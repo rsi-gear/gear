@@ -1,10 +1,12 @@
 # prime-agent IPython Kernel 移植决策
 
-- 状态：Draft v0.2
+- 状态：Draft v0.4
 - 目的：为 DSH 自进化 harness 插件（[spec](dsh-self-evolving-harness-spec.md)）的 `PythonNotebookRuntime` 组件提供移植决策
 - 参考实现：`../prime-agent/packages/coding-agent/src/core/kernel/`（KernelManager，1605 行）+ `src/core/tools/ipython.ts`（工具层）+ `prime-agent-runtime`（Python 侧 rlm shim）
 - 更新：2026-08-19 — 基于对 prime-agent 源码的完整阅读与四轮探索调研
 - 更新：2026-08-19 — v0.2：按 DSH 源码核查修正一处事实（"Python SDK 渲染器"实为 TS 侧 codegen `py-types.ts`，`python/` 目录无渲染器）；补 zeromq 原生依赖进 DSH 仓库的工程代价与决策记录
+- 更新：2026-08-20 — v0.3：澄清移植边界——prime-agent 的 Python skills（pyproject 包 editable 安装进 kernel venv、cell 内 await 调用）不移植；DSH 的 skill 加载保持原生，`ipython_input` 只是工具面的新增成员
+- 更新：2026-08-20 — v0.4：取消独立 `cell/run` 事件域（cell 即工具调用，复用 `tool/call` + `tool/result`），与 spec v0.3.5 同步
 
 ## 1. 结论
 
@@ -138,12 +140,14 @@ Node 侧:    handleCommMessage → handleHostRequest（按 data.type 查 hostHan
 | host bridge comm | provider 内 | comm 机制保留，handlers 换 spec API |
 | `rlm.harness.*` 直写 | **不做** | 改为 `HarnessMutation` + git commit（spec §5） |
 | `_rebuildSystemPrompt` 热生效 | `systemPrompt.section()` 注册（agent scope） | 见 harness 装配分析 |
-| cell 结果入日志 | `SessionEventMap` 的 `cell/run` 事件 + `session.append` | 新增事件域后必须跑 `pnpm run gen-persistence-catalog`（否则 resume 拒绝日志） |
+| cell 结果入日志 | 复用工具管道的 `tool/call` + `tool/result`（不设独立事件域） | `ipython_input` 注册为普通工具即自动满足；无需新增 `cell/run` 事件域 |
+
+**说明**：prime-agent 的 Python skills（pyproject 包 `--editable` 安装进 kernel venv、cell 内 `await skill(...)` 调用）不移植——DSH 的 skill 加载保持原生（SKILL.md + SkillProvider 缝 + catalog），`ipython_input` 只是工具面的新增成员，不是唯一工具（DSH 既有工具面由 preset 组合决定，原样保留）。
 
 ## 9. 需要论证的边界（spec §10 要求）
 
 1. **与 code-runtime 缝**：定义是 one-shot（`CodeRunRequest` 无 streaming/会话句柄）。持久 kernel 两条路：(a) 保持 `run()` 单次语义、kernel 内部按 session 延续命名空间（每次 `run()` 只是往同一 kernel 塞一段 program）；(b) 扩展 `CodeRuntime` 加 session 方法（属破坏性定义变更，需评审）。V1 建议 (a)。
-2. **与 terminal 缝**：terminal 是"进程树 + 字节流"，code-runtime 是"program + bindings + 结构化结果"。持久 kernel 的**模型可见输出必须是结构化结果**（经 `tool/result` 入日志），不能是 PTY 字节流——这是"cell/run 可重放"契约的前提。
+2. **与 terminal 缝**：terminal 是"进程树 + 字节流"，code-runtime 是"program + bindings + 结构化结果"。持久 kernel 的**模型可见输出必须是结构化结果**（经 `tool/result` 入日志），不能是 PTY 字节流——这是 cell 重放契约（`tool/call` + `tool/result`）的前提。
 3. **进程安全**：kernel 不是安全沙箱（prime-agent 与 spec §11 一致）；不可信 hook/tool 代码走 Harbor Docker，与 kernel 隔离正交。
 
 ## 10. 参考文件索引
