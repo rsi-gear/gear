@@ -1,2 +1,7 @@
 deepseek-harness/
 .workbuddy/
+node_modules/
+lib/
+coverage/
+*.tgz
+.dsh-refine/
