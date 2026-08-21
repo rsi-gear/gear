@@ -1,10 +1,11 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
 import { SessionAwareNotebookRuntime } from '../../src/notebook/runtime.js'
+import { SandboxManager } from '@anthropic-ai/sandbox-runtime'
 
 const runtimes: SessionAwareNotebookRuntime[] = []
 const roots: string[] = []
@@ -71,5 +72,65 @@ describe('SessionAwareNotebookRuntime', () => {
     runtimes.push(runtime)
     const result = await runtime.execute({ sessionId: 'real', cwd: root, role: 'rollout', code: '%precision 3\n1 / 3' })
     expect(result.result).toContain('0.333')
+  })
+
+  const sandboxDependencies = process.platform === 'darwin' || process.platform === 'linux'
+    ? SandboxManager.checkDependencies().errors
+    : ['unsupported platform']
+  it.skipIf(sandboxDependencies.length > 0)('sandboxes the entire meta kernel with scratch-only data access and a sanitized environment', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'refine-notebook-sandbox-'))
+    roots.push(root)
+    const secret = join(root, 'control-plane-secret.txt')
+    await writeFile(secret, 'held-out-control-data')
+    const previous = process.env.REFINE_NOTEBOOK_TEST_SECRET
+    process.env.REFINE_NOTEBOOK_TEST_SECRET = 'must-not-cross'
+    const runtime = new SessionAwareNotebookRuntime({
+      helperPath: fileURLToPath(new URL('../fixtures/notebook-helper.py', import.meta.url)),
+      sandbox: {
+        roles: ['refine-meta'],
+        mode: 'required',
+        scratchRoot: join(root, 'scratch'),
+      },
+    })
+    runtimes.push(runtime)
+    try {
+      await runtime.initialize()
+      const cwd = await runtime.execute({
+        sessionId: 'meta-sandbox', cwd: root, role: 'refine-meta',
+        code: "(__import__('os').getcwd(), __import__('os').environ.get('REFINE_NOTEBOOK_TEST_SECRET'))",
+      })
+      expect(cwd.result).toContain('/scratch/')
+      expect(cwd.result).toContain('None')
+      const write = await runtime.execute({
+        sessionId: 'meta-sandbox', cwd: root, role: 'refine-meta',
+        code: "open('proposal.tmp', 'w').write('ok')",
+      })
+      expect(write.result).toBe('2')
+      await expect(runtime.execute({
+        sessionId: 'meta-sandbox', cwd: root, role: 'refine-meta',
+        code: `open(${JSON.stringify(secret)}).read()`,
+      })).rejects.toThrow(/Operation not permitted|Permission denied/iu)
+      const childRead = await runtime.execute({
+        sessionId: 'meta-sandbox', cwd: root, role: 'refine-meta',
+        code: `__import__('subprocess').run(['/bin/cat', ${JSON.stringify(secret)}], capture_output=True).returncode`,
+      })
+      expect(childRead.result).not.toBe('0')
+      await expect(runtime.execute({
+        sessionId: 'meta-sandbox', cwd: root, role: 'refine-meta',
+        code: "__import__('socket').socket().bind(('127.0.0.1', 0))",
+      })).rejects.toThrow(/Operation not permitted|Permission denied/iu)
+      try {
+        const hostProcess = await runtime.execute({
+          sessionId: 'meta-sandbox', cwd: root, role: 'refine-meta',
+          code: `'must-not-cross' in __import__('subprocess').run(['/bin/ps', 'eww', '-p', '${process.pid}'], capture_output=True, text=True).stdout`,
+        })
+        expect(hostProcess.result).toBe('False')
+      } catch (error) {
+        expect(String(error)).toMatch(/Operation not permitted|Permission denied/iu)
+      }
+    } finally {
+      if (previous === undefined) delete process.env.REFINE_NOTEBOOK_TEST_SECRET
+      else process.env.REFINE_NOTEBOOK_TEST_SECRET = previous
+    }
   })
 })

@@ -25,6 +25,7 @@ export * from './evaluator/hitch-cli.js'
 export * from './meta/session.js'
 export * from './meta/isolation.js'
 export * from './notebook/runtime.js'
+export * from './notebook/sandbox.js'
 export * from './notebook/tool.js'
 export * from './refine/service.js'
 export * from './state/store.js'
@@ -86,6 +87,18 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   let capabilities: RefineCapabilities | undefined
   const notebook = new SessionAwareNotebookRuntime({
     ...(config.pythonExecutable === undefined ? {} : { pythonExecutable: config.pythonExecutable }),
+    sandbox: {
+      roles: ['refine-meta'],
+      mode: config.metaSandbox.mode,
+      scratchRoot: join(stateRoot, 'meta-notebooks'),
+      protectedPaths: [
+        stateRoot,
+        config.dshRepository,
+        config.heldOutRef,
+        config.hitch.root,
+        ...(config.seedTasksPath === undefined ? [] : [config.seedTasksPath]),
+      ],
+    },
     allowedMethods: {
       'refine-meta': [
         'harness.current', 'harness.read', 'seed_tasks.load', 'trajectory.query', 'hitch.status',
@@ -129,6 +142,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
 
   await store.initialize()
   await builder.initialize()
+  await notebook.initialize()
   if (await store.readChampion() === undefined && config.initialChampion !== undefined) {
     const manifest = await builder.readManifest(config.initialChampion.ref)
     if (manifest.digest !== config.initialChampion.manifestDigest) {
@@ -148,6 +162,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   ctx.effect(() => async () => {
     await targetWorkers.dispose()
     await service.dispose()
+    await notebook.dispose()
   }, 'refine.dispose()')
   ctx.commands.register({
     name: 'refine',

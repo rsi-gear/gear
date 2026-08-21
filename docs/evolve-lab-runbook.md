@@ -77,6 +77,13 @@ Round state is under `.evolve-lab/state/refine`; Hitch evidence and prepared
 artifacts are under `.evolve-lab/hitch-home`. The target repository must remain
 clean before starting a round.
 
+The meta IPython helper runs inside the required OS sandbox. Its actual cwd is
+a per-session directory below `.evolve-lab/state/refine/meta-notebooks`, and it
+cannot directly read the surrounding lab, DSH session logs, target repository,
+Hitch state, held-out dataset, credentials, or host environment. Champion and
+trajectory data must cross the typed Host Bridge. On macOS this requires the
+built-in `sandbox-exec`; on Linux install Bubblewrap, `socat`, and ripgrep.
+
 The launcher reads `DEEPSEEK_API_KEY` from the existing
 `/Users/zgq/.dsh/.credentials.yaml` without copying it into the lab and passes
 it to the DSH/Hitch child process. Credential values are not written to the

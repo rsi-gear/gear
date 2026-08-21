@@ -183,7 +183,9 @@ preset id 可采用 `target-<manifestDigest>`，不得覆盖同名目录。Contr
 | target interactive | isolated TargetWorker | 有 | 仅 `refine.run`、`refine.status` |
 | rollout | Harbor trial | 可选，默认启用但不持久化 snapshot | 无 refine/trajectory/Hitch/champion API |
 
-Meta session 不挂载 champion preset，其 SkillProvider locator、`skill-filesystem.customSkillDirs`、system-prompt sections、tools、hooks 与 workflows 均不得指向 harness repo。TargetHarness 内容进入 meta 的唯一通道是 typed API 返回的带 ref/digest/来源标记的数据；它可能影响 meta 的判断，但不能成为 meta 的活跃 composition 或 authority。`harness.current()` 返回 ref、manifest 与 path/digest index；`harness.read({ref,path,offset,limit})` 只读允许 tree、校验 ref/path/digest并有 page/byte bounds。MetaHarness 的固定 skill catalog 可以包含 pinned DSH API/插件开发文档，但不得包含 TargetHarness 目录。任何 meta-visible refinement-history projection 必须删除 `heldOut*` fields 和 partition refs；Control Plane 的完整 record 不直接暴露给 meta。
+Meta session 不挂载 champion preset，其 SkillProvider locator、`skill-filesystem.customSkillDirs`、system-prompt sections、tools、hooks 与 workflows 均不得指向 harness repo。TargetHarness 内容进入 meta 的唯一通道是 typed API 返回的带 ref/digest/来源标记的数据；它可能影响 meta 的判断，但不能成为 meta 的活跃 composition 或 authority。这个约束同时由 composition 检查和整个 meta Python 进程的 OS sandbox 执行：kernel 不在 host workspace 中运行、不能读取 Control Plane state/session log/DSH repo/held-out，也不继承 host credentials。只限制 Host Bridge 或包装 `%%bash` 不构成这个边界，因为 Python `open()` 与 `subprocess` 可以绕过它们。
+
+`harness.current()` 返回 ref、manifest 与 path/digest index；`harness.read({ref,path,offset,limit})` 只读允许 tree、校验 ref/path/digest并有 page/byte bounds。MetaHarness 的固定 skill catalog 可以包含 pinned DSH API/插件开发文档，但不得包含 TargetHarness 目录。任何 meta-visible refinement-history projection 必须删除 `heldOut*` fields 和 partition refs；Control Plane 的完整 record 不直接暴露给 meta。
 
 target 的 `refine.status` 也只返回 public projection：round id、粗粒度 status、terminal decision 与 seed-side summary；不返回 held-out ref/delta、workspace/verifier refs、Meta session id 或 Control Plane path。特权 UI 若要审计完整 record，使用独立 human-authorized control endpoint，不能复用 target capability。
 
@@ -220,7 +222,7 @@ interface NotebookExecuteRequest {
   sessionId: SessionId
   cwd: string
   code: string
-  role: 'meta' | 'target' | 'rollout'
+  role: 'refine-meta' | 'target' | 'rollout'
   signal: AbortSignal
 }
 
@@ -233,6 +235,8 @@ abstract class NotebookRuntime extends Service {
 ```
 
 Provider 为每个 `SessionId` 懒创建一个 kernel、串行执行 cell，并在 session/agent disposal 时回收。Prime Agent 的对应做法也是由 `AgentSession` 持有 `IpythonKernelProvisioner`，工具 closure 捕获 provisioner；`KernelManager.sessionId` 用于 ownership/cleanup，而不是让一个无 session 参数的全局 runtime 猜调用者。
+
+`refine-meta` 的逻辑 cwd 只参与 session identity/binding；实际 kernel cwd 是 `stateRoot/meta-notebooks` 下按 session 隔离、权限为 owner-only 的随机 scratch。整个 helper 进程及其子进程由 OS sandbox 包裹：filesystem read 默认从 `/` deny，再只放行固定系统/Python runtime、packaged helper 与当前 scratch；write 只放行当前 scratch；network 全禁；environment 采用白名单重建并将 HOME/TMPDIR/XDG/IPython state 重定向进 scratch。sandbox 初始化或平台依赖缺失时，Control Plane fail closed，不退回 direct spawn。
 
 Host Bridge handlers 在 session setup 时按角色注册；每个 request 带 generation、request id、abort signal 和 current-generation check。kernel 不保存 host credential。snapshot 是 owner-private、绑定 session id + Target/MetaHarnessRef 的可选 dill 文件；rollout 默认禁用。恢复失败或无 snapshot 时启动空 namespace，并向模型记录 notice；系统不自动重放历史 cell 来重新执行副作用，日志重放只重建模型当时看见的证据。
 

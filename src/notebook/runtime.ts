@@ -3,6 +3,7 @@ import { createInterface, type Interface as ReadlineInterface } from 'node:readl
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import type { SessionRole } from '../types.js'
+import { NotebookKernelSandbox, type NotebookKernelSandboxOptions } from './sandbox.js'
 
 export interface NotebookExecuteRequest {
   sessionId: string
@@ -24,6 +25,7 @@ export interface NotebookExecuteResult {
 export type NotebookBridgeHandler = (method: string, params: unknown, request: NotebookExecuteRequest) => Promise<unknown>
 
 export interface NotebookRuntime {
+  initialize(): Promise<void>
   execute(request: NotebookExecuteRequest): Promise<NotebookExecuteResult>
   interrupt(sessionId: string): Promise<void>
   restart(sessionId: string): Promise<void>
@@ -54,7 +56,10 @@ interface Kernel {
   pending: Map<string, KernelRequest>
   stderr: string[]
   cwd: string
+  executionCwd: string
   role: SessionRole
+  cleanup(): Promise<void>
+  cleanupPromise?: Promise<void>
 }
 
 export interface SessionAwareNotebookOptions {
@@ -64,6 +69,7 @@ export interface SessionAwareNotebookOptions {
   allowedMethods?: Partial<Record<SessionRole, readonly string[]>>
   interruptGraceMs?: number
   shutdownGraceMs?: number
+  sandbox?: NotebookKernelSandboxOptions & { roles: readonly SessionRole[] }
 }
 
 function defaultHelperPath(): string {
@@ -82,7 +88,11 @@ export class SessionAwareNotebookRuntime implements NotebookRuntime {
   private readonly allowedMethods: Partial<Record<SessionRole, readonly string[]>>
   private readonly interruptGraceMs: number
   private readonly shutdownGraceMs: number
+  private readonly sandboxRoles: ReadonlySet<SessionRole>
+  private readonly sandbox: NotebookKernelSandbox | undefined
   private readonly disposals = new Map<string, Promise<void>>()
+  private readonly starts = new Map<string, Promise<Kernel>>()
+  private readonly cleanups = new Set<Promise<void>>()
   private disposed = false
 
   constructor(options: SessionAwareNotebookOptions = {}) {
@@ -92,6 +102,14 @@ export class SessionAwareNotebookRuntime implements NotebookRuntime {
     this.allowedMethods = options.allowedMethods ?? {}
     this.interruptGraceMs = options.interruptGraceMs ?? 5_000
     this.shutdownGraceMs = options.shutdownGraceMs ?? 1_000
+    this.sandboxRoles = new Set(options.sandbox?.roles ?? [])
+    this.sandbox = options.sandbox === undefined
+      ? undefined
+      : new NotebookKernelSandbox(this.pythonExecutable, this.helperPath, options.sandbox)
+  }
+
+  async initialize(): Promise<void> {
+    await this.sandbox?.initialize()
   }
 
   async execute(request: NotebookExecuteRequest): Promise<NotebookExecuteResult> {
@@ -99,7 +117,7 @@ export class SessionAwareNotebookRuntime implements NotebookRuntime {
     if (request.signal?.aborted === true) throw request.signal.reason
     await this.disposals.get(request.sessionId)
     const cwd = resolve(request.cwd)
-    const kernel = this.kernels.get(request.sessionId) ?? this.spawnKernel(request.sessionId, cwd, request.role)
+    const kernel = this.kernels.get(request.sessionId) ?? await this.getOrSpawnKernel(request.sessionId, cwd, request.role)
     if (kernel.cwd !== cwd || kernel.role !== request.role) {
       throw new Error(`notebook session ${request.sessionId} cannot be rebound to a different cwd or role`)
     }
@@ -112,12 +130,12 @@ export class SessionAwareNotebookRuntime implements NotebookRuntime {
     const abort = (): void => {
       void this.interrupt(request.sessionId)
       abortTimer = setTimeout(() => {
-        if (kernel.pending.has(requestId)) kernel.child.kill('SIGKILL')
+        if (kernel.pending.has(requestId)) this.signalKernel(kernel, 'SIGKILL')
       }, this.interruptGraceMs)
     }
     request.signal?.addEventListener('abort', abort, { once: true })
     kernel.child.stdin.write(`${JSON.stringify({
-      type: 'execute', requestId, code: request.code, cwd: request.cwd,
+      type: 'execute', requestId, code: request.code, cwd: kernel.executionCwd,
       allowedMethods: this.allowedMethods[request.role] ?? [],
     })}\n`)
     try {
@@ -131,7 +149,7 @@ export class SessionAwareNotebookRuntime implements NotebookRuntime {
   async interrupt(sessionId: string): Promise<void> {
     const kernel = this.kernels.get(sessionId)
     if (kernel === undefined) return
-    kernel.child.kill('SIGINT')
+    this.signalKernel(kernel, 'SIGINT')
   }
 
   async restart(sessionId: string): Promise<void> {
@@ -149,13 +167,14 @@ export class SessionAwareNotebookRuntime implements NotebookRuntime {
       kernel.pending.clear()
       kernel.child.stdin.end(`${JSON.stringify({ type: 'shutdown' })}\n`)
       if (kernel.child.exitCode !== null) return resolvePromise()
-      const terminate = setTimeout(() => kernel.child.kill('SIGTERM'), this.shutdownGraceMs)
-      const kill = setTimeout(() => kernel.child.kill('SIGKILL'), this.shutdownGraceMs + 5_000)
+      const terminate = setTimeout(() => this.signalKernel(kernel, 'SIGTERM'), this.shutdownGraceMs)
+      const kill = setTimeout(() => this.signalKernel(kernel, 'SIGKILL'), this.shutdownGraceMs + 5_000)
       kernel.child.once('exit', () => { clearTimeout(terminate); clearTimeout(kill); resolvePromise() })
     })
     this.disposals.set(sessionId, disposal)
     try {
       await disposal
+      await this.cleanupKernel(kernel)
     } finally {
       if (this.disposals.get(sessionId) === disposal) this.disposals.delete(sessionId)
     }
@@ -163,14 +182,44 @@ export class SessionAwareNotebookRuntime implements NotebookRuntime {
 
   async dispose(): Promise<void> {
     this.disposed = true
-    await Promise.all([...this.kernels.keys()].map(sessionId => this.disposeSession(sessionId)))
-    await Promise.all(this.disposals.values())
+    try {
+      await Promise.allSettled(this.starts.values())
+      await Promise.all([...this.kernels.keys()].map(sessionId => this.disposeSession(sessionId)))
+      await Promise.all(this.disposals.values())
+      await Promise.all(this.cleanups)
+    } finally {
+      await this.sandbox?.dispose()
+    }
   }
 
-  private spawnKernel(sessionId: string, cwd: string, role: SessionRole): Kernel {
-    const child = spawn(this.pythonExecutable, ['-u', this.helperPath], { stdio: ['pipe', 'pipe', 'pipe'] })
+  private async getOrSpawnKernel(sessionId: string, cwd: string, role: SessionRole): Promise<Kernel> {
+    const existing = this.starts.get(sessionId)
+    if (existing !== undefined) return existing
+    const start = this.spawnKernel(sessionId, cwd, role)
+    this.starts.set(sessionId, start)
+    try {
+      return await start
+    } finally {
+      if (this.starts.get(sessionId) === start) this.starts.delete(sessionId)
+    }
+  }
+
+  private async spawnKernel(sessionId: string, cwd: string, role: SessionRole): Promise<Kernel> {
+    const launch = this.sandbox !== undefined && this.sandboxRoles.has(role)
+      ? await this.sandbox.launch(sessionId, cwd)
+      : {
+          child: spawn(this.pythonExecutable, ['-u', this.helperPath], {
+            detached: process.platform !== 'win32',
+            stdio: ['pipe', 'pipe', 'pipe'],
+          }),
+          cwd,
+          cleanup: async () => {},
+        }
+    const child = launch.child
     const lines = createInterface({ input: child.stdout })
-    const kernel: Kernel = { child, lines, pending: new Map(), stderr: [], cwd, role }
+    const kernel: Kernel = {
+      child, lines, pending: new Map(), stderr: [], cwd, executionCwd: launch.cwd, role, cleanup: launch.cleanup,
+    }
     this.kernels.set(sessionId, kernel)
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (chunk: string) => {
@@ -224,5 +273,24 @@ export class SessionAwareNotebookRuntime implements NotebookRuntime {
     for (const pending of kernel.pending.values()) pending.reject(error)
     kernel.pending.clear()
     kernel.lines.close()
+    void this.cleanupKernel(kernel).catch(() => {})
+  }
+
+  private cleanupKernel(kernel: Kernel): Promise<void> {
+    if (kernel.cleanupPromise !== undefined) return kernel.cleanupPromise
+    const cleanup = kernel.cleanup().finally(() => this.cleanups.delete(cleanup))
+    kernel.cleanupPromise = cleanup
+    this.cleanups.add(cleanup)
+    return cleanup
+  }
+
+  private signalKernel(kernel: Kernel, signal: NodeJS.Signals): void {
+    if (kernel.child.pid !== undefined && process.platform !== 'win32') {
+      try {
+        process.kill(-kernel.child.pid, signal)
+        return
+      } catch {}
+    }
+    kernel.child.kill(signal)
   }
 }

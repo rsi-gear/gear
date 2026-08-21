@@ -60,6 +60,8 @@ describe('published plugin composition', () => {
       `    dshBaseRef: ${fixture.baseRef}`,
       '    toolchainRef: node-22-tsc',
       '    sandboxProfileRef: sandbox-v1',
+      '    metaSandbox:',
+      '      mode: disabled',
       '    seedTaskRef: seed-commit',
       '    heldOutRef: held-out-commit',
       '    compiler:',

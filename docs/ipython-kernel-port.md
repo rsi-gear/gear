@@ -166,14 +166,20 @@ Prime Agent 的 `<ipython_kernel_reset>` / restore notice 语义保留，但在 
 
 ## 9. 与安全隔离的关系
 
-IPython kernel 不是 sandbox，`isolation: process` 也不是安全声明。Meta kernel 的安全来自固定、最小 Host Bridge 且不加载 target code；Target/rollout kernel 的安全来自整个 DSH process 所在的 TargetWorker/Harbor container。candidate code 与 kernel 权限相同，因此必须共用固定 filesystem/network/credential profile。
+Prime Agent 的 direct-spawn IPython kernel 不是 sandbox，`isolation: process` 也不是安全声明。Gear 只复用它的 session ownership、持久 namespace 与 lifecycle 结构，不复用其“kernel 拥有用户 OS 权限”的 trust model。
+
+`refine-meta` helper 的整个进程树必须运行在 OS sandbox 内，而不是只包装 `bash`/`%%bash`。kernel 的实际 cwd 是 per-session scratch；read 默认 deny root，只放行 Python runtime、packaged helper 与当前 scratch；write 只放行当前 scratch；network 全禁；host environment 采用白名单重建，HOME/TMPDIR/XDG/IPython state 指向 scratch。Control Plane 的 workspace、DSH repo、state/session logs、Hitch state、held-out 与 credentials 均不在这个可见集合中。Meta 访问 champion、seed public projection 和 trajectory public projection只能经过固定 Host Bridge。
+
+macOS provider 使用 `sandbox-exec`，Linux provider 使用 Bubblewrap；依赖缺失、sandbox 初始化失败或 unsupported platform 必须在插件初始化时 fail closed。`metaSandbox.mode: disabled` 只能用于明确选择 Prime-style trusted local diagnosis 的场景；启用后不得宣称 held-out secrecy、typed-API-only input 或有效 promotion attribution。
+
+Target/rollout kernel 的安全来自整个 DSH process 所在的 TargetWorker/Harbor container。candidate code 与 kernel 权限相同，因此必须共用固定 filesystem/network/credential profile。
 
 NotebookRuntime 不提供任意 host file mount、credential lookup 或 package installation handler。需要这些能力的 proposal 属于 `rejected-for-substrate`。
 
 ## 10. 实施顺序与测试
 
 1. `NotebookRuntime` Definition + fake provider，证明 session id/cwd/role 显式传递、dispose ownership 和 consumer composition。
-2. IPython provider：direct spawn、wire protocol、structured result、interrupt/restart/teardown；加入原生依赖平台 gate。
+2. IPython provider：target/rollout direct spawn、meta whole-process sandbox launch、wire protocol、structured result、interrupt/restart/teardown；加入原生依赖平台 gate。
 3. `tool-ipython` REAL composition + keyless snapshot，证明 `tool/call`/`tool/result` replay 和 exact agent session routing。
 4. role Host Bridge：meta/target/rollout denial tests；target 反向 RPC 集成在 TargetWorker protocol PR。
 5. snapshot：identity/permission/size/partial restore/crash tests；rollout disabled path。

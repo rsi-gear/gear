@@ -104,6 +104,8 @@ Mount the control-plane entry from a DSH composition:
     dshBaseRef: 0123456789abcdef0123456789abcdef01234567
     toolchainRef: node-22-tsc
     sandboxProfileRef: isolated-v1
+    metaSandbox:
+      mode: required
     seedTaskRef: /absolute/path/to/harbor-seed-dataset
     heldOutRef: /absolute/path/to/harbor-held-out-dataset
     taskBudgetMs: 300000
@@ -170,12 +172,23 @@ older session. The registry verifies the commit and manifest before launch.
 - Node.js 22.19+ (or 24+), matching DSH.
 - Public DSH `0.1.0-rc.8` packages supplied by the host deployment.
 - Python 3 with IPython for `ipython_input`. The executable is configurable.
+- Meta notebooks require OS-level sandbox support by default: macOS uses the
+  built-in `sandbox-exec`; Linux requires Bubblewrap, `socat`, and ripgrep.
+  The sandbox runtime is pinned as a package dependency. Windows is not yet a
+  supported control-plane host.
 - For production evaluation, an installed Hitch `0.2.x` CLI plus Harbor. Local-only
   candidates additionally require Hitch's local-exact-commit transport capability.
 
+The meta kernel is air-gapped, receives a sanitized environment, and can read
+and write only its per-session scratch directory plus its Python runtime. Its
+logical workspace path is retained solely as session identity; it is not the
+kernel's filesystem cwd. `metaSandbox.mode: disabled` exists only for trusted
+local diagnosis and invalidates held-out secrecy and the typed-API-only claim.
+
 Target/candidate isolation and scoped credentials remain deployment
-responsibilities. Hitch/Harbor failures fail the round; the plugin never falls
-back to evaluating candidate code in the control plane.
+responsibilities because those processes run in TargetWorker/Harbor rather
+than the control-plane meta sandbox. Hitch/Harbor failures fail the round; the
+plugin never falls back to evaluating candidate code in the control plane.
 
 Persisted artifact-era state is intentionally incompatible. Remove or migrate
 old `.dsh-refine` state before switching to schema version 2; a `sha256:`

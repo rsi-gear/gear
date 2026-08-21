@@ -51,6 +51,7 @@
     "prepack": "npm run build"
   },
   "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.55",
     "@deepseek-ai/schemastery": "^3.18.1",
     "diff": "^8.0.2",
     "js-yaml": "^4.1.0"

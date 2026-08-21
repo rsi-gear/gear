@@ -32,6 +32,9 @@ export interface Config {
   heldOutRef: string
   taskBudgetMs: number
   pythonExecutable?: string
+  metaSandbox: {
+    mode: 'required' | 'disabled'
+  }
   seedTasksPath?: string
   allowedImports: string[]
   initialChampion?: ChampionState
@@ -65,6 +68,9 @@ export const ConfigSchema: Schema<Config> = Schema.object({
   heldOutRef: Schema.string().required(),
   taskBudgetMs: Schema.number().default(300_000),
   pythonExecutable: Schema.string().default('python3'),
+  metaSandbox: Schema.object({
+    mode: Schema.union(['required', 'disabled'] as const).default('required'),
+  }).default({ mode: 'required' }),
   seedTasksPath: Schema.string(),
   allowedImports: Schema.array(Schema.string()).default(['@deepseek-ai/', 'node:']),
   initialChampion: Schema.object({
