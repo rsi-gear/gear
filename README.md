@@ -66,14 +66,16 @@ Rollout Agent 在演进后的 Seed Tasks 上生成轨迹，Evaluator 为轨迹�
 
 `dsh-plugin-refine` is a distributable DeepSeek Harness (DSH) plugin for
 meta-managed evolution of an isolated target harness. The control-plane plugin
-owns refinement rounds, a persistent meta-agent session, content-addressed
-harness mutations, and session-aware IPython notebooks. The package also
+owns refinement rounds, a persistent meta-agent session, Git-versioned
+harness mutations, and session-aware IPython notebooks. Each target harness
+version is an exact Git commit in a complete DSH source repository. The package also
 exports `dsh-plugin-refine/worker`, the role-scoped plugin loaded inside a
 target worker.
 
 The package deliberately does not load target harness code in the control
-plane. Candidate evaluation is an injected service boundary; the Hitch/Harbor
-provider is not part of this release.
+plane. Its production evaluator invokes an installed Hitch CLI and reuses
+Hitch's existing `deepseek` adapter and Harbor backend; it does not import
+Hitch internals.
 
 ### Installation
 
@@ -88,29 +90,46 @@ Mount the control-plane entry from a DSH composition:
   name: dsh-plugin-refine
   config:
     workspaceRoot: /absolute/path/to/workspace
-    harnessRoot: /absolute/path/to/harness-store
+    dshRepository: /absolute/path/to/clean-complete-dsh-repository
+    targetRoot: harness
     metaPreset: refine-meta
     metaHarnessRef: meta-v1
     metaModel:
       provider: deepseek
       model: deepseek-chat
-    dshRevision: 0.1.0-rc.8
+    dshBaseRef: 0123456789abcdef0123456789abcdef01234567
     toolchainRef: node-22-tsc
     sandboxProfileRef: isolated-v1
-    seedTaskRef: 0123456789abcdef0123456789abcdef01234567
-    heldOutRef: fedcba9876543210fedcba9876543210fedcba98
+    seedTaskRef: /absolute/path/to/harbor-seed-dataset
+    heldOutRef: /absolute/path/to/harbor-held-out-dataset
     taskBudgetMs: 300000
     compiler:
       command: /opt/dsh-toolchain/bin/build-target-harness
       args: []
       env: {}
     allowedImports: ["@deepseek-ai/", "node:"]
+    hitch:
+      executable: hitch
+      harnessId: deepseek
+      model: deepseek-chat
+      attempts: 1
+      maxConcurrent: 4
+      setupTimeoutMs: 1800000
+      terminationGraceMs: 5000
+      maxOutputBytes: 8388608
+      agentArgs: []
+      passEnv: []
+    initialChampion:
+      schemaVersion: 2
+      ref: fedcba9876543210fedcba9876543210fedcba98
+      manifestDigest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      updatedAt: "2026-08-21T00:00:00.000Z"
 ```
 
 The composition must also provide DSH `agents`, `agentPresets`, `commands`,
-`tools`, and the standard session/system-prompt services. A deployment-specific
-evaluation plugin must provide the `refineEvaluator` service before rounds can
-be admitted.
+`tools`, and the standard session/system-prompt services. The configured DSH
+repository must be clean; `dshBaseRef` and the champion ref must be exact full
+commit OIDs. The plugin creates detached worktrees and commits candidates itself.
 
 The command plane accepts:
 
@@ -131,18 +150,32 @@ Load the worker entry only inside the isolated worker composition:
   name: dsh-plugin-refine/worker
   config:
     role: target
-    targetHarnessRef: sha256:...
-    targetPreset: target-...
+    targetHarnessRef: 0123456789abcdef0123456789abcdef01234567
+    targetManifestDigest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    targetPreset: target-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     sandboxProfileRef: isolated-v1
 ```
+
+The control-plane plugin provides `ctx.targetWorkers`. Use
+`createCurrent(...)` for a new target session so it pins the current champion;
+use `create(...)` with a previously accepted exact commit only when resuming an
+older session. The registry verifies the commit and manifest before launch.
 
 ### Runtime requirements
 
 - Node.js 22.19+ (or 24+), matching DSH.
 - Public DSH `0.1.0-rc.8` packages supplied by the host deployment.
 - Python 3 with IPython for `ipython_input`. The executable is configurable.
+- For production evaluation, an installed Hitch `0.2.x` CLI plus Harbor. Local-only
+  candidates additionally require Hitch's local-exact-commit transport capability.
 
-Target/candidate isolation, scoped credentials, and a real evaluator remain
-deployment responsibilities. The plugin fails closed when no evaluator is
-installed; it never falls back to evaluating candidate code in the control
-plane.
+Target/candidate isolation and scoped credentials remain deployment
+responsibilities. Hitch/Harbor failures fail the round; the plugin never falls
+back to evaluating candidate code in the control plane.
+
+Persisted artifact-era state is intentionally incompatible. Remove or migrate
+old `.dsh-refine` state before switching to schema version 2; a `sha256:`
+artifact ref is never interpreted as a Git commit.
+
+See [Gear ↔ Hitch CLI integration](docs/hitch-dsh-integration.md) and the
+[Hitch local exact commit → Harbor transport requirements](docs/hitch-local-commit-harbor-requirements.md).

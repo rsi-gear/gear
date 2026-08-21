@@ -53,6 +53,8 @@ interface Kernel {
   lines: ReadlineInterface
   pending: Map<string, KernelRequest>
   stderr: string[]
+  cwd: string
+  role: SessionRole
 }
 
 export interface SessionAwareNotebookOptions {
@@ -60,6 +62,8 @@ export interface SessionAwareNotebookOptions {
   helperPath?: string
   bridge?: NotebookBridgeHandler
   allowedMethods?: Partial<Record<SessionRole, readonly string[]>>
+  interruptGraceMs?: number
+  shutdownGraceMs?: number
 }
 
 function defaultHelperPath(): string {
@@ -76,23 +80,41 @@ export class SessionAwareNotebookRuntime implements NotebookRuntime {
   private readonly helperPath: string
   private readonly bridge: NotebookBridgeHandler
   private readonly allowedMethods: Partial<Record<SessionRole, readonly string[]>>
+  private readonly interruptGraceMs: number
+  private readonly shutdownGraceMs: number
+  private readonly disposals = new Map<string, Promise<void>>()
+  private disposed = false
 
   constructor(options: SessionAwareNotebookOptions = {}) {
     this.pythonExecutable = options.pythonExecutable ?? 'python3'
     this.helperPath = options.helperPath ?? defaultHelperPath()
     this.bridge = options.bridge ?? (async (method) => { throw new Error(`notebook host bridge method is unavailable: ${method}`) })
     this.allowedMethods = options.allowedMethods ?? {}
+    this.interruptGraceMs = options.interruptGraceMs ?? 5_000
+    this.shutdownGraceMs = options.shutdownGraceMs ?? 1_000
   }
 
   async execute(request: NotebookExecuteRequest): Promise<NotebookExecuteResult> {
+    if (this.disposed) throw new Error('NotebookRuntime is disposed')
     if (request.signal?.aborted === true) throw request.signal.reason
-    const kernel = this.kernels.get(request.sessionId) ?? this.spawnKernel(request.sessionId)
+    await this.disposals.get(request.sessionId)
+    const cwd = resolve(request.cwd)
+    const kernel = this.kernels.get(request.sessionId) ?? this.spawnKernel(request.sessionId, cwd, request.role)
+    if (kernel.cwd !== cwd || kernel.role !== request.role) {
+      throw new Error(`notebook session ${request.sessionId} cannot be rebound to a different cwd or role`)
+    }
     if (kernel.pending.size > 0) throw new Error(`notebook session ${request.sessionId} is already executing`)
     const requestId = crypto.randomUUID()
     const completion = new Promise<NotebookExecuteResult>((resolvePromise, reject) => {
       kernel.pending.set(requestId, { resolve: resolvePromise, reject, request, concludesTurn: false })
     })
-    const abort = (): void => { void this.interrupt(request.sessionId) }
+    let abortTimer: NodeJS.Timeout | undefined
+    const abort = (): void => {
+      void this.interrupt(request.sessionId)
+      abortTimer = setTimeout(() => {
+        if (kernel.pending.has(requestId)) kernel.child.kill('SIGKILL')
+      }, this.interruptGraceMs)
+    }
     request.signal?.addEventListener('abort', abort, { once: true })
     kernel.child.stdin.write(`${JSON.stringify({
       type: 'execute', requestId, code: request.code, cwd: request.cwd,
@@ -101,6 +123,7 @@ export class SessionAwareNotebookRuntime implements NotebookRuntime {
     try {
       return await completion
     } finally {
+      if (abortTimer !== undefined) clearTimeout(abortTimer)
       request.signal?.removeEventListener('abort', abort)
     }
   }
@@ -113,29 +136,41 @@ export class SessionAwareNotebookRuntime implements NotebookRuntime {
 
   async restart(sessionId: string): Promise<void> {
     await this.disposeSession(sessionId)
-    this.spawnKernel(sessionId)
   }
 
   async disposeSession(sessionId: string): Promise<void> {
+    const existing = this.disposals.get(sessionId)
+    if (existing !== undefined) return existing
     const kernel = this.kernels.get(sessionId)
     if (kernel === undefined) return
     this.kernels.delete(sessionId)
-    kernel.child.stdin.end(`${JSON.stringify({ type: 'shutdown' })}\n`)
-    await new Promise<void>((resolvePromise) => {
+    const disposal = new Promise<void>((resolvePromise) => {
+      for (const pending of kernel.pending.values()) pending.reject(new Error(`notebook session ${sessionId} was disposed`))
+      kernel.pending.clear()
+      kernel.child.stdin.end(`${JSON.stringify({ type: 'shutdown' })}\n`)
       if (kernel.child.exitCode !== null) return resolvePromise()
-      const timeout = setTimeout(() => kernel.child.kill('SIGTERM'), 1_000)
-      kernel.child.once('exit', () => { clearTimeout(timeout); resolvePromise() })
+      const terminate = setTimeout(() => kernel.child.kill('SIGTERM'), this.shutdownGraceMs)
+      const kill = setTimeout(() => kernel.child.kill('SIGKILL'), this.shutdownGraceMs + 5_000)
+      kernel.child.once('exit', () => { clearTimeout(terminate); clearTimeout(kill); resolvePromise() })
     })
+    this.disposals.set(sessionId, disposal)
+    try {
+      await disposal
+    } finally {
+      if (this.disposals.get(sessionId) === disposal) this.disposals.delete(sessionId)
+    }
   }
 
   async dispose(): Promise<void> {
+    this.disposed = true
     await Promise.all([...this.kernels.keys()].map(sessionId => this.disposeSession(sessionId)))
+    await Promise.all(this.disposals.values())
   }
 
-  private spawnKernel(sessionId: string): Kernel {
+  private spawnKernel(sessionId: string, cwd: string, role: SessionRole): Kernel {
     const child = spawn(this.pythonExecutable, ['-u', this.helperPath], { stdio: ['pipe', 'pipe', 'pipe'] })
     const lines = createInterface({ input: child.stdout })
-    const kernel: Kernel = { child, lines, pending: new Map(), stderr: [] }
+    const kernel: Kernel = { child, lines, pending: new Map(), stderr: [], cwd, role }
     this.kernels.set(sessionId, kernel)
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (chunk: string) => {

@@ -10,10 +10,13 @@ export interface TargetWorkerLaunch {
   cwd: string
   env: Record<string, string>
   targetHarnessRef: string
+  targetManifestDigest: string
   sandboxProfileRef: string
   provider: string
   model: string
   maxTokens?: number
+  onSessionEvent?: (params: Record<string, unknown>) => void
+  onSessionStatus?: (params: Record<string, unknown>) => void
 }
 
 interface SessionRecord {
@@ -25,6 +28,7 @@ export class TargetWorkerManager {
   private child: ChildProcessWithoutNullStreams | undefined
   private peer: JsonRpcPeer | undefined
   private readonly sessions = new Map<string, SessionRecord>()
+  private stderr = ''
 
   constructor(
     readonly launch: TargetWorkerLaunch,
@@ -42,6 +46,8 @@ export class TargetWorkerManager {
     const peer = new JsonRpcPeer(child.stdout, child.stdin)
     this.child = child
     this.peer = peer
+    child.stderr.setEncoding('utf8')
+    child.stderr.on('data', (chunk: string) => { this.stderr = `${this.stderr}${chunk}`.slice(-16_000) })
     peer.handle('control/refine.run', async params => {
       this.assertControlRequest(params)
       return this.refine.admit('target')
@@ -51,23 +57,32 @@ export class TargetWorkerManager {
       if (typeof params.roundId !== 'string') throw new TypeError('roundId is required')
       return this.refine.status(params.roundId)
     })
-    child.once('exit', () => {
-      peer.close(new Error(`target worker ${this.launch.workerId} exited`))
+    peer.handle('session.event', params => { this.launch.onSessionEvent?.(params); return {} })
+    peer.handle('session.status', params => { this.launch.onSessionStatus?.(params); return {} })
+    child.once('error', error => peer.close(error))
+    child.once('exit', (code, signal) => {
+      peer.close(new Error(`target worker ${this.launch.workerId} exited (${signal ?? code ?? 'unknown'}): ${this.stderr}`))
       if (this.child === child) {
         this.child = undefined
         this.peer = undefined
       }
     })
-    const initialized = await peer.request('initialize', {
-      cwd: this.launch.cwd,
-      provider: this.launch.provider,
-      model: this.launch.model,
-      ...(this.launch.maxTokens === undefined ? {} : { maxTokens: this.launch.maxTokens }),
-    })
-    if (typeof initialized !== 'object' || initialized === null
-      || (initialized as { targetHarnessRef?: unknown }).targetHarnessRef !== this.launch.targetHarnessRef
-      || (initialized as { sandboxProfileRef?: unknown }).sandboxProfileRef !== this.launch.sandboxProfileRef) {
-      throw new Error('target worker initialized with a different harness or sandbox profile ref')
+    try {
+      const initialized = await peer.request('initialize', {
+        cwd: this.launch.cwd,
+        provider: this.launch.provider,
+        model: this.launch.model,
+        ...(this.launch.maxTokens === undefined ? {} : { maxTokens: this.launch.maxTokens }),
+      })
+      if (typeof initialized !== 'object' || initialized === null
+        || (initialized as { targetHarnessRef?: unknown }).targetHarnessRef !== this.launch.targetHarnessRef
+        || (initialized as { targetManifestDigest?: unknown }).targetManifestDigest !== this.launch.targetManifestDigest
+        || (initialized as { sandboxProfileRef?: unknown }).sandboxProfileRef !== this.launch.sandboxProfileRef) {
+        throw new Error('target worker initialized with a different harness, manifest, or sandbox profile ref')
+      }
+    } catch (error) {
+      await this.disposeProcess()
+      throw error
     }
   }
 
@@ -75,13 +90,7 @@ export class TargetWorkerManager {
     await this.start()
     await this.requirePeer().request('session/open', { sessionId, mode })
     this.sessions.set(sessionId, { sessionId, mode: 'resume' })
-    await this.store.writeWorkerRecord(this.launch.workerId, {
-      workerId: this.launch.workerId,
-      sessionIds: [...this.sessions.keys()].sort(),
-      targetHarnessRef: this.launch.targetHarnessRef,
-      sandboxProfileRef: this.launch.sandboxProfileRef,
-      updatedAt: new Date().toISOString(),
-    })
+    await this.persistRecord()
   }
 
   async prompt(sessionId: string, contentBlocks: unknown[]): Promise<unknown> {
@@ -95,6 +104,7 @@ export class TargetWorkerManager {
   async closeSession(sessionId: string): Promise<void> {
     await this.requirePeer().request('session/close', { sessionId })
     this.sessions.delete(sessionId)
+    await this.persistRecord()
   }
 
   async restart(): Promise<void> {
@@ -121,6 +131,17 @@ export class TargetWorkerManager {
     return this.peer
   }
 
+  private persistRecord(): Promise<void> {
+    return this.store.writeWorkerRecord(this.launch.workerId, {
+      workerId: this.launch.workerId,
+      sessionIds: [...this.sessions.keys()].sort(),
+      targetHarnessRef: this.launch.targetHarnessRef,
+      targetManifestDigest: this.launch.targetManifestDigest,
+      sandboxProfileRef: this.launch.sandboxProfileRef,
+      updatedAt: new Date().toISOString(),
+    })
+  }
+
   private async disposeProcess(): Promise<void> {
     const child = this.child
     const peer = this.peer
@@ -132,8 +153,9 @@ export class TargetWorkerManager {
     child.stdin.end()
     await new Promise<void>(resolvePromise => {
       if (child.exitCode !== null) return resolvePromise()
-      const timeout = setTimeout(() => child.kill('SIGTERM'), 1_000)
-      child.once('exit', () => { clearTimeout(timeout); resolvePromise() })
+      const terminate = setTimeout(() => child.kill('SIGTERM'), 1_000)
+      const kill = setTimeout(() => child.kill('SIGKILL'), 6_000)
+      child.once('exit', () => { clearTimeout(terminate); clearTimeout(kill); resolvePromise() })
     })
   }
 }

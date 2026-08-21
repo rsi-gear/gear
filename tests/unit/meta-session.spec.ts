@@ -53,9 +53,9 @@ class FakeHost implements MetaAgentHost {
 
 function round(): RefinementRound {
   return {
-    schemaVersion: 1, roundId: 'round-1', workspaceRoot: '/workspace', status: 'waiting-proposal', source: 'api',
-    createdAt: 'now', updatedAt: 'now', metaHarnessRef: 'meta-v1', targetHarnessRef: 'parent',
-    targetHarnessDigest: 'sha256:parent', sandboxProfileRef: 'sandbox-v1',
+    schemaVersion: 2, roundId: 'round-1', workspaceRoot: '/workspace', status: 'waiting-proposal', source: 'api',
+    createdAt: 'now', updatedAt: 'now', metaHarnessRef: 'meta-v1', targetHarnessRef: 'a'.repeat(40),
+    targetHarnessDigest: `sha256:${'b'.repeat(64)}`, sandboxProfileRef: 'sandbox-v1',
     seedTaskRef: 'seed', heldOutRef: 'held-out', taskBudgetMs: 60_000,
     promotionPolicy: {
       minimumCandidateScore: 0, minimumAbsoluteGain: 0, requireNoRegression: true,
@@ -63,8 +63,17 @@ function round(): RefinementRound {
     },
     batchId: 'batch-1', roundIndex: 1, roundCount: 1,
     baseline: {
-      ref: 'evidence:base', trajectoryRefs: [], runtimeFingerprint: 'runtime',
+      evalId: `eval_${'c'.repeat(32)}`, dataset: 'seed', requestedCommit: 'a'.repeat(40),
+      actualCommit: 'a'.repeat(40), revisionIdentity: `sha256:${'d'.repeat(64)}`,
+      invocationFingerprint: `sha256:${'e'.repeat(64)}`, primaryReward: 1, trials: [{
+        taskName: 'one', status: 'completed', rewards: { reward: 1 },
+      }],
       summary: { total: 1, passed: 1, failed: 0, score: 1 },
+      localSourceTransport: {
+        kind: 'local-git-commit', resolutionIdentity: `sha256:${'d'.repeat(64)}`,
+        commit: 'a'.repeat(40), tree: 'f'.repeat(40),
+        payloadSha256: `sha256:${'1'.repeat(64)}`, payloadBytes: 1,
+      },
     },
   }
 }

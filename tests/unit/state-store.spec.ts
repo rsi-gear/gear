@@ -20,15 +20,17 @@ describe('RefineStateStore', () => {
   it('atomically persists state and enforces champion CAS', async () => {
     const state = await store()
     await state.initialize()
-    await state.writeChampion({ ref: 'parent', digest: 'd1', artifactPath: '/artifact', updatedAt: 'now' })
-    await state.compareAndSwapChampion('parent', {
-      ref: 'candidate', digest: 'd2', artifactPath: '/candidate', updatedAt: 'later', roundId: 'round-1',
+    const parent = 'a'.repeat(40)
+    const candidate = 'b'.repeat(40)
+    await state.writeChampion({ schemaVersion: 2, ref: parent, manifestDigest: `sha256:${'1'.repeat(64)}`, updatedAt: 'now' })
+    await state.compareAndSwapChampion(parent, {
+      schemaVersion: 2, ref: candidate, manifestDigest: `sha256:${'2'.repeat(64)}`, updatedAt: 'later', roundId: 'round-1',
     })
-    expect((await state.readChampion())?.ref).toBe('candidate')
-    await expect(state.compareAndSwapChampion('parent', {
-      ref: 'bad', digest: 'bad', artifactPath: '/bad', updatedAt: 'never',
+    expect((await state.readChampion())?.ref).toBe(candidate)
+    await expect(state.compareAndSwapChampion(parent, {
+      schemaVersion: 2, ref: 'c'.repeat(40), manifestDigest: `sha256:${'3'.repeat(64)}`, updatedAt: 'never',
     })).rejects.toThrow(/CAS failed/)
-    expect(JSON.parse(await readFile(join(state.root, 'champion.json'), 'utf8'))).toMatchObject({ ref: 'candidate' })
+    expect(JSON.parse(await readFile(join(state.root, 'champion.json'), 'utf8'))).toMatchObject({ ref: candidate })
   })
 
   it('admits one cross-process owner and release is idempotent', async () => {
@@ -49,5 +51,14 @@ describe('RefineStateStore', () => {
     }))
     const lock = await state.acquireRoundLock()
     await lock.release()
+  })
+
+  it('rejects persisted artifact-era state instead of confusing sha256 identities with commits', async () => {
+    const state = await store()
+    await state.initialize()
+    await writeFile(join(state.root, 'champion.json'), JSON.stringify({
+      ref: `sha256:${'a'.repeat(64)}`, digest: `sha256:${'b'.repeat(64)}`, artifactPath: '/old', updatedAt: 'old',
+    }))
+    await expect(state.readChampion()).rejects.toThrow(/unsupported champion state schema/)
   })
 })

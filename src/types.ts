@@ -40,7 +40,7 @@ export interface HarnessArtifact {
 export interface HarnessManifest {
   schemaVersion: 1
   parentRef?: HarnessRef
-  dshRevision: string
+  dshBaseRef: string
   toolchainRef: string
   sandboxProfileRef: SandboxProfileRef
   artifacts: HarnessArtifact[]
@@ -48,9 +48,9 @@ export interface HarnessManifest {
 }
 
 export interface ChampionState {
+  schemaVersion: 2
   ref: HarnessRef
-  digest: string
-  artifactPath: string
+  manifestDigest: string
   updatedAt: string
   roundId?: string
 }
@@ -65,10 +65,12 @@ export type RoundStatus =
   | 'baseline-running'
   | 'waiting-proposal'
   | 'building-candidate'
-  | 'candidate-running'
+  | 'candidate-seed-running'
+  | 'held-out-running'
   | 'promoting'
   | 'accepted'
   | 'rejected'
+  | 'rejected-for-substrate'
   | 'failed'
 
 export interface ScoreSummary {
@@ -79,21 +81,51 @@ export interface ScoreSummary {
   metrics?: Record<string, number>
 }
 
-export interface EvaluationEvidence {
-  ref: EvidenceRef
-  summary: ScoreSummary
-  trajectoryRefs: EvidenceRef[]
-  runtimeFingerprint: string
+export interface HitchTrialSummary {
+  taskName: string
+  trialName?: string
+  status: 'completed' | 'errored'
+  rewards: Record<string, number>
 }
 
-export interface CandidateEvaluation {
-  baseline: ScoreSummary
-  candidate: ScoreSummary
-  heldOutDelta: number
+export interface LocalSourceTransportSummary {
+  kind: 'local-git-commit'
+  resolutionIdentity: string
+  commit: HarnessRef
+  tree: string
+  payloadSha256: string
+  payloadBytes: number
+}
+
+export interface HitchEvaluationEvidence {
+  evalId: string
+  dataset: string
+  requestedCommit: HarnessRef
+  actualCommit: HarnessRef
+  revisionIdentity: string
+  invocationFingerprint: string
+  primaryReward: number
+  summary: ScoreSummary
+  trials: HitchTrialSummary[]
+  localSourceTransport: LocalSourceTransportSummary
+}
+
+export type EvaluationPhase = 'seed-baseline' | 'seed-candidate' | 'held-out-baseline' | 'held-out-candidate'
+
+export interface EvaluationRequest {
+  phase: EvaluationPhase
+  dataset: string
+  harnessRef: HarnessRef
+}
+
+export interface RoundEvaluation {
+  seedBaseline: HitchEvaluationEvidence
+  seedCandidate: HitchEvaluationEvidence
+  heldOutBaseline?: HitchEvaluationEvidence
+  heldOutCandidate?: HitchEvaluationEvidence
+  scoreDelta: number
+  heldOutScoreDelta?: number
   requiredRegressions: number
-  infrastructureOk: boolean
-  parityFingerprint: string
-  evidenceRefs: EvidenceRef[]
 }
 
 export interface MetaAttribution {
@@ -107,7 +139,7 @@ export interface MetaAttribution {
 }
 
 export interface RefinementRound {
-  schemaVersion: 1
+  schemaVersion: 2
   roundId: string
   workspaceRoot: string
   status: RoundStatus
@@ -126,14 +158,13 @@ export interface RefinementRound {
   roundIndex: number
   roundCount: number
   requestedTarget?: SemanticTarget
-  baseline?: EvaluationEvidence
+  baseline?: HitchEvaluationEvidence
   mutation?: HarnessMutation | null
   candidateRef?: HarnessRef
   candidateDigest?: string
-  candidateArtifactPath?: string
-  evaluation?: CandidateEvaluation
+  evaluation?: RoundEvaluation
   meta?: MetaAttribution
-  decision?: 'accepted' | 'rejected' | 'no-change'
+  decision?: 'accepted' | 'rejected' | 'rejected-for-substrate' | 'no-change'
   failure?: { phase: string; message: string }
 }
 
@@ -145,7 +176,7 @@ export interface AdmissionResult {
 export interface PublicRoundStatus {
   roundId: string
   status: RoundStatus
-  decision?: 'accepted' | 'rejected' | 'no-change'
+  decision?: 'accepted' | 'rejected' | 'rejected-for-substrate' | 'no-change'
   seedSummary?: ScoreSummary
   failure?: string
 }
@@ -156,21 +187,21 @@ export interface PromotionPolicy {
   requireNoRegression: boolean
   maxHeldOutRegression: number
   maxRequiredRegressions: number
+  requiredTaskIds?: string[]
 }
 
 export interface RefineEvaluator {
-  evaluateBaseline(round: Readonly<RefinementRound>, signal: AbortSignal): Promise<EvaluationEvidence>
-  evaluateCandidate(
+  evaluate(
     round: Readonly<RefinementRound>,
-    candidate: Readonly<PreparedHarness>,
+    request: Readonly<EvaluationRequest>,
     signal: AbortSignal,
-  ): Promise<CandidateEvaluation>
+  ): Promise<HitchEvaluationEvidence>
 }
 
 export interface PreparedHarness {
   ref: HarnessRef
   digest: string
-  artifactPath: string
+  repositoryPath: string
   manifest: HarnessManifest
 }
 
@@ -186,3 +217,7 @@ export interface RefineBridgeRequestMap {
 }
 
 export type SessionRole = 'refine-meta' | 'target' | 'rollout'
+
+export function isExactGitCommit(value: string): boolean {
+  return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(value)
+}

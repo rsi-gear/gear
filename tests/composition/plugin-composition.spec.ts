@@ -1,5 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -7,6 +6,7 @@ import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
 import * as refine from '../../src/index.js'
+import { createGitHarnessFixture } from '../helpers/git-fixture.js'
 
 let context: Context | undefined
 let root: string | undefined
@@ -20,10 +20,8 @@ afterEach(async () => {
 
 describe('published plugin composition', () => {
   it('loads named exports through a real cordis.yml Loader composition', async () => {
-    root = await mkdtemp(join(tmpdir(), 'refine-composition-'))
-    const harness = join(root, 'champion')
-    await mkdir(harness, { recursive: true })
-    await writeFile(join(harness, 'manifest.json'), JSON.stringify({ schemaVersion: 1, digest: 'sha256:champion', artifacts: [] }))
+    const fixture = await createGitHarnessFixture()
+    root = fixture.root
     const commands: Array<{ name: string }> = []
     const metaPresetPath = join(root, 'meta-preset', 'agent.cordis.yml')
     await mkdir(join(root, 'meta-preset'), { recursive: true })
@@ -54,12 +52,13 @@ describe('published plugin composition', () => {
       '- name: dsh-plugin-refine',
       '  config:',
       `    workspaceRoot: ${q(root)}`,
-      `    harnessRoot: ${q(join(root, 'harness-store'))}`,
+      `    dshRepository: ${q(fixture.repository)}`,
+      `    targetRoot: ${q(fixture.targetRoot)}`,
       '    metaPreset: refine-meta',
       '    metaHarnessRef: meta-v1',
       '    metaModel: {}',
-      '    dshRevision: rc8',
-      '    toolchainRef: test-toolchain',
+      `    dshBaseRef: ${fixture.baseRef}`,
+      '    toolchainRef: node-22-tsc',
       '    sandboxProfileRef: sandbox-v1',
       '    seedTaskRef: seed-commit',
       '    heldOutRef: held-out-commit',
@@ -68,9 +67,9 @@ describe('published plugin composition', () => {
       '      args: ["-e", "process.exit(0)"]',
       '      env: {}',
       '    initialChampion:',
-      '      ref: champion',
-      '      digest: sha256:champion',
-      `      artifactPath: ${q(harness)}`,
+      '      schemaVersion: 2',
+      `      ref: ${fixture.championRef}`,
+      `      manifestDigest: ${fixture.manifest.digest}`,
       '      updatedAt: now',
       '',
     ].join('\n'))
@@ -95,6 +94,7 @@ describe('published plugin composition', () => {
 
     expect(context.refine).toBeDefined()
     expect(context.notebookRuntime).toBeDefined()
+    expect(context.targetWorkers).toBeDefined()
     expect(commands).toContainEqual(expect.objectContaining({ name: 'refine' }))
   })
 })

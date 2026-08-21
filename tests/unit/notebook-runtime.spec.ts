@@ -48,6 +48,21 @@ describe('SessionAwareNotebookRuntime', () => {
     })).rejects.toThrow(/PermissionError/)
   })
 
+  it('does not silently rebind a session kernel to another role or cwd', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'refine-notebook-'))
+    roots.push(root)
+    const runtime = new SessionAwareNotebookRuntime({
+      helperPath: fileURLToPath(new URL('../fixtures/notebook-helper.py', import.meta.url)),
+    })
+    runtimes.push(runtime)
+    await runtime.execute({ sessionId: 'fixed', cwd: root, role: 'refine-meta', code: '1' })
+    await expect(runtime.execute({ sessionId: 'fixed', cwd: root, role: 'target', code: '1' }))
+      .rejects.toThrow(/different cwd or role/)
+    await runtime.dispose()
+    await expect(runtime.execute({ sessionId: 'new', cwd: root, role: 'target', code: '1' }))
+      .rejects.toThrow(/disposed/)
+  })
+
   const hasIpython = spawnSync('python3', ['-c', 'import IPython'], { stdio: 'ignore' }).status === 0
   it.skipIf(!hasIpython)('runs the packaged helper against a real IPython installation', async () => {
     const root = await mkdtemp(join(tmpdir(), 'refine-notebook-ipython-'))

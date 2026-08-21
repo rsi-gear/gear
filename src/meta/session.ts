@@ -111,7 +111,7 @@ export class MetaSessionManager {
         roundId: round.roundId,
         targetHarnessRef: round.targetHarnessRef,
         targetHarnessDigest: round.targetHarnessDigest,
-        baselineEvidenceRef: round.baseline?.ref,
+        baselineEvidenceRef: round.baseline?.evalId,
         requestedTarget: round.requestedTarget,
         batch: { id: round.batchId, index: round.roundIndex, count: round.roundCount },
       }) }],

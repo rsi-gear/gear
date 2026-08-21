@@ -1,7 +1,8 @@
 import { constants } from 'node:fs'
 import { access, mkdir, open, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import type { ChampionState, MetaSessionState, RefinementRound } from '../types.js'
+import type { ChampionState, HitchEvaluationEvidence, MetaSessionState, RefinementRound } from '../types.js'
+import { isExactGitCommit } from '../types.js'
 
 interface LockRecord {
   pid: number
@@ -51,14 +52,12 @@ export class RoundAlreadyRunningError extends Error {
 export class RefineStateStore {
   readonly roundsPath: string
   readonly locksPath: string
-  readonly verifiersPath: string
   readonly workersPath: string
   readonly metaHarnessPath: string
 
   constructor(readonly root: string) {
     this.roundsPath = join(root, 'rounds')
     this.locksPath = join(root, 'locks')
-    this.verifiersPath = join(root, 'verifiers')
     this.workersPath = join(root, 'workers')
     this.metaHarnessPath = join(root, 'meta-harness')
   }
@@ -67,17 +66,18 @@ export class RefineStateStore {
     await Promise.all([
       mkdir(this.roundsPath, { recursive: true }),
       mkdir(this.locksPath, { recursive: true }),
-      mkdir(this.verifiersPath, { recursive: true }),
       mkdir(this.workersPath, { recursive: true }),
       mkdir(this.metaHarnessPath, { recursive: true }),
     ])
   }
 
   async readChampion(): Promise<ChampionState | undefined> {
-    return this.readJson<ChampionState>(join(this.root, 'champion.json'))
+    const value = await this.readJson<unknown>(join(this.root, 'champion.json'))
+    return value === undefined ? undefined : this.validateChampion(value)
   }
 
   async writeChampion(value: ChampionState): Promise<void> {
+    this.validateChampion(value)
     await this.atomicWrite(join(this.root, 'champion.json'), value)
   }
 
@@ -90,26 +90,30 @@ export class RefineStateStore {
   }
 
   async readMeta(): Promise<MetaSessionState | undefined> {
-    return this.readJson<MetaSessionState>(join(this.root, 'meta.json'))
+    const value = await this.readJson<unknown>(join(this.root, 'meta.json'))
+    return value === undefined ? undefined : this.validateMeta(value)
   }
 
   async writeMeta(value: MetaSessionState): Promise<void> {
+    this.validateMeta(value)
     await this.atomicWrite(join(this.root, 'meta.json'), value)
   }
 
   async readRound(roundId: string): Promise<RefinementRound | undefined> {
-    return this.readJson<RefinementRound>(this.roundFile(roundId))
+    const value = await this.readJson<unknown>(this.roundFile(roundId))
+    return value === undefined ? undefined : this.validateRound(value)
   }
 
   async writeRound(value: RefinementRound): Promise<void> {
+    this.validateRound(value)
     await this.atomicWrite(this.roundFile(value.roundId), value)
   }
 
   async listRounds(): Promise<RefinementRound[]> {
     await this.initialize()
     const names = (await readdir(this.roundsPath)).filter(name => name.endsWith('.json')).sort()
-    const rounds = await Promise.all(names.map(name => this.readJson<RefinementRound>(join(this.roundsPath, name))))
-    return rounds.filter((round): round is RefinementRound => round !== undefined)
+    const rounds = await Promise.all(names.map(name => this.readJson<unknown>(join(this.roundsPath, name))))
+    return rounds.filter((round): round is unknown => round !== undefined).map(round => this.validateRound(round))
   }
 
   async writeWorkerRecord(workerId: string, value: unknown): Promise<void> {
@@ -213,6 +217,166 @@ export class RefineStateStore {
       if (code !== 'EINVAL' && code !== 'ENOTSUP' && code !== 'EPERM' && code !== 'EISDIR') throw error
     }
     await stat(path)
+  }
+
+  private validateChampion(value: unknown): ChampionState {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError('champion state must be an object')
+    const champion = value as Partial<ChampionState>
+    if (champion.schemaVersion !== 2) throw new TypeError('unsupported champion state schema; migrate the old sha256 artifact state')
+    if (typeof champion.ref !== 'string' || !isExactGitCommit(champion.ref)) throw new TypeError('champion ref must be an exact Git commit')
+    if (typeof champion.manifestDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(champion.manifestDigest)) {
+      throw new TypeError('champion manifestDigest must be a sha256 digest')
+    }
+    if (typeof champion.updatedAt !== 'string' || champion.updatedAt.length === 0) throw new TypeError('champion updatedAt is required')
+    if (champion.roundId !== undefined && typeof champion.roundId !== 'string') throw new TypeError('champion roundId must be a string')
+    return champion as ChampionState
+  }
+
+  private validateMeta(value: unknown): MetaSessionState {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError('meta state must be an object')
+    const meta = value as Partial<MetaSessionState>
+    if (typeof meta.sessionId !== 'string' || meta.sessionId.length === 0
+      || typeof meta.metaHarnessRef !== 'string' || meta.metaHarnessRef.length === 0) {
+      throw new TypeError('meta state requires sessionId and metaHarnessRef')
+    }
+    return meta as MetaSessionState
+  }
+
+  private validateRound(value: unknown): RefinementRound {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError('refinement round must be an object')
+    const round = value as Partial<RefinementRound>
+    if (round.schemaVersion !== 2) throw new TypeError('unsupported refinement round schema; old artifact rounds are not compatible')
+    if (typeof round.roundId !== 'string' || !/^[a-zA-Z0-9_-]+$/u.test(round.roundId)) throw new TypeError('roundId is invalid')
+    const statuses = new Set([
+      'queued', 'baseline-running', 'waiting-proposal', 'building-candidate', 'candidate-seed-running',
+      'held-out-running', 'promoting', 'accepted', 'rejected', 'rejected-for-substrate', 'failed',
+    ])
+    if (typeof round.status !== 'string' || !statuses.has(round.status)) throw new TypeError('round status is invalid')
+    if (round.source !== 'command' && round.source !== 'target' && round.source !== 'api') throw new TypeError('round source is invalid')
+    for (const [name, field] of Object.entries({
+      workspaceRoot: round.workspaceRoot,
+      createdAt: round.createdAt,
+      updatedAt: round.updatedAt,
+      metaHarnessRef: round.metaHarnessRef,
+      sandboxProfileRef: round.sandboxProfileRef,
+      seedTaskRef: round.seedTaskRef,
+      heldOutRef: round.heldOutRef,
+      batchId: round.batchId,
+    })) {
+      if (typeof field !== 'string' || field.length === 0) throw new TypeError(`round ${name} is required`)
+    }
+    if (!Number.isSafeInteger(round.taskBudgetMs) || (round.taskBudgetMs as number) <= 0) throw new TypeError('round taskBudgetMs is invalid')
+    if (!Number.isSafeInteger(round.roundIndex) || !Number.isSafeInteger(round.roundCount)
+      || (round.roundIndex as number) < 1 || (round.roundCount as number) < (round.roundIndex as number)) {
+      throw new TypeError('round batch index/count is invalid')
+    }
+    if (typeof round.targetHarnessRef !== 'string' || !isExactGitCommit(round.targetHarnessRef)) {
+      throw new TypeError('round targetHarnessRef must be an exact Git commit')
+    }
+    if (typeof round.targetHarnessDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(round.targetHarnessDigest)) {
+      throw new TypeError('round targetHarnessDigest must be a sha256 digest')
+    }
+    if (round.candidateRef !== undefined && !isExactGitCommit(round.candidateRef)) throw new TypeError('round candidateRef must be an exact Git commit')
+    if (round.candidateDigest !== undefined && !/^sha256:[0-9a-f]{64}$/u.test(round.candidateDigest)) {
+      throw new TypeError('round candidateDigest must be a sha256 digest')
+    }
+    if (round.baseline !== undefined) this.validateEvaluationEvidence(round.baseline, 'round baseline')
+    if (round.evaluation !== undefined) {
+      this.validateEvaluationEvidence(round.evaluation.seedBaseline, 'seed baseline')
+      this.validateEvaluationEvidence(round.evaluation.seedCandidate, 'seed candidate')
+      if (round.evaluation.heldOutBaseline !== undefined) this.validateEvaluationEvidence(round.evaluation.heldOutBaseline, 'held-out baseline')
+      if (round.evaluation.heldOutCandidate !== undefined) this.validateEvaluationEvidence(round.evaluation.heldOutCandidate, 'held-out candidate')
+      if (!Number.isFinite(round.evaluation.scoreDelta)
+        || (round.evaluation.heldOutScoreDelta !== undefined && !Number.isFinite(round.evaluation.heldOutScoreDelta))
+        || !Number.isSafeInteger(round.evaluation.requiredRegressions) || round.evaluation.requiredRegressions < 0) {
+        throw new TypeError('round evaluation deltas are invalid')
+      }
+    }
+    const terminal = round.status === 'accepted' || round.status === 'rejected'
+      || round.status === 'rejected-for-substrate' || round.status === 'failed'
+    if (!terminal && round.decision !== undefined) throw new TypeError('non-terminal round cannot have a decision')
+    if (round.status === 'accepted') {
+      if (round.decision !== 'accepted' || round.candidateRef === undefined || round.candidateDigest === undefined
+        || round.evaluation?.heldOutBaseline === undefined || round.evaluation.heldOutCandidate === undefined
+        || round.evaluation.seedCandidate.actualCommit !== round.candidateRef
+        || round.evaluation.heldOutCandidate.actualCommit !== round.candidateRef) {
+        throw new TypeError('accepted round is missing verified candidate evaluation evidence')
+      }
+    }
+    if (round.baseline !== undefined
+      && (round.baseline.requestedCommit !== round.targetHarnessRef
+        || round.baseline.actualCommit !== round.targetHarnessRef
+        || round.baseline.dataset !== round.seedTaskRef)) {
+      throw new TypeError('round baseline does not match its pinned target/seed partition')
+    }
+    if (round.evaluation !== undefined) {
+      const candidate = round.candidateRef
+      if (candidate === undefined
+        || round.evaluation.seedBaseline.requestedCommit !== round.targetHarnessRef
+        || round.evaluation.seedBaseline.actualCommit !== round.targetHarnessRef
+        || round.evaluation.seedBaseline.dataset !== round.seedTaskRef
+        || round.evaluation.seedCandidate.requestedCommit !== candidate
+        || round.evaluation.seedCandidate.actualCommit !== candidate
+        || round.evaluation.seedCandidate.dataset !== round.seedTaskRef
+        || round.evaluation.seedBaseline.invocationFingerprint !== round.evaluation.seedCandidate.invocationFingerprint) {
+        throw new TypeError('round seed evaluation does not match its pinned commits/partition/parity')
+      }
+      const heldOutBaseline = round.evaluation.heldOutBaseline
+      const heldOutCandidate = round.evaluation.heldOutCandidate
+      if (heldOutBaseline !== undefined
+        && (heldOutBaseline.requestedCommit !== round.targetHarnessRef
+          || heldOutBaseline.actualCommit !== round.targetHarnessRef
+          || heldOutBaseline.dataset !== round.heldOutRef)) {
+        throw new TypeError('round held-out baseline does not match its pinned target/partition')
+      }
+      if (heldOutCandidate !== undefined
+        && (heldOutBaseline === undefined
+          || heldOutCandidate.requestedCommit !== candidate
+          || heldOutCandidate.actualCommit !== candidate
+          || heldOutCandidate.dataset !== round.heldOutRef
+          || heldOutBaseline.invocationFingerprint !== heldOutCandidate.invocationFingerprint)) {
+        throw new TypeError('round held-out evaluation does not match its pinned commits/partition/parity')
+      }
+    }
+    if (round.status === 'rejected' && round.decision !== 'rejected' && round.decision !== 'no-change') {
+      throw new TypeError('rejected round must record rejected or no-change decision')
+    }
+    if (round.status === 'rejected-for-substrate' && round.decision !== 'rejected-for-substrate') {
+      throw new TypeError('substrate rejection must record rejected-for-substrate decision')
+    }
+    return round as RefinementRound
+  }
+
+  private validateEvaluationEvidence(value: HitchEvaluationEvidence, label: string): void {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError(`${label} must be an object`)
+    if (!/^eval_[0-9a-f]{32}$/u.test(value.evalId)) throw new TypeError(`${label} evalId is invalid`)
+    if (typeof value.dataset !== 'string' || value.dataset.length === 0) throw new TypeError(`${label} dataset is invalid`)
+    if (!isExactGitCommit(value.requestedCommit) || !isExactGitCommit(value.actualCommit)) throw new TypeError(`${label} commit is invalid`)
+    if (typeof value.revisionIdentity !== 'string' || value.revisionIdentity.length === 0
+      || typeof value.invocationFingerprint !== 'string' || value.invocationFingerprint.length === 0
+      || !Number.isFinite(value.primaryReward)) throw new TypeError(`${label} identity/reward is invalid`)
+    if (typeof value.summary !== 'object' || value.summary === null
+      || !Number.isSafeInteger(value.summary.total) || !Number.isSafeInteger(value.summary.passed)
+      || !Number.isSafeInteger(value.summary.failed) || !Number.isFinite(value.summary.score)
+      || value.summary.total < 0 || value.summary.passed < 0 || value.summary.failed < 0
+      || value.summary.passed + value.summary.failed !== value.summary.total) {
+      throw new TypeError(`${label} score summary is invalid`)
+    }
+    if (!Array.isArray(value.trials) || value.trials.length !== value.summary.total
+      || value.trials.some(trial => typeof trial.taskName !== 'string' || trial.taskName.length === 0
+      || trial.status !== 'completed'
+      || typeof trial.rewards !== 'object' || trial.rewards === null
+      || Object.values(trial.rewards).some(reward => !Number.isFinite(reward)))) {
+      throw new TypeError(`${label} trials are invalid`)
+    }
+    const transport = value.localSourceTransport
+    if (typeof transport !== 'object' || transport === null || transport.kind !== 'local-git-commit'
+      || transport.commit !== value.actualCommit || !isExactGitCommit(transport.tree)
+      || transport.resolutionIdentity !== value.revisionIdentity
+      || !/^sha256:[0-9a-f]{64}$/u.test(transport.payloadSha256)
+      || !Number.isSafeInteger(transport.payloadBytes) || transport.payloadBytes < 0) {
+      throw new TypeError(`${label} local exact commit transport evidence is invalid`)
+    }
   }
 }
 

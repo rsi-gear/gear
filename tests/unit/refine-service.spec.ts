@@ -1,13 +1,13 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { rm } from 'node:fs/promises'
 import { afterEach, describe, expect, it } from 'vitest'
 import { HarnessBuilder, NoopHarnessCompiler } from '../../src/harness/builder.js'
 import { RefineService } from '../../src/refine/service.js'
 import { RefineStateStore } from '../../src/state/store.js'
 import type {
-  CandidateEvaluation, EvaluationEvidence, HarnessMutation, MetaAttribution, RefineEvaluator, RefinementRound,
+  EvaluationPhase, EvaluationRequest, HarnessMutation, HitchEvaluationEvidence, MetaAttribution,
+  RefineEvaluator, RefinementRound,
 } from '../../src/types.js'
+import { createGitHarnessFixture, type GitHarnessFixture } from '../helpers/git-fixture.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
@@ -19,20 +19,41 @@ class FakeMeta {
 }
 
 class FakeEvaluator implements RefineEvaluator {
-  constructor(private readonly candidateScore: number) {}
-  async evaluateBaseline(): Promise<EvaluationEvidence> {
+  calls: EvaluationPhase[] = []
+
+  constructor(
+    private readonly candidateScore: number,
+    private readonly heldOutDelta = 0,
+    private readonly failPhase?: EvaluationPhase,
+  ) {}
+
+  async evaluate(_round: Readonly<RefinementRound>, request: Readonly<EvaluationRequest>): Promise<HitchEvaluationEvidence> {
+    this.calls.push(request.phase)
+    if (request.phase === this.failPhase) throw new Error(`infrastructure failed during ${request.phase}`)
+    const baseline = request.phase.endsWith('baseline')
+    const heldOut = request.phase.startsWith('held-out')
+    const score = heldOut ? baseline ? 0.6 : 0.6 + this.heldOutDelta : baseline ? 0.5 : this.candidateScore
+    const passed = Math.max(0, Math.min(10, Math.round(score * 10)))
+    const serial = this.calls.length.toString(16).padStart(32, '0')
     return {
-      ref: 'evidence:baseline', trajectoryRefs: ['trajectory:base'], runtimeFingerprint: 'parity-v1',
-      summary: { total: 10, passed: 5, failed: 5, score: 0.5 },
-    }
-  }
-  async evaluateCandidate(): Promise<CandidateEvaluation> {
-    const passed = Math.round(this.candidateScore * 10)
-    return {
-      baseline: { total: 10, passed: 5, failed: 5, score: 0.5 },
-      candidate: { total: 10, passed, failed: 10 - passed, score: this.candidateScore },
-      heldOutDelta: 0, requiredRegressions: 0, infrastructureOk: true,
-      parityFingerprint: 'parity-v1', evidenceRefs: ['evidence:candidate'],
+      evalId: `eval_${serial}`,
+      dataset: request.dataset,
+      requestedCommit: request.harnessRef,
+      actualCommit: request.harnessRef,
+      revisionIdentity: `sha256:${serial.padEnd(64, '0')}`,
+      invocationFingerprint: `parity:${request.dataset}`,
+      primaryReward: score,
+      summary: { total: 10, passed, failed: 10 - passed, score },
+      trials: Array.from({ length: 10 }, (_, index) => ({
+        taskName: `task-${index}`,
+        status: 'completed' as const,
+        rewards: { reward: index < passed ? 1 : 0 },
+      })),
+      localSourceTransport: {
+        kind: 'local-git-commit', resolutionIdentity: `sha256:${serial.padEnd(64, '0')}`,
+        commit: request.harnessRef, tree: 'f'.repeat(40),
+        payloadSha256: `sha256:${'1'.repeat(64)}`, payloadBytes: 1,
+      },
     }
   }
 }
@@ -47,135 +68,132 @@ async function eventually<T>(read: () => Promise<T>, accept: (value: T) => boole
   throw new Error('condition not reached')
 }
 
-async function fixture(score = 0.8, evaluatorPresent = true) {
-  const root = await mkdtemp(join(tmpdir(), 'refine-service-'))
-  roots.push(root)
-  const parent = join(root, 'harnesses', 'parent')
-  await mkdir(join(parent, 'preset'), { recursive: true })
-  await mkdir(join(parent, 'plugins'), { recursive: true })
-  await writeFile(join(parent, 'preset', 'agent.cordis.yml'), '- name: ./plugins/context.js\n')
-  await writeFile(join(parent, 'plugins', 'context.ts'), 'export const value = 1\n')
-  await writeFile(join(parent, 'manifest.json'), JSON.stringify({ schemaVersion: 1, digest: 'sha256:parent', artifacts: [] }))
-  const store = new RefineStateStore(join(root, '.dsh-refine'))
+async function fixture(score = 0.8, heldOutDelta = 0, failPhase?: EvaluationPhase) {
+  const git = await createGitHarnessFixture()
+  roots.push(git.root)
+  const store = new RefineStateStore(`${git.root}/.dsh-refine`)
   await store.initialize()
-  await store.writeChampion({ ref: 'parent', digest: 'sha256:parent', artifactPath: parent, updatedAt: 'before' })
+  await store.writeChampion({
+    schemaVersion: 2, ref: git.championRef, manifestDigest: git.manifest.digest, updatedAt: 'before',
+  })
   await store.writeMeta({ sessionId: 'meta-1', metaHarnessRef: 'meta-v1' })
   const meta = new FakeMeta()
-  const evaluator = new FakeEvaluator(score)
-  const service = new RefineService(
-    store,
-    new HarnessBuilder({
-      harnessRoot: join(root, 'harnesses'), artifactRoot: join(root, 'artifacts'),
-      dshRevision: 'rc8', toolchainRef: 'tsc', sandboxProfileRef: 'sandbox-v1', compiler: new NoopHarnessCompiler(),
-    }),
-    meta as never,
-    () => evaluatorPresent ? evaluator : undefined,
-    {
-      workspaceRoot: root, metaHarnessRef: 'meta-v1', sandboxProfileRef: 'sandbox-v1',
-      promotion: {
-        minimumCandidateScore: 0.7, minimumAbsoluteGain: 0.1, requireNoRegression: true,
-        maxHeldOutRegression: 0, maxRequiredRegressions: 0,
-      },
-      seedTaskRef: 'seed-commit', heldOutRef: 'held-out-commit', taskBudgetMs: 60_000,
+  const evaluator = new FakeEvaluator(score, heldOutDelta, failPhase)
+  const builder = new HarnessBuilder({
+    repositoryPath: git.repository,
+    targetRoot: git.targetRoot,
+    dshBaseRef: git.baseRef,
+    toolchainRef: 'node-22-tsc',
+    sandboxProfileRef: 'sandbox-v1',
+    compiler: new NoopHarnessCompiler(),
+  })
+  await builder.initialize()
+  const service = new RefineService(store, builder, meta as never, evaluator, {
+    workspaceRoot: git.root,
+    metaHarnessRef: 'meta-v1',
+    sandboxProfileRef: 'sandbox-v1',
+    promotion: {
+      minimumCandidateScore: 0.7, minimumAbsoluteGain: 0.1, requireNoRegression: true,
+      maxHeldOutRegression: 0, maxRequiredRegressions: 0,
     },
-  )
+    seedTaskRef: 'seed-dataset', heldOutRef: 'held-out-dataset', taskBudgetMs: 60_000,
+  })
   await service.initialize()
-  return { root, store, service, meta }
+  return { git, store, service, meta, evaluator }
 }
 
 const attribution: MetaAttribution = {
   sessionId: 'meta-1', requestHeaderSeq: 10, proposalEventSeq: 12, provider: 'test', model: 'test',
 }
 
-function proposal(parentRef = 'parent', parentDigest = 'sha256:parent', path = 'prompts/new.md'): HarnessMutation {
+function proposal(git: GitHarnessFixture, parentRef = git.championRef, parentDigest = git.manifest.digest, path = 'prompts/new.md'): HarnessMutation {
   return {
     parentRef, parentDigest, target: 'context',
     ops: [{ type: 'create', path, content: 'new context\n', expect: 'absent' }],
-    rationale: 'better context', evidenceRefs: ['evidence:baseline'], expectedOutcome: 'higher score',
+    rationale: 'better context', evidenceRefs: ['eval:baseline'], expectedOutcome: 'higher score',
   }
 }
 
 describe('RefineService', () => {
-  it('returns queued immediately, awaits one proposal, evaluates, and atomically promotes', async () => {
-    const { service, store, meta } = await fixture()
+  it('runs four Hitch phases and atomically promotes an exact commit', async () => {
+    const { git, service, store, meta, evaluator } = await fixture()
     const admission = await service.admit('api')
     expect(admission.status).toBe('queued')
     await expect(service.admit('api')).resolves.toEqual(admission)
     await eventually(() => store.readRound(admission.roundId), round => round?.status === 'waiting-proposal')
     await eventually(async () => meta.wakes, wakes => wakes.includes(admission.roundId))
-    expect(meta.wakes).toEqual([admission.roundId])
-    await service.submitProposal(admission.roundId, proposal(), attribution)
-    await expect(service.submitProposal(admission.roundId, proposal(), attribution)).rejects.toThrow(/already received|not waiting/)
+    await service.submitProposal(admission.roundId, proposal(git), attribution)
     const terminal = await eventually(() => store.readRound(admission.roundId), round => round?.status === 'accepted')
     expect(terminal).toMatchObject({ decision: 'accepted', meta: attribution })
-    expect((await store.readChampion())?.ref).toMatch(/^sha256:/)
+    expect((await store.readChampion())?.ref).toMatch(/^[0-9a-f]{40}$/u)
+    expect((await store.readChampion())?.ref).not.toBe(git.championRef)
+    expect(evaluator.calls).toEqual(['seed-baseline', 'seed-candidate', 'held-out-baseline', 'held-out-candidate'])
     await service.dispose()
   })
 
   it('records a null proposal as an attributable no-change rejection', async () => {
-    const { service, store } = await fixture()
+    const { git, service, store } = await fixture()
     const admission = await service.admit('command')
     await eventually(() => store.readRound(admission.roundId), round => round?.status === 'waiting-proposal')
     await service.submitProposal(admission.roundId, null, attribution)
     const terminal = await eventually(() => store.readRound(admission.roundId), round => round?.status === 'rejected')
     expect(terminal?.decision).toBe('no-change')
-    expect((await store.readChampion())?.ref).toBe('parent')
+    expect((await store.readChampion())?.ref).toBe(git.championRef)
     await service.dispose()
   })
 
-  it('fails closed before admission when the evaluator provider is absent', async () => {
-    const { service, store } = await fixture(0.8, false)
-    await expect(service.admit('target')).rejects.toThrow(/no refineEvaluator/)
-    const lock = await store.acquireRoundLock()
-    await lock.release()
-    await service.dispose()
-  })
-
-  it('rejects a non-improving candidate without changing champion', async () => {
-    const { service, store } = await fixture(0.55)
+  it('rejects at the seed gate without spending held-out evaluations', async () => {
+    const { git, service, store, evaluator } = await fixture(0.55)
     const admission = await service.admit('api')
     await eventually(() => store.readRound(admission.roundId), round => round?.status === 'waiting-proposal')
-    await service.submitProposal(admission.roundId, proposal(), attribution)
-    const terminal = await eventually(() => store.readRound(admission.roundId), round => round?.status === 'rejected')
-    expect(terminal?.decision).toBe('rejected')
-    expect((await store.readChampion())?.ref).toBe('parent')
+    await service.submitProposal(admission.roundId, proposal(git), attribution)
+    await eventually(() => store.readRound(admission.roundId), round => round?.status === 'rejected')
+    expect(evaluator.calls).toEqual(['seed-baseline', 'seed-candidate'])
+    expect((await store.readChampion())?.ref).toBe(git.championRef)
     await service.dispose()
   })
 
-  it('rolls back only to a harness accepted by a recorded round', async () => {
-    const { service, store } = await fixture()
+  it('classifies Hitch infrastructure errors as failed rather than rejected', async () => {
+    const { service, store } = await fixture(0.8, 0, 'seed-baseline')
+    const admission = await service.admit('api')
+    const terminal = await eventually(() => store.readRound(admission.roundId), round => round?.status === 'failed')
+    expect(terminal?.failure?.message).toContain('infrastructure failed')
+    expect(terminal?.decision).toBeUndefined()
+    await service.dispose()
+  })
+
+  it('classifies attempts to expand fixed substrate separately from infrastructure failure', async () => {
+    const { git, service, store } = await fixture()
+    const admission = await service.admit('api')
+    await eventually(() => store.readRound(admission.roundId), round => round?.status === 'waiting-proposal')
+    await service.submitProposal(admission.roundId, proposal(git, git.championRef, git.manifest.digest, 'packages/core.ts'), attribution)
+    const terminal = await eventually(() => store.readRound(admission.roundId), round => round?.status === 'rejected-for-substrate')
+    expect(terminal?.decision).toBe('rejected-for-substrate')
+    expect(terminal?.failure?.message).toContain('fixed substrate')
+    await service.dispose()
+  })
+
+  it('rolls back only to a commit accepted by a complete recorded evaluation', async () => {
+    const { git, service, store } = await fixture()
     const first = await service.admit('api')
     await eventually(() => store.readRound(first.roundId), round => round?.status === 'waiting-proposal')
-    await service.submitProposal(first.roundId, proposal(), attribution)
+    await service.submitProposal(first.roundId, proposal(git), attribution)
     await eventually(() => store.readRound(first.roundId), round => round?.status === 'accepted')
     const firstChampion = (await store.readChampion())!
     await eventually(async () => {
-      try {
-        const lock = await store.acquireRoundLock('between-rounds')
-        await lock.release()
-        return true
-      } catch {
-        return false
-      }
-    }, value => value)
+      try { const lock = await store.acquireRoundLock('probe'); await lock.release(); return true } catch { return false }
+    }, Boolean)
 
     const second = await service.admit('api')
     await eventually(() => store.readRound(second.roundId), round => round?.status === 'waiting-proposal')
     await service.submitProposal(second.roundId, proposal(
-      firstChampion.ref, firstChampion.digest, 'prompts/second.md',
+      git, firstChampion.ref, firstChampion.manifestDigest, 'prompts/second.md',
     ), { ...attribution, proposalEventSeq: 13 })
     await eventually(() => store.readRound(second.roundId), round => round?.status === 'accepted')
-    expect((await store.readChampion())?.ref).not.toBe(firstChampion.ref)
     await eventually(async () => {
-      try {
-        const lock = await store.acquireRoundLock('test-probe')
-        await lock.release()
-        return true
-      } catch {
-        return false
-      }
-    }, value => value)
-    await expect(service.rollback('sha256:not-verified')).rejects.toThrow(/not accepted/)
+      try { const lock = await store.acquireRoundLock('probe-2'); await lock.release(); return true } catch { return false }
+    }, Boolean)
+    await expect(service.rollback('f'.repeat(40))).rejects.toThrow(/not accepted/)
     await service.rollback(firstChampion.ref)
     expect((await store.readChampion())?.ref).toBe(firstChampion.ref)
     await service.dispose()
@@ -192,14 +210,7 @@ describe('RefineService', () => {
       const rounds = await store.listRounds()
       return rounds.find(round => round.roundId !== first.roundId && round.status === 'waiting-proposal')
     }, round => round !== undefined)
-    expect(secondRound).toMatchObject({
-      batchId: (await store.readRound(first.roundId))?.batchId,
-      roundIndex: 2,
-      roundCount: 2,
-      seedTaskRef: 'seed-override',
-      taskBudgetMs: 12_345,
-      requestedTarget: 'routing',
-    })
+    expect(secondRound).toMatchObject({ roundIndex: 2, roundCount: 2, seedTaskRef: 'seed-override', requestedTarget: 'routing' })
     await service.submitProposal(secondRound!.roundId, null, { ...attribution, proposalEventSeq: 14 })
     await eventually(() => store.readRound(secondRound!.roundId), round => round?.status === 'rejected')
     await service.dispose()

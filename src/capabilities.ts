@@ -1,11 +1,11 @@
-import { readFile, realpath } from 'node:fs/promises'
-import { isAbsolute, resolve, sep } from 'node:path'
+import { readFile } from 'node:fs/promises'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import type { MetaSessionManager } from './meta/session.js'
+import type { HarnessBuilder } from './harness/builder.js'
 import type { RefineService } from './refine/service.js'
 import type { RefineStateStore } from './state/store.js'
-import type { HarnessMutation, RefineBridgeRequestMap, SessionRole } from './types.js'
+import type { RefineBridgeRequestMap, SessionRole } from './types.js'
 
 export interface CapabilityOptions {
   seedTasksPath?: string
@@ -28,6 +28,7 @@ export class RefineCapabilities {
     private readonly service: RefineService,
     private readonly store: RefineStateStore,
     private readonly meta: MetaSessionManager,
+    private readonly builder: HarnessBuilder,
     private readonly resolveAgent: (sessionId: string) => Agent | undefined,
     private readonly options: CapabilityOptions = {},
   ) {
@@ -48,19 +49,15 @@ export class RefineCapabilities {
     if (method === 'harness.current') {
       const champion = await this.store.readChampion()
       if (champion === undefined) throw new Error('no champion is initialized')
-      const manifest = JSON.parse(await readFile(resolve(champion.artifactPath, 'manifest.json'), 'utf8')) as unknown
-      return publicJson({ ref: champion.ref, digest: champion.digest, manifest })
+      const manifest = await this.builder.readManifest(champion.ref)
+      if (manifest.digest !== champion.manifestDigest) throw new Error('champion manifest digest does not match its Git commit')
+      return publicJson({ ref: champion.ref, digest: champion.manifestDigest, manifest })
     }
     if (method === 'harness.read') {
       const champion = await this.store.readChampion()
       if (champion === undefined || args.ref !== champion.ref) throw new Error('harness ref is not the current champion')
       const path = this.string(args, 'path')
-      if (isAbsolute(path) || path.split('/').some(segment => segment === '..' || segment === '')) throw new Error('invalid harness path')
-      const absolute = resolve(champion.artifactPath, ...path.split('/'))
-      if (!absolute.startsWith(`${resolve(champion.artifactPath)}${sep}`)) throw new Error('harness path escaped artifact')
-      const [realRoot, realFile] = await Promise.all([realpath(champion.artifactPath), realpath(absolute)])
-      if (!realFile.startsWith(`${realRoot}${sep}`)) throw new Error('harness path followed a symlink outside the artifact')
-      const content = await readFile(realFile, 'utf8')
+      const { content } = await this.builder.readHarnessFile(champion.ref, path)
       const offset = this.optionalInteger(args, 'offset') ?? 0
       const limit = Math.min(this.optionalInteger(args, 'limit') ?? this.maxReadBytes, this.maxReadBytes)
       return { ref: champion.ref, path, offset, text: content.slice(offset, offset + limit), eof: offset + limit >= content.length }
@@ -78,9 +75,9 @@ export class RefineCapabilities {
         targetHarnessRef: round.targetHarnessRef,
         baseline: round.baseline,
         evaluation: round.evaluation === undefined ? undefined : {
-          baseline: round.evaluation.baseline,
-          candidate: round.evaluation.candidate,
-          evidenceRefs: round.evaluation.evidenceRefs.filter(ref => !/held[-_]?out/iu.test(ref)),
+          seedBaseline: round.evaluation.seedBaseline,
+          seedCandidate: round.evaluation.seedCandidate,
+          scoreDelta: round.evaluation.scoreDelta,
         },
         decision: round.decision,
         failure: round.failure === undefined ? undefined : { phase: round.failure.phase },
@@ -92,7 +89,9 @@ export class RefineCapabilities {
       const roundId = this.string(args, 'roundId')
       const agent = this.resolveAgent(sessionId)
       if (agent === undefined) throw new Error('meta session is not live')
-      const mutation = (args.mutation ?? null) as HarnessMutation | null
+      const mutation = args.mutation === null || args.mutation === undefined
+        ? null
+        : this.builder.validateMutation(args.mutation)
       const attribution = this.meta.proposalAttribution(roundId, agent, mutation)
       await this.service.submitProposal(roundId, mutation, attribution)
       return { accepted: true, roundId }

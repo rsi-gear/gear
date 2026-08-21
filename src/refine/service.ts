@@ -1,15 +1,18 @@
 import type { HarnessBuilder } from '../harness/builder.js'
+import { SubstrateExpansionError } from '../harness/builder.js'
 import type { MetaSessionManager } from '../meta/session.js'
 import { RoundAlreadyRunningError, type RefineStateStore, type WorkspaceLock } from '../state/store.js'
 import type {
   AdmissionResult,
   ChampionState,
   HarnessMutation,
+  HitchEvaluationEvidence,
   MetaAttribution,
   PromotionPolicy,
   PublicRoundStatus,
   RefineEvaluator,
   RefinementRound,
+  RoundEvaluation,
   SemanticTarget,
 } from '../types.js'
 
@@ -44,7 +47,7 @@ interface ActiveRound {
   source: RefinementRound['source']
 }
 
-const TERMINAL = new Set(['accepted', 'rejected', 'failed'])
+const TERMINAL = new Set<RefinementRound['status']>(['accepted', 'rejected', 'rejected-for-substrate', 'failed'])
 
 function now(): string {
   return new Date().toISOString()
@@ -52,6 +55,21 @@ function now(): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function taskRewards(evidence: HitchEvaluationEvidence): Map<string, number> {
+  const grouped = new Map<string, number[]>()
+  for (const trial of evidence.trials) {
+    const reward = trial.rewards.reward ?? Object.values(trial.rewards)[0]
+    if (reward === undefined) continue
+    const values = grouped.get(trial.taskName) ?? []
+    values.push(reward)
+    grouped.set(trial.taskName, values)
+  }
+  return new Map([...grouped].map(([task, values]) => [
+    task,
+    values.reduce((total, value) => total + value, 0) / values.length,
+  ]))
 }
 
 export class RefineService {
@@ -62,7 +80,7 @@ export class RefineService {
     readonly store: RefineStateStore,
     readonly builder: HarnessBuilder,
     readonly meta: MetaSessionManager,
-    private readonly evaluator: () => RefineEvaluator | undefined,
+    readonly evaluator: RefineEvaluator,
     readonly options: RefineServiceOptions,
   ) {}
 
@@ -82,9 +100,6 @@ export class RefineService {
 
   async admit(source: RefinementRound['source'], options: AdmissionOptions = {}): Promise<AdmissionResult> {
     if (this.disposed) throw new Error('RefineService is disposed')
-    if (this.evaluator() === undefined) {
-      throw new Error('no refineEvaluator service is installed; refusing to evaluate candidate code in the control plane')
-    }
     const roundCount = options.rounds ?? 1
     const taskBudgetMs = options.taskBudgetMs ?? this.options.taskBudgetMs
     if (!Number.isSafeInteger(roundCount) || roundCount < 1 || roundCount > 100) {
@@ -110,7 +125,7 @@ export class RefineService {
     })
     const timestamp = now()
     const round: RefinementRound = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       roundId,
       workspaceRoot: this.options.workspaceRoot,
       status: 'queued',
@@ -119,7 +134,7 @@ export class RefineService {
       updatedAt: timestamp,
       metaHarnessRef: this.options.metaHarnessRef,
       targetHarnessRef: champion.ref,
-      targetHarnessDigest: champion.digest,
+      targetHarnessDigest: champion.manifestDigest,
       sandboxProfileRef: this.options.sandboxProfileRef,
       seedTaskRef: options.seedTaskRef ?? this.options.seedTaskRef,
       heldOutRef: this.options.heldOutRef,
@@ -172,7 +187,7 @@ export class RefineService {
       roundId,
       status: round.status,
       ...(round.decision === undefined ? {} : { decision: round.decision }),
-      ...(round.evaluation === undefined ? {} : { seedSummary: round.evaluation.candidate }),
+      ...(round.evaluation === undefined ? {} : { seedSummary: round.evaluation.seedCandidate.summary }),
       ...(round.failure === undefined ? {} : { failure: round.failure.phase }),
     }
   }
@@ -191,13 +206,13 @@ export class RefineService {
         && round.decision === 'accepted'
         && round.candidateRef === verifiedHarnessRef
         && round.candidateDigest !== undefined
-        && round.candidateArtifactPath !== undefined)
+        && round.evaluation?.heldOutCandidate?.actualCommit === verifiedHarnessRef)
       if (verified === undefined) throw new Error(`harness ref was not accepted by a recorded round: ${verifiedHarnessRef}`)
       const current = await this.requireChampion()
       const restored: ChampionState = {
+        schemaVersion: 2,
         ref: verified.candidateRef!,
-        digest: verified.candidateDigest!,
-        artifactPath: verified.candidateArtifactPath!,
+        manifestDigest: verified.candidateDigest!,
         updatedAt: now(),
         roundId: `rollback:${verified.roundId}`,
       }
@@ -225,11 +240,10 @@ export class RefineService {
     if (active === undefined) return
     let continueBatch = false
     try {
-      const evaluator = this.evaluator()
-      if (evaluator === undefined) throw new Error('refineEvaluator disappeared after admission')
       let round = await this.transition(roundId, { status: 'baseline-running' })
-      const baseline = await evaluator.evaluateBaseline(round, active.abort.signal)
-      if (baseline.runtimeFingerprint.length === 0) throw new Error('baseline evaluator returned no runtime fingerprint')
+      const baseline = await this.evaluator.evaluate(round, {
+        phase: 'seed-baseline', dataset: round.seedTaskRef, harnessRef: round.targetHarnessRef,
+      }, active.abort.signal)
       round = await this.transition(roundId, { status: 'waiting-proposal', baseline })
       await this.meta.wake(round)
       const proposal = await active.proposal.promise
@@ -240,27 +254,71 @@ export class RefineService {
         return
       }
       this.validateProposalParent(round, proposal.mutation)
+      if (round.requestedTarget !== undefined && proposal.mutation.target !== round.requestedTarget) {
+        throw new Error(`proposal target ${proposal.mutation.target} does not match requested target ${round.requestedTarget}`)
+      }
       round = await this.transition(roundId, { status: 'building-candidate' })
-      const candidate = await this.builder.build(proposal.mutation, active.abort.signal)
+      let candidate
+      try {
+        candidate = await this.builder.build(proposal.mutation, active.abort.signal)
+      } catch (error) {
+        if (!(error instanceof SubstrateExpansionError)) throw error
+        await this.transition(roundId, {
+          status: 'rejected-for-substrate',
+          decision: 'rejected-for-substrate',
+          failure: { phase: 'building-candidate', message: error.message },
+        })
+        continueBatch = true
+        return
+      }
       round = await this.transition(roundId, {
-        status: 'candidate-running', candidateRef: candidate.ref, candidateDigest: candidate.digest,
-        candidateArtifactPath: candidate.artifactPath,
+        status: 'candidate-seed-running', candidateRef: candidate.ref, candidateDigest: candidate.digest,
       })
-      const evaluation = await evaluator.evaluateCandidate(round, candidate, active.abort.signal)
-      if (evaluation.parityFingerprint !== baseline.runtimeFingerprint) {
-        throw new Error('baseline/candidate runtime parity fingerprint mismatch')
+      const seedCandidate = await this.evaluator.evaluate(round, {
+        phase: 'seed-candidate', dataset: round.seedTaskRef, harnessRef: candidate.ref,
+      }, active.abort.signal)
+      this.assertParity(baseline, seedCandidate, 'seed')
+      let evaluation: RoundEvaluation = {
+        seedBaseline: baseline,
+        seedCandidate,
+        scoreDelta: seedCandidate.primaryReward - baseline.primaryReward,
+        requiredRegressions: this.requiredRegressions(round, baseline, seedCandidate),
       }
       round = await this.transition(roundId, { evaluation })
-      if (!this.shouldPromote(evaluation)) {
+      if (!this.passesSeed(round, evaluation)) {
+        await this.transition(roundId, { status: 'rejected', decision: 'rejected' })
+        continueBatch = true
+        return
+      }
+
+      round = await this.transition(roundId, { status: 'held-out-running' })
+      const heldOutBaseline = await this.evaluator.evaluate(round, {
+        phase: 'held-out-baseline', dataset: round.heldOutRef, harnessRef: round.targetHarnessRef,
+      }, active.abort.signal)
+      evaluation = { ...evaluation, heldOutBaseline }
+      round = await this.transition(roundId, { evaluation })
+      const heldOutCandidate = await this.evaluator.evaluate(round, {
+        phase: 'held-out-candidate', dataset: round.heldOutRef, harnessRef: candidate.ref,
+      }, active.abort.signal)
+      this.assertParity(heldOutBaseline, heldOutCandidate, 'held-out')
+      evaluation = {
+        ...evaluation,
+        heldOutCandidate,
+        heldOutScoreDelta: heldOutCandidate.primaryReward - heldOutBaseline.primaryReward,
+        requiredRegressions: evaluation.requiredRegressions
+          + this.requiredRegressions(round, heldOutBaseline, heldOutCandidate),
+      }
+      round = await this.transition(roundId, { evaluation })
+      if (!this.passesHeldOut(round, evaluation)) {
         await this.transition(roundId, { status: 'rejected', decision: 'rejected' })
         continueBatch = true
         return
       }
       round = await this.transition(roundId, { status: 'promoting' })
       const champion: ChampionState = {
+        schemaVersion: 2,
         ref: candidate.ref,
-        digest: candidate.digest,
-        artifactPath: candidate.artifactPath,
+        manifestDigest: candidate.digest,
         updatedAt: now(),
         roundId,
       }
@@ -303,7 +361,7 @@ export class RefineService {
     const roundId = crypto.randomUUID()
     const timestamp = now()
     const round: RefinementRound = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       roundId,
       workspaceRoot: this.options.workspaceRoot,
       status: 'queued',
@@ -312,7 +370,7 @@ export class RefineService {
       updatedAt: timestamp,
       metaHarnessRef: this.options.metaHarnessRef,
       targetHarnessRef: champion.ref,
-      targetHarnessDigest: champion.digest,
+      targetHarnessDigest: champion.manifestDigest,
       sandboxProfileRef: this.options.sandboxProfileRef,
       seedTaskRef: previous.seedTaskRef,
       heldOutRef: this.options.heldOutRef,
@@ -342,16 +400,53 @@ export class RefineService {
     queueMicrotask(() => { void this.drive(roundId) })
   }
 
-  private shouldPromote(evaluation: NonNullable<RefinementRound['evaluation']>): boolean {
+  private passesSeed(round: RefinementRound, evaluation: RoundEvaluation): boolean {
     const { promotion } = this.options
-    const gain = evaluation.candidate.score - evaluation.baseline.score
-    if (!evaluation.infrastructureOk) return false
-    if (evaluation.candidate.score < promotion.minimumCandidateScore) return false
-    if (gain < promotion.minimumAbsoluteGain) return false
-    if (evaluation.heldOutDelta < -promotion.maxHeldOutRegression) return false
+    if (evaluation.seedCandidate.primaryReward < promotion.minimumCandidateScore) return false
+    if (evaluation.scoreDelta < promotion.minimumAbsoluteGain) return false
     if (evaluation.requiredRegressions > promotion.maxRequiredRegressions) return false
-    if (promotion.requireNoRegression && evaluation.candidate.passed < evaluation.baseline.passed) return false
-    return true
+    if (promotion.requireNoRegression
+      && evaluation.seedCandidate.summary.passed < evaluation.seedBaseline.summary.passed) return false
+    return round.candidateRef === evaluation.seedCandidate.actualCommit
+  }
+
+  private passesHeldOut(round: RefinementRound, evaluation: RoundEvaluation): boolean {
+    const heldOutBaseline = evaluation.heldOutBaseline
+    const heldOutCandidate = evaluation.heldOutCandidate
+    if (heldOutBaseline === undefined || heldOutCandidate === undefined || evaluation.heldOutScoreDelta === undefined) return false
+    if (evaluation.heldOutScoreDelta < -this.options.promotion.maxHeldOutRegression) return false
+    if (evaluation.requiredRegressions > this.options.promotion.maxRequiredRegressions) return false
+    if (this.options.promotion.requireNoRegression
+      && heldOutCandidate.summary.passed < heldOutBaseline.summary.passed) return false
+    return round.candidateRef === heldOutCandidate.actualCommit
+  }
+
+  private requiredRegressions(
+    round: RefinementRound,
+    baseline: HitchEvaluationEvidence,
+    candidate: HitchEvaluationEvidence,
+  ): number {
+    const required = round.promotionPolicy.requiredTaskIds ?? []
+    if (required.length === 0) return 0
+    const before = taskRewards(baseline)
+    const after = taskRewards(candidate)
+    let regressions = 0
+    for (const task of required) {
+      const baselineReward = before.get(task)
+      const candidateReward = after.get(task)
+      if (baselineReward === undefined || candidateReward === undefined) {
+        throw new Error(`required task is missing from Hitch eval result: ${task}`)
+      }
+      if (candidateReward < baselineReward) regressions += 1
+    }
+    return regressions
+  }
+
+  private assertParity(baseline: HitchEvaluationEvidence, candidate: HitchEvaluationEvidence, partition: string): void {
+    if (baseline.invocationFingerprint !== candidate.invocationFingerprint) {
+      throw new Error(`${partition} baseline/candidate Hitch invocation parity mismatch`)
+    }
+    if (baseline.dataset !== candidate.dataset) throw new Error(`${partition} baseline/candidate dataset mismatch`)
   }
 
   private validateProposalParent(round: RefinementRound, mutation: HarnessMutation): void {

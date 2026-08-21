@@ -10,13 +10,15 @@ import { SessionAwareNotebookRuntime } from '../notebook/runtime.js'
 import { mountNotebookTool } from '../notebook/tool.js'
 import type { SessionRole } from '../types.js'
 import type {} from '@deepseek-ai/dsh-agent-presets'
-import { presetIdForHarnessRef } from '../harness/builder.js'
+import { presetIdForManifestDigest } from '../harness/builder.js'
+import { isExactGitCommit } from '../types.js'
 
 export * from './peer.js'
 
 export interface WorkerConfig {
   role: Extract<SessionRole, 'target' | 'rollout'>
   targetHarnessRef: string
+  targetManifestDigest: string
   targetPreset: string
   sandboxProfileRef: string
   pythonExecutable?: string
@@ -29,6 +31,7 @@ export const inject = ['agents', 'agentPresets', 'tools', 'systemPrompt']
 export const Config: Schema<WorkerConfig> = Schema.object({
   role: Schema.union(['target', 'rollout'] as const).required(),
   targetHarnessRef: Schema.string().required(),
+  targetManifestDigest: Schema.string().required(),
   targetPreset: Schema.string().required(),
   sandboxProfileRef: Schema.string().required(),
   pythonExecutable: Schema.string().default('python3'),
@@ -40,8 +43,9 @@ interface OpenParams {
 }
 
 export async function apply(ctx: Context, config: WorkerConfig): Promise<void> {
-  if (config.targetPreset !== presetIdForHarnessRef(config.targetHarnessRef)) {
-    throw new Error('targetPreset must be the content-addressed preset id derived from targetHarnessRef')
+  if (!isExactGitCommit(config.targetHarnessRef)) throw new Error('targetHarnessRef must be an exact Git commit')
+  if (config.targetPreset !== presetIdForManifestDigest(config.targetManifestDigest)) {
+    throw new Error('targetPreset must be derived from the target manifest digest')
   }
   const input = config.input ?? process.stdin
   const output = config.output ?? process.stdout
@@ -106,6 +110,7 @@ export async function apply(ctx: Context, config: WorkerConfig): Promise<void> {
       return {
         serverInfo: { name: 'dsh-refine-worker', version: '0.1.0' },
         targetHarnessRef: config.targetHarnessRef,
+        targetManifestDigest: config.targetManifestDigest,
         sandboxProfileRef: config.sandboxProfileRef,
       }
     }),

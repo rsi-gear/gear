@@ -1,6 +1,5 @@
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import type { RefineEvaluator } from './types.js'
 import type { SemanticTarget } from './types.js'
 import type {} from '@deepseek-ai/dsh-commands'
 import { HarnessBuilder } from './harness/builder.js'
@@ -12,7 +11,9 @@ import { DshMetaAgentHost, MetaSessionManager } from './meta/session.js'
 import { assertMetaPresetIsolation } from './meta/isolation.js'
 import { RefineService } from './refine/service.js'
 import { RefineCapabilities } from './capabilities.js'
+import { HitchCliEvaluator } from './evaluator/hitch-cli.js'
 import { ConfigSchema, type Config as PluginConfig } from './config.js'
+import { TargetWorkerRegistry } from './worker/registry.js'
 import './context.js'
 
 export * from './types.js'
@@ -20,6 +21,7 @@ export * from './config.js'
 export * from './capabilities.js'
 export * from './harness/builder.js'
 export * from './harness/compiler.js'
+export * from './evaluator/hitch-cli.js'
 export * from './meta/session.js'
 export * from './meta/isolation.js'
 export * from './notebook/runtime.js'
@@ -27,6 +29,7 @@ export * from './notebook/tool.js'
 export * from './refine/service.js'
 export * from './state/store.js'
 export * from './worker/manager.js'
+export * from './worker/registry.js'
 
 export const name = 'refine'
 export const inject = ['agents', 'agentPresets', 'commands', 'tools', 'systemPrompt']
@@ -65,20 +68,20 @@ export function parseAdmissionInput(words: string[]): {
 
 export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   const stateRoot = config.stateRoot ?? join(config.workspaceRoot, '.dsh-refine')
-  const artifactRoot = config.artifactRoot ?? join(config.harnessRoot, 'artifacts')
   const store = new RefineStateStore(stateRoot)
   const metaPreset = await ctx.agentPresets.resolve(config.metaPreset)
-  await assertMetaPresetIsolation(metaPreset, [config.harnessRoot, artifactRoot])
+  await assertMetaPresetIsolation(metaPreset, [config.dshRepository])
   const compiler = new SubprocessHarnessCompiler(config.compiler)
   const builder = new HarnessBuilder({
-    harnessRoot: config.harnessRoot,
-    artifactRoot,
-    dshRevision: config.dshRevision,
+    repositoryPath: config.dshRepository,
+    targetRoot: config.targetRoot,
+    dshBaseRef: config.dshBaseRef,
     toolchainRef: config.toolchainRef,
     sandboxProfileRef: config.sandboxProfileRef,
     allowedImports: config.allowedImports,
     compiler,
   })
+  const evaluator = new HitchCliEvaluator({ ...config.hitch, repositoryPath: config.dshRepository })
 
   let capabilities: RefineCapabilities | undefined
   const notebook = new SessionAwareNotebookRuntime({
@@ -108,7 +111,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     store,
     builder,
     meta,
-    () => ctx.get('refineEvaluator') as RefineEvaluator | undefined,
+    evaluator,
     {
       workspaceRoot: config.workspaceRoot,
       metaHarnessRef: config.metaHarnessRef,
@@ -119,18 +122,33 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       taskBudgetMs: config.taskBudgetMs,
     },
   )
-  capabilities = new RefineCapabilities(service, store, meta, sessionId => ctx.agents.get(sessionId as never), {
+  capabilities = new RefineCapabilities(service, store, meta, builder, sessionId => ctx.agents.get(sessionId as never), {
     ...(config.seedTasksPath === undefined ? {} : { seedTasksPath: config.seedTasksPath }),
   })
+  const targetWorkers = new TargetWorkerRegistry(service, store, builder)
 
   await store.initialize()
+  await builder.initialize()
   if (await store.readChampion() === undefined && config.initialChampion !== undefined) {
+    const manifest = await builder.readManifest(config.initialChampion.ref)
+    if (manifest.digest !== config.initialChampion.manifestDigest) {
+      throw new Error('initial champion manifestDigest does not match its exact Git commit')
+    }
     await store.writeChampion(config.initialChampion)
+  }
+  const champion = await store.readChampion()
+  if (champion !== undefined) {
+    const manifest = await builder.readManifest(champion.ref)
+    if (manifest.digest !== champion.manifestDigest) throw new Error('persisted champion manifestDigest does not match its exact Git commit')
   }
   await service.initialize()
   ctx.provide('notebookRuntime', notebook)
   ctx.provide('refine', service)
-  ctx.effect(() => () => service.dispose(), 'refine.dispose()')
+  ctx.provide('targetWorkers', targetWorkers)
+  ctx.effect(() => async () => {
+    await targetWorkers.dispose()
+    await service.dispose()
+  }, 'refine.dispose()')
   ctx.commands.register({
     name: 'refine',
     description: 'Queue a target harness refinement round.',
