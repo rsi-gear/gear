@@ -10,6 +10,11 @@
   "publishConfig": {
     "access": "public"
   },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "exports": {
@@ -31,6 +36,7 @@
     "lib/**/*.js",
     "lib/**/*.d.ts",
     "assets/ipython-kernel.py",
+    "cordis.patch.yml",
     "README.md",
     "LICENSE"
   ],

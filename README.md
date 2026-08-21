@@ -80,8 +80,12 @@ Hitch internals.
 ### Installation
 
 ```sh
-npm install dsh-plugin-refine
+dsh plugin --profile web add dsh-plugin-refine
 ```
+
+The package declares a DSH bundle containing a disabled `refine` row. Enable
+and configure that row in the profile's own `cordis.patch.yml`; installation
+alone does not start the control plane.
 
 Mount the control-plane entry from a DSH composition:
 
@@ -179,3 +183,5 @@ artifact ref is never interpreted as a Git commit.
 
 See [Gear ↔ Hitch CLI integration](docs/hitch-dsh-integration.md) and the
 [Hitch local exact commit → Harbor transport requirements](docs/hitch-local-commit-harbor-requirements.md).
+For the isolated 1-seed + 1-held-out Terminal-Bench 2.0 setup used during local
+development, see the [evolve lab runbook](docs/evolve-lab-runbook.md).

@@ -207,7 +207,9 @@ RefineService 第一次需要 meta 时执行：
 
 每个 round 在 baseline evidence 就绪后，用 `agent.followup(roundEnvelopeMessage)` 唤醒同一个 meta session。消息只包含 round/ref/证据索引，不内联整份 target tree；meta 通过 typed API 分页读取。MetaHarness 变更必须 rotate session，禁止在已有 meta history 上换 composition。
 
-`submit_refinement_proposal({roundId, mutation: HarnessMutation | null})` 是一次性提交协议：只接受当前 waiting-proposal round、正确 meta session 与未使用 round id；成功 append durable proposal event 后由 tool execution 调用 `concludeTurn()` 结束该 meta turn。stale/duplicate submission 拒绝。每轮记录 `metaSessionId`、proposal-producing request 所适用的最近一个 `request/header.seq` 和 proposal event seq；若该 round 内出现多个不同的有效 header，则 fail closed，从而形成输入配置到 proposal 的归因链，而不假设 DSH 每轮都会重复写一条未变化的 header。
+`submit_refinement_proposal({roundId, mutation: HarnessMutation | null})` 是一次性提交协议：只接受当前 waiting-proposal round、正确 meta session 与未使用 round id；由 tool execution 完成提交，stale/duplicate submission 拒绝。每轮记录 `metaSessionId`、proposal-producing request 所适用的最近一个 `request/header.seq`，以及承载 typed bridge 调用的既有 `tool/call.seq`（字段名保留为 `proposalEventSeq`）。若该 round 内出现多个不同的有效 header，则 fail closed，从而形成输入配置到 proposal 的归因链，而不假设 DSH 每轮都会重复写一条未变化的 header。这里的“有效 header”比较 `config/system/tools`；`adapterDefaults` 只记录同一有效配置来自默认值还是显式值，不改变模型行为，因此不制造归因冲突。
+
+Gear 不向 DSH session log 追加仓库外自定义事件。DSH rc.8 的 declaration merging 只提供编译期类型扩展，cold reader 的持久化事件目录仍由 DSH 构建时生成，尚无 out-of-tree runtime registration surface；插件事件会导致进程重启后的 session resume 被拒绝。proposal 的业务事实由 Gear round state 持久化，DSH log 只提供内置 `request/header` 与 `tool/call` 归因锚点。若旧 meta session 因未知插件事件或持久化缺失而不可恢复，RefineService 自动 rotate 到新的固定 MetaHarness session 并原子更新 `meta.json`。
 
 ## 6. Session-aware NotebookRuntime
 
@@ -346,7 +348,7 @@ interface RefinementRecord {
   metaHarnessRef: MetaHarnessRef
   metaSessionId?: SessionId
   metaRequestHeaderSeq?: number
-  proposalEventSeq?: number
+  proposalEventSeq?: number // 指向承载 typed proposal bridge 调用的既有 tool/call 事件
   metaModel?: LlmCallConfig
   sandboxProfileRef: SandboxProfileRef
   baselineEvalRef?: HitchEvalRef
@@ -379,7 +381,7 @@ V1 必须证明：
 
 - MetaHarness/Control Plane 的 module graph、skill locator 与 prompt sources 中没有 TargetHarness 路径；向 target artifact 放置同名控制 plugin 不能在 host 激活。
 - target/rollout 看不到 meta APIs；target 只有 `refine.run/status` public projection 且 project mount 看不到 `.dsh-refine`/Harness/Seed/Hitch state；rollout 无控制 capability；调用绕过路径在 executor/RPC handler 被拒绝。
-- Meta session 可 create、进程重启后 resume、MetaHarnessRef 变化时 rotate；每个 proposal 可追到 proposal-producing request 的有效 request header 与唯一 proposal event。
+- Meta session 可 create、进程重启后 resume、MetaHarnessRef 变化或旧日志不兼容时 rotate；每个 proposal 可追到 proposal-producing request 的有效 request header 与承载提交的唯一内置 tool-call event。
 - `/refine` 和 `refine.run()` 在持久化 admission 后立即返回；调用方取消不取消 round；跨进程并发只产生一个 active round。
 - Notebook namespace 按 SessionId 隔离并跨 tool call/compaction 保持；dispose、interrupt、restart 和 worker crash 不遗留 kernel；snapshot 缺失不会伪称已重放副作用。
 - meta 可提交原生 pre/routing/post/action-verifier plugin code；系统没有 policy interpreter；构建只使用固定依赖/toolchain。

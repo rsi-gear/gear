@@ -6,15 +6,6 @@ import type {} from '@deepseek-ai/dsh-agent-presets'
 import type { MetaAttribution, MetaHarnessRef, RefinementRound } from '../types.js'
 import type { RefineStateStore } from '../state/store.js'
 
-declare module '@deepseek-ai/dsh-session' {
-  interface SessionEventMap {
-    'refine/proposal': {
-      roundId: string
-      mutation: unknown
-    }
-  }
-}
-
 export interface MetaAgentHost {
   getLive(sessionId: string): Agent | undefined
   resume(sessionId: string): Promise<AgentHandle>
@@ -32,9 +23,9 @@ interface RoundWake {
   firstObservedSeq: number
 }
 
-function missingPersistence(error: unknown): boolean {
+function cannotResumePersistedSession(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
-  return /(?:not found|unknown session|does not exist|missing)/iu.test(message)
+  return /(?:not found|unknown session|does not exist|missing|unknown to this harness|not marked ignorable)/iu.test(message)
 }
 
 export class DshMetaAgentHost implements MetaAgentHost {
@@ -93,7 +84,7 @@ export class MetaSessionManager {
         this.handle = await this.host.resume(state.sessionId)
         return this.handle.agent
       } catch (error) {
-        if (!missingPersistence(error)) throw error
+        if (!cannotResumePersistedSession(error)) throw error
       }
     }
     const sessionId = crypto.randomUUID()
@@ -120,16 +111,26 @@ export class MetaSessionManager {
     return String(agent.id)
   }
 
-  proposalAttribution(roundId: string, agent: Agent, mutation: unknown): MetaAttribution {
+  proposalAttribution(roundId: string, agent: Agent, _mutation: unknown): MetaAttribution {
     const wake = this.wakes.get(roundId)
     if (wake === undefined || wake.sessionId !== String(agent.id)) throw new Error('proposal did not originate from the round meta session')
-    const headers = [...agent.session.events].filter(event => event.type === 'request/header')
+    const events = [...agent.session.events]
+    const headers = events.filter(event => event.type === 'request/header')
     const relevant = headers.filter(event => event.seq >= wake.firstObservedSeq)
-    const distinct = new Set(relevant.map(event => JSON.stringify(event.data.header)))
+    const distinct = new Set(relevant.map(event => JSON.stringify({
+      config: event.data.header.config,
+      system: event.data.header.system,
+      tools: event.data.header.tools,
+    })))
     if (distinct.size > 1) throw new Error('multiple effective request headers occurred during one proposal round')
     const effective = relevant.at(-1) ?? headers.at(-1)
     if (effective === undefined) throw new Error('proposal has no attributable request/header event')
-    const proposal = agent.session.append('refine/proposal', { roundId, mutation })
+    // The proposal crosses the typed bridge while the notebook tool call is
+    // executing. Point at that existing durable event instead of appending a
+    // plugin-owned session event: DSH's cold reader cannot register event types
+    // declared by out-of-tree plugins yet.
+    const proposal = events.findLast(event => event.type === 'tool/call' && event.seq >= wake.firstObservedSeq)
+    if (proposal === undefined) throw new Error('proposal has no attributable tool/call event')
     const options = agent.options
     return {
       sessionId: String(agent.id),

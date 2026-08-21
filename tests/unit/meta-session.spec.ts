@@ -113,7 +113,7 @@ describe('MetaSessionManager', () => {
     await manager.dispose()
   })
 
-  it('attributes a proposal to one effective request header and appends a durable event', async () => {
+  it('attributes a proposal to its existing durable notebook tool call', async () => {
     const root = await mkdtemp(join(tmpdir(), 'refine-meta-'))
     roots.push(root)
     const store = new RefineStateStore(root)
@@ -127,9 +127,58 @@ describe('MetaSessionManager', () => {
     ;(agent.session.events as unknown as Array<unknown>).push({
       type: 'request/header', seq: 1, data: { header: { provider: 'p', model: 'm' }, reason: 'change' },
     })
+    ;(agent.session.events as unknown as Array<unknown>).push({
+      type: 'tool/call', seq: 2, data: { name: 'ipython_input', arguments: '{}' },
+    })
     const attribution = manager.proposalAttribution('round-1', agent, null)
     expect(attribution).toMatchObject({ sessionId: String(agent.id), requestHeaderSeq: 1, proposalEventSeq: 2 })
-    expect([...agent.session.events].at(-1)?.type).toBe('refine/proposal')
+    expect([...agent.session.events].at(-1)?.type).toBe('tool/call')
+    await manager.dispose()
+  })
+
+  it('treats adapter-default provenance changes as the same effective request header', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'refine-meta-'))
+    roots.push(root)
+    const store = new RefineStateStore(root)
+    await store.initialize()
+    const host = new FakeHost()
+    const manager = new MetaSessionManager(store, host, { metaHarnessRef: 'meta-v1', model: {} })
+    const agent = await manager.agent()
+    await manager.wake(round())
+    const effective = { config: { provider: 'p', model: 'm' }, system: [], tools: [] }
+    ;(agent.session.events as unknown as Array<unknown>).push({
+      type: 'request/header', seq: 1,
+      data: { header: { ...effective, adapterDefaults: { reasoningEffort: true } }, reason: 'initial' },
+    }, {
+      type: 'request/header', seq: 2,
+      data: { header: effective, reason: 'change' },
+    }, {
+      type: 'tool/call', seq: 3, data: { name: 'ipython_input', arguments: '{}' },
+    })
+    expect(manager.proposalAttribution('round-1', agent, null)).toMatchObject({
+      requestHeaderSeq: 2,
+      proposalEventSeq: 3,
+    })
+    await manager.dispose()
+  })
+
+  it('rotates a persisted session whose log contains an unsupported plugin event', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'refine-meta-'))
+    roots.push(root)
+    const store = new RefineStateStore(root)
+    await store.initialize()
+    await store.writeMeta({ sessionId: 'incompatible', metaHarnessRef: 'meta-v1' })
+    const host = new FakeHost()
+    host.resume = async (id: string): Promise<AgentHandle> => {
+      host.resumes.push(id)
+      throw new Error(`session "${id}" contains event type "refine/proposal" unknown to this harness and not marked ignorable`)
+    }
+    const manager = new MetaSessionManager(store, host, { metaHarnessRef: 'meta-v1', model: {} })
+    const agent = await manager.agent()
+    expect(agent.id).not.toBe('incompatible')
+    expect(host.resumes).toEqual(['incompatible'])
+    expect(host.creates).toHaveLength(1)
+    expect((await store.readMeta())?.sessionId).toBe(agent.id)
     await manager.dispose()
   })
 })
