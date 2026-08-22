@@ -263,7 +263,13 @@ export class SessionAwareNotebookRuntime implements NotebookRuntime {
     }
     kernel.pending.delete(requestId)
     if (message.type === 'result' && message.ok === true && message.result !== undefined) {
-      pending.resolve({ ...message.result, ...(pending.concludesTurn ? { concludesTurn: true } : {}) })
+      const execution = message.result
+      const { result, ...rest } = execution
+      pending.resolve({
+        ...rest,
+        ...(typeof result === 'string' ? { result } : {}),
+        ...(pending.concludesTurn ? { concludesTurn: true } : {}),
+      })
     }
     else pending.reject(new Error(message.error?.traceback ?? message.error?.message ?? 'IPython execution failed'))
   }

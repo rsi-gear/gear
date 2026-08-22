@@ -8,7 +8,7 @@ Hitch state.
 
 - DSH: `@deepseek-ai/dsh@0.1.0-rc.8`
 - Gear: the locally packed `dsh-plugin-refine@0.1.0`
-- Hitch: local `feat/run-centered-trajectory-storage-spec@c564bde11dbbe92f3b1dcd7373b340416cb83bc3`, package version `0.2.0`
+- Hitch: local `feat/run-centered-trajectory-storage-spec@dee3176c0e0dc1d8e81fdb7bf154012c1c6b64ec`, package version `0.2.0`
 - Harbor: managed `0.21.0`
 - target substrate commit: `4ddad53c1f858e02ae69167ac0d2adcbb9d53f80`
 - initial champion commit: `2f1a76d3774e30e667b9895c8e9be831b3553639`
@@ -101,17 +101,18 @@ git -C .evolve-lab/target-dsh status --short
 forces Hitch to resolve and build the exact initial champion; its output must
 report `observed_version: 0.1.0-rc.8`.
 
-## Run-centered trajectory smoke status
+## Run-centered trajectory status
 
-Round `18fbc12e-6854-45b9-bd40-c7683fe4804c` proved that the feat build exports
-a complete provider-native DSH trajectory from Docker (about 6.3 MB, including
-tool calls/results, usage and original event timing). Host import currently
-fails before publication because Harbor reports `task_name` as
-`terminal-bench/regex-log`, while the exported bundle obtains the authoritative
-lock task name `regex-log`; Hitch compares those strings directly and reports
-`mismatched benchmark context`. Until Hitch normalizes this identity, the
-failed staging bundle remains under the eval trial and `hitch trajectory
-inspect <run-id> --json` correctly cannot see it in the authoritative run store.
+Round `18fbc12e-6854-45b9-bd40-c7683fe4804c` first proved that the feat build
+exports a complete provider-native DSH trajectory from Docker (about 6.3 MB,
+including tool calls/results, usage and original event timing), while exposing
+a Harbor display-name versus locked task-identity mismatch. Hitch `23ff627`
+fixed that comparison by using the locked Harbor task identity. Hitch
+`dee3176` subsequently preserved the original timeout classification when
+trajectory finalization runs after a timed-out agent, instead of masking it as
+`trajectory_recording_failed`. The pinned build above includes both fixes and
+publishes valid trajectories to the authoritative run store for
+`hitch trajectory inspect <run-id> --json`.
 
 ## Validated full round
 

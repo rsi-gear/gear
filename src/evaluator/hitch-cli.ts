@@ -13,6 +13,7 @@ import type {
   RefineEvaluator,
   RefinementRound,
   ScoreSummary,
+  TrajectoryDiagnostics,
 } from '../types.js'
 import { isExactGitCommit } from '../types.js'
 
@@ -70,6 +71,62 @@ function sha256(value: string): string {
 function rewardForTrial(rewards: Record<string, number>): number | undefined {
   if (rewards.reward !== undefined) return rewards.reward
   return Object.values(rewards)[0]
+}
+
+function excerpt(value: unknown, maxBytes = 1200): string {
+  const text = typeof value === 'string' ? value : JSON.stringify(value) ?? String(value)
+  return text.length <= maxBytes ? text : `${text.slice(0, maxBytes)}…`
+}
+
+function containsToolError(value: unknown, depth = 0): boolean {
+  if (depth > 8 || value === null || value === undefined) return false
+  if (Array.isArray(value)) return value.some(item => containsToolError(item, depth + 1))
+  if (typeof value !== 'object') return false
+  const item = value as JsonRecord
+  if (item.isError === true || item.is_error === true) return true
+  if (item.error !== undefined && item.error !== null && item.error !== false) return true
+  return Object.values(item).some(child => containsToolError(child, depth + 1))
+}
+
+function trajectoryDiagnostics(events: JsonRecord[]): TrajectoryDiagnostics {
+  const eventTypes: Record<string, number> = {}
+  const errorExcerpts: TrajectoryDiagnostics['errorExcerpts'] = []
+  const finalAssistantExcerpts: TrajectoryDiagnostics['finalAssistantExcerpts'] = []
+  let toolCalls = 0
+  let toolResults = 0
+  let toolErrors = 0
+  for (const event of events) {
+    const type = typeof event.type === 'string' ? event.type : 'unknown'
+    eventTypes[type] = (eventTypes[type] ?? 0) + 1
+    if (type === 'tool/call' || type === 'tool/code-dispatch-start') toolCalls += 1
+    if (type === 'tool/result' || type === 'tool/code-dispatch') {
+      toolResults += 1
+      const data = typeof event.data === 'object' && event.data !== null ? event.data as JsonRecord : {}
+      if (containsToolError(data)) {
+        toolErrors += 1
+        if (errorExcerpts.length < 20) errorExcerpts.push({
+          ...(typeof event.seq === 'number' ? { seq: event.seq } : {}),
+          type,
+          excerpt: excerpt(data),
+        })
+      }
+    }
+    if (/error|failed|exception/iu.test(type) && errorExcerpts.length < 20) {
+      errorExcerpts.push({
+        ...(typeof event.seq === 'number' ? { seq: event.seq } : {}),
+        type,
+        excerpt: excerpt(event.data),
+      })
+    }
+    if (type === 'assistant/message') {
+      finalAssistantExcerpts.push({
+        ...(typeof event.seq === 'number' ? { seq: event.seq } : {}),
+        excerpt: excerpt(event.data),
+      })
+      if (finalAssistantExcerpts.length > 3) finalAssistantExcerpts.shift()
+    }
+  }
+  return { totalEvents: events.length, eventTypes, toolCalls, toolResults, toolErrors, errorExcerpts, finalAssistantExcerpts }
 }
 
 export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader {
@@ -146,6 +203,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       limit,
       total: events.length,
       eof: offset + page.length >= events.length,
+      diagnostics: trajectoryDiagnostics(events),
     }
   }
 

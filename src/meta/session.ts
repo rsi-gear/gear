@@ -3,7 +3,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent, AgentHandle, AgentOptions } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-presets'
-import type { MetaAttribution, MetaHarnessRef, RefinementRound } from '../types.js'
+import type { MetaAttribution, MetaHarnessRef, ProposalEvidenceAudit, RefinementRound } from '../types.js'
 import type { RefineStateStore } from '../state/store.js'
 
 export interface MetaAgentHost {
@@ -21,6 +21,26 @@ export interface MetaSessionOptions {
 interface RoundWake {
   sessionId: string
   firstObservedSeq: number
+}
+
+interface RoundEvidenceAccess {
+  baselineEvalId: string
+  summaryAccessed: boolean
+  accessedRefs: Set<string>
+  diagnosedRunRefs: Set<string>
+}
+
+function reward(rewards: Record<string, number>): number | undefined {
+  return rewards.reward ?? Object.values(rewards)[0]
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`
+  if (typeof value === 'object' && value !== null) {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right))
+    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`).join(',')}}`
+  }
+  return JSON.stringify(value) ?? 'undefined'
 }
 
 function cannotResumePersistedSession(error: unknown): boolean {
@@ -67,6 +87,7 @@ export class DshMetaAgentHost implements MetaAgentHost {
 export class MetaSessionManager {
   private handle: AgentHandle | undefined
   private readonly wakes = new Map<string, RoundWake>()
+  private readonly evidenceAccess = new Map<string, RoundEvidenceAccess>()
 
   constructor(
     private readonly store: RefineStateStore,
@@ -96,13 +117,41 @@ export class MetaSessionManager {
   async wake(round: Readonly<RefinementRound>): Promise<string> {
     const agent = await this.agent()
     this.wakes.set(round.roundId, { sessionId: String(agent.id), firstObservedSeq: agent.session.seq })
+    const baselineRefs = [
+      ...(round.baseline === undefined ? [] : [round.baseline.evalId]),
+      ...(round.baseline?.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId]) ?? []),
+    ]
+    this.evidenceAccess.set(round.roundId, {
+      baselineEvalId: round.baseline?.evalId ?? '',
+      summaryAccessed: round.baseline !== undefined,
+      accessedRefs: new Set(baselineRefs),
+      diagnosedRunRefs: new Set(),
+    })
     agent.followup(createUserMessage({
       content: [{ type: 'text', text: JSON.stringify({
         kind: 'refinement-round',
         roundId: round.roundId,
         targetHarnessRef: round.targetHarnessRef,
         targetHarnessDigest: round.targetHarnessDigest,
-        baselineEvidenceRef: round.baseline?.evalId,
+        evidencePolicy: {
+          currentRoundOnly: true,
+          citeObservedSeedRefs: true,
+          diagnoseEveryFailedRunBeforeProposal: true,
+          heldOutUnavailable: true,
+        },
+        baseline: round.baseline === undefined ? undefined : {
+          evalId: round.baseline.evalId,
+          primaryReward: round.baseline.primaryReward,
+          summary: round.baseline.summary,
+          trials: round.baseline.trials.map(trial => ({
+            taskName: trial.taskName,
+            trialName: trial.trialName,
+            runId: trial.runId,
+            attempt: trial.attempt,
+            status: trial.status,
+            reward: reward(trial.rewards),
+          })),
+        },
         requestedTarget: round.requestedTarget,
         batch: { id: round.batchId, index: round.roundIndex, count: round.roundCount },
       }) }],
@@ -111,13 +160,48 @@ export class MetaSessionManager {
     return String(agent.id)
   }
 
+  activeRoundId(sessionId: string): string | undefined {
+    return [...this.wakes].findLast(([, wake]) => wake.sessionId === sessionId)?.[0]
+  }
+
+  recordEvidenceAccess(
+    roundId: string,
+    sessionId: string,
+    access: { summary?: boolean; refs?: readonly string[]; diagnosedRunRefs?: readonly string[] },
+  ): void {
+    const wake = this.wakes.get(roundId)
+    const current = this.evidenceAccess.get(roundId)
+    if (wake === undefined || current === undefined || wake.sessionId !== sessionId) {
+      return
+    }
+    if (access.summary === true) current.summaryAccessed = true
+    for (const ref of access.refs ?? []) current.accessedRefs.add(ref)
+    for (const ref of access.diagnosedRunRefs ?? []) current.diagnosedRunRefs.add(ref)
+  }
+
+  proposalEvidenceAudit(roundId: string, sessionId: string, citedRefs: readonly string[]): ProposalEvidenceAudit {
+    const wake = this.wakes.get(roundId)
+    const access = this.evidenceAccess.get(roundId)
+    if (wake === undefined || access === undefined || wake.sessionId !== sessionId) {
+      throw new Error('proposal evidence did not originate from the active round meta session')
+    }
+    return {
+      roundId,
+      baselineEvalId: access.baselineEvalId,
+      summaryAccessed: access.summaryAccessed,
+      accessedRefs: [...access.accessedRefs].sort(),
+      diagnosedRunRefs: [...access.diagnosedRunRefs].sort(),
+      citedRefs: [...citedRefs],
+    }
+  }
+
   proposalAttribution(roundId: string, agent: Agent, _mutation: unknown): MetaAttribution {
     const wake = this.wakes.get(roundId)
     if (wake === undefined || wake.sessionId !== String(agent.id)) throw new Error('proposal did not originate from the round meta session')
     const events = [...agent.session.events]
     const headers = events.filter(event => event.type === 'request/header')
     const relevant = headers.filter(event => event.seq >= wake.firstObservedSeq)
-    const distinct = new Set(relevant.map(event => JSON.stringify({
+    const distinct = new Set(relevant.map(event => stableJson({
       config: event.data.header.config,
       system: event.data.header.system,
       tools: event.data.header.tools,
@@ -147,5 +231,6 @@ export class MetaSessionManager {
     await this.handle?.dispose()
     this.handle = undefined
     this.wakes.clear()
+    this.evidenceAccess.clear()
   }
 }

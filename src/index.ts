@@ -6,7 +6,7 @@ import { HarnessBuilder } from './harness/builder.js'
 import { SubprocessHarnessCompiler } from './harness/compiler.js'
 import { RefineStateStore } from './state/store.js'
 import { SessionAwareNotebookRuntime } from './notebook/runtime.js'
-import { mountNotebookTool } from './notebook/tool.js'
+import { mountMetaCapabilityTools, mountNotebookTool } from './notebook/tool.js'
 import { DshMetaAgentHost, MetaSessionManager } from './meta/session.js'
 import { assertMetaPresetIsolation } from './meta/isolation.js'
 import { RefineService } from './refine/service.js'
@@ -114,6 +114,10 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   })
   const host = new DshMetaAgentHost(ctx, config.metaPreset, config.metaModel, (agentCtx) => {
     mountNotebookTool(agentCtx, notebook, 'refine-meta', config.workspaceRoot)
+    mountMetaCapabilityTools(agentCtx, async (sessionId, method, params, signal) => {
+      if (capabilities === undefined) throw new Error('refine capabilities are not initialized')
+      return capabilities.call('refine-meta', sessionId, method, params, signal)
+    })
   })
   const meta = new MetaSessionManager(store, host, {
     metaHarnessRef: config.metaHarnessRef,

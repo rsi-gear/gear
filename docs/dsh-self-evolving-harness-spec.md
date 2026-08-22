@@ -156,7 +156,7 @@ type ArtifactOp =
   | { type: 'delete'; path: string; expectedDigest: string }
 ```
 
-`ArtifactOp.content` 可以是完整原生代码。固定 validator 只执行结构检查：parent CAS、相对路径与 symlink containment、允许目录、单一 semantic target、操作大小/数量上限、held-out evidence 禁止、依赖/lockfile 禁止和 manifest 完整性。它不尝试理解代码是否“真的属于 post_action”，也不把源码翻译为 policy。
+`ArtifactOp.content` 可以是完整原生代码。固定 validator 只执行结构检查：parent CAS、相对路径与 symlink containment、允许目录、单一 semantic target、操作大小/数量上限、至少一个非空 seed `evidenceRef`、held-out evidence 禁止、依赖/lockfile 禁止和 manifest 完整性。当前 round/已访问/失败轨迹覆盖等语义校验由 RefineService 的 proposal evidence validator 完成。它不尝试理解代码是否“真的属于 post_action”，也不把源码翻译为 policy。
 
 默认每轮只修改一个 semantic target，可包含为完成该目标所需的多个文件。绝对路径、`..`、symlink escape、package manager lifecycle script、lockfile/依赖新增、二进制、生成物直写以及 evaluator/control/sandbox 路径一律拒绝。
 
@@ -179,13 +179,13 @@ preset id 可采用 `target-<manifestDigest>`，不得覆盖同名目录。Contr
 
 | Session 角色 | 运行位置 | `ipython_input` | Host Bridge / 控制能力 |
 | --- | --- | --- | --- |
-| `refine-meta` | Control Plane，固定 MetaHarness | 有 | `harness.current`、`harness.read`、`seed_tasks.load`、`trajectory.query`、`hitch.status`、`submit_refinement_proposal` |
+| `refine-meta` | Control Plane，固定 MetaHarness | 有，且不是唯一工具 | direct DSH tools `harness_current`、`harness_read`、`seed_tasks_load`、`trajectory_query`、`hitch_status`、`submit_refinement_proposal`；IPython 内提供同构 dotted API |
 | target interactive | isolated TargetWorker | 有 | 仅 `refine.run`、`refine.status` |
 | rollout | Harbor trial | 可选，默认启用但不持久化 snapshot | 无 refine/trajectory/Hitch/champion API |
 
 Meta session 不挂载 champion preset，其 SkillProvider locator、`skill-filesystem.customSkillDirs`、system-prompt sections、tools、hooks 与 workflows 均不得指向 harness repo。TargetHarness 内容进入 meta 的唯一通道是 typed API 返回的带 ref/digest/来源标记的数据；它可能影响 meta 的判断，但不能成为 meta 的活跃 composition 或 authority。这个约束同时由 composition 检查和整个 meta Python 进程的 OS sandbox 执行：kernel 不在 host workspace 中运行、不能读取 Control Plane state/session log/DSH repo/held-out，也不继承 host credentials。只限制 Host Bridge 或包装 `%%bash` 不构成这个边界，因为 Python `open()` 与 `subprocess` 可以绕过它们。
 
-`harness.current()` 返回 ref、manifest 与 path/digest index；`harness.read({ref,path,offset,limit})` 只读允许 tree、校验 ref/path/digest并有 page/byte bounds。`trajectory.query({})` 返回历史 round 的 seed evidence index；`trajectory.query({refs:[evalId|runId],offset,limit})` 只能解析 round record 中已钉住的 seed baseline/candidate run，通过 `hitch trajectory inspect <run-id> --json` 分页读取 canonical trajectory。未知 run、held-out run 和任意本地路径均拒绝；返回值删除 Hitch path、按事件数和序列化字节双重限界，并按敏感字段、已知 pass-through credential 值和 held-out ref 做结构化脱敏。MetaHarness 的固定 skill catalog 可以包含 pinned DSH API/插件开发文档，但不得包含 TargetHarness 目录。任何 meta-visible refinement-history projection 必须删除 `heldOut*` fields 和 partition refs；Control Plane 的完整 record 不直接暴露给 meta。
+`harness.current()` 返回 ref、manifest 与 path/digest index；`harness.read({ref,path,offset,limit})` 只读允许 tree、校验 ref/path/digest并有 page/byte bounds。`trajectory.query({})` 默认返回 active round 的 seed evidence index，显式 `roundId` 可读取历史 seed projection；`trajectory.query({refs:[evalId|runId],offset,limit})` 只能解析目标 round record 中已钉住的 seed baseline/candidate run，通过 `hitch trajectory inspect <run-id> --json` 读取 canonical trajectory。`offset=0` 附带从完整 trajectory 生成的 bounded diagnostics（event type 计数、tool error、错误摘录和最后 assistant 摘录），raw events 继续分页。未知 run、跨轮 run、held-out run 和任意本地路径均拒绝；返回值删除 Hitch path、按事件数和序列化字节双重限界，并按敏感字段、已知 pass-through credential 值和 held-out ref 做结构化脱敏。MetaHarness 固定挂载一段与 tool schema 同源的 capability guide；未来也可以包含 pinned DSH API/插件开发 skill，但不得包含 TargetHarness 目录。任何 meta-visible refinement-history projection 必须删除 `heldOut*` fields 和 partition refs；Control Plane 的完整 record 不直接暴露给 meta。
 
 target 的 `refine.status` 也只返回 public projection：round id、粗粒度 status、terminal decision 与 seed-side summary；不返回 held-out ref/delta、workspace/verifier refs、Meta session id 或 Control Plane path。特权 UI 若要审计完整 record，使用独立 human-authorized control endpoint，不能复用 target capability。
 
@@ -207,9 +207,9 @@ RefineService 第一次需要 meta 时执行：
 3. 否则优先 `ctx.agents.resume({ resumeSessionId, setup: mountRefineMeta })`；持久化中不存在时才 `ctx.agents.create({ sessionId, setup: mountRefineMeta })`；
 4. RefineService 持有 handle 直到 workspace service dispose。
 
-每个 round 在 baseline evidence 就绪后，用 `agent.followup(roundEnvelopeMessage)` 唤醒同一个 meta session。消息只包含 round/ref/证据索引，不内联整份 target tree；meta 通过 typed API 分页读取。MetaHarness 变更必须 rotate session，禁止在已有 meta history 上换 composition。
+每个 round 在 baseline evidence 就绪后，用 `agent.followup(roundEnvelopeMessage)` 唤醒同一个 meta session。消息内联本轮 authoritative seed baseline summary、逐 task reward 与 eval/run refs，但不内联整份 target tree 或 raw trajectory；meta 通过 typed API 读取失败 run 的完整轨迹诊断并按需分页 raw events。每轮 envelope 明示本轮 evidence policy，避免持久 session 把历史分数误当当前 baseline。MetaHarness 变更必须 rotate session，禁止在已有 meta history 上换 composition。
 
-`submit_refinement_proposal({roundId, mutation: HarnessMutation | null})` 是一次性提交协议：只接受当前 waiting-proposal round、正确 meta session 与未使用 round id；由 tool execution 完成提交，stale/duplicate submission 拒绝。每轮记录 `metaSessionId`、proposal-producing request 所适用的最近一个 `request/header.seq`，以及承载 typed bridge 调用的既有 `tool/call.seq`（字段名保留为 `proposalEventSeq`）。若该 round 内出现多个不同的有效 header，则 fail closed，从而形成输入配置到 proposal 的归因链，而不假设 DSH 每轮都会重复写一条未变化的 header。这里的“有效 header”比较 `config/system/tools`；`adapterDefaults` 只记录同一有效配置来自默认值还是显式值，不改变模型行为，因此不制造归因冲突。
+`submit_refinement_proposal({roundId, mutation: HarnessMutation | null})` 是一次性提交协议：只接受当前 waiting-proposal round、正确 meta session 与未使用 round id；由 tool execution 完成提交，stale/duplicate submission 拒绝。非空 mutation 的 `evidenceRefs` 至少包含一个当前 baseline eval/run ref；Control Plane 校验 ref 属于当前 round、已通过 typed projection 暴露/读取，并要求每个失败 baseline run 的完整轨迹 diagnostics 已被 Meta 读取。`ProposalEvidenceAudit` 与 mutation 一起写入 round record，不能用历史 round 或 candidate/held-out ref 冒充本轮证据。每轮记录 `metaSessionId`、proposal-producing request 所适用的最近一个 `request/header.seq`，以及承载 typed bridge 调用的既有 `tool/call.seq`（字段名保留为 `proposalEventSeq`）。若该 round 内出现多个不同的有效 header，则 fail closed，从而形成输入配置到 proposal 的归因链，而不假设 DSH 每轮都会重复写一条未变化的 header。这里的“有效 header”按 canonical JSON 比较 `config/system/tools`，对象字段顺序和 `adapterDefaults` provenance 都不制造伪冲突。
 
 Gear 不向 DSH session log 追加仓库外自定义事件。DSH rc.8 的 declaration merging 只提供编译期类型扩展，cold reader 的持久化事件目录仍由 DSH 构建时生成，尚无 out-of-tree runtime registration surface；插件事件会导致进程重启后的 session resume 被拒绝。proposal 的业务事实由 Gear round state 持久化，DSH log 只提供内置 `request/header` 与 `tool/call` 归因锚点。若旧 meta session 因未知插件事件或持久化缺失而不可恢复，RefineService 自动 rotate 到新的固定 MetaHarness session 并原子更新 `meta.json`。
 
@@ -303,7 +303,7 @@ V1 使用 Harbor dataset 返回的 reward；若 dataset 只给 pass/fail，则�
 
 所有 candidate 都包含或可能包含可执行 plugin code，因此 baseline、candidate 和 held-out 全部使用 Harbor；`hitch run` 的 host workspace 不能作为安全替代。Gear 通过子进程调用已安装的 `hitch eval run --backend harbor ... --output json`，不 deep-import Hitch 内部模块，也不要求 Hitch 提供 Node SDK。Harness full Git commit 是版本 id，Hitch resolution/prepare/run/eval 是执行权威，RefineService 保存 refs、actual commit、score summary，以及每个 trial 的 `run_id`/attempt。新 run-centered eval schema 以顶层 `trials[]` 的 `observation_status/reward/run_id` 为权威；任一 invalid observation 都是 infrastructure failure。旧 Harbor-shaped `summary.trials` 仅作为向后兼容输入。
 
-Hitch `dev@8c034d9` 已交付 local exact commit transport：接受 clean local repo（部署可另设限制）的 `deepseek@git+file:///...#<full-commit>`，在 host 解析并锁定 exact commit，把该 commit 所需的 Git object pack 送入 Harbor，并在容器内用现有 `deepseek` recipe/headless prepare/run；容器内实际 commit/tree 与 host resolution 相同。`feat/run-centered-trajectory-storage-spec@c564bde` 在此基础上导出 DSH provider-native trajectory，并提供 `hitch trajectory inspect <run-id> --json`。其他 local/refname guard 保持不变。完整运输合同见 [Hitch Local Exact Commit → Harbor Transport 开发需求](hitch-local-commit-harbor-requirements.md)。
+Hitch `dev@8c034d9` 已交付 local exact commit transport：接受 clean local repo（部署可另设限制）的 `deepseek@git+file:///...#<full-commit>`，在 host 解析并锁定 exact commit，把该 commit 所需的 Git object pack 送入 Harbor，并在容器内用现有 `deepseek` recipe/headless prepare/run；容器内实际 commit/tree 与 host resolution 相同。`feat/run-centered-trajectory-storage-spec@dee3176` 在此基础上导出 DSH provider-native trajectory，使用 locked Harbor task identity 校验 bundle，保留 timeout 的原始失败分类，并提供 `hitch trajectory inspect <run-id> --json`。其他 local/refname guard 保持不变。完整运输合同见 [Hitch Local Exact Commit → Harbor Transport 开发需求](hitch-local-commit-harbor-requirements.md)。
 
 ## 9. Seed Task Set
 
@@ -334,12 +334,16 @@ Seed/held-out partition 通过 immutable `ref` 钉住 Harbor dataset 定义；da
 ```ts
 type RoundStatus =
   | 'queued'
-  | 'baseline'
+  | 'baseline-running'
   | 'waiting-proposal'
-  | 'building'
-  | 'candidate-eval'
-  | 'held-out-eval'
-  | 'terminal'
+  | 'building-candidate'
+  | 'candidate-seed-running'
+  | 'held-out-running'
+  | 'promoting'
+  | 'accepted'
+  | 'rejected'
+  | 'rejected-for-substrate'
+  | 'failed'
 
 interface RefinementRecord {
   id: RoundId
@@ -353,6 +357,13 @@ interface RefinementRecord {
   metaSessionId?: SessionId
   metaRequestHeaderSeq?: number
   proposalEventSeq?: number // 指向承载 typed proposal bridge 调用的既有 tool/call 事件
+  proposalEvidence?: {
+    baselineEvalId: HitchEvalRef
+    summaryAccessed: boolean
+    accessedRefs: string[]
+    diagnosedRunRefs: HitchRunRef[]
+    citedRefs: string[]
+  }
   metaModel?: LlmCallConfig
   sandboxProfileRef: SandboxProfileRef
   baselineEvalRef?: HitchEvalRef
@@ -367,7 +378,7 @@ interface RefinementRecord {
   heldOutCandidateEvalRef?: HitchEvalRef
   heldOutBaselineScore?: number
   heldOutCandidateScore?: number
-  decision?: 'accepted' | 'rejected' | 'rejected-for-substrate' | 'no-op' | 'failed'
+  decision?: 'accepted' | 'rejected' | 'rejected-for-substrate' | 'no-change'
   scoreDelta?: number
   heldOutScoreDelta?: number
   createdAt: string
@@ -375,7 +386,7 @@ interface RefinementRecord {
 }
 ```
 
-`status !== 'terminal'` 时 `decision` 必须缺省；进入 `terminal` 的同一次 atomic write 必须写入 decision。`accepted` 还必须具备 candidate、两侧 seed/held-out eval refs、actual commit、score 与 delta；package invariant 直接检查 requested ref、Hitch actual resolution 和 champion pointer 相等。baseline 之前失败的 round 可以没有 `metaSessionId`，因为 Meta session 按需创建。
+`decision` 只在 `accepted`、`rejected` 或 `rejected-for-substrate` 等业务终态写入；基础设施 `failed` 用 `failure.phase/message` 表达而不伪装成零分决策。`accepted` 还必须具备 candidate、两侧 seed/held-out eval refs、actual commit、score 与 delta；package invariant 直接检查 requested ref、Hitch actual resolution 和 champion pointer 相等。baseline 之前失败的 round 可以没有 `metaSessionId`，因为 Meta session 按需创建。
 
 `MetaHarnessRef` 指向 immutable manifest，覆盖 DSH revision、refine plugin/build、`refine-meta` preset、meta prompt/fixed skills、typed API schema 与 sandbox profile。V1 为常量；未来若演进 meta，它可直接成为独立 lineage pointer，无需改变 record 结构。
 

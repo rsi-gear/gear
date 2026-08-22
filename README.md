@@ -151,12 +151,22 @@ and otherwise advance serially from the current accepted champion. Rollback
 accepts only an immutable harness ref previously accepted by a recorded round.
 
 For run-centered Hitch builds, each successful eval trial records its immutable
-`run_id`. A refine-meta session can first call `trajectory.query({})` to list
-seed evidence and then page a canonical target trajectory with
-`trajectory.query({ refs: [evalIdOrRunId], offset, limit })`. References are
-resolved against seed evidence already pinned in round state; arbitrary and
-held-out run IDs are rejected. Gear invokes `hitch trajectory inspect --json`
-and returns a byte-bounded, credential-redacted projection without Hitch paths.
+`run_id`. The round wake includes the authoritative baseline summary and task
+results. A refine-meta session can use the schema-rich `trajectory_query` tool
+(or the equivalent persistent-Python `trajectory.query`) without refs to read
+the active round index, then pass `refs: [evalIdOrRunId]` for a complete-run
+diagnostic summary plus a bounded raw event page. Arbitrary, cross-round, and
+held-out refs are rejected. Before a proposal is accepted, Gear verifies that
+the mutation cites observed current-baseline evidence and that Meta inspected
+the whole-run diagnostics for every failed baseline trial. The audit is stored
+on the round record.
+
+The fixed MetaHarness mounts `harness_current`, `harness_read`,
+`seed_tasks_load`, `trajectory_query`, `hitch_status`, and
+`submit_refinement_proposal` as direct DSH tools alongside `ipython_input`.
+IPython remains the persistent composition/scratch environment; it is not the
+only discovery or control surface. Its Python objects have explicit signatures
+and docstrings, so `help(trajectory.query)` describes the same typed contract.
 
 Load the worker entry only inside the isolated worker composition:
 

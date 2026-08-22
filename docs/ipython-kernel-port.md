@@ -71,7 +71,7 @@ abstract class NotebookRuntime extends Service {
 
 Provider 的内部 `Map<SessionId, KernelRecord>` 是该显式接口的正常实现细节：key 来自 request，而不是 ambient context。`KernelRecord` 至少包含 cwd、role、generation、provisioner、snapshot identity 和 memoized disposal。相同 session id 使用不同 cwd/role/harness identity 时拒绝，不能静默重绑。
 
-`tool-ipython` 注册 `ipython_input`，`executionMode` 为 exclusive/sequential，`presentCall` 使用 terminal card。它从 `exec.agent.session` 取 id/cwd，从 session setup 写入的固定 role descriptor 取 role，然后调用 `ctx.notebookRuntime.execute()`。DSH 既有 bash/fs/web/skill/terminal/subagent/workflow tools 仍由各 preset 决定，IPython 只是新增成员。
+`tool-ipython` 注册 `ipython_input`，`executionMode` 为 exclusive/sequential，`presentCall` 使用 terminal card。它从 `exec.agent.session` 取 id/cwd，从 session setup 写入的固定 role descriptor 取 role，然后调用 `ctx.notebookRuntime.execute()`。DSH 既有工具仍由各 preset 决定；Gear 的固定 refine-meta composition 另外显式挂载 `harness_current`、`harness_read`、`seed_tasks_load`、`trajectory_query`、`hitch_status` 与 `submit_refinement_proposal` 六个 schema-rich direct tools。它们与 Python dotted API 调用同一 capability implementation，避免把 API discovery 和所有控制操作都压到 `ipython_input`；不会因此开放 host bash/fs/web authority。IPython 仍可在 OS sandbox 的 scratch cwd 中用 `open()`/`subprocess` 做组合分析。
 
 ## 4. Session 与进程生命周期
 

@@ -72,6 +72,12 @@ describe('SessionAwareNotebookRuntime', () => {
     runtimes.push(runtime)
     const result = await runtime.execute({ sessionId: 'real', cwd: root, role: 'rollout', code: '%precision 3\n1 / 3' })
     expect(result.result).toContain('0.333')
+    const printed = await runtime.execute({ sessionId: 'real', cwd: root, role: 'rollout', code: "print('hello')" })
+    expect(printed).toMatchObject({ stdout: 'hello\n' })
+    expect(printed.result).toBeUndefined()
+    const help = await runtime.execute({ sessionId: 'real', cwd: root, role: 'rollout', code: 'help(trajectory.query)' })
+    expect(help.stdout).toContain('whole-trajectory diagnostics')
+    expect(help.result).toBeUndefined()
   })
 
   const sandboxDependencies = process.platform === 'darwin' || process.platform === 'linux'

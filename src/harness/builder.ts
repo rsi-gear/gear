@@ -225,8 +225,9 @@ export class HarnessBuilder {
     if (!Array.isArray(value.ops) || value.ops.length === 0 || value.ops.length > this.maxOperations) {
       throw new MutationValidationError(`mutation must contain 1..${this.maxOperations} operations`)
     }
-    if (!Array.isArray(value.evidenceRefs) || value.evidenceRefs.some(ref => typeof ref !== 'string')) {
-      throw new MutationValidationError('mutation evidenceRefs must be strings')
+    if (!Array.isArray(value.evidenceRefs) || value.evidenceRefs.length === 0
+      || value.evidenceRefs.some(ref => typeof ref !== 'string' || ref.length === 0)) {
+      throw new MutationValidationError('mutation evidenceRefs must contain at least one non-empty string')
     }
     if (typeof value.rationale !== 'string' || typeof value.expectedOutcome !== 'string') {
       throw new MutationValidationError('mutation rationale and expectedOutcome must be strings')

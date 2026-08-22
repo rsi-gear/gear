@@ -44,22 +44,73 @@ def bridge_call(method, params=None):
         raise RuntimeError(str(response.get("error", "host bridge failed")))
 
 
-class Namespace:
-    def __init__(self, prefix):
-        self._prefix = prefix
+class HarnessAPI:
+    """Read the immutable current champion. This never mounts it as Meta authority."""
 
-    def __getattr__(self, name):
-        method = self._prefix + "." + name
-        return lambda **kwargs: bridge_call(method, kwargs)
+    def current(self):
+        """Return the current champion ref, digest, and manifest."""
+        return bridge_call("harness.current")
+
+    def read(self, ref, path, offset=0, limit=None):
+        """Read one manifest-indexed champion file with byte/page bounds."""
+        params = {"ref": ref, "path": path, "offset": offset}
+        if limit is not None:
+            params["limit"] = limit
+        return bridge_call("harness.read", params)
+
+
+class SeedTasksAPI:
+    """Load only the configured seed task set. Held-out tasks are unavailable."""
+
+    def load(self, partition="seed"):
+        """Return the seed task configuration; partition must be 'seed'."""
+        return bridge_call("seed_tasks.load", {"partition": partition})
+
+
+class TrajectoryAPI:
+    """Query seed evidence and Hitch canonical target trajectories."""
+
+    def query(self, roundId=None, refs=None, offset=0, limit=20):
+        """List one round's seed summary, or inspect eval/run refs with diagnostics and paged events."""
+        params = {"offset": offset, "limit": limit}
+        if roundId is not None:
+            params["roundId"] = roundId
+        if refs is not None:
+            params["refs"] = refs
+        return bridge_call("trajectory.query", params)
+
+
+class HitchAPI:
+    """Read the public, seed-only status of a refinement round."""
+
+    def status(self, roundId):
+        """Return baseline/candidate summaries without held-out fields."""
+        return bridge_call("hitch.status", {"roundId": roundId})
+
+
+class RefineAPI:
+    """Target-session control APIs; unavailable to the refine-meta role."""
+
+    def run(self, reason=None):
+        params = {} if reason is None else {"reason": reason}
+        return bridge_call("refine.run", params)
+
+    def status(self, roundId):
+        return bridge_call("refine.status", {"roundId": roundId})
+
+
+def submit_refinement_proposal(roundId, mutation):
+    """Submit exactly one current-round mutation (or None); this concludes the Meta turn."""
+    return bridge_call("submit_refinement_proposal", {"roundId": roundId, "mutation": mutation})
 
 
 SHELL.user_ns.update({
-    "harness": Namespace("harness"),
-    "seed_tasks": Namespace("seed_tasks"),
-    "trajectory": Namespace("trajectory"),
-    "hitch": Namespace("hitch"),
-    "refine": Namespace("refine"),
-    "submit_refinement_proposal": lambda **kwargs: bridge_call("submit_refinement_proposal", kwargs),
+    "harness": HarnessAPI(),
+    "seed_tasks": SeedTasksAPI(),
+    "trajectory": TrajectoryAPI(),
+    "hitch": HitchAPI(),
+    "refine": RefineAPI(),
+    "submit_refinement_proposal": submit_refinement_proposal,
 })
 
 

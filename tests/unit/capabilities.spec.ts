@@ -41,6 +41,8 @@ describe('RefineCapabilities Git projection', () => {
     await expect(capabilities.call('refine-meta', 'meta', 'harness.read', {
       ref: fixture.championRef, path: 'plugins/not-in-manifest.ts',
     })).rejects.toThrow(/not in the target manifest/)
+    await expect(capabilities.call('refine-meta', 'meta', 'seed_tasks.load', { partition: 'held-out' }))
+      .rejects.toThrow(/must be "seed"/)
   })
 
   it('indexes and pages only recorded seed trajectories through Hitch', async () => {
@@ -128,10 +130,24 @@ describe('RefineCapabilities Git projection', () => {
           limit,
           total: 1,
           eof: true,
+          diagnostics: {
+            totalEvents: 1,
+            eventTypes: { 'tool/result': 1 },
+            toolCalls: 0,
+            toolResults: 1,
+            toolErrors: 1,
+            errorExcerpts: [{ type: 'tool/result', excerpt: 'top-secret held-out-secret' }],
+            finalAssistantExcerpts: [],
+          },
         }
       },
     }
-    const capabilities = new RefineCapabilities({} as never, store, {} as never, builder, () => undefined, {
+    const accesses: unknown[] = []
+    const meta = {
+      activeRoundId: () => round.roundId,
+      recordEvidenceAccess: (...args: unknown[]) => { accesses.push(args) },
+    }
+    const capabilities = new RefineCapabilities({} as never, store, meta as never, builder, () => undefined, {
       trajectoryReader: reader,
       secretValues: ['top-secret'],
     })
@@ -150,9 +166,15 @@ describe('RefineCapabilities Git projection', () => {
       runId: seedRun,
       header: { authorization: '[REDACTED]' },
       events: [{ data: { text: '[REDACTED] [REDACTED_HELD_OUT]', token: '[REDACTED]' } }],
+      diagnostics: { errorExcerpts: [{ excerpt: '[REDACTED] [REDACTED_HELD_OUT]' }] },
       nextOffset: 1,
       eof: true,
     }] })
+    expect(accesses).toContainEqual([
+      round.roundId,
+      'meta',
+      expect.objectContaining({ diagnosedRunRefs: [seedRun] }),
+    ])
     await expect(capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [heldRun] }))
       .rejects.toThrow(/not recorded seed evidence/)
   })

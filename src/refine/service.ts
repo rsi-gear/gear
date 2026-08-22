@@ -8,7 +8,9 @@ import type {
   HarnessMutation,
   HitchEvaluationEvidence,
   MetaAttribution,
+  ProposalEvidenceAudit,
   PromotionPolicy,
+  PublicSeedEvidence,
   PublicRoundStatus,
   RefineEvaluator,
   RefinementRound,
@@ -36,7 +38,11 @@ export interface AdmissionOptions {
 interface ActiveRound {
   lock: WorkspaceLock
   abort: AbortController
-  proposal: PromiseWithResolvers<{ mutation: HarnessMutation | null; meta: MetaAttribution }>
+  proposal: PromiseWithResolvers<{
+    mutation: HarnessMutation | null
+    meta: MetaAttribution
+    evidence: ProposalEvidenceAudit
+  }>
   proposalSubmitted: boolean
   batchId: string
   roundIndex: number
@@ -45,6 +51,16 @@ interface ActiveRound {
   taskBudgetMs: number
   requestedTarget?: SemanticTarget
   source: RefinementRound['source']
+}
+
+type ProposalValue = Awaited<ActiveRound['proposal']['promise']>
+
+function proposalResolvers(): PromiseWithResolvers<ProposalValue> {
+  const proposal = Promise.withResolvers<ProposalValue>()
+  // A round can be aborted before drive() reaches its proposal await. Mark the
+  // rejection observed immediately while preserving normal await semantics.
+  void proposal.promise.catch(() => {})
+  return proposal
 }
 
 const TERMINAL = new Set<RefinementRound['status']>(['accepted', 'rejected', 'rejected-for-substrate', 'failed'])
@@ -72,8 +88,32 @@ function taskRewards(evidence: HitchEvaluationEvidence): Map<string, number> {
   ]))
 }
 
+function trialReward(trial: HitchEvaluationEvidence['trials'][number]): number | undefined {
+  return trial.rewards.reward ?? Object.values(trial.rewards)[0]
+}
+
+function publicSeedEvidence(evidence: HitchEvaluationEvidence): PublicSeedEvidence {
+  return {
+    evalId: evidence.evalId,
+    primaryReward: evidence.primaryReward,
+    summary: evidence.summary,
+    trials: evidence.trials.map(trial => {
+      const rewardValue = trialReward(trial)
+      return {
+        taskName: trial.taskName,
+        ...(trial.trialName === undefined ? {} : { trialName: trial.trialName }),
+        ...(trial.runId === undefined ? {} : { runId: trial.runId }),
+        ...(trial.attempt === undefined ? {} : { attempt: trial.attempt }),
+        status: trial.status,
+        ...(rewardValue === undefined ? {} : { reward: rewardValue }),
+      }
+    }),
+  }
+}
+
 export class RefineService {
   private readonly active = new Map<string, ActiveRound>()
+  private readonly drives = new Set<Promise<void>>()
   private disposed = false
 
   constructor(
@@ -148,7 +188,7 @@ export class RefineService {
     const active: ActiveRound = {
       lock,
       abort: new AbortController(),
-      proposal: Promise.withResolvers(),
+      proposal: proposalResolvers(),
       proposalSubmitted: false,
       batchId,
       roundIndex: 1,
@@ -166,19 +206,25 @@ export class RefineService {
       await lock.release()
       throw error
     }
-    queueMicrotask(() => { void this.drive(roundId) })
+    queueMicrotask(() => this.startDrive(roundId))
     return { roundId, status: 'queued' }
   }
 
-  async submitProposal(roundId: string, mutation: HarnessMutation | null, meta: MetaAttribution): Promise<void> {
+  async submitProposal(
+    roundId: string,
+    mutation: HarnessMutation | null,
+    meta: MetaAttribution,
+    evidence: ProposalEvidenceAudit,
+  ): Promise<void> {
     const active = this.active.get(roundId)
     if (active === undefined) throw new Error(`stale or unknown refinement round: ${roundId}`)
     const round = await this.requireRound(roundId)
     if (round.status !== 'waiting-proposal') throw new Error(`round ${roundId} is not waiting for a proposal`)
     if (active.proposalSubmitted) throw new Error(`round ${roundId} already received a proposal`)
     if (meta.sessionId !== (await this.store.readMeta())?.sessionId) throw new Error('proposal meta session does not own this workspace')
+    this.validateProposalEvidence(round, mutation, evidence)
     active.proposalSubmitted = true
-    active.proposal.resolve({ mutation, meta })
+    active.proposal.resolve({ mutation, meta, evidence })
   }
 
   async status(roundId: string): Promise<PublicRoundStatus> {
@@ -187,7 +233,13 @@ export class RefineService {
       roundId,
       status: round.status,
       ...(round.decision === undefined ? {} : { decision: round.decision }),
-      ...(round.evaluation === undefined ? {} : { seedSummary: round.evaluation.seedCandidate.summary }),
+      ...(round.evaluation?.seedCandidate !== undefined
+        ? { seedSummary: round.evaluation.seedCandidate.summary }
+        : round.baseline === undefined ? {} : { seedSummary: round.baseline.summary }),
+      ...(round.baseline === undefined ? {} : { seedBaseline: publicSeedEvidence(round.baseline) }),
+      ...(round.evaluation?.seedCandidate === undefined ? {} : {
+        seedCandidate: publicSeedEvidence(round.evaluation.seedCandidate),
+      }),
       ...(round.failure === undefined ? {} : { failure: round.failure.phase }),
     }
   }
@@ -230,6 +282,7 @@ export class RefineService {
       active.abort.abort(error)
       active.proposal.reject(error)
     }
+    await Promise.allSettled([...this.drives])
     await Promise.all([...this.active.values()].map(active => active.lock.release().catch(() => {})))
     this.active.clear()
     await this.meta.dispose()
@@ -247,7 +300,11 @@ export class RefineService {
       round = await this.transition(roundId, { status: 'waiting-proposal', baseline })
       await this.meta.wake(round)
       const proposal = await active.proposal.promise
-      round = await this.transition(roundId, { mutation: proposal.mutation, meta: proposal.meta })
+      round = await this.transition(roundId, {
+        mutation: proposal.mutation,
+        meta: proposal.meta,
+        proposalEvidence: proposal.evidence,
+      })
       if (proposal.mutation === null) {
         await this.transition(roundId, { status: 'rejected', decision: 'no-change' })
         continueBatch = true
@@ -356,6 +413,12 @@ export class RefineService {
     }
   }
 
+  private startDrive(roundId: string): void {
+    const drive = this.drive(roundId)
+    this.drives.add(drive)
+    void drive.finally(() => this.drives.delete(drive))
+  }
+
   private async queueContinuation(previous: ActiveRound): Promise<void> {
     const champion = await this.requireChampion()
     const roundId = crypto.randomUUID()
@@ -384,7 +447,7 @@ export class RefineService {
     const active: ActiveRound = {
       lock: previous.lock,
       abort: previous.abort,
-      proposal: Promise.withResolvers(),
+      proposal: proposalResolvers(),
       proposalSubmitted: false,
       batchId: previous.batchId,
       roundIndex: previous.roundIndex + 1,
@@ -397,7 +460,7 @@ export class RefineService {
     await this.store.writeRound(round)
     await previous.lock.retarget(roundId)
     this.active.set(roundId, active)
-    queueMicrotask(() => { void this.drive(roundId) })
+    queueMicrotask(() => this.startDrive(roundId))
   }
 
   private passesSeed(round: RefinementRound, evaluation: RoundEvaluation): boolean {
@@ -452,6 +515,40 @@ export class RefineService {
   private validateProposalParent(round: RefinementRound, mutation: HarnessMutation): void {
     if (mutation.parentRef !== round.targetHarnessRef || mutation.parentDigest !== round.targetHarnessDigest) {
       throw new Error('proposal parent does not match the round target harness CAS')
+    }
+  }
+
+  private validateProposalEvidence(
+    round: RefinementRound,
+    mutation: HarnessMutation | null,
+    audit: ProposalEvidenceAudit,
+  ): void {
+    const baseline = round.baseline
+    if (baseline === undefined) throw new Error('proposal has no current baseline evidence')
+    if (audit.roundId !== round.roundId || audit.baselineEvalId !== baseline.evalId) {
+      throw new Error('proposal evidence does not belong to the current round baseline')
+    }
+    if (!audit.summaryAccessed) throw new Error('proposal requires the current baseline summary')
+    const cited = mutation?.evidenceRefs ?? []
+    if (mutation !== null && cited.length === 0) throw new Error('proposal must cite current baseline evidence')
+    if (JSON.stringify(cited) !== JSON.stringify(audit.citedRefs)) {
+      throw new Error('proposal evidence audit does not match mutation evidenceRefs')
+    }
+    const allowed = new Set([
+      baseline.evalId,
+      ...baseline.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId]),
+    ])
+    const accessed = new Set(audit.accessedRefs)
+    for (const ref of cited) {
+      if (!allowed.has(ref)) throw new Error(`proposal evidence ref is not from the current seed baseline: ${ref}`)
+      if (!accessed.has(ref)) throw new Error(`proposal cites seed evidence that Meta did not access: ${ref}`)
+    }
+    const diagnosed = new Set(audit.diagnosedRunRefs)
+    const missingDiagnostics = baseline.trials
+      .filter(trial => trial.status === 'errored' || (trialReward(trial) ?? 0) <= 0)
+      .flatMap(trial => trial.runId === undefined || diagnosed.has(trial.runId) ? [] : [trial.runId])
+    if (missingDiagnostics.length > 0) {
+      throw new Error(`proposal requires trajectory diagnostics for every failed baseline run: ${missingDiagnostics.join(', ')}`)
     }
   }
 

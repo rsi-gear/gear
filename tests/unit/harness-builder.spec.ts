@@ -70,6 +70,9 @@ describe('HarnessBuilder', () => {
     await expect(builder.build({ ...mutation(fixture, [{
       type: 'delete', path: 'plugins/context.ts', expectedDigest: 'sha256:stale',
     }]), evidenceRefs: ['held-out:secret'] }, new AbortController().signal)).rejects.toThrow(/held-out/)
+    expect(() => builder.validateMutation({ ...mutation(fixture, [{
+      type: 'create', path: 'prompts/no-evidence.md', content: 'x', expect: 'absent',
+    }]), evidenceRefs: [] })).toThrow(/at least one/)
   })
 
   it('rejects imports outside the fixed toolchain dependency allowlist', async () => {

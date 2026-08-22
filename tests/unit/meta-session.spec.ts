@@ -23,11 +23,13 @@ function fakeAgent(id: string): Agent {
       return event
     },
   }
+  const followups: unknown[] = []
   return {
     id,
     options: { provider: 'p', model: 'm', maxTokens: 100 },
     session,
-    followup() {},
+    followup(message: unknown) { followups.push(message) },
+    followups,
   } as unknown as Agent
 }
 
@@ -79,6 +81,24 @@ function round(): RefinementRound {
 }
 
 describe('MetaSessionManager', () => {
+  it('wakes Meta with the authoritative current baseline and evidence policy', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'refine-meta-'))
+    roots.push(root)
+    const store = new RefineStateStore(root)
+    await store.initialize()
+    const host = new FakeHost()
+    const manager = new MetaSessionManager(store, host, { metaHarnessRef: 'meta-v1', model: {} })
+    const agent = await manager.agent()
+    await manager.wake(round())
+    const serialized = JSON.stringify((agent as unknown as { followups: unknown[] }).followups)
+    expect(serialized).toContain('\\"primaryReward\\":1')
+    expect(serialized).toContain('diagnoseEveryFailedRunBeforeProposal')
+    expect(manager.activeRoundId(String(agent.id))).toBe('round-1')
+    const audit = manager.proposalEvidenceAudit('round-1', String(agent.id), [`eval_${'c'.repeat(32)}`])
+    expect(audit).toMatchObject({ summaryAccessed: true, baselineEvalId: `eval_${'c'.repeat(32)}` })
+    await manager.dispose()
+  })
+
   it('resumes the persisted fixed-harness session and reuses it across wakes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'refine-meta-'))
     roots.push(root)
@@ -159,6 +179,28 @@ describe('MetaSessionManager', () => {
       requestHeaderSeq: 2,
       proposalEventSeq: 3,
     })
+    await manager.dispose()
+  })
+
+  it('compares effective request headers independent of object property order', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'refine-meta-'))
+    roots.push(root)
+    const store = new RefineStateStore(root)
+    await store.initialize()
+    const host = new FakeHost()
+    const manager = new MetaSessionManager(store, host, { metaHarnessRef: 'meta-v1', model: {} })
+    const agent = await manager.agent()
+    await manager.wake(round())
+    ;(agent.session.events as unknown as Array<unknown>).push({
+      type: 'request/header', seq: 1,
+      data: { header: { config: { provider: 'p', model: 'm', maxTokens: 1 }, system: [], tools: [] } },
+    }, {
+      type: 'request/header', seq: 2,
+      data: { header: { config: { maxTokens: 1, model: 'm', provider: 'p' }, tools: [], system: [] } },
+    }, {
+      type: 'tool/call', seq: 3, data: { name: 'submit_refinement_proposal', arguments: '{}' },
+    })
+    expect(manager.proposalAttribution('round-1', agent, null)).toMatchObject({ requestHeaderSeq: 2, proposalEventSeq: 3 })
     await manager.dispose()
   })
 

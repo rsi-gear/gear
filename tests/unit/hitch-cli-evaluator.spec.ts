@@ -54,7 +54,7 @@ if (args[0] === 'trajectory' && args[1] === 'inspect') {
     ref: { schema_version: '2', run_id: runId, fidelity: 'provider_native', provider: 'deepseek', files: [] },
     header: { type: 'session', version: 1, id: 'session-1', createdAt: 1, delegationDepth: 0 },
     events: [
-      { type: 'turn/start', seq: 0, time: 10, data: { turn: 1 } },
+      { type: 'tool/result', seq: 0, time: 10, data: { message: { content: [{ isError: true }] } } },
       { type: 'assistant/message', seq: 1, time: 11, data: { content: [{ type: 'text', text: 'done' }] } },
       { type: 'turn/end', seq: 2, time: 12, data: { turn: 1 } },
     ],
@@ -140,6 +140,14 @@ describe('HitchCliEvaluator', () => {
       total: 3,
       eof: false,
       events: [{ type: 'assistant/message', seq: 1 }],
+      diagnostics: {
+        totalEvents: 3,
+        eventTypes: { 'tool/result': 1, 'assistant/message': 1, 'turn/end': 1 },
+        toolResults: 1,
+        toolErrors: 1,
+        errorExcerpts: [{ seq: 0, type: 'tool/result' }],
+        finalAssistantExcerpts: [{ seq: 1 }],
+      },
     })
   })
 

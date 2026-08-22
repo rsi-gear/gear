@@ -46,6 +46,7 @@ class FakeEvaluator implements RefineEvaluator {
       summary: { total: 10, passed, failed: 10 - passed, score },
       trials: Array.from({ length: 10 }, (_, index) => ({
         taskName: `task-${index}`,
+        runId: `run_${`${serial}${index.toString(16)}`.slice(-32).padStart(32, '0')}`,
         status: 'completed' as const,
         rewards: { reward: index < passed ? 1 : 0 },
       })),
@@ -106,6 +107,31 @@ const attribution: MetaAttribution = {
   sessionId: 'meta-1', requestHeaderSeq: 10, proposalEventSeq: 12, provider: 'test', model: 'test',
 }
 
+async function submit(
+  service: RefineService,
+  store: RefineStateStore,
+  roundId: string,
+  mutation: HarnessMutation | null,
+  meta: MetaAttribution = attribution,
+): Promise<void> {
+  const round = await store.readRound(roundId)
+  if (round?.baseline === undefined) throw new Error('test baseline is unavailable')
+  const currentMutation = mutation === null ? null : { ...mutation, evidenceRefs: [round.baseline.evalId] }
+  const runRefs = round.baseline.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId])
+  const failedRunRefs = round.baseline.trials.flatMap(trial => {
+    const reward = trial.rewards.reward ?? Object.values(trial.rewards)[0] ?? 0
+    return trial.runId === undefined || reward > 0 ? [] : [trial.runId]
+  })
+  await service.submitProposal(roundId, currentMutation, meta, {
+    roundId,
+    baselineEvalId: round.baseline.evalId,
+    summaryAccessed: true,
+    accessedRefs: [round.baseline.evalId, ...runRefs],
+    diagnosedRunRefs: failedRunRefs,
+    citedRefs: currentMutation?.evidenceRefs ?? [],
+  })
+}
+
 function proposal(git: GitHarnessFixture, parentRef = git.championRef, parentDigest = git.manifest.digest, path = 'prompts/new.md'): HarnessMutation {
   return {
     parentRef, parentDigest, target: 'context',
@@ -115,6 +141,36 @@ function proposal(git: GitHarnessFixture, parentRef = git.championRef, parentDig
 }
 
 describe('RefineService', () => {
+  it('exposes the current baseline while waiting for a proposal', async () => {
+    const { service, store } = await fixture()
+    const admission = await service.admit('api')
+    await eventually(() => store.readRound(admission.roundId), round => round?.status === 'waiting-proposal')
+    const status = await service.status(admission.roundId)
+    expect(status).toMatchObject({
+      status: 'waiting-proposal',
+      seedSummary: { total: 10, passed: 5, failed: 5, score: 0.5 },
+      seedBaseline: { primaryReward: 0.5 },
+    })
+    expect(status.seedBaseline?.trials[0]?.runId).toMatch(/^run_/u)
+    await service.dispose()
+  })
+
+  it('rejects a proposal that skipped failed-run trajectory diagnostics', async () => {
+    const { git, service, store } = await fixture()
+    const admission = await service.admit('api')
+    const round = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'waiting-proposal')
+    const current = { ...proposal(git), evidenceRefs: [round!.baseline!.evalId] }
+    await expect(service.submitProposal(admission.roundId, current, attribution, {
+      roundId: admission.roundId,
+      baselineEvalId: round!.baseline!.evalId,
+      summaryAccessed: true,
+      accessedRefs: [round!.baseline!.evalId],
+      diagnosedRunRefs: [],
+      citedRefs: current.evidenceRefs,
+    })).rejects.toThrow(/diagnostics for every failed baseline run/)
+    await service.dispose()
+  })
+
   it('runs four Hitch phases and atomically promotes an exact commit', async () => {
     const { git, service, store, meta, evaluator } = await fixture()
     const admission = await service.admit('api')
@@ -122,7 +178,7 @@ describe('RefineService', () => {
     await expect(service.admit('api')).resolves.toEqual(admission)
     await eventually(() => store.readRound(admission.roundId), round => round?.status === 'waiting-proposal')
     await eventually(async () => meta.wakes, wakes => wakes.includes(admission.roundId))
-    await service.submitProposal(admission.roundId, proposal(git), attribution)
+    await submit(service, store, admission.roundId, proposal(git))
     const terminal = await eventually(() => store.readRound(admission.roundId), round => round?.status === 'accepted')
     expect(terminal).toMatchObject({ decision: 'accepted', meta: attribution })
     expect((await store.readChampion())?.ref).toMatch(/^[0-9a-f]{40}$/u)
@@ -135,7 +191,7 @@ describe('RefineService', () => {
     const { git, service, store } = await fixture()
     const admission = await service.admit('command')
     await eventually(() => store.readRound(admission.roundId), round => round?.status === 'waiting-proposal')
-    await service.submitProposal(admission.roundId, null, attribution)
+    await submit(service, store, admission.roundId, null)
     const terminal = await eventually(() => store.readRound(admission.roundId), round => round?.status === 'rejected')
     expect(terminal?.decision).toBe('no-change')
     expect((await store.readChampion())?.ref).toBe(git.championRef)
@@ -146,7 +202,7 @@ describe('RefineService', () => {
     const { git, service, store, evaluator } = await fixture(0.55)
     const admission = await service.admit('api')
     await eventually(() => store.readRound(admission.roundId), round => round?.status === 'waiting-proposal')
-    await service.submitProposal(admission.roundId, proposal(git), attribution)
+    await submit(service, store, admission.roundId, proposal(git))
     await eventually(() => store.readRound(admission.roundId), round => round?.status === 'rejected')
     expect(evaluator.calls).toEqual(['seed-baseline', 'seed-candidate'])
     expect((await store.readChampion())?.ref).toBe(git.championRef)
@@ -166,7 +222,7 @@ describe('RefineService', () => {
     const { git, service, store } = await fixture()
     const admission = await service.admit('api')
     await eventually(() => store.readRound(admission.roundId), round => round?.status === 'waiting-proposal')
-    await service.submitProposal(admission.roundId, proposal(git, git.championRef, git.manifest.digest, 'packages/core.ts'), attribution)
+    await submit(service, store, admission.roundId, proposal(git, git.championRef, git.manifest.digest, 'packages/core.ts'))
     const terminal = await eventually(() => store.readRound(admission.roundId), round => round?.status === 'rejected-for-substrate')
     expect(terminal?.decision).toBe('rejected-for-substrate')
     expect(terminal?.failure?.message).toContain('fixed substrate')
@@ -177,7 +233,7 @@ describe('RefineService', () => {
     const { git, service, store } = await fixture()
     const first = await service.admit('api')
     await eventually(() => store.readRound(first.roundId), round => round?.status === 'waiting-proposal')
-    await service.submitProposal(first.roundId, proposal(git), attribution)
+    await submit(service, store, first.roundId, proposal(git))
     await eventually(() => store.readRound(first.roundId), round => round?.status === 'accepted')
     const firstChampion = (await store.readChampion())!
     await eventually(async () => {
@@ -186,7 +242,7 @@ describe('RefineService', () => {
 
     const second = await service.admit('api')
     await eventually(() => store.readRound(second.roundId), round => round?.status === 'waiting-proposal')
-    await service.submitProposal(second.roundId, proposal(
+    await submit(service, store, second.roundId, proposal(
       git, firstChampion.ref, firstChampion.manifestDigest, 'prompts/second.md',
     ), { ...attribution, proposalEventSeq: 13 })
     await eventually(() => store.readRound(second.roundId), round => round?.status === 'accepted')
@@ -205,13 +261,13 @@ describe('RefineService', () => {
       seedTaskRef: 'seed-override', rounds: 2, taskBudgetMs: 12_345, target: 'routing',
     })
     await eventually(() => store.readRound(first.roundId), round => round?.status === 'waiting-proposal')
-    await service.submitProposal(first.roundId, null, attribution)
+    await submit(service, store, first.roundId, null)
     const secondRound = await eventually(async () => {
       const rounds = await store.listRounds()
       return rounds.find(round => round.roundId !== first.roundId && round.status === 'waiting-proposal')
     }, round => round !== undefined)
     expect(secondRound).toMatchObject({ roundIndex: 2, roundCount: 2, seedTaskRef: 'seed-override', requestedTarget: 'routing' })
-    await service.submitProposal(secondRound!.roundId, null, { ...attribution, proposalEventSeq: 14 })
+    await submit(service, store, secondRound!.roundId, null, { ...attribution, proposalEventSeq: 14 })
     await eventually(() => store.readRound(secondRound!.roundId), round => round?.status === 'rejected')
     await service.dispose()
   })

@@ -96,6 +96,9 @@ export class RefineCapabilities {
       return { ref: champion.ref, path, offset, text: content.slice(offset, offset + limit), eof: offset + limit >= content.length }
     }
     if (method === 'seed_tasks.load') {
+      if (args.partition !== undefined && args.partition !== 'seed') {
+        throw new TypeError('seed_tasks.load partition must be "seed"')
+      }
       if (this.options.seedTasksPath === undefined) return { tasks: [] }
       return publicJson(JSON.parse(await readFile(this.options.seedTasksPath, 'utf8')))
     }
@@ -106,8 +109,16 @@ export class RefineCapabilities {
       const rounds = await this.store.listRounds()
       const evidence = this.seedRunEvidence(rounds)
       const refs = this.optionalStrings(args, 'refs')
+      const requestedRoundId = this.optionalString(args, 'roundId')
+        ?? this.meta.activeRoundId?.(sessionId)
+      const visibleRounds = requestedRoundId === undefined
+        ? rounds
+        : rounds.filter(round => round.roundId === requestedRoundId)
+      if (requestedRoundId !== undefined && visibleRounds.length === 0) {
+        throw new Error(`unknown refinement round: ${requestedRoundId}`)
+      }
       if (refs === undefined || refs.length === 0) {
-        const projected = rounds.slice(offset, offset + limit).map(round => ({
+        const projected = visibleRounds.slice(offset, offset + limit).map(round => ({
           roundId: round.roundId,
           status: round.status,
           targetHarnessRef: round.targetHarnessRef,
@@ -119,15 +130,29 @@ export class RefineCapabilities {
           decision: round.decision,
           failure: round.failure === undefined ? undefined : { phase: round.failure.phase },
         }))
-        return publicJson({ rounds: projected, offset, limit, eof: offset + projected.length >= rounds.length })
+        for (const round of visibleRounds.slice(offset, offset + limit)) {
+          this.meta.recordEvidenceAccess?.(round.roundId, sessionId, {
+            summary: round.baseline !== undefined,
+            refs: round.baseline === undefined ? [] : [
+              round.baseline.evalId,
+              ...round.baseline.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId]),
+            ],
+          })
+        }
+        return publicJson({ rounds: projected, offset, limit, eof: offset + projected.length >= visibleRounds.length })
       }
       if (refs.length > 10) throw new TypeError('trajectory.query accepts at most 10 refs')
       if (this.options.trajectoryReader === undefined) throw new Error('Hitch trajectory reader is unavailable')
-      const selected = this.resolveSeedRefs(refs, evidence)
+      const selected = this.resolveSeedRefs(refs, evidence, requestedRoundId)
       const trajectories = []
       for (const item of selected) {
         const page = await this.options.trajectoryReader.inspectTrajectory(item.trial.runId, offset, limit, signal)
-        const bounded = this.boundTrajectoryPage(page.header, page.events, roundHeldOutRef(rounds, item.roundId))
+        const bounded = this.boundTrajectoryPage(
+          page.header,
+          page.events,
+          page.diagnostics,
+          roundHeldOutRef(rounds, item.roundId),
+        )
         const consumed = bounded.events.length
         trajectories.push({
           ref: item.trial.runId,
@@ -141,6 +166,7 @@ export class RefineCapabilities {
           provider: page.provider,
           sessionId: page.sessionId,
           ...(offset === 0 ? { header: bounded.header } : {}),
+          ...(offset === 0 ? { diagnostics: bounded.diagnostics } : {}),
           events: bounded.events,
           offset,
           limit,
@@ -149,9 +175,24 @@ export class RefineCapabilities {
           eof: page.eof && consumed === page.events.length,
         })
       }
+      for (const item of selected) this.meta.recordEvidenceAccess?.(item.roundId, sessionId, {
+        refs: [item.evalId, item.trial.runId],
+        ...(offset === 0 ? { diagnosedRunRefs: [item.trial.runId] } : {}),
+      })
       return publicJson({ trajectories })
     }
-    if (method === 'hitch.status') return this.service.status(this.string(args, 'roundId'))
+    if (method === 'hitch.status') {
+      const roundId = this.string(args, 'roundId')
+      const status = await this.service.status(roundId)
+      if (status.seedBaseline !== undefined) this.meta.recordEvidenceAccess?.(roundId, sessionId, {
+        summary: true,
+        refs: [
+          status.seedBaseline.evalId,
+          ...status.seedBaseline.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId]),
+        ],
+      })
+      return status
+    }
     if (method === 'submit_refinement_proposal') {
       const roundId = this.string(args, 'roundId')
       const agent = this.resolveAgent(sessionId)
@@ -160,7 +201,8 @@ export class RefineCapabilities {
         ? null
         : this.builder.validateMutation(args.mutation)
       const attribution = this.meta.proposalAttribution(roundId, agent, mutation)
-      await this.service.submitProposal(roundId, mutation, attribution)
+      const evidence = this.meta.proposalEvidenceAudit(roundId, sessionId, mutation?.evidenceRefs ?? [])
+      await this.service.submitProposal(roundId, mutation, attribution, evidence)
       return { accepted: true, roundId }
     }
     throw new Error(`unknown refine-meta capability: ${method}`)
@@ -181,10 +223,11 @@ export class RefineCapabilities {
     return values
   }
 
-  private resolveSeedRefs(refs: string[], evidence: SeedRunEvidence[]): SeedRunEvidence[] {
+  private resolveSeedRefs(refs: string[], evidence: SeedRunEvidence[], roundId?: string): SeedRunEvidence[] {
     const selected = new Map<string, SeedRunEvidence>()
     for (const ref of refs) {
-      const matches = evidence.filter(item => item.evalId === ref || item.trial.runId === ref)
+      const matches = evidence.filter(item => (roundId === undefined || item.roundId === roundId)
+        && (item.evalId === ref || item.trial.runId === ref))
       if (matches.length === 0) throw new Error(`trajectory ref is not recorded seed evidence: ${ref}`)
       for (const item of matches) selected.set(item.trial.runId, item)
     }
@@ -192,28 +235,33 @@ export class RefineCapabilities {
   }
 
   private projectEvidence(phase: SeedRunEvidence['phase'], evidence: HitchEvaluationEvidence): unknown {
+    const trials = evidence.trials.map(trial => ({
+      taskName: trial.taskName,
+      trialName: trial.trialName,
+      runId: trial.runId,
+      attempt: trial.attempt,
+      status: trial.status,
+      rewards: trial.rewards,
+    }))
     return {
       phase,
       evalId: evidence.evalId,
       harnessRef: evidence.actualCommit,
       primaryReward: evidence.primaryReward,
       summary: evidence.summary,
-      trials: evidence.trials.map(trial => ({
-        taskName: trial.taskName,
-        trialName: trial.trialName,
-        runId: trial.runId,
-        attempt: trial.attempt,
-        status: trial.status,
-        rewards: trial.rewards,
-      })),
+      trials,
+      failedTrials: trials.filter(trial => trial.status === 'errored'
+        || (trial.rewards.reward ?? Object.values(trial.rewards)[0] ?? 0) <= 0),
     }
   }
 
-  private boundTrajectoryPage(header: unknown, events: unknown[], heldOutRef: string | undefined): {
+  private boundTrajectoryPage(header: unknown, events: unknown[], diagnostics: unknown, heldOutRef: string | undefined): {
     header: JsonValue
     events: JsonValue[]
+    diagnostics: JsonValue
   } {
     const sanitizedHeader = this.sanitize(header, heldOutRef)
+    const sanitizedDiagnostics = this.sanitize(diagnostics, heldOutRef)
     const bounded: JsonValue[] = []
     let bytes = Buffer.byteLength(JSON.stringify(sanitizedHeader))
     for (const event of events) {
@@ -233,7 +281,7 @@ export class RefineCapabilities {
       bounded.push(sanitized)
       bytes += eventBytes
     }
-    return { header: sanitizedHeader, events: bounded }
+    return { header: sanitizedHeader, events: bounded, diagnostics: sanitizedDiagnostics }
   }
 
   private sanitize(value: unknown, heldOutRef: string | undefined, key?: string): JsonValue {
@@ -263,6 +311,13 @@ export class RefineCapabilities {
     if (value === undefined) return undefined
     if (!Number.isSafeInteger(value) || (value as number) < 0) throw new TypeError(`${key} must be a non-negative integer`)
     return value as number
+  }
+
+  private optionalString(args: Record<string, unknown>, key: string): string | undefined {
+    const value = args[key]
+    if (value === undefined) return undefined
+    if (typeof value !== 'string' || value.length === 0) throw new TypeError(`${key} must be a non-empty string`)
+    return value
   }
 
   private optionalStrings(args: Record<string, unknown>, key: string): string[] | undefined {

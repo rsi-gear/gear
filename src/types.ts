@@ -101,6 +101,17 @@ export interface HitchTrajectoryPage {
   limit: number
   total: number
   eof: boolean
+  diagnostics: TrajectoryDiagnostics
+}
+
+export interface TrajectoryDiagnostics {
+  totalEvents: number
+  eventTypes: Record<string, number>
+  toolCalls: number
+  toolResults: number
+  toolErrors: number
+  errorExcerpts: Array<{ seq?: number; type: string; excerpt: string }>
+  finalAssistantExcerpts: Array<{ seq?: number; excerpt: string }>
 }
 
 export interface HitchTrajectoryReader {
@@ -157,6 +168,15 @@ export interface MetaAttribution {
   sampling?: JsonValue
 }
 
+export interface ProposalEvidenceAudit {
+  roundId: string
+  baselineEvalId: string
+  summaryAccessed: boolean
+  accessedRefs: string[]
+  diagnosedRunRefs: string[]
+  citedRefs: string[]
+}
+
 export interface RefinementRound {
   schemaVersion: 2
   roundId: string
@@ -183,6 +203,7 @@ export interface RefinementRound {
   candidateDigest?: string
   evaluation?: RoundEvaluation
   meta?: MetaAttribution
+  proposalEvidence?: ProposalEvidenceAudit
   decision?: 'accepted' | 'rejected' | 'rejected-for-substrate' | 'no-change'
   failure?: { phase: string; message: string }
 }
@@ -197,7 +218,23 @@ export interface PublicRoundStatus {
   status: RoundStatus
   decision?: 'accepted' | 'rejected' | 'rejected-for-substrate' | 'no-change'
   seedSummary?: ScoreSummary
+  seedBaseline?: PublicSeedEvidence
+  seedCandidate?: PublicSeedEvidence
   failure?: string
+}
+
+export interface PublicSeedEvidence {
+  evalId: string
+  primaryReward: number
+  summary: ScoreSummary
+  trials: Array<{
+    taskName: string
+    trialName?: string
+    runId?: string
+    attempt?: number
+    status: 'completed' | 'errored'
+    reward?: number
+  }>
 }
 
 export interface PromotionPolicy {
@@ -228,7 +265,7 @@ export interface RefineBridgeRequestMap {
   'harness.current': Record<string, never>
   'harness.read': { ref: string; path: string; offset?: number; limit?: number }
   'seed_tasks.load': { partition?: 'seed' }
-  'trajectory.query': { refs?: string[]; offset?: number; limit?: number }
+  'trajectory.query': { roundId?: string; refs?: string[]; offset?: number; limit?: number }
   'hitch.status': { roundId: string }
   'submit_refinement_proposal': { roundId: string; mutation: HarnessMutation | null }
   'refine.run': { reason?: string }
