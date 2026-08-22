@@ -34,6 +34,7 @@ export class TargetWorkerManager {
     readonly launch: TargetWorkerLaunch,
     private readonly refine: RefineService,
     private readonly store: RefineStateStore,
+    private readonly evolutionId: string,
   ) {}
 
   async start(): Promise<void> {
@@ -50,12 +51,12 @@ export class TargetWorkerManager {
     child.stderr.on('data', (chunk: string) => { this.stderr = `${this.stderr}${chunk}`.slice(-16_000) })
     peer.handle('control/refine.run', async params => {
       this.assertControlRequest(params)
-      return this.refine.admit('target')
+      return this.refine.continueEvolution('target', this.evolutionId)
     })
     peer.handle('control/refine.status', async params => {
       this.assertControlRequest(params)
-      if (typeof params.roundId !== 'string') throw new TypeError('roundId is required')
-      return this.refine.status(params.roundId)
+      if (params.roundId !== undefined && typeof params.roundId !== 'string') throw new TypeError('roundId must be a string')
+      return this.refine.status(this.evolutionId, params.roundId as string | undefined)
     })
     peer.handle('session.event', params => { this.launch.onSessionEvent?.(params); return {} })
     peer.handle('session.status', params => { this.launch.onSessionStatus?.(params); return {} })

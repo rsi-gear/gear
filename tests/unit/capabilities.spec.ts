@@ -27,7 +27,9 @@ describe('RefineCapabilities Git projection', () => {
       compiler: new NoopHarnessCompiler(),
     })
     await builder.initialize()
-    const capabilities = new RefineCapabilities({} as never, store, {} as never, builder, () => undefined)
+    const meta = { recordEvidenceAccess: () => {}, proposalAttribution: () => ({}), proposalEvidenceAudit: () => ({}) }
+    const service = { activeEntryForSession: () => ({ evolutionId: 'evo-1', roundId: 'round-1', store, meta, workspace: { workspaceId: 'workspace-1' } }) }
+    const capabilities = new RefineCapabilities(service as never, builder, () => undefined)
     await expect(capabilities.call('refine-meta', 'meta', 'harness.current', {})).resolves.toMatchObject({
       ref: fixture.championRef,
       digest: fixture.manifest.digest,
@@ -77,7 +79,8 @@ describe('RefineCapabilities Git projection', () => {
     const seedCandidate = evidence(`eval_${'2'.repeat(32)}`, 'seed', candidateRun)
     const heldBaseline = evidence(`eval_${'3'.repeat(32)}`, 'held-out-secret', heldRun)
     const round: RefinementRound = {
-      schemaVersion: 2,
+      schemaVersion: 3,
+      evolutionId: 'evo-1',
       roundId: 'round-trajectory',
       workspaceRoot: fixture.root,
       status: 'rejected',
@@ -152,7 +155,8 @@ describe('RefineCapabilities Git projection', () => {
       activeRoundId: () => round.roundId,
       recordEvidenceAccess: (...args: unknown[]) => { accesses.push(args) },
     }
-    const capabilities = new RefineCapabilities({} as never, store, meta as never, builder, () => undefined, {
+    const service = { activeEntryForSession: () => ({ evolutionId: 'evo-1', roundId: round.roundId, store, meta, workspace: { workspaceId: 'workspace-1' } }) }
+    const capabilities = new RefineCapabilities(service as never, builder, () => undefined, {
       trajectoryReader: reader,
       secretValues: ['top-secret'],
     })

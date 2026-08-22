@@ -13,6 +13,8 @@ export interface MetaAgentHost {
 }
 
 export interface MetaSessionOptions {
+  evolutionId: string
+  specDigest: string
   metaHarnessRef: MetaHarnessRef
   model: AgentOptions
   sampling?: unknown
@@ -53,7 +55,7 @@ export class DshMetaAgentHost implements MetaAgentHost {
     private readonly ctx: Context,
     private readonly preset: string,
     private readonly model: AgentOptions,
-    private readonly setupMetaCapabilities: (agentCtx: Context) => void,
+    private readonly setupMetaCapabilities: (agentCtx: Context, sessionId: string) => void | Promise<void>,
   ) {}
 
   getLive(sessionId: string): Agent | undefined {
@@ -66,7 +68,7 @@ export class DshMetaAgentHost implements MetaAgentHost {
       agentOptions: this.model,
       setup: async (agentCtx) => {
         await this.ctx.agentPresets.mount(agentCtx, this.preset)
-        this.setupMetaCapabilities(agentCtx)
+        await this.setupMetaCapabilities(agentCtx, sessionId)
       },
     })
   }
@@ -78,7 +80,7 @@ export class DshMetaAgentHost implements MetaAgentHost {
       meta: { agentPreset: this.preset },
       setup: async (agentCtx) => {
         await this.ctx.agentPresets.mount(agentCtx, this.preset)
-        this.setupMetaCapabilities(agentCtx)
+        await this.setupMetaCapabilities(agentCtx, sessionId)
       },
     })
   }
@@ -98,7 +100,9 @@ export class MetaSessionManager {
   async agent(): Promise<Agent> {
     if (this.handle !== undefined) return this.handle.agent
     const state = await this.store.readMeta()
-    if (state?.metaHarnessRef === this.options.metaHarnessRef) {
+    if (state?.evolutionId === this.options.evolutionId
+      && state.specDigest === this.options.specDigest
+      && state.metaHarnessRef === this.options.metaHarnessRef) {
       const live = this.host.getLive(state.sessionId)
       if (live !== undefined) return live
       try {
@@ -110,11 +114,20 @@ export class MetaSessionManager {
     }
     const sessionId = crypto.randomUUID()
     this.handle = await this.host.create(sessionId)
-    await this.store.writeMeta({ sessionId, metaHarnessRef: this.options.metaHarnessRef })
+    await this.store.writeMeta({
+      schemaVersion: 1,
+      evolutionId: this.options.evolutionId,
+      sessionId,
+      metaHarnessRef: this.options.metaHarnessRef,
+      specDigest: this.options.specDigest,
+    })
     return this.handle.agent
   }
 
   async wake(round: Readonly<RefinementRound>): Promise<string> {
+    if (round.evolutionId !== this.options.evolutionId) {
+      throw new Error(`Meta session for evolution ${this.options.evolutionId} cannot wake round from ${round.evolutionId}`)
+    }
     const agent = await this.agent()
     this.wakes.set(round.roundId, { sessionId: String(agent.id), firstObservedSeq: agent.session.seq })
     const baselineRefs = [
@@ -130,9 +143,16 @@ export class MetaSessionManager {
     agent.followup(createUserMessage({
       content: [{ type: 'text', text: JSON.stringify({
         kind: 'refinement-round',
+        evolutionId: round.evolutionId,
         roundId: round.roundId,
         targetHarnessRef: round.targetHarnessRef,
         targetHarnessDigest: round.targetHarnessDigest,
+        candidateWorkspace: round.candidateWorkspaceId === undefined ? undefined : {
+          workspaceId: round.candidateWorkspaceId,
+          virtualRoot: '/candidate',
+          editableRoot: '/candidate/harness',
+          mode: 'git-native',
+        },
         evidencePolicy: {
           currentRoundOnly: true,
           citeObservedSeedRefs: true,
@@ -152,7 +172,7 @@ export class MetaSessionManager {
             reward: reward(trial.rewards),
           })),
         },
-        requestedTarget: round.requestedTarget,
+        advisoryFocus: round.advisoryFocus,
         batch: { id: round.batchId, index: round.roundIndex, count: round.roundCount },
       }) }],
       source: { kind: 'plugin', plugin: 'dsh-plugin-refine' },
@@ -186,6 +206,7 @@ export class MetaSessionManager {
       throw new Error('proposal evidence did not originate from the active round meta session')
     }
     return {
+      evolutionId: this.options.evolutionId,
       roundId,
       baselineEvalId: access.baselineEvalId,
       summaryAccessed: access.summaryAccessed,
@@ -217,6 +238,7 @@ export class MetaSessionManager {
     if (proposal === undefined) throw new Error('proposal has no attributable tool/call event')
     const options = agent.options
     return {
+      evolutionId: this.options.evolutionId,
       sessionId: String(agent.id),
       requestHeaderSeq: effective.seq,
       proposalEventSeq: proposal.seq,

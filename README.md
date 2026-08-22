@@ -67,7 +67,9 @@ Rollout Agent 在演进后的 Seed Tasks 上生成轨迹，Evaluator 为轨迹�
 `dsh-plugin-refine` is a distributable DeepSeek Harness (DSH) plugin for
 meta-managed evolution of an isolated target harness. The control-plane plugin
 owns refinement rounds, a persistent meta-agent session, Git-versioned
-harness mutations, and session-aware IPython notebooks. Each target harness
+harness candidate workspaces, and session-aware IPython notebooks. Every plain
+`/refine` creates an isolated evolution; multi-round batches and explicit
+`continue` reuse only that evolution's Meta history and champion. Each target harness
 version is an exact Git commit in a complete DSH source repository. The package also
 exports `dsh-plugin-refine/worker`, the role-scoped plugin loaded inside a
 target worker.
@@ -94,7 +96,7 @@ Mount the control-plane entry from a DSH composition:
   name: dsh-plugin-refine
   config:
     workspaceRoot: /absolute/path/to/workspace
-    dshRepository: /absolute/path/to/clean-complete-dsh-repository
+    dshRepository: /absolute/path/to/complete-dsh-repository
     targetRoot: harness
     metaPreset: refine-meta
     metaHarnessRef: meta-v1
@@ -114,6 +116,18 @@ Mount the control-plane entry from a DSH composition:
       args: []
       env: {}
     allowedImports: ["@deepseek-ai/", "node:"]
+    evolutionState:
+      publishedPointer: true
+      maxLiveMetaSessions: 8
+    candidateWorkspace:
+      rootName: candidate-worktrees
+      maxFiles: 64
+      maxBytes: 2097152
+      maxDiffBytes: 1048576
+      maxReadBytes: 131072
+      shellEnabled: true
+      shellTimeoutMs: 120000
+      shellOutputBytes: 1048576
     hitch:
       executable: hitch
       harnessId: deepseek
@@ -135,20 +149,28 @@ Mount the control-plane entry from a DSH composition:
 
 The composition must also provide DSH `agents`, `agentPresets`, `commands`,
 `tools`, and the standard session/system-prompt services. The configured DSH
-repository must be clean; `dshBaseRef` and the champion ref must be exact full
-commit OIDs. The plugin creates detached worktrees and commits candidates itself.
+repository may have unrelated local changes because candidates are created in
+detached worktrees from exact commits; those changes never enter a candidate.
+`dshBaseRef` and every champion/candidate ref must be exact full commit OIDs.
+In required sandbox mode, `compiler.command` must be an absolute path to the
+fixed toolchain executable.
 
 The command plane accepts:
 
 ```text
-/refine <seed-task-ref> [--rounds N] [--budget MILLISECONDS] [--target SEMANTIC_TARGET]
-/refine status [ROUND_ID]
-/refine rollback <VERIFIED_HARNESS_REF>
+/refine <seed-task-ref> [--rounds N] [--budget MILLISECONDS] [--focus FOCUS] [--from initial|published|EXACT_REF] [--name NAME]
+/refine continue <EVOLUTION_ID> [--rounds N] [--focus FOCUS]
+/refine status [EVOLUTION_ID [ROUND_ID]]
+/refine publish <EVOLUTION_ID> [EXACT_REF]
+/refine rollback <EVOLUTION_ID> <VERIFIED_EXACT_REF>
 ```
 
-Multi-round batches retain one workspace lock, stop on infrastructure failure,
-and otherwise advance serially from the current accepted champion. Rollback
-accepts only an immutable harness ref previously accepted by a recorded round.
+`--focus` accepts repeated or comma-separated semantic targets and is advisory:
+Meta may modify several behavior surfaces in one composite candidate. Multi-round
+batches retain one per-evolution lock and advance serially from that evolution's
+accepted champion. A plain invocation never reuses another invocation's state.
+Publishing is explicit and separate from promotion. Rollback accepts only a commit
+previously accepted inside the selected evolution.
 
 For run-centered Hitch builds, each successful eval trial records its immutable
 `run_id`. The round wake includes the authoritative baseline summary and task
@@ -161,12 +183,14 @@ the mutation cites observed current-baseline evidence and that Meta inspected
 the whole-run diagnostics for every failed baseline trial. The audit is stored
 on the round record.
 
-The fixed MetaHarness mounts `harness_current`, `harness_read`,
-`seed_tasks_load`, `trajectory_query`, `hitch_status`, and
-`submit_refinement_proposal` as direct DSH tools alongside `ipython_input`.
-IPython remains the persistent composition/scratch environment; it is not the
-only discovery or control surface. Its Python objects have explicit signatures
-and docstrings, so `help(trajectory.query)` describes the same typed contract.
+The fixed MetaHarness mounts DSH's standard `read`, `write`, `edit`, `glob`,
+`grep`, and (when enabled) air-gapped `bash` over a session-bound candidate
+filesystem. Gear adds `candidate_diff`, `candidate_check`, `finalize_candidate`,
+and `decline_candidate`, while retaining the read-only evidence tools
+`harness_current`, `harness_read`, `seed_tasks_load`, `trajectory_query`, and
+`hitch_status`. The provider boundary hides host paths, state, credentials,
+held-out data, Git metadata, and network access. IPython remains a persistent
+analysis scratchpad and typed-control compatibility surface, not the only tool.
 
 Load the worker entry only inside the isolated worker composition:
 
@@ -182,9 +206,10 @@ Load the worker entry only inside the isolated worker composition:
 ```
 
 The control-plane plugin provides `ctx.targetWorkers`. Use
-`createCurrent(...)` for a new target session so it pins the current champion;
-use `create(...)` with a previously accepted exact commit only when resuming an
-older session. The registry verifies the commit and manifest before launch.
+`createCurrent(...)` to pin the explicitly published workspace default,
+`createForEvolution(evolutionId, ...)` to pin one experiment's current champion,
+or `create(evolutionId, ...)` with a previously accepted exact commit when
+resuming an older session. The registry verifies the commit and manifest before launch.
 
 ### Runtime requirements
 
@@ -209,9 +234,11 @@ responsibilities because those processes run in TargetWorker/Harbor rather
 than the control-plane meta sandbox. Hitch/Harbor failures fail the round; the
 plugin never falls back to evaluating candidate code in the control plane.
 
-Persisted artifact-era state is intentionally incompatible. Remove or migrate
-old `.dsh-refine` state before switching to schema version 2; a `sha256:`
-artifact ref is never interpreted as a Git commit.
+Startup performs an explicit, journaled migration of legacy v2 batches into
+archived evolution records. The old shared Meta session is never resumed and a
+legacy in-progress mutation is never re-executed. The old top-level champion
+becomes only the optional published pointer; a `sha256:` artifact ref is never
+interpreted as a Git commit.
 
 See [Gear ↔ Hitch CLI integration](docs/hitch-dsh-integration.md) and the
 [Hitch local exact commit → Harbor transport requirements](docs/hitch-local-commit-harbor-requirements.md).

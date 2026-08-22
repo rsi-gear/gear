@@ -1,6 +1,6 @@
 # Prime Agent IPython Kernel 移植决策
 
-- 状态：Draft v0.5
+- 状态：Implemented seam；高级 Jupyter wire/snapshot 仍为后续方向
 - 目的：为 [DSH Self-Evolving Harness Plugin Spec](dsh-self-evolving-harness-spec.md) 定义 session-aware `NotebookRuntime`
 - 参考实现：Prime Agent `KernelManager`、`IpythonKernelProvisioner`、state snapshot 与 Python comm runtime
 - 更新：2026-08-20 — 最终选择独立 `NotebookRuntime` capability seam；不在 one-shot `CodeRuntime` provider 内隐藏 session kernel map；补全 Meta/TargetWorker/rollout 生命周期、角色化 Host Bridge 与无 UI busy-kernel 策略。
@@ -71,7 +71,7 @@ abstract class NotebookRuntime extends Service {
 
 Provider 的内部 `Map<SessionId, KernelRecord>` 是该显式接口的正常实现细节：key 来自 request，而不是 ambient context。`KernelRecord` 至少包含 cwd、role、generation、provisioner、snapshot identity 和 memoized disposal。相同 session id 使用不同 cwd/role/harness identity 时拒绝，不能静默重绑。
 
-`tool-ipython` 注册 `ipython_input`，`executionMode` 为 exclusive/sequential，`presentCall` 使用 terminal card。它从 `exec.agent.session` 取 id/cwd，从 session setup 写入的固定 role descriptor 取 role，然后调用 `ctx.notebookRuntime.execute()`。DSH 既有工具仍由各 preset 决定；Gear 的固定 refine-meta composition 另外显式挂载 `harness_current`、`harness_read`、`seed_tasks_load`、`trajectory_query`、`hitch_status` 与 `submit_refinement_proposal` 六个 schema-rich direct tools。它们与 Python dotted API 调用同一 capability implementation，避免把 API discovery 和所有控制操作都压到 `ipython_input`；不会因此开放 host bash/fs/web authority。IPython 仍可在 OS sandbox 的 scratch cwd 中用 `open()`/`subprocess` 做组合分析。
+`tool-ipython` 注册 `ipython_input`，`executionMode` 为 exclusive/sequential，`presentCall` 使用 terminal card。它从 `exec.agent.session` 取 id/cwd，从 session setup 写入的固定 role descriptor 取 role，然后调用 `ctx.notebookRuntime.execute()`。Gear 的 refine-meta scope 同时挂载只读 evidence tools、DSH 原生 `read/write/edit/glob/grep/bash` 和 Gear 的 `candidate_diff/candidate_check/finalize_candidate/decline_candidate`。这些工具与 Python dotted control API 调用同一 capability implementation；coding tools 则通过 session-bound Candidate provider 操作 Git worktree。IPython 的 OS sandbox scratch 与 candidate worktree 是两个不同权限域，Python 自身不能直接打开 candidate 或 control-plane host path。
 
 ## 4. Session 与进程生命周期
 
@@ -132,7 +132,7 @@ handler registry 在 session setup 时按角色固定，不能由 Python payload
 
 | role | handlers |
 | --- | --- |
-| meta | `harness.current`、`harness.read`、`seed_tasks.load`、`trajectory.query`、`hitch.status`、`submit_refinement_proposal` |
+| meta | `harness.current`、`harness.read`、`seed_tasks.load`、`trajectory.query`、`hitch.status`、`candidate.diff/check/finalize/decline`；源码编辑走同 session 的 DSH coding tools |
 | target | `refine.run`、`refine.status` |
 | rollout | 空 |
 

@@ -254,7 +254,7 @@ export class SessionAwareNotebookRuntime implements NotebookRuntime {
       try {
         if (!allowed.includes(method)) throw new Error(`bridge method is not allowed for ${pending.request.role}: ${method}`)
         const result = await this.bridge(method, message.params, pending.request)
-        if (method === 'submit_refinement_proposal') pending.concludesTurn = true
+        if (method === 'candidate.finalize' || method === 'candidate.decline') pending.concludesTurn = true
         kernel.child.stdin.write(`${JSON.stringify({ type: 'bridge_response', requestId, ok: true, result })}\n`)
       } catch (error) {
         kernel.child.stdin.write(`${JSON.stringify({ type: 'bridge_response', requestId, ok: false, error: errorMessage(error) })}\n`)

@@ -39,6 +39,20 @@ export interface Config {
   seedTasksPath?: string
   allowedImports: string[]
   initialChampion?: ChampionState
+  evolutionState: {
+    publishedPointer: boolean
+    maxLiveMetaSessions: number
+  }
+  candidateWorkspace: {
+    rootName: string
+    maxFiles: number
+    maxBytes: number
+    maxDiffBytes: number
+    maxReadBytes: number
+    shellEnabled: boolean
+    shellTimeoutMs: number
+    shellOutputBytes: number
+  }
   compiler: {
     command: string
     args: string[]
@@ -80,6 +94,29 @@ export const ConfigSchema: Schema<Config> = Schema.object({
     manifestDigest: Schema.string().required(),
     updatedAt: Schema.string().required(),
     roundId: Schema.string(),
+  }),
+  evolutionState: Schema.object({
+    publishedPointer: Schema.boolean().default(true),
+    maxLiveMetaSessions: Schema.number().default(8),
+  }).default({ publishedPointer: true, maxLiveMetaSessions: 8 }),
+  candidateWorkspace: Schema.object({
+    rootName: Schema.string().default('candidate-worktrees'),
+    maxFiles: Schema.number().default(64),
+    maxBytes: Schema.number().default(2 * 1024 * 1024),
+    maxDiffBytes: Schema.number().default(1024 * 1024),
+    maxReadBytes: Schema.number().default(128 * 1024),
+    shellEnabled: Schema.boolean().default(true),
+    shellTimeoutMs: Schema.number().default(120_000),
+    shellOutputBytes: Schema.number().default(1024 * 1024),
+  }).default({
+    rootName: 'candidate-worktrees',
+    maxFiles: 64,
+    maxBytes: 2 * 1024 * 1024,
+    maxDiffBytes: 1024 * 1024,
+    maxReadBytes: 128 * 1024,
+    shellEnabled: true,
+    shellTimeoutMs: 120_000,
+    shellOutputBytes: 1024 * 1024,
   }),
   compiler: Schema.object({
     command: Schema.string().required(),

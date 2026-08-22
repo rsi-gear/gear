@@ -40,7 +40,7 @@ class Namespace:
 
 namespace.update({
     "harness": Namespace("harness"),
-    "submit_refinement_proposal": lambda **kwargs: call("submit_refinement_proposal", kwargs),
+    "candidate": Namespace("candidate"),
 })
 
 for raw in wire_in:

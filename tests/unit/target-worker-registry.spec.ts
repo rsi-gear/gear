@@ -49,8 +49,15 @@ lines.on('line', line => {
 })
 `)
     const events: Record<string, unknown>[] = []
-    const registry = new TargetWorkerRegistry({} as never, store, builder)
-    const manager = await registry.createCurrent({
+    const refine = { registry: {
+      stateStore: () => store,
+      readPublished: async () => ({
+        schemaVersion: 1 as const, ref: fixture.championRef, manifestDigest: fixture.manifest.digest,
+        publishedAt: 'now', sourceEvolutionId: 'evo-1',
+      }),
+    } }
+    const registry = new TargetWorkerRegistry(refine as never, builder)
+    const manager = await registry.createForEvolution('evo-1', {
       workerId: 'worker-1',
       command: process.execPath,
       args: [script, fixture.championRef, fixture.manifest.digest, 'sandbox-v1'],
@@ -65,7 +72,13 @@ lines.on('line', line => {
     await new Promise(resolvePromise => setTimeout(resolvePromise, 20))
     expect(events).toContainEqual(expect.objectContaining({ sessionId: 'session-1' }))
     await manager.closeSession('session-1')
-    await expect(registry.create({
+    const published = await registry.createCurrent({
+      workerId: 'worker-published', command: process.execPath,
+      args: [script, fixture.championRef, fixture.manifest.digest, 'sandbox-v1'],
+      cwd: fixture.root, env: {}, sandboxProfileRef: 'sandbox-v1', provider: 'test', model: 'test',
+    })
+    expect(published.launch.targetHarnessRef).toBe(fixture.championRef)
+    await expect(registry.create('evo-1', {
       workerId: 'bad', command: process.execPath, args: [], cwd: fixture.root, env: {},
       targetHarnessRef: 'f'.repeat(40), targetManifestDigest: fixture.manifest.digest,
       sandboxProfileRef: 'sandbox-v1', provider: 'test', model: 'test',

@@ -34,15 +34,15 @@ describe('SessionAwareNotebookRuntime', () => {
     const calls: string[] = []
     const runtime = new SessionAwareNotebookRuntime({
       helperPath: fileURLToPath(new URL('../fixtures/notebook-helper.py', import.meta.url)),
-      allowedMethods: { 'refine-meta': ['harness.current', 'submit_refinement_proposal'], rollout: [] },
+      allowedMethods: { 'refine-meta': ['harness.current', 'candidate.finalize'], rollout: [] },
       bridge: async (method) => { calls.push(method); return { ok: true } },
     })
     runtimes.push(runtime)
     const result = await runtime.execute({
       sessionId: 'meta', cwd: root, role: 'refine-meta',
-      code: "harness.current(); submit_refinement_proposal(roundId='r1', mutation=None)",
+      code: "harness.current(); candidate.finalize(rationale='r', expectedOutcome='x', evidenceRefs=['e'])",
     })
-    expect(calls).toEqual(['harness.current', 'submit_refinement_proposal'])
+    expect(calls).toEqual(['harness.current', 'candidate.finalize'])
     expect(result.concludesTurn).toBe(true)
     await expect(runtime.execute({
       sessionId: 'rollout', cwd: root, role: 'rollout', code: 'harness.current()',
@@ -83,7 +83,8 @@ describe('SessionAwareNotebookRuntime', () => {
   const sandboxDependencies = process.platform === 'darwin' || process.platform === 'linux'
     ? SandboxManager.checkDependencies().errors
     : ['unsupported platform']
-  it.skipIf(sandboxDependencies.length > 0)('sandboxes the entire meta kernel with scratch-only data access and a sanitized environment', async () => {
+  const canListenLoopback = spawnSync(process.execPath, ['-e', "const n=require('node:net').createServer();n.listen(0,'127.0.0.1',()=>n.close(()=>process.exit(0)));n.on('error',()=>process.exit(1))"]).status === 0
+  it.skipIf(sandboxDependencies.length > 0 || !canListenLoopback)('sandboxes the entire meta kernel with scratch-only data access and a sanitized environment', async () => {
     const root = await mkdtemp(join(tmpdir(), 'refine-notebook-sandbox-'))
     roots.push(root)
     const secret = join(root, 'control-plane-secret.txt')

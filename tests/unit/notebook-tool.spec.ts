@@ -24,7 +24,10 @@ describe('Meta notebook tools', () => {
       'seed_tasks_load',
       'trajectory_query',
       'hitch_status',
-      'submit_refinement_proposal',
+      'candidate_diff',
+      'candidate_check',
+      'finalize_candidate',
+      'decline_candidate',
     ])
     expect(sections[0]?.text).toContain('diagnostics for every failed baseline run')
     const trajectory = tools.find(tool => tool.name === 'trajectory_query')!
@@ -40,7 +43,7 @@ describe('Meta notebook tools', () => {
     )
   })
 
-  it('rejects guessed proposal operation fields before calling the capability', async () => {
+  it('rejects identity and operation fields on metadata-only finalization', async () => {
     const tools: ToolDefinition[] = []
     const call = vi.fn(async () => ({ accepted: true }))
     const context = {
@@ -48,30 +51,17 @@ describe('Meta notebook tools', () => {
       systemPrompt: { section() {} },
     } as unknown as Context
     mountMetaCapabilityTools(context, call)
-    const submit = tools.find(tool => tool.name === 'submit_refinement_proposal')!
+    const submit = tools.find(tool => tool.name === 'finalize_candidate')!
     const concludeTurn = vi.fn()
-    const exec = {
-      agent: { id: 'meta-1' },
-      signal: new AbortController().signal,
-      concludeTurn,
-    } as never
     await expect(submit.execute({
-      roundId: 'round-1',
-      mutation: {
-        parentRef: 'a'.repeat(40),
-        parentDigest: `sha256:${'b'.repeat(64)}`,
-        target: 'context',
-        ops: [{ type: 'patch', path: 'plugins/policy.js', unifiedDiff: 'guessed field', expectedDigest: `sha256:${'c'.repeat(64)}` }],
-        rationale: 'fix failure',
-        evidenceRefs: ['run-1'],
-        expectedOutcome: 'pass',
-      },
-    }, exec)).rejects.toThrow(/invalid arguments/iu)
+      roundId: 'round-1', rationale: 'fix failure', evidenceRefs: ['run-1'], expectedOutcome: 'pass',
+    }, { agent: { id: 'meta-1' }, signal: new AbortController().signal, concludeTurn } as never))
+      .rejects.toThrow(/unknown field.*roundId/iu)
     expect(call).not.toHaveBeenCalled()
     expect(concludeTurn).not.toHaveBeenCalled()
   })
 
-  it('accepts the exact proposal schema and concludes only after host acceptance', async () => {
+  it('accepts metadata-only finalization and concludes only after host acceptance', async () => {
     const tools: ToolDefinition[] = []
     const call = vi.fn(async () => ({ accepted: true }))
     const context = {
@@ -79,31 +69,18 @@ describe('Meta notebook tools', () => {
       systemPrompt: { section() {} },
     } as unknown as Context
     mountMetaCapabilityTools(context, call)
-    const submit = tools.find(tool => tool.name === 'submit_refinement_proposal')!
-    const mutation = {
-      parentRef: 'a'.repeat(40),
-      parentDigest: `sha256:${'b'.repeat(64)}`,
-      target: 'context',
-      ops: [{
-        type: 'patch',
-        path: 'plugins/policy.js',
-        patch: '--- a/plugins/policy.js\n+++ b/plugins/policy.js\n',
-        expectedDigest: `sha256:${'c'.repeat(64)}`,
-      }],
-      rationale: 'fix failure',
-      evidenceRefs: ['run-1'],
-      expectedOutcome: 'pass',
-    }
+    const submit = tools.find(tool => tool.name === 'finalize_candidate')!
+    const finalization = { rationale: 'fix failure', evidenceRefs: ['run-1'], expectedOutcome: 'pass', semanticTargets: ['context', 'routing'] }
     const concludeTurn = vi.fn()
-    await submit.execute({ roundId: 'round-1', mutation }, {
+    await submit.execute(finalization, {
       agent: { id: 'meta-1' },
       signal: new AbortController().signal,
       concludeTurn,
     } as never)
     expect(call).toHaveBeenCalledWith(
       'meta-1',
-      'submit_refinement_proposal',
-      { roundId: 'round-1', mutation },
+      'candidate.finalize',
+      finalization,
       expect.any(AbortSignal),
     )
     expect(concludeTurn).toHaveBeenCalledOnce()

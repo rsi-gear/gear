@@ -52,6 +52,14 @@
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "0.0.55",
+    "@deepseek-ai/dsh-fs": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-fs-local": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-fs-observation-policy": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-shell": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-subprocess": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-tool-bash": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-tool-fs": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-tool-fs-search": "^0.1.0-rc.8",
     "@deepseek-ai/schemastery": "^3.18.1",
     "diff": "^8.0.2",
     "js-yaml": "^4.1.0"

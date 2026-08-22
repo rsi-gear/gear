@@ -10,7 +10,8 @@ afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, {
 
 function round(root: string, commit: string, digest: string): RefinementRound {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
+    evolutionId: 'evo-1',
     roundId: 'round-1',
     workspaceRoot: root,
     status: 'baseline-running',

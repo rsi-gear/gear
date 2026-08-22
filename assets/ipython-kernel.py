@@ -22,6 +22,11 @@ CURRENT_REQUEST = None
 ALLOWED_METHODS = set()
 
 
+def compact(value):
+    """Drop only unset optionals while preserving false/zero/empty values."""
+    return {key: item for key, item in value.items() if item is not None}
+
+
 def send(payload):
     WIRE_OUT.write(json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n")
     WIRE_OUT.flush()
@@ -71,7 +76,7 @@ class TrajectoryAPI:
     """Query seed evidence and Hitch canonical target trajectories."""
 
     def query(self, roundId=None, refs=None, offset=0, limit=20):
-        """List one round's seed summary, or inspect eval/run refs with diagnostics and paged events."""
+        """List seed summaries, or inspect eval/run refs with whole-trajectory diagnostics and paged events."""
         params = {"offset": offset, "limit": limit}
         if roundId is not None:
             params["roundId"] = roundId
@@ -95,28 +100,27 @@ class RefineAPI:
         params = {} if reason is None else {"reason": reason}
         return bridge_call("refine.run", params)
 
-    def status(self, roundId):
-        return bridge_call("refine.status", {"roundId": roundId})
+    def status(self, evolutionId, roundId=None):
+        return bridge_call("refine.status", compact({"evolutionId": evolutionId, "roundId": roundId}))
 
 
-def submit_refinement_proposal(roundId, mutation):
-    """Submit one current-round mutation (or None).
+class CandidateAPI:
+    """Git-native candidate control plane; source editing uses DSH tools."""
 
-    A mutation is:
-      {"parentRef": str, "parentDigest": str, "target": str, "ops": list,
-       "rationale": str, "evidenceRefs": list[str], "expectedOutcome": str}
+    def diff(self, maxBytes=None):
+        return bridge_call("candidate.diff", compact({"maxBytes": maxBytes}))
 
-    Exact operation forms are:
-      {"type": "create", "path": str, "content": str, "expect": "absent"}
-      {"type": "patch", "path": str, "patch": unified_diff,
-       "expectedDigest": sha256}
-      {"type": "delete", "path": str, "expectedDigest": sha256}
+    def check(self, check=None):
+        return bridge_call("candidate.check", compact({"check": check}))
 
-    Never use this call to probe the schema. Invalid fields, stale digests, and
-    non-applying patches are rejected without consuming the round proposal. A
-    valid submission concludes the Meta turn.
-    """
-    return bridge_call("submit_refinement_proposal", {"roundId": roundId, "mutation": mutation})
+    def finalize(self, rationale, expectedOutcome, evidenceRefs, semanticTargets=None):
+        return bridge_call("candidate.finalize", compact({
+            "rationale": rationale, "expectedOutcome": expectedOutcome,
+            "evidenceRefs": evidenceRefs, "semanticTargets": semanticTargets,
+        }))
+
+    def decline(self, rationale, evidenceRefs=None):
+        return bridge_call("candidate.decline", compact({"rationale": rationale, "evidenceRefs": evidenceRefs}))
 
 
 SHELL.user_ns.update({
@@ -125,7 +129,7 @@ SHELL.user_ns.update({
     "trajectory": TrajectoryAPI(),
     "hitch": HitchAPI(),
     "refine": RefineAPI(),
-    "submit_refinement_proposal": submit_refinement_proposal,
+    "candidate": CandidateAPI(),
 })
 
 

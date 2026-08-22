@@ -55,7 +55,7 @@ export class RefineStateStore {
   readonly workersPath: string
   readonly metaHarnessPath: string
 
-  constructor(readonly root: string) {
+  constructor(readonly root: string, readonly evolutionId?: string) {
     this.roundsPath = join(root, 'rounds')
     this.locksPath = join(root, 'locks')
     this.workersPath = join(root, 'workers')
@@ -235,9 +235,13 @@ export class RefineStateStore {
   private validateMeta(value: unknown): MetaSessionState {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError('meta state must be an object')
     const meta = value as Partial<MetaSessionState>
-    if (typeof meta.sessionId !== 'string' || meta.sessionId.length === 0
-      || typeof meta.metaHarnessRef !== 'string' || meta.metaHarnessRef.length === 0) {
-      throw new TypeError('meta state requires sessionId and metaHarnessRef')
+    if (meta.schemaVersion !== 1
+      || typeof meta.evolutionId !== 'string' || !/^[a-zA-Z0-9_-]+$/u.test(meta.evolutionId)
+      || (this.evolutionId !== undefined && meta.evolutionId !== this.evolutionId)
+      || typeof meta.sessionId !== 'string' || meta.sessionId.length === 0
+      || typeof meta.metaHarnessRef !== 'string' || meta.metaHarnessRef.length === 0
+      || typeof meta.specDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(meta.specDigest)) {
+      throw new TypeError('meta state requires matching evolutionId, sessionId, metaHarnessRef, and specDigest')
     }
     return meta as MetaSessionState
   }
@@ -245,10 +249,14 @@ export class RefineStateStore {
   private validateRound(value: unknown): RefinementRound {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError('refinement round must be an object')
     const round = value as Partial<RefinementRound>
-    if (round.schemaVersion !== 2) throw new TypeError('unsupported refinement round schema; old artifact rounds are not compatible')
+    if (round.schemaVersion !== 3) throw new TypeError('unsupported refinement round schema; run the explicit evolution migration')
+    if (typeof round.evolutionId !== 'string' || !/^[a-zA-Z0-9_-]+$/u.test(round.evolutionId)
+      || (this.evolutionId !== undefined && round.evolutionId !== this.evolutionId)) {
+      throw new TypeError('round evolutionId is invalid or does not match its store')
+    }
     if (typeof round.roundId !== 'string' || !/^[a-zA-Z0-9_-]+$/u.test(round.roundId)) throw new TypeError('roundId is invalid')
     const statuses = new Set([
-      'queued', 'baseline-running', 'waiting-proposal', 'building-candidate', 'candidate-seed-running',
+      'queued', 'baseline-running', 'preparing-candidate', 'candidate-editing', 'building-candidate', 'candidate-seed-running',
       'held-out-running', 'promoting', 'accepted', 'rejected', 'rejected-for-substrate', 'failed',
     ])
     if (typeof round.status !== 'string' || !statuses.has(round.status)) throw new TypeError('round status is invalid')
@@ -279,6 +287,37 @@ export class RefineStateStore {
     if (round.candidateRef !== undefined && !isExactGitCommit(round.candidateRef)) throw new TypeError('round candidateRef must be an exact Git commit')
     if (round.candidateDigest !== undefined && !/^sha256:[0-9a-f]{64}$/u.test(round.candidateDigest)) {
       throw new TypeError('round candidateDigest must be a sha256 digest')
+    }
+    if (round.advisoryFocus !== undefined && (!Array.isArray(round.advisoryFocus)
+      || new Set(round.advisoryFocus).size !== round.advisoryFocus.length)) {
+      throw new TypeError('round advisoryFocus must be a deduplicated array')
+    }
+    if (round.finalization !== undefined && round.finalization !== null) {
+      if (typeof round.finalization.rationale !== 'string' || round.finalization.rationale.length === 0
+        || typeof round.finalization.expectedOutcome !== 'string' || round.finalization.expectedOutcome.length === 0
+        || !Array.isArray(round.finalization.evidenceRefs)
+        || round.finalization.evidenceRefs.some(ref => typeof ref !== 'string' || ref.length === 0)) {
+        throw new TypeError('round finalization is invalid')
+      }
+    }
+    if (round.decline !== undefined && (typeof round.decline.rationale !== 'string'
+      || round.decline.rationale.length === 0 || !Array.isArray(round.decline.evidenceRefs)
+      || round.decline.evidenceRefs.some(ref => typeof ref !== 'string' || ref.length === 0))) {
+      throw new TypeError('round decline is invalid')
+    }
+    if (round.candidateDiff !== undefined) {
+      if (round.candidateDiff.parentRef !== round.targetHarnessRef
+        || !/^sha256:[0-9a-f]{64}$/u.test(round.candidateDiff.patchDigest)
+        || !Number.isSafeInteger(round.candidateDiff.totalBytes) || round.candidateDiff.totalBytes < 0
+        || !Array.isArray(round.candidateDiff.files)) {
+        throw new TypeError('round candidateDiff is invalid')
+      }
+    }
+    if (round.meta !== undefined && round.meta.evolutionId !== round.evolutionId) {
+      throw new TypeError('round meta attribution evolution mismatch')
+    }
+    if (round.proposalEvidence !== undefined && round.proposalEvidence.evolutionId !== round.evolutionId) {
+      throw new TypeError('round proposal evidence evolution mismatch')
     }
     if (round.baseline !== undefined) this.validateEvaluationEvidence(round.baseline, 'round baseline')
     if (round.evaluation !== undefined) {

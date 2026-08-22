@@ -1,20 +1,22 @@
 import { readFile } from 'node:fs/promises'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
-import type { MetaSessionManager } from './meta/session.js'
 import type { HarnessBuilder } from './harness/builder.js'
 import type { RefineService } from './refine/service.js'
-import type { RefineStateStore } from './state/store.js'
 import type {
+  CandidateFinalization,
   HitchEvaluationEvidence,
   HitchTrajectoryReader,
   HitchTrialSummary,
   RefineBridgeRequestMap,
+  RefinementRound,
+  SemanticTarget,
   SessionRole,
 } from './types.js'
 
 export interface CapabilityOptions {
   seedTasksPath?: string
+  configuredSeedTaskRef?: string
   maxReadBytes?: number
   maxTrajectoryPageBytes?: number
   trajectoryReader?: HitchTrajectoryReader
@@ -31,6 +33,7 @@ function publicJson(value: unknown): JsonValue {
 }
 
 interface SeedRunEvidence {
+  evolutionId: string
   roundId: string
   phase: 'seed-baseline' | 'seed-candidate'
   evalId: string
@@ -46,8 +49,6 @@ export class RefineCapabilities {
 
   constructor(
     private readonly service: RefineService,
-    private readonly store: RefineStateStore,
-    private readonly meta: MetaSessionManager,
     private readonly builder: HarnessBuilder,
     private readonly resolveAgent: (sessionId: string) => Agent | undefined,
     private readonly options: CapabilityOptions = {},
@@ -68,7 +69,7 @@ export class RefineCapabilities {
     if (role === 'refine-meta') return this.callMeta(sessionId, method, args, signal)
     if (role === 'target') {
       if (method === 'refine.run') return this.service.admit('target')
-      if (method === 'refine.status') return this.service.status(this.string(args, 'roundId'))
+      if (method === 'refine.status') return this.service.status(this.string(args, 'evolutionId'), this.optionalString(args, 'roundId'))
     }
     throw new Error(`capability is unavailable for ${role}: ${method}`)
   }
@@ -79,15 +80,18 @@ export class RefineCapabilities {
     args: Record<string, unknown>,
     signal: AbortSignal,
   ): Promise<unknown> {
+    const active = this.service.activeEntryForSession(sessionId)
+    if (active === undefined) throw new Error('Meta session has no active candidate round')
+    const { evolutionId, spec, roundId: activeRoundId, store, meta, workspace } = active
     if (method === 'harness.current') {
-      const champion = await this.store.readChampion()
+      const champion = await store.readChampion()
       if (champion === undefined) throw new Error('no champion is initialized')
       const manifest = await this.builder.readManifest(champion.ref)
       if (manifest.digest !== champion.manifestDigest) throw new Error('champion manifest digest does not match its Git commit')
       return publicJson({ ref: champion.ref, digest: champion.manifestDigest, manifest })
     }
     if (method === 'harness.read') {
-      const champion = await this.store.readChampion()
+      const champion = await store.readChampion()
       if (champion === undefined || args.ref !== champion.ref) throw new Error('harness ref is not the current champion')
       const path = this.string(args, 'path')
       const { content, digest, bytes } = await this.builder.readHarnessFile(champion.ref, path)
@@ -107,6 +111,9 @@ export class RefineCapabilities {
       if (args.partition !== undefined && args.partition !== 'seed') {
         throw new TypeError('seed_tasks.load partition must be "seed"')
       }
+      if (this.options.configuredSeedTaskRef !== undefined && spec.seedTaskRef !== this.options.configuredSeedTaskRef) {
+        return { datasetRef: spec.seedTaskRef, tasks: [], available: false, reason: 'no typed seed-task projection is configured for this evolution dataset' }
+      }
       if (this.options.seedTasksPath === undefined) return { tasks: [] }
       return publicJson(JSON.parse(await readFile(this.options.seedTasksPath, 'utf8')))
     }
@@ -114,11 +121,11 @@ export class RefineCapabilities {
       const offset = this.optionalInteger(args, 'offset') ?? 0
       const limit = Math.min(this.optionalInteger(args, 'limit') ?? 20, 100)
       if (limit <= 0) throw new TypeError('limit must be a positive integer')
-      const rounds = await this.store.listRounds()
+      const rounds = await store.listRounds()
       const evidence = this.seedRunEvidence(rounds)
       const refs = this.optionalStrings(args, 'refs')
       const requestedRoundId = this.optionalString(args, 'roundId')
-        ?? this.meta.activeRoundId?.(sessionId)
+        ?? activeRoundId
       const visibleRounds = requestedRoundId === undefined
         ? rounds
         : rounds.filter(round => round.roundId === requestedRoundId)
@@ -139,7 +146,7 @@ export class RefineCapabilities {
           failure: round.failure === undefined ? undefined : { phase: round.failure.phase },
         }))
         for (const round of visibleRounds.slice(offset, offset + limit)) {
-          this.meta.recordEvidenceAccess?.(round.roundId, sessionId, {
+          meta.recordEvidenceAccess(round.roundId, sessionId, {
             summary: round.baseline !== undefined,
             refs: round.baseline === undefined ? [] : [
               round.baseline.evalId,
@@ -183,7 +190,7 @@ export class RefineCapabilities {
           eof: page.eof && consumed === page.events.length,
         })
       }
-      for (const item of selected) this.meta.recordEvidenceAccess?.(item.roundId, sessionId, {
+      for (const item of selected) meta.recordEvidenceAccess(item.roundId, sessionId, {
         refs: [item.evalId, item.trial.runId],
         ...(offset === 0 ? { diagnosedRunRefs: [item.trial.runId] } : {}),
       })
@@ -191,8 +198,9 @@ export class RefineCapabilities {
     }
     if (method === 'hitch.status') {
       const roundId = this.string(args, 'roundId')
-      const status = await this.service.status(roundId)
-      if (status.seedBaseline !== undefined) this.meta.recordEvidenceAccess?.(roundId, sessionId, {
+      if (roundId !== activeRoundId) throw new Error('hitch.status is limited to the active round')
+      const status = await this.service.status(evolutionId, roundId)
+      if (status.seedBaseline !== undefined) meta.recordEvidenceAccess(roundId, sessionId, {
         summary: true,
         refs: [
           status.seedBaseline.evalId,
@@ -201,28 +209,38 @@ export class RefineCapabilities {
       })
       return status
     }
-    if (method === 'submit_refinement_proposal') {
-      const roundId = this.string(args, 'roundId')
+    if (method === 'candidate.diff') {
+      return publicJson(await this.service.workspaceManager.diff(workspace.workspaceId, this.optionalInteger(args, 'maxBytes'), signal))
+    }
+    if (method === 'candidate.check') {
+      const check = this.optionalString(args, 'check')
+      if (check !== undefined && check !== 'compiler') throw new TypeError('candidate_check only supports the fixed "compiler" pipeline')
+      await this.service.workspaceManager.withOpenWorkspace(sessionId, true, async handle => this.builder.checkWorkspace(handle, signal))
+      return { ok: true, summary: await this.service.workspaceManager.preflight(workspace.workspaceId, signal) }
+    }
+    if (method === 'candidate.finalize' || method === 'candidate.decline') {
       const agent = this.resolveAgent(sessionId)
       if (agent === undefined) throw new Error('meta session is not live')
-      const mutation = args.mutation === null || args.mutation === undefined
-        ? null
-        : await this.builder.validateProposalMutation(args.mutation)
-      const attribution = this.meta.proposalAttribution(roundId, agent, mutation)
-      const evidence = this.meta.proposalEvidenceAudit(roundId, sessionId, mutation?.evidenceRefs ?? [])
-      await this.service.submitProposal(roundId, mutation, attribution, evidence)
-      return { accepted: true, roundId }
+      const finalization = method === 'candidate.decline' ? null : this.finalization(args)
+      const decline = method === 'candidate.decline'
+        ? { rationale: this.string(args, 'rationale'), evidenceRefs: this.optionalStrings(args, 'evidenceRefs') ?? [] }
+        : undefined
+      const citedRefs = finalization?.evidenceRefs ?? decline?.evidenceRefs ?? []
+      const attribution = meta.proposalAttribution(activeRoundId, agent, finalization)
+      const evidence = meta.proposalEvidenceAudit(activeRoundId, sessionId, citedRefs)
+      const diff = await this.service.submitFinalization(evolutionId, activeRoundId, finalization, decline, attribution, evidence)
+      return publicJson({ accepted: true, evolutionId, roundId: activeRoundId, ...(diff === undefined ? {} : { diff }) })
     }
     throw new Error(`unknown refine-meta capability: ${method}`)
   }
 
-  private seedRunEvidence(rounds: Awaited<ReturnType<RefineStateStore['listRounds']>>): SeedRunEvidence[] {
+  private seedRunEvidence(rounds: RefinementRound[]): SeedRunEvidence[] {
     const values: SeedRunEvidence[] = []
     for (const round of rounds) {
       const append = (phase: SeedRunEvidence['phase'], evidence: HitchEvaluationEvidence | undefined): void => {
         if (evidence === undefined) return
         for (const trial of evidence.trials) {
-          if (trial.runId !== undefined) values.push({ roundId: round.roundId, phase, evalId: evidence.evalId, trial: { ...trial, runId: trial.runId } })
+          if (trial.runId !== undefined) values.push({ evolutionId: round.evolutionId, roundId: round.roundId, phase, evalId: evidence.evalId, trial: { ...trial, runId: trial.runId } })
         }
       }
       append('seed-baseline', round.baseline)
@@ -336,10 +354,27 @@ export class RefineCapabilities {
     }
     return value as string[]
   }
+
+  private finalization(args: Record<string, unknown>): CandidateFinalization {
+    const rationale = this.string(args, 'rationale')
+    const expectedOutcome = this.string(args, 'expectedOutcome')
+    const evidenceRefs = this.optionalStrings(args, 'evidenceRefs')
+    if (evidenceRefs === undefined || evidenceRefs.length === 0) throw new TypeError('evidenceRefs must contain current baseline evidence')
+    const semanticTargets = this.optionalStrings(args, 'semanticTargets')
+    const allowed = new Set<SemanticTarget>([
+      'context', 'pre_action', 'routing', 'post_action', 'action_verifier',
+      'skill', 'tool', 'workflow', 'compaction',
+    ])
+    if (semanticTargets?.some(value => !allowed.has(value as SemanticTarget))) throw new TypeError('semanticTargets contains an unknown target')
+    return {
+      rationale, expectedOutcome, evidenceRefs: [...new Set(evidenceRefs)],
+      ...(semanticTargets === undefined ? {} : { semanticTargets: [...new Set(semanticTargets)] as SemanticTarget[] }),
+    }
+  }
 }
 
 function roundHeldOutRef(
-  rounds: Awaited<ReturnType<RefineStateStore['listRounds']>>,
+  rounds: RefinementRound[],
   roundId: string,
 ): string | undefined {
   return rounds.find(round => round.roundId === roundId)?.heldOutRef

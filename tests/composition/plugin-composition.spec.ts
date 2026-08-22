@@ -43,6 +43,8 @@ describe('published plugin composition', () => {
         } as never)
         ctx.provide('tools', {} as never)
         ctx.provide('systemPrompt', {} as never)
+        ctx.provide('subprocess', {} as never)
+        ctx.provide('shellEnv', {} as never)
       },
     }
     const configPath = join(root, 'agent.cordis.yml')
@@ -62,6 +64,8 @@ describe('published plugin composition', () => {
       '    sandboxProfileRef: sandbox-v1',
       '    metaSandbox:',
       '      mode: disabled',
+      '    candidateWorkspace:',
+      '      shellEnabled: false',
       '    seedTaskRef: seed-commit',
       '    heldOutRef: held-out-commit',
       '    compiler:',

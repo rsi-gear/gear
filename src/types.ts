@@ -4,6 +4,7 @@ export type HarnessRef = string
 export type MetaHarnessRef = string
 export type SandboxProfileRef = string
 export type EvidenceRef = string
+export type EvolutionId = string
 
 export type SemanticTarget =
   | 'context'
@@ -15,21 +16,6 @@ export type SemanticTarget =
   | 'tool'
   | 'workflow'
   | 'compaction'
-
-export type ArtifactOp =
-  | { type: 'create'; path: string; content: string; expect: 'absent' }
-  | { type: 'patch'; path: string; patch: string; expectedDigest: string }
-  | { type: 'delete'; path: string; expectedDigest: string }
-
-export interface HarnessMutation {
-  parentRef: HarnessRef
-  parentDigest: string
-  target: SemanticTarget
-  ops: ArtifactOp[]
-  rationale: string
-  evidenceRefs: EvidenceRef[]
-  expectedOutcome: string
-}
 
 export interface HarnessArtifact {
   path: string
@@ -56,14 +42,63 @@ export interface ChampionState {
 }
 
 export interface MetaSessionState {
+  schemaVersion: 1
+  evolutionId: EvolutionId
   sessionId: string
   metaHarnessRef: MetaHarnessRef
+  specDigest: string
+}
+
+export interface EvolutionSpec {
+  schemaVersion: 1
+  evolutionId: EvolutionId
+  source: 'native' | 'legacy-migration'
+  createdAt: string
+  initialHarnessRef: HarnessRef
+  initialHarnessDigest: string
+  seedTaskRef: string
+  seedTaskDigest: string
+  heldOutRef: string
+  heldOutDigest: string
+  metaHarnessRef: MetaHarnessRef
+  metaModel: JsonValue
+  metaSampling?: JsonValue
+  promotionPolicy: PromotionPolicy
+  taskBudgetMs: number
+  toolchainRef: string
+  sandboxProfileRef: SandboxProfileRef
+}
+
+export interface EvolutionRegistryEntry {
+  evolutionId: EvolutionId
+  name?: string
+  specDigest: string
+  status: 'active' | 'archived'
+  createdAt: string
+  updatedAt: string
+  lastBatchId?: string
+  lastRoundId?: string
+}
+
+export interface EvolutionRegistryState {
+  schemaVersion: 1
+  evolutions: EvolutionRegistryEntry[]
+}
+
+export interface PublishedHarnessState {
+  schemaVersion: 1
+  ref: HarnessRef
+  manifestDigest: string
+  publishedAt: string
+  sourceEvolutionId?: EvolutionId
+  roundId?: string
 }
 
 export type RoundStatus =
   | 'queued'
   | 'baseline-running'
-  | 'waiting-proposal'
+  | 'preparing-candidate'
+  | 'candidate-editing'
   | 'building-candidate'
   | 'candidate-seed-running'
   | 'held-out-running'
@@ -159,6 +194,7 @@ export interface RoundEvaluation {
 }
 
 export interface MetaAttribution {
+  evolutionId: EvolutionId
   sessionId: string
   requestHeaderSeq: number
   proposalEventSeq: number
@@ -169,6 +205,7 @@ export interface MetaAttribution {
 }
 
 export interface ProposalEvidenceAudit {
+  evolutionId: EvolutionId
   roundId: string
   baselineEvalId: string
   summaryAccessed: boolean
@@ -177,8 +214,38 @@ export interface ProposalEvidenceAudit {
   citedRefs: string[]
 }
 
+export interface CandidateFinalization {
+  rationale: string
+  evidenceRefs: EvidenceRef[]
+  expectedOutcome: string
+  semanticTargets?: SemanticTarget[]
+}
+
+export interface CandidateDecline {
+  rationale: string
+  evidenceRefs: EvidenceRef[]
+}
+
+export interface CandidateDiffFile {
+  path: string
+  change: 'created' | 'modified' | 'deleted'
+  additions?: number
+  deletions?: number
+  bytesBefore?: number
+  bytesAfter?: number
+}
+
+export interface CandidateDiffSummary {
+  parentRef: HarnessRef
+  files: CandidateDiffFile[]
+  totalBytes: number
+  patchDigest: string
+  source?: 'git-native' | 'legacy-mutation'
+}
+
 export interface RefinementRound {
-  schemaVersion: 2
+  schemaVersion: 3
+  evolutionId: EvolutionId
   roundId: string
   workspaceRoot: string
   status: RoundStatus
@@ -196,9 +263,12 @@ export interface RefinementRound {
   batchId: string
   roundIndex: number
   roundCount: number
-  requestedTarget?: SemanticTarget
+  advisoryFocus?: SemanticTarget[]
   baseline?: HitchEvaluationEvidence
-  mutation?: HarnessMutation | null
+  candidateWorkspaceId?: string
+  finalization?: CandidateFinalization | null
+  decline?: CandidateDecline
+  candidateDiff?: CandidateDiffSummary
   candidateRef?: HarnessRef
   candidateDigest?: string
   evaluation?: RoundEvaluation
@@ -209,11 +279,15 @@ export interface RefinementRound {
 }
 
 export interface AdmissionResult {
+  evolutionId: EvolutionId
+  batchId: string
   roundId: string
   status: 'queued'
 }
 
 export interface PublicRoundStatus {
+  evolutionId: EvolutionId
+  batchId: string
   roundId: string
   status: RoundStatus
   decision?: 'accepted' | 'rejected' | 'rejected-for-substrate' | 'no-change'
@@ -267,9 +341,12 @@ export interface RefineBridgeRequestMap {
   'seed_tasks.load': { partition?: 'seed' }
   'trajectory.query': { roundId?: string; refs?: string[]; offset?: number; limit?: number }
   'hitch.status': { roundId: string }
-  'submit_refinement_proposal': { roundId: string; mutation: HarnessMutation | null }
+  'candidate.diff': { maxBytes?: number }
+  'candidate.check': { check?: string }
+  'candidate.finalize': CandidateFinalization
+  'candidate.decline': { rationale: string; evidenceRefs: EvidenceRef[] }
   'refine.run': { reason?: string }
-  'refine.status': { roundId: string }
+  'refine.status': { evolutionId: string; roundId?: string }
 }
 
 export type SessionRole = 'refine-meta' | 'target' | 'rollout'

@@ -1,18 +1,13 @@
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { applyPatch } from 'diff'
+import { readFile, readdir, writeFile } from 'node:fs/promises'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { load as loadYaml } from 'js-yaml'
-import type { ArtifactOp, HarnessManifest, HarnessMutation, PreparedHarness, SemanticTarget } from '../types.js'
+import type { CandidateDiffSummary, HarnessManifest, PreparedHarness } from '../types.js'
 import { isExactGitCommit } from '../types.js'
+import type { CandidateWorkspaceHandle } from '../candidate/workspace.js'
 
 const ALLOWED_ROOTS = new Set(['preset', 'plugins', 'prompts', 'skills', 'workflows'])
-const SEMANTIC_TARGETS = new Set<SemanticTarget>([
-  'context', 'pre_action', 'routing', 'post_action', 'action_verifier',
-  'skill', 'tool', 'workflow', 'compaction',
-])
 const FORBIDDEN_NAMES = new Set([
   'package.json', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lock', 'bun.lockb',
 ])
@@ -30,8 +25,6 @@ export interface HarnessBuilderOptions {
   gitExecutable?: string
   commitAuthorName?: string
   commitAuthorEmail?: string
-  maxOperations?: number
-  maxMutationBytes?: number
   maxGitOutputBytes?: number
   allowedImports?: string[]
   compiler: HarnessCompiler
@@ -93,6 +86,24 @@ function safeRelativePath(path: string): string {
   return segments.join('/')
 }
 
+function porcelainPaths(output: string): string[] {
+  const fields = output.split('\0')
+  const paths: string[] = []
+  for (let index = 0; index < fields.length; index += 1) {
+    const field = fields[index]
+    if (field === undefined || field.length === 0) continue
+    if (field.length < 4 || field[2] !== ' ') throw new Error('Git returned malformed porcelain status')
+    const code = field.slice(0, 2)
+    paths.push(field.slice(3))
+    if (/[RC]/u.test(code)) {
+      const source = fields[++index]
+      if (source === undefined || source.length === 0) throw new Error('Git returned malformed rename/copy status')
+      paths.push(source)
+    }
+  }
+  return paths
+}
+
 async function files(root: string): Promise<string[]> {
   const found: string[] = []
   async function visit(directory: string): Promise<void> {
@@ -109,8 +120,6 @@ async function files(root: string): Promise<string[]> {
 }
 
 export class HarnessBuilder {
-  private readonly maxOperations: number
-  private readonly maxMutationBytes: number
   private readonly maxGitOutputBytes: number
   readonly repositoryPath: string
   readonly targetRoot: string
@@ -118,111 +127,78 @@ export class HarnessBuilder {
   constructor(readonly options: HarnessBuilderOptions) {
     this.repositoryPath = resolve(options.repositoryPath)
     this.targetRoot = normalizedTargetRoot(options.targetRoot)
-    this.maxOperations = options.maxOperations ?? 32
-    this.maxMutationBytes = options.maxMutationBytes ?? 512 * 1024
     this.maxGitOutputBytes = options.maxGitOutputBytes ?? 8 * 1024 * 1024
   }
 
   async initialize(): Promise<void> {
     const inside = (await this.git(['rev-parse', '--is-inside-work-tree'])).stdout.trim()
     if (inside !== 'true') throw new Error(`target DSH repository is not a Git worktree: ${this.repositoryPath}`)
-    await this.assertRepositoryClean()
     await this.resolveExactCommit(this.options.dshBaseRef, true)
   }
 
-  async build(mutation: HarnessMutation, signal: AbortSignal): Promise<PreparedHarness> {
-    this.validateEnvelope(mutation)
-    await this.assertRepositoryClean()
-    const parentRef = await this.resolveExactCommit(mutation.parentRef, true)
+  async finalizeWorkspace(
+    handle: CandidateWorkspaceHandle,
+    sealed: CandidateDiffSummary,
+    signal: AbortSignal,
+  ): Promise<PreparedHarness> {
+    if (handle.state !== 'finalizing') throw new MutationValidationError(`candidate workspace must be finalizing, found ${handle.state}`)
+    if (sealed.parentRef !== handle.parentRef || sealed.files.length === 0) {
+      throw new MutationValidationError('candidate workspace has no sealed change or the parent identity mismatches')
+    }
+    const parentRef = await this.resolveExactCommit(handle.parentRef, true)
     const parentManifest = await this.readManifest(parentRef)
-    if (parentManifest.digest !== mutation.parentDigest) {
-      throw new MutationValidationError(`parent digest CAS failed: expected ${mutation.parentDigest}, found ${parentManifest.digest}`)
+    if (parentManifest.digest !== handle.parentDigest) {
+      throw new MutationValidationError(`parent digest CAS failed: expected ${handle.parentDigest}, found ${parentManifest.digest}`)
     }
+    const head = await this.resolveExactCommitAt(handle.worktreePath, 'HEAD')
+    if (head !== parentRef) throw new MutationValidationError('candidate workspace HEAD changed after sealing')
+    const cached = await this.git(['-C', handle.worktreePath, 'diff', '--cached', '--quiet', '--exit-code'], signal, [0, 1])
+    if (cached.code !== 0) throw new MutationValidationError('candidate workspace index changed before finalization')
 
-    const temporaryRoot = await mkdtemp(join(tmpdir(), 'dsh-refine-build-'))
-    const worktree = join(temporaryRoot, 'worktree')
-    let worktreeAdded = false
-    try {
-      await this.git(['worktree', 'add', '--detach', worktree, parentRef], signal)
-      worktreeAdded = true
-      const harnessRoot = join(worktree, ...this.targetRoot.split('/'))
-      for (const op of mutation.ops) await this.applyOperation(harnessRoot, op)
-      await this.validateComposition(harnessRoot)
-      await this.validateImports(harnessRoot)
-      await this.options.compiler.compile(worktree, signal)
-      await this.assertCompilerStayedInTarget(worktree)
-      const manifest = await this.createManifest(harnessRoot, parentRef)
-      await writeFile(join(harnessRoot, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
-      await this.git(['-C', worktree, 'add', '--', this.targetRoot], signal)
-      await this.git([
-        '-C', worktree,
-        '-c', `user.name=${this.options.commitAuthorName ?? 'DSH Refine Meta Agent'}`,
-        '-c', `user.email=${this.options.commitAuthorEmail ?? 'dsh-refine@localhost'}`,
-        'commit', '--no-gpg-sign', '--no-verify', '-m', `refine: evolve target harness from ${parentRef}`,
-      ], signal)
-      const ref = await this.resolveExactCommitAt(worktree, 'HEAD')
-      const status = (await this.git(['-C', worktree, 'status', '--porcelain=v1', '--untracked-files=all'], signal)).stdout
-      if (status.trim().length > 0) throw new Error(`candidate worktree is not clean after commit:\n${status.slice(0, 4000)}`)
-      await this.git(['update-ref', `refs/dsh-refine/candidates/${ref}`, ref], signal)
-      return { ref, digest: manifest.digest, repositoryPath: this.repositoryPath, manifest }
-    } finally {
-      if (worktreeAdded) await this.git(['worktree', 'remove', '--force', worktree]).catch(() => {})
-      await rm(temporaryRoot, { recursive: true, force: true })
+    const harnessRoot = join(handle.worktreePath, ...this.targetRoot.split('/'))
+    await this.validateComposition(harnessRoot)
+    await this.validateImports(harnessRoot)
+    await this.options.compiler.compile(handle.worktreePath, signal)
+    await this.assertCompilerStayedInTarget(handle.worktreePath)
+    if (await this.resolveExactCommitAt(handle.worktreePath, 'HEAD') !== parentRef) {
+      throw new SubstrateExpansionError('compiler changed candidate Git HEAD')
     }
+    const manifest = await this.createManifest(harnessRoot, parentRef)
+    if (!await this.hasArtifactChanges(handle.worktreePath)) {
+      throw new MutationValidationError('candidate has no artifact changes after the fixed compiler pipeline')
+    }
+    await writeFile(join(harnessRoot, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
+    await this.git(['-C', handle.worktreePath, 'add', '--', this.targetRoot], signal)
+    await this.assertCompilerStayedInTarget(handle.worktreePath)
+    await this.git([
+      '-C', handle.worktreePath,
+      '-c', `user.name=${this.options.commitAuthorName ?? 'DSH Refine Meta Agent'}`,
+      '-c', `user.email=${this.options.commitAuthorEmail ?? 'dsh-refine@localhost'}`,
+      'commit', '--no-gpg-sign', '--no-verify', '-m', 'refine: evolve target harness', '-m',
+      `Evolution: ${handle.evolutionId}\nRound: ${handle.roundId}\nParent: ${parentRef}`,
+    ], signal)
+    const ref = await this.resolveExactCommitAt(handle.worktreePath, 'HEAD')
+    const status = (await this.git(['-C', handle.worktreePath, 'status', '--porcelain=v1', '-z', '--untracked-files=all'], signal)).stdout
+    if (status.length > 0) throw new Error(`candidate worktree is not clean after commit (${porcelainPaths(status).slice(0, 20).join(', ')})`)
+    await this.git(['update-ref', `refs/dsh-refine/evolutions/${handle.evolutionId}/candidates/${ref}`, ref], signal)
+    const verified = await this.readManifest(ref)
+    if (verified.digest !== manifest.digest) throw new MutationValidationError('candidate manifest changed while committing')
+    return { ref, digest: manifest.digest, repositoryPath: this.repositoryPath, manifest }
   }
 
-  validateMutation(value: unknown): HarnessMutation {
-    try {
-      this.validateEnvelope(value as HarnessMutation)
-    } catch (error) {
-      // A structurally submitted proposal that asks for fixed substrate is
-      // admitted so RefineService can durably classify it as such.
-      if (!(error instanceof SubstrateExpansionError)) throw error
+  async checkWorkspace(handle: CandidateWorkspaceHandle, signal: AbortSignal): Promise<void> {
+    if (handle.state !== 'open') throw new MutationValidationError(`candidate workspace must be open for checks, found ${handle.state}`)
+    const parentRef = await this.resolveExactCommit(handle.parentRef, true)
+    if (await this.resolveExactCommitAt(handle.worktreePath, 'HEAD') !== parentRef) {
+      throw new MutationValidationError('candidate workspace HEAD changed before check')
     }
-    return value as HarnessMutation
+    const harnessRoot = join(handle.worktreePath, ...this.targetRoot.split('/'))
+    await this.validateComposition(harnessRoot)
+    await this.validateImports(harnessRoot)
+    await this.options.compiler.compile(handle.worktreePath, signal)
+    await this.assertCompilerStayedInTarget(handle.worktreePath)
   }
 
-  /**
-   * Validate a proposal against the immutable parent before the one-shot
-   * submission is consumed. This intentionally stops short of compilation and
-   * candidate construction; those remain RefineService build-phase work.
-   */
-  async validateProposalMutation(value: unknown): Promise<HarnessMutation> {
-    let mutation: HarnessMutation
-    try {
-      this.validateEnvelope(value as HarnessMutation)
-      mutation = value as HarnessMutation
-    } catch (error) {
-      // Fixed-substrate requests must still reach RefineService so the round is
-      // durably classified as rejected-for-substrate rather than a tool retry.
-      if (!(error instanceof SubstrateExpansionError)) throw error
-      return value as HarnessMutation
-    }
-
-    const parentRef = await this.resolveExactCommit(mutation.parentRef, true)
-    const manifest = await this.readManifest(parentRef)
-    if (manifest.digest !== mutation.parentDigest) {
-      throw new MutationValidationError(`parent digest CAS failed: expected ${mutation.parentDigest}, found ${manifest.digest}`)
-    }
-    const artifacts = new Map(manifest.artifacts.map(artifact => [artifact.path, artifact]))
-    for (const op of mutation.ops) {
-      const path = safeRelativePath(op.path)
-      const artifact = artifacts.get(path)
-      if (op.type === 'create') {
-        if (artifact !== undefined) throw new MutationValidationError(`create expected absent path: ${path}`)
-        continue
-      }
-      if (artifact === undefined) throw new MutationValidationError(`path is not in the target manifest: ${path}`)
-      if (artifact.digest !== op.expectedDigest) throw new MutationValidationError(`digest CAS failed for ${path}`)
-      if (op.type === 'patch') {
-        const raw = await this.showBuffer(parentRef, path)
-        if (applyPatch(raw.toString('utf8'), op.patch) === false) {
-          throw new MutationValidationError(`patch did not apply cleanly: ${path}`)
-        }
-      }
-    }
-    return mutation
-  }
 
   async readManifest(ref: string): Promise<HarnessManifest> {
     const commit = await this.resolveExactCommit(ref, true)
@@ -257,93 +233,6 @@ export class HarnessBuilder {
     return { content, digest, bytes }
   }
 
-  private validateEnvelope(value: HarnessMutation): void {
-    if (typeof value !== 'object' || value === null) throw new MutationValidationError('mutation must be an object')
-    if (!isExactGitCommit(value.parentRef)) throw new MutationValidationError('mutation parentRef must be a full Git commit OID')
-    if (typeof value.parentDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(value.parentDigest)) {
-      throw new MutationValidationError('mutation parentDigest must be a sha256 digest')
-    }
-    if (!SEMANTIC_TARGETS.has(value.target)) throw new MutationValidationError(`unknown semantic target: ${String(value.target)}`)
-    if (!Array.isArray(value.ops) || value.ops.length === 0 || value.ops.length > this.maxOperations) {
-      throw new MutationValidationError(`mutation must contain 1..${this.maxOperations} operations`)
-    }
-    if (!Array.isArray(value.evidenceRefs) || value.evidenceRefs.length === 0
-      || value.evidenceRefs.some(ref => typeof ref !== 'string' || ref.length === 0)) {
-      throw new MutationValidationError('mutation evidenceRefs must contain at least one non-empty string')
-    }
-    if (typeof value.rationale !== 'string' || typeof value.expectedOutcome !== 'string') {
-      throw new MutationValidationError('mutation rationale and expectedOutcome must be strings')
-    }
-    let bytes = 0
-    const paths = new Set<string>()
-    for (const op of value.ops) {
-      if (typeof op !== 'object' || op === null || !new Set(['create', 'patch', 'delete']).has(op.type)) {
-        throw new MutationValidationError('mutation operation has an invalid type')
-      }
-      if (typeof op.path !== 'string') throw new MutationValidationError('mutation operation path must be a string')
-      const path = safeRelativePath(op.path)
-      if (paths.has(path)) throw new MutationValidationError(`artifact path appears more than once: ${path}`)
-      paths.add(path)
-      if (op.type === 'create' && (op.expect !== 'absent' || typeof op.content !== 'string')) {
-        throw new MutationValidationError(`create operation is malformed: ${path}`)
-      }
-      if (op.type === 'patch' && (typeof op.patch !== 'string' || typeof op.expectedDigest !== 'string')) {
-        throw new MutationValidationError(`patch operation is malformed: ${path}`)
-      }
-      if (op.type === 'delete' && typeof op.expectedDigest !== 'string') {
-        throw new MutationValidationError(`delete operation is malformed: ${path}`)
-      }
-      const source = op.type === 'patch' ? op.patch : op.type === 'create' ? op.content : ''
-      if (source.includes('\0')) throw new MutationValidationError(`binary mutation content is forbidden: ${path}`)
-      bytes += Buffer.byteLength(source)
-    }
-    if (bytes > this.maxMutationBytes) throw new MutationValidationError(`mutation exceeds ${this.maxMutationBytes} bytes`)
-    if (value.evidenceRefs.some(ref => /held[-_]?out/iu.test(ref))) {
-      throw new MutationValidationError('held-out evidence cannot be referenced by a mutation')
-    }
-  }
-
-  private async applyOperation(root: string, op: ArtifactOp): Promise<void> {
-    const path = safeRelativePath(op.path)
-    const absolute = resolve(root, ...path.split('/'))
-    if (!absolute.startsWith(`${resolve(root)}${sep}`)) throw new MutationValidationError(`artifact path escaped worktree: ${path}`)
-    await this.assertNoSymlinkAncestor(root, path)
-    if (op.type === 'create') {
-      try {
-        await lstat(absolute)
-        throw new MutationValidationError(`create expected absent path: ${path}`)
-      } catch (error) {
-        if (error instanceof MutationValidationError) throw error
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-      }
-      await mkdir(dirname(absolute), { recursive: true })
-      await writeFile(absolute, op.content, { encoding: 'utf8', flag: 'wx' })
-      return
-    }
-    const current = await readFile(absolute)
-    if (sha256(current) !== op.expectedDigest) throw new MutationValidationError(`digest CAS failed for ${path}`)
-    if (op.type === 'delete') {
-      await rm(absolute)
-      return
-    }
-    const patched = applyPatch(current.toString('utf8'), op.patch)
-    if (patched === false) throw new MutationValidationError(`patch did not apply cleanly: ${path}`)
-    await writeFile(absolute, patched, 'utf8')
-  }
-
-  private async assertNoSymlinkAncestor(root: string, path: string): Promise<void> {
-    const segments = path.split('/').slice(0, -1)
-    let current = root
-    for (const segment of segments) {
-      current = join(current, segment)
-      try {
-        if ((await lstat(current)).isSymbolicLink()) throw new MutationValidationError(`symlink ancestor is forbidden: ${path}`)
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-        return
-      }
-    }
-  }
 
   private async validateComposition(root: string): Promise<void> {
     const compositionPath = join(root, 'preset', 'agent.cordis.yml')
@@ -474,25 +363,25 @@ export class HarnessBuilder {
     }
   }
 
-  private async assertRepositoryClean(): Promise<void> {
-    const status = (await this.git(['status', '--porcelain=v1', '--untracked-files=all'])).stdout
-    if (status.trim().length > 0) throw new Error(`target DSH repository must be clean before refinement:\n${status.slice(0, 4000)}`)
-  }
-
   private async assertBaseAncestor(commit: string): Promise<void> {
     const result = await this.git(['merge-base', '--is-ancestor', this.options.dshBaseRef, commit], undefined, [0, 1])
     if (result.code !== 0) throw new MutationValidationError(`candidate parent ${commit} is not based on fixed DSH base ${this.options.dshBaseRef}`)
   }
 
   private async assertCompilerStayedInTarget(worktree: string): Promise<void> {
-    const output = (await this.git(['-C', worktree, 'status', '--porcelain=v1', '--untracked-files=all'])).stdout
-    for (const line of output.split('\n').filter(Boolean)) {
-      const rawPath = line.slice(3).split(' -> ').at(-1) ?? ''
-      const normalized = rawPath.replace(/^"|"$/gu, '')
-      if (normalized !== this.targetRoot && !normalized.startsWith(`${this.targetRoot}/`)) {
-        throw new SubstrateExpansionError(`compiler or mutation changed fixed substrate outside ${this.targetRoot}: ${normalized}`)
+    const output = (await this.git(['-C', worktree, 'status', '--porcelain=v1', '-z', '--untracked-files=all'])).stdout
+    for (const path of porcelainPaths(output)) {
+      if (path !== this.targetRoot && !path.startsWith(`${this.targetRoot}/`)) {
+        throw new SubstrateExpansionError(`compiler or mutation changed fixed substrate outside ${this.targetRoot}: ${path}`)
       }
     }
+  }
+
+  private async hasArtifactChanges(worktree: string): Promise<boolean> {
+    const output = (await this.git([
+      '-C', worktree, 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--', this.targetRoot,
+    ])).stdout
+    return porcelainPaths(output).some(path => path !== `${this.targetRoot}/manifest.json`)
   }
 
   private async resolveExactCommit(ref: string, requireExact: boolean): Promise<string> {

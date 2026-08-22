@@ -1,4 +1,7 @@
 import { spawn } from 'node:child_process'
+import { SandboxManager, type SandboxRuntimeConfig } from '@anthropic-ai/sandbox-runtime'
+import { realpath } from 'node:fs/promises'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import type { HarnessCompiler } from './builder.js'
 
 export interface SubprocessCompilerOptions {
@@ -6,6 +9,15 @@ export interface SubprocessCompilerOptions {
   args?: string[]
   timeoutMs?: number
   env?: Record<string, string>
+  sandboxMode?: 'required' | 'disabled'
+  targetRoot?: string
+}
+
+function shellQuote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'` }
+function systemReadPaths(): string[] {
+  return process.platform === 'darwin'
+    ? ['/System', '/usr', '/bin', '/sbin', '/Library', '/private/etc', '/dev']
+    : ['/usr', '/bin', '/sbin', '/lib', '/lib64', '/etc', '/dev']
 }
 
 export class SubprocessHarnessCompiler implements HarnessCompiler {
@@ -13,7 +25,28 @@ export class SubprocessHarnessCompiler implements HarnessCompiler {
 
   async compile(worktree: string, signal: AbortSignal): Promise<void> {
     if (signal.aborted) throw signal.reason
-    const child = spawn(this.options.command, this.options.args ?? [], {
+    let command = this.options.command
+    let args = this.options.args ?? []
+    if (this.options.sandboxMode === 'required') {
+      if (!isAbsolute(command)) throw new Error('sandboxed harness compiler command must be an absolute fixed toolchain path')
+      const canonicalCommand = await realpath(command)
+      const targetPath = join(resolve(worktree), ...(this.options.targetRoot ?? 'harness').split('/'))
+      const config: SandboxRuntimeConfig = {
+        network: { allowedDomains: [], deniedDomains: ['*'], allowUnixSockets: [], allowLocalBinding: false },
+        filesystem: {
+          denyRead: ['/'], allowRead: [
+            ...systemReadPaths(), resolve(worktree), dirname(resolve(command)), dirname(dirname(canonicalCommand)),
+          ],
+          allowWrite: [targetPath], denyWrite: [], allowGitConfig: false,
+        },
+        allowAppleEvents: false,
+      }
+      const line = [command, ...args].map(shellQuote).join(' ')
+      const wrapped = await SandboxManager.wrapWithSandboxArgv(line, '/bin/bash', config)
+      command = wrapped.argv[0]!
+      args = wrapped.argv.slice(1)
+    }
+    const child = spawn(command, args, {
       cwd: worktree,
       env: this.options.env ?? {},
       stdio: ['ignore', 'pipe', 'pipe'],

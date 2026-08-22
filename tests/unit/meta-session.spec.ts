@@ -55,7 +55,7 @@ class FakeHost implements MetaAgentHost {
 
 function round(): RefinementRound {
   return {
-    schemaVersion: 2, roundId: 'round-1', workspaceRoot: '/workspace', status: 'waiting-proposal', source: 'api',
+    schemaVersion: 3, evolutionId: 'evo-1', roundId: 'round-1', workspaceRoot: '/workspace', status: 'candidate-editing', source: 'api',
     createdAt: 'now', updatedAt: 'now', metaHarnessRef: 'meta-v1', targetHarnessRef: 'a'.repeat(40),
     targetHarnessDigest: `sha256:${'b'.repeat(64)}`, sandboxProfileRef: 'sandbox-v1',
     seedTaskRef: 'seed', heldOutRef: 'held-out', taskBudgetMs: 60_000,
@@ -64,6 +64,7 @@ function round(): RefinementRound {
       maxHeldOutRegression: 0, maxRequiredRegressions: 0,
     },
     batchId: 'batch-1', roundIndex: 1, roundCount: 1,
+    candidateWorkspaceId: 'workspace-1',
     baseline: {
       evalId: `eval_${'c'.repeat(32)}`, dataset: 'seed', requestedCommit: 'a'.repeat(40),
       actualCommit: 'a'.repeat(40), revisionIdentity: `sha256:${'d'.repeat(64)}`,
@@ -80,6 +81,14 @@ function round(): RefinementRound {
   }
 }
 
+const META_OPTIONS = {
+  evolutionId: 'evo-1', specDigest: `sha256:${'9'.repeat(64)}`, metaHarnessRef: 'meta-v1', model: {},
+} as const
+
+function metaState(sessionId: string, metaHarnessRef = 'meta-v1') {
+  return { schemaVersion: 1 as const, evolutionId: 'evo-1', sessionId, metaHarnessRef, specDigest: META_OPTIONS.specDigest }
+}
+
 describe('MetaSessionManager', () => {
   it('wakes Meta with the authoritative current baseline and evidence policy', async () => {
     const root = await mkdtemp(join(tmpdir(), 'refine-meta-'))
@@ -87,7 +96,7 @@ describe('MetaSessionManager', () => {
     const store = new RefineStateStore(root)
     await store.initialize()
     const host = new FakeHost()
-    const manager = new MetaSessionManager(store, host, { metaHarnessRef: 'meta-v1', model: {} })
+    const manager = new MetaSessionManager(store, host, META_OPTIONS)
     const agent = await manager.agent()
     await manager.wake(round())
     const serialized = JSON.stringify((agent as unknown as { followups: unknown[] }).followups)
@@ -104,10 +113,10 @@ describe('MetaSessionManager', () => {
     roots.push(root)
     const store = new RefineStateStore(root)
     await store.initialize()
-    await store.writeMeta({ sessionId: 'persisted', metaHarnessRef: 'meta-v1' })
+    await store.writeMeta(metaState('persisted'))
     const host = new FakeHost()
     const manager = new MetaSessionManager(store, host, {
-      metaHarnessRef: 'meta-v1', model: { provider: 'p', model: 'm' }, sampling: { temperature: 0 },
+      ...META_OPTIONS, model: { provider: 'p', model: 'm' }, sampling: { temperature: 0 },
     })
     expect((await manager.agent()).id).toBe('persisted')
     await manager.wake(round())
@@ -122,9 +131,9 @@ describe('MetaSessionManager', () => {
     roots.push(root)
     const store = new RefineStateStore(root)
     await store.initialize()
-    await store.writeMeta({ sessionId: 'old', metaHarnessRef: 'meta-old' })
+    await store.writeMeta(metaState('old', 'meta-old'))
     const host = new FakeHost()
-    const manager = new MetaSessionManager(store, host, { metaHarnessRef: 'meta-v2', model: {} })
+    const manager = new MetaSessionManager(store, host, { ...META_OPTIONS, metaHarnessRef: 'meta-v2' })
     const agent = await manager.agent()
     expect(agent.id).not.toBe('old')
     expect((await store.readMeta())?.metaHarnessRef).toBe('meta-v2')
@@ -140,7 +149,7 @@ describe('MetaSessionManager', () => {
     await store.initialize()
     const host = new FakeHost()
     const manager = new MetaSessionManager(store, host, {
-      metaHarnessRef: 'meta-v1', model: { provider: 'p', model: 'm' }, sampling: { temperature: 0 },
+      ...META_OPTIONS, model: { provider: 'p', model: 'm' }, sampling: { temperature: 0 },
     })
     const agent = await manager.agent()
     await manager.wake(round())
@@ -162,7 +171,7 @@ describe('MetaSessionManager', () => {
     const store = new RefineStateStore(root)
     await store.initialize()
     const host = new FakeHost()
-    const manager = new MetaSessionManager(store, host, { metaHarnessRef: 'meta-v1', model: {} })
+    const manager = new MetaSessionManager(store, host, META_OPTIONS)
     const agent = await manager.agent()
     await manager.wake(round())
     const effective = { config: { provider: 'p', model: 'm' }, system: [], tools: [] }
@@ -188,7 +197,7 @@ describe('MetaSessionManager', () => {
     const store = new RefineStateStore(root)
     await store.initialize()
     const host = new FakeHost()
-    const manager = new MetaSessionManager(store, host, { metaHarnessRef: 'meta-v1', model: {} })
+    const manager = new MetaSessionManager(store, host, META_OPTIONS)
     const agent = await manager.agent()
     await manager.wake(round())
     ;(agent.session.events as unknown as Array<unknown>).push({
@@ -198,7 +207,7 @@ describe('MetaSessionManager', () => {
       type: 'request/header', seq: 2,
       data: { header: { config: { maxTokens: 1, model: 'm', provider: 'p' }, tools: [], system: [] } },
     }, {
-      type: 'tool/call', seq: 3, data: { name: 'submit_refinement_proposal', arguments: '{}' },
+      type: 'tool/call', seq: 3, data: { name: 'finalize_candidate', arguments: '{}' },
     })
     expect(manager.proposalAttribution('round-1', agent, null)).toMatchObject({ requestHeaderSeq: 2, proposalEventSeq: 3 })
     await manager.dispose()
@@ -209,13 +218,13 @@ describe('MetaSessionManager', () => {
     roots.push(root)
     const store = new RefineStateStore(root)
     await store.initialize()
-    await store.writeMeta({ sessionId: 'incompatible', metaHarnessRef: 'meta-v1' })
+    await store.writeMeta(metaState('incompatible'))
     const host = new FakeHost()
     host.resume = async (id: string): Promise<AgentHandle> => {
       host.resumes.push(id)
       throw new Error(`session "${id}" contains event type "refine/proposal" unknown to this harness and not marked ignorable`)
     }
-    const manager = new MetaSessionManager(store, host, { metaHarnessRef: 'meta-v1', model: {} })
+    const manager = new MetaSessionManager(store, host, META_OPTIONS)
     const agent = await manager.agent()
     expect(agent.id).not.toBe('incompatible')
     expect(host.resumes).toEqual(['incompatible'])
