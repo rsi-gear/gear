@@ -6,6 +6,8 @@ import type { HitchConfig } from '../config.js'
 import type {
   EvaluationRequest,
   HitchEvaluationEvidence,
+  HitchTrajectoryPage,
+  HitchTrajectoryReader,
   HitchTrialSummary,
   LocalSourceTransportSummary,
   RefineEvaluator,
@@ -70,7 +72,7 @@ function rewardForTrial(rewards: Record<string, number>): number | undefined {
   return Object.values(rewards)[0]
 }
 
-export class HitchCliEvaluator implements RefineEvaluator {
+export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader {
   readonly repositoryPath: string
 
   constructor(readonly options: HitchCliEvaluatorOptions) {
@@ -82,7 +84,69 @@ export class HitchCliEvaluator implements RefineEvaluator {
     if (!Number.isSafeInteger(options.setupTimeoutMs) || options.setupTimeoutMs < 0) throw new TypeError('hitch.setupTimeoutMs must be non-negative')
     if (!Number.isSafeInteger(options.terminationGraceMs) || options.terminationGraceMs < 0) throw new TypeError('hitch.terminationGraceMs must be non-negative')
     if (!Number.isSafeInteger(options.maxOutputBytes) || options.maxOutputBytes <= 0) throw new TypeError('hitch.maxOutputBytes must be positive')
+    if (!Number.isSafeInteger(options.maxTrajectoryOutputBytes) || options.maxTrajectoryOutputBytes <= 0) {
+      throw new TypeError('hitch.maxTrajectoryOutputBytes must be positive')
+    }
     if (options.passEnv.some(name => !/^[A-Z_][A-Z0-9_]*$/u.test(name))) throw new TypeError('hitch.passEnv contains an invalid environment variable name')
+  }
+
+  async inspectTrajectory(
+    runId: string,
+    offset: number,
+    limit: number,
+    signal: AbortSignal,
+  ): Promise<HitchTrajectoryPage> {
+    if (!/^run_[0-9a-f]{32}$/u.test(runId)) throw new TypeError('Hitch trajectory requires a valid run ID')
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new TypeError('trajectory offset must be a non-negative integer')
+    if (!Number.isSafeInteger(limit) || limit <= 0) throw new TypeError('trajectory limit must be a positive integer')
+    const args = [
+      ...(this.options.root.length === 0 ? [] : ['--root', this.options.root]),
+      'trajectory', 'inspect', runId, '--json',
+    ]
+    const processResult = await this.run(
+      args,
+      this.repositoryPath,
+      signal,
+      this.options.maxTrajectoryOutputBytes,
+    )
+    if (processResult.exitCode !== 0) {
+      throw new HitchEvaluationError(
+        `Hitch trajectory inspect failed for ${runId}: ${processResult.stderr.slice(-4000)}`,
+        'hitch_trajectory_unavailable',
+      )
+    }
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(processResult.stdout)
+    } catch (error) {
+      throw new HitchEvaluationError(`Hitch emitted invalid trajectory JSON (${String(error)})`, 'invalid_hitch_json')
+    }
+    const result = record(parsed, 'Hitch trajectory')
+    if (result.schema_version !== '1' || result.run_id !== runId) {
+      throw new HitchEvaluationError('Hitch trajectory identity does not match the requested run', 'invalid_hitch_result')
+    }
+    const ref = record(result.ref, 'trajectory.ref')
+    const fidelity = ref.fidelity
+    if (fidelity !== 'provider_native' && fidelity !== 'normalized' && fidelity !== 'minimal') {
+      throw new HitchEvaluationError('Hitch trajectory fidelity is invalid', 'invalid_hitch_result')
+    }
+    const header = record(result.header, 'trajectory.header')
+    const sessionId = string(header.id, 'trajectory.header.id')
+    if (!Array.isArray(result.events)) throw new HitchEvaluationError('trajectory.events must be an array', 'invalid_hitch_result')
+    const events = result.events.map((event, index) => record(event, `trajectory.events[${index}]`))
+    const page = events.slice(offset, offset + limit)
+    return {
+      runId,
+      fidelity,
+      ...(typeof ref.provider === 'string' && ref.provider.length > 0 ? { provider: ref.provider } : {}),
+      sessionId,
+      header: header as never,
+      events: page as never[],
+      offset,
+      limit,
+      total: events.length,
+      eof: offset + page.length >= events.length,
+    }
   }
 
   async evaluate(
@@ -175,6 +239,18 @@ export class HitchCliEvaluator implements RefineEvaluator {
       throw new HitchEvaluationError('Hitch local source transport identity does not match the locked candidate', 'hitch_transport_mismatch')
     }
     const summaryValue = record(result.summary, 'summary')
+    if (Array.isArray(result.trials)) {
+      return this.parseRunCenteredResult(
+        result,
+        summaryValue,
+        evalId,
+        request,
+        actualCommit,
+        revisionIdentity,
+        invocationFingerprint,
+        transport,
+      )
+    }
     const total = integer(summaryValue.n_trials, 'summary.n_trials')
     const completed = integer(summaryValue.n_completed, 'summary.n_completed')
     const errored = integer(summaryValue.n_errored, 'summary.n_errored')
@@ -208,6 +284,73 @@ export class HitchCliEvaluator implements RefineEvaluator {
       trials,
       localSourceTransport: transport,
     }
+  }
+
+  private parseRunCenteredResult(
+    result: JsonRecord,
+    summaryValue: JsonRecord,
+    evalId: string,
+    request: Readonly<EvaluationRequest>,
+    actualCommit: string,
+    revisionIdentity: string,
+    invocationFingerprint: string,
+    transport: LocalSourceTransportSummary,
+  ): HitchEvaluationEvidence {
+    const total = integer(summaryValue.n_trials, 'summary.n_trials')
+    const completed = integer(summaryValue.n_completed, 'summary.n_completed')
+    const invalid = integer(summaryValue.n_invalid, 'summary.n_invalid')
+    const trials = this.parseRunTrials(result.trials)
+    if (trials.length !== total) throw new HitchEvaluationError('Hitch trial count does not match summary.n_trials')
+    const invalidTrials = (result.trials as JsonRecord[]).filter(trial => trial.observation_status !== 'valid')
+    if (total <= 0 || completed !== total || invalid !== 0 || invalidTrials.length > 0) {
+      const reasons = invalidTrials.map(trial => `${String(trial.trial_id)}:${String(trial.invalid_reason ?? 'invalid')}`).join(', ')
+      throw new HitchEvaluationError(
+        `Hitch eval has invalid run observations: total=${total}, completed=${completed}, invalid=${invalid}${reasons.length === 0 ? '' : ` (${reasons})`}`,
+        'hitch_infrastructure_failure',
+      )
+    }
+    const primaryReward = finite(summaryValue.primary_reward, 'summary.primary_reward')
+    const passed = trials.filter(trial => (rewardForTrial(trial.rewards) ?? 0) > 0).length
+    const summary: ScoreSummary = {
+      total,
+      passed,
+      failed: total - passed,
+      score: primaryReward,
+      metrics: { primaryReward },
+    }
+    return {
+      evalId,
+      dataset: request.dataset,
+      requestedCommit: request.harnessRef,
+      actualCommit,
+      revisionIdentity,
+      invocationFingerprint,
+      primaryReward,
+      summary,
+      trials,
+      localSourceTransport: transport,
+    }
+  }
+
+  private parseRunTrials(value: unknown): HitchTrialSummary[] {
+    if (!Array.isArray(value)) throw new HitchEvaluationError('trials must be an array', 'invalid_hitch_result')
+    return value.map((item, index) => {
+      const trial = record(item, `trials[${index}]`)
+      const runId = string(trial.run_id, `trials[${index}].run_id`)
+      if (!/^run_[0-9a-f]{32}$/u.test(runId)) throw new HitchEvaluationError(`trials[${index}].run_id is invalid`, 'invalid_hitch_result')
+      const observation = string(trial.observation_status, `trials[${index}].observation_status`)
+      const reward = observation === 'valid' ? finite(trial.reward, `trials[${index}].reward`) : 0
+      const attempt = integer(trial.attempt, `trials[${index}].attempt`)
+      if (attempt <= 0) throw new HitchEvaluationError(`trials[${index}].attempt must be positive`, 'invalid_hitch_result')
+      return {
+        taskName: string(trial.task_id, `trials[${index}].task_id`),
+        trialName: string(trial.trial_id, `trials[${index}].trial_id`),
+        runId,
+        attempt,
+        status: observation === 'valid' ? 'completed' : 'errored',
+        rewards: { reward },
+      }
+    })
   }
 
   private parseTrials(value: unknown): HitchTrialSummary[] {
@@ -251,7 +394,12 @@ export class HitchCliEvaluator implements RefineEvaluator {
     }
   }
 
-  private run(args: string[], cwd: string, signal: AbortSignal): Promise<ProcessResult> {
+  private run(
+    args: string[],
+    cwd: string,
+    signal: AbortSignal,
+    maxOutputBytes = this.options.maxOutputBytes,
+  ): Promise<ProcessResult> {
     if (signal.aborted) return Promise.reject(signal.reason)
     return new Promise<ProcessResult>((resolvePromise, reject) => {
       const child = spawn(this.options.executable, args, {
@@ -265,10 +413,10 @@ export class HitchCliEvaluator implements RefineEvaluator {
       let killTimer: NodeJS.Timeout | undefined
       const append = (stream: 'stdout' | 'stderr', current: string, chunk: string): string => {
         const next = current + chunk
-        if (Buffer.byteLength(next) > this.options.maxOutputBytes) {
+        if (Buffer.byteLength(next) > maxOutputBytes) {
           overflow = stream
           child.kill('SIGTERM')
-          return next.slice(0, this.options.maxOutputBytes)
+          return next.slice(0, maxOutputBytes)
         }
         return next
       }
@@ -291,7 +439,7 @@ export class HitchCliEvaluator implements RefineEvaluator {
         if (killTimer !== undefined) clearTimeout(killTimer)
         if (signal.aborted) return reject(signal.reason)
         if (overflow !== undefined) {
-          return reject(new HitchEvaluationError(`Hitch ${overflow} exceeded ${this.options.maxOutputBytes} bytes`, 'hitch_output_overflow'))
+          return reject(new HitchEvaluationError(`Hitch ${overflow} exceeded ${maxOutputBytes} bytes`, 'hitch_output_overflow'))
         }
         if (code === null) return reject(new HitchEvaluationError(`Hitch exited from signal ${childSignal ?? 'unknown'}`))
         resolvePromise({ stdout, stderr, exitCode: code })

@@ -185,7 +185,7 @@ preset id 可采用 `target-<manifestDigest>`，不得覆盖同名目录。Contr
 
 Meta session 不挂载 champion preset，其 SkillProvider locator、`skill-filesystem.customSkillDirs`、system-prompt sections、tools、hooks 与 workflows 均不得指向 harness repo。TargetHarness 内容进入 meta 的唯一通道是 typed API 返回的带 ref/digest/来源标记的数据；它可能影响 meta 的判断，但不能成为 meta 的活跃 composition 或 authority。这个约束同时由 composition 检查和整个 meta Python 进程的 OS sandbox 执行：kernel 不在 host workspace 中运行、不能读取 Control Plane state/session log/DSH repo/held-out，也不继承 host credentials。只限制 Host Bridge 或包装 `%%bash` 不构成这个边界，因为 Python `open()` 与 `subprocess` 可以绕过它们。
 
-`harness.current()` 返回 ref、manifest 与 path/digest index；`harness.read({ref,path,offset,limit})` 只读允许 tree、校验 ref/path/digest并有 page/byte bounds。MetaHarness 的固定 skill catalog 可以包含 pinned DSH API/插件开发文档，但不得包含 TargetHarness 目录。任何 meta-visible refinement-history projection 必须删除 `heldOut*` fields 和 partition refs；Control Plane 的完整 record 不直接暴露给 meta。
+`harness.current()` 返回 ref、manifest 与 path/digest index；`harness.read({ref,path,offset,limit})` 只读允许 tree、校验 ref/path/digest并有 page/byte bounds。`trajectory.query({})` 返回历史 round 的 seed evidence index；`trajectory.query({refs:[evalId|runId],offset,limit})` 只能解析 round record 中已钉住的 seed baseline/candidate run，通过 `hitch trajectory inspect <run-id> --json` 分页读取 canonical trajectory。未知 run、held-out run 和任意本地路径均拒绝；返回值删除 Hitch path、按事件数和序列化字节双重限界，并按敏感字段、已知 pass-through credential 值和 held-out ref 做结构化脱敏。MetaHarness 的固定 skill catalog 可以包含 pinned DSH API/插件开发文档，但不得包含 TargetHarness 目录。任何 meta-visible refinement-history projection 必须删除 `heldOut*` fields 和 partition refs；Control Plane 的完整 record 不直接暴露给 meta。
 
 target 的 `refine.status` 也只返回 public projection：round id、粗粒度 status、terminal decision 与 seed-side summary；不返回 held-out ref/delta、workspace/verifier refs、Meta session id 或 Control Plane path。特权 UI 若要审计完整 record，使用独立 human-authorized control endpoint，不能复用 target capability。
 
@@ -278,7 +278,7 @@ busy kernel 在无 UI 的 meta/rollout 中按固定超时自动 interrupt，仍 
 - **Harbor dataset verifier/reward**：在隔离 trial 中按 dataset 定义执行，是 V1 task score 的权威来源；Gear 不再另起 verifier sidecar，也不修改 Hitch run。
 - **promotion gate**：RefineService 固定代码，比较 infra、parity、required tasks、score delta 和 held-out delta；candidate 不能调用或修改。
 
-DSH 自己保存原生 session 日志。V1 不要求 Hitch 把 DSH 的逐事件日志复制成另一份 trajectory，也不把完整 trajectory 导出作为 promotion 前置；Gear 只保存能够定位评测结果和 DSH 原生日志的引用。若未来要跨运行时统一查询 tool events，应新增显式导出合同，不能把 Hitch 当前的 final text 当作完整轨迹。
+DSH 在 trial 内保存原生 session 日志；Hitch 的 run-centered trajectory store 负责在容器退出前把 provider-native 日志导出、校验并原子导入 host `runs/<run-id>`。有效 canonical trajectory 是 eval trial 的基础设施成功条件，而不是可选 final-text 附件。Gear 不复制 trajectory 文件，只在 round evidence 中保存 Hitch `eval_id`/`run_id`，并通过 Hitch CLI 的显式查询合同读取。
 
 ### 8.2 Parity
 
@@ -301,9 +301,9 @@ V1 使用 Harbor dataset 返回的 reward；若 dataset 只给 pass/fail，则�
 
 ### 8.4 Hitch/Harbor
 
-所有 candidate 都包含或可能包含可执行 plugin code，因此 baseline、candidate 和 held-out 全部使用 Harbor；`hitch run` 的 host workspace 不能作为安全替代。Gear 通过子进程调用已安装的 `hitch eval run --backend harbor ... --output json`，不 deep-import Hitch 内部模块，也不要求 Hitch 提供 Node SDK。Harness full Git commit 是版本 id，Hitch resolution/prepare/run/eval 是执行权威，RefineService 只保存 refs、actual commit 和 score summary。
+所有 candidate 都包含或可能包含可执行 plugin code，因此 baseline、candidate 和 held-out 全部使用 Harbor；`hitch run` 的 host workspace 不能作为安全替代。Gear 通过子进程调用已安装的 `hitch eval run --backend harbor ... --output json`，不 deep-import Hitch 内部模块，也不要求 Hitch 提供 Node SDK。Harness full Git commit 是版本 id，Hitch resolution/prepare/run/eval 是执行权威，RefineService 保存 refs、actual commit、score summary，以及每个 trial 的 `run_id`/attempt。新 run-centered eval schema 以顶层 `trials[]` 的 `observation_status/reward/run_id` 为权威；任一 invalid observation 都是 infrastructure failure。旧 Harbor-shaped `summary.trials` 仅作为向后兼容输入。
 
-Hitch `dev@8c034d9` 已交付 local exact commit transport：接受 clean local repo（部署可另设限制）的 `deepseek@git+file:///...#<full-commit>`，在 host 解析并锁定 exact commit，把该 commit 所需的 Git object pack 送入 Harbor，并在容器内用现有 `deepseek` recipe/headless prepare/run；容器内实际 commit/tree 与 host resolution 相同。其他 local/refname guard 保持不变。完整合同见 [Hitch Local Exact Commit → Harbor Transport 开发需求](hitch-local-commit-harbor-requirements.md)。
+Hitch `dev@8c034d9` 已交付 local exact commit transport：接受 clean local repo（部署可另设限制）的 `deepseek@git+file:///...#<full-commit>`，在 host 解析并锁定 exact commit，把该 commit 所需的 Git object pack 送入 Harbor，并在容器内用现有 `deepseek` recipe/headless prepare/run；容器内实际 commit/tree 与 host resolution 相同。`feat/run-centered-trajectory-storage-spec@c564bde` 在此基础上导出 DSH provider-native trajectory，并提供 `hitch trajectory inspect <run-id> --json`。其他 local/refname guard 保持不变。完整运输合同见 [Hitch Local Exact Commit → Harbor Transport 开发需求](hitch-local-commit-harbor-requirements.md)。
 
 ## 9. Seed Task Set
 
@@ -356,7 +356,9 @@ interface RefinementRecord {
   metaModel?: LlmCallConfig
   sandboxProfileRef: SandboxProfileRef
   baselineEvalRef?: HitchEvalRef
+  baselineRunRefs?: HitchRunRef[]
   candidateEvalRef?: HitchEvalRef
+  candidateRunRefs?: HitchRunRef[]
   baselineActualCommit?: HarnessRef
   candidateActualCommit?: HarnessRef
   baselineScore?: number
@@ -391,7 +393,7 @@ V1 必须证明：
 - meta 可提交原生 pre/routing/post/action-verifier plugin code；系统没有 policy interpreter；构建只使用固定依赖/toolchain。
 - candidate source 在 host import 会被架构测试阻断；所有 candidate/baseline/held-out trials 均在 Harbor 或等价固定隔离 profile 中运行。
 - baseline/candidate 的规范化 Hitch CLI 参数、dataset/ref、model、attempt、timeout、concurrency、agent args 与 sandbox profile 除 harness ref 外相同；infra failure 产生 `failed` 而非零分。
-- baseline/candidate/held-out 都复用现有 Hitch `deepseek` adapter 与 DSH headless；Gear 不 deep-import Hitch，不维护第二套 prepared artifact、trajectory 或 verifier sidecar。
+- baseline/candidate/held-out 都复用现有 Hitch `deepseek` adapter 与 DSH headless；Gear 不 deep-import Hitch，不维护第二套 prepared artifact、trajectory 或 verifier sidecar；seed trajectory 只通过已记录 run ref 和 Hitch CLI 分页读取。
 - local exact commit 在 host 解析后被完整运进 Harbor；trial 内 materialized commit/tree 与 host resolution 相等，untracked 文件、凭据、hook 和无关 refs 不进入 payload。
 - held-out 数据及 aggregate delta 不能经 meta typed API、target `refine.status`、history projection、filesystem 或 evidence ref 泄露；未通过 held-out gate 不更新 champion。
 - promotion/rollback 只原子移动 pointer 到已验证 immutable ref；已有 target session 始终钉住原 ref并可按该 ref resume。
@@ -404,7 +406,7 @@ V1 必须证明：
 - 把 IPython、Hitch workspace 或 TypeScript typecheck 当作安全 sandbox；
 - 自动新增 npm/Python 依赖、系统服务、credential、网络权限或 container mount；
 - Hitch Node SDK、`dsh-evolving` adapter、Gear 自有 harness overlay/artifact store；
-- 把 DSH 原生 session 日志复制为 Hitch 完整 trajectory、完整 workspace snapshot或 Gear verifier sidecar；
+- 由 Gear 再复制一份 Hitch canonical trajectory、保存完整 workspace snapshot或维护 Gear verifier sidecar；
 - 要求交互 SDK TargetWorker 与 Harbor headless 逐事件完全相同；
 - 完整 GEAR Supervisor、训练/checkpoint evolution、连续分或多次统计评测。
 

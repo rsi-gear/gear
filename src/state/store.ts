@@ -365,6 +365,8 @@ export class RefineStateStore {
     if (!Array.isArray(value.trials) || value.trials.length !== value.summary.total
       || value.trials.some(trial => typeof trial.taskName !== 'string' || trial.taskName.length === 0
       || trial.status !== 'completed'
+      || (trial.runId !== undefined && !/^run_[0-9a-f]{32}$/u.test(trial.runId))
+      || (trial.attempt !== undefined && (!Number.isSafeInteger(trial.attempt) || trial.attempt <= 0))
       || typeof trial.rewards !== 'object' || trial.rewards === null
       || Object.values(trial.rewards).some(reward => !Number.isFinite(reward)))) {
       throw new TypeError(`${label} trials are invalid`)

@@ -1,8 +1,10 @@
 deepseek-harness/
 .workbuddy/
 node_modules/
+.pnpm-store/
 lib/
 coverage/
 *.tgz
 .dsh-refine/
 .evolve-lab/
+knowledge/

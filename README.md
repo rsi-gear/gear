@@ -123,6 +123,7 @@ Mount the control-plane entry from a DSH composition:
       setupTimeoutMs: 1800000
       terminationGraceMs: 5000
       maxOutputBytes: 8388608
+      maxTrajectoryOutputBytes: 67108864
       agentArgs: []
       passEnv: []
     initialChampion:
@@ -148,6 +149,14 @@ The command plane accepts:
 Multi-round batches retain one workspace lock, stop on infrastructure failure,
 and otherwise advance serially from the current accepted champion. Rollback
 accepts only an immutable harness ref previously accepted by a recorded round.
+
+For run-centered Hitch builds, each successful eval trial records its immutable
+`run_id`. A refine-meta session can first call `trajectory.query({})` to list
+seed evidence and then page a canonical target trajectory with
+`trajectory.query({ refs: [evalIdOrRunId], offset, limit })`. References are
+resolved against seed evidence already pinned in round state; arbitrary and
+held-out run IDs are rejected. Gear invokes `hitch trajectory inspect --json`
+and returns a byte-bounded, credential-redacted projection without Hitch paths.
 
 Load the worker entry only inside the isolated worker composition:
 

@@ -12,6 +12,7 @@ export interface HitchConfig {
   setupTimeoutMs: number
   terminationGraceMs: number
   maxOutputBytes: number
+  maxTrajectoryOutputBytes: number
   agentArgs: string[]
   passEnv: string[]
 }
@@ -96,6 +97,7 @@ export const ConfigSchema: Schema<Config> = Schema.object({
     setupTimeoutMs: Schema.number().default(1_800_000),
     terminationGraceMs: Schema.number().default(5_000),
     maxOutputBytes: Schema.number().default(8 * 1024 * 1024),
+    maxTrajectoryOutputBytes: Schema.number().default(64 * 1024 * 1024),
     agentArgs: Schema.array(Schema.string()).default([]),
     passEnv: Schema.array(Schema.string()).default([]),
   }).default({
@@ -108,6 +110,7 @@ export const ConfigSchema: Schema<Config> = Schema.object({
     setupTimeoutMs: 1_800_000,
     terminationGraceMs: 5_000,
     maxOutputBytes: 8 * 1024 * 1024,
+    maxTrajectoryOutputBytes: 64 * 1024 * 1024,
     agentArgs: [],
     passEnv: [],
   }),

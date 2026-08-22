@@ -47,16 +47,36 @@ const value = name => args[args.indexOf(name) + 1]
 const dataset = value('--dataset')
 const harness = value('--harness')
 const commit = harness.match(/#([0-9a-f]{40,64})$/)?.[1]
-if (dataset === 'slow') setTimeout(() => {}, 30000)
+if (args[0] === 'trajectory' && args[1] === 'inspect') {
+  const runId = args[2]
+  process.stdout.write(JSON.stringify({
+    schema_version: '1', run_id: runId,
+    ref: { schema_version: '2', run_id: runId, fidelity: 'provider_native', provider: 'deepseek', files: [] },
+    header: { type: 'session', version: 1, id: 'session-1', createdAt: 1, delegationDepth: 0 },
+    events: [
+      { type: 'turn/start', seq: 0, time: 10, data: { turn: 1 } },
+      { type: 'assistant/message', seq: 1, time: 11, data: { content: [{ type: 'text', text: 'done' }] } },
+      { type: 'turn/end', seq: 2, time: 12, data: { turn: 1 } },
+    ],
+  }) + '\\n')
+} else if (dataset === 'slow') setTimeout(() => {}, 30000)
 else if (dataset === 'invalid-json') process.stdout.write('not-json\\n')
 else {
   const actual = dataset === 'mismatch' ? 'f'.repeat(40) : commit
+  const legacy = dataset === 'legacy'
+  const invalidRun = dataset === 'invalid-run'
   process.stdout.write(JSON.stringify({
     schema_version: '1', eval_id: 'eval_' + '1'.repeat(32), status: 'succeeded', exit_code: 0,
     candidate: { harness_ref: 'deepseek@commit:' + actual, revision_identity: 'sha256:' + '2'.repeat(64) },
     dataset,
-    summary: { n_trials: 1, n_completed: 1, n_errored: 0, n_cancelled: 0, primary_reward: 1,
-      trials: [{ task_name: 'task-1', trial_name: 'trial-1', status: 'completed', rewards: { reward: 1 } }] },
+    ...(legacy ? {} : { trials: [{ trial_id: 'trial-1', run_id: 'run_' + '5'.repeat(32), task_id: 'task-1',
+      attempt: 1, observation_status: invalidRun ? 'invalid' : 'valid', ...(invalidRun ? { invalid_reason: 'infrastructure_failure' } : { reward: 1 }),
+      verifier_result_ref: 'verifier/result.json' }] }),
+    summary: legacy
+      ? { n_trials: 1, n_completed: 1, n_errored: 0, n_cancelled: 0, primary_reward: 1,
+          trials: [{ task_name: 'task-1', trial_name: 'trial-1', status: 'completed', rewards: { reward: 1 } }] }
+      : { n_trials: 1, n_completed: invalidRun ? 0 : 1, n_invalid: invalidRun ? 1 : 0,
+          primary_reward: invalidRun ? null : 1, rewards: { reward: { count: 1, mean: 1 } } },
     local_source_transport: { kind: 'local-git-commit', resolution_identity: 'sha256:' + '2'.repeat(64),
       commit: actual, tree: '3'.repeat(40), payload_sha256: 'sha256:' + '4'.repeat(64), payload_bytes: 100 },
     started_at: new Date().toISOString(), completed_at: new Date().toISOString(),
@@ -74,6 +94,7 @@ else {
     setupTimeoutMs: 10_000,
     terminationGraceMs: 100,
     maxOutputBytes: 1024 * 1024,
+    maxTrajectoryOutputBytes: 1024 * 1024,
     agentArgs: [],
     passEnv: [],
     repositoryPath: fixture.repository,
@@ -92,7 +113,33 @@ describe('HitchCliEvaluator', () => {
     expect(evidence).toMatchObject({
       dataset: 'seed', requestedCommit: fixture.championRef, actualCommit: fixture.championRef,
       primaryReward: 1, summary: { total: 1, passed: 1, failed: 0 },
+      trials: [{ runId: `run_${'5'.repeat(32)}`, attempt: 1 }],
       localSourceTransport: { commit: fixture.championRef },
+    })
+  })
+
+  it('keeps compatibility with the legacy Harbor-shaped summary', async () => {
+    const { fixture, evaluator } = await setup()
+    const evidence = await evaluator.evaluate(
+      round(fixture.root, fixture.championRef, fixture.manifest.digest),
+      { phase: 'seed-baseline', dataset: 'legacy', harnessRef: fixture.championRef },
+      new AbortController().signal,
+    )
+    expect(evidence).toMatchObject({ primaryReward: 1, trials: [{ taskName: 'task-1' }] })
+  })
+
+  it('reads a bounded page from Hitch canonical trajectory JSON', async () => {
+    const { evaluator } = await setup()
+    const runId = `run_${'5'.repeat(32)}`
+    await expect(evaluator.inspectTrajectory(runId, 1, 1, new AbortController().signal)).resolves.toMatchObject({
+      runId,
+      fidelity: 'provider_native',
+      sessionId: 'session-1',
+      offset: 1,
+      limit: 1,
+      total: 3,
+      eof: false,
+      events: [{ type: 'assistant/message', seq: 1 }],
     })
   })
 
@@ -105,6 +152,15 @@ describe('HitchCliEvaluator', () => {
     await expect(evaluator.evaluate(state, {
       phase: 'seed-baseline', dataset: 'mismatch', harnessRef: fixture.championRef,
     }, new AbortController().signal)).rejects.toThrow(/resolved .* expected/)
+  })
+
+  it('classifies an invalid run observation as infrastructure failure', async () => {
+    const { fixture, evaluator } = await setup()
+    await expect(evaluator.evaluate(
+      round(fixture.root, fixture.championRef, fixture.manifest.digest),
+      { phase: 'seed-baseline', dataset: 'invalid-run', harnessRef: fixture.championRef },
+      new AbortController().signal,
+    )).rejects.toThrow(/invalid run observations.*infrastructure_failure/)
   })
 
   it('terminates Hitch when the round is aborted', async () => {

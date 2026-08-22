@@ -109,7 +109,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     },
     bridge: async (method, params, request) => {
       if (capabilities === undefined) throw new Error('refine capabilities are not initialized')
-      return capabilities.call(request.role, request.sessionId, method, params)
+      return capabilities.call(request.role, request.sessionId, method, params, request.signal)
     },
   })
   const host = new DshMetaAgentHost(ctx, config.metaPreset, config.metaModel, (agentCtx) => {
@@ -137,6 +137,11 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   )
   capabilities = new RefineCapabilities(service, store, meta, builder, sessionId => ctx.agents.get(sessionId as never), {
     ...(config.seedTasksPath === undefined ? {} : { seedTasksPath: config.seedTasksPath }),
+    trajectoryReader: evaluator,
+    secretValues: config.hitch.passEnv.flatMap(name => {
+      const value = process.env[name]
+      return value === undefined || value.length === 0 ? [] : [value]
+    }),
   })
   const targetWorkers = new TargetWorkerRegistry(service, store, builder)
 

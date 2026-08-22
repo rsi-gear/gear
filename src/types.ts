@@ -84,8 +84,27 @@ export interface ScoreSummary {
 export interface HitchTrialSummary {
   taskName: string
   trialName?: string
+  runId?: string
+  attempt?: number
   status: 'completed' | 'errored'
   rewards: Record<string, number>
+}
+
+export interface HitchTrajectoryPage {
+  runId: string
+  fidelity: 'provider_native' | 'normalized' | 'minimal'
+  provider?: string
+  sessionId: string
+  header: JsonValue
+  events: JsonValue[]
+  offset: number
+  limit: number
+  total: number
+  eof: boolean
+}
+
+export interface HitchTrajectoryReader {
+  inspectTrajectory(runId: string, offset: number, limit: number, signal: AbortSignal): Promise<HitchTrajectoryPage>
 }
 
 export interface LocalSourceTransportSummary {
