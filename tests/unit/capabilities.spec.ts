@@ -34,7 +34,12 @@ describe('RefineCapabilities Git projection', () => {
     })
     await expect(capabilities.call('refine-meta', 'meta', 'harness.read', {
       ref: fixture.championRef, path: 'plugins/context.ts',
-    })).resolves.toMatchObject({ text: 'export const value = 1\n', eof: true })
+    })).resolves.toMatchObject({
+      text: 'export const value = 1\n',
+      digest: fixture.manifest.artifacts.find(artifact => artifact.path === 'plugins/context.ts')?.digest,
+      bytes: Buffer.byteLength('export const value = 1\n'),
+      eof: true,
+    })
     await expect(capabilities.call('refine-meta', 'meta', 'harness.read', {
       ref: fixture.championRef, path: '../package.json',
     })).rejects.toThrow(/escapes|not normalized/)

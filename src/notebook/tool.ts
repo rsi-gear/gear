@@ -71,6 +71,71 @@ const JSON_OUTPUT = {
   },
 }
 
+const ARTIFACT_OPERATION_SCHEMA = {
+  oneOf: [
+    {
+      type: 'object' as const,
+      additionalProperties: false,
+      description: 'Create a new harness artifact. The path must not already exist.',
+      properties: {
+        type: { type: 'string' as const, const: 'create', required: true },
+        path: { type: 'string' as const, required: true, description: 'Manifest-relative artifact path.' },
+        content: { type: 'string' as const, required: true, description: 'Complete UTF-8 file content.' },
+        expect: { type: 'string' as const, const: 'absent', required: true },
+      },
+    },
+    {
+      type: 'object' as const,
+      additionalProperties: false,
+      description: 'Patch an existing harness artifact with a unified diff.',
+      properties: {
+        type: { type: 'string' as const, const: 'patch', required: true },
+        path: { type: 'string' as const, required: true, description: 'Manifest-relative artifact path.' },
+        patch: { type: 'string' as const, required: true, description: 'Unified diff that applies cleanly to the exact current file.' },
+        expectedDigest: { type: 'string' as const, required: true, description: 'Exact sha256 digest returned by harness_read.' },
+      },
+    },
+    {
+      type: 'object' as const,
+      additionalProperties: false,
+      description: 'Delete an existing harness artifact.',
+      properties: {
+        type: { type: 'string' as const, const: 'delete', required: true },
+        path: { type: 'string' as const, required: true, description: 'Manifest-relative artifact path.' },
+        expectedDigest: { type: 'string' as const, required: true, description: 'Exact sha256 digest returned by harness_read.' },
+      },
+    },
+  ] as const,
+} as const
+
+const HARNESS_MUTATION_SCHEMA = {
+  type: 'object' as const,
+  additionalProperties: false,
+  description: 'A complete, current-round target harness mutation.',
+  properties: {
+    parentRef: { type: 'string' as const, required: true, description: 'Full champion Git commit from harness_current.' },
+    parentDigest: { type: 'string' as const, required: true, description: 'Champion manifest digest from harness_current.' },
+    target: {
+      type: 'string' as const,
+      enum: [
+        'context', 'pre_action', 'routing', 'post_action', 'action_verifier',
+        'skill', 'tool', 'workflow', 'compaction',
+      ] as const,
+      required: true,
+      description: 'Primary semantic surface changed by this mutation.',
+    },
+    ops: {
+      type: 'array' as const,
+      items: ARTIFACT_OPERATION_SCHEMA,
+      required: true,
+      description: 'One or more exact create, patch, or delete operations.',
+    },
+    rationale: { type: 'string' as const, required: true, description: 'Evidence-grounded reason for the mutation.' },
+    evidenceRefs: { type: 'array' as const, items: { type: 'string' as const }, required: true, description: 'Current baseline eval/run refs supporting this proposal.' },
+    expectedOutcome: { type: 'string' as const, required: true, description: 'Observable expected improvement.' },
+  },
+} as const
+
 export function mountMetaCapabilityTools(agentCtx: Context, call: MetaCapabilityCaller): void {
   agentCtx.systemPrompt.section({
     name: 'refine-meta:capability-guide',
@@ -82,6 +147,8 @@ export function mountMetaCapabilityTools(agentCtx: Context, call: MetaCapability
       'Cite only the current baseline evalId/runIds that were exposed by the wake or typed tools. Held-out evidence is unavailable.',
       'Prefer the typed tools below for discovery and proposal submission. Use ipython_input for persistent analysis, scratch files, and sandboxed composition.',
       'trajectory_query without refs returns the current round summary. With refs=[evalId|runId], offset=0 includes whole-trajectory diagnostics plus a bounded raw event page.',
+      'A non-null proposal must be {parentRef, parentDigest, target, ops, rationale, evidenceRefs, expectedOutcome}. Exact operation shapes are create={type,path,content,expect:"absent"}, patch={type,path,patch,expectedDigest}, delete={type,path,expectedDigest}. patch is a unified diff.',
+      'Never submit a schema probe. Invalid fields, stale digests, and non-applying patches are rejected without consuming the round proposal, so inspect and retry with a real mutation.',
     ].join('\n'),
   })
   agentCtx.tools.register(defineTool({
@@ -146,13 +213,13 @@ export function mountMetaCapabilityTools(agentCtx: Context, call: MetaCapability
   }))
   agentCtx.tools.register(defineTool({
     name: 'submit_refinement_proposal',
-    description: 'Submit exactly one current-round harness mutation, or null for an evidence-based no-change decision. Concludes the Meta turn.',
+    description: 'Submit one fully specified current-round HarnessMutation, or null for an evidence-based no-change decision. A valid submission concludes the Meta turn; invalid or non-applying mutations can be corrected and retried.',
     parameters: {
       roundId: { type: 'string', required: true },
       mutation: {
         required: true,
         oneOf: [
-          { type: 'object', additionalProperties: true },
+          HARNESS_MUTATION_SCHEMA,
           { type: 'null' },
         ],
       },

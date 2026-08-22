@@ -182,6 +182,48 @@ export class HarnessBuilder {
     return value as HarnessMutation
   }
 
+  /**
+   * Validate a proposal against the immutable parent before the one-shot
+   * submission is consumed. This intentionally stops short of compilation and
+   * candidate construction; those remain RefineService build-phase work.
+   */
+  async validateProposalMutation(value: unknown): Promise<HarnessMutation> {
+    let mutation: HarnessMutation
+    try {
+      this.validateEnvelope(value as HarnessMutation)
+      mutation = value as HarnessMutation
+    } catch (error) {
+      // Fixed-substrate requests must still reach RefineService so the round is
+      // durably classified as rejected-for-substrate rather than a tool retry.
+      if (!(error instanceof SubstrateExpansionError)) throw error
+      return value as HarnessMutation
+    }
+
+    const parentRef = await this.resolveExactCommit(mutation.parentRef, true)
+    const manifest = await this.readManifest(parentRef)
+    if (manifest.digest !== mutation.parentDigest) {
+      throw new MutationValidationError(`parent digest CAS failed: expected ${mutation.parentDigest}, found ${manifest.digest}`)
+    }
+    const artifacts = new Map(manifest.artifacts.map(artifact => [artifact.path, artifact]))
+    for (const op of mutation.ops) {
+      const path = safeRelativePath(op.path)
+      const artifact = artifacts.get(path)
+      if (op.type === 'create') {
+        if (artifact !== undefined) throw new MutationValidationError(`create expected absent path: ${path}`)
+        continue
+      }
+      if (artifact === undefined) throw new MutationValidationError(`path is not in the target manifest: ${path}`)
+      if (artifact.digest !== op.expectedDigest) throw new MutationValidationError(`digest CAS failed for ${path}`)
+      if (op.type === 'patch') {
+        const raw = await this.showBuffer(parentRef, path)
+        if (applyPatch(raw.toString('utf8'), op.patch) === false) {
+          throw new MutationValidationError(`patch did not apply cleanly: ${path}`)
+        }
+      }
+    }
+    return mutation
+  }
+
   async readManifest(ref: string): Promise<HarnessManifest> {
     const commit = await this.resolveExactCommit(ref, true)
     await this.assertBaseAncestor(commit)

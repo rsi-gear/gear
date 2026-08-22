@@ -75,6 +75,43 @@ describe('HarnessBuilder', () => {
     }]), evidenceRefs: [] })).toThrow(/at least one/)
   })
 
+  it('preflights proposal CAS and patch applicability before submission is consumed', async () => {
+    const { builder, fixture } = await setup()
+    const original = 'export const value = 1\n'
+    const changed = 'export const value = 2\n'
+    const valid = mutation(fixture, [{
+      type: 'patch',
+      path: 'plugins/context.ts',
+      expectedDigest: digestContent(original),
+      patch: createTwoFilesPatch('a/plugins/context.ts', 'b/plugins/context.ts', original, changed),
+    }])
+    await expect(builder.validateProposalMutation(valid)).resolves.toEqual(valid)
+
+    await expect(builder.validateProposalMutation(mutation(fixture, [{
+      type: 'patch',
+      path: 'plugins/context.ts',
+      expectedDigest: digestContent(original),
+      patch: createTwoFilesPatch(
+        'a/plugins/context.ts',
+        'b/plugins/context.ts',
+        'export const value = 999\n',
+        changed,
+      ),
+    }]))).rejects.toThrow(/patch did not apply cleanly/)
+
+    await expect(builder.validateProposalMutation(mutation(fixture, [{
+      type: 'create', path: 'plugins/context.ts', content: changed, expect: 'absent',
+    }]))).rejects.toThrow(/create expected absent path/)
+  })
+
+  it('keeps fixed-substrate proposals admissible for durable service classification', async () => {
+    const { builder, fixture } = await setup()
+    const proposal = mutation(fixture, [{
+      type: 'create', path: 'plugins/package.json', content: '{}', expect: 'absent',
+    }])
+    await expect(builder.validateProposalMutation(proposal)).resolves.toEqual(proposal)
+  })
+
   it('rejects imports outside the fixed toolchain dependency allowlist', async () => {
     const { builder, fixture } = await setup()
     await expect(builder.build(mutation(fixture, [{

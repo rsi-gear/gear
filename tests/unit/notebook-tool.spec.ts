@@ -39,4 +39,73 @@ describe('Meta notebook tools', () => {
       expect.any(AbortSignal),
     )
   })
+
+  it('rejects guessed proposal operation fields before calling the capability', async () => {
+    const tools: ToolDefinition[] = []
+    const call = vi.fn(async () => ({ accepted: true }))
+    const context = {
+      tools: { register(definition: ToolDefinition) { tools.push(definition) } },
+      systemPrompt: { section() {} },
+    } as unknown as Context
+    mountMetaCapabilityTools(context, call)
+    const submit = tools.find(tool => tool.name === 'submit_refinement_proposal')!
+    const concludeTurn = vi.fn()
+    const exec = {
+      agent: { id: 'meta-1' },
+      signal: new AbortController().signal,
+      concludeTurn,
+    } as never
+    await expect(submit.execute({
+      roundId: 'round-1',
+      mutation: {
+        parentRef: 'a'.repeat(40),
+        parentDigest: `sha256:${'b'.repeat(64)}`,
+        target: 'context',
+        ops: [{ type: 'patch', path: 'plugins/policy.js', unifiedDiff: 'guessed field', expectedDigest: `sha256:${'c'.repeat(64)}` }],
+        rationale: 'fix failure',
+        evidenceRefs: ['run-1'],
+        expectedOutcome: 'pass',
+      },
+    }, exec)).rejects.toThrow(/invalid arguments/iu)
+    expect(call).not.toHaveBeenCalled()
+    expect(concludeTurn).not.toHaveBeenCalled()
+  })
+
+  it('accepts the exact proposal schema and concludes only after host acceptance', async () => {
+    const tools: ToolDefinition[] = []
+    const call = vi.fn(async () => ({ accepted: true }))
+    const context = {
+      tools: { register(definition: ToolDefinition) { tools.push(definition) } },
+      systemPrompt: { section() {} },
+    } as unknown as Context
+    mountMetaCapabilityTools(context, call)
+    const submit = tools.find(tool => tool.name === 'submit_refinement_proposal')!
+    const mutation = {
+      parentRef: 'a'.repeat(40),
+      parentDigest: `sha256:${'b'.repeat(64)}`,
+      target: 'context',
+      ops: [{
+        type: 'patch',
+        path: 'plugins/policy.js',
+        patch: '--- a/plugins/policy.js\n+++ b/plugins/policy.js\n',
+        expectedDigest: `sha256:${'c'.repeat(64)}`,
+      }],
+      rationale: 'fix failure',
+      evidenceRefs: ['run-1'],
+      expectedOutcome: 'pass',
+    }
+    const concludeTurn = vi.fn()
+    await submit.execute({ roundId: 'round-1', mutation }, {
+      agent: { id: 'meta-1' },
+      signal: new AbortController().signal,
+      concludeTurn,
+    } as never)
+    expect(call).toHaveBeenCalledWith(
+      'meta-1',
+      'submit_refinement_proposal',
+      { roundId: 'round-1', mutation },
+      expect.any(AbortSignal),
+    )
+    expect(concludeTurn).toHaveBeenCalledOnce()
+  })
 })

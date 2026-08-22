@@ -90,10 +90,18 @@ export class RefineCapabilities {
       const champion = await this.store.readChampion()
       if (champion === undefined || args.ref !== champion.ref) throw new Error('harness ref is not the current champion')
       const path = this.string(args, 'path')
-      const { content } = await this.builder.readHarnessFile(champion.ref, path)
+      const { content, digest, bytes } = await this.builder.readHarnessFile(champion.ref, path)
       const offset = this.optionalInteger(args, 'offset') ?? 0
       const limit = Math.min(this.optionalInteger(args, 'limit') ?? this.maxReadBytes, this.maxReadBytes)
-      return { ref: champion.ref, path, offset, text: content.slice(offset, offset + limit), eof: offset + limit >= content.length }
+      return {
+        ref: champion.ref,
+        path,
+        digest,
+        bytes,
+        offset,
+        text: content.slice(offset, offset + limit),
+        eof: offset + limit >= content.length,
+      }
     }
     if (method === 'seed_tasks.load') {
       if (args.partition !== undefined && args.partition !== 'seed') {
@@ -199,7 +207,7 @@ export class RefineCapabilities {
       if (agent === undefined) throw new Error('meta session is not live')
       const mutation = args.mutation === null || args.mutation === undefined
         ? null
-        : this.builder.validateMutation(args.mutation)
+        : await this.builder.validateProposalMutation(args.mutation)
       const attribution = this.meta.proposalAttribution(roundId, agent, mutation)
       const evidence = this.meta.proposalEvidenceAudit(roundId, sessionId, mutation?.evidenceRefs ?? [])
       await this.service.submitProposal(roundId, mutation, attribution, evidence)

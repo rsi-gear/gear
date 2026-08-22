@@ -100,7 +100,22 @@ class RefineAPI:
 
 
 def submit_refinement_proposal(roundId, mutation):
-    """Submit exactly one current-round mutation (or None); this concludes the Meta turn."""
+    """Submit one current-round mutation (or None).
+
+    A mutation is:
+      {"parentRef": str, "parentDigest": str, "target": str, "ops": list,
+       "rationale": str, "evidenceRefs": list[str], "expectedOutcome": str}
+
+    Exact operation forms are:
+      {"type": "create", "path": str, "content": str, "expect": "absent"}
+      {"type": "patch", "path": str, "patch": unified_diff,
+       "expectedDigest": sha256}
+      {"type": "delete", "path": str, "expectedDigest": sha256}
+
+    Never use this call to probe the schema. Invalid fields, stale digests, and
+    non-applying patches are rejected without consuming the round proposal. A
+    valid submission concludes the Meta turn.
+    """
     return bridge_call("submit_refinement_proposal", {"roundId": roundId, "mutation": mutation})
 
 
