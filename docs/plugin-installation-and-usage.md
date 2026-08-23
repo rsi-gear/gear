@@ -531,6 +531,10 @@ Meta Agent只看到 seed baseline。held-out ref、轨迹和结果不进入 Meta
 - Hitch 是否包含 local exact commit transport；
 - eval 的所有 trials 是否都完成。Gear 会把 incomplete/errored/cancelled trial 视为 infrastructure failure，而不是低分样本。
 
+如果 target trajectory 中 Bash 一致报
+`SandboxUnavailableError: sandbox mode "workspace-write" is requested, but no sandbox backend is usable on this host`，
+说明 DSH 正在 Harbor task container 内请求第二层进程沙箱，而该 task image 没有可用的 Bubblewrap/Landlock backend。这不是模型或 Hitch transport 错误。对 Terminal-Bench 这类必须修改容器内 `/etc`、服务状态或其他 workspace 外路径的任务，应在不可演进的 target carrier/profile 中固定 `sandbox-policy.mode: danger-full-access`、`approval.policy: never` 和 `permission.defaultPreset: danger-full-access`，让 Harbor 的 disposable container 成为 trial 安全边界。不要在启动 Web/Meta 的父进程上全局设置 `DSH_PERMISSION_MODE=danger-full-access`，也不要把这项配置放进 candidate 可修改的 `harness/` 目录。
+
 ### Meta Agent 无法使用 bash
 
 检查 `candidateWorkspace.shellEnabled`、OS sandbox 依赖和固定 candidate provider。即使关闭 bash，Meta 仍可使用 `read/write/edit/glob/grep`，但 compiler/check 能力仍由 `candidate_check` 提供。

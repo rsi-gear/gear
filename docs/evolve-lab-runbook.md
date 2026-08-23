@@ -11,7 +11,7 @@ Hitch state.
 - Hitch: local `feat/run-centered-trajectory-storage-spec@dee3176c0e0dc1d8e81fdb7bf154012c1c6b64ec`, package version `0.2.0`
 - Harbor: managed `0.21.0`
 - target substrate commit: `4ddad53c1f858e02ae69167ac0d2adcbb9d53f80`
-- initial champion commit: `2f1a76d3774e30e667b9895c8e9be831b3553639`
+- initial champion commit: `e244535673114f07b30f2ba5c694ee9b2db834b1`
 - seed: Terminal-Bench 2.0 `terminal-bench/regex-log`
 - held-out: Terminal-Bench 2.0 `terminal-bench/log-summary-date-ranges`
 
@@ -25,6 +25,16 @@ the public rc.8 DSH package. Its fixed headless launcher verifies
 `harness/preset/agent.cordis.yml`, and only then makes the headless runner
 eligible to start. Hitch uses its unmodified `deepseek` adapter and records the
 carrier's exact commit.
+
+The fixed carrier also selects DSH's `danger-full-access` permission preset
+for target headless sessions only. Harbor's disposable Docker task container
+is the target trial's security boundary, and Terminal-Bench tasks must be able
+to modify container-owned paths such as `/etc`, `/git`, and service state. A
+nested DSH `workspace-write` sandbox both blocks those legitimate task effects
+and fails with `SandboxUnavailableError` in task images that contain neither a
+usable Bubblewrap nor Landlock backend. This override lives in
+`fixed/target.patch.yml`, outside the evolvable `harness/` tree; it does not
+change the Web/Meta control plane or the candidate-editing sandbox.
 
 The Terminal-Bench images are Linux/amd64. On Apple Silicon, Docker Desktop
 must be able to run amd64 containers. This lab was validated with Docker
@@ -129,3 +139,20 @@ The meta agent patched `harness/plugins/policy.js`, Gear built candidate
 checks passed, and the promotion gate atomically accepted that commit as the
 new champion with manifest digest
 `sha256:6b2e1ddc7adc9db0d57c0a0fae95917cc4a23657dd00be144cfc255ae881412f`.
+
+## Validated target sandbox fix
+
+Eval `eval_afc1f661781944399bf4211575b8fa8e` ran
+`terminal-bench/nginx-request-logging` against carrier commit
+`e244535673114f07b30f2ba5c694ee9b2db834b1`. Run
+`run_4eceb3af0f3142f48264c742df22c743` durably recorded
+`permission/preset=danger-full-access`, `sandbox/mode=danger-full-access`, and
+`approval/policy=never`. The target installed Nginx through `apt-get`, wrote
+`/etc/nginx` and `/var/www`, started the service, and passed the benchmark with
+reward `1`; no Bash call raised `SandboxUnavailableError`.
+
+Eval `eval_dfe4440603554cb08da56e033e6fd617` then reran the previously
+failing `terminal-bench/git-multibranch` task. Run
+`run_6ebcaedc9ee64874b1dd0ed8682fe4df` made 37 Bash calls, configured
+`/git`, SSH, Nginx, Git hooks, and branch deployments, and passed with reward
+`1`. Its provider-native trajectory contains no `SandboxUnavailableError`.
