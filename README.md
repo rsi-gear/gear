@@ -242,5 +242,8 @@ interpreted as a Git commit.
 
 See [Gear ↔ Hitch CLI integration](docs/hitch-dsh-integration.md) and the
 [Hitch local exact commit → Harbor transport requirements](docs/hitch-local-commit-harbor-requirements.md).
+For a complete Chinese setup guide covering installation, dependencies,
+configuration, and `/refine` operations, see
+[dsh-plugin-refine 安装与使用指南](docs/plugin-installation-and-usage.md).
 For the isolated 1-seed + 1-held-out Terminal-Bench 2.0 setup used during local
 development, see the [evolve lab runbook](docs/evolve-lab-runbook.md).
