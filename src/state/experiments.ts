@@ -15,6 +15,7 @@ export const EXPERIMENTS_TSV_COLUMNS = [
   'heldout_eval_id',
   'heldout_score',
   'decision',
+  'selection_role',
   'record_path',
   'updated_at',
 ] as const
@@ -41,6 +42,12 @@ function decision(round: RefinementRound, candidateId: string): string | undefin
   return undefined
 }
 
+function selectionRole(round: RefinementRound, candidateId: string): string | undefined {
+  if (round.promotionCandidateId === candidateId || round.selection?.promotionCandidateId === candidateId) return 'finalist'
+  if (round.selection?.selectedCandidateIds.includes(candidateId) === true) return 'survivor'
+  return undefined
+}
+
 export function serializeExperimentsTsv(evolutions: readonly ExperimentIndexEvolution[]): string {
   const rows = evolutions
     .flatMap(({ entry, rounds }) => rounds.flatMap(round => round.candidatePool.map(candidate => ({
@@ -60,6 +67,7 @@ export function serializeExperimentsTsv(evolutions: readonly ExperimentIndexEvol
         candidate.heldOutEvaluation?.evalId,
         candidate.heldOutEvaluation?.primaryReward,
         decision(round, candidate.candidateId),
+        selectionRole(round, candidate.candidateId),
         `evolutions/${entry.evolutionId}/rounds/${round.roundId}.json`,
         round.updatedAt,
       ],

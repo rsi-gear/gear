@@ -128,6 +128,14 @@ export class RefineStateStore {
     await this.atomicWrite(join(this.root, 'population.json'), value)
   }
 
+  async compareAndSwapPopulation(expectedDigest: string, value: PopulationState): Promise<void> {
+    const current = await this.readPopulation()
+    if (current?.digest !== expectedDigest) {
+      throw new Error(`population CAS failed: expected ${expectedDigest}, found ${current?.digest ?? '<missing>'}`)
+    }
+    await this.writePopulation(value)
+  }
+
   async readRound(roundId: string): Promise<RefinementRound | undefined> {
     const value = await this.readJson<unknown>(this.roundFile(roundId))
     return value === undefined ? undefined : this.validateRound(value)
@@ -272,8 +280,10 @@ export class RefineStateStore {
       || typeof meta.specDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(meta.specDigest)) {
       throw new TypeError('meta state requires matching evolutionId, sessionId, metaHarnessRef, and specDigest')
     }
-    if ((meta.checkpointRef === undefined) !== (meta.checkpointDigest === undefined)
-      || (meta.checkpointDigest !== undefined && !/^sha256:[0-9a-f]{64}$/u.test(meta.checkpointDigest))) {
+    if (meta.checkpoint !== undefined
+      && (typeof meta.checkpoint.sourceSessionId !== 'string' || meta.checkpoint.sourceSessionId !== meta.sessionId
+        || !Number.isSafeInteger(meta.checkpoint.eventCount) || meta.checkpoint.eventCount < 0
+        || !/^sha256:[0-9a-f]{64}$/u.test(meta.checkpoint.prefixDigest))) {
       throw new TypeError('meta checkpoint identity is invalid')
     }
     return meta as MetaSessionState
@@ -295,6 +305,12 @@ export class RefineStateStore {
         || !Array.isArray(member.parentCandidateIds) || member.lineageRootId.length === 0
         || !validMetricSet(member.metrics)
         || member.selectedAt.length === 0) throw new TypeError('population member is invalid')
+      if (member.metaCheckpoint !== undefined
+        && (member.metaCheckpoint.sourceSessionId !== member.metaSessionId
+          || !Number.isSafeInteger(member.metaCheckpoint.eventCount) || member.metaCheckpoint.eventCount < 0
+          || !/^sha256:[0-9a-f]{64}$/u.test(member.metaCheckpoint.prefixDigest))) {
+        throw new TypeError('population member Meta checkpoint is invalid')
+      }
     }
     const identity = { evolutionId: population.evolutionId, generation: population.generation, members: population.members }
     if (digestJson(identity) !== population.digest) throw new TypeError('population digest mismatch')
@@ -391,7 +407,16 @@ export class RefineStateStore {
     }
     for (const candidate of round.candidatePool) {
       if (candidate.roundId !== round.roundId || candidate.candidateId.length === 0
-        || !isExactGitCommit(candidate.parentHarnessRef)) throw new TypeError('round candidate identity is invalid')
+        || !isExactGitCommit(candidate.parentHarnessRef) || candidate.parentCandidateIds.length !== 1) {
+        throw new TypeError('round candidate identity is invalid')
+      }
+      for (const checkpoint of [candidate.parentCheckpoint, candidate.resultCheckpoint]) {
+        if (checkpoint !== undefined && (typeof checkpoint.sourceSessionId !== 'string'
+          || !Number.isSafeInteger(checkpoint.eventCount) || checkpoint.eventCount < 0
+          || !/^sha256:[0-9a-f]{64}$/u.test(checkpoint.prefixDigest))) {
+          throw new TypeError('round candidate Meta checkpoint is invalid')
+        }
+      }
       if (candidate.diff !== undefined && (candidate.diff.parentRef !== candidate.parentHarnessRef
         || !/^sha256:[0-9a-f]{64}$/u.test(candidate.diff.patchDigest)
         || !Number.isSafeInteger(candidate.diff.totalBytes) || candidate.diff.totalBytes < 0
@@ -410,8 +435,49 @@ export class RefineStateStore {
         }
       }
       if (candidate.seedEvaluation !== undefined) this.validateEvaluationEvidence(candidate.seedEvaluation, 'candidate seed evaluation')
+      if (candidate.seedComparison !== undefined) {
+        if (typeof candidate.seedComparison.parentBaselineEvalId !== 'string'
+          || !Number.isFinite(candidate.seedComparison.scoreDelta)
+          || !Number.isSafeInteger(candidate.seedComparison.requiredRegressions)
+          || candidate.seedComparison.requiredRegressions < 0) {
+          throw new TypeError('candidate seed comparison is invalid')
+        }
+        this.validatePairedTrials(
+          candidate.seedComparison.pairedTrials,
+          round.plan.seed.conditionId,
+          candidate.seedEvaluation?.trials.length ?? -1,
+          'candidate seed',
+        )
+      }
       if (candidate.heldOutEvaluation !== undefined) this.validateEvaluationEvidence(candidate.heldOutEvaluation, 'candidate held-out evaluation')
       if (candidate.metrics !== undefined && !validMetricSet(candidate.metrics)) throw new TypeError('candidate metrics are invalid')
+    }
+    if (round.parentAllocations !== undefined) {
+      if (round.parentAllocations.length !== round.candidatePool.length) throw new TypeError('round parent allocation is incomplete')
+      for (const allocation of round.parentAllocations) {
+        const candidate = round.candidatePool.find(item => item.candidateId === allocation.candidateId)
+        if (candidate === undefined || candidate.parentCandidateIds[0] !== allocation.parentCandidateId
+          || candidate.parentHarnessRef !== allocation.parentHarnessRef || !isExactGitCommit(allocation.parentHarnessRef)
+          || !/^sha256:[0-9a-f]{64}$/u.test(allocation.parentHarnessDigest)) {
+          throw new TypeError('round parent allocation is invalid')
+        }
+      }
+    }
+    if (round.parentBaselines !== undefined) {
+      for (const baseline of round.parentBaselines) {
+        this.validateEvaluationEvidence(baseline.evidence, 'parent seed baseline')
+        if (baseline.evidence.actualCommit !== baseline.parentHarnessRef
+          || baseline.evidence.conditionId !== round.plan.seed.conditionId) throw new TypeError('parent seed baseline identity is invalid')
+      }
+    }
+    if (round.selection !== undefined) {
+      const selected = new Set(round.selection.selectedCandidateIds)
+      if (selected.size !== round.selection.selectedCandidateIds.length || selected.size === 0
+        || !selected.has(round.selection.promotionCandidateId)
+        || round.promotionCandidateId !== undefined && round.promotionCandidateId !== round.selection.promotionCandidateId
+        || [...selected].some(id => !round.candidatePool!.some(candidate => candidate.candidateId === id))) {
+        throw new TypeError('round selection decision is invalid')
+      }
     }
     if (round.meta !== undefined && round.meta.evolutionId !== round.evolutionId) {
       throw new TypeError('round meta attribution evolution mismatch')
@@ -449,6 +515,42 @@ export class RefineStateStore {
         || (round.evaluation.heldOutScoreDelta !== undefined && !Number.isFinite(round.evaluation.heldOutScoreDelta))
         || !Number.isSafeInteger(round.evaluation.requiredRegressions) || round.evaluation.requiredRegressions < 0) {
         throw new TypeError('round evaluation deltas are invalid')
+      }
+    }
+    if (round.parentPopulationDigest !== undefined && !/^sha256:[0-9a-f]{64}$/u.test(round.parentPopulationDigest)) {
+      throw new TypeError('round parent population digest is invalid')
+    }
+    if (round.commitIntent !== undefined) {
+      const intent = round.commitIntent
+      if (intent.expectedPopulationDigest !== round.parentPopulationDigest
+        || intent.expectedChampionRef !== round.targetHarnessRef
+        || intent.promotionCandidateId !== round.promotionCandidateId
+        || !['prepared', 'population-committed', 'champion-committed'].includes(intent.phase)
+        || !['accepted', 'rejected'].includes(intent.decision)) {
+        throw new TypeError('round commit intent identity is invalid')
+      }
+      this.validatePopulation(intent.nextPopulation)
+      const selectedIds = new Set(round.selection?.selectedCandidateIds ?? [])
+      if (intent.nextPopulation.evolutionId !== round.evolutionId
+        || intent.nextPopulation.members.length !== selectedIds.size
+        || intent.nextPopulation.members.some(member => {
+          const candidate = round.candidatePool!.find(value => value.candidateId === member.candidateId)
+          return !selectedIds.has(member.candidateId) || candidate?.metrics === undefined || candidate.resultCheckpoint === undefined
+            || candidate.metaSessionId === undefined || candidate.sealedVersion?.commitOid !== member.harnessRef
+            || candidate.sealedVersion.manifestDigest !== member.harnessDigest
+            || candidate.metaSessionId !== member.metaSessionId
+            || digestJson(candidate.metrics) !== digestJson(member.metrics)
+            || digestJson(candidate.resultCheckpoint) !== digestJson(member.metaCheckpoint)
+        })) {
+        throw new TypeError('round commit intent population does not match seed-selected candidates')
+      }
+      if ((intent.decision === 'accepted') !== (intent.nextChampion !== undefined)) {
+        throw new TypeError('round commit intent champion decision is incomplete')
+      }
+      if (intent.nextChampion !== undefined
+        && (this.validateChampion(intent.nextChampion).ref
+          !== round.candidatePool.find(candidate => candidate.candidateId === intent.promotionCandidateId)?.sealedVersion?.commitOid)) {
+        throw new TypeError('round commit intent champion is invalid')
       }
     }
     const terminal = round.status === 'accepted' || round.status === 'rejected'

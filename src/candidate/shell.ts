@@ -136,7 +136,15 @@ export class CandidateShellExecutor extends ShellExecutor {
     let value = requested
     if (value === '/candidate' || value === '/candidate/harness') value = '.'
     else if (value.startsWith('/candidate/harness/')) value = value.slice('/candidate/harness/'.length)
-    else if (isAbsolute(value)) throw new Error('candidate shell workdir cannot be an absolute host path')
+    else if (isAbsolute(value)) {
+      // dsh-tool-bash resolves a relative model workdir against the standing
+      // sandbox workspace before it reaches the executor. Accept that
+      // canonicalized identity only when it is still inside this candidate;
+      // arbitrary absolute host paths remain forbidden.
+      const canonical = resolve(value)
+      if (!contained(canonical, resolve(root))) throw new Error('candidate shell workdir cannot be an absolute host path')
+      return canonical
+    }
     const path = resolve(root, value)
     if (!contained(path, resolve(root))) throw new Error('candidate shell workdir escapes the target root')
     return path

@@ -34,6 +34,7 @@ describe('published plugin composition', () => {
           create: async () => { throw new Error('not used') },
           resume: async () => { throw new Error('not used') },
         } as never)
+        ctx.provide('sessions', { flush: async () => true } as never)
         ctx.provide('agentPresets', {
           mount: async () => ({ id: 'refine-meta' }),
           resolve: async () => ({ id: 'refine-meta', path: metaPresetPath, trust: 'system' }),

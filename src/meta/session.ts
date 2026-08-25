@@ -3,13 +3,20 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-presets'
-import type { DshMetaAgentSpec, MetaAttribution, ProposalEvidenceAudit, RefinementRound } from '../types.js'
+import type {
+  CandidateRecord, DshMetaAgentSpec, EvaluationEvidence, MetaAttribution, MetaCheckpointRef,
+  ProposalEvidenceAudit, RefinementRound,
+} from '../types.js'
 import type { RefineStateStore } from '../state/store.js'
+import { digestJson } from '../state/digest.js'
 
 export interface MetaAgentHost {
   getLive(sessionId: string): Agent | undefined
   resume(sessionId: string, spec: DshMetaAgentSpec): Promise<AgentHandle>
   create(sessionId: string, spec: DshMetaAgentSpec): Promise<AgentHandle>
+  checkpoint(agent: Agent): Promise<MetaCheckpointRef>
+  fork(sessionId: string, spec: DshMetaAgentSpec, checkpoint: MetaCheckpointRef): Promise<AgentHandle>
+  cancelAndFlush(agent: Agent, reason: string): Promise<void>
 }
 
 export interface MetaSessionOptions {
@@ -19,6 +26,8 @@ export interface MetaSessionOptions {
 }
 
 interface RoundWake {
+  roundId: string
+  candidateId?: string
   sessionId: string
   firstObservedSeq: number
 }
@@ -83,6 +92,55 @@ export class DshMetaAgentHost implements MetaAgentHost {
     })
   }
 
+  async checkpoint(agent: Agent): Promise<MetaCheckpointRef> {
+    await agent.whenIdle()
+    return agent.runMaintenance(async () => {
+      const participated = await this.ctx.sessions.flush(agent.session)
+      if (!participated) throw new Error('durable Meta session persistence is required for candidate forks')
+      const prefix = structuredClone([...agent.session.events])
+      return {
+        sourceSessionId: String(agent.id),
+        eventCount: prefix.length,
+        prefixDigest: digestJson(prefix),
+      }
+    })
+  }
+
+  fork(sessionId: string, spec: DshMetaAgentSpec, checkpoint: MetaCheckpointRef): Promise<AgentHandle> {
+    const source = this.getLive(checkpoint.sourceSessionId)
+    if (source === undefined) throw new Error(`Meta checkpoint source is not live: ${checkpoint.sourceSessionId}`)
+    const prefix = structuredClone([...source.session.events].slice(0, checkpoint.eventCount))
+    if (prefix.length !== checkpoint.eventCount || digestJson(prefix) !== checkpoint.prefixDigest) {
+      throw new Error('Meta checkpoint prefix identity mismatch')
+    }
+    return this.ctx.agents.create({
+      sessionId: SessionId(sessionId),
+      seed: prefix,
+      agentOptions: spec.model,
+      meta: {
+        parentSession: SessionId(checkpoint.sourceSessionId),
+        seedLength: checkpoint.eventCount,
+        // Candidate tools expose a stable virtual filesystem identity. Giving
+        // the fork that cwd also makes DSH's ordinary bash/search defaulting
+        // resolve inside the candidate instead of the control-plane workspace.
+        cwd: '/candidate/harness',
+        agentPreset: spec.preset.id,
+      },
+      setup: async (agentCtx) => {
+        await this.ctx.agentPresets.mount(agentCtx, spec.preset.id)
+        this.installSampling(agentCtx, spec)
+        await this.setupMetaCapabilities(agentCtx, sessionId)
+      },
+    })
+  }
+
+  async cancelAndFlush(agent: Agent, reason: string): Promise<void> {
+    agent.cancel({ kind: 'hook', reason })
+    await agent.whenIdle()
+    const participated = await this.ctx.sessions.flush(agent.session)
+    if (!participated) throw new Error('durable Meta session persistence is required before cleanup')
+  }
+
   private installSampling(agentCtx: Context, spec: DshMetaAgentSpec): void {
     const { temperature } = spec.sampling
     if (temperature === undefined) return
@@ -92,6 +150,7 @@ export class DshMetaAgentHost implements MetaAgentHost {
 
 export class MetaSessionManager {
   private handle: AgentHandle | undefined
+  private readonly handles = new Map<string, AgentHandle>()
   private readonly wakes = new Map<string, RoundWake>()
   private readonly evidenceAccess = new Map<string, RoundEvidenceAccess>()
 
@@ -111,6 +170,7 @@ export class MetaSessionManager {
       if (live !== undefined) return live
       try {
         this.handle = await this.host.resume(state.sessionId, this.options.metaAgent)
+        this.handles.set(state.sessionId, this.handle)
         return this.handle.agent
       } catch (error) {
         if (!cannotResumePersistedSession(error)) throw error
@@ -118,6 +178,7 @@ export class MetaSessionManager {
     }
     const sessionId = crypto.randomUUID()
     this.handle = await this.host.create(sessionId, this.options.metaAgent)
+    this.handles.set(sessionId, this.handle)
     await this.store.writeMeta({
       evolutionId: this.options.evolutionId,
       sessionId,
@@ -127,19 +188,69 @@ export class MetaSessionManager {
     return this.handle.agent
   }
 
+  async checkpoint(sessionId?: string): Promise<MetaCheckpointRef> {
+    const agent = sessionId === undefined ? await this.agent() : await this.ensureAgent(sessionId)
+    const checkpoint = await this.host.checkpoint(agent)
+    const state = await this.store.readMeta()
+    if (state?.sessionId === String(agent.id)) await this.store.writeMeta({ ...state, checkpoint })
+    return checkpoint
+  }
+
+  async fork(checkpoint: MetaCheckpointRef): Promise<Agent> {
+    await this.ensureAgent(checkpoint.sourceSessionId)
+    const sessionId = crypto.randomUUID()
+    const handle = await this.host.fork(sessionId, this.options.metaAgent, checkpoint)
+    this.handles.set(sessionId, handle)
+    return handle.agent
+  }
+
+  async cancelAndDispose(sessionId: string, reason: string): Promise<void> {
+    await this.cancel(sessionId, reason)
+    await this.release(sessionId)
+  }
+
+  async cancel(sessionId: string, reason: string): Promise<void> {
+    const agent = await this.ensureAgent(sessionId)
+    await this.host.cancelAndFlush(agent, reason)
+  }
+
+  async release(sessionId: string): Promise<void> {
+    const handle = this.handles.get(sessionId)
+    this.wakes.delete(sessionId)
+    this.evidenceAccess.delete(sessionId)
+    if (handle === undefined || handle === this.handle) return
+    this.handles.delete(sessionId)
+    await handle.dispose()
+  }
+
   async wake(round: Readonly<RefinementRound>): Promise<string> {
+    const candidate = round.candidatePool.find(value => value.status === 'generating')
+    return this.wakeCandidate(round, candidate, round.baseline, await this.agent())
+  }
+
+  async wakeCandidate(
+    round: Readonly<RefinementRound>,
+    candidate: Readonly<CandidateRecord> | undefined,
+    baseline: EvaluationEvidence | undefined,
+    agent: Agent,
+  ): Promise<string> {
     if (round.evolutionId !== this.options.evolutionId) {
       throw new Error(`Meta session for evolution ${this.options.evolutionId} cannot wake round from ${round.evolutionId}`)
     }
-    const agent = await this.agent()
-    this.wakes.set(round.roundId, { sessionId: String(agent.id), firstObservedSeq: agent.session.seq })
+    const sessionId = String(agent.id)
+    this.wakes.set(sessionId, {
+      roundId: round.roundId,
+      ...(candidate === undefined ? {} : { candidateId: candidate.candidateId }),
+      sessionId,
+      firstObservedSeq: agent.session.seq,
+    })
     const baselineRefs = [
-      ...(round.baseline === undefined ? [] : [round.baseline.evalId]),
-      ...(round.baseline?.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId]) ?? []),
+      ...(baseline === undefined ? [] : [baseline.evalId]),
+      ...(baseline?.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId]) ?? []),
     ]
-    this.evidenceAccess.set(round.roundId, {
-      baselineEvalId: round.baseline?.evalId ?? '',
-      summaryAccessed: round.baseline !== undefined,
+    this.evidenceAccess.set(sessionId, {
+      baselineEvalId: baseline?.evalId ?? '',
+      summaryAccessed: baseline !== undefined,
       accessedRefs: new Set(baselineRefs),
       diagnosedRunRefs: new Set(),
     })
@@ -148,10 +259,10 @@ export class MetaSessionManager {
         kind: 'refinement-round',
         evolutionId: round.evolutionId,
         roundId: round.roundId,
-        targetHarnessRef: round.targetHarnessRef,
-        targetHarnessDigest: round.targetHarnessDigest,
-        candidateWorkspace: round.candidatePool.find(candidate => candidate.status === 'generating')?.workspaceId === undefined ? undefined : {
-          workspaceId: round.candidatePool.find(candidate => candidate.status === 'generating')!.workspaceId,
+        candidateId: candidate?.candidateId,
+        targetHarnessRef: candidate?.parentHarnessRef ?? round.targetHarnessRef,
+        candidateWorkspace: candidate?.workspaceId === undefined ? undefined : {
+          workspaceId: candidate.workspaceId,
           virtualRoot: '/candidate',
           editableRoot: '/candidate/harness',
           mode: 'git-native',
@@ -162,11 +273,11 @@ export class MetaSessionManager {
           diagnoseEveryFailedRunBeforeProposal: true,
           heldOutUnavailable: true,
         },
-        baseline: round.baseline === undefined ? undefined : {
-          evalId: round.baseline.evalId,
-          primaryReward: round.baseline.primaryReward,
-          summary: round.baseline.summary,
-          trials: round.baseline.trials.map(trial => ({
+        baseline: baseline === undefined ? undefined : {
+          evalId: baseline.evalId,
+          primaryReward: baseline.primaryReward,
+          summary: baseline.summary,
+          trials: baseline.trials.map(trial => ({
             taskName: trial.taskName,
             trialName: trial.trialName,
             runId: trial.runId,
@@ -180,11 +291,11 @@ export class MetaSessionManager {
       }) }],
       source: { kind: 'plugin', plugin: 'dsh-plugin-refine' },
     }))
-    return String(agent.id)
+    return sessionId
   }
 
   activeRoundId(sessionId: string): string | undefined {
-    return [...this.wakes].findLast(([, wake]) => wake.sessionId === sessionId)?.[0]
+    return this.wakes.get(sessionId)?.roundId
   }
 
   recordEvidenceAccess(
@@ -192,9 +303,9 @@ export class MetaSessionManager {
     sessionId: string,
     access: { summary?: boolean; refs?: readonly string[]; diagnosedRunRefs?: readonly string[] },
   ): void {
-    const wake = this.wakes.get(roundId)
-    const current = this.evidenceAccess.get(roundId)
-    if (wake === undefined || current === undefined || wake.sessionId !== sessionId) {
+    const wake = this.wakes.get(sessionId)
+    const current = this.evidenceAccess.get(sessionId)
+    if (wake === undefined || current === undefined || wake.roundId !== roundId) {
       return
     }
     if (access.summary === true) current.summaryAccessed = true
@@ -203,14 +314,15 @@ export class MetaSessionManager {
   }
 
   proposalEvidenceAudit(roundId: string, sessionId: string, citedRefs: readonly string[]): ProposalEvidenceAudit {
-    const wake = this.wakes.get(roundId)
-    const access = this.evidenceAccess.get(roundId)
-    if (wake === undefined || access === undefined || wake.sessionId !== sessionId) {
+    const wake = this.wakes.get(sessionId)
+    const access = this.evidenceAccess.get(sessionId)
+    if (wake === undefined || access === undefined || wake.roundId !== roundId) {
       throw new Error('proposal evidence did not originate from the active round meta session')
     }
     return {
       evolutionId: this.options.evolutionId,
       roundId,
+      ...(wake.candidateId === undefined ? {} : { candidateId: wake.candidateId }),
       baselineEvalId: access.baselineEvalId,
       summaryAccessed: access.summaryAccessed,
       accessedRefs: [...access.accessedRefs].sort(),
@@ -220,8 +332,8 @@ export class MetaSessionManager {
   }
 
   proposalAttribution(roundId: string, agent: Agent, _mutation: unknown): MetaAttribution {
-    const wake = this.wakes.get(roundId)
-    if (wake === undefined || wake.sessionId !== String(agent.id)) throw new Error('proposal did not originate from the round meta session')
+    const wake = this.wakes.get(String(agent.id))
+    if (wake === undefined || wake.roundId !== roundId) throw new Error('proposal did not originate from the round meta session')
     const events = [...agent.session.events]
     const headers = events.filter(event => event.type === 'request/header')
     const relevant = headers.filter(event => event.seq >= wake.firstObservedSeq)
@@ -258,8 +370,20 @@ export class MetaSessionManager {
     }
   }
 
+  private async ensureAgent(sessionId: string): Promise<Agent> {
+    const owned = this.handles.get(sessionId)
+    if (owned !== undefined) return owned.agent
+    const live = this.host.getLive(sessionId)
+    if (live !== undefined) return live
+    const handle = await this.host.resume(sessionId, this.options.metaAgent)
+    this.handles.set(sessionId, handle)
+    return handle.agent
+  }
+
   async dispose(): Promise<void> {
-    await this.handle?.dispose()
+    const handles = [...new Set(this.handles.values())]
+    await Promise.allSettled(handles.map(handle => handle.dispose()))
+    this.handles.clear()
     this.handle = undefined
     this.wakes.clear()
     this.evidenceAccess.clear()

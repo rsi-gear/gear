@@ -32,6 +32,13 @@ export interface CandidateWorkspaceBinding {
   generation: number
 }
 
+export interface CandidateWorkspaceRequest {
+  evolutionId: string
+  roundId: string
+  parentHarnessRef: string
+  parentHarnessDigest: string
+}
+
 export interface CandidateWorkspaceOptions {
   repositoryPath: string
   targetRoot: string
@@ -91,14 +98,20 @@ export class CandidateWorkspaceManager {
     if (inside !== 'true') throw new Error(`candidate repository is not a Git worktree: ${this.repositoryPath}`)
   }
 
-  async create(round: Readonly<RefinementRound>, signal: AbortSignal): Promise<CandidateWorkspaceHandle> {
-    safeId(round.evolutionId, 'evolutionId')
-    safeId(round.roundId, 'roundId')
-    if (!isExactGitCommit(round.targetHarnessRef)) throw new TypeError('candidate parent must be an exact Git commit')
-    const resolvedParent = (await this.git(['-C', this.repositoryPath, 'rev-parse', '--verify', `${round.targetHarnessRef}^{commit}`], signal)).stdout.toString('utf8').trim()
-    if (resolvedParent !== round.targetHarnessRef) throw new Error('candidate parent ref did not resolve to its pinned exact commit')
+  async create(input: Readonly<CandidateWorkspaceRequest> | Readonly<RefinementRound>, signal: AbortSignal): Promise<CandidateWorkspaceHandle> {
+    const request: CandidateWorkspaceRequest = 'parentHarnessRef' in input ? input : {
+      evolutionId: input.evolutionId,
+      roundId: input.roundId,
+      parentHarnessRef: input.targetHarnessRef,
+      parentHarnessDigest: input.targetHarnessDigest,
+    }
+    safeId(request.evolutionId, 'evolutionId')
+    safeId(request.roundId, 'roundId')
+    if (!isExactGitCommit(request.parentHarnessRef)) throw new TypeError('candidate parent must be an exact Git commit')
+    const resolvedParent = (await this.git(['-C', this.repositoryPath, 'rev-parse', '--verify', `${request.parentHarnessRef}^{commit}`], signal)).stdout.toString('utf8').trim()
+    if (resolvedParent !== request.parentHarnessRef) throw new Error('candidate parent ref did not resolve to its pinned exact commit')
 
-    const evolutionRoot = resolve(this.options.rootForEvolution(round.evolutionId))
+    const evolutionRoot = resolve(this.options.rootForEvolution(request.evolutionId))
     await mkdir(evolutionRoot, { recursive: true, mode: 0o700 })
     const ownedRoot = await mkdtemp(join(evolutionRoot, 'workspace-'))
     const workspaceId = crypto.randomUUID()
@@ -110,10 +123,10 @@ export class CandidateWorkspaceManager {
       const targetPath = await realpath(join(worktreePath, ...this.targetRoot.split('/')))
       const handle: CandidateWorkspaceHandle = {
         workspaceId,
-        evolutionId: round.evolutionId,
-        roundId: round.roundId,
-        parentRef: round.targetHarnessRef,
-        parentDigest: round.targetHarnessDigest,
+        evolutionId: request.evolutionId,
+        roundId: request.roundId,
+        parentRef: request.parentHarnessRef,
+        parentDigest: request.parentHarnessDigest,
         worktreePath,
         targetPath,
         generation: ++this.generation,
@@ -328,6 +341,7 @@ export class CandidateWorkspaceManager {
   async dispose(workspaceId: string): Promise<void> {
     const handle = this.requireHandle(workspaceId)
     if (handle.state === 'disposed') return
+    await this.drain(workspaceId)
     for (const [sessionId, binding] of this.bindings) {
       if (binding.workspaceId === workspaceId) this.bindings.delete(sessionId)
     }
@@ -347,6 +361,13 @@ export class CandidateWorkspaceManager {
     handle.state = 'disposed'
     this.handles.delete(workspaceId)
     await rm(ownedRoot, { recursive: true, force: true })
+  }
+
+  async drain(workspaceId: string): Promise<void> {
+    this.requireHandle(workspaceId)
+    while ((this.activeOperations.get(workspaceId) ?? 0) > 0) {
+      await new Promise(resolveWait => setTimeout(resolveWait, 10))
+    }
   }
 
   async recoverOrphans(evolutionId: string): Promise<string[]> {

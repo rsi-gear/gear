@@ -7,6 +7,7 @@ import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import { DshMetaAgentHost, MetaSessionManager, type MetaAgentHost } from '../../src/meta/session.js'
 import { RefineStateStore } from '../../src/state/store.js'
 import type { RefinementRound } from '../../src/types.js'
+import { digestJson } from '../../src/state/digest.js'
 import { evidence, metaAgent, roundFixture } from '../helpers/research-fixture.js'
 
 const roots: string[] = []
@@ -18,6 +19,7 @@ function fakeAgent(id: string): Agent {
   }]
   const session = {
     events,
+    header: { cwd: '/workspace' },
     get seq() { return events.length },
     append(type: string, data: unknown) {
       const event = { type, seq: events.length, data }
@@ -31,6 +33,9 @@ function fakeAgent(id: string): Agent {
     options: { provider: 'p', model: 'm', maxTokens: 100 },
     session,
     followup(message: unknown) { followups.push(message) },
+    async whenIdle() {},
+    async runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>) { return task(new AbortController().signal) },
+    cancel() {},
     followups,
   } as unknown as Agent
 }
@@ -53,6 +58,19 @@ class FakeHost implements MetaAgentHost {
     this.live.set(id, agent)
     return { agent, dispose: async () => { this.live.delete(id) } }
   }
+  async checkpoint(agent: Agent) {
+    const events = [...agent.session.events]
+    return { sourceSessionId: String(agent.id), eventCount: events.length, prefixDigest: digestJson(events) }
+  }
+  async fork(id: string, _spec: unknown, checkpoint: import('../../src/types.js').MetaCheckpointRef): Promise<AgentHandle> {
+    const agent = fakeAgent(id)
+    this.live.set(id, agent)
+    ;(agent.session.events as unknown as unknown[]).splice(0, 1, ...structuredClone([
+      ...this.live.get(checkpoint.sourceSessionId)!.session.events,
+    ].slice(0, checkpoint.eventCount)))
+    return { agent, dispose: async () => { this.live.delete(id) } }
+  }
+  async cancelAndFlush(): Promise<void> {}
 }
 
 function round(): RefinementRound {
@@ -71,6 +89,33 @@ function metaState(sessionId: string, metaHarnessRef = 'meta-v1') {
 }
 
 describe('MetaSessionManager', () => {
+  it('refuses to checkpoint when no durable session listener participates', async () => {
+    const host = new DshMetaAgentHost({ sessions: { flush: async () => false } } as never, async () => {})
+    await expect(host.checkpoint(fakeAgent('ephemeral'))).rejects.toThrow(/durable Meta session persistence/)
+  })
+
+  it('creates a child Agent from the exact checkpoint prefix and records fork lineage', async () => {
+    const source = fakeAgent('parent')
+    let created: Record<string, unknown> | undefined
+    const child = fakeAgent('child')
+    const parent = {
+      agents: {
+        get: (id: string) => String(id) === 'parent' ? source : undefined,
+        create: async (options: Record<string, unknown>) => { created = options; return { agent: child, dispose: async () => {} } },
+      },
+      agentPresets: { mount: async () => {} },
+    }
+    const host = new DshMetaAgentHost(parent as never, async () => {})
+    const prefix = [...source.session.events]
+    await host.fork('child', metaAgent(), {
+      sourceSessionId: 'parent', eventCount: prefix.length, prefixDigest: digestJson(prefix),
+    })
+    expect(created?.seed).toEqual(prefix)
+    expect(created?.meta).toMatchObject({
+      parentSession: 'parent', seedLength: prefix.length, cwd: '/candidate/harness', agentPreset: 'meta-v1',
+    })
+  })
+
   it('injects immutable Meta sampling into the effective DSH request', async () => {
     const scoped = new Context()
     let created: Record<string, unknown> | undefined
@@ -112,6 +157,26 @@ describe('MetaSessionManager', () => {
     expect(manager.activeRoundId(String(agent.id))).toBe('round-1')
     const audit = manager.proposalEvidenceAudit('round-1', String(agent.id), [round().baseline!.evalId])
     expect(audit).toMatchObject({ summaryAccessed: true, baselineEvalId: round().baseline!.evalId })
+    await manager.dispose()
+  })
+
+  it('isolates sibling wake and evidence state by child session', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'refine-meta-'))
+    roots.push(root)
+    const store = new RefineStateStore(root)
+    await store.initialize()
+    const host = new FakeHost()
+    const manager = new MetaSessionManager(store, host, META_OPTIONS)
+    const checkpoint = await manager.checkpoint()
+    const [leftAgent, rightAgent] = await Promise.all([manager.fork(checkpoint), manager.fork(checkpoint)])
+    const state = round()
+    const left = { ...state.candidatePool[0]!, candidateId: 'left', workspaceId: 'left-workspace' }
+    const right = { ...state.candidatePool[0]!, candidateId: 'right', workspaceId: 'right-workspace' }
+    state.candidatePool = [left, right]
+    await manager.wakeCandidate(state, left, state.baseline, leftAgent)
+    await manager.wakeCandidate(state, right, state.baseline, rightAgent)
+    expect(manager.proposalEvidenceAudit(state.roundId, String(leftAgent.id), [state.baseline!.evalId]).candidateId).toBe('left')
+    expect(manager.proposalEvidenceAudit(state.roundId, String(rightAgent.id), [state.baseline!.evalId]).candidateId).toBe('right')
     await manager.dispose()
   })
 

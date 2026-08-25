@@ -3,11 +3,16 @@ import { SubprocessRuntime, type SubprocessHandle, type SubprocessSpawnSpec, typ
 import { basename, isAbsolute } from 'node:path'
 import type { CandidateWorkspaceManager } from './workspace.js'
 
-function assertRelativeSearchPath(path: string): void {
-  if (isAbsolute(path) || path.includes('\\') || path.split('/').some(part => part === '..')) {
+function candidateSearchPath(input: string): string {
+  let path = input
+  if (path === '/candidate' || path === '/candidate/harness') path = '.'
+  else if (path.startsWith('/candidate/harness/')) path = path.slice('/candidate/harness/'.length)
+  else if (isAbsolute(path)) throw new Error('search path must be relative to the active candidate workspace')
+  if (path.includes('\\') || path.split('/').some(part => part === '..')) {
     throw new Error('search path must be relative to the active candidate workspace')
   }
   if (path.split('/').some(part => part === '.git')) throw new Error('candidate Git metadata is not searchable')
+  return path
 }
 
 /** Trusted adapter for DSH's fixed ripgrep tools. It is intentionally not a
@@ -33,9 +38,14 @@ export class CandidateSearchSubprocess extends SubprocessRuntime {
       || spec.argv.some(arg => arg === '--follow' || arg === '-L' || arg === '--pre' || arg.startsWith('--pre='))) {
       throw new Error('candidate subprocess only accepts DSH fixed ripgrep invocations')
     }
-    const separator = spec.argv.lastIndexOf('--')
-    if (separator >= 0) for (const path of spec.argv.slice(separator + 1)) assertRelativeSearchPath(path)
-    return this.upstream.spawn({ ...spec, cwd: handle.targetPath, env: {} })
+    const argv = [...spec.argv]
+    const separator = argv.lastIndexOf('--')
+    if (separator >= 0) {
+      for (let index = separator + 1; index < argv.length; index += 1) {
+        argv[index] = candidateSearchPath(argv[index]!)
+      }
+    }
+    return this.upstream.spawn({ ...spec, argv, cwd: handle.targetPath, env: {} })
   }
 
   spawnTerminal(_spec: SubprocessTerminalSpawnSpec): Promise<SubprocessTerminalHandle> {

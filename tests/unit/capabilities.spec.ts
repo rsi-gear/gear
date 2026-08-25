@@ -4,14 +4,14 @@ import { RefineCapabilities } from '../../src/capabilities.js'
 import { HarnessBuilder, NoopHarnessCompiler } from '../../src/harness/builder.js'
 import { RefineStateStore } from '../../src/state/store.js'
 import type { HitchEvaluationEvidence, HitchTrajectoryReader, RefinementRound } from '../../src/types.js'
-import { createGitHarnessFixture } from '../helpers/git-fixture.js'
+import { createGitHarnessFixture, gitOutput } from '../helpers/git-fixture.js'
 import { roundFixture } from '../helpers/research-fixture.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 
 describe('RefineCapabilities Git projection', () => {
-  it('reads only manifest-indexed files from the exact champion commit', async () => {
+  it('reads only manifest-indexed files from the candidate parent, not the deployment champion', async () => {
     const fixture = await createGitHarnessFixture()
     roots.push(fixture.root)
     const store = new RefineStateStore(`${fixture.root}/state`)
@@ -28,15 +28,21 @@ describe('RefineCapabilities Git projection', () => {
       compiler: new NoopHarnessCompiler(),
     })
     await builder.initialize()
+    gitOutput(fixture.repository, ['commit', '--allow-empty', '-m', 'research survivor'])
+    const parentRef = gitOutput(fixture.repository, ['rev-parse', 'HEAD'])
     const meta = { recordEvidenceAccess: () => {}, proposalAttribution: () => ({}), proposalEvidenceAudit: () => ({}) }
-    const service = { activeEntryForSession: () => ({ evolutionId: 'evo-1', roundId: 'round-1', store, meta, workspace: { workspaceId: 'workspace-1' } }) }
+    const service = { activeEntryForSession: () => ({
+      evolutionId: 'evo-1', roundId: 'round-1', store, meta,
+      parentHarnessRef: parentRef, parentHarnessDigest: fixture.manifest.digest,
+      workspace: { workspaceId: 'workspace-1', parentRef, parentDigest: fixture.manifest.digest },
+    }) }
     const capabilities = new RefineCapabilities(service as never, builder, () => undefined)
     await expect(capabilities.call('refine-meta', 'meta', 'harness.current', {})).resolves.toMatchObject({
-      ref: fixture.championRef,
+      ref: parentRef,
       digest: fixture.manifest.digest,
     })
     await expect(capabilities.call('refine-meta', 'meta', 'harness.read', {
-      ref: fixture.championRef, path: 'plugins/context.ts',
+      ref: parentRef, path: 'plugins/context.ts',
     })).resolves.toMatchObject({
       text: 'export const value = 1\n',
       digest: fixture.manifest.artifacts.find(artifact => artifact.path === 'plugins/context.ts')?.digest,
@@ -44,11 +50,14 @@ describe('RefineCapabilities Git projection', () => {
       eof: true,
     })
     await expect(capabilities.call('refine-meta', 'meta', 'harness.read', {
-      ref: fixture.championRef, path: '../package.json',
+      ref: parentRef, path: '../package.json',
     })).rejects.toThrow(/escapes|not normalized/)
     await expect(capabilities.call('refine-meta', 'meta', 'harness.read', {
-      ref: fixture.championRef, path: 'plugins/not-in-manifest.ts',
+      ref: parentRef, path: 'plugins/not-in-manifest.ts',
     })).rejects.toThrow(/not in the target manifest/)
+    await expect(capabilities.call('refine-meta', 'meta', 'harness.read', {
+      ref: fixture.championRef, path: 'plugins/context.ts',
+    })).rejects.toThrow(/not the current candidate parent/)
     await expect(capabilities.call('refine-meta', 'meta', 'seed_tasks.load', { partition: 'held-out' }))
       .rejects.toThrow(/must be "seed"/)
   })

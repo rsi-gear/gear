@@ -47,9 +47,13 @@ export interface MetaSessionState {
   sessionId: string
   metaHarnessRef: MetaHarnessRef
   specDigest: string
-  parentSessionId?: string
-  checkpointRef?: string
-  checkpointDigest?: string
+  checkpoint?: MetaCheckpointRef
+}
+
+export interface MetaCheckpointRef {
+  sourceSessionId: string
+  eventCount: number
+  prefixDigest: string
 }
 
 export interface ArtifactRef {
@@ -348,6 +352,7 @@ export interface MetaAttribution {
 export interface ProposalEvidenceAudit {
   evolutionId: EvolutionId
   roundId: string
+  candidateId?: string
   baselineEvalId: string
   summaryAccessed: boolean
   accessedRefs: string[]
@@ -398,21 +403,44 @@ export interface CandidateRecord {
   parentHarnessRef: HarnessRef
   parentCandidateIds: string[]
   metaSessionId?: string
-  metaCheckpointRef?: string
+  parentCheckpoint?: MetaCheckpointRef
+  resultCheckpoint?: MetaCheckpointRef
   workspaceId?: string
   sealedVersion?: SealedCandidateVersion
   proposal?: CandidateFinalization
+  decline?: CandidateDecline
   diff?: CandidateDiffSummary
   meta?: MetaAttribution
   proposalEvidence?: ProposalEvidenceAudit
   seedEvaluation?: EvaluationEvidence
+  seedComparison?: CandidateSeedComparison
   heldOutEvaluation?: EvaluationEvidence
   metrics?: MetricSet
+  failure?: { phase: string; message: string }
   status: 'generating' | 'ready' | 'evaluating' | 'selected' | 'discarded' | 'failed'
+}
+
+export interface CandidateSeedComparison {
+  parentBaselineEvalId: string
+  pairedTrials: PairedTrial[]
+  scoreDelta: number
+  requiredRegressions: number
+}
+
+/** The complete seed-only projection visible to selection components. */
+export interface CandidateSelectionInput {
+  candidateId: string
+  parentHarnessRef: HarnessRef
+  parentCandidateIds: string[]
+  sealedVersion: SealedCandidateVersion
+  seedEvaluation: EvaluationEvidence
+  seedComparison: CandidateSeedComparison
+  metrics: MetricSet
 }
 
 export interface SelectionDecision {
   selectedCandidateIds: string[]
+  promotionCandidateId: string
   reason: string
   component: ComponentRef<unknown>
   metrics: Record<string, number>
@@ -435,9 +463,32 @@ export interface PopulationMember {
   parentCandidateIds: string[]
   lineageRootId: string
   metaSessionId?: string
-  metaCheckpointRef?: string
+  metaCheckpoint?: MetaCheckpointRef
   metrics: MetricSet
   selectedAt: string
+}
+
+export interface ParentAllocation {
+  candidateId: string
+  parentCandidateId: string
+  parentHarnessRef: HarnessRef
+  parentHarnessDigest: string
+}
+
+export interface ParentSeedBaseline {
+  parentCandidateId: string
+  parentHarnessRef: HarnessRef
+  evidence: EvaluationEvidence
+}
+
+export interface RoundCommitIntent {
+  expectedPopulationDigest: string
+  nextPopulation: PopulationState
+  expectedChampionRef: HarnessRef
+  nextChampion?: ChampionState
+  decision: 'accepted' | 'rejected'
+  promotionCandidateId: string
+  phase: 'prepared' | 'population-committed' | 'champion-committed'
 }
 
 export interface PopulationState {
@@ -468,13 +519,18 @@ export interface RefinementRound {
   roundCount: number
   advisoryFocus?: SemanticTarget[]
   plan: ResolvedRoundPlan
+  parentPopulationDigest?: string
+  parentAllocations?: ParentAllocation[]
+  parentBaselines?: ParentSeedBaseline[]
   baseline?: EvaluationEvidence
   finalization?: CandidateFinalization | null
   decline?: CandidateDecline
   candidatePool: CandidateRecord[]
   selection?: SelectionDecision
+  promotionCandidateId?: string
   promotedCandidateId?: string
   evaluation?: RoundEvaluation
+  commitIntent?: RoundCommitIntent
   meta?: MetaAttribution
   proposalEvidence?: ProposalEvidenceAudit
   decision?: 'accepted' | 'rejected' | 'rejected-for-substrate' | 'no-change'

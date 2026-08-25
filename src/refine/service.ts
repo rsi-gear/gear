@@ -9,8 +9,8 @@ import type { RefineStateStore, WorkspaceLock } from '../state/store.js'
 import type {
   AdmissionResult, CandidateDecline, CandidateDiffSummary, CandidateFinalization, CandidateRecord, ChampionState,
   CandidateGenerationSpec, ComponentRef, DshMetaAgentSpec, EvaluationEvidence, EvolutionRegistryEntry, EvolutionSpec, MetaAttribution,
-  PairedTrial, ProposalEvidenceAudit, PromotionPolicy, PublicSeedEvidence, PublicRoundStatus,
-  RefineEvaluator, RefinementRound, RolloutSpec, RoundEvaluation, SemanticTarget,
+  MetaCheckpointRef, PairedTrial, PopulationState, ProposalEvidenceAudit, PromotionPolicy, PublicSeedEvidence, PublicRoundStatus,
+  RefineEvaluator, RefinementRound, RolloutSpec, RoundEvaluation, SemanticTarget, PopulationMember,
 } from '../types.js'
 import { isExactGitCommit } from '../types.js'
 
@@ -67,20 +67,27 @@ interface FinalizationValue {
   evidence: ProposalEvidenceAudit
 }
 
+interface CandidateExecution {
+  candidateId: string
+  abort: AbortController
+  finalization: PromiseWithResolvers<FinalizationValue>
+  finalizationSubmitted: boolean
+  workspace?: CandidateWorkspaceHandle
+  metaSessionId?: string
+  baseline?: EvaluationEvidence
+}
+
 interface ActiveRound {
   evolution: EvolutionRuntime
   lock: WorkspaceLock
   abort: AbortController
-  finalization: PromiseWithResolvers<FinalizationValue>
-  finalizationSubmitted: boolean
+  executions: Map<string, CandidateExecution>
+  currentCandidateId?: string
   batchId: string
   roundIndex: number
   roundCount: number
   advisoryFocus?: SemanticTarget[]
   source: RefinementRound['source']
-  candidateId: string
-  workspace?: CandidateWorkspaceHandle
-  metaSessionId?: string
 }
 
 const TERMINAL = new Set<RefinementRound['status']>(['accepted', 'rejected', 'rejected-for-substrate', 'failed'])
@@ -202,10 +209,16 @@ export class RefineService {
         for (const candidate of round.candidatePool) {
           if (candidate.sealedVersion !== undefined) await this.builder.verifySealedCandidate(candidate.sealedVersion)
         }
-        if (!TERMINAL.has(round.status)) {
+        if (round.commitIntent !== undefined
+          && (round.status !== round.commitIntent.decision || round.commitIntent.phase !== 'champion-committed')) {
+          await this.reconcileCommitIntent(store, round).catch(async error => store.writeRound({
+            ...round, status: 'failed', updatedAt: now(),
+            failure: { phase: 'recovery', message: errorMessage(error) },
+          }))
+        } else if (!TERMINAL.has(round.status)) {
           await store.writeRound({
             ...round, status: 'failed', updatedAt: now(),
-            failure: { phase: 'recovery', message: 'control plane restarted before the round reached a durable terminal state' },
+            failure: { phase: 'recovery', message: 'control plane restarted before the round reached a durable commit intent' },
           })
         }
       }
@@ -270,22 +283,26 @@ export class RefineService {
   ): Promise<CandidateDiffSummary | undefined> {
     const active = this.active.get(roundId)
     if (active === undefined || active.evolution.spec.evolutionId !== evolutionId) throw new Error(`stale or unknown refinement round: ${roundId}`)
+    const execution = [...active.executions.values()].find(value => value.metaSessionId === meta.sessionId)
+    if (execution === undefined) throw new Error('finalization Meta session does not own an active candidate')
     const round = await this.requireRound(active.evolution.store, roundId)
     if (round.status !== 'candidate-editing') throw new Error(`round ${roundId} is not accepting a finalization`)
-    if (active.finalizationSubmitted) throw new Error(`round ${roundId} already received a finalization`)
-    const persistedMeta = await active.evolution.store.readMeta()
-    if (persistedMeta?.sessionId !== meta.sessionId || meta.evolutionId !== evolutionId) {
-      throw new Error('finalization Meta session does not own this evolution workspace')
+    if (execution.finalizationSubmitted) throw new Error(`candidate ${execution.candidateId} already received a finalization`)
+    if (meta.evolutionId !== evolutionId || evidence.candidateId !== execution.candidateId) {
+      throw new Error('finalization Meta session does not own this evolution candidate')
     }
-    this.validateFinalizationEvidence(round, finalization, decline, evidence)
+    const candidate = round.candidatePool.find(value => value.candidateId === execution.candidateId)
+    const baseline = round.parentBaselines?.find(value => value.parentCandidateId === candidate?.parentCandidateIds[0])?.evidence
+    if (candidate === undefined || baseline === undefined) throw new Error('candidate parent baseline is unavailable')
+    this.validateFinalizationEvidence(round, baseline, finalization, decline, evidence)
     let diff: CandidateDiffSummary | undefined
     if (finalization !== null) {
-      if (active.workspace === undefined) throw new Error('round has no candidate workspace')
-      diff = await this.workspaceManager.seal(active.workspace.workspaceId, active.abort.signal)
+      if (execution.workspace === undefined) throw new Error('candidate has no workspace')
+      diff = await this.workspaceManager.seal(execution.workspace.workspaceId, execution.abort.signal)
       if (diff.files.length === 0) throw new Error('candidate has no changes; use decline_candidate')
     }
-    active.finalizationSubmitted = true
-    active.finalization.resolve({
+    execution.finalizationSubmitted = true
+    execution.finalization.resolve({
       finalization,
       ...(decline === undefined ? {} : { decline }),
       ...(diff === undefined ? {} : { diff }),
@@ -363,9 +380,10 @@ export class RefineService {
 
   activeEntry(roundId: string): { evolutionId: string; store: RefineStateStore; meta: MetaSessionManager; workspace?: CandidateWorkspaceHandle } | undefined {
     const active = this.active.get(roundId)
+    const execution = active?.currentCandidateId === undefined ? undefined : active.executions.get(active.currentCandidateId)
     return active === undefined ? undefined : {
       evolutionId: active.evolution.spec.evolutionId, store: active.evolution.store, meta: active.evolution.meta,
-      ...(active.workspace === undefined ? {} : { workspace: active.workspace }),
+      ...(execution?.workspace === undefined ? {} : { workspace: execution.workspace }),
     }
   }
 
@@ -376,16 +394,30 @@ export class RefineService {
     store: RefineStateStore
     meta: MetaSessionManager
     workspace: CandidateWorkspaceHandle
+    candidateId: string
+    parentHarnessRef: string
+    parentHarnessDigest: string
+    baseline: EvaluationEvidence
   } | undefined {
     for (const [roundId, active] of this.active) {
-      if (active.metaSessionId !== sessionId || active.workspace === undefined) continue
+      const execution = [...active.executions.values()].find(value => value.metaSessionId === sessionId)
+      if (execution?.workspace === undefined) continue
+      // activeEntryForSession is synchronous; generation stores this routing on
+      // the workspace and candidate execution, so derive the immutable parent
+      // from the handle and use the in-memory baseline snapshot below.
+      const baseline = execution.baseline
+      if (baseline === undefined) continue
       return {
         evolutionId: active.evolution.spec.evolutionId,
         spec: active.evolution.spec,
         roundId,
         store: active.evolution.store,
         meta: active.evolution.meta,
-        workspace: active.workspace,
+        workspace: execution.workspace,
+        candidateId: execution.candidateId,
+        parentHarnessRef: execution.workspace.parentRef,
+        parentHarnessDigest: execution.workspace.parentDigest,
+        baseline,
       }
     }
     return undefined
@@ -396,7 +428,10 @@ export class RefineService {
     for (const active of this.active.values()) {
       const error = new Error('RefineService disposed')
       active.abort.abort(error)
-      active.finalization.reject(error)
+      for (const execution of active.executions.values()) {
+        execution.abort.abort(error)
+        execution.finalization.reject(error)
+      }
     }
     await Promise.allSettled([...this.drives])
     await Promise.all([...this.active.values()].map(active => active.lock.release().catch(() => {})))
@@ -416,11 +451,11 @@ export class RefineService {
     const lock = await evolution.store.acquireRoundLock(roundId)
     const champion = await this.requireChampion(evolution.store).catch(async (error: unknown) => { await lock.release(); throw error })
     const population = await evolution.store.readPopulation().catch(async (error: unknown) => { await lock.release(); throw error })
-    const parentCandidateIds = population?.members.filter(member => member.harnessRef === champion.ref).map(member => member.candidateId) ?? []
+    if (population === undefined) { await lock.release(); throw new Error('evolution has no research population') }
     const round = this.newRound(
-      evolution.spec, champion, source, batchId, roundId, 1, roundCount, parentCandidateIds, advisoryFocus,
+      evolution.spec, champion, population, source, batchId, roundId, 1, roundCount, advisoryFocus,
     )
-    const active = this.newActive(evolution, lock, source, batchId, 1, roundCount, round.candidatePool[0]!.candidateId, advisoryFocus)
+    const active = this.newActive(evolution, lock, source, batchId, 1, roundCount, advisoryFocus)
     this.active.set(roundId, active)
     try {
       await evolution.store.writeRound(round)
@@ -437,22 +472,38 @@ export class RefineService {
   private newRound(
     spec: EvolutionSpec,
     champion: ChampionState,
+    population: PopulationState,
     source: RefinementRound['source'],
     batchId: string,
     roundId: string,
     roundIndex: number,
     roundCount: number,
-    parentCandidateIds: string[],
     advisoryFocus?: SemanticTarget[],
   ): RefinementRound {
     const timestamp = now()
     const taskSampler = this.components.taskSampler(spec.rollout.taskSampler)
     const plan = taskSampler.resolve(roundId, spec.datasets, spec.rollout, spec.taskBudgetMs)
     const slots = this.components.candidateGenerator(spec.candidateGeneration.strategy)
-      .plan(roundId, champion.ref, spec.candidateGeneration.maxCandidates)
-    if (slots.length !== 1) {
-      throw new Error('current DSH runtime cannot fork a durable Meta session; candidateGeneration.maxCandidates must be 1')
-    }
+      .plan(roundId, population.members.map(member => ({
+        candidateId: member.candidateId,
+        harnessRef: member.harnessRef,
+        harnessDigest: member.harnessDigest,
+        parentCandidateIds: [...member.parentCandidateIds],
+        lineageRootId: member.lineageRootId,
+        metrics: { ...member.metrics },
+      })), spec.candidateGeneration.maxCandidates)
+    if (slots.length !== spec.candidateGeneration.maxCandidates) throw new Error('candidate generator returned the wrong number of slots')
+    const parentAllocations = slots.map(slot => {
+      if (slot.parentCandidateIds.length !== 1) throw new Error('each candidate must have exactly one research parent')
+      const parent = population.members.find(member => member.candidateId === slot.parentCandidateIds[0])
+      if (parent === undefined || parent.harnessRef !== slot.parentHarnessRef) throw new Error('candidate generator returned an unknown parent')
+      return {
+        candidateId: slot.candidateId,
+        parentCandidateId: parent.candidateId,
+        parentHarnessRef: parent.harnessRef,
+        parentHarnessDigest: parent.harnessDigest,
+      }
+    })
     return {
       evolutionId: spec.evolutionId, roundId, workspaceRoot: this.options.workspaceRoot,
       status: 'queued', source, createdAt: timestamp, updatedAt: timestamp,
@@ -460,7 +511,9 @@ export class RefineService {
       sandboxProfileRef: spec.sandboxProfileRef, seedTaskRef: spec.datasets.seed.ref, heldOutRef: spec.datasets.heldOut.ref,
       taskBudgetMs: spec.taskBudgetMs, promotionPolicy: { ...spec.promotion.policy.config },
       batchId, roundIndex, roundCount, plan,
-      candidatePool: slots.map(slot => ({ ...slot, parentCandidateIds: [...parentCandidateIds], roundId, status: 'generating' })),
+      parentPopulationDigest: population.digest,
+      parentAllocations,
+      candidatePool: slots.map(slot => ({ ...slot, roundId, status: 'generating' })),
       ...(advisoryFocus === undefined ? {} : { advisoryFocus }),
     }
   }
@@ -472,12 +525,11 @@ export class RefineService {
     batchId: string,
     roundIndex: number,
     roundCount: number,
-    candidateId: string,
     advisoryFocus?: SemanticTarget[],
   ): ActiveRound {
     return {
-      evolution, lock, source, batchId, roundIndex, roundCount, candidateId,
-      abort: new AbortController(), finalization: finalizationResolvers(), finalizationSubmitted: false,
+      evolution, lock, source, batchId, roundIndex, roundCount,
+      abort: new AbortController(), executions: new Map(),
       ...(advisoryFocus === undefined ? {} : { advisoryFocus }),
     }
   }
@@ -489,185 +541,261 @@ export class RefineService {
     let continueBatch = false
     try {
       let round = await this.transition(store, roundId, { status: 'baseline-running' })
-      const baseline = await active.evolution.evaluator.evaluate(round, {
+      const championBaseline = await active.evolution.evaluator.evaluate(round, {
         phase: 'seed-baseline', dataset: round.seedTaskRef, harnessRef: round.targetHarnessRef,
         condition: round.plan.seed,
       }, active.abort.signal)
-      round = await this.transition(store, roundId, { status: 'preparing-candidate', baseline })
-      const workspace = await this.workspaceManager.create(round, active.abort.signal)
-      active.workspace = workspace
-      round = await this.transition(store, roundId, {
-        status: 'candidate-editing',
-        candidatePool: this.patchCandidate(round, active.candidateId, { workspaceId: workspace.workspaceId }),
-      })
-      const agent = await meta.agent()
-      active.metaSessionId = String(agent.id)
-      this.workspaceManager.bind(workspace.workspaceId, active.metaSessionId)
-      await meta.wake(round)
-      const generationTimeoutMs = active.evolution.spec.candidateGeneration.budget.timeoutMs
-      let generationTimer: ReturnType<typeof setTimeout> | undefined
-      const generationTimeout = new Promise<never>((_resolve, reject) => {
-        generationTimer = setTimeout(() => {
-          const error = new Error(`candidate generation exceeded its ${generationTimeoutMs}ms budget`)
-          active.abort.abort(error)
-          reject(error)
-        }, generationTimeoutMs)
-      })
-      let proposal: FinalizationValue
-      try {
-        proposal = await Promise.race([active.finalization.promise, generationTimeout])
-      } finally {
-        if (generationTimer !== undefined) clearTimeout(generationTimer)
+      const population = await store.readPopulation()
+      if (population === undefined || population.digest !== round.parentPopulationDigest) throw new Error('research population changed during round admission')
+      const parentBaselines = [{
+        parentCandidateId: population.members.find(member => member.harnessRef === round.targetHarnessRef)?.candidateId
+          ?? `champion-${round.targetHarnessRef}`,
+        parentHarnessRef: round.targetHarnessRef,
+        evidence: championBaseline,
+      }]
+      for (const parent of population.members) {
+        if (parentBaselines.some(value => value.parentCandidateId === parent.candidateId)) continue
+        const evidence = await active.evolution.evaluator.evaluate(round, {
+          phase: 'seed-baseline', dataset: round.seedTaskRef, harnessRef: parent.harnessRef, condition: round.plan.seed,
+        }, active.abort.signal)
+        parentBaselines.push({ parentCandidateId: parent.candidateId, parentHarnessRef: parent.harnessRef, evidence })
       }
       round = await this.transition(store, roundId, {
-        finalization: proposal.finalization,
-        ...(proposal.decline === undefined ? {} : { decline: proposal.decline }),
-        meta: proposal.meta, proposalEvidence: proposal.evidence,
-        candidatePool: this.patchCandidate(round, active.candidateId, {
-          ...(proposal.finalization === null ? {} : { proposal: proposal.finalization }),
-          ...(proposal.diff === undefined ? {} : { diff: proposal.diff }),
-          meta: proposal.meta,
-          proposalEvidence: proposal.evidence,
-        }),
+        status: 'preparing-candidate', baseline: championBaseline, parentBaselines,
       })
-      if (proposal.finalization === null || proposal.diff === undefined) {
-        await this.transition(store, roundId, { status: 'rejected', decision: 'no-change' })
-        continueBatch = true
-        return
+
+      const rootCheckpoint = await meta.checkpoint()
+      const parentCheckpoints = new Map<string, MetaCheckpointRef>()
+      for (const member of population.members) parentCheckpoints.set(member.candidateId, member.metaCheckpoint ?? rootCheckpoint)
+      const generationBudgetMs = active.evolution.spec.candidateGeneration.budget.timeoutMs
+      const generationDeadline = Date.now() + generationBudgetMs
+
+      // Generate and seal every sibling before any candidate rollout. This keeps
+      // proposal-time evidence independent of sibling evaluation order.
+      for (const initialCandidate of round.candidatePool) {
+        const candidateId = initialCandidate.candidateId
+        const allocation = round.parentAllocations?.find(value => value.candidateId === candidateId)
+        if (allocation === undefined) throw new Error(`candidate has no parent allocation: ${candidateId}`)
+        const parentBaseline = parentBaselines.find(value => value.parentCandidateId === allocation.parentCandidateId)?.evidence
+        const parentCheckpoint = parentCheckpoints.get(allocation.parentCandidateId)
+        if (parentBaseline === undefined || parentCheckpoint === undefined) throw new Error('candidate parent state is incomplete')
+        const execution: CandidateExecution = {
+          candidateId, abort: new AbortController(), finalization: finalizationResolvers(),
+          finalizationSubmitted: false, baseline: parentBaseline,
+        }
+        active.executions.set(candidateId, execution)
+        active.currentCandidateId = candidateId
+        let completedCheckpoint = false
+        try {
+          const workspace = await this.workspaceManager.create({
+            evolutionId: round.evolutionId,
+            roundId,
+            parentHarnessRef: allocation.parentHarnessRef,
+            parentHarnessDigest: allocation.parentHarnessDigest,
+          }, execution.abort.signal)
+          execution.workspace = workspace
+          const agent = await meta.fork(parentCheckpoint)
+          execution.metaSessionId = String(agent.id)
+          this.workspaceManager.bind(workspace.workspaceId, execution.metaSessionId)
+          round = await this.transition(store, roundId, {
+            status: 'candidate-editing',
+            candidatePool: this.patchCandidate(round, candidateId, {
+              workspaceId: workspace.workspaceId,
+              metaSessionId: execution.metaSessionId,
+              parentCheckpoint,
+            }),
+          })
+          const currentCandidate = round.candidatePool.find(value => value.candidateId === candidateId)!
+          await meta.wakeCandidate(round, currentCandidate, parentBaseline, agent)
+          const timeoutMs = Math.max(0, generationDeadline - Date.now())
+          let timer: ReturnType<typeof setTimeout> | undefined
+          const timeout = new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => reject(new Error(`candidate generation exceeded its ${generationBudgetMs}ms round budget`)), timeoutMs)
+          })
+          let proposal: FinalizationValue
+          try { proposal = await Promise.race([execution.finalization.promise, timeout]) }
+          finally { if (timer !== undefined) clearTimeout(timer) }
+          const resultCheckpoint = await meta.checkpoint(execution.metaSessionId)
+          completedCheckpoint = true
+          round = await this.transition(store, roundId, {
+            candidatePool: this.patchCandidate(round, candidateId, {
+              ...(proposal.finalization === null ? {} : { proposal: proposal.finalization }),
+              ...(proposal.decline === undefined ? {} : { decline: proposal.decline }),
+              ...(proposal.diff === undefined ? {} : { diff: proposal.diff }),
+              meta: proposal.meta, proposalEvidence: proposal.evidence, resultCheckpoint,
+              ...(proposal.finalization === null ? { status: 'discarded' as const } : {}),
+            }),
+          })
+          if (proposal.finalization === null || proposal.diff === undefined) continue
+          round = await this.transition(store, roundId, { status: 'building-candidate' })
+          this.workspaceManager.markFinalizing(workspace.workspaceId)
+          const verifiedDiff = await this.workspaceManager.verifySealed(workspace.workspaceId, proposal.diff, execution.abort.signal)
+          const sealed = await this.builder.finalizeWorkspace(workspace, verifiedDiff, execution.abort.signal)
+          await this.workspaceManager.markCommitted(workspace.workspaceId)
+          round = await this.transition(store, roundId, {
+            candidatePool: this.patchCandidate(round, candidateId, {
+              sealedVersion: {
+                commitOid: sealed.ref, treeOid: sealed.treeOid, manifestDigest: sealed.digest,
+                patchDigest: proposal.diff.patchDigest, immutableRef: sealed.immutableRef,
+              },
+            }),
+          })
+        } catch (error) {
+          round = await this.transition(store, roundId, {
+            candidatePool: this.patchCandidate(round, candidateId, {
+              status: 'failed',
+              failure: { phase: error instanceof SubstrateExpansionError ? 'building-candidate' : 'candidate-generation', message: errorMessage(error) },
+            }),
+          })
+        } finally {
+          await this.cleanupExecution(active, execution, completedCheckpoint ? undefined : 'candidate generation stopped')
+        }
       }
-      round = await this.transition(store, roundId, { status: 'building-candidate' })
-      let candidate
-      try {
-        this.workspaceManager.markFinalizing(workspace.workspaceId)
-        const verifiedDiff = await this.workspaceManager.verifySealed(workspace.workspaceId, proposal.diff, active.abort.signal)
-        candidate = await this.builder.finalizeWorkspace(workspace, verifiedDiff, active.abort.signal)
-        await this.workspaceManager.markCommitted(workspace.workspaceId)
-      } catch (error) {
-        if (!(error instanceof SubstrateExpansionError)) throw error
+      delete active.currentCandidateId
+
+      round = await this.transition(store, roundId, { status: 'candidate-seed-running' })
+      for (const candidate of round.candidatePool.filter(value => value.sealedVersion !== undefined && value.status !== 'failed')) {
+        const parentBaseline = parentBaselines.find(value => value.parentCandidateId === candidate.parentCandidateIds[0])?.evidence
+        if (parentBaseline === undefined || candidate.sealedVersion === undefined) throw new Error('candidate seed baseline is unavailable')
+        round = await this.transition(store, roundId, {
+          candidatePool: this.patchCandidate(round, candidate.candidateId, { status: 'evaluating' }),
+        })
+        try {
+          const seedCandidate = await active.evolution.evaluator.evaluate(round, {
+            phase: 'seed-candidate', dataset: round.seedTaskRef, harnessRef: candidate.sealedVersion.commitOid,
+            condition: round.plan.seed,
+          }, active.abort.signal)
+          this.assertParity(parentBaseline, seedCandidate, 'seed')
+          const comparison = {
+            parentBaselineEvalId: parentBaseline.evalId,
+            pairedTrials: pairedTrials(parentBaseline, seedCandidate),
+            scoreDelta: seedCandidate.primaryReward - parentBaseline.primaryReward,
+            requiredRegressions: this.requiredRegressions(round, parentBaseline, seedCandidate),
+          }
+          round = await this.transition(store, roundId, {
+            candidatePool: this.patchCandidate(round, candidate.candidateId, {
+              seedEvaluation: seedCandidate,
+              seedComparison: comparison,
+              metrics: await this.evaluateJudges(active.evolution.spec, seedCandidate),
+              status: 'ready',
+            }),
+          })
+        } catch (error) {
+          round = await this.transition(store, roundId, {
+            candidatePool: this.patchCandidate(round, candidate.candidateId, {
+              status: 'failed', failure: { phase: 'candidate-seed-running', message: errorMessage(error) },
+            }),
+          })
+        }
+      }
+
+      const selectable = round.candidatePool.flatMap(candidate => candidate.sealedVersion !== undefined
+        && candidate.seedEvaluation !== undefined && candidate.seedComparison !== undefined && candidate.metrics !== undefined
+        ? [{
+            candidateId: candidate.candidateId, parentHarnessRef: candidate.parentHarnessRef,
+            parentCandidateIds: candidate.parentCandidateIds, sealedVersion: candidate.sealedVersion,
+            seedEvaluation: candidate.seedEvaluation, seedComparison: candidate.seedComparison, metrics: candidate.metrics,
+          }]
+        : [])
+      if (selectable.length < active.evolution.spec.selection.survivors) {
         await this.transition(store, roundId, {
-          status: 'rejected-for-substrate', decision: 'rejected-for-substrate',
-          failure: { phase: 'building-candidate', message: error.message },
+          status: 'rejected', decision: 'no-change',
+          failure: { phase: 'selection', message: `only ${selectable.length} candidates were evaluable` },
         })
         continueBatch = true
         return
       }
-      round = await this.transition(store, roundId, {
-        status: 'candidate-seed-running',
-        candidatePool: this.patchCandidate(round, active.candidateId, {
-          status: 'evaluating',
-          sealedVersion: {
-            commitOid: candidate.ref,
-            treeOid: candidate.treeOid,
-            manifestDigest: candidate.digest,
-            patchDigest: proposal.diff.patchDigest,
-            immutableRef: candidate.immutableRef,
-          },
-        }),
-      })
-      const seedCandidate = await active.evolution.evaluator.evaluate(round, {
-        phase: 'seed-candidate', dataset: round.seedTaskRef, harnessRef: candidate.ref,
-        condition: round.plan.seed,
-      }, active.abort.signal)
-      this.assertParity(baseline, seedCandidate, 'seed')
-      let evaluation: RoundEvaluation = {
-        seedBaseline: baseline, seedCandidate,
-        seedPairedTrials: pairedTrials(baseline, seedCandidate),
-        scoreDelta: seedCandidate.primaryReward - baseline.primaryReward,
-        requiredRegressions: this.requiredRegressions(round, baseline, seedCandidate),
-      }
-      round = await this.transition(store, roundId, {
-        evaluation,
-        candidatePool: this.patchCandidate(round, active.candidateId, {
-          seedEvaluation: seedCandidate,
-          metrics: await this.evaluateJudges(active.evolution.spec, seedCandidate),
-          status: 'ready',
-        }),
-      })
       const selection = this.components.selector(active.evolution.spec.selection.strategy)
-        .select(round.candidatePool, active.evolution.spec.selection.survivors)
-      if (selection.selectedCandidateIds.length !== 1 || selection.selectedCandidateIds[0] !== active.candidateId) {
-        throw new Error('single-candidate runtime received an invalid selection decision')
-      }
+        .select(selectable, active.evolution.spec.selection.survivors)
+      if (!selection.selectedCandidateIds.includes(selection.promotionCandidateId)) throw new Error('promotion finalist must be a survivor')
       round = await this.transition(store, roundId, {
-        selection,
-        candidatePool: this.patchCandidate(round, active.candidateId, { status: 'selected' }),
+        selection, promotionCandidateId: selection.promotionCandidateId,
+        candidatePool: round.candidatePool.map(candidate => selection.selectedCandidateIds.includes(candidate.candidateId)
+          ? { ...candidate, status: 'selected' as const }
+          : candidate.status === 'ready' ? { ...candidate, status: 'discarded' as const } : candidate),
       })
-      if (!this.passesSeed(round, evaluation)) {
-        await this.transition(store, roundId, { status: 'rejected', decision: 'rejected' })
-        continueBatch = true
-        return
+      const finalist = round.candidatePool.find(value => value.candidateId === selection.promotionCandidateId)
+      if (finalist?.sealedVersion === undefined || finalist.seedEvaluation === undefined) throw new Error('promotion finalist is not evaluable')
+      let evaluation: RoundEvaluation = {
+        seedBaseline: championBaseline,
+        seedCandidate: finalist.seedEvaluation,
+        seedPairedTrials: pairedTrials(championBaseline, finalist.seedEvaluation),
+        scoreDelta: finalist.seedEvaluation.primaryReward - championBaseline.primaryReward,
+        requiredRegressions: this.requiredRegressions(round, championBaseline, finalist.seedEvaluation),
       }
-      round = await this.transition(store, roundId, { status: 'held-out-running' })
-      const heldOutBaseline = await active.evolution.evaluator.evaluate(round, {
-        phase: 'held-out-baseline', dataset: round.heldOutRef, harnessRef: round.targetHarnessRef,
-        condition: round.plan.heldOut,
-      }, active.abort.signal)
-      evaluation = { ...evaluation, heldOutBaseline }
       round = await this.transition(store, roundId, { evaluation })
-      const heldOutCandidate = await active.evolution.evaluator.evaluate(round, {
-        phase: 'held-out-candidate', dataset: round.heldOutRef, harnessRef: candidate.ref,
-        condition: round.plan.heldOut,
-      }, active.abort.signal)
-      this.assertParity(heldOutBaseline, heldOutCandidate, 'held-out')
-      evaluation = {
-        ...evaluation, heldOutCandidate,
-        heldOutPairedTrials: pairedTrials(heldOutBaseline, heldOutCandidate),
-        promotionMetrics: await this.evaluateJudges(active.evolution.spec, heldOutCandidate),
-        heldOutScoreDelta: heldOutCandidate.primaryReward - heldOutBaseline.primaryReward,
-        requiredRegressions: evaluation.requiredRegressions + this.requiredRegressions(round, heldOutBaseline, heldOutCandidate),
+      let accepted = false
+      if (this.passesSeed(round, evaluation)) {
+        round = await this.transition(store, roundId, { status: 'held-out-running' })
+        const heldOutBaseline = await active.evolution.evaluator.evaluate(round, {
+          phase: 'held-out-baseline', dataset: round.heldOutRef, harnessRef: round.targetHarnessRef,
+          condition: round.plan.heldOut,
+        }, active.abort.signal)
+        const heldOutCandidate = await active.evolution.evaluator.evaluate(round, {
+          phase: 'held-out-candidate', dataset: round.heldOutRef, harnessRef: finalist.sealedVersion.commitOid,
+          condition: round.plan.heldOut,
+        }, active.abort.signal)
+        this.assertParity(heldOutBaseline, heldOutCandidate, 'held-out')
+        evaluation = {
+          ...evaluation, heldOutBaseline, heldOutCandidate,
+          heldOutPairedTrials: pairedTrials(heldOutBaseline, heldOutCandidate),
+          promotionMetrics: await this.evaluateJudges(active.evolution.spec, heldOutCandidate),
+          heldOutScoreDelta: heldOutCandidate.primaryReward - heldOutBaseline.primaryReward,
+          requiredRegressions: evaluation.requiredRegressions + this.requiredRegressions(round, heldOutBaseline, heldOutCandidate),
+        }
+        round = await this.transition(store, roundId, {
+          evaluation,
+          candidatePool: this.patchCandidate(round, finalist.candidateId, { heldOutEvaluation: heldOutCandidate }),
+        })
+        accepted = this.passesHeldOut(round, evaluation, active.evolution.spec)
       }
+
+      const nextPopulation = this.nextPopulation(round, population, selection.selectedCandidateIds)
+      const nextChampion = accepted ? {
+        schemaVersion: 2 as const,
+        ref: finalist.sealedVersion.commitOid,
+        manifestDigest: finalist.sealedVersion.manifestDigest,
+        updatedAt: now(), roundId,
+      } : undefined
       round = await this.transition(store, roundId, {
-        evaluation,
-        candidatePool: this.patchCandidate(round, active.candidateId, { heldOutEvaluation: heldOutCandidate }),
+        status: 'promoting',
+        commitIntent: {
+          expectedPopulationDigest: population.digest, nextPopulation,
+          expectedChampionRef: round.targetHarnessRef,
+          ...(nextChampion === undefined ? {} : { nextChampion }),
+          decision: accepted ? 'accepted' : 'rejected',
+          promotionCandidateId: finalist.candidateId,
+          phase: 'prepared',
+        },
       })
-      if (!this.passesHeldOut(round, evaluation, active.evolution.spec)) {
-        await this.transition(store, roundId, { status: 'rejected', decision: 'rejected' })
-        continueBatch = true
-        return
-      }
-      round = await this.transition(store, roundId, { status: 'promoting' })
-      await store.compareAndSwapChampion(round.targetHarnessRef, {
-        schemaVersion: 2, ref: candidate.ref, manifestDigest: candidate.digest, updatedAt: now(), roundId,
+      await store.compareAndSwapPopulation(population.digest, nextPopulation)
+      round = await this.transition(store, roundId, {
+        commitIntent: { ...round.commitIntent!, phase: 'population-committed' },
       })
-      const previousPopulation = await store.readPopulation()
-      const candidateRecord = round.candidatePool.find(value => value.candidateId === active.candidateId)!
-      const parentMember = previousPopulation?.members.find(member => candidateRecord.parentCandidateIds.includes(member.candidateId))
-      const populationIdentity = {
-        evolutionId: round.evolutionId,
-        generation: (previousPopulation?.generation ?? 0) + 1,
-        members: [{
-          candidateId: active.candidateId,
-          harnessRef: candidate.ref,
-          harnessDigest: candidate.digest,
-          parentCandidateIds: [...candidateRecord.parentCandidateIds],
-          lineageRootId: parentMember?.lineageRootId ?? active.candidateId,
-          ...(active.metaSessionId === undefined ? {} : { metaSessionId: active.metaSessionId }),
-          metrics: {
-            ...(evaluation.promotionMetrics ?? {
-              quality: heldOutCandidate.primaryReward,
-              taskSuccessRate: heldOutCandidate.summary.total === 0 ? 0 : heldOutCandidate.summary.passed / heldOutCandidate.summary.total,
-            }),
-          },
-          selectedAt: now(),
-        }],
-      }
-      await store.writePopulation({ ...populationIdentity, digest: digestJson(populationIdentity) })
-      await this.transition(store, roundId, {
-        status: 'accepted', decision: 'accepted', promotedCandidateId: active.candidateId,
+      if (nextChampion !== undefined) await store.compareAndSwapChampion(round.targetHarnessRef, nextChampion)
+      round = await this.transition(store, roundId, {
+        commitIntent: { ...round.commitIntent!, phase: 'champion-committed' },
       })
+      await this.transition(store, roundId, accepted
+        ? { status: 'accepted', decision: 'accepted', promotedCandidateId: finalist.candidateId }
+        : { status: 'rejected', decision: 'rejected' })
       continueBatch = true
     } catch (error) {
       const round = await store.readRound(roundId)
       if (round !== undefined && !TERMINAL.has(round.status)) {
-        await store.writeRound({
-          ...round, status: 'failed', updatedAt: now(), failure: { phase: round.status, message: errorMessage(error) },
-        }).catch(() => {})
+        if (round.commitIntent !== undefined) {
+          await this.reconcileCommitIntent(store, round).catch(async recoveryError => store.writeRound({
+            ...round, status: 'failed', updatedAt: now(),
+            failure: { phase: 'commit-recovery', message: errorMessage(recoveryError) },
+          }).catch(() => {}))
+        } else {
+          await store.writeRound({
+            ...round, status: 'failed', updatedAt: now(), failure: { phase: round.status, message: errorMessage(error) },
+          }).catch(() => {})
+        }
       }
     } finally {
-      if (active.metaSessionId !== undefined && active.workspace !== undefined) {
-        try { this.workspaceManager.unbind(active.metaSessionId, active.workspace.workspaceId) } catch {}
-      }
-      if (active.workspace !== undefined) await this.workspaceManager.dispose(active.workspace.workspaceId).catch(() => {})
+      for (const execution of active.executions.values()) await this.cleanupExecution(active, execution, 'round stopped').catch(() => {})
       this.active.delete(roundId)
       if (continueBatch && active.roundIndex < active.roundCount && !this.disposed) {
         try { await this.queueContinuation(active); return } catch (error) {
@@ -684,16 +812,16 @@ export class RefineService {
   private async queueContinuation(previous: ActiveRound): Promise<void> {
     const champion = await this.requireChampion(previous.evolution.store)
     const population = await previous.evolution.store.readPopulation()
-    const parentCandidateIds = population?.members.filter(member => member.harnessRef === champion.ref).map(member => member.candidateId) ?? []
+    if (population === undefined) throw new Error('evolution has no research population')
     const roundId = crypto.randomUUID()
     const index = previous.roundIndex + 1
     const round = this.newRound(
-      previous.evolution.spec, champion, previous.source, previous.batchId, roundId, index, previous.roundCount,
-      parentCandidateIds, previous.advisoryFocus,
+      previous.evolution.spec, champion, population, previous.source, previous.batchId, roundId, index, previous.roundCount,
+      previous.advisoryFocus,
     )
     const active = this.newActive(
       previous.evolution, previous.lock, previous.source, previous.batchId, index, previous.roundCount,
-      round.candidatePool[0]!.candidateId, previous.advisoryFocus,
+      previous.advisoryFocus,
     )
     await previous.evolution.store.writeRound(round)
     await previous.lock.retarget(roundId)
@@ -764,7 +892,7 @@ export class RefineService {
 
   private passesSeed(round: RefinementRound, evaluation: RoundEvaluation): boolean {
     const promotion = round.promotionPolicy
-    const candidate = round.candidatePool.find(value => value.status === 'selected')
+    const candidate = round.candidatePool.find(value => value.candidateId === round.promotionCandidateId)
     return evaluation.seedCandidate.primaryReward >= promotion.minimumCandidateScore
       && evaluation.scoreDelta >= promotion.minimumAbsoluteGain
       && evaluation.requiredRegressions <= promotion.maxRequiredRegressions
@@ -775,7 +903,7 @@ export class RefineService {
   private passesHeldOut(round: RefinementRound, evaluation: RoundEvaluation, spec: EvolutionSpec): boolean {
     const baseline = evaluation.heldOutBaseline
     const candidate = evaluation.heldOutCandidate
-    const selected = round.candidatePool.find(value => value.status === 'selected')
+    const selected = round.candidatePool.find(value => value.candidateId === round.promotionCandidateId)
     if (baseline === undefined || candidate === undefined || evaluation.heldOutScoreDelta === undefined
       || selected?.sealedVersion?.commitOid !== candidate.actualCommit) return false
     return this.components.promotionPolicy(spec.promotion.policy).decide({
@@ -826,12 +954,11 @@ export class RefineService {
 
   private validateFinalizationEvidence(
     round: RefinementRound,
+    baseline: EvaluationEvidence,
     finalization: CandidateFinalization | null,
     decline: CandidateDecline | undefined,
     audit: ProposalEvidenceAudit,
   ): void {
-    const baseline = round.baseline
-    if (baseline === undefined) throw new Error('finalization has no current baseline evidence')
     if (audit.evolutionId !== round.evolutionId || audit.roundId !== round.roundId || audit.baselineEvalId !== baseline.evalId) {
       throw new Error('finalization evidence does not belong to the current evolution/round baseline')
     }
@@ -851,6 +978,80 @@ export class RefineService {
       .filter(trial => trial.status === 'errored' || (trialReward(trial) ?? 0) <= 0)
       .flatMap(trial => trial.runId === undefined || diagnosed.has(trial.runId) ? [] : [trial.runId])
     if (missing.length > 0) throw new Error(`finalization requires trajectory diagnostics for every failed baseline run: ${missing.join(', ')}`)
+  }
+
+  private nextPopulation(round: RefinementRound, previous: PopulationState, selectedIds: readonly string[]): PopulationState {
+    const members: PopulationMember[] = selectedIds.map(candidateId => {
+      const candidate = round.candidatePool.find(value => value.candidateId === candidateId)
+      if (candidate?.sealedVersion === undefined || candidate.metrics === undefined
+        || candidate.metaSessionId === undefined || candidate.resultCheckpoint === undefined) {
+        throw new Error(`selected candidate is missing durable seed state: ${candidateId}`)
+      }
+      const parent = previous.members.find(value => value.candidateId === candidate.parentCandidateIds[0])
+      if (parent === undefined) throw new Error(`selected candidate has unknown parent: ${candidateId}`)
+      return {
+        candidateId,
+        harnessRef: candidate.sealedVersion.commitOid,
+        harnessDigest: candidate.sealedVersion.manifestDigest,
+        parentCandidateIds: [...candidate.parentCandidateIds],
+        lineageRootId: parent.lineageRootId,
+        metaSessionId: candidate.metaSessionId,
+        metaCheckpoint: candidate.resultCheckpoint,
+        metrics: { ...candidate.metrics },
+        selectedAt: now(),
+      }
+    })
+    const identity = { evolutionId: round.evolutionId, generation: previous.generation + 1, members }
+    return { ...identity, digest: digestJson(identity) }
+  }
+
+  private async cleanupExecution(
+    active: ActiveRound,
+    execution: CandidateExecution,
+    cancelReason?: string,
+  ): Promise<void> {
+    const { meta } = active.evolution
+    const sessionId = execution.metaSessionId
+    const workspace = execution.workspace
+    if (cancelReason !== undefined && sessionId !== undefined) await meta.cancel(sessionId, cancelReason).catch(() => {})
+    if (sessionId !== undefined && workspace !== undefined) {
+      try { this.workspaceManager.unbind(sessionId, workspace.workspaceId) } catch {}
+    }
+    if (workspace !== undefined) await this.workspaceManager.drain(workspace.workspaceId).catch(() => {})
+    if (sessionId !== undefined) await meta.release(sessionId).catch(() => {})
+    if (workspace !== undefined) await this.workspaceManager.dispose(workspace.workspaceId).catch(() => {})
+    active.executions.delete(execution.candidateId)
+    if (active.currentCandidateId === execution.candidateId) delete active.currentCandidateId
+  }
+
+  private async reconcileCommitIntent(store: RefineStateStore, round: RefinementRound): Promise<void> {
+    const intent = round.commitIntent
+    if (intent === undefined) throw new Error('round has no commit intent')
+    const population = await store.readPopulation()
+    if (population?.digest === intent.expectedPopulationDigest) {
+      await store.compareAndSwapPopulation(intent.expectedPopulationDigest, intent.nextPopulation)
+    } else if (population?.digest !== intent.nextPopulation.digest) {
+      throw new Error('population does not match either side of the commit intent')
+    }
+    const champion = await this.requireChampion(store)
+    if (intent.nextChampion !== undefined) {
+      if (champion.ref === intent.expectedChampionRef) {
+        await store.compareAndSwapChampion(intent.expectedChampionRef, intent.nextChampion)
+      } else if (champion.ref !== intent.nextChampion.ref) {
+        throw new Error('champion does not match either side of the commit intent')
+      }
+    } else if (champion.ref !== intent.expectedChampionRef) {
+      throw new Error('rejected commit intent observed an unexpected champion')
+    }
+    const { failure: _failure, ...recovered } = round
+    await store.writeRound({
+      ...recovered,
+      status: intent.decision,
+      decision: intent.decision,
+      ...(intent.decision === 'accepted' ? { promotedCandidateId: intent.promotionCandidateId } : {}),
+      commitIntent: { ...intent, phase: 'champion-committed' },
+      updatedAt: now(),
+    })
   }
 
   private async transition(store: RefineStateStore, roundId: string, patch: Partial<RefinementRound>): Promise<RefinementRound> {
@@ -913,9 +1114,6 @@ export class RefineService {
       throw new Error(`unsupported rollout provider: ${spec.rollout.provider.id}`)
     }
     for (const judge of spec.evaluation.judges) this.components.judge(judge)
-    if (spec.candidateGeneration.maxCandidates !== 1 || spec.selection.survivors !== 1) {
-      throw new Error('current DSH runtime does not support durable session fork; maxCandidates and survivors must be 1')
-    }
     if (spec.rollout.seeds !== undefined) throw new Error('current Hitch adapter does not support typed rollout seeds')
     if (spec.rollout.sampling.temperature !== undefined) {
       throw new Error('current Hitch adapter does not support typed rollout temperature')

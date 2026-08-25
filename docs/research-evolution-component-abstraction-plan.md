@@ -1,6 +1,6 @@
 # Gear 可组合进化实验框架改造方案
 
-- 状态：第一阶段已实现；依赖上游能力的多候选与质量—多样性阶段待完成
+- 状态：串行 best-of-N、多 survivor population 与唯一 promotion 已实现；candidate 并发和质量—多样性阶段待完成
 - 日期：2026-08-25
 - 目标：在保留 Gear 现有 Git 身份、隔离、held-out 保密和 promotion 事务安全的前提下，把固定的单候选进化流程升级为可配置、可审计、可扩展的研究实验框架。
 
@@ -8,7 +8,7 @@
 
 当前 Gear 已经具备一组可靠的执行基础：candidate 使用完整 Git commit 标识，dataset 和 evolution spec 带有 digest，Meta 与 target 隔离，seed/held-out 分区受到控制，promotion 通过 champion compare-and-swap 完成。
 
-当前缺口不在于能否运行一次安全的 harness refinement，而在于实验算法和实际运行参数没有形成统一、不可变、可恢复的研究接口：
+本方案启动时识别出的缺口不在于能否运行一次安全的 harness refinement，而在于实验算法和实际运行参数没有形成统一、不可变、可恢复的研究接口：
 
 - `metaSampling` 被保存和记录，但没有进入真实 Meta 模型请求；
 - `continue` 从当前全局配置创建 Meta session 和 Hitch evaluator，而不是完全从 evolution spec 恢复；
@@ -19,15 +19,15 @@
 - 当前状态只能表达单一 champion，不能表达 candidate population、survivor 和 lineage；
 - evaluator 和 evidence 类型仍然绑定 Hitch，社区 provider 无法仅通过插件加入。
 
-Meta Agent 本身不需要 Gear 重新发明模块系统。DSH preset 已经能够组合完整 Agent 的 system prompt、skills、tools、workflows、hooks、plugins 和文档 memory。Gear 的缺口是当前只在插件启动时选择一个全局 `metaPreset`，没有把解析后的完整 DSH preset 作为 per-evolution、可 digest、可恢复的一等实验身份。
+Meta Agent 本身不需要 Gear 重新发明模块系统。DSH preset 已经能够组合完整 Agent 的 system prompt、skills、tools、workflows、hooks、plugins 和文档。Gear 已将解析后的完整 DSH preset 固化为 per-evolution、可 digest、可恢复的一等实验身份；动态消息历史继续由 DSH session 管理。
 
 改造按以下顺序推进：
 
 1. 修复参数实际生效和 continuation 正确性；
 2. 引入类型化、可 digest 的评测条件和配对证据；
 3. 建立受约束的组件 provider 接口；
-4. 支持 best-of-N，但仍保持单 survivor；
-5. 再引入 population、lineage 和多 survivor；
+4. 支持 best-of-N，并保持唯一 promotion finalist；
+5. 引入独立的 research population、lineage 和多 survivor；
 6. 最后增加 trajectory diversity 和质量—多样性选择器。
 
 ## 2. 术语
@@ -60,7 +60,7 @@ baseline 和 candidate 可以引用同一个 `EvaluationCondition`，但必须�
 
 ### 2.7 Population
 
-当前所有 survivor 的集合。现有 Gear 可以视为 population size 永远为 1，唯一成员就是 champion。
+当前所有 survivor 的集合。population 是研究状态，可以包含多个成员，并且不要求其中每个成员都是 deployment champion。
 
 ### 2.8 Lineage
 
@@ -301,7 +301,7 @@ preset 可以使用 DSH 原生 composition 组合 system prompt、skills、workf
 
 ### 5.2 Per-evolution Meta Agent
 
-当前全局 `DshMetaAgentHost(config.metaPreset, config.metaModel)` 必须改为根据 `spec.metaAgent` 创建 runtime。同一 Gear 进程应能同时运行：
+Meta runtime 已根据 `spec.metaAgent` 按 evolution 创建。同一 Gear 进程可以同时运行：
 
 ```text
 Evolution A -> refine-meta-basic
@@ -318,9 +318,11 @@ Evolution C -> refine-meta-security
 ```ts
 interface MetaRuntimeState {
   sessionId: string
-  parentSessionId?: string
-  checkpointRef?: string
-  checkpointDigest?: string
+  checkpoint?: {
+    sourceSessionId: string
+    eventCount: number
+    prefixDigest: string
+  }
 }
 ```
 
@@ -542,7 +544,8 @@ interface CandidateGenerationRequest {
 }
 
 interface CandidateGenerationCapabilities {
-  forkMetaAgent(parentSessionId: string, checkpointRef?: string): Promise<MetaAgentHandle>
+  checkpointMetaAgent(sessionId: string): Promise<MetaCheckpointRef>
+  forkMetaAgent(checkpoint: MetaCheckpointRef): Promise<MetaAgentHandle>
   createWorkspace(parentHarnessRef: string): Promise<CandidateWorkspaceHandle>
   runCandidateCheck(workspaceId: string): Promise<CandidateCheckResult>
   sealWorkspace(workspaceId: string): Promise<CandidateDiffSummary>
@@ -555,7 +558,8 @@ interface CandidateSubmission {
   workspaceId: string
   finalization: CandidateFinalization
   metaEvidence: MetaAttribution
-  metaCheckpointRef?: string
+  parentCheckpoint: MetaCheckpointRef
+  resultCheckpoint: MetaCheckpointRef
 }
 ```
 
@@ -587,6 +591,7 @@ interface CandidateSelectionRequest {
 
 interface SelectionDecision {
   selectedCandidateIds: string[]
+  promotionCandidateId: string
   rankedCandidateIds?: string[]
   reason: string
   metricsDigest: string
@@ -714,9 +719,9 @@ interface EvaluationEvidence {
 }
 ```
 
-## 9. Best-of-N：先保持单 survivor
+## 9. Best-of-N 与唯一 promotion finalist
 
-第一版多候选仅支持：
+当前内置策略支持：
 
 ```yaml
 candidateGeneration:
@@ -724,18 +729,18 @@ candidateGeneration:
   maxCandidates: 4
 selection:
   strategy: highest-quality
-  survivors: 1
+  survivors: 1 # 也可以大于 1，但 promotionCandidateId 仍然唯一
 ```
 
 ### 9.1 每轮流程
 
 1. 固化 `ResolvedRoundPlan`；
-2. baseline 执行全部 seed/dev conditions；
-3. 从同一个固定 Meta history prefix fork N 个 Meta session；
+2. 为每个 distinct research parent 执行 seed/dev baseline，并单独固定本轮 deployment champion baseline；
+3. 每个 child 从其 parent 的同一个精确 Meta history prefix fork 独立 session；
 4. 为每个 session 创建独立 candidate workspace；
 5. 生成和 finalize N 个 candidate；
-6. 所有 candidate 执行相同 seed/dev conditions；
-7. `CandidateSelector` 选出一个 finalist；
+6. 所有 proposal 均完成后，candidate 才执行相同 seed/dev conditions，避免后生成 sibling 看到先评测 sibling 的结果；
+7. `CandidateSelector` 选出 survivor 集合，并从其中明确一个 `promotionCandidateId`；
 8. 只有 finalist 运行 held-out conditions；
 9. `PromotionPolicyProvider` 决定是否更新 champion；
 10. 未入选 candidate、session 和 evidence 归档，所有 workspace 清理。
@@ -752,7 +757,9 @@ Meta history prefix P
 
 各 proposal session 不能顺序共享新增历史，否则后一个 proposal 会受到前一个 proposal 的思路影响，不再是相同起点的独立样本。
 
-winner 的 Meta session 可以成为下一轮 lineage head；未入选 session 只保留审计记录。
+checkpoint 使用 `sourceSessionId + eventCount + prefixDigest` 标识精确事件前缀。Gear 先等待 Agent idle，再在 DSH maintenance phase 内执行 `sessions.flush()` durability barrier 并计算 prefix digest；没有 persistence listener 参与时拒绝 fork。child 通过 `agents.create({ seed: exactPrefix, meta: { parentSession, seedLength, cwd, agentPreset } })` 创建，不能先调用 `sessions.fork()` 创建裸 session 再交给 Agent factory。
+
+每个 survivor 的 Meta session checkpoint 成为自身下一代 lineage head；未入选 session 只保留审计记录。当前 controller 串行生成 candidate，session/workspace/state 身份已经按 candidate 隔离，后续可增加受限并发而不改变持久化模型。
 
 ### 9.3 Candidate 状态
 
@@ -775,11 +782,14 @@ interface CandidateRecord {
   parentHarnessRef: string
   parentCandidateIds: string[]
   metaSessionId: string
-  metaCheckpointRef?: string
+  parentCheckpoint?: MetaCheckpointRef
+  resultCheckpoint?: MetaCheckpointRef
   workspaceId: string
   sealedVersion?: SealedCandidateVersion
   proposal?: CandidateFinalization
+  decline?: CandidateDecline
   seedEvaluation?: EvaluationEvidence
+  seedComparison?: CandidateSeedComparison
   status:
     | 'generating'
     | 'ready'
@@ -810,6 +820,7 @@ treeOid
 ```ts
 candidatePool: CandidateRecord[]
 selection?: SelectionDecision
+promotionCandidateId?: string
 promotedCandidateId?: string
 ```
 
@@ -831,7 +842,7 @@ candidate pool
 
 ## 11. Population、survivor 与 lineage
 
-best-of-N 稳定后，再支持 `survivors > 1`。
+`survivors > 1` 表示 research population 可以保留多个 seed-selected candidate；它不表示多个版本同时替换 deployment champion。每轮仍只有一个 promotion finalist。
 
 ```ts
 interface PopulationState {
@@ -848,7 +859,7 @@ interface PopulationMember {
   parentCandidateIds: string[]
   lineageRootId: string
   metaSessionId: string
-  metaCheckpointRef?: string
+  metaCheckpoint?: MetaCheckpointRef
   metrics: MetricSet
   selectedAt: string
 }
@@ -858,8 +869,10 @@ interface PopulationMember {
 
 ```ts
 interface ParentAllocation {
+  candidateId: string
   parentCandidateId: string
-  proposalCount: number
+  parentHarnessRef: string
+  parentHarnessDigest: string
 }
 ```
 
@@ -876,6 +889,8 @@ H0
 ```
 
 Gear 必须记录每个 child 的 parent commit、parent candidate、Meta session lineage、metrics 和 selection reason。
+
+population 只保存 seed/dev selection metrics。held-out evidence 与 promotion metrics 只留在 round 的 promotion-private state，不能进入下一代 parent allocation 或 selector 输入。promotion 被拒绝时，research population 仍可前进，而 deployment champion 保持不变。
 
 population state 与 champion state 分开保存：
 
@@ -984,12 +999,12 @@ plan/result 合同必须包含：
 当前 TSV 固定一行对应一个 candidate，按 `evolution_id + round_id + candidate_id` 排序，字段顺序为：
 
 ```tsv
-evolution_id	evolution_name	round_id	candidate_id	status	parent_commit	candidate_commit	candidate_tree	immutable_ref	seed_eval_id	seed_score	heldout_eval_id	heldout_score	decision	record_path	updated_at
+evolution_id	evolution_name	round_id	candidate_id	status	parent_commit	candidate_commit	candidate_tree	immutable_ref	seed_eval_id	seed_score	heldout_eval_id	heldout_score	decision	selection_role	record_path	updated_at
 ```
 
 约束如下：
 
-- `status` 是 Candidate Record 状态；`decision` 表示 selected、promoted 或 round terminal decision；
+- `status` 是 Candidate Record 状态；`decision` 表示 selected、promoted 或 round terminal decision；`selection_role` 区分唯一 `finalist` 与其他 `survivor`；
 - `candidate_commit/candidate_tree/immutable_ref` 在 seal 前为空；评测字段在对应 evaluation 完成前为空；
 - `record_path` 是相对 `stateRoot` 的权威 JSON 路径；当前 candidate 内嵌在 round，因此指向 `rounds/<round-id>.json`；
 - worktree 绝对路径、完整 diff、proposal、trajectory 和 run ID 列表不得写入 TSV；
@@ -1004,11 +1019,11 @@ evolution_id	evolution_name	round_id	candidate_id	status	parent_commit	candidate
 - sealed candidate 必须验证 `treeOid == commitOid^{tree}`，其不可变 ref 必须仍指向同一个 `commitOid`；
 - resolved DSH preset dependency manifest 和 Meta session checkpoint 必须验证 digest；
 - 并行 proposal 必须从明确的 parent session checkpoint 分叉，不能共享可变 session；
-- 进程重启时不重新执行未达到 durable checkpoint 的模型请求；
-- 未完成 rollout 标记基础设施失败或根据明确 retry policy 重试；
+- 进程重启时，已达到 durable checkpoint 的 Meta session 可以按精确 prefix 恢复；尚未形成 durable Gear record 的外部模型或 rollout 调用不能声称 exactly-once；
+- 未完成 rollout 标记基础设施失败或按显式 at-least-once retry policy 重试；provider 将来提供 idempotency key/query 后才能升级 exactly-once 语义；
 - 已完成 rollout evidence 不得因重启重复计分；
 - candidate workspace 继续使用 sidecar 精确恢复和清理；
-- population 更新、champion promotion 和 registry touch 各自保持原子语义；
+- population 更新与 champion promotion 使用持久化 `RoundCommitIntent` 协调：先写 intent，再 population CAS，再按 decision 执行 champion CAS，最后写 terminal round；启动时对两个指针幂等对账；
 - accepted/rejected/discarded candidate 的 Git ref 和 evidence 保持可审计。
 
 ## 15. 测试与验收
@@ -1063,6 +1078,8 @@ evolution_id	evolution_name	round_id	candidate_id	status	parent_commit	candidate
 
 - N 个 Meta session 从同一 prefix fork；
 - N 个 workspace 相互不可读写；
+- 所有 proposal 完成前不启动任何 candidate seed rollout；
+- 生成 `timeoutMs` 是全部 sibling 共享的 round-wide deadline，不随 candidate 数量倍增；
 - 每个 sealed candidate 都记录并验证 `commitOid`、`treeOid`、manifest digest、patch digest 和不可变 ref；
 - 相同 Tree SHA 的不同 candidate 仍保留独立 proposal 和 lineage；
 - 只有 Tree SHA 和完整 resolved evaluation condition 均相同时才能复用评测结果；
@@ -1076,10 +1093,14 @@ evolution_id	evolution_name	round_id	candidate_id	status	parent_commit	candidate
 ### 15.7 Population
 
 - survivor parent/child lineage 可完整恢复；
+- 每个 candidate 与自己的 research parent 做 seed paired comparison，唯一 finalist 另与本轮 deployment champion 做 promotion comparison；
+- population metrics 只来自 seed/dev，held-out 不进入下一代选择输入；
 - population digest 检测篡改；
 - 多 survivor 不改变单一 deployment champion 语义；
 - 不同 lineage 的 Meta history 不混用；
 - selector 决策包含输入 metrics、component identity 和 reason。
+- promotion rejected 时 population 仍可前进，champion 保持不变；
+- `RoundCommitIntent` 在 population/champion CAS 中断后可幂等恢复。
 
 ## 16. 实施顺序
 
@@ -1124,20 +1145,27 @@ Gear 的可复现目标是：实验计划可重放、配置和实现可验证、
 - CandidateGenerator、TaskSampler、RolloutProvider、Judge、CandidateSelector 和 PromotionPolicy 已进入公开 `ComponentRegistry`，registry 作为 `ctx.evolutionComponents` Cordis service 暴露，注册返回卸载函数；
 - 组件引用校验 `type/apiVersion/package/version/integrity/configDigest`。内置组件 integrity 来自实际发布模块和 package manifest bytes，而不是仅对版本字符串做摘要；
 - sealed candidate 标准记录并恢复校验 `commitOid/treeOid/manifestDigest/patchDigest/immutableRef`；
-- round 已使用 `candidatePool`，并持久化 selection、population、parent IDs、lineage root 和 metrics；当前 population size 仍为 1；
-- `experiments.tsv` 已作为 candidate-oriented materialized view 落地；由 registry controller 在启动和 round 更新后加锁、原子重建，JSON 仍是唯一事实源；
-- 候选生成 `timeoutMs` 会真实中止和清理；DSH 无法审计的总请求数/总 token 预算会明确拒绝；
+- DSH Meta checkpoint 使用 `sourceSessionId/eventCount/prefixDigest`，在 `whenIdle + runMaintenance + sessions.flush` 后固化；缺少 durability listener 时拒绝 fork；child 通过 `agents.create(seed)` 创建并记录 `parentSession/seedLength/cwd/agentPreset`；
+- Meta capability、evidence audit、finalization 和 workspace binding 已按 `sessionId -> candidate` 隔离；非 champion survivor 的 child 读取自己的 research parent，而不是全局 champion；
+- `maxCandidates > 1` 已支持。当前 controller 串行创建 sibling workspace/session，但先完成所有 proposal，再开始任何 candidate seed rollout；单 candidate 失败不会覆盖其他 candidate state；
+- `survivors > 1` 已支持。内置 generator 对当前 population 做确定性 round-robin parent allocation，每个 child 第一版恰好一个 parent；selector 输入是 seed-only projection，并明确返回唯一 `promotionCandidateId`；
+- 每个 child 相对自己的 research parent 计算 seed improvement；promotion finalist 另相对本轮固定 champion 执行 seed/held-out paired gate；population 永远使用 seed metrics，promotion rejected 时仍可形成下一代；
+- population 与 champion 通过 `RoundCommitIntent + population CAS + champion CAS` 提交，启动恢复可对 prepared/部分提交状态幂等对账；
+- round 已使用 `candidatePool`，并持久化 parent allocation、per-parent baseline、selection、population、parent IDs、Meta checkpoint、lineage root 和 metrics；
+- `experiments.tsv` 已作为 candidate-oriented materialized view 落地；新增 `selection_role` 区分唯一 finalist 和其他 survivor，由 registry controller 在启动和 round 更新后加锁、原子重建，JSON 仍是唯一事实源；
+- 候选生成 `timeoutMs` 是所有 sibling 共享的 round-wide deadline；超时会显式 cancel/idle/flush Meta Agent，撤销 binding，等待 workspace 操作排空，再释放 Agent 和 worktree；DSH 无法完整审计的总请求数/总 token 预算仍明确拒绝；
 - demo 旧 state 会被明确拒绝，不会用当前全局配置隐式补齐。
 
-以下能力没有伪装成已实现，而是在 admission/continue 阶段明确拒绝：
+以下能力仍没有伪装成已实现：
 
 | 能力 | 当前行为 | 所需前置能力 |
 | --- | --- | --- |
 | `meta topP/seed` | 类型暂不暴露 | DSH call config、adapter 和 durable request header 支持 |
 | rollout `seeds/temperature` | 配置出现即拒绝 | Hitch plan/result 合同和 adapter 有效值回显 |
 | 每个 task/repetition 的独立 condition cell | 当前 condition 固定一次不可变 dataset invocation，内部 trial 形成 `PairedTrial` | Hitch 在执行前解析并回传显式 rollout plan |
-| `maxCandidates > 1` | 创建 evolution 前拒绝 | DSH durable session checkpoint/fork |
-| `survivors > 1` | 创建 evolution 前拒绝 | 多候选执行完成后才能启用的 parent allocation 和 session lineage |
+| candidate proposal 并发 | 当前 candidate-scoped 状态正确，但 controller 串行执行 | round reducer/revision CAS、全局 semaphore 和聚合 usage accounting |
+| 多 parent merge child | 每个 child 强制恰好一个 parent | Git merge/conflict policy 与 Meta history merge 语义 |
+| 外部调用 exactly-once recovery | durable Gear record 前按失败/显式 retry 处理 | provider idempotency key 和按 key 查询 |
 | trajectory diversity、Pareto、MAP-Elites | 尚未提供内置实现 | 规范化 trajectory descriptors 和多候选池 |
 
-因此当前代码完成的是安全、可恢复、可扩展的第一阶段骨架，以及单候选路径上的真实参数闭环；它没有声称已经完成受 DSH/Hitch 上游能力阻塞的 best-of-N 和质量—多样性算法。后续实现这些能力时应删除对应 capability rejection，并补齐第 15 节中相应验收测试，而不是绕过验证。
+因此当前代码已经具备串行 best-of-N、多 survivor research population、唯一 deployment promotion、精确 Meta fork 和跨 population/champion 恢复协议；它仍不是完整的质量—多样性研究平台，下一阶段主要是 candidate 并发、trajectory descriptors/selector、typed Hitch cell 执行与 provider 级幂等恢复。

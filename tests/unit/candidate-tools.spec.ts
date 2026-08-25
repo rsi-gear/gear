@@ -5,6 +5,7 @@ import type { SubprocessHandle, SubprocessRuntime, SubprocessSpawnSpec } from '@
 import { afterEach, describe, expect, it } from 'vitest'
 import { CandidateFileSystem } from '../../src/candidate/filesystem.js'
 import { CandidateSearchSubprocess } from '../../src/candidate/subprocess.js'
+import { CandidateShellExecutor } from '../../src/candidate/shell.js'
 import { CandidateWorkspaceManager } from '../../src/candidate/workspace.js'
 import { isolateCandidateProviderContext } from '../../src/candidate/context.js'
 import type { RefinementRound } from '../../src/types.js'
@@ -77,9 +78,22 @@ describe('candidate-scoped DSH providers', () => {
     const search = new CandidateSearchSubprocess(new Context(), upstream, manager, 'meta-1')
     search.spawn({ argv: ['/opt/tool/rg', '--no-config', '--json', '--regexp=needle', '--', 'prompts'], cwd: '/', env: { SECRET: 'x' } } as unknown as SubprocessSpawnSpec)
     expect(captured).toMatchObject({ cwd: handle.targetPath, env: {} })
+    search.spawn({ argv: ['/opt/tool/rg', '--no-config', '--json', '--regexp=needle', '--', '/candidate/harness/prompts'], cwd: '/', env: {} } as unknown as SubprocessSpawnSpec)
+    expect(captured?.argv.at(-1)).toBe('prompts')
     expect(() => search.spawn({ argv: ['/bin/sh', '--no-config'], cwd: handle.targetPath } as unknown as SubprocessSpawnSpec)).toThrow(/fixed ripgrep/)
     expect(() => search.spawn({ argv: ['/opt/tool/rg', '--no-config', '--', '../state'], cwd: handle.targetPath } as unknown as SubprocessSpawnSpec)).toThrow(/relative/)
     expect(() => search.spawn({ argv: ['/opt/tool/rg', '--no-config', '--follow'], cwd: handle.targetPath } as unknown as SubprocessSpawnSpec)).toThrow(/fixed ripgrep/)
+    manager.unbind('meta-1', handle.workspaceId)
+    await manager.dispose(handle.workspaceId)
+  })
+
+  it('accepts DSH-normalized candidate shell workdirs without admitting other host paths', async () => {
+    const { fixture, manager, handle } = await setup()
+    const shell = new CandidateShellExecutor(new Context(), manager, 'meta-1', 1_000, 1_024)
+    expect(shell.resolve({ command: 'pwd', workdir: '/candidate/harness' }).workdir).toBe(handle.targetPath)
+    expect(shell.resolve({ command: 'pwd', workdir: join(handle.targetPath, 'prompts') }).workdir)
+      .toBe(join(handle.targetPath, 'prompts'))
+    expect(() => shell.resolve({ command: 'pwd', workdir: fixture.root })).toThrow(/absolute host path/)
     manager.unbind('meta-1', handle.workspaceId)
     await manager.dispose(handle.workspaceId)
   })

@@ -53,7 +53,7 @@ export * from './worker/manager.js'
 export * from './worker/registry.js'
 
 export const name = 'refine'
-export const inject = ['agents', 'agentPresets', 'commands', 'tools', 'systemPrompt', 'subprocess']
+export const inject = ['agents', 'sessions', 'agentPresets', 'commands', 'tools', 'systemPrompt', 'subprocess']
 export const Config = ConfigSchema
 
 const SEMANTIC_TARGETS = new Set<SemanticTarget>([

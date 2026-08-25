@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import type {
   ArtifactRef,
-  CandidateRecord,
+  CandidateSelectionInput,
   ComponentKind,
   ComponentRef,
   EvaluationCondition,
@@ -80,9 +80,18 @@ export interface CandidateGenerationSlot {
   parentCandidateIds: string[]
 }
 
+export interface CandidateGenerationParent {
+  candidateId: string
+  harnessRef: string
+  harnessDigest: string
+  parentCandidateIds: string[]
+  lineageRootId: string
+  metrics: MetricSet
+}
+
 export interface CandidateGenerator {
   readonly ref: ComponentRef<unknown>
-  plan(roundId: string, parentHarnessRef: string, maxCandidates: number): CandidateGenerationSlot[]
+  plan(roundId: string, parents: readonly CandidateGenerationParent[], maxCandidates: number): CandidateGenerationSlot[]
 }
 
 export class ForkedProposalCandidateGenerator implements CandidateGenerator {
@@ -93,14 +102,16 @@ export class ForkedProposalCandidateGenerator implements CandidateGenerator {
     this.ref = ref
   }
 
-  plan(roundId: string, parentHarnessRef: string, maxCandidates: number): CandidateGenerationSlot[] {
+  plan(roundId: string, parents: readonly CandidateGenerationParent[], maxCandidates: number): CandidateGenerationSlot[] {
     if (!Number.isSafeInteger(maxCandidates) || maxCandidates <= 0) {
       throw new TypeError('candidateGeneration.maxCandidates must be a positive integer')
     }
+    if (parents.length === 0) throw new TypeError('candidate generation requires at least one parent')
+    const ordered = [...parents].sort((left, right) => left.candidateId.localeCompare(right.candidateId))
     return Array.from({ length: maxCandidates }, (_, index) => ({
       candidateId: `${roundId}-candidate-${index + 1}`,
-      parentHarnessRef,
-      parentCandidateIds: [],
+      parentHarnessRef: ordered[index % ordered.length]!.harnessRef,
+      parentCandidateIds: [ordered[index % ordered.length]!.candidateId],
     }))
   }
 }
@@ -147,7 +158,7 @@ export class DatasetTaskSampler implements TaskSampler {
 
 export interface CandidateSelector {
   readonly ref: ComponentRef<unknown>
-  select(candidates: readonly CandidateRecord[], survivors: number): SelectionDecision
+  select(candidates: readonly CandidateSelectionInput[], survivors: number): SelectionDecision
 }
 
 export interface Judge {
@@ -184,17 +195,18 @@ export class HighestQualityCandidateSelector implements CandidateSelector {
     this.ref = ref
   }
 
-  select(candidates: readonly CandidateRecord[], survivors: number): SelectionDecision {
+  select(candidates: readonly CandidateSelectionInput[], survivors: number): SelectionDecision {
     if (!Number.isSafeInteger(survivors) || survivors <= 0) throw new TypeError('selection.survivors must be positive')
-    const scored = candidates
-      .filter((candidate): candidate is CandidateRecord & { seedEvaluation: EvaluationEvidence } => candidate.seedEvaluation !== undefined)
+    const scored = [...candidates]
       .sort((left, right) => (right.metrics?.quality ?? right.seedEvaluation.primaryReward)
         - (left.metrics?.quality ?? left.seedEvaluation.primaryReward)
         || left.candidateId.localeCompare(right.candidateId))
+      .filter((candidate, index, ordered) => ordered.findIndex(value => value.sealedVersion.treeOid === candidate.sealedVersion.treeOid) === index)
     if (scored.length < survivors) throw new Error(`selector needs ${survivors} evaluated candidates, found ${scored.length}`)
     const selected = scored.slice(0, survivors)
     return {
       selectedCandidateIds: selected.map(candidate => candidate.candidateId),
+      promotionCandidateId: selected[0]!.candidateId,
       reason: 'highest primary reward on seed/dev evaluation',
       component: this.ref,
       metrics: Object.fromEntries(scored.map(candidate => [candidate.candidateId, candidate.metrics?.quality ?? candidate.seedEvaluation.primaryReward])),

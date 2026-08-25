@@ -80,7 +80,7 @@ export function roundFixture(overrides: Partial<RefinementRound> = {}): Refineme
     },
     candidatePool: [{
       candidateId: `${roundId}-candidate-1`, roundId, parentHarnessRef: targetHarnessRef,
-      parentCandidateIds: [], status: 'generating',
+      parentCandidateIds: [`initial-${targetHarnessRef}`], status: 'generating',
     }],
     ...overrides,
   }

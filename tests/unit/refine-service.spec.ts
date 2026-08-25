@@ -15,12 +15,33 @@ afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, {
 
 class FakeMeta {
   wakes: string[] = []
+  private child = 0
+  private readonly agents = new Map<string, { id: string }>()
   constructor(private readonly evolutionId: string, private readonly store: import('../../src/state/store.js').RefineStateStore, private readonly specDigest: string) {}
   async agent() {
-    await this.store.writeMeta({ evolutionId: this.evolutionId, sessionId: `meta-${this.evolutionId}`, metaHarnessRef: 'meta-v1', specDigest: this.specDigest })
-    return { id: `meta-${this.evolutionId}` }
+    const id = `meta-${this.evolutionId}`
+    await this.store.writeMeta({ evolutionId: this.evolutionId, sessionId: id, metaHarnessRef: 'meta-v1', specDigest: this.specDigest })
+    const agent = { id }
+    this.agents.set(id, agent)
+    return agent
   }
   async wake(round: Readonly<RefinementRound>): Promise<string> { this.wakes.push(round.roundId); return `meta-${this.evolutionId}` }
+  async checkpoint(sessionId?: string) {
+    const id = sessionId ?? String((await this.agent()).id)
+    return { sourceSessionId: id, eventCount: 0, prefixDigest: `sha256:${'0'.repeat(64)}` }
+  }
+  async fork() {
+    const id = `meta-${this.evolutionId}-candidate-${++this.child}`
+    const agent = { id }
+    this.agents.set(id, agent)
+    return agent
+  }
+  async wakeCandidate(round: Readonly<RefinementRound>, _candidate: unknown, _baseline: unknown, agent: { id: string }) {
+    this.wakes.push(round.roundId)
+    return agent.id
+  }
+  async cancel(): Promise<void> {}
+  async release(sessionId: string): Promise<void> { this.agents.delete(sessionId) }
   async dispose(): Promise<void> {}
 }
 
@@ -76,6 +97,8 @@ async function setup(
   mismatchSeedCondition = false,
   maxCandidates = 1,
   generationTimeoutMs = 300_000,
+  survivors = 1,
+  heldOutDelta = 0,
 ) {
   const git = await createGitHarnessFixture()
   roots.push(git.root)
@@ -89,7 +112,7 @@ async function setup(
     rootForEvolution: id => join(registry.evolutionRoot(id), 'candidate-worktrees'),
     maxFiles: 64, maxBytes: 2_000_000, maxDiffBytes: 1_000_000,
   })
-  const evaluator = new FakeEvaluator(candidateScore, 0, mismatchSeedCondition)
+  const evaluator = new FakeEvaluator(candidateScore, heldOutDelta, mismatchSeedCondition)
   const defaults = evolutionSpec()
   const promotionPolicy = {
     minimumCandidateScore: 0.7, minimumAbsoluteGain: 0.1, requireNoRegression: true,
@@ -108,7 +131,7 @@ async function setup(
       budget: { ...defaults.candidateGeneration.budget, timeoutMs: generationTimeoutMs },
     },
     rollout: defaults.rollout,
-    evaluation: defaults.evaluation, selection: defaults.selection,
+    evaluation: defaults.evaluation, selection: { ...defaults.selection, survivors },
     toolchainRef: 'node-22-tsc', sandboxProfileRef: 'sandbox-v1',
     promotion: { policy: builtinComponentRef('promotion-policy', 'paired-gate', promotionPolicy) },
     seedTaskRef: 'seed', heldOutRef: 'held-out', taskBudgetMs: 60_000,
@@ -128,21 +151,23 @@ async function editing(service: RefineService, evolutionId: string, roundId: str
 async function finalize(service: RefineService, round: RefinementRound): Promise<void> {
   const active = service.activeEntry(round.roundId)
   if (active?.workspace === undefined || round.baseline === undefined) throw new Error('round is not editable')
-  await eventually(() => active.store.readMeta(), value => value?.sessionId === `meta-${round.evolutionId}`)
+  const current = await active.store.readRound(round.roundId)
+  const candidate = current?.candidatePool.find(value => value.workspaceId === active.workspace?.workspaceId)
+  const sessionId = candidate?.metaSessionId
+  if (sessionId === undefined || candidate === undefined) throw new Error('candidate Meta session is unavailable')
   await eventually(async () => {
-    try { return service.workspaceManager.resolve(`meta-${round.evolutionId}`).workspaceId }
+    try { return service.workspaceManager.resolve(sessionId).workspaceId }
     catch { return undefined }
   }, value => value === active.workspace!.workspaceId)
   await mkdir(join(active.workspace.targetPath, 'prompts'), { recursive: true })
-  await writeFile(join(active.workspace.targetPath, 'prompts', `round-${round.roundIndex}.md`), 'improved context\n')
-  const sessionId = `meta-${round.evolutionId}`
+  await writeFile(join(active.workspace.targetPath, 'prompts', `${candidate.candidateId}.md`), 'improved context\n')
   const meta: MetaAttribution = { evolutionId: round.evolutionId, sessionId, requestHeaderSeq: 1, proposalEventSeq: 2 }
   const runRefs = round.baseline.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId])
   const failed = round.baseline.trials.flatMap(trial => (trial.rewards.reward ?? 0) <= 0 && trial.runId !== undefined ? [trial.runId] : [])
   await service.submitFinalization(round.evolutionId, round.roundId, {
     rationale: 'fix observed failures', expectedOutcome: 'higher reward', evidenceRefs: [round.baseline.evalId], semanticTargets: ['context', 'routing'],
   }, undefined, meta, {
-    evolutionId: round.evolutionId, roundId: round.roundId, baselineEvalId: round.baseline.evalId,
+    evolutionId: round.evolutionId, roundId: round.roundId, candidateId: candidate.candidateId, baselineEvalId: round.baseline.evalId,
     summaryAccessed: true, accessedRefs: [round.baseline.evalId, ...runRefs], diagnosedRunRefs: failed, citedRefs: [round.baseline.evalId],
   })
 }
@@ -167,7 +192,11 @@ describe('RefineService evolution workspaces', () => {
     await finalize(service, round)
     const store = service.registry.stateStore(admission.evolutionId)
     const terminal = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'accepted')
-    expect(terminal?.candidatePool[0]?.diff?.files).toContainEqual(expect.objectContaining({ path: 'prompts/round-1.md', change: 'created' }))
+    const terminalCandidate = terminal?.candidatePool[0]
+    if (terminalCandidate === undefined) throw new Error('accepted round has no candidate')
+    expect(terminal?.candidatePool[0]?.diff?.files).toContainEqual(expect.objectContaining({
+      path: `prompts/${terminalCandidate.candidateId}.md`, change: 'created',
+    }))
     expect(terminal?.candidatePool[0]?.sealedVersion).toMatchObject({
       commitOid: expect.stringMatching(/^[0-9a-f]{40,64}$/),
       treeOid: expect.stringMatching(/^[0-9a-f]{40,64}$/),
@@ -202,8 +231,10 @@ describe('RefineService evolution workspaces', () => {
     const admission = await service.admit('command', { rounds: 2, focus: ['workflow'] })
     const first = await editing(service, admission.evolutionId, admission.roundId)
     const active = service.activeEntry(first.roundId)!
-    const sessionId = `meta-${first.evolutionId}`
-    await eventually(() => active.store.readMeta(), value => value?.sessionId === sessionId)
+    const current = await active.store.readRound(first.roundId)
+    const candidate = current?.candidatePool.find(value => value.workspaceId === active.workspace?.workspaceId)
+    const sessionId = candidate?.metaSessionId
+    if (sessionId === undefined || candidate === undefined) throw new Error('candidate Meta session is unavailable')
     await eventually(async () => {
       try { return service.workspaceManager.resolve(sessionId).workspaceId }
       catch { return undefined }
@@ -214,7 +245,7 @@ describe('RefineService evolution workspaces', () => {
     }, {
       evolutionId: first.evolutionId, sessionId, requestHeaderSeq: 1, proposalEventSeq: 2,
     }, {
-      evolutionId: first.evolutionId, roundId: first.roundId, baselineEvalId: first.baseline!.evalId,
+      evolutionId: first.evolutionId, roundId: first.roundId, candidateId: candidate.candidateId, baselineEvalId: first.baseline!.evalId,
       summaryAccessed: true, accessedRefs: [first.baseline!.evalId, ...failed], diagnosedRunRefs: failed, citedRefs: [],
     })
     expect(active.workspace).toBeDefined()
@@ -222,7 +253,7 @@ describe('RefineService evolution workspaces', () => {
     const second = await eventually(async () => (await store.listRounds()).find(value => value.roundIndex === 2), value => value?.status === 'candidate-editing')
     expect(await store.readRound(first.roundId)).toMatchObject({
       decision: 'no-change',
-      decline: { rationale: 'No evidence-grounded improvement is safe this round.', evidenceRefs: [] },
+      candidatePool: [{ decline: { rationale: 'No evidence-grounded improvement is safe this round.', evidenceRefs: [] } }],
     })
     expect(second).toMatchObject({ batchId: admission.batchId, advisoryFocus: ['workflow'], roundCount: 2 })
     expect(service.activeEntry(second!.roundId)?.workspace?.workspaceId).not.toBe(active.workspace?.workspaceId)
@@ -274,24 +305,96 @@ describe('RefineService evolution workspaces', () => {
     await service.dispose()
   })
 
-  it('fails closed when baseline and candidate do not share the same evaluation condition identity', async () => {
+  it('fails the candidate closed when baseline and candidate do not share the same evaluation condition identity', async () => {
     const { service, evaluator } = await setup(0.8, true)
     const admission = await service.admit('api')
     const state = await editing(service, admission.evolutionId, admission.roundId)
     await finalize(service, state)
     const terminal = await eventually(
       () => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId),
-      value => value?.status === 'failed',
+      value => value?.status === 'rejected',
     )
-    expect(terminal?.failure?.message).toMatch(/condition identity mismatch/)
+    expect(terminal?.candidatePool[0]?.failure?.message).toMatch(/condition identity mismatch/)
     expect(evaluator.calls).toEqual(['seed-baseline', 'seed-candidate'])
     await service.dispose()
   })
 
-  it('rejects unsupported best-of-N before creating partial evolution state', async () => {
-    const { service } = await setup(0.8, false, 2)
-    await expect(service.admit('api')).rejects.toThrow(/durable session fork/)
-    expect(await service.listEvolutions()).toEqual([])
+  it('generates all best-of-N proposals before running candidate evaluations', async () => {
+    const { service, evaluator } = await setup(0.8, false, 2)
+    const admission = await service.admit('api')
+    const first = await editing(service, admission.evolutionId, admission.roundId)
+    const firstWorkspace = service.activeEntry(first.roundId)?.workspace?.workspaceId
+    await finalize(service, first)
+    const second = await eventually(
+      () => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId) as Promise<RefinementRound>,
+      value => value?.status === 'candidate-editing'
+        && service.activeEntry(value.roundId)?.workspace?.workspaceId !== firstWorkspace,
+    )
+    expect(evaluator.calls).toEqual(['seed-baseline'])
+    await finalize(service, second)
+    const terminal = await eventually(
+      () => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId),
+      value => value?.status === 'accepted',
+    )
+    expect(terminal?.candidatePool).toHaveLength(2)
+    expect(terminal?.candidatePool.every(candidate => candidate.seedEvaluation !== undefined)).toBe(true)
+    await service.dispose()
+  })
+
+  it('keeps multiple seed-selected survivors while promotion still has one finalist', async () => {
+    const { service, git } = await setup(0.8, false, 3, 300_000, 2, -0.2)
+    const admission = await service.admit('api')
+    let previousWorkspace: string | undefined
+    for (let index = 0; index < 3; index += 1) {
+      const round = await eventually(
+        () => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId) as Promise<RefinementRound>,
+        value => value?.status === 'candidate-editing'
+          && service.activeEntry(value.roundId)?.workspace?.workspaceId !== previousWorkspace,
+      )
+      previousWorkspace = service.activeEntry(round.roundId)?.workspace?.workspaceId
+      await finalize(service, round)
+    }
+    const store = service.registry.stateStore(admission.evolutionId)
+    const terminal = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'rejected')
+    expect(terminal?.selection?.selectedCandidateIds).toHaveLength(2)
+    expect(terminal?.selection?.promotionCandidateId).toBe(terminal?.promotionCandidateId)
+    expect(terminal?.promotedCandidateId).toBeUndefined()
+    expect((await store.readChampion())?.ref).toBe(git.championRef)
+    const population = await store.readPopulation()
+    expect(population?.generation).toBe(1)
+    expect(population?.members).toHaveLength(2)
+    expect(population?.members.every(member => member.metrics.quality === 0.8)).toBe(true)
+    expect(population?.members.every(member => member.metaCheckpoint?.sourceSessionId === member.metaSessionId)).toBe(true)
+    await service.dispose()
+  })
+
+  it('reconciles a prepared population/champion commit intent idempotently on startup', async () => {
+    const { service } = await setup()
+    const admission = await service.admit('api')
+    const store = service.registry.stateStore(admission.evolutionId)
+    const initialChampion = await store.readChampion()
+    const initialPopulation = await store.readPopulation()
+    const round = await editing(service, admission.evolutionId, admission.roundId)
+    await finalize(service, round)
+    const terminal = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'accepted')
+    if (terminal?.commitIntent === undefined || initialChampion === undefined || initialPopulation === undefined) {
+      throw new Error('test round is missing durable commit state')
+    }
+    const { decision: _decision, promotedCandidateId: _promoted, ...nonTerminal } = terminal
+    await store.writeChampion(initialChampion)
+    await store.writePopulation(initialPopulation)
+    await store.writeRound({
+      ...nonTerminal,
+      status: 'failed',
+      commitIntent: { ...terminal.commitIntent, phase: 'prepared' },
+      updatedAt: 'interrupted',
+    })
+    await service.initialize()
+    expect(await store.readPopulation()).toEqual(terminal.commitIntent.nextPopulation)
+    expect((await store.readChampion())?.ref).toBe(terminal.commitIntent.nextChampion?.ref)
+    expect(await store.readRound(admission.roundId)).toMatchObject({ status: 'accepted', decision: 'accepted' })
+    await service.initialize()
+    expect(await store.readRound(admission.roundId)).toMatchObject({ status: 'accepted', decision: 'accepted' })
     await service.dispose()
   })
 
@@ -308,9 +411,9 @@ describe('RefineService evolution workspaces', () => {
     const admission = await service.admit('api')
     const terminal = await eventually(
       () => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId),
-      value => value?.status === 'failed',
+      value => value?.status === 'rejected',
     )
-    expect(terminal?.failure?.message).toMatch(/candidate generation exceeded its 50ms budget/)
+    expect(terminal?.candidatePool[0]?.failure?.message).toMatch(/candidate generation exceeded its 50ms round budget/)
     await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
     await service.dispose()
   })

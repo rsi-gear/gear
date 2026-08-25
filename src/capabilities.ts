@@ -82,23 +82,28 @@ export class RefineCapabilities {
   ): Promise<unknown> {
     const active = this.service.activeEntryForSession(sessionId)
     if (active === undefined) throw new Error('Meta session has no active candidate round')
-    const { evolutionId, spec, roundId: activeRoundId, store, meta, workspace } = active
+    const {
+      evolutionId, spec, roundId: activeRoundId, store, meta, workspace,
+      baseline,
+    } = active
+    const champion = active.parentHarnessRef === undefined ? await store.readChampion() : undefined
+    const parentHarnessRef = active.parentHarnessRef ?? workspace.parentRef ?? champion?.ref
+    const parentHarnessDigest = active.parentHarnessDigest ?? workspace.parentDigest ?? champion?.manifestDigest
     if (method === 'harness.current') {
-      const champion = await store.readChampion()
-      if (champion === undefined) throw new Error('no champion is initialized')
-      const manifest = await this.builder.readManifest(champion.ref)
-      if (manifest.digest !== champion.manifestDigest) throw new Error('champion manifest digest does not match its Git commit')
-      return publicJson({ ref: champion.ref, digest: champion.manifestDigest, manifest })
+      if (parentHarnessRef === undefined || parentHarnessDigest === undefined) throw new Error('candidate parent is unavailable')
+      const manifest = await this.builder.readManifest(parentHarnessRef)
+      if (manifest.digest !== parentHarnessDigest) throw new Error('candidate parent manifest digest does not match its Git commit')
+      return publicJson({ ref: parentHarnessRef, digest: parentHarnessDigest, manifest })
     }
     if (method === 'harness.read') {
-      const champion = await store.readChampion()
-      if (champion === undefined || args.ref !== champion.ref) throw new Error('harness ref is not the current champion')
+      if (parentHarnessRef === undefined) throw new Error('candidate parent is unavailable')
+      if (args.ref !== parentHarnessRef) throw new Error('harness ref is not the current candidate parent')
       const path = this.string(args, 'path')
-      const { content, digest, bytes } = await this.builder.readHarnessFile(champion.ref, path)
+      const { content, digest, bytes } = await this.builder.readHarnessFile(parentHarnessRef, path)
       const offset = this.optionalInteger(args, 'offset') ?? 0
       const limit = Math.min(this.optionalInteger(args, 'limit') ?? this.maxReadBytes, this.maxReadBytes)
       return {
-        ref: champion.ref,
+        ref: parentHarnessRef,
         path,
         digest,
         bytes,
@@ -122,7 +127,13 @@ export class RefineCapabilities {
       const limit = Math.min(this.optionalInteger(args, 'limit') ?? 20, 100)
       if (limit <= 0) throw new TypeError('limit must be a positive integer')
       const rounds = await store.listRounds()
-      const evidence = this.seedRunEvidence(rounds)
+      const evidence = baseline === undefined ? this.seedRunEvidence(rounds) : baseline.trials.flatMap(trial => trial.runId === undefined ? [] : [{
+        evolutionId,
+        roundId: activeRoundId,
+        phase: 'seed-baseline' as const,
+        evalId: baseline.evalId,
+        trial: { ...trial, runId: trial.runId },
+      }])
       const refs = this.optionalStrings(args, 'refs')
       const requestedRoundId = this.optionalString(args, 'roundId')
         ?? activeRoundId
@@ -136,21 +147,25 @@ export class RefineCapabilities {
         const projected = visibleRounds.slice(offset, offset + limit).map(round => ({
           roundId: round.roundId,
           status: round.status,
-          targetHarnessRef: round.targetHarnessRef,
+          targetHarnessRef: round.roundId === activeRoundId ? parentHarnessRef ?? round.targetHarnessRef : round.targetHarnessRef,
           seedEvidence: [
-            ...(round.baseline === undefined ? [] : [this.projectEvidence('seed-baseline', round.baseline)]),
-            ...(round.evaluation?.seedCandidate === undefined ? [] : [this.projectEvidence('seed-candidate', round.evaluation.seedCandidate)]),
+            ...(round.roundId === activeRoundId && baseline !== undefined
+              ? [this.projectEvidence('seed-baseline', baseline)]
+              : round.baseline === undefined ? [] : [this.projectEvidence('seed-baseline', round.baseline)]),
+            ...(round.roundId === activeRoundId && baseline !== undefined || round.evaluation?.seedCandidate === undefined
+              ? [] : [this.projectEvidence('seed-candidate', round.evaluation.seedCandidate)]),
           ],
           scoreDelta: round.evaluation?.scoreDelta,
           decision: round.decision,
           failure: round.failure === undefined ? undefined : { phase: round.failure.phase },
         }))
         for (const round of visibleRounds.slice(offset, offset + limit)) {
+          const visibleBaseline = round.roundId === activeRoundId ? baseline ?? round.baseline : round.baseline
           meta.recordEvidenceAccess(round.roundId, sessionId, {
-            summary: round.baseline !== undefined,
-            refs: round.baseline === undefined ? [] : [
-              round.baseline.evalId,
-              ...round.baseline.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId]),
+            summary: visibleBaseline !== undefined,
+            refs: visibleBaseline === undefined ? [] : [
+              visibleBaseline.evalId,
+              ...visibleBaseline.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId]),
             ],
           })
         }
@@ -200,14 +215,31 @@ export class RefineCapabilities {
       const roundId = this.string(args, 'roundId')
       if (roundId !== activeRoundId) throw new Error('hitch.status is limited to the active round')
       const status = await this.service.status(evolutionId, roundId)
-      if (status.seedBaseline !== undefined) meta.recordEvidenceAccess(roundId, sessionId, {
+      const visibleStatus = baseline === undefined ? status : {
+        ...status,
+        seedSummary: baseline.summary,
+        seedBaseline: {
+          evalId: baseline.evalId,
+          primaryReward: baseline.primaryReward,
+          summary: baseline.summary,
+          trials: baseline.trials.map(trial => ({
+            taskName: trial.taskName,
+            ...(trial.trialName === undefined ? {} : { trialName: trial.trialName }),
+            ...(trial.runId === undefined ? {} : { runId: trial.runId }),
+            ...(trial.attempt === undefined ? {} : { attempt: trial.attempt }),
+            status: trial.status,
+            reward: trial.rewards.reward ?? Object.values(trial.rewards)[0],
+          })),
+        },
+      }
+      if (visibleStatus.seedBaseline !== undefined) meta.recordEvidenceAccess(roundId, sessionId, {
         summary: true,
         refs: [
-          status.seedBaseline.evalId,
-          ...status.seedBaseline.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId]),
+          visibleStatus.seedBaseline.evalId,
+          ...visibleStatus.seedBaseline.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId]),
         ],
       })
-      return status
+      return visibleStatus
     }
     if (method === 'candidate.diff') {
       return publicJson(await this.service.workspaceManager.diff(workspace.workspaceId, this.optionalInteger(args, 'maxBytes'), signal))
