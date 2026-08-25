@@ -277,10 +277,10 @@ order: 50
 | `metaPreset` | 固定 Meta Agent preset id |
 | `metaModel` | Meta Agent 使用的 DSH provider、model 和输出预算 |
 | `metaSampling.temperature` | 进入真实 DSH `agent/request` 的 Meta temperature；有效值会从 request header 归因 |
-| `candidateGeneration.maxCandidates` | 每轮候选数；当前 DSH 尚无 durable session fork，因此暂时必须为 `1` |
+| `candidateGeneration.maxCandidates` | 每轮从相同 Meta checkpoint 生成的独立候选数 |
 | `candidateGeneration.timeoutMs` | Meta 候选生成的真实超时；超时会中止 round 并清理 workspace |
 | `candidateGeneration.maxModelRequests/maxTokens` | 预留的总量预算；当前 DSH 无聚合 usage evidence，配置时会明确拒绝 |
-| `selection.survivors` | 每轮保留数量；当前单 population 流程暂时必须为 `1` |
+| `selection.survivors` | 每轮必须保留进下一代 population 的候选数，不得超过 `maxCandidates` |
 | `seedTaskRef` | 默认公开训练/诊断 dataset；普通 `/refine` 可用第一个位置参数覆盖 |
 | `heldOutRef` | 固定 held-out dataset；不会暴露给 Meta Agent |
 | `taskBudgetMs` | 每个 target trial 的超时预算；可由新 evolution 的 `--budget` 覆盖 |
