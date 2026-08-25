@@ -470,6 +470,7 @@ failed
 
 ```text
 <stateRoot>/
+├── experiments.tsv
 ├── registry.json
 ├── evolutions/<evolution-id>/
 │   ├── spec.json
@@ -484,7 +485,19 @@ failed
 
 共用目录不等于共用状态。只有显式 `continue <evolution-id>` 才能跨 invocation 复用同一个 evolution。
 
-### 10.2 轨迹
+### 10.2 Candidate TSV 索引
+
+`experiments.tsv` 是面向人和 LLM 的快速索引，每个 candidate 一行：
+
+```tsv
+evolution_id	evolution_name	round_id	candidate_id	status	parent_commit	candidate_commit	candidate_tree	immutable_ref	seed_eval_id	seed_score	heldout_eval_id	heldout_score	decision	record_path	updated_at
+```
+
+它由 Gear Controller 根据 `registry.json` 和 round JSON 自动生成。启动、candidate 状态变化、评测完成和 promotion 后都会原子重建；手工删除后，下次初始化也会恢复。JSON 和 TSV 不是跨文件事务，状态切换时 TSV 可能短暂落后一版；controller 写入完成后会收敛，自动化决策始终应读取权威 JSON。
+
+TSV 不是事实源：不要直接编辑，不要从它执行 promotion，也不要把它当作 trajectory 存储。复杂 proposal、diff、逐 trial run IDs 和 evidence audit 保存在 `record_path` 指向的 round JSON；完整 trajectory 继续由 Hitch RunRecord 保存。worktree 绝对路径不会进入 TSV。
+
+### 10.3 轨迹
 
 Hitch 保存 target trial 的 canonical run/trajectory。Gear 在 round record 中保存 `evalId`、每个 trial 的 `runId`、reward、commit identity 和 evidence audit。
 
@@ -503,7 +516,7 @@ trajectory.query(...)
 hitch trajectory inspect <run-id> --json
 ```
 
-### 10.3 held-out 隔离
+### 10.4 held-out 隔离
 
 Meta Agent只看到 seed baseline。held-out ref、轨迹和结果不进入 Meta prompt，也不能通过 typed API 查询。candidate 提交后，held-out 只由 `RefineService` 和 Hitch 控制面使用。
 

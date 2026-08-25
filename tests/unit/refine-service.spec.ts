@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { CandidateWorkspaceManager } from '../../src/candidate/workspace.js'
@@ -179,6 +179,19 @@ describe('RefineService evolution workspaces', () => {
         candidateId: terminal?.promotedCandidateId,
         parentCandidateIds: [`initial-${git.championRef}`],
       }],
+    })
+    const indexed = await eventually(async () => {
+      const [header, row] = (await readFile(service.registry.experimentsPath, 'utf8')).trimEnd().split('\n')
+      return Object.fromEntries(header!.split('\t').map((field, index) => [field, row!.split('\t')[index]]))
+    }, value => value.decision === 'promoted')
+    expect(indexed).toMatchObject({
+      evolution_id: admission.evolutionId,
+      round_id: admission.roundId,
+      candidate_id: terminal?.promotedCandidateId,
+      status: 'selected',
+      candidate_commit: terminal?.candidatePool[0]?.sealedVersion?.commitOid,
+      decision: 'promoted',
+      record_path: `evolutions/${admission.evolutionId}/rounds/${admission.roundId}.json`,
     })
     expect(evaluator.calls).toEqual(['seed-baseline', 'seed-candidate', 'held-out-baseline', 'held-out-candidate'])
     await service.dispose()

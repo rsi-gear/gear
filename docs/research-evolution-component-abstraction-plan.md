@@ -962,22 +962,44 @@ plan/result 合同必须包含：
 新增持久对象：
 
 ```text
-evolutions/<evolution-id>/
-  spec.json
-  champion.json
-  population.json             # 多 survivor 阶段启用
-  meta.json
-  meta-resources/
-    preset-manifest.json
-  rounds/<round-id>.json
-  plans/<round-id>.json
-  candidates/<candidate-id>.json
-  locks/
-  candidate-worktrees/
+<stateRoot>/
+  experiments.tsv                 # 人和 LLM 可扫描的生成式索引，不是事实源
+  registry.json
+  evolutions/<evolution-id>/
+    spec.json
+    champion.json
+    population.json             # 多 survivor 阶段启用
+    meta.json
+    meta-resources/
+      preset-manifest.json
+    rounds/<round-id>.json
+    plans/<round-id>.json
+    candidates/<candidate-id>.json
+    locks/
+    candidate-worktrees/
 ```
+
+`experiments.tsv` 是 `registry.json` 和各 round/candidate JSON 的 materialized view。它不保存 proposal、trajectory、多个 run ID 等复杂事实，也不参与恢复、promotion 或版本身份判断；删除后必须能够从权威 JSON 完整重建。Gear Controller 在 round 原子写入后串行重建它，并使用独立的跨进程文件锁和原子 rename，candidate agent 不得直接修改。JSON 与 TSV 是两次独立原子写入，因此读者可能短暂看到上一状态的 TSV；controller 写操作返回和启动重建完成后，视图必须与当前 JSON 一致。
+
+当前 TSV 固定一行对应一个 candidate，按 `evolution_id + round_id + candidate_id` 排序，字段顺序为：
+
+```tsv
+evolution_id	evolution_name	round_id	candidate_id	status	parent_commit	candidate_commit	candidate_tree	immutable_ref	seed_eval_id	seed_score	heldout_eval_id	heldout_score	decision	record_path	updated_at
+```
+
+约束如下：
+
+- `status` 是 Candidate Record 状态；`decision` 表示 selected、promoted 或 round terminal decision；
+- `candidate_commit/candidate_tree/immutable_ref` 在 seal 前为空；评测字段在对应 evaluation 完成前为空；
+- `record_path` 是相对 `stateRoot` 的权威 JSON 路径；当前 candidate 内嵌在 round，因此指向 `rounds/<round-id>.json`；
+- worktree 绝对路径、完整 diff、proposal、trajectory 和 run ID 列表不得写入 TSV；
+- tab、换行和反斜杠使用 `\t`、`\n`、`\r`、`\\` 转义，保证每个 candidate 始终占一行；
+- demo 阶段不增加 `schema_version` 列；列结构变化可以破坏性更新并全量重建；
+- Commit/tree/JSON/Hitch RunRecord 仍是权威事实，TSV 只用于扫描、筛选和让 LLM 定位 `record_path`。
 
 恢复规则：
 
+- 初始化时无论 TSV 是否存在，都从当前 registry/round JSON 重建，自动清除陈旧行；
 - spec、resolved plan、candidate record 和 population 都必须验证 digest；
 - sealed candidate 必须验证 `treeOid == commitOid^{tree}`，其不可变 ref 必须仍指向同一个 `commitOid`；
 - resolved DSH preset dependency manifest 和 Meta session checkpoint 必须验证 digest；
@@ -1103,6 +1125,7 @@ Gear 的可复现目标是：实验计划可重放、配置和实现可验证、
 - 组件引用校验 `type/apiVersion/package/version/integrity/configDigest`。内置组件 integrity 来自实际发布模块和 package manifest bytes，而不是仅对版本字符串做摘要；
 - sealed candidate 标准记录并恢复校验 `commitOid/treeOid/manifestDigest/patchDigest/immutableRef`；
 - round 已使用 `candidatePool`，并持久化 selection、population、parent IDs、lineage root 和 metrics；当前 population size 仍为 1；
+- `experiments.tsv` 已作为 candidate-oriented materialized view 落地；由 registry controller 在启动和 round 更新后加锁、原子重建，JSON 仍是唯一事实源；
 - 候选生成 `timeoutMs` 会真实中止和清理；DSH 无法审计的总请求数/总 token 预算会明确拒绝；
 - demo 旧 state 会被明确拒绝，不会用当前全局配置隐式补齐。
 

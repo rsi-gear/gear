@@ -12,6 +12,7 @@ import type {
 import { isExactGitCommit } from '../types.js'
 import { RefineStateStore } from './store.js'
 import { digestJson } from './digest.js'
+import { serializeExperimentsTsv } from './experiments.js'
 
 export { digestJson } from './digest.js'
 
@@ -126,12 +127,15 @@ export class EvolutionRegistryStore {
   readonly evolutionsRoot: string
   readonly registryPath: string
   readonly publishedPath: string
+  readonly experimentsPath: string
   private registryQueue: Promise<void> = Promise.resolve()
+  private experimentsQueue: Promise<void> = Promise.resolve()
 
   constructor(readonly root: string) {
     this.evolutionsRoot = join(root, 'evolutions')
     this.registryPath = join(root, 'registry.json')
     this.publishedPath = join(root, 'published.json')
+    this.experimentsPath = join(root, 'experiments.tsv')
   }
 
   async initialize(): Promise<void> {
@@ -142,6 +146,7 @@ export class EvolutionRegistryStore {
     } else {
       this.validateRegistry(existing)
     }
+    await this.refreshExperimentsIndex()
   }
 
   evolutionRoot(evolutionId: EvolutionId): string {
@@ -150,7 +155,11 @@ export class EvolutionRegistryStore {
   }
 
   stateStore(evolutionId: EvolutionId): RefineStateStore {
-    return new RefineStateStore(this.evolutionRoot(evolutionId), evolutionId)
+    return new RefineStateStore(
+      this.evolutionRoot(evolutionId),
+      evolutionId,
+      async () => this.refreshExperimentsIndex(),
+    )
   }
 
   async createEvolution(options: CreateEvolutionOptions): Promise<EvolutionRegistryEntry> {
@@ -291,6 +300,23 @@ export class EvolutionRegistryStore {
     return entries.filter(entry => entry.isDirectory() && !indexed.has(entry.name)).map(entry => entry.name).sort()
   }
 
+  async refreshExperimentsIndex(): Promise<void> {
+    const operation = this.experimentsQueue.then(async () => {
+      await this.withFileLock('experiments', async () => {
+        const registry = await this.readJson<unknown>(this.registryPath)
+        if (registry === undefined) return
+        const state = this.validateRegistry(registry)
+        const evolutions = await Promise.all(state.evolutions.map(async entry => ({
+          entry,
+          rounds: await new RefineStateStore(this.evolutionRoot(entry.evolutionId), entry.evolutionId).listRounds(),
+        })))
+        await this.atomicWriteText(this.experimentsPath, serializeExperimentsTsv(evolutions))
+      })
+    })
+    this.experimentsQueue = operation.catch(() => {})
+    await operation
+  }
+
   private async readRegistry(): Promise<EvolutionRegistryState> {
     const value = await this.readJson<unknown>(this.registryPath)
     if (value === undefined) throw new Error('evolution registry is missing')
@@ -323,6 +349,7 @@ export class EvolutionRegistryStore {
         this.validateRegistry(next)
         await this.atomicWrite(this.registryPath, next)
       })
+      await this.refreshExperimentsIndex()
     })
     this.registryQueue = operation.catch(() => {})
     await operation
@@ -338,11 +365,15 @@ export class EvolutionRegistryStore {
   }
 
   private async atomicWrite(path: string, value: unknown): Promise<void> {
+    await this.atomicWriteText(path, json(value))
+  }
+
+  private async atomicWriteText(path: string, value: string): Promise<void> {
     await mkdir(dirname(path), { recursive: true })
     const temporary = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`
     const handle = await open(temporary, 'wx', 0o600)
     try {
-      await handle.writeFile(json(value), 'utf8')
+      await handle.writeFile(value, 'utf8')
       await handle.sync()
     } finally {
       await handle.close()

@@ -70,7 +70,11 @@ export class RefineStateStore {
   readonly workersPath: string
   readonly metaHarnessPath: string
 
-  constructor(readonly root: string, readonly evolutionId?: string) {
+  constructor(
+    readonly root: string,
+    readonly evolutionId?: string,
+    private readonly onRoundChange?: () => Promise<void>,
+  ) {
     this.roundsPath = join(root, 'rounds')
     this.locksPath = join(root, 'locks')
     this.workersPath = join(root, 'workers')
@@ -132,6 +136,7 @@ export class RefineStateStore {
   async writeRound(value: RefinementRound): Promise<void> {
     this.validateRound(value)
     await this.atomicWrite(this.roundFile(value.roundId), value)
+    await this.onRoundChange?.()
   }
 
   async listRounds(): Promise<RefinementRound[]> {

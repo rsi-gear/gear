@@ -188,6 +188,10 @@ RolloutProvider, Judge, CandidateSelector, and PromotionPolicy implementations.
 Registrations must exactly match the package/version/integrity/config identity stored
 in the experiment spec.
 
+The state root also contains `experiments.tsv`, a deterministic candidate-per-row
+materialized view for humans and LLMs. Gear rebuilds it atomically from the
+authoritative registry and round JSON; it is never a promotion or recovery authority.
+
 The current DSH/Hitch adapters deliberately fail closed for capabilities they cannot
 prove effective: rollout seeds/temperature, aggregate Meta request/token budgets,
 durable Meta session forks, `maxCandidates > 1`, and `survivors > 1`. Candidate
