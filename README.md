@@ -99,10 +99,11 @@ Mount the control-plane entry from a DSH composition:
     dshRepository: /absolute/path/to/complete-dsh-repository
     targetRoot: harness
     metaPreset: refine-meta
-    metaHarnessRef: meta-v1
     metaModel:
       provider: deepseek
       model: deepseek-chat
+    metaSampling:
+      temperature: 0.8
     dshBaseRef: 0123456789abcdef0123456789abcdef01234567
     toolchainRef: node-22-tsc
     sandboxProfileRef: isolated-v1
@@ -128,6 +129,11 @@ Mount the control-plane entry from a DSH composition:
       shellEnabled: true
       shellTimeoutMs: 120000
       shellOutputBytes: 1048576
+    candidateGeneration:
+      maxCandidates: 1
+      timeoutMs: 300000
+    selection:
+      survivors: 1
     hitch:
       executable: hitch
       harnessId: deepseek
@@ -138,6 +144,7 @@ Mount the control-plane entry from a DSH composition:
       terminationGraceMs: 5000
       maxOutputBytes: 8388608
       maxTrajectoryOutputBytes: 67108864
+      sampling: {}
       agentArgs: []
       passEnv: []
     initialChampion:
@@ -171,6 +178,22 @@ batches retain one per-evolution lock and advance serially from that evolution's
 accepted champion. A plain invocation never reuses another invocation's state.
 Publishing is explicit and separate from promotion. Rollback accepts only a commit
 previously accepted inside the selected evolution.
+
+Each new evolution now seals its Meta preset/runtime, dataset identities, rollout
+condition, algorithm component identities, selection, and promotion policy in an
+immutable `EvolutionSpec`. `continue` revalidates those identities and never falls
+back to changed global defaults. The plugin also provides `ctx.evolutionComponents`;
+developer plugins can register lifecycle-scoped CandidateGenerator, TaskSampler,
+RolloutProvider, Judge, CandidateSelector, and PromotionPolicy implementations.
+Registrations must exactly match the package/version/integrity/config identity stored
+in the experiment spec.
+
+The current DSH/Hitch adapters deliberately fail closed for capabilities they cannot
+prove effective: rollout seeds/temperature, aggregate Meta request/token budgets,
+durable Meta session forks, `maxCandidates > 1`, and `survivors > 1`. Candidate
+generation `timeoutMs` is enforced. See
+[`docs/research-evolution-component-abstraction-plan.md`](docs/research-evolution-component-abstraction-plan.md)
+for the implemented boundary and remaining upstream work.
 
 For run-centered Hitch builds, each successful eval trial records its immutable
 `run_id`. The round wake includes the authoritative baseline summary and task
@@ -234,11 +257,11 @@ responsibilities because those processes run in TargetWorker/Harbor rather
 than the control-plane meta sandbox. Hitch/Harbor failures fail the round; the
 plugin never falls back to evaluating candidate code in the control plane.
 
-Startup performs an explicit, journaled migration of legacy v2 batches into
-archived evolution records. The old shared Meta session is never resumed and a
-legacy in-progress mutation is never re-executed. The old top-level champion
-becomes only the optional published pointer; a `sha256:` artifact ref is never
-interpreted as a Git commit.
+The project is still in its demo phase and intentionally does not migrate old
+control-plane state. Incompatible upgrades require deleting the old demo
+`stateRoot` and creating a new evolution. Gear never fills a historical spec
+from current global defaults, and a `sha256:` artifact ref is never interpreted
+as a Git commit.
 
 See [Gear ↔ Hitch CLI integration](docs/hitch-dsh-integration.md) and the
 [Hitch local exact commit → Harbor transport requirements](docs/hitch-local-commit-harbor-requirements.md).

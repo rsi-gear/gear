@@ -35,4 +35,26 @@ describe('HarnessBuilder exact commit validation', () => {
     const tampered = gitOutput(fixture.repository, ['rev-parse', 'HEAD'])
     await expect(builder.readManifest(tampered)).rejects.toThrow(/integrity mismatch/)
   })
+
+  it('verifies commit, root tree, manifest, and immutable candidate ref as one sealed identity', async () => {
+    const fixture = await createGitHarnessFixture()
+    roots.push(fixture.root)
+    const builder = new HarnessBuilder({
+      repositoryPath: fixture.repository, targetRoot: fixture.targetRoot, dshBaseRef: fixture.baseRef,
+      toolchainRef: 'node-22-tsc', sandboxProfileRef: 'sandbox-v1', compiler: new NoopHarnessCompiler(),
+    })
+    await builder.initialize()
+    const immutableRef = 'refs/dsh-refine/evolutions/evo-1/candidates/test'
+    gitOutput(fixture.repository, ['update-ref', immutableRef, fixture.championRef])
+    const treeOid = gitOutput(fixture.repository, ['rev-parse', `${fixture.championRef}^{tree}`])
+    const version = {
+      commitOid: fixture.championRef,
+      treeOid,
+      manifestDigest: fixture.manifest.digest,
+      patchDigest: `sha256:${'1'.repeat(64)}`,
+      immutableRef,
+    }
+    await expect(builder.verifySealedCandidate(version)).resolves.toBeUndefined()
+    await expect(builder.verifySealedCandidate({ ...version, treeOid: 'f'.repeat(40) })).rejects.toThrow(/tree OID/)
+  })
 })

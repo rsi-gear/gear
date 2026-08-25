@@ -5,7 +5,7 @@ import type { HarnessBuilder } from './harness/builder.js'
 import type { RefineService } from './refine/service.js'
 import type {
   CandidateFinalization,
-  HitchEvaluationEvidence,
+  EvaluationEvidence,
   HitchTrajectoryReader,
   HitchTrialSummary,
   RefineBridgeRequestMap,
@@ -111,8 +111,8 @@ export class RefineCapabilities {
       if (args.partition !== undefined && args.partition !== 'seed') {
         throw new TypeError('seed_tasks.load partition must be "seed"')
       }
-      if (this.options.configuredSeedTaskRef !== undefined && spec.seedTaskRef !== this.options.configuredSeedTaskRef) {
-        return { datasetRef: spec.seedTaskRef, tasks: [], available: false, reason: 'no typed seed-task projection is configured for this evolution dataset' }
+      if (this.options.configuredSeedTaskRef !== undefined && spec.datasets.seed.ref !== this.options.configuredSeedTaskRef) {
+        return { datasetRef: spec.datasets.seed.ref, tasks: [], available: false, reason: 'no typed seed-task projection is configured for this evolution dataset' }
       }
       if (this.options.seedTasksPath === undefined) return { tasks: [] }
       return publicJson(JSON.parse(await readFile(this.options.seedTasksPath, 'utf8')))
@@ -237,7 +237,7 @@ export class RefineCapabilities {
   private seedRunEvidence(rounds: RefinementRound[]): SeedRunEvidence[] {
     const values: SeedRunEvidence[] = []
     for (const round of rounds) {
-      const append = (phase: SeedRunEvidence['phase'], evidence: HitchEvaluationEvidence | undefined): void => {
+      const append = (phase: SeedRunEvidence['phase'], evidence: EvaluationEvidence | undefined): void => {
         if (evidence === undefined) return
         for (const trial of evidence.trials) {
           if (trial.runId !== undefined) values.push({ evolutionId: round.evolutionId, roundId: round.roundId, phase, evalId: evidence.evalId, trial: { ...trial, runId: trial.runId } })
@@ -260,7 +260,7 @@ export class RefineCapabilities {
     return [...selected.values()]
   }
 
-  private projectEvidence(phase: SeedRunEvidence['phase'], evidence: HitchEvaluationEvidence): unknown {
+  private projectEvidence(phase: SeedRunEvidence['phase'], evidence: EvaluationEvidence): unknown {
     const trials = evidence.trials.map(trial => ({
       taskName: trial.taskName,
       trialName: trial.trialName,

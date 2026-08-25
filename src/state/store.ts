@@ -1,8 +1,9 @@
 import { constants } from 'node:fs'
 import { access, mkdir, open, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import type { ChampionState, HitchEvaluationEvidence, MetaSessionState, RefinementRound } from '../types.js'
+import type { ChampionState, EvaluationEvidence, MetaSessionState, PairedTrial, PopulationState, RefinementRound } from '../types.js'
 import { isExactGitCommit } from '../types.js'
+import { digestJson } from './digest.js'
 
 interface LockRecord {
   pid: number
@@ -38,6 +39,20 @@ function isAlive(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'EPERM'
   }
+}
+
+function validMetricSet(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const metrics = value as Record<string, unknown>
+  if (!Number.isFinite(metrics.quality) || !Number.isFinite(metrics.taskSuccessRate)) return false
+  for (const key of ['cost', 'latency', 'safety', 'trajectoryDiversity']) {
+    if (metrics[key] !== undefined && !Number.isFinite(metrics[key])) return false
+  }
+  if (metrics.descriptors !== undefined) {
+    if (typeof metrics.descriptors !== 'object' || metrics.descriptors === null || Array.isArray(metrics.descriptors)) return false
+    if (Object.values(metrics.descriptors).some(item => typeof item !== 'string' && !Number.isFinite(item))) return false
+  }
+  return true
 }
 
 export class RoundAlreadyRunningError extends Error {
@@ -97,6 +112,16 @@ export class RefineStateStore {
   async writeMeta(value: MetaSessionState): Promise<void> {
     this.validateMeta(value)
     await this.atomicWrite(join(this.root, 'meta.json'), value)
+  }
+
+  async readPopulation(): Promise<PopulationState | undefined> {
+    const value = await this.readJson<unknown>(join(this.root, 'population.json'))
+    return value === undefined ? undefined : this.validatePopulation(value)
+  }
+
+  async writePopulation(value: PopulationState): Promise<void> {
+    this.validatePopulation(value)
+    await this.atomicWrite(join(this.root, 'population.json'), value)
   }
 
   async readRound(roundId: string): Promise<RefinementRound | undefined> {
@@ -235,21 +260,45 @@ export class RefineStateStore {
   private validateMeta(value: unknown): MetaSessionState {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError('meta state must be an object')
     const meta = value as Partial<MetaSessionState>
-    if (meta.schemaVersion !== 1
-      || typeof meta.evolutionId !== 'string' || !/^[a-zA-Z0-9_-]+$/u.test(meta.evolutionId)
+    if (typeof meta.evolutionId !== 'string' || !/^[a-zA-Z0-9_-]+$/u.test(meta.evolutionId)
       || (this.evolutionId !== undefined && meta.evolutionId !== this.evolutionId)
       || typeof meta.sessionId !== 'string' || meta.sessionId.length === 0
       || typeof meta.metaHarnessRef !== 'string' || meta.metaHarnessRef.length === 0
       || typeof meta.specDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(meta.specDigest)) {
       throw new TypeError('meta state requires matching evolutionId, sessionId, metaHarnessRef, and specDigest')
     }
+    if ((meta.checkpointRef === undefined) !== (meta.checkpointDigest === undefined)
+      || (meta.checkpointDigest !== undefined && !/^sha256:[0-9a-f]{64}$/u.test(meta.checkpointDigest))) {
+      throw new TypeError('meta checkpoint identity is invalid')
+    }
     return meta as MetaSessionState
+  }
+
+  private validatePopulation(value: unknown): PopulationState {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError('population state must be an object')
+    const population = value as Partial<PopulationState>
+    if (typeof population.evolutionId !== 'string' || !/^[a-zA-Z0-9_-]+$/u.test(population.evolutionId)
+      || (this.evolutionId !== undefined && population.evolutionId !== this.evolutionId)
+      || !Number.isSafeInteger(population.generation) || (population.generation as number) < 0
+      || !Array.isArray(population.members) || population.members.length === 0
+      || typeof population.digest !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(population.digest)) {
+      throw new TypeError('population identity is invalid')
+    }
+    for (const member of population.members) {
+      if (typeof member.candidateId !== 'string' || member.candidateId.length === 0
+        || !isExactGitCommit(member.harnessRef) || !/^sha256:[0-9a-f]{64}$/u.test(member.harnessDigest)
+        || !Array.isArray(member.parentCandidateIds) || member.lineageRootId.length === 0
+        || !validMetricSet(member.metrics)
+        || member.selectedAt.length === 0) throw new TypeError('population member is invalid')
+    }
+    const identity = { evolutionId: population.evolutionId, generation: population.generation, members: population.members }
+    if (digestJson(identity) !== population.digest) throw new TypeError('population digest mismatch')
+    return population as PopulationState
   }
 
   private validateRound(value: unknown): RefinementRound {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError('refinement round must be an object')
     const round = value as Partial<RefinementRound>
-    if (round.schemaVersion !== 3) throw new TypeError('unsupported refinement round schema; run the explicit evolution migration')
     if (typeof round.evolutionId !== 'string' || !/^[a-zA-Z0-9_-]+$/u.test(round.evolutionId)
       || (this.evolutionId !== undefined && round.evolutionId !== this.evolutionId)) {
       throw new TypeError('round evolutionId is invalid or does not match its store')
@@ -284,9 +333,35 @@ export class RefineStateStore {
     if (typeof round.targetHarnessDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(round.targetHarnessDigest)) {
       throw new TypeError('round targetHarnessDigest must be a sha256 digest')
     }
-    if (round.candidateRef !== undefined && !isExactGitCommit(round.candidateRef)) throw new TypeError('round candidateRef must be an exact Git commit')
-    if (round.candidateDigest !== undefined && !/^sha256:[0-9a-f]{64}$/u.test(round.candidateDigest)) {
-      throw new TypeError('round candidateDigest must be a sha256 digest')
+    if (round.plan === undefined || round.plan.planId.length === 0 || !/^sha256:[0-9a-f]{64}$/u.test(round.plan.digest)) {
+      throw new TypeError('round resolved plan is invalid')
+    }
+    if (round.plan.taskSampler.kind !== 'task-sampler'
+      || digestJson({ roundId: round.roundId, taskSampler: round.plan.taskSampler, seed: round.plan.seed, heldOut: round.plan.heldOut }) !== round.plan.digest) {
+      throw new TypeError('round resolved plan digest mismatch')
+    }
+    for (const [label, condition] of [['seed', round.plan.seed], ['held-out', round.plan.heldOut]] as const) {
+      if (!/^sha256:[0-9a-f]{64}$/u.test(condition.conditionId) || condition.partition !== label
+        || condition.dataset.ref !== (label === 'seed' ? round.seedTaskRef : round.heldOutRef)
+        || !/^sha256:[0-9a-f]{64}$/u.test(condition.dataset.digest)
+        || !Number.isSafeInteger(condition.repetitions) || condition.repetitions <= 0
+        || !Number.isSafeInteger(condition.timeoutMs) || condition.timeoutMs !== round.taskBudgetMs
+        || typeof condition.model !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(condition.rolloutProviderDigest)) {
+        throw new TypeError(`round ${label} evaluation condition is invalid`)
+      }
+      const conditionIdentity = {
+        partition: condition.partition,
+        dataset: condition.dataset,
+        repetitions: condition.repetitions,
+        ...(condition.seeds === undefined ? {} : { seeds: condition.seeds }),
+        model: condition.model,
+        sampling: condition.sampling,
+        timeoutMs: condition.timeoutMs,
+        rolloutProviderDigest: condition.rolloutProviderDigest,
+      }
+      if (digestJson(conditionIdentity) !== condition.conditionId) {
+        throw new TypeError(`round ${label} evaluation condition digest mismatch`)
+      }
     }
     if (round.advisoryFocus !== undefined && (!Array.isArray(round.advisoryFocus)
       || new Set(round.advisoryFocus).size !== round.advisoryFocus.length)) {
@@ -305,13 +380,33 @@ export class RefineStateStore {
       || round.decline.evidenceRefs.some(ref => typeof ref !== 'string' || ref.length === 0))) {
       throw new TypeError('round decline is invalid')
     }
-    if (round.candidateDiff !== undefined) {
-      if (round.candidateDiff.parentRef !== round.targetHarnessRef
-        || !/^sha256:[0-9a-f]{64}$/u.test(round.candidateDiff.patchDigest)
-        || !Number.isSafeInteger(round.candidateDiff.totalBytes) || round.candidateDiff.totalBytes < 0
-        || !Array.isArray(round.candidateDiff.files)) {
-        throw new TypeError('round candidateDiff is invalid')
+    if (!Array.isArray(round.candidatePool) || round.candidatePool.length === 0
+      || new Set(round.candidatePool.map(candidate => candidate.candidateId)).size !== round.candidatePool.length) {
+      throw new TypeError('round candidatePool is invalid')
+    }
+    for (const candidate of round.candidatePool) {
+      if (candidate.roundId !== round.roundId || candidate.candidateId.length === 0
+        || !isExactGitCommit(candidate.parentHarnessRef)) throw new TypeError('round candidate identity is invalid')
+      if (candidate.diff !== undefined && (candidate.diff.parentRef !== candidate.parentHarnessRef
+        || !/^sha256:[0-9a-f]{64}$/u.test(candidate.diff.patchDigest)
+        || !Number.isSafeInteger(candidate.diff.totalBytes) || candidate.diff.totalBytes < 0
+        || !Array.isArray(candidate.diff.files))) {
+        throw new TypeError('round candidate diff is invalid')
       }
+      if (candidate.sealedVersion !== undefined) {
+        if (!isExactGitCommit(candidate.sealedVersion.commitOid) || !isExactGitCommit(candidate.sealedVersion.treeOid)
+          || !/^sha256:[0-9a-f]{64}$/u.test(candidate.sealedVersion.manifestDigest)
+          || !/^sha256:[0-9a-f]{64}$/u.test(candidate.sealedVersion.patchDigest)
+          || !candidate.sealedVersion.immutableRef.startsWith('refs/dsh-refine/evolutions/')) {
+          throw new TypeError('round sealed candidate identity is invalid')
+        }
+        if (candidate.diff !== undefined && candidate.sealedVersion.patchDigest !== candidate.diff.patchDigest) {
+          throw new TypeError('round sealed candidate patch digest mismatch')
+        }
+      }
+      if (candidate.seedEvaluation !== undefined) this.validateEvaluationEvidence(candidate.seedEvaluation, 'candidate seed evaluation')
+      if (candidate.heldOutEvaluation !== undefined) this.validateEvaluationEvidence(candidate.heldOutEvaluation, 'candidate held-out evaluation')
+      if (candidate.metrics !== undefined && !validMetricSet(candidate.metrics)) throw new TypeError('candidate metrics are invalid')
     }
     if (round.meta !== undefined && round.meta.evolutionId !== round.evolutionId) {
       throw new TypeError('round meta attribution evolution mismatch')
@@ -325,6 +420,26 @@ export class RefineStateStore {
       this.validateEvaluationEvidence(round.evaluation.seedCandidate, 'seed candidate')
       if (round.evaluation.heldOutBaseline !== undefined) this.validateEvaluationEvidence(round.evaluation.heldOutBaseline, 'held-out baseline')
       if (round.evaluation.heldOutCandidate !== undefined) this.validateEvaluationEvidence(round.evaluation.heldOutCandidate, 'held-out candidate')
+      this.validatePairedTrials(
+        round.evaluation.seedPairedTrials,
+        round.plan.seed.conditionId,
+        round.evaluation.seedCandidate.trials.length,
+        'seed',
+      )
+      if (round.evaluation.heldOutPairedTrials !== undefined) {
+        if (round.evaluation.heldOutCandidate === undefined) throw new TypeError('held-out pairs require candidate evidence')
+        this.validatePairedTrials(
+          round.evaluation.heldOutPairedTrials,
+          round.plan.heldOut.conditionId,
+          round.evaluation.heldOutCandidate.trials.length,
+          'held-out',
+        )
+      } else if (round.evaluation.heldOutCandidate !== undefined) {
+        throw new TypeError('held-out candidate evidence requires paired trials')
+      }
+      if (round.evaluation.promotionMetrics !== undefined && !validMetricSet(round.evaluation.promotionMetrics)) {
+        throw new TypeError('round promotion metrics are invalid')
+      }
       if (!Number.isFinite(round.evaluation.scoreDelta)
         || (round.evaluation.heldOutScoreDelta !== undefined && !Number.isFinite(round.evaluation.heldOutScoreDelta))
         || !Number.isSafeInteger(round.evaluation.requiredRegressions) || round.evaluation.requiredRegressions < 0) {
@@ -335,21 +450,24 @@ export class RefineStateStore {
       || round.status === 'rejected-for-substrate' || round.status === 'failed'
     if (!terminal && round.decision !== undefined) throw new TypeError('non-terminal round cannot have a decision')
     if (round.status === 'accepted') {
-      if (round.decision !== 'accepted' || round.candidateRef === undefined || round.candidateDigest === undefined
+      const promoted = round.candidatePool.find(candidate => candidate.candidateId === round.promotedCandidateId)
+      if (round.decision !== 'accepted' || promoted?.sealedVersion === undefined
         || round.evaluation?.heldOutBaseline === undefined || round.evaluation.heldOutCandidate === undefined
-        || round.evaluation.seedCandidate.actualCommit !== round.candidateRef
-        || round.evaluation.heldOutCandidate.actualCommit !== round.candidateRef) {
+        || round.evaluation.seedCandidate.actualCommit !== promoted.sealedVersion.commitOid
+        || round.evaluation.heldOutCandidate.actualCommit !== promoted.sealedVersion.commitOid) {
         throw new TypeError('accepted round is missing verified candidate evaluation evidence')
       }
     }
     if (round.baseline !== undefined
       && (round.baseline.requestedCommit !== round.targetHarnessRef
         || round.baseline.actualCommit !== round.targetHarnessRef
-        || round.baseline.dataset !== round.seedTaskRef)) {
+        || round.baseline.dataset !== round.seedTaskRef
+        || round.baseline.conditionId !== round.plan.seed.conditionId)) {
       throw new TypeError('round baseline does not match its pinned target/seed partition')
     }
     if (round.evaluation !== undefined) {
-      const candidate = round.candidateRef
+      const candidate = round.candidatePool.find(value => value.sealedVersion?.commitOid === round.evaluation?.seedCandidate.actualCommit)
+        ?.sealedVersion?.commitOid
       if (candidate === undefined
         || round.evaluation.seedBaseline.requestedCommit !== round.targetHarnessRef
         || round.evaluation.seedBaseline.actualCommit !== round.targetHarnessRef
@@ -357,7 +475,13 @@ export class RefineStateStore {
         || round.evaluation.seedCandidate.requestedCommit !== candidate
         || round.evaluation.seedCandidate.actualCommit !== candidate
         || round.evaluation.seedCandidate.dataset !== round.seedTaskRef
-        || round.evaluation.seedBaseline.invocationFingerprint !== round.evaluation.seedCandidate.invocationFingerprint) {
+        || round.evaluation.seedBaseline.conditionId !== round.plan.seed.conditionId
+        || round.evaluation.seedCandidate.conditionId !== round.plan.seed.conditionId
+        || round.evaluation.seedBaseline.provider !== round.evaluation.seedCandidate.provider
+        || round.evaluation.seedBaseline.effectiveConfigDigest !== round.evaluation.seedCandidate.effectiveConfigDigest
+        || ((round.evaluation.seedBaseline.invocationFingerprint !== undefined
+            || round.evaluation.seedCandidate.invocationFingerprint !== undefined)
+          && round.evaluation.seedBaseline.invocationFingerprint !== round.evaluation.seedCandidate.invocationFingerprint)) {
         throw new TypeError('round seed evaluation does not match its pinned commits/partition/parity')
       }
       const heldOutBaseline = round.evaluation.heldOutBaseline
@@ -365,7 +489,8 @@ export class RefineStateStore {
       if (heldOutBaseline !== undefined
         && (heldOutBaseline.requestedCommit !== round.targetHarnessRef
           || heldOutBaseline.actualCommit !== round.targetHarnessRef
-          || heldOutBaseline.dataset !== round.heldOutRef)) {
+          || heldOutBaseline.dataset !== round.heldOutRef
+          || heldOutBaseline.conditionId !== round.plan.heldOut.conditionId)) {
         throw new TypeError('round held-out baseline does not match its pinned target/partition')
       }
       if (heldOutCandidate !== undefined
@@ -373,7 +498,11 @@ export class RefineStateStore {
           || heldOutCandidate.requestedCommit !== candidate
           || heldOutCandidate.actualCommit !== candidate
           || heldOutCandidate.dataset !== round.heldOutRef
-          || heldOutBaseline.invocationFingerprint !== heldOutCandidate.invocationFingerprint)) {
+          || heldOutCandidate.conditionId !== round.plan.heldOut.conditionId
+          || heldOutBaseline.provider !== heldOutCandidate.provider
+          || heldOutBaseline.effectiveConfigDigest !== heldOutCandidate.effectiveConfigDigest
+          || ((heldOutBaseline.invocationFingerprint !== undefined || heldOutCandidate.invocationFingerprint !== undefined)
+            && heldOutBaseline.invocationFingerprint !== heldOutCandidate.invocationFingerprint))) {
         throw new TypeError('round held-out evaluation does not match its pinned commits/partition/parity')
       }
     }
@@ -386,13 +515,17 @@ export class RefineStateStore {
     return round as RefinementRound
   }
 
-  private validateEvaluationEvidence(value: HitchEvaluationEvidence, label: string): void {
+  private validateEvaluationEvidence(value: EvaluationEvidence, label: string): void {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError(`${label} must be an object`)
-    if (!/^eval_[0-9a-f]{32}$/u.test(value.evalId)) throw new TypeError(`${label} evalId is invalid`)
+    if (typeof value.provider !== 'string' || value.provider.length === 0
+      || !/^sha256:[0-9a-f]{64}$/u.test(value.conditionId)
+      || !/^sha256:[0-9a-f]{64}$/u.test(value.effectiveConfigDigest)
+      || typeof value.evalId !== 'string' || value.evalId.length === 0) throw new TypeError(`${label} identity is invalid`)
     if (typeof value.dataset !== 'string' || value.dataset.length === 0) throw new TypeError(`${label} dataset is invalid`)
     if (!isExactGitCommit(value.requestedCommit) || !isExactGitCommit(value.actualCommit)) throw new TypeError(`${label} commit is invalid`)
     if (typeof value.revisionIdentity !== 'string' || value.revisionIdentity.length === 0
-      || typeof value.invocationFingerprint !== 'string' || value.invocationFingerprint.length === 0
+      || (value.invocationFingerprint !== undefined
+        && (typeof value.invocationFingerprint !== 'string' || value.invocationFingerprint.length === 0))
       || !Number.isFinite(value.primaryReward)) throw new TypeError(`${label} identity/reward is invalid`)
     if (typeof value.summary !== 'object' || value.summary === null
       || !Number.isSafeInteger(value.summary.total) || !Number.isSafeInteger(value.summary.passed)
@@ -404,19 +537,32 @@ export class RefineStateStore {
     if (!Array.isArray(value.trials) || value.trials.length !== value.summary.total
       || value.trials.some(trial => typeof trial.taskName !== 'string' || trial.taskName.length === 0
       || trial.status !== 'completed'
-      || (trial.runId !== undefined && !/^run_[0-9a-f]{32}$/u.test(trial.runId))
+      || (trial.runId !== undefined && (typeof trial.runId !== 'string' || trial.runId.length === 0))
       || (trial.attempt !== undefined && (!Number.isSafeInteger(trial.attempt) || trial.attempt <= 0))
       || typeof trial.rewards !== 'object' || trial.rewards === null
       || Object.values(trial.rewards).some(reward => !Number.isFinite(reward)))) {
       throw new TypeError(`${label} trials are invalid`)
     }
     const transport = value.localSourceTransport
-    if (typeof transport !== 'object' || transport === null || transport.kind !== 'local-git-commit'
-      || transport.commit !== value.actualCommit || !isExactGitCommit(transport.tree)
-      || transport.resolutionIdentity !== value.revisionIdentity
-      || !/^sha256:[0-9a-f]{64}$/u.test(transport.payloadSha256)
-      || !Number.isSafeInteger(transport.payloadBytes) || transport.payloadBytes < 0) {
-      throw new TypeError(`${label} local exact commit transport evidence is invalid`)
+    if (transport !== undefined) {
+      if (typeof transport !== 'object' || transport === null || transport.kind !== 'local-git-commit'
+        || transport.commit !== value.actualCommit || !isExactGitCommit(transport.tree)
+        || transport.resolutionIdentity !== value.revisionIdentity
+        || !/^sha256:[0-9a-f]{64}$/u.test(transport.payloadSha256)
+        || !Number.isSafeInteger(transport.payloadBytes) || transport.payloadBytes < 0) {
+        throw new TypeError(`${label} local exact commit transport evidence is invalid`)
+      }
+    }
+  }
+
+  private validatePairedTrials(value: PairedTrial[], conditionId: string, expectedCount: number, label: string): void {
+    if (!Array.isArray(value) || value.length !== expectedCount
+      || new Set(value.map(trial => trial.trialKey)).size !== value.length
+      || value.some(trial => trial.conditionId !== conditionId || trial.trialKey.length === 0 || trial.taskName.length === 0
+        || !Number.isFinite(trial.baselineReward) || !Number.isFinite(trial.candidateReward)
+        || !Number.isFinite(trial.rewardDelta)
+        || trial.rewardDelta !== trial.candidateReward - trial.baselineReward)) {
+      throw new TypeError(`round ${label} paired trials are invalid`)
     }
   }
 }

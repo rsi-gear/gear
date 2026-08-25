@@ -5,6 +5,7 @@ import { HarnessBuilder, NoopHarnessCompiler } from '../../src/harness/builder.j
 import { RefineStateStore } from '../../src/state/store.js'
 import type { HitchEvaluationEvidence, HitchTrajectoryReader, RefinementRound } from '../../src/types.js'
 import { createGitHarnessFixture } from '../helpers/git-fixture.js'
+import { roundFixture } from '../helpers/research-fixture.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
@@ -57,13 +58,21 @@ describe('RefineCapabilities Git projection', () => {
     roots.push(fixture.root)
     const store = new RefineStateStore(`${fixture.root}/state`)
     await store.initialize()
+    const baseRound = roundFixture({
+      roundId: 'round-trajectory', workspaceRoot: fixture.root, status: 'rejected',
+      targetHarnessRef: fixture.championRef, targetHarnessDigest: fixture.manifest.digest,
+      heldOutRef: 'held-out-secret', decision: 'rejected',
+    })
     const evidence = (evalId: string, dataset: string, runId: string): HitchEvaluationEvidence => ({
+      provider: 'fake',
+      conditionId: dataset === 'seed' ? baseRound.plan.seed.conditionId : baseRound.plan.heldOut.conditionId,
+      effectiveConfigDigest: `sha256:${'9'.repeat(64)}`,
       evalId,
       dataset,
       requestedCommit: fixture.championRef,
       actualCommit: fixture.championRef,
       revisionIdentity: `sha256:${'2'.repeat(64)}`,
-      invocationFingerprint: `parity:${dataset}`,
+      invocationFingerprint: `sha256:${'9'.repeat(64)}`,
       primaryReward: 1,
       summary: { total: 1, passed: 1, failed: 0, score: 1 },
       trials: [{ taskName: 'task-1', trialName: 'trial-1', runId, attempt: 1, status: 'completed', rewards: { reward: 1 } }],
@@ -79,39 +88,34 @@ describe('RefineCapabilities Git projection', () => {
     const seedCandidate = evidence(`eval_${'2'.repeat(32)}`, 'seed', candidateRun)
     const heldBaseline = evidence(`eval_${'3'.repeat(32)}`, 'held-out-secret', heldRun)
     const round: RefinementRound = {
-      schemaVersion: 3,
-      evolutionId: 'evo-1',
-      roundId: 'round-trajectory',
-      workspaceRoot: fixture.root,
-      status: 'rejected',
-      source: 'api',
-      createdAt: 'now',
-      updatedAt: 'now',
-      metaHarnessRef: 'meta-v1',
-      targetHarnessRef: fixture.championRef,
-      targetHarnessDigest: fixture.manifest.digest,
-      sandboxProfileRef: 'sandbox-v1',
-      seedTaskRef: 'seed',
-      heldOutRef: 'held-out-secret',
-      taskBudgetMs: 60_000,
-      promotionPolicy: {
-        minimumCandidateScore: 0, minimumAbsoluteGain: 0, requireNoRegression: true,
-        maxHeldOutRegression: 0, maxRequiredRegressions: 0,
-      },
-      batchId: 'batch-1',
-      roundIndex: 1,
-      roundCount: 1,
+      ...baseRound,
       baseline: seedBaseline,
-      candidateRef: fixture.championRef,
-      candidateDigest: fixture.manifest.digest,
+      candidatePool: [{
+        ...baseRound.candidatePool[0]!,
+        status: 'discarded',
+        sealedVersion: {
+          commitOid: fixture.championRef,
+          treeOid: '3'.repeat(40),
+          manifestDigest: fixture.manifest.digest,
+          patchDigest: `sha256:${'8'.repeat(64)}`,
+          immutableRef: `refs/dsh-refine/evolutions/evo-1/candidates/${fixture.championRef}`,
+        },
+        seedEvaluation: seedCandidate,
+      }],
       evaluation: {
         seedBaseline,
         seedCandidate,
+        seedPairedTrials: [{
+          conditionId: baseRound.plan.seed.conditionId,
+          trialKey: JSON.stringify(['task-1', 1]),
+          taskName: 'task-1', baselineTrialName: 'trial-1', candidateTrialName: 'trial-2', attempt: 1,
+          baselineRunId: seedRun, candidateRunId: candidateRun,
+          baselineReward: 1, candidateReward: 1, rewardDelta: 0,
+        }],
         heldOutBaseline: heldBaseline,
         scoreDelta: 0,
         requiredRegressions: 0,
       },
-      decision: 'rejected',
     }
     await store.writeRound(round)
     const builder = new HarnessBuilder({

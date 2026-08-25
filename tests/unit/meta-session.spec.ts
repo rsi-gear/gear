@@ -2,17 +2,19 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
-import { MetaSessionManager, type MetaAgentHost } from '../../src/meta/session.js'
+import { DshMetaAgentHost, MetaSessionManager, type MetaAgentHost } from '../../src/meta/session.js'
 import { RefineStateStore } from '../../src/state/store.js'
 import type { RefinementRound } from '../../src/types.js'
+import { evidence, metaAgent, roundFixture } from '../helpers/research-fixture.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 
 function fakeAgent(id: string): Agent {
   const events: Array<Record<string, unknown>> = [{
-    type: 'request/header', seq: 0, data: { header: { provider: 'p', model: 'm' }, reason: 'initial' },
+    type: 'request/header', seq: 0, data: { header: { config: { provider: 'p', model: 'm' } }, reason: 'initial' },
   }]
   const session = {
     events,
@@ -54,42 +56,47 @@ class FakeHost implements MetaAgentHost {
 }
 
 function round(): RefinementRound {
-  return {
-    schemaVersion: 3, evolutionId: 'evo-1', roundId: 'round-1', workspaceRoot: '/workspace', status: 'candidate-editing', source: 'api',
-    createdAt: 'now', updatedAt: 'now', metaHarnessRef: 'meta-v1', targetHarnessRef: 'a'.repeat(40),
-    targetHarnessDigest: `sha256:${'b'.repeat(64)}`, sandboxProfileRef: 'sandbox-v1',
-    seedTaskRef: 'seed', heldOutRef: 'held-out', taskBudgetMs: 60_000,
-    promotionPolicy: {
-      minimumCandidateScore: 0, minimumAbsoluteGain: 0, requireNoRegression: true,
-      maxHeldOutRegression: 0, maxRequiredRegressions: 0,
-    },
-    batchId: 'batch-1', roundIndex: 1, roundCount: 1,
-    candidateWorkspaceId: 'workspace-1',
-    baseline: {
-      evalId: `eval_${'c'.repeat(32)}`, dataset: 'seed', requestedCommit: 'a'.repeat(40),
-      actualCommit: 'a'.repeat(40), revisionIdentity: `sha256:${'d'.repeat(64)}`,
-      invocationFingerprint: `sha256:${'e'.repeat(64)}`, primaryReward: 1, trials: [{
-        taskName: 'one', status: 'completed', rewards: { reward: 1 },
-      }],
-      summary: { total: 1, passed: 1, failed: 0, score: 1 },
-      localSourceTransport: {
-        kind: 'local-git-commit', resolutionIdentity: `sha256:${'d'.repeat(64)}`,
-        commit: 'a'.repeat(40), tree: 'f'.repeat(40),
-        payloadSha256: `sha256:${'1'.repeat(64)}`, payloadBytes: 1,
-      },
-    },
-  }
+  const value = roundFixture({ status: 'candidate-editing' })
+  value.candidatePool[0]!.workspaceId = 'workspace-1'
+  value.baseline = evidence(value.plan.seed, value.targetHarnessRef, 1, 'c')
+  return value
 }
 
 const META_OPTIONS = {
-  evolutionId: 'evo-1', specDigest: `sha256:${'9'.repeat(64)}`, metaHarnessRef: 'meta-v1', model: {},
+  evolutionId: 'evo-1', specDigest: `sha256:${'9'.repeat(64)}`, metaAgent: metaAgent(),
 } as const
 
 function metaState(sessionId: string, metaHarnessRef = 'meta-v1') {
-  return { schemaVersion: 1 as const, evolutionId: 'evo-1', sessionId, metaHarnessRef, specDigest: META_OPTIONS.specDigest }
+  return { evolutionId: 'evo-1', sessionId, metaHarnessRef, specDigest: META_OPTIONS.specDigest }
 }
 
 describe('MetaSessionManager', () => {
+  it('injects immutable Meta sampling into the effective DSH request', async () => {
+    const scoped = new Context()
+    let created: Record<string, unknown> | undefined
+    let mounted: string | undefined
+    const agent = fakeAgent('meta-sampling')
+    const parent = {
+      agents: {
+        get: () => undefined,
+        create: async (options: Record<string, unknown>) => {
+          created = options
+          await (options.setup as (ctx: Context) => Promise<void>)(scoped)
+          return { agent, dispose: async () => {} }
+        },
+      },
+      agentPresets: { mount: async (_ctx: Context, preset: string) => { mounted = preset } },
+    }
+    const host = new DshMetaAgentHost(parent as never, async () => {})
+    await host.create('meta-sampling', metaAgent('meta-temperature', 0.75))
+    const effective = await (scoped as unknown as {
+      waterfall(name: string, payload: unknown, next: () => Promise<unknown>): Promise<Record<string, unknown>>
+    }).waterfall('agent/request', {}, async () => ({ provider: 'p', model: 'm' }))
+    expect(mounted).toBe('meta-temperature')
+    expect(created?.agentOptions).toMatchObject({ provider: 'p', model: 'm' })
+    expect(effective).toMatchObject({ provider: 'p', model: 'm', temperature: 0.75 })
+  })
+
   it('wakes Meta with the authoritative current baseline and evidence policy', async () => {
     const root = await mkdtemp(join(tmpdir(), 'refine-meta-'))
     roots.push(root)
@@ -103,8 +110,8 @@ describe('MetaSessionManager', () => {
     expect(serialized).toContain('\\"primaryReward\\":1')
     expect(serialized).toContain('diagnoseEveryFailedRunBeforeProposal')
     expect(manager.activeRoundId(String(agent.id))).toBe('round-1')
-    const audit = manager.proposalEvidenceAudit('round-1', String(agent.id), [`eval_${'c'.repeat(32)}`])
-    expect(audit).toMatchObject({ summaryAccessed: true, baselineEvalId: `eval_${'c'.repeat(32)}` })
+    const audit = manager.proposalEvidenceAudit('round-1', String(agent.id), [round().baseline!.evalId])
+    expect(audit).toMatchObject({ summaryAccessed: true, baselineEvalId: round().baseline!.evalId })
     await manager.dispose()
   })
 
@@ -116,7 +123,7 @@ describe('MetaSessionManager', () => {
     await store.writeMeta(metaState('persisted'))
     const host = new FakeHost()
     const manager = new MetaSessionManager(store, host, {
-      ...META_OPTIONS, model: { provider: 'p', model: 'm' }, sampling: { temperature: 0 },
+      ...META_OPTIONS, metaAgent: metaAgent('meta-v1', 0),
     })
     expect((await manager.agent()).id).toBe('persisted')
     await manager.wake(round())
@@ -133,7 +140,7 @@ describe('MetaSessionManager', () => {
     await store.initialize()
     await store.writeMeta(metaState('old', 'meta-old'))
     const host = new FakeHost()
-    const manager = new MetaSessionManager(store, host, { ...META_OPTIONS, metaHarnessRef: 'meta-v2' })
+    const manager = new MetaSessionManager(store, host, { ...META_OPTIONS, metaAgent: metaAgent('meta-v2') })
     const agent = await manager.agent()
     expect(agent.id).not.toBe('old')
     expect((await store.readMeta())?.metaHarnessRef).toBe('meta-v2')
@@ -149,18 +156,21 @@ describe('MetaSessionManager', () => {
     await store.initialize()
     const host = new FakeHost()
     const manager = new MetaSessionManager(store, host, {
-      ...META_OPTIONS, model: { provider: 'p', model: 'm' }, sampling: { temperature: 0 },
+      ...META_OPTIONS, metaAgent: metaAgent('meta-v1', 0),
     })
     const agent = await manager.agent()
     await manager.wake(round())
     ;(agent.session.events as unknown as Array<unknown>).push({
-      type: 'request/header', seq: 1, data: { header: { provider: 'p', model: 'm' }, reason: 'change' },
+      type: 'request/header', seq: 1, data: { header: { config: { provider: 'p', model: 'm', temperature: 0 } }, reason: 'change' },
     })
     ;(agent.session.events as unknown as Array<unknown>).push({
       type: 'tool/call', seq: 2, data: { name: 'ipython_input', arguments: '{}' },
     })
     const attribution = manager.proposalAttribution('round-1', agent, null)
-    expect(attribution).toMatchObject({ sessionId: String(agent.id), requestHeaderSeq: 1, proposalEventSeq: 2 })
+    expect(attribution).toMatchObject({
+      sessionId: String(agent.id), requestHeaderSeq: 1, proposalEventSeq: 2,
+      provider: 'p', model: 'm', sampling: { temperature: 0 },
+    })
     expect([...agent.session.events].at(-1)?.type).toBe('tool/call')
     await manager.dispose()
   })

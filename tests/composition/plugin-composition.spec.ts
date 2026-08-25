@@ -57,8 +57,9 @@ describe('published plugin composition', () => {
       `    dshRepository: ${q(fixture.repository)}`,
       `    targetRoot: ${q(fixture.targetRoot)}`,
       '    metaPreset: refine-meta',
-      '    metaHarnessRef: meta-v1',
-      '    metaModel: {}',
+      '    metaModel:',
+      '      provider: test',
+      '      model: test-model',
       `    dshBaseRef: ${fixture.baseRef}`,
       '    toolchainRef: node-22-tsc',
       '    sandboxProfileRef: sandbox-v1',
@@ -72,6 +73,8 @@ describe('published plugin composition', () => {
       `      command: ${q(process.execPath)}`,
       '      args: ["-e", "process.exit(0)"]',
       '      env: {}',
+      '    hitch:',
+      '      model: test-rollout-model',
       '    initialChampion:',
       '      schemaVersion: 2',
       `      ref: ${fixture.championRef}`,
@@ -101,6 +104,8 @@ describe('published plugin composition', () => {
     expect(context.refine).toBeDefined()
     expect(context.notebookRuntime).toBeDefined()
     expect(context.targetWorkers).toBeDefined()
+    expect(context.evolutionComponents).toBeDefined()
+    expect(context.refine.options.rollout.seeds).toBeUndefined()
     expect(commands).toContainEqual(expect.objectContaining({ name: 'refine' }))
   })
 })

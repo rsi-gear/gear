@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { readFile, readdir, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { load as loadYaml } from 'js-yaml'
-import type { CandidateDiffSummary, HarnessManifest, PreparedHarness } from '../types.js'
+import type { CandidateDiffSummary, HarnessManifest, PreparedHarness, SealedCandidateVersion } from '../types.js'
 import { isExactGitCommit } from '../types.js'
 import type { CandidateWorkspaceHandle } from '../candidate/workspace.js'
 
@@ -180,10 +180,13 @@ export class HarnessBuilder {
     const ref = await this.resolveExactCommitAt(handle.worktreePath, 'HEAD')
     const status = (await this.git(['-C', handle.worktreePath, 'status', '--porcelain=v1', '-z', '--untracked-files=all'], signal)).stdout
     if (status.length > 0) throw new Error(`candidate worktree is not clean after commit (${porcelainPaths(status).slice(0, 20).join(', ')})`)
-    await this.git(['update-ref', `refs/dsh-refine/evolutions/${handle.evolutionId}/candidates/${ref}`, ref], signal)
+    const immutableRef = `refs/dsh-refine/evolutions/${handle.evolutionId}/candidates/${ref}`
+    await this.git(['update-ref', immutableRef, ref], signal)
+    const treeOid = (await this.git(['rev-parse', `${ref}^{tree}`], signal)).stdout.trim()
+    if (!isExactGitCommit(treeOid)) throw new MutationValidationError('candidate root tree object id is invalid')
     const verified = await this.readManifest(ref)
     if (verified.digest !== manifest.digest) throw new MutationValidationError('candidate manifest changed while committing')
-    return { ref, digest: manifest.digest, repositoryPath: this.repositoryPath, manifest }
+    return { ref, digest: manifest.digest, treeOid, immutableRef, repositoryPath: this.repositoryPath, manifest }
   }
 
   async checkWorkspace(handle: CandidateWorkspaceHandle, signal: AbortSignal): Promise<void> {
@@ -197,6 +200,18 @@ export class HarnessBuilder {
     await this.validateImports(harnessRoot)
     await this.options.compiler.compile(handle.worktreePath, signal)
     await this.assertCompilerStayedInTarget(handle.worktreePath)
+  }
+
+  async verifySealedCandidate(version: Readonly<SealedCandidateVersion>): Promise<void> {
+    const commit = await this.resolveExactCommit(version.commitOid, true)
+    const pinned = await this.resolveExactCommit(version.immutableRef, false)
+    if (pinned !== commit) throw new MutationValidationError('candidate immutable ref no longer points to its sealed commit')
+    const treeOid = (await this.git(['rev-parse', `${commit}^{tree}`])).stdout.trim()
+    if (treeOid !== version.treeOid) throw new MutationValidationError('candidate tree OID does not match its sealed commit')
+    const manifest = await this.readManifest(commit)
+    if (manifest.digest !== version.manifestDigest) {
+      throw new MutationValidationError('candidate manifest digest does not match its sealed commit')
+    }
   }
 
 

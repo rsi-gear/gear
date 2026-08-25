@@ -1,6 +1,6 @@
 import Schema from '@deepseek-ai/schemastery'
 import type { AgentOptions } from '@deepseek-ai/dsh-agent'
-import type { ChampionState, PromotionPolicy } from './types.js'
+import type { ChampionState, MetaSamplingConfig, PromotionPolicy, RolloutSamplingConfig } from './types.js'
 
 export interface HitchConfig {
   executable: string
@@ -13,6 +13,8 @@ export interface HitchConfig {
   terminationGraceMs: number
   maxOutputBytes: number
   maxTrajectoryOutputBytes: number
+  seeds?: number[]
+  sampling: RolloutSamplingConfig
   agentArgs: string[]
   passEnv: string[]
 }
@@ -23,9 +25,8 @@ export interface Config {
   targetRoot: string
   stateRoot?: string
   metaPreset: string
-  metaHarnessRef: string
   metaModel: AgentOptions
-  metaSampling?: Record<string, string | number | boolean>
+  metaSampling: MetaSamplingConfig
   dshBaseRef: string
   toolchainRef: string
   sandboxProfileRef: string
@@ -53,6 +54,15 @@ export interface Config {
     shellTimeoutMs: number
     shellOutputBytes: number
   }
+  candidateGeneration: {
+    maxCandidates: number
+    maxModelRequests?: number
+    maxTokens?: number
+    timeoutMs: number
+  }
+  selection: {
+    survivors: number
+  }
   compiler: {
     command: string
     args: string[]
@@ -69,13 +79,14 @@ export const ConfigSchema: Schema<Config> = Schema.object({
   targetRoot: Schema.string().default('harness'),
   stateRoot: Schema.string(),
   metaPreset: Schema.string().required(),
-  metaHarnessRef: Schema.string().required(),
   metaModel: Schema.object({
     provider: Schema.string(),
     model: Schema.string(),
     maxTokens: Schema.number(),
   }).required(),
-  metaSampling: Schema.dict(Schema.union([Schema.string(), Schema.number(), Schema.boolean()])),
+  metaSampling: Schema.object({
+    temperature: Schema.number(),
+  }).default({} as never),
   dshBaseRef: Schema.string().required(),
   toolchainRef: Schema.string().required(),
   sandboxProfileRef: Schema.string().required(),
@@ -118,6 +129,15 @@ export const ConfigSchema: Schema<Config> = Schema.object({
     shellTimeoutMs: 120_000,
     shellOutputBytes: 1024 * 1024,
   }),
+  candidateGeneration: Schema.object({
+    maxCandidates: Schema.number().default(1),
+    maxModelRequests: Schema.number(),
+    maxTokens: Schema.number(),
+    timeoutMs: Schema.number().default(300_000),
+  }).default({ maxCandidates: 1, timeoutMs: 300_000 } as never),
+  selection: Schema.object({
+    survivors: Schema.number().default(1),
+  }).default({ survivors: 1 }),
   compiler: Schema.object({
     command: Schema.string().required(),
     args: Schema.array(Schema.string()).default([]),
@@ -135,6 +155,8 @@ export const ConfigSchema: Schema<Config> = Schema.object({
     terminationGraceMs: Schema.number().default(5_000),
     maxOutputBytes: Schema.number().default(8 * 1024 * 1024),
     maxTrajectoryOutputBytes: Schema.number().default(64 * 1024 * 1024),
+    seeds: Schema.array(Schema.number()),
+    sampling: Schema.object({ temperature: Schema.number() }).default({} as never),
     agentArgs: Schema.array(Schema.string()).default([]),
     passEnv: Schema.array(Schema.string()).default([]),
   }).default({
@@ -148,9 +170,10 @@ export const ConfigSchema: Schema<Config> = Schema.object({
     terminationGraceMs: 5_000,
     maxOutputBytes: 8 * 1024 * 1024,
     maxTrajectoryOutputBytes: 64 * 1024 * 1024,
+    sampling: {} as never,
     agentArgs: [],
     passEnv: [],
-  }),
+  } as never),
   promotion: Schema.object({
     minimumCandidateScore: Schema.number().default(0),
     minimumAbsoluteGain: Schema.number().default(0),

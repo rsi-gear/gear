@@ -9,7 +9,6 @@ import type {} from '@deepseek-ai/dsh-commands'
 import { HarnessBuilder } from './harness/builder.js'
 import { SubprocessHarnessCompiler } from './harness/compiler.js'
 import { EvolutionRegistryStore } from './state/evolution.js'
-import { migrateLegacyState } from './state/migration.js'
 import { CandidateWorkspaceManager } from './candidate/workspace.js'
 import { CandidateFileSystem } from './candidate/filesystem.js'
 import { CandidateSearchSubprocess } from './candidate/subprocess.js'
@@ -18,11 +17,12 @@ import { isolateCandidateProviderContext } from './candidate/context.js'
 import { SessionAwareNotebookRuntime } from './notebook/runtime.js'
 import { mountMetaCapabilityTools, mountNotebookTool } from './notebook/tool.js'
 import { DshMetaAgentHost, MetaSessionManager } from './meta/session.js'
-import { assertMetaPresetIsolation } from './meta/isolation.js'
+import { assertMetaPresetIsolation, resolveDshPresetRef, resolveDshRuntimeIdentity } from './meta/isolation.js'
 import { RefineService } from './refine/service.js'
+import { builtinComponentRef, ComponentRegistry } from './evolution/components.js'
 import { RefineCapabilities } from './capabilities.js'
 import { HitchCliEvaluator } from './evaluator/hitch-cli.js'
-import { ConfigSchema, type Config as PluginConfig } from './config.js'
+import { ConfigSchema, type Config as PluginConfig, type HitchConfig } from './config.js'
 import { TargetWorkerRegistry } from './worker/registry.js'
 import './context.js'
 
@@ -41,7 +41,8 @@ export * from './refine/service.js'
 export * from './state/store.js'
 export * from './state/evolution.js'
 export * from './state/dataset.js'
-export * from './state/migration.js'
+export * from './state/digest.js'
+export * from './evolution/components.js'
 export * from './candidate/workspace.js'
 export * from './candidate/filesystem.js'
 export * from './candidate/subprocess.js'
@@ -96,6 +97,7 @@ export function parseAdmissionInput(words: string[]): {
 }
 
 export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
+  const components = new ComponentRegistry()
   for (const [name, value] of Object.entries({
     taskBudgetMs: config.taskBudgetMs,
     maxLiveMetaSessions: config.evolutionState.maxLiveMetaSessions,
@@ -106,8 +108,31 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     shellTimeoutMs: config.candidateWorkspace.shellTimeoutMs,
     shellOutputBytes: config.candidateWorkspace.shellOutputBytes,
     compilerTimeoutMs: config.compiler.timeoutMs,
+    candidateMaxCandidates: config.candidateGeneration.maxCandidates,
+    candidateGenerationTimeoutMs: config.candidateGeneration.timeoutMs,
+    selectionSurvivors: config.selection.survivors,
   })) {
     if (!Number.isSafeInteger(value) || value <= 0) throw new TypeError(`${name} must be a positive safe integer`)
+  }
+  if (config.selection.survivors > config.candidateGeneration.maxCandidates) {
+    throw new TypeError('selection.survivors cannot exceed candidateGeneration.maxCandidates')
+  }
+  if (config.metaModel.provider === undefined || config.metaModel.provider.length === 0
+    || config.metaModel.model === undefined || config.metaModel.model.length === 0) {
+    throw new TypeError('metaModel.provider and metaModel.model are required')
+  }
+  if (config.hitch.model.length === 0) throw new TypeError('hitch.model is required for reproducible rollout plans')
+  for (const [name, value] of Object.entries({
+    candidateMaxModelRequests: config.candidateGeneration.maxModelRequests,
+    candidateMaxTokens: config.candidateGeneration.maxTokens,
+  })) {
+    if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
+      throw new TypeError(`${name} must be a positive safe integer`)
+    }
+  }
+  if (config.metaSampling.temperature !== undefined
+    && (!Number.isFinite(config.metaSampling.temperature) || config.metaSampling.temperature < 0 || config.metaSampling.temperature > 2)) {
+    throw new TypeError('metaSampling.temperature must be between 0 and 2')
   }
   if (config.metaSandbox.mode === 'required' && !isAbsolute(config.compiler.command)) {
     throw new TypeError('compiler.command must be an absolute fixed toolchain path when sandboxing is required')
@@ -116,6 +141,54 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   const registry = new EvolutionRegistryStore(stateRoot)
   const metaPreset = await ctx.agentPresets.resolve(config.metaPreset)
   await assertMetaPresetIsolation(metaPreset, [config.dshRepository])
+  const resolvedMetaPreset = await resolveDshPresetRef(metaPreset)
+  const dshRuntime = await resolveDshRuntimeIdentity()
+  const metaAgent = {
+    runtime: dshRuntime,
+    preset: resolvedMetaPreset,
+    model: {
+      provider: config.metaModel.provider,
+      model: config.metaModel.model,
+      ...(config.metaModel.maxTokens === undefined ? {} : { maxTokens: config.metaModel.maxTokens }),
+    },
+    sampling: { ...config.metaSampling },
+  }
+  const candidateGeneration = {
+    strategy: builtinComponentRef('candidate-generator', 'dsh-meta-forked-proposals', {}),
+    maxCandidates: config.candidateGeneration.maxCandidates,
+    budget: {
+      ...(config.candidateGeneration.maxModelRequests === undefined ? {} : { maxModelRequests: config.candidateGeneration.maxModelRequests }),
+      ...(config.candidateGeneration.maxTokens === undefined ? {} : { maxTokens: config.candidateGeneration.maxTokens }),
+      timeoutMs: config.candidateGeneration.timeoutMs,
+    },
+  }
+  const rollout = {
+    provider: builtinComponentRef('rollout-provider', 'hitch-cli', structuredClone(config.hitch)),
+    taskSampler: builtinComponentRef('task-sampler', 'dataset', {}),
+    repetitions: config.hitch.attempts,
+    ...(config.hitch.seeds === undefined || config.hitch.seeds.length === 0 ? {} : { seeds: [...config.hitch.seeds] }),
+    model: config.hitch.model,
+    sampling: { ...config.hitch.sampling },
+    agentConfig: { agentArgs: [...config.hitch.agentArgs] },
+  }
+  components.registerRolloutProvider('hitch-cli', rollout.provider.implementation, ref => ({
+    ref,
+    createEvaluator: spec => new HitchCliEvaluator({
+      ...(spec.rollout.provider.config as unknown as HitchConfig),
+      repositoryPath: config.dshRepository,
+    }),
+  }))
+  const evaluation = {
+    judges: [builtinComponentRef('judge', 'task-reward', {})],
+    primaryMetric: 'primaryReward',
+  }
+  const selection = {
+    strategy: builtinComponentRef('candidate-selector', 'highest-quality', {}),
+    survivors: config.selection.survivors,
+  }
+  const promotion = {
+    policy: builtinComponentRef('promotion-policy', 'paired-gate', structuredClone(config.promotion)),
+  }
   const compiler = new SubprocessHarnessCompiler({
     ...config.compiler, sandboxMode: config.metaSandbox.mode, targetRoot: config.targetRoot,
   })
@@ -160,7 +233,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   })
   let workspaceManager: CandidateWorkspaceManager
   const upstreamSubprocess = ctx.subprocess
-  const host = new DshMetaAgentHost(ctx, config.metaPreset, config.metaModel, async (agentCtx, sessionId) => {
+  const host = new DshMetaAgentHost(ctx, async (agentCtx, sessionId) => {
     const candidateCtx = isolateCandidateProviderContext(agentCtx)
     new CandidateFileSystem(candidateCtx, workspaceManager, sessionId, config.candidateWorkspace.maxReadBytes)
     new CandidateSearchSubprocess(candidateCtx, upstreamSubprocess, workspaceManager, sessionId)
@@ -188,33 +261,48 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     maxBytes: config.candidateWorkspace.maxBytes,
     maxDiffBytes: config.candidateWorkspace.maxDiffBytes,
   })
+  const validateMetaRuntime = async (spec: import('./types.js').EvolutionSpec): Promise<void> => {
+    const currentPreset = await ctx.agentPresets.resolve(spec.metaAgent.preset.id)
+    await assertMetaPresetIsolation(currentPreset, [config.dshRepository])
+    const currentIdentity = await resolveDshPresetRef(currentPreset)
+    if (currentIdentity.digest !== spec.metaAgent.preset.digest) {
+      throw new Error('Meta preset content changed; evolution cannot continue')
+    }
+    const currentRuntime = await resolveDshRuntimeIdentity()
+    if (spec.metaAgent.runtime.type !== currentRuntime.type
+      || spec.metaAgent.runtime.version !== currentRuntime.version
+      || spec.metaAgent.runtime.integrity !== currentRuntime.integrity) {
+      throw new Error('DSH Meta runtime identity changed; evolution cannot continue')
+    }
+  }
   const service = new RefineService(
     registry,
     builder,
     workspaceManager,
-    (spec, specDigest, store) => new MetaSessionManager(store, host, {
-      evolutionId: spec.evolutionId,
-      specDigest,
-      metaHarnessRef: spec.metaHarnessRef,
-      model: config.metaModel,
-      ...(config.metaSampling === undefined ? {} : { sampling: config.metaSampling }),
-    }),
+    async (spec, specDigest, store) => {
+      await validateMetaRuntime(spec)
+      return new MetaSessionManager(store, host, { evolutionId: spec.evolutionId, specDigest, metaAgent: spec.metaAgent })
+    },
     evaluator,
     {
       workspaceRoot: config.workspaceRoot,
-      metaHarnessRef: config.metaHarnessRef,
-      metaModel: config.metaModel,
-      ...(config.metaSampling === undefined ? {} : { metaSampling: config.metaSampling }),
+      metaAgent,
+      candidateGeneration,
+      rollout,
+      evaluation,
+      selection,
+      promotion,
       toolchainRef: config.toolchainRef,
       sandboxProfileRef: config.sandboxProfileRef,
-      promotion: config.promotion,
       seedTaskRef: config.seedTaskRef,
       heldOutRef: config.heldOutRef,
       taskBudgetMs: config.taskBudgetMs,
       ...(config.initialChampion === undefined ? {} : { initialChampion: config.initialChampion }),
       publishedPointer: config.evolutionState.publishedPointer,
       maxLiveMetaSessions: config.evolutionState.maxLiveMetaSessions,
+      validateRuntime: validateMetaRuntime,
     },
+    components,
   )
   capabilities = new RefineCapabilities(service, builder, sessionId => ctx.agents.get(sessionId as never), {
     ...(config.seedTasksPath === undefined ? {} : { seedTasksPath: config.seedTasksPath }),
@@ -227,7 +315,6 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   })
   const targetWorkers = new TargetWorkerRegistry(service, builder)
 
-  await migrateLegacyState(registry)
   await registry.initialize()
   await builder.initialize()
   if (config.candidateWorkspace.shellEnabled && config.metaSandbox.mode !== 'required') {
@@ -244,6 +331,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   ctx.provide('notebookRuntime', notebook)
   ctx.provide('refine', service)
   ctx.provide('targetWorkers', targetWorkers)
+  ctx.provide('evolutionComponents', components)
   ctx.effect(() => async () => {
     await targetWorkers.dispose()
     await service.dispose()

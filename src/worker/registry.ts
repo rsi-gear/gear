@@ -82,7 +82,8 @@ export class TargetWorkerRegistry {
   private async isAcceptedRef(store: import('../state/store.js').RefineStateStore, ref: string): Promise<boolean> {
     if ((await store.readChampion())?.ref === ref) return true
     return (await store.listRounds()).some(round => round.status === 'accepted'
-      && round.decision === 'accepted' && round.candidateRef === ref)
+      && round.decision === 'accepted'
+      && round.candidatePool.some(candidate => candidate.sealedVersion?.commitOid === ref))
   }
 
   private key(evolutionId: string, workerId: string): string { return `${evolutionId}\u0000${workerId}` }

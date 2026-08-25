@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -39,5 +39,21 @@ describe('refine-meta preset isolation', () => {
     await expect(assertMetaPresetIsolation(
       { id: 'refine-meta', trust: 'system', path: presetPath }, [target],
     )).resolves.toBeUndefined()
+  })
+
+  it('rejects a symlink inside the preset that resolves into target content', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'refine-meta-isolation-'))
+    roots.push(root)
+    const target = join(root, 'target-harness')
+    const presetRoot = join(root, 'meta')
+    const presetPath = join(presetRoot, 'agent.cordis.yml')
+    await mkdir(join(target, 'skills'), { recursive: true })
+    await mkdir(presetRoot, { recursive: true })
+    await writeFile(join(target, 'skills', 'secret.md'), 'target-only\n')
+    await writeFile(presetPath, '[]\n')
+    await symlink(join(target, 'skills'), join(presetRoot, 'linked-skills'))
+    await expect(assertMetaPresetIsolation(
+      { id: 'refine-meta', trust: 'system', path: presetPath }, [target],
+    )).rejects.toThrow(/contains a link/)
   })
 })

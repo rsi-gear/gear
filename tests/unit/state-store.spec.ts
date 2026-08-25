@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { RefineStateStore, RoundAlreadyRunningError } from '../../src/state/store.js'
+import { evidence, roundFixture } from '../helpers/research-fixture.js'
 
 const roots: string[] = []
 
@@ -60,5 +61,17 @@ describe('RefineStateStore', () => {
       ref: `sha256:${'a'.repeat(64)}`, digest: `sha256:${'b'.repeat(64)}`, artifactPath: '/old', updatedAt: 'old',
     }))
     await expect(state.readChampion()).rejects.toThrow(/unsupported champion state schema/)
+  })
+
+  it('persists provider-neutral evaluation evidence without Hitch-only transport fields', async () => {
+    const state = await store()
+    const round = roundFixture({ status: 'preparing-candidate' })
+    const hitch = evidence(round.plan.seed, round.targetHarnessRef)
+    const { invocationFingerprint: _fingerprint, localSourceTransport: _transport, ...generic } = hitch
+    round.baseline = { ...generic, provider: 'custom-runner', evalId: 'custom-eval-1' }
+    await state.writeRound(round)
+    await expect(state.readRound(round.roundId)).resolves.toMatchObject({
+      baseline: { provider: 'custom-runner', evalId: 'custom-eval-1' },
+    })
   })
 })

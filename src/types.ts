@@ -5,6 +5,7 @@ export type MetaHarnessRef = string
 export type SandboxProfileRef = string
 export type EvidenceRef = string
 export type EvolutionId = string
+export type GitObjectId = string
 
 export type SemanticTarget =
   | 'context'
@@ -42,28 +43,119 @@ export interface ChampionState {
 }
 
 export interface MetaSessionState {
-  schemaVersion: 1
   evolutionId: EvolutionId
   sessionId: string
   metaHarnessRef: MetaHarnessRef
   specDigest: string
+  parentSessionId?: string
+  checkpointRef?: string
+  checkpointDigest?: string
+}
+
+export interface ArtifactRef {
+  ref: string
+  digest: string
+}
+
+export type ComponentKind =
+  | 'candidate-generator'
+  | 'task-sampler'
+  | 'rollout-provider'
+  | 'judge'
+  | 'candidate-selector'
+  | 'promotion-policy'
+
+export interface ComponentRef<C = JsonValue> {
+  kind: ComponentKind
+  id: string
+  apiVersion: 1
+  implementation: {
+    package: string
+    version: string
+    integrity: string
+  }
+  config: C
+  configDigest: string
+}
+
+export interface MetaSamplingConfig {
+  temperature?: number
+}
+
+export interface RolloutSamplingConfig {
+  temperature?: number
+}
+
+export interface ResolvedDshPresetResource {
+  logicalPath: string
+  kind: 'composition' | 'system-prompt' | 'skill' | 'workflow' | 'document' | 'plugin'
+  digest: string
+}
+
+export interface ResolvedDshPresetRef {
+  id: string
+  digest: string
+  resources: ResolvedDshPresetResource[]
+}
+
+export interface DshMetaAgentSpec {
+  runtime: {
+    type: 'dsh'
+    version: string
+    integrity: string
+  }
+  preset: ResolvedDshPresetRef
+  model: {
+    provider: string
+    model: string
+    maxTokens?: number
+  }
+  sampling: MetaSamplingConfig
+}
+
+export interface CandidateGenerationSpec {
+  strategy: ComponentRef<unknown>
+  maxCandidates: number
+  budget: {
+    maxModelRequests?: number
+    maxTokens?: number
+    timeoutMs: number
+  }
+}
+
+export interface RolloutSpec {
+  provider: ComponentRef<unknown>
+  taskSampler: ComponentRef<unknown>
+  repetitions: number
+  seeds?: number[]
+  model: string
+  sampling: RolloutSamplingConfig
+  agentConfig: JsonValue
 }
 
 export interface EvolutionSpec {
-  schemaVersion: 1
   evolutionId: EvolutionId
-  source: 'native' | 'legacy-migration'
   createdAt: string
-  initialHarnessRef: HarnessRef
-  initialHarnessDigest: string
-  seedTaskRef: string
-  seedTaskDigest: string
-  heldOutRef: string
-  heldOutDigest: string
-  metaHarnessRef: MetaHarnessRef
-  metaModel: JsonValue
-  metaSampling?: JsonValue
-  promotionPolicy: PromotionPolicy
+
+  initialHarness: ArtifactRef
+  datasets: {
+    seed: ArtifactRef
+    heldOut: ArtifactRef
+  }
+  metaAgent: DshMetaAgentSpec
+  candidateGeneration: CandidateGenerationSpec
+  rollout: RolloutSpec
+  evaluation: {
+    judges: ComponentRef<unknown>[]
+    primaryMetric: string
+  }
+  selection: {
+    strategy: ComponentRef<unknown>
+    survivors: number
+  }
+  promotion: {
+    policy: ComponentRef<PromotionPolicy>
+  }
   taskBudgetMs: number
   toolchainRef: string
   sandboxProfileRef: SandboxProfileRef
@@ -116,7 +208,7 @@ export interface ScoreSummary {
   metrics?: Record<string, number>
 }
 
-export interface HitchTrialSummary {
+export interface EvaluationTrialSummary {
   taskName: string
   trialName?: string
   runId?: string
@@ -124,6 +216,8 @@ export interface HitchTrialSummary {
   status: 'completed' | 'errored'
   rewards: Record<string, number>
 }
+
+export type HitchTrialSummary = EvaluationTrialSummary
 
 export interface HitchTrajectoryPage {
   runId: string
@@ -162,16 +256,25 @@ export interface LocalSourceTransportSummary {
   payloadBytes: number
 }
 
-export interface HitchEvaluationEvidence {
+export interface EvaluationEvidence {
+  provider: string
+  conditionId: string
+  effectiveConfigDigest: string
   evalId: string
   dataset: string
   requestedCommit: HarnessRef
   actualCommit: HarnessRef
   revisionIdentity: string
-  invocationFingerprint: string
+  invocationFingerprint?: string
   primaryReward: number
   summary: ScoreSummary
-  trials: HitchTrialSummary[]
+  trials: EvaluationTrialSummary[]
+  localSourceTransport?: LocalSourceTransportSummary
+  metadata?: JsonValue
+}
+
+export interface HitchEvaluationEvidence extends EvaluationEvidence {
+  invocationFingerprint: string
   localSourceTransport: LocalSourceTransportSummary
 }
 
@@ -181,13 +284,51 @@ export interface EvaluationRequest {
   phase: EvaluationPhase
   dataset: string
   harnessRef: HarnessRef
+  condition: EvaluationCondition
+}
+
+export interface EvaluationCondition {
+  conditionId: string
+  partition: 'seed' | 'held-out'
+  dataset: ArtifactRef
+  repetitions: number
+  seeds?: number[]
+  model: string
+  sampling: RolloutSamplingConfig
+  timeoutMs: number
+  rolloutProviderDigest: string
+}
+
+export interface ResolvedRoundPlan {
+  planId: string
+  digest: string
+  taskSampler: ComponentRef<unknown>
+  seed: EvaluationCondition
+  heldOut: EvaluationCondition
+}
+
+export interface PairedTrial {
+  conditionId: string
+  trialKey: string
+  taskName: string
+  baselineTrialName?: string
+  candidateTrialName?: string
+  attempt?: number
+  baselineRunId?: string
+  candidateRunId?: string
+  baselineReward: number
+  candidateReward: number
+  rewardDelta: number
 }
 
 export interface RoundEvaluation {
-  seedBaseline: HitchEvaluationEvidence
-  seedCandidate: HitchEvaluationEvidence
-  heldOutBaseline?: HitchEvaluationEvidence
-  heldOutCandidate?: HitchEvaluationEvidence
+  seedBaseline: EvaluationEvidence
+  seedCandidate: EvaluationEvidence
+  seedPairedTrials: PairedTrial[]
+  heldOutBaseline?: EvaluationEvidence
+  heldOutCandidate?: EvaluationEvidence
+  heldOutPairedTrials?: PairedTrial[]
+  promotionMetrics?: MetricSet
   scoreDelta: number
   heldOutScoreDelta?: number
   requiredRegressions: number
@@ -243,8 +384,70 @@ export interface CandidateDiffSummary {
   source?: 'git-native' | 'legacy-mutation'
 }
 
+export interface SealedCandidateVersion {
+  commitOid: GitObjectId
+  treeOid: GitObjectId
+  manifestDigest: string
+  patchDigest: string
+  immutableRef: string
+}
+
+export interface CandidateRecord {
+  candidateId: string
+  roundId: string
+  parentHarnessRef: HarnessRef
+  parentCandidateIds: string[]
+  metaSessionId?: string
+  metaCheckpointRef?: string
+  workspaceId?: string
+  sealedVersion?: SealedCandidateVersion
+  proposal?: CandidateFinalization
+  diff?: CandidateDiffSummary
+  meta?: MetaAttribution
+  proposalEvidence?: ProposalEvidenceAudit
+  seedEvaluation?: EvaluationEvidence
+  heldOutEvaluation?: EvaluationEvidence
+  metrics?: MetricSet
+  status: 'generating' | 'ready' | 'evaluating' | 'selected' | 'discarded' | 'failed'
+}
+
+export interface SelectionDecision {
+  selectedCandidateIds: string[]
+  reason: string
+  component: ComponentRef<unknown>
+  metrics: Record<string, number>
+}
+
+export interface MetricSet {
+  quality: number
+  taskSuccessRate: number
+  cost?: number
+  latency?: number
+  safety?: number
+  trajectoryDiversity?: number
+  descriptors?: Record<string, string | number>
+}
+
+export interface PopulationMember {
+  candidateId: string
+  harnessRef: HarnessRef
+  harnessDigest: string
+  parentCandidateIds: string[]
+  lineageRootId: string
+  metaSessionId?: string
+  metaCheckpointRef?: string
+  metrics: MetricSet
+  selectedAt: string
+}
+
+export interface PopulationState {
+  evolutionId: EvolutionId
+  generation: number
+  members: PopulationMember[]
+  digest: string
+}
+
 export interface RefinementRound {
-  schemaVersion: 3
   evolutionId: EvolutionId
   roundId: string
   workspaceRoot: string
@@ -264,13 +467,13 @@ export interface RefinementRound {
   roundIndex: number
   roundCount: number
   advisoryFocus?: SemanticTarget[]
-  baseline?: HitchEvaluationEvidence
-  candidateWorkspaceId?: string
+  plan: ResolvedRoundPlan
+  baseline?: EvaluationEvidence
   finalization?: CandidateFinalization | null
   decline?: CandidateDecline
-  candidateDiff?: CandidateDiffSummary
-  candidateRef?: HarnessRef
-  candidateDigest?: string
+  candidatePool: CandidateRecord[]
+  selection?: SelectionDecision
+  promotedCandidateId?: string
   evaluation?: RoundEvaluation
   meta?: MetaAttribution
   proposalEvidence?: ProposalEvidenceAudit
@@ -325,12 +528,14 @@ export interface RefineEvaluator {
     round: Readonly<RefinementRound>,
     request: Readonly<EvaluationRequest>,
     signal: AbortSignal,
-  ): Promise<HitchEvaluationEvidence>
+  ): Promise<EvaluationEvidence>
 }
 
 export interface PreparedHarness {
   ref: HarnessRef
   digest: string
+  treeOid: GitObjectId
+  immutableRef: string
   repositoryPath: string
   manifest: HarnessManifest
 }

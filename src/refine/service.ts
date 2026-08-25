@@ -1,5 +1,5 @@
-import type { AgentOptions } from '@deepseek-ai/dsh-agent'
 import type { CandidateWorkspaceHandle, CandidateWorkspaceManager } from '../candidate/workspace.js'
+import { ComponentRegistry } from '../evolution/components.js'
 import type { HarnessBuilder } from '../harness/builder.js'
 import { SubstrateExpansionError } from '../harness/builder.js'
 import type { MetaSessionManager } from '../meta/session.js'
@@ -7,27 +7,31 @@ import { digestDatasetRef } from '../state/dataset.js'
 import { digestJson, type EvolutionRegistryStore } from '../state/evolution.js'
 import type { RefineStateStore, WorkspaceLock } from '../state/store.js'
 import type {
-  AdmissionResult, CandidateDecline, CandidateDiffSummary, CandidateFinalization, ChampionState,
-  EvolutionRegistryEntry, EvolutionSpec, HitchEvaluationEvidence, MetaAttribution,
-  ProposalEvidenceAudit, PromotionPolicy, PublicSeedEvidence, PublicRoundStatus,
-  RefineEvaluator, RefinementRound, RoundEvaluation, SemanticTarget,
+  AdmissionResult, CandidateDecline, CandidateDiffSummary, CandidateFinalization, CandidateRecord, ChampionState,
+  CandidateGenerationSpec, ComponentRef, DshMetaAgentSpec, EvaluationEvidence, EvolutionRegistryEntry, EvolutionSpec, MetaAttribution,
+  PairedTrial, ProposalEvidenceAudit, PromotionPolicy, PublicSeedEvidence, PublicRoundStatus,
+  RefineEvaluator, RefinementRound, RolloutSpec, RoundEvaluation, SemanticTarget,
 } from '../types.js'
 import { isExactGitCommit } from '../types.js'
 
 export interface RefineServiceOptions {
   workspaceRoot: string
-  metaHarnessRef: string
-  metaModel: AgentOptions
-  metaSampling?: Record<string, string | number | boolean>
+  metaAgent: DshMetaAgentSpec
+  candidateGeneration: CandidateGenerationSpec
+  rollout: RolloutSpec
+  evaluation: EvolutionSpec['evaluation']
+  selection: EvolutionSpec['selection']
+  promotion: { policy: ComponentRef<PromotionPolicy> }
   toolchainRef: string
   sandboxProfileRef: string
-  promotion: PromotionPolicy
   seedTaskRef: string
   heldOutRef: string
   taskBudgetMs: number
   initialChampion?: ChampionState
   publishedPointer: boolean
   maxLiveMetaSessions: number
+  createEvaluator?: (spec: EvolutionSpec) => RefineEvaluator
+  validateRuntime?: (spec: EvolutionSpec) => void | Promise<void>
 }
 
 export interface AdmissionOptions {
@@ -40,13 +44,18 @@ export interface AdmissionOptions {
 }
 
 export interface ContinueOptions { rounds?: number; focus?: SemanticTarget[] }
-export type MetaSessionFactory = (spec: EvolutionSpec, specDigest: string, store: RefineStateStore) => MetaSessionManager
+export type MetaSessionFactory = (
+  spec: EvolutionSpec,
+  specDigest: string,
+  store: RefineStateStore,
+) => MetaSessionManager | Promise<MetaSessionManager>
 
 interface EvolutionRuntime {
   spec: EvolutionSpec
   specDigest: string
   store: RefineStateStore
   meta: MetaSessionManager
+  evaluator: RefineEvaluator
   lastUsedAt: number
 }
 
@@ -69,6 +78,7 @@ interface ActiveRound {
   roundCount: number
   advisoryFocus?: SemanticTarget[]
   source: RefinementRound['source']
+  candidateId: string
   workspace?: CandidateWorkspaceHandle
   metaSessionId?: string
 }
@@ -92,7 +102,7 @@ function validateCount(rounds: number): number {
   return rounds
 }
 
-function taskRewards(evidence: HitchEvaluationEvidence): Map<string, number> {
+function taskRewards(evidence: EvaluationEvidence): Map<string, number> {
   const grouped = new Map<string, number[]>()
   for (const trial of evidence.trials) {
     const reward = trial.rewards.reward ?? Object.values(trial.rewards)[0]
@@ -104,11 +114,11 @@ function taskRewards(evidence: HitchEvaluationEvidence): Map<string, number> {
   return new Map([...grouped].map(([task, values]) => [task, values.reduce((sum, value) => sum + value, 0) / values.length]))
 }
 
-function trialReward(trial: HitchEvaluationEvidence['trials'][number]): number | undefined {
+function trialReward(trial: EvaluationEvidence['trials'][number]): number | undefined {
   return trial.rewards.reward ?? Object.values(trial.rewards)[0]
 }
 
-function publicSeedEvidence(evidence: HitchEvaluationEvidence): PublicSeedEvidence {
+function publicSeedEvidence(evidence: EvaluationEvidence): PublicSeedEvidence {
   return {
     evalId: evidence.evalId,
     primaryReward: evidence.primaryReward,
@@ -127,6 +137,45 @@ function publicSeedEvidence(evidence: HitchEvaluationEvidence): PublicSeedEviden
   }
 }
 
+function pairedTrials(baseline: EvaluationEvidence, candidate: EvaluationEvidence): PairedTrial[] {
+  const index = new Map<string, EvaluationEvidence['trials'][number]>()
+  const key = (trial: EvaluationEvidence['trials'][number]): string => JSON.stringify([
+    trial.taskName, trial.attempt ?? null,
+  ])
+  for (const trial of baseline.trials) {
+    const trialKey = key(trial)
+    if (index.has(trialKey)) throw new Error(`baseline has ambiguous duplicate trial identity: ${trialKey}`)
+    index.set(trialKey, trial)
+  }
+  const result: PairedTrial[] = []
+  for (const trial of candidate.trials) {
+    const trialKey = key(trial)
+    const before = index.get(trialKey)
+    if (before === undefined) throw new Error(`candidate trial has no paired baseline identity: ${trialKey}`)
+    index.delete(trialKey)
+    const baselineReward = trialReward(before)
+    const candidateReward = trialReward(trial)
+    if (baselineReward === undefined || candidateReward === undefined) {
+      throw new Error(`paired trial has no reward: ${trialKey}`)
+    }
+    result.push({
+      conditionId: baseline.conditionId,
+      trialKey,
+      taskName: trial.taskName,
+      ...(before.trialName === undefined ? {} : { baselineTrialName: before.trialName }),
+      ...(trial.trialName === undefined ? {} : { candidateTrialName: trial.trialName }),
+      ...(trial.attempt === undefined ? {} : { attempt: trial.attempt }),
+      ...(before.runId === undefined ? {} : { baselineRunId: before.runId }),
+      ...(trial.runId === undefined ? {} : { candidateRunId: trial.runId }),
+      baselineReward,
+      candidateReward,
+      rewardDelta: candidateReward - baselineReward,
+    })
+  }
+  if (index.size > 0) throw new Error(`candidate is missing ${index.size} paired baseline trial(s)`)
+  return result.sort((left, right) => left.trialKey.localeCompare(right.trialKey))
+}
+
 export class RefineService {
   private readonly active = new Map<string, ActiveRound>()
   private readonly runtimes = new Map<string, EvolutionRuntime>()
@@ -140,6 +189,7 @@ export class RefineService {
     readonly createMetaSession: MetaSessionFactory,
     readonly evaluator: RefineEvaluator,
     readonly options: RefineServiceOptions,
+    readonly components = new ComponentRegistry(),
   ) {}
 
   async initialize(): Promise<void> {
@@ -149,6 +199,9 @@ export class RefineService {
       const store = this.registry.stateStore(entry.evolutionId)
       await store.initialize()
       for (const round of await store.listRounds()) {
+        for (const candidate of round.candidatePool) {
+          if (candidate.sealedVersion !== undefined) await this.builder.verifySealedCandidate(candidate.sealedVersion)
+        }
         if (!TERMINAL.has(round.status)) {
           await store.writeRound({
             ...round, status: 'failed', updatedAt: now(),
@@ -170,16 +223,22 @@ export class RefineService {
     const initial = await this.resolveInitialChampion(options.from)
     const seedTaskRef = options.seedTaskRef ?? this.options.seedTaskRef
     const spec: EvolutionSpec = {
-      schemaVersion: 1, evolutionId, source: 'native', createdAt: now(),
-      initialHarnessRef: initial.ref, initialHarnessDigest: initial.manifestDigest,
-      seedTaskRef, seedTaskDigest: await digestDatasetRef(seedTaskRef),
-      heldOutRef: this.options.heldOutRef, heldOutDigest: await digestDatasetRef(this.options.heldOutRef),
-      metaHarnessRef: this.options.metaHarnessRef,
-      metaModel: JSON.parse(JSON.stringify(this.options.metaModel)) as never,
-      ...(this.options.metaSampling === undefined ? {} : { metaSampling: JSON.parse(JSON.stringify(this.options.metaSampling)) as never }),
-      promotionPolicy: { ...this.options.promotion }, taskBudgetMs,
+      evolutionId, createdAt: now(),
+      initialHarness: { ref: initial.ref, digest: initial.manifestDigest },
+      datasets: {
+        seed: { ref: seedTaskRef, digest: await digestDatasetRef(seedTaskRef) },
+        heldOut: { ref: this.options.heldOutRef, digest: await digestDatasetRef(this.options.heldOutRef) },
+      },
+      metaAgent: structuredClone(this.options.metaAgent),
+      candidateGeneration: structuredClone(this.options.candidateGeneration),
+      rollout: structuredClone(this.options.rollout),
+      evaluation: structuredClone(this.options.evaluation),
+      selection: structuredClone(this.options.selection),
+      promotion: structuredClone(this.options.promotion),
+      taskBudgetMs,
       toolchainRef: this.options.toolchainRef, sandboxProfileRef: this.options.sandboxProfileRef,
     }
+    this.resolveComponents(spec)
     await this.registry.createEvolution({ spec, champion: initial, ...(options.name === undefined ? {} : { name: options.name }) })
     return this.startBatch(await this.runtime(evolutionId), source, batchId, roundCount, normalizeFocus(options.focus))
   }
@@ -190,11 +249,12 @@ export class RefineService {
     if (entry === undefined) throw new Error(`unknown evolution: ${evolutionId}`)
     if (entry.status !== 'active') throw new Error(`evolution is archived and cannot continue: ${evolutionId}`)
     const evolution = await this.runtime(evolutionId)
-    if (evolution.spec.source === 'legacy-migration') throw new Error('legacy migrated evolution cannot continue')
+    this.resolveComponents(evolution.spec)
+    await this.options.validateRuntime?.(evolution.spec)
     const [seedDigest, heldOutDigest] = await Promise.all([
-      digestDatasetRef(evolution.spec.seedTaskRef), digestDatasetRef(evolution.spec.heldOutRef),
+      digestDatasetRef(evolution.spec.datasets.seed.ref), digestDatasetRef(evolution.spec.datasets.heldOut.ref),
     ])
-    if (seedDigest !== evolution.spec.seedTaskDigest || heldOutDigest !== evolution.spec.heldOutDigest) {
+    if (seedDigest !== evolution.spec.datasets.seed.digest || heldOutDigest !== evolution.spec.datasets.heldOut.digest) {
       throw new Error('evolution dataset content changed; create a new evolution')
     }
     return this.startBatch(evolution, source, crypto.randomUUID(), validateCount(options.rounds ?? 1), normalizeFocus(options.focus))
@@ -259,14 +319,18 @@ export class RefineService {
     const evolution = await this.runtime(evolutionId)
     const lock = await evolution.store.acquireRoundLock(`rollback-${crypto.randomUUID()}`)
     try {
-      const verified = (await evolution.store.listRounds()).find(round =>
-        round.status === 'accepted' && round.decision === 'accepted' && round.candidateRef === verifiedHarnessRef
-        && round.candidateDigest !== undefined && round.evaluation?.heldOutCandidate?.actualCommit === verifiedHarnessRef)
-      if (verified === undefined) throw new Error(`harness ref was not accepted by evolution ${evolutionId}: ${verifiedHarnessRef}`)
+      const verified = (await evolution.store.listRounds()).flatMap(round => round.candidatePool.map(candidate => ({ round, candidate })))
+        .find(({ round, candidate }) => round.status === 'accepted' && round.decision === 'accepted'
+          && candidate.sealedVersion?.commitOid === verifiedHarnessRef
+          && candidate.heldOutEvaluation?.actualCommit === verifiedHarnessRef)
+      if (verified?.candidate.sealedVersion === undefined) {
+        throw new Error(`harness ref was not accepted by evolution ${evolutionId}: ${verifiedHarnessRef}`)
+      }
       const current = await this.requireChampion(evolution.store)
       const restored: ChampionState = {
-        schemaVersion: 2, ref: verified.candidateRef!, manifestDigest: verified.candidateDigest!,
-        updatedAt: now(), roundId: `rollback:${verified.roundId}`,
+        schemaVersion: 2, ref: verified.candidate.sealedVersion.commitOid,
+        manifestDigest: verified.candidate.sealedVersion.manifestDigest,
+        updatedAt: now(), roundId: `rollback:${verified.round.roundId}`,
       }
       await evolution.store.compareAndSwapChampion(current.ref, restored)
       return restored
@@ -279,10 +343,13 @@ export class RefineService {
     const champion = await this.requireChampion(evolution.store)
     let selected = champion
     if (verifiedHarnessRef !== undefined && verifiedHarnessRef !== champion.ref) {
-      const accepted = (await evolution.store.listRounds()).find(round => round.status === 'accepted'
-        && round.candidateRef === verifiedHarnessRef && round.candidateDigest !== undefined)
-      if (accepted === undefined) throw new Error('publish ref is not accepted history of this evolution')
-      selected = { schemaVersion: 2, ref: verifiedHarnessRef, manifestDigest: accepted.candidateDigest!, updatedAt: now(), roundId: accepted.roundId }
+      const accepted = (await evolution.store.listRounds()).flatMap(round => round.candidatePool.map(candidate => ({ round, candidate })))
+        .find(({ round, candidate }) => round.status === 'accepted' && candidate.sealedVersion?.commitOid === verifiedHarnessRef)
+      if (accepted?.candidate.sealedVersion === undefined) throw new Error('publish ref is not accepted history of this evolution')
+      selected = {
+        schemaVersion: 2, ref: verifiedHarnessRef,
+        manifestDigest: accepted.candidate.sealedVersion.manifestDigest, updatedAt: now(), roundId: accepted.round.roundId,
+      }
     }
     const current = await this.registry.readPublished()
     await this.registry.compareAndSwapPublished(current?.ref, {
@@ -348,8 +415,12 @@ export class RefineService {
     const roundId = crypto.randomUUID()
     const lock = await evolution.store.acquireRoundLock(roundId)
     const champion = await this.requireChampion(evolution.store).catch(async (error: unknown) => { await lock.release(); throw error })
-    const round = this.newRound(evolution.spec, champion, source, batchId, roundId, 1, roundCount, advisoryFocus)
-    const active = this.newActive(evolution, lock, source, batchId, 1, roundCount, advisoryFocus)
+    const population = await evolution.store.readPopulation().catch(async (error: unknown) => { await lock.release(); throw error })
+    const parentCandidateIds = population?.members.filter(member => member.harnessRef === champion.ref).map(member => member.candidateId) ?? []
+    const round = this.newRound(
+      evolution.spec, champion, source, batchId, roundId, 1, roundCount, parentCandidateIds, advisoryFocus,
+    )
+    const active = this.newActive(evolution, lock, source, batchId, 1, roundCount, round.candidatePool[0]!.candidateId, advisoryFocus)
     this.active.set(roundId, active)
     try {
       await evolution.store.writeRound(round)
@@ -371,16 +442,26 @@ export class RefineService {
     roundId: string,
     roundIndex: number,
     roundCount: number,
+    parentCandidateIds: string[],
     advisoryFocus?: SemanticTarget[],
   ): RefinementRound {
     const timestamp = now()
+    const taskSampler = this.components.taskSampler(spec.rollout.taskSampler)
+    const plan = taskSampler.resolve(roundId, spec.datasets, spec.rollout, spec.taskBudgetMs)
+    const slots = this.components.candidateGenerator(spec.candidateGeneration.strategy)
+      .plan(roundId, champion.ref, spec.candidateGeneration.maxCandidates)
+    if (slots.length !== 1) {
+      throw new Error('current DSH runtime cannot fork a durable Meta session; candidateGeneration.maxCandidates must be 1')
+    }
     return {
-      schemaVersion: 3, evolutionId: spec.evolutionId, roundId, workspaceRoot: this.options.workspaceRoot,
+      evolutionId: spec.evolutionId, roundId, workspaceRoot: this.options.workspaceRoot,
       status: 'queued', source, createdAt: timestamp, updatedAt: timestamp,
-      metaHarnessRef: spec.metaHarnessRef, targetHarnessRef: champion.ref, targetHarnessDigest: champion.manifestDigest,
-      sandboxProfileRef: spec.sandboxProfileRef, seedTaskRef: spec.seedTaskRef, heldOutRef: spec.heldOutRef,
-      taskBudgetMs: spec.taskBudgetMs, promotionPolicy: { ...spec.promotionPolicy },
-      batchId, roundIndex, roundCount, ...(advisoryFocus === undefined ? {} : { advisoryFocus }),
+      metaHarnessRef: spec.metaAgent.preset.id, targetHarnessRef: champion.ref, targetHarnessDigest: champion.manifestDigest,
+      sandboxProfileRef: spec.sandboxProfileRef, seedTaskRef: spec.datasets.seed.ref, heldOutRef: spec.datasets.heldOut.ref,
+      taskBudgetMs: spec.taskBudgetMs, promotionPolicy: { ...spec.promotion.policy.config },
+      batchId, roundIndex, roundCount, plan,
+      candidatePool: slots.map(slot => ({ ...slot, parentCandidateIds: [...parentCandidateIds], roundId, status: 'generating' })),
+      ...(advisoryFocus === undefined ? {} : { advisoryFocus }),
     }
   }
 
@@ -391,10 +472,11 @@ export class RefineService {
     batchId: string,
     roundIndex: number,
     roundCount: number,
+    candidateId: string,
     advisoryFocus?: SemanticTarget[],
   ): ActiveRound {
     return {
-      evolution, lock, source, batchId, roundIndex, roundCount,
+      evolution, lock, source, batchId, roundIndex, roundCount, candidateId,
       abort: new AbortController(), finalization: finalizationResolvers(), finalizationSubmitted: false,
       ...(advisoryFocus === undefined ? {} : { advisoryFocus }),
     }
@@ -407,23 +489,46 @@ export class RefineService {
     let continueBatch = false
     try {
       let round = await this.transition(store, roundId, { status: 'baseline-running' })
-      const baseline = await this.evaluator.evaluate(round, {
+      const baseline = await active.evolution.evaluator.evaluate(round, {
         phase: 'seed-baseline', dataset: round.seedTaskRef, harnessRef: round.targetHarnessRef,
+        condition: round.plan.seed,
       }, active.abort.signal)
       round = await this.transition(store, roundId, { status: 'preparing-candidate', baseline })
       const workspace = await this.workspaceManager.create(round, active.abort.signal)
       active.workspace = workspace
-      round = await this.transition(store, roundId, { status: 'candidate-editing', candidateWorkspaceId: workspace.workspaceId })
+      round = await this.transition(store, roundId, {
+        status: 'candidate-editing',
+        candidatePool: this.patchCandidate(round, active.candidateId, { workspaceId: workspace.workspaceId }),
+      })
       const agent = await meta.agent()
       active.metaSessionId = String(agent.id)
       this.workspaceManager.bind(workspace.workspaceId, active.metaSessionId)
       await meta.wake(round)
-      const proposal = await active.finalization.promise
+      const generationTimeoutMs = active.evolution.spec.candidateGeneration.budget.timeoutMs
+      let generationTimer: ReturnType<typeof setTimeout> | undefined
+      const generationTimeout = new Promise<never>((_resolve, reject) => {
+        generationTimer = setTimeout(() => {
+          const error = new Error(`candidate generation exceeded its ${generationTimeoutMs}ms budget`)
+          active.abort.abort(error)
+          reject(error)
+        }, generationTimeoutMs)
+      })
+      let proposal: FinalizationValue
+      try {
+        proposal = await Promise.race([active.finalization.promise, generationTimeout])
+      } finally {
+        if (generationTimer !== undefined) clearTimeout(generationTimer)
+      }
       round = await this.transition(store, roundId, {
         finalization: proposal.finalization,
         ...(proposal.decline === undefined ? {} : { decline: proposal.decline }),
-        ...(proposal.diff === undefined ? {} : { candidateDiff: proposal.diff }),
         meta: proposal.meta, proposalEvidence: proposal.evidence,
+        candidatePool: this.patchCandidate(round, active.candidateId, {
+          ...(proposal.finalization === null ? {} : { proposal: proposal.finalization }),
+          ...(proposal.diff === undefined ? {} : { diff: proposal.diff }),
+          meta: proposal.meta,
+          proposalEvidence: proposal.evidence,
+        }),
       })
       if (proposal.finalization === null || proposal.diff === undefined) {
         await this.transition(store, roundId, { status: 'rejected', decision: 'no-change' })
@@ -447,40 +552,75 @@ export class RefineService {
         return
       }
       round = await this.transition(store, roundId, {
-        status: 'candidate-seed-running', candidateRef: candidate.ref, candidateDigest: candidate.digest,
+        status: 'candidate-seed-running',
+        candidatePool: this.patchCandidate(round, active.candidateId, {
+          status: 'evaluating',
+          sealedVersion: {
+            commitOid: candidate.ref,
+            treeOid: candidate.treeOid,
+            manifestDigest: candidate.digest,
+            patchDigest: proposal.diff.patchDigest,
+            immutableRef: candidate.immutableRef,
+          },
+        }),
       })
-      const seedCandidate = await this.evaluator.evaluate(round, {
+      const seedCandidate = await active.evolution.evaluator.evaluate(round, {
         phase: 'seed-candidate', dataset: round.seedTaskRef, harnessRef: candidate.ref,
+        condition: round.plan.seed,
       }, active.abort.signal)
       this.assertParity(baseline, seedCandidate, 'seed')
       let evaluation: RoundEvaluation = {
         seedBaseline: baseline, seedCandidate,
+        seedPairedTrials: pairedTrials(baseline, seedCandidate),
         scoreDelta: seedCandidate.primaryReward - baseline.primaryReward,
         requiredRegressions: this.requiredRegressions(round, baseline, seedCandidate),
       }
-      round = await this.transition(store, roundId, { evaluation })
+      round = await this.transition(store, roundId, {
+        evaluation,
+        candidatePool: this.patchCandidate(round, active.candidateId, {
+          seedEvaluation: seedCandidate,
+          metrics: await this.evaluateJudges(active.evolution.spec, seedCandidate),
+          status: 'ready',
+        }),
+      })
+      const selection = this.components.selector(active.evolution.spec.selection.strategy)
+        .select(round.candidatePool, active.evolution.spec.selection.survivors)
+      if (selection.selectedCandidateIds.length !== 1 || selection.selectedCandidateIds[0] !== active.candidateId) {
+        throw new Error('single-candidate runtime received an invalid selection decision')
+      }
+      round = await this.transition(store, roundId, {
+        selection,
+        candidatePool: this.patchCandidate(round, active.candidateId, { status: 'selected' }),
+      })
       if (!this.passesSeed(round, evaluation)) {
         await this.transition(store, roundId, { status: 'rejected', decision: 'rejected' })
         continueBatch = true
         return
       }
       round = await this.transition(store, roundId, { status: 'held-out-running' })
-      const heldOutBaseline = await this.evaluator.evaluate(round, {
+      const heldOutBaseline = await active.evolution.evaluator.evaluate(round, {
         phase: 'held-out-baseline', dataset: round.heldOutRef, harnessRef: round.targetHarnessRef,
+        condition: round.plan.heldOut,
       }, active.abort.signal)
       evaluation = { ...evaluation, heldOutBaseline }
       round = await this.transition(store, roundId, { evaluation })
-      const heldOutCandidate = await this.evaluator.evaluate(round, {
+      const heldOutCandidate = await active.evolution.evaluator.evaluate(round, {
         phase: 'held-out-candidate', dataset: round.heldOutRef, harnessRef: candidate.ref,
+        condition: round.plan.heldOut,
       }, active.abort.signal)
       this.assertParity(heldOutBaseline, heldOutCandidate, 'held-out')
       evaluation = {
         ...evaluation, heldOutCandidate,
+        heldOutPairedTrials: pairedTrials(heldOutBaseline, heldOutCandidate),
+        promotionMetrics: await this.evaluateJudges(active.evolution.spec, heldOutCandidate),
         heldOutScoreDelta: heldOutCandidate.primaryReward - heldOutBaseline.primaryReward,
         requiredRegressions: evaluation.requiredRegressions + this.requiredRegressions(round, heldOutBaseline, heldOutCandidate),
       }
-      round = await this.transition(store, roundId, { evaluation })
-      if (!this.passesHeldOut(round, evaluation)) {
+      round = await this.transition(store, roundId, {
+        evaluation,
+        candidatePool: this.patchCandidate(round, active.candidateId, { heldOutEvaluation: heldOutCandidate }),
+      })
+      if (!this.passesHeldOut(round, evaluation, active.evolution.spec)) {
         await this.transition(store, roundId, { status: 'rejected', decision: 'rejected' })
         continueBatch = true
         return
@@ -489,7 +629,32 @@ export class RefineService {
       await store.compareAndSwapChampion(round.targetHarnessRef, {
         schemaVersion: 2, ref: candidate.ref, manifestDigest: candidate.digest, updatedAt: now(), roundId,
       })
-      await this.transition(store, roundId, { status: 'accepted', decision: 'accepted' })
+      const previousPopulation = await store.readPopulation()
+      const candidateRecord = round.candidatePool.find(value => value.candidateId === active.candidateId)!
+      const parentMember = previousPopulation?.members.find(member => candidateRecord.parentCandidateIds.includes(member.candidateId))
+      const populationIdentity = {
+        evolutionId: round.evolutionId,
+        generation: (previousPopulation?.generation ?? 0) + 1,
+        members: [{
+          candidateId: active.candidateId,
+          harnessRef: candidate.ref,
+          harnessDigest: candidate.digest,
+          parentCandidateIds: [...candidateRecord.parentCandidateIds],
+          lineageRootId: parentMember?.lineageRootId ?? active.candidateId,
+          ...(active.metaSessionId === undefined ? {} : { metaSessionId: active.metaSessionId }),
+          metrics: {
+            ...(evaluation.promotionMetrics ?? {
+              quality: heldOutCandidate.primaryReward,
+              taskSuccessRate: heldOutCandidate.summary.total === 0 ? 0 : heldOutCandidate.summary.passed / heldOutCandidate.summary.total,
+            }),
+          },
+          selectedAt: now(),
+        }],
+      }
+      await store.writePopulation({ ...populationIdentity, digest: digestJson(populationIdentity) })
+      await this.transition(store, roundId, {
+        status: 'accepted', decision: 'accepted', promotedCandidateId: active.candidateId,
+      })
       continueBatch = true
     } catch (error) {
       const round = await store.readRound(roundId)
@@ -518,10 +683,18 @@ export class RefineService {
 
   private async queueContinuation(previous: ActiveRound): Promise<void> {
     const champion = await this.requireChampion(previous.evolution.store)
+    const population = await previous.evolution.store.readPopulation()
+    const parentCandidateIds = population?.members.filter(member => member.harnessRef === champion.ref).map(member => member.candidateId) ?? []
     const roundId = crypto.randomUUID()
     const index = previous.roundIndex + 1
-    const round = this.newRound(previous.evolution.spec, champion, previous.source, previous.batchId, roundId, index, previous.roundCount, previous.advisoryFocus)
-    const active = this.newActive(previous.evolution, previous.lock, previous.source, previous.batchId, index, previous.roundCount, previous.advisoryFocus)
+    const round = this.newRound(
+      previous.evolution.spec, champion, previous.source, previous.batchId, roundId, index, previous.roundCount,
+      parentCandidateIds, previous.advisoryFocus,
+    )
+    const active = this.newActive(
+      previous.evolution, previous.lock, previous.source, previous.batchId, index, previous.roundCount,
+      round.candidatePool[0]!.candidateId, previous.advisoryFocus,
+    )
     await previous.evolution.store.writeRound(round)
     await previous.lock.retarget(roundId)
     await this.registry.touch(previous.evolution.spec.evolutionId, { batchId: previous.batchId, roundId })
@@ -545,7 +718,17 @@ export class RefineService {
     if (entry === undefined || entry.specDigest !== specDigest) throw new Error(`evolution spec digest mismatch: ${evolutionId}`)
     const store = this.registry.stateStore(evolutionId)
     await store.initialize()
-    const runtime = { spec, specDigest, store, meta: this.createMetaSession(spec, specDigest, store), lastUsedAt: Date.now() }
+    this.resolveComponents(spec)
+    const runtime = {
+      spec,
+      specDigest,
+      store,
+      meta: await this.createMetaSession(spec, specDigest, store),
+      evaluator: this.components.hasRolloutProvider(spec.rollout.provider.id)
+        ? this.components.rolloutProvider(spec.rollout.provider).createEvaluator(spec)
+        : this.options.createEvaluator?.(spec) ?? this.evaluator,
+      lastUsedAt: Date.now(),
+    }
     this.runtimes.set(evolutionId, runtime)
     return runtime
   }
@@ -581,24 +764,39 @@ export class RefineService {
 
   private passesSeed(round: RefinementRound, evaluation: RoundEvaluation): boolean {
     const promotion = round.promotionPolicy
+    const candidate = round.candidatePool.find(value => value.status === 'selected')
     return evaluation.seedCandidate.primaryReward >= promotion.minimumCandidateScore
       && evaluation.scoreDelta >= promotion.minimumAbsoluteGain
       && evaluation.requiredRegressions <= promotion.maxRequiredRegressions
       && (!promotion.requireNoRegression || evaluation.seedCandidate.summary.passed >= evaluation.seedBaseline.summary.passed)
-      && round.candidateRef === evaluation.seedCandidate.actualCommit
+      && candidate?.sealedVersion?.commitOid === evaluation.seedCandidate.actualCommit
   }
 
-  private passesHeldOut(round: RefinementRound, evaluation: RoundEvaluation): boolean {
+  private passesHeldOut(round: RefinementRound, evaluation: RoundEvaluation, spec: EvolutionSpec): boolean {
     const baseline = evaluation.heldOutBaseline
     const candidate = evaluation.heldOutCandidate
-    return baseline !== undefined && candidate !== undefined && evaluation.heldOutScoreDelta !== undefined
-      && evaluation.heldOutScoreDelta >= -round.promotionPolicy.maxHeldOutRegression
-      && evaluation.requiredRegressions <= round.promotionPolicy.maxRequiredRegressions
-      && (!round.promotionPolicy.requireNoRegression || candidate.summary.passed >= baseline.summary.passed)
-      && round.candidateRef === candidate.actualCommit
+    const selected = round.candidatePool.find(value => value.status === 'selected')
+    if (baseline === undefined || candidate === undefined || evaluation.heldOutScoreDelta === undefined
+      || selected?.sealedVersion?.commitOid !== candidate.actualCommit) return false
+    return this.components.promotionPolicy(spec.promotion.policy).decide({
+      policy: spec.promotion.policy.config,
+      seedBaseline: evaluation.seedBaseline,
+      seedCandidate: evaluation.seedCandidate,
+      heldOutBaseline: baseline,
+      heldOutCandidate: candidate,
+      pairedTrials: {
+        seed: evaluation.seedPairedTrials,
+        heldOut: evaluation.heldOutPairedTrials ?? [],
+      },
+      metrics: evaluation.promotionMetrics ?? {
+        quality: candidate.primaryReward,
+        taskSuccessRate: candidate.summary.total === 0 ? 0 : candidate.summary.passed / candidate.summary.total,
+      },
+      requiredRegressions: evaluation.requiredRegressions,
+    }).accepted
   }
 
-  private requiredRegressions(round: RefinementRound, baseline: HitchEvaluationEvidence, candidate: HitchEvaluationEvidence): number {
+  private requiredRegressions(round: RefinementRound, baseline: EvaluationEvidence, candidate: EvaluationEvidence): number {
     const required = round.promotionPolicy.requiredTaskIds ?? []
     const before = taskRewards(baseline)
     const after = taskRewards(candidate)
@@ -612,8 +810,17 @@ export class RefineService {
     return regressions
   }
 
-  private assertParity(baseline: HitchEvaluationEvidence, candidate: HitchEvaluationEvidence, partition: string): void {
-    if (baseline.invocationFingerprint !== candidate.invocationFingerprint) throw new Error(`${partition} baseline/candidate Hitch invocation parity mismatch`)
+  private assertParity(baseline: EvaluationEvidence, candidate: EvaluationEvidence, partition: string): void {
+    if (baseline.conditionId !== candidate.conditionId) throw new Error(`${partition} baseline/candidate condition identity mismatch`)
+    if (baseline.provider !== candidate.provider) throw new Error(`${partition} baseline/candidate rollout provider mismatch`)
+    if (baseline.effectiveConfigDigest !== candidate.effectiveConfigDigest) {
+      throw new Error(`${partition} baseline/candidate effective rollout config mismatch`)
+    }
+    if (baseline.invocationFingerprint !== undefined || candidate.invocationFingerprint !== undefined) {
+      if (baseline.invocationFingerprint !== candidate.invocationFingerprint) {
+        throw new Error(`${partition} baseline/candidate provider invocation parity mismatch`)
+      }
+    }
     if (baseline.dataset !== candidate.dataset) throw new Error(`${partition} baseline/candidate dataset mismatch`)
   }
 
@@ -663,6 +870,60 @@ export class RefineService {
     const champion = await store.readChampion()
     if (champion === undefined) throw new Error('evolution has no champion')
     return champion
+  }
+
+  private patchCandidate(
+    round: Readonly<RefinementRound>,
+    candidateId: string,
+    patch: Partial<CandidateRecord>,
+  ): CandidateRecord[] {
+    let found = false
+    const candidates = round.candidatePool.map(candidate => {
+      if (candidate.candidateId !== candidateId) return candidate
+      found = true
+      return { ...candidate, ...patch, candidateId: candidate.candidateId, roundId: candidate.roundId }
+    })
+    if (!found) throw new Error(`unknown candidate in round ${round.roundId}: ${candidateId}`)
+    return candidates
+  }
+
+  private async evaluateJudges(
+    spec: EvolutionSpec,
+    evidence: EvaluationEvidence,
+  ): Promise<import('../types.js').MetricSet> {
+    const values = await Promise.all(spec.evaluation.judges.map(async ref => this.components.judge(ref).evaluate(evidence)))
+    const merged = Object.assign({
+      quality: evidence.primaryReward,
+      taskSuccessRate: evidence.summary.total === 0 ? 0 : evidence.summary.passed / evidence.summary.total,
+    }, ...values)
+    if (!Number.isFinite(merged.quality) || !Number.isFinite(merged.taskSuccessRate)) {
+      throw new Error('judge produced invalid quality metrics')
+    }
+    return merged
+  }
+
+  private resolveComponents(spec: EvolutionSpec): void {
+    this.components.candidateGenerator(spec.candidateGeneration.strategy)
+    this.components.taskSampler(spec.rollout.taskSampler)
+    this.components.selector(spec.selection.strategy)
+    this.components.promotionPolicy(spec.promotion.policy)
+    if (this.components.hasRolloutProvider(spec.rollout.provider.id)) {
+      this.components.rolloutProvider(spec.rollout.provider)
+    } else if (this.options.createEvaluator === undefined && spec.rollout.provider.id !== 'hitch-cli') {
+      throw new Error(`unsupported rollout provider: ${spec.rollout.provider.id}`)
+    }
+    for (const judge of spec.evaluation.judges) this.components.judge(judge)
+    if (spec.candidateGeneration.maxCandidates !== 1 || spec.selection.survivors !== 1) {
+      throw new Error('current DSH runtime does not support durable session fork; maxCandidates and survivors must be 1')
+    }
+    if (spec.rollout.seeds !== undefined) throw new Error('current Hitch adapter does not support typed rollout seeds')
+    if (spec.rollout.sampling.temperature !== undefined) {
+      throw new Error('current Hitch adapter does not support typed rollout temperature')
+    }
+    if (spec.candidateGeneration.budget.maxModelRequests !== undefined
+      || spec.candidateGeneration.budget.maxTokens !== undefined) {
+      throw new Error('current DSH runtime does not expose aggregate proposal usage; maxModelRequests and maxTokens are unsupported')
+    }
   }
 
   private assertAvailable(): void { if (this.disposed) throw new Error('RefineService is disposed') }

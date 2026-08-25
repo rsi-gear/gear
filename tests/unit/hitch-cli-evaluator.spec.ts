@@ -2,40 +2,19 @@ import { chmod, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { HitchCliEvaluator } from '../../src/evaluator/hitch-cli.js'
-import type { RefinementRound } from '../../src/types.js'
+import type { EvaluationRequest, RefinementRound } from '../../src/types.js'
 import { createGitHarnessFixture } from '../helpers/git-fixture.js'
+import { evaluationCondition, roundFixture } from '../helpers/research-fixture.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 
 function round(root: string, commit: string, digest: string): RefinementRound {
-  return {
-    schemaVersion: 3,
-    evolutionId: 'evo-1',
-    roundId: 'round-1',
-    workspaceRoot: root,
-    status: 'baseline-running',
-    source: 'api',
-    createdAt: 'now',
-    updatedAt: 'now',
-    metaHarnessRef: 'meta-v1',
-    targetHarnessRef: commit,
-    targetHarnessDigest: digest,
-    sandboxProfileRef: 'sandbox-v1',
-    seedTaskRef: 'seed',
-    heldOutRef: 'held-out',
-    taskBudgetMs: 60_000,
-    promotionPolicy: {
-      minimumCandidateScore: 0,
-      minimumAbsoluteGain: 0,
-      requireNoRegression: true,
-      maxHeldOutRegression: 0,
-      maxRequiredRegressions: 0,
-    },
-    batchId: 'batch-1',
-    roundIndex: 1,
-    roundCount: 1,
-  }
+  return roundFixture({ workspaceRoot: root, status: 'baseline-running', targetHarnessRef: commit, targetHarnessDigest: digest })
+}
+
+function request(dataset: string, harnessRef: string): EvaluationRequest {
+  return { phase: 'seed-baseline', dataset, harnessRef, condition: evaluationCondition('seed', dataset) }
 }
 
 async function setup() {
@@ -96,6 +75,7 @@ else {
     terminationGraceMs: 100,
     maxOutputBytes: 1024 * 1024,
     maxTrajectoryOutputBytes: 1024 * 1024,
+    sampling: {},
     agentArgs: [],
     passEnv: [],
     repositoryPath: fixture.repository,
@@ -108,7 +88,7 @@ describe('HitchCliEvaluator', () => {
     const { fixture, evaluator } = await setup()
     const evidence = await evaluator.evaluate(
       round(fixture.root, fixture.championRef, fixture.manifest.digest),
-      { phase: 'seed-baseline', dataset: 'seed', harnessRef: fixture.championRef },
+      request('seed', fixture.championRef),
       new AbortController().signal,
     )
     expect(evidence).toMatchObject({
@@ -123,7 +103,7 @@ describe('HitchCliEvaluator', () => {
     const { fixture, evaluator } = await setup()
     const evidence = await evaluator.evaluate(
       round(fixture.root, fixture.championRef, fixture.manifest.digest),
-      { phase: 'seed-baseline', dataset: 'legacy', harnessRef: fixture.championRef },
+      request('legacy', fixture.championRef),
       new AbortController().signal,
     )
     expect(evidence).toMatchObject({ primaryReward: 1, trials: [{ taskName: 'task-1' }] })
@@ -155,19 +135,15 @@ describe('HitchCliEvaluator', () => {
   it('fails closed on invalid JSON and actual commit mismatch', async () => {
     const { fixture, evaluator } = await setup()
     const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
-    await expect(evaluator.evaluate(state, {
-      phase: 'seed-baseline', dataset: 'invalid-json', harnessRef: fixture.championRef,
-    }, new AbortController().signal)).rejects.toThrow(/invalid JSON/)
-    await expect(evaluator.evaluate(state, {
-      phase: 'seed-baseline', dataset: 'mismatch', harnessRef: fixture.championRef,
-    }, new AbortController().signal)).rejects.toThrow(/resolved .* expected/)
+    await expect(evaluator.evaluate(state, request('invalid-json', fixture.championRef), new AbortController().signal)).rejects.toThrow(/invalid JSON/)
+    await expect(evaluator.evaluate(state, request('mismatch', fixture.championRef), new AbortController().signal)).rejects.toThrow(/resolved .* expected/)
   })
 
   it('classifies an invalid run observation as infrastructure failure', async () => {
     const { fixture, evaluator } = await setup()
     await expect(evaluator.evaluate(
       round(fixture.root, fixture.championRef, fixture.manifest.digest),
-      { phase: 'seed-baseline', dataset: 'invalid-run', harnessRef: fixture.championRef },
+      request('invalid-run', fixture.championRef),
       new AbortController().signal,
     )).rejects.toThrow(/invalid run observations.*infrastructure_failure/)
   })
@@ -177,7 +153,7 @@ describe('HitchCliEvaluator', () => {
     const controller = new AbortController()
     const evaluation = evaluator.evaluate(
       round(fixture.root, fixture.championRef, fixture.manifest.digest),
-      { phase: 'seed-baseline', dataset: 'slow', harnessRef: fixture.championRef },
+      request('slow', fixture.championRef),
       controller.signal,
     )
     setTimeout(() => controller.abort(new Error('test abort')), 50)

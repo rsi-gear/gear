@@ -1,23 +1,21 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import type { Agent, AgentHandle, AgentOptions } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-presets'
-import type { MetaAttribution, MetaHarnessRef, ProposalEvidenceAudit, RefinementRound } from '../types.js'
+import type { DshMetaAgentSpec, MetaAttribution, ProposalEvidenceAudit, RefinementRound } from '../types.js'
 import type { RefineStateStore } from '../state/store.js'
 
 export interface MetaAgentHost {
   getLive(sessionId: string): Agent | undefined
-  resume(sessionId: string): Promise<AgentHandle>
-  create(sessionId: string): Promise<AgentHandle>
+  resume(sessionId: string, spec: DshMetaAgentSpec): Promise<AgentHandle>
+  create(sessionId: string, spec: DshMetaAgentSpec): Promise<AgentHandle>
 }
 
 export interface MetaSessionOptions {
   evolutionId: string
   specDigest: string
-  metaHarnessRef: MetaHarnessRef
-  model: AgentOptions
-  sampling?: unknown
+  metaAgent: DshMetaAgentSpec
 }
 
 interface RoundWake {
@@ -53,8 +51,6 @@ function cannotResumePersistedSession(error: unknown): boolean {
 export class DshMetaAgentHost implements MetaAgentHost {
   constructor(
     private readonly ctx: Context,
-    private readonly preset: string,
-    private readonly model: AgentOptions,
     private readonly setupMetaCapabilities: (agentCtx: Context, sessionId: string) => void | Promise<void>,
   ) {}
 
@@ -62,27 +58,35 @@ export class DshMetaAgentHost implements MetaAgentHost {
     return this.ctx.agents.get(SessionId(sessionId))
   }
 
-  resume(sessionId: string): Promise<AgentHandle> {
+  resume(sessionId: string, spec: DshMetaAgentSpec): Promise<AgentHandle> {
     return this.ctx.agents.resume({
       resumeSessionId: SessionId(sessionId),
-      agentOptions: this.model,
+      agentOptions: spec.model,
       setup: async (agentCtx) => {
-        await this.ctx.agentPresets.mount(agentCtx, this.preset)
+        await this.ctx.agentPresets.mount(agentCtx, spec.preset.id)
+        this.installSampling(agentCtx, spec)
         await this.setupMetaCapabilities(agentCtx, sessionId)
       },
     })
   }
 
-  create(sessionId: string): Promise<AgentHandle> {
+  create(sessionId: string, spec: DshMetaAgentSpec): Promise<AgentHandle> {
     return this.ctx.agents.create({
       sessionId: SessionId(sessionId),
-      agentOptions: this.model,
-      meta: { agentPreset: this.preset },
+      agentOptions: spec.model,
+      meta: { agentPreset: spec.preset.id },
       setup: async (agentCtx) => {
-        await this.ctx.agentPresets.mount(agentCtx, this.preset)
+        await this.ctx.agentPresets.mount(agentCtx, spec.preset.id)
+        this.installSampling(agentCtx, spec)
         await this.setupMetaCapabilities(agentCtx, sessionId)
       },
     })
+  }
+
+  private installSampling(agentCtx: Context, spec: DshMetaAgentSpec): void {
+    const { temperature } = spec.sampling
+    if (temperature === undefined) return
+    agentCtx.on('agent/request', async (_payload, next) => ({ ...await next(), temperature }))
   }
 }
 
@@ -102,23 +106,22 @@ export class MetaSessionManager {
     const state = await this.store.readMeta()
     if (state?.evolutionId === this.options.evolutionId
       && state.specDigest === this.options.specDigest
-      && state.metaHarnessRef === this.options.metaHarnessRef) {
+      && state.metaHarnessRef === this.options.metaAgent.preset.id) {
       const live = this.host.getLive(state.sessionId)
       if (live !== undefined) return live
       try {
-        this.handle = await this.host.resume(state.sessionId)
+        this.handle = await this.host.resume(state.sessionId, this.options.metaAgent)
         return this.handle.agent
       } catch (error) {
         if (!cannotResumePersistedSession(error)) throw error
       }
     }
     const sessionId = crypto.randomUUID()
-    this.handle = await this.host.create(sessionId)
+    this.handle = await this.host.create(sessionId, this.options.metaAgent)
     await this.store.writeMeta({
-      schemaVersion: 1,
       evolutionId: this.options.evolutionId,
       sessionId,
-      metaHarnessRef: this.options.metaHarnessRef,
+      metaHarnessRef: this.options.metaAgent.preset.id,
       specDigest: this.options.specDigest,
     })
     return this.handle.agent
@@ -147,8 +150,8 @@ export class MetaSessionManager {
         roundId: round.roundId,
         targetHarnessRef: round.targetHarnessRef,
         targetHarnessDigest: round.targetHarnessDigest,
-        candidateWorkspace: round.candidateWorkspaceId === undefined ? undefined : {
-          workspaceId: round.candidateWorkspaceId,
+        candidateWorkspace: round.candidatePool.find(candidate => candidate.status === 'generating')?.workspaceId === undefined ? undefined : {
+          workspaceId: round.candidatePool.find(candidate => candidate.status === 'generating')!.workspaceId,
           virtualRoot: '/candidate',
           editableRoot: '/candidate/harness',
           mode: 'git-native',
@@ -236,16 +239,22 @@ export class MetaSessionManager {
     // declared by out-of-tree plugins yet.
     const proposal = events.findLast(event => event.type === 'tool/call' && event.seq >= wake.firstObservedSeq)
     if (proposal === undefined) throw new Error('proposal has no attributable tool/call event')
-    const options = agent.options
+    const config = effective.data.header.config
+    if (config.provider !== this.options.metaAgent.model.provider || config.model !== this.options.metaAgent.model.model
+      || (this.options.metaAgent.model.maxTokens !== undefined && config.maxTokens !== this.options.metaAgent.model.maxTokens)
+      || (this.options.metaAgent.sampling.temperature !== undefined
+        && config.temperature !== this.options.metaAgent.sampling.temperature)) {
+      throw new Error('effective Meta request config does not match immutable evolution spec')
+    }
     return {
       evolutionId: this.options.evolutionId,
       sessionId: String(agent.id),
       requestHeaderSeq: effective.seq,
       proposalEventSeq: proposal.seq,
-      ...(options.provider === undefined ? {} : { provider: options.provider }),
-      ...(options.model === undefined ? {} : { model: options.model }),
-      ...(options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }),
-      ...(this.options.sampling === undefined ? {} : { sampling: this.options.sampling as never }),
+      provider: config.provider,
+      model: config.model,
+      ...(config.maxTokens === undefined ? {} : { maxTokens: config.maxTokens }),
+      ...(config.temperature === undefined ? {} : { sampling: { temperature: config.temperature } }),
     }
   }
 

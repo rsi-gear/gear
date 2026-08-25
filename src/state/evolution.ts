@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import { mkdir, open, readFile, readdir, rename, rm, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type {
@@ -7,28 +6,17 @@ import type {
   EvolutionRegistryEntry,
   EvolutionRegistryState,
   EvolutionSpec,
+  PopulationState,
   PublishedHarnessState,
 } from '../types.js'
 import { isExactGitCommit } from '../types.js'
 import { RefineStateStore } from './store.js'
+import { digestJson } from './digest.js'
+
+export { digestJson } from './digest.js'
 
 const SHA256 = /^sha256:[0-9a-f]{64}$/u
 const SAFE_ID = /^[a-zA-Z0-9_-]+$/u
-
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`
-  if (typeof value === 'object' && value !== null) {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, item]) => item !== undefined)
-      .sort(([left], [right]) => left.localeCompare(right))
-    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`).join(',')}}`
-  }
-  return JSON.stringify(value) ?? 'null'
-}
-
-export function digestJson(value: unknown): string {
-  return `sha256:${createHash('sha256').update(stableJson(value)).digest('hex')}`
-}
 
 function json(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`
@@ -47,25 +35,79 @@ function validateChampion(value: ChampionState): ChampionState {
 }
 
 function validateSpec(value: EvolutionSpec): EvolutionSpec {
-  if (value.schemaVersion !== 1 || (value.source !== 'native' && value.source !== 'legacy-migration')) {
-    throw new TypeError('evolution spec schema/source is invalid')
-  }
   assertSafeId(value.evolutionId, 'evolutionId')
-  if (!isExactGitCommit(value.initialHarnessRef) || !SHA256.test(value.initialHarnessDigest)) {
+  if (!isExactGitCommit(value.initialHarness.ref) || !SHA256.test(value.initialHarness.digest)) {
     throw new TypeError('evolution initial harness identity is invalid')
+  }
+  if (!SHA256.test(value.datasets.seed.digest) || !SHA256.test(value.datasets.heldOut.digest)
+    || value.datasets.seed.ref.length === 0 || value.datasets.heldOut.ref.length === 0) {
+    throw new TypeError('evolution dataset identities are invalid')
   }
   for (const [name, field] of Object.entries({
     createdAt: value.createdAt,
-    seedTaskRef: value.seedTaskRef,
-    heldOutRef: value.heldOutRef,
-    metaHarnessRef: value.metaHarnessRef,
+    metaPreset: value.metaAgent.preset.id,
+    metaProvider: value.metaAgent.model.provider,
+    metaModel: value.metaAgent.model.model,
     toolchainRef: value.toolchainRef,
     sandboxProfileRef: value.sandboxProfileRef,
   })) {
     if (typeof field !== 'string' || field.length === 0) throw new TypeError(`evolution ${name} is required`)
   }
-  if (!SHA256.test(value.seedTaskDigest) || !SHA256.test(value.heldOutDigest)) {
-    throw new TypeError('evolution dataset digests are invalid')
+  if (value.metaAgent.runtime.type !== 'dsh' || value.metaAgent.runtime.version.length === 0
+    || value.metaAgent.runtime.integrity.length === 0 || !SHA256.test(value.metaAgent.preset.digest)
+    || value.metaAgent.preset.resources.some(resource => resource.logicalPath.length === 0 || !SHA256.test(resource.digest))) {
+    throw new TypeError('evolution Meta Agent identity is invalid')
+  }
+  const temperature = value.metaAgent.sampling.temperature
+  if (temperature !== undefined && (!Number.isFinite(temperature) || temperature < 0 || temperature > 2)) {
+    throw new TypeError('evolution Meta temperature is invalid')
+  }
+  if (value.metaAgent.model.maxTokens !== undefined
+    && (!Number.isSafeInteger(value.metaAgent.model.maxTokens) || value.metaAgent.model.maxTokens <= 0)) {
+    throw new TypeError('evolution Meta maxTokens is invalid')
+  }
+  if (!Number.isSafeInteger(value.candidateGeneration.maxCandidates) || value.candidateGeneration.maxCandidates <= 0
+    || !Number.isSafeInteger(value.candidateGeneration.budget.timeoutMs) || value.candidateGeneration.budget.timeoutMs <= 0) {
+    throw new TypeError('evolution candidate generation budget is invalid')
+  }
+  for (const budget of [value.candidateGeneration.budget.maxModelRequests, value.candidateGeneration.budget.maxTokens]) {
+    if (budget !== undefined && (!Number.isSafeInteger(budget) || budget <= 0)) {
+      throw new TypeError('evolution candidate generation optional budget is invalid')
+    }
+  }
+  if (!Number.isSafeInteger(value.rollout.repetitions) || value.rollout.repetitions <= 0
+    || value.rollout.model.length === 0 || !Number.isSafeInteger(value.selection.survivors)
+    || value.selection.survivors <= 0 || value.selection.survivors > value.candidateGeneration.maxCandidates) {
+    throw new TypeError('evolution rollout/selection configuration is invalid')
+  }
+  if (value.rollout.seeds !== undefined && (value.rollout.seeds.length === 0
+    || value.rollout.seeds.length !== value.rollout.repetitions
+    || value.rollout.seeds.some(seed => !Number.isSafeInteger(seed)))) {
+    throw new TypeError('evolution rollout seeds are invalid')
+  }
+  const rolloutTemperature = value.rollout.sampling.temperature
+  if (rolloutTemperature !== undefined
+    && (!Number.isFinite(rolloutTemperature) || rolloutTemperature < 0 || rolloutTemperature > 2)) {
+    throw new TypeError('evolution rollout temperature is invalid')
+  }
+  if (!Array.isArray(value.evaluation.judges) || value.evaluation.judges.length === 0
+    || typeof value.evaluation.primaryMetric !== 'string' || value.evaluation.primaryMetric.length === 0) {
+    throw new TypeError('evolution evaluation configuration is invalid')
+  }
+  const components = [
+    ['candidate-generator', value.candidateGeneration.strategy],
+    ['rollout-provider', value.rollout.provider],
+    ['task-sampler', value.rollout.taskSampler],
+    ...value.evaluation.judges.map(component => ['judge', component] as const),
+    ['candidate-selector', value.selection.strategy],
+    ['promotion-policy', value.promotion.policy],
+  ] as const
+  for (const [kind, component] of components) {
+    if (component.kind !== kind || component.apiVersion !== 1 || component.id.length === 0 || component.implementation.package.length === 0
+      || component.implementation.version.length === 0 || component.implementation.integrity.length === 0
+      || digestJson(component.config) !== component.configDigest) {
+      throw new TypeError(`evolution component identity is invalid: ${component.id}`)
+    }
   }
   if (!Number.isSafeInteger(value.taskBudgetMs) || value.taskBudgetMs <= 0) {
     throw new TypeError('evolution taskBudgetMs is invalid')
@@ -126,9 +168,24 @@ export class EvolutionRegistryStore {
     }
     const store = this.stateStore(spec.evolutionId)
     try {
+      const populationIdentity = {
+        evolutionId: spec.evolutionId,
+        generation: 0,
+        members: [{
+          candidateId: `initial-${champion.ref}`,
+          harnessRef: champion.ref,
+          harnessDigest: champion.manifestDigest,
+          parentCandidateIds: [],
+          lineageRootId: `initial-${champion.ref}`,
+          metrics: { quality: 0, taskSuccessRate: 0 },
+          selectedAt: spec.createdAt,
+        }],
+      }
+      const population: PopulationState = { ...populationIdentity, digest: digestJson(populationIdentity) }
       await Promise.all([
         this.atomicWrite(join(root, 'spec.json'), spec),
         store.writeChampion(champion),
+        store.writePopulation(population),
         store.initialize(),
       ])
       const timestamp = new Date().toISOString()

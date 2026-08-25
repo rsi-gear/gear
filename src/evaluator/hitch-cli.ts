@@ -214,18 +214,25 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
   ): Promise<HitchEvaluationEvidence> {
     if (!isExactGitCommit(request.harnessRef)) throw new TypeError('Hitch evaluation requires a full Git commit OID')
     if (request.dataset.length === 0) throw new TypeError('Hitch evaluation dataset must not be empty')
+    if (request.condition.dataset.ref !== request.dataset || request.condition.timeoutMs !== round.taskBudgetMs) {
+      throw new TypeError('Hitch evaluation request does not match its resolved condition')
+    }
+    if (request.condition.seeds !== undefined) throw new TypeError('Hitch CLI adapter does not support typed rollout seeds')
+    if (request.condition.sampling.temperature !== undefined) {
+      throw new TypeError('Hitch CLI adapter does not support typed rollout temperature')
+    }
     const source = `git+${pathToFileURL(this.repositoryPath).href}#${request.harnessRef}`
     const harness = `${this.options.harnessId}@${source}`
     const parity = {
-      schemaVersion: 1,
+      conditionId: request.condition.conditionId,
       executable: this.options.executable,
       hitchRoot: this.options.root,
       repositoryPath: this.repositoryPath,
       backend: 'harbor',
       dataset: request.dataset,
       harnessId: this.options.harnessId,
-      model: this.options.model,
-      attempts: this.options.attempts,
+      model: request.condition.model,
+      attempts: request.condition.repetitions,
       maxConcurrent: this.options.maxConcurrent,
       timeoutMs: round.taskBudgetMs,
       setupTimeoutMs: this.options.setupTimeoutMs,
@@ -239,8 +246,8 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       '--backend', 'harbor',
       '--dataset', request.dataset,
       '--harness', harness,
-      ...(this.options.model.length === 0 ? [] : ['--model', this.options.model]),
-      '--attempts', String(this.options.attempts),
+      ...(request.condition.model.length === 0 ? [] : ['--model', request.condition.model]),
+      '--attempts', String(request.condition.repetitions),
       '--max-concurrent', String(this.options.maxConcurrent),
       '--timeout', `${round.taskBudgetMs}ms`,
       '--setup-timeout', `${this.options.setupTimeoutMs}ms`,
@@ -331,6 +338,9 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       metrics: { primaryReward },
     }
     return {
+      provider: 'hitch-cli',
+      conditionId: request.condition.conditionId,
+      effectiveConfigDigest: invocationFingerprint,
       evalId,
       dataset: request.dataset,
       requestedCommit: request.harnessRef,
@@ -377,6 +387,9 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       metrics: { primaryReward },
     }
     return {
+      provider: 'hitch-cli',
+      conditionId: request.condition.conditionId,
+      effectiveConfigDigest: invocationFingerprint,
       evalId,
       dataset: request.dataset,
       requestedCommit: request.harnessRef,

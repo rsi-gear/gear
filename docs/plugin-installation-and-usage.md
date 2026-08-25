@@ -192,11 +192,12 @@ order: 50
     stateRoot: /srv/dsh/refine-state
 
     metaPreset: refine-meta
-    metaHarnessRef: refine-meta-v1
     metaModel:
       provider: deepseek-official
       model: deepseek-v4-flash
       maxTokens: 8192
+    metaSampling:
+      temperature: 0.8
 
     dshBaseRef: 0123456789abcdef0123456789abcdef01234567
     toolchainRef: node-22-fixed-check-v1
@@ -231,6 +232,13 @@ order: 50
       shellTimeoutMs: 120000
       shellOutputBytes: 1048576
 
+    candidateGeneration:
+      maxCandidates: 1
+      timeoutMs: 300000
+
+    selection:
+      survivors: 1
+
     hitch:
       executable: /usr/local/bin/hitch
       root: /srv/dsh/hitch-state
@@ -242,6 +250,7 @@ order: 50
       terminationGraceMs: 5000
       maxOutputBytes: 8388608
       maxTrajectoryOutputBytes: 67108864
+      sampling: {}
       agentArgs: []
       passEnv: [DEEPSEEK_API_KEY]
 
@@ -266,14 +275,19 @@ order: 50
 | `dshRepository` | 完整 target DSH Git 仓库 |
 | `stateRoot` | evolution registry、round、Meta session ownership 和 candidate worktree sidecar 的持久化根目录 |
 | `metaPreset` | 固定 Meta Agent preset id |
-| `metaHarnessRef` | 固定 Meta Harness 版本标识；用于跨轮归因，不是 target commit |
 | `metaModel` | Meta Agent 使用的 DSH provider、model 和输出预算 |
+| `metaSampling.temperature` | 进入真实 DSH `agent/request` 的 Meta temperature；有效值会从 request header 归因 |
+| `candidateGeneration.maxCandidates` | 每轮候选数；当前 DSH 尚无 durable session fork，因此暂时必须为 `1` |
+| `candidateGeneration.timeoutMs` | Meta 候选生成的真实超时；超时会中止 round 并清理 workspace |
+| `candidateGeneration.maxModelRequests/maxTokens` | 预留的总量预算；当前 DSH 无聚合 usage evidence，配置时会明确拒绝 |
+| `selection.survivors` | 每轮保留数量；当前单 population 流程暂时必须为 `1` |
 | `seedTaskRef` | 默认公开训练/诊断 dataset；普通 `/refine` 可用第一个位置参数覆盖 |
 | `heldOutRef` | 固定 held-out dataset；不会暴露给 Meta Agent |
 | `taskBudgetMs` | 每个 target trial 的超时预算；可由新 evolution 的 `--budget` 覆盖 |
 | `compiler` | candidate finalize 前固定执行的 compiler/check pipeline |
 | `candidateWorkspace.shellEnabled` | 是否向 Meta Agent 暴露 air-gapped `bash` |
 | `hitch.maxConcurrent` | 一个 Hitch evaluation 内 target trials 的最大并发数 |
+| `hitch.seeds` / `hitch.sampling` | 类型化 rollout 条件；当前 Hitch CLI adapter 不支持时在 admission 阶段明确拒绝 |
 | `hitch.passEnv` | 只传环境变量名称；不要把 credential value 写进 YAML |
 | `promotion` | seed/held-out gate 和 required-task 回归策略 |
 | `publishedPointer` | 是否维护 workspace 级显式 published pointer |

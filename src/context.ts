@@ -1,6 +1,7 @@
 import type { NotebookRuntime } from './notebook/runtime.js'
 import type { RefineService } from './refine/service.js'
 import type { TargetWorkerRegistry } from './worker/registry.js'
+import type { ComponentRegistry } from './evolution/components.js'
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-presets'
 import type {} from '@deepseek-ai/dsh-commands'
@@ -12,6 +13,7 @@ declare module '@deepseek-ai/cordis' {
     refine: RefineService
     notebookRuntime: NotebookRuntime
     targetWorkers: TargetWorkerRegistry
+    evolutionComponents: ComponentRegistry
   }
 }
 

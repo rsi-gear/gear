@@ -7,6 +7,8 @@ import { RefineService } from '../../src/refine/service.js'
 import { EvolutionRegistryStore } from '../../src/state/evolution.js'
 import type { EvaluationPhase, EvaluationRequest, HitchEvaluationEvidence, MetaAttribution, RefineEvaluator, RefinementRound } from '../../src/types.js'
 import { createGitHarnessFixture } from '../helpers/git-fixture.js'
+import { builtinComponentRef } from '../../src/evolution/components.js'
+import { evolutionSpec } from '../helpers/research-fixture.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
@@ -15,7 +17,7 @@ class FakeMeta {
   wakes: string[] = []
   constructor(private readonly evolutionId: string, private readonly store: import('../../src/state/store.js').RefineStateStore, private readonly specDigest: string) {}
   async agent() {
-    await this.store.writeMeta({ schemaVersion: 1, evolutionId: this.evolutionId, sessionId: `meta-${this.evolutionId}`, metaHarnessRef: 'meta-v1', specDigest: this.specDigest })
+    await this.store.writeMeta({ evolutionId: this.evolutionId, sessionId: `meta-${this.evolutionId}`, metaHarnessRef: 'meta-v1', specDigest: this.specDigest })
     return { id: `meta-${this.evolutionId}` }
   }
   async wake(round: Readonly<RefinementRound>): Promise<string> { this.wakes.push(round.roundId); return `meta-${this.evolutionId}` }
@@ -24,7 +26,11 @@ class FakeMeta {
 
 class FakeEvaluator implements RefineEvaluator {
   calls: EvaluationPhase[] = []
-  constructor(private readonly candidateScore = 0.8, private readonly heldOutDelta = 0) {}
+  constructor(
+    private readonly candidateScore = 0.8,
+    private readonly heldOutDelta = 0,
+    private readonly mismatchSeedCondition = false,
+  ) {}
   async evaluate(_round: Readonly<RefinementRound>, request: Readonly<EvaluationRequest>): Promise<HitchEvaluationEvidence> {
     this.calls.push(request.phase)
     const baseline = request.phase.endsWith('baseline')
@@ -33,12 +39,18 @@ class FakeEvaluator implements RefineEvaluator {
     const passed = Math.round(score * 10)
     const serial = this.calls.length.toString(16).padStart(32, '0')
     return {
+      provider: 'fake',
+      conditionId: this.mismatchSeedCondition && request.phase === 'seed-candidate'
+        ? `sha256:${'f'.repeat(64)}` : request.condition.conditionId,
+      effectiveConfigDigest: request.condition.rolloutProviderDigest,
       evalId: `eval_${serial}`, dataset: request.dataset,
       requestedCommit: request.harnessRef, actualCommit: request.harnessRef,
-      revisionIdentity: `sha256:${serial.padEnd(64, '0')}`, invocationFingerprint: `parity:${request.dataset}`,
+      revisionIdentity: `sha256:${serial.padEnd(64, '0')}`,
+      invocationFingerprint: request.condition.rolloutProviderDigest,
       primaryReward: score, summary: { total: 10, passed, failed: 10 - passed, score },
       trials: Array.from({ length: 10 }, (_, index) => ({
-        taskName: `task-${index}`, runId: `run_${`${serial}${index}`.slice(-32).padStart(32, '0')}`,
+        taskName: `task-${index}`, trialName: `${request.phase}-trial-${index}`, attempt: 1,
+        runId: `run_${`${serial}${index}`.slice(-32).padStart(32, '0')}`,
         status: 'completed' as const, rewards: { reward: index < passed ? 1 : 0 },
       })),
       localSourceTransport: {
@@ -59,7 +71,12 @@ async function eventually<T>(read: () => Promise<T>, accept: (value: T) => boole
   throw new Error('condition not reached')
 }
 
-async function setup(candidateScore = 0.8) {
+async function setup(
+  candidateScore = 0.8,
+  mismatchSeedCondition = false,
+  maxCandidates = 1,
+  generationTimeoutMs = 300_000,
+) {
   const git = await createGitHarnessFixture()
   roots.push(git.root)
   const registry = new EvolutionRegistryStore(join(git.root, 'state'))
@@ -72,18 +89,28 @@ async function setup(candidateScore = 0.8) {
     rootForEvolution: id => join(registry.evolutionRoot(id), 'candidate-worktrees'),
     maxFiles: 64, maxBytes: 2_000_000, maxDiffBytes: 1_000_000,
   })
-  const evaluator = new FakeEvaluator(candidateScore)
+  const evaluator = new FakeEvaluator(candidateScore, 0, mismatchSeedCondition)
+  const defaults = evolutionSpec()
+  const promotionPolicy = {
+    minimumCandidateScore: 0.7, minimumAbsoluteGain: 0.1, requireNoRegression: true,
+    maxHeldOutRegression: 0, maxRequiredRegressions: 0,
+  }
   const metas = new Map<string, FakeMeta>()
   const service = new RefineService(registry, builder, workspaces, (spec, digest, store) => {
     const meta = new FakeMeta(spec.evolutionId, store, digest)
     metas.set(spec.evolutionId, meta)
     return meta as never
   }, evaluator, {
-    workspaceRoot: git.root, metaHarnessRef: 'meta-v1', metaModel: {}, toolchainRef: 'node-22-tsc',
-    sandboxProfileRef: 'sandbox-v1', promotion: {
-      minimumCandidateScore: 0.7, minimumAbsoluteGain: 0.1, requireNoRegression: true,
-      maxHeldOutRegression: 0, maxRequiredRegressions: 0,
+    workspaceRoot: git.root, metaAgent: defaults.metaAgent,
+    candidateGeneration: {
+      ...defaults.candidateGeneration,
+      maxCandidates,
+      budget: { ...defaults.candidateGeneration.budget, timeoutMs: generationTimeoutMs },
     },
+    rollout: defaults.rollout,
+    evaluation: defaults.evaluation, selection: defaults.selection,
+    toolchainRef: 'node-22-tsc', sandboxProfileRef: 'sandbox-v1',
+    promotion: { policy: builtinComponentRef('promotion-policy', 'paired-gate', promotionPolicy) },
     seedTaskRef: 'seed', heldOutRef: 'held-out', taskBudgetMs: 60_000,
     initialChampion: { schemaVersion: 2, ref: git.championRef, manifestDigest: git.manifest.digest, updatedAt: 'initial' },
     publishedPointer: true, maxLiveMetaSessions: 4,
@@ -140,8 +167,19 @@ describe('RefineService evolution workspaces', () => {
     await finalize(service, round)
     const store = service.registry.stateStore(admission.evolutionId)
     const terminal = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'accepted')
-    expect(terminal?.candidateDiff?.files).toContainEqual(expect.objectContaining({ path: 'prompts/round-1.md', change: 'created' }))
+    expect(terminal?.candidatePool[0]?.diff?.files).toContainEqual(expect.objectContaining({ path: 'prompts/round-1.md', change: 'created' }))
+    expect(terminal?.candidatePool[0]?.sealedVersion).toMatchObject({
+      commitOid: expect.stringMatching(/^[0-9a-f]{40,64}$/),
+      treeOid: expect.stringMatching(/^[0-9a-f]{40,64}$/),
+    })
     expect((await store.readChampion())?.ref).not.toBe(git.championRef)
+    expect(await store.readPopulation()).toMatchObject({
+      generation: 1,
+      members: [{
+        candidateId: terminal?.promotedCandidateId,
+        parentCandidateIds: [`initial-${git.championRef}`],
+      }],
+    })
     expect(evaluator.calls).toEqual(['seed-baseline', 'seed-candidate', 'held-out-baseline', 'held-out-candidate'])
     await service.dispose()
   })
@@ -178,6 +216,40 @@ describe('RefineService evolution workspaces', () => {
     await service.dispose()
   })
 
+  it('continues from the immutable EvolutionSpec after global defaults change', async () => {
+    const { service } = await setup()
+    const admission = await service.admit('api')
+    const first = await editing(service, admission.evolutionId, admission.roundId)
+    await finalize(service, first)
+    await eventually(
+      () => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId),
+      value => value?.status === 'accepted',
+    )
+    await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
+    service.options.metaAgent.preset.id = 'changed-global-preset'
+    service.options.rollout.model = 'changed-global-model'
+    const continued = await service.continueEvolution('api', admission.evolutionId)
+    const second = await editing(service, admission.evolutionId, continued.roundId)
+    expect(second.metaHarnessRef).toBe('meta-v1')
+    expect(second.plan.seed.model).toBe('deepseek-chat')
+    await service.dispose()
+  })
+
+  it('revalidates the resolved Meta runtime before every continue', async () => {
+    const { service } = await setup()
+    const admission = await service.admit('api')
+    const first = await editing(service, admission.evolutionId, admission.roundId)
+    await finalize(service, first)
+    await eventually(
+      () => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId),
+      value => value?.status === 'accepted',
+    )
+    await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
+    service.options.validateRuntime = async () => { throw new Error('preset digest mismatch') }
+    await expect(service.continueEvolution('api', admission.evolutionId)).rejects.toThrow(/preset digest mismatch/)
+    await service.dispose()
+  })
+
   it('rejects below the seed gate without spending held-out evaluations', async () => {
     const { service, evaluator } = await setup(0.55)
     const admission = await service.admit('api')
@@ -186,6 +258,47 @@ describe('RefineService evolution workspaces', () => {
     const store = service.registry.stateStore(admission.evolutionId)
     await eventually(() => store.readRound(admission.roundId), value => value?.status === 'rejected')
     expect(evaluator.calls).toEqual(['seed-baseline', 'seed-candidate'])
+    await service.dispose()
+  })
+
+  it('fails closed when baseline and candidate do not share the same evaluation condition identity', async () => {
+    const { service, evaluator } = await setup(0.8, true)
+    const admission = await service.admit('api')
+    const state = await editing(service, admission.evolutionId, admission.roundId)
+    await finalize(service, state)
+    const terminal = await eventually(
+      () => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId),
+      value => value?.status === 'failed',
+    )
+    expect(terminal?.failure?.message).toMatch(/condition identity mismatch/)
+    expect(evaluator.calls).toEqual(['seed-baseline', 'seed-candidate'])
+    await service.dispose()
+  })
+
+  it('rejects unsupported best-of-N before creating partial evolution state', async () => {
+    const { service } = await setup(0.8, false, 2)
+    await expect(service.admit('api')).rejects.toThrow(/durable session fork/)
+    expect(await service.listEvolutions()).toEqual([])
+    await service.dispose()
+  })
+
+  it('rejects proposal usage budgets that DSH cannot verify instead of recording them as effective', async () => {
+    const { service } = await setup()
+    service.options.candidateGeneration.budget.maxModelRequests = 2
+    await expect(service.admit('api')).rejects.toThrow(/aggregate proposal usage/)
+    expect(await service.listEvolutions()).toEqual([])
+    await service.dispose()
+  })
+
+  it('enforces the immutable candidate generation timeout and cleans up the workspace', async () => {
+    const { service } = await setup(0.8, false, 1, 50)
+    const admission = await service.admit('api')
+    const terminal = await eventually(
+      () => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId),
+      value => value?.status === 'failed',
+    )
+    expect(terminal?.failure?.message).toMatch(/candidate generation exceeded its 50ms budget/)
+    await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
     await service.dispose()
   })
 })

@@ -4,19 +4,13 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { CandidateWorkspaceManager } from '../../src/candidate/workspace.js'
 import type { RefinementRound } from '../../src/types.js'
 import { createGitHarnessFixture } from '../helpers/git-fixture.js'
+import { roundFixture } from '../helpers/research-fixture.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 
 function round(root: string, ref: string, digest: string): RefinementRound {
-  return {
-    schemaVersion: 3, evolutionId: 'evo-1', roundId: 'round-1', workspaceRoot: root,
-    status: 'preparing-candidate', source: 'api', createdAt: 'now', updatedAt: 'now',
-    metaHarnessRef: 'meta-v1', targetHarnessRef: ref, targetHarnessDigest: digest,
-    sandboxProfileRef: 'sandbox-v1', seedTaskRef: 'seed', heldOutRef: 'held-out', taskBudgetMs: 1_000,
-    promotionPolicy: { minimumCandidateScore: 0, minimumAbsoluteGain: 0, requireNoRegression: true, maxHeldOutRegression: 0, maxRequiredRegressions: 0 },
-    batchId: 'batch-1', roundIndex: 1, roundCount: 1,
-  }
+  return roundFixture({ workspaceRoot: root, targetHarnessRef: ref, targetHarnessDigest: digest, taskBudgetMs: 1_000 })
 }
 
 async function setup() {
