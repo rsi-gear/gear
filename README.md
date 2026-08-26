@@ -179,7 +179,6 @@ evaluation feedback to drive continuous model capability evolution.
 - [Installation and usage](docs/plugin-installation-and-usage.md)
 - [Gear and Hitch integration](docs/hitch-dsh-integration.md)
 - [Local evolution lab runbook](docs/evolve-lab-runbook.md)
-- [Terminal-Bench 2.0 local dataset](docs/terminal-bench-2-dataset.md)
 
 ## Development
 
