@@ -58,10 +58,6 @@ Run one refinement round from a DSH session:
 /refine status
 ```
 
-Each plain `/refine` starts an isolated evolution. Use `/refine continue
-<evolution-id>` to run more rounds with the same immutable experiment spec and
-Meta history.
-
 ### Optional: install Rear
 
 [Rear](https://github.com/rsi-gear/rear) is a read-only web workbench for Gear
@@ -78,6 +74,42 @@ dsh plugin --profile web add ./dsh-plugin-rear-0.1.0.tgz
 
 Enable Rear's dormant plugin row and point `gear.root` and `hitch.root` at the
 same state directories used by Gear and Hitch.
+
+## Using `/refine`
+
+Start a new isolated evolution with:
+
+```text
+/refine [seed-task-ref] [--rounds N] [--budget MILLISECONDS] [--focus FOCUS] [--from SOURCE] [--name NAME]
+```
+
+| Argument | Description |
+| --- | --- |
+| `seed-task-ref` | Optional seed dataset override; otherwise the configured dataset is used |
+| `--rounds N` | Number of complete refinement rounds to run serially |
+| `--budget MILLISECONDS` | Per-trial timeout for the new evolution |
+| `--focus FOCUS` | Advisory focus for the Meta Agent; repeat the option or use comma-separated values |
+| `--from SOURCE` | Start from `initial`, `published`, or an exact Git commit |
+| `--name NAME` | Human-readable name for the new evolution |
+
+Supported focus values are `context`, `pre_action`, `routing`, `post_action`,
+`action_verifier`, `skill`, `tool`, `workflow`, and `compaction`. The legacy
+`--target` option is an alias for a single `--focus` value.
+
+Manage an evolution with:
+
+| Command | Purpose |
+| --- | --- |
+| `/refine continue <evolution-id> [--rounds N] [--focus FOCUS]` | Continue with the same spec, Meta history, and champion |
+| `/refine status [evolution-id [round-id]]` | List evolutions or inspect one evolution or round |
+| `/refine publish <evolution-id> [exact-ref]` | Publish an accepted champion as the workspace default |
+| `/refine rollback <evolution-id> <exact-ref>` | Return an evolution to a previously accepted commit |
+
+A plain `/refine` always creates a new evolution. `continue` accepts only
+`--rounds` and `--focus`; datasets, models, budgets, sandboxes, and promotion
+policy remain sealed by the original experiment spec. See the
+[installation and usage guide](docs/plugin-installation-and-usage.md#8-使用-refine)
+for command output, lifecycle states, and operational details.
 
 ## How it works
 
