@@ -24,7 +24,7 @@ need Bubblewrap, `socat`, and ripgrep.
 evidence backend. It installs and manages Harbor for containerized evaluations.
 
 ```bash
-npm install --global agent-hitch@0.2.1
+npm install --global agent-hitch@latest
 hitch eval setup harbor
 hitch eval doctor --json
 ```
@@ -179,6 +179,7 @@ evaluation feedback to drive continuous model capability evolution.
 - [Installation and usage](docs/plugin-installation-and-usage.md)
 - [Gear and Hitch integration](docs/hitch-dsh-integration.md)
 - [Local evolution lab runbook](docs/evolve-lab-runbook.md)
+- [Terminal-Bench 2.0 local dataset](docs/terminal-bench-2-dataset.md)
 
 ## Development
 
