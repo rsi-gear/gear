@@ -81,13 +81,14 @@ Start a new isolated evolution with:
 
 ```text
 /refine [seed-task-ref] [--rounds N] [--budget MILLISECONDS] [--focus FOCUS] [--from SOURCE] [--name NAME]
+/refine rerun <evolution-id> <round-id> --eval <eval-id> (--invalid | --task TASK...)
 ```
 
 | Argument | Description |
 | --- | --- |
 | `seed-task-ref` | Optional seed dataset override; otherwise the configured dataset is used |
 | `--rounds N` | Number of complete refinement rounds to run serially |
-| `--budget MILLISECONDS` | Per-trial timeout for the new evolution |
+| `--budget MILLISECONDS` | Per-trial timeout for the new evolution; defaults to 3600000 (60 minutes) |
 | `--focus FOCUS` | Advisory focus for the Meta Agent; repeat the option or use comma-separated values |
 | `--from SOURCE` | Start from `initial`, `published`, or an exact Git commit |
 | `--name NAME` | Human-readable name for the new evolution |

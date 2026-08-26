@@ -4,7 +4,7 @@ import * as ToolFs from '@deepseek-ai/dsh-tool-fs'
 import * as FsObservationPolicy from '@deepseek-ai/dsh-fs-observation-policy'
 import * as ToolFsSearch from '@deepseek-ai/dsh-tool-fs-search'
 import * as ToolBash from '@deepseek-ai/dsh-tool-bash'
-import type { SemanticTarget } from './types.js'
+import type { EvaluationRerunSelector, SemanticTarget } from './types.js'
 import type {} from '@deepseek-ai/dsh-commands'
 import { HarnessBuilder } from './harness/builder.js'
 import { SubprocessHarnessCompiler } from './harness/compiler.js'
@@ -95,6 +95,39 @@ export function parseAdmissionInput(words: string[]): {
     } else throw new TypeError(`unknown refine option: ${word}`)
   }
   return parsed
+}
+
+export function parseEvaluationRerunInput(words: string[]): {
+  evolutionId: string
+  roundId: string
+  evalId: string
+  selector: EvaluationRerunSelector
+} {
+  const evolutionId = words[0]
+  const roundId = words[1]
+  if (evolutionId === undefined || roundId === undefined) {
+    throw new TypeError('usage: /refine rerun <evolution-id> <round-id> --eval <eval-id> (--invalid | --task NAME...)')
+  }
+  let evalId: string | undefined
+  let invalid = false
+  const taskNames: string[] = []
+  for (let index = 2; index < words.length; index += 1) {
+    const word = words[index]!
+    if (word === '--invalid') { invalid = true; continue }
+    const value = words[++index]
+    if (value === undefined) throw new TypeError(`${word} requires a value`)
+    if (word === '--eval') evalId = value
+    else if (word === '--task') taskNames.push(value)
+    else throw new TypeError(`unknown refine rerun option: ${word}`)
+  }
+  if (evalId === undefined || !/^eval_[0-9a-f]{32}$/u.test(evalId)) throw new TypeError('--eval requires a Hitch eval id')
+  if (invalid === (taskNames.length > 0)) throw new TypeError('refine rerun requires exactly one of --invalid or --task')
+  return {
+    evolutionId,
+    roundId,
+    evalId,
+    selector: invalid ? { mode: 'invalid' } : { mode: 'tasks', taskNames: [...new Set(taskNames)] },
+  }
 }
 
 export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
@@ -360,6 +393,16 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
             ...(parsed.focus === undefined ? {} : { focus: parsed.focus }),
           })
           return { kind: 'success', text: `queued evolution ${accepted.evolutionId}, batch ${accepted.batchId}, round ${accepted.roundId}` }
+        }
+        if (words[0] === 'rerun') {
+          const parsed = parseEvaluationRerunInput(words.slice(1))
+          const result = await service.rerunEvaluation(parsed.evolutionId, parsed.roundId, parsed.evalId, parsed.selector)
+          return {
+            kind: 'success',
+            text: result.evalStatus === 'succeeded'
+              ? `repaired eval ${result.evalId}; continuing round ${parsed.roundId}`
+              : `reran ${result.selectedTasks.join(', ') || 'no tasks'}; remaining invalid: ${result.remainingInvalidTasks.join(', ') || 'unknown'}`,
+          }
         }
         if (words[0] === 'publish') {
           if (words[1] === undefined) return { kind: 'error', text: 'usage: /refine publish <evolution-id> [verified-harness-ref]' }

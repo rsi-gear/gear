@@ -205,7 +205,7 @@ order: 50
 
     seedTaskRef: /srv/benchmarks/terminal-bench/seed
     heldOutRef: /srv/benchmarks/terminal-bench/held-out
-    taskBudgetMs: 900000
+    taskBudgetMs: 3600000
     pythonExecutable: /srv/dsh/refine-python/bin/python
     metaSandbox:
       mode: required

@@ -5,7 +5,7 @@ import { CandidateWorkspaceManager } from '../../src/candidate/workspace.js'
 import { HarnessBuilder, NoopHarnessCompiler } from '../../src/harness/builder.js'
 import { RefineService } from '../../src/refine/service.js'
 import { EvolutionRegistryStore } from '../../src/state/evolution.js'
-import type { EvaluationPhase, EvaluationRequest, HitchEvaluationEvidence, MetaAttribution, RefineEvaluator, RefinementRound } from '../../src/types.js'
+import type { EvaluationPhase, EvaluationRequest, EvaluationRerunResult, EvaluationRerunSelector, EvaluationReservation, HitchEvaluationEvidence, MetaAttribution, RefineEvaluator, RefinementRound, RoundEvaluationAttempt } from '../../src/types.js'
 import { createGitHarnessFixture } from '../helpers/git-fixture.js'
 import { builtinComponentRef } from '../../src/evolution/components.js'
 import { evolutionSpec } from '../helpers/research-fixture.js'
@@ -47,12 +47,22 @@ class FakeMeta {
 
 class FakeEvaluator implements RefineEvaluator {
   calls: EvaluationPhase[] = []
+  private reservations = 0
   constructor(
     private readonly candidateScore = 0.8,
     private readonly heldOutDelta = 0,
     private readonly mismatchSeedCondition = false,
   ) {}
-  async evaluate(_round: Readonly<RefinementRound>, request: Readonly<EvaluationRequest>): Promise<HitchEvaluationEvidence> {
+  async reserve(): Promise<EvaluationReservation> {
+    this.reservations += 1
+    return { provider: 'fake', evalId: `eval_fake_${this.reservations}` }
+  }
+  async evaluate(
+    _round: Readonly<RefinementRound>,
+    request: Readonly<EvaluationRequest>,
+    _signal?: AbortSignal,
+    reservation?: Readonly<EvaluationReservation>,
+  ): Promise<HitchEvaluationEvidence> {
     this.calls.push(request.phase)
     const baseline = request.phase.endsWith('baseline')
     const heldOut = request.phase.startsWith('held-out')
@@ -60,11 +70,11 @@ class FakeEvaluator implements RefineEvaluator {
     const passed = Math.round(score * 10)
     const serial = this.calls.length.toString(16).padStart(32, '0')
     return {
-      provider: 'fake',
+      provider: reservation?.provider ?? 'fake',
       conditionId: this.mismatchSeedCondition && request.phase === 'seed-candidate'
         ? `sha256:${'f'.repeat(64)}` : request.condition.conditionId,
       effectiveConfigDigest: request.condition.rolloutProviderDigest,
-      evalId: `eval_${serial}`, dataset: request.dataset,
+      evalId: reservation?.evalId ?? `eval_${serial}`, dataset: request.dataset,
       requestedCommit: request.harnessRef, actualCommit: request.harnessRef,
       revisionIdentity: `sha256:${serial.padEnd(64, '0')}`,
       invocationFingerprint: request.condition.rolloutProviderDigest,
@@ -78,6 +88,25 @@ class FakeEvaluator implements RefineEvaluator {
         kind: 'local-git-commit', resolutionIdentity: `sha256:${serial.padEnd(64, '0')}`,
         commit: request.harnessRef, tree: 'f'.repeat(40), payloadSha256: `sha256:${'1'.repeat(64)}`, payloadBytes: 1,
       },
+    }
+  }
+  async rerun(
+    round: Readonly<RefinementRound>,
+    request: Readonly<EvaluationRequest>,
+    attempt: Readonly<RoundEvaluationAttempt>,
+    selector: Readonly<EvaluationRerunSelector>,
+    signal: AbortSignal,
+  ): Promise<EvaluationRerunResult> {
+    const evidence = await this.evaluate(round, request, signal, { provider: attempt.provider, evalId: attempt.evalId })
+    const tasks = selector.mode === 'invalid' ? ['task-1'] : selector.taskNames
+    return {
+      provider: attempt.provider,
+      evalId: attempt.evalId,
+      selectedTasks: [...tasks],
+      repairedTasks: [...tasks],
+      remainingInvalidTasks: [],
+      evalStatus: 'succeeded',
+      evidence,
     }
   }
 }
@@ -173,6 +202,85 @@ async function finalize(service: RefineService, round: RefinementRound): Promise
 }
 
 describe('RefineService evolution workspaces', () => {
+  it('persists a running evaluation attempt before invoking the reserved evaluator', async () => {
+    const { service, evaluator } = await setup()
+    const original = evaluator.evaluate.bind(evaluator)
+    const gate = Promise.withResolvers<void>()
+    let held = true
+    evaluator.evaluate = async (...args) => {
+      if (held) {
+        held = false
+        await gate.promise
+      }
+      return original(...args)
+    }
+    const admission = await service.admit('api')
+    const store = service.registry.stateStore(admission.evolutionId)
+    const running = await eventually(
+      () => store.readRound(admission.roundId),
+      value => value?.evaluationAttempts?.some(attempt => attempt.status === 'running') === true,
+    )
+    if (running === undefined) throw new Error('running round disappeared')
+    expect(running?.evaluationAttempts).toMatchObject([{
+      provider: 'fake', phase: 'seed-baseline', status: 'running',
+      owner: { role: 'baseline', harnessRef: running.targetHarnessRef },
+    }])
+    gate.resolve()
+    await editing(service, admission.evolutionId, admission.roundId)
+    expect((await store.readRound(admission.roundId))?.evaluationAttempts?.[0]).toMatchObject({ status: 'settled' })
+    await service.dispose()
+  })
+
+  it('retains a failed reserved evaluation attempt for diagnosis', async () => {
+    const { service, evaluator } = await setup()
+    evaluator.evaluate = async () => { throw Object.assign(new Error('reserved evaluation failed'), { code: 'fixture_failure' }) }
+    const admission = await service.admit('api')
+    const terminal = await eventually(
+      () => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId),
+      value => value?.status === 'failed',
+    )
+    expect(terminal?.evaluationAttempts).toMatchObject([{
+      provider: 'fake', phase: 'seed-baseline', status: 'failed',
+      completedAt: expect.any(String),
+      failure: { code: 'fixture_failure', message: 'reserved evaluation failed' },
+    }])
+    await service.dispose()
+  })
+
+  it('reruns a failed Hitch attempt under the same eval id and continues the round', async () => {
+    const { service, evaluator } = await setup()
+    const evalId = `eval_${'7'.repeat(32)}`
+    const originalReserve = evaluator.reserve.bind(evaluator)
+    const originalEvaluate = evaluator.evaluate.bind(evaluator)
+    let firstReservation = true
+    let firstEvaluation = true
+    evaluator.reserve = async () => {
+      if (firstReservation) {
+        firstReservation = false
+        return { provider: 'hitch-cli', evalId }
+      }
+      return originalReserve()
+    }
+    evaluator.evaluate = async (...args) => {
+      if (firstEvaluation) {
+        firstEvaluation = false
+        throw Object.assign(new Error('invalid task observation'), { code: 'hitch_infrastructure_failure' })
+      }
+      return originalEvaluate(...args)
+    }
+    const admission = await service.admit('api')
+    const store = service.registry.stateStore(admission.evolutionId)
+    await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
+    const rerun = await service.rerunEvaluation(admission.evolutionId, admission.roundId, evalId, { mode: 'invalid' })
+    expect(rerun).toMatchObject({ evalId, evalStatus: 'succeeded', remainingInvalidTasks: [] })
+    const resumed = await editing(service, admission.evolutionId, admission.roundId)
+    expect(resumed.evaluationAttempts?.find(attempt => attempt.evalId === evalId)).toMatchObject({
+      provider: 'hitch-cli', status: 'settled', completedAt: expect.any(String),
+    })
+    expect(resumed.baseline).toMatchObject({ evalId })
+    await service.dispose()
+  })
+
   it('creates a fresh isolated evolution for every admission', async () => {
     const { service } = await setup()
     const first = await service.admit('api', { name: 'first' })
@@ -223,6 +331,12 @@ describe('RefineService evolution workspaces', () => {
       record_path: `evolutions/${admission.evolutionId}/rounds/${admission.roundId}.json`,
     })
     expect(evaluator.calls).toEqual(['seed-baseline', 'seed-candidate', 'held-out-baseline', 'held-out-candidate'])
+    expect(terminal?.evaluationAttempts).toHaveLength(4)
+    expect(terminal?.evaluationAttempts?.every(attempt => attempt.status === 'settled' && attempt.completedAt !== undefined)).toBe(true)
+    expect(terminal?.evaluationAttempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: 'seed-baseline', owner: expect.objectContaining({ role: 'baseline' }) }),
+      expect.objectContaining({ phase: 'seed-candidate', owner: expect.objectContaining({ role: 'candidate', candidateId: terminalCandidate.candidateId }) }),
+    ]))
     await service.dispose()
   })
 

@@ -26,6 +26,7 @@ const args = process.argv.slice(2)
 const value = name => args[args.indexOf(name) + 1]
 const dataset = value('--dataset')
 const harness = value('--harness')
+const evalId = args.includes('--eval-id') ? value('--eval-id') : 'eval_' + '1'.repeat(32)
 const commit = harness.match(/#([0-9a-f]{40,64})$/)?.[1]
 if (args[0] === 'trajectory' && args[1] === 'inspect') {
   const runId = args[2]
@@ -39,6 +40,29 @@ if (args[0] === 'trajectory' && args[1] === 'inspect') {
       { type: 'turn/end', seq: 2, time: 12, data: { turn: 1 } },
     ],
   }) + '\\n')
+} else if (args[0] === 'eval' && args[1] === 'rerun') {
+  process.stdout.write(JSON.stringify({
+    schema_version: '1', kind: 'eval-rerun', rerun_id: 'rerun_' + '9'.repeat(32), eval_id: args[2], status: 'completed',
+    selected_tasks: args.includes('--invalid') ? ['task-1'] : args.flatMap((arg, index) => arg === '--task' ? [args[index + 1]] : []),
+    repaired_tasks: ['task-1'], remaining_invalid_tasks: [], eval_status: 'succeeded',
+  }) + '\\n')
+} else if (args[0] === 'eval' && args[1] === 'inspect') {
+  const inspectedEvalId = args[2]
+  const actual = ${JSON.stringify(fixture.championRef)}
+  process.stdout.write(JSON.stringify({
+    schema_version: '1', eval_id: inspectedEvalId,
+    result: {
+      schema_version: '1', eval_id: inspectedEvalId, status: 'succeeded', exit_code: 0,
+      candidate: { harness_ref: 'deepseek@commit:' + actual, revision_identity: 'sha256:' + '2'.repeat(64) },
+      dataset: 'seed',
+      trials: [{ trial_id: 'trial-1', run_id: 'run_' + '5'.repeat(32), task_id: 'task-1',
+        attempt: 1, observation_status: 'valid', reward: 1, verifier_result_ref: 'verifier/result.json' }],
+      summary: { n_trials: 1, n_completed: 1, n_invalid: 0, primary_reward: 1, rewards: { reward: { count: 1, mean: 1 } } },
+      local_source_transport: { kind: 'local-git-commit', resolution_identity: 'sha256:' + '2'.repeat(64),
+        commit: actual, tree: '3'.repeat(40), payload_sha256: 'sha256:' + '4'.repeat(64), payload_bytes: 100 },
+      started_at: new Date().toISOString(), completed_at: new Date().toISOString(),
+    },
+  }) + '\\n')
 } else if (dataset === 'slow') setTimeout(() => {}, 30000)
 else if (dataset === 'invalid-json') process.stdout.write('not-json\\n')
 else {
@@ -46,7 +70,7 @@ else {
   const legacy = dataset === 'legacy'
   const invalidRun = dataset === 'invalid-run'
   process.stdout.write(JSON.stringify({
-    schema_version: '1', eval_id: 'eval_' + '1'.repeat(32), status: 'succeeded', exit_code: 0,
+    schema_version: '1', eval_id: evalId, status: 'succeeded', exit_code: 0,
     candidate: { harness_ref: 'deepseek@commit:' + actual, revision_identity: 'sha256:' + '2'.repeat(64) },
     dataset,
     ...(legacy ? {} : { trials: [{ trial_id: 'trial-1', run_id: 'run_' + '5'.repeat(32), task_id: 'task-1',
@@ -96,6 +120,36 @@ describe('HitchCliEvaluator', () => {
       primaryReward: 1, summary: { total: 1, passed: 1, failed: 0 },
       trials: [{ runId: `run_${'5'.repeat(32)}`, attempt: 1 }],
       localSourceTransport: { commit: fixture.championRef },
+    })
+  })
+
+  it('reserves a Hitch eval id and binds the invocation/result to it', async () => {
+    const { fixture, evaluator } = await setup()
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const input = request('seed', fixture.championRef)
+    const reservation = await evaluator.reserve(state, input)
+    expect(reservation).toMatchObject({ provider: 'hitch-cli', evalId: expect.stringMatching(/^eval_[0-9a-f]{32}$/u) })
+    await expect(evaluator.evaluate(state, input, new AbortController().signal, reservation)).resolves.toMatchObject({
+      provider: reservation.provider,
+      evalId: reservation.evalId,
+    })
+  })
+
+  it('reruns invalid tasks under the original eval id and loads repaired evidence', async () => {
+    const { fixture, evaluator } = await setup()
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const input = request('seed', fixture.championRef)
+    const evalId = `eval_${'7'.repeat(32)}`
+    await expect(evaluator.rerun(state, input, {
+      provider: 'hitch-cli', evalId, phase: 'seed-baseline',
+      owner: { candidateId: `champion-${fixture.championRef}`, role: 'baseline', harnessRef: fixture.championRef },
+      conditionId: input.condition.conditionId, dataset: input.dataset,
+      requestedModelId: input.condition.model, requestedCommit: fixture.championRef,
+      status: 'failed', startedAt: new Date().toISOString(), completedAt: new Date().toISOString(),
+      failure: { code: 'hitch_infrastructure_failure', message: 'invalid task' },
+    }, { mode: 'invalid' }, new AbortController().signal)).resolves.toMatchObject({
+      provider: 'hitch-cli', evalId, selectedTasks: ['task-1'], repairedTasks: ['task-1'],
+      remainingInvalidTasks: [], evalStatus: 'succeeded', evidence: { evalId, primaryReward: 1 },
     })
   })
 

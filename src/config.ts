@@ -92,7 +92,7 @@ export const ConfigSchema: Schema<Config> = Schema.object({
   sandboxProfileRef: Schema.string().required(),
   seedTaskRef: Schema.string().required(),
   heldOutRef: Schema.string().required(),
-  taskBudgetMs: Schema.number().default(300_000),
+  taskBudgetMs: Schema.number().default(3_600_000),
   pythonExecutable: Schema.string().default('python3'),
   metaSandbox: Schema.object({
     mode: Schema.union(['required', 'disabled'] as const).default('required'),

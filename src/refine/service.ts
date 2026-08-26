@@ -8,9 +8,9 @@ import { digestJson, type EvolutionRegistryStore } from '../state/evolution.js'
 import type { RefineStateStore, WorkspaceLock } from '../state/store.js'
 import type {
   AdmissionResult, CandidateDecline, CandidateDiffSummary, CandidateFinalization, CandidateRecord, ChampionState,
-  CandidateGenerationSpec, ComponentRef, DshMetaAgentSpec, EvaluationEvidence, EvolutionRegistryEntry, EvolutionSpec, MetaAttribution,
+  CandidateGenerationSpec, ComponentRef, DshMetaAgentSpec, EvaluationEvidence, EvaluationRequest, EvaluationRerunResult, EvaluationRerunSelector, EvolutionRegistryEntry, EvolutionSpec, MetaAttribution,
   MetaCheckpointRef, PairedTrial, PopulationState, ProposalEvidenceAudit, PromotionPolicy, PublicSeedEvidence, PublicRoundStatus,
-  RefineEvaluator, RefinementRound, RolloutSpec, RoundEvaluation, SemanticTarget, PopulationMember,
+  RefineEvaluator, RefinementRound, RolloutSpec, RoundEvaluation, RoundEvaluationAttempt, SemanticTarget, PopulationMember,
 } from '../types.js'
 import { isExactGitCommit } from '../types.js'
 
@@ -77,6 +77,9 @@ interface CandidateExecution {
   baseline?: EvaluationEvidence
 }
 
+type CandidatePatch = { [Key in keyof CandidateRecord]?: CandidateRecord[Key] | undefined }
+type RoundPatch = { [Key in keyof RefinementRound]?: RefinementRound[Key] | undefined }
+
 interface ActiveRound {
   evolution: EvolutionRuntime
   lock: WorkspaceLock
@@ -88,6 +91,7 @@ interface ActiveRound {
   roundCount: number
   advisoryFocus?: SemanticTarget[]
   source: RefinementRound['source']
+  drive?: Promise<void>
 }
 
 const TERMINAL = new Set<RefinementRound['status']>(['accepted', 'rejected', 'rejected-for-substrate', 'failed'])
@@ -271,6 +275,131 @@ export class RefineService {
       throw new Error('evolution dataset content changed; create a new evolution')
     }
     return this.startBatch(evolution, source, crypto.randomUUID(), validateCount(options.rounds ?? 1), normalizeFocus(options.focus))
+  }
+
+  async rerunEvaluation(
+    evolutionId: string,
+    roundId: string,
+    evalId: string,
+    selector: EvaluationRerunSelector,
+  ): Promise<EvaluationRerunResult> {
+    this.assertAvailable()
+    const live = this.active.get(roundId)
+    if (live !== undefined) {
+      const persisted = await live.evolution.store.readRound(roundId)
+      if (persisted === undefined || !TERMINAL.has(persisted.status)) {
+        throw new Error(`refinement round is already active: ${roundId}`)
+      }
+      await live.drive
+      if (this.active.has(roundId)) throw new Error(`refinement round is already active: ${roundId}`)
+    }
+    const evolution = await this.runtime(evolutionId)
+    const lock = await evolution.store.acquireRoundLock(roundId)
+    let handedToDrive = false
+    let attempt: RoundEvaluationAttempt | undefined
+    try {
+      let round = await this.requireRound(evolution.store, roundId)
+      if (round.evolutionId !== evolutionId || round.status !== 'failed') {
+        throw new Error(`round ${roundId} is not a failed evaluation round`)
+      }
+      attempt = round.evaluationAttempts?.find(value => value.evalId === evalId && value.provider === 'hitch-cli')
+      if (attempt === undefined) throw new Error(`round ${roundId} does not own Hitch eval ${evalId}`)
+      if (attempt.status !== 'failed') throw new Error(`Hitch eval ${evalId} is not failed`)
+      if (evolution.evaluator.rerun === undefined) throw new Error('configured evaluator does not support task rerun')
+      const request = this.evaluationRequest(round, attempt)
+      round = await this.transition(evolution.store, roundId, {
+        status: 'repairing-evaluation',
+        failure: undefined,
+        evaluationAttempts: (round.evaluationAttempts ?? []).map(value => value.provider === attempt!.provider && value.evalId === attempt!.evalId
+          ? (() => {
+              const { completedAt: _completedAt, failure: _failure, ...owned } = value
+              return { ...owned, status: 'rerunning' as const }
+            })()
+          : value),
+      })
+      let result: EvaluationRerunResult
+      try {
+        result = await evolution.evaluator.rerun(round, request, attempt, selector, new AbortController().signal)
+      } catch (error) {
+        const current = await this.requireRound(evolution.store, roundId)
+        await this.transition(evolution.store, roundId, {
+          status: 'failed',
+          failure: { phase: 'repairing-evaluation', message: errorMessage(error) },
+          evaluationAttempts: (current.evaluationAttempts ?? []).map(value => value.provider === attempt!.provider && value.evalId === attempt!.evalId
+            ? {
+                ...value, status: 'failed' as const, completedAt: now(),
+                failure: {
+                  code: typeof (error as { code?: unknown }).code === 'string' ? (error as { code: string }).code : 'evaluation_rerun_failed',
+                  message: errorMessage(error),
+                },
+              }
+            : value),
+        })
+        throw error
+      }
+      if (result.provider !== attempt.provider || result.evalId !== attempt.evalId) {
+        throw new Error('evaluation rerun result does not match Gear ownership')
+      }
+      if (result.evalStatus !== 'succeeded' || result.evidence === undefined) {
+        const current = await this.requireRound(evolution.store, roundId)
+        const message = result.remainingInvalidTasks.length === 0
+          ? 'evaluation rerun did not produce complete evidence'
+          : `evaluation still has invalid tasks: ${result.remainingInvalidTasks.join(', ')}`
+        await this.transition(evolution.store, roundId, {
+          status: 'failed',
+          failure: { phase: 'repairing-evaluation', message },
+          evaluationAttempts: (current.evaluationAttempts ?? []).map(value => value.provider === attempt!.provider && value.evalId === attempt!.evalId
+            ? { ...value, status: 'failed' as const, completedAt: now(), failure: { code: 'evaluation_has_invalid_tasks', message } }
+            : value),
+        })
+        return result
+      }
+      this.assertRepairedEvidence(attempt, result.evidence)
+      const current = await this.requireRound(evolution.store, roundId)
+      const evidencePatch = await this.repairedEvidencePatch(current, attempt, result.evidence, evolution.spec)
+      round = await this.transition(evolution.store, roundId, {
+        ...evidencePatch,
+        status: 'repairing-evaluation',
+        failure: undefined,
+        evaluationAttempts: (current.evaluationAttempts ?? []).map(value => value.provider === attempt!.provider && value.evalId === attempt!.evalId
+          ? (() => {
+              const { failure: _failure, ...owned } = value
+              return { ...owned, status: 'settled' as const, completedAt: now() }
+            })()
+          : value),
+      })
+      const active = this.newActive(
+        evolution, lock, round.source, round.batchId, round.roundIndex, round.roundCount, round.advisoryFocus,
+      )
+      this.active.set(roundId, active)
+      handedToDrive = true
+      queueMicrotask(() => this.startDrive(roundId))
+      return result
+    } catch (error) {
+      if (attempt !== undefined && !handedToDrive) {
+        const current = await evolution.store.readRound(roundId).catch(() => undefined)
+        if (current?.status === 'repairing-evaluation') {
+          await evolution.store.writeRound({
+            ...current,
+            status: 'failed',
+            updatedAt: now(),
+            failure: { phase: 'repairing-evaluation', message: errorMessage(error) },
+            evaluationAttempts: (current.evaluationAttempts ?? []).map(value => value.provider === attempt!.provider && value.evalId === attempt!.evalId
+              ? {
+                  ...value, status: 'failed' as const, completedAt: now(),
+                  failure: {
+                    code: typeof (error as { code?: unknown }).code === 'string' ? (error as { code: string }).code : 'evaluation_rerun_failed',
+                    message: errorMessage(error),
+                  },
+                }
+              : value),
+          }).catch(() => {})
+        }
+      }
+      throw error
+    } finally {
+      if (!handedToDrive) await lock.release().catch(() => {})
+    }
   }
 
   async submitFinalization(
@@ -541,27 +670,48 @@ export class RefineService {
     let continueBatch = false
     try {
       let round = await this.transition(store, roundId, { status: 'baseline-running' })
-      const championBaseline = await active.evolution.evaluator.evaluate(round, {
-        phase: 'seed-baseline', dataset: round.seedTaskRef, harnessRef: round.targetHarnessRef,
-        condition: round.plan.seed,
-      }, active.abort.signal)
       const population = await store.readPopulation()
       if (population === undefined || population.digest !== round.parentPopulationDigest) throw new Error('research population changed during round admission')
-      const parentBaselines = [{
-        parentCandidateId: population.members.find(member => member.harnessRef === round.targetHarnessRef)?.candidateId
-          ?? `champion-${round.targetHarnessRef}`,
-        parentHarnessRef: round.targetHarnessRef,
-        evidence: championBaseline,
-      }]
-      for (const parent of population.members) {
+      const championCandidateId = round.parentAllocations?.find(allocation => allocation.parentHarnessRef === round.targetHarnessRef)?.parentCandidateId
+        ?? `champion-${round.targetHarnessRef}`
+      let championBaseline = round.baseline
+        ?? round.parentBaselines?.find(value => value.parentCandidateId === championCandidateId)?.evidence
+      if (championBaseline === undefined) {
+        const champion = await this.evaluateWithAttempt(active, round, {
+          phase: 'seed-baseline', dataset: round.seedTaskRef, harnessRef: round.targetHarnessRef,
+          condition: round.plan.seed,
+        }, {
+          candidateId: championCandidateId, role: 'baseline', harnessRef: round.targetHarnessRef,
+        }, (current, evidence) => ({
+          baseline: evidence,
+          parentBaselines: [
+            ...(current.parentBaselines ?? []).filter(value => value.parentCandidateId !== championCandidateId),
+            { parentCandidateId: championCandidateId, parentHarnessRef: round.targetHarnessRef, evidence },
+          ],
+        }))
+        round = champion.round
+        championBaseline = champion.evidence
+      }
+      let parentBaselines = round.parentBaselines ?? []
+      const allocatedParentIds = [...new Set((round.parentAllocations ?? []).map(allocation => allocation.parentCandidateId))]
+      for (const parentCandidateId of allocatedParentIds) {
+        const parent = population.members.find(member => member.candidateId === parentCandidateId)
+        if (parent === undefined) throw new Error(`allocated research parent is unavailable: ${parentCandidateId}`)
         if (parentBaselines.some(value => value.parentCandidateId === parent.candidateId)) continue
-        const evidence = await active.evolution.evaluator.evaluate(round, {
+        const evaluated = await this.evaluateWithAttempt(active, round, {
           phase: 'seed-baseline', dataset: round.seedTaskRef, harnessRef: parent.harnessRef, condition: round.plan.seed,
-        }, active.abort.signal)
-        parentBaselines.push({ parentCandidateId: parent.candidateId, parentHarnessRef: parent.harnessRef, evidence })
+        }, {
+          candidateId: parent.candidateId, role: 'baseline', harnessRef: parent.harnessRef,
+        }, (current, evidence) => ({
+          parentBaselines: [...(current.parentBaselines ?? []), {
+            parentCandidateId: parent.candidateId, parentHarnessRef: parent.harnessRef, evidence,
+          }],
+        }))
+        round = evaluated.round
+        parentBaselines = round.parentBaselines ?? []
       }
       round = await this.transition(store, roundId, {
-        status: 'preparing-candidate', baseline: championBaseline, parentBaselines,
+        status: 'preparing-candidate',
       })
 
       const rootCheckpoint = await meta.checkpoint()
@@ -573,6 +723,7 @@ export class RefineService {
       // Generate and seal every sibling before any candidate rollout. This keeps
       // proposal-time evidence independent of sibling evaluation order.
       for (const initialCandidate of round.candidatePool) {
+        if (initialCandidate.sealedVersion !== undefined || initialCandidate.status !== 'generating') continue
         const candidateId = initialCandidate.candidateId
         const allocation = round.parentAllocations?.find(value => value.candidateId === candidateId)
         if (allocation === undefined) throw new Error(`candidate has no parent allocation: ${candidateId}`)
@@ -657,29 +808,53 @@ export class RefineService {
       for (const candidate of round.candidatePool.filter(value => value.sealedVersion !== undefined && value.status !== 'failed')) {
         const parentBaseline = parentBaselines.find(value => value.parentCandidateId === candidate.parentCandidateIds[0])?.evidence
         if (parentBaseline === undefined || candidate.sealedVersion === undefined) throw new Error('candidate seed baseline is unavailable')
+        if (candidate.seedEvaluation !== undefined) {
+          this.assertParity(parentBaseline, candidate.seedEvaluation, 'seed')
+          if (candidate.seedComparison === undefined || candidate.metrics === undefined || candidate.status !== 'ready') {
+            const comparison = {
+              parentBaselineEvalId: parentBaseline.evalId,
+              pairedTrials: pairedTrials(parentBaseline, candidate.seedEvaluation),
+              scoreDelta: candidate.seedEvaluation.primaryReward - parentBaseline.primaryReward,
+              requiredRegressions: this.requiredRegressions(round, parentBaseline, candidate.seedEvaluation),
+            }
+            round = await this.transition(store, roundId, {
+              candidatePool: this.patchCandidate(round, candidate.candidateId, {
+                seedComparison: comparison,
+                metrics: await this.evaluateJudges(active.evolution.spec, candidate.seedEvaluation),
+                status: 'ready',
+                failure: undefined,
+              }),
+            })
+          }
+          continue
+        }
         round = await this.transition(store, roundId, {
           candidatePool: this.patchCandidate(round, candidate.candidateId, { status: 'evaluating' }),
         })
         try {
-          const seedCandidate = await active.evolution.evaluator.evaluate(round, {
+          const evaluated = await this.evaluateWithAttempt(active, round, {
             phase: 'seed-candidate', dataset: round.seedTaskRef, harnessRef: candidate.sealedVersion.commitOid,
             condition: round.plan.seed,
-          }, active.abort.signal)
-          this.assertParity(parentBaseline, seedCandidate, 'seed')
-          const comparison = {
-            parentBaselineEvalId: parentBaseline.evalId,
-            pairedTrials: pairedTrials(parentBaseline, seedCandidate),
-            scoreDelta: seedCandidate.primaryReward - parentBaseline.primaryReward,
-            requiredRegressions: this.requiredRegressions(round, parentBaseline, seedCandidate),
-          }
-          round = await this.transition(store, roundId, {
-            candidatePool: this.patchCandidate(round, candidate.candidateId, {
-              seedEvaluation: seedCandidate,
-              seedComparison: comparison,
-              metrics: await this.evaluateJudges(active.evolution.spec, seedCandidate),
-              status: 'ready',
-            }),
+          }, {
+            candidateId: candidate.candidateId, role: 'candidate', harnessRef: candidate.sealedVersion.commitOid,
+          }, async (current, seedCandidate) => {
+            this.assertParity(parentBaseline, seedCandidate, 'seed')
+            const comparison = {
+              parentBaselineEvalId: parentBaseline.evalId,
+              pairedTrials: pairedTrials(parentBaseline, seedCandidate),
+              scoreDelta: seedCandidate.primaryReward - parentBaseline.primaryReward,
+              requiredRegressions: this.requiredRegressions(current, parentBaseline, seedCandidate),
+            }
+            return {
+              candidatePool: this.patchCandidate(current, candidate.candidateId, {
+                seedEvaluation: seedCandidate,
+                seedComparison: comparison,
+                metrics: await this.evaluateJudges(active.evolution.spec, seedCandidate),
+                status: 'ready',
+              }),
+            }
           })
+          round = evaluated.round
         } catch (error) {
           round = await this.transition(store, roundId, {
             candidatePool: this.patchCandidate(round, candidate.candidateId, {
@@ -717,6 +892,7 @@ export class RefineService {
       const finalist = round.candidatePool.find(value => value.candidateId === selection.promotionCandidateId)
       if (finalist?.sealedVersion === undefined || finalist.seedEvaluation === undefined) throw new Error('promotion finalist is not evaluable')
       let evaluation: RoundEvaluation = {
+        ...round.evaluation,
         seedBaseline: championBaseline,
         seedCandidate: finalist.seedEvaluation,
         seedPairedTrials: pairedTrials(championBaseline, finalist.seedEvaluation),
@@ -727,26 +903,55 @@ export class RefineService {
       let accepted = false
       if (this.passesSeed(round, evaluation)) {
         round = await this.transition(store, roundId, { status: 'held-out-running' })
-        const heldOutBaseline = await active.evolution.evaluator.evaluate(round, {
-          phase: 'held-out-baseline', dataset: round.heldOutRef, harnessRef: round.targetHarnessRef,
-          condition: round.plan.heldOut,
-        }, active.abort.signal)
-        const heldOutCandidate = await active.evolution.evaluator.evaluate(round, {
-          phase: 'held-out-candidate', dataset: round.heldOutRef, harnessRef: finalist.sealedVersion.commitOid,
-          condition: round.plan.heldOut,
-        }, active.abort.signal)
-        this.assertParity(heldOutBaseline, heldOutCandidate, 'held-out')
-        evaluation = {
-          ...evaluation, heldOutBaseline, heldOutCandidate,
-          heldOutPairedTrials: pairedTrials(heldOutBaseline, heldOutCandidate),
-          promotionMetrics: await this.evaluateJudges(active.evolution.spec, heldOutCandidate),
-          heldOutScoreDelta: heldOutCandidate.primaryReward - heldOutBaseline.primaryReward,
-          requiredRegressions: evaluation.requiredRegressions + this.requiredRegressions(round, heldOutBaseline, heldOutCandidate),
+        let heldOutBaseline = evaluation.heldOutBaseline
+        if (heldOutBaseline === undefined) {
+          const baselineEvaluation = await this.evaluateWithAttempt(active, round, {
+            phase: 'held-out-baseline', dataset: round.heldOutRef, harnessRef: round.targetHarnessRef,
+            condition: round.plan.heldOut,
+          }, {
+            candidateId: championCandidateId, role: 'baseline', harnessRef: round.targetHarnessRef,
+          }, (current, evidence) => ({ evaluation: { ...current.evaluation!, heldOutBaseline: evidence } }))
+          round = baselineEvaluation.round
+          heldOutBaseline = baselineEvaluation.evidence
         }
-        round = await this.transition(store, roundId, {
-          evaluation,
-          candidatePool: this.patchCandidate(round, finalist.candidateId, { heldOutEvaluation: heldOutCandidate }),
-        })
+        let heldOutCandidate = evaluation.heldOutCandidate
+        if (heldOutCandidate === undefined) {
+          const candidateEvaluation = await this.evaluateWithAttempt(active, round, {
+            phase: 'held-out-candidate', dataset: round.heldOutRef, harnessRef: finalist.sealedVersion.commitOid,
+            condition: round.plan.heldOut,
+          }, {
+            candidateId: finalist.candidateId, role: 'candidate', harnessRef: finalist.sealedVersion.commitOid,
+          }, async (current, evidence) => {
+            this.assertParity(heldOutBaseline, evidence, 'held-out')
+            const completeEvaluation = {
+              ...evaluation, heldOutBaseline, heldOutCandidate: evidence,
+              heldOutPairedTrials: pairedTrials(heldOutBaseline, evidence),
+              promotionMetrics: await this.evaluateJudges(active.evolution.spec, evidence),
+              heldOutScoreDelta: evidence.primaryReward - heldOutBaseline.primaryReward,
+              requiredRegressions: evaluation.requiredRegressions + this.requiredRegressions(current, heldOutBaseline, evidence),
+            }
+            return {
+              evaluation: completeEvaluation,
+              candidatePool: this.patchCandidate(current, finalist.candidateId, { heldOutEvaluation: evidence }),
+            }
+          })
+          round = candidateEvaluation.round
+          heldOutCandidate = candidateEvaluation.evidence
+          evaluation = round.evaluation!
+        } else {
+          this.assertParity(heldOutBaseline, heldOutCandidate, 'held-out')
+          evaluation = {
+            ...evaluation, heldOutBaseline, heldOutCandidate,
+            heldOutPairedTrials: pairedTrials(heldOutBaseline, heldOutCandidate),
+            promotionMetrics: await this.evaluateJudges(active.evolution.spec, heldOutCandidate),
+            heldOutScoreDelta: heldOutCandidate.primaryReward - heldOutBaseline.primaryReward,
+            requiredRegressions: evaluation.requiredRegressions + this.requiredRegressions(round, heldOutBaseline, heldOutCandidate),
+          }
+          round = await this.transition(store, roundId, {
+            evaluation,
+            candidatePool: this.patchCandidate(round, finalist.candidateId, { heldOutEvaluation: heldOutCandidate }),
+          })
+        }
         accepted = this.passesHeldOut(round, evaluation, active.evolution.spec)
       }
 
@@ -832,6 +1037,8 @@ export class RefineService {
 
   private startDrive(roundId: string): void {
     const drive = this.drive(roundId)
+    const active = this.active.get(roundId)
+    if (active !== undefined) active.drive = drive
     this.drives.add(drive)
     void drive.finally(() => this.drives.delete(drive))
   }
@@ -1054,11 +1261,178 @@ export class RefineService {
     })
   }
 
-  private async transition(store: RefineStateStore, roundId: string, patch: Partial<RefinementRound>): Promise<RefinementRound> {
+  private async transition(store: RefineStateStore, roundId: string, patch: RoundPatch): Promise<RefinementRound> {
     const round = await this.requireRound(store, roundId)
-    const updated = { ...round, ...patch, updatedAt: now() }
+    const updated = { ...round, ...patch, updatedAt: now() } as RefinementRound & Record<string, unknown>
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === undefined) delete updated[key]
+    }
     await store.writeRound(updated)
     return updated
+  }
+
+  private async evaluateWithAttempt(
+    active: ActiveRound,
+    round: RefinementRound,
+    request: EvaluationRequest,
+    owner: RoundEvaluationAttempt['owner'],
+    settledPatch: (
+      current: RefinementRound,
+      evidence: EvaluationEvidence,
+    ) => Partial<RefinementRound> | Promise<Partial<RefinementRound>>,
+  ): Promise<{ round: RefinementRound; evidence: EvaluationEvidence }> {
+    const { evaluator, store } = active.evolution
+    const reservation = await evaluator.reserve?.(round, request)
+    let attempt: RoundEvaluationAttempt | undefined
+    if (reservation !== undefined) {
+      if (typeof reservation.provider !== 'string' || reservation.provider.length === 0
+        || typeof reservation.evalId !== 'string' || reservation.evalId.length === 0) {
+        throw new Error('evaluator returned an invalid evaluation reservation')
+      }
+      const current = await this.requireRound(store, round.roundId)
+      if ((current.evaluationAttempts ?? []).some(value => value.provider === reservation.provider && value.evalId === reservation.evalId)) {
+        throw new Error(`evaluation reservation was reused: ${reservation.provider}/${reservation.evalId}`)
+      }
+      attempt = {
+        provider: reservation.provider,
+        evalId: reservation.evalId,
+        phase: request.phase,
+        owner: { ...owner },
+        conditionId: request.condition.conditionId,
+        dataset: request.dataset,
+        requestedModelId: request.condition.model,
+        requestedCommit: request.harnessRef,
+        status: 'running',
+        startedAt: now(),
+      }
+      round = await this.transition(store, round.roundId, {
+        evaluationAttempts: [...(current.evaluationAttempts ?? []), attempt],
+      })
+    }
+
+    let evidence: EvaluationEvidence
+    try {
+      evidence = await evaluator.evaluate(round, request, active.abort.signal, reservation)
+      if (reservation !== undefined
+        && (evidence.provider !== reservation.provider || evidence.evalId !== reservation.evalId)) {
+        throw new Error(`evaluation evidence does not match reservation: ${reservation.provider}/${reservation.evalId}`)
+      }
+    } catch (error) {
+      if (attempt !== undefined) {
+        const current = await this.requireRound(store, round.roundId)
+        const status = active.abort.signal.aborted ? 'cancelled' as const : 'failed' as const
+        await this.transition(store, round.roundId, {
+          evaluationAttempts: (current.evaluationAttempts ?? []).map(value => value.provider === attempt!.provider && value.evalId === attempt!.evalId
+            ? {
+                ...value,
+                status,
+                completedAt: now(),
+                failure: {
+                  code: typeof (error as { code?: unknown }).code === 'string' ? (error as { code: string }).code : 'evaluation_failed',
+                  message: errorMessage(error),
+                },
+              }
+            : value),
+        })
+      }
+      throw error
+    }
+
+    let patch: Partial<RefinementRound>
+    try {
+      patch = await settledPatch(round, evidence)
+    } catch (error) {
+      if (attempt !== undefined) {
+        const current = await this.requireRound(store, round.roundId)
+        await this.transition(store, round.roundId, {
+          evaluationAttempts: (current.evaluationAttempts ?? []).map(value => value.provider === attempt!.provider && value.evalId === attempt!.evalId
+            ? { ...value, status: 'settled', completedAt: now() }
+            : value),
+        })
+      }
+      throw error
+    }
+    const current = await this.requireRound(store, round.roundId)
+    const evaluationAttempts = attempt === undefined ? current.evaluationAttempts : (current.evaluationAttempts ?? []).map(value => (
+      value.provider === attempt!.provider && value.evalId === attempt!.evalId
+        ? { ...value, status: 'settled' as const, completedAt: now() }
+        : value
+    ))
+    round = await this.transition(store, round.roundId, {
+      ...patch,
+      ...(evaluationAttempts === undefined ? {} : { evaluationAttempts }),
+    })
+    return { round, evidence }
+  }
+
+  private evaluationRequest(round: RefinementRound, attempt: RoundEvaluationAttempt): EvaluationRequest {
+    const condition = attempt.phase.startsWith('seed-') ? round.plan.seed : round.plan.heldOut
+    const dataset = attempt.phase.startsWith('seed-') ? round.seedTaskRef : round.heldOutRef
+    if (attempt.conditionId !== condition.conditionId || attempt.dataset !== dataset
+      || attempt.requestedModelId !== condition.model || attempt.requestedCommit !== attempt.owner.harnessRef) {
+      throw new Error(`evaluation attempt ${attempt.evalId} no longer matches its frozen condition`)
+    }
+    return { phase: attempt.phase, dataset, harnessRef: attempt.requestedCommit, condition }
+  }
+
+  private assertRepairedEvidence(attempt: RoundEvaluationAttempt, evidence: EvaluationEvidence): void {
+    if (evidence.provider !== attempt.provider || evidence.evalId !== attempt.evalId
+      || evidence.conditionId !== attempt.conditionId || evidence.dataset !== attempt.dataset
+      || evidence.requestedCommit !== attempt.requestedCommit || evidence.actualCommit !== attempt.owner.harnessRef) {
+      throw new Error(`repaired evaluation evidence does not match attempt ${attempt.evalId}`)
+    }
+  }
+
+  private async repairedEvidencePatch(
+    round: RefinementRound,
+    attempt: RoundEvaluationAttempt,
+    evidence: EvaluationEvidence,
+    spec: EvolutionSpec,
+  ): Promise<RoundPatch> {
+    if (attempt.phase === 'seed-baseline') {
+      const parentBaselines = [
+        ...(round.parentBaselines ?? []).filter(value => value.parentCandidateId !== attempt.owner.candidateId),
+        { parentCandidateId: attempt.owner.candidateId, parentHarnessRef: attempt.owner.harnessRef, evidence },
+      ]
+      return {
+        parentBaselines,
+        ...(attempt.owner.harnessRef === round.targetHarnessRef ? { baseline: evidence } : {}),
+      }
+    }
+    if (attempt.phase === 'seed-candidate') {
+      const candidate = round.candidatePool.find(value => value.candidateId === attempt.owner.candidateId)
+      if (candidate?.sealedVersion?.commitOid !== attempt.owner.harnessRef) throw new Error('repaired seed candidate owner is unavailable')
+      return {
+        candidatePool: this.patchCandidate(round, candidate.candidateId, {
+          seedEvaluation: evidence,
+          seedComparison: undefined,
+          metrics: undefined,
+          status: 'evaluating',
+          failure: undefined,
+        }),
+      }
+    }
+    if (round.evaluation === undefined) throw new Error('repaired held-out evaluation has no seed evaluation state')
+    if (attempt.phase === 'held-out-baseline') {
+      return { evaluation: { ...round.evaluation, heldOutBaseline: evidence } }
+    }
+    const candidate = round.candidatePool.find(value => value.candidateId === attempt.owner.candidateId)
+    if (candidate?.sealedVersion?.commitOid !== attempt.owner.harnessRef) throw new Error('repaired held-out candidate owner is unavailable')
+    const heldOutBaseline = round.evaluation.heldOutBaseline
+    if (heldOutBaseline === undefined) throw new Error('repaired held-out candidate has no paired baseline')
+    this.assertParity(heldOutBaseline, evidence, 'held-out')
+    const evaluation = {
+      ...round.evaluation,
+      heldOutCandidate: evidence,
+      heldOutPairedTrials: pairedTrials(heldOutBaseline, evidence),
+      promotionMetrics: await this.evaluateJudges(spec, evidence),
+      heldOutScoreDelta: evidence.primaryReward - heldOutBaseline.primaryReward,
+      requiredRegressions: round.evaluation.requiredRegressions + this.requiredRegressions(round, heldOutBaseline, evidence),
+    }
+    return {
+      evaluation,
+      candidatePool: this.patchCandidate(round, candidate.candidateId, { heldOutEvaluation: evidence, failure: undefined }),
+    }
   }
 
   private async requireRound(store: RefineStateStore, roundId: string): Promise<RefinementRound> {
@@ -1076,13 +1450,17 @@ export class RefineService {
   private patchCandidate(
     round: Readonly<RefinementRound>,
     candidateId: string,
-    patch: Partial<CandidateRecord>,
+    patch: CandidatePatch,
   ): CandidateRecord[] {
     let found = false
     const candidates = round.candidatePool.map(candidate => {
       if (candidate.candidateId !== candidateId) return candidate
       found = true
-      return { ...candidate, ...patch, candidateId: candidate.candidateId, roundId: candidate.roundId }
+      const updated = { ...candidate, ...patch, candidateId: candidate.candidateId, roundId: candidate.roundId } as CandidateRecord & Record<string, unknown>
+      for (const [key, value] of Object.entries(patch)) {
+        if (value === undefined) delete updated[key]
+      }
+      return updated
     })
     if (!found) throw new Error(`unknown candidate in round ${round.roundId}: ${candidateId}`)
     return candidates
