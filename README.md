@@ -138,8 +138,8 @@ for the extension contract.
 
 ## Roadmap
 
-Expand and evolve seed tasks, then use the resulting trajectories and rewards
-to continuously fine-tune and evaluate models.
+Expand and evolve seed tasks, then use the resulting trajectories and
+evaluation feedback to drive continuous model capability evolution.
 
 ## Documentation
 
