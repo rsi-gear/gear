@@ -190,6 +190,22 @@ describe('HitchCliEvaluator', () => {
     },
   )
 
+  it.each([
+    ['missing', ['task-1', 'task-2'], [{ taskId: 'task-1', attempt: 1 }], /missing frozen logical slots: task-2#1/u],
+    ['duplicate', ['task-1'], [{ taskId: 'task-1', attempt: 1 }, { taskId: 'task-1', attempt: 1 }], /duplicate logical slot: task-1#1/u],
+    ['out-of-range', ['task-1'], [{ taskId: 'task-1', attempt: 2 }], /outside frozen range 1\.\.1: task-1#2/u],
+  ] as Array<[string, string[], Array<{ taskId: string; attempt: number }>, RegExp]>)(
+    'rejects succeeded single-attempt evidence with %s slots',
+    async (_case, tasks, trials, message) => {
+      const { fixture, evaluator } = await setup('0.2.5', { attempts: 1, tasks, trials })
+      await expect(evaluator.evaluate(
+        round(fixture.root, fixture.championRef, fixture.manifest.digest),
+        request('seed', fixture.championRef),
+        new AbortController().signal,
+      )).rejects.toMatchObject({ code: 'invalid_hitch_result', message: expect.stringMatching(message) })
+    },
+  )
+
   it('reruns invalid tasks under the original eval id and loads repaired evidence', async () => {
     const { fixture, evaluator } = await setup()
     const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)

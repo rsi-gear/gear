@@ -338,15 +338,13 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       && (evidence.provider !== reservation.provider || evidence.evalId !== reservation.evalId)) {
       throw new HitchEvaluationError('Hitch result does not match the reserved evaluation identity', 'hitch_eval_identity_mismatch')
     }
-    if (request.condition.repetitions > 1) {
-      const inspection = await this.inspectEvaluation(
-        evidence.evalId,
-        round.workspaceRoot,
-        signal,
-        'hitch_eval_inspect_failed',
-      )
-      this.assertCompleteTrialSlots(inspection, evidence, request)
-    }
+    const inspection = await this.inspectEvaluation(
+      evidence.evalId,
+      round.workspaceRoot,
+      signal,
+      'hitch_eval_inspect_failed',
+    )
+    this.assertCompleteTrialSlots(inspection, evidence, request)
     return evidence
   }
 

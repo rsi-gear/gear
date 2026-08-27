@@ -335,6 +335,8 @@ Hitch 子进程沿用现有 SIGTERM → `terminationGraceMs` → SIGKILL 行为�
 
 repair 从 `repair-completed` durable write handoff 到 `ActiveRound` 的临界区不得包含 `await`。write 返回后的关闭检查与 `active.set()` 必须同步连续执行：若 dispose 已设置标记或 abort repair，保留 `repair-completed` 供下次启动恢复；若 dispose 在 `active.set()` 之后开始，则它必须能在 active scan 中看到并取消该 drive。
 
+`ActiveRound.abort` 还必须作为整个 drive 的父取消信号：drive 在恢复入口、阶段边界和 commit 前检查该 signal，新建 candidate execution 时把它与 execution-local signal 组合。dispose 扫描 active 后不得再启动新的 candidate execution、Meta wake 或 population/champion commit；若尚未消费 `repair-completed` intent，则保留该 intent 供下次启动恢复。
+
 因 dispose 终止的 rerun 记录为可重试的 attempt `failed`，建议 code `evaluation_rerun_aborted`，message 保留 `RefineService disposed`。
 
 ### 5.7 Startup recovery
@@ -344,6 +346,8 @@ repair 从 `repair-completed` durable write handoff 到 `ActiveRound` 的临界�
 - `repairing-evaluation + repair-completed + matching evidence`：保留状态并重建持有同一 round lock 的 `ActiveRound`；
 - 旧版本可能留下的 `repairing-evaluation + rerunning + matching evidence`：单次原子写迁移为 `repair-completed + completedAt`，随后按上一条继续；
 - pending resume 恢复必须验证 attempt/evidence identity，并由 resumed drive 的首次 transition 改为 `settled`。
+
+存在多个 pending resume 时，`initialize()` 必须先为它们全部获取 runtime/lock 并登记 active，全部成功后才能启动任何 drive。中途失败必须释放此前已登记的 active/lock 并 dispose 已创建的 runtime，不能在插件初始化失败后留下后台 drive。
 
 对其余无 commit intent 的非 terminal round，必须先生成完整 next-round value，再用单次 `writeRound()` 原子替换：
 
@@ -515,33 +519,48 @@ Gear 的 `EvaluationRerunResult` parser 应接受 Hitch 新增的 slot arrays，
    - succeeded result 分别缺少 slot、重复 slot、包含 attempt 3；
    - Gear 根据 inspected frozen plan 全部拒绝，evidence 不进入 round。
 
-4. **dispose aborts and waits for rerun**
+4. **single-attempt evidence 同样 fails closed**
+   - frozen repetitions 为 1；
+   - succeeded result 分别缺少 planned task、重复 slot、包含 attempt 2；
+   - Gear 仍读取 frozen plan 并全部拒绝。
+
+5. **dispose aborts and waits for rerun**
    - fake rerun 阻塞并观察 signal；
    - `dispose()` abort 后必须等待 fake evaluator settle；
    - 最终 round/attempt 均 `failed`，lock 可再次获取。
 
-5. **dispose blocks post-write repair handoff**
+6. **dispose blocks post-write repair handoff**
    - 阻塞 `repair-completed` durable write，并在 write 返回前启动 dispose；
    - repair completion settle 后 dispose 有界完成，不出现新的 active drive；
    - round 保留 `repair-completed + evidence`，lock 已释放，供下次启动恢复。
 
-6. **restart distinguishes interrupted and completed repair**
+7. **dispose cancels an already handed-off drive**
+   - active 已登记，但 resumed drive 的第一次 durable transition 尚未开始；
+   - dispose 后不得创建 candidate execution，且保留 `repair-completed + evidence`；
+   - dispose 有界完成并释放 lock。
+
+8. **restart distinguishes interrupted and completed repair**
    - 构造无 evidence 的 `repairing-evaluation + rerunning`，initialize 后 round/attempt 均 `failed`，含 recovery codes；
    - 分别构造 `repair-completed + evidence` 和 legacy `rerunning + evidence` 崩溃快照；
    - initialize 不抛错，legacy 快照先原子迁移，随后两者都继续 drive，attempt 最终 `settled`；
    - evidence identity 和 evalId 保持不变，不再调用 Hitch rerun。
 
-7. **non-repairable candidate shortage remains no-change**
+9. **startup pending resume preparation is all-or-nothing**
+   - 构造两个 pending resume，并让第二个 runtime 初始化失败；
+   - initialize 失败后第一个不得启动 drive，所有 active/lock/runtime 都已清理；
+   - durable pending resume intent 保持不变。
+
+10. **non-repairable candidate shortage remains no-change**
    - candidate generation/compiler 失败但没有 failed Hitch attempt；
    - round 仍为 `rejected/no-change`。
 
-8. **stale or committed round cannot reopen**
+11. **stale or committed round cannot reopen**
    - parent population changed、champion changed、commitIntent exists 均无 mutation、无 Hitch call。
 
-9. **same round permits only one repair job**
+12. **same round permits only one repair job**
    - 两个并发请求仅一个进入 evaluator，另一个稳定失败；不泄漏 lock/job。
 
-10. 保留 baseline rerun success，并补 held-out 与 seed-candidate regression，证明四种 phase 共用 identity guard。
+13. 保留 baseline rerun success，并补 held-out 与 seed-candidate regression，证明四种 phase 共用 identity guard。
 
 ### 8.3 Gear HitchCliEvaluator
 
