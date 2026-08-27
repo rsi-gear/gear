@@ -396,7 +396,9 @@ export class RefineStateStore {
       'rejected-for-substrate', 'failed',
     ])
     if (typeof round.status !== 'string' || !statuses.has(round.status)) throw new TypeError('round status is invalid')
-    if (round.source !== 'command' && round.source !== 'target' && round.source !== 'api') throw new TypeError('round source is invalid')
+    if (round.source !== 'command' && round.source !== 'target' && round.source !== 'api' && round.source !== 'skill') {
+      throw new TypeError('round source is invalid')
+    }
     for (const [name, field] of Object.entries({
       workspaceRoot: round.workspaceRoot,
       createdAt: round.createdAt,
@@ -497,6 +499,26 @@ export class RefineStateStore {
           throw new TypeError('round candidate Meta checkpoint is invalid')
         }
       }
+      if (candidate.generationAttempts !== undefined) {
+        if (!Array.isArray(candidate.generationAttempts) || candidate.generationAttempts.length === 0) {
+          throw new TypeError('round candidate generation attempts are invalid')
+        }
+        for (const [index, attempt] of candidate.generationAttempts.entries()) {
+          const hasValidFailure = attempt.failure !== undefined
+            && typeof attempt.failure.phase === 'string' && attempt.failure.phase.length > 0
+            && typeof attempt.failure.message === 'string' && attempt.failure.message.length > 0
+          if (attempt.attempt !== index + 1
+            || typeof attempt.startedAt !== 'string' || attempt.startedAt.length === 0
+            || attempt.workspaceId !== undefined && (typeof attempt.workspaceId !== 'string' || attempt.workspaceId.length === 0)
+            || attempt.metaSessionId !== undefined && (typeof attempt.metaSessionId !== 'string' || attempt.metaSessionId.length === 0)
+            || attempt.status === 'running' && (attempt.completedAt !== undefined || attempt.failure !== undefined)
+            || attempt.status === 'succeeded' && (typeof attempt.completedAt !== 'string' || attempt.completedAt.length === 0 || attempt.failure !== undefined)
+            || attempt.status === 'failed' && (typeof attempt.completedAt !== 'string' || attempt.completedAt.length === 0 || !hasValidFailure)
+            || !['running', 'succeeded', 'failed'].includes(attempt.status)) {
+            throw new TypeError('round candidate generation attempt is invalid')
+          }
+        }
+      }
       if (candidate.diff !== undefined && (candidate.diff.parentRef !== candidate.parentHarnessRef
         || !/^sha256:[0-9a-f]{64}$/u.test(candidate.diff.patchDigest)
         || !Number.isSafeInteger(candidate.diff.totalBytes) || candidate.diff.totalBytes < 0
@@ -556,6 +578,10 @@ export class RefineStateStore {
       }
       if (candidate.heldOutEvaluation !== undefined) this.validateEvaluationEvidence(candidate.heldOutEvaluation, 'candidate held-out evaluation')
       if (candidate.metrics !== undefined && !validMetricSet(candidate.metrics)) throw new TypeError('candidate metrics are invalid')
+    }
+    if (['accepted', 'rejected', 'rejected-for-substrate', 'failed'].includes(round.status)
+      && round.candidatePool.some(candidate => candidate.generationAttempts?.some(attempt => attempt.status === 'running'))) {
+      throw new TypeError('terminal round cannot contain a running candidate generation attempt')
     }
     if (round.parentAllocations !== undefined) {
       if (round.parentAllocations.length !== round.candidatePool.length) throw new TypeError('round parent allocation is incomplete')

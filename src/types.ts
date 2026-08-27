@@ -118,13 +118,38 @@ export interface DshMetaAgentSpec {
   sampling: MetaSamplingConfig
 }
 
+export interface GenericMetaAgentSpec {
+  runtime: {
+    type: string
+    version: string
+    integrity: string
+  }
+  preset: {
+    id: string
+    digest: string
+    resources: Array<{ logicalPath: string; kind: string; digest: string }>
+  }
+  model: {
+    provider: string
+    model: string
+    maxTokens?: number
+  }
+  sampling: MetaSamplingConfig
+}
+
+export type MetaAgentSpec = DshMetaAgentSpec | GenericMetaAgentSpec
+
 export interface CandidateGenerationSpec {
   strategy: ComponentRef<unknown>
   maxCandidates: number
   budget: {
     maxModelRequests?: number
     maxTokens?: number
-    timeoutMs: number
+    /** Legacy round-wide timeout retained for immutable EvolutionSpec compatibility. */
+    timeoutMs?: number
+    attemptTimeoutMs?: number
+    maxAttemptsPerCandidate?: number
+    roundTimeoutMs?: number
   }
 }
 
@@ -147,7 +172,7 @@ export interface EvolutionSpec {
     seed: ArtifactRef
     heldOut: ArtifactRef
   }
-  metaAgent: DshMetaAgentSpec
+  metaAgent: MetaAgentSpec
   candidateGeneration: CandidateGenerationSpec
   rollout: RolloutSpec
   evaluation: {
@@ -456,8 +481,11 @@ export interface RoundEvaluation {
 export interface MetaAttribution {
   evolutionId: EvolutionId
   sessionId: string
-  requestHeaderSeq: number
-  proposalEventSeq: number
+  requestHeaderSeq?: number
+  proposalEventSeq?: number
+  source?:
+    | { kind: 'dsh-events'; requestHeaderSeq: number; proposalEventSeq: number }
+    | { kind: 'skill-lease'; harness: string; clientId: string; leaseId: string }
   provider?: string
   model?: string
   maxTokens?: number
@@ -512,6 +540,16 @@ export interface SealedCandidateVersion {
   immutableRef: string
 }
 
+export interface CandidateGenerationAttempt {
+  attempt: number
+  status: 'running' | 'succeeded' | 'failed'
+  startedAt: string
+  completedAt?: string
+  workspaceId?: string
+  metaSessionId?: string
+  failure?: { phase: string; message: string }
+}
+
 export interface CandidateRecord {
   candidateId: string
   roundId: string
@@ -531,6 +569,7 @@ export interface CandidateRecord {
   seedComparison?: CandidateSeedComparison
   heldOutEvaluation?: EvaluationEvidence
   metrics?: MetricSet
+  generationAttempts?: CandidateGenerationAttempt[]
   failure?: { phase: string; message: string }
   status: 'generating' | 'ready' | 'evaluating' | 'selected' | 'discarded' | 'failed'
 }
@@ -657,7 +696,7 @@ export interface RefinementRound {
   roundId: string
   workspaceRoot: string
   status: RoundStatus
-  source: 'command' | 'target' | 'api'
+  source: 'command' | 'target' | 'api' | 'skill'
   createdAt: string
   updatedAt: string
   metaHarnessRef: MetaHarnessRef

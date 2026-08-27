@@ -1,5 +1,9 @@
 # DSH Self-Evolving Harness Plugin Spec
 
+> 本文保留 DSH native adapter 的实现规格。Harness-neutral Meta 入口、独立
+> `gear-refine serve` 和通用 Refine Skill 见
+> [Harness-neutral Refine Skill 与独立控制面](harness-agnostic-refine-skill.md)。
+
 - 状态：Implemented v0.6
 - 目标运行时：DeepSeek Harness 0.1.0-rc.8
 - 评测后端：Hitch 0.2.x CLI + Harbor
@@ -146,6 +150,8 @@ queued
 `decline_candidate` 直接形成 `rejected + no-change`。seed gate未通过不运行 held-out。accepted candidate通过 parent CAS更新该 evolution champion；并发或 parent变化时失败关闭。
 
 一个 round可以同时改变多个 semantic surface。`--focus` 只是 advisory，不限制文件或要求每个 surface单独提交。multi-round串行运行，每轮使用新 worktree；业务拒绝/no-change继续，基础设施失败终止 batch。
+
+Meta proposal 超时属于可重试的基础设施失败。控制器在同一 candidate、同一 round 内复用 frozen parent、baseline evidence 和 parent Meta checkpoint，以新的 child session/worktree 干净重试；重试不增加 `roundIndex`。若重试耗尽并导致可选 candidate 少于 `survivors`，round 进入 `failed` 且 batch 停止，不得折叠为 `rejected/no-change`。
 
 ## 8. 命令语义
 

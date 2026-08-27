@@ -48,6 +48,43 @@ describe('EvolutionRegistryStore', () => {
     await expect(registry.createEvolution({ spec: old as never, champion: champion() })).rejects.toThrow()
   })
 
+  it('continues to accept immutable specs with the legacy generation timeout', async () => {
+    const root = join(process.env.TMPDIR ?? '/tmp', `refine-legacy-budget-${crypto.randomUUID()}`)
+    roots.push(root)
+    const registry = new EvolutionRegistryStore(root)
+    const legacy = spec('evo-legacy-budget')
+    legacy.candidateGeneration.budget = { timeoutMs: 300_000 }
+    await registry.createEvolution({ spec: legacy, champion: champion() })
+    await expect(registry.requireSpec(legacy.evolutionId)).resolves.toMatchObject({
+      candidateGeneration: { budget: { timeoutMs: 300_000 } },
+    })
+  })
+
+  it('persists a harness-neutral skill Meta identity without treating it as DSH', async () => {
+    const root = join(process.env.TMPDIR ?? '/tmp', `refine-skill-meta-${crypto.randomUUID()}`)
+    roots.push(root)
+    const registry = new EvolutionRegistryStore(root)
+    const external = spec('evo-skill-meta')
+    external.metaAgent = {
+      runtime: { type: 'claude-code', version: '1.0.0', integrity: `sha256:${'1'.repeat(64)}` },
+      preset: {
+        id: 'refine',
+        digest: `sha256:${'2'.repeat(64)}`,
+        resources: [{ logicalPath: 'SKILL.md', kind: 'skill', digest: `sha256:${'2'.repeat(64)}` }],
+      },
+      model: { provider: 'anthropic', model: 'claude-test' },
+      sampling: {},
+    }
+    await registry.createEvolution({ spec: external, champion: champion() })
+    await expect(registry.requireSpec(external.evolutionId)).resolves.toMatchObject({
+      metaAgent: { runtime: { type: 'claude-code' }, preset: { id: 'refine' } },
+    })
+
+    const invalid = spec('evo-invalid-skill-meta')
+    invalid.metaAgent = { ...external.metaAgent, runtime: { ...external.metaAgent.runtime, integrity: 'not-a-digest' } }
+    await expect(registry.createEvolution({ spec: invalid, champion: champion() })).rejects.toThrow(/Meta Agent identity/)
+  })
+
   it('rejects a component placed in the wrong extension slot', async () => {
     const root = join(process.env.TMPDIR ?? '/tmp', `refine-kind-${crypto.randomUUID()}`)
     roots.push(root)

@@ -27,6 +27,16 @@ export interface Config {
   metaPreset: string
   metaModel: AgentOptions
   metaSampling: MetaSamplingConfig
+  metaAdapter: {
+    kind: 'dsh' | 'skill'
+    runtimeType?: string
+    runtimeVersion?: string
+    runtimeIntegrity?: string
+    harnessId?: string
+    harnessDigest?: string
+    socketPath?: string
+    maxRequestBytes: number
+  }
   dshBaseRef: string
   toolchainRef: string
   sandboxProfileRef: string
@@ -58,7 +68,11 @@ export interface Config {
     maxCandidates: number
     maxModelRequests?: number
     maxTokens?: number
-    timeoutMs: number
+    /** Deprecated compatibility alias for the former single round-wide budget. */
+    timeoutMs?: number
+    attemptTimeoutMs?: number
+    maxAttemptsPerCandidate?: number
+    roundTimeoutMs?: number
   }
   selection: {
     survivors: number
@@ -102,6 +116,16 @@ export const ConfigSchema: Schema<Config> = Schema.object({
   metaSampling: Schema.object({
     temperature: Schema.number(),
   }).default({} as never),
+  metaAdapter: Schema.object({
+    kind: Schema.union(['dsh', 'skill'] as const).default('dsh'),
+    runtimeType: Schema.string(),
+    runtimeVersion: Schema.string(),
+    runtimeIntegrity: Schema.string(),
+    harnessId: Schema.string(),
+    harnessDigest: Schema.string(),
+    socketPath: Schema.string(),
+    maxRequestBytes: Schema.number().default(1024 * 1024),
+  }).default({ kind: 'dsh', maxRequestBytes: 1024 * 1024 } as never),
   dshBaseRef: Schema.string().required(),
   toolchainRef: Schema.string().required(),
   sandboxProfileRef: Schema.string().required(),
@@ -148,8 +172,16 @@ export const ConfigSchema: Schema<Config> = Schema.object({
     maxCandidates: Schema.number().default(1),
     maxModelRequests: Schema.number(),
     maxTokens: Schema.number(),
-    timeoutMs: Schema.number().default(300_000),
-  }).default({ maxCandidates: 1, timeoutMs: 300_000 } as never),
+    timeoutMs: Schema.number(),
+    attemptTimeoutMs: Schema.number(),
+    maxAttemptsPerCandidate: Schema.number(),
+    roundTimeoutMs: Schema.number(),
+  }).default({
+    maxCandidates: 1,
+    attemptTimeoutMs: 900_000,
+    maxAttemptsPerCandidate: 2,
+    roundTimeoutMs: 1_800_000,
+  } as never),
   selection: Schema.object({
     survivors: Schema.number().default(1),
     timeoutMs: Schema.number().default(300_000),

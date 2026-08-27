@@ -3,10 +3,10 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { CandidateWorkspaceManager } from '../../src/candidate/workspace.js'
 import { HitchEvaluationError } from '../../src/evaluator/hitch-cli.js'
-import { HarnessBuilder, NoopHarnessCompiler } from '../../src/harness/builder.js'
+import { HarnessBuilder, NoopHarnessCompiler, SubstrateExpansionError } from '../../src/harness/builder.js'
 import { RefineService } from '../../src/refine/service.js'
 import { EvolutionRegistryStore } from '../../src/state/evolution.js'
-import type { EvaluationPhase, EvaluationRequest, EvaluationRerunResult, EvaluationRerunSelector, EvaluationReservation, HitchEvaluationEvidence, MetaAttribution, RefineEvaluator, RefinementRound, RoundEvaluationAttempt } from '../../src/types.js'
+import type { EvaluationPhase, EvaluationRequest, EvaluationRerunResult, EvaluationRerunSelector, EvaluationReservation, HitchEvaluationEvidence, MetaAttribution, MetaCheckpointRef, RefineEvaluator, RefinementRound, RoundEvaluationAttempt } from '../../src/types.js'
 import { createGitHarnessFixture } from '../helpers/git-fixture.js'
 import { builtinComponentRef, componentRef } from '../../src/evolution/components.js'
 import { evolutionSpec } from '../helpers/research-fixture.js'
@@ -16,6 +16,7 @@ afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, {
 
 class FakeMeta {
   wakes: string[] = []
+  forks: MetaCheckpointRef[] = []
   private child = 0
   private readonly agents = new Map<string, { id: string }>()
   constructor(private readonly evolutionId: string, readonly store: import('../../src/state/store.js').RefineStateStore, private readonly specDigest: string) {}
@@ -31,7 +32,8 @@ class FakeMeta {
     const id = sessionId ?? String((await this.agent()).id)
     return { sourceSessionId: id, eventCount: 0, prefixDigest: `sha256:${'0'.repeat(64)}` }
   }
-  async fork() {
+  async fork(checkpoint: MetaCheckpointRef) {
+    this.forks.push(structuredClone(checkpoint))
     const id = `meta-${this.evolutionId}-candidate-${++this.child}`
     const agent = { id }
     this.agents.set(id, agent)
@@ -181,7 +183,7 @@ class FakeEvaluator implements RefineEvaluator {
 }
 
 async function eventually<T>(read: () => Promise<T>, accept: (value: T) => boolean): Promise<T> {
-  const deadline = Date.now() + 8_000
+  const deadline = Date.now() + 15_000
   do {
     const value = await read()
     if (accept(value)) return value
@@ -194,9 +196,11 @@ async function setup(
   candidateScore = 0.8,
   mismatchSeedCondition = false,
   maxCandidates = 1,
-  generationTimeoutMs = 300_000,
+  generationAttemptTimeoutMs = 300_000,
   survivors = 1,
   heldOutDelta = 0,
+  maxGenerationAttempts = 2,
+  generationRoundTimeoutMs = generationAttemptTimeoutMs * maxGenerationAttempts * maxCandidates,
 ) {
   const git = await createGitHarnessFixture()
   roots.push(git.root)
@@ -226,7 +230,11 @@ async function setup(
     candidateGeneration: {
       ...defaults.candidateGeneration,
       maxCandidates,
-      budget: { ...defaults.candidateGeneration.budget, timeoutMs: generationTimeoutMs },
+      budget: {
+        attemptTimeoutMs: generationAttemptTimeoutMs,
+        maxAttemptsPerCandidate: maxGenerationAttempts,
+        roundTimeoutMs: generationRoundTimeoutMs,
+      },
     },
     rollout: defaults.rollout,
     evaluation: defaults.evaluation, selection: { ...defaults.selection, survivors },
@@ -1334,7 +1342,7 @@ describe('RefineService evolution workspaces', () => {
     await service.dispose()
   })
 
-  it('rejects proposal usage budgets that DSH cannot verify instead of recording them as effective', async () => {
+  it('rejects proposal usage budgets that the Meta harness adapter cannot verify instead of recording them as effective', async () => {
     const { service } = await setup()
     service.options.candidateGeneration.budget.maxModelRequests = 2
     await expect(service.admit('api')).rejects.toThrow(/aggregate proposal usage/)
@@ -1342,15 +1350,155 @@ describe('RefineService evolution workspaces', () => {
     await service.dispose()
   })
 
-  it('enforces the immutable candidate generation timeout and cleans up the workspace', async () => {
-    const { service } = await setup(0.8, false, 1, 50)
-    const admission = await service.admit('api')
-    const terminal = await eventually(
-      () => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId),
-      value => value?.status === 'rejected',
+  it('retries a timed-out candidate in the same round with a fresh workspace', async () => {
+    const { service, evaluator, metas } = await setup(0.8, false, 1, 500, 1, 0, 2, 5_000)
+    const admission = await service.admit('api', { rounds: 2 })
+    const first = await editing(service, admission.evolutionId, admission.roundId)
+    const firstWorkspaceId = service.activeEntry(first.roundId)?.workspace?.workspaceId
+    const firstSessionId = first.candidatePool[0]?.metaSessionId
+    if (firstWorkspaceId === undefined || firstSessionId === undefined) throw new Error('first generation attempt is unavailable')
+
+    const store = service.registry.stateStore(admission.evolutionId)
+    const retried = await eventually(
+      () => store.readRound(admission.roundId) as Promise<RefinementRound>,
+      value => {
+        const retrySessionId = value?.candidatePool[0]?.metaSessionId
+        const retryWorkspaceId = value === undefined ? undefined : service.activeEntry(value.roundId)?.workspace?.workspaceId
+        return value?.status === 'candidate-editing'
+          && retrySessionId !== undefined && retrySessionId !== firstSessionId
+          && retryWorkspaceId !== undefined && retryWorkspaceId !== firstWorkspaceId
+      },
     )
-    expect(terminal?.candidatePool[0]?.failure?.message).toMatch(/candidate generation exceeded its 50ms round budget/)
+    expect(await store.listRounds()).toHaveLength(1)
+    await finalize(service, retried)
+    const terminal = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'accepted')
+    expect(terminal?.roundIndex).toBe(1)
+    expect(terminal?.candidatePool[0]?.generationAttempts).toMatchObject([
+      { attempt: 1, status: 'failed', failure: { phase: 'candidate-generation' } },
+      { attempt: 2, status: 'succeeded' },
+    ])
+    const attempts = terminal?.candidatePool[0]?.generationAttempts
+    expect(attempts?.[0]?.workspaceId).not.toBe(attempts?.[1]?.workspaceId)
+    expect(attempts?.[0]?.metaSessionId).not.toBe(attempts?.[1]?.metaSessionId)
+    expect(metas.get(admission.evolutionId)?.forks).toEqual([
+      terminal?.candidatePool[0]?.parentCheckpoint,
+      terminal?.candidatePool[0]?.parentCheckpoint,
+    ])
+    expect(evaluator.calls.filter(phase => phase === 'seed-baseline')).toHaveLength(1)
+    await service.dispose()
+  })
+
+  it('enforces the attempt deadline while Meta fork is still pending', async () => {
+    const { service, evaluator, metas } = await setup(0.8, false, 1, 40, 1, 0, 1, 100)
+    const baselineGate = Promise.withResolvers<void>()
+    const evaluate = evaluator.evaluate.bind(evaluator)
+    evaluator.evaluate = async (...args) => {
+      await baselineGate.promise
+      return evaluate(...args)
+    }
+    const admission = await service.admit('api')
+    const meta = metas.get(admission.evolutionId)
+    if (meta === undefined) throw new Error('Meta fixture is unavailable')
+    meta.fork = async () => new Promise<never>(() => {})
+    baselineGate.resolve()
+
+    const store = service.registry.stateStore(admission.evolutionId)
+    const terminal = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
+    expect(terminal?.candidatePool[0]?.generationAttempts).toMatchObject([
+      { attempt: 1, status: 'failed', failure: { message: expect.stringMatching(/40ms attempt budget/) } },
+    ])
     await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
     await service.dispose()
+  })
+
+  it('continues with a successful sibling when another candidate times out', async () => {
+    const { service } = await setup(0.8, false, 2, 500, 1, 0, 1, 5_000)
+    const admission = await service.admit('api')
+    const first = await editing(service, admission.evolutionId, admission.roundId)
+    const firstCandidateId = first.candidatePool.find(candidate => candidate.metaSessionId !== undefined)?.candidateId
+    if (firstCandidateId === undefined) throw new Error('first sibling is unavailable')
+    const store = service.registry.stateStore(admission.evolutionId)
+    const second = await eventually(
+      () => store.readRound(admission.roundId) as Promise<RefinementRound>,
+      value => value?.status === 'candidate-editing'
+        && value.candidatePool.some(candidate => candidate.candidateId !== firstCandidateId
+          && candidate.metaSessionId !== undefined
+          && service.activeEntry(value.roundId)?.workspace?.workspaceId === candidate.workspaceId),
+    )
+    await finalize(service, second)
+    const terminal = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'accepted')
+    expect(terminal?.candidatePool.find(candidate => candidate.candidateId === firstCandidateId)).toMatchObject({
+      status: 'failed', failure: { phase: 'candidate-generation' },
+    })
+    expect(terminal?.candidatePool.filter(candidate => candidate.status === 'selected')).toHaveLength(1)
+    await service.dispose()
+  })
+
+  it('preserves rejected-for-substrate instead of reporting retry exhaustion', async () => {
+    const { service } = await setup()
+    service.builder.finalizeWorkspace = async () => {
+      throw new SubstrateExpansionError('candidate requires a fixed substrate change')
+    }
+    const admission = await service.admit('api')
+    const round = await editing(service, admission.evolutionId, admission.roundId)
+    await finalize(service, round)
+    const terminal = await eventually(
+      () => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId),
+      value => value?.status === 'rejected-for-substrate',
+    )
+    expect(terminal?.decision).toBe('rejected-for-substrate')
+    expect(terminal?.failure).toMatchObject({
+      phase: 'rejected-for-substrate', message: expect.stringMatching(/fixed substrate change/),
+    })
+    await service.dispose()
+  })
+
+  it('fails the round and stops the batch after candidate generation retries are exhausted', async () => {
+    const { service } = await setup(0.8, false, 1, 40, 1, 0, 2, 200)
+    const admission = await service.admit('api', { rounds: 2 })
+    const store = service.registry.stateStore(admission.evolutionId)
+    const terminal = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
+    expect(terminal?.decision).toBeUndefined()
+    expect(terminal?.failure).toMatchObject({ phase: 'candidate-generation' })
+    expect(terminal?.candidatePool[0]?.generationAttempts).toHaveLength(2)
+    expect(terminal?.candidatePool[0]?.generationAttempts?.every(attempt => attempt.status === 'failed')).toBe(true)
+    expect(await store.listRounds()).toHaveLength(1)
+    await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
+    await service.dispose()
+  })
+
+  it('settles a running candidate generation attempt when recovering after restart', async () => {
+    const { service, evaluator, registry } = await setup()
+    const admission = await service.admit('api')
+    await editing(service, admission.evolutionId, admission.roundId)
+    const store = registry.stateStore(admission.evolutionId)
+    await service.dispose()
+    expect(await store.readRound(admission.roundId)).toMatchObject({
+      status: 'candidate-editing',
+      candidatePool: [{ generationAttempts: [{ status: 'running' }] }],
+    })
+
+    const recovering = new RefineService(
+      registry,
+      service.builder,
+      service.workspaceManager,
+      (spec, digest, runtimeStore) => new FakeMeta(spec.evolutionId, runtimeStore, digest) as never,
+      evaluator,
+      service.options,
+      service.components,
+    )
+    await recovering.initialize()
+    expect(await store.readRound(admission.roundId)).toMatchObject({
+      status: 'failed',
+      failure: { phase: 'recovery' },
+      candidatePool: [{
+        status: 'failed',
+        generationAttempts: [{
+          status: 'failed', completedAt: expect.any(String),
+          failure: { phase: 'candidate-generation', message: 'control plane restarted during candidate generation' },
+        }],
+      }],
+    })
+    await recovering.dispose()
   })
 })

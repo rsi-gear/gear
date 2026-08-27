@@ -100,6 +100,12 @@ dsh plugin --profile web remove dsh-plugin-refine
 
 ## 4. 创建固定 Meta Agent preset
 
+本节只适用于 `metaAdapter.kind: dsh` 的 native Meta 模式。若 Meta Agent 来自
+Codex、Claude Code 或另一个 Harness，请改用
+[Harness-neutral Refine Skill 与独立控制面](harness-agnostic-refine-skill.md)；
+DSH plugin 也可以只承载 Gear Core，并通过 `metaAdapter.kind: skill` 开放本地
+skill socket。
+
 插件不会从 candidate harness 加载 Meta Agent 的 persona。部署方必须在 DSH home 的用户 preset 根目录中创建独立的 `refine-meta` preset：
 
 ```text
@@ -192,6 +198,8 @@ order: 50
     stateRoot: /srv/dsh/refine-state
 
     metaPreset: refine-meta
+    metaAdapter:
+      kind: dsh
     metaModel:
       provider: deepseek-official
       model: deepseek-v4-flash
@@ -234,7 +242,9 @@ order: 50
 
     candidateGeneration:
       maxCandidates: 1
-      timeoutMs: 300000
+      attemptTimeoutMs: 900000
+      maxAttemptsPerCandidate: 2
+      roundTimeoutMs: 1800000
 
     selection:
       survivors: 1
@@ -279,7 +289,10 @@ order: 50
 | `metaModel` | Meta Agent 使用的 DSH provider、model 和输出预算 |
 | `metaSampling.temperature` | 进入真实 DSH `agent/request` 的 Meta temperature；有效值会从 request header 归因 |
 | `candidateGeneration.maxCandidates` | 每轮从相同 Meta checkpoint 生成的独立候选数 |
-| `candidateGeneration.timeoutMs` | Meta 候选生成的真实超时；超时会中止 round 并清理 workspace |
+| `candidateGeneration.attemptTimeoutMs` | 单次 Meta 候选生成尝试的超时；默认 900000ms |
+| `candidateGeneration.maxAttemptsPerCandidate` | 每个 candidate 在同一 round 内允许的独立尝试次数；重试复用 parent、baseline 和 parent checkpoint，但使用新的 Agent/workspace |
+| `candidateGeneration.roundTimeoutMs` | 整个 round 的候选生成总预算，覆盖全部 candidate 和 retry；默认 1800000ms |
+| `candidateGeneration.timeoutMs` | 旧 profile 兼容字段；映射为一次尝试、无自动重试的新建 EvolutionSpec 不再写入该字段 |
 | `candidateGeneration.maxModelRequests/maxTokens` | 预留的总量预算；当前 DSH 无聚合 usage evidence，配置时会明确拒绝 |
 | `selection.survivors` | 每轮必须保留进下一代 population 的候选数，不得超过 `maxCandidates` |
 | `selection.timeoutMs` | 整个异步 candidate assessment 的超时，包括轨迹读取和可选 verifier 调用 |

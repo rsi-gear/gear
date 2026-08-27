@@ -1,5 +1,4 @@
 import { readFile } from 'node:fs/promises'
-import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import type { HarnessBuilder } from './harness/builder.js'
 import type { RefineService } from './refine/service.js'
@@ -54,16 +53,21 @@ export class RefineCapabilities {
   private readonly maxReadBytes: number
   private readonly maxTrajectoryPageBytes: number
   private readonly secretValues: readonly string[]
+  private readonly options: CapabilityOptions
 
   constructor(
     private readonly service: RefineService,
     private readonly builder: HarnessBuilder,
-    private readonly resolveAgent: (sessionId: string) => Agent | undefined,
-    private readonly options: CapabilityOptions = {},
+    optionsOrLegacyResolver: CapabilityOptions | ((sessionId: string) => unknown) = {},
+    legacyOptions: CapabilityOptions = {},
   ) {
-    this.maxReadBytes = options.maxReadBytes ?? 128 * 1024
-    this.maxTrajectoryPageBytes = options.maxTrajectoryPageBytes ?? this.maxReadBytes
-    this.secretValues = (options.secretValues ?? []).filter(value => value.length > 0)
+    // The resolver argument was part of the DSH-only API. Keep accepting it so
+    // existing plugin consumers can upgrade while attribution moves behind the
+    // harness-neutral MetaSessionController contract.
+    this.options = typeof optionsOrLegacyResolver === 'function' ? legacyOptions : optionsOrLegacyResolver
+    this.maxReadBytes = this.options.maxReadBytes ?? 128 * 1024
+    this.maxTrajectoryPageBytes = this.options.maxTrajectoryPageBytes ?? this.maxReadBytes
+    this.secretValues = (this.options.secretValues ?? []).filter(value => value.length > 0)
   }
 
   async call(
@@ -278,14 +282,12 @@ export class RefineCapabilities {
       return { ok: true, summary: await this.service.workspaceManager.preflight(workspace.workspaceId, signal) }
     }
     if (method === 'candidate.finalize' || method === 'candidate.decline') {
-      const agent = this.resolveAgent(sessionId)
-      if (agent === undefined) throw new Error('meta session is not live')
       const finalization = method === 'candidate.decline' ? null : this.finalization(args)
       const decline = method === 'candidate.decline'
         ? { rationale: this.string(args, 'rationale'), evidenceRefs: this.optionalStrings(args, 'evidenceRefs') ?? [] }
         : undefined
       const citedRefs = finalization?.evidenceRefs ?? decline?.evidenceRefs ?? []
-      const attribution = meta.proposalAttribution(activeRoundId, agent, finalization)
+      const attribution = await meta.proposalAttribution(activeRoundId, sessionId, finalization)
       const evidence = meta.proposalEvidenceAudit(activeRoundId, sessionId, citedRefs)
       const diff = await this.service.submitFinalization(evolutionId, activeRoundId, finalization, decline, attribution, evidence)
       return publicJson({ accepted: true, evolutionId, roundId: activeRoundId, ...(diff === undefined ? {} : { diff }) })

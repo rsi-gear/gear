@@ -54,9 +54,10 @@ function validateSpec(value: EvolutionSpec): EvolutionSpec {
   })) {
     if (typeof field !== 'string' || field.length === 0) throw new TypeError(`evolution ${name} is required`)
   }
-  if (value.metaAgent.runtime.type !== 'dsh' || value.metaAgent.runtime.version.length === 0
-    || value.metaAgent.runtime.integrity.length === 0 || !SHA256.test(value.metaAgent.preset.digest)
-    || value.metaAgent.preset.resources.some(resource => resource.logicalPath.length === 0 || !SHA256.test(resource.digest))) {
+  if (value.metaAgent.runtime.type.length === 0 || value.metaAgent.runtime.version.length === 0
+    || !SHA256.test(value.metaAgent.runtime.integrity) || !SHA256.test(value.metaAgent.preset.digest)
+    || value.metaAgent.preset.resources.some(resource => resource.logicalPath.length === 0
+      || resource.kind.length === 0 || !SHA256.test(resource.digest))) {
     throw new TypeError('evolution Meta Agent identity is invalid')
   }
   const temperature = value.metaAgent.sampling.temperature
@@ -67,8 +68,18 @@ function validateSpec(value: EvolutionSpec): EvolutionSpec {
     && (!Number.isSafeInteger(value.metaAgent.model.maxTokens) || value.metaAgent.model.maxTokens <= 0)) {
     throw new TypeError('evolution Meta maxTokens is invalid')
   }
+  const generationBudget = value.candidateGeneration.budget
+  const legacyGenerationBudget = generationBudget.timeoutMs !== undefined
+    && generationBudget.attemptTimeoutMs === undefined
+    && generationBudget.maxAttemptsPerCandidate === undefined
+    && generationBudget.roundTimeoutMs === undefined
+  const retryingGenerationBudget = generationBudget.timeoutMs === undefined
+    && Number.isSafeInteger(generationBudget.attemptTimeoutMs) && generationBudget.attemptTimeoutMs! > 0
+    && Number.isSafeInteger(generationBudget.maxAttemptsPerCandidate) && generationBudget.maxAttemptsPerCandidate! > 0
+    && Number.isSafeInteger(generationBudget.roundTimeoutMs) && generationBudget.roundTimeoutMs! > 0
   if (!Number.isSafeInteger(value.candidateGeneration.maxCandidates) || value.candidateGeneration.maxCandidates <= 0
-    || !Number.isSafeInteger(value.candidateGeneration.budget.timeoutMs) || value.candidateGeneration.budget.timeoutMs <= 0) {
+    || !(legacyGenerationBudget && Number.isSafeInteger(generationBudget.timeoutMs) && generationBudget.timeoutMs! > 0)
+      && !retryingGenerationBudget) {
     throw new TypeError('evolution candidate generation budget is invalid')
   }
   for (const budget of [value.candidateGeneration.budget.maxModelRequests, value.candidateGeneration.budget.maxTokens]) {

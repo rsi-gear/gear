@@ -9,6 +9,7 @@ import type {
 } from '../types.js'
 import type { RefineStateStore } from '../state/store.js'
 import { digestJson } from '../state/digest.js'
+import type { MetaAgentSession, MetaSessionController } from './controller.js'
 
 export interface MetaAgentHost {
   getLive(sessionId: string): Agent | undefined
@@ -148,7 +149,7 @@ export class DshMetaAgentHost implements MetaAgentHost {
   }
 }
 
-export class MetaSessionManager {
+export class MetaSessionManager implements MetaSessionController {
   private handle: AgentHandle | undefined
   private readonly handles = new Map<string, AgentHandle>()
   private readonly wakes = new Map<string, RoundWake>()
@@ -232,7 +233,7 @@ export class MetaSessionManager {
     round: Readonly<RefinementRound>,
     candidate: Readonly<CandidateRecord> | undefined,
     baseline: EvaluationEvidence | undefined,
-    agent: Agent,
+    agent: MetaAgentSession,
   ): Promise<string> {
     if (round.evolutionId !== this.options.evolutionId) {
       throw new Error(`Meta session for evolution ${this.options.evolutionId} cannot wake round from ${round.evolutionId}`)
@@ -242,7 +243,7 @@ export class MetaSessionManager {
       roundId: round.roundId,
       ...(candidate === undefined ? {} : { candidateId: candidate.candidateId }),
       sessionId,
-      firstObservedSeq: agent.session.seq,
+      firstObservedSeq: this.requireDshAgent(agent).session.seq,
     })
     const baselineRefs = [
       ...(baseline === undefined ? [] : [baseline.evalId]),
@@ -254,7 +255,7 @@ export class MetaSessionManager {
       accessedRefs: new Set(baselineRefs),
       diagnosedRunRefs: new Set(),
     })
-    agent.followup(createUserMessage({
+    this.requireDshAgent(agent).followup(createUserMessage({
       content: [{ type: 'text', text: JSON.stringify({
         kind: 'refinement-round',
         evolutionId: round.evolutionId,
@@ -331,7 +332,9 @@ export class MetaSessionManager {
     }
   }
 
-  proposalAttribution(roundId: string, agent: Agent, _mutation: unknown): MetaAttribution {
+  proposalAttribution(roundId: string, session: string | MetaAgentSession, _mutation: unknown): MetaAttribution {
+    const sessionId = typeof session === 'string' ? session : String(session.id)
+    const agent = this.requireDshAgentById(sessionId)
     const wake = this.wakes.get(String(agent.id))
     if (wake === undefined || wake.roundId !== roundId) throw new Error('proposal did not originate from the round meta session')
     const events = [...agent.session.events]
@@ -363,6 +366,7 @@ export class MetaSessionManager {
       sessionId: String(agent.id),
       requestHeaderSeq: effective.seq,
       proposalEventSeq: proposal.seq,
+      source: { kind: 'dsh-events', requestHeaderSeq: effective.seq, proposalEventSeq: proposal.seq },
       provider: config.provider,
       model: config.model,
       ...(config.maxTokens === undefined ? {} : { maxTokens: config.maxTokens }),
@@ -378,6 +382,17 @@ export class MetaSessionManager {
     const handle = await this.host.resume(sessionId, this.options.metaAgent)
     this.handles.set(sessionId, handle)
     return handle.agent
+  }
+
+  private requireDshAgent(session: MetaAgentSession): Agent {
+    return this.requireDshAgentById(String(session.id))
+  }
+
+  private requireDshAgentById(sessionId: string): Agent {
+    const owned = this.handles.get(sessionId)?.agent
+    const agent = owned ?? this.host.getLive(sessionId)
+    if (agent === undefined) throw new Error('meta session is not live')
+    return agent
   }
 
   async dispose(): Promise<void> {

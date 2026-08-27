@@ -2,9 +2,9 @@
 
 **General Evolution Architecture for Agents**
 
-> 本文描述 GEAR 的长期项目愿景。当前仓库中的可运行实现聚焦于基于
-> DeepSeek Harness、Hitch 和 Harbor 的 Harness 演进控制面；部分模型训练与
-> 数据基础设施能力仍属于后续规划。
+> 本文描述 GEAR 的长期项目愿景。当前仓库已经提供独立 Gear Core、通用
+> Refine Agent Skill、DSH 兼容适配层，以及基于 Hitch/Harbor 的 Target rollout；
+> 更多 Target builder、模型训练与数据基础设施能力仍属于后续规划。
 
 GEAR 是一个面向智能体持续演进的通用架构。它将 Agent 运行、轨迹评测和
 数据基础设施解耦，并通过评测反馈持续改进 Harness、Seed Tasks 和模型能力。
@@ -26,7 +26,7 @@ Agent 由以下部分动态装配：
 
 - **Harness Loader**：加载 Prompt、Skill、Tool 和 Workflow 等运行配置。
 - **Model Loader**：加载 Base Model 或指定 Checkpoint。
-- **Agent Runtime**：通过 CLI Adapter 管理 Session 和 Context，可接入 Codex、Claude Code、Pi 等 Agent CLI。
+- **Agent Runtime**：Meta 侧通过 Refine Skill 和本地能力协议接入 Codex、Claude Code、DSH 等 Harness；Target 侧由独立 rollout provider 管理。
 
 ### Evaluator
 
