@@ -234,7 +234,9 @@ order: 50
 
     candidateGeneration:
       maxCandidates: 1
-      timeoutMs: 300000
+      attemptTimeoutMs: 900000
+      maxAttemptsPerCandidate: 2
+      roundTimeoutMs: 1800000
 
     selection:
       survivors: 1
@@ -279,7 +281,10 @@ order: 50
 | `metaModel` | Meta Agent 使用的 DSH provider、model 和输出预算 |
 | `metaSampling.temperature` | 进入真实 DSH `agent/request` 的 Meta temperature；有效值会从 request header 归因 |
 | `candidateGeneration.maxCandidates` | 每轮从相同 Meta checkpoint 生成的独立候选数 |
-| `candidateGeneration.timeoutMs` | Meta 候选生成的真实超时；超时会中止 round 并清理 workspace |
+| `candidateGeneration.attemptTimeoutMs` | 单次 Meta 候选生成尝试的超时；默认 900000ms |
+| `candidateGeneration.maxAttemptsPerCandidate` | 每个 candidate 在同一 round 内允许的独立尝试次数；重试复用 parent、baseline 和 parent checkpoint，但使用新的 Agent/workspace |
+| `candidateGeneration.roundTimeoutMs` | 整个 round 的候选生成总预算，覆盖全部 candidate 和 retry；默认 1800000ms |
+| `candidateGeneration.timeoutMs` | 旧 profile 兼容字段；映射为一次尝试、无自动重试的新建 EvolutionSpec 不再写入该字段 |
 | `candidateGeneration.maxModelRequests/maxTokens` | 预留的总量预算；当前 DSH 无聚合 usage evidence，配置时会明确拒绝 |
 | `selection.survivors` | 每轮必须保留进下一代 population 的候选数，不得超过 `maxCandidates` |
 | `selection.timeoutMs` | 整个异步 candidate assessment 的超时，包括轨迹读取和可选 verifier 调用 |

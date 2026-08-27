@@ -226,7 +226,9 @@ interface EvolutionSpec {
     budget: {
       maxModelRequests?: number
       maxTokens?: number
-      timeoutMs: number
+      attemptTimeoutMs: number
+      maxAttemptsPerCandidate: number
+      roundTimeoutMs: number
     }
   }
 
@@ -1115,7 +1117,9 @@ evolution_id	evolution_name	round_id	candidate_id	status	parent_commit	candidate
 - N 个 Meta session 从同一 prefix fork；
 - N 个 workspace 相互不可读写；
 - 所有 proposal 完成前不启动任何 candidate seed rollout；
-- 生成 `timeoutMs` 是全部 sibling 共享的 round-wide deadline，不随 candidate 数量倍增；
+- `attemptTimeoutMs` 限制单次 Meta proposal，`roundTimeoutMs` 是全部 sibling/attempt 共享的总 deadline；
+- proposal 超时在同一 candidate/round 内从相同 parent checkpoint 创建干净 Agent/workspace 重试，不重复 baseline，也不增加 roundIndex；
+- 重试耗尽且导致 survivor 不足时 round 进入 `failed` 并停止 batch；只有显式 `decline_candidate` 才形成业务 `no-change`；
 - 每个 sealed candidate 都记录并验证 `commitOid`、`treeOid`、manifest digest、patch digest 和不可变 ref；
 - 相同 Tree SHA 的不同 candidate 仍保留独立 proposal 和 lineage；
 - 只有 Tree SHA 和完整 resolved evaluation condition 均相同时才能复用评测结果；
@@ -1190,7 +1194,7 @@ Gear 的可复现目标是：实验计划可重放、配置和实现可验证、
 - population 与 champion 通过 `RoundCommitIntent + population CAS + champion CAS` 提交，启动恢复可对 prepared/部分提交状态幂等对账；
 - round 已使用 `candidatePool`，并持久化 parent allocation、per-parent baseline、selection、population、parent IDs、Meta checkpoint、lineage root 和 metrics；
 - `experiments.tsv` 已作为 candidate-oriented materialized view 落地；新增 `selection_role` 区分唯一 finalist 和其他 survivor，由 registry controller 在启动和 round 更新后加锁、原子重建，JSON 仍是唯一事实源；
-- 候选生成 `timeoutMs` 是所有 sibling 共享的 round-wide deadline；超时会显式 cancel/idle/flush Meta Agent，撤销 binding，等待 workspace 操作排空，再释放 Agent 和 worktree；DSH 无法完整审计的总请求数/总 token 预算仍明确拒绝；
+- 候选生成使用 per-attempt timeout、每 candidate 最大尝试数和 sibling 共享 round deadline；超时会显式 cancel/idle/flush Meta Agent、清理 workspace，再从同一 durable parent/checkpoint 干净重试；每次 attempt 均持久化审计，耗尽后 fail batch；DSH 无法完整审计的总请求数/总 token 预算仍明确拒绝；
 - demo 旧 state 会被明确拒绝，不会用当前全局配置隐式补齐。
 
 以下能力仍没有伪装成已实现：

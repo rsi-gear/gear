@@ -67,8 +67,18 @@ function validateSpec(value: EvolutionSpec): EvolutionSpec {
     && (!Number.isSafeInteger(value.metaAgent.model.maxTokens) || value.metaAgent.model.maxTokens <= 0)) {
     throw new TypeError('evolution Meta maxTokens is invalid')
   }
+  const generationBudget = value.candidateGeneration.budget
+  const legacyGenerationBudget = generationBudget.timeoutMs !== undefined
+    && generationBudget.attemptTimeoutMs === undefined
+    && generationBudget.maxAttemptsPerCandidate === undefined
+    && generationBudget.roundTimeoutMs === undefined
+  const retryingGenerationBudget = generationBudget.timeoutMs === undefined
+    && Number.isSafeInteger(generationBudget.attemptTimeoutMs) && generationBudget.attemptTimeoutMs! > 0
+    && Number.isSafeInteger(generationBudget.maxAttemptsPerCandidate) && generationBudget.maxAttemptsPerCandidate! > 0
+    && Number.isSafeInteger(generationBudget.roundTimeoutMs) && generationBudget.roundTimeoutMs! > 0
   if (!Number.isSafeInteger(value.candidateGeneration.maxCandidates) || value.candidateGeneration.maxCandidates <= 0
-    || !Number.isSafeInteger(value.candidateGeneration.budget.timeoutMs) || value.candidateGeneration.budget.timeoutMs <= 0) {
+    || !(legacyGenerationBudget && Number.isSafeInteger(generationBudget.timeoutMs) && generationBudget.timeoutMs! > 0)
+      && !retryingGenerationBudget) {
     throw new TypeError('evolution candidate generation budget is invalid')
   }
   for (const budget of [value.candidateGeneration.budget.maxModelRequests, value.candidateGeneration.budget.maxTokens]) {

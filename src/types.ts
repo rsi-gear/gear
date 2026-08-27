@@ -124,7 +124,11 @@ export interface CandidateGenerationSpec {
   budget: {
     maxModelRequests?: number
     maxTokens?: number
-    timeoutMs: number
+    /** Legacy round-wide timeout retained for immutable EvolutionSpec compatibility. */
+    timeoutMs?: number
+    attemptTimeoutMs?: number
+    maxAttemptsPerCandidate?: number
+    roundTimeoutMs?: number
   }
 }
 
@@ -512,6 +516,16 @@ export interface SealedCandidateVersion {
   immutableRef: string
 }
 
+export interface CandidateGenerationAttempt {
+  attempt: number
+  status: 'running' | 'succeeded' | 'failed'
+  startedAt: string
+  completedAt?: string
+  workspaceId?: string
+  metaSessionId?: string
+  failure?: { phase: string; message: string }
+}
+
 export interface CandidateRecord {
   candidateId: string
   roundId: string
@@ -531,6 +545,7 @@ export interface CandidateRecord {
   seedComparison?: CandidateSeedComparison
   heldOutEvaluation?: EvaluationEvidence
   metrics?: MetricSet
+  generationAttempts?: CandidateGenerationAttempt[]
   failure?: { phase: string; message: string }
   status: 'generating' | 'ready' | 'evaluating' | 'selected' | 'discarded' | 'failed'
 }

@@ -48,6 +48,18 @@ describe('EvolutionRegistryStore', () => {
     await expect(registry.createEvolution({ spec: old as never, champion: champion() })).rejects.toThrow()
   })
 
+  it('continues to accept immutable specs with the legacy generation timeout', async () => {
+    const root = join(process.env.TMPDIR ?? '/tmp', `refine-legacy-budget-${crypto.randomUUID()}`)
+    roots.push(root)
+    const registry = new EvolutionRegistryStore(root)
+    const legacy = spec('evo-legacy-budget')
+    legacy.candidateGeneration.budget = { timeoutMs: 300_000 }
+    await registry.createEvolution({ spec: legacy, champion: champion() })
+    await expect(registry.requireSpec(legacy.evolutionId)).resolves.toMatchObject({
+      candidateGeneration: { budget: { timeoutMs: 300_000 } },
+    })
+  })
+
   it('rejects a component placed in the wrong extension slot', async () => {
     const root = join(process.env.TMPDIR ?? '/tmp', `refine-kind-${crypto.randomUUID()}`)
     roots.push(root)

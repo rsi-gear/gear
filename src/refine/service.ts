@@ -8,7 +8,7 @@ import { digestJson, type EvolutionRegistryStore } from '../state/evolution.js'
 import type { RefineStateStore, WorkspaceLock } from '../state/store.js'
 import type {
   AdmissionResult, CandidateAssessment, CandidateAssessmentResult, CandidateDecline, CandidateDiffSummary, CandidateFinalization, CandidateRecord, ChampionState,
-  CandidateGenerationSpec, ComponentRef, DshMetaAgentSpec, EvaluationEvidence, EvaluationRequest, EvaluationRerunResult, EvaluationRerunSelector, EvolutionRegistryEntry, EvolutionSpec, MetaAttribution,
+  CandidateGenerationAttempt, CandidateGenerationSpec, ComponentRef, DshMetaAgentSpec, EvaluationEvidence, EvaluationRequest, EvaluationRerunResult, EvaluationRerunSelector, EvolutionRegistryEntry, EvolutionSpec, MetaAttribution,
   HitchTrajectoryReader, MetaCheckpointRef, MetricSet, PairedTrial, PairingAudit, PopulationState, ProposalEvidenceAudit, PromotionPolicy, PublicSeedEvidence, PublicRoundStatus,
   RefineEvaluator, RefinementRound, RolloutSpec, RoundEvaluation, RoundEvaluationAttempt, SemanticTarget, PopulationMember,
 } from '../types.js'
@@ -115,6 +115,71 @@ interface PendingEvaluationResume {
 const TERMINAL = new Set<RefinementRound['status']>(['accepted', 'rejected', 'rejected-for-substrate', 'failed'])
 function now(): string { return new Date().toISOString() }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error) }
+
+class CandidateGenerationTimeoutError extends Error {
+  constructor(readonly scope: 'attempt' | 'round', readonly budgetMs: number) {
+    super(`candidate generation exceeded its ${budgetMs}ms ${scope} budget`)
+    this.name = 'CandidateGenerationTimeoutError'
+  }
+}
+
+function effectiveCandidateGenerationBudget(spec: CandidateGenerationSpec): {
+  attemptTimeoutMs: number
+  maxAttemptsPerCandidate: number
+  roundTimeoutMs: number
+} {
+  const { budget } = spec
+  if (budget.attemptTimeoutMs !== undefined
+    && budget.maxAttemptsPerCandidate !== undefined
+    && budget.roundTimeoutMs !== undefined) {
+    return {
+      attemptTimeoutMs: budget.attemptTimeoutMs,
+      maxAttemptsPerCandidate: budget.maxAttemptsPerCandidate,
+      roundTimeoutMs: budget.roundTimeoutMs,
+    }
+  }
+  if (budget.timeoutMs !== undefined) {
+    return { attemptTimeoutMs: budget.timeoutMs, maxAttemptsPerCandidate: 1, roundTimeoutMs: budget.timeoutMs }
+  }
+  throw new Error('candidate generation budget is incomplete')
+}
+
+function patchGenerationAttempt(
+  attempts: readonly CandidateGenerationAttempt[],
+  attempt: number,
+  patch: Partial<CandidateGenerationAttempt>,
+): CandidateGenerationAttempt[] {
+  let found = false
+  const updated = attempts.map(value => {
+    if (value.attempt !== attempt) return value
+    found = true
+    return { ...value, ...patch, attempt: value.attempt }
+  })
+  if (!found) throw new Error(`unknown candidate generation attempt: ${attempt}`)
+  return updated
+}
+
+function settleInterruptedCandidateGeneration(
+  round: RefinementRound,
+  completedAt: string,
+  message: string,
+): CandidateRecord[] {
+  return round.candidatePool.map(candidate => {
+    if (!candidate.generationAttempts?.some(attempt => attempt.status === 'running')) return candidate
+    const failure = { phase: 'candidate-generation', message }
+    return {
+      ...candidate,
+      status: 'failed',
+      failure,
+      generationAttempts: candidate.generationAttempts.map(attempt => attempt.status !== 'running' ? attempt : {
+        ...attempt,
+        status: 'failed' as const,
+        completedAt,
+        failure,
+      }),
+    }
+  })
+}
 
 function finalizationResolvers(): PromiseWithResolvers<FinalizationValue> {
   const value = Promise.withResolvers<FinalizationValue>()
@@ -357,6 +422,9 @@ export class RefineService {
               status: 'failed',
               updatedAt: completedAt,
               failure: { phase: 'recovery', message: 'control plane restarted during an evaluation resumed from repair' },
+              candidatePool: settleInterruptedCandidateGeneration(
+                round, completedAt, 'control plane restarted during candidate generation',
+              ),
               evaluationAttempts: (round.evaluationAttempts ?? []).map(attempt => this.sameAttempt(attempt, pendingRepair)
                 ? (() => {
                     const { failure: _failure, ...owned } = attempt
@@ -415,6 +483,9 @@ export class RefineService {
             status: 'failed',
             updatedAt: completedAt,
             failure: { phase: 'recovery', message: 'control plane restarted during an evaluation' },
+            candidatePool: settleInterruptedCandidateGeneration(
+              round, completedAt, 'control plane restarted during candidate generation',
+            ),
             evaluationAttempts: (round.evaluationAttempts ?? []).map(attempt => {
               if (attempt.status !== 'running' && attempt.status !== 'rerunning') return attempt
               const rerunning = attempt.status === 'rerunning'
@@ -438,9 +509,13 @@ export class RefineService {
             failure: { phase: 'recovery', message: errorMessage(error) },
           }))
         } else if (!TERMINAL.has(round.status)) {
+          const completedAt = now()
           await store.writeRound({
-            ...round, status: 'failed', updatedAt: now(),
+            ...round, status: 'failed', updatedAt: completedAt,
             failure: { phase: 'recovery', message: 'control plane restarted before the round reached a durable commit intent' },
+            candidatePool: settleInterruptedCandidateGeneration(
+              round, completedAt, 'control plane restarted during candidate generation',
+            ),
           })
         }
       }
@@ -1103,8 +1178,8 @@ export class RefineService {
       active.abort.signal.throwIfAborted()
       const parentCheckpoints = new Map<string, MetaCheckpointRef>()
       for (const member of population.members) parentCheckpoints.set(member.candidateId, member.metaCheckpoint ?? rootCheckpoint)
-      const generationBudgetMs = active.evolution.spec.candidateGeneration.budget.timeoutMs
-      const generationDeadline = Date.now() + generationBudgetMs
+      const generationBudget = effectiveCandidateGenerationBudget(active.evolution.spec.candidateGeneration)
+      const generationDeadline = Date.now() + generationBudget.roundTimeoutMs
 
       // Generate and seal every sibling before any candidate rollout. This keeps
       // proposal-time evidence independent of sibling evaluation order.
@@ -1117,86 +1192,181 @@ export class RefineService {
         const parentBaseline = parentBaselines.find(value => value.parentCandidateId === allocation.parentCandidateId)?.evidence
         const parentCheckpoint = parentCheckpoints.get(allocation.parentCandidateId)
         if (parentBaseline === undefined || parentCheckpoint === undefined) throw new Error('candidate parent state is incomplete')
-        const executionAbort = new AbortController()
-        const execution: CandidateExecution = {
-          candidateId,
-          abort: executionAbort,
-          signal: AbortSignal.any([active.abort.signal, executionAbort.signal]),
-          finalization: finalizationResolvers(),
-          finalizationSubmitted: false, baseline: parentBaseline,
-        }
-        active.executions.set(candidateId, execution)
-        active.currentCandidateId = candidateId
-        let completedCheckpoint = false
-        try {
-          const workspace = await this.workspaceManager.create({
-            evolutionId: round.evolutionId,
-            roundId,
-            parentHarnessRef: allocation.parentHarnessRef,
-            parentHarnessDigest: allocation.parentHarnessDigest,
-          }, execution.signal)
-          execution.workspace = workspace
+        let generationComplete = false
+        for (let attemptNumber = 1; attemptNumber <= generationBudget.maxAttemptsPerCandidate; attemptNumber += 1) {
           active.abort.signal.throwIfAborted()
-          const agent = await meta.fork(parentCheckpoint)
-          execution.metaSessionId = String(agent.id)
-          active.abort.signal.throwIfAborted()
-          this.workspaceManager.bind(workspace.workspaceId, execution.metaSessionId)
+          const startedAt = now()
+          const previousCandidate = round.candidatePool.find(value => value.candidateId === candidateId)!
+          const generationAttempts: CandidateGenerationAttempt[] = [
+            ...(previousCandidate.generationAttempts ?? []),
+            { attempt: attemptNumber, status: 'running', startedAt },
+          ]
           round = await this.transition(store, roundId, {
-            status: 'candidate-editing',
+            status: 'preparing-candidate',
             candidatePool: this.patchCandidate(round, candidateId, {
-              workspaceId: workspace.workspaceId,
-              metaSessionId: execution.metaSessionId,
-              parentCheckpoint,
+              status: 'generating', failure: undefined, workspaceId: undefined, metaSessionId: undefined,
+              generationAttempts,
             }),
           })
-          active.abort.signal.throwIfAborted()
-          const currentCandidate = round.candidatePool.find(value => value.candidateId === candidateId)!
-          await meta.wakeCandidate(round, currentCandidate, parentBaseline, agent)
-          active.abort.signal.throwIfAborted()
-          const timeoutMs = Math.max(0, generationDeadline - Date.now())
-          let timer: ReturnType<typeof setTimeout> | undefined
-          const timeout = new Promise<never>((_resolve, reject) => {
-            timer = setTimeout(() => reject(new Error(`candidate generation exceeded its ${generationBudgetMs}ms round budget`)), timeoutMs)
+          const remainingBeforeAttempt = generationDeadline - Date.now()
+          if (remainingBeforeAttempt <= 0) {
+            const timeout = new CandidateGenerationTimeoutError('round', generationBudget.roundTimeoutMs)
+            const failure = { phase: 'candidate-generation', message: timeout.message }
+            round = await this.transition(store, roundId, {
+              candidatePool: this.patchCandidate(round, candidateId, {
+                status: 'failed', failure,
+                generationAttempts: patchGenerationAttempt(generationAttempts, attemptNumber, {
+                  status: 'failed', completedAt: now(), failure,
+                }),
+              }),
+            })
+            break
+          }
+
+          const executionAbort = new AbortController()
+          const execution: CandidateExecution = {
+            candidateId,
+            abort: executionAbort,
+            signal: AbortSignal.any([active.abort.signal, executionAbort.signal]),
+            finalization: finalizationResolvers(),
+            finalizationSubmitted: false, baseline: parentBaseline,
+          }
+          active.executions.set(candidateId, execution)
+          active.currentCandidateId = candidateId
+          const timeoutScope = remainingBeforeAttempt <= generationBudget.attemptTimeoutMs ? 'round' : 'attempt'
+          const timeoutBudgetMs = timeoutScope === 'round'
+            ? generationBudget.roundTimeoutMs
+            : generationBudget.attemptTimeoutMs
+          const timeoutMs = Math.min(generationBudget.attemptTimeoutMs, remainingBeforeAttempt)
+          const deadlineError = new CandidateGenerationTimeoutError(timeoutScope, timeoutBudgetMs)
+          let deadlineTimer: ReturnType<typeof setTimeout> | undefined
+          let rejectAttempt: (reason: unknown) => void = () => {}
+          const deadline = new Promise<never>((_resolve, reject) => {
+            rejectAttempt = reject
+            deadlineTimer = setTimeout(() => {
+              reject(deadlineError)
+              executionAbort.abort(deadlineError)
+            }, timeoutMs)
           })
-          let proposal: FinalizationValue
-          try { proposal = await Promise.race([execution.finalization.promise, timeout]) }
-          finally { if (timer !== undefined) clearTimeout(timer) }
-          const resultCheckpoint = await meta.checkpoint(execution.metaSessionId)
-          active.abort.signal.throwIfAborted()
-          completedCheckpoint = true
-          round = await this.transition(store, roundId, {
-            candidatePool: this.patchCandidate(round, candidateId, {
-              ...(proposal.finalization === null ? {} : { proposal: proposal.finalization }),
-              ...(proposal.decline === undefined ? {} : { decline: proposal.decline }),
-              ...(proposal.diff === undefined ? {} : { diff: proposal.diff }),
-              meta: proposal.meta, proposalEvidence: proposal.evidence, resultCheckpoint,
-              ...(proposal.finalization === null ? { status: 'discarded' as const } : {}),
-            }),
-          })
-          if (proposal.finalization === null || proposal.diff === undefined) continue
-          round = await this.transition(store, roundId, { status: 'building-candidate' })
-          this.workspaceManager.markFinalizing(workspace.workspaceId)
-          const verifiedDiff = await this.workspaceManager.verifySealed(workspace.workspaceId, proposal.diff, execution.signal)
-          const sealed = await this.builder.finalizeWorkspace(workspace, verifiedDiff, execution.signal)
-          await this.workspaceManager.markCommitted(workspace.workspaceId)
-          round = await this.transition(store, roundId, {
-            candidatePool: this.patchCandidate(round, candidateId, {
-              sealedVersion: {
-                commitOid: sealed.ref, treeOid: sealed.treeOid, manifestDigest: sealed.digest,
-                patchDigest: proposal.diff.patchDigest, immutableRef: sealed.immutableRef,
-              },
-            }),
-          })
-        } catch (error) {
-          active.abort.signal.throwIfAborted()
-          round = await this.transition(store, roundId, {
-            candidatePool: this.patchCandidate(round, candidateId, {
-              status: 'failed',
-              failure: { phase: error instanceof SubstrateExpansionError ? 'building-candidate' : 'candidate-generation', message: errorMessage(error) },
-            }),
-          })
-        } finally {
-          await this.cleanupExecution(active, execution, completedCheckpoint ? undefined : 'candidate generation stopped')
+          const stopForRoundAbort = () => rejectAttempt(active.abort.signal.reason ?? new Error('refinement round aborted'))
+          if (active.abort.signal.aborted) stopForRoundAbort()
+          else active.abort.signal.addEventListener('abort', stopForRoundAbort, { once: true })
+          void deadline.catch(() => {})
+          let completedCheckpoint = false
+          let shouldRetry = false
+          try {
+            const workspacePromise = this.workspaceManager.create({
+              evolutionId: round.evolutionId,
+              roundId,
+              parentHarnessRef: allocation.parentHarnessRef,
+              parentHarnessDigest: allocation.parentHarnessDigest,
+            }, execution.signal)
+            let workspace: CandidateWorkspaceHandle
+            try {
+              workspace = await Promise.race([workspacePromise, deadline])
+            } catch (error) {
+              void workspacePromise.then(lateWorkspace => this.workspaceManager.dispose(lateWorkspace.workspaceId)).catch(() => {})
+              throw error
+            }
+            execution.workspace = workspace
+            execution.signal.throwIfAborted()
+            const forkPromise = meta.fork(parentCheckpoint)
+            let agent: Awaited<ReturnType<MetaSessionManager['fork']>>
+            try {
+              agent = await Promise.race([forkPromise, deadline])
+            } catch (error) {
+              void forkPromise.then(async lateAgent => {
+                const lateSessionId = String(lateAgent.id)
+                await meta.cancel(lateSessionId, 'candidate generation attempt expired before fork completed').catch(() => {})
+                await meta.release(lateSessionId).catch(() => {})
+              }).catch(() => {})
+              throw error
+            }
+            execution.metaSessionId = String(agent.id)
+            execution.signal.throwIfAborted()
+            this.workspaceManager.bind(workspace.workspaceId, execution.metaSessionId)
+            const currentAttempts = round.candidatePool.find(value => value.candidateId === candidateId)!.generationAttempts!
+            round = await this.transition(store, roundId, {
+              status: 'candidate-editing',
+              candidatePool: this.patchCandidate(round, candidateId, {
+                workspaceId: workspace.workspaceId,
+                metaSessionId: execution.metaSessionId,
+                parentCheckpoint,
+                generationAttempts: patchGenerationAttempt(currentAttempts, attemptNumber, {
+                  workspaceId: workspace.workspaceId, metaSessionId: execution.metaSessionId,
+                }),
+              }),
+            })
+            execution.signal.throwIfAborted()
+            const currentCandidate = round.candidatePool.find(value => value.candidateId === candidateId)!
+            await Promise.race([meta.wakeCandidate(round, currentCandidate, parentBaseline, agent), deadline])
+            execution.signal.throwIfAborted()
+            const proposal = await Promise.race([execution.finalization.promise, deadline])
+            const resultCheckpoint = await Promise.race([meta.checkpoint(execution.metaSessionId), deadline])
+            execution.signal.throwIfAborted()
+            completedCheckpoint = true
+            const completedAttempts = round.candidatePool.find(value => value.candidateId === candidateId)!.generationAttempts!
+            round = await this.transition(store, roundId, {
+              candidatePool: this.patchCandidate(round, candidateId, {
+                ...(proposal.finalization === null ? {} : { proposal: proposal.finalization }),
+                ...(proposal.decline === undefined ? {} : { decline: proposal.decline }),
+                ...(proposal.diff === undefined ? {} : { diff: proposal.diff }),
+                meta: proposal.meta, proposalEvidence: proposal.evidence, resultCheckpoint,
+                generationAttempts: patchGenerationAttempt(completedAttempts, attemptNumber, {
+                  status: 'succeeded', completedAt: now(),
+                }),
+                ...(proposal.finalization === null ? { status: 'discarded' as const } : {}),
+              }),
+            })
+            execution.signal.throwIfAborted()
+            if (proposal.finalization !== null && proposal.diff !== undefined) {
+              round = await this.transition(store, roundId, { status: 'building-candidate' })
+              this.workspaceManager.markFinalizing(workspace.workspaceId)
+              const verifiedDiff = await this.workspaceManager.verifySealed(workspace.workspaceId, proposal.diff, execution.signal)
+              const sealed = await this.builder.finalizeWorkspace(workspace, verifiedDiff, execution.signal)
+              execution.signal.throwIfAborted()
+              await this.workspaceManager.markCommitted(workspace.workspaceId)
+              round = await this.transition(store, roundId, {
+                candidatePool: this.patchCandidate(round, candidateId, {
+                  sealedVersion: {
+                    commitOid: sealed.ref, treeOid: sealed.treeOid, manifestDigest: sealed.digest,
+                    patchDigest: proposal.diff.patchDigest, immutableRef: sealed.immutableRef,
+                  },
+                }),
+              })
+            }
+            generationComplete = true
+          } catch (error) {
+            active.abort.signal.throwIfAborted()
+            // Close the attempt before persisting retry state so a late tool call
+            // from the timed-out child cannot seal or submit the disposed workspace.
+            execution.finalizationSubmitted = true
+            execution.abort.abort(error instanceof Error ? error : new Error(errorMessage(error)))
+            const phase = error instanceof SubstrateExpansionError
+              ? 'rejected-for-substrate'
+              : round.status === 'building-candidate' ? 'building-candidate' : 'candidate-generation'
+            const failure = { phase, message: errorMessage(error) }
+            shouldRetry = error instanceof CandidateGenerationTimeoutError
+              && !completedCheckpoint
+              && attemptNumber < generationBudget.maxAttemptsPerCandidate
+              && Date.now() < generationDeadline
+            const failedAttempts = round.candidatePool.find(value => value.candidateId === candidateId)!.generationAttempts!
+            round = await this.transition(store, roundId, {
+              candidatePool: this.patchCandidate(round, candidateId, {
+                status: shouldRetry ? 'generating' : 'failed',
+                failure: shouldRetry ? undefined : failure,
+                ...(shouldRetry ? { workspaceId: undefined, metaSessionId: undefined } : {}),
+                generationAttempts: patchGenerationAttempt(failedAttempts, attemptNumber, {
+                  status: 'failed', completedAt: now(), failure,
+                }),
+              }),
+            })
+          } finally {
+            active.abort.signal.removeEventListener('abort', stopForRoundAbort)
+            if (deadlineTimer !== undefined) clearTimeout(deadlineTimer)
+            await this.cleanupExecution(active, execution, completedCheckpoint ? undefined : 'candidate generation stopped')
+          }
+          if (generationComplete || !shouldRetry) break
         }
       }
       active.abort.signal.throwIfAborted()
@@ -1322,6 +1492,32 @@ export class RefineService {
             failure: {
               phase: 'candidate-seed-running',
               message: `candidate evaluations can be repaired: ${repairableSeedAttempts.map(attempt => attempt.evalId).join(', ')}`,
+            },
+          }))
+          return
+        }
+        const substrateCandidates = round.candidatePool.filter(candidate => candidate.status === 'failed'
+          && candidate.failure?.phase === 'rejected-for-substrate')
+        if (substrateCandidates.length > 0) {
+          await this.transition(store, roundId, this.completeEvaluationRepairResume(active, round, {
+            status: 'rejected-for-substrate', decision: 'rejected-for-substrate',
+            failure: {
+              phase: 'rejected-for-substrate',
+              message: substrateCandidates.map(candidate => `${candidate.candidateId}: ${candidate.failure!.message}`).join('; '),
+            },
+          }))
+          return
+        }
+        const failedGenerationCandidates = round.candidatePool.filter(candidate => candidate.status === 'failed'
+          && (candidate.failure?.phase === 'candidate-generation' || candidate.failure?.phase === 'building-candidate'))
+        if (failedGenerationCandidates.length > 0) {
+          await this.transition(store, roundId, this.completeEvaluationRepairResume(active, round, {
+            status: 'failed',
+            failure: {
+              phase: 'candidate-generation',
+              message: failedGenerationCandidates
+                .map(candidate => `${candidate.candidateId}: ${candidate.failure!.message}`)
+                .join('; '),
             },
           }))
           return

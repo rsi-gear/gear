@@ -58,7 +58,11 @@ export interface Config {
     maxCandidates: number
     maxModelRequests?: number
     maxTokens?: number
-    timeoutMs: number
+    /** Deprecated compatibility alias for the former single round-wide budget. */
+    timeoutMs?: number
+    attemptTimeoutMs?: number
+    maxAttemptsPerCandidate?: number
+    roundTimeoutMs?: number
   }
   selection: {
     survivors: number
@@ -148,8 +152,16 @@ export const ConfigSchema: Schema<Config> = Schema.object({
     maxCandidates: Schema.number().default(1),
     maxModelRequests: Schema.number(),
     maxTokens: Schema.number(),
-    timeoutMs: Schema.number().default(300_000),
-  }).default({ maxCandidates: 1, timeoutMs: 300_000 } as never),
+    timeoutMs: Schema.number(),
+    attemptTimeoutMs: Schema.number(),
+    maxAttemptsPerCandidate: Schema.number(),
+    roundTimeoutMs: Schema.number(),
+  }).default({
+    maxCandidates: 1,
+    attemptTimeoutMs: 900_000,
+    maxAttemptsPerCandidate: 2,
+    roundTimeoutMs: 1_800_000,
+  } as never),
   selection: Schema.object({
     survivors: Schema.number().default(1),
     timeoutMs: Schema.number().default(300_000),

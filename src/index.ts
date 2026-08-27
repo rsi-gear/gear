@@ -139,6 +139,20 @@ export function parseEvaluationRerunInput(words: string[]): {
 
 export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   const components = new ComponentRegistry()
+  const legacyCandidateBudget = config.candidateGeneration.timeoutMs !== undefined
+    && config.candidateGeneration.attemptTimeoutMs === undefined
+    && config.candidateGeneration.maxAttemptsPerCandidate === undefined
+    && config.candidateGeneration.roundTimeoutMs === undefined
+  const candidateAttemptTimeoutMs = config.candidateGeneration.attemptTimeoutMs
+    ?? config.candidateGeneration.timeoutMs
+    ?? 900_000
+  const candidateMaxAttemptsPerCandidate = config.candidateGeneration.maxAttemptsPerCandidate
+    ?? (legacyCandidateBudget ? 1 : 2)
+  const derivedRoundTimeoutMs = candidateAttemptTimeoutMs
+    * candidateMaxAttemptsPerCandidate
+    * config.candidateGeneration.maxCandidates
+  const candidateRoundTimeoutMs = config.candidateGeneration.roundTimeoutMs
+    ?? (legacyCandidateBudget ? config.candidateGeneration.timeoutMs! : derivedRoundTimeoutMs)
   for (const [name, value] of Object.entries({
     taskBudgetMs: config.taskBudgetMs,
     maxLiveMetaSessions: config.evolutionState.maxLiveMetaSessions,
@@ -150,7 +164,9 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     shellOutputBytes: config.candidateWorkspace.shellOutputBytes,
     compilerTimeoutMs: config.compiler.timeoutMs,
     candidateMaxCandidates: config.candidateGeneration.maxCandidates,
-    candidateGenerationTimeoutMs: config.candidateGeneration.timeoutMs,
+    candidateAttemptTimeoutMs,
+    candidateMaxAttemptsPerCandidate,
+    candidateRoundTimeoutMs,
     selectionSurvivors: config.selection.survivors,
     selectionTimeoutMs: config.selection.timeoutMs,
   })) {
@@ -223,7 +239,9 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     budget: {
       ...(config.candidateGeneration.maxModelRequests === undefined ? {} : { maxModelRequests: config.candidateGeneration.maxModelRequests }),
       ...(config.candidateGeneration.maxTokens === undefined ? {} : { maxTokens: config.candidateGeneration.maxTokens }),
-      timeoutMs: config.candidateGeneration.timeoutMs,
+      attemptTimeoutMs: candidateAttemptTimeoutMs,
+      maxAttemptsPerCandidate: candidateMaxAttemptsPerCandidate,
+      roundTimeoutMs: candidateRoundTimeoutMs,
     },
   }
   const rollout = {

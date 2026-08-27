@@ -127,7 +127,7 @@ export function evolutionSpec(evolutionId = 'evo-1'): EvolutionSpec {
     candidateGeneration: {
       strategy: builtinComponentRef('candidate-generator', 'dsh-meta-forked-proposals', {}),
       maxCandidates: 1,
-      budget: { timeoutMs: 60_000 },
+      budget: { attemptTimeoutMs: 60_000, maxAttemptsPerCandidate: 2, roundTimeoutMs: 120_000 },
     },
     rollout: {
       provider: builtinComponentRef('rollout-provider', 'hitch-cli', {}),
