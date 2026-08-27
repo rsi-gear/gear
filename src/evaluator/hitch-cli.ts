@@ -8,6 +8,7 @@ import type {
   EvaluationRerunResult,
   EvaluationRerunSelector,
   EvaluationReservation,
+  EvaluationTrialSlot,
   HitchEvaluationEvidence,
   HitchTrajectoryPage,
   HitchTrajectoryReader,
@@ -73,6 +74,16 @@ function stringArray(value: unknown, label: string): string[] {
     throw new HitchEvaluationError(`${label} must be an array of non-empty strings`, 'invalid_hitch_result')
   }
   return [...value as string[]]
+}
+
+function trialSlots(value: unknown, label: string): EvaluationTrialSlot[] {
+  if (!Array.isArray(value)) throw new HitchEvaluationError(`${label} must be an array`, 'invalid_hitch_result')
+  return value.map((item, index) => {
+    const slot = record(item, `${label}[${index}]`)
+    const attempt = integer(slot.attempt, `${label}[${index}].attempt`)
+    if (attempt <= 0) throw new HitchEvaluationError(`${label}[${index}].attempt must be positive`, 'invalid_hitch_result')
+    return { taskId: string(slot.task_id, `${label}[${index}].task_id`), attempt }
+  })
 }
 
 function sha256(value: string): string {
@@ -142,6 +153,7 @@ function trajectoryDiagnostics(events: JsonRecord[]): TrajectoryDiagnostics {
 
 export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader {
   readonly repositoryPath: string
+  private preflightPromise?: Promise<void>
 
   constructor(readonly options: HitchCliEvaluatorOptions) {
     this.repositoryPath = resolve(options.repositoryPath)
@@ -156,6 +168,38 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       throw new TypeError('hitch.maxTrajectoryOutputBytes must be positive')
     }
     if (options.passEnv.some(name => !/^[A-Z_][A-Z0-9_]*$/u.test(name))) throw new TypeError('hitch.passEnv contains an invalid environment variable name')
+  }
+
+  preflight(): Promise<void> {
+    this.preflightPromise ??= this.checkVersion()
+    return this.preflightPromise
+  }
+
+  private async checkVersion(): Promise<void> {
+    const controller = new AbortController()
+    const timeout = setTimeout(
+      () => controller.abort(new HitchEvaluationError('Hitch version check timed out', 'hitch_version_check_failed')),
+      10_000,
+    )
+    let result: ProcessResult
+    try { result = await this.run(['--version'], this.repositoryPath, controller.signal, 16_384) }
+    finally { clearTimeout(timeout) }
+    const output = `${result.stdout}\n${result.stderr}`.trim()
+    if (result.exitCode !== 0) {
+      throw new HitchEvaluationError(`Hitch version check failed: ${output.slice(-4000)}`, 'hitch_version_check_failed')
+    }
+    const match = output.match(/(?:^|\D)(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(?:\D|$)/u)
+    if (match === null) {
+      throw new HitchEvaluationError(`unsupported Hitch CLI version output: ${output}`, 'unsupported_hitch_version')
+    }
+    const [major, minor, patch] = match.slice(1, 4).map(Number) as [number, number, number]
+    const supported = match[4] === undefined && (major > 0 || minor > 2 || (minor === 2 && patch >= 5))
+    if (!supported) {
+      throw new HitchEvaluationError(
+        `unsupported Hitch CLI ${match[0].trim()}; Gear requires agent-hitch >= 0.2.5 for stable eval identity and multi-attempt rerun`,
+        'unsupported_hitch_version',
+      )
+    }
   }
 
   async reserve(
@@ -339,6 +383,10 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     const selectedTasks = stringArray(envelope.selected_tasks, 'selected_tasks')
     const repairedTasks = stringArray(envelope.repaired_tasks, 'repaired_tasks')
     const remainingInvalidTasks = stringArray(envelope.remaining_invalid_tasks, 'remaining_invalid_tasks')
+    const selectedTrials = envelope.selected_trials === undefined ? undefined : trialSlots(envelope.selected_trials, 'selected_trials')
+    const repairedTrials = envelope.repaired_trials === undefined ? undefined : trialSlots(envelope.repaired_trials, 'repaired_trials')
+    const remainingInvalidTrials = envelope.remaining_invalid_trials === undefined
+      ? undefined : trialSlots(envelope.remaining_invalid_trials, 'remaining_invalid_trials')
     let evidence: HitchEvaluationEvidence | undefined
     if (envelope.eval_status === 'succeeded') {
       const inspect = await this.run([
@@ -368,6 +416,9 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       selectedTasks,
       repairedTasks,
       remainingInvalidTasks,
+      ...(selectedTrials === undefined ? {} : { selectedTrials }),
+      ...(repairedTrials === undefined ? {} : { repairedTrials }),
+      ...(remainingInvalidTrials === undefined ? {} : { remainingInvalidTrials }),
       evalStatus: envelope.eval_status,
       ...(evidence === undefined ? {} : { evidence }),
     }

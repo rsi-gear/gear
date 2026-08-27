@@ -301,12 +301,20 @@ export type EvaluationRerunSelector =
   | { mode: 'invalid' }
   | { mode: 'tasks'; taskNames: string[] }
 
+export interface EvaluationTrialSlot {
+  taskId: string
+  attempt: number
+}
+
 export interface EvaluationRerunResult {
   provider: string
   evalId: string
   selectedTasks: string[]
   repairedTasks: string[]
   remainingInvalidTasks: string[]
+  selectedTrials?: EvaluationTrialSlot[]
+  repairedTrials?: EvaluationTrialSlot[]
+  remainingInvalidTrials?: EvaluationTrialSlot[]
   evalStatus: 'succeeded' | 'failed'
   evidence?: EvaluationEvidence
 }
@@ -594,6 +602,12 @@ export interface PublicRoundStatus {
   seedBaseline?: PublicSeedEvidence
   seedCandidate?: PublicSeedEvidence
   failure?: string
+  repairableEvaluations?: Array<{
+    provider: string
+    evalId: string
+    phase: EvaluationPhase
+    candidateId: string
+  }>
 }
 
 export interface PublicSeedEvidence {
@@ -620,6 +634,8 @@ export interface PromotionPolicy {
 }
 
 export interface RefineEvaluator {
+  preflight?(): Promise<void>
+
   reserve?(
     round: Readonly<RefinementRound>,
     request: Readonly<EvaluationRequest>,

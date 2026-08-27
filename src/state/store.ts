@@ -536,7 +536,8 @@ export class RefineStateStore {
       ].filter((value): value is EvaluationEvidence => value !== undefined)
       for (const value of evidence) {
         const attempt = round.evaluationAttempts.find(candidate => candidate.provider === value.provider && candidate.evalId === value.evalId)
-        if (attempt === undefined || attempt.status !== 'settled'
+        const repairingEvidence = round.status === 'repairing-evaluation' && attempt?.status === 'rerunning'
+        if (attempt === undefined || (attempt.status !== 'settled' && !repairingEvidence)
           || attempt.conditionId !== value.conditionId || attempt.dataset !== value.dataset
           || attempt.requestedCommit !== value.requestedCommit || attempt.owner.harnessRef !== value.actualCommit) {
           throw new TypeError('round evaluation evidence does not match its durable attempt ownership')

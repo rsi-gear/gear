@@ -17,7 +17,7 @@ function request(dataset: string, harnessRef: string): EvaluationRequest {
   return { phase: 'seed-baseline', dataset, harnessRef, condition: evaluationCondition('seed', dataset) }
 }
 
-async function setup() {
+async function setup(version = '0.2.5') {
   const fixture = await createGitHarnessFixture()
   roots.push(fixture.root)
   const executable = join(fixture.root, 'fake-hitch.mjs')
@@ -27,8 +27,9 @@ const value = name => args[args.indexOf(name) + 1]
 const dataset = value('--dataset')
 const harness = value('--harness')
 const evalId = args.includes('--eval-id') ? value('--eval-id') : 'eval_' + '1'.repeat(32)
-const commit = harness.match(/#([0-9a-f]{40,64})$/)?.[1]
-if (args[0] === 'trajectory' && args[1] === 'inspect') {
+const commit = harness?.match(/#([0-9a-f]{40,64})$/)?.[1]
+if (args[0] === '--version') process.stdout.write(${JSON.stringify(version)} + '\\n')
+else if (args[0] === 'trajectory' && args[1] === 'inspect') {
   const runId = args[2]
   process.stdout.write(JSON.stringify({
     schema_version: '1', run_id: runId,
@@ -45,6 +46,8 @@ if (args[0] === 'trajectory' && args[1] === 'inspect') {
     schema_version: '1', kind: 'eval-rerun', rerun_id: 'rerun_' + '9'.repeat(32), eval_id: args[2], status: 'completed',
     selected_tasks: args.includes('--invalid') ? ['task-1'] : args.flatMap((arg, index) => arg === '--task' ? [args[index + 1]] : []),
     repaired_tasks: ['task-1'], remaining_invalid_tasks: [], eval_status: 'succeeded',
+    selected_trials: [{ task_id: 'task-1', attempt: 1 }],
+    repaired_trials: [{ task_id: 'task-1', attempt: 1 }], remaining_invalid_trials: [],
   }) + '\\n')
 } else if (args[0] === 'eval' && args[1] === 'inspect') {
   const inspectedEvalId = args[2]
@@ -108,6 +111,17 @@ else {
 }
 
 describe('HitchCliEvaluator', () => {
+  it('requires stable eval identity support from agent-hitch 0.2.5 or newer', async () => {
+    const supported = await setup('0.2.5')
+    await expect(supported.evaluator.preflight()).resolves.toBeUndefined()
+    const old = await setup('0.2.4')
+    await expect(old.evaluator.preflight()).rejects.toMatchObject({ code: 'unsupported_hitch_version' })
+    const prerelease = await setup('0.2.5-rc.1')
+    await expect(prerelease.evaluator.preflight()).rejects.toMatchObject({ code: 'unsupported_hitch_version' })
+    const malformed = await setup('not-a-version')
+    await expect(malformed.evaluator.preflight()).rejects.toMatchObject({ code: 'unsupported_hitch_version' })
+  })
+
   it('invokes Hitch CLI and validates exact local commit transport evidence', async () => {
     const { fixture, evaluator } = await setup()
     const evidence = await evaluator.evaluate(
@@ -149,6 +163,8 @@ describe('HitchCliEvaluator', () => {
       failure: { code: 'hitch_infrastructure_failure', message: 'invalid task' },
     }, { mode: 'invalid' }, new AbortController().signal)).resolves.toMatchObject({
       provider: 'hitch-cli', evalId, selectedTasks: ['task-1'], repairedTasks: ['task-1'],
+      selectedTrials: [{ taskId: 'task-1', attempt: 1 }],
+      repairedTrials: [{ taskId: 'task-1', attempt: 1 }], remainingInvalidTrials: [],
       remainingInvalidTasks: [], evalStatus: 'succeeded', evidence: { evalId, primaryReward: 1 },
     })
   })

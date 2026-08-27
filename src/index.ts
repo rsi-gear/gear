@@ -401,7 +401,11 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
             kind: 'success',
             text: result.evalStatus === 'succeeded'
               ? `repaired eval ${result.evalId}; continuing round ${parsed.roundId}`
-              : `reran ${result.selectedTasks.join(', ') || 'no tasks'}; remaining invalid: ${result.remainingInvalidTasks.join(', ') || 'unknown'}`,
+              : `reran ${result.selectedTasks.join(', ') || 'no tasks'}; remaining invalid: ${
+                result.remainingInvalidTrials?.map(slot => `${slot.taskId}#${slot.attempt}`).join(', ')
+                  || result.remainingInvalidTasks.join(', ')
+                  || 'unknown'
+              }`,
           }
         }
         if (words[0] === 'publish') {

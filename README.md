@@ -24,7 +24,7 @@ need Bubblewrap, `socat`, and ripgrep.
 evidence backend. It installs and manages Harbor for containerized evaluations.
 
 ```bash
-npm install --global agent-hitch@latest
+npm install --global 'agent-hitch@>=0.2.5'
 hitch eval setup harbor
 hitch eval doctor --json
 ```
@@ -103,6 +103,7 @@ Manage an evolution with:
 | --- | --- |
 | `/refine continue <evolution-id> [--rounds N] [--focus FOCUS]` | Continue with the same spec, Meta history, and champion |
 | `/refine status [evolution-id [round-id]]` | List evolutions or inspect one evolution or round |
+| `/refine rerun <evolution-id> <round-id> --eval <eval-id> (--invalid \| --task TASK...)` | Repair invalid/missing logical trial slots in a failed Hitch evaluation |
 | `/refine publish <evolution-id> [exact-ref]` | Publish an accepted champion as the workspace default |
 | `/refine rollback <evolution-id> <exact-ref>` | Return an evolution to a previously accepted commit |
 
@@ -111,6 +112,10 @@ A plain `/refine` always creates a new evolution. `continue` accepts only
 policy remain sealed by the original experiment spec. See the
 [installation and usage guide](docs/plugin-installation-and-usage.md#8-使用-refine)
 for command output, lifecycle states, and operational details.
+
+Gear requires agent-hitch 0.2.5 or newer and checks the CLI version at startup.
+For multi-attempt evaluations, `--task TASK` repairs every invalid or missing
+`(task, attempt)` slot for that task while preserving already-valid slots.
 
 ## How it works
 
