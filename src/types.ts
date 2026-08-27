@@ -332,7 +332,7 @@ export interface RoundEvaluationAttempt {
   dataset: string
   requestedModelId: string
   requestedCommit: HarnessRef
-  status: 'running' | 'rerunning' | 'settled' | 'failed' | 'cancelled'
+  status: 'running' | 'rerunning' | 'repair-completed' | 'settled' | 'failed' | 'cancelled'
   startedAt: string
   completedAt?: string
   failure?: { code: string; message: string }

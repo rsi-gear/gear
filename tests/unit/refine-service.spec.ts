@@ -391,6 +391,57 @@ describe('RefineService evolution workspaces', () => {
     await service.dispose()
   })
 
+  it.each(['rerunning', 'repair-completed'] as const)(
+    'resumes a repaired evaluation after restart from durable %s state',
+    async repairStatus => {
+      const { service, evaluator } = await setup()
+      const evalId = `eval_${(repairStatus === 'rerunning' ? 'c' : 'd').repeat(32)}`
+      const originalEvaluate = evaluator.evaluate.bind(evaluator)
+      evaluator.reserve = async () => ({ provider: 'hitch-cli', evalId })
+      evaluator.evaluate = async () => { throw Object.assign(new Error('invalid baseline'), { code: 'hitch_infrastructure_failure' }) }
+      const admission = await service.admit('api')
+      const store = service.registry.stateStore(admission.evolutionId)
+      const failed = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
+      const attempt = failed?.evaluationAttempts?.[0]
+      if (failed === undefined || attempt === undefined) throw new Error('failed round has no evaluation attempt')
+      const request: EvaluationRequest = {
+        phase: attempt.phase,
+        dataset: attempt.dataset,
+        harnessRef: attempt.requestedCommit,
+        condition: failed.plan.seed,
+      }
+      const evidence = await originalEvaluate(
+        failed,
+        request,
+        new AbortController().signal,
+        { provider: attempt.provider, evalId: attempt.evalId },
+      )
+      const { failure: _roundFailure, ...pending } = failed
+      const { completedAt: _completedAt, failure: _attemptFailure, ...repairing } = attempt
+      await store.writeRound({
+        ...pending,
+        status: 'repairing-evaluation',
+        baseline: evidence,
+        parentBaselines: [{
+          parentCandidateId: attempt.owner.candidateId,
+          parentHarnessRef: attempt.owner.harnessRef,
+          evidence,
+        }],
+        evaluationAttempts: [{
+          ...repairing,
+          status: repairStatus,
+          ...(repairStatus === 'repair-completed' ? { completedAt: 'repair-finished' } : {}),
+        }],
+      })
+
+      await expect(service.initialize()).resolves.toBeUndefined()
+      const resumed = await editing(service, admission.evolutionId, admission.roundId)
+      expect(resumed.baseline).toMatchObject({ evalId })
+      expect(resumed.evaluationAttempts?.[0]).toMatchObject({ status: 'settled', completedAt: expect.any(String) })
+      await service.dispose()
+    },
+  )
+
   it('creates a fresh isolated evolution for every admission', async () => {
     const { service } = await setup()
     const first = await service.admit('api', { name: 'first' })

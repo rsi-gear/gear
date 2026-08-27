@@ -536,11 +536,19 @@ export class RefineStateStore {
       ].filter((value): value is EvaluationEvidence => value !== undefined)
       for (const value of evidence) {
         const attempt = round.evaluationAttempts.find(candidate => candidate.provider === value.provider && candidate.evalId === value.evalId)
-        const repairingEvidence = round.status === 'repairing-evaluation' && attempt?.status === 'rerunning'
+        const repairingEvidence = round.status === 'repairing-evaluation'
+          && (attempt?.status === 'rerunning' || attempt?.status === 'repair-completed')
         if (attempt === undefined || (attempt.status !== 'settled' && !repairingEvidence)
           || attempt.conditionId !== value.conditionId || attempt.dataset !== value.dataset
           || attempt.requestedCommit !== value.requestedCommit || attempt.owner.harnessRef !== value.actualCommit) {
           throw new TypeError('round evaluation evidence does not match its durable attempt ownership')
+        }
+      }
+      for (const attempt of round.evaluationAttempts) {
+        if (attempt.status === 'repair-completed'
+          && (round.status !== 'repairing-evaluation'
+            || !evidence.some(value => value.provider === attempt.provider && value.evalId === attempt.evalId))) {
+          throw new TypeError('completed evaluation repair requires durable evidence and pending resume state')
         }
       }
     }
@@ -664,7 +672,7 @@ export class RefineStateStore {
     if (identities.has(identity)) throw new TypeError('round evaluation attempt identity is duplicated')
     identities.add(identity)
     if (!['seed-baseline', 'seed-candidate', 'held-out-baseline', 'held-out-candidate'].includes(attempt.phase)
-      || !['running', 'rerunning', 'settled', 'failed', 'cancelled'].includes(attempt.status)
+      || !['running', 'rerunning', 'repair-completed', 'settled', 'failed', 'cancelled'].includes(attempt.status)
       || typeof attempt.startedAt !== 'string' || attempt.startedAt.length === 0
       || typeof attempt.owner !== 'object' || attempt.owner === null
       || typeof attempt.owner.candidateId !== 'string' || attempt.owner.candidateId.length === 0
@@ -679,7 +687,7 @@ export class RefineStateStore {
       || ((attempt.status === 'failed' || attempt.status === 'cancelled')
         && (typeof attempt.failure?.code !== 'string' || attempt.failure.code.length === 0
           || typeof attempt.failure.message !== 'string' || attempt.failure.message.length === 0))
-      || (attempt.status === 'settled' && attempt.failure !== undefined)) {
+      || ((attempt.status === 'settled' || attempt.status === 'repair-completed') && attempt.failure !== undefined)) {
       throw new TypeError('round evaluation attempt terminal state is invalid')
     }
     const condition = attempt.phase.startsWith('seed-') ? round.plan.seed : round.plan.heldOut

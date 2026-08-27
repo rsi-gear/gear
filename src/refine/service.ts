@@ -105,6 +105,12 @@ interface ActiveEvaluationRepair {
   completion?: Promise<EvaluationRerunResult>
 }
 
+interface PendingEvaluationResume {
+  evolutionId: string
+  roundId: string
+  attempt: Pick<RoundEvaluationAttempt, 'provider' | 'evalId'>
+}
+
 const TERMINAL = new Set<RefinementRound['status']>(['accepted', 'rejected', 'rejected-for-substrate', 'failed'])
 function now(): string { return new Date().toISOString() }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error) }
@@ -219,12 +225,35 @@ export class RefineService {
     await this.evaluator.preflight?.()
     await this.registry.initialize()
     await this.workspaceManager.initialize()
+    const pendingResumes: PendingEvaluationResume[] = []
     for (const entry of await this.registry.list()) {
       const store = this.registry.stateStore(entry.evolutionId)
       await store.initialize()
       for (const round of await store.listRounds()) {
         for (const candidate of round.candidatePool) {
           if (candidate.sealedVersion !== undefined) await this.builder.verifySealedCandidate(candidate.sealedVersion)
+        }
+        const pendingRepair = this.pendingRepairAttempt(round)
+        if (pendingRepair !== undefined) {
+          if (pendingRepair.status === 'rerunning') {
+            const completedAt = now()
+            await store.writeRound({
+              ...round,
+              updatedAt: completedAt,
+              evaluationAttempts: (round.evaluationAttempts ?? []).map(attempt => this.sameAttempt(attempt, pendingRepair)
+                ? (() => {
+                    const { failure: _failure, ...owned } = attempt
+                    return { ...owned, status: 'repair-completed' as const, completedAt }
+                  })()
+                : attempt),
+            })
+          }
+          pendingResumes.push({
+            evolutionId: entry.evolutionId,
+            roundId: round.roundId,
+            attempt: { provider: pendingRepair.provider, evalId: pendingRepair.evalId },
+          })
+          continue
         }
         const interruptedAttempts = (round.evaluationAttempts ?? []).some(
           attempt => attempt.status === 'running' || attempt.status === 'rerunning',
@@ -267,6 +296,7 @@ export class RefineService {
       }
       await this.workspaceManager.recoverOrphans(entry.evolutionId)
     }
+    for (const pending of pendingResumes) await this.resumeCompletedEvaluationRepair(pending)
   }
 
   async admit(source: RefinementRound['source'], options: AdmissionOptions = {}): Promise<AdmissionResult> {
@@ -408,10 +438,17 @@ export class RefineService {
       this.assertRepairedEvidence(attempt, result.evidence)
       const current = await this.requireRound(evolution.store, roundId)
       const evidencePatch = await this.repairedEvidencePatch(current, attempt, result.evidence, evolution.spec)
+      const repairCompletedAt = now()
       round = await this.transition(evolution.store, roundId, {
         ...evidencePatch,
         status: 'repairing-evaluation',
         failure: undefined,
+        evaluationAttempts: (current.evaluationAttempts ?? []).map(value => this.sameAttempt(value, attempt)
+          ? (() => {
+              const { failure: _failure, ...owned } = value
+              return { ...owned, status: 'repair-completed' as const, completedAt: repairCompletedAt }
+            })()
+          : value),
       })
       const active = this.newActive(
         evolution, repair.lock, round.source, round.batchId, round.roundIndex, round.roundCount, round.advisoryFocus,
@@ -433,6 +470,8 @@ export class RefineService {
   private async failEvaluationRepair(repair: ActiveEvaluationRepair, error: unknown): Promise<void> {
     const round = await repair.evolution.store.readRound(repair.roundId).catch(() => undefined)
     if (round?.status !== 'repairing-evaluation') return
+    const attempt = round.evaluationAttempts?.find(value => this.sameAttempt(value, repair.attempt))
+    if (attempt?.status === 'repair-completed' && this.attemptHasEvidence(round, attempt)) return
     const aborted = repair.abort.signal.aborted
     const code = aborted
       ? 'evaluation_rerun_aborted'
@@ -456,16 +495,53 @@ export class RefineService {
   }
 
   private attemptHasEvidence(round: RefinementRound, attempt: RoundEvaluationAttempt): boolean {
+    const matches = (evidence: EvaluationEvidence | undefined): boolean =>
+      evidence?.provider === attempt.provider && evidence.evalId === attempt.evalId
     if (attempt.phase === 'seed-baseline') {
-      return round.baseline?.evalId === attempt.evalId
-        || round.parentBaselines?.some(value => value.evidence.evalId === attempt.evalId) === true
+      return matches(round.baseline)
+        || round.parentBaselines?.some(value => matches(value.evidence)) === true
     }
     if (attempt.phase === 'seed-candidate') {
-      return round.candidatePool.some(candidate => candidate.seedEvaluation?.evalId === attempt.evalId)
+      return round.candidatePool.some(candidate => matches(candidate.seedEvaluation))
     }
-    if (attempt.phase === 'held-out-baseline') return round.evaluation?.heldOutBaseline?.evalId === attempt.evalId
-    return round.evaluation?.heldOutCandidate?.evalId === attempt.evalId
-      || round.candidatePool.some(candidate => candidate.heldOutEvaluation?.evalId === attempt.evalId)
+    if (attempt.phase === 'held-out-baseline') return matches(round.evaluation?.heldOutBaseline)
+    return matches(round.evaluation?.heldOutCandidate)
+      || round.candidatePool.some(candidate => matches(candidate.heldOutEvaluation))
+  }
+
+  private pendingRepairAttempt(round: RefinementRound): RoundEvaluationAttempt | undefined {
+    if (round.status !== 'repairing-evaluation' || round.commitIntent !== undefined || round.decision !== undefined) return undefined
+    const pending = (round.evaluationAttempts ?? []).filter(attempt =>
+      (attempt.status === 'repair-completed' || attempt.status === 'rerunning')
+      && this.attemptHasEvidence(round, attempt))
+    if (pending.length > 1) throw new Error(`round ${round.roundId} has multiple completed evaluation repairs`)
+    return pending[0]
+  }
+
+  private async resumeCompletedEvaluationRepair(pending: PendingEvaluationResume): Promise<void> {
+    if (this.active.has(pending.roundId) || this.repairs.has(pending.roundId)) {
+      throw new Error(`refinement round is already active: ${pending.roundId}`)
+    }
+    const evolution = await this.runtime(pending.evolutionId)
+    const lock = await evolution.store.acquireRoundLock(pending.roundId)
+    let handedToDrive = false
+    try {
+      const round = await this.requireRound(evolution.store, pending.roundId)
+      const attempt = round.evaluationAttempts?.find(value => this.sameAttempt(value, pending.attempt))
+      if (round.status !== 'repairing-evaluation' || attempt?.status !== 'repair-completed'
+        || !this.attemptHasEvidence(round, attempt)) {
+        throw new Error(`round ${pending.roundId} no longer has a completed evaluation repair to resume`)
+      }
+      const active = this.newActive(
+        evolution, lock, round.source, round.batchId, round.roundIndex, round.roundCount, round.advisoryFocus,
+      )
+      active.repairAttempt = { ...pending.attempt }
+      this.active.set(pending.roundId, active)
+      handedToDrive = true
+      queueMicrotask(() => this.startDrive(pending.roundId))
+    } finally {
+      if (!handedToDrive) await lock.release().catch(() => {})
+    }
   }
 
   private repairableAttempts(round: RefinementRound): RoundEvaluationAttempt[] {
@@ -762,6 +838,12 @@ export class RefineService {
     try {
       const beforeResume = await this.requireRound(store, roundId)
       const repairCompletedAt = now()
+      if (active.repairAttempt !== undefined) {
+        const repairAttempt = beforeResume.evaluationAttempts?.find(attempt => this.sameAttempt(attempt, active.repairAttempt!))
+        if (repairAttempt?.status !== 'repair-completed' || !this.attemptHasEvidence(beforeResume, repairAttempt)) {
+          throw new Error(`round ${roundId} has no completed evaluation repair to resume`)
+        }
+      }
       let round = await this.transition(store, roundId, {
         status: 'baseline-running',
         ...(active.repairAttempt === undefined ? {} : {
@@ -1113,13 +1195,20 @@ export class RefineService {
             ...round, status: 'failed', updatedAt: completedAt, failure: { phase: round.status, message: errorMessage(error) },
             ...(active.repairAttempt === undefined ? {} : {
               evaluationAttempts: (round.evaluationAttempts ?? []).map(attempt =>
-                this.sameAttempt(attempt, active.repairAttempt!) && attempt.status === 'rerunning'
-                  ? {
-                      ...attempt,
-                      status: 'failed' as const,
-                      completedAt,
-                      failure: { code: 'evaluation_rerun_resume_failed', message: errorMessage(error) },
-                    }
+                this.sameAttempt(attempt, active.repairAttempt!)
+                  ? attempt.status === 'repair-completed'
+                    ? (() => {
+                        const { failure: _failure, ...owned } = attempt
+                        return { ...owned, status: 'settled' as const, completedAt }
+                      })()
+                    : attempt.status === 'rerunning'
+                      ? {
+                          ...attempt,
+                          status: 'failed' as const,
+                          completedAt,
+                          failure: { code: 'evaluation_rerun_resume_failed', message: errorMessage(error) },
+                        }
+                      : attempt
                   : attempt),
             }),
           }).catch(() => {})
