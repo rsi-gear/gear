@@ -506,13 +506,14 @@ semantic config 进入 experiment/plan digest。execution config 记录在运行
 
 优先复用 Cordis service/provider 生命周期，不建立无所有权和卸载语义的进程全局 registry。
 
-DSH preset 已经是 Meta Agent 的原生插拔单元，不再定义平行的 `MetaAgentProvider`。Gear需要注册的是进化算法组件：CandidateGenerator 决定生成哪些方案，CandidateSelector 决定保留哪些方案，PromotionPolicy 决定 finalist 是否足以替换 champion。
+DSH preset 已经是 Meta Agent 的原生插拔单元，不再定义平行的 `MetaAgentProvider`。Gear需要注册的是进化算法组件：CandidateGenerator 决定生成哪些方案，CandidateAssessor 把 seed/dev evidence（必要时包括 trajectory）转换成跨候选指标，CandidateSelector 按这些已封存指标决定保留哪些方案，PromotionPolicy 决定 finalist 是否足以替换 champion。
 
 ```text
 生成哪些方案
     -> CandidateGenerator
 从 seed/dev candidate pool 中选谁
-    -> CandidateSelector
+    -> CandidateAssessor（可异步、有模型调用）
+    -> CandidateSelector（同步纯策略）
 finalist 是否通过 held-out 并替换 champion
     -> PromotionPolicy
 ```
@@ -567,40 +568,73 @@ CandidateGenerator 不直接创建 Git commit、读取 held-out、写 Gear state
 
 `maxCandidates` 和生成预算属于 CandidateGenerator，不在 selector 中重复声明 `candidatePoolSize`。
 
-### 8.2 CandidateSelector
+### 8.2 CandidateAssessor
 
-CandidateSelector 扩展搜索策略。它只读取已经持久化的 seed/dev evaluation 和 metrics，不生成 candidate、不读取 held-out、不更新 champion。
+CandidateAssessor 属于 selection 阶段，但与选择策略分离。它可以只复用 Harbor/Judge 已持久化的 reward，也可以异步读取每个 candidate 在相同 task/repetition cell 上的 trajectory，调用 LLM-as-a-Verifier、规则引擎或质量—多样性分析器，再返回统一 `MetricSet`。它不读取 held-out、不修改 workspace、不决定 survivor，也不更新 champion。
+
+```ts
+interface CandidateAssessor {
+  readonly ref: ComponentRef<unknown>
+  assess(
+    request: {
+      evolutionId: string
+      roundId: string
+      candidates: readonly CandidateSelectionInput[]
+    },
+    context: {
+      trajectoryReader?: HitchTrajectoryReader
+    },
+    signal: AbortSignal,
+  ): Promise<CandidateAssessmentResult>
+}
+
+interface CandidateAssessmentResult {
+  candidateMetrics: Record<string, MetricSet>
+  rankingCandidateIds?: string[]
+  reason: string
+  evidence: JsonValue
+  usage?: {
+    modelRequests: number
+    inputTokens: number
+    outputTokens: number
+    cachedInputTokens?: number
+    reasoningTokens?: number
+  }
+}
+```
+
+Gear 校验 assessor 必须覆盖且只能覆盖本次候选集合，封存 `component + candidateMetrics + ranking + evidence + usage` 并计算 digest，然后才允许 selector 运行。round 在模型调用期间进入 `selection-running`；超时、取消、轨迹缺失、task/repetition cell 不一致或输出身份不匹配均 fail closed。原始 trajectory 仍由 Hitch RunRecord 保存，Gear assessment 只保存 run id、prompt/trajectory digest、评分和 usage，不复制大段轨迹。
+
+内置 `evaluation-metrics` assessor 不发起额外调用，直接使用 Judge 产出的指标。可选 `llm-verifier` assessor 通过受限 Python bridge 调用 `llm_verifier.select`，对每个共享 task/repetition cell 做配对比较，再聚合为 candidate quality。Python 解释器绝对路径、`llm-verifier` 包版本与源码完整性、模型、criteria、sampling/evaluation 参数和允许传入的环境变量名全部进入不可变 component config。
+
+### 8.3 CandidateSelector
+
+CandidateSelector 扩展搜索策略。它只读取已经持久化的 seed/dev evaluation、封存后的 assessment 和 metrics，不生成 candidate、不读取 trajectory、不发模型请求、不读取 held-out、不更新 champion。
 
 ```ts
 interface CandidateSelector {
-  select(request: CandidateSelectionRequest): Promise<SelectionDecision>
+  select(request: CandidateSelectionRequest): SelectionDecision
 }
 
 interface CandidateSelectionRequest {
-  evolutionId: string
-  roundId: string
-  candidates: Array<{
-    candidateId: string
-    parentCandidateIds: string[]
-    harnessRef: string
-    evaluation: EvaluationEvidence
-    metrics: MetricSet
-  }>
-  survivorLimit: number
+  candidates: readonly CandidateSelectionInput[]
+  survivors: number
+  assessment: CandidateAssessment
 }
 
 interface SelectionDecision {
   selectedCandidateIds: string[]
   promotionCandidateId: string
-  rankedCandidateIds?: string[]
   reason: string
-  metricsDigest: string
+  component: ComponentRef<unknown>
+  assessmentDigest: string
+  metrics: Record<string, number>
 }
 ```
 
-第一批 selector 可以依次支持 highest quality、max paired gain、weighted score、Pareto frontier、diversity-aware selection 和 MAP-Elites。selector 应尽量是纯函数，使同一 candidate pool 可以离线重放和比较多种算法，而不重新消耗 rollout。
+第一批 selector 可以依次支持 highest quality、max paired gain、weighted score、Pareto frontier、diversity-aware selection 和 MAP-Elites。selector 必须保持纯函数，使同一 assessment 可以离线重放和比较多种算法，而不重新消耗 rollout 或 verifier 调用。decision 必须回写当前 `assessmentDigest`，阻止选择结果与另一份评分证据拼接。
 
-### 8.3 PromotionPolicy
+### 8.4 PromotionPolicy
 
 PromotionPolicy 是 selector 之后的最终业务 gate。selector 回答“pool 中谁最好”，PromotionPolicy 回答“这个 finalist 是否足以替换当前 champion”。pool 中最好的 candidate 仍可能因为 held-out regression、required task 退化、成本或安全指标而被拒绝。
 
@@ -644,12 +678,12 @@ PromotionPolicy 只能返回结构化决定，不能直接写 `champion.json`、
 - baseline/candidate evidence 必须匹配同一 resolved plan；
 - required rollout 和有效配置证据完整；
 - 基础设施失败不能被当作零分 candidate；
-- held-out 不进入 Meta Agent 或 CandidateSelector projection；
+- held-out 不进入 Meta Agent、CandidateAssessor 或 CandidateSelector projection；
 - current champion parent identity 未发生变化；
 - component implementation 和配置与 spec 一致；
 - promotion 必须由 Gear通过 CAS 完成。
 
-### 8.4 其他算法组件
+### 8.5 其他算法组件
 
 ```ts
 interface TaskSampler {
@@ -667,28 +701,30 @@ interface Judge {
 
 TaskSampler 只解析 seed/dev 或由 Gear控制的 held-out task set；RolloutProvider 负责隔离执行；Judge 把 evidence 转换为质量、成本、安全和多样性指标。
 
-### 8.5 权限与信任级别
+### 8.6 权限与信任级别
 
 | 组件 | 核心职责 | held-out | workspace/Git 写权限 | champion 写权限 |
 | --- | --- | --- | --- | --- |
 | CandidateGenerator | 生成 candidate submission | 无 | 仅通过 Gear受限 capability | 无 |
+| CandidateAssessor | 从 seed/dev reward/trajectory 形成可审计指标 | 无 | 无 | 无 |
 | CandidateSelector | 从 seed/dev pool 选择 survivor | 无 | 无 | 无 |
 | PromotionPolicy | 判断 finalist 是否可 promotion | 仅 Gear提供的受限 aggregate/evidence | 无 | 无 |
 | Gear Core | 校验、隔离、提交和 CAS | 管理权限 | 有限且权威 | 唯一写者 |
 
-CandidateSelector 最适合开放给第三方，因为它可以是无文件系统和模型权限的纯计算组件。CandidateGenerator 可高度扩展，但必须使用 Gear签发的 capabilities。PromotionPolicy 风险最高，只允许 trusted control-plane provider，并始终位于 Gear硬性 gate 之后。
+CandidateSelector 最适合开放给第三方，因为它是无文件系统和模型权限的纯计算组件。CandidateAssessor 可以开放，但其 trajectory reader、子进程、凭据名白名单、timeout 和输出上限必须由 Gear授予和约束。CandidateGenerator 可高度扩展，但必须使用 Gear签发的 capabilities。PromotionPolicy 风险最高，只允许 trusted control-plane provider，并始终位于 Gear硬性 gate 之后。
 
-### 8.6 Cordis 注册
+### 8.7 Cordis 注册
 
 ```ts
-ctx.candidateGenerators.register('best-of-n', generator)
-ctx.candidateSelectors.register('pareto', selector)
-ctx.promotionPolicies.register('paired-no-regression', policy)
+ctx.evolutionComponents.registerCandidateGenerator('best-of-n', implementation, factory)
+ctx.evolutionComponents.registerCandidateAssessor('llm-verifier', implementation, factory)
+ctx.evolutionComponents.registerCandidateSelector('pareto', implementation, factory)
+ctx.evolutionComponents.registerPromotionPolicy('paired-no-regression', implementation, factory)
 ```
 
 Evolution spec 固化所选 provider 的 package、version、integrity、config 和 config digest。运行时找不到完全匹配的 provider 时拒绝新建或 continue，不按同名 provider 静默替换。
 
-### 8.7 Capability validation
+### 8.8 Capability validation
 
 provider 在 admission 时声明能力：
 
@@ -705,7 +741,7 @@ interface ProviderCapabilities {
 
 spec 请求 provider 不支持的能力时，新 evolution 创建失败。
 
-### 8.8 泛化 evaluator evidence
+### 8.9 泛化 evaluator evidence
 
 `RefineEvaluator` 不再返回 `HitchEvaluationEvidence`。通用 evidence 只包含 Gear 所需字段，Hitch 特有数据放入 namespaced metadata：
 
@@ -740,7 +776,7 @@ selection:
 4. 为每个 session 创建独立 candidate workspace；
 5. 生成和 finalize N 个 candidate；
 6. 所有 proposal 均完成后，candidate 才执行相同 seed/dev conditions，避免后生成 sibling 看到先评测 sibling 的结果；
-7. `CandidateSelector` 选出 survivor 集合，并从其中明确一个 `promotionCandidateId`；
+7. `CandidateAssessor` 异步形成并封存跨候选 assessment，`CandidateSelector` 再选出 survivor 集合，并从其中明确一个 `promotionCandidateId`；
 8. 只有 finalist 运行 held-out conditions；
 9. `PromotionPolicyProvider` 决定是否更新 champion；
 10. 未入选 candidate、session 和 evidence 归档，所有 workspace 清理。
@@ -1135,20 +1171,21 @@ Gear 的可复现目标是：实验计划可重放、配置和实现可验证、
 
 ## 18. 当前实现状态
 
-截至 2026-08-25，本方案已经落地以下部分：
+截至 2026-08-26，本方案已经落地以下部分：
 
 - `EvolutionSpec` 已直接破坏性升级，不引入 `EvolutionSpecV2`、`schemaVersion` 或旧状态迁移；
 - `metaSampling.temperature` 通过 DSH `agent/request` 进入真实请求，attribution 从真实 `request/header.config` 读取并校验；
 - 完整 DSH preset 文件闭包、外部文档和 DSH runtime package bytes 都进入 per-evolution identity，`continue` 会重新解析 preset、runtime、dataset 和 component identity；
 - rollout、task sampler、judges、selection 和 promotion 配置固化进不可变 spec；
 - `EvaluationCondition`、`ResolvedRoundPlan`、provider-neutral `EvaluationEvidence` 和逐 trial `PairedTrial` 已持久化，并在 baseline/candidate provider、condition 和有效配置不一致时 fail closed；
-- CandidateGenerator、TaskSampler、RolloutProvider、Judge、CandidateSelector 和 PromotionPolicy 已进入公开 `ComponentRegistry`，registry 作为 `ctx.evolutionComponents` Cordis service 暴露，注册返回卸载函数；
+- CandidateGenerator、TaskSampler、RolloutProvider、Judge、CandidateAssessor、CandidateSelector 和 PromotionPolicy 已进入公开 `ComponentRegistry`，registry 作为 `ctx.evolutionComponents` Cordis service 暴露，注册返回卸载函数；
 - 组件引用校验 `type/apiVersion/package/version/integrity/configDigest`。内置组件 integrity 来自实际发布模块和 package manifest bytes，而不是仅对版本字符串做摘要；
 - sealed candidate 标准记录并恢复校验 `commitOid/treeOid/manifestDigest/patchDigest/immutableRef`；
 - DSH Meta checkpoint 使用 `sourceSessionId/eventCount/prefixDigest`，在 `whenIdle + runMaintenance + sessions.flush` 后固化；缺少 durability listener 时拒绝 fork；child 通过 `agents.create(seed)` 创建并记录 `parentSession/seedLength/cwd/agentPreset`；
 - Meta capability、evidence audit、finalization 和 workspace binding 已按 `sessionId -> candidate` 隔离；非 champion survivor 的 child 读取自己的 research parent，而不是全局 champion；
 - `maxCandidates > 1` 已支持。当前 controller 串行创建 sibling workspace/session，但先完成所有 proposal，再开始任何 candidate seed rollout；单 candidate 失败不会覆盖其他 candidate state；
 - `survivors > 1` 已支持。内置 generator 对当前 population 做确定性 round-robin parent allocation，每个 child 第一版恰好一个 parent；selector 输入是 seed-only projection，并明确返回唯一 `promotionCandidateId`；
+- selection 已拆为异步 `CandidateAssessor` 与同步纯函数 `CandidateSelector`。默认 assessor 复用 Judge metrics；可选 `llm-verifier` assessor 从 Hitch `run_id` 读取共享 seed task/repetition cell 的 trajectory，经受限 Python bridge 调用 `llm_verifier.select`，持久化 component identity、评分、ranking、证据 digest 和 token usage，再由 selector 绑定 `assessmentDigest` 做决策；
 - 每个 child 相对自己的 research parent 计算 seed improvement；promotion finalist 另相对本轮固定 champion 执行 seed/held-out paired gate；population 永远使用 seed metrics，promotion rejected 时仍可形成下一代；
 - population 与 champion 通过 `RoundCommitIntent + population CAS + champion CAS` 提交，启动恢复可对 prepared/部分提交状态幂等对账；
 - round 已使用 `candidatePool`，并持久化 parent allocation、per-parent baseline、selection、population、parent IDs、Meta checkpoint、lineage root 和 metrics；

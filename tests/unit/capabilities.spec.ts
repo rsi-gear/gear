@@ -82,9 +82,12 @@ describe('RefineCapabilities Git projection', () => {
       actualCommit: fixture.championRef,
       revisionIdentity: `sha256:${'2'.repeat(64)}`,
       invocationFingerprint: `sha256:${'9'.repeat(64)}`,
+      completeness: 'complete',
+      plannedTrialCount: 1,
       primaryReward: 1,
       summary: { total: 1, passed: 1, failed: 0, score: 1 },
       trials: [{ taskName: 'task-1', trialName: 'trial-1', runId, attempt: 1, status: 'completed', rewards: { reward: 1 } }],
+      invalidTrials: [],
       localSourceTransport: {
         kind: 'local-git-commit', resolutionIdentity: `sha256:${'2'.repeat(64)}`,
         commit: fixture.championRef, tree: '3'.repeat(40), payloadSha256: `sha256:${'4'.repeat(64)}`, payloadBytes: 1,
@@ -93,12 +96,49 @@ describe('RefineCapabilities Git projection', () => {
     const seedRun = `run_${'1'.repeat(32)}`
     const candidateRun = `run_${'2'.repeat(32)}`
     const heldRun = `run_${'3'.repeat(32)}`
+    const failedRun = `run_${'4'.repeat(32)}`
+    const invalidSeedRun = `run_${'5'.repeat(32)}`
+    const invalidCandidateRun = `run_${'6'.repeat(32)}`
     const seedBaseline = evidence(`eval_${'1'.repeat(32)}`, 'seed', seedRun)
     const seedCandidate = evidence(`eval_${'2'.repeat(32)}`, 'seed', candidateRun)
+    for (const [value, runId] of [[seedBaseline, invalidSeedRun], [seedCandidate, invalidCandidateRun]] as const) {
+      value.completeness = 'partial'
+      value.plannedTrialCount = 2
+      value.invalidTrials = [{
+        taskName: 'task-2', trialName: 'trial-2', runId, attempt: 1,
+        status: 'errored', invalidReason: 'infrastructure_failure',
+      }]
+    }
     const heldBaseline = evidence(`eval_${'3'.repeat(32)}`, 'held-out-secret', heldRun)
+    const failedEvalId = `eval_${'4'.repeat(32)}`
     const round: RefinementRound = {
       ...baseRound,
       baseline: seedBaseline,
+      failedEvaluations: [{
+        phase: 'seed-baseline',
+        owner: {
+          candidateId: baseRound.candidatePool[0]!.parentCandidateIds[0]!,
+          harnessRef: fixture.championRef,
+          role: 'baseline',
+        },
+        evidence: {
+          provider: 'fake',
+          conditionId: baseRound.plan.seed.conditionId,
+          effectiveConfigDigest: `sha256:${'9'.repeat(64)}`,
+          evalId: failedEvalId,
+          dataset: 'seed',
+          requestedCommit: fixture.championRef,
+          actualCommit: fixture.championRef,
+          revisionIdentity: `sha256:${'2'.repeat(64)}`,
+          invocationFingerprint: `sha256:${'9'.repeat(64)}`,
+          runSetComplete: true,
+          trials: [{
+            taskName: 'task-failed', trialName: 'trial-failed', runId: failedRun, attempt: 1,
+            status: 'errored', invalidReason: 'infrastructure_failure',
+          }],
+        },
+        failure: { code: 'hitch_infrastructure_failure', message: 'invalid observation' },
+      }],
       candidatePool: [{
         ...baseRound.candidatePool[0]!,
         status: 'discarded',
@@ -117,10 +157,11 @@ describe('RefineCapabilities Git projection', () => {
         seedPairedTrials: [{
           conditionId: baseRound.plan.seed.conditionId,
           trialKey: JSON.stringify(['task-1', 1]),
-          taskName: 'task-1', baselineTrialName: 'trial-1', candidateTrialName: 'trial-2', attempt: 1,
+          taskName: 'task-1', baselineTrialName: 'trial-1', candidateTrialName: 'trial-1', attempt: 1,
           baselineRunId: seedRun, candidateRunId: candidateRun,
           baselineReward: 1, candidateReward: 1, rewardDelta: 0,
         }],
+        seedPairing: { planned: 2, paired: 1, excluded: 1, baselineInvalid: 1, candidateInvalid: 1 },
         heldOutBaseline: heldBaseline,
         scoreDelta: 0,
         requiredRegressions: 0,
@@ -176,14 +217,17 @@ describe('RefineCapabilities Git projection', () => {
     const index = await capabilities.call('refine-meta', 'meta', 'trajectory.query', {})
     expect(index).toMatchObject({
       rounds: [{ seedEvidence: [
-        { phase: 'seed-baseline', evalId: seedBaseline.evalId, trials: [{ runId: seedRun }] },
-        { phase: 'seed-candidate', evalId: seedCandidate.evalId, trials: [{ runId: candidateRun }] },
+        { phase: 'seed-baseline', evalId: seedBaseline.evalId, completeness: 'partial', plannedTrialCount: 2,
+          trials: [{ runId: seedRun }, { runId: invalidSeedRun, invalidReason: 'infrastructure_failure' }] },
+        { phase: 'seed-candidate', evalId: seedCandidate.evalId, completeness: 'partial', plannedTrialCount: 2,
+          trials: [{ runId: candidateRun }, { runId: invalidCandidateRun, invalidReason: 'infrastructure_failure' }] },
+        { phase: 'seed-baseline', outcome: 'failed', evalId: failedEvalId, trials: [{ runId: failedRun }] },
       ] }],
     })
     expect(JSON.stringify(index)).not.toContain(heldRun)
     expect(JSON.stringify(index)).not.toContain('held-out-secret')
 
-    const page = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [seedBaseline.evalId] })
+    const page = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [seedRun] })
     expect(page).toMatchObject({ trajectories: [{
       runId: seedRun,
       header: { authorization: '[REDACTED]' },
@@ -197,6 +241,17 @@ describe('RefineCapabilities Git projection', () => {
       'meta',
       expect.objectContaining({ diagnosedRunRefs: [seedRun] }),
     ])
+    await expect(capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [invalidSeedRun] }))
+      .resolves.toMatchObject({ trajectories: [{
+        runId: invalidSeedRun,
+        taskName: 'task-2',
+      }] })
+    const failedPage = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [failedEvalId] })
+    expect(failedPage).toMatchObject({ trajectories: [{
+      runId: failedRun,
+      outcome: 'failed',
+      failure: { code: 'hitch_infrastructure_failure' },
+    }] })
     await expect(capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [heldRun] }))
       .rejects.toThrow(/not recorded seed evidence/)
   })

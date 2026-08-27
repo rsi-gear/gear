@@ -78,7 +78,8 @@ function validateSpec(value: EvolutionSpec): EvolutionSpec {
   }
   if (!Number.isSafeInteger(value.rollout.repetitions) || value.rollout.repetitions <= 0
     || value.rollout.model.length === 0 || !Number.isSafeInteger(value.selection.survivors)
-    || value.selection.survivors <= 0 || value.selection.survivors > value.candidateGeneration.maxCandidates) {
+    || value.selection.survivors <= 0 || value.selection.survivors > value.candidateGeneration.maxCandidates
+    || !Number.isSafeInteger(value.selection.timeoutMs) || value.selection.timeoutMs <= 0) {
     throw new TypeError('evolution rollout/selection configuration is invalid')
   }
   if (value.rollout.seeds !== undefined && (value.rollout.seeds.length === 0
@@ -100,6 +101,7 @@ function validateSpec(value: EvolutionSpec): EvolutionSpec {
     ['rollout-provider', value.rollout.provider],
     ['task-sampler', value.rollout.taskSampler],
     ...value.evaluation.judges.map(component => ['judge', component] as const),
+    ['candidate-assessor', value.selection.assessor],
     ['candidate-selector', value.selection.strategy],
     ['promotion-policy', value.promotion.policy],
   ] as const

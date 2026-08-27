@@ -62,6 +62,21 @@ export interface Config {
   }
   selection: {
     survivors: number
+    timeoutMs: number
+    llmVerifier?: {
+      pythonExecutable: string
+      model: string
+      criteria: Record<string, string>
+      groundTruthNote?: string
+      nEvaluations: number
+      pivots: number
+      seed: number
+      maxWorkers: number
+      maxOutputBytes: number
+      maxTrajectoryEvents: number
+      maxTrajectoryChars: number
+      passEnv: string[]
+    }
   }
   compiler: {
     command: string
@@ -137,7 +152,22 @@ export const ConfigSchema: Schema<Config> = Schema.object({
   }).default({ maxCandidates: 1, timeoutMs: 300_000 } as never),
   selection: Schema.object({
     survivors: Schema.number().default(1),
-  }).default({ survivors: 1 }),
+    timeoutMs: Schema.number().default(300_000),
+    llmVerifier: Schema.object({
+      pythonExecutable: Schema.string().required(),
+      model: Schema.string().required(),
+      criteria: Schema.dict(Schema.string()).required(),
+      groundTruthNote: Schema.string(),
+      nEvaluations: Schema.number().default(4),
+      pivots: Schema.number().default(2),
+      seed: Schema.number().default(0),
+      maxWorkers: Schema.number().default(8),
+      maxOutputBytes: Schema.number().default(1024 * 1024),
+      maxTrajectoryEvents: Schema.number().default(100_000),
+      maxTrajectoryChars: Schema.number().default(512 * 1024),
+      passEnv: Schema.array(Schema.string()).default([]),
+    }).default(undefined as never),
+  }).default({ survivors: 1, timeoutMs: 300_000, llmVerifier: undefined as never }),
   compiler: Schema.object({
     command: Schema.string().required(),
     args: Schema.array(Schema.string()).default([]),

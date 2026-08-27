@@ -12,6 +12,7 @@ describe('published DSH bundle', () => {
     }
     expect(pkg.dsh?.bundle?.patch).toBe('./cordis.patch.yml')
     expect(pkg.files).toContain('cordis.patch.yml')
+    expect(pkg.files).toContain('assets/llm-verifier-bridge.py')
 
     const patch = load(await readFile(resolve(root, 'cordis.patch.yml'), 'utf8')) as Array<{
       insert?: Array<{ id?: string; name?: string; disabled?: boolean }>

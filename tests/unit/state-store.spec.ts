@@ -2,6 +2,8 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { builtinComponentRef } from '../../src/evolution/components.js'
+import { digestJson } from '../../src/state/evolution.js'
 import { RefineStateStore, RoundAlreadyRunningError } from '../../src/state/store.js'
 import { evidence, roundFixture } from '../helpers/research-fixture.js'
 
@@ -109,5 +111,156 @@ describe('RefineStateStore', () => {
     await expect(state.writeRound({ ...round, status: 'failed' })).rejects.toThrow(/repair resume intent is invalid/u)
     const { evaluationRepairResume: _intent, ...withoutIntent } = round
     await expect(state.writeRound(withoutIntent)).rejects.toThrow(/durable attempt ownership/u)
+  })
+
+  it('persists partial evidence while rejecting inconsistent completeness metadata', async () => {
+    const state = await store()
+    const round = roundFixture({ status: 'preparing-candidate' })
+    const partial = evidence(round.plan.seed, round.targetHarnessRef)
+    partial.completeness = 'partial'
+    partial.plannedTrialCount = 2
+    partial.invalidTrials = [{
+      taskName: 'task-2', trialName: 'trial-2', runId: `run_${'2'.repeat(32)}`,
+      attempt: 1, status: 'errored', invalidReason: 'infrastructure_failure',
+    }]
+    round.baseline = partial
+    await state.writeRound(round)
+    await expect(state.readRound(round.roundId)).resolves.toMatchObject({
+      baseline: {
+        completeness: 'partial', plannedTrialCount: 2,
+        summary: { total: 1 }, invalidTrials: [{ taskName: 'task-2' }],
+      },
+    })
+    round.baseline = { ...partial, completeness: 'complete' }
+    await expect(state.writeRound(round)).rejects.toThrow(/invalid trials are invalid/)
+  })
+
+  it('binds persisted pairs, rewards, deltas, and planned identities to raw evidence', async () => {
+    const state = await store()
+    const round = roundFixture({ status: 'candidate-seed-running' })
+    const baseline = evidence(round.plan.seed, round.targetHarnessRef, 0.4, '1')
+    const candidate = evidence(round.plan.seed, 'b'.repeat(40), 0.8, '2')
+    round.candidatePool = [{
+      ...round.candidatePool[0]!,
+      status: 'evaluating',
+      sealedVersion: {
+        commitOid: 'b'.repeat(40), treeOid: 'c'.repeat(40),
+        manifestDigest: `sha256:${'3'.repeat(64)}`, patchDigest: `sha256:${'4'.repeat(64)}`,
+        immutableRef: `refs/dsh-refine/evolutions/evo-1/candidates/${round.candidatePool[0]!.candidateId}`,
+      },
+    }]
+    const pair = {
+      conditionId: round.plan.seed.conditionId,
+      trialKey: JSON.stringify(['task-1', null]),
+      taskName: 'task-1',
+      baselineRunId: baseline.trials[0]!.runId!,
+      candidateRunId: candidate.trials[0]!.runId!,
+      baselineReward: 0.4,
+      candidateReward: 0.8,
+      rewardDelta: 0.4,
+    }
+    round.evaluation = {
+      seedBaseline: baseline,
+      seedCandidate: candidate,
+      seedPairedTrials: [pair],
+      seedPairing: { planned: 1, paired: 1, excluded: 0, baselineInvalid: 0, candidateInvalid: 0 },
+      scoreDelta: 0.4,
+      requiredRegressions: 0,
+    }
+    await state.writeRound(round)
+    round.promotionPolicy = { ...round.promotionPolicy, requiredTaskIds: ['task-1'] }
+    await state.writeRound(round)
+    round.evaluation.requiredRegressions = 1
+    await expect(state.writeRound(round)).rejects.toThrow(/required regressions do not match/)
+    round.evaluation.requiredRegressions = 0
+    round.evaluation.seedPairedTrials = [{ ...pair, candidateReward: 0.9, rewardDelta: 0.5 }]
+    round.evaluation.scoreDelta = 0.5
+    await expect(state.writeRound(round)).rejects.toThrow(/pairing audit is invalid/)
+    round.evaluation.seedPairedTrials = [pair]
+    round.evaluation.scoreDelta = 0.3
+    await expect(state.writeRound(round)).rejects.toThrow(/score delta does not match/)
+    round.evaluation.scoreDelta = 0.4
+    round.evaluation.seedCandidate = {
+      ...candidate,
+      trials: [{ ...candidate.trials[0]!, taskName: 'task-other' }],
+    }
+    await expect(state.writeRound(round)).rejects.toThrow(/pairing audit is invalid/)
+  })
+
+  it('rejects assessment evidence that is detached from candidate metrics or selector input', async () => {
+    const state = await store()
+    const round = roundFixture({ status: 'selection-running' })
+    const candidateId = round.candidatePool[0]!.candidateId
+    const candidateCommit = 'b'.repeat(40)
+    const baseline = evidence(round.plan.seed, round.targetHarnessRef, 0.4, '1')
+    const evaluated = evidence(round.plan.seed, candidateCommit, 0.8, '2')
+    const metrics = { quality: 0.8, taskSuccessRate: 1, descriptors: { llmVerifierScore: 0.8 } }
+    round.baseline = baseline
+    round.parentBaselines = [{
+      parentCandidateId: round.candidatePool[0]!.parentCandidateIds[0]!,
+      parentHarnessRef: round.targetHarnessRef,
+      evidence: baseline,
+    }]
+    round.candidatePool = [{
+      ...round.candidatePool[0]!,
+      status: 'selected',
+      sealedVersion: {
+        commitOid: candidateCommit,
+        treeOid: 'c'.repeat(40),
+        manifestDigest: `sha256:${'3'.repeat(64)}`,
+        patchDigest: `sha256:${'4'.repeat(64)}`,
+        immutableRef: `refs/dsh-refine/evolutions/evo-1/candidates/${candidateId}`,
+      },
+      seedEvaluation: evaluated,
+      seedComparison: {
+        parentBaselineEvalId: baseline.evalId,
+        pairedTrials: [{
+          conditionId: round.plan.seed.conditionId,
+          trialKey: JSON.stringify(['task-1', null]),
+          taskName: 'task-1',
+          baselineRunId: baseline.trials[0]!.runId!,
+          candidateRunId: evaluated.trials[0]!.runId!,
+          baselineReward: 0.4,
+          candidateReward: 0.8,
+          rewardDelta: 0.4,
+        }],
+        pairing: { planned: 1, paired: 1, excluded: 0, baselineInvalid: 0, candidateInvalid: 0 },
+        scoreDelta: 0.4,
+        requiredRegressions: 0,
+      },
+      metrics,
+    }]
+    const component = builtinComponentRef('candidate-assessor', 'evaluation-metrics', {})
+    const assessmentIdentity = {
+      component,
+      candidateMetrics: { [candidateId]: metrics },
+      rankingCandidateIds: [candidateId],
+      reason: 'test assessment',
+      evidence: { kind: 'test' },
+      usage: { modelRequests: 0, inputTokens: 0, outputTokens: 0 },
+    }
+    round.selectionAssessment = { ...assessmentIdentity, digest: digestJson(assessmentIdentity) }
+    round.selection = {
+      selectedCandidateIds: [candidateId],
+      promotionCandidateId: candidateId,
+      reason: 'highest quality',
+      component: builtinComponentRef('candidate-selector', 'highest-quality', {}),
+      assessmentDigest: round.selectionAssessment.digest,
+      metrics: { [candidateId]: 0.8 },
+    }
+    round.promotionCandidateId = candidateId
+    await state.writeRound(round)
+
+    const path = join(state.roundsPath, `${round.roundId}.json`)
+    const detached = JSON.parse(await readFile(path, 'utf8')) as typeof round
+    detached.candidatePool[0]!.metrics!.quality = 0.1
+    await writeFile(path, JSON.stringify(detached))
+    await expect(state.readRound(round.roundId)).rejects.toThrow(/assessment metrics do not match/)
+
+    await state.writeRound(round)
+    const changedSelection = JSON.parse(await readFile(path, 'utf8')) as typeof round
+    changedSelection.selection!.metrics = { unexpected: 1 }
+    await writeFile(path, JSON.stringify(changedSelection))
+    await expect(state.readRound(round.roundId)).rejects.toThrow(/selection decision is invalid/)
   })
 })

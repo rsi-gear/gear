@@ -238,6 +238,7 @@ order: 50
 
     selection:
       survivors: 1
+      timeoutMs: 300000
 
     hitch:
       executable: /usr/local/bin/hitch
@@ -281,6 +282,8 @@ order: 50
 | `candidateGeneration.timeoutMs` | Meta 候选生成的真实超时；超时会中止 round 并清理 workspace |
 | `candidateGeneration.maxModelRequests/maxTokens` | 预留的总量预算；当前 DSH 无聚合 usage evidence，配置时会明确拒绝 |
 | `selection.survivors` | 每轮必须保留进下一代 population 的候选数，不得超过 `maxCandidates` |
+| `selection.timeoutMs` | 整个异步 candidate assessment 的超时，包括轨迹读取和可选 verifier 调用 |
+| `selection.llmVerifier` | 可选的 LLM-as-a-Verifier assessor；不配置时直接使用 Harbor/Judge 产生的 evaluation metrics |
 | `seedTaskRef` | 默认公开训练/诊断 dataset；普通 `/refine` 可用第一个位置参数覆盖 |
 | `heldOutRef` | 固定 held-out dataset；不会暴露给 Meta Agent |
 | `taskBudgetMs` | 每个 target trial 的超时预算；可由新 evolution 的 `--budget` 覆盖 |
@@ -294,6 +297,35 @@ order: 50
 | `publishedPointer` | 是否维护 workspace 级显式 published pointer |
 
 `initialChampion` 对全新部署实际上是必需的：没有它就无法创建第一个 evolution。以后每个普通 `/refine` 仍默认从这个固定初始版本开始；它不会偷偷继承另一个 evolution 的 champion。
+
+### 6.2 可选 LLM-as-a-Verifier
+
+如果用户任务集的 Harbor verifier 只负责执行有效性，或希望基于完整 agent trajectory 做语义判定，可以在 selection 阶段启用 `llm-verifier` assessor：
+
+```yaml
+selection:
+  survivors: 1
+  timeoutMs: 900000
+  llmVerifier:
+    pythonExecutable: /absolute/path/to/python
+    model: deepseek-v4-flash
+    criteria:
+      task-success: >-
+        Judge whether the trajectory actually completes the user's task and
+        produces a correct, verifiable final result.
+    nEvaluations: 2
+    pivots: 2
+    seed: 0
+    maxWorkers: 8
+    maxOutputBytes: 1048576
+    maxTrajectoryEvents: 100000
+    maxTrajectoryChars: 524288
+    passEnv: [DEEPSEEK_API_KEY]
+```
+
+`pythonExecutable` 必须是绝对路径，且该解释器中必须安装兼容的 `llm-verifier`。Gear在创建 evolution 时记录 Python 版本、包版本和包源码 digest；`continue` 会重新检查，运行时发生漂移即拒绝恢复。`passEnv` 只列出允许传给 verifier 子进程的凭据变量名，值不会写入 spec 或 round state。
+
+所有候选必须具有完全相同的 seed task/repetition cell，并且每个 trial 都有可读取的 Hitch `run_id`。assessor 只把 run id、problem/trajectory digest、逐 cell 分数、ranking 和 token usage 写入 Gear；原始 trajectory 保持在 Hitch RunRecord 中。LLM verifier 只参与 seed/dev selection，held-out promotion 仍由独立的 PromotionPolicy 控制，避免把 held-out 暴露给搜索过程。
 
 ## 7. 启动前检查
 

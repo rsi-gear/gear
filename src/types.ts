@@ -66,6 +66,7 @@ export type ComponentKind =
   | 'task-sampler'
   | 'rollout-provider'
   | 'judge'
+  | 'candidate-assessor'
   | 'candidate-selector'
   | 'promotion-policy'
 
@@ -154,8 +155,10 @@ export interface EvolutionSpec {
     primaryMetric: string
   }
   selection: {
+    assessor: ComponentRef<unknown>
     strategy: ComponentRef<unknown>
     survivors: number
+    timeoutMs: number
   }
   promotion: {
     policy: ComponentRef<PromotionPolicy>
@@ -197,6 +200,7 @@ export type RoundStatus =
   | 'candidate-editing'
   | 'building-candidate'
   | 'candidate-seed-running'
+  | 'selection-running'
   | 'held-out-running'
   | 'repairing-evaluation'
   | 'promoting'
@@ -223,6 +227,15 @@ export interface EvaluationTrialSummary {
 }
 
 export type HitchTrialSummary = EvaluationTrialSummary
+
+export interface InvalidEvaluationTrialSummary {
+  taskName: string
+  trialName: string
+  runId: string
+  attempt: number
+  status: 'errored'
+  invalidReason: string
+}
 
 export interface HitchTrajectoryPage {
   runId: string
@@ -271,9 +284,12 @@ export interface EvaluationEvidence {
   actualCommit: HarnessRef
   revisionIdentity: string
   invocationFingerprint?: string
+  completeness: 'complete' | 'partial'
+  plannedTrialCount: number
   primaryReward: number
   summary: ScoreSummary
   trials: EvaluationTrialSummary[]
+  invalidTrials: InvalidEvaluationTrialSummary[]
   localSourceTransport?: LocalSourceTransportSummary
   metadata?: JsonValue
 }
@@ -284,6 +300,42 @@ export interface HitchEvaluationEvidence extends EvaluationEvidence {
 }
 
 export type EvaluationPhase = 'seed-baseline' | 'seed-candidate' | 'held-out-baseline' | 'held-out-candidate'
+
+export interface FailedEvaluationTrialSummary {
+  taskName: string
+  trialName: string
+  runId: string
+  attempt: number
+  status: 'completed' | 'errored'
+  invalidReason?: string
+}
+
+/** Complete run membership from an evaluation that was rejected for scoring. */
+export interface FailedEvaluationEvidence {
+  provider: string
+  conditionId: string
+  effectiveConfigDigest: string
+  evalId: string
+  dataset: string
+  requestedCommit: HarnessRef
+  actualCommit: HarnessRef
+  revisionIdentity: string
+  invocationFingerprint?: string
+  runSetComplete: true
+  trials: FailedEvaluationTrialSummary[]
+  localSourceTransport?: LocalSourceTransportSummary
+}
+
+export interface FailedEvaluationRecord {
+  phase: EvaluationPhase
+  owner: {
+    candidateId: string
+    harnessRef: HarnessRef
+    role: 'baseline' | 'candidate'
+  }
+  evidence: FailedEvaluationEvidence
+  failure: { code: string; message: string }
+}
 
 export interface EvaluationRequest {
   phase: EvaluationPhase
@@ -378,13 +430,23 @@ export interface PairedTrial {
   rewardDelta: number
 }
 
+export interface PairingAudit {
+  planned: number
+  paired: number
+  excluded: number
+  baselineInvalid: number
+  candidateInvalid: number
+}
+
 export interface RoundEvaluation {
   seedBaseline: EvaluationEvidence
   seedCandidate: EvaluationEvidence
   seedPairedTrials: PairedTrial[]
+  seedPairing: PairingAudit
   heldOutBaseline?: EvaluationEvidence
   heldOutCandidate?: EvaluationEvidence
   heldOutPairedTrials?: PairedTrial[]
+  heldOutPairing?: PairingAudit
   promotionMetrics?: MetricSet
   scoreDelta: number
   heldOutScoreDelta?: number
@@ -476,6 +538,7 @@ export interface CandidateRecord {
 export interface CandidateSeedComparison {
   parentBaselineEvalId: string
   pairedTrials: PairedTrial[]
+  pairing: PairingAudit
   scoreDelta: number
   requiredRegressions: number
 }
@@ -491,11 +554,49 @@ export interface CandidateSelectionInput {
   metrics: MetricSet
 }
 
+export interface CandidateAssessmentRequest {
+  evolutionId: EvolutionId
+  roundId: string
+  candidates: readonly CandidateSelectionInput[]
+}
+
+export interface CandidateAssessmentContext {
+  trajectoryReader?: HitchTrajectoryReader
+}
+
+export interface CandidateAssessmentUsage {
+  modelRequests: number
+  inputTokens: number
+  outputTokens: number
+  cachedInputTokens?: number
+  reasoningTokens?: number
+}
+
+export interface CandidateAssessmentResult {
+  candidateMetrics: Record<string, MetricSet>
+  rankingCandidateIds?: string[]
+  reason: string
+  evidence: JsonValue
+  usage?: CandidateAssessmentUsage
+}
+
+export interface CandidateAssessment extends CandidateAssessmentResult {
+  component: ComponentRef<unknown>
+  digest: string
+}
+
+export interface CandidateSelectionRequest {
+  candidates: readonly CandidateSelectionInput[]
+  survivors: number
+  assessment: CandidateAssessment
+}
+
 export interface SelectionDecision {
   selectedCandidateIds: string[]
   promotionCandidateId: string
   reason: string
   component: ComponentRef<unknown>
+  assessmentDigest: string
   metrics: Record<string, number>
 }
 
@@ -576,9 +677,11 @@ export interface RefinementRound {
   parentAllocations?: ParentAllocation[]
   parentBaselines?: ParentSeedBaseline[]
   baseline?: EvaluationEvidence
+  failedEvaluations?: FailedEvaluationRecord[]
   finalization?: CandidateFinalization | null
   decline?: CandidateDecline
   candidatePool: CandidateRecord[]
+  selectionAssessment?: CandidateAssessment
   selection?: SelectionDecision
   promotionCandidateId?: string
   promotedCandidateId?: string
@@ -620,6 +723,8 @@ export interface PublicRoundStatus {
 
 export interface PublicSeedEvidence {
   evalId: string
+  completeness: 'complete' | 'partial'
+  plannedTrialCount: number
   primaryReward: number
   summary: ScoreSummary
   trials: Array<{
@@ -629,6 +734,7 @@ export interface PublicSeedEvidence {
     attempt?: number
     status: 'completed' | 'errored'
     reward?: number
+    invalidReason?: string
   }>
 }
 

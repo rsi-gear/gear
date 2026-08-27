@@ -2,12 +2,13 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { CandidateWorkspaceManager } from '../../src/candidate/workspace.js'
+import { HitchEvaluationError } from '../../src/evaluator/hitch-cli.js'
 import { HarnessBuilder, NoopHarnessCompiler } from '../../src/harness/builder.js'
 import { RefineService } from '../../src/refine/service.js'
 import { EvolutionRegistryStore } from '../../src/state/evolution.js'
 import type { EvaluationPhase, EvaluationRequest, EvaluationRerunResult, EvaluationRerunSelector, EvaluationReservation, HitchEvaluationEvidence, MetaAttribution, RefineEvaluator, RefinementRound, RoundEvaluationAttempt } from '../../src/types.js'
 import { createGitHarnessFixture } from '../helpers/git-fixture.js'
-import { builtinComponentRef } from '../../src/evolution/components.js'
+import { builtinComponentRef, componentRef } from '../../src/evolution/components.js'
 import { evolutionSpec } from '../helpers/research-fixture.js'
 
 const roots: string[] = []
@@ -48,6 +49,10 @@ class FakeMeta {
 class FakeEvaluator implements RefineEvaluator {
   calls: EvaluationPhase[] = []
   private reservations = 0
+  failurePhase?: EvaluationPhase
+  readonly partialInvalidByPhase = new Map<EvaluationPhase, number[]>()
+  readonly partialInvalidByCall = new Map<number, number[]>()
+  useRequiredTaskRepetitions = false
   constructor(
     private readonly candidateScore = 0.8,
     private readonly heldOutDelta = 0,
@@ -72,7 +77,7 @@ class FakeEvaluator implements RefineEvaluator {
     const score = heldOut ? (baseline ? 0.6 : 0.6 + this.heldOutDelta) : (baseline ? 0.5 : this.candidateScore)
     const passed = Math.round(score * 10)
     const serial = this.calls.length.toString(16).padStart(32, '0')
-    return {
+    const evidence: HitchEvaluationEvidence = {
       provider: reservation?.provider ?? 'fake',
       conditionId: this.mismatchSeedCondition && request.phase === 'seed-candidate'
         ? `sha256:${'f'.repeat(64)}` : request.condition.conditionId,
@@ -81,17 +86,76 @@ class FakeEvaluator implements RefineEvaluator {
       requestedCommit: request.harnessRef, actualCommit: request.harnessRef,
       revisionIdentity: `sha256:${serial.padEnd(64, '0')}`,
       invocationFingerprint: request.condition.rolloutProviderDigest,
+      completeness: 'complete', plannedTrialCount: 10,
       primaryReward: score, summary: { total: 10, passed, failed: 10 - passed, score },
       trials: Array.from({ length: 10 }, (_, index) => ({
-        taskName: `task-${index}`, trialName: `${request.phase}-trial-${index}`, attempt: 1,
+        taskName: this.useRequiredTaskRepetitions && index >= 8 ? 'task-required' : `task-${index}`,
+        trialName: `${request.phase}-trial-${index}`,
+        attempt: this.useRequiredTaskRepetitions && index >= 8 ? index - 7 : 1,
         runId: `run_${`${serial}${index}`.slice(-32).padStart(32, '0')}`,
         status: 'completed' as const, rewards: { reward: index < passed ? 1 : 0 },
       })),
+      invalidTrials: [],
       localSourceTransport: {
         kind: 'local-git-commit', resolutionIdentity: `sha256:${serial.padEnd(64, '0')}`,
         commit: request.harnessRef, tree: 'f'.repeat(40), payloadSha256: `sha256:${'1'.repeat(64)}`, payloadBytes: 1,
       },
     }
+    if (this.failurePhase === request.phase) {
+      const trials = evidence.trials.map((trial, index) => ({
+        taskName: trial.taskName,
+        trialName: trial.trialName!,
+        runId: trial.runId!,
+        attempt: trial.attempt!,
+        status: index === evidence.trials.length - 1 ? 'errored' as const : 'completed' as const,
+        ...(index === evidence.trials.length - 1 ? { invalidReason: 'infrastructure_failure' } : {}),
+      }))
+      throw new HitchEvaluationError('fake invalid run observations', 'hitch_infrastructure_failure', {
+        provider: evidence.provider,
+        conditionId: evidence.conditionId,
+        effectiveConfigDigest: evidence.effectiveConfigDigest,
+        evalId: evidence.evalId,
+        dataset: evidence.dataset,
+        requestedCommit: evidence.requestedCommit,
+        actualCommit: evidence.actualCommit,
+        revisionIdentity: evidence.revisionIdentity,
+        invocationFingerprint: evidence.invocationFingerprint,
+        runSetComplete: true,
+        trials,
+        localSourceTransport: evidence.localSourceTransport,
+      })
+    }
+    const invalidIndexes = new Set(
+      this.partialInvalidByCall.get(this.calls.length) ?? this.partialInvalidByPhase.get(request.phase) ?? [],
+    )
+    if (invalidIndexes.size > 0) {
+      const validTrials = evidence.trials.filter((_trial, index) => !invalidIndexes.has(index))
+      const invalidTrials = evidence.trials.flatMap((trial, index) => !invalidIndexes.has(index) ? [] : [{
+        taskName: trial.taskName,
+        trialName: trial.trialName!,
+        runId: trial.runId!,
+        attempt: trial.attempt!,
+        status: 'errored' as const,
+        invalidReason: 'infrastructure_failure',
+      }])
+      const rewards = validTrials.map(trial => trial.rewards.reward!)
+      const validScore = rewards.length === 0 ? 0 : rewards.reduce((sum, reward) => sum + reward, 0) / rewards.length
+      const validPassed = rewards.filter(reward => reward > 0).length
+      return {
+        ...evidence,
+        completeness: 'partial',
+        primaryReward: validScore,
+        summary: {
+          total: validTrials.length,
+          passed: validPassed,
+          failed: validTrials.length - validPassed,
+          score: validScore,
+        },
+        trials: validTrials,
+        invalidTrials,
+      }
+    }
+    return evidence
   }
   async rerun(
     round: Readonly<RefinementRound>,
@@ -102,13 +166,15 @@ class FakeEvaluator implements RefineEvaluator {
   ): Promise<EvaluationRerunResult> {
     const evidence = await this.evaluate(round, request, signal, { provider: attempt.provider, evalId: attempt.evalId })
     const tasks = selector.mode === 'invalid' ? ['task-1'] : selector.taskNames
+    const remainingInvalidTasks = [...new Set(evidence.invalidTrials.map(trial => trial.taskName))]
     return {
       provider: attempt.provider,
       evalId: attempt.evalId,
       selectedTasks: [...tasks],
-      repairedTasks: [...tasks],
-      remainingInvalidTasks: [],
-      evalStatus: 'succeeded',
+      repairedTasks: tasks.filter(task => !remainingInvalidTasks.includes(task)),
+      remainingInvalidTasks,
+      remainingInvalidTrials: evidence.invalidTrials.map(trial => ({ taskId: trial.taskName, attempt: trial.attempt })),
+      evalStatus: evidence.completeness === 'complete' ? 'succeeded' : 'failed',
       evidence,
     }
   }
@@ -194,8 +260,13 @@ async function finalize(service: RefineService, round: RefinementRound): Promise
   await mkdir(join(active.workspace.targetPath, 'prompts'), { recursive: true })
   await writeFile(join(active.workspace.targetPath, 'prompts', `${candidate.candidateId}.md`), 'improved context\n')
   const meta: MetaAttribution = { evolutionId: round.evolutionId, sessionId, requestHeaderSeq: 1, proposalEventSeq: 2 }
-  const runRefs = round.baseline.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId])
-  const failed = round.baseline.trials.flatMap(trial => (trial.rewards.reward ?? 0) <= 0 && trial.runId !== undefined ? [trial.runId] : [])
+  const runRefs = [
+    ...round.baseline.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId]),
+    ...round.baseline.invalidTrials.map(trial => trial.runId),
+  ]
+  const failed = [
+    ...round.baseline.trials.flatMap(trial => (trial.rewards.reward ?? 0) <= 0 && trial.runId !== undefined ? [trial.runId] : []),
+  ]
   await service.submitFinalization(round.evolutionId, round.roundId, {
     rationale: 'fix observed failures', expectedOutcome: 'higher reward', evidenceRefs: [round.baseline.evalId], semanticTargets: ['context', 'routing'],
   }, undefined, meta, {
@@ -285,6 +356,46 @@ describe('RefineService evolution workspaces', () => {
     })
     expect(resumed.evaluationRepairResume).toMatchObject({ provider: 'hitch-cli', evalId })
     expect(resumed.baseline).toMatchObject({ evalId })
+    await service.dispose()
+  })
+
+  it('continues the round when a rerun still has invalid cells but yields partial evidence', async () => {
+    const { service, evaluator } = await setup()
+    const evalId = `eval_${'3'.repeat(32)}`
+    const originalEvaluate = evaluator.evaluate.bind(evaluator)
+    let firstReservation = true
+    let reservation = 0
+    let firstEvaluation = true
+    evaluator.reserve = async () => firstReservation
+      ? (firstReservation = false, { provider: 'hitch-cli', evalId })
+      : { provider: 'hitch-cli', evalId: `eval_${(++reservation).toString(16).padStart(32, '0')}` }
+    evaluator.evaluate = async (...args) => {
+      if (firstEvaluation) {
+        firstEvaluation = false
+        throw Object.assign(new Error('invalid task observation'), { code: 'hitch_infrastructure_failure' })
+      }
+      return originalEvaluate(...args)
+    }
+    evaluator.partialInvalidByCall.set(1, [9])
+
+    const admission = await service.admit('api')
+    const store = service.registry.stateStore(admission.evolutionId)
+    await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
+    const rerun = await service.rerunEvaluation(admission.evolutionId, admission.roundId, evalId, { mode: 'invalid' })
+    expect(rerun).toMatchObject({
+      evalId,
+      evalStatus: 'failed',
+      remainingInvalidTasks: ['task-9'],
+      evidence: { completeness: 'partial', plannedTrialCount: 10, invalidTrials: [{ taskName: 'task-9' }] },
+    })
+
+    const resumed = await editing(service, admission.evolutionId, admission.roundId)
+    expect(resumed.baseline).toMatchObject({ evalId, completeness: 'partial' })
+    expect(resumed.evaluationAttempts?.find(attempt => attempt.evalId === evalId)).toMatchObject({ status: 'repair-completed' })
+    await finalize(service, resumed)
+    const terminal = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'accepted')
+    expect(terminal?.evaluation?.seedPairing).toMatchObject({ planned: 10, paired: 9, excluded: 1, baselineInvalid: 1 })
+    expect(terminal?.evaluationAttempts?.find(attempt => attempt.evalId === evalId)).toMatchObject({ status: 'settled' })
     await service.dispose()
   })
 
@@ -837,6 +948,122 @@ describe('RefineService evolution workspaces', () => {
     await service.dispose()
   })
 
+  it('continues candidate generation and promotion using only the valid paired intersection', async () => {
+    const { service, evaluator } = await setup()
+    evaluator.partialInvalidByPhase.set('seed-baseline', [9])
+    evaluator.partialInvalidByPhase.set('seed-candidate', [8])
+    evaluator.partialInvalidByPhase.set('held-out-baseline', [9])
+    evaluator.partialInvalidByPhase.set('held-out-candidate', [8])
+    const admission = await service.admit('api')
+    const round = await editing(service, admission.evolutionId, admission.roundId)
+    expect(round.baseline).toMatchObject({
+      completeness: 'partial', plannedTrialCount: 10,
+      summary: { total: 9 }, invalidTrials: [{ taskName: 'task-9' }],
+    })
+    await finalize(service, round)
+    const terminal = await eventually(
+      () => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId),
+      value => value?.status === 'accepted',
+    )
+    expect(terminal?.failedEvaluations).toBeUndefined()
+    expect(terminal?.evaluation).toMatchObject({
+      seedPairing: { planned: 10, paired: 8, excluded: 2, baselineInvalid: 1, candidateInvalid: 1 },
+      heldOutPairing: { planned: 10, paired: 8, excluded: 2, baselineInvalid: 1, candidateInvalid: 1 },
+      seedPairedTrials: expect.arrayContaining([expect.objectContaining({ taskName: 'task-0' })]),
+      heldOutPairedTrials: expect.arrayContaining([expect.objectContaining({ taskName: 'task-0' })]),
+    })
+    expect(terminal?.evaluation?.seedPairedTrials).toHaveLength(8)
+    expect(terminal?.evaluation?.heldOutPairedTrials).toHaveLength(8)
+    expect(terminal?.candidatePool[0]?.seedComparison?.pairing).toEqual({
+      planned: 10, paired: 8, excluded: 2, baselineInvalid: 1, candidateInvalid: 1,
+    })
+    await service.dispose()
+  })
+
+  it('drops only a zero-pair seed candidate while another candidate continues', async () => {
+    const { service, evaluator } = await setup(0.8, false, 2)
+    const policy = { ...service.options.promotion.policy.config, requiredTaskIds: ['task-0'] }
+    service.options.promotion.policy = builtinComponentRef('promotion-policy', 'paired-gate', policy)
+    evaluator.partialInvalidByCall.set(2, Array.from({ length: 10 }, (_, index) => index))
+    const admission = await service.admit('api')
+    let previousWorkspace: string | undefined
+    for (let index = 0; index < 2; index += 1) {
+      const round = await eventually(
+        () => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId) as Promise<RefinementRound>,
+        value => value?.status === 'candidate-editing'
+          && service.activeEntry(value.roundId)?.workspace?.workspaceId !== previousWorkspace,
+      )
+      previousWorkspace = service.activeEntry(round.roundId)?.workspace?.workspaceId
+      await finalize(service, round)
+    }
+    const terminal = await eventually(
+      () => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId),
+      value => value?.status === 'accepted',
+    )
+    expect(terminal?.candidatePool).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        status: 'failed',
+        seedEvaluation: expect.objectContaining({ completeness: 'partial', summary: { total: 0, passed: 0, failed: 0, score: 0 } }),
+        seedComparison: expect.objectContaining({
+          pairedTrials: [],
+          pairing: { planned: 10, paired: 0, excluded: 10, baselineInvalid: 0, candidateInvalid: 10 },
+        }),
+        failure: { phase: 'candidate-seed-running', message: expect.stringMatching(/no valid paired/) },
+      }),
+      expect.objectContaining({ status: 'selected', seedComparison: expect.objectContaining({ pairing: expect.objectContaining({ paired: 10 }) }) }),
+    ]))
+    await service.dispose()
+  })
+
+  it('rejects stably when held-out has zero pairs without invoking judges on empty evidence', async () => {
+    const { service, evaluator } = await setup()
+    const implementation = { package: 'test-empty-judge', version: '1.0.0', integrity: `sha256:${'d'.repeat(64)}` }
+    const judge = componentRef('judge', 'reject-empty', implementation, {})
+    service.components.registerJudge('reject-empty', implementation, ref => ({
+      ref,
+      async evaluate(value) {
+        if (value.summary.total === 0) throw new Error('judge must not receive empty paired evidence')
+        return { quality: value.primaryReward, taskSuccessRate: value.summary.passed / value.summary.total }
+      },
+    }))
+    service.options.evaluation.judges = [judge]
+    const policy = { ...service.options.promotion.policy.config, requiredTaskIds: ['task-0'] }
+    service.options.promotion.policy = builtinComponentRef('promotion-policy', 'paired-gate', policy)
+    evaluator.partialInvalidByCall.set(4, Array.from({ length: 10 }, (_, index) => index))
+    const admission = await service.admit('api')
+    const round = await editing(service, admission.evolutionId, admission.roundId)
+    await finalize(service, round)
+    const terminal = await eventually(
+      () => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId),
+      value => value?.status === 'rejected',
+    )
+    expect(terminal?.failure).toBeUndefined()
+    expect(terminal?.evaluation).toMatchObject({
+      heldOutPairing: { planned: 10, paired: 0, excluded: 10, baselineInvalid: 0, candidateInvalid: 10 },
+      promotionMetrics: { quality: 0, taskSuccessRate: 0 },
+    })
+    await service.dispose()
+  })
+
+  it('requires every protected task to have a common valid paired repetition', async () => {
+    const { service, evaluator } = await setup()
+    evaluator.useRequiredTaskRepetitions = true
+    evaluator.partialInvalidByPhase.set('seed-baseline', [9])
+    evaluator.partialInvalidByPhase.set('seed-candidate', [8])
+    const policy = { ...service.options.promotion.policy.config, requiredTaskIds: ['task-required'] }
+    service.options.promotion.policy = builtinComponentRef('promotion-policy', 'paired-gate', policy)
+    const admission = await service.admit('api')
+    const round = await editing(service, admission.evolutionId, admission.roundId)
+    await finalize(service, round)
+    const terminal = await eventually(
+      () => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId),
+      value => value?.status === 'rejected',
+    )
+    expect(terminal?.candidatePool[0]?.failure?.message).toMatch(/required task has no valid paired rollout cell/)
+    expect(evaluator.calls).toEqual(['seed-baseline', 'seed-candidate'])
+    await service.dispose()
+  })
+
   it('continues a multi-round batch with a fresh workspace and persistent evolution', async () => {
     const { service } = await setup()
     const admission = await service.admit('command', { rounds: 2, focus: ['workflow'] })
@@ -952,6 +1179,62 @@ describe('RefineService evolution workspaces', () => {
     await service.dispose()
   })
 
+  it('persists an asynchronous cross-candidate assessment before applying the pure selection policy', async () => {
+    const { service } = await setup(0.8, false, 2)
+    const implementation = {
+      package: 'test-selection-assessor', version: '1.0.0', integrity: `sha256:${'e'.repeat(64)}`,
+    }
+    const assessorRef = componentRef('candidate-assessor', 'async-test', implementation, { model: 'test' })
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    service.components.registerCandidateAssessor('async-test', implementation, ref => ({
+      ref,
+      async assess(request, _context, signal) {
+        entered.resolve()
+        await release.promise
+        signal.throwIfAborted()
+        const ordered = [...request.candidates].sort((left, right) => left.candidateId.localeCompare(right.candidateId))
+        return {
+          candidateMetrics: Object.fromEntries(ordered.map((candidate, index) => [candidate.candidateId, {
+            ...candidate.metrics,
+            quality: index === ordered.length - 1 ? 0.9 : 0.1,
+          }])),
+          rankingCandidateIds: ordered.map(candidate => candidate.candidateId).reverse(),
+          reason: 'test asynchronous pairwise assessment',
+          evidence: { kind: 'test-pairwise', requestCount: 1 },
+          usage: { modelRequests: 1, inputTokens: 10, outputTokens: 2 },
+        }
+      },
+    }))
+    service.options.selection.assessor = assessorRef
+    const admission = await service.admit('api')
+    let previousWorkspace: string | undefined
+    for (let index = 0; index < 2; index += 1) {
+      const round = await eventually(
+        () => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId) as Promise<RefinementRound>,
+        value => value?.status === 'candidate-editing'
+          && service.activeEntry(value.roundId)?.workspace?.workspaceId !== previousWorkspace,
+      )
+      previousWorkspace = service.activeEntry(round.roundId)?.workspace?.workspaceId
+      await finalize(service, round)
+    }
+    await entered.promise
+    const store = service.registry.stateStore(admission.evolutionId)
+    expect(await store.readRound(admission.roundId)).toMatchObject({ status: 'selection-running' })
+    release.resolve()
+    const terminal = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'accepted')
+    expect(terminal?.selectionAssessment).toMatchObject({
+      component: { id: 'async-test' },
+      rankingCandidateIds: [expect.stringMatching(/candidate-2$/), expect.stringMatching(/candidate-1$/)],
+      usage: { modelRequests: 1, inputTokens: 10, outputTokens: 2 },
+      digest: expect.stringMatching(/^sha256:/),
+    })
+    expect(terminal?.selection?.assessmentDigest).toBe(terminal?.selectionAssessment?.digest)
+    expect(terminal?.promotionCandidateId).toMatch(/candidate-2$/)
+    expect(terminal?.candidatePool.find(candidate => candidate.candidateId.endsWith('candidate-2'))?.metrics?.quality).toBe(0.9)
+    await service.dispose()
+  })
+
   it('keeps multiple seed-selected survivors while promotion still has one finalist', async () => {
     const { service, git } = await setup(0.8, false, 3, 300_000, 2, -0.2)
     const admission = await service.admit('api')
@@ -976,6 +1259,48 @@ describe('RefineService evolution workspaces', () => {
     expect(population?.members).toHaveLength(2)
     expect(population?.members.every(member => member.metrics.quality === 0.8)).toBe(true)
     expect(population?.members.every(member => member.metaCheckpoint?.sourceSessionId === member.metaSessionId)).toBe(true)
+    await service.dispose()
+  })
+
+  it('persists the failed reserved baseline attempt before failing the round', async () => {
+    const { service, evaluator } = await setup()
+    evaluator.failurePhase = 'seed-baseline'
+    const admission = await service.admit('api')
+    const terminal = await eventually(
+      () => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId),
+      value => value?.status === 'failed',
+    )
+    expect(terminal?.baseline).toBeUndefined()
+    expect(terminal?.evaluationAttempts).toEqual([expect.objectContaining({
+      phase: 'seed-baseline',
+      owner: expect.objectContaining({ role: 'baseline', harnessRef: terminal?.targetHarnessRef }),
+      status: 'failed',
+      failure: { code: 'hitch_infrastructure_failure', message: 'fake invalid run observations' },
+    })])
+    expect(terminal?.failedEvaluations).toBeUndefined()
+    expect(terminal?.failure).toMatchObject({ phase: 'baseline-running' })
+    await service.dispose()
+  })
+
+  it('retains a successful held-out baseline when the held-out candidate evaluation fails', async () => {
+    const { service, evaluator } = await setup()
+    const admission = await service.admit('api')
+    const round = await editing(service, admission.evolutionId, admission.roundId)
+    evaluator.failurePhase = 'held-out-candidate'
+    await finalize(service, round)
+    const terminal = await eventually(
+      () => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId),
+      value => value?.status === 'failed',
+    )
+    expect(terminal?.evaluation?.heldOutBaseline).toBeDefined()
+    expect(terminal?.evaluation?.heldOutCandidate).toBeUndefined()
+    expect(terminal?.evaluationAttempts).toEqual(expect.arrayContaining([expect.objectContaining({
+      phase: 'held-out-candidate',
+      owner: expect.objectContaining({ role: 'candidate' }),
+      status: 'failed',
+      failure: { code: 'hitch_infrastructure_failure', message: 'fake invalid run observations' },
+    })]))
+    expect(terminal?.failedEvaluations).toBeUndefined()
     await service.dispose()
   })
 

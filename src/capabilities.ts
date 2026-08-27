@@ -7,7 +7,6 @@ import type {
   CandidateFinalization,
   EvaluationEvidence,
   HitchTrajectoryReader,
-  HitchTrialSummary,
   RefineBridgeRequestMap,
   RefinementRound,
   SemanticTarget,
@@ -37,7 +36,16 @@ interface SeedRunEvidence {
   roundId: string
   phase: 'seed-baseline' | 'seed-candidate'
   evalId: string
-  trial: HitchTrialSummary & { runId: string }
+  trial: {
+    taskName: string
+    trialName?: string
+    runId: string
+    attempt?: number
+    status: 'completed' | 'errored'
+    rewards?: Record<string, number>
+    invalidReason?: string
+  }
+  failure?: { code: string; message: string }
 }
 
 const SENSITIVE_KEY = /(?:api[_-]?key|authorization|credential|password|secret|token)/iu
@@ -127,13 +135,22 @@ export class RefineCapabilities {
       const limit = Math.min(this.optionalInteger(args, 'limit') ?? 20, 100)
       if (limit <= 0) throw new TypeError('limit must be a positive integer')
       const rounds = await store.listRounds()
-      const evidence = baseline === undefined ? this.seedRunEvidence(rounds) : baseline.trials.flatMap(trial => trial.runId === undefined ? [] : [{
-        evolutionId,
-        roundId: activeRoundId,
-        phase: 'seed-baseline' as const,
-        evalId: baseline.evalId,
-        trial: { ...trial, runId: trial.runId },
-      }])
+      const evidence = baseline === undefined ? this.seedRunEvidence(rounds) : [
+        ...baseline.trials.flatMap(trial => trial.runId === undefined ? [] : [{
+          evolutionId,
+          roundId: activeRoundId,
+          phase: 'seed-baseline' as const,
+          evalId: baseline.evalId,
+          trial: { ...trial, runId: trial.runId },
+        }]),
+        ...baseline.invalidTrials.map(trial => ({
+          evolutionId,
+          roundId: activeRoundId,
+          phase: 'seed-baseline' as const,
+          evalId: baseline.evalId,
+          trial: { ...trial },
+        })),
+      ]
       const refs = this.optionalStrings(args, 'refs')
       const requestedRoundId = this.optionalString(args, 'roundId')
         ?? activeRoundId
@@ -154,6 +171,9 @@ export class RefineCapabilities {
               : round.baseline === undefined ? [] : [this.projectEvidence('seed-baseline', round.baseline)]),
             ...(round.roundId === activeRoundId && baseline !== undefined || round.evaluation?.seedCandidate === undefined
               ? [] : [this.projectEvidence('seed-candidate', round.evaluation.seedCandidate)]),
+            ...(round.failedEvaluations ?? [])
+              .filter(failed => failed.phase === 'seed-baseline' || failed.phase === 'seed-candidate')
+              .map(failed => this.projectFailedEvidence(failed)),
           ],
           scoreDelta: round.evaluation?.scoreDelta,
           decision: round.decision,
@@ -166,6 +186,7 @@ export class RefineCapabilities {
             refs: visibleBaseline === undefined ? [] : [
               visibleBaseline.evalId,
               ...visibleBaseline.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId]),
+              ...visibleBaseline.invalidTrials.map(trial => trial.runId),
             ],
           })
         }
@@ -192,6 +213,7 @@ export class RefineCapabilities {
           taskName: item.trial.taskName,
           trialName: item.trial.trialName,
           runId: page.runId,
+          ...(item.failure === undefined ? {} : { outcome: 'failed', failure: item.failure }),
           fidelity: page.fidelity,
           provider: page.provider,
           sessionId: page.sessionId,
@@ -220,16 +242,21 @@ export class RefineCapabilities {
         seedSummary: baseline.summary,
         seedBaseline: {
           evalId: baseline.evalId,
+          completeness: baseline.completeness,
+          plannedTrialCount: baseline.plannedTrialCount,
           primaryReward: baseline.primaryReward,
           summary: baseline.summary,
-          trials: baseline.trials.map(trial => ({
-            taskName: trial.taskName,
-            ...(trial.trialName === undefined ? {} : { trialName: trial.trialName }),
-            ...(trial.runId === undefined ? {} : { runId: trial.runId }),
-            ...(trial.attempt === undefined ? {} : { attempt: trial.attempt }),
-            status: trial.status,
-            reward: trial.rewards.reward ?? Object.values(trial.rewards)[0],
-          })),
+          trials: [
+            ...baseline.trials.map(trial => ({
+              taskName: trial.taskName,
+              ...(trial.trialName === undefined ? {} : { trialName: trial.trialName }),
+              ...(trial.runId === undefined ? {} : { runId: trial.runId }),
+              ...(trial.attempt === undefined ? {} : { attempt: trial.attempt }),
+              status: trial.status,
+              reward: trial.rewards.reward ?? Object.values(trial.rewards)[0],
+            })),
+            ...baseline.invalidTrials.map(trial => ({ ...trial })),
+          ],
         },
       }
       if (visibleStatus.seedBaseline !== undefined) meta.recordEvidenceAccess(roundId, sessionId, {
@@ -274,9 +301,25 @@ export class RefineCapabilities {
         for (const trial of evidence.trials) {
           if (trial.runId !== undefined) values.push({ evolutionId: round.evolutionId, roundId: round.roundId, phase, evalId: evidence.evalId, trial: { ...trial, runId: trial.runId } })
         }
+        for (const trial of evidence.invalidTrials) {
+          values.push({ evolutionId: round.evolutionId, roundId: round.roundId, phase, evalId: evidence.evalId, trial: { ...trial } })
+        }
       }
       append('seed-baseline', round.baseline)
       append('seed-candidate', round.evaluation?.seedCandidate)
+      for (const failed of round.failedEvaluations ?? []) {
+        if (failed.phase !== 'seed-baseline' && failed.phase !== 'seed-candidate') continue
+        for (const trial of failed.evidence.trials) {
+          values.push({
+            evolutionId: round.evolutionId,
+            roundId: round.roundId,
+            phase: failed.phase,
+            evalId: failed.evidence.evalId,
+            trial: { ...trial },
+            failure: { ...failed.failure },
+          })
+        }
+      }
     }
     return values
   }
@@ -293,23 +336,36 @@ export class RefineCapabilities {
   }
 
   private projectEvidence(phase: SeedRunEvidence['phase'], evidence: EvaluationEvidence): unknown {
-    const trials = evidence.trials.map(trial => ({
-      taskName: trial.taskName,
-      trialName: trial.trialName,
-      runId: trial.runId,
-      attempt: trial.attempt,
-      status: trial.status,
-      rewards: trial.rewards,
-    }))
+    const trials: SeedRunEvidence['trial'][] = [
+      ...evidence.trials.flatMap(trial => trial.runId === undefined ? [] : [{ ...trial, runId: trial.runId }]),
+      ...evidence.invalidTrials.map(trial => ({ ...trial })),
+    ]
     return {
       phase,
       evalId: evidence.evalId,
       harnessRef: evidence.actualCommit,
+      completeness: evidence.completeness,
+      plannedTrialCount: evidence.plannedTrialCount,
       primaryReward: evidence.primaryReward,
       summary: evidence.summary,
       trials,
       failedTrials: trials.filter(trial => trial.status === 'errored'
-        || (trial.rewards.reward ?? Object.values(trial.rewards)[0] ?? 0) <= 0),
+        || ((trial.rewards?.reward ?? Object.values(trial.rewards ?? {})[0] ?? 0) <= 0)),
+    }
+  }
+
+  private projectFailedEvidence(
+    failed: NonNullable<RefinementRound['failedEvaluations']>[number],
+  ): unknown {
+    return {
+      phase: failed.phase,
+      outcome: 'failed',
+      evalId: failed.evidence.evalId,
+      harnessRef: failed.evidence.actualCommit,
+      owner: failed.owner,
+      failure: failed.failure,
+      trials: failed.evidence.trials,
+      failedTrials: failed.evidence.trials.filter(trial => trial.status === 'errored'),
     }
   }
 

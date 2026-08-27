@@ -3,6 +3,10 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import type {
   ArtifactRef,
+  CandidateAssessmentContext,
+  CandidateAssessmentRequest,
+  CandidateAssessmentResult,
+  CandidateSelectionRequest,
   CandidateSelectionInput,
   ComponentKind,
   ComponentRef,
@@ -158,7 +162,16 @@ export class DatasetTaskSampler implements TaskSampler {
 
 export interface CandidateSelector {
   readonly ref: ComponentRef<unknown>
-  select(candidates: readonly CandidateSelectionInput[], survivors: number): SelectionDecision
+  select(request: CandidateSelectionRequest): SelectionDecision
+}
+
+export interface CandidateAssessor {
+  readonly ref: ComponentRef<unknown>
+  assess(
+    request: CandidateAssessmentRequest,
+    context: CandidateAssessmentContext,
+    signal: AbortSignal,
+  ): Promise<CandidateAssessmentResult>
 }
 
 export interface Judge {
@@ -187,6 +200,36 @@ export class TaskRewardJudge implements Judge {
   }
 }
 
+export class EvaluationMetricsCandidateAssessor implements CandidateAssessor {
+  readonly ref: ComponentRef<unknown>
+
+  constructor(ref: ComponentRef<unknown>) {
+    assertComponentRef(ref, 'candidate-assessor')
+    this.ref = ref
+  }
+
+  async assess(
+    request: CandidateAssessmentRequest,
+    _context: CandidateAssessmentContext,
+    signal: AbortSignal,
+  ): Promise<CandidateAssessmentResult> {
+    signal.throwIfAborted()
+    const ordered = [...request.candidates].sort((left, right) => left.candidateId.localeCompare(right.candidateId))
+    return {
+      candidateMetrics: Object.fromEntries(ordered.map(candidate => [candidate.candidateId, structuredClone(candidate.metrics)])),
+      rankingCandidateIds: ordered
+        .sort((left, right) => right.metrics.quality - left.metrics.quality || left.candidateId.localeCompare(right.candidateId))
+        .map(candidate => candidate.candidateId),
+      reason: 'used persisted seed evaluation metrics without additional model calls',
+      evidence: {
+        kind: 'evaluation-metrics',
+        evalIds: Object.fromEntries(ordered.map(candidate => [candidate.candidateId, candidate.seedEvaluation.evalId])),
+      },
+      usage: { modelRequests: 0, inputTokens: 0, outputTokens: 0 },
+    }
+  }
+}
+
 export class HighestQualityCandidateSelector implements CandidateSelector {
   readonly ref: ComponentRef<unknown>
 
@@ -195,7 +238,8 @@ export class HighestQualityCandidateSelector implements CandidateSelector {
     this.ref = ref
   }
 
-  select(candidates: readonly CandidateSelectionInput[], survivors: number): SelectionDecision {
+  select(request: CandidateSelectionRequest): SelectionDecision {
+    const { candidates, survivors, assessment } = request
     if (!Number.isSafeInteger(survivors) || survivors <= 0) throw new TypeError('selection.survivors must be positive')
     const scored = [...candidates]
       .sort((left, right) => (right.metrics?.quality ?? right.seedEvaluation.primaryReward)
@@ -207,8 +251,9 @@ export class HighestQualityCandidateSelector implements CandidateSelector {
     return {
       selectedCandidateIds: selected.map(candidate => candidate.candidateId),
       promotionCandidateId: selected[0]!.candidateId,
-      reason: 'highest primary reward on seed/dev evaluation',
+      reason: 'highest assessed quality on seed/dev evaluation',
       component: this.ref,
+      assessmentDigest: assessment.digest,
       metrics: Object.fromEntries(scored.map(candidate => [candidate.candidateId, candidate.metrics?.quality ?? candidate.seedEvaluation.primaryReward])),
     }
   }
@@ -238,6 +283,17 @@ export interface PromotionPolicyProvider {
   decide(request: PromotionDecisionRequest): PromotionDecision
 }
 
+function pairedRewards(trials: readonly PairedTrial[], side: 'baseline' | 'candidate'): {
+  score: number
+  passed: number
+} {
+  const rewards = trials.map(trial => side === 'baseline' ? trial.baselineReward : trial.candidateReward)
+  return {
+    score: rewards.length === 0 ? 0 : rewards.reduce((sum, reward) => sum + reward, 0) / rewards.length,
+    passed: rewards.filter(reward => reward > 0).length,
+  }
+}
+
 export class PairedGatePromotionPolicy implements PromotionPolicyProvider {
   readonly ref: ComponentRef<PromotionPolicy>
 
@@ -247,15 +303,22 @@ export class PairedGatePromotionPolicy implements PromotionPolicyProvider {
   }
 
   decide(request: PromotionDecisionRequest): PromotionDecision {
-    const seedDelta = request.seedCandidate.primaryReward - request.seedBaseline.primaryReward
-    const heldOutDelta = request.heldOutCandidate.primaryReward - request.heldOutBaseline.primaryReward
-    const accepted = request.seedCandidate.primaryReward >= request.policy.minimumCandidateScore
+    if (request.pairedTrials.seed.length === 0 || request.pairedTrials.heldOut.length === 0) {
+      return { accepted: false, reason: 'paired promotion gate requires at least one valid seed and held-out pair' }
+    }
+    const seedBaseline = pairedRewards(request.pairedTrials.seed, 'baseline')
+    const seedCandidate = pairedRewards(request.pairedTrials.seed, 'candidate')
+    const heldOutBaseline = pairedRewards(request.pairedTrials.heldOut, 'baseline')
+    const heldOutCandidate = pairedRewards(request.pairedTrials.heldOut, 'candidate')
+    const seedDelta = seedCandidate.score - seedBaseline.score
+    const heldOutDelta = heldOutCandidate.score - heldOutBaseline.score
+    const accepted = seedCandidate.score >= request.policy.minimumCandidateScore
       && seedDelta >= request.policy.minimumAbsoluteGain
       && heldOutDelta >= -request.policy.maxHeldOutRegression
       && request.requiredRegressions <= request.policy.maxRequiredRegressions
       && (!request.policy.requireNoRegression
-        || (request.seedCandidate.summary.passed >= request.seedBaseline.summary.passed
-          && request.heldOutCandidate.summary.passed >= request.heldOutBaseline.summary.passed))
+        || (seedCandidate.passed >= seedBaseline.passed
+          && heldOutCandidate.passed >= heldOutBaseline.passed))
     return {
       accepted,
       reason: accepted ? 'paired seed and held-out gates passed' : 'paired promotion gate rejected candidate',
@@ -272,6 +335,7 @@ export class ComponentRegistry {
   private readonly candidateGenerators = new Map<string, RegisteredComponent<unknown, CandidateGenerator>>()
   private readonly taskSamplers = new Map<string, RegisteredComponent<unknown, TaskSampler>>()
   private readonly rolloutProviders = new Map<string, RegisteredComponent<unknown, RolloutProvider>>()
+  private readonly assessors = new Map<string, RegisteredComponent<unknown, CandidateAssessor>>()
   private readonly selectors = new Map<string, RegisteredComponent<unknown, CandidateSelector>>()
   private readonly judges = new Map<string, RegisteredComponent<unknown, Judge>>()
   private readonly promotionPolicies = new Map<string, RegisteredComponent<PromotionPolicy, PromotionPolicyProvider>>()
@@ -279,6 +343,7 @@ export class ComponentRegistry {
   constructor() {
     this.registerCandidateGenerator('dsh-meta-forked-proposals', builtinImplementation('candidate-generator', 'dsh-meta-forked-proposals'), ref => new ForkedProposalCandidateGenerator(ref))
     this.registerTaskSampler('dataset', builtinImplementation('task-sampler', 'dataset'), ref => new DatasetTaskSampler(ref))
+    this.registerCandidateAssessor('evaluation-metrics', builtinImplementation('candidate-assessor', 'evaluation-metrics'), ref => new EvaluationMetricsCandidateAssessor(ref))
     this.registerCandidateSelector('highest-quality', builtinImplementation('candidate-selector', 'highest-quality'), ref => new HighestQualityCandidateSelector(ref))
     this.registerJudge('task-reward', builtinImplementation('judge', 'task-reward'), ref => new TaskRewardJudge(ref))
     this.registerPromotionPolicy('paired-gate', builtinImplementation('promotion-policy', 'paired-gate'), ref => new PairedGatePromotionPolicy(ref))
@@ -294,6 +359,10 @@ export class ComponentRegistry {
 
   registerRolloutProvider(id: string, implementation: ComponentImplementation, factory: (ref: ComponentRef<unknown>) => RolloutProvider): () => void {
     return this.register(this.rolloutProviders, id, implementation, factory)
+  }
+
+  registerCandidateAssessor(id: string, implementation: ComponentImplementation, factory: (ref: ComponentRef<unknown>) => CandidateAssessor): () => void {
+    return this.register(this.assessors, id, implementation, factory)
   }
 
   registerCandidateSelector(id: string, implementation: ComponentImplementation, factory: (ref: ComponentRef<unknown>) => CandidateSelector): () => void {
@@ -326,6 +395,10 @@ export class ComponentRegistry {
 
   hasRolloutProvider(id: string): boolean {
     return this.rolloutProviders.has(id)
+  }
+
+  assessor(ref: ComponentRef<unknown>): CandidateAssessor {
+    return this.resolve(this.assessors, ref, 'candidate-assessor')
   }
 
   selector(ref: ComponentRef<unknown>): CandidateSelector {

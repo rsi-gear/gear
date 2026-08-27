@@ -1,7 +1,10 @@
 import { constants } from 'node:fs'
 import { access, mkdir, open, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import type { ChampionState, EvaluationEvidence, MetaSessionState, PairedTrial, PopulationState, RefinementRound, RoundEvaluationAttempt } from '../types.js'
+import type {
+  CandidateAssessment, ChampionState, ComponentKind, ComponentRef, EvaluationEvidence, MetaSessionState,
+  PairedTrial, PairingAudit, PopulationState, RefinementRound, RoundEvaluationAttempt,
+} from '../types.js'
 import { isExactGitCommit } from '../types.js'
 import { digestJson } from './digest.js'
 
@@ -53,6 +56,68 @@ function validMetricSet(value: unknown): boolean {
     if (Object.values(metrics.descriptors).some(item => typeof item !== 'string' && !Number.isFinite(item))) return false
   }
   return true
+}
+
+function trialKey(trial: { taskName: string; attempt?: number }): string {
+  return JSON.stringify([trial.taskName, trial.attempt ?? null])
+}
+
+function trialReward(trial: EvaluationEvidence['trials'][number]): number {
+  const reward = trial.rewards.reward ?? Object.values(trial.rewards)[0]
+  if (reward === undefined) throw new TypeError('paired evaluation trial has no reward')
+  return reward
+}
+
+function expectedPairedTrials(baseline: EvaluationEvidence, candidate: EvaluationEvidence): PairedTrial[] {
+  const baselineTrials = new Map(baseline.trials.map(trial => [trialKey(trial), trial]))
+  return candidate.trials.flatMap(trial => {
+    const key = trialKey(trial)
+    const before = baselineTrials.get(key)
+    if (before === undefined) return []
+    const baselineReward = trialReward(before)
+    const candidateReward = trialReward(trial)
+    return [{
+      conditionId: baseline.conditionId,
+      trialKey: key,
+      taskName: trial.taskName,
+      ...(before.trialName === undefined ? {} : { baselineTrialName: before.trialName }),
+      ...(trial.trialName === undefined ? {} : { candidateTrialName: trial.trialName }),
+      ...(trial.attempt === undefined ? {} : { attempt: trial.attempt }),
+      ...(before.runId === undefined ? {} : { baselineRunId: before.runId }),
+      ...(trial.runId === undefined ? {} : { candidateRunId: trial.runId }),
+      baselineReward,
+      candidateReward,
+      rewardDelta: candidateReward - baselineReward,
+    }]
+  }).sort((left, right) => left.trialKey.localeCompare(right.trialKey))
+}
+
+function pairedScoreDelta(pairs: readonly PairedTrial[]): number {
+  if (pairs.length === 0) return 0
+  return pairs.reduce((sum, pair) => sum + pair.candidateReward - pair.baselineReward, 0) / pairs.length
+}
+
+function requiredRegressionCount(requiredTaskIds: readonly string[], pairs: readonly PairedTrial[]): number {
+  if (pairs.length === 0) return 0
+  const grouped = new Map<string, PairedTrial[]>()
+  for (const pair of pairs) grouped.set(pair.taskName, [...(grouped.get(pair.taskName) ?? []), pair])
+  let regressions = 0
+  for (const task of requiredTaskIds) {
+    const taskPairs = grouped.get(task)
+    if (taskPairs === undefined || taskPairs.length === 0) {
+      throw new TypeError(`required task has no valid paired rollout cell: ${task}`)
+    }
+    const baseline = taskPairs.reduce((sum, pair) => sum + pair.baselineReward, 0) / taskPairs.length
+    const candidate = taskPairs.reduce((sum, pair) => sum + pair.candidateReward, 0) / taskPairs.length
+    if (candidate < baseline) regressions += 1
+  }
+  return regressions
+}
+
+function validComponentRef(value: ComponentRef<unknown>, kind: ComponentKind): boolean {
+  return value.kind === kind && value.apiVersion === 1 && value.id.length > 0
+    && value.implementation.package.length > 0 && value.implementation.version.length > 0
+    && value.implementation.integrity.length > 0 && digestJson(value.config) === value.configDigest
 }
 
 export class RoundAlreadyRunningError extends Error {
@@ -327,7 +392,8 @@ export class RefineStateStore {
     if (typeof round.roundId !== 'string' || !/^[a-zA-Z0-9_-]+$/u.test(round.roundId)) throw new TypeError('roundId is invalid')
     const statuses = new Set([
       'queued', 'baseline-running', 'preparing-candidate', 'candidate-editing', 'building-candidate', 'candidate-seed-running',
-      'held-out-running', 'repairing-evaluation', 'promoting', 'accepted', 'rejected', 'rejected-for-substrate', 'failed',
+      'selection-running', 'held-out-running', 'repairing-evaluation', 'promoting', 'accepted', 'rejected',
+      'rejected-for-substrate', 'failed',
     ])
     if (typeof round.status !== 'string' || !statuses.has(round.status)) throw new TypeError('round status is invalid')
     if (round.source !== 'command' && round.source !== 'target' && round.source !== 'api') throw new TypeError('round source is invalid')
@@ -353,6 +419,20 @@ export class RefineStateStore {
     }
     if (typeof round.targetHarnessDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(round.targetHarnessDigest)) {
       throw new TypeError('round targetHarnessDigest must be a sha256 digest')
+    }
+    const promotionPolicy = round.promotionPolicy
+    if (promotionPolicy === undefined
+      || !Number.isFinite(promotionPolicy.minimumCandidateScore)
+      || !Number.isFinite(promotionPolicy.minimumAbsoluteGain)
+      || typeof promotionPolicy.requireNoRegression !== 'boolean'
+      || !Number.isFinite(promotionPolicy.maxHeldOutRegression)
+      || !Number.isSafeInteger(promotionPolicy.maxRequiredRegressions)
+      || promotionPolicy.maxRequiredRegressions < 0
+      || (promotionPolicy.requiredTaskIds !== undefined
+        && (!Array.isArray(promotionPolicy.requiredTaskIds)
+          || promotionPolicy.requiredTaskIds.some(task => typeof task !== 'string' || task.length === 0)
+          || new Set(promotionPolicy.requiredTaskIds).size !== promotionPolicy.requiredTaskIds.length))) {
+      throw new TypeError('round promotion policy is invalid')
     }
     if (round.plan === undefined || round.plan.planId.length === 0 || !/^sha256:[0-9a-f]{64}$/u.test(round.plan.digest)) {
       throw new TypeError('round resolved plan is invalid')
@@ -436,7 +516,8 @@ export class RefineStateStore {
       }
       if (candidate.seedEvaluation !== undefined) this.validateEvaluationEvidence(candidate.seedEvaluation, 'candidate seed evaluation')
       if (candidate.seedComparison !== undefined) {
-        if (typeof candidate.seedComparison.parentBaselineEvalId !== 'string'
+        if (candidate.seedEvaluation === undefined
+          || typeof candidate.seedComparison.parentBaselineEvalId !== 'string'
           || !Number.isFinite(candidate.seedComparison.scoreDelta)
           || !Number.isSafeInteger(candidate.seedComparison.requiredRegressions)
           || candidate.seedComparison.requiredRegressions < 0) {
@@ -445,9 +526,33 @@ export class RefineStateStore {
         this.validatePairedTrials(
           candidate.seedComparison.pairedTrials,
           round.plan.seed.conditionId,
-          candidate.seedEvaluation?.trials.length ?? -1,
+          candidate.seedComparison.pairing.paired,
           'candidate seed',
         )
+        const parentBaselineRecord = round.parentBaselines?.find(value => (
+          value.evidence.evalId === candidate.seedComparison!.parentBaselineEvalId
+        ))
+        if (parentBaselineRecord === undefined
+          || parentBaselineRecord.parentCandidateId !== candidate.parentCandidateIds[0]) {
+          throw new TypeError('candidate seed comparison baseline is unavailable')
+        }
+        const parentBaseline = parentBaselineRecord.evidence
+        this.validatePairingAudit(
+          candidate.seedComparison.pairing,
+          parentBaseline,
+          candidate.seedEvaluation,
+          candidate.seedComparison.pairedTrials,
+          'candidate seed',
+        )
+        if (Math.abs(candidate.seedComparison.scoreDelta - pairedScoreDelta(candidate.seedComparison.pairedTrials)) > 1e-12) {
+          throw new TypeError('candidate seed comparison score delta is invalid')
+        }
+        if (candidate.seedComparison.requiredRegressions !== requiredRegressionCount(
+          promotionPolicy.requiredTaskIds ?? [],
+          candidate.seedComparison.pairedTrials,
+        )) {
+          throw new TypeError('candidate seed comparison required regressions are invalid')
+        }
       }
       if (candidate.heldOutEvaluation !== undefined) this.validateEvaluationEvidence(candidate.heldOutEvaluation, 'candidate held-out evaluation')
       if (candidate.metrics !== undefined && !validMetricSet(candidate.metrics)) throw new TypeError('candidate metrics are invalid')
@@ -480,10 +585,34 @@ export class RefineStateStore {
           || baseline.evidence.conditionId !== round.plan.seed.conditionId) throw new TypeError('parent seed baseline identity is invalid')
       }
     }
+    if (round.failedEvaluations !== undefined) {
+      if (!Array.isArray(round.failedEvaluations)) throw new TypeError('round failed evaluations must be an array')
+      const keys = round.failedEvaluations.map(value => `${value.phase}\u0000${value.owner.candidateId}\u0000${value.evidence.evalId}`)
+      if (new Set(keys).size !== keys.length) throw new TypeError('round failed evaluations are duplicated')
+      for (const failed of round.failedEvaluations) this.validateFailedEvaluation(failed, round as RefinementRound)
+    }
+    if (round.selectionAssessment !== undefined) {
+      const assessableCandidates = round.candidatePool
+        .filter(candidate => candidate.seedEvaluation !== undefined && candidate.seedComparison !== undefined && candidate.metrics !== undefined)
+      const assessable = assessableCandidates.map(candidate => candidate.candidateId)
+      this.validateCandidateAssessment(round.selectionAssessment, assessable)
+      if (assessableCandidates.some(candidate => digestJson(candidate.metrics) !== digestJson(
+        round.selectionAssessment!.candidateMetrics[candidate.candidateId],
+      ))) {
+        throw new TypeError('round candidate assessment metrics do not match candidate records')
+      }
+    }
     if (round.selection !== undefined) {
       const selected = new Set(round.selection.selectedCandidateIds)
+      const assessedIds = Object.keys(round.selectionAssessment?.candidateMetrics ?? {}).sort()
+      const metricIds = Object.keys(round.selection.metrics).sort()
       if (selected.size !== round.selection.selectedCandidateIds.length || selected.size === 0
         || !selected.has(round.selection.promotionCandidateId)
+        || round.selectionAssessment === undefined
+        || round.selection.assessmentDigest !== round.selectionAssessment.digest
+        || !validComponentRef(round.selection.component, 'candidate-selector')
+        || JSON.stringify(metricIds) !== JSON.stringify(assessedIds)
+        || Object.values(round.selection.metrics).some(metric => !Number.isFinite(metric))
         || round.promotionCandidateId !== undefined && round.promotionCandidateId !== round.selection.promotionCandidateId
         || [...selected].some(id => !round.candidatePool!.some(candidate => candidate.candidateId === id))) {
         throw new TypeError('round selection decision is invalid')
@@ -504,19 +633,43 @@ export class RefineStateStore {
       this.validatePairedTrials(
         round.evaluation.seedPairedTrials,
         round.plan.seed.conditionId,
-        round.evaluation.seedCandidate.trials.length,
+        round.evaluation.seedPairing.paired,
         'seed',
       )
+      this.validatePairingAudit(
+        round.evaluation.seedPairing,
+        round.evaluation.seedBaseline,
+        round.evaluation.seedCandidate,
+        round.evaluation.seedPairedTrials,
+        'seed',
+      )
+      if (Math.abs(round.evaluation.scoreDelta - pairedScoreDelta(round.evaluation.seedPairedTrials)) > 1e-12) {
+        throw new TypeError('round seed score delta does not match paired evidence')
+      }
       if (round.evaluation.heldOutPairedTrials !== undefined) {
-        if (round.evaluation.heldOutCandidate === undefined) throw new TypeError('held-out pairs require candidate evidence')
+        if (round.evaluation.heldOutBaseline === undefined || round.evaluation.heldOutCandidate === undefined
+          || round.evaluation.heldOutPairing === undefined) throw new TypeError('held-out pairs require paired evidence and audit')
         this.validatePairedTrials(
           round.evaluation.heldOutPairedTrials,
           round.plan.heldOut.conditionId,
-          round.evaluation.heldOutCandidate.trials.length,
+          round.evaluation.heldOutPairing.paired,
           'held-out',
         )
+        this.validatePairingAudit(
+          round.evaluation.heldOutPairing,
+          round.evaluation.heldOutBaseline,
+          round.evaluation.heldOutCandidate,
+          round.evaluation.heldOutPairedTrials,
+          'held-out',
+        )
+        if (round.evaluation.heldOutScoreDelta === undefined
+          || Math.abs(round.evaluation.heldOutScoreDelta - pairedScoreDelta(round.evaluation.heldOutPairedTrials)) > 1e-12) {
+          throw new TypeError('round held-out score delta does not match paired evidence')
+        }
       } else if (round.evaluation.heldOutCandidate !== undefined) {
         throw new TypeError('held-out candidate evidence requires paired trials')
+      } else if (round.evaluation.heldOutPairing !== undefined) {
+        throw new TypeError('held-out pairing audit requires paired trials')
       }
       if (round.evaluation.promotionMetrics !== undefined && !validMetricSet(round.evaluation.promotionMetrics)) {
         throw new TypeError('round promotion metrics are invalid')
@@ -525,6 +678,20 @@ export class RefineStateStore {
         || (round.evaluation.heldOutScoreDelta !== undefined && !Number.isFinite(round.evaluation.heldOutScoreDelta))
         || !Number.isSafeInteger(round.evaluation.requiredRegressions) || round.evaluation.requiredRegressions < 0) {
         throw new TypeError('round evaluation deltas are invalid')
+      }
+      const expectedRequiredRegressions = requiredRegressionCount(
+        promotionPolicy.requiredTaskIds ?? [],
+        round.evaluation.seedPairedTrials,
+      ) + requiredRegressionCount(
+        promotionPolicy.requiredTaskIds ?? [],
+        round.evaluation.heldOutPairedTrials ?? [],
+      )
+      if (round.evaluation.requiredRegressions !== expectedRequiredRegressions) {
+        throw new TypeError('round required regressions do not match paired evidence')
+      }
+      if (round.status === 'accepted' && (round.evaluation.seedPairedTrials.length === 0
+        || (round.evaluation.heldOutPairedTrials?.length ?? 0) === 0)) {
+        throw new TypeError('accepted round requires valid seed and held-out pairs')
       }
     }
     if (round.evaluationAttempts !== undefined) {
@@ -738,6 +905,38 @@ export class RefineStateStore {
     }
   }
 
+  private validateCandidateAssessment(value: CandidateAssessment, candidateIds: string[]): void {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)
+      || value.component.kind !== 'candidate-assessor'
+      || !validComponentRef(value.component, 'candidate-assessor')
+      || typeof value.reason !== 'string' || value.reason.length === 0
+      || typeof value.candidateMetrics !== 'object' || value.candidateMetrics === null
+      || Array.isArray(value.candidateMetrics)) {
+      throw new TypeError('round candidate assessment is invalid')
+    }
+    const expected = [...candidateIds].sort()
+    const actual = Object.keys(value.candidateMetrics).sort()
+    if (JSON.stringify(expected) !== JSON.stringify(actual)
+      || Object.values(value.candidateMetrics).some(metrics => !validMetricSet(metrics))) {
+      throw new TypeError('round candidate assessment metrics are invalid')
+    }
+    if (value.rankingCandidateIds !== undefined
+      && JSON.stringify([...value.rankingCandidateIds].sort()) !== JSON.stringify(expected)) {
+      throw new TypeError('round candidate assessment ranking is invalid')
+    }
+    if (value.usage !== undefined) {
+      const usage = [value.usage.modelRequests, value.usage.inputTokens, value.usage.outputTokens,
+        value.usage.cachedInputTokens, value.usage.reasoningTokens]
+      if (usage.some(item => item !== undefined && (!Number.isSafeInteger(item) || item < 0))) {
+        throw new TypeError('round candidate assessment usage is invalid')
+      }
+    }
+    const { digest, ...identity } = value
+    if (!/^sha256:[0-9a-f]{64}$/u.test(digest) || digestJson(identity) !== digest) {
+      throw new TypeError('round candidate assessment digest mismatch')
+    }
+  }
+
   private validateEvaluationEvidence(value: EvaluationEvidence, label: string): void {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError(`${label} must be an object`)
     if (typeof value.provider !== 'string' || value.provider.length === 0
@@ -749,7 +948,11 @@ export class RefineStateStore {
     if (typeof value.revisionIdentity !== 'string' || value.revisionIdentity.length === 0
       || (value.invocationFingerprint !== undefined
         && (typeof value.invocationFingerprint !== 'string' || value.invocationFingerprint.length === 0))
-      || !Number.isFinite(value.primaryReward)) throw new TypeError(`${label} identity/reward is invalid`)
+      || !Number.isFinite(value.primaryReward)
+      || (value.completeness !== 'complete' && value.completeness !== 'partial')
+      || !Number.isSafeInteger(value.plannedTrialCount) || value.plannedTrialCount <= 0) {
+      throw new TypeError(`${label} identity/reward is invalid`)
+    }
     if (typeof value.summary !== 'object' || value.summary === null
       || !Number.isSafeInteger(value.summary.total) || !Number.isSafeInteger(value.summary.passed)
       || !Number.isSafeInteger(value.summary.failed) || !Number.isFinite(value.summary.score)
@@ -766,6 +969,24 @@ export class RefineStateStore {
       || Object.values(trial.rewards).some(reward => !Number.isFinite(reward)))) {
       throw new TypeError(`${label} trials are invalid`)
     }
+    if (!Array.isArray(value.invalidTrials)
+      || value.plannedTrialCount !== value.trials.length + value.invalidTrials.length
+      || (value.completeness === 'complete' ? value.invalidTrials.length !== 0 : value.invalidTrials.length === 0)
+      || value.invalidTrials.some(trial => typeof trial.taskName !== 'string' || trial.taskName.length === 0
+        || typeof trial.trialName !== 'string' || trial.trialName.length === 0
+        || typeof trial.runId !== 'string' || trial.runId.length === 0
+        || !Number.isSafeInteger(trial.attempt) || trial.attempt <= 0
+        || trial.status !== 'errored'
+        || typeof trial.invalidReason !== 'string' || trial.invalidReason.length === 0)) {
+      throw new TypeError(`${label} invalid trials are invalid`)
+    }
+    const plannedKeys = [...value.trials, ...value.invalidTrials]
+      .map(trial => JSON.stringify([trial.taskName, trial.attempt ?? null]))
+    const runIds = [...value.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId]),
+      ...value.invalidTrials.map(trial => trial.runId)]
+    if (new Set(plannedKeys).size !== plannedKeys.length || new Set(runIds).size !== runIds.length) {
+      throw new TypeError(`${label} trial identities are ambiguous`)
+    }
     const transport = value.localSourceTransport
     if (transport !== undefined) {
       if (typeof transport !== 'object' || transport === null || transport.kind !== 'local-git-commit'
@@ -778,6 +999,78 @@ export class RefineStateStore {
     }
   }
 
+  private validateFailedEvaluation(
+    value: NonNullable<RefinementRound['failedEvaluations']>[number],
+    round: RefinementRound,
+  ): void {
+    const phases = new Set(['seed-baseline', 'seed-candidate', 'held-out-baseline', 'held-out-candidate'])
+    if (typeof value !== 'object' || value === null || Array.isArray(value)
+      || !phases.has(value.phase)
+      || typeof value.owner !== 'object' || value.owner === null
+      || typeof value.owner.candidateId !== 'string' || value.owner.candidateId.length === 0
+      || !isExactGitCommit(value.owner.harnessRef)
+      || (value.owner.role !== 'baseline' && value.owner.role !== 'candidate')
+      || (value.phase.endsWith('baseline') ? value.owner.role !== 'baseline' : value.owner.role !== 'candidate')
+      || typeof value.failure !== 'object' || value.failure === null
+      || typeof value.failure.code !== 'string' || value.failure.code.length === 0
+      || typeof value.failure.message !== 'string' || value.failure.message.length === 0) {
+      throw new TypeError('round failed evaluation record is invalid')
+    }
+    const evidence = value.evidence
+    if (typeof evidence !== 'object' || evidence === null || Array.isArray(evidence)
+      || typeof evidence.provider !== 'string' || evidence.provider.length === 0
+      || !/^sha256:[0-9a-f]{64}$/u.test(evidence.conditionId)
+      || !/^sha256:[0-9a-f]{64}$/u.test(evidence.effectiveConfigDigest)
+      || typeof evidence.evalId !== 'string' || evidence.evalId.length === 0
+      || typeof evidence.dataset !== 'string' || evidence.dataset.length === 0
+      || !isExactGitCommit(evidence.requestedCommit) || !isExactGitCommit(evidence.actualCommit)
+      || typeof evidence.revisionIdentity !== 'string' || evidence.revisionIdentity.length === 0
+      || (evidence.invocationFingerprint !== undefined
+        && (typeof evidence.invocationFingerprint !== 'string' || evidence.invocationFingerprint.length === 0))
+      || evidence.runSetComplete !== true
+      || !Array.isArray(evidence.trials) || evidence.trials.length === 0) {
+      throw new TypeError('round failed evaluation evidence is invalid')
+    }
+    const runIds = evidence.trials.map(trial => trial.runId)
+    if (new Set(runIds).size !== runIds.length || evidence.trials.some(trial => (
+      typeof trial.taskName !== 'string' || trial.taskName.length === 0
+      || typeof trial.trialName !== 'string' || trial.trialName.length === 0
+      || typeof trial.runId !== 'string' || trial.runId.length === 0
+      || !Number.isSafeInteger(trial.attempt) || trial.attempt <= 0
+      || (trial.status !== 'completed' && trial.status !== 'errored')
+      || (trial.status === 'errored'
+        && (typeof trial.invalidReason !== 'string' || trial.invalidReason.length === 0))
+      || (trial.invalidReason !== undefined && (typeof trial.invalidReason !== 'string' || trial.invalidReason.length === 0))
+    ))) {
+      throw new TypeError('round failed evaluation trials are invalid')
+    }
+    const partition = value.phase.startsWith('seed-') ? round.plan.seed : round.plan.heldOut
+    if (evidence.conditionId !== partition.conditionId || evidence.dataset !== partition.dataset.ref
+      || evidence.requestedCommit !== value.owner.harnessRef || evidence.actualCommit !== value.owner.harnessRef) {
+      throw new TypeError('round failed evaluation does not match its owner or partition')
+    }
+    if (value.owner.role === 'candidate') {
+      const candidate = round.candidatePool.find(item => item.candidateId === value.owner.candidateId)
+      if (candidate?.sealedVersion?.commitOid !== value.owner.harnessRef) {
+        throw new TypeError('round failed candidate evaluation owner is invalid')
+      }
+    } else {
+      const parentHarnesses = new Set([
+        round.targetHarnessRef,
+        ...(round.parentAllocations ?? []).map(allocation => allocation.parentHarnessRef),
+      ])
+      if (!parentHarnesses.has(value.owner.harnessRef)) throw new TypeError('round failed baseline evaluation owner is invalid')
+    }
+    const transport = evidence.localSourceTransport
+    if (transport !== undefined && (typeof transport !== 'object' || transport === null
+      || transport.kind !== 'local-git-commit' || transport.commit !== evidence.actualCommit
+      || !isExactGitCommit(transport.tree) || transport.resolutionIdentity !== evidence.revisionIdentity
+      || !/^sha256:[0-9a-f]{64}$/u.test(transport.payloadSha256)
+      || !Number.isSafeInteger(transport.payloadBytes) || transport.payloadBytes < 0)) {
+      throw new TypeError('round failed evaluation transport is invalid')
+    }
+  }
+
   private validatePairedTrials(value: PairedTrial[], conditionId: string, expectedCount: number, label: string): void {
     if (!Array.isArray(value) || value.length !== expectedCount
       || new Set(value.map(trial => trial.trialKey)).size !== value.length
@@ -786,6 +1079,37 @@ export class RefineStateStore {
         || !Number.isFinite(trial.rewardDelta)
         || trial.rewardDelta !== trial.candidateReward - trial.baselineReward)) {
       throw new TypeError(`round ${label} paired trials are invalid`)
+    }
+  }
+
+  private validatePairingAudit(
+    value: PairingAudit,
+    baseline: EvaluationEvidence,
+    candidate: EvaluationEvidence,
+    pairs: readonly PairedTrial[],
+    label: string,
+  ): void {
+    const baselinePlanned = [...baseline.trials, ...baseline.invalidTrials].map(trialKey).sort()
+    const candidatePlanned = [...candidate.trials, ...candidate.invalidTrials].map(trialKey).sort()
+    const expectedPairs = expectedPairedTrials(baseline, candidate)
+    if (typeof value !== 'object' || value === null || Array.isArray(value)
+      || !Number.isSafeInteger(value.planned) || value.planned <= 0
+      || !Number.isSafeInteger(value.paired) || value.paired < 0
+      || !Number.isSafeInteger(value.excluded) || value.excluded < 0
+      || !Number.isSafeInteger(value.baselineInvalid) || value.baselineInvalid < 0
+      || !Number.isSafeInteger(value.candidateInvalid) || value.candidateInvalid < 0
+      || value.planned !== baseline.plannedTrialCount || value.planned !== candidate.plannedTrialCount
+      || value.paired !== pairs.length || value.excluded !== value.planned - value.paired
+      || value.baselineInvalid !== baseline.invalidTrials.length
+      || value.candidateInvalid !== candidate.invalidTrials.length
+      || baseline.conditionId !== candidate.conditionId
+      || baseline.provider !== candidate.provider
+      || baseline.effectiveConfigDigest !== candidate.effectiveConfigDigest
+      || baseline.invocationFingerprint !== candidate.invocationFingerprint
+      || baseline.dataset !== candidate.dataset
+      || JSON.stringify(baselinePlanned) !== JSON.stringify(candidatePlanned)
+      || digestJson(pairs) !== digestJson(expectedPairs)) {
+      throw new TypeError(`round ${label} pairing audit is invalid`)
     }
   }
 }

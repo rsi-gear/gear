@@ -19,7 +19,13 @@ import { mountMetaCapabilityTools, mountNotebookTool } from './notebook/tool.js'
 import { DshMetaAgentHost, MetaSessionManager } from './meta/session.js'
 import { assertMetaPresetIsolation, resolveDshPresetRef, resolveDshRuntimeIdentity } from './meta/isolation.js'
 import { RefineService } from './refine/service.js'
-import { builtinComponentRef, ComponentRegistry } from './evolution/components.js'
+import { builtinComponentRef, componentRef, ComponentRegistry } from './evolution/components.js'
+import {
+  LlmVerifierCandidateAssessor,
+  llmVerifierImplementation,
+  resolveLlmVerifierRuntime,
+  type LlmVerifierAssessorConfig,
+} from './selection/llm-verifier.js'
 import { RefineCapabilities } from './capabilities.js'
 import { HitchCliEvaluator } from './evaluator/hitch-cli.js'
 import { ConfigSchema, type Config as PluginConfig, type HitchConfig } from './config.js'
@@ -44,6 +50,7 @@ export * from './state/dataset.js'
 export * from './state/digest.js'
 export * from './state/experiments.js'
 export * from './evolution/components.js'
+export * from './selection/llm-verifier.js'
 export * from './candidate/workspace.js'
 export * from './candidate/filesystem.js'
 export * from './candidate/subprocess.js'
@@ -145,11 +152,34 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     candidateMaxCandidates: config.candidateGeneration.maxCandidates,
     candidateGenerationTimeoutMs: config.candidateGeneration.timeoutMs,
     selectionSurvivors: config.selection.survivors,
+    selectionTimeoutMs: config.selection.timeoutMs,
   })) {
     if (!Number.isSafeInteger(value) || value <= 0) throw new TypeError(`${name} must be a positive safe integer`)
   }
   if (config.selection.survivors > config.candidateGeneration.maxCandidates) {
     throw new TypeError('selection.survivors cannot exceed candidateGeneration.maxCandidates')
+  }
+  if (config.selection.llmVerifier !== undefined) {
+    const llmVerifier = config.selection.llmVerifier
+    for (const [name, value] of Object.entries({
+      nEvaluations: llmVerifier.nEvaluations,
+      pivots: llmVerifier.pivots,
+      maxWorkers: llmVerifier.maxWorkers,
+      maxOutputBytes: llmVerifier.maxOutputBytes,
+      maxTrajectoryEvents: llmVerifier.maxTrajectoryEvents,
+      maxTrajectoryChars: llmVerifier.maxTrajectoryChars,
+    })) {
+      if (!Number.isSafeInteger(value) || value <= 0) throw new TypeError(`selection.llmVerifier.${name} must be a positive safe integer`)
+    }
+    if (!Number.isSafeInteger(llmVerifier.seed) || llmVerifier.seed < 0) {
+      throw new TypeError('selection.llmVerifier.seed must be a non-negative safe integer')
+    }
+    if (!isAbsolute(llmVerifier.pythonExecutable) || llmVerifier.model.length === 0
+      || Object.keys(llmVerifier.criteria).length === 0
+      || Object.values(llmVerifier.criteria).some(value => value.length === 0)
+      || llmVerifier.passEnv.some(name => !/^[A-Z_][A-Z0-9_]*$/u.test(name))) {
+      throw new TypeError('selection.llmVerifier requires an absolute Python executable, model, and criteria')
+    }
   }
   if (config.metaModel.provider === undefined || config.metaModel.provider.length === 0
     || config.metaModel.model === undefined || config.metaModel.model.length === 0) {
@@ -216,9 +246,33 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     judges: [builtinComponentRef('judge', 'task-reward', {})],
     primaryMetric: 'primaryReward',
   }
+  let selectionAssessor = builtinComponentRef('candidate-assessor', 'evaluation-metrics', {})
+  if (config.selection.llmVerifier !== undefined) {
+    const configured = config.selection.llmVerifier
+    const assessorConfig: LlmVerifierAssessorConfig = {
+      pythonExecutable: configured.pythonExecutable,
+      runtime: await resolveLlmVerifierRuntime(configured.pythonExecutable),
+      model: configured.model,
+      criteria: structuredClone(configured.criteria),
+      ...(configured.groundTruthNote === undefined ? {} : { groundTruthNote: configured.groundTruthNote }),
+      nEvaluations: configured.nEvaluations,
+      pivots: configured.pivots,
+      seed: configured.seed,
+      maxWorkers: configured.maxWorkers,
+      maxOutputBytes: configured.maxOutputBytes,
+      maxTrajectoryEvents: configured.maxTrajectoryEvents,
+      maxTrajectoryChars: configured.maxTrajectoryChars,
+      passEnv: [...configured.passEnv],
+    }
+    const implementation = llmVerifierImplementation()
+    selectionAssessor = componentRef('candidate-assessor', 'llm-verifier', implementation, assessorConfig)
+    components.registerCandidateAssessor('llm-verifier', implementation, ref => new LlmVerifierCandidateAssessor(ref))
+  }
   const selection = {
+    assessor: selectionAssessor,
     strategy: builtinComponentRef('candidate-selector', 'highest-quality', {}),
     survivors: config.selection.survivors,
+    timeoutMs: config.selection.timeoutMs,
   }
   const promotion = {
     policy: builtinComponentRef('promotion-policy', 'paired-gate', structuredClone(config.promotion)),
@@ -295,7 +349,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     maxBytes: config.candidateWorkspace.maxBytes,
     maxDiffBytes: config.candidateWorkspace.maxDiffBytes,
   })
-  const validateMetaRuntime = async (spec: import('./types.js').EvolutionSpec): Promise<void> => {
+  const validateEvolutionRuntime = async (spec: import('./types.js').EvolutionSpec): Promise<void> => {
     const currentPreset = await ctx.agentPresets.resolve(spec.metaAgent.preset.id)
     await assertMetaPresetIsolation(currentPreset, [config.dshRepository])
     const currentIdentity = await resolveDshPresetRef(currentPreset)
@@ -308,13 +362,20 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       || spec.metaAgent.runtime.integrity !== currentRuntime.integrity) {
       throw new Error('DSH Meta runtime identity changed; evolution cannot continue')
     }
+    if (spec.selection.assessor.id === 'llm-verifier') {
+      const assessorConfig = spec.selection.assessor.config as LlmVerifierAssessorConfig
+      const currentVerifier = await resolveLlmVerifierRuntime(assessorConfig.pythonExecutable)
+      if (JSON.stringify(currentVerifier) !== JSON.stringify(assessorConfig.runtime)) {
+        throw new Error('llm-verifier runtime identity changed; evolution cannot continue')
+      }
+    }
   }
   const service = new RefineService(
     registry,
     builder,
     workspaceManager,
     async (spec, specDigest, store) => {
-      await validateMetaRuntime(spec)
+      await validateEvolutionRuntime(spec)
       return new MetaSessionManager(store, host, { evolutionId: spec.evolutionId, specDigest, metaAgent: spec.metaAgent })
     },
     evaluator,
@@ -334,7 +395,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       ...(config.initialChampion === undefined ? {} : { initialChampion: config.initialChampion }),
       publishedPointer: config.evolutionState.publishedPointer,
       maxLiveMetaSessions: config.evolutionState.maxLiveMetaSessions,
-      validateRuntime: validateMetaRuntime,
+      validateRuntime: validateEvolutionRuntime,
     },
     components,
   )
@@ -342,7 +403,10 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     ...(config.seedTasksPath === undefined ? {} : { seedTasksPath: config.seedTasksPath }),
     configuredSeedTaskRef: config.seedTaskRef,
     trajectoryReader: evaluator,
-    secretValues: config.hitch.passEnv.flatMap(name => {
+    secretValues: [...new Set([
+      ...config.hitch.passEnv,
+      ...(config.selection.llmVerifier?.passEnv ?? []),
+    ])].flatMap(name => {
       const value = process.env[name]
       return value === undefined || value.length === 0 ? [] : [value]
     }),

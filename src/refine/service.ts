@@ -7,9 +7,9 @@ import { digestDatasetRef } from '../state/dataset.js'
 import { digestJson, type EvolutionRegistryStore } from '../state/evolution.js'
 import type { RefineStateStore, WorkspaceLock } from '../state/store.js'
 import type {
-  AdmissionResult, CandidateDecline, CandidateDiffSummary, CandidateFinalization, CandidateRecord, ChampionState,
+  AdmissionResult, CandidateAssessment, CandidateAssessmentResult, CandidateDecline, CandidateDiffSummary, CandidateFinalization, CandidateRecord, ChampionState,
   CandidateGenerationSpec, ComponentRef, DshMetaAgentSpec, EvaluationEvidence, EvaluationRequest, EvaluationRerunResult, EvaluationRerunSelector, EvolutionRegistryEntry, EvolutionSpec, MetaAttribution,
-  MetaCheckpointRef, PairedTrial, PopulationState, ProposalEvidenceAudit, PromotionPolicy, PublicSeedEvidence, PublicRoundStatus,
+  HitchTrajectoryReader, MetaCheckpointRef, MetricSet, PairedTrial, PairingAudit, PopulationState, ProposalEvidenceAudit, PromotionPolicy, PublicSeedEvidence, PublicRoundStatus,
   RefineEvaluator, RefinementRound, RolloutSpec, RoundEvaluation, RoundEvaluationAttempt, SemanticTarget, PopulationMember,
 } from '../types.js'
 import { isExactGitCommit } from '../types.js'
@@ -143,58 +143,103 @@ function normalizeEvaluationRerunSelector(selector: EvaluationRerunSelector): Ev
   }
   return { mode: 'tasks', taskNames: [...new Set(selector.taskNames)] }
 }
-
-function taskRewards(evidence: EvaluationEvidence): Map<string, number> {
-  const grouped = new Map<string, number[]>()
-  for (const trial of evidence.trials) {
-    const reward = trial.rewards.reward ?? Object.values(trial.rewards)[0]
-    if (reward === undefined) continue
-    const values = grouped.get(trial.taskName) ?? []
-    values.push(reward)
-    grouped.set(trial.taskName, values)
-  }
-  return new Map([...grouped].map(([task, values]) => [task, values.reduce((sum, value) => sum + value, 0) / values.length]))
-}
-
 function trialReward(trial: EvaluationEvidence['trials'][number]): number | undefined {
   return trial.rewards.reward ?? Object.values(trial.rewards)[0]
+}
+
+function validMetricSet(value: MetricSet): boolean {
+  return Number.isFinite(value.quality) && Number.isFinite(value.taskSuccessRate)
+    && [value.cost, value.latency, value.safety, value.trajectoryDiversity]
+      .every(metric => metric === undefined || Number.isFinite(metric))
+    && (value.descriptors === undefined || Object.values(value.descriptors)
+      .every(item => typeof item === 'string' || Number.isFinite(item)))
+}
+
+function sealAssessment(
+  component: ComponentRef<unknown>,
+  candidates: readonly import('../types.js').CandidateSelectionInput[],
+  result: CandidateAssessmentResult,
+): CandidateAssessment {
+  const candidateIds = candidates.map(candidate => candidate.candidateId).sort()
+  const metricIds = Object.keys(result.candidateMetrics).sort()
+  if (JSON.stringify(candidateIds) !== JSON.stringify(metricIds)
+    || Object.values(result.candidateMetrics).some(metrics => !validMetricSet(metrics))) {
+    throw new Error('candidate assessor returned invalid or incomplete metrics')
+  }
+  if (result.rankingCandidateIds !== undefined
+    && JSON.stringify([...result.rankingCandidateIds].sort()) !== JSON.stringify(candidateIds)) {
+    throw new Error('candidate assessor ranking is not a candidate permutation')
+  }
+  if (result.reason.length === 0) throw new Error('candidate assessor must provide a reason')
+  if (result.usage !== undefined) {
+    const usage = [result.usage.modelRequests, result.usage.inputTokens, result.usage.outputTokens,
+      result.usage.cachedInputTokens, result.usage.reasoningTokens]
+    if (usage.some(value => value !== undefined && (!Number.isSafeInteger(value) || value < 0))) {
+      throw new Error('candidate assessor returned invalid usage')
+    }
+  }
+  const identity = {
+    component,
+    candidateMetrics: result.candidateMetrics,
+    ...(result.rankingCandidateIds === undefined ? {} : { rankingCandidateIds: result.rankingCandidateIds }),
+    reason: result.reason,
+    evidence: result.evidence,
+    ...(result.usage === undefined ? {} : { usage: result.usage }),
+  }
+  return { ...identity, digest: digestJson(identity) }
+}
+
+function trajectoryReader(evaluator: RefineEvaluator): HitchTrajectoryReader | undefined {
+  const value = evaluator as Partial<HitchTrajectoryReader>
+  return typeof value.inspectTrajectory === 'function' ? value as HitchTrajectoryReader : undefined
 }
 
 function publicSeedEvidence(evidence: EvaluationEvidence): PublicSeedEvidence {
   return {
     evalId: evidence.evalId,
+    completeness: evidence.completeness,
+    plannedTrialCount: evidence.plannedTrialCount,
     primaryReward: evidence.primaryReward,
     summary: evidence.summary,
-    trials: evidence.trials.map(trial => {
-      const reward = trialReward(trial)
-      return {
-        taskName: trial.taskName,
-        ...(trial.trialName === undefined ? {} : { trialName: trial.trialName }),
-        ...(trial.runId === undefined ? {} : { runId: trial.runId }),
-        ...(trial.attempt === undefined ? {} : { attempt: trial.attempt }),
-        status: trial.status,
-        ...(reward === undefined ? {} : { reward }),
-      }
-    }),
+    trials: [
+      ...evidence.trials.map(trial => {
+        const reward = trialReward(trial)
+        return {
+          taskName: trial.taskName,
+          ...(trial.trialName === undefined ? {} : { trialName: trial.trialName }),
+          ...(trial.runId === undefined ? {} : { runId: trial.runId }),
+          ...(trial.attempt === undefined ? {} : { attempt: trial.attempt }),
+          status: trial.status,
+          ...(reward === undefined ? {} : { reward }),
+        }
+      }),
+      ...evidence.invalidTrials.map(trial => ({ ...trial })),
+    ],
   }
+}
+
+function trialIdentity(trial: { taskName: string; attempt?: number }): string {
+  return JSON.stringify([trial.taskName, trial.attempt ?? null])
+}
+
+function plannedTrialKeys(evidence: EvaluationEvidence): string[] {
+  return [...evidence.trials, ...evidence.invalidTrials]
+    .map(trialIdentity)
+    .sort((left, right) => left.localeCompare(right))
 }
 
 function pairedTrials(baseline: EvaluationEvidence, candidate: EvaluationEvidence): PairedTrial[] {
   const index = new Map<string, EvaluationEvidence['trials'][number]>()
-  const key = (trial: EvaluationEvidence['trials'][number]): string => JSON.stringify([
-    trial.taskName, trial.attempt ?? null,
-  ])
   for (const trial of baseline.trials) {
-    const trialKey = key(trial)
+    const trialKey = trialIdentity(trial)
     if (index.has(trialKey)) throw new Error(`baseline has ambiguous duplicate trial identity: ${trialKey}`)
     index.set(trialKey, trial)
   }
   const result: PairedTrial[] = []
   for (const trial of candidate.trials) {
-    const trialKey = key(trial)
+    const trialKey = trialIdentity(trial)
     const before = index.get(trialKey)
-    if (before === undefined) throw new Error(`candidate trial has no paired baseline identity: ${trialKey}`)
-    index.delete(trialKey)
+    if (before === undefined) continue
     const baselineReward = trialReward(before)
     const candidateReward = trialReward(trial)
     if (baselineReward === undefined || candidateReward === undefined) {
@@ -214,8 +259,59 @@ function pairedTrials(baseline: EvaluationEvidence, candidate: EvaluationEvidenc
       rewardDelta: candidateReward - baselineReward,
     })
   }
-  if (index.size > 0) throw new Error(`candidate is missing ${index.size} paired baseline trial(s)`)
   return result.sort((left, right) => left.trialKey.localeCompare(right.trialKey))
+}
+
+function pairingAudit(
+  baseline: EvaluationEvidence,
+  candidate: EvaluationEvidence,
+  pairs: readonly PairedTrial[],
+): PairingAudit {
+  return {
+    planned: baseline.plannedTrialCount,
+    paired: pairs.length,
+    excluded: baseline.plannedTrialCount - pairs.length,
+    baselineInvalid: baseline.invalidTrials.length,
+    candidateInvalid: candidate.invalidTrials.length,
+  }
+}
+
+function pairedAggregate(pairs: readonly PairedTrial[], side: 'baseline' | 'candidate'): {
+  score: number
+  passed: number
+  total: number
+} {
+  const rewards = pairs.map(pair => side === 'baseline' ? pair.baselineReward : pair.candidateReward)
+  return {
+    score: rewards.length === 0 ? 0 : rewards.reduce((sum, reward) => sum + reward, 0) / rewards.length,
+    passed: rewards.filter(reward => reward > 0).length,
+    total: rewards.length,
+  }
+}
+
+function projectPairedEvidence(
+  evidence: EvaluationEvidence,
+  pairs: readonly PairedTrial[],
+  side: 'baseline' | 'candidate',
+): EvaluationEvidence {
+  const keys = new Set(pairs.map(pair => pair.trialKey))
+  const trials = evidence.trials.filter(trial => keys.has(trialIdentity(trial)))
+  const aggregate = pairedAggregate(pairs, side)
+  return {
+    ...evidence,
+    completeness: 'complete',
+    plannedTrialCount: pairs.length,
+    primaryReward: aggregate.score,
+    summary: {
+      total: aggregate.total,
+      passed: aggregate.passed,
+      failed: aggregate.total - aggregate.passed,
+      score: aggregate.score,
+      metrics: { primaryReward: aggregate.score },
+    },
+    trials,
+    invalidTrials: [],
+  }
 }
 
 export class RefineService {
@@ -497,11 +593,11 @@ export class RefineService {
       if (result.provider !== attempt.provider || result.evalId !== attempt.evalId) {
         throw new Error('evaluation rerun result does not match Gear ownership')
       }
-      if (result.evalStatus !== 'succeeded' || result.evidence === undefined) {
+      if (result.evidence === undefined) {
         const slots = result.remainingInvalidTrials?.map(slot => `${slot.taskId}#${slot.attempt}`) ?? []
         const invalid = slots.length > 0 ? slots : result.remainingInvalidTasks
         const message = invalid.length === 0
-          ? 'evaluation rerun did not produce complete evidence'
+          ? 'evaluation rerun did not produce inspectable evidence'
           : `evaluation still has invalid trials: ${invalid.join(', ')}`
         await this.failEvaluationRepair(
           repair,
@@ -1115,13 +1211,31 @@ export class RefineService {
         if (candidate.seedEvaluation !== undefined) {
           this.assertParity(parentBaseline, candidate.seedEvaluation, 'seed')
           if (candidate.seedComparison === undefined || candidate.metrics === undefined || candidate.status !== 'ready') {
-            const comparison = {
+            const seedPairs = pairedTrials(parentBaseline, candidate.seedEvaluation)
+            const baselineAggregate = pairedAggregate(seedPairs, 'baseline')
+            const candidateAggregate = pairedAggregate(seedPairs, 'candidate')
+            const comparisonBase = {
               parentBaselineEvalId: parentBaseline.evalId,
-              pairedTrials: pairedTrials(parentBaseline, candidate.seedEvaluation),
-              scoreDelta: candidate.seedEvaluation.primaryReward - parentBaseline.primaryReward,
-              requiredRegressions: this.requiredRegressions(round, parentBaseline, candidate.seedEvaluation),
+              pairedTrials: seedPairs,
+              pairing: pairingAudit(parentBaseline, candidate.seedEvaluation, seedPairs),
+              scoreDelta: candidateAggregate.score - baselineAggregate.score,
             }
-            const metrics = await this.evaluateJudges(active.evolution.spec, candidate.seedEvaluation)
+            if (seedPairs.length === 0) {
+              round = await this.transition(store, roundId, {
+                candidatePool: this.patchCandidate(round, candidate.candidateId, {
+                  seedComparison: { ...comparisonBase, requiredRegressions: 0 },
+                  metrics: undefined,
+                  status: 'failed',
+                  failure: { phase: 'candidate-seed-running', message: 'seed baseline/candidate have no valid paired trials' },
+                }),
+              })
+              continue
+            }
+            const comparison = { ...comparisonBase, requiredRegressions: this.requiredRegressions(round, seedPairs) }
+            const metrics = await this.evaluateJudges(
+              active.evolution.spec,
+              projectPairedEvidence(candidate.seedEvaluation, seedPairs, 'candidate'),
+            )
             active.abort.signal.throwIfAborted()
             round = await this.transition(store, roundId, {
               candidatePool: this.patchCandidate(round, candidate.candidateId, {
@@ -1145,17 +1259,32 @@ export class RefineService {
             candidateId: candidate.candidateId, role: 'candidate', harnessRef: candidate.sealedVersion.commitOid,
           }, async (current, seedCandidate) => {
             this.assertParity(parentBaseline, seedCandidate, 'seed')
-            const comparison = {
+            const seedPairs = pairedTrials(parentBaseline, seedCandidate)
+            const baselineAggregate = pairedAggregate(seedPairs, 'baseline')
+            const candidateAggregate = pairedAggregate(seedPairs, 'candidate')
+            const comparisonBase = {
               parentBaselineEvalId: parentBaseline.evalId,
-              pairedTrials: pairedTrials(parentBaseline, seedCandidate),
-              scoreDelta: seedCandidate.primaryReward - parentBaseline.primaryReward,
-              requiredRegressions: this.requiredRegressions(current, parentBaseline, seedCandidate),
+              pairedTrials: seedPairs,
+              pairing: pairingAudit(parentBaseline, seedCandidate, seedPairs),
+              scoreDelta: candidateAggregate.score - baselineAggregate.score,
             }
+            if (seedPairs.length === 0) return {
+              candidatePool: this.patchCandidate(current, candidate.candidateId, {
+                seedEvaluation: seedCandidate,
+                seedComparison: { ...comparisonBase, requiredRegressions: 0 },
+                status: 'failed',
+                failure: { phase: 'candidate-seed-running', message: 'seed baseline/candidate have no valid paired trials' },
+              }),
+            }
+            const comparison = { ...comparisonBase, requiredRegressions: this.requiredRegressions(current, seedPairs) }
             return {
               candidatePool: this.patchCandidate(current, candidate.candidateId, {
                 seedEvaluation: seedCandidate,
                 seedComparison: comparison,
-                metrics: await this.evaluateJudges(active.evolution.spec, seedCandidate),
+                metrics: await this.evaluateJudges(
+                  active.evolution.spec,
+                  projectPairedEvidence(seedCandidate, seedPairs, 'candidate'),
+                ),
                 status: 'ready',
               }),
             }
@@ -1176,7 +1305,12 @@ export class RefineService {
         ? [{
             candidateId: candidate.candidateId, parentHarnessRef: candidate.parentHarnessRef,
             parentCandidateIds: candidate.parentCandidateIds, sealedVersion: candidate.sealedVersion,
-            seedEvaluation: candidate.seedEvaluation, seedComparison: candidate.seedComparison, metrics: candidate.metrics,
+            seedEvaluation: projectPairedEvidence(
+              candidate.seedEvaluation,
+              candidate.seedComparison.pairedTrials,
+              'candidate',
+            ),
+            seedComparison: candidate.seedComparison, metrics: candidate.metrics,
           }]
         : [])
       active.abort.signal.throwIfAborted()
@@ -1199,8 +1333,38 @@ export class RefineService {
         continueBatch = true
         return
       }
+      round = await this.transition(store, roundId, { status: 'selection-running' })
+      const assessmentSignal = AbortSignal.any([
+        active.abort.signal,
+        AbortSignal.timeout(active.evolution.spec.selection.timeoutMs),
+      ])
+      const assessor = this.components.assessor(active.evolution.spec.selection.assessor)
+      const reader = trajectoryReader(active.evolution.evaluator)
+      const assessment = sealAssessment(assessor.ref, selectable, await assessor.assess({
+        evolutionId: round.evolutionId,
+        roundId: round.roundId,
+        candidates: selectable,
+      }, {
+        ...(reader === undefined ? {} : { trajectoryReader: reader }),
+      }, assessmentSignal))
+      const assessedSelectable = selectable.map(candidate => ({
+        ...candidate,
+        metrics: assessment.candidateMetrics[candidate.candidateId]!,
+      }))
+      round = await this.transition(store, roundId, {
+        selectionAssessment: assessment,
+        candidatePool: round.candidatePool.map(candidate => {
+          const metrics = assessment.candidateMetrics[candidate.candidateId]
+          return metrics === undefined ? candidate : { ...candidate, metrics }
+        }),
+      })
       const selection = this.components.selector(active.evolution.spec.selection.strategy)
-        .select(selectable, active.evolution.spec.selection.survivors)
+        .select({
+          candidates: assessedSelectable,
+          survivors: active.evolution.spec.selection.survivors,
+          assessment,
+        })
+      if (selection.assessmentDigest !== assessment.digest) throw new Error('selector decision is not bound to the current assessment')
       if (!selection.selectedCandidateIds.includes(selection.promotionCandidateId)) throw new Error('promotion finalist must be a survivor')
       round = await this.transition(store, roundId, {
         selection, promotionCandidateId: selection.promotionCandidateId,
@@ -1211,13 +1375,18 @@ export class RefineService {
       active.abort.signal.throwIfAborted()
       const finalist = round.candidatePool.find(value => value.candidateId === selection.promotionCandidateId)
       if (finalist?.sealedVersion === undefined || finalist.seedEvaluation === undefined) throw new Error('promotion finalist is not evaluable')
+      this.assertParity(championBaseline, finalist.seedEvaluation, 'seed')
+      const seedPairs = pairedTrials(championBaseline, finalist.seedEvaluation)
+      const seedBaselineAggregate = pairedAggregate(seedPairs, 'baseline')
+      const seedCandidateAggregate = pairedAggregate(seedPairs, 'candidate')
       let evaluation: RoundEvaluation = {
         ...round.evaluation,
         seedBaseline: championBaseline,
         seedCandidate: finalist.seedEvaluation,
-        seedPairedTrials: pairedTrials(championBaseline, finalist.seedEvaluation),
-        scoreDelta: finalist.seedEvaluation.primaryReward - championBaseline.primaryReward,
-        requiredRegressions: this.requiredRegressions(round, championBaseline, finalist.seedEvaluation),
+        seedPairedTrials: seedPairs,
+        seedPairing: pairingAudit(championBaseline, finalist.seedEvaluation, seedPairs),
+        scoreDelta: seedCandidateAggregate.score - seedBaselineAggregate.score,
+        requiredRegressions: seedPairs.length === 0 ? 0 : this.requiredRegressions(round, seedPairs),
       }
       round = await this.transition(store, roundId, { evaluation })
       active.abort.signal.throwIfAborted()
@@ -1245,12 +1414,22 @@ export class RefineService {
             candidateId: finalist.candidateId, role: 'candidate', harnessRef: finalist.sealedVersion.commitOid,
           }, async (current, evidence) => {
             this.assertParity(heldOutBaseline, evidence, 'held-out')
+            const heldOutPairs = pairedTrials(heldOutBaseline, evidence)
+            const heldOutBaselineAggregate = pairedAggregate(heldOutPairs, 'baseline')
+            const heldOutCandidateAggregate = pairedAggregate(heldOutPairs, 'candidate')
             const completeEvaluation = {
               ...evaluation, heldOutBaseline, heldOutCandidate: evidence,
-              heldOutPairedTrials: pairedTrials(heldOutBaseline, evidence),
-              promotionMetrics: await this.evaluateJudges(active.evolution.spec, evidence),
-              heldOutScoreDelta: evidence.primaryReward - heldOutBaseline.primaryReward,
-              requiredRegressions: evaluation.requiredRegressions + this.requiredRegressions(current, heldOutBaseline, evidence),
+              heldOutPairedTrials: heldOutPairs,
+              heldOutPairing: pairingAudit(heldOutBaseline, evidence, heldOutPairs),
+              promotionMetrics: heldOutPairs.length === 0
+                ? { quality: 0, taskSuccessRate: 0 }
+                : await this.evaluateJudges(
+                    active.evolution.spec,
+                    projectPairedEvidence(evidence, heldOutPairs, 'candidate'),
+                  ),
+              heldOutScoreDelta: heldOutCandidateAggregate.score - heldOutBaselineAggregate.score,
+              requiredRegressions: evaluation.requiredRegressions
+                + (heldOutPairs.length === 0 ? 0 : this.requiredRegressions(current, heldOutPairs)),
             }
             return {
               evaluation: completeEvaluation,
@@ -1262,14 +1441,24 @@ export class RefineService {
           evaluation = round.evaluation!
         } else {
           this.assertParity(heldOutBaseline, heldOutCandidate, 'held-out')
-          const promotionMetrics = await this.evaluateJudges(active.evolution.spec, heldOutCandidate)
+          const heldOutPairs = pairedTrials(heldOutBaseline, heldOutCandidate)
+          const heldOutBaselineAggregate = pairedAggregate(heldOutPairs, 'baseline')
+          const heldOutCandidateAggregate = pairedAggregate(heldOutPairs, 'candidate')
+          const promotionMetrics = heldOutPairs.length === 0
+            ? { quality: 0, taskSuccessRate: 0 }
+            : await this.evaluateJudges(
+                active.evolution.spec,
+                projectPairedEvidence(heldOutCandidate, heldOutPairs, 'candidate'),
+              )
           active.abort.signal.throwIfAborted()
           evaluation = {
             ...evaluation, heldOutBaseline, heldOutCandidate,
-            heldOutPairedTrials: pairedTrials(heldOutBaseline, heldOutCandidate),
+            heldOutPairedTrials: heldOutPairs,
+            heldOutPairing: pairingAudit(heldOutBaseline, heldOutCandidate, heldOutPairs),
             promotionMetrics,
-            heldOutScoreDelta: heldOutCandidate.primaryReward - heldOutBaseline.primaryReward,
-            requiredRegressions: evaluation.requiredRegressions + this.requiredRegressions(round, heldOutBaseline, heldOutCandidate),
+            heldOutScoreDelta: heldOutCandidateAggregate.score - heldOutBaselineAggregate.score,
+            requiredRegressions: evaluation.requiredRegressions
+              + (heldOutPairs.length === 0 ? 0 : this.requiredRegressions(round, heldOutPairs)),
           }
           round = await this.transition(store, roundId, {
             evaluation,
@@ -1448,10 +1637,13 @@ export class RefineService {
   private passesSeed(round: RefinementRound, evaluation: RoundEvaluation): boolean {
     const promotion = round.promotionPolicy
     const candidate = round.candidatePool.find(value => value.candidateId === round.promotionCandidateId)
-    return evaluation.seedCandidate.primaryReward >= promotion.minimumCandidateScore
+    const baseline = pairedAggregate(evaluation.seedPairedTrials, 'baseline')
+    const pairedCandidate = pairedAggregate(evaluation.seedPairedTrials, 'candidate')
+    return evaluation.seedPairedTrials.length > 0
+      && pairedCandidate.score >= promotion.minimumCandidateScore
       && evaluation.scoreDelta >= promotion.minimumAbsoluteGain
       && evaluation.requiredRegressions <= promotion.maxRequiredRegressions
-      && (!promotion.requireNoRegression || evaluation.seedCandidate.summary.passed >= evaluation.seedBaseline.summary.passed)
+      && (!promotion.requireNoRegression || pairedCandidate.passed >= baseline.passed)
       && candidate?.sealedVersion?.commitOid === evaluation.seedCandidate.actualCommit
   }
 
@@ -1479,15 +1671,18 @@ export class RefineService {
     }).accepted
   }
 
-  private requiredRegressions(round: RefinementRound, baseline: EvaluationEvidence, candidate: EvaluationEvidence): number {
+  private requiredRegressions(round: RefinementRound, pairs: readonly PairedTrial[]): number {
     const required = round.promotionPolicy.requiredTaskIds ?? []
-    const before = taskRewards(baseline)
-    const after = taskRewards(candidate)
+    const grouped = new Map<string, PairedTrial[]>()
+    for (const pair of pairs) grouped.set(pair.taskName, [...(grouped.get(pair.taskName) ?? []), pair])
     let regressions = 0
     for (const task of required) {
-      const left = before.get(task)
-      const right = after.get(task)
-      if (left === undefined || right === undefined) throw new Error(`required task is missing from Hitch eval result: ${task}`)
+      const taskPairs = grouped.get(task)
+      if (taskPairs === undefined || taskPairs.length === 0) {
+        throw new Error(`required task has no valid paired rollout cell: ${task}`)
+      }
+      const left = taskPairs.reduce((sum, pair) => sum + pair.baselineReward, 0) / taskPairs.length
+      const right = taskPairs.reduce((sum, pair) => sum + pair.candidateReward, 0) / taskPairs.length
       if (right < left) regressions += 1
     }
     return regressions
@@ -1505,6 +1700,17 @@ export class RefineService {
       }
     }
     if (baseline.dataset !== candidate.dataset) throw new Error(`${partition} baseline/candidate dataset mismatch`)
+    if (baseline.plannedTrialCount !== candidate.plannedTrialCount) {
+      throw new Error(`${partition} baseline/candidate planned trial count mismatch`)
+    }
+    const baselineKeys = plannedTrialKeys(baseline)
+    const candidateKeys = plannedTrialKeys(candidate)
+    if (new Set(baselineKeys).size !== baselineKeys.length || new Set(candidateKeys).size !== candidateKeys.length) {
+      throw new Error(`${partition} baseline/candidate have ambiguous planned trial identity`)
+    }
+    if (JSON.stringify(baselineKeys) !== JSON.stringify(candidateKeys)) {
+      throw new Error(`${partition} baseline/candidate rollout cell identity mismatch`)
+    }
   }
 
   private validateFinalizationEvidence(
@@ -1522,7 +1728,11 @@ export class RefineService {
     const cited = finalization?.evidenceRefs ?? decline?.evidenceRefs ?? []
     if (finalization !== null && cited.length === 0) throw new Error('finalization must cite current baseline evidence')
     if (JSON.stringify(cited) !== JSON.stringify(audit.citedRefs)) throw new Error('finalization evidence audit does not match evidenceRefs')
-    const allowed = new Set([baseline.evalId, ...baseline.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId])])
+    const allowed = new Set([
+      baseline.evalId,
+      ...baseline.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId]),
+      ...baseline.invalidTrials.map(trial => trial.runId),
+    ])
     const accessed = new Set(audit.accessedRefs)
     for (const ref of cited) {
       if (!allowed.has(ref)) throw new Error(`finalization evidence ref is not from the current seed baseline: ${ref}`)
@@ -1530,7 +1740,7 @@ export class RefineService {
     }
     const diagnosed = new Set(audit.diagnosedRunRefs)
     const missing = baseline.trials
-      .filter(trial => trial.status === 'errored' || (trialReward(trial) ?? 0) <= 0)
+      .filter(trial => (trialReward(trial) ?? 0) <= 0)
       .flatMap(trial => trial.runId === undefined || diagnosed.has(trial.runId) ? [] : [trial.runId])
     if (missing.length > 0) throw new Error(`finalization requires trajectory diagnostics for every failed baseline run: ${missing.join(', ')}`)
   }
@@ -1796,13 +2006,20 @@ export class RefineService {
     const heldOutBaseline = round.evaluation.heldOutBaseline
     if (heldOutBaseline === undefined) throw new Error('repaired held-out candidate has no paired baseline')
     this.assertParity(heldOutBaseline, evidence, 'held-out')
+    const heldOutPairs = pairedTrials(heldOutBaseline, evidence)
+    const heldOutBaselineAggregate = pairedAggregate(heldOutPairs, 'baseline')
+    const heldOutCandidateAggregate = pairedAggregate(heldOutPairs, 'candidate')
     const evaluation = {
       ...round.evaluation,
       heldOutCandidate: evidence,
-      heldOutPairedTrials: pairedTrials(heldOutBaseline, evidence),
-      promotionMetrics: await this.evaluateJudges(spec, evidence),
-      heldOutScoreDelta: evidence.primaryReward - heldOutBaseline.primaryReward,
-      requiredRegressions: round.evaluation.requiredRegressions + this.requiredRegressions(round, heldOutBaseline, evidence),
+      heldOutPairedTrials: heldOutPairs,
+      heldOutPairing: pairingAudit(heldOutBaseline, evidence, heldOutPairs),
+      promotionMetrics: heldOutPairs.length === 0
+        ? { quality: 0, taskSuccessRate: 0 }
+        : await this.evaluateJudges(spec, projectPairedEvidence(evidence, heldOutPairs, 'candidate')),
+      heldOutScoreDelta: heldOutCandidateAggregate.score - heldOutBaselineAggregate.score,
+      requiredRegressions: round.evaluation.requiredRegressions
+        + (heldOutPairs.length === 0 ? 0 : this.requiredRegressions(round, heldOutPairs)),
     }
     return {
       evaluation,
@@ -1859,6 +2076,7 @@ export class RefineService {
   private resolveComponents(spec: EvolutionSpec): void {
     this.components.candidateGenerator(spec.candidateGeneration.strategy)
     this.components.taskSampler(spec.rollout.taskSampler)
+    this.components.assessor(spec.selection.assessor)
     this.components.selector(spec.selection.strategy)
     this.components.promotionPolicy(spec.promotion.policy)
     if (this.components.hasRolloutProvider(spec.rollout.provider.id)) {

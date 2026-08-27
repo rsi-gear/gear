@@ -27,6 +27,7 @@ interface InspectFixture {
   planCommit?: string
   planBenchmarkRevision?: string
   attemptExecution?: string | null
+  invalidTrials?: Array<{ taskId: string; attempt: number }>
 }
 
 async function setup(version = '0.2.5', inspectFixture: InspectFixture = {}) {
@@ -36,6 +37,7 @@ async function setup(version = '0.2.5', inspectFixture: InspectFixture = {}) {
   const inspectedAttempts = inspectFixture.attempts ?? 1
   const inspectedTasks = inspectFixture.tasks ?? ['task-1']
   const inspectedTrials = inspectFixture.trials ?? [{ taskId: 'task-1', attempt: 1 }]
+  const inspectedInvalidTrials = inspectFixture.invalidTrials ?? []
   const inspectedDataset = inspectFixture.dataset ?? 'seed'
   const planDataset = inspectFixture.planDataset ?? inspectedDataset
   const planCommit = inspectFixture.planCommit ?? fixture.championRef
@@ -52,6 +54,9 @@ const harness = value('--harness')
 const evalId = args.includes('--eval-id') ? value('--eval-id') : 'eval_' + '1'.repeat(32)
 const commit = harness?.match(/#([0-9a-f]{40,64})$/)?.[1]
 const inspectedTrials = ${JSON.stringify(inspectedTrials)}
+const inspectedInvalidTrials = ${JSON.stringify(inspectedInvalidTrials)}
+const isInvalidTrial = trial => inspectedInvalidTrials.some(slot => slot.taskId === trial.taskId && slot.attempt === trial.attempt)
+const remainingInvalidTasks = [...new Set(inspectedInvalidTrials.map(slot => slot.taskId))]
 if (args[0] === '--version') process.stdout.write(${JSON.stringify(version)} + '\\n')
 else if (args[0] === 'trajectory' && args[1] === 'inspect') {
   const runId = args[2]
@@ -69,9 +74,12 @@ else if (args[0] === 'trajectory' && args[1] === 'inspect') {
   process.stdout.write(JSON.stringify({
     schema_version: '1', kind: 'eval-rerun', rerun_id: 'rerun_' + '9'.repeat(32), eval_id: args[2], status: 'completed',
     selected_tasks: args.includes('--invalid') ? ['task-1'] : args.flatMap((arg, index) => arg === '--task' ? [args[index + 1]] : []),
-    repaired_tasks: ['task-1'], remaining_invalid_tasks: [], eval_status: 'succeeded',
+    repaired_tasks: inspectedInvalidTrials.length === 0 ? ['task-1'] : [],
+    remaining_invalid_tasks: remainingInvalidTasks,
+    eval_status: inspectedInvalidTrials.length === 0 ? 'succeeded' : 'failed',
     selected_trials: [{ task_id: 'task-1', attempt: 1 }],
-    repaired_trials: [{ task_id: 'task-1', attempt: 1 }], remaining_invalid_trials: [],
+    repaired_trials: inspectedInvalidTrials.length === 0 ? [{ task_id: 'task-1', attempt: 1 }] : [],
+    remaining_invalid_trials: inspectedInvalidTrials.map(slot => ({ task_id: slot.taskId, attempt: slot.attempt })),
   }) + '\\n')
 } else if (args[0] === 'eval' && args[1] === 'inspect') {
   const inspectedEvalId = args[2]
@@ -89,16 +97,23 @@ else if (args[0] === 'trajectory' && args[1] === 'inspect') {
         harness_ref: 'deepseek@commit:' + ${JSON.stringify(planCommit)}, harness_id: 'deepseek',
         revision_identity: 'sha256:' + '2'.repeat(64) } },
     result: {
-      schema_version: '1', eval_id: inspectedEvalId, status: 'succeeded', exit_code: 0,
+      schema_version: '1', eval_id: inspectedEvalId,
+      status: inspectedInvalidTrials.length === 0 ? 'succeeded' : 'failed',
+      exit_code: inspectedInvalidTrials.length === 0 ? 0 : 1,
       candidate: { harness_ref: 'deepseek@commit:' + actual, revision_identity: 'sha256:' + '2'.repeat(64) },
       dataset: ${JSON.stringify(inspectedDataset)},
       trials: inspectedTrials.map((trial, index) => ({
         trial_id: 'trial-' + (index + 1), run_id: 'run_' + String(index + 5).repeat(32).slice(0, 32),
-        task_id: trial.taskId, attempt: trial.attempt, observation_status: 'valid', reward: 1,
+        task_id: trial.taskId, attempt: trial.attempt,
+        observation_status: isInvalidTrial(trial) ? 'invalid' : 'valid',
+        ...(isInvalidTrial(trial) ? { invalid_reason: 'infrastructure_failure' } : { reward: 1 }),
         verifier_result_ref: 'verifier/result.json',
       })),
-      summary: { n_trials: inspectedTrials.length, n_completed: inspectedTrials.length,
-        n_invalid: 0, primary_reward: 1, rewards: { reward: { count: inspectedTrials.length, mean: 1 } } },
+      summary: { n_trials: inspectedTrials.length,
+        n_completed: inspectedTrials.length - inspectedInvalidTrials.length,
+        n_invalid: inspectedInvalidTrials.length,
+        primary_reward: inspectedTrials.length === inspectedInvalidTrials.length ? null : 1,
+        rewards: { reward: { count: inspectedTrials.length - inspectedInvalidTrials.length, mean: 1 } } },
       local_source_transport: { kind: 'local-git-commit', resolution_identity: 'sha256:' + '2'.repeat(64),
         commit: actual, tree: '3'.repeat(40), payload_sha256: 'sha256:' + '4'.repeat(64), payload_bytes: 100 },
       started_at: new Date().toISOString(), completed_at: new Date().toISOString(),
@@ -109,30 +124,38 @@ else if (dataset === 'invalid-json') process.stdout.write('not-json\\n')
 else {
   const actual = dataset === 'mismatch' ? 'f'.repeat(40) : commit
   const legacy = dataset === 'legacy'
-  const invalidRun = dataset === 'invalid-run'
-  const runTrials = invalidRun
+  const invalidRun = dataset === 'invalid-run' || inspectedInvalidTrials.length > 0
+  const failedCompleteRun = dataset === 'failed-complete-run'
+  const runTrials = dataset === 'invalid-run'
     ? [{ trial_id: 'trial-1', run_id: 'run_' + '5'.repeat(32), task_id: 'task-1',
         attempt: 1, observation_status: 'invalid', invalid_reason: 'infrastructure_failure',
         verifier_result_ref: 'verifier/result.json' }]
     : inspectedTrials.map((trial, index) => ({
         trial_id: 'trial-' + (index + 1), run_id: 'run_' + String(index + 5).repeat(32).slice(0, 32),
-        task_id: trial.taskId, attempt: trial.attempt, observation_status: 'valid', reward: 1,
+        task_id: trial.taskId, attempt: trial.attempt,
+        observation_status: isInvalidTrial(trial) ? 'invalid' : 'valid',
+        ...(isInvalidTrial(trial) ? { invalid_reason: 'infrastructure_failure' } : { reward: 1 }),
         verifier_result_ref: 'verifier/result.json',
       }))
+  const validCount = runTrials.filter(trial => trial.observation_status === 'valid').length
+  const invalidCount = runTrials.length - validCount
   process.stdout.write(JSON.stringify({
-    schema_version: '1', eval_id: evalId, status: 'succeeded', exit_code: 0,
+    schema_version: '1', eval_id: evalId,
+    status: invalidRun || failedCompleteRun ? 'failed' : 'succeeded',
+    exit_code: invalidRun || failedCompleteRun ? 13 : 0,
     candidate: { harness_ref: 'deepseek@commit:' + actual, revision_identity: 'sha256:' + '2'.repeat(64) },
     dataset,
     ...(legacy ? {} : { trials: runTrials }),
     summary: legacy
       ? { n_trials: 1, n_completed: 1, n_errored: 0, n_cancelled: 0, primary_reward: 1,
           trials: [{ task_name: 'task-1', trial_name: 'trial-1', status: 'completed', rewards: { reward: 1 } }] }
-      : { n_trials: runTrials.length, n_completed: invalidRun ? 0 : runTrials.length, n_invalid: invalidRun ? 1 : 0,
-          primary_reward: invalidRun ? null : 1, rewards: { reward: { count: 1, mean: 1 } } },
+      : { n_trials: runTrials.length, n_completed: validCount, n_invalid: invalidCount,
+          primary_reward: validCount === 0 ? null : 1, rewards: { reward: { count: validCount, mean: validCount === 0 ? null : 1 } } },
     local_source_transport: { kind: 'local-git-commit', resolution_identity: 'sha256:' + '2'.repeat(64),
       commit: actual, tree: '3'.repeat(40), payload_sha256: 'sha256:' + '4'.repeat(64), payload_bytes: 100 },
     started_at: new Date().toISOString(), completed_at: new Date().toISOString(),
   }) + '\\n')
+  if (invalidRun || failedCompleteRun) process.exitCode = 13
 }
 `)
   await chmod(executable, 0o755)
@@ -282,6 +305,31 @@ describe('HitchCliEvaluator', () => {
     })
   })
 
+  it('returns inspectable partial evidence when rerun leaves invalid slots', async () => {
+    const { fixture, evaluator } = await setup('0.2.5', {
+      invalidTrials: [{ taskId: 'task-1', attempt: 1 }],
+    })
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const input = request('seed', fixture.championRef)
+    const evalId = `eval_${'8'.repeat(32)}`
+    await expect(evaluator.rerun(state, input, {
+      provider: 'hitch-cli', evalId, phase: 'seed-baseline',
+      owner: { candidateId: `champion-${fixture.championRef}`, role: 'baseline', harnessRef: fixture.championRef },
+      conditionId: input.condition.conditionId, dataset: input.dataset,
+      requestedModelId: input.condition.model, requestedCommit: fixture.championRef,
+      status: 'failed', startedAt: new Date().toISOString(), completedAt: new Date().toISOString(),
+      failure: { code: 'hitch_infrastructure_failure', message: 'invalid task' },
+    }, { mode: 'invalid' }, new AbortController().signal)).resolves.toMatchObject({
+      provider: 'hitch-cli', evalId, selectedTasks: ['task-1'], repairedTasks: [],
+      remainingInvalidTasks: ['task-1'], evalStatus: 'failed',
+      remainingInvalidTrials: [{ taskId: 'task-1', attempt: 1 }],
+      evidence: {
+        evalId, completeness: 'partial', plannedTrialCount: 1, trials: [],
+        invalidTrials: [{ taskName: 'task-1', attempt: 1, invalidReason: 'infrastructure_failure' }],
+      },
+    })
+  })
+
   it('keeps compatibility with the legacy Harbor-shaped summary', async () => {
     const { fixture, evaluator } = await setup('0.2.5', { dataset: 'legacy' })
     const evidence = await evaluator.evaluate(
@@ -322,13 +370,68 @@ describe('HitchCliEvaluator', () => {
     await expect(evaluator.evaluate(state, request('mismatch', fixture.championRef), new AbortController().signal)).rejects.toThrow(/resolved .* expected/)
   })
 
-  it('classifies an invalid run observation as infrastructure failure', async () => {
-    const { fixture, evaluator } = await setup()
+  it('rejects failed status when the run evidence is nevertheless complete', async () => {
+    const { fixture, evaluator } = await setup('0.2.5', {
+      dataset: 'failed-complete-run', planDataset: 'failed-complete-run',
+    })
     await expect(evaluator.evaluate(
+      round(fixture.root, fixture.championRef, fixture.manifest.digest),
+      request('failed-complete-run', fixture.championRef),
+      new AbortController().signal,
+    )).rejects.toMatchObject({
+      code: 'invalid_hitch_result',
+      message: 'Hitch result status does not match run evidence completeness',
+    })
+  })
+
+  it('returns partial evidence for an invalid run without scoring it as zero', async () => {
+    const { fixture, evaluator } = await setup('0.2.5', { dataset: 'invalid-run', planDataset: 'invalid-run' })
+    const evidence = await evaluator.evaluate(
       round(fixture.root, fixture.championRef, fixture.manifest.digest),
       request('invalid-run', fixture.championRef),
       new AbortController().signal,
-    )).rejects.toThrow(/invalid run observations.*infrastructure_failure/)
+    )
+    expect(evidence).toMatchObject({
+      completeness: 'partial',
+      plannedTrialCount: 1,
+      primaryReward: 0,
+      summary: { total: 0, passed: 0, failed: 0 },
+      trials: [],
+      invalidTrials: [{
+        runId: `run_${'5'.repeat(32)}`,
+        status: 'errored',
+        invalidReason: 'infrastructure_failure',
+      }],
+    })
+  })
+
+  it('preserves valid rewards when a failed eval contains both valid and invalid trials', async () => {
+    const trials = [
+      { taskId: 'distribution-search', attempt: 1 },
+      { taskId: 'prove-plus-comm', attempt: 1 },
+      { taskId: 'pytorch-model-recovery', attempt: 1 },
+    ]
+    const invalidTrials = trials.slice(1)
+    const { fixture, evaluator } = await setup('0.2.5', {
+      dataset: 'partial-run', planDataset: 'partial-run',
+      tasks: trials.map(trial => trial.taskId), trials, invalidTrials,
+    })
+    const evidence = await evaluator.evaluate(
+      round(fixture.root, fixture.championRef, fixture.manifest.digest),
+      request('partial-run', fixture.championRef),
+      new AbortController().signal,
+    )
+    expect(evidence).toMatchObject({
+      completeness: 'partial',
+      plannedTrialCount: 3,
+      primaryReward: 1,
+      summary: { total: 1, passed: 1, failed: 0, score: 1 },
+      trials: [{ taskName: 'distribution-search', rewards: { reward: 1 } }],
+      invalidTrials: [
+        { taskName: 'prove-plus-comm', invalidReason: 'infrastructure_failure' },
+        { taskName: 'pytorch-model-recovery', invalidReason: 'infrastructure_failure' },
+      ],
+    })
   })
 
   it('terminates Hitch when the round is aborted', async () => {

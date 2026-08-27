@@ -36,6 +36,7 @@
     "lib/**/*.js",
     "lib/**/*.d.ts",
     "assets/ipython-kernel.py",
+    "assets/llm-verifier-bridge.py",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"
