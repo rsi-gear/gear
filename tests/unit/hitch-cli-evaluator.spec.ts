@@ -1,5 +1,6 @@
 import { chmod, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { HitchCliEvaluator } from '../../src/evaluator/hitch-cli.js'
 import type { EvaluationRequest, RefinementRound } from '../../src/types.js'
@@ -21,6 +22,11 @@ interface InspectFixture {
   attempts?: number
   tasks?: string[]
   trials?: Array<{ taskId: string; attempt: number }>
+  dataset?: string
+  planDataset?: string
+  planCommit?: string
+  planBenchmarkRevision?: string
+  attemptExecution?: string | null
 }
 
 async function setup(version = '0.2.5', inspectFixture: InspectFixture = {}) {
@@ -30,6 +36,14 @@ async function setup(version = '0.2.5', inspectFixture: InspectFixture = {}) {
   const inspectedAttempts = inspectFixture.attempts ?? 1
   const inspectedTasks = inspectFixture.tasks ?? ['task-1']
   const inspectedTrials = inspectFixture.trials ?? [{ taskId: 'task-1', attempt: 1 }]
+  const inspectedDataset = inspectFixture.dataset ?? 'seed'
+  const planDataset = inspectFixture.planDataset ?? inspectedDataset
+  const planCommit = inspectFixture.planCommit ?? fixture.championRef
+  const planBenchmarkRevision = inspectFixture.planBenchmarkRevision ?? 'revision-1'
+  const attemptExecution = inspectFixture.attemptExecution === undefined
+    ? "attempt_execution: 'harbor-attempt-shards-v1',"
+    : inspectFixture.attemptExecution === null ? '' : `attempt_execution: ${JSON.stringify(inspectFixture.attemptExecution)},`
+  const requestedHarnessRef = `deepseek@git+${pathToFileURL(fixture.repository).href}#${fixture.championRef}`
   await writeFile(executable, `#!/usr/bin/env node
 const args = process.argv.slice(2)
 const value = name => args[args.indexOf(name) + 1]
@@ -64,12 +78,20 @@ else if (args[0] === 'trajectory' && args[1] === 'inspect') {
   const actual = ${JSON.stringify(fixture.championRef)}
   process.stdout.write(JSON.stringify({
     schema_version: '1', eval_id: inspectedEvalId,
+    request: { schema_version: '1', backend: 'harbor', dataset: ${JSON.stringify(inspectedDataset)},
+      harness_ref: ${JSON.stringify(requestedHarnessRef)}, model: 'deepseek-chat', attempts: ${JSON.stringify(inspectedAttempts)},
+      benchmark_id: 'benchmark-1', benchmark_revision: 'revision-1' },
     plan: { schema_version: '1', eval_id: inspectedEvalId,
-      attempts: ${JSON.stringify(inspectedAttempts)}, tasks: ${JSON.stringify(inspectedTasks)} },
+      backend: 'harbor', dataset: ${JSON.stringify(planDataset)}, benchmark_id: 'benchmark-1',
+      benchmark_revision: ${JSON.stringify(planBenchmarkRevision)}, attempts: ${JSON.stringify(inspectedAttempts)},
+      ${attemptExecution} tasks: ${JSON.stringify(inspectedTasks)},
+      candidate: { requested_harness_ref: ${JSON.stringify(requestedHarnessRef)},
+        harness_ref: 'deepseek@commit:' + ${JSON.stringify(planCommit)}, harness_id: 'deepseek',
+        revision_identity: 'sha256:' + '2'.repeat(64) } },
     result: {
       schema_version: '1', eval_id: inspectedEvalId, status: 'succeeded', exit_code: 0,
       candidate: { harness_ref: 'deepseek@commit:' + actual, revision_identity: 'sha256:' + '2'.repeat(64) },
-      dataset: 'seed',
+      dataset: ${JSON.stringify(inspectedDataset)},
       trials: inspectedTrials.map((trial, index) => ({
         trial_id: 'trial-' + (index + 1), run_id: 'run_' + String(index + 5).repeat(32).slice(0, 32),
         task_id: trial.taskId, attempt: trial.attempt, observation_status: 'valid', reward: 1,
@@ -141,6 +163,8 @@ describe('HitchCliEvaluator', () => {
     await expect(old.evaluator.preflight()).rejects.toMatchObject({ code: 'unsupported_hitch_version' })
     const prerelease = await setup('0.2.5-rc.1')
     await expect(prerelease.evaluator.preflight()).rejects.toMatchObject({ code: 'unsupported_hitch_version' })
+    const laterPrerelease = await setup('0.2.6-rc.1')
+    await expect(laterPrerelease.evaluator.preflight()).resolves.toBeUndefined()
     const malformed = await setup('not-a-version')
     await expect(malformed.evaluator.preflight()).rejects.toMatchObject({ code: 'unsupported_hitch_version' })
   })
@@ -206,6 +230,38 @@ describe('HitchCliEvaluator', () => {
     },
   )
 
+  it.each([
+    ['dataset', { planDataset: 'another-dataset' }, /request and plan dataset identity differ/u],
+    ['benchmark revision', { planBenchmarkRevision: 'another-revision' }, /request and plan dataset identity differ/u],
+    ['candidate commit', { planCommit: 'f'.repeat(40) }, /plan candidate commit differs/u],
+  ] as Array<[string, InspectFixture, RegExp]>)('rejects a frozen plan with mismatched %s identity', async (_case, inspect, message) => {
+    const { fixture, evaluator } = await setup('0.2.5', inspect)
+    await expect(evaluator.evaluate(
+      round(fixture.root, fixture.championRef, fixture.manifest.digest),
+      request('seed', fixture.championRef),
+      new AbortController().signal,
+    )).rejects.toMatchObject({ code: 'invalid_hitch_result', message: expect.stringMatching(message) })
+  })
+
+  it('rejects multi-attempt evidence without an explicit execution identity', async () => {
+    const { fixture, evaluator } = await setup('0.2.5', {
+      attempts: 2,
+      tasks: ['task-1'],
+      trials: [{ taskId: 'task-1', attempt: 1 }, { taskId: 'task-1', attempt: 2 }],
+      attemptExecution: null,
+    })
+    const input = request('seed', fixture.championRef)
+    input.condition = { ...input.condition, repetitions: 2 }
+    await expect(evaluator.evaluate(
+      round(fixture.root, fixture.championRef, fixture.manifest.digest),
+      input,
+      new AbortController().signal,
+    )).rejects.toMatchObject({
+      code: 'invalid_hitch_result',
+      message: expect.stringMatching(/no stable logical-attempt identity/u),
+    })
+  })
+
   it('reruns invalid tasks under the original eval id and loads repaired evidence', async () => {
     const { fixture, evaluator } = await setup()
     const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
@@ -227,7 +283,7 @@ describe('HitchCliEvaluator', () => {
   })
 
   it('keeps compatibility with the legacy Harbor-shaped summary', async () => {
-    const { fixture, evaluator } = await setup()
+    const { fixture, evaluator } = await setup('0.2.5', { dataset: 'legacy' })
     const evidence = await evaluator.evaluate(
       round(fixture.root, fixture.championRef, fixture.manifest.digest),
       request('legacy', fixture.championRef),

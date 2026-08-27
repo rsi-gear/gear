@@ -253,16 +253,19 @@ describe('RefineService evolution workspaces', () => {
   it('reruns a failed Hitch attempt under the same eval id and continues the round', async () => {
     const { service, evaluator } = await setup()
     const evalId = `eval_${'7'.repeat(32)}`
-    const originalReserve = evaluator.reserve.bind(evaluator)
     const originalEvaluate = evaluator.evaluate.bind(evaluator)
     let firstReservation = true
+    let reservation = 0
     let firstEvaluation = true
-    evaluator.reserve = async (...args) => {
+    evaluator.reserve = async () => {
       if (firstReservation) {
         firstReservation = false
         return { provider: 'hitch-cli', evalId }
       }
-      return originalReserve(...args)
+      return {
+        provider: 'hitch-cli',
+        evalId: `eval_${(++reservation).toString(16).padStart(32, '0')}`,
+      }
     }
     evaluator.evaluate = async (...args) => {
       if (firstEvaluation) {
@@ -278,8 +281,9 @@ describe('RefineService evolution workspaces', () => {
     expect(rerun).toMatchObject({ evalId, evalStatus: 'succeeded', remainingInvalidTasks: [] })
     const resumed = await editing(service, admission.evolutionId, admission.roundId)
     expect(resumed.evaluationAttempts?.find(attempt => attempt.evalId === evalId)).toMatchObject({
-      provider: 'hitch-cli', status: 'settled', completedAt: expect.any(String),
+      provider: 'hitch-cli', status: 'repair-completed', completedAt: expect.any(String),
     })
+    expect(resumed.evaluationRepairResume).toMatchObject({ provider: 'hitch-cli', evalId })
     expect(resumed.baseline).toMatchObject({ evalId })
     await service.dispose()
   })
@@ -300,6 +304,56 @@ describe('RefineService evolution workspaces', () => {
       { mode: 'tasks', taskNames: [] },
     )).rejects.toThrow(/at least one non-empty task name/u)
     expect(await store.readRound(admission.roundId)).toEqual(failed)
+    await service.dispose()
+  })
+
+  it('rejects evaluation repair for an archived evolution before invoking Hitch', async () => {
+    const { service, evaluator, registry, metas } = await setup()
+    const evalId = `eval_${'4'.repeat(32)}`
+    evaluator.reserve = async () => ({ provider: 'hitch-cli', evalId })
+    evaluator.evaluate = async () => { throw Object.assign(new Error('invalid baseline'), { code: 'hitch_infrastructure_failure' }) }
+    let rerunCalled = false
+    evaluator.rerun = async () => {
+      rerunCalled = true
+      throw new Error('Hitch must not be invoked for an archived evolution')
+    }
+    const admission = await service.admit('api')
+    const store = metas.get(admission.evolutionId)?.store
+    if (store === undefined) throw new Error('evolution runtime store is unavailable')
+    const failed = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
+    await registry.archive(admission.evolutionId)
+
+    await expect(service.rerunEvaluation(admission.evolutionId, admission.roundId, evalId, { mode: 'invalid' }))
+      .rejects.toThrow(/archived/u)
+    expect(rerunCalled).toBe(false)
+    expect(await store.readRound(admission.roundId)).toEqual(failed)
+    await expect(service.status(admission.evolutionId, admission.roundId)).resolves.not.toHaveProperty('repairableEvaluations')
+    await service.dispose()
+  })
+
+  it('rejects evaluation repair when the champion manifest identity changed', async () => {
+    const { service, evaluator, registry, metas } = await setup()
+    const evalId = `eval_${'5'.repeat(32)}`
+    evaluator.reserve = async () => ({ provider: 'hitch-cli', evalId })
+    evaluator.evaluate = async () => { throw Object.assign(new Error('invalid baseline'), { code: 'hitch_infrastructure_failure' }) }
+    let rerunCalled = false
+    evaluator.rerun = async () => {
+      rerunCalled = true
+      throw new Error('Hitch must not be invoked for stale champion identity')
+    }
+    const admission = await service.admit('api')
+    const store = metas.get(admission.evolutionId)?.store
+    if (store === undefined) throw new Error('evolution runtime store is unavailable')
+    const failed = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
+    const champion = await store.readChampion()
+    if (champion === undefined) throw new Error('test evolution has no champion')
+    await store.writeChampion({ ...champion, manifestDigest: `sha256:${'f'.repeat(64)}` })
+
+    await expect(service.rerunEvaluation(admission.evolutionId, admission.roundId, evalId, { mode: 'invalid' }))
+      .rejects.toThrow(/no longer matches/u)
+    expect(rerunCalled).toBe(false)
+    expect(await store.readRound(admission.roundId)).toEqual(failed)
+    await expect(service.status(admission.evolutionId, admission.roundId)).resolves.not.toHaveProperty('repairableEvaluations')
     await service.dispose()
   })
 
@@ -329,7 +383,7 @@ describe('RefineService evolution workspaces', () => {
     expect(repairable?.candidatePool[0]?.status).toBe('failed')
     expect(repairable?.candidatePool[0]?.seedEvaluation).toBeUndefined()
     await expect(service.status(admission.evolutionId, admission.roundId)).resolves.toMatchObject({
-      repairableEvaluations: [{ provider: 'hitch-cli', evalId, phase: 'seed-candidate' }],
+      repairableEvaluations: [{ provider: 'hitch-cli', evalId, phase: 'seed-candidate', repetitions: 1 }],
     })
     await expect(service.rerunEvaluation(admission.evolutionId, admission.roundId, evalId, { mode: 'invalid' }))
       .resolves.toMatchObject({ evalStatus: 'succeeded', evalId })
@@ -340,6 +394,7 @@ describe('RefineService evolution workspaces', () => {
     expect(terminal?.status, terminal?.failure?.message).toBe('accepted')
     expect(terminal?.candidatePool[0]).toMatchObject({ seedEvaluation: { evalId } })
     expect(terminal?.evaluationAttempts?.find(attempt => attempt.evalId === evalId)).toMatchObject({ status: 'settled' })
+    expect(terminal?.evaluationRepairResume).toBeUndefined()
     await service.dispose()
   })
 
@@ -370,7 +425,7 @@ describe('RefineService evolution workspaces', () => {
   })
 
   it('does not start a new active drive when dispose overlaps the repair-completed write', async () => {
-    const { service, evaluator, metas } = await setup()
+    const { service, evaluator, registry, metas } = await setup()
     const evalId = `eval_${'e'.repeat(32)}`
     const originalEvaluate = evaluator.evaluate.bind(evaluator)
     let first = true
@@ -425,18 +480,49 @@ describe('RefineService evolution workspaces', () => {
     expect(await store.readRound(admission.roundId)).toMatchObject({
       status: 'repairing-evaluation',
       baseline: { evalId },
+      evaluationRepairResume: { provider: 'hitch-cli', evalId, completedAt: expect.any(String) },
       evaluationAttempts: [{ status: 'repair-completed', completedAt: expect.any(String) }],
     })
     const lock = await store.acquireRoundLock(admission.roundId)
     await lock.release()
+
+    await registry.archive(admission.evolutionId)
+    const recovering = new RefineService(
+      registry,
+      service.builder,
+      service.workspaceManager,
+      (spec, digest, runtimeStore) => new FakeMeta(spec.evolutionId, runtimeStore, digest) as never,
+      evaluator,
+      service.options,
+      service.components,
+    )
+    await recovering.initialize()
+    expect(recovering.activeEntry(admission.roundId)).toBeUndefined()
+    expect(await store.readRound(admission.roundId)).toMatchObject({
+      status: 'repairing-evaluation',
+      evaluationRepairResume: { evalId },
+      evaluationAttempts: [{ status: 'repair-completed' }],
+    })
+    await recovering.dispose()
   })
 
-  it('does not create a candidate execution when dispose starts after repair handoff', async () => {
-    const { service, evaluator, metas } = await setup()
+  it('preserves and restarts a durable repair when dispose starts after the resumed drive transition', async () => {
+    const { service, evaluator, registry, metas } = await setup()
     const evalId = `eval_${'f'.repeat(32)}`
     const originalEvaluate = evaluator.evaluate.bind(evaluator)
+    let firstReservation = true
+    let reservation = 0
     let first = true
-    evaluator.reserve = async () => ({ provider: 'hitch-cli', evalId })
+    evaluator.reserve = async () => {
+      if (firstReservation) {
+        firstReservation = false
+        return { provider: 'hitch-cli', evalId }
+      }
+      return {
+        provider: 'hitch-cli',
+        evalId: `eval_${(++reservation).toString(16).padStart(32, '0')}`,
+      }
+    }
     evaluator.evaluate = async (...args) => {
       if (first) {
         first = false
@@ -449,27 +535,28 @@ describe('RefineService evolution workspaces', () => {
     if (store === undefined) throw new Error('evolution runtime store is unavailable')
     await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
 
-    const driveReadStarted = Promise.withResolvers<void>()
-    const releaseDriveRead = Promise.withResolvers<void>()
-    const originalReadRound = store.readRound.bind(store)
-    let blockPendingResumeRead = true
-    store.readRound = async roundId => {
-      const value = await originalReadRound(roundId)
-      if (blockPendingResumeRead && value?.status === 'repairing-evaluation'
-        && value.evaluationAttempts?.some(attempt => attempt.status === 'repair-completed')) {
-        blockPendingResumeRead = false
-        driveReadStarted.resolve()
-        await releaseDriveRead.promise
+    const populationReadStarted = Promise.withResolvers<void>()
+    const releasePopulationRead = Promise.withResolvers<void>()
+    const originalReadPopulation = store.readPopulation.bind(store)
+    let blockResumedPopulationRead = true
+    store.readPopulation = async () => {
+      const value = await originalReadPopulation()
+      const current = await store.readRound(admission.roundId)
+      if (blockResumedPopulationRead && current?.status === 'baseline-running'
+        && current.evaluationRepairResume?.evalId === evalId) {
+        blockResumedPopulationRead = false
+        populationReadStarted.resolve()
+        await releasePopulationRead.promise
       }
       return value
     }
 
     await expect(service.rerunEvaluation(admission.evolutionId, admission.roundId, evalId, { mode: 'invalid' }))
       .resolves.toMatchObject({ evalStatus: 'succeeded' })
-    await driveReadStarted.promise
+    await populationReadStarted.promise
     expect(service.activeEntry(admission.roundId)?.workspace).toBeUndefined()
     const disposing = service.dispose()
-    releaseDriveRead.resolve()
+    releasePopulationRead.resolve()
     let timeout: NodeJS.Timeout | undefined
     try {
       await Promise.race([
@@ -485,12 +572,36 @@ describe('RefineService evolution workspaces', () => {
     expect(service.activeEntry(admission.roundId)).toBeUndefined()
     expect((await store.readRound(admission.roundId))?.candidatePool[0]?.workspaceId).toBeUndefined()
     expect(await store.readRound(admission.roundId)).toMatchObject({
-      status: 'repairing-evaluation',
+      status: 'baseline-running',
       baseline: { evalId },
+      evaluationRepairResume: { provider: 'hitch-cli', evalId, completedAt: expect.any(String) },
       evaluationAttempts: [{ status: 'repair-completed' }],
     })
     const lock = await store.acquireRoundLock(admission.roundId)
     await lock.release()
+
+    const recovering = new RefineService(
+      registry,
+      service.builder,
+      service.workspaceManager,
+      (spec, digest, runtimeStore) => new FakeMeta(spec.evolutionId, runtimeStore, digest) as never,
+      evaluator,
+      service.options,
+      service.components,
+    )
+    await recovering.initialize()
+    const resumed = await editing(recovering, admission.evolutionId, admission.roundId)
+    expect(resumed.evaluationRepairResume).toMatchObject({ evalId })
+    expect(resumed.evaluationAttempts?.find(attempt => attempt.evalId === evalId)).toMatchObject({ status: 'repair-completed' })
+    await finalize(recovering, resumed)
+    const terminal = await eventually(
+      () => store.readRound(admission.roundId),
+      value => value !== undefined && ['accepted', 'rejected', 'failed'].includes(value.status),
+    )
+    expect(terminal?.status, JSON.stringify(terminal?.candidatePool)).toBe('accepted')
+    expect(terminal?.evaluationRepairResume).toBeUndefined()
+    expect(terminal?.evaluationAttempts?.find(attempt => attempt.evalId === evalId)).toMatchObject({ status: 'settled' })
+    await recovering.dispose()
   })
 
   it('recovers an interrupted rerun atomically and idempotently on startup', async () => {
@@ -580,7 +691,8 @@ describe('RefineService evolution workspaces', () => {
       await expect(service.initialize()).resolves.toBeUndefined()
       const resumed = await editing(service, admission.evolutionId, admission.roundId)
       expect(resumed.baseline).toMatchObject({ evalId })
-      expect(resumed.evaluationAttempts?.[0]).toMatchObject({ status: 'settled', completedAt: expect.any(String) })
+      expect(resumed.evaluationAttempts?.[0]).toMatchObject({ status: 'repair-completed', completedAt: expect.any(String) })
+      expect(resumed.evaluationRepairResume).toMatchObject({ provider: 'hitch-cli', evalId })
       await service.dispose()
     },
   )

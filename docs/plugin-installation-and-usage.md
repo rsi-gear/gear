@@ -30,7 +30,7 @@
 | Harbor | 与所选 benchmark 兼容 | task discovery、容器运行和 verifier/reward |
 | Docker | Harbor 可用的 Docker 环境 | 执行隔离的 target-agent trial |
 
-生产评测使用 Hitch CLI，而不是 Hitch 的 Node 内部 API。启动 DSH 的进程必须能在 `PATH` 中找到 `hitch`，或者在插件配置中提供绝对路径。插件启动时会执行版本/capability preflight；低于 0.2.5、prerelease、不可解析输出或命令失败都会在任何 benchmark 启动前明确报错。Gear 不会在失败后去掉 `--eval-id` 重试，以免重复运行 benchmark。
+生产评测使用 Hitch CLI，而不是 Hitch 的 Node 内部 API。启动 DSH 的进程必须能在 `PATH` 中找到 `hitch`，或者在插件配置中提供绝对路径。插件启动时会执行版本/capability preflight；低于 0.2.5（包括 `0.2.5` 的 prerelease）、不可解析输出或命令失败都会在任何 benchmark 启动前明确报错，更高版本的 prerelease 按标准 semver 顺序判断。Gear 不会在失败后去掉 `--eval-id` 重试，以免重复运行 benchmark。
 
 ### 2.2 操作系统要求
 
@@ -409,7 +409,7 @@ rejected
 failed
 ```
 
-失败 round 的状态结果会附带 `repairableEvaluations`，其中包含下一条 rerun 命令需要的 `provider`、`evalId`、`phase` 和 `candidateId`。
+只有仍匹配当前 population 和完整 champion identity 的失败 round，状态结果才会附带 `repairableEvaluations`，其中包含下一条 rerun 命令需要的 `provider`、`evalId`、`phase`、`candidateId` 和 `repetitions`。
 
 ### 8.3 修复失败的 Hitch evaluation
 
@@ -418,7 +418,7 @@ failed
 /refine rerun <evolution-id> <round-id> --eval <eval-id> --task task-a --task task-b
 ```
 
-rerun 只接受尚未形成 decision/commit intent 的 `failed` round 和其中可修复的 failed Hitch attempt。`--invalid` 修复全部 invalid/missing logical slots；`--task` 修复指定 task 的全部 invalid/missing attempts，已经 valid 的 slots 不会重跑。Gear 会根据 Hitch frozen plan 校验每个 task 的 `1..repetitions` slot 恰好出现一次，缺失、重复或越界 evidence 都会被拒绝。修复期间 Gear 持有 round lock；服务关闭会 abort 并等待 Hitch；若关闭与 `repair-completed` 落盘重叠，Gear 不再启动新 drive，而是保留 pending resume。服务意外重启时，无 evidence 的遗留 `rerunning` attempt 会恢复为可重试的 `failed`；已经落盘完整 evidence 的 `repair-completed` attempt 会作为 pending resume 自动继续原 round。
+rerun 只接受 active evolution 中尚未形成 decision/commit intent、且 population 与完整 champion ref/manifest identity 未变化的 `failed` round，以及其中可修复的 failed Hitch attempt。`--invalid` 修复全部 invalid/missing logical slots；`--task` 修复指定 task 的全部 invalid/missing attempts，已经 valid 的 slots 不会重跑。Gear 会核对 Hitch inspection request/plan 的 dataset、benchmark、candidate revision 和 logical-attempt execution identity，并验证每个 task 的 `1..repetitions` slot 恰好出现一次；身份串错、缺失、重复或越界 evidence 都会被拒绝。修复期间 Gear 持有 round lock；完整 evidence 会和 durable `evaluationRepairResume + repair-completed` 原子落盘，并贯穿 resumed drive 的全部无 commit intent 阶段。服务关闭会 abort 并等待 Hitch，但不会提前消费该 intent；下次启动会继续原 round，直到形成 commit intent 或 terminal 状态才把 attempt 改为 `settled`。archived evolution 会保留 pending intent 但不会启动 repair。
 
 Hitch 0.2.4 创建的 `attempts=1` eval 仍可由 Hitch 的 legacy 路径处理；0.2.4 创建的 multi-attempt eval 没有可靠 logical-attempt identity，必须创建新的 eval，不能原地修复。
 

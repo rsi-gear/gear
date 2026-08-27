@@ -338,6 +338,12 @@ export interface RoundEvaluationAttempt {
   failure?: { code: string; message: string }
 }
 
+export interface EvaluationRepairResumeIntent {
+  provider: string
+  evalId: string
+  completedAt: string
+}
+
 export interface EvaluationCondition {
   conditionId: string
   partition: 'seed' | 'held-out'
@@ -578,6 +584,7 @@ export interface RefinementRound {
   promotedCandidateId?: string
   evaluation?: RoundEvaluation
   evaluationAttempts?: RoundEvaluationAttempt[]
+  evaluationRepairResume?: EvaluationRepairResumeIntent
   commitIntent?: RoundCommitIntent
   meta?: MetaAttribution
   proposalEvidence?: ProposalEvidenceAudit
@@ -607,6 +614,7 @@ export interface PublicRoundStatus {
     evalId: string
     phase: EvaluationPhase
     candidateId: string
+    repetitions: number
   }>
 }
 

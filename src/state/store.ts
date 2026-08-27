@@ -463,6 +463,9 @@ export class RefineStateStore {
         }
       }
     }
+    if (round.evaluationRepairResume !== undefined && round.evaluationAttempts === undefined) {
+      throw new TypeError('round evaluation repair resume intent requires evaluation attempts')
+    }
     if (round.evaluationAttempts !== undefined) {
       if (!Array.isArray(round.evaluationAttempts)) throw new TypeError('round evaluationAttempts must be an array')
       const identities = new Set<string>()
@@ -536,18 +539,41 @@ export class RefineStateStore {
       ].filter((value): value is EvaluationEvidence => value !== undefined)
       for (const value of evidence) {
         const attempt = round.evaluationAttempts.find(candidate => candidate.provider === value.provider && candidate.evalId === value.evalId)
-        const repairingEvidence = round.status === 'repairing-evaluation'
+        const durableRepairEvidence = attempt?.status === 'repair-completed'
+          && round.evaluationRepairResume?.provider === attempt.provider
+          && round.evaluationRepairResume.evalId === attempt.evalId
+        const legacyRepairEvidence = round.evaluationRepairResume === undefined
+          && round.status === 'repairing-evaluation'
           && (attempt?.status === 'rerunning' || attempt?.status === 'repair-completed')
-        if (attempt === undefined || (attempt.status !== 'settled' && !repairingEvidence)
+        if (attempt === undefined || (attempt.status !== 'settled' && !durableRepairEvidence && !legacyRepairEvidence)
           || attempt.conditionId !== value.conditionId || attempt.dataset !== value.dataset
           || attempt.requestedCommit !== value.requestedCommit || attempt.owner.harnessRef !== value.actualCommit) {
           throw new TypeError('round evaluation evidence does not match its durable attempt ownership')
         }
       }
+      const resume = round.evaluationRepairResume
+      if (resume !== undefined) {
+        if (typeof resume !== 'object' || resume === null
+          || typeof resume.provider !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(resume.provider)
+          || typeof resume.evalId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(resume.evalId)
+          || typeof resume.completedAt !== 'string' || resume.completedAt.length === 0) {
+          throw new TypeError('round evaluation repair resume intent is invalid')
+        }
+        const terminal = round.status === 'accepted' || round.status === 'rejected'
+          || round.status === 'rejected-for-substrate' || round.status === 'failed'
+        const attempt = round.evaluationAttempts.find(candidate => candidate.provider === resume.provider && candidate.evalId === resume.evalId)
+        if (terminal || round.decision !== undefined || round.commitIntent !== undefined
+          || attempt?.status !== 'repair-completed' || attempt.completedAt !== resume.completedAt
+          || !evidence.some(value => value.provider === resume.provider && value.evalId === resume.evalId)) {
+          throw new TypeError('round evaluation repair resume intent is invalid')
+        }
+      }
       for (const attempt of round.evaluationAttempts) {
-        if (attempt.status === 'repair-completed'
-          && (round.status !== 'repairing-evaluation'
-            || !evidence.some(value => value.provider === attempt.provider && value.evalId === attempt.evalId))) {
+        const ownsResume = round.evaluationRepairResume?.provider === attempt.provider
+          && round.evaluationRepairResume.evalId === attempt.evalId
+        const legacyPendingResume = round.evaluationRepairResume === undefined && round.status === 'repairing-evaluation'
+        if (attempt.status === 'repair-completed' && ((!ownsResume && !legacyPendingResume)
+          || !evidence.some(value => value.provider === attempt.provider && value.evalId === attempt.evalId))) {
           throw new TypeError('completed evaluation repair requires durable evidence and pending resume state')
         }
       }

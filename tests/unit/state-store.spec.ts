@@ -74,4 +74,40 @@ describe('RefineStateStore', () => {
       baseline: { provider: 'custom-runner', evalId: 'custom-eval-1' },
     })
   })
+
+  it('requires a unique non-terminal resume intent for durable repair evidence', async () => {
+    const state = await store()
+    const round = roundFixture({ status: 'baseline-running' })
+    const repaired = { ...evidence(round.plan.seed, round.targetHarnessRef), provider: 'hitch-cli' }
+    const completedAt = 'repair-completed-at'
+    round.baseline = repaired
+    round.parentBaselines = [{
+      parentCandidateId: `champion-${round.targetHarnessRef}`,
+      parentHarnessRef: round.targetHarnessRef,
+      evidence: repaired,
+    }]
+    round.evaluationAttempts = [{
+      provider: repaired.provider,
+      evalId: repaired.evalId,
+      phase: 'seed-baseline',
+      owner: {
+        candidateId: `champion-${round.targetHarnessRef}`,
+        role: 'baseline',
+        harnessRef: round.targetHarnessRef,
+      },
+      conditionId: round.plan.seed.conditionId,
+      dataset: round.seedTaskRef,
+      requestedModelId: round.plan.seed.model,
+      requestedCommit: round.targetHarnessRef,
+      status: 'repair-completed',
+      startedAt: 'repair-started-at',
+      completedAt,
+    }]
+    round.evaluationRepairResume = { provider: repaired.provider, evalId: repaired.evalId, completedAt }
+
+    await expect(state.writeRound(round)).resolves.toBeUndefined()
+    await expect(state.writeRound({ ...round, status: 'failed' })).rejects.toThrow(/repair resume intent is invalid/u)
+    const { evaluationRepairResume: _intent, ...withoutIntent } = round
+    await expect(state.writeRound(withoutIntent)).rejects.toThrow(/durable attempt ownership/u)
+  })
 })

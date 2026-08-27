@@ -178,8 +178,11 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
   private async checkVersion(): Promise<void> {
     const controller = new AbortController()
     const timeout = setTimeout(
-      () => controller.abort(new HitchEvaluationError('Hitch version check timed out', 'hitch_version_check_failed')),
-      10_000,
+      () => controller.abort(new HitchEvaluationError(
+        `Hitch version check timed out for ${this.options.executable}; Gear requires agent-hitch >= 0.2.5`,
+        'hitch_version_check_failed',
+      )),
+      5_000,
     )
     let result: ProcessResult
     try { result = await this.run(['--version'], this.repositoryPath, controller.signal, 16_384) }
@@ -193,7 +196,9 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       throw new HitchEvaluationError(`unsupported Hitch CLI version output: ${output}`, 'unsupported_hitch_version')
     }
     const [major, minor, patch] = match.slice(1, 4).map(Number) as [number, number, number]
-    const supported = match[4] === undefined && (major > 0 || minor > 2 || (minor === 2 && patch >= 5))
+    const coreAboveMinimum = major > 0 || (major === 0 && (minor > 2 || (minor === 2 && patch > 5)))
+    const coreAtMinimum = major === 0 && minor === 2 && patch === 5
+    const supported = coreAboveMinimum || (coreAtMinimum && match[4] === undefined)
     if (!supported) {
       throw new HitchEvaluationError(
         `unsupported Hitch CLI ${match[0].trim()}; Gear requires agent-hitch >= 0.2.5 for stable eval identity and multi-attempt rerun`,
@@ -463,9 +468,40 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     if (plan.schema_version !== '1' || plan.eval_id !== evidence.evalId) {
       throw new HitchEvaluationError('Hitch eval plan identity is invalid', 'invalid_hitch_result')
     }
+    const inspectedRequest = record(inspection.request, 'Hitch eval request')
+    if (inspectedRequest.schema_version !== '1' || inspectedRequest.backend !== 'harbor'
+      || inspectedRequest.dataset !== request.dataset
+      || inspectedRequest.model !== request.condition.model) {
+      throw new HitchEvaluationError('Hitch eval request does not match the frozen Gear condition', 'invalid_hitch_result')
+    }
     const attempts = integer(plan.attempts, 'plan.attempts')
-    if (attempts <= 0 || attempts !== request.condition.repetitions) {
+    const requestedAttempts = integer(inspectedRequest.attempts, 'request.attempts')
+    if (attempts <= 0 || attempts !== request.condition.repetitions || requestedAttempts !== attempts) {
       throw new HitchEvaluationError('Hitch eval plan attempts do not match the frozen condition', 'invalid_hitch_result')
+    }
+    const attemptExecution = plan.attempt_execution
+    if ((attemptExecution !== undefined && attemptExecution !== 'harbor-attempt-shards-v1')
+      || (attempts > 1 && attemptExecution !== 'harbor-attempt-shards-v1')) {
+      throw new HitchEvaluationError('Hitch eval plan has no stable logical-attempt identity', 'invalid_hitch_result')
+    }
+    const benchmarkId = string(inspectedRequest.benchmark_id, 'request.benchmark_id')
+    const benchmarkRevision = string(inspectedRequest.benchmark_revision, 'request.benchmark_revision')
+    if (plan.backend !== 'harbor' || plan.dataset !== inspectedRequest.dataset
+      || plan.benchmark_id !== benchmarkId || plan.benchmark_revision !== benchmarkRevision) {
+      throw new HitchEvaluationError('Hitch eval request and plan dataset identity differ', 'invalid_hitch_result')
+    }
+    const candidate = record(plan.candidate, 'plan.candidate')
+    const requestedHarnessRef = string(inspectedRequest.harness_ref, 'request.harness_ref')
+    if (candidate.requested_harness_ref !== requestedHarnessRef
+      || candidate.harness_id !== this.options.harnessId
+      || candidate.revision_identity !== evidence.revisionIdentity) {
+      throw new HitchEvaluationError('Hitch eval plan candidate identity differs from the result', 'invalid_hitch_result')
+    }
+    const lockedHarnessRef = string(candidate.harness_ref, 'plan.candidate.harness_ref')
+    const lockedCommit = lockedHarnessRef.match(/@commit:([0-9a-f]{40}|[0-9a-f]{64})$/u)?.[1]
+    if (lockedCommit !== request.harnessRef || lockedCommit !== evidence.actualCommit
+      || lockedHarnessRef !== `${this.options.harnessId}@commit:${lockedCommit}`) {
+      throw new HitchEvaluationError('Hitch eval plan candidate commit differs from the request', 'invalid_hitch_result')
     }
     const tasks = stringArray(plan.tasks, 'plan.tasks')
     const plannedTasks = new Set(tasks)
@@ -557,6 +593,9 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     const match = lockedHarnessRef.match(/@commit:([0-9a-f]{40}|[0-9a-f]{64})$/u)
     if (match?.[1] === undefined) throw new HitchEvaluationError('Hitch candidate does not contain a locked commit')
     const actualCommit = match[1]
+    if (lockedHarnessRef !== `${this.options.harnessId}@commit:${actualCommit}`) {
+      throw new HitchEvaluationError('Hitch candidate harness id does not match the configured adapter', 'hitch_commit_mismatch')
+    }
     if (actualCommit !== request.harnessRef) {
       throw new HitchEvaluationError(`Hitch resolved ${actualCommit}, expected ${request.harnessRef}`, 'hitch_commit_mismatch')
     }
