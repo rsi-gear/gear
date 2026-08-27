@@ -418,7 +418,7 @@ failed
 /refine rerun <evolution-id> <round-id> --eval <eval-id> --task task-a --task task-b
 ```
 
-rerun 只接受尚未形成 decision/commit intent 的 `failed` round 和其中可修复的 failed Hitch attempt。`--invalid` 修复全部 invalid/missing logical slots；`--task` 修复指定 task 的全部 invalid/missing attempts，已经 valid 的 slots 不会重跑。修复期间 Gear 持有 round lock；服务关闭会 abort 并等待 Hitch。服务意外重启时，无 evidence 的遗留 `rerunning` attempt 会恢复为可重试的 `failed`；已经落盘完整 evidence 的 `repair-completed` attempt 会作为 pending resume 自动继续原 round。
+rerun 只接受尚未形成 decision/commit intent 的 `failed` round 和其中可修复的 failed Hitch attempt。`--invalid` 修复全部 invalid/missing logical slots；`--task` 修复指定 task 的全部 invalid/missing attempts，已经 valid 的 slots 不会重跑。Gear 会根据 Hitch frozen plan 校验每个 task 的 `1..repetitions` slot 恰好出现一次，缺失、重复或越界 evidence 都会被拒绝。修复期间 Gear 持有 round lock；服务关闭会 abort 并等待 Hitch；若关闭与 `repair-completed` 落盘重叠，Gear 不再启动新 drive，而是保留 pending resume。服务意外重启时，无 evidence 的遗留 `rerunning` attempt 会恢复为可重试的 `failed`；已经落盘完整 evidence 的 `repair-completed` attempt 会作为 pending resume 自动继续原 round。
 
 Hitch 0.2.4 创建的 `attempts=1` eval 仍可由 Hitch 的 legacy 路径处理；0.2.4 创建的 multi-attempt eval 没有可靠 logical-attempt identity，必须创建新的 eval，不能原地修复。
 

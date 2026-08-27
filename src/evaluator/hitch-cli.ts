@@ -338,6 +338,15 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       && (evidence.provider !== reservation.provider || evidence.evalId !== reservation.evalId)) {
       throw new HitchEvaluationError('Hitch result does not match the reserved evaluation identity', 'hitch_eval_identity_mismatch')
     }
+    if (request.condition.repetitions > 1) {
+      const inspection = await this.inspectEvaluation(
+        evidence.evalId,
+        round.workspaceRoot,
+        signal,
+        'hitch_eval_inspect_failed',
+      )
+      this.assertCompleteTrialSlots(inspection, evidence, request)
+    }
     return evidence
   }
 
@@ -387,20 +396,18 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     const repairedTrials = envelope.repaired_trials === undefined ? undefined : trialSlots(envelope.repaired_trials, 'repaired_trials')
     const remainingInvalidTrials = envelope.remaining_invalid_trials === undefined
       ? undefined : trialSlots(envelope.remaining_invalid_trials, 'remaining_invalid_trials')
+    if (envelope.eval_status === 'succeeded'
+      && (remainingInvalidTasks.length > 0 || (remainingInvalidTrials?.length ?? 0) > 0)) {
+      throw new HitchEvaluationError('Hitch rerun succeeded with remaining invalid slots', 'invalid_hitch_result')
+    }
     let evidence: HitchEvaluationEvidence | undefined
     if (envelope.eval_status === 'succeeded') {
-      const inspect = await this.run([
-        ...(this.options.root.length === 0 ? [] : ['--root', this.options.root]),
-        'eval', 'inspect', attempt.evalId, '--json',
-      ], round.workspaceRoot, signal)
-      if (inspect.exitCode !== 0) {
-        throw new HitchEvaluationError(`Hitch could not inspect repaired eval ${attempt.evalId}`, 'hitch_eval_rerun_inspect_failed')
-      }
-      let inspectionValue: unknown
-      try { inspectionValue = JSON.parse(inspect.stdout) } catch (error) {
-        throw new HitchEvaluationError(`Hitch emitted invalid inspect JSON (${String(error)})`, 'invalid_hitch_json')
-      }
-      const inspection = record(inspectionValue, 'Hitch eval inspection')
+      const inspection = await this.inspectEvaluation(
+        attempt.evalId,
+        round.workspaceRoot,
+        signal,
+        'hitch_eval_rerun_inspect_failed',
+      )
       const result = record(inspection.result, 'Hitch repaired eval result')
       evidence = this.parseResult(
         result,
@@ -409,6 +416,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
         this.invocationFingerprint(round, request),
       )
       if (evidence.evalId !== attempt.evalId) throw new HitchEvaluationError('repaired evidence eval id changed', 'hitch_eval_identity_mismatch')
+      this.assertCompleteTrialSlots(inspection, evidence, request)
     }
     return {
       provider: 'hitch-cli',
@@ -421,6 +429,85 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       ...(remainingInvalidTrials === undefined ? {} : { remainingInvalidTrials }),
       evalStatus: envelope.eval_status,
       ...(evidence === undefined ? {} : { evidence }),
+    }
+  }
+
+  private async inspectEvaluation(
+    evalId: string,
+    cwd: string,
+    signal: AbortSignal,
+    failureCode: string,
+  ): Promise<JsonRecord> {
+    const inspect = await this.run([
+      ...(this.options.root.length === 0 ? [] : ['--root', this.options.root]),
+      'eval', 'inspect', evalId, '--json',
+    ], cwd, signal)
+    if (inspect.exitCode !== 0) {
+      throw new HitchEvaluationError(`Hitch could not inspect eval ${evalId}`, failureCode)
+    }
+    let inspectionValue: unknown
+    try { inspectionValue = JSON.parse(inspect.stdout) } catch (error) {
+      throw new HitchEvaluationError(`Hitch emitted invalid inspect JSON (${String(error)})`, 'invalid_hitch_json')
+    }
+    const inspection = record(inspectionValue, 'Hitch eval inspection')
+    if (inspection.schema_version !== '1' || inspection.eval_id !== evalId) {
+      throw new HitchEvaluationError('Hitch inspection identity is invalid', 'invalid_hitch_result')
+    }
+    return inspection
+  }
+
+  private assertCompleteTrialSlots(
+    inspection: JsonRecord,
+    evidence: HitchEvaluationEvidence,
+    request: Readonly<EvaluationRequest>,
+  ): void {
+    const plan = record(inspection.plan, 'Hitch eval plan')
+    if (plan.schema_version !== '1' || plan.eval_id !== evidence.evalId) {
+      throw new HitchEvaluationError('Hitch eval plan identity is invalid', 'invalid_hitch_result')
+    }
+    const attempts = integer(plan.attempts, 'plan.attempts')
+    if (attempts <= 0 || attempts !== request.condition.repetitions) {
+      throw new HitchEvaluationError('Hitch eval plan attempts do not match the frozen condition', 'invalid_hitch_result')
+    }
+    const tasks = stringArray(plan.tasks, 'plan.tasks')
+    const plannedTasks = new Set(tasks)
+    if (tasks.length === 0 || plannedTasks.size !== tasks.length) {
+      throw new HitchEvaluationError('Hitch eval plan tasks must be non-empty and unique', 'invalid_hitch_result')
+    }
+    const expectedTrials = tasks.length * attempts
+    if (!Number.isSafeInteger(expectedTrials)) {
+      throw new HitchEvaluationError('Hitch eval plan trial count exceeds the safe integer range', 'invalid_hitch_result')
+    }
+    const slots = new Set<string>()
+    for (const trial of evidence.trials) {
+      if (!plannedTasks.has(trial.taskName)) {
+        throw new HitchEvaluationError(`Hitch evidence contains task outside the frozen plan: ${trial.taskName}`, 'invalid_hitch_result')
+      }
+      const logicalAttempt = trial.attempt ?? (attempts === 1 ? 1 : undefined)
+      if (logicalAttempt === undefined || !Number.isSafeInteger(logicalAttempt)
+        || logicalAttempt < 1 || logicalAttempt > attempts) {
+        throw new HitchEvaluationError(
+          `Hitch evidence attempt is outside frozen range 1..${attempts}: ${trial.taskName}#${String(trial.attempt)}`,
+          'invalid_hitch_result',
+        )
+      }
+      const slot = `${trial.taskName}\0${logicalAttempt}`
+      if (slots.has(slot)) {
+        throw new HitchEvaluationError(`Hitch evidence contains duplicate logical slot: ${trial.taskName}#${logicalAttempt}`, 'invalid_hitch_result')
+      }
+      slots.add(slot)
+    }
+    if (slots.size !== expectedTrials) {
+      const missing: string[] = []
+      for (const task of tasks) {
+        for (let attempt = 1; attempt <= attempts; attempt += 1) {
+          if (!slots.has(`${task}\0${attempt}`)) missing.push(`${task}#${attempt}`)
+        }
+      }
+      throw new HitchEvaluationError(
+        `Hitch evidence is missing frozen logical slots: ${missing.join(', ')}`,
+        'invalid_hitch_result',
+      )
     }
   }
 

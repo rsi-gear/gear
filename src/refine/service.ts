@@ -450,6 +450,9 @@ export class RefineService {
             })()
           : value),
       })
+      if (this.disposed || repair.abort.signal.aborted) {
+        throw repair.abort.signal.reason ?? new Error('RefineService disposed')
+      }
       const active = this.newActive(
         evolution, repair.lock, round.source, round.batchId, round.roundIndex, round.roundCount, round.advisoryFocus,
       )

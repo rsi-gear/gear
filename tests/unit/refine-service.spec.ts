@@ -17,7 +17,7 @@ class FakeMeta {
   wakes: string[] = []
   private child = 0
   private readonly agents = new Map<string, { id: string }>()
-  constructor(private readonly evolutionId: string, private readonly store: import('../../src/state/store.js').RefineStateStore, private readonly specDigest: string) {}
+  constructor(private readonly evolutionId: string, readonly store: import('../../src/state/store.js').RefineStateStore, private readonly specDigest: string) {}
   async agent() {
     const id = `meta-${this.evolutionId}`
     await this.store.writeMeta({ evolutionId: this.evolutionId, sessionId: id, metaHarnessRef: 'meta-v1', specDigest: this.specDigest })
@@ -348,6 +348,68 @@ describe('RefineService evolution workspaces', () => {
       status: 'failed',
       evaluationAttempts: [{ status: 'failed', failure: { code: 'evaluation_rerun_aborted' } }],
     })
+  })
+
+  it('does not start a new active drive when dispose overlaps the repair-completed write', async () => {
+    const { service, evaluator, metas } = await setup()
+    const evalId = `eval_${'e'.repeat(32)}`
+    const originalEvaluate = evaluator.evaluate.bind(evaluator)
+    let first = true
+    evaluator.reserve = async () => ({ provider: 'hitch-cli', evalId })
+    evaluator.evaluate = async (...args) => {
+      if (first) {
+        first = false
+        throw Object.assign(new Error('invalid baseline'), { code: 'hitch_infrastructure_failure' })
+      }
+      return originalEvaluate(...args)
+    }
+    const admission = await service.admit('api')
+    const store = metas.get(admission.evolutionId)?.store
+    if (store === undefined) throw new Error('evolution runtime store is unavailable')
+    await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
+
+    const writeStarted = Promise.withResolvers<void>()
+    const releaseWrite = Promise.withResolvers<void>()
+    const originalWriteRound = store.writeRound.bind(store)
+    let blockCompletedRepair = true
+    store.writeRound = async value => {
+      if (blockCompletedRepair && value.status === 'repairing-evaluation'
+        && value.evaluationAttempts?.some(attempt => attempt.status === 'repair-completed')) {
+        blockCompletedRepair = false
+        writeStarted.resolve()
+        await releaseWrite.promise
+      }
+      await originalWriteRound(value)
+    }
+
+    const pending = service.rerunEvaluation(admission.evolutionId, admission.roundId, evalId, { mode: 'invalid' })
+    let rejection: unknown
+    const observed = pending.catch(error => { rejection = error })
+    await writeStarted.promise
+    const disposing = service.dispose()
+    releaseWrite.resolve()
+    let timeout: NodeJS.Timeout | undefined
+    try {
+      await Promise.race([
+        disposing,
+        new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => reject(new Error('dispose did not finish after repair handoff was stopped')), 2_000)
+        }),
+      ])
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout)
+    }
+    await observed
+
+    expect(rejection).toMatchObject({ message: 'RefineService disposed' })
+    expect(service.activeEntry(admission.roundId)).toBeUndefined()
+    expect(await store.readRound(admission.roundId)).toMatchObject({
+      status: 'repairing-evaluation',
+      baseline: { evalId },
+      evaluationAttempts: [{ status: 'repair-completed', completedAt: expect.any(String) }],
+    })
+    const lock = await store.acquireRoundLock(admission.roundId)
+    await lock.release()
   })
 
   it('recovers an interrupted rerun atomically and idempotently on startup', async () => {
