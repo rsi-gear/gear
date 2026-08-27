@@ -159,8 +159,12 @@ Meta harness 读取 `skills/refine/SKILL.md`，通过 `gear-refine request`：
 7. `candidate.finalize` 或 `candidate.decline`；
 8. 继续领取 sibling/next-round，直到 batch terminal。
 
-完整方法和参数见
+完整方法、逐字段参数和调用顺序见
 [`skills/refine/references/protocol.md`](../skills/refine/references/protocol.md)。
+Meta Agent 在修改 candidate 前还必须读取
+[`skills/refine/references/target-harness-editing.md`](../skills/refine/references/target-harness-editing.md)，
+其中说明如何从 seed trajectory 建立因果假设、选择可编辑的 harness 资产、使用
+observation digest 安全修改，以及何时 finalize 或 decline。
 
 ## 6. 安全边界
 
@@ -204,4 +208,5 @@ Claude Code 或另一 DSH session。
 - 不经过 DSH Context 的 standalone control plane；
 - 从 `control.start` 到 claim、trajectory diagnosis、candidate edit/check/finalize、
   seed/held-out evaluation 和 champion promotion 的完整端到端流程；
+- Skill 内完整 protocol schema 与 Target Harness 编辑手册的打包、发现和校验；
 - 原有 DSH plugin composition、状态恢复、evaluation repair 和 promotion 回归。

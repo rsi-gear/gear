@@ -22,8 +22,12 @@ Require all of the following before starting or claiming work:
 Do not guess an identity or silently change it. Gear seals it into the
 evolution spec and rejects a different harness on claim or resume.
 
-Read [references/protocol.md](references/protocol.md) when constructing calls or
-handling an active assignment.
+Read [references/protocol.md](references/protocol.md) before constructing calls
+or handling an active assignment. Before diagnosing evidence or changing a
+candidate, also read
+[references/target-harness-editing.md](references/target-harness-editing.md).
+These references are the complete method contract and Target Harness editing
+guide; do not infer missing field names from errors.
 
 ## Run an evolution
 
@@ -34,17 +38,26 @@ handling an active assignment.
    `meta.claim`. Baseline evaluation can finish before an assignment appears.
 3. Treat the returned lease id, token, client id, session id, and candidate id
    as one inseparable capability. Never reuse them for another assignment.
-4. Use only the candidate file and `meta.call` methods exposed by Gear. Do not
-   discover or modify Gear state, Git metadata, held-out data, or host paths
-   directly.
-5. Review the baseline summary. Query the trajectory for every failed baseline
-   run before proposing a change. Keep cited evidence limited to references
-   actually returned for the active seed baseline.
-6. Make the smallest coherent harness change, inspect `candidate.diff`, and run
-   `candidate.check` before finalizing. Use `candidate.decline` when evidence
-   does not justify a change.
-7. After finalization, poll status. Claim and complete every subsequent
-   candidate or round until the requested batch reaches a terminal state.
+4. Use only the candidate file and `meta.call` methods exposed by Gear. Start
+   with `harness.current`, `candidate.tree`, and `seed_tasks.load`; read the
+   active candidate files before selecting an edit. Do not discover or modify
+   Gear state, Git metadata, held-out data, credentials, or host paths directly.
+5. Review the baseline summary. Query `trajectory.query` with `refs` for every
+   failed baseline run before proposing a change. Use `nextOffset` for bounded
+   pagination and stop once the causal evidence is sufficient. Keep cited
+   evidence limited to references actually returned for the active seed
+   baseline.
+6. Connect the observed failure to a harness-controlled cause, select the
+   affected semantic target, and make the smallest coherent change. New files
+   must be connected from an existing preset, plugin, skill, or workflow entry;
+   unreferenced files do not change Target Agent behavior.
+7. Inspect `candidate.diff`, remove accidental or task-specific changes, and
+   run `candidate.check` before finalizing. Use `candidate.decline` when the
+   evidence does not justify a harness change or the required fix is outside
+   the editable substrate.
+8. After finalization, stop using that lease and poll status. Claim and complete
+   every subsequent candidate or round until the requested batch reaches a
+   terminal state.
 
 Do not call `control.publish` or `control.rollback` unless the user explicitly
 requests that state change. Automatic per-evolution promotion remains governed
