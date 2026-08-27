@@ -1,7 +1,7 @@
 import { constants } from 'node:fs'
 import { access, mkdir, open, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import type { ChampionState, EvaluationEvidence, MetaSessionState, PairedTrial, PopulationState, RefinementRound } from '../types.js'
+import type { ChampionState, EvaluationEvidence, MetaSessionState, PairedTrial, PopulationState, RefinementRound, RoundEvaluationAttempt } from '../types.js'
 import { isExactGitCommit } from '../types.js'
 import { digestJson } from './digest.js'
 
@@ -327,7 +327,7 @@ export class RefineStateStore {
     if (typeof round.roundId !== 'string' || !/^[a-zA-Z0-9_-]+$/u.test(round.roundId)) throw new TypeError('roundId is invalid')
     const statuses = new Set([
       'queued', 'baseline-running', 'preparing-candidate', 'candidate-editing', 'building-candidate', 'candidate-seed-running',
-      'held-out-running', 'promoting', 'accepted', 'rejected', 'rejected-for-substrate', 'failed',
+      'held-out-running', 'repairing-evaluation', 'promoting', 'accepted', 'rejected', 'rejected-for-substrate', 'failed',
     ])
     if (typeof round.status !== 'string' || !statuses.has(round.status)) throw new TypeError('round status is invalid')
     if (round.source !== 'command' && round.source !== 'target' && round.source !== 'api') throw new TypeError('round source is invalid')
@@ -463,6 +463,16 @@ export class RefineStateStore {
         }
       }
     }
+    if (round.evaluationRepairResume !== undefined && round.evaluationAttempts === undefined) {
+      throw new TypeError('round evaluation repair resume intent requires evaluation attempts')
+    }
+    if (round.evaluationAttempts !== undefined) {
+      if (!Array.isArray(round.evaluationAttempts)) throw new TypeError('round evaluationAttempts must be an array')
+      const identities = new Set<string>()
+      for (const attempt of round.evaluationAttempts) {
+        this.validateEvaluationAttempt(round as RefinementRound, attempt, identities)
+      }
+    }
     if (round.parentBaselines !== undefined) {
       for (const baseline of round.parentBaselines) {
         this.validateEvaluationEvidence(baseline.evidence, 'parent seed baseline')
@@ -515,6 +525,57 @@ export class RefineStateStore {
         || (round.evaluation.heldOutScoreDelta !== undefined && !Number.isFinite(round.evaluation.heldOutScoreDelta))
         || !Number.isSafeInteger(round.evaluation.requiredRegressions) || round.evaluation.requiredRegressions < 0) {
         throw new TypeError('round evaluation deltas are invalid')
+      }
+    }
+    if (round.evaluationAttempts !== undefined) {
+      const evidence = [
+        round.baseline,
+        ...(round.parentBaselines ?? []).map(value => value.evidence),
+        ...round.candidatePool.flatMap(candidate => [candidate.seedEvaluation, candidate.heldOutEvaluation]),
+        round.evaluation?.seedBaseline,
+        round.evaluation?.seedCandidate,
+        round.evaluation?.heldOutBaseline,
+        round.evaluation?.heldOutCandidate,
+      ].filter((value): value is EvaluationEvidence => value !== undefined)
+      for (const value of evidence) {
+        const attempt = round.evaluationAttempts.find(candidate => candidate.provider === value.provider && candidate.evalId === value.evalId)
+        const durableRepairEvidence = attempt?.status === 'repair-completed'
+          && round.evaluationRepairResume?.provider === attempt.provider
+          && round.evaluationRepairResume.evalId === attempt.evalId
+        const legacyRepairEvidence = round.evaluationRepairResume === undefined
+          && round.status === 'repairing-evaluation'
+          && (attempt?.status === 'rerunning' || attempt?.status === 'repair-completed')
+        if (attempt === undefined || (attempt.status !== 'settled' && !durableRepairEvidence && !legacyRepairEvidence)
+          || attempt.conditionId !== value.conditionId || attempt.dataset !== value.dataset
+          || attempt.requestedCommit !== value.requestedCommit || attempt.owner.harnessRef !== value.actualCommit) {
+          throw new TypeError('round evaluation evidence does not match its durable attempt ownership')
+        }
+      }
+      const resume = round.evaluationRepairResume
+      if (resume !== undefined) {
+        if (typeof resume !== 'object' || resume === null
+          || typeof resume.provider !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(resume.provider)
+          || typeof resume.evalId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(resume.evalId)
+          || typeof resume.completedAt !== 'string' || resume.completedAt.length === 0) {
+          throw new TypeError('round evaluation repair resume intent is invalid')
+        }
+        const terminal = round.status === 'accepted' || round.status === 'rejected'
+          || round.status === 'rejected-for-substrate' || round.status === 'failed'
+        const attempt = round.evaluationAttempts.find(candidate => candidate.provider === resume.provider && candidate.evalId === resume.evalId)
+        if (terminal || round.decision !== undefined || round.commitIntent !== undefined
+          || attempt?.status !== 'repair-completed' || attempt.completedAt !== resume.completedAt
+          || !evidence.some(value => value.provider === resume.provider && value.evalId === resume.evalId)) {
+          throw new TypeError('round evaluation repair resume intent is invalid')
+        }
+      }
+      for (const attempt of round.evaluationAttempts) {
+        const ownsResume = round.evaluationRepairResume?.provider === attempt.provider
+          && round.evaluationRepairResume.evalId === attempt.evalId
+        const legacyPendingResume = round.evaluationRepairResume === undefined && round.status === 'repairing-evaluation'
+        if (attempt.status === 'repair-completed' && ((!ownsResume && !legacyPendingResume)
+          || !evidence.some(value => value.provider === attempt.provider && value.evalId === attempt.evalId))) {
+          throw new TypeError('completed evaluation repair requires durable evidence and pending resume state')
+        }
       }
     }
     if (round.parentPopulationDigest !== undefined && !/^sha256:[0-9a-f]{64}$/u.test(round.parentPopulationDigest)) {
@@ -620,6 +681,61 @@ export class RefineStateStore {
       throw new TypeError('substrate rejection must record rejected-for-substrate decision')
     }
     return round as RefinementRound
+  }
+
+  private validateEvaluationAttempt(
+    round: RefinementRound,
+    attempt: RoundEvaluationAttempt,
+    identities: Set<string>,
+  ): void {
+    if (typeof attempt !== 'object' || attempt === null || Array.isArray(attempt)
+      || typeof attempt.provider !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(attempt.provider)
+      || typeof attempt.evalId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(attempt.evalId)
+      || (attempt.provider === 'hitch-cli' && !/^eval_[0-9a-f]{32}$/u.test(attempt.evalId))) {
+      throw new TypeError('round evaluation attempt identity is invalid')
+    }
+    const identity = `${attempt.provider}\0${attempt.evalId}`
+    if (identities.has(identity)) throw new TypeError('round evaluation attempt identity is duplicated')
+    identities.add(identity)
+    if (!['seed-baseline', 'seed-candidate', 'held-out-baseline', 'held-out-candidate'].includes(attempt.phase)
+      || !['running', 'rerunning', 'repair-completed', 'settled', 'failed', 'cancelled'].includes(attempt.status)
+      || typeof attempt.startedAt !== 'string' || attempt.startedAt.length === 0
+      || typeof attempt.owner !== 'object' || attempt.owner === null
+      || typeof attempt.owner.candidateId !== 'string' || attempt.owner.candidateId.length === 0
+      || (attempt.owner.role !== 'baseline' && attempt.owner.role !== 'candidate')
+      || !isExactGitCommit(attempt.owner.harnessRef)
+      || attempt.requestedCommit !== attempt.owner.harnessRef) {
+      throw new TypeError('round evaluation attempt lifecycle/owner is invalid')
+    }
+    const terminal = attempt.status !== 'running' && attempt.status !== 'rerunning'
+    if (terminal !== (typeof attempt.completedAt === 'string' && attempt.completedAt.length > 0)
+      || ((attempt.status === 'running' || attempt.status === 'rerunning') && attempt.failure !== undefined)
+      || ((attempt.status === 'failed' || attempt.status === 'cancelled')
+        && (typeof attempt.failure?.code !== 'string' || attempt.failure.code.length === 0
+          || typeof attempt.failure.message !== 'string' || attempt.failure.message.length === 0))
+      || ((attempt.status === 'settled' || attempt.status === 'repair-completed') && attempt.failure !== undefined)) {
+      throw new TypeError('round evaluation attempt terminal state is invalid')
+    }
+    const condition = attempt.phase.startsWith('seed-') ? round.plan.seed : round.plan.heldOut
+    const expectedDataset = attempt.phase.startsWith('seed-') ? round.seedTaskRef : round.heldOutRef
+    if (attempt.conditionId !== condition.conditionId || attempt.dataset !== expectedDataset
+      || attempt.requestedModelId !== condition.model) {
+      throw new TypeError('round evaluation attempt condition is invalid')
+    }
+    if (attempt.owner.role === 'candidate') {
+      const candidate = round.candidatePool.find(value => value.candidateId === attempt.owner.candidateId)
+      if (!attempt.phase.endsWith('candidate') || candidate?.sealedVersion?.commitOid !== attempt.owner.harnessRef) {
+        throw new TypeError('round candidate evaluation attempt owner is invalid')
+      }
+      return
+    }
+    const allocation = round.parentAllocations?.find(value => value.parentCandidateId === attempt.owner.candidateId
+      && value.parentHarnessRef === attempt.owner.harnessRef)
+    const deterministicChampion = attempt.owner.harnessRef === round.targetHarnessRef
+      && attempt.owner.candidateId === `champion-${round.targetHarnessRef}`
+    if (!attempt.phase.endsWith('baseline') || (allocation === undefined && !deterministicChampion)) {
+      throw new TypeError('round baseline evaluation attempt owner is invalid')
+    }
   }
 
   private validateEvaluationEvidence(value: EvaluationEvidence, label: string): void {

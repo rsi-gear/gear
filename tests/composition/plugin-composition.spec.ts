@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -26,6 +26,9 @@ describe('published plugin composition', () => {
     const metaPresetPath = join(root, 'meta-preset', 'agent.cordis.yml')
     await mkdir(join(root, 'meta-preset'), { recursive: true })
     await writeFile(metaPresetPath, '[]\n')
+    const hitchExecutable = join(root, 'fake-hitch.mjs')
+    await writeFile(hitchExecutable, '#!/usr/bin/env node\nconsole.log("0.2.5")\n')
+    await chmod(hitchExecutable, 0o755)
     const fakeServices = {
       name: 'refine-test-services',
       apply(ctx: Context) {
@@ -75,6 +78,7 @@ describe('published plugin composition', () => {
       '      args: ["-e", "process.exit(0)"]',
       '      env: {}',
       '    hitch:',
+      `      executable: ${q(hitchExecutable)}`,
       '      model: test-rollout-model',
       '    initialChampion:',
       '      schemaVersion: 2',

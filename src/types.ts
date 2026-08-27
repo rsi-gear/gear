@@ -198,6 +198,7 @@ export type RoundStatus =
   | 'building-candidate'
   | 'candidate-seed-running'
   | 'held-out-running'
+  | 'repairing-evaluation'
   | 'promoting'
   | 'accepted'
   | 'rejected'
@@ -289,6 +290,58 @@ export interface EvaluationRequest {
   dataset: string
   harnessRef: HarnessRef
   condition: EvaluationCondition
+}
+
+export interface EvaluationReservation {
+  provider: string
+  evalId: string
+}
+
+export type EvaluationRerunSelector =
+  | { mode: 'invalid' }
+  | { mode: 'tasks'; taskNames: string[] }
+
+export interface EvaluationTrialSlot {
+  taskId: string
+  attempt: number
+}
+
+export interface EvaluationRerunResult {
+  provider: string
+  evalId: string
+  selectedTasks: string[]
+  repairedTasks: string[]
+  remainingInvalidTasks: string[]
+  selectedTrials?: EvaluationTrialSlot[]
+  repairedTrials?: EvaluationTrialSlot[]
+  remainingInvalidTrials?: EvaluationTrialSlot[]
+  evalStatus: 'succeeded' | 'failed'
+  evidence?: EvaluationEvidence
+}
+
+export interface RoundEvaluationAttempt {
+  provider: string
+  evalId: string
+  phase: EvaluationPhase
+  owner: {
+    candidateId: string
+    role: 'baseline' | 'candidate'
+    harnessRef: HarnessRef
+  }
+  conditionId: string
+  dataset: string
+  requestedModelId: string
+  requestedCommit: HarnessRef
+  status: 'running' | 'rerunning' | 'repair-completed' | 'settled' | 'failed' | 'cancelled'
+  startedAt: string
+  completedAt?: string
+  failure?: { code: string; message: string }
+}
+
+export interface EvaluationRepairResumeIntent {
+  provider: string
+  evalId: string
+  completedAt: string
 }
 
 export interface EvaluationCondition {
@@ -530,6 +583,8 @@ export interface RefinementRound {
   promotionCandidateId?: string
   promotedCandidateId?: string
   evaluation?: RoundEvaluation
+  evaluationAttempts?: RoundEvaluationAttempt[]
+  evaluationRepairResume?: EvaluationRepairResumeIntent
   commitIntent?: RoundCommitIntent
   meta?: MetaAttribution
   proposalEvidence?: ProposalEvidenceAudit
@@ -554,6 +609,13 @@ export interface PublicRoundStatus {
   seedBaseline?: PublicSeedEvidence
   seedCandidate?: PublicSeedEvidence
   failure?: string
+  repairableEvaluations?: Array<{
+    provider: string
+    evalId: string
+    phase: EvaluationPhase
+    candidateId: string
+    repetitions: number
+  }>
 }
 
 export interface PublicSeedEvidence {
@@ -580,11 +642,27 @@ export interface PromotionPolicy {
 }
 
 export interface RefineEvaluator {
+  preflight?(): Promise<void>
+
+  reserve?(
+    round: Readonly<RefinementRound>,
+    request: Readonly<EvaluationRequest>,
+  ): Promise<EvaluationReservation>
+
   evaluate(
     round: Readonly<RefinementRound>,
     request: Readonly<EvaluationRequest>,
     signal: AbortSignal,
+    reservation?: Readonly<EvaluationReservation>,
   ): Promise<EvaluationEvidence>
+
+  rerun?(
+    round: Readonly<RefinementRound>,
+    request: Readonly<EvaluationRequest>,
+    attempt: Readonly<RoundEvaluationAttempt>,
+    selector: Readonly<EvaluationRerunSelector>,
+    signal: AbortSignal,
+  ): Promise<EvaluationRerunResult>
 }
 
 export interface PreparedHarness {

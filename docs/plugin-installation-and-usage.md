@@ -26,11 +26,11 @@
 | pnpm | 在 `PATH` 中可用 | `dsh plugin` 会把包管理命令转发给 pnpm |
 | Git | 支持 worktree 的现代版本 | candidate 隔离、exact commit identity 和 promotion |
 | Python 3 + IPython | Python 可执行文件可配置 | Meta Agent 的 `ipython_input` 分析环境 |
-| Hitch | `0.2.x`，包含 local exact commit → Harbor 运输和 run trajectory 保存能力 | 评测和轨迹记录 |
+| Hitch | `agent-hitch >= 0.2.5` | exact-commit 评测、稳定 eval identity、multi-attempt slot rerun 和轨迹记录 |
 | Harbor | 与所选 benchmark 兼容 | task discovery、容器运行和 verifier/reward |
 | Docker | Harbor 可用的 Docker 环境 | 执行隔离的 target-agent trial |
 
-生产评测使用 Hitch CLI，而不是 Hitch 的 Node 内部 API。启动 DSH 的进程必须能在 `PATH` 中找到 `hitch`，或者在插件配置中提供绝对路径。
+生产评测使用 Hitch CLI，而不是 Hitch 的 Node 内部 API。启动 DSH 的进程必须能在 `PATH` 中找到 `hitch`，或者在插件配置中提供绝对路径。插件启动时会执行版本/capability preflight；低于 0.2.5（包括 `0.2.5` 的 prerelease）、不可解析输出或命令失败都会在任何 benchmark 启动前明确报错，更高版本的 prerelease 按标准 semver 顺序判断。Gear 不会在失败后去掉 `--eval-id` 重试，以免重复运行 benchmark。
 
 ### 2.2 操作系统要求
 
@@ -205,7 +205,7 @@ order: 50
 
     seedTaskRef: /srv/benchmarks/terminal-bench/seed
     heldOutRef: /srv/benchmarks/terminal-bench/held-out
-    taskBudgetMs: 900000
+    taskBudgetMs: 3600000
     pythonExecutable: /srv/dsh/refine-python/bin/python
     metaSandbox:
       mode: required
@@ -287,6 +287,7 @@ order: 50
 | `compiler` | candidate finalize 前固定执行的 compiler/check pipeline |
 | `candidateWorkspace.shellEnabled` | 是否向 Meta Agent 暴露 air-gapped `bash` |
 | `hitch.maxConcurrent` | 一个 Hitch evaluation 内 target trials 的最大并发数 |
+| `hitch.attempts` | 每个 task 的 logical attempt 数；可以是任意正整数，Hitch 0.2.5+ 会按 attempt shard 执行和修复 |
 | `hitch.seeds` / `hitch.sampling` | 类型化 rollout 条件；当前 Hitch CLI adapter 不支持时在 admission 阶段明确拒绝 |
 | `hitch.passEnv` | 只传环境变量名称；不要把 credential value 写进 YAML |
 | `promotion` | seed/held-out gate 和 required-task 回归策略 |
@@ -408,7 +409,20 @@ rejected
 failed
 ```
 
-### 8.3 在同一个 evolution 中继续
+只有仍匹配当前 population 和完整 champion identity 的失败 round，状态结果才会附带 `repairableEvaluations`，其中包含下一条 rerun 命令需要的 `provider`、`evalId`、`phase`、`candidateId` 和 `repetitions`。
+
+### 8.3 修复失败的 Hitch evaluation
+
+```text
+/refine rerun <evolution-id> <round-id> --eval <eval-id> --invalid
+/refine rerun <evolution-id> <round-id> --eval <eval-id> --task task-a --task task-b
+```
+
+rerun 只接受 active evolution 中尚未形成 decision/commit intent、且 population 与完整 champion ref/manifest identity 未变化的 `failed` round，以及其中可修复的 failed Hitch attempt。`--invalid` 修复全部 invalid/missing logical slots；`--task` 修复指定 task 的全部 invalid/missing attempts，已经 valid 的 slots 不会重跑。Gear 会核对 Hitch inspection request/plan 的 dataset、benchmark、candidate revision 和 logical-attempt execution identity，并验证每个 task 的 `1..repetitions` slot 恰好出现一次；身份串错、缺失、重复或越界 evidence 都会被拒绝。修复期间 Gear 持有 round lock；完整 evidence 会和 durable `evaluationRepairResume + repair-completed` 原子落盘，并贯穿 resumed drive 的全部无 commit intent 阶段。服务关闭会 abort 并等待 Hitch，但不会提前消费该 intent；下次启动会继续原 round，直到形成 commit intent 或 terminal 状态才把 attempt 改为 `settled`。archived evolution 会保留 pending intent 但不会启动 repair。
+
+Hitch 0.2.4 创建的 `attempts=1` eval 仍可由 Hitch 的 legacy 路径处理；0.2.4 创建的 multi-attempt eval 没有可靠 logical-attempt identity，必须创建新的 eval，不能原地修复。
+
+### 8.4 在同一个 evolution 中继续
 
 ```text
 /refine continue <evolution-id> --rounds 2 --focus post_action,action_verifier
@@ -418,7 +432,7 @@ failed
 
 如果本地 seed 或 held-out dataset 内容发生变化，Gear 会拒绝 continue，并要求创建新的 evolution。
 
-### 8.4 从其他版本分叉
+### 8.5 从其他版本分叉
 
 普通新 evolution 默认从 `initialChampion` 开始，也可以显式选择：
 
@@ -427,7 +441,7 @@ failed
 /refine --from <exact-git-commit> --rounds 1
 ```
 
-### 8.5 发布和回滚
+### 8.6 发布和回滚
 
 自动 promotion 只更新当前 evolution 的 champion，不会自动改变 workspace 级默认版本。
 
@@ -557,6 +571,8 @@ Meta Agent只看到 seed baseline。held-out ref、轨迹和结果不进入 Meta
 - `passEnv` 中声明的 credential 是否确实存在于启动 DSH 的环境；
 - Hitch 是否包含 local exact commit transport；
 - eval 的所有 trials 是否都完成。Gear 会把 incomplete/errored/cancelled trial 视为 infrastructure failure，而不是低分样本。
+
+如果 `/refine status <evolution-id> <round-id>` 返回 `repairableEvaluations`，使用其中的 `evalId` 执行 `/refine rerun`。seed candidate 的 invalid evaluation 会保持 `failed/repairable`，不会再被提前折叠为 `rejected/no-change`。
 
 如果 target trajectory 中 Bash 一致报
 `SandboxUnavailableError: sandbox mode "workspace-write" is requested, but no sandbox backend is usable on this host`，

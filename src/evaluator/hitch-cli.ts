@@ -1,10 +1,14 @@
 import { spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { HitchConfig } from '../config.js'
 import type {
   EvaluationRequest,
+  EvaluationRerunResult,
+  EvaluationRerunSelector,
+  EvaluationReservation,
+  EvaluationTrialSlot,
   HitchEvaluationEvidence,
   HitchTrajectoryPage,
   HitchTrajectoryReader,
@@ -12,6 +16,7 @@ import type {
   LocalSourceTransportSummary,
   RefineEvaluator,
   RefinementRound,
+  RoundEvaluationAttempt,
   ScoreSummary,
   TrajectoryDiagnostics,
 } from '../types.js'
@@ -62,6 +67,23 @@ function integer(value: unknown, label: string): number {
     throw new HitchEvaluationError(`${label} must be a non-negative integer`, 'invalid_hitch_result')
   }
   return value as number
+}
+
+function stringArray(value: unknown, label: string): string[] {
+  if (!Array.isArray(value) || value.some(item => typeof item !== 'string' || item.length === 0)) {
+    throw new HitchEvaluationError(`${label} must be an array of non-empty strings`, 'invalid_hitch_result')
+  }
+  return [...value as string[]]
+}
+
+function trialSlots(value: unknown, label: string): EvaluationTrialSlot[] {
+  if (!Array.isArray(value)) throw new HitchEvaluationError(`${label} must be an array`, 'invalid_hitch_result')
+  return value.map((item, index) => {
+    const slot = record(item, `${label}[${index}]`)
+    const attempt = integer(slot.attempt, `${label}[${index}].attempt`)
+    if (attempt <= 0) throw new HitchEvaluationError(`${label}[${index}].attempt must be positive`, 'invalid_hitch_result')
+    return { taskId: string(slot.task_id, `${label}[${index}].task_id`), attempt }
+  })
 }
 
 function sha256(value: string): string {
@@ -131,6 +153,7 @@ function trajectoryDiagnostics(events: JsonRecord[]): TrajectoryDiagnostics {
 
 export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader {
   readonly repositoryPath: string
+  private preflightPromise?: Promise<void>
 
   constructor(readonly options: HitchCliEvaluatorOptions) {
     this.repositoryPath = resolve(options.repositoryPath)
@@ -145,6 +168,50 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       throw new TypeError('hitch.maxTrajectoryOutputBytes must be positive')
     }
     if (options.passEnv.some(name => !/^[A-Z_][A-Z0-9_]*$/u.test(name))) throw new TypeError('hitch.passEnv contains an invalid environment variable name')
+  }
+
+  preflight(): Promise<void> {
+    this.preflightPromise ??= this.checkVersion()
+    return this.preflightPromise
+  }
+
+  private async checkVersion(): Promise<void> {
+    const controller = new AbortController()
+    const timeout = setTimeout(
+      () => controller.abort(new HitchEvaluationError(
+        `Hitch version check timed out for ${this.options.executable}; Gear requires agent-hitch >= 0.2.5`,
+        'hitch_version_check_failed',
+      )),
+      5_000,
+    )
+    let result: ProcessResult
+    try { result = await this.run(['--version'], this.repositoryPath, controller.signal, 16_384) }
+    finally { clearTimeout(timeout) }
+    const output = `${result.stdout}\n${result.stderr}`.trim()
+    if (result.exitCode !== 0) {
+      throw new HitchEvaluationError(`Hitch version check failed: ${output.slice(-4000)}`, 'hitch_version_check_failed')
+    }
+    const match = output.match(/(?:^|\D)(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(?:\D|$)/u)
+    if (match === null) {
+      throw new HitchEvaluationError(`unsupported Hitch CLI version output: ${output}`, 'unsupported_hitch_version')
+    }
+    const [major, minor, patch] = match.slice(1, 4).map(Number) as [number, number, number]
+    const coreAboveMinimum = major > 0 || (major === 0 && (minor > 2 || (minor === 2 && patch > 5)))
+    const coreAtMinimum = major === 0 && minor === 2 && patch === 5
+    const supported = coreAboveMinimum || (coreAtMinimum && match[4] === undefined)
+    if (!supported) {
+      throw new HitchEvaluationError(
+        `unsupported Hitch CLI ${match[0].trim()}; Gear requires agent-hitch >= 0.2.5 for stable eval identity and multi-attempt rerun`,
+        'unsupported_hitch_version',
+      )
+    }
+  }
+
+  async reserve(
+    _round: Readonly<RefinementRound>,
+    _request: Readonly<EvaluationRequest>,
+  ): Promise<EvaluationReservation> {
+    return { provider: 'hitch-cli', evalId: `eval_${randomUUID().replaceAll('-', '')}` }
   }
 
   async inspectTrajectory(
@@ -211,6 +278,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     round: Readonly<RefinementRound>,
     request: Readonly<EvaluationRequest>,
     signal: AbortSignal,
+    reservation?: Readonly<EvaluationReservation>,
   ): Promise<HitchEvaluationEvidence> {
     if (!isExactGitCommit(request.harnessRef)) throw new TypeError('Hitch evaluation requires a full Git commit OID')
     if (request.dataset.length === 0) throw new TypeError('Hitch evaluation dataset must not be empty')
@@ -220,6 +288,10 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     if (request.condition.seeds !== undefined) throw new TypeError('Hitch CLI adapter does not support typed rollout seeds')
     if (request.condition.sampling.temperature !== undefined) {
       throw new TypeError('Hitch CLI adapter does not support typed rollout temperature')
+    }
+    if (reservation !== undefined
+      && (reservation.provider !== 'hitch-cli' || !/^eval_[0-9a-f]{32}$/u.test(reservation.evalId))) {
+      throw new TypeError('Hitch evaluation reservation is invalid')
     }
     const source = `git+${pathToFileURL(this.repositoryPath).href}#${request.harnessRef}`
     const harness = `${this.options.harnessId}@${source}`
@@ -244,6 +316,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       ...(this.options.root.length === 0 ? [] : ['--root', this.options.root]),
       'eval', 'run',
       '--backend', 'harbor',
+      ...(reservation === undefined ? [] : ['--eval-id', reservation.evalId]),
       '--dataset', request.dataset,
       '--harness', harness,
       ...(request.condition.model.length === 0 ? [] : ['--model', request.condition.model]),
@@ -265,7 +338,231 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
         'invalid_hitch_json',
       )
     }
-    return this.parseResult(parsed, processResult, request, sha256(JSON.stringify(parity)))
+    const evidence = this.parseResult(parsed, processResult, request, sha256(JSON.stringify(parity)))
+    if (reservation !== undefined
+      && (evidence.provider !== reservation.provider || evidence.evalId !== reservation.evalId)) {
+      throw new HitchEvaluationError('Hitch result does not match the reserved evaluation identity', 'hitch_eval_identity_mismatch')
+    }
+    const inspection = await this.inspectEvaluation(
+      evidence.evalId,
+      round.workspaceRoot,
+      signal,
+      'hitch_eval_inspect_failed',
+    )
+    this.assertCompleteTrialSlots(inspection, evidence, request)
+    return evidence
+  }
+
+  async rerun(
+    round: Readonly<RefinementRound>,
+    request: Readonly<EvaluationRequest>,
+    attempt: Readonly<RoundEvaluationAttempt>,
+    selector: Readonly<EvaluationRerunSelector>,
+    signal: AbortSignal,
+  ): Promise<EvaluationRerunResult> {
+    if (attempt.provider !== 'hitch-cli' || !/^eval_[0-9a-f]{32}$/u.test(attempt.evalId)) {
+      throw new TypeError('Hitch evaluation rerun requires an owned Hitch eval id')
+    }
+    if (attempt.phase !== request.phase || attempt.dataset !== request.dataset
+      || attempt.conditionId !== request.condition.conditionId || attempt.requestedCommit !== request.harnessRef
+      || attempt.requestedModelId !== request.condition.model) {
+      throw new TypeError('Hitch evaluation rerun request does not match the original attempt')
+    }
+    const args = [
+      ...(this.options.root.length === 0 ? [] : ['--root', this.options.root]),
+      'eval', 'rerun', attempt.evalId,
+      ...(selector.mode === 'invalid'
+        ? ['--invalid']
+        : selector.taskNames.flatMap(task => ['--task', task])),
+      '--output', 'json',
+    ]
+    const processResult = await this.run(args, round.workspaceRoot, signal)
+    if (processResult.exitCode !== 0) {
+      throw new HitchEvaluationError(
+        `Hitch eval rerun failed for ${attempt.evalId}: ${processResult.stderr.slice(-4000)}`,
+        'hitch_eval_rerun_failed',
+      )
+    }
+    let parsed: unknown
+    try { parsed = JSON.parse(processResult.stdout) } catch (error) {
+      throw new HitchEvaluationError(`Hitch emitted invalid rerun JSON (${String(error)})`, 'invalid_hitch_json')
+    }
+    const envelope = record(parsed, 'Hitch rerun result')
+    if (envelope.schema_version !== '1' || envelope.kind !== 'eval-rerun' || envelope.eval_id !== attempt.evalId
+      || envelope.status !== 'completed' || (envelope.eval_status !== 'succeeded' && envelope.eval_status !== 'failed')) {
+      throw new HitchEvaluationError('Hitch rerun result identity/status is invalid', 'invalid_hitch_result')
+    }
+    const selectedTasks = stringArray(envelope.selected_tasks, 'selected_tasks')
+    const repairedTasks = stringArray(envelope.repaired_tasks, 'repaired_tasks')
+    const remainingInvalidTasks = stringArray(envelope.remaining_invalid_tasks, 'remaining_invalid_tasks')
+    const selectedTrials = envelope.selected_trials === undefined ? undefined : trialSlots(envelope.selected_trials, 'selected_trials')
+    const repairedTrials = envelope.repaired_trials === undefined ? undefined : trialSlots(envelope.repaired_trials, 'repaired_trials')
+    const remainingInvalidTrials = envelope.remaining_invalid_trials === undefined
+      ? undefined : trialSlots(envelope.remaining_invalid_trials, 'remaining_invalid_trials')
+    if (envelope.eval_status === 'succeeded'
+      && (remainingInvalidTasks.length > 0 || (remainingInvalidTrials?.length ?? 0) > 0)) {
+      throw new HitchEvaluationError('Hitch rerun succeeded with remaining invalid slots', 'invalid_hitch_result')
+    }
+    let evidence: HitchEvaluationEvidence | undefined
+    if (envelope.eval_status === 'succeeded') {
+      const inspection = await this.inspectEvaluation(
+        attempt.evalId,
+        round.workspaceRoot,
+        signal,
+        'hitch_eval_rerun_inspect_failed',
+      )
+      const result = record(inspection.result, 'Hitch repaired eval result')
+      evidence = this.parseResult(
+        result,
+        { stdout: JSON.stringify(result), stderr: '', exitCode: integer(result.exit_code, 'exit_code') },
+        request,
+        this.invocationFingerprint(round, request),
+      )
+      if (evidence.evalId !== attempt.evalId) throw new HitchEvaluationError('repaired evidence eval id changed', 'hitch_eval_identity_mismatch')
+      this.assertCompleteTrialSlots(inspection, evidence, request)
+    }
+    return {
+      provider: 'hitch-cli',
+      evalId: attempt.evalId,
+      selectedTasks,
+      repairedTasks,
+      remainingInvalidTasks,
+      ...(selectedTrials === undefined ? {} : { selectedTrials }),
+      ...(repairedTrials === undefined ? {} : { repairedTrials }),
+      ...(remainingInvalidTrials === undefined ? {} : { remainingInvalidTrials }),
+      evalStatus: envelope.eval_status,
+      ...(evidence === undefined ? {} : { evidence }),
+    }
+  }
+
+  private async inspectEvaluation(
+    evalId: string,
+    cwd: string,
+    signal: AbortSignal,
+    failureCode: string,
+  ): Promise<JsonRecord> {
+    const inspect = await this.run([
+      ...(this.options.root.length === 0 ? [] : ['--root', this.options.root]),
+      'eval', 'inspect', evalId, '--json',
+    ], cwd, signal)
+    if (inspect.exitCode !== 0) {
+      throw new HitchEvaluationError(`Hitch could not inspect eval ${evalId}`, failureCode)
+    }
+    let inspectionValue: unknown
+    try { inspectionValue = JSON.parse(inspect.stdout) } catch (error) {
+      throw new HitchEvaluationError(`Hitch emitted invalid inspect JSON (${String(error)})`, 'invalid_hitch_json')
+    }
+    const inspection = record(inspectionValue, 'Hitch eval inspection')
+    if (inspection.schema_version !== '1' || inspection.eval_id !== evalId) {
+      throw new HitchEvaluationError('Hitch inspection identity is invalid', 'invalid_hitch_result')
+    }
+    return inspection
+  }
+
+  private assertCompleteTrialSlots(
+    inspection: JsonRecord,
+    evidence: HitchEvaluationEvidence,
+    request: Readonly<EvaluationRequest>,
+  ): void {
+    const plan = record(inspection.plan, 'Hitch eval plan')
+    if (plan.schema_version !== '1' || plan.eval_id !== evidence.evalId) {
+      throw new HitchEvaluationError('Hitch eval plan identity is invalid', 'invalid_hitch_result')
+    }
+    const inspectedRequest = record(inspection.request, 'Hitch eval request')
+    if (inspectedRequest.schema_version !== '1' || inspectedRequest.backend !== 'harbor'
+      || inspectedRequest.dataset !== request.dataset
+      || inspectedRequest.model !== request.condition.model) {
+      throw new HitchEvaluationError('Hitch eval request does not match the frozen Gear condition', 'invalid_hitch_result')
+    }
+    const attempts = integer(plan.attempts, 'plan.attempts')
+    const requestedAttempts = integer(inspectedRequest.attempts, 'request.attempts')
+    if (attempts <= 0 || attempts !== request.condition.repetitions || requestedAttempts !== attempts) {
+      throw new HitchEvaluationError('Hitch eval plan attempts do not match the frozen condition', 'invalid_hitch_result')
+    }
+    const attemptExecution = plan.attempt_execution
+    if ((attemptExecution !== undefined && attemptExecution !== 'harbor-attempt-shards-v1')
+      || (attempts > 1 && attemptExecution !== 'harbor-attempt-shards-v1')) {
+      throw new HitchEvaluationError('Hitch eval plan has no stable logical-attempt identity', 'invalid_hitch_result')
+    }
+    const benchmarkId = string(inspectedRequest.benchmark_id, 'request.benchmark_id')
+    const benchmarkRevision = string(inspectedRequest.benchmark_revision, 'request.benchmark_revision')
+    if (plan.backend !== 'harbor' || plan.dataset !== inspectedRequest.dataset
+      || plan.benchmark_id !== benchmarkId || plan.benchmark_revision !== benchmarkRevision) {
+      throw new HitchEvaluationError('Hitch eval request and plan dataset identity differ', 'invalid_hitch_result')
+    }
+    const candidate = record(plan.candidate, 'plan.candidate')
+    const requestedHarnessRef = string(inspectedRequest.harness_ref, 'request.harness_ref')
+    if (candidate.requested_harness_ref !== requestedHarnessRef
+      || candidate.harness_id !== this.options.harnessId
+      || candidate.revision_identity !== evidence.revisionIdentity) {
+      throw new HitchEvaluationError('Hitch eval plan candidate identity differs from the result', 'invalid_hitch_result')
+    }
+    const lockedHarnessRef = string(candidate.harness_ref, 'plan.candidate.harness_ref')
+    const lockedCommit = lockedHarnessRef.match(/@commit:([0-9a-f]{40}|[0-9a-f]{64})$/u)?.[1]
+    if (lockedCommit !== request.harnessRef || lockedCommit !== evidence.actualCommit
+      || lockedHarnessRef !== `${this.options.harnessId}@commit:${lockedCommit}`) {
+      throw new HitchEvaluationError('Hitch eval plan candidate commit differs from the request', 'invalid_hitch_result')
+    }
+    const tasks = stringArray(plan.tasks, 'plan.tasks')
+    const plannedTasks = new Set(tasks)
+    if (tasks.length === 0 || plannedTasks.size !== tasks.length) {
+      throw new HitchEvaluationError('Hitch eval plan tasks must be non-empty and unique', 'invalid_hitch_result')
+    }
+    const expectedTrials = tasks.length * attempts
+    if (!Number.isSafeInteger(expectedTrials)) {
+      throw new HitchEvaluationError('Hitch eval plan trial count exceeds the safe integer range', 'invalid_hitch_result')
+    }
+    const slots = new Set<string>()
+    for (const trial of evidence.trials) {
+      if (!plannedTasks.has(trial.taskName)) {
+        throw new HitchEvaluationError(`Hitch evidence contains task outside the frozen plan: ${trial.taskName}`, 'invalid_hitch_result')
+      }
+      const logicalAttempt = trial.attempt ?? (attempts === 1 ? 1 : undefined)
+      if (logicalAttempt === undefined || !Number.isSafeInteger(logicalAttempt)
+        || logicalAttempt < 1 || logicalAttempt > attempts) {
+        throw new HitchEvaluationError(
+          `Hitch evidence attempt is outside frozen range 1..${attempts}: ${trial.taskName}#${String(trial.attempt)}`,
+          'invalid_hitch_result',
+        )
+      }
+      const slot = `${trial.taskName}\0${logicalAttempt}`
+      if (slots.has(slot)) {
+        throw new HitchEvaluationError(`Hitch evidence contains duplicate logical slot: ${trial.taskName}#${logicalAttempt}`, 'invalid_hitch_result')
+      }
+      slots.add(slot)
+    }
+    if (slots.size !== expectedTrials) {
+      const missing: string[] = []
+      for (const task of tasks) {
+        for (let attempt = 1; attempt <= attempts; attempt += 1) {
+          if (!slots.has(`${task}\0${attempt}`)) missing.push(`${task}#${attempt}`)
+        }
+      }
+      throw new HitchEvaluationError(
+        `Hitch evidence is missing frozen logical slots: ${missing.join(', ')}`,
+        'invalid_hitch_result',
+      )
+    }
+  }
+
+  private invocationFingerprint(round: Readonly<RefinementRound>, request: Readonly<EvaluationRequest>): string {
+    return sha256(JSON.stringify({
+      conditionId: request.condition.conditionId,
+      executable: this.options.executable,
+      hitchRoot: this.options.root,
+      repositoryPath: this.repositoryPath,
+      backend: 'harbor',
+      dataset: request.dataset,
+      harnessId: this.options.harnessId,
+      model: request.condition.model,
+      attempts: request.condition.repetitions,
+      maxConcurrent: this.options.maxConcurrent,
+      timeoutMs: round.taskBudgetMs,
+      setupTimeoutMs: this.options.setupTimeoutMs,
+      agentArgs: this.options.agentArgs,
+      passEnv: this.options.passEnv,
+      sandboxProfileRef: round.sandboxProfileRef,
+    }))
   }
 
   private parseResult(
@@ -296,6 +593,9 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     const match = lockedHarnessRef.match(/@commit:([0-9a-f]{40}|[0-9a-f]{64})$/u)
     if (match?.[1] === undefined) throw new HitchEvaluationError('Hitch candidate does not contain a locked commit')
     const actualCommit = match[1]
+    if (lockedHarnessRef !== `${this.options.harnessId}@commit:${actualCommit}`) {
+      throw new HitchEvaluationError('Hitch candidate harness id does not match the configured adapter', 'hitch_commit_mismatch')
+    }
     if (actualCommit !== request.harnessRef) {
       throw new HitchEvaluationError(`Hitch resolved ${actualCommit}, expected ${request.harnessRef}`, 'hitch_commit_mismatch')
     }
