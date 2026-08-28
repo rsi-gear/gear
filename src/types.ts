@@ -413,6 +413,8 @@ export interface RoundEvaluationAttempt {
   startedAt: string
   completedAt?: string
   failure?: { code: string; message: string }
+  /** A settled seed baseline imported from an earlier round instead of rerun. */
+  reusedFromRoundId?: string
 }
 
 export interface EvaluationRepairResumeIntent {
