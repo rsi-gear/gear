@@ -283,6 +283,32 @@ async function finalize(service: RefineService, round: RefinementRound): Promise
   })
 }
 
+async function decline(service: RefineService, round: RefinementRound): Promise<void> {
+  const active = service.activeEntry(round.roundId)
+  if (active?.workspace === undefined || round.baseline === undefined) throw new Error('round is not editable')
+  const current = await active.store.readRound(round.roundId)
+  const candidate = current?.candidatePool.find(value => value.workspaceId === active.workspace?.workspaceId)
+  const sessionId = candidate?.metaSessionId
+  if (sessionId === undefined || candidate === undefined) throw new Error('candidate Meta session is unavailable')
+  const failed = round.baseline.trials.flatMap(trial => (
+    (trial.rewards.reward ?? 0) <= 0 && trial.runId !== undefined ? [trial.runId] : []
+  ))
+  await service.submitFinalization(round.evolutionId, round.roundId, null, {
+    rationale: 'No evidence-grounded improvement is safe this round.', evidenceRefs: [],
+  }, {
+    evolutionId: round.evolutionId, sessionId, requestHeaderSeq: 1, proposalEventSeq: 2,
+  }, {
+    evolutionId: round.evolutionId,
+    roundId: round.roundId,
+    candidateId: candidate.candidateId,
+    baselineEvalId: round.baseline.evalId,
+    summaryAccessed: true,
+    accessedRefs: [round.baseline.evalId, ...failed],
+    diagnosedRunRefs: failed,
+    citedRefs: [],
+  })
+}
+
 describe('RefineService evolution workspaces', () => {
   it('persists a running evaluation attempt before invoking the reserved evaluator', async () => {
     const { service, evaluator } = await setup()
@@ -1122,6 +1148,94 @@ describe('RefineService evolution workspaces', () => {
     const second = await editing(service, admission.evolutionId, continued.roundId)
     expect(second.metaHarnessRef).toBe('meta-v1')
     expect(second.plan.seed.model).toBe('deepseek-chat')
+    await service.dispose()
+  })
+
+  it('reuses an exact prior seed baseline when continuing the same harness and condition', async () => {
+    const { service, evaluator } = await setup()
+    const admission = await service.admit('api')
+    const store = service.registry.stateStore(admission.evolutionId)
+    await decline(service, await editing(service, admission.evolutionId, admission.roundId))
+    const first = await eventually(
+      () => store.readRound(admission.roundId),
+      value => value?.status === 'rejected',
+    )
+    if (first?.baseline === undefined) throw new Error('first round has no baseline')
+    await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
+
+    const continued = await service.continueEvolution('api', admission.evolutionId)
+    const second = await editing(service, admission.evolutionId, continued.roundId)
+
+    expect(second.baseline?.evalId).toBe(first.baseline.evalId)
+    expect(second.baseline?.conditionId).toBe(first.plan.seed.conditionId)
+    expect(second.baseline?.actualCommit).toBe(first.targetHarnessRef)
+    expect(second.evaluationAttempts?.find(attempt => attempt.evalId === first.baseline!.evalId)).toMatchObject({
+      status: 'settled',
+      reusedFromRoundId: first.roundId,
+    })
+    expect(evaluator.calls).toEqual(['seed-baseline'])
+    await service.dispose()
+  })
+
+  it('reuses a complete seed baseline after rerun repair and round completion', async () => {
+    const { service, evaluator } = await setup()
+    const evalId = `eval_${'a'.repeat(32)}`
+    const originalEvaluate = evaluator.evaluate.bind(evaluator)
+    let firstEvaluation = true
+    evaluator.reserve = async () => ({ provider: 'hitch-cli', evalId })
+    evaluator.evaluate = async (...args) => {
+      if (firstEvaluation) {
+        firstEvaluation = false
+        throw Object.assign(new Error('invalid task observation'), { code: 'hitch_infrastructure_failure' })
+      }
+      return originalEvaluate(...args)
+    }
+
+    const admission = await service.admit('api')
+    const store = service.registry.stateStore(admission.evolutionId)
+    await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
+    await service.rerunEvaluation(admission.evolutionId, admission.roundId, evalId, { mode: 'invalid' })
+    await decline(service, await editing(service, admission.evolutionId, admission.roundId))
+    const first = await eventually(
+      () => store.readRound(admission.roundId),
+      value => value?.status === 'rejected',
+    )
+    expect(first?.evaluationAttempts?.find(attempt => attempt.evalId === evalId)).toMatchObject({ status: 'settled' })
+    await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
+
+    const continued = await service.continueEvolution('api', admission.evolutionId)
+    const second = await editing(service, admission.evolutionId, continued.roundId)
+
+    expect(second.baseline?.evalId).toBe(evalId)
+    expect(second.evaluationAttempts?.find(attempt => attempt.evalId === evalId)).toMatchObject({
+      status: 'settled',
+      reusedFromRoundId: first!.roundId,
+    })
+    expect(evaluator.calls).toEqual(['seed-baseline'])
+    await service.dispose()
+  })
+
+  it('evaluates a fresh seed baseline instead of reusing partial evidence', async () => {
+    const { service, evaluator } = await setup()
+    evaluator.partialInvalidByCall.set(1, [9])
+    const admission = await service.admit('api')
+    const store = service.registry.stateStore(admission.evolutionId)
+    await decline(service, await editing(service, admission.evolutionId, admission.roundId))
+    const first = await eventually(
+      () => store.readRound(admission.roundId),
+      value => value?.status === 'rejected',
+    )
+    if (first?.baseline === undefined) throw new Error('first round has no baseline')
+    expect(first.baseline.completeness).toBe('partial')
+    await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
+
+    const continued = await service.continueEvolution('api', admission.evolutionId)
+    const second = await editing(service, admission.evolutionId, continued.roundId)
+
+    expect(second.baseline?.completeness).toBe('complete')
+    expect(second.baseline?.evalId).not.toBe(first.baseline.evalId)
+    expect(second.evaluationAttempts?.some(attempt => attempt.reusedFromRoundId !== undefined)).toBe(false)
+    expect(evaluator.calls).toEqual(['seed-baseline', 'seed-baseline'])
     await service.dispose()
   })
 

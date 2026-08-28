@@ -906,7 +906,11 @@ export class RefineStateStore {
       || ((attempt.status === 'failed' || attempt.status === 'cancelled')
         && (typeof attempt.failure?.code !== 'string' || attempt.failure.code.length === 0
           || typeof attempt.failure.message !== 'string' || attempt.failure.message.length === 0))
-      || ((attempt.status === 'settled' || attempt.status === 'repair-completed') && attempt.failure !== undefined)) {
+      || ((attempt.status === 'settled' || attempt.status === 'repair-completed') && attempt.failure !== undefined)
+      || (attempt.reusedFromRoundId !== undefined
+        && (typeof attempt.reusedFromRoundId !== 'string' || attempt.reusedFromRoundId.length === 0
+          || attempt.reusedFromRoundId === round.roundId || attempt.phase !== 'seed-baseline'
+          || attempt.status !== 'settled'))) {
       throw new TypeError('round evaluation attempt terminal state is invalid')
     }
     const condition = attempt.phase.startsWith('seed-') ? round.plan.seed : round.plan.heldOut

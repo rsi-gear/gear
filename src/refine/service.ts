@@ -112,6 +112,11 @@ interface PendingEvaluationResume {
   attempt: Pick<RoundEvaluationAttempt, 'provider' | 'evalId'>
 }
 
+interface ReusableSeedBaseline {
+  evidence: EvaluationEvidence
+  sourceRoundId: string
+}
+
 const TERMINAL = new Set<RefinementRound['status']>(['accepted', 'rejected', 'rejected-for-substrate', 'failed'])
 function now(): string { return new Date().toISOString() }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error) }
@@ -1136,20 +1141,28 @@ export class RefineService {
       let championBaseline = round.baseline
         ?? round.parentBaselines?.find(value => value.parentCandidateId === championCandidateId)?.evidence
       if (championBaseline === undefined) {
-        const champion = await this.evaluateWithAttempt(active, round, {
-          phase: 'seed-baseline', dataset: round.seedTaskRef, harnessRef: round.targetHarnessRef,
-          condition: round.plan.seed,
-        }, {
-          candidateId: championCandidateId, role: 'baseline', harnessRef: round.targetHarnessRef,
-        }, (current, evidence) => ({
-          baseline: evidence,
-          parentBaselines: [
-            ...(current.parentBaselines ?? []).filter(value => value.parentCandidateId !== championCandidateId),
-            { parentCandidateId: championCandidateId, parentHarnessRef: round.targetHarnessRef, evidence },
-          ],
-        }))
-        round = champion.round
-        championBaseline = champion.evidence
+        const reusable = await this.findReusableSeedBaseline(store, round, championCandidateId, round.targetHarnessRef)
+        if (reusable !== undefined) {
+          round = await this.persistReusableSeedBaseline(
+            store, round, championCandidateId, round.targetHarnessRef, reusable, true,
+          )
+          championBaseline = reusable.evidence
+        } else {
+          const champion = await this.evaluateWithAttempt(active, round, {
+            phase: 'seed-baseline', dataset: round.seedTaskRef, harnessRef: round.targetHarnessRef,
+            condition: round.plan.seed,
+          }, {
+            candidateId: championCandidateId, role: 'baseline', harnessRef: round.targetHarnessRef,
+          }, (current, evidence) => ({
+            baseline: evidence,
+            parentBaselines: [
+              ...(current.parentBaselines ?? []).filter(value => value.parentCandidateId !== championCandidateId),
+              { parentCandidateId: championCandidateId, parentHarnessRef: round.targetHarnessRef, evidence },
+            ],
+          }))
+          round = champion.round
+          championBaseline = champion.evidence
+        }
       }
       let parentBaselines = round.parentBaselines ?? []
       const allocatedParentIds = [...new Set((round.parentAllocations ?? []).map(allocation => allocation.parentCandidateId))]
@@ -1157,16 +1170,23 @@ export class RefineService {
         const parent = population.members.find(member => member.candidateId === parentCandidateId)
         if (parent === undefined) throw new Error(`allocated research parent is unavailable: ${parentCandidateId}`)
         if (parentBaselines.some(value => value.parentCandidateId === parent.candidateId)) continue
-        const evaluated = await this.evaluateWithAttempt(active, round, {
-          phase: 'seed-baseline', dataset: round.seedTaskRef, harnessRef: parent.harnessRef, condition: round.plan.seed,
-        }, {
-          candidateId: parent.candidateId, role: 'baseline', harnessRef: parent.harnessRef,
-        }, (current, evidence) => ({
-          parentBaselines: [...(current.parentBaselines ?? []), {
-            parentCandidateId: parent.candidateId, parentHarnessRef: parent.harnessRef, evidence,
-          }],
-        }))
-        round = evaluated.round
+        const reusable = await this.findReusableSeedBaseline(store, round, parent.candidateId, parent.harnessRef)
+        if (reusable !== undefined) {
+          round = await this.persistReusableSeedBaseline(
+            store, round, parent.candidateId, parent.harnessRef, reusable, false,
+          )
+        } else {
+          const evaluated = await this.evaluateWithAttempt(active, round, {
+            phase: 'seed-baseline', dataset: round.seedTaskRef, harnessRef: parent.harnessRef, condition: round.plan.seed,
+          }, {
+            candidateId: parent.candidateId, role: 'baseline', harnessRef: parent.harnessRef,
+          }, (current, evidence) => ({
+            parentBaselines: [...(current.parentBaselines ?? []), {
+              parentCandidateId: parent.candidateId, parentHarnessRef: parent.harnessRef, evidence,
+            }],
+          }))
+          round = evaluated.round
+        }
         parentBaselines = round.parentBaselines ?? []
       }
       round = await this.transition(store, roundId, {
@@ -1740,6 +1760,89 @@ export class RefineService {
       await active.lock.release().catch(() => {})
       this.active.delete(roundId)
     }
+  }
+
+  private async findReusableSeedBaseline(
+    store: RefineStateStore,
+    round: RefinementRound,
+    parentCandidateId: string,
+    parentHarnessRef: string,
+  ): Promise<ReusableSeedBaseline | undefined> {
+    const previousRounds = (await store.listRounds())
+      .filter(previous => previous.roundId !== round.roundId && TERMINAL.has(previous.status))
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    for (const previous of previousRounds) {
+      const matchingParent = previous.parentBaselines
+        ?.filter(value => value.parentCandidateId === parentCandidateId && value.parentHarnessRef === parentHarnessRef)
+        .map(value => value.evidence) ?? []
+      const matchingHarness = previous.parentBaselines
+        ?.filter(value => value.parentCandidateId !== parentCandidateId && value.parentHarnessRef === parentHarnessRef)
+        .map(value => value.evidence) ?? []
+      const champion = previous.targetHarnessRef === parentHarnessRef && previous.baseline !== undefined
+        ? [previous.baseline]
+        : []
+      for (const evidence of [...matchingParent, ...matchingHarness, ...champion]) {
+        const attempt = previous.evaluationAttempts?.find(value => (
+          value.provider === evidence.provider && value.evalId === evidence.evalId
+        ))
+        if (evidence.completeness !== 'complete'
+          || attempt?.status !== 'settled'
+          || attempt.phase !== 'seed-baseline'
+          || attempt.owner.role !== 'baseline'
+          || attempt.owner.harnessRef !== parentHarnessRef
+          || attempt.requestedModelId !== round.plan.seed.model
+          || evidence.conditionId !== round.plan.seed.conditionId
+          || evidence.dataset !== round.seedTaskRef
+          || evidence.effectiveConfigDigest !== round.plan.seed.rolloutProviderDigest
+          || evidence.requestedCommit !== parentHarnessRef
+          || evidence.actualCommit !== parentHarnessRef) continue
+        return { evidence: structuredClone(evidence), sourceRoundId: previous.roundId }
+      }
+    }
+    return undefined
+  }
+
+  private async persistReusableSeedBaseline(
+    store: RefineStateStore,
+    round: RefinementRound,
+    parentCandidateId: string,
+    parentHarnessRef: string,
+    reusable: ReusableSeedBaseline,
+    champion: boolean,
+  ): Promise<RefinementRound> {
+    const current = await this.requireRound(store, round.roundId)
+    const evidence = structuredClone(reusable.evidence)
+    const existingAttempt = current.evaluationAttempts?.find(value => (
+      value.provider === evidence.provider && value.evalId === evidence.evalId
+    ))
+    if (existingAttempt !== undefined && existingAttempt.owner.harnessRef !== parentHarnessRef) {
+      throw new Error(`reused evaluation identity has conflicting ownership: ${evidence.provider}/${evidence.evalId}`)
+    }
+    const timestamp = now()
+    const evaluationAttempts = existingAttempt === undefined
+      ? [...(current.evaluationAttempts ?? []), {
+          provider: evidence.provider,
+          evalId: evidence.evalId,
+          phase: 'seed-baseline' as const,
+          owner: { candidateId: parentCandidateId, role: 'baseline' as const, harnessRef: parentHarnessRef },
+          conditionId: current.plan.seed.conditionId,
+          dataset: current.seedTaskRef,
+          requestedModelId: current.plan.seed.model,
+          requestedCommit: parentHarnessRef,
+          status: 'settled' as const,
+          startedAt: timestamp,
+          completedAt: timestamp,
+          reusedFromRoundId: reusable.sourceRoundId,
+        }]
+      : current.evaluationAttempts
+    return this.transition(store, current.roundId, {
+      ...(champion ? { baseline: evidence } : {}),
+      parentBaselines: [
+        ...(current.parentBaselines ?? []).filter(value => value.parentCandidateId !== parentCandidateId),
+        { parentCandidateId, parentHarnessRef, evidence },
+      ],
+      evaluationAttempts,
+    })
   }
 
   private async queueContinuation(previous: ActiveRound): Promise<void> {
