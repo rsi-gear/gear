@@ -26,8 +26,11 @@ Read [references/protocol.md](references/protocol.md) before constructing calls
 or handling an active assignment. Before diagnosing evidence or changing a
 candidate, also read
 [references/target-harness-editing.md](references/target-harness-editing.md).
-These references are the complete method contract and Target Harness editing
-guide; do not infer missing field names from errors.
+When the candidate is Gear's DSH carrier, also read
+[references/dsh-target-harness.md](references/dsh-target-harness.md) before
+choosing an artifact or hook. These references are the complete method
+contract, general editing guide, and version-specific DSH authoring guide; do
+not infer missing field names or harness APIs from errors.
 
 ## Run an evolution
 

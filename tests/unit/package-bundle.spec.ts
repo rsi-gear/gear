@@ -25,9 +25,33 @@ describe('published Gear bundle', () => {
     expect(new Set(references)).toEqual(new Set([
       'references/protocol.md',
       'references/target-harness-editing.md',
+      'references/dsh-target-harness.md',
     ]))
-    await expect(Promise.all(references.map(path => readFile(resolve(dirname(skillPath), path), 'utf8'))))
-      .resolves.toHaveLength(2)
+    const referenceBodies = await Promise.all(
+      references.map(path => readFile(resolve(dirname(skillPath), path), 'utf8')),
+    )
+    expect(referenceBodies).toHaveLength(3)
+
+    const dshGuide = await readFile(
+      resolve(dirname(skillPath), 'references/dsh-target-harness.md'),
+      'utf8',
+    )
+    for (const required of [
+      '`preset/`',
+      '`plugins/`',
+      '`prompts/`',
+      '`skills/`',
+      '`workflows/`',
+      '`candidate.edit`',
+      '`candidate.write`',
+      '`candidate.remove`',
+      '`tools/pre-execute`',
+      '`tools/post-execute`',
+      '`ctx.tools.guard(...)`',
+      '`@deepseek-ai/dsh-skill-filesystem`',
+    ]) {
+      expect(dshGuide).toContain(required)
+    }
 
     const patch = load(await readFile(resolve(root, 'cordis.patch.yml'), 'utf8')) as Array<{
       insert?: Array<{ id?: string; name?: string; disabled?: boolean }>

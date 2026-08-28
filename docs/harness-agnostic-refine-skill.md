@@ -164,7 +164,12 @@ Meta harness 读取 `skills/refine/SKILL.md`，通过 `gear-refine request`：
 Meta Agent 在修改 candidate 前还必须读取
 [`skills/refine/references/target-harness-editing.md`](../skills/refine/references/target-harness-editing.md)，
 其中说明如何从 seed trajectory 建立因果假设、选择可编辑的 harness 资产、使用
-observation digest 安全修改，以及何时 finalize 或 decline。
+observation digest 安全修改，以及何时 finalize 或 decline。若 candidate 是
+Gear 的 DSH carrier，还必须读取
+[`skills/refine/references/dsh-target-harness.md`](../skills/refine/references/dsh-target-harness.md)：
+它基于锁定的 DSH `0.1.0-rc.8` 源码，说明 `preset/`、`plugins/`、`prompts/`、
+`skills/`、`workflows/` 的真实加载关系、Cordis plugin 结构、skill provider
+接线，以及 `tools/pre-execute` / `tools/post-execute` 等 native hook 的完整示例。
 
 ## 6. 安全边界
 

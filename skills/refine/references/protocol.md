@@ -2,7 +2,9 @@
 
 This is the complete structured protocol used by a Refine Meta Agent. The
 Target Harness editing and reasoning guide is in
-[target-harness-editing.md](target-harness-editing.md).
+[target-harness-editing.md](target-harness-editing.md). Gear DSH candidates also
+require the version-specific
+[dsh-target-harness.md](dsh-target-harness.md) authoring guide.
 
 ## Transport and request form
 
@@ -430,7 +432,9 @@ For each candidate assignment:
 3. Query offset zero for every failed baseline run; page relevant trajectories
    using `nextOffset`.
 4. Follow [target-harness-editing.md](target-harness-editing.md) to select and
-   apply an evidence-based edit, or decide to decline.
+   apply an evidence-based edit, or decide to decline. For Gear's DSH carrier,
+   first follow [dsh-target-harness.md](dsh-target-harness.md) to map the
+   semantic target to a real DSH artifact, registration, and hook.
 5. For an edit, call `candidate.diff`, `candidate.check`, then
    `candidate.finalize`. For no justified edit, call `candidate.decline`.
 6. Stop using the concluded lease. Poll `control.status` through candidate seed,

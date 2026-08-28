@@ -3,6 +3,11 @@
 Use this guide after claiming a Meta assignment and before changing candidate
 files. The protocol and schemas are in [protocol.md](protocol.md).
 
+When the candidate manifest or tree identifies Gear's DeepSeek Harness carrier,
+read [dsh-target-harness.md](dsh-target-harness.md) before choosing a file or
+hook. It documents the locked DSH version, the actual load graph, all five
+editable roots, native tool interception APIs, and complete wiring examples.
+
 ## Authority and workspace model
 
 The Meta Agent is optimizing the Target Agent's harness, not solving the seed
@@ -36,7 +41,8 @@ Only these top-level roots are editable:
 
 The table is a routing aid, not a filename convention. Inspect the candidate
 tree and existing composition before deciding which artifact controls the
-observed behavior.
+observed behavior. In particular, directory membership never proves that DSH
+loads a resource; its DSH-specific composition must make the resource live.
 
 The following are fixed substrate and cannot be edited: `manifest.json`, Git
 metadata, package manifests, dependency lockfiles, files outside the five roots,
