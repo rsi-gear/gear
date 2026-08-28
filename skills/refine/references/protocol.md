@@ -198,6 +198,18 @@ Examples below show method-specific fields in addition to this envelope.
 
 ## Candidate file methods
 
+Request routing is strict:
+
+- send `candidate.tree`, `candidate.read`, `candidate.write`, `candidate.edit`,
+  and `candidate.remove` directly as the request method;
+- send every capability documented under **Meta capabilities** through request
+  method `meta.call`, placing its name in `params.capability` and its payload in
+  `params.arguments`.
+
+In particular, `candidate.diff`, `candidate.check`, `candidate.finalize`, and
+`candidate.decline` are capability names, not top-level request methods. A call
+such as `gear-refine request candidate.diff ...` is invalid.
+
 All paths are logical paths below `/candidate/harness`. Relative paths such as
 `plugins/policy.js` are preferred. Absolute host paths are unavailable.
 
@@ -435,8 +447,9 @@ For each candidate assignment:
    apply an evidence-based edit, or decide to decline. For Gear's DSH carrier,
    first follow [dsh-target-harness.md](dsh-target-harness.md) to map the
    semantic target to a real DSH artifact, registration, and hook.
-5. For an edit, call `candidate.diff`, `candidate.check`, then
-   `candidate.finalize`. For no justified edit, call `candidate.decline`.
+5. For an edit, use `meta.call` with capabilities `candidate.diff`,
+   `candidate.check`, then `candidate.finalize`. For no justified edit, use
+   `meta.call` with capability `candidate.decline`.
 6. Stop using the concluded lease. Poll `control.status` through candidate seed,
    selection, held-out, and promotion states.
 7. Claim every subsequent candidate/round in the requested batch. Finish only

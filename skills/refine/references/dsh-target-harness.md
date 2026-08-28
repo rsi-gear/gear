@@ -695,6 +695,7 @@ Confirm all of the following in `candidate.diff`:
 - The change is general to the observed failure pattern and contains no seed
   answer or held-out guess.
 
-Then run `candidate.check` with `{"check":"compiler"}`. A successful compiler
-check proves the carrier can load and validate the candidate; it does not prove
-the behavioral hypothesis, which remains subject to Gear evaluation.
+Then use `meta.call` with capability `candidate.check` and arguments
+`{"check":"compiler"}`. A successful compiler check proves the carrier can load
+and validate the candidate; it does not prove the behavioral hypothesis, which
+remains subject to Gear evaluation.

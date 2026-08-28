@@ -41,10 +41,15 @@ not infer missing field names or harness APIs from errors.
    `meta.claim`. Baseline evaluation can finish before an assignment appears.
 3. Treat the returned lease id, token, client id, session id, and candidate id
    as one inseparable capability. Never reuse them for another assignment.
-4. Use only the candidate file and `meta.call` methods exposed by Gear. Start
-   with `harness.current`, `candidate.tree`, and `seed_tasks.load`; read the
-   active candidate files before selecting an edit. Do not discover or modify
-   Gear state, Git metadata, held-out data, credentials, or host paths directly.
+4. Use only the candidate file and `meta.call` methods exposed by Gear. The
+   direct candidate methods are exactly `candidate.tree`, `candidate.read`,
+   `candidate.write`, `candidate.edit`, and `candidate.remove`. Invoke
+   `harness.current`, `harness.read`, `seed_tasks.load`, `trajectory.query`,
+   `hitch.status`, `candidate.diff`, `candidate.check`, `candidate.finalize`,
+   and `candidate.decline` only as `meta.call` capabilities; they are not
+   top-level request methods. Read the active candidate files before selecting
+   an edit. Do not discover or modify Gear state, Git metadata, held-out data,
+   credentials, or host paths directly.
 5. Review the baseline summary. Query `trajectory.query` with `refs` for every
    failed baseline run before proposing a change. Use `nextOffset` for bounded
    pagination and stop once the causal evidence is sufficient. Keep cited

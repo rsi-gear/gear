@@ -187,8 +187,8 @@ file.
 
 ## Validate the candidate
 
-Call `candidate.diff` before the compiler check. Review the authoritative patch,
-not a reconstruction from memory. Confirm:
+Call `meta.call` with capability `candidate.diff` before the compiler check.
+Review the authoritative patch, not a reconstruction from memory. Confirm:
 
 - every changed file supports the stated causal hypothesis;
 - no seed answer, hidden-task guess, credential, host path, or unrelated cleanup
@@ -197,10 +197,11 @@ not a reconstruction from memory. Confirm:
 - the patch fits within the existing fixed toolchain and dependencies;
 - `semanticTargets` and `expectedOutcome` describe the diff accurately.
 
-Then call `candidate.check` with `{"check":"compiler"}`. This is the fixed
-candidate build/validation pipeline; it does not prove task improvement. If it
-fails, repair only the candidate defect reported by the check, then inspect the
-diff and check again. Never bypass the check or modify the manifest manually.
+Then call `meta.call` with capability `candidate.check` and arguments
+`{"check":"compiler"}`. This is the fixed candidate build/validation pipeline;
+it does not prove task improvement. If it fails, repair only the candidate
+defect reported by the check, then inspect the diff and check again. Never
+bypass the check or modify the manifest manually.
 
 ## Finalize or decline
 
