@@ -264,6 +264,14 @@ order: 50
       sampling: {}
       agentArgs: []
       passEnv: [DEEPSEEK_API_KEY]
+      controlPlane:
+        mode: daemon
+        provider: local-docker
+        cpuPerTrial: 2
+        memoryPerTrial: 4GiB
+        buildMode: prebuild-preferred
+        modelCapture: native
+        requireModelCapture: false
 
     promotion:
       minimumCandidateScore: 0
@@ -306,6 +314,11 @@ order: 50
 | `hitch.attempts` | 每个 task 的 logical attempt 数；可以是任意正整数，Hitch 0.2.5+ 会按 attempt shard 执行和修复 |
 | `hitch.seeds` / `hitch.sampling` | 类型化 rollout 条件；当前 Hitch CLI adapter 不支持时在 admission 阶段明确拒绝 |
 | `hitch.passEnv` | 只传环境变量名称；不要把 credential value 写进 YAML |
+| `hitch.controlPlane.mode` | `direct`（默认）直接执行 CLI eval；`daemon` 使用 Hitch 0.2.6+ 的持久化 submit/watch/cancel 调度 |
+| `hitch.controlPlane.provider` | 可选的 daemon execution provider；配置后 Gear 会校验 Hitch 冻结的 provider 完全一致 |
+| `hitch.controlPlane.cpuPerTrial` / `memoryPerTrial` | 可选的每个 trial 资源请求；CPU 是正整数核数，内存使用 `MiB`/`GiB` 等 Hitch 单位 |
+| `hitch.controlPlane.buildMode` | 可选的 `backend`、`prebuild-preferred` 或 `prebuild-required` |
+| `hitch.controlPlane.modelCapture` / `requireModelCapture` | 可选的模型交互采集策略；实际冻结策略会进入 baseline/candidate parity fingerprint |
 | `promotion` | seed/held-out gate 和 required-task 回归策略 |
 | `publishedPointer` | 是否维护 workspace 级显式 published pointer |
 
@@ -355,6 +368,22 @@ hitch --version
 hitch eval doctor --json
 docker info
 ```
+
+若 `hitch.controlPlane.mode: daemon`，还要在同一个 `hitch.root` 启动并检查 daemon。daemon 的总 CPU、内存、容器槽和 GPU 容量在启动时配置；Gear 配置的是每次 eval 的 trial 请求，不能超过 daemon 容量：
+
+```sh
+hitch --root /srv/dsh/hitch-state daemon start \
+  --max-concurrent 4 \
+  --capacity-cpu-millis 8000 \
+  --capacity-memory-mib 16384 \
+  --container-slots 4 \
+  --build-slots 1 \
+  --eval-cpu-millis 2000 \
+  --eval-memory-mib 4096
+hitch --root /srv/dsh/hitch-state daemon status --json
+```
+
+Gear 启动时要求 daemon 状态为 `running`，并校验其 `eval_trial` 资源策略。提交使用由 evolution、round、phase、condition 和固定调用参数派生的幂等键；重启后重复 reservation 会得到同一个 Hitch eval ID。round 被取消时 Gear 会终止本地 watch 并向 daemon 发送 `eval cancel`。daemon eval 的 rerun 始终显式使用 `--daemon --type candidate-restart`。
 
 检查 Python：
 

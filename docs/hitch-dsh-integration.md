@@ -1,8 +1,8 @@
-# Gear ↔ Hitch CLI 集成设计
+# Gear ↔ Hitch CLI / daemon 集成设计
 
-- 状态：Draft v0.5
+- 状态：Draft v0.6
 - 目的：用已安装的 Hitch CLI 完成 TargetHarness 的版本解析、Harbor 评测和证据记录
-- 基线：agent-hitch `dev@8c034d9`，DeepSeek Harness headless
+- 基线：agent-hitch `0.2.6`，DeepSeek Harness headless
 - 更新：2026-08-21 — 删除 `dsh-evolving` adapter、`dsh-eval-runner`、Hitch Node API 和独立 overlay identity；V1 直接复用 Hitch 现有 `deepseek` adapter，每个 TargetHarness 版本是一个完整 DSH source repo 的 exact Git commit；Hitch 唯一缺口是把 local exact commit 运输进 Harbor。
 
 ## 1. 决策
@@ -55,9 +55,9 @@ Git commit 是 Gear、Hitch、round record 和 champion pointer 共用的唯一�
 
 Gear 在创建 H1 前对 H0 做 parent CAS，应用 mutation、运行固定检查并创建 commit。Hitch随后解析和 prepare这个 exact commit。promotion只把 champion从H0移动到已经成功评测的H1。
 
-## 3. Gear 只调用 Hitch CLI
+## 3. Gear 只调用 Hitch 的公开 CLI
 
-推荐调用形式：
+Gear 不导入 Hitch 内部模块。默认 `hitch.controlPlane.mode: direct` 使用直接 CLI：
 
 ```bash
 hitch eval run \
@@ -72,17 +72,37 @@ hitch eval run \
   --output json
 ```
 
+需要让 eval 与其他 Hitch 工作共享持久化队列和资源预算时，配置 `hitch.controlPlane.mode: daemon`。Gear 先用确定性幂等键预留服务端身份，再等待同一 eval：
+
+```bash
+hitch --root <state-root> eval submit \
+  --idempotency-key <gear-derived-key> \
+  --backend harbor \
+  --dataset <dataset> \
+  --harness 'deepseek@git+file:///absolute/path/to/dsh-repo#<full-commit>' \
+  --model <fixed-model> \
+  --attempts 1 \
+  --max-concurrent <n> \
+  --timeout <duration> \
+  --setup-timeout <duration>
+
+hitch --root <state-root> eval watch <server-eval-id> --output json
+```
+
+取消时 Gear 终止本地 watch 后调用 `eval cancel`；修复时调用 `eval rerun ... --type candidate-restart --daemon`。daemon 的总资源容量由 `hitch daemon start` 管理，Gear 可在 submission 中固定 provider、每 trial CPU/内存、build mode 和 model-capture policy。
+
 Gear：
 
 1. 通过配置的 executable或 `PATH` 查找 `hitch`；
-2. 启动前可调用 `hitch --version` 和 `hitch eval doctor --json`；
+2. 启动前调用 `hitch --version`；daemon 模式还调用同一 root 的 `daemon status --json` 并要求状态为 `running`；
 3. 每次 eval 使用独立 argv，不经过 shell；
 4. 从 stdout读取单个 JSON result，stderr只作 bounded diagnostic；
-5. 转发 abort为 SIGTERM，超时后按固定 grace period升级终止；
+5. direct 模式转发 abort 为 SIGTERM，超时后按固定 grace period升级终止；daemon 模式同时发送持久化 cancellation；
 6. 校验 CLI exit code、`status`、`eval_id`、resolved commit、trial counts和 `summary.primary_reward`；
-7. round record只保存 Hitch返回的eval/ref和Gear自己的decision，不修改 Hitch records。
+7. daemon 模式从 inspection 校验 submission request、幂等键 hash 和冻结 execution policy，并把实际 policy 纳入 baseline/candidate parity fingerprint；
+8. round record只保存 Hitch返回的eval/ref和Gear自己的decision，不修改 Hitch records。
 
-不要求 Hitch Node exports、daemon或Gear专用plugin ABI。daemon以后可作为性能优化，但不是V1正确性前提。
+不要求 Hitch Node exports 或 Gear 专用 plugin ABI。direct 与 daemon 都经过同一个 CLI JSON 合同；direct 要求 agent-hitch 0.2.5+，daemon 要求 0.2.6+。
 
 ## 4. Baseline、candidate与held-out
 

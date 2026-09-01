@@ -35,6 +35,25 @@ hitch eval setup harbor
 hitch eval doctor --json
 ```
 
+Gear uses Hitch's direct eval CLI by default. To share one bounded scheduler
+with other Hitch work, install agent-hitch 0.2.6 or newer, start a daemon for
+the configured Hitch root, and select daemon mode:
+
+```bash
+hitch --root /absolute/path/to/hitch-state daemon start --max-concurrent 4
+```
+
+```yaml
+hitch:
+  root: /absolute/path/to/hitch-state
+  controlPlane:
+    mode: daemon
+```
+
+Daemon mode uses durable, idempotent `eval submit`, `eval watch`, `eval cancel`,
+and daemon rerun operations. Gear verifies the frozen Hitch execution policy
+before accepting evidence. Keep `mode: direct` when no daemon owns that root.
+
 ### 2. Build Gear
 
 Until the package is published, install Gear from a source checkout:
@@ -137,8 +156,9 @@ policy remain sealed by the original experiment spec. See the
 [installation and usage guide](docs/plugin-installation-and-usage.md#8-使用-refine)
 for command output, lifecycle states, and operational details.
 
-Gear requires agent-hitch 0.2.5 or newer and checks the CLI version at startup.
-For multi-attempt evaluations, `--task TASK` repairs every invalid or missing
+Gear checks the Hitch CLI version at startup. Direct mode requires agent-hitch
+0.2.5 or newer; daemon mode requires 0.2.6 or newer and a running daemon. For
+multi-attempt evaluations, `--task TASK` repairs every invalid or missing
 `(task, attempt)` slot for that task while preserving already-valid slots.
 
 ## How it works
