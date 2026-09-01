@@ -2,13 +2,13 @@ import type { CandidateWorkspaceHandle, CandidateWorkspaceManager } from '../can
 import { ComponentRegistry } from '../evolution/components.js'
 import type { HarnessBuilder } from '../harness/builder.js'
 import { SubstrateExpansionError } from '../harness/builder.js'
-import type { MetaSessionManager } from '../meta/session.js'
+import type { MetaSessionController } from '../meta/controller.js'
 import { digestDatasetRef } from '../state/dataset.js'
 import { digestJson, type EvolutionRegistryStore } from '../state/evolution.js'
 import type { RefineStateStore, WorkspaceLock } from '../state/store.js'
 import type {
   AdmissionResult, CandidateAssessment, CandidateAssessmentResult, CandidateDecline, CandidateDiffSummary, CandidateFinalization, CandidateRecord, ChampionState,
-  CandidateGenerationAttempt, CandidateGenerationSpec, ComponentRef, DshMetaAgentSpec, EvaluationEvidence, EvaluationRequest, EvaluationRerunResult, EvaluationRerunSelector, EvolutionRegistryEntry, EvolutionSpec, MetaAttribution,
+  CandidateGenerationAttempt, CandidateGenerationSpec, ComponentRef, MetaAgentSpec, EvaluationEvidence, EvaluationRequest, EvaluationRerunResult, EvaluationRerunSelector, EvolutionRegistryEntry, EvolutionSpec, MetaAttribution,
   HitchTrajectoryReader, MetaCheckpointRef, MetricSet, PairedTrial, PairingAudit, PopulationState, ProposalEvidenceAudit, PromotionPolicy, PublicSeedEvidence, PublicRoundStatus,
   RefineEvaluator, RefinementRound, RolloutSpec, RoundEvaluation, RoundEvaluationAttempt, SemanticTarget, PopulationMember,
 } from '../types.js'
@@ -16,7 +16,7 @@ import { isExactGitCommit } from '../types.js'
 
 export interface RefineServiceOptions {
   workspaceRoot: string
-  metaAgent: DshMetaAgentSpec
+  metaAgent: MetaAgentSpec
   candidateGeneration: CandidateGenerationSpec
   rollout: RolloutSpec
   evaluation: EvolutionSpec['evaluation']
@@ -48,13 +48,13 @@ export type MetaSessionFactory = (
   spec: EvolutionSpec,
   specDigest: string,
   store: RefineStateStore,
-) => MetaSessionManager | Promise<MetaSessionManager>
+) => MetaSessionController | Promise<MetaSessionController>
 
 interface EvolutionRuntime {
   spec: EvolutionSpec
   specDigest: string
   store: RefineStateStore
-  meta: MetaSessionManager
+  meta: MetaSessionController
   evaluator: RefineEvaluator
   lastUsedAt: number
 }
@@ -110,6 +110,11 @@ interface PendingEvaluationResume {
   evolutionId: string
   roundId: string
   attempt: Pick<RoundEvaluationAttempt, 'provider' | 'evalId'>
+}
+
+interface ReusableSeedBaseline {
+  evidence: EvaluationEvidence
+  sourceRoundId: string
 }
 
 const TERMINAL = new Set<RefinementRound['status']>(['accepted', 'rejected', 'rejected-for-substrate', 'failed'])
@@ -948,7 +953,7 @@ export class RefineService {
 
   async champion(evolutionId: string): Promise<ChampionState> { return this.requireChampion((await this.runtime(evolutionId)).store) }
 
-  activeEntry(roundId: string): { evolutionId: string; store: RefineStateStore; meta: MetaSessionManager; workspace?: CandidateWorkspaceHandle } | undefined {
+  activeEntry(roundId: string): { evolutionId: string; store: RefineStateStore; meta: MetaSessionController; workspace?: CandidateWorkspaceHandle } | undefined {
     const active = this.active.get(roundId)
     const execution = active?.currentCandidateId === undefined ? undefined : active.executions.get(active.currentCandidateId)
     return active === undefined ? undefined : {
@@ -962,7 +967,7 @@ export class RefineService {
     spec: EvolutionSpec
     roundId: string
     store: RefineStateStore
-    meta: MetaSessionManager
+    meta: MetaSessionController
     workspace: CandidateWorkspaceHandle
     candidateId: string
     parentHarnessRef: string
@@ -1136,20 +1141,28 @@ export class RefineService {
       let championBaseline = round.baseline
         ?? round.parentBaselines?.find(value => value.parentCandidateId === championCandidateId)?.evidence
       if (championBaseline === undefined) {
-        const champion = await this.evaluateWithAttempt(active, round, {
-          phase: 'seed-baseline', dataset: round.seedTaskRef, harnessRef: round.targetHarnessRef,
-          condition: round.plan.seed,
-        }, {
-          candidateId: championCandidateId, role: 'baseline', harnessRef: round.targetHarnessRef,
-        }, (current, evidence) => ({
-          baseline: evidence,
-          parentBaselines: [
-            ...(current.parentBaselines ?? []).filter(value => value.parentCandidateId !== championCandidateId),
-            { parentCandidateId: championCandidateId, parentHarnessRef: round.targetHarnessRef, evidence },
-          ],
-        }))
-        round = champion.round
-        championBaseline = champion.evidence
+        const reusable = await this.findReusableSeedBaseline(store, round, championCandidateId, round.targetHarnessRef)
+        if (reusable !== undefined) {
+          round = await this.persistReusableSeedBaseline(
+            store, round, championCandidateId, round.targetHarnessRef, reusable, true,
+          )
+          championBaseline = reusable.evidence
+        } else {
+          const champion = await this.evaluateWithAttempt(active, round, {
+            phase: 'seed-baseline', dataset: round.seedTaskRef, harnessRef: round.targetHarnessRef,
+            condition: round.plan.seed,
+          }, {
+            candidateId: championCandidateId, role: 'baseline', harnessRef: round.targetHarnessRef,
+          }, (current, evidence) => ({
+            baseline: evidence,
+            parentBaselines: [
+              ...(current.parentBaselines ?? []).filter(value => value.parentCandidateId !== championCandidateId),
+              { parentCandidateId: championCandidateId, parentHarnessRef: round.targetHarnessRef, evidence },
+            ],
+          }))
+          round = champion.round
+          championBaseline = champion.evidence
+        }
       }
       let parentBaselines = round.parentBaselines ?? []
       const allocatedParentIds = [...new Set((round.parentAllocations ?? []).map(allocation => allocation.parentCandidateId))]
@@ -1157,16 +1170,23 @@ export class RefineService {
         const parent = population.members.find(member => member.candidateId === parentCandidateId)
         if (parent === undefined) throw new Error(`allocated research parent is unavailable: ${parentCandidateId}`)
         if (parentBaselines.some(value => value.parentCandidateId === parent.candidateId)) continue
-        const evaluated = await this.evaluateWithAttempt(active, round, {
-          phase: 'seed-baseline', dataset: round.seedTaskRef, harnessRef: parent.harnessRef, condition: round.plan.seed,
-        }, {
-          candidateId: parent.candidateId, role: 'baseline', harnessRef: parent.harnessRef,
-        }, (current, evidence) => ({
-          parentBaselines: [...(current.parentBaselines ?? []), {
-            parentCandidateId: parent.candidateId, parentHarnessRef: parent.harnessRef, evidence,
-          }],
-        }))
-        round = evaluated.round
+        const reusable = await this.findReusableSeedBaseline(store, round, parent.candidateId, parent.harnessRef)
+        if (reusable !== undefined) {
+          round = await this.persistReusableSeedBaseline(
+            store, round, parent.candidateId, parent.harnessRef, reusable, false,
+          )
+        } else {
+          const evaluated = await this.evaluateWithAttempt(active, round, {
+            phase: 'seed-baseline', dataset: round.seedTaskRef, harnessRef: parent.harnessRef, condition: round.plan.seed,
+          }, {
+            candidateId: parent.candidateId, role: 'baseline', harnessRef: parent.harnessRef,
+          }, (current, evidence) => ({
+            parentBaselines: [...(current.parentBaselines ?? []), {
+              parentCandidateId: parent.candidateId, parentHarnessRef: parent.harnessRef, evidence,
+            }],
+          }))
+          round = evaluated.round
+        }
         parentBaselines = round.parentBaselines ?? []
       }
       round = await this.transition(store, roundId, {
@@ -1271,7 +1291,7 @@ export class RefineService {
             execution.workspace = workspace
             execution.signal.throwIfAborted()
             const forkPromise = meta.fork(parentCheckpoint)
-            let agent: Awaited<ReturnType<MetaSessionManager['fork']>>
+            let agent: Awaited<ReturnType<MetaSessionController['fork']>>
             try {
               agent = await Promise.race([forkPromise, deadline])
             } catch (error) {
@@ -1740,6 +1760,89 @@ export class RefineService {
       await active.lock.release().catch(() => {})
       this.active.delete(roundId)
     }
+  }
+
+  private async findReusableSeedBaseline(
+    store: RefineStateStore,
+    round: RefinementRound,
+    parentCandidateId: string,
+    parentHarnessRef: string,
+  ): Promise<ReusableSeedBaseline | undefined> {
+    const previousRounds = (await store.listRounds())
+      .filter(previous => previous.roundId !== round.roundId && TERMINAL.has(previous.status))
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    for (const previous of previousRounds) {
+      const matchingParent = previous.parentBaselines
+        ?.filter(value => value.parentCandidateId === parentCandidateId && value.parentHarnessRef === parentHarnessRef)
+        .map(value => value.evidence) ?? []
+      const matchingHarness = previous.parentBaselines
+        ?.filter(value => value.parentCandidateId !== parentCandidateId && value.parentHarnessRef === parentHarnessRef)
+        .map(value => value.evidence) ?? []
+      const champion = previous.targetHarnessRef === parentHarnessRef && previous.baseline !== undefined
+        ? [previous.baseline]
+        : []
+      for (const evidence of [...matchingParent, ...matchingHarness, ...champion]) {
+        const attempt = previous.evaluationAttempts?.find(value => (
+          value.provider === evidence.provider && value.evalId === evidence.evalId
+        ))
+        if (evidence.completeness !== 'complete'
+          || attempt?.status !== 'settled'
+          || attempt.phase !== 'seed-baseline'
+          || attempt.owner.role !== 'baseline'
+          || attempt.owner.harnessRef !== parentHarnessRef
+          || attempt.requestedModelId !== round.plan.seed.model
+          || evidence.conditionId !== round.plan.seed.conditionId
+          || evidence.dataset !== round.seedTaskRef
+          || evidence.effectiveConfigDigest !== round.plan.seed.rolloutProviderDigest
+          || evidence.requestedCommit !== parentHarnessRef
+          || evidence.actualCommit !== parentHarnessRef) continue
+        return { evidence: structuredClone(evidence), sourceRoundId: previous.roundId }
+      }
+    }
+    return undefined
+  }
+
+  private async persistReusableSeedBaseline(
+    store: RefineStateStore,
+    round: RefinementRound,
+    parentCandidateId: string,
+    parentHarnessRef: string,
+    reusable: ReusableSeedBaseline,
+    champion: boolean,
+  ): Promise<RefinementRound> {
+    const current = await this.requireRound(store, round.roundId)
+    const evidence = structuredClone(reusable.evidence)
+    const existingAttempt = current.evaluationAttempts?.find(value => (
+      value.provider === evidence.provider && value.evalId === evidence.evalId
+    ))
+    if (existingAttempt !== undefined && existingAttempt.owner.harnessRef !== parentHarnessRef) {
+      throw new Error(`reused evaluation identity has conflicting ownership: ${evidence.provider}/${evidence.evalId}`)
+    }
+    const timestamp = now()
+    const evaluationAttempts = existingAttempt === undefined
+      ? [...(current.evaluationAttempts ?? []), {
+          provider: evidence.provider,
+          evalId: evidence.evalId,
+          phase: 'seed-baseline' as const,
+          owner: { candidateId: parentCandidateId, role: 'baseline' as const, harnessRef: parentHarnessRef },
+          conditionId: current.plan.seed.conditionId,
+          dataset: current.seedTaskRef,
+          requestedModelId: current.plan.seed.model,
+          requestedCommit: parentHarnessRef,
+          status: 'settled' as const,
+          startedAt: timestamp,
+          completedAt: timestamp,
+          reusedFromRoundId: reusable.sourceRoundId,
+        }]
+      : current.evaluationAttempts
+    return this.transition(store, current.roundId, {
+      ...(champion ? { baseline: evidence } : {}),
+      parentBaselines: [
+        ...(current.parentBaselines ?? []).filter(value => value.parentCandidateId !== parentCandidateId),
+        { parentCandidateId, parentHarnessRef, evidence },
+      ],
+      evaluationAttempts,
+    })
   }
 
   private async queueContinuation(previous: ActiveRound): Promise<void> {
@@ -2287,7 +2390,7 @@ export class RefineService {
     }
     if (spec.candidateGeneration.budget.maxModelRequests !== undefined
       || spec.candidateGeneration.budget.maxTokens !== undefined) {
-      throw new Error('current DSH runtime does not expose aggregate proposal usage; maxModelRequests and maxTokens are unsupported')
+      throw new Error('current Meta harness adapter does not expose aggregate proposal usage; maxModelRequests and maxTokens are unsupported')
     }
   }
 

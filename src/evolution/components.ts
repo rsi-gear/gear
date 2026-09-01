@@ -342,6 +342,7 @@ export class ComponentRegistry {
 
   constructor() {
     this.registerCandidateGenerator('dsh-meta-forked-proposals', builtinImplementation('candidate-generator', 'dsh-meta-forked-proposals'), ref => new ForkedProposalCandidateGenerator(ref))
+    this.registerCandidateGenerator('meta-forked-proposals', builtinImplementation('candidate-generator', 'meta-forked-proposals'), ref => new ForkedProposalCandidateGenerator(ref))
     this.registerTaskSampler('dataset', builtinImplementation('task-sampler', 'dataset'), ref => new DatasetTaskSampler(ref))
     this.registerCandidateAssessor('evaluation-metrics', builtinImplementation('candidate-assessor', 'evaluation-metrics'), ref => new EvaluationMetricsCandidateAssessor(ref))
     this.registerCandidateSelector('highest-quality', builtinImplementation('candidate-selector', 'highest-quality'), ref => new HighestQualityCandidateSelector(ref))

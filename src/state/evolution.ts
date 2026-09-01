@@ -54,9 +54,10 @@ function validateSpec(value: EvolutionSpec): EvolutionSpec {
   })) {
     if (typeof field !== 'string' || field.length === 0) throw new TypeError(`evolution ${name} is required`)
   }
-  if (value.metaAgent.runtime.type !== 'dsh' || value.metaAgent.runtime.version.length === 0
-    || value.metaAgent.runtime.integrity.length === 0 || !SHA256.test(value.metaAgent.preset.digest)
-    || value.metaAgent.preset.resources.some(resource => resource.logicalPath.length === 0 || !SHA256.test(resource.digest))) {
+  if (value.metaAgent.runtime.type.length === 0 || value.metaAgent.runtime.version.length === 0
+    || !SHA256.test(value.metaAgent.runtime.integrity) || !SHA256.test(value.metaAgent.preset.digest)
+    || value.metaAgent.preset.resources.some(resource => resource.logicalPath.length === 0
+      || resource.kind.length === 0 || !SHA256.test(resource.digest))) {
     throw new TypeError('evolution Meta Agent identity is invalid')
   }
   const temperature = value.metaAgent.sampling.temperature

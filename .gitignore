@@ -8,3 +8,4 @@ coverage/
 .dsh-refine/
 .evolve-lab/
 knowledge/
+.DS_Store

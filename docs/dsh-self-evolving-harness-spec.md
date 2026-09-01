@@ -1,5 +1,9 @@
 # DSH Self-Evolving Harness Plugin Spec
 
+> 本文保留 DSH native adapter 的实现规格。Harness-neutral Meta 入口、独立
+> `gear-refine serve` 和通用 Refine Skill 见
+> [Harness-neutral Refine Skill 与独立控制面](harness-agnostic-refine-skill.md)。
+
 - 状态：Implemented v0.6
 - 目标运行时：DeepSeek Harness 0.1.0-rc.8
 - 评测后端：Hitch 0.2.x CLI + Harbor

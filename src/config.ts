@@ -27,6 +27,16 @@ export interface Config {
   metaPreset: string
   metaModel: AgentOptions
   metaSampling: MetaSamplingConfig
+  metaAdapter: {
+    kind: 'dsh' | 'skill'
+    runtimeType?: string
+    runtimeVersion?: string
+    runtimeIntegrity?: string
+    harnessId?: string
+    harnessDigest?: string
+    socketPath?: string
+    maxRequestBytes: number
+  }
   dshBaseRef: string
   toolchainRef: string
   sandboxProfileRef: string
@@ -106,6 +116,16 @@ export const ConfigSchema: Schema<Config> = Schema.object({
   metaSampling: Schema.object({
     temperature: Schema.number(),
   }).default({} as never),
+  metaAdapter: Schema.object({
+    kind: Schema.union(['dsh', 'skill'] as const).default('dsh'),
+    runtimeType: Schema.string(),
+    runtimeVersion: Schema.string(),
+    runtimeIntegrity: Schema.string(),
+    harnessId: Schema.string(),
+    harnessDigest: Schema.string(),
+    socketPath: Schema.string(),
+    maxRequestBytes: Schema.number().default(1024 * 1024),
+  }).default({ kind: 'dsh', maxRequestBytes: 1024 * 1024 } as never),
   dshBaseRef: Schema.string().required(),
   toolchainRef: Schema.string().required(),
   sandboxProfileRef: Schema.string().required(),

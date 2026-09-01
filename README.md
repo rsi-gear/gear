@@ -13,10 +13,16 @@ selects a research population, and promotes at most one deployment champion.
 
 ## Quick start
 
-Gear runs as a [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/DeepSeek-Harness)
-plugin. It requires Node.js 22.19+ (or 24+), DSH `0.1.0-rc.8`, Git, Python 3
-with IPython, Docker, and an installed Hitch CLI. Linux control-plane hosts also
-need Bubblewrap, `socat`, and ripgrep.
+Gear Core can run independently and expose the packaged `refine` Agent Skill to
+Codex, Claude Code, DSH, or another Agent Skills-compatible Meta harness. A DSH
+plugin remains available as a compatibility host and retains the `/refine`
+command. The Meta harness and the Target harness are independent; Hitch starts
+the configured Target harness for isolated rollouts.
+
+Gear requires Node.js 22.19+ (or 24+), Git, Docker, and an installed Hitch CLI.
+The DSH compatibility host additionally requires DSH `0.1.0-rc.8`. Python,
+IPython, Bubblewrap, `socat`, and ripgrep are required only by the configured
+compiler, verifier, or DSH Meta sandbox features that use them.
 
 ### 1. Install Hitch
 
@@ -29,7 +35,7 @@ hitch eval setup harbor
 hitch eval doctor --json
 ```
 
-### 2. Build and install Gear
+### 2. Build Gear
 
 Until the package is published, install Gear from a source checkout:
 
@@ -38,20 +44,35 @@ git clone https://github.com/rsi-gear/gear.git
 cd gear
 npm ci
 npm pack
-dsh plugin --profile web add ./dsh-plugin-refine-0.1.0.tgz
+npm install --global ./dsh-plugin-refine-0.1.0.tgz
 ```
 
-The bundled plugin row is disabled by default. Complete the one-time Meta Agent,
-target repository, dataset, and profile configuration in the
-[installation guide](docs/plugin-installation-and-usage.md), then verify and
-start the profile:
+### 3. Choose the Meta entrypoint
+
+For Codex, Claude Code, or another compatible harness, configure skill mode and
+start the standalone control plane:
 
 ```bash
+gear-refine serve --config /absolute/path/to/gear-refine.json
+```
+
+Install or link the packaged [`refine` skill](skills/refine/SKILL.md) into the
+Meta harness and point `GEAR_REFINE_SOCKET` at the socket reported by the
+server. The skill creates or continues evolutions, claims candidate leases, and
+uses Gear's restricted evidence and candidate APIs. See the
+[standalone and skill guide](docs/harness-agnostic-refine-skill.md).
+
+For the DSH compatibility host, install the package as a plugin:
+
+```bash
+dsh plugin --profile web add ./dsh-plugin-refine-0.1.0.tgz
 dsh --profile web --dump-config
 dsh --profile web --no-open
 ```
 
-Run one refinement round from a DSH session:
+The bundled plugin row is disabled by default. Complete its one-time setup in
+the [DSH installation guide](docs/plugin-installation-and-usage.md). DSH native
+mode keeps the slash-command interface:
 
 ```text
 /refine --rounds 1 --focus context,routing
@@ -75,7 +96,10 @@ dsh plugin --profile web add ./dsh-plugin-rear-0.1.0.tgz
 Enable Rear's dormant plugin row and point `gear.root` and `hitch.root` at the
 same state directories used by Gear and Hitch.
 
-## Using `/refine`
+## Using refine
+
+The `refine` skill calls the structured Gear protocol. In DSH native mode, the
+following `/refine` commands remain equivalent compatibility shortcuts.
 
 Start a new isolated evolution with:
 
@@ -149,17 +173,18 @@ the experiment state machine.
 
 | Component | Algorithmic responsibility | Built-in implementation |
 | --- | --- | --- |
-| `CandidateGenerator` | Allocate parents and propose candidate harnesses | Forked DSH Meta Agent proposals |
+| `CandidateGenerator` | Allocate parents and propose candidate harnesses | Forked Meta Agent proposals |
 | `TaskSampler` | Resolve seed and held-out tasks into evaluation conditions | Dataset sampler |
 | `RolloutProvider` | Execute exact harness versions and collect evidence | Hitch CLI |
 | `Judge` | Convert rollout evidence into comparable metrics | Task reward and success rate |
 | `CandidateSelector` | Choose survivors and one promotion finalist | Highest quality |
 | `PromotionPolicy` | Decide whether the finalist replaces the champion | Paired seed/held-out gate |
 
-The Meta Agent's model, prompt, skills, tools, workflows, and documents are also
-replaceable through a DSH preset. The resolved preset is part of the experiment
-identity, so changing it creates a different evolution rather than silently
-altering an existing one.
+The Meta Agent runtime, model, skill/preset, sampling, and content digests are
+part of the experiment identity. DSH native mode resolves that identity from a
+DSH preset; skill mode seals the external harness and `SKILL.md` identity.
+Changing either creates a different evolution rather than silently altering an
+existing one.
 
 Algorithm plugins cannot bypass Gear's reproducibility and safety core:
 
@@ -182,6 +207,7 @@ evaluation feedback to drive continuous model capability evolution.
 ## Documentation
 
 - [Vision and architecture](docs/vision.md)
+- [Harness-neutral Refine Skill and standalone control plane](docs/harness-agnostic-refine-skill.md)
 - [Installation and usage](docs/plugin-installation-and-usage.md)
 - [Gear and Hitch integration](docs/hitch-dsh-integration.md)
 - [Local evolution lab runbook](docs/evolve-lab-runbook.md)

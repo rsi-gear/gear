@@ -118,6 +118,27 @@ export interface DshMetaAgentSpec {
   sampling: MetaSamplingConfig
 }
 
+export interface GenericMetaAgentSpec {
+  runtime: {
+    type: string
+    version: string
+    integrity: string
+  }
+  preset: {
+    id: string
+    digest: string
+    resources: Array<{ logicalPath: string; kind: string; digest: string }>
+  }
+  model: {
+    provider: string
+    model: string
+    maxTokens?: number
+  }
+  sampling: MetaSamplingConfig
+}
+
+export type MetaAgentSpec = DshMetaAgentSpec | GenericMetaAgentSpec
+
 export interface CandidateGenerationSpec {
   strategy: ComponentRef<unknown>
   maxCandidates: number
@@ -151,7 +172,7 @@ export interface EvolutionSpec {
     seed: ArtifactRef
     heldOut: ArtifactRef
   }
-  metaAgent: DshMetaAgentSpec
+  metaAgent: MetaAgentSpec
   candidateGeneration: CandidateGenerationSpec
   rollout: RolloutSpec
   evaluation: {
@@ -392,6 +413,8 @@ export interface RoundEvaluationAttempt {
   startedAt: string
   completedAt?: string
   failure?: { code: string; message: string }
+  /** A settled seed baseline imported from an earlier round instead of rerun. */
+  reusedFromRoundId?: string
 }
 
 export interface EvaluationRepairResumeIntent {
@@ -460,8 +483,11 @@ export interface RoundEvaluation {
 export interface MetaAttribution {
   evolutionId: EvolutionId
   sessionId: string
-  requestHeaderSeq: number
-  proposalEventSeq: number
+  requestHeaderSeq?: number
+  proposalEventSeq?: number
+  source?:
+    | { kind: 'dsh-events'; requestHeaderSeq: number; proposalEventSeq: number }
+    | { kind: 'skill-lease'; harness: string; clientId: string; leaseId: string }
   provider?: string
   model?: string
   maxTokens?: number
@@ -672,7 +698,7 @@ export interface RefinementRound {
   roundId: string
   workspaceRoot: string
   status: RoundStatus
-  source: 'command' | 'target' | 'api'
+  source: 'command' | 'target' | 'api' | 'skill'
   createdAt: string
   updatedAt: string
   metaHarnessRef: MetaHarnessRef

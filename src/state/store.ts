@@ -396,7 +396,9 @@ export class RefineStateStore {
       'rejected-for-substrate', 'failed',
     ])
     if (typeof round.status !== 'string' || !statuses.has(round.status)) throw new TypeError('round status is invalid')
-    if (round.source !== 'command' && round.source !== 'target' && round.source !== 'api') throw new TypeError('round source is invalid')
+    if (round.source !== 'command' && round.source !== 'target' && round.source !== 'api' && round.source !== 'skill') {
+      throw new TypeError('round source is invalid')
+    }
     for (const [name, field] of Object.entries({
       workspaceRoot: round.workspaceRoot,
       createdAt: round.createdAt,
@@ -904,7 +906,11 @@ export class RefineStateStore {
       || ((attempt.status === 'failed' || attempt.status === 'cancelled')
         && (typeof attempt.failure?.code !== 'string' || attempt.failure.code.length === 0
           || typeof attempt.failure.message !== 'string' || attempt.failure.message.length === 0))
-      || ((attempt.status === 'settled' || attempt.status === 'repair-completed') && attempt.failure !== undefined)) {
+      || ((attempt.status === 'settled' || attempt.status === 'repair-completed') && attempt.failure !== undefined)
+      || (attempt.reusedFromRoundId !== undefined
+        && (typeof attempt.reusedFromRoundId !== 'string' || attempt.reusedFromRoundId.length === 0
+          || attempt.reusedFromRoundId === round.roundId || attempt.phase !== 'seed-baseline'
+          || attempt.status !== 'settled'))) {
       throw new TypeError('round evaluation attempt terminal state is invalid')
     }
     const condition = attempt.phase.startsWith('seed-') ? round.plan.seed : round.plan.heldOut

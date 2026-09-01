@@ -100,6 +100,12 @@ dsh plugin --profile web remove dsh-plugin-refine
 
 ## 4. 创建固定 Meta Agent preset
 
+本节只适用于 `metaAdapter.kind: dsh` 的 native Meta 模式。若 Meta Agent 来自
+Codex、Claude Code 或另一个 Harness，请改用
+[Harness-neutral Refine Skill 与独立控制面](harness-agnostic-refine-skill.md)；
+DSH plugin 也可以只承载 Gear Core，并通过 `metaAdapter.kind: skill` 开放本地
+skill socket。
+
 插件不会从 candidate harness 加载 Meta Agent 的 persona。部署方必须在 DSH home 的用户 preset 根目录中创建独立的 `refine-meta` preset：
 
 ```text
@@ -192,6 +198,8 @@ order: 50
     stateRoot: /srv/dsh/refine-state
 
     metaPreset: refine-meta
+    metaAdapter:
+      kind: dsh
     metaModel:
       provider: deepseek-official
       model: deepseek-v4-flash

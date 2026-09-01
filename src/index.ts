@@ -4,7 +4,7 @@ import * as ToolFs from '@deepseek-ai/dsh-tool-fs'
 import * as FsObservationPolicy from '@deepseek-ai/dsh-fs-observation-policy'
 import * as ToolFsSearch from '@deepseek-ai/dsh-tool-fs-search'
 import * as ToolBash from '@deepseek-ai/dsh-tool-bash'
-import type { EvaluationRerunSelector, SemanticTarget } from './types.js'
+import type { DshMetaAgentSpec, EvaluationRerunSelector, MetaAgentSpec, SemanticTarget } from './types.js'
 import type {} from '@deepseek-ai/dsh-commands'
 import { HarnessBuilder } from './harness/builder.js'
 import { SubprocessHarnessCompiler } from './harness/compiler.js'
@@ -30,6 +30,10 @@ import { RefineCapabilities } from './capabilities.js'
 import { HitchCliEvaluator } from './evaluator/hitch-cli.js'
 import { ConfigSchema, type Config as PluginConfig, type HitchConfig } from './config.js'
 import { TargetWorkerRegistry } from './worker/registry.js'
+import { SkillMetaCoordinator, SkillMetaSessionManager } from './meta/skill.js'
+import { SkillCandidateFiles } from './skill/files.js'
+import { RefineSkillGateway } from './skill/gateway.js'
+import { RefineSkillServer } from './skill/server.js'
 import './context.js'
 
 export * from './types.js'
@@ -39,6 +43,8 @@ export * from './harness/builder.js'
 export * from './harness/compiler.js'
 export * from './evaluator/hitch-cli.js'
 export * from './meta/session.js'
+export * from './meta/controller.js'
+export * from './meta/skill.js'
 export * from './meta/isolation.js'
 export * from './notebook/runtime.js'
 export * from './notebook/sandbox.js'
@@ -58,10 +64,17 @@ export * from './candidate/shell.js'
 export * from './candidate/context.js'
 export * from './worker/manager.js'
 export * from './worker/registry.js'
+export * from './skill/files.js'
+export * from './skill/gateway.js'
+export * from './skill/server.js'
+export * from './skill/client.js'
+export * from './skill/control-plane.js'
 
 export const name = 'refine'
 export const inject = ['agents', 'sessions', 'agentPresets', 'commands', 'tools', 'systemPrompt', 'subprocess']
 export const Config = ConfigSchema
+
+const SHA256 = /^sha256:[0-9a-f]{64}$/u
 
 const SEMANTIC_TARGETS = new Set<SemanticTarget>([
   'context', 'pre_action', 'routing', 'post_action', 'action_verifier',
@@ -169,6 +182,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     candidateRoundTimeoutMs,
     selectionSurvivors: config.selection.survivors,
     selectionTimeoutMs: config.selection.timeoutMs,
+    skillMaxRequestBytes: config.metaAdapter.maxRequestBytes,
   })) {
     if (!Number.isSafeInteger(value) || value <= 0) throw new TypeError(`${name} must be a positive safe integer`)
   }
@@ -201,6 +215,17 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     || config.metaModel.model === undefined || config.metaModel.model.length === 0) {
     throw new TypeError('metaModel.provider and metaModel.model are required')
   }
+  if (config.metaAdapter.kind === 'skill') {
+    for (const [name, value] of Object.entries({
+      runtimeType: config.metaAdapter.runtimeType,
+      runtimeVersion: config.metaAdapter.runtimeVersion,
+      harnessId: config.metaAdapter.harnessId,
+    })) {
+      if (typeof value !== 'string' || value.length === 0) throw new TypeError(`metaAdapter.${name} is required in skill mode`)
+    }
+    if (!SHA256.test(config.metaAdapter.runtimeIntegrity ?? '')) throw new TypeError('metaAdapter.runtimeIntegrity must be sha256 in skill mode')
+    if (!SHA256.test(config.metaAdapter.harnessDigest ?? '')) throw new TypeError('metaAdapter.harnessDigest must be sha256 in skill mode')
+  }
   if (config.hitch.model.length === 0) throw new TypeError('hitch.model is required for reproducible rollout plans')
   for (const [name, value] of Object.entries({
     candidateMaxModelRequests: config.candidateGeneration.maxModelRequests,
@@ -219,22 +244,47 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   }
   const stateRoot = config.stateRoot ?? join(config.workspaceRoot, '.dsh-refine')
   const registry = new EvolutionRegistryStore(stateRoot)
-  const metaPreset = await ctx.agentPresets.resolve(config.metaPreset)
-  await assertMetaPresetIsolation(metaPreset, [config.dshRepository])
-  const resolvedMetaPreset = await resolveDshPresetRef(metaPreset)
-  const dshRuntime = await resolveDshRuntimeIdentity()
-  const metaAgent = {
-    runtime: dshRuntime,
-    preset: resolvedMetaPreset,
-    model: {
-      provider: config.metaModel.provider,
-      model: config.metaModel.model,
-      ...(config.metaModel.maxTokens === undefined ? {} : { maxTokens: config.metaModel.maxTokens }),
-    },
-    sampling: { ...config.metaSampling },
+  let metaAgent: MetaAgentSpec
+  if (config.metaAdapter.kind === 'dsh') {
+    const metaPreset = await ctx.agentPresets.resolve(config.metaPreset)
+    await assertMetaPresetIsolation(metaPreset, [config.dshRepository])
+    metaAgent = {
+      runtime: await resolveDshRuntimeIdentity(),
+      preset: await resolveDshPresetRef(metaPreset),
+      model: {
+        provider: config.metaModel.provider,
+        model: config.metaModel.model,
+        ...(config.metaModel.maxTokens === undefined ? {} : { maxTokens: config.metaModel.maxTokens }),
+      },
+      sampling: { ...config.metaSampling },
+    }
+  } else {
+    const harnessDigest = config.metaAdapter.harnessDigest!
+    metaAgent = {
+      runtime: {
+        type: config.metaAdapter.runtimeType!,
+        version: config.metaAdapter.runtimeVersion!,
+        integrity: config.metaAdapter.runtimeIntegrity!,
+      },
+      preset: {
+        id: config.metaAdapter.harnessId!,
+        digest: harnessDigest,
+        resources: [{ logicalPath: 'SKILL.md', kind: 'skill', digest: harnessDigest }],
+      },
+      model: {
+        provider: config.metaModel.provider,
+        model: config.metaModel.model,
+        ...(config.metaModel.maxTokens === undefined ? {} : { maxTokens: config.metaModel.maxTokens }),
+      },
+      sampling: { ...config.metaSampling },
+    }
   }
   const candidateGeneration = {
-    strategy: builtinComponentRef('candidate-generator', 'dsh-meta-forked-proposals', {}),
+    strategy: builtinComponentRef(
+      'candidate-generator',
+      config.metaAdapter.kind === 'dsh' ? 'dsh-meta-forked-proposals' : 'meta-forked-proposals',
+      {},
+    ),
     maxCandidates: config.candidateGeneration.maxCandidates,
     budget: {
       ...(config.candidateGeneration.maxModelRequests === undefined ? {} : { maxModelRequests: config.candidateGeneration.maxModelRequests }),
@@ -367,18 +417,24 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     maxBytes: config.candidateWorkspace.maxBytes,
     maxDiffBytes: config.candidateWorkspace.maxDiffBytes,
   })
+  const skillCoordinator = new SkillMetaCoordinator()
   const validateEvolutionRuntime = async (spec: import('./types.js').EvolutionSpec): Promise<void> => {
-    const currentPreset = await ctx.agentPresets.resolve(spec.metaAgent.preset.id)
-    await assertMetaPresetIsolation(currentPreset, [config.dshRepository])
-    const currentIdentity = await resolveDshPresetRef(currentPreset)
-    if (currentIdentity.digest !== spec.metaAgent.preset.digest) {
-      throw new Error('Meta preset content changed; evolution cannot continue')
-    }
-    const currentRuntime = await resolveDshRuntimeIdentity()
-    if (spec.metaAgent.runtime.type !== currentRuntime.type
-      || spec.metaAgent.runtime.version !== currentRuntime.version
-      || spec.metaAgent.runtime.integrity !== currentRuntime.integrity) {
-      throw new Error('DSH Meta runtime identity changed; evolution cannot continue')
+    if (config.metaAdapter.kind === 'dsh') {
+      if (spec.metaAgent.runtime.type !== 'dsh') throw new Error('evolution requires a different Meta harness adapter')
+      const currentPreset = await ctx.agentPresets.resolve(spec.metaAgent.preset.id)
+      await assertMetaPresetIsolation(currentPreset, [config.dshRepository])
+      const currentIdentity = await resolveDshPresetRef(currentPreset)
+      if (currentIdentity.digest !== spec.metaAgent.preset.digest) {
+        throw new Error('Meta preset content changed; evolution cannot continue')
+      }
+      const currentRuntime = await resolveDshRuntimeIdentity()
+      if (spec.metaAgent.runtime.type !== currentRuntime.type
+        || spec.metaAgent.runtime.version !== currentRuntime.version
+        || spec.metaAgent.runtime.integrity !== currentRuntime.integrity) {
+        throw new Error('DSH Meta runtime identity changed; evolution cannot continue')
+      }
+    } else if (JSON.stringify(spec.metaAgent) !== JSON.stringify(metaAgent)) {
+      throw new Error('skill Meta harness identity changed; evolution cannot continue')
     }
     if (spec.selection.assessor.id === 'llm-verifier') {
       const assessorConfig = spec.selection.assessor.config as LlmVerifierAssessorConfig
@@ -394,7 +450,18 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     workspaceManager,
     async (spec, specDigest, store) => {
       await validateEvolutionRuntime(spec)
-      return new MetaSessionManager(store, host, { evolutionId: spec.evolutionId, specDigest, metaAgent: spec.metaAgent })
+      if (config.metaAdapter.kind === 'skill') {
+        return new SkillMetaSessionManager(store, skillCoordinator, {
+          evolutionId: spec.evolutionId,
+          specDigest,
+          metaAgent: spec.metaAgent,
+        })
+      }
+      return new MetaSessionManager(store, host, {
+        evolutionId: spec.evolutionId,
+        specDigest,
+        metaAgent: spec.metaAgent as DshMetaAgentSpec,
+      })
     },
     evaluator,
     {
@@ -417,7 +484,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     },
     components,
   )
-  capabilities = new RefineCapabilities(service, builder, sessionId => ctx.agents.get(sessionId as never), {
+  capabilities = new RefineCapabilities(service, builder, {
     ...(config.seedTasksPath === undefined ? {} : { seedTasksPath: config.seedTasksPath }),
     configuredSeedTaskRef: config.seedTaskRef,
     trajectoryReader: evaluator,
@@ -429,6 +496,18 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       return value === undefined || value.length === 0 ? [] : [value]
     }),
   })
+  const skillServer = config.metaAdapter.kind === 'skill'
+    ? new RefineSkillServer(
+        config.metaAdapter.socketPath ?? join(stateRoot, 'refine.sock'),
+        new RefineSkillGateway(
+          service,
+          skillCoordinator,
+          capabilities,
+          new SkillCandidateFiles(workspaceManager, { maxReadBytes: config.candidateWorkspace.maxReadBytes }),
+          { maxRequestBytes: config.metaAdapter.maxRequestBytes },
+        ),
+      )
+    : undefined
   const targetWorkers = new TargetWorkerRegistry(service, builder)
 
   await registry.initialize()
@@ -444,11 +523,13 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     }
   }
   await service.initialize()
+  await skillServer?.start()
   ctx.provide('notebookRuntime', notebook)
   ctx.provide('refine', service)
   ctx.provide('targetWorkers', targetWorkers)
   ctx.provide('evolutionComponents', components)
   ctx.effect(() => async () => {
+    await skillServer?.dispose()
     await targetWorkers.dispose()
     await service.dispose()
     await notebook.dispose()
