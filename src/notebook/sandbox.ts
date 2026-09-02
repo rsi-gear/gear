@@ -4,7 +4,11 @@ import { createHash } from 'node:crypto'
 import { homedir, tmpdir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
-import { SandboxManager, type SandboxRuntimeConfig } from '@anthropic-ai/sandbox-runtime'
+import { SandboxManager } from '@anthropic-ai/sandbox-runtime'
+import {
+  acquireAirGappedSandbox, assertAirGappedSandboxActive, createAirGappedSandboxConfig, sandboxSystemReadPaths,
+  type AirGappedSandboxLease, type LinuxSandboxIsolation,
+} from '../sandbox.js'
 
 const execFile = promisify(execFileCallback)
 
@@ -12,6 +16,7 @@ export type NotebookSandboxMode = 'required' | 'disabled'
 
 export interface NotebookKernelSandboxOptions {
   mode?: NotebookSandboxMode
+  linuxIsolation?: LinuxSandboxIsolation
   scratchRoot: string
   protectedPaths?: readonly string[]
 }
@@ -30,10 +35,6 @@ interface PythonRuntime {
 const SAFE_ENV_KEYS = [
   'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'TERM',
 ] as const
-
-let sandboxInitialization: Promise<void> | undefined
-let sandboxInitializedByGear = false
-let sandboxUsers = 0
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`
@@ -57,67 +58,6 @@ async function canonicalPaths(paths: readonly string[]): Promise<string[]> {
 function containsPath(parent: string, child: string): boolean {
   const relative = child.slice(parent.length)
   return child === parent || (child.startsWith(parent) && relative.startsWith('/'))
-}
-
-function systemReadPaths(): string[] {
-  if (process.platform === 'darwin') {
-    return ['/System', '/usr', '/bin', '/sbin', '/Library', '/private/etc', '/dev']
-  }
-  return ['/usr', '/bin', '/sbin', '/lib', '/lib64', '/etc', '/dev']
-}
-
-function baseConfig(): SandboxRuntimeConfig {
-  return {
-    network: {
-      allowedDomains: [],
-      deniedDomains: ['*'],
-      allowUnixSockets: [],
-      allowLocalBinding: false,
-    },
-    filesystem: {
-      denyRead: ['/'],
-      allowRead: systemReadPaths(),
-      allowWrite: [],
-      denyWrite: [],
-      allowGitConfig: false,
-    },
-    allowAppleEvents: false,
-  }
-}
-
-async function acquireSandbox(): Promise<void> {
-  if (process.platform !== 'darwin' && process.platform !== 'linux') {
-    throw new Error(`meta notebook sandbox is required but unsupported on ${process.platform}`)
-  }
-  if (sandboxInitialization === undefined) {
-    sandboxInitialization = (async () => {
-      const existing = SandboxManager.getConfig()
-      if (existing === undefined) {
-        await SandboxManager.initialize(baseConfig())
-        sandboxInitializedByGear = true
-      }
-      const active = SandboxManager.getConfig()
-      if (active === undefined
-        || active.network.allowedDomains.length !== 0
-        || active.network.allowAllUnixSockets === true
-        || (active.network.allowUnixSockets?.length ?? 0) !== 0
-        || active.network.allowLocalBinding === true
-        || active.allowAppleEvents === true
-        || active.enableWeakerNetworkIsolation === true) {
-        throw new Error('meta notebook sandbox requires an air-gapped SandboxManager configuration')
-      }
-    })()
-  }
-  await sandboxInitialization
-  sandboxUsers += 1
-}
-
-async function releaseSandbox(): Promise<void> {
-  if (sandboxUsers > 0) sandboxUsers -= 1
-  if (sandboxUsers !== 0 || !sandboxInitializedByGear) return
-  await SandboxManager.reset()
-  sandboxInitialization = undefined
-  sandboxInitializedByGear = false
 }
 
 async function inspectPython(pythonExecutable: string): Promise<PythonRuntime> {
@@ -152,7 +92,7 @@ async function inspectPython(pythonExecutable: string): Promise<PythonRuntime> {
 }
 
 function sanitizedEnvironment(scratch: string, python: PythonRuntime): NodeJS.ProcessEnv {
-  const systemRoots = systemReadPaths()
+  const systemRoots = sandboxSystemReadPaths()
   const inheritedSystemPath = (process.env.PATH ?? '').split(delimiter)
     .filter(path => path.startsWith('/') && systemRoots.some(root => containsPath(root, resolve(path))))
   const env: NodeJS.ProcessEnv = {
@@ -177,6 +117,7 @@ export class NotebookKernelSandbox {
   private initialization: Promise<void> | undefined
   private disposed = false
   private python: PythonRuntime | undefined
+  private sandboxLease: AirGappedSandboxLease | undefined
 
   constructor(
     private readonly pythonExecutable: string,
@@ -189,13 +130,14 @@ export class NotebookKernelSandbox {
     if (this.disposed) throw new Error('meta notebook sandbox is disposed')
     if (this.initialization !== undefined) return this.initialization
     const initialization = (async () => {
-      await acquireSandbox()
+      const sandboxLease = await acquireAirGappedSandbox(this.options.linuxIsolation, 'meta notebook')
       try {
         this.python = await inspectPython(this.pythonExecutable)
         if (this.disposed) throw new Error('meta notebook sandbox was disposed during initialization')
+        this.sandboxLease = sandboxLease
         this.initialized = true
       } catch (error) {
-        await releaseSandbox()
+        await sandboxLease.release()
         throw error
       }
     })()
@@ -228,7 +170,7 @@ export class NotebookKernelSandbox {
       throw new Error('meta notebook scratchRoot overlaps a broad or executable runtime path')
     }
     const protectedPaths = await canonicalPaths(this.options.protectedPaths ?? [])
-    const runtimeAllowlist = uniquePaths([...systemReadPaths(), ...this.python.readPaths])
+    const runtimeAllowlist = uniquePaths([...sandboxSystemReadPaths(), ...this.python.readPaths])
     const exposed = protectedPaths.find(path => runtimeAllowlist.some(runtime => containsPath(runtime, path)))
     if (exposed !== undefined) throw new Error(`protected control-plane path overlaps the Python runtime allowlist: ${exposed}`)
     const helper = await realpath(this.helperPath)
@@ -240,29 +182,34 @@ export class NotebookKernelSandbox {
     await Promise.all(['home', 'tmp', 'cache', 'config', 'data', 'ipython'].map(path => mkdir(join(scratch, path), { mode: 0o700 })))
 
     try {
-      const config: SandboxRuntimeConfig = {
-        ...baseConfig(),
-        filesystem: {
-          denyRead: ['/'],
-          allowRead: uniquePaths([...systemReadPaths(), ...this.python.readPaths, helper, scratch]),
-          allowWrite: [scratch],
-          denyWrite: [],
-          allowGitConfig: false,
-        },
-      }
-      const command = [this.python.executable, '-I', '-u', helper].map(shellQuote).join(' ')
-      const wrapped = await SandboxManager.wrapWithSandboxArgv(command, '/bin/bash', config)
-      const child = spawn(wrapped.argv[0]!, wrapped.argv.slice(1), {
-        cwd: scratch,
-        env: sanitizedEnvironment(scratch, this.python),
-        detached: process.platform !== 'win32',
-        shell: false,
-        stdio: ['pipe', 'pipe', 'pipe'],
+      const config = await createAirGappedSandboxConfig({
+        linuxIsolation: this.options.linuxIsolation,
+        allowRead: uniquePaths([...sandboxSystemReadPaths(), ...this.python.readPaths, helper, scratch]),
+        allowWrite: [scratch],
       })
+      const command = [this.python.executable, '-I', '-u', helper].map(shellQuote).join(' ')
+      assertAirGappedSandboxActive(config)
+      const wrapped = await SandboxManager.wrapWithSandboxArgv(command, '/bin/bash', config)
+      let child: ChildProcessWithoutNullStreams
+      try {
+        child = spawn(wrapped.argv[0]!, wrapped.argv.slice(1), {
+          cwd: scratch,
+          env: sanitizedEnvironment(scratch, this.python),
+          detached: process.platform !== 'win32',
+          shell: false,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        })
+      } catch (error) {
+        SandboxManager.cleanupAfterCommand()
+        throw error
+      }
       return {
         child,
         cwd: scratch,
-        cleanup: async () => { await rm(scratch, { recursive: true, force: true }) },
+        cleanup: async () => {
+          SandboxManager.cleanupAfterCommand()
+          await rm(scratch, { recursive: true, force: true })
+        },
       }
     } catch (error) {
       await rm(scratch, { recursive: true, force: true })
@@ -274,9 +221,10 @@ export class NotebookKernelSandbox {
     if (this.disposed) return
     this.disposed = true
     await this.initialization?.catch(() => {})
-    if (this.initialized) await releaseSandbox()
+    await this.sandboxLease?.release()
     this.initialized = false
     this.initialization = undefined
     this.python = undefined
+    this.sandboxLease = undefined
   }
 }

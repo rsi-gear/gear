@@ -359,7 +359,8 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     policy: builtinComponentRef('promotion-policy', 'paired-gate', structuredClone(config.promotion)),
   }
   const compiler = new SubprocessHarnessCompiler({
-    ...config.compiler, sandboxMode: config.metaSandbox.mode, targetRoot: config.targetRoot,
+    ...config.compiler, sandboxMode: config.metaSandbox.mode,
+    linuxIsolation: config.metaSandbox.linuxIsolation, targetRoot: config.targetRoot,
   })
   const builder = new HarnessBuilder({
     repositoryPath: config.dshRepository,
@@ -378,6 +379,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     sandbox: {
       roles: ['refine-meta'],
       mode: config.metaSandbox.mode,
+      linuxIsolation: config.metaSandbox.linuxIsolation,
       scratchRoot: join(stateRoot, 'meta-notebooks'),
       protectedPaths: [
         stateRoot,
@@ -413,6 +415,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       new CandidateShellExecutor(
         candidateCtx, workspaceManager, sessionId,
         config.candidateWorkspace.shellTimeoutMs, config.candidateWorkspace.shellOutputBytes,
+        config.metaSandbox.linuxIsolation,
       )
       await candidateCtx.plugin(ToolBash, { enableRunInBackground: false })
     }
@@ -523,30 +526,43 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     : undefined
   const targetWorkers = new TargetWorkerRegistry(service, builder)
 
-  await registry.initialize()
-  await builder.initialize()
-  if (config.candidateWorkspace.shellEnabled && config.metaSandbox.mode !== 'required') {
-    throw new Error('candidateWorkspace.shellEnabled requires the air-gapped Meta sandbox')
-  }
-  await notebook.initialize()
-  if (config.initialChampion !== undefined) {
-    const manifest = await builder.readManifest(config.initialChampion.ref)
-    if (manifest.digest !== config.initialChampion.manifestDigest) {
-      throw new Error('initial champion manifestDigest does not match its exact Git commit')
+  const disposeRuntime = async (): Promise<void> => {
+    const failures: unknown[] = []
+    for (const dispose of [
+      async () => skillServer?.dispose(),
+      async () => targetWorkers.dispose(),
+      async () => service.dispose(),
+      async () => notebook.dispose(),
+    ]) {
+      try { await dispose() } catch (error) { failures.push(error) }
     }
+    if (failures.length > 0) throw new AggregateError(failures, 'failed to dispose refine runtime')
   }
-  await service.initialize()
-  await skillServer?.start()
+
+  try {
+    await registry.initialize()
+    await builder.initialize()
+    if (config.candidateWorkspace.shellEnabled && config.metaSandbox.mode !== 'required') {
+      throw new Error('candidateWorkspace.shellEnabled requires the air-gapped Meta sandbox')
+    }
+    await notebook.initialize()
+    if (config.initialChampion !== undefined) {
+      const manifest = await builder.readManifest(config.initialChampion.ref)
+      if (manifest.digest !== config.initialChampion.manifestDigest) {
+        throw new Error('initial champion manifestDigest does not match its exact Git commit')
+      }
+    }
+    await service.initialize()
+    await skillServer?.start()
+  } catch (error) {
+    await disposeRuntime().catch(() => {})
+    throw error
+  }
   ctx.provide('notebookRuntime', notebook)
   ctx.provide('refine', service)
   ctx.provide('targetWorkers', targetWorkers)
   ctx.provide('evolutionComponents', components)
-  ctx.effect(() => async () => {
-    await skillServer?.dispose()
-    await targetWorkers.dispose()
-    await service.dispose()
-    await notebook.dispose()
-  }, 'refine.dispose()')
+  ctx.effect(() => disposeRuntime, 'refine.dispose()')
   ctx.commands.register({
     name: 'refine',
     description: 'Queue a target harness refinement round.',

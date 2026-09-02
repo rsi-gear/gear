@@ -1,8 +1,12 @@
 import { spawn } from 'node:child_process'
-import { SandboxManager, type SandboxRuntimeConfig } from '@anthropic-ai/sandbox-runtime'
+import { SandboxManager } from '@anthropic-ai/sandbox-runtime'
 import { realpath } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import type { HarnessCompiler } from './builder.js'
+import {
+  assertAirGappedSandboxActive, createAirGappedSandboxConfig, sandboxSystemReadPaths,
+  type LinuxSandboxIsolation,
+} from '../sandbox.js'
 
 export interface SubprocessCompilerOptions {
   command: string
@@ -10,16 +14,11 @@ export interface SubprocessCompilerOptions {
   timeoutMs?: number
   env?: Record<string, string>
   sandboxMode?: 'required' | 'disabled'
+  linuxIsolation?: LinuxSandboxIsolation
   targetRoot?: string
 }
 
 function shellQuote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'` }
-function systemReadPaths(): string[] {
-  return process.platform === 'darwin'
-    ? ['/System', '/usr', '/bin', '/sbin', '/Library', '/private/etc', '/dev']
-    : ['/usr', '/bin', '/sbin', '/lib', '/lib64', '/etc', '/dev']
-}
-
 export class SubprocessHarnessCompiler implements HarnessCompiler {
   constructor(private readonly options: SubprocessCompilerOptions) {}
 
@@ -27,30 +26,36 @@ export class SubprocessHarnessCompiler implements HarnessCompiler {
     if (signal.aborted) throw signal.reason
     let command = this.options.command
     let args = this.options.args ?? []
+    let sandboxWrapped = false
     if (this.options.sandboxMode === 'required') {
       if (!isAbsolute(command)) throw new Error('sandboxed harness compiler command must be an absolute fixed toolchain path')
       const canonicalCommand = await realpath(command)
       const targetPath = join(resolve(worktree), ...(this.options.targetRoot ?? 'harness').split('/'))
-      const config: SandboxRuntimeConfig = {
-        network: { allowedDomains: [], deniedDomains: ['*'], allowUnixSockets: [], allowLocalBinding: false },
-        filesystem: {
-          denyRead: ['/'], allowRead: [
-            ...systemReadPaths(), resolve(worktree), dirname(resolve(command)), dirname(dirname(canonicalCommand)),
-          ],
-          allowWrite: [targetPath], denyWrite: [], allowGitConfig: false,
-        },
-        allowAppleEvents: false,
-      }
+      const config = await createAirGappedSandboxConfig({
+        linuxIsolation: this.options.linuxIsolation,
+        allowRead: [
+          ...sandboxSystemReadPaths(), resolve(worktree), dirname(resolve(command)), dirname(dirname(canonicalCommand)),
+        ],
+        allowWrite: [targetPath],
+      })
       const line = [command, ...args].map(shellQuote).join(' ')
+      assertAirGappedSandboxActive(config)
       const wrapped = await SandboxManager.wrapWithSandboxArgv(line, '/bin/bash', config)
       command = wrapped.argv[0]!
       args = wrapped.argv.slice(1)
+      sandboxWrapped = true
     }
-    const child = spawn(command, args, {
-      cwd: worktree,
-      env: this.options.env ?? {},
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
+    let child
+    try {
+      child = spawn(command, args, {
+        cwd: worktree,
+        env: this.options.env ?? {},
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    } catch (error) {
+      if (sandboxWrapped) SandboxManager.cleanupAfterCommand()
+      throw error
+    }
     let stdout = ''
     let stderr = ''
     child.stdout.setEncoding('utf8')
@@ -79,6 +84,7 @@ export class SubprocessHarnessCompiler implements HarnessCompiler {
         throw new Error(`harness compiler failed (${result.signal ?? result.code ?? 'unknown'})\n${stderr || stdout}`)
       }
     } finally {
+      if (sandboxWrapped) SandboxManager.cleanupAfterCommand()
       if (timeout !== undefined) clearTimeout(timeout)
       if (killTimer !== undefined) clearTimeout(killTimer)
       signal.removeEventListener('abort', abort)

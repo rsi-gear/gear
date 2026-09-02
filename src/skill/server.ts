@@ -19,6 +19,7 @@ function write(socket: Socket, value: unknown): void {
 
 export class RefineSkillServer {
   private server: Server | undefined
+  private ownsSocketPath = false
   private readonly sockets = new Set<Socket>()
 
   constructor(readonly socketPath: string, private readonly gateway: RefineSkillGateway) {}
@@ -40,23 +41,31 @@ export class RefineSkillServer {
     try {
       await new Promise<void>((resolve, reject) => {
         server.once('error', reject)
-        server.listen(this.socketPath, () => { server.off('error', reject); resolve() })
+        server.listen(this.socketPath, () => {
+          server.off('error', reject)
+          this.ownsSocketPath = true
+          resolve()
+        })
       })
       if (process.platform !== 'win32') await chmod(this.socketPath, 0o600)
     } catch (error) {
       this.server = undefined
       server.close()
+      if (this.ownsSocketPath && process.platform !== 'win32') await rm(this.socketPath, { force: true })
+      this.ownsSocketPath = false
       throw error
     }
   }
 
   async dispose(): Promise<void> {
     const server = this.server
+    const ownsSocketPath = this.ownsSocketPath
     this.server = undefined
+    this.ownsSocketPath = false
     for (const socket of this.sockets) socket.destroy()
     this.sockets.clear()
     if (server !== undefined) await new Promise<void>((resolve, reject) => server.close(error => error === undefined ? resolve() : reject(error)))
-    if (process.platform !== 'win32') await rm(this.socketPath, { force: true })
+    if (ownsSocketPath && process.platform !== 'win32') await rm(this.socketPath, { force: true })
   }
 
   private accept(socket: Socket): void {

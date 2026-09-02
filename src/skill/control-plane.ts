@@ -11,6 +11,7 @@ import {
 import { HitchCliEvaluator } from '../evaluator/hitch-cli.js'
 import { HarnessBuilder, type HarnessCompiler } from '../harness/builder.js'
 import { SubprocessHarnessCompiler } from '../harness/compiler.js'
+import { acquireAirGappedSandbox } from '../sandbox.js'
 import { SkillMetaCoordinator, SkillMetaSessionManager } from '../meta/skill.js'
 import { compatibleSkillMetaAgent } from '../meta/controller.js'
 import { RefineService } from '../refine/service.js'
@@ -184,6 +185,7 @@ export async function createSkillControlPlane(
   const compiler = dependencies.compiler ?? new SubprocessHarnessCompiler({
     ...config.compiler,
     sandboxMode: config.metaSandbox.mode,
+    linuxIsolation: config.metaSandbox.linuxIsolation,
     targetRoot: config.targetRoot,
   })
   const builder = new HarnessBuilder({
@@ -271,13 +273,22 @@ export async function createSkillControlPlane(
   )
   const socketPath = config.metaAdapter.socketPath ?? join(stateRoot, 'refine.sock')
   const server = new RefineSkillServer(socketPath, gateway)
-  await builder.initialize()
-  if (config.initialChampion !== undefined) {
-    const manifest = await builder.readManifest(config.initialChampion.ref)
-    if (manifest.digest !== config.initialChampion.manifestDigest) throw new Error('initial champion manifestDigest does not match its exact Git commit')
+  const sandboxLease = config.metaSandbox.mode === 'required'
+    ? await acquireAirGappedSandbox(config.metaSandbox.linuxIsolation, 'refine compiler')
+    : undefined
+  try {
+    await builder.initialize()
+    if (config.initialChampion !== undefined) {
+      const manifest = await builder.readManifest(config.initialChampion.ref)
+      if (manifest.digest !== config.initialChampion.manifestDigest) throw new Error('initial champion manifestDigest does not match its exact Git commit')
+    }
+    await service.initialize()
+    await server.start()
+  } catch (error) {
+    await service.dispose().catch(() => {})
+    await sandboxLease?.release()
+    throw error
   }
-  await service.initialize()
-  try { await server.start() } catch (error) { await service.dispose(); throw error }
   let disposed = false
   return {
     service,
@@ -287,8 +298,15 @@ export async function createSkillControlPlane(
     async dispose() {
       if (disposed) return
       disposed = true
-      await server.dispose()
-      await service.dispose()
+      try {
+        await server.dispose()
+      } finally {
+        try {
+          await service.dispose()
+        } finally {
+          await sandboxLease?.release()
+        }
+      }
     },
   }
 }

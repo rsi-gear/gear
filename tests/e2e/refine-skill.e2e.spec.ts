@@ -1,7 +1,9 @@
 import { rm } from 'node:fs/promises'
+import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ConfigSchema } from '../../src/config.js'
+import { SandboxManager } from '@anthropic-ai/sandbox-runtime'
 import { NoopHarnessCompiler } from '../../src/harness/builder.js'
 import type { SkillHarnessIdentity } from '../../src/meta/skill.js'
 import { requestRefineSkill } from '../../src/skill/client.js'
@@ -19,6 +21,9 @@ import { createGitHarnessFixture } from '../helpers/git-fixture.js'
 import { SHA } from '../helpers/research-fixture.js'
 
 const cleanups: Array<() => Promise<void>> = []
+const canListenLoopback = spawnSync(process.execPath, ['-e', "const n=require('node:net').createServer();n.listen(0,'127.0.0.1',()=>n.close(()=>process.exit(0)));n.on('error',()=>process.exit(1))"]).status === 0
+const hasSandbox = (process.platform === 'darwin' || process.platform === 'linux')
+  && SandboxManager.checkDependencies().errors.length === 0 && canListenLoopback
 afterEach(async () => {
   await Promise.allSettled(cleanups.splice(0).reverse().map(cleanup => cleanup()))
 })
@@ -149,7 +154,9 @@ describe('refine skill end to end', () => {
       seedTaskRef: 'seed',
       heldOutRef: 'held-out',
       taskBudgetMs: 60_000,
-      metaSandbox: { mode: 'disabled' },
+      metaSandbox: hasSandbox
+        ? { mode: 'required', linuxIsolation: process.platform === 'linux' ? 'bubblewrap-only' : 'seccomp' }
+        : { mode: 'disabled' },
       initialChampion: {
         schemaVersion: 2,
         ref: fixture.championRef,

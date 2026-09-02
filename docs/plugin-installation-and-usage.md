@@ -40,6 +40,13 @@
 
 `metaSandbox.mode: required` 是推荐且默认的生产模式。`disabled` 只适合可信本地诊断；关闭 sandbox 后不能再声称 held-out 隔离或 typed-API-only 安全边界成立。
 
+Linux 还必须明确 Unix socket 隔离实现：
+
+- `metaSandbox.linuxIsolation: seccomp` 是默认值。Gear 会把 `apply-seccomp` 的精确可执行路径显式绑定进 Bubblewrap，并在插件启动时运行真实子进程 preflight；二进制不可见、不可执行或被系统安全策略拦截都会在接收 `/refine` 前失败。
+- `metaSandbox.linuxIsolation: bubblewrap-only` 是 Ubuntu/AppArmor 兼容模式。它只跳过创建 AF_UNIX socket 的 seccomp 过滤，仍保留 Bubblewrap 的文件系统、PID 和断网 namespace。启用前必须确认所有宿主控制面 socket 都位于 sandbox `allowRead` 之外；Gear 的 Linux 回归会验证宿主 socket 不可见且不可连接。
+
+不要通过关闭 AppArmor、给 `bwrap` 设置 setuid 或授予全局 `CAP_SYS_ADMIN` 来绕过启动错误。若发行版策略禁止 `apply-seccomp` 创建嵌套 user namespace，优先使用上述显式兼容模式，并保留 `metaSandbox.mode: required`。
+
 ### 2.3 npm 依赖如何提供
 
 插件自己的普通 npm 依赖会随安装自动解析，包括 DSH filesystem/search/bash 适配包、`@anthropic-ai/sandbox-runtime`、`js-yaml` 和 `diff`，不需要逐个手工安装。
@@ -216,6 +223,10 @@ order: 50
     pythonExecutable: /srv/dsh/refine-python/bin/python
     metaSandbox:
       mode: required
+      # Ubuntu/AppArmor 会禁止 apply-seccomp 的嵌套 CAP_SYS_ADMIN 时使用。
+      # 仍保留 bubblewrap 的文件、PID 与断网 namespace；宿主 Unix socket
+      # 必须同时位于不可见的宿主路径。其他 Linux 环境保持 seccomp。
+      linuxIsolation: seccomp
 
     initialChampion:
       schemaVersion: 2
