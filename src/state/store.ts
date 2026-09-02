@@ -3,7 +3,7 @@ import { access, mkdir, open, readFile, readdir, rename, rm, stat, unlink, write
 import { dirname, join } from 'node:path'
 import type {
   CandidateAssessment, ChampionState, ComponentKind, ComponentRef, EvaluationEvidence, MetaSessionState,
-  PairedTrial, PairingAudit, PopulationState, RefinementRound, RoundEvaluationAttempt,
+  PairedTrial, PairingAudit, PopulationState, RefinementRound, RoundEvaluationAttempt, EvaluationSubmissionIntent,
 } from '../types.js'
 import { isExactGitCommit } from '../types.js'
 import { digestJson } from './digest.js'
@@ -618,6 +618,34 @@ export class RefineStateStore {
         this.validateEvaluationAttempt(round as RefinementRound, attempt, identities)
       }
     }
+    if (round.pendingEvaluationSubmissions !== undefined) {
+      if (!Array.isArray(round.pendingEvaluationSubmissions)) throw new TypeError('pending evaluation submissions must be an array')
+      const identities = new Set<string>()
+      for (const pending of round.pendingEvaluationSubmissions) {
+        if (typeof pending !== 'object' || pending === null || typeof pending.request !== 'object'
+          || pending.request === null || typeof pending.request.phase !== 'string') {
+          throw new TypeError('pending evaluation submission is invalid')
+        }
+        this.validateSubmissionIntent(pending.intent)
+        const identity = `${pending.intent.provider}\0${pending.intent.idempotencyKey}`
+        if (identities.has(identity)) throw new TypeError('pending evaluation submission is duplicated')
+        identities.add(identity)
+        const request = pending.request
+        const condition = request.phase.startsWith('seed-') ? round.plan!.seed : round.plan!.heldOut
+        if (digestJson(request.condition) !== digestJson(condition)
+          || (pending.reservation !== undefined && pending.reservation.provider !== pending.intent.provider)) {
+          throw new TypeError('pending evaluation submission condition/provider is invalid')
+        }
+        this.validateEvaluationAttempt(round as RefinementRound, {
+          provider: pending.intent.provider,
+          evalId: pending.reservation?.evalId ?? `eval_${'0'.repeat(32)}`,
+          phase: request.phase, owner: pending.owner,
+          conditionId: request.condition.conditionId, dataset: request.dataset,
+          requestedModelId: request.condition.model, requestedCommit: request.harnessRef,
+          status: 'running', startedAt: pending.startedAt,
+        }, new Set())
+      }
+    }
     if (round.parentBaselines !== undefined) {
       for (const baseline of round.parentBaselines) {
         this.validateEvaluationEvidence(baseline.evidence, 'parent seed baseline')
@@ -896,6 +924,10 @@ export class RefineStateStore {
       || (attempt.provider === 'hitch-cli' && !/^eval_[0-9a-f]{32}$/u.test(attempt.evalId))) {
       throw new TypeError('round evaluation attempt identity is invalid')
     }
+    if (attempt.submissionIntent !== undefined) {
+      this.validateSubmissionIntent(attempt.submissionIntent)
+      if (attempt.submissionIntent.provider !== attempt.provider) throw new TypeError('evaluation submission provider differs from attempt')
+    }
     const identity = `${attempt.provider}\0${attempt.evalId}`
     if (identities.has(identity)) throw new TypeError('round evaluation attempt identity is duplicated')
     identities.add(identity)
@@ -941,6 +973,15 @@ export class RefineStateStore {
       && attempt.owner.candidateId === `champion-${round.targetHarnessRef}`
     if (!attempt.phase.endsWith('baseline') || (allocation === undefined && !deterministicChampion)) {
       throw new TypeError('round baseline evaluation attempt owner is invalid')
+    }
+  }
+
+  private validateSubmissionIntent(intent: EvaluationSubmissionIntent): void {
+    if (typeof intent !== 'object' || intent === null
+      || typeof intent.provider !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(intent.provider)
+      || typeof intent.idempotencyKey !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(intent.idempotencyKey)
+      || intent.parameters === undefined) {
+      throw new TypeError('evaluation submission intent is invalid')
     }
   }
 

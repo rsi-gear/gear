@@ -382,6 +382,28 @@ export interface EvaluationReservation {
   evalId: string
 }
 
+/** Prepared without side effects; persisted before a remote submission can start. */
+export interface EvaluationSubmissionIntent {
+  provider: string
+  idempotencyKey: string
+  parameters: JsonValue
+}
+
+export interface EvaluationFailure {
+  code: string
+  message: string
+}
+
+/** Remains durable until the remote evaluation finishes or accepts cancellation. */
+export interface PendingEvaluationSubmission {
+  intent: EvaluationSubmissionIntent
+  request: EvaluationRequest
+  owner: RoundEvaluationAttempt['owner']
+  startedAt: string
+  reservation?: EvaluationReservation
+  cleanupFailure?: EvaluationFailure
+}
+
 export type EvaluationRerunSelector =
   | { mode: 'invalid' }
   | { mode: 'tasks'; taskNames: string[] }
@@ -423,6 +445,8 @@ export interface RoundEvaluationAttempt {
   failure?: { code: string; message: string }
   /** A settled baseline imported from an earlier round instead of rerun. */
   reusedFromRoundId?: string
+  cleanupFailure?: EvaluationFailure
+  submissionIntent?: EvaluationSubmissionIntent
 }
 
 export interface EvaluationRepairResumeIntent {
@@ -751,6 +775,7 @@ export interface RefinementRound {
   promotedCandidateId?: string
   evaluation?: RoundEvaluation
   evaluationAttempts?: RoundEvaluationAttempt[]
+  pendingEvaluationSubmissions?: PendingEvaluationSubmission[]
   evaluationRepairResume?: EvaluationRepairResumeIntent
   commitIntent?: RoundCommitIntent
   meta?: MetaAttribution
@@ -776,6 +801,7 @@ export interface PublicRoundStatus {
   seedBaseline?: PublicSeedEvidence
   seedCandidate?: PublicSeedEvidence
   failure?: string
+  evaluationCleanupFailures?: Array<{ provider: string; evalId?: string; code: string }>
   candidateGeneration?: Array<{
     candidateId: string
     status: CandidateRecord['status']
@@ -835,9 +861,29 @@ export interface RefineEvaluator {
     invocationFingerprint?: string
   } | undefined>
 
+  prepareSubmission?(
+    round: Readonly<RefinementRound>,
+    request: Readonly<EvaluationRequest>,
+  ): EvaluationSubmissionIntent | undefined
+
   reserve?(
     round: Readonly<RefinementRound>,
     request: Readonly<EvaluationRequest>,
+    signal?: AbortSignal,
+    intent?: Readonly<EvaluationSubmissionIntent>,
+  ): Promise<EvaluationReservation>
+
+  /** Resolves once remote cancellation is durably accepted (or the eval is terminal). */
+  cancelReservation?(
+    reservation: Readonly<EvaluationReservation>,
+    intent?: Readonly<EvaluationSubmissionIntent>,
+  ): Promise<void>
+
+  recoverReservation?(
+    round: Readonly<RefinementRound>,
+    request: Readonly<EvaluationRequest>,
+    signal: AbortSignal,
+    intent: Readonly<EvaluationSubmissionIntent>,
   ): Promise<EvaluationReservation>
 
   evaluate(

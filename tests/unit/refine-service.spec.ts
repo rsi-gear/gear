@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { CandidateWorkspaceManager } from '../../src/candidate/workspace.js'
 import { HitchEvaluationError } from '../../src/evaluator/hitch-cli.js'
+import type { EvaluationSubmissionIntent } from '../../src/types.js'
 import { HarnessBuilder, NoopHarnessCompiler, SubstrateExpansionError } from '../../src/harness/builder.js'
 import { RefineService } from '../../src/refine/service.js'
 import { EvolutionRegistryStore } from '../../src/state/evolution.js'
@@ -67,9 +68,15 @@ class FakeEvaluator implements RefineEvaluator {
     private readonly heldOutDelta = 0,
     private readonly mismatchSeedCondition = false,
   ) {}
+  prepareSubmission(_round: Readonly<RefinementRound>, _request: Readonly<EvaluationRequest>): EvaluationSubmissionIntent | undefined {
+    return undefined
+  }
+  async cancelReservation(_reservation: Readonly<EvaluationReservation>, _intent?: Readonly<EvaluationSubmissionIntent>): Promise<void> {}
   async reserve(
     _round: Readonly<RefinementRound>,
     _request: Readonly<EvaluationRequest>,
+    _signal?: AbortSignal,
+    _intent?: Readonly<EvaluationSubmissionIntent>,
   ): Promise<EvaluationReservation> {
     this.reservations += 1
     return { provider: 'fake', evalId: `eval_fake_${this.reservations}` }
@@ -329,6 +336,185 @@ async function decline(service: RefineService, round: RefinementRound): Promise<
 }
 
 describe('RefineService evolution workspaces', () => {
+  function durable(evaluator: FakeEvaluator): void {
+    evaluator.prepareSubmission = (round, request) => ({
+      provider: 'fake', idempotencyKey: `intent-${round.roundId}-${request.phase}`,
+      parameters: { frozen: 'original' },
+    })
+  }
+
+  function restart(service: RefineService, evaluator: RefineEvaluator): RefineService {
+    return new RefineService(service.registry, service.builder, service.workspaceManager,
+      service.createMetaSession, evaluator, service.options, service.components)
+  }
+
+  it('persists submission ownership before the first remote side effect', async () => {
+    const { service, evaluator } = await setup()
+    durable(evaluator)
+    const originalReserve = evaluator.reserve.bind(evaluator)
+    evaluator.reserve = async (round, request, signal, intent) => {
+      const stored = await service.registry.stateStore(round.evolutionId).readRound(round.roundId)
+      expect(stored?.pendingEvaluationSubmissions).toMatchObject([{ intent, request,
+        owner: { role: 'baseline', harnessRef: request.harnessRef } }])
+      expect(stored?.evaluationAttempts ?? []).toHaveLength(0)
+      expect(signal?.aborted).toBe(false)
+      return originalReserve(round, request)
+    }
+    const admission = await service.admit('api')
+    const round = await editing(service, admission.evolutionId, admission.roundId)
+    expect(round.pendingEvaluationSubmissions).toEqual([])
+    expect(round.evaluationAttempts?.[0]?.submissionIntent?.parameters).toEqual({ frozen: 'original' })
+    await service.dispose()
+  })
+
+  it('recovers and cancels a submitted evaluation when the acknowledgement is lost', async () => {
+    const { service, evaluator } = await setup()
+    durable(evaluator)
+    const submissions: string[] = []
+    const cancellations: string[] = []
+    evaluator.reserve = async (_round, _request, _signal, intent) => {
+      submissions.push(intent!.idempotencyKey)
+      if (submissions.length === 1) throw Object.assign(new Error('submission reply lost'), { code: 'reply_lost' })
+      return { provider: 'fake', evalId: 'remote-eval' }
+    }
+    evaluator.cancelReservation = async reservation => { cancellations.push(reservation.evalId) }
+    const admission = await service.admit('api')
+    const round = await eventually(() => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId), value => value?.status === 'failed')
+    expect(submissions).toHaveLength(2)
+    expect(new Set(submissions).size).toBe(1)
+    expect(cancellations).toEqual(['remote-eval'])
+    expect(round).toMatchObject({ pendingEvaluationSubmissions: [],
+      evaluationAttempts: [{ evalId: 'remote-eval', status: 'cancelled', failure: { code: 'reply_lost' } }] })
+    expect(evaluator.calls).toEqual([])
+    await service.dispose()
+  })
+
+  it('cancels accepted work if writing the returned eval ownership fails', async () => {
+    const { service, evaluator } = await setup()
+    durable(evaluator)
+    const cancelled: string[] = []
+    evaluator.reserve = async round => {
+      const store = service.activeEntry(round.roundId)!.store
+      const write = store.writeRound.bind(store)
+      let injected = false
+      store.writeRound = async value => {
+        if (!injected && value.evaluationAttempts?.some(attempt => attempt.status === 'running')) {
+          injected = true
+          throw new Error('ownership write failed')
+        }
+        return write(value)
+      }
+      return { provider: 'fake', evalId: 'remote-eval' }
+    }
+    evaluator.cancelReservation = async reservation => { cancelled.push(reservation.evalId) }
+    const admission = await service.admit('api')
+    const round = await eventually(() => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId), value => value?.status === 'failed')
+    expect(cancelled).toEqual(['remote-eval'])
+    expect(round?.pendingEvaluationSubmissions).toEqual([])
+    expect(round?.failure?.message).toBe('ownership write failed')
+    expect(evaluator.calls).toEqual([])
+    await service.dispose()
+  })
+
+  it('propagates abort into reservation and cleans up with an independent signal', async () => {
+    const { service, evaluator } = await setup()
+    durable(evaluator)
+    const started = Promise.withResolvers<void>()
+    let calls = 0
+    let cancelled = false
+    evaluator.reserve = async (_round, _request, signal) => {
+      expect(signal?.aborted).toBe(false)
+      calls += 1
+      if (calls === 1) {
+        started.resolve()
+        await new Promise((_resolve, reject) => signal!.addEventListener('abort', () => reject(signal!.reason), { once: true }))
+      }
+      return { provider: 'fake', evalId: 'remote-eval' }
+    }
+    evaluator.cancelReservation = async () => { cancelled = true }
+    const admission = await service.admit('api')
+    await started.promise
+    await service.dispose()
+    expect(calls).toBe(2)
+    expect(cancelled).toBe(true)
+    const round = await service.registry.stateStore(admission.evolutionId).readRound(admission.roundId)
+    expect(round?.pendingEvaluationSubmissions).toEqual([])
+    expect(evaluator.calls).toEqual([])
+  })
+
+  it.each([false, true])('recovers unresolved ownership after restart (server ID saved: %s)', async knownId => {
+    const { service, evaluator } = await setup()
+    durable(evaluator)
+    let unavailable = true
+    const keys: string[] = []
+    const cancelled: string[] = []
+    evaluator.reserve = async (_round, _request, _signal, intent) => {
+      keys.push(intent!.idempotencyKey)
+      expect(intent!.parameters).toEqual({ frozen: 'original' })
+      if (unavailable && !knownId) throw new Error('submission reply unavailable')
+      return { provider: 'fake', evalId: 'remote-eval' }
+    }
+    evaluator.evaluate = async () => { throw Object.assign(new Error('observer failed'), { code: 'observer_failed' }) }
+    evaluator.cancelReservation = async reservation => {
+      if (unavailable) throw Object.assign(new Error('cancel unavailable'), { code: 'cancel_unavailable' })
+      cancelled.push(reservation.evalId)
+    }
+    const admission = await service.admit('api')
+    const store = service.registry.stateStore(admission.evolutionId)
+    const failed = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
+    expect(failed?.pendingEvaluationSubmissions).toHaveLength(1)
+    expect(failed?.pendingEvaluationSubmissions?.[0]?.reservation !== undefined).toBe(knownId)
+    expect(failed?.pendingEvaluationSubmissions?.[0]?.cleanupFailure).toBeDefined()
+    expect((await service.status(admission.evolutionId, admission.roundId)).evaluationCleanupFailures).toHaveLength(1)
+    if (knownId) expect(failed?.evaluationAttempts?.[0]).toMatchObject({
+      failure: { code: 'observer_failed', message: 'observer failed' },
+      cleanupFailure: { code: 'cancel_unavailable' },
+    })
+    await service.dispose()
+    unavailable = false
+    evaluator.prepareSubmission = () => { throw new Error('must replay persisted intent, not prepare a new one') }
+    const recovering = restart(service, evaluator)
+    await recovering.initialize()
+    expect(cancelled).toEqual(['remote-eval'])
+    expect(new Set(keys).size).toBe(1)
+    expect((await store.readRound(admission.roundId))?.pendingEvaluationSubmissions).toEqual([])
+    await recovering.initialize()
+    expect(cancelled).toHaveLength(1)
+    await recovering.dispose()
+  })
+
+  it('recovers an interrupted owned attempt before validating the current runtime', async () => {
+    const { service, evaluator } = await setup()
+    durable(evaluator)
+    evaluator.evaluate = async () => { throw new Error('observer stopped') }
+    const admission = await service.admit('api')
+    const store = service.registry.stateStore(admission.evolutionId)
+    const failed = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
+    await service.dispose()
+    if (failed === undefined) throw new Error('missing failed round')
+    const { failure: _roundFailure, ...interrupted } = failed
+    await store.writeRound({
+      ...interrupted, status: 'baseline-running', pendingEvaluationSubmissions: [],
+      evaluationAttempts: failed.evaluationAttempts!.map(attempt => {
+        const { failure: _failure, completedAt: _completedAt, ...owned } = attempt
+        return { ...owned, status: 'running' as const }
+      }),
+    })
+    const cancelled: string[] = []
+    evaluator.cancelReservation = async reservation => { cancelled.push(reservation.evalId) }
+    Object.assign(evaluator, { preflight: async () => { throw new Error('current runtime unavailable') } })
+    const recovering = restart(service, evaluator)
+    await expect(recovering.initialize()).rejects.toThrow('current runtime unavailable')
+    expect(cancelled).toEqual([failed.evaluationAttempts![0]!.evalId])
+    expect(await store.readRound(admission.roundId)).toMatchObject({
+      status: 'failed', pendingEvaluationSubmissions: [], evaluationAttempts: [{ status: 'cancelled' }],
+    })
+    Object.assign(evaluator, { preflight: async () => {} })
+    await recovering.initialize()
+    expect(cancelled).toHaveLength(1)
+    await recovering.dispose()
+  })
+
   it('persists a running evaluation attempt before invoking the reserved evaluator', async () => {
     const { service, evaluator } = await setup()
     const original = evaluator.evaluate.bind(evaluator)

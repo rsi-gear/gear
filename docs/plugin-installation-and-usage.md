@@ -397,7 +397,7 @@ hitch --root /srv/dsh/hitch-state daemon start \
 hitch --root /srv/dsh/hitch-state daemon status --json
 ```
 
-Gear 启动时要求 daemon 状态为 `running`，并校验其 `eval_trial` 资源策略。提交使用由 evolution、round、phase、condition 和固定调用参数派生的幂等键；重启后重复 reservation 会得到同一个 Hitch eval ID。round 被取消时 Gear 会终止本地 watch 并向 daemon 发送 `eval cancel`。daemon eval 的 rerun 始终显式使用 `--daemon --type candidate-restart`。
+Gear 在接收新工作前要求 daemon 状态为 `running`，并校验其 `eval_trial` 资源策略。每次提交前先持久化归属、幂等键和固定参数；幂等键由 evolution、round、phase、condition 和固定调用参数派生。重启时 Gear 找回并取消未完成的提交；若重放被 daemon 拒绝，则按已保存的幂等键 hash 查询原任务。清理失败会保留记录供下次启动重试，并在状态接口的 `evaluationCleanupFailures` 中显示错误码。round 取消或观察失败时，Gear 都会尝试 `eval cancel`；取消失败单独记录，不覆盖原始错误。daemon eval 的 rerun 始终显式使用 `--daemon --type candidate-restart`。
 
 检查 Python：
 

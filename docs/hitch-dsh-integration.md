@@ -102,6 +102,12 @@ Gear：
 7. daemon 模式从 inspection 校验 submission request、幂等键 hash 和冻结 execution policy，并把实际 policy 纳入 baseline/candidate 的语义配置身份 `effectiveConfigDigest`；
 8. round record只保存 Hitch返回的eval/ref和Gear自己的decision，不修改 Hitch records。
 
+daemon 提交前，Gear 先在 round 的 `pendingEvaluationSubmissions` 保存归属、评测请求、幂等键和固定 CLI 参数，然后才执行 `eval submit`。返回的 eval ID 与 attempt 归属一并落盘。提交阶段接收 round 的取消信号；即使响应丢失或 ID 写入失败，Gear 仍可使用持久化意图恢复同一任务并取消它。
+
+启动恢复会处理未完成的提交，包括已经标记为失败的 round。Gear 先重放原幂等键；如果默认资源策略或执行容量变化导致重放被拒绝，则通过 `eval list` / `eval inspect` 查找匹配的 `idempotency_key_hash`。恢复出的任务会被取消，而不是继续执行中断的 round。只有评测结束或 daemon 持久接受取消后，Gear 才移除待处理意图；清理失败会保留意图，供下次启动重试。
+
+提交后的 watch、JSON 解析、运行时校验、inspection 和 rerun 异常都会触发独立且有时限的取消。取消失败保留原始错误的 code、message 和 cause，并单独记录 `cleanupFailure`；状态接口通过 `evaluationCleanupFailures` 暴露待处理的清理错误码。
+
 不要求 Hitch Node exports 或 Gear 专用 plugin ABI。direct 与 daemon 都经过同一个 CLI JSON 合同；direct 要求 agent-hitch 0.2.5+，daemon 要求 0.2.6+。
 
 direct 模式可按语义配置身份复用跨轮次 baseline。daemon 的默认执行策略在提交后才冻结，当前不预先声明可复用身份，因此每轮重新评测 baseline，避免复用不同执行策略下的结果。

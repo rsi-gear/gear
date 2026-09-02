@@ -11,6 +11,7 @@ import type {
   EvaluationRerunResult,
   EvaluationRerunSelector,
   EvaluationReservation,
+  EvaluationSubmissionIntent,
   EvaluationTrialSlot,
   FailedEvaluationEvidence,
   HitchEvaluationEvidence,
@@ -26,6 +27,7 @@ import type {
   TrajectoryDiagnostics,
 } from '../types.js'
 import { isExactGitCommit } from '../types.js'
+import { EvaluationCleanupError } from './cleanup.js'
 
 export interface HitchCliEvaluatorOptions extends HitchConfig {
   repositoryPath: string
@@ -323,27 +325,50 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     this.parseResourceVector(policy.eval_trial, 'Hitch daemon eval trial policy')
   }
 
+  prepareSubmission(
+    round: Readonly<RefinementRound>,
+    request: Readonly<EvaluationRequest>,
+  ): EvaluationSubmissionIntent | undefined {
+    if (!this.daemonMode) return undefined
+    this.assertEvaluationRequest(round, request)
+    return {
+      provider: 'hitch-cli',
+      idempotencyKey: this.daemonIdempotencyKey(round, request),
+      parameters: {
+        root: this.options.root,
+        args: [...this.controlPlaneArgs(), ...this.evalRequestArgs(round, request)],
+      },
+    }
+  }
+
   async reserve(
     round: Readonly<RefinementRound>,
     request: Readonly<EvaluationRequest>,
+    signal?: AbortSignal,
+    intent?: Readonly<EvaluationSubmissionIntent>,
   ): Promise<EvaluationReservation> {
-    if (this.daemonMode) return this.reserveDaemonEvaluation(round, request)
+    signal?.throwIfAborted()
+    // A stored intent must remain recoverable even if the configured mode changed.
+    if (intent !== undefined) return this.reserveDaemonEvaluation(round, intent, signal)
+    if (this.daemonMode) throw new TypeError('Hitch daemon submission requires a persisted submission intent')
     return { provider: 'hitch-cli', evalId: `eval_${randomUUID().replaceAll('-', '')}` }
   }
 
   private async reserveDaemonEvaluation(
     round: Readonly<RefinementRound>,
-    request: Readonly<EvaluationRequest>,
+    intent: Readonly<EvaluationSubmissionIntent>,
+    signal?: AbortSignal,
   ): Promise<EvaluationReservation> {
-    this.assertEvaluationRequest(round, request)
+    const parameters = this.submissionParameters(intent)
     const args = [
-      ...this.rootArgs(),
+      ...(parameters.root.length === 0 ? [] : ['--root', parameters.root]),
       'eval', 'submit',
-      '--idempotency-key', this.daemonIdempotencyKey(round, request),
-      ...this.controlPlaneArgs(),
-      ...this.evalRequestArgs(round, request),
+      '--idempotency-key', intent.idempotencyKey,
+      ...parameters.args,
     ]
-    const result = await this.run(args, round.workspaceRoot, AbortSignal.timeout(30_000), 64 * 1024)
+    const timeout = AbortSignal.timeout(30_000)
+    const result = await this.run(args, round.workspaceRoot,
+      signal === undefined ? timeout : AbortSignal.any([signal, timeout]), 64 * 1024)
     if (result.exitCode !== 0) {
       throw new HitchEvaluationError(`Hitch daemon eval submission failed: ${result.stderr.slice(-4000)}`, 'hitch_eval_submit_failed')
     }
@@ -354,10 +379,66 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     const accepted = record(parsed, 'Hitch eval submission')
     const evalId = string(accepted.eval_id, 'eval submission eval_id')
     if (accepted.schema_version !== '1' || !/^eval_[0-9a-f]{32}$/u.test(evalId)
-      || (accepted.status !== 'queued' && accepted.status !== 'running')) {
+      || !new Set(['queued', 'running', 'cancelling', 'cancelled', 'succeeded', 'failed']).has(accepted.status as string)) {
       throw new HitchEvaluationError('Hitch eval submission identity/status is invalid', 'invalid_hitch_result')
     }
     return { provider: 'hitch-cli', evalId }
+  }
+
+  private submissionParameters(intent: Readonly<EvaluationSubmissionIntent>): { root: string; args: string[] } {
+    if (intent.provider !== 'hitch-cli' || !/^gear-eval-v1-[0-9a-f]{64}$/u.test(intent.idempotencyKey)) {
+      throw new TypeError('Hitch submission intent identity is invalid')
+    }
+    const parameters = record(intent.parameters, 'Hitch submission parameters')
+    if (typeof parameters.root !== 'string') throw new TypeError('Hitch submission root is invalid')
+    return { root: parameters.root, args: stringArray(parameters.args, 'Hitch submission arguments') }
+  }
+
+  async recoverReservation(
+    round: Readonly<RefinementRound>,
+    _request: Readonly<EvaluationRequest>,
+    signal: AbortSignal,
+    intent: Readonly<EvaluationSubmissionIntent>,
+  ): Promise<EvaluationReservation> {
+    const parameters = this.submissionParameters(intent)
+    try { return await this.reserveDaemonEvaluation(round, intent, signal) }
+    catch (submissionError) {
+      // Hitch resolves daemon defaults before checking the idempotency index.
+      // Changed defaults or unavailable execution capacity can reject a replay
+      // even though the original evaluation still exists. Locate its frozen key
+      // through the public read-only CLI so it can still be cancelled.
+      signal.throwIfAborted()
+      const rootArgs = parameters.root.length === 0 ? [] : ['--root', parameters.root]
+      const listed = await this.run([...rootArgs, 'eval', 'list', '--json'], this.repositoryPath, signal)
+      if (listed.exitCode !== 0) throw submissionError
+      const list = record(JSON.parse(listed.stdout), 'Hitch evaluation list')
+      if (list.schema_version !== '1' || !Array.isArray(list.evals)) throw submissionError
+      for (const value of list.evals) {
+        const entry = record(value, 'Hitch listed evaluation')
+        const evalId = string(entry.eval_id, 'Hitch listed eval_id')
+        if (!/^eval_[0-9a-f]{32}$/u.test(evalId)) throw submissionError
+        const inspection = await this.inspectEvaluation(evalId, this.repositoryPath, signal,
+          'hitch_eval_recovery_inspect_failed', parameters.root)
+        if (inspection.submission === undefined) continue
+        const submission = record(inspection.submission, 'Hitch persisted submission')
+        if (submission.schema_version === '1' && submission.eval_id === evalId
+          && submission.idempotency_key_hash === sha256(intent.idempotencyKey)) {
+          return { provider: 'hitch-cli', evalId }
+        }
+      }
+      throw submissionError
+    }
+  }
+
+  async cancelReservation(
+    reservation: Readonly<EvaluationReservation>,
+    intent?: Readonly<EvaluationSubmissionIntent>,
+  ): Promise<void> {
+    if (reservation.provider !== 'hitch-cli' || !/^eval_[0-9a-f]{32}$/u.test(reservation.evalId)) {
+      throw new TypeError('Hitch cancellation reservation is invalid')
+    }
+    const root = intent === undefined ? this.options.root : this.submissionParameters(intent).root
+    await this.cancelDaemonEvaluation(reservation.evalId, this.repositoryPath, root)
   }
 
   private controlPlanePolicyIsExplicit(): boolean {
@@ -551,22 +632,22 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     signal: AbortSignal,
     reservation?: Readonly<EvaluationReservation>,
   ): Promise<HitchEvaluationEvidence> {
-    this.assertEvaluationRequest(round, request)
-    if (reservation !== undefined
-      && (reservation.provider !== 'hitch-cli' || !/^eval_[0-9a-f]{32}$/u.test(reservation.evalId))) {
-      throw new TypeError('Hitch evaluation reservation is invalid')
-    }
-    if (this.daemonMode && reservation === undefined) {
-      throw new TypeError('Hitch daemon evaluation requires a durable reservation')
-    }
-    const args = [
-      ...this.rootArgs(),
-      ...(this.daemonMode
-        ? ['eval', 'watch', (reservation as EvaluationReservation).evalId]
-        : ['eval', 'run', ...(reservation === undefined ? [] : ['--eval-id', reservation.evalId]), ...this.evalRequestArgs(round, request)]),
-      '--output', 'json',
-    ]
     try {
+      this.assertEvaluationRequest(round, request)
+      if (reservation !== undefined
+        && (reservation.provider !== 'hitch-cli' || !/^eval_[0-9a-f]{32}$/u.test(reservation.evalId))) {
+        throw new TypeError('Hitch evaluation reservation is invalid')
+      }
+      if (this.daemonMode && reservation === undefined) {
+        throw new TypeError('Hitch daemon evaluation requires a durable reservation')
+      }
+      const args = [
+        ...this.rootArgs(),
+        ...(this.daemonMode
+          ? ['eval', 'watch', (reservation as EvaluationReservation).evalId]
+          : ['eval', 'run', ...(reservation === undefined ? [] : ['--eval-id', reservation.evalId]), ...this.evalRequestArgs(round, request)]),
+        '--output', 'json',
+      ]
       let identity = await this.resolveEvaluationIdentity(round, request, signal)
       const processResult = await this.run(args, round.workspaceRoot, signal)
       let parsed: unknown
@@ -602,14 +683,11 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       this.assertCompleteTrialSlots(inspection, evidence, request)
       return evidence
     } catch (error) {
-      if (this.daemonMode && reservation !== undefined && signal.aborted) {
+      if (this.daemonMode && reservation !== undefined) {
         try {
-          await this.cancelDaemonEvaluation(reservation.evalId, round.workspaceRoot)
+          await this.cancelReservation(reservation)
         } catch (cancelError) {
-          throw new HitchEvaluationError(
-            `Hitch daemon eval ${reservation.evalId} was aborted but could not be cancelled: ${String(cancelError)}`,
-            'hitch_eval_cancel_failed',
-          )
+          throw new EvaluationCleanupError(error, cancelError)
         }
       }
       throw error
@@ -631,74 +709,82 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       || attempt.requestedModelId !== request.condition.model) {
       throw new TypeError('Hitch evaluation rerun request does not match the original attempt')
     }
-    const identity = await this.resolveEvaluationIdentity(round, request, signal)
-    const args = [
-      ...this.rootArgs(),
-      'eval', 'rerun', attempt.evalId,
-      ...(selector.mode === 'invalid'
-        ? ['--invalid']
-        : selector.taskNames.flatMap(task => ['--task', task])),
-      '--type', 'candidate-restart',
-      ...(this.daemonMode ? ['--daemon'] : []),
-      '--output', 'json',
-    ]
-    const processResult = await this.run(args, round.workspaceRoot, signal)
-    if (processResult.exitCode !== 0) {
-      throw new HitchEvaluationError(
-        `Hitch eval rerun failed for ${attempt.evalId}: ${processResult.stderr.slice(-4000)}`,
-        'hitch_eval_rerun_failed',
+    try {
+      const identity = await this.resolveEvaluationIdentity(round, request, signal)
+      const args = [
+        ...this.rootArgs(),
+        'eval', 'rerun', attempt.evalId,
+        ...(selector.mode === 'invalid'
+          ? ['--invalid']
+          : selector.taskNames.flatMap(task => ['--task', task])),
+        '--type', 'candidate-restart',
+        ...(this.daemonMode ? ['--daemon'] : []),
+        '--output', 'json',
+      ]
+      const processResult = await this.run(args, round.workspaceRoot, signal)
+      if (processResult.exitCode !== 0) {
+        throw new HitchEvaluationError(
+          `Hitch eval rerun failed for ${attempt.evalId}: ${processResult.stderr.slice(-4000)}`,
+          'hitch_eval_rerun_failed',
+        )
+      }
+      let parsed: unknown
+      try { parsed = JSON.parse(processResult.stdout) } catch (error) {
+        throw new HitchEvaluationError(`Hitch emitted invalid rerun JSON (${String(error)})`, 'invalid_hitch_json')
+      }
+      const envelope = record(parsed, 'Hitch rerun result')
+      if (envelope.schema_version !== '1' || envelope.kind !== 'eval-rerun' || envelope.eval_id !== attempt.evalId
+        || envelope.status !== 'completed' || (envelope.eval_status !== 'succeeded' && envelope.eval_status !== 'failed')) {
+        throw new HitchEvaluationError('Hitch rerun result identity/status is invalid', 'invalid_hitch_result')
+      }
+      const selectedTasks = stringArray(envelope.selected_tasks, 'selected_tasks')
+      const repairedTasks = stringArray(envelope.repaired_tasks, 'repaired_tasks')
+      const remainingInvalidTasks = stringArray(envelope.remaining_invalid_tasks, 'remaining_invalid_tasks')
+      const selectedTrials = envelope.selected_trials === undefined ? undefined : trialSlots(envelope.selected_trials, 'selected_trials')
+      const repairedTrials = envelope.repaired_trials === undefined ? undefined : trialSlots(envelope.repaired_trials, 'repaired_trials')
+      const remainingInvalidTrials = envelope.remaining_invalid_trials === undefined
+        ? undefined : trialSlots(envelope.remaining_invalid_trials, 'remaining_invalid_trials')
+      if (envelope.eval_status === 'succeeded'
+        && (remainingInvalidTasks.length > 0 || (remainingInvalidTrials?.length ?? 0) > 0)) {
+        throw new HitchEvaluationError('Hitch rerun succeeded with remaining invalid slots', 'invalid_hitch_result')
+      }
+      const inspection = await this.inspectEvaluation(
+        attempt.evalId,
+        round.workspaceRoot,
+        signal,
+        'hitch_eval_rerun_inspect_failed',
       )
-    }
-    let parsed: unknown
-    try { parsed = JSON.parse(processResult.stdout) } catch (error) {
-      throw new HitchEvaluationError(`Hitch emitted invalid rerun JSON (${String(error)})`, 'invalid_hitch_json')
-    }
-    const envelope = record(parsed, 'Hitch rerun result')
-    if (envelope.schema_version !== '1' || envelope.kind !== 'eval-rerun' || envelope.eval_id !== attempt.evalId
-      || envelope.status !== 'completed' || (envelope.eval_status !== 'succeeded' && envelope.eval_status !== 'failed')) {
-      throw new HitchEvaluationError('Hitch rerun result identity/status is invalid', 'invalid_hitch_result')
-    }
-    const selectedTasks = stringArray(envelope.selected_tasks, 'selected_tasks')
-    const repairedTasks = stringArray(envelope.repaired_tasks, 'repaired_tasks')
-    const remainingInvalidTasks = stringArray(envelope.remaining_invalid_tasks, 'remaining_invalid_tasks')
-    const selectedTrials = envelope.selected_trials === undefined ? undefined : trialSlots(envelope.selected_trials, 'selected_trials')
-    const repairedTrials = envelope.repaired_trials === undefined ? undefined : trialSlots(envelope.repaired_trials, 'repaired_trials')
-    const remainingInvalidTrials = envelope.remaining_invalid_trials === undefined
-      ? undefined : trialSlots(envelope.remaining_invalid_trials, 'remaining_invalid_trials')
-    if (envelope.eval_status === 'succeeded'
-      && (remainingInvalidTasks.length > 0 || (remainingInvalidTrials?.length ?? 0) > 0)) {
-      throw new HitchEvaluationError('Hitch rerun succeeded with remaining invalid slots', 'invalid_hitch_result')
-    }
-    const inspection = await this.inspectEvaluation(
-      attempt.evalId,
-      round.workspaceRoot,
-      signal,
-      'hitch_eval_rerun_inspect_failed',
-    )
-    const result = record(inspection.result, 'Hitch repaired eval result')
-    const evidence = this.parseResult(
-      result,
-      { stdout: JSON.stringify(result), stderr: '', exitCode: integer(result.exit_code, 'exit_code') },
-      request,
-      this.daemonMode ? this.daemonEvaluationIdentity(round, request, inspection, identity) : identity,
-      true,
-    )
-    if (evidence.evalId !== attempt.evalId) throw new HitchEvaluationError('repaired evidence eval id changed', 'hitch_eval_identity_mismatch')
-    if ((envelope.eval_status === 'succeeded') !== (evidence.completeness === 'complete')) {
-      throw new HitchEvaluationError('Hitch rerun status does not match repaired evidence completeness', 'invalid_hitch_result')
-    }
-    this.assertCompleteTrialSlots(inspection, evidence, request)
-    return {
-      provider: 'hitch-cli',
-      evalId: attempt.evalId,
-      selectedTasks,
-      repairedTasks,
-      remainingInvalidTasks,
-      ...(selectedTrials === undefined ? {} : { selectedTrials }),
-      ...(repairedTrials === undefined ? {} : { repairedTrials }),
-      ...(remainingInvalidTrials === undefined ? {} : { remainingInvalidTrials }),
-      evalStatus: envelope.eval_status,
-      evidence,
+      const result = record(inspection.result, 'Hitch repaired eval result')
+      const evidence = this.parseResult(
+        result,
+        { stdout: JSON.stringify(result), stderr: '', exitCode: integer(result.exit_code, 'exit_code') },
+        request,
+        this.daemonMode ? this.daemonEvaluationIdentity(round, request, inspection, identity) : identity,
+        true,
+      )
+      if (evidence.evalId !== attempt.evalId) throw new HitchEvaluationError('repaired evidence eval id changed', 'hitch_eval_identity_mismatch')
+      if ((envelope.eval_status === 'succeeded') !== (evidence.completeness === 'complete')) {
+        throw new HitchEvaluationError('Hitch rerun status does not match repaired evidence completeness', 'invalid_hitch_result')
+      }
+      this.assertCompleteTrialSlots(inspection, evidence, request)
+      return {
+        provider: 'hitch-cli',
+        evalId: attempt.evalId,
+        selectedTasks,
+        repairedTasks,
+        remainingInvalidTasks,
+        ...(selectedTrials === undefined ? {} : { selectedTrials }),
+        ...(repairedTrials === undefined ? {} : { repairedTrials }),
+        ...(remainingInvalidTrials === undefined ? {} : { remainingInvalidTrials }),
+        evalStatus: envelope.eval_status,
+        evidence,
+      }
+    } catch (error) {
+      if (this.daemonMode) {
+        try { await this.cancelReservation(attempt, attempt.submissionIntent) }
+        catch (cleanupError) { throw new EvaluationCleanupError(error, cleanupError) }
+      }
+      throw error
     }
   }
 
@@ -707,9 +793,10 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     cwd: string,
     signal: AbortSignal,
     failureCode: string,
+    root = this.options.root,
   ): Promise<JsonRecord> {
     const inspect = await this.run([
-      ...this.rootArgs(),
+      ...(root.length === 0 ? [] : ['--root', root]),
       'eval', 'inspect', evalId, '--json',
     ], cwd, signal)
     if (inspect.exitCode !== 0) {
@@ -726,9 +813,9 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     return inspection
   }
 
-  private async cancelDaemonEvaluation(evalId: string, cwd: string): Promise<void> {
+  private async cancelDaemonEvaluation(evalId: string, cwd: string, root: string): Promise<void> {
     const result = await this.run([
-      ...this.rootArgs(), 'eval', 'cancel', evalId,
+      ...(root.length === 0 ? [] : ['--root', root]), 'eval', 'cancel', evalId,
     ], cwd, AbortSignal.timeout(Math.max(5_000, this.options.terminationGraceMs)), 64 * 1024)
     if (result.exitCode !== 0) {
       throw new HitchEvaluationError(`Hitch could not cancel daemon eval ${evalId}: ${result.stderr.slice(-4000)}`, 'hitch_eval_cancel_failed')
@@ -1270,7 +1357,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
         const next = current + chunk
         if (Buffer.byteLength(next) > maxOutputBytes) {
           overflow = stream
-          child.kill('SIGTERM')
+          terminate()
           return next.slice(0, maxOutputBytes)
         }
         return next
@@ -1280,6 +1367,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       child.stdout.on('data', (chunk: string) => { stdout = append('stdout', stdout, chunk) })
       child.stderr.on('data', (chunk: string) => { stderr = append('stderr', stderr, chunk) })
       const terminate = (): void => {
+        if (killTimer !== undefined) return
         child.kill('SIGTERM')
         killTimer = setTimeout(() => child.kill('SIGKILL'), this.options.terminationGraceMs)
       }

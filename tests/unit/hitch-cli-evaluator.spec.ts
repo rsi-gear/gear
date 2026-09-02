@@ -35,6 +35,8 @@ interface InspectFixture {
 interface SetupOptions {
   controlPlane?: HitchConfig['controlPlane']
   daemonStatus?: 'running' | 'stopped'
+  fault?: 'submit-reply-lost' | 'submit-replay-rejected' | 'submit-wait' | 'watch-invalid-json' | 'watch-overflow' | 'watch-exit' | 'inspect-failure' | 'rerun-invalid-json'
+  cancelFails?: boolean
 }
 
 async function setup(version = '0.2.5', inspectFixture: InspectFixture = {}, setupOptions: SetupOptions = {}) {
@@ -60,6 +62,21 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs
 import { createHash } from 'node:crypto'
 const args = process.argv.slice(2)
 appendFileSync(${JSON.stringify(invocationLog)}, JSON.stringify(args) + '\\n')
+const fault = ${JSON.stringify(setupOptions.fault ?? '')}
+if (args[0] === 'eval' && (
+  (args[1] === 'watch' && fault === 'watch-invalid-json') ||
+  (args[1] === 'rerun' && fault === 'rerun-invalid-json')
+)) { process.stdout.write('bad-json'); process.exit(0) }
+if (args[0] === 'eval' && args[1] === 'watch' && fault === 'watch-overflow') {
+  process.on('SIGTERM', () => {})
+  process.stdout.write('x'.repeat(100000))
+  await new Promise(resolve => setTimeout(resolve, 30000))
+}
+if (args[0] === 'eval' && (
+  (args[1] === 'watch' && fault === 'watch-exit') ||
+  (args[1] === 'inspect' && fault === 'inspect-failure') ||
+  (args[1] === 'cancel' && ${JSON.stringify(setupOptions.cancelFails ?? false)})
+)) { process.stderr.write('injected CLI failure'); process.exit(9) }
 const value = name => args.includes(name) ? args[args.indexOf(name) + 1] : undefined
 const statePath = ${JSON.stringify(submissionState)}
 const submitted = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : undefined
@@ -99,12 +116,15 @@ else if (args[0] === 'daemon' && args[1] === 'status') {
     resource_policy: { eval_trial: { cpu_millis: 1000, memory_bytes: 1073741824, container_slots: 1, build_slots: 0 } },
   }) + '\\n')
 } else if (args[0] === 'eval' && args[1] === 'submit') {
+  if (submitted && fault === 'submit-replay-rejected') { process.stderr.write('idempotency_conflict'); process.exit(9) }
   const acceptedEvalId = 'eval_' + '6'.repeat(32)
   const idempotencyKey = value('--idempotency-key')
   writeFileSync(statePath, JSON.stringify({
     evalId: acceptedEvalId, dataset, harness,
     idempotencyKeyHash: 'sha256:' + createHash('sha256').update(idempotencyKey).digest('hex'),
   }))
+  if (!submitted && fault === 'submit-reply-lost') { process.stderr.write('lost submission reply'); process.exit(9) }
+  if (!submitted && fault === 'submit-wait') await new Promise(resolve => setTimeout(resolve, 30000))
   process.stdout.write(JSON.stringify({ schema_version: '1', eval_id: acceptedEvalId, status: 'queued' }) + '\\n')
 } else if (args[0] === 'eval' && args[1] === 'cancel') {
   process.stdout.write(JSON.stringify({ schema_version: '1', eval_id: args[2], status: 'cancelling' }) + '\\n')
@@ -132,6 +152,8 @@ else if (args[0] === 'trajectory' && args[1] === 'inspect') {
     repaired_trials: inspectedInvalidTrials.length === 0 ? [{ task_id: 'task-1', attempt: 1 }] : [],
     remaining_invalid_trials: inspectedInvalidTrials.map(slot => ({ task_id: slot.taskId, attempt: slot.attempt })),
   }) + '\\n')
+} else if (args[0] === 'eval' && args[1] === 'list') {
+  process.stdout.write(JSON.stringify({ schema_version: '1', evals: submitted ? [{ eval_id: submitted.evalId }] : [] }))
 } else if (args[0] === 'eval' && args[1] === 'inspect') {
   const inspectedEvalId = args[2]
   const actual = ${JSON.stringify(fixture.championRef)}
@@ -237,6 +259,123 @@ else {
 }
 
 describe('HitchCliEvaluator', () => {
+  it('recovers the owned eval by its stored key when changed daemon defaults reject replay', async () => {
+    const { fixture, evaluator, invocationLog } = await setup('0.2.6', {}, {
+      controlPlane: { mode: 'daemon', requireModelCapture: false }, fault: 'submit-replay-rejected',
+    })
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const input = request('seed', fixture.championRef)
+    const intent = evaluator.prepareSubmission(state, input)!
+    const original = await evaluator.reserve(state, input, undefined, intent)
+    evaluator.options.root = 'different-daemon-root'
+    const recovered = await evaluator.recoverReservation(state, input, new AbortController().signal, intent)
+    expect(recovered).toEqual(original)
+    await evaluator.cancelReservation(recovered, intent)
+    const calls = (await readFile(invocationLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as string[])
+    expect(calls).toContainEqual(['eval', 'list', '--json'])
+    expect(calls).toContainEqual(['eval', 'cancel', original.evalId])
+  })
+
+  it('prepares without submitting and replays a lost acknowledgement using the frozen intent', async () => {
+    const { fixture, evaluator, invocationLog } = await setup('0.2.6', {}, {
+      controlPlane: { mode: 'daemon', requireModelCapture: false }, fault: 'submit-reply-lost',
+    })
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const input = request('seed', fixture.championRef)
+    const intent = evaluator.prepareSubmission(state, input)!
+    await expect(readFile(invocationLog, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(evaluator.reserve(state, input)).rejects.toThrow(/persisted submission intent/u)
+    await expect(evaluator.reserve(state, input, undefined, intent)).rejects.toThrow(/lost submission reply/u)
+    evaluator.options.controlPlane = { mode: 'direct', requireModelCapture: false }
+    const reserved = await evaluator.reserve(state, input, undefined, intent)
+    await evaluator.cancelReservation(reserved, intent)
+    const calls = (await readFile(invocationLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as string[])
+    const submissions = calls.filter(args => args[1] === 'submit')
+    expect(submissions).toHaveLength(2)
+    expect(submissions[0]).toEqual(submissions[1])
+    expect(calls).toContainEqual(['eval', 'cancel', reserved.evalId])
+  })
+
+  it('propagates caller cancellation while submitting and can recover the accepted eval afterwards', async () => {
+    const { fixture, evaluator, submissionState } = await setup('0.2.6', {}, {
+      controlPlane: { mode: 'daemon', requireModelCapture: false }, fault: 'submit-wait',
+    })
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const input = request('seed', fixture.championRef)
+    const intent = evaluator.prepareSubmission(state, input)!
+    const controller = new AbortController()
+    const submission = evaluator.reserve(state, input, controller.signal, intent)
+    const rejected = expect(submission).rejects.toThrow('cancel during submission')
+    await expect.poll(() => readFile(submissionState, 'utf8').catch(() => ''), { timeout: 5000 }).not.toBe('')
+    controller.abort(new Error('cancel during submission'))
+    await rejected
+    const recovered = await evaluator.reserve(state, input, undefined, intent)
+    await evaluator.cancelReservation(recovered, intent)
+  })
+
+  it.each(['watch-invalid-json', 'watch-overflow', 'watch-exit', 'inspect-failure', 'rerun-invalid-json'] as const)(
+    'cancels daemon work after %s', async fault => {
+      const { fixture, evaluator, invocationLog } = await setup('0.2.6', {}, {
+        controlPlane: { mode: 'daemon', requireModelCapture: false }, fault,
+      })
+      const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+      const input = request('seed', fixture.championRef)
+      const intent = evaluator.prepareSubmission(state, input)!
+      const reservation = await evaluator.reserve(state, input, undefined, intent)
+      if (fault === 'watch-overflow') evaluator.options.maxOutputBytes = 1024
+      const result = fault === 'rerun-invalid-json' ? evaluator.rerun(state, input, {
+        ...reservation, phase: input.phase, conditionId: input.condition.conditionId,
+        dataset: input.dataset, requestedCommit: input.harnessRef, requestedModelId: input.condition.model,
+        owner: { candidateId: `champion-${input.harnessRef}`, role: 'baseline', harnessRef: input.harnessRef },
+        status: 'failed', startedAt: 'before', completedAt: 'after', submissionIntent: intent,
+      }, { mode: 'invalid' }, new AbortController().signal)
+        : evaluator.evaluate(state, input, new AbortController().signal, reservation)
+      await expect(result).rejects.toMatchObject({ code: fault === 'watch-overflow' ? 'hitch_output_overflow'
+        : fault === 'inspect-failure' ? 'hitch_eval_inspect_failed' : 'invalid_hitch_json' })
+      const calls = (await readFile(invocationLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as string[])
+      expect(calls).toContainEqual(['eval', 'cancel', reservation.evalId])
+    },
+  )
+
+  it('preserves the observer error and reports cancellation failure separately', async () => {
+    const { fixture, evaluator } = await setup('0.2.6', {}, {
+      controlPlane: { mode: 'daemon', requireModelCapture: false }, fault: 'watch-invalid-json', cancelFails: true,
+    })
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const input = request('seed', fixture.championRef)
+    const reservation = await evaluator.reserve(state, input, undefined, evaluator.prepareSubmission(state, input))
+    await expect(evaluator.evaluate(state, input, new AbortController().signal, reservation)).rejects.toMatchObject({
+      code: 'invalid_hitch_json', message: expect.stringContaining('invalid JSON'),
+      cause: { code: 'invalid_hitch_json' }, cleanupFailure: { code: 'hitch_eval_cancel_failed' },
+    })
+  })
+
+  it('cancels an owned daemon evaluation when runtime validation fails', async () => {
+    const { fixture, evaluator, invocationLog } = await setup('0.2.6', {}, {
+      controlPlane: { mode: 'daemon', requireModelCapture: false },
+    })
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const input = request('seed', fixture.championRef)
+    const reservation = await evaluator.reserve(state, input, undefined, evaluator.prepareSubmission(state, input))
+    await writeFile(evaluator.options.executable, (await readFile(evaluator.options.executable, 'utf8')).replace('"0.2.6"', '"0.2.4"'))
+    await expect(evaluator.evaluate(state, input, new AbortController().signal, reservation)).rejects.toMatchObject({ code: 'unsupported_hitch_version' })
+    expect(await readFile(invocationLog, 'utf8')).toContain(JSON.stringify(['eval', 'cancel', reservation.evalId]))
+  })
+
+  it('reports the original spawn failure even when the executable also prevents cancellation', async () => {
+    const { fixture, evaluator } = await setup('0.2.6', {}, {
+      controlPlane: { mode: 'daemon', requireModelCapture: false },
+    })
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const input = request('seed', fixture.championRef)
+    const reservation = await evaluator.reserve(state, input, undefined, evaluator.prepareSubmission(state, input))
+    await chmod(evaluator.options.executable, 0o644)
+    await expect(evaluator.evaluate(state, input, new AbortController().signal, reservation)).rejects.toMatchObject({
+      code: 'hitch_unavailable', message: expect.stringContaining('failed to start Hitch CLI'),
+      cause: { code: 'hitch_unavailable' }, cleanupFailure: { code: 'hitch_unavailable' },
+    })
+  })
+
   it('requires stable eval identity support from agent-hitch 0.2.5 or newer', async () => {
     const supported = await setup('0.2.5')
     const state = round(supported.fixture.root, supported.fixture.championRef, supported.fixture.manifest.digest)
@@ -275,8 +414,8 @@ describe('HitchCliEvaluator', () => {
     const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
     const input = request('seed', fixture.championRef)
     await evaluator.preflight()
-    const first = await evaluator.reserve(state, input)
-    const second = await evaluator.reserve(state, input)
+    const first = await evaluator.reserve(state, input, undefined, evaluator.prepareSubmission(state, input))
+    const second = await evaluator.reserve(state, input, undefined, evaluator.prepareSubmission(state, input))
     expect(second).toEqual(first)
     await expect(evaluator.evaluate(state, input, new AbortController().signal, first)).resolves.toMatchObject({
       provider: 'hitch-cli', evalId: first.evalId, completeness: 'complete',
@@ -300,7 +439,7 @@ describe('HitchCliEvaluator', () => {
     }, { controlPlane: { mode: 'daemon', provider: 'local-docker', requireModelCapture: false } })
     const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
     const input = request('seed', fixture.championRef)
-    const reservation = await evaluator.reserve(state, input)
+    const reservation = await evaluator.reserve(state, input, undefined, evaluator.prepareSubmission(state, input))
     await expect(evaluator.evaluate(state, input, new AbortController().signal, reservation)).rejects.toMatchObject({
       code: 'invalid_hitch_result', message: expect.stringMatching(/provider differs/u),
     })
@@ -313,7 +452,7 @@ describe('HitchCliEvaluator', () => {
     const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
     const input = request('seed', fixture.championRef)
     await expect(evaluator.evaluationIdentity(state, input)).resolves.toBeUndefined()
-    const reservation = await evaluator.reserve(state, input)
+    const reservation = await evaluator.reserve(state, input, undefined, evaluator.prepareSubmission(state, input))
     const baseline = await evaluator.evaluate(state, input, new AbortController().signal, reservation)
     const repeated = await evaluator.evaluate(state, input, new AbortController().signal, reservation)
     expect(repeated.effectiveConfigDigest).toBe(baseline.effectiveConfigDigest)
@@ -338,7 +477,7 @@ describe('HitchCliEvaluator', () => {
     }, { controlPlane: { mode: 'daemon', requireModelCapture: false } })
     const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
     const input = request('slow', fixture.championRef)
-    const reservation = await evaluator.reserve(state, input)
+    const reservation = await evaluator.reserve(state, input, undefined, evaluator.prepareSubmission(state, input))
     const controller = new AbortController()
     if (timing === 'before watching') controller.abort(new Error('test daemon abort'))
     const evaluation = evaluator.evaluate(state, input, controller.signal, reservation)
@@ -440,7 +579,7 @@ describe('HitchCliEvaluator', () => {
     const { fixture, evaluator } = await setup()
     const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
     const input = request('seed', fixture.championRef)
-    const reservation = await evaluator.reserve(state, input)
+    const reservation = await evaluator.reserve(state, input, undefined, evaluator.prepareSubmission(state, input))
     expect(reservation).toMatchObject({ provider: 'hitch-cli', evalId: expect.stringMatching(/^eval_[0-9a-f]{32}$/u) })
     await expect(evaluator.evaluate(state, input, new AbortController().signal, reservation)).resolves.toMatchObject({
       provider: reservation.provider,
@@ -551,7 +690,7 @@ describe('HitchCliEvaluator', () => {
     }, { controlPlane: { mode: 'daemon', requireModelCapture: false } })
     const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
     const input = request('seed', fixture.championRef)
-    const reservation = await evaluator.reserve(state, input)
+    const reservation = await evaluator.reserve(state, input, undefined, evaluator.prepareSubmission(state, input))
     const initial = await evaluator.evaluate(state, input, new AbortController().signal, reservation)
     await expect(evaluator.rerun(state, input, {
       provider: 'hitch-cli', evalId: reservation.evalId, phase: 'seed-baseline',
