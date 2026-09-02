@@ -32,7 +32,8 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
-      - run: npm test
+      - name: Test as the production service user
+        run: sudo env "PATH=$PATH" npm test
       - run: npm pack --dry-run
 
   sandbox-linux:
@@ -50,7 +51,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y bubblewrap ripgrep socat
       - run: npm ci
-      - run: npm run test:sandbox:platform
+      - name: Test as the production service user
+        run: sudo env "PATH=$PATH" npm run test:sandbox:platform
 
   sandbox-macos:
     name: Sandbox / macOS
