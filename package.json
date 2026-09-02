@@ -57,6 +57,7 @@
     "test:unit": "vitest run tests/unit",
     "test:composition": "vitest run tests/composition",
     "test:e2e": "vitest run tests/e2e",
+    "test:sandbox:platform": "vitest run tests/integration/sandbox-platform.spec.ts tests/unit/sandbox.spec.ts tests/unit/notebook-runtime.spec.ts tests/e2e/refine-skill.e2e.spec.ts",
     "pack:check": "npm run build && npm pack --dry-run",
     "prepack": "npm run build"
   },
