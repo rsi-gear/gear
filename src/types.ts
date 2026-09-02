@@ -155,6 +155,12 @@ export interface CandidateGenerationSpec {
 
 export interface RolloutSpec {
   provider: ComponentRef<unknown>
+  /**
+   * Digest of the provider implementation and result-affecting rollout settings.
+   * Machine paths, credentials, concurrency, and output/logging limits are excluded.
+   * Optional only for reading EvolutionSpecs created before this field existed.
+   */
+  providerSemanticDigest?: string
   taskSampler: ComponentRef<unknown>
   repetitions: number
   seeds?: number[]
@@ -302,12 +308,14 @@ export interface LocalSourceTransportSummary {
 export interface EvaluationEvidence {
   provider: string
   conditionId: string
+  /** Path- and credential-independent semantic rollout configuration identity. */
   effectiveConfigDigest: string
   evalId: string
   dataset: string
   requestedCommit: HarnessRef
   actualCommit: HarnessRef
   revisionIdentity: string
+  /** Diagnostic execution fingerprint; differences do not make evidence semantically incomparable. */
   invocationFingerprint?: string
   completeness: 'complete' | 'partial'
   plannedTrialCount: number
@@ -413,7 +421,7 @@ export interface RoundEvaluationAttempt {
   startedAt: string
   completedAt?: string
   failure?: { code: string; message: string }
-  /** A settled seed baseline imported from an earlier round instead of rerun. */
+  /** A settled baseline imported from an earlier round instead of rerun. */
   reusedFromRoundId?: string
 }
 
@@ -549,7 +557,22 @@ export interface CandidateGenerationAttempt {
   completedAt?: string
   workspaceId?: string
   metaSessionId?: string
+  metaTurn?: MetaTurnObservation
   failure?: { phase: string; message: string }
+}
+
+export interface MetaTurnObservation {
+  reason: string
+  turn?: number
+  durationMs?: number
+  effectiveMaxTokens?: number
+  usage?: {
+    inputTokens: number
+    outputTokens: number
+    cacheReadTokens?: number
+    cacheWriteTokens?: number
+    reasoningTokens?: number
+  }
 }
 
 export interface CandidateRecord {
@@ -753,6 +776,12 @@ export interface PublicRoundStatus {
   seedBaseline?: PublicSeedEvidence
   seedCandidate?: PublicSeedEvidence
   failure?: string
+  candidateGeneration?: Array<{
+    candidateId: string
+    status: CandidateRecord['status']
+    attempts: Array<Pick<CandidateGenerationAttempt,
+      'attempt' | 'status' | 'startedAt' | 'completedAt' | 'metaSessionId' | 'metaTurn' | 'failure'>>
+  }>
   repairableEvaluations?: Array<{
     provider: string
     evalId: string
@@ -790,6 +819,21 @@ export interface PromotionPolicy {
 
 export interface RefineEvaluator {
   preflight?(): Promise<void>
+
+  /** Resolve the semantic provider/runtime identity for reuse, or return undefined when it cannot be known yet. */
+  evaluationIdentity?(
+    round: Readonly<RefinementRound>,
+    request: Readonly<EvaluationRequest>,
+    signal?: AbortSignal,
+  ): {
+    provider: string
+    effectiveConfigDigest: string
+    invocationFingerprint?: string
+  } | undefined | Promise<{
+    provider: string
+    effectiveConfigDigest: string
+    invocationFingerprint?: string
+  } | undefined>
 
   reserve?(
     round: Readonly<RefinementRound>,

@@ -114,7 +114,7 @@ interface LockedLocalGitResolution {
 container不能根据临时路径重新调用public resolution并产生另一个identity。尤其不能把host ref：
 
 ```text
-deepseek@git+file:///Users/.../repo#abc...
+deepseek@git+file:///path/to/repo#abc...
 ```
 
 简单改写成：

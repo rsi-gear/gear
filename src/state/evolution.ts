@@ -98,6 +98,10 @@ function validateSpec(value: EvolutionSpec): EvolutionSpec {
     || value.rollout.seeds.some(seed => !Number.isSafeInteger(seed)))) {
     throw new TypeError('evolution rollout seeds are invalid')
   }
+  if (value.rollout.providerSemanticDigest !== undefined
+    && !/^sha256:[0-9a-f]{64}$/u.test(value.rollout.providerSemanticDigest)) {
+    throw new TypeError('evolution rollout provider semantic digest is invalid')
+  }
   const rolloutTemperature = value.rollout.sampling.temperature
   if (rolloutTemperature !== undefined
     && (!Number.isFinite(rolloutTemperature) || rolloutTemperature < 0 || rolloutTemperature > 2)) {

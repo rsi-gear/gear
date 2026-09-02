@@ -55,6 +55,7 @@ export interface Config {
   pythonExecutable?: string
   metaSandbox: {
     mode: 'required' | 'disabled'
+    linuxIsolation: 'seccomp' | 'bubblewrap-only'
   }
   seedTasksPath?: string
   allowedImports: string[]
@@ -144,7 +145,8 @@ export const ConfigSchema: Schema<Config> = Schema.object({
   pythonExecutable: Schema.string().default('python3'),
   metaSandbox: Schema.object({
     mode: Schema.union(['required', 'disabled'] as const).default('required'),
-  }).default({ mode: 'required' }),
+    linuxIsolation: Schema.union(['seccomp', 'bubblewrap-only'] as const).default('seccomp'),
+  }).default({ mode: 'required', linuxIsolation: 'seccomp' }),
   seedTasksPath: Schema.string(),
   allowedImports: Schema.array(Schema.string()).default(['@deepseek-ai/', 'node:']),
   initialChampion: Schema.object({

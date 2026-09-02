@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { createServer, type Server } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
 import { SessionAwareNotebookRuntime } from '../../src/notebook/runtime.js'
 import { SandboxManager } from '@anthropic-ai/sandbox-runtime'
@@ -88,7 +89,28 @@ describe('SessionAwareNotebookRuntime', () => {
     const root = await mkdtemp(join(tmpdir(), 'refine-notebook-sandbox-'))
     roots.push(root)
     const secret = join(root, 'control-plane-secret.txt')
+    const hostSocket = join(root, 'control-plane.sock')
     await writeFile(secret, 'held-out-control-data')
+    const server: Server = createServer()
+    await new Promise<void>((resolvePromise, reject) => {
+      server.once('error', reject)
+      server.listen(hostSocket, resolvePromise)
+    })
+    const tcpServer: Server = createServer()
+    await new Promise<void>((resolvePromise, reject) => {
+      tcpServer.once('error', reject)
+      tcpServer.listen(0, '127.0.0.1', resolvePromise)
+    })
+    const tcpAddress = tcpServer.address()
+    if (tcpAddress === null || typeof tcpAddress === 'string') throw new Error('test TCP server has no port')
+    const abstractSocket = `\0gear-control-${process.pid}-${Date.now()}`
+    const abstractServer = process.platform === 'linux' ? createServer() : undefined
+    if (abstractServer !== undefined) {
+      await new Promise<void>((resolvePromise, reject) => {
+        abstractServer.once('error', reject)
+        abstractServer.listen(abstractSocket, resolvePromise)
+      })
+    }
     const previous = process.env.REFINE_NOTEBOOK_TEST_SECRET
     process.env.REFINE_NOTEBOOK_TEST_SECRET = 'must-not-cross'
     const runtime = new SessionAwareNotebookRuntime({
@@ -96,6 +118,7 @@ describe('SessionAwareNotebookRuntime', () => {
       sandbox: {
         roles: ['refine-meta'],
         mode: 'required',
+        linuxIsolation: process.platform === 'linux' ? 'bubblewrap-only' : 'seccomp',
         scratchRoot: join(root, 'scratch'),
       },
     })
@@ -116,7 +139,7 @@ describe('SessionAwareNotebookRuntime', () => {
       await expect(runtime.execute({
         sessionId: 'meta-sandbox', cwd: root, role: 'refine-meta',
         code: `open(${JSON.stringify(secret)}).read()`,
-      })).rejects.toThrow(/Operation not permitted|Permission denied/iu)
+      })).rejects.toThrow(/Operation not permitted|Permission denied|No such file or directory/iu)
       const childRead = await runtime.execute({
         sessionId: 'meta-sandbox', cwd: root, role: 'refine-meta',
         code: `__import__('subprocess').run(['/bin/cat', ${JSON.stringify(secret)}], capture_output=True).returncode`,
@@ -124,8 +147,23 @@ describe('SessionAwareNotebookRuntime', () => {
       expect(childRead.result).not.toBe('0')
       await expect(runtime.execute({
         sessionId: 'meta-sandbox', cwd: root, role: 'refine-meta',
-        code: "__import__('socket').socket().bind(('127.0.0.1', 0))",
-      })).rejects.toThrow(/Operation not permitted|Permission denied/iu)
+        code: `__import__('socket').create_connection(('127.0.0.1', ${tcpAddress.port}), timeout=0.1)`,
+      })).rejects.toThrow(/Operation not permitted|Permission denied|Network is unreachable|Connection refused|timed out/iu)
+      const hostSocketVisible = await runtime.execute({
+        sessionId: 'meta-sandbox', cwd: root, role: 'refine-meta',
+        code: `__import__('os').path.exists(${JSON.stringify(hostSocket)})`,
+      })
+      expect(hostSocketVisible.result).toBe('False')
+      await expect(runtime.execute({
+        sessionId: 'meta-sandbox', cwd: root, role: 'refine-meta',
+        code: `__import__('socket').socket(__import__('socket').AF_UNIX).connect(${JSON.stringify(hostSocket)})`,
+      })).rejects.toThrow(/Operation not permitted|Permission denied|No such file or directory/iu)
+      if (abstractServer !== undefined) {
+        await expect(runtime.execute({
+          sessionId: 'meta-sandbox', cwd: root, role: 'refine-meta',
+          code: `__import__('socket').socket(__import__('socket').AF_UNIX).connect(${JSON.stringify(abstractSocket)})`,
+        })).rejects.toThrow(/Operation not permitted|Permission denied|Connection refused|No such file or directory/iu)
+      }
       try {
         const hostProcess = await runtime.execute({
           sessionId: 'meta-sandbox', cwd: root, role: 'refine-meta',
@@ -136,6 +174,9 @@ describe('SessionAwareNotebookRuntime', () => {
         expect(String(error)).toMatch(/Operation not permitted|Permission denied/iu)
       }
     } finally {
+      if (abstractServer !== undefined) await new Promise<void>(resolvePromise => abstractServer.close(() => resolvePromise()))
+      await new Promise<void>(resolvePromise => tcpServer.close(() => resolvePromise()))
+      await new Promise<void>(resolvePromise => server.close(() => resolvePromise()))
       if (previous === undefined) delete process.env.REFINE_NOTEBOOK_TEST_SECRET
       else process.env.REFINE_NOTEBOOK_TEST_SECRET = previous
     }

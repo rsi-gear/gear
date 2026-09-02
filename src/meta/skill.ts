@@ -247,7 +247,7 @@ export class SkillMetaSessionManager implements MetaSessionController {
 
   async wake(round: Readonly<RefinementRound>): Promise<string> {
     const candidate = round.candidatePool.find(value => value.status === 'generating')
-    return this.wakeCandidate(round, candidate, round.baseline, await this.agent())
+    return (await this.wakeCandidate(round, candidate, round.baseline, await this.agent())).sessionId
   }
 
   async wakeCandidate(
@@ -255,7 +255,7 @@ export class SkillMetaSessionManager implements MetaSessionController {
     candidate: Readonly<CandidateRecord> | undefined,
     baseline: EvaluationEvidence | undefined,
     session: MetaAgentSession,
-  ): Promise<string> {
+  ): Promise<import('./controller.js').MetaWakeHandle> {
     if (round.evolutionId !== this.options.evolutionId) throw new Error('Meta skill session received a foreign evolution')
     if (candidate?.workspaceId === undefined || baseline === undefined) throw new Error('Meta skill assignment is incomplete')
     const allocation = round.parentAllocations?.find(value => value.candidateId === candidate.candidateId)
@@ -315,7 +315,7 @@ export class SkillMetaSessionManager implements MetaSessionController {
       state.summaryAccessed = true
       for (const ref of refs) state.accessedRefs.add(ref)
     })
-    return session.id
+    return { sessionId: session.id }
   }
 
   activeRoundId(sessionId: string): string | undefined {

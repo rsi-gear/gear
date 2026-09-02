@@ -40,6 +40,13 @@
 
 `metaSandbox.mode: required` 是推荐且默认的生产模式。`disabled` 只适合可信本地诊断；关闭 sandbox 后不能再声称 held-out 隔离或 typed-API-only 安全边界成立。
 
+Linux 还必须明确 Unix socket 隔离实现：
+
+- `metaSandbox.linuxIsolation: seccomp` 是默认值。Gear 会把 `apply-seccomp` 的精确可执行路径显式绑定进 Bubblewrap，并在插件启动时运行真实子进程 preflight；二进制不可见、不可执行或被系统安全策略拦截都会在接收 `/refine` 前失败。
+- `metaSandbox.linuxIsolation: bubblewrap-only` 是 Ubuntu/AppArmor 兼容模式。它只跳过创建 AF_UNIX socket 的 seccomp 过滤，仍保留 Bubblewrap 的文件系统、PID 和断网 namespace。启用前必须确认所有宿主控制面 socket 都位于 sandbox `allowRead` 之外；Gear 的 Linux 回归会验证宿主 socket 不可见且不可连接。
+
+不要通过关闭 AppArmor、给 `bwrap` 设置 setuid 或授予全局 `CAP_SYS_ADMIN` 来绕过启动错误。若发行版策略禁止 `apply-seccomp` 创建嵌套 user namespace，优先使用上述显式兼容模式，并保留 `metaSandbox.mode: required`。
+
 ### 2.3 npm 依赖如何提供
 
 插件自己的普通 npm 依赖会随安装自动解析，包括 DSH filesystem/search/bash 适配包、`@anthropic-ai/sandbox-runtime`、`js-yaml` 和 `diff`，不需要逐个手工安装。
@@ -203,7 +210,6 @@ order: 50
     metaModel:
       provider: deepseek-official
       model: deepseek-v4-flash
-      maxTokens: 8192
     metaSampling:
       temperature: 0.8
 
@@ -217,6 +223,10 @@ order: 50
     pythonExecutable: /srv/dsh/refine-python/bin/python
     metaSandbox:
       mode: required
+      # Ubuntu/AppArmor 会禁止 apply-seccomp 的嵌套 CAP_SYS_ADMIN 时使用。
+      # 仍保留 bubblewrap 的文件、PID 与断网 namespace；宿主 Unix socket
+      # 必须同时位于不可见的宿主路径。其他 Linux 环境保持 seccomp。
+      linuxIsolation: seccomp
 
     initialChampion:
       schemaVersion: 2
@@ -286,6 +296,10 @@ order: 50
       maxLiveMetaSessions: 8
 ```
 
+新部署不要在 Gear 中设置 `metaModel.maxTokens`。省略该字段可避免 Gear
+人为收紧单次 Meta 回合的输出上限；模型服务或 DSH adapter 自身仍可能施加其
+支持的上限。旧 evolution 若已经封存了该字段，恢复时仍按原 identity 校验。
+
 ### 6.1 关键配置说明
 
 | 字段 | 含义 |
@@ -294,7 +308,7 @@ order: 50
 | `dshRepository` | 完整 target DSH Git 仓库 |
 | `stateRoot` | evolution registry、round、Meta session ownership 和 candidate worktree sidecar 的持久化根目录 |
 | `metaPreset` | 固定 Meta Agent preset id |
-| `metaModel` | Meta Agent 使用的 DSH provider、model 和输出预算 |
+| `metaModel` | Meta Agent 使用的 DSH provider 和 model；新配置不设置 `maxTokens` |
 | `metaSampling.temperature` | 进入真实 DSH `agent/request` 的 Meta temperature；有效值会从 request header 归因 |
 | `candidateGeneration.maxCandidates` | 每轮从相同 Meta checkpoint 生成的独立候选数 |
 | `candidateGeneration.attemptTimeoutMs` | 单次 Meta 候选生成尝试的超时；默认 900000ms |
@@ -318,7 +332,7 @@ order: 50
 | `hitch.controlPlane.provider` | 可选的 daemon execution provider；配置后 Gear 会校验 Hitch 冻结的 provider 完全一致 |
 | `hitch.controlPlane.cpuPerTrial` / `memoryPerTrial` | 可选的每个 trial 资源请求；CPU 是正整数核数，内存使用 `MiB`/`GiB` 等 Hitch 单位 |
 | `hitch.controlPlane.buildMode` | 可选的 `backend`、`prebuild-preferred` 或 `prebuild-required` |
-| `hitch.controlPlane.modelCapture` / `requireModelCapture` | 可选的模型交互采集策略；实际冻结策略会进入 baseline/candidate parity fingerprint |
+| `hitch.controlPlane.modelCapture` / `requireModelCapture` | 可选的模型交互采集策略；实际冻结策略会进入 baseline/candidate 语义配置身份 |
 | `promotion` | seed/held-out gate 和 required-task 回归策略 |
 | `publishedPointer` | 是否维护 workspace 级显式 published pointer |
 

@@ -99,10 +99,12 @@ Gear：
 4. 从 stdout读取单个 JSON result，stderr只作 bounded diagnostic；
 5. direct 模式转发 abort 为 SIGTERM，超时后按固定 grace period升级终止；daemon 模式同时发送持久化 cancellation；
 6. 校验 CLI exit code、`status`、`eval_id`、resolved commit、trial counts和 `summary.primary_reward`；
-7. daemon 模式从 inspection 校验 submission request、幂等键 hash 和冻结 execution policy，并把实际 policy 纳入 baseline/candidate parity fingerprint；
+7. daemon 模式从 inspection 校验 submission request、幂等键 hash 和冻结 execution policy，并把实际 policy 纳入 baseline/candidate 的语义配置身份 `effectiveConfigDigest`；
 8. round record只保存 Hitch返回的eval/ref和Gear自己的decision，不修改 Hitch records。
 
 不要求 Hitch Node exports 或 Gear 专用 plugin ABI。direct 与 daemon 都经过同一个 CLI JSON 合同；direct 要求 agent-hitch 0.2.5+，daemon 要求 0.2.6+。
+
+direct 模式可按语义配置身份复用跨轮次 baseline。daemon 的默认执行策略在提交后才冻结，当前不预先声明可复用身份，因此每轮重新评测 baseline，避免复用不同执行策略下的结果。
 
 ## 4. Baseline、candidate与held-out
 

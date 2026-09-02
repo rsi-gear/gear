@@ -507,6 +507,19 @@ export class RefineStateStore {
           const hasValidFailure = attempt.failure !== undefined
             && typeof attempt.failure.phase === 'string' && attempt.failure.phase.length > 0
             && typeof attempt.failure.message === 'string' && attempt.failure.message.length > 0
+          const turnUsage = attempt.metaTurn?.usage
+          const hasValidMetaTurn = attempt.metaTurn === undefined || (
+            typeof attempt.metaTurn.reason === 'string' && attempt.metaTurn.reason.length > 0
+            && (attempt.metaTurn.turn === undefined || Number.isSafeInteger(attempt.metaTurn.turn))
+            && (attempt.metaTurn.durationMs === undefined
+              || Number.isSafeInteger(attempt.metaTurn.durationMs) && attempt.metaTurn.durationMs >= 0)
+            && (attempt.metaTurn.effectiveMaxTokens === undefined
+              || Number.isSafeInteger(attempt.metaTurn.effectiveMaxTokens) && attempt.metaTurn.effectiveMaxTokens > 0)
+            && (turnUsage === undefined || [
+              turnUsage.inputTokens, turnUsage.outputTokens, turnUsage.cacheReadTokens,
+              turnUsage.cacheWriteTokens, turnUsage.reasoningTokens,
+            ].every(value => value === undefined || Number.isSafeInteger(value) && value >= 0))
+          )
           if (attempt.attempt !== index + 1
             || typeof attempt.startedAt !== 'string' || attempt.startedAt.length === 0
             || attempt.workspaceId !== undefined && (typeof attempt.workspaceId !== 'string' || attempt.workspaceId.length === 0)
@@ -514,6 +527,7 @@ export class RefineStateStore {
             || attempt.status === 'running' && (attempt.completedAt !== undefined || attempt.failure !== undefined)
             || attempt.status === 'succeeded' && (typeof attempt.completedAt !== 'string' || attempt.completedAt.length === 0 || attempt.failure !== undefined)
             || attempt.status === 'failed' && (typeof attempt.completedAt !== 'string' || attempt.completedAt.length === 0 || !hasValidFailure)
+            || !hasValidMetaTurn
             || !['running', 'succeeded', 'failed'].includes(attempt.status)) {
             throw new TypeError('round candidate generation attempt is invalid')
           }
@@ -839,10 +853,7 @@ export class RefineStateStore {
         || round.evaluation.seedBaseline.conditionId !== round.plan.seed.conditionId
         || round.evaluation.seedCandidate.conditionId !== round.plan.seed.conditionId
         || round.evaluation.seedBaseline.provider !== round.evaluation.seedCandidate.provider
-        || round.evaluation.seedBaseline.effectiveConfigDigest !== round.evaluation.seedCandidate.effectiveConfigDigest
-        || ((round.evaluation.seedBaseline.invocationFingerprint !== undefined
-            || round.evaluation.seedCandidate.invocationFingerprint !== undefined)
-          && round.evaluation.seedBaseline.invocationFingerprint !== round.evaluation.seedCandidate.invocationFingerprint)) {
+        || round.evaluation.seedBaseline.effectiveConfigDigest !== round.evaluation.seedCandidate.effectiveConfigDigest) {
         throw new TypeError('round seed evaluation does not match its pinned commits/partition/parity')
       }
       const heldOutBaseline = round.evaluation.heldOutBaseline
@@ -861,9 +872,7 @@ export class RefineStateStore {
           || heldOutCandidate.dataset !== round.heldOutRef
           || heldOutCandidate.conditionId !== round.plan.heldOut.conditionId
           || heldOutBaseline.provider !== heldOutCandidate.provider
-          || heldOutBaseline.effectiveConfigDigest !== heldOutCandidate.effectiveConfigDigest
-          || ((heldOutBaseline.invocationFingerprint !== undefined || heldOutCandidate.invocationFingerprint !== undefined)
-            && heldOutBaseline.invocationFingerprint !== heldOutCandidate.invocationFingerprint))) {
+          || heldOutBaseline.effectiveConfigDigest !== heldOutCandidate.effectiveConfigDigest)) {
         throw new TypeError('round held-out evaluation does not match its pinned commits/partition/parity')
       }
     }
@@ -909,7 +918,7 @@ export class RefineStateStore {
       || ((attempt.status === 'settled' || attempt.status === 'repair-completed') && attempt.failure !== undefined)
       || (attempt.reusedFromRoundId !== undefined
         && (typeof attempt.reusedFromRoundId !== 'string' || attempt.reusedFromRoundId.length === 0
-          || attempt.reusedFromRoundId === round.roundId || attempt.phase !== 'seed-baseline'
+          || attempt.reusedFromRoundId === round.roundId || !attempt.phase.endsWith('baseline')
           || attempt.status !== 'settled'))) {
       throw new TypeError('round evaluation attempt terminal state is invalid')
     }
@@ -1135,7 +1144,6 @@ export class RefineStateStore {
       || baseline.conditionId !== candidate.conditionId
       || baseline.provider !== candidate.provider
       || baseline.effectiveConfigDigest !== candidate.effectiveConfigDigest
-      || baseline.invocationFingerprint !== candidate.invocationFingerprint
       || baseline.dataset !== candidate.dataset
       || JSON.stringify(baselinePlanned) !== JSON.stringify(candidatePlanned)
       || digestJson(pairs) !== digestJson(expectedPairs)) {

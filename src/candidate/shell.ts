@@ -1,22 +1,20 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { ShellExecutor, type ShellExecRequest, type ShellExecSpec, type ShellProcess, type ShellRunResult } from '@deepseek-ai/dsh-shell'
-import { SandboxManager, type SandboxRuntimeConfig } from '@anthropic-ai/sandbox-runtime'
+import { SandboxManager } from '@anthropic-ai/sandbox-runtime'
 import { spawn } from 'node:child_process'
 import { mkdir } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { CandidateWorkspaceManager } from './workspace.js'
+import {
+  assertAirGappedSandboxActive, createAirGappedSandboxConfig, sandboxSystemReadPaths,
+  type LinuxSandboxIsolation,
+} from '../sandbox.js'
 
 const SAFE_ENV = ['LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'TERM'] as const
 
 function contained(path: string, root: string): boolean {
   const offset = relative(root, path)
   return offset === '' || (offset !== '..' && !offset.startsWith(`..${sep}`) && !isAbsolute(offset))
-}
-
-function systemPaths(): string[] {
-  return process.platform === 'darwin'
-    ? ['/System', '/usr', '/bin', '/sbin', '/Library', '/private/etc', '/dev']
-    : ['/usr', '/bin', '/sbin', '/lib', '/lib64', '/etc', '/dev']
 }
 
 function environment(scratch: string): NodeJS.ProcessEnv {
@@ -50,6 +48,7 @@ export class CandidateShellExecutor extends ShellExecutor {
     private readonly metaSessionId: string,
     private readonly timeoutCapMs: number,
     private readonly outputCapBytes: number,
+    private readonly linuxIsolation: LinuxSandboxIsolation = 'seccomp',
   ) { super(ctx) }
 
   override get sandboxMode(): 'workspace-write' { return 'workspace-write' }
@@ -76,19 +75,23 @@ export class CandidateShellExecutor extends ShellExecutor {
       }
       const scratch = join(dirname(handle.worktreePath), 'command-scratch')
       await Promise.all(['home', 'tmp', 'cache', 'config'].map(path => mkdir(join(scratch, path), { recursive: true, mode: 0o700 })))
-      const config: SandboxRuntimeConfig = {
-        network: { allowedDomains: [], deniedDomains: ['*'], allowUnixSockets: [], allowLocalBinding: false },
-        filesystem: {
-          denyRead: ['/'], allowRead: [...systemPaths(), handle.worktreePath, scratch],
-          allowWrite: [handle.targetPath, scratch], denyWrite: [], allowGitConfig: false,
-        },
-        allowAppleEvents: false,
-      }
-      const wrapped = await SandboxManager.wrapWithSandboxArgv(spec.command, '/bin/bash', config)
-      const child = spawn(wrapped.argv[0]!, wrapped.argv.slice(1), {
-        cwd: spec.workdir, env: environment(scratch), detached: process.platform !== 'win32', shell: false,
-        stdio: ['ignore', 'pipe', 'pipe'],
+      const config = await createAirGappedSandboxConfig({
+        linuxIsolation: this.linuxIsolation,
+        allowRead: [...sandboxSystemReadPaths(), handle.worktreePath, scratch],
+        allowWrite: [handle.targetPath, scratch],
       })
+      assertAirGappedSandboxActive(config)
+      const wrapped = await SandboxManager.wrapWithSandboxArgv(spec.command, '/bin/bash', config)
+      let child
+      try {
+        child = spawn(wrapped.argv[0]!, wrapped.argv.slice(1), {
+          cwd: spec.workdir, env: environment(scratch), detached: process.platform !== 'win32', shell: false,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        })
+      } catch (error) {
+        SandboxManager.cleanupAfterCommand()
+        throw error
+      }
       const stdout: Buffer[] = []
       const stderr: Buffer[] = []
       let stdoutTruncated = false
@@ -121,6 +124,7 @@ export class CandidateShellExecutor extends ShellExecutor {
           sandbox: { mode: 'workspace-write', denied, enforcement: 'full' },
         }
       } finally {
+        SandboxManager.cleanupAfterCommand()
         clearTimeout(timeout)
         if (killTimer !== undefined) clearTimeout(killTimer)
         spec.signal?.removeEventListener('abort', onAbort)

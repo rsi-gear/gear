@@ -1,4 +1,4 @@
-import { builtinComponentRef } from '../../src/evolution/components.js'
+import { builtinComponentRef, rolloutProviderSemanticDigest } from '../../src/evolution/components.js'
 import { digestJson } from '../../src/state/evolution.js'
 import type {
   DshMetaAgentSpec,
@@ -118,6 +118,8 @@ export function evidence(
 
 export function evolutionSpec(evolutionId = 'evo-1'): EvolutionSpec {
   const promotion = { ...DEFAULT_PROMOTION }
+  const rolloutProvider = builtinComponentRef('rollout-provider', 'hitch-cli', {})
+  const rolloutAgentConfig = {}
   return {
     evolutionId,
     createdAt: 'now',
@@ -130,12 +132,13 @@ export function evolutionSpec(evolutionId = 'evo-1'): EvolutionSpec {
       budget: { attemptTimeoutMs: 60_000, maxAttemptsPerCandidate: 2, roundTimeoutMs: 120_000 },
     },
     rollout: {
-      provider: builtinComponentRef('rollout-provider', 'hitch-cli', {}),
+      provider: rolloutProvider,
+      providerSemanticDigest: rolloutProviderSemanticDigest(rolloutProvider, { harnessId: 'test' }, rolloutAgentConfig),
       taskSampler: builtinComponentRef('task-sampler', 'dataset', {}),
       repetitions: 1,
       model: 'deepseek-chat',
       sampling: {},
-      agentConfig: {},
+      agentConfig: rolloutAgentConfig,
     },
     evaluation: { judges: [builtinComponentRef('judge', 'task-reward', {})], primaryMetric: 'primaryReward' },
     selection: {

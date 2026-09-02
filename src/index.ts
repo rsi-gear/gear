@@ -17,9 +17,15 @@ import { isolateCandidateProviderContext } from './candidate/context.js'
 import { SessionAwareNotebookRuntime } from './notebook/runtime.js'
 import { mountMetaCapabilityTools, mountNotebookTool } from './notebook/tool.js'
 import { DshMetaAgentHost, MetaSessionManager } from './meta/session.js'
+import { compatibleSkillMetaAgent } from './meta/controller.js'
 import { assertMetaPresetIsolation, resolveDshPresetRef, resolveDshRuntimeIdentity } from './meta/isolation.js'
 import { RefineService } from './refine/service.js'
-import { builtinComponentRef, componentRef, ComponentRegistry } from './evolution/components.js'
+import {
+  builtinComponentRef,
+  componentRef,
+  ComponentRegistry,
+  rolloutProviderSemanticDigest,
+} from './evolution/components.js'
 import {
   LlmVerifierCandidateAssessor,
   llmVerifierImplementation,
@@ -294,14 +300,21 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       roundTimeoutMs: candidateRoundTimeoutMs,
     },
   }
+  const rolloutProvider = builtinComponentRef('rollout-provider', 'hitch-cli', structuredClone(config.hitch))
+  const rolloutAgentConfig = { agentArgs: [...config.hitch.agentArgs] }
   const rollout = {
-    provider: builtinComponentRef('rollout-provider', 'hitch-cli', structuredClone(config.hitch)),
+    provider: rolloutProvider,
+    providerSemanticDigest: rolloutProviderSemanticDigest(
+      rolloutProvider,
+      { harnessId: config.hitch.harnessId },
+      rolloutAgentConfig,
+    ),
     taskSampler: builtinComponentRef('task-sampler', 'dataset', {}),
     repetitions: config.hitch.attempts,
     ...(config.hitch.seeds === undefined || config.hitch.seeds.length === 0 ? {} : { seeds: [...config.hitch.seeds] }),
     model: config.hitch.model,
     sampling: { ...config.hitch.sampling },
-    agentConfig: { agentArgs: [...config.hitch.agentArgs] },
+    agentConfig: rolloutAgentConfig,
   }
   components.registerRolloutProvider('hitch-cli', rollout.provider.implementation, ref => ({
     ref,
@@ -346,7 +359,8 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     policy: builtinComponentRef('promotion-policy', 'paired-gate', structuredClone(config.promotion)),
   }
   const compiler = new SubprocessHarnessCompiler({
-    ...config.compiler, sandboxMode: config.metaSandbox.mode, targetRoot: config.targetRoot,
+    ...config.compiler, sandboxMode: config.metaSandbox.mode,
+    linuxIsolation: config.metaSandbox.linuxIsolation, targetRoot: config.targetRoot,
   })
   const builder = new HarnessBuilder({
     repositoryPath: config.dshRepository,
@@ -365,6 +379,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     sandbox: {
       roles: ['refine-meta'],
       mode: config.metaSandbox.mode,
+      linuxIsolation: config.metaSandbox.linuxIsolation,
       scratchRoot: join(stateRoot, 'meta-notebooks'),
       protectedPaths: [
         stateRoot,
@@ -400,6 +415,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       new CandidateShellExecutor(
         candidateCtx, workspaceManager, sessionId,
         config.candidateWorkspace.shellTimeoutMs, config.candidateWorkspace.shellOutputBytes,
+        config.metaSandbox.linuxIsolation,
       )
       await candidateCtx.plugin(ToolBash, { enableRunInBackground: false })
     }
@@ -433,7 +449,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
         || spec.metaAgent.runtime.integrity !== currentRuntime.integrity) {
         throw new Error('DSH Meta runtime identity changed; evolution cannot continue')
       }
-    } else if (JSON.stringify(spec.metaAgent) !== JSON.stringify(metaAgent)) {
+    } else if (!compatibleSkillMetaAgent(spec.metaAgent, metaAgent)) {
       throw new Error('skill Meta harness identity changed; evolution cannot continue')
     }
     if (spec.selection.assessor.id === 'llm-verifier') {
@@ -510,30 +526,43 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     : undefined
   const targetWorkers = new TargetWorkerRegistry(service, builder)
 
-  await registry.initialize()
-  await builder.initialize()
-  if (config.candidateWorkspace.shellEnabled && config.metaSandbox.mode !== 'required') {
-    throw new Error('candidateWorkspace.shellEnabled requires the air-gapped Meta sandbox')
-  }
-  await notebook.initialize()
-  if (config.initialChampion !== undefined) {
-    const manifest = await builder.readManifest(config.initialChampion.ref)
-    if (manifest.digest !== config.initialChampion.manifestDigest) {
-      throw new Error('initial champion manifestDigest does not match its exact Git commit')
+  const disposeRuntime = async (): Promise<void> => {
+    const failures: unknown[] = []
+    for (const dispose of [
+      async () => skillServer?.dispose(),
+      async () => targetWorkers.dispose(),
+      async () => service.dispose(),
+      async () => notebook.dispose(),
+    ]) {
+      try { await dispose() } catch (error) { failures.push(error) }
     }
+    if (failures.length > 0) throw new AggregateError(failures, 'failed to dispose refine runtime')
   }
-  await service.initialize()
-  await skillServer?.start()
+
+  try {
+    await registry.initialize()
+    await builder.initialize()
+    if (config.candidateWorkspace.shellEnabled && config.metaSandbox.mode !== 'required') {
+      throw new Error('candidateWorkspace.shellEnabled requires the air-gapped Meta sandbox')
+    }
+    await notebook.initialize()
+    if (config.initialChampion !== undefined) {
+      const manifest = await builder.readManifest(config.initialChampion.ref)
+      if (manifest.digest !== config.initialChampion.manifestDigest) {
+        throw new Error('initial champion manifestDigest does not match its exact Git commit')
+      }
+    }
+    await service.initialize()
+    await skillServer?.start()
+  } catch (error) {
+    await disposeRuntime().catch(() => {})
+    throw error
+  }
   ctx.provide('notebookRuntime', notebook)
   ctx.provide('refine', service)
   ctx.provide('targetWorkers', targetWorkers)
   ctx.provide('evolutionComponents', components)
-  ctx.effect(() => async () => {
-    await skillServer?.dispose()
-    await targetWorkers.dispose()
-    await service.dispose()
-    await notebook.dispose()
-  }, 'refine.dispose()')
+  ctx.effect(() => disposeRuntime, 'refine.dispose()')
   ctx.commands.register({
     name: 'refine',
     description: 'Queue a target harness refinement round.',

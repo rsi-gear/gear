@@ -153,8 +153,7 @@ running:
     },
     "model": {
       "provider": "exact provider",
-      "model": "exact model",
-      "maxTokens": 32768
+      "model": "exact model"
     },
     "sampling": {
       "temperature": 0
@@ -163,7 +162,9 @@ running:
 }
 ```
 
-Omit optional `maxTokens` and `temperature` only when they are also absent from
+New Gear configurations omit `maxTokens` so Gear does not impose an additional
+per-turn output cap. A legacy evolution that sealed `maxTokens` must still send
+that exact value. Omit optional `temperature` only when it is also absent from
 the sealed Gear configuration. When no sampling fields are configured, still
 send `"sampling": {}`. Identity equality is exact. Do not guess values or
 silently substitute another runtime/model.

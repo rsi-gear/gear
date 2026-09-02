@@ -2,14 +2,38 @@ import type {
   CandidateRecord,
   EvaluationEvidence,
   MetaAttribution,
+  MetaAgentSpec,
   MetaCheckpointRef,
+  MetaTurnObservation,
   ProposalEvidenceAudit,
   RefinementRound,
 } from '../types.js'
+import { digestJson } from '../state/digest.js'
 
 /** Opaque session identity owned by a Meta harness adapter. */
 export interface MetaAgentSession {
   id: string
+}
+
+export interface MetaWakeHandle {
+  sessionId: string
+  /**
+   * Present when the adapter can observe the owned Meta turn reaching idle.
+   * Skill-driven adapters omit it because completion happens out of process.
+   */
+  completion?: Promise<MetaTurnObservation>
+}
+
+/**
+ * New skill profiles omit maxTokens, but a resumed evolution must keep using
+ * the value sealed in its immutable spec. Every other identity field remains
+ * exact, and an explicitly configured current maxTokens must still match.
+ */
+export function compatibleSkillMetaAgent(sealed: MetaAgentSpec, current: MetaAgentSpec): boolean {
+  const compatibleCurrent = current.model.maxTokens === undefined && sealed.model.maxTokens !== undefined
+    ? { ...current, model: { ...current.model, maxTokens: sealed.model.maxTokens } }
+    : current
+  return digestJson(sealed) === digestJson(compatibleCurrent)
 }
 
 /**
@@ -32,7 +56,7 @@ export interface MetaSessionController {
     candidate: Readonly<CandidateRecord> | undefined,
     baseline: EvaluationEvidence | undefined,
     session: MetaAgentSession,
-  ): Promise<string>
+  ): Promise<MetaWakeHandle>
   activeRoundId(sessionId: string): string | undefined
   recordEvidenceAccess(
     roundId: string,
