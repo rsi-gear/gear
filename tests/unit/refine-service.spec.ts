@@ -1,6 +1,6 @@
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CandidateWorkspaceManager } from '../../src/candidate/workspace.js'
 import { HitchEvaluationError } from '../../src/evaluator/hitch-cli.js'
 import type { EvaluationSubmissionIntent } from '../../src/types.js'
@@ -1818,41 +1818,59 @@ describe('RefineService evolution workspaces', () => {
   })
 
   it('retries a timed-out candidate in the same round with a fresh workspace', async () => {
-    const { service, evaluator, metas } = await setup(0.8, false, 1, 500, 1, 0, 2, 5_000)
-    const admission = await service.admit('api', { rounds: 2 })
-    const first = await editing(service, admission.evolutionId, admission.roundId)
-    const firstWorkspaceId = service.activeEntry(first.roundId)?.workspace?.workspaceId
-    const firstSessionId = first.candidatePool[0]?.metaSessionId
-    if (firstWorkspaceId === undefined || firstSessionId === undefined) throw new Error('first generation attempt is unavailable')
+    const attemptBudgetMs = 30_000
+    const { service, evaluator, metas } = await setup(0.8, false, 1, attemptBudgetMs, 1, 0, 2, 90_000)
+    // Expire the first real deadline callback explicitly. A 500ms wall-clock
+    // budget also races the retry's Git/file operations on slower CI runners.
+    const originalSetTimeout = globalThis.setTimeout
+    let expireFirstAttempt: (() => void) | undefined
+    const timerSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation((...args: Parameters<typeof setTimeout>) => {
+      const timer = originalSetTimeout(...args)
+      if (args[1] === attemptBudgetMs && expireFirstAttempt === undefined) {
+        expireFirstAttempt = () => { clearTimeout(timer); args[0]() }
+      }
+      return timer
+    })
+    try {
+      const admission = await service.admit('api', { rounds: 2 })
+      const first = await editing(service, admission.evolutionId, admission.roundId)
+      const firstWorkspaceId = service.activeEntry(first.roundId)?.workspace?.workspaceId
+      const firstSessionId = first.candidatePool[0]?.metaSessionId
+      if (firstWorkspaceId === undefined || firstSessionId === undefined) throw new Error('first generation attempt is unavailable')
 
-    const store = service.registry.stateStore(admission.evolutionId)
-    const retried = await eventually(
-      () => store.readRound(admission.roundId) as Promise<RefinementRound>,
-      value => {
-        const retrySessionId = value?.candidatePool[0]?.metaSessionId
-        const retryWorkspaceId = value === undefined ? undefined : service.activeEntry(value.roundId)?.workspace?.workspaceId
-        return value?.status === 'candidate-editing'
-          && retrySessionId !== undefined && retrySessionId !== firstSessionId
-          && retryWorkspaceId !== undefined && retryWorkspaceId !== firstWorkspaceId
-      },
-    )
-    expect(await store.listRounds()).toHaveLength(1)
-    await finalize(service, retried)
-    const terminal = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'accepted')
-    expect(terminal?.roundIndex).toBe(1)
-    expect(terminal?.candidatePool[0]?.generationAttempts).toMatchObject([
-      { attempt: 1, status: 'failed', failure: { phase: 'candidate-generation' } },
-      { attempt: 2, status: 'succeeded' },
-    ])
-    const attempts = terminal?.candidatePool[0]?.generationAttempts
-    expect(attempts?.[0]?.workspaceId).not.toBe(attempts?.[1]?.workspaceId)
-    expect(attempts?.[0]?.metaSessionId).not.toBe(attempts?.[1]?.metaSessionId)
-    expect(metas.get(admission.evolutionId)?.forks).toEqual([
-      terminal?.candidatePool[0]?.parentCheckpoint,
-      terminal?.candidatePool[0]?.parentCheckpoint,
-    ])
-    expect(evaluator.calls.filter(phase => phase === 'seed-baseline')).toHaveLength(1)
-    await service.dispose()
+      if (expireFirstAttempt === undefined) throw new Error('candidate deadline was not scheduled')
+      expireFirstAttempt()
+      const store = service.registry.stateStore(admission.evolutionId)
+      const retried = await eventually(
+        () => store.readRound(admission.roundId) as Promise<RefinementRound>,
+        value => {
+          const retrySessionId = value?.candidatePool[0]?.metaSessionId
+          const retryWorkspaceId = value === undefined ? undefined : service.activeEntry(value.roundId)?.workspace?.workspaceId
+          return value?.status === 'candidate-editing'
+            && retrySessionId !== undefined && retrySessionId !== firstSessionId
+            && retryWorkspaceId !== undefined && retryWorkspaceId !== firstWorkspaceId
+        },
+      )
+      expect(await store.listRounds()).toHaveLength(1)
+      await finalize(service, retried)
+      const terminal = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'accepted')
+      expect(terminal?.roundIndex).toBe(1)
+      expect(terminal?.candidatePool[0]?.generationAttempts).toMatchObject([
+        { attempt: 1, status: 'failed', failure: { phase: 'candidate-generation' } },
+        { attempt: 2, status: 'succeeded' },
+      ])
+      const attempts = terminal?.candidatePool[0]?.generationAttempts
+      expect(attempts?.[0]?.workspaceId).not.toBe(attempts?.[1]?.workspaceId)
+      expect(attempts?.[0]?.metaSessionId).not.toBe(attempts?.[1]?.metaSessionId)
+      expect(metas.get(admission.evolutionId)?.forks).toEqual([
+        terminal?.candidatePool[0]?.parentCheckpoint,
+        terminal?.candidatePool[0]?.parentCheckpoint,
+      ])
+      expect(evaluator.calls.filter(phase => phase === 'seed-baseline')).toHaveLength(1)
+    } finally {
+      timerSpy.mockRestore()
+      await service.dispose()
+    }
   })
 
   it('enforces the attempt deadline while Meta fork is still pending', async () => {
