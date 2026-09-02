@@ -362,8 +362,12 @@ Read semantic failure bundles (the default when `refs` is present):
 active/visible seed evidence. An `evalId` expands to its recorded runs. Held-out
 or arbitrary Hitch refs are rejected. A bundle contains task/outcome identity,
 the effective DSH surface projection, bounded semantic steps, final answer,
-observed file paths, coverage, and a digest-bound diagnosis receipt. Raw
-`assistant/chunk` events are omitted.
+structured verifier result, bounded verifier CTRF/stdout/stderr diagnostics
+when retained, observed file paths, coverage, and a digest-bound diagnosis
+receipt. Raw `assistant/chunk` events are omitted. `coverage.verifier` is
+`complete`, `result_only`, `explicitly-missing`, or `unavailable`;
+`result_only` means the structured result exists but verifier logs were not
+retained, so do not describe it as a complete verifier failure explanation.
 
 Server-generated diagnosis actions use batches of at most five runs so every
 bundle retains at least one key step when semantic steps exist. A manual batch

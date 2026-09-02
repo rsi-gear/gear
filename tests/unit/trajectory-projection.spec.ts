@@ -3,7 +3,13 @@ import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { RefineCapabilities } from '../../src/capabilities.js'
 import { contentExcerpt, projectTrajectory } from '../../src/evaluator/trajectory-projection.js'
-import type { GearFailureBundle, HitchTrajectory, TrajectoryDiagnostics, TrajectoryProjection } from '../../src/types.js'
+import type {
+  DiagnosisReceipt,
+  GearFailureBundle,
+  HitchTrajectory,
+  TrajectoryDiagnostics,
+  TrajectoryProjection,
+} from '../../src/types.js'
 
 function diagnostics(events: HitchTrajectory['events']): TrajectoryDiagnostics {
   const eventTypes: Record<string, number> = {}
@@ -224,8 +230,20 @@ describe('trajectory projection', () => {
       maxTrajectoryPageBytes: 4 * 1024,
       maxFailureBundleBytes: 4 * 1024,
       allowUnavailableVerifierDiagnosis: true,
+      secretValues: ['top-secret'],
     }) as unknown as {
-      failureBundle(item: never, projection: TrajectoryProjection, heldOutRef: undefined, maxBytes: number): GearFailureBundle
+      failureBundle(
+        item: never,
+        projection: TrajectoryProjection,
+        verifier: never,
+        heldOutRef: string | undefined,
+        maxBytes: number,
+      ): GearFailureBundle
+      diagnosisReceipt(
+        bundle: GearFailureBundle,
+        trajectoryDigest: string,
+        verifierStatus: 'corrupt',
+      ): DiagnosisReceipt
     }
     const bundle = bundleBuilder.failureBundle({
       evolutionId: 'evolution', roundId: 'round', phase: 'seed-baseline', evalId: 'eval',
@@ -237,12 +255,27 @@ describe('trajectory projection', () => {
         rewards: { reward: 0 },
         invalidReason: `reason-${'r'.repeat(100_000)}`,
       },
-    } as never, result, undefined, 4 * 1024)
+    } as never, result, {
+      runId: result.runId,
+      verifier: {
+        status: 'corrupt',
+        result: {
+          token: 'top-secret',
+          held_out_metric: 'must-not-leak',
+          payload: 'v'.repeat(20_000),
+        },
+      },
+    } as never, 'private-partition', 4 * 1024)
     expect(Buffer.byteLength(JSON.stringify(bundle))).toBeLessThanOrEqual(4 * 1024)
     expect(bundle.trajectory.keySteps).toHaveLength(1)
     expect(bundle.trajectory.omittedEventTypeCount).toBeGreaterThan(0)
     expect(bundle.workspace.omittedPathCount).toBeGreaterThan(0)
     expect(bundle.identity.taskNameTruncated).toBe(true)
+    expect(bundle.coverage.verifier).toBe('unavailable')
+    expect(JSON.stringify(bundle)).not.toContain('top-secret')
+    expect(JSON.stringify(bundle)).not.toContain('held_out_metric')
+    expect(JSON.stringify(bundle)).not.toContain('must-not-leak')
+    expect(bundleBuilder.diagnosisReceipt(bundle, result.trajectoryDigest, 'corrupt').compatibility).toBeUndefined()
   })
 
   const tb21Path = resolve('.debug/fixtures/tb21-eval-b716/trajectory-inspect-write-compressor.json')
@@ -297,12 +330,19 @@ describe('trajectory projection', () => {
       maxFailureBundleBytes: 128 * 1024,
       allowUnavailableVerifierDiagnosis: true,
     }) as unknown as {
-      failureBundle(item: never, projection: TrajectoryProjection, heldOutRef: undefined, maxBytes: number): GearFailureBundle
+      failureBundle(
+        item: never,
+        projection: TrajectoryProjection,
+        verifier: never,
+        heldOutRef: undefined,
+        maxBytes: number,
+      ): GearFailureBundle
     }
     const bundle = bundleBuilder.failureBundle({
       evolutionId: 'evolution-fixture', roundId: 'round-fixture', phase: 'seed-baseline', evalId: 'eval-fixture',
       trial: { taskName: 'write-compressor', runId: source.run_id, status: 'completed', rewards: { reward: 0 } },
-    } as never, result, undefined, Math.floor(128 * 1024 / 5))
+    } as never, result, { runId: result.runId, verifier: { status: 'unavailable' } } as never,
+    undefined, Math.floor(128 * 1024 / 5))
     expect(bundle.trajectory.keySteps.length).toBeGreaterThanOrEqual(1)
     expect(bundle.trajectory.contextEpochs[0]?.header.adapterDefaultsExcerpt?.preview)
       .toContain('reasoningEffort')

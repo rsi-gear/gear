@@ -2,8 +2,16 @@ import { rm } from 'node:fs/promises'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RefineCapabilities } from '../../src/capabilities.js'
 import { HarnessBuilder, NoopHarnessCompiler } from '../../src/harness/builder.js'
+import { digestJson } from '../../src/state/digest.js'
 import { RefineStateStore } from '../../src/state/store.js'
-import type { HitchEvaluationEvidence, HitchTrajectoryPage, HitchTrajectoryReader, RefinementRound } from '../../src/types.js'
+import type {
+  GearFailureBundle,
+  HitchEvaluationEvidence,
+  HitchTrajectoryPage,
+  HitchTrajectoryReader,
+  HitchVerifierEvidence,
+  RefinementRound,
+} from '../../src/types.js'
 import { createGitHarnessFixture, gitOutput } from '../helpers/git-fixture.js'
 import { evidence as evidenceFixture, roundFixture } from '../helpers/research-fixture.js'
 
@@ -227,7 +235,36 @@ describe('RefineCapabilities Git projection', () => {
           },
         }
     })
-    const reader: HitchTrajectoryReader = { inspectTrajectory }
+    const verifierParents = new Map([
+      [seedRun, { evalId: seedBaseline.evalId, trialId: 'trial-1', attempt: 1 }],
+      [invalidSeedRun, { evalId: seedBaseline.evalId, trialId: 'trial-2', attempt: 1 }],
+      [failedRun, { evalId: failedEvalId, trialId: 'trial-failed', attempt: 1 }],
+    ])
+    const inspectVerifierEvidence = vi.fn(async (runId: string): Promise<HitchVerifierEvidence> => {
+      const common = {
+        runId,
+        parent: verifierParents.get(runId)!,
+        observation: { status: 'valid' as const, reward: runId === seedRun ? 1 : 0 },
+      }
+      if (runId === failedRun) return { ...common, verifier: { status: 'missing' } }
+      return {
+        ...common,
+        verifier: {
+          status: runId === invalidSeedRun ? 'result_only' : 'complete',
+          result: {
+            rewards: { reward: runId === seedRun ? 1 : 0 },
+            token: 'top-secret',
+            held_out_metric: 'must not be exposed',
+          },
+          resultSha256: `sha256:${'7'.repeat(64)}`,
+          ...(runId === invalidSeedRun ? {} : {
+            diagnostics: { stdout: [{ name: 'test-stdout.txt', text: 'top-secret held-out-secret assertion output' }] },
+          }),
+        },
+        redactions: [{ ruleId: 'absolute-path-v1', count: 1 }],
+      }
+    })
+    const reader: HitchTrajectoryReader = { inspectTrajectory, inspectVerifierEvidence }
     const accesses: unknown[] = []
     const meta = {
       activeRoundId: () => round.roundId,
@@ -293,9 +330,18 @@ describe('RefineCapabilities Git projection', () => {
     expect(bundle).toMatchObject({ bundles: [{
       identity: { runId: seedRun, taskName: 'task-1' },
       trajectory: { rawEventCount: 2, keySteps: [{ turn: 1, step: 1 }] },
-      coverage: { task: 'complete', trajectory: 'complete', verifier: 'unavailable' },
+      outcome: {
+        verifierStatus: 'complete',
+        verifierResult: { rewards: { reward: 1 }, token: '[REDACTED]' },
+        verifierDiagnostics: { artifacts: { stdout: [{ text: '[REDACTED] [REDACTED_HELD_OUT] assertion output' }] } },
+      },
+      coverage: { task: 'complete', trajectory: 'complete', verifier: 'complete' },
       bundleDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
     }] })
+    const visibleBundle = (bundle as unknown as { bundles: GearFailureBundle[] }).bundles[0]!
+    const { bundleDigest, ...digestInput } = visibleBundle
+    expect(digestJson(digestInput)).toBe(bundleDigest)
+    expect(JSON.stringify(visibleBundle)).not.toContain('held_out_metric')
     expect(accesses).toContainEqual([
       round.roundId,
       'meta',
@@ -304,6 +350,7 @@ describe('RefineCapabilities Git projection', () => {
       }),
     ])
     expect(inspectTrajectory).toHaveBeenCalledTimes(3)
+    expect(inspectVerifierEvidence).toHaveBeenCalledTimes(1)
     const tinyProjectionCache = new RefineCapabilities(service as never, builder, () => undefined, {
       trajectoryReader: reader,
       maxTrajectoryPageBytes: 4 * 1024,
@@ -333,13 +380,20 @@ describe('RefineCapabilities Git projection', () => {
     })
     await expect(capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [invalidSeedRun] }))
       .resolves.toMatchObject({ bundles: [{
-        identity: { runId: invalidSeedRun, taskName: 'task-2' },
+      identity: { runId: invalidSeedRun, taskName: 'task-2' },
+      outcome: { verifierStatus: 'result_only' },
+      coverage: { verifier: 'result_only' },
       }] })
     const failedPage = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [failedEvalId] })
     expect(failedPage).toMatchObject({ bundles: [{
       identity: { runId: failedRun },
-      outcome: { trialStatus: 'errored', invalidReason: 'infrastructure_failure' },
+      outcome: { trialStatus: 'errored', invalidReason: 'infrastructure_failure', verifierStatus: 'missing' },
+      coverage: { verifier: 'explicitly-missing' },
     }] })
+    expect(inspectVerifierEvidence).toHaveBeenCalledTimes(3)
+    verifierParents.set(candidateRun, { evalId: `eval_${'f'.repeat(32)}`, trialId: 'trial-1', attempt: 1 })
+    await expect(capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [candidateRun] }))
+      .rejects.toThrow(/verifier evidence eval identity mismatch/)
     await expect(capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [heldRun] }))
       .rejects.toThrow(/not recorded seed evidence/)
   })

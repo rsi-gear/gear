@@ -52,10 +52,12 @@ not infer missing field names or harness APIs from errors.
    credentials, or host paths directly.
 5. Review the baseline summary. Query `trajectory.query` with `refs` for every
    failed baseline run before proposing a change. The default `bundle` view
-   returns the effective DSH context, semantic steps, outcome, and diagnosis
-   progress without raw chunk noise. Use `steps`, `context`, or `events` only
-   for focused drill-down. Keep cited evidence limited to references actually
-   returned for the active seed baseline.
+   returns the effective DSH context, semantic steps, reward, structured
+   verifier result, bounded verifier diagnostics when retained, and diagnosis
+   progress without raw chunk noise. Treat `result_only` as missing verifier
+   logs, not as a complete failure explanation. Use `steps`, `context`, or
+   `events` only for focused drill-down. Keep cited evidence limited to
+   references actually returned for the active seed baseline.
 6. Connect the observed failure to a harness-controlled cause, select the
    affected semantic target, and make the smallest coherent change. New files
    must be connected from an existing preset, plugin, skill, or workflow entry;

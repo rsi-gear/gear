@@ -1,9 +1,10 @@
 # Meta Agent 轨迹重建与 Verifier Evidence 实施方案
 
-- 状态：Gear phase implemented；Hitch verifier phase pending
+- 状态：Gear 与 Hitch verifier phases implemented；本地端到端验证通过
 - 涉及仓库：`gear`、`agent-hitch`
 - Gear 核查基线：`c9da5f9e8244f7d91e735ac36d16a1531f22e866`
 - Hitch 核查基线：`4ad697d9bc8219917a2d2d234107deaeca81b41e`
+- Hitch verifier 实现：`6351425787c242f1318b89f3405697cbee930893`
 - 日期：2026-09-02
 - 取代：[Hitch Run Evidence 与语义轨迹查询开发需求](hitch-run-evidence-query-development-requirements.md)
 

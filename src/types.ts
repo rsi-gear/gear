@@ -309,6 +309,33 @@ export interface TrajectoryDiagnostics {
 export interface HitchTrajectoryReader {
   inspectTrajectory(runId: string, offset: number, limit: number, signal: AbortSignal): Promise<HitchTrajectoryPage>
   loadTrajectory?(runId: string, signal: AbortSignal): Promise<HitchTrajectory>
+  inspectVerifierEvidence?(runId: string, signal: AbortSignal): Promise<HitchVerifierEvidence>
+}
+
+export interface HitchVerifierEvidence {
+  runId: string
+  parent?: {
+    evalId: string
+    trialId: string
+    attempt: number
+  }
+  observation?: {
+    status: 'valid' | 'invalid'
+    reward?: number
+    invalidReason?: string
+    verifierResultRef?: string
+  }
+  verifier: {
+    status: 'complete' | 'result_only' | 'missing' | 'corrupt' | 'unavailable'
+    result?: JsonValue
+    resultSha256?: string
+    diagnostics?: JsonValue
+    issues?: string[]
+  }
+  redactions?: Array<{
+    ruleId: string
+    count: number
+  }>
 }
 
 export interface ContentExcerpt {

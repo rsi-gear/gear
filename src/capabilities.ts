@@ -13,6 +13,7 @@ import type {
   GearFailureBundle,
   HitchTrajectory,
   HitchTrajectoryReader,
+  HitchVerifierEvidence,
   RefineBridgeRequestMap,
   RefinementRound,
   SemanticTarget,
@@ -201,6 +202,19 @@ function compactCounts(
     .slice(0, maxEntries)
     .map(([key, count]) => [boundedUtf8(key, 96), count] as const)
   return { counts: Object.fromEntries(entries), omittedCount: Object.keys(values).length - entries.length }
+}
+
+function compactJsonEvidence(
+  value: JsonValue,
+  runId: string,
+  field: string,
+  maxBytes: number,
+): JsonValue {
+  if (Buffer.byteLength(JSON.stringify(value)) <= maxBytes) return value
+  return {
+    truncated: true,
+    excerpt: compactExcerpt(contentExcerpt(runId, value, field, undefined, maxBytes), maxBytes),
+  } as unknown as JsonValue
 }
 
 export class RefineCapabilities {
@@ -403,11 +417,25 @@ export class RefineCapabilities {
         try {
           for (const item of selected) {
             const projection = await this.projectedTrajectory(item.trial.runId, signal)
-            const bundle = this.failureBundle(item, projection, roundHeldOutRef(rounds, item.roundId), perBundleBudget)
+            const verifier = await this.loadVerifierEvidence(item, signal)
+            const bundle = this.failureBundle(
+              item,
+              projection,
+              verifier,
+              roundHeldOutRef(rounds, item.roundId),
+              perBundleBudget,
+            )
             bundles.push(bundle)
             if (bundle.coverage.task === 'complete' && bundle.coverage.trajectory === 'complete'
               && (bundle.trajectory.semanticStepCount === 0 || bundle.trajectory.keySteps.length > 0)) {
-              receipts.push({ item, receipt: this.diagnosisReceipt(bundle, projection.trajectoryDigest) })
+              receipts.push({
+                item,
+                receipt: this.diagnosisReceipt(
+                  bundle,
+                  projection.trajectoryDigest,
+                  verifier.verifier.status,
+                ),
+              })
             }
           }
         } catch (error) {
@@ -726,6 +754,30 @@ export class RefineCapabilities {
     }
   }
 
+  private async loadVerifierEvidence(
+    item: SeedRunEvidence,
+    signal: AbortSignal,
+  ): Promise<HitchVerifierEvidence> {
+    const inspect = this.options.trajectoryReader?.inspectVerifierEvidence
+    if (inspect === undefined) return { runId: item.trial.runId, verifier: { status: 'unavailable' } }
+    const evidence = await inspect.call(this.options.trajectoryReader, item.trial.runId, signal)
+    if (evidence.runId !== item.trial.runId) {
+      throw new Error(`verifier evidence run identity mismatch for ${item.trial.runId}`)
+    }
+    if (evidence.parent !== undefined) {
+      if (evidence.parent.evalId !== item.evalId) {
+        throw new Error(`verifier evidence eval identity mismatch for ${item.trial.runId}`)
+      }
+      if (item.trial.trialName !== undefined && evidence.parent.trialId !== item.trial.trialName) {
+        throw new Error(`verifier evidence trial identity mismatch for ${item.trial.runId}`)
+      }
+      if (item.trial.attempt !== undefined && evidence.parent.attempt !== item.trial.attempt) {
+        throw new Error(`verifier evidence attempt identity mismatch for ${item.trial.runId}`)
+      }
+    }
+    return evidence
+  }
+
   private bundleBatchRecovery(selected: readonly SeedRunEvidence[]): Record<string, unknown> {
     const actions = selected.map((item, index) => ({
       actionId: `diagnose-oversized-bundle-${index + 1}`,
@@ -749,6 +801,7 @@ export class RefineCapabilities {
   private failureBundle(
     item: SeedRunEvidence,
     projection: TrajectoryProjection,
+    verifierEvidence: HitchVerifierEvidence,
     heldOutRef: string | undefined,
     maxBytes: number,
   ): GearFailureBundle {
@@ -761,16 +814,19 @@ export class RefineCapabilities {
         maxSteps: 8, excerptBytes: 1_200, maxToolActions: 2, maxAssistantMessages: 1,
         terminalReason: true, maxContexts: 4, maxSurfaceSeqs: 32, maxPaths: 16,
         pathBytes: 256, maxEventTypes: 32, labelBytes: 512, includeFinalAnswer: true,
+        verifierBytes: 12 * 1024,
       },
       {
         maxSteps: 2, excerptBytes: 320, maxToolActions: 1, maxAssistantMessages: 1,
         terminalReason: false, maxContexts: 1, maxSurfaceSeqs: 8, maxPaths: 4,
         pathBytes: 96, maxEventTypes: 8, labelBytes: 128, includeFinalAnswer: true,
+        verifierBytes: 2 * 1024,
       },
       {
         maxSteps: 1, excerptBytes: 220, maxToolActions: 1, maxAssistantMessages: 1,
         terminalReason: false, maxContexts: 0, maxSurfaceSeqs: 0, maxPaths: 0,
         pathBytes: 0, maxEventTypes: 0, labelBytes: 96, includeFinalAnswer: false,
+        verifierBytes: 1_024,
       },
     ] as const
     for (const profile of profiles) {
@@ -812,7 +868,42 @@ export class RefineCapabilities {
         if (workspaceStatus === 'observed-only') {
           crossSourceSignals.push({ kind: 'workspace_paths_observed_without_authoritative_diff', runId: item.trial.runId })
         }
-        crossSourceSignals.push({ kind: 'verifier_evidence_unavailable', runId: item.trial.runId })
+        const verifierStatus = verifierEvidence.verifier.status === 'corrupt'
+          ? 'unavailable' as const
+          : verifierEvidence.verifier.status
+        const verifierCoverage = verifierStatus === 'missing'
+          ? 'explicitly-missing' as const
+          : verifierStatus
+        if (verifierEvidence.verifier.status === 'unavailable') {
+          crossSourceSignals.push({ kind: 'verifier_evidence_unavailable', runId: item.trial.runId })
+        } else if (verifierEvidence.verifier.status === 'corrupt') {
+          crossSourceSignals.push({ kind: 'verifier_evidence_corrupt', runId: item.trial.runId })
+        } else if (verifierEvidence.verifier.status === 'result_only') {
+          crossSourceSignals.push({ kind: 'verifier_diagnostics_missing', runId: item.trial.runId })
+        } else if (verifierEvidence.verifier.status === 'missing') {
+          crossSourceSignals.push({ kind: 'verifier_result_explicitly_missing', runId: item.trial.runId })
+        }
+        if (reward !== undefined && verifierEvidence.observation?.reward !== undefined
+          && reward !== verifierEvidence.observation.reward) {
+          crossSourceSignals.push({ kind: 'baseline_verifier_reward_mismatch', runId: item.trial.runId })
+        }
+        const verifierDiagnostics = {
+          ...(verifierEvidence.verifier.diagnostics === undefined
+            ? {}
+            : { artifacts: verifierEvidence.verifier.diagnostics }),
+          ...(verifierEvidence.verifier.issues === undefined ? {} : { issues: verifierEvidence.verifier.issues }),
+          ...(verifierEvidence.redactions === undefined ? {} : { redactions: verifierEvidence.redactions }),
+        }
+        const hasVerifierDiagnostics = Object.keys(verifierDiagnostics).length > 0
+        // Sanitize structured evidence before it can be collapsed into a text
+        // excerpt. Once serialized, key-sensitive values can no longer be
+        // recognized by the sanitizer.
+        const safeVerifierResult = verifierEvidence.verifier.result === undefined
+          ? undefined
+          : publicJson(this.sanitize(verifierEvidence.verifier.result, heldOutRef))
+        const safeVerifierDiagnostics = !hasVerifierDiagnostics
+          ? undefined
+          : publicJson(this.sanitize(verifierDiagnostics, heldOutRef))
         const draft = {
           schemaVersion: 1 as const,
           identity: {
@@ -835,7 +926,23 @@ export class RefineCapabilities {
             ...(item.trial.invalidReason === undefined ? {} : {
               invalidReason: boundedUtf8(item.trial.invalidReason, profile.labelBytes),
             }),
-            verifierStatus: 'unavailable' as const,
+            verifierStatus,
+            ...(safeVerifierResult === undefined ? {} : {
+              verifierResult: compactJsonEvidence(
+                safeVerifierResult,
+                item.trial.runId,
+                'verifier.result',
+                profile.verifierBytes,
+              ),
+            }),
+            ...(safeVerifierDiagnostics === undefined ? {} : {
+              verifierDiagnostics: compactJsonEvidence(
+                safeVerifierDiagnostics,
+                item.trial.runId,
+                'verifier.diagnostics',
+                profile.verifierBytes,
+              ),
+            }),
           },
           trajectory: {
             fidelity: projection.fidelity,
@@ -862,12 +969,14 @@ export class RefineCapabilities {
           coverage: {
             task: prompt === undefined ? 'missing' as const : 'complete' as const,
             trajectory: projection.fidelity === 'exact-surface' ? 'complete' as const : 'partial' as const,
-            verifier: 'unavailable' as const,
+            verifier: verifierCoverage,
             childSessions: 'unavailable' as const,
             workspace: workspaceStatus,
           },
         }
-        const sanitized = this.sanitize(draft, heldOutRef) as unknown as Omit<GearFailureBundle, 'bundleDigest'>
+        // publicJson is part of the externally visible projection, so apply it
+        // before binding the bundle digest and recording a diagnosis receipt.
+        const sanitized = publicJson(this.sanitize(draft, heldOutRef)) as unknown as Omit<GearFailureBundle, 'bundleDigest'>
         const bundle: GearFailureBundle = { ...sanitized, bundleDigest: digestJson(sanitized) }
         if (Buffer.byteLength(JSON.stringify(bundle)) <= maxBytes) return bundle
       }
@@ -875,14 +984,19 @@ export class RefineCapabilities {
     throw new Error(`failure bundle for ${item.trial.runId} exceeds the configured output budget`)
   }
 
-  private diagnosisReceipt(bundle: GearFailureBundle, trajectoryDigest: string): DiagnosisReceipt {
+  private diagnosisReceipt(
+    bundle: GearFailureBundle,
+    trajectoryDigest: string,
+    sourceVerifierStatus: HitchVerifierEvidence['verifier']['status'],
+  ): DiagnosisReceipt {
     return {
       runId: bundle.identity.runId,
       bundleDigest: bundle.bundleDigest,
       trajectoryDigest,
       projectionVersion: 1,
       verifierStatus: bundle.coverage.verifier,
-      ...(bundle.coverage.verifier === 'unavailable' && this.options.allowUnavailableVerifierDiagnosis === true
+      ...(bundle.coverage.verifier === 'unavailable' && sourceVerifierStatus === 'unavailable'
+        && this.options.allowUnavailableVerifierDiagnosis === true
         ? { compatibility: 'allow-unavailable-verifier' as const }
         : {}),
       sanitizationPolicyDigest: digestJson({

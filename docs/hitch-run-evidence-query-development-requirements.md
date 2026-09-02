@@ -1,6 +1,6 @@
 # Hitch Run Evidence 与语义轨迹查询开发需求
 
-- 状态：Superseded
+- 状态：Superseded；缩减后的 verifier evidence API 已在 Hitch `6351425` 实现
 - 日期：2026-09-02
 
 这份旧方案曾计划让 Hitch 同时负责 DSH 上下文重建、语义轨迹投影和 verifier evidence 查询。经代码核查后确认，这个职责划分过重：Hitch 已经提供 canonical DSH trajectory，而 Gear 已经具备直接消费 DSH surface 语义的条件。

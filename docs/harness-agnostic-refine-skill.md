@@ -138,8 +138,9 @@ shasum -a 256 skills/refine/SKILL.md
 
 未列出的数组、budget、selection 和 promotion 字段使用 `ConfigSchema` 默认值。
 生产配置仍应显式固定实验相关参数，以便审阅。
-示例中的 `allowUnavailableVerifierDiagnosis:true` 是 Hitch verifier API 上线前的
-显式过渡兼容；严格默认值为 `false`，API 可用后应删除该开关并重新读取 failure bundles。
+示例中的 `allowUnavailableVerifierDiagnosis:true` 只适用于尚未提供 verifier evidence API 的
+旧 Hitch；严格默认值为 `false`。使用支持 `hitch verifier inspect` 的 Hitch 后应删除该开关，
+并重新读取 failure bundles，让 receipt 记录真实 verifier coverage。
 
 启动：
 

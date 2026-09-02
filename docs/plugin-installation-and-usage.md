@@ -324,7 +324,7 @@ order: 50
 | `hitch.attempts` | 每个 task 的 logical attempt 数；可以是任意正整数，Hitch 0.2.5+ 会按 attempt shard 执行和修复 |
 | `hitch.seeds` / `hitch.sampling` | 类型化 rollout 条件；当前 Hitch CLI adapter 不支持时在 admission 阶段明确拒绝 |
 | `hitch.passEnv` | 只传环境变量名称；不要把 credential value 写进 YAML |
-| `hitch.allowUnavailableVerifierDiagnosis` | 默认 `false`；仅在 Hitch verifier API 上线前显式开启 trajectory-only 诊断兼容。bundle/receipt 仍标记 verifier unavailable；API 上线后应关闭 |
+| `hitch.allowUnavailableVerifierDiagnosis` | 默认 `false`；仅为缺少 `hitch verifier inspect` 的旧 Hitch 显式开启 trajectory-only 诊断兼容。bundle/receipt 仍标记 verifier unavailable；升级后应关闭并重新读取 bundles |
 | `promotion` | seed/held-out gate 和 required-task 回归策略 |
 | `publishedPointer` | 是否维护 workspace 级显式 published pointer |
 

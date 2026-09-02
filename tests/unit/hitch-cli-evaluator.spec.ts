@@ -70,6 +70,21 @@ else if (args[0] === 'trajectory' && args[1] === 'inspect') {
       { type: 'turn/end', seq: 2, time: 12, data: { turn: 1 } },
     ],
   }) + '\\n')
+} else if (args[0] === 'verifier' && args[1] === 'inspect') {
+  const runId = args[2]
+  process.stdout.write(JSON.stringify({
+    schema_version: '1', kind: 'verifier-evidence', run_id: runId,
+    parent: { eval_id: 'eval_' + '1'.repeat(32), trial_id: 'trial-1', attempt: 1 },
+    observation: { status: 'valid', reward: 0, verifier_result_ref: 'verifier/result.json' },
+    verifier: {
+      status: 'complete', result: { rewards: { reward: 0 } }, result_sha256: 'sha256:' + '8'.repeat(64),
+      diagnostics: { stdout: [{
+        name: 'test-stdout.txt', media_type: 'text/plain', bytes: 16,
+        sha256: 'sha256:' + '9'.repeat(64), truncated: false, text: 'assertion failed',
+      }] },
+    },
+    redactions: [{ rule_id: 'absolute-path-v1', count: 2 }],
+  }) + '\\n')
 } else if (args[0] === 'eval' && args[1] === 'rerun') {
   process.stdout.write(JSON.stringify({
     schema_version: '1', kind: 'eval-rerun', rerun_id: 'rerun_' + '9'.repeat(32), eval_id: args[2], status: 'completed',
@@ -436,6 +451,84 @@ describe('HitchCliEvaluator', () => {
         finalAssistantExcerpts: [{ seq: 1 }],
       },
     })
+  })
+
+  it('reads and validates run-centered Hitch verifier evidence', async () => {
+    const { evaluator } = await setup()
+    const runId = `run_${'5'.repeat(32)}`
+    await expect(evaluator.inspectVerifierEvidence(runId, new AbortController().signal)).resolves.toEqual({
+      runId,
+      parent: { evalId: `eval_${'1'.repeat(32)}`, trialId: 'trial-1', attempt: 1 },
+      observation: { status: 'valid', reward: 0, verifierResultRef: 'verifier/result.json' },
+      verifier: {
+        status: 'complete',
+        result: { rewards: { reward: 0 } },
+        resultSha256: `sha256:${'8'.repeat(64)}`,
+        diagnostics: { stdout: [{
+          name: 'test-stdout.txt', media_type: 'text/plain', bytes: 16,
+          sha256: `sha256:${'9'.repeat(64)}`, truncated: false, text: 'assertion failed',
+        }] },
+      },
+      redactions: [{ ruleId: 'absolute-path-v1', count: 2 }],
+    })
+  })
+
+  it('reports verifier evidence as unavailable when an older Hitch lacks the command', async () => {
+    const { evaluator } = await setup()
+    await writeFile(evaluator.options.executable, `#!/usr/bin/env node
+if (process.argv[2] === '--version') process.stdout.write('0.2.6\\n')
+else { process.stderr.write('hitch: unknown command: verifier\\n'); process.exitCode = 2 }
+`)
+    await chmod(evaluator.options.executable, 0o755)
+    const runId = `run_${'5'.repeat(32)}`
+    await expect(evaluator.inspectVerifierEvidence(runId, new AbortController().signal)).resolves.toMatchObject({
+      runId,
+      verifier: { status: 'unavailable', issues: [expect.stringContaining('unknown command: verifier')] },
+    })
+  })
+
+  it('fails closed when verifier inspection fails for reasons other than an unsupported command', async () => {
+    const { evaluator } = await setup()
+    await writeFile(evaluator.options.executable, `#!/usr/bin/env node
+process.stderr.write('run evidence cannot be read: permission denied\\n')
+process.exitCode = 1
+`)
+    await chmod(evaluator.options.executable, 0o755)
+    await expect(evaluator.inspectVerifierEvidence(
+      `run_${'5'.repeat(32)}`,
+      new AbortController().signal,
+    )).rejects.toMatchObject({
+      code: 'hitch_verifier_inspect_failed',
+      message: expect.stringContaining('permission denied'),
+    })
+  })
+
+  it.each([
+    ['null CTRF', 'complete', { ctrf: null }],
+    ['null stdout entry', 'complete', { stdout: [null] }],
+    ['non-array stdout', 'result_only', { stdout: 'bad' }],
+  ])('rejects malformed verifier diagnostics: %s', async (_label, status, diagnostics) => {
+    const { evaluator } = await setup()
+    const runId = `run_${'5'.repeat(32)}`
+    const payload = {
+      schema_version: '1',
+      kind: 'verifier-evidence',
+      run_id: runId,
+      verifier: {
+        status,
+        result: {},
+        result_sha256: `sha256:${'8'.repeat(64)}`,
+        diagnostics,
+      },
+    }
+    await writeFile(evaluator.options.executable, `#!/usr/bin/env node
+process.stdout.write(${JSON.stringify(JSON.stringify(payload))})
+`)
+    await chmod(evaluator.options.executable, 0o755)
+    await expect(evaluator.inspectVerifierEvidence(
+      runId,
+      new AbortController().signal,
+    )).rejects.toMatchObject({ code: 'invalid_hitch_result' })
   })
 
   it('loads and caches the complete canonical trajectory once per run', async () => {
