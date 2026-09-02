@@ -203,7 +203,6 @@ order: 50
     metaModel:
       provider: deepseek-official
       model: deepseek-v4-flash
-      maxTokens: 8192
     metaSampling:
       temperature: 0.8
 
@@ -278,6 +277,10 @@ order: 50
       maxLiveMetaSessions: 8
 ```
 
+新部署不要在 Gear 中设置 `metaModel.maxTokens`。省略该字段可避免 Gear
+人为收紧单次 Meta 回合的输出上限；模型服务或 DSH adapter 自身仍可能施加其
+支持的上限。旧 evolution 若已经封存了该字段，恢复时仍按原 identity 校验。
+
 ### 6.1 关键配置说明
 
 | 字段 | 含义 |
@@ -286,7 +289,7 @@ order: 50
 | `dshRepository` | 完整 target DSH Git 仓库 |
 | `stateRoot` | evolution registry、round、Meta session ownership 和 candidate worktree sidecar 的持久化根目录 |
 | `metaPreset` | 固定 Meta Agent preset id |
-| `metaModel` | Meta Agent 使用的 DSH provider、model 和输出预算 |
+| `metaModel` | Meta Agent 使用的 DSH provider 和 model；新配置不设置 `maxTokens` |
 | `metaSampling.temperature` | 进入真实 DSH `agent/request` 的 Meta temperature；有效值会从 request header 归因 |
 | `candidateGeneration.maxCandidates` | 每轮从相同 Meta checkpoint 生成的独立候选数 |
 | `candidateGeneration.attemptTimeoutMs` | 单次 Meta 候选生成尝试的超时；默认 900000ms |

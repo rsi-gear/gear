@@ -2,10 +2,11 @@ import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-agent-presets'
 import type {
   CandidateRecord, DshMetaAgentSpec, EvaluationEvidence, MetaAttribution, MetaCheckpointRef,
-  ProposalEvidenceAudit, RefinementRound,
+  MetaTurnObservation, ProposalEvidenceAudit, RefinementRound,
 } from '../types.js'
 import type { RefineStateStore } from '../state/store.js'
 import { digestJson } from '../state/digest.js'
@@ -56,6 +57,28 @@ function stableJson(value: unknown): string {
 function cannotResumePersistedSession(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
   return /(?:not found|unknown session|does not exist|missing|unknown to this harness|not marked ignorable)/iu.test(message)
+}
+
+function observeTurn(events: readonly SessionEvent[], firstObservedSeq: number): MetaTurnObservation {
+  const owned = events.filter(event => event.seq >= firstObservedSeq)
+  const end = owned.findLast(event => event.type === 'turn/end')
+  if (end === undefined || end.type !== 'turn/end') return { reason: 'missing-turn-end' }
+  const turn = end.data.turn
+  const start = owned.find(event => event.type === 'turn/start' && event.data.turn === turn)
+  const assistant = owned.findLast(event => event.type === 'assistant/message' && event.data.turn === turn)
+  const header = owned.findLast(event => event.type === 'request/header')
+  const effectiveMaxTokens = header?.type === 'request/header' && typeof header.data.header.config.maxTokens === 'number'
+    ? header.data.header.config.maxTokens
+    : undefined
+  return {
+    reason: end.data.reason?.kind ?? 'unknown',
+    turn,
+    ...(start === undefined ? {} : { durationMs: Math.max(0, end.time - start.time) }),
+    ...(effectiveMaxTokens === undefined ? {} : { effectiveMaxTokens }),
+    ...(assistant?.type !== 'assistant/message' || assistant.data.usage === undefined
+      ? {}
+      : { usage: { ...assistant.data.usage } }),
+  }
 }
 
 export class DshMetaAgentHost implements MetaAgentHost {
@@ -226,7 +249,7 @@ export class MetaSessionManager implements MetaSessionController {
 
   async wake(round: Readonly<RefinementRound>): Promise<string> {
     const candidate = round.candidatePool.find(value => value.status === 'generating')
-    return this.wakeCandidate(round, candidate, round.baseline, await this.agent())
+    return (await this.wakeCandidate(round, candidate, round.baseline, await this.agent())).sessionId
   }
 
   async wakeCandidate(
@@ -234,16 +257,18 @@ export class MetaSessionManager implements MetaSessionController {
     candidate: Readonly<CandidateRecord> | undefined,
     baseline: EvaluationEvidence | undefined,
     agent: MetaAgentSession,
-  ): Promise<string> {
+  ): Promise<import('./controller.js').MetaWakeHandle> {
     if (round.evolutionId !== this.options.evolutionId) {
       throw new Error(`Meta session for evolution ${this.options.evolutionId} cannot wake round from ${round.evolutionId}`)
     }
     const sessionId = String(agent.id)
+    const dshAgent = this.requireDshAgent(agent)
+    const firstObservedSeq = dshAgent.session.seq
     this.wakes.set(sessionId, {
       roundId: round.roundId,
       ...(candidate === undefined ? {} : { candidateId: candidate.candidateId }),
       sessionId,
-      firstObservedSeq: this.requireDshAgent(agent).session.seq,
+      firstObservedSeq,
     })
     const baselineRefs = [
       ...(baseline === undefined ? [] : [baseline.evalId]),
@@ -255,7 +280,7 @@ export class MetaSessionManager implements MetaSessionController {
       accessedRefs: new Set(baselineRefs),
       diagnosedRunRefs: new Set(),
     })
-    this.requireDshAgent(agent).followup(createUserMessage({
+    dshAgent.followup(createUserMessage({
       content: [{ type: 'text', text: JSON.stringify({
         kind: 'refinement-round',
         evolutionId: round.evolutionId,
@@ -292,7 +317,10 @@ export class MetaSessionManager implements MetaSessionController {
       }) }],
       source: { kind: 'plugin', plugin: 'dsh-plugin-refine' },
     }))
-    return sessionId
+    return {
+      sessionId,
+      completion: dshAgent.whenIdle().then(() => observeTurn([...dshAgent.session.events], firstObservedSeq)),
+    }
   }
 
   activeRoundId(sessionId: string): string | undefined {

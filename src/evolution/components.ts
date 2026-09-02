@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import type { JsonValue } from '@deepseek-ai/dsh-session'
 import type {
   ArtifactRef,
   CandidateAssessmentContext,
@@ -63,6 +64,28 @@ export function componentRef<C>(
 
 export function builtinComponentRef<C>(kind: ComponentKind, id: string, config: C): ComponentRef<C> {
   return componentRef(kind, id, builtinImplementation(kind, id), config)
+}
+
+/**
+ * Builds the stable identity used to decide whether rollout evidence is semantically reusable.
+ * Callers must pass only settings that can change the evaluated result. Operational placement,
+ * credentials, concurrency, and logging/output limits belong in the provider config, not here.
+ */
+export function rolloutProviderSemanticDigest(
+  provider: ComponentRef<unknown>,
+  semanticConfig: JsonValue,
+  agentConfig: JsonValue,
+): string {
+  return digestJson({
+    provider: {
+      kind: provider.kind,
+      id: provider.id,
+      apiVersion: provider.apiVersion,
+      implementation: provider.implementation,
+    },
+    semanticConfig,
+    agentConfig,
+  })
 }
 
 export function assertComponentRef(value: ComponentRef<unknown>, expectedKind?: ComponentKind): void {
@@ -139,7 +162,10 @@ function condition(
     model: rollout.model,
     sampling: rollout.sampling,
     timeoutMs,
-    rolloutProviderDigest: digestJson(rollout.provider),
+    // Legacy specs retain their original identity so they remain readable. New specs provide the
+    // path-independent semantic digest explicitly; their first round after this change establishes
+    // evidence under the new identity.
+    rolloutProviderDigest: rollout.providerSemanticDigest ?? digestJson(rollout.provider),
   }
   return { conditionId: digestJson(identity), ...identity }
 }

@@ -17,9 +17,15 @@ import { isolateCandidateProviderContext } from './candidate/context.js'
 import { SessionAwareNotebookRuntime } from './notebook/runtime.js'
 import { mountMetaCapabilityTools, mountNotebookTool } from './notebook/tool.js'
 import { DshMetaAgentHost, MetaSessionManager } from './meta/session.js'
+import { compatibleSkillMetaAgent } from './meta/controller.js'
 import { assertMetaPresetIsolation, resolveDshPresetRef, resolveDshRuntimeIdentity } from './meta/isolation.js'
 import { RefineService } from './refine/service.js'
-import { builtinComponentRef, componentRef, ComponentRegistry } from './evolution/components.js'
+import {
+  builtinComponentRef,
+  componentRef,
+  ComponentRegistry,
+  rolloutProviderSemanticDigest,
+} from './evolution/components.js'
 import {
   LlmVerifierCandidateAssessor,
   llmVerifierImplementation,
@@ -294,14 +300,21 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       roundTimeoutMs: candidateRoundTimeoutMs,
     },
   }
+  const rolloutProvider = builtinComponentRef('rollout-provider', 'hitch-cli', structuredClone(config.hitch))
+  const rolloutAgentConfig = { agentArgs: [...config.hitch.agentArgs] }
   const rollout = {
-    provider: builtinComponentRef('rollout-provider', 'hitch-cli', structuredClone(config.hitch)),
+    provider: rolloutProvider,
+    providerSemanticDigest: rolloutProviderSemanticDigest(
+      rolloutProvider,
+      { harnessId: config.hitch.harnessId },
+      rolloutAgentConfig,
+    ),
     taskSampler: builtinComponentRef('task-sampler', 'dataset', {}),
     repetitions: config.hitch.attempts,
     ...(config.hitch.seeds === undefined || config.hitch.seeds.length === 0 ? {} : { seeds: [...config.hitch.seeds] }),
     model: config.hitch.model,
     sampling: { ...config.hitch.sampling },
-    agentConfig: { agentArgs: [...config.hitch.agentArgs] },
+    agentConfig: rolloutAgentConfig,
   }
   components.registerRolloutProvider('hitch-cli', rollout.provider.implementation, ref => ({
     ref,
@@ -433,7 +446,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
         || spec.metaAgent.runtime.integrity !== currentRuntime.integrity) {
         throw new Error('DSH Meta runtime identity changed; evolution cannot continue')
       }
-    } else if (JSON.stringify(spec.metaAgent) !== JSON.stringify(metaAgent)) {
+    } else if (!compatibleSkillMetaAgent(spec.metaAgent, metaAgent)) {
       throw new Error('skill Meta harness identity changed; evolution cannot continue')
     }
     if (spec.selection.assessor.id === 'llm-verifier') {

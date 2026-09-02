@@ -7,6 +7,7 @@ import {
   EvaluationMetricsCandidateAssessor,
   HighestQualityCandidateSelector,
   PairedGatePromotionPolicy,
+  rolloutProviderSemanticDigest,
   TaskRewardJudge,
 } from '../../src/evolution/components.js'
 import { evidence, evolutionSpec, roundFixture } from '../helpers/research-fixture.js'
@@ -28,6 +29,65 @@ describe('evolution component contracts', () => {
     expect(first).toEqual(second)
     expect(first.seed.conditionId).not.toBe(first.heldOut.conditionId)
     expect(first.seed.dataset).toEqual(spec.datasets.seed)
+  })
+
+  it('keeps condition identity stable across provider relocation and operational changes', () => {
+    const spec = evolutionSpec()
+    const agentConfig = { agentArgs: ['--mode', 'evaluation'] }
+    const firstProvider = builtinComponentRef('rollout-provider', 'hitch-cli', {
+      executable: 'tools/hitch',
+      root: 'runtime-a',
+      harnessId: 'terminal-bench',
+      maxConcurrent: 1,
+      passEnv: ['MODEL_API_KEY_A'],
+    })
+    const relocatedProvider = builtinComponentRef('rollout-provider', 'hitch-cli', {
+      executable: 'vendor/hitch',
+      root: 'runtime-b',
+      harnessId: 'terminal-bench',
+      maxConcurrent: 8,
+      passEnv: ['MODEL_API_KEY_B'],
+    })
+    const firstSemanticDigest = rolloutProviderSemanticDigest(
+      firstProvider,
+      { harnessId: 'terminal-bench' },
+      agentConfig,
+    )
+    const relocatedSemanticDigest = rolloutProviderSemanticDigest(
+      relocatedProvider,
+      { harnessId: 'terminal-bench' },
+      agentConfig,
+    )
+    expect(relocatedSemanticDigest).toBe(firstSemanticDigest)
+
+    const sampler = new DatasetTaskSampler(spec.rollout.taskSampler)
+    const first = sampler.resolve('round-1', spec.datasets, {
+      ...spec.rollout,
+      provider: firstProvider,
+      providerSemanticDigest: firstSemanticDigest,
+      agentConfig,
+    }, spec.taskBudgetMs)
+    const relocated = sampler.resolve('round-1', spec.datasets, {
+      ...spec.rollout,
+      provider: relocatedProvider,
+      providerSemanticDigest: relocatedSemanticDigest,
+      agentConfig,
+    }, spec.taskBudgetMs)
+    expect(relocated.seed.conditionId).toBe(first.seed.conditionId)
+    expect(relocated.heldOut.conditionId).toBe(first.heldOut.conditionId)
+
+    const differentAgentDigest = rolloutProviderSemanticDigest(
+      relocatedProvider,
+      { harnessId: 'terminal-bench' },
+      { agentArgs: ['--mode', 'different'] },
+    )
+    const changed = sampler.resolve('round-1', spec.datasets, {
+      ...spec.rollout,
+      provider: relocatedProvider,
+      providerSemanticDigest: differentAgentDigest,
+      agentConfig: { agentArgs: ['--mode', 'different'] },
+    }, spec.taskBudgetMs)
+    expect(changed.seed.conditionId).not.toBe(first.seed.conditionId)
   })
 
   it('allocates a fixed candidate count deterministically across research parents', () => {

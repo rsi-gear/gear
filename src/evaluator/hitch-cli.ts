@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { resolve } from 'node:path'
+import { readFile, realpath } from 'node:fs/promises'
+import { delimiter, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { HitchConfig } from '../config.js'
 import type {
@@ -32,6 +33,12 @@ interface ProcessResult {
   stdout: string
   stderr: string
   exitCode: number
+}
+
+interface HitchEvaluationIdentity {
+  provider: 'hitch-cli'
+  effectiveConfigDigest: string
+  invocationFingerprint: string
 }
 
 type JsonRecord = Record<string, unknown>
@@ -102,7 +109,7 @@ function trialSlots(value: unknown, label: string): EvaluationTrialSlot[] {
   })
 }
 
-function sha256(value: string): string {
+function sha256(value: string | Uint8Array): string {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`
 }
 
@@ -169,7 +176,7 @@ function trajectoryDiagnostics(events: JsonRecord[]): TrajectoryDiagnostics {
 
 export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader {
   readonly repositoryPath: string
-  private preflightPromise?: Promise<void>
+  private executablePathPromise?: Promise<string>
 
   constructor(readonly options: HitchCliEvaluatorOptions) {
     this.repositoryPath = resolve(options.repositoryPath)
@@ -186,13 +193,16 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     if (options.passEnv.some(name => !/^[A-Z_][A-Z0-9_]*$/u.test(name))) throw new TypeError('hitch.passEnv contains an invalid environment variable name')
   }
 
-  preflight(): Promise<void> {
-    this.preflightPromise ??= this.checkVersion()
-    return this.preflightPromise
+  async preflight(): Promise<void> {
+    await this.checkVersion()
   }
 
-  private async checkVersion(): Promise<void> {
+  private async checkVersion(signal?: AbortSignal): Promise<string> {
+    await this.executablePath()
     const controller = new AbortController()
+    const abortFromCaller = (): void => controller.abort(signal?.reason)
+    if (signal?.aborted === true) abortFromCaller()
+    else signal?.addEventListener('abort', abortFromCaller, { once: true })
     const timeout = setTimeout(
       () => controller.abort(new HitchEvaluationError(
         `Hitch version check timed out for ${this.options.executable}; Gear requires agent-hitch >= 0.2.5`,
@@ -202,7 +212,10 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     )
     let result: ProcessResult
     try { result = await this.run(['--version'], this.repositoryPath, controller.signal, 16_384) }
-    finally { clearTimeout(timeout) }
+    finally {
+      clearTimeout(timeout)
+      signal?.removeEventListener('abort', abortFromCaller)
+    }
     const output = `${result.stdout}\n${result.stderr}`.trim()
     if (result.exitCode !== 0) {
       throw new HitchEvaluationError(`Hitch version check failed: ${output.slice(-4000)}`, 'hitch_version_check_failed')
@@ -221,6 +234,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
         'unsupported_hitch_version',
       )
     }
+    return sha256(output)
   }
 
   async reserve(
@@ -228,6 +242,31 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     _request: Readonly<EvaluationRequest>,
   ): Promise<EvaluationReservation> {
     return { provider: 'hitch-cli', evalId: `eval_${randomUUID().replaceAll('-', '')}` }
+  }
+
+  async evaluationIdentity(
+    round: Readonly<RefinementRound>,
+    request: Readonly<EvaluationRequest>,
+    signal?: AbortSignal,
+  ): Promise<HitchEvaluationIdentity> {
+    return this.resolveEvaluationIdentity(round, request, signal)
+  }
+
+  private async resolveEvaluationIdentity(
+    round: Readonly<RefinementRound>,
+    request: Readonly<EvaluationRequest>,
+    signal?: AbortSignal,
+  ): Promise<HitchEvaluationIdentity> {
+    signal?.throwIfAborted()
+    const hitchRuntimeIdentity = await this.runtimeIdentity(signal)
+    signal?.throwIfAborted()
+    const effectiveConfigDigest = this.effectiveConfigDigest(round, request, hitchRuntimeIdentity)
+    const invocationFingerprint = this.invocationFingerprint(effectiveConfigDigest)
+    return {
+      provider: 'hitch-cli',
+      effectiveConfigDigest,
+      invocationFingerprint,
+    }
   }
 
   async inspectTrajectory(
@@ -311,23 +350,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     }
     const source = `git+${pathToFileURL(this.repositoryPath).href}#${request.harnessRef}`
     const harness = `${this.options.harnessId}@${source}`
-    const parity = {
-      conditionId: request.condition.conditionId,
-      executable: this.options.executable,
-      hitchRoot: this.options.root,
-      repositoryPath: this.repositoryPath,
-      backend: 'harbor',
-      dataset: request.dataset,
-      harnessId: this.options.harnessId,
-      model: request.condition.model,
-      attempts: request.condition.repetitions,
-      maxConcurrent: this.options.maxConcurrent,
-      timeoutMs: round.taskBudgetMs,
-      setupTimeoutMs: this.options.setupTimeoutMs,
-      agentArgs: this.options.agentArgs,
-      passEnv: this.options.passEnv,
-      sandboxProfileRef: round.sandboxProfileRef,
-    }
+    const identity = await this.resolveEvaluationIdentity(round, request, signal)
     const args = [
       ...(this.options.root.length === 0 ? [] : ['--root', this.options.root]),
       'eval', 'run',
@@ -354,7 +377,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
         'invalid_hitch_json',
       )
     }
-    const evidence = this.parseResult(parsed, processResult, request, sha256(JSON.stringify(parity)), true)
+    const evidence = this.parseResult(parsed, processResult, request, identity, true)
     if (reservation !== undefined
       && (evidence.provider !== reservation.provider || evidence.evalId !== reservation.evalId)) {
       throw new HitchEvaluationError('Hitch result does not match the reserved evaluation identity', 'hitch_eval_identity_mismatch')
@@ -384,6 +407,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       || attempt.requestedModelId !== request.condition.model) {
       throw new TypeError('Hitch evaluation rerun request does not match the original attempt')
     }
+    const identity = await this.resolveEvaluationIdentity(round, request, signal)
     const args = [
       ...(this.options.root.length === 0 ? [] : ['--root', this.options.root]),
       'eval', 'rerun', attempt.evalId,
@@ -430,7 +454,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       result,
       { stdout: JSON.stringify(result), stderr: '', exitCode: integer(result.exit_code, 'exit_code') },
       request,
-      this.invocationFingerprint(round, request),
+      identity,
       true,
     )
     if (evidence.evalId !== attempt.evalId) throw new HitchEvaluationError('repaired evidence eval id changed', 'hitch_eval_identity_mismatch')
@@ -562,31 +586,91 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     }
   }
 
-  private invocationFingerprint(round: Readonly<RefinementRound>, request: Readonly<EvaluationRequest>): string {
+  private effectiveConfigDigest(
+    round: Readonly<RefinementRound>,
+    request: Readonly<EvaluationRequest>,
+    hitchRuntimeIdentity: string,
+  ): string {
     return sha256(JSON.stringify({
+      provider: 'hitch-cli',
       conditionId: request.condition.conditionId,
-      executable: this.options.executable,
-      hitchRoot: this.options.root,
-      repositoryPath: this.repositoryPath,
+      hitchRuntimeIdentity,
       backend: 'harbor',
-      dataset: request.dataset,
       harnessId: this.options.harnessId,
-      model: request.condition.model,
-      attempts: request.condition.repetitions,
-      maxConcurrent: this.options.maxConcurrent,
-      timeoutMs: round.taskBudgetMs,
-      setupTimeoutMs: this.options.setupTimeoutMs,
-      agentArgs: this.options.agentArgs,
-      passEnv: this.options.passEnv,
       sandboxProfileRef: round.sandboxProfileRef,
     }))
+  }
+
+  private invocationFingerprint(effectiveConfigDigest: string): string {
+    return sha256(JSON.stringify({
+      effectiveConfigDigest,
+      maxConcurrent: this.options.maxConcurrent,
+      setupTimeoutMs: this.options.setupTimeoutMs,
+      terminationGraceMs: this.options.terminationGraceMs,
+      maxOutputBytes: this.options.maxOutputBytes,
+      maxTrajectoryOutputBytes: this.options.maxTrajectoryOutputBytes,
+    }))
+  }
+
+  private executablePath(): Promise<string> {
+    this.executablePathPromise ??= this.resolveExecutablePath()
+    return this.executablePathPromise
+  }
+
+  private async runtimeIdentity(signal?: AbortSignal): Promise<string> {
+    signal?.throwIfAborted()
+    const executablePath = await this.executablePath()
+    const readExecutable = async (): Promise<Uint8Array> => readFile(executablePath).catch(error => {
+      throw new HitchEvaluationError(
+        `cannot fingerprint Hitch executable ${executablePath}: ${String(error)}`,
+        'hitch_version_check_failed',
+      )
+    })
+    const executableDigestBefore = sha256(await readExecutable())
+    signal?.throwIfAborted()
+    const versionOutputDigest = await this.checkVersion(signal)
+    signal?.throwIfAborted()
+    const executableDigest = sha256(await readExecutable())
+    if (executableDigest !== executableDigestBefore) {
+      throw new HitchEvaluationError(
+        `Hitch executable changed while its runtime identity was being validated: ${executablePath}`,
+        'hitch_version_check_failed',
+      )
+    }
+    return sha256(JSON.stringify({
+      versionOutputDigest,
+      executableDigest,
+    }))
+  }
+
+  private async resolveExecutablePath(): Promise<string> {
+    const candidates = this.options.executable.includes('/')
+      ? [resolve(this.repositoryPath, this.options.executable)]
+      : (process.env.PATH ?? '').split(delimiter)
+        .filter(path => path.length > 0)
+        .map(path => resolve(path, this.options.executable))
+    for (const candidate of candidates) {
+      try { return await realpath(candidate) }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw new HitchEvaluationError(
+            `cannot resolve Hitch executable ${candidate}: ${String(error)}`,
+            'hitch_version_check_failed',
+          )
+        }
+      }
+    }
+    throw new HitchEvaluationError(
+      `cannot resolve Hitch executable for runtime fingerprint: ${this.options.executable}`,
+      'hitch_version_check_failed',
+    )
   }
 
   private parseResult(
     value: unknown,
     processResult: ProcessResult,
     request: Readonly<EvaluationRequest>,
-    invocationFingerprint: string,
+    identity: HitchEvaluationIdentity,
     allowFailedRunEvidence = false,
   ): HitchEvaluationEvidence {
     const result = record(value, 'Hitch result')
@@ -634,7 +718,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
         request,
         actualCommit,
         revisionIdentity,
-        invocationFingerprint,
+        identity,
         transport,
       )
       if ((result.status === 'succeeded') !== (evidence.completeness === 'complete')) {
@@ -669,13 +753,13 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     return {
       provider: 'hitch-cli',
       conditionId: request.condition.conditionId,
-      effectiveConfigDigest: invocationFingerprint,
+      effectiveConfigDigest: identity.effectiveConfigDigest,
       evalId,
       dataset: request.dataset,
       requestedCommit: request.harnessRef,
       actualCommit,
       revisionIdentity,
-      invocationFingerprint,
+      invocationFingerprint: identity.invocationFingerprint,
       completeness: 'complete',
       plannedTrialCount: total,
       primaryReward,
@@ -693,7 +777,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     request: Readonly<EvaluationRequest>,
     actualCommit: string,
     revisionIdentity: string,
-    invocationFingerprint: string,
+    identity: HitchEvaluationIdentity,
     transport: LocalSourceTransportSummary,
   ): HitchEvaluationEvidence {
     const total = integer(summaryValue.n_trials, 'summary.n_trials')
@@ -745,13 +829,13 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     return {
       provider: 'hitch-cli',
       conditionId: request.condition.conditionId,
-      effectiveConfigDigest: invocationFingerprint,
+      effectiveConfigDigest: identity.effectiveConfigDigest,
       evalId,
       dataset: request.dataset,
       requestedCommit: request.harnessRef,
       actualCommit,
       revisionIdentity,
-      invocationFingerprint,
+      invocationFingerprint: identity.invocationFingerprint,
       completeness: invalidTrials.length === 0 ? 'complete' : 'partial',
       plannedTrialCount: total,
       primaryReward,
@@ -831,15 +915,17 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     }
   }
 
-  private run(
+  private async run(
     args: string[],
     cwd: string,
     signal: AbortSignal,
     maxOutputBytes = this.options.maxOutputBytes,
   ): Promise<ProcessResult> {
-    if (signal.aborted) return Promise.reject(signal.reason)
+    signal.throwIfAborted()
+    const executablePath = await this.executablePath()
+    signal.throwIfAborted()
     return new Promise<ProcessResult>((resolvePromise, reject) => {
-      const child = spawn(this.options.executable, args, {
+      const child = spawn(executablePath, args, {
         cwd,
         env: process.env,
         stdio: ['ignore', 'pipe', 'pipe'],

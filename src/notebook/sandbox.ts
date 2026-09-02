@@ -2,7 +2,7 @@ import { execFile as execFileCallback, spawn, type ChildProcessWithoutNullStream
 import { chmod, mkdir, mkdtemp, realpath, rm } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { homedir, tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { SandboxManager, type SandboxRuntimeConfig } from '@anthropic-ai/sandbox-runtime'
 
@@ -151,9 +151,12 @@ async function inspectPython(pythonExecutable: string): Promise<PythonRuntime> {
   }
 }
 
-function sanitizedEnvironment(scratch: string): NodeJS.ProcessEnv {
+function sanitizedEnvironment(scratch: string, python: PythonRuntime): NodeJS.ProcessEnv {
+  const systemRoots = systemReadPaths()
+  const inheritedSystemPath = (process.env.PATH ?? '').split(delimiter)
+    .filter(path => path.startsWith('/') && systemRoots.some(root => containsPath(root, resolve(path))))
   const env: NodeJS.ProcessEnv = {
-    PATH: '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin',
+    PATH: uniquePaths([dirname(python.executable), ...inheritedSystemPath]).join(delimiter),
     HOME: join(scratch, 'home'),
     TMPDIR: join(scratch, 'tmp'),
     XDG_CACHE_HOME: join(scratch, 'cache'),
@@ -251,7 +254,7 @@ export class NotebookKernelSandbox {
       const wrapped = await SandboxManager.wrapWithSandboxArgv(command, '/bin/bash', config)
       const child = spawn(wrapped.argv[0]!, wrapped.argv.slice(1), {
         cwd: scratch,
-        env: sanitizedEnvironment(scratch),
+        env: sanitizedEnvironment(scratch, this.python),
         detached: process.platform !== 'win32',
         shell: false,
         stdio: ['pipe', 'pipe', 'pipe'],

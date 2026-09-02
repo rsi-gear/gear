@@ -2,11 +2,17 @@ import { isAbsolute, join } from 'node:path'
 import { RefineCapabilities } from '../capabilities.js'
 import { CandidateWorkspaceManager } from '../candidate/workspace.js'
 import type { Config, HitchConfig } from '../config.js'
-import { builtinComponentRef, componentRef, ComponentRegistry } from '../evolution/components.js'
+import {
+  builtinComponentRef,
+  componentRef,
+  ComponentRegistry,
+  rolloutProviderSemanticDigest,
+} from '../evolution/components.js'
 import { HitchCliEvaluator } from '../evaluator/hitch-cli.js'
 import { HarnessBuilder, type HarnessCompiler } from '../harness/builder.js'
 import { SubprocessHarnessCompiler } from '../harness/compiler.js'
 import { SkillMetaCoordinator, SkillMetaSessionManager } from '../meta/skill.js'
+import { compatibleSkillMetaAgent } from '../meta/controller.js'
 import { RefineService } from '../refine/service.js'
 import {
   LlmVerifierCandidateAssessor,
@@ -123,14 +129,21 @@ export async function createSkillControlPlane(
       roundTimeoutMs,
     },
   }
+  const rolloutProvider = builtinComponentRef('rollout-provider', 'hitch-cli', structuredClone(config.hitch))
+  const rolloutAgentConfig = { agentArgs: [...config.hitch.agentArgs] }
   const rollout = {
-    provider: builtinComponentRef('rollout-provider', 'hitch-cli', structuredClone(config.hitch)),
+    provider: rolloutProvider,
+    providerSemanticDigest: rolloutProviderSemanticDigest(
+      rolloutProvider,
+      { harnessId: config.hitch.harnessId },
+      rolloutAgentConfig,
+    ),
     taskSampler: builtinComponentRef('task-sampler', 'dataset', {}),
     repetitions: config.hitch.attempts,
     ...(config.hitch.seeds === undefined || config.hitch.seeds.length === 0 ? {} : { seeds: [...config.hitch.seeds] }),
     model: config.hitch.model,
     sampling: { ...config.hitch.sampling },
-    agentConfig: { agentArgs: [...config.hitch.agentArgs] },
+    agentConfig: rolloutAgentConfig,
   }
   const evaluator = dependencies.evaluator ?? new HitchCliEvaluator({ ...config.hitch, repositoryPath: config.dshRepository })
   if (dependencies.evaluator === undefined) {
@@ -192,7 +205,7 @@ export async function createSkillControlPlane(
   })
   const coordinator = new SkillMetaCoordinator()
   const validateRuntime = async (spec: import('../types.js').EvolutionSpec): Promise<void> => {
-    if (JSON.stringify(spec.metaAgent) !== JSON.stringify(metaAgent)) throw new Error('skill Meta harness identity changed; evolution cannot continue')
+    if (!compatibleSkillMetaAgent(spec.metaAgent, metaAgent)) throw new Error('skill Meta harness identity changed; evolution cannot continue')
     if (spec.selection.assessor.id === 'llm-verifier') {
       const assessorConfig = spec.selection.assessor.config as LlmVerifierAssessorConfig
       const current = await resolveLlmVerifierRuntime(assessorConfig.pythonExecutable)

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import { DshMetaAgentHost, MetaSessionManager, type MetaAgentHost } from '../../src/meta/session.js'
+import { compatibleSkillMetaAgent } from '../../src/meta/controller.js'
 import { RefineStateStore } from '../../src/state/store.js'
 import type { RefinementRound } from '../../src/types.js'
 import { digestJson } from '../../src/state/digest.js'
@@ -89,6 +90,18 @@ function metaState(sessionId: string, metaHarnessRef = 'meta-v1') {
 }
 
 describe('MetaSessionManager', () => {
+  it('lets a new uncapped skill profile resume a legacy evolution using its sealed maxTokens', () => {
+    const current = metaAgent()
+    const sealed = { ...current, model: { ...current.model, maxTokens: 8192 } }
+    expect(compatibleSkillMetaAgent(sealed, current)).toBe(true)
+    expect(compatibleSkillMetaAgent(sealed, {
+      ...current, model: { ...current.model, maxTokens: 4096 },
+    })).toBe(false)
+    expect(compatibleSkillMetaAgent(sealed, {
+      ...current, model: { ...current.model, model: 'changed' },
+    })).toBe(false)
+  })
+
   it('refuses to checkpoint when no durable session listener participates', async () => {
     const host = new DshMetaAgentHost({ sessions: { flush: async () => false } } as never, async () => {})
     await expect(host.checkpoint(fakeAgent('ephemeral'))).rejects.toThrow(/durable Meta session persistence/)
@@ -157,6 +170,41 @@ describe('MetaSessionManager', () => {
     expect(manager.activeRoundId(String(agent.id))).toBe('round-1')
     const audit = manager.proposalEvidenceAudit('round-1', String(agent.id), [round().baseline!.evalId])
     expect(audit).toMatchObject({ summaryAccessed: true, baselineEvalId: round().baseline!.evalId })
+    await manager.dispose()
+  })
+
+  it('observes the owned DSH turn ending with its effective limit and usage', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'refine-meta-'))
+    roots.push(root)
+    const store = new RefineStateStore(root)
+    await store.initialize()
+    const host = new FakeHost()
+    const manager = new MetaSessionManager(store, host, META_OPTIONS)
+    const agent = await manager.agent()
+    ;(agent as unknown as { whenIdle: () => Promise<void> }).whenIdle = async () => {
+      const events = agent.session.events as unknown as Array<Record<string, unknown>>
+      events.push(
+        { type: 'turn/start', seq: 1, time: 100, data: { turn: 1 } },
+        {
+          type: 'request/header', seq: 2, time: 101,
+          data: { header: { config: { provider: 'p', model: 'm', maxTokens: 8192 } } },
+        },
+        {
+          type: 'assistant/message', seq: 3, time: 69_000,
+          data: {
+            turn: 1, step: 1, message: { role: 'assistant', content: [] },
+            usage: { inputTokens: 11_074, outputTokens: 8192, cacheReadTokens: 18_688, reasoningTokens: 8192 },
+          },
+        },
+        { type: 'turn/end', seq: 4, time: 69_100, data: { turn: 1, reason: { kind: 'max-tokens' } } },
+      )
+    }
+    const state = round()
+    const wake = await manager.wakeCandidate(state, state.candidatePool[0], state.baseline, agent)
+    await expect(wake.completion).resolves.toEqual({
+      reason: 'max-tokens', turn: 1, durationMs: 69_000, effectiveMaxTokens: 8192,
+      usage: { inputTokens: 11_074, outputTokens: 8192, cacheReadTokens: 18_688, reasoningTokens: 8192 },
+    })
     await manager.dispose()
   })
 

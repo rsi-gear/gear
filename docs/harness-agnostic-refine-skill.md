@@ -52,7 +52,8 @@ Skill mode 必须在启动前固定：
 - runtime type，例如 `codex`、`claude-code` 或 `dsh`；
 - runtime version 与 runtime artifact SHA-256；
 - harness/skill id 与 `SKILL.md` SHA-256；
-- provider、model、`maxTokens` 和 sampling。
+- provider、model 和 sampling。新配置省略 `maxTokens`，避免由 Gear 额外限制
+  Meta 回合；旧 evolution 中已封存的值仍属于 identity。
 
 `metaAdapter.runtimeIntegrity` 与 `metaAdapter.harnessDigest` 使用
 `sha256:<64 lowercase hex>`。例如计算当前 skill 文件：
@@ -79,8 +80,7 @@ shasum -a 256 skills/refine/SKILL.md
   "metaPreset": "refine",
   "metaModel": {
     "provider": "openai",
-    "model": "gpt-5",
-    "maxTokens": 32768
+    "model": "gpt-5"
   },
   "metaSampling": {},
   "metaAdapter": {

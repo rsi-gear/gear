@@ -1,4 +1,4 @@
-import { chmod, rm, writeFile } from 'node:fs/promises'
+import { appendFile, chmod, copyFile, mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -181,7 +181,11 @@ else {
 describe('HitchCliEvaluator', () => {
   it('requires stable eval identity support from agent-hitch 0.2.5 or newer', async () => {
     const supported = await setup('0.2.5')
+    const state = round(supported.fixture.root, supported.fixture.championRef, supported.fixture.manifest.digest)
+    const input = request('seed', supported.fixture.championRef)
+    const identity = await supported.evaluator.evaluationIdentity(state, input)
     await expect(supported.evaluator.preflight()).resolves.toBeUndefined()
+    expect(await supported.evaluator.evaluationIdentity(state, input)).toEqual(identity)
     const old = await setup('0.2.4')
     await expect(old.evaluator.preflight()).rejects.toMatchObject({ code: 'unsupported_hitch_version' })
     const prerelease = await setup('0.2.5-rc.1')
@@ -192,14 +196,85 @@ describe('HitchCliEvaluator', () => {
     await expect(malformed.evaluator.preflight()).rejects.toMatchObject({ code: 'unsupported_hitch_version' })
   })
 
-  it('invokes Hitch CLI and validates exact local commit transport evidence', async () => {
+  it('keeps semantic identity independent of environment, workspace, and executable location', async () => {
+    const { fixture, evaluator } = await setup('0.2.5')
+    const environmentName = `GEAR_HITCH_IDENTITY_${crypto.randomUUID().replaceAll('-', '').toUpperCase()}`
+    evaluator.options.passEnv.push(environmentName)
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const input = request('seed', fixture.championRef)
+    process.env[environmentName] = 'first-value'
+    try {
+      await evaluator.preflight()
+      const first = await evaluator.evaluationIdentity(state, input)
+
+      process.env[environmentName] = 'second-value'
+      expect(await evaluator.evaluationIdentity(state, input)).toEqual(first)
+
+      process.env[environmentName] = 'first-value'
+      expect(await evaluator.evaluationIdentity(
+        { ...state, workspaceRoot: join(fixture.root, 'other-workspace') }, input,
+      )).toEqual(first)
+
+      const relocatedExecutable = join(fixture.root, 'relocated-hitch.mjs')
+      await copyFile(evaluator.options.executable, relocatedExecutable)
+      await chmod(relocatedExecutable, 0o755)
+      const relocated = new HitchCliEvaluator({
+        ...evaluator.options,
+        executable: relocatedExecutable,
+        passEnv: [...evaluator.options.passEnv],
+      })
+      expect(await relocated.evaluationIdentity(state, input)).toEqual(first)
+
+      await appendFile(evaluator.options.executable, '\n// same semver, different build\n')
+      expect((await evaluator.evaluationIdentity(state, input)).effectiveConfigDigest).not.toBe(first.effectiveConfigDigest)
+    } finally {
+      delete process.env[environmentName]
+    }
+  })
+
+  it('revalidates the Hitch version after same-instance executable replacement', async () => {
+    const { fixture, evaluator } = await setup('0.2.5')
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const input = request('seed', fixture.championRef)
+    await expect(evaluator.evaluationIdentity(state, input)).resolves.toBeDefined()
+
+    await writeFile(evaluator.options.executable, '#!/usr/bin/env node\nprocess.stdout.write("0.2.4\\n")\n')
+    await expect(evaluator.evaluationIdentity(state, input))
+      .rejects.toMatchObject({ code: 'unsupported_hitch_version' })
+    await expect(evaluator.preflight()).rejects.toMatchObject({ code: 'unsupported_hitch_version' })
+  })
+
+  it('runs the absolute executable resolved during preflight when the evaluation cwd differs', async () => {
     const { fixture, evaluator } = await setup()
-    const evidence = await evaluator.evaluate(
-      round(fixture.root, fixture.championRef, fixture.manifest.digest),
+    const evaluationWorkspace = join(fixture.root, 'workspace', 'nested')
+    await mkdir(evaluationWorkspace, { recursive: true })
+    const relativeEvaluator = new HitchCliEvaluator({
+      ...evaluator.options,
+      executable: '../fake-hitch.mjs',
+      passEnv: [...evaluator.options.passEnv],
+    })
+    const state = round(evaluationWorkspace, fixture.championRef, fixture.manifest.digest)
+    await expect(relativeEvaluator.evaluate(
+      state,
       request('seed', fixture.championRef),
       new AbortController().signal,
+    )).resolves.toMatchObject({ requestedCommit: fixture.championRef, actualCommit: fixture.championRef })
+  })
+
+  it('invokes Hitch CLI and validates exact local commit transport evidence', async () => {
+    const { fixture, evaluator } = await setup()
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const input = request('seed', fixture.championRef)
+    const evidence = await evaluator.evaluate(
+      state,
+      input,
+      new AbortController().signal,
     )
+    const identity = await evaluator.evaluationIdentity(state, input)
     expect(evidence).toMatchObject({
+      provider: identity.provider,
+      effectiveConfigDigest: identity.effectiveConfigDigest,
+      invocationFingerprint: identity.invocationFingerprint,
       dataset: 'seed', requestedCommit: fixture.championRef, actualCommit: fixture.championRef,
       primaryReward: 1, summary: { total: 1, passed: 1, failed: 0 },
       trials: [{ runId: `run_${'5'.repeat(32)}`, attempt: 1 }],

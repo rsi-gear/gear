@@ -140,6 +140,7 @@ describe('RefineStateStore', () => {
     const round = roundFixture({ status: 'candidate-seed-running' })
     const baseline = evidence(round.plan.seed, round.targetHarnessRef, 0.4, '1')
     const candidate = evidence(round.plan.seed, 'b'.repeat(40), 0.8, '2')
+    candidate.invocationFingerprint = `sha256:${'d'.repeat(64)}`
     round.candidatePool = [{
       ...round.candidatePool[0]!,
       status: 'evaluating',

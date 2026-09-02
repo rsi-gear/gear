@@ -1,8 +1,7 @@
 # Terminal-Bench 2.0 evolve lab
 
-The local lab lives at `/Users/zgq/Desktop/projs/gear/.evolve-lab` and is
-ignored by Git. It is intentionally isolated from the user's normal DSH and
-Hitch state.
+The local lab lives in `.evolve-lab` at the repository root and is ignored by
+Git. It is intentionally isolated from the user's normal DSH and Hitch state.
 
 ## Pinned components
 
@@ -51,9 +50,10 @@ verifier.
 First start Docker Desktop. Then run:
 
 ```sh
-cd /Users/zgq/Desktop/projs/gear
 .evolve-lab/bin/evolve.mjs doctor
 ```
+
+Run all lab commands from the Gear repository root.
 
 Continue only when the JSON says `"ready": true`. Start the isolated DSH
 control plane:
@@ -95,7 +95,7 @@ trajectory data must cross the typed Host Bridge. On macOS this requires the
 built-in `sandbox-exec`; on Linux install Bubblewrap, `socat`, and ripgrep.
 
 The launcher reads `DEEPSEEK_API_KEY` from the existing
-`/Users/zgq/.dsh/.credentials.yaml` without copying it into the lab and passes
+`~/.dsh/.credentials.yaml` without copying it into the lab and passes
 it to the DSH/Hitch child process. Credential values are not written to the
 repository or printed by the launcher.
 
