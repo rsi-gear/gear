@@ -3,6 +3,7 @@ import type { RefineStateStore } from '../state/store.js'
 import { digestJson } from '../state/digest.js'
 import type {
   CandidateRecord,
+  DiagnosisReceipt,
   EvaluationEvidence,
   MetaAgentSpec,
   MetaAttribution,
@@ -158,6 +159,7 @@ interface WakeState {
   summaryAccessed: boolean
   accessedRefs: Set<string>
   diagnosedRunRefs: Set<string>
+  diagnosisReceipts: Map<string, DiagnosisReceipt>
 }
 
 export interface SkillMetaSessionOptions {
@@ -267,6 +269,7 @@ export class SkillMetaSessionManager implements MetaSessionController {
       summaryAccessed: false,
       accessedRefs: new Set(),
       diagnosedRunRefs: new Set(),
+      diagnosisReceipts: new Map(),
     }
     this.wakes.set(session.id, state)
     const refs = [
@@ -325,13 +328,22 @@ export class SkillMetaSessionManager implements MetaSessionController {
   recordEvidenceAccess(
     roundId: string,
     sessionId: string,
-    access: { summary?: boolean; refs?: readonly string[]; diagnosedRunRefs?: readonly string[] },
+    access: {
+      summary?: boolean
+      refs?: readonly string[]
+      diagnosedRunRefs?: readonly string[]
+      diagnosisReceipts?: readonly DiagnosisReceipt[]
+    },
   ): void {
     const state = this.wakes.get(sessionId)
     if (state === undefined || state.roundId !== roundId) return
     if (access.summary === true) state.summaryAccessed = true
     for (const ref of access.refs ?? []) state.accessedRefs.add(ref)
     for (const ref of access.diagnosedRunRefs ?? []) state.diagnosedRunRefs.add(ref)
+    for (const receipt of access.diagnosisReceipts ?? []) {
+      state.diagnosedRunRefs.add(receipt.runId)
+      state.diagnosisReceipts.set(receipt.runId, structuredClone(receipt))
+    }
   }
 
   proposalEvidenceAudit(roundId: string, sessionId: string, citedRefs: readonly string[]): ProposalEvidenceAudit {
@@ -345,6 +357,9 @@ export class SkillMetaSessionManager implements MetaSessionController {
       summaryAccessed: state.summaryAccessed,
       accessedRefs: [...state.accessedRefs].sort(),
       diagnosedRunRefs: [...state.diagnosedRunRefs].sort(),
+      diagnosisReceipts: [...state.diagnosisReceipts.values()]
+        .sort((left, right) => left.runId.localeCompare(right.runId))
+        .map(receipt => structuredClone(receipt)),
       citedRefs: [...citedRefs],
     }
   }

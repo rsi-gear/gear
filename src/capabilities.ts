@@ -2,14 +2,26 @@ import { readFile } from 'node:fs/promises'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import type { HarnessBuilder } from './harness/builder.js'
 import type { RefineService } from './refine/service.js'
+import { contentExcerpt, projectTrajectory, selectKeySteps } from './evaluator/trajectory-projection.js'
+import { digestJson } from './state/digest.js'
+import { finalizationReadiness, recoveryRequired } from './refine/finalization-readiness.js'
 import type {
   CandidateFinalization,
+  ContentExcerpt,
+  DiagnosisReceipt,
   EvaluationEvidence,
+  GearFailureBundle,
+  HitchTrajectory,
   HitchTrajectoryReader,
   RefineBridgeRequestMap,
   RefinementRound,
   SemanticTarget,
   SessionRole,
+  TrajectoryContextEpoch,
+  TrajectoryMessageEvidence,
+  TrajectoryProjection,
+  TrajectorySemanticStep,
+  TrajectoryToolAction,
 } from './types.js'
 
 export interface CapabilityOptions {
@@ -17,6 +29,10 @@ export interface CapabilityOptions {
   configuredSeedTaskRef?: string
   maxReadBytes?: number
   maxTrajectoryPageBytes?: number
+  maxFailureBundleBytes?: number
+  maxTrajectoryCacheEntries?: number
+  maxTrajectoryProjectionCacheBytes?: number
+  allowUnavailableVerifierDiagnosis?: boolean
   trajectoryReader?: HitchTrajectoryReader
   secretValues?: readonly string[]
 }
@@ -47,13 +63,153 @@ interface SeedRunEvidence {
   failure?: { code: string; message: string }
 }
 
+interface SharedProjectionLoad {
+  promise: Promise<TrajectoryProjection>
+  controller: AbortController
+  waiters: number
+  settled: boolean
+  bytes: number
+}
+
 const SENSITIVE_KEY = /(?:api[_-]?key|authorization|credential|password|secret|token)/iu
+
+function compactExcerpt(value: ContentExcerpt, maxJsonBytes = 1_200): ContentExcerpt {
+  let preview = value.preview
+  let tail = value.tail
+  let compacted: ContentExcerpt = { ...value }
+  while (Buffer.byteLength(JSON.stringify(compacted)) > maxJsonBytes && (preview.length > 0 || (tail?.length ?? 0) > 0)) {
+    preview = preview.slice(0, Math.floor(preview.length * 0.7))
+    tail = tail === undefined ? undefined : tail.slice(Math.ceil(tail.length * 0.3))
+    compacted = {
+      ...value,
+      preview,
+      ...(tail === undefined || tail.length === 0 ? {} : { tail }),
+      truncated: true,
+    }
+  }
+  return compacted
+}
+
+function boundedUtf8(value: string, maxBytes: number): string {
+  if (Buffer.byteLength(value) <= maxBytes) return value
+  const suffix = '…'
+  const budget = Math.max(0, maxBytes - Buffer.byteLength(suffix))
+  const prefix = Buffer.from(value).subarray(0, budget).toString('utf8').replace(/\uFFFD+$/u, '')
+  return `${prefix}${suffix}`
+}
+
+function compactMessage(value: TrajectoryMessageEvidence, excerptBytes = 1_200): TrajectoryMessageEvidence {
+  return {
+    ...value,
+    eventType: boundedUtf8(value.eventType, 96),
+    role: boundedUtf8(value.role, 96),
+    message: compactExcerpt(value.message, excerptBytes),
+  }
+}
+
+function compactToolAction(value: TrajectoryToolAction, excerptBytes = 1_200): TrajectoryToolAction {
+  return {
+    ...value,
+    callId: boundedUtf8(value.callId, 128),
+    name: boundedUtf8(value.name, 128),
+    arguments: compactExcerpt(value.arguments, excerptBytes),
+    ...(value.result === undefined ? {} : { result: compactExcerpt(value.result, excerptBytes) }),
+    ...(value.error === undefined ? {} : {
+      error: {
+        name: boundedUtf8(value.error.name, 96),
+        code: boundedUtf8(value.error.code, 96),
+      },
+    }),
+  }
+}
+
+function compactStep(
+  value: TrajectorySemanticStep,
+  runId: string,
+  options: { excerptBytes: number; maxToolActions: number; maxAssistantMessages: number; terminalReason: boolean },
+): TrajectorySemanticStep {
+  const selectedActions = new Map<string, TrajectoryToolAction>()
+  for (const action of value.toolActions) {
+    if (action.status !== 'completed' && selectedActions.size < options.maxToolActions) selectedActions.set(action.callId, action)
+  }
+  for (const action of options.maxToolActions === 0 ? [] : value.toolActions.slice(-options.maxToolActions)) {
+    if (selectedActions.size < options.maxToolActions) selectedActions.set(action.callId, action)
+  }
+  const assistantMessages = (options.maxAssistantMessages === 0 ? [] : value.assistantMessages.slice(-options.maxAssistantMessages))
+    .map(message => compactMessage(message, options.excerptBytes))
+  const toolActions = [...selectedActions.values()].map(action => compactToolAction(action, options.excerptBytes))
+  const { terminalReason, ...base } = value
+  return {
+    ...base,
+    id: boundedUtf8(value.id, 128),
+    ...(value.contextEpochId === undefined ? {} : { contextEpochId: boundedUtf8(value.contextEpochId, 128) }),
+    assistantMessages,
+    toolActions,
+    ...(terminalReason === undefined || !options.terminalReason ? {} : {
+      terminalReasonExcerpt: compactExcerpt(
+        contentExcerpt(runId, terminalReason, 'step.terminalReason', value.seqEnd, options.excerptBytes),
+        options.excerptBytes,
+      ),
+    }),
+    ...(value.assistantMessages.length <= assistantMessages.length ? {} : {
+      omittedAssistantMessageCount: value.assistantMessages.length - assistantMessages.length,
+    }),
+    ...(value.toolActions.length <= toolActions.length ? {} : {
+      omittedToolActionCount: value.toolActions.length - toolActions.length,
+    }),
+  }
+}
+
+function compactEpoch(
+  value: TrajectoryContextEpoch,
+  runId: string,
+  options: { excerptBytes: number; maxSurfaceSeqs: number },
+): TrajectoryContextEpoch {
+  const surfaceMessageSeqs = options.maxSurfaceSeqs === 0 ? [] : value.surfaceMessageSeqs.slice(-options.maxSurfaceSeqs)
+  return {
+    ...value,
+    id: boundedUtf8(value.id, 128),
+    header: {
+      ...(value.header.config === undefined ? {} : {
+        configExcerpt: compactExcerpt(
+          contentExcerpt(runId, value.header.config, 'request.header.config', value.requestSeq, options.excerptBytes),
+          options.excerptBytes,
+        ),
+      }),
+      ...(value.header.adapterDefaults === undefined ? {} : {
+        adapterDefaultsExcerpt: compactExcerpt(
+          contentExcerpt(runId, value.header.adapterDefaults, 'request.header.adapterDefaults', value.requestSeq, options.excerptBytes),
+          options.excerptBytes,
+        ),
+      }),
+      ...(value.header.system === undefined ? {} : { system: compactExcerpt(value.header.system, options.excerptBytes) }),
+      ...(value.header.tools === undefined ? {} : { tools: compactExcerpt(value.header.tools, options.excerptBytes) }),
+    },
+    surfaceMessageSeqs,
+    ...(value.surfaceMessageSeqs.length <= surfaceMessageSeqs.length ? {} : {
+      omittedSurfaceMessageSeqCount: value.surfaceMessageSeqs.length - surfaceMessageSeqs.length,
+    }),
+  }
+}
+
+function compactCounts(
+  values: Readonly<Record<string, number>>,
+  maxEntries: number,
+): { counts: Record<string, number>; omittedCount: number } {
+  const entries = Object.entries(values)
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, maxEntries)
+    .map(([key, count]) => [boundedUtf8(key, 96), count] as const)
+  return { counts: Object.fromEntries(entries), omittedCount: Object.keys(values).length - entries.length }
+}
 
 export class RefineCapabilities {
   private readonly maxReadBytes: number
   private readonly maxTrajectoryPageBytes: number
   private readonly secretValues: readonly string[]
   private readonly options: CapabilityOptions
+  private readonly trajectoryProjections = new Map<string, SharedProjectionLoad>()
+  private trajectoryProjectionCacheBytes = 0
 
   constructor(
     private readonly service: RefineService,
@@ -67,6 +223,22 @@ export class RefineCapabilities {
     this.options = typeof optionsOrLegacyResolver === 'function' ? legacyOptions : optionsOrLegacyResolver
     this.maxReadBytes = this.options.maxReadBytes ?? 128 * 1024
     this.maxTrajectoryPageBytes = this.options.maxTrajectoryPageBytes ?? this.maxReadBytes
+    if (!Number.isSafeInteger(this.maxTrajectoryPageBytes) || this.maxTrajectoryPageBytes < 4 * 1024) {
+      throw new TypeError('maxTrajectoryPageBytes must be an integer of at least 4096 bytes')
+    }
+    if (this.options.maxFailureBundleBytes !== undefined
+      && (!Number.isSafeInteger(this.options.maxFailureBundleBytes) || this.options.maxFailureBundleBytes < 4 * 1024)) {
+      throw new TypeError('maxFailureBundleBytes must be an integer of at least 4096 bytes')
+    }
+    if (this.options.maxTrajectoryCacheEntries !== undefined
+      && (!Number.isSafeInteger(this.options.maxTrajectoryCacheEntries) || this.options.maxTrajectoryCacheEntries <= 0)) {
+      throw new TypeError('maxTrajectoryCacheEntries must be a positive integer')
+    }
+    if (this.options.maxTrajectoryProjectionCacheBytes !== undefined
+      && (!Number.isSafeInteger(this.options.maxTrajectoryProjectionCacheBytes)
+        || this.options.maxTrajectoryProjectionCacheBytes <= 0)) {
+      throw new TypeError('maxTrajectoryProjectionCacheBytes must be a positive integer')
+    }
     this.secretValues = (this.options.secretValues ?? []).filter(value => value.length > 0)
   }
 
@@ -135,6 +307,10 @@ export class RefineCapabilities {
       return publicJson(JSON.parse(await readFile(this.options.seedTasksPath, 'utf8')))
     }
     if (method === 'trajectory.query') {
+      const requestedView = this.optionalString(args, 'view')
+      if (requestedView !== undefined && !['bundle', 'steps', 'context', 'events'].includes(requestedView)) {
+        throw new TypeError('trajectory view must be bundle, steps, context, or events')
+      }
       const offset = this.optionalInteger(args, 'offset') ?? 0
       const limit = Math.min(this.optionalInteger(args, 'limit') ?? 20, 100)
       if (limit <= 0) throw new TypeError('limit must be a positive integer')
@@ -165,6 +341,17 @@ export class RefineCapabilities {
         throw new Error(`unknown refinement round: ${requestedRoundId}`)
       }
       if (refs === undefined || refs.length === 0) {
+        for (const round of visibleRounds.slice(offset, offset + limit)) {
+          const visibleBaseline = round.roundId === activeRoundId ? baseline ?? round.baseline : round.baseline
+          meta.recordEvidenceAccess(round.roundId, sessionId, {
+            summary: visibleBaseline !== undefined,
+            refs: visibleBaseline === undefined ? [] : [
+              visibleBaseline.evalId,
+              ...visibleBaseline.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId]),
+              ...visibleBaseline.invalidTrials.map(trial => trial.runId),
+            ],
+          })
+        }
         const projected = visibleRounds.slice(offset, offset + limit).map(round => ({
           roundId: round.roundId,
           status: round.status,
@@ -183,57 +370,178 @@ export class RefineCapabilities {
           decision: round.decision,
           failure: round.failure === undefined ? undefined : { phase: round.failure.phase },
         }))
-        for (const round of visibleRounds.slice(offset, offset + limit)) {
-          const visibleBaseline = round.roundId === activeRoundId ? baseline ?? round.baseline : round.baseline
-          meta.recordEvidenceAccess(round.roundId, sessionId, {
-            summary: visibleBaseline !== undefined,
-            refs: visibleBaseline === undefined ? [] : [
-              visibleBaseline.evalId,
-              ...visibleBaseline.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId]),
-              ...visibleBaseline.invalidTrials.map(trial => trial.runId),
-            ],
-          })
-        }
-        return publicJson({ rounds: projected, offset, limit, eof: offset + projected.length >= visibleRounds.length })
+        const readiness = baseline === undefined
+          ? undefined
+          : finalizationReadiness(baseline, meta.proposalEvidenceAudit(activeRoundId, sessionId, []))
+        return publicJson({
+          rounds: projected,
+          offset,
+          limit,
+          eof: offset + projected.length >= visibleRounds.length,
+          ...(readiness === undefined ? {} : { diagnosisProgress: readiness }),
+        })
       }
       if (refs.length > 10) throw new TypeError('trajectory.query accepts at most 10 refs')
       if (this.options.trajectoryReader === undefined) throw new Error('Hitch trajectory reader is unavailable')
       const selected = this.resolveSeedRefs(refs, evidence, requestedRoundId)
-      const trajectories = []
-      for (const item of selected) {
-        const page = await this.options.trajectoryReader.inspectTrajectory(item.trial.runId, offset, limit, signal)
-        const bounded = this.boundTrajectoryPage(
-          page.header,
-          page.events,
-          page.diagnostics,
-          roundHeldOutRef(rounds, item.roundId),
-        )
-        const consumed = bounded.events.length
-        trajectories.push({
-          ref: item.trial.runId,
-          roundId: item.roundId,
-          phase: item.phase,
-          evalId: item.evalId,
-          taskName: item.trial.taskName,
-          trialName: item.trial.trialName,
-          runId: page.runId,
-          ...(item.failure === undefined ? {} : { outcome: 'failed', failure: item.failure }),
-          fidelity: page.fidelity,
-          provider: page.provider,
-          sessionId: page.sessionId,
-          ...(offset === 0 ? { header: bounded.header } : {}),
-          ...(offset === 0 ? { diagnostics: bounded.diagnostics } : {}),
-          events: bounded.events,
-          offset,
-          limit,
-          total: page.total,
-          nextOffset: offset + consumed,
-          eof: page.eof && consumed === page.events.length,
+      const view = requestedView ?? 'bundle'
+      if (selected.length > 10) {
+        throw new TypeError('trajectory.query expands to at most 10 runs; query recorded run refs in batches')
+      }
+      if (view !== 'bundle' && selected.length !== 1) {
+        throw new TypeError(`${view} drill-down requires exactly one recorded run ref`)
+      }
+      if (view === 'bundle') {
+        const bundles: GearFailureBundle[] = []
+        const receipts: Array<{ item: SeedRunEvidence; receipt: DiagnosisReceipt }> = []
+        const totalBudget = this.options.maxFailureBundleBytes ?? this.maxTrajectoryPageBytes
+        const perBundleBudget = Math.floor(totalBudget / Math.max(1, selected.length))
+        if (perBundleBudget < 4 * 1024) {
+          if (selected.length > 1) return publicJson(this.bundleBatchRecovery(selected))
+          throw new Error('failure bundle output budget is too small for this batch; query fewer run refs')
+        }
+        try {
+          for (const item of selected) {
+            const projection = await this.projectedTrajectory(item.trial.runId, signal)
+            const bundle = this.failureBundle(item, projection, roundHeldOutRef(rounds, item.roundId), perBundleBudget)
+            bundles.push(bundle)
+            if (bundle.coverage.task === 'complete' && bundle.coverage.trajectory === 'complete'
+              && (bundle.trajectory.semanticStepCount === 0 || bundle.trajectory.keySteps.length > 0)) {
+              receipts.push({ item, receipt: this.diagnosisReceipt(bundle, projection.trajectoryDigest) })
+            }
+          }
+        } catch (error) {
+          if (selected.length > 1 && error instanceof Error
+            && error.message.includes('exceeds the configured output budget')) {
+            return publicJson(this.bundleBatchRecovery(selected))
+          }
+          throw error
+        }
+        for (const { item, receipt } of receipts) meta.recordEvidenceAccess(item.roundId, sessionId, {
+          refs: [item.evalId, item.trial.runId],
+          diagnosisReceipts: [receipt],
         })
+        const readiness = baseline === undefined
+          ? undefined
+          : finalizationReadiness(baseline, meta.proposalEvidenceAudit(activeRoundId, sessionId, []))
+        return publicJson({
+          bundles,
+          ...(readiness === undefined ? {} : { diagnosisProgress: readiness }),
+        })
+      }
+
+      const trajectories: unknown[] = []
+      for (const item of selected) {
+        if (view === 'events') {
+          const trajectory = await this.loadCompleteTrajectory(item.trial.runId, signal)
+          const requestedTypes = this.optionalStrings(args, 'eventTypes')
+          const aroundSeq = this.optionalInteger(args, 'aroundSeq')
+          const radius = this.optionalInteger(args, 'radius') ?? 10
+          const errorsOnly = this.optionalBoolean(args, 'errorsOnly') ?? false
+          let rawEvents = trajectory.events
+          if (requestedTypes !== undefined) rawEvents = rawEvents.filter(event => {
+            const value = record(event)
+            return typeof value.type === 'string' && requestedTypes.includes(value.type)
+          })
+          if (aroundSeq !== undefined) rawEvents = rawEvents.filter(event => {
+            const value = record(event)
+            return typeof value.seq === 'number' && Math.abs(value.seq - aroundSeq) <= radius
+          })
+          if (errorsOnly) rawEvents = rawEvents.filter(event => /error|failed|exception/iu.test(JSON.stringify(event)))
+          const events = rawEvents.slice(offset, offset + limit)
+          const bounded = this.boundTrajectoryPage(
+            trajectory.header,
+            events,
+            trajectory.diagnostics,
+            roundHeldOutRef(rounds, item.roundId),
+          )
+          const consumed = bounded.events.length
+          trajectories.push({
+            ref: item.trial.runId,
+            roundId: item.roundId,
+            phase: item.phase,
+            evalId: item.evalId,
+            taskName: item.trial.taskName,
+            trialName: item.trial.trialName,
+            runId: trajectory.runId,
+            ...(item.failure === undefined ? {} : { outcome: 'failed', failure: item.failure }),
+            view,
+            fidelity: trajectory.fidelity,
+            provider: trajectory.provider,
+            sessionId: trajectory.sessionId,
+            ...(offset === 0 ? { header: bounded.header } : {}),
+            ...(offset === 0 ? { diagnostics: bounded.diagnostics } : {}),
+            events: bounded.events,
+            offset,
+            limit,
+            total: rawEvents.length,
+            nextOffset: offset + consumed,
+            eof: offset + consumed >= rawEvents.length && consumed === events.length,
+          })
+          continue
+        }
+        const projection = await this.projectedTrajectory(item.trial.runId, signal)
+        if (view === 'steps') {
+          const turn = this.optionalInteger(args, 'turn')
+          const stepNumber = this.optionalInteger(args, 'step')
+          const errorsOnly = this.optionalBoolean(args, 'errorsOnly') ?? false
+          const filtered = projection.semanticSteps.filter(step =>
+            (turn === undefined || step.turn === turn)
+            && (stepNumber === undefined || step.step === stepNumber)
+            && (!errorsOnly || step.toolActions.some(action => action.status !== 'completed')))
+          const page = filtered.slice(offset, offset + limit)
+          const bounded = this.boundTrajectoryItems(page, roundHeldOutRef(rounds, item.roundId))
+          trajectories.push({
+            ref: item.trial.runId,
+            roundId: item.roundId,
+            phase: item.phase,
+            evalId: item.evalId,
+            taskName: item.trial.taskName,
+            runId: item.trial.runId,
+            view,
+            steps: bounded.items,
+            offset,
+            limit,
+            total: filtered.length,
+            nextOffset: offset + bounded.consumed,
+            eof: offset + bounded.consumed >= filtered.length && bounded.consumed === page.length,
+          })
+          continue
+        }
+        if (view === 'context') {
+          const epochs = projection.contextEpochs.slice(offset, offset + limit)
+          const contexts = epochs.map(epoch => {
+            const surfaceMessages = epoch.surfaceMessageSeqs
+              .flatMap(seq => projection.messages.find(message => message.seq === seq) ?? [])
+            const visibleMessages = surfaceMessages.slice(-6)
+            return {
+              ...epoch,
+              surfaceMessageCount: surfaceMessages.length,
+              omittedSurfaceMessageCount: surfaceMessages.length - visibleMessages.length,
+              surfaceMessages: visibleMessages,
+            }
+          })
+          const bounded = this.boundTrajectoryItems(contexts, roundHeldOutRef(rounds, item.roundId))
+          trajectories.push({
+            ref: item.trial.runId,
+            roundId: item.roundId,
+            phase: item.phase,
+            evalId: item.evalId,
+            taskName: item.trial.taskName,
+            runId: item.trial.runId,
+            view,
+            epochs: bounded.items,
+            offset,
+            limit,
+            total: projection.contextEpochs.length,
+            nextOffset: offset + bounded.consumed,
+            eof: offset + bounded.consumed >= projection.contextEpochs.length && bounded.consumed === epochs.length,
+          })
+          continue
+        }
       }
       for (const item of selected) meta.recordEvidenceAccess(item.roundId, sessionId, {
         refs: [item.evalId, item.trial.runId],
-        ...(offset === 0 ? { diagnosedRunRefs: [item.trial.runId] } : {}),
       })
       return publicJson({ trajectories })
     }
@@ -279,7 +587,16 @@ export class RefineCapabilities {
       const check = this.optionalString(args, 'check')
       if (check !== undefined && check !== 'compiler') throw new TypeError('candidate_check only supports the fixed "compiler" pipeline')
       await this.service.workspaceManager.withOpenWorkspace(sessionId, true, async handle => this.builder.checkWorkspace(handle, signal))
-      return { ok: true, summary: await this.service.workspaceManager.preflight(workspace.workspaceId, signal) }
+      const summary = await this.service.workspaceManager.preflight(workspace.workspaceId, signal)
+      const readiness = baseline === undefined
+        ? undefined
+        : finalizationReadiness(baseline, meta.proposalEvidenceAudit(activeRoundId, sessionId, []))
+      return {
+        ok: true,
+        summary,
+        compiler: { ok: true, summary },
+        ...(readiness === undefined ? {} : { finalizationReadiness: readiness }),
+      }
     }
     if (method === 'candidate.finalize' || method === 'candidate.decline') {
       const finalization = method === 'candidate.decline' ? null : this.finalization(args)
@@ -287,12 +604,293 @@ export class RefineCapabilities {
         ? { rationale: this.string(args, 'rationale'), evidenceRefs: this.optionalStrings(args, 'evidenceRefs') ?? [] }
         : undefined
       const citedRefs = finalization?.evidenceRefs ?? decline?.evidenceRefs ?? []
-      const attribution = await meta.proposalAttribution(activeRoundId, sessionId, finalization)
       const evidence = meta.proposalEvidenceAudit(activeRoundId, sessionId, citedRefs)
+      if (baseline !== undefined) {
+        const readiness = finalizationReadiness(baseline, evidence)
+        const recovery = recoveryRequired(
+          readiness,
+          method === 'candidate.decline' ? 'candidate.decline' : 'candidate.finalize',
+        )
+        if (recovery !== undefined) return publicJson(recovery)
+      }
+      const attribution = await meta.proposalAttribution(activeRoundId, sessionId, finalization)
       const diff = await this.service.submitFinalization(evolutionId, activeRoundId, finalization, decline, attribution, evidence)
       return publicJson({ accepted: true, evolutionId, roundId: activeRoundId, ...(diff === undefined ? {} : { diff }) })
     }
     throw new Error(`unknown refine-meta capability: ${method}`)
+  }
+
+  private async projectedTrajectory(
+    runId: string,
+    signal: AbortSignal,
+  ): Promise<TrajectoryProjection> {
+    const cached = this.trajectoryProjections.get(runId)
+    if (cached !== undefined) {
+      this.trajectoryProjections.delete(runId)
+      this.trajectoryProjections.set(runId, cached)
+      return this.waitForProjection(runId, cached, signal)
+    }
+    const controller = new AbortController()
+    const shared: SharedProjectionLoad = {
+      promise: this.loadCompleteTrajectory(runId, controller.signal).then(projectTrajectory),
+      controller,
+      waiters: 0,
+      settled: false,
+      bytes: 0,
+    }
+    this.trajectoryProjections.set(runId, shared)
+    void shared.promise.then(
+      projection => {
+        shared.settled = true
+        if (this.trajectoryProjections.get(runId) === shared) {
+          shared.bytes = Buffer.byteLength(JSON.stringify(projection))
+          this.trajectoryProjectionCacheBytes += shared.bytes
+          this.trimTrajectoryProjectionCache()
+        }
+      },
+      () => {
+        shared.settled = true
+        this.deleteTrajectoryProjection(runId, shared)
+      },
+    )
+    this.trimTrajectoryProjectionCache()
+    return this.waitForProjection(runId, shared, signal)
+  }
+
+  private trimTrajectoryProjectionCache(): void {
+    const maxEntries = this.options.maxTrajectoryCacheEntries ?? 8
+    const maxBytes = this.options.maxTrajectoryProjectionCacheBytes ?? 64 * 1024 * 1024
+    while (this.trajectoryProjections.size > maxEntries || this.trajectoryProjectionCacheBytes > maxBytes) {
+      const oldest = this.trajectoryProjections.keys().next().value as string | undefined
+      if (oldest === undefined) break
+      this.deleteTrajectoryProjection(oldest)
+    }
+  }
+
+  private deleteTrajectoryProjection(runId: string, expected?: SharedProjectionLoad): void {
+    const existing = this.trajectoryProjections.get(runId)
+    if (existing === undefined || (expected !== undefined && existing !== expected)) return
+    this.trajectoryProjections.delete(runId)
+    this.trajectoryProjectionCacheBytes = Math.max(0, this.trajectoryProjectionCacheBytes - existing.bytes)
+  }
+
+  private waitForProjection(
+    runId: string,
+    shared: SharedProjectionLoad,
+    signal: AbortSignal,
+  ): Promise<TrajectoryProjection> {
+    signal.throwIfAborted()
+    shared.waiters += 1
+    return new Promise((resolvePromise, reject) => {
+      let completed = false
+      const release = (): void => {
+        if (completed) return
+        completed = true
+        signal.removeEventListener('abort', abort)
+        shared.waiters -= 1
+        if (shared.waiters === 0 && !shared.settled) {
+          shared.controller.abort(new Error(`trajectory projection abandoned for ${runId}`))
+        }
+      }
+      const abort = (): void => {
+        release()
+        reject(signal.reason ?? new Error('trajectory projection aborted'))
+      }
+      signal.addEventListener('abort', abort, { once: true })
+      void shared.promise.then(
+        value => { release(); resolvePromise(value) },
+        error => { release(); reject(error) },
+      )
+    })
+  }
+
+  private async loadCompleteTrajectory(runId: string, signal: AbortSignal): Promise<HitchTrajectory> {
+    const reader = this.options.trajectoryReader
+    if (reader === undefined) throw new Error('Hitch trajectory reader is unavailable')
+    if (reader.loadTrajectory !== undefined) return reader.loadTrajectory(runId, signal)
+    const page = await reader.inspectTrajectory(runId, 0, Number.MAX_SAFE_INTEGER, signal)
+    if (!page.eof || page.events.length !== page.total) {
+      throw new Error(`trajectory reader cannot provide a complete canonical trajectory for ${runId}`)
+    }
+    return {
+      runId: page.runId,
+      fidelity: page.fidelity,
+      ...(page.provider === undefined ? {} : { provider: page.provider }),
+      sessionId: page.sessionId,
+      trajectoryDigest: page.trajectoryDigest ?? digestJson({ header: page.header, events: page.events }),
+      bytes: Buffer.byteLength(JSON.stringify({ header: page.header, events: page.events })),
+      ref: {},
+      header: page.header,
+      events: page.events,
+      diagnostics: page.diagnostics,
+    }
+  }
+
+  private bundleBatchRecovery(selected: readonly SeedRunEvidence[]): Record<string, unknown> {
+    const actions = selected.map((item, index) => ({
+      actionId: `diagnose-oversized-bundle-${index + 1}`,
+      tool: 'trajectory_query',
+      arguments: { refs: [item.trial.runId], view: 'bundle' },
+      reason: `Read the failure bundle for recorded run ${item.trial.runId} separately because the combined response exceeds the output budget.`,
+      coversRunIds: [item.trial.runId],
+    }))
+    return {
+      schemaVersion: 1,
+      bundles: [],
+      batchAccepted: false,
+      recoverable: true,
+      code: 'BUNDLE_BATCH_TOO_LARGE',
+      message: 'The combined failure-bundle response exceeds the output budget. Execute nextAction, then remainingActions; each successful single-run query records its diagnosis receipt.',
+      nextAction: actions[0],
+      remainingActions: actions.slice(1),
+    }
+  }
+
+  private failureBundle(
+    item: SeedRunEvidence,
+    projection: TrajectoryProjection,
+    heldOutRef: string | undefined,
+    maxBytes: number,
+  ): GearFailureBundle {
+    const reward = item.trial.rewards?.reward ?? Object.values(item.trial.rewards ?? {})[0]
+    const prompt = projection.messages.find(message => message.eventType === 'user/message' && message.role === 'user')
+    const workspaceStatus = projection.pathsObservedThroughTools.length === 0 ? 'missing' : 'observed-only'
+    const minimumSteps = projection.semanticSteps.length === 0 ? 0 : 1
+    const profiles = [
+      {
+        maxSteps: 8, excerptBytes: 1_200, maxToolActions: 2, maxAssistantMessages: 1,
+        terminalReason: true, maxContexts: 4, maxSurfaceSeqs: 32, maxPaths: 16,
+        pathBytes: 256, maxEventTypes: 32, labelBytes: 512, includeFinalAnswer: true,
+      },
+      {
+        maxSteps: 2, excerptBytes: 320, maxToolActions: 1, maxAssistantMessages: 1,
+        terminalReason: false, maxContexts: 1, maxSurfaceSeqs: 8, maxPaths: 4,
+        pathBytes: 96, maxEventTypes: 8, labelBytes: 128, includeFinalAnswer: true,
+      },
+      {
+        maxSteps: 1, excerptBytes: 220, maxToolActions: 1, maxAssistantMessages: 1,
+        terminalReason: false, maxContexts: 0, maxSurfaceSeqs: 0, maxPaths: 0,
+        pathBytes: 0, maxEventTypes: 0, labelBytes: 96, includeFinalAnswer: false,
+      },
+    ] as const
+    for (const profile of profiles) {
+      const upperSteps = Math.min(profile.maxSteps, projection.semanticSteps.length)
+      for (let maxSteps = upperSteps; maxSteps >= minimumSteps; maxSteps -= 1) {
+        const selectedSteps = selectKeySteps(projection, maxSteps)
+        const keySteps = selectedSteps.map(step => compactStep(step, item.trial.runId, {
+          excerptBytes: profile.excerptBytes,
+          maxToolActions: profile.maxToolActions,
+          maxAssistantMessages: profile.maxContexts === 0 && step.toolActions.length > 0
+            ? 0
+            : profile.maxAssistantMessages,
+          terminalReason: profile.terminalReason,
+        }))
+        const contextIds = new Set(keySteps.flatMap(step => step.contextEpochId === undefined ? [] : [step.contextEpochId]))
+        const selectedContexts = contextIds.size > 0
+          ? projection.contextEpochs.filter(epoch => contextIds.has(epoch.id))
+          : projection.contextEpochs.filter((_epoch, index) => index === 0 || index === projection.contextEpochs.length - 1)
+        const contextEpochs = (profile.maxContexts === 0 ? [] : selectedContexts.slice(-profile.maxContexts))
+          .map(epoch => compactEpoch(epoch, item.trial.runId, {
+            excerptBytes: profile.excerptBytes,
+            maxSurfaceSeqs: profile.maxSurfaceSeqs,
+          }))
+        const eventTypes = compactCounts(projection.omittedEventTypes, profile.maxEventTypes)
+        const pathsObservedThroughTools = projection.pathsObservedThroughTools
+          .slice(0, profile.maxPaths)
+          .map(path => boundedUtf8(path, profile.pathBytes))
+        const taskName = boundedUtf8(item.trial.taskName, profile.labelBytes)
+        const trialName = item.trial.trialName === undefined
+          ? undefined
+          : boundedUtf8(item.trial.trialName, profile.labelBytes)
+        const crossSourceSignals: GearFailureBundle['crossSourceSignals'] = []
+        if (item.trial.status === 'completed' && (reward ?? 0) <= 0) {
+          crossSourceSignals.push({ kind: 'completed_run_with_zero_reward', runId: item.trial.runId })
+        }
+        if (projection.errors.length > 0) {
+          crossSourceSignals.push({ kind: 'completed_run_with_tool_errors', runId: item.trial.runId })
+        }
+        if (workspaceStatus === 'observed-only') {
+          crossSourceSignals.push({ kind: 'workspace_paths_observed_without_authoritative_diff', runId: item.trial.runId })
+        }
+        crossSourceSignals.push({ kind: 'verifier_evidence_unavailable', runId: item.trial.runId })
+        const draft = {
+          schemaVersion: 1 as const,
+          identity: {
+            evolutionId: item.evolutionId,
+            roundId: item.roundId,
+            phase: item.phase,
+            evalId: item.evalId,
+            runId: item.trial.runId,
+            taskName,
+            ...(taskName === item.trial.taskName ? {} : { taskNameTruncated: true }),
+            ...(trialName === undefined ? {} : { trialName }),
+            ...(trialName === item.trial.trialName ? {} : { trialNameTruncated: true }),
+            ...(item.trial.attempt === undefined ? {} : { attempt: item.trial.attempt }),
+            trajectoryDigest: projection.trajectoryDigest,
+          },
+          task: prompt === undefined ? {} : { prompt: compactExcerpt(prompt.message, profile.excerptBytes) },
+          outcome: {
+            trialStatus: item.trial.status,
+            ...(reward === undefined ? {} : { reward }),
+            ...(item.trial.invalidReason === undefined ? {} : {
+              invalidReason: boundedUtf8(item.trial.invalidReason, profile.labelBytes),
+            }),
+            verifierStatus: 'unavailable' as const,
+          },
+          trajectory: {
+            fidelity: projection.fidelity,
+            rawEventCount: projection.rawEventCount,
+            omittedEventTypes: eventTypes.counts,
+            ...(eventTypes.omittedCount === 0 ? {} : { omittedEventTypeCount: eventTypes.omittedCount }),
+            contextEpochCount: projection.contextEpochs.length,
+            contextEpochs,
+            semanticStepCount: projection.semanticSteps.length,
+            keySteps,
+            omittedStepCount: projection.semanticSteps.length - keySteps.length,
+            ...(projection.finalAnswer === undefined || !profile.includeFinalAnswer
+              ? {}
+              : { finalAnswer: compactMessage(projection.finalAnswer, profile.excerptBytes) }),
+          },
+          workspace: {
+            status: workspaceStatus,
+            pathsObservedThroughTools,
+            ...(projection.pathsObservedThroughTools.length <= pathsObservedThroughTools.length ? {} : {
+              omittedPathCount: projection.pathsObservedThroughTools.length - pathsObservedThroughTools.length,
+            }),
+          },
+          crossSourceSignals,
+          coverage: {
+            task: prompt === undefined ? 'missing' as const : 'complete' as const,
+            trajectory: projection.fidelity === 'exact-surface' ? 'complete' as const : 'partial' as const,
+            verifier: 'unavailable' as const,
+            childSessions: 'unavailable' as const,
+            workspace: workspaceStatus,
+          },
+        }
+        const sanitized = this.sanitize(draft, heldOutRef) as unknown as Omit<GearFailureBundle, 'bundleDigest'>
+        const bundle: GearFailureBundle = { ...sanitized, bundleDigest: digestJson(sanitized) }
+        if (Buffer.byteLength(JSON.stringify(bundle)) <= maxBytes) return bundle
+      }
+    }
+    throw new Error(`failure bundle for ${item.trial.runId} exceeds the configured output budget`)
+  }
+
+  private diagnosisReceipt(bundle: GearFailureBundle, trajectoryDigest: string): DiagnosisReceipt {
+    return {
+      runId: bundle.identity.runId,
+      bundleDigest: bundle.bundleDigest,
+      trajectoryDigest,
+      projectionVersion: 1,
+      verifierStatus: bundle.coverage.verifier,
+      ...(bundle.coverage.verifier === 'unavailable' && this.options.allowUnavailableVerifierDiagnosis === true
+        ? { compatibility: 'allow-unavailable-verifier' as const }
+        : {}),
+      sanitizationPolicyDigest: digestJson({
+        sensitiveKeyPattern: SENSITIVE_KEY.source,
+        secretDigests: this.secretValues.map(value => digestJson(value)).sort(),
+      }),
+      inspectedAt: new Date().toISOString(),
+    }
   }
 
   private seedRunEvidence(rounds: RefinementRound[]): SeedRunEvidence[] {
@@ -376,28 +974,87 @@ export class RefineCapabilities {
     events: JsonValue[]
     diagnostics: JsonValue
   } {
-    const sanitizedHeader = this.sanitize(header, heldOutRef)
-    const sanitizedDiagnostics = this.sanitize(diagnostics, heldOutRef)
+    let sanitizedHeader = this.sanitize(header, heldOutRef)
+    let headerBytes = Buffer.byteLength(JSON.stringify(sanitizedHeader))
+    if (headerBytes > Math.floor(this.maxTrajectoryPageBytes / 4)) {
+      const source = record(header)
+      sanitizedHeader = this.sanitize({
+        ...(typeof source.type === 'string' ? { type: source.type } : {}),
+        ...(typeof source.id === 'string' ? { id: source.id } : {}),
+        truncated: true,
+        originalBytes: headerBytes,
+      }, heldOutRef)
+      headerBytes = Buffer.byteLength(JSON.stringify(sanitizedHeader))
+    }
+    let sanitizedDiagnostics = this.sanitize(diagnostics, heldOutRef)
+    let diagnosticsBytes = Buffer.byteLength(JSON.stringify(sanitizedDiagnostics))
+    if (diagnosticsBytes > Math.floor(this.maxTrajectoryPageBytes / 4)) {
+      const source = record(diagnostics)
+      sanitizedDiagnostics = this.sanitize({
+        totalEvents: source.totalEvents,
+        eventTypeCount: typeof source.eventTypes === 'object' && source.eventTypes !== null
+          ? Object.keys(source.eventTypes).length
+          : undefined,
+        toolCalls: source.toolCalls,
+        toolResults: source.toolResults,
+        toolErrors: source.toolErrors,
+        truncated: true,
+        originalBytes: diagnosticsBytes,
+      }, heldOutRef)
+      diagnosticsBytes = Buffer.byteLength(JSON.stringify(sanitizedDiagnostics))
+    }
     const bounded: JsonValue[] = []
-    let bytes = Buffer.byteLength(JSON.stringify(sanitizedHeader))
+    let bytes = headerBytes + diagnosticsBytes
     for (const event of events) {
       let sanitized = this.sanitize(event, heldOutRef)
       let eventBytes = Buffer.byteLength(JSON.stringify(sanitized))
-      if (eventBytes > this.maxTrajectoryPageBytes) {
+      if (eventBytes > this.maxTrajectoryPageBytes - bytes) {
         const source = record(event)
-        sanitized = publicJson({
+        sanitized = this.sanitize({
           type: source.type,
           seq: source.seq,
           time: source.time,
           data: { truncated: true, originalBytes: eventBytes },
-        })
+        }, heldOutRef)
         eventBytes = Buffer.byteLength(JSON.stringify(sanitized))
       }
-      if (bounded.length > 0 && bytes + eventBytes > this.maxTrajectoryPageBytes) break
+      if (bytes + eventBytes > this.maxTrajectoryPageBytes) break
       bounded.push(sanitized)
       bytes += eventBytes
     }
     return { header: sanitizedHeader, events: bounded, diagnostics: sanitizedDiagnostics }
+  }
+
+  private boundTrajectoryItems(items: unknown[], heldOutRef: string | undefined): {
+    items: JsonValue[]
+    consumed: number
+  } {
+    const bounded: JsonValue[] = []
+    let bytes = 0
+    let consumed = 0
+    for (const item of items) {
+      let sanitized = this.sanitize(item, heldOutRef)
+      let itemBytes = Buffer.byteLength(JSON.stringify(sanitized))
+      if (itemBytes > this.maxTrajectoryPageBytes) {
+        const source = record(item)
+        sanitized = this.sanitize({
+          ...(typeof source.id === 'string' ? { id: source.id } : {}),
+          ...(typeof source.requestSeq === 'number' ? { requestSeq: source.requestSeq } : {}),
+          ...(typeof source.boundarySeq === 'number' ? { boundarySeq: source.boundarySeq } : {}),
+          ...(typeof source.seqStart === 'number' ? { seqStart: source.seqStart } : {}),
+          ...(typeof source.turn === 'number' ? { turn: source.turn } : {}),
+          ...(typeof source.step === 'number' ? { step: source.step } : {}),
+          truncated: true,
+          originalBytes: itemBytes,
+        }, heldOutRef)
+        itemBytes = Buffer.byteLength(JSON.stringify(sanitized))
+      }
+      if (bounded.length > 0 && bytes + itemBytes > this.maxTrajectoryPageBytes) break
+      bounded.push(sanitized)
+      bytes += itemBytes
+      consumed += 1
+    }
+    return { items: bounded, consumed }
   }
 
   private sanitize(value: unknown, heldOutRef: string | undefined, key?: string): JsonValue {
@@ -411,9 +1068,21 @@ export class RefineCapabilities {
     if (value === null || typeof value === 'number' || typeof value === 'boolean') return value
     if (Array.isArray(value)) return value.map(item => this.sanitize(item, heldOutRef))
     if (typeof value === 'object') {
-      return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, this.sanitize(item, heldOutRef, name)])) as JsonValue
+      return Object.fromEntries(Object.entries(value).map(([name, item]) => [
+        this.sanitizeKey(name, heldOutRef),
+        this.sanitize(item, heldOutRef, name),
+      ])) as JsonValue
     }
     return String(value)
+  }
+
+  private sanitizeKey(name: string, heldOutRef: string | undefined): string {
+    let result = name
+    for (const secret of this.secretValues) result = result.split(secret).join('[REDACTED]')
+    if (heldOutRef !== undefined && heldOutRef.length > 0) {
+      result = result.split(heldOutRef).join('[REDACTED_HELD_OUT]')
+    }
+    return result
   }
 
   private string(args: Record<string, unknown>, key: string): string {
@@ -433,6 +1102,13 @@ export class RefineCapabilities {
     const value = args[key]
     if (value === undefined) return undefined
     if (typeof value !== 'string' || value.length === 0) throw new TypeError(`${key} must be a non-empty string`)
+    return value
+  }
+
+  private optionalBoolean(args: Record<string, unknown>, key: string): boolean | undefined {
+    const value = args[key]
+    if (value === undefined) return undefined
+    if (typeof value !== 'boolean') throw new TypeError(`${key} must be a boolean`)
     return value
   }
 

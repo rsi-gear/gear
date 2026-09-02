@@ -75,13 +75,19 @@ class SeedTasksAPI:
 class TrajectoryAPI:
     """Query seed evidence and Hitch canonical target trajectories."""
 
-    def query(self, roundId=None, refs=None, offset=0, limit=20):
-        """List seed summaries, or inspect eval/run refs with whole-trajectory diagnostics and paged events."""
+    def query(self, roundId=None, refs=None, view=None, offset=0, limit=20,
+              turn=None, step=None, eventTypes=None, aroundSeq=None, radius=None,
+              errorsOnly=None):
+        """Read seed summaries/progress or bundle, steps, context, and raw-event views for eval/run refs."""
         params = {"offset": offset, "limit": limit}
         if roundId is not None:
             params["roundId"] = roundId
         if refs is not None:
             params["refs"] = refs
+        params.update(compact({
+            "view": view, "turn": turn, "step": step, "eventTypes": eventTypes,
+            "aroundSeq": aroundSeq, "radius": radius, "errorsOnly": errorsOnly,
+        }))
         return bridge_call("trajectory.query", params)
 
 

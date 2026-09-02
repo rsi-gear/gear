@@ -12,6 +12,7 @@ import type {
   EvaluationTrialSlot,
   FailedEvaluationEvidence,
   HitchEvaluationEvidence,
+  HitchTrajectory,
   HitchTrajectoryPage,
   HitchTrajectoryReader,
   HitchTrialSummary,
@@ -33,6 +34,13 @@ interface ProcessResult {
   stdout: string
   stderr: string
   exitCode: number
+}
+
+interface SharedTrajectoryLoad {
+  promise: Promise<HitchTrajectory>
+  controller: AbortController
+  waiters: number
+  settled: boolean
 }
 
 interface HitchEvaluationIdentity {
@@ -177,6 +185,9 @@ function trajectoryDiagnostics(events: JsonRecord[]): TrajectoryDiagnostics {
 export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader {
   readonly repositoryPath: string
   private executablePathPromise?: Promise<string>
+  private readonly trajectoryCache = new Map<string, HitchTrajectory>()
+  private readonly trajectoryLoads = new Map<string, SharedTrajectoryLoad>()
+  private trajectoryCacheBytes = 0
 
   constructor(readonly options: HitchCliEvaluatorOptions) {
     this.repositoryPath = resolve(options.repositoryPath)
@@ -189,6 +200,14 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     if (!Number.isSafeInteger(options.maxOutputBytes) || options.maxOutputBytes <= 0) throw new TypeError('hitch.maxOutputBytes must be positive')
     if (!Number.isSafeInteger(options.maxTrajectoryOutputBytes) || options.maxTrajectoryOutputBytes <= 0) {
       throw new TypeError('hitch.maxTrajectoryOutputBytes must be positive')
+    }
+    if (options.trajectoryCacheEntries !== undefined
+      && (!Number.isSafeInteger(options.trajectoryCacheEntries) || options.trajectoryCacheEntries <= 0)) {
+      throw new TypeError('hitch.trajectoryCacheEntries must be positive')
+    }
+    if (options.trajectoryCacheBytes !== undefined
+      && (!Number.isSafeInteger(options.trajectoryCacheBytes) || options.trajectoryCacheBytes <= 0)) {
+      throw new TypeError('hitch.trajectoryCacheBytes must be positive')
     }
     if (options.passEnv.some(name => !/^[A-Z_][A-Z0-9_]*$/u.test(name))) throw new TypeError('hitch.passEnv contains an invalid environment variable name')
   }
@@ -278,6 +297,88 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     if (!/^run_[0-9a-f]{32}$/u.test(runId)) throw new TypeError('Hitch trajectory requires a valid run ID')
     if (!Number.isSafeInteger(offset) || offset < 0) throw new TypeError('trajectory offset must be a non-negative integer')
     if (!Number.isSafeInteger(limit) || limit <= 0) throw new TypeError('trajectory limit must be a positive integer')
+    const trajectory = await this.loadTrajectory(runId, signal)
+    const page = trajectory.events.slice(offset, offset + limit)
+    return {
+      runId,
+      fidelity: trajectory.fidelity,
+      ...(trajectory.provider === undefined ? {} : { provider: trajectory.provider }),
+      sessionId: trajectory.sessionId,
+      trajectoryDigest: trajectory.trajectoryDigest,
+      header: trajectory.header,
+      events: page,
+      offset,
+      limit,
+      total: trajectory.events.length,
+      eof: offset + page.length >= trajectory.events.length,
+      diagnostics: trajectory.diagnostics,
+    }
+  }
+
+  async loadTrajectory(runId: string, signal: AbortSignal): Promise<HitchTrajectory> {
+    if (!/^run_[0-9a-f]{32}$/u.test(runId)) throw new TypeError('Hitch trajectory requires a valid run ID')
+    signal.throwIfAborted()
+    const cached = this.trajectoryCache.get(runId)
+    if (cached !== undefined) {
+      this.trajectoryCache.delete(runId)
+      this.trajectoryCache.set(runId, cached)
+      return cached
+    }
+    const pending = this.trajectoryLoads.get(runId)
+    if (pending !== undefined) return this.waitForTrajectoryLoad(runId, pending, signal)
+    const controller = new AbortController()
+    const shared: SharedTrajectoryLoad = {
+      promise: this.fetchTrajectory(runId, controller.signal),
+      controller,
+      waiters: 0,
+      settled: false,
+    }
+    this.trajectoryLoads.set(runId, shared)
+    void shared.promise.then(
+      trajectory => {
+        shared.settled = true
+        this.cacheTrajectory(trajectory)
+        if (this.trajectoryLoads.get(runId) === shared) this.trajectoryLoads.delete(runId)
+      },
+      () => {
+        shared.settled = true
+        if (this.trajectoryLoads.get(runId) === shared) this.trajectoryLoads.delete(runId)
+      },
+    )
+    return this.waitForTrajectoryLoad(runId, shared, signal)
+  }
+
+  private waitForTrajectoryLoad(
+    runId: string,
+    shared: SharedTrajectoryLoad,
+    signal: AbortSignal,
+  ): Promise<HitchTrajectory> {
+    signal.throwIfAborted()
+    shared.waiters += 1
+    return new Promise<HitchTrajectory>((resolvePromise, reject) => {
+      let completed = false
+      const release = (): void => {
+        if (completed) return
+        completed = true
+        signal.removeEventListener('abort', abort)
+        shared.waiters -= 1
+        if (shared.waiters === 0 && !shared.settled && this.trajectoryLoads.get(runId) === shared) {
+          shared.controller.abort(new Error(`trajectory load abandoned for ${runId}`))
+        }
+      }
+      const abort = (): void => {
+        release()
+        reject(signal.reason ?? new Error('trajectory load aborted'))
+      }
+      signal.addEventListener('abort', abort, { once: true })
+      void shared.promise.then(
+        trajectory => { release(); resolvePromise(trajectory) },
+        error => { release(); reject(error) },
+      )
+    })
+  }
+
+  private async fetchTrajectory(runId: string, signal: AbortSignal): Promise<HitchTrajectory> {
     const args = [
       ...(this.options.root.length === 0 ? [] : ['--root', this.options.root]),
       'trajectory', 'inspect', runId, '--json',
@@ -313,19 +414,43 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     const sessionId = string(header.id, 'trajectory.header.id')
     if (!Array.isArray(result.events)) throw new HitchEvaluationError('trajectory.events must be an array', 'invalid_hitch_result')
     const events = result.events.map((event, index) => record(event, `trajectory.events[${index}]`))
-    const page = events.slice(offset, offset + limit)
+    const canonicalFile = Array.isArray(ref.files)
+      ? ref.files.map(item => record(item, 'trajectory.ref.files[]')).find(item => item.role === 'canonical_session')
+      : undefined
+    const reportedDigest = typeof ref.sha256 === 'string'
+      ? ref.sha256
+      : typeof canonicalFile?.sha256 === 'string' ? canonicalFile.sha256 : undefined
+    const trajectoryDigest = reportedDigest !== undefined && /^sha256:[0-9a-f]{64}$/u.test(reportedDigest)
+      ? reportedDigest
+      : sha256(processResult.stdout)
     return {
       runId,
       fidelity,
       ...(typeof ref.provider === 'string' && ref.provider.length > 0 ? { provider: ref.provider } : {}),
       sessionId,
+      trajectoryDigest,
+      bytes: Buffer.byteLength(processResult.stdout),
+      ref: ref as never,
       header: header as never,
-      events: page as never[],
-      offset,
-      limit,
-      total: events.length,
-      eof: offset + page.length >= events.length,
+      events: events as never[],
       diagnostics: trajectoryDiagnostics(events),
+    }
+  }
+
+  private cacheTrajectory(trajectory: HitchTrajectory): void {
+    const maxEntries = this.options.trajectoryCacheEntries ?? 8
+    const maxBytes = this.options.trajectoryCacheBytes ?? 256 * 1024 * 1024
+    if (trajectory.bytes > maxBytes) return
+    const existing = this.trajectoryCache.get(trajectory.runId)
+    if (existing !== undefined) this.trajectoryCacheBytes -= existing.bytes
+    this.trajectoryCache.delete(trajectory.runId)
+    this.trajectoryCache.set(trajectory.runId, trajectory)
+    this.trajectoryCacheBytes += trajectory.bytes
+    while (this.trajectoryCache.size > maxEntries || this.trajectoryCacheBytes > maxBytes) {
+      const oldest = this.trajectoryCache.entries().next().value as [string, HitchTrajectory] | undefined
+      if (oldest === undefined) break
+      this.trajectoryCache.delete(oldest[0])
+      this.trajectoryCacheBytes -= oldest[1].bytes
     }
   }
 
@@ -930,23 +1055,33 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
         env: process.env,
         stdio: ['ignore', 'pipe', 'pipe'],
       })
-      let stdout = ''
-      let stderr = ''
+      const stdoutChunks: string[] = []
+      const stderrChunks: string[] = []
+      let stdoutBytes = 0
+      let stderrBytes = 0
       let overflow: 'stdout' | 'stderr' | undefined
       let killTimer: NodeJS.Timeout | undefined
-      const append = (stream: 'stdout' | 'stderr', current: string, chunk: string): string => {
-        const next = current + chunk
-        if (Buffer.byteLength(next) > maxOutputBytes) {
+      const append = (stream: 'stdout' | 'stderr', chunk: string): void => {
+        if (overflow !== undefined) return
+        const chunkBytes = Buffer.byteLength(chunk)
+        const currentBytes = stream === 'stdout' ? stdoutBytes : stderrBytes
+        if (currentBytes + chunkBytes > maxOutputBytes) {
           overflow = stream
           child.kill('SIGTERM')
-          return next.slice(0, maxOutputBytes)
+          return
         }
-        return next
+        if (stream === 'stdout') {
+          stdoutChunks.push(chunk)
+          stdoutBytes += chunkBytes
+        } else {
+          stderrChunks.push(chunk)
+          stderrBytes += chunkBytes
+        }
       }
       child.stdout.setEncoding('utf8')
       child.stderr.setEncoding('utf8')
-      child.stdout.on('data', (chunk: string) => { stdout = append('stdout', stdout, chunk) })
-      child.stderr.on('data', (chunk: string) => { stderr = append('stderr', stderr, chunk) })
+      child.stdout.on('data', (chunk: string) => { append('stdout', chunk) })
+      child.stderr.on('data', (chunk: string) => { append('stderr', chunk) })
       const terminate = (): void => {
         child.kill('SIGTERM')
         killTimer = setTimeout(() => child.kill('SIGKILL'), this.options.terminationGraceMs)
@@ -965,7 +1100,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
           return reject(new HitchEvaluationError(`Hitch ${overflow} exceeded ${maxOutputBytes} bytes`, 'hitch_output_overflow'))
         }
         if (code === null) return reject(new HitchEvaluationError(`Hitch exited from signal ${childSignal ?? 'unknown'}`))
-        resolvePromise({ stdout, stderr, exitCode: code })
+        resolvePromise({ stdout: stdoutChunks.join(''), stderr: stderrChunks.join(''), exitCode: code })
       })
     })
   }

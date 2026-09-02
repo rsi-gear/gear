@@ -259,6 +259,17 @@ export async function createSkillControlPlane(
     ...('inspectTrajectory' in evaluator && typeof evaluator.inspectTrajectory === 'function'
       ? { trajectoryReader: evaluator as RefineEvaluator & HitchTrajectoryReader }
       : {}),
+    maxTrajectoryPageBytes: config.candidateWorkspace.maxReadBytes,
+    maxFailureBundleBytes: config.candidateWorkspace.maxReadBytes,
+    ...(config.hitch.trajectoryCacheEntries === undefined ? {} : {
+      maxTrajectoryCacheEntries: config.hitch.trajectoryCacheEntries,
+    }),
+    ...(config.hitch.trajectoryCacheBytes === undefined ? {} : {
+      maxTrajectoryProjectionCacheBytes: config.hitch.trajectoryCacheBytes,
+    }),
+    ...(config.hitch.allowUnavailableVerifierDiagnosis === undefined ? {} : {
+      allowUnavailableVerifierDiagnosis: config.hitch.allowUnavailableVerifierDiagnosis,
+    }),
     secretValues: [...new Set([
       ...config.hitch.passEnv,
       ...(config.selection.llmVerifier?.passEnv ?? []),

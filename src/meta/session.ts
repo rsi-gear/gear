@@ -5,7 +5,7 @@ import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-agent-presets'
 import type {
-  CandidateRecord, DshMetaAgentSpec, EvaluationEvidence, MetaAttribution, MetaCheckpointRef,
+  CandidateRecord, DiagnosisReceipt, DshMetaAgentSpec, EvaluationEvidence, MetaAttribution, MetaCheckpointRef,
   MetaTurnObservation, ProposalEvidenceAudit, RefinementRound,
 } from '../types.js'
 import type { RefineStateStore } from '../state/store.js'
@@ -39,6 +39,7 @@ interface RoundEvidenceAccess {
   summaryAccessed: boolean
   accessedRefs: Set<string>
   diagnosedRunRefs: Set<string>
+  diagnosisReceipts: Map<string, DiagnosisReceipt>
 }
 
 function reward(rewards: Record<string, number>): number | undefined {
@@ -279,6 +280,7 @@ export class MetaSessionManager implements MetaSessionController {
       summaryAccessed: baseline !== undefined,
       accessedRefs: new Set(baselineRefs),
       diagnosedRunRefs: new Set(),
+      diagnosisReceipts: new Map(),
     })
     dshAgent.followup(createUserMessage({
       content: [{ type: 'text', text: JSON.stringify({
@@ -330,7 +332,12 @@ export class MetaSessionManager implements MetaSessionController {
   recordEvidenceAccess(
     roundId: string,
     sessionId: string,
-    access: { summary?: boolean; refs?: readonly string[]; diagnosedRunRefs?: readonly string[] },
+    access: {
+      summary?: boolean
+      refs?: readonly string[]
+      diagnosedRunRefs?: readonly string[]
+      diagnosisReceipts?: readonly DiagnosisReceipt[]
+    },
   ): void {
     const wake = this.wakes.get(sessionId)
     const current = this.evidenceAccess.get(sessionId)
@@ -340,6 +347,10 @@ export class MetaSessionManager implements MetaSessionController {
     if (access.summary === true) current.summaryAccessed = true
     for (const ref of access.refs ?? []) current.accessedRefs.add(ref)
     for (const ref of access.diagnosedRunRefs ?? []) current.diagnosedRunRefs.add(ref)
+    for (const receipt of access.diagnosisReceipts ?? []) {
+      current.diagnosedRunRefs.add(receipt.runId)
+      current.diagnosisReceipts.set(receipt.runId, structuredClone(receipt))
+    }
   }
 
   proposalEvidenceAudit(roundId: string, sessionId: string, citedRefs: readonly string[]): ProposalEvidenceAudit {
@@ -356,6 +367,9 @@ export class MetaSessionManager implements MetaSessionController {
       summaryAccessed: access.summaryAccessed,
       accessedRefs: [...access.accessedRefs].sort(),
       diagnosedRunRefs: [...access.diagnosedRunRefs].sort(),
+      diagnosisReceipts: [...access.diagnosisReceipts.values()]
+        .sort((left, right) => left.runId.localeCompare(right.runId))
+        .map(receipt => structuredClone(receipt)),
       citedRefs: [...citedRefs],
     }
   }

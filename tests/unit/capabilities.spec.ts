@@ -1,11 +1,11 @@
 import { rm } from 'node:fs/promises'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RefineCapabilities } from '../../src/capabilities.js'
 import { HarnessBuilder, NoopHarnessCompiler } from '../../src/harness/builder.js'
 import { RefineStateStore } from '../../src/state/store.js'
-import type { HitchEvaluationEvidence, HitchTrajectoryReader, RefinementRound } from '../../src/types.js'
+import type { HitchEvaluationEvidence, HitchTrajectoryPage, HitchTrajectoryReader, RefinementRound } from '../../src/types.js'
 import { createGitHarnessFixture, gitOutput } from '../helpers/git-fixture.js'
-import { roundFixture } from '../helpers/research-fixture.js'
+import { evidence as evidenceFixture, roundFixture } from '../helpers/research-fixture.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
@@ -176,25 +176,49 @@ describe('RefineCapabilities Git projection', () => {
       sandboxProfileRef: 'sandbox-v1',
       compiler: new NoopHarnessCompiler(),
     })
-    const reader: HitchTrajectoryReader = {
-      async inspectTrajectory(runId, offset, limit) {
+    const inspectTrajectory = vi.fn(async (
+      runId: string,
+      offset: number,
+      limit: number,
+      _signal: AbortSignal,
+    ): Promise<HitchTrajectoryPage> => {
         return {
           runId,
           fidelity: 'provider_native',
           provider: 'deepseek',
           sessionId: 'target-session',
           header: { type: 'session', id: 'target-session', authorization: 'top-secret' },
-          events: [{
-            type: 'tool/result', seq: offset, time: 1,
-            data: { text: 'top-secret held-out-secret', token: 'top-secret' },
-          }],
+          events: [
+            {
+              type: 'user/message', seq: 0, time: 1, surfaceOp: 'append',
+              data: {
+                role: 'user', id: 'user-1', source: { kind: 'user' }, token: 'top-secret',
+                'held-out-secret': 'must not leak through an object key',
+                content: [{ type: 'text', text: 'top-secret held-out-secret' }],
+              },
+            },
+            {
+              type: 'assistant/message', seq: 1, time: 2, surfaceOp: 'append',
+              data: {
+                turn: 1,
+                step: 1,
+                message: {
+                  role: 'assistant', id: 'assistant-1', source: { kind: 'model', provider: 'fake', model: 'fake' },
+                  content: [{
+                    type: 'text',
+                    text: `answer contains top-secret and held-out-secret ${'x'.repeat(10_000)}`,
+                  }],
+                },
+              },
+            },
+          ],
           offset,
           limit,
-          total: 1,
+          total: 2,
           eof: true,
           diagnostics: {
-            totalEvents: 1,
-            eventTypes: { 'tool/result': 1 },
+            totalEvents: 2,
+            eventTypes: { 'user/message': 1, 'assistant/message': 1 },
             toolCalls: 0,
             toolResults: 1,
             toolErrors: 1,
@@ -202,8 +226,8 @@ describe('RefineCapabilities Git projection', () => {
             finalAssistantExcerpts: [],
           },
         }
-      },
-    }
+    })
+    const reader: HitchTrajectoryReader = { inspectTrajectory }
     const accesses: unknown[] = []
     const meta = {
       activeRoundId: () => round.roundId,
@@ -213,6 +237,9 @@ describe('RefineCapabilities Git projection', () => {
     const capabilities = new RefineCapabilities(service as never, builder, () => undefined, {
       trajectoryReader: reader,
       secretValues: ['top-secret'],
+      maxTrajectoryPageBytes: 4 * 1024,
+      maxFailureBundleBytes: 128 * 1024,
+      allowUnavailableVerifierDiagnosis: true,
     })
     const index = await capabilities.call('refine-meta', 'meta', 'trajectory.query', {})
     expect(index).toMatchObject({
@@ -227,32 +254,151 @@ describe('RefineCapabilities Git projection', () => {
     expect(JSON.stringify(index)).not.toContain(heldRun)
     expect(JSON.stringify(index)).not.toContain('held-out-secret')
 
-    const page = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [seedRun] })
+    const page = await capabilities.call('refine-meta', 'meta', 'trajectory.query', {
+      refs: [seedRun], view: 'events', eventTypes: ['user/message'],
+    })
     expect(page).toMatchObject({ trajectories: [{
       runId: seedRun,
       header: { authorization: '[REDACTED]' },
-      events: [{ data: { text: '[REDACTED] [REDACTED_HELD_OUT]', token: '[REDACTED]' } }],
+      events: [{ data: {
+        content: [{ text: '[REDACTED] [REDACTED_HELD_OUT]' }],
+        token: '[REDACTED]',
+      } }],
       diagnostics: { errorExcerpts: [{ excerpt: '[REDACTED] [REDACTED_HELD_OUT]' }] },
       nextOffset: 1,
       eof: true,
     }] })
-    expect(accesses).toContainEqual([
+    expect(accesses).not.toContainEqual([
       round.roundId,
       'meta',
       expect.objectContaining({ diagnosedRunRefs: [seedRun] }),
     ])
+    const largeEvent = await capabilities.call('refine-meta', 'meta', 'trajectory.query', {
+      refs: [seedRun], view: 'events', eventTypes: ['assistant/message'],
+    })
+    expect(largeEvent).toMatchObject({ trajectories: [{
+      events: [{ seq: 1, data: { truncated: true } }],
+      nextOffset: 1,
+      eof: true,
+    }] })
+    expect(JSON.stringify(largeEvent)).not.toContain('top-secret')
+    expect(JSON.stringify(largeEvent)).not.toContain('held-out-secret')
+    const steps = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [seedRun], view: 'steps' })
+    expect(JSON.stringify(steps)).not.toContain('top-secret')
+    expect(JSON.stringify(steps)).not.toContain('held-out-secret')
+    expect(steps).toMatchObject({ trajectories: [{ steps: [{ assistantMessages: [{ message: {
+      preview: expect.stringContaining('answer contains [REDACTED] and [REDACTED_HELD_OUT]'),
+    } }] }] }] })
+    const bundle = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [seedRun] })
+    expect(bundle).toMatchObject({ bundles: [{
+      identity: { runId: seedRun, taskName: 'task-1' },
+      trajectory: { rawEventCount: 2, keySteps: [{ turn: 1, step: 1 }] },
+      coverage: { task: 'complete', trajectory: 'complete', verifier: 'unavailable' },
+      bundleDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+    }] })
+    expect(accesses).toContainEqual([
+      round.roundId,
+      'meta',
+      expect.objectContaining({
+        diagnosisReceipts: [expect.objectContaining({ runId: seedRun, projectionVersion: 1 })],
+      }),
+    ])
+    expect(inspectTrajectory).toHaveBeenCalledTimes(3)
+    const tinyProjectionCache = new RefineCapabilities(service as never, builder, () => undefined, {
+      trajectoryReader: reader,
+      maxTrajectoryPageBytes: 4 * 1024,
+      maxFailureBundleBytes: 128 * 1024,
+      maxTrajectoryProjectionCacheBytes: 1,
+      allowUnavailableVerifierDiagnosis: true,
+    })
+    await tinyProjectionCache.call('refine-meta', 'meta', 'trajectory.query', { refs: [seedRun], view: 'steps' })
+    await tinyProjectionCache.call('refine-meta', 'meta', 'trajectory.query', { refs: [seedRun], view: 'steps' })
+    expect(inspectTrajectory).toHaveBeenCalledTimes(5)
+
+    const constrainedBundles = new RefineCapabilities(service as never, builder, () => undefined, {
+      trajectoryReader: reader,
+      maxTrajectoryPageBytes: 4 * 1024,
+      maxFailureBundleBytes: 4 * 1024,
+      allowUnavailableVerifierDiagnosis: true,
+    })
+    await expect(constrainedBundles.call('refine-meta', 'meta', 'trajectory.query', {
+      refs: [seedRun, invalidSeedRun], view: 'bundle',
+    })).resolves.toMatchObject({
+      batchAccepted: false,
+      recoverable: true,
+      code: 'BUNDLE_BATCH_TOO_LARGE',
+      bundles: [],
+      nextAction: { tool: 'trajectory_query', arguments: { refs: [seedRun], view: 'bundle' } },
+      remainingActions: [{ tool: 'trajectory_query', arguments: { refs: [invalidSeedRun], view: 'bundle' } }],
+    })
     await expect(capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [invalidSeedRun] }))
-      .resolves.toMatchObject({ trajectories: [{
-        runId: invalidSeedRun,
-        taskName: 'task-2',
+      .resolves.toMatchObject({ bundles: [{
+        identity: { runId: invalidSeedRun, taskName: 'task-2' },
       }] })
     const failedPage = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [failedEvalId] })
-    expect(failedPage).toMatchObject({ trajectories: [{
-      runId: failedRun,
-      outcome: 'failed',
-      failure: { code: 'hitch_infrastructure_failure' },
+    expect(failedPage).toMatchObject({ bundles: [{
+      identity: { runId: failedRun },
+      outcome: { trialStatus: 'errored', invalidReason: 'infrastructure_failure' },
     }] })
     await expect(capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [heldRun] }))
       .rejects.toThrow(/not recorded seed evidence/)
+  })
+
+  it('returns an executable recovery action instead of consuming an incomplete finalization', async () => {
+    const round = roundFixture({ roundId: 'round-recovery', status: 'candidate-editing' })
+    const baseline = evidenceFixture(round.plan.seed, round.targetHarnessRef, 0)
+    baseline.trials[0]!.taskName = 'make-doom-for-mips'
+    const submitFinalization = vi.fn()
+    const proposalAttribution = vi.fn()
+    const meta = {
+      proposalEvidenceAudit: () => ({
+        evolutionId: round.evolutionId,
+        roundId: round.roundId,
+        candidateId: round.candidatePool[0]!.candidateId,
+        baselineEvalId: baseline.evalId,
+        summaryAccessed: true,
+        accessedRefs: [baseline.evalId],
+        diagnosedRunRefs: [],
+        citedRefs: [baseline.evalId],
+      }),
+      proposalAttribution,
+    }
+    const service = {
+      activeEntryForSession: () => ({
+        evolutionId: round.evolutionId,
+        spec: { datasets: { seed: { ref: 'seed' } } },
+        roundId: round.roundId,
+        store: {},
+        meta,
+        workspace: { workspaceId: 'workspace-1', parentRef: round.targetHarnessRef, parentDigest: round.targetHarnessDigest },
+        baseline,
+        parentHarnessRef: round.targetHarnessRef,
+        parentHarnessDigest: round.targetHarnessDigest,
+      }),
+      submitFinalization,
+    }
+    const capabilities = new RefineCapabilities(service as never, {} as never)
+    const result = await capabilities.call('refine-meta', 'meta', 'candidate.finalize', {
+      rationale: 'fix the failed task',
+      expectedOutcome: 'the task passes',
+      evidenceRefs: [baseline.evalId],
+    })
+    expect(result).toMatchObject({
+      accepted: false,
+      recoverable: true,
+      code: 'MISSING_BASELINE_DIAGNOSIS',
+      readiness: {
+        failedRunCount: 1,
+        remainingRunCount: 1,
+        missing: [{ taskName: 'make-doom-for-mips', runId: baseline.trials[0]!.runId }],
+      },
+      nextAction: {
+        tool: 'trajectory_query',
+        arguments: { refs: [baseline.trials[0]!.runId], view: 'bundle' },
+      },
+      retry: { tool: 'finalize_candidate', reusePreviousArguments: true },
+    })
+    expect(proposalAttribution).not.toHaveBeenCalled()
+    expect(submitFinalization).not.toHaveBeenCalled()
   })
 })

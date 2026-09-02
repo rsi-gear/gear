@@ -1,4 +1,4 @@
-import { appendFile, chmod, copyFile, mkdir, rm, writeFile } from 'node:fs/promises'
+import { appendFile, chmod, copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -436,6 +436,76 @@ describe('HitchCliEvaluator', () => {
         finalAssistantExcerpts: [{ seq: 1 }],
       },
     })
+  })
+
+  it('loads and caches the complete canonical trajectory once per run', async () => {
+    const { evaluator } = await setup()
+    const runId = `run_${'5'.repeat(32)}`
+    const loaded = await evaluator.loadTrajectory(runId, new AbortController().signal)
+    expect(loaded).toMatchObject({
+      runId,
+      trajectoryDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      events: [{ seq: 0 }, { seq: 1 }, { seq: 2 }],
+      diagnostics: { totalEvents: 3 },
+    })
+    await writeFile(evaluator.options.executable, '#!/usr/bin/env node\nprocess.stdout.write("invalid-json\\n")\n')
+    await expect(evaluator.inspectTrajectory(runId, 2, 1, new AbortController().signal)).resolves.toMatchObject({
+      events: [{ seq: 2 }],
+      total: 3,
+      eof: true,
+      trajectoryDigest: loaded.trajectoryDigest,
+    })
+  })
+
+  it('keeps a shared trajectory load alive when only one waiter aborts', async () => {
+    const { fixture, evaluator } = await setup()
+    const counter = join(fixture.root, 'trajectory-invocations.txt')
+    const runId = `run_${'7'.repeat(32)}`
+    const payload = {
+      schema_version: '1', run_id: runId,
+      ref: { schema_version: '2', run_id: runId, fidelity: 'provider_native', provider: 'deepseek', files: [] },
+      header: { type: 'session', version: 1, id: 'session-delayed', createdAt: 1, delegationDepth: 0 },
+      events: [{
+        type: 'user/message', seq: 0, time: 1, surfaceOp: 'append',
+        data: { role: 'user', id: 'u1', source: { kind: 'user' }, content: [{ type: 'text', text: 'prompt' }] },
+      }],
+    }
+    await writeFile(evaluator.options.executable, `#!/usr/bin/env node
+import { appendFileSync } from 'node:fs'
+appendFileSync(${JSON.stringify(counter)}, 'inspect\\n')
+setTimeout(() => process.stdout.write(${JSON.stringify(JSON.stringify(payload) + '\n')}), 100)
+`)
+    await chmod(evaluator.options.executable, 0o755)
+    const firstController = new AbortController()
+    const secondController = new AbortController()
+    const first = evaluator.loadTrajectory(runId, firstController.signal)
+    const second = evaluator.loadTrajectory(runId, secondController.signal)
+    firstController.abort(new Error('first waiter cancelled'))
+    await expect(first).rejects.toThrow(/first waiter cancelled/)
+    await expect(second).resolves.toMatchObject({ runId, sessionId: 'session-delayed' })
+    expect((await readFile(counter, 'utf8')).trim().split('\n')).toHaveLength(1)
+  })
+
+  it('does not retain a trajectory that exceeds the configured cache byte budget', async () => {
+    const { fixture, evaluator } = await setup()
+    const counter = join(fixture.root, 'trajectory-evictions.txt')
+    const runId = `run_${'8'.repeat(32)}`
+    const payload = {
+      schema_version: '1', run_id: runId,
+      ref: { schema_version: '2', run_id: runId, fidelity: 'provider_native', provider: 'deepseek', files: [] },
+      header: { type: 'session', version: 1, id: 'session-uncached', createdAt: 1, delegationDepth: 0 },
+      events: [],
+    }
+    evaluator.options.trajectoryCacheBytes = 1
+    await writeFile(evaluator.options.executable, `#!/usr/bin/env node
+import { appendFileSync } from 'node:fs'
+appendFileSync(${JSON.stringify(counter)}, 'inspect\\n')
+process.stdout.write(${JSON.stringify(JSON.stringify(payload) + '\n')})
+`)
+    await chmod(evaluator.options.executable, 0o755)
+    await evaluator.loadTrajectory(runId, new AbortController().signal)
+    await evaluator.loadTrajectory(runId, new AbortController().signal)
+    expect((await readFile(counter, 'utf8')).trim().split('\n')).toHaveLength(2)
   })
 
   it('fails closed on invalid JSON and actual commit mismatch', async () => {

@@ -6,13 +6,25 @@ import { HitchEvaluationError } from '../../src/evaluator/hitch-cli.js'
 import { HarnessBuilder, NoopHarnessCompiler, SubstrateExpansionError } from '../../src/harness/builder.js'
 import { RefineService } from '../../src/refine/service.js'
 import { EvolutionRegistryStore } from '../../src/state/evolution.js'
-import type { EvaluationPhase, EvaluationRequest, EvaluationRerunResult, EvaluationRerunSelector, EvaluationReservation, HitchEvaluationEvidence, MetaAttribution, MetaCheckpointRef, MetaTurnObservation, RefineEvaluator, RefinementRound, RoundEvaluationAttempt } from '../../src/types.js'
+import type { DiagnosisReceipt, EvaluationPhase, EvaluationRequest, EvaluationRerunResult, EvaluationRerunSelector, EvaluationReservation, HitchEvaluationEvidence, MetaAttribution, MetaCheckpointRef, MetaTurnObservation, RefineEvaluator, RefinementRound, RoundEvaluationAttempt } from '../../src/types.js'
 import { createGitHarnessFixture } from '../helpers/git-fixture.js'
 import { builtinComponentRef, componentRef } from '../../src/evolution/components.js'
 import { evolutionSpec } from '../helpers/research-fixture.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
+
+function diagnosisReceipts(runIds: readonly string[]): DiagnosisReceipt[] {
+  return runIds.map(runId => ({
+    runId,
+    bundleDigest: `sha256:${'c'.repeat(64)}`,
+    trajectoryDigest: `sha256:${'d'.repeat(64)}`,
+    projectionVersion: 1,
+    verifierStatus: 'complete',
+    sanitizationPolicyDigest: `sha256:${'e'.repeat(64)}`,
+    inspectedAt: 'now',
+  }))
+}
 
 class FakeMeta {
   wakes: string[] = []
@@ -298,7 +310,8 @@ async function finalize(service: RefineService, round: RefinementRound): Promise
     rationale: 'fix observed failures', expectedOutcome: 'higher reward', evidenceRefs: [round.baseline.evalId], semanticTargets: ['context', 'routing'],
   }, undefined, meta, {
     evolutionId: round.evolutionId, roundId: round.roundId, candidateId: candidate.candidateId, baselineEvalId: round.baseline.evalId,
-    summaryAccessed: true, accessedRefs: [round.baseline.evalId, ...runRefs], diagnosedRunRefs: failed, citedRefs: [round.baseline.evalId],
+    summaryAccessed: true, accessedRefs: [round.baseline.evalId, ...runRefs], diagnosedRunRefs: failed,
+    diagnosisReceipts: diagnosisReceipts(failed), citedRefs: [round.baseline.evalId],
   })
 }
 
@@ -324,6 +337,7 @@ async function decline(service: RefineService, round: RefinementRound): Promise<
     summaryAccessed: true,
     accessedRefs: [round.baseline.evalId, ...failed],
     diagnosedRunRefs: failed,
+    diagnosisReceipts: diagnosisReceipts(failed),
     citedRefs: [],
   })
 }
@@ -1137,7 +1151,8 @@ describe('RefineService evolution workspaces', () => {
       evolutionId: first.evolutionId, sessionId, requestHeaderSeq: 1, proposalEventSeq: 2,
     }, {
       evolutionId: first.evolutionId, roundId: first.roundId, candidateId: candidate.candidateId, baselineEvalId: first.baseline!.evalId,
-      summaryAccessed: true, accessedRefs: [first.baseline!.evalId, ...failed], diagnosedRunRefs: failed, citedRefs: [],
+      summaryAccessed: true, accessedRefs: [first.baseline!.evalId, ...failed], diagnosedRunRefs: failed,
+      diagnosisReceipts: diagnosisReceipts(failed), citedRefs: [],
     })
     expect(active.workspace).toBeDefined()
     const store = service.registry.stateStore(admission.evolutionId)

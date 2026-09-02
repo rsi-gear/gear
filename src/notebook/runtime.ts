@@ -62,6 +62,11 @@ interface Kernel {
   cleanupPromise?: Promise<void>
 }
 
+function finalizationAccepted(value: unknown): boolean {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    && (value as Record<string, unknown>).accepted === true
+}
+
 export interface SessionAwareNotebookOptions {
   pythonExecutable?: string
   helperPath?: string
@@ -254,7 +259,9 @@ export class SessionAwareNotebookRuntime implements NotebookRuntime {
       try {
         if (!allowed.includes(method)) throw new Error(`bridge method is not allowed for ${pending.request.role}: ${method}`)
         const result = await this.bridge(method, message.params, pending.request)
-        if (method === 'candidate.finalize' || method === 'candidate.decline') pending.concludesTurn = true
+        if ((method === 'candidate.finalize' || method === 'candidate.decline') && finalizationAccepted(result)) {
+          pending.concludesTurn = true
+        }
         kernel.child.stdin.write(`${JSON.stringify({ type: 'bridge_response', requestId, ok: true, result })}\n`)
       } catch (error) {
         kernel.child.stdin.write(`${JSON.stringify({ type: 'bridge_response', requestId, ok: false, error: errorMessage(error) })}\n`)
