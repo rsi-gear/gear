@@ -41,6 +41,25 @@ describe('RefineStateStore', () => {
     }] })).rejects.toThrow(/owner/u)
   })
 
+  it('persists rerun identity only for its owned failed or rerunning attempt', async () => {
+    const state = await store()
+    const round = roundFixture({ status: 'repairing-evaluation' })
+    const evalId = `eval_${'a'.repeat(32)}`
+    const reservation = { provider: 'hitch-cli', evalId, rerunId: `rerun_${'b'.repeat(32)}`, parameters: { root: 'original-root' } }
+    round.evaluationAttempts = [{
+      provider: 'hitch-cli', evalId, phase: 'seed-baseline',
+      owner: { candidateId: `champion-${round.targetHarnessRef}`, role: 'baseline', harnessRef: round.targetHarnessRef },
+      conditionId: round.plan.seed.conditionId, dataset: round.seedTaskRef,
+      requestedModelId: round.plan.seed.model, requestedCommit: round.targetHarnessRef,
+      status: 'rerunning', startedAt: 'before',
+    }]
+    await state.writeRound({ ...round, pendingEvaluationRerun: { reservation } })
+    expect((await state.readRound(round.roundId))?.pendingEvaluationRerun).toEqual({ reservation })
+    for (const changed of [{ evalId: `eval_${'c'.repeat(32)}` }, { rerunId: '../other' }, { provider: 'other' }]) {
+      await expect(state.writeRound({ ...round, pendingEvaluationRerun: { reservation: { ...reservation, ...changed } } })).rejects.toThrow()
+    }
+  })
+
   it('atomically persists state and enforces champion CAS', async () => {
     const state = await store()
     await state.initialize()

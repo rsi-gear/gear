@@ -75,7 +75,7 @@ if (args[0] === 'eval' && args[1] === 'watch' && fault === 'watch-overflow') {
 if (args[0] === 'eval' && (
   (args[1] === 'watch' && fault === 'watch-exit') ||
   (args[1] === 'inspect' && fault === 'inspect-failure') ||
-  (args[1] === 'cancel' && ${JSON.stringify(setupOptions.cancelFails ?? false)})
+  (['cancel', 'rerun-cancel'].includes(args[1]) && ${JSON.stringify(setupOptions.cancelFails ?? false)})
 )) { process.stderr.write('injected CLI failure'); process.exit(9) }
 const value = name => args.includes(name) ? args[args.indexOf(name) + 1] : undefined
 const statePath = ${JSON.stringify(submissionState)}
@@ -129,6 +129,9 @@ else if (args[0] === 'daemon' && args[1] === 'status') {
 } else if (args[0] === 'eval' && args[1] === 'cancel') {
   process.stdout.write(JSON.stringify({ schema_version: '1', eval_id: args[2], status: 'cancelling' }) + '\\n')
 }
+else if (args[0] === 'eval' && args[1] === 'rerun-cancel') {
+  process.stdout.write(JSON.stringify({ schema_version: '1', eval_id: args[2], rerun_id: args[3], status: 'cancelled' }))
+}
 else if (args[0] === 'trajectory' && args[1] === 'inspect') {
   const runId = args[2]
   process.stdout.write(JSON.stringify({
@@ -143,7 +146,7 @@ else if (args[0] === 'trajectory' && args[1] === 'inspect') {
   }) + '\\n')
 } else if (args[0] === 'eval' && args[1] === 'rerun') {
   process.stdout.write(JSON.stringify({
-    schema_version: '1', kind: 'eval-rerun', rerun_id: 'rerun_' + '9'.repeat(32), eval_id: args[2], status: 'completed',
+    schema_version: '1', kind: 'eval-rerun', rerun_id: value('--rerun-id') ?? 'rerun_' + '9'.repeat(32), eval_id: args[2], status: 'completed',
     selected_tasks: args.includes('--invalid') ? ['task-1'] : args.flatMap((arg, index) => arg === '--task' ? [args[index + 1]] : []),
     repaired_tasks: inspectedInvalidTrials.length === 0 ? ['task-1'] : [],
     remaining_invalid_tasks: remainingInvalidTasks,
@@ -323,17 +326,21 @@ describe('HitchCliEvaluator', () => {
       const intent = evaluator.prepareSubmission(state, input)!
       const reservation = await evaluator.reserve(state, input, undefined, intent)
       if (fault === 'watch-overflow') evaluator.options.maxOutputBytes = 1024
+      const rerunReservation = { ...reservation, rerunId: `rerun_${'8'.repeat(32)}`, parameters: { root: '' } }
       const result = fault === 'rerun-invalid-json' ? evaluator.rerun(state, input, {
         ...reservation, phase: input.phase, conditionId: input.condition.conditionId,
         dataset: input.dataset, requestedCommit: input.harnessRef, requestedModelId: input.condition.model,
         owner: { candidateId: `champion-${input.harnessRef}`, role: 'baseline', harnessRef: input.harnessRef },
         status: 'failed', startedAt: 'before', completedAt: 'after', submissionIntent: intent,
-      }, { mode: 'invalid' }, new AbortController().signal)
+      }, { mode: 'invalid' }, new AbortController().signal, rerunReservation)
         : evaluator.evaluate(state, input, new AbortController().signal, reservation)
       await expect(result).rejects.toMatchObject({ code: fault === 'watch-overflow' ? 'hitch_output_overflow'
         : fault === 'inspect-failure' ? 'hitch_eval_inspect_failed' : 'invalid_hitch_json' })
       const calls = (await readFile(invocationLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as string[])
-      expect(calls).toContainEqual(['eval', 'cancel', reservation.evalId])
+      expect(calls).toContainEqual(fault === 'rerun-invalid-json'
+        ? ['eval', 'rerun-cancel', reservation.evalId, rerunReservation.rerunId]
+        : ['eval', 'cancel', reservation.evalId])
+      if (fault === 'rerun-invalid-json') expect(calls).not.toContainEqual(['eval', 'cancel', reservation.evalId])
     },
   )
 
@@ -692,14 +699,16 @@ describe('HitchCliEvaluator', () => {
     const input = request('seed', fixture.championRef)
     const reservation = await evaluator.reserve(state, input, undefined, evaluator.prepareSubmission(state, input))
     const initial = await evaluator.evaluate(state, input, new AbortController().signal, reservation)
-    await expect(evaluator.rerun(state, input, {
+    const attempt: import('../../src/types.js').RoundEvaluationAttempt = {
       provider: 'hitch-cli', evalId: reservation.evalId, phase: 'seed-baseline',
       owner: { candidateId: `champion-${fixture.championRef}`, role: 'baseline', harnessRef: fixture.championRef },
       conditionId: input.condition.conditionId, dataset: input.dataset,
       requestedModelId: input.condition.model, requestedCommit: fixture.championRef,
       status: 'failed', startedAt: new Date().toISOString(), completedAt: new Date().toISOString(),
       failure: { code: 'hitch_infrastructure_failure', message: 'invalid task' },
-    }, { mode: 'invalid' }, new AbortController().signal)).resolves.toMatchObject({
+    }
+    const rerunReservation = evaluator.prepareRerun(state, input, attempt, { mode: 'invalid' })!
+    await expect(evaluator.rerun(state, input, attempt, { mode: 'invalid' }, new AbortController().signal, rerunReservation)).resolves.toMatchObject({
       provider: 'hitch-cli', evalId: reservation.evalId, evalStatus: 'succeeded',
       evidence: {
         effectiveConfigDigest: initial.effectiveConfigDigest,
@@ -708,7 +717,7 @@ describe('HitchCliEvaluator', () => {
     })
     const invocations = (await readFile(invocationLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as string[])
     expect(invocations).toContainEqual([
-      'eval', 'rerun', reservation.evalId, '--invalid', '--type', 'candidate-restart', '--daemon', '--output', 'json',
+      'eval', 'rerun', reservation.evalId, '--invalid', '--type', 'candidate-restart', '--daemon', '--rerun-id', rerunReservation.rerunId, '--output', 'json',
     ])
   })
 

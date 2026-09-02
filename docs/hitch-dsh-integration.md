@@ -200,3 +200,29 @@ DSH原生session log是agent trajectory事实来源。V1不要求Hitch重新实�
 - [Hitch Harbor backend](../../agent-hitch/src/harbor-backend.ts)
 - [Hitch Harbor agent](../../agent-hitch/integrations/harbor/hitch_harbor_agent.py)
 - [DSH headless runner](../deepseek-harness/packages/bundle/headless/src/index.ts)
+
+### Daemon rerun 的独立生命周期
+
+Gear 在调用 `hitch eval rerun --daemon --rerun-id <id>` 前，将独立的
+`rerunId`、源 `evalId` 和原始 Hitch root 原子写入 `pendingEvaluationRerun`。
+观察失败、进程中止、证据持久化失败以及 Gear 重启，都使用
+`hitch eval rerun-cancel <eval-id> <rerun-id>` 清理这次修复。源 eval 的
+`eval cancel` 不会取消 rerun，不能用它代替。
+
+取消接口必须在 rerun 执行和资源释放完成后才确认成功，并持久化该 ID 的取消记录，
+阻止迟到的提交启动。取消失败时保留 pending identity，状态中暴露独立的清理错误，
+启动时重试同一 ID；完成清理前不接受新的 repair。若 Hitch 自身重启后返回
+`execution_state_ambiguous`，Gear 保留归属，不能将其当作已停止。
+
+这条路径要求 Hitch 同时提供 `--rerun-id` 和 `eval rerun-cancel` 合同；
+不支持该合同的 CLI/daemon 会拒绝操作，不会退回旧的 daemon rerun 命令。
+CI 的 `Hitch rerun contract` job 固定 Hitch 实现提交，运行真实 CLI、HTTP 路由和
+调度器联动测试；本地可构建同一 Hitch 提交后运行：
+
+```sh
+HITCH_CONTRACT_ROOT=/path/to/agent-hitch npm test -- tests/integration/hitch-rerun-contract.spec.ts
+```
+
+配套实现：[agent-hitch PR #15](https://github.com/rsi-gear/agent-hitch/pull/15)，
+合同测试固定提交 `90d4cc3a5d98df53b02e57b54762e16ac1c6d942`。
+启用 daemon rerun 前需安装包含该实现的 Hitch。

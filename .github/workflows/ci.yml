@@ -64,3 +64,29 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:sandbox:platform
+
+  hitch-rerun-contract:
+    name: Hitch rerun contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with:
+          repository: rsi-gear/agent-hitch
+          # Companion contract: durable client rerun identity and cancellation.
+          ref: 90d4cc3a5d98df53b02e57b54762e16ac1c6d942
+          path: .hitch-contract
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.22.1
+          cache: npm
+      - run: npm ci
+      - run: npm ci
+        working-directory: .hitch-contract
+      - run: npm run check
+        working-directory: .hitch-contract
+      - name: Verify Gear against the real Hitch CLI and daemon
+        run: npm test -- tests/integration/hitch-rerun-contract.spec.ts
+        env:
+          HITCH_CONTRACT_ROOT: ${{ github.workspace }}/.hitch-contract

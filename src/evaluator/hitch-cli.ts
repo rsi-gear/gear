@@ -28,6 +28,7 @@ import type {
 } from '../types.js'
 import { isExactGitCommit } from '../types.js'
 import { EvaluationCleanupError } from './cleanup.js'
+import type { EvaluationRerunReservation } from '../types.js'
 
 export interface HitchCliEvaluatorOptions extends HitchConfig {
   repositoryPath: string
@@ -694,12 +695,49 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     }
   }
 
+  prepareRerun(
+    _round: Readonly<RefinementRound>,
+    _request: Readonly<EvaluationRequest>,
+    attempt: Readonly<RoundEvaluationAttempt>,
+    _selector: Readonly<EvaluationRerunSelector>,
+  ): EvaluationRerunReservation | undefined {
+    if (!this.daemonMode) return undefined
+    return {
+      provider: 'hitch-cli', evalId: attempt.evalId,
+      rerunId: `rerun_${randomUUID().replaceAll('-', '')}`,
+      parameters: { root: attempt.submissionIntent === undefined ? this.options.root : this.submissionParameters(attempt.submissionIntent).root },
+    }
+  }
+
+  private rerunRoot(reservation: Readonly<EvaluationRerunReservation>): string {
+    if (reservation.provider !== 'hitch-cli' || !/^eval_[0-9a-f]{32}$/u.test(reservation.evalId)
+      || !/^rerun_[0-9a-f]{32}$/u.test(reservation.rerunId)) throw new TypeError('Hitch rerun reservation is invalid')
+    const parameters = record(reservation.parameters, 'Hitch rerun parameters')
+    if (typeof parameters.root !== 'string') throw new TypeError('Hitch rerun root is invalid')
+    return parameters.root
+  }
+
+  async cancelRerun(reservation: Readonly<EvaluationRerunReservation>): Promise<void> {
+    const root = this.rerunRoot(reservation)
+    const result = await this.run([
+      ...(root.length === 0 ? [] : ['--root', root]),
+      'eval', 'rerun-cancel', reservation.evalId, reservation.rerunId,
+    ], this.repositoryPath, AbortSignal.timeout(30_000), 64 * 1024)
+    if (result.exitCode !== 0) throw new HitchEvaluationError(`Hitch rerun cancellation failed: ${result.stderr.slice(-4000)}`, 'hitch_rerun_cancel_failed')
+    const cancelled = record(JSON.parse(result.stdout), 'Hitch rerun cancellation')
+    if (cancelled.schema_version !== '1' || cancelled.eval_id !== reservation.evalId || cancelled.rerun_id !== reservation.rerunId
+      || !['cancelled', 'completed', 'failed'].includes(cancelled.status as string)) {
+      throw new HitchEvaluationError('Hitch rerun cancellation did not confirm a stopped operation', 'hitch_rerun_cancel_failed')
+    }
+  }
+
   async rerun(
     round: Readonly<RefinementRound>,
     request: Readonly<EvaluationRequest>,
     attempt: Readonly<RoundEvaluationAttempt>,
     selector: Readonly<EvaluationRerunSelector>,
     signal: AbortSignal,
+    reservation?: Readonly<EvaluationRerunReservation>,
   ): Promise<EvaluationRerunResult> {
     if (attempt.provider !== 'hitch-cli' || !/^eval_[0-9a-f]{32}$/u.test(attempt.evalId)) {
       throw new TypeError('Hitch evaluation rerun requires an owned Hitch eval id')
@@ -709,16 +747,19 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       || attempt.requestedModelId !== request.condition.model) {
       throw new TypeError('Hitch evaluation rerun request does not match the original attempt')
     }
+    if (this.daemonMode && reservation === undefined) throw new TypeError('Hitch daemon rerun requires a persisted rerun reservation')
+    const root = reservation === undefined ? this.options.root : this.rerunRoot(reservation)
+    if (reservation !== undefined && reservation.evalId !== attempt.evalId) throw new TypeError('Hitch rerun reservation does not match its source eval')
     try {
       const identity = await this.resolveEvaluationIdentity(round, request, signal)
       const args = [
-        ...this.rootArgs(),
+        ...(root.length === 0 ? [] : ['--root', root]),
         'eval', 'rerun', attempt.evalId,
         ...(selector.mode === 'invalid'
           ? ['--invalid']
           : selector.taskNames.flatMap(task => ['--task', task])),
         '--type', 'candidate-restart',
-        ...(this.daemonMode ? ['--daemon'] : []),
+        ...(reservation === undefined ? [] : ['--daemon', '--rerun-id', reservation.rerunId]),
         '--output', 'json',
       ]
       const processResult = await this.run(args, round.workspaceRoot, signal)
@@ -734,6 +775,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       }
       const envelope = record(parsed, 'Hitch rerun result')
       if (envelope.schema_version !== '1' || envelope.kind !== 'eval-rerun' || envelope.eval_id !== attempt.evalId
+        || (reservation !== undefined && envelope.rerun_id !== reservation.rerunId)
         || envelope.status !== 'completed' || (envelope.eval_status !== 'succeeded' && envelope.eval_status !== 'failed')) {
         throw new HitchEvaluationError('Hitch rerun result identity/status is invalid', 'invalid_hitch_result')
       }
@@ -753,6 +795,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
         round.workspaceRoot,
         signal,
         'hitch_eval_rerun_inspect_failed',
+        root,
       )
       const result = record(inspection.result, 'Hitch repaired eval result')
       const evidence = this.parseResult(
@@ -780,8 +823,8 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
         evidence,
       }
     } catch (error) {
-      if (this.daemonMode) {
-        try { await this.cancelReservation(attempt, attempt.submissionIntent) }
+      if (reservation !== undefined) {
+        try { await this.cancelRerun(reservation) }
         catch (cleanupError) { throw new EvaluationCleanupError(error, cleanupError) }
       }
       throw error

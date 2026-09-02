@@ -618,6 +618,20 @@ export class RefineStateStore {
         this.validateEvaluationAttempt(round as RefinementRound, attempt, identities)
       }
     }
+    if (round.pendingEvaluationRerun !== undefined) {
+      const pending = round.pendingEvaluationRerun
+      if (typeof pending !== 'object' || pending === null || typeof pending.reservation !== 'object' || pending.reservation === null) {
+        throw new TypeError('pending evaluation rerun is invalid')
+      }
+      const reservation = pending.reservation
+      this.validateSubmissionIntent({ provider: reservation.provider, idempotencyKey: reservation.rerunId, parameters: reservation.parameters })
+      const attempt = round.evaluationAttempts?.find(value => value.provider === reservation.provider && value.evalId === reservation.evalId)
+      if (attempt === undefined || (attempt.status !== 'rerunning' && attempt.status !== 'failed')
+        || (round.status !== 'repairing-evaluation' && round.status !== 'failed')
+        || (reservation.provider === 'hitch-cli' && !/^rerun_[0-9a-f]{32}$/u.test(reservation.rerunId))) {
+        throw new TypeError('pending evaluation rerun does not match its owned attempt')
+      }
+    }
     if (round.pendingEvaluationSubmissions !== undefined) {
       if (!Array.isArray(round.pendingEvaluationSubmissions)) throw new TypeError('pending evaluation submissions must be an array')
       const identities = new Set<string>()

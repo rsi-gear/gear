@@ -408,6 +408,17 @@ export type EvaluationRerunSelector =
   | { mode: 'invalid' }
   | { mode: 'tasks'; taskNames: string[] }
 
+/** Client-chosen operation identity, persisted before a daemon rerun starts. */
+export interface EvaluationRerunReservation extends EvaluationReservation {
+  rerunId: string
+  parameters: JsonValue
+}
+
+export interface PendingEvaluationRerun {
+  reservation: EvaluationRerunReservation
+  cleanupFailure?: EvaluationFailure
+}
+
 export interface EvaluationTrialSlot {
   taskId: string
   attempt: number
@@ -776,6 +787,7 @@ export interface RefinementRound {
   evaluation?: RoundEvaluation
   evaluationAttempts?: RoundEvaluationAttempt[]
   pendingEvaluationSubmissions?: PendingEvaluationSubmission[]
+  pendingEvaluationRerun?: PendingEvaluationRerun
   evaluationRepairResume?: EvaluationRepairResumeIntent
   commitIntent?: RoundCommitIntent
   meta?: MetaAttribution
@@ -801,7 +813,7 @@ export interface PublicRoundStatus {
   seedBaseline?: PublicSeedEvidence
   seedCandidate?: PublicSeedEvidence
   failure?: string
-  evaluationCleanupFailures?: Array<{ provider: string; evalId?: string; code: string }>
+  evaluationCleanupFailures?: Array<{ provider: string; evalId?: string; rerunId?: string; code: string }>
   candidateGeneration?: Array<{
     candidateId: string
     status: CandidateRecord['status']
@@ -893,12 +905,23 @@ export interface RefineEvaluator {
     reservation?: Readonly<EvaluationReservation>,
   ): Promise<EvaluationEvidence>
 
+  prepareRerun?(
+    round: Readonly<RefinementRound>,
+    request: Readonly<EvaluationRequest>,
+    attempt: Readonly<RoundEvaluationAttempt>,
+    selector: Readonly<EvaluationRerunSelector>,
+  ): EvaluationRerunReservation | undefined
+
+  /** Resolves only when the rerun has stopped, including remote resource cleanup. */
+  cancelRerun?(reservation: Readonly<EvaluationRerunReservation>): Promise<void>
+
   rerun?(
     round: Readonly<RefinementRound>,
     request: Readonly<EvaluationRequest>,
     attempt: Readonly<RoundEvaluationAttempt>,
     selector: Readonly<EvaluationRerunSelector>,
     signal: AbortSignal,
+    reservation?: Readonly<EvaluationRerunReservation>,
   ): Promise<EvaluationRerunResult>
 }
 

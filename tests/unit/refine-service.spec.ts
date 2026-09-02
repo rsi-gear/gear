@@ -3,9 +3,10 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CandidateWorkspaceManager } from '../../src/candidate/workspace.js'
 import { HitchEvaluationError } from '../../src/evaluator/hitch-cli.js'
-import type { EvaluationSubmissionIntent } from '../../src/types.js'
+import type { EvaluationSubmissionIntent, EvaluationRerunReservation } from '../../src/types.js'
 import { HarnessBuilder, NoopHarnessCompiler, SubstrateExpansionError } from '../../src/harness/builder.js'
 import { RefineService } from '../../src/refine/service.js'
+import { RefineStateStore } from '../../src/state/store.js'
 import { EvolutionRegistryStore } from '../../src/state/evolution.js'
 import type { EvaluationPhase, EvaluationRequest, EvaluationRerunResult, EvaluationRerunSelector, EvaluationReservation, HitchEvaluationEvidence, MetaAttribution, MetaCheckpointRef, MetaTurnObservation, RefineEvaluator, RefinementRound, RoundEvaluationAttempt } from '../../src/types.js'
 import { createGitHarnessFixture } from '../helpers/git-fixture.js'
@@ -560,6 +561,101 @@ describe('RefineService evolution workspaces', () => {
     await service.dispose()
   })
 
+  it.each(['observer', 'dispose', 'evidence-write'] as const)('owns and cancels the rerun itself after %s failure', async failure => {
+    const { service, evaluator } = await setup()
+    const evalId = `eval_${'7'.repeat(32)}`
+    const rerunReservation: EvaluationRerunReservation = {
+      provider: 'hitch-cli', evalId, rerunId: `rerun_${'9'.repeat(32)}`, parameters: { root: 'original-root' },
+    }
+    const evaluate = evaluator.evaluate.bind(evaluator)
+    let first = true
+    evaluator.reserve = async () => ({ provider: 'hitch-cli', evalId })
+    evaluator.evaluate = async (...args) => {
+      if (first) { first = false; throw new Error('invalid baseline') }
+      return evaluate(...args)
+    }
+    const admission = await service.admit('api')
+    const store = service.registry.stateStore(admission.evolutionId)
+    await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
+    let remoteActive = false
+    const cancelRerun = vi.fn(async (owned: EvaluationRerunReservation) => {
+      expect(owned).toEqual(rerunReservation)
+      remoteActive = false
+    })
+    Object.assign(evaluator, { prepareRerun: () => rerunReservation, cancelRerun })
+    const rerun = evaluator.rerun.bind(evaluator)
+    evaluator.rerun = async (...args) => {
+      expect((await store.readRound(admission.roundId))?.pendingEvaluationRerun?.reservation).toEqual(rerunReservation)
+      remoteActive = true
+      if (failure === 'observer') throw Object.assign(new Error('rerun observer failed'), { code: 'observer_failed' })
+      if (failure === 'dispose') await new Promise<void>((_resolve, reject) => args[4].addEventListener('abort', () => reject(args[4].reason), { once: true }))
+      return rerun(...args)
+    }
+    const write = RefineStateStore.prototype.writeRound
+    const writeSpy = vi.spyOn(RefineStateStore.prototype, 'writeRound').mockImplementation(async function (this: RefineStateStore, value) {
+      if (failure === 'evidence-write' && value.roundId === admission.roundId && value.evaluationRepairResume !== undefined) {
+        throw new Error('repaired evidence write failed')
+      }
+      return write.call(this, value)
+    })
+    try {
+      const pending = service.rerunEvaluation(admission.evolutionId, admission.roundId, evalId, { mode: 'invalid' })
+      const rejected = expect(pending).rejects.toThrow(failure === 'observer' ? /observer failed/u : failure === 'evidence-write' ? /evidence write failed/u : /disposed/u)
+      if (failure === 'dispose') {
+        await eventually(async () => remoteActive, value => value)
+        await service.dispose()
+      }
+      await rejected
+      expect(cancelRerun).toHaveBeenCalledTimes(1)
+      expect(remoteActive).toBe(false)
+      expect((await store.readRound(admission.roundId))?.pendingEvaluationRerun).toBeUndefined()
+      expect((await store.readRound(admission.roundId))?.evaluationAttempts?.[0]?.status).toBe('failed')
+    } finally { writeSpy.mockRestore(); await service.dispose() }
+  })
+
+  it('retains failed rerun cleanup and retries the same identity on restart', async () => {
+    const { service, evaluator } = await setup()
+    const evalId = `eval_${'6'.repeat(32)}`
+    const reservation: EvaluationRerunReservation = { provider: 'hitch-cli', evalId, rerunId: `rerun_${'8'.repeat(32)}`, parameters: { root: 'frozen-root' } }
+    evaluator.reserve = async () => ({ provider: 'hitch-cli', evalId })
+    evaluator.evaluate = async () => { throw new Error('invalid baseline') }
+    const admission = await service.admit('api')
+    const store = service.registry.stateStore(admission.evolutionId)
+    await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
+    let unavailable = true
+    const cancelled: EvaluationRerunReservation[] = []
+    Object.assign(evaluator, {
+      prepareRerun: () => reservation,
+      cancelRerun: async (owned: EvaluationRerunReservation) => {
+        cancelled.push(owned)
+        if (unavailable) throw Object.assign(new Error('daemon unavailable'), { code: 'cancel_unavailable' })
+      },
+    })
+    const cancelEval = vi.spyOn(evaluator, 'cancelReservation')
+    evaluator.rerun = async () => { throw Object.assign(new Error('reply lost'), { code: 'reply_lost' }) }
+    await expect(service.rerunEvaluation(admission.evolutionId, admission.roundId, evalId, { mode: 'invalid' })).rejects.toThrow('reply lost')
+    expect(await store.readRound(admission.roundId)).toMatchObject({
+      pendingEvaluationRerun: { reservation, cleanupFailure: { code: 'cancel_unavailable' } },
+      evaluationAttempts: [{ failure: { code: 'reply_lost' }, cleanupFailure: { code: 'cancel_unavailable' } }],
+    })
+    expect(await service.status(admission.evolutionId, admission.roundId)).toMatchObject({
+      evaluationCleanupFailures: [{ evalId, rerunId: reservation.rerunId, code: 'cancel_unavailable' }],
+    })
+    await expect(service.rerunEvaluation(admission.evolutionId, admission.roundId, evalId, { mode: 'invalid' })).rejects.toThrow(/cleanup/u)
+    await expect(service.initialize()).rejects.toThrow('daemon unavailable')
+    unavailable = false
+    await service.initialize()
+    const recovered = await store.readRound(admission.roundId)
+    expect(recovered?.pendingEvaluationRerun).toBeUndefined()
+    expect(recovered?.evaluationAttempts?.[0]?.cleanupFailure).toBeUndefined()
+    expect(recovered?.evaluationAttempts?.[0]?.failure?.code).toBe('reply_lost')
+    expect(cancelled).toEqual([reservation, reservation, reservation])
+    expect(cancelEval).not.toHaveBeenCalled()
+    await service.initialize()
+    expect(cancelled).toHaveLength(3)
+    await service.dispose()
+  })
+
   it('reruns a failed Hitch attempt under the same eval id and continues the round', async () => {
     const { service, evaluator } = await setup()
     const evalId = `eval_${'7'.repeat(32)}`
@@ -587,6 +683,9 @@ describe('RefineService evolution workspaces', () => {
     const admission = await service.admit('api')
     const store = service.registry.stateStore(admission.evolutionId)
     await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
+    const rerunReservation: EvaluationRerunReservation = { provider: 'hitch-cli', evalId, rerunId: `rerun_${'4'.repeat(32)}`, parameters: { root: '' } }
+    const cancelRerun = vi.fn(async () => {})
+    Object.assign(evaluator, { prepareRerun: () => rerunReservation, cancelRerun })
     const rerun = await service.rerunEvaluation(admission.evolutionId, admission.roundId, evalId, { mode: 'invalid' })
     expect(rerun).toMatchObject({ evalId, evalStatus: 'succeeded', remainingInvalidTasks: [] })
     const resumed = await editing(service, admission.evolutionId, admission.roundId)
@@ -594,6 +693,8 @@ describe('RefineService evolution workspaces', () => {
       provider: 'hitch-cli', status: 'repair-completed', completedAt: expect.any(String),
     })
     expect(resumed.evaluationRepairResume).toMatchObject({ provider: 'hitch-cli', evalId })
+    expect(resumed.pendingEvaluationRerun).toBeUndefined()
+    expect(cancelRerun).not.toHaveBeenCalled()
     expect(resumed.baseline).toMatchObject({ evalId })
     await service.dispose()
   })
@@ -973,15 +1074,22 @@ describe('RefineService evolution workspaces', () => {
     if (failed === undefined) throw new Error('failed round disappeared')
     if (failed.evaluationAttempts === undefined) throw new Error('failed round has no evaluation attempt')
     const { failure: _roundFailure, ...interrupted } = failed
+    const reservation: EvaluationRerunReservation = { provider: 'hitch-cli', evalId, rerunId: `rerun_${'5'.repeat(32)}`, parameters: { root: 'saved-root' } }
+    const cancelRerun = vi.fn(async () => {})
+    Object.assign(evaluator, { cancelRerun })
+    const cancelEval = vi.spyOn(evaluator, 'cancelReservation')
     await store.writeRound({
       ...interrupted,
       status: 'repairing-evaluation',
+      pendingEvaluationRerun: { reservation },
       evaluationAttempts: failed.evaluationAttempts.map(attempt => {
         const { completedAt: _completedAt, failure: _failure, ...running } = attempt
         return { ...running, status: 'rerunning' as const }
       }),
     })
     await service.initialize()
+    expect(cancelRerun).toHaveBeenCalledExactlyOnceWith(reservation)
+    expect(cancelEval).not.toHaveBeenCalled()
     const recovered = await store.readRound(admission.roundId)
     expect(recovered).toMatchObject({
       status: 'failed',

@@ -426,9 +426,19 @@ export class RefineService {
       const store = this.registry.stateStore(entry.evolutionId)
       await store.initialize()
       for (let round of await store.listRounds()) {
+        if (round.pendingEvaluationRerun !== undefined) {
+          const spec = await this.registry.requireSpec(entry.evolutionId)
+          this.resolveComponents(spec)
+          round = await this.cleanupEvaluationRerun(store, round, this.evaluatorForSpec(spec), {
+            code: 'evaluation_rerun_interrupted_by_restart', message: 'control plane restarted during a remote rerun',
+          })
+        }
+        if (round.evaluationAttempts?.some(attempt => attempt.submissionIntent !== undefined && attempt.status === 'rerunning')) {
+          throw new Error('cannot recover an interrupted daemon rerun without its durable rerun identity')
+        }
         if ((round.pendingEvaluationSubmissions?.length ?? 0) > 0
           || round.evaluationAttempts?.some(attempt => attempt.submissionIntent !== undefined
-            && (attempt.status === 'running' || attempt.status === 'rerunning'))) {
+            && attempt.status === 'running')) {
           const spec = await this.registry.requireSpec(entry.evolutionId)
           this.resolveComponents(spec)
           const evaluator = this.evaluatorForSpec(spec)
@@ -645,6 +655,7 @@ export class RefineService {
       if (round.decision !== undefined || round.commitIntent !== undefined) {
         throw new Error(`round ${roundId} already has a durable decision or commit intent`)
       }
+      if (round.pendingEvaluationRerun !== undefined) throw new Error('previous rerun cleanup must finish before another repair')
       const [population, champion] = await Promise.all([
         evolution.store.readPopulation(), evolution.store.readChampion(),
       ])
@@ -681,9 +692,14 @@ export class RefineService {
     const { evolution, attempt } = repair
     const { roundId } = initialRound
     try {
+      const reservation = evolution.evaluator.prepareRerun?.(initialRound, request, attempt, selector)
+      if (reservation !== undefined && evolution.evaluator.cancelRerun === undefined) {
+        throw new Error('durable rerun requires cancellation support')
+      }
       let round = await this.transition(evolution.store, roundId, {
         status: 'repairing-evaluation',
         failure: undefined,
+        pendingEvaluationRerun: reservation === undefined ? undefined : { reservation },
         evaluationAttempts: (initialRound.evaluationAttempts ?? []).map(value => this.sameAttempt(value, attempt)
           ? (() => {
               const { completedAt: _completedAt, failure: _failure, ...owned } = value
@@ -693,7 +709,7 @@ export class RefineService {
       })
       const rerun = evolution.evaluator.rerun
       if (rerun === undefined) throw new Error('configured evaluator does not support task rerun')
-      const result = await rerun.call(evolution.evaluator, round, request, attempt, selector, repair.abort.signal)
+      const result = await rerun.call(evolution.evaluator, round, request, attempt, selector, repair.abort.signal, reservation)
       if (result.provider !== attempt.provider || result.evalId !== attempt.evalId) {
         throw new Error('evaluation rerun result does not match Gear ownership')
       }
@@ -722,6 +738,7 @@ export class RefineService {
           evalId: attempt.evalId,
           completedAt: repairCompletedAt,
         },
+        pendingEvaluationRerun: undefined,
         evaluationAttempts: (current.evaluationAttempts ?? []).map(value => this.sameAttempt(value, attempt)
           ? (() => {
               const { failure: _failure, ...owned } = value
@@ -750,7 +767,7 @@ export class RefineService {
   }
 
   private async failEvaluationRepair(repair: ActiveEvaluationRepair, error: unknown): Promise<void> {
-    const round = await repair.evolution.store.readRound(repair.roundId).catch(() => undefined)
+    let round = await repair.evolution.store.readRound(repair.roundId).catch(() => undefined)
     if (round?.status !== 'repairing-evaluation') return
     const attempt = round.evaluationAttempts?.find(value => this.sameAttempt(value, repair.attempt))
     if (attempt?.status === 'repair-completed' && this.attemptHasEvidence(round, attempt)) return
@@ -761,29 +778,54 @@ export class RefineService {
         ? (error as { code: string }).code
         : 'evaluation_rerun_failed'
     const completedAt = now()
-    const pending = error instanceof EvaluationCleanupError && attempt?.submissionIntent !== undefined ? {
-      intent: attempt.submissionIntent, request: this.evaluationRequest(round, attempt),
-      owner: attempt.owner, startedAt: attempt.startedAt,
-      reservation: { provider: attempt.provider, evalId: attempt.evalId },
-      cleanupFailure: error.cleanupFailure,
-    } : undefined
+    let cleanupFailure: EvaluationFailure | undefined
+    if (round.pendingEvaluationRerun !== undefined) {
+      try {
+        round = await this.cleanupEvaluationRerun(repair.evolution.store, round, repair.evolution.evaluator, { code, message: errorMessage(error) })
+      } catch (cleanupError) {
+        cleanupFailure = evaluationFailure(cleanupError)
+        round = await this.requireRound(repair.evolution.store, repair.roundId)
+      }
+    }
     await repair.evolution.store.writeRound({
       ...round,
       status: 'failed',
       updatedAt: completedAt,
       failure: { phase: 'repairing-evaluation', message: errorMessage(error) },
-      ...(pending === undefined ? {} : {
-        pendingEvaluationSubmissions: [
-          ...(round.pendingEvaluationSubmissions ?? []).filter(value => !this.sameSubmission(value, pending)), pending,
-        ],
-      }),
       evaluationAttempts: (round.evaluationAttempts ?? []).map(attempt => this.sameAttempt(attempt, repair.attempt)
         ? {
             ...attempt, status: 'failed' as const, completedAt, failure: { code, message: errorMessage(error) },
-            ...(error instanceof EvaluationCleanupError ? { cleanupFailure: error.cleanupFailure } : {}),
+            ...(cleanupFailure === undefined ? {} : { cleanupFailure }),
           }
         : attempt),
     })
+  }
+
+  private async cleanupEvaluationRerun(
+    store: RefineStateStore,
+    round: RefinementRound,
+    evaluator: RefineEvaluator,
+    failure: EvaluationFailure,
+  ): Promise<RefinementRound> {
+    const pending = round.pendingEvaluationRerun
+    if (pending === undefined) return round
+    try {
+      if (evaluator.cancelRerun === undefined) throw new Error('cannot recover durable rerun: evaluator has no rerun cancellation support')
+      await evaluator.cancelRerun(pending.reservation)
+      return await this.transition(store, round.roundId, {
+        pendingEvaluationRerun: undefined,
+        evaluationAttempts: (round.evaluationAttempts ?? []).map(attempt => {
+          if (!this.sameAttempt(attempt, pending.reservation)) return attempt
+          const { cleanupFailure: _cleanupFailure, ...owned } = attempt
+          return { ...owned, status: 'failed' as const, completedAt: now(), failure: attempt.failure ?? failure }
+        }),
+      })
+    } catch (error) {
+      await this.transition(store, round.roundId, {
+        pendingEvaluationRerun: { ...pending, cleanupFailure: evaluationFailure(error) },
+      }).catch(() => {})
+      throw error
+    }
   }
 
   private sameAttempt(left: Pick<RoundEvaluationAttempt, 'provider' | 'evalId'>, right: Pick<RoundEvaluationAttempt, 'provider' | 'evalId'>): boolean {
@@ -954,12 +996,18 @@ export class RefineService {
       ...(round.baseline === undefined ? {} : { seedBaseline: publicSeedEvidence(round.baseline) }),
       ...(round.evaluation?.seedCandidate === undefined ? {} : { seedCandidate: publicSeedEvidence(round.evaluation.seedCandidate) }),
       ...(round.failure === undefined ? {} : { failure: round.failure.phase }),
-      ...((round.pendingEvaluationSubmissions ?? []).some(value => value.cleanupFailure !== undefined) ? {
-        evaluationCleanupFailures: (round.pendingEvaluationSubmissions ?? []).flatMap(value => value.cleanupFailure === undefined ? [] : [{
+      ...((round.pendingEvaluationSubmissions ?? []).some(value => value.cleanupFailure !== undefined)
+        || round.pendingEvaluationRerun?.cleanupFailure !== undefined ? {
+        evaluationCleanupFailures: [...(round.pendingEvaluationSubmissions ?? []).flatMap(value => value.cleanupFailure === undefined ? [] : [{
           provider: value.intent.provider,
           ...(value.reservation === undefined ? {} : { evalId: value.reservation.evalId }),
           code: value.cleanupFailure.code,
-        }]),
+        }]), ...(round.pendingEvaluationRerun?.cleanupFailure === undefined ? [] : [{
+          provider: round.pendingEvaluationRerun.reservation.provider,
+          evalId: round.pendingEvaluationRerun.reservation.evalId,
+          rerunId: round.pendingEvaluationRerun.reservation.rerunId,
+          code: round.pendingEvaluationRerun.cleanupFailure.code,
+        }])],
       } : {}),
       ...(candidateGeneration.length === 0 ? {} : { candidateGeneration }),
       ...(repairableEvaluations === undefined ? {} : { repairableEvaluations }),
@@ -2482,7 +2530,7 @@ export class RefineService {
   ): Promise<RefinementRound> {
     const pending = [...(round.pendingEvaluationSubmissions ?? [])]
     for (const attempt of round.evaluationAttempts ?? []) {
-      if (attempt.submissionIntent === undefined || (attempt.status !== 'running' && attempt.status !== 'rerunning')) continue
+      if (attempt.submissionIntent === undefined || attempt.status !== 'running') continue
       const submission: PendingEvaluationSubmission = {
         intent: attempt.submissionIntent, request: this.evaluationRequest(round, attempt),
         owner: attempt.owner, startedAt: attempt.startedAt,
