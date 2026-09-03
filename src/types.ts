@@ -273,12 +273,26 @@ export interface HitchTrajectoryPage {
   fidelity: 'provider_native' | 'normalized' | 'minimal'
   provider?: string
   sessionId: string
+  trajectoryDigest?: string
   header: JsonValue
   events: JsonValue[]
   offset: number
   limit: number
   total: number
   eof: boolean
+  diagnostics: TrajectoryDiagnostics
+}
+
+export interface HitchTrajectory {
+  runId: string
+  fidelity: 'provider_native' | 'normalized' | 'minimal'
+  provider?: string
+  sessionId: string
+  trajectoryDigest: string
+  bytes: number
+  ref: JsonValue
+  header: JsonValue
+  events: JsonValue[]
   diagnostics: TrajectoryDiagnostics
 }
 
@@ -294,6 +308,244 @@ export interface TrajectoryDiagnostics {
 
 export interface HitchTrajectoryReader {
   inspectTrajectory(runId: string, offset: number, limit: number, signal: AbortSignal): Promise<HitchTrajectoryPage>
+  loadTrajectory?(runId: string, signal: AbortSignal): Promise<HitchTrajectory>
+  inspectVerifierEvidence?(runId: string, signal: AbortSignal): Promise<HitchVerifierEvidence>
+}
+
+export interface HitchVerifierEvidence {
+  runId: string
+  parent?: {
+    evalId: string
+    trialId: string
+    attempt: number
+  }
+  observation?: {
+    status: 'valid' | 'invalid'
+    reward?: number
+    invalidReason?: string
+    verifierResultRef?: string
+  }
+  verifier: {
+    status: 'complete' | 'result_only' | 'missing' | 'corrupt' | 'unavailable'
+    result?: JsonValue
+    resultSha256?: string
+    diagnostics?: JsonValue
+    issues?: string[]
+  }
+  redactions?: Array<{
+    ruleId: string
+    count: number
+  }>
+}
+
+export interface ContentExcerpt {
+  preview: string
+  tail?: string
+  bytes: number
+  sha256: string
+  truncated: boolean
+  source: { runId: string; seq?: number; field: string }
+}
+
+export interface TrajectoryMessageEvidence {
+  seq: number
+  eventType: string
+  role: string
+  message: ContentExcerpt
+  sourceEventSeqs?: { count: number; first: number; last: number }
+}
+
+export interface TrajectoryToolAction {
+  callId: string
+  name: string
+  callSeq: number
+  resultSeq?: number
+  arguments: ContentExcerpt
+  result?: ContentExcerpt
+  error?: { name: string; code: string }
+  status: 'completed' | 'errored' | 'open'
+}
+
+export interface TrajectorySemanticStep {
+  id: string
+  turn: number
+  step: number
+  seqStart: number
+  seqEnd: number
+  contextEpochId?: string
+  assistantMessages: TrajectoryMessageEvidence[]
+  toolActions: TrajectoryToolAction[]
+  omittedAssistantMessageCount?: number
+  omittedToolActionCount?: number
+  terminalReason?: JsonValue
+  terminalReasonExcerpt?: ContentExcerpt
+}
+
+export interface TrajectoryContextEpoch {
+  id: string
+  boundarySeq: number
+  requestSeq?: number
+  turn?: number
+  step?: number
+  header: {
+    config?: JsonValue
+    adapterDefaults?: JsonValue
+    configExcerpt?: ContentExcerpt
+    adapterDefaultsExcerpt?: ContentExcerpt
+    system?: ContentExcerpt
+    tools?: ContentExcerpt
+  }
+  surfaceMessageSeqs: number[]
+  omittedSurfaceMessageSeqCount?: number
+  replacementGeneration: number
+}
+
+export interface TrajectoryProjection {
+  schemaVersion: 1
+  runId: string
+  trajectoryDigest: string
+  fidelity: 'exact-surface' | 'normalized-surface' | 'minimal' | 'unavailable'
+  rawEventCount: number
+  eventTypes: Record<string, number>
+  omittedEventTypes: Record<string, number>
+  contextEpochs: TrajectoryContextEpoch[]
+  messages: TrajectoryMessageEvidence[]
+  semanticSteps: TrajectorySemanticStep[]
+  finalAnswer?: TrajectoryMessageEvidence
+  pathsObservedThroughTools: string[]
+  replacements: Array<{ seq: number; start: number; end: number; shadowedSeqs: number[] }>
+  errors: Array<{ seq?: number; type: string; excerpt: string }>
+}
+
+export interface GearFailureBundle {
+  schemaVersion: 1
+  identity: {
+    evolutionId: string
+    roundId: string
+    phase: 'seed-baseline' | 'seed-candidate'
+    evalId: string
+    runId: string
+    taskName: string
+    taskNameTruncated?: boolean
+    trialName?: string
+    trialNameTruncated?: boolean
+    attempt?: number
+    trajectoryDigest: string
+  }
+  task: { prompt?: ContentExcerpt }
+  outcome: {
+    trialStatus: 'completed' | 'errored'
+    reward?: number
+    invalidReason?: string
+    verifierStatus: 'complete' | 'result_only' | 'missing' | 'unavailable'
+    verifierResult?: JsonValue
+    verifierDiagnostics?: JsonValue
+  }
+  trajectory: {
+    fidelity: TrajectoryProjection['fidelity']
+    rawEventCount: number
+    omittedEventTypes: Record<string, number>
+    omittedEventTypeCount?: number
+    contextEpochCount: number
+    contextEpochs: TrajectoryContextEpoch[]
+    semanticStepCount: number
+    keySteps: TrajectorySemanticStep[]
+    omittedStepCount: number
+    finalAnswer?: TrajectoryMessageEvidence
+  }
+  workspace: {
+    status: 'complete' | 'observed-only' | 'missing'
+    pathsObservedThroughTools: string[]
+    omittedPathCount?: number
+  }
+  crossSourceSignals: Array<{ kind: string; runId: string }>
+  coverage: {
+    task: 'complete' | 'missing'
+    trajectory: 'complete' | 'partial' | 'missing'
+    verifier: 'complete' | 'result_only' | 'explicitly-missing' | 'unavailable'
+    childSessions: 'complete' | 'partial' | 'none' | 'unavailable'
+    workspace: 'complete' | 'observed-only' | 'missing'
+  }
+  bundleDigest: string
+}
+
+export interface DiagnosisReceipt {
+  runId: string
+  bundleDigest: string
+  trajectoryDigest: string
+  projectionVersion: 1
+  verifierStatus: GearFailureBundle['coverage']['verifier']
+  compatibility?: 'allow-unavailable-verifier'
+  sanitizationPolicyDigest: string
+  inspectedAt: string
+}
+
+export interface MissingDiagnosis {
+  taskName: string
+  runId: string
+  trialName?: string
+  attempt?: number
+  reward?: number
+}
+
+export interface CapabilityAction {
+  actionId: string
+  tool: 'trajectory_query' | 'candidate_check' | 'finalize_candidate' | 'decline_candidate'
+  arguments: JsonValue
+  reason: string
+  coversRunIds?: string[]
+}
+
+export interface FinalizationReadiness {
+  ready: boolean
+  summaryAccessed: boolean
+  baselineEvalId: string
+  failedRunCount: number
+  diagnosedRunCount: number
+  remainingRunCount: number
+  missing: MissingDiagnosis[]
+  verifierBlockedRunIds: string[]
+  unaccessedCitedRefs: string[]
+  blockers: Array<{
+    code: 'BASELINE_SUMMARY_REQUIRED' | 'MISSING_BASELINE_DIAGNOSIS' | 'EVIDENCE_REF_NOT_ACCESSED' | 'VERIFIER_EVIDENCE_UNAVAILABLE'
+    message: string
+  }>
+  nextActions: CapabilityAction[]
+}
+
+export interface MetaRecoveryRequired {
+  schemaVersion: 1
+  accepted: false
+  recoverable: true
+  code: 'BASELINE_SUMMARY_REQUIRED' | 'MISSING_BASELINE_DIAGNOSIS' | 'EVIDENCE_REF_NOT_ACCESSED'
+  failedOperation: 'candidate.finalize' | 'candidate.decline'
+  message: string
+  readiness: FinalizationReadiness
+  nextAction: CapabilityAction
+  remainingActions: CapabilityAction[]
+  retry: {
+    tool: 'finalize_candidate' | 'decline_candidate'
+    reusePreviousArguments: true
+  }
+}
+
+export interface MetaPrerequisiteBlocked {
+  schemaVersion: 1
+  accepted: false
+  recoverable: false
+  code: 'VERIFIER_EVIDENCE_UNAVAILABLE'
+  failedOperation: 'candidate.finalize' | 'candidate.decline'
+  message: string
+  readiness: FinalizationReadiness
+  operatorAction: {
+    upgrade: 'Hitch verifier evidence API'
+    compatibilityConfig: 'hitch.allowUnavailableVerifierDiagnosis=true'
+  }
+  retry: {
+    tool: 'finalize_candidate' | 'decline_candidate'
+    reusePreviousArguments: true
+    afterPrerequisite: true
+  }
 }
 
 export interface LocalSourceTransportSummary {
@@ -545,6 +797,7 @@ export interface ProposalEvidenceAudit {
   summaryAccessed: boolean
   accessedRefs: string[]
   diagnosedRunRefs: string[]
+  diagnosisReceipts?: DiagnosisReceipt[]
   citedRefs: string[]
 }
 
@@ -938,7 +1191,19 @@ export interface RefineBridgeRequestMap {
   'harness.current': Record<string, never>
   'harness.read': { ref: string; path: string; offset?: number; limit?: number }
   'seed_tasks.load': { partition?: 'seed' }
-  'trajectory.query': { roundId?: string; refs?: string[]; offset?: number; limit?: number }
+  'trajectory.query': {
+    roundId?: string
+    refs?: string[]
+    view?: 'bundle' | 'steps' | 'context' | 'events'
+    offset?: number
+    limit?: number
+    turn?: number
+    step?: number
+    eventTypes?: string[]
+    aroundSeq?: number
+    radius?: number
+    errorsOnly?: boolean
+  }
   'hitch.status': { roundId: string }
   'candidate.diff': { maxBytes?: number }
   'candidate.check': { check?: string }

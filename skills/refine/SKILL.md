@@ -51,16 +51,20 @@ not infer missing field names or harness APIs from errors.
    an edit. Do not discover or modify Gear state, Git metadata, held-out data,
    credentials, or host paths directly.
 5. Review the baseline summary. Query `trajectory.query` with `refs` for every
-   failed baseline run before proposing a change. Use `nextOffset` for bounded
-   pagination and stop once the causal evidence is sufficient. Keep cited
-   evidence limited to references actually returned for the active seed
-   baseline.
+   failed baseline run before proposing a change. The default `bundle` view
+   returns the effective DSH context, semantic steps, reward, structured
+   verifier result, bounded verifier diagnostics when retained, and diagnosis
+   progress without raw chunk noise. Treat `result_only` as missing verifier
+   logs, not as a complete failure explanation. Use `steps`, `context`, or
+   `events` only for focused drill-down. Keep cited evidence limited to
+   references actually returned for the active seed baseline.
 6. Connect the observed failure to a harness-controlled cause, select the
    affected semantic target, and make the smallest coherent change. New files
    must be connected from an existing preset, plugin, skill, or workflow entry;
    unreferenced files do not change Target Agent behavior.
 7. Inspect `candidate.diff`, remove accidental or task-specific changes, and
-   run `candidate.check` before finalizing. Use `candidate.decline` when the
+   run `candidate.check` before finalizing and require
+   `finalizationReadiness.ready: true`. Use `candidate.decline` when the
    evidence does not justify a harness change or the required fix is outside
    the editable substrate.
 8. After finalization, stop using that lease and poll status. Claim and complete
@@ -77,5 +81,14 @@ by Gear's sealed promotion policy.
 - On a timeout or failed round, inspect status; do not create a replacement
   evolution unless the user asked for a new one.
 - Use `control.rerun` only for repairable evaluation slots reported by status.
+- If `trajectory.query` returns `batchAccepted:false, recoverable:true`, execute
+  `nextAction` and every `remainingActions` entry. This is an authoritative
+  request to split an oversized bundle batch; do not retry the same batch.
+- If finalize or decline returns `accepted:false, recoverable:true`, execute
+  `nextAction`, then `remainingActions`, and retry the same operation with the
+  same arguments. The lease remains active until `accepted:true`.
+- If it returns `accepted:false, recoverable:false`, report the exact
+  `operatorAction` and do not repeat the same tool call. A verifier prerequisite
+  requires an operator or configuration change.
 - Never bypass a failed compiler check, evidence requirement, identity check,
   or promotion decision by editing state files.

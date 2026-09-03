@@ -8,13 +8,25 @@ import { HarnessBuilder, NoopHarnessCompiler, SubstrateExpansionError } from '..
 import { RefineService } from '../../src/refine/service.js'
 import { RefineStateStore } from '../../src/state/store.js'
 import { EvolutionRegistryStore } from '../../src/state/evolution.js'
-import type { EvaluationPhase, EvaluationRequest, EvaluationRerunResult, EvaluationRerunSelector, EvaluationReservation, HitchEvaluationEvidence, MetaAttribution, MetaCheckpointRef, MetaTurnObservation, RefineEvaluator, RefinementRound, RoundEvaluationAttempt } from '../../src/types.js'
+import type { DiagnosisReceipt, EvaluationPhase, EvaluationRequest, EvaluationRerunResult, EvaluationRerunSelector, EvaluationReservation, HitchEvaluationEvidence, MetaAttribution, MetaCheckpointRef, MetaTurnObservation, RefineEvaluator, RefinementRound, RoundEvaluationAttempt } from '../../src/types.js'
 import { createGitHarnessFixture } from '../helpers/git-fixture.js'
 import { builtinComponentRef, componentRef } from '../../src/evolution/components.js'
 import { evolutionSpec } from '../helpers/research-fixture.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
+
+function diagnosisReceipts(runIds: readonly string[]): DiagnosisReceipt[] {
+  return runIds.map(runId => ({
+    runId,
+    bundleDigest: `sha256:${'c'.repeat(64)}`,
+    trajectoryDigest: `sha256:${'d'.repeat(64)}`,
+    projectionVersion: 1,
+    verifierStatus: 'complete',
+    sanitizationPolicyDigest: `sha256:${'e'.repeat(64)}`,
+    inspectedAt: 'now',
+  }))
+}
 
 class FakeMeta {
   wakes: string[] = []
@@ -306,7 +318,8 @@ async function finalize(service: RefineService, round: RefinementRound): Promise
     rationale: 'fix observed failures', expectedOutcome: 'higher reward', evidenceRefs: [round.baseline.evalId], semanticTargets: ['context', 'routing'],
   }, undefined, meta, {
     evolutionId: round.evolutionId, roundId: round.roundId, candidateId: candidate.candidateId, baselineEvalId: round.baseline.evalId,
-    summaryAccessed: true, accessedRefs: [round.baseline.evalId, ...runRefs], diagnosedRunRefs: failed, citedRefs: [round.baseline.evalId],
+    summaryAccessed: true, accessedRefs: [round.baseline.evalId, ...runRefs], diagnosedRunRefs: failed,
+    diagnosisReceipts: diagnosisReceipts(failed), citedRefs: [round.baseline.evalId],
   })
 }
 
@@ -332,6 +345,7 @@ async function decline(service: RefineService, round: RefinementRound): Promise<
     summaryAccessed: true,
     accessedRefs: [round.baseline.evalId, ...failed],
     diagnosedRunRefs: failed,
+    diagnosisReceipts: diagnosisReceipts(failed),
     citedRefs: [],
   })
 }
@@ -1431,7 +1445,8 @@ describe('RefineService evolution workspaces', () => {
       evolutionId: first.evolutionId, sessionId, requestHeaderSeq: 1, proposalEventSeq: 2,
     }, {
       evolutionId: first.evolutionId, roundId: first.roundId, candidateId: candidate.candidateId, baselineEvalId: first.baseline!.evalId,
-      summaryAccessed: true, accessedRefs: [first.baseline!.evalId, ...failed], diagnosedRunRefs: failed, citedRefs: [],
+      summaryAccessed: true, accessedRefs: [first.baseline!.evalId, ...failed], diagnosedRunRefs: failed,
+      diagnosisReceipts: diagnosisReceipts(failed), citedRefs: [],
     })
     expect(active.workspace).toBeDefined()
     const store = service.registry.stateStore(admission.evolutionId)
@@ -2005,26 +2020,44 @@ describe('RefineService evolution workspaces', () => {
   })
 
   it('continues with a successful sibling when another candidate times out', async () => {
-    const { service } = await setup(0.8, false, 2, 500, 1, 0, 1, 5_000)
-    const admission = await service.admit('api')
-    const first = await editing(service, admission.evolutionId, admission.roundId)
-    const firstCandidateId = first.candidatePool.find(candidate => candidate.metaSessionId !== undefined)?.candidateId
-    if (firstCandidateId === undefined) throw new Error('first sibling is unavailable')
-    const store = service.registry.stateStore(admission.evolutionId)
-    const second = await eventually(
-      () => store.readRound(admission.roundId) as Promise<RefinementRound>,
-      value => value?.status === 'candidate-editing'
-        && value.candidatePool.some(candidate => candidate.candidateId !== firstCandidateId
-          && candidate.metaSessionId !== undefined
-          && service.activeEntry(value.roundId)?.workspace?.workspaceId === candidate.workspaceId),
-    )
-    await finalize(service, second)
-    const terminal = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'accepted')
-    expect(terminal?.candidatePool.find(candidate => candidate.candidateId === firstCandidateId)).toMatchObject({
-      status: 'failed', failure: { phase: 'candidate-generation' },
+    const attemptBudgetMs = 30_000
+    const { service } = await setup(0.8, false, 2, attemptBudgetMs, 1, 0, 1, 90_000)
+    // Trigger only the first sibling's deadline; finalizing the successful
+    // sibling includes Git and evidence checks that must not race a 500ms timer.
+    const originalSetTimeout = globalThis.setTimeout
+    let expireFirstAttempt: (() => void) | undefined
+    const timerSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation((...args: Parameters<typeof setTimeout>) => {
+      const timer = originalSetTimeout(...args)
+      if (args[1] === attemptBudgetMs && expireFirstAttempt === undefined) {
+        expireFirstAttempt = () => { clearTimeout(timer); args[0]() }
+      }
+      return timer
     })
-    expect(terminal?.candidatePool.filter(candidate => candidate.status === 'selected')).toHaveLength(1)
-    await service.dispose()
+    try {
+      const admission = await service.admit('api')
+      const first = await editing(service, admission.evolutionId, admission.roundId)
+      const firstCandidateId = first.candidatePool.find(candidate => candidate.metaSessionId !== undefined)?.candidateId
+      if (firstCandidateId === undefined) throw new Error('first sibling is unavailable')
+      if (expireFirstAttempt === undefined) throw new Error('candidate deadline was not scheduled')
+      expireFirstAttempt()
+      const store = service.registry.stateStore(admission.evolutionId)
+      const second = await eventually(
+        () => store.readRound(admission.roundId) as Promise<RefinementRound>,
+        value => value?.status === 'candidate-editing'
+          && value.candidatePool.some(candidate => candidate.candidateId !== firstCandidateId
+            && candidate.metaSessionId !== undefined
+            && service.activeEntry(value.roundId)?.workspace?.workspaceId === candidate.workspaceId),
+      )
+      await finalize(service, second)
+      const terminal = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'accepted')
+      expect(terminal?.candidatePool.find(candidate => candidate.candidateId === firstCandidateId)).toMatchObject({
+        status: 'failed', failure: { phase: 'candidate-generation' },
+      })
+      expect(terminal?.candidatePool.filter(candidate => candidate.status === 'selected')).toHaveLength(1)
+    } finally {
+      timerSpy.mockRestore()
+      await service.dispose()
+    }
   })
 
   it('preserves rejected-for-substrate instead of reporting retry exhaustion', async () => {

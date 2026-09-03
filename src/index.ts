@@ -504,6 +504,17 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     ...(config.seedTasksPath === undefined ? {} : { seedTasksPath: config.seedTasksPath }),
     configuredSeedTaskRef: config.seedTaskRef,
     trajectoryReader: evaluator,
+    maxTrajectoryPageBytes: config.candidateWorkspace.maxReadBytes,
+    maxFailureBundleBytes: config.candidateWorkspace.maxReadBytes,
+    ...(config.hitch.trajectoryCacheEntries === undefined ? {} : {
+      maxTrajectoryCacheEntries: config.hitch.trajectoryCacheEntries,
+    }),
+    ...(config.hitch.trajectoryCacheBytes === undefined ? {} : {
+      maxTrajectoryProjectionCacheBytes: config.hitch.trajectoryCacheBytes,
+    }),
+    ...(config.hitch.allowUnavailableVerifierDiagnosis === undefined ? {} : {
+      allowUnavailableVerifierDiagnosis: config.hitch.allowUnavailableVerifierDiagnosis,
+    }),
     secretValues: [...new Set([
       ...config.hitch.passEnv,
       ...(config.selection.llmVerifier?.passEnv ?? []),

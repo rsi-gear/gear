@@ -29,7 +29,8 @@ describe('Meta notebook tools', () => {
       'finalize_candidate',
       'decline_candidate',
     ])
-    expect(sections[0]?.text).toContain('diagnostics for every failed baseline run')
+    expect(sections[0]?.text).toContain('failure bundle for every failed baseline run')
+    expect(sections[0]?.text).toContain('accepted=false and recoverable=true')
     const trajectory = tools.find(tool => tool.name === 'trajectory_query')!
     await trajectory.execute({ refs: ['run_1'], offset: 0 }, {
       agent: { id: 'meta-1' },
@@ -84,5 +85,27 @@ describe('Meta notebook tools', () => {
       expect.any(AbortSignal),
     )
     expect(concludeTurn).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the Meta turn open when finalization returns a recoverable action', async () => {
+    const tools: ToolDefinition[] = []
+    const call = vi.fn(async () => ({
+      accepted: false,
+      recoverable: true,
+      code: 'MISSING_BASELINE_DIAGNOSIS',
+      nextAction: { tool: 'trajectory_query', arguments: { refs: ['run-1'], view: 'bundle' } },
+    }))
+    const context = {
+      tools: { register(definition: ToolDefinition) { tools.push(definition) } },
+      systemPrompt: { section() {} },
+    } as unknown as Context
+    mountMetaCapabilityTools(context, call)
+    const submit = tools.find(tool => tool.name === 'finalize_candidate')!
+    const concludeTurn = vi.fn()
+    await expect(submit.execute({
+      rationale: 'fix failure', evidenceRefs: ['run-1'], expectedOutcome: 'pass',
+    }, { agent: { id: 'meta-1' }, signal: new AbortController().signal, concludeTurn } as never))
+      .resolves.toMatchObject({ accepted: false, recoverable: true })
+    expect(concludeTurn).not.toHaveBeenCalled()
   })
 })

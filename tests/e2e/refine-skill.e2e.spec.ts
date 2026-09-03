@@ -96,14 +96,20 @@ class E2eEvaluator implements RefineEvaluator {
       provider: 'fake',
       sessionId: `session-${runId}`,
       header: { task: 'observed failure' },
-      events: [{ type: 'assistant', content: 'missing context caused the failure' }],
+      events: [{
+        type: 'user/message', seq: 0, time: 1, surfaceOp: 'append',
+        data: {
+          role: 'user', id: 'user-1', source: { kind: 'user' },
+          content: [{ type: 'text', text: 'missing context caused the failure' }],
+        },
+      }],
       offset,
       limit,
       total: 1,
       eof: true,
       diagnostics: {
         totalEvents: 1,
-        eventTypes: { assistant: 1 },
+        eventTypes: { 'user/message': 1 },
         toolCalls: 0,
         toolResults: 0,
         toolErrors: 0,
@@ -172,7 +178,7 @@ describe('refine skill end to end', () => {
       },
       selection: { survivors: 1, timeoutMs: 10_000 },
       compiler: { command: process.execPath, args: [], timeoutMs: 10_000, env: {} },
-      hitch: { model: 'target-model' },
+      hitch: { model: 'target-model', allowUnavailableVerifierDiagnosis: true },
       promotion: {
         minimumCandidateScore: 0.7,
         minimumAbsoluteGain: 0.1,
@@ -198,9 +204,13 @@ describe('refine skill end to end', () => {
     const failedRun = claim.baseline.trials.find(trial => (trial.reward ?? 0) <= 0)?.runId
     if (failedRun === undefined) throw new Error('baseline has no failed run')
 
-    await requestRefineSkill(socketPath, {
+    const trajectoryResult = await requestRefineSkill(socketPath, {
       method: 'meta.call',
       params: { ...lease, capability: 'trajectory.query', arguments: { refs: [failedRun], offset: 0, limit: 20 } },
+    })
+    expect(trajectoryResult).toMatchObject({
+      bundles: [{ identity: { runId: failedRun }, coverage: { trajectory: 'complete' } }],
+      diagnosisProgress: { ready: true, remainingRunCount: 0 },
     })
     const observed = await requestRefineSkill(socketPath, {
       method: 'candidate.read', params: { ...lease, path: 'plugins/context.ts' },
@@ -217,7 +227,7 @@ describe('refine skill end to end', () => {
     })
     await expect(requestRefineSkill(socketPath, {
       method: 'meta.call', params: { ...lease, capability: 'candidate.check', arguments: { check: 'compiler' } },
-    })).resolves.toMatchObject({ ok: true })
+    })).resolves.toMatchObject({ ok: true, finalizationReadiness: { ready: true, remainingRunCount: 0 } })
     await expect(requestRefineSkill(socketPath, {
       method: 'meta.call', params: { ...lease, capability: 'candidate.diff', arguments: {} },
     })).resolves.toMatchObject({ summary: { files: [expect.objectContaining({ path: 'plugins/context.ts' })] } })

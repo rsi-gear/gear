@@ -1,5 +1,6 @@
 import type {
   CandidateRecord,
+  DiagnosisReceipt,
   EvaluationEvidence,
   MetaAttribution,
   MetaAgentSpec,
@@ -61,7 +62,12 @@ export interface MetaSessionController {
   recordEvidenceAccess(
     roundId: string,
     sessionId: string,
-    access: { summary?: boolean; refs?: readonly string[]; diagnosedRunRefs?: readonly string[] },
+    access: {
+      summary?: boolean
+      refs?: readonly string[]
+      diagnosedRunRefs?: readonly string[]
+      diagnosisReceipts?: readonly DiagnosisReceipt[]
+    },
   ): void
   proposalEvidenceAudit(roundId: string, sessionId: string, citedRefs: readonly string[]): ProposalEvidenceAudit
   proposalAttribution(roundId: string, sessionId: string, mutation: unknown): MetaAttribution | Promise<MetaAttribution>

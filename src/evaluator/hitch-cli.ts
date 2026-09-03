@@ -15,9 +15,11 @@ import type {
   EvaluationTrialSlot,
   FailedEvaluationEvidence,
   HitchEvaluationEvidence,
+  HitchTrajectory,
   HitchTrajectoryPage,
   HitchTrajectoryReader,
   HitchTrialSummary,
+  HitchVerifierEvidence,
   InvalidEvaluationTrialSummary,
   LocalSourceTransportSummary,
   RefineEvaluator,
@@ -38,6 +40,13 @@ interface ProcessResult {
   stdout: string
   stderr: string
   exitCode: number
+}
+
+interface SharedTrajectoryLoad {
+  promise: Promise<HitchTrajectory>
+  controller: AbortController
+  waiters: number
+  settled: boolean
 }
 
 interface HitchEvaluationIdentity {
@@ -96,6 +105,141 @@ function integer(value: unknown, label: string): number {
     throw new HitchEvaluationError(`${label} must be a non-negative integer`, 'invalid_hitch_result')
   }
   return value as number
+}
+
+function optionalFinite(value: unknown, label: string): number | undefined {
+  return value === undefined ? undefined : finite(value, label)
+}
+
+function optionalString(value: unknown, label: string): string | undefined {
+  return value === undefined ? undefined : string(value, label)
+}
+
+function jsonValue(value: unknown, label: string): import('@deepseek-ai/dsh-session').JsonValue {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (Array.isArray(value)) return value.map((item, index) => jsonValue(item, `${label}[${index}]`))
+  if (typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, jsonValue(item, `${label}.${key}`)]))
+  }
+  throw new HitchEvaluationError(`${label} must be JSON`, 'invalid_hitch_result')
+}
+
+const VERIFIER_ARTIFACT_NAMES = new Set([
+  'ctrf.json',
+  'test-stdout.txt',
+  'test-stderr.txt',
+  'stdout.txt',
+  'stderr.txt',
+])
+
+function exactFields(value: JsonRecord, allowed: readonly string[], label: string): void {
+  const allowedFields = new Set(allowed)
+  const unexpected = Object.keys(value).find(field => !allowedFields.has(field))
+  if (unexpected !== undefined) {
+    throw new HitchEvaluationError(`${label} has unknown field: ${unexpected}`, 'invalid_hitch_result')
+  }
+}
+
+function verifierArtifact(value: unknown, label: string): import('@deepseek-ai/dsh-session').JsonValue {
+  const artifact = record(value, label)
+  exactFields(artifact, ['name', 'media_type', 'bytes', 'sha256', 'truncated', 'json', 'text'], label)
+  const name = string(artifact.name, `${label}.name`)
+  if (!VERIFIER_ARTIFACT_NAMES.has(name)) {
+    throw new HitchEvaluationError(`${label}.name is invalid`, 'invalid_hitch_result')
+  }
+  const mediaType = string(artifact.media_type, `${label}.media_type`)
+  const expectedMediaType = name === 'ctrf.json' ? 'application/json' : 'text/plain'
+  if (mediaType !== expectedMediaType) {
+    throw new HitchEvaluationError(`${label}.media_type is invalid`, 'invalid_hitch_result')
+  }
+  const bytes = integer(artifact.bytes, `${label}.bytes`)
+  const sha256 = string(artifact.sha256, `${label}.sha256`)
+  if (!/^sha256:[0-9a-f]{64}$/u.test(sha256)) {
+    throw new HitchEvaluationError(`${label}.sha256 is invalid`, 'invalid_hitch_result')
+  }
+  if (typeof artifact.truncated !== 'boolean') {
+    throw new HitchEvaluationError(`${label}.truncated must be boolean`, 'invalid_hitch_result')
+  }
+  const hasJson = artifact.json !== undefined
+  const hasText = artifact.text !== undefined
+  if (hasJson === hasText) {
+    throw new HitchEvaluationError(`${label} requires exactly one content representation`, 'invalid_hitch_result')
+  }
+  if (hasText && typeof artifact.text !== 'string') {
+    throw new HitchEvaluationError(`${label}.text must be a string`, 'invalid_hitch_result')
+  }
+  if (hasJson && (mediaType !== 'application/json' || artifact.truncated)) {
+    throw new HitchEvaluationError(`${label} may use json only for complete JSON content`, 'invalid_hitch_result')
+  }
+  if (mediaType === 'application/json' && !artifact.truncated && !hasJson) {
+    throw new HitchEvaluationError(`${label} requires json for complete JSON content`, 'invalid_hitch_result')
+  }
+  return {
+    name,
+    media_type: mediaType,
+    bytes,
+    sha256,
+    truncated: artifact.truncated,
+    ...(hasJson
+      ? { json: jsonValue(artifact.json, `${label}.json`) }
+      : { text: artifact.text as string }),
+  }
+}
+
+function verifierDiagnostics(value: unknown): {
+  value: import('@deepseek-ai/dsh-session').JsonValue
+  hasArtifacts: boolean
+} {
+  const diagnostics = record(value, 'verifier evidence diagnostics')
+  exactFields(
+    diagnostics,
+    ['ctrf', 'stdout', 'stderr', 'infrastructure_error', 'retry_history'],
+    'verifier evidence diagnostics',
+  )
+  const ctrf = diagnostics.ctrf === undefined
+    ? undefined
+    : verifierArtifact(diagnostics.ctrf, 'verifier evidence diagnostics.ctrf')
+  const artifactArray = (field: 'stdout' | 'stderr'): import('@deepseek-ai/dsh-session').JsonValue[] | undefined => {
+    const source = diagnostics[field]
+    if (source === undefined) return undefined
+    if (!Array.isArray(source)) {
+      throw new HitchEvaluationError(`verifier evidence diagnostics.${field} must be an array`, 'invalid_hitch_result')
+    }
+    return source.map((item, index) => verifierArtifact(
+      item,
+      `verifier evidence diagnostics.${field}[${index}]`,
+    ))
+  }
+  const stdout = artifactArray('stdout')
+  const stderr = artifactArray('stderr')
+  const infrastructureError = diagnostics.infrastructure_error === undefined
+    ? undefined
+    : jsonValue(diagnostics.infrastructure_error, 'verifier evidence diagnostics.infrastructure_error')
+  let retryHistory: import('@deepseek-ai/dsh-session').JsonValue[] | undefined
+  if (diagnostics.retry_history !== undefined) {
+    if (!Array.isArray(diagnostics.retry_history)) {
+      throw new HitchEvaluationError('verifier evidence diagnostics.retry_history must be an array', 'invalid_hitch_result')
+    }
+    retryHistory = diagnostics.retry_history.map((item, index) => jsonValue(
+      item,
+      `verifier evidence diagnostics.retry_history[${index}]`,
+    ))
+  }
+  const hasArtifacts = ctrf !== undefined || (stdout?.length ?? 0) > 0 || (stderr?.length ?? 0) > 0
+  if (!hasArtifacts && infrastructureError === undefined && (retryHistory?.length ?? 0) === 0) {
+    throw new HitchEvaluationError('verifier evidence diagnostics must not be empty', 'invalid_hitch_result')
+  }
+  return {
+    value: {
+      ...(ctrf === undefined ? {} : { ctrf }),
+      ...(stdout === undefined ? {} : { stdout }),
+      ...(stderr === undefined ? {} : { stderr }),
+      ...(infrastructureError === undefined ? {} : { infrastructure_error: infrastructureError }),
+      ...(retryHistory === undefined ? {} : { retry_history: retryHistory }),
+    },
+    hasArtifacts,
+  }
 }
 
 function stringArray(value: unknown, label: string): string[] {
@@ -197,6 +341,9 @@ function trajectoryDiagnostics(events: JsonRecord[]): TrajectoryDiagnostics {
 export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader {
   readonly repositoryPath: string
   private executablePathPromise?: Promise<string>
+  private readonly trajectoryCache = new Map<string, HitchTrajectory>()
+  private readonly trajectoryLoads = new Map<string, SharedTrajectoryLoad>()
+  private trajectoryCacheBytes = 0
 
   private get controlPlane(): HitchControlPlaneOptions {
     return { mode: 'direct', requireModelCapture: false, ...this.options.controlPlane }
@@ -217,6 +364,14 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     if (!Number.isSafeInteger(options.maxOutputBytes) || options.maxOutputBytes <= 0) throw new TypeError('hitch.maxOutputBytes must be positive')
     if (!Number.isSafeInteger(options.maxTrajectoryOutputBytes) || options.maxTrajectoryOutputBytes <= 0) {
       throw new TypeError('hitch.maxTrajectoryOutputBytes must be positive')
+    }
+    if (options.trajectoryCacheEntries !== undefined
+      && (!Number.isSafeInteger(options.trajectoryCacheEntries) || options.trajectoryCacheEntries <= 0)) {
+      throw new TypeError('hitch.trajectoryCacheEntries must be positive')
+    }
+    if (options.trajectoryCacheBytes !== undefined
+      && (!Number.isSafeInteger(options.trajectoryCacheBytes) || options.trajectoryCacheBytes <= 0)) {
+      throw new TypeError('hitch.trajectoryCacheBytes must be positive')
     }
     if (options.passEnv.some(name => !/^[A-Z_][A-Z0-9_]*$/u.test(name))) throw new TypeError('hitch.passEnv contains an invalid environment variable name')
     const controlPlane = this.controlPlane
@@ -576,6 +731,240 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     if (!/^run_[0-9a-f]{32}$/u.test(runId)) throw new TypeError('Hitch trajectory requires a valid run ID')
     if (!Number.isSafeInteger(offset) || offset < 0) throw new TypeError('trajectory offset must be a non-negative integer')
     if (!Number.isSafeInteger(limit) || limit <= 0) throw new TypeError('trajectory limit must be a positive integer')
+    const trajectory = await this.loadTrajectory(runId, signal)
+    const page = trajectory.events.slice(offset, offset + limit)
+    return {
+      runId,
+      fidelity: trajectory.fidelity,
+      ...(trajectory.provider === undefined ? {} : { provider: trajectory.provider }),
+      sessionId: trajectory.sessionId,
+      trajectoryDigest: trajectory.trajectoryDigest,
+      header: trajectory.header,
+      events: page,
+      offset,
+      limit,
+      total: trajectory.events.length,
+      eof: offset + page.length >= trajectory.events.length,
+      diagnostics: trajectory.diagnostics,
+    }
+  }
+
+  async inspectVerifierEvidence(runId: string, signal: AbortSignal): Promise<HitchVerifierEvidence> {
+    if (!/^run_[0-9a-f]{32}$/u.test(runId)) throw new TypeError('Hitch verifier evidence requires a valid run ID')
+    signal.throwIfAborted()
+    const args = [
+      ...(this.options.root.length === 0 ? [] : ['--root', this.options.root]),
+      'verifier', 'inspect', runId, '--json',
+    ]
+    const processResult = await this.run(
+      args,
+      this.repositoryPath,
+      signal,
+      this.options.maxTrajectoryOutputBytes,
+    )
+    if (processResult.exitCode !== 0) {
+      const output = `${processResult.stderr}\n${processResult.stdout}`.trim()
+      if (output !== 'hitch: unknown command: verifier') {
+        throw new HitchEvaluationError(
+          `Hitch verifier inspect failed with exit ${processResult.exitCode}: ${excerpt(output, 1_000)}`,
+          'hitch_verifier_inspect_failed',
+        )
+      }
+      return {
+        runId,
+        verifier: {
+          status: 'unavailable',
+          issues: [`Hitch verifier evidence API is unsupported: ${output}`],
+        },
+      }
+    }
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(processResult.stdout)
+    } catch (error) {
+      throw new HitchEvaluationError(`Hitch emitted invalid verifier evidence JSON (${String(error)})`, 'invalid_hitch_json')
+    }
+    const result = record(parsed, 'Hitch verifier evidence')
+    if (result.schema_version !== '1' || result.kind !== 'verifier-evidence' || result.run_id !== runId) {
+      throw new HitchEvaluationError('Hitch verifier evidence identity does not match the requested run', 'invalid_hitch_result')
+    }
+    const parentRecord = result.parent === undefined ? undefined : record(result.parent, 'verifier evidence parent')
+    const parentAttempt = parentRecord === undefined ? undefined : integer(parentRecord.attempt, 'verifier evidence parent.attempt')
+    if (parentAttempt !== undefined && parentAttempt <= 0) {
+      throw new HitchEvaluationError('verifier evidence parent.attempt must be positive', 'invalid_hitch_result')
+    }
+    const parentEvalId = parentRecord === undefined
+      ? undefined
+      : string(parentRecord.eval_id, 'verifier evidence parent.eval_id')
+    if (parentEvalId !== undefined && !/^eval_[0-9a-f]{32}$/u.test(parentEvalId)) {
+      throw new HitchEvaluationError('verifier evidence parent.eval_id is invalid', 'invalid_hitch_result')
+    }
+    const parentTrialId = parentRecord === undefined
+      ? undefined
+      : string(parentRecord.trial_id, 'verifier evidence parent.trial_id')
+    const observationRecord = result.observation === undefined
+      ? undefined
+      : record(result.observation, 'verifier evidence observation')
+    const observationStatus = observationRecord?.status
+    if (observationRecord !== undefined && observationStatus !== 'valid' && observationStatus !== 'invalid') {
+      throw new HitchEvaluationError('verifier evidence observation.status is invalid', 'invalid_hitch_result')
+    }
+    const observationReward = observationRecord === undefined
+      ? undefined
+      : optionalFinite(observationRecord.reward, 'verifier evidence observation.reward')
+    const observationInvalidReason = observationRecord === undefined
+      ? undefined
+      : optionalString(observationRecord.invalid_reason, 'verifier evidence observation.invalid_reason')
+    const observationResultRef = observationRecord === undefined
+      ? undefined
+      : optionalString(observationRecord.verifier_result_ref, 'verifier evidence observation.verifier_result_ref')
+    const verifierRecord = record(result.verifier, 'verifier evidence verifier')
+    const verifierStatus = verifierRecord.status
+    if (verifierStatus !== 'complete' && verifierStatus !== 'result_only'
+      && verifierStatus !== 'missing' && verifierStatus !== 'corrupt') {
+      throw new HitchEvaluationError('verifier evidence status is invalid', 'invalid_hitch_result')
+    }
+    const resultSha256 = optionalString(verifierRecord.result_sha256, 'verifier evidence result_sha256')
+    if (resultSha256 !== undefined && !/^sha256:[0-9a-f]{64}$/u.test(resultSha256)) {
+      throw new HitchEvaluationError('verifier evidence result digest is invalid', 'invalid_hitch_result')
+    }
+    if ((verifierStatus === 'complete' || verifierStatus === 'result_only')
+      && (verifierRecord.result === undefined || resultSha256 === undefined)) {
+      throw new HitchEvaluationError(`${verifierStatus} verifier evidence requires a result and digest`, 'invalid_hitch_result')
+    }
+    const parsedDiagnostics = verifierRecord.diagnostics === undefined
+      ? undefined
+      : verifierDiagnostics(verifierRecord.diagnostics)
+    const hasArtifactDiagnostics = parsedDiagnostics?.hasArtifacts === true
+    if (verifierStatus === 'complete' && !hasArtifactDiagnostics) {
+      throw new HitchEvaluationError('complete verifier evidence requires artifact diagnostics', 'invalid_hitch_result')
+    }
+    if (verifierStatus === 'result_only' && hasArtifactDiagnostics) {
+      throw new HitchEvaluationError('result_only verifier evidence must not include artifact diagnostics', 'invalid_hitch_result')
+    }
+    if (verifierStatus === 'missing' && (verifierRecord.result !== undefined || resultSha256 !== undefined)) {
+      throw new HitchEvaluationError('missing verifier evidence must not include a result or digest', 'invalid_hitch_result')
+    }
+    const issues = verifierRecord.issues === undefined
+      ? undefined
+      : stringArray(verifierRecord.issues, 'verifier evidence issues')
+    const redactions = result.redactions === undefined
+      ? undefined
+      : (() => {
+          if (!Array.isArray(result.redactions)) {
+            throw new HitchEvaluationError('verifier evidence redactions must be an array', 'invalid_hitch_result')
+          }
+          const values = result.redactions.map((item, index) => {
+            const redaction = record(item, `verifier evidence redactions[${index}]`)
+            exactFields(redaction, ['rule_id', 'count'], `verifier evidence redactions[${index}]`)
+            const ruleId = string(redaction.rule_id, `verifier evidence redactions[${index}].rule_id`)
+            const count = integer(redaction.count, `verifier evidence redactions[${index}].count`)
+            if (!/^[a-z0-9][a-z0-9._-]{0,127}$/u.test(ruleId) || count < 1) {
+              throw new HitchEvaluationError(`verifier evidence redactions[${index}] is invalid`, 'invalid_hitch_result')
+            }
+            return { ruleId, count }
+          })
+          const canonical = [...values].sort((left, right) => left.ruleId.localeCompare(right.ruleId))
+          if (new Set(values.map(item => item.ruleId)).size !== values.length
+            || JSON.stringify(canonical) !== JSON.stringify(values)) {
+            throw new HitchEvaluationError('verifier evidence redactions must be unique and canonical', 'invalid_hitch_result')
+          }
+          return values
+        })()
+    return {
+      runId,
+      ...(parentRecord === undefined ? {} : {
+        parent: {
+          evalId: parentEvalId!,
+          trialId: parentTrialId!,
+          attempt: parentAttempt!,
+        },
+      }),
+      ...(observationRecord === undefined ? {} : {
+        observation: {
+          status: observationStatus as 'valid' | 'invalid',
+          ...(observationReward === undefined ? {} : { reward: observationReward }),
+          ...(observationInvalidReason === undefined ? {} : { invalidReason: observationInvalidReason }),
+          ...(observationResultRef === undefined ? {} : { verifierResultRef: observationResultRef }),
+        },
+      }),
+      verifier: {
+        status: verifierStatus,
+        ...(verifierRecord.result === undefined ? {} : { result: jsonValue(verifierRecord.result, 'verifier evidence result') }),
+        ...(resultSha256 === undefined ? {} : { resultSha256 }),
+        ...(parsedDiagnostics === undefined ? {} : {
+          diagnostics: parsedDiagnostics.value,
+        }),
+        ...(issues === undefined ? {} : { issues }),
+      },
+      ...(redactions === undefined ? {} : { redactions }),
+    }
+  }
+
+  async loadTrajectory(runId: string, signal: AbortSignal): Promise<HitchTrajectory> {
+    if (!/^run_[0-9a-f]{32}$/u.test(runId)) throw new TypeError('Hitch trajectory requires a valid run ID')
+    signal.throwIfAborted()
+    const cached = this.trajectoryCache.get(runId)
+    if (cached !== undefined) {
+      this.trajectoryCache.delete(runId)
+      this.trajectoryCache.set(runId, cached)
+      return cached
+    }
+    const pending = this.trajectoryLoads.get(runId)
+    if (pending !== undefined) return this.waitForTrajectoryLoad(runId, pending, signal)
+    const controller = new AbortController()
+    const shared: SharedTrajectoryLoad = {
+      promise: this.fetchTrajectory(runId, controller.signal),
+      controller,
+      waiters: 0,
+      settled: false,
+    }
+    this.trajectoryLoads.set(runId, shared)
+    void shared.promise.then(
+      trajectory => {
+        shared.settled = true
+        this.cacheTrajectory(trajectory)
+        if (this.trajectoryLoads.get(runId) === shared) this.trajectoryLoads.delete(runId)
+      },
+      () => {
+        shared.settled = true
+        if (this.trajectoryLoads.get(runId) === shared) this.trajectoryLoads.delete(runId)
+      },
+    )
+    return this.waitForTrajectoryLoad(runId, shared, signal)
+  }
+
+  private waitForTrajectoryLoad(
+    runId: string,
+    shared: SharedTrajectoryLoad,
+    signal: AbortSignal,
+  ): Promise<HitchTrajectory> {
+    signal.throwIfAborted()
+    shared.waiters += 1
+    return new Promise<HitchTrajectory>((resolvePromise, reject) => {
+      let completed = false
+      const release = (): void => {
+        if (completed) return
+        completed = true
+        signal.removeEventListener('abort', abort)
+        shared.waiters -= 1
+        if (shared.waiters === 0 && !shared.settled && this.trajectoryLoads.get(runId) === shared) {
+          shared.controller.abort(new Error(`trajectory load abandoned for ${runId}`))
+        }
+      }
+      const abort = (): void => {
+        release()
+        reject(signal.reason ?? new Error('trajectory load aborted'))
+      }
+      signal.addEventListener('abort', abort, { once: true })
+      void shared.promise.then(
+        trajectory => { release(); resolvePromise(trajectory) },
+        error => { release(); reject(error) },
+      )
+    })
+  }
+
+  private async fetchTrajectory(runId: string, signal: AbortSignal): Promise<HitchTrajectory> {
     const args = [
       ...(this.options.root.length === 0 ? [] : ['--root', this.options.root]),
       'trajectory', 'inspect', runId, '--json',
@@ -611,19 +1000,43 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     const sessionId = string(header.id, 'trajectory.header.id')
     if (!Array.isArray(result.events)) throw new HitchEvaluationError('trajectory.events must be an array', 'invalid_hitch_result')
     const events = result.events.map((event, index) => record(event, `trajectory.events[${index}]`))
-    const page = events.slice(offset, offset + limit)
+    const canonicalFile = Array.isArray(ref.files)
+      ? ref.files.map(item => record(item, 'trajectory.ref.files[]')).find(item => item.role === 'canonical_session')
+      : undefined
+    const reportedDigest = typeof ref.sha256 === 'string'
+      ? ref.sha256
+      : typeof canonicalFile?.sha256 === 'string' ? canonicalFile.sha256 : undefined
+    const trajectoryDigest = reportedDigest !== undefined && /^sha256:[0-9a-f]{64}$/u.test(reportedDigest)
+      ? reportedDigest
+      : sha256(processResult.stdout)
     return {
       runId,
       fidelity,
       ...(typeof ref.provider === 'string' && ref.provider.length > 0 ? { provider: ref.provider } : {}),
       sessionId,
+      trajectoryDigest,
+      bytes: Buffer.byteLength(processResult.stdout),
+      ref: ref as never,
       header: header as never,
-      events: page as never[],
-      offset,
-      limit,
-      total: events.length,
-      eof: offset + page.length >= events.length,
+      events: events as never[],
       diagnostics: trajectoryDiagnostics(events),
+    }
+  }
+
+  private cacheTrajectory(trajectory: HitchTrajectory): void {
+    const maxEntries = this.options.trajectoryCacheEntries ?? 8
+    const maxBytes = this.options.trajectoryCacheBytes ?? 256 * 1024 * 1024
+    if (trajectory.bytes > maxBytes) return
+    const existing = this.trajectoryCache.get(trajectory.runId)
+    if (existing !== undefined) this.trajectoryCacheBytes -= existing.bytes
+    this.trajectoryCache.delete(trajectory.runId)
+    this.trajectoryCache.set(trajectory.runId, trajectory)
+    this.trajectoryCacheBytes += trajectory.bytes
+    while (this.trajectoryCache.size > maxEntries || this.trajectoryCacheBytes > maxBytes) {
+      const oldest = this.trajectoryCache.entries().next().value as [string, HitchTrajectory] | undefined
+      if (oldest === undefined) break
+      this.trajectoryCache.delete(oldest[0])
+      this.trajectoryCacheBytes -= oldest[1].bytes
     }
   }
 
@@ -1392,23 +1805,33 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
         env: process.env,
         stdio: ['ignore', 'pipe', 'pipe'],
       })
-      let stdout = ''
-      let stderr = ''
+      const stdoutChunks: string[] = []
+      const stderrChunks: string[] = []
+      let stdoutBytes = 0
+      let stderrBytes = 0
       let overflow: 'stdout' | 'stderr' | undefined
       let killTimer: NodeJS.Timeout | undefined
-      const append = (stream: 'stdout' | 'stderr', current: string, chunk: string): string => {
-        const next = current + chunk
-        if (Buffer.byteLength(next) > maxOutputBytes) {
+      const append = (stream: 'stdout' | 'stderr', chunk: string): void => {
+        if (overflow !== undefined) return
+        const chunkBytes = Buffer.byteLength(chunk)
+        const currentBytes = stream === 'stdout' ? stdoutBytes : stderrBytes
+        if (currentBytes + chunkBytes > maxOutputBytes) {
           overflow = stream
           terminate()
-          return next.slice(0, maxOutputBytes)
+          return
         }
-        return next
+        if (stream === 'stdout') {
+          stdoutChunks.push(chunk)
+          stdoutBytes += chunkBytes
+        } else {
+          stderrChunks.push(chunk)
+          stderrBytes += chunkBytes
+        }
       }
       child.stdout.setEncoding('utf8')
       child.stderr.setEncoding('utf8')
-      child.stdout.on('data', (chunk: string) => { stdout = append('stdout', stdout, chunk) })
-      child.stderr.on('data', (chunk: string) => { stderr = append('stderr', stderr, chunk) })
+      child.stdout.on('data', (chunk: string) => { append('stdout', chunk) })
+      child.stderr.on('data', (chunk: string) => { append('stderr', chunk) })
       const terminate = (): void => {
         if (killTimer !== undefined) return
         child.kill('SIGTERM')
@@ -1428,7 +1851,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
           return reject(new HitchEvaluationError(`Hitch ${overflow} exceeded ${maxOutputBytes} bytes`, 'hitch_output_overflow'))
         }
         if (code === null) return reject(new HitchEvaluationError(`Hitch exited from signal ${childSignal ?? 'unknown'}`))
-        resolvePromise({ stdout, stderr, exitCode: code })
+        resolvePromise({ stdout: stdoutChunks.join(''), stderr: stderrChunks.join(''), exitCode: code })
       })
     })
   }

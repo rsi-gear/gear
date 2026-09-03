@@ -36,7 +36,7 @@ describe('SessionAwareNotebookRuntime', () => {
     const runtime = new SessionAwareNotebookRuntime({
       helperPath: fileURLToPath(new URL('../fixtures/notebook-helper.py', import.meta.url)),
       allowedMethods: { 'refine-meta': ['harness.current', 'candidate.finalize'], rollout: [] },
-      bridge: async (method) => { calls.push(method); return { ok: true } },
+      bridge: async (method) => { calls.push(method); return method === 'candidate.finalize' ? { accepted: true } : { ok: true } },
     })
     runtimes.push(runtime)
     const result = await runtime.execute({
@@ -48,6 +48,25 @@ describe('SessionAwareNotebookRuntime', () => {
     await expect(runtime.execute({
       sessionId: 'rollout', cwd: root, role: 'rollout', code: 'harness.current()',
     })).rejects.toThrow(/PermissionError/)
+  })
+
+  it('keeps IPython active after a recoverable finalization rejection', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'refine-notebook-'))
+    roots.push(root)
+    const runtime = new SessionAwareNotebookRuntime({
+      helperPath: fileURLToPath(new URL('../fixtures/notebook-helper.py', import.meta.url)),
+      allowedMethods: { 'refine-meta': ['candidate.finalize'], rollout: [] },
+      bridge: async () => ({ accepted: false, recoverable: true }),
+    })
+    runtimes.push(runtime)
+    const result = await runtime.execute({
+      sessionId: 'meta-recovery', cwd: root, role: 'refine-meta',
+      code: "candidate.finalize(rationale='r', expectedOutcome='x', evidenceRefs=['e'])",
+    })
+    expect(result.concludesTurn).toBeUndefined()
+    await expect(runtime.execute({
+      sessionId: 'meta-recovery', cwd: root, role: 'refine-meta', code: '1 + 1',
+    })).resolves.toMatchObject({ result: '2' })
   })
 
   it('does not silently rebind a session kernel to another role or cwd', async () => {
@@ -77,7 +96,7 @@ describe('SessionAwareNotebookRuntime', () => {
     expect(printed).toMatchObject({ stdout: 'hello\n' })
     expect(printed.result).toBeUndefined()
     const help = await runtime.execute({ sessionId: 'real', cwd: root, role: 'rollout', code: 'help(trajectory.query)' })
-    expect(help.stdout).toContain('whole-trajectory diagnostics')
+    expect(help.stdout).toContain('bundle, steps, context, and raw-event views')
     expect(help.result).toBeUndefined()
   })
 

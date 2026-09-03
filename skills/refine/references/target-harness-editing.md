@@ -72,10 +72,11 @@ Do not assume a standard harness layout beyond the five editable roots.
 A failed run is a baseline trial with zero/negative reward, `errored` status, or
 an explicit failure record. Query every such run by its returned `runId`.
 
-Start at `offset: 0` with a small `limit`. The first page includes diagnostics
-such as event counts, tool errors, and final-message excerpts. Page with the
-returned `nextOffset`; a byte bound can make a page shorter than the requested
-limit. Read only as far as needed to identify the causal chain:
+Start with the default `bundle` view. It reconstructs DSH's effective message
+surface, groups assistant/tool behavior into semantic steps, joins the baseline
+outcome, and omits raw stream chunks. Use `steps`, `context`, or `events` only
+when the bundle identifies a sequence or error that needs focused drill-down.
+Read only as far as needed to identify the causal chain:
 
 ```text
 task contract

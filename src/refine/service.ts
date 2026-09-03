@@ -15,6 +15,7 @@ import type {
 import { isExactGitCommit } from '../types.js'
 import type { EvaluationReservation, PendingEvaluationSubmission, EvaluationFailure } from '../types.js'
 import { EvaluationCleanupError, evaluationFailure } from '../evaluator/cleanup.js'
+import { finalizationReadiness } from './finalization-readiness.js'
 
 export interface RefineServiceOptions {
   workspaceRoot: string
@@ -2228,7 +2229,8 @@ export class RefineService {
     if (audit.evolutionId !== round.evolutionId || audit.roundId !== round.roundId || audit.baselineEvalId !== baseline.evalId) {
       throw new Error('finalization evidence does not belong to the current evolution/round baseline')
     }
-    if (!audit.summaryAccessed) throw new Error('finalization requires the current baseline summary')
+    const readiness = finalizationReadiness(baseline, audit)
+    if (!readiness.summaryAccessed) throw new Error('finalization requires the current baseline summary')
     if (finalization === null && decline === undefined) throw new Error('decline rationale is required')
     const cited = finalization?.evidenceRefs ?? decline?.evidenceRefs ?? []
     if (finalization !== null && cited.length === 0) throw new Error('finalization must cite current baseline evidence')
@@ -2243,11 +2245,9 @@ export class RefineService {
       if (!allowed.has(ref)) throw new Error(`finalization evidence ref is not from the current seed baseline: ${ref}`)
       if (!accessed.has(ref)) throw new Error(`finalization cites seed evidence that Meta did not access: ${ref}`)
     }
-    const diagnosed = new Set(audit.diagnosedRunRefs)
-    const missing = baseline.trials
-      .filter(trial => (trialReward(trial) ?? 0) <= 0)
-      .flatMap(trial => trial.runId === undefined || diagnosed.has(trial.runId) ? [] : [trial.runId])
-    if (missing.length > 0) throw new Error(`finalization requires trajectory diagnostics for every failed baseline run: ${missing.join(', ')}`)
+    if (readiness.missing.length > 0) {
+      throw new Error(`finalization requires trajectory diagnostics for every failed baseline run: ${readiness.missing.map(item => item.runId).join(', ')}`)
+    }
   }
 
   private nextPopulation(round: RefinementRound, previous: PopulationState, selectedIds: readonly string[]): PopulationState {

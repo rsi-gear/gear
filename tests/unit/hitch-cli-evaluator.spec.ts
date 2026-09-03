@@ -144,6 +144,21 @@ else if (args[0] === 'trajectory' && args[1] === 'inspect') {
       { type: 'turn/end', seq: 2, time: 12, data: { turn: 1 } },
     ],
   }) + '\\n')
+} else if (args[0] === 'verifier' && args[1] === 'inspect') {
+  const runId = args[2]
+  process.stdout.write(JSON.stringify({
+    schema_version: '1', kind: 'verifier-evidence', run_id: runId,
+    parent: { eval_id: 'eval_' + '1'.repeat(32), trial_id: 'trial-1', attempt: 1 },
+    observation: { status: 'valid', reward: 0, verifier_result_ref: 'verifier/result.json' },
+    verifier: {
+      status: 'complete', result: { rewards: { reward: 0 } }, result_sha256: 'sha256:' + '8'.repeat(64),
+      diagnostics: { stdout: [{
+        name: 'test-stdout.txt', media_type: 'text/plain', bytes: 16,
+        sha256: 'sha256:' + '9'.repeat(64), truncated: false, text: 'assertion failed',
+      }] },
+    },
+    redactions: [{ rule_id: 'absolute-path-v1', count: 2 }],
+  }) + '\\n')
 } else if (args[0] === 'eval' && args[1] === 'rerun') {
   process.stdout.write(JSON.stringify({
     schema_version: '1', kind: 'eval-rerun', rerun_id: value('--rerun-id') ?? 'rerun_' + '9'.repeat(32), eval_id: args[2], status: 'completed',
@@ -777,6 +792,154 @@ describe('HitchCliEvaluator', () => {
         finalAssistantExcerpts: [{ seq: 1 }],
       },
     })
+  })
+
+  it('reads and validates run-centered Hitch verifier evidence', async () => {
+    const { evaluator } = await setup()
+    const runId = `run_${'5'.repeat(32)}`
+    await expect(evaluator.inspectVerifierEvidence(runId, new AbortController().signal)).resolves.toEqual({
+      runId,
+      parent: { evalId: `eval_${'1'.repeat(32)}`, trialId: 'trial-1', attempt: 1 },
+      observation: { status: 'valid', reward: 0, verifierResultRef: 'verifier/result.json' },
+      verifier: {
+        status: 'complete',
+        result: { rewards: { reward: 0 } },
+        resultSha256: `sha256:${'8'.repeat(64)}`,
+        diagnostics: { stdout: [{
+          name: 'test-stdout.txt', media_type: 'text/plain', bytes: 16,
+          sha256: `sha256:${'9'.repeat(64)}`, truncated: false, text: 'assertion failed',
+        }] },
+      },
+      redactions: [{ ruleId: 'absolute-path-v1', count: 2 }],
+    })
+  })
+
+  it('reports verifier evidence as unavailable when an older Hitch lacks the command', async () => {
+    const { evaluator } = await setup()
+    await writeFile(evaluator.options.executable, `#!/usr/bin/env node
+if (process.argv[2] === '--version') process.stdout.write('0.2.6\\n')
+else { process.stderr.write('hitch: unknown command: verifier\\n'); process.exitCode = 2 }
+`)
+    await chmod(evaluator.options.executable, 0o755)
+    const runId = `run_${'5'.repeat(32)}`
+    await expect(evaluator.inspectVerifierEvidence(runId, new AbortController().signal)).resolves.toMatchObject({
+      runId,
+      verifier: { status: 'unavailable', issues: [expect.stringContaining('unknown command: verifier')] },
+    })
+  })
+
+  it('fails closed when verifier inspection fails for reasons other than an unsupported command', async () => {
+    const { evaluator } = await setup()
+    await writeFile(evaluator.options.executable, `#!/usr/bin/env node
+process.stderr.write('run evidence cannot be read: permission denied\\n')
+process.exitCode = 1
+`)
+    await chmod(evaluator.options.executable, 0o755)
+    await expect(evaluator.inspectVerifierEvidence(
+      `run_${'5'.repeat(32)}`,
+      new AbortController().signal,
+    )).rejects.toMatchObject({
+      code: 'hitch_verifier_inspect_failed',
+      message: expect.stringContaining('permission denied'),
+    })
+  })
+
+  it.each([
+    ['null CTRF', 'complete', { ctrf: null }],
+    ['null stdout entry', 'complete', { stdout: [null] }],
+    ['non-array stdout', 'result_only', { stdout: 'bad' }],
+  ])('rejects malformed verifier diagnostics: %s', async (_label, status, diagnostics) => {
+    const { evaluator } = await setup()
+    const runId = `run_${'5'.repeat(32)}`
+    const payload = {
+      schema_version: '1',
+      kind: 'verifier-evidence',
+      run_id: runId,
+      verifier: {
+        status,
+        result: {},
+        result_sha256: `sha256:${'8'.repeat(64)}`,
+        diagnostics,
+      },
+    }
+    await writeFile(evaluator.options.executable, `#!/usr/bin/env node
+process.stdout.write(${JSON.stringify(JSON.stringify(payload))})
+`)
+    await chmod(evaluator.options.executable, 0o755)
+    await expect(evaluator.inspectVerifierEvidence(
+      runId,
+      new AbortController().signal,
+    )).rejects.toMatchObject({ code: 'invalid_hitch_result' })
+  })
+
+  it('loads and caches the complete canonical trajectory once per run', async () => {
+    const { evaluator } = await setup()
+    const runId = `run_${'5'.repeat(32)}`
+    const loaded = await evaluator.loadTrajectory(runId, new AbortController().signal)
+    expect(loaded).toMatchObject({
+      runId,
+      trajectoryDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      events: [{ seq: 0 }, { seq: 1 }, { seq: 2 }],
+      diagnostics: { totalEvents: 3 },
+    })
+    await writeFile(evaluator.options.executable, '#!/usr/bin/env node\nprocess.stdout.write("invalid-json\\n")\n')
+    await expect(evaluator.inspectTrajectory(runId, 2, 1, new AbortController().signal)).resolves.toMatchObject({
+      events: [{ seq: 2 }],
+      total: 3,
+      eof: true,
+      trajectoryDigest: loaded.trajectoryDigest,
+    })
+  })
+
+  it('keeps a shared trajectory load alive when only one waiter aborts', async () => {
+    const { fixture, evaluator } = await setup()
+    const counter = join(fixture.root, 'trajectory-invocations.txt')
+    const runId = `run_${'7'.repeat(32)}`
+    const payload = {
+      schema_version: '1', run_id: runId,
+      ref: { schema_version: '2', run_id: runId, fidelity: 'provider_native', provider: 'deepseek', files: [] },
+      header: { type: 'session', version: 1, id: 'session-delayed', createdAt: 1, delegationDepth: 0 },
+      events: [{
+        type: 'user/message', seq: 0, time: 1, surfaceOp: 'append',
+        data: { role: 'user', id: 'u1', source: { kind: 'user' }, content: [{ type: 'text', text: 'prompt' }] },
+      }],
+    }
+    await writeFile(evaluator.options.executable, `#!/usr/bin/env node
+import { appendFileSync } from 'node:fs'
+appendFileSync(${JSON.stringify(counter)}, 'inspect\\n')
+setTimeout(() => process.stdout.write(${JSON.stringify(JSON.stringify(payload) + '\n')}), 100)
+`)
+    await chmod(evaluator.options.executable, 0o755)
+    const firstController = new AbortController()
+    const secondController = new AbortController()
+    const first = evaluator.loadTrajectory(runId, firstController.signal)
+    const second = evaluator.loadTrajectory(runId, secondController.signal)
+    firstController.abort(new Error('first waiter cancelled'))
+    await expect(first).rejects.toThrow(/first waiter cancelled/)
+    await expect(second).resolves.toMatchObject({ runId, sessionId: 'session-delayed' })
+    expect((await readFile(counter, 'utf8')).trim().split('\n')).toHaveLength(1)
+  })
+
+  it('does not retain a trajectory that exceeds the configured cache byte budget', async () => {
+    const { fixture, evaluator } = await setup()
+    const counter = join(fixture.root, 'trajectory-evictions.txt')
+    const runId = `run_${'8'.repeat(32)}`
+    const payload = {
+      schema_version: '1', run_id: runId,
+      ref: { schema_version: '2', run_id: runId, fidelity: 'provider_native', provider: 'deepseek', files: [] },
+      header: { type: 'session', version: 1, id: 'session-uncached', createdAt: 1, delegationDepth: 0 },
+      events: [],
+    }
+    evaluator.options.trajectoryCacheBytes = 1
+    await writeFile(evaluator.options.executable, `#!/usr/bin/env node
+import { appendFileSync } from 'node:fs'
+appendFileSync(${JSON.stringify(counter)}, 'inspect\\n')
+process.stdout.write(${JSON.stringify(JSON.stringify(payload) + '\n')})
+`)
+    await chmod(evaluator.options.executable, 0o755)
+    await evaluator.loadTrajectory(runId, new AbortController().signal)
+    await evaluator.loadTrajectory(runId, new AbortController().signal)
+    expect((await readFile(counter, 'utf8')).trim().split('\n')).toHaveLength(2)
   })
 
   it('fails closed on invalid JSON and actual commit mismatch', async () => {

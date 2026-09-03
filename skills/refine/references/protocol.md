@@ -344,35 +344,49 @@ Index the visible seed evidence for the active round:
 }
 ```
 
-Omit `refs` for index mode. The response contains round status and `seedEvidence`
-with evaluation/run ids, public trials, failed trials, score delta, decision,
-and failure phase when available.
+Omit `refs` for index mode. The response contains round status, `seedEvidence`,
+and `diagnosisProgress` with exact missing task/run identities and executable
+next actions.
 
-Read provider-native trajectory pages:
+Read semantic failure bundles (the default when `refs` is present):
 
 ```json
 {
   "roundId":"optional active round id",
   "refs":["run_<recorded seed run id>"],
-  "offset":0,
-  "limit":20
+  "view":"bundle"
 }
 ```
 
 `refs` accepts one to ten seed `runId` or `evalId` values returned for the
 active/visible seed evidence. An `evalId` expands to its recorded runs. Held-out
-or arbitrary Hitch refs are rejected. `offset` defaults to zero. `limit`
-defaults to 20 and is capped at 100.
+or arbitrary Hitch refs are rejected. A bundle contains task/outcome identity,
+the effective DSH surface projection, bounded semantic steps, final answer,
+structured verifier result, bounded verifier CTRF/stdout/stderr diagnostics
+when retained, observed file paths, coverage, and a digest-bound diagnosis
+receipt. Raw `assistant/chunk` events are omitted. `coverage.verifier` is
+`complete`, `result_only`, `explicitly-missing`, or `unavailable`;
+`result_only` means the structured result exists but verifier logs were not
+retained, so do not describe it as a complete verifier failure explanation.
 
-Each trajectory contains identity, task name, provider/fidelity, events,
-`offset`, `limit`, `total`, `nextOffset`, and `eof`. Offset zero also returns the
-header and diagnostics. Server byte limits may return fewer events than
-`limit`; always continue from `nextOffset`, never from `offset + limit`.
-Sensitive values and held-out references are redacted.
+Server-generated diagnosis actions use batches of at most five runs so every
+bundle retains at least one key step when semantic steps exist. A manual batch
+that cannot retain that minimum returns
+`batchAccepted:false`, `recoverable:true`, code `BUNDLE_BATCH_TOO_LARGE`, and
+directly executable single-run `nextAction`/`remainingActions`. Execute those
+actions instead of retrying the same batch. No diagnosis receipt is recorded
+for the rejected batch; each successful split query records its own receipt.
 
-Query offset zero for every failed baseline run before finalizing or declining.
-Paginate only until the causal evidence is sufficient; provider chunk events can
-be large.
+Use `view:"steps"`, `view:"context"`, or `view:"events"` for single-run drill-down.
+Those views support bounded `offset`/`limit`; steps support `turn`, `step`, and
+`errorsOnly`, while events support `eventTypes`, `aroundSeq`, `radius`, and
+`errorsOnly`. Sensitive values and held-out references are redacted. Drill-down
+views do not satisfy the finalization diagnosis gate; only a successfully
+returned complete bundle creates a receipt.
+
+Query a bundle for every failed baseline run before finalizing or declining.
+Use the response's `diagnosisProgress.nextActions` rather than manually mapping
+task names to run IDs.
 
 ### `hitch.status`
 
@@ -401,8 +415,10 @@ the summary and patch digest remain authoritative.
 ```
 
 `check` is optional; the only accepted value is `compiler`. Runs Gear's fixed
-workspace validation/compiler and returns `ok:true` with the authoritative diff
-summary. It does not run the seed or held-out benchmark.
+workspace validation/compiler and returns the backward-compatible `ok:true`
+and summary plus separate `compiler` and `finalizationReadiness` objects. It
+does not run the seed or held-out benchmark. Do not finalize while readiness is
+false; execute its typed `nextActions` first.
 
 ### `candidate.finalize`
 
@@ -418,9 +434,23 @@ summary. It does not run the seed or held-out benchmark.
 `rationale`, nonempty `evidenceRefs`, and `expectedOutcome` are required.
 `semanticTargets` is optional and uses the same values as `focus`. Cite only
 current baseline refs that were actually returned and observed. Before this
-call, inspect the baseline, query every failed run from offset zero, inspect the
-diff, and pass `candidate.check`. The call seals/submits the candidate and
-concludes the lease; it does not mean the candidate passed evaluation.
+call, inspect the baseline, query every failed run in bundle view, inspect the
+diff, and pass `candidate.check` with readiness true. `accepted:true` seals and
+submits the candidate and concludes the lease; it does not mean the candidate
+passed evaluation.
+
+If evidence prerequisites remain, the response is not an exception-shaped
+string. It returns `accepted:false`, `recoverable:true`, a stable `code`,
+task-labelled `readiness.missing`, directly callable `nextAction` and
+`remainingActions`, and `retry.reusePreviousArguments:true`. The lease and
+candidate workspace remain active. Execute the actions and retry.
+
+If strict verifier evidence is unavailable, Gear instead returns
+`accepted:false`, `recoverable:false`, `code:"VERIFIER_EVIDENCE_UNAVAILABLE"`,
+and an exact `operatorAction`. Do not loop on the same call. An operator must
+upgrade Hitch or explicitly enable the temporary
+`hitch.allowUnavailableVerifierDiagnosis=true` compatibility mode, then the
+affected bundles must be read again.
 
 ### `candidate.decline`
 
@@ -432,8 +462,9 @@ concludes the lease; it does not mean the candidate passed evaluation.
 ```
 
 Use when evidence is insufficient or no allowed/generalizable harness edit is
-justified. Every failed baseline run must still be diagnosed. This concludes
-the lease without a candidate diff.
+justified. Every failed baseline run must still be diagnosed. It concludes the
+lease without a candidate diff only when the response is `accepted:true`; a
+recoverable rejection follows the same action protocol as finalize.
 
 ## Complete assignment sequence
 
@@ -442,16 +473,18 @@ For each candidate assignment:
 1. Poll `control.status` and `meta.claim` until a matching lease is returned.
 2. Record the assignment and baseline; call `harness.current`, `candidate.tree`,
    `seed_tasks.load`, and `hitch.status`.
-3. Query offset zero for every failed baseline run; page relevant trajectories
-   using `nextOffset`.
+3. Query bundle view for every failed baseline run, following the returned
+   diagnosis actions; use steps/context/events only for focused drill-down.
 4. Follow [target-harness-editing.md](target-harness-editing.md) to select and
    apply an evidence-based edit, or decide to decline. For Gear's DSH carrier,
    first follow [dsh-target-harness.md](dsh-target-harness.md) to map the
    semantic target to a real DSH artifact, registration, and hook.
 5. For an edit, use `meta.call` with capabilities `candidate.diff`,
-   `candidate.check`, then `candidate.finalize`. For no justified edit, use
+   `candidate.check`, require readiness true, then `candidate.finalize`. For no justified edit, use
    `meta.call` with capability `candidate.decline`.
-6. Stop using the concluded lease. Poll `control.status` through candidate seed,
+6. If finalize/decline returns a recoverable response, execute all actions and
+   retry with the same arguments. Stop using the lease only after
+   `accepted:true`. Poll `control.status` through candidate seed,
    selection, held-out, and promotion states.
 7. Claim every subsequent candidate/round in the requested batch. Finish only
    at `accepted`, `rejected`, `rejected-for-substrate`, or `failed` for the last
