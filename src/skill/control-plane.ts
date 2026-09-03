@@ -256,7 +256,9 @@ export async function createSkillControlPlane(
   const capabilities = new RefineCapabilities(service, builder, {
     ...(config.seedTasksPath === undefined ? {} : { seedTasksPath: config.seedTasksPath }),
     configuredSeedTaskRef: config.seedTaskRef,
-    ...('inspectTrajectory' in evaluator && typeof evaluator.inspectTrajectory === 'function'
+    ...('inspectTrajectoryAnalysis' in evaluator && typeof evaluator.inspectTrajectoryAnalysis === 'function'
+      && 'inspectTrajectoryEvents' in evaluator && typeof evaluator.inspectTrajectoryEvents === 'function'
+      && 'inspectCapabilities' in evaluator && typeof evaluator.inspectCapabilities === 'function'
       ? { trajectoryReader: evaluator as RefineEvaluator & HitchTrajectoryReader }
       : {}),
     maxTrajectoryPageBytes: config.candidateWorkspace.maxReadBytes,

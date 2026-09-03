@@ -2,9 +2,11 @@ import { chmod, mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { componentRef } from '../../src/evolution/components.js'
+import { contentExcerpt } from '../../src/evaluator/trajectory-projection.js'
 import { LlmVerifierCandidateAssessor, type LlmVerifierAssessorConfig } from '../../src/selection/llm-verifier.js'
-import type { CandidateSelectionInput, HitchTrajectoryPage, HitchTrajectoryReader } from '../../src/types.js'
+import type { CandidateSelectionInput, HitchTrajectoryAnalysis, HitchTrajectoryReader } from '../../src/types.js'
 import { evidence, evaluationCondition, SHA } from '../helpers/research-fixture.js'
+import { trajectoryAnalysis, trajectoryReader } from '../helpers/trajectory-fixture.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
@@ -85,22 +87,18 @@ function candidate(candidateId: string, runId: string): CandidateSelectionInput 
   }
 }
 
-function page(runId: string, answer: string, problem = 'Solve the same task.'): HitchTrajectoryPage {
-  return {
-    runId,
-    fidelity: 'provider_native',
-    sessionId: runId,
-    header: { id: runId },
-    events: [
+function analysis(runId: string, answer: string, problem = 'Solve the same task.'): HitchTrajectoryAnalysis {
+  return trajectoryAnalysis(runId, [
       { type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: problem }] } },
       { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: answer }] } } },
-    ],
-    offset: 0,
-    limit: 100,
-    total: 2,
-    eof: true,
-    diagnostics: { totalEvents: 2, eventTypes: {}, toolCalls: 0, toolResults: 0, toolErrors: 0, errorExcerpts: [], finalAssistantExcerpts: [] },
-  }
+    ])
+}
+
+function readerFor(runIds: readonly string[], answer: (runId: string) => string, problem?: (runId: string) => string): HitchTrajectoryReader {
+  return trajectoryReader(new Map(runIds.map(runId => [
+    runId,
+    analysis(runId, answer(runId), problem?.(runId)),
+  ])))
 }
 
 describe('LlmVerifierCandidateAssessor', () => {
@@ -109,14 +107,11 @@ describe('LlmVerifierCandidateAssessor', () => {
     const ref = componentRef('candidate-assessor', 'llm-verifier', {
       package: 'test-assessor', version: '1.0.0', integrity: SHA('9'),
     }, config(executable))
-    const reader: HitchTrajectoryReader = {
-      async inspectTrajectory(runId) {
-        return page(runId, runId.endsWith('2') ? 'preferred solution' : 'weak solution')
-      },
-    }
+    const runIds = [`run_${'1'.repeat(32)}`, `run_${'2'.repeat(32)}`]
+    const reader = readerFor(runIds, runId => runId.endsWith('2') ? 'preferred solution' : 'weak solution')
     const result = await new LlmVerifierCandidateAssessor(ref).assess({
       evolutionId: 'evo-1', roundId: 'round-1',
-      candidates: [candidate('left', `run_${'1'.repeat(32)}`), candidate('right', `run_${'2'.repeat(32)}`)],
+      candidates: [candidate('left', runIds[0]!), candidate('right', runIds[1]!)],
     }, { trajectoryReader: reader }, new AbortController().signal)
     expect(result.rankingCandidateIds).toEqual(['right', 'left'])
     expect(result.candidateMetrics.right).toMatchObject({ quality: 0.9, descriptors: { llmVerifierScore: 0.9 } })
@@ -136,6 +131,31 @@ describe('LlmVerifierCandidateAssessor', () => {
     expect(JSON.stringify(result.evidence)).not.toContain('preferred solution')
   })
 
+  it('assesses trajectories whose long task and assistant messages are top-level excerpts', async () => {
+    const executable = await fakePython()
+    const ref = componentRef('candidate-assessor', 'llm-verifier', {
+      package: 'test-assessor', version: '1.0.0', integrity: SHA('9'),
+    }, config(executable))
+    const runIds = [`run_${'1'.repeat(32)}`, `run_${'2'.repeat(32)}`]
+    const analyses = new Map(runIds.map(runId => {
+      const value = analysis(runId, runId.endsWith('2') ? 'preferred solution' : 'weak solution')
+      value.surface.nodes[0]!.message = contentExcerpt(runId, 'Solve the same task.', 'message', 0, 8) as never
+      value.surface.nodes[1]!.message = contentExcerpt(
+        runId,
+        runId.endsWith('2') ? 'preferred solution' : 'weak solution',
+        'message',
+        1,
+        15,
+      ) as never
+      return [runId, value] as const
+    }))
+    const result = await new LlmVerifierCandidateAssessor(ref).assess({
+      evolutionId: 'evo-1', roundId: 'round-1',
+      candidates: [candidate('left', runIds[0]!), candidate('right', runIds[1]!)],
+    }, { trajectoryReader: trajectoryReader(analyses) }, new AbortController().signal)
+    expect(result.rankingCandidateIds).toEqual(['right', 'left'])
+  })
+
   it('compares partial candidates on their common valid paired support', async () => {
     const executable = await fakePython()
     const ref = componentRef('candidate-assessor', 'llm-verifier', {
@@ -152,10 +172,12 @@ describe('LlmVerifierCandidateAssessor', () => {
       status: 'completed', rewards: { reward: 1 },
     })
     const inspected: string[] = []
+    const baseReader = readerFor([`run_${'1'.repeat(32)}`, `run_${'2'.repeat(32)}`], runId => runId.endsWith('2') ? 'preferred solution' : 'weak solution')
     const reader: HitchTrajectoryReader = {
-      async inspectTrajectory(runId) {
+      ...baseReader,
+      async inspectTrajectoryAnalysis(runId, signal) {
         inspected.push(runId)
-        return page(runId, runId.endsWith('2') ? 'preferred solution' : 'weak solution')
+        return baseReader.inspectTrajectoryAnalysis(runId, signal)
       },
     }
     const result = await new LlmVerifierCandidateAssessor(ref).assess({
@@ -171,14 +193,11 @@ describe('LlmVerifierCandidateAssessor', () => {
     const ref = componentRef('candidate-assessor', 'llm-verifier', {
       package: 'test-assessor', version: '1.0.0', integrity: SHA('9'),
     }, config(executable))
-    const reader: HitchTrajectoryReader = {
-      async inspectTrajectory(runId) {
-        return page(runId, 'answer', runId.endsWith('2') ? 'Different task.' : 'Original task.')
-      },
-    }
+    const runIds = [`run_${'1'.repeat(32)}`, `run_${'2'.repeat(32)}`]
+    const reader = readerFor(runIds, () => 'answer', runId => runId.endsWith('2') ? 'Different task.' : 'Original task.')
     await expect(new LlmVerifierCandidateAssessor(ref).assess({
       evolutionId: 'evo-1', roundId: 'round-1',
-      candidates: [candidate('left', `run_${'1'.repeat(32)}`), candidate('right', `run_${'2'.repeat(32)}`)],
+      candidates: [candidate('left', runIds[0]!), candidate('right', runIds[1]!)],
     }, { trajectoryReader: reader }, new AbortController().signal)).rejects.toThrow(/prompt mismatch/)
   })
 
@@ -187,11 +206,12 @@ describe('LlmVerifierCandidateAssessor', () => {
     const ref = componentRef('candidate-assessor', 'llm-verifier', {
       package: 'test-assessor', version: '1.0.0', integrity: SHA('9'),
     }, config(executable, 'delay'))
-    const reader: HitchTrajectoryReader = { async inspectTrajectory(runId) { return page(runId, 'answer') } }
+    const runIds = [`run_${'1'.repeat(32)}`, `run_${'2'.repeat(32)}`]
+    const reader = readerFor(runIds, () => 'answer')
     const controller = new AbortController()
     const pending = new LlmVerifierCandidateAssessor(ref).assess({
       evolutionId: 'evo-1', roundId: 'round-1',
-      candidates: [candidate('left', `run_${'1'.repeat(32)}`), candidate('right', `run_${'2'.repeat(32)}`)],
+      candidates: [candidate('left', runIds[0]!), candidate('right', runIds[1]!)],
     }, { trajectoryReader: reader }, controller.signal)
     setTimeout(() => controller.abort(new Error('selection cancelled')), 25)
     await expect(pending).rejects.toThrow(/selection cancelled/)
@@ -206,10 +226,11 @@ describe('LlmVerifierCandidateAssessor', () => {
       const ref = componentRef('candidate-assessor', 'llm-verifier', {
         package: 'test-assessor', version: '1.0.0', integrity: SHA('9'),
       }, assessorConfig)
-      const reader: HitchTrajectoryReader = { async inspectTrajectory(runId) { return page(runId, 'answer') } }
+      const runIds = [`run_${'1'.repeat(32)}`, `run_${'2'.repeat(32)}`]
+      const reader = readerFor(runIds, () => 'answer')
       const pending = new LlmVerifierCandidateAssessor(ref).assess({
         evolutionId: 'evo-1', roundId: 'round-1',
-        candidates: [candidate('left', `run_${'1'.repeat(32)}`), candidate('right', `run_${'2'.repeat(32)}`)],
+        candidates: [candidate('left', runIds[0]!), candidate('right', runIds[1]!)],
       }, { trajectoryReader: reader }, new AbortController().signal)
       await expect(pending).rejects.toThrow(/\[REDACTED\]/)
       await expect(pending).rejects.not.toThrow(secret)

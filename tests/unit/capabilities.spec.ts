@@ -7,13 +7,14 @@ import { RefineStateStore } from '../../src/state/store.js'
 import type {
   GearFailureBundle,
   HitchEvaluationEvidence,
-  HitchTrajectoryPage,
+  HitchTrajectoryAnalysis,
   HitchTrajectoryReader,
   HitchVerifierEvidence,
   RefinementRound,
 } from '../../src/types.js'
 import { createGitHarnessFixture, gitOutput } from '../helpers/git-fixture.js'
 import { evidence as evidenceFixture, roundFixture } from '../helpers/research-fixture.js'
+import { trajectoryAnalysis } from '../helpers/trajectory-fixture.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
@@ -184,56 +185,68 @@ describe('RefineCapabilities Git projection', () => {
       sandboxProfileRef: 'sandbox-v1',
       compiler: new NoopHarnessCompiler(),
     })
-    const inspectTrajectory = vi.fn(async (
-      runId: string,
-      offset: number,
-      limit: number,
-      _signal: AbortSignal,
-    ): Promise<HitchTrajectoryPage> => {
-        return {
-          runId,
-          fidelity: 'provider_native',
-          provider: 'deepseek',
-          sessionId: 'target-session',
-          header: { type: 'session', id: 'target-session', authorization: 'top-secret' },
-          events: [
-            {
-              type: 'user/message', seq: 0, time: 1, surfaceOp: 'append',
-              data: {
-                role: 'user', id: 'user-1', source: { kind: 'user' }, token: 'top-secret',
-                'held-out-secret': 'must not leak through an object key',
-                content: [{ type: 'text', text: 'top-secret held-out-secret' }],
-              },
-            },
-            {
-              type: 'assistant/message', seq: 1, time: 2, surfaceOp: 'append',
-              data: {
-                turn: 1,
-                step: 1,
-                message: {
-                  role: 'assistant', id: 'assistant-1', source: { kind: 'model', provider: 'fake', model: 'fake' },
-                  content: [{
-                    type: 'text',
-                    text: `answer contains top-secret and held-out-secret ${'x'.repeat(10_000)}`,
-                  }],
-                },
-              },
-            },
-          ],
-          offset,
-          limit,
-          total: 2,
-          eof: true,
-          diagnostics: {
-            totalEvents: 2,
-            eventTypes: { 'user/message': 1, 'assistant/message': 1 },
-            toolCalls: 0,
-            toolResults: 1,
-            toolErrors: 1,
-            errorExcerpts: [{ type: 'tool/result', excerpt: 'top-secret held-out-secret' }],
-            finalAssistantExcerpts: [],
+    const rawEvents = [
+      {
+        type: 'user/message', seq: 0, time: 1, surfaceOp: 'append',
+        data: {
+          role: 'user', id: 'user-1', source: { kind: 'user' }, token: 'top-secret',
+          'held-out-secret': 'must not leak through an object key',
+          content: [{ type: 'text', text: 'top-secret held-out-secret' }],
+        },
+      },
+      {
+        type: 'assistant/message', seq: 1, time: 2, surfaceOp: 'append',
+        data: {
+          turn: 1,
+          step: 1,
+          message: {
+            role: 'assistant', id: 'assistant-1', source: { kind: 'model', provider: 'fake', model: 'fake' },
+            content: [{
+              type: 'text',
+              text: `answer contains top-secret and held-out-secret ${'x'.repeat(10_000)}`,
+            }],
           },
+        },
+      },
+    ]
+    const inspectTrajectoryAnalysis = vi.fn(async (runId: string): Promise<HitchTrajectoryAnalysis> =>
+      trajectoryAnalysis(runId, rawEvents, runId === seedRun ? 'normalized' : 'provider_native'))
+    const inspectTrajectoryEvents = vi.fn(async (runId: string, query: {
+      eventTypes?: string[]; limit?: number; cursor?: string
+    }) => {
+      const analysis = trajectoryAnalysis(runId, rawEvents)
+      if (query.eventTypes?.includes('retry-test') === true) {
+        const all = Array.from({ length: 5 }, (_, seq) => ({
+          type: 'retry-test', seq, data: { text: 'x'.repeat(1_500) },
+        }))
+        const start = query.cursor === undefined ? 0 : Number(query.cursor.slice('cursor-'.length))
+        const page = all.slice(start, start + (query.limit ?? 100))
+        const next = start + page.length
+        return {
+          schemaVersion: 1 as const,
+          kind: 'trajectory-events-page' as const,
+          runId,
+          canonicalSha256: analysis.source.canonicalSha256,
+          filter: { eventTypes: ['retry-test'] },
+          events: page,
+          totalMatches: all.length,
+          ...(next < all.length ? { nextCursor: `cursor-${next}` } : {}),
+          eof: next >= all.length,
         }
+      }
+      const filtered = query.eventTypes === undefined
+        ? rawEvents
+        : rawEvents.filter(event => query.eventTypes!.includes(event.type))
+      return {
+        schemaVersion: 1 as const,
+        kind: 'trajectory-events-page' as const,
+        runId,
+        canonicalSha256: analysis.source.canonicalSha256,
+        filter: query.eventTypes === undefined ? {} : { eventTypes: query.eventTypes },
+        events: filtered.slice(0, query.limit ?? 100),
+        totalMatches: filtered.length,
+        eof: true,
+      }
     })
     const verifierParents = new Map([
       [seedRun, { evalId: seedBaseline.evalId, trialId: 'trial-1', attempt: 1 }],
@@ -264,7 +277,12 @@ describe('RefineCapabilities Git projection', () => {
         redactions: [{ ruleId: 'absolute-path-v1', count: 1 }],
       }
     })
-    const reader: HitchTrajectoryReader = { inspectTrajectory, inspectVerifierEvidence }
+    const reader: HitchTrajectoryReader = {
+      async inspectCapabilities() { return { schemaVersion: 1, trajectoryAnalysis: 1, trajectoryEventsPage: 1 } },
+      inspectTrajectoryAnalysis,
+      inspectTrajectoryEvents,
+      inspectVerifierEvidence,
+    }
     const accesses: unknown[] = []
     const meta = {
       activeRoundId: () => round.roundId,
@@ -296,13 +314,12 @@ describe('RefineCapabilities Git projection', () => {
     })
     expect(page).toMatchObject({ trajectories: [{
       runId: seedRun,
-      header: { authorization: '[REDACTED]' },
+      canonicalSha256: expect.stringMatching(/^sha256:/),
       events: [{ data: {
         content: [{ text: '[REDACTED] [REDACTED_HELD_OUT]' }],
         token: '[REDACTED]',
       } }],
-      diagnostics: { errorExcerpts: [{ excerpt: '[REDACTED] [REDACTED_HELD_OUT]' }] },
-      nextOffset: 1,
+      total: 1,
       eof: true,
     }] })
     expect(accesses).not.toContainEqual([
@@ -314,8 +331,7 @@ describe('RefineCapabilities Git projection', () => {
       refs: [seedRun], view: 'events', eventTypes: ['assistant/message'],
     })
     expect(largeEvent).toMatchObject({ trajectories: [{
-      events: [{ seq: 1, data: { truncated: true } }],
-      nextOffset: 1,
+      events: [{ type: 'assistant/message', seq: 1, truncated: true, originalBytes: expect.any(Number) }],
       eof: true,
     }] })
     expect(JSON.stringify(largeEvent)).not.toContain('top-secret')
@@ -329,7 +345,9 @@ describe('RefineCapabilities Git projection', () => {
     const bundle = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [seedRun] })
     expect(bundle).toMatchObject({ bundles: [{
       identity: { runId: seedRun, taskName: 'task-1' },
-      trajectory: { rawEventCount: 2, keySteps: [{ turn: 1, step: 1 }] },
+      trajectory: {
+        fidelity: 'normalized-surface', rawEventCount: 2, keySteps: [{ turn: 1, step: 1 }],
+      },
       outcome: {
         verifierStatus: 'complete',
         verifierResult: { rewards: { reward: 1 }, token: '[REDACTED]' },
@@ -349,7 +367,27 @@ describe('RefineCapabilities Git projection', () => {
         diagnosisReceipts: [expect.objectContaining({ runId: seedRun, projectionVersion: 1 })],
       }),
     ])
-    expect(inspectTrajectory).toHaveBeenCalledTimes(3)
+    expect(inspectTrajectoryAnalysis).toHaveBeenCalledTimes(1)
+    expect(inspectTrajectoryEvents).toHaveBeenCalledTimes(2)
+    expect(inspectTrajectoryEvents.mock.calls[0]?.[1]).toMatchObject({ maxBytes: 4 * 1024 })
+    const narrowedPage = await capabilities.call('refine-meta', 'meta', 'trajectory.query', {
+      refs: [seedRun], view: 'events', eventTypes: ['retry-test'], limit: 5,
+    })
+    expect(narrowedPage).toMatchObject({ trajectories: [{
+      events: [{ seq: 0 }, { seq: 1 }],
+      limit: 2,
+      requestedLimit: 5,
+      nextCursor: 'cursor-2',
+      eof: false,
+    }] })
+    const continuedPage = await capabilities.call('refine-meta', 'meta', 'trajectory.query', {
+      refs: [seedRun], view: 'events', eventTypes: ['retry-test'], cursor: 'cursor-2', limit: 5,
+    })
+    expect(continuedPage).toMatchObject({ trajectories: [{
+      events: [{ seq: 2 }, { seq: 3 }],
+      nextCursor: 'cursor-4',
+      eof: false,
+    }] })
     expect(inspectVerifierEvidence).toHaveBeenCalledTimes(1)
     const tinyProjectionCache = new RefineCapabilities(service as never, builder, () => undefined, {
       trajectoryReader: reader,
@@ -360,7 +398,7 @@ describe('RefineCapabilities Git projection', () => {
     })
     await tinyProjectionCache.call('refine-meta', 'meta', 'trajectory.query', { refs: [seedRun], view: 'steps' })
     await tinyProjectionCache.call('refine-meta', 'meta', 'trajectory.query', { refs: [seedRun], view: 'steps' })
-    expect(inspectTrajectory).toHaveBeenCalledTimes(5)
+    expect(inspectTrajectoryAnalysis).toHaveBeenCalledTimes(3)
 
     const constrainedBundles = new RefineCapabilities(service as never, builder, () => undefined, {
       trajectoryReader: reader,
@@ -393,9 +431,43 @@ describe('RefineCapabilities Git projection', () => {
     expect(inspectVerifierEvidence).toHaveBeenCalledTimes(3)
     verifierParents.set(candidateRun, { evalId: `eval_${'f'.repeat(32)}`, trialId: 'trial-1', attempt: 1 })
     await expect(capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [candidateRun] }))
-      .rejects.toThrow(/verifier evidence eval identity mismatch/)
+      .resolves.toMatchObject({ bundles: [{
+        identity: { runId: candidateRun },
+        outcome: {
+          verifierStatus: 'unavailable',
+          verifierDiagnostics: { issues: [expect.stringContaining('verifier evidence eval identity mismatch')] },
+        },
+        crossSourceSignals: [{ kind: 'verifier_evidence_corrupt', runId: candidateRun }],
+        coverage: { verifier: 'unavailable' },
+      }] })
+    expect(accesses.at(-1)).toMatchObject([
+      round.roundId,
+      'meta',
+      { diagnosisReceipts: [{ runId: candidateRun, verifierStatus: 'unavailable' }] },
+    ])
+    expect(JSON.stringify(accesses.at(-1))).not.toContain('allow-unavailable-verifier')
     await expect(capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [heldRun] }))
       .rejects.toThrow(/not recorded seed evidence/)
+
+    const blockedReader: HitchTrajectoryReader = {
+      ...reader,
+      async inspectTrajectoryAnalysis() {
+        throw Object.assign(new Error('canonical digest mismatch'), { code: 'trajectory_integrity_mismatch' })
+      },
+    }
+    const blockedCapabilities = new RefineCapabilities(service as never, builder, () => undefined, {
+      trajectoryReader: blockedReader,
+      maxFailureBundleBytes: 128 * 1024,
+    })
+    await expect(blockedCapabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [seedRun] }))
+      .resolves.toMatchObject({
+        bundles: [],
+        batchAccepted: false,
+        recoverable: false,
+        code: 'TRAJECTORY_EVIDENCE_UNAVAILABLE',
+        blockedRuns: [{ runId: seedRun, code: 'trajectory_integrity_mismatch' }],
+        operatorAction: { runIds: [seedRun], reason: 'trajectory_integrity_mismatch' },
+      })
   })
 
   it('returns an executable recovery action instead of consuming an incomplete finalization', async () => {

@@ -10,7 +10,7 @@ import type {
   CandidateAssessmentResult,
   CandidateAssessmentUsage,
   ComponentRef,
-  HitchTrajectoryPage,
+  HitchTrajectoryAnalysis,
   MetricSet,
 } from '../types.js'
 import { assertComponentRef, type CandidateAssessor } from '../evolution/components.js'
@@ -255,48 +255,69 @@ function contentText(value: unknown): string {
   return value.flatMap(block => {
     if (typeof block !== 'object' || block === null || Array.isArray(block)) return []
     const item = block as Record<string, unknown>
-    if ((item.type === 'text' || item.type === 'reasoning') && typeof item.text === 'string') return [item.text]
+    if ((item.type === 'text' || item.type === 'reasoning') && item.text !== undefined) return [projectedText(item.text)]
     if (item.type === 'tool-call') return [JSON.stringify(item)]
     return []
   }).join('\n')
 }
 
-function eventMessage(page: HitchTrajectoryPage, type: string): Array<Record<string, unknown>> {
-  return page.events.flatMap(event => {
-    if (typeof event !== 'object' || event === null || Array.isArray(event)) return []
-    const item = event as Record<string, unknown>
-    if (item.type !== type || typeof item.data !== 'object' || item.data === null || Array.isArray(item.data)) return []
-    return [item.data as Record<string, unknown>]
-  })
+function projectedText(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return JSON.stringify(value) ?? String(value)
+  const item = value as Record<string, unknown>
+  if (typeof item.truncated === 'boolean' && typeof item.preview === 'string') {
+    return `${item.preview}${typeof item.tail === 'string' ? `\n[...excerpted...]\n${item.tail}` : ''}`
+  }
+  return JSON.stringify(value)
 }
 
-function renderTrajectory(page: HitchTrajectoryPage, maxChars: number): RenderedTrajectory {
-  const userMessages = eventMessage(page, 'user/message')
-  const problem = userMessages.flatMap(data => {
-    const source = typeof data.source === 'object' && data.source !== null ? data.source as Record<string, unknown> : {}
-    return source.kind === 'user' ? [contentText(data.content)] : []
+function renderTrajectory(analysis: HitchTrajectoryAnalysis, maxChars: number): RenderedTrajectory {
+  const surfaceMessages = new Map(analysis.surface.nodes.map(node => [node.seq, node.message]))
+  const problem = analysis.surface.nodes.flatMap(node => {
+    if (node.eventType !== 'user/message') return []
+    const data = typeof node.message === 'object' && node.message !== null && !Array.isArray(node.message)
+      ? node.message as Record<string, unknown>
+      : undefined
+    if (data === undefined) return [projectedText(node.message)]
+    if (typeof data.truncated === 'boolean' && typeof data.preview === 'string') return [projectedText(data)]
+    return [contentText(data.content)]
   }).find(value => value.trim().length > 0)
-  if (problem === undefined) throw new Error(`trajectory ${page.runId} has no task user message`)
+  if (problem === undefined) throw new Error(`trajectory ${analysis.runId} has no task user message`)
   const sections: string[] = []
-  for (const event of page.events) {
+  for (const event of analysis.events) {
     if (typeof event !== 'object' || event === null || Array.isArray(event)) continue
     const item = event as Record<string, unknown>
     const type = item.type
     if (type === 'assistant/message') {
       const data = typeof item.data === 'object' && item.data !== null ? item.data as Record<string, unknown> : {}
-      const message = typeof data.message === 'object' && data.message !== null ? data.message as Record<string, unknown> : data
-      const text = contentText(message.content)
+      const message = Number.isSafeInteger(data.surface_node_seq)
+        ? surfaceMessages.get(data.surface_node_seq as number)
+        : undefined
+      const messageRecord = typeof message === 'object' && message !== null && !Array.isArray(message)
+        ? message as Record<string, unknown>
+        : undefined
+      const text = messageRecord === undefined
+        ? projectedText(message)
+        : typeof messageRecord.truncated === 'boolean' && typeof messageRecord.preview === 'string'
+          ? projectedText(messageRecord)
+          : contentText(messageRecord.content)
       if (text.length > 0) sections.push(`ASSISTANT\n${text}`)
-    } else if (type === 'tool/call' || type === 'tool/result' || type === 'tool/code-dispatch' || type === 'tool/code-dispatch-start') {
-      sections.push(`${String(type).toUpperCase()}\n${JSON.stringify(item.data ?? null)}`)
+    } else if (type === 'tool/result') {
+      const data = typeof item.data === 'object' && item.data !== null ? item.data as Record<string, unknown> : {}
+      const message = Number.isSafeInteger(data.surface_node_seq)
+        ? surfaceMessages.get(data.surface_node_seq as number)
+        : undefined
+      sections.push(`TOOL/RESULT\n${projectedText(message ?? data)}`)
+    } else if (type === 'tool/call' || type === 'tool/code-dispatch' || type === 'tool/code-dispatch-start') {
+      sections.push(`${String(type).toUpperCase()}\n${projectedText(item.data ?? null)}`)
     }
   }
   const trace = sections.join('\n\n')
-  if (trace.length === 0) throw new Error(`trajectory ${page.runId} has no assessable agent events`)
+  if (trace.length === 0) throw new Error(`trajectory ${analysis.runId} has no assessable agent events`)
   if (problem.length > maxChars || trace.length > maxChars) {
-    throw new Error(`trajectory ${page.runId} exceeds llm-verifier maxTrajectoryChars`)
+    throw new Error(`trajectory ${analysis.runId} exceeds llm-verifier maxTrajectoryChars`)
   }
-  return { problem, trace, digest: digestJson({ header: page.header, problem, trace }) }
+  return { problem, trace, digest: digestJson({ canonicalSha256: analysis.source.canonicalSha256, problem, trace }) }
 }
 
 function exactCandidateKeys(value: Record<string, unknown>, candidateIds: readonly string[], label: string): void {
@@ -400,13 +421,12 @@ export class LlmVerifierCandidateAssessor implements CandidateAssessor {
         const trial = trialMaps[index]!.get(key)!
         taskName = trial.taskName
         attempt = trial.attempt ?? 1
-        const page = await context.trajectoryReader.inspectTrajectory(
-          trial.runId!, 0, this.config.maxTrajectoryEvents, signal,
-        )
-        if (page.total > this.config.maxTrajectoryEvents || !page.eof) {
-          throw new Error(`trajectory ${trial.runId} exceeds llm-verifier maxTrajectoryEvents`)
+        const analysis = await context.trajectoryReader.inspectTrajectoryAnalysis(trial.runId!, signal)
+        const semanticItemCount = analysis.surface.nodes.length + analysis.events.length + analysis.chunkSummaries.length
+        if (semanticItemCount > this.config.maxTrajectoryEvents) {
+          throw new Error(`trajectory ${trial.runId} exceeds llm-verifier maxTrajectoryEvents after bounded projection`)
         }
-        const rendered = renderTrajectory(page, this.config.maxTrajectoryChars)
+        const rendered = renderTrajectory(analysis, this.config.maxTrajectoryChars)
         const problemDigest = digestJson(rendered.problem)
         if (sharedProblemDigest !== undefined && sharedProblemDigest !== problemDigest) {
           throw new Error(`llm-verifier task prompt mismatch for ${taskName} attempt ${attempt}`)

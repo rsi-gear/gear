@@ -5,6 +5,7 @@ import type {
   MetaPrerequisiteBlocked,
   MetaRecoveryRequired,
   ProposalEvidenceAudit,
+  TrajectoryEvidenceBlocker,
 } from '../types.js'
 
 function reward(rewards: Record<string, number>): number | undefined {
@@ -26,6 +27,7 @@ function receiptIsValid(receipt: NonNullable<ProposalEvidenceAudit['diagnosisRec
 export function finalizationReadiness(
   baseline: EvaluationEvidence,
   audit: ProposalEvidenceAudit,
+  trajectoryBlockedRuns: readonly TrajectoryEvidenceBlocker[] = [],
 ): FinalizationReadiness {
   const required = baseline.trials
     .filter(trial => (reward(trial.rewards) ?? 0) <= 0 && trial.runId !== undefined)
@@ -48,7 +50,12 @@ export function finalizationReadiness(
     .map(receipt => receipt.runId))
   const missing = required.filter(item => !diagnosed.has(item.runId))
   const verifierBlockedRunIds = missing.filter(item => verifierBlocked.has(item.runId)).map(item => item.runId)
-  const actionableMissing = missing.filter(item => !verifierBlocked.has(item.runId))
+  const requiredRunIds = new Set(required.map(item => item.runId))
+  const trajectoryBlocked = trajectoryBlockedRuns
+    .filter(item => requiredRunIds.has(item.runId) && !diagnosed.has(item.runId))
+    .sort((left, right) => left.runId.localeCompare(right.runId))
+  const trajectoryBlockedRunIds = new Set(trajectoryBlocked.map(item => item.runId))
+  const actionableMissing = missing.filter(item => !verifierBlocked.has(item.runId) && !trajectoryBlockedRunIds.has(item.runId))
   const allowedRefs = new Set([
     baseline.evalId,
     ...baseline.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId]),
@@ -98,6 +105,12 @@ export function finalizationReadiness(
       message: `${verifierBlockedRunIds.length} failed baseline run${verifierBlockedRunIds.length === 1 ? ' has' : 's have'} no verifier evidence and compatibility is disabled.`,
     })
   }
+  if (trajectoryBlocked.length > 0) {
+    blockers.push({
+      code: 'TRAJECTORY_EVIDENCE_UNAVAILABLE',
+      message: `${trajectoryBlocked.length} failed baseline run${trajectoryBlocked.length === 1 ? ' has' : 's have'} no usable bounded trajectory evidence.`,
+    })
+  }
   if (unaccessedCitedRefs.length > 0) {
     blockers.push({
       code: 'EVIDENCE_REF_NOT_ACCESSED',
@@ -132,6 +145,7 @@ export function finalizationReadiness(
     remainingRunCount: missing.length,
     missing,
     verifierBlockedRunIds,
+    trajectoryBlockedRuns: trajectoryBlocked,
     unaccessedCitedRefs,
     blockers,
     nextActions,
@@ -157,6 +171,23 @@ export function recoveryRequired(
       operatorAction: {
         upgrade: 'Hitch verifier evidence API',
         compatibilityConfig: 'hitch.allowUnavailableVerifierDiagnosis=true',
+      },
+      retry: { tool: retryTool, reusePreviousArguments: true, afterPrerequisite: true },
+    }
+  }
+  if (first.code === 'TRAJECTORY_EVIDENCE_UNAVAILABLE') {
+    return {
+      schemaVersion: 1,
+      accepted: false,
+      recoverable: false,
+      code: first.code,
+      failedOperation,
+      message: `The operation was not submitted because bounded trajectory evidence is unavailable for ${readiness.trajectoryBlockedRuns.length} failed baseline run${readiness.trajectoryBlockedRuns.length === 1 ? '' : 's'}. Do not retry until Hitch or the recorded trajectory has been repaired, then read the affected bundles again.`,
+      readiness,
+      operatorAction: {
+        upgrade: 'Hitch bounded trajectory analysis capability',
+        runIds: readiness.trajectoryBlockedRuns.map(item => item.runId),
+        reason: readiness.trajectoryBlockedRuns.map(item => item.code).join(','),
       },
       retry: { tool: retryTool, reusePreviousArguments: true, afterPrerequisite: true },
     }

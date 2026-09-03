@@ -268,47 +268,134 @@ export interface InvalidEvaluationTrialSummary {
   invalidReason: string
 }
 
-export interface HitchTrajectoryPage {
-  runId: string
-  fidelity: 'provider_native' | 'normalized' | 'minimal'
-  provider?: string
-  sessionId: string
-  trajectoryDigest?: string
-  header: JsonValue
-  events: JsonValue[]
-  offset: number
-  limit: number
-  total: number
-  eof: boolean
-  diagnostics: TrajectoryDiagnostics
+export interface HitchCapabilities {
+  schemaVersion: 1
+  trajectoryAnalysis: 1
+  trajectoryEventsPage: 1
+  verifierEvidence?: 1
 }
 
-export interface HitchTrajectory {
-  runId: string
-  fidelity: 'provider_native' | 'normalized' | 'minimal'
-  provider?: string
-  sessionId: string
-  trajectoryDigest: string
+export interface HitchTrajectoryContentExcerpt {
+  preview: string
+  tail?: string
   bytes: number
-  ref: JsonValue
-  header: JsonValue
-  events: JsonValue[]
-  diagnostics: TrajectoryDiagnostics
+  sha256: string
+  truncated: boolean
+  source: { runId: string; seq: number; field: string }
 }
 
-export interface TrajectoryDiagnostics {
-  totalEvents: number
-  eventTypes: Record<string, number>
-  toolCalls: number
-  toolResults: number
-  toolErrors: number
-  errorExcerpts: Array<{ seq?: number; type: string; excerpt: string }>
-  finalAssistantExcerpts: Array<{ seq?: number; excerpt: string }>
+export type HitchSurfaceOperation = 'append' | { op: 'replace'; start: number; end: number }
+
+export interface HitchTrajectorySurfaceNode {
+  seq: number
+  eventType: 'user/message' | 'assistant/message' | 'tool/result'
+  surfaceOp: HitchSurfaceOperation
+  message: JsonValue
+}
+
+export interface HitchTrajectoryRequestBoundary {
+  turn: number
+  step: number
+  /** Zero-based model request attempt within the DSH step. */
+  attempt: number
+  retryId?: JsonValue
+  boundarySeq: number
+  surfaceRevision: number
+  requestHeaderSeq?: number
+}
+
+export interface HitchTrajectoryChunkSummary {
+  turn: number
+  step: number
+  /** Zero-based model request attempt within the DSH step. */
+  attempt: number
+  retryId?: JsonValue
+  firstSeq: number
+  lastSeq: number
+  count: number
+  types: Record<string, number>
+  modelBoundarySeq: number
+  usage?: JsonValue
+  finishReason?: JsonValue
+  partial?: {
+    status: 'incomplete'
+    content: HitchTrajectoryContentExcerpt
+    sourceSeqCount: number
+  }
+}
+
+export interface HitchTrajectoryAnalysis {
+  schemaVersion: 1
+  kind: 'trajectory-analysis'
+  runId: string
+  source: {
+    fidelity: 'provider_native' | 'normalized' | 'minimal'
+    provider?: string
+    sessionId: string
+    canonicalSha256: string
+    canonicalBytes: number
+    eventCount: number
+    eventTypes: Record<string, number>
+  }
+  header: JsonValue
+  surface: {
+    fidelity: 'exact' | 'normalized' | 'partial'
+    nodes: HitchTrajectorySurfaceNode[]
+    currentNodeSeqs: number[]
+    replacements: Array<{ seq: number; start: number; end: number; shadowedSeqs: number[] }>
+    requestBoundaries: HitchTrajectoryRequestBoundary[]
+    requestHeaders: Array<{ seq: number; header: JsonValue }>
+  }
+  events: JsonValue[]
+  chunkSummaries: HitchTrajectoryChunkSummary[]
+  omittedEventTypes: Record<string, number>
+  coverage: {
+    surface: 'complete' | 'partial'
+    chunks: 'coalesced' | 'omitted' | 'partial'
+    content: 'complete' | 'excerpted' | 'partial'
+    childSessions: 'complete' | 'partial' | 'none' | 'unavailable'
+  }
+  redactions?: Array<{ ruleId: string; count: number }>
+}
+
+export interface HitchTrajectoryEventsQuery {
+  eventTypes?: string[]
+  seqStart?: number
+  seqEnd?: number
+  field?: string
+  canonicalSha256?: string
+  cursor?: string
+  limit?: number
+  /** Internal response budget forwarded to Hitch; not exposed as a Meta-controlled argument. */
+  maxBytes?: number
+}
+
+export interface HitchTrajectoryEventsPage {
+  schemaVersion: 1
+  kind: 'trajectory-events-page'
+  runId: string
+  canonicalSha256: string
+  filter: {
+    eventTypes?: string[]
+    seqStart?: number
+    seqEnd?: number
+    field?: string
+  }
+  events: JsonValue[]
+  totalMatches: number
+  nextCursor?: string
+  eof: boolean
+  redactions?: Array<{ ruleId: string; count: number }>
 }
 
 export interface HitchTrajectoryReader {
-  inspectTrajectory(runId: string, offset: number, limit: number, signal: AbortSignal): Promise<HitchTrajectoryPage>
-  loadTrajectory?(runId: string, signal: AbortSignal): Promise<HitchTrajectory>
+  inspectCapabilities(signal: AbortSignal): Promise<HitchCapabilities>
+  inspectTrajectoryAnalysis(runId: string, signal: AbortSignal): Promise<HitchTrajectoryAnalysis>
+  inspectTrajectoryEvents(
+    runId: string,
+    query: Readonly<HitchTrajectoryEventsQuery>,
+    signal: AbortSignal,
+  ): Promise<HitchTrajectoryEventsPage>
   inspectVerifierEvidence?(runId: string, signal: AbortSignal): Promise<HitchVerifierEvidence>
 }
 
@@ -363,7 +450,24 @@ export interface TrajectoryToolAction {
   arguments: ContentExcerpt
   result?: ContentExcerpt
   error?: { name: string; code: string }
-  status: 'completed' | 'errored' | 'open'
+  status: 'completed' | 'errored' | 'open' | 'unknown'
+}
+
+export interface TrajectoryModelRequestEvidence {
+  contextEpochId?: string
+  attempt: number
+  retryId?: JsonValue
+  firstSeq: number
+  lastSeq: number
+  chunkCount: number
+  chunkTypes: Record<string, number>
+  usage?: JsonValue
+  finishReason?: JsonValue
+  partial?: {
+    status: 'incomplete'
+    content: ContentExcerpt
+    sourceSeqCount: number
+  }
 }
 
 export interface TrajectorySemanticStep {
@@ -373,10 +477,13 @@ export interface TrajectorySemanticStep {
   seqStart: number
   seqEnd: number
   contextEpochId?: string
+  contextEpochIds?: string[]
   assistantMessages: TrajectoryMessageEvidence[]
   toolActions: TrajectoryToolAction[]
+  modelRequests?: TrajectoryModelRequestEvidence[]
   omittedAssistantMessageCount?: number
   omittedToolActionCount?: number
+  omittedModelRequestCount?: number
   terminalReason?: JsonValue
   terminalReasonExcerpt?: ContentExcerpt
 }
@@ -387,6 +494,8 @@ export interface TrajectoryContextEpoch {
   requestSeq?: number
   turn?: number
   step?: number
+  attempt: number
+  retryId?: JsonValue
   header: {
     config?: JsonValue
     adapterDefaults?: JsonValue
@@ -415,6 +524,8 @@ export interface TrajectoryProjection {
   pathsObservedThroughTools: string[]
   replacements: Array<{ seq: number; start: number; end: number; shadowedSeqs: number[] }>
   errors: Array<{ seq?: number; type: string; excerpt: string }>
+  coverage: HitchTrajectoryAnalysis['coverage']
+  redactions?: Array<{ ruleId: string; count: number }>
 }
 
 export interface GearFailureBundle {
@@ -451,6 +562,8 @@ export interface GearFailureBundle {
     semanticStepCount: number
     keySteps: TrajectorySemanticStep[]
     omittedStepCount: number
+    errors: Array<{ seq?: number; type: string; excerpt: string }>
+    omittedErrorCount?: number
     finalAnswer?: TrajectoryMessageEvidence
   }
   workspace: {
@@ -462,6 +575,7 @@ export interface GearFailureBundle {
   coverage: {
     task: 'complete' | 'missing'
     trajectory: 'complete' | 'partial' | 'missing'
+    content: 'complete' | 'excerpted' | 'partial'
     verifier: 'complete' | 'result_only' | 'explicitly-missing' | 'unavailable'
     childSessions: 'complete' | 'partial' | 'none' | 'unavailable'
     workspace: 'complete' | 'observed-only' | 'missing'
@@ -505,9 +619,10 @@ export interface FinalizationReadiness {
   remainingRunCount: number
   missing: MissingDiagnosis[]
   verifierBlockedRunIds: string[]
+  trajectoryBlockedRuns: TrajectoryEvidenceBlocker[]
   unaccessedCitedRefs: string[]
   blockers: Array<{
-    code: 'BASELINE_SUMMARY_REQUIRED' | 'MISSING_BASELINE_DIAGNOSIS' | 'EVIDENCE_REF_NOT_ACCESSED' | 'VERIFIER_EVIDENCE_UNAVAILABLE'
+    code: 'BASELINE_SUMMARY_REQUIRED' | 'MISSING_BASELINE_DIAGNOSIS' | 'EVIDENCE_REF_NOT_ACCESSED' | 'VERIFIER_EVIDENCE_UNAVAILABLE' | 'TRAJECTORY_EVIDENCE_UNAVAILABLE'
     message: string
   }>
   nextActions: CapabilityAction[]
@@ -533,19 +648,27 @@ export interface MetaPrerequisiteBlocked {
   schemaVersion: 1
   accepted: false
   recoverable: false
-  code: 'VERIFIER_EVIDENCE_UNAVAILABLE'
+  code: 'VERIFIER_EVIDENCE_UNAVAILABLE' | 'TRAJECTORY_EVIDENCE_UNAVAILABLE'
   failedOperation: 'candidate.finalize' | 'candidate.decline'
   message: string
   readiness: FinalizationReadiness
   operatorAction: {
-    upgrade: 'Hitch verifier evidence API'
-    compatibilityConfig: 'hitch.allowUnavailableVerifierDiagnosis=true'
+    upgrade: string
+    compatibilityConfig?: 'hitch.allowUnavailableVerifierDiagnosis=true'
+    runIds?: string[]
+    reason?: string
   }
   retry: {
     tool: 'finalize_candidate' | 'decline_candidate'
     reusePreviousArguments: true
     afterPrerequisite: true
   }
+}
+
+export interface TrajectoryEvidenceBlocker {
+  runId: string
+  code: string
+  message: string
 }
 
 export interface LocalSourceTransportSummary {
@@ -1200,6 +1323,11 @@ export interface RefineBridgeRequestMap {
     turn?: number
     step?: number
     eventTypes?: string[]
+    seqStart?: number
+    seqEnd?: number
+    field?: string
+    canonicalSha256?: string
+    cursor?: string
     aroundSeq?: number
     radius?: number
     errorsOnly?: boolean

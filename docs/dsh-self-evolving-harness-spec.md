@@ -109,7 +109,7 @@ target 只可调用 `refine.run`/`refine.status`；rollout 没有 refine control
 Meta 必须：
 
 1. 读取当前 baseline summary；
-2. 对每个失败 baseline run读取 offset 0的完整轨迹 diagnostics；
+2. 对每个失败 baseline run读取 digest-bound semantic failure bundle；仅在需要时通过 Hitch 源端游标读取有界 events；
 3. finalize时引用已访问、属于本轮 seed baseline的 evidence refs；
 4. 或用 `decline_candidate` 提交带 rationale的 no-change。
 

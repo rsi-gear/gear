@@ -14,10 +14,16 @@ import type {
   EvaluationSubmissionIntent,
   EvaluationTrialSlot,
   FailedEvaluationEvidence,
+  HitchCapabilities,
   HitchEvaluationEvidence,
-  HitchTrajectory,
-  HitchTrajectoryPage,
+  HitchTrajectoryAnalysis,
+  HitchTrajectoryChunkSummary,
+  HitchTrajectoryContentExcerpt,
+  HitchTrajectoryEventsPage,
+  HitchTrajectoryEventsQuery,
   HitchTrajectoryReader,
+  HitchTrajectoryRequestBoundary,
+  HitchTrajectorySurfaceNode,
   HitchTrialSummary,
   HitchVerifierEvidence,
   InvalidEvaluationTrialSummary,
@@ -26,7 +32,6 @@ import type {
   RefinementRound,
   RoundEvaluationAttempt,
   ScoreSummary,
-  TrajectoryDiagnostics,
 } from '../types.js'
 import { isExactGitCommit } from '../types.js'
 import { EvaluationCleanupError } from './cleanup.js'
@@ -43,7 +48,7 @@ interface ProcessResult {
 }
 
 interface SharedTrajectoryLoad {
-  promise: Promise<HitchTrajectory>
+  promise: Promise<HitchTrajectoryAnalysis>
   controller: AbortController
   waiters: number
   settled: boolean
@@ -249,6 +254,223 @@ function stringArray(value: unknown, label: string): string[] {
   return [...value as string[]]
 }
 
+function booleanValue(value: unknown, label: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw new HitchEvaluationError(`${label} must be boolean`, 'invalid_hitch_result')
+  }
+  return value
+}
+
+function digest(value: unknown, label: string): string {
+  const result = string(value, label)
+  if (!/^sha256:[0-9a-f]{64}$/u.test(result)) {
+    throw new HitchEvaluationError(`${label} must be a sha256 digest`, 'invalid_hitch_result')
+  }
+  return result
+}
+
+function counts(value: unknown, label: string): Record<string, number> {
+  const source = record(value, label)
+  const result: Record<string, number> = {}
+  for (const [key, count] of Object.entries(source).sort(([left], [right]) => left.localeCompare(right))) {
+    if (key.length === 0 || key.length > 1_024) {
+      throw new HitchEvaluationError(`${label} contains an invalid key`, 'invalid_hitch_result')
+    }
+    result[key] = integer(count, `${label}.${key}`)
+  }
+  return result
+}
+
+function redactions(value: unknown, label: string): Array<{ ruleId: string; count: number }> {
+  if (!Array.isArray(value)) throw new HitchEvaluationError(`${label} must be an array`, 'invalid_hitch_result')
+  const result = value.map((item, index) => {
+    const entry = record(item, `${label}[${index}]`)
+    exactFields(entry, ['rule_id', 'count'], `${label}[${index}]`)
+    const ruleId = string(entry.rule_id, `${label}[${index}].rule_id`)
+    const count = integer(entry.count, `${label}[${index}].count`)
+    if (!/^[a-z0-9][a-z0-9._-]{0,127}$/u.test(ruleId) || count < 1) {
+      throw new HitchEvaluationError(`${label}[${index}] is invalid`, 'invalid_hitch_result')
+    }
+    return { ruleId, count }
+  })
+  if (new Set(result.map(item => item.ruleId)).size !== result.length
+    || result.some((item, index) => index > 0 && result[index - 1]!.ruleId.localeCompare(item.ruleId) >= 0)) {
+    throw new HitchEvaluationError(`${label} must be unique and sorted`, 'invalid_hitch_result')
+  }
+  return result
+}
+
+function projectedJsonValue(value: unknown, label: string): import('@deepseek-ai/dsh-session').JsonValue {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (Array.isArray(value)) return value.map((item, index) => projectedJsonValue(item, `${label}[${index}]`))
+  if (typeof value !== 'object') {
+    throw new HitchEvaluationError(`${label} must be JSON`, 'invalid_hitch_result')
+  }
+  const source = value as JsonRecord
+  const sourceRef = typeof source.source === 'object' && source.source !== null && !Array.isArray(source.source)
+    ? source.source as JsonRecord
+    : undefined
+  const excerptFields = ['bytes', 'preview', 'sha256', 'source', 'tail', 'truncated']
+  if (typeof source.truncated === 'boolean' && sourceRef !== undefined && typeof source.preview === 'string'
+    && Object.keys(source).every(key => excerptFields.includes(key))) {
+    exactFields(sourceRef, ['run_id', 'seq', 'field'], `${label}.source`)
+    const bytes = integer(source.bytes, `${label}.bytes`)
+    const sha256 = digest(source.sha256, `${label}.sha256`)
+    const runId = string(sourceRef.run_id, `${label}.source.run_id`)
+    const seq = integer(sourceRef.seq, `${label}.source.seq`)
+    const field = string(sourceRef.field, `${label}.source.field`)
+    if (!/^run_[0-9a-f]{32}$/u.test(runId)) {
+      throw new HitchEvaluationError(`${label}.source.run_id is invalid`, 'invalid_hitch_result')
+    }
+    if (source.tail !== undefined && typeof source.tail !== 'string') {
+      throw new HitchEvaluationError(`${label}.tail must be a string`, 'invalid_hitch_result')
+    }
+    return {
+      preview: source.preview,
+      ...(source.tail === undefined ? {} : { tail: source.tail }),
+      bytes,
+      sha256,
+      truncated: source.truncated,
+      source: { runId, seq, field },
+    }
+  }
+  return Object.fromEntries(Object.entries(source).map(([key, item]) => [key, projectedJsonValue(item, `${label}.${key}`)]))
+}
+
+function surfaceOperation(value: unknown, label: string): HitchTrajectorySurfaceNode['surfaceOp'] {
+  if (value === 'append') return value
+  const operation = record(value, label)
+  exactFields(operation, ['op', 'start', 'end'], label)
+  if (operation.op !== 'replace') throw new HitchEvaluationError(`${label}.op is invalid`, 'invalid_hitch_result')
+  return { op: 'replace', start: integer(operation.start, `${label}.start`), end: integer(operation.end, `${label}.end`) }
+}
+
+function surfaceNode(value: unknown, index: number, runId: string, eventCount: number): HitchTrajectorySurfaceNode {
+  const label = `trajectory analysis surface.nodes[${index}]`
+  const node = record(value, label)
+  exactFields(node, ['seq', 'event_type', 'surface_op', 'message'], label)
+  const seq = integer(node.seq, `${label}.seq`)
+  const eventType = node.event_type
+  if (eventType !== 'user/message' && eventType !== 'assistant/message' && eventType !== 'tool/result') {
+    throw new HitchEvaluationError(`${label}.event_type is invalid`, 'invalid_hitch_result')
+  }
+  if (seq >= eventCount) throw new HitchEvaluationError(`${label}.seq is out of range`, 'invalid_hitch_result')
+  const message = projectedJsonValue(node.message, `${label}.message`)
+  validateProjectedSources(message, runId, `${label}.message`)
+  return { seq, eventType, surfaceOp: surfaceOperation(node.surface_op, `${label}.surface_op`), message }
+}
+
+function validateProjectedSources(value: unknown, runId: string, label: string): void {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => validateProjectedSources(item, runId, `${label}[${index}]`))
+    return
+  }
+  if (typeof value !== 'object' || value === null) return
+  const item = value as JsonRecord
+  const source = typeof item.truncated === 'boolean' && typeof item.preview === 'string'
+    && typeof item.source === 'object' && item.source !== null && !Array.isArray(item.source)
+    ? item.source as JsonRecord
+    : undefined
+  if (source !== undefined && source.runId !== runId) {
+    throw new HitchEvaluationError(`${label} excerpt belongs to another run`, 'invalid_hitch_result')
+  }
+  for (const [key, child] of Object.entries(item)) validateProjectedSources(child, runId, `${label}.${key}`)
+}
+
+function requestBoundary(value: unknown, index: number, runId: string, eventCount: number, nodeCount: number): HitchTrajectoryRequestBoundary {
+  const label = `trajectory analysis surface.request_boundaries[${index}]`
+  const boundary = record(value, label)
+  exactFields(boundary, ['turn', 'step', 'attempt', 'retry_id', 'boundary_seq', 'surface_revision', 'request_header_seq'], label)
+  const boundarySeq = integer(boundary.boundary_seq, `${label}.boundary_seq`)
+  const surfaceRevision = integer(boundary.surface_revision, `${label}.surface_revision`)
+  if (boundarySeq >= eventCount || surfaceRevision > nodeCount) {
+    throw new HitchEvaluationError(`${label} is out of range`, 'invalid_hitch_result')
+  }
+  const attempt = integer(boundary.attempt, `${label}.attempt`)
+  if (attempt < 0) throw new HitchEvaluationError(`${label}.attempt must be non-negative`, 'invalid_hitch_result')
+  const retryId = boundary.retry_id === undefined
+    ? undefined
+    : projectedJsonValue(boundary.retry_id, `${label}.retry_id`)
+  if (retryId !== undefined) validateProjectedSources(retryId, runId, `${label}.retry_id`)
+  return {
+    turn: integer(boundary.turn, `${label}.turn`),
+    step: integer(boundary.step, `${label}.step`),
+    attempt,
+    ...(retryId === undefined ? {} : { retryId }),
+    boundarySeq,
+    surfaceRevision,
+    ...(boundary.request_header_seq === undefined ? {} : {
+      requestHeaderSeq: integer(boundary.request_header_seq, `${label}.request_header_seq`),
+    }),
+  }
+}
+
+function hitchContentExcerpt(value: unknown, label: string, runId: string): HitchTrajectoryContentExcerpt {
+  const projected = projectedJsonValue(value, label)
+  const excerpt = record(projected, label)
+  const source = record(excerpt.source, `${label}.source`)
+  if (typeof excerpt.truncated !== 'boolean' || typeof excerpt.preview !== 'string' || source.runId !== runId) {
+    throw new HitchEvaluationError(`${label} is not a bound content excerpt`, 'invalid_hitch_result')
+  }
+  return projected as unknown as HitchTrajectoryContentExcerpt
+}
+
+function chunkSummary(value: unknown, index: number, runId: string, eventCount: number): HitchTrajectoryChunkSummary {
+  const label = `trajectory analysis chunk_summaries[${index}]`
+  const summary = record(value, label)
+  exactFields(summary, [
+    'turn', 'step', 'attempt', 'retry_id', 'first_seq', 'last_seq', 'count', 'types', 'model_boundary_seq',
+    'usage', 'finish_reason', 'partial',
+  ], label)
+  const firstSeq = integer(summary.first_seq, `${label}.first_seq`)
+  const lastSeq = integer(summary.last_seq, `${label}.last_seq`)
+  const count = integer(summary.count, `${label}.count`)
+  const types = counts(summary.types, `${label}.types`)
+  const modelBoundarySeq = integer(summary.model_boundary_seq, `${label}.model_boundary_seq`)
+  if (count < 1 || firstSeq > lastSeq || lastSeq >= eventCount || modelBoundarySeq !== firstSeq
+    || Object.values(types).reduce((sum, item) => sum + item, 0) !== count) {
+    throw new HitchEvaluationError(`${label} has inconsistent range or counts`, 'invalid_hitch_result')
+  }
+  const attempt = integer(summary.attempt, `${label}.attempt`)
+  if (attempt < 0) throw new HitchEvaluationError(`${label}.attempt must be non-negative`, 'invalid_hitch_result')
+  const retryId = summary.retry_id === undefined
+    ? undefined
+    : projectedJsonValue(summary.retry_id, `${label}.retry_id`)
+  if (retryId !== undefined) validateProjectedSources(retryId, runId, `${label}.retry_id`)
+  let partial: HitchTrajectoryChunkSummary['partial']
+  if (summary.partial !== undefined) {
+    const raw = record(summary.partial, `${label}.partial`)
+    exactFields(raw, ['status', 'content', 'source_seq_count'], `${label}.partial`)
+    if (raw.status !== 'incomplete') throw new HitchEvaluationError(`${label}.partial.status is invalid`, 'invalid_hitch_result')
+    partial = {
+      status: 'incomplete',
+      content: hitchContentExcerpt(raw.content, `${label}.partial.content`, runId),
+      sourceSeqCount: integer(raw.source_seq_count, `${label}.partial.source_seq_count`),
+    }
+  }
+  const usage = summary.usage === undefined ? undefined : projectedJsonValue(summary.usage, `${label}.usage`)
+  const finishReason = summary.finish_reason === undefined
+    ? undefined
+    : projectedJsonValue(summary.finish_reason, `${label}.finish_reason`)
+  if (usage !== undefined) validateProjectedSources(usage, runId, `${label}.usage`)
+  if (finishReason !== undefined) validateProjectedSources(finishReason, runId, `${label}.finish_reason`)
+  return {
+    turn: integer(summary.turn, `${label}.turn`),
+    step: integer(summary.step, `${label}.step`),
+    attempt,
+    ...(retryId === undefined ? {} : { retryId }),
+    firstSeq,
+    lastSeq,
+    count,
+    types,
+    modelBoundarySeq,
+    ...(usage === undefined ? {} : { usage }),
+    ...(finishReason === undefined ? {} : { finishReason }),
+    ...(partial === undefined ? {} : { partial }),
+  }
+}
+
 function trialSlots(value: unknown, label: string): EvaluationTrialSlot[] {
   if (!Array.isArray(value)) throw new HitchEvaluationError(`${label} must be an array`, 'invalid_hitch_result')
   return value.map((item, index) => {
@@ -287,61 +509,29 @@ function excerpt(value: unknown, maxBytes = 1200): string {
   return text.length <= maxBytes ? text : `${text.slice(0, maxBytes)}…`
 }
 
-function containsToolError(value: unknown, depth = 0): boolean {
-  if (depth > 8 || value === null || value === undefined) return false
-  if (Array.isArray(value)) return value.some(item => containsToolError(item, depth + 1))
-  if (typeof value !== 'object') return false
-  const item = value as JsonRecord
-  if (item.isError === true || item.is_error === true) return true
-  if (item.error !== undefined && item.error !== null && item.error !== false) return true
-  return Object.values(item).some(child => containsToolError(child, depth + 1))
-}
-
-function trajectoryDiagnostics(events: JsonRecord[]): TrajectoryDiagnostics {
-  const eventTypes: Record<string, number> = {}
-  const errorExcerpts: TrajectoryDiagnostics['errorExcerpts'] = []
-  const finalAssistantExcerpts: TrajectoryDiagnostics['finalAssistantExcerpts'] = []
-  let toolCalls = 0
-  let toolResults = 0
-  let toolErrors = 0
-  for (const event of events) {
-    const type = typeof event.type === 'string' ? event.type : 'unknown'
-    eventTypes[type] = (eventTypes[type] ?? 0) + 1
-    if (type === 'tool/call' || type === 'tool/code-dispatch-start') toolCalls += 1
-    if (type === 'tool/result' || type === 'tool/code-dispatch') {
-      toolResults += 1
-      const data = typeof event.data === 'object' && event.data !== null ? event.data as JsonRecord : {}
-      if (containsToolError(data)) {
-        toolErrors += 1
-        if (errorExcerpts.length < 20) errorExcerpts.push({
-          ...(typeof event.seq === 'number' ? { seq: event.seq } : {}),
-          type,
-          excerpt: excerpt(data),
-        })
-      }
-    }
-    if (/error|failed|exception/iu.test(type) && errorExcerpts.length < 20) {
-      errorExcerpts.push({
-        ...(typeof event.seq === 'number' ? { seq: event.seq } : {}),
-        type,
-        excerpt: excerpt(event.data),
-      })
-    }
-    if (type === 'assistant/message') {
-      finalAssistantExcerpts.push({
-        ...(typeof event.seq === 'number' ? { seq: event.seq } : {}),
-        excerpt: excerpt(event.data),
-      })
-      if (finalAssistantExcerpts.length > 3) finalAssistantExcerpts.shift()
+function structuredCliError(output: string): { code: string; message: string } | undefined {
+  for (const line of output.split(/\r?\n/u).reverse()) {
+    try {
+      const envelope = JSON.parse(line) as unknown
+      if (typeof envelope !== 'object' || envelope === null || Array.isArray(envelope)) continue
+      const error = (envelope as JsonRecord).error
+      if (typeof error !== 'object' || error === null || Array.isArray(error)) continue
+      const detail = error as JsonRecord
+      if (typeof detail.code !== 'string' || !/^[a-z0-9_]{1,128}$/u.test(detail.code)
+        || typeof detail.message !== 'string') continue
+      return { code: detail.code, message: detail.message }
+    } catch {
+      // Older Hitch versions use plain-text diagnostics.
     }
   }
-  return { totalEvents: events.length, eventTypes, toolCalls, toolResults, toolErrors, errorExcerpts, finalAssistantExcerpts }
+  return undefined
 }
 
 export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader {
   readonly repositoryPath: string
   private executablePathPromise?: Promise<string>
-  private readonly trajectoryCache = new Map<string, HitchTrajectory>()
+  private readonly trajectoryCache = new Map<string, { analysis: HitchTrajectoryAnalysis; bytes: number }>()
+  private readonly trajectoryDigestByRun = new Map<string, string>()
   private readonly trajectoryLoads = new Map<string, SharedTrajectoryLoad>()
   private trajectoryCacheBytes = 0
 
@@ -364,6 +554,14 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     if (!Number.isSafeInteger(options.maxOutputBytes) || options.maxOutputBytes <= 0) throw new TypeError('hitch.maxOutputBytes must be positive')
     if (!Number.isSafeInteger(options.maxTrajectoryOutputBytes) || options.maxTrajectoryOutputBytes <= 0) {
       throw new TypeError('hitch.maxTrajectoryOutputBytes must be positive')
+    }
+    if (options.maxTrajectoryAnalysisBytes !== undefined
+      && (!Number.isSafeInteger(options.maxTrajectoryAnalysisBytes) || options.maxTrajectoryAnalysisBytes <= 0)) {
+      throw new TypeError('hitch.maxTrajectoryAnalysisBytes must be positive')
+    }
+    if (options.maxTrajectoryEventsBytes !== undefined
+      && (!Number.isSafeInteger(options.maxTrajectoryEventsBytes) || options.maxTrajectoryEventsBytes <= 0)) {
+      throw new TypeError('hitch.maxTrajectoryEventsBytes must be positive')
     }
     if (options.trajectoryCacheEntries !== undefined
       && (!Number.isSafeInteger(options.trajectoryCacheEntries) || options.trajectoryCacheEntries <= 0)) {
@@ -405,6 +603,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
   async preflight(): Promise<void> {
     await this.checkVersion()
     if (this.daemonMode) await this.checkDaemon()
+    await this.inspectCapabilities(new AbortController().signal)
   }
 
   private async checkVersion(signal?: AbortSignal): Promise<string> {
@@ -722,31 +921,138 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     }
   }
 
-  async inspectTrajectory(
-    runId: string,
-    offset: number,
-    limit: number,
-    signal: AbortSignal,
-  ): Promise<HitchTrajectoryPage> {
-    if (!/^run_[0-9a-f]{32}$/u.test(runId)) throw new TypeError('Hitch trajectory requires a valid run ID')
-    if (!Number.isSafeInteger(offset) || offset < 0) throw new TypeError('trajectory offset must be a non-negative integer')
-    if (!Number.isSafeInteger(limit) || limit <= 0) throw new TypeError('trajectory limit must be a positive integer')
-    const trajectory = await this.loadTrajectory(runId, signal)
-    const page = trajectory.events.slice(offset, offset + limit)
-    return {
-      runId,
-      fidelity: trajectory.fidelity,
-      ...(trajectory.provider === undefined ? {} : { provider: trajectory.provider }),
-      sessionId: trajectory.sessionId,
-      trajectoryDigest: trajectory.trajectoryDigest,
-      header: trajectory.header,
-      events: page,
-      offset,
-      limit,
-      total: trajectory.events.length,
-      eof: offset + page.length >= trajectory.events.length,
-      diagnostics: trajectory.diagnostics,
+  async inspectCapabilities(signal: AbortSignal): Promise<HitchCapabilities> {
+    signal.throwIfAborted()
+    const processResult = await this.run(['capabilities', '--json'], this.repositoryPath, signal, 16_384)
+    if (processResult.exitCode !== 0) {
+      const output = `${processResult.stderr}\n${processResult.stdout}`.trim()
+      throw new HitchEvaluationError(
+        `Hitch bounded trajectory capabilities are unavailable: ${excerpt(output, 1_000)}`,
+        'hitch_trajectory_capabilities_unavailable',
+      )
     }
+    let parsed: unknown
+    try { parsed = JSON.parse(processResult.stdout) }
+    catch (error) {
+      throw new HitchEvaluationError(`Hitch emitted invalid capabilities JSON (${String(error)})`, 'invalid_hitch_json')
+    }
+    const value = record(parsed, 'Hitch capabilities')
+    if (value.schema_version !== '1' || value.trajectory_analysis !== '1' || value.trajectory_events_page !== '1') {
+      throw new HitchEvaluationError(
+        'Hitch must provide trajectory_analysis=1 and trajectory_events_page=1',
+        'hitch_trajectory_capabilities_unavailable',
+      )
+    }
+    if (value.verifier_evidence !== undefined && value.verifier_evidence !== '1') {
+      throw new HitchEvaluationError('Hitch verifier_evidence capability is invalid', 'invalid_hitch_result')
+    }
+    return {
+      schemaVersion: 1,
+      trajectoryAnalysis: 1,
+      trajectoryEventsPage: 1,
+      ...(value.verifier_evidence === '1' ? { verifierEvidence: 1 as const } : {}),
+    }
+  }
+
+  async inspectTrajectoryAnalysis(runId: string, signal: AbortSignal): Promise<HitchTrajectoryAnalysis> {
+    if (!/^run_[0-9a-f]{32}$/u.test(runId)) throw new TypeError('Hitch trajectory requires a valid run ID')
+    signal.throwIfAborted()
+    const cachedDigest = this.trajectoryDigestByRun.get(runId)
+    const cached = cachedDigest === undefined ? undefined : this.trajectoryCache.get(`${runId}:${cachedDigest}`)
+    if (cached !== undefined) {
+      this.trajectoryCache.delete(`${runId}:${cachedDigest}`)
+      this.trajectoryCache.set(`${runId}:${cachedDigest}`, cached)
+      return cached.analysis
+    }
+    const pending = this.trajectoryLoads.get(runId)
+    if (pending !== undefined) return this.waitForTrajectoryLoad(runId, pending, signal)
+    const controller = new AbortController()
+    const shared: SharedTrajectoryLoad = {
+      promise: this.fetchTrajectoryAnalysis(runId, controller.signal),
+      controller,
+      waiters: 0,
+      settled: false,
+    }
+    this.trajectoryLoads.set(runId, shared)
+    void shared.promise.then(
+      analysis => {
+        shared.settled = true
+        this.cacheTrajectory(analysis)
+        if (this.trajectoryLoads.get(runId) === shared) this.trajectoryLoads.delete(runId)
+      },
+      () => {
+        shared.settled = true
+        if (this.trajectoryLoads.get(runId) === shared) this.trajectoryLoads.delete(runId)
+      },
+    )
+    return this.waitForTrajectoryLoad(runId, shared, signal)
+  }
+
+  async inspectTrajectoryEvents(
+    runId: string,
+    query: Readonly<HitchTrajectoryEventsQuery>,
+    signal: AbortSignal,
+  ): Promise<HitchTrajectoryEventsPage> {
+    if (!/^run_[0-9a-f]{32}$/u.test(runId)) throw new TypeError('Hitch trajectory requires a valid run ID')
+    const limit = query.limit ?? 100
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+      throw new TypeError('trajectory events limit must be between 1 and 1000')
+    }
+    if (query.seqStart !== undefined && (!Number.isSafeInteger(query.seqStart) || query.seqStart < 0)) {
+      throw new TypeError('trajectory events seqStart must be a non-negative integer')
+    }
+    if (query.seqEnd !== undefined && (!Number.isSafeInteger(query.seqEnd) || query.seqEnd < 0)) {
+      throw new TypeError('trajectory events seqEnd must be a non-negative integer')
+    }
+    if (query.seqStart !== undefined && query.seqEnd !== undefined && query.seqStart > query.seqEnd) {
+      throw new TypeError('trajectory events seqStart must not exceed seqEnd')
+    }
+    if (query.field !== undefined && (query.seqStart === undefined || query.seqStart !== query.seqEnd
+      || query.canonicalSha256 === undefined)) {
+      throw new TypeError('trajectory events field requires one exact sequence and canonicalSha256')
+    }
+    if (query.canonicalSha256 !== undefined && !/^sha256:[0-9a-f]{64}$/u.test(query.canonicalSha256)) {
+      throw new TypeError('trajectory events canonicalSha256 is invalid')
+    }
+    if (query.cursor !== undefined && (query.cursor.length === 0 || query.cursor.length > 16_384)) {
+      throw new TypeError('trajectory events cursor is invalid')
+    }
+    const configuredMaxBytes = this.options.maxTrajectoryEventsBytes
+      ?? Math.min(this.options.maxTrajectoryOutputBytes, 4 * 1024 * 1024)
+    if (query.maxBytes !== undefined && (!Number.isSafeInteger(query.maxBytes) || query.maxBytes < 1)) {
+      throw new TypeError('trajectory events maxBytes must be a positive integer')
+    }
+    const maxBytes = Math.min(configuredMaxBytes, query.maxBytes ?? configuredMaxBytes)
+    const eventTypes = query.eventTypes === undefined
+      ? undefined
+      : [...new Set(query.eventTypes.filter(value => value.length > 0))].sort()
+    if (eventTypes?.length === 0 || eventTypes?.some(value => value.length > 1_024)) {
+      throw new TypeError('trajectory events eventTypes must contain event type names of at most 1024 characters')
+    }
+    const normalizedQuery: HitchTrajectoryEventsQuery = {
+      ...query,
+      ...(eventTypes === undefined ? {} : { eventTypes }),
+      maxBytes,
+    }
+    const args = [
+      ...(this.options.root.length === 0 ? [] : ['--root', this.options.root]),
+      'trajectory', 'events', runId,
+      ...(eventTypes === undefined ? [] : ['--types', eventTypes.join(',')]),
+      ...(query.seqStart === undefined ? [] : ['--seq-start', String(query.seqStart)]),
+      ...(query.seqEnd === undefined ? [] : ['--seq-end', String(query.seqEnd)]),
+      ...(query.field === undefined ? [] : ['--field', query.field]),
+      ...(query.canonicalSha256 === undefined ? [] : ['--canonical-sha256', query.canonicalSha256]),
+      ...(query.cursor === undefined ? [] : ['--cursor', query.cursor]),
+      '--limit', String(limit), '--max-bytes', String(maxBytes), '--json',
+    ]
+    const processResult = await this.run(args, this.repositoryPath, signal, maxBytes)
+    if (processResult.exitCode !== 0) throw this.trajectoryCommandError('events', runId, processResult)
+    let parsed: unknown
+    try { parsed = JSON.parse(processResult.stdout) }
+    catch (error) {
+      throw new HitchEvaluationError(`Hitch emitted invalid trajectory events JSON (${String(error)})`, 'invalid_hitch_json')
+    }
+    return this.parseTrajectoryEventsPage(parsed, runId, normalizedQuery, limit)
   }
 
   async inspectVerifierEvidence(runId: string, signal: AbortSignal): Promise<HitchVerifierEvidence> {
@@ -764,6 +1070,16 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     )
     if (processResult.exitCode !== 0) {
       const output = `${processResult.stderr}\n${processResult.stdout}`.trim()
+      const structured = structuredCliError(output)
+      if (structured?.code === 'verifier_evidence_corrupt') {
+        return {
+          runId,
+          verifier: {
+            status: 'corrupt',
+            issues: [`Hitch could not validate verifier evidence: ${excerpt(structured.message, 512)}`],
+          },
+        }
+      }
       if (output !== 'hitch: unknown command: verifier') {
         throw new HitchEvaluationError(
           `Hitch verifier inspect failed with exit ${processResult.exitCode}: ${excerpt(output, 1_000)}`,
@@ -901,47 +1217,14 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     }
   }
 
-  async loadTrajectory(runId: string, signal: AbortSignal): Promise<HitchTrajectory> {
-    if (!/^run_[0-9a-f]{32}$/u.test(runId)) throw new TypeError('Hitch trajectory requires a valid run ID')
-    signal.throwIfAborted()
-    const cached = this.trajectoryCache.get(runId)
-    if (cached !== undefined) {
-      this.trajectoryCache.delete(runId)
-      this.trajectoryCache.set(runId, cached)
-      return cached
-    }
-    const pending = this.trajectoryLoads.get(runId)
-    if (pending !== undefined) return this.waitForTrajectoryLoad(runId, pending, signal)
-    const controller = new AbortController()
-    const shared: SharedTrajectoryLoad = {
-      promise: this.fetchTrajectory(runId, controller.signal),
-      controller,
-      waiters: 0,
-      settled: false,
-    }
-    this.trajectoryLoads.set(runId, shared)
-    void shared.promise.then(
-      trajectory => {
-        shared.settled = true
-        this.cacheTrajectory(trajectory)
-        if (this.trajectoryLoads.get(runId) === shared) this.trajectoryLoads.delete(runId)
-      },
-      () => {
-        shared.settled = true
-        if (this.trajectoryLoads.get(runId) === shared) this.trajectoryLoads.delete(runId)
-      },
-    )
-    return this.waitForTrajectoryLoad(runId, shared, signal)
-  }
-
   private waitForTrajectoryLoad(
     runId: string,
     shared: SharedTrajectoryLoad,
     signal: AbortSignal,
-  ): Promise<HitchTrajectory> {
+  ): Promise<HitchTrajectoryAnalysis> {
     signal.throwIfAborted()
     shared.waiters += 1
-    return new Promise<HitchTrajectory>((resolvePromise, reject) => {
+    return new Promise<HitchTrajectoryAnalysis>((resolvePromise, reject) => {
       let completed = false
       const release = (): void => {
         if (completed) return
@@ -958,85 +1241,328 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       }
       signal.addEventListener('abort', abort, { once: true })
       void shared.promise.then(
-        trajectory => { release(); resolvePromise(trajectory) },
+        analysis => { release(); resolvePromise(analysis) },
         error => { release(); reject(error) },
       )
     })
   }
 
-  private async fetchTrajectory(runId: string, signal: AbortSignal): Promise<HitchTrajectory> {
+  private async fetchTrajectoryAnalysis(runId: string, signal: AbortSignal): Promise<HitchTrajectoryAnalysis> {
+    const maxBytes = this.options.maxTrajectoryAnalysisBytes
+      ?? Math.min(this.options.maxTrajectoryOutputBytes, 16 * 1024 * 1024)
     const args = [
       ...(this.options.root.length === 0 ? [] : ['--root', this.options.root]),
-      'trajectory', 'inspect', runId, '--json',
+      'trajectory', 'project', runId, '--profile', 'analysis', '--max-bytes', String(maxBytes), '--json',
     ]
-    const processResult = await this.run(
-      args,
-      this.repositoryPath,
-      signal,
-      this.options.maxTrajectoryOutputBytes,
-    )
-    if (processResult.exitCode !== 0) {
-      throw new HitchEvaluationError(
-        `Hitch trajectory inspect failed for ${runId}: ${processResult.stderr.slice(-4000)}`,
-        'hitch_trajectory_unavailable',
-      )
-    }
+    const processResult = await this.run(args, this.repositoryPath, signal, maxBytes)
+    if (processResult.exitCode !== 0) throw this.trajectoryCommandError('project', runId, processResult)
     let parsed: unknown
-    try {
-      parsed = JSON.parse(processResult.stdout)
-    } catch (error) {
-      throw new HitchEvaluationError(`Hitch emitted invalid trajectory JSON (${String(error)})`, 'invalid_hitch_json')
+    try { parsed = JSON.parse(processResult.stdout) }
+    catch (error) {
+      throw new HitchEvaluationError(`Hitch emitted invalid trajectory analysis JSON (${String(error)})`, 'invalid_hitch_json')
     }
-    const result = record(parsed, 'Hitch trajectory')
-    if (result.schema_version !== '1' || result.run_id !== runId) {
-      throw new HitchEvaluationError('Hitch trajectory identity does not match the requested run', 'invalid_hitch_result')
+    return this.parseTrajectoryAnalysis(parsed, runId)
+  }
+
+  private parseTrajectoryAnalysis(value: unknown, runId: string): HitchTrajectoryAnalysis {
+    const result = record(value, 'Hitch trajectory analysis')
+    exactFields(result, [
+      'schema_version', 'kind', 'run_id', 'source', 'header', 'surface', 'events', 'chunk_summaries',
+      'omitted_event_types', 'coverage', 'redactions',
+    ], 'Hitch trajectory analysis')
+    if (result.schema_version !== '1' || result.kind !== 'trajectory-analysis' || result.run_id !== runId) {
+      throw new HitchEvaluationError('Hitch trajectory analysis identity does not match the requested run', 'invalid_hitch_result')
     }
-    const ref = record(result.ref, 'trajectory.ref')
-    const fidelity = ref.fidelity
-    if (fidelity !== 'provider_native' && fidelity !== 'normalized' && fidelity !== 'minimal') {
-      throw new HitchEvaluationError('Hitch trajectory fidelity is invalid', 'invalid_hitch_result')
+    const source = record(result.source, 'trajectory analysis source')
+    exactFields(source, [
+      'fidelity', 'provider', 'session_id', 'canonical_sha256', 'canonical_bytes', 'event_count', 'event_types',
+    ], 'trajectory analysis source')
+    if (source.fidelity !== 'provider_native' && source.fidelity !== 'normalized' && source.fidelity !== 'minimal') {
+      throw new HitchEvaluationError('trajectory analysis source fidelity is invalid', 'invalid_hitch_result')
     }
-    const header = record(result.header, 'trajectory.header')
-    const sessionId = string(header.id, 'trajectory.header.id')
-    if (!Array.isArray(result.events)) throw new HitchEvaluationError('trajectory.events must be an array', 'invalid_hitch_result')
-    const events = result.events.map((event, index) => record(event, `trajectory.events[${index}]`))
-    const canonicalFile = Array.isArray(ref.files)
-      ? ref.files.map(item => record(item, 'trajectory.ref.files[]')).find(item => item.role === 'canonical_session')
-      : undefined
-    const reportedDigest = typeof ref.sha256 === 'string'
-      ? ref.sha256
-      : typeof canonicalFile?.sha256 === 'string' ? canonicalFile.sha256 : undefined
-    const trajectoryDigest = reportedDigest !== undefined && /^sha256:[0-9a-f]{64}$/u.test(reportedDigest)
-      ? reportedDigest
-      : sha256(processResult.stdout)
+    const canonicalSha256 = digest(source.canonical_sha256, 'trajectory analysis source.canonical_sha256')
+    const eventCount = integer(source.event_count, 'trajectory analysis source.event_count')
+    const eventTypes = counts(source.event_types, 'trajectory analysis source.event_types')
+    if (Object.values(eventTypes).reduce((sum, count) => sum + count, 0) !== eventCount) {
+      throw new HitchEvaluationError('trajectory analysis source event counts are inconsistent', 'invalid_hitch_result')
+    }
+    const surface = record(result.surface, 'trajectory analysis surface')
+    exactFields(surface, [
+      'fidelity', 'nodes', 'current_node_seqs', 'replacements', 'request_boundaries', 'request_headers',
+    ], 'trajectory analysis surface')
+    if (surface.fidelity !== 'exact' && surface.fidelity !== 'normalized' && surface.fidelity !== 'partial') {
+      throw new HitchEvaluationError('trajectory analysis surface fidelity is invalid', 'invalid_hitch_result')
+    }
+    if (!Array.isArray(surface.nodes) || !Array.isArray(surface.current_node_seqs)
+      || !Array.isArray(surface.replacements) || !Array.isArray(surface.request_boundaries)
+      || !Array.isArray(surface.request_headers)) {
+      throw new HitchEvaluationError('trajectory analysis surface arrays are invalid', 'invalid_hitch_result')
+    }
+    const nodes = surface.nodes.map((item, index) => surfaceNode(item, index, runId, eventCount))
+    if (nodes.some((node, index) => index > 0 && nodes[index - 1]!.seq >= node.seq)) {
+      throw new HitchEvaluationError('trajectory analysis surface nodes must be increasing', 'invalid_hitch_result')
+    }
+    const nodeSeqs = new Set(nodes.map(node => node.seq))
+    const currentNodeSeqs = surface.current_node_seqs.map((seq, index) => integer(seq, `surface.current_node_seqs[${index}]`))
+    if (currentNodeSeqs.some(seq => !nodeSeqs.has(seq)) || new Set(currentNodeSeqs).size !== currentNodeSeqs.length) {
+      throw new HitchEvaluationError('trajectory analysis current surface nodes are invalid', 'invalid_hitch_result')
+    }
+    const replacements = surface.replacements.map((item, index) => {
+      const label = `trajectory analysis surface.replacements[${index}]`
+      const replacement = record(item, label)
+      exactFields(replacement, ['seq', 'start', 'end', 'shadowed_seqs'], label)
+      if (!Array.isArray(replacement.shadowed_seqs)) {
+        throw new HitchEvaluationError(`${label}.shadowed_seqs must be an array`, 'invalid_hitch_result')
+      }
+      return {
+        seq: integer(replacement.seq, `${label}.seq`),
+        start: integer(replacement.start, `${label}.start`),
+        end: integer(replacement.end, `${label}.end`),
+        shadowedSeqs: replacement.shadowed_seqs.map((seq, seqIndex) => integer(seq, `${label}.shadowed_seqs[${seqIndex}]`)),
+      }
+    })
+    const requestBoundaries = surface.request_boundaries.map((item, index) => requestBoundary(item, index, runId, eventCount, nodes.length))
+    if (requestBoundaries.some((item, index) => index > 0 && requestBoundaries[index - 1]!.boundarySeq >= item.boundarySeq)) {
+      throw new HitchEvaluationError('trajectory analysis request boundaries must be increasing', 'invalid_hitch_result')
+    }
+    if (new Set(requestBoundaries.map(item => `${item.turn}:${item.step}:${item.attempt}`)).size !== requestBoundaries.length) {
+      throw new HitchEvaluationError('trajectory analysis request attempts must be unique', 'invalid_hitch_result')
+    }
+    for (const boundary of requestBoundaries) {
+      const priorNode = boundary.surfaceRevision === 0 ? undefined : nodes[boundary.surfaceRevision - 1]
+      const nextNode = nodes[boundary.surfaceRevision]
+      if ((priorNode !== undefined && priorNode.seq >= boundary.boundarySeq)
+        || (nextNode !== undefined && nextNode.seq < boundary.boundarySeq)) {
+        throw new HitchEvaluationError('trajectory analysis request boundary has an inconsistent surface revision', 'invalid_hitch_result')
+      }
+    }
+    const requestHeaders = surface.request_headers.map((item, index) => {
+      const label = `trajectory analysis surface.request_headers[${index}]`
+      const header = record(item, label)
+      exactFields(header, ['seq', 'header'], label)
+      const seq = integer(header.seq, `${label}.seq`)
+      if (seq >= eventCount) throw new HitchEvaluationError(`${label}.seq is out of range`, 'invalid_hitch_result')
+      const projected = projectedJsonValue(header.header, `${label}.header`)
+      validateProjectedSources(projected, runId, `${label}.header`)
+      return { seq, header: projected }
+    })
+    if (requestHeaders.some((item, index) => index > 0 && requestHeaders[index - 1]!.seq >= item.seq)) {
+      throw new HitchEvaluationError('trajectory analysis request headers must be increasing', 'invalid_hitch_result')
+    }
+    const headerSeqs = new Set(requestHeaders.map(item => item.seq))
+    if (requestBoundaries.some(boundary => boundary.requestHeaderSeq !== undefined && !headerSeqs.has(boundary.requestHeaderSeq))) {
+      throw new HitchEvaluationError('trajectory analysis request boundary references an unknown header', 'invalid_hitch_result')
+    }
+    if (requestBoundaries.some(boundary => boundary.requestHeaderSeq !== undefined
+      && boundary.requestHeaderSeq >= boundary.boundarySeq)) {
+      throw new HitchEvaluationError('trajectory analysis request boundary references a future header', 'invalid_hitch_result')
+    }
+    if (!Array.isArray(result.events) || !Array.isArray(result.chunk_summaries)) {
+      throw new HitchEvaluationError('trajectory analysis events and chunk summaries must be arrays', 'invalid_hitch_result')
+    }
+    const events = result.events.map((event, index) => {
+      const projected = projectedJsonValue(event, `trajectory analysis events[${index}]`)
+      validateProjectedSources(projected, runId, `trajectory analysis events[${index}]`)
+      const item = record(projected, `trajectory analysis events[${index}]`)
+      if (item.type === 'assistant/chunk') {
+        throw new HitchEvaluationError('trajectory analysis must not include raw assistant chunks', 'invalid_hitch_result')
+      }
+      if (typeof item.type !== 'string' || item.type.length === 0 || eventTypes[item.type] === undefined) {
+        throw new HitchEvaluationError(`trajectory analysis events[${index}].type is invalid`, 'invalid_hitch_result')
+      }
+      const seq = integer(item.seq, `trajectory analysis events[${index}].seq`)
+      if (seq >= eventCount) throw new HitchEvaluationError(`trajectory analysis events[${index}].seq is out of range`, 'invalid_hitch_result')
+      return projected
+    })
+    if (events.some((event, index) => index > 0
+      && (record(events[index - 1], 'trajectory analysis event').seq as number) >= (record(event, 'trajectory analysis event').seq as number))) {
+      throw new HitchEvaluationError('trajectory analysis diagnostic events must be increasing', 'invalid_hitch_result')
+    }
+    const chunkSummaries = result.chunk_summaries.map((item, index) => chunkSummary(item, index, runId, eventCount))
+    if (chunkSummaries.some((item, index) => index > 0 && chunkSummaries[index - 1]!.firstSeq >= item.firstSeq)) {
+      throw new HitchEvaluationError('trajectory analysis chunk summaries must be increasing', 'invalid_hitch_result')
+    }
+    const boundariesByAttempt = new Map(requestBoundaries.map(item => [`${item.turn}:${item.step}:${item.attempt}`, item]))
+    for (const summary of chunkSummaries) {
+      const boundary = boundariesByAttempt.get(`${summary.turn}:${summary.step}:${summary.attempt}`)
+      if (boundary === undefined || boundary.boundarySeq !== summary.modelBoundarySeq
+        || JSON.stringify(boundary.retryId) !== JSON.stringify(summary.retryId)) {
+        throw new HitchEvaluationError('trajectory analysis chunk summary does not match its request boundary', 'invalid_hitch_result')
+      }
+    }
+    const omittedEventTypes = counts(result.omitted_event_types, 'trajectory analysis omitted_event_types')
+    for (const [type, count] of Object.entries(omittedEventTypes)) {
+      if (count > (eventTypes[type] ?? 0)) {
+        throw new HitchEvaluationError(`trajectory analysis omitted count exceeds source count for ${type}`, 'invalid_hitch_result')
+      }
+    }
+    if ((eventTypes['assistant/chunk'] ?? 0) !== (omittedEventTypes['assistant/chunk'] ?? 0)) {
+      throw new HitchEvaluationError('trajectory analysis must account for every assistant chunk as omitted', 'invalid_hitch_result')
+    }
+    const coverage = record(result.coverage, 'trajectory analysis coverage')
+    exactFields(coverage, ['surface', 'chunks', 'content', 'child_sessions'], 'trajectory analysis coverage')
+    if (coverage.surface !== 'complete' && coverage.surface !== 'partial') {
+      throw new HitchEvaluationError('trajectory analysis surface coverage is invalid', 'invalid_hitch_result')
+    }
+    if (coverage.chunks !== 'coalesced' && coverage.chunks !== 'omitted' && coverage.chunks !== 'partial') {
+      throw new HitchEvaluationError('trajectory analysis chunk coverage is invalid', 'invalid_hitch_result')
+    }
+    if (coverage.content !== 'complete' && coverage.content !== 'excerpted' && coverage.content !== 'partial') {
+      throw new HitchEvaluationError('trajectory analysis content coverage is invalid', 'invalid_hitch_result')
+    }
+    if (coverage.child_sessions !== 'complete' && coverage.child_sessions !== 'partial'
+      && coverage.child_sessions !== 'none' && coverage.child_sessions !== 'unavailable') {
+      throw new HitchEvaluationError('trajectory analysis child session coverage is invalid', 'invalid_hitch_result')
+    }
+    const latestHeader = projectedJsonValue(result.header, 'trajectory analysis header')
+    validateProjectedSources(latestHeader, runId, 'trajectory analysis header')
     return {
+      schemaVersion: 1,
+      kind: 'trajectory-analysis',
       runId,
-      fidelity,
-      ...(typeof ref.provider === 'string' && ref.provider.length > 0 ? { provider: ref.provider } : {}),
-      sessionId,
-      trajectoryDigest,
-      bytes: Buffer.byteLength(processResult.stdout),
-      ref: ref as never,
-      header: header as never,
-      events: events as never[],
-      diagnostics: trajectoryDiagnostics(events),
+      source: {
+        fidelity: source.fidelity,
+        ...(source.provider === undefined ? {} : { provider: string(source.provider, 'trajectory analysis source.provider') }),
+        sessionId: string(source.session_id, 'trajectory analysis source.session_id'),
+        canonicalSha256,
+        canonicalBytes: integer(source.canonical_bytes, 'trajectory analysis source.canonical_bytes'),
+        eventCount,
+        eventTypes,
+      },
+      header: latestHeader,
+      surface: {
+        fidelity: surface.fidelity,
+        nodes,
+        currentNodeSeqs,
+        replacements,
+        requestBoundaries,
+        requestHeaders,
+      },
+      events,
+      chunkSummaries,
+      omittedEventTypes,
+      coverage: {
+        surface: coverage.surface,
+        chunks: coverage.chunks,
+        content: coverage.content,
+        childSessions: coverage.child_sessions,
+      },
+      ...(result.redactions === undefined ? {} : { redactions: redactions(result.redactions, 'trajectory analysis redactions') }),
     }
   }
 
-  private cacheTrajectory(trajectory: HitchTrajectory): void {
+  private parseTrajectoryEventsPage(
+    value: unknown,
+    runId: string,
+    query: Readonly<HitchTrajectoryEventsQuery>,
+    limit: number,
+  ): HitchTrajectoryEventsPage {
+    const result = record(value, 'Hitch trajectory events page')
+    exactFields(result, [
+      'schema_version', 'kind', 'run_id', 'canonical_sha256', 'filter', 'events', 'total_matches',
+      'next_cursor', 'eof', 'redactions',
+    ], 'Hitch trajectory events page')
+    if (result.schema_version !== '1' || result.kind !== 'trajectory-events-page' || result.run_id !== runId) {
+      throw new HitchEvaluationError('Hitch trajectory events identity does not match the requested run', 'invalid_hitch_result')
+    }
+    const canonicalSha256 = digest(result.canonical_sha256, 'trajectory events canonical_sha256')
+    if (query.canonicalSha256 !== undefined && query.canonicalSha256 !== canonicalSha256) {
+      throw new HitchEvaluationError('Hitch trajectory events canonical digest mismatch', 'invalid_hitch_result')
+    }
+    const filter = record(result.filter, 'trajectory events filter')
+    exactFields(filter, ['types', 'seq_start', 'seq_end', 'field'], 'trajectory events filter')
+    const eventTypes = filter.types === undefined ? undefined : stringArray(filter.types, 'trajectory events filter.types')
+    const seqStart = filter.seq_start === undefined ? undefined : integer(filter.seq_start, 'trajectory events filter.seq_start')
+    const seqEnd = filter.seq_end === undefined ? undefined : integer(filter.seq_end, 'trajectory events filter.seq_end')
+    const field = filter.field === undefined ? undefined : string(filter.field, 'trajectory events filter.field')
+    if ((query.eventTypes !== undefined && JSON.stringify(query.eventTypes) !== JSON.stringify(eventTypes))
+      || (query.seqStart !== undefined && query.seqStart !== seqStart)
+      || (query.seqEnd !== undefined && query.seqEnd !== seqEnd)
+      || (query.field !== undefined && query.field !== field)) {
+      throw new HitchEvaluationError('trajectory events response filter does not match the request', 'invalid_hitch_result')
+    }
+    if (!Array.isArray(result.events)) throw new HitchEvaluationError('trajectory events events must be an array', 'invalid_hitch_result')
+    if (result.events.length > limit) throw new HitchEvaluationError('trajectory events page exceeds requested limit', 'invalid_hitch_result')
+    const events = result.events.map((event, index) => {
+      const projected = projectedJsonValue(event, `trajectory events events[${index}]`)
+      validateProjectedSources(projected, runId, `trajectory events events[${index}]`)
+      const item = record(projected, `trajectory events events[${index}]`)
+      const type = string(item.type, `trajectory events events[${index}].type`)
+      const seq = integer(item.seq, `trajectory events events[${index}].seq`)
+      if ((seqStart !== undefined && seq < seqStart) || (seqEnd !== undefined && seq > seqEnd)) {
+        throw new HitchEvaluationError('trajectory events response contains an event outside its sequence filter', 'invalid_hitch_result')
+      }
+      if (field === undefined && eventTypes !== undefined && !eventTypes.includes(type)) {
+        throw new HitchEvaluationError('trajectory events response contains an event outside its type filter', 'invalid_hitch_result')
+      }
+      return projected
+    })
+    if (events.some((event, index) => index > 0
+      && (record(events[index - 1], 'trajectory event').seq as number) >= (record(event, 'trajectory event').seq as number))) {
+      throw new HitchEvaluationError('trajectory events response must be increasing', 'invalid_hitch_result')
+    }
+    const totalMatches = integer(result.total_matches, 'trajectory events total_matches')
+    if (totalMatches < events.length) throw new HitchEvaluationError('trajectory events total_matches is inconsistent', 'invalid_hitch_result')
+    const eof = booleanValue(result.eof, 'trajectory events eof')
+    const nextCursor = result.next_cursor === undefined ? undefined : string(result.next_cursor, 'trajectory events next_cursor')
+    if ((eof && nextCursor !== undefined) || (!eof && nextCursor === undefined)) {
+      throw new HitchEvaluationError('trajectory events cursor/eof state is inconsistent', 'invalid_hitch_result')
+    }
+    return {
+      schemaVersion: 1,
+      kind: 'trajectory-events-page',
+      runId,
+      canonicalSha256,
+      filter: {
+        ...(eventTypes === undefined ? {} : { eventTypes }),
+        ...(seqStart === undefined ? {} : { seqStart }),
+        ...(seqEnd === undefined ? {} : { seqEnd }),
+        ...(field === undefined ? {} : { field }),
+      },
+      events,
+      totalMatches,
+      ...(nextCursor === undefined ? {} : { nextCursor }),
+      eof,
+      ...(result.redactions === undefined ? {} : { redactions: redactions(result.redactions, 'trajectory events redactions') }),
+    }
+  }
+
+  private trajectoryCommandError(action: 'project' | 'events', runId: string, result: ProcessResult): HitchEvaluationError {
+    const output = `${result.stderr}\n${result.stdout}`.trim()
+    const structured = structuredCliError(output)
+    const stableCode = structured?.code
+      ?? output.match(/(?:^|\s)(trajectory_[a-z0-9_]+):/u)?.[1]
+      ?? `hitch_trajectory_${action}_failed`
+    return new HitchEvaluationError(
+      `Hitch trajectory ${action} failed for ${runId}: ${excerpt(structured?.message ?? output, 2_000)}`,
+      stableCode,
+    )
+  }
+
+  private cacheTrajectory(analysis: HitchTrajectoryAnalysis): void {
     const maxEntries = this.options.trajectoryCacheEntries ?? 8
     const maxBytes = this.options.trajectoryCacheBytes ?? 256 * 1024 * 1024
-    if (trajectory.bytes > maxBytes) return
-    const existing = this.trajectoryCache.get(trajectory.runId)
-    if (existing !== undefined) this.trajectoryCacheBytes -= existing.bytes
-    this.trajectoryCache.delete(trajectory.runId)
-    this.trajectoryCache.set(trajectory.runId, trajectory)
-    this.trajectoryCacheBytes += trajectory.bytes
+    const bytes = Buffer.byteLength(JSON.stringify(analysis))
+    if (bytes > maxBytes) return
+    const previousDigest = this.trajectoryDigestByRun.get(analysis.runId)
+    if (previousDigest !== undefined) {
+      const previousKey = `${analysis.runId}:${previousDigest}`
+      const previous = this.trajectoryCache.get(previousKey)
+      if (previous !== undefined) this.trajectoryCacheBytes -= previous.bytes
+      this.trajectoryCache.delete(previousKey)
+    }
+    const key = `${analysis.runId}:${analysis.source.canonicalSha256}`
+    this.trajectoryCache.set(key, { analysis, bytes })
+    this.trajectoryDigestByRun.set(analysis.runId, analysis.source.canonicalSha256)
+    this.trajectoryCacheBytes += bytes
     while (this.trajectoryCache.size > maxEntries || this.trajectoryCacheBytes > maxBytes) {
-      const oldest = this.trajectoryCache.entries().next().value as [string, HitchTrajectory] | undefined
+      const oldest = this.trajectoryCache.entries().next().value as [string, { analysis: HitchTrajectoryAnalysis; bytes: number }] | undefined
       if (oldest === undefined) break
       this.trajectoryCache.delete(oldest[0])
       this.trajectoryCacheBytes -= oldest[1].bytes
+      if (this.trajectoryDigestByRun.get(oldest[1].analysis.runId) === oldest[1].analysis.source.canonicalSha256) {
+        this.trajectoryDigestByRun.delete(oldest[1].analysis.runId)
+      }
     }
   }
 
@@ -1477,6 +2003,8 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       terminationGraceMs: this.options.terminationGraceMs,
       maxOutputBytes: this.options.maxOutputBytes,
       maxTrajectoryOutputBytes: this.options.maxTrajectoryOutputBytes,
+      maxTrajectoryAnalysisBytes: this.options.maxTrajectoryAnalysisBytes ?? 16 * 1024 * 1024,
+      maxTrajectoryEventsBytes: this.options.maxTrajectoryEventsBytes ?? 4 * 1024 * 1024,
     }))
   }
 

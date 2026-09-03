@@ -3,48 +3,19 @@ import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { RefineCapabilities } from '../../src/capabilities.js'
 import { contentExcerpt, projectTrajectory } from '../../src/evaluator/trajectory-projection.js'
+import { trajectoryAnalysis } from '../helpers/trajectory-fixture.js'
 import type {
   DiagnosisReceipt,
   GearFailureBundle,
-  HitchTrajectory,
-  TrajectoryDiagnostics,
+  HitchTrajectoryAnalysis,
   TrajectoryProjection,
 } from '../../src/types.js'
 
-function diagnostics(events: HitchTrajectory['events']): TrajectoryDiagnostics {
-  const eventTypes: Record<string, number> = {}
-  for (const value of events) {
-    const event = value as { type?: string }
-    const type = event.type ?? 'unknown'
-    eventTypes[type] = (eventTypes[type] ?? 0) + 1
-  }
-  return {
-    totalEvents: events.length,
-    eventTypes,
-    toolCalls: eventTypes['tool/call'] ?? 0,
-    toolResults: eventTypes['tool/result'] ?? 0,
-    toolErrors: 0,
-    errorExcerpts: [],
-    finalAssistantExcerpts: [],
-  }
-}
-
 function trajectory(
-  events: HitchTrajectory['events'],
-  fidelity: HitchTrajectory['fidelity'] = 'provider_native',
-): HitchTrajectory {
-  return {
-    runId: `run_${'1'.repeat(32)}`,
-    fidelity,
-    provider: 'deepseek',
-    sessionId: 'session-1',
-    trajectoryDigest: `sha256:${'a'.repeat(64)}`,
-    bytes: Buffer.byteLength(JSON.stringify(events)),
-    ref: {},
-    header: { version: 0, id: 'session-1', createdAt: 1 },
-    events,
-    diagnostics: diagnostics(events),
-  }
+  events: readonly unknown[],
+  fidelity: HitchTrajectoryAnalysis['source']['fidelity'] = 'provider_native',
+): HitchTrajectoryAnalysis {
+  return trajectoryAnalysis(`run_${'1'.repeat(32)}`, events, fidelity)
 }
 
 describe('trajectory projection', () => {
@@ -90,6 +61,7 @@ describe('trajectory projection', () => {
         type: 'request/header', seq: 4, time: 5,
         data: { reason: 'change', header: { config: { provider: 'p', model: 'm2' }, system: 'system-2' } },
       },
+      { type: 'assistant/chunk', seq: 5, time: 6, data: { turn: 1, step: 2, chunk: '...' } },
     ]
     const result = projectTrajectory(trajectory(events))
     expect(result.fidelity).toBe('exact-surface')
@@ -172,6 +144,50 @@ describe('trajectory projection', () => {
       excerpt: 'ToolResultError: TOOL_RESULT_ERROR',
     })
     expect(result.pathsObservedThroughTools).toEqual(['/app/a.txt'])
+  })
+
+  it('preserves task, final-answer, and tool pairing when complete surface messages are excerpts', () => {
+    const analysis = trajectory([
+      {
+        type: 'user/message', surfaceOp: 'append',
+        data: { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'very long task' }] },
+      },
+      {
+        type: 'tool/call',
+        data: { turn: 1, step: 1, callId: 'call-1', name: 'read', arguments: '{}' },
+      },
+      {
+        type: 'tool/result', surfaceOp: 'append', sourceEventSeqs: [1],
+        data: {
+          turn: 1, step: 1,
+          message: {
+            role: 'user', source: { kind: 'tool', callId: 'call-1' },
+            content: [{ type: 'tool-result', toolCallId: 'call-1', content: [{ type: 'text', text: 'long result' }] }],
+          },
+        },
+      },
+      {
+        type: 'assistant/message', surfaceOp: 'append',
+        data: {
+          turn: 1, step: 1,
+          message: { role: 'assistant', content: [{ type: 'text', text: 'very long final answer' }] },
+        },
+      },
+    ])
+    analysis.surface.nodes[0]!.message = contentExcerpt(analysis.runId, 'very long task', 'message', 0, 4) as never
+    analysis.surface.nodes[1]!.message = contentExcerpt(analysis.runId, 'very long result', 'message', 2, 4) as never
+    analysis.surface.nodes[2]!.message = contentExcerpt(analysis.runId, 'very long final answer', 'message', 3, 4) as never
+    const result = projectTrajectory(analysis)
+    expect(result.messages).toMatchObject([
+      { seq: 0, eventType: 'user/message', role: 'user' },
+      { seq: 2, eventType: 'tool/result', role: 'tool' },
+      { seq: 3, eventType: 'assistant/message', role: 'assistant' },
+    ])
+    expect(result.semanticSteps).toMatchObject([{ toolActions: [{
+      callId: 'call-1', callSeq: 1, resultSeq: 2, status: 'unknown',
+    }] }])
+    expect(result.errors).toContainEqual(expect.objectContaining({ seq: 2, type: 'tool/result-status-unknown' }))
+    expect(result.finalAnswer).toMatchObject({ seq: 3, role: 'assistant' })
   })
 
   it('does not issue exact-surface fidelity for normalized or minimal source evidence', () => {
@@ -282,22 +298,11 @@ describe('trajectory projection', () => {
   it.skipIf(!existsSync(tb21Path))('projects the tb21 write-compressor fixture without chunk noise', () => {
     const source = JSON.parse(readFileSync(tb21Path, 'utf8')) as {
       run_id: string
-      ref: { fidelity: HitchTrajectory['fidelity']; provider?: string; sha256: string }
-      header: HitchTrajectory['header'] & { id: string }
-      events: HitchTrajectory['events']
+      ref: { fidelity: HitchTrajectoryAnalysis['source']['fidelity']; provider?: string; sha256: string }
+      header: { id: string }
+      events: unknown[]
     }
-    const result = projectTrajectory({
-      runId: source.run_id,
-      fidelity: source.ref.fidelity,
-      ...(source.ref.provider === undefined ? {} : { provider: source.ref.provider }),
-      sessionId: source.header.id,
-      trajectoryDigest: source.ref.sha256,
-      bytes: readFileSync(tb21Path).byteLength,
-      ref: source.ref,
-      header: source.header,
-      events: source.events,
-      diagnostics: diagnostics(source.events),
-    })
+    const result = projectTrajectory(trajectoryAnalysis(source.run_id, source.events, source.ref.fidelity))
     expect(result.rawEventCount).toBe(103_479)
     expect(result.eventTypes['assistant/chunk']).toBe(103_321)
     expect(result.omittedEventTypes['assistant/chunk']).toBe(103_321)

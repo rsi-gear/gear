@@ -11,7 +11,6 @@ import type {
   DiagnosisReceipt,
   EvaluationEvidence,
   GearFailureBundle,
-  HitchTrajectory,
   HitchTrajectoryReader,
   HitchVerifierEvidence,
   RefineBridgeRequestMap,
@@ -19,6 +18,7 @@ import type {
   SemanticTarget,
   SessionRole,
   TrajectoryContextEpoch,
+  TrajectoryEvidenceBlocker,
   TrajectoryMessageEvidence,
   TrajectoryProjection,
   TrajectorySemanticStep,
@@ -139,13 +139,35 @@ function compactStep(
   const assistantMessages = (options.maxAssistantMessages === 0 ? [] : value.assistantMessages.slice(-options.maxAssistantMessages))
     .map(message => compactMessage(message, options.excerptBytes))
   const toolActions = [...selectedActions.values()].map(action => compactToolAction(action, options.excerptBytes))
-  const { terminalReason, ...base } = value
+  const selectedRequests = new Map<number, NonNullable<TrajectorySemanticStep['modelRequests']>[number]>()
+  for (const request of value.modelRequests ?? []) {
+    if (/error|failed|exception|retry/iu.test(JSON.stringify(request.finishReason ?? null)) && selectedRequests.size < 2) {
+      selectedRequests.set(request.firstSeq, request)
+    }
+  }
+  for (const request of (value.modelRequests ?? []).slice(-2)) {
+    if (selectedRequests.size < 2) selectedRequests.set(request.firstSeq, request)
+  }
+  const modelRequests = [...selectedRequests.values()].sort((left, right) => left.firstSeq - right.firstSeq).map(request => ({
+    ...request,
+    ...(request.usage === undefined ? {} : {
+      usage: compactJsonEvidence(request.usage, runId, 'modelRequest.usage', options.excerptBytes),
+    }),
+    ...(request.finishReason === undefined ? {} : {
+      finishReason: compactJsonEvidence(request.finishReason, runId, 'modelRequest.finishReason', options.excerptBytes),
+    }),
+    ...(request.partial === undefined ? {} : {
+      partial: { ...request.partial, content: compactExcerpt(request.partial.content, options.excerptBytes) },
+    }),
+  }))
+  const { terminalReason, modelRequests: _modelRequests, ...base } = value
   return {
     ...base,
     id: boundedUtf8(value.id, 128),
     ...(value.contextEpochId === undefined ? {} : { contextEpochId: boundedUtf8(value.contextEpochId, 128) }),
     assistantMessages,
     toolActions,
+    ...(modelRequests.length === 0 ? {} : { modelRequests }),
     ...(terminalReason === undefined || !options.terminalReason ? {} : {
       terminalReasonExcerpt: compactExcerpt(
         contentExcerpt(runId, terminalReason, 'step.terminalReason', value.seqEnd, options.excerptBytes),
@@ -157,6 +179,9 @@ function compactStep(
     }),
     ...(value.toolActions.length <= toolActions.length ? {} : {
       omittedToolActionCount: value.toolActions.length - toolActions.length,
+    }),
+    ...((value.modelRequests?.length ?? 0) <= modelRequests.length ? {} : {
+      omittedModelRequestCount: value.modelRequests!.length - modelRequests.length,
     }),
   }
 }
@@ -223,6 +248,7 @@ export class RefineCapabilities {
   private readonly secretValues: readonly string[]
   private readonly options: CapabilityOptions
   private readonly trajectoryProjections = new Map<string, SharedProjectionLoad>()
+  private readonly trajectoryEvidenceBlockers = new Map<string, TrajectoryEvidenceBlocker>()
   private trajectoryProjectionCacheBytes = 0
 
   constructor(
@@ -386,7 +412,11 @@ export class RefineCapabilities {
         }))
         const readiness = baseline === undefined
           ? undefined
-          : finalizationReadiness(baseline, meta.proposalEvidenceAudit(activeRoundId, sessionId, []))
+          : finalizationReadiness(
+              baseline,
+              meta.proposalEvidenceAudit(activeRoundId, sessionId, []),
+              this.trajectoryBlockers(sessionId, activeRoundId, baseline),
+            )
         return publicJson({
           rounds: projected,
           offset,
@@ -416,7 +446,36 @@ export class RefineCapabilities {
         }
         try {
           for (const item of selected) {
-            const projection = await this.projectedTrajectory(item.trial.runId, signal)
+            let projection: TrajectoryProjection
+            try {
+              projection = await this.projectedTrajectory(item.trial.runId, signal)
+              this.trajectoryEvidenceBlockers.delete(this.trajectoryBlockerKey(sessionId, item.roundId, item.trial.runId))
+            } catch (error) {
+              const blocker = this.recordTrajectoryBlocker(sessionId, item.roundId, item.trial.runId, error)
+              return publicJson(this.trajectoryEvidenceBlocked([blocker]))
+            }
+            if (projection.coverage.surface !== 'complete' || projection.fidelity === 'unavailable') {
+              const blocker = this.recordTrajectoryBlocker(
+                sessionId,
+                item.roundId,
+                item.trial.runId,
+                Object.assign(new Error('bounded trajectory surface is incomplete'), {
+                  code: 'hitch_trajectory_analysis_incomplete',
+                }),
+              )
+              return publicJson(this.trajectoryEvidenceBlocked([blocker]))
+            }
+            if (!projection.messages.some(message => message.eventType === 'user/message' && message.role === 'user')) {
+              const blocker = this.recordTrajectoryBlocker(
+                sessionId,
+                item.roundId,
+                item.trial.runId,
+                Object.assign(new Error('bounded trajectory has no observable task prompt'), {
+                  code: 'hitch_trajectory_task_context_missing',
+                }),
+              )
+              return publicJson(this.trajectoryEvidenceBlocked([blocker]))
+            }
             const verifier = await this.loadVerifierEvidence(item, signal)
             const bundle = this.failureBundle(
               item,
@@ -443,6 +502,17 @@ export class RefineCapabilities {
             && error.message.includes('exceeds the configured output budget')) {
             return publicJson(this.bundleBatchRecovery(selected))
           }
+          if (selected.length === 1 && error instanceof Error
+            && error.message.includes('exceeds the configured output budget')) {
+            const item = selected[0]!
+            const blocker = this.recordTrajectoryBlocker(
+              sessionId,
+              item.roundId,
+              item.trial.runId,
+              Object.assign(error, { code: 'gear_failure_bundle_overflow' }),
+            )
+            return publicJson(this.trajectoryEvidenceBlocked([blocker]))
+          }
           throw error
         }
         for (const { item, receipt } of receipts) meta.recordEvidenceAccess(item.roundId, sessionId, {
@@ -451,7 +521,11 @@ export class RefineCapabilities {
         })
         const readiness = baseline === undefined
           ? undefined
-          : finalizationReadiness(baseline, meta.proposalEvidenceAudit(activeRoundId, sessionId, []))
+          : finalizationReadiness(
+              baseline,
+              meta.proposalEvidenceAudit(activeRoundId, sessionId, []),
+              this.trajectoryBlockers(sessionId, activeRoundId, baseline),
+            )
         return publicJson({
           bundles,
           ...(readiness === undefined ? {} : { diagnosisProgress: readiness }),
@@ -461,29 +535,51 @@ export class RefineCapabilities {
       const trajectories: unknown[] = []
       for (const item of selected) {
         if (view === 'events') {
-          const trajectory = await this.loadCompleteTrajectory(item.trial.runId, signal)
           const requestedTypes = this.optionalStrings(args, 'eventTypes')
           const aroundSeq = this.optionalInteger(args, 'aroundSeq')
           const radius = this.optionalInteger(args, 'radius') ?? 10
           const errorsOnly = this.optionalBoolean(args, 'errorsOnly') ?? false
-          let rawEvents = trajectory.events
-          if (requestedTypes !== undefined) rawEvents = rawEvents.filter(event => {
-            const value = record(event)
-            return typeof value.type === 'string' && requestedTypes.includes(value.type)
-          })
-          if (aroundSeq !== undefined) rawEvents = rawEvents.filter(event => {
-            const value = record(event)
-            return typeof value.seq === 'number' && Math.abs(value.seq - aroundSeq) <= radius
-          })
-          if (errorsOnly) rawEvents = rawEvents.filter(event => /error|failed|exception/iu.test(JSON.stringify(event)))
-          const events = rawEvents.slice(offset, offset + limit)
-          const bounded = this.boundTrajectoryPage(
-            trajectory.header,
-            events,
-            trajectory.diagnostics,
-            roundHeldOutRef(rounds, item.roundId),
-          )
-          const consumed = bounded.events.length
+          const seqStart = this.optionalInteger(args, 'seqStart')
+          const seqEnd = this.optionalInteger(args, 'seqEnd')
+          const field = this.optionalString(args, 'field')
+          const cursor = this.optionalString(args, 'cursor')
+          const requestedDigest = this.optionalString(args, 'canonicalSha256')
+          if (offset !== 0) throw new TypeError('events view uses cursor pagination; offset must be 0')
+          if (aroundSeq !== undefined && (seqStart !== undefined || seqEnd !== undefined || field !== undefined)) {
+            throw new TypeError('aroundSeq cannot be combined with seqStart, seqEnd, or field')
+          }
+          if (radius < 0) throw new TypeError('radius must be non-negative')
+          const projection = requestedDigest === undefined && cursor === undefined
+            ? await this.projectedTrajectory(item.trial.runId, signal)
+            : undefined
+          const canonicalSha256 = requestedDigest ?? projection?.trajectoryDigest
+          let pageLimit = limit
+          let page
+          let events
+          let bounded
+          while (true) {
+            page = await this.options.trajectoryReader.inspectTrajectoryEvents(item.trial.runId, {
+              ...(requestedTypes === undefined ? {} : { eventTypes: requestedTypes }),
+              ...(aroundSeq === undefined ? (seqStart === undefined ? {} : { seqStart }) : { seqStart: Math.max(0, aroundSeq - radius) }),
+              ...(aroundSeq === undefined ? (seqEnd === undefined ? {} : { seqEnd }) : { seqEnd: aroundSeq + radius }),
+              ...(field === undefined ? {} : { field }),
+              ...(canonicalSha256 === undefined ? {} : { canonicalSha256 }),
+              ...(cursor === undefined ? {} : { cursor }),
+              limit: pageLimit,
+              maxBytes: this.maxTrajectoryPageBytes,
+            }, signal)
+            events = errorsOnly
+              ? page.events.filter(event => /error|failed|exception|retry/iu.test(JSON.stringify(event)))
+              : page.events
+            bounded = this.boundTrajectoryItems(events, roundHeldOutRef(rounds, item.roundId))
+            if (bounded.consumed === events.length) break
+            if (pageLimit === 1) {
+              throw Object.assign(new Error(`single bounded event for ${item.trial.runId} exceeds the Gear response budget`), {
+                code: 'gear_trajectory_events_page_overflow',
+              })
+            }
+            pageLimit = Math.max(1, Math.min(pageLimit - 1, bounded.consumed))
+          }
           trajectories.push({
             ref: item.trial.runId,
             roundId: item.roundId,
@@ -491,20 +587,20 @@ export class RefineCapabilities {
             evalId: item.evalId,
             taskName: item.trial.taskName,
             trialName: item.trial.trialName,
-            runId: trajectory.runId,
+            runId: page.runId,
             ...(item.failure === undefined ? {} : { outcome: 'failed', failure: item.failure }),
             view,
-            fidelity: trajectory.fidelity,
-            provider: trajectory.provider,
-            sessionId: trajectory.sessionId,
-            ...(offset === 0 ? { header: bounded.header } : {}),
-            ...(offset === 0 ? { diagnostics: bounded.diagnostics } : {}),
-            events: bounded.events,
-            offset,
-            limit,
-            total: rawEvents.length,
-            nextOffset: offset + consumed,
-            eof: offset + consumed >= rawEvents.length && consumed === events.length,
+            canonicalSha256: page.canonicalSha256,
+            filter: page.filter,
+            events: bounded.items,
+            cursor: cursor ?? null,
+            limit: pageLimit,
+            ...(pageLimit === limit ? {} : { requestedLimit: limit }),
+            total: page.totalMatches,
+            ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
+            eof: page.eof,
+            ...(page.redactions === undefined ? {} : { redactions: page.redactions }),
+            ...(errorsOnly ? { pageFilter: 'errorsOnly' } : {}),
           })
           continue
         }
@@ -618,7 +714,11 @@ export class RefineCapabilities {
       const summary = await this.service.workspaceManager.preflight(workspace.workspaceId, signal)
       const readiness = baseline === undefined
         ? undefined
-        : finalizationReadiness(baseline, meta.proposalEvidenceAudit(activeRoundId, sessionId, []))
+        : finalizationReadiness(
+            baseline,
+            meta.proposalEvidenceAudit(activeRoundId, sessionId, []),
+            this.trajectoryBlockers(sessionId, activeRoundId, baseline),
+          )
       return {
         ok: true,
         summary,
@@ -634,7 +734,11 @@ export class RefineCapabilities {
       const citedRefs = finalization?.evidenceRefs ?? decline?.evidenceRefs ?? []
       const evidence = meta.proposalEvidenceAudit(activeRoundId, sessionId, citedRefs)
       if (baseline !== undefined) {
-        const readiness = finalizationReadiness(baseline, evidence)
+        const readiness = finalizationReadiness(
+          baseline,
+          evidence,
+          this.trajectoryBlockers(sessionId, activeRoundId, baseline),
+        )
         const recovery = recoveryRequired(
           readiness,
           method === 'candidate.decline' ? 'candidate.decline' : 'candidate.finalize',
@@ -660,7 +764,7 @@ export class RefineCapabilities {
     }
     const controller = new AbortController()
     const shared: SharedProjectionLoad = {
-      promise: this.loadCompleteTrajectory(runId, controller.signal).then(projectTrajectory),
+      promise: this.requireTrajectoryReader().inspectTrajectoryAnalysis(runId, controller.signal).then(projectTrajectory),
       controller,
       waiters: 0,
       settled: false,
@@ -732,25 +836,65 @@ export class RefineCapabilities {
     })
   }
 
-  private async loadCompleteTrajectory(runId: string, signal: AbortSignal): Promise<HitchTrajectory> {
+  private requireTrajectoryReader(): HitchTrajectoryReader {
     const reader = this.options.trajectoryReader
-    if (reader === undefined) throw new Error('Hitch trajectory reader is unavailable')
-    if (reader.loadTrajectory !== undefined) return reader.loadTrajectory(runId, signal)
-    const page = await reader.inspectTrajectory(runId, 0, Number.MAX_SAFE_INTEGER, signal)
-    if (!page.eof || page.events.length !== page.total) {
-      throw new Error(`trajectory reader cannot provide a complete canonical trajectory for ${runId}`)
+    if (reader === undefined) throw new Error('Hitch bounded trajectory reader is unavailable')
+    return reader
+  }
+
+  private trajectoryBlockerKey(sessionId: string, roundId: string, runId: string): string {
+    return `${sessionId}\0${roundId}\0${runId}`
+  }
+
+  private recordTrajectoryBlocker(
+    sessionId: string,
+    roundId: string,
+    runId: string,
+    error: unknown,
+  ): TrajectoryEvidenceBlocker {
+    const source = error as { code?: unknown }
+    const code = typeof source?.code === 'string' && /^[a-z0-9_]{1,128}$/u.test(source.code)
+      ? source.code
+      : 'hitch_trajectory_project_failed'
+    const blocker = {
+      runId,
+      code,
+      message: `Bounded trajectory evidence could not be constructed for ${runId} (${code}).`,
     }
+    this.trajectoryEvidenceBlockers.set(this.trajectoryBlockerKey(sessionId, roundId, runId), blocker)
+    return blocker
+  }
+
+  private trajectoryBlockers(
+    sessionId: string,
+    roundId: string,
+    baseline: EvaluationEvidence,
+  ): TrajectoryEvidenceBlocker[] {
+    const required = new Set([
+      ...baseline.trials.filter(trial => (trial.rewards.reward ?? Object.values(trial.rewards)[0] ?? 0) <= 0)
+        .flatMap(trial => trial.runId === undefined ? [] : [trial.runId]),
+      ...baseline.invalidTrials.map(trial => trial.runId),
+    ])
+    return [...required].flatMap(runId => {
+      const blocker = this.trajectoryEvidenceBlockers.get(this.trajectoryBlockerKey(sessionId, roundId, runId))
+      return blocker === undefined ? [] : [blocker]
+    }).sort((left, right) => left.runId.localeCompare(right.runId))
+  }
+
+  private trajectoryEvidenceBlocked(blockers: readonly TrajectoryEvidenceBlocker[]): Record<string, unknown> {
     return {
-      runId: page.runId,
-      fidelity: page.fidelity,
-      ...(page.provider === undefined ? {} : { provider: page.provider }),
-      sessionId: page.sessionId,
-      trajectoryDigest: page.trajectoryDigest ?? digestJson({ header: page.header, events: page.events }),
-      bytes: Buffer.byteLength(JSON.stringify({ header: page.header, events: page.events })),
-      ref: {},
-      header: page.header,
-      events: page.events,
-      diagnostics: page.diagnostics,
+      schemaVersion: 1,
+      bundles: [],
+      batchAccepted: false,
+      recoverable: false,
+      code: 'TRAJECTORY_EVIDENCE_UNAVAILABLE',
+      message: `Failure bundles could not be constructed for ${blockers.length} run${blockers.length === 1 ? '' : 's'}. Do not retry the same query until Hitch or the trajectory evidence is repaired.`,
+      blockedRuns: blockers,
+      operatorAction: {
+        upgrade: 'Hitch bounded trajectory analysis capability',
+        runIds: blockers.map(item => item.runId),
+        reason: blockers.map(item => item.code).join(','),
+      },
     }
   }
 
@@ -758,24 +902,40 @@ export class RefineCapabilities {
     item: SeedRunEvidence,
     signal: AbortSignal,
   ): Promise<HitchVerifierEvidence> {
-    const inspect = this.options.trajectoryReader?.inspectVerifierEvidence
-    if (inspect === undefined) return { runId: item.trial.runId, verifier: { status: 'unavailable' } }
-    const evidence = await inspect.call(this.options.trajectoryReader, item.trial.runId, signal)
-    if (evidence.runId !== item.trial.runId) {
-      throw new Error(`verifier evidence run identity mismatch for ${item.trial.runId}`)
+    try {
+      const inspect = this.options.trajectoryReader?.inspectVerifierEvidence
+      if (inspect === undefined) return { runId: item.trial.runId, verifier: { status: 'unavailable' } }
+      const evidence = await inspect.call(this.options.trajectoryReader, item.trial.runId, signal)
+      if (evidence.runId !== item.trial.runId) {
+        throw new Error(`verifier evidence run identity mismatch for ${item.trial.runId}`)
+      }
+      if (evidence.parent !== undefined) {
+        if (evidence.parent.evalId !== item.evalId) {
+          throw new Error(`verifier evidence eval identity mismatch for ${item.trial.runId}`)
+        }
+        if (item.trial.trialName !== undefined && evidence.parent.trialId !== item.trial.trialName) {
+          throw new Error(`verifier evidence trial identity mismatch for ${item.trial.runId}`)
+        }
+        if (item.trial.attempt !== undefined && evidence.parent.attempt !== item.trial.attempt) {
+          throw new Error(`verifier evidence attempt identity mismatch for ${item.trial.runId}`)
+        }
+      }
+      return evidence
+    } catch (error) {
+      signal.throwIfAborted()
+      const source = error as { code?: unknown; message?: unknown }
+      const code = typeof source?.code === 'string' && /^[a-z0-9_]{1,128}$/u.test(source.code)
+        ? source.code
+        : 'hitch_verifier_evidence_invalid'
+      const detail = typeof source?.message === 'string' ? source.message : String(error)
+      return {
+        runId: item.trial.runId,
+        verifier: {
+          status: 'corrupt',
+          issues: [`Verifier evidence could not be validated (${code}): ${boundedUtf8(detail, 512)}`],
+        },
+      }
     }
-    if (evidence.parent !== undefined) {
-      if (evidence.parent.evalId !== item.evalId) {
-        throw new Error(`verifier evidence eval identity mismatch for ${item.trial.runId}`)
-      }
-      if (item.trial.trialName !== undefined && evidence.parent.trialId !== item.trial.trialName) {
-        throw new Error(`verifier evidence trial identity mismatch for ${item.trial.runId}`)
-      }
-      if (item.trial.attempt !== undefined && evidence.parent.attempt !== item.trial.attempt) {
-        throw new Error(`verifier evidence attempt identity mismatch for ${item.trial.runId}`)
-      }
-    }
-    return evidence
   }
 
   private bundleBatchRecovery(selected: readonly SeedRunEvidence[]): Record<string, unknown> {
@@ -813,19 +973,19 @@ export class RefineCapabilities {
       {
         maxSteps: 8, excerptBytes: 1_200, maxToolActions: 2, maxAssistantMessages: 1,
         terminalReason: true, maxContexts: 4, maxSurfaceSeqs: 32, maxPaths: 16,
-        pathBytes: 256, maxEventTypes: 32, labelBytes: 512, includeFinalAnswer: true,
+        pathBytes: 256, maxEventTypes: 32, maxErrors: 8, labelBytes: 512, includeFinalAnswer: true,
         verifierBytes: 12 * 1024,
       },
       {
         maxSteps: 2, excerptBytes: 320, maxToolActions: 1, maxAssistantMessages: 1,
         terminalReason: false, maxContexts: 1, maxSurfaceSeqs: 8, maxPaths: 4,
-        pathBytes: 96, maxEventTypes: 8, labelBytes: 128, includeFinalAnswer: true,
+        pathBytes: 96, maxEventTypes: 8, maxErrors: 3, labelBytes: 128, includeFinalAnswer: true,
         verifierBytes: 2 * 1024,
       },
       {
         maxSteps: 1, excerptBytes: 220, maxToolActions: 1, maxAssistantMessages: 1,
         terminalReason: false, maxContexts: 0, maxSurfaceSeqs: 0, maxPaths: 0,
-        pathBytes: 0, maxEventTypes: 0, labelBytes: 96, includeFinalAnswer: false,
+        pathBytes: 0, maxEventTypes: 0, maxErrors: 1, labelBytes: 96, includeFinalAnswer: false,
         verifierBytes: 1_024,
       },
     ] as const
@@ -854,6 +1014,11 @@ export class RefineCapabilities {
         const pathsObservedThroughTools = projection.pathsObservedThroughTools
           .slice(0, profile.maxPaths)
           .map(path => boundedUtf8(path, profile.pathBytes))
+        const errors = projection.errors.slice(0, profile.maxErrors).map(error => ({
+          ...(error.seq === undefined ? {} : { seq: error.seq }),
+          type: boundedUtf8(error.type, 128),
+          excerpt: boundedUtf8(error.excerpt, profile.excerptBytes),
+        }))
         const taskName = boundedUtf8(item.trial.taskName, profile.labelBytes)
         const trialName = item.trial.trialName === undefined
           ? undefined
@@ -954,6 +1119,10 @@ export class RefineCapabilities {
             semanticStepCount: projection.semanticSteps.length,
             keySteps,
             omittedStepCount: projection.semanticSteps.length - keySteps.length,
+            errors,
+            ...(projection.errors.length <= errors.length ? {} : {
+              omittedErrorCount: projection.errors.length - errors.length,
+            }),
             ...(projection.finalAnswer === undefined || !profile.includeFinalAnswer
               ? {}
               : { finalAnswer: compactMessage(projection.finalAnswer, profile.excerptBytes) }),
@@ -968,9 +1137,12 @@ export class RefineCapabilities {
           crossSourceSignals,
           coverage: {
             task: prompt === undefined ? 'missing' as const : 'complete' as const,
-            trajectory: projection.fidelity === 'exact-surface' ? 'complete' as const : 'partial' as const,
+            trajectory: projection.coverage.surface === 'complete' && projection.fidelity !== 'unavailable'
+              ? 'complete' as const
+              : 'partial' as const,
+            content: projection.coverage.content,
             verifier: verifierCoverage,
-            childSessions: 'unavailable' as const,
+            childSessions: projection.coverage.childSessions,
             workspace: workspaceStatus,
           },
         }
@@ -1083,62 +1255,6 @@ export class RefineCapabilities {
     }
   }
 
-  private boundTrajectoryPage(header: unknown, events: unknown[], diagnostics: unknown, heldOutRef: string | undefined): {
-    header: JsonValue
-    events: JsonValue[]
-    diagnostics: JsonValue
-  } {
-    let sanitizedHeader = this.sanitize(header, heldOutRef)
-    let headerBytes = Buffer.byteLength(JSON.stringify(sanitizedHeader))
-    if (headerBytes > Math.floor(this.maxTrajectoryPageBytes / 4)) {
-      const source = record(header)
-      sanitizedHeader = this.sanitize({
-        ...(typeof source.type === 'string' ? { type: source.type } : {}),
-        ...(typeof source.id === 'string' ? { id: source.id } : {}),
-        truncated: true,
-        originalBytes: headerBytes,
-      }, heldOutRef)
-      headerBytes = Buffer.byteLength(JSON.stringify(sanitizedHeader))
-    }
-    let sanitizedDiagnostics = this.sanitize(diagnostics, heldOutRef)
-    let diagnosticsBytes = Buffer.byteLength(JSON.stringify(sanitizedDiagnostics))
-    if (diagnosticsBytes > Math.floor(this.maxTrajectoryPageBytes / 4)) {
-      const source = record(diagnostics)
-      sanitizedDiagnostics = this.sanitize({
-        totalEvents: source.totalEvents,
-        eventTypeCount: typeof source.eventTypes === 'object' && source.eventTypes !== null
-          ? Object.keys(source.eventTypes).length
-          : undefined,
-        toolCalls: source.toolCalls,
-        toolResults: source.toolResults,
-        toolErrors: source.toolErrors,
-        truncated: true,
-        originalBytes: diagnosticsBytes,
-      }, heldOutRef)
-      diagnosticsBytes = Buffer.byteLength(JSON.stringify(sanitizedDiagnostics))
-    }
-    const bounded: JsonValue[] = []
-    let bytes = headerBytes + diagnosticsBytes
-    for (const event of events) {
-      let sanitized = this.sanitize(event, heldOutRef)
-      let eventBytes = Buffer.byteLength(JSON.stringify(sanitized))
-      if (eventBytes > this.maxTrajectoryPageBytes - bytes) {
-        const source = record(event)
-        sanitized = this.sanitize({
-          type: source.type,
-          seq: source.seq,
-          time: source.time,
-          data: { truncated: true, originalBytes: eventBytes },
-        }, heldOutRef)
-        eventBytes = Buffer.byteLength(JSON.stringify(sanitized))
-      }
-      if (bytes + eventBytes > this.maxTrajectoryPageBytes) break
-      bounded.push(sanitized)
-      bytes += eventBytes
-    }
-    return { header: sanitizedHeader, events: bounded, diagnostics: sanitizedDiagnostics }
-  }
-
   private boundTrajectoryItems(items: unknown[], heldOutRef: string | undefined): {
     items: JsonValue[]
     consumed: number
@@ -1153,6 +1269,8 @@ export class RefineCapabilities {
         const source = record(item)
         sanitized = this.sanitize({
           ...(typeof source.id === 'string' ? { id: source.id } : {}),
+          ...(typeof source.type === 'string' ? { type: source.type } : {}),
+          ...(typeof source.seq === 'number' ? { seq: source.seq } : {}),
           ...(typeof source.requestSeq === 'number' ? { requestSeq: source.requestSeq } : {}),
           ...(typeof source.boundarySeq === 'number' ? { boundarySeq: source.boundarySeq } : {}),
           ...(typeof source.seqStart === 'number' ? { seqStart: source.seqStart } : {}),

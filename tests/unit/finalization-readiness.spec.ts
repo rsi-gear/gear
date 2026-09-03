@@ -147,4 +147,32 @@ describe('finalization readiness', () => {
       nextAction: { arguments: { refs: [runId], view: 'bundle' } },
     })
   })
+
+  it('stops retry loops when Hitch cannot construct bounded trajectory evidence', () => {
+    const evidence = baseline(1)
+    const runId = evidence.trials[0]!.runId!
+    const readiness = finalizationReadiness(evidence, audit(), [{
+      runId,
+      code: 'trajectory_integrity_mismatch',
+      message: `Bounded trajectory evidence could not be constructed for ${runId}.`,
+    }])
+    expect(readiness).toMatchObject({
+      ready: false,
+      missing: [{ taskName: 'task-01', runId }],
+      trajectoryBlockedRuns: [{ runId, code: 'trajectory_integrity_mismatch' }],
+      blockers: [{ code: 'TRAJECTORY_EVIDENCE_UNAVAILABLE' }],
+      nextActions: [],
+    })
+    expect(recoveryRequired(readiness, 'candidate.finalize')).toMatchObject({
+      accepted: false,
+      recoverable: false,
+      code: 'TRAJECTORY_EVIDENCE_UNAVAILABLE',
+      operatorAction: {
+        upgrade: 'Hitch bounded trajectory analysis capability',
+        runIds: [runId],
+        reason: 'trajectory_integrity_mismatch',
+      },
+      retry: { tool: 'finalize_candidate', reusePreviousArguments: true, afterPrerequisite: true },
+    })
+  })
 })

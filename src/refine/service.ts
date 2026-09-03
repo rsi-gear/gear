@@ -278,7 +278,11 @@ function sealAssessment(
 
 function trajectoryReader(evaluator: RefineEvaluator): HitchTrajectoryReader | undefined {
   const value = evaluator as Partial<HitchTrajectoryReader>
-  return typeof value.inspectTrajectory === 'function' ? value as HitchTrajectoryReader : undefined
+  return typeof value.inspectCapabilities === 'function'
+    && typeof value.inspectTrajectoryAnalysis === 'function'
+    && typeof value.inspectTrajectoryEvents === 'function'
+    ? value as HitchTrajectoryReader
+    : undefined
 }
 
 function publicSeedEvidence(evidence: EvaluationEvidence): PublicSeedEvidence {
