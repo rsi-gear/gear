@@ -833,6 +833,12 @@ export interface RoundEvaluationAttempt {
   reusedFromRoundId?: string
   cleanupFailure?: EvaluationFailure
   submissionIntent?: EvaluationSubmissionIntent
+  /** Diagnostic provenance for a reuse decision; it does not determine semantic compatibility. */
+  reuseAudit?: {
+    sourceInvocationFingerprint: string
+    currentInvocationFingerprint: string
+    invocationFingerprintChanged: boolean
+  }
 }
 
 export interface EvaluationRepairResumeIntent {
@@ -1234,7 +1240,7 @@ export interface PromotionPolicy {
 export interface RefineEvaluator {
   preflight?(): Promise<void>
 
-  /** Resolve the semantic provider/runtime identity for reuse, or return undefined when it cannot be known yet. */
+  /** Resolve semantic evaluation identity plus diagnostic invocation provenance, or return undefined when not known yet. */
   evaluationIdentity?(
     round: Readonly<RefinementRound>,
     request: Readonly<EvaluationRequest>,

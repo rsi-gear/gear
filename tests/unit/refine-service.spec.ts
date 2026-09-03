@@ -1502,6 +1502,11 @@ describe('RefineService evolution workspaces', () => {
     expect(second.evaluationAttempts?.find(attempt => attempt.evalId === first.baseline!.evalId)).toMatchObject({
       status: 'settled',
       reusedFromRoundId: first.roundId,
+      reuseAudit: {
+        sourceInvocationFingerprint: first.baseline.invocationFingerprint,
+        currentInvocationFingerprint: `sha256:${'d'.repeat(64)}`,
+        invocationFingerprintChanged: true,
+      },
     })
     expect(evaluator.calls).toEqual(['seed-baseline'])
     await service.dispose()

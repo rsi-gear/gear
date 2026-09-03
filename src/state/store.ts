@@ -965,7 +965,17 @@ export class RefineStateStore {
       || (attempt.reusedFromRoundId !== undefined
         && (typeof attempt.reusedFromRoundId !== 'string' || attempt.reusedFromRoundId.length === 0
           || attempt.reusedFromRoundId === round.roundId || !attempt.phase.endsWith('baseline')
-          || attempt.status !== 'settled'))) {
+          || attempt.status !== 'settled'))
+      || (attempt.reuseAudit !== undefined
+        && (attempt.reusedFromRoundId === undefined
+          || typeof attempt.reuseAudit !== 'object' || attempt.reuseAudit === null
+          || typeof attempt.reuseAudit.sourceInvocationFingerprint !== 'string'
+          || attempt.reuseAudit.sourceInvocationFingerprint.length === 0
+          || typeof attempt.reuseAudit.currentInvocationFingerprint !== 'string'
+          || attempt.reuseAudit.currentInvocationFingerprint.length === 0
+          || typeof attempt.reuseAudit.invocationFingerprintChanged !== 'boolean'
+          || attempt.reuseAudit.invocationFingerprintChanged
+            !== (attempt.reuseAudit.sourceInvocationFingerprint !== attempt.reuseAudit.currentInvocationFingerprint)))) {
       throw new TypeError('round evaluation attempt terminal state is invalid')
     }
     const condition = attempt.phase.startsWith('seed-') ? round.plan.seed : round.plan.heldOut

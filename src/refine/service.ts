@@ -118,11 +118,25 @@ interface PendingEvaluationResume {
 interface ReusableBaseline {
   evidence: EvaluationEvidence
   sourceRoundId: string
+  currentInvocationFingerprint?: string
 }
 
 const TERMINAL = new Set<RefinementRound['status']>(['accepted', 'rejected', 'rejected-for-substrate', 'failed'])
 function now(): string { return new Date().toISOString() }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error) }
+
+function reuseInvocationAudit(reusable: ReusableBaseline): Pick<RoundEvaluationAttempt, 'reuseAudit'> {
+  const source = reusable.evidence.invocationFingerprint
+  const current = reusable.currentInvocationFingerprint
+  if (source === undefined || current === undefined) return {}
+  return {
+    reuseAudit: {
+      sourceInvocationFingerprint: source,
+      currentInvocationFingerprint: current,
+      invocationFingerprintChanged: source !== current,
+    },
+  }
+}
 
 class CandidateGenerationTimeoutError extends Error {
   constructor(readonly scope: 'attempt' | 'round', readonly budgetMs: number) {
@@ -1969,7 +1983,13 @@ export class RefineService {
           || evidence.effectiveConfigDigest !== evaluationIdentity.effectiveConfigDigest
           || evidence.requestedCommit !== harnessRef
           || evidence.actualCommit !== harnessRef) continue
-        return { evidence: structuredClone(evidence), sourceRoundId: previous.roundId }
+        return {
+          evidence: structuredClone(evidence),
+          sourceRoundId: previous.roundId,
+          ...(evaluationIdentity.invocationFingerprint === undefined
+            ? {}
+            : { currentInvocationFingerprint: evaluationIdentity.invocationFingerprint }),
+        }
       }
     }
     return undefined
@@ -2006,6 +2026,7 @@ export class RefineService {
           startedAt: timestamp,
           completedAt: timestamp,
           reusedFromRoundId: reusable.sourceRoundId,
+          ...reuseInvocationAudit(reusable),
         }]
       : current.evaluationAttempts
     return this.transition(store, current.roundId, {
@@ -2049,6 +2070,7 @@ export class RefineService {
           startedAt: timestamp,
           completedAt: timestamp,
           reusedFromRoundId: reusable.sourceRoundId,
+          ...reuseInvocationAudit(reusable),
         }]
       : current.evaluationAttempts
     return this.transition(store, current.roundId, {

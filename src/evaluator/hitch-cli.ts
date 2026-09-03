@@ -912,8 +912,8 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     signal?.throwIfAborted()
     const hitchRuntimeIdentity = await this.runtimeIdentity(signal)
     signal?.throwIfAborted()
-    const effectiveConfigDigest = this.effectiveConfigDigest(round, request, hitchRuntimeIdentity)
-    const invocationFingerprint = this.invocationFingerprint(effectiveConfigDigest)
+    const effectiveConfigDigest = this.effectiveConfigDigest(round, request)
+    const invocationFingerprint = this.invocationFingerprint(effectiveConfigDigest, hitchRuntimeIdentity)
     return {
       provider: 'hitch-cli',
       effectiveConfigDigest,
@@ -1850,7 +1850,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     return {
       provider: 'hitch-cli',
       effectiveConfigDigest,
-      invocationFingerprint: this.invocationFingerprint(effectiveConfigDigest),
+      invocationFingerprint: this.daemonInvocationFingerprint(effectiveConfigDigest, identity.invocationFingerprint),
     }
   }
 
@@ -1983,21 +1983,20 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
   private effectiveConfigDigest(
     round: Readonly<RefinementRound>,
     request: Readonly<EvaluationRequest>,
-    hitchRuntimeIdentity: string,
   ): string {
     return sha256(JSON.stringify({
       provider: 'hitch-cli',
       conditionId: request.condition.conditionId,
-      hitchRuntimeIdentity,
       backend: 'harbor',
       harnessId: this.options.harnessId,
       sandboxProfileRef: round.sandboxProfileRef,
     }))
   }
 
-  private invocationFingerprint(effectiveConfigDigest: string): string {
+  private invocationFingerprint(effectiveConfigDigest: string, hitchRuntimeIdentity: string): string {
     return sha256(JSON.stringify({
       effectiveConfigDigest,
+      hitchRuntimeIdentity,
       maxConcurrent: this.options.maxConcurrent,
       setupTimeoutMs: this.options.setupTimeoutMs,
       terminationGraceMs: this.options.terminationGraceMs,
@@ -2006,6 +2005,10 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       maxTrajectoryAnalysisBytes: this.options.maxTrajectoryAnalysisBytes ?? 16 * 1024 * 1024,
       maxTrajectoryEventsBytes: this.options.maxTrajectoryEventsBytes ?? 4 * 1024 * 1024,
     }))
+  }
+
+  private daemonInvocationFingerprint(effectiveConfigDigest: string, directInvocationFingerprint: string): string {
+    return sha256(JSON.stringify({ effectiveConfigDigest, directInvocationFingerprint }))
   }
 
   private executablePath(): Promise<string> {

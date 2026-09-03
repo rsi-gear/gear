@@ -607,7 +607,7 @@ describe('HitchCliEvaluator', () => {
     expect(invocations).toContainEqual(['eval', 'cancel', reservation.evalId])
   })
 
-  it('keeps semantic identity independent of environment, workspace, and executable location', async () => {
+  it('keeps Hitch runtime changes diagnostic instead of invalidating semantic evidence reuse', async () => {
     const { fixture, evaluator } = await setup('0.2.5')
     const environmentName = `GEAR_HITCH_IDENTITY_${crypto.randomUUID().replaceAll('-', '').toUpperCase()}`
     evaluator.options.passEnv.push(environmentName)
@@ -638,7 +638,10 @@ describe('HitchCliEvaluator', () => {
       expect(await relocated.evaluationIdentity(state, input)).toEqual(first)
 
       await appendFile(evaluator.options.executable, '\n// same semver, different build\n')
-      expect((await evaluator.evaluationIdentity(state, input))?.effectiveConfigDigest).not.toBe(first.effectiveConfigDigest)
+      const changedRuntime = await evaluator.evaluationIdentity(state, input)
+      if (changedRuntime === undefined) throw new Error('changed direct Hitch evaluation identity is missing')
+      expect(changedRuntime.effectiveConfigDigest).toBe(first.effectiveConfigDigest)
+      expect(changedRuntime.invocationFingerprint).not.toBe(first.invocationFingerprint)
     } finally {
       delete process.env[environmentName]
     }
