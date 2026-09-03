@@ -378,11 +378,38 @@ actions instead of retrying the same batch. No diagnosis receipt is recorded
 for the rejected batch; each successful split query records its own receipt.
 
 Use `view:"steps"`, `view:"context"`, or `view:"events"` for single-run drill-down.
-Those views support bounded `offset`/`limit`; steps support `turn`, `step`, and
-`errorsOnly`, while events support `eventTypes`, `aroundSeq`, `radius`, and
-`errorsOnly`. Sensitive values and held-out references are redacted. Drill-down
-views do not satisfy the finalization diagnosis gate; only a successfully
-returned complete bundle creates a receipt.
+Steps and context use bounded `offset`/`limit`; steps support `turn`, `step`, and
+`errorsOnly`. Events are filtered and paged by Hitch at the canonical source:
+
+```json
+{
+  "refs":["run_<recorded seed run id>"],
+  "view":"events",
+  "eventTypes":["tool/call","tool/result"],
+  "seqStart":120,
+  "seqEnd":180,
+  "limit":50,
+  "canonicalSha256":"sha256:<digest from bundle or prior page>"
+}
+```
+
+Continue an event scan with the opaque `nextCursor` from the prior response;
+leave `offset` at zero and do not construct or alter the cursor. `aroundSeq` plus
+`radius` is shorthand for a sequence window and cannot be combined with
+`seqStart`, `seqEnd`, or `field`. Field drill-down requires one exact sequence
+(`seqStart == seqEnd`) and `canonicalSha256`; it is intended for a known large
+event field such as a coalesced chunk delta, not for rereading the full session.
+`errorsOnly` is a bounded post-filter of that returned page. Sensitive values
+and held-out references are redacted. Drill-down views do not satisfy the
+finalization diagnosis gate; only a successfully returned complete bundle
+creates a receipt.
+
+If bounded analysis cannot be produced, the bundle query returns
+`batchAccepted:false`, `recoverable:false`,
+`code:"TRAJECTORY_EVIDENCE_UNAVAILABLE"`, exact `blockedRuns` with stable Hitch
+codes, and an `operatorAction`. Do not retry the same query. Report those fields;
+an operator must update/fix Hitch or repair the stored trajectory, then the
+bundle must be read again before finalization.
 
 Query a bundle for every failed baseline run before finalizing or declining.
 Use the response's `diagnosisProgress.nextActions` rather than manually mapping
@@ -452,6 +479,13 @@ upgrade Hitch or explicitly enable the temporary
 `hitch.allowUnavailableVerifierDiagnosis=true` compatibility mode, then the
 affected bundles must be read again.
 
+If bounded trajectory analysis previously failed, Gear returns the analogous
+non-recoverable `TRAJECTORY_EVIDENCE_UNAVAILABLE` response with
+`readiness.trajectoryBlockedRuns` and `operatorAction.runIds`. This is distinct
+from an unread run: repeating the suggested bundle query cannot fix it. Repair
+Hitch/the recorded evidence first, reread the affected bundles, then retry the
+same finalization arguments.
+
 ### `candidate.decline`
 
 ```json
@@ -502,6 +536,8 @@ state as a substitute for completing this sequence.
 - Observation mismatch: re-read the candidate file and reassess the edit.
 - Compiler failure: repair the candidate within allowed roots or decline when
   no valid repair is possible.
+- `TRAJECTORY_EVIDENCE_UNAVAILABLE`: stop repeated bundle/finalization calls and
+  report `blockedRuns`/`operatorAction`; resume only after the prerequisite is repaired.
 - Failed round with `repairableEvaluations`: use `control.rerun` only for the
   advertised evolution, round, evaluation, and logical slots.
 - Nonterminal status: continue polling the same round.

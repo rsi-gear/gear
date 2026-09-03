@@ -27,7 +27,13 @@ describe('published plugin composition', () => {
     await mkdir(join(root, 'meta-preset'), { recursive: true })
     await writeFile(metaPresetPath, '[]\n')
     const hitchExecutable = join(root, 'fake-hitch.mjs')
-    await writeFile(hitchExecutable, '#!/usr/bin/env node\nconsole.log("0.2.5")\n')
+    await writeFile(hitchExecutable, `#!/usr/bin/env node
+if (process.argv[2] === '--version') console.log('0.2.7')
+else if (process.argv[2] === 'capabilities') console.log(JSON.stringify({
+  schema_version: '1', trajectory_analysis: '1', trajectory_events_page: '1', verifier_evidence: '1',
+}))
+else process.exitCode = 2
+`)
     await chmod(hitchExecutable, 0o755)
     const fakeServices = {
       name: 'refine-test-services',

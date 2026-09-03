@@ -13,12 +13,16 @@ import type {
   EvaluationRequest,
   EvaluationReservation,
   HitchEvaluationEvidence,
-  HitchTrajectoryPage,
+  HitchCapabilities,
+  HitchTrajectoryAnalysis,
+  HitchTrajectoryEventsPage,
+  HitchTrajectoryEventsQuery,
   RefineEvaluator,
   RefinementRound,
 } from '../../src/types.js'
 import { createGitHarnessFixture } from '../helpers/git-fixture.js'
 import { SHA } from '../helpers/research-fixture.js'
+import { trajectoryAnalysis, trajectoryEventsPage } from '../helpers/trajectory-fixture.js'
 
 const cleanups: Array<() => Promise<void>> = []
 const canListenLoopback = spawnSync(process.execPath, ['-e', "const n=require('node:net').createServer();n.listen(0,'127.0.0.1',()=>n.close(()=>process.exit(0)));n.on('error',()=>process.exit(1))"]).status === 0
@@ -89,34 +93,26 @@ class E2eEvaluator implements RefineEvaluator {
     }
   }
 
-  async inspectTrajectory(runId: string, offset: number, limit: number, _signal: AbortSignal): Promise<HitchTrajectoryPage> {
-    return {
-      runId,
-      fidelity: 'provider_native',
-      provider: 'fake',
-      sessionId: `session-${runId}`,
-      header: { task: 'observed failure' },
-      events: [{
+  async inspectCapabilities(): Promise<HitchCapabilities> {
+    return { schemaVersion: 1, trajectoryAnalysis: 1, trajectoryEventsPage: 1 }
+  }
+
+  async inspectTrajectoryAnalysis(runId: string, _signal: AbortSignal): Promise<HitchTrajectoryAnalysis> {
+    return trajectoryAnalysis(runId, [{
         type: 'user/message', seq: 0, time: 1, surfaceOp: 'append',
         data: {
           role: 'user', id: 'user-1', source: { kind: 'user' },
           content: [{ type: 'text', text: 'missing context caused the failure' }],
         },
-      }],
-      offset,
-      limit,
-      total: 1,
-      eof: true,
-      diagnostics: {
-        totalEvents: 1,
-        eventTypes: { 'user/message': 1 },
-        toolCalls: 0,
-        toolResults: 0,
-        toolErrors: 0,
-        errorExcerpts: [],
-        finalAssistantExcerpts: [{ excerpt: 'missing context caused the failure' }],
-      },
-    }
+    }])
+  }
+
+  async inspectTrajectoryEvents(
+    runId: string,
+    query: Readonly<HitchTrajectoryEventsQuery>,
+    signal: AbortSignal,
+  ): Promise<HitchTrajectoryEventsPage> {
+    return trajectoryEventsPage(await this.inspectTrajectoryAnalysis(runId, signal), query)
   }
 }
 

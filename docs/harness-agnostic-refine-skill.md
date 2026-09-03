@@ -120,9 +120,11 @@ shasum -a 256 skills/refine/SKILL.md
     "terminationGraceMs": 5000,
     "maxOutputBytes": 8388608,
     "maxTrajectoryOutputBytes": 67108864,
+    "maxTrajectoryAnalysisBytes": 16777216,
+    "maxTrajectoryEventsBytes": 4194304,
     "trajectoryCacheEntries": 8,
     "trajectoryCacheBytes": 268435456,
-    "allowUnavailableVerifierDiagnosis": true,
+    "allowUnavailableVerifierDiagnosis": false,
     "sampling": {},
     "agentArgs": [],
     "passEnv": []

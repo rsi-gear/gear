@@ -31,6 +31,7 @@ describe('Meta notebook tools', () => {
     ])
     expect(sections[0]?.text).toContain('failure bundle for every failed baseline run')
     expect(sections[0]?.text).toContain('accepted=false and recoverable=true')
+    expect(sections[0]?.text).toContain('TRAJECTORY_EVIDENCE_UNAVAILABLE')
     const trajectory = tools.find(tool => tool.name === 'trajectory_query')!
     await trajectory.execute({ refs: ['run_1'], offset: 0 }, {
       agent: { id: 'meta-1' },

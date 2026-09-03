@@ -54,9 +54,11 @@ not infer missing field names or harness APIs from errors.
    failed baseline run before proposing a change. The default `bundle` view
    returns the effective DSH context, semantic steps, reward, structured
    verifier result, bounded verifier diagnostics when retained, and diagnosis
-   progress without raw chunk noise. Treat `result_only` as missing verifier
-   logs, not as a complete failure explanation. Use `steps`, `context`, or
-   `events` only for focused drill-down. Keep cited evidence limited to
+   progress from Hitch's bounded `analysis` projection without raw chunk noise.
+   Treat `result_only` as missing verifier logs, not as a complete failure
+   explanation. Use `steps`, `context`, or `events` only for focused drill-down.
+   In events view, follow the returned opaque `nextCursor` and keep its
+   `canonicalSha256` fixed; do not emulate offset paging. Keep cited evidence limited to
    references actually returned for the active seed baseline.
 6. Connect the observed failure to a harness-controlled cause, select the
    affected semantic target, and make the smallest coherent change. New files
@@ -88,7 +90,9 @@ by Gear's sealed promotion policy.
   `nextAction`, then `remainingActions`, and retry the same operation with the
   same arguments. The lease remains active until `accepted:true`.
 - If it returns `accepted:false, recoverable:false`, report the exact
-  `operatorAction` and do not repeat the same tool call. A verifier prerequisite
-  requires an operator or configuration change.
+  `operatorAction` and do not repeat the same tool call. Verifier evidence may
+  require an operator/configuration change. `TRAJECTORY_EVIDENCE_UNAVAILABLE`
+  means Hitch could not construct bounded analysis for the listed `blockedRuns`;
+  Hitch or that stored trajectory must be repaired before rereading the bundle.
 - Never bypass a failed compiler check, evidence requirement, identity check,
   or promotion decision by editing state files.

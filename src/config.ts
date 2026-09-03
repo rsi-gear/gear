@@ -13,6 +13,8 @@ export interface HitchConfig {
   terminationGraceMs: number
   maxOutputBytes: number
   maxTrajectoryOutputBytes: number
+  maxTrajectoryAnalysisBytes?: number
+  maxTrajectoryEventsBytes?: number
   trajectoryCacheEntries?: number
   trajectoryCacheBytes?: number
   allowUnavailableVerifierDiagnosis?: boolean
@@ -222,6 +224,8 @@ export const ConfigSchema: Schema<Config> = Schema.object({
     terminationGraceMs: Schema.number().default(5_000),
     maxOutputBytes: Schema.number().default(8 * 1024 * 1024),
     maxTrajectoryOutputBytes: Schema.number().default(64 * 1024 * 1024),
+    maxTrajectoryAnalysisBytes: Schema.number().default(16 * 1024 * 1024),
+    maxTrajectoryEventsBytes: Schema.number().default(4 * 1024 * 1024),
     trajectoryCacheEntries: Schema.number().default(8),
     trajectoryCacheBytes: Schema.number().default(256 * 1024 * 1024),
     allowUnavailableVerifierDiagnosis: Schema.boolean().default(false),
@@ -240,6 +244,8 @@ export const ConfigSchema: Schema<Config> = Schema.object({
     terminationGraceMs: 5_000,
     maxOutputBytes: 8 * 1024 * 1024,
     maxTrajectoryOutputBytes: 64 * 1024 * 1024,
+    maxTrajectoryAnalysisBytes: 16 * 1024 * 1024,
+    maxTrajectoryEventsBytes: 4 * 1024 * 1024,
     trajectoryCacheEntries: 8,
     trajectoryCacheBytes: 256 * 1024 * 1024,
     allowUnavailableVerifierDiagnosis: false,

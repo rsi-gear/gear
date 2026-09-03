@@ -30,6 +30,65 @@ interface InspectFixture {
   invalidTrials?: Array<{ taskId: string; attempt: number }>
 }
 
+function trajectoryAnalysisPayload(runId: string, sessionId: string): unknown {
+  return {
+    schema_version: '1', kind: 'trajectory-analysis', run_id: runId,
+    source: {
+      fidelity: 'provider_native', provider: 'deepseek', session_id: sessionId,
+      canonical_sha256: `sha256:${'b'.repeat(64)}`, canonical_bytes: 120, event_count: 1,
+      event_types: { 'user/message': 1 },
+    },
+    header: { type: 'session', version: 1, id: sessionId, createdAt: 1, delegationDepth: 0 },
+    surface: {
+      fidelity: 'exact',
+      nodes: [{
+        seq: 0, event_type: 'user/message', surface_op: 'append',
+        message: { role: 'user', id: 'u1', source: { kind: 'user' }, content: [{ type: 'text', text: 'prompt' }] },
+      }],
+      current_node_seqs: [0], replacements: [], request_boundaries: [], request_headers: [],
+    },
+    events: [{ type: 'user/message', seq: 0, time: 1, data: { surface_node_seq: 0 } }],
+    chunk_summaries: [], omitted_event_types: {},
+    coverage: { surface: 'complete', chunks: 'omitted', content: 'complete', child_sessions: 'unavailable' },
+  }
+}
+
+function partialTrajectoryAnalysisPayload(runId: string): unknown {
+  return {
+    schema_version: '1', kind: 'trajectory-analysis', run_id: runId,
+    source: {
+      fidelity: 'provider_native', provider: 'deepseek', session_id: 'session-partial',
+      canonical_sha256: `sha256:${'c'.repeat(64)}`, canonical_bytes: 200, event_count: 2,
+      event_types: { 'user/message': 1, 'assistant/chunk': 1 },
+    },
+    header: null,
+    surface: {
+      fidelity: 'exact',
+      nodes: [{
+        seq: 0, event_type: 'user/message', surface_op: 'append',
+        message: { role: 'user', content: [{ type: 'text', text: 'prompt' }] },
+      }],
+      current_node_seqs: [0], replacements: [],
+      request_boundaries: [{ turn: 1, step: 1, attempt: 0, boundary_seq: 1, surface_revision: 1 }],
+      request_headers: [],
+    },
+    events: [{ type: 'user/message', seq: 0, time: 1, data: { surface_node_seq: 0 } }],
+    chunk_summaries: [{
+      turn: 1, step: 1, attempt: 0, first_seq: 1, last_seq: 1, count: 1,
+      types: { 'text-delta': 1 }, model_boundary_seq: 1,
+      partial: {
+        status: 'incomplete', source_seq_count: 1,
+        content: {
+          preview: 'incomplete answer', bytes: 17, sha256: `sha256:${'d'.repeat(64)}`, truncated: false,
+          source: { run_id: runId, seq: 1, field: 'data.chunk.delta' },
+        },
+      },
+    }],
+    omitted_event_types: { 'assistant/chunk': 1 },
+    coverage: { surface: 'complete', chunks: 'partial', content: 'complete', child_sessions: 'unavailable' },
+  }
+}
+
 async function setup(version = '0.2.5', inspectFixture: InspectFixture = {}) {
   const fixture = await createGitHarnessFixture()
   roots.push(fixture.root)
@@ -58,17 +117,56 @@ const inspectedInvalidTrials = ${JSON.stringify(inspectedInvalidTrials)}
 const isInvalidTrial = trial => inspectedInvalidTrials.some(slot => slot.taskId === trial.taskId && slot.attempt === trial.attempt)
 const remainingInvalidTasks = [...new Set(inspectedInvalidTrials.map(slot => slot.taskId))]
 if (args[0] === '--version') process.stdout.write(${JSON.stringify(version)} + '\\n')
-else if (args[0] === 'trajectory' && args[1] === 'inspect') {
+else if (args[0] === 'capabilities') {
+  process.stdout.write(JSON.stringify({
+    schema_version: '1', trajectory_analysis: '1', trajectory_events_page: '1', verifier_evidence: '1',
+  }) + '\\n')
+} else if (args[0] === 'trajectory' && args[1] === 'project') {
   const runId = args[2]
   process.stdout.write(JSON.stringify({
-    schema_version: '1', run_id: runId,
-    ref: { schema_version: '2', run_id: runId, fidelity: 'provider_native', provider: 'deepseek', files: [] },
+    schema_version: '1', kind: 'trajectory-analysis', run_id: runId,
+    source: {
+      fidelity: 'provider_native', provider: 'deepseek', session_id: 'session-1',
+      canonical_sha256: 'sha256:' + 'a'.repeat(64), canonical_bytes: 300, event_count: 3,
+      event_types: { 'tool/result': 1, 'assistant/message': 1, 'turn/end': 1 },
+    },
     header: { type: 'session', version: 1, id: 'session-1', createdAt: 1, delegationDepth: 0 },
+    surface: {
+      fidelity: 'exact',
+      nodes: [
+        { seq: 0, event_type: 'tool/result', surface_op: 'append', message: { content: [{ isError: true }] } },
+        { seq: 1, event_type: 'assistant/message', surface_op: 'append', message: { content: [{ type: 'text', text: 'done' }] } },
+      ],
+      current_node_seqs: [0, 1], replacements: [], request_boundaries: [], request_headers: [],
+    },
     events: [
-      { type: 'tool/result', seq: 0, time: 10, data: { message: { content: [{ isError: true }] } } },
-      { type: 'assistant/message', seq: 1, time: 11, data: { content: [{ type: 'text', text: 'done' }] } },
+      { type: 'tool/result', seq: 0, time: 10, data: { surface_node_seq: 0 } },
+      { type: 'assistant/message', seq: 1, time: 11, data: { surface_node_seq: 1 } },
       { type: 'turn/end', seq: 2, time: 12, data: { turn: 1 } },
     ],
+    chunk_summaries: [], omitted_event_types: {},
+    coverage: { surface: 'complete', chunks: 'omitted', content: 'complete', child_sessions: 'unavailable' },
+  }) + '\\n')
+} else if (args[0] === 'trajectory' && args[1] === 'events') {
+  const runId = args[2]
+  const all = [
+    { type: 'tool/result', seq: 0, time: 10, data: { message: { content: [{ isError: true }] } } },
+    { type: 'assistant/message', seq: 1, time: 11, data: { content: [{ type: 'text', text: 'done' }] } },
+    { type: 'turn/end', seq: 2, time: 12, data: { turn: 1 } },
+  ]
+  const types = args.includes('--types') ? value('--types').split(',') : undefined
+  const start = args.includes('--seq-start') ? Number(value('--seq-start')) : 0
+  const end = args.includes('--seq-end') ? Number(value('--seq-end')) : Number.MAX_SAFE_INTEGER
+  const matches = all.filter(event => (!types || types.includes(event.type)) && event.seq >= start && event.seq <= end)
+  const limit = Number(value('--limit'))
+  const page = matches.slice(0, limit)
+  process.stdout.write(JSON.stringify({
+    schema_version: '1', kind: 'trajectory-events-page', run_id: runId,
+    canonical_sha256: 'sha256:' + 'a'.repeat(64),
+    filter: { ...(types ? { types } : {}), ...(args.includes('--seq-start') ? { seq_start: start } : {}),
+      ...(args.includes('--seq-end') ? { seq_end: end } : {}) },
+    events: page, total_matches: matches.length,
+    ...(page.length < matches.length ? { next_cursor: 'cursor-1' } : {}), eof: page.length >= matches.length,
   }) + '\\n')
 } else if (args[0] === 'verifier' && args[1] === 'inspect') {
   const runId = args[2]
@@ -430,26 +528,67 @@ describe('HitchCliEvaluator', () => {
     expect(evidence).toMatchObject({ primaryReward: 1, trials: [{ taskName: 'task-1' }] })
   })
 
-  it('reads a bounded page from Hitch canonical trajectory JSON', async () => {
+  it('reads bounded Hitch analysis and source-paged events', async () => {
     const { evaluator } = await setup()
     const runId = `run_${'5'.repeat(32)}`
-    await expect(evaluator.inspectTrajectory(runId, 1, 1, new AbortController().signal)).resolves.toMatchObject({
+    await expect(evaluator.inspectTrajectoryAnalysis(runId, new AbortController().signal)).resolves.toMatchObject({
       runId,
-      fidelity: 'provider_native',
-      sessionId: 'session-1',
-      offset: 1,
-      limit: 1,
-      total: 3,
-      eof: false,
-      events: [{ type: 'assistant/message', seq: 1 }],
-      diagnostics: {
-        totalEvents: 3,
-        eventTypes: { 'tool/result': 1, 'assistant/message': 1, 'turn/end': 1 },
-        toolResults: 1,
-        toolErrors: 1,
-        errorExcerpts: [{ seq: 0, type: 'tool/result' }],
-        finalAssistantExcerpts: [{ seq: 1 }],
+      source: {
+        fidelity: 'provider_native', sessionId: 'session-1', canonicalSha256: `sha256:${'a'.repeat(64)}`,
+        eventCount: 3, eventTypes: { 'tool/result': 1, 'assistant/message': 1, 'turn/end': 1 },
       },
+      surface: { currentNodeSeqs: [0, 1] },
+      coverage: { surface: 'complete', chunks: 'omitted', content: 'complete' },
+    })
+    await expect(evaluator.inspectTrajectoryEvents(runId, {
+      eventTypes: ['turn/end', 'assistant/message', 'assistant/message'], seqStart: 1, seqEnd: 2, limit: 2,
+    }, new AbortController().signal)).resolves.toMatchObject({
+      runId, canonicalSha256: `sha256:${'a'.repeat(64)}`,
+      filter: { eventTypes: ['assistant/message', 'turn/end'], seqStart: 1, seqEnd: 2 },
+      events: [{ type: 'assistant/message', seq: 1 }, { type: 'turn/end', seq: 2 }], totalMatches: 2, eof: true,
+    })
+  })
+
+  it('preserves Hitch structured trajectory error codes for actionable blockers', async () => {
+    const { evaluator } = await setup()
+    const runId = `run_${'5'.repeat(32)}`
+    await writeFile(evaluator.options.executable, `#!/usr/bin/env node
+process.stderr.write(JSON.stringify({
+  schema_version: '1', kind: 'error',
+  error: { code: 'trajectory_integrity_mismatch', message: 'canonical digest mismatch', exit_code: 3 },
+}) + '\\n')
+process.exitCode = 3
+`)
+    await chmod(evaluator.options.executable, 0o755)
+    await expect(evaluator.inspectTrajectoryAnalysis(
+      runId,
+      new AbortController().signal,
+    )).rejects.toMatchObject({
+      code: 'trajectory_integrity_mismatch',
+      message: expect.stringContaining('canonical digest mismatch'),
+    })
+  })
+
+  it('accepts attempt zero and complete bounded excerpts for interrupted requests', async () => {
+    const { evaluator } = await setup()
+    const runId = `run_${'6'.repeat(32)}`
+    const payload = partialTrajectoryAnalysisPayload(runId)
+    await writeFile(evaluator.options.executable, `#!/usr/bin/env node
+process.stdout.write(${JSON.stringify(JSON.stringify(payload) + '\n')})
+`)
+    await chmod(evaluator.options.executable, 0o755)
+    await expect(evaluator.inspectTrajectoryAnalysis(
+      runId,
+      new AbortController().signal,
+    )).resolves.toMatchObject({
+      surface: { requestBoundaries: [{ attempt: 0 }] },
+      chunkSummaries: [{
+        attempt: 0,
+        partial: {
+          status: 'incomplete',
+          content: { preview: 'incomplete answer', truncated: false, source: { runId, seq: 1 } },
+        },
+      }],
     })
   })
 
@@ -503,6 +642,24 @@ process.exitCode = 1
     })
   })
 
+  it('turns Hitch verifier corruption envelopes into explicit corrupt evidence', async () => {
+    const { evaluator } = await setup()
+    await writeFile(evaluator.options.executable, `#!/usr/bin/env node
+process.stderr.write(JSON.stringify({
+  schema_version: '1', kind: 'error',
+  error: { code: 'verifier_evidence_corrupt', message: 'run record is corrupt', exit_code: 3 },
+}) + '\\n')
+process.exitCode = 3
+`)
+    await chmod(evaluator.options.executable, 0o755)
+    await expect(evaluator.inspectVerifierEvidence(
+      `run_${'5'.repeat(32)}`,
+      new AbortController().signal,
+    )).resolves.toMatchObject({
+      verifier: { status: 'corrupt', issues: [expect.stringContaining('run record is corrupt')] },
+    })
+  })
+
   it.each([
     ['null CTRF', 'complete', { ctrf: null }],
     ['null stdout entry', 'complete', { stdout: [null] }],
@@ -531,38 +688,24 @@ process.stdout.write(${JSON.stringify(JSON.stringify(payload))})
     )).rejects.toMatchObject({ code: 'invalid_hitch_result' })
   })
 
-  it('loads and caches the complete canonical trajectory once per run', async () => {
+  it('loads and caches the bounded analysis once per run', async () => {
     const { evaluator } = await setup()
     const runId = `run_${'5'.repeat(32)}`
-    const loaded = await evaluator.loadTrajectory(runId, new AbortController().signal)
+    const loaded = await evaluator.inspectTrajectoryAnalysis(runId, new AbortController().signal)
     expect(loaded).toMatchObject({
       runId,
-      trajectoryDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      source: { canonicalSha256: `sha256:${'a'.repeat(64)}`, eventCount: 3 },
       events: [{ seq: 0 }, { seq: 1 }, { seq: 2 }],
-      diagnostics: { totalEvents: 3 },
     })
     await writeFile(evaluator.options.executable, '#!/usr/bin/env node\nprocess.stdout.write("invalid-json\\n")\n')
-    await expect(evaluator.inspectTrajectory(runId, 2, 1, new AbortController().signal)).resolves.toMatchObject({
-      events: [{ seq: 2 }],
-      total: 3,
-      eof: true,
-      trajectoryDigest: loaded.trajectoryDigest,
-    })
+    await expect(evaluator.inspectTrajectoryAnalysis(runId, new AbortController().signal)).resolves.toEqual(loaded)
   })
 
   it('keeps a shared trajectory load alive when only one waiter aborts', async () => {
     const { fixture, evaluator } = await setup()
     const counter = join(fixture.root, 'trajectory-invocations.txt')
     const runId = `run_${'7'.repeat(32)}`
-    const payload = {
-      schema_version: '1', run_id: runId,
-      ref: { schema_version: '2', run_id: runId, fidelity: 'provider_native', provider: 'deepseek', files: [] },
-      header: { type: 'session', version: 1, id: 'session-delayed', createdAt: 1, delegationDepth: 0 },
-      events: [{
-        type: 'user/message', seq: 0, time: 1, surfaceOp: 'append',
-        data: { role: 'user', id: 'u1', source: { kind: 'user' }, content: [{ type: 'text', text: 'prompt' }] },
-      }],
-    }
+    const payload = trajectoryAnalysisPayload(runId, 'session-delayed')
     await writeFile(evaluator.options.executable, `#!/usr/bin/env node
 import { appendFileSync } from 'node:fs'
 appendFileSync(${JSON.stringify(counter)}, 'inspect\\n')
@@ -571,11 +714,11 @@ setTimeout(() => process.stdout.write(${JSON.stringify(JSON.stringify(payload) +
     await chmod(evaluator.options.executable, 0o755)
     const firstController = new AbortController()
     const secondController = new AbortController()
-    const first = evaluator.loadTrajectory(runId, firstController.signal)
-    const second = evaluator.loadTrajectory(runId, secondController.signal)
+    const first = evaluator.inspectTrajectoryAnalysis(runId, firstController.signal)
+    const second = evaluator.inspectTrajectoryAnalysis(runId, secondController.signal)
     firstController.abort(new Error('first waiter cancelled'))
     await expect(first).rejects.toThrow(/first waiter cancelled/)
-    await expect(second).resolves.toMatchObject({ runId, sessionId: 'session-delayed' })
+    await expect(second).resolves.toMatchObject({ runId, source: { sessionId: 'session-delayed' } })
     expect((await readFile(counter, 'utf8')).trim().split('\n')).toHaveLength(1)
   })
 
@@ -583,12 +726,7 @@ setTimeout(() => process.stdout.write(${JSON.stringify(JSON.stringify(payload) +
     const { fixture, evaluator } = await setup()
     const counter = join(fixture.root, 'trajectory-evictions.txt')
     const runId = `run_${'8'.repeat(32)}`
-    const payload = {
-      schema_version: '1', run_id: runId,
-      ref: { schema_version: '2', run_id: runId, fidelity: 'provider_native', provider: 'deepseek', files: [] },
-      header: { type: 'session', version: 1, id: 'session-uncached', createdAt: 1, delegationDepth: 0 },
-      events: [],
-    }
+    const payload = trajectoryAnalysisPayload(runId, 'session-uncached')
     evaluator.options.trajectoryCacheBytes = 1
     await writeFile(evaluator.options.executable, `#!/usr/bin/env node
 import { appendFileSync } from 'node:fs'
@@ -596,8 +734,8 @@ appendFileSync(${JSON.stringify(counter)}, 'inspect\\n')
 process.stdout.write(${JSON.stringify(JSON.stringify(payload) + '\n')})
 `)
     await chmod(evaluator.options.executable, 0o755)
-    await evaluator.loadTrajectory(runId, new AbortController().signal)
-    await evaluator.loadTrajectory(runId, new AbortController().signal)
+    await evaluator.inspectTrajectoryAnalysis(runId, new AbortController().signal)
+    await evaluator.inspectTrajectoryAnalysis(runId, new AbortController().signal)
     expect((await readFile(counter, 'utf8')).trim().split('\n')).toHaveLength(2)
   })
 
