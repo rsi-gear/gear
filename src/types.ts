@@ -757,9 +757,42 @@ export interface EvaluationReservation {
   evalId: string
 }
 
+/** Prepared without side effects; persisted before a remote submission can start. */
+export interface EvaluationSubmissionIntent {
+  provider: string
+  idempotencyKey: string
+  parameters: JsonValue
+}
+
+export interface EvaluationFailure {
+  code: string
+  message: string
+}
+
+/** Remains durable until the remote evaluation finishes or accepts cancellation. */
+export interface PendingEvaluationSubmission {
+  intent: EvaluationSubmissionIntent
+  request: EvaluationRequest
+  owner: RoundEvaluationAttempt['owner']
+  startedAt: string
+  reservation?: EvaluationReservation
+  cleanupFailure?: EvaluationFailure
+}
+
 export type EvaluationRerunSelector =
   | { mode: 'invalid' }
   | { mode: 'tasks'; taskNames: string[] }
+
+/** Client-chosen operation identity, persisted before a daemon rerun starts. */
+export interface EvaluationRerunReservation extends EvaluationReservation {
+  rerunId: string
+  parameters: JsonValue
+}
+
+export interface PendingEvaluationRerun {
+  reservation: EvaluationRerunReservation
+  cleanupFailure?: EvaluationFailure
+}
 
 export interface EvaluationTrialSlot {
   taskId: string
@@ -798,6 +831,8 @@ export interface RoundEvaluationAttempt {
   failure?: { code: string; message: string }
   /** A settled baseline imported from an earlier round instead of rerun. */
   reusedFromRoundId?: string
+  cleanupFailure?: EvaluationFailure
+  submissionIntent?: EvaluationSubmissionIntent
 }
 
 export interface EvaluationRepairResumeIntent {
@@ -1127,6 +1162,8 @@ export interface RefinementRound {
   promotedCandidateId?: string
   evaluation?: RoundEvaluation
   evaluationAttempts?: RoundEvaluationAttempt[]
+  pendingEvaluationSubmissions?: PendingEvaluationSubmission[]
+  pendingEvaluationRerun?: PendingEvaluationRerun
   evaluationRepairResume?: EvaluationRepairResumeIntent
   commitIntent?: RoundCommitIntent
   meta?: MetaAttribution
@@ -1152,6 +1189,7 @@ export interface PublicRoundStatus {
   seedBaseline?: PublicSeedEvidence
   seedCandidate?: PublicSeedEvidence
   failure?: string
+  evaluationCleanupFailures?: Array<{ provider: string; evalId?: string; rerunId?: string; code: string }>
   candidateGeneration?: Array<{
     candidateId: string
     status: CandidateRecord['status']
@@ -1196,7 +1234,7 @@ export interface PromotionPolicy {
 export interface RefineEvaluator {
   preflight?(): Promise<void>
 
-  /** Resolve the semantic provider/runtime identity that must match before prior evidence can be reused. */
+  /** Resolve the semantic provider/runtime identity for reuse, or return undefined when it cannot be known yet. */
   evaluationIdentity?(
     round: Readonly<RefinementRound>,
     request: Readonly<EvaluationRequest>,
@@ -1205,15 +1243,35 @@ export interface RefineEvaluator {
     provider: string
     effectiveConfigDigest: string
     invocationFingerprint?: string
-  } | Promise<{
+  } | undefined | Promise<{
     provider: string
     effectiveConfigDigest: string
     invocationFingerprint?: string
-  }>
+  } | undefined>
+
+  prepareSubmission?(
+    round: Readonly<RefinementRound>,
+    request: Readonly<EvaluationRequest>,
+  ): EvaluationSubmissionIntent | undefined
 
   reserve?(
     round: Readonly<RefinementRound>,
     request: Readonly<EvaluationRequest>,
+    signal?: AbortSignal,
+    intent?: Readonly<EvaluationSubmissionIntent>,
+  ): Promise<EvaluationReservation>
+
+  /** Resolves once remote cancellation is durably accepted (or the eval is terminal). */
+  cancelReservation?(
+    reservation: Readonly<EvaluationReservation>,
+    intent?: Readonly<EvaluationSubmissionIntent>,
+  ): Promise<void>
+
+  recoverReservation?(
+    round: Readonly<RefinementRound>,
+    request: Readonly<EvaluationRequest>,
+    signal: AbortSignal,
+    intent: Readonly<EvaluationSubmissionIntent>,
   ): Promise<EvaluationReservation>
 
   evaluate(
@@ -1223,12 +1281,23 @@ export interface RefineEvaluator {
     reservation?: Readonly<EvaluationReservation>,
   ): Promise<EvaluationEvidence>
 
+  prepareRerun?(
+    round: Readonly<RefinementRound>,
+    request: Readonly<EvaluationRequest>,
+    attempt: Readonly<RoundEvaluationAttempt>,
+    selector: Readonly<EvaluationRerunSelector>,
+  ): EvaluationRerunReservation | undefined
+
+  /** Resolves only when the rerun has stopped, including remote resource cleanup. */
+  cancelRerun?(reservation: Readonly<EvaluationRerunReservation>): Promise<void>
+
   rerun?(
     round: Readonly<RefinementRound>,
     request: Readonly<EvaluationRequest>,
     attempt: Readonly<RoundEvaluationAttempt>,
     selector: Readonly<EvaluationRerunSelector>,
     signal: AbortSignal,
+    reservation?: Readonly<EvaluationRerunReservation>,
   ): Promise<EvaluationRerunResult>
 }
 

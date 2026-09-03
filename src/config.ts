@@ -22,6 +22,15 @@ export interface HitchConfig {
   sampling: RolloutSamplingConfig
   agentArgs: string[]
   passEnv: string[]
+  controlPlane?: {
+    mode: 'direct' | 'daemon'
+    provider?: string
+    cpuPerTrial?: number
+    memoryPerTrial?: string
+    buildMode?: 'backend' | 'prebuild-preferred' | 'prebuild-required'
+    modelCapture?: 'off' | 'native' | 'proxy' | 'hybrid'
+    requireModelCapture: boolean
+  }
 }
 
 export interface Config {
@@ -233,6 +242,15 @@ export const ConfigSchema: Schema<Config> = Schema.object({
     sampling: Schema.object({ temperature: Schema.number() }).default({} as never),
     agentArgs: Schema.array(Schema.string()).default([]),
     passEnv: Schema.array(Schema.string()).default([]),
+    controlPlane: Schema.object({
+      mode: Schema.union(['direct', 'daemon'] as const).default('direct'),
+      provider: Schema.string(),
+      cpuPerTrial: Schema.number(),
+      memoryPerTrial: Schema.string(),
+      buildMode: Schema.union(['backend', 'prebuild-preferred', 'prebuild-required'] as const),
+      modelCapture: Schema.union(['off', 'native', 'proxy', 'hybrid'] as const),
+      requireModelCapture: Schema.boolean().default(false),
+    }).default({ mode: 'direct', requireModelCapture: false } as never),
   }).default({
     executable: 'hitch',
     harnessId: 'deepseek',
@@ -252,6 +270,7 @@ export const ConfigSchema: Schema<Config> = Schema.object({
     sampling: {} as never,
     agentArgs: [],
     passEnv: [],
+    controlPlane: { mode: 'direct', requireModelCapture: false },
   } as never),
   promotion: Schema.object({
     minimumCandidateScore: Schema.number().default(0),

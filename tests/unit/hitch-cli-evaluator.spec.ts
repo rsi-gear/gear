@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { HitchCliEvaluator } from '../../src/evaluator/hitch-cli.js'
+import type { HitchConfig } from '../../src/config.js'
 import type { EvaluationRequest, RefinementRound } from '../../src/types.js'
 import { createGitHarnessFixture } from '../helpers/git-fixture.js'
 import { evaluationCondition, roundFixture } from '../helpers/research-fixture.js'
@@ -28,6 +29,14 @@ interface InspectFixture {
   planBenchmarkRevision?: string
   attemptExecution?: string | null
   invalidTrials?: Array<{ taskId: string; attempt: number }>
+  executionProvider?: string
+}
+
+interface SetupOptions {
+  controlPlane?: HitchConfig['controlPlane']
+  daemonStatus?: 'running' | 'stopped'
+  fault?: 'submit-reply-lost' | 'submit-replay-rejected' | 'submit-wait' | 'watch-invalid-json' | 'watch-overflow' | 'watch-exit' | 'inspect-failure' | 'rerun-invalid-json'
+  cancelFails?: boolean
 }
 
 function trajectoryAnalysisPayload(runId: string, sessionId: string): unknown {
@@ -89,10 +98,12 @@ function partialTrajectoryAnalysisPayload(runId: string): unknown {
   }
 }
 
-async function setup(version = '0.2.5', inspectFixture: InspectFixture = {}) {
+async function setup(version = '0.2.5', inspectFixture: InspectFixture = {}, setupOptions: SetupOptions = {}) {
   const fixture = await createGitHarnessFixture()
   roots.push(fixture.root)
   const executable = join(fixture.root, 'fake-hitch.mjs')
+  const invocationLog = join(fixture.root, 'fake-hitch-invocations.jsonl')
+  const submissionState = join(fixture.root, 'fake-hitch-submission.json')
   const inspectedAttempts = inspectFixture.attempts ?? 1
   const inspectedTasks = inspectFixture.tasks ?? ['task-1']
   const inspectedTrials = inspectFixture.trials ?? [{ taskId: 'task-1', attempt: 1 }]
@@ -106,17 +117,80 @@ async function setup(version = '0.2.5', inspectFixture: InspectFixture = {}) {
     : inspectFixture.attemptExecution === null ? '' : `attempt_execution: ${JSON.stringify(inspectFixture.attemptExecution)},`
   const requestedHarnessRef = `deepseek@git+${pathToFileURL(fixture.repository).href}#${fixture.championRef}`
   await writeFile(executable, `#!/usr/bin/env node
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 const args = process.argv.slice(2)
-const value = name => args[args.indexOf(name) + 1]
-const dataset = value('--dataset')
-const harness = value('--harness')
-const evalId = args.includes('--eval-id') ? value('--eval-id') : 'eval_' + '1'.repeat(32)
+appendFileSync(${JSON.stringify(invocationLog)}, JSON.stringify(args) + '\\n')
+const fault = ${JSON.stringify(setupOptions.fault ?? '')}
+if (args[0] === 'eval' && (
+  (args[1] === 'watch' && fault === 'watch-invalid-json') ||
+  (args[1] === 'rerun' && fault === 'rerun-invalid-json')
+)) { process.stdout.write('bad-json'); process.exit(0) }
+if (args[0] === 'eval' && args[1] === 'watch' && fault === 'watch-overflow') {
+  process.on('SIGTERM', () => {})
+  process.stdout.write('x'.repeat(100000))
+  await new Promise(resolve => setTimeout(resolve, 30000))
+}
+if (args[0] === 'eval' && (
+  (args[1] === 'watch' && fault === 'watch-exit') ||
+  (args[1] === 'inspect' && fault === 'inspect-failure') ||
+  (['cancel', 'rerun-cancel'].includes(args[1]) && ${JSON.stringify(setupOptions.cancelFails ?? false)})
+)) { process.stderr.write('injected CLI failure'); process.exit(9) }
+const value = name => args.includes(name) ? args[args.indexOf(name) + 1] : undefined
+const statePath = ${JSON.stringify(submissionState)}
+const submitted = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : undefined
+const dataset = value('--dataset') ?? submitted?.dataset
+const harness = value('--harness') ?? submitted?.harness
+const evalId = args.includes('--eval-id') ? value('--eval-id')
+  : args[0] === 'eval' && ['watch', 'cancel'].includes(args[1]) ? args[2]
+  : submitted?.evalId ?? 'eval_' + '1'.repeat(32)
 const commit = harness?.match(/#([0-9a-f]{40,64})$/)?.[1]
 const inspectedTrials = ${JSON.stringify(inspectedTrials)}
 const inspectedInvalidTrials = ${JSON.stringify(inspectedInvalidTrials)}
 const isInvalidTrial = trial => inspectedInvalidTrials.some(slot => slot.taskId === trial.taskId && slot.attempt === trial.attempt)
 const remainingInvalidTasks = [...new Set(inspectedInvalidTrials.map(slot => slot.taskId))]
+const inspectionRequest = {
+  schema_version: '1', backend: 'harbor', dataset: ${JSON.stringify(inspectedDataset)},
+  harness_ref: ${JSON.stringify(requestedHarnessRef)}, model: 'deepseek-chat', attempts: ${JSON.stringify(inspectedAttempts)},
+  max_concurrent: 2, infrastructure_retries: 0, infrastructure_retry_backoff_ms: 0,
+  timeout_ms: 30000, setup_timeout_ms: 10000, agent_args: [], pass_env: [],
+  benchmark_id: 'benchmark-1', benchmark_revision: 'revision-1',
+}
+const inspectionExecution = {
+  provider: submitted?.executionProvider ?? ${JSON.stringify(inspectFixture.executionProvider ?? 'local-docker')}, max_parallelism: 2,
+  resources: { default_trial: { cpu_millis: 1000, memory_bytes: 1073741824, container_slots: 1, build_slots: 0 } },
+  build: { mode: 'prebuild-preferred' }, model_capture: { mode: 'native', required: false },
+}
+const canonicalJson = input => Array.isArray(input) ? '[' + input.map(canonicalJson).join(',') + ']'
+  : input && typeof input === 'object'
+    ? '{' + Object.keys(input).filter(key => input[key] !== undefined).sort()
+        .map(key => JSON.stringify(key) + ':' + canonicalJson(input[key])).join(',') + '}'
+    : JSON.stringify(input)
+const submissionDigest = 'sha256:' + createHash('sha256')
+  .update(canonicalJson({ request: inspectionRequest, execution: inspectionExecution })).digest('hex')
 if (args[0] === '--version') process.stdout.write(${JSON.stringify(version)} + '\\n')
+else if (args[0] === 'daemon' && args[1] === 'status') {
+  process.stdout.write(JSON.stringify({
+    schema_version: '1', status: ${JSON.stringify(setupOptions.daemonStatus ?? 'running')},
+    resource_policy: { eval_trial: { cpu_millis: 1000, memory_bytes: 1073741824, container_slots: 1, build_slots: 0 } },
+  }) + '\\n')
+} else if (args[0] === 'eval' && args[1] === 'submit') {
+  if (submitted && fault === 'submit-replay-rejected') { process.stderr.write('idempotency_conflict'); process.exit(9) }
+  const acceptedEvalId = 'eval_' + '6'.repeat(32)
+  const idempotencyKey = value('--idempotency-key')
+  writeFileSync(statePath, JSON.stringify({
+    evalId: acceptedEvalId, dataset, harness,
+    idempotencyKeyHash: 'sha256:' + createHash('sha256').update(idempotencyKey).digest('hex'),
+  }))
+  if (!submitted && fault === 'submit-reply-lost') { process.stderr.write('lost submission reply'); process.exit(9) }
+  if (!submitted && fault === 'submit-wait') await new Promise(resolve => setTimeout(resolve, 30000))
+  process.stdout.write(JSON.stringify({ schema_version: '1', eval_id: acceptedEvalId, status: 'queued' }) + '\\n')
+} else if (args[0] === 'eval' && args[1] === 'cancel') {
+  process.stdout.write(JSON.stringify({ schema_version: '1', eval_id: args[2], status: 'cancelling' }) + '\\n')
+}
+else if (args[0] === 'eval' && args[1] === 'rerun-cancel') {
+  process.stdout.write(JSON.stringify({ schema_version: '1', eval_id: args[2], rerun_id: args[3], status: 'cancelled' }))
+}
 else if (args[0] === 'capabilities') {
   process.stdout.write(JSON.stringify({
     schema_version: '1', trajectory_analysis: '1', trajectory_events_page: '1', verifier_evidence: '1',
@@ -185,7 +259,7 @@ else if (args[0] === 'capabilities') {
   }) + '\\n')
 } else if (args[0] === 'eval' && args[1] === 'rerun') {
   process.stdout.write(JSON.stringify({
-    schema_version: '1', kind: 'eval-rerun', rerun_id: 'rerun_' + '9'.repeat(32), eval_id: args[2], status: 'completed',
+    schema_version: '1', kind: 'eval-rerun', rerun_id: value('--rerun-id') ?? 'rerun_' + '9'.repeat(32), eval_id: args[2], status: 'completed',
     selected_tasks: args.includes('--invalid') ? ['task-1'] : args.flatMap((arg, index) => arg === '--task' ? [args[index + 1]] : []),
     repaired_tasks: inspectedInvalidTrials.length === 0 ? ['task-1'] : [],
     remaining_invalid_tasks: remainingInvalidTasks,
@@ -194,14 +268,20 @@ else if (args[0] === 'capabilities') {
     repaired_trials: inspectedInvalidTrials.length === 0 ? [{ task_id: 'task-1', attempt: 1 }] : [],
     remaining_invalid_trials: inspectedInvalidTrials.map(slot => ({ task_id: slot.taskId, attempt: slot.attempt })),
   }) + '\\n')
+} else if (args[0] === 'eval' && args[1] === 'list') {
+  process.stdout.write(JSON.stringify({ schema_version: '1', evals: submitted ? [{ eval_id: submitted.evalId }] : [] }))
 } else if (args[0] === 'eval' && args[1] === 'inspect') {
   const inspectedEvalId = args[2]
   const actual = ${JSON.stringify(fixture.championRef)}
   process.stdout.write(JSON.stringify({
     schema_version: '1', eval_id: inspectedEvalId,
-    request: { schema_version: '1', backend: 'harbor', dataset: ${JSON.stringify(inspectedDataset)},
-      harness_ref: ${JSON.stringify(requestedHarnessRef)}, model: 'deepseek-chat', attempts: ${JSON.stringify(inspectedAttempts)},
-      benchmark_id: 'benchmark-1', benchmark_revision: 'revision-1' },
+    request: inspectionRequest,
+    ...(submitted ? { submission: {
+      schema_version: '1', eval_id: inspectedEvalId, request: inspectionRequest,
+      execution: inspectionExecution,
+      submission_digest: submissionDigest, idempotency_key_hash: submitted.idempotencyKeyHash,
+      submitted_at: new Date().toISOString(),
+    } } : {}),
     plan: { schema_version: '1', eval_id: inspectedEvalId,
       backend: 'harbor', dataset: ${JSON.stringify(planDataset)}, benchmark_id: 'benchmark-1',
       benchmark_revision: ${JSON.stringify(planBenchmarkRevision)}, attempts: ${JSON.stringify(inspectedAttempts)},
@@ -239,7 +319,8 @@ else {
   const legacy = dataset === 'legacy'
   const invalidRun = dataset === 'invalid-run' || inspectedInvalidTrials.length > 0
   const failedCompleteRun = dataset === 'failed-complete-run'
-  const runTrials = dataset === 'invalid-run'
+  const zeroRunFailed = dataset === 'zero-run-failed'
+  const runTrials = zeroRunFailed ? [] : dataset === 'invalid-run'
     ? [{ trial_id: 'trial-1', run_id: 'run_' + '5'.repeat(32), task_id: 'task-1',
         attempt: 1, observation_status: 'invalid', invalid_reason: 'infrastructure_failure',
         verifier_result_ref: 'verifier/result.json' }]
@@ -254,8 +335,8 @@ else {
   const invalidCount = runTrials.length - validCount
   process.stdout.write(JSON.stringify({
     schema_version: '1', eval_id: evalId,
-    status: invalidRun || failedCompleteRun ? 'failed' : 'succeeded',
-    exit_code: invalidRun || failedCompleteRun ? 13 : 0,
+    status: invalidRun || failedCompleteRun || zeroRunFailed ? 'failed' : 'succeeded',
+    exit_code: invalidRun || failedCompleteRun || zeroRunFailed ? 13 : 0,
     candidate: { harness_ref: 'deepseek@commit:' + actual, revision_identity: 'sha256:' + '2'.repeat(64) },
     dataset,
     ...(legacy ? {} : { trials: runTrials }),
@@ -266,9 +347,10 @@ else {
           primary_reward: validCount === 0 ? null : 1, rewards: { reward: { count: validCount, mean: validCount === 0 ? null : 1 } } },
     local_source_transport: { kind: 'local-git-commit', resolution_identity: 'sha256:' + '2'.repeat(64),
       commit: actual, tree: '3'.repeat(40), payload_sha256: 'sha256:' + '4'.repeat(64), payload_bytes: 100 },
+    ...(zeroRunFailed ? { error: { code: 'harbor_failed', message: 'Harbor work items completed 2/5' } } : {}),
     started_at: new Date().toISOString(), completed_at: new Date().toISOString(),
   }) + '\\n')
-  if (invalidRun || failedCompleteRun) process.exitCode = 13
+  if (invalidRun || failedCompleteRun || zeroRunFailed) process.exitCode = 13
 }
 `)
   await chmod(executable, 0o755)
@@ -286,12 +368,134 @@ else {
     sampling: {},
     agentArgs: [],
     passEnv: [],
+    ...(setupOptions.controlPlane === undefined ? {} : { controlPlane: setupOptions.controlPlane }),
     repositoryPath: fixture.repository,
   })
-  return { fixture, evaluator }
+  return { fixture, evaluator, invocationLog, submissionState }
 }
 
 describe('HitchCliEvaluator', () => {
+  it('recovers the owned eval by its stored key when changed daemon defaults reject replay', async () => {
+    const { fixture, evaluator, invocationLog } = await setup('0.2.6', {}, {
+      controlPlane: { mode: 'daemon', requireModelCapture: false }, fault: 'submit-replay-rejected',
+    })
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const input = request('seed', fixture.championRef)
+    const intent = evaluator.prepareSubmission(state, input)!
+    const original = await evaluator.reserve(state, input, undefined, intent)
+    evaluator.options.root = 'different-daemon-root'
+    const recovered = await evaluator.recoverReservation(state, input, new AbortController().signal, intent)
+    expect(recovered).toEqual(original)
+    await evaluator.cancelReservation(recovered, intent)
+    const calls = (await readFile(invocationLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as string[])
+    expect(calls).toContainEqual(['eval', 'list', '--json'])
+    expect(calls).toContainEqual(['eval', 'cancel', original.evalId])
+  })
+
+  it('prepares without submitting and replays a lost acknowledgement using the frozen intent', async () => {
+    const { fixture, evaluator, invocationLog } = await setup('0.2.6', {}, {
+      controlPlane: { mode: 'daemon', requireModelCapture: false }, fault: 'submit-reply-lost',
+    })
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const input = request('seed', fixture.championRef)
+    const intent = evaluator.prepareSubmission(state, input)!
+    await expect(readFile(invocationLog, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(evaluator.reserve(state, input)).rejects.toThrow(/persisted submission intent/u)
+    await expect(evaluator.reserve(state, input, undefined, intent)).rejects.toThrow(/lost submission reply/u)
+    evaluator.options.controlPlane = { mode: 'direct', requireModelCapture: false }
+    const reserved = await evaluator.reserve(state, input, undefined, intent)
+    await evaluator.cancelReservation(reserved, intent)
+    const calls = (await readFile(invocationLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as string[])
+    const submissions = calls.filter(args => args[1] === 'submit')
+    expect(submissions).toHaveLength(2)
+    expect(submissions[0]).toEqual(submissions[1])
+    expect(calls).toContainEqual(['eval', 'cancel', reserved.evalId])
+  })
+
+  it('propagates caller cancellation while submitting and can recover the accepted eval afterwards', async () => {
+    const { fixture, evaluator, submissionState } = await setup('0.2.6', {}, {
+      controlPlane: { mode: 'daemon', requireModelCapture: false }, fault: 'submit-wait',
+    })
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const input = request('seed', fixture.championRef)
+    const intent = evaluator.prepareSubmission(state, input)!
+    const controller = new AbortController()
+    const submission = evaluator.reserve(state, input, controller.signal, intent)
+    const rejected = expect(submission).rejects.toThrow('cancel during submission')
+    await expect.poll(() => readFile(submissionState, 'utf8').catch(() => ''), { timeout: 5000 }).not.toBe('')
+    controller.abort(new Error('cancel during submission'))
+    await rejected
+    const recovered = await evaluator.reserve(state, input, undefined, intent)
+    await evaluator.cancelReservation(recovered, intent)
+  })
+
+  it.each(['watch-invalid-json', 'watch-overflow', 'watch-exit', 'inspect-failure', 'rerun-invalid-json'] as const)(
+    'cancels daemon work after %s', async fault => {
+      const { fixture, evaluator, invocationLog } = await setup('0.2.6', {}, {
+        controlPlane: { mode: 'daemon', requireModelCapture: false }, fault,
+      })
+      const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+      const input = request('seed', fixture.championRef)
+      const intent = evaluator.prepareSubmission(state, input)!
+      const reservation = await evaluator.reserve(state, input, undefined, intent)
+      if (fault === 'watch-overflow') evaluator.options.maxOutputBytes = 1024
+      const rerunReservation = { ...reservation, rerunId: `rerun_${'8'.repeat(32)}`, parameters: { root: '' } }
+      const result = fault === 'rerun-invalid-json' ? evaluator.rerun(state, input, {
+        ...reservation, phase: input.phase, conditionId: input.condition.conditionId,
+        dataset: input.dataset, requestedCommit: input.harnessRef, requestedModelId: input.condition.model,
+        owner: { candidateId: `champion-${input.harnessRef}`, role: 'baseline', harnessRef: input.harnessRef },
+        status: 'failed', startedAt: 'before', completedAt: 'after', submissionIntent: intent,
+      }, { mode: 'invalid' }, new AbortController().signal, rerunReservation)
+        : evaluator.evaluate(state, input, new AbortController().signal, reservation)
+      await expect(result).rejects.toMatchObject({ code: fault === 'watch-overflow' ? 'hitch_output_overflow'
+        : fault === 'inspect-failure' ? 'hitch_eval_inspect_failed' : 'invalid_hitch_json' })
+      const calls = (await readFile(invocationLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as string[])
+      expect(calls).toContainEqual(fault === 'rerun-invalid-json'
+        ? ['eval', 'rerun-cancel', reservation.evalId, rerunReservation.rerunId]
+        : ['eval', 'cancel', reservation.evalId])
+      if (fault === 'rerun-invalid-json') expect(calls).not.toContainEqual(['eval', 'cancel', reservation.evalId])
+    },
+  )
+
+  it('preserves the observer error and reports cancellation failure separately', async () => {
+    const { fixture, evaluator } = await setup('0.2.6', {}, {
+      controlPlane: { mode: 'daemon', requireModelCapture: false }, fault: 'watch-invalid-json', cancelFails: true,
+    })
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const input = request('seed', fixture.championRef)
+    const reservation = await evaluator.reserve(state, input, undefined, evaluator.prepareSubmission(state, input))
+    await expect(evaluator.evaluate(state, input, new AbortController().signal, reservation)).rejects.toMatchObject({
+      code: 'invalid_hitch_json', message: expect.stringContaining('invalid JSON'),
+      cause: { code: 'invalid_hitch_json' }, cleanupFailure: { code: 'hitch_eval_cancel_failed' },
+    })
+  })
+
+  it('cancels an owned daemon evaluation when runtime validation fails', async () => {
+    const { fixture, evaluator, invocationLog } = await setup('0.2.6', {}, {
+      controlPlane: { mode: 'daemon', requireModelCapture: false },
+    })
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const input = request('seed', fixture.championRef)
+    const reservation = await evaluator.reserve(state, input, undefined, evaluator.prepareSubmission(state, input))
+    await writeFile(evaluator.options.executable, (await readFile(evaluator.options.executable, 'utf8')).replace('"0.2.6"', '"0.2.4"'))
+    await expect(evaluator.evaluate(state, input, new AbortController().signal, reservation)).rejects.toMatchObject({ code: 'unsupported_hitch_version' })
+    expect(await readFile(invocationLog, 'utf8')).toContain(JSON.stringify(['eval', 'cancel', reservation.evalId]))
+  })
+
+  it('reports the original spawn failure even when the executable also prevents cancellation', async () => {
+    const { fixture, evaluator } = await setup('0.2.6', {}, {
+      controlPlane: { mode: 'daemon', requireModelCapture: false },
+    })
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const input = request('seed', fixture.championRef)
+    const reservation = await evaluator.reserve(state, input, undefined, evaluator.prepareSubmission(state, input))
+    await chmod(evaluator.options.executable, 0o644)
+    await expect(evaluator.evaluate(state, input, new AbortController().signal, reservation)).rejects.toMatchObject({
+      code: 'hitch_unavailable', message: expect.stringContaining('failed to start Hitch CLI'),
+      cause: { code: 'hitch_unavailable' }, cleanupFailure: { code: 'hitch_unavailable' },
+    })
+  })
+
   it('requires stable eval identity support from agent-hitch 0.2.5 or newer', async () => {
     const supported = await setup('0.2.5')
     const state = round(supported.fixture.root, supported.fixture.championRef, supported.fixture.manifest.digest)
@@ -309,6 +513,100 @@ describe('HitchCliEvaluator', () => {
     await expect(malformed.evaluator.preflight()).rejects.toMatchObject({ code: 'unsupported_hitch_version' })
   })
 
+  it('requires Hitch 0.2.6 and a running daemon in control-plane mode', async () => {
+    const controlPlane = { mode: 'daemon', requireModelCapture: false } as const
+    const supported = await setup('0.2.6', {}, { controlPlane })
+    await expect(supported.evaluator.preflight()).resolves.toBeUndefined()
+    const old = await setup('0.2.5', {}, { controlPlane })
+    await expect(old.evaluator.preflight()).rejects.toMatchObject({ code: 'unsupported_hitch_version' })
+    const stopped = await setup('0.2.6', {}, { controlPlane, daemonStatus: 'stopped' })
+    await expect(stopped.evaluator.preflight()).rejects.toMatchObject({ code: 'hitch_daemon_unavailable' })
+  })
+
+  it('submits daemon evals idempotently, watches them, and accepts task-slot plans', async () => {
+    const controlPlane = {
+      mode: 'daemon', provider: 'local-docker', cpuPerTrial: 1, memoryPerTrial: '1GiB',
+      buildMode: 'prebuild-preferred', modelCapture: 'native', requireModelCapture: false,
+    } as const
+    const { fixture, evaluator, invocationLog } = await setup('0.2.6', {
+      attemptExecution: 'harbor-task-slots-v1',
+    }, { controlPlane })
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const input = request('seed', fixture.championRef)
+    await evaluator.preflight()
+    const first = await evaluator.reserve(state, input, undefined, evaluator.prepareSubmission(state, input))
+    const second = await evaluator.reserve(state, input, undefined, evaluator.prepareSubmission(state, input))
+    expect(second).toEqual(first)
+    await expect(evaluator.evaluate(state, input, new AbortController().signal, first)).resolves.toMatchObject({
+      provider: 'hitch-cli', evalId: first.evalId, completeness: 'complete',
+    })
+    const invocations = (await readFile(invocationLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as string[])
+    const submissions = invocations.filter(args => args[0] === 'eval' && args[1] === 'submit')
+    expect(submissions).toHaveLength(2)
+    expect(submissions[0]?.[submissions[0].indexOf('--idempotency-key') + 1]).toBe(
+      submissions[1]?.[submissions[1].indexOf('--idempotency-key') + 1],
+    )
+    expect(submissions[0]).toEqual(expect.arrayContaining([
+      '--provider', 'local-docker', '--cpu-per-trial', '1', '--memory-per-trial', '1GiB',
+      '--build-mode', 'prebuild-preferred', '--model-capture', 'native',
+    ]))
+    expect(invocations).toContainEqual(['eval', 'watch', first.evalId, '--output', 'json'])
+  })
+
+  it('rejects daemon execution policy drift from the submitted Gear condition', async () => {
+    const { fixture, evaluator } = await setup('0.2.6', {
+      attemptExecution: 'harbor-task-slots-v1', executionProvider: 'remote-worker',
+    }, { controlPlane: { mode: 'daemon', provider: 'local-docker', requireModelCapture: false } })
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const input = request('seed', fixture.championRef)
+    const reservation = await evaluator.reserve(state, input, undefined, evaluator.prepareSubmission(state, input))
+    await expect(evaluator.evaluate(state, input, new AbortController().signal, reservation)).rejects.toMatchObject({
+      code: 'invalid_hitch_result', message: expect.stringMatching(/provider differs/u),
+    })
+  })
+
+  it('includes frozen daemon policy in semantic identity and skips reuse lookup', async () => {
+    const { fixture, evaluator, submissionState } = await setup('0.2.6', {
+      attemptExecution: 'harbor-task-slots-v1',
+    }, { controlPlane: { mode: 'daemon', requireModelCapture: false } })
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const input = request('seed', fixture.championRef)
+    await expect(evaluator.evaluationIdentity(state, input)).resolves.toBeUndefined()
+    const reservation = await evaluator.reserve(state, input, undefined, evaluator.prepareSubmission(state, input))
+    const baseline = await evaluator.evaluate(state, input, new AbortController().signal, reservation)
+    const repeated = await evaluator.evaluate(state, input, new AbortController().signal, reservation)
+    expect(repeated.effectiveConfigDigest).toBe(baseline.effectiveConfigDigest)
+    await expect(evaluator.evaluationIdentity(state, input)).resolves.toBeUndefined()
+
+    const direct = new HitchCliEvaluator({
+      ...evaluator.options, controlPlane: { mode: 'direct', requireModelCapture: false },
+    })
+    const directIdentity = await direct.evaluationIdentity(state, input)
+    if (directIdentity === undefined) throw new Error('direct Hitch evaluation identity is missing')
+    expect(baseline.effectiveConfigDigest).not.toBe(directIdentity.effectiveConfigDigest)
+
+    const submission = JSON.parse(await readFile(submissionState, 'utf8')) as Record<string, unknown>
+    await writeFile(submissionState, JSON.stringify({ ...submission, executionProvider: 'remote-worker' }))
+    const changed = await evaluator.evaluate(state, input, new AbortController().signal, reservation)
+    expect(changed.effectiveConfigDigest).not.toBe(baseline.effectiveConfigDigest)
+  })
+
+  it.each(['before watching', 'while watching'])('cancels a submitted daemon eval aborted %s', async timing => {
+    const { fixture, evaluator, invocationLog } = await setup('0.2.6', {
+      dataset: 'slow', planDataset: 'slow', attemptExecution: 'harbor-task-slots-v1',
+    }, { controlPlane: { mode: 'daemon', requireModelCapture: false } })
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const input = request('slow', fixture.championRef)
+    const reservation = await evaluator.reserve(state, input, undefined, evaluator.prepareSubmission(state, input))
+    const controller = new AbortController()
+    if (timing === 'before watching') controller.abort(new Error('test daemon abort'))
+    const evaluation = evaluator.evaluate(state, input, controller.signal, reservation)
+    if (timing === 'while watching') setTimeout(() => controller.abort(new Error('test daemon abort')), 50)
+    await expect(evaluation).rejects.toThrow(/test daemon abort/u)
+    const invocations = (await readFile(invocationLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as string[])
+    expect(invocations).toContainEqual(['eval', 'cancel', reservation.evalId])
+  })
+
   it('keeps semantic identity independent of environment, workspace, and executable location', async () => {
     const { fixture, evaluator } = await setup('0.2.5')
     const environmentName = `GEAR_HITCH_IDENTITY_${crypto.randomUUID().replaceAll('-', '').toUpperCase()}`
@@ -319,6 +617,7 @@ describe('HitchCliEvaluator', () => {
     try {
       await evaluator.preflight()
       const first = await evaluator.evaluationIdentity(state, input)
+      if (first === undefined) throw new Error('direct Hitch evaluation identity is missing')
 
       process.env[environmentName] = 'second-value'
       expect(await evaluator.evaluationIdentity(state, input)).toEqual(first)
@@ -339,7 +638,7 @@ describe('HitchCliEvaluator', () => {
       expect(await relocated.evaluationIdentity(state, input)).toEqual(first)
 
       await appendFile(evaluator.options.executable, '\n// same semver, different build\n')
-      expect((await evaluator.evaluationIdentity(state, input)).effectiveConfigDigest).not.toBe(first.effectiveConfigDigest)
+      expect((await evaluator.evaluationIdentity(state, input))?.effectiveConfigDigest).not.toBe(first.effectiveConfigDigest)
     } finally {
       delete process.env[environmentName]
     }
@@ -384,6 +683,7 @@ describe('HitchCliEvaluator', () => {
       new AbortController().signal,
     )
     const identity = await evaluator.evaluationIdentity(state, input)
+    if (identity === undefined) throw new Error('direct Hitch evaluation identity is missing')
     expect(evidence).toMatchObject({
       provider: identity.provider,
       effectiveConfigDigest: identity.effectiveConfigDigest,
@@ -399,7 +699,7 @@ describe('HitchCliEvaluator', () => {
     const { fixture, evaluator } = await setup()
     const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
     const input = request('seed', fixture.championRef)
-    const reservation = await evaluator.reserve(state, input)
+    const reservation = await evaluator.reserve(state, input, undefined, evaluator.prepareSubmission(state, input))
     expect(reservation).toMatchObject({ provider: 'hitch-cli', evalId: expect.stringMatching(/^eval_[0-9a-f]{32}$/u) })
     await expect(evaluator.evaluate(state, input, new AbortController().signal, reservation)).resolves.toMatchObject({
       provider: reservation.provider,
@@ -473,6 +773,17 @@ describe('HitchCliEvaluator', () => {
     })
   })
 
+  it('rejects daemon task-slot plans in direct CLI mode', async () => {
+    const { fixture, evaluator } = await setup('0.2.5', { attemptExecution: 'harbor-task-slots-v1' })
+    await expect(evaluator.evaluate(
+      round(fixture.root, fixture.championRef, fixture.manifest.digest),
+      request('seed', fixture.championRef),
+      new AbortController().signal,
+    )).rejects.toMatchObject({
+      code: 'invalid_hitch_result', message: expect.stringMatching(/no stable logical-attempt identity/u),
+    })
+  })
+
   it('reruns invalid tasks under the original eval id and loads repaired evidence', async () => {
     const { fixture, evaluator } = await setup()
     const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
@@ -491,6 +802,36 @@ describe('HitchCliEvaluator', () => {
       repairedTrials: [{ taskId: 'task-1', attempt: 1 }], remainingInvalidTrials: [],
       remainingInvalidTasks: [], evalStatus: 'succeeded', evidence: { evalId, primaryReward: 1 },
     })
+  })
+
+  it('submits daemon reruns explicitly and reloads their frozen policy', async () => {
+    const { fixture, evaluator, invocationLog } = await setup('0.2.6', {
+      attemptExecution: 'harbor-task-slots-v1',
+    }, { controlPlane: { mode: 'daemon', requireModelCapture: false } })
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const input = request('seed', fixture.championRef)
+    const reservation = await evaluator.reserve(state, input, undefined, evaluator.prepareSubmission(state, input))
+    const initial = await evaluator.evaluate(state, input, new AbortController().signal, reservation)
+    const attempt: import('../../src/types.js').RoundEvaluationAttempt = {
+      provider: 'hitch-cli', evalId: reservation.evalId, phase: 'seed-baseline',
+      owner: { candidateId: `champion-${fixture.championRef}`, role: 'baseline', harnessRef: fixture.championRef },
+      conditionId: input.condition.conditionId, dataset: input.dataset,
+      requestedModelId: input.condition.model, requestedCommit: fixture.championRef,
+      status: 'failed', startedAt: new Date().toISOString(), completedAt: new Date().toISOString(),
+      failure: { code: 'hitch_infrastructure_failure', message: 'invalid task' },
+    }
+    const rerunReservation = evaluator.prepareRerun(state, input, attempt, { mode: 'invalid' })!
+    await expect(evaluator.rerun(state, input, attempt, { mode: 'invalid' }, new AbortController().signal, rerunReservation)).resolves.toMatchObject({
+      provider: 'hitch-cli', evalId: reservation.evalId, evalStatus: 'succeeded',
+      evidence: {
+        effectiveConfigDigest: initial.effectiveConfigDigest,
+        invocationFingerprint: initial.invocationFingerprint,
+      },
+    })
+    const invocations = (await readFile(invocationLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as string[])
+    expect(invocations).toContainEqual([
+      'eval', 'rerun', reservation.evalId, '--invalid', '--type', 'candidate-restart', '--daemon', '--rerun-id', rerunReservation.rerunId, '--output', 'json',
+    ])
   })
 
   it('returns inspectable partial evidence when rerun leaves invalid slots', async () => {
@@ -778,6 +1119,20 @@ process.stdout.write(${JSON.stringify(JSON.stringify(payload) + '\n')})
         status: 'errored',
         invalidReason: 'infrastructure_failure',
       }],
+    })
+  })
+
+  it('preserves the Hitch infrastructure error when a failed eval has no canonical trials', async () => {
+    const { fixture, evaluator } = await setup('0.2.5', {
+      dataset: 'zero-run-failed', planDataset: 'zero-run-failed',
+    })
+    await expect(evaluator.evaluate(
+      round(fixture.root, fixture.championRef, fixture.manifest.digest),
+      request('zero-run-failed', fixture.championRef),
+      new AbortController().signal,
+    )).rejects.toMatchObject({
+      code: 'harbor_failed',
+      message: expect.stringMatching(/failed before producing canonical trial evidence.*2\/5/u),
     })
   })
 

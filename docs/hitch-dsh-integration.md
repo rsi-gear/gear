@@ -1,8 +1,8 @@
-# Gear ↔ Hitch CLI 集成设计
+# Gear ↔ Hitch CLI / daemon 集成设计
 
-- 状态：Draft v0.5
+- 状态：Draft v0.6
 - 目的：用已安装的 Hitch CLI 完成 TargetHarness 的版本解析、Harbor 评测和证据记录
-- 基线：agent-hitch `dev@8c034d9`，DeepSeek Harness headless
+- 基线：agent-hitch `0.2.6`，DeepSeek Harness headless
 - 更新：2026-08-21 — 删除 `dsh-evolving` adapter、`dsh-eval-runner`、Hitch Node API 和独立 overlay identity；V1 直接复用 Hitch 现有 `deepseek` adapter，每个 TargetHarness 版本是一个完整 DSH source repo 的 exact Git commit；Hitch 唯一缺口是把 local exact commit 运输进 Harbor。
 
 ## 1. 决策
@@ -55,9 +55,9 @@ Git commit 是 Gear、Hitch、round record 和 champion pointer 共用的唯一�
 
 Gear 在创建 H1 前对 H0 做 parent CAS，应用 mutation、运行固定检查并创建 commit。Hitch随后解析和 prepare这个 exact commit。promotion只把 champion从H0移动到已经成功评测的H1。
 
-## 3. Gear 只调用 Hitch CLI
+## 3. Gear 只调用 Hitch 的公开 CLI
 
-推荐调用形式：
+Gear 不导入 Hitch 内部模块。默认 `hitch.controlPlane.mode: direct` 使用直接 CLI：
 
 ```bash
 hitch eval run \
@@ -72,17 +72,45 @@ hitch eval run \
   --output json
 ```
 
+需要让 eval 与其他 Hitch 工作共享持久化队列和资源预算时，配置 `hitch.controlPlane.mode: daemon`。Gear 先用确定性幂等键预留服务端身份，再等待同一 eval：
+
+```bash
+hitch --root <state-root> eval submit \
+  --idempotency-key <gear-derived-key> \
+  --backend harbor \
+  --dataset <dataset> \
+  --harness 'deepseek@git+file:///absolute/path/to/dsh-repo#<full-commit>' \
+  --model <fixed-model> \
+  --attempts 1 \
+  --max-concurrent <n> \
+  --timeout <duration> \
+  --setup-timeout <duration>
+
+hitch --root <state-root> eval watch <server-eval-id> --output json
+```
+
+取消时 Gear 终止本地 watch 后调用 `eval cancel`；修复时调用 `eval rerun ... --type candidate-restart --daemon`。daemon 的总资源容量由 `hitch daemon start` 管理，Gear 可在 submission 中固定 provider、每 trial CPU/内存、build mode 和 model-capture policy。
+
 Gear：
 
 1. 通过配置的 executable或 `PATH` 查找 `hitch`；
-2. 启动前可调用 `hitch --version` 和 `hitch eval doctor --json`；
+2. 启动前调用 `hitch --version`；daemon 模式还调用同一 root 的 `daemon status --json` 并要求状态为 `running`；
 3. 每次 eval 使用独立 argv，不经过 shell；
 4. 从 stdout读取单个 JSON result，stderr只作 bounded diagnostic；
-5. 转发 abort为 SIGTERM，超时后按固定 grace period升级终止；
+5. direct 模式转发 abort 为 SIGTERM，超时后按固定 grace period升级终止；daemon 模式同时发送持久化 cancellation；
 6. 校验 CLI exit code、`status`、`eval_id`、resolved commit、trial counts和 `summary.primary_reward`；
-7. round record只保存 Hitch返回的eval/ref和Gear自己的decision，不修改 Hitch records。
+7. daemon 模式从 inspection 校验 submission request、幂等键 hash 和冻结 execution policy，并把实际 policy 纳入 baseline/candidate 的语义配置身份 `effectiveConfigDigest`；
+8. round record只保存 Hitch返回的eval/ref和Gear自己的decision，不修改 Hitch records。
 
-不要求 Hitch Node exports、daemon或Gear专用plugin ABI。daemon以后可作为性能优化，但不是V1正确性前提。
+daemon 提交前，Gear 先在 round 的 `pendingEvaluationSubmissions` 保存归属、评测请求、幂等键和固定 CLI 参数，然后才执行 `eval submit`。返回的 eval ID 与 attempt 归属一并落盘。提交阶段接收 round 的取消信号；即使响应丢失或 ID 写入失败，Gear 仍可使用持久化意图恢复同一任务并取消它。
+
+启动恢复会处理未完成的提交，包括已经标记为失败的 round。Gear 先重放原幂等键；如果默认资源策略或执行容量变化导致重放被拒绝，则通过 `eval list` / `eval inspect` 查找匹配的 `idempotency_key_hash`。恢复出的任务会被取消，而不是继续执行中断的 round。只有评测结束或 daemon 持久接受取消后，Gear 才移除待处理意图；清理失败会保留意图，供下次启动重试。
+
+提交后的 watch、JSON 解析、运行时校验、inspection 和 rerun 异常都会触发独立且有时限的取消。取消失败保留原始错误的 code、message 和 cause，并单独记录 `cleanupFailure`；状态接口通过 `evaluationCleanupFailures` 暴露待处理的清理错误码。
+
+不要求 Hitch Node exports 或 Gear 专用 plugin ABI。direct 与 daemon 都经过同一个 CLI JSON 合同；direct 要求 agent-hitch 0.2.5+，daemon 要求 0.2.6+。
+
+direct 模式可按语义配置身份复用跨轮次 baseline。daemon 的默认执行策略在提交后才冻结，当前不预先声明可复用身份，因此每轮重新评测 baseline，避免复用不同执行策略下的结果。
 
 ## 4. Baseline、candidate与held-out
 
@@ -172,3 +200,29 @@ DSH原生session log是agent trajectory事实来源。V1不要求Hitch重新实�
 - [Hitch Harbor backend](../../agent-hitch/src/harbor-backend.ts)
 - [Hitch Harbor agent](../../agent-hitch/integrations/harbor/hitch_harbor_agent.py)
 - [DSH headless runner](../deepseek-harness/packages/bundle/headless/src/index.ts)
+
+### Daemon rerun 的独立生命周期
+
+Gear 在调用 `hitch eval rerun --daemon --rerun-id <id>` 前，将独立的
+`rerunId`、源 `evalId` 和原始 Hitch root 原子写入 `pendingEvaluationRerun`。
+观察失败、进程中止、证据持久化失败以及 Gear 重启，都使用
+`hitch eval rerun-cancel <eval-id> <rerun-id>` 清理这次修复。源 eval 的
+`eval cancel` 不会取消 rerun，不能用它代替。
+
+取消接口必须在 rerun 执行和资源释放完成后才确认成功，并持久化该 ID 的取消记录，
+阻止迟到的提交启动。取消失败时保留 pending identity，状态中暴露独立的清理错误，
+启动时重试同一 ID；完成清理前不接受新的 repair。若 Hitch 自身重启后返回
+`execution_state_ambiguous`，Gear 保留归属，不能将其当作已停止。
+
+这条路径要求 Hitch 同时提供 `--rerun-id` 和 `eval rerun-cancel` 合同；
+不支持该合同的 CLI/daemon 会拒绝操作，不会退回旧的 daemon rerun 命令。
+CI 的 `Hitch rerun contract` job 固定 Hitch 实现提交，运行真实 CLI、HTTP 路由和
+调度器联动测试；本地可构建同一 Hitch 提交后运行：
+
+```sh
+HITCH_CONTRACT_ROOT=/path/to/agent-hitch npm test -- tests/integration/hitch-rerun-contract.spec.ts
+```
+
+配套实现：[agent-hitch PR #15](https://github.com/rsi-gear/agent-hitch/pull/15)，
+合同测试固定提交 `90d4cc3a5d98df53b02e57b54762e16ac1c6d942`。
+启用 daemon rerun 前需安装包含该实现的 Hitch。
