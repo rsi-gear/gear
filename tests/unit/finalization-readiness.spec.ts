@@ -50,9 +50,9 @@ describe('finalization readiness', () => {
       diagnosedRunCount: 0,
       remainingRunCount: 11,
       nextActions: [
-        { tool: 'trajectory_query', arguments: { view: 'bundle' }, coversRunIds: expect.arrayContaining([]) },
-        { tool: 'trajectory_query', arguments: { view: 'bundle' } },
-        { tool: 'trajectory_query', arguments: { view: 'bundle' } },
+        { tool: 'trajectory_query', arguments: { refs: expect.any(Array) }, coversRunIds: expect.arrayContaining([]) },
+        { tool: 'trajectory_query', arguments: { refs: expect.any(Array) } },
+        { tool: 'trajectory_query', arguments: { refs: expect.any(Array) } },
       ],
     })
     expect(readiness.missing).toContainEqual(expect.objectContaining({ taskName: 'task-01', reward: 0 }))
@@ -139,12 +139,12 @@ describe('finalization readiness', () => {
       ready: false,
       unaccessedCitedRefs: [runId],
       blockers: [{ code: 'EVIDENCE_REF_NOT_ACCESSED' }],
-      nextActions: [{ tool: 'trajectory_query', arguments: { refs: [runId], view: 'bundle' } }],
+      nextActions: [{ tool: 'trajectory_query', arguments: { refs: [runId] } }],
     })
     expect(recoveryRequired(readiness, 'candidate.finalize')).toMatchObject({
       accepted: false,
       code: 'EVIDENCE_REF_NOT_ACCESSED',
-      nextAction: { arguments: { refs: [runId], view: 'bundle' } },
+      nextAction: { arguments: { refs: [runId] } },
     })
   })
 

@@ -202,11 +202,11 @@ describe('refine skill end to end', () => {
 
     const trajectoryResult = await requestRefineSkill(socketPath, {
       method: 'meta.call',
-      params: { ...lease, capability: 'trajectory.query', arguments: { refs: [failedRun], offset: 0, limit: 20 } },
+      params: { ...lease, capability: 'trajectory.query', arguments: { refs: [failedRun] } },
     })
     expect(trajectoryResult).toMatchObject({
-      bundles: [{ identity: { runId: failedRun }, coverage: { trajectory: 'complete' } }],
-      diagnosisProgress: { ready: true, remainingRunCount: 0 },
+      runs: [{ runId: failedRun }],
+      diagnosisProgress: { ready: true, diagnosed: 1, required: 1, remainingRunIds: [] },
     })
     const observed = await requestRefineSkill(socketPath, {
       method: 'candidate.read', params: { ...lease, path: 'plugins/context.ts' },

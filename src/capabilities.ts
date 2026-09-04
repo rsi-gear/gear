@@ -1,8 +1,9 @@
 import { readFile } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import type { HarnessBuilder } from './harness/builder.js'
 import type { RefineService } from './refine/service.js'
-import { contentExcerpt, projectTrajectory, selectKeySteps } from './evaluator/trajectory-projection.js'
+import { projectTrajectory } from './evaluator/trajectory-projection.js'
 import { digestJson } from './state/digest.js'
 import { finalizationReadiness, recoveryRequired } from './refine/finalization-readiness.js'
 import type {
@@ -10,19 +11,16 @@ import type {
   ContentExcerpt,
   DiagnosisReceipt,
   EvaluationEvidence,
-  GearFailureBundle,
   HitchTrajectoryReader,
   HitchVerifierEvidence,
+  MetaEvidenceText,
+  MetaFailureCard,
   RefineBridgeRequestMap,
   RefinementRound,
   SemanticTarget,
   SessionRole,
-  TrajectoryContextEpoch,
   TrajectoryEvidenceBlocker,
-  TrajectoryMessageEvidence,
   TrajectoryProjection,
-  TrajectorySemanticStep,
-  TrajectoryToolAction,
 } from './types.js'
 
 export interface CapabilityOptions {
@@ -45,6 +43,11 @@ function record(value: unknown): Record<string, unknown> {
 
 function publicJson(value: unknown): JsonValue {
   return JSON.parse(JSON.stringify(value, (key, item) => /heldOut|held_out|partitionRef/iu.test(key) ? undefined : item)) as JsonValue
+}
+
+function assertOnlyKeys(args: Record<string, unknown>, allowed: readonly string[]): void {
+  const extra = Object.keys(args).filter(key => !allowed.includes(key))
+  if (extra.length > 0) throw new TypeError(`invalid arguments: unknown field(s): ${extra.join(', ')}`)
 }
 
 interface SeedRunEvidence {
@@ -72,24 +75,57 @@ interface SharedProjectionLoad {
   bytes: number
 }
 
-const SENSITIVE_KEY = /(?:api[_-]?key|authorization|credential|password|secret|token)/iu
-
-function compactExcerpt(value: ContentExcerpt, maxJsonBytes = 1_200): ContentExcerpt {
-  let preview = value.preview
-  let tail = value.tail
-  let compacted: ContentExcerpt = { ...value }
-  while (Buffer.byteLength(JSON.stringify(compacted)) > maxJsonBytes && (preview.length > 0 || (tail?.length ?? 0) > 0)) {
-    preview = preview.slice(0, Math.floor(preview.length * 0.7))
-    tail = tail === undefined ? undefined : tail.slice(Math.ceil(tail.length * 0.3))
-    compacted = {
-      ...value,
-      preview,
-      ...(tail === undefined || tail.length === 0 ? {} : { tail }),
-      truncated: true,
-    }
+interface TrajectoryDetailRef {
+  sessionId: string
+  roundId: string
+  runId: string
+  offset: number
+  text?: string
+  sourceComplete?: boolean
+  source?: {
+    seq: number
+    field: string
+    canonicalSha256: string
+    bytes: number
   }
-  return compacted
+  pendingDiagnosis?: {
+    evalId: string
+    cardDigest: string
+    trajectoryDigest: string
+    verifierStatus: DiagnosisReceipt['verifierStatus']
+    sourceVerifierStatus: HitchVerifierEvidence['verifier']['status']
+    visibleDigests: string[]
+    recorded: boolean
+  }
 }
+
+interface TrajectoryDetailRead {
+  visible: Record<string, unknown>
+  diagnosis?: { evalId: string; runId: string; receipt: DiagnosisReceipt }
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function readableMessage(value: unknown, depth = 0): string {
+  if (depth > 8 || value === null || value === undefined) return ''
+  if (typeof value === 'string') {
+    try { return readableMessage(JSON.parse(value), depth + 1) }
+    catch { return value }
+  }
+  if (Array.isArray(value)) return value.map(item => readableMessage(item, depth + 1)).filter(Boolean).join('\n')
+  const item = objectValue(value)
+  if (item === undefined) return String(value)
+  if (item.type === 'tool-call') return ''
+  if (typeof item.text === 'string') return item.text
+  if (Array.isArray(item.content)) return readableMessage(item.content, depth + 1)
+  return JSON.stringify(value, null, 2)
+}
+
+const SENSITIVE_KEY = /(?:api[_-]?key|authorization|credential|password|secret|token)/iu
 
 function boundedUtf8(value: string, maxBytes: number): string {
   if (Buffer.byteLength(value) <= maxBytes) return value
@@ -99,147 +135,23 @@ function boundedUtf8(value: string, maxBytes: number): string {
   return `${prefix}${suffix}`
 }
 
-function compactMessage(value: TrajectoryMessageEvidence, excerptBytes = 1_200): TrajectoryMessageEvidence {
-  return {
-    ...value,
-    eventType: boundedUtf8(value.eventType, 96),
-    role: boundedUtf8(value.role, 96),
-    message: compactExcerpt(value.message, excerptBytes),
-  }
+function characters(value: string): string[] {
+  return Array.from(value)
 }
 
-function compactToolAction(value: TrajectoryToolAction, excerptBytes = 1_200): TrajectoryToolAction {
-  return {
-    ...value,
-    callId: boundedUtf8(value.callId, 128),
-    name: boundedUtf8(value.name, 128),
-    arguments: compactExcerpt(value.arguments, excerptBytes),
-    ...(value.result === undefined ? {} : { result: compactExcerpt(value.result, excerptBytes) }),
-    ...(value.error === undefined ? {} : {
-      error: {
-        name: boundedUtf8(value.error.name, 96),
-        code: boundedUtf8(value.error.code, 96),
-      },
-    }),
-  }
+function characterLength(value: string): number {
+  return characters(value).length
 }
 
-function compactStep(
-  value: TrajectorySemanticStep,
-  runId: string,
-  options: { excerptBytes: number; maxToolActions: number; maxAssistantMessages: number; terminalReason: boolean },
-): TrajectorySemanticStep {
-  const selectedActions = new Map<string, TrajectoryToolAction>()
-  for (const action of value.toolActions) {
-    if (action.status !== 'completed' && selectedActions.size < options.maxToolActions) selectedActions.set(action.callId, action)
-  }
-  for (const action of options.maxToolActions === 0 ? [] : value.toolActions.slice(-options.maxToolActions)) {
-    if (selectedActions.size < options.maxToolActions) selectedActions.set(action.callId, action)
-  }
-  const assistantMessages = (options.maxAssistantMessages === 0 ? [] : value.assistantMessages.slice(-options.maxAssistantMessages))
-    .map(message => compactMessage(message, options.excerptBytes))
-  const toolActions = [...selectedActions.values()].map(action => compactToolAction(action, options.excerptBytes))
-  const selectedRequests = new Map<number, NonNullable<TrajectorySemanticStep['modelRequests']>[number]>()
-  for (const request of value.modelRequests ?? []) {
-    if (/error|failed|exception|retry/iu.test(JSON.stringify(request.finishReason ?? null)) && selectedRequests.size < 2) {
-      selectedRequests.set(request.firstSeq, request)
-    }
-  }
-  for (const request of (value.modelRequests ?? []).slice(-2)) {
-    if (selectedRequests.size < 2) selectedRequests.set(request.firstSeq, request)
-  }
-  const modelRequests = [...selectedRequests.values()].sort((left, right) => left.firstSeq - right.firstSeq).map(request => ({
-    ...request,
-    ...(request.usage === undefined ? {} : {
-      usage: compactJsonEvidence(request.usage, runId, 'modelRequest.usage', options.excerptBytes),
-    }),
-    ...(request.finishReason === undefined ? {} : {
-      finishReason: compactJsonEvidence(request.finishReason, runId, 'modelRequest.finishReason', options.excerptBytes),
-    }),
-    ...(request.partial === undefined ? {} : {
-      partial: { ...request.partial, content: compactExcerpt(request.partial.content, options.excerptBytes) },
-    }),
-  }))
-  const { terminalReason, modelRequests: _modelRequests, ...base } = value
-  return {
-    ...base,
-    id: boundedUtf8(value.id, 128),
-    ...(value.contextEpochId === undefined ? {} : { contextEpochId: boundedUtf8(value.contextEpochId, 128) }),
-    assistantMessages,
-    toolActions,
-    ...(modelRequests.length === 0 ? {} : { modelRequests }),
-    ...(terminalReason === undefined || !options.terminalReason ? {} : {
-      terminalReasonExcerpt: compactExcerpt(
-        contentExcerpt(runId, terminalReason, 'step.terminalReason', value.seqEnd, options.excerptBytes),
-        options.excerptBytes,
-      ),
-    }),
-    ...(value.assistantMessages.length <= assistantMessages.length ? {} : {
-      omittedAssistantMessageCount: value.assistantMessages.length - assistantMessages.length,
-    }),
-    ...(value.toolActions.length <= toolActions.length ? {} : {
-      omittedToolActionCount: value.toolActions.length - toolActions.length,
-    }),
-    ...((value.modelRequests?.length ?? 0) <= modelRequests.length ? {} : {
-      omittedModelRequestCount: value.modelRequests!.length - modelRequests.length,
-    }),
-  }
+function boundedCharacters(value: string, maxCharacters: number): string {
+  const values = characters(value)
+  if (values.length <= maxCharacters) return value
+  if (maxCharacters <= 1) return '…'.slice(0, maxCharacters)
+  return `${values.slice(0, maxCharacters - 1).join('')}…`
 }
 
-function compactEpoch(
-  value: TrajectoryContextEpoch,
-  runId: string,
-  options: { excerptBytes: number; maxSurfaceSeqs: number },
-): TrajectoryContextEpoch {
-  const surfaceMessageSeqs = options.maxSurfaceSeqs === 0 ? [] : value.surfaceMessageSeqs.slice(-options.maxSurfaceSeqs)
-  return {
-    ...value,
-    id: boundedUtf8(value.id, 128),
-    header: {
-      ...(value.header.config === undefined ? {} : {
-        configExcerpt: compactExcerpt(
-          contentExcerpt(runId, value.header.config, 'request.header.config', value.requestSeq, options.excerptBytes),
-          options.excerptBytes,
-        ),
-      }),
-      ...(value.header.adapterDefaults === undefined ? {} : {
-        adapterDefaultsExcerpt: compactExcerpt(
-          contentExcerpt(runId, value.header.adapterDefaults, 'request.header.adapterDefaults', value.requestSeq, options.excerptBytes),
-          options.excerptBytes,
-        ),
-      }),
-      ...(value.header.system === undefined ? {} : { system: compactExcerpt(value.header.system, options.excerptBytes) }),
-      ...(value.header.tools === undefined ? {} : { tools: compactExcerpt(value.header.tools, options.excerptBytes) }),
-    },
-    surfaceMessageSeqs,
-    ...(value.surfaceMessageSeqs.length <= surfaceMessageSeqs.length ? {} : {
-      omittedSurfaceMessageSeqCount: value.surfaceMessageSeqs.length - surfaceMessageSeqs.length,
-    }),
-  }
-}
-
-function compactCounts(
-  values: Readonly<Record<string, number>>,
-  maxEntries: number,
-): { counts: Record<string, number>; omittedCount: number } {
-  const entries = Object.entries(values)
-    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
-    .slice(0, maxEntries)
-    .map(([key, count]) => [boundedUtf8(key, 96), count] as const)
-  return { counts: Object.fromEntries(entries), omittedCount: Object.keys(values).length - entries.length }
-}
-
-function compactJsonEvidence(
-  value: JsonValue,
-  runId: string,
-  field: string,
-  maxBytes: number,
-): JsonValue {
-  if (Buffer.byteLength(JSON.stringify(value)) <= maxBytes) return value
-  return {
-    truncated: true,
-    excerpt: compactExcerpt(contentExcerpt(runId, value, field, undefined, maxBytes), maxBytes),
-  } as unknown as JsonValue
+function renderedMetaEvidence(value: MetaEvidenceText): string {
+  return `${value.text}${value.detailRef === undefined ? '' : `\n[more: ${value.detailRef}]`}`
 }
 
 export class RefineCapabilities {
@@ -249,6 +161,7 @@ export class RefineCapabilities {
   private readonly options: CapabilityOptions
   private readonly trajectoryProjections = new Map<string, SharedProjectionLoad>()
   private readonly trajectoryEvidenceBlockers = new Map<string, TrajectoryEvidenceBlocker>()
+  private readonly trajectoryDetailRefs = new Map<string, TrajectoryDetailRef>()
   private trajectoryProjectionCacheBytes = 0
 
   constructor(
@@ -347,15 +260,33 @@ export class RefineCapabilities {
       return publicJson(JSON.parse(await readFile(this.options.seedTasksPath, 'utf8')))
     }
     if (method === 'trajectory.query') {
-      const requestedView = this.optionalString(args, 'view')
-      if (requestedView !== undefined && !['bundle', 'steps', 'context', 'events'].includes(requestedView)) {
-        throw new TypeError('trajectory view must be bundle, steps, context, or events')
+      assertOnlyKeys(args, ['refs', 'detailRef', 'find'])
+      const refs = this.optionalStrings(args, 'refs')
+      const detailRef = this.optionalString(args, 'detailRef')
+      const find = this.optionalString(args, 'find')
+      if (detailRef !== undefined && refs !== undefined) {
+        throw new TypeError('trajectory.query accepts either refs or detailRef, not both')
       }
-      const offset = this.optionalInteger(args, 'offset') ?? 0
-      const limit = Math.min(this.optionalInteger(args, 'limit') ?? 20, 100)
-      if (limit <= 0) throw new TypeError('limit must be a positive integer')
+      if (find !== undefined && detailRef === undefined) {
+        throw new TypeError('find requires detailRef')
+      }
       const rounds = await store.listRounds()
-      const evidence = baseline === undefined ? this.seedRunEvidence(rounds) : [
+      if (detailRef !== undefined) {
+        const read = await this.readTrajectoryDetail(
+          sessionId,
+          activeRoundId,
+          detailRef,
+          find,
+          roundHeldOutRef(rounds, activeRoundId),
+          signal,
+        )
+        if (read.diagnosis !== undefined) meta.recordEvidenceAccess(activeRoundId, sessionId, {
+          refs: [read.diagnosis.evalId, read.diagnosis.runId],
+          diagnosisReceipts: [read.diagnosis.receipt],
+        })
+        return publicJson(read.visible)
+      }
+      const evidence: SeedRunEvidence[] = baseline === undefined ? this.seedRunEvidence(rounds) : [
         ...baseline.trials.flatMap(trial => trial.runId === undefined ? [] : [{
           evolutionId,
           roundId: activeRoundId,
@@ -371,45 +302,30 @@ export class RefineCapabilities {
           trial: { ...trial },
         })),
       ]
-      const refs = this.optionalStrings(args, 'refs')
-      const requestedRoundId = this.optionalString(args, 'roundId')
-        ?? activeRoundId
-      const visibleRounds = requestedRoundId === undefined
-        ? rounds
-        : rounds.filter(round => round.roundId === requestedRoundId)
-      if (requestedRoundId !== undefined && visibleRounds.length === 0) {
-        throw new Error(`unknown refinement round: ${requestedRoundId}`)
-      }
       if (refs === undefined || refs.length === 0) {
-        for (const round of visibleRounds.slice(offset, offset + limit)) {
-          const visibleBaseline = round.roundId === activeRoundId ? baseline ?? round.baseline : round.baseline
-          meta.recordEvidenceAccess(round.roundId, sessionId, {
-            summary: visibleBaseline !== undefined,
-            refs: visibleBaseline === undefined ? [] : [
-              visibleBaseline.evalId,
-              ...visibleBaseline.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId]),
-              ...visibleBaseline.invalidTrials.map(trial => trial.runId),
-            ],
-          })
-        }
-        const projected = visibleRounds.slice(offset, offset + limit).map(round => ({
-          roundId: round.roundId,
-          status: round.status,
-          targetHarnessRef: round.roundId === activeRoundId ? parentHarnessRef ?? round.targetHarnessRef : round.targetHarnessRef,
-          seedEvidence: [
-            ...(round.roundId === activeRoundId && baseline !== undefined
-              ? [this.projectEvidence('seed-baseline', baseline)]
-              : round.baseline === undefined ? [] : [this.projectEvidence('seed-baseline', round.baseline)]),
-            ...(round.roundId === activeRoundId && baseline !== undefined || round.evaluation?.seedCandidate === undefined
-              ? [] : [this.projectEvidence('seed-candidate', round.evaluation.seedCandidate)]),
-            ...(round.failedEvaluations ?? [])
-              .filter(failed => failed.phase === 'seed-baseline' || failed.phase === 'seed-candidate')
-              .map(failed => this.projectFailedEvidence(failed)),
+        const failedRuns = evidence
+          .filter(item => item.roundId === activeRoundId && (
+            item.trial.status === 'errored'
+            || (item.trial.rewards?.reward ?? Object.values(item.trial.rewards ?? {})[0] ?? 0) <= 0
+          ))
+          .map(item => ({
+            task: item.trial.taskName,
+            runId: item.trial.runId,
+            status: item.trial.status,
+            ...(item.trial.rewards === undefined ? {} : {
+              reward: item.trial.rewards.reward ?? Object.values(item.trial.rewards)[0],
+            }),
+            ...(item.trial.invalidReason === undefined ? {} : { invalidReason: item.trial.invalidReason }),
+          }))
+        const visibleBaseline = baseline ?? rounds.find(round => round.roundId === activeRoundId)?.baseline
+        meta.recordEvidenceAccess(activeRoundId, sessionId, {
+          summary: visibleBaseline !== undefined,
+          refs: visibleBaseline === undefined ? [] : [
+            visibleBaseline.evalId,
+            ...visibleBaseline.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId]),
+            ...visibleBaseline.invalidTrials.map(trial => trial.runId),
           ],
-          scoreDelta: round.evaluation?.scoreDelta,
-          decision: round.decision,
-          failure: round.failure === undefined ? undefined : { phase: round.failure.phase },
-        }))
+        })
         const readiness = baseline === undefined
           ? undefined
           : finalizationReadiness(
@@ -418,256 +334,106 @@ export class RefineCapabilities {
               this.trajectoryBlockers(sessionId, activeRoundId, baseline),
             )
         return publicJson({
-          rounds: projected,
-          offset,
-          limit,
-          eof: offset + projected.length >= visibleRounds.length,
-          ...(readiness === undefined ? {} : { diagnosisProgress: readiness }),
+          baseline: {
+            status: visibleBaseline?.completeness ?? 'unavailable',
+            ...(visibleBaseline?.primaryReward === undefined ? {} : { score: visibleBaseline.primaryReward }),
+            failedRuns,
+          },
+          ...(readiness === undefined ? {} : { diagnosisProgress: this.compactDiagnosisProgress(readiness) }),
         })
       }
-      if (refs.length > 10) throw new TypeError('trajectory.query accepts at most 10 refs')
+      if (refs.length > 5) throw new TypeError('trajectory.query accepts at most 5 run refs')
       if (this.options.trajectoryReader === undefined) throw new Error('Hitch trajectory reader is unavailable')
-      const selected = this.resolveSeedRefs(refs, evidence, requestedRoundId)
-      const view = requestedView ?? 'bundle'
-      if (selected.length > 10) {
-        throw new TypeError('trajectory.query expands to at most 10 runs; query recorded run refs in batches')
-      }
-      if (view !== 'bundle' && selected.length !== 1) {
-        throw new TypeError(`${view} drill-down requires exactly one recorded run ref`)
-      }
-      if (view === 'bundle') {
-        const bundles: GearFailureBundle[] = []
-        const receipts: Array<{ item: SeedRunEvidence; receipt: DiagnosisReceipt }> = []
-        const totalBudget = this.options.maxFailureBundleBytes ?? this.maxTrajectoryPageBytes
-        const perBundleBudget = Math.floor(totalBudget / Math.max(1, selected.length))
-        if (perBundleBudget < 4 * 1024) {
-          if (selected.length > 1) return publicJson(this.bundleBatchRecovery(selected))
-          throw new Error('failure bundle output budget is too small for this batch; query fewer run refs')
-        }
-        try {
-          for (const item of selected) {
-            let projection: TrajectoryProjection
-            try {
-              projection = await this.projectedTrajectory(item.trial.runId, signal)
-              this.trajectoryEvidenceBlockers.delete(this.trajectoryBlockerKey(sessionId, item.roundId, item.trial.runId))
-            } catch (error) {
-              const blocker = this.recordTrajectoryBlocker(sessionId, item.roundId, item.trial.runId, error)
-              return publicJson(this.trajectoryEvidenceBlocked([blocker]))
-            }
-            if (projection.coverage.surface !== 'complete' || projection.fidelity === 'unavailable') {
-              const blocker = this.recordTrajectoryBlocker(
-                sessionId,
-                item.roundId,
-                item.trial.runId,
-                Object.assign(new Error('bounded trajectory surface is incomplete'), {
-                  code: 'hitch_trajectory_analysis_incomplete',
-                }),
-              )
-              return publicJson(this.trajectoryEvidenceBlocked([blocker]))
-            }
-            if (!projection.messages.some(message => message.eventType === 'user/message' && message.role === 'user')) {
-              const blocker = this.recordTrajectoryBlocker(
-                sessionId,
-                item.roundId,
-                item.trial.runId,
-                Object.assign(new Error('bounded trajectory has no observable task prompt'), {
-                  code: 'hitch_trajectory_task_context_missing',
-                }),
-              )
-              return publicJson(this.trajectoryEvidenceBlocked([blocker]))
-            }
-            const verifier = await this.loadVerifierEvidence(item, signal)
-            const bundle = this.failureBundle(
-              item,
-              projection,
-              verifier,
-              roundHeldOutRef(rounds, item.roundId),
-              perBundleBudget,
-            )
-            bundles.push(bundle)
-            if (bundle.coverage.task === 'complete' && bundle.coverage.trajectory === 'complete'
-              && (bundle.trajectory.semanticStepCount === 0 || bundle.trajectory.keySteps.length > 0)) {
-              receipts.push({
-                item,
-                receipt: this.diagnosisReceipt(
-                  bundle,
-                  projection.trajectoryDigest,
-                  verifier.verifier.status,
-                ),
-              })
-            }
-          }
-        } catch (error) {
-          if (selected.length > 1 && error instanceof Error
-            && error.message.includes('exceeds the configured output budget')) {
-            return publicJson(this.bundleBatchRecovery(selected))
-          }
-          if (selected.length === 1 && error instanceof Error
-            && error.message.includes('exceeds the configured output budget')) {
-            const item = selected[0]!
-            const blocker = this.recordTrajectoryBlocker(
-              sessionId,
-              item.roundId,
-              item.trial.runId,
-              Object.assign(error, { code: 'gear_failure_bundle_overflow' }),
-            )
-            return publicJson(this.trajectoryEvidenceBlocked([blocker]))
-          }
-          throw error
-        }
-        for (const { item, receipt } of receipts) meta.recordEvidenceAccess(item.roundId, sessionId, {
-          refs: [item.evalId, item.trial.runId],
-          diagnosisReceipts: [receipt],
-        })
-        const readiness = baseline === undefined
-          ? undefined
-          : finalizationReadiness(
-              baseline,
-              meta.proposalEvidenceAudit(activeRoundId, sessionId, []),
-              this.trajectoryBlockers(sessionId, activeRoundId, baseline),
-            )
-        return publicJson({
-          bundles,
-          ...(readiness === undefined ? {} : { diagnosisProgress: readiness }),
-        })
-      }
-
-      const trajectories: unknown[] = []
+      const selected = this.resolveSeedRefs(refs, evidence, activeRoundId)
+      if (selected.length > 5) throw new TypeError('trajectory.query expands to at most 5 runs')
+      const cards: MetaFailureCard[] = []
+      const receipts: Array<{ item: SeedRunEvidence; receipt: DiagnosisReceipt }> = []
       for (const item of selected) {
-        if (view === 'events') {
-          const requestedTypes = this.optionalStrings(args, 'eventTypes')
-          const aroundSeq = this.optionalInteger(args, 'aroundSeq')
-          const radius = this.optionalInteger(args, 'radius') ?? 10
-          const errorsOnly = this.optionalBoolean(args, 'errorsOnly') ?? false
-          const seqStart = this.optionalInteger(args, 'seqStart')
-          const seqEnd = this.optionalInteger(args, 'seqEnd')
-          const field = this.optionalString(args, 'field')
-          const cursor = this.optionalString(args, 'cursor')
-          const requestedDigest = this.optionalString(args, 'canonicalSha256')
-          if (offset !== 0) throw new TypeError('events view uses cursor pagination; offset must be 0')
-          if (aroundSeq !== undefined && (seqStart !== undefined || seqEnd !== undefined || field !== undefined)) {
-            throw new TypeError('aroundSeq cannot be combined with seqStart, seqEnd, or field')
-          }
-          if (radius < 0) throw new TypeError('radius must be non-negative')
-          const projection = requestedDigest === undefined && cursor === undefined
-            ? await this.projectedTrajectory(item.trial.runId, signal)
-            : undefined
-          const canonicalSha256 = requestedDigest ?? projection?.trajectoryDigest
-          let pageLimit = limit
-          let page
-          let events
-          let bounded
-          while (true) {
-            page = await this.options.trajectoryReader.inspectTrajectoryEvents(item.trial.runId, {
-              ...(requestedTypes === undefined ? {} : { eventTypes: requestedTypes }),
-              ...(aroundSeq === undefined ? (seqStart === undefined ? {} : { seqStart }) : { seqStart: Math.max(0, aroundSeq - radius) }),
-              ...(aroundSeq === undefined ? (seqEnd === undefined ? {} : { seqEnd }) : { seqEnd: aroundSeq + radius }),
-              ...(field === undefined ? {} : { field }),
-              ...(canonicalSha256 === undefined ? {} : { canonicalSha256 }),
-              ...(cursor === undefined ? {} : { cursor }),
-              limit: pageLimit,
-              maxBytes: this.maxTrajectoryPageBytes,
-            }, signal)
-            events = errorsOnly
-              ? page.events.filter(event => /error|failed|exception|retry/iu.test(JSON.stringify(event)))
-              : page.events
-            bounded = this.boundTrajectoryItems(events, roundHeldOutRef(rounds, item.roundId))
-            if (bounded.consumed === events.length) break
-            if (pageLimit === 1) {
-              throw Object.assign(new Error(`single bounded event for ${item.trial.runId} exceeds the Gear response budget`), {
-                code: 'gear_trajectory_events_page_overflow',
-              })
-            }
-            pageLimit = Math.max(1, Math.min(pageLimit - 1, bounded.consumed))
-          }
-          trajectories.push({
-            ref: item.trial.runId,
-            roundId: item.roundId,
-            phase: item.phase,
-            evalId: item.evalId,
-            taskName: item.trial.taskName,
-            trialName: item.trial.trialName,
-            runId: page.runId,
-            ...(item.failure === undefined ? {} : { outcome: 'failed', failure: item.failure }),
-            view,
-            canonicalSha256: page.canonicalSha256,
-            filter: page.filter,
-            events: bounded.items,
-            cursor: cursor ?? null,
-            limit: pageLimit,
-            ...(pageLimit === limit ? {} : { requestedLimit: limit }),
-            total: page.totalMatches,
-            ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
-            eof: page.eof,
-            ...(page.redactions === undefined ? {} : { redactions: page.redactions }),
-            ...(errorsOnly ? { pageFilter: 'errorsOnly' } : {}),
-          })
-          continue
+        let projection: TrajectoryProjection
+        try {
+          projection = await this.projectedTrajectory(item.trial.runId, signal)
+          this.trajectoryEvidenceBlockers.delete(this.trajectoryBlockerKey(sessionId, item.roundId, item.trial.runId))
+        } catch (error) {
+          const blocker = this.recordTrajectoryBlocker(sessionId, item.roundId, item.trial.runId, error)
+          return publicJson(this.trajectoryEvidenceBlocked([blocker]))
         }
-        const projection = await this.projectedTrajectory(item.trial.runId, signal)
-        if (view === 'steps') {
-          const turn = this.optionalInteger(args, 'turn')
-          const stepNumber = this.optionalInteger(args, 'step')
-          const errorsOnly = this.optionalBoolean(args, 'errorsOnly') ?? false
-          const filtered = projection.semanticSteps.filter(step =>
-            (turn === undefined || step.turn === turn)
-            && (stepNumber === undefined || step.step === stepNumber)
-            && (!errorsOnly || step.toolActions.some(action => action.status !== 'completed')))
-          const page = filtered.slice(offset, offset + limit)
-          const bounded = this.boundTrajectoryItems(page, roundHeldOutRef(rounds, item.roundId))
-          trajectories.push({
-            ref: item.trial.runId,
-            roundId: item.roundId,
-            phase: item.phase,
-            evalId: item.evalId,
-            taskName: item.trial.taskName,
-            runId: item.trial.runId,
-            view,
-            steps: bounded.items,
-            offset,
-            limit,
-            total: filtered.length,
-            nextOffset: offset + bounded.consumed,
-            eof: offset + bounded.consumed >= filtered.length && bounded.consumed === page.length,
-          })
-          continue
+        if (projection.coverage.surface !== 'complete' || projection.fidelity === 'unavailable') {
+          const blocker = this.recordTrajectoryBlocker(
+            sessionId,
+            item.roundId,
+            item.trial.runId,
+            Object.assign(new Error('bounded trajectory surface is incomplete'), {
+              code: 'hitch_trajectory_analysis_incomplete',
+            }),
+          )
+          return publicJson(this.trajectoryEvidenceBlocked([blocker]))
         }
-        if (view === 'context') {
-          const epochs = projection.contextEpochs.slice(offset, offset + limit)
-          const contexts = epochs.map(epoch => {
-            const surfaceMessages = epoch.surfaceMessageSeqs
-              .flatMap(seq => projection.messages.find(message => message.seq === seq) ?? [])
-            const visibleMessages = surfaceMessages.slice(-6)
-            return {
-              ...epoch,
-              surfaceMessageCount: surfaceMessages.length,
-              omittedSurfaceMessageCount: surfaceMessages.length - visibleMessages.length,
-              surfaceMessages: visibleMessages,
-            }
-          })
-          const bounded = this.boundTrajectoryItems(contexts, roundHeldOutRef(rounds, item.roundId))
-          trajectories.push({
-            ref: item.trial.runId,
-            roundId: item.roundId,
-            phase: item.phase,
+        const prompt = projection.messages.find(message => message.eventType === 'user/message' && message.role === 'user')
+        if (prompt === undefined) {
+          const blocker = this.recordTrajectoryBlocker(
+            sessionId,
+            item.roundId,
+            item.trial.runId,
+            Object.assign(new Error('bounded trajectory has no observable task prompt'), {
+              code: 'hitch_trajectory_task_context_missing',
+            }),
+          )
+          return publicJson(this.trajectoryEvidenceBlocked([blocker]))
+        }
+        const verifier = await this.loadVerifierEvidence(item, signal)
+        const card = this.failureCard(
+          sessionId,
+          item,
+          projection,
+          verifier,
+          roundHeldOutRef(rounds, item.roundId),
+        )
+        cards.push(card)
+        const verifierStatus = verifier.verifier.status === 'missing'
+          ? 'explicitly-missing' as const
+          : verifier.verifier.status === 'corrupt'
+            ? 'unavailable' as const
+            : verifier.verifier.status
+        const cardDigest = digestJson(card)
+        if (card.verifier.needsDetail === true && card.verifier.detailRef !== undefined) {
+          const requiredDetail = this.trajectoryDetailRefs.get(card.verifier.detailRef)
+          if (requiredDetail !== undefined) requiredDetail.pendingDiagnosis = {
             evalId: item.evalId,
-            taskName: item.trial.taskName,
-            runId: item.trial.runId,
-            view,
-            epochs: bounded.items,
-            offset,
-            limit,
-            total: projection.contextEpochs.length,
-            nextOffset: offset + bounded.consumed,
-            eof: offset + bounded.consumed >= projection.contextEpochs.length && bounded.consumed === epochs.length,
+            cardDigest,
+            trajectoryDigest: projection.trajectoryDigest,
+            verifierStatus,
+            sourceVerifierStatus: verifier.verifier.status,
+            visibleDigests: [],
+            recorded: false,
+          }
+        } else if (projection.coverage.surface === 'complete' && card.transcript.text.length > 0) {
+          receipts.push({
+            item,
+            receipt: this.diagnosisReceiptForCard(
+              card.runId,
+              cardDigest,
+              projection.trajectoryDigest,
+              verifierStatus,
+              verifier.verifier.status,
+            ),
           })
-          continue
         }
       }
-      for (const item of selected) meta.recordEvidenceAccess(item.roundId, sessionId, {
+      for (const { item, receipt } of receipts) meta.recordEvidenceAccess(item.roundId, sessionId, {
         refs: [item.evalId, item.trial.runId],
+        diagnosisReceipts: [receipt],
       })
-      return publicJson({ trajectories })
+      const readiness = baseline === undefined
+        ? undefined
+        : finalizationReadiness(
+            baseline,
+            meta.proposalEvidenceAudit(activeRoundId, sessionId, []),
+            this.trajectoryBlockers(sessionId, activeRoundId, baseline),
+          )
+      return publicJson({
+        runs: cards,
+        ...(readiness === undefined ? {} : { diagnosisProgress: this.compactDiagnosisProgress(readiness) }),
+      })
     }
     if (method === 'hitch.status') {
       const roundId = this.string(args, 'roundId')
@@ -884,11 +650,11 @@ export class RefineCapabilities {
   private trajectoryEvidenceBlocked(blockers: readonly TrajectoryEvidenceBlocker[]): Record<string, unknown> {
     return {
       schemaVersion: 1,
-      bundles: [],
+      runs: [],
       batchAccepted: false,
       recoverable: false,
       code: 'TRAJECTORY_EVIDENCE_UNAVAILABLE',
-      message: `Failure bundles could not be constructed for ${blockers.length} run${blockers.length === 1 ? '' : 's'}. Do not retry the same query until Hitch or the trajectory evidence is repaired.`,
+      message: `Diagnostic cards could not be constructed for ${blockers.length} run${blockers.length === 1 ? '' : 's'}. Do not retry the same query until Hitch or the trajectory evidence is repaired.`,
       blockedRuns: blockers,
       operatorAction: {
         upgrade: 'Hitch bounded trajectory analysis capability',
@@ -938,236 +704,284 @@ export class RefineCapabilities {
     }
   }
 
-  private bundleBatchRecovery(selected: readonly SeedRunEvidence[]): Record<string, unknown> {
-    const actions = selected.map((item, index) => ({
-      actionId: `diagnose-oversized-bundle-${index + 1}`,
-      tool: 'trajectory_query',
-      arguments: { refs: [item.trial.runId], view: 'bundle' },
-      reason: `Read the failure bundle for recorded run ${item.trial.runId} separately because the combined response exceeds the output budget.`,
-      coversRunIds: [item.trial.runId],
-    }))
+  private compactDiagnosisProgress(value: ReturnType<typeof finalizationReadiness>): Record<string, unknown> {
     return {
-      schemaVersion: 1,
-      bundles: [],
-      batchAccepted: false,
-      recoverable: true,
-      code: 'BUNDLE_BATCH_TOO_LARGE',
-      message: 'The combined failure-bundle response exceeds the output budget. Execute nextAction, then remainingActions; each successful single-run query records its diagnosis receipt.',
-      nextAction: actions[0],
-      remainingActions: actions.slice(1),
+      ready: value.ready,
+      diagnosed: value.diagnosedRunCount,
+      required: value.failedRunCount,
+      remainingRunIds: value.missing.map(item => item.runId),
     }
   }
 
-  private failureBundle(
+  private registerDetailRef(value: TrajectoryDetailRef): string {
+    const ref = `detail_${randomBytes(16).toString('hex')}`
+    this.trajectoryDetailRefs.set(ref, value)
+    this.trimDetailRefs()
+    return ref
+  }
+
+  private trimDetailRefs(): void {
+    const cachedTexts = (): number => {
+      const unique = new Set<string>()
+      for (const value of this.trajectoryDetailRefs.values()) {
+        if (value.text !== undefined) unique.add(value.text)
+      }
+      return [...unique].reduce((total, text) => total + Buffer.byteLength(text), 0)
+    }
+    while (this.trajectoryDetailRefs.size > 4_096 || cachedTexts() > 64 * 1024 * 1024) {
+      const oldest = this.trajectoryDetailRefs.keys().next().value as string | undefined
+      if (oldest === undefined) break
+      this.trajectoryDetailRefs.delete(oldest)
+    }
+  }
+
+  private inlineDetailRef(
+    sessionId: string,
+    roundId: string,
+    runId: string,
+    text: string,
+    sourceComplete = true,
+  ): string {
+    return this.registerDetailRef({ sessionId, roundId, runId, offset: 0, text, sourceComplete })
+  }
+
+  private evidenceText(
+    sessionId: string,
+    item: SeedRunEvidence,
+    projection: TrajectoryProjection,
+    value: ContentExcerpt,
+    maxCharacters: number,
+    heldOutRef: string | undefined,
+  ): MetaEvidenceText {
+    const joined = value.tail === undefined ? value.preview : `${value.preview}\n…\n${value.tail}`
+    const safe = this.sanitize(joined, heldOutRef) as string
+    const visible = boundedCharacters(safe, maxCharacters)
+    const truncated = value.truncated || characterLength(safe) > maxCharacters
+    if (!truncated) return { text: visible }
+    const detailRef = value.source.seq === undefined
+      ? this.inlineDetailRef(sessionId, item.roundId, item.trial.runId, safe)
+      : this.registerDetailRef({
+          sessionId,
+          roundId: item.roundId,
+          runId: item.trial.runId,
+          offset: 0,
+          source: {
+            seq: value.source.seq,
+            field: value.source.field,
+            canonicalSha256: projection.trajectoryDigest,
+            bytes: value.bytes,
+          },
+        })
+    return { text: visible, truncated: true, detailRef }
+  }
+
+  private inlineEvidenceText(
+    sessionId: string,
+    item: SeedRunEvidence,
+    text: string,
+    maxCharacters: number,
+    heldOutRef: string | undefined,
+  ): MetaEvidenceText {
+    const safe = this.sanitize(text, heldOutRef) as string
+    if (characterLength(safe) <= maxCharacters) return { text: safe }
+    return {
+      text: boundedCharacters(safe, maxCharacters),
+      truncated: true,
+      detailRef: this.inlineDetailRef(sessionId, item.roundId, item.trial.runId, safe),
+    }
+  }
+
+  private verifierCard(
+    sessionId: string,
+    item: SeedRunEvidence,
+    evidence: HitchVerifierEvidence,
+    heldOutRef: string | undefined,
+    detailBytes: number,
+  ): MetaFailureCard['verifier'] {
+    const status = evidence.verifier.status === 'corrupt' ? 'unavailable' : evidence.verifier.status
+    const safeDiagnostics = evidence.verifier.diagnostics === undefined
+      ? undefined
+      : this.sanitize(evidence.verifier.diagnostics, heldOutRef)
+    const diagnostics = objectValue(safeDiagnostics)
+    const ctrf = objectValue(diagnostics?.ctrf)
+    const ctrfJson = objectValue(ctrf?.json)
+    const results = objectValue(ctrfJson?.results)
+    const summary = objectValue(results?.summary)
+    const tests = Array.isArray(results?.tests) ? results.tests : []
+    const failedTests = tests.flatMap(test => {
+      const value = objectValue(test)
+      if (value === undefined || value.status === 'passed' || value.status === 'skipped') return []
+      const name = typeof value.name === 'string' ? value.name : 'unnamed verifier check'
+      const detail = [value.message, value.trace]
+        .filter((part): part is string => typeof part === 'string' && part.length > 0)
+        .join('\n') || `Verifier status: ${String(value.status ?? 'failed')}`
+      return [{
+        name: boundedUtf8(name, 240),
+        detail: this.inlineEvidenceText(sessionId, item, detail, detailBytes, heldOutRef),
+      }]
+    }).slice(0, 5)
+    const summaryText = summary === undefined
+      ? status === 'missing'
+        ? 'Verifier result is missing.'
+        : status === 'result_only'
+          ? 'Verifier returned a result without diagnostic artifacts.'
+          : evidence.verifier.issues?.[0] ?? 'Verifier diagnostics are available.'
+      : `${String(summary.passed ?? 0)} passed, ${String(summary.failed ?? failedTests.length)} failed, ${String(summary.skipped ?? 0)} skipped.`
+    const detailChunks: string[] = []
+    let diagnosticsComplete = true
+    const appendArtifact = (label: string, value: unknown): void => {
+      const artifact = objectValue(value)
+      if (artifact === undefined) return
+      if (artifact.truncated === true) diagnosticsComplete = false
+      if (artifact.json !== undefined) detailChunks.push(`${label}\n${JSON.stringify(artifact.json, null, 2)}`)
+      else if (typeof artifact.text === 'string') detailChunks.push(`${label}\n${artifact.text}`)
+    }
+    appendArtifact('CTRF', diagnostics?.ctrf)
+    for (const stream of ['stdout', 'stderr'] as const) {
+      const artifacts = diagnostics?.[stream]
+      if (!Array.isArray(artifacts)) continue
+      for (const artifact of artifacts) {
+        const name = objectValue(artifact)?.name
+        appendArtifact(`${stream.toUpperCase()}${typeof name === 'string' ? ` ${name}` : ''}`, artifact)
+      }
+    }
+    if (diagnostics?.infrastructure_error !== undefined) {
+      detailChunks.push(`INFRASTRUCTURE ERROR\n${JSON.stringify(diagnostics.infrastructure_error, null, 2)}`)
+    }
+    if (diagnostics?.retry_history !== undefined) {
+      detailChunks.push(`RETRY HISTORY\n${JSON.stringify(diagnostics.retry_history, null, 2)}`)
+    }
+    const diagnosticsText = detailChunks.length === 0 ? undefined : detailChunks.join('\n\n')
+    const needsDetail = status === 'complete' && failedTests.length === 0 && diagnosticsText !== undefined
+    return {
+      status,
+      summary: boundedUtf8(this.sanitize(summaryText, heldOutRef) as string, 600),
+      ...(failedTests.length === 0 ? {} : { failures: failedTests }),
+      ...(diagnosticsText === undefined ? {} : {
+        detailRef: this.inlineDetailRef(
+          sessionId, item.roundId, item.trial.runId, diagnosticsText, diagnosticsComplete,
+        ),
+      }),
+      ...(needsDetail ? { needsDetail: true as const } : {}),
+    }
+  }
+
+  private failureCard(
+    sessionId: string,
     item: SeedRunEvidence,
     projection: TrajectoryProjection,
     verifierEvidence: HitchVerifierEvidence,
     heldOutRef: string | undefined,
-    maxBytes: number,
-  ): GearFailureBundle {
+  ): MetaFailureCard {
     const reward = item.trial.rewards?.reward ?? Object.values(item.trial.rewards ?? {})[0]
-    const prompt = projection.messages.find(message => message.eventType === 'user/message' && message.role === 'user')
-    const workspaceStatus = projection.pathsObservedThroughTools.length === 0 ? 'missing' : 'observed-only'
-    const minimumSteps = projection.semanticSteps.length === 0 ? 0 : 1
-    const profiles = [
-      {
-        maxSteps: 8, excerptBytes: 1_200, maxToolActions: 2, maxAssistantMessages: 1,
-        terminalReason: true, maxContexts: 4, maxSurfaceSeqs: 32, maxPaths: 16,
-        pathBytes: 256, maxEventTypes: 32, maxErrors: 8, labelBytes: 512, includeFinalAnswer: true,
-        verifierBytes: 12 * 1024,
-      },
-      {
-        maxSteps: 2, excerptBytes: 320, maxToolActions: 1, maxAssistantMessages: 1,
-        terminalReason: false, maxContexts: 1, maxSurfaceSeqs: 8, maxPaths: 4,
-        pathBytes: 96, maxEventTypes: 8, maxErrors: 3, labelBytes: 128, includeFinalAnswer: true,
-        verifierBytes: 2 * 1024,
-      },
-      {
-        maxSteps: 1, excerptBytes: 220, maxToolActions: 1, maxAssistantMessages: 1,
-        terminalReason: false, maxContexts: 0, maxSurfaceSeqs: 0, maxPaths: 0,
-        pathBytes: 0, maxEventTypes: 0, maxErrors: 1, labelBytes: 96, includeFinalAnswer: false,
-        verifierBytes: 1_024,
-      },
-    ] as const
-    for (const profile of profiles) {
-      const upperSteps = Math.min(profile.maxSteps, projection.semanticSteps.length)
-      for (let maxSteps = upperSteps; maxSteps >= minimumSteps; maxSteps -= 1) {
-        const selectedSteps = selectKeySteps(projection, maxSteps)
-        const keySteps = selectedSteps.map(step => compactStep(step, item.trial.runId, {
-          excerptBytes: profile.excerptBytes,
-          maxToolActions: profile.maxToolActions,
-          maxAssistantMessages: profile.maxContexts === 0 && step.toolActions.length > 0
-            ? 0
-            : profile.maxAssistantMessages,
-          terminalReason: profile.terminalReason,
-        }))
-        const contextIds = new Set(keySteps.flatMap(step => step.contextEpochId === undefined ? [] : [step.contextEpochId]))
-        const selectedContexts = contextIds.size > 0
-          ? projection.contextEpochs.filter(epoch => contextIds.has(epoch.id))
-          : projection.contextEpochs.filter((_epoch, index) => index === 0 || index === projection.contextEpochs.length - 1)
-        const contextEpochs = (profile.maxContexts === 0 ? [] : selectedContexts.slice(-profile.maxContexts))
-          .map(epoch => compactEpoch(epoch, item.trial.runId, {
-            excerptBytes: profile.excerptBytes,
-            maxSurfaceSeqs: profile.maxSurfaceSeqs,
-          }))
-        const eventTypes = compactCounts(projection.omittedEventTypes, profile.maxEventTypes)
-        const pathsObservedThroughTools = projection.pathsObservedThroughTools
-          .slice(0, profile.maxPaths)
-          .map(path => boundedUtf8(path, profile.pathBytes))
-        const errors = projection.errors.slice(0, profile.maxErrors).map(error => ({
-          ...(error.seq === undefined ? {} : { seq: error.seq }),
-          type: boundedUtf8(error.type, 128),
-          excerpt: boundedUtf8(error.excerpt, profile.excerptBytes),
-        }))
-        const taskName = boundedUtf8(item.trial.taskName, profile.labelBytes)
-        const trialName = item.trial.trialName === undefined
-          ? undefined
-          : boundedUtf8(item.trial.trialName, profile.labelBytes)
-        const crossSourceSignals: GearFailureBundle['crossSourceSignals'] = []
-        if (item.trial.status === 'completed' && (reward ?? 0) <= 0) {
-          crossSourceSignals.push({ kind: 'completed_run_with_zero_reward', runId: item.trial.runId })
-        }
-        if (projection.errors.length > 0) {
-          crossSourceSignals.push({ kind: 'completed_run_with_tool_errors', runId: item.trial.runId })
-        }
-        if (workspaceStatus === 'observed-only') {
-          crossSourceSignals.push({ kind: 'workspace_paths_observed_without_authoritative_diff', runId: item.trial.runId })
-        }
-        const verifierStatus = verifierEvidence.verifier.status === 'corrupt'
-          ? 'unavailable' as const
-          : verifierEvidence.verifier.status
-        const verifierCoverage = verifierStatus === 'missing'
-          ? 'explicitly-missing' as const
-          : verifierStatus
-        if (verifierEvidence.verifier.status === 'unavailable') {
-          crossSourceSignals.push({ kind: 'verifier_evidence_unavailable', runId: item.trial.runId })
-        } else if (verifierEvidence.verifier.status === 'corrupt') {
-          crossSourceSignals.push({ kind: 'verifier_evidence_corrupt', runId: item.trial.runId })
-        } else if (verifierEvidence.verifier.status === 'result_only') {
-          crossSourceSignals.push({ kind: 'verifier_diagnostics_missing', runId: item.trial.runId })
-        } else if (verifierEvidence.verifier.status === 'missing') {
-          crossSourceSignals.push({ kind: 'verifier_result_explicitly_missing', runId: item.trial.runId })
-        }
-        if (reward !== undefined && verifierEvidence.observation?.reward !== undefined
-          && reward !== verifierEvidence.observation.reward) {
-          crossSourceSignals.push({ kind: 'baseline_verifier_reward_mismatch', runId: item.trial.runId })
-        }
-        const verifierDiagnostics = {
-          ...(verifierEvidence.verifier.diagnostics === undefined
-            ? {}
-            : { artifacts: verifierEvidence.verifier.diagnostics }),
-          ...(verifierEvidence.verifier.issues === undefined ? {} : { issues: verifierEvidence.verifier.issues }),
-          ...(verifierEvidence.redactions === undefined ? {} : { redactions: verifierEvidence.redactions }),
-        }
-        const hasVerifierDiagnostics = Object.keys(verifierDiagnostics).length > 0
-        // Sanitize structured evidence before it can be collapsed into a text
-        // excerpt. Once serialized, key-sensitive values can no longer be
-        // recognized by the sanitizer.
-        const safeVerifierResult = verifierEvidence.verifier.result === undefined
-          ? undefined
-          : publicJson(this.sanitize(verifierEvidence.verifier.result, heldOutRef))
-        const safeVerifierDiagnostics = !hasVerifierDiagnostics
-          ? undefined
-          : publicJson(this.sanitize(verifierDiagnostics, heldOutRef))
-        const draft = {
-          schemaVersion: 1 as const,
-          identity: {
-            evolutionId: item.evolutionId,
-            roundId: item.roundId,
-            phase: item.phase,
-            evalId: item.evalId,
-            runId: item.trial.runId,
-            taskName,
-            ...(taskName === item.trial.taskName ? {} : { taskNameTruncated: true }),
-            ...(trialName === undefined ? {} : { trialName }),
-            ...(trialName === item.trial.trialName ? {} : { trialNameTruncated: true }),
-            ...(item.trial.attempt === undefined ? {} : { attempt: item.trial.attempt }),
-            trajectoryDigest: projection.trajectoryDigest,
-          },
-          task: prompt === undefined ? {} : { prompt: compactExcerpt(prompt.message, profile.excerptBytes) },
-          outcome: {
-            trialStatus: item.trial.status,
-            ...(reward === undefined ? {} : { reward }),
-            ...(item.trial.invalidReason === undefined ? {} : {
-              invalidReason: boundedUtf8(item.trial.invalidReason, profile.labelBytes),
-            }),
-            verifierStatus,
-            ...(safeVerifierResult === undefined ? {} : {
-              verifierResult: compactJsonEvidence(
-                safeVerifierResult,
-                item.trial.runId,
-                'verifier.result',
-                profile.verifierBytes,
-              ),
-            }),
-            ...(safeVerifierDiagnostics === undefined ? {} : {
-              verifierDiagnostics: compactJsonEvidence(
-                safeVerifierDiagnostics,
-                item.trial.runId,
-                'verifier.diagnostics',
-                profile.verifierBytes,
-              ),
-            }),
-          },
-          trajectory: {
-            fidelity: projection.fidelity,
-            rawEventCount: projection.rawEventCount,
-            omittedEventTypes: eventTypes.counts,
-            ...(eventTypes.omittedCount === 0 ? {} : { omittedEventTypeCount: eventTypes.omittedCount }),
-            contextEpochCount: projection.contextEpochs.length,
-            contextEpochs,
-            semanticStepCount: projection.semanticSteps.length,
-            keySteps,
-            omittedStepCount: projection.semanticSteps.length - keySteps.length,
-            errors,
-            ...(projection.errors.length <= errors.length ? {} : {
-              omittedErrorCount: projection.errors.length - errors.length,
-            }),
-            ...(projection.finalAnswer === undefined || !profile.includeFinalAnswer
-              ? {}
-              : { finalAnswer: compactMessage(projection.finalAnswer, profile.excerptBytes) }),
-          },
-          workspace: {
-            status: workspaceStatus,
-            pathsObservedThroughTools,
-            ...(projection.pathsObservedThroughTools.length <= pathsObservedThroughTools.length ? {} : {
-              omittedPathCount: projection.pathsObservedThroughTools.length - pathsObservedThroughTools.length,
-            }),
-          },
-          crossSourceSignals,
-          coverage: {
-            task: prompt === undefined ? 'missing' as const : 'complete' as const,
-            trajectory: projection.coverage.surface === 'complete' && projection.fidelity !== 'unavailable'
-              ? 'complete' as const
-              : 'partial' as const,
-            content: projection.coverage.content,
-            verifier: verifierCoverage,
-            childSessions: projection.coverage.childSessions,
-            workspace: workspaceStatus,
-          },
-        }
-        // publicJson is part of the externally visible projection, so apply it
-        // before binding the bundle digest and recording a diagnosis receipt.
-        const sanitized = publicJson(this.sanitize(draft, heldOutRef)) as unknown as Omit<GearFailureBundle, 'bundleDigest'>
-        const bundle: GearFailureBundle = { ...sanitized, bundleDigest: digestJson(sanitized) }
-        if (Buffer.byteLength(JSON.stringify(bundle)) <= maxBytes) return bundle
-      }
+    const actions = projection.semanticSteps.flatMap(step => step.toolActions)
+    const pairedToolResults = new Set(actions.flatMap(action =>
+      action.resultSeq === undefined ? [] : [action.resultSeq]))
+    const blocks: Array<{ seq: number; order: number; text: string }> = []
+
+    for (const message of projection.messages) {
+      if (message.eventType === 'tool/result' && pairedToolResults.has(message.seq)) continue
+      const isToolResult = message.eventType === 'tool/result' || message.role === 'tool'
+      const evidence = this.evidenceText(
+        sessionId,
+        item,
+        projection,
+        message.message,
+        isToolResult ? 2_000 : 80_000,
+        heldOutRef,
+      )
+      if (evidence.text.trim().length === 0 && evidence.detailRef === undefined) continue
+      const label = message.eventType === 'user/message' && message.role === 'user'
+        ? 'USER'
+        : message.eventType === 'assistant/message' && message.role === 'assistant'
+          ? 'ASSISTANT'
+          : 'TOOL RESULT'
+      blocks.push({ seq: message.seq, order: 0, text: `${label}\n${renderedMetaEvidence(evidence)}` })
     }
-    throw new Error(`failure bundle for ${item.trial.runId} exceeds the configured output budget`)
+
+    for (const action of actions) {
+      const input = this.evidenceText(
+        sessionId, item, projection, action.arguments, 80_000, heldOutRef,
+      )
+      const output = action.result === undefined
+        ? undefined
+        : this.evidenceText(sessionId, item, projection, action.result, 2_000, heldOutRef)
+      blocks.push({
+        seq: action.callSeq,
+        order: 1,
+        text: [
+          `TOOL ${boundedUtf8(action.name, 96)} · ${action.status}`,
+          `input: ${renderedMetaEvidence(input)}`,
+          ...(output === undefined ? [] : [`output: ${renderedMetaEvidence(output)}`]),
+        ].join('\n'),
+      })
+    }
+
+    blocks.sort((left, right) => left.seq - right.seq || left.order - right.order)
+    return publicJson(this.sanitize({
+      task: boundedUtf8(item.trial.taskName, 240),
+      runId: item.trial.runId,
+      outcome: {
+        status: item.trial.status,
+        ...(reward === undefined ? {} : { reward }),
+        ...(item.trial.invalidReason === undefined ? {} : {
+          invalidReason: boundedUtf8(item.trial.invalidReason, 300),
+        }),
+      },
+      verifier: this.verifierCard(sessionId, item, verifierEvidence, heldOutRef, 2_000),
+      transcript: this.transcriptWindow(sessionId, item, blocks.map(block => block.text)),
+    }, heldOutRef)) as unknown as MetaFailureCard
   }
 
-  private diagnosisReceipt(
-    bundle: GearFailureBundle,
+  private transcriptWindow(
+    sessionId: string,
+    item: SeedRunEvidence,
+    blocks: readonly string[],
+  ): MetaFailureCard['transcript'] {
+    const maxCharacters = 80_000
+    let firstVisible = blocks.length
+    let visibleCharacters = 0
+    for (let index = blocks.length - 1; index >= 0; index -= 1) {
+      const separatorCharacters = firstVisible === blocks.length ? 0 : 2
+      const nextCharacters = characterLength(blocks[index]!) + separatorCharacters
+      if (visibleCharacters + nextCharacters > maxCharacters) break
+      firstVisible = index
+      visibleCharacters += nextCharacters
+    }
+    if (firstVisible === 0) return { text: blocks.join('\n\n') }
+    if (firstVisible === blocks.length && blocks.length > 0) {
+      const finalCharacters = characters(blocks.at(-1)!)
+      const split = Math.max(0, finalCharacters.length - maxCharacters)
+      const earlier = [...blocks.slice(0, -1), finalCharacters.slice(0, split).join('')]
+        .filter(Boolean)
+        .join('\n\n')
+      return {
+        text: finalCharacters.slice(split).join(''),
+        earlierRef: this.inlineDetailRef(sessionId, item.roundId, item.trial.runId, earlier),
+      }
+    }
+    return {
+      text: blocks.slice(firstVisible).join('\n\n'),
+      earlierRef: this.inlineDetailRef(
+        sessionId, item.roundId, item.trial.runId, blocks.slice(0, firstVisible).join('\n\n'),
+      ),
+    }
+  }
+
+  private diagnosisReceiptForCard(
+    runId: string,
+    cardDigest: string,
     trajectoryDigest: string,
+    verifierStatus: DiagnosisReceipt['verifierStatus'],
     sourceVerifierStatus: HitchVerifierEvidence['verifier']['status'],
   ): DiagnosisReceipt {
     return {
-      runId: bundle.identity.runId,
-      bundleDigest: bundle.bundleDigest,
+      runId,
+      bundleDigest: cardDigest,
       trajectoryDigest,
       projectionVersion: 1,
-      verifierStatus: bundle.coverage.verifier,
-      ...(bundle.coverage.verifier === 'unavailable' && sourceVerifierStatus === 'unavailable'
+      verifierStatus,
+      ...(verifierStatus === 'unavailable' && sourceVerifierStatus === 'unavailable'
         && this.options.allowUnavailableVerifierDiagnosis === true
         ? { compatibility: 'allow-unavailable-verifier' as const }
         : {}),
@@ -1176,6 +990,142 @@ export class RefineCapabilities {
         secretDigests: this.secretValues.map(value => digestJson(value)).sort(),
       }),
       inspectedAt: new Date().toISOString(),
+    }
+  }
+
+  private async readTrajectoryDetail(
+    sessionId: string,
+    roundId: string,
+    ref: string,
+    find: string | undefined,
+    heldOutRef: string | undefined,
+    signal: AbortSignal,
+  ): Promise<TrajectoryDetailRead> {
+    const detail = this.trajectoryDetailRefs.get(ref)
+    if (detail === undefined || detail.sessionId !== sessionId || detail.roundId !== roundId) {
+      throw new Error('detailRef is unknown or no longer valid for this Meta task')
+    }
+    if (find !== undefined && find.length > 500) throw new TypeError('find must be at most 500 characters')
+    let text = detail.text
+    let sourceComplete = detail.sourceComplete ?? true
+    if (text === undefined) {
+      if (detail.source === undefined || this.options.trajectoryReader === undefined) {
+        throw new Error('detailRef source is unavailable')
+      }
+      const source = detail.source
+      const page = await this.options.trajectoryReader.inspectTrajectoryEvents(detail.runId, {
+        seqStart: source.seq,
+        seqEnd: source.seq,
+        field: source.field,
+        canonicalSha256: source.canonicalSha256,
+        limit: 1,
+        maxBytes: Math.min(4 * 1024 * 1024, Math.max(this.maxTrajectoryPageBytes, source.bytes + 64 * 1024)),
+      }, signal)
+      const event = objectValue(page.events[0])
+      const excerpt = objectValue(event?.event_excerpt)
+      const completeValue = event !== undefined && Object.hasOwn(event, 'value')
+        ? event.value
+        : excerpt !== undefined && Object.hasOwn(excerpt, 'value')
+          ? excerpt.value
+          : undefined
+      if (completeValue !== undefined) {
+        text = source.field === 'data.arguments'
+          ? (() => {
+              const value = completeValue
+              if (typeof value !== 'string') return JSON.stringify(this.sanitize(value, heldOutRef), null, 2)
+              try { return JSON.stringify(this.sanitize(JSON.parse(value), heldOutRef), null, 2) }
+              catch { return value }
+            })()
+          : readableMessage(completeValue)
+        sourceComplete = true
+      } else if (typeof excerpt?.preview === 'string') {
+        text = 'The upstream source retained only an incomplete excerpt; its content cannot be safely reconstructed.'
+        sourceComplete = false
+      } else {
+        throw new Error('detailRef no longer resolves to readable trajectory content')
+      }
+      text = this.sanitize(text, heldOutRef) as string
+      detail.text = text
+      detail.sourceComplete = sourceComplete
+      this.trimDetailRefs()
+    }
+    if (find !== undefined) {
+      const matches: string[] = []
+      const haystack = text.toLocaleLowerCase()
+      const needle = find.toLocaleLowerCase()
+      let cursor = detail.offset
+      while (matches.length < 5) {
+        const match = haystack.indexOf(needle, cursor)
+        if (match < 0) break
+        matches.push(boundedUtf8(text.slice(Math.max(0, match - 180), match + find.length + 220), 500))
+        cursor = match + Math.max(1, find.length)
+      }
+      const more = haystack.indexOf(needle, cursor) >= 0
+      const nextRef = more
+        ? this.registerDetailRef({ ...detail, offset: cursor })
+        : undefined
+      const visible = {
+        detail: {
+          matches,
+          complete: sourceComplete && !more,
+        },
+        ...(nextRef === undefined ? {} : { nextRef }),
+      }
+      return this.completeTrajectoryDetailRead(detail, visible, false)
+    }
+    const maxBytes = Math.min(16 * 1024, this.maxTrajectoryPageBytes)
+    let end = Math.min(text.length, detail.offset + maxBytes)
+    while (end > detail.offset && Buffer.byteLength(text.slice(detail.offset, end)) > maxBytes) end -= 1
+    const pageText = text.slice(detail.offset, end)
+    const nextRef = end < text.length
+      ? this.registerDetailRef({ ...detail, offset: end })
+      : undefined
+    const visible = {
+      detail: {
+        text: pageText,
+        complete: sourceComplete && nextRef === undefined,
+      },
+      ...(nextRef === undefined ? {} : { nextRef }),
+    }
+    return this.completeTrajectoryDetailRead(detail, visible, sourceComplete && nextRef === undefined)
+  }
+
+  private completeTrajectoryDetailRead(
+    detail: TrajectoryDetailRef,
+    visible: Record<string, unknown>,
+    complete: boolean,
+  ): TrajectoryDetailRead {
+    const pending = detail.pendingDiagnosis
+    if (pending === undefined || pending.recorded) return { visible }
+    pending.visibleDigests.push(digestJson(visible))
+    if (!complete) {
+      const hasContinuation = typeof visible.nextRef === 'string'
+      if (!hasContinuation && detail.sourceComplete === false) {
+        this.recordTrajectoryBlocker(
+          detail.sessionId,
+          detail.roundId,
+          detail.runId,
+          Object.assign(new Error('required verifier diagnostics are only available as an incomplete excerpt'), {
+            code: 'hitch_verifier_diagnostics_incomplete',
+          }),
+        )
+      }
+      return { visible }
+    }
+    pending.recorded = true
+    return {
+      visible,
+      diagnosis: {
+        evalId: pending.evalId,
+        runId: detail.runId,
+        receipt: this.diagnosisReceiptForCard(
+          detail.runId,
+          digestJson({ card: pending.cardDigest, details: pending.visibleDigests }),
+          pending.trajectoryDigest,
+          pending.verifierStatus,
+          pending.sourceVerifierStatus,
+        ),
+      },
     }
   }
 
@@ -1214,85 +1164,22 @@ export class RefineCapabilities {
     const selected = new Map<string, SeedRunEvidence>()
     for (const ref of refs) {
       const matches = evidence.filter(item => (roundId === undefined || item.roundId === roundId)
-        && (item.evalId === ref || item.trial.runId === ref))
-      if (matches.length === 0) throw new Error(`trajectory ref is not recorded seed evidence: ${ref}`)
+        && item.trial.runId === ref)
+      if (matches.length === 0) throw new Error(`trajectory ref is not a recorded seed run: ${ref}`)
       for (const item of matches) selected.set(item.trial.runId, item)
     }
     return [...selected.values()]
-  }
-
-  private projectEvidence(phase: SeedRunEvidence['phase'], evidence: EvaluationEvidence): unknown {
-    const trials: SeedRunEvidence['trial'][] = [
-      ...evidence.trials.flatMap(trial => trial.runId === undefined ? [] : [{ ...trial, runId: trial.runId }]),
-      ...evidence.invalidTrials.map(trial => ({ ...trial })),
-    ]
-    return {
-      phase,
-      evalId: evidence.evalId,
-      harnessRef: evidence.actualCommit,
-      completeness: evidence.completeness,
-      plannedTrialCount: evidence.plannedTrialCount,
-      primaryReward: evidence.primaryReward,
-      summary: evidence.summary,
-      trials,
-      failedTrials: trials.filter(trial => trial.status === 'errored'
-        || ((trial.rewards?.reward ?? Object.values(trial.rewards ?? {})[0] ?? 0) <= 0)),
-    }
-  }
-
-  private projectFailedEvidence(
-    failed: NonNullable<RefinementRound['failedEvaluations']>[number],
-  ): unknown {
-    return {
-      phase: failed.phase,
-      outcome: 'failed',
-      evalId: failed.evidence.evalId,
-      harnessRef: failed.evidence.actualCommit,
-      owner: failed.owner,
-      failure: failed.failure,
-      trials: failed.evidence.trials,
-      failedTrials: failed.evidence.trials.filter(trial => trial.status === 'errored'),
-    }
-  }
-
-  private boundTrajectoryItems(items: unknown[], heldOutRef: string | undefined): {
-    items: JsonValue[]
-    consumed: number
-  } {
-    const bounded: JsonValue[] = []
-    let bytes = 0
-    let consumed = 0
-    for (const item of items) {
-      let sanitized = this.sanitize(item, heldOutRef)
-      let itemBytes = Buffer.byteLength(JSON.stringify(sanitized))
-      if (itemBytes > this.maxTrajectoryPageBytes) {
-        const source = record(item)
-        sanitized = this.sanitize({
-          ...(typeof source.id === 'string' ? { id: source.id } : {}),
-          ...(typeof source.type === 'string' ? { type: source.type } : {}),
-          ...(typeof source.seq === 'number' ? { seq: source.seq } : {}),
-          ...(typeof source.requestSeq === 'number' ? { requestSeq: source.requestSeq } : {}),
-          ...(typeof source.boundarySeq === 'number' ? { boundarySeq: source.boundarySeq } : {}),
-          ...(typeof source.seqStart === 'number' ? { seqStart: source.seqStart } : {}),
-          ...(typeof source.turn === 'number' ? { turn: source.turn } : {}),
-          ...(typeof source.step === 'number' ? { step: source.step } : {}),
-          truncated: true,
-          originalBytes: itemBytes,
-        }, heldOutRef)
-        itemBytes = Buffer.byteLength(JSON.stringify(sanitized))
-      }
-      if (bounded.length > 0 && bytes + itemBytes > this.maxTrajectoryPageBytes) break
-      bounded.push(sanitized)
-      bytes += itemBytes
-      consumed += 1
-    }
-    return { items: bounded, consumed }
   }
 
   private sanitize(value: unknown, heldOutRef: string | undefined, key?: string): JsonValue {
     if (key !== undefined && SENSITIVE_KEY.test(key)) return '[REDACTED]'
     if (typeof value === 'string') {
       let text = value
+      const trimmed = text.trim()
+      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        try { text = JSON.stringify(this.sanitize(JSON.parse(text), heldOutRef), null, 2) }
+        catch { /* Ordinary text that merely starts like JSON. */ }
+      }
       for (const secret of this.secretValues) text = text.split(secret).join('[REDACTED]')
       if (heldOutRef !== undefined && heldOutRef.length > 0) text = text.split(heldOutRef).join('[REDACTED_HELD_OUT]')
       return text

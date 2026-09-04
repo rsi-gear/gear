@@ -334,86 +334,58 @@ projection is configured. Held-out tasks are never available.
 
 ### `trajectory.query`
 
-Index the visible seed evidence for the active round:
+List failed seed runs and diagnosis progress for the active round:
 
 ```json
-{
-  "roundId":"optional active round id",
-  "offset":0,
-  "limit":20
-}
+{}
 ```
 
-Omit `refs` for index mode. The response contains round status, `seedEvidence`,
-and `diagnosisProgress` with exact missing task/run identities and executable
-next actions.
-
-Read semantic failure bundles (the default when `refs` is present):
+Read compact diagnostic cards for up to five recorded runs:
 
 ```json
-{
-  "roundId":"optional active round id",
-  "refs":["run_<recorded seed run id>"],
-  "view":"bundle"
-}
+{"refs":["run_<recorded seed run id>"]}
 ```
 
-`refs` accepts one to ten seed `runId` or `evalId` values returned for the
-active/visible seed evidence. An `evalId` expands to its recorded runs. Held-out
-or arbitrary Hitch refs are rejected. A bundle contains task/outcome identity,
-the effective DSH surface projection, bounded semantic steps, final answer,
-structured verifier result, bounded verifier CTRF/stdout/stderr diagnostics
-when retained, observed file paths, coverage, and a digest-bound diagnosis
-receipt. Raw `assistant/chunk` events are omitted. `coverage.verifier` is
-`complete`, `result_only`, `explicitly-missing`, or `unavailable`;
-`result_only` means the structured result exists but verifier logs were not
-retained, so do not describe it as a complete verifier failure explanation.
-
-Server-generated diagnosis actions use batches of at most five runs so every
-bundle retains at least one key step when semantic steps exist. A manual batch
-that cannot retain that minimum returns
-`batchAccepted:false`, `recoverable:true`, code `BUNDLE_BATCH_TOO_LARGE`, and
-directly executable single-run `nextAction`/`remainingActions`. Execute those
-actions instead of retrying the same batch. No diagnosis receipt is recorded
-for the rejected batch; each successful split query records its own receipt.
-
-Use `view:"steps"`, `view:"context"`, or `view:"events"` for single-run drill-down.
-Steps and context use bounded `offset`/`limit`; steps support `turn`, `step`, and
-`errorsOnly`. Events are filtered and paged by Hitch at the canonical source:
+The card contains task/outcome data, a verifier summary, and every chronological
+message that fits in the final 80,000-character transcript window. It does not
+select or rank semantic steps. Each tool result is previewed at no more than
+2,000 characters. Internal sequence numbers, canonical digests, field paths,
+byte ranges, context epochs, and raw events are not exposed. Long values contain
+an opaque `detailRef`; messages before the transcript window use `earlierRef`:
 
 ```json
-{
-  "refs":["run_<recorded seed run id>"],
-  "view":"events",
-  "eventTypes":["tool/call","tool/result"],
-  "seqStart":120,
-  "seqEnd":180,
-  "limit":50,
-  "canonicalSha256":"sha256:<digest from bundle or prior page>"
-}
+{"detailRef":"detail_<opaque>"}
 ```
 
-Continue an event scan with the opaque `nextCursor` from the prior response;
-leave `offset` at zero and do not construct or alter the cursor. `aroundSeq` plus
-`radius` is shorthand for a sequence window and cannot be combined with
-`seqStart`, `seqEnd`, or `field`. Field drill-down requires one exact sequence
-(`seqStart == seqEnd`) and `canonicalSha256`; it is intended for a known large
-event field such as a coalesced chunk delta, not for rereading the full session.
-`errorsOnly` is a bounded post-filter of that returned page. Sensitive values
-and held-out references are redacted. Drill-down views do not satisfy the
-finalization diagnosis gate; only a successfully returned complete bundle
-creates a receipt.
+The response contains a bounded text page and, when more remains, an opaque
+`nextRef`. Continue by passing `nextRef` as `detailRef`. Search long content
+without loading every page by supplying `find`:
 
-If bounded analysis cannot be produced, the bundle query returns
+```json
+{"detailRef":"detail_<opaque>","find":"AssertionError"}
+```
+
+Search is a locator and does not satisfy a card's required verifier-detail
+read. For a `[required verifier details: ...]` reference, read the ordinary
+pages through the final page before finalization.
+
+If a detail response says `complete:false` without a `nextRef`, Hitch supplied
+only an incomplete source excerpt; Gear does not invent a continuation. Treat
+that run as blocked until the retained source evidence is repaired or extended.
+
+Only `refs`, `detailRef`, and `find` are accepted. Sensitive values and held-out
+references are redacted. Gear keeps source location, integrity, and paging data
+internally and binds the diagnosis receipt to the exact visible card plus any
+required verifier-detail pages.
+
+If bounded analysis cannot be produced, the card query returns
 `batchAccepted:false`, `recoverable:false`,
 `code:"TRAJECTORY_EVIDENCE_UNAVAILABLE"`, exact `blockedRuns` with stable Hitch
 codes, and an `operatorAction`. Do not retry the same query. Report those fields;
 an operator must update/fix Hitch or repair the stored trajectory, then the
-bundle must be read again before finalization.
+card must be read again before finalization.
 
-Query a bundle for every failed baseline run before finalizing or declining.
-Use the response's `diagnosisProgress.nextActions` rather than manually mapping
-task names to run IDs.
+Query a card for every failed baseline run before finalizing or declining.
 
 ### `hitch.status`
 
@@ -461,7 +433,7 @@ false; execute its typed `nextActions` first.
 `rationale`, nonempty `evidenceRefs`, and `expectedOutcome` are required.
 `semanticTargets` is optional and uses the same values as `focus`. Cite only
 current baseline refs that were actually returned and observed. Before this
-call, inspect the baseline, query every failed run in bundle view, inspect the
+call, inspect the baseline, query every failed run's diagnostic card, inspect the
 diff, and pass `candidate.check` with readiness true. `accepted:true` seals and
 submits the candidate and concludes the lease; it does not mean the candidate
 passed evaluation.
@@ -477,13 +449,13 @@ If strict verifier evidence is unavailable, Gear instead returns
 and an exact `operatorAction`. Do not loop on the same call. An operator must
 upgrade Hitch or explicitly enable the temporary
 `hitch.allowUnavailableVerifierDiagnosis=true` compatibility mode, then the
-affected bundles must be read again.
+affected diagnostic cards must be read again.
 
 If bounded trajectory analysis previously failed, Gear returns the analogous
 non-recoverable `TRAJECTORY_EVIDENCE_UNAVAILABLE` response with
 `readiness.trajectoryBlockedRuns` and `operatorAction.runIds`. This is distinct
-from an unread run: repeating the suggested bundle query cannot fix it. Repair
-Hitch/the recorded evidence first, reread the affected bundles, then retry the
+from an unread run: repeating the suggested card query cannot fix it. Repair
+Hitch/the recorded evidence first, reread the affected cards, then retry the
 same finalization arguments.
 
 ### `candidate.decline`
@@ -507,8 +479,8 @@ For each candidate assignment:
 1. Poll `control.status` and `meta.claim` until a matching lease is returned.
 2. Record the assignment and baseline; call `harness.current`, `candidate.tree`,
    `seed_tasks.load`, and `hitch.status`.
-3. Query bundle view for every failed baseline run, following the returned
-   diagnosis actions; use steps/context/events only for focused drill-down.
+3. Query a diagnostic card for every failed baseline run, following only the
+   opaque `detailRef` values needed for focused drill-down.
 4. Follow [target-harness-editing.md](target-harness-editing.md) to select and
    apply an evidence-based edit, or decide to decline. For Gear's DSH carrier,
    first follow [dsh-target-harness.md](dsh-target-harness.md) to map the
@@ -536,7 +508,7 @@ state as a substitute for completing this sequence.
 - Observation mismatch: re-read the candidate file and reassess the edit.
 - Compiler failure: repair the candidate within allowed roots or decline when
   no valid repair is possible.
-- `TRAJECTORY_EVIDENCE_UNAVAILABLE`: stop repeated bundle/finalization calls and
+- `TRAJECTORY_EVIDENCE_UNAVAILABLE`: stop repeated card/finalization calls and
   report `blockedRuns`/`operatorAction`; resume only after the prerequisite is repaired.
 - Failed round with `repairableEvaluations`: use `control.rerun` only for the
   advertised evolution, round, evaluation, and logical slots.

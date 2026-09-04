@@ -85,7 +85,7 @@ export function finalizationReadiness(
   if (actionableMissing.length > 0) {
     blockers.push({
       code: 'MISSING_BASELINE_DIAGNOSIS',
-      message: `${actionableMissing.length} failed baseline run${actionableMissing.length === 1 ? '' : 's'} still require a failure bundle.`,
+      message: `${actionableMissing.length} failed baseline run${actionableMissing.length === 1 ? '' : 's'} still require a diagnostic card.`,
     })
     for (let index = 0; index < actionableMissing.length; index += 5) {
       const batch = actionableMissing.slice(index, index + 5)
@@ -93,8 +93,8 @@ export function finalizationReadiness(
       nextActions.push({
         actionId: `diagnose-failed-baselines-${Math.floor(index / 5) + 1}`,
         tool: 'trajectory_query',
-        arguments: { refs, view: 'bundle' },
-        reason: `Read failure bundles for ${refs.length} failed baseline run${refs.length === 1 ? '' : 's'}.`,
+        arguments: { refs },
+        reason: `Read diagnostic cards for ${refs.length} failed baseline run${refs.length === 1 ? '' : 's'}.`,
         coversRunIds: refs,
       })
     }
@@ -130,7 +130,7 @@ export function finalizationReadiness(
       nextActions.push({
         actionId: `read-cited-baseline-runs-${Math.floor(index / 10) + 1}`,
         tool: 'trajectory_query',
-        arguments: { refs, view: 'bundle' },
+        arguments: { refs },
         reason: `Read the ${refs.length} cited baseline run${refs.length === 1 ? '' : 's'} before retrying.`,
         coversRunIds: refs,
       })
@@ -166,7 +166,7 @@ export function recoveryRequired(
       recoverable: false,
       code: first.code,
       failedOperation,
-      message: `The operation was not submitted because verifier evidence is unavailable for ${readiness.verifierBlockedRunIds.length} failed baseline run${readiness.verifierBlockedRunIds.length === 1 ? '' : 's'}. An operator must upgrade Hitch or explicitly enable trajectory-only compatibility, then the bundles must be read again.`,
+      message: `The operation was not submitted because verifier evidence is unavailable for ${readiness.verifierBlockedRunIds.length} failed baseline run${readiness.verifierBlockedRunIds.length === 1 ? '' : 's'}. An operator must upgrade Hitch or explicitly enable trajectory-only compatibility, then the diagnostic cards must be read again.`,
       readiness,
       operatorAction: {
         upgrade: 'Hitch verifier evidence API',
@@ -182,7 +182,7 @@ export function recoveryRequired(
       recoverable: false,
       code: first.code,
       failedOperation,
-      message: `The operation was not submitted because bounded trajectory evidence is unavailable for ${readiness.trajectoryBlockedRuns.length} failed baseline run${readiness.trajectoryBlockedRuns.length === 1 ? '' : 's'}. Do not retry until Hitch or the recorded trajectory has been repaired, then read the affected bundles again.`,
+      message: `The operation was not submitted because bounded trajectory evidence is unavailable for ${readiness.trajectoryBlockedRuns.length} failed baseline run${readiness.trajectoryBlockedRuns.length === 1 ? '' : 's'}. Do not retry until Hitch or the recorded trajectory has been repaired, then read the affected diagnostic cards again.`,
       readiness,
       operatorAction: {
         upgrade: 'Hitch bounded trajectory analysis capability',

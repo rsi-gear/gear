@@ -11,7 +11,7 @@
 
 新方案的边界是：
 
-- Gear 读取并缓存 canonical DSH trajectory，负责 context、semantic steps 和 failure bundle；
+- Gear 读取并缓存 canonical DSH trajectory，负责内部语义投影和面向 Meta 的 compact diagnostic card；
 - Hitch 继续负责证据持久化与完整性边界，只新增 structured verifier result 和 bounded diagnostics 的只读接口；
 - Hitch 不生成 Meta Agent 专用的语义轨迹；
 - server-side trajectory 索引仅作为后续性能优化。

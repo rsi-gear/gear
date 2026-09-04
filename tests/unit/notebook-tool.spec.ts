@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
-import { mountMetaCapabilityTools, renderNotebookResult } from '../../src/notebook/tool.js'
+import { mountMetaCapabilityTools, renderNotebookResult, renderTrajectoryResult } from '../../src/notebook/tool.js'
 
 describe('Meta notebook tools', () => {
   it('renders Python None/null as normal no-output instead of throwing', () => {
@@ -29,21 +29,42 @@ describe('Meta notebook tools', () => {
       'finalize_candidate',
       'decline_candidate',
     ])
-    expect(sections[0]?.text).toContain('failure bundle for every failed baseline run')
+    expect(sections[0]?.text).toContain('diagnostic card for every failed baseline run')
     expect(sections[0]?.text).toContain('accepted=false and recoverable=true')
     expect(sections[0]?.text).toContain('TRAJECTORY_EVIDENCE_UNAVAILABLE')
     expect(sections[0]?.text).toContain('sandboxed bash')
     const trajectory = tools.find(tool => tool.name === 'trajectory_query')!
-    await trajectory.execute({ refs: ['run_1'], offset: 0 }, {
+    expect(Object.keys((trajectory.parameters as { properties: object }).properties)).toEqual(['refs', 'detailRef', 'find'])
+    await trajectory.execute({ refs: ['run_1'] }, {
       agent: { id: 'meta-1' },
       signal: new AbortController().signal,
     } as never)
     expect(call).toHaveBeenCalledWith(
       'meta-1',
       'trajectory.query',
-      { refs: ['run_1'], offset: 0 },
+      { refs: ['run_1'] },
       expect.any(AbortSignal),
     )
+  })
+
+  it('renders diagnostic cards as a compact UI-like transcript', () => {
+    const rendered = renderTrajectoryResult({
+      runs: [{
+        task: 'compile-extension',
+        runId: 'run_1',
+        outcome: { status: 'completed', reward: 0 },
+        verifier: { status: 'complete', summary: '3 passed, 1 failed.' },
+        transcript: {
+          earlierRef: 'detail_0',
+          text: 'TOOL bash · errored\ninput: pytest -q\noutput: one failure\n[more: detail_1]',
+        },
+      }],
+    } as never)
+    expect(rendered).toContain('TASK compile-extension')
+    expect(rendered).toContain('[earlier messages: detail_0]')
+    expect(rendered).toContain('TOOL bash · errored')
+    expect(rendered).toContain('[more: detail_1]')
+    expect(rendered).not.toContain('schemaVersion')
   })
 
   it('describes the restricted workspace when candidate bash is disabled', () => {
@@ -119,7 +140,7 @@ describe('Meta notebook tools', () => {
       accepted: false,
       recoverable: true,
       code: 'MISSING_BASELINE_DIAGNOSIS',
-      nextAction: { tool: 'trajectory_query', arguments: { refs: ['run-1'], view: 'bundle' } },
+      nextAction: { tool: 'trajectory_query', arguments: { refs: ['run-1'] } },
     }))
     const context = {
       tools: { register(definition: ToolDefinition) { tools.push(definition) } },

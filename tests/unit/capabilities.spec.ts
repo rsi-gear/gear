@@ -1,16 +1,17 @@
 import { rm } from 'node:fs/promises'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RefineCapabilities } from '../../src/capabilities.js'
+import { projectTrajectory } from '../../src/evaluator/trajectory-projection.js'
 import { HarnessBuilder, NoopHarnessCompiler } from '../../src/harness/builder.js'
-import { digestJson } from '../../src/state/digest.js'
 import { RefineStateStore } from '../../src/state/store.js'
 import type {
-  GearFailureBundle,
   HitchEvaluationEvidence,
   HitchTrajectoryAnalysis,
   HitchTrajectoryReader,
   HitchVerifierEvidence,
+  MetaFailureCard,
   RefinementRound,
+  TrajectoryProjection,
 } from '../../src/types.js'
 import { createGitHarnessFixture, gitOutput } from '../helpers/git-fixture.js'
 import { evidence as evidenceFixture, roundFixture } from '../helpers/research-fixture.js'
@@ -212,9 +213,47 @@ describe('RefineCapabilities Git projection', () => {
     const inspectTrajectoryAnalysis = vi.fn(async (runId: string): Promise<HitchTrajectoryAnalysis> =>
       trajectoryAnalysis(runId, rawEvents, runId === seedRun ? 'normalized' : 'provider_native'))
     const inspectTrajectoryEvents = vi.fn(async (runId: string, query: {
-      eventTypes?: string[]; limit?: number; cursor?: string
+      eventTypes?: string[]; limit?: number; cursor?: string; seqStart?: number; seqEnd?: number
+      field?: string; canonicalSha256?: string; maxBytes?: number
     }) => {
       const analysis = trajectoryAnalysis(runId, rawEvents)
+      if (query.seqStart === 99 && query.seqEnd === 99 && query.field === 'data.message') {
+        return {
+          schemaVersion: 1 as const,
+          kind: 'trajectory-events-page' as const,
+          runId,
+          canonicalSha256: analysis.source.canonicalSha256,
+          filter: { seqStart: 99, seqEnd: 99, field: query.field },
+          events: [{
+            type: 'assistant/message', seq: 99,
+            event_excerpt: {
+              preview: '{"type":"assistant/message","seq":99,"data":{"authorization":"Bearer leaked',
+              tail: `","bytes":5000000,"sha256":"sha256:${'a'.repeat(64)}","source":{"run_id":"${runId}","field":"event"}}`,
+              truncated: true,
+            },
+          }],
+          totalMatches: 1,
+          eof: true,
+        }
+      }
+      if (query.field !== undefined && query.seqStart === query.seqEnd) {
+        const seq = query.seqStart!
+        const event = rawEvents.find(item => item.seq === seq)!
+        const data = event.data as Record<string, unknown>
+        const value = JSON.parse(JSON.stringify(
+          query.field === 'data' ? data : data[query.field.slice('data.'.length)],
+        ))
+        return {
+          schemaVersion: 1 as const,
+          kind: 'trajectory-events-page' as const,
+          runId,
+          canonicalSha256: analysis.source.canonicalSha256,
+          filter: { seqStart: seq, seqEnd: seq, field: query.field },
+          events: [{ type: event.type, seq: event.seq, event_excerpt: { value } }],
+          totalMatches: 1,
+          eof: true,
+        }
+      }
       if (query.eventTypes?.includes('retry-test') === true) {
         const all = Array.from({ length: 5 }, (_, seq) => ({
           type: 'retry-test', seq, data: { text: 'x'.repeat(1_500) },
@@ -287,8 +326,21 @@ describe('RefineCapabilities Git projection', () => {
     const meta = {
       activeRoundId: () => round.roundId,
       recordEvidenceAccess: (...args: unknown[]) => { accesses.push(args) },
+      proposalEvidenceAudit: () => ({
+        summaryAccessed: true,
+        accessedRefs: [],
+        diagnosedRunRefs: [],
+        citedRefs: [],
+        diagnosisReceipts: accesses.flatMap(value => {
+          const access = (value as unknown[])[2] as { diagnosisReceipts?: unknown[] } | undefined
+          return access?.diagnosisReceipts ?? []
+        }),
+      }),
     }
-    const service = { activeEntryForSession: () => ({ evolutionId: 'evo-1', roundId: round.roundId, store, meta, workspace: { workspaceId: 'workspace-1' } }) }
+    const service = { activeEntryForSession: () => ({
+      evolutionId: 'evo-1', roundId: round.roundId, store, meta, baseline: seedBaseline,
+      workspace: { workspaceId: 'workspace-1' },
+    }) }
     const capabilities = new RefineCapabilities(service as never, builder, () => undefined, {
       trajectoryReader: reader,
       secretValues: ['top-secret'],
@@ -298,69 +350,40 @@ describe('RefineCapabilities Git projection', () => {
     })
     const index = await capabilities.call('refine-meta', 'meta', 'trajectory.query', {})
     expect(index).toMatchObject({
-      rounds: [{ seedEvidence: [
-        { phase: 'seed-baseline', evalId: seedBaseline.evalId, completeness: 'partial', plannedTrialCount: 2,
-          trials: [{ runId: seedRun }, { runId: invalidSeedRun, invalidReason: 'infrastructure_failure' }] },
-        { phase: 'seed-candidate', evalId: seedCandidate.evalId, completeness: 'partial', plannedTrialCount: 2,
-          trials: [{ runId: candidateRun }, { runId: invalidCandidateRun, invalidReason: 'infrastructure_failure' }] },
-        { phase: 'seed-baseline', outcome: 'failed', evalId: failedEvalId, trials: [{ runId: failedRun }] },
-      ] }],
+      baseline: {
+        status: 'partial', score: 1,
+        failedRuns: [{ task: 'task-2', runId: invalidSeedRun, invalidReason: 'infrastructure_failure' }],
+      },
     })
     expect(JSON.stringify(index)).not.toContain(heldRun)
+    expect(JSON.stringify(index)).not.toContain(candidateRun)
     expect(JSON.stringify(index)).not.toContain('held-out-secret')
 
-    const page = await capabilities.call('refine-meta', 'meta', 'trajectory.query', {
-      refs: [seedRun], view: 'events', eventTypes: ['user/message'],
-    })
-    expect(page).toMatchObject({ trajectories: [{
+    await expect(capabilities.call('refine-meta', 'meta', 'trajectory.query', {
+      refs: [seedRun], view: 'events', seqStart: 0,
+    })).rejects.toThrow(/unknown field/u)
+
+    const result = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [seedRun] })
+    expect(result).toMatchObject({ runs: [{
+      task: 'task-1',
       runId: seedRun,
-      canonicalSha256: expect.stringMatching(/^sha256:/),
-      events: [{ data: {
-        content: [{ text: '[REDACTED] [REDACTED_HELD_OUT]' }],
-        token: '[REDACTED]',
-      } }],
-      total: 1,
-      eof: true,
+      outcome: { status: 'completed', reward: 1 },
+      verifier: {
+        status: 'complete', summary: 'Verifier diagnostics are available.', needsDetail: true,
+        detailRef: expect.stringMatching(/^detail_/u),
+      },
+      transcript: {
+        text: expect.stringContaining('answer contains [REDACTED] and [REDACTED_HELD_OUT]'),
+      },
     }] })
+    const serialized = JSON.stringify(result)
+    for (const field of ['canonicalSha256', 'seqStart', 'seqEnd', 'field', 'bytes', 'sha256', 'offset', 'cursor']) {
+      expect(serialized).not.toContain(field)
+    }
+    expect(serialized).not.toContain('top-secret')
+    expect(serialized).not.toContain('held-out-secret')
+    expect(serialized).not.toContain('held_out_metric')
     expect(accesses).not.toContainEqual([
-      round.roundId,
-      'meta',
-      expect.objectContaining({ diagnosedRunRefs: [seedRun] }),
-    ])
-    const largeEvent = await capabilities.call('refine-meta', 'meta', 'trajectory.query', {
-      refs: [seedRun], view: 'events', eventTypes: ['assistant/message'],
-    })
-    expect(largeEvent).toMatchObject({ trajectories: [{
-      events: [{ type: 'assistant/message', seq: 1, truncated: true, originalBytes: expect.any(Number) }],
-      eof: true,
-    }] })
-    expect(JSON.stringify(largeEvent)).not.toContain('top-secret')
-    expect(JSON.stringify(largeEvent)).not.toContain('held-out-secret')
-    const steps = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [seedRun], view: 'steps' })
-    expect(JSON.stringify(steps)).not.toContain('top-secret')
-    expect(JSON.stringify(steps)).not.toContain('held-out-secret')
-    expect(steps).toMatchObject({ trajectories: [{ steps: [{ assistantMessages: [{ message: {
-      preview: expect.stringContaining('answer contains [REDACTED] and [REDACTED_HELD_OUT]'),
-    } }] }] }] })
-    const bundle = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [seedRun] })
-    expect(bundle).toMatchObject({ bundles: [{
-      identity: { runId: seedRun, taskName: 'task-1' },
-      trajectory: {
-        fidelity: 'normalized-surface', rawEventCount: 2, keySteps: [{ turn: 1, step: 1 }],
-      },
-      outcome: {
-        verifierStatus: 'complete',
-        verifierResult: { rewards: { reward: 1 }, token: '[REDACTED]' },
-        verifierDiagnostics: { artifacts: { stdout: [{ text: '[REDACTED] [REDACTED_HELD_OUT] assertion output' }] } },
-      },
-      coverage: { task: 'complete', trajectory: 'complete', verifier: 'complete' },
-      bundleDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
-    }] })
-    const visibleBundle = (bundle as unknown as { bundles: GearFailureBundle[] }).bundles[0]!
-    const { bundleDigest, ...digestInput } = visibleBundle
-    expect(digestJson(digestInput)).toBe(bundleDigest)
-    expect(JSON.stringify(visibleBundle)).not.toContain('held_out_metric')
-    expect(accesses).toContainEqual([
       round.roundId,
       'meta',
       expect.objectContaining({
@@ -368,26 +391,152 @@ describe('RefineCapabilities Git projection', () => {
       }),
     ])
     expect(inspectTrajectoryAnalysis).toHaveBeenCalledTimes(1)
+    const card = (result as {
+      runs: Array<{
+        verifier: { detailRef?: string }
+        transcript: { text: string }
+      }>
+    }).runs[0]!
+    const verifierDetail = await capabilities.call('refine-meta', 'meta', 'trajectory.query', {
+      detailRef: card.verifier.detailRef!,
+    })
+    expect(verifierDetail).toMatchObject({
+      detail: { text: expect.stringContaining('STDOUT test-stdout.txt'), complete: true },
+    })
+    expect(JSON.stringify(verifierDetail)).not.toMatch(/media_type|sha256|bytes|truncated/u)
+    expect(accesses).toContainEqual([
+      round.roundId,
+      'meta',
+      expect.objectContaining({
+        diagnosisReceipts: [expect.objectContaining({ runId: seedRun, projectionVersion: 1 })],
+      }),
+    ])
+    const assistantRef = card.transcript.text.match(/ASSISTANT[\s\S]*?\[more: (detail_[a-f0-9]+)\]/u)?.[1]
+    expect(assistantRef).toMatch(/^detail_/u)
+    const detailPage = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { detailRef: assistantRef })
+    expect(detailPage).toMatchObject({
+      detail: { text: expect.stringContaining('answer contains [REDACTED] and [REDACTED_HELD_OUT]'), complete: false },
+      nextRef: expect.stringMatching(/^detail_/u),
+    })
+    expect(JSON.stringify(detailPage)).not.toContain('canonicalSha256')
+    let continuation = (detailPage as { nextRef?: string }).nextRef
+    let completed = false
+    while (continuation !== undefined) {
+      const page = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { detailRef: continuation }) as {
+        detail: { text: string; complete: boolean }
+        nextRef?: string
+      }
+      completed = page.detail.complete
+      continuation = page.nextRef
+    }
+    expect(completed).toBe(true)
+    const found = await capabilities.call('refine-meta', 'meta', 'trajectory.query', {
+      detailRef: assistantRef, find: 'answer contains',
+    })
+    expect(found).toMatchObject({ detail: { matches: [expect.stringContaining('answer contains')] } })
+    const internals = capabilities as unknown as {
+      failureCard(
+        sessionId: string,
+        item: never,
+        projection: TrajectoryProjection,
+        verifier: HitchVerifierEvidence,
+        heldOutRef: string | undefined,
+      ): MetaFailureCard
+      registerDetailRef(value: {
+        sessionId: string; roundId: string; runId: string; offset: number
+        source: { seq: number; field: string; canonicalSha256: string; bytes: number }
+      }): string
+    }
+    const windowProjection = projectTrajectory(trajectoryAnalysis(seedRun, rawEvents))
+    const excerpt = (preview: string, field: string) => ({
+      preview,
+      bytes: Buffer.byteLength(preview),
+      sha256: `sha256:${'a'.repeat(64)}`,
+      truncated: false,
+      source: { runId: seedRun, field },
+    })
+    windowProjection.messages = [
+      {
+        seq: 0, eventType: 'user/message', role: 'user',
+        message: excerpt('window task', 'data'),
+      },
+      ...Array.from({ length: 50 }, (_, index) => ({
+        seq: index + 1,
+        eventType: 'assistant/message',
+        role: 'assistant',
+        message: excerpt(`message-${index.toString().padStart(2, '0')} ${'a'.repeat(1_990)}`, 'data.message'),
+      })),
+    ]
+    const fullToolResult = `${'r'.repeat(5_000)} TOOL-RESULT-END`
+    windowProjection.semanticSteps = [{
+      id: 'turn-1-step-1', turn: 1, step: 1, seqStart: 100, seqEnd: 101,
+      assistantMessages: [],
+      toolActions: [{
+        callId: 'call-window', name: 'bash', callSeq: 100, resultSeq: 101,
+        arguments: excerpt('{"command":"long-output"}', 'data.arguments'),
+        result: excerpt(fullToolResult, 'data.message'),
+        status: 'completed',
+      }],
+    }]
+    const windowCard = internals.failureCard('meta', {
+      evolutionId: 'evo-1', roundId: round.roundId, phase: 'seed-baseline', evalId: seedBaseline.evalId,
+      trial: { taskName: 'window-task', runId: seedRun, status: 'completed', rewards: { reward: 0 } },
+    } as never, windowProjection, {
+      runId: seedRun, verifier: { status: 'result_only' },
+    }, undefined)
+    expect(Array.from(windowCard.transcript.text).length).toBeLessThanOrEqual(80_000)
+    expect(windowCard.transcript.text).toContain('message-49')
+    expect(windowCard.transcript.text).not.toContain('message-00')
+    expect(windowCard.transcript.earlierRef).toMatch(/^detail_/u)
+    const toolOutput = windowCard.transcript.text.match(/output: ([\s\S]*?)\n\[more: (detail_[a-f0-9]+)\]/u)
+    expect(toolOutput).toBeDefined()
+    expect(Array.from(toolOutput![1]!)).toHaveLength(2_000)
+    let earlierRef = windowCard.transcript.earlierRef
+    let earlierText = ''
+    while (earlierRef !== undefined) {
+      const page = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { detailRef: earlierRef }) as {
+        detail: { text: string }
+        nextRef?: string
+      }
+      earlierText += page.detail.text
+      earlierRef = page.nextRef
+    }
+    expect(earlierText).toContain('message-00')
+    let toolDetailRef: string | undefined = toolOutput![2]!
+    let fullToolText = ''
+    while (toolDetailRef !== undefined) {
+      const page = await capabilities.call('refine-meta', 'meta', 'trajectory.query', {
+        detailRef: toolDetailRef,
+      }) as { detail: { text: string }; nextRef?: string }
+      fullToolText += page.detail.text
+      toolDetailRef = page.nextRef
+    }
+    expect(fullToolText).toContain('TOOL-RESULT-END')
+    const unsafeExcerptRef = internals.registerDetailRef({
+      sessionId: 'meta', roundId: round.roundId, runId: seedRun, offset: 0,
+      source: {
+        seq: 99, field: 'data.message',
+        canonicalSha256: trajectoryAnalysis(seedRun, rawEvents).source.canonicalSha256,
+        bytes: 5_000_000,
+      },
+    })
+    const safeIncomplete = await capabilities.call('refine-meta', 'meta', 'trajectory.query', {
+      detailRef: unsafeExcerptRef,
+    })
+    expect(safeIncomplete).toEqual({
+      detail: {
+        text: 'The upstream source retained only an incomplete excerpt; its content cannot be safely reconstructed.',
+        complete: false,
+      },
+    })
+    expect(JSON.stringify(safeIncomplete)).not.toMatch(/Bearer leaked|seq|field|bytes|sha256|run_id/u)
+    await expect(capabilities.call('refine-meta', 'another-meta', 'trajectory.query', {
+      detailRef: assistantRef,
+    })).rejects.toThrow(/unknown or no longer valid/u)
     expect(inspectTrajectoryEvents).toHaveBeenCalledTimes(2)
-    expect(inspectTrajectoryEvents.mock.calls[0]?.[1]).toMatchObject({ maxBytes: 4 * 1024 })
-    const narrowedPage = await capabilities.call('refine-meta', 'meta', 'trajectory.query', {
-      refs: [seedRun], view: 'events', eventTypes: ['retry-test'], limit: 5,
+    expect(inspectTrajectoryEvents.mock.calls[0]?.[1]).toMatchObject({
+      seqStart: 1, seqEnd: 1, field: 'data.message', canonicalSha256: expect.stringMatching(/^sha256:/),
     })
-    expect(narrowedPage).toMatchObject({ trajectories: [{
-      events: [{ seq: 0 }, { seq: 1 }],
-      limit: 2,
-      requestedLimit: 5,
-      nextCursor: 'cursor-2',
-      eof: false,
-    }] })
-    const continuedPage = await capabilities.call('refine-meta', 'meta', 'trajectory.query', {
-      refs: [seedRun], view: 'events', eventTypes: ['retry-test'], cursor: 'cursor-2', limit: 5,
-    })
-    expect(continuedPage).toMatchObject({ trajectories: [{
-      events: [{ seq: 2 }, { seq: 3 }],
-      nextCursor: 'cursor-4',
-      eof: false,
-    }] })
     expect(inspectVerifierEvidence).toHaveBeenCalledTimes(1)
     const tinyProjectionCache = new RefineCapabilities(service as never, builder, () => undefined, {
       trajectoryReader: reader,
@@ -396,58 +545,19 @@ describe('RefineCapabilities Git projection', () => {
       maxTrajectoryProjectionCacheBytes: 1,
       allowUnavailableVerifierDiagnosis: true,
     })
-    await tinyProjectionCache.call('refine-meta', 'meta', 'trajectory.query', { refs: [seedRun], view: 'steps' })
-    await tinyProjectionCache.call('refine-meta', 'meta', 'trajectory.query', { refs: [seedRun], view: 'steps' })
+    await tinyProjectionCache.call('refine-meta', 'meta', 'trajectory.query', { refs: [seedRun] })
+    await tinyProjectionCache.call('refine-meta', 'meta', 'trajectory.query', { refs: [seedRun] })
     expect(inspectTrajectoryAnalysis).toHaveBeenCalledTimes(3)
 
-    const constrainedBundles = new RefineCapabilities(service as never, builder, () => undefined, {
-      trajectoryReader: reader,
-      maxTrajectoryPageBytes: 4 * 1024,
-      maxFailureBundleBytes: 4 * 1024,
-      allowUnavailableVerifierDiagnosis: true,
-    })
-    await expect(constrainedBundles.call('refine-meta', 'meta', 'trajectory.query', {
-      refs: [seedRun, invalidSeedRun], view: 'bundle',
-    })).resolves.toMatchObject({
-      batchAccepted: false,
-      recoverable: true,
-      code: 'BUNDLE_BATCH_TOO_LARGE',
-      bundles: [],
-      nextAction: { tool: 'trajectory_query', arguments: { refs: [seedRun], view: 'bundle' } },
-      remainingActions: [{ tool: 'trajectory_query', arguments: { refs: [invalidSeedRun], view: 'bundle' } }],
-    })
     await expect(capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [invalidSeedRun] }))
-      .resolves.toMatchObject({ bundles: [{
-      identity: { runId: invalidSeedRun, taskName: 'task-2' },
-      outcome: { verifierStatus: 'result_only' },
-      coverage: { verifier: 'result_only' },
+      .resolves.toMatchObject({ runs: [{
+      runId: invalidSeedRun,
+      task: 'task-2',
+      outcome: { status: 'errored', invalidReason: 'infrastructure_failure' },
+      verifier: { status: 'result_only' },
       }] })
-    const failedPage = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [failedEvalId] })
-    expect(failedPage).toMatchObject({ bundles: [{
-      identity: { runId: failedRun },
-      outcome: { trialStatus: 'errored', invalidReason: 'infrastructure_failure', verifierStatus: 'missing' },
-      coverage: { verifier: 'explicitly-missing' },
-    }] })
-    expect(inspectVerifierEvidence).toHaveBeenCalledTimes(3)
-    verifierParents.set(candidateRun, { evalId: `eval_${'f'.repeat(32)}`, trialId: 'trial-1', attempt: 1 })
-    await expect(capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [candidateRun] }))
-      .resolves.toMatchObject({ bundles: [{
-        identity: { runId: candidateRun },
-        outcome: {
-          verifierStatus: 'unavailable',
-          verifierDiagnostics: { issues: [expect.stringContaining('verifier evidence eval identity mismatch')] },
-        },
-        crossSourceSignals: [{ kind: 'verifier_evidence_corrupt', runId: candidateRun }],
-        coverage: { verifier: 'unavailable' },
-      }] })
-    expect(accesses.at(-1)).toMatchObject([
-      round.roundId,
-      'meta',
-      { diagnosisReceipts: [{ runId: candidateRun, verifierStatus: 'unavailable' }] },
-    ])
-    expect(JSON.stringify(accesses.at(-1))).not.toContain('allow-unavailable-verifier')
     await expect(capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [heldRun] }))
-      .rejects.toThrow(/not recorded seed evidence/)
+      .rejects.toThrow(/not a recorded seed run/)
 
     const blockedReader: HitchTrajectoryReader = {
       ...reader,
@@ -461,7 +571,7 @@ describe('RefineCapabilities Git projection', () => {
     })
     await expect(blockedCapabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [seedRun] }))
       .resolves.toMatchObject({
-        bundles: [],
+        runs: [],
         batchAccepted: false,
         recoverable: false,
         code: 'TRAJECTORY_EVIDENCE_UNAVAILABLE',
@@ -520,7 +630,7 @@ describe('RefineCapabilities Git projection', () => {
       },
       nextAction: {
         tool: 'trajectory_query',
-        arguments: { refs: [baseline.trials[0]!.runId], view: 'bundle' },
+        arguments: { refs: [baseline.trials[0]!.runId] },
       },
       retry: { tool: 'finalize_candidate', reusePreviousArguments: true },
     })

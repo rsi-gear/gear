@@ -72,10 +72,12 @@ Do not assume a standard harness layout beyond the five editable roots.
 A failed run is a baseline trial with zero/negative reward, `errored` status, or
 an explicit failure record. Query every such run by its returned `runId`.
 
-Start with the default `bundle` view. It reconstructs DSH's effective message
-surface, groups assistant/tool behavior into semantic steps, joins the baseline
-outcome, and omits raw stream chunks. Use `steps`, `context`, or `events` only
-when the bundle identifies a sequence or error that needs focused drill-down.
+Start with the compact diagnostic card. It shows the task, verifier failure,
+and the final 80,000 characters of the chronological message transcript while
+omitting raw stream chunks and protocol metadata. Each tool-result preview is
+at most 2,000 characters. Use `earlierRef` for messages before the window and
+expand `detailRef` for a complete long result; use `find` when searching is more
+efficient than paging it.
 Read only as far as needed to identify the causal chain:
 
 ```text

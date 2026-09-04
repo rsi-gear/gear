@@ -36,6 +36,7 @@ interface SurfaceSnapshot {
 
 const DEFAULT_EXCERPT_BYTES = 2_000
 const DEFAULT_TAIL_BYTES = 500
+const SENSITIVE_CONTENT_KEY = /(?:api[_-]?key|authorization|credential|password|secret|token)/iu
 
 function record(value: unknown): JsonRecord | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -44,8 +45,35 @@ function record(value: unknown): JsonRecord | undefined {
 }
 
 function text(value: unknown): string {
-  if (typeof value === 'string') return value
-  return JSON.stringify(value) ?? String(value)
+  const stringify = (item: unknown): string | undefined => JSON.stringify(
+    item,
+    (key, child) => SENSITIVE_CONTENT_KEY.test(key) ? '[REDACTED]' : child,
+  )
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value) as unknown
+      if (typeof parsed === 'object' && parsed !== null) return stringify(parsed) ?? value
+    } catch {
+      // Ordinary message text is not JSON.
+    }
+    return value
+  }
+  return stringify(value) ?? String(value)
+}
+
+function messageText(value: unknown, depth = 0): string {
+  if (depth > 8 || value === null || value === undefined) return ''
+  if (typeof value === 'string') {
+    try { return messageText(JSON.parse(value), depth + 1) }
+    catch { return value }
+  }
+  if (Array.isArray(value)) return value.map(item => messageText(item, depth + 1)).filter(Boolean).join('\n')
+  const item = record(value)
+  if (item === undefined) return String(value)
+  if (item.type === 'tool-call') return ''
+  if (typeof item.text === 'string') return item.text
+  if (Array.isArray(item.content)) return messageText(item.content, depth + 1)
+  return text(value)
 }
 
 function utf8Prefix(value: string, bytes: number): string {
@@ -95,13 +123,27 @@ function isHitchExcerpt(value: unknown): value is HitchTrajectoryContentExcerpt 
 
 function evidenceExcerpt(runId: string, value: unknown, field: string, seq: number, maxBytes = DEFAULT_EXCERPT_BYTES): ContentExcerpt {
   if (!isHitchExcerpt(value)) return contentExcerpt(runId, value, field, seq, maxBytes)
+  let preview: string
+  if (value.truncated) {
+    preview = `[Long ${field}; open its detailRef to inspect the content.]`
+  } else {
+    let parsed: unknown
+    try { parsed = JSON.parse(value.preview) }
+    catch { parsed = value.preview }
+    if (value.source.field !== field && typeof parsed === 'object' && parsed !== null) {
+      const path = field === 'request.header' ? ['data', 'header'] : field.split('.')
+      let selected: unknown = parsed
+      for (const part of path) selected = record(selected)?.[part]
+      if (selected !== undefined) parsed = selected
+    }
+    preview = field === 'data' || field.endsWith('.message') ? messageText(parsed) : text(parsed)
+  }
   return {
-    preview: value.preview,
-    ...(value.tail === undefined ? {} : { tail: value.tail }),
+    preview,
     bytes: value.bytes,
     sha256: value.sha256,
     truncated: value.truncated,
-    source: { runId: value.source.runId, seq: value.source.seq, field: value.source.field },
+    source: { runId: value.source.runId, seq: value.source.seq, field },
   }
 }
 
@@ -111,11 +153,14 @@ function messageEvidence(runId: string, node: HitchTrajectorySurfaceNode): Traje
   const inferredRole = node.eventType === 'user/message'
     ? 'user'
     : node.eventType === 'assistant/message' ? 'assistant' : 'tool'
+  const field = node.eventType === 'user/message' ? 'data' : 'data.message'
   return {
     seq: node.seq,
     eventType: node.eventType,
     role: typeof value?.role === 'string' ? value.role : inferredRole,
-    message: evidenceExcerpt(runId, node.message, 'message', node.seq),
+    message: isHitchExcerpt(node.message)
+      ? evidenceExcerpt(runId, node.message, field, node.seq)
+      : contentExcerpt(runId, messageText(node.message), field, node.seq),
   }
 }
 
@@ -288,7 +333,7 @@ function addProjectionError(
   errors.push({ seq, type, excerpt: contentExcerpt(runId, value, 'event', seq, 1_200).preview })
 }
 
-/** Convert Hitch's bounded semantic analysis into Gear's failure-bundle projection. */
+/** Convert Hitch's bounded semantic analysis into Gear's internal trajectory projection. */
 export function projectTrajectory(analysis: HitchTrajectoryAnalysis): TrajectoryProjection {
   const nodes = [...analysis.surface.nodes].sort((left, right) => left.seq - right.seq)
   if (!nodes.every((node, index) => index === 0 || node.seq > nodes[index - 1]!.seq)) {
@@ -388,7 +433,7 @@ export function projectTrajectory(analysis: HitchTrajectoryAnalysis): Trajectory
         callId: data.callId,
         name: data.name,
         callSeq: seq,
-        arguments: evidenceExcerpt(analysis.runId, data.arguments ?? '', 'tool.arguments', seq, 1_200),
+        arguments: evidenceExcerpt(analysis.runId, data.arguments ?? '', 'data.arguments', seq, 1_200),
         status: 'open',
       }
       calls.set(action.callId, action)
@@ -407,7 +452,9 @@ export function projectTrajectory(analysis: HitchTrajectoryAnalysis): Trajectory
       if (action !== undefined) {
         const error = errorFromResult(data, message)
         action.resultSeq = seq
-        action.result = evidenceExcerpt(analysis.runId, message ?? data, 'tool.result', surfaceNodeSeq)
+        action.result = isHitchExcerpt(message)
+          ? evidenceExcerpt(analysis.runId, message, 'data.message', surfaceNodeSeq)
+          : contentExcerpt(analysis.runId, messageText(message ?? data), 'data.message', surfaceNodeSeq)
         action.status = error !== undefined ? 'errored' : isHitchExcerpt(message) ? 'unknown' : 'completed'
         if (error !== undefined) {
           action.error = error
@@ -503,22 +550,4 @@ export function projectTrajectory(analysis: HitchTrajectoryAnalysis): Trajectory
     coverage: { ...analysis.coverage },
     ...(analysis.redactions === undefined ? {} : { redactions: analysis.redactions.map(item => ({ ...item })) }),
   }
-}
-
-export function selectKeySteps(projection: TrajectoryProjection, maxSteps = 8): TrajectorySemanticStep[] {
-  if (projection.semanticSteps.length <= maxSteps) return projection.semanticSteps
-  const selected = new Map<string, TrajectorySemanticStep>()
-  const add = (step: TrajectorySemanticStep | undefined): void => {
-    if (step !== undefined && selected.size < maxSteps) selected.set(step.id, step)
-  }
-  const errorSteps = projection.semanticSteps.filter(step =>
-    step.toolActions.some(action => action.status !== 'completed')
-    || step.modelRequests?.some(request => containsToolError(request.finishReason)) === true)
-  const errorBudget = maxSteps > 1 ? maxSteps - 1 : maxSteps
-  for (const step of errorSteps.slice(0, errorBudget)) add(step)
-  add(projection.semanticSteps.at(-1))
-  add(projection.semanticSteps[0])
-  for (const step of projection.semanticSteps.slice(-4)) add(step)
-  for (const step of projection.semanticSteps) add(step)
-  return [...selected.values()].sort((left, right) => left.seqStart - right.seqStart)
 }

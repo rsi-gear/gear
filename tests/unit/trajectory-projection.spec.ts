@@ -1,15 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { RefineCapabilities } from '../../src/capabilities.js'
 import { contentExcerpt, projectTrajectory } from '../../src/evaluator/trajectory-projection.js'
 import { trajectoryAnalysis } from '../helpers/trajectory-fixture.js'
-import type {
-  DiagnosisReceipt,
-  GearFailureBundle,
-  HitchTrajectoryAnalysis,
-  TrajectoryProjection,
-} from '../../src/types.js'
+import type { HitchTrajectoryAnalysis } from '../../src/types.js'
 
 function trajectory(
   events: readonly unknown[],
@@ -24,6 +18,18 @@ describe('trajectory projection', () => {
     expect(result.truncated).toBe(true)
     expect(result.preview).not.toContain('\uFFFD')
     expect(result.tail).not.toContain('\uFFFD')
+  })
+
+  it('redacts sensitive keys inside structured values and JSON strings before excerpting', () => {
+    const structured = contentExcerpt('run-1', {
+      command: 'ok', authorization: 'Bearer leaked', nested: { password: 'also-leaked' },
+    }, 'arguments', 1)
+    const encoded = contentExcerpt('run-1', JSON.stringify({ token: 'leaked-token', path: '/safe' }), 'arguments', 2)
+    expect(structured.preview).toContain('"authorization":"[REDACTED]"')
+    expect(structured.preview).toContain('"password":"[REDACTED]"')
+    expect(structured.preview).not.toContain('Bearer leaked')
+    expect(encoded.preview).toContain('"token":"[REDACTED]"')
+    expect(encoded.preview).not.toContain('leaked-token')
   })
 
   it('uses DSH replacement semantics to reconstruct request context epochs', () => {
@@ -190,6 +196,28 @@ describe('trajectory projection', () => {
     expect(result.finalAnswer).toMatchObject({ seq: 3, role: 'assistant' })
   })
 
+  it('does not expose wrapper metadata or sensitive JSON from source-provided excerpts', () => {
+    const analysis = trajectory([{
+      type: 'assistant/message', seq: 0, time: 1, surfaceOp: 'append',
+      data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'answer' }] } },
+    }])
+    analysis.surface.nodes[0]!.message = {
+      preview: '{"type":"assistant/message","seq":0,"data":{"message":{"authorization":"Bearer leaked',
+      tail: '","source":{"run_id":"internal","field":"event"}}}',
+      bytes: 10_000,
+      sha256: `sha256:${'a'.repeat(64)}`,
+      truncated: true,
+      source: { runId: analysis.runId, seq: 0, field: 'event' },
+    }
+    const result = projectTrajectory(analysis)
+    expect(result.messages[0]?.message).toMatchObject({
+      preview: '[Long data.message; open its detailRef to inspect the content.]',
+      truncated: true,
+      source: { seq: 0, field: 'data.message' },
+    })
+    expect(JSON.stringify(result.messages[0])).not.toMatch(/Bearer leaked|run_id|"field":"event"/u)
+  })
+
   it('does not issue exact-surface fidelity for normalized or minimal source evidence', () => {
     const events = [{
       type: 'user/message', seq: 0, time: 1, surfaceOp: 'append',
@@ -209,7 +237,7 @@ describe('trajectory projection', () => {
     expect(Buffer.byteLength(JSON.stringify(result.messages[0]))).toBeLessThan(1_000)
   })
 
-  it('keeps an oversized single-run bundle actionable within the minimum output budget', () => {
+  it('keeps oversized message and tool content bounded with correct internal source fields', () => {
     const result = projectTrajectory(trajectory([
       {
         type: 'user/message', seq: 0, time: 1, surfaceOp: 'append',
@@ -237,61 +265,15 @@ describe('trajectory projection', () => {
       },
       { type: 'step/end', seq: 6, time: 7, data: { turn: 1, step: 1, reason: { detail: 'z'.repeat(50_000) } } },
     ]))
-    result.contextEpochs[0]!.header.config = { huge: 'c'.repeat(100_000) }
-    result.contextEpochs[0]!.surfaceMessageSeqs = Array.from({ length: 100_000 }, (_, index) => index)
-    result.pathsObservedThroughTools = Array.from({ length: 2_000 }, (_, index) => `/app/${index}-${'p'.repeat(1_000)}`)
-    result.omittedEventTypes = Object.fromEntries(Array.from({ length: 2_000 }, (_, index) => [`event-${index}-${'e'.repeat(100)}`, 1]))
-    result.semanticSteps[0]!.terminalReason = { detail: 'z'.repeat(100_000) }
-    const bundleBuilder = new RefineCapabilities({} as never, {} as never, {
-      maxTrajectoryPageBytes: 4 * 1024,
-      maxFailureBundleBytes: 4 * 1024,
-      allowUnavailableVerifierDiagnosis: true,
-      secretValues: ['top-secret'],
-    }) as unknown as {
-      failureBundle(
-        item: never,
-        projection: TrajectoryProjection,
-        verifier: never,
-        heldOutRef: string | undefined,
-        maxBytes: number,
-      ): GearFailureBundle
-      diagnosisReceipt(
-        bundle: GearFailureBundle,
-        trajectoryDigest: string,
-        verifierStatus: 'corrupt',
-      ): DiagnosisReceipt
-    }
-    const bundle = bundleBuilder.failureBundle({
-      evolutionId: 'evolution', roundId: 'round', phase: 'seed-baseline', evalId: 'eval',
-      trial: {
-        taskName: `task-${'t'.repeat(100_000)}`,
-        trialName: `trial-${'n'.repeat(100_000)}`,
-        runId: result.runId,
-        status: 'completed',
-        rewards: { reward: 0 },
-        invalidReason: `reason-${'r'.repeat(100_000)}`,
-      },
-    } as never, result, {
-      runId: result.runId,
-      verifier: {
-        status: 'corrupt',
-        result: {
-          token: 'top-secret',
-          held_out_metric: 'must-not-leak',
-          payload: 'v'.repeat(20_000),
-        },
-      },
-    } as never, 'private-partition', 4 * 1024)
-    expect(Buffer.byteLength(JSON.stringify(bundle))).toBeLessThanOrEqual(4 * 1024)
-    expect(bundle.trajectory.keySteps).toHaveLength(1)
-    expect(bundle.trajectory.omittedEventTypeCount).toBeGreaterThan(0)
-    expect(bundle.workspace.omittedPathCount).toBeGreaterThan(0)
-    expect(bundle.identity.taskNameTruncated).toBe(true)
-    expect(bundle.coverage.verifier).toBe('unavailable')
-    expect(JSON.stringify(bundle)).not.toContain('top-secret')
-    expect(JSON.stringify(bundle)).not.toContain('held_out_metric')
-    expect(JSON.stringify(bundle)).not.toContain('must-not-leak')
-    expect(bundleBuilder.diagnosisReceipt(bundle, result.trajectoryDigest, 'corrupt').compatibility).toBeUndefined()
+    expect(result.messages.find(message => message.role === 'assistant')?.message).toMatchObject({
+      truncated: true,
+      source: { seq: 4, field: 'data.message' },
+    })
+    expect(result.semanticSteps[0]?.toolActions[0]?.arguments).toMatchObject({
+      truncated: true,
+      source: { seq: 5, field: 'data.arguments' },
+    })
+    expect(Buffer.byteLength(JSON.stringify(result.messages))).toBeLessThan(5_000)
   })
 
   const tb21Path = resolve('.debug/fixtures/tb21-eval-b716/trajectory-inspect-write-compressor.json')
@@ -330,28 +312,6 @@ describe('trajectory projection', () => {
     expect(result.contextEpochs[1]!.surfaceMessageSeqs.length).toBeGreaterThan(2)
     expect(result.messages.some(message => (message.sourceEventSeqs?.count ?? 0) > 1_000)).toBe(true)
     expect(Math.max(...result.messages.map(message => Buffer.byteLength(JSON.stringify(message))))).toBeLessThan(5_000)
-    const bundleBuilder = new RefineCapabilities({} as never, {} as never, {
-      maxTrajectoryPageBytes: 128 * 1024,
-      maxFailureBundleBytes: 128 * 1024,
-      allowUnavailableVerifierDiagnosis: true,
-    }) as unknown as {
-      failureBundle(
-        item: never,
-        projection: TrajectoryProjection,
-        verifier: never,
-        heldOutRef: undefined,
-        maxBytes: number,
-      ): GearFailureBundle
-    }
-    const bundle = bundleBuilder.failureBundle({
-      evolutionId: 'evolution-fixture', roundId: 'round-fixture', phase: 'seed-baseline', evalId: 'eval-fixture',
-      trial: { taskName: 'write-compressor', runId: source.run_id, status: 'completed', rewards: { reward: 0 } },
-    } as never, result, { runId: result.runId, verifier: { status: 'unavailable' } } as never,
-    undefined, Math.floor(128 * 1024 / 5))
-    expect(bundle.trajectory.keySteps.length).toBeGreaterThanOrEqual(1)
-    expect(bundle.trajectory.contextEpochs[0]?.header.adapterDefaultsExcerpt?.preview)
-      .toContain('reasoningEffort')
-    expect(Buffer.byteLength(JSON.stringify(bundle))).toBeLessThanOrEqual(Math.floor(128 * 1024 / 5))
     expect(result.fidelity).toBe('exact-surface')
     expect(JSON.stringify(result.messages)).not.toContain('assistant/chunk')
   })

@@ -528,59 +528,32 @@ export interface TrajectoryProjection {
   redactions?: Array<{ ruleId: string; count: number }>
 }
 
-export interface GearFailureBundle {
-  schemaVersion: 1
-  identity: {
-    evolutionId: string
-    roundId: string
-    phase: 'seed-baseline' | 'seed-candidate'
-    evalId: string
-    runId: string
-    taskName: string
-    taskNameTruncated?: boolean
-    trialName?: string
-    trialNameTruncated?: boolean
-    attempt?: number
-    trajectoryDigest: string
-  }
-  task: { prompt?: ContentExcerpt }
+export interface MetaFailureCard {
+  task: string
+  runId: string
   outcome: {
-    trialStatus: 'completed' | 'errored'
+    status: 'completed' | 'errored'
     reward?: number
     invalidReason?: string
-    verifierStatus: 'complete' | 'result_only' | 'missing' | 'unavailable'
-    verifierResult?: JsonValue
-    verifierDiagnostics?: JsonValue
   }
-  trajectory: {
-    fidelity: TrajectoryProjection['fidelity']
-    rawEventCount: number
-    omittedEventTypes: Record<string, number>
-    omittedEventTypeCount?: number
-    contextEpochCount: number
-    contextEpochs: TrajectoryContextEpoch[]
-    semanticStepCount: number
-    keySteps: TrajectorySemanticStep[]
-    omittedStepCount: number
-    errors: Array<{ seq?: number; type: string; excerpt: string }>
-    omittedErrorCount?: number
-    finalAnswer?: TrajectoryMessageEvidence
+  prompt?: MetaEvidenceText
+  verifier: {
+    status: 'complete' | 'result_only' | 'missing' | 'unavailable'
+    summary: string
+    failures?: Array<{ name: string; detail: MetaEvidenceText }>
+    detailRef?: string
+    needsDetail?: true
   }
-  workspace: {
-    status: 'complete' | 'observed-only' | 'missing'
-    pathsObservedThroughTools: string[]
-    omittedPathCount?: number
+  transcript: {
+    text: string
+    earlierRef?: string
   }
-  crossSourceSignals: Array<{ kind: string; runId: string }>
-  coverage: {
-    task: 'complete' | 'missing'
-    trajectory: 'complete' | 'partial' | 'missing'
-    content: 'complete' | 'excerpted' | 'partial'
-    verifier: 'complete' | 'result_only' | 'explicitly-missing' | 'unavailable'
-    childSessions: 'complete' | 'partial' | 'none' | 'unavailable'
-    workspace: 'complete' | 'observed-only' | 'missing'
-  }
-  bundleDigest: string
+}
+
+export interface MetaEvidenceText {
+  text: string
+  truncated?: true
+  detailRef?: string
 }
 
 export interface DiagnosisReceipt {
@@ -588,7 +561,7 @@ export interface DiagnosisReceipt {
   bundleDigest: string
   trajectoryDigest: string
   projectionVersion: 1
-  verifierStatus: GearFailureBundle['coverage']['verifier']
+  verifierStatus: 'complete' | 'result_only' | 'explicitly-missing' | 'unavailable'
   compatibility?: 'allow-unavailable-verifier'
   sanitizationPolicyDigest: string
   inspectedAt: string
@@ -1321,22 +1294,9 @@ export interface RefineBridgeRequestMap {
   'harness.read': { ref: string; path: string; offset?: number; limit?: number }
   'seed_tasks.load': { partition?: 'seed' }
   'trajectory.query': {
-    roundId?: string
     refs?: string[]
-    view?: 'bundle' | 'steps' | 'context' | 'events'
-    offset?: number
-    limit?: number
-    turn?: number
-    step?: number
-    eventTypes?: string[]
-    seqStart?: number
-    seqEnd?: number
-    field?: string
-    canonicalSha256?: string
-    cursor?: string
-    aroundSeq?: number
-    radius?: number
-    errorsOnly?: boolean
+    detailRef?: string
+    find?: string
   }
   'hitch.status': { roundId: string }
   'candidate.diff': { maxBytes?: number }
