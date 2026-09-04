@@ -41,6 +41,16 @@ function option(args, name) {
   return index < 0 ? undefined : args[index + 1]
 }
 
+function safeCodexArgs(args) {
+  if ((process.env.GEAR_TARGET_PROVIDER ?? 'openai-codex') !== 'openai-codex') return args
+  const parsed = invocation(args)
+  if (parsed.command === 'eval' && parsed.action === 'run'
+    && option(parsed.actionArgs, '--infrastructure-retries') === undefined) {
+    return [...args, '--infrastructure-retries', '0']
+  }
+  return args
+}
+
 async function trialValidity(args) {
   const parsed = invocation(args)
   if (parsed.command !== 'eval' || !['run', 'submit', 'rerun'].includes(parsed.action)) return undefined
@@ -50,9 +60,13 @@ async function trialValidity(args) {
 
   let timeout
   let setupTimeout
+  let attempts
+  let infrastructureRetries
   if (parsed.action === 'run') {
     timeout = option(parsed.actionArgs, '--timeout')
     setupTimeout = option(parsed.actionArgs, '--setup-timeout')
+    attempts = option(parsed.actionArgs, '--attempts') ?? 1
+    infrastructureRetries = option(parsed.actionArgs, '--infrastructure-retries') ?? 1
   } else {
     const evalId = parsed.actionArgs[0]
     if (!/^eval_[a-f0-9]{32}$/u.test(evalId ?? '')) throw new Error('eval rerun requires a valid eval ID')
@@ -65,6 +79,11 @@ async function trialValidity(args) {
     const request = JSON.parse(await readFile(join(parsed.root, 'evals', evalId, 'request.json'), 'utf8'))
     timeout = request.timeout_ms
     setupTimeout = request.setup_timeout_ms
+    attempts = request.attempts ?? 1
+    infrastructureRetries = request.infrastructure_retries ?? 1
+  }
+  if (Number(attempts) !== 1 || Number(infrastructureRetries) !== 0) {
+    throw new Error('Codex target direct evals require one attempt and zero infrastructure retries')
   }
   if (timeout === undefined || duration(timeout) <= 0) {
     throw new Error('Codex target direct evals require a positive --timeout')
@@ -77,8 +96,8 @@ async function trialValidity(args) {
 }
 
 async function codexAccessEnvelope(requiredValidityMs) {
-  if (!/^[A-Z_][A-Z0-9_]*$/u.test(CODEX_ACCESS_ENV)) {
-    throw new Error('GEAR_TARGET_CODEX_ENV must be an environment variable name')
+  if (!/^DSH_OPENAI_CODEX_ACCESS(?:_[A-Z0-9]+)*_B64$/u.test(CODEX_ACCESS_ENV)) {
+    throw new Error('GEAR_TARGET_CODEX_ENV must match DSH_OPENAI_CODEX_ACCESS_*_B64')
   }
   const authFile = process.env.GEAR_TARGET_CODEX_AUTH_FILE
     ?? (process.env.DSH_HOME === undefined ? undefined : join(process.env.DSH_HOME, '.openai-codex-auth.json'))
@@ -126,31 +145,49 @@ async function codexAccessEnvelope(requiredValidityMs) {
 
 async function targetEnvironment(args) {
   const environment = { ...process.env, GEAR_TARGET_CODEX_ENV: CODEX_ACCESS_ENV }
-  if ((process.env.GEAR_TARGET_PROVIDER ?? 'openai-codex') !== 'openai-codex') return environment
+  if ((process.env.GEAR_TARGET_PROVIDER ?? 'openai-codex') !== 'openai-codex') return { environment }
   const requiredValidityMs = await trialValidity(args)
-  if (requiredValidityMs === undefined) return environment
+  if (requiredValidityMs === undefined) return { environment }
   const envelope = await codexAccessEnvelope(requiredValidityMs)
   return {
-    ...environment,
-    [CODEX_ACCESS_ENV]: Buffer.from(JSON.stringify(envelope)).toString('base64'),
+    environment: {
+      ...environment,
+      [CODEX_ACCESS_ENV]: Buffer.from(JSON.stringify(envelope)).toString('base64'),
+    },
+    accessDeadlineAt: envelope.expires - EXPIRY_MARGIN_MS,
   }
 }
 
 async function main() {
-  const args = process.argv.slice(2)
+  const args = safeCodexArgs(process.argv.slice(2))
+  const target = await targetEnvironment(args)
   const child = spawn(process.env.GEAR_HITCH_EXECUTABLE ?? 'hitch', args, {
-    env: await targetEnvironment(args),
+    env: target.environment,
     stdio: 'inherit',
   })
+  let accessDeadlineReached = false
+  const deadlineTimer = target.accessDeadlineAt === undefined ? undefined : setTimeout(() => {
+    accessDeadlineReached = child.kill('SIGTERM')
+  }, Math.max(0, target.accessDeadlineAt - Date.now()))
   const forward = signal => child.kill(signal)
   process.once('SIGINT', forward)
   process.once('SIGTERM', forward)
-  const result = await new Promise((resolveResult, reject) => {
-    child.once('error', reject)
-    child.once('exit', (code, signal) => resolveResult({ code, signal }))
-  })
+  let result
+  try {
+    result = await new Promise((resolveResult, reject) => {
+      child.once('error', reject)
+      child.once('exit', (code, signal) => resolveResult({ code, signal }))
+    })
+  } finally {
+    if (deadlineTimer !== undefined) clearTimeout(deadlineTimer)
+  }
   process.removeListener('SIGINT', forward)
   process.removeListener('SIGTERM', forward)
+  if (accessDeadlineReached) {
+    process.stderr.write('gear-hitch-codex: target access safety deadline reached before Hitch completed\n')
+    process.exitCode = 1
+    return
+  }
   if (result.signal !== null) process.kill(process.pid, result.signal)
   process.exitCode = result.code ?? 1
 }

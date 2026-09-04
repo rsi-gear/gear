@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 const execute = promisify(execFile)
 const wrapper = fileURLToPath(new URL('../../assets/hitch-codex-wrapper.mjs', import.meta.url))
+const EXPIRY_MARGIN_MS = 5 * 60 * 1000
 const roots: string[] = []
 
 afterEach(async () => Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))))
@@ -34,7 +35,9 @@ else {
     }
   }
   const credentialName = process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_ACCESS_B64'
-  process.stdout.write(JSON.stringify({ args, credentialName, credential: process.env[credentialName] }))
+  const output = () => process.stdout.write(JSON.stringify({ args, credentialName, credential: process.env[credentialName] }))
+  if (process.env.FAKE_HITCH_DELAY_MS) setTimeout(output, Number(process.env.FAKE_HITCH_DELAY_MS))
+  else output()
 }
 `)
   await chmod(hitch, 0o755)
@@ -98,7 +101,7 @@ export function createModels({ credentials }) {
           ...current,
           access: 'raced-access',
           refresh: 'raced-host-refresh',
-          expires: 4_102_444_800_000,
+          expires: Number(process.env.FAKE_RACED_EXPIRES),
           accountId: 'account-2',
         }))
       }
@@ -127,6 +130,7 @@ export function openaiCodexProvider() { return { id: 'openai-codex' } }
 function runArgs(root = 'eval') {
   return [
     '--root', root, 'eval', 'run', '--timeout', '10m', '--setup-timeout', '1m',
+    '--infrastructure-retries', '0',
     '--pass-env', 'DSH_OPENAI_CODEX_ACCESS_B64', '--pass-env', 'GEAR_TARGET_CODEX_ENV',
   ]
 }
@@ -167,6 +171,27 @@ describe('gear-hitch-codex', () => {
     expect(accessEnvelope(stdout).access).toBe('original-access')
   })
 
+  it('supports a custom credential name in the dedicated namespace', async () => {
+    const { env } = await fixture(Date.now() + 86_400_000)
+    const credentialName = 'DSH_OPENAI_CODEX_ACCESS_TEAM_A_B64'
+    const args = [
+      'eval', 'run', '--timeout', '10m', '--setup-timeout', '1m',
+      '--pass-env', credentialName, '--pass-env', 'GEAR_TARGET_CODEX_ENV',
+    ]
+    const { stdout } = await execute(process.execPath, [wrapper, ...args], {
+      env: { ...env, GEAR_TARGET_CODEX_ENV: credentialName },
+    })
+    expect(JSON.parse(stdout).credentialName).toBe(credentialName)
+    expect(accessEnvelope(stdout).access).toBe('original-access')
+  })
+
+  it('disables the Hitch default infrastructure retry when the option is omitted', async () => {
+    const { env } = await fixture(Date.now() + 86_400_000)
+    const args = ['eval', 'run', '--timeout', '10m', '--setup-timeout', '1m']
+    const { stdout } = await execute(process.execPath, [wrapper, ...args], { env })
+    expect(JSON.parse(stdout).args).toEqual([...args, '--infrastructure-retries', '0'])
+  })
+
   it('parses the real command after a --root value named eval and exports access only', async () => {
     const expires = Date.now() + 86_400_000
     const { authFile, env, refreshLog } = await fixture(expires)
@@ -197,12 +222,13 @@ describe('gear-hitch-codex', () => {
 
   it('retries when the credential changes between getAuth and the locked snapshot', async () => {
     const { env } = await fixture(Date.now() + 86_400_000)
+    const racedExpires = Date.now() + 3_600_000
     const { stdout } = await execute(process.execPath, [wrapper, ...runArgs()], {
-      env: { ...env, FAKE_SWAP_AFTER_GET_AUTH: '1' },
+      env: { ...env, FAKE_SWAP_AFTER_GET_AUTH: '1', FAKE_RACED_EXPIRES: String(racedExpires) },
     })
     expect(accessEnvelope(stdout)).toMatchObject({
       access: 'raced-access',
-      expires: 4_102_444_800_000,
+      expires: racedExpires,
       accountId: 'account-2',
     })
   })
@@ -212,7 +238,12 @@ describe('gear-hitch-codex', () => {
     const evalId = 'eval_1234567890abcdef1234567890abcdef'
     const evalRoot = join(hitchRoot, 'evals', evalId)
     await mkdir(evalRoot, { recursive: true })
-    await writeFile(join(evalRoot, 'request.json'), JSON.stringify({ timeout_ms: 600_000, setup_timeout_ms: 60_000 }))
+    await writeFile(join(evalRoot, 'request.json'), JSON.stringify({
+      timeout_ms: 600_000,
+      setup_timeout_ms: 60_000,
+      attempts: 1,
+      infrastructure_retries: 0,
+    }))
     const args = ['--root', hitchRoot, 'eval', 'rerun', evalId, '--task', 'one']
     const { stdout } = await execute(process.execPath, [wrapper, ...args], { env })
     expect(JSON.parse(stdout).args).toEqual(args)
@@ -251,10 +282,58 @@ describe('gear-hitch-codex', () => {
       const evalId = 'eval_1234567890abcdef1234567890abcdef'
       const evalRoot = join(hitchRoot, 'evals', evalId)
       await mkdir(evalRoot, { recursive: true })
-      await writeFile(join(evalRoot, 'request.json'), JSON.stringify({ timeout_ms: 600_000, setup_timeout_ms: 0 }))
+      await writeFile(join(evalRoot, 'request.json'), JSON.stringify({
+        timeout_ms: 600_000,
+        setup_timeout_ms: 0,
+        attempts: 1,
+        infrastructure_retries: 0,
+      }))
       invocationArgs = ['--root', hitchRoot, 'eval', 'rerun', evalId]
     }
     await expect(execute(process.execPath, [wrapper, ...(invocationArgs ?? [])], { env }))
       .rejects.toMatchObject({ stderr: expect.stringContaining('positive --setup-timeout') })
+  })
+
+  it.each([
+    ['multiple attempts', ['eval', 'run', '--timeout', '10m', '--setup-timeout', '1m', '--attempts', '2']],
+    ['an infrastructure retry', [
+      'eval', 'run', '--timeout', '10m', '--setup-timeout', '1m', '--infrastructure-retries', '1',
+    ]],
+  ])('rejects direct runs with %s', async (_name, args) => {
+    const { env } = await fixture(Date.now() + 86_400_000)
+    await expect(execute(process.execPath, [wrapper, ...args], { env }))
+      .rejects.toMatchObject({ stderr: expect.stringContaining('one attempt and zero infrastructure retries') })
+  })
+
+  it.each([
+    ['multiple attempts', { attempts: 2, infrastructure_retries: 0 }],
+    ['an infrastructure retry', { attempts: 1, infrastructure_retries: 1 }],
+  ])('rejects direct reruns with %s', async (_name, request) => {
+    const { env, hitchRoot } = await fixture(Date.now() + 86_400_000)
+    const evalId = 'eval_1234567890abcdef1234567890abcdef'
+    const evalRoot = join(hitchRoot, 'evals', evalId)
+    await mkdir(evalRoot, { recursive: true })
+    await writeFile(join(evalRoot, 'request.json'), JSON.stringify({
+      timeout_ms: 600_000,
+      setup_timeout_ms: 60_000,
+      ...request,
+    }))
+    await expect(execute(process.execPath, [wrapper, '--root', hitchRoot, 'eval', 'rerun', evalId], { env }))
+      .rejects.toMatchObject({ stderr: expect.stringContaining('one attempt and zero infrastructure retries') })
+  })
+
+  it.each(['PATH', 'GEAR_TARGET_CODEX_ENV'])('rejects unsafe credential environment name %s', async name => {
+    const { env } = await fixture(Date.now() + 86_400_000)
+    await expect(execute(process.execPath, [wrapper, ...runArgs()], {
+      env: { ...env, GEAR_TARGET_CODEX_ENV: name },
+    })).rejects.toMatchObject({ stderr: expect.stringContaining('DSH_OPENAI_CODEX_ACCESS_*_B64') })
+  })
+
+  it('stops Hitch before the access token enters its refresh window', async () => {
+    const { env } = await fixture(Date.now() + EXPIRY_MARGIN_MS + 750)
+    await expect(execute(process.execPath, [wrapper,
+      'eval', 'run', '--timeout', '1ms', '--setup-timeout', '1ms', '--infrastructure-retries', '0',
+    ], { env: { ...env, FAKE_HITCH_DELAY_MS: '5000' } }))
+      .rejects.toMatchObject({ stderr: expect.stringContaining('target access safety deadline') })
   })
 })

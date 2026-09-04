@@ -381,7 +381,10 @@ export GEAR_TARGET_CODEX_AUTH_FILE=/absolute/path/to/.openai-codex-auth.json
 `DSH_OPENAI_CODEX_ACCESS_B64`，必须与 `hitch.passEnv` 一致。
 默认情况下不需要预先设置 `GEAR_TARGET_CODEX_ENV`，包装器会把生效名称加入
 Hitch 子进程环境，满足 `passEnv` 校验。自定义名称时仍要在启动包装器前设置它；
-包装器会把同一个非敏感名称传给 target launcher。
+包装器会把同一个非敏感名称传给 target launcher。为避免覆盖 `PATH` 或流程控制
+变量，自定义名称必须位于专用命名空间，例如
+`DSH_OPENAI_CODEX_ACCESS_TEAM_A_B64`；默认名仍为
+`DSH_OPENAI_CODEX_ACCESS_B64`。
 
 这个接入只支持 `hitch.controlPlane.mode: direct`。包装器在 direct
 `eval run` 或 `eval rerun` 启动前，通过 pi-ai 的公开认证生命周期取得覆盖
@@ -394,11 +397,18 @@ setup budget、task budget 和五分钟余量的 access token；需要刷新时�
 正数，因为 Hitch 中 setup timeout 为 `0` 表示不限制时长，无法安全导出一个
 不可刷新的短期 access token。
 
+Codex access-only 路径只允许一次 logical attempt，并将未显式指定的 Hitch
+`infrastructure-retries` 安全地改为 `0`；显式配置多 attempt 或重试会被拒绝。
+从 access 导出开始，包装器还会以“token 到期前五分钟”为整个 direct Hitch
+进程的硬截止时间。这个截止时间覆盖 harness 解析、制品/镜像准备和 target
+执行；若前置阶段耗时过长，评测会被终止，而不是让容器进入需要 refresh token
+的窗口。
+
 `eval submit`、`eval run --daemon` 和 daemon rerun 会明确拒绝；`--version`、
 capabilities、watch、inspect 等命令保持透明转发。一次 direct evaluation 中的
-容器共享同一个 access 快照，因此大批量、多波次评测必须拆成能在 access 到期前
-完成的小批次；daemon 若要支持 Codex，应另行实现由 daemon 持有的 credential
-broker。
+容器共享同一个 access 快照，因此大批量、多波次评测应拆成能在硬截止时间前
+完成的小批次，否则该 eval 会被安全终止；daemon 若要支持 Codex，应另行实现由
+daemon 持有的 credential broker。
 
 容器销毁不会丢失宿主登录，也不需要为每个 task 重新做设备验证。
 显式设置 `GEAR_TARGET_PROVIDER=deepseek-official` 时，包装器直接透传并使用配置的

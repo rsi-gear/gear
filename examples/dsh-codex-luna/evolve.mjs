@@ -99,6 +99,7 @@ if (command === 'codex-status') {
     '--harness', ref,
     '--model', `${provider}/${model}`,
     '--attempts', '1',
+    '--infrastructure-retries', '0',
     '--max-concurrent', process.env.GEAR_TARGET_MAX_CONCURRENT ?? '1',
     '--timeout', `${process.env.GEAR_TASK_BUDGET_MS ?? '900000'}ms`,
     '--setup-timeout', '1800000ms',

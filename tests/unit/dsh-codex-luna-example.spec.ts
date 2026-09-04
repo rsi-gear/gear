@@ -30,6 +30,7 @@ describe('DSH Codex Luna example', () => {
     })
     const targetLauncher = await readFile(join(example, 'target-carrier', 'apps', 'cli', 'lib', 'bin.js'), 'utf8')
     expect(targetLauncher).toContain("process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_ACCESS_B64'")
+    expect(targetLauncher).toContain('DSH_OPENAI_CODEX_ACCESS(?:_[A-Z0-9]+)*_B64')
     expect(targetLauncher).toContain("refresh: 'disabled-in-disposable-target'")
   })
 
@@ -76,6 +77,7 @@ describe('DSH Codex Luna example', () => {
     expect(patch).toContain("process.env.GEAR_META_MODEL ?? 'gpt-5.6-luna'")
     expect(patch).toContain("process.env.GEAR_TARGET_MODEL ?? 'gpt-5.6-luna'")
     expect(launcher).toContain("GEAR_TARGET_CODEX_ENV: process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_ACCESS_B64'")
+    expect(launcher).toContain("'--infrastructure-retries', '0'")
     expect(launcher).not.toContain('.codex/auth.json')
   })
 })

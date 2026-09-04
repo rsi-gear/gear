@@ -17,6 +17,9 @@ if (!process.argv.includes('--version')) {
   const dshHome = process.env.DSH_HOME
   if (typeof dshHome !== 'string' || dshHome.length === 0) throw new Error('DSH_HOME is required')
   const credentialName = process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_ACCESS_B64'
+  if (!/^DSH_OPENAI_CODEX_ACCESS(?:_[A-Z0-9]+)*_B64$/u.test(credentialName)) {
+    throw new Error('GEAR_TARGET_CODEX_ENV must match DSH_OPENAI_CODEX_ACCESS_*_B64')
+  }
   const encodedAccess = process.env[credentialName]
   if (encodedAccess) {
     delete process.env[credentialName]
