@@ -64,7 +64,7 @@ The model and OAuth settings are environment variables:
 - `GEAR_TARGET_MODEL`, default `gpt-5.6-luna`
 - `GEAR_TARGET_CODEX_AUTH_FILE`, default
   `.evolve-lab/dsh-home/.openai-codex-auth.json`
-- `GEAR_TARGET_CODEX_ENV`, default `DSH_OPENAI_CODEX_AUTH_B64`
+- `GEAR_TARGET_CODEX_ENV`, default `DSH_OPENAI_CODEX_ACCESS_B64`
 - `GEAR_HITCH_EXECUTABLE`, the real Hitch executable behind
   `gear-hitch-codex`; default `hitch`
 - `GEAR_DSH_CODEX_MODULE`, optional `dsh-codex` module override
@@ -97,14 +97,18 @@ These commands use the community `dsh-codex` plugin and do not require an
 `OPENAI_API_KEY`.
 
 Configure `hitch.executable` to the installed `gear-hitch-codex` binary and
-set `GEAR_HITCH_EXECUTABLE` to the real Hitch binary. Before `eval run`,
-`eval submit`, or `eval rerun`, the wrapper checks the persistent host OAuth
-document. A token with less than five minutes remaining is refreshed through
-the public `dsh-codex` lifecycle and written back to the host file; the wrapper
-then reads the latest bytes into `DSH_OPENAI_CODEX_AUTH_B64` for Hitch to pass
-to every disposable target container in that evaluation. Other Hitch commands
-are transparent pass-throughs. Login is therefore persistent across tasks and
-containers rather than repeated per task.
+set `GEAR_HITCH_EXECUTABLE` to the real Hitch binary. This integration requires
+`hitch.controlPlane.mode: direct`. Before direct `eval run` or `eval rerun`, the
+wrapper asks the public pi-ai lifecycle for an access token valid for the setup
+budget, task budget, and a five-minute margin. Refresh and rotating refresh-token
+writes happen only in the locked host store.
+
+Hitch receives `DSH_OPENAI_CODEX_ACCESS_B64`, an access-only envelope containing
+the short-lived bearer, expiry, and account id. It never receives the OAuth
+document or refresh token. The target writes a disposable dsh-codex document
+with a deliberately unusable refresh placeholder, so it can use the bearer but
+cannot rotate the host login. `eval submit`, `eval run --daemon`, and daemon
+reruns fail explicitly; other Hitch commands are transparent pass-throughs.
 
 ## Run
 
@@ -149,12 +153,18 @@ built-in `sandbox-exec`; on Linux install Bubblewrap, `socat`, and ripgrep.
 
 For target trials, `gear-hitch-codex` reads the plugin-owned credential from
 `GEAR_TARGET_CODEX_AUTH_FILE`, refreshes the persistent host document when
-needed, and transports the current document as a redacted Hitch credential.
-The target launcher writes it with mode `0600` into that disposable run's
-isolated `DSH_HOME`. The flow never reads or copies `~/.codex/auth.json`, never
-requires an `OPENAI_API_KEY`, and does not print the credential. Setting
-`GEAR_TARGET_PROVIDER=deepseek-official` retains the previous
-`DEEPSEEK_API_KEY` path as an explicit fallback configuration.
+needed, and transports only the current access envelope as a redacted Hitch
+credential. The target launcher writes it with mode `0600` into that disposable
+run's isolated `DSH_HOME`. The flow never reads or copies `~/.codex/auth.json`,
+never distributes a rotating refresh token, never requires an
+`OPENAI_API_KEY`, and does not print the bearer. Setting
+`GEAR_TARGET_PROVIDER=deepseek-official` retains the previous `DEEPSEEK_API_KEY`
+path as an explicit fallback configuration.
+
+Every container in one direct eval receives the same access snapshot. The eval
+must therefore finish before that access token expires; split a long multi-wave
+dataset into smaller direct evals. A daemon deployment needs a daemon-owned
+credential broker and is intentionally outside this example.
 
 ## Useful checks
 
@@ -216,20 +226,12 @@ failing `terminal-bench/git-multibranch` task. Run
 
 ## Validated Codex target
 
-Eval `eval_950723027a1b42e0975b2ece613b6bbd` ran
-`terminal-bench/nginx-request-logging` in a disposable Docker container against
-carrier commit `c2b707ffe7ed02a7fe57f7984dd2d27667638552`. Run
-`run_105ba991138947d48fb9eb7a75b46a6b` recorded
-`openai-codex/gpt-5.6-luna`, produced a provider-native trajectory with 20 tool
-calls, exited successfully, and passed the Harbor verifier with reward `1`.
-These commit and run ids document the original local validation; a fresh
-bootstrap intentionally produces new target commit ids with the same pinned
-carrier source.
-
-The tracked example and `gear-hitch-codex` wrapper were independently
-revalidated from a fresh bootstrap on 2026-09-04. The bootstrap produced target
-commit `2e3b11f85d29375506da526093b4ce69cd4a4528`; eval
-`eval_1c0d28d13b2c47e5a276b406a42c1fb2` then ran the same Nginx task as
-`openai-codex/gpt-5.6-luna`. Run
-`run_245291ca5b5c42fd8bfe0193fccb0ac9` completed with exit code `0`, valid
-observation status, and verifier reward `1`.
+The access-only target path was revalidated from a fresh bootstrap on
+2026-09-05. The bootstrap produced carrier commit
+`d15247047e55562c687512e7f75a8820d77d1c40`; eval
+`eval_e26754b3cc2d4128a8b4586af2b3b037` then ran
+`terminal-bench/nginx-request-logging` in a disposable Docker container using
+`DSH_OPENAI_CODEX_ACCESS_B64`. Run
+`run_1b8837ecc5d04b6b8716ba7cbeedce18` recorded
+`openai-codex/gpt-5.6-luna`, exited successfully with valid observation status,
+and passed the Harbor verifier with reward `1`.

@@ -32,7 +32,7 @@ async function environment(includeTarget = true) {
     GEAR_TARGET_PROVIDER: process.env.GEAR_TARGET_PROVIDER ?? 'openai-codex',
     GEAR_TARGET_MODEL: process.env.GEAR_TARGET_MODEL ?? 'gpt-5.6-luna',
     GEAR_TARGET_CODEX_AUTH_FILE: process.env.GEAR_TARGET_CODEX_AUTH_FILE ?? join(dshHome, '.openai-codex-auth.json'),
-    GEAR_TARGET_CODEX_ENV: process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_AUTH_B64',
+    GEAR_TARGET_CODEX_ENV: process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_ACCESS_B64',
     DSH_CODEX_SEARCH_MODE: process.env.DSH_CODEX_SEARCH_MODE ?? 'live',
   }
   if (!includeTarget) return env
@@ -89,7 +89,7 @@ if (command === 'codex-status') {
   const provider = process.env.GEAR_TARGET_PROVIDER ?? 'openai-codex'
   const model = process.env.GEAR_TARGET_MODEL ?? 'gpt-5.6-luna'
   const credential = provider === 'openai-codex'
-    ? process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_AUTH_B64'
+    ? process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_ACCESS_B64'
     : 'DEEPSEEK_API_KEY'
   await run(hitchWrapper, [
     '--root', join(labRoot, 'hitch-home'),

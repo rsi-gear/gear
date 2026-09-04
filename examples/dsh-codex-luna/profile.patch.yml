@@ -50,8 +50,10 @@
       maxTrajectoryOutputBytes: 67108864
       sampling: {}
       agentArgs: []
+      controlPlane:
+        mode: direct
       passEnv:
-        - !!js "(process.env.GEAR_TARGET_PROVIDER ?? 'openai-codex') === 'openai-codex' ? (process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_AUTH_B64') : 'DEEPSEEK_API_KEY'"
+        - !!js "(process.env.GEAR_TARGET_PROVIDER ?? 'openai-codex') === 'openai-codex' ? (process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_ACCESS_B64') : 'DEEPSEEK_API_KEY'"
         - GEAR_TARGET_CODEX_ENV
 
 - id: agent-default-model

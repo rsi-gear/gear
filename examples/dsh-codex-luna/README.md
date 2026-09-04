@@ -61,9 +61,15 @@ node examples/dsh-codex-luna/evolve.mjs codex-device-login
 ```
 
 The login is stored in the isolated DSH home. `gear-hitch-codex` refreshes it
-on the host before a target evaluation and injects a snapshot into each target
-container. A container writes that snapshot to its disposable DSH home, so a
-new task does not require another device login.
+only on the host before a direct target evaluation. Each target container gets
+a short-lived access-only envelope, never the rotating refresh token. A
+container writes a non-refreshable credential to its disposable DSH home, so a
+new task does not require another device login and cannot invalidate the host
+login.
+
+Daemon submission is intentionally unsupported: keep `hitch.controlPlane.mode`
+set to `direct`. Containers in one eval share an access snapshot, so split a
+long multi-wave dataset into direct evals that finish before it expires.
 
 ## Check and run
 

@@ -16,12 +16,27 @@ if (!process.argv.includes('--version')) {
   }
   const dshHome = process.env.DSH_HOME
   if (typeof dshHome !== 'string' || dshHome.length === 0) throw new Error('DSH_HOME is required')
-  const credentialName = process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_AUTH_B64'
-  const codexAuth = process.env[credentialName]
-  if (codexAuth) {
-    await mkdir(dshHome, { recursive: true })
-    await writeFile(join(dshHome, '.openai-codex-auth.json'), Buffer.from(codexAuth, 'base64'), { mode: 0o600 })
+  const credentialName = process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_ACCESS_B64'
+  const encodedAccess = process.env[credentialName]
+  if (encodedAccess) {
     delete process.env[credentialName]
+    const envelope = JSON.parse(Buffer.from(encodedAccess, 'base64').toString('utf8'))
+    if (envelope?.version !== 1 || typeof envelope.access !== 'string'
+      || typeof envelope.expires !== 'number' || typeof envelope.accountId !== 'string') {
+      throw new Error('Gear Codex access envelope is invalid')
+    }
+    await mkdir(dshHome, { recursive: true })
+    const document = {
+      version: 1,
+      credential: {
+        type: 'oauth',
+        access: envelope.access,
+        refresh: 'disabled-in-disposable-target',
+        expires: envelope.expires,
+        accountId: envelope.accountId,
+      },
+    }
+    await writeFile(join(dshHome, '.openai-codex-auth.json'), `${JSON.stringify(document)}\n`, { mode: 0o600 })
   }
   const profileRoot = join(dshHome, 'profiles', 'headless')
   await mkdir(profileRoot, { recursive: true })

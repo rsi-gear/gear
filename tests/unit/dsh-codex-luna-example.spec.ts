@@ -29,7 +29,8 @@ describe('DSH Codex Luna example', () => {
       'dsh-codex': '0.2.6',
     })
     const targetLauncher = await readFile(join(example, 'target-carrier', 'apps', 'cli', 'lib', 'bin.js'), 'utf8')
-    expect(targetLauncher).toContain("process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_AUTH_B64'")
+    expect(targetLauncher).toContain("process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_ACCESS_B64'")
+    expect(targetLauncher).toContain("refresh: 'disabled-in-disposable-target'")
   })
 
   it('bootstraps an exact-commit target with a valid harness manifest', async () => {
@@ -74,7 +75,7 @@ describe('DSH Codex Luna example', () => {
     const launcher = await readFile(join(example, 'evolve.mjs'), 'utf8')
     expect(patch).toContain("process.env.GEAR_META_MODEL ?? 'gpt-5.6-luna'")
     expect(patch).toContain("process.env.GEAR_TARGET_MODEL ?? 'gpt-5.6-luna'")
-    expect(launcher).toContain("GEAR_TARGET_CODEX_ENV: process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_AUTH_B64'")
+    expect(launcher).toContain("GEAR_TARGET_CODEX_ENV: process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_ACCESS_B64'")
     expect(launcher).not.toContain('.codex/auth.json')
   })
 })

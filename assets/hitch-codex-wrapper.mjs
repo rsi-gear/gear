@@ -1,21 +1,79 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
-const REFRESH_WINDOW_MS = 5 * 60 * 1000
-const CODEX_CREDENTIAL_ENV = process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_AUTH_B64'
+const EXPIRY_MARGIN_MS = 5 * 60 * 1000
+const DEFAULT_SETUP_BUDGET_MS = 30 * 60 * 1000
+const CODEX_ACCESS_ENV = process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_ACCESS_B64'
 
-function launchesTrials(args) {
-  const evalIndex = args.indexOf('eval')
-  return evalIndex >= 0 && ['run', 'submit', 'rerun'].includes(args[evalIndex + 1])
+function takeOption(args, name) {
+  const index = args.indexOf(name)
+  if (index < 0) return undefined
+  if (index === args.length - 1) throw new Error(`${name} requires a value`)
+  const value = args[index + 1]
+  args.splice(index, 2)
+  return value
 }
 
-async function targetEnvironment(args) {
-  if (!launchesTrials(args) || (process.env.GEAR_TARGET_PROVIDER ?? 'openai-codex') !== 'openai-codex') {
-    return process.env
+function invocation(args) {
+  const remaining = [...args]
+  const root = resolve(takeOption(remaining, '--root') ?? process.env.HITCH_ROOT ?? join(homedir(), '.hitch'))
+  return {
+    root,
+    command: remaining[0],
+    action: remaining[1],
+    actionArgs: remaining.slice(2),
   }
-  if (!/^[A-Z_][A-Z0-9_]*$/u.test(CODEX_CREDENTIAL_ENV)) {
+}
+
+function duration(value) {
+  const match = String(value).trim().match(/^(\d+(?:\.\d+)?)(ms|s|m|h)?$/u)
+  if (!match) throw new Error(`invalid duration: ${value}`)
+  const scales = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 }
+  return Math.round(Number(match[1]) * scales[match[2] ?? 'ms'])
+}
+
+function option(args, name) {
+  const index = args.indexOf(name)
+  return index < 0 ? undefined : args[index + 1]
+}
+
+async function trialValidity(args) {
+  const parsed = invocation(args)
+  if (parsed.command !== 'eval' || !['run', 'submit', 'rerun'].includes(parsed.action)) return undefined
+  if (parsed.action === 'submit' || parsed.actionArgs.includes('--daemon')) {
+    throw new Error('Codex target credentials require direct Hitch evals; daemon submission is unsupported')
+  }
+
+  let timeout
+  let setupTimeout
+  if (parsed.action === 'run') {
+    timeout = option(parsed.actionArgs, '--timeout')
+    setupTimeout = option(parsed.actionArgs, '--setup-timeout')
+  } else {
+    const evalId = parsed.actionArgs[0]
+    if (!/^eval_[a-f0-9]{32}$/u.test(evalId ?? '')) throw new Error('eval rerun requires a valid eval ID')
+    try {
+      await readFile(join(parsed.root, 'evals', evalId, 'submission.json'))
+      throw new Error('Codex target credentials require direct Hitch evals; daemon rerun is unsupported')
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
+    }
+    const request = JSON.parse(await readFile(join(parsed.root, 'evals', evalId, 'request.json'), 'utf8'))
+    timeout = request.timeout_ms
+    setupTimeout = request.setup_timeout_ms
+  }
+  if (timeout === undefined || duration(timeout) <= 0) {
+    throw new Error('Codex target direct evals require a positive --timeout')
+  }
+  return duration(timeout) + duration(setupTimeout ?? DEFAULT_SETUP_BUDGET_MS) + EXPIRY_MARGIN_MS
+}
+
+async function codexAccessEnvelope(requiredValidityMs) {
+  if (!/^[A-Z_][A-Z0-9_]*$/u.test(CODEX_ACCESS_ENV)) {
     throw new Error('GEAR_TARGET_CODEX_ENV must be an environment variable name')
   }
   const authFile = process.env.GEAR_TARGET_CODEX_AUTH_FILE
@@ -23,21 +81,50 @@ async function targetEnvironment(args) {
   if (authFile === undefined) throw new Error('GEAR_TARGET_CODEX_AUTH_FILE or DSH_HOME is required')
 
   const moduleName = process.env.GEAR_DSH_CODEX_MODULE ?? 'dsh-codex'
-  const {
-    OpenAICodexCredentialStore,
-    openAICodexAuthStatus,
-    readOpenAICodexRateLimits,
-  } = await import(moduleName)
+  const moduleUrl = moduleName.startsWith('file:') ? moduleName : import.meta.resolve(moduleName)
+  const { OpenAICodexCredentialStore, OPENAI_CODEX_PROVIDER } = await import(moduleUrl)
+  let directory = dirname(fileURLToPath(moduleUrl))
+  let piAiRoot
+  for (;;) {
+    const candidate = join(directory, 'node_modules', '@earendil-works', 'pi-ai')
+    try {
+      await readFile(join(candidate, 'package.json'))
+      piAiRoot = candidate
+      break
+    } catch (error) {
+      const parent = dirname(directory)
+      if (error?.code !== 'ENOENT' || parent === directory) throw error
+      directory = parent
+    }
+  }
+  const { createModels } = await import(pathToFileURL(join(piAiRoot, 'dist', 'index.js')).href)
+  const { openaiCodexProvider } = await import(pathToFileURL(join(piAiRoot, 'dist', 'providers', 'openai-codex.js')).href)
   const store = new OpenAICodexCredentialStore(authFile)
-  const status = await openAICodexAuthStatus(store)
-  if (!status.authenticated) throw new Error('OpenAI Codex is signed out')
-  const expiresAt = status.expiresAt?.valueOf()
-  if (expiresAt === undefined || !Number.isFinite(expiresAt) || expiresAt <= Date.now() + REFRESH_WINDOW_MS) {
-    await readOpenAICodexRateLimits(store)
+  const models = createModels({ credentials: store })
+  models.setProvider(openaiCodexProvider())
+  const auth = await models.getAuth(OPENAI_CODEX_PROVIDER, { minOAuthValidityMs: requiredValidityMs })
+  const credential = await store.read(OPENAI_CODEX_PROVIDER)
+  const access = auth?.auth.apiKey
+  if (credential?.type !== 'oauth' || typeof credential.accountId !== 'string'
+    || typeof access !== 'string' || access.length === 0) {
+    throw new Error('OpenAI Codex is signed out')
   }
   return {
+    version: 1,
+    access,
+    expires: credential.expires,
+    accountId: credential.accountId,
+  }
+}
+
+async function targetEnvironment(args) {
+  if ((process.env.GEAR_TARGET_PROVIDER ?? 'openai-codex') !== 'openai-codex') return process.env
+  const requiredValidityMs = await trialValidity(args)
+  if (requiredValidityMs === undefined) return process.env
+  const envelope = await codexAccessEnvelope(requiredValidityMs)
+  return {
     ...process.env,
-    [CODEX_CREDENTIAL_ENV]: (await readFile(authFile)).toString('base64'),
+    [CODEX_ACCESS_ENV]: Buffer.from(JSON.stringify(envelope)).toString('base64'),
   }
 }
 
@@ -50,9 +137,9 @@ async function main() {
   const forward = signal => child.kill(signal)
   process.once('SIGINT', forward)
   process.once('SIGTERM', forward)
-  const result = await new Promise((resolve, reject) => {
+  const result = await new Promise((resolveResult, reject) => {
     child.once('error', reject)
-    child.once('exit', (code, signal) => resolve({ code, signal }))
+    child.once('exit', (code, signal) => resolveResult({ code, signal }))
   })
   process.removeListener('SIGINT', forward)
   process.removeListener('SIGTERM', forward)

@@ -360,7 +360,9 @@ order: 50
 hitch:
   executable: /absolute/path/to/gear-hitch-codex
   model: openai-codex/gpt-5.6-luna
-  passEnv: [DSH_OPENAI_CODEX_AUTH_B64, GEAR_TARGET_CODEX_ENV]
+  controlPlane:
+    mode: direct
+  passEnv: [DSH_OPENAI_CODEX_ACCESS_B64, GEAR_TARGET_CODEX_ENV]
 ```
 
 包装器通过环境变量配置，不把 credential value 写入 Gear 配置或 evolution
@@ -376,21 +378,29 @@ export GEAR_TARGET_CODEX_AUTH_FILE=/absolute/path/to/.openai-codex-auth.json
 `$DSH_HOME/.openai-codex-auth.json`。若 `dsh-codex` 不在包装器的普通 Node
 模块解析路径中，可以用 `GEAR_DSH_CODEX_MODULE` 指向它的入口；目标环境变量名
 也可通过 `GEAR_TARGET_CODEX_ENV` 覆盖，默认是
-`DSH_OPENAI_CODEX_AUTH_B64`，必须与 `hitch.passEnv` 一致。
+`DSH_OPENAI_CODEX_ACCESS_B64`，必须与 `hitch.passEnv` 一致。
 自定义名称时还要把非敏感的 `GEAR_TARGET_CODEX_ENV` 一并传给 target launcher。
 
-包装器只在 `eval run`、`eval submit` 和 `eval rerun` 启动前工作：它从宿主机
-的持久 OAuth 文件读取状态，token 距过期不足五分钟时通过 `dsh-codex` 的公开
-认证生命周期刷新并写回同一文件，然后把最新文件编码到 Hitch 子进程环境中。
-一次 evaluation 内的所有容器共享这份新快照；容器销毁不会丢失宿主登录，也
-不需要为每个 task 重新做设备验证。`--version`、capabilities、watch、inspect
-等命令保持透明转发。
+这个接入只支持 `hitch.controlPlane.mode: direct`。包装器在 direct
+`eval run` 或 `eval rerun` 启动前，通过 pi-ai 的公开认证生命周期取得覆盖
+setup budget、task budget 和五分钟余量的 access token；需要刷新时，只更新带
+跨进程锁的宿主 OAuth 文件。随后传给 Hitch 的自定义 envelope 只含短期 access、
+到期时间和 account id，不含 rotating refresh token。target 为满足 dsh-codex
+文件格式写入不可用的 refresh 占位值，因此容器不能刷新或破坏宿主登录。
+
+`eval submit`、`eval run --daemon` 和 daemon rerun 会明确拒绝；`--version`、
+capabilities、watch、inspect 等命令保持透明转发。一次 direct evaluation 中的
+容器共享同一个 access 快照，因此大批量、多波次评测必须拆成能在 access 到期前
+完成的小批次；daemon 若要支持 Codex，应另行实现由 daemon 持有的 credential
+broker。
+
+容器销毁不会丢失宿主登录，也不需要为每个 task 重新做设备验证。
 显式设置 `GEAR_TARGET_PROVIDER=deepseek-official` 时，包装器直接透传并使用配置的
 `DEEPSEEK_API_KEY` fallback，不触发 Codex 登录检查。
 
-不要将 `~/.codex/auth.json` 传入 target，也不要把 OAuth JSON、base64 值或
-refresh token 写进 YAML。首次登录和真正需要重新授权时，仍由
-`dsh-codex login --device-code` 在宿主机完成。
+不要将 `~/.codex/auth.json` 或 dsh-codex OAuth 文档传入 target，也不要把
+access envelope、base64 值或 refresh token 写进 YAML。首次登录和真正需要
+重新授权时，仍由 `dsh-codex login --device-code` 在宿主机完成。
 
 ### 6.3 可选 LLM-as-a-Verifier
 
