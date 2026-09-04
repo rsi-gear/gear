@@ -344,7 +344,55 @@ order: 50
 
 `initialChampion` 对全新部署实际上是必需的：没有它就无法创建第一个 evolution。以后每个普通 `/refine` 仍默认从这个固定初始版本开始；它不会偷偷继承另一个 evolution 的 champion。
 
-### 6.2 可选 LLM-as-a-Verifier
+### 6.2 在一次性 target 容器间复用 Codex 登录
+
+若 target 使用 `dsh-codex` 的 ChatGPT OAuth，而 Hitch/Harbor 为每个 task
+创建独立容器，可以把 Gear 附带的 `gear-hitch-codex` 设置为
+`hitch.executable`：
+
+仓库内的
+[`examples/dsh-codex-luna`](../examples/dsh-codex-luna/README.md) 包含完整可复现
+示例：Meta DSH 和 target agent 都默认使用 `openai-codex/gpt-5.6-luna`、
+固定兼容依赖版本、生成 exact-commit target carrier，并复用下面的宿主 OAuth
+传输链路。示例不包含 token、运行状态或 benchmark 数据。
+
+```yaml
+hitch:
+  executable: /absolute/path/to/gear-hitch-codex
+  model: openai-codex/gpt-5.6-luna
+  passEnv: [DSH_OPENAI_CODEX_AUTH_B64, GEAR_TARGET_CODEX_ENV]
+```
+
+包装器通过环境变量配置，不把 credential value 写入 Gear 配置或 evolution
+state：
+
+```sh
+export GEAR_HITCH_EXECUTABLE=/absolute/path/to/hitch
+export GEAR_TARGET_CODEX_AUTH_FILE=/absolute/path/to/.openai-codex-auth.json
+```
+
+`GEAR_HITCH_EXECUTABLE` 未设置时默认调用 PATH 中的 `hitch`。
+`GEAR_TARGET_CODEX_AUTH_FILE` 未设置时默认读取
+`$DSH_HOME/.openai-codex-auth.json`。若 `dsh-codex` 不在包装器的普通 Node
+模块解析路径中，可以用 `GEAR_DSH_CODEX_MODULE` 指向它的入口；目标环境变量名
+也可通过 `GEAR_TARGET_CODEX_ENV` 覆盖，默认是
+`DSH_OPENAI_CODEX_AUTH_B64`，必须与 `hitch.passEnv` 一致。
+自定义名称时还要把非敏感的 `GEAR_TARGET_CODEX_ENV` 一并传给 target launcher。
+
+包装器只在 `eval run`、`eval submit` 和 `eval rerun` 启动前工作：它从宿主机
+的持久 OAuth 文件读取状态，token 距过期不足五分钟时通过 `dsh-codex` 的公开
+认证生命周期刷新并写回同一文件，然后把最新文件编码到 Hitch 子进程环境中。
+一次 evaluation 内的所有容器共享这份新快照；容器销毁不会丢失宿主登录，也
+不需要为每个 task 重新做设备验证。`--version`、capabilities、watch、inspect
+等命令保持透明转发。
+显式设置 `GEAR_TARGET_PROVIDER=deepseek-official` 时，包装器直接透传并使用配置的
+`DEEPSEEK_API_KEY` fallback，不触发 Codex 登录检查。
+
+不要将 `~/.codex/auth.json` 传入 target，也不要把 OAuth JSON、base64 值或
+refresh token 写进 YAML。首次登录和真正需要重新授权时，仍由
+`dsh-codex login --device-code` 在宿主机完成。
+
+### 6.3 可选 LLM-as-a-Verifier
 
 如果用户任务集的 Harbor verifier 只负责执行有效性，或希望基于完整 agent trajectory 做语义判定，可以在 selection 阶段启用 `llm-verifier` assessor：
 

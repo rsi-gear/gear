@@ -18,7 +18,8 @@
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "bin": {
-    "gear-refine": "./lib/cli.js"
+    "gear-refine": "./lib/cli.js",
+    "gear-hitch-codex": "./assets/hitch-codex-wrapper.mjs"
   },
   "exports": {
     ".": {
@@ -44,6 +45,7 @@
     "lib/**/*.d.ts",
     "assets/ipython-kernel.py",
     "assets/llm-verifier-bridge.py",
+    "assets/hitch-codex-wrapper.mjs",
     "skills/refine/**",
     "cordis.patch.yml",
     "README.md",
