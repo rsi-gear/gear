@@ -60,6 +60,10 @@ export type MetaCapabilityCaller = (
   signal: AbortSignal,
 ) => Promise<unknown>
 
+export interface MetaCapabilityOptions {
+  shellEnabled: boolean
+}
+
 function jsonValue(value: unknown): JsonValue {
   return JSON.parse(JSON.stringify(value)) as JsonValue
 }
@@ -81,7 +85,14 @@ const JSON_OUTPUT = {
   },
 }
 
-export function mountMetaCapabilityTools(agentCtx: Context, call: MetaCapabilityCaller): void {
+export function mountMetaCapabilityTools(
+  agentCtx: Context,
+  call: MetaCapabilityCaller,
+  options: MetaCapabilityOptions = { shellEnabled: false },
+): void {
+  const workspaceCapabilityGuide = options.shellEnabled
+    ? 'Use read/write/edit/glob/grep and sandboxed bash to inspect and edit the active candidate directly.'
+    : 'Use read/write/edit/glob/grep to inspect and edit the active candidate directly. Bash is unavailable; do not attempt to access host absolute paths mentioned in tool output.'
   agentCtx.systemPrompt.section({
     name: 'refine-meta:capability-guide',
     order: 107,
@@ -91,7 +102,7 @@ export function mountMetaCapabilityTools(agentCtx: Context, call: MetaCapability
       'At each refinement-round wake, treat the embedded baseline as the authoritative current-round evidence.',
       'Before proposing, inspect the failure bundle for every failed baseline run. Use steps, context, or raw events only for additional drill-down.',
       'Cite only the current baseline evalId/runIds that were exposed by the wake or typed tools. Held-out evidence is unavailable.',
-      'Use read/write/edit/glob/grep and sandboxed bash to inspect and edit the active candidate directly.',
+      workspaceCapabilityGuide,
       'You may coordinate changes across any number of semantic surfaces.',
       'trajectory_query without refs returns the current round summary and diagnosis progress. With refs=[runId], the default bundle view returns a bounded semantic failure bundle.',
       'If trajectory_query returns batchAccepted=false and recoverable=true, execute nextAction exactly, then remainingActions; the server has split an oversized bundle batch into safe single-run queries.',

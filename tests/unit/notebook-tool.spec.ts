@@ -17,7 +17,7 @@ describe('Meta notebook tools', () => {
       tools: { register(definition: ToolDefinition) { tools.push(definition) } },
       systemPrompt: { section(value: { name: string; text: string }) { sections.push(value) } },
     } as unknown as Context
-    mountMetaCapabilityTools(context, call)
+    mountMetaCapabilityTools(context, call, { shellEnabled: true })
     expect(tools.map(tool => tool.name)).toEqual([
       'harness_current',
       'harness_read',
@@ -32,6 +32,7 @@ describe('Meta notebook tools', () => {
     expect(sections[0]?.text).toContain('failure bundle for every failed baseline run')
     expect(sections[0]?.text).toContain('accepted=false and recoverable=true')
     expect(sections[0]?.text).toContain('TRAJECTORY_EVIDENCE_UNAVAILABLE')
+    expect(sections[0]?.text).toContain('sandboxed bash')
     const trajectory = tools.find(tool => tool.name === 'trajectory_query')!
     await trajectory.execute({ refs: ['run_1'], offset: 0 }, {
       agent: { id: 'meta-1' },
@@ -45,6 +46,30 @@ describe('Meta notebook tools', () => {
     )
   })
 
+  it('describes the restricted workspace when candidate bash is disabled', () => {
+    const sections: Array<{ name: string; text: string }> = []
+    const context = {
+      tools: { register() {} },
+      systemPrompt: { section(value: { name: string; text: string }) { sections.push(value) } },
+    } as unknown as Context
+    mountMetaCapabilityTools(context, vi.fn(), { shellEnabled: false })
+    expect(sections[0]?.text).not.toContain('sandboxed bash')
+    expect(sections[0]?.text).not.toMatch(/use [^.!?;\n]*bash/iu)
+    expect(sections[0]?.text).toContain('Bash is unavailable')
+    expect(sections[0]?.text).toContain('host absolute paths')
+  })
+
+  it('defaults legacy callers to the restricted workspace guide', () => {
+    const sections: Array<{ name: string; text: string }> = []
+    const context = {
+      tools: { register() {} },
+      systemPrompt: { section(value: { name: string; text: string }) { sections.push(value) } },
+    } as unknown as Context
+    mountMetaCapabilityTools(context, vi.fn())
+    expect(sections[0]?.text).not.toMatch(/use [^.!?;\n]*bash/iu)
+    expect(sections[0]?.text).toContain('Bash is unavailable')
+  })
+
   it('rejects identity and operation fields on metadata-only finalization', async () => {
     const tools: ToolDefinition[] = []
     const call = vi.fn(async () => ({ accepted: true }))
@@ -52,7 +77,7 @@ describe('Meta notebook tools', () => {
       tools: { register(definition: ToolDefinition) { tools.push(definition) } },
       systemPrompt: { section() {} },
     } as unknown as Context
-    mountMetaCapabilityTools(context, call)
+    mountMetaCapabilityTools(context, call, { shellEnabled: true })
     const submit = tools.find(tool => tool.name === 'finalize_candidate')!
     const concludeTurn = vi.fn()
     await expect(submit.execute({
@@ -70,7 +95,7 @@ describe('Meta notebook tools', () => {
       tools: { register(definition: ToolDefinition) { tools.push(definition) } },
       systemPrompt: { section() {} },
     } as unknown as Context
-    mountMetaCapabilityTools(context, call)
+    mountMetaCapabilityTools(context, call, { shellEnabled: true })
     const submit = tools.find(tool => tool.name === 'finalize_candidate')!
     const finalization = { rationale: 'fix failure', evidenceRefs: ['run-1'], expectedOutcome: 'pass', semanticTargets: ['context', 'routing'] }
     const concludeTurn = vi.fn()
@@ -100,7 +125,7 @@ describe('Meta notebook tools', () => {
       tools: { register(definition: ToolDefinition) { tools.push(definition) } },
       systemPrompt: { section() {} },
     } as unknown as Context
-    mountMetaCapabilityTools(context, call)
+    mountMetaCapabilityTools(context, call, { shellEnabled: true })
     const submit = tools.find(tool => tool.name === 'finalize_candidate')!
     const concludeTurn = vi.fn()
     await expect(submit.execute({

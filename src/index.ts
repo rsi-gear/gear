@@ -423,6 +423,8 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     mountMetaCapabilityTools(candidateCtx, async (sessionId, method, params, signal) => {
       if (capabilities === undefined) throw new Error('refine capabilities are not initialized')
       return capabilities.call('refine-meta', sessionId, method, params, signal)
+    }, {
+      shellEnabled: config.candidateWorkspace.shellEnabled,
     })
   })
   workspaceManager = new CandidateWorkspaceManager({
