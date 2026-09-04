@@ -1,14 +1,11 @@
 #!/usr/bin/env node
-import { execFileSync, spawn } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const EXPIRY_MARGIN_MS = 5 * 60 * 1000
-const SHUTDOWN_GRACE_MS = 3 * 1000
-const SHUTDOWN_BUFFER_MS = 2 * 1000
-const SHUTDOWN_RESERVE_MS = SHUTDOWN_GRACE_MS + SHUTDOWN_BUFFER_MS
 const DEFAULT_SETUP_BUDGET_MS = 30 * 60 * 1000
 const CODEX_ACCESS_ENV = process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_ACCESS_B64'
 
@@ -95,7 +92,7 @@ async function trialValidity(args) {
   if (setupBudgetMs <= 0) {
     throw new Error('Codex target direct evals require a positive --setup-timeout')
   }
-  return duration(timeout) + setupBudgetMs + EXPIRY_MARGIN_MS + SHUTDOWN_RESERVE_MS
+  return duration(timeout) + setupBudgetMs + EXPIRY_MARGIN_MS
 }
 
 async function codexAccessEnvelope(requiredValidityMs) {
@@ -157,144 +154,26 @@ async function targetEnvironment(args) {
       ...environment,
       [CODEX_ACCESS_ENV]: Buffer.from(JSON.stringify(envelope)).toString('base64'),
     },
-    accessShutdownAt: envelope.expires - EXPIRY_MARGIN_MS - SHUTDOWN_RESERVE_MS,
   }
-}
-
-function processTable() {
-  if (process.platform === 'win32') {
-    throw new Error('Codex target direct evals require POSIX process inspection')
-  }
-  let output
-  try {
-    output = execFileSync('ps', [
-      '-A', '-o', 'pid=', '-o', 'ppid=', '-o', 'pgid=', '-o', 'sess=', '-o', 'lstart=',
-    ], {
-      encoding: 'utf8',
-    })
-  } catch (error) {
-    throw new Error('Codex target process tree inspection is unavailable', { cause: error })
-  }
-  const entries = output.trim().split('\n').flatMap(row => {
-    const [pidText, parentText, groupText, sessionText, ...startedParts] = row.trim().split(/\s+/u)
-    const pid = Number(pidText)
-    const parent = Number(parentText)
-    const group = Number(groupText)
-    const session = Number(sessionText)
-    if (![pid, parent, group, session].every(Number.isSafeInteger) || startedParts.length === 0) return []
-    return [{ pid, parent, group, session, started: startedParts.join(' ') }]
-  })
-  if (!entries.some(entry => entry.pid === process.pid)) {
-    throw new Error('Codex target process tree inspection returned incomplete data')
-  }
-  return entries
-}
-
-function processTree(rootPid, processes = processTable()) {
-  const byPid = new Map(processes.map(entry => [entry.pid, entry]))
-  const children = new Map()
-  for (const entry of processes) {
-    children.set(entry.parent, [...(children.get(entry.parent) ?? []), entry.pid])
-  }
-  const pids = byPid.has(rootPid) ? [rootPid] : []
-  for (let index = 0; index < pids.length; index += 1) pids.push(...(children.get(pids[index]) ?? []))
-  return pids.map(pid => byPid.get(pid))
-}
-
-function sameProcess(left, right) {
-  return left.pid === right?.pid && left.group === right.group
-    && left.session === right.session && left.started === right.started
-}
-
-function signalPid(entry, signal) {
-  try {
-    process.kill(entry.pid, signal)
-    return true
-  } catch (error) {
-    if (error?.code === 'ESRCH') return false
-    throw error
-  }
-}
-
-function mergeTrees(...trees) {
-  const entries = new Map()
-  for (const entry of trees.flat()) {
-    entries.set(`${entry.pid}:${entry.group}:${entry.session}:${entry.started}`, entry)
-  }
-  return [...entries.values()]
-}
-
-function signalTree(tree, signal) {
-  const current = new Map(processTable().map(entry => [entry.pid, entry]))
-  let signalled = false
-  for (const entry of [...tree].reverse()) {
-    if (sameProcess(entry, current.get(entry.pid))) signalled = signalPid(entry, signal) || signalled
-  }
-  return signalled
 }
 
 async function main() {
   const args = safeCodexArgs(process.argv.slice(2))
   const target = await targetEnvironment(args)
-  if (target.accessShutdownAt !== undefined) processTable()
   const child = spawn(process.env.GEAR_HITCH_EXECUTABLE ?? 'hitch', args, {
-    detached: process.platform !== 'win32',
     env: target.environment,
     stdio: 'inherit',
   })
-  let accessDeadlineReached = false
-  let forceKillTimer
-  let deadlineTree = []
-  let treeError
-  const forceStop = () => {
-    try {
-      const current = processTable()
-      const root = deadlineTree[0]
-      const currentRoot = root === undefined ? undefined : current.find(entry => entry.pid === root.pid)
-      const latestTree = root !== undefined && sameProcess(root, currentRoot)
-        ? processTree(root.pid, current)
-        : []
-      deadlineTree = mergeTrees(deadlineTree, latestTree)
-      signalTree(deadlineTree, 'SIGKILL')
-    } catch (error) {
-      treeError ??= error
-      child.kill('SIGKILL')
-    }
-  }
-  const deadlineTimer = target.accessShutdownAt === undefined ? undefined : setTimeout(() => {
-    try {
-      deadlineTree = child.pid === undefined ? [] : processTree(child.pid)
-      accessDeadlineReached = deadlineTree.length > 0
-      signalTree(deadlineTree, 'SIGTERM')
-    } catch (error) {
-      treeError = error
-      accessDeadlineReached = child.kill('SIGTERM')
-    }
-    if (accessDeadlineReached) forceKillTimer = setTimeout(forceStop, SHUTDOWN_GRACE_MS)
-  }, Math.max(0, target.accessShutdownAt - Date.now()))
   const forwardInterrupt = () => child.kill('SIGINT')
   const forwardTerminate = () => child.kill('SIGTERM')
   process.once('SIGINT', forwardInterrupt)
   process.once('SIGTERM', forwardTerminate)
-  let result
-  try {
-    result = await new Promise((resolveResult, reject) => {
-      child.once('error', reject)
-      child.once('exit', (code, signal) => resolveResult({ code, signal }))
-    })
-  } finally {
-    if (deadlineTimer !== undefined) clearTimeout(deadlineTimer)
-    if (forceKillTimer !== undefined) clearTimeout(forceKillTimer)
-    if (accessDeadlineReached) forceStop()
-  }
+  const result = await new Promise((resolveResult, reject) => {
+    child.once('error', reject)
+    child.once('exit', (code, signal) => resolveResult({ code, signal }))
+  })
   process.removeListener('SIGINT', forwardInterrupt)
   process.removeListener('SIGTERM', forwardTerminate)
-  if (accessDeadlineReached) {
-    const detail = treeError instanceof Error ? ` (${treeError.message})` : ''
-    process.stderr.write(`gear-hitch-codex: target access safety deadline reached before Hitch completed${detail}\n`)
-    process.exitCode = 1
-    return
-  }
   if (result.signal !== null) process.kill(process.pid, result.signal)
   process.exitCode = result.code ?? 1
 }

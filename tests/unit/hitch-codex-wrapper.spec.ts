@@ -1,15 +1,13 @@
 import { execFile } from 'node:child_process'
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
 
 const execute = promisify(execFile)
 const wrapper = fileURLToPath(new URL('../../assets/hitch-codex-wrapper.mjs', import.meta.url))
-const EXPIRY_MARGIN_MS = 5 * 60 * 1000
-const SHUTDOWN_RESERVE_MS = 5 * 1000
 const roots: string[] = []
 
 afterEach(async () => Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))))
@@ -20,43 +18,19 @@ async function fixture(expires: number) {
   const hitch = join(root, 'hitch.mjs')
   const hitchRoot = join(root, 'hitch-root')
   const authFile = join(root, 'auth.json')
-  const hitchStartFile = join(root, 'hitch-started')
   const plugin = join(root, 'dsh-codex.mjs')
-  const ps = join(root, 'ps')
-  const processTreeFile = join(root, 'process-tree')
   const piAiRoot = join(root, 'node_modules', '@earendil-works', 'pi-ai')
   const piAiDist = join(piAiRoot, 'dist')
   const refreshLog = join(root, 'refresh.log')
-  const descendantPidFile = join(root, 'descendant.pid')
   await mkdir(join(piAiDist, 'providers'), { recursive: true })
   await writeFile(hitch, `#!/usr/bin/env node
-import { spawn } from 'node:child_process'
-import { writeFileSync } from 'node:fs'
 const args = process.argv.slice(2)
 if (process.argv[2] === '--version') process.stdout.write('0.2.7\\n')
 else {
-  if (process.env.FAKE_HITCH_START_FILE) writeFileSync(process.env.FAKE_HITCH_START_FILE, 'started')
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === '--pass-env' && process.env[args[index + 1]] === undefined) {
       process.stderr.write('environment variable is not set: ' + args[index + 1] + '\\n')
       process.exit(1)
-    }
-  }
-  if (process.env.FAKE_HITCH_IGNORE_TERM === '1') {
-    process.on('SIGTERM', () => {})
-    const descendant = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], {
-      detached: true,
-      stdio: 'ignore',
-    })
-    writeFileSync(process.env.FAKE_DESCENDANT_PID_FILE, String(descendant.pid))
-    const rootIdentity = process.pid + ' ' + process.ppid + ' ' + process.pid + ' ' + process.pid + ' Thu Sep 04 18:00:00 2026'
-    const descendantIdentity = descendant.pid + ' ' + process.pid + ' ' + descendant.pid + ' ' + descendant.pid + ' Thu Sep 04 18:00:01 2026'
-    writeFileSync(process.env.FAKE_PS_TREE_FILE, rootIdentity + '\\n' + descendantIdentity + '\\n')
-    if (process.env.FAKE_PID_REUSE_MS) {
-      setTimeout(() => {
-        const reusedIdentity = descendant.pid + ' 1 ' + descendant.pid + ' ' + descendant.pid + ' Thu Sep 04 18:00:02 2026'
-        writeFileSync(process.env.FAKE_PS_TREE_FILE, rootIdentity + '\\n' + reusedIdentity + '\\n')
-      }, Number(process.env.FAKE_PID_REUSE_MS))
     }
   }
   const credentialName = process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_ACCESS_B64'
@@ -66,15 +40,6 @@ else {
 }
 `)
   await chmod(hitch, 0o755)
-  await writeFile(ps, `#!/usr/bin/env node
-import { readFileSync } from 'node:fs'
-if (process.env.FAKE_PS_FAIL === '1') process.exit(1)
-const wrapperIdentity = process.ppid + ' 1 ' + process.ppid + ' ' + process.ppid + ' Thu Sep 04 17:59:59 2026'
-let tree = ''
-try { tree = readFileSync(process.env.FAKE_PS_TREE_FILE, 'utf8') } catch {}
-process.stdout.write(wrapperIdentity + '\\n' + tree)
-`)
-  await chmod(ps, 0o755)
   await writeFile(authFile, `${JSON.stringify({
     version: 1,
     credential: {
@@ -149,18 +114,14 @@ export function openaiCodexProvider() { return { id: 'openai-codex' } }
 `)
   return {
     authFile,
-    descendantPidFile,
     hitch,
     hitchRoot,
-    hitchStartFile,
     refreshLog,
     env: {
       ...process.env,
       GEAR_HITCH_EXECUTABLE: hitch,
       GEAR_DSH_CODEX_MODULE: pathToFileURL(plugin).href,
       GEAR_TARGET_CODEX_AUTH_FILE: authFile,
-      FAKE_PS_TREE_FILE: processTreeFile,
-      PATH: `${root}:${process.env.PATH}`,
     },
   }
 }
@@ -367,52 +328,11 @@ describe('gear-hitch-codex', () => {
     })).rejects.toMatchObject({ stderr: expect.stringContaining('DSH_OPENAI_CODEX_ACCESS_*_B64') })
   })
 
-  it('fails closed before launching Hitch when process inspection is unavailable', async () => {
-    const { env, hitchStartFile } = await fixture(Date.now() + 86_400_000)
-    await expect(execute(process.execPath, [wrapper, ...runArgs()], {
-      env: { ...env, FAKE_HITCH_START_FILE: hitchStartFile, FAKE_PS_FAIL: '1' },
-    })).rejects.toMatchObject({ stderr: expect.stringContaining('process tree inspection is unavailable') })
-    await expect(readFile(hitchStartFile)).rejects.toMatchObject({ code: 'ENOENT' })
-  })
-
-  it('force-kills an uncooperative Hitch process tree before the access refresh window', async () => {
-    const expires = Date.now() + EXPIRY_MARGIN_MS + SHUTDOWN_RESERVE_MS + 750
-    const { descendantPidFile, env } = await fixture(expires)
-    await expect(execute(process.execPath, [wrapper,
-      'eval', 'run', '--timeout', '1ms', '--setup-timeout', '1ms', '--infrastructure-retries', '0',
-    ], { env: {
-      ...env,
-      FAKE_DESCENDANT_PID_FILE: descendantPidFile,
-      FAKE_HITCH_DELAY_MS: '10000',
-      FAKE_HITCH_IGNORE_TERM: '1',
-    } }))
-      .rejects.toMatchObject({ stderr: expect.stringContaining('target access safety deadline') })
-    expect(Date.now()).toBeLessThan(expires - EXPIRY_MARGIN_MS)
-    const descendantPid = Number(await readFile(descendantPidFile, 'utf8'))
-    expect(() => process.kill(descendantPid, 0)).toThrow()
-  })
-
-  it('does not kill a PID whose process identity changes during the shutdown grace period', async () => {
-    const expires = Date.now() + EXPIRY_MARGIN_MS + SHUTDOWN_RESERVE_MS + 750
-    const { descendantPidFile, env } = await fixture(expires)
-    try {
-      await expect(execute(process.execPath, [wrapper,
-        'eval', 'run', '--timeout', '1ms', '--setup-timeout', '1ms', '--infrastructure-retries', '0',
-      ], { env: {
-        ...env,
-        FAKE_DESCENDANT_PID_FILE: descendantPidFile,
-        FAKE_HITCH_DELAY_MS: '10000',
-        FAKE_HITCH_IGNORE_TERM: '1',
-        FAKE_PID_REUSE_MS: '1500',
-      } }))
-        .rejects.toMatchObject({ stderr: expect.stringContaining('target access safety deadline') })
-      const descendantPid = Number(await readFile(descendantPidFile, 'utf8'))
-      expect(() => process.kill(descendantPid, 0)).not.toThrow()
-    } finally {
-      try {
-        const descendantPid = Number(await readFile(descendantPidFile, 'utf8'))
-        process.kill(descendantPid, 'SIGKILL')
-      } catch {}
-    }
+  it('does not depend on host process-table inspection', async () => {
+    const { env } = await fixture(Date.now() + 86_400_000)
+    const { stdout } = await execute(process.execPath, [wrapper, ...runArgs()], {
+      env: { ...env, PATH: dirname(process.execPath) },
+    })
+    expect(accessEnvelope(stdout).access).toBe('original-access')
   })
 })

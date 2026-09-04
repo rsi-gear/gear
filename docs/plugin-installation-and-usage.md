@@ -388,7 +388,7 @@ Hitch 子进程环境，满足 `passEnv` 校验。自定义名称时仍要在启
 
 这个接入只支持 `hitch.controlPlane.mode: direct`。包装器在 direct
 `eval run` 或 `eval rerun` 启动前，通过 pi-ai 的公开认证生命周期取得覆盖
-setup budget、task budget、五分钟余量和五秒关闭预留的 access token；需要刷新
+setup budget、task budget和五分钟余量的 access token；需要刷新
 时，只更新带跨进程锁的宿主 OAuth 文件。随后传给 Hitch 的自定义 envelope 只含
 短期 access、到期时间和 account id，不含 rotating refresh token。target 为满足
 dsh-codex 文件格式写入不可用的 refresh 占位值，因此容器不能刷新或破坏宿主登录。
@@ -399,22 +399,17 @@ dsh-codex 文件格式写入不可用的 refresh 占位值，因此容器不能�
 
 Codex access-only 路径只允许一次 logical attempt，并将未显式指定的 Hitch
 `infrastructure-retries` 安全地改为 `0`；显式配置多 attempt 或重试会被拒绝。
-从 access 导出开始，包装器还会为整个 direct Hitch 进程设置硬截止时间：在
-token 进入五分钟 refresh 窗口前五秒，先向 Hitch 进程树发送 SIGTERM，给三秒
-优雅退出时间，再向整个进程树发送 SIGKILL，并保留最后两秒调度余量。
-这个截止时间覆盖 harness 解析、制品/镜像准备和 target 执行；若前置阶段耗时
-过长，评测会被终止，而不是让容器进入需要 refresh token 的窗口。
-
-该 direct access-only 路径要求宿主提供可用的 POSIX `ps` 进程枚举；不可用时会在
-启动 Hitch 前 fail closed。关闭快照会记录 PID、进程组、session 和启动时间，
-每次发信号前重新校验身份；宽限期后的再次枚举也只会在原 Hitch 身份仍匹配时
-进行，避免将复用的 PID 当成原评测进程误杀。
+这里没有把宿主进程枚举或 PID 强杀当作 credential 安全边界：它们无法撤销一个
+已经发出的 bearer，也无法跨平台无竞态地识别 Hitch 创建的 detached 后代。
+真正的边界是短期 access token 自带的服务端 expiry，以及 target 中不存在可用的
+refresh token。若 harness 解析或镜像准备耗时超过启动时估算，dsh-codex 会在
+五分钟刷新窗口内用不可用的占位值刷新并失败；它不能旋转或改写宿主凭据。
 
 `eval submit`、`eval run --daemon` 和 daemon rerun 会明确拒绝；`--version`、
 capabilities、watch、inspect 等命令保持透明转发。一次 direct evaluation 中的
-容器共享同一个 access 快照，因此大批量、多波次评测应拆成能在硬截止时间前
-完成的小批次，否则该 eval 会被安全终止；daemon 若要支持 Codex，应另行实现由
-daemon 持有的 credential broker。
+容器共享同一个 access 快照，因此大批量、多波次评测应拆成能在 access 有效期内
+完成的小批次，否则模型调用会因不可刷新而失败；daemon 若要支持 Codex，应另行
+实现由 daemon 持有的 credential broker。
 
 容器销毁不会丢失宿主登录，也不需要为每个 task 重新做设备验证。
 显式设置 `GEAR_TARGET_PROVIDER=deepseek-official` 时，包装器直接透传并使用配置的

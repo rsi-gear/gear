@@ -100,7 +100,7 @@ Configure `hitch.executable` to the installed `gear-hitch-codex` binary and
 set `GEAR_HITCH_EXECUTABLE` to the real Hitch binary. This integration requires
 `hitch.controlPlane.mode: direct`. Before direct `eval run` or `eval rerun`, the
 wrapper asks the public pi-ai lifecycle for an access token valid for the setup
-budget, task budget, a five-minute margin, and a five-second shutdown reserve.
+budget, task budget, and a five-minute margin.
 Refresh and rotating refresh-token writes happen only in the locked host store.
 The wrapper exports access, expiry, and account id from one locked snapshot and
 retries once if a concurrent host refresh changes it. Both task and setup
@@ -108,18 +108,13 @@ timeouts must be positive; Hitch treats a zero setup timeout as unlimited, which
 cannot be covered by a fixed access token.
 The access-only path permits one logical attempt and zero infrastructure retries;
 the wrapper adds zero retries when the option is omitted and rejects larger
-values. Five seconds before the bearer enters its five-minute refresh window,
-the wrapper sends SIGTERM to the isolated Hitch process tree, allows a
-three-second shutdown grace period, then sends SIGKILL to that tree. The final
-two seconds are a scheduling buffer. Harness resolution and image/artifact
-preparation are therefore inside the same hard credential deadline even though
-Hitch does not count them against the target setup timeout.
-
-The direct access-only path requires working POSIX `ps` process inspection and
-fails before Hitch starts if it is unavailable. Shutdown snapshots record PID,
-process group, session, and start time; every signal revalidates that identity,
-and a post-grace rescan proceeds only while the original Hitch identity still
-matches. This prevents a recycled PID from being treated as part of the eval.
+values. Host process enumeration and PID killing are deliberately not treated
+as a credential boundary: they cannot revoke an exported bearer and cannot
+identify detached descendants without races across supported platforms. The
+boundary is the issuer-enforced access-token expiry plus the absence of a usable
+refresh token in the target. If harness resolution or image/artifact preparation
+outlives the startup estimate, dsh-codex enters its refresh path and fails on the
+target-only placeholder instead of rotating or overwriting the host credential.
 
 Hitch receives `DSH_OPENAI_CODEX_ACCESS_B64`, an access-only envelope containing
 the short-lived bearer, expiry, and account id. It never receives the OAuth
@@ -182,10 +177,10 @@ never distributes a rotating refresh token, never requires an
 path as an explicit fallback configuration.
 
 Every container in one direct eval receives the same access snapshot. The eval
-must therefore finish before the wrapper's hard credential deadline; split a
-long multi-wave dataset into smaller direct evals or it will be terminated. A
-daemon deployment needs a daemon-owned credential broker and is intentionally
-outside this example.
+should therefore finish inside that access lifetime; split a long multi-wave
+dataset into smaller direct evals or later model calls will fail without
+refreshing. A daemon deployment needs a daemon-owned credential broker and is
+intentionally outside this example.
 
 ## Useful checks
 
