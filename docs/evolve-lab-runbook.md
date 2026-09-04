@@ -101,14 +101,19 @@ set `GEAR_HITCH_EXECUTABLE` to the real Hitch binary. This integration requires
 `hitch.controlPlane.mode: direct`. Before direct `eval run` or `eval rerun`, the
 wrapper asks the public pi-ai lifecycle for an access token valid for the setup
 budget, task budget, and a five-minute margin. Refresh and rotating refresh-token
-writes happen only in the locked host store.
+writes happen only in the locked host store. The wrapper exports access, expiry,
+and account id from one locked snapshot and retries once if a concurrent host
+refresh changes it. Both task and setup timeouts must be positive; Hitch treats a
+zero setup timeout as unlimited, which cannot be covered by a fixed access token.
 
 Hitch receives `DSH_OPENAI_CODEX_ACCESS_B64`, an access-only envelope containing
 the short-lived bearer, expiry, and account id. It never receives the OAuth
 document or refresh token. The target writes a disposable dsh-codex document
 with a deliberately unusable refresh placeholder, so it can use the bearer but
 cannot rotate the host login. `eval submit`, `eval run --daemon`, and daemon
-reruns fail explicitly; other Hitch commands are transparent pass-throughs.
+reruns fail explicitly; other Hitch commands are transparent pass-throughs. The
+wrapper also sets `GEAR_TARGET_CODEX_ENV` in the Hitch child environment, so the
+documented default `passEnv` list works without a separate export.
 
 ## Run
 
@@ -229,9 +234,10 @@ failing `terminal-bench/git-multibranch` task. Run
 The access-only target path was revalidated from a fresh bootstrap on
 2026-09-05. The bootstrap produced carrier commit
 `d15247047e55562c687512e7f75a8820d77d1c40`; eval
-`eval_e26754b3cc2d4128a8b4586af2b3b037` then ran
+`eval_a7cdd78ce0f5484da03d60c88cacf8f3` then ran
 `terminal-bench/nginx-request-logging` in a disposable Docker container using
-`DSH_OPENAI_CODEX_ACCESS_B64`. Run
-`run_1b8837ecc5d04b6b8716ba7cbeedce18` recorded
+the documented two-entry `passEnv` list while `GEAR_TARGET_CODEX_ENV` was
+deliberately absent from the wrapper's initial environment. Run
+`run_988db0bfb00e409c9b2fee1d80c0d194` recorded
 `openai-codex/gpt-5.6-luna`, exited successfully with valid observation status,
 and passed the Harbor verifier with reward `1`.

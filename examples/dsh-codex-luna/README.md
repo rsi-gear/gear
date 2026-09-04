@@ -69,7 +69,9 @@ login.
 
 Daemon submission is intentionally unsupported: keep `hitch.controlPlane.mode`
 set to `direct`. Containers in one eval share an access snapshot, so split a
-long multi-wave dataset into direct evals that finish before it expires.
+long multi-wave dataset into direct evals that finish before it expires. Keep
+both task and setup timeouts positive; Hitch's zero setup timeout is unlimited
+and is rejected by the access-only wrapper.
 
 ## Check and run
 

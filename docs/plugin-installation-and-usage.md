@@ -379,7 +379,9 @@ export GEAR_TARGET_CODEX_AUTH_FILE=/absolute/path/to/.openai-codex-auth.json
 模块解析路径中，可以用 `GEAR_DSH_CODEX_MODULE` 指向它的入口；目标环境变量名
 也可通过 `GEAR_TARGET_CODEX_ENV` 覆盖，默认是
 `DSH_OPENAI_CODEX_ACCESS_B64`，必须与 `hitch.passEnv` 一致。
-自定义名称时还要把非敏感的 `GEAR_TARGET_CODEX_ENV` 一并传给 target launcher。
+默认情况下不需要预先设置 `GEAR_TARGET_CODEX_ENV`，包装器会把生效名称加入
+Hitch 子进程环境，满足 `passEnv` 校验。自定义名称时仍要在启动包装器前设置它；
+包装器会把同一个非敏感名称传给 target launcher。
 
 这个接入只支持 `hitch.controlPlane.mode: direct`。包装器在 direct
 `eval run` 或 `eval rerun` 启动前，通过 pi-ai 的公开认证生命周期取得覆盖
@@ -387,6 +389,10 @@ setup budget、task budget 和五分钟余量的 access token；需要刷新时�
 跨进程锁的宿主 OAuth 文件。随后传给 Hitch 的自定义 envelope 只含短期 access、
 到期时间和 account id，不含 rotating refresh token。target 为满足 dsh-codex
 文件格式写入不可用的 refresh 占位值，因此容器不能刷新或破坏宿主登录。
+包装器在宿主锁内读取 access、到期时间和 account id 的一致快照；若并发刷新
+恰好发生在导出期间，会重新获取一次。`--timeout` 和 `--setup-timeout` 必须为
+正数，因为 Hitch 中 setup timeout 为 `0` 表示不限制时长，无法安全导出一个
+不可刷新的短期 access token。
 
 `eval submit`、`eval run --daemon` 和 daemon rerun 会明确拒绝；`--version`、
 capabilities、watch、inspect 等命令保持透明转发。一次 direct evaluation 中的

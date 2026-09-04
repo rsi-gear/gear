@@ -69,7 +69,11 @@ async function trialValidity(args) {
   if (timeout === undefined || duration(timeout) <= 0) {
     throw new Error('Codex target direct evals require a positive --timeout')
   }
-  return duration(timeout) + duration(setupTimeout ?? DEFAULT_SETUP_BUDGET_MS) + EXPIRY_MARGIN_MS
+  const setupBudgetMs = duration(setupTimeout ?? DEFAULT_SETUP_BUDGET_MS)
+  if (setupBudgetMs <= 0) {
+    throw new Error('Codex target direct evals require a positive --setup-timeout')
+  }
+  return duration(timeout) + setupBudgetMs + EXPIRY_MARGIN_MS
 }
 
 async function codexAccessEnvelope(requiredValidityMs) {
@@ -102,28 +106,32 @@ async function codexAccessEnvelope(requiredValidityMs) {
   const store = new OpenAICodexCredentialStore(authFile)
   const models = createModels({ credentials: store })
   models.setProvider(openaiCodexProvider())
-  const auth = await models.getAuth(OPENAI_CODEX_PROVIDER, { minOAuthValidityMs: requiredValidityMs })
-  const credential = await store.read(OPENAI_CODEX_PROVIDER)
-  const access = auth?.auth.apiKey
-  if (credential?.type !== 'oauth' || typeof credential.accountId !== 'string'
-    || typeof access !== 'string' || access.length === 0) {
-    throw new Error('OpenAI Codex is signed out')
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const auth = await models.getAuth(OPENAI_CODEX_PROVIDER, { minOAuthValidityMs: requiredValidityMs })
+    const credential = await store.modify(OPENAI_CODEX_PROVIDER, async () => undefined)
+    const access = auth?.auth.apiKey
+    if (credential?.type === 'oauth' && typeof credential.accountId === 'string'
+      && typeof access === 'string' && access.length > 0 && credential.access === access
+      && credential.expires > Date.now() + requiredValidityMs) {
+      return {
+        version: 1,
+        access,
+        expires: credential.expires,
+        accountId: credential.accountId,
+      }
+    }
   }
-  return {
-    version: 1,
-    access,
-    expires: credential.expires,
-    accountId: credential.accountId,
-  }
+  throw new Error('OpenAI Codex credential changed while exporting target access')
 }
 
 async function targetEnvironment(args) {
-  if ((process.env.GEAR_TARGET_PROVIDER ?? 'openai-codex') !== 'openai-codex') return process.env
+  const environment = { ...process.env, GEAR_TARGET_CODEX_ENV: CODEX_ACCESS_ENV }
+  if ((process.env.GEAR_TARGET_PROVIDER ?? 'openai-codex') !== 'openai-codex') return environment
   const requiredValidityMs = await trialValidity(args)
-  if (requiredValidityMs === undefined) return process.env
+  if (requiredValidityMs === undefined) return environment
   const envelope = await codexAccessEnvelope(requiredValidityMs)
   return {
-    ...process.env,
+    ...environment,
     [CODEX_ACCESS_ENV]: Buffer.from(JSON.stringify(envelope)).toString('base64'),
   }
 }
