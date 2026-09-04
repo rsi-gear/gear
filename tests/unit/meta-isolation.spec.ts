@@ -2,12 +2,47 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { assertMetaPresetIsolation } from '../../src/meta/isolation.js'
+import {
+  assertMetaPresetComposesCapabilities,
+  assertMetaPresetIsolation,
+} from '../../src/meta/isolation.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 
 describe('refine-meta preset isolation', () => {
+  it('rejects a complete persona that would suppress Gear capability guidance', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'refine-meta-isolation-'))
+    roots.push(root)
+    const presetPath = join(root, 'agent.cordis.yml')
+    await writeFile(presetPath, [
+      "- name: '@deepseek-ai/dsh-persona'",
+      '  config:',
+      '    complete: true',
+      '    text: fixed meta persona',
+      '',
+    ].join('\n'))
+    await expect(assertMetaPresetComposesCapabilities(
+      { id: 'refine-meta', trust: 'system', path: presetPath },
+    )).rejects.toThrow(/complete persona suppresses Gear capability/)
+  })
+
+  it('accepts a composable persona', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'refine-meta-isolation-'))
+    roots.push(root)
+    const presetPath = join(root, 'agent.cordis.yml')
+    await writeFile(presetPath, [
+      "- name: '@deepseek-ai/dsh-persona'",
+      '  config:',
+      '    complete: false',
+      '    text: fixed meta persona',
+      '',
+    ].join('\n'))
+    await expect(assertMetaPresetComposesCapabilities(
+      { id: 'refine-meta', trust: 'system', path: presetPath },
+    )).resolves.toBeUndefined()
+  })
+
   it('rejects skill and plugin paths that point into target harness artifacts', async () => {
     const root = await mkdtemp(join(tmpdir(), 'refine-meta-isolation-'))
     roots.push(root)

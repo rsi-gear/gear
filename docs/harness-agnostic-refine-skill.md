@@ -16,9 +16,10 @@ Codex / Claude Code / DSH / compatible harness
       Hitch -> configured Target harness
 ```
 
-`gear-refine serve` 不创建 DSH `Context`，也不加载 DSH Meta Agent。它直接
-构造 Gear 的 registry、candidate workspace、evaluator、selection、promotion
-和 skill lease gateway。DSH 插件保留为兼容适配层；原生 `/refine` 行为不变。
+`gear-refine serve` 不创建 DSH `Context`，直接构造 Gear 的 registry、candidate
+workspace、evaluator、selection、promotion 和 skill lease gateway。DSH plugin
+则把同一个随包 skill 发布到 DSH 原生 skill catalog，并提供调用同一 gateway 的
+`refine_request` 工具；两者共享协议和候选编辑边界。
 
 当前发布的 Target builder 仍以完整 DSH source repository 和 exact Git
 commit 为版本单位，默认 rollout provider 仍是 Hitch `deepseek` adapter。
@@ -39,11 +40,12 @@ npm install --global ./dsh-plugin-refine-0.1.0.tgz
 
 - `gear-refine`：独立 server 与通用 client；
 - `skills/refine/SKILL.md`：Agent Skills 入口；
-- `dsh-plugin-refine`：DSH 兼容插件。
+- `dsh-plugin-refine`：发布同一 Skill 的 DSH plugin，并保留旧 adapter。
 
-把 `skills/refine` 复制或链接到 Meta harness 的 skill 目录。不同产品的
-skill 安装位置由该产品决定；不要复制一份并修改协议或安全约束，否则它的
-digest 将不再匹配 evolution identity。
+使用 standalone server 时，把 `skills/refine` 复制或链接到 Meta harness 的
+skill 目录。不同产品的 skill 安装位置由该产品决定；不要复制一份并修改协议
+或安全约束，否则它的 digest 将不再匹配 evolution identity。使用 DSH plugin
+时不需要再复制：插件会以高优先级发布包内原件及其 references。
 
 ## 3. 固定 Meta identity
 
@@ -55,7 +57,12 @@ Skill mode 必须在启动前固定：
 - provider、model 和 sampling。新配置省略 `maxTokens`，避免由 Gear 额外限制
   Meta 回合；旧 evolution 中已封存的值仍属于 identity。
 
-`metaAdapter.runtimeIntegrity` 与 `metaAdapter.harnessDigest` 使用
+DSH plugin 中若未填写任何 identity 字段，Gear 会从当前 DSH runtime 和包内
+`skills/refine/SKILL.md` 自动派生并封存 identity；`refine_request` 还会校验
+当前 DSH request 的 provider、model、`maxTokens` 和 temperature 与配置一致。Standalone 或
+外部 Meta harness 必须显式提供全部 identity 字段。
+
+显式配置时，`metaAdapter.runtimeIntegrity` 与 `metaAdapter.harnessDigest` 使用
 `sha256:<64 lowercase hex>`。例如计算当前 skill 文件：
 
 ```bash
@@ -77,7 +84,6 @@ shasum -a 256 skills/refine/SKILL.md
   "stateRoot": "/absolute/control-workspace/.gear-refine",
   "dshRepository": "/absolute/target-dsh-repository",
   "targetRoot": "harness",
-  "metaPreset": "refine",
   "metaModel": {
     "provider": "openai",
     "model": "gpt-5"
@@ -156,7 +162,8 @@ skill socket，再等待 RefineService 与 active evaluation 清理完成。
 
 ## 5. Skill 工作流
 
-Meta harness 读取 `skills/refine/SKILL.md`，通过 `gear-refine request`：
+Meta harness 读取 `skills/refine/SKILL.md`，通过 DSH 的 `refine_request` 或
+standalone 的 `gear-refine request`：
 
 1. `control.start` 或显式 `control.continue`；
 2. 轮询 `control.status` 与 `meta.claim`；
@@ -201,14 +208,17 @@ External Meta harness 本身的 OS 权限由其宿主负责。Gear 不向它授�
 worktree、state root 或 credential 的 host path；部署仍应让 Codex、Claude Code
 或其他宿主运行在与其职责匹配的 filesystem/network sandbox 中。
 
-## 7. DSH 兼容模式
+## 7. DSH Skill-first 与兼容模式
 
-`metaAdapter.kind: "dsh"` 保持现有 `DshMetaAgentHost`、DSH session event
-attribution、preset isolation 和 `/refine` 命令。
+`metaAdapter.kind: "skill"` 是默认值。在 DSH plugin 中，Gear 发布包内
+`refine` skill；由于不再注册同名 host command，用户输入 `/refine` 会走 DSH
+标准的 skill 注入路径。该 skill 优先使用 `refine_request`，由当前 DSH session
+直接领取和完成 assignment；socket 同时保留给 Codex、Claude Code 或另一
+兼容 harness。
 
-也可以在 DSH plugin 配置中选择 `metaAdapter.kind: "skill"`。此时 DSH 只承载
-Gear Core 和兼容 UI，真正的 Meta Agent 通过同一个 local socket 来自 Codex、
-Claude Code 或另一 DSH session。
+只有显式设置 `metaAdapter.kind: "dsh"` 时，Gear 才创建 `DshMetaAgentHost` 并
+注册旧 `/refine` command。该兼容模式要求 `metaPreset`，保留 DSH session event
+attribution 和 preset isolation，但不再是默认启动方式。
 
 ## 8. 验证范围
 
@@ -218,6 +228,7 @@ Claude Code 或另一 DSH session。
 - external identity sealing、claim、lease authorization、stale lease cleanup；
 - candidate path containment、observation write/edit/remove、link 拒绝；
 - local JSON socket request/error lifecycle；
+- DSH 原生 skill catalog、session-bound `refine_request` 和同名 command 避让；
 - 不经过 DSH Context 的 standalone control plane；
 - 从 `control.start` 到 claim、trajectory diagnosis、candidate edit/check/finalize、
   seed/held-out evaluation 和 champion promotion 的完整端到端流程；

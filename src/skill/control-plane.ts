@@ -51,6 +51,7 @@ function positive(value: number | undefined, name: string, fallback: number): nu
 
 export function skillMetaAgent(config: Config): MetaAgentSpec {
   if (config.metaAdapter.kind !== 'skill') throw new TypeError('standalone Gear requires metaAdapter.kind="skill"')
+  if (config.metaPreset !== undefined) throw new TypeError('metaPreset is not valid in standalone skill mode')
   const fields = {
     runtimeType: config.metaAdapter.runtimeType,
     runtimeVersion: config.metaAdapter.runtimeVersion,

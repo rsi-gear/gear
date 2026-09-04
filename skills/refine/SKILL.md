@@ -11,7 +11,12 @@ Agent runs separately through the rollout provider configured in Gear.
 
 ## Connect
 
-Require all of the following before starting or claiming work:
+Use the native `refine_request` tool when it is available. It carries the same
+protocol as the CLI and binds the current DSH session's client and immutable
+runtime/skill identity; pass only the method and its ordinary parameters, with
+no `clientId` or `identity`.
+
+Otherwise require all of the following before starting or claiming work:
 
 - the `gear-refine` executable;
 - `GEAR_REFINE_SOCKET`, unless the user supplies `--socket`;
@@ -39,8 +44,9 @@ not infer missing field names or harness APIs from errors.
    continuation must name the evolution explicitly.
 2. Call `control.start` or `control.continue`, then poll `control.status` and
    `meta.claim`. Baseline evaluation can finish before an assignment appears.
-3. Treat the returned lease id, token, client id, session id, and candidate id
-   as one inseparable capability. Never reuse them for another assignment.
+3. Treat the returned lease id, token, session id, candidate id, and (for CLI
+   clients) client id as one inseparable capability. Never reuse them for
+   another assignment.
 4. Use only the candidate file and `meta.call` methods exposed by Gear. The
    direct candidate methods are exactly `candidate.tree`, `candidate.read`,
    `candidate.write`, `candidate.edit`, and `candidate.remove`. Invoke
@@ -62,10 +68,17 @@ not infer missing field names or harness APIs from errors.
    `trajectory.query`; pass a returned `nextRef` back as the next `detailRef`,
    or add `find` to search that long content. Keep cited evidence limited to
    references actually returned for the active seed baseline.
-6. Connect the observed failure to a harness-controlled cause, select the
-   affected semantic target, and make the smallest coherent change. New files
-   must be connected from an existing preset, plugin, skill, or workflow entry;
-   unreferenced files do not change Target Agent behavior.
+6. Connect the observed failure to a harness-controlled cause, then choose the
+   narrowest intervention at the point where that cause is observable or
+   enforceable. Treat the current tree as a starting state, not a closed list
+   of available mechanisms: new files are allowed, but must be connected from
+   an existing preset, plugin, skill, or workflow entry. For a failure tied to
+   a tool call or result, compare a hook or action verifier with prompt guidance
+   before choosing `context`; if `context` is still best, explain why no narrower
+   enforceable or on-demand mechanism fits. Do not add guidance for an
+   infrastructure failure or behavior the Target Agent already performed
+   correctly. Use the routing criteria in the editing guide rather than copying
+   a seed-specific remedy into a shared prompt.
 7. Inspect `candidate.diff`, remove accidental or task-specific changes, and
    run `candidate.check` before finalizing and require
    `finalizationReadiness.ready: true`. Use `candidate.decline` when the

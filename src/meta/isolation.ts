@@ -29,6 +29,13 @@ function strings(value: unknown): string[] {
   return []
 }
 
+function records(value: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(value)) return value.flatMap(records)
+  if (typeof value !== 'object' || value === null) return []
+  const record = value as Record<string, unknown>
+  return [record, ...Object.values(record).flatMap(records)]
+}
+
 function sha256(content: Uint8Array | string): string {
   return `sha256:${createHash('sha256').update(content).digest('hex')}`
 }
@@ -139,5 +146,23 @@ export async function assertMetaPresetIsolation(
     if (roots.some(root => within(candidate, root))) {
       throw new Error(`refine-meta composition references target harness content: ${value}`)
     }
+  }
+}
+
+/** Reject prompt composition that would hide Gear's scoped capability and safety guidance. */
+export async function assertMetaPresetComposesCapabilities(preset: AgentPreset): Promise<void> {
+  const composition = loadYaml(await readFile(preset.path, 'utf8'))
+  const completePersona = records(composition).find(value => {
+    if (value.name !== '@deepseek-ai/dsh-persona') return false
+    const config = value.config
+    return typeof config === 'object' && config !== null
+      && !Array.isArray(config)
+      && (config as Record<string, unknown>).complete === true
+  })
+  if (completePersona !== undefined) {
+    throw new Error(
+      'refine-meta preset must not set @deepseek-ai/dsh-persona config.complete=true; '
+      + 'a complete persona suppresses Gear capability and authoring guidance',
+    )
   }
 }

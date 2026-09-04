@@ -18,7 +18,12 @@ import { SessionAwareNotebookRuntime } from './notebook/runtime.js'
 import { mountMetaCapabilityTools, mountNotebookTool } from './notebook/tool.js'
 import { DshMetaAgentHost, MetaSessionManager } from './meta/session.js'
 import { compatibleSkillMetaAgent } from './meta/controller.js'
-import { assertMetaPresetIsolation, resolveDshPresetRef, resolveDshRuntimeIdentity } from './meta/isolation.js'
+import {
+  assertMetaPresetComposesCapabilities,
+  assertMetaPresetIsolation,
+  resolveDshPresetRef,
+  resolveDshRuntimeIdentity,
+} from './meta/isolation.js'
 import { RefineService } from './refine/service.js'
 import {
   builtinComponentRef,
@@ -36,10 +41,11 @@ import { RefineCapabilities } from './capabilities.js'
 import { HitchCliEvaluator } from './evaluator/hitch-cli.js'
 import { ConfigSchema, type Config as PluginConfig, type HitchConfig } from './config.js'
 import { TargetWorkerRegistry } from './worker/registry.js'
-import { SkillMetaCoordinator, SkillMetaSessionManager } from './meta/skill.js'
+import { skillHarnessIdentity, SkillMetaCoordinator, SkillMetaSessionManager } from './meta/skill.js'
 import { SkillCandidateFiles } from './skill/files.js'
 import { RefineSkillGateway } from './skill/gateway.js'
 import { RefineSkillServer } from './skill/server.js'
+import { loadBundledRefineSkill, mountDshRefineSkill } from './skill/dsh.js'
 import './context.js'
 
 export * from './types.js'
@@ -75,9 +81,10 @@ export * from './skill/gateway.js'
 export * from './skill/server.js'
 export * from './skill/client.js'
 export * from './skill/control-plane.js'
+export * from './skill/dsh.js'
 
 export const name = 'refine'
-export const inject = ['agents', 'sessions', 'agentPresets', 'commands', 'tools', 'systemPrompt', 'subprocess']
+export const inject = ['agents', 'sessions', 'agentPresets', 'commands', 'tools', 'skills', 'systemPrompt', 'subprocess']
 export const Config = ConfigSchema
 
 const SHA256 = /^sha256:[0-9a-f]{64}$/u
@@ -221,16 +228,8 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     || config.metaModel.model === undefined || config.metaModel.model.length === 0) {
     throw new TypeError('metaModel.provider and metaModel.model are required')
   }
-  if (config.metaAdapter.kind === 'skill') {
-    for (const [name, value] of Object.entries({
-      runtimeType: config.metaAdapter.runtimeType,
-      runtimeVersion: config.metaAdapter.runtimeVersion,
-      harnessId: config.metaAdapter.harnessId,
-    })) {
-      if (typeof value !== 'string' || value.length === 0) throw new TypeError(`metaAdapter.${name} is required in skill mode`)
-    }
-    if (!SHA256.test(config.metaAdapter.runtimeIntegrity ?? '')) throw new TypeError('metaAdapter.runtimeIntegrity must be sha256 in skill mode')
-    if (!SHA256.test(config.metaAdapter.harnessDigest ?? '')) throw new TypeError('metaAdapter.harnessDigest must be sha256 in skill mode')
+  if (config.metaAdapter.kind === 'skill' && config.metaPreset !== undefined) {
+    throw new TypeError('metaPreset is only valid when metaAdapter.kind="dsh"; remove it for skill mode')
   }
   if (config.hitch.model.length === 0) throw new TypeError('hitch.model is required for reproducible rollout plans')
   for (const [name, value] of Object.entries({
@@ -252,8 +251,12 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   const registry = new EvolutionRegistryStore(stateRoot)
   let metaAgent: MetaAgentSpec
   if (config.metaAdapter.kind === 'dsh') {
+    if (config.metaPreset === undefined || config.metaPreset.length === 0) {
+      throw new TypeError('metaPreset is required when metaAdapter.kind="dsh"')
+    }
     const metaPreset = await ctx.agentPresets.resolve(config.metaPreset)
     await assertMetaPresetIsolation(metaPreset, [config.dshRepository])
+    await assertMetaPresetComposesCapabilities(metaPreset)
     metaAgent = {
       runtime: await resolveDshRuntimeIdentity(),
       preset: await resolveDshPresetRef(metaPreset),
@@ -265,18 +268,51 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       sampling: { ...config.metaSampling },
     }
   } else {
-    const harnessDigest = config.metaAdapter.harnessDigest!
-    metaAgent = {
-      runtime: {
+    const configuredIdentity = {
+      runtimeType: config.metaAdapter.runtimeType,
+      runtimeVersion: config.metaAdapter.runtimeVersion,
+      runtimeIntegrity: config.metaAdapter.runtimeIntegrity,
+      harnessId: config.metaAdapter.harnessId,
+      harnessDigest: config.metaAdapter.harnessDigest,
+    }
+    const hasConfiguredIdentity = Object.values(configuredIdentity).some(value => value !== undefined)
+    let runtime: MetaAgentSpec['runtime']
+    let preset: MetaAgentSpec['preset']
+    if (!hasConfiguredIdentity) {
+      const [dshRuntime, skill] = await Promise.all([
+        resolveDshRuntimeIdentity(),
+        loadBundledRefineSkill(),
+      ])
+      runtime = dshRuntime
+      preset = {
+        id: skill.name,
+        digest: skill.digest,
+        resources: [{ logicalPath: 'SKILL.md', kind: 'skill', digest: skill.digest }],
+      }
+    } else {
+      for (const [name, value] of Object.entries({
+        runtimeType: config.metaAdapter.runtimeType,
+        runtimeVersion: config.metaAdapter.runtimeVersion,
+        harnessId: config.metaAdapter.harnessId,
+      })) {
+        if (typeof value !== 'string' || value.length === 0) throw new TypeError(`metaAdapter.${name} is required in configured skill mode`)
+      }
+      if (!SHA256.test(config.metaAdapter.runtimeIntegrity ?? '')) throw new TypeError('metaAdapter.runtimeIntegrity must be sha256 in configured skill mode')
+      if (!SHA256.test(config.metaAdapter.harnessDigest ?? '')) throw new TypeError('metaAdapter.harnessDigest must be sha256 in configured skill mode')
+      runtime = {
         type: config.metaAdapter.runtimeType!,
         version: config.metaAdapter.runtimeVersion!,
         integrity: config.metaAdapter.runtimeIntegrity!,
-      },
-      preset: {
+      }
+      preset = {
         id: config.metaAdapter.harnessId!,
-        digest: harnessDigest,
-        resources: [{ logicalPath: 'SKILL.md', kind: 'skill', digest: harnessDigest }],
-      },
+        digest: config.metaAdapter.harnessDigest!,
+        resources: [{ logicalPath: 'SKILL.md', kind: 'skill', digest: config.metaAdapter.harnessDigest! }],
+      }
+    }
+    metaAgent = {
+      runtime,
+      preset,
       model: {
         provider: config.metaModel.provider,
         model: config.metaModel.model,
@@ -525,18 +561,21 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       return value === undefined || value.length === 0 ? [] : [value]
     }),
   })
-  const skillServer = config.metaAdapter.kind === 'skill'
-    ? new RefineSkillServer(
-        config.metaAdapter.socketPath ?? join(stateRoot, 'refine.sock'),
-        new RefineSkillGateway(
-          service,
-          skillCoordinator,
-          capabilities,
-          new SkillCandidateFiles(workspaceManager, { maxReadBytes: config.candidateWorkspace.maxReadBytes }),
-          { maxRequestBytes: config.metaAdapter.maxRequestBytes },
-        ),
+  const skillGateway = config.metaAdapter.kind === 'skill'
+    ? new RefineSkillGateway(
+        service,
+        skillCoordinator,
+        capabilities,
+        new SkillCandidateFiles(workspaceManager, { maxReadBytes: config.candidateWorkspace.maxReadBytes }),
+        { maxRequestBytes: config.metaAdapter.maxRequestBytes },
       )
     : undefined
+  const skillServer = skillGateway === undefined
+    ? undefined
+    : new RefineSkillServer(
+        config.metaAdapter.socketPath ?? join(stateRoot, 'refine.sock'),
+        skillGateway,
+      )
   const targetWorkers = new TargetWorkerRegistry(service, builder)
 
   const disposeRuntime = async (): Promise<void> => {
@@ -566,6 +605,9 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       }
     }
     await service.initialize()
+    if (skillGateway !== undefined && metaAgent.runtime.type === 'dsh') {
+      await mountDshRefineSkill(ctx, skillGateway, skillHarnessIdentity(metaAgent))
+    }
     await skillServer?.start()
   } catch (error) {
     await disposeRuntime().catch(() => {})
@@ -576,66 +618,68 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   ctx.provide('targetWorkers', targetWorkers)
   ctx.provide('evolutionComponents', components)
   ctx.effect(() => disposeRuntime, 'refine.dispose()')
-  ctx.commands.register({
-    name: 'refine',
-    description: 'Queue a target harness refinement round.',
-    input: { hint: 'optional reason' },
-    async handler(invocation) {
-      try {
-        const words = invocation.rawInput.trim().split(/\s+/u).filter(Boolean)
-        if (words[0] === 'status') {
-          if (words[1] === undefined) return { kind: 'success', text: JSON.stringify(await service.listEvolutions()) }
-          return { kind: 'success', text: JSON.stringify(await service.status(words[1], words[2])) }
-        }
-        if (words[0] === 'continue') {
-          if (words[1] === undefined) return { kind: 'error', text: 'usage: /refine continue <evolution-id> [--rounds N] [--focus FOCUS]' }
-          const parsed = parseAdmissionInput(words.slice(2))
-          if (parsed.seedTaskRef !== undefined || parsed.taskBudgetMs !== undefined || parsed.from !== undefined || parsed.name !== undefined) {
-            return { kind: 'error', text: 'continue accepts only --rounds and --focus' }
+  if (config.metaAdapter.kind === 'dsh') {
+    ctx.commands.register({
+      name: 'refine',
+      description: 'Queue a target harness refinement round.',
+      input: { hint: 'optional reason' },
+      async handler(invocation) {
+        try {
+          const words = invocation.rawInput.trim().split(/\s+/u).filter(Boolean)
+          if (words[0] === 'status') {
+            if (words[1] === undefined) return { kind: 'success', text: JSON.stringify(await service.listEvolutions()) }
+            return { kind: 'success', text: JSON.stringify(await service.status(words[1], words[2])) }
           }
-          const accepted = await service.continueEvolution('command', words[1], {
+          if (words[0] === 'continue') {
+            if (words[1] === undefined) return { kind: 'error', text: 'usage: /refine continue <evolution-id> [--rounds N] [--focus FOCUS]' }
+            const parsed = parseAdmissionInput(words.slice(2))
+            if (parsed.seedTaskRef !== undefined || parsed.taskBudgetMs !== undefined || parsed.from !== undefined || parsed.name !== undefined) {
+              return { kind: 'error', text: 'continue accepts only --rounds and --focus' }
+            }
+            const accepted = await service.continueEvolution('command', words[1], {
+              ...(parsed.rounds === undefined ? {} : { rounds: parsed.rounds }),
+              ...(parsed.focus === undefined ? {} : { focus: parsed.focus }),
+            })
+            return { kind: 'success', text: `queued evolution ${accepted.evolutionId}, batch ${accepted.batchId}, round ${accepted.roundId}` }
+          }
+          if (words[0] === 'rerun') {
+            const parsed = parseEvaluationRerunInput(words.slice(1))
+            const result = await service.rerunEvaluation(parsed.evolutionId, parsed.roundId, parsed.evalId, parsed.selector)
+            return {
+              kind: 'success',
+              text: result.evalStatus === 'succeeded'
+                ? `repaired eval ${result.evalId}; continuing round ${parsed.roundId}`
+                : `reran ${result.selectedTasks.join(', ') || 'no tasks'}; remaining invalid: ${
+                  result.remainingInvalidTrials?.map(slot => `${slot.taskId}#${slot.attempt}`).join(', ')
+                    || result.remainingInvalidTasks.join(', ')
+                    || 'unknown'
+                }`,
+            }
+          }
+          if (words[0] === 'publish') {
+            if (words[1] === undefined) return { kind: 'error', text: 'usage: /refine publish <evolution-id> [verified-harness-ref]' }
+            await service.publish(words[1], words[2])
+            return { kind: 'success', text: `published champion from evolution ${words[1]}` }
+          }
+          if (words[0] === 'rollback') {
+            if (words[1] === undefined || words[2] === undefined) return { kind: 'error', text: 'usage: /refine rollback <evolution-id> <verified-harness-ref>' }
+            const champion = await service.rollback(words[1], words[2])
+            return { kind: 'success', text: `champion now points to ${champion.ref}` }
+          }
+          const parsed = parseAdmissionInput(words)
+          const accepted = await service.admit('command', {
+            ...(parsed.seedTaskRef === undefined ? {} : { seedTaskRef: parsed.seedTaskRef }),
             ...(parsed.rounds === undefined ? {} : { rounds: parsed.rounds }),
+            ...(parsed.taskBudgetMs === undefined ? {} : { taskBudgetMs: parsed.taskBudgetMs }),
             ...(parsed.focus === undefined ? {} : { focus: parsed.focus }),
+            ...(parsed.from === undefined ? {} : { from: parsed.from }),
+            ...(parsed.name === undefined ? {} : { name: parsed.name }),
           })
           return { kind: 'success', text: `queued evolution ${accepted.evolutionId}, batch ${accepted.batchId}, round ${accepted.roundId}` }
+        } catch (error) {
+          return { kind: 'error', text: error instanceof Error ? error.message : String(error) }
         }
-        if (words[0] === 'rerun') {
-          const parsed = parseEvaluationRerunInput(words.slice(1))
-          const result = await service.rerunEvaluation(parsed.evolutionId, parsed.roundId, parsed.evalId, parsed.selector)
-          return {
-            kind: 'success',
-            text: result.evalStatus === 'succeeded'
-              ? `repaired eval ${result.evalId}; continuing round ${parsed.roundId}`
-              : `reran ${result.selectedTasks.join(', ') || 'no tasks'}; remaining invalid: ${
-                result.remainingInvalidTrials?.map(slot => `${slot.taskId}#${slot.attempt}`).join(', ')
-                  || result.remainingInvalidTasks.join(', ')
-                  || 'unknown'
-              }`,
-          }
-        }
-        if (words[0] === 'publish') {
-          if (words[1] === undefined) return { kind: 'error', text: 'usage: /refine publish <evolution-id> [verified-harness-ref]' }
-          await service.publish(words[1], words[2])
-          return { kind: 'success', text: `published champion from evolution ${words[1]}` }
-        }
-        if (words[0] === 'rollback') {
-          if (words[1] === undefined || words[2] === undefined) return { kind: 'error', text: 'usage: /refine rollback <evolution-id> <verified-harness-ref>' }
-          const champion = await service.rollback(words[1], words[2])
-          return { kind: 'success', text: `champion now points to ${champion.ref}` }
-        }
-        const parsed = parseAdmissionInput(words)
-        const accepted = await service.admit('command', {
-          ...(parsed.seedTaskRef === undefined ? {} : { seedTaskRef: parsed.seedTaskRef }),
-          ...(parsed.rounds === undefined ? {} : { rounds: parsed.rounds }),
-          ...(parsed.taskBudgetMs === undefined ? {} : { taskBudgetMs: parsed.taskBudgetMs }),
-          ...(parsed.focus === undefined ? {} : { focus: parsed.focus }),
-          ...(parsed.from === undefined ? {} : { from: parsed.from }),
-          ...(parsed.name === undefined ? {} : { name: parsed.name }),
-        })
-        return { kind: 'success', text: `queued evolution ${accepted.evolutionId}, batch ${accepted.batchId}, round ${accepted.roundId}` }
-      } catch (error) {
-        return { kind: 'error', text: error instanceof Error ? error.message : String(error) }
-      }
-    },
-  })
+      },
+    })
+  }
 }

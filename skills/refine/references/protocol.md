@@ -8,7 +8,18 @@ require the version-specific
 
 ## Transport and request form
 
-The client sends one request at a time:
+Use DSH's native bridge when the `refine_request` tool is available:
+
+```json
+{"method":"control.status","params":{}}
+```
+
+The tool binds the current DSH agent session as `clientId` and supplies the
+sealed DSH runtime and packaged-skill identity on `meta.claim`. Do not add or
+copy those two fields when using this transport.
+
+For Codex, Claude Code, and other shell-capable Meta harnesses, send one request
+at a time through the CLI:
 
 ```text
 gear-refine [--socket <path>] request <method> '<json-params>'
@@ -18,7 +29,8 @@ Set `GEAR_REFINE_SOCKET` when `--socket` is omitted. Standard output is one JSON
 value. A nonzero exit means the request failed; treat its message as a protocol
 error, not as permission to inspect host state.
 
-Keep `leaseToken` secret. Do not print it in commentary, reports, logs, diffs,
+Both transports call the same gateway methods and receive the same results.
+Keep `leaseToken` secret. Do not print it in commentary, reports, diffs,
 prompts, or candidate files. It is sent only in requests for its assignment.
 
 ## Control methods
@@ -135,7 +147,8 @@ explicitly requests rollback.
 ## Claiming a Meta assignment
 
 Poll `meta.claim` after starting/continuing and while baseline evaluation is
-running:
+running. CLI clients send the complete identity below; `refine_request` clients
+omit both `clientId` and `identity` because the DSH bridge binds them:
 
 ```json
 {
@@ -185,7 +198,7 @@ for another candidate, round, or client.
 
 ## Lease request envelope
 
-Every candidate method and `meta.call` includes:
+Every CLI candidate method and `meta.call` includes:
 
 ```json
 {
@@ -196,6 +209,8 @@ Every candidate method and `meta.call` includes:
 ```
 
 Examples below show method-specific fields in addition to this envelope.
+When using `refine_request`, omit `clientId`; the bridge supplies it while the
+lease id and token remain required.
 
 ## Candidate file methods
 

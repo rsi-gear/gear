@@ -33,6 +33,8 @@ describe('Meta notebook tools', () => {
     expect(sections[0]?.text).toContain('accepted=false and recoverable=true')
     expect(sections[0]?.text).toContain('TRAJECTORY_EVIDENCE_UNAVAILABLE')
     expect(sections[0]?.text).toContain('sandboxed bash')
+    expect(sections[0]?.text).toContain('current candidate tree is a starting state')
+    expect(sections[0]?.text).toContain('compare an executable hook or verifier with prompt guidance')
     const trajectory = tools.find(tool => tool.name === 'trajectory_query')!
     expect(Object.keys((trajectory.parameters as { properties: object }).properties)).toEqual(['refs', 'detailRef', 'find'])
     await trajectory.execute({ refs: ['run_1'] }, {
