@@ -100,17 +100,20 @@ Configure `hitch.executable` to the installed `gear-hitch-codex` binary and
 set `GEAR_HITCH_EXECUTABLE` to the real Hitch binary. This integration requires
 `hitch.controlPlane.mode: direct`. Before direct `eval run` or `eval rerun`, the
 wrapper asks the public pi-ai lifecycle for an access token valid for the setup
-budget, task budget, and a five-minute margin. Refresh and rotating refresh-token
-writes happen only in the locked host store. The wrapper exports access, expiry,
-and account id from one locked snapshot and retries once if a concurrent host
-refresh changes it. Both task and setup timeouts must be positive; Hitch treats a
-zero setup timeout as unlimited, which cannot be covered by a fixed access token.
+budget, task budget, a five-minute margin, and a five-second shutdown reserve.
+Refresh and rotating refresh-token writes happen only in the locked host store.
+The wrapper exports access, expiry, and account id from one locked snapshot and
+retries once if a concurrent host refresh changes it. Both task and setup
+timeouts must be positive; Hitch treats a zero setup timeout as unlimited, which
+cannot be covered by a fixed access token.
 The access-only path permits one logical attempt and zero infrastructure retries;
 the wrapper adds zero retries when the option is omitted and rejects larger
-values. It also terminates the whole direct Hitch process before the bearer enters
-its five-minute refresh window, so harness resolution and image/artifact
-preparation are inside a hard credential deadline even though Hitch does not
-count them against the target setup timeout.
+values. Five seconds before the bearer enters its five-minute refresh window,
+the wrapper sends SIGTERM to the isolated Hitch process tree, allows a
+three-second shutdown grace period, then sends SIGKILL to that tree. The final
+two seconds are a scheduling buffer. Harness resolution and image/artifact
+preparation are therefore inside the same hard credential deadline even though
+Hitch does not count them against the target setup timeout.
 
 Hitch receives `DSH_OPENAI_CODEX_ACCESS_B64`, an access-only envelope containing
 the short-lived bearer, expiry, and account id. It never receives the OAuth
@@ -241,11 +244,11 @@ failing `terminal-bench/git-multibranch` task. Run
 The access-only target path was revalidated from a fresh bootstrap on
 2026-09-05. The bootstrap produced carrier commit
 `de51abbaf15e0390b5bd7987303fcd694167416e`; eval
-`eval_08d7497a30f5465b84839e789751c2e2` then ran
+`eval_26bc877e6c8a4d26aa7d58c8e689e1e9` then ran
 `terminal-bench/nginx-request-logging` in a disposable Docker container using
 the documented two-entry `passEnv` list while `GEAR_TARGET_CODEX_ENV` was
 deliberately absent and `--infrastructure-retries` was omitted from the
 wrapper's initial invocation. Run
-`run_d56d529a3a094b6e8bab18a282711e2d` recorded zero infrastructure retries and
+`run_21b6b72701184422abcc6381c2b49ce9` recorded zero infrastructure retries and
 `openai-codex/gpt-5.6-luna`, exited successfully with valid observation status,
 and passed the Harbor verifier with reward `1`.

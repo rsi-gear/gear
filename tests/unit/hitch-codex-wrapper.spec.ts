@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 const execute = promisify(execFile)
 const wrapper = fileURLToPath(new URL('../../assets/hitch-codex-wrapper.mjs', import.meta.url))
 const EXPIRY_MARGIN_MS = 5 * 60 * 1000
+const SHUTDOWN_RESERVE_MS = 5 * 1000
 const roots: string[] = []
 
 afterEach(async () => Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))))
@@ -23,8 +24,11 @@ async function fixture(expires: number) {
   const piAiRoot = join(root, 'node_modules', '@earendil-works', 'pi-ai')
   const piAiDist = join(piAiRoot, 'dist')
   const refreshLog = join(root, 'refresh.log')
+  const descendantPidFile = join(root, 'descendant.pid')
   await mkdir(join(piAiDist, 'providers'), { recursive: true })
   await writeFile(hitch, `#!/usr/bin/env node
+import { spawn } from 'node:child_process'
+import { writeFileSync } from 'node:fs'
 const args = process.argv.slice(2)
 if (process.argv[2] === '--version') process.stdout.write('0.2.7\\n')
 else {
@@ -33,6 +37,14 @@ else {
       process.stderr.write('environment variable is not set: ' + args[index + 1] + '\\n')
       process.exit(1)
     }
+  }
+  if (process.env.FAKE_HITCH_IGNORE_TERM === '1') {
+    process.on('SIGTERM', () => {})
+    const descendant = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], {
+      detached: true,
+      stdio: 'ignore',
+    })
+    writeFileSync(process.env.FAKE_DESCENDANT_PID_FILE, String(descendant.pid))
   }
   const credentialName = process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_ACCESS_B64'
   const output = () => process.stdout.write(JSON.stringify({ args, credentialName, credential: process.env[credentialName] }))
@@ -115,6 +127,7 @@ export function openaiCodexProvider() { return { id: 'openai-codex' } }
 `)
   return {
     authFile,
+    descendantPidFile,
     hitch,
     hitchRoot,
     refreshLog,
@@ -329,11 +342,20 @@ describe('gear-hitch-codex', () => {
     })).rejects.toMatchObject({ stderr: expect.stringContaining('DSH_OPENAI_CODEX_ACCESS_*_B64') })
   })
 
-  it('stops Hitch before the access token enters its refresh window', async () => {
-    const { env } = await fixture(Date.now() + EXPIRY_MARGIN_MS + 750)
+  it('force-kills an uncooperative Hitch process tree before the access refresh window', async () => {
+    const expires = Date.now() + EXPIRY_MARGIN_MS + SHUTDOWN_RESERVE_MS + 750
+    const { descendantPidFile, env } = await fixture(expires)
     await expect(execute(process.execPath, [wrapper,
       'eval', 'run', '--timeout', '1ms', '--setup-timeout', '1ms', '--infrastructure-retries', '0',
-    ], { env: { ...env, FAKE_HITCH_DELAY_MS: '5000' } }))
+    ], { env: {
+      ...env,
+      FAKE_DESCENDANT_PID_FILE: descendantPidFile,
+      FAKE_HITCH_DELAY_MS: '10000',
+      FAKE_HITCH_IGNORE_TERM: '1',
+    } }))
       .rejects.toMatchObject({ stderr: expect.stringContaining('target access safety deadline') })
+    expect(Date.now()).toBeLessThan(expires - EXPIRY_MARGIN_MS)
+    const descendantPid = Number(await readFile(descendantPidFile, 'utf8'))
+    expect(() => process.kill(descendantPid, 0)).toThrow()
   })
 })

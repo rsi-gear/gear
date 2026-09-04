@@ -70,9 +70,12 @@ login.
 Daemon submission is intentionally unsupported: keep `hitch.controlPlane.mode`
 set to `direct`. Containers in one eval share an access snapshot, so split a
 long multi-wave dataset into direct evals that finish before the wrapper's hard
-credential deadline. The access-only path permits one attempt and zero
-infrastructure retries. Keep both task and setup timeouts positive; Hitch's zero
-setup timeout is unlimited and is rejected by the wrapper.
+credential deadline. Five seconds before the token enters its refresh window,
+the wrapper gives the isolated Hitch process tree three seconds to exit, then
+force-kills it, leaving a two-second scheduling buffer. The access-only path
+permits one attempt and zero infrastructure retries. Keep both task and setup
+timeouts positive; Hitch's zero setup timeout is unlimited and is rejected by
+the wrapper.
 
 ## Check and run
 

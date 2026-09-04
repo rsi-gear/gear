@@ -388,10 +388,10 @@ Hitch 子进程环境，满足 `passEnv` 校验。自定义名称时仍要在启
 
 这个接入只支持 `hitch.controlPlane.mode: direct`。包装器在 direct
 `eval run` 或 `eval rerun` 启动前，通过 pi-ai 的公开认证生命周期取得覆盖
-setup budget、task budget 和五分钟余量的 access token；需要刷新时，只更新带
-跨进程锁的宿主 OAuth 文件。随后传给 Hitch 的自定义 envelope 只含短期 access、
-到期时间和 account id，不含 rotating refresh token。target 为满足 dsh-codex
-文件格式写入不可用的 refresh 占位值，因此容器不能刷新或破坏宿主登录。
+setup budget、task budget、五分钟余量和五秒关闭预留的 access token；需要刷新
+时，只更新带跨进程锁的宿主 OAuth 文件。随后传给 Hitch 的自定义 envelope 只含
+短期 access、到期时间和 account id，不含 rotating refresh token。target 为满足
+dsh-codex 文件格式写入不可用的 refresh 占位值，因此容器不能刷新或破坏宿主登录。
 包装器在宿主锁内读取 access、到期时间和 account id 的一致快照；若并发刷新
 恰好发生在导出期间，会重新获取一次。`--timeout` 和 `--setup-timeout` 必须为
 正数，因为 Hitch 中 setup timeout 为 `0` 表示不限制时长，无法安全导出一个
@@ -399,10 +399,11 @@ setup budget、task budget 和五分钟余量的 access token；需要刷新时�
 
 Codex access-only 路径只允许一次 logical attempt，并将未显式指定的 Hitch
 `infrastructure-retries` 安全地改为 `0`；显式配置多 attempt 或重试会被拒绝。
-从 access 导出开始，包装器还会以“token 到期前五分钟”为整个 direct Hitch
-进程的硬截止时间。这个截止时间覆盖 harness 解析、制品/镜像准备和 target
-执行；若前置阶段耗时过长，评测会被终止，而不是让容器进入需要 refresh token
-的窗口。
+从 access 导出开始，包装器还会为整个 direct Hitch 进程设置硬截止时间：在
+token 进入五分钟 refresh 窗口前五秒，先向 Hitch 进程树发送 SIGTERM，给三秒
+优雅退出时间，再向整个进程树发送 SIGKILL，并保留最后两秒调度余量。
+这个截止时间覆盖 harness 解析、制品/镜像准备和 target 执行；若前置阶段耗时
+过长，评测会被终止，而不是让容器进入需要 refresh token 的窗口。
 
 `eval submit`、`eval run --daemon` 和 daemon rerun 会明确拒绝；`--version`、
 capabilities、watch、inspect 等命令保持透明转发。一次 direct evaluation 中的

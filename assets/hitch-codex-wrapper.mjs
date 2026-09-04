@@ -1,11 +1,14 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const EXPIRY_MARGIN_MS = 5 * 60 * 1000
+const SHUTDOWN_GRACE_MS = 3 * 1000
+const SHUTDOWN_BUFFER_MS = 2 * 1000
+const SHUTDOWN_RESERVE_MS = SHUTDOWN_GRACE_MS + SHUTDOWN_BUFFER_MS
 const DEFAULT_SETUP_BUDGET_MS = 30 * 60 * 1000
 const CODEX_ACCESS_ENV = process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_ACCESS_B64'
 
@@ -92,7 +95,7 @@ async function trialValidity(args) {
   if (setupBudgetMs <= 0) {
     throw new Error('Codex target direct evals require a positive --setup-timeout')
   }
-  return duration(timeout) + setupBudgetMs + EXPIRY_MARGIN_MS
+  return duration(timeout) + setupBudgetMs + EXPIRY_MARGIN_MS + SHUTDOWN_RESERVE_MS
 }
 
 async function codexAccessEnvelope(requiredValidityMs) {
@@ -154,22 +157,66 @@ async function targetEnvironment(args) {
       ...environment,
       [CODEX_ACCESS_ENV]: Buffer.from(JSON.stringify(envelope)).toString('base64'),
     },
-    accessDeadlineAt: envelope.expires - EXPIRY_MARGIN_MS,
+    accessShutdownAt: envelope.expires - EXPIRY_MARGIN_MS - SHUTDOWN_RESERVE_MS,
   }
+}
+
+function processTreePids(rootPid) {
+  if (process.platform === 'win32') return [rootPid]
+  let rows
+  try {
+    rows = execFileSync('ps', ['-A', '-o', 'pid=', '-o', 'ppid='], { encoding: 'utf8' })
+  } catch {
+    return [rootPid]
+  }
+  const children = new Map()
+  for (const row of rows.trim().split('\n')) {
+    const [pid, parent] = row.trim().split(/\s+/u).map(Number)
+    if (!Number.isSafeInteger(pid) || !Number.isSafeInteger(parent)) continue
+    children.set(parent, [...(children.get(parent) ?? []), pid])
+  }
+  const result = [rootPid]
+  for (let index = 0; index < result.length; index += 1) result.push(...(children.get(result[index]) ?? []))
+  return result
+}
+
+function signalPid(pid, signal) {
+  try {
+    process.kill(pid, signal)
+    return true
+  } catch (error) {
+    if (error?.code === 'ESRCH') return false
+    throw error
+  }
+}
+
+function signalTree(child, signal, knownPids = []) {
+  if (child.pid === undefined) return false
+  const pids = [...new Set([...knownPids, ...processTreePids(child.pid)])]
+  let signalled = process.platform === 'win32' ? false : signalPid(-child.pid, signal)
+  for (const pid of pids.reverse()) signalled = signalPid(pid, signal) || signalled
+  return signalled
 }
 
 async function main() {
   const args = safeCodexArgs(process.argv.slice(2))
   const target = await targetEnvironment(args)
   const child = spawn(process.env.GEAR_HITCH_EXECUTABLE ?? 'hitch', args, {
+    detached: process.platform !== 'win32',
     env: target.environment,
     stdio: 'inherit',
   })
   let accessDeadlineReached = false
-  const deadlineTimer = target.accessDeadlineAt === undefined ? undefined : setTimeout(() => {
-    accessDeadlineReached = child.kill('SIGTERM')
-  }, Math.max(0, target.accessDeadlineAt - Date.now()))
-  const forward = signal => child.kill(signal)
+  let forceKillTimer
+  let deadlineTreePids = []
+  const deadlineTimer = target.accessShutdownAt === undefined ? undefined : setTimeout(() => {
+    deadlineTreePids = child.pid === undefined ? [] : processTreePids(child.pid)
+    accessDeadlineReached = signalTree(child, 'SIGTERM', deadlineTreePids)
+    if (accessDeadlineReached) {
+      forceKillTimer = setTimeout(() => signalTree(child, 'SIGKILL', deadlineTreePids), SHUTDOWN_GRACE_MS)
+    }
+  }, Math.max(0, target.accessShutdownAt - Date.now()))
+  const forward = signal => signalTree(child, signal)
   process.once('SIGINT', forward)
   process.once('SIGTERM', forward)
   let result
@@ -180,6 +227,8 @@ async function main() {
     })
   } finally {
     if (deadlineTimer !== undefined) clearTimeout(deadlineTimer)
+    if (forceKillTimer !== undefined) clearTimeout(forceKillTimer)
+    if (accessDeadlineReached) signalTree(child, 'SIGKILL', deadlineTreePids)
   }
   process.removeListener('SIGINT', forward)
   process.removeListener('SIGTERM', forward)
