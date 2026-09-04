@@ -405,6 +405,11 @@ token 进入五分钟 refresh 窗口前五秒，先向 Hitch 进程树发送 SIG
 这个截止时间覆盖 harness 解析、制品/镜像准备和 target 执行；若前置阶段耗时
 过长，评测会被终止，而不是让容器进入需要 refresh token 的窗口。
 
+该 direct access-only 路径要求宿主提供可用的 POSIX `ps` 进程枚举；不可用时会在
+启动 Hitch 前 fail closed。关闭快照会记录 PID、进程组、session 和启动时间，
+每次发信号前重新校验身份；宽限期后的再次枚举也只会在原 Hitch 身份仍匹配时
+进行，避免将复用的 PID 当成原评测进程误杀。
+
 `eval submit`、`eval run --daemon` 和 daemon rerun 会明确拒绝；`--version`、
 capabilities、watch、inspect 等命令保持透明转发。一次 direct evaluation 中的
 容器共享同一个 access 快照，因此大批量、多波次评测应拆成能在硬截止时间前

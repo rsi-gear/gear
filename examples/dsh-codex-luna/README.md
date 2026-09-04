@@ -75,7 +75,10 @@ the wrapper gives the isolated Hitch process tree three seconds to exit, then
 force-kills it, leaving a two-second scheduling buffer. The access-only path
 permits one attempt and zero infrastructure retries. Keep both task and setup
 timeouts positive; Hitch's zero setup timeout is unlimited and is rejected by
-the wrapper.
+the wrapper. This direct path requires working POSIX `ps` process inspection
+and fails before Hitch starts when it is unavailable. Cached descendants are
+identified by PID, process group, session, and start time and are revalidated
+before each signal.
 
 ## Check and run
 

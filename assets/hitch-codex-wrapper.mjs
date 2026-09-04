@@ -161,28 +161,54 @@ async function targetEnvironment(args) {
   }
 }
 
-function processTreePids(rootPid) {
-  if (process.platform === 'win32') return [rootPid]
-  let rows
+function processTable() {
+  if (process.platform === 'win32') {
+    throw new Error('Codex target direct evals require POSIX process inspection')
+  }
+  let output
   try {
-    rows = execFileSync('ps', ['-A', '-o', 'pid=', '-o', 'ppid='], { encoding: 'utf8' })
-  } catch {
-    return [rootPid]
+    output = execFileSync('ps', [
+      '-A', '-o', 'pid=', '-o', 'ppid=', '-o', 'pgid=', '-o', 'sess=', '-o', 'lstart=',
+    ], {
+      encoding: 'utf8',
+    })
+  } catch (error) {
+    throw new Error('Codex target process tree inspection is unavailable', { cause: error })
   }
-  const children = new Map()
-  for (const row of rows.trim().split('\n')) {
-    const [pid, parent] = row.trim().split(/\s+/u).map(Number)
-    if (!Number.isSafeInteger(pid) || !Number.isSafeInteger(parent)) continue
-    children.set(parent, [...(children.get(parent) ?? []), pid])
+  const entries = output.trim().split('\n').flatMap(row => {
+    const [pidText, parentText, groupText, sessionText, ...startedParts] = row.trim().split(/\s+/u)
+    const pid = Number(pidText)
+    const parent = Number(parentText)
+    const group = Number(groupText)
+    const session = Number(sessionText)
+    if (![pid, parent, group, session].every(Number.isSafeInteger) || startedParts.length === 0) return []
+    return [{ pid, parent, group, session, started: startedParts.join(' ') }]
+  })
+  if (!entries.some(entry => entry.pid === process.pid)) {
+    throw new Error('Codex target process tree inspection returned incomplete data')
   }
-  const result = [rootPid]
-  for (let index = 0; index < result.length; index += 1) result.push(...(children.get(result[index]) ?? []))
-  return result
+  return entries
 }
 
-function signalPid(pid, signal) {
+function processTree(rootPid, processes = processTable()) {
+  const byPid = new Map(processes.map(entry => [entry.pid, entry]))
+  const children = new Map()
+  for (const entry of processes) {
+    children.set(entry.parent, [...(children.get(entry.parent) ?? []), entry.pid])
+  }
+  const pids = byPid.has(rootPid) ? [rootPid] : []
+  for (let index = 0; index < pids.length; index += 1) pids.push(...(children.get(pids[index]) ?? []))
+  return pids.map(pid => byPid.get(pid))
+}
+
+function sameProcess(left, right) {
+  return left.pid === right?.pid && left.group === right.group
+    && left.session === right.session && left.started === right.started
+}
+
+function signalPid(entry, signal) {
   try {
-    process.kill(pid, signal)
+    process.kill(entry.pid, signal)
     return true
   } catch (error) {
     if (error?.code === 'ESRCH') return false
@@ -190,17 +216,27 @@ function signalPid(pid, signal) {
   }
 }
 
-function signalTree(child, signal, knownPids = []) {
-  if (child.pid === undefined) return false
-  const pids = [...new Set([...knownPids, ...processTreePids(child.pid)])]
-  let signalled = process.platform === 'win32' ? false : signalPid(-child.pid, signal)
-  for (const pid of pids.reverse()) signalled = signalPid(pid, signal) || signalled
+function mergeTrees(...trees) {
+  const entries = new Map()
+  for (const entry of trees.flat()) {
+    entries.set(`${entry.pid}:${entry.group}:${entry.session}:${entry.started}`, entry)
+  }
+  return [...entries.values()]
+}
+
+function signalTree(tree, signal) {
+  const current = new Map(processTable().map(entry => [entry.pid, entry]))
+  let signalled = false
+  for (const entry of [...tree].reverse()) {
+    if (sameProcess(entry, current.get(entry.pid))) signalled = signalPid(entry, signal) || signalled
+  }
   return signalled
 }
 
 async function main() {
   const args = safeCodexArgs(process.argv.slice(2))
   const target = await targetEnvironment(args)
+  if (target.accessShutdownAt !== undefined) processTable()
   const child = spawn(process.env.GEAR_HITCH_EXECUTABLE ?? 'hitch', args, {
     detached: process.platform !== 'win32',
     env: target.environment,
@@ -208,17 +244,38 @@ async function main() {
   })
   let accessDeadlineReached = false
   let forceKillTimer
-  let deadlineTreePids = []
-  const deadlineTimer = target.accessShutdownAt === undefined ? undefined : setTimeout(() => {
-    deadlineTreePids = child.pid === undefined ? [] : processTreePids(child.pid)
-    accessDeadlineReached = signalTree(child, 'SIGTERM', deadlineTreePids)
-    if (accessDeadlineReached) {
-      forceKillTimer = setTimeout(() => signalTree(child, 'SIGKILL', deadlineTreePids), SHUTDOWN_GRACE_MS)
+  let deadlineTree = []
+  let treeError
+  const forceStop = () => {
+    try {
+      const current = processTable()
+      const root = deadlineTree[0]
+      const currentRoot = root === undefined ? undefined : current.find(entry => entry.pid === root.pid)
+      const latestTree = root !== undefined && sameProcess(root, currentRoot)
+        ? processTree(root.pid, current)
+        : []
+      deadlineTree = mergeTrees(deadlineTree, latestTree)
+      signalTree(deadlineTree, 'SIGKILL')
+    } catch (error) {
+      treeError ??= error
+      child.kill('SIGKILL')
     }
+  }
+  const deadlineTimer = target.accessShutdownAt === undefined ? undefined : setTimeout(() => {
+    try {
+      deadlineTree = child.pid === undefined ? [] : processTree(child.pid)
+      accessDeadlineReached = deadlineTree.length > 0
+      signalTree(deadlineTree, 'SIGTERM')
+    } catch (error) {
+      treeError = error
+      accessDeadlineReached = child.kill('SIGTERM')
+    }
+    if (accessDeadlineReached) forceKillTimer = setTimeout(forceStop, SHUTDOWN_GRACE_MS)
   }, Math.max(0, target.accessShutdownAt - Date.now()))
-  const forward = signal => signalTree(child, signal)
-  process.once('SIGINT', forward)
-  process.once('SIGTERM', forward)
+  const forwardInterrupt = () => child.kill('SIGINT')
+  const forwardTerminate = () => child.kill('SIGTERM')
+  process.once('SIGINT', forwardInterrupt)
+  process.once('SIGTERM', forwardTerminate)
   let result
   try {
     result = await new Promise((resolveResult, reject) => {
@@ -228,12 +285,13 @@ async function main() {
   } finally {
     if (deadlineTimer !== undefined) clearTimeout(deadlineTimer)
     if (forceKillTimer !== undefined) clearTimeout(forceKillTimer)
-    if (accessDeadlineReached) signalTree(child, 'SIGKILL', deadlineTreePids)
+    if (accessDeadlineReached) forceStop()
   }
-  process.removeListener('SIGINT', forward)
-  process.removeListener('SIGTERM', forward)
+  process.removeListener('SIGINT', forwardInterrupt)
+  process.removeListener('SIGTERM', forwardTerminate)
   if (accessDeadlineReached) {
-    process.stderr.write('gear-hitch-codex: target access safety deadline reached before Hitch completed\n')
+    const detail = treeError instanceof Error ? ` (${treeError.message})` : ''
+    process.stderr.write(`gear-hitch-codex: target access safety deadline reached before Hitch completed${detail}\n`)
     process.exitCode = 1
     return
   }

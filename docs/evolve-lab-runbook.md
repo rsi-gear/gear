@@ -115,6 +115,12 @@ two seconds are a scheduling buffer. Harness resolution and image/artifact
 preparation are therefore inside the same hard credential deadline even though
 Hitch does not count them against the target setup timeout.
 
+The direct access-only path requires working POSIX `ps` process inspection and
+fails before Hitch starts if it is unavailable. Shutdown snapshots record PID,
+process group, session, and start time; every signal revalidates that identity,
+and a post-grace rescan proceeds only while the original Hitch identity still
+matches. This prevents a recycled PID from being treated as part of the eval.
+
 Hitch receives `DSH_OPENAI_CODEX_ACCESS_B64`, an access-only envelope containing
 the short-lived bearer, expiry, and account id. It never receives the OAuth
 document or refresh token. The target writes a disposable dsh-codex document
@@ -244,11 +250,11 @@ failing `terminal-bench/git-multibranch` task. Run
 The access-only target path was revalidated from a fresh bootstrap on
 2026-09-05. The bootstrap produced carrier commit
 `de51abbaf15e0390b5bd7987303fcd694167416e`; eval
-`eval_26bc877e6c8a4d26aa7d58c8e689e1e9` then ran
+`eval_3bf9cc83b0a845339079b7cb1998c496` then ran
 `terminal-bench/nginx-request-logging` in a disposable Docker container using
 the documented two-entry `passEnv` list while `GEAR_TARGET_CODEX_ENV` was
 deliberately absent and `--infrastructure-retries` was omitted from the
 wrapper's initial invocation. Run
-`run_21b6b72701184422abcc6381c2b49ce9` recorded zero infrastructure retries and
+`run_8f7aab28c97b4998985caa3e9101a3d1` recorded zero infrastructure retries and
 `openai-codex/gpt-5.6-luna`, exited successfully with valid observation status,
 and passed the Harbor verifier with reward `1`.
