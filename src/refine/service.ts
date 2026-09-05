@@ -2110,8 +2110,11 @@ export class RefineService {
   }
 
   private async queueContinuation(previous: ActiveRound): Promise<void> {
+    previous.abort.signal.throwIfAborted()
     const champion = await this.requireChampion(previous.evolution.store)
+    previous.abort.signal.throwIfAborted()
     const population = await previous.evolution.store.readPopulation()
+    previous.abort.signal.throwIfAborted()
     if (population === undefined) throw new Error('evolution has no research population')
     const roundId = crypto.randomUUID()
     const index = previous.roundIndex + 1
@@ -2124,8 +2127,13 @@ export class RefineService {
       previous.advisoryFocus,
     )
     await previous.evolution.store.writeRound(round)
+    previous.abort.signal.throwIfAborted()
     await previous.lock.retarget(roundId)
+    previous.abort.signal.throwIfAborted()
     await this.registry.touch(previous.evolution.spec.evolutionId, { batchId: previous.batchId, roundId })
+    // Disposal is waiting for the current drive; do not hand its lock to a
+    // new drive that was not included in disposal's active-work snapshot.
+    previous.abort.signal.throwIfAborted()
     this.active.set(roundId, active)
     queueMicrotask(() => this.startDrive(roundId))
   }

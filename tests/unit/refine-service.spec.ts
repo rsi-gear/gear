@@ -2072,6 +2072,57 @@ describe('RefineService evolution workspaces', () => {
     }
   })
 
+  it('does not start a continuation when disposal overlaps its final registry write', async () => {
+    const { service, registry, metas } = await setup()
+    const admission = await service.admit('api', { rounds: 2 })
+    const first = await editing(service, admission.evolutionId, admission.roundId)
+    const store = metas.get(admission.evolutionId)!.store
+    const touchStarted = Promise.withResolvers<void>()
+    const releaseTouch = Promise.withResolvers<void>()
+    const originalTouch = registry.touch.bind(registry)
+    const originalReadRound = store.readRound.bind(store)
+    let continuationRoundId: string | undefined
+    let disposing = false
+    let continuationReads = 0
+    const touchSpy = vi.spyOn(registry, 'touch').mockImplementation(async (evolutionId, update) => {
+      await originalTouch(evolutionId, update)
+      if (update.roundId !== undefined && update.roundId !== admission.roundId) {
+        continuationRoundId = update.roundId
+        touchStarted.resolve()
+        await releaseTouch.promise
+      }
+    })
+    const readSpy = vi.spyOn(store, 'readRound').mockImplementation(async roundId => {
+      if (disposing && roundId === continuationRoundId) {
+        // A late drive would access this round after shutdown began. Refuse
+        // that access so a failing regression cannot leave a background writer.
+        continuationReads += 1
+        return undefined
+      }
+      return originalReadRound(roundId)
+    })
+    try {
+      await finalize(service, first)
+      await touchStarted.promise
+      disposing = true
+      const pendingDisposal = service.dispose()
+      releaseTouch.resolve()
+      await pendingDisposal
+
+      expect(continuationReads).toBe(0)
+      expect(continuationRoundId).toBeDefined()
+      expect(await originalReadRound(continuationRoundId!)).toMatchObject({ status: 'queued' })
+      expect(service.activeEntry(continuationRoundId!)).toBeUndefined()
+      const lock = await store.acquireRoundLock()
+      await lock.release()
+    } finally {
+      releaseTouch.resolve()
+      await service.dispose()
+      touchSpy.mockRestore()
+      readSpy.mockRestore()
+    }
+  })
+
   it('enforces the attempt deadline while Meta fork is still pending', async () => {
     const { service, evaluator, metas } = await setup(0.8, false, 1, 40, 1, 0, 1, 100)
     const baselineGate = Promise.withResolvers<void>()
