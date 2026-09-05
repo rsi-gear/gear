@@ -14,7 +14,14 @@ import { builtinComponentRef, componentRef } from '../../src/evolution/component
 import { evolutionSpec } from '../helpers/research-fixture.js'
 
 const roots: string[] = []
-afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map(root => rm(root, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 50,
+  })))
+})
 
 function diagnosisReceipts(runIds: readonly string[]): DiagnosisReceipt[] {
   return runIds.map(runId => ({
