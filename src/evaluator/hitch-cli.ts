@@ -2311,6 +2311,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       && result.status === 'failed'
       && exitCode !== 0
       && Array.isArray(result.trials)
+      && result.trials.length > 0
     if ((result.status !== 'succeeded' || exitCode !== 0) && !failedRunEvidence) {
       const error = typeof result.error === 'object' && result.error !== null ? result.error as JsonRecord : {}
       throw new HitchEvaluationError(
@@ -2416,13 +2417,6 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     const completed = integer(summaryValue.n_completed, 'summary.n_completed')
     const invalid = integer(summaryValue.n_invalid, 'summary.n_invalid')
     const parsed = this.parseRunTrials(result.trials)
-    if (total === 0 && parsed.length === 0 && result.status === 'failed') {
-      const error = typeof result.error === 'object' && result.error !== null ? result.error as JsonRecord : {}
-      throw new HitchEvaluationError(
-        `Hitch eval ${evalId} failed before producing canonical trial evidence (${String(error.code ?? 'hitch_eval_failed')}): ${String(error.message ?? 'no trial observations')}`,
-        typeof error.code === 'string' ? error.code : 'hitch_eval_failed',
-      )
-    }
     if (total <= 0 || parsed.length !== total) throw new HitchEvaluationError('Hitch trial count does not match summary.n_trials')
     const valid = parsed.filter(trial => trial.observationStatus === 'valid')
     const invalidObservations = parsed.filter(trial => trial.observationStatus === 'invalid')

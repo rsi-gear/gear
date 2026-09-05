@@ -10,3 +10,7 @@ coverage/
 .debug/
 knowledge/
 .DS_Store
+
+# Built from the pinned upstream ToolFs package.
+assets/gear-tool-fs.js
+assets/gear-tool-fs.LICENSE

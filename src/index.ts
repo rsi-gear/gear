@@ -1,6 +1,6 @@
 import { isAbsolute, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import * as ToolFs from '@deepseek-ai/dsh-tool-fs'
+import * as ToolFs from '../assets/gear-tool-fs.js'
 import * as FsObservationPolicy from '@deepseek-ai/dsh-fs-observation-policy'
 import * as ToolFsSearch from '@deepseek-ai/dsh-tool-fs-search'
 import * as ToolBash from '@deepseek-ai/dsh-tool-bash'

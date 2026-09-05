@@ -21,7 +21,7 @@ mode. The Meta harness and the Target harness are independent; Hitch starts the
 configured Target harness for isolated rollouts.
 
 Gear requires Node.js 22.19+ (or 24+), Git, Docker, and an installed Hitch CLI.
-The DSH plugin deployment additionally requires DSH `0.1.0-rc.8`. Python,
+The DSH plugin deployment supports DSH `0.1.0-rc.8` and `0.1.1-rc.2`. Python,
 IPython, Bubblewrap, `socat`, and ripgrep are required only by the configured
 compiler, verifier, or DSH Meta sandbox features that use them.
 
