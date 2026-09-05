@@ -48,4 +48,45 @@ Gear 的 `tests/unit/private-tool-fs.spec.ts` 在 rc.8 和原版 rc.2 中验证�
 
 Gear 完整回归：35 个测试文件通过、2 个跳过，340 项测试通过、8 项跳过；类型检查和构建通过。独立 Subagent 审查了两个最终实现与安装边界，未发现阻塞问题。审查发现的 fork 文档误装公共 npm 包问题已经修正。
 
-服务器只做了只读核验，没有替换安装包、重启服务或重跑 43 个任务。生产验收仍需安装修复版本后确认 root checkpoint、generation attempt 和真实 Meta turn 出现；本地和 CI 通过不表示原实验已经重新运行成功。
+## ECS 安装验证
+
+2026-09-05 已在 ECS 安装上述三个修复包，保留原版 DSH `0.1.1-rc.2`。控制面使用独立 fork 的 `dsh-codex@0.2.6-fork.1`；Target 保留原有 `dsh-codex@0.2.6` 和 champion，以隔离本次初始化修复。
+
+Hitch 的 controller runtime 要求包内有真实的 `node_modules/smol-toml` 目录。部署目录使用 npm 的 `install-strategy=nested`，并保留该 `.npmrc`，避免默认提升依赖导致 runtime payload 缺失。
+
+首次准备失败还确认了原报告中的错误诊断问题：Hitch 返回 `failure_stage: preparing`、`trials: []`，并省略尚未生成的 dataset identity。Gear 曾将其误认作 partial evidence，把原始缺依赖错误覆盖为 dataset mismatch。现在只有非空 trials 可以走 partial evidence；空结果沿用原始失败路径，schema、eval ID、退出码和非空证据的 dataset 校验保持有效。85 个 evaluator 场景、类型检查、构建和四项 CI 已验证，独立 review 无阻塞。
+
+实际验证使用 TB 2.1 的固定 10 个任务、并发 10、单次尝试，创建全新 evolution，避免复用旧 reservation。此次不执行候选晋级；独立实验的 `minimumCandidateScore: 2` 阻止额外 held-out 评估，不能据此判断候选性能是否达标。最终验收以这轮的 durable 结果为准。
+
+主验证已完成：Hitch `status: succeeded`，10 个任务全部通过 container setup 并产生有效结果，6 个通过、4 个 verifier 未通过，0 个基础设施失败。运行时间为 2026-09-05 07:01:51.623 至 07:40:28.764 UTC。
+
+| 任务 | Reward |
+| --- | ---: |
+| bn-fit-modify | 1 |
+| build-cython-ext | 0 |
+| build-pmars | 1 |
+| build-pov-ray | 0 |
+| caffe-cifar-10 | 1 |
+| cancel-async-tasks | 0 |
+| cobol-modernization | 1 |
+| constraints-scheduling | 1 |
+| custom-memory-heap-crash | 1 |
+| db-wal-recovery | 0 |
+
+- Evolution：`fcbe1fcc-9f8b-4853-ac5b-3485af5e509a`
+- Round：`41468179-ce6e-48b9-855e-b5a14fbabd69`
+- Baseline eval：`eval_8029842c5ca84dd7955b0954f2ffb75b`
+- Controller runtime：`sha256:560ff8fe92593bd03c15e9b96f7fb827f5d74eeef7513fb03ac18e6843d2e901`
+
+该轮随后成功创建 Meta 根会话、checkpoint、两个 generation attempt 和 fork session，不再出现同名工具注册错误。模型请求确实发出，但原有 `metaSampling.temperature: 1` 被提供方拒绝，原始错误为 `Unsupported parameter: temperature`。服务器配置已改为 `metaSampling: {}`；没有修改模型插件去静默丢弃用户参数，也没有改写旧 evolution 的冻结 spec。
+
+为验证修正后的模型请求，另建单任务 Meta 冒烟实验，而非重跑整批长任务。该实验的 Meta generation attempt 成功，turn 1 以 `completed` 结束，耗时 52,968 ms，产生 6 条 assistant message、10 次 tool call/result，并完成候选 finalize，随后进入候选评估。实际请求为 `openai-codex/gpt-5.6-luna`，没有 temperature；18 个工具名无重复，`read_image` 与 `read_url_image` 各一个。
+
+- Meta 冒烟 evolution：`dad10c92-91e6-4d16-ade0-982f52c2100c`
+- Round：`5524ff1c-938e-4ede-9fcf-642f4370d0fd`
+- Meta session：`c2f2e33f-6703-4fff-8ab4-9a71dc385d4a`
+- 根 checkpoint session：`61cc8bb2-d73e-40dd-95b1-b8bd6c19bf7d`
+
+主验证的 6/10 分数与该单任务冒烟实验分别记录，不合并为性能结论。
+
+冒烟候选评估 `eval_0dac732deb3a4036bbb113d7e5ebc12a` 已结束：1 个有效 trial、reward 1、无基础设施错误。Round 的 `failure` 为空；终态 `rejected` 来自验收专用的晋级阈值 2，不是框架失败。验收后默认配置恢复为 10 个 seed 任务、并发 10、正常晋级阈值 0，保留 `metaSampling: {}` 和三个修复包；既有实验的冻结配置与结果保持原样。
