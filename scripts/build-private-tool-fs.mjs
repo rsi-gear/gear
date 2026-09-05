@@ -13,9 +13,10 @@ const directory = await mkdtemp(join(tmpdir(), 'gear-tool-fs-'))
 
 try {
   // npm's content-addressed cache avoids downloading the pinned archive on every build.
+  // Even during a parent pack --dry-run, this input archive must exist for integrity verification.
   const packed = JSON.parse(execFileSync('npm', [
     'pack', `@deepseek-ai/dsh-tool-fs@${version}`, '--ignore-scripts',
-    '--prefer-offline', '--json', '--pack-destination', directory,
+    '--prefer-offline', '--dry-run=false', '--json', '--pack-destination', directory,
   ], { cwd: root, encoding: 'utf8' }))
   const archive = join(directory, packed[0].filename)
   const bytes = await readFile(archive)
