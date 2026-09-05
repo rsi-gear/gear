@@ -126,13 +126,15 @@ function renderStructuredVerifier(verifier: Record<string, unknown>): string[] {
           ...(component.code === undefined ? [] : [`code ${String(component.code)}`]),
         ].join(' · '))
         if (component.publicDetails !== undefined) lines.push(`public details: ${JSON.stringify(component.publicDetails)}`)
+        if (typeof component.publicDetailsPreview === 'string') lines.push(`public details preview: ${component.publicDetailsPreview}`)
         if (component.trajectoryRefs !== undefined) lines.push(`trajectory refs: ${JSON.stringify(component.trajectoryRefs)}`)
       }
     }
+    if (process.truncated === true) lines.push('[process preview truncated; full evidence in verifier details]')
   }
   const feedback = asObject(verifier.feedback)
   if (Array.isArray(feedback?.items)) {
-    if (feedback.items.length === 0) lines.push('FEEDBACK · no items')
+    if (feedback.items.length === 0 && feedback.truncated !== true) lines.push('FEEDBACK · no items')
     for (const value of feedback.items) {
       const item = asObject(value)
       if (item === undefined) continue
@@ -140,6 +142,7 @@ function renderStructuredVerifier(verifier: Record<string, unknown>): string[] {
       if (item.componentIds !== undefined) lines.push(`components: ${JSON.stringify(item.componentIds)}`)
       if (item.trajectoryRefs !== undefined) lines.push(`trajectory refs: ${JSON.stringify(item.trajectoryRefs)}`)
     }
+    if (feedback.truncated === true) lines.push('[feedback preview truncated; full evidence in verifier details]')
   }
   return lines
 }

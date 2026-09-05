@@ -610,8 +610,12 @@ export interface MetaFailureCard {
     status: 'complete' | 'result_only' | 'missing' | 'unavailable'
     summary: string
     scores?: EvaluationTrialScores
-    process?: VerifierProcessEvidence
-    feedback?: VerifierFeedback
+    process?: Omit<VerifierProcessEvidence, 'components'> & {
+      components?: Array<Omit<VerifierProcessComponent, 'privateDetailsRef'> & { publicDetailsPreview?: string }>
+      /** This view contains previews; detailRef retains the complete public evidence. */
+      truncated?: true
+    }
+    feedback?: VerifierFeedback & { truncated?: true }
     failures?: Array<{ name: string; detail: MetaEvidenceText }>
     detailRef?: string
     needsDetail?: true

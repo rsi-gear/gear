@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RefineCapabilities } from '../../src/capabilities.js'
 import { projectTrajectory } from '../../src/evaluator/trajectory-projection.js'
 import { HarnessBuilder, NoopHarnessCompiler } from '../../src/harness/builder.js'
+import { renderTrajectoryResult } from '../../src/notebook/tool.js'
 import { RefineStateStore } from '../../src/state/store.js'
 import type {
   HitchEvaluationEvidence,
@@ -704,6 +705,133 @@ describe('RefineCapabilities Git projection', () => {
       expect(resultOnly.runs[0]!.verifier.detailRef).toMatch(/^detail_/u)
       expect(resultOnly.runs[0]!.verifier).not.toHaveProperty('needsDetail')
       expect(receipts()).toHaveLength(2)
+    },
+  )
+
+  it.each(['process', 'feedback'] as const)(
+    'bounds structured %s cards while preserving complete paged evidence and diagnosis requirements',
+    async channel => {
+      const round = roundFixture({ roundId: 'round-bounded-structured', status: 'candidate-editing', heldOutRef: 'held-out-secret' })
+      const baseline = evidenceFixture(round.plan.seed, round.targetHarnessRef, 0)
+      round.baseline = baseline
+      const runId = baseline.trials[0]!.runId!
+      const longFeedback = `feedback start top-secret held-out-secret ${'反馈🙂'.repeat(23_040)} feedback tail`
+      const longExplanation = `process start top-secret held-out-secret ${'过程🙂'.repeat(6_000)} process tail`
+      const trajectoryRefs = Array.from({ length: 100 }, (_, seq) => ({ runId, seqStart: seq, seqEnd: seq }))
+      const verifier: HitchVerifierEvidence = { runId, verifier: {
+        status: 'complete',
+        scores: { totalScore: 0, ...(channel === 'process' ? { processScore: 0 } : {}), normalization: 'standard' },
+        ...(channel === 'process' ? { process: {
+          schemaVersion: 1, metric: `assertions-${'\u0000'.repeat(500)}`, score: 0,
+          detailStatus: 'components', passed: 0, total: 20, excluded: 0,
+          components: Array.from({ length: 20 }, (_, index) => ({
+            id: index === 0 ? 'step-0' : `step-${index}-${'\u0000'.repeat(500)}`,
+            category: `assertion-${'\u0000'.repeat(500)}`, status: 'failed' as const, weight: 1,
+            code: index === 1 ? 'missing-output-\u0000'.repeat(2_000) : 'missing-output',
+            publicDetails: index === 0 ? {
+              explanation: longExplanation,
+              nested: { api_key: 'nested-credential', heldOutAnswer: 'hidden-answer', partitionRef: 'hidden-partition' },
+            } : { note: `component detail ${index}` },
+            privateDetailsRef: `private-only/step-${index}.json`, trajectoryRefs,
+          })),
+        } as const } : { feedback: {
+          schemaVersion: 1,
+          items: Array.from({ length: 20 }, (_, index) => ({
+            code: index === 1 ? 'repair-\u0000'.repeat(2_000) : `repair-${index}`, severity: 'error' as const,
+            message: index === 0 ? longFeedback : `feedback item ${index} ${'\u0000'.repeat(1_000)}`,
+            trajectoryRefs,
+          })),
+        } as const }),
+        // A short legacy failure must not satisfy diagnosis when structured
+        // evidence has been omitted from the same card.
+        diagnostics: { ctrf: { json: { results: {
+          summary: { passed: 0, failed: 1, skipped: 0 },
+          tests: [{ name: 'legacy assertion', status: 'failed', message: 'Legacy failure clue.' }],
+        } } } },
+      } }
+      expect(Buffer.byteLength(longFeedback)).toBeGreaterThan(225 * 1024)
+      const accesses: Array<{ diagnosisReceipts?: unknown[] }> = []
+      const receipts = () => accesses.flatMap(access => access.diagnosisReceipts ?? [])
+      const meta = {
+        recordEvidenceAccess: (_roundId: string, _sessionId: string, access: typeof accesses[number]) => { accesses.push(access) },
+        proposalEvidenceAudit: () => ({ summaryAccessed: true, accessedRefs: [baseline.evalId], diagnosedRunRefs: [],
+          citedRefs: [], diagnosisReceipts: receipts() }),
+      }
+      const service = { activeEntryForSession: () => ({ evolutionId: round.evolutionId, roundId: round.roundId,
+        parentHarnessRef: round.targetHarnessRef, workspace: {}, baseline, meta,
+        store: { listRounds: async () => [round] } }) }
+      const inspectTrajectoryEvents = vi.fn(async () => { throw new Error('structured details must not fetch trajectory events') })
+      const capabilities = new RefineCapabilities(service as never, {} as HarnessBuilder, {
+        trajectoryReader: {
+          inspectCapabilities: async () => ({ schemaVersion: 1, trajectoryAnalysis: 1, trajectoryEventsPage: 1 }),
+          inspectTrajectoryAnalysis: async () => trajectoryAnalysis(runId, [
+            { type: 'user/message', data: { role: 'user', content: [{ type: 'text', text: 'task prompt' }] } },
+            { type: 'assistant/message', data: { message: { role: 'assistant', content: [{ type: 'text', text: 'candidate answer' }] } } },
+          ]),
+          inspectTrajectoryEvents,
+          inspectVerifierEvidence: async () => verifier,
+        },
+        secretValues: ['top-secret'], maxTrajectoryPageBytes: 4096,
+      })
+      const result = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [runId] })
+      const card = (result as unknown as { runs: MetaFailureCard[] }).runs[0]!
+      const preview = card.verifier[channel]!
+      expect(preview).toMatchObject({ truncated: true })
+      expect(Buffer.byteLength(JSON.stringify(preview))).toBeLessThanOrEqual(8_000)
+      expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(10_000)
+      expect(card.verifier).toMatchObject({
+        scores: { totalScore: 0, ...(channel === 'process' ? { processScore: 0 } : {}), normalization: 'standard' },
+        failures: [{ name: 'legacy assertion', detail: { text: 'Legacy failure clue.' } }],
+        needsDetail: true, detailRef: expect.stringMatching(/^detail_[a-f0-9]+$/u),
+      })
+      if (channel === 'process') {
+        expect(card.verifier.process).toMatchObject({ score: 0, passed: 0, total: 20, excluded: 0 })
+        const components = card.verifier.process!.components!
+        expect(components.length).toBeGreaterThan(0)
+        expect(components.length).toBeLessThanOrEqual(5)
+        expect(components[0]).not.toHaveProperty('publicDetails')
+        expect(components[0]).toHaveProperty('publicDetailsPreview', expect.stringContaining('process start'))
+      } else {
+        expect(card.verifier.feedback!.items.length).toBeGreaterThan(0)
+        expect(card.verifier.feedback!.items.length).toBeLessThanOrEqual(5)
+      }
+      const rendered = renderTrajectoryResult(result as Parameters<typeof renderTrajectoryResult>[0])
+      expect(Buffer.byteLength(rendered)).toBeLessThan(10_000)
+      expect(rendered).toMatch(/preview|truncated|omitted/iu)
+      expect(rendered).toContain(`[required verifier details: ${card.verifier.detailRef!}]`)
+      expect(rendered).not.toContain(channel === 'process' ? 'process tail' : 'feedback tail')
+      expect(receipts()).toHaveLength(0)
+
+      const ref = card.verifier.detailRef!
+      const tail = channel === 'process' ? 'process tail' : 'feedback tail'
+      const found = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { detailRef: ref, find: tail })
+      expect(found).toMatchObject({ detail: { matches: [expect.stringContaining(tail)] } })
+      expect(receipts()).toHaveLength(0)
+      const pages: string[] = []
+      let nextRef: string | undefined = ref
+      while (nextRef !== undefined) {
+        const page = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { detailRef: nextRef }) as {
+          detail: { text: string; complete: boolean }; nextRef?: string
+        }
+        expect(Buffer.byteLength(page.detail.text)).toBeLessThanOrEqual(4096)
+        pages.push(page.detail.text)
+        expect(page.detail.complete).toBe(page.nextRef === undefined)
+        nextRef = page.nextRef
+        if (nextRef !== undefined) expect(receipts()).toHaveLength(0)
+      }
+      expect(pages.length).toBeGreaterThan(1)
+      const detail = pages.join('')
+      expect(detail).toContain(channel === 'process'
+        ? longExplanation.replace('top-secret', '[REDACTED]').replace('held-out-secret', '[REDACTED_HELD_OUT]')
+        : longFeedback.replace('top-secret', '[REDACTED]').replace('held-out-secret', '[REDACTED_HELD_OUT]'))
+      expect(detail).toContain(channel === 'process' ? 'component detail 19' : 'feedback item 19')
+      expect(detail).toContain('"seqStart": 99')
+      expect(detail).toContain('Legacy failure clue.')
+      for (const visible of [JSON.stringify(result), rendered, detail, JSON.stringify(found)]) {
+        expect(visible).not.toMatch(/top-secret|held-out-secret|privateDetailsRef|private-only|nested-credential|heldOutAnswer|hidden-answer|partitionRef|hidden-partition/u)
+      }
+      expect(receipts()).toHaveLength(1)
+      expect(inspectTrajectoryEvents).not.toHaveBeenCalled()
     },
   )
 

@@ -6,6 +6,7 @@ import type { RefineService } from './refine/service.js'
 import { projectTrajectory } from './evaluator/trajectory-projection.js'
 import { digestJson } from './state/digest.js'
 import { finalizationReadiness, recoveryRequired } from './refine/finalization-readiness.js'
+import { previewVerifierFeedback, previewVerifierProcess } from './meta/verifier-preview.js'
 import type {
   CandidateFinalization,
   ContentExcerpt,
@@ -801,7 +802,7 @@ export class RefineCapabilities {
     detailBytes: number,
   ): MetaFailureCard['verifier'] {
     const status = evidence.verifier.status === 'corrupt' ? 'unavailable' : evidence.verifier.status
-    const process = evidence.verifier.process === undefined ? undefined : {
+    const process = evidence.verifier.process === undefined ? undefined : publicJson(this.sanitize({
       schemaVersion: evidence.verifier.process.schemaVersion,
       metric: evidence.verifier.process.metric,
       score: evidence.verifier.process.score,
@@ -820,7 +821,12 @@ export class RefineCapabilities {
           ...(component.trajectoryRefs === undefined ? {} : { trajectoryRefs: component.trajectoryRefs }),
         })),
       }),
-    }
+    }, heldOutRef)) as unknown as NonNullable<HitchVerifierEvidence['verifier']['process']>
+    // Redact before clipping so a preview cannot split and expose a secret.
+    const feedback = evidence.verifier.feedback === undefined ? undefined
+      : publicJson(this.sanitize(evidence.verifier.feedback, heldOutRef)) as unknown as NonNullable<HitchVerifierEvidence['verifier']['feedback']>
+    const processPreview = process === undefined ? undefined : previewVerifierProcess(process)
+    const feedbackPreview = feedback === undefined ? undefined : previewVerifierFeedback(feedback)
     const safeDiagnostics = evidence.verifier.diagnostics === undefined
       ? undefined
       : this.sanitize(evidence.verifier.diagnostics, heldOutRef)
@@ -853,7 +859,7 @@ export class RefineCapabilities {
     for (const [label, value] of [
       ['SCORES', evidence.verifier.scores],
       ['PROCESS', process],
-      ['FEEDBACK', evidence.verifier.feedback],
+      ['FEEDBACK', feedback],
     ] as const) {
       if (value !== undefined) {
         // Detail refs cache serialized text, so apply the same public-field
@@ -885,13 +891,14 @@ export class RefineCapabilities {
       detailChunks.push(`RETRY HISTORY\n${JSON.stringify(diagnostics.retry_history, null, 2)}`)
     }
     const diagnosticsText = detailChunks.length === 0 ? undefined : detailChunks.join('\n\n')
-    const needsDetail = status === 'complete' && failedTests.length === 0 && diagnosticsText !== undefined
+    const needsDetail = status === 'complete' && diagnosticsText !== undefined
+      && (failedTests.length === 0 || processPreview?.truncated === true || feedbackPreview?.truncated === true)
     return {
       status,
       summary: boundedUtf8(this.sanitize(summaryText, heldOutRef) as string, 600),
       ...(evidence.verifier.scores === undefined ? {} : { scores: evidence.verifier.scores }),
-      ...(process === undefined ? {} : { process }),
-      ...(evidence.verifier.feedback === undefined ? {} : { feedback: evidence.verifier.feedback }),
+      ...(processPreview === undefined ? {} : { process: processPreview }),
+      ...(feedbackPreview === undefined ? {} : { feedback: feedbackPreview }),
       ...(failedTests.length === 0 ? {} : { failures: failedTests }),
       ...(diagnosticsText === undefined ? {} : {
         detailRef: this.inlineDetailRef(
