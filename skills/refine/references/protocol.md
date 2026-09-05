@@ -14,9 +14,19 @@ Use DSH's native bridge when the `refine_request` tool is available:
 {"method":"control.status","params":{}}
 ```
 
-The tool binds the current DSH agent session as `clientId` and supplies the
-sealed DSH runtime and packaged-skill identity on `meta.claim`. Do not add or
-copy those two fields when using this transport.
+The tool verifies a native load of the packaged skill in the current session,
+checks the current scope's skill selection and configured model/sampling, then
+binds the DSH session as `clientId` and supplies the configured identity on
+`meta.claim`. Do not add or copy those fields. An omitted Gear `maxTokens`
+accepts DSH's marked adapter default, not an unrelated explicit cap.
+
+The packaged skill digest covers the entire directory, including references
+and invocation metadata. Use `gear-refine skill-identity --path <skill-directory>`
+to compute it for external clients; a hash of `SKILL.md` alone is insufficient.
+After compaction removes the load record, reload the skill before retrying.
+Code Mode must complete its skill-loading call before a separate Refine call.
+This is skill-load verification, not attestation of the host's full composition
+or a grant/restriction of its filesystem permissions.
 
 For Codex, Claude Code, and other shell-capable Meta harnesses, send one request
 at a time through the CLI:

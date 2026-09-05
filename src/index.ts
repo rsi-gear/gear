@@ -287,7 +287,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       preset = {
         id: skill.name,
         digest: skill.digest,
-        resources: [{ logicalPath: 'SKILL.md', kind: 'skill', digest: skill.digest }],
+        resources: skill.resources,
       }
     } else {
       for (const [name, value] of Object.entries({
@@ -308,6 +308,13 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
         id: config.metaAdapter.harnessId!,
         digest: config.metaAdapter.harnessDigest!,
         resources: [{ logicalPath: 'SKILL.md', kind: 'skill', digest: config.metaAdapter.harnessDigest! }],
+      }
+      if (runtime.type === 'dsh') {
+        const skill = await loadBundledRefineSkill()
+        if (preset.id !== skill.name || preset.digest !== skill.digest) {
+          throw new Error('DSH skill mode must use the packaged refine skill identity')
+        }
+        preset.resources = skill.resources
       }
     }
     metaAgent = {
@@ -477,6 +484,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       if (spec.metaAgent.runtime.type !== 'dsh') throw new Error('evolution requires a different Meta harness adapter')
       const currentPreset = await ctx.agentPresets.resolve(spec.metaAgent.preset.id)
       await assertMetaPresetIsolation(currentPreset, [config.dshRepository])
+      await assertMetaPresetComposesCapabilities(currentPreset)
       const currentIdentity = await resolveDshPresetRef(currentPreset)
       if (currentIdentity.digest !== spec.metaAgent.preset.digest) {
         throw new Error('Meta preset content changed; evolution cannot continue')
@@ -489,6 +497,10 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       }
     } else if (!compatibleSkillMetaAgent(spec.metaAgent, metaAgent)) {
       throw new Error('skill Meta harness identity changed; evolution cannot continue')
+    }
+    if (config.metaAdapter.kind === 'skill' && metaAgent.runtime.type === 'dsh'
+      && (await loadBundledRefineSkill()).digest !== spec.metaAgent.preset.digest) {
+      throw new Error('packaged refine skill changed; evolution cannot continue')
     }
     if (spec.selection.assessor.id === 'llm-verifier') {
       const assessorConfig = spec.selection.assessor.config as LlmVerifierAssessorConfig

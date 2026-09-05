@@ -134,6 +134,11 @@ else process.exitCode = 2
     expect(context.refine.options.rollout.seeds).toBeUndefined()
     expect(context.refine.options.metaAgent.runtime.type).toBe('dsh')
     expect(context.refine.options.metaAgent.preset.id).toBe('refine')
+    expect(context.refine.options.metaAgent.preset.resources.map(value => value.logicalPath)).toEqual([
+      'SKILL.md', 'agents/openai.yaml', 'references/dsh-target-harness.md',
+      'references/protocol.md', 'references/target-harness-editing.md',
+    ])
+    expect(context.refine.options.metaAgent.preset.digest).not.toBe(context.refine.options.metaAgent.preset.resources[0]?.digest)
     expect(commands).toEqual([])
     expect(tools).toContainEqual(expect.objectContaining({ name: 'refine_request' }))
     expect(skillProvider).toBeDefined()

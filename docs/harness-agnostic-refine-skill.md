@@ -53,25 +53,32 @@ Skill mode 必须在启动前固定：
 
 - runtime type，例如 `codex`、`claude-code` 或 `dsh`；
 - runtime version 与 runtime artifact SHA-256；
-- harness/skill id 与 `SKILL.md` SHA-256；
+- harness/skill id 与整个 skill 目录的资源清单 SHA-256（包括 references 和调用元数据）；
 - provider、model 和 sampling。新配置省略 `maxTokens`，避免由 Gear 额外限制
   Meta 回合；旧 evolution 中已封存的值仍属于 identity。
 
 DSH plugin 中若未填写任何 identity 字段，Gear 会从当前 DSH runtime 和包内
-`skills/refine/SKILL.md` 自动派生并封存 identity；`refine_request` 还会校验
-当前 DSH request 的 provider、model、`maxTokens` 和 temperature 与配置一致。Standalone 或
+`skills/refine` 完整目录自动派生并封存 identity；`refine_request` 还会校验
+当前作用域选中的随包 skill、会话中的原生加载记录，以及 request 的 provider、model
+和 temperature。显式配置的 `maxTokens` 必须一致；省略时允许 DSH 标记的 adapter 默认值，
+不接受其他显式上限。Standalone 或
 外部 Meta harness 必须显式提供全部 identity 字段。
 
 显式配置时，`metaAdapter.runtimeIntegrity` 与 `metaAdapter.harnessDigest` 使用
-`sha256:<64 lowercase hex>`。例如计算当前 skill 文件：
+`sha256:<64 lowercase hex>`。计算当前 skill bundle：
 
 ```bash
-shasum -a 256 skills/refine/SKILL.md
+gear-refine skill-identity --path /absolute/path/to/skills/refine
 ```
 
-在配置和 `meta.claim` identity 中使用同一个带 `sha256:` 前缀的值。Gear
+输出包含 `id`、`digest` 和每个资源的 `logicalPath`/`kind`/`digest`。
+资源按相对路径排序；总指纹是该 JSON 资源数组的 SHA-256，不含绝对安装路径。
+在配置和 `meta.claim` identity 中使用同一个带 `sha256:` 前缀的 `digest` 值。Gear
 会把这些字段写入 immutable `EvolutionSpec`；claim、continue 和恢复时不匹配
 都会 fail closed。
+
+旧版仅封存 `SKILL.md` 的 evolution 不会自动迁移到新指纹；升级后应创建新 evolution，
+不要修改旧实验 identity。Native bridge 会拒绝启动后发生的 bundle 内容变化。
 
 ## 4. Standalone 配置
 
@@ -204,7 +211,10 @@ Gear 的 DSH carrier，还必须读取
 - Skill claim 返回 baseline summary 和 seed refs；每个 failed baseline run 必须
   调用 trajectory query 后才能 finalize。
 
-External Meta harness 本身的 OS 权限由其宿主负责。Gear 不向它授予 candidate
+Skill 模式的 Meta harness（包括当前会话中的 native DSH）本身的 OS 权限由其宿主负责。
+原生加载记录验证只证明该 session 加载过随包 skill，并不证明其他 persona、历史、
+工具或权限未变化；socket 客户端的 identity 仍是受信本地客户端的声明，不是远程证明。
+Gear 不向它授予 candidate
 worktree、state root 或 credential 的 host path；部署仍应让 Codex、Claude Code
 或其他宿主运行在与其职责匹配的 filesystem/network sandbox 中。
 
@@ -215,6 +225,9 @@ worktree、state root 或 credential 的 host path；部署仍应让 Codex、Cla
 标准的 skill 注入路径。该 skill 优先使用 `refine_request`，由当前 DSH session
 直接领取和完成 assignment；socket 同时保留给 Codex、Claude Code 或另一
 兼容 harness。
+
+若压缩历史移除了 skill 加载记录，需通过原生 skill 工具重新加载；Code Mode 中先
+完成加载调用，再单独调用 `refine_request`。用户粘贴的 skill 文本不能替代原生加载记录。
 
 只有显式设置 `metaAdapter.kind: "dsh"` 时，Gear 才创建 `DshMetaAgentHost` 并
 注册旧 `/refine` command。该兼容模式要求 `metaPreset`，保留 DSH session event

@@ -204,11 +204,15 @@ the experiment state machine.
 | `PromotionPolicy` | Decide whether the finalist replaces the champion | Paired seed/held-out gate |
 
 The Meta Agent runtime, model, skill/preset, sampling, and content digests are
-part of the experiment identity. Skill mode seals the harness and `SKILL.md`
-identity; the DSH plugin derives both from its runtime and packaged skill.
+part of the experiment identity. Skill mode seals the configured harness and
+skill-bundle identity, including references and invocation metadata; the DSH
+plugin derives these from its runtime and packaged skill. Its native bridge
+also verifies the loaded skill and current model settings, but does not attest
+or restrict the rest of the host session's tools, history, or OS permissions.
 Legacy Native DSH mode instead resolves identity from a configured DSH preset.
 Changing either creates a different evolution rather than silently altering an
-existing one.
+existing one. Bundles sealed with the old `SKILL.md`-only digest require a new
+evolution after upgrading; Gear does not rewrite existing experiment identities.
 
 Algorithm plugins cannot bypass Gear's reproducibility and safety core:
 

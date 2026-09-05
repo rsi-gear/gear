@@ -119,12 +119,14 @@ filesystem provider 和 model-facing skill loader。
 DSH 会把它当作原生 skill gesture，将完整 `SKILL.md` 注入当前 agent；skill 再用
 `refine_request` 调用与 Codex/Claude Code socket client 相同的 Gear gateway。
 该工具把 lease 绑定到当前 DSH session，自动提供 runtime 和 packaged-skill
-identity，并在每次调用前确认当前 request 的 provider、model、`maxTokens` 和
-temperature 与 Meta 配置一致。
+identity；每次调用前确认当前 scope 仍选中随包 skill、会话保留原生 skill 加载记录，
+并校验 provider、model 和 temperature。显式 `maxTokens` 必须一致；省略时允许
+DSH 标记的 adapter 默认值。压缩移除加载记录后需重新加载 skill。
+这不隔离或证明当前会话的其他工具、历史或 OS 权限，宿主仍负责这些边界。
 
 若不填写 `runtimeType`、`runtimeVersion`、`runtimeIntegrity`、`harnessId`、
 `harnessDigest` 中的任何一项，插件会从当前 DSH runtime 和包内 skill 自动派生
-整组 identity。若 Meta 来自外部 Codex、Claude Code 或另一 Harness，则必须
+整组 identity，包括完整 skill 目录中各资源的指纹。若 Meta 来自外部 Codex、Claude Code 或另一 Harness，则必须
 显式填写完整 identity，并按
 [Harness-neutral Refine Skill 与独立控制面](harness-agnostic-refine-skill.md)
 连接 socket。
@@ -137,6 +139,10 @@ temperature 与 Meta 配置一致。
 
 以下 preset 配置只适用于显式 `metaAdapter.kind: dsh`。这个旧模式由 Gear 创建
 专用 DSH Meta session，并注册 host `/refine` command；新部署优先使用 4.1。
+
+兼容模式检查静态 YAML/JSON include 图及其 patches，禁止实际启用的
+`@deepseek-ai/dsh-persona` 使用 `complete: true`。无法静态核验的 `!!js` 表达式或
+可执行 include 会被拒绝；需要改为字面配置后再使用该模式。
 
 插件不会从 candidate harness 加载 Meta Agent 的 persona。部署方必须在 DSH home 的用户 preset 根目录中创建独立的 `refine-meta` preset：
 

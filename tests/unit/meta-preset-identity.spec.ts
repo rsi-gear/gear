@@ -8,6 +8,23 @@ const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 
 describe('resolved DSH preset identity', () => {
+  it('hashes documents reached through external nested includes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'refine-preset-includes-'))
+    roots.push(root)
+    await mkdir(join(root, 'preset'))
+    await mkdir(join(root, 'external'))
+    const path = join(root, 'preset/agent.cordis.yml')
+    await writeFile(path, '- name: cordis:include\n  config:\n    path: ../external/entry.json\n')
+    await writeFile(join(root, 'external/entry.json'), JSON.stringify([{ name: 'docs', config: { path: './guide.md' } }]))
+    await writeFile(join(root, 'external/guide.md'), 'one')
+    const preset = { id: 'meta', trust: 'system' as const, path }
+    const before = await resolveDshPresetRef(preset)
+    await writeFile(join(root, 'external/guide.md'), 'two')
+    const after = await resolveDshPresetRef(preset)
+    expect(after.digest).not.toBe(before.digest)
+    expect(after.resources.some(value => value.logicalPath.endsWith('guide.md'))).toBe(true)
+  })
+
   it('derives the DSH runtime identity from installed package bytes', async () => {
     await expect(resolveDshRuntimeIdentity()).resolves.toMatchObject({
       type: 'dsh', version: expect.any(String), integrity: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),

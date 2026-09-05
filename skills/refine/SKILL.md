@@ -12,9 +12,14 @@ Agent runs separately through the rollout provider configured in Gear.
 ## Connect
 
 Use the native `refine_request` tool when it is available. It carries the same
-protocol as the CLI and binds the current DSH session's client and immutable
-runtime/skill identity; pass only the method and its ordinary parameters, with
-no `clientId` or `identity`.
+protocol as the CLI and binds the current DSH session's client and configured
+runtime/skill identity after verifying the packaged skill was loaded; pass only
+the method and its ordinary parameters, with no `clientId` or `identity`.
+If the bridge reports missing instructions (for example after compaction),
+reload `refine` with DSH's native skill tool before retrying. In Code Mode,
+finish the skill-loading call before making a separate Refine request.
+This does not change or attest the host session's other tools, history, or OS
+permissions; those remain the host's responsibility.
 
 Otherwise require all of the following before starting or claiming work:
 
