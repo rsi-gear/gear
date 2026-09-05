@@ -312,6 +312,23 @@ export interface HitchTrajectoryRequestBoundary {
   requestHeaderSeq?: number
 }
 
+export type TrajectoryPartialEvidence<TContent> = {
+  status: 'incomplete'
+  sourceSeqCount: number
+} & ({
+  content: TContent
+  streams?: never
+} | {
+  content?: never
+  streams: Array<{
+    blockIndex: number
+    blockStartSeq: number
+    kind: 'text' | 'reasoning' | 'tool_arguments'
+    content: TContent
+    sourceSeqCount: number
+  }>
+})
+
 export interface HitchTrajectoryChunkSummary {
   turn: number
   step: number
@@ -325,11 +342,7 @@ export interface HitchTrajectoryChunkSummary {
   modelBoundarySeq: number
   usage?: JsonValue
   finishReason?: JsonValue
-  partial?: {
-    status: 'incomplete'
-    content: HitchTrajectoryContentExcerpt
-    sourceSeqCount: number
-  }
+  partial?: TrajectoryPartialEvidence<HitchTrajectoryContentExcerpt>
 }
 
 export interface HitchTrajectoryAnalysis {
@@ -523,11 +536,7 @@ export interface TrajectoryModelRequestEvidence {
   chunkTypes: Record<string, number>
   usage?: JsonValue
   finishReason?: JsonValue
-  partial?: {
-    status: 'incomplete'
-    content: ContentExcerpt
-    sourceSeqCount: number
-  }
+  partial?: TrajectoryPartialEvidence<ContentExcerpt>
 }
 
 export interface TrajectorySemanticStep {

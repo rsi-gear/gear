@@ -568,12 +568,46 @@ function chunkSummary(value: unknown, index: number, runId: string, eventCount: 
   let partial: HitchTrajectoryChunkSummary['partial']
   if (summary.partial !== undefined) {
     const raw = record(summary.partial, `${label}.partial`)
-    exactFields(raw, ['status', 'content', 'source_seq_count'], `${label}.partial`)
+    exactFields(raw, ['status', 'content', 'streams', 'source_seq_count'], `${label}.partial`)
     if (raw.status !== 'incomplete') throw new HitchEvaluationError(`${label}.partial.status is invalid`, 'invalid_hitch_result')
-    partial = {
-      status: 'incomplete',
-      content: hitchContentExcerpt(raw.content, `${label}.partial.content`, runId),
-      sourceSeqCount: integer(raw.source_seq_count, `${label}.partial.source_seq_count`),
+    if ((raw.content === undefined) === (raw.streams === undefined)) {
+      throw new HitchEvaluationError(`${label}.partial requires exactly one of content or streams`, 'invalid_hitch_result')
+    }
+    const sourceSeqCount = integer(raw.source_seq_count, `${label}.partial.source_seq_count`)
+    if (raw.streams === undefined) {
+      partial = {
+        status: 'incomplete',
+        content: hitchContentExcerpt(raw.content, `${label}.partial.content`, runId),
+        sourceSeqCount,
+      }
+    } else {
+      if (!Array.isArray(raw.streams) || raw.streams.length < 2) {
+        throw new HitchEvaluationError(`${label}.partial.streams requires at least two streams`, 'invalid_hitch_result')
+      }
+      const streams = raw.streams.map((item, streamIndex) => {
+        const streamLabel = `${label}.partial.streams[${streamIndex}]`
+        const stream = record(item, streamLabel)
+        exactFields(stream, ['block_index', 'block_start_seq', 'kind', 'content', 'source_seq_count'], streamLabel)
+        const blockIndex = integer(stream.block_index, `${streamLabel}.block_index`)
+        const blockStartSeq = integer(stream.block_start_seq, `${streamLabel}.block_start_seq`)
+        if (stream.kind !== 'text' && stream.kind !== 'reasoning' && stream.kind !== 'tool_arguments') {
+          throw new HitchEvaluationError(`${streamLabel}.kind is invalid`, 'invalid_hitch_result')
+        }
+        const content = hitchContentExcerpt(stream.content, `${streamLabel}.content`, runId)
+        if (blockStartSeq < firstSeq || blockStartSeq > lastSeq
+          || content.source.seq !== blockStartSeq || content.source.field !== 'data.chunk.delta') {
+          throw new HitchEvaluationError(`${streamLabel} has an inconsistent source`, 'invalid_hitch_result')
+        }
+        return {
+          blockIndex, blockStartSeq, kind: stream.kind as 'text' | 'reasoning' | 'tool_arguments', content,
+          sourceSeqCount: integer(stream.source_seq_count, `${streamLabel}.source_seq_count`),
+        }
+      })
+      if (streams.some((stream, streamIndex) => streamIndex > 0 && streams[streamIndex - 1]!.blockStartSeq >= stream.blockStartSeq)
+        || streams.reduce((total, stream) => total + stream.sourceSeqCount, 0) !== sourceSeqCount) {
+        throw new HitchEvaluationError(`${label}.partial.streams has inconsistent order or source counts`, 'invalid_hitch_result')
+      }
+      partial = { status: 'incomplete', streams, sourceSeqCount }
     }
   }
   const usage = summary.usage === undefined ? undefined : projectedJsonValue(summary.usage, `${label}.usage`)

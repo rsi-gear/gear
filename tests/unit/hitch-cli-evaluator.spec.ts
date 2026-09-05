@@ -63,7 +63,7 @@ function trajectoryAnalysisPayload(runId: string, sessionId: string): unknown {
   }
 }
 
-function partialTrajectoryAnalysisPayload(runId: string): unknown {
+function partialTrajectoryAnalysisPayload(runId: string) {
   return {
     schema_version: '1', kind: 'trajectory-analysis', run_id: runId,
     source: {
@@ -96,6 +96,33 @@ function partialTrajectoryAnalysisPayload(runId: string): unknown {
     }],
     omitted_event_types: { 'assistant/chunk': 1 },
     coverage: { surface: 'complete', chunks: 'partial', content: 'complete', child_sessions: 'unavailable' },
+  }
+}
+
+function multiStreamTrajectoryAnalysisPayload(runId: string) {
+  const payload = partialTrajectoryAnalysisPayload(runId)
+  // Reduced from the real AutomationBench timeout: one unfinished request
+  // contains reasoning and two independently addressed tool argument streams.
+  const streams = [
+    { block_index: 0, block_start_seq: 1, kind: 'reasoning', text: 'Checking the contact', source_seq_count: 2 },
+    { block_index: 1, block_start_seq: 4, kind: 'tool_arguments', text: '{"contact_id":7}', source_seq_count: 1 },
+    { block_index: 2, block_start_seq: 6, kind: 'tool_arguments', text: '{"phone":"123', source_seq_count: 2 },
+  ].map(({ text, ...stream }) => ({
+    ...stream,
+    content: {
+      preview: text, bytes: Buffer.byteLength(text), sha256: `sha256:${'d'.repeat(64)}`, truncated: false,
+      source: { run_id: runId, seq: stream.block_start_seq, field: 'data.chunk.delta' },
+    },
+  }))
+  return {
+    ...payload,
+    source: { ...payload.source, event_count: 9, event_types: { 'user/message': 1, 'assistant/chunk': 8 } },
+    chunk_summaries: [{
+      turn: 1, step: 1, attempt: 0, first_seq: 1, last_seq: 8, count: 8,
+      types: { 'block-start': 3, 'reasoning-delta': 2, 'tool-call-delta': 3 }, model_boundary_seq: 1,
+      partial: { status: 'incomplete', streams, source_seq_count: 5 },
+    }],
+    omitted_event_types: { 'assistant/chunk': 8 },
   }
 }
 
@@ -976,6 +1003,87 @@ process.stdout.write(${JSON.stringify(JSON.stringify(payload) + '\n')})
         },
       }],
     })
+  })
+
+  it('reads independent unfinished streams from a timed-out model request', async () => {
+    const { evaluator } = await setup()
+    const runId = `run_${'6'.repeat(32)}`
+    const payload = multiStreamTrajectoryAnalysisPayload(runId)
+    await writeFile(evaluator.options.executable, `#!/usr/bin/env node
+process.stdout.write(${JSON.stringify(JSON.stringify(payload) + '\n')})
+`)
+    const analysis = await evaluator.inspectTrajectoryAnalysis(runId, new AbortController().signal)
+    const partial = analysis.chunkSummaries[0]!.partial!
+    expect(partial.content).toBeUndefined()
+    expect(partial).toMatchObject({
+      status: 'incomplete', sourceSeqCount: 5,
+      streams: [
+        { blockIndex: 0, blockStartSeq: 1, kind: 'reasoning', sourceSeqCount: 2,
+          content: { preview: 'Checking the contact', source: { runId, seq: 1, field: 'data.chunk.delta' } } },
+        { blockIndex: 1, blockStartSeq: 4, kind: 'tool_arguments', sourceSeqCount: 1,
+          content: { preview: '{"contact_id":7}', source: { runId, seq: 4, field: 'data.chunk.delta' } } },
+        { blockIndex: 2, blockStartSeq: 6, kind: 'tool_arguments', sourceSeqCount: 2,
+          content: { preview: '{"phone":"123', source: { runId, seq: 6, field: 'data.chunk.delta' } } },
+      ],
+    })
+    expect(analysis.coverage).toMatchObject({ surface: 'complete', chunks: 'partial', content: 'complete' })
+  })
+
+  it.each(['content', 'streams'] as const)('accepts multiple source fragments per chunk in partial %s', async representation => {
+    const { evaluator } = await setup()
+    const runId = `run_${'6'.repeat(32)}`
+    // Hitch counts text and argumentsDelta independently when a tool-call
+    // delta contains both. Source fragments can outnumber chunk events.
+    const streams = multiStreamTrajectoryAnalysisPayload(runId).chunk_summaries[0]!.partial.streams.slice(0, 2)
+      .map(stream => ({ ...stream, kind: 'tool_arguments', source_seq_count: 4 }))
+    const count = representation === 'content' ? 4 : 6
+    const sourceCount = representation === 'content' ? 6 : 8
+    const base = partialTrajectoryAnalysisPayload(runId)
+    const payload = {
+      ...base,
+      source: { ...base.source, event_count: count + 1, event_types: { 'user/message': 1, 'assistant/chunk': count } },
+      chunk_summaries: [{
+        turn: 1, step: 1, attempt: 0, first_seq: 1, last_seq: count, count, model_boundary_seq: 1,
+        types: { 'block-start': count - sourceCount / 2, 'tool-call-delta': sourceCount / 2 },
+        partial: { status: 'incomplete', source_seq_count: sourceCount,
+          ...(representation === 'content' ? { content: base.chunk_summaries[0]!.partial.content } : { streams }) },
+      }],
+      omitted_event_types: { 'assistant/chunk': count },
+    }
+    await writeFile(evaluator.options.executable, `#!/usr/bin/env node
+process.stdout.write(${JSON.stringify(JSON.stringify(payload) + '\n')})
+`)
+    const analysis = await evaluator.inspectTrajectoryAnalysis(runId, new AbortController().signal)
+    expect(analysis.chunkSummaries[0]!.partial!.sourceSeqCount).toBe(sourceCount)
+    expect(analysis.chunkSummaries[0]!.partial!.streams?.length).toBe(representation === 'content' ? undefined : 2)
+  })
+
+  it.each([
+    ['both representations', (partial: ReturnType<typeof multiStreamTrajectoryAnalysisPayload>['chunk_summaries'][number]['partial']) => { Object.assign(partial, { content: partial.streams[0]!.content }) }],
+    ['neither representation', (partial) => { Reflect.deleteProperty(partial, 'streams') }],
+    ['only one stream', (partial) => { partial.streams.splice(1) }],
+    ['unknown stream field', (partial) => { Object.assign(partial.streams[0]!, { unrecognized: true }) }],
+    ['unknown partial field', (partial) => { Object.assign(partial, { unrecognized: true }) }],
+    ['negative block index', (partial) => { partial.streams[0]!.block_index = -1 }],
+    ['unknown stream kind', (partial) => { partial.streams[0]!.kind = 'audio' }],
+    ['foreign run', (partial) => { partial.streams[0]!.content.source.run_id = `run_${'7'.repeat(32)}` }],
+    ['mismatched source sequence', (partial) => { partial.streams[0]!.content.source.seq = 2 }],
+    ['out-of-range block sequence', (partial) => { partial.streams[2]!.block_start_seq = 9; partial.streams[2]!.content.source.seq = 9 }],
+    ['wrong source field', (partial) => { partial.streams[0]!.content.source.field = 'data.other' }],
+    ['inconsistent total source count', (partial) => { partial.source_seq_count = 4 }],
+    ['negative source count', (partial) => { partial.streams[0]!.source_seq_count = -1 }],
+    ['unordered streams', (partial) => { partial.streams.reverse() }],
+    ['duplicate stream source', (partial) => { partial.streams[1]!.block_start_seq = 1; partial.streams[1]!.content.source.seq = 1 }],
+  ] satisfies Array<[string, (partial: ReturnType<typeof multiStreamTrajectoryAnalysisPayload>['chunk_summaries'][number]['partial']) => void]>)('rejects malformed unfinished streams: %s', async (_name, corrupt) => {
+    const { evaluator } = await setup()
+    const runId = `run_${'6'.repeat(32)}`
+    const payload = multiStreamTrajectoryAnalysisPayload(runId)
+    corrupt(payload.chunk_summaries[0]!.partial)
+    await writeFile(evaluator.options.executable, `#!/usr/bin/env node
+process.stdout.write(${JSON.stringify(JSON.stringify(payload) + '\n')})
+`)
+    await expect(evaluator.inspectTrajectoryAnalysis(runId, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'invalid_hitch_result' })
   })
 
   it('reads and validates run-centered Hitch verifier evidence', async () => {
