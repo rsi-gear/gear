@@ -30,6 +30,7 @@ interface InspectFixture {
   attemptExecution?: string | null
   invalidTrials?: Array<{ taskId: string; attempt: number }>
   executionProvider?: string
+  processScore?: number
 }
 
 interface SetupOptions {
@@ -147,6 +148,7 @@ const evalId = args.includes('--eval-id') ? value('--eval-id')
 const commit = harness?.match(/#([0-9a-f]{40,64})$/)?.[1]
 const inspectedTrials = ${JSON.stringify(inspectedTrials)}
 const inspectedInvalidTrials = ${JSON.stringify(inspectedInvalidTrials)}
+const processScore = ${JSON.stringify(inspectFixture.processScore)}
 const isInvalidTrial = trial => inspectedInvalidTrials.some(slot => slot.taskId === trial.taskId && slot.attempt === trial.attempt)
 const remainingInvalidTasks = [...new Set(inspectedInvalidTrials.map(slot => slot.taskId))]
 const inspectionRequest = {
@@ -299,7 +301,10 @@ else if (args[0] === 'capabilities') {
         trial_id: 'trial-' + (index + 1), run_id: 'run_' + String(index + 5).repeat(32).slice(0, 32),
         task_id: trial.taskId, attempt: trial.attempt,
         observation_status: isInvalidTrial(trial) ? 'invalid' : 'valid',
-        ...(isInvalidTrial(trial) ? { invalid_reason: 'infrastructure_failure' } : { reward: 1 }),
+        ...(isInvalidTrial(trial) ? { invalid_reason: 'infrastructure_failure' } : {
+          reward: 1,
+          scores: { total_score: 1, ...(processScore === undefined ? {} : { process_score: processScore }), normalization: 'standard' },
+        }),
         verifier_result_ref: 'verifier/result.json',
       })),
       summary: { n_trials: inspectedTrials.length,
@@ -328,7 +333,10 @@ else {
         trial_id: 'trial-' + (index + 1), run_id: 'run_' + String(index + 5).repeat(32).slice(0, 32),
         task_id: trial.taskId, attempt: trial.attempt,
         observation_status: isInvalidTrial(trial) ? 'invalid' : 'valid',
-        ...(isInvalidTrial(trial) ? { invalid_reason: 'infrastructure_failure' } : { reward: 1 }),
+        ...(isInvalidTrial(trial) ? { invalid_reason: 'infrastructure_failure' } : {
+          reward: 1,
+          scores: { total_score: 1, ...(processScore === undefined ? {} : { process_score: processScore }), normalization: 'standard' },
+        }),
         verifier_result_ref: 'verifier/result.json',
       }))
   const validCount = runTrials.filter(trial => trial.observation_status === 'valid').length
@@ -513,6 +521,16 @@ describe('HitchCliEvaluator', () => {
     await expect(malformed.evaluator.preflight()).rejects.toMatchObject({ code: 'unsupported_hitch_version' })
   })
 
+  it('does not reuse evidence before Hitch freezes a standard benchmark manifest identity', async () => {
+    const { fixture, evaluator } = await setup('0.2.8')
+    await mkdir(join(fixture.root, 'seed'), { recursive: true })
+    await writeFile(join(fixture.root, 'seed', 'benchmark.adapter.json'), '{}\n')
+    await expect(evaluator.evaluationIdentity(
+      round(fixture.root, fixture.championRef, fixture.manifest.digest),
+      request('seed', fixture.championRef),
+    )).resolves.toBeUndefined()
+  })
+
   it('requires Hitch 0.2.6 and a running daemon in control-plane mode', async () => {
     const controlPlane = { mode: 'daemon', requireModelCapture: false } as const
     const supported = await setup('0.2.6', {}, { controlPlane })
@@ -692,10 +710,36 @@ describe('HitchCliEvaluator', () => {
       effectiveConfigDigest: identity.effectiveConfigDigest,
       invocationFingerprint: identity.invocationFingerprint,
       dataset: 'seed', requestedCommit: fixture.championRef, actualCommit: fixture.championRef,
+      benchmark: { id: 'benchmark-1', revision: 'revision-1' },
       primaryReward: 1, summary: { total: 1, passed: 1, failed: 0 },
       trials: [{ runId: `run_${'5'.repeat(32)}`, attempt: 1 }],
       localSourceTransport: { commit: fixture.championRef },
     })
+  })
+
+  it('keeps process score optional and aggregates it only when the benchmark provides it', async () => {
+    const withProcess = await setup('0.2.8', { processScore: 0.5 })
+    const processEvidence = await withProcess.evaluator.evaluate(
+      round(withProcess.fixture.root, withProcess.fixture.championRef, withProcess.fixture.manifest.digest),
+      request('seed', withProcess.fixture.championRef),
+      new AbortController().signal,
+    )
+    expect(processEvidence).toMatchObject({
+      primaryReward: 1,
+      processScore: 0.5,
+      summary: { score: 1, process: { score: 0.5 }, metrics: { totalScore: 1, processScore: 0.5 } },
+      trials: [{ scores: { totalScore: 1, processScore: 0.5, normalization: 'standard' } }],
+    })
+
+    const totalOnly = await setup('0.2.8')
+    const totalOnlyEvidence = await totalOnly.evaluator.evaluate(
+      round(totalOnly.fixture.root, totalOnly.fixture.championRef, totalOnly.fixture.manifest.digest),
+      request('seed', totalOnly.fixture.championRef),
+      new AbortController().signal,
+    )
+    expect(totalOnlyEvidence.processScore).toBeUndefined()
+    expect(totalOnlyEvidence.summary.process).toBeUndefined()
+    expect(totalOnlyEvidence.trials[0]?.scores?.processScore).toBeUndefined()
   })
 
   it('reserves a Hitch eval id and binds the invocation/result to it', async () => {
@@ -776,15 +820,13 @@ describe('HitchCliEvaluator', () => {
     })
   })
 
-  it('rejects daemon task-slot plans in direct CLI mode', async () => {
+  it('accepts stable task-slot plans in direct CLI mode', async () => {
     const { fixture, evaluator } = await setup('0.2.5', { attemptExecution: 'harbor-task-slots-v1' })
     await expect(evaluator.evaluate(
       round(fixture.root, fixture.championRef, fixture.manifest.digest),
       request('seed', fixture.championRef),
       new AbortController().signal,
-    )).rejects.toMatchObject({
-      code: 'invalid_hitch_result', message: expect.stringMatching(/no stable logical-attempt identity/u),
-    })
+    )).resolves.toMatchObject({ provider: 'hitch-cli', completeness: 'complete' })
   })
 
   it('reruns invalid tasks under the original eval id and loads repaired evidence', async () => {
@@ -954,6 +996,48 @@ process.stdout.write(${JSON.stringify(JSON.stringify(payload) + '\n')})
       },
       redactions: [{ ruleId: 'absolute-path-v1', count: 2 }],
     })
+  })
+
+  it('reads structured process evidence without inventing feedback', async () => {
+    const { evaluator } = await setup()
+    const runId = `run_${'5'.repeat(32)}`
+    const process = {
+      schema_version: '1', metric: 'partial_credit', score: 0.5, detail_status: 'components',
+      passed: 1, total: 2, excluded: 0,
+      components: [
+        { id: 'assertion-001', category: 'email.sent', status: 'passed', weight: 1 },
+        { id: 'assertion-002', category: 'email.body', status: 'failed', weight: 1 },
+      ],
+    }
+    const payload = {
+      schema_version: '1', kind: 'verifier-evidence', run_id: runId,
+      observation: { status: 'valid', reward: 0, verifier_result_ref: 'verifier/result.json' },
+      verifier: {
+        status: 'result_only',
+        result: { rewards: { reward: 0, total_score: 0, process_score: 0.5 } },
+        result_sha256: `sha256:${'8'.repeat(64)}`,
+        scores: { total_score: 0, process_score: 0.5, normalization: 'standard' },
+        process,
+        structured_artifacts: {
+          process: { ref: 'verifier/process.json', bytes: 512, sha256: `sha256:${'7'.repeat(64)}` },
+        },
+      },
+    }
+    await writeFile(evaluator.options.executable, `#!/usr/bin/env node
+process.stdout.write(${JSON.stringify(JSON.stringify(payload))})
+`)
+    await chmod(evaluator.options.executable, 0o755)
+    await expect(evaluator.inspectVerifierEvidence(runId, new AbortController().signal)).resolves.toMatchObject({
+      verifier: {
+        scores: { totalScore: 0, processScore: 0.5, normalization: 'standard' },
+        process: {
+          schemaVersion: 1, metric: 'partial_credit', score: 0.5, detailStatus: 'components',
+          components: [{ id: 'assertion-001', status: 'passed' }, { id: 'assertion-002', status: 'failed' }],
+        },
+      },
+    })
+    const evidence = await evaluator.inspectVerifierEvidence(runId, new AbortController().signal)
+    expect(evidence.verifier.feedback).toBeUndefined()
   })
 
   it('reports verifier evidence as unavailable when an older Hitch lacks the command', async () => {

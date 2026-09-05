@@ -309,6 +309,27 @@ describe('RefineCapabilities Git projection', () => {
             held_out_metric: 'must not be exposed',
           },
           resultSha256: `sha256:${'7'.repeat(64)}`,
+          ...(runId !== seedRun ? {} : {
+            scores: { totalScore: 1, processScore: 0.5, normalization: 'standard' as const },
+            process: {
+              schemaVersion: 1 as const,
+              metric: 'partial_credit',
+              score: 0.5,
+              detailStatus: 'components' as const,
+              passed: 1,
+              total: 1,
+              excluded: 0,
+              components: [{
+                id: 'assertion-1', category: 'message-sent', status: 'passed' as const, weight: 1,
+                publicDetails: { note: 'top-secret held-out-secret' },
+                privateDetailsRef: 'private-only/assertion-1.json',
+              }],
+            },
+            feedback: {
+              schemaVersion: 1 as const,
+              items: [{ code: 'done', severity: 'info' as const, message: 'top-secret held-out-secret feedback' }],
+            },
+          }),
           ...(runId === invalidSeedRun ? {} : {
             diagnostics: { stdout: [{ name: 'test-stdout.txt', text: 'top-secret held-out-secret assertion output' }] },
           }),
@@ -370,6 +391,15 @@ describe('RefineCapabilities Git projection', () => {
       outcome: { status: 'completed', reward: 1 },
       verifier: {
         status: 'complete', summary: 'Verifier diagnostics are available.', needsDetail: true,
+        scores: { totalScore: 1, processScore: 0.5, normalization: 'standard' },
+        process: {
+          metric: 'partial_credit', score: 0.5,
+          components: [{
+            id: 'assertion-1', status: 'passed',
+            publicDetails: { note: '[REDACTED] [REDACTED_HELD_OUT]' },
+          }],
+        },
+        feedback: { items: [{ code: 'done', message: '[REDACTED] [REDACTED_HELD_OUT] feedback' }] },
         detailRef: expect.stringMatching(/^detail_/u),
       },
       transcript: {
@@ -383,6 +413,7 @@ describe('RefineCapabilities Git projection', () => {
     expect(serialized).not.toContain('top-secret')
     expect(serialized).not.toContain('held-out-secret')
     expect(serialized).not.toContain('held_out_metric')
+    expect(serialized).not.toContain('private-only')
     expect(accesses).not.toContainEqual([
       round.roundId,
       'meta',

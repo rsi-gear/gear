@@ -246,6 +246,13 @@ export interface ScoreSummary {
   failed: number
   score: number
   metrics?: Record<string, number>
+  process?: { score: number }
+}
+
+export interface EvaluationTrialScores {
+  totalScore: number
+  processScore?: number
+  normalization: 'standard' | 'legacy-reward'
 }
 
 export interface EvaluationTrialSummary {
@@ -255,6 +262,7 @@ export interface EvaluationTrialSummary {
   attempt?: number
   status: 'completed' | 'errored'
   rewards: Record<string, number>
+  scores?: EvaluationTrialScores
 }
 
 export type HitchTrialSummary = EvaluationTrialSummary
@@ -416,6 +424,13 @@ export interface HitchVerifierEvidence {
     status: 'complete' | 'result_only' | 'missing' | 'corrupt' | 'unavailable'
     result?: JsonValue
     resultSha256?: string
+    scores?: EvaluationTrialScores
+    process?: VerifierProcessEvidence
+    feedback?: VerifierFeedback
+    structuredArtifacts?: {
+      process?: VerifierStructuredArtifact
+      feedback?: VerifierStructuredArtifact
+    }
     diagnostics?: JsonValue
     issues?: string[]
   }
@@ -423,6 +438,51 @@ export interface HitchVerifierEvidence {
     ruleId: string
     count: number
   }>
+}
+
+export interface VerifierTrajectoryRef {
+  runId: string
+  seqStart?: number
+  seqEnd?: number
+}
+
+export interface VerifierProcessComponent {
+  id: string
+  category: string
+  status: 'passed' | 'failed' | 'excluded'
+  weight: number
+  code?: string
+  publicDetails?: Record<string, JsonValue>
+  privateDetailsRef?: string
+  trajectoryRefs?: VerifierTrajectoryRef[]
+}
+
+export interface VerifierProcessEvidence {
+  schemaVersion: 1
+  metric: string
+  score: number
+  detailStatus: 'components' | 'aggregate-only'
+  passed?: number
+  total?: number
+  excluded?: number
+  components?: VerifierProcessComponent[]
+}
+
+export interface VerifierFeedback {
+  schemaVersion: 1
+  items: Array<{
+    code: string
+    severity: 'info' | 'warning' | 'error'
+    message: string
+    componentIds?: string[]
+    trajectoryRefs?: VerifierTrajectoryRef[]
+  }>
+}
+
+export interface VerifierStructuredArtifact {
+  ref: 'verifier/process.json' | 'verifier/feedback.json'
+  bytes: number
+  sha256: string
 }
 
 export interface ContentExcerpt {
@@ -540,6 +600,9 @@ export interface MetaFailureCard {
   verifier: {
     status: 'complete' | 'result_only' | 'missing' | 'unavailable'
     summary: string
+    scores?: EvaluationTrialScores
+    process?: VerifierProcessEvidence
+    feedback?: VerifierFeedback
     failures?: Array<{ name: string; detail: MetaEvidenceText }>
     detailRef?: string
     needsDetail?: true
@@ -665,9 +728,15 @@ export interface EvaluationEvidence {
   revisionIdentity: string
   /** Diagnostic execution fingerprint; differences do not make evidence semantically incomparable. */
   invocationFingerprint?: string
+  /** Frozen dataset/scoring identity reported by the evaluator, when available. */
+  benchmark?: {
+    id: string
+    revision: string
+  }
   completeness: 'complete' | 'partial'
   plannedTrialCount: number
   primaryReward: number
+  processScore?: number
   summary: ScoreSummary
   trials: EvaluationTrialSummary[]
   invalidTrials: InvalidEvaluationTrialSummary[]
@@ -852,6 +921,9 @@ export interface PairedTrial {
   baselineReward: number
   candidateReward: number
   rewardDelta: number
+  baselineProcessScore?: number
+  candidateProcessScore?: number
+  processScoreDelta?: number
 }
 
 export interface PairingAudit {
@@ -873,7 +945,9 @@ export interface RoundEvaluation {
   heldOutPairing?: PairingAudit
   promotionMetrics?: MetricSet
   scoreDelta: number
+  processScoreDelta?: number
   heldOutScoreDelta?: number
+  heldOutProcessScoreDelta?: number
   requiredRegressions: number
 }
 
@@ -994,6 +1068,7 @@ export interface CandidateSeedComparison {
   pairedTrials: PairedTrial[]
   pairing: PairingAudit
   scoreDelta: number
+  processScoreDelta?: number
   requiredRegressions: number
 }
 
@@ -1189,6 +1264,7 @@ export interface PublicSeedEvidence {
   completeness: 'complete' | 'partial'
   plannedTrialCount: number
   primaryReward: number
+  processScore?: number
   summary: ScoreSummary
   trials: Array<{
     taskName: string
@@ -1197,6 +1273,7 @@ export interface PublicSeedEvidence {
     attempt?: number
     status: 'completed' | 'errored'
     reward?: number
+    scores?: EvaluationTrialScores
     invalidReason?: string
   }>
 }

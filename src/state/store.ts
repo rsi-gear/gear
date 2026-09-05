@@ -76,6 +76,8 @@ function expectedPairedTrials(baseline: EvaluationEvidence, candidate: Evaluatio
     if (before === undefined) return []
     const baselineReward = trialReward(before)
     const candidateReward = trialReward(trial)
+    const baselineProcessScore = before.scores?.processScore
+    const candidateProcessScore = trial.scores?.processScore
     return [{
       conditionId: baseline.conditionId,
       trialKey: key,
@@ -88,6 +90,11 @@ function expectedPairedTrials(baseline: EvaluationEvidence, candidate: Evaluatio
       baselineReward,
       candidateReward,
       rewardDelta: candidateReward - baselineReward,
+      ...(baselineProcessScore === undefined ? {} : { baselineProcessScore }),
+      ...(candidateProcessScore === undefined ? {} : { candidateProcessScore }),
+      ...(baselineProcessScore === undefined || candidateProcessScore === undefined
+        ? {}
+        : { processScoreDelta: candidateProcessScore - baselineProcessScore }),
     }]
   }).sort((left, right) => left.trialKey.localeCompare(right.trialKey))
 }
@@ -95,6 +102,11 @@ function expectedPairedTrials(baseline: EvaluationEvidence, candidate: Evaluatio
 function pairedScoreDelta(pairs: readonly PairedTrial[]): number {
   if (pairs.length === 0) return 0
   return pairs.reduce((sum, pair) => sum + pair.candidateReward - pair.baselineReward, 0) / pairs.length
+}
+
+function pairedProcessScoreDelta(pairs: readonly PairedTrial[]): number | undefined {
+  if (pairs.length === 0 || pairs.some(pair => pair.baselineProcessScore === undefined || pair.candidateProcessScore === undefined)) return undefined
+  return pairs.reduce((sum, pair) => sum + pair.candidateProcessScore! - pair.baselineProcessScore!, 0) / pairs.length
 }
 
 function requiredRegressionCount(requiredTaskIds: readonly string[], pairs: readonly PairedTrial[]): number {
@@ -555,6 +567,7 @@ export class RefineStateStore {
         if (candidate.seedEvaluation === undefined
           || typeof candidate.seedComparison.parentBaselineEvalId !== 'string'
           || !Number.isFinite(candidate.seedComparison.scoreDelta)
+          || (candidate.seedComparison.processScoreDelta !== undefined && !Number.isFinite(candidate.seedComparison.processScoreDelta))
           || !Number.isSafeInteger(candidate.seedComparison.requiredRegressions)
           || candidate.seedComparison.requiredRegressions < 0) {
           throw new TypeError('candidate seed comparison is invalid')
@@ -582,6 +595,12 @@ export class RefineStateStore {
         )
         if (Math.abs(candidate.seedComparison.scoreDelta - pairedScoreDelta(candidate.seedComparison.pairedTrials)) > 1e-12) {
           throw new TypeError('candidate seed comparison score delta is invalid')
+        }
+        const expectedProcessScoreDelta = pairedProcessScoreDelta(candidate.seedComparison.pairedTrials)
+        if ((candidate.seedComparison.processScoreDelta === undefined) !== (expectedProcessScoreDelta === undefined)
+          || candidate.seedComparison.processScoreDelta !== undefined
+            && Math.abs(candidate.seedComparison.processScoreDelta - expectedProcessScoreDelta!) > 1e-12) {
+          throw new TypeError('candidate seed comparison process score delta is invalid')
         }
         if (candidate.seedComparison.requiredRegressions !== requiredRegressionCount(
           promotionPolicy.requiredTaskIds ?? [],
@@ -728,6 +747,12 @@ export class RefineStateStore {
       if (Math.abs(round.evaluation.scoreDelta - pairedScoreDelta(round.evaluation.seedPairedTrials)) > 1e-12) {
         throw new TypeError('round seed score delta does not match paired evidence')
       }
+      const seedProcessScoreDelta = pairedProcessScoreDelta(round.evaluation.seedPairedTrials)
+      if ((round.evaluation.processScoreDelta === undefined) !== (seedProcessScoreDelta === undefined)
+        || round.evaluation.processScoreDelta !== undefined
+          && Math.abs(round.evaluation.processScoreDelta - seedProcessScoreDelta!) > 1e-12) {
+        throw new TypeError('round seed process score delta does not match paired evidence')
+      }
       if (round.evaluation.heldOutPairedTrials !== undefined) {
         if (round.evaluation.heldOutBaseline === undefined || round.evaluation.heldOutCandidate === undefined
           || round.evaluation.heldOutPairing === undefined) throw new TypeError('held-out pairs require paired evidence and audit')
@@ -748,6 +773,12 @@ export class RefineStateStore {
           || Math.abs(round.evaluation.heldOutScoreDelta - pairedScoreDelta(round.evaluation.heldOutPairedTrials)) > 1e-12) {
           throw new TypeError('round held-out score delta does not match paired evidence')
         }
+        const heldOutProcessScoreDelta = pairedProcessScoreDelta(round.evaluation.heldOutPairedTrials)
+        if ((round.evaluation.heldOutProcessScoreDelta === undefined) !== (heldOutProcessScoreDelta === undefined)
+          || round.evaluation.heldOutProcessScoreDelta !== undefined
+            && Math.abs(round.evaluation.heldOutProcessScoreDelta - heldOutProcessScoreDelta!) > 1e-12) {
+          throw new TypeError('round held-out process score delta does not match paired evidence')
+        }
       } else if (round.evaluation.heldOutCandidate !== undefined) {
         throw new TypeError('held-out candidate evidence requires paired trials')
       } else if (round.evaluation.heldOutPairing !== undefined) {
@@ -757,7 +788,9 @@ export class RefineStateStore {
         throw new TypeError('round promotion metrics are invalid')
       }
       if (!Number.isFinite(round.evaluation.scoreDelta)
+        || (round.evaluation.processScoreDelta !== undefined && !Number.isFinite(round.evaluation.processScoreDelta))
         || (round.evaluation.heldOutScoreDelta !== undefined && !Number.isFinite(round.evaluation.heldOutScoreDelta))
+        || (round.evaluation.heldOutProcessScoreDelta !== undefined && !Number.isFinite(round.evaluation.heldOutProcessScoreDelta))
         || !Number.isSafeInteger(round.evaluation.requiredRegressions) || round.evaluation.requiredRegressions < 0) {
         throw new TypeError('round evaluation deltas are invalid')
       }
@@ -1052,7 +1085,13 @@ export class RefineStateStore {
     if (typeof value.revisionIdentity !== 'string' || value.revisionIdentity.length === 0
       || (value.invocationFingerprint !== undefined
         && (typeof value.invocationFingerprint !== 'string' || value.invocationFingerprint.length === 0))
+      || (value.benchmark !== undefined && (
+        typeof value.benchmark !== 'object' || value.benchmark === null
+        || typeof value.benchmark.id !== 'string' || value.benchmark.id.length === 0
+        || typeof value.benchmark.revision !== 'string' || value.benchmark.revision.length === 0
+      ))
       || !Number.isFinite(value.primaryReward)
+      || (value.processScore !== undefined && !Number.isFinite(value.processScore))
       || (value.completeness !== 'complete' && value.completeness !== 'partial')
       || !Number.isSafeInteger(value.plannedTrialCount) || value.plannedTrialCount <= 0) {
       throw new TypeError(`${label} identity/reward is invalid`)
@@ -1064,14 +1103,33 @@ export class RefineStateStore {
       || value.summary.passed + value.summary.failed !== value.summary.total) {
       throw new TypeError(`${label} score summary is invalid`)
     }
+    if ((value.processScore === undefined) !== (value.summary.process === undefined)
+      || value.processScore !== undefined && value.summary.process?.score !== value.processScore) {
+      throw new TypeError(`${label} process score summary is invalid`)
+    }
     if (!Array.isArray(value.trials) || value.trials.length !== value.summary.total
       || value.trials.some(trial => typeof trial.taskName !== 'string' || trial.taskName.length === 0
       || trial.status !== 'completed'
       || (trial.runId !== undefined && (typeof trial.runId !== 'string' || trial.runId.length === 0))
       || (trial.attempt !== undefined && (!Number.isSafeInteger(trial.attempt) || trial.attempt <= 0))
       || typeof trial.rewards !== 'object' || trial.rewards === null
-      || Object.values(trial.rewards).some(reward => !Number.isFinite(reward)))) {
+      || Object.values(trial.rewards).some(reward => !Number.isFinite(reward))
+      || (trial.scores !== undefined && (
+        !Number.isFinite(trial.scores.totalScore)
+        || (trial.scores.processScore !== undefined && !Number.isFinite(trial.scores.processScore))
+        || (trial.scores.normalization !== 'standard' && trial.scores.normalization !== 'legacy-reward')
+        || (trial.scores.normalization === 'legacy-reward' && trial.scores.processScore !== undefined)
+        || trial.scores.totalScore !== (trial.rewards.total_score ?? trial.rewards.reward ?? Object.values(trial.rewards)[0])
+      )))) {
       throw new TypeError(`${label} trials are invalid`)
+    }
+    const processScores = value.trials.flatMap(trial => trial.scores?.processScore === undefined ? [] : [trial.scores.processScore])
+    const expectedProcess = processScores.length === value.trials.length && processScores.length > 0
+      ? processScores.reduce((sum, score) => sum + score, 0) / processScores.length
+      : undefined
+    if ((value.processScore === undefined) !== (expectedProcess === undefined)
+      || value.processScore !== undefined && Math.abs(value.processScore - expectedProcess!) > 1e-12) {
+      throw new TypeError(`${label} process score does not match trials`)
     }
     if (!Array.isArray(value.invalidTrials)
       || value.plannedTrialCount !== value.trials.length + value.invalidTrials.length
@@ -1181,7 +1239,13 @@ export class RefineStateStore {
       || value.some(trial => trial.conditionId !== conditionId || trial.trialKey.length === 0 || trial.taskName.length === 0
         || !Number.isFinite(trial.baselineReward) || !Number.isFinite(trial.candidateReward)
         || !Number.isFinite(trial.rewardDelta)
-        || trial.rewardDelta !== trial.candidateReward - trial.baselineReward)) {
+        || trial.rewardDelta !== trial.candidateReward - trial.baselineReward
+        || (trial.baselineProcessScore !== undefined && !Number.isFinite(trial.baselineProcessScore))
+        || (trial.candidateProcessScore !== undefined && !Number.isFinite(trial.candidateProcessScore))
+        || (trial.processScoreDelta !== undefined && !Number.isFinite(trial.processScoreDelta))
+        || (trial.processScoreDelta === undefined) !== (trial.baselineProcessScore === undefined || trial.candidateProcessScore === undefined)
+        || trial.processScoreDelta !== undefined
+          && trial.processScoreDelta !== trial.candidateProcessScore! - trial.baselineProcessScore!)) {
       throw new TypeError(`round ${label} paired trials are invalid`)
     }
   }
@@ -1209,6 +1273,8 @@ export class RefineStateStore {
       || baseline.conditionId !== candidate.conditionId
       || baseline.provider !== candidate.provider
       || baseline.effectiveConfigDigest !== candidate.effectiveConfigDigest
+      || baseline.benchmark?.id !== candidate.benchmark?.id
+      || baseline.benchmark?.revision !== candidate.benchmark?.revision
       || baseline.dataset !== candidate.dataset
       || JSON.stringify(baselinePlanned) !== JSON.stringify(candidatePlanned)
       || digestJson(pairs) !== digestJson(expectedPairs)) {

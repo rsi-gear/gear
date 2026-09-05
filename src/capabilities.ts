@@ -62,6 +62,7 @@ interface SeedRunEvidence {
     attempt?: number
     status: 'completed' | 'errored'
     rewards?: Record<string, number>
+    scores?: EvaluationEvidence['trials'][number]['scores']
     invalidReason?: string
   }
   failure?: { code: string; message: string }
@@ -337,6 +338,7 @@ export class RefineCapabilities {
           baseline: {
             status: visibleBaseline?.completeness ?? 'unavailable',
             ...(visibleBaseline?.primaryReward === undefined ? {} : { score: visibleBaseline.primaryReward }),
+            ...(visibleBaseline?.processScore === undefined ? {} : { processScore: visibleBaseline.processScore }),
             failedRuns,
           },
           ...(readiness === undefined ? {} : { diagnosisProgress: this.compactDiagnosisProgress(readiness) }),
@@ -799,6 +801,26 @@ export class RefineCapabilities {
     detailBytes: number,
   ): MetaFailureCard['verifier'] {
     const status = evidence.verifier.status === 'corrupt' ? 'unavailable' : evidence.verifier.status
+    const process = evidence.verifier.process === undefined ? undefined : {
+      schemaVersion: evidence.verifier.process.schemaVersion,
+      metric: evidence.verifier.process.metric,
+      score: evidence.verifier.process.score,
+      detailStatus: evidence.verifier.process.detailStatus,
+      ...(evidence.verifier.process.passed === undefined ? {} : { passed: evidence.verifier.process.passed }),
+      ...(evidence.verifier.process.total === undefined ? {} : { total: evidence.verifier.process.total }),
+      ...(evidence.verifier.process.excluded === undefined ? {} : { excluded: evidence.verifier.process.excluded }),
+      ...(evidence.verifier.process.components === undefined ? {} : {
+        components: evidence.verifier.process.components.map(component => ({
+          id: component.id,
+          category: component.category,
+          status: component.status,
+          weight: component.weight,
+          ...(component.code === undefined ? {} : { code: component.code }),
+          ...(component.publicDetails === undefined ? {} : { publicDetails: component.publicDetails }),
+          ...(component.trajectoryRefs === undefined ? {} : { trajectoryRefs: component.trajectoryRefs }),
+        })),
+      }),
+    }
     const safeDiagnostics = evidence.verifier.diagnostics === undefined
       ? undefined
       : this.sanitize(evidence.verifier.diagnostics, heldOutRef)
@@ -856,6 +878,9 @@ export class RefineCapabilities {
     return {
       status,
       summary: boundedUtf8(this.sanitize(summaryText, heldOutRef) as string, 600),
+      ...(evidence.verifier.scores === undefined ? {} : { scores: evidence.verifier.scores }),
+      ...(process === undefined ? {} : { process }),
+      ...(evidence.verifier.feedback === undefined ? {} : { feedback: evidence.verifier.feedback }),
       ...(failedTests.length === 0 ? {} : { failures: failedTests }),
       ...(diagnosticsText === undefined ? {} : {
         detailRef: this.inlineDetailRef(

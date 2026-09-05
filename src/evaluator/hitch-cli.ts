@@ -32,6 +32,11 @@ import type {
   RefinementRound,
   RoundEvaluationAttempt,
   ScoreSummary,
+  EvaluationTrialScores,
+  VerifierFeedback,
+  VerifierProcessEvidence,
+  VerifierStructuredArtifact,
+  VerifierTrajectoryRef,
 } from '../types.js'
 import { isExactGitCommit } from '../types.js'
 import { EvaluationCleanupError } from './cleanup.js'
@@ -70,6 +75,7 @@ interface ParsedRunTrial {
   attempt: number
   observationStatus: 'valid' | 'invalid'
   reward?: number
+  scores?: EvaluationTrialScores
   invalidReason?: string
 }
 
@@ -244,6 +250,127 @@ function verifierDiagnostics(value: unknown): {
       ...(retryHistory === undefined ? {} : { retry_history: retryHistory }),
     },
     hasArtifacts,
+  }
+}
+
+function evaluationTrialScores(value: unknown, label: string): EvaluationTrialScores {
+  const scores = record(value, label)
+  exactFields(scores, ['total_score', 'process_score', 'normalization'], label)
+  const totalScore = finite(scores.total_score, `${label}.total_score`)
+  const processScore = optionalFinite(scores.process_score, `${label}.process_score`)
+  if (scores.normalization !== 'standard' && scores.normalization !== 'legacy-reward') {
+    throw new HitchEvaluationError(`${label}.normalization is invalid`, 'invalid_hitch_result')
+  }
+  if (scores.normalization === 'legacy-reward' && processScore !== undefined) {
+    throw new HitchEvaluationError(`${label} legacy normalization cannot include process_score`, 'invalid_hitch_result')
+  }
+  return {
+    totalScore,
+    ...(processScore === undefined ? {} : { processScore }),
+    normalization: scores.normalization,
+  }
+}
+
+function verifierTrajectoryRefs(value: unknown, label: string): VerifierTrajectoryRef[] {
+  if (!Array.isArray(value)) throw new HitchEvaluationError(`${label} must be an array`, 'invalid_hitch_result')
+  return value.map((item, index) => {
+    const ref = record(item, `${label}[${index}]`)
+    exactFields(ref, ['run_id', 'seq_start', 'seq_end'], `${label}[${index}]`)
+    const runId = string(ref.run_id, `${label}[${index}].run_id`)
+    if (!/^run_[0-9a-f]{32}$/u.test(runId)) throw new HitchEvaluationError(`${label}[${index}].run_id is invalid`, 'invalid_hitch_result')
+    const seqStart = ref.seq_start === undefined ? undefined : integer(ref.seq_start, `${label}[${index}].seq_start`)
+    const seqEnd = ref.seq_end === undefined ? undefined : integer(ref.seq_end, `${label}[${index}].seq_end`)
+    if (seqStart !== undefined && seqEnd !== undefined && seqEnd < seqStart) {
+      throw new HitchEvaluationError(`${label}[${index}] range is invalid`, 'invalid_hitch_result')
+    }
+    return { runId, ...(seqStart === undefined ? {} : { seqStart }), ...(seqEnd === undefined ? {} : { seqEnd }) }
+  })
+}
+
+function verifierProcessEvidence(value: unknown): VerifierProcessEvidence {
+  const process = record(value, 'verifier process evidence')
+  exactFields(process, ['schema_version', 'metric', 'score', 'detail_status', 'passed', 'total', 'excluded', 'components'], 'verifier process evidence')
+  if (process.schema_version !== '1' || (process.detail_status !== 'components' && process.detail_status !== 'aggregate-only')) {
+    throw new HitchEvaluationError('verifier process evidence schema is invalid', 'invalid_hitch_result')
+  }
+  const metric = string(process.metric, 'verifier process evidence.metric')
+  const score = finite(process.score, 'verifier process evidence.score')
+  if (process.detail_status === 'aggregate-only') {
+    if (process.passed !== undefined || process.total !== undefined || process.excluded !== undefined || process.components !== undefined) {
+      throw new HitchEvaluationError('aggregate-only verifier process evidence contains component fields', 'invalid_hitch_result')
+    }
+    return { schemaVersion: 1, metric, score, detailStatus: 'aggregate-only' }
+  }
+  const passed = integer(process.passed, 'verifier process evidence.passed')
+  const total = integer(process.total, 'verifier process evidence.total')
+  const excluded = integer(process.excluded, 'verifier process evidence.excluded')
+  if (!Array.isArray(process.components)) throw new HitchEvaluationError('verifier process evidence.components must be an array', 'invalid_hitch_result')
+  const components = process.components.map((item, index) => {
+    const component = record(item, `verifier process evidence.components[${index}]`)
+    exactFields(component, ['id', 'category', 'status', 'weight', 'code', 'public_details', 'private_details_ref', 'trajectory_refs'], `verifier process evidence.components[${index}]`)
+    if (component.status !== 'passed' && component.status !== 'failed' && component.status !== 'excluded') {
+      throw new HitchEvaluationError(`verifier process evidence.components[${index}].status is invalid`, 'invalid_hitch_result')
+    }
+    const publicDetails = component.public_details === undefined ? undefined : record(component.public_details, `verifier process evidence.components[${index}].public_details`)
+    const trajectoryRefs = component.trajectory_refs === undefined ? undefined : verifierTrajectoryRefs(component.trajectory_refs, `verifier process evidence.components[${index}].trajectory_refs`)
+    return {
+      id: string(component.id, `verifier process evidence.components[${index}].id`),
+      category: string(component.category, `verifier process evidence.components[${index}].category`),
+      status: component.status as 'passed' | 'failed' | 'excluded',
+      weight: finite(component.weight, `verifier process evidence.components[${index}].weight`),
+      ...(component.code === undefined ? {} : { code: string(component.code, `verifier process evidence.components[${index}].code`) }),
+      ...(publicDetails === undefined ? {} : {
+        publicDetails: Object.fromEntries(Object.entries(publicDetails).map(([key, item]) => [key, jsonValue(item, `verifier process evidence.components[${index}].public_details.${key}`)])),
+      }),
+      ...(component.private_details_ref === undefined ? {} : { privateDetailsRef: string(component.private_details_ref, `verifier process evidence.components[${index}].private_details_ref`) }),
+      ...(trajectoryRefs === undefined ? {} : { trajectoryRefs }),
+    }
+  })
+  if (new Set(components.map(component => component.id)).size !== components.length
+    || passed !== components.filter(component => component.status === 'passed').length
+    || total !== components.filter(component => component.status !== 'excluded').length
+    || excluded !== components.filter(component => component.status === 'excluded').length) {
+    throw new HitchEvaluationError('verifier process evidence component counts are inconsistent', 'invalid_hitch_result')
+  }
+  return { schemaVersion: 1, metric, score, detailStatus: 'components', passed, total, excluded, components }
+}
+
+function verifierFeedback(value: unknown, process: VerifierProcessEvidence | undefined): VerifierFeedback {
+  const feedback = record(value, 'verifier feedback')
+  exactFields(feedback, ['schema_version', 'items'], 'verifier feedback')
+  if (feedback.schema_version !== '1' || !Array.isArray(feedback.items)) {
+    throw new HitchEvaluationError('verifier feedback schema is invalid', 'invalid_hitch_result')
+  }
+  const componentIds = new Set(process?.components?.map(component => component.id) ?? [])
+  const items = feedback.items.map((item, index) => {
+    const entry = record(item, `verifier feedback.items[${index}]`)
+    exactFields(entry, ['code', 'severity', 'message', 'component_ids', 'trajectory_refs'], `verifier feedback.items[${index}]`)
+    if (entry.severity !== 'info' && entry.severity !== 'warning' && entry.severity !== 'error') {
+      throw new HitchEvaluationError(`verifier feedback.items[${index}].severity is invalid`, 'invalid_hitch_result')
+    }
+    const ids = entry.component_ids === undefined ? undefined : stringArray(entry.component_ids, `verifier feedback.items[${index}].component_ids`)
+    if (ids?.some(id => !componentIds.has(id))) throw new HitchEvaluationError('verifier feedback references an unknown process component', 'invalid_hitch_result')
+    const refs = entry.trajectory_refs === undefined ? undefined : verifierTrajectoryRefs(entry.trajectory_refs, `verifier feedback.items[${index}].trajectory_refs`)
+    return {
+      code: string(entry.code, `verifier feedback.items[${index}].code`),
+      severity: entry.severity as 'info' | 'warning' | 'error',
+      message: string(entry.message, `verifier feedback.items[${index}].message`),
+      ...(ids === undefined ? {} : { componentIds: ids }),
+      ...(refs === undefined ? {} : { trajectoryRefs: refs }),
+    }
+  })
+  return { schemaVersion: 1, items }
+}
+
+function verifierStructuredArtifact(value: unknown, name: 'process' | 'feedback'): VerifierStructuredArtifact {
+  const artifact = record(value, `verifier structured artifact ${name}`)
+  exactFields(artifact, ['ref', 'bytes', 'sha256'], `verifier structured artifact ${name}`)
+  const expected = `verifier/${name}.json` as VerifierStructuredArtifact['ref']
+  if (artifact.ref !== expected) throw new HitchEvaluationError(`verifier structured artifact ${name}.ref is invalid`, 'invalid_hitch_result')
+  return {
+    ref: expected,
+    bytes: integer(artifact.bytes, `verifier structured artifact ${name}.bytes`),
+    sha256: digest(artifact.sha256, `verifier structured artifact ${name}.sha256`),
   }
 }
 
@@ -900,8 +1027,23 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     signal?.throwIfAborted()
     // Daemon defaults are frozen at submission; prior evidence cannot be reused
     // until the current execution policy can be resolved before submission.
-    if (this.daemonMode) return undefined
+    // Standard benchmark identity is validated and frozen by Hitch planning;
+    // do not reuse an older baseline before that dataset identity is observed.
+    if (this.daemonMode || await this.hasStandardBenchmarkManifest(round, request)) return undefined
     return this.resolveEvaluationIdentity(round, request, signal)
+  }
+
+  private async hasStandardBenchmarkManifest(
+    round: Readonly<RefinementRound>,
+    request: Readonly<EvaluationRequest>,
+  ): Promise<boolean> {
+    try {
+      await readFile(resolve(round.workspaceRoot, request.dataset, 'benchmark.adapter.json'))
+      return true
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+      throw error
+    }
   }
 
   private async resolveEvaluationIdentity(
@@ -1135,6 +1277,11 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       ? undefined
       : optionalString(observationRecord.verifier_result_ref, 'verifier evidence observation.verifier_result_ref')
     const verifierRecord = record(result.verifier, 'verifier evidence verifier')
+    exactFields(
+      verifierRecord,
+      ['status', 'result', 'result_sha256', 'scores', 'process', 'feedback', 'structured_artifacts', 'diagnostics', 'issues'],
+      'verifier evidence verifier',
+    )
     const verifierStatus = verifierRecord.status
     if (verifierStatus !== 'complete' && verifierStatus !== 'result_only'
       && verifierStatus !== 'missing' && verifierStatus !== 'corrupt') {
@@ -1147,6 +1294,44 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     if ((verifierStatus === 'complete' || verifierStatus === 'result_only')
       && (verifierRecord.result === undefined || resultSha256 === undefined)) {
       throw new HitchEvaluationError(`${verifierStatus} verifier evidence requires a result and digest`, 'invalid_hitch_result')
+    }
+    const scores = verifierRecord.scores === undefined
+      ? undefined
+      : evaluationTrialScores(verifierRecord.scores, 'verifier evidence scores')
+    const process = verifierRecord.process === undefined
+      ? undefined
+      : verifierProcessEvidence(verifierRecord.process)
+    const feedback = verifierRecord.feedback === undefined
+      ? undefined
+      : verifierFeedback(verifierRecord.feedback, process)
+    const structuredArtifactsRecord = verifierRecord.structured_artifacts === undefined
+      ? undefined
+      : record(verifierRecord.structured_artifacts, 'verifier evidence structured_artifacts')
+    if (structuredArtifactsRecord !== undefined) {
+      exactFields(structuredArtifactsRecord, ['process', 'feedback'], 'verifier evidence structured_artifacts')
+      if (structuredArtifactsRecord.process === undefined && structuredArtifactsRecord.feedback === undefined) {
+        throw new HitchEvaluationError('verifier evidence structured_artifacts must not be empty', 'invalid_hitch_result')
+      }
+    }
+    const structuredArtifacts = structuredArtifactsRecord === undefined ? undefined : {
+      ...(structuredArtifactsRecord.process === undefined ? {} : {
+        process: verifierStructuredArtifact(structuredArtifactsRecord.process, 'process'),
+      }),
+      ...(structuredArtifactsRecord.feedback === undefined ? {} : {
+        feedback: verifierStructuredArtifact(structuredArtifactsRecord.feedback, 'feedback'),
+      }),
+    }
+    if (verifierStatus !== 'corrupt') {
+      if ((process !== undefined) !== (scores?.processScore !== undefined)) {
+        throw new HitchEvaluationError('verifier process availability does not match process_score', 'invalid_hitch_result')
+      }
+      if (process !== undefined && Math.abs(process.score - scores!.processScore!) > 1e-12) {
+        throw new HitchEvaluationError('verifier process score is inconsistent', 'invalid_hitch_result')
+      }
+      if ((process !== undefined) !== (structuredArtifacts?.process !== undefined)
+        || (feedback !== undefined) !== (structuredArtifacts?.feedback !== undefined)) {
+        throw new HitchEvaluationError('verifier structured artifact metadata is incomplete', 'invalid_hitch_result')
+      }
     }
     const parsedDiagnostics = verifierRecord.diagnostics === undefined
       ? undefined
@@ -1208,6 +1393,10 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
         status: verifierStatus,
         ...(verifierRecord.result === undefined ? {} : { result: jsonValue(verifierRecord.result, 'verifier evidence result') }),
         ...(resultSha256 === undefined ? {} : { resultSha256 }),
+        ...(scores === undefined ? {} : { scores }),
+        ...(process === undefined ? {} : { process }),
+        ...(feedback === undefined ? {} : { feedback }),
+        ...(structuredArtifacts === undefined ? {} : { structuredArtifacts }),
         ...(parsedDiagnostics === undefined ? {} : {
           diagnostics: parsedDiagnostics.value,
         }),
@@ -1620,8 +1809,8 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
         signal,
         'hitch_eval_inspect_failed',
       )
-      this.assertCompleteTrialSlots(inspection, evidence, request)
-      return evidence
+      const benchmark = this.assertCompleteTrialSlots(inspection, evidence, request)
+      return { ...evidence, benchmark }
     } catch (error) {
       if (this.daemonMode && reservation !== undefined) {
         try {
@@ -1748,7 +1937,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       if ((envelope.eval_status === 'succeeded') !== (evidence.completeness === 'complete')) {
         throw new HitchEvaluationError('Hitch rerun status does not match repaired evidence completeness', 'invalid_hitch_result')
       }
-      this.assertCompleteTrialSlots(inspection, evidence, request)
+      const benchmark = this.assertCompleteTrialSlots(inspection, evidence, request)
       return {
         provider: 'hitch-cli',
         evalId: attempt.evalId,
@@ -1759,7 +1948,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
         ...(repairedTrials === undefined ? {} : { repairedTrials }),
         ...(remainingInvalidTrials === undefined ? {} : { remainingInvalidTrials }),
         evalStatus: envelope.eval_status,
-        evidence,
+        evidence: { ...evidence, benchmark },
       }
     } catch (error) {
       if (reservation !== undefined) {
@@ -1896,7 +2085,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     inspection: JsonRecord,
     evidence: HitchEvaluationEvidence,
     request: Readonly<EvaluationRequest>,
-  ): void {
+  ): { id: string; revision: string } {
     const plan = record(inspection.plan, 'Hitch eval plan')
     if (plan.schema_version !== '1' || plan.eval_id !== evidence.evalId) {
       throw new HitchEvaluationError('Hitch eval plan identity is invalid', 'invalid_hitch_result')
@@ -1914,7 +2103,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     }
     const attemptExecution = plan.attempt_execution
     const stableAttemptExecution = attemptExecution === 'harbor-attempt-shards-v1'
-      || (this.daemonMode && attemptExecution === 'harbor-task-slots-v1')
+      || attemptExecution === 'harbor-task-slots-v1'
     if ((attemptExecution !== undefined && !stableAttemptExecution)
       || (attempts > 1 && !stableAttemptExecution)) {
       throw new HitchEvaluationError('Hitch eval plan has no stable logical-attempt identity', 'invalid_hitch_result')
@@ -1978,6 +2167,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
         'invalid_hitch_result',
       )
     }
+    return { id: benchmarkId, revision: benchmarkRevision }
   }
 
   private effectiveConfigDigest(
@@ -2142,12 +2332,17 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     const trials = this.parseTrials(summaryValue.trials)
     if (trials.length !== total) throw new HitchEvaluationError('Hitch trial count does not match summary.n_trials')
     const passed = trials.filter(trial => (rewardForTrial(trial.rewards) ?? 0) > 0).length
+    const processScores = trials.flatMap(trial => trial.scores?.processScore === undefined ? [] : [trial.scores.processScore])
+    const processScore = processScores.length === trials.length && processScores.length > 0
+      ? processScores.reduce((sum, score) => sum + score, 0) / processScores.length
+      : undefined
     const summary: ScoreSummary = {
       total,
       passed,
       failed: total - passed,
       score: primaryReward,
-      metrics: { primaryReward },
+      metrics: { primaryReward, totalScore: primaryReward, ...(processScore === undefined ? {} : { processScore }) },
+      ...(processScore === undefined ? {} : { process: { score: processScore } }),
     }
     return {
       provider: 'hitch-cli',
@@ -2162,6 +2357,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       completeness: 'complete',
       plannedTrialCount: total,
       primaryReward,
+      ...(processScore === undefined ? {} : { processScore }),
       summary,
       trials,
       invalidTrials: [],
@@ -2205,7 +2401,12 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       runId: trial.runId,
       attempt: trial.attempt,
       status: 'completed',
-      rewards: { reward: trial.reward! },
+      rewards: {
+        reward: trial.reward!,
+        total_score: trial.scores?.totalScore ?? trial.reward!,
+        ...(trial.scores?.processScore === undefined ? {} : { process_score: trial.scores.processScore }),
+      },
+      scores: trial.scores ?? { totalScore: trial.reward!, normalization: 'legacy-reward' },
     }))
     const invalidTrials: InvalidEvaluationTrialSummary[] = invalidObservations.map(trial => ({
       taskName: trial.taskName,
@@ -2217,7 +2418,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     }))
     const primaryReward = trials.length === 0
       ? 0
-      : trials.reduce((sum, trial) => sum + trial.rewards.reward!, 0) / trials.length
+      : trials.reduce((sum, trial) => sum + trial.scores!.totalScore, 0) / trials.length
     if (trials.length > 0) {
       const reportedPrimaryReward = finite(summaryValue.primary_reward, 'summary.primary_reward')
       if (Math.abs(reportedPrimaryReward - primaryReward) > 1e-12) {
@@ -2225,12 +2426,17 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       }
     }
     const passed = trials.filter(trial => (rewardForTrial(trial.rewards) ?? 0) > 0).length
+    const processScores = trials.flatMap(trial => trial.scores?.processScore === undefined ? [] : [trial.scores.processScore])
+    const processScore = processScores.length === trials.length && processScores.length > 0
+      ? processScores.reduce((sum, score) => sum + score, 0) / processScores.length
+      : undefined
     const summary: ScoreSummary = {
       total: trials.length,
       passed,
       failed: trials.length - passed,
       score: primaryReward,
-      metrics: { primaryReward },
+      metrics: { primaryReward, totalScore: primaryReward, ...(processScore === undefined ? {} : { processScore }) },
+      ...(processScore === undefined ? {} : { process: { score: processScore } }),
     }
     return {
       provider: 'hitch-cli',
@@ -2245,6 +2451,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       completeness: invalidTrials.length === 0 ? 'complete' : 'partial',
       plannedTrialCount: total,
       primaryReward,
+      ...(processScore === undefined ? {} : { processScore }),
       summary,
       trials,
       invalidTrials,
@@ -2263,6 +2470,14 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
         throw new HitchEvaluationError(`trials[${index}].observation_status is invalid`, 'invalid_hitch_result')
       }
       const reward = observation === 'valid' ? finite(trial.reward, `trials[${index}].reward`) : undefined
+      const scores = observation === 'valid'
+        ? (trial.scores === undefined
+            ? { totalScore: reward!, normalization: 'legacy-reward' as const }
+            : evaluationTrialScores(trial.scores, `trials[${index}].scores`))
+        : undefined
+      if (scores !== undefined && scores.totalScore !== reward) {
+        throw new HitchEvaluationError(`trials[${index}].scores.total_score does not match reward`, 'invalid_hitch_result')
+      }
       const invalidReason = observation === 'invalid'
         ? string(trial.invalid_reason, `trials[${index}].invalid_reason`)
         : undefined
@@ -2275,6 +2490,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
         attempt,
         observationStatus: observation,
         ...(reward === undefined ? {} : { reward }),
+        ...(scores === undefined ? {} : { scores }),
         ...(invalidReason === undefined ? {} : { invalidReason }),
       }
     })
@@ -2293,7 +2509,16 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       for (const [name, reward] of Object.entries(rewardsValue)) rewards[name] = finite(reward, `trial reward ${name}`)
       const taskName = string(trial.task_name, `summary.trials[${index}].task_name`)
       const trialName = typeof trial.trial_name === 'string' && trial.trial_name.length > 0 ? trial.trial_name : undefined
-      return { taskName, ...(trialName === undefined ? {} : { trialName }), status: 'completed', rewards }
+      const totalScore = rewards.total_score ?? rewardForTrial(rewards)
+      if (totalScore === undefined || rewards.reward !== undefined && Math.abs(rewards.reward - totalScore) > 1e-12) {
+        throw new HitchEvaluationError(`summary.trials[${index}] total score is invalid`, 'invalid_hitch_result')
+      }
+      const scores: EvaluationTrialScores = {
+        totalScore,
+        ...(rewards.process_score === undefined ? {} : { processScore: rewards.process_score }),
+        normalization: rewards.total_score === undefined ? 'legacy-reward' : 'standard',
+      }
+      return { taskName, ...(trialName === undefined ? {} : { trialName }), status: 'completed', rewards, scores }
     })
   }
 

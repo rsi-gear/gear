@@ -38,6 +38,7 @@ export interface SkillAssignment {
   baseline: {
     evalId: string
     primaryReward: number
+    processScore?: number
     summary: EvaluationEvidence['summary']
     trials: Array<{
       taskName: string
@@ -46,6 +47,7 @@ export interface SkillAssignment {
       attempt?: number
       status: 'completed' | 'errored'
       reward?: number
+      scores?: EvaluationEvidence['trials'][number]['scores']
       invalidReason?: string
     }>
   }
@@ -296,6 +298,7 @@ export class SkillMetaSessionManager implements MetaSessionController {
       baseline: {
         evalId: baseline.evalId,
         primaryReward: baseline.primaryReward,
+        ...(baseline.processScore === undefined ? {} : { processScore: baseline.processScore }),
         summary: structuredClone(baseline.summary),
         trials: [
           ...baseline.trials.map(trial => {
@@ -307,6 +310,7 @@ export class SkillMetaSessionManager implements MetaSessionController {
               ...(trial.attempt === undefined ? {} : { attempt: trial.attempt }),
               status: trial.status,
               ...(reward === undefined ? {} : { reward }),
+              ...(trial.scores === undefined ? {} : { scores: structuredClone(trial.scores) }),
             }
           }),
           ...baseline.invalidTrials.map(trial => ({ ...trial })),

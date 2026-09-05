@@ -180,6 +180,12 @@ describe('RefineStateStore', () => {
     const round = roundFixture({ status: 'candidate-seed-running' })
     const baseline = evidence(round.plan.seed, round.targetHarnessRef, 0.4, '1')
     const candidate = evidence(round.plan.seed, 'b'.repeat(40), 0.8, '2')
+    baseline.processScore = 0.25
+    baseline.summary = { ...baseline.summary, process: { score: 0.25 }, metrics: { ...baseline.summary.metrics, processScore: 0.25 } }
+    baseline.trials[0] = { ...baseline.trials[0]!, rewards: { reward: 0.4, total_score: 0.4, process_score: 0.25 }, scores: { totalScore: 0.4, processScore: 0.25, normalization: 'standard' } }
+    candidate.processScore = 0.75
+    candidate.summary = { ...candidate.summary, process: { score: 0.75 }, metrics: { ...candidate.summary.metrics, processScore: 0.75 } }
+    candidate.trials[0] = { ...candidate.trials[0]!, rewards: { reward: 0.8, total_score: 0.8, process_score: 0.75 }, scores: { totalScore: 0.8, processScore: 0.75, normalization: 'standard' } }
     candidate.invocationFingerprint = `sha256:${'d'.repeat(64)}`
     round.candidatePool = [{
       ...round.candidatePool[0]!,
@@ -199,6 +205,9 @@ describe('RefineStateStore', () => {
       baselineReward: 0.4,
       candidateReward: 0.8,
       rewardDelta: 0.4,
+      baselineProcessScore: 0.25,
+      candidateProcessScore: 0.75,
+      processScoreDelta: 0.5,
     }
     round.evaluation = {
       seedBaseline: baseline,
@@ -206,6 +215,7 @@ describe('RefineStateStore', () => {
       seedPairedTrials: [pair],
       seedPairing: { planned: 1, paired: 1, excluded: 0, baselineInvalid: 0, candidateInvalid: 0 },
       scoreDelta: 0.4,
+      processScoreDelta: 0.5,
       requiredRegressions: 0,
     }
     await state.writeRound(round)
@@ -221,6 +231,14 @@ describe('RefineStateStore', () => {
     round.evaluation.scoreDelta = 0.3
     await expect(state.writeRound(round)).rejects.toThrow(/score delta does not match/)
     round.evaluation.scoreDelta = 0.4
+    round.evaluation.processScoreDelta = 0.4
+    await expect(state.writeRound(round)).rejects.toThrow(/process score delta does not match/)
+    round.evaluation.processScoreDelta = 0.5
+    round.evaluation.seedBaseline = { ...baseline, benchmark: { id: 'benchmark-1', revision: 'revision-1' } }
+    round.evaluation.seedCandidate = { ...candidate, benchmark: { id: 'benchmark-1', revision: 'revision-2' } }
+    await expect(state.writeRound(round)).rejects.toThrow(/pairing audit is invalid/)
+    round.evaluation.seedBaseline = baseline
+    round.evaluation.seedCandidate = candidate
     round.evaluation.seedCandidate = {
       ...candidate,
       trials: [{ ...candidate.trials[0]!, taskName: 'task-other' }],
