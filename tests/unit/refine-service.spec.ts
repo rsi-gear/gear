@@ -1,8 +1,9 @@
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CandidateWorkspaceManager } from '../../src/candidate/workspace.js'
-import { HitchEvaluationError } from '../../src/evaluator/hitch-cli.js'
+import { HitchCliEvaluator, HitchEvaluationError } from '../../src/evaluator/hitch-cli.js'
 import type { EvaluationSubmissionIntent, EvaluationRerunReservation } from '../../src/types.js'
 import { HarnessBuilder, NoopHarnessCompiler, SubstrateExpansionError } from '../../src/harness/builder.js'
 import { RefineService } from '../../src/refine/service.js'
@@ -1533,6 +1534,76 @@ describe('RefineService evolution workspaces', () => {
     expect(second.evaluationAttempts?.some(attempt => attempt.reusedFromRoundId !== undefined)).toBe(false)
     expect(evaluator.calls).toEqual(['seed-baseline', 'seed-baseline'])
     await service.dispose()
+  })
+
+  it('refreshes legacy seed and held-out baselines after the Hitch scoring contract upgrade', async () => {
+    const { git, service, evaluator } = await setup()
+    try {
+      const executable = join(git.root, 'fake-hitch-version.mjs')
+      await writeFile(executable, "#!/usr/bin/env node\nprocess.stdout.write('0.2.8\\n')\n")
+      await chmod(executable, 0o755)
+      const hitch = new HitchCliEvaluator({
+        executable, repositoryPath: git.repository, root: '', harnessId: 'deepseek',
+        model: 'deepseek-chat', attempts: 1, maxConcurrent: 2, setupTimeoutMs: 10_000,
+        terminationGraceMs: 100, maxOutputBytes: 1024 * 1024, maxTrajectoryOutputBytes: 1024 * 1024,
+        sampling: {}, agentArgs: [], passEnv: [],
+      })
+      // Freeze the pre-upgrade digest algorithm to model evidence already on disk.
+      evaluator.evaluationIdentity = (round, request) => {
+        const effectiveConfigDigest = `sha256:${createHash('sha256').update(JSON.stringify({
+          provider: 'hitch-cli', conditionId: request.condition.conditionId, backend: 'harbor',
+          harnessId: hitch.options.harnessId, sandboxProfileRef: round.sandboxProfileRef,
+        })).digest('hex')}`
+        return { provider: 'fake', effectiveConfigDigest, invocationFingerprint: effectiveConfigDigest }
+      }
+      const admission = await service.admit('api')
+      const store = service.registry.stateStore(admission.evolutionId)
+      await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
+      const first = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'accepted')
+      const promoted = first?.candidatePool.find(candidate => candidate.candidateId === first.promotedCandidateId)
+      if (first === undefined || promoted?.sealedVersion === undefined
+        || promoted.seedEvaluation === undefined || promoted.heldOutEvaluation === undefined) {
+        throw new Error('first round did not persist promoted candidate evidence')
+      }
+      expect(promoted.seedEvaluation.benchmark).toBeUndefined()
+      expect(promoted.heldOutEvaluation.benchmark).toBeUndefined()
+      await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
+
+      // Resolve the real current Hitch identity while keeping task execution local.
+      // The dataset paths have no standard manifest, so normal cache lookup runs.
+      const identities = new Map<string, NonNullable<Awaited<ReturnType<typeof hitch.evaluationIdentity>>>>()
+      for (const [phase, condition] of [['seed-baseline', first.plan.seed], ['held-out-baseline', first.plan.heldOut]] as const) {
+        const identity = await hitch.evaluationIdentity(first, {
+          phase, condition, dataset: condition.dataset.ref, harnessRef: promoted.sealedVersion.commitOid,
+        })
+        if (identity === undefined) throw new Error('current Hitch evaluation identity is unavailable')
+        identities.set(condition.conditionId, identity)
+      }
+      evaluator.evaluationIdentity = (_round, request) => ({ ...identities.get(request.condition.conditionId)!, provider: 'fake' })
+      const originalEvaluate = evaluator.evaluate.bind(evaluator)
+      evaluator.evaluate = async (...args) => ({
+        ...await originalEvaluate(...args),
+        benchmark: { id: `benchmark-${args[1].dataset}`, revision: 'revision-1' },
+      })
+
+      const continued = await service.continueEvolution('api', admission.evolutionId)
+      const second = await editing(service, admission.evolutionId, continued.roundId)
+      expect(second.baseline?.evalId).not.toBe(promoted.seedEvaluation.evalId)
+      expect(second.baseline?.benchmark).toEqual({ id: 'benchmark-seed', revision: 'revision-1' })
+      await finalize(service, second)
+      const terminal = await eventually(() => store.readRound(second.roundId), value => value?.status === 'accepted')
+      expect(terminal?.evaluation?.heldOutBaseline?.evalId).not.toBe(promoted.heldOutEvaluation.evalId)
+      expect(terminal?.evaluation?.seedPairedTrials).toHaveLength(10)
+      expect(terminal?.evaluation?.heldOutPairedTrials).toHaveLength(10)
+      expect(terminal?.evaluationAttempts?.some(attempt => attempt.reusedFromRoundId !== undefined)).toBe(false)
+      expect(evaluator.calls).toEqual([
+        'seed-baseline', 'seed-candidate', 'held-out-baseline', 'held-out-candidate',
+        'seed-baseline', 'seed-candidate', 'held-out-baseline', 'held-out-candidate',
+      ])
+      expect((await store.readRound(first.roundId))?.baseline?.benchmark).toBeUndefined()
+    } finally {
+      await service.dispose()
+    }
   })
 
   it('reuses a promoted candidate as the next round seed and held-out baseline', async () => {

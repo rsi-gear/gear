@@ -2176,6 +2176,9 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
   ): string {
     return sha256(JSON.stringify({
       provider: 'hitch-cli',
+      // Evidence collected before this contract lacks benchmark identity and
+      // cannot be paired with current scores, even for legacy datasets.
+      scoringContract: 'benchmark-scores-v1',
       conditionId: request.condition.conditionId,
       backend: 'harbor',
       harnessId: this.options.harnessId,
