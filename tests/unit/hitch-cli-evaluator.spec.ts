@@ -1407,8 +1407,37 @@ process.stdout.write(${JSON.stringify(JSON.stringify(payload) + '\n')})
       new AbortController().signal,
     )).rejects.toMatchObject({
       code: 'harbor_failed',
-      message: expect.stringMatching(/failed before producing canonical trial evidence.*2\/5/u),
+      message: expect.stringMatching(/failed \(harbor_failed\).*2\/5/u),
     })
+  })
+
+  it.each([
+    ['preparing failure without result identities', {}, 12, 'internal_error', /runtime payload rule is missing/u],
+    ['unsupported schema', { schema_version: '999' }, 12, 'unsupported_hitch_schema', /unsupported Hitch eval schema/u],
+    ['invalid eval identity', { eval_id: 'invalid' }, 12, 'invalid_hitch_result', /invalid Hitch eval_id/u],
+    ['process exit mismatch', {}, 1, 'hitch_evaluation_failed', /process\/result exit mismatch/u],
+    ['failed evidence for another dataset', { dataset: 'another-dataset', trials: [{}] }, 12, 'hitch_evaluation_failed', /dataset does not match/u],
+    ['successful evidence for another dataset', { status: 'succeeded', exit_code: 0, dataset: 'another-dataset', trials: [{}] }, 0, 'hitch_evaluation_failed', /dataset does not match/u],
+  ])('rejects %s without accepting unrelated evidence', async (_label, override, processExit, code, message) => {
+    const { fixture, evaluator } = await setup()
+    const payload = {
+      schema_version: '1', eval_id: `eval_${'1'.repeat(32)}`,
+      status: 'failed', exit_code: 12, failure_stage: 'preparing', trials: [],
+      error: { code: 'internal_error', message: 'runtime payload rule is missing: node_modules/smol-toml' },
+      ...override,
+    }
+    await writeFile(evaluator.options.executable, `#!/usr/bin/env node
+if (process.argv.includes('--version')) process.stdout.write('0.2.8')
+else {
+  process.stdout.write(${JSON.stringify(JSON.stringify(payload))})
+  process.exitCode = ${processExit}
+}
+`)
+    await expect(evaluator.evaluate(
+      round(fixture.root, fixture.championRef, fixture.manifest.digest),
+      request('seed', fixture.championRef),
+      new AbortController().signal,
+    )).rejects.toMatchObject({ code, message: expect.stringMatching(message) })
   })
 
   it('preserves valid rewards when a failed eval contains both valid and invalid trials', async () => {
