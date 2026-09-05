@@ -344,7 +344,82 @@ order: 50
 
 `initialChampion` 对全新部署实际上是必需的：没有它就无法创建第一个 evolution。以后每个普通 `/refine` 仍默认从这个固定初始版本开始；它不会偷偷继承另一个 evolution 的 champion。
 
-### 6.2 可选 LLM-as-a-Verifier
+### 6.2 在一次性 target 容器间复用 Codex 登录
+
+若 target 使用 `dsh-codex` 的 ChatGPT OAuth，而 Hitch/Harbor 为每个 task
+创建独立容器，可以把 Gear 附带的 `gear-hitch-codex` 设置为
+`hitch.executable`：
+
+仓库内的
+[`examples/dsh-codex-luna`](../examples/dsh-codex-luna/README.md) 包含完整可复现
+示例：Meta DSH 和 target agent 都默认使用 `openai-codex/gpt-5.6-luna`、
+固定兼容依赖版本、生成 exact-commit target carrier，并复用下面的宿主 OAuth
+传输链路。示例不包含 token、运行状态或 benchmark 数据。
+
+```yaml
+hitch:
+  executable: /absolute/path/to/gear-hitch-codex
+  model: openai-codex/gpt-5.6-luna
+  controlPlane:
+    mode: direct
+  passEnv: [DSH_OPENAI_CODEX_ACCESS_B64, GEAR_TARGET_CODEX_ENV]
+```
+
+包装器通过环境变量配置，不把 credential value 写入 Gear 配置或 evolution
+state：
+
+```sh
+export GEAR_HITCH_EXECUTABLE=/absolute/path/to/hitch
+export GEAR_TARGET_CODEX_AUTH_FILE=/absolute/path/to/.openai-codex-auth.json
+```
+
+`GEAR_HITCH_EXECUTABLE` 未设置时默认调用 PATH 中的 `hitch`。
+`GEAR_TARGET_CODEX_AUTH_FILE` 未设置时默认读取
+`$DSH_HOME/.openai-codex-auth.json`。若 `dsh-codex` 不在包装器的普通 Node
+模块解析路径中，可以用 `GEAR_DSH_CODEX_MODULE` 指向它的入口；目标环境变量名
+也可通过 `GEAR_TARGET_CODEX_ENV` 覆盖，默认是
+`DSH_OPENAI_CODEX_ACCESS_B64`，必须与 `hitch.passEnv` 一致。
+默认情况下不需要预先设置 `GEAR_TARGET_CODEX_ENV`，包装器会把生效名称加入
+Hitch 子进程环境，满足 `passEnv` 校验。自定义名称时仍要在启动包装器前设置它；
+包装器会把同一个非敏感名称传给 target launcher。为避免覆盖 `PATH` 或流程控制
+变量，自定义名称必须位于专用命名空间，例如
+`DSH_OPENAI_CODEX_ACCESS_TEAM_A_B64`；默认名仍为
+`DSH_OPENAI_CODEX_ACCESS_B64`。
+
+这个接入只支持 `hitch.controlPlane.mode: direct`。包装器在 direct
+`eval run` 或 `eval rerun` 启动前，通过 pi-ai 的公开认证生命周期取得覆盖
+setup budget、task budget和五分钟余量的 access token；需要刷新
+时，只更新带跨进程锁的宿主 OAuth 文件。随后传给 Hitch 的自定义 envelope 只含
+短期 access、到期时间和 account id，不含 rotating refresh token。target 为满足
+dsh-codex 文件格式写入不可用的 refresh 占位值，因此容器不能刷新或破坏宿主登录。
+包装器在宿主锁内读取 access、到期时间和 account id 的一致快照；若并发刷新
+恰好发生在导出期间，会重新获取一次。`--timeout` 和 `--setup-timeout` 必须为
+正数，因为 Hitch 中 setup timeout 为 `0` 表示不限制时长，无法安全导出一个
+不可刷新的短期 access token。
+
+Codex access-only 路径只允许一次 logical attempt，并将未显式指定的 Hitch
+`infrastructure-retries` 安全地改为 `0`；显式配置多 attempt 或重试会被拒绝。
+这里没有把宿主进程枚举或 PID 强杀当作 credential 安全边界：它们无法撤销一个
+已经发出的 bearer，也无法跨平台无竞态地识别 Hitch 创建的 detached 后代。
+真正的边界是短期 access token 自带的服务端 expiry，以及 target 中不存在可用的
+refresh token。若 harness 解析或镜像准备耗时超过启动时估算，dsh-codex 会在
+五分钟刷新窗口内用不可用的占位值刷新并失败；它不能旋转或改写宿主凭据。
+
+`eval submit`、`eval run --daemon` 和 daemon rerun 会明确拒绝；`--version`、
+capabilities、watch、inspect 等命令保持透明转发。一次 direct evaluation 中的
+容器共享同一个 access 快照，因此大批量、多波次评测应拆成能在 access 有效期内
+完成的小批次，否则模型调用会因不可刷新而失败；daemon 若要支持 Codex，应另行
+实现由 daemon 持有的 credential broker。
+
+容器销毁不会丢失宿主登录，也不需要为每个 task 重新做设备验证。
+显式设置 `GEAR_TARGET_PROVIDER=deepseek-official` 时，包装器直接透传并使用配置的
+`DEEPSEEK_API_KEY` fallback，不触发 Codex 登录检查。
+
+不要将 `~/.codex/auth.json` 或 dsh-codex OAuth 文档传入 target，也不要把
+access envelope、base64 值或 refresh token 写进 YAML。首次登录和真正需要
+重新授权时，仍由 `dsh-codex login --device-code` 在宿主机完成。
+
+### 6.3 可选 LLM-as-a-Verifier
 
 如果用户任务集的 Harbor verifier 只负责执行有效性，或希望基于完整 agent trajectory 做语义判定，可以在 selection 阶段启用 `llm-verifier` assessor：
 

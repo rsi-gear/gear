@@ -1,0 +1,14 @@
+{
+  "name": "gear-dsh-codex-luna-runtime",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.1.1-rc.2",
+    "@earendil-works/pi-ai": "0.84.4",
+    "agent-hitch": "0.2.7"
+  },
+  "overrides": {
+    "@earendil-works/pi-ai": "0.84.4"
+  }
+}
