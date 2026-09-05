@@ -1,12 +1,16 @@
 import { appendFile, chmod, copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { HitchCliEvaluator } from '../../src/evaluator/hitch-cli.js'
+import { RefineCapabilities } from '../../src/capabilities.js'
+import { renderTrajectoryResult } from '../../src/notebook/tool.js'
 import type { HitchConfig } from '../../src/config.js'
-import type { EvaluationRequest, RefinementRound } from '../../src/types.js'
+import type { DiagnosisReceipt, EvaluationRequest, MetaFailureCard, RefinementRound } from '../../src/types.js'
 import { createGitHarnessFixture } from '../helpers/git-fixture.js'
-import { evaluationCondition, roundFixture } from '../helpers/research-fixture.js'
+import { evaluationCondition, evidence as evidenceFixture, roundFixture } from '../helpers/research-fixture.js'
+import { trajectoryAnalysis } from '../helpers/trajectory-fixture.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
@@ -30,6 +34,7 @@ interface InspectFixture {
   attemptExecution?: string | null
   invalidTrials?: Array<{ taskId: string; attempt: number }>
   executionProvider?: string
+  processScore?: number
 }
 
 interface SetupOptions {
@@ -62,7 +67,7 @@ function trajectoryAnalysisPayload(runId: string, sessionId: string): unknown {
   }
 }
 
-function partialTrajectoryAnalysisPayload(runId: string): unknown {
+function partialTrajectoryAnalysisPayload(runId: string) {
   return {
     schema_version: '1', kind: 'trajectory-analysis', run_id: runId,
     source: {
@@ -95,6 +100,33 @@ function partialTrajectoryAnalysisPayload(runId: string): unknown {
     }],
     omitted_event_types: { 'assistant/chunk': 1 },
     coverage: { surface: 'complete', chunks: 'partial', content: 'complete', child_sessions: 'unavailable' },
+  }
+}
+
+function multiStreamTrajectoryAnalysisPayload(runId: string) {
+  const payload = partialTrajectoryAnalysisPayload(runId)
+  // Reduced from the real AutomationBench timeout: one unfinished request
+  // contains reasoning and two independently addressed tool argument streams.
+  const streams = [
+    { block_index: 0, block_start_seq: 1, kind: 'reasoning', text: 'Checking the contact', source_seq_count: 2 },
+    { block_index: 1, block_start_seq: 4, kind: 'tool_arguments', text: '{"contact_id":7}', source_seq_count: 1 },
+    { block_index: 2, block_start_seq: 6, kind: 'tool_arguments', text: '{"phone":"123', source_seq_count: 2 },
+  ].map(({ text, ...stream }) => ({
+    ...stream,
+    content: {
+      preview: text, bytes: Buffer.byteLength(text), sha256: `sha256:${'d'.repeat(64)}`, truncated: false,
+      source: { run_id: runId, seq: stream.block_start_seq, field: 'data.chunk.delta' },
+    },
+  }))
+  return {
+    ...payload,
+    source: { ...payload.source, event_count: 9, event_types: { 'user/message': 1, 'assistant/chunk': 8 } },
+    chunk_summaries: [{
+      turn: 1, step: 1, attempt: 0, first_seq: 1, last_seq: 8, count: 8,
+      types: { 'block-start': 3, 'reasoning-delta': 2, 'tool-call-delta': 3 }, model_boundary_seq: 1,
+      partial: { status: 'incomplete', streams, source_seq_count: 5 },
+    }],
+    omitted_event_types: { 'assistant/chunk': 8 },
   }
 }
 
@@ -147,6 +179,7 @@ const evalId = args.includes('--eval-id') ? value('--eval-id')
 const commit = harness?.match(/#([0-9a-f]{40,64})$/)?.[1]
 const inspectedTrials = ${JSON.stringify(inspectedTrials)}
 const inspectedInvalidTrials = ${JSON.stringify(inspectedInvalidTrials)}
+const processScore = ${JSON.stringify(inspectFixture.processScore)}
 const isInvalidTrial = trial => inspectedInvalidTrials.some(slot => slot.taskId === trial.taskId && slot.attempt === trial.attempt)
 const remainingInvalidTasks = [...new Set(inspectedInvalidTrials.map(slot => slot.taskId))]
 const inspectionRequest = {
@@ -299,7 +332,10 @@ else if (args[0] === 'capabilities') {
         trial_id: 'trial-' + (index + 1), run_id: 'run_' + String(index + 5).repeat(32).slice(0, 32),
         task_id: trial.taskId, attempt: trial.attempt,
         observation_status: isInvalidTrial(trial) ? 'invalid' : 'valid',
-        ...(isInvalidTrial(trial) ? { invalid_reason: 'infrastructure_failure' } : { reward: 1 }),
+        ...(isInvalidTrial(trial) ? { invalid_reason: 'infrastructure_failure' } : {
+          reward: 1,
+          scores: { total_score: 1, ...(processScore === undefined ? {} : { process_score: processScore }), normalization: 'standard' },
+        }),
         verifier_result_ref: 'verifier/result.json',
       })),
       summary: { n_trials: inspectedTrials.length,
@@ -328,7 +364,10 @@ else {
         trial_id: 'trial-' + (index + 1), run_id: 'run_' + String(index + 5).repeat(32).slice(0, 32),
         task_id: trial.taskId, attempt: trial.attempt,
         observation_status: isInvalidTrial(trial) ? 'invalid' : 'valid',
-        ...(isInvalidTrial(trial) ? { invalid_reason: 'infrastructure_failure' } : { reward: 1 }),
+        ...(isInvalidTrial(trial) ? { invalid_reason: 'infrastructure_failure' } : {
+          reward: 1,
+          scores: { total_score: 1, ...(processScore === undefined ? {} : { process_score: processScore }), normalization: 'standard' },
+        }),
         verifier_result_ref: 'verifier/result.json',
       }))
   const validCount = runTrials.filter(trial => trial.observation_status === 'valid').length
@@ -513,6 +552,16 @@ describe('HitchCliEvaluator', () => {
     await expect(malformed.evaluator.preflight()).rejects.toMatchObject({ code: 'unsupported_hitch_version' })
   })
 
+  it('does not reuse evidence before Hitch freezes a standard benchmark manifest identity', async () => {
+    const { fixture, evaluator } = await setup('0.2.8')
+    await mkdir(join(fixture.root, 'seed'), { recursive: true })
+    await writeFile(join(fixture.root, 'seed', 'benchmark.adapter.json'), '{}\n')
+    await expect(evaluator.evaluationIdentity(
+      round(fixture.root, fixture.championRef, fixture.manifest.digest),
+      request('seed', fixture.championRef),
+    )).resolves.toBeUndefined()
+  })
+
   it('requires Hitch 0.2.6 and a running daemon in control-plane mode', async () => {
     const controlPlane = { mode: 'daemon', requireModelCapture: false } as const
     const supported = await setup('0.2.6', {}, { controlPlane })
@@ -692,10 +741,36 @@ describe('HitchCliEvaluator', () => {
       effectiveConfigDigest: identity.effectiveConfigDigest,
       invocationFingerprint: identity.invocationFingerprint,
       dataset: 'seed', requestedCommit: fixture.championRef, actualCommit: fixture.championRef,
+      benchmark: { id: 'benchmark-1', revision: 'revision-1' },
       primaryReward: 1, summary: { total: 1, passed: 1, failed: 0 },
       trials: [{ runId: `run_${'5'.repeat(32)}`, attempt: 1 }],
       localSourceTransport: { commit: fixture.championRef },
     })
+  })
+
+  it('keeps process score optional and aggregates it only when the benchmark provides it', async () => {
+    const withProcess = await setup('0.2.8', { processScore: 0.5 })
+    const processEvidence = await withProcess.evaluator.evaluate(
+      round(withProcess.fixture.root, withProcess.fixture.championRef, withProcess.fixture.manifest.digest),
+      request('seed', withProcess.fixture.championRef),
+      new AbortController().signal,
+    )
+    expect(processEvidence).toMatchObject({
+      primaryReward: 1,
+      processScore: 0.5,
+      summary: { score: 1, process: { score: 0.5 }, metrics: { totalScore: 1, processScore: 0.5 } },
+      trials: [{ scores: { totalScore: 1, processScore: 0.5, normalization: 'standard' } }],
+    })
+
+    const totalOnly = await setup('0.2.8')
+    const totalOnlyEvidence = await totalOnly.evaluator.evaluate(
+      round(totalOnly.fixture.root, totalOnly.fixture.championRef, totalOnly.fixture.manifest.digest),
+      request('seed', totalOnly.fixture.championRef),
+      new AbortController().signal,
+    )
+    expect(totalOnlyEvidence.processScore).toBeUndefined()
+    expect(totalOnlyEvidence.summary.process).toBeUndefined()
+    expect(totalOnlyEvidence.trials[0]?.scores?.processScore).toBeUndefined()
   })
 
   it('reserves a Hitch eval id and binds the invocation/result to it', async () => {
@@ -776,15 +851,13 @@ describe('HitchCliEvaluator', () => {
     })
   })
 
-  it('rejects daemon task-slot plans in direct CLI mode', async () => {
+  it('accepts stable task-slot plans in direct CLI mode', async () => {
     const { fixture, evaluator } = await setup('0.2.5', { attemptExecution: 'harbor-task-slots-v1' })
     await expect(evaluator.evaluate(
       round(fixture.root, fixture.championRef, fixture.manifest.digest),
       request('seed', fixture.championRef),
       new AbortController().signal,
-    )).rejects.toMatchObject({
-      code: 'invalid_hitch_result', message: expect.stringMatching(/no stable logical-attempt identity/u),
-    })
+    )).resolves.toMatchObject({ provider: 'hitch-cli', completeness: 'complete' })
   })
 
   it('reruns invalid tasks under the original eval id and loads repaired evidence', async () => {
@@ -936,6 +1009,87 @@ process.stdout.write(${JSON.stringify(JSON.stringify(payload) + '\n')})
     })
   })
 
+  it('reads independent unfinished streams from a timed-out model request', async () => {
+    const { evaluator } = await setup()
+    const runId = `run_${'6'.repeat(32)}`
+    const payload = multiStreamTrajectoryAnalysisPayload(runId)
+    await writeFile(evaluator.options.executable, `#!/usr/bin/env node
+process.stdout.write(${JSON.stringify(JSON.stringify(payload) + '\n')})
+`)
+    const analysis = await evaluator.inspectTrajectoryAnalysis(runId, new AbortController().signal)
+    const partial = analysis.chunkSummaries[0]!.partial!
+    expect(partial.content).toBeUndefined()
+    expect(partial).toMatchObject({
+      status: 'incomplete', sourceSeqCount: 5,
+      streams: [
+        { blockIndex: 0, blockStartSeq: 1, kind: 'reasoning', sourceSeqCount: 2,
+          content: { preview: 'Checking the contact', source: { runId, seq: 1, field: 'data.chunk.delta' } } },
+        { blockIndex: 1, blockStartSeq: 4, kind: 'tool_arguments', sourceSeqCount: 1,
+          content: { preview: '{"contact_id":7}', source: { runId, seq: 4, field: 'data.chunk.delta' } } },
+        { blockIndex: 2, blockStartSeq: 6, kind: 'tool_arguments', sourceSeqCount: 2,
+          content: { preview: '{"phone":"123', source: { runId, seq: 6, field: 'data.chunk.delta' } } },
+      ],
+    })
+    expect(analysis.coverage).toMatchObject({ surface: 'complete', chunks: 'partial', content: 'complete' })
+  })
+
+  it.each(['content', 'streams'] as const)('accepts multiple source fragments per chunk in partial %s', async representation => {
+    const { evaluator } = await setup()
+    const runId = `run_${'6'.repeat(32)}`
+    // Hitch counts text and argumentsDelta independently when a tool-call
+    // delta contains both. Source fragments can outnumber chunk events.
+    const streams = multiStreamTrajectoryAnalysisPayload(runId).chunk_summaries[0]!.partial.streams.slice(0, 2)
+      .map(stream => ({ ...stream, kind: 'tool_arguments', source_seq_count: 4 }))
+    const count = representation === 'content' ? 4 : 6
+    const sourceCount = representation === 'content' ? 6 : 8
+    const base = partialTrajectoryAnalysisPayload(runId)
+    const payload = {
+      ...base,
+      source: { ...base.source, event_count: count + 1, event_types: { 'user/message': 1, 'assistant/chunk': count } },
+      chunk_summaries: [{
+        turn: 1, step: 1, attempt: 0, first_seq: 1, last_seq: count, count, model_boundary_seq: 1,
+        types: { 'block-start': count - sourceCount / 2, 'tool-call-delta': sourceCount / 2 },
+        partial: { status: 'incomplete', source_seq_count: sourceCount,
+          ...(representation === 'content' ? { content: base.chunk_summaries[0]!.partial.content } : { streams }) },
+      }],
+      omitted_event_types: { 'assistant/chunk': count },
+    }
+    await writeFile(evaluator.options.executable, `#!/usr/bin/env node
+process.stdout.write(${JSON.stringify(JSON.stringify(payload) + '\n')})
+`)
+    const analysis = await evaluator.inspectTrajectoryAnalysis(runId, new AbortController().signal)
+    expect(analysis.chunkSummaries[0]!.partial!.sourceSeqCount).toBe(sourceCount)
+    expect(analysis.chunkSummaries[0]!.partial!.streams?.length).toBe(representation === 'content' ? undefined : 2)
+  })
+
+  it.each([
+    ['both representations', (partial: ReturnType<typeof multiStreamTrajectoryAnalysisPayload>['chunk_summaries'][number]['partial']) => { Object.assign(partial, { content: partial.streams[0]!.content }) }],
+    ['neither representation', (partial) => { Reflect.deleteProperty(partial, 'streams') }],
+    ['only one stream', (partial) => { partial.streams.splice(1) }],
+    ['unknown stream field', (partial) => { Object.assign(partial.streams[0]!, { unrecognized: true }) }],
+    ['unknown partial field', (partial) => { Object.assign(partial, { unrecognized: true }) }],
+    ['negative block index', (partial) => { partial.streams[0]!.block_index = -1 }],
+    ['unknown stream kind', (partial) => { partial.streams[0]!.kind = 'audio' }],
+    ['foreign run', (partial) => { partial.streams[0]!.content.source.run_id = `run_${'7'.repeat(32)}` }],
+    ['mismatched source sequence', (partial) => { partial.streams[0]!.content.source.seq = 2 }],
+    ['out-of-range block sequence', (partial) => { partial.streams[2]!.block_start_seq = 9; partial.streams[2]!.content.source.seq = 9 }],
+    ['wrong source field', (partial) => { partial.streams[0]!.content.source.field = 'data.other' }],
+    ['inconsistent total source count', (partial) => { partial.source_seq_count = 4 }],
+    ['negative source count', (partial) => { partial.streams[0]!.source_seq_count = -1 }],
+    ['unordered streams', (partial) => { partial.streams.reverse() }],
+    ['duplicate stream source', (partial) => { partial.streams[1]!.block_start_seq = 1; partial.streams[1]!.content.source.seq = 1 }],
+  ] satisfies Array<[string, (partial: ReturnType<typeof multiStreamTrajectoryAnalysisPayload>['chunk_summaries'][number]['partial']) => void]>)('rejects malformed unfinished streams: %s', async (_name, corrupt) => {
+    const { evaluator } = await setup()
+    const runId = `run_${'6'.repeat(32)}`
+    const payload = multiStreamTrajectoryAnalysisPayload(runId)
+    corrupt(payload.chunk_summaries[0]!.partial)
+    await writeFile(evaluator.options.executable, `#!/usr/bin/env node
+process.stdout.write(${JSON.stringify(JSON.stringify(payload) + '\n')})
+`)
+    await expect(evaluator.inspectTrajectoryAnalysis(runId, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'invalid_hitch_result' })
+  })
+
   it('reads and validates run-centered Hitch verifier evidence', async () => {
     const { evaluator } = await setup()
     const runId = `run_${'5'.repeat(32)}`
@@ -953,6 +1107,124 @@ process.stdout.write(${JSON.stringify(JSON.stringify(payload) + '\n')})
         }] },
       },
       redactions: [{ ruleId: 'absolute-path-v1', count: 2 }],
+    })
+  })
+
+  it('reads structured process evidence without inventing feedback', async () => {
+    const { evaluator } = await setup()
+    const runId = `run_${'5'.repeat(32)}`
+    const process = {
+      schema_version: '1', metric: 'partial_credit', score: 0.5, detail_status: 'components',
+      passed: 1, total: 2, excluded: 0,
+      components: [
+        { id: 'assertion-001', category: 'email.sent', status: 'passed', weight: 1 },
+        { id: 'assertion-002', category: 'email.body', status: 'failed', weight: 1 },
+      ],
+    }
+    const payload = {
+      schema_version: '1', kind: 'verifier-evidence', run_id: runId,
+      observation: { status: 'valid', reward: 0, verifier_result_ref: 'verifier/result.json' },
+      verifier: {
+        status: 'result_only',
+        result: { rewards: { reward: 0, total_score: 0, process_score: 0.5 } },
+        result_sha256: `sha256:${'8'.repeat(64)}`,
+        scores: { total_score: 0, process_score: 0.5, normalization: 'standard' },
+        process,
+        structured_artifacts: {
+          process: { ref: 'verifier/process.json', bytes: 512, sha256: `sha256:${'7'.repeat(64)}` },
+        },
+      },
+    }
+    await writeFile(evaluator.options.executable, `#!/usr/bin/env node
+process.stdout.write(${JSON.stringify(JSON.stringify(payload))})
+`)
+    await chmod(evaluator.options.executable, 0o755)
+    await expect(evaluator.inspectVerifierEvidence(runId, new AbortController().signal)).resolves.toMatchObject({
+      verifier: {
+        scores: { totalScore: 0, processScore: 0.5, normalization: 'standard' },
+        process: {
+          schemaVersion: 1, metric: 'partial_credit', score: 0.5, detailStatus: 'components',
+          components: [{ id: 'assertion-001', status: 'passed' }, { id: 'assertion-002', status: 'failed' }],
+        },
+      },
+    })
+    const evidence = await evaluator.inspectVerifierEvidence(runId, new AbortController().signal)
+    expect(evidence.verifier.feedback).toBeUndefined()
+  })
+
+  it('requires complete detail readback for parsed result_only feedback before diagnosing a failed run', async () => {
+    const { evaluator } = await setup()
+    const state = roundFixture({ status: 'candidate-editing' })
+    const baseline = evidenceFixture(state.plan.seed, state.targetHarnessRef, 0)
+    state.baseline = baseline
+    const runId = baseline.trials[0]!.runId!
+    const message = `${'Verifier context. '.repeat(1_200)}ACTION REQUIRED: notify the recipient.`
+    const feedback = { schema_version: '1', items: [{ code: 'missing-notification', severity: 'error', message }] }
+    const result = { rewards: { reward: 0, total_score: 0 } }
+    const sha256 = (value: unknown) => `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`
+    const payload = {
+      schema_version: '1', kind: 'verifier-evidence', run_id: runId,
+      observation: { status: 'valid', reward: 0, verifier_result_ref: 'verifier/result.json' },
+      verifier: {
+        status: 'result_only', result, result_sha256: sha256(result),
+        scores: { total_score: 0, normalization: 'standard' }, feedback,
+        structured_artifacts: { feedback: {
+          ref: 'verifier/feedback.json', bytes: Buffer.byteLength(JSON.stringify(feedback)), sha256: sha256(feedback),
+        } },
+      },
+    }
+    await writeFile(evaluator.options.executable, `#!/usr/bin/env node
+process.stdout.write(${JSON.stringify(JSON.stringify(payload))})
+`)
+    const receipts: DiagnosisReceipt[] = []
+    const meta = {
+      recordEvidenceAccess: (_roundId: string, _sessionId: string, access: { diagnosisReceipts?: DiagnosisReceipt[] }) => {
+        receipts.push(...(access.diagnosisReceipts ?? []))
+      },
+      proposalEvidenceAudit: () => ({ summaryAccessed: true, accessedRefs: [baseline.evalId],
+        diagnosedRunRefs: [], citedRefs: [], diagnosisReceipts: receipts }),
+    }
+    const service = { activeEntryForSession: () => ({ evolutionId: state.evolutionId, roundId: state.roundId,
+      parentHarnessRef: state.targetHarnessRef, workspace: {}, baseline, meta,
+      store: { listRounds: async () => [state] } }) }
+    const capabilities = new RefineCapabilities(service as never, {} as never, {
+      maxTrajectoryPageBytes: 4096,
+      trajectoryReader: {
+        inspectCapabilities: async () => ({ schemaVersion: 1, trajectoryAnalysis: 1, trajectoryEventsPage: 1 }),
+        inspectTrajectoryAnalysis: async () => trajectoryAnalysis(runId, [
+          { type: 'user/message', data: { role: 'user', content: [{ type: 'text', text: 'Notify the recipient.' }] } },
+        ]),
+        inspectTrajectoryEvents: async () => { throw new Error('verifier detail must use the recorded artifact') },
+        inspectVerifierEvidence: (id, signal) => evaluator.inspectVerifierEvidence(id, signal),
+      },
+    })
+    const card = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [runId] }) as {
+      runs: MetaFailureCard[]
+    }
+    expect(card).toMatchObject({
+      runs: [{ verifier: { status: 'result_only', feedback: { truncated: true }, needsDetail: true } }],
+      diagnosisProgress: { ready: false, diagnosed: 0 },
+    })
+    expect(renderTrajectoryResult(card as unknown as Parameters<typeof renderTrajectoryResult>[0])).not.toContain('ACTION REQUIRED')
+    expect(receipts).toHaveLength(0)
+    const detailRef = card.runs[0]!.verifier.detailRef!
+    const found = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { detailRef, find: 'ACTION REQUIRED' })
+    expect(found).toMatchObject({ detail: { matches: [expect.stringContaining('ACTION REQUIRED')] } })
+    expect(receipts).toHaveLength(0)
+    let nextRef: string | undefined = detailRef
+    let text = ''
+    while (nextRef !== undefined) {
+      const page = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { detailRef: nextRef }) as {
+        detail: { text: string }; nextRef?: string
+      }
+      text += page.detail.text
+      nextRef = page.nextRef
+      expect(receipts).toHaveLength(nextRef === undefined ? 1 : 0)
+    }
+    expect(text).toContain(message)
+    expect(receipts[0]).toMatchObject({ runId, verifierStatus: 'result_only' })
+    await expect(capabilities.call('refine-meta', 'meta', 'trajectory.query', {})).resolves.toMatchObject({
+      diagnosisProgress: { ready: true, diagnosed: 1 },
     })
   })
 

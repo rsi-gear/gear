@@ -494,13 +494,28 @@ export function projectTrajectory(analysis: HitchTrajectoryAnalysis): Trajectory
       ...(summary.partial === undefined ? {} : {
         partial: {
           status: summary.partial.status,
-          content: evidenceExcerpt(
-            analysis.runId,
-            summary.partial.content,
-            'data.chunk.delta',
-            summary.firstSeq,
-          ),
           sourceSeqCount: summary.partial.sourceSeqCount,
+          ...(summary.partial.streams === undefined ? {
+            content: evidenceExcerpt(
+              analysis.runId,
+              summary.partial.content,
+              'data.chunk.delta',
+              summary.firstSeq,
+            ),
+          } : {
+            streams: summary.partial.streams.map(stream => ({
+              blockIndex: stream.blockIndex,
+              blockStartSeq: stream.blockStartSeq,
+              kind: stream.kind,
+              content: evidenceExcerpt(
+                analysis.runId,
+                stream.content,
+                'data.chunk.delta',
+                stream.blockStartSeq,
+              ),
+              sourceSeqCount: stream.sourceSeqCount,
+            })),
+          }),
         },
       }),
     }

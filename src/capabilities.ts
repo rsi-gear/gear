@@ -6,6 +6,7 @@ import type { RefineService } from './refine/service.js'
 import { projectTrajectory } from './evaluator/trajectory-projection.js'
 import { digestJson } from './state/digest.js'
 import { finalizationReadiness, recoveryRequired } from './refine/finalization-readiness.js'
+import { previewVerifierFeedback, previewVerifierProcess } from './meta/verifier-preview.js'
 import type {
   CandidateFinalization,
   ContentExcerpt,
@@ -62,6 +63,7 @@ interface SeedRunEvidence {
     attempt?: number
     status: 'completed' | 'errored'
     rewards?: Record<string, number>
+    scores?: EvaluationEvidence['trials'][number]['scores']
     invalidReason?: string
   }
   failure?: { code: string; message: string }
@@ -337,6 +339,7 @@ export class RefineCapabilities {
           baseline: {
             status: visibleBaseline?.completeness ?? 'unavailable',
             ...(visibleBaseline?.primaryReward === undefined ? {} : { score: visibleBaseline.primaryReward }),
+            ...(visibleBaseline?.processScore === undefined ? {} : { processScore: visibleBaseline.processScore }),
             failedRuns,
           },
           ...(readiness === undefined ? {} : { diagnosisProgress: this.compactDiagnosisProgress(readiness) }),
@@ -799,6 +802,31 @@ export class RefineCapabilities {
     detailBytes: number,
   ): MetaFailureCard['verifier'] {
     const status = evidence.verifier.status === 'corrupt' ? 'unavailable' : evidence.verifier.status
+    const process = evidence.verifier.process === undefined ? undefined : publicJson(this.sanitize({
+      schemaVersion: evidence.verifier.process.schemaVersion,
+      metric: evidence.verifier.process.metric,
+      score: evidence.verifier.process.score,
+      detailStatus: evidence.verifier.process.detailStatus,
+      ...(evidence.verifier.process.passed === undefined ? {} : { passed: evidence.verifier.process.passed }),
+      ...(evidence.verifier.process.total === undefined ? {} : { total: evidence.verifier.process.total }),
+      ...(evidence.verifier.process.excluded === undefined ? {} : { excluded: evidence.verifier.process.excluded }),
+      ...(evidence.verifier.process.components === undefined ? {} : {
+        components: evidence.verifier.process.components.map(component => ({
+          id: component.id,
+          category: component.category,
+          status: component.status,
+          weight: component.weight,
+          ...(component.code === undefined ? {} : { code: component.code }),
+          ...(component.publicDetails === undefined ? {} : { publicDetails: component.publicDetails }),
+          ...(component.trajectoryRefs === undefined ? {} : { trajectoryRefs: component.trajectoryRefs }),
+        })),
+      }),
+    }, heldOutRef)) as unknown as NonNullable<HitchVerifierEvidence['verifier']['process']>
+    // Redact before clipping so a preview cannot split and expose a secret.
+    const feedback = evidence.verifier.feedback === undefined ? undefined
+      : publicJson(this.sanitize(evidence.verifier.feedback, heldOutRef)) as unknown as NonNullable<HitchVerifierEvidence['verifier']['feedback']>
+    const processPreview = process === undefined ? undefined : previewVerifierProcess(process)
+    const feedbackPreview = feedback === undefined ? undefined : previewVerifierFeedback(feedback)
     const safeDiagnostics = evidence.verifier.diagnostics === undefined
       ? undefined
       : this.sanitize(evidence.verifier.diagnostics, heldOutRef)
@@ -828,6 +856,17 @@ export class RefineCapabilities {
           : evidence.verifier.issues?.[0] ?? 'Verifier diagnostics are available.'
       : `${String(summary.passed ?? 0)} passed, ${String(summary.failed ?? failedTests.length)} failed, ${String(summary.skipped ?? 0)} skipped.`
     const detailChunks: string[] = []
+    for (const [label, value] of [
+      ['SCORES', evidence.verifier.scores],
+      ['PROCESS', process],
+      ['FEEDBACK', feedback],
+    ] as const) {
+      if (value !== undefined) {
+        // Detail refs cache serialized text, so apply the same public-field
+        // projection and redaction as the card before serializing it.
+        detailChunks.push(`${label}\n${JSON.stringify(publicJson(this.sanitize(value, heldOutRef)), null, 2)}`)
+      }
+    }
     let diagnosticsComplete = true
     const appendArtifact = (label: string, value: unknown): void => {
       const artifact = objectValue(value)
@@ -852,10 +891,17 @@ export class RefineCapabilities {
       detailChunks.push(`RETRY HISTORY\n${JSON.stringify(diagnostics.retry_history, null, 2)}`)
     }
     const diagnosticsText = detailChunks.length === 0 ? undefined : detailChunks.join('\n\n')
-    const needsDetail = status === 'complete' && failedTests.length === 0 && diagnosticsText !== undefined
+    // Structured artifacts can be usable even without legacy diagnostics
+    // (result_only). Omitted evidence must be read before issuing a receipt.
+    const needsDetail = (status === 'complete' || status === 'result_only') && diagnosticsText !== undefined
+      && ((status === 'complete' && failedTests.length === 0)
+        || processPreview?.truncated === true || feedbackPreview?.truncated === true)
     return {
       status,
       summary: boundedUtf8(this.sanitize(summaryText, heldOutRef) as string, 600),
+      ...(evidence.verifier.scores === undefined ? {} : { scores: evidence.verifier.scores }),
+      ...(processPreview === undefined ? {} : { process: processPreview }),
+      ...(feedbackPreview === undefined ? {} : { feedback: feedbackPreview }),
       ...(failedTests.length === 0 ? {} : { failures: failedTests }),
       ...(diagnosticsText === undefined ? {} : {
         detailRef: this.inlineDetailRef(

@@ -305,6 +305,7 @@ function publicSeedEvidence(evidence: EvaluationEvidence): PublicSeedEvidence {
     completeness: evidence.completeness,
     plannedTrialCount: evidence.plannedTrialCount,
     primaryReward: evidence.primaryReward,
+    ...(evidence.processScore === undefined ? {} : { processScore: evidence.processScore }),
     summary: evidence.summary,
     trials: [
       ...evidence.trials.map(trial => {
@@ -316,6 +317,7 @@ function publicSeedEvidence(evidence: EvaluationEvidence): PublicSeedEvidence {
           ...(trial.attempt === undefined ? {} : { attempt: trial.attempt }),
           status: trial.status,
           ...(reward === undefined ? {} : { reward }),
+          ...(trial.scores === undefined ? {} : { scores: trial.scores }),
         }
       }),
       ...evidence.invalidTrials.map(trial => ({ ...trial })),
@@ -350,6 +352,8 @@ function pairedTrials(baseline: EvaluationEvidence, candidate: EvaluationEvidenc
     if (baselineReward === undefined || candidateReward === undefined) {
       throw new Error(`paired trial has no reward: ${trialKey}`)
     }
+    const baselineProcessScore = before.scores?.processScore
+    const candidateProcessScore = trial.scores?.processScore
     result.push({
       conditionId: baseline.conditionId,
       trialKey,
@@ -362,6 +366,11 @@ function pairedTrials(baseline: EvaluationEvidence, candidate: EvaluationEvidenc
       baselineReward,
       candidateReward,
       rewardDelta: candidateReward - baselineReward,
+      ...(baselineProcessScore === undefined ? {} : { baselineProcessScore }),
+      ...(candidateProcessScore === undefined ? {} : { candidateProcessScore }),
+      ...(baselineProcessScore === undefined || candidateProcessScore === undefined
+        ? {}
+        : { processScoreDelta: candidateProcessScore - baselineProcessScore }),
     })
   }
   return result.sort((left, right) => left.trialKey.localeCompare(right.trialKey))
@@ -394,6 +403,19 @@ function pairedAggregate(pairs: readonly PairedTrial[], side: 'baseline' | 'cand
   }
 }
 
+function pairedProcessAggregate(pairs: readonly PairedTrial[], side: 'baseline' | 'candidate'): number | undefined {
+  const scores = pairs.map(pair => side === 'baseline' ? pair.baselineProcessScore : pair.candidateProcessScore)
+  if (scores.length === 0 || scores.some(score => score === undefined)) return undefined
+  const available = scores as number[]
+  return available.reduce((sum, score) => sum + score, 0) / available.length
+}
+
+function pairedProcessDelta(pairs: readonly PairedTrial[]): number | undefined {
+  const baseline = pairedProcessAggregate(pairs, 'baseline')
+  const candidate = pairedProcessAggregate(pairs, 'candidate')
+  return baseline === undefined || candidate === undefined ? undefined : candidate - baseline
+}
+
 function projectPairedEvidence(
   evidence: EvaluationEvidence,
   pairs: readonly PairedTrial[],
@@ -402,17 +424,20 @@ function projectPairedEvidence(
   const keys = new Set(pairs.map(pair => pair.trialKey))
   const trials = evidence.trials.filter(trial => keys.has(trialIdentity(trial)))
   const aggregate = pairedAggregate(pairs, side)
+  const processScore = pairedProcessAggregate(pairs, side)
   return {
     ...evidence,
     completeness: 'complete',
     plannedTrialCount: pairs.length,
     primaryReward: aggregate.score,
+    ...(processScore === undefined ? {} : { processScore }),
     summary: {
       total: aggregate.total,
       passed: aggregate.passed,
       failed: aggregate.total - aggregate.passed,
       score: aggregate.score,
-      metrics: { primaryReward: aggregate.score },
+      metrics: { primaryReward: aggregate.score, totalScore: aggregate.score, ...(processScore === undefined ? {} : { processScore }) },
+      ...(processScore === undefined ? {} : { process: { score: processScore } }),
     },
     trials,
     invalidTrials: [],
@@ -1557,6 +1582,7 @@ export class RefineService {
               pairedTrials: seedPairs,
               pairing: pairingAudit(parentBaseline, candidate.seedEvaluation, seedPairs),
               scoreDelta: candidateAggregate.score - baselineAggregate.score,
+              ...(pairedProcessDelta(seedPairs) === undefined ? {} : { processScoreDelta: pairedProcessDelta(seedPairs)! }),
             }
             if (seedPairs.length === 0) {
               round = await this.transition(store, roundId, {
@@ -1605,6 +1631,7 @@ export class RefineService {
               pairedTrials: seedPairs,
               pairing: pairingAudit(parentBaseline, seedCandidate, seedPairs),
               scoreDelta: candidateAggregate.score - baselineAggregate.score,
+              ...(pairedProcessDelta(seedPairs) === undefined ? {} : { processScoreDelta: pairedProcessDelta(seedPairs)! }),
             }
             if (seedPairs.length === 0) return {
               candidatePool: this.patchCandidate(current, candidate.candidateId, {
@@ -1750,6 +1777,7 @@ export class RefineService {
         seedPairedTrials: seedPairs,
         seedPairing: pairingAudit(championBaseline, finalist.seedEvaluation, seedPairs),
         scoreDelta: seedCandidateAggregate.score - seedBaselineAggregate.score,
+        ...(pairedProcessDelta(seedPairs) === undefined ? {} : { processScoreDelta: pairedProcessDelta(seedPairs)! }),
         requiredRegressions: seedPairs.length === 0 ? 0 : this.requiredRegressions(round, seedPairs),
       }
       round = await this.transition(store, roundId, { evaluation })
@@ -1803,6 +1831,7 @@ export class RefineService {
                     projectPairedEvidence(evidence, heldOutPairs, 'candidate'),
                   ),
               heldOutScoreDelta: heldOutCandidateAggregate.score - heldOutBaselineAggregate.score,
+              ...(pairedProcessDelta(heldOutPairs) === undefined ? {} : { heldOutProcessScoreDelta: pairedProcessDelta(heldOutPairs)! }),
               requiredRegressions: evaluation.requiredRegressions
                 + (heldOutPairs.length === 0 ? 0 : this.requiredRegressions(current, heldOutPairs)),
             }
@@ -1832,6 +1861,7 @@ export class RefineService {
             heldOutPairing: pairingAudit(heldOutBaseline, heldOutCandidate, heldOutPairs),
             promotionMetrics,
             heldOutScoreDelta: heldOutCandidateAggregate.score - heldOutBaselineAggregate.score,
+            ...(pairedProcessDelta(heldOutPairs) === undefined ? {} : { heldOutProcessScoreDelta: pairedProcessDelta(heldOutPairs)! }),
             requiredRegressions: evaluation.requiredRegressions
               + (heldOutPairs.length === 0 ? 0 : this.requiredRegressions(round, heldOutPairs)),
           }
@@ -2080,8 +2110,11 @@ export class RefineService {
   }
 
   private async queueContinuation(previous: ActiveRound): Promise<void> {
+    previous.abort.signal.throwIfAborted()
     const champion = await this.requireChampion(previous.evolution.store)
+    previous.abort.signal.throwIfAborted()
     const population = await previous.evolution.store.readPopulation()
+    previous.abort.signal.throwIfAborted()
     if (population === undefined) throw new Error('evolution has no research population')
     const roundId = crypto.randomUUID()
     const index = previous.roundIndex + 1
@@ -2094,8 +2127,13 @@ export class RefineService {
       previous.advisoryFocus,
     )
     await previous.evolution.store.writeRound(round)
+    previous.abort.signal.throwIfAborted()
     await previous.lock.retarget(roundId)
+    previous.abort.signal.throwIfAborted()
     await this.registry.touch(previous.evolution.spec.evolutionId, { batchId: previous.batchId, roundId })
+    // Disposal is waiting for the current drive; do not hand its lock to a
+    // new drive that was not included in disposal's active-work snapshot.
+    previous.abort.signal.throwIfAborted()
     this.active.set(roundId, active)
     queueMicrotask(() => this.startDrive(roundId))
   }
@@ -2230,6 +2268,10 @@ export class RefineService {
     if (baseline.provider !== candidate.provider) throw new Error(`${partition} baseline/candidate rollout provider mismatch`)
     if (baseline.effectiveConfigDigest !== candidate.effectiveConfigDigest) {
       throw new Error(`${partition} baseline/candidate effective rollout config mismatch`)
+    }
+    if (baseline.benchmark?.id !== candidate.benchmark?.id
+      || baseline.benchmark?.revision !== candidate.benchmark?.revision) {
+      throw new Error(`${partition} baseline/candidate benchmark scoring identity mismatch`)
     }
     if (baseline.dataset !== candidate.dataset) throw new Error(`${partition} baseline/candidate dataset mismatch`)
     if (baseline.plannedTrialCount !== candidate.plannedTrialCount) {
@@ -2665,6 +2707,7 @@ export class RefineService {
         ? { quality: 0, taskSuccessRate: 0 }
         : await this.evaluateJudges(spec, projectPairedEvidence(evidence, heldOutPairs, 'candidate')),
       heldOutScoreDelta: heldOutCandidateAggregate.score - heldOutBaselineAggregate.score,
+      ...(pairedProcessDelta(heldOutPairs) === undefined ? {} : { heldOutProcessScoreDelta: pairedProcessDelta(heldOutPairs)! }),
       requiredRegressions: round.evaluation.requiredRegressions
         + (heldOutPairs.length === 0 ? 0 : this.requiredRegressions(round, heldOutPairs)),
     }

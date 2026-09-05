@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
+import type { JsonValue } from '@deepseek-ai/dsh-session'
 import { mountMetaCapabilityTools, renderNotebookResult, renderTrajectoryResult } from '../../src/notebook/tool.js'
 
 describe('Meta notebook tools', () => {
@@ -67,6 +68,111 @@ describe('Meta notebook tools', () => {
     expect(rendered).toContain('TOOL bash · errored')
     expect(rendered).toContain('[more: detail_1]')
     expect(rendered).not.toContain('schemaVersion')
+    expect(rendered).not.toMatch(/SCORES|PROCESS|COMPONENT|FEEDBACK/u)
+  })
+
+  it('renders structured verifier evidence through the default trajectory tool output', async () => {
+    const tools: ToolDefinition[] = []
+    const call = vi.fn(async () => ({
+      runs: [{
+        task: 'send-message', runId: 'run_1',
+        outcome: { status: 'completed', reward: 0 },
+        verifier: {
+          status: 'complete', summary: 'Verifier diagnostics are available.',
+          scores: { totalScore: 0, processScore: 0.5, normalization: 'standard' },
+          process: {
+            schemaVersion: 1, metric: 'partial_credit', score: 0.5, detailStatus: 'components',
+            passed: 1, total: 2, excluded: 1,
+            components: [
+              { id: 'setup', category: 'environment', status: 'passed', weight: 1 },
+              {
+                id: 'send', category: 'message-sent', status: 'failed', weight: 1, code: 'recipient-mismatch',
+                publicDetails: { expected: 'team channel', actual: 'personal inbox' },
+                trajectoryRefs: [{ runId: 'run_1', seqStart: 7, seqEnd: 9 }],
+              },
+              { id: 'cleanup', category: 'environment', status: 'excluded', weight: 1, code: 'not-applicable' },
+            ],
+          },
+          feedback: {
+            schemaVersion: 1,
+            items: [{
+              code: 'wrong-channel', severity: 'error', message: 'Send the message to the requested team channel.',
+              componentIds: ['send'], trajectoryRefs: [{ runId: 'run_1', seqStart: 7, seqEnd: 9 }],
+            }],
+          },
+          detailRef: 'detail_structured', needsDetail: true,
+        },
+        transcript: { text: 'ASSISTANT\nMessage sent.' },
+      }],
+    }))
+    const context = {
+      tools: { register(definition: ToolDefinition) { tools.push(definition) } },
+      systemPrompt: { section() {} },
+    } as unknown as Context
+    mountMetaCapabilityTools(context, call)
+    const trajectory = tools.find(tool => tool.name === 'trajectory_query')!
+    const args = { refs: ['run_1'] }
+    const result = await trajectory.execute(args, {
+      agent: { id: 'meta-1' }, signal: new AbortController().signal,
+    } as never)
+    const blocks = trajectory.output!.render(args, result as JsonValue)
+    expect(blocks).toEqual([{ type: 'text', text: expect.any(String) }])
+    const rendered = (blocks[0] as { text: string }).text
+    expect(rendered).toContain('SCORES · total 0 · process 0.5 · normalization standard')
+    expect(rendered).toContain('PROCESS partial_credit · score 0.5 · components · 1 passed · 2 total · 1 excluded')
+    expect(rendered).toContain('COMPONENT setup · passed · environment · weight 1')
+    expect(rendered).toContain('COMPONENT send · failed · message-sent · weight 1 · code recipient-mismatch')
+    expect(rendered).toContain('public details: {"expected":"team channel","actual":"personal inbox"}')
+    expect(rendered).toContain('COMPONENT cleanup · excluded · environment · weight 1 · code not-applicable')
+    expect(rendered).toContain('FEEDBACK error · wrong-channel\nSend the message to the requested team channel.')
+    expect(rendered).toContain('components: ["send"]')
+    expect(rendered).toContain('trajectory refs: [{"runId":"run_1","seqStart":7,"seqEnd":9}]')
+    expect(rendered).toContain('[required verifier details: detail_structured]')
+    expect(rendered).toContain('MESSAGES\nASSISTANT\nMessage sent.')
+    expect(rendered).not.toContain('schemaVersion')
+  })
+
+  it.each(['standard', 'legacy-reward'])('renders %s total-only scores without inventing process evidence', normalization => {
+    const rendered = renderTrajectoryResult({
+      runs: [{
+        verifier: { status: 'result_only', summary: 'Final score only.', scores: { totalScore: 1, normalization } },
+      }],
+    })
+    expect(rendered).toContain(`SCORES · total 1 · normalization ${normalization}`)
+    expect(rendered).not.toMatch(/ · process |PROCESS|COMPONENT|FEEDBACK|undefined/u)
+  })
+
+  it('renders aggregate-only process evidence without inventing component counts', () => {
+    const rendered = renderTrajectoryResult({
+      runs: [{
+        verifier: {
+          status: 'complete', summary: 'Aggregate process evidence.',
+          process: { schemaVersion: 1, metric: 'partial_credit', score: 0, detailStatus: 'aggregate-only' },
+          feedback: { schemaVersion: 1, items: [] },
+          detailRef: 'detail_aggregate',
+        },
+      }],
+    })
+    expect(rendered).toContain('PROCESS partial_credit · score 0 · aggregate-only')
+    expect(rendered).toContain('FEEDBACK · no items')
+    expect(rendered).toContain('[verifier details: detail_aggregate]')
+    expect(rendered).not.toMatch(/SCORES|COMPONENT|\d+ passed|\d+ total|\d+ excluded|undefined/u)
+  })
+
+  it('renders feedback even when process evidence is unavailable', () => {
+    const rendered = renderTrajectoryResult({
+      runs: [{
+        verifier: {
+          status: 'complete', summary: 'Feedback only.',
+          feedback: {
+            schemaVersion: 1,
+            items: [{ code: 'timeout', severity: 'warning', message: 'Execution exceeded the task time limit.' }],
+          },
+        },
+      }],
+    })
+    expect(rendered).toContain('FEEDBACK warning · timeout\nExecution exceeded the task time limit.')
+    expect(rendered).not.toMatch(/SCORES|PROCESS|COMPONENT|undefined/u)
   })
 
   it('describes the restricted workspace when candidate bash is disabled', () => {

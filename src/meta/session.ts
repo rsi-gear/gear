@@ -304,6 +304,7 @@ export class MetaSessionManager implements MetaSessionController {
         baseline: baseline === undefined ? undefined : {
           evalId: baseline.evalId,
           primaryReward: baseline.primaryReward,
+          ...(baseline.processScore === undefined ? {} : { processScore: baseline.processScore }),
           summary: baseline.summary,
           trials: baseline.trials.map(trial => ({
             taskName: trial.taskName,
@@ -312,6 +313,7 @@ export class MetaSessionManager implements MetaSessionController {
             attempt: trial.attempt,
             status: trial.status,
             reward: reward(trial.rewards),
+            ...(trial.scores === undefined ? {} : { scores: trial.scores }),
           })),
         },
         advisoryFocus: round.advisoryFocus,

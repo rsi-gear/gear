@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RefineCapabilities } from '../../src/capabilities.js'
 import { projectTrajectory } from '../../src/evaluator/trajectory-projection.js'
 import { HarnessBuilder, NoopHarnessCompiler } from '../../src/harness/builder.js'
+import { renderTrajectoryResult } from '../../src/notebook/tool.js'
 import { RefineStateStore } from '../../src/state/store.js'
 import type {
   HitchEvaluationEvidence,
@@ -309,6 +310,27 @@ describe('RefineCapabilities Git projection', () => {
             held_out_metric: 'must not be exposed',
           },
           resultSha256: `sha256:${'7'.repeat(64)}`,
+          ...(runId !== seedRun ? {} : {
+            scores: { totalScore: 1, processScore: 0.5, normalization: 'standard' as const },
+            process: {
+              schemaVersion: 1 as const,
+              metric: 'partial_credit',
+              score: 0.5,
+              detailStatus: 'components' as const,
+              passed: 1,
+              total: 1,
+              excluded: 0,
+              components: [{
+                id: 'assertion-1', category: 'message-sent', status: 'passed' as const, weight: 1,
+                publicDetails: { note: 'top-secret held-out-secret' },
+                privateDetailsRef: 'private-only/assertion-1.json',
+              }],
+            },
+            feedback: {
+              schemaVersion: 1 as const,
+              items: [{ code: 'done', severity: 'info' as const, message: 'top-secret held-out-secret feedback' }],
+            },
+          }),
           ...(runId === invalidSeedRun ? {} : {
             diagnostics: { stdout: [{ name: 'test-stdout.txt', text: 'top-secret held-out-secret assertion output' }] },
           }),
@@ -370,6 +392,15 @@ describe('RefineCapabilities Git projection', () => {
       outcome: { status: 'completed', reward: 1 },
       verifier: {
         status: 'complete', summary: 'Verifier diagnostics are available.', needsDetail: true,
+        scores: { totalScore: 1, processScore: 0.5, normalization: 'standard' },
+        process: {
+          metric: 'partial_credit', score: 0.5,
+          components: [{
+            id: 'assertion-1', status: 'passed',
+            publicDetails: { note: '[REDACTED] [REDACTED_HELD_OUT]' },
+          }],
+        },
+        feedback: { items: [{ code: 'done', message: '[REDACTED] [REDACTED_HELD_OUT] feedback' }] },
         detailRef: expect.stringMatching(/^detail_/u),
       },
       transcript: {
@@ -383,6 +414,7 @@ describe('RefineCapabilities Git projection', () => {
     expect(serialized).not.toContain('top-secret')
     expect(serialized).not.toContain('held-out-secret')
     expect(serialized).not.toContain('held_out_metric')
+    expect(serialized).not.toContain('private-only')
     expect(accesses).not.toContainEqual([
       round.roundId,
       'meta',
@@ -579,6 +611,303 @@ describe('RefineCapabilities Git projection', () => {
         operatorAction: { runIds: [seedRun], reason: 'trajectory_integrity_mismatch' },
       })
   })
+
+  it.each(['scores', 'process', 'feedback', 'all'] as const)(
+    'pages structured verifier %s through an opaque detail ref without legacy diagnostics',
+    async channels => {
+      const round = roundFixture({ roundId: 'round-structured', status: 'candidate-editing', heldOutRef: 'held-out-secret' })
+      const baseline = evidenceFixture(round.plan.seed, round.targetHarnessRef, 0)
+      round.baseline = baseline
+      const runId = baseline.trials[0]!.runId!
+      const hasProcess = channels === 'process' || channels === 'all'
+      const hasFeedback = channels === 'feedback' || channels === 'all'
+      const verifier: HitchVerifierEvidence = { runId, verifier: {
+        status: 'complete',
+        scores: { totalScore: 0, ...(hasProcess ? { processScore: 0 } : {}), normalization: 'standard' },
+        ...(hasProcess ? { process: {
+          schemaVersion: 1, metric: 'assertions', score: 0, detailStatus: 'components', passed: 0, total: 1, excluded: 0,
+          components: [{ id: 'step-1', category: 'assertion', status: 'failed', weight: 1, code: 'missing-output',
+            publicDetails: { note: 'process clue top-secret held-out-secret', explanation: '过程🙂'.repeat(900),
+              api_key: 'nested-credential', heldOutAnswer: 'hidden-answer', partitionRef: 'hidden-partition' },
+            privateDetailsRef: 'private-only/step-1.json', trajectoryRefs: [{ runId, seqStart: 1, seqEnd: 1 }] }],
+        } as const } : {}),
+        ...(hasFeedback ? { feedback: { schemaVersion: 1, items: [{ code: 'repair', severity: 'error',
+          message: `feedback clue top-secret held-out-secret ${'证据🙂'.repeat(1200)}`,
+          ...(hasProcess ? { componentIds: ['step-1'] } : {}), trajectoryRefs: [{ runId, seqStart: 1, seqEnd: 1 }] }] } as const } : {}),
+      } }
+      const accesses: Array<{ diagnosisReceipts?: unknown[] }> = []
+      const receipts = () => accesses.flatMap(access => access.diagnosisReceipts ?? [])
+      const meta = {
+        recordEvidenceAccess: (_roundId: string, _sessionId: string, access: typeof accesses[number]) => { accesses.push(access) },
+        proposalEvidenceAudit: () => ({ summaryAccessed: true, accessedRefs: [baseline.evalId], diagnosedRunRefs: [],
+          citedRefs: [], diagnosisReceipts: receipts() }),
+      }
+      const service = { activeEntryForSession: () => ({ evolutionId: round.evolutionId, roundId: round.roundId,
+        parentHarnessRef: round.targetHarnessRef, workspace: {}, baseline, meta,
+        store: { listRounds: async () => [round] } }) }
+      const inspectTrajectoryEvents = vi.fn(async () => { throw new Error('structured details must not fetch trajectory events') })
+      const capabilities = new RefineCapabilities(service as never, {} as HarnessBuilder, {
+        trajectoryReader: {
+          inspectCapabilities: async () => ({ schemaVersion: 1, trajectoryAnalysis: 1, trajectoryEventsPage: 1 }),
+          inspectTrajectoryAnalysis: async () => trajectoryAnalysis(runId, [
+            { type: 'user/message', data: { role: 'user', content: [{ type: 'text', text: 'task prompt' }] } },
+            { type: 'assistant/message', data: { message: { role: 'assistant', content: [{ type: 'text', text: 'candidate answer' }] } } },
+          ]),
+          inspectTrajectoryEvents,
+          inspectVerifierEvidence: async () => verifier,
+        },
+        secretValues: ['top-secret'], maxTrajectoryPageBytes: 4096, maxFailureBundleBytes: 128 * 1024,
+      })
+      const result = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [runId] }) as { runs: MetaFailureCard[] }
+      const card = result.runs[0]!
+      expect(card.verifier).toMatchObject({ status: 'complete', needsDetail: true, detailRef: expect.stringMatching(/^detail_[a-f0-9]+$/u) })
+      expect(receipts()).toHaveLength(0)
+      const ref = card.verifier.detailRef!
+      await expect(capabilities.call('refine-meta', 'other-meta', 'trajectory.query', { detailRef: ref })).rejects.toThrow(/unknown or no longer valid/u)
+      const found = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { detailRef: ref, find: 'totalScore' })
+      expect(found).toMatchObject({ detail: { matches: [expect.stringContaining('totalScore')] } })
+      expect(receipts()).toHaveLength(0)
+      const pages: string[] = []
+      let nextRef: string | undefined = ref
+      while (nextRef !== undefined) {
+        const page = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { detailRef: nextRef }) as {
+          detail: { text: string; complete: boolean }; nextRef?: string
+        }
+        expect(Buffer.byteLength(page.detail.text)).toBeLessThanOrEqual(4096)
+        pages.push(page.detail.text)
+        expect(page.detail.complete).toBe(page.nextRef === undefined)
+        nextRef = page.nextRef
+        if (nextRef !== undefined) expect(receipts()).toHaveLength(0)
+      }
+      const detail = pages.join('')
+      expect(detail).toContain('SCORES\n')
+      if (hasProcess) {
+        expect(detail).toContain('PROCESS\n')
+        expect(detail).toContain('process clue [REDACTED] [REDACTED_HELD_OUT]')
+        expect(detail).toContain('过程🙂'.repeat(900))
+      }
+      if (hasFeedback) {
+        expect(detail).toContain('FEEDBACK\n')
+        expect(detail).toContain('feedback clue [REDACTED] [REDACTED_HELD_OUT]')
+        expect(detail).toContain('证据🙂'.repeat(1200))
+      }
+      if (hasProcess || hasFeedback) expect(pages.length).toBeGreaterThan(1)
+      for (const text of [JSON.stringify(result), detail, JSON.stringify(found)]) {
+        expect(text).not.toMatch(/top-secret|held-out-secret|privateDetailsRef|private-only|nested-credential|heldOutAnswer|hidden-answer|partitionRef|hidden-partition/u)
+      }
+      expect(receipts()).toHaveLength(1)
+      await capabilities.call('refine-meta', 'meta', 'trajectory.query', { detailRef: ref })
+      expect(receipts()).toHaveLength(1)
+      expect(inspectTrajectoryEvents).not.toHaveBeenCalled()
+
+      verifier.verifier.status = 'result_only'
+      accesses.length = 0
+      const resultOnly = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [runId] }) as { runs: MetaFailureCard[] }
+      const resultOnlyCard = resultOnly.runs[0]!
+      expect(resultOnlyCard.verifier.detailRef).toMatch(/^detail_/u)
+      if (hasProcess || hasFeedback) {
+        expect(resultOnlyCard.verifier).toMatchObject({ needsDetail: true })
+        expect(resultOnly).toMatchObject({ diagnosisProgress: { ready: false, diagnosed: 0 } })
+        expect(receipts()).toHaveLength(0)
+        let resultOnlyRef: string | undefined = resultOnlyCard.verifier.detailRef!
+        while (resultOnlyRef !== undefined) {
+          const page = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { detailRef: resultOnlyRef }) as {
+            detail: { complete: boolean }; nextRef?: string
+          }
+          resultOnlyRef = page.nextRef
+          expect(receipts()).toHaveLength(page.detail.complete ? 1 : 0)
+        }
+      } else {
+        expect(resultOnlyCard.verifier).not.toHaveProperty('needsDetail')
+        expect(resultOnly).toMatchObject({ diagnosisProgress: { ready: true, diagnosed: 1 } })
+        expect(receipts()).toHaveLength(1)
+      }
+    },
+  )
+
+  it.each(['process', 'feedback'] as const)(
+    'accepts untruncated result_only %s evidence directly from its card',
+    async channel => {
+      const round = roundFixture({ roundId: 'round-small-structured', status: 'candidate-editing' })
+      const baseline = evidenceFixture(round.plan.seed, round.targetHarnessRef, 0)
+      round.baseline = baseline
+      const runId = baseline.trials[0]!.runId!
+      const accesses: Array<{ diagnosisReceipts?: unknown[] }> = []
+      const receipts = () => accesses.flatMap(access => access.diagnosisReceipts ?? [])
+      const meta = {
+        recordEvidenceAccess: (_roundId: string, _sessionId: string, access: typeof accesses[number]) => { accesses.push(access) },
+        proposalEvidenceAudit: () => ({ summaryAccessed: true, accessedRefs: [baseline.evalId], diagnosedRunRefs: [],
+          citedRefs: [], diagnosisReceipts: receipts() }),
+      }
+      const service = { activeEntryForSession: () => ({ evolutionId: round.evolutionId, roundId: round.roundId,
+        parentHarnessRef: round.targetHarnessRef, workspace: {}, baseline, meta,
+        store: { listRounds: async () => [round] } }) }
+      const capabilities = new RefineCapabilities(service as never, {} as HarnessBuilder, {
+        trajectoryReader: {
+          inspectCapabilities: async () => ({ schemaVersion: 1, trajectoryAnalysis: 1, trajectoryEventsPage: 1 }),
+          inspectTrajectoryAnalysis: async () => trajectoryAnalysis(runId, [
+            { type: 'user/message', data: { role: 'user', content: [{ type: 'text', text: 'task prompt' }] } },
+            { type: 'assistant/message', data: { message: { role: 'assistant', content: [{ type: 'text', text: 'candidate answer' }] } } },
+          ]),
+          inspectTrajectoryEvents: async () => { throw new Error('structured details must not fetch trajectory events') },
+          inspectVerifierEvidence: async () => ({ runId, verifier: {
+            status: 'result_only',
+            scores: { totalScore: 0, ...(channel === 'process' ? { processScore: 0 } : {}), normalization: 'standard' },
+            ...(channel === 'process' ? { process: {
+              schemaVersion: 1, metric: 'assertions', score: 0, detailStatus: 'components', passed: 0, total: 1, excluded: 0,
+              components: [{ id: 'step-1', category: 'assertion', status: 'failed', weight: 1, code: 'missing-output' }],
+            } as const } : { feedback: {
+              schemaVersion: 1, items: [{ code: 'repair', severity: 'error', message: 'Return the missing output.' }],
+            } as const }),
+          } }),
+        },
+      })
+      const result = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [runId] }) as { runs: MetaFailureCard[] }
+      expect(result.runs[0]!.verifier[channel]).toMatchObject(channel === 'process'
+        ? { components: [{ id: 'step-1', status: 'failed', code: 'missing-output' }] }
+        : { items: [{ code: 'repair', message: 'Return the missing output.' }] })
+      expect(result.runs[0]!.verifier[channel]).not.toHaveProperty('truncated', true)
+      expect(result.runs[0]!.verifier).not.toHaveProperty('needsDetail')
+      expect(result).toMatchObject({ diagnosisProgress: { ready: true, diagnosed: 1, required: 1, remainingRunIds: [] } })
+      expect(receipts()).toHaveLength(1)
+    },
+  )
+
+  it.each([
+    ['complete', 'process'], ['complete', 'feedback'],
+    ['result_only', 'process'], ['result_only', 'feedback'],
+  ] as const)(
+    'bounds %s structured %s cards while preserving complete paged evidence and diagnosis requirements',
+    async (status, channel) => {
+      const round = roundFixture({ roundId: 'round-bounded-structured', status: 'candidate-editing', heldOutRef: 'held-out-secret' })
+      const baseline = evidenceFixture(round.plan.seed, round.targetHarnessRef, 0)
+      round.baseline = baseline
+      const runId = baseline.trials[0]!.runId!
+      const longFeedback = `feedback start top-secret held-out-secret ${'反馈🙂'.repeat(23_040)} feedback tail`
+      const longExplanation = `process start top-secret held-out-secret ${'过程🙂'.repeat(6_000)} process tail`
+      const trajectoryRefs = Array.from({ length: 100 }, (_, seq) => ({ runId, seqStart: seq, seqEnd: seq }))
+      const verifier: HitchVerifierEvidence = { runId, verifier: {
+        status,
+        scores: { totalScore: 0, ...(channel === 'process' ? { processScore: 0 } : {}), normalization: 'standard' },
+        ...(channel === 'process' ? { process: {
+          schemaVersion: 1, metric: `assertions-${'\u0000'.repeat(500)}`, score: 0,
+          detailStatus: 'components', passed: 0, total: 20, excluded: 0,
+          components: Array.from({ length: 20 }, (_, index) => ({
+            id: index === 0 ? 'step-0' : `step-${index}-${'\u0000'.repeat(500)}`,
+            category: `assertion-${'\u0000'.repeat(500)}`, status: 'failed' as const, weight: 1,
+            code: index === 1 ? 'missing-output-\u0000'.repeat(2_000) : 'missing-output',
+            publicDetails: index === 0 ? {
+              explanation: longExplanation,
+              nested: { api_key: 'nested-credential', heldOutAnswer: 'hidden-answer', partitionRef: 'hidden-partition' },
+            } : { note: `component detail ${index}` },
+            privateDetailsRef: `private-only/step-${index}.json`, trajectoryRefs,
+          })),
+        } as const } : { feedback: {
+          schemaVersion: 1,
+          items: Array.from({ length: 20 }, (_, index) => ({
+            code: index === 1 ? 'repair-\u0000'.repeat(2_000) : `repair-${index}`, severity: 'error' as const,
+            message: index === 0 ? longFeedback : `feedback item ${index} ${'\u0000'.repeat(1_000)}`,
+            trajectoryRefs,
+          })),
+        } as const }),
+        // A short legacy failure must not satisfy diagnosis when structured
+        // evidence has been omitted from the same card.
+        ...(status === 'complete' ? { diagnostics: { ctrf: { json: { results: {
+          summary: { passed: 0, failed: 1, skipped: 0 },
+          tests: [{ name: 'legacy assertion', status: 'failed', message: 'Legacy failure clue.' }],
+        } } } } } : {}),
+      } }
+      expect(Buffer.byteLength(longFeedback)).toBeGreaterThan(225 * 1024)
+      const accesses: Array<{ diagnosisReceipts?: unknown[] }> = []
+      const receipts = () => accesses.flatMap(access => access.diagnosisReceipts ?? [])
+      const meta = {
+        recordEvidenceAccess: (_roundId: string, _sessionId: string, access: typeof accesses[number]) => { accesses.push(access) },
+        proposalEvidenceAudit: () => ({ summaryAccessed: true, accessedRefs: [baseline.evalId], diagnosedRunRefs: [],
+          citedRefs: [], diagnosisReceipts: receipts() }),
+      }
+      const service = { activeEntryForSession: () => ({ evolutionId: round.evolutionId, roundId: round.roundId,
+        parentHarnessRef: round.targetHarnessRef, workspace: {}, baseline, meta,
+        store: { listRounds: async () => [round] } }) }
+      const inspectTrajectoryEvents = vi.fn(async () => { throw new Error('structured details must not fetch trajectory events') })
+      const capabilities = new RefineCapabilities(service as never, {} as HarnessBuilder, {
+        trajectoryReader: {
+          inspectCapabilities: async () => ({ schemaVersion: 1, trajectoryAnalysis: 1, trajectoryEventsPage: 1 }),
+          inspectTrajectoryAnalysis: async () => trajectoryAnalysis(runId, [
+            { type: 'user/message', data: { role: 'user', content: [{ type: 'text', text: 'task prompt' }] } },
+            { type: 'assistant/message', data: { message: { role: 'assistant', content: [{ type: 'text', text: 'candidate answer' }] } } },
+          ]),
+          inspectTrajectoryEvents,
+          inspectVerifierEvidence: async () => verifier,
+        },
+        secretValues: ['top-secret'], maxTrajectoryPageBytes: 4096,
+      })
+      const result = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [runId] })
+      const card = (result as unknown as { runs: MetaFailureCard[] }).runs[0]!
+      const preview = card.verifier[channel]!
+      expect(preview).toMatchObject({ truncated: true })
+      expect(Buffer.byteLength(JSON.stringify(preview))).toBeLessThanOrEqual(8_000)
+      expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(10_000)
+      expect(result).toMatchObject({ diagnosisProgress: { ready: false, diagnosed: 0, required: 1, remainingRunIds: [runId] } })
+      expect(card.verifier).toMatchObject({
+        status,
+        scores: { totalScore: 0, ...(channel === 'process' ? { processScore: 0 } : {}), normalization: 'standard' },
+        ...(status === 'complete' ? { failures: [{ name: 'legacy assertion', detail: { text: 'Legacy failure clue.' } }] } : {}),
+        needsDetail: true, detailRef: expect.stringMatching(/^detail_[a-f0-9]+$/u),
+      })
+      if (channel === 'process') {
+        expect(card.verifier.process).toMatchObject({ score: 0, passed: 0, total: 20, excluded: 0 })
+        const components = card.verifier.process!.components!
+        expect(components.length).toBeGreaterThan(0)
+        expect(components.length).toBeLessThanOrEqual(5)
+        expect(components[0]).not.toHaveProperty('publicDetails')
+        expect(components[0]).toHaveProperty('publicDetailsPreview', expect.stringContaining('process start'))
+      } else {
+        expect(card.verifier.feedback!.items.length).toBeGreaterThan(0)
+        expect(card.verifier.feedback!.items.length).toBeLessThanOrEqual(5)
+      }
+      const rendered = renderTrajectoryResult(result as Parameters<typeof renderTrajectoryResult>[0])
+      expect(Buffer.byteLength(rendered)).toBeLessThan(10_000)
+      expect(rendered).toMatch(/preview|truncated|omitted/iu)
+      expect(rendered).toContain(`[required verifier details: ${card.verifier.detailRef!}]`)
+      expect(rendered).not.toContain(channel === 'process' ? 'process tail' : 'feedback tail')
+      expect(receipts()).toHaveLength(0)
+
+      const ref = card.verifier.detailRef!
+      const tail = channel === 'process' ? 'process tail' : 'feedback tail'
+      const found = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { detailRef: ref, find: tail })
+      expect(found).toMatchObject({ detail: { matches: [expect.stringContaining(tail)] } })
+      expect(receipts()).toHaveLength(0)
+      await expect(capabilities.call('refine-meta', 'meta', 'trajectory.query', {}))
+        .resolves.toMatchObject({ diagnosisProgress: { ready: false, diagnosed: 0, remainingRunIds: [runId] } })
+      const pages: string[] = []
+      let nextRef: string | undefined = ref
+      while (nextRef !== undefined) {
+        const page = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { detailRef: nextRef }) as {
+          detail: { text: string; complete: boolean }; nextRef?: string
+        }
+        expect(Buffer.byteLength(page.detail.text)).toBeLessThanOrEqual(4096)
+        pages.push(page.detail.text)
+        expect(page.detail.complete).toBe(page.nextRef === undefined)
+        nextRef = page.nextRef
+        if (nextRef !== undefined) expect(receipts()).toHaveLength(0)
+      }
+      expect(pages.length).toBeGreaterThan(1)
+      const detail = pages.join('')
+      expect(detail).toContain(channel === 'process'
+        ? longExplanation.replace('top-secret', '[REDACTED]').replace('held-out-secret', '[REDACTED_HELD_OUT]')
+        : longFeedback.replace('top-secret', '[REDACTED]').replace('held-out-secret', '[REDACTED_HELD_OUT]'))
+      expect(detail).toContain(channel === 'process' ? 'component detail 19' : 'feedback item 19')
+      expect(detail).toContain('"seqStart": 99')
+      if (status === 'complete') expect(detail).toContain('Legacy failure clue.')
+      for (const visible of [JSON.stringify(result), rendered, detail, JSON.stringify(found)]) {
+        expect(visible).not.toMatch(/top-secret|held-out-secret|privateDetailsRef|private-only|nested-credential|heldOutAnswer|hidden-answer|partitionRef|hidden-partition/u)
+      }
+      expect(receipts()).toHaveLength(1)
+      await expect(capabilities.call('refine-meta', 'meta', 'trajectory.query', {}))
+        .resolves.toMatchObject({ diagnosisProgress: { ready: true, diagnosed: 1, required: 1, remainingRunIds: [] } })
+      expect(inspectTrajectoryEvents).not.toHaveBeenCalled()
+    },
+  )
 
   it('returns an executable recovery action instead of consuming an incomplete finalization', async () => {
     const round = roundFixture({ roundId: 'round-recovery', status: 'candidate-editing' })

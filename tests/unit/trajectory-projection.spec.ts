@@ -237,6 +237,63 @@ describe('trajectory projection', () => {
     expect(Buffer.byteLength(JSON.stringify(result.messages[0]))).toBeLessThan(1_000)
   })
 
+  it('keeps incomplete reasoning and parallel tool argument streams separate after a timeout', () => {
+    const analysis = trajectory([])
+    const streams = [
+      {
+        blockIndex: 0, blockStartSeq: 18, kind: 'reasoning' as const, sourceSeqCount: 2,
+        value: 'Locate the contact before updating the phone.',
+      },
+      {
+        blockIndex: 1, blockStartSeq: 37, kind: 'tool_arguments' as const, sourceSeqCount: 2,
+        value: '{"query":"SELECT id FROM contacts WHERE name = \\"Avery',
+      },
+      {
+        blockIndex: 2, blockStartSeq: 43, kind: 'tool_arguments' as const, sourceSeqCount: 1,
+        value: '{"phone":"+1-555-014',
+      },
+    ].map(({ value, ...stream }) => ({
+      ...stream,
+      content: {
+        ...contentExcerpt(analysis.runId, value, 'data.chunk.delta', stream.blockStartSeq),
+        source: { runId: analysis.runId, seq: stream.blockStartSeq, field: 'data.chunk.delta' },
+      },
+    }))
+    analysis.chunkSummaries = [{
+      turn: 1, step: 1, attempt: 0, modelBoundarySeq: 17,
+      firstSeq: 17, lastSeq: 46, count: 8,
+      types: { 'block-start': 3, 'block-delta': 5 },
+      partial: { status: 'incomplete', sourceSeqCount: 5, streams },
+    }]
+
+    const request = projectTrajectory(analysis).semanticSteps[0]?.modelRequests?.[0]
+    expect(request?.partial).toEqual({ status: 'incomplete', sourceSeqCount: 5, streams })
+    expect(request?.partial).not.toHaveProperty('content')
+    expect(request?.partial?.streams?.map(stream => stream.content.source.seq)).toEqual([18, 37, 43])
+    expect(request?.partial?.streams?.map(stream => stream.content.preview)).toEqual([
+      'Locate the contact before updating the phone.',
+      '{"query":"SELECT id FROM contacts WHERE name = \\"Avery',
+      '{"phone":"+1-555-014',
+    ])
+  })
+
+  it('preserves the legacy incomplete request content format', () => {
+    const analysis = trajectory([])
+    const content = {
+      ...contentExcerpt(analysis.runId, 'Unfinished answer', 'data.chunk.delta', 4),
+      source: { runId: analysis.runId, seq: 4, field: 'data.chunk.delta' },
+    }
+    analysis.chunkSummaries = [{
+      turn: 1, step: 1, attempt: 0, modelBoundarySeq: 4,
+      firstSeq: 4, lastSeq: 6, count: 3, types: { 'text-delta': 3 },
+      partial: { status: 'incomplete', sourceSeqCount: 3, content },
+    }]
+
+    const partial = projectTrajectory(analysis).semanticSteps[0]?.modelRequests?.[0]?.partial
+    expect(partial).toEqual({ status: 'incomplete', sourceSeqCount: 3, content })
+    expect(partial).not.toHaveProperty('streams')
+  })
+
   it('keeps oversized message and tool content bounded with correct internal source fields', () => {
     const result = projectTrajectory(trajectory([
       {
