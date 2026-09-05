@@ -22,7 +22,7 @@
 | 组件 | 要求 | 用途 |
 | --- | --- | --- |
 | Node.js | `22.19+` 或 `24+` | DSH 和插件运行时 |
-| DSH | `0.1.0-rc.8` | 提供 agent、session、preset、命令和标准 coding tools |
+| DSH | `0.1.0-rc.8` 或 `0.1.1-rc.2` | 提供 agent、session、preset、命令和标准 coding tools |
 | pnpm | 在 `PATH` 中可用 | `dsh plugin` 会把包管理命令转发给 pnpm |
 | Git | 支持 worktree 的现代版本 | candidate 隔离、exact commit identity 和 promotion |
 | Python 3 + IPython | Python 可执行文件可配置 | Meta Agent 的 `ipython_input` 分析环境 |
@@ -51,7 +51,7 @@ Linux 还必须明确 Unix socket 隔离实现：
 
 插件自己的普通 npm 依赖会随安装自动解析，包括 DSH filesystem/search/bash 适配包、`@anthropic-ai/sandbox-runtime`、`js-yaml` 和 `diff`，不需要逐个手工安装。
 
-以下 peer dependency 必须由 DSH profile 提供，并与 `0.1.0-rc.8` 兼容：
+以下 peer dependency 由 DSH profile 提供，DSH 包版本需与 `0.1.0-rc.8` 或 `0.1.1-rc.2` 兼容：
 
 - `@deepseek-ai/cordis`
 - `@deepseek-ai/dsh-agent`
@@ -62,8 +62,12 @@ Linux 还必须明确 Unix socket 隔离实现：
 - `@deepseek-ai/dsh-skill`
 - `@deepseek-ai/dsh-system-prompt`
 - `@deepseek-ai/dsh-tools`
+- `@deepseek-ai/dsh-attachment`
+- `@deepseek-ai/dsh-sandbox`
 
 标准 DSH `web` profile 已提供这些宿主能力。不要在 Gear 中复制一套 DSH runtime。
+
+Gear 安装包携带私有 ToolFs：构建时校验固定的上游 `0.1.1-rc.2` 包，只补齐图片工具的 `fs` 注入，并内联该工具使用的 diff 9。运行时继续使用宿主 DSH 服务，Gear 自身的 diff 8 保持独立。这不覆盖全局 DSH，也不依赖任何图片插件。源码安装的 `prepare` 和打包前构建会生成该 asset；服务器安装构建好的 tarball 不需要构建工具。详见 [图片工具故障与修复记录](meta-agent-initialization-fix-2026-09-05.md)。
 
 ## 3. 安装插件
 
