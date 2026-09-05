@@ -8,7 +8,28 @@ require the version-specific
 
 ## Transport and request form
 
-The client sends one request at a time:
+Use DSH's native bridge when the `refine_request` tool is available:
+
+```json
+{"method":"control.status","params":{}}
+```
+
+The tool verifies a native load of the packaged skill in the current session,
+checks the current scope's skill selection and configured model/sampling, then
+binds the DSH session as `clientId` and supplies the configured identity on
+`meta.claim`. Do not add or copy those fields. An omitted Gear `maxTokens`
+accepts DSH's marked adapter default, not an unrelated explicit cap.
+
+The packaged skill digest covers the entire directory, including references
+and invocation metadata. Use `gear-refine skill-identity --path <skill-directory>`
+to compute it for external clients; a hash of `SKILL.md` alone is insufficient.
+After compaction removes the load record, reload the skill before retrying.
+Code Mode must complete its skill-loading call before a separate Refine call.
+This is skill-load verification, not attestation of the host's full composition
+or a grant/restriction of its filesystem permissions.
+
+For Codex, Claude Code, and other shell-capable Meta harnesses, send one request
+at a time through the CLI:
 
 ```text
 gear-refine [--socket <path>] request <method> '<json-params>'
@@ -18,7 +39,8 @@ Set `GEAR_REFINE_SOCKET` when `--socket` is omitted. Standard output is one JSON
 value. A nonzero exit means the request failed; treat its message as a protocol
 error, not as permission to inspect host state.
 
-Keep `leaseToken` secret. Do not print it in commentary, reports, logs, diffs,
+Both transports call the same gateway methods and receive the same results.
+Keep `leaseToken` secret. Do not print it in commentary, reports, diffs,
 prompts, or candidate files. It is sent only in requests for its assignment.
 
 ## Control methods
@@ -135,7 +157,8 @@ explicitly requests rollback.
 ## Claiming a Meta assignment
 
 Poll `meta.claim` after starting/continuing and while baseline evaluation is
-running:
+running. CLI clients send the complete identity below; `refine_request` clients
+omit both `clientId` and `identity` because the DSH bridge binds them:
 
 ```json
 {
@@ -185,7 +208,7 @@ for another candidate, round, or client.
 
 ## Lease request envelope
 
-Every candidate method and `meta.call` includes:
+Every CLI candidate method and `meta.call` includes:
 
 ```json
 {
@@ -196,6 +219,8 @@ Every candidate method and `meta.call` includes:
 ```
 
 Examples below show method-specific fields in addition to this envelope.
+When using `refine_request`, omit `clientId`; the bridge supplies it while the
+lease id and token remain required.
 
 ## Candidate file methods
 

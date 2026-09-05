@@ -115,11 +115,36 @@ Before editing, state internally:
 - why the proposed change should alter that behavior;
 - what unrelated behaviors must remain unchanged.
 
+Choose the mechanism from the causal boundary, not from whichever candidate
+file already exists:
+
+| Observable boundary | Usually prefer | Use shared prompt/context only when |
+| --- | --- | --- |
+| Stable guidance needed on nearly every request | `context` | The rule is broadly applicable and has no narrower reliable trigger |
+| Recognizable class of tasks needing substantial instructions | `skill` | The instructions truly belong in every request instead of being loaded on demand |
+| Repeatable multi-step procedure | `workflow` | The procedure is short, universal guidance rather than an executable sequence |
+| Tool call can be allowed, denied, or questioned before execution | `pre_action` or guard | The condition cannot be observed reliably from the structured call |
+| Tool result can be validated or corrected after execution | `post_action` or `action_verifier` | No deterministic result signal can distinguish the failure |
+| The Target Agent lacks an operation or structured interface | `tool` | Existing tools suffice and only their use needs guidance |
+| Relevant state is lost during summarization | `compaction` | The information was missing before compaction rather than discarded by it |
+
+The absence of a file for the preferred mechanism does not make that mechanism
+unavailable. Create and wire the smallest supported artifact when the candidate
+toolchain exposes the necessary extension point. Conversely, do not invent an
+executable hook when the evidence supplies no deterministic trigger.
+
+When a failure appears at a tool-call or tool-result boundary, explicitly
+compare the applicable hook/verifier with prompt guidance. Choosing `context`
+is justified only when the behavior cannot be enforced or loaded more narrowly.
+Do not add a policy for infrastructure failures, or for behavior that the
+trajectory shows the Target Agent already performed correctly.
+
 Prefer the smallest change that breaks the causal chain. Avoid:
 
 - task names, expected answers, grader details, or literal patches for a seed
   task;
 - broad rewrites when one existing policy or resource is responsible;
+- aggregating unrelated seed remedies into one always-on instruction block;
 - duplicating an instruction already present elsewhere;
 - adding a file without registering or referencing it;
 - changing multiple semantic targets without evidence for each;

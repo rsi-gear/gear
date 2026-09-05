@@ -127,7 +127,7 @@ async function eventually<T>(read: () => Promise<T>, accept: (value: T) => boole
 }
 
 describe('refine skill end to end', () => {
-  it.each(['codex', 'claude-code'])('lets a %s Meta harness claim, edit, diagnose, finalize, evaluate, and promote', async runtimeType => {
+  it.each(['codex', 'claude-code', 'dsh'])('lets a %s Meta harness claim, edit, diagnose, finalize, evaluate, and promote', async runtimeType => {
     const fixture = await createGitHarnessFixture()
     cleanups.push(() => rm(fixture.root, { recursive: true, force: true }))
     const evaluator = new E2eEvaluator()
@@ -137,7 +137,6 @@ describe('refine skill end to end', () => {
       dshRepository: fixture.repository,
       targetRoot: fixture.targetRoot,
       stateRoot: join(fixture.root, 'state'),
-      metaPreset: 'refine',
       metaModel: { provider: 'openai', model: 'gpt-test' },
       metaSampling: {},
       metaAdapter: {

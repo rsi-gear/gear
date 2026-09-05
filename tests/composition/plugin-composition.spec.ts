@@ -23,6 +23,11 @@ describe('published plugin composition', () => {
     const fixture = await createGitHarnessFixture()
     root = fixture.root
     const commands: Array<{ name: string }> = []
+    const tools: Array<{ name: string }> = []
+    let skillProvider: {
+      list(options: { signal?: AbortSignal }): Promise<unknown>
+      get(candidate: unknown, options: { signal?: AbortSignal }): Promise<unknown>
+    } | undefined
     const metaPresetPath = join(root, 'meta-preset', 'agent.cordis.yml')
     await mkdir(join(root, 'meta-preset'), { recursive: true })
     await writeFile(metaPresetPath, '[]\n')
@@ -51,13 +56,22 @@ else process.exitCode = 2
         ctx.provide('commands', {
           register(definition: { name: string }) { commands.push(definition); return () => {} },
         } as never)
-        ctx.provide('tools', {} as never)
+        ctx.provide('tools', {
+          register(definition: { name: string }) { tools.push(definition); return () => {} },
+        } as never)
+        ctx.provide('skills', {
+          registerProvider(create: (control: { signal: AbortSignal; invalidate(): void }) => typeof skillProvider) {
+            skillProvider = create({ signal: new AbortController().signal, invalidate() {} })
+            return () => {}
+          },
+        } as never)
         ctx.provide('systemPrompt', {} as never)
         ctx.provide('subprocess', {} as never)
         ctx.provide('shellEnv', {} as never)
       },
     }
     const configPath = join(root, 'agent.cordis.yml')
+    const socketPath = join('/private/tmp', `gear-refine-composition-${process.pid}-${Date.now()}.sock`)
     const q = (value: string): string => JSON.stringify(value)
     await writeFile(configPath, [
       '- name: refine-test-services',
@@ -66,7 +80,8 @@ else process.exitCode = 2
       `    workspaceRoot: ${q(root)}`,
       `    dshRepository: ${q(fixture.repository)}`,
       `    targetRoot: ${q(fixture.targetRoot)}`,
-      '    metaPreset: refine-meta',
+      '    metaAdapter:',
+      `      socketPath: ${q(socketPath)}`,
       '    metaModel:',
       '      provider: test',
       '      model: test-model',
@@ -117,6 +132,20 @@ else process.exitCode = 2
     expect(context.targetWorkers).toBeDefined()
     expect(context.evolutionComponents).toBeDefined()
     expect(context.refine.options.rollout.seeds).toBeUndefined()
-    expect(commands).toContainEqual(expect.objectContaining({ name: 'refine' }))
+    expect(context.refine.options.metaAgent.runtime.type).toBe('dsh')
+    expect(context.refine.options.metaAgent.preset.id).toBe('refine')
+    expect(context.refine.options.metaAgent.preset.resources.map(value => value.logicalPath)).toEqual([
+      'SKILL.md', 'agents/openai.yaml', 'references/dsh-target-harness.md',
+      'references/protocol.md', 'references/target-harness-editing.md',
+    ])
+    expect(context.refine.options.metaAgent.preset.digest).not.toBe(context.refine.options.metaAgent.preset.resources[0]?.digest)
+    expect(commands).toEqual([])
+    expect(tools).toContainEqual(expect.objectContaining({ name: 'refine_request' }))
+    expect(skillProvider).toBeDefined()
+    const candidates = await skillProvider!.list({}) as Array<{ name: string; rank: number }>
+    expect(candidates).toContainEqual(expect.objectContaining({ name: 'refine', rank: 0 }))
+    const skill = await skillProvider!.get(candidates[0], {}) as { content: string; resourceBase: { kind: string } }
+    expect(skill.content).toContain('current tree as a starting state')
+    expect(skill.resourceBase.kind).toBe('directory')
   })
 })

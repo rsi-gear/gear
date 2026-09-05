@@ -53,9 +53,11 @@ when it seals a valid candidate.
 
 ## How the Meta Agent may edit these files
 
-The Meta Agent never edits the candidate through a host path, shell redirect,
-Git command, or an IPython filesystem API. All candidate mutations cross the
-Gear lease API:
+Use the candidate-scoped tools exposed by the active Meta adapter; never use an
+unscoped host path, Git command, shell redirect, or IPython filesystem API to
+reach the candidate.
+
+In harness-neutral skill mode, mutations cross the Gear lease API:
 
 - `candidate.edit` replaces a unique observed substring in an existing text
   file;
@@ -63,14 +65,15 @@ Gear lease API:
   whole observed file with its current digest;
 - `candidate.remove` deletes an observed file with its current digest.
 
-These are three valid mutation methods; modifications are not restricted to
-`candidate.edit`. The Meta harness may transport the structured calls through
-`gear-refine request`. A DSH compatibility host may happen to use an IPython
-kernel for its own agent runtime, but the kernel is not the candidate editing
-boundary and grants no extra filesystem authority.
+Use `candidate.tree` and `candidate.read` before those mutations and carry the
+new observation digest forward after each change. Modifications are not
+restricted to `candidate.edit`.
 
-Always use `candidate.tree` and `candidate.read` first. After each mutation,
-use the newly returned digest before changing that file again.
+In Native DSH Meta mode, Gear instead scopes DSH's standard `read`, `write`,
+`edit`, `glob`, `grep`, and optional sandboxed `bash` tools to the active
+candidate. Use those standard tools directly; do not look for unavailable
+`candidate.*` aliases. In either mode, IPython is an analysis scratchpad and
+grants no additional candidate or host filesystem authority.
 
 ## `preset/`: composition entrypoint
 
@@ -675,9 +678,10 @@ Its preset must connect every live resource:
 Do not create this whole layout by default. It demonstrates the connections;
 the actual candidate should contain only the smallest evidence-supported set.
 
-## Review checklist before `candidate.check`
+## Review checklist before the candidate check
 
-Confirm all of the following in `candidate.diff`:
+Inspect the authoritative diff with `candidate.diff` in skill mode or
+`candidate_diff` in Native DSH Meta mode, then confirm all of the following:
 
 - `preset/agent.cordis.yml` remains a valid top-level list with unique row ids.
 - Every new plugin uses named ESM exports and declares its required services.
@@ -696,6 +700,7 @@ Confirm all of the following in `candidate.diff`:
   answer or held-out guess.
 
 Then use `meta.call` with capability `candidate.check` and arguments
-`{"check":"compiler"}`. A successful compiler check proves the carrier can load
-and validate the candidate; it does not prove the behavioral hypothesis, which
-remains subject to Gear evaluation.
+`{"check":"compiler"}` in skill mode, or call `candidate_check` in Native DSH
+Meta mode. A successful compiler check proves the carrier can load and validate
+the candidate; it does not prove the behavioral hypothesis, which remains
+subject to Gear evaluation.

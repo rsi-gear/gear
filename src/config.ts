@@ -38,7 +38,8 @@ export interface Config {
   dshRepository: string
   targetRoot: string
   stateRoot?: string
-  metaPreset: string
+  /** Required only by the legacy Native DSH Meta adapter. */
+  metaPreset?: string
   metaModel: AgentOptions
   metaSampling: MetaSamplingConfig
   metaAdapter: {
@@ -122,7 +123,7 @@ export const ConfigSchema: Schema<Config> = Schema.object({
   dshRepository: Schema.string().required(),
   targetRoot: Schema.string().default('harness'),
   stateRoot: Schema.string(),
-  metaPreset: Schema.string().required(),
+  metaPreset: Schema.string(),
   metaModel: Schema.object({
     provider: Schema.string(),
     model: Schema.string(),
@@ -132,7 +133,7 @@ export const ConfigSchema: Schema<Config> = Schema.object({
     temperature: Schema.number(),
   }).default({} as never),
   metaAdapter: Schema.object({
-    kind: Schema.union(['dsh', 'skill'] as const).default('dsh'),
+    kind: Schema.union(['dsh', 'skill'] as const).default('skill'),
     runtimeType: Schema.string(),
     runtimeVersion: Schema.string(),
     runtimeIntegrity: Schema.string(),
@@ -140,7 +141,7 @@ export const ConfigSchema: Schema<Config> = Schema.object({
     harnessDigest: Schema.string(),
     socketPath: Schema.string(),
     maxRequestBytes: Schema.number().default(1024 * 1024),
-  }).default({ kind: 'dsh', maxRequestBytes: 1024 * 1024 } as never),
+  }).default({ kind: 'skill', maxRequestBytes: 1024 * 1024 } as never),
   dshBaseRef: Schema.string().required(),
   toolchainRef: Schema.string().required(),
   sandboxProfileRef: Schema.string().required(),

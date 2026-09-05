@@ -3,13 +3,26 @@ import { readFile } from 'node:fs/promises'
 import { ConfigSchema } from './config.js'
 import { requestRefineSkill } from './skill/client.js'
 import { createSkillControlPlane } from './skill/control-plane.js'
+import { loadBundledRefineSkill } from './skill/bundle.js'
 
 function usage(): never {
-  throw new Error('usage: gear-refine serve --config PATH | gear-refine [--socket PATH] request <method> [json-params]')
+  throw new Error('usage: gear-refine serve --config PATH | gear-refine skill-identity [--path DIRECTORY] | gear-refine [--socket PATH] request <method> [json-params]')
 }
 
 async function main(argv: string[]): Promise<void> {
   const args = [...argv]
+  if (args[0] === 'skill-identity') {
+    args.shift()
+    let directory: string | undefined
+    if (args.length > 0) {
+      if (args.shift() !== '--path') usage()
+      directory = args.shift()
+      if (directory === undefined || args.length > 0) usage()
+    }
+    const skill = await loadBundledRefineSkill(directory)
+    process.stdout.write(`${JSON.stringify({ id: skill.name, digest: skill.digest, resources: skill.resources })}\n`)
+    return
+  }
   if (args[0] === 'serve') {
     args.shift()
     if (args.shift() !== '--config') usage()

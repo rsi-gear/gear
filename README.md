@@ -13,14 +13,15 @@ selects a research population, and promotes at most one deployment champion.
 
 ## Quick start
 
-Gear Core can run independently and expose the packaged `refine` Agent Skill to
-Codex, Claude Code, DSH, or another Agent Skills-compatible Meta harness. A DSH
-plugin remains available as a compatibility host and retains the `/refine`
-command. The Meta harness and the Target harness are independent; Hitch starts
-the configured Target harness for isolated rollouts.
+Gear uses the packaged `refine` Agent Skill as its primary Meta entrypoint for
+Codex, Claude Code, DSH, and other Agent Skills-compatible harnesses. The DSH
+plugin publishes that same skill through DSH's native skill catalog; its older
+direct-session adapter remains available only as an explicit compatibility
+mode. The Meta harness and the Target harness are independent; Hitch starts the
+configured Target harness for isolated rollouts.
 
 Gear requires Node.js 22.19+ (or 24+), Git, Docker, and an installed Hitch CLI.
-The DSH compatibility host additionally requires DSH `0.1.0-rc.8`. Python,
+The DSH plugin deployment additionally requires DSH `0.1.0-rc.8`. Python,
 IPython, Bubblewrap, `socat`, and ripgrep are required only by the configured
 compiler, verifier, or DSH Meta sandbox features that use them.
 
@@ -68,7 +69,7 @@ npm install --global ./dsh-plugin-refine-0.1.0.tgz
 
 ### 3. Choose the Meta entrypoint
 
-For Codex, Claude Code, or another compatible harness, configure skill mode and
+For Codex, Claude Code, or another external harness, configure skill mode and
 start the standalone control plane:
 
 ```bash
@@ -81,7 +82,7 @@ server. The skill creates or continues evolutions, claims candidate leases, and
 uses Gear's restricted evidence and candidate APIs. See the
 [standalone and skill guide](docs/harness-agnostic-refine-skill.md).
 
-For the DSH compatibility host, install the package as a plugin:
+For DSH, install the package as a plugin:
 
 ```bash
 dsh plugin --profile web add ./dsh-plugin-refine-0.1.0.tgz
@@ -90,8 +91,9 @@ dsh --profile web --no-open
 ```
 
 The bundled plugin row is disabled by default. Complete its one-time setup in
-the [DSH installation guide](docs/plugin-installation-and-usage.md). DSH native
-mode keeps the slash-command interface:
+the [DSH installation guide](docs/plugin-installation-and-usage.md). Skill mode
+is the default: the plugin publishes the bundled skill and `refine_request`
+bridge, and DSH's native `/refine` gesture loads it into the current agent:
 
 ```text
 /refine --rounds 1 --focus context,routing
@@ -117,8 +119,9 @@ same state directories used by Gear and Hitch.
 
 ## Using refine
 
-The `refine` skill calls the structured Gear protocol. In DSH native mode, the
-following `/refine` commands remain equivalent compatibility shortcuts.
+The `refine` skill calls the structured Gear protocol. In DSH skill mode,
+`/refine` is a native skill invocation; in explicit legacy mode, the same text
+is handled by Gear's compatibility command.
 
 Start a new isolated evolution with:
 
@@ -201,10 +204,15 @@ the experiment state machine.
 | `PromotionPolicy` | Decide whether the finalist replaces the champion | Paired seed/held-out gate |
 
 The Meta Agent runtime, model, skill/preset, sampling, and content digests are
-part of the experiment identity. DSH native mode resolves that identity from a
-DSH preset; skill mode seals the external harness and `SKILL.md` identity.
+part of the experiment identity. Skill mode seals the configured harness and
+skill-bundle identity, including references and invocation metadata; the DSH
+plugin derives these from its runtime and packaged skill. Its native bridge
+also verifies the loaded skill and current model settings, but does not attest
+or restrict the rest of the host session's tools, history, or OS permissions.
+Legacy Native DSH mode instead resolves identity from a configured DSH preset.
 Changing either creates a different evolution rather than silently altering an
-existing one.
+existing one. Bundles sealed with the old `SKILL.md`-only digest require a new
+evolution after upgrading; Gear does not rewrite existing experiment identities.
 
 Algorithm plugins cannot bypass Gear's reproducibility and safety core:
 

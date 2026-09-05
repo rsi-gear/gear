@@ -70,7 +70,7 @@ function trialReward(trial: EvaluationEvidence['trials'][number]): number | unde
   return trial.rewards.reward ?? Object.values(trial.rewards)[0]
 }
 
-function expectedIdentity(spec: MetaAgentSpec): SkillHarnessIdentity {
+export function skillHarnessIdentity(spec: MetaAgentSpec): SkillHarnessIdentity {
   return {
     runtime: { ...spec.runtime },
     preset: { id: spec.preset.id, digest: spec.preset.digest },
@@ -314,7 +314,7 @@ export class SkillMetaSessionManager implements MetaSessionController {
       },
       ...(round.advisoryFocus === undefined ? {} : { advisoryFocus: [...round.advisoryFocus] }),
       batch: { id: round.batchId, index: round.roundIndex, count: round.roundCount },
-    }, expectedIdentity(this.options.metaAgent), () => {
+    }, skillHarnessIdentity(this.options.metaAgent), () => {
       state.summaryAccessed = true
       for (const ref of refs) state.accessedRefs.add(ref)
     })

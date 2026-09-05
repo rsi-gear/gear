@@ -25,6 +25,7 @@ describe('published Gear bundle', () => {
     const skillPath = resolve(root, 'skills/refine/SKILL.md')
     const skill = await readFile(skillPath, 'utf8')
     expect(skill).toContain('name: refine')
+    expect(skill).toContain('native `refine_request` tool')
     const references = [...skill.matchAll(/\]\((references\/[^)]+)\)/gu)].map(match => match[1]!)
     expect(new Set(references)).toEqual(new Set([
       'references/protocol.md',
@@ -53,6 +54,7 @@ describe('published Gear bundle', () => {
       '`tools/post-execute`',
       '`ctx.tools.guard(...)`',
       '`@deepseek-ai/dsh-skill-filesystem`',
+      'In Native DSH Meta mode',
     ]) {
       expect(dshGuide).toContain(required)
     }
