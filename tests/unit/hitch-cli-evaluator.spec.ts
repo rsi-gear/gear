@@ -1,12 +1,16 @@
 import { appendFile, chmod, copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { HitchCliEvaluator } from '../../src/evaluator/hitch-cli.js'
+import { RefineCapabilities } from '../../src/capabilities.js'
+import { renderTrajectoryResult } from '../../src/notebook/tool.js'
 import type { HitchConfig } from '../../src/config.js'
-import type { EvaluationRequest, RefinementRound } from '../../src/types.js'
+import type { DiagnosisReceipt, EvaluationRequest, MetaFailureCard, RefinementRound } from '../../src/types.js'
 import { createGitHarnessFixture } from '../helpers/git-fixture.js'
-import { evaluationCondition, roundFixture } from '../helpers/research-fixture.js'
+import { evaluationCondition, evidence as evidenceFixture, roundFixture } from '../helpers/research-fixture.js'
+import { trajectoryAnalysis } from '../helpers/trajectory-fixture.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
@@ -1146,6 +1150,82 @@ process.stdout.write(${JSON.stringify(JSON.stringify(payload))})
     })
     const evidence = await evaluator.inspectVerifierEvidence(runId, new AbortController().signal)
     expect(evidence.verifier.feedback).toBeUndefined()
+  })
+
+  it('requires complete detail readback for parsed result_only feedback before diagnosing a failed run', async () => {
+    const { evaluator } = await setup()
+    const state = roundFixture({ status: 'candidate-editing' })
+    const baseline = evidenceFixture(state.plan.seed, state.targetHarnessRef, 0)
+    state.baseline = baseline
+    const runId = baseline.trials[0]!.runId!
+    const message = `${'Verifier context. '.repeat(1_200)}ACTION REQUIRED: notify the recipient.`
+    const feedback = { schema_version: '1', items: [{ code: 'missing-notification', severity: 'error', message }] }
+    const result = { rewards: { reward: 0, total_score: 0 } }
+    const sha256 = (value: unknown) => `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`
+    const payload = {
+      schema_version: '1', kind: 'verifier-evidence', run_id: runId,
+      observation: { status: 'valid', reward: 0, verifier_result_ref: 'verifier/result.json' },
+      verifier: {
+        status: 'result_only', result, result_sha256: sha256(result),
+        scores: { total_score: 0, normalization: 'standard' }, feedback,
+        structured_artifacts: { feedback: {
+          ref: 'verifier/feedback.json', bytes: Buffer.byteLength(JSON.stringify(feedback)), sha256: sha256(feedback),
+        } },
+      },
+    }
+    await writeFile(evaluator.options.executable, `#!/usr/bin/env node
+process.stdout.write(${JSON.stringify(JSON.stringify(payload))})
+`)
+    const receipts: DiagnosisReceipt[] = []
+    const meta = {
+      recordEvidenceAccess: (_roundId: string, _sessionId: string, access: { diagnosisReceipts?: DiagnosisReceipt[] }) => {
+        receipts.push(...(access.diagnosisReceipts ?? []))
+      },
+      proposalEvidenceAudit: () => ({ summaryAccessed: true, accessedRefs: [baseline.evalId],
+        diagnosedRunRefs: [], citedRefs: [], diagnosisReceipts: receipts }),
+    }
+    const service = { activeEntryForSession: () => ({ evolutionId: state.evolutionId, roundId: state.roundId,
+      parentHarnessRef: state.targetHarnessRef, workspace: {}, baseline, meta,
+      store: { listRounds: async () => [state] } }) }
+    const capabilities = new RefineCapabilities(service as never, {} as never, {
+      maxTrajectoryPageBytes: 4096,
+      trajectoryReader: {
+        inspectCapabilities: async () => ({ schemaVersion: 1, trajectoryAnalysis: 1, trajectoryEventsPage: 1 }),
+        inspectTrajectoryAnalysis: async () => trajectoryAnalysis(runId, [
+          { type: 'user/message', data: { role: 'user', content: [{ type: 'text', text: 'Notify the recipient.' }] } },
+        ]),
+        inspectTrajectoryEvents: async () => { throw new Error('verifier detail must use the recorded artifact') },
+        inspectVerifierEvidence: (id, signal) => evaluator.inspectVerifierEvidence(id, signal),
+      },
+    })
+    const card = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [runId] }) as {
+      runs: MetaFailureCard[]
+    }
+    expect(card).toMatchObject({
+      runs: [{ verifier: { status: 'result_only', feedback: { truncated: true }, needsDetail: true } }],
+      diagnosisProgress: { ready: false, diagnosed: 0 },
+    })
+    expect(renderTrajectoryResult(card as unknown as Parameters<typeof renderTrajectoryResult>[0])).not.toContain('ACTION REQUIRED')
+    expect(receipts).toHaveLength(0)
+    const detailRef = card.runs[0]!.verifier.detailRef!
+    const found = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { detailRef, find: 'ACTION REQUIRED' })
+    expect(found).toMatchObject({ detail: { matches: [expect.stringContaining('ACTION REQUIRED')] } })
+    expect(receipts).toHaveLength(0)
+    let nextRef: string | undefined = detailRef
+    let text = ''
+    while (nextRef !== undefined) {
+      const page = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { detailRef: nextRef }) as {
+        detail: { text: string }; nextRef?: string
+      }
+      text += page.detail.text
+      nextRef = page.nextRef
+      expect(receipts).toHaveLength(nextRef === undefined ? 1 : 0)
+    }
+    expect(text).toContain(message)
+    expect(receipts[0]).toMatchObject({ runId, verifierStatus: 'result_only' })
+    await expect(capabilities.call('refine-meta', 'meta', 'trajectory.query', {})).resolves.toMatchObject({
+      diagnosisProgress: { ready: true, diagnosed: 1 },
+    })
   })
 
   it('reports verifier evidence as unavailable when an older Hitch lacks the command', async () => {

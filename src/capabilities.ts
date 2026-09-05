@@ -891,8 +891,11 @@ export class RefineCapabilities {
       detailChunks.push(`RETRY HISTORY\n${JSON.stringify(diagnostics.retry_history, null, 2)}`)
     }
     const diagnosticsText = detailChunks.length === 0 ? undefined : detailChunks.join('\n\n')
-    const needsDetail = status === 'complete' && diagnosticsText !== undefined
-      && (failedTests.length === 0 || processPreview?.truncated === true || feedbackPreview?.truncated === true)
+    // Structured artifacts can be usable even without legacy diagnostics
+    // (result_only). Omitted evidence must be read before issuing a receipt.
+    const needsDetail = (status === 'complete' || status === 'result_only') && diagnosticsText !== undefined
+      && ((status === 'complete' && failedTests.length === 0)
+        || processPreview?.truncated === true || feedbackPreview?.truncated === true)
     return {
       status,
       summary: boundedUtf8(this.sanitize(summaryText, heldOutRef) as string, 600),

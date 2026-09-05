@@ -701,16 +701,84 @@ describe('RefineCapabilities Git projection', () => {
       expect(inspectTrajectoryEvents).not.toHaveBeenCalled()
 
       verifier.verifier.status = 'result_only'
+      accesses.length = 0
       const resultOnly = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [runId] }) as { runs: MetaFailureCard[] }
-      expect(resultOnly.runs[0]!.verifier.detailRef).toMatch(/^detail_/u)
-      expect(resultOnly.runs[0]!.verifier).not.toHaveProperty('needsDetail')
-      expect(receipts()).toHaveLength(2)
+      const resultOnlyCard = resultOnly.runs[0]!
+      expect(resultOnlyCard.verifier.detailRef).toMatch(/^detail_/u)
+      if (hasProcess || hasFeedback) {
+        expect(resultOnlyCard.verifier).toMatchObject({ needsDetail: true })
+        expect(resultOnly).toMatchObject({ diagnosisProgress: { ready: false, diagnosed: 0 } })
+        expect(receipts()).toHaveLength(0)
+        let resultOnlyRef: string | undefined = resultOnlyCard.verifier.detailRef!
+        while (resultOnlyRef !== undefined) {
+          const page = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { detailRef: resultOnlyRef }) as {
+            detail: { complete: boolean }; nextRef?: string
+          }
+          resultOnlyRef = page.nextRef
+          expect(receipts()).toHaveLength(page.detail.complete ? 1 : 0)
+        }
+      } else {
+        expect(resultOnlyCard.verifier).not.toHaveProperty('needsDetail')
+        expect(resultOnly).toMatchObject({ diagnosisProgress: { ready: true, diagnosed: 1 } })
+        expect(receipts()).toHaveLength(1)
+      }
     },
   )
 
   it.each(['process', 'feedback'] as const)(
-    'bounds structured %s cards while preserving complete paged evidence and diagnosis requirements',
+    'accepts untruncated result_only %s evidence directly from its card',
     async channel => {
+      const round = roundFixture({ roundId: 'round-small-structured', status: 'candidate-editing' })
+      const baseline = evidenceFixture(round.plan.seed, round.targetHarnessRef, 0)
+      round.baseline = baseline
+      const runId = baseline.trials[0]!.runId!
+      const accesses: Array<{ diagnosisReceipts?: unknown[] }> = []
+      const receipts = () => accesses.flatMap(access => access.diagnosisReceipts ?? [])
+      const meta = {
+        recordEvidenceAccess: (_roundId: string, _sessionId: string, access: typeof accesses[number]) => { accesses.push(access) },
+        proposalEvidenceAudit: () => ({ summaryAccessed: true, accessedRefs: [baseline.evalId], diagnosedRunRefs: [],
+          citedRefs: [], diagnosisReceipts: receipts() }),
+      }
+      const service = { activeEntryForSession: () => ({ evolutionId: round.evolutionId, roundId: round.roundId,
+        parentHarnessRef: round.targetHarnessRef, workspace: {}, baseline, meta,
+        store: { listRounds: async () => [round] } }) }
+      const capabilities = new RefineCapabilities(service as never, {} as HarnessBuilder, {
+        trajectoryReader: {
+          inspectCapabilities: async () => ({ schemaVersion: 1, trajectoryAnalysis: 1, trajectoryEventsPage: 1 }),
+          inspectTrajectoryAnalysis: async () => trajectoryAnalysis(runId, [
+            { type: 'user/message', data: { role: 'user', content: [{ type: 'text', text: 'task prompt' }] } },
+            { type: 'assistant/message', data: { message: { role: 'assistant', content: [{ type: 'text', text: 'candidate answer' }] } } },
+          ]),
+          inspectTrajectoryEvents: async () => { throw new Error('structured details must not fetch trajectory events') },
+          inspectVerifierEvidence: async () => ({ runId, verifier: {
+            status: 'result_only',
+            scores: { totalScore: 0, ...(channel === 'process' ? { processScore: 0 } : {}), normalization: 'standard' },
+            ...(channel === 'process' ? { process: {
+              schemaVersion: 1, metric: 'assertions', score: 0, detailStatus: 'components', passed: 0, total: 1, excluded: 0,
+              components: [{ id: 'step-1', category: 'assertion', status: 'failed', weight: 1, code: 'missing-output' }],
+            } as const } : { feedback: {
+              schemaVersion: 1, items: [{ code: 'repair', severity: 'error', message: 'Return the missing output.' }],
+            } as const }),
+          } }),
+        },
+      })
+      const result = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [runId] }) as { runs: MetaFailureCard[] }
+      expect(result.runs[0]!.verifier[channel]).toMatchObject(channel === 'process'
+        ? { components: [{ id: 'step-1', status: 'failed', code: 'missing-output' }] }
+        : { items: [{ code: 'repair', message: 'Return the missing output.' }] })
+      expect(result.runs[0]!.verifier[channel]).not.toHaveProperty('truncated', true)
+      expect(result.runs[0]!.verifier).not.toHaveProperty('needsDetail')
+      expect(result).toMatchObject({ diagnosisProgress: { ready: true, diagnosed: 1, required: 1, remainingRunIds: [] } })
+      expect(receipts()).toHaveLength(1)
+    },
+  )
+
+  it.each([
+    ['complete', 'process'], ['complete', 'feedback'],
+    ['result_only', 'process'], ['result_only', 'feedback'],
+  ] as const)(
+    'bounds %s structured %s cards while preserving complete paged evidence and diagnosis requirements',
+    async (status, channel) => {
       const round = roundFixture({ roundId: 'round-bounded-structured', status: 'candidate-editing', heldOutRef: 'held-out-secret' })
       const baseline = evidenceFixture(round.plan.seed, round.targetHarnessRef, 0)
       round.baseline = baseline
@@ -719,7 +787,7 @@ describe('RefineCapabilities Git projection', () => {
       const longExplanation = `process start top-secret held-out-secret ${'过程🙂'.repeat(6_000)} process tail`
       const trajectoryRefs = Array.from({ length: 100 }, (_, seq) => ({ runId, seqStart: seq, seqEnd: seq }))
       const verifier: HitchVerifierEvidence = { runId, verifier: {
-        status: 'complete',
+        status,
         scores: { totalScore: 0, ...(channel === 'process' ? { processScore: 0 } : {}), normalization: 'standard' },
         ...(channel === 'process' ? { process: {
           schemaVersion: 1, metric: `assertions-${'\u0000'.repeat(500)}`, score: 0,
@@ -744,10 +812,10 @@ describe('RefineCapabilities Git projection', () => {
         } as const }),
         // A short legacy failure must not satisfy diagnosis when structured
         // evidence has been omitted from the same card.
-        diagnostics: { ctrf: { json: { results: {
+        ...(status === 'complete' ? { diagnostics: { ctrf: { json: { results: {
           summary: { passed: 0, failed: 1, skipped: 0 },
           tests: [{ name: 'legacy assertion', status: 'failed', message: 'Legacy failure clue.' }],
-        } } } },
+        } } } } } : {}),
       } }
       expect(Buffer.byteLength(longFeedback)).toBeGreaterThan(225 * 1024)
       const accesses: Array<{ diagnosisReceipts?: unknown[] }> = []
@@ -779,9 +847,11 @@ describe('RefineCapabilities Git projection', () => {
       expect(preview).toMatchObject({ truncated: true })
       expect(Buffer.byteLength(JSON.stringify(preview))).toBeLessThanOrEqual(8_000)
       expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(10_000)
+      expect(result).toMatchObject({ diagnosisProgress: { ready: false, diagnosed: 0, required: 1, remainingRunIds: [runId] } })
       expect(card.verifier).toMatchObject({
+        status,
         scores: { totalScore: 0, ...(channel === 'process' ? { processScore: 0 } : {}), normalization: 'standard' },
-        failures: [{ name: 'legacy assertion', detail: { text: 'Legacy failure clue.' } }],
+        ...(status === 'complete' ? { failures: [{ name: 'legacy assertion', detail: { text: 'Legacy failure clue.' } }] } : {}),
         needsDetail: true, detailRef: expect.stringMatching(/^detail_[a-f0-9]+$/u),
       })
       if (channel === 'process') {
@@ -807,6 +877,8 @@ describe('RefineCapabilities Git projection', () => {
       const found = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { detailRef: ref, find: tail })
       expect(found).toMatchObject({ detail: { matches: [expect.stringContaining(tail)] } })
       expect(receipts()).toHaveLength(0)
+      await expect(capabilities.call('refine-meta', 'meta', 'trajectory.query', {}))
+        .resolves.toMatchObject({ diagnosisProgress: { ready: false, diagnosed: 0, remainingRunIds: [runId] } })
       const pages: string[] = []
       let nextRef: string | undefined = ref
       while (nextRef !== undefined) {
@@ -826,11 +898,13 @@ describe('RefineCapabilities Git projection', () => {
         : longFeedback.replace('top-secret', '[REDACTED]').replace('held-out-secret', '[REDACTED_HELD_OUT]'))
       expect(detail).toContain(channel === 'process' ? 'component detail 19' : 'feedback item 19')
       expect(detail).toContain('"seqStart": 99')
-      expect(detail).toContain('Legacy failure clue.')
+      if (status === 'complete') expect(detail).toContain('Legacy failure clue.')
       for (const visible of [JSON.stringify(result), rendered, detail, JSON.stringify(found)]) {
         expect(visible).not.toMatch(/top-secret|held-out-secret|privateDetailsRef|private-only|nested-credential|heldOutAnswer|hidden-answer|partitionRef|hidden-partition/u)
       }
       expect(receipts()).toHaveLength(1)
+      await expect(capabilities.call('refine-meta', 'meta', 'trajectory.query', {}))
+        .resolves.toMatchObject({ diagnosisProgress: { ready: true, diagnosed: 1, required: 1, remainingRunIds: [] } })
       expect(inspectTrajectoryEvents).not.toHaveBeenCalled()
     },
   )
