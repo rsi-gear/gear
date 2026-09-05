@@ -611,6 +611,102 @@ describe('RefineCapabilities Git projection', () => {
       })
   })
 
+  it.each(['scores', 'process', 'feedback', 'all'] as const)(
+    'pages structured verifier %s through an opaque detail ref without legacy diagnostics',
+    async channels => {
+      const round = roundFixture({ roundId: 'round-structured', status: 'candidate-editing', heldOutRef: 'held-out-secret' })
+      const baseline = evidenceFixture(round.plan.seed, round.targetHarnessRef, 0)
+      round.baseline = baseline
+      const runId = baseline.trials[0]!.runId!
+      const hasProcess = channels === 'process' || channels === 'all'
+      const hasFeedback = channels === 'feedback' || channels === 'all'
+      const verifier: HitchVerifierEvidence = { runId, verifier: {
+        status: 'complete',
+        scores: { totalScore: 0, ...(hasProcess ? { processScore: 0 } : {}), normalization: 'standard' },
+        ...(hasProcess ? { process: {
+          schemaVersion: 1, metric: 'assertions', score: 0, detailStatus: 'components', passed: 0, total: 1, excluded: 0,
+          components: [{ id: 'step-1', category: 'assertion', status: 'failed', weight: 1, code: 'missing-output',
+            publicDetails: { note: 'process clue top-secret held-out-secret', explanation: '过程🙂'.repeat(900),
+              api_key: 'nested-credential', heldOutAnswer: 'hidden-answer', partitionRef: 'hidden-partition' },
+            privateDetailsRef: 'private-only/step-1.json', trajectoryRefs: [{ runId, seqStart: 1, seqEnd: 1 }] }],
+        } as const } : {}),
+        ...(hasFeedback ? { feedback: { schemaVersion: 1, items: [{ code: 'repair', severity: 'error',
+          message: `feedback clue top-secret held-out-secret ${'证据🙂'.repeat(1200)}`,
+          ...(hasProcess ? { componentIds: ['step-1'] } : {}), trajectoryRefs: [{ runId, seqStart: 1, seqEnd: 1 }] }] } as const } : {}),
+      } }
+      const accesses: Array<{ diagnosisReceipts?: unknown[] }> = []
+      const receipts = () => accesses.flatMap(access => access.diagnosisReceipts ?? [])
+      const meta = {
+        recordEvidenceAccess: (_roundId: string, _sessionId: string, access: typeof accesses[number]) => { accesses.push(access) },
+        proposalEvidenceAudit: () => ({ summaryAccessed: true, accessedRefs: [baseline.evalId], diagnosedRunRefs: [],
+          citedRefs: [], diagnosisReceipts: receipts() }),
+      }
+      const service = { activeEntryForSession: () => ({ evolutionId: round.evolutionId, roundId: round.roundId,
+        parentHarnessRef: round.targetHarnessRef, workspace: {}, baseline, meta,
+        store: { listRounds: async () => [round] } }) }
+      const inspectTrajectoryEvents = vi.fn(async () => { throw new Error('structured details must not fetch trajectory events') })
+      const capabilities = new RefineCapabilities(service as never, {} as HarnessBuilder, {
+        trajectoryReader: {
+          inspectCapabilities: async () => ({ schemaVersion: 1, trajectoryAnalysis: 1, trajectoryEventsPage: 1 }),
+          inspectTrajectoryAnalysis: async () => trajectoryAnalysis(runId, [
+            { type: 'user/message', data: { role: 'user', content: [{ type: 'text', text: 'task prompt' }] } },
+            { type: 'assistant/message', data: { message: { role: 'assistant', content: [{ type: 'text', text: 'candidate answer' }] } } },
+          ]),
+          inspectTrajectoryEvents,
+          inspectVerifierEvidence: async () => verifier,
+        },
+        secretValues: ['top-secret'], maxTrajectoryPageBytes: 4096, maxFailureBundleBytes: 128 * 1024,
+      })
+      const result = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [runId] }) as { runs: MetaFailureCard[] }
+      const card = result.runs[0]!
+      expect(card.verifier).toMatchObject({ status: 'complete', needsDetail: true, detailRef: expect.stringMatching(/^detail_[a-f0-9]+$/u) })
+      expect(receipts()).toHaveLength(0)
+      const ref = card.verifier.detailRef!
+      await expect(capabilities.call('refine-meta', 'other-meta', 'trajectory.query', { detailRef: ref })).rejects.toThrow(/unknown or no longer valid/u)
+      const found = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { detailRef: ref, find: 'totalScore' })
+      expect(found).toMatchObject({ detail: { matches: [expect.stringContaining('totalScore')] } })
+      expect(receipts()).toHaveLength(0)
+      const pages: string[] = []
+      let nextRef: string | undefined = ref
+      while (nextRef !== undefined) {
+        const page = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { detailRef: nextRef }) as {
+          detail: { text: string; complete: boolean }; nextRef?: string
+        }
+        expect(Buffer.byteLength(page.detail.text)).toBeLessThanOrEqual(4096)
+        pages.push(page.detail.text)
+        expect(page.detail.complete).toBe(page.nextRef === undefined)
+        nextRef = page.nextRef
+        if (nextRef !== undefined) expect(receipts()).toHaveLength(0)
+      }
+      const detail = pages.join('')
+      expect(detail).toContain('SCORES\n')
+      if (hasProcess) {
+        expect(detail).toContain('PROCESS\n')
+        expect(detail).toContain('process clue [REDACTED] [REDACTED_HELD_OUT]')
+        expect(detail).toContain('过程🙂'.repeat(900))
+      }
+      if (hasFeedback) {
+        expect(detail).toContain('FEEDBACK\n')
+        expect(detail).toContain('feedback clue [REDACTED] [REDACTED_HELD_OUT]')
+        expect(detail).toContain('证据🙂'.repeat(1200))
+      }
+      if (hasProcess || hasFeedback) expect(pages.length).toBeGreaterThan(1)
+      for (const text of [JSON.stringify(result), detail, JSON.stringify(found)]) {
+        expect(text).not.toMatch(/top-secret|held-out-secret|privateDetailsRef|private-only|nested-credential|heldOutAnswer|hidden-answer|partitionRef|hidden-partition/u)
+      }
+      expect(receipts()).toHaveLength(1)
+      await capabilities.call('refine-meta', 'meta', 'trajectory.query', { detailRef: ref })
+      expect(receipts()).toHaveLength(1)
+      expect(inspectTrajectoryEvents).not.toHaveBeenCalled()
+
+      verifier.verifier.status = 'result_only'
+      const resultOnly = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [runId] }) as { runs: MetaFailureCard[] }
+      expect(resultOnly.runs[0]!.verifier.detailRef).toMatch(/^detail_/u)
+      expect(resultOnly.runs[0]!.verifier).not.toHaveProperty('needsDetail')
+      expect(receipts()).toHaveLength(2)
+    },
+  )
+
   it('returns an executable recovery action instead of consuming an incomplete finalization', async () => {
     const round = roundFixture({ roundId: 'round-recovery', status: 'candidate-editing' })
     const baseline = evidenceFixture(round.plan.seed, round.targetHarnessRef, 0)

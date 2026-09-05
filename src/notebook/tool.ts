@@ -100,6 +100,50 @@ function renderedEvidence(value: unknown): string {
   return `${evidence.text}${suffix}`
 }
 
+function renderStructuredVerifier(verifier: Record<string, unknown>): string[] {
+  const lines: string[] = []
+  const scores = asObject(verifier.scores)
+  if (scores !== undefined) {
+    lines.push([
+      `SCORES · total ${String(scores.totalScore)}`,
+      ...(scores.processScore === undefined ? [] : [`process ${String(scores.processScore)}`]),
+      `normalization ${String(scores.normalization)}`,
+    ].join(' · '))
+  }
+  const process = asObject(verifier.process)
+  if (process !== undefined) {
+    lines.push([
+      `PROCESS ${String(process.metric)} · score ${String(process.score)} · ${String(process.detailStatus)}`,
+      ...(['passed', 'total', 'excluded'] as const).flatMap(key =>
+        process[key] === undefined ? [] : [`${String(process[key])} ${key}`]),
+    ].join(' · '))
+    if (Array.isArray(process.components)) {
+      for (const value of process.components) {
+        const component = asObject(value)
+        if (component === undefined) continue
+        lines.push([
+          `COMPONENT ${String(component.id)} · ${String(component.status)} · ${String(component.category)} · weight ${String(component.weight)}`,
+          ...(component.code === undefined ? [] : [`code ${String(component.code)}`]),
+        ].join(' · '))
+        if (component.publicDetails !== undefined) lines.push(`public details: ${JSON.stringify(component.publicDetails)}`)
+        if (component.trajectoryRefs !== undefined) lines.push(`trajectory refs: ${JSON.stringify(component.trajectoryRefs)}`)
+      }
+    }
+  }
+  const feedback = asObject(verifier.feedback)
+  if (Array.isArray(feedback?.items)) {
+    if (feedback.items.length === 0) lines.push('FEEDBACK · no items')
+    for (const value of feedback.items) {
+      const item = asObject(value)
+      if (item === undefined) continue
+      lines.push(`FEEDBACK ${String(item.severity)} · ${String(item.code)}\n${String(item.message)}`)
+      if (item.componentIds !== undefined) lines.push(`components: ${JSON.stringify(item.componentIds)}`)
+      if (item.trajectoryRefs !== undefined) lines.push(`trajectory refs: ${JSON.stringify(item.trajectoryRefs)}`)
+    }
+  }
+  return lines
+}
+
 export function renderTrajectoryResult(value: JsonValue): string {
   const root = asObject(value)
   const runs = Array.isArray(root?.runs) ? root.runs : undefined
@@ -115,6 +159,7 @@ export function renderTrajectoryResult(value: JsonValue): string {
       ]
       if (typeof outcome.invalidReason === 'string') lines.push(`REASON ${outcome.invalidReason}`)
       lines.push(`\nVERIFIER · ${String(verifier.status ?? '')}\n${String(verifier.summary ?? '')}`)
+      lines.push(...renderStructuredVerifier(verifier))
       if (Array.isArray(verifier.failures)) {
         for (const failureValue of verifier.failures) {
           const failure = asObject(failureValue) ?? {}
@@ -195,6 +240,7 @@ export function mountMetaCapabilityTools(
       workspaceCapabilityGuide,
       'You may coordinate changes across any number of semantic surfaces.',
       'trajectory_query without arguments returns failed run IDs and diagnosis progress. With refs=[runId], it returns a compact diagnostic card.',
+      'Diagnostic cards show total and optional process scores, public process components, and verifier feedback when available. Use [verifier details: detailRef] to expand structured evidence and diagnostic artifacts.',
       'A diagnostic card contains the last 80,000 characters of the chronological message transcript. Use [earlier messages: detailRef] to read messages before that window. Each tool result is previewed at up to 2,000 characters; use its [more: detailRef] for the full result.',
       'When a card contains [required verifier details: detailRef], read that detail through its final page before finalizing. Continue with the returned nextRef by passing it as detailRef. Use find with detailRef to search long content.',
       'If trajectory_query or finalization returns TRAJECTORY_EVIDENCE_UNAVAILABLE with recoverable=false, stop retrying and report blockedRuns/operatorAction; Hitch or the recorded trajectory must be repaired first.',

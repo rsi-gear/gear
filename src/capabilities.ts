@@ -850,6 +850,17 @@ export class RefineCapabilities {
           : evidence.verifier.issues?.[0] ?? 'Verifier diagnostics are available.'
       : `${String(summary.passed ?? 0)} passed, ${String(summary.failed ?? failedTests.length)} failed, ${String(summary.skipped ?? 0)} skipped.`
     const detailChunks: string[] = []
+    for (const [label, value] of [
+      ['SCORES', evidence.verifier.scores],
+      ['PROCESS', process],
+      ['FEEDBACK', evidence.verifier.feedback],
+    ] as const) {
+      if (value !== undefined) {
+        // Detail refs cache serialized text, so apply the same public-field
+        // projection and redaction as the card before serializing it.
+        detailChunks.push(`${label}\n${JSON.stringify(publicJson(this.sanitize(value, heldOutRef)), null, 2)}`)
+      }
+    }
     let diagnosticsComplete = true
     const appendArtifact = (label: string, value: unknown): void => {
       const artifact = objectValue(value)
