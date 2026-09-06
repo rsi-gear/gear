@@ -19,6 +19,28 @@ function spec(evolutionId: string): EvolutionSpec {
 }
 
 describe('EvolutionRegistryStore', () => {
+  it.each([-1, 60_001, 1.5])('rejects invalid finalization reserve %s', async reserve => {
+    const root = join(process.env.TMPDIR ?? '/tmp', `refine-reserve-${crypto.randomUUID()}`)
+    roots.push(root)
+    const registry = new EvolutionRegistryStore(root)
+    const value = spec('evo-reserve')
+    value.candidateGeneration.budget.finalizationReserveMs = reserve
+    await expect(registry.createEvolution({ spec: value, champion: champion() })).rejects.toThrow(/finalization reserve/)
+  })
+
+  it('seals an explicit finalization reserve without changing legacy budgets', async () => {
+    const root = join(process.env.TMPDIR ?? '/tmp', `refine-reserve-${crypto.randomUUID()}`)
+    roots.push(root)
+    const registry = new EvolutionRegistryStore(root)
+    const value = spec('evo-reserve')
+    const previous = digestJson(value)
+    value.candidateGeneration.budget.finalizationReserveMs = 10_000
+    const entry = await registry.createEvolution({ spec: value, champion: champion() })
+    expect(entry.specDigest).not.toBe(previous)
+    value.candidateGeneration.budget.finalizationReserveMs = 1
+    expect((await registry.requireSpec(value.evolutionId)).candidateGeneration.budget.finalizationReserveMs).toBe(10_000)
+  })
+
   it('seals Medium into persistent Meta sampling and includes it in spec identity', async () => {
     const root = join(process.env.TMPDIR ?? '/tmp', `refine-medium-${crypto.randomUUID()}`)
     roots.push(root)

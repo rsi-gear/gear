@@ -1,5 +1,6 @@
 import type {
   CandidateRecord,
+  CandidateGenerationBudgetStatus,
   DiagnosisReceipt,
   EvaluationEvidence,
   MetaAttribution,
@@ -29,6 +30,7 @@ export interface MetaExecutionBinding {
   executionId: string
   attempt: number
   deadlineAt: number
+  generationBudget?: CandidateGenerationBudgetStatus
   signal: AbortSignal
   budget: { maxModelRequests?: number; maxTokens?: number }
   isComplete(): boolean

@@ -72,6 +72,11 @@ function validateSpec(value: EvolutionSpec): EvolutionSpec {
     throw new TypeError('evolution Meta maxTokens is invalid')
   }
   const generationBudget = value.candidateGeneration.budget
+  if (generationBudget.finalizationReserveMs !== undefined
+    && (!Number.isSafeInteger(generationBudget.finalizationReserveMs) || generationBudget.finalizationReserveMs < 0
+      || generationBudget.finalizationReserveMs > (generationBudget.attemptTimeoutMs ?? generationBudget.timeoutMs ?? 0))) {
+    throw new TypeError('candidate finalization reserve must be between zero and the attempt timeout')
+  }
   const legacyGenerationBudget = generationBudget.timeoutMs !== undefined
     && generationBudget.attemptTimeoutMs === undefined
     && generationBudget.maxAttemptsPerCandidate === undefined

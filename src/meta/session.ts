@@ -17,6 +17,7 @@ import { DshOffloadingHost, type MetaOffloadingHost } from './offloading-host.js
 import { DshContextExecution } from './offloading-execution.js'
 import { MetaOffloadingStore } from './offloading-store.js'
 import { MetaContextError } from './offloading-policy.js'
+import { generationBudgetSnapshot } from '../refine/generation-budget.js'
 
 export interface MetaAgentHost {
   offloading?: MetaOffloadingHost
@@ -413,6 +414,10 @@ export class MetaSessionManager implements MetaSessionController {
     const envelope = createUserMessage({
       content: [{ type: 'text', text: JSON.stringify({
         kind: 'refinement-round',
+        ...(execution?.generationBudget === undefined ? {} : { generationBudget: generationBudgetSnapshot(execution.generationBudget) }),
+        ...(execution !== undefined && execution.attempt > 1 ? {
+          retryRecovery: { workspace: 'fresh', diagnosis: 'query-current-baseline' },
+        } : {}),
         evolutionId: round.evolutionId,
         roundId: round.roundId,
         candidateId: candidate?.candidateId,

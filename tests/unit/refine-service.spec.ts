@@ -18,6 +18,11 @@ import type { DiagnosisReceipt, EvaluationPhase, EvaluationRequest, EvaluationRe
 import { createGitHarnessFixture } from '../helpers/git-fixture.js'
 import { builtinComponentRef, componentRef } from '../../src/evolution/components.js'
 import { evolutionSpec } from '../helpers/research-fixture.js'
+import { SkillMetaCoordinator, SkillMetaSessionManager, skillHarnessIdentity } from '../../src/meta/skill.js'
+import { RefineCapabilities } from '../../src/capabilities.js'
+import { renderTrajectoryResult } from '../../src/notebook/tool.js'
+import { trajectoryAnalysis } from '../helpers/trajectory-fixture.js'
+import type { HitchTrajectoryReader } from '../../src/types.js'
 
 const roots: string[] = []
 afterEach(async () => {
@@ -253,6 +258,7 @@ async function setup(
   heldOutDelta = 0,
   maxGenerationAttempts = 2,
   generationRoundTimeoutMs = generationAttemptTimeoutMs * maxGenerationAttempts * maxCandidates,
+  skillCoordinator?: SkillMetaCoordinator,
 ) {
   const git = await createGitHarnessFixture()
   roots.push(git.root)
@@ -274,6 +280,9 @@ async function setup(
   }
   const metas = new Map<string, FakeMeta>()
   const service = new RefineService(registry, builder, workspaces, (spec, digest, store) => {
+    if (skillCoordinator !== undefined) return new SkillMetaSessionManager(store, skillCoordinator, {
+      evolutionId: spec.evolutionId, specDigest: digest, metaAgent: spec.metaAgent,
+    })
     const meta = new FakeMeta(spec.evolutionId, store, digest)
     metas.set(spec.evolutionId, meta)
     return meta as never
@@ -2493,6 +2502,94 @@ describe('RefineService evolution workspaces', () => {
     await finalize(service, retried)
     await eventually(() => store.readRound(admission.roundId), value => value?.status === 'accepted')
     await service.dispose()
+  })
+
+  it('restores 40 of 56 diagnoses after a real attempt timeout and completes only the remaining 16', async () => {
+    const coordinator = new SkillMetaCoordinator()
+    const { service, evaluator } = await setup(0.8, false, 1, 30_000, 1, 0, 2, 90_000, coordinator)
+    const evaluate = evaluator.evaluate.bind(evaluator)
+    evaluator.evaluate = async (...args) => {
+      const result = await evaluate(...args)
+      result.trials = Array.from({ length: 56 }, (_, index) => ({
+        taskName: `task-${index}`, trialName: `trial-${index}`, attempt: 1,
+        runId: `run_${index.toString(16).padStart(32, '0')}`, status: 'completed' as const, rewards: { reward: 0 },
+      }))
+      result.plannedTrialCount = 56
+      result.primaryReward = 0
+      result.summary = { total: 56, failed: 56, passed: 0, score: 0 }
+      return result
+    }
+    const inspected: string[] = []
+    const reader: HitchTrajectoryReader = {
+      async inspectCapabilities() { return { schemaVersion: 1, trajectoryAnalysis: 1, trajectoryEventsPage: 1 } },
+      async inspectTrajectoryAnalysis(runId) {
+        inspected.push(runId)
+        return trajectoryAnalysis(runId, [
+          { type: 'user/message', data: { role: 'user', content: [{ type: 'text', text: `Task for ${runId}` }] } },
+          { type: 'assistant/message', data: { message: { role: 'assistant', content: [{ type: 'text', text: 'Observed failed attempt' }] } } },
+        ])
+      },
+      async inspectTrajectoryEvents() { throw new Error('no detail fetch needed') },
+      async inspectVerifierEvidence(runId) { return { runId, verifier: { status: 'result_only' } } },
+    }
+    let capabilities = new RefineCapabilities(service, service.builder, { trajectoryReader: reader })
+    const originalSetTimeout = globalThis.setTimeout
+    let expire: (() => void) | undefined
+    const timer = vi.spyOn(globalThis, 'setTimeout').mockImplementation((...args: Parameters<typeof setTimeout>) => {
+      const handle = originalSetTimeout(...args)
+      if (args[1] === 30_000 && expire === undefined) expire = () => { clearTimeout(handle); args[0]() }
+      return handle
+    })
+    try {
+      const admission = await service.admit('skill')
+      const first = await editing(service, admission.evolutionId, admission.roundId)
+      const claim = await eventually(async () => coordinator.claim('same-client', skillHarnessIdentity(service.options.metaAgent)), value => value !== undefined)
+      const sessionId = claim!.sessionId
+      const baseline = first.baseline!
+      const refs = baseline.trials.map(value => value.runId!)
+      for (let index = 0; index < 40; index += 5) {
+        await capabilities.call('refine-meta', sessionId, 'trajectory.query', { refs: refs.slice(index, index + 5) })
+      }
+      expect(await service.readCandidateDiagnoses(sessionId)).toHaveLength(40)
+      expect(await capabilities.call('refine-meta', sessionId, 'trajectory.query', {})).toMatchObject({
+        diagnosisProgress: { diagnosed: 40, required: 56 },
+      })
+      const reconnect = coordinator.claim('same-client', skillHarnessIdentity(service.options.metaAgent))!
+      expect(reconnect.generationBudget?.deadlineAt).toBe(claim!.generationBudget?.deadlineAt)
+      expect(reconnect.generationBudget!.remainingMs).toBeLessThanOrEqual(claim!.generationBudget!.remainingMs)
+      expire!()
+      const store = service.registry.stateStore(admission.evolutionId)
+      await eventually(() => store.readRound(admission.roundId), value => value?.status === 'candidate-editing'
+        && value.candidatePool[0]?.generationAttempts?.length === 2 && value.candidatePool[0]?.metaSessionId !== sessionId)
+      const retry = await eventually(async () => coordinator.claim('same-client', skillHarnessIdentity(service.options.metaAgent)), value => value !== undefined)
+      expect(retry!.retryRecovery).toEqual({ workspace: 'fresh', diagnosis: 'query-current-baseline' })
+      expect(retry!.generationBudget?.roundDeadlineAt).toBe(claim!.generationBudget?.roundDeadlineAt)
+      expect(retry!.workspaceId).not.toBe(claim!.workspaceId)
+      await expect(capabilities.call('refine-meta', sessionId, 'trajectory.query', {})).rejects.toThrow(/no active/)
+      // Recreate the capability layer to prove recovery reads disk, not its caches.
+      capabilities = new RefineCapabilities(service, service.builder, { trajectoryReader: reader })
+      const result = await capabilities.call('refine-meta', retry!.sessionId, 'trajectory.query', {}) as {
+        diagnosisRecovery: { restored: Array<{ runId: string; detailRef: string }> }; diagnosisProgress: { diagnosed: number }
+      }
+      expect(result.diagnosisRecovery.restored).toHaveLength(40)
+      expect(result).toMatchObject({ diagnosisProgress: { diagnosed: 40, required: 56, remainingRunIds: refs.slice(40) } })
+      expect(renderTrajectoryResult(result as never)).toContain('Observed failed attempt')
+      expect(renderTrajectoryResult(result as never)).toContain('GENERATION BUDGET')
+      const detail = await capabilities.call('refine-meta', retry!.sessionId, 'trajectory.query', {
+        detailRef: result.diagnosisRecovery.restored[0]!.detailRef,
+      })
+      expect(JSON.stringify(detail)).toContain('Observed failed attempt')
+      expect(inspected).toHaveLength(80) // 40 original reads + 40 content checks, no model rediagnosis.
+      for (let index = 40; index < 56; index += 5) {
+        await capabilities.call('refine-meta', retry!.sessionId, 'trajectory.query', { refs: refs.slice(index, index + 5) })
+      }
+      expect(await capabilities.call('refine-meta', retry!.sessionId, 'candidate.decline', {
+        rationale: 'All 56 failures inspected; no safe intervention in this test.', evidenceRefs: [baseline.evalId],
+      })).toMatchObject({ accepted: true })
+      const settled = await eventually(() => store.readRound(admission.roundId), value => value?.candidatePool[0]?.generationAttempts?.[1]?.status === 'succeeded')
+      expect(settled!.candidatePool[0]!.proposalEvidence!.diagnosisReceipts).toHaveLength(56)
+      expect(inspected).toHaveLength(96)
+    } finally { timer.mockRestore(); await service.dispose() }
   })
 
   it('retries a timed-out candidate in the same round with a fresh workspace', async () => {

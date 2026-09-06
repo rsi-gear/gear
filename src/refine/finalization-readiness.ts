@@ -12,7 +12,7 @@ function reward(rewards: Record<string, number>): number | undefined {
   return rewards.reward ?? Object.values(rewards)[0]
 }
 
-function receiptIsValid(receipt: NonNullable<ProposalEvidenceAudit['diagnosisReceipts']>[number]): boolean {
+export function receiptIsValid(receipt: NonNullable<ProposalEvidenceAudit['diagnosisReceipts']>[number]): boolean {
   const verifierAccepted = receipt.verifierStatus === 'complete'
     || receipt.verifierStatus === 'result_only'
     || receipt.verifierStatus === 'explicitly-missing'
