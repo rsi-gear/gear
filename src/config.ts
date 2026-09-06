@@ -91,6 +91,7 @@ export interface Config {
     attemptTimeoutMs?: number
     maxAttemptsPerCandidate?: number
     roundTimeoutMs?: number
+    finalizationReserveMs?: number
   }
   selection: {
     survivors: number
@@ -206,6 +207,7 @@ export const ConfigSchema: Schema<Config> = Schema.object({
     attemptTimeoutMs: Schema.number(),
     maxAttemptsPerCandidate: Schema.number(),
     roundTimeoutMs: Schema.number(),
+    finalizationReserveMs: Schema.number(),
   }).default({
     maxCandidates: 1,
     attemptTimeoutMs: 900_000,

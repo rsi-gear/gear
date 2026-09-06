@@ -61,7 +61,21 @@ not infer missing field names or harness APIs from errors.
    top-level request methods. Read the active candidate files before selecting
    an edit. Do not discover or modify Gear state, Git metadata, held-out data,
    credentials, or host paths directly.
-5. Review the baseline summary. Query `trajectory.query` with `refs` for every
+5. Review the baseline summary. Start with `trajectory.query` without arguments
+   on every assignment: it restores validated diagnostics from earlier attempts
+   of this candidate and returns their summaries plus current-session detail
+   refs. If `diagnosisRecovery.remaining` is positive, repeat that query to
+   receive the rest. Use `diagnosisProgress.remainingRunIds` to choose new reads.
+   Recovery does not restore candidate edits; inspect the current tree. Changed
+   baseline, trajectory, verifier, or sanitization policy requires reading the
+   affected evidence again.
+   `generationBudget` reports attempt/round deadlines and remaining time. Its
+   finalization reserve is advisory time for editing, checking, and sealing; it
+   does not extend the deadline. Reconnecting does not reset time. A
+   `DIAGNOSIS_BUDGET_AT_RISK` warning means the observed pace may leave too little
+   time for the remaining work; do not skip required diagnoses or assume that
+   continuing an old evolution adopts new budget settings.
+   Query `trajectory.query` with `refs` for every remaining
    failed baseline run before proposing a change. It returns a compact
    diagnostic card containing the task, outcome, verifier failure summary,
    and the chronological message transcript without raw chunk noise. The card

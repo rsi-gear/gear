@@ -168,6 +168,8 @@ export interface CandidateGenerationSpec {
     attemptTimeoutMs?: number
     maxAttemptsPerCandidate?: number
     roundTimeoutMs?: number
+    /** Advisory time reserved for editing/checking/sealing, within the hard attempt budget. */
+    finalizationReserveMs?: number
   }
 }
 
@@ -1052,11 +1054,28 @@ export interface CandidateGenerationAttempt {
   attempt: number
   status: 'running' | 'succeeded' | 'failed'
   startedAt: string
+  deadlineAt?: number
+  preparationCompletedAt?: string
+  proposalCompletedAt?: string
   completedAt?: string
   workspaceId?: string
   metaSessionId?: string
   metaTurn?: MetaTurnObservation
   failure?: { phase: string; message: string }
+}
+
+export interface CandidateGenerationBudgetStatus {
+  attempt: number
+  maxAttemptsPerCandidate: number
+  attemptTimeoutMs: number
+  roundTimeoutMs: number
+  deadlineAt: number
+  roundDeadlineAt: number
+  remainingMs: number
+  roundRemainingMs: number
+  /** Advisory reserve; it never extends or replaces the hard deadlines. */
+  finalizationReserveMs: number
+  diagnosisAvailableMs: number
 }
 
 export interface MetaTurnObservation {
@@ -1293,8 +1312,10 @@ export interface PublicRoundStatus {
   candidateGeneration?: Array<{
     candidateId: string
     status: CandidateRecord['status']
+    budget?: CandidateGenerationBudgetStatus
     attempts: Array<Pick<CandidateGenerationAttempt,
-      'attempt' | 'status' | 'startedAt' | 'completedAt' | 'metaSessionId' | 'metaTurn' | 'failure'>>
+      'attempt' | 'status' | 'startedAt' | 'completedAt' | 'metaSessionId' | 'metaTurn' | 'failure'
+      | 'deadlineAt' | 'preparationCompletedAt' | 'proposalCompletedAt'>>
   }>
   repairableEvaluations?: Array<{
     provider: string

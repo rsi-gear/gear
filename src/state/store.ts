@@ -509,6 +509,10 @@ export class RefineStateStore {
       || new Set(round.candidatePool.map(candidate => candidate.candidateId)).size !== round.candidatePool.length) {
       throw new TypeError('round candidatePool is invalid')
     }
+    if (round.candidateGenerationDeadlineAt !== undefined
+      && (!Number.isSafeInteger(round.candidateGenerationDeadlineAt) || round.candidateGenerationDeadlineAt <= 0)) {
+      throw new TypeError('round candidate generation deadline is invalid')
+    }
     for (const candidate of round.candidatePool) {
       if (candidate.roundId !== round.roundId || candidate.candidateId.length === 0
         || !isExactGitCommit(candidate.parentHarnessRef) || candidate.parentCandidateIds.length !== 1) {
@@ -543,6 +547,8 @@ export class RefineStateStore {
             ].every(value => value === undefined || Number.isSafeInteger(value) && value >= 0))
           )
           if (attempt.attempt !== index + 1
+            || attempt.deadlineAt !== undefined && (!Number.isSafeInteger(attempt.deadlineAt) || attempt.deadlineAt <= 0)
+            || [attempt.preparationCompletedAt, attempt.proposalCompletedAt].some(value => value !== undefined && !Number.isFinite(Date.parse(value)))
             || typeof attempt.startedAt !== 'string' || attempt.startedAt.length === 0
             || attempt.workspaceId !== undefined && (typeof attempt.workspaceId !== 'string' || attempt.workspaceId.length === 0)
             || attempt.metaSessionId !== undefined && (typeof attempt.metaSessionId !== 'string' || attempt.metaSessionId.length === 0)

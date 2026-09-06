@@ -19,6 +19,9 @@ import type { EvaluationReservation, PendingEvaluationSubmission, EvaluationFail
 import { EvaluationCleanupError, evaluationFailure } from '../evaluator/cleanup.js'
 import { finalizationReadiness } from './finalization-readiness.js'
 import { BaselineReuseBlockedError } from './baseline-reuse.js'
+import { generationBudgetSnapshot } from './generation-budget.js'
+import { CandidateDiagnosisStore, type CandidateDiagnosisRecord } from '../state/candidate-diagnosis.js'
+import type { CandidateGenerationBudgetStatus } from '../types.js'
 
 export interface RefineServiceOptions {
   workspaceRoot: string
@@ -83,6 +86,8 @@ interface CandidateExecution {
   metaSessionId?: string
   baseline?: EvaluationEvidence
   preserveWorkspace?: boolean
+  generationBudget?: CandidateGenerationBudgetStatus
+  evidenceWrites?: Set<Promise<void>>
 }
 
 type CandidatePatch = { [Key in keyof CandidateRecord]?: CandidateRecord[Key] | undefined }
@@ -1069,10 +1074,14 @@ export class RefineService {
       : [{
           candidateId: candidate.candidateId,
           status: candidate.status,
+          ...this.activeGenerationBudget(round.roundId, candidate.candidateId),
           attempts: candidate.generationAttempts.map(attempt => ({
             attempt: attempt.attempt,
             status: attempt.status,
             startedAt: attempt.startedAt,
+            ...(attempt.deadlineAt === undefined ? {} : { deadlineAt: attempt.deadlineAt }),
+            ...(attempt.preparationCompletedAt === undefined ? {} : { preparationCompletedAt: attempt.preparationCompletedAt }),
+            ...(attempt.proposalCompletedAt === undefined ? {} : { proposalCompletedAt: attempt.proposalCompletedAt }),
             ...(attempt.completedAt === undefined ? {} : { completedAt: attempt.completedAt }),
             ...(attempt.metaSessionId === undefined ? {} : { metaSessionId: attempt.metaSessionId }),
             ...(attempt.metaTurn === undefined ? {} : { metaTurn: structuredClone(attempt.metaTurn) }),
@@ -1108,6 +1117,11 @@ export class RefineService {
   }
 
   listEvolutions(): Promise<EvolutionRegistryEntry[]> { return this.registry.list() }
+
+  private activeGenerationBudget(roundId: string, candidateId: string): { budget?: CandidateGenerationBudgetStatus } {
+    const execution = this.active.get(roundId)?.executions.get(candidateId)
+    return execution?.generationBudget === undefined ? {} : { budget: generationBudgetSnapshot(execution.generationBudget) }
+  }
 
   async rollback(evolutionId: string, verifiedHarnessRef: string): Promise<ChampionState> {
     const evolution = await this.runtime(evolutionId)
@@ -1175,6 +1189,8 @@ export class RefineService {
     parentHarnessRef: string
     parentHarnessDigest: string
     baseline: EvaluationEvidence
+    signal: AbortSignal
+    generationBudget?: CandidateGenerationBudgetStatus
   } | undefined {
     for (const [roundId, active] of this.active) {
       const execution = [...active.executions.values()].find(value => value.metaSessionId === sessionId)
@@ -1195,9 +1211,46 @@ export class RefineService {
         parentHarnessRef: execution.workspace.parentRef,
         parentHarnessDigest: execution.workspace.parentDigest,
         baseline,
+        signal: execution.signal,
+        ...(execution.generationBudget === undefined ? {} : {
+          generationBudget: generationBudgetSnapshot(execution.generationBudget),
+        }),
       }
     }
     return undefined
+  }
+
+  private diagnosisStoreForSession(sessionId: string): CandidateDiagnosisStore {
+    const active = this.activeEntryForSession(sessionId)
+    if (active === undefined) throw new Error('stale candidate diagnosis owner')
+    return new CandidateDiagnosisStore(active.store.root, {
+      evolutionId: active.evolutionId, specDigest: digestJson(active.spec), roundId: active.roundId,
+      candidateId: active.candidateId, parentHarnessDigest: active.parentHarnessDigest,
+      baselineDigest: digestJson(active.baseline),
+    })
+  }
+
+  async readCandidateDiagnoses(sessionId: string): Promise<CandidateDiagnosisRecord[]> {
+    const records = await this.diagnosisStoreForSession(sessionId).read()
+    if (this.activeEntryForSession(sessionId) === undefined) throw new Error('stale candidate diagnosis owner')
+    return records
+  }
+
+  async recordCandidateDiagnosis(sessionId: string, record: Omit<CandidateDiagnosisRecord, 'source'>): Promise<void> {
+    const active = this.activeEntryForSession(sessionId)
+    if (active === undefined) throw new Error('stale candidate diagnosis owner')
+    const execution = this.active.get(active.roundId)!.executions.get(active.candidateId)!
+    const assertOwner = () => {
+      execution.signal.throwIfAborted()
+      if (execution.metaSessionId !== sessionId || execution.finalizationSubmitted) throw new Error('stale candidate diagnosis owner')
+    }
+    const operation = this.diagnosisStoreForSession(sessionId).write({ ...record,
+      source: { sessionId, attempt: execution.generationBudget!.attempt },
+    }, assertOwner)
+    const writes = execution.evidenceWrites ??= new Set()
+    writes.add(operation)
+    try { await operation }
+    finally { writes.delete(operation) }
   }
 
   async dispose(): Promise<void> {
@@ -1408,7 +1461,7 @@ export class RefineService {
       for (const member of population.members) parentCheckpoints.set(member.candidateId, member.metaCheckpoint ?? rootCheckpoint)
       const generationBudget = effectiveCandidateGenerationBudget(active.evolution.spec.candidateGeneration)
       const generationDeadline = round.candidateGenerationDeadlineAt ?? Date.now() + generationBudget.roundTimeoutMs
-      if (active.evolution.spec.metaAgent.contextOffloading !== undefined && round.candidateGenerationDeadlineAt === undefined) {
+      if (round.candidateGenerationDeadlineAt === undefined) {
         round = await this.transition(store, roundId, { candidateGenerationDeadlineAt: generationDeadline })
       }
 
@@ -1467,13 +1520,20 @@ export class RefineService {
           }
           active.executions.set(candidateId, execution)
           active.currentCandidateId = candidateId
-          const timeoutScope = remainingBeforeAttempt <= generationBudget.attemptTimeoutMs ? 'round' : 'attempt'
+          const timerStartedAt = Date.now()
+          const attemptLimitAt = recovered?.deadlineAt ?? timerStartedAt + generationBudget.attemptTimeoutMs
+          const timeoutScope = generationDeadline <= attemptLimitAt ? 'round' : 'attempt'
           const timeoutBudgetMs = timeoutScope === 'round'
             ? generationBudget.roundTimeoutMs
             : generationBudget.attemptTimeoutMs
-          const timeoutMs = Math.max(0, Math.min(generationBudget.attemptTimeoutMs, remainingBeforeAttempt,
-            recovered === undefined ? Infinity : recovered.deadlineAt - Date.now()))
-          const attemptDeadlineAt = recovered?.deadlineAt ?? Date.now() + timeoutMs
+          const attemptDeadlineAt = Math.min(attemptLimitAt, generationDeadline)
+          const timeoutMs = Math.max(0, attemptDeadlineAt - timerStartedAt)
+          execution.generationBudget = generationBudgetSnapshot({
+            ...generationBudget, attempt: attemptNumber, deadlineAt: attemptDeadlineAt,
+            roundDeadlineAt: generationDeadline, remainingMs: 0, roundRemainingMs: 0, diagnosisAvailableMs: 0,
+            finalizationReserveMs: active.evolution.spec.candidateGeneration.budget.finalizationReserveMs
+              ?? Math.min(300_000, Math.floor(generationBudget.attemptTimeoutMs / 5)),
+          })
           const deadlineError = new CandidateGenerationTimeoutError(timeoutScope, timeoutBudgetMs)
           let deadlineTimer: ReturnType<typeof setTimeout> | undefined
           let rejectAttempt: (reason: unknown) => void = () => {}
@@ -1491,6 +1551,12 @@ export class RefineService {
           let completedCheckpoint = false
           let shouldRetry = false
           try {
+            round = await this.transition(store, roundId, {
+              candidatePool: this.patchCandidate(round, candidateId, {
+                generationAttempts: patchGenerationAttempt(generationAttempts, attemptNumber, { deadlineAt: attemptDeadlineAt }),
+              }),
+            })
+            execution.signal.throwIfAborted()
             // The default root can be empty and unmaterialized. Recreating it
             // after restart must not change an already-running attempt's parent.
             const sealedController = recovered?.recovery?.controller as { parentCheckpoint?: MetaCheckpointRef } | undefined
@@ -1546,6 +1612,8 @@ export class RefineService {
                 parentCheckpoint,
                 generationAttempts: patchGenerationAttempt(currentAttempts, attemptNumber, {
                   workspaceId: workspace.workspaceId, metaSessionId: execution.metaSessionId,
+                  preparationCompletedAt: recovered === undefined ? now()
+                    : currentAttempts.find(value => value.attempt === attemptNumber)?.preparationCompletedAt ?? now(),
                 }),
               }),
             })
@@ -1553,6 +1621,7 @@ export class RefineService {
             const currentCandidate = round.candidatePool.find(value => value.candidateId === candidateId)!
             const wake = await Promise.race([meta.wakeCandidate(round, currentCandidate, parentBaseline, agent, {
               executionId: recovered?.executionId ?? crypto.randomUUID(), attempt: attemptNumber, deadlineAt: attemptDeadlineAt,
+              generationBudget: execution.generationBudget,
               signal: execution.signal, budget: active.evolution.spec.candidateGeneration.budget,
               isComplete: () => execution.finalizationSubmitted,
               snapshot: async () => {
@@ -1608,6 +1677,7 @@ export class RefineService {
                 generationAttempts: patchGenerationAttempt(completedAttempts, attemptNumber, {
                   metaSessionId: execution.metaSessionId,
                   status: 'succeeded', completedAt: now(),
+                  proposalCompletedAt: now(),
                   ...(metaTurn === undefined ? {} : { metaTurn }),
                 }),
                 ...(proposal.finalization === null ? { status: 'discarded' as const } : {}),
@@ -2529,6 +2599,7 @@ export class RefineService {
     const { meta } = active.evolution
     const sessionId = execution.metaSessionId
     const workspace = execution.workspace
+    await Promise.allSettled([...(execution.evidenceWrites ?? [])])
     if (cancelReason !== undefined && sessionId !== undefined) await meta.cancel(sessionId, cancelReason).catch(() => {})
     if (sessionId !== undefined && workspace !== undefined) {
       try { this.workspaceManager.unbind(sessionId, workspace.workspaceId) } catch {}

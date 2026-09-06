@@ -350,6 +350,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       attemptTimeoutMs: candidateAttemptTimeoutMs,
       maxAttemptsPerCandidate: candidateMaxAttemptsPerCandidate,
       roundTimeoutMs: candidateRoundTimeoutMs,
+      ...(config.candidateGeneration.finalizationReserveMs === undefined ? {} : { finalizationReserveMs: config.candidateGeneration.finalizationReserveMs }),
     },
   }
   const rolloutProvider = builtinComponentRef('rollout-provider', 'hitch-cli', structuredClone(config.hitch))

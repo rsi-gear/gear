@@ -149,6 +149,8 @@ function renderStructuredVerifier(verifier: Record<string, unknown>): string[] {
 
 export function renderTrajectoryResult(value: JsonValue): string {
   const root = asObject(value)
+  const recovery = root?.diagnosisRecovery === undefined ? [] : [`DIAGNOSIS RECOVERY\n${JSON.stringify(root.diagnosisRecovery, null, 2)}`]
+  const budget = root?.generationBudget === undefined ? [] : [`GENERATION BUDGET\n${JSON.stringify(root.generationBudget, null, 2)}`]
   const runs = Array.isArray(root?.runs) ? root.runs : undefined
   if (runs !== undefined) {
     const sections = runs.map(runValue => {
@@ -186,7 +188,7 @@ export function renderTrajectoryResult(value: JsonValue): string {
     if (progress !== undefined) {
       sections.push(`DIAGNOSIS ${String(progress.diagnosed ?? 0)}/${String(progress.required ?? 0)}`)
     }
-    return sections.join('\n\n')
+    return [...sections, ...recovery, ...budget].join('\n\n')
   }
   const detail = asObject(root?.detail)
   if (detail !== undefined) {
@@ -211,6 +213,8 @@ export function renderTrajectoryResult(value: JsonValue): string {
       `BASELINE ${String(baseline.status ?? '')}`,
       ...failures,
       ...(progress === undefined ? [] : [`DIAGNOSIS ${String(progress.diagnosed ?? 0)}/${String(progress.required ?? 0)}`]),
+      ...recovery,
+      ...budget,
     ].join('\n')
   }
   return JSON.stringify(value, null, 2)

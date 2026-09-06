@@ -131,6 +131,7 @@ export async function createSkillControlPlane(
       attemptTimeoutMs,
       maxAttemptsPerCandidate,
       roundTimeoutMs,
+      ...(config.candidateGeneration.finalizationReserveMs === undefined ? {} : { finalizationReserveMs: config.candidateGeneration.finalizationReserveMs }),
     },
   }
   const rolloutProvider = builtinComponentRef('rollout-provider', 'hitch-cli', structuredClone(config.hitch))

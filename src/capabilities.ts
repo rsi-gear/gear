@@ -5,7 +5,8 @@ import type { HarnessBuilder } from './harness/builder.js'
 import type { RefineService } from './refine/service.js'
 import { projectTrajectory } from './evaluator/trajectory-projection.js'
 import { digestJson } from './state/digest.js'
-import { finalizationReadiness, recoveryRequired } from './refine/finalization-readiness.js'
+import type { CandidateDiagnosisRecord } from './state/candidate-diagnosis.js'
+import { finalizationReadiness, receiptIsValid, recoveryRequired } from './refine/finalization-readiness.js'
 import { previewVerifierFeedback, previewVerifierProcess } from './meta/verifier-preview.js'
 import type {
   CandidateFinalization,
@@ -98,12 +99,13 @@ interface TrajectoryDetailRef {
     sourceVerifierStatus: HitchVerifierEvidence['verifier']['status']
     visibleDigests: string[]
     recorded: boolean
+    recovery?: Omit<CandidateDiagnosisRecord, 'receipt' | 'source'>
   }
 }
 
 interface TrajectoryDetailRead {
   visible: Record<string, unknown>
-  diagnosis?: { evalId: string; runId: string; receipt: DiagnosisReceipt }
+  diagnosis?: { evalId: string; runId: string; receipt: DiagnosisReceipt; recovery?: Omit<CandidateDiagnosisRecord, 'receipt' | 'source'> }
 }
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {
@@ -221,6 +223,8 @@ export class RefineCapabilities {
   ): Promise<unknown> {
     const active = this.service.activeEntryForSession(sessionId)
     if (active === undefined) throw new Error('Meta session has no active candidate round')
+    if (active.signal !== undefined) signal = AbortSignal.any([signal, active.signal])
+    signal.throwIfAborted()
     const {
       evolutionId, spec, roundId: activeRoundId, store, meta, workspace,
       baseline,
@@ -282,10 +286,17 @@ export class RefineCapabilities {
           roundHeldOutRef(rounds, activeRoundId),
           signal,
         )
-        if (read.diagnosis !== undefined) meta.recordEvidenceAccess(activeRoundId, sessionId, {
-          refs: [read.diagnosis.evalId, read.diagnosis.runId],
-          diagnosisReceipts: [read.diagnosis.receipt],
-        })
+        if (read.diagnosis !== undefined) {
+          if (read.diagnosis.recovery !== undefined) await this.service.recordCandidateDiagnosis?.(sessionId, {
+            ...read.diagnosis.recovery, receipt: read.diagnosis.receipt,
+          })
+          signal.throwIfAborted()
+          meta.recordEvidenceAccess(activeRoundId, sessionId, {
+            refs: [read.diagnosis.evalId, read.diagnosis.runId], diagnosisReceipts: [read.diagnosis.receipt],
+          })
+          const pending = this.trajectoryDetailRefs.get(detailRef)?.pendingDiagnosis
+          if (pending !== undefined) pending.recorded = true
+        }
         return publicJson(read.visible)
       }
       const evidence: SeedRunEvidence[] = baseline === undefined ? this.seedRunEvidence(rounds) : [
@@ -305,6 +316,8 @@ export class RefineCapabilities {
         })),
       ]
       if (refs === undefined || refs.length === 0) {
+        const diagnosisRecovery = baseline === undefined ? undefined
+          : await this.restoreCandidateDiagnoses(sessionId, baseline, evidence, signal)
         const failedRuns = evidence
           .filter(item => item.roundId === activeRoundId && (
             item.trial.status === 'errored'
@@ -343,6 +356,8 @@ export class RefineCapabilities {
             failedRuns,
           },
           ...(readiness === undefined ? {} : { diagnosisProgress: this.compactDiagnosisProgress(readiness) }),
+          ...(diagnosisRecovery === undefined ? {} : { diagnosisRecovery }),
+          ...this.generationBudgetStatus(sessionId, rounds.find(value => value.roundId === activeRoundId)),
         })
       }
       if (refs.length > 5) throw new TypeError('trajectory.query accepts at most 5 run refs')
@@ -398,6 +413,16 @@ export class RefineCapabilities {
             ? 'unavailable' as const
             : verifier.verifier.status
         const cardDigest = digestJson(card)
+        const recovery = {
+          sourceDigest: digestJson({ trajectoryDigest: projection.trajectoryDigest, verifier }),
+          evidence: { card: this.durableDiagnosticCard({
+            ...card,
+            // A long assistant reply can push the task out of the recovery transcript tail.
+            prompt: this.evidenceText(
+              sessionId, item, projection, prompt.message, 160, roundHeldOutRef(rounds, item.roundId),
+            ),
+          }) },
+        }
         if (card.verifier.needsDetail === true && card.verifier.detailRef !== undefined) {
           const requiredDetail = this.trajectoryDetailRefs.get(card.verifier.detailRef)
           if (requiredDetail !== undefined) requiredDetail.pendingDiagnosis = {
@@ -408,23 +433,24 @@ export class RefineCapabilities {
             sourceVerifierStatus: verifier.verifier.status,
             visibleDigests: [],
             recorded: false,
+            recovery,
           }
         } else if (projection.coverage.surface === 'complete' && card.transcript.text.length > 0) {
-          receipts.push({
-            item,
-            receipt: this.diagnosisReceiptForCard(
+          const receipt = this.diagnosisReceiptForCard(
               card.runId,
               cardDigest,
               projection.trajectoryDigest,
               verifierStatus,
               verifier.verifier.status,
-            ),
-          })
+            )
+          await this.service.recordCandidateDiagnosis?.(sessionId, { ...recovery, receipt })
+          signal.throwIfAborted()
+          receipts.push({ item, receipt })
         }
       }
+      signal.throwIfAborted()
       for (const { item, receipt } of receipts) meta.recordEvidenceAccess(item.roundId, sessionId, {
-        refs: [item.evalId, item.trial.runId],
-        diagnosisReceipts: [receipt],
+        refs: [item.evalId, item.trial.runId], diagnosisReceipts: [receipt],
       })
       const readiness = baseline === undefined
         ? undefined
@@ -436,6 +462,7 @@ export class RefineCapabilities {
       return publicJson({
         runs: cards,
         ...(readiness === undefined ? {} : { diagnosisProgress: this.compactDiagnosisProgress(readiness) }),
+        ...this.generationBudgetStatus(sessionId, rounds.find(value => value.roundId === activeRoundId)),
       })
     }
     if (method === 'hitch.status') {
@@ -493,6 +520,7 @@ export class RefineCapabilities {
         summary,
         compiler: { ok: true, summary },
         ...(readiness === undefined ? {} : { finalizationReadiness: readiness }),
+        ...this.generationBudgetStatus(sessionId),
       }
     }
     if (method === 'candidate.finalize' || method === 'candidate.decline') {
@@ -519,6 +547,110 @@ export class RefineCapabilities {
       return publicJson({ accepted: true, evolutionId, roundId: activeRoundId, ...(diff === undefined ? {} : { diff }) })
     }
     throw new Error(`unknown refine-meta capability: ${method}`)
+  }
+
+  private durableDiagnosticCard(card: MetaFailureCard): MetaFailureCard {
+    // These capabilities belong to the old session. Reissue a current-session
+    // archive ref on restoration; deeper trajectory reads can query the run.
+    return JSON.parse(JSON.stringify(card, (key, value) => {
+      if (['detailRef', 'earlierRef', 'needsDetail'].includes(key)) return undefined
+      return typeof value === 'string' ? value.replace(/\[more: detail_[a-f0-9]+\]/gu, '[query this run for full detail]') : value
+    })) as MetaFailureCard
+  }
+
+  private sanitizationPolicyDigest(): string {
+    return digestJson({ sensitiveKeyPattern: SENSITIVE_KEY.source,
+      secretDigests: this.secretValues.map(value => digestJson(value)).sort() })
+  }
+
+  private async restoreCandidateDiagnoses(
+    sessionId: string, baseline: EvaluationEvidence, runs: SeedRunEvidence[], signal: AbortSignal,
+  ): Promise<Record<string, unknown> | undefined> {
+    const records = await this.service.readCandidateDiagnoses?.(sessionId) ?? []
+    const active = this.service.activeEntryForSession(sessionId)
+    if (active === undefined) throw new Error('stale candidate diagnosis owner')
+    const audit = active.meta.proposalEvidenceAudit(active.roundId, sessionId, [])
+    const diagnosed = new Set((audit.diagnosisReceipts ?? []).filter(receiptIsValid).map(value => value.runId))
+    const latest = new Map(records.map(value => [value.receipt.runId, value]))
+    const pending = [...latest.values()].filter(value => !diagnosed.has(value.receipt.runId))
+    if (pending.length === 0) return undefined
+    const restored: Array<Record<string, unknown>> = []
+    const restoredReceipts: DiagnosisReceipt[] = []
+    const invalidatedRunIds: string[] = []
+    let bytes = 0
+    let remaining = 0
+    for (const record of pending) {
+      signal.throwIfAborted()
+      const runId = record.receipt.runId
+      const item = runs.find(value => value.trial.runId === runId && value.evalId === baseline.evalId)
+      if (item === undefined || !receiptIsValid(record.receipt)
+        || record.receipt.sanitizationPolicyDigest !== this.sanitizationPolicyDigest()
+        || record.receipt.compatibility !== undefined && this.options.allowUnavailableVerifierDiagnosis !== true) {
+        invalidatedRunIds.push(runId); continue
+      }
+      const row = {
+        runId, task: boundedUtf8(record.evidence.card.task, 256), outcome: record.evidence.card.outcome,
+        prompt: boundedUtf8(record.evidence.card.prompt?.text ?? '', 160),
+        verifier: boundedUtf8(record.evidence.verifierDetails ?? JSON.stringify(record.evidence.card.verifier), 400),
+        transcriptTail: boundedUtf8(record.evidence.card.transcript.text.slice(-240), 240),
+        sourceAttempt: record.source.attempt,
+      }
+      const rowBytes = Buffer.byteLength(JSON.stringify(row)) + 128
+      if (bytes + rowBytes > Math.max(4096, Math.min(64 * 1024, this.maxReadBytes))) { remaining += 1; continue }
+      // Verify live evidence without asking the model to diagnose it again.
+      // Bypass the projection cache: the same run ID may have been repaired.
+      try {
+        const projection = projectTrajectory(await this.requireTrajectoryReader().inspectTrajectoryAnalysis(runId, signal))
+        const verifier = await this.loadVerifierEvidence(item, signal)
+        if (projection.coverage.surface !== 'complete' || projection.fidelity === 'unavailable'
+          || digestJson({ trajectoryDigest: projection.trajectoryDigest, verifier }) !== record.sourceDigest) {
+          this.deleteTrajectoryProjection(runId)
+          invalidatedRunIds.push(runId); continue
+        }
+      } catch (error) {
+        signal.throwIfAborted()
+        this.deleteTrajectoryProjection(runId)
+        invalidatedRunIds.push(runId); continue
+      }
+      signal.throwIfAborted()
+      if (this.service.activeEntryForSession(sessionId) === undefined) throw new Error('stale candidate diagnosis owner')
+      const detailRef = this.inlineDetailRef(sessionId, active.roundId, runId, JSON.stringify(record.evidence))
+      restored.push({ ...row, detailRef })
+      bytes += rowBytes
+      restoredReceipts.push(record.receipt)
+    }
+    signal.throwIfAborted()
+    active.meta.recordEvidenceAccess(active.roundId, sessionId, {
+      refs: [baseline.evalId, ...restoredReceipts.map(value => value.runId)], diagnosisReceipts: restoredReceipts,
+    })
+    return { restored, invalidatedRunIds, remaining,
+      ...(remaining === 0 ? {} : { nextAction: 'Query trajectory.query without arguments to receive the remaining recovery summaries.' }),
+      workspace: 'Edits are not restored by diagnostic recovery; inspect the current candidate tree.',
+    }
+  }
+
+  private generationBudgetStatus(sessionId: string, round?: RefinementRound): Record<string, unknown> {
+    const active = this.service.activeEntryForSession(sessionId)
+    const budget = active?.generationBudget
+    if (active === undefined || budget === undefined) return {}
+    const audit = active.meta.proposalEvidenceAudit(active.roundId, sessionId, [])
+    const readiness = finalizationReadiness(active.baseline, audit)
+    const attempt = round?.candidatePool.find(value => value.candidateId === active.candidateId)
+      ?.generationAttempts?.find(value => value.attempt === budget.attempt)
+    const began = Date.parse(attempt?.preparationCompletedAt ?? '')
+    const currentReads = (audit.diagnosisReceipts ?? []).filter(value => receiptIsValid(value) && Date.parse(value.inspectedAt) >= began)
+    const lastRead = Math.max(...currentReads.map(value => Date.parse(value.inspectedAt)))
+    const estimate = readiness.remainingRunCount === 0 ? 0 : currentReads.length === 0 ? undefined
+      : Math.ceil(Math.max(0, lastRead - began) / currentReads.length * readiness.remainingRunCount)
+    return { generationBudget: { ...budget,
+      diagnosedRunCount: readiness.diagnosedRunCount, remainingRunCount: readiness.remainingRunCount,
+      estimatedDiagnosisRemainingMs: estimate ?? null,
+      ...(readiness.remainingRunCount > 0 && (budget.diagnosisAvailableMs === 0
+        || estimate !== undefined && estimate > budget.diagnosisAvailableMs) ? {
+          warning: 'DIAGNOSIS_BUDGET_AT_RISK',
+          message: 'Remaining diagnosis may consume the time reserved for editing and validation. Deadlines do not reset on reconnect. A larger budget requires a new evolution.',
+        } : {}),
+    } }
   }
 
   private async projectedTrajectory(
@@ -1031,10 +1163,7 @@ export class RefineCapabilities {
         && this.options.allowUnavailableVerifierDiagnosis === true
         ? { compatibility: 'allow-unavailable-verifier' as const }
         : {}),
-      sanitizationPolicyDigest: digestJson({
-        sensitiveKeyPattern: SENSITIVE_KEY.source,
-        secretDigests: this.secretValues.map(value => digestJson(value)).sort(),
-      }),
+      sanitizationPolicyDigest: this.sanitizationPolicyDigest(),
       inspectedAt: new Date().toISOString(),
     }
   }
@@ -1158,12 +1287,15 @@ export class RefineCapabilities {
       }
       return { visible }
     }
-    pending.recorded = true
     return {
       visible,
       diagnosis: {
         evalId: pending.evalId,
         runId: detail.runId,
+        ...(pending.recovery === undefined ? {} : { recovery: {
+          ...pending.recovery,
+          evidence: { ...pending.recovery.evidence, verifierDetails: detail.text ?? '' },
+        } }),
         receipt: this.diagnosisReceiptForCard(
           detail.runId,
           digestJson({ card: pending.cardDigest, details: pending.visibleDigests }),

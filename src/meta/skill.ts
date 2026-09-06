@@ -3,6 +3,7 @@ import type { RefineStateStore } from '../state/store.js'
 import { digestJson } from '../state/digest.js'
 import type {
   CandidateRecord,
+  CandidateGenerationBudgetStatus,
   DiagnosisReceipt,
   EvaluationEvidence,
   MetaAgentSpec,
@@ -12,7 +13,8 @@ import type {
   ProposalEvidenceAudit,
   RefinementRound,
 } from '../types.js'
-import type { MetaAgentSession, MetaSessionController } from './controller.js'
+import type { MetaAgentSession, MetaSessionController, MetaExecutionBinding } from './controller.js'
+import { generationBudgetSnapshot } from '../refine/generation-budget.js'
 
 export interface SkillHarnessIdentity {
   runtime: { type: string; version: string; integrity: string }
@@ -22,6 +24,8 @@ export interface SkillHarnessIdentity {
 }
 
 export interface SkillAssignment {
+  generationBudget?: CandidateGenerationBudgetStatus
+  retryRecovery?: { workspace: 'fresh'; diagnosis: 'query-current-baseline' }
   leaseId: string
   evolutionId: string
   roundId: string
@@ -123,7 +127,11 @@ export class SkillMetaCoordinator {
       entry.identity = structuredClone(identity)
       entry.onClaim()
     }
-    return { ...structuredClone(entry.assignment), leaseToken: entry.token }
+    return { ...structuredClone(entry.assignment), leaseToken: entry.token,
+      ...(entry.assignment.generationBudget === undefined ? {} : {
+        generationBudget: generationBudgetSnapshot(entry.assignment.generationBudget),
+      }),
+    }
   }
 
   authorize(leaseId: string, leaseToken: string, clientId: string): SkillAssignment {
@@ -260,6 +268,7 @@ export class SkillMetaSessionManager implements MetaSessionController {
     candidate: Readonly<CandidateRecord> | undefined,
     baseline: EvaluationEvidence | undefined,
     session: MetaAgentSession,
+    execution?: MetaExecutionBinding,
   ): Promise<import('./controller.js').MetaWakeHandle> {
     if (round.evolutionId !== this.options.evolutionId) throw new Error('Meta skill session received a foreign evolution')
     if (candidate?.workspaceId === undefined || baseline === undefined) throw new Error('Meta skill assignment is incomplete')
@@ -282,6 +291,12 @@ export class SkillMetaSessionManager implements MetaSessionController {
     ]
     const leaseId = crypto.randomUUID()
     this.coordinator.publish({
+      ...(execution?.generationBudget === undefined ? {} : {
+        generationBudget: generationBudgetSnapshot(execution.generationBudget),
+      }),
+      ...(execution !== undefined && execution.attempt > 1 ? {
+        retryRecovery: { workspace: 'fresh' as const, diagnosis: 'query-current-baseline' as const },
+      } : {}),
       leaseId,
       evolutionId: round.evolutionId,
       roundId: round.roundId,
