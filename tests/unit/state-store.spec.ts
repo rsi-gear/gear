@@ -20,6 +20,30 @@ async function store(): Promise<RefineStateStore> {
 }
 
 describe('RefineStateStore', () => {
+  it('validates durable evaluation starts without requiring a provider eval ID', async () => {
+    const state = await store()
+    const round = roundFixture({ status: 'baseline-running' })
+    const start = { phase: 'seed-baseline' as const, harnessRef: round.targetHarnessRef,
+      conditionId: round.plan.seed.conditionId, startedAt: 'now' }
+    await state.writeRound({ ...round, evaluationStarts: [start] })
+    expect((await state.readRound(round.roundId))?.evaluationStarts).toEqual([start])
+    await expect(state.writeRound({ ...round, evaluationStarts: [{ ...start, conditionId: round.plan.heldOut.conditionId }] })).rejects.toThrow(/evaluation start/u)
+  })
+
+  it('persists explicit baseline blockers only on failed rounds', async () => {
+    const state = await store()
+    const round = roundFixture({ status: 'failed' })
+    const baselineReuseBlocker = {
+      code: 'BASELINE_IDENTITY_UNRESOLVED' as const,
+      reason: 'Existing baseline identity could not be verified.',
+      requiredAction: 'Restore evaluator identity resolution.',
+    }
+    await state.writeRound({ ...round, baselineReuseBlocker })
+    expect((await state.readRound(round.roundId))?.baselineReuseBlocker).toEqual(baselineReuseBlocker)
+    await expect(state.writeRound({ ...round, status: 'baseline-running', baselineReuseBlocker })).rejects.toThrow(/baselineReuseBlocker/u)
+    await expect(state.writeRound({ ...round, baselineReuseBlocker: { ...baselineReuseBlocker, requiredAction: '' } })).rejects.toThrow(/baselineReuseBlocker/u)
+  })
+
   it('persists unresolved submission ownership and rejects mismatched or duplicated intents', async () => {
     const state = await store()
     const round = roundFixture({ status: 'baseline-running' })

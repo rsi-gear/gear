@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { HitchCliEvaluator } from '../../src/evaluator/hitch-cli.js'
+import { digestDatasetRef } from '../../src/state/dataset.js'
 import { RefineCapabilities } from '../../src/capabilities.js'
 import { renderTrajectoryResult } from '../../src/notebook/tool.js'
 import type { HitchConfig } from '../../src/config.js'
@@ -552,7 +553,7 @@ describe('HitchCliEvaluator', () => {
     await expect(malformed.evaluator.preflight()).rejects.toMatchObject({ code: 'unsupported_hitch_version' })
   })
 
-  it('does not reuse evidence before Hitch freezes a standard benchmark manifest identity', async () => {
+  it('leaves standard benchmark identity unresolved when the frozen dataset cannot be verified', async () => {
     const { fixture, evaluator } = await setup('0.2.8')
     await mkdir(join(fixture.root, 'seed'), { recursive: true })
     await writeFile(join(fixture.root, 'seed', 'benchmark.adapter.json'), '{}\n')
@@ -560,6 +561,22 @@ describe('HitchCliEvaluator', () => {
       round(fixture.root, fixture.championRef, fixture.manifest.digest),
       request('seed', fixture.championRef),
     )).resolves.toBeUndefined()
+  })
+
+  it.each(['manifest', 'task'] as const)('resolves standard benchmark identity without executing trials and detects %s drift', async drift => {
+    const { fixture, evaluator, invocationLog } = await setup('0.2.8')
+    const root = join(fixture.root, 'seed')
+    await mkdir(root)
+    await writeFile(join(root, 'benchmark.adapter.json'), '{}\n')
+    await writeFile(join(root, 'task.txt'), 'frozen task')
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const input = request('seed', fixture.championRef)
+    input.condition.dataset.digest = await digestDatasetRef('seed', fixture.root)
+    const identity = await evaluator.evaluationIdentity(state, input)
+    expect(identity).toMatchObject({ provider: 'hitch-cli', effectiveConfigDigest: expect.stringMatching(/^sha256:/u) })
+    expect(await readFile(invocationLog, 'utf8')).not.toMatch(/eval|run/u)
+    await writeFile(join(root, drift === 'manifest' ? 'benchmark.adapter.json' : 'task.txt'), 'changed')
+    expect(await evaluator.evaluationIdentity(state, input)).toBeUndefined()
   })
 
   it('requires Hitch 0.2.6 and a running daemon in control-plane mode', async () => {

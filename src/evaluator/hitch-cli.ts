@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
 import type { HitchConfig } from '../config.js'
 import { digestJson } from '../state/digest.js'
+import { digestDatasetRef } from '../state/dataset.js'
 import type {
   EvaluationRequest,
   EvaluationRerunResult,
@@ -1061,9 +1062,16 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     signal?.throwIfAborted()
     // Daemon defaults are frozen at submission; prior evidence cannot be reused
     // until the current execution policy can be resolved before submission.
-    // Standard benchmark identity is validated and frozen by Hitch planning;
-    // do not reuse an older baseline before that dataset identity is observed.
-    if (this.daemonMode || await this.hasStandardBenchmarkManifest(round, request)) return undefined
+    if (this.daemonMode) return undefined
+    // Settled evidence has already passed Hitch planning. Verify that the whole
+    // compiled dataset, including its adapter/scoring manifest, is unchanged.
+    // Unknown legacy identities stay unresolved; the service must block reuse
+    // rather than treating that uncertainty as permission to run more trials.
+    if (await this.hasStandardBenchmarkManifest(round, request)) {
+      const datasetDigest = await digestDatasetRef(request.dataset, round.workspaceRoot)
+      signal?.throwIfAborted()
+      if (datasetDigest !== request.condition.dataset.digest) return undefined
+    }
     return this.resolveEvaluationIdentity(round, request, signal)
   }
 

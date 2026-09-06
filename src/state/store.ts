@@ -408,6 +408,16 @@ export class RefineStateStore {
       'rejected-for-substrate', 'failed',
     ])
     if (typeof round.status !== 'string' || !statuses.has(round.status)) throw new TypeError('round status is invalid')
+    if (round.baselineReuseBlocker !== undefined) {
+      const blocker = round.baselineReuseBlocker
+      if (typeof blocker !== 'object' || blocker === null
+        || !['BASELINE_IDENTITY_UNRESOLVED', 'BASELINE_CONDITION_MISMATCH', 'BASELINE_EVIDENCE_UNAVAILABLE'].includes(blocker.code)
+        || typeof blocker.reason !== 'string' || blocker.reason.length === 0
+        || typeof blocker.requiredAction !== 'string' || blocker.requiredAction.length === 0
+        || round.status !== 'failed') {
+        throw new TypeError('round baselineReuseBlocker is invalid')
+      }
+    }
     if (round.source !== 'command' && round.source !== 'target' && round.source !== 'api' && round.source !== 'skill') {
       throw new TypeError('round source is invalid')
     }
@@ -624,6 +634,18 @@ export class RefineStateStore {
           || candidate.parentHarnessRef !== allocation.parentHarnessRef || !isExactGitCommit(allocation.parentHarnessRef)
           || !/^sha256:[0-9a-f]{64}$/u.test(allocation.parentHarnessDigest)) {
           throw new TypeError('round parent allocation is invalid')
+        }
+      }
+    }
+    if (round.evaluationStarts !== undefined) {
+      if (!Array.isArray(round.evaluationStarts)) throw new TypeError('round evaluationStarts must be an array')
+      for (const start of round.evaluationStarts) {
+        if (typeof start !== 'object' || start === null
+          || !['seed-baseline', 'seed-candidate', 'held-out-baseline', 'held-out-candidate'].includes(start.phase)
+          || !isExactGitCommit(start.harnessRef)
+          || start.conditionId !== (start.phase.startsWith('seed-') ? round.plan!.seed : round.plan!.heldOut).conditionId
+          || typeof start.startedAt !== 'string' || start.startedAt.length === 0) {
+          throw new TypeError('round evaluation start is invalid')
         }
       }
     }

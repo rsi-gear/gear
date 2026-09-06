@@ -1525,7 +1525,7 @@ describe('RefineService evolution workspaces', () => {
     await service.dispose()
   })
 
-  it('reruns the baseline when the evaluator runtime identity changes', async () => {
+  it('blocks without rerunning the baseline when the evaluator runtime identity changes', async () => {
     const { service, evaluator } = await setup()
     const admission = await service.admit('api')
     const store = service.registry.stateStore(admission.evolutionId)
@@ -1539,16 +1539,17 @@ describe('RefineService evolution workspaces', () => {
 
     evaluator.runtimeConfigDigest = `sha256:${'e'.repeat(64)}`
     const continued = await service.continueEvolution('api', admission.evolutionId)
-    const second = await editing(service, admission.evolutionId, continued.roundId)
+    const second = await eventually(() => store.readRound(continued.roundId), value => value?.status === 'failed')
 
-    expect(second.baseline?.evalId).not.toBe(first.baseline.evalId)
-    expect(second.baseline?.effectiveConfigDigest).toBe(evaluator.runtimeConfigDigest)
-    expect(second.evaluationAttempts?.some(attempt => attempt.reusedFromRoundId !== undefined)).toBe(false)
-    expect(evaluator.calls).toEqual(['seed-baseline', 'seed-baseline'])
+    expect(second?.baselineReuseBlocker?.code).toBe('BASELINE_CONDITION_MISMATCH')
+    expect(second?.baseline).toBeUndefined()
+    expect(second?.evaluationAttempts ?? []).toEqual([])
+    expect(await store.readRound(first.roundId)).toEqual(first)
+    expect(evaluator.calls).toEqual(['seed-baseline'])
     await service.dispose()
   })
 
-  it('refreshes legacy seed and held-out baselines after the Hitch scoring contract upgrade', async () => {
+  it('blocks legacy seed and held-out baselines after the Hitch scoring contract upgrade', async () => {
     const { git, service, evaluator } = await setup()
     try {
       const executable = join(git.root, 'fake-hitch-version.mjs')
@@ -1599,32 +1600,26 @@ describe('RefineService evolution workspaces', () => {
       })
 
       const continued = await service.continueEvolution('api', admission.evolutionId)
-      const second = await editing(service, admission.evolutionId, continued.roundId)
-      expect(second.baseline?.evalId).not.toBe(promoted.seedEvaluation.evalId)
-      expect(second.baseline?.benchmark).toEqual({ id: 'benchmark-seed', revision: 'revision-1' })
-      await finalize(service, second)
-      const terminal = await eventually(() => store.readRound(second.roundId), value => value?.status === 'accepted')
-      expect(terminal?.evaluation?.heldOutBaseline?.evalId).not.toBe(promoted.heldOutEvaluation.evalId)
-      expect(terminal?.evaluation?.seedPairedTrials).toHaveLength(10)
-      expect(terminal?.evaluation?.heldOutPairedTrials).toHaveLength(10)
-      expect(terminal?.evaluationAttempts?.some(attempt => attempt.reusedFromRoundId !== undefined)).toBe(false)
+      const second = await eventually(() => store.readRound(continued.roundId), value => value?.status === 'failed')
+      expect(second?.baselineReuseBlocker?.code).toBe('BASELINE_CONDITION_MISMATCH')
+      expect(second?.evaluationAttempts ?? []).toEqual([])
       expect(evaluator.calls).toEqual([
         'seed-baseline', 'seed-candidate', 'held-out-baseline', 'held-out-candidate',
-        'seed-baseline', 'seed-candidate', 'held-out-baseline', 'held-out-candidate',
       ])
+      expect(await store.readRound(first.roundId)).toEqual(first)
       expect((await store.readRound(first.roundId))?.baseline?.benchmark).toBeUndefined()
     } finally {
       await service.dispose()
     }
   })
 
-  it('reuses a promoted candidate as the next round seed and held-out baseline', async () => {
+  it.each(['automatic', 'appended'] as const)('reuses a promoted candidate as the %s round seed and held-out baseline', async mode => {
     const { service, evaluator } = await setup()
     service.options.promotion.policy = builtinComponentRef('promotion-policy', 'paired-gate', {
       ...service.options.promotion.policy.config,
       minimumAbsoluteGain: 0,
     })
-    const admission = await service.admit('api', { rounds: 2 })
+    const admission = await service.admit('api', { rounds: mode === 'automatic' ? 2 : 1 })
     const store = service.registry.stateStore(admission.evolutionId)
     await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
     const first = await eventually(
@@ -1636,8 +1631,12 @@ describe('RefineService evolution workspaces', () => {
       || promoted.seedEvaluation === undefined || promoted.heldOutEvaluation === undefined) {
       throw new Error('first round did not persist promoted candidate evidence')
     }
+    if (mode === 'appended') {
+      await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
+      await service.continueEvolution('api', admission.evolutionId)
+    }
     const second = await eventually(
-      async () => (await store.listRounds()).find(value => value.roundIndex === 2),
+      async () => (await store.listRounds()).find(value => value.roundId !== first.roundId),
       value => value?.status === 'candidate-editing',
     )
     expect(second?.targetHarnessRef).toBe(promoted.sealedVersion.commitOid)
@@ -1666,7 +1665,7 @@ describe('RefineService evolution workspaces', () => {
     await service.dispose()
   })
 
-  it('reruns a promoted candidate baseline when its prior seed evidence was partial', async () => {
+  it('blocks a promoted candidate baseline when its prior seed evidence was partial', async () => {
     const { service, evaluator } = await setup()
     evaluator.partialInvalidByPhase.set('seed-candidate', [9])
     const admission = await service.admit('api', { rounds: 2 })
@@ -1682,11 +1681,12 @@ describe('RefineService evolution workspaces', () => {
 
     const second = await eventually(
       async () => (await store.listRounds()).find(value => value.roundIndex === 2),
-      value => value?.status === 'candidate-editing',
+      value => value?.status === 'failed',
     )
-    expect(second?.baseline?.completeness).toBe('complete')
-    expect(second?.baseline?.evalId).not.toBe(promoted.seedEvaluation.evalId)
-    expect(evaluator.calls.filter(phase => phase === 'seed-baseline')).toHaveLength(2)
+    expect(second?.baselineReuseBlocker?.code).toBe('BASELINE_EVIDENCE_UNAVAILABLE')
+    expect(second?.evaluationAttempts ?? []).toEqual([])
+    expect(evaluator.calls.filter(phase => phase === 'seed-baseline')).toHaveLength(1)
+    expect(await store.readRound(first!.roundId)).toEqual(first)
     await service.dispose()
   })
 
@@ -1733,7 +1733,7 @@ describe('RefineService evolution workspaces', () => {
     await service.dispose()
   })
 
-  it('evaluates a fresh seed baseline instead of reusing partial evidence', async () => {
+  it('preserves partial baseline trials and blocks instead of starting a fresh evaluation', async () => {
     const { service, evaluator } = await setup()
     evaluator.partialInvalidByCall.set(1, [9])
     const admission = await service.admit('api')
@@ -1748,13 +1748,362 @@ describe('RefineService evolution workspaces', () => {
     await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
 
     const continued = await service.continueEvolution('api', admission.evolutionId)
-    const second = await editing(service, admission.evolutionId, continued.roundId)
+    const second = await eventually(() => store.readRound(continued.roundId), value => value?.status === 'failed')
 
-    expect(second.baseline?.completeness).toBe('complete')
-    expect(second.baseline?.evalId).not.toBe(first.baseline.evalId)
-    expect(second.evaluationAttempts?.some(attempt => attempt.reusedFromRoundId !== undefined)).toBe(false)
-    expect(evaluator.calls).toEqual(['seed-baseline', 'seed-baseline'])
+    expect(second?.baselineReuseBlocker?.code).toBe('BASELINE_EVIDENCE_UNAVAILABLE')
+    expect(second?.evaluationAttempts ?? []).toEqual([])
+    expect(evaluator.calls).toEqual(['seed-baseline'])
+    expect(await store.readRound(first.roundId)).toEqual(first)
     await service.dispose()
+  })
+
+  it.each(['unknown', 'throws', 'missing-method'] as const)('blocks %s identity resolution without reserving trials or waking Meta', async mode => {
+    const { service, evaluator, metas } = await setup()
+    if (mode === 'missing-method') {
+      service.options.createEvaluator = () => ({
+        reserve: evaluator.reserve.bind(evaluator), evaluate: evaluator.evaluate.bind(evaluator),
+      })
+    }
+    try {
+      const first = await service.admit('api')
+      const store = service.registry.stateStore(first.evolutionId)
+      await decline(service, await editing(service, first.evolutionId, first.roundId))
+      const original = await eventually(() => store.readRound(first.roundId), r => r?.status === 'rejected')
+      await eventually(async () => service.activeEntry(first.roundId), r => r === undefined)
+      if (mode === 'unknown') vi.spyOn(evaluator, 'evaluationIdentity').mockReturnValueOnce(undefined as never)
+      if (mode === 'throws') vi.spyOn(evaluator, 'evaluationIdentity').mockImplementationOnce(() => { throw new Error('private provider error') })
+      const reserve = vi.spyOn(evaluator, 'reserve')
+      const wakes = metas.get(first.evolutionId)!.wakes.length
+      const next = await service.continueEvolution('api', first.evolutionId, { rounds: 2 })
+      const blocked = await eventually(() => store.readRound(next.roundId), r => r?.status === 'failed')
+      expect(blocked?.baselineReuseBlocker?.code).toBe('BASELINE_IDENTITY_UNRESOLVED')
+      expect(blocked?.evaluationAttempts ?? []).toEqual([])
+      expect(reserve).not.toHaveBeenCalled()
+      expect(evaluator.calls).toEqual(['seed-baseline'])
+      expect(metas.get(first.evolutionId)!.wakes).toHaveLength(wakes)
+      expect(await store.readRound(first.roundId)).toEqual(original)
+      const status = await service.status(first.evolutionId, next.roundId)
+      expect(status).toMatchObject({ baselineReuseBlocker: { code: 'BASELINE_IDENTITY_UNRESOLVED', requiredAction: expect.any(String) } })
+      expect(JSON.stringify(status)).not.toContain('private provider error')
+      expect(await store.listRounds()).toHaveLength(2)
+    } finally { await service.dispose() }
+  })
+
+  it('blocks a previous failed evaluation without durable evidence instead of retrying every trial', async () => {
+    const { service, evaluator } = await setup()
+    try {
+      evaluator.failurePhase = 'seed-baseline'
+      const first = await service.admit('api')
+      const store = service.registry.stateStore(first.evolutionId)
+      const original = await eventually(() => store.readRound(first.roundId), r => r?.status === 'failed')
+      await eventually(async () => service.activeEntry(first.roundId), r => r === undefined)
+      delete evaluator.failurePhase
+      const next = await service.continueEvolution('api', first.evolutionId)
+      const blocked = await eventually(() => store.readRound(next.roundId), r => r?.status === 'failed')
+      expect(blocked?.baselineReuseBlocker?.code).toBe('BASELINE_EVIDENCE_UNAVAILABLE')
+      expect(evaluator.calls).toEqual(['seed-baseline'])
+      expect(await store.readRound(first.roundId)).toEqual(original)
+    } finally { await service.dispose() }
+  })
+
+  it.each([false, true])('blocks an unreserved provider failure without repeating execution (restart=%s)', async restart => {
+    const { service, evaluator } = await setup()
+    const execute = vi.fn(async () => { throw new Error('provider failed after starting trials') })
+    service.options.createEvaluator = () => ({
+      evaluationIdentity: evaluator.evaluationIdentity.bind(evaluator), evaluate: execute,
+    })
+    let resumed = service
+    try {
+      const first = await service.admit('api')
+      const store = service.registry.stateStore(first.evolutionId)
+      const original = await eventually(() => store.readRound(first.roundId), r => r?.status === 'failed')
+      await eventually(async () => service.activeEntry(first.roundId), r => r === undefined)
+      expect(original?.evaluationAttempts).toBeUndefined()
+      expect(original?.evaluationStarts).toEqual([expect.objectContaining({ phase: 'seed-baseline', harnessRef: original!.targetHarnessRef })])
+      if (restart) {
+        await service.dispose()
+        resumed = new RefineService(service.registry, service.builder, service.workspaceManager, service.createMetaSession, evaluator, service.options)
+        await resumed.initialize()
+      }
+      const next = await resumed.continueEvolution('api', first.evolutionId)
+      const blocked = await eventually(() => store.readRound(next.roundId), r => r?.status === 'failed')
+      expect(blocked?.baselineReuseBlocker?.code).toBe('BASELINE_EVIDENCE_UNAVAILABLE')
+      expect(execute).toHaveBeenCalledTimes(1)
+      expect(await store.readRound(first.roundId)).toEqual(original)
+    } finally { await resumed.dispose(); await service.dispose() }
+  })
+
+  it('keeps a failed current-round baseline blocked after repairing only a seed candidate', async () => {
+    const { service, evaluator } = await setup(0.8, false, 2)
+    let reservation = 0
+    evaluator.reserve = async () => ({ provider: 'hitch-cli', evalId: `eval_${(++reservation).toString(16).padStart(32, '0')}` })
+    const identity = evaluator.evaluationIdentity.bind(evaluator)
+    evaluator.evaluationIdentity = (round, request) => ({ ...identity(round, request), provider: 'hitch-cli' })
+    const evaluate = evaluator.evaluate.bind(evaluator)
+    const failOnce = new Set<EvaluationPhase>(['seed-candidate', 'held-out-baseline'])
+    evaluator.evaluate = async (...args) => {
+      if (failOnce.delete(args[1].phase)) {
+        evaluator.failurePhase = args[1].phase
+        try { return await evaluate(...args) }
+        finally { delete evaluator.failurePhase }
+      }
+      return evaluate(...args)
+    }
+    try {
+      const admission = await service.admit('api')
+      const store = service.registry.stateStore(admission.evolutionId)
+      const first = await editing(service, admission.evolutionId, admission.roundId)
+      const workspaceId = service.activeEntry(first.roundId)!.workspace!.workspaceId
+      await finalize(service, first)
+      const second = await eventually(() => store.readRound(first.roundId), r => r?.status === 'candidate-editing'
+        && service.activeEntry(first.roundId)?.workspace?.workspaceId !== workspaceId)
+      await finalize(service, second!)
+      const failed = await eventually(() => store.readRound(first.roundId), r => r?.status === 'failed')
+      const seedAttempt = failed!.evaluationAttempts!.find(attempt => attempt.phase === 'seed-candidate' && attempt.status === 'failed')!
+      const baselineAttempt = failed!.evaluationAttempts!.find(attempt => attempt.phase === 'held-out-baseline')!
+      expect(baselineAttempt.status).toBe('failed')
+      const seedBaseline = structuredClone(failed!.baseline)
+      await service.rerunEvaluation(first.evolutionId, first.roundId, seedAttempt.evalId, { mode: 'invalid' })
+      const blocked = await eventually(() => store.readRound(first.roundId), r => r?.status === 'failed' || r?.status === 'accepted')
+      expect(blocked?.baselineReuseBlocker?.code).toBe('BASELINE_EVIDENCE_UNAVAILABLE')
+      expect(blocked?.status).toBe('failed')
+      expect(blocked?.evaluationAttempts?.filter(attempt => attempt.phase === 'held-out-baseline')).toEqual([baselineAttempt])
+      expect(evaluator.calls.filter(phase => phase === 'held-out-baseline')).toHaveLength(1)
+      expect(blocked?.baseline).toEqual(seedBaseline)
+      expect((await service.status(first.evolutionId, first.roundId)).repairableEvaluations).toEqual([
+        expect.objectContaining({ evalId: baselineAttempt.evalId, phase: 'held-out-baseline' }),
+      ])
+
+      // Explicitly repairing that baseline is still allowed and keeps its eval ID.
+      await service.rerunEvaluation(first.evolutionId, first.roundId, baselineAttempt.evalId, { mode: 'invalid' })
+      const terminal = await eventually(() => store.readRound(first.roundId), r => r?.status === 'accepted' || r?.status === 'failed')
+      expect(terminal?.failure).toBeUndefined()
+      expect(terminal?.status).toBe('accepted')
+      expect(terminal?.baselineReuseBlocker).toBeUndefined()
+      expect(terminal?.baseline).toEqual(seedBaseline)
+      expect(terminal?.evaluation?.heldOutBaseline?.evalId).toBe(baselineAttempt.evalId)
+      expect(terminal?.evaluationAttempts?.filter(attempt => attempt.phase === 'held-out-baseline')).toEqual([
+        expect.objectContaining({ evalId: baselineAttempt.evalId, status: 'settled' }),
+      ])
+      expect(evaluator.calls.filter(phase => phase === 'held-out-baseline')).toHaveLength(2)
+    } finally { await service.dispose() }
+  })
+
+  it('resumes a repaired held-out candidate without repeating either baseline', async () => {
+    const { service, evaluator } = await setup()
+    let reservation = 0
+    evaluator.reserve = async () => ({ provider: 'hitch-cli', evalId: `eval_${(++reservation).toString(16).padStart(32, '0')}` })
+    evaluator.failurePhase = 'held-out-candidate'
+    try {
+      const first = await service.admit('api')
+      const store = service.registry.stateStore(first.evolutionId)
+      await finalize(service, await editing(service, first.evolutionId, first.roundId))
+      const failed = await eventually(() => store.readRound(first.roundId), r => r?.status === 'failed')
+      const baseline = structuredClone(failed!.evaluation!.heldOutBaseline)
+      const attempt = failed!.evaluationAttempts!.find(value => value.phase === 'held-out-candidate')!
+      delete evaluator.failurePhase
+      await service.rerunEvaluation(first.evolutionId, first.roundId, attempt.evalId, { mode: 'invalid' })
+      const terminal = await eventually(() => store.readRound(first.roundId), r => r?.status === 'accepted' || r?.status === 'failed')
+      expect(terminal?.failure).toBeUndefined()
+      expect(terminal?.status).toBe('accepted')
+      expect(terminal?.evaluation?.heldOutBaseline).toEqual(baseline)
+      expect(terminal?.evaluation?.heldOutCandidate?.evalId).toBe(attempt.evalId)
+      expect(terminal?.evaluation?.heldOutPairedTrials).toHaveLength(10)
+      expect(evaluator.calls).toEqual(['seed-baseline', 'seed-candidate', 'held-out-baseline', 'held-out-candidate', 'held-out-candidate'])
+    } finally { await service.dispose() }
+  })
+
+  it.each([false, true])('allows explicit candidate repair after a held-out reuse blocker (identity restored=%s)', async restoreIdentity => {
+    const { service, evaluator } = await setup(0.8, false, 2)
+    let reservation = 0
+    evaluator.reserve = async () => ({ provider: 'hitch-cli', evalId: `eval_${(++reservation).toString(16).padStart(32, '0')}` })
+    const identity = evaluator.evaluationIdentity.bind(evaluator)
+    let blockHeldOut = false
+    evaluator.evaluationIdentity = (round, request) => blockHeldOut && request.phase === 'held-out-baseline'
+      ? undefined as never : { ...identity(round, request), provider: 'hitch-cli' }
+    const evaluate = evaluator.evaluate.bind(evaluator)
+    let failOneCandidate = false
+    evaluator.evaluate = async (...args) => {
+      if (failOneCandidate && args[1].phase === 'seed-candidate') {
+        failOneCandidate = false
+        throw Object.assign(new Error('candidate infrastructure failure'), { code: 'hitch_infrastructure_failure' })
+      }
+      return evaluate(...args)
+    }
+    service.options.promotion.policy = builtinComponentRef('promotion-policy', 'paired-gate', {
+      ...service.options.promotion.policy.config, minimumAbsoluteGain: 0,
+    })
+    async function generate(evolutionId: string, roundId: string) {
+      const first = await editing(service, evolutionId, roundId)
+      const workspaceId = service.activeEntry(roundId)!.workspace!.workspaceId
+      await finalize(service, first)
+      const second = await eventually(
+        () => service.registry.stateStore(evolutionId).readRound(roundId),
+        r => r?.status === 'candidate-editing' && service.activeEntry(roundId)?.workspace?.workspaceId !== workspaceId,
+      )
+      await finalize(service, second!)
+    }
+    try {
+      const first = await service.admit('api')
+      const store = service.registry.stateStore(first.evolutionId)
+      await generate(first.evolutionId, first.roundId)
+      const original = await eventually(() => store.readRound(first.roundId), r => r?.status === 'accepted')
+      await eventually(async () => service.activeEntry(first.roundId), r => r === undefined)
+      blockHeldOut = true
+      failOneCandidate = true
+      const next = await service.continueEvolution('api', first.evolutionId)
+      await generate(first.evolutionId, next.roundId)
+      const blocked = await eventually(() => store.readRound(next.roundId), r => r?.status === 'failed')
+      expect(blocked?.baselineReuseBlocker?.code).toBe('BASELINE_IDENTITY_UNRESOLVED')
+      const attempt = blocked!.evaluationAttempts!.find(value => value.status === 'failed')!
+      expect((await service.status(first.evolutionId, next.roundId)).repairableEvaluations).toEqual([
+        expect.objectContaining({ evalId: attempt.evalId }),
+      ])
+      blockHeldOut = !restoreIdentity
+      await expect(service.rerunEvaluation(first.evolutionId, next.roundId, attempt.evalId, { mode: 'invalid' })).resolves.toMatchObject({ evalId: attempt.evalId })
+      const terminal = await eventually(() => store.readRound(next.roundId), r => r?.status === 'accepted' || r?.status === 'failed')
+      expect(terminal?.failure?.message).toEqual(restoreIdentity ? undefined : expect.stringContaining('Cannot verify'))
+      expect(terminal?.status).toBe(restoreIdentity ? 'accepted' : 'failed')
+      if (restoreIdentity) expect(terminal?.baselineReuseBlocker).toBeUndefined()
+      else expect(terminal?.baselineReuseBlocker?.code).toBe('BASELINE_IDENTITY_UNRESOLVED')
+      expect(evaluator.calls.filter(phase => phase === 'seed-baseline')).toHaveLength(1)
+      expect(evaluator.calls.filter(phase => phase === 'held-out-baseline')).toHaveLength(1)
+      expect(await store.readRound(first.roundId)).toEqual(original)
+    } finally { await service.dispose() }
+  })
+
+  it('uses original promotion evidence despite a newer cancelled duplicate baseline', async () => {
+    const { service, evaluator } = await setup()
+    try {
+      const first = await service.admit('api')
+      const store = service.registry.stateStore(first.evolutionId)
+      await finalize(service, await editing(service, first.evolutionId, first.roundId))
+      const original = await eventually(() => store.readRound(first.roundId), r => r?.status === 'accepted')
+      const promoted = original!.candidatePool.find(candidate => candidate.candidateId === original!.promotedCandidateId)!
+      await eventually(async () => service.activeEntry(first.roundId), r => r === undefined)
+      vi.spyOn(evaluator, 'evaluationIdentity').mockReturnValueOnce(undefined as never)
+      const duplicate = await service.continueEvolution('api', first.evolutionId)
+      const blocked = await eventually(() => store.readRound(duplicate.roundId), r => r?.status === 'failed')
+      await eventually(async () => service.activeEntry(duplicate.roundId), r => r === undefined)
+      // Reconstruct the legacy failure from the incident: a cancelled duplicate
+      // has attempt ownership, while the promotion's full evidence still exists.
+      const cancelled: RefinementRound = { ...blocked!, evaluationAttempts: [{
+        provider: 'fake', evalId: 'eval_cancelled_duplicate', phase: 'seed-baseline',
+        owner: { candidateId: `champion-${blocked!.targetHarnessRef}`, role: 'baseline', harnessRef: blocked!.targetHarnessRef },
+        conditionId: blocked!.plan.seed.conditionId, dataset: blocked!.seedTaskRef,
+        requestedModelId: blocked!.plan.seed.model, requestedCommit: blocked!.targetHarnessRef,
+        status: 'cancelled', startedAt: blocked!.createdAt, completedAt: blocked!.updatedAt,
+        failure: { code: 'cancelled', message: 'Cancelled duplicate baseline.' },
+      }] }
+      delete cancelled.baselineReuseBlocker
+      await store.writeRound(cancelled)
+      const next = await service.continueEvolution('api', first.evolutionId)
+      const continued = await editing(service, first.evolutionId, next.roundId)
+      expect(continued.baseline).toEqual(promoted.seedEvaluation)
+      expect(continued.evaluationAttempts?.[0]?.reusedFromRoundId).toBe(first.roundId)
+      expect(evaluator.calls).toEqual(['seed-baseline', 'seed-candidate', 'held-out-baseline', 'held-out-candidate'])
+      expect(await store.readRound(first.roundId)).toEqual(original)
+      expect(await store.readRound(duplicate.roundId)).toEqual(cancelled)
+    } finally { await service.dispose() }
+  })
+
+  it('reuses complete zero-reward results without replacing any trial', async () => {
+    const { service, evaluator } = await setup()
+    const evaluate = evaluator.evaluate.bind(evaluator)
+    evaluator.evaluate = async (...args) => {
+      const evidence = await evaluate(...args)
+      return { ...evidence, primaryReward: 0, summary: { total: 10, passed: 0, failed: 10, score: 0 },
+        trials: evidence.trials.map(trial => ({ ...trial, rewards: { reward: 0 } })) }
+    }
+    try {
+      const first = await service.admit('api')
+      const store = service.registry.stateStore(first.evolutionId)
+      await decline(service, await editing(service, first.evolutionId, first.roundId))
+      const original = await eventually(() => store.readRound(first.roundId), r => r?.status === 'rejected')
+      await eventually(async () => service.activeEntry(first.roundId), r => r === undefined)
+      const next = await service.continueEvolution('api', first.evolutionId)
+      const continued = await editing(service, first.evolutionId, next.roundId)
+      expect(continued.baseline).toEqual(original?.baseline)
+      expect(continued.baseline?.summary).toMatchObject({ total: 10, score: 0 })
+      expect(evaluator.calls).toEqual(['seed-baseline'])
+    } finally { await service.dispose() }
+  })
+
+  it('blocks partial promoted held-out evidence without rerunning its valid trials', async () => {
+    const { service, evaluator } = await setup()
+    evaluator.partialInvalidByCall.set(4, [9])
+    service.options.promotion.policy = builtinComponentRef('promotion-policy', 'paired-gate', {
+      ...service.options.promotion.policy.config, minimumAbsoluteGain: 0,
+    })
+    try {
+      const first = await service.admit('api', { rounds: 2 })
+      const store = service.registry.stateStore(first.evolutionId)
+      await finalize(service, await editing(service, first.evolutionId, first.roundId))
+      const original = await eventually(() => store.readRound(first.roundId), r => r?.status === 'accepted')
+      const next = await eventually(async () => (await store.listRounds()).find(r => r.roundIndex === 2), r => r?.status === 'candidate-editing')
+      await finalize(service, next!)
+      const blocked = await eventually(() => store.readRound(next!.roundId), r => r?.status === 'failed')
+      expect(blocked?.baselineReuseBlocker?.code).toBe('BASELINE_EVIDENCE_UNAVAILABLE')
+      expect(evaluator.calls).toEqual(['seed-baseline', 'seed-candidate', 'held-out-baseline', 'held-out-candidate', 'seed-candidate'])
+      expect(await store.readRound(first.roundId)).toEqual(original)
+    } finally { await service.dispose() }
+  })
+
+  it.each(['absolute', 'relative'] as const)('reuses promoted standard benchmark evidence after restart with %s dataset paths', async pathMode => {
+    const { service, evaluator, git } = await setup()
+    let restarted: RefineService | undefined
+    try {
+      for (const partition of ['seed', 'held-out']) {
+        const dir = join(git.root, partition)
+        await mkdir(dir)
+        await writeFile(join(dir, 'benchmark.adapter.json'), JSON.stringify({ benchmark: { id: partition, revision: '1' } }))
+        await writeFile(join(dir, 'task.txt'), 'immutable fixture task')
+      }
+      service.options.seedTaskRef = pathMode === 'absolute' ? join(git.root, 'seed') : 'seed'
+      service.options.heldOutRef = pathMode === 'absolute' ? join(git.root, 'held-out') : 'held-out'
+      const executable = join(git.root, 'hitch-version.mjs')
+      await writeFile(executable, "#!/usr/bin/env node\nprocess.stdout.write('0.2.8\\n')\n")
+      await chmod(executable, 0o755)
+      const hitch = new HitchCliEvaluator({
+        executable, repositoryPath: git.repository, root: '', harnessId: 'deepseek', model: 'deepseek-chat',
+        attempts: 1, maxConcurrent: 2, setupTimeoutMs: 10000, terminationGraceMs: 100,
+        maxOutputBytes: 1024 * 1024, maxTrajectoryOutputBytes: 1024 * 1024, sampling: {}, agentArgs: [], passEnv: [],
+      })
+      service.options.createEvaluator = () => ({
+        reserve: evaluator.reserve.bind(evaluator),
+        evaluationIdentity: async (...args) => {
+          const identity = await hitch.evaluationIdentity(...args)
+          return identity === undefined ? undefined : { ...identity, provider: 'fake' }
+        },
+        evaluate: async (...args) => {
+          const evidence = await evaluator.evaluate(...args)
+          const identity = await hitch.evaluationIdentity(args[0], args[1], args[2])
+          if (identity === undefined) throw new Error('fixture expected a resolved direct identity')
+          return { ...evidence, effectiveConfigDigest: identity.effectiveConfigDigest,
+            invocationFingerprint: identity.invocationFingerprint, benchmark: { id: args[1].dataset, revision: '1' } }
+        },
+      })
+      service.options.promotion.policy = builtinComponentRef('promotion-policy', 'paired-gate', {
+        ...service.options.promotion.policy.config, minimumAbsoluteGain: 0,
+      })
+      const first = await service.admit('api')
+      const store = service.registry.stateStore(first.evolutionId)
+      await finalize(service, await editing(service, first.evolutionId, first.roundId))
+      const original = await eventually(() => store.readRound(first.roundId), r => r?.status === 'accepted')
+      const promoted = original!.candidatePool[0]!
+      await eventually(async () => service.activeEntry(first.roundId), r => r === undefined)
+      await service.dispose()
+      restarted = new RefineService(service.registry, service.builder, service.workspaceManager, service.createMetaSession, evaluator, service.options)
+      await restarted.initialize()
+      const next = await restarted.continueEvolution('api', first.evolutionId)
+      const round = await editing(restarted, first.evolutionId, next.roundId)
+      expect(round.baseline).toEqual(promoted.seedEvaluation)
+      await finalize(restarted, round)
+      const terminal = await eventually(() => store.readRound(next.roundId), r => r?.status === 'accepted')
+      expect(terminal?.evaluation?.heldOutBaseline).toEqual(promoted.heldOutEvaluation)
+      expect(evaluator.calls).toEqual(['seed-baseline', 'seed-candidate', 'held-out-baseline', 'held-out-candidate', 'seed-candidate', 'held-out-candidate'])
+      expect(await store.readRound(first.roundId)).toEqual(original)
+    } finally { await restarted?.dispose(); await service.dispose() }
   })
 
   it('revalidates the resolved Meta runtime before every continue', async () => {
