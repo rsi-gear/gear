@@ -2081,8 +2081,7 @@ export class RefineService {
     const preferredRoundId = championHead?.ref === harnessRef
       ? championHead.roundId?.replace(/^rollback:/u, '')
       : undefined
-    const previousRounds = (await store.listRounds())
-      .filter(previous => previous.roundId !== round.roundId)
+    const historyRounds = (await store.listRounds())
       // Prefer the promotion's original evidence, then stable history order.
       // A later cancelled duplicate must not displace the champion's results.
       .sort((left, right) => Number(right.roundId === preferredRoundId)
@@ -2091,7 +2090,7 @@ export class RefineService {
         || left.roundId.localeCompare(right.roundId))
     const sources: Array<{ previous: RefinementRound; evidence: EvaluationEvidence; attempt?: RoundEvaluationAttempt }> = []
     let hasPriorAttempt = false
-    for (const previous of previousRounds) {
+    for (const previous of historyRounds) {
       signal.throwIfAborted()
       hasPriorAttempt ||= previous.evaluationStarts?.some(start => (
         start.harnessRef === harnessRef && start.phase.startsWith(`${partition}-`)
@@ -2105,6 +2104,9 @@ export class RefineService {
       hasPriorAttempt ||= previous.failedEvaluations?.some(failed => (
         failed.owner.harnessRef === harnessRef && failed.phase.startsWith(`${partition}-`)
       )) ?? false
+      // The resumed round may already own a failed baseline. It must prevent
+      // fresh execution even though it cannot be its own historical reuse source.
+      if (previous.roundId === round.roundId) continue
       const matchingParent = partition === 'seed' && parentCandidateId !== undefined
         ? previous.parentBaselines
           ?.filter(value => value.parentCandidateId === parentCandidateId && value.parentHarnessRef === harnessRef)

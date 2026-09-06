@@ -1833,6 +1833,62 @@ describe('RefineService evolution workspaces', () => {
     } finally { await resumed.dispose(); await service.dispose() }
   })
 
+  it('keeps a failed current-round baseline blocked after repairing only a seed candidate', async () => {
+    const { service, evaluator } = await setup(0.8, false, 2)
+    let reservation = 0
+    evaluator.reserve = async () => ({ provider: 'hitch-cli', evalId: `eval_${(++reservation).toString(16).padStart(32, '0')}` })
+    const identity = evaluator.evaluationIdentity.bind(evaluator)
+    evaluator.evaluationIdentity = (round, request) => ({ ...identity(round, request), provider: 'hitch-cli' })
+    const evaluate = evaluator.evaluate.bind(evaluator)
+    const failOnce = new Set<EvaluationPhase>(['seed-candidate', 'held-out-baseline'])
+    evaluator.evaluate = async (...args) => {
+      if (failOnce.delete(args[1].phase)) {
+        evaluator.failurePhase = args[1].phase
+        try { return await evaluate(...args) }
+        finally { delete evaluator.failurePhase }
+      }
+      return evaluate(...args)
+    }
+    try {
+      const admission = await service.admit('api')
+      const store = service.registry.stateStore(admission.evolutionId)
+      const first = await editing(service, admission.evolutionId, admission.roundId)
+      const workspaceId = service.activeEntry(first.roundId)!.workspace!.workspaceId
+      await finalize(service, first)
+      const second = await eventually(() => store.readRound(first.roundId), r => r?.status === 'candidate-editing'
+        && service.activeEntry(first.roundId)?.workspace?.workspaceId !== workspaceId)
+      await finalize(service, second!)
+      const failed = await eventually(() => store.readRound(first.roundId), r => r?.status === 'failed')
+      const seedAttempt = failed!.evaluationAttempts!.find(attempt => attempt.phase === 'seed-candidate' && attempt.status === 'failed')!
+      const baselineAttempt = failed!.evaluationAttempts!.find(attempt => attempt.phase === 'held-out-baseline')!
+      expect(baselineAttempt.status).toBe('failed')
+      const seedBaseline = structuredClone(failed!.baseline)
+      await service.rerunEvaluation(first.evolutionId, first.roundId, seedAttempt.evalId, { mode: 'invalid' })
+      const blocked = await eventually(() => store.readRound(first.roundId), r => r?.status === 'failed' || r?.status === 'accepted')
+      expect(blocked?.baselineReuseBlocker?.code).toBe('BASELINE_EVIDENCE_UNAVAILABLE')
+      expect(blocked?.status).toBe('failed')
+      expect(blocked?.evaluationAttempts?.filter(attempt => attempt.phase === 'held-out-baseline')).toEqual([baselineAttempt])
+      expect(evaluator.calls.filter(phase => phase === 'held-out-baseline')).toHaveLength(1)
+      expect(blocked?.baseline).toEqual(seedBaseline)
+      expect((await service.status(first.evolutionId, first.roundId)).repairableEvaluations).toEqual([
+        expect.objectContaining({ evalId: baselineAttempt.evalId, phase: 'held-out-baseline' }),
+      ])
+
+      // Explicitly repairing that baseline is still allowed and keeps its eval ID.
+      await service.rerunEvaluation(first.evolutionId, first.roundId, baselineAttempt.evalId, { mode: 'invalid' })
+      const terminal = await eventually(() => store.readRound(first.roundId), r => r?.status === 'accepted' || r?.status === 'failed')
+      expect(terminal?.failure).toBeUndefined()
+      expect(terminal?.status).toBe('accepted')
+      expect(terminal?.baselineReuseBlocker).toBeUndefined()
+      expect(terminal?.baseline).toEqual(seedBaseline)
+      expect(terminal?.evaluation?.heldOutBaseline?.evalId).toBe(baselineAttempt.evalId)
+      expect(terminal?.evaluationAttempts?.filter(attempt => attempt.phase === 'held-out-baseline')).toEqual([
+        expect.objectContaining({ evalId: baselineAttempt.evalId, status: 'settled' }),
+      ])
+      expect(evaluator.calls.filter(phase => phase === 'held-out-baseline')).toHaveLength(2)
+    } finally { await service.dispose() }
+  })
+
   it('resumes a repaired held-out candidate without repeating either baseline', async () => {
     const { service, evaluator } = await setup()
     let reservation = 0
