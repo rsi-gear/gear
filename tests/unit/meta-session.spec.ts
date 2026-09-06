@@ -292,6 +292,27 @@ describe('MetaSessionManager', () => {
     await manager.dispose()
   })
 
+  it('retains the provider error that ended the owned Meta turn', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'refine-meta-error-'))
+    roots.push(root)
+    const store = new RefineStateStore(root)
+    await store.initialize()
+    const manager = new MetaSessionManager(store, new FakeHost(), META_OPTIONS)
+    const agent = await manager.agent()
+    const error = { code: 'CONTEXT_WINDOW_EXCEEDED', message: 'Your input exceeds the context window of this model.' }
+    ;(agent as unknown as { whenIdle: () => Promise<void> }).whenIdle = async () => {
+      const events = agent.session.events as unknown as Array<Record<string, unknown>>
+      events.push(
+        { type: 'turn/start', seq: 1, time: 100, data: { turn: 1 } },
+        { type: 'turn/end', seq: 2, time: 200, data: { turn: 1, reason: { kind: 'error', error } } },
+      )
+    }
+    const state = round()
+    const wake = await manager.wakeCandidate(state, state.candidatePool[0], state.baseline, agent)
+    await expect(wake.completion).resolves.toEqual({ reason: 'error', error, turn: 1, durationMs: 100 })
+    await manager.dispose()
+  })
+
   it('isolates sibling wake and evidence state by child session', async () => {
     const root = await mkdtemp(join(tmpdir(), 'refine-meta-'))
     roots.push(root)

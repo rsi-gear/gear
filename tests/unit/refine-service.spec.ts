@@ -7,6 +7,7 @@ import { HitchCliEvaluator, HitchEvaluationError } from '../../src/evaluator/hit
 import type { EvaluationSubmissionIntent, EvaluationRerunReservation } from '../../src/types.js'
 import { HarnessBuilder, NoopHarnessCompiler, SubstrateExpansionError } from '../../src/harness/builder.js'
 import { RefineService } from '../../src/refine/service.js'
+import type { MetaSessionController } from '../../src/meta/controller.js'
 import { RefineStateStore } from '../../src/state/store.js'
 import { EvolutionRegistryStore } from '../../src/state/evolution.js'
 import type { DiagnosisReceipt, EvaluationPhase, EvaluationRequest, EvaluationRerunResult, EvaluationRerunSelector, EvaluationReservation, HitchEvaluationEvidence, MetaAttribution, MetaCheckpointRef, MetaTurnObservation, RefineEvaluator, RefinementRound, RoundEvaluationAttempt } from '../../src/types.js'
@@ -1977,7 +1978,53 @@ describe('RefineService evolution workspaces', () => {
     await service.dispose()
   })
 
-  it('retries immediately when an observable Meta turn ends without finalizing', async () => {
+  it('keeps one attempt and the same uncommitted workspace through two session activations', async () => {
+    const { service, evaluator, metas } = await setup()
+    const gate = Promise.withResolvers<void>()
+    const evaluate = evaluator.evaluate.bind(evaluator)
+    evaluator.evaluate = async (...args) => { await gate.promise; return evaluate(...args) }
+    const admission = await service.admit('api')
+    const meta = metas.get(admission.evolutionId)! as unknown as MetaSessionController
+    const idle = Promise.withResolvers<MetaTurnObservation>()
+    const oldIds: string[] = []
+    const workspaceIds: string[] = []
+    meta.wakeCandidate = async (_round, _candidate, _baseline, agent, binding) => {
+      let id = agent.id
+      for (let generation = 1; generation <= 2; generation += 1) {
+        const workspace = service.workspaceManager.resolve(id)
+        workspaceIds.push(workspace.workspaceId)
+        const path = join(workspace.targetPath, 'prompts', 'rotation.md')
+        await mkdir(join(workspace.targetPath, 'prompts'), { recursive: true })
+        if (generation === 2) expect(await readFile(path, 'utf8')).toBe('edit 1')
+        await service.workspaceManager.withOpenWorkspace(id, true, async () => writeFile(path, `edit ${generation}`))
+        await binding!.snapshot()
+        expect(binding!.signal.aborted).toBe(false)
+        const next = `${agent.id}-rotated-${generation}`
+        await binding!.activate(id, next, generation)
+        expect(service.activeEntryForSession(id)).toBeUndefined()
+        expect(() => service.workspaceManager.resolve(id)).toThrow(/no active/)
+        oldIds.push(id)
+        id = next
+      }
+      return { sessionId: agent.id, completion: idle.promise }
+    }
+    gate.resolve()
+    const store = service.registry.stateStore(admission.evolutionId)
+    const round = await eventually(() => store.readRound(admission.roundId) as Promise<RefinementRound>,
+      round => round.candidatePool[0]?.metaSessionId?.endsWith('-rotated-2') === true)
+    expect(new Set(workspaceIds).size).toBe(1)
+    expect(round.candidatePool[0]!.generationAttempts).toHaveLength(1)
+    await finalize(service, round)
+    idle.resolve({ reason: 'completed' })
+    const completed = await eventually(() => store.readRound(admission.roundId), round => round?.status === 'accepted')
+    expect(completed!.candidatePool[0]!.meta?.sessionId).toBe(round.candidatePool[0]!.metaSessionId)
+    expect(completed!.candidatePool[0]!.resultCheckpoint?.sourceSessionId).toBe(round.candidatePool[0]!.metaSessionId)
+    expect(completed!.candidatePool[0]!.generationAttempts).toHaveLength(1)
+    expect(oldIds).toHaveLength(2)
+    await service.dispose()
+  })
+
+  it.each(['max-tokens', 'error'])('retries when a Meta turn ends with %s and retains the cause', async reason => {
     const { service, evaluator, metas } = await setup(0.8, false, 1, 300_000, 1, 0, 2, 600_000)
     const baselineGate = Promise.withResolvers<void>()
     const evaluate = evaluator.evaluate.bind(evaluator)
@@ -1992,8 +2039,9 @@ describe('RefineService evolution workspaces', () => {
     const admission = await service.admit('api')
     const meta = metas.get(admission.evolutionId)
     if (meta === undefined) throw new Error('Meta fixture is unavailable')
+    const error = { code: 'CONTEXT_WINDOW_EXCEEDED', message: 'Your input exceeds the context window of this model.' }
     meta.turnCompletions.push({
-      reason: 'max-tokens', turn: 1, durationMs: 69_000, effectiveMaxTokens: 8192,
+      reason, ...(reason === 'error' ? { error } : {}), turn: 1, durationMs: 69_000, effectiveMaxTokens: 8192,
       usage: { inputTokens: 11_074, outputTokens: 8192, cacheReadTokens: 18_688, reasoningTokens: 8192 },
     })
     baselineGate.resolve()
@@ -2007,15 +2055,19 @@ describe('RefineService evolution workspaces', () => {
     expect(retried.candidatePool[0]?.generationAttempts?.[0]).toMatchObject({
       status: 'failed',
       metaTurn: {
-        reason: 'max-tokens', effectiveMaxTokens: 8192,
+        reason, ...(reason === 'error' ? { error } : {}), effectiveMaxTokens: 8192,
         usage: { outputTokens: 8192, reasoningTokens: 8192 },
       },
       failure: { message: expect.stringContaining('without candidate.finalize or candidate.decline') },
     })
+    if (reason === 'error') {
+      expect(retried.candidatePool[0]?.generationAttempts?.[0]?.failure?.message).toContain(error.code)
+      expect(retried.candidatePool[0]?.generationAttempts?.[0]?.failure?.message).toContain(error.message)
+    }
     expect((await service.status(admission.evolutionId, admission.roundId)).candidateGeneration)
       .toEqual(expect.arrayContaining([expect.objectContaining({
         attempts: expect.arrayContaining([expect.objectContaining({
-          status: 'failed', metaTurn: expect.objectContaining({ reason: 'max-tokens' }),
+          status: 'failed', metaTurn: expect.objectContaining({ reason }),
         })]),
       })]))
     await finalize(service, retried)
