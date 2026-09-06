@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { SkillMetaCoordinator, SkillMetaSessionManager, type SkillHarnessIdentity } from '../../src/meta/skill.js'
 import { RefineStateStore } from '../../src/state/store.js'
 import type { MetaAgentSpec } from '../../src/types.js'
+import { compatibleSkillMetaAgent } from '../../src/meta/controller.js'
 import { evidence, roundFixture, SHA } from '../helpers/research-fixture.js'
 
 const roots: string[] = []
@@ -30,6 +31,14 @@ function spec(): MetaAgentSpec {
 }
 
 describe('SkillMetaSessionManager', () => {
+  it('requires the same sealed reasoning effort when resuming an external Meta harness', () => {
+    const medium = { ...spec(), sampling: { reasoningEffort: 'medium' } }
+    expect(compatibleSkillMetaAgent(medium, structuredClone(medium))).toBe(true)
+    expect(compatibleSkillMetaAgent(medium, { ...medium, sampling: { reasoningEffort: 'low' } })).toBe(false)
+    expect(compatibleSkillMetaAgent(medium, spec())).toBe(false)
+    expect(compatibleSkillMetaAgent(spec(), spec())).toBe(true)
+  })
+
   it('leases one candidate to an exactly matching external harness and records attributable evidence', async () => {
     const root = await mkdtemp(join(tmpdir(), 'gear-skill-meta-'))
     roots.push(root)
@@ -37,7 +46,7 @@ describe('SkillMetaSessionManager', () => {
     await store.initialize()
     const coordinator = new SkillMetaCoordinator()
     const manager = new SkillMetaSessionManager(store, coordinator, {
-      evolutionId: 'evo-1', specDigest: SHA('9'), metaAgent: spec(),
+      evolutionId: 'evo-1', specDigest: SHA('9'), metaAgent: { ...spec(), sampling: { reasoningEffort: 'medium' } },
     })
     const parent = await manager.agent()
     const child = await manager.fork(await manager.checkpoint(parent.id))
@@ -58,7 +67,9 @@ describe('SkillMetaSessionManager', () => {
     expect(() => coordinator.claim('codex-session', {
       ...identity(), model: { provider: 'openai', model: 'different' },
     }, round.evolutionId)).toThrow(/identity/)
-    const claim = coordinator.claim('codex-session', identity(), round.evolutionId)
+    expect(() => coordinator.claim('codex-session', identity(), round.evolutionId)).toThrow(/immutable evolution spec/)
+    const mediumIdentity = { ...identity(), sampling: { reasoningEffort: 'medium' } }
+    const claim = coordinator.claim('codex-session', mediumIdentity, round.evolutionId)
     expect(claim).toMatchObject({
       evolutionId: round.evolutionId,
       roundId: round.roundId,
@@ -67,7 +78,7 @@ describe('SkillMetaSessionManager', () => {
       workspaceId: 'workspace-1',
     })
     if (claim === undefined) throw new Error('assignment was not claimed')
-    expect(coordinator.claim('another-client', identity(), round.evolutionId)).toBeUndefined()
+    expect(coordinator.claim('another-client', mediumIdentity, round.evolutionId)).toBeUndefined()
     expect(coordinator.authorize(claim.leaseId, claim.leaseToken, 'codex-session').sessionId).toBe(child.id)
     expect(() => coordinator.authorize(claim.leaseId, 'wrong', 'codex-session')).toThrow(/lease/)
 
@@ -85,6 +96,7 @@ describe('SkillMetaSessionManager', () => {
       source: { kind: 'skill-lease', harness: 'codex', clientId: 'codex-session', leaseId: claim.leaseId },
       provider: 'openai',
       model: 'gpt-test',
+      sampling: { reasoningEffort: 'medium' },
     })
 
     await manager.release(child.id)

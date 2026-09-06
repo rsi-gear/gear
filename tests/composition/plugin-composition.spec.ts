@@ -85,6 +85,8 @@ else process.exitCode = 2
       '    metaModel:',
       '      provider: test',
       '      model: test-model',
+      '    metaSampling:',
+      '      reasoningEffort: medium',
       `    dshBaseRef: ${fixture.baseRef}`,
       '    toolchainRef: node-22-tsc',
       '    sandboxProfileRef: sandbox-v1',
@@ -132,6 +134,7 @@ else process.exitCode = 2
     expect(context.targetWorkers).toBeDefined()
     expect(context.evolutionComponents).toBeDefined()
     expect(context.refine.options.rollout.seeds).toBeUndefined()
+    expect(context.refine.options.metaAgent.sampling).toEqual({ reasoningEffort: 'medium' })
     expect(context.refine.options.metaAgent.runtime.type).toBe('dsh')
     expect(context.refine.options.metaAgent.preset.id).toBe('refine')
     expect(context.refine.options.metaAgent.preset.resources.map(value => value.logicalPath)).toEqual([

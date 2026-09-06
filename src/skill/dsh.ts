@@ -120,7 +120,9 @@ export async function mountDshRefineSkill(
         || request.model !== identity.model.model
         || (request.maxTokens !== identity.model.maxTokens
           && !(identity.model.maxTokens === undefined && header?.adapterDefaults?.maxTokens === true))
-        || request.temperature !== identity.sampling?.temperature) {
+        || request.temperature !== identity.sampling?.temperature
+        || (identity.sampling?.reasoningEffort !== undefined
+          && request.reasoningEffort !== identity.sampling.reasoningEffort)) {
         throw new Error('current DSH request identity does not match the immutable Gear configuration')
       }
       if ((await loadBundledRefineSkill()).digest !== identity.preset.digest) {

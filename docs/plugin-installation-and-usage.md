@@ -124,7 +124,7 @@ DSH 会把它当作原生 skill gesture，将完整 `SKILL.md` 注入当前 agen
 `refine_request` 调用与 Codex/Claude Code socket client 相同的 Gear gateway。
 该工具把 lease 绑定到当前 DSH session，自动提供 runtime 和 packaged-skill
 identity；每次调用前确认当前 scope 仍选中随包 skill、会话保留原生 skill 加载记录，
-并校验 provider、model 和 temperature。显式 `maxTokens` 必须一致；省略时允许
+并校验 provider、model、temperature 和显式配置的 `reasoningEffort`。显式 `maxTokens` 必须一致；省略时允许
 DSH 标记的 adapter 默认值。压缩移除加载记录后需重新加载 skill。
 这不隔离或证明当前会话的其他工具、历史或 OS 权限，宿主仍负责这些边界。
 
@@ -344,6 +344,18 @@ order: 50
 人为收紧单次 Meta 回合的输出上限；模型服务或 DSH adapter 自身仍可能施加其
 支持的上限。旧 evolution 若已经封存了该字段，恢复时仍按原 identity 校验。
 
+需要固定 thinking effort 时，设置 `metaSampling.reasoningEffort: medium`
+（或所选模型支持的其他 effort id）。该值会封存进 evolution spec。
+在 `metaAdapter.kind: dsh` 模式下，Gear 在新建、恢复和 fork 会话时将其写入
+最终请求，并从 request header 记录有效值；模型不支持该值时由 DSH 拒绝请求。
+省略该字段的旧 spec 继续使用原有默认行为。当前 profile 显式配置了不同 effort
+时，必须创建新 evolution，不能继续旧实验。
+
+Skill 模式由宿主设置实际请求参数；Gear 校验 identity，DSH skill bridge 还会
+校验当前请求中的显式 effort。外部 harness 的 `meta.claim` identity 应在
+`sampling.reasoningEffort` 中提供相同值。Target 的 effort 由 target harness
+单独配置；Luna 示例在固定的 `target.patch.yml` 中设为 `medium`。
+
 ### 6.1 关键配置说明
 
 | 字段 | 含义 |
@@ -355,6 +367,7 @@ order: 50
 | `metaPreset` | 仅 `metaAdapter.kind: dsh` 兼容模式需要的固定 Meta Agent preset id |
 | `metaModel` | Meta Agent 使用的 provider 和 model；DSH skill bridge 会与当前 agent 校验，新配置不设置 `maxTokens` |
 | `metaSampling.temperature` | 进入真实 DSH `agent/request` 的 Meta temperature；有效值会从 request header 归因 |
+| `metaSampling.reasoningEffort` | 可选的 Meta thinking effort，如 `medium`；使用模型 adapter 支持的原始 effort id，不能留空或带首尾空格 |
 | `candidateGeneration.maxCandidates` | 每轮从相同 Meta checkpoint 生成的独立候选数 |
 | `candidateGeneration.attemptTimeoutMs` | 单次 Meta 候选生成尝试的超时；默认 900000ms |
 | `candidateGeneration.maxAttemptsPerCandidate` | 每个 candidate 在同一 round 内允许的独立尝试次数；重试复用 parent、baseline 和 parent checkpoint，但使用新的 Agent/workspace |

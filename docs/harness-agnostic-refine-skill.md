@@ -60,9 +60,14 @@ Skill mode 必须在启动前固定：
 DSH plugin 中若未填写任何 identity 字段，Gear 会从当前 DSH runtime 和包内
 `skills/refine` 完整目录自动派生并封存 identity；`refine_request` 还会校验
 当前作用域选中的随包 skill、会话中的原生加载记录，以及 request 的 provider、model
-和 temperature。显式配置的 `maxTokens` 必须一致；省略时允许 DSH 标记的 adapter 默认值，
+和 temperature，以及显式配置的 `reasoningEffort`。显式配置的 `maxTokens` 必须一致；省略时允许 DSH 标记的 adapter 默认值，
 不接受其他显式上限。Standalone 或
 外部 Meta harness 必须显式提供全部 identity 字段。
+
+可通过 `metaSampling.reasoningEffort` 固定 thinking effort，例如 `medium`。
+宿主负责设置实际模型请求；`meta.claim` 的 `identity.sampling.reasoningEffort`
+必须与封存值一致。省略 effort 时保留宿主默认行为；更改已封存的 sampling
+需要创建新 evolution。
 
 显式配置时，`metaAdapter.runtimeIntegrity` 与 `metaAdapter.harnessDigest` 使用
 `sha256:<64 lowercase hex>`。计算当前 skill bundle：

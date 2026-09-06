@@ -1,5 +1,5 @@
 import { Context } from '@deepseek-ai/cordis'
-import LlmRuntime, { CallId, createAssistantMessage, createToolResultMessage, createUserMessage, LlmAdapter, type Message } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { CallId, createAssistantMessage, createToolResultMessage, createUserMessage, LlmAdapter, ReasoningEffortId, type Message } from '@deepseek-ai/dsh-llm'
 import { type EpochHeader, type SessionEvent } from '@deepseek-ai/dsh-session'
 import SkillRegistry, { renderSkillContent } from '@deepseek-ai/dsh-skill'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -158,6 +158,26 @@ describe('DSH refine skill bridge', () => {
     b.setHeader({ config: { ...b.identity.model, ...change } })
     await expect(b.execute('control.status')).rejects.toThrow('current DSH request identity does not match')
     expect(b.call).not.toHaveBeenCalled()
+  })
+
+  it.each(['medium', 'low', undefined])('checks explicit Medium against request effort %s', async effort => {
+    const b = await bridge()
+    b.identity.sampling = { reasoningEffort: 'medium' }
+    b.setHeader({ config: {
+      ...b.identity.model,
+      ...(effort === undefined ? {} : { reasoningEffort: ReasoningEffortId(effort) }),
+    } })
+    if (effort === 'medium') await expect(b.execute()).resolves.toEqual({ leaseId: 'lease-1' })
+    else {
+      await expect(b.execute()).rejects.toThrow('current DSH request identity does not match')
+      expect(b.call).not.toHaveBeenCalled()
+    }
+  })
+
+  it('allows the request default when effort was not configured', async () => {
+    const b = await bridge()
+    b.setHeader({ config: { ...b.identity.model, reasoningEffort: ReasoningEffortId('medium') } })
+    await expect(b.execute()).resolves.toEqual({ leaseId: 'lease-1' })
   })
 
   it('rejects a configured DSH identity that does not match the packaged skill', async () => {

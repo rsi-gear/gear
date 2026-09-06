@@ -17,6 +17,7 @@ import { isolateCandidateProviderContext } from './candidate/context.js'
 import { SessionAwareNotebookRuntime } from './notebook/runtime.js'
 import { mountMetaCapabilityTools, mountNotebookTool } from './notebook/tool.js'
 import { DshMetaAgentHost, MetaSessionManager } from './meta/session.js'
+import { assertMetaReasoningEffortMatches, validateMetaSampling } from './meta/sampling.js'
 import { compatibleSkillMetaAgent } from './meta/controller.js'
 import {
   assertMetaPresetComposesCapabilities,
@@ -240,10 +241,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       throw new TypeError(`${name} must be a positive safe integer`)
     }
   }
-  if (config.metaSampling.temperature !== undefined
-    && (!Number.isFinite(config.metaSampling.temperature) || config.metaSampling.temperature < 0 || config.metaSampling.temperature > 2)) {
-    throw new TypeError('metaSampling.temperature must be between 0 and 2')
-  }
+  validateMetaSampling(config.metaSampling)
   if (config.metaSandbox.mode === 'required' && !isAbsolute(config.compiler.command)) {
     throw new TypeError('compiler.command must be an absolute fixed toolchain path when sandboxing is required')
   }
@@ -482,6 +480,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   const validateEvolutionRuntime = async (spec: import('./types.js').EvolutionSpec): Promise<void> => {
     if (config.metaAdapter.kind === 'dsh') {
       if (spec.metaAgent.runtime.type !== 'dsh') throw new Error('evolution requires a different Meta harness adapter')
+      assertMetaReasoningEffortMatches(spec.metaAgent.sampling, config.metaSampling)
       const currentPreset = await ctx.agentPresets.resolve(spec.metaAgent.preset.id)
       await assertMetaPresetIsolation(currentPreset, [config.dshRepository])
       await assertMetaPresetComposesCapabilities(currentPreset)

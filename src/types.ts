@@ -85,6 +85,8 @@ export interface ComponentRef<C = JsonValue> {
 
 export interface MetaSamplingConfig {
   temperature?: number
+  /** Adapter-owned effort id (for example, medium), sealed into the evolution spec. */
+  reasoningEffort?: string
 }
 
 export interface RolloutSamplingConfig {
