@@ -415,7 +415,13 @@ export class RefineCapabilities {
         const cardDigest = digestJson(card)
         const recovery = {
           sourceDigest: digestJson({ trajectoryDigest: projection.trajectoryDigest, verifier }),
-          evidence: { card: this.durableDiagnosticCard(card) },
+          evidence: { card: this.durableDiagnosticCard({
+            ...card,
+            // A long assistant reply can push the task out of the recovery transcript tail.
+            prompt: this.evidenceText(
+              sessionId, item, projection, prompt.message, 160, roundHeldOutRef(rounds, item.roundId),
+            ),
+          }) },
         }
         if (card.verifier.needsDetail === true && card.verifier.detailRef !== undefined) {
           const requiredDetail = this.trajectoryDetailRefs.get(card.verifier.detailRef)

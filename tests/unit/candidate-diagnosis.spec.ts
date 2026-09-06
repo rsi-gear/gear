@@ -15,7 +15,7 @@ import { trajectoryAnalysis } from '../helpers/trajectory-fixture.js'
 const cleanup: Array<() => Promise<unknown>> = []
 afterEach(async () => { for (const dispose of cleanup.splice(0).reverse()) await dispose() })
 
-async function fixture(details = '') {
+async function fixture(details = '', messages: { prompt?: string; assistant?: string } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'gear-diagnosis-'))
   cleanup.push(() => rm(root, { recursive: true, force: true }))
   const store = new RefineStateStore(root)
@@ -60,14 +60,14 @@ async function fixture(details = '') {
       })
     },
   }
-  let trajectoryText = 'original observed trajectory'
+  let trajectoryText = messages.assistant ?? 'original observed trajectory'
   let verifierText = details
   let secrets = ['sensitive-value']
   const reader: HitchTrajectoryReader = {
     async inspectCapabilities() { return { schemaVersion: 1, trajectoryAnalysis: 1, trajectoryEventsPage: 1 } },
     async inspectTrajectoryAnalysis(runId) {
       return trajectoryAnalysis(runId, [
-        { type: 'user/message', data: { role: 'user', content: [{ type: 'text', text: 'Diagnose the task' }] } },
+        { type: 'user/message', data: { role: 'user', content: [{ type: 'text', text: messages.prompt ?? 'Diagnose the task' }] } },
         { type: 'assistant/message', data: { message: { role: 'assistant', content: [{ type: 'text', text: trajectoryText }] } } },
       ])
     },
@@ -105,6 +105,26 @@ async function fixture(details = '') {
 }
 
 describe('durable candidate diagnosis recovery', () => {
+  it.each(['inline', 'paginated'])('retains the sanitized task prompt after a long reply with %s verifier evidence', async mode => {
+    const f = await fixture(mode === 'paginated' ? 'failure details '.repeat(3000) : '', {
+      prompt: 'Diagnose the task using sensitive-value',
+      assistant: 'Long assistant reply. '.repeat(100),
+    })
+    const first = await f.call({ refs: [f.baseline.trials[0]!.runId!] })
+    let ref = first.runs[0].verifier.detailRef
+    if (mode === 'paginated') expect(ref).toBeDefined()
+    while (ref !== undefined) ref = (await f.call({ detailRef: ref })).nextRef
+    await f.retry()
+    const recovered = await f.call({})
+    expect(recovered.diagnosisProgress).toMatchObject({ diagnosed: 1, required: 1 })
+    const restored = recovered.diagnosisRecovery.restored[0]
+    expect(restored.transcriptTail).not.toContain('Diagnose the task')
+    expect(restored.prompt).toBe('Diagnose the task using [REDACTED]')
+    const saved = await f.journal().read()
+    expect(saved[0]!.evidence.card.prompt?.text).toBe(restored.prompt)
+    expect(JSON.stringify(saved)).not.toContain('sensitive-value')
+  })
+
   it('warns when diagnosis consumes the reserve without inventing an ETA or blocking reads', async () => {
     const f = await fixture()
     f.setBudget({ attempt: 1, maxAttemptsPerCandidate: 2, attemptTimeoutMs: 10_000, roundTimeoutMs: 20_000,
