@@ -13,6 +13,7 @@ import { isExactGitCommit } from '../types.js'
 import { RefineStateStore } from './store.js'
 import { digestJson } from './digest.js'
 import { serializeExperimentsTsv } from './experiments.js'
+import { validateMetaSampling } from '../meta/sampling.js'
 
 export { digestJson } from './digest.js'
 
@@ -60,10 +61,7 @@ function validateSpec(value: EvolutionSpec): EvolutionSpec {
       || resource.kind.length === 0 || !SHA256.test(resource.digest))) {
     throw new TypeError('evolution Meta Agent identity is invalid')
   }
-  const temperature = value.metaAgent.sampling.temperature
-  if (temperature !== undefined && (!Number.isFinite(temperature) || temperature < 0 || temperature > 2)) {
-    throw new TypeError('evolution Meta temperature is invalid')
-  }
+  validateMetaSampling(value.metaAgent.sampling, 'evolution Meta sampling')
   if (value.metaAgent.model.maxTokens !== undefined
     && (!Number.isSafeInteger(value.metaAgent.model.maxTokens) || value.metaAgent.model.maxTokens <= 0)) {
     throw new TypeError('evolution Meta maxTokens is invalid')

@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
@@ -11,6 +11,7 @@ import type {
 import type { RefineStateStore } from '../state/store.js'
 import { digestJson } from '../state/digest.js'
 import type { MetaAgentSession, MetaSessionController } from './controller.js'
+import { validateMetaSampling } from './sampling.js'
 
 export interface MetaAgentHost {
   getLive(sessionId: string): Agent | undefined
@@ -96,11 +97,7 @@ export class DshMetaAgentHost implements MetaAgentHost {
     return this.ctx.agents.resume({
       resumeSessionId: SessionId(sessionId),
       agentOptions: spec.model,
-      setup: async (agentCtx) => {
-        await this.ctx.agentPresets.mount(agentCtx, spec.preset.id)
-        this.installSampling(agentCtx, spec)
-        await this.setupMetaCapabilities(agentCtx, sessionId)
-      },
+      setup: agentCtx => this.setupAgent(agentCtx, sessionId, spec),
     })
   }
 
@@ -109,11 +106,7 @@ export class DshMetaAgentHost implements MetaAgentHost {
       sessionId: SessionId(sessionId),
       agentOptions: spec.model,
       meta: { agentPreset: spec.preset.id },
-      setup: async (agentCtx) => {
-        await this.ctx.agentPresets.mount(agentCtx, spec.preset.id)
-        this.installSampling(agentCtx, spec)
-        await this.setupMetaCapabilities(agentCtx, sessionId)
-      },
+      setup: agentCtx => this.setupAgent(agentCtx, sessionId, spec),
     })
   }
 
@@ -151,11 +144,7 @@ export class DshMetaAgentHost implements MetaAgentHost {
         cwd: '/candidate/harness',
         agentPreset: spec.preset.id,
       },
-      setup: async (agentCtx) => {
-        await this.ctx.agentPresets.mount(agentCtx, spec.preset.id)
-        this.installSampling(agentCtx, spec)
-        await this.setupMetaCapabilities(agentCtx, sessionId)
-      },
+      setup: agentCtx => this.setupAgent(agentCtx, sessionId, spec),
     })
   }
 
@@ -166,10 +155,20 @@ export class DshMetaAgentHost implements MetaAgentHost {
     if (!participated) throw new Error('durable Meta session persistence is required before cleanup')
   }
 
-  private installSampling(agentCtx: Context, spec: DshMetaAgentSpec): void {
-    const { temperature } = spec.sampling
-    if (temperature === undefined) return
-    agentCtx.on('agent/request', async (_payload, next) => ({ ...await next(), temperature }))
+  private async setupAgent(agentCtx: Context, sessionId: string, spec: DshMetaAgentSpec): Promise<void> {
+    validateMetaSampling(spec.sampling)
+    await this.ctx.agentPresets.mount(agentCtx, spec.preset.id)
+    await this.setupMetaCapabilities(agentCtx, sessionId)
+    const { temperature, reasoningEffort } = spec.sampling
+    if (temperature === undefined && reasoningEffort === undefined) return
+    // Run outside preset/model-selection hooks: those can otherwise clear or
+    // replace effort after next(). Resumed/forked headers must use the sealed
+    // explicit sampling, while omitted fields retain provider defaults.
+    agentCtx.on('agent/request', async (_payload, next) => ({
+      ...await next(),
+      ...(temperature === undefined ? {} : { temperature }),
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort: ReasoningEffortId(reasoningEffort) }),
+    }), { prepend: true })
   }
 }
 
@@ -402,7 +401,9 @@ export class MetaSessionManager implements MetaSessionController {
     if (config.provider !== this.options.metaAgent.model.provider || config.model !== this.options.metaAgent.model.model
       || (this.options.metaAgent.model.maxTokens !== undefined && config.maxTokens !== this.options.metaAgent.model.maxTokens)
       || (this.options.metaAgent.sampling.temperature !== undefined
-        && config.temperature !== this.options.metaAgent.sampling.temperature)) {
+        && config.temperature !== this.options.metaAgent.sampling.temperature)
+      || (this.options.metaAgent.sampling.reasoningEffort !== undefined
+        && config.reasoningEffort !== this.options.metaAgent.sampling.reasoningEffort)) {
       throw new Error('effective Meta request config does not match immutable evolution spec')
     }
     return {
@@ -414,7 +415,12 @@ export class MetaSessionManager implements MetaSessionController {
       provider: config.provider,
       model: config.model,
       ...(config.maxTokens === undefined ? {} : { maxTokens: config.maxTokens }),
-      ...(config.temperature === undefined ? {} : { sampling: { temperature: config.temperature } }),
+      ...(config.temperature === undefined && config.reasoningEffort === undefined ? {} : {
+        sampling: {
+          ...(config.temperature === undefined ? {} : { temperature: config.temperature }),
+          ...(config.reasoningEffort === undefined ? {} : { reasoningEffort: String(config.reasoningEffort) }),
+        },
+      }),
     }
   }
 

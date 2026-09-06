@@ -4,7 +4,7 @@ import { join, relative, resolve, sep } from 'node:path'
 import Include from '@deepseek-ai/cordis-plugin-include'
 
 export const name = 'gear-target-harness-loader'
-export const inject = ['loader']
+export const inject = ['loader', 'agentDefaultModel', 'settings']
 
 const ALLOWED_ROOTS = new Set(['preset', 'plugins', 'prompts', 'skills', 'workflows'])
 
@@ -73,10 +73,20 @@ export async function verifyTargetHarness(repositoryRoot) {
 
 export async function apply(ctx, config) {
   if (typeof config?.repositoryRoot !== 'string' || !config.repositoryRoot) throw new Error('target repository root is required')
+  if (typeof config.reasoningEffort !== 'string' || !config.reasoningEffort
+    || config.reasoningEffort.trim() !== config.reasoningEffort) {
+    throw new Error('target reasoning effort must be a non-empty effort id without surrounding whitespace')
+  }
   const verified = await verifyTargetHarness(config.repositoryRoot)
   await ctx.plugin(Include, {
     path: join(verified.root, 'preset', 'agent.cordis.yml'),
     enableLogs: false,
+  })
+  // Persist the fixed effort in this run's settings before the headless runner
+  // reads its selection; provider/model remain the final Hitch-selected pair.
+  await ctx.agentDefaultModel.saveSelection({
+    ...ctx.agentDefaultModel.currentSelection(),
+    reasoningEffort: config.reasoningEffort,
   })
   ctx.provide('targetHarness', Object.freeze({
     ref: verified.manifest.digest,

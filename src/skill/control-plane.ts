@@ -14,6 +14,7 @@ import { SubprocessHarnessCompiler } from '../harness/compiler.js'
 import { acquireAirGappedSandbox } from '../sandbox.js'
 import { SkillMetaCoordinator, SkillMetaSessionManager } from '../meta/skill.js'
 import { compatibleSkillMetaAgent } from '../meta/controller.js'
+import { validateMetaSampling } from '../meta/sampling.js'
 import { RefineService } from '../refine/service.js'
 import {
   LlmVerifierCandidateAssessor,
@@ -52,6 +53,7 @@ function positive(value: number | undefined, name: string, fallback: number): nu
 export function skillMetaAgent(config: Config): MetaAgentSpec {
   if (config.metaAdapter.kind !== 'skill') throw new TypeError('standalone Gear requires metaAdapter.kind="skill"')
   if (config.metaPreset !== undefined) throw new TypeError('metaPreset is not valid in standalone skill mode')
+  validateMetaSampling(config.metaSampling)
   const fields = {
     runtimeType: config.metaAdapter.runtimeType,
     runtimeVersion: config.metaAdapter.runtimeVersion,

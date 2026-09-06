@@ -2,6 +2,8 @@ import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { EvolutionRegistryStore } from '../../src/state/evolution.js'
+import { digestJson } from '../../src/state/digest.js'
+import { assertMetaReasoningEffortMatches } from '../../src/meta/sampling.js'
 import type { ChampionState, EvolutionSpec } from '../../src/types.js'
 import { evolutionSpec } from '../helpers/research-fixture.js'
 
@@ -17,6 +19,35 @@ function spec(evolutionId: string): EvolutionSpec {
 }
 
 describe('EvolutionRegistryStore', () => {
+  it('seals Medium into persistent Meta sampling and includes it in spec identity', async () => {
+    const root = join(process.env.TMPDIR ?? '/tmp', `refine-medium-${crypto.randomUUID()}`)
+    roots.push(root)
+    const registry = new EvolutionRegistryStore(root)
+    const value = spec('evo-medium')
+    const legacyDigest = digestJson(value)
+    value.metaAgent.sampling.reasoningEffort = 'medium'
+    const entry = await registry.createEvolution({ spec: value, champion: champion() })
+    expect(entry.specDigest).not.toBe(legacyDigest)
+    const restored = await new EvolutionRegistryStore(root).requireSpec(value.evolutionId)
+    expect(restored.metaAgent.sampling.reasoningEffort).toBe('medium')
+    expect(digestJson(restored)).toBe(entry.specDigest)
+    expect(() => assertMetaReasoningEffortMatches(restored.metaAgent.sampling, { reasoningEffort: 'medium' })).not.toThrow()
+    expect(() => assertMetaReasoningEffortMatches(restored.metaAgent.sampling, { reasoningEffort: 'low' }))
+      .toThrow(/immutable evolution spec/)
+    expect(() => assertMetaReasoningEffortMatches({}, { reasoningEffort: 'medium' })).toThrow(/immutable evolution spec/)
+    expect(() => assertMetaReasoningEffortMatches({}, {})).not.toThrow()
+    expect(() => assertMetaReasoningEffortMatches(restored.metaAgent.sampling, {})).not.toThrow()
+  })
+
+  it.each(['', ' medium', 'medium ', 1, null])('rejects invalid persistent Meta effort %j', async (effort) => {
+    const root = join(process.env.TMPDIR ?? '/tmp', `refine-invalid-effort-${crypto.randomUUID()}`)
+    roots.push(root)
+    const value = spec('evo-invalid-effort')
+    value.metaAgent.sampling.reasoningEffort = effort as string
+    await expect(new EvolutionRegistryStore(root).createEvolution({ spec: value, champion: champion() }))
+      .rejects.toThrow(/reasoningEffort/)
+  })
+
   it('keeps champion and Meta state under independent evolution roots', async () => {
     const root = join(process.env.TMPDIR ?? '/tmp', `refine-registry-${crypto.randomUUID()}`)
     roots.push(root)

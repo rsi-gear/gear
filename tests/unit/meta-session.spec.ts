@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
+import { installModelSelection, type Agent, type AgentHandle } from '@deepseek-ai/dsh-agent'
+import { LlmAdapter, LlmRuntime, ReasoningEffortId, type LlmCallConfig } from '@deepseek-ai/dsh-llm'
 import { DshMetaAgentHost, MetaSessionManager, type MetaAgentHost } from '../../src/meta/session.js'
 import { compatibleSkillMetaAgent } from '../../src/meta/controller.js'
 import { RefineStateStore } from '../../src/state/store.js'
@@ -155,6 +156,89 @@ describe('MetaSessionManager', () => {
     expect(effective).toMatchObject({ provider: 'p', model: 'm', temperature: 0.75 })
   })
 
+  it.each(['create', 'resume', 'fork'] as const)('pins Medium through %s despite persisted and preset effort overrides', async (operation) => {
+    const scoped = new Context()
+    const source = fakeAgent('parent')
+    const spec = { ...metaAgent(), sampling: { temperature: 0.75, reasoningEffort: 'medium' } }
+    const spawn = async (options: { setup: (ctx: Context) => Promise<void> }) => {
+      await options.setup(scoped)
+      return { agent: fakeAgent('meta-medium'), dispose: async () => {} }
+    }
+    const parent = {
+      agents: { get: () => source, create: spawn, resume: spawn },
+      agentPresets: {
+        mount: async (ctx: Context) => {
+          // This real DSH hook clears inherited effort when the selected model
+          // has no explicit effort. Gear must be the outermost request hook.
+          installModelSelection(ctx, { current: undefined, assembled: { provider: 'p', model: 'm' } })
+        },
+      },
+    }
+    const host = new DshMetaAgentHost(parent as never, async (ctx) => {
+      ctx.on('agent/request', async (_payload, next) => ({
+        ...await next(), reasoningEffort: ReasoningEffortId('low'), temperature: 0,
+      }), { prepend: true })
+    })
+    if (operation === 'fork') {
+      const prefix = [...source.session.events]
+      await host.fork('meta-medium', spec, {
+        sourceSessionId: 'parent', eventCount: prefix.length, prefixDigest: digestJson(prefix),
+      })
+    } else await host[operation]('meta-medium', spec)
+
+    const previous: LlmCallConfig = Object.freeze({ provider: 'p', model: 'm', reasoningEffort: ReasoningEffortId('low') })
+    const effective = await (scoped as unknown as {
+      waterfall(name: string, payload: unknown, next: () => Promise<LlmCallConfig>): Promise<LlmCallConfig>
+    }).waterfall('agent/request', {}, async () => previous)
+    expect(effective).toEqual({ provider: 'p', model: 'm', temperature: 0.75, reasoningEffort: 'medium' })
+    expect(previous.reasoningEffort).toBe('low')
+
+    class CapabilityAdapter extends LlmAdapter {
+      supported = ['low', 'medium']
+      override async resolveModel(provider: string, model: string) {
+        return {
+          provider, id: model, name: model,
+          reasoning: {
+            efforts: this.supported.map(id => ({ id: ReasoningEffortId(id), name: id })),
+            defaultEffort: ReasoningEffortId('low'),
+          },
+        }
+      }
+      async *stream(): AsyncGenerator<never> { throw new Error('this offline test must never call a model') }
+    }
+    const llm = new LlmRuntime(scoped)
+    const adapter = new CapabilityAdapter()
+    const dispose = llm.registerAdapter(['p'], adapter)
+    try {
+      expect((await llm.prepareCall(effective)).config.reasoningEffort).toBe('medium')
+      adapter.supported = ['low']
+      await expect(llm.prepareCall(effective)).rejects.toMatchObject({ code: 'UNSUPPORTED_REASONING_EFFORT' })
+    } finally {
+      dispose()
+      await scoped.fiber.dispose()
+    }
+  })
+
+  it.each([undefined, 0.75])('preserves adapter effort defaults when a legacy Meta spec only sets temperature %s', async temperature => {
+    const scoped = new Context()
+    const host = new DshMetaAgentHost({
+      agents: {
+        create: async (options: { setup: (ctx: Context) => Promise<void> }) => {
+          await options.setup(scoped)
+          return { agent: fakeAgent('legacy'), dispose: async () => {} }
+        },
+      },
+      agentPresets: { mount: async () => {} },
+    } as never, async () => {})
+    await host.create('legacy', metaAgent('meta-v1', temperature))
+    const defaults = { provider: 'p', model: 'm', reasoningEffort: ReasoningEffortId('low') }
+    const effective = await (scoped as unknown as {
+      waterfall(name: string, payload: unknown, next: () => Promise<unknown>): Promise<unknown>
+    }).waterfall('agent/request', {}, async () => defaults)
+    expect(effective).toEqual({ ...defaults, ...(temperature === undefined ? {} : { temperature }) })
+    await scoped.fiber.dispose()
+  })
+
   it('wakes Meta with the authoritative current baseline and evidence policy', async () => {
     const root = await mkdtemp(join(tmpdir(), 'refine-meta-'))
     roots.push(root)
@@ -285,6 +369,29 @@ describe('MetaSessionManager', () => {
       provider: 'p', model: 'm', sampling: { temperature: 0 },
     })
     expect([...agent.session.events].at(-1)?.type).toBe('tool/call')
+    await manager.dispose()
+  })
+
+  it.each(['medium', 'low', undefined])('checks effective proposal effort %s against the sealed Medium spec', async (effort) => {
+    const root = await mkdtemp(join(tmpdir(), 'refine-meta-effort-'))
+    roots.push(root)
+    const store = new RefineStateStore(root)
+    await store.initialize()
+    const manager = new MetaSessionManager(store, new FakeHost(), {
+      ...META_OPTIONS, metaAgent: { ...metaAgent(), sampling: { reasoningEffort: 'medium' } },
+    })
+    const agent = await manager.agent()
+    await manager.wake(round())
+    ;(agent.session.events as unknown as unknown[]).push({
+      type: 'request/header', seq: 1, data: { header: { config: {
+        provider: 'p', model: 'm', ...(effort === undefined ? {} : { reasoningEffort: effort }),
+      } }, reason: 'change' },
+    }, { type: 'tool/call', seq: 2, data: { name: 'ipython_input', arguments: '{}' } })
+    if (effort === 'medium') {
+      expect(manager.proposalAttribution('round-1', agent, null)).toMatchObject({
+        provider: 'p', model: 'm', sampling: { reasoningEffort: 'medium' },
+      })
+    } else expect(() => manager.proposalAttribution('round-1', agent, null)).toThrow(/immutable evolution spec/)
     await manager.dispose()
   })
 

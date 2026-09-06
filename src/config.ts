@@ -131,6 +131,7 @@ export const ConfigSchema: Schema<Config> = Schema.object({
   }).required(),
   metaSampling: Schema.object({
     temperature: Schema.number(),
+    reasoningEffort: Schema.string(),
   }).default({} as never),
   metaAdapter: Schema.object({
     kind: Schema.union(['dsh', 'skill'] as const).default('skill'),

@@ -8,6 +8,7 @@ import type {
   MetaAgentSpec,
   MetaAttribution,
   MetaCheckpointRef,
+  MetaSamplingConfig,
   ProposalEvidenceAudit,
   RefinementRound,
 } from '../types.js'
@@ -17,7 +18,7 @@ export interface SkillHarnessIdentity {
   runtime: { type: string; version: string; integrity: string }
   preset: { id: string; digest: string }
   model: { provider: string; model: string; maxTokens?: number }
-  sampling?: { temperature?: number }
+  sampling?: MetaSamplingConfig
 }
 
 export interface SkillAssignment {
