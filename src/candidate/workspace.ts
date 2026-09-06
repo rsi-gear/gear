@@ -177,6 +177,17 @@ export class CandidateWorkspaceManager {
     this.bindings.delete(metaSessionId)
   }
 
+  rotateBinding(workspaceId: string, sourceSessionId: string, successorSessionId: string): void {
+    const handle = this.resolve(sourceSessionId)
+    if (handle.workspaceId !== workspaceId || handle.state !== 'open'
+      || (this.activeOperations.get(workspaceId) ?? 0) !== 0 || this.bindings.has(successorSessionId)) {
+      throw new Error('candidate workspace is not quiescent for session rotation')
+    }
+    this.bindings.delete(sourceSessionId)
+    handle.generation += 1
+    this.bind(workspaceId, successorSessionId)
+  }
+
   async withOpenWorkspace<T>(metaSessionId: string, mutation: boolean, callback: (handle: CandidateWorkspaceHandle) => Promise<T>): Promise<T> {
     const handle = this.resolve(metaSessionId)
     if (handle.state !== 'open') throw new Error(`candidate workspace does not accept operations in state ${handle.state}`)
@@ -370,7 +381,38 @@ export class CandidateWorkspaceManager {
     }
   }
 
-  async recoverOrphans(evolutionId: string): Promise<string[]> {
+  async restore(workspaceId: string, input: CandidateWorkspaceRequest): Promise<CandidateWorkspaceHandle> {
+    safeId(workspaceId, 'workspaceId')
+    safeId(input.evolutionId, 'evolutionId')
+    const root = resolve(this.options.rootForEvolution(input.evolutionId))
+    const matches: Array<{ ownedRoot: string; sidecar: CandidateWorkspaceHandle }> = []
+    for (const entry of await readdir(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !entry.name.startsWith('workspace-')) continue
+      const ownedRoot = join(root, entry.name)
+      let sidecar: CandidateWorkspaceHandle
+      try { sidecar = JSON.parse(await readFile(join(ownedRoot, 'workspace.json'), 'utf8')) as CandidateWorkspaceHandle }
+      catch { continue }
+      if (sidecar.workspaceId === workspaceId) matches.push({ ownedRoot, sidecar })
+    }
+    if (matches.length !== 1) throw new Error('candidate workspace recovery identity is missing or ambiguous')
+    const { ownedRoot, sidecar } = matches[0]!
+    if (sidecar.workspaceId !== workspaceId || sidecar.evolutionId !== input.evolutionId
+      || sidecar.roundId !== input.roundId || sidecar.parentRef !== input.parentHarnessRef
+      || sidecar.parentDigest !== input.parentHarnessDigest || sidecar.worktreePath !== join(ownedRoot, 'worktree')
+      || sidecar.state !== 'open' || typeof sidecar.ownershipToken !== 'string') {
+      throw new Error('candidate workspace recovery identity mismatch')
+    }
+    if ((await lstat(ownedRoot)).isSymbolicLink()
+      || (await realpath(sidecar.worktreePath)) !== join(await realpath(ownedRoot), 'worktree')) {
+      throw new Error('candidate recovery workspace is redirected')
+    }
+    const handle = { ...sidecar, targetPath: await realpath(join(sidecar.worktreePath, this.targetRoot)), generation: ++this.generation }
+    this.handles.set(workspaceId, handle)
+    try { await this.preflight(workspaceId) } catch (error) { this.handles.delete(workspaceId); throw error }
+    return handle
+  }
+
+  async recoverOrphans(evolutionId: string, preservedWorkspaceIds: ReadonlySet<string> = new Set()): Promise<string[]> {
     safeId(evolutionId, 'evolutionId')
     const root = resolve(this.options.rootForEvolution(evolutionId))
     await mkdir(root, { recursive: true, mode: 0o700 })
@@ -390,6 +432,7 @@ export class CandidateWorkspaceManager {
         continue
       }
       if (this.handles.has(sidecar.workspaceId)) continue
+      if (preservedWorkspaceIds.has(sidecar.workspaceId)) continue
       await this.git(['-C', this.repositoryPath, 'worktree', 'remove', '--force', String(sidecar.worktreePath)]).catch(() => {})
       await rm(ownedRoot, { recursive: true, force: true })
       recovered.push(sidecar.workspaceId)

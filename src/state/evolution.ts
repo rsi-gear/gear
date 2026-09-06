@@ -14,6 +14,7 @@ import { RefineStateStore } from './store.js'
 import { digestJson } from './digest.js'
 import { serializeExperimentsTsv } from './experiments.js'
 import { validateMetaSampling } from '../meta/sampling.js'
+import { validateOffloadingPolicy } from '../meta/offloading-policy.js'
 
 export { digestJson } from './digest.js'
 
@@ -62,6 +63,10 @@ function validateSpec(value: EvolutionSpec): EvolutionSpec {
     throw new TypeError('evolution Meta Agent identity is invalid')
   }
   validateMetaSampling(value.metaAgent.sampling, 'evolution Meta sampling')
+  if (value.metaAgent.contextOffloading !== undefined) {
+    if (value.metaAgent.runtime.type !== 'dsh') throw new TypeError('context offloading requires native DSH Meta')
+    validateOffloadingPolicy(value.metaAgent.contextOffloading)
+  }
   if (value.metaAgent.model.maxTokens !== undefined
     && (!Number.isSafeInteger(value.metaAgent.model.maxTokens) || value.metaAgent.model.maxTokens <= 0)) {
     throw new TypeError('evolution Meta maxTokens is invalid')

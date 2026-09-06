@@ -214,6 +214,31 @@ Changing either creates a different evolution rather than silently altering an
 existing one. Bundles sealed with the old `SKILL.md`-only digest require a new
 evolution after upgrading; Gear does not rewrite existing experiment identities.
 
+Native DSH Meta can opt into fresh-session context handoff:
+
+```yaml
+metaAdapter:
+  kind: dsh
+metaContextOffloading:
+  mode: proactive
+  contextWindow: 128000 # actual capacity of your configured model, not its output limit
+```
+
+Omit `contextWindow` only when the adapter supplies capacity metadata, or select
+`mode: overflow-only` explicitly. Offloading is disabled when this configuration
+is absent and is never retroactively enabled for an existing evolution. Defaults
+trigger at 80% pressure, target a bootstrap below 50%, and cap summaries at 4k
+tokens (scaled down for smaller windows). The Meta preset must not also mount an
+independent DSH compaction plugin. Session persistence is required.
+
+An attempt keeps its worktree, evidence receipts, deadline and aggregate request
+and token budgets across handoffs. Without an explicit `metaModel.maxTokens`,
+offloading limits each conversation response to its sealed `reserveTokens`.
+Notebook kernels are recreated. Journals, immutable handoff bundles and bounded
+tool-output artifacts live under the evolution's `meta-context/` directory;
+Meta reads them only through owner-scoped `meta_context_read` references.
+See the [implementation and recovery details](docs/dsh-meta-context-offloading-spec.zh-CN.md#13-v1-实现与使用).
+
 Algorithm plugins cannot bypass Gear's reproducibility and safety core:
 
 - exact Git commit and manifest verification;

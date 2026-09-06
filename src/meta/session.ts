@@ -4,19 +4,28 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-agent-presets'
+import type {} from '@deepseek-ai/dsh-session-persistence'
 import type {
   CandidateRecord, DiagnosisReceipt, DshMetaAgentSpec, EvaluationEvidence, MetaAttribution, MetaCheckpointRef,
   MetaTurnObservation, ProposalEvidenceAudit, RefinementRound,
 } from '../types.js'
 import type { RefineStateStore } from '../state/store.js'
 import { digestJson } from '../state/digest.js'
-import type { MetaAgentSession, MetaSessionController } from './controller.js'
+import type { MetaAgentSession, MetaSessionController, MetaExecutionBinding } from './controller.js'
 import { validateMetaSampling } from './sampling.js'
+import { DshOffloadingHost, type MetaOffloadingHost } from './offloading-host.js'
+import { DshContextExecution } from './offloading-execution.js'
+import { MetaOffloadingStore } from './offloading-store.js'
 
 export interface MetaAgentHost {
+  offloading?: MetaOffloadingHost
+  retire?(sessionId: string): Promise<void>
+  quiesce?(sessionId: string): Promise<void>
+  events?(checkpoint: MetaCheckpointRef): Promise<readonly SessionEvent[]>
+  prepareFresh?(sessionId: string, spec: DshMetaAgentSpec, candidate: boolean): Promise<AgentHandle>
   getLive(sessionId: string): Agent | undefined
   resume(sessionId: string, spec: DshMetaAgentSpec): Promise<AgentHandle>
-  create(sessionId: string, spec: DshMetaAgentSpec): Promise<AgentHandle>
+  create(sessionId: string, spec: DshMetaAgentSpec, candidate?: boolean): Promise<AgentHandle>
   checkpoint(agent: Agent): Promise<MetaCheckpointRef>
   fork(sessionId: string, spec: DshMetaAgentSpec, checkpoint: MetaCheckpointRef): Promise<AgentHandle>
   cancelAndFlush(agent: Agent, reason: string): Promise<void>
@@ -74,6 +83,10 @@ function observeTurn(events: readonly SessionEvent[], firstObservedSeq: number):
     : undefined
   return {
     reason: end.data.reason?.kind ?? 'unknown',
+    ...(end.data.reason?.kind === 'error' ? { error: {
+      message: end.data.reason.error.message,
+      ...(end.data.reason.error.code === undefined ? {} : { code: String(end.data.reason.error.code) }),
+    } } : {}),
     turn,
     ...(start === undefined ? {} : { durationMs: Math.max(0, end.time - start.time) }),
     ...(effectiveMaxTokens === undefined ? {} : { effectiveMaxTokens }),
@@ -84,10 +97,48 @@ function observeTurn(events: readonly SessionEvent[], firstObservedSeq: number):
 }
 
 export class DshMetaAgentHost implements MetaAgentHost {
+  readonly offloading: MetaOffloadingHost
+  private readonly permitted = new Set<string>()
+  private readonly quiesced = new Set<string>()
   constructor(
     private readonly ctx: Context,
     private readonly setupMetaCapabilities: (agentCtx: Context, sessionId: string) => void | Promise<void>,
-  ) {}
+    private readonly retireRuntime?: (sessionId: string) => Promise<void>,
+  ) { this.offloading = new DshOffloadingHost(ctx, this.permitted) }
+
+  async quiesce(sessionId: string): Promise<void> {
+    if (this.quiesced.has(sessionId)) return
+    await this.retireRuntime?.(sessionId)
+    this.quiesced.add(sessionId)
+  }
+  async retire(sessionId: string): Promise<void> {
+    this.permitted.delete(sessionId)
+    await this.offloading.retire?.(sessionId)
+    await this.quiesce(sessionId)
+    this.quiesced.delete(sessionId)
+  }
+
+  async prepareFresh(sessionId: string, spec: DshMetaAgentSpec, candidate: boolean): Promise<AgentHandle> {
+    const persistence = this.ctx.get('sessionPersistence')
+    if (persistence !== undefined && (await persistence.list()).some(header => String(header.id) === sessionId)) {
+      const handle = await this.resume(sessionId, spec)
+      if (handle.agent.session.events.some(event => event.type === 'tool/call' || event.type === 'step/start')) {
+        await handle.dispose()
+        throw new Error('prepared successor already performed work')
+      }
+      return handle
+    }
+    return this.create(sessionId, spec, candidate)
+  }
+
+  async events(checkpoint: MetaCheckpointRef): Promise<readonly SessionEvent[]> {
+    const live = this.getLive(checkpoint.sourceSessionId)
+    const events = live?.session.events
+      ?? (await this.ctx.sessionPersistence.inspect(SessionId(checkpoint.sourceSessionId))).events
+    const prefix = structuredClone(events.slice(0, checkpoint.eventCount))
+    if (prefix.length !== checkpoint.eventCount || digestJson(prefix) !== checkpoint.prefixDigest) throw new Error('Meta checkpoint prefix identity mismatch')
+    return prefix
+  }
 
   getLive(sessionId: string): Agent | undefined {
     return this.ctx.agents.get(SessionId(sessionId))
@@ -101,11 +152,11 @@ export class DshMetaAgentHost implements MetaAgentHost {
     })
   }
 
-  create(sessionId: string, spec: DshMetaAgentSpec): Promise<AgentHandle> {
+  create(sessionId: string, spec: DshMetaAgentSpec, candidate = false): Promise<AgentHandle> {
     return this.ctx.agents.create({
       sessionId: SessionId(sessionId),
       agentOptions: spec.model,
-      meta: { agentPreset: spec.preset.id },
+      meta: { agentPreset: spec.preset.id, ...(candidate ? { cwd: '/candidate/harness' } : {}) },
       setup: agentCtx => this.setupAgent(agentCtx, sessionId, spec),
     })
   }
@@ -124,13 +175,8 @@ export class DshMetaAgentHost implements MetaAgentHost {
     })
   }
 
-  fork(sessionId: string, spec: DshMetaAgentSpec, checkpoint: MetaCheckpointRef): Promise<AgentHandle> {
-    const source = this.getLive(checkpoint.sourceSessionId)
-    if (source === undefined) throw new Error(`Meta checkpoint source is not live: ${checkpoint.sourceSessionId}`)
-    const prefix = structuredClone([...source.session.events].slice(0, checkpoint.eventCount))
-    if (prefix.length !== checkpoint.eventCount || digestJson(prefix) !== checkpoint.prefixDigest) {
-      throw new Error('Meta checkpoint prefix identity mismatch')
-    }
+  async fork(sessionId: string, spec: DshMetaAgentSpec, checkpoint: MetaCheckpointRef): Promise<AgentHandle> {
+    const prefix = await this.events(checkpoint)
     return this.ctx.agents.create({
       sessionId: SessionId(sessionId),
       seed: prefix,
@@ -159,8 +205,23 @@ export class DshMetaAgentHost implements MetaAgentHost {
     validateMetaSampling(spec.sampling)
     await this.ctx.agentPresets.mount(agentCtx, spec.preset.id)
     await this.setupMetaCapabilities(agentCtx, sessionId)
+    if (spec.contextOffloading !== undefined) {
+      agentCtx.on('tools/pre-execute', async (exec, next) => {
+        if (exec.agent === undefined || !this.permitted.has(String(exec.agent.id))) throw new Error('Meta session has no active execution permission')
+        return next()
+      }, { prepend: true })
+      agentCtx.on('agent/pre-step', async (payload, next) => {
+        if (this.permitted.has(String(payload.agent.id))) return next()
+        // Preset startup/resume hooks may wake a staged agent. Park claimed input
+        // durably until the logical controller has installed ownership checks.
+        payload.agent.cancel({ kind: 'hook', reason: 'Meta context activation pending' }, { keepInbox: true })
+        const ids = new Set([...payload.agent.inbox.nextStep, ...payload.agent.inbox.nextTurn].map(message => message.id))
+        for (const message of payload.messages) if (!ids.has(message.id)) payload.agent.inject(message)
+        return { kind: 'reject' }
+      }, { prepend: true })
+    }
     const { temperature, reasoningEffort } = spec.sampling
-    if (temperature === undefined && reasoningEffort === undefined) return
+    if (temperature === undefined && reasoningEffort === undefined && spec.contextOffloading === undefined) return
     // Run outside preset/model-selection hooks: those can otherwise clear or
     // replace effort after next(). Resumed/forked headers must use the sealed
     // explicit sampling, while omitted fields retain provider defaults.
@@ -168,6 +229,8 @@ export class DshMetaAgentHost implements MetaAgentHost {
       ...await next(),
       ...(temperature === undefined ? {} : { temperature }),
       ...(reasoningEffort === undefined ? {} : { reasoningEffort: ReasoningEffortId(reasoningEffort) }),
+      ...(spec.contextOffloading === undefined || spec.model.maxTokens !== undefined
+        ? {} : { maxTokens: spec.contextOffloading.reserveTokens }),
     }), { prepend: true })
   }
 }
@@ -177,6 +240,7 @@ export class MetaSessionManager implements MetaSessionController {
   private readonly handles = new Map<string, AgentHandle>()
   private readonly wakes = new Map<string, RoundWake>()
   private readonly evidenceAccess = new Map<string, RoundEvidenceAccess>()
+  private readonly executions = new Map<string, DshContextExecution>()
 
   constructor(
     private readonly store: RefineStateStore,
@@ -221,12 +285,14 @@ export class MetaSessionManager implements MetaSessionController {
   }
 
   async fork(checkpoint: MetaCheckpointRef): Promise<Agent> {
-    await this.ensureAgent(checkpoint.sourceSessionId)
+    if (this.host.events === undefined) await this.ensureAgent(checkpoint.sourceSessionId)
     const sessionId = crypto.randomUUID()
     const handle = await this.host.fork(sessionId, this.options.metaAgent, checkpoint)
     this.handles.set(sessionId, handle)
     return handle.agent
   }
+
+  async restore(sessionId: string): Promise<Agent> { return this.ensureAgent(sessionId) }
 
   async cancelAndDispose(sessionId: string, reason: string): Promise<void> {
     await this.cancel(sessionId, reason)
@@ -234,20 +300,52 @@ export class MetaSessionManager implements MetaSessionController {
   }
 
   async cancel(sessionId: string, reason: string): Promise<void> {
-    const agent = await this.ensureAgent(sessionId)
+    const execution = this.executions.get(sessionId)
+    execution?.stop(reason)
+    const agent = await this.ensureAgent(execution?.activeSessionId ?? sessionId)
     await this.host.cancelAndFlush(agent, reason)
   }
 
   async release(sessionId: string): Promise<void> {
+    const execution = this.executions.get(sessionId)
+    if (execution !== undefined) {
+      for (const [id, owner] of this.executions) if (owner === execution) {
+        this.executions.delete(id)
+        await this.releasePhysical(id)
+      }
+      return
+    }
+    await this.releasePhysical(sessionId)
+  }
+
+  private async releasePhysical(sessionId: string): Promise<void> {
     const handle = this.handles.get(sessionId)
     this.wakes.delete(sessionId)
     this.evidenceAccess.delete(sessionId)
     if (handle === undefined || handle === this.handle) return
     this.handles.delete(sessionId)
     await handle.dispose()
+    await this.host.retire?.(sessionId)
   }
 
   async wake(round: Readonly<RefinementRound>): Promise<string> {
+    if (this.options.metaAgent.contextOffloading !== undefined) {
+      const root = await this.agent()
+      const handle = await this.wakeCandidate(round, undefined, round.baseline, root, {
+        executionId: crypto.randomUUID(), attempt: 0, deadlineAt: Date.now() + round.taskBudgetMs,
+        signal: AbortSignal.timeout(round.taskBudgetMs), budget: {}, isComplete: () => false,
+        snapshot: async () => ({ owner: 'root', evolutionId: this.options.evolutionId, specDigest: this.options.specDigest }),
+        activate: async (sourceId, nextId) => {
+          const current = await this.store.readMeta()
+          if (current?.sessionId !== sourceId) throw new Error('root Meta context owner changed')
+          const { checkpoint: _checkpoint, ...identity } = current
+          await this.store.writeMeta({ ...identity, sessionId: nextId })
+          this.handle = this.handles.get(nextId)
+        },
+      })
+      void handle.completion?.catch(() => {})
+      return handle.sessionId
+    }
     const candidate = round.candidatePool.find(value => value.status === 'generating')
     return (await this.wakeCandidate(round, candidate, round.baseline, await this.agent())).sessionId
   }
@@ -257,6 +355,7 @@ export class MetaSessionManager implements MetaSessionController {
     candidate: Readonly<CandidateRecord> | undefined,
     baseline: EvaluationEvidence | undefined,
     agent: MetaAgentSession,
+    execution?: MetaExecutionBinding,
   ): Promise<import('./controller.js').MetaWakeHandle> {
     if (round.evolutionId !== this.options.evolutionId) {
       throw new Error(`Meta session for evolution ${this.options.evolutionId} cannot wake round from ${round.evolutionId}`)
@@ -281,7 +380,7 @@ export class MetaSessionManager implements MetaSessionController {
       diagnosedRunRefs: new Set(),
       diagnosisReceipts: new Map(),
     })
-    dshAgent.followup(createUserMessage({
+    const envelope = createUserMessage({
       content: [{ type: 'text', text: JSON.stringify({
         kind: 'refinement-round',
         evolutionId: round.evolutionId,
@@ -319,7 +418,52 @@ export class MetaSessionManager implements MetaSessionController {
         batch: { id: round.batchId, index: round.roundIndex, count: round.roundCount },
       }) }],
       source: { kind: 'plugin', plugin: 'dsh-plugin-refine' },
-    }))
+    })
+    if (this.options.metaAgent.contextOffloading !== undefined) {
+      if (this.host.offloading === undefined) throw new Error('DSH host does not implement context offloading')
+      if (execution === undefined) throw new Error('context offloading requires a logical execution and deadline')
+      const offloader = new DshContextExecution(
+        new MetaOffloadingStore(this.store.root), this.host.offloading, {
+          fresh: async successorId => {
+            const handle = this.handles.get(successorId) ?? await (this.host.prepareFresh === undefined
+              ? this.host.create(successorId, this.options.metaAgent, candidate !== undefined)
+              : this.host.prepareFresh(successorId, this.options.metaAgent, candidate !== undefined))
+            this.handles.set(successorId, handle)
+            return handle.agent
+          },
+          checkpoint: agent => this.host.checkpoint(agent),
+          quiesce: id => this.host.quiesce?.(id) ?? Promise.resolve(),
+          events: async checkpoint => {
+            if (this.host.events !== undefined) return this.host.events(checkpoint)
+            const source = await this.ensureAgent(checkpoint.sourceSessionId)
+            const events = structuredClone([...source.session.events].slice(0, checkpoint.eventCount))
+            if (events.length !== checkpoint.eventCount || digestJson(events) !== checkpoint.prefixDigest) throw new Error('handoff source checkpoint mismatch')
+            return events
+          },
+          evidence: id => this.proposalEvidenceAudit(round.roundId, id, []),
+          activate: (sourceId, successor, audit) => {
+            const nextId = String(successor.id)
+            this.wakes.set(nextId, { ...this.wakes.get(sourceId)!, sessionId: nextId, firstObservedSeq: successor.session.seq })
+            this.evidenceAccess.set(nextId, {
+              baselineEvalId: audit.baselineEvalId, summaryAccessed: audit.summaryAccessed,
+              accessedRefs: new Set(audit.accessedRefs), diagnosedRunRefs: new Set(audit.diagnosedRunRefs),
+              diagnosisReceipts: new Map((audit.diagnosisReceipts ?? []).map(receipt => [receipt.runId, structuredClone(receipt)])),
+            })
+            if (sourceId !== nextId) {
+              this.wakes.delete(sourceId)
+              this.evidenceAccess.delete(sourceId)
+            }
+            this.executions.set(nextId, offloader)
+          },
+          release: id => this.releasePhysical(id),
+          observe: (agent, seq) => observeTurn([...agent.session.events], seq),
+        }, this.options.metaAgent, this.options.specDigest, this.options.evolutionId, round.roundId,
+        candidate?.candidateId, execution,
+      )
+      this.executions.set(sessionId, offloader)
+      return { sessionId, completion: offloader.run(dshAgent, envelope, firstObservedSeq) }
+    }
+    dshAgent.followup(envelope)
     return {
       sessionId,
       completion: dshAgent.whenIdle().then(() => observeTurn([...dshAgent.session.events], firstObservedSeq)),
@@ -409,6 +553,11 @@ export class MetaSessionManager implements MetaSessionController {
     return {
       evolutionId: this.options.evolutionId,
       sessionId: String(agent.id),
+      ...(this.executions.get(sessionId) === undefined ? {} : {
+        executionId: this.executions.get(sessionId)!.state.executionId,
+        generation: this.executions.get(sessionId)!.state.generation,
+        handoffRefs: [...this.executions.get(sessionId)!.state.handoffs],
+      }),
       requestHeaderSeq: effective.seq,
       proposalEventSeq: proposal.seq,
       source: { kind: 'dsh-events', requestHeaderSeq: effective.seq, proposalEventSeq: proposal.seq },
@@ -446,11 +595,16 @@ export class MetaSessionManager implements MetaSessionController {
   }
 
   async dispose(): Promise<void> {
+    for (const execution of new Set(this.executions.values())) execution.stop('Meta session manager disposed')
     const handles = [...new Set(this.handles.values())]
-    await Promise.allSettled(handles.map(handle => handle.dispose()))
+    await Promise.allSettled(handles.map(async handle => {
+      await handle.dispose()
+      await this.host.retire?.(String(handle.agent.id))
+    }))
     this.handles.clear()
     this.handle = undefined
     this.wakes.clear()
     this.evidenceAccess.clear()
+    this.executions.clear()
   }
 }
