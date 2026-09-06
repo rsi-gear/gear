@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { lstat, readFile, readdir } from 'node:fs/promises'
-import { isAbsolute, join, relative, sep } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 function digest(parts: Array<string | Uint8Array>): string {
   const hash = createHash('sha256')
@@ -34,10 +34,10 @@ async function localTreeDigest(root: string): Promise<string> {
 }
 
 /** Resolve a dataset reference to a stable identity before an evolution starts. */
-export async function digestDatasetRef(ref: string): Promise<string> {
+export async function digestDatasetRef(ref: string, workspaceRoot = process.cwd()): Promise<string> {
   if (ref.length === 0) throw new TypeError('dataset ref must be non-empty')
   try {
-    return await localTreeDigest(ref)
+    return await localTreeDigest(resolve(workspaceRoot, ref))
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     if (isAbsolute(ref)) throw new Error(`local dataset ref does not exist: ${ref}`, { cause: error })

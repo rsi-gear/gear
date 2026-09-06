@@ -18,6 +18,7 @@ import { isExactGitCommit } from '../types.js'
 import type { EvaluationReservation, PendingEvaluationSubmission, EvaluationFailure } from '../types.js'
 import { EvaluationCleanupError, evaluationFailure } from '../evaluator/cleanup.js'
 import { finalizationReadiness } from './finalization-readiness.js'
+import { BaselineReuseBlockedError } from './baseline-reuse.js'
 
 export interface RefineServiceOptions {
   workspaceRoot: string
@@ -671,8 +672,8 @@ export class RefineService {
       evolutionId, createdAt: now(),
       initialHarness: { ref: initial.ref, digest: initial.manifestDigest },
       datasets: {
-        seed: { ref: seedTaskRef, digest: await digestDatasetRef(seedTaskRef) },
-        heldOut: { ref: this.options.heldOutRef, digest: await digestDatasetRef(this.options.heldOutRef) },
+        seed: { ref: seedTaskRef, digest: await digestDatasetRef(seedTaskRef, this.options.workspaceRoot) },
+        heldOut: { ref: this.options.heldOutRef, digest: await digestDatasetRef(this.options.heldOutRef, this.options.workspaceRoot) },
       },
       metaAgent: structuredClone(this.options.metaAgent),
       candidateGeneration: structuredClone(this.options.candidateGeneration),
@@ -697,7 +698,8 @@ export class RefineService {
     this.resolveComponents(evolution.spec)
     await this.options.validateRuntime?.(evolution.spec)
     const [seedDigest, heldOutDigest] = await Promise.all([
-      digestDatasetRef(evolution.spec.datasets.seed.ref), digestDatasetRef(evolution.spec.datasets.heldOut.ref),
+      digestDatasetRef(evolution.spec.datasets.seed.ref, this.options.workspaceRoot),
+      digestDatasetRef(evolution.spec.datasets.heldOut.ref, this.options.workspaceRoot),
     ])
     if (seedDigest !== evolution.spec.datasets.seed.digest || heldOutDigest !== evolution.spec.datasets.heldOut.digest) {
       throw new Error('evolution dataset content changed; create a new evolution')
@@ -784,6 +786,7 @@ export class RefineService {
       let round = await this.transition(evolution.store, roundId, {
         status: 'repairing-evaluation',
         failure: undefined,
+        baselineReuseBlocker: undefined,
         pendingEvaluationRerun: reservation === undefined ? undefined : { reservation },
         evaluationAttempts: (initialRound.evaluationAttempts ?? []).map(value => this.sameAttempt(value, attempt)
           ? (() => {
@@ -1085,6 +1088,7 @@ export class RefineService {
       ...(round.baseline === undefined ? {} : { seedBaseline: publicSeedEvidence(round.baseline) }),
       ...(round.evaluation?.seedCandidate === undefined ? {} : { seedCandidate: publicSeedEvidence(round.evaluation.seedCandidate) }),
       ...(round.failure === undefined ? {} : { failure: round.failure.phase }),
+      ...(round.baselineReuseBlocker === undefined ? {} : { baselineReuseBlocker: { ...round.baselineReuseBlocker } }),
       ...((round.pendingEvaluationSubmissions ?? []).some(value => value.cleanupFailure !== undefined)
         || round.pendingEvaluationRerun?.cleanupFailure !== undefined ? {
         evaluationCleanupFailures: [...(round.pendingEvaluationSubmissions ?? []).flatMap(value => value.cleanupFailure === undefined ? [] : [{
@@ -1872,8 +1876,13 @@ export class RefineService {
       const seedPairs = pairedTrials(championBaseline, finalist.seedEvaluation)
       const seedBaselineAggregate = pairedAggregate(seedPairs, 'baseline')
       const seedCandidateAggregate = pairedAggregate(seedPairs, 'candidate')
+      // A repaired seed candidate can change the finalist. Keep raw baseline
+      // evidence, but rebuild pairing/metrics for the newly selected candidate.
+      const priorHeldOutBaseline = round.evaluation?.heldOutBaseline
+      const priorHeldOutCandidate = round.evaluation?.heldOutCandidate?.actualCommit === finalist.sealedVersion.commitOid
+        ? round.evaluation.heldOutCandidate : finalist.heldOutEvaluation
       let evaluation: RoundEvaluation = {
-        ...round.evaluation,
+        ...(priorHeldOutBaseline === undefined ? {} : { heldOutBaseline: priorHeldOutBaseline }),
         seedBaseline: championBaseline,
         seedCandidate: finalist.seedEvaluation,
         seedPairedTrials: seedPairs,
@@ -1910,7 +1919,9 @@ export class RefineService {
             heldOutBaseline = baselineEvaluation.evidence
           }
         }
-        let heldOutCandidate = evaluation.heldOutCandidate
+        // Candidate evidence remains durable in candidatePool while its paired
+        // projection is rebuilt below in one validated state transition.
+        let heldOutCandidate = priorHeldOutCandidate
         if (heldOutCandidate === undefined) {
           const candidateEvaluation = await this.evaluateWithAttempt(active, round, {
             phase: 'held-out-candidate', dataset: round.heldOutRef, harnessRef: finalist.sealedVersion.commitOid,
@@ -2031,6 +2042,7 @@ export class RefineService {
             ...this.completeEvaluationRepairResume(active, round, {}),
             status: 'failed',
             failure: { phase: round.status, message: errorMessage(error) },
+            ...(error instanceof BaselineReuseBlockedError ? { baselineReuseBlocker: error.blocker } : {}),
           }).catch(() => {})
         }
       }
@@ -2065,21 +2077,34 @@ export class RefineService {
     signal.throwIfAborted()
     const condition = partition === 'seed' ? round.plan.seed : round.plan.heldOut
     const dataset = partition === 'seed' ? round.seedTaskRef : round.heldOutRef
-    const evaluationIdentity = evaluator.evaluationIdentity === undefined
-      ? undefined
-      : await evaluator.evaluationIdentity(round, {
-          phase: partition === 'seed' ? 'seed-baseline' : 'held-out-baseline',
-          dataset,
-          harnessRef,
-          condition,
-        }, signal)
-    signal.throwIfAborted()
-    if (evaluationIdentity === undefined) return undefined
+    const championHead = await store.readChampion()
+    const preferredRoundId = championHead?.ref === harnessRef
+      ? championHead.roundId?.replace(/^rollback:/u, '')
+      : undefined
     const previousRounds = (await store.listRounds())
-      .filter(previous => previous.roundId !== round.roundId && TERMINAL.has(previous.status))
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .filter(previous => previous.roundId !== round.roundId)
+      // Prefer the promotion's original evidence, then stable history order.
+      // A later cancelled duplicate must not displace the champion's results.
+      .sort((left, right) => Number(right.roundId === preferredRoundId)
+        - Number(left.roundId === preferredRoundId)
+        || left.createdAt.localeCompare(right.createdAt)
+        || left.roundId.localeCompare(right.roundId))
+    const sources: Array<{ previous: RefinementRound; evidence: EvaluationEvidence; attempt?: RoundEvaluationAttempt }> = []
+    let hasPriorAttempt = false
     for (const previous of previousRounds) {
       signal.throwIfAborted()
+      hasPriorAttempt ||= previous.evaluationStarts?.some(start => (
+        start.harnessRef === harnessRef && start.phase.startsWith(`${partition}-`)
+      )) ?? false
+      hasPriorAttempt ||= previous.evaluationAttempts?.some(attempt => (
+        attempt.owner.harnessRef === harnessRef && attempt.phase.startsWith(`${partition}-`)
+      )) ?? false
+      hasPriorAttempt ||= previous.pendingEvaluationSubmissions?.some(pending => (
+        pending.request.harnessRef === harnessRef && pending.request.phase.startsWith(`${partition}-`)
+      )) ?? false
+      hasPriorAttempt ||= previous.failedEvaluations?.some(failed => (
+        failed.owner.harnessRef === harnessRef && failed.phase.startsWith(`${partition}-`)
+      )) ?? false
       const matchingParent = partition === 'seed' && parentCandidateId !== undefined
         ? previous.parentBaselines
           ?.filter(value => value.parentCandidateId === parentCandidateId && value.parentHarnessRef === harnessRef)
@@ -2104,27 +2129,76 @@ export class RefineService {
         const attempt = previous.evaluationAttempts?.find(value => (
           value.provider === evidence.provider && value.evalId === evidence.evalId
         ))
-        if (evidence.completeness !== 'complete'
-          || attempt?.status !== 'settled'
-          || attempt.phase !== `${partition}-${attempt.owner.role}`
-          || attempt.owner.harnessRef !== harnessRef
-          || attempt.requestedModelId !== condition.model
-          || evidence.provider !== evaluationIdentity.provider
-          || evidence.conditionId !== condition.conditionId
-          || evidence.dataset !== dataset
-          || evidence.effectiveConfigDigest !== evaluationIdentity.effectiveConfigDigest
-          || evidence.requestedCommit !== harnessRef
-          || evidence.actualCommit !== harnessRef) continue
-        return {
-          evidence: structuredClone(evidence),
-          sourceRoundId: previous.roundId,
-          ...(evaluationIdentity.invocationFingerprint === undefined
-            ? {}
-            : { currentInvocationFingerprint: evaluationIdentity.invocationFingerprint }),
-        }
+        sources.push({ previous, evidence, ...(attempt === undefined ? {} : { attempt }) })
       }
     }
-    return undefined
+    // Only genuinely missing history authorizes a fresh baseline. Identity
+    // resolution failures, partial results and failed attempts are not misses.
+    if (sources.length === 0 && !hasPriorAttempt) return undefined
+    let evaluationIdentity: Awaited<ReturnType<NonNullable<RefineEvaluator['evaluationIdentity']>>>
+    try {
+      if (await digestDatasetRef(dataset, round.workspaceRoot) !== condition.dataset.digest) {
+        throw new BaselineReuseBlockedError({
+          code: 'BASELINE_CONDITION_MISMATCH',
+          reason: `The frozen ${partition} dataset has changed; no baseline refresh was started.`,
+          requiredAction: 'Restore the frozen dataset, or explicitly start a new evolution for changed conditions.',
+        })
+      }
+      evaluationIdentity = await evaluator.evaluationIdentity?.(round, {
+        phase: partition === 'seed' ? 'seed-baseline' : 'held-out-baseline',
+        dataset, harnessRef, condition,
+      }, signal)
+    } catch (error) {
+      signal.throwIfAborted()
+      if (error instanceof BaselineReuseBlockedError) throw error
+      throw new BaselineReuseBlockedError({
+        code: 'BASELINE_IDENTITY_UNRESOLVED',
+        reason: `Cannot verify the existing ${partition} baseline identity; no baseline refresh was started.`,
+        requiredAction: 'Restore evaluator identity resolution before continuing this evolution.',
+      }, { cause: error })
+    }
+    signal.throwIfAborted()
+    if (evaluationIdentity === undefined) {
+      throw new BaselineReuseBlockedError({
+        code: 'BASELINE_IDENTITY_UNRESOLVED',
+        reason: `Cannot verify the existing ${partition} baseline identity before execution; no baseline refresh was started.`,
+        requiredAction: 'Use an evaluator that can resolve the frozen evaluation identity without starting Target trials.',
+      })
+    }
+    let hasCompatibleEvidence = false
+    for (const { previous, evidence, attempt } of sources) {
+      if (evidence.provider !== evaluationIdentity.provider
+        || evidence.conditionId !== condition.conditionId
+        || evidence.dataset !== dataset
+        || evidence.effectiveConfigDigest !== evaluationIdentity.effectiveConfigDigest
+        || evidence.requestedCommit !== harnessRef
+        || evidence.actualCommit !== harnessRef) continue
+      hasCompatibleEvidence = true
+      if (evidence.completeness !== 'complete'
+        || attempt?.status !== 'settled'
+        || attempt.phase !== `${partition}-${attempt.owner.role}`
+        || attempt.owner.harnessRef !== harnessRef
+        || attempt.requestedModelId !== condition.model) continue
+      return {
+        evidence: structuredClone(evidence),
+        sourceRoundId: previous.roundId,
+        ...(evaluationIdentity.invocationFingerprint === undefined
+          ? {}
+          : { currentInvocationFingerprint: evaluationIdentity.invocationFingerprint }),
+      }
+    }
+    if (hasCompatibleEvidence || sources.length === 0) {
+      throw new BaselineReuseBlockedError({
+        code: 'BASELINE_EVIDENCE_UNAVAILABLE',
+        reason: `The existing ${partition} evaluation has no verifiable complete baseline; no baseline refresh was started.`,
+        requiredAction: 'Recover complete settled evidence for the original evaluation. Partial results require a provider-supported repair that preserves valid trials.',
+      })
+    }
+    throw new BaselineReuseBlockedError({
+      code: 'BASELINE_CONDITION_MISMATCH',
+      reason: `The existing ${partition} baseline is incompatible with the frozen evaluation identity; no baseline refresh was started.`,
+      requiredAction: 'Restore compatible evaluation conditions, or explicitly start a new evolution for changed conditions.',
+    })
   }
 
   private async persistReusableSeedBaseline(
@@ -2516,6 +2590,16 @@ export class RefineService {
   ): Promise<{ round: RefinementRound; evidence: EvaluationEvidence }> {
     const { evaluator, store } = active.evolution
     active.abort.signal.throwIfAborted()
+    // Record possible execution before calling provider code, including providers
+    // without reserve() and failures before a reservation response is persisted.
+    const beforeStart = await this.requireRound(store, round.roundId)
+    round = await this.transition(store, round.roundId, {
+      evaluationStarts: [...(beforeStart.evaluationStarts ?? []), {
+        phase: request.phase, harnessRef: request.harnessRef,
+        conditionId: request.condition.conditionId, startedAt: now(),
+      }],
+    })
+    active.abort.signal.throwIfAborted()
     const intent = evaluator.prepareSubmission?.(round, request)
     let pending: PendingEvaluationSubmission | undefined
     if (intent !== undefined) {
@@ -2779,6 +2863,10 @@ export class RefineService {
       const candidate = round.candidatePool.find(value => value.candidateId === attempt.owner.candidateId)
       if (candidate?.sealedVersion?.commitOid !== attempt.owner.harnessRef) throw new Error('repaired seed candidate owner is unavailable')
       return {
+        // The assessable set changes when a failed seed eval is repaired.
+        selectionAssessment: undefined,
+        selection: undefined,
+        promotionCandidateId: undefined,
         candidatePool: this.patchCandidate(round, candidate.candidateId, {
           seedEvaluation: evidence,
           seedComparison: undefined,

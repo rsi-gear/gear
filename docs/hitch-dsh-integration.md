@@ -126,6 +126,18 @@ held-out candidate: eval(H1, held-out)
 
 四次调用使用相同的dataset materialization规则、model、attempts、timeout、setup timeout、concurrency和固定agent args；有意差异只有commit和seed/held-out partition。held-out eval只在proposal产生后由RefineService发起，其refs和aggregate不进入meta projection。
 
+追加轮次和同批次的后续轮次复用同一个 exact commit 已完成的 seed / held-out 结果，包括其晋升前作为 candidate 的评测。复用保留原始 eval ID、trial/run ID 和评分，不改写来源记录；优先查找当前 champion 的晋升轮次，然后按稳定历史顺序查找。零分但有效的 trial 属于完整结果。
+
+只有该 commit / partition 从未留下评测证据、执行开始记录、attempt 或待确认的提交，才自动启动新 baseline。已有结果无法复用时，round 进入 `failed`，`control.status` 的 `baselineReuseBlocker` 给出原因和恢复要求：
+
+- `BASELINE_IDENTITY_UNRESOLVED`：无法在执行前确认身份，例如当前 daemon 接口不能预先解析冻结后的执行策略；不会通过 submit 来探测身份。
+- `BASELINE_CONDITION_MISMATCH`：数据集、评分合同或有效配置不兼容；需要恢复兼容条件，或明确创建新 evolution。
+- `BASELINE_EVIDENCE_UNAVAILABLE`：已有 partial / failed 评测，或缺少完整、已结算的来源证据；保留原有有效 trial，不能通过追加轮次触发全量重跑。
+
+Direct 模式下，标准 benchmark 不再一律禁用复用；Gear 验证冻结的数据集完整目录（包含 adapter / scoring manifest）未变，再核对已有证据的有效配置。相对数据集路径按 evolution 的 workspace root 解析，与 Hitch 执行路径一致。旧实验若曾按错误工作目录封存了 opaque digest，会明确拒绝继续，不改写旧 spec 或 evidence。
+
+这项修复不增加 provider 的 partial 补齐接口，也不改变 population、pause/resume 或旧实验迁移语义。调用 provider 前先持久化执行开始记录，即使 provider 不支持预留 eval ID 或在返回 ID 前失败，后续轮次也不能将其误判为从未执行。已有失败评测的显式 rerun 修复入口继续保留；修复启动时清除旧阻塞诊断，恢复后重新校验 baseline；partial 的自动补齐需要 provider 能保证保留有效 trial 的独立支持。
+
 V1 promotion使用Harbor dataset verifier返回的reward。action verifier仍可属于TargetHarness并帮助agent自纠，但不能修改Harbor reward或Gear promotion policy。
 
 ## 5. Hitch 已交付：local exact commit进入Harbor

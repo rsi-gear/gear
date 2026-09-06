@@ -1216,7 +1216,14 @@ export interface PopulationState {
   digest: string
 }
 
+export interface BaselineReuseBlocker {
+  code: 'BASELINE_IDENTITY_UNRESOLVED' | 'BASELINE_CONDITION_MISMATCH' | 'BASELINE_EVIDENCE_UNAVAILABLE'
+  reason: string
+  requiredAction: string
+}
+
 export interface RefinementRound {
+  baselineReuseBlocker?: BaselineReuseBlocker
   candidateGenerationDeadlineAt?: number
   evolutionId: EvolutionId
   roundId: string
@@ -1251,6 +1258,8 @@ export interface RefinementRound {
   promotionCandidateId?: string
   promotedCandidateId?: string
   evaluation?: RoundEvaluation
+  /** Possible provider execution, persisted before an eval ID is available. */
+  evaluationStarts?: Array<{ phase: EvaluationPhase; harnessRef: HarnessRef; conditionId: string; startedAt: string }>
   evaluationAttempts?: RoundEvaluationAttempt[]
   pendingEvaluationSubmissions?: PendingEvaluationSubmission[]
   pendingEvaluationRerun?: PendingEvaluationRerun
@@ -1270,6 +1279,7 @@ export interface AdmissionResult {
 }
 
 export interface PublicRoundStatus {
+  baselineReuseBlocker?: BaselineReuseBlocker
   evolutionId: EvolutionId
   batchId: string
   roundId: string
