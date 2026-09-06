@@ -16,6 +16,7 @@ import { validateMetaSampling } from './sampling.js'
 import { DshOffloadingHost, type MetaOffloadingHost } from './offloading-host.js'
 import { DshContextExecution } from './offloading-execution.js'
 import { MetaOffloadingStore } from './offloading-store.js'
+import { MetaContextError } from './offloading-policy.js'
 
 export interface MetaAgentHost {
   offloading?: MetaOffloadingHost
@@ -292,7 +293,36 @@ export class MetaSessionManager implements MetaSessionController {
     return handle.agent
   }
 
-  async restore(sessionId: string): Promise<Agent> { return this.ensureAgent(sessionId) }
+  async restore(sessionId: string, executionId?: string): Promise<Agent> {
+    if (executionId !== undefined) {
+      const journal = new MetaOffloadingStore(this.store.root)
+      const state = await journal.read(executionId)
+      if (state === undefined || state.activeSessionId !== sessionId
+        || state.evolutionId !== this.options.evolutionId || state.specDigest !== this.options.specDigest) {
+        throw new MetaContextError('context-handoff-failed', 'restore execution owner or sealed identity mismatch')
+      }
+      if (state.status === 'running' && state.intent?.phase === 'activated') {
+        // DSH materializes a session only on its first append. The owner CAS can
+        // be durable while its empty successor is still absent from persistence.
+        const ref = state.intent.bundleDigest
+        if (ref === undefined || !state.handoffs.includes(ref)) {
+          throw new MetaContextError('context-handoff-failed', 'activated restore has no committed handoff bundle')
+        }
+        const bundle = await journal.readBundle(ref)
+        if (bundle.manifest.executionId !== executionId || bundle.manifest.evolutionId !== this.options.evolutionId
+          || bundle.manifest.specDigest !== this.options.specDigest || bundle.manifest.generation !== state.generation
+          || bundle.manifest.successorSessionId !== sessionId || state.intent.successorSessionId !== sessionId) {
+          throw new MetaContextError('context-handoff-failed', 'activated restore handoff identity mismatch')
+        }
+        if (this.host.prepareFresh !== undefined) {
+          const handle = await this.host.prepareFresh(sessionId, this.options.metaAgent, state.candidateId !== undefined)
+          this.handles.set(sessionId, handle)
+          return handle.agent
+        }
+      }
+    }
+    return this.ensureAgent(sessionId)
+  }
 
   async cancelAndDispose(sessionId: string, reason: string): Promise<void> {
     await this.cancel(sessionId, reason)

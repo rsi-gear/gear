@@ -308,10 +308,14 @@ V2 将精确任务、用户修正和最新 controller 快照放在独立的 `pro
 
 启动时可恢复处于 handoff intent/prepared 或已激活、尚无未知业务副作用的 execution。落盘但尚未写入 journal 的 bundle 按 execution 与预分配 successor 身份找回。新 session 沿用同一预分配 ID；CAS 后只恢复新 owner。已落盘的 inbox/message ID 用于避免重复投递相同输入。
 
+DSH 在首次 append 时才物化 session。若 owner CAS 已提交、continuation 尚未投递，successor 可能不在持久化列表中；只有 journal 的 activated 状态与已提交 bundle 的 owner、generation 和 successor ID 一致时，才允许按原 ID 重建空 session。delivered 状态下缺失日志仍拒绝恢复。恢复同一 attempt 时沿用 journal 封存的 parentCheckpoint，避免空 root 在重启后获得新 ID 而误判；当前 workspace、diff 与证据快照仍重新计算并校验。
+
 恢复会核对封存身份、worktree parent、diff digest 和证据快照。若新 session 已执行工具调用而无法确认其业务副作用，或 workspace 内容不匹配，则失败关闭，保留 workspace 与日志供检查。V1 不尝试接管未知外部进程、不重放写命令来推测其结果。取消或超时覆盖 summary、session 创建和 activation；终止状态不能经 CAS 重新变为 running。
+
+取消与 DSH maintenance 异常竞态时，抛出并持久化逻辑 execution 的原始 abort reason，避免底层取消对象将原因覆盖为 `[object Object]`。
 
 ### 验证
 
-`tests/unit/meta-offloading.spec.ts` 使用真实 DSH agent loop 与离线模型 adapter 验证连续两次交接、预算、溢出恢复、摘要失败、取消、交接期间 steering、大工具返回、owner 隔离，以及 intent / bundle 落盘 / prepared / activated / delivered 五处模拟重启。`tests/unit/refine-service.spec.ts` 覆盖相同 Git worktree、单一 attempt 和最终 session 归因。真实模型长任务的摘要遗漏、质量与阈值校准仍应由后续实验评估。
+`tests/unit/meta-offloading.spec.ts` 使用真实 DSH agent loop 与离线模型 adapter 验证连续两次交接、预算、溢出恢复、摘要失败、取消、交接期间 steering、大工具返回、owner 隔离。intent / bundle 落盘 / prepared / activated / delivered 五处重启测试使用真实 PersistenceCoordinator，在销毁旧 context 后通过 `MetaSessionManager.restore()` 冷恢复，并验证日志缺失、owner 不匹配、未知副作用与 workspace 变化时拒绝恢复。`tests/unit/refine-service.spec.ts` 覆盖相同 Git worktree、单一 attempt、空 root 重建后的 parent checkpoint 保留和最终 session 归因。真实模型长任务的摘要遗漏、质量与阈值校准仍应由后续实验评估。
 
 2026-09-06 的 V2 历史回放验证使用 GPT-5.6 Luna / medium、272,000-token 实际窗口和 80% 自然阈值：完整处理 56 条失败训练轨迹投影的 178 页（3,053,098 字符），经过 5 次交接、6 个 session，最大实际请求输入 217,311 tokens，未观察到上下文溢出。任务信封在全部交接中精确保留，成功处理的页码连续、无重复。4 次交接后误提交上一页被回放工具拒绝后恢复；摘要仍出现缩写引用和伪工具调用文本。该结果验证了这批材料上的目标隔离和可恢复接续，不代表摘要格式或工具参数始终正确；未执行新的 benchmark 或改动候选。

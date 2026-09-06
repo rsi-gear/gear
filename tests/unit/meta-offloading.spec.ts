@@ -16,6 +16,7 @@ import { RefineStateStore } from '../../src/state/store.js'
 import { contextMessage, DshOffloadingHost, usageTokens } from '../../src/meta/offloading-host.js'
 import { digestJson } from '../../src/state/digest.js'
 import { metaAgent, roundFixture, evidence } from '../helpers/research-fixture.js'
+import { MemorySessionBackend, MemorySessionPersistence } from '../helpers/session-persistence.js'
 
 const cleanups: Array<() => Promise<unknown>> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
@@ -38,8 +39,8 @@ function summaryFixture() {
 }
 
 async function setup(options: { summary?: string; overflow?: boolean; maxRequests?: number; abortSummary?: boolean; summaryGate?: Promise<void>; largeOutput?: boolean;
-  nonshrinking?: boolean; oversizedFixed?: boolean;
-  restore?: { state: MetaExecutionState; seed: readonly SessionEvent[]; bundle?: HandoffBundle }
+  nonshrinking?: boolean; oversizedFixed?: boolean; persistence?: MemorySessionBackend; abortReason?: unknown;
+  restore?: { state: MetaExecutionState; bundle?: HandoffBundle; workText?: string }
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'gear-offloading-'))
   cleanups.push(() => rm(root, { recursive: true, force: true }))
@@ -51,14 +52,15 @@ async function setup(options: { summary?: string; overflow?: boolean; maxRequest
   new LlmRuntime(ctx)
   await ctx.plugin(AgentLoop, { agents: [] })
   cleanups.push(() => ctx.fiber.dispose())
-  ctx.on('session/flush', async () => {})
+  if (options.persistence === undefined) ctx.on('session/flush', async () => {})
+  else new MemorySessionPersistence(ctx, options.persistence)
   const archived = new Map<string, readonly SessionEvent[]>()
   ctx.on('agent/disposed', ({ agent }) => { archived.set(String(agent.id), agent.session.events) })
   ctx.provide('agentPresets', { mount: async () => {} } as never)
   const abort = new AbortController()
   const calls: GenerateOptions[] = []
   let work = options.restore === undefined ? 0 : 1
-  if (options.restore !== undefined) await writeFile(join(root, 'work.txt'), '1')
+  if (options.restore !== undefined) await writeFile(join(root, 'work.txt'), options.restore.workText ?? '1')
   let completed = false
   let activeId: string
   class Adapter extends LlmAdapter {
@@ -66,7 +68,7 @@ async function setup(options: { summary?: string; overflow?: boolean; maxRequest
       calls.push(request)
       if (request.purpose === 'compaction') {
         await options.summaryGate
-        if (options.abortSummary) abort.abort(new Error('cancel during summary'))
+        if (options.abortSummary) abort.abort(options.abortReason ?? new Error('cancel during summary'))
         yield { type: 'text-delta', index: 0, text: options.summary ?? 'Goal: continue editing. Work file holds completed edits. Next: run work tool. Kernel is new.' }
         yield { type: 'usage', usage: { inputTokens: 100, outputTokens: 25, cacheReadTokens: 50 } }
         yield { type: 'finish', reason: { kind: 'stop' } }
@@ -123,10 +125,8 @@ async function setup(options: { summary?: string; overflow?: boolean; maxRequest
     await journal.cas(undefined, options.restore.state)
     if (options.restore.bundle !== undefined) await journal.writeBundle(options.restore.bundle)
   }
-  const agent = options.restore === undefined ? await manager.fork(parent) : (await ctx.agents.create({
-    sessionId: SessionId(options.restore.state.activeSessionId), seed: options.restore.seed, agentOptions: spec.model,
-    setup: setupCapabilities,
-  })).agent
+  const agent = options.restore === undefined ? await manager.fork(parent)
+    : await manager.restore(options.restore.state.activeSessionId, options.restore.state.executionId)
   activeId = String(agent.id)
   const round = roundFixture({ status: 'candidate-editing' })
   const baseline = evidence(round.plan.seed, round.targetHarnessRef, 0, 'c')
@@ -241,7 +241,14 @@ describe('DSH context offloading', () => {
     const fixture = await setup({ abortSummary: true })
     await expect(fixture.handle.completion).rejects.toThrow(/cancel during summary/)
     expect(fixture.switches).toHaveLength(0)
-    expect((await fixture.journal.read('execution-test'))!.status).toBe('stopped')
+    expect(await fixture.journal.read('execution-test')).toMatchObject({ status: 'stopped', failure: 'context-handoff-failed: cancel during summary' })
+  })
+
+  it('preserves a string abort reason in the durable failure', async () => {
+    const fixture = await setup({ abortSummary: true, abortReason: 'cancel requested by user' })
+    await expect(fixture.handle.completion).rejects.toThrow('cancel requested by user')
+    expect(await fixture.journal.read('execution-test')).toMatchObject({ status: 'stopped', failure: 'context-handoff-failed: cancel requested by user' })
+    expect(fixture.switches).toHaveLength(0)
   })
 
   it('preserves steering arriving while the source is in summary maintenance', async () => {
@@ -280,9 +287,23 @@ describe('DSH context offloading', () => {
     expect(JSON.stringify(await fixture.journal.readOutput('execution-test', ref!))).toContain('large output '.repeat(2000))
   })
 
-  it.each(['intent', 'bundle-written', 'prepared', 'activated', 'delivered'] as const)(
-    'recovers a crash at %s with the same successor, deadline and worktree', async phase => {
-      const original = await setup()
+  it.each<{
+    phase: 'intent' | 'bundle-written' | 'prepared' | 'activated' | 'delivered'
+    fault: 'none' | 'missing-session' | 'wrong-owner' | 'already-worked' | 'changed-workspace'
+  }>([
+    { phase: 'intent', fault: 'none' },
+    { phase: 'bundle-written', fault: 'none' },
+    { phase: 'prepared', fault: 'none' },
+    { phase: 'activated', fault: 'none' },
+    { phase: 'delivered', fault: 'none' },
+    { phase: 'delivered', fault: 'missing-session' },
+    { phase: 'activated', fault: 'wrong-owner' },
+    { phase: 'activated', fault: 'already-worked' },
+    { phase: 'activated', fault: 'changed-workspace' },
+  ])(
+    'validates cold recovery at $phase with fault=$fault', async ({ phase, fault }) => {
+      const backend = new MemorySessionBackend()
+      const original = await setup({ persistence: backend })
       await original.handle.completion
       const finished = (await original.journal.read('execution-test'))!
       const ref = finished.handoffs[0]!
@@ -305,15 +326,52 @@ describe('DSH context offloading', () => {
           ...(phase === 'intent' || phase === 'bundle-written' ? {} : { bundleDigest: ref }),
         },
       }
-      const resumed = await setup({ restore: { state,
-        seed: activated ? phase === 'delivered' ? successorEvents.slice(0, firstTurn) : []
-          : original.agent.session.events.slice(0, bundle.manifest.source.eventCount),
+      const seed = activated ? phase === 'delivered' ? successorEvents.slice(0, firstTurn) : []
+        : original.agent.session.events.slice(0, bundle.manifest.source.eventCount)
+      // Discard all live DSH state. Materialized prefixes are the only data the
+      // new coordinator can see; activated-before-delivery has no stored record.
+      await original.manager.dispose()
+      await original.ctx.fiber.dispose()
+      const cold = new MemorySessionBackend()
+      const sourceId = SessionId(bundle.manifest.source.sourceSessionId)
+      cold.records.set(sourceId, structuredClone(backend.records.get(sourceId)!))
+      cold.records.get(sourceId)!.events = structuredClone(original.agent.session.events.slice(0, bundle.manifest.source.eventCount)) as SessionEvent[]
+      if (phase === 'delivered') {
+        const successorId = SessionId(bundle.manifest.successorSessionId)
+        cold.records.set(successorId, structuredClone(backend.records.get(successorId)!))
+        expect(seed.length).toBeGreaterThan(0)
+      }
+      const id = SessionId(state.activeSessionId)
+      if (phase === 'activated') cold.records.delete(id)
+      else cold.records.get(id)!.events = structuredClone(seed) as SessionEvent[]
+      if (fault === 'missing-session') cold.records.delete(id)
+      if (fault === 'wrong-owner') state.intent!.successorSessionId = 'other-successor'
+      if (fault === 'already-worked') cold.records.set(id, structuredClone(backend.records.get(id)!))
+      const resume = setup({ persistence: cold, restore: { state,
         ...(phase === 'intent' ? {} : { bundle }),
+        ...(fault === 'changed-workspace' ? { workText: 'unknown side effect' } : {}),
       } })
+      if (fault === 'missing-session' || fault === 'wrong-owner' || fault === 'already-worked') {
+        const errors = { 'missing-session': /not found/iu, 'wrong-owner': /handoff identity mismatch/u,
+          'already-worked': /already performed work/u }
+        await expect(resume).rejects.toThrow(errors[fault])
+        return
+      }
+      const resumed = await resume
+      if (fault === 'changed-workspace') {
+        await expect(resumed.handle.completion).rejects.toThrow(/workspace digest changed/u)
+        expect(resumed.calls).toHaveLength(0)
+        expect(resumed.switches).toHaveLength(0)
+        return
+      }
       await resumed.handle.completion
       const recovered = (await resumed.journal.read('execution-test'))!
       expect(recovered).toMatchObject({ status: 'completed', attempt: 1, deadlineAt: finished.deadlineAt })
       expect(recovered.sessions.filter(id => id === bundle.manifest.successorSessionId)).toHaveLength(1)
+      expect(original.parent.eventCount).toBe(0)
+      expect(resumed.parent.eventCount).toBe(0)
+      expect(resumed.parent.prefixDigest).toBe(original.parent.prefixDigest)
+      expect(resumed.parent.sourceSessionId).not.toBe(original.parent.sourceSessionId)
       expect(await readFile(join(resumed.root, 'work.txt'), 'utf8')).toBe('3')
       expect(resumed.calls.filter(call => call.purpose === 'compaction')).toHaveLength(phase === 'intent' ? 2 : 1)
     },

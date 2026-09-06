@@ -61,7 +61,7 @@ export interface MetaSessionController {
   agent(): Promise<MetaAgentSession>
   checkpoint(sessionId?: string): Promise<MetaCheckpointRef>
   fork(checkpoint: MetaCheckpointRef): Promise<MetaAgentSession>
-  restore?(sessionId: string): Promise<MetaAgentSession>
+  restore?(sessionId: string, executionId?: string): Promise<MetaAgentSession>
   cancel(sessionId: string, reason: string): Promise<void>
   release(sessionId: string): Promise<void>
   dispose(): Promise<void>

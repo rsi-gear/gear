@@ -1417,8 +1417,8 @@ export class RefineService {
         const allocation = round.parentAllocations?.find(value => value.candidateId === candidateId)
         if (allocation === undefined) throw new Error(`candidate has no parent allocation: ${candidateId}`)
         const parentBaseline = parentBaselines.find(value => value.parentCandidateId === allocation.parentCandidateId)?.evidence
-        const parentCheckpoint = parentCheckpoints.get(allocation.parentCandidateId)
-        if (parentBaseline === undefined || parentCheckpoint === undefined) throw new Error('candidate parent state is incomplete')
+        const currentParentCheckpoint = parentCheckpoints.get(allocation.parentCandidateId)
+        if (parentBaseline === undefined || currentParentCheckpoint === undefined) throw new Error('candidate parent state is incomplete')
         let generationComplete = false
         const resuming = active.contextResume?.candidateId === candidateId ? active.contextResume : undefined
         for (let attemptNumber = resuming?.attempt ?? 1; attemptNumber <= generationBudget.maxAttemptsPerCandidate; attemptNumber += 1) {
@@ -1487,6 +1487,17 @@ export class RefineService {
           let completedCheckpoint = false
           let shouldRetry = false
           try {
+            // The default root can be empty and unmaterialized. Recreating it
+            // after restart must not change an already-running attempt's parent.
+            const sealedController = recovered?.recovery?.controller as { parentCheckpoint?: MetaCheckpointRef } | undefined
+            const parentCheckpoint = recovered === undefined ? currentParentCheckpoint : sealedController?.parentCheckpoint
+            if (parentCheckpoint === undefined || parentCheckpoint === null || typeof parentCheckpoint.sourceSessionId !== 'string'
+              || !parentCheckpoint.sourceSessionId || !Number.isSafeInteger(parentCheckpoint.eventCount)
+              || parentCheckpoint.eventCount < 0 || !/^sha256:[a-f0-9]{64}$/u.test(parentCheckpoint.prefixDigest)
+              || recovered !== undefined && previousCandidate.parentCheckpoint !== undefined
+                && digestJson(parentCheckpoint) !== digestJson(previousCandidate.parentCheckpoint)) {
+              throw new MetaContextError('context-unrecoverable', 'sealed candidate parent checkpoint is missing or inconsistent')
+            }
             const workspaceInput = {
               evolutionId: round.evolutionId,
               roundId,
@@ -1507,7 +1518,7 @@ export class RefineService {
             execution.signal.throwIfAborted()
             const forkPromise = recovered === undefined ? meta.fork(parentCheckpoint)
               : meta.restore === undefined ? Promise.reject(new Error('Meta adapter cannot restore context execution'))
-                : meta.restore(recovered.activeSessionId)
+                : meta.restore(recovered.activeSessionId, recovered.executionId)
             let agent: Awaited<ReturnType<MetaSessionController['fork']>>
             try {
               agent = await Promise.race([forkPromise, deadline])

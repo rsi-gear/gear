@@ -337,8 +337,11 @@ export class DshContextExecution {
       }
     } catch (error) {
       agent.cancel({ kind: 'hook', reason: 'context execution stopped' })
-      const failure = error instanceof MetaContextError ? error
-        : new MetaContextError('context-handoff-failed', error instanceof Error ? error.message : String(error))
+      // Maintenance may reject with DSH's cancellation object before the logical
+      // signal's reason surfaces. The execution's cancellation remains primary.
+      const cause = this.binding.signal.aborted ? this.binding.signal.reason : error
+      const failure = cause instanceof MetaContextError ? cause
+        : new MetaContextError('context-handoff-failed', cause instanceof Error ? cause.message : String(cause))
       await this.update(state => ({ ...state, status: 'stopped', failure: failure.message })).catch(() => {})
       throw failure
     } finally {
