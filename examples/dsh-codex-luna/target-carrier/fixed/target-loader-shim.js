@@ -1,4 +1,7 @@
 export const name = 'gear-target-harness-loader-shim'
+// The outer Loader entry must wait for the child's services; a pending child
+// fiber is already settled to ctx.plugin(), even though apply has not run.
+export const inject = ['loader', 'agentDefaultModel', 'settings']
 
 export async function apply(ctx, config) {
   const url = process.env.DSH_REFINE_TARGET_LOADER_URL

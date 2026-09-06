@@ -89,7 +89,15 @@ node examples/dsh-codex-luna/evolve.mjs target-eval /absolute/path/to/one-task-d
 node examples/dsh-codex-luna/evolve.mjs web
 ```
 
-Meta and target default independently to Luna. All relevant choices are
+Meta and target default independently to Luna with Medium reasoning effort.
+`metaSampling.reasoningEffort` controls Meta requests. The target's fixed
+`target-harness-loader` sets `reasoningEffort: medium` in each disposable DSH
+home before the headless runner reads its model selection, while preserving
+Hitch's provider and model. This configuration lives outside the mutable
+`harness/` tree and survives candidate iterations; subscription settings and
+credentials remain in the run's own home.
+
+All relevant choices are
 configuration:
 
 - `GEAR_META_PROVIDER` / `GEAR_META_MODEL`
