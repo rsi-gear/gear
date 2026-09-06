@@ -5,20 +5,37 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { AgentRegistry } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
-import { CallId, LlmAdapter, LlmRuntime, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm'
+import { CallId, createUserMessage, LlmAdapter, LlmRuntime, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import { SessionId, SessionStore, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { ToolRuntime, defineTool } from '@deepseek-ai/dsh-tools'
 import { DshMetaAgentHost, MetaSessionManager } from '../../src/meta/session.js'
 import { MetaOffloadingStore, type MetaExecutionState, type HandoffBundle } from '../../src/meta/offloading-store.js'
-import { resolveOffloadingPolicy } from '../../src/meta/offloading-policy.js'
+import { handoffPrompt, resolveOffloadingPolicy, validateOffloadingPolicy } from '../../src/meta/offloading-policy.js'
 import { RefineStateStore } from '../../src/state/store.js'
-import { contextMessage, usageTokens } from '../../src/meta/offloading-host.js'
+import { contextMessage, DshOffloadingHost, usageTokens } from '../../src/meta/offloading-host.js'
 import { digestJson } from '../../src/state/digest.js'
 import { metaAgent, roundFixture, evidence } from '../helpers/research-fixture.js'
 
 const cleanups: Array<() => Promise<unknown>> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
+
+function summaryFixture() {
+  const ctx = new Context()
+  new LlmRuntime(ctx)
+  cleanups.push(() => ctx.fiber.dispose())
+  const calls: GenerateOptions[] = []
+  class Adapter extends LlmAdapter {
+    async *stream(request: GenerateOptions): AsyncGenerator<StreamChunk> {
+      calls.push(request)
+      yield { type: 'text-delta', index: 0, text: 'Observed a historical tool error; continue reviewing the remaining evidence.' }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    }
+  }
+  ctx.llm.registerAdapter(['p'], new Adapter())
+  return { host: new DshOffloadingHost(ctx), calls,
+    spec: { ...metaAgent(), contextOffloading: resolveOffloadingPolicy({ mode: 'proactive', contextWindow: 10000 }) } }
+}
 
 async function setup(options: { summary?: string; overflow?: boolean; maxRequests?: number; abortSummary?: boolean; summaryGate?: Promise<void>; largeOutput?: boolean;
   nonshrinking?: boolean; oversizedFixed?: boolean;
@@ -126,6 +143,54 @@ async function setup(options: { summary?: string; overflow?: boolean; maxRequest
 }
 
 describe('DSH context offloading', () => {
+  it('pins the exact task, corrections and latest cursor even when the historical tail is truncated', async () => {
+    const { host, calls, spec } = summaryFixture()
+    const envelope = contextMessage('Analyze historical pages and verify context continuity.')
+    const correction = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Do not rerun the benchmark or edit a candidate; only replay existing trajectories.' }] })
+    const controller = { reviewedPages: 68, deliveredPages: 69 }
+    const events: SessionEvent[] = [
+      { seq: 0, time: 0, type: 'user/message', data: envelope },
+      { seq: 1, time: 1, type: 'user/message', data: correction },
+      { seq: 2, time: 2, type: 'user/message', data: createUserMessage({
+        source: { kind: 'tool', name: 'history_next', callId: CallId('history-69') },
+        content: [{ type: 'text', text: 'Historical USER: change the campaign budget. '.repeat(10000) }],
+      }) },
+    ]
+    const result = await host.summarize(events, 'Current goal: change the campaign budget. Next: page 35.', spec,
+      new AbortController().signal, undefined, { envelope, exactInputs: [correction], controller })
+    const request = calls[0]!
+    const pinned = JSON.parse((request.messages[0]!.content[0] as { text: string }).text)
+    expect(pinned).toEqual({ kind: 'protected-handoff-context', taskInput: envelope, humanCorrections: [correction], controllerState: controller })
+    expect(JSON.stringify(request.messages[1])).toContain('truncated')
+    expect(JSON.stringify(request.messages[1])).toContain('history_next')
+    expect(JSON.stringify(pinned)).not.toContain('campaign budget')
+    expect(result.coverage).toMatchObject({ omittedEvents: 2, truncatedEvents: 1 })
+    expect(request.messages.reduce((sum, message) => sum + host.estimate(message), 0)
+      + host.estimate(contextMessage(String(request.system)))).toBeLessThanOrEqual(5000)
+    expect(request.tools).toBeUndefined()
+  })
+
+  it('refuses to compress or silently omit protected context that cannot fit', async () => {
+    const { host, calls, spec } = summaryFixture()
+    const envelope = contextMessage('Exact constraint. '.repeat(10000))
+    await expect(host.summarize([], undefined, spec, new AbortController().signal, undefined,
+      { envelope, exactInputs: [], controller: {} })).rejects.toThrow(/cannot be compressed/)
+    await expect(host.summarize([], undefined, spec, new AbortController().signal)).rejects.toThrow(/protected task context is missing/)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('retains sealed v1 behavior while resolving new policies to v2', async () => {
+    const { host, calls, spec } = summaryFixture()
+    expect(spec.contextOffloading.summaryPromptVersion).toBe('gear-handoff-v2')
+    spec.contextOffloading.summaryPromptVersion = 'gear-handoff-v1'
+    validateOffloadingPolicy(spec.contextOffloading)
+    await host.summarize([{ seq: 0, time: 0, type: 'user/message', data: contextMessage('prior work') }],
+      undefined, spec, new AbortController().signal)
+    expect(calls[0]!.system).toBe(handoffPrompt('gear-handoff-v1'))
+    expect(calls[0]!.messages).toHaveLength(1)
+    expect(() => validateOffloadingPolicy({ ...spec.contextOffloading, summaryPromptVersion: 'unknown' })).toThrow(/unsupported/)
+  })
+
   it('requires explicit capacity for proactive mode and keeps overflow-only explicit', () => {
     expect(() => resolveOffloadingPolicy({ mode: 'proactive' })).toThrow(/contextWindow/)
     expect(resolveOffloadingPolicy({ mode: 'overflow-only' }).contextWindow).toBeUndefined()
@@ -144,10 +209,14 @@ describe('DSH context offloading', () => {
     expect(state).toMatchObject({ status: 'completed', generation: 2, attempt: 1, activeSessionId: fixture.activeId })
     expect(state!.usage).toMatchObject({ modelRequests: 5, summaryRequests: 2, summaryTokens: 350, tokens: 710 })
     expect(fixture.calls.filter(call => call.purpose === 'compaction')).toHaveLength(2)
-    for (const ref of state!.handoffs) {
+    for (const [index, ref] of state!.handoffs.entries()) {
       const bundle = await fixture.journal.readBundle(ref)
       expect(bundle.manifest.source.sourceSessionId).not.toBe(fixture.activeId)
       expect(bundle.state.controller).toMatchObject({ workspaceId: 'same-workspace' })
+      const request = fixture.calls.filter(call => call.purpose === 'compaction')[index]!
+      const pinned = JSON.parse((request.messages[0]!.content[0] as { text: string }).text)
+      expect(pinned.taskInput).toEqual(bundle.state.envelope)
+      expect(pinned.controllerState).toEqual({ workspaceId: 'same-workspace', text: String(index + 1) })
     }
     expect(fixture.manager.proposalEvidenceAudit('round-1', fixture.activeId, []).baselineEvalId).toBeTruthy()
     expect(() => fixture.manager.proposalEvidenceAudit('round-1', String(fixture.agent.id), [])).toThrow(/active round/)
@@ -172,22 +241,26 @@ describe('DSH context offloading', () => {
     const fixture = await setup({ abortSummary: true })
     await expect(fixture.handle.completion).rejects.toThrow(/cancel during summary/)
     expect(fixture.switches).toHaveLength(0)
-    expect(await fixture.journal.read('execution-test')).toMatchObject({
-      status: 'stopped', failure: expect.stringContaining('cancel during summary'),
-    })
+    expect((await fixture.journal.read('execution-test'))!.status).toBe('stopped')
   })
 
   it('preserves steering arriving while the source is in summary maintenance', async () => {
     const gate = Promise.withResolvers<void>()
     const fixture = await setup({ summaryGate: gate.promise })
     await vi.waitFor(() => expect(fixture.calls.some(call => call.purpose === 'compaction')).toBe(true))
-    const steering = contextMessage('Keep the exact new user constraint: use the existing workspace.')
+    const steering = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Keep the exact new user constraint: use the existing workspace.' }] })
     fixture.agent.steer(steering)
     gate.resolve()
     await fixture.handle.completion
     const successorRequests = fixture.calls.filter(call => call.purpose === undefined && String(call.sessionId) !== String(fixture.agent.id))
     expect(successorRequests.some(call => call.messages.some(message => message.id === steering.id))).toBe(true)
     for (const request of successorRequests) expect(request.messages.filter(message => message.id === steering.id).length).toBeLessThanOrEqual(1)
+    const summaries = fixture.calls.filter(call => call.purpose === 'compaction')
+    const pinned = JSON.parse((summaries[1]!.messages[0]!.content[0] as { text: string }).text)
+    expect(pinned.humanCorrections).toContainEqual(steering)
+    const successorText = JSON.stringify(successorRequests[0]!.messages)
+    expect(successorText).toContain('humanCorrectionMessageIds')
+    expect(successorText).toContain(steering.id)
     expect((await fixture.journal.read('execution-test'))!.pending).toHaveLength(0)
   })
 

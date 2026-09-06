@@ -148,11 +148,7 @@ export class DshMetaAgentHost implements MetaAgentHost {
     return this.ctx.agents.resume({
       resumeSessionId: SessionId(sessionId),
       agentOptions: spec.model,
-      setup: async (agentCtx) => {
-        await this.ctx.agentPresets.mount(agentCtx, spec.preset.id)
-        await this.setupMetaCapabilities(agentCtx, sessionId)
-        this.installSampling(agentCtx, spec)
-      },
+      setup: agentCtx => this.setupAgent(agentCtx, sessionId, spec),
     })
   }
 
@@ -161,11 +157,7 @@ export class DshMetaAgentHost implements MetaAgentHost {
       sessionId: SessionId(sessionId),
       agentOptions: spec.model,
       meta: { agentPreset: spec.preset.id, ...(candidate ? { cwd: '/candidate/harness' } : {}) },
-      setup: async (agentCtx) => {
-        await this.ctx.agentPresets.mount(agentCtx, spec.preset.id)
-        await this.setupMetaCapabilities(agentCtx, sessionId)
-        this.installSampling(agentCtx, spec)
-      },
+      setup: agentCtx => this.setupAgent(agentCtx, sessionId, spec),
     })
   }
 
@@ -198,11 +190,7 @@ export class DshMetaAgentHost implements MetaAgentHost {
         cwd: '/candidate/harness',
         agentPreset: spec.preset.id,
       },
-      setup: async (agentCtx) => {
-        await this.ctx.agentPresets.mount(agentCtx, spec.preset.id)
-        await this.setupMetaCapabilities(agentCtx, sessionId)
-        this.installSampling(agentCtx, spec)
-      },
+      setup: agentCtx => this.setupAgent(agentCtx, sessionId, spec),
     })
   }
 
@@ -213,8 +201,10 @@ export class DshMetaAgentHost implements MetaAgentHost {
     if (!participated) throw new Error('durable Meta session persistence is required before cleanup')
   }
 
-  private installSampling(agentCtx: Context, spec: DshMetaAgentSpec): void {
+  private async setupAgent(agentCtx: Context, sessionId: string, spec: DshMetaAgentSpec): Promise<void> {
     validateMetaSampling(spec.sampling)
+    await this.ctx.agentPresets.mount(agentCtx, spec.preset.id)
+    await this.setupMetaCapabilities(agentCtx, sessionId)
     if (spec.contextOffloading !== undefined) {
       agentCtx.on('tools/pre-execute', async (exec, next) => {
         if (exec.agent === undefined || !this.permitted.has(String(exec.agent.id))) throw new Error('Meta session has no active execution permission')

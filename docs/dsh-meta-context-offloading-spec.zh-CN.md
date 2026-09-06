@@ -125,9 +125,11 @@ handoff/
 
 ### 5.2 模型生成的 summary
 
-只总结可见工作状态，不要求转储内部推理。固定内容：
+目标区和运行状态区独立于摘要：原始任务 envelope、按顺序保留的用户修正，以及 controller 最新状态都直接传给摘要生成器和接续 session，不经过 LLM 重写或历史裁剪。后来的用户修正覆盖先前冲突要求；摘要中的目标和旧进度不能覆盖这些精确输入。目标输入在工作记录中按消息 ID 去重，不重复压缩。
 
-1. 当前目标、用户纠正和约束。
+只总结与当前目标有关的可见工作记录，不要求转储内部推理。固定内容：
+
+1. 与独立目标区一致的工作发现；不重新生成目标、约束、完成条件和运行游标。
 2. 已确认的诊断及对应 evidence refs；明确区分事实与尚待验证的假设。
 3. 已采取的修改、涉及文件和验证结果。
 4. 已否定的方法及简短原因，避免重复试错。
@@ -149,6 +151,7 @@ handoff/
 封存的 Meta preset / system / tools
 + 当前 round/candidate 恢复 envelope
 + 必须精确保留的用户输入与新 steering
++ 最新 controller 状态（独立于摘要）
 + 一个有界 handoff summary
 + 少量确有必要的最近内容或 artifact refs
 ```
@@ -279,7 +282,9 @@ metaContextOffloading:
 
 实际触发余量取 `max(reserveTokens, effectiveOutputLimit + maxStepToolResultTokens)`，因此较大的显式输出上限会提前触发交接。已有历史输出已包含在 token-meter 压力中，不再次累加；独立摘要请求按自己的有界输入计算峰值。
 
-摘要调用使用同一封存 provider/model/sampling、独立 `purpose: compaction` 请求，不带业务 tools，也不写 proposal session 的 request header。策略包含 `gear-handoff-v1` 摘要 prompt 版本；DSH token-meter 固定为 `0.1.0-rc.8`。Meta preset 若包含独立 compaction 插件，会在启用时被拒绝。
+摘要调用使用同一封存 provider/model/sampling、独立 `purpose: compaction` 请求，不带业务 tools，也不写 proposal session 的 request header。新策略封存 `gear-handoff-v2` 摘要 prompt 版本，已有 `gear-handoff-v1` evolution 继续使用原 prompt，不静默升级。DSH token-meter 固定为 `0.1.0-rc.8`。Meta preset 若包含独立 compaction 插件，会在启用时被拒绝。
+
+V2 将精确任务、用户修正和最新 controller 快照放在独立的 `protected-handoff-context` 消息中，先从摘要输入预算扣除，再为旧摘要和近期轨迹分配剩余空间。目标区本身无法容纳时明确失败，不裁剪目标或约束。工作记录保留外层 event type / message source，内部历史任务的 USER 文本不升级为当前用户指令。摘要期间到达的新用户输入仍精确投递给 successor，并在下一次交接纳入保留区。
 
 ### 持久化与权限
 
@@ -308,3 +313,5 @@ metaContextOffloading:
 ### 验证
 
 `tests/unit/meta-offloading.spec.ts` 使用真实 DSH agent loop 与离线模型 adapter 验证连续两次交接、预算、溢出恢复、摘要失败、取消、交接期间 steering、大工具返回、owner 隔离，以及 intent / bundle 落盘 / prepared / activated / delivered 五处模拟重启。`tests/unit/refine-service.spec.ts` 覆盖相同 Git worktree、单一 attempt 和最终 session 归因。真实模型长任务的摘要遗漏、质量与阈值校准仍应由后续实验评估。
+
+2026-09-06 的 V2 历史回放验证使用 GPT-5.6 Luna / medium、272,000-token 实际窗口和 80% 自然阈值：完整处理 56 条失败训练轨迹投影的 178 页（3,053,098 字符），经过 5 次交接、6 个 session，最大实际请求输入 217,311 tokens，未观察到上下文溢出。任务信封在全部交接中精确保留，成功处理的页码连续、无重复。4 次交接后误提交上一页被回放工具拒绝后恢复；摘要仍出现缩写引用和伪工具调用文本。该结果验证了这批材料上的目标隔离和可恢复接续，不代表摘要格式或工具参数始终正确；未执行新的 benchmark 或改动候选。
