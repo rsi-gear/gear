@@ -118,25 +118,9 @@ export interface DshMetaAgentSpec {
     maxTokens?: number
   }
   sampling: MetaSamplingConfig
-  contextOffloading?: DshContextOffloadingPolicy
-}
-
-/** Sealed with the evolution; absence preserves legacy session behavior. */
-export interface DshContextOffloadingPolicy {
-  schemaVersion: 1
-  mode: 'proactive' | 'overflow-only'
-  contextWindow?: number
-  triggerRatio: number
-  bootstrapRatio: number
-  reserveTokens: number
-  summaryMaxTokens: number
-  maxToolResultTokens: number
-  maxStepToolResultTokens: number
-  summaryPromptVersion: string
 }
 
 export interface GenericMetaAgentSpec {
-  contextOffloading?: DshContextOffloadingPolicy
   runtime: {
     type: string
     version: string
@@ -983,9 +967,6 @@ export interface RoundEvaluation {
 }
 
 export interface MetaAttribution {
-  executionId?: string
-  generation?: number
-  handoffRefs?: string[]
   evolutionId: EvolutionId
   sessionId: string
   requestHeaderSeq?: number
@@ -1061,7 +1042,6 @@ export interface CandidateGenerationAttempt {
 
 export interface MetaTurnObservation {
   reason: string
-  error?: { message: string; code?: string }
   turn?: number
   durationMs?: number
   effectiveMaxTokens?: number
@@ -1217,7 +1197,6 @@ export interface PopulationState {
 }
 
 export interface RefinementRound {
-  candidateGenerationDeadlineAt?: number
   evolutionId: EvolutionId
   roundId: string
   workspaceRoot: string

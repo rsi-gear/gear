@@ -3,8 +3,6 @@ import { ComponentRegistry } from '../evolution/components.js'
 import type { HarnessBuilder } from '../harness/builder.js'
 import { SubstrateExpansionError } from '../harness/builder.js'
 import type { MetaSessionController } from '../meta/controller.js'
-import { MetaContextError } from '../meta/offloading-policy.js'
-import { MetaOffloadingStore, type MetaExecutionState } from '../meta/offloading-store.js'
 import { digestDatasetRef } from '../state/dataset.js'
 import { digestJson, type EvolutionRegistryStore } from '../state/evolution.js'
 import type { RefineStateStore, WorkspaceLock } from '../state/store.js'
@@ -81,7 +79,6 @@ interface CandidateExecution {
   workspace?: CandidateWorkspaceHandle
   metaSessionId?: string
   baseline?: EvaluationEvidence
-  preserveWorkspace?: boolean
 }
 
 type CandidatePatch = { [Key in keyof CandidateRecord]?: CandidateRecord[Key] | undefined }
@@ -93,7 +90,6 @@ interface ActiveRound {
   abort: AbortController
   executions: Map<string, CandidateExecution>
   currentCandidateId?: string
-  contextResume?: MetaExecutionState
   batchId: string
   roundIndex: number
   roundCount: number
@@ -153,13 +149,12 @@ class MetaTurnEndedWithoutProposalError extends Error {
   constructor(readonly observation: MetaTurnObservation) {
     const details = [
       `reason=${observation.reason}`,
-      observation.error?.code === undefined ? undefined : `code=${observation.error.code}`,
       observation.effectiveMaxTokens === undefined ? undefined : `effectiveMaxTokens=${observation.effectiveMaxTokens}`,
       observation.usage?.outputTokens === undefined ? undefined : `outputTokens=${observation.usage.outputTokens}`,
       observation.usage?.reasoningTokens === undefined ? undefined : `reasoningTokens=${observation.usage.reasoningTokens}`,
       observation.durationMs === undefined ? undefined : `durationMs=${observation.durationMs}`,
     ].filter((value): value is string => value !== undefined)
-    super(`Meta turn ended without candidate.finalize or candidate.decline (${details.join(', ')})${observation.error === undefined ? '' : `: ${observation.error.message}`}`)
+    super(`Meta turn ended without candidate.finalize or candidate.decline (${details.join(', ')})`)
     this.name = 'MetaTurnEndedWithoutProposalError'
   }
 }
@@ -471,16 +466,9 @@ export class RefineService {
     await this.registry.initialize()
     await this.workspaceManager.initialize()
     const pendingResumes: PendingEvaluationResume[] = []
-    const contextResumes: Array<{ evolutionId: string; roundId: string; execution: MetaExecutionState }> = []
     for (const entry of await this.registry.list()) {
       const store = this.registry.stateStore(entry.evolutionId)
       await store.initialize()
-      const contextStore = new MetaOffloadingStore(store.root)
-      const contextExecutions = await contextStore.list()
-      const preservedWorkspaces = new Set(contextExecutions.flatMap(execution => {
-        const controller = execution.recovery?.controller as { workspaceId?: string } | undefined
-        return controller?.workspaceId === undefined ? [] : [controller.workspaceId]
-      }))
       for (let round of await store.listRounds()) {
         if (round.pendingEvaluationRerun !== undefined) {
           const spec = await this.registry.requireSpec(entry.evolutionId)
@@ -603,26 +591,6 @@ export class RefineService {
             failure: { phase: 'recovery', message: errorMessage(error) },
           }))
         } else if (!TERMINAL.has(round.status)) {
-          const resumable = contextExecutions.filter(execution => execution.roundId === round.roundId
-            && execution.candidateId !== undefined
-            && execution.recovery !== undefined && execution.deadlineAt > Date.now()
-            && (execution.status === 'rotating' || execution.status === 'running'
-              && (execution.intent?.phase === 'activated' || execution.intent?.phase === 'delivered')))
-          if (resumable.length === 1 && ['candidate-editing', 'preparing-candidate', 'baseline-running'].includes(round.status)) {
-            const spec = await this.registry.requireSpec(entry.evolutionId)
-            const execution = resumable[0]!
-            if (spec.metaAgent.contextOffloading !== undefined && execution.specDigest === digestJson(spec)
-              && round.candidatePool.some(candidate => candidate.candidateId === execution.candidateId && candidate.status === 'generating')) {
-              contextResumes.push({ evolutionId: entry.evolutionId, roundId: round.roundId, execution })
-              continue
-            }
-          }
-          for (const context of contextExecutions.filter(context => context.roundId === round.roundId
-            && (context.status === 'running' || context.status === 'rotating'))) {
-            await contextStore.cas(context.revision, { ...context, revision: context.revision + 1, status: 'stopped',
-              failure: 'context-handoff-failed: restart outside a recoverable handoff boundary',
-            })
-          }
           const completedAt = now()
           await store.writeRound({
             ...round, status: 'failed', updatedAt: completedAt,
@@ -633,20 +601,11 @@ export class RefineService {
           })
         }
       }
-      await this.workspaceManager.recoverOrphans(entry.evolutionId, preservedWorkspaces)
+      await this.workspaceManager.recoverOrphans(entry.evolutionId)
     }
     await this.evaluator.preflight?.()
     const resumedRoundIds: string[] = []
     try {
-      for (const pending of contextResumes) {
-        const evolution = await this.runtime(pending.evolutionId)
-        const lock = await evolution.store.acquireRoundLock(pending.roundId)
-        const round = await this.requireRound(evolution.store, pending.roundId)
-        const active = this.newActive(evolution, lock, round.source, round.batchId, round.roundIndex, round.roundCount, round.advisoryFocus)
-        active.contextResume = pending.execution
-        this.active.set(pending.roundId, active)
-        resumedRoundIds.push(pending.roundId)
-      }
       for (const pending of pendingResumes) {
         await this.resumeCompletedEvaluationRepair(pending)
         resumedRoundIds.push(pending.roundId)
@@ -1003,8 +962,6 @@ export class RefineService {
     const execution = [...active.executions.values()].find(value => value.metaSessionId === meta.sessionId)
     if (execution === undefined) throw new Error('finalization Meta session does not own an active candidate')
     const round = await this.requireRound(active.evolution.store, roundId)
-    execution.signal.throwIfAborted()
-    if (execution.metaSessionId !== meta.sessionId) throw new Error('stale finalization Meta session generation')
     if (round.status !== 'candidate-editing') throw new Error(`round ${roundId} is not accepting a finalization`)
     if (execution.finalizationSubmitted) throw new Error(`candidate ${execution.candidateId} already received a finalization`)
     if (meta.evolutionId !== evolutionId || evidence.candidateId !== execution.candidateId) {
@@ -1020,8 +977,6 @@ export class RefineService {
       diff = await this.workspaceManager.seal(execution.workspace.workspaceId, execution.signal)
       if (diff.files.length === 0) throw new Error('candidate has no changes; use decline_candidate')
     }
-    execution.signal.throwIfAborted()
-    if (execution.metaSessionId !== meta.sessionId || execution.finalizationSubmitted) throw new Error('stale or duplicate candidate finalization')
     execution.finalizationSubmitted = true
     execution.finalization.resolve({
       finalization,
@@ -1174,7 +1129,7 @@ export class RefineService {
   } | undefined {
     for (const [roundId, active] of this.active) {
       const execution = [...active.executions.values()].find(value => value.metaSessionId === sessionId)
-      if (execution?.workspace === undefined || execution.signal.aborted || execution.finalizationSubmitted) continue
+      if (execution?.workspace === undefined) continue
       // activeEntryForSession is synchronous; generation stores this routing on
       // the workspace and candidate execution, so derive the immutable parent
       // from the handle and use the in-memory baseline snapshot below.
@@ -1403,10 +1358,7 @@ export class RefineService {
       const parentCheckpoints = new Map<string, MetaCheckpointRef>()
       for (const member of population.members) parentCheckpoints.set(member.candidateId, member.metaCheckpoint ?? rootCheckpoint)
       const generationBudget = effectiveCandidateGenerationBudget(active.evolution.spec.candidateGeneration)
-      const generationDeadline = round.candidateGenerationDeadlineAt ?? Date.now() + generationBudget.roundTimeoutMs
-      if (active.evolution.spec.metaAgent.contextOffloading !== undefined && round.candidateGenerationDeadlineAt === undefined) {
-        round = await this.transition(store, roundId, { candidateGenerationDeadlineAt: generationDeadline })
-      }
+      const generationDeadline = Date.now() + generationBudget.roundTimeoutMs
 
       // Generate and seal every sibling before any candidate rollout. This keeps
       // proposal-time evidence independent of sibling evaluation order.
@@ -1420,21 +1372,18 @@ export class RefineService {
         const parentCheckpoint = parentCheckpoints.get(allocation.parentCandidateId)
         if (parentBaseline === undefined || parentCheckpoint === undefined) throw new Error('candidate parent state is incomplete')
         let generationComplete = false
-        const resuming = active.contextResume?.candidateId === candidateId ? active.contextResume : undefined
-        for (let attemptNumber = resuming?.attempt ?? 1; attemptNumber <= generationBudget.maxAttemptsPerCandidate; attemptNumber += 1) {
-          const recovered = attemptNumber === resuming?.attempt ? resuming : undefined
+        for (let attemptNumber = 1; attemptNumber <= generationBudget.maxAttemptsPerCandidate; attemptNumber += 1) {
           active.abort.signal.throwIfAborted()
           const startedAt = now()
           const previousCandidate = round.candidatePool.find(value => value.candidateId === candidateId)!
           const generationAttempts: CandidateGenerationAttempt[] = [
             ...(previousCandidate.generationAttempts ?? []),
-            ...(recovered === undefined ? [{ attempt: attemptNumber, status: 'running' as const, startedAt }] : []),
+            { attempt: attemptNumber, status: 'running', startedAt },
           ]
           round = await this.transition(store, roundId, {
             status: 'preparing-candidate',
             candidatePool: this.patchCandidate(round, candidateId, {
-              status: 'generating', failure: undefined,
-              ...(recovered === undefined ? { workspaceId: undefined, metaSessionId: undefined } : {}),
+              status: 'generating', failure: undefined, workspaceId: undefined, metaSessionId: undefined,
               generationAttempts,
             }),
           })
@@ -1467,9 +1416,7 @@ export class RefineService {
           const timeoutBudgetMs = timeoutScope === 'round'
             ? generationBudget.roundTimeoutMs
             : generationBudget.attemptTimeoutMs
-          const timeoutMs = Math.max(0, Math.min(generationBudget.attemptTimeoutMs, remainingBeforeAttempt,
-            recovered === undefined ? Infinity : recovered.deadlineAt - Date.now()))
-          const attemptDeadlineAt = recovered?.deadlineAt ?? Date.now() + timeoutMs
+          const timeoutMs = Math.min(generationBudget.attemptTimeoutMs, remainingBeforeAttempt)
           const deadlineError = new CandidateGenerationTimeoutError(timeoutScope, timeoutBudgetMs)
           let deadlineTimer: ReturnType<typeof setTimeout> | undefined
           let rejectAttempt: (reason: unknown) => void = () => {}
@@ -1487,15 +1434,12 @@ export class RefineService {
           let completedCheckpoint = false
           let shouldRetry = false
           try {
-            const workspaceInput = {
+            const workspacePromise = this.workspaceManager.create({
               evolutionId: round.evolutionId,
               roundId,
               parentHarnessRef: allocation.parentHarnessRef,
               parentHarnessDigest: allocation.parentHarnessDigest,
-            }
-            const workspacePromise = recovered === undefined
-              ? this.workspaceManager.create(workspaceInput, execution.signal)
-              : this.workspaceManager.restore(previousCandidate.workspaceId!, workspaceInput)
+            }, execution.signal)
             let workspace: CandidateWorkspaceHandle
             try {
               workspace = await Promise.race([workspacePromise, deadline])
@@ -1505,9 +1449,7 @@ export class RefineService {
             }
             execution.workspace = workspace
             execution.signal.throwIfAborted()
-            const forkPromise = recovered === undefined ? meta.fork(parentCheckpoint)
-              : meta.restore === undefined ? Promise.reject(new Error('Meta adapter cannot restore context execution'))
-                : meta.restore(recovered.activeSessionId)
+            const forkPromise = meta.fork(parentCheckpoint)
             let agent: Awaited<ReturnType<MetaSessionController['fork']>>
             try {
               agent = await Promise.race([forkPromise, deadline])
@@ -1536,36 +1478,7 @@ export class RefineService {
             })
             execution.signal.throwIfAborted()
             const currentCandidate = round.candidatePool.find(value => value.candidateId === candidateId)!
-            const wake = await Promise.race([meta.wakeCandidate(round, currentCandidate, parentBaseline, agent, {
-              executionId: recovered?.executionId ?? crypto.randomUUID(), attempt: attemptNumber, deadlineAt: attemptDeadlineAt,
-              signal: execution.signal, budget: active.evolution.spec.candidateGeneration.budget,
-              isComplete: () => execution.finalizationSubmitted,
-              snapshot: async () => {
-                execution.signal.throwIfAborted()
-                await this.workspaceManager.drain(workspace.workspaceId)
-                const diff = await this.workspaceManager.preflight(workspace.workspaceId, execution.signal)
-                return {
-                  evolutionId: round.evolutionId, roundId, candidateId, attempt: attemptNumber,
-                  workspaceId: workspace.workspaceId, parentHarnessRef: allocation.parentHarnessRef,
-                  parentCheckpoint, baselineEvalId: parentBaseline.evalId, diff,
-                  specDigest: active.evolution.specDigest,
-                }
-              },
-              activate: async (sourceId, successorId) => {
-                execution.signal.throwIfAborted()
-                if (execution.finalizationSubmitted || execution.metaSessionId !== sourceId) throw new Error('stale candidate session activation')
-                this.workspaceManager.rotateBinding(workspace.workspaceId, sourceId, successorId)
-                execution.metaSessionId = successorId
-                round = await this.transition(store, roundId, {
-                  candidatePool: this.patchCandidate(round, candidateId, {
-                    metaSessionId: successorId,
-                    generationAttempts: patchGenerationAttempt(round.candidatePool.find(value => value.candidateId === candidateId)!.generationAttempts!, attemptNumber, {
-                      metaSessionId: successorId,
-                    }),
-                  }),
-                })
-              },
-            }), deadline])
+            const wake = await Promise.race([meta.wakeCandidate(round, currentCandidate, parentBaseline, agent), deadline])
             execution.signal.throwIfAborted()
             const turnSettlement = wake.completion?.then(observation => {
               if (!execution.finalizationSubmitted) throw new MetaTurnEndedWithoutProposalError(observation)
@@ -1585,13 +1498,11 @@ export class RefineService {
             const completedAttempts = round.candidatePool.find(value => value.candidateId === candidateId)!.generationAttempts!
             round = await this.transition(store, roundId, {
               candidatePool: this.patchCandidate(round, candidateId, {
-                metaSessionId: execution.metaSessionId,
                 ...(proposal.finalization === null ? {} : { proposal: proposal.finalization }),
                 ...(proposal.decline === undefined ? {} : { decline: proposal.decline }),
                 ...(proposal.diff === undefined ? {} : { diff: proposal.diff }),
                 meta: proposal.meta, proposalEvidence: proposal.evidence, resultCheckpoint,
                 generationAttempts: patchGenerationAttempt(completedAttempts, attemptNumber, {
-                  metaSessionId: execution.metaSessionId,
                   status: 'succeeded', completedAt: now(),
                   ...(metaTurn === undefined ? {} : { metaTurn }),
                 }),
@@ -1617,7 +1528,6 @@ export class RefineService {
             }
             generationComplete = true
           } catch (error) {
-            if (active.evolution.spec.metaAgent.contextOffloading !== undefined && !completedCheckpoint) execution.preserveWorkspace = true
             active.abort.signal.throwIfAborted()
             // Close the attempt before persisting retry state so a late tool call
             // from the timed-out child cannot seal or submit the disposed workspace.
@@ -1628,8 +1538,7 @@ export class RefineService {
               : round.status === 'building-candidate' ? 'building-candidate' : 'candidate-generation'
             const failure = { phase, message: errorMessage(error) }
             shouldRetry = (error instanceof CandidateGenerationTimeoutError
-              || error instanceof MetaTurnEndedWithoutProposalError
-              || error instanceof MetaContextError && error.code === 'context-handoff-failed')
+              || error instanceof MetaTurnEndedWithoutProposalError)
               && !completedCheckpoint
               && attemptNumber < generationBudget.maxAttemptsPerCandidate
               && Date.now() < generationDeadline
@@ -2448,7 +2357,7 @@ export class RefineService {
     }
     if (workspace !== undefined) await this.workspaceManager.drain(workspace.workspaceId).catch(() => {})
     if (sessionId !== undefined) await meta.release(sessionId).catch(() => {})
-    if (workspace !== undefined && execution.preserveWorkspace !== true) await this.workspaceManager.dispose(workspace.workspaceId).catch(() => {})
+    if (workspace !== undefined) await this.workspaceManager.dispose(workspace.workspaceId).catch(() => {})
     active.executions.delete(execution.candidateId)
     if (active.currentCandidateId === execution.candidateId) delete active.currentCandidateId
   }
@@ -2870,8 +2779,8 @@ export class RefineService {
     if (spec.rollout.sampling.temperature !== undefined) {
       throw new Error('current Hitch adapter does not support typed rollout temperature')
     }
-    if ((spec.candidateGeneration.budget.maxModelRequests !== undefined
-      || spec.candidateGeneration.budget.maxTokens !== undefined) && spec.metaAgent.contextOffloading === undefined) {
+    if (spec.candidateGeneration.budget.maxModelRequests !== undefined
+      || spec.candidateGeneration.budget.maxTokens !== undefined) {
       throw new Error('current Meta harness adapter does not expose aggregate proposal usage; maxModelRequests and maxTokens are unsupported')
     }
   }

@@ -17,8 +17,6 @@ import { isolateCandidateProviderContext } from './candidate/context.js'
 import { SessionAwareNotebookRuntime } from './notebook/runtime.js'
 import { mountMetaCapabilityTools, mountNotebookTool } from './notebook/tool.js'
 import { DshMetaAgentHost, MetaSessionManager } from './meta/session.js'
-import { resolveOffloadingPolicy } from './meta/offloading-policy.js'
-import { assertMetaPresetOffloadingCoordinator } from './meta/isolation.js'
 import { assertMetaReasoningEffortMatches, validateMetaSampling } from './meta/sampling.js'
 import { compatibleSkillMetaAgent } from './meta/controller.js'
 import {
@@ -257,13 +255,6 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     const metaPreset = await ctx.agentPresets.resolve(config.metaPreset)
     await assertMetaPresetIsolation(metaPreset, [config.dshRepository])
     await assertMetaPresetComposesCapabilities(metaPreset)
-    const contextOffloading = config.metaContextOffloading === undefined ? undefined : resolveOffloadingPolicy(
-      config.metaContextOffloading,
-      config.metaContextOffloading.contextWindow === undefined && config.metaContextOffloading.mode === 'proactive'
-        ? (await ctx.llm.resolveModelInfo(config.metaModel.provider, config.metaModel.model)).context?.contextWindow
-        : undefined,
-    )
-    if (contextOffloading !== undefined) await assertMetaPresetOffloadingCoordinator(metaPreset)
     metaAgent = {
       runtime: await resolveDshRuntimeIdentity(),
       preset: await resolveDshPresetRef(metaPreset),
@@ -273,10 +264,8 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
         ...(config.metaModel.maxTokens === undefined ? {} : { maxTokens: config.metaModel.maxTokens }),
       },
       sampling: { ...config.metaSampling },
-      ...(contextOffloading === undefined ? {} : { contextOffloading }),
     }
   } else {
-    if (config.metaContextOffloading !== undefined) throw new Error('metaContextOffloading requires metaAdapter.kind="dsh"')
     const configuredIdentity = {
       runtimeType: config.metaAdapter.runtimeType,
       runtimeVersion: config.metaAdapter.runtimeVersion,
@@ -478,7 +467,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     }, {
       shellEnabled: config.candidateWorkspace.shellEnabled,
     })
-  }, sessionId => notebook.disposeSession(sessionId))
+  })
   workspaceManager = new CandidateWorkspaceManager({
     repositoryPath: config.dshRepository,
     targetRoot: config.targetRoot,
@@ -495,7 +484,6 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       const currentPreset = await ctx.agentPresets.resolve(spec.metaAgent.preset.id)
       await assertMetaPresetIsolation(currentPreset, [config.dshRepository])
       await assertMetaPresetComposesCapabilities(currentPreset)
-      if (spec.metaAgent.contextOffloading !== undefined) await assertMetaPresetOffloadingCoordinator(currentPreset)
       const currentIdentity = await resolveDshPresetRef(currentPreset)
       if (currentIdentity.digest !== spec.metaAgent.preset.digest) {
         throw new Error('Meta preset content changed; evolution cannot continue')

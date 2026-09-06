@@ -27,24 +27,6 @@ async function setup() {
 }
 
 describe('CandidateWorkspaceManager', () => {
-  it('preserves and restores an interrupted handoff workspace without rebuilding its diff', async () => {
-    const { manager, handle } = await setup()
-    await mkdir(join(handle.targetPath, 'prompts'), { recursive: true })
-    await writeFile(join(handle.targetPath, 'prompts', 'handoff.md'), 'uncommitted work\n')
-    const before = await manager.preflight(handle.workspaceId)
-    const recovered = new CandidateWorkspaceManager(manager.options)
-    await recovered.initialize()
-    expect(await recovered.recoverOrphans(handle.evolutionId, new Set([handle.workspaceId]))).toEqual([])
-    const input = { evolutionId: handle.evolutionId, roundId: handle.roundId,
-      parentHarnessRef: handle.parentRef, parentHarnessDigest: handle.parentDigest }
-    await expect(recovered.restore(handle.workspaceId, { ...input, parentHarnessDigest: 'changed' })).rejects.toThrow(/identity/)
-    const restored = await recovered.restore(handle.workspaceId, input)
-    recovered.bind(restored.workspaceId, 'successor')
-    expect(restored.worktreePath).toBe(handle.worktreePath)
-    expect(await recovered.preflight(restored.workspaceId)).toEqual(before)
-    expect(await readFile(join(restored.targetPath, 'prompts', 'handoff.md'), 'utf8')).toBe('uncommitted work\n')
-    await recovered.dispose(restored.workspaceId)
-  })
   it('binds one opaque workspace to one Meta session and renders a host-path-free diff', async () => {
     const { manager, handle } = await setup()
     manager.bind(handle.workspaceId, 'meta-1')

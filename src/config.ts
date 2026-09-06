@@ -1,6 +1,5 @@
 import Schema from '@deepseek-ai/schemastery'
 import type { AgentOptions } from '@deepseek-ai/dsh-agent'
-import type { OffloadingConfig } from './meta/offloading-policy.js'
 import type { ChampionState, MetaSamplingConfig, PromotionPolicy, RolloutSamplingConfig } from './types.js'
 
 export interface HitchConfig {
@@ -43,7 +42,6 @@ export interface Config {
   metaPreset?: string
   metaModel: AgentOptions
   metaSampling: MetaSamplingConfig
-  metaContextOffloading?: OffloadingConfig
   metaAdapter: {
     kind: 'dsh' | 'skill'
     runtimeType?: string
@@ -135,16 +133,6 @@ export const ConfigSchema: Schema<Config> = Schema.object({
     temperature: Schema.number(),
     reasoningEffort: Schema.string(),
   }).default({} as never),
-  metaContextOffloading: Schema.object({
-    mode: Schema.union(['proactive', 'overflow-only'] as const).required(),
-    contextWindow: Schema.number(),
-    triggerRatio: Schema.number(),
-    bootstrapRatio: Schema.number(),
-    reserveTokens: Schema.number(),
-    summaryMaxTokens: Schema.number(),
-    maxToolResultTokens: Schema.number(),
-    maxStepToolResultTokens: Schema.number(),
-  }).default(undefined as never),
   metaAdapter: Schema.object({
     kind: Schema.union(['dsh', 'skill'] as const).default('skill'),
     runtimeType: Schema.string(),

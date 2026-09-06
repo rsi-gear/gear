@@ -25,19 +25,6 @@ export interface MetaWakeHandle {
   completion?: Promise<MetaTurnObservation>
 }
 
-export interface MetaExecutionBinding {
-  executionId: string
-  attempt: number
-  deadlineAt: number
-  signal: AbortSignal
-  budget: { maxModelRequests?: number; maxTokens?: number }
-  isComplete(): boolean
-  /** Called only after old tools and processes have settled. */
-  snapshot(): Promise<unknown>
-  /** Synchronous permission switch after the durable owner CAS. */
-  activate(sourceSessionId: string, successorSessionId: string, generation: number): void | Promise<void>
-}
-
 /**
  * New skill profiles omit maxTokens, but a resumed evolution must keep using
  * the value sealed in its immutable spec. Every other identity field remains
@@ -61,7 +48,6 @@ export interface MetaSessionController {
   agent(): Promise<MetaAgentSession>
   checkpoint(sessionId?: string): Promise<MetaCheckpointRef>
   fork(checkpoint: MetaCheckpointRef): Promise<MetaAgentSession>
-  restore?(sessionId: string): Promise<MetaAgentSession>
   cancel(sessionId: string, reason: string): Promise<void>
   release(sessionId: string): Promise<void>
   dispose(): Promise<void>
@@ -71,7 +57,6 @@ export interface MetaSessionController {
     candidate: Readonly<CandidateRecord> | undefined,
     baseline: EvaluationEvidence | undefined,
     session: MetaAgentSession,
-    execution?: MetaExecutionBinding,
   ): Promise<MetaWakeHandle>
   activeRoundId(sessionId: string): string | undefined
   recordEvidenceAccess(

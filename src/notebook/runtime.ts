@@ -291,9 +291,6 @@ export class SessionAwareNotebookRuntime implements NotebookRuntime {
 
   private cleanupKernel(kernel: Kernel): Promise<void> {
     if (kernel.cleanupPromise !== undefined) return kernel.cleanupPromise
-    // A normally exiting kernel may leave child processes in its owned group.
-    // A successor session must not race those children against the same worktree.
-    this.signalKernel(kernel, 'SIGKILL')
     const cleanup = kernel.cleanup().finally(() => this.cleanups.delete(cleanup))
     kernel.cleanupPromise = cleanup
     this.cleanups.add(cleanup)

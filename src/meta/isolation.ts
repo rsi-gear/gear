@@ -241,10 +241,3 @@ export async function assertMetaPresetComposesCapabilities(preset: AgentPreset):
     )
   }
 }
-
-export async function assertMetaPresetOffloadingCoordinator(preset: AgentPreset): Promise<void> {
-  const entries = (await metaCompositions(preset)).flatMap(composition => composition.entries)
-  if (entries.some(entry => /dsh-compaction(?:-basic|-auto)?(?:$|\/)/u.test(entry.name))) {
-    throw new Error('Gear context offloading requires a Meta preset without independent DSH compaction plugins')
-  }
-}
