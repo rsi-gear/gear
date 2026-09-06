@@ -102,7 +102,7 @@ target 只可调用 `refine.run`/`refine.status`；rollout 没有 refine control
 
 ## 6. Meta session 与 evidence
 
-每个 evolution 至多一个 persistent Meta session。新 evolution必须新建 session；同一 batch多轮和显式 continue复用。resume同时验证 evolution ownership、spec digest、MetaHarnessRef和 role，失败时按同一固定 MetaHarness rotate新 session。live runtime handle由 LRU上限控制，持久 session仍可恢复。
+每个 evolution 有一个根 Meta 逻辑上下文，各 candidate 从真实 parent checkpoint 创建独立分支。新 evolution 必须新建根 session；同一 batch 多轮和显式 continue 复用其逻辑身份。启用 DSH context offloading 后，一个 candidate attempt 可以跨多个历史物理 session，但同一执行始终只有一个可写的 active session；切换不改变 attempt、workspace、deadline 或累计模型预算。resume 同时验证 evolution ownership、spec digest、MetaHarnessRef 和 execution generation。旧 checkpoint 不改写，释放 live handle 不删除持久日志。交接及恢复规则见 [DSH Meta context offloading spec](dsh-meta-context-offloading-spec.zh-CN.md)。
 
 每轮 wake envelope包含 evolution/batch/round identity、parent ref/digest、baseline seed summary、task结果、eval/run refs、candidate逻辑路径和 advisory focus。它不内联完整源码或 raw trajectory。
 

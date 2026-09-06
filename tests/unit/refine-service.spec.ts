@@ -7,6 +7,11 @@ import { HitchCliEvaluator, HitchEvaluationError } from '../../src/evaluator/hit
 import type { EvaluationSubmissionIntent, EvaluationRerunReservation } from '../../src/types.js'
 import { HarnessBuilder, NoopHarnessCompiler, SubstrateExpansionError } from '../../src/harness/builder.js'
 import { RefineService } from '../../src/refine/service.js'
+import type { MetaSessionController } from '../../src/meta/controller.js'
+import { MetaOffloadingStore, type MetaExecutionState } from '../../src/meta/offloading-store.js'
+import { resolveOffloadingPolicy } from '../../src/meta/offloading-policy.js'
+import { contextMessage } from '../../src/meta/offloading-host.js'
+import { digestJson } from '../../src/state/digest.js'
 import { RefineStateStore } from '../../src/state/store.js'
 import { EvolutionRegistryStore } from '../../src/state/evolution.js'
 import type { DiagnosisReceipt, EvaluationPhase, EvaluationRequest, EvaluationRerunResult, EvaluationRerunSelector, EvaluationReservation, HitchEvaluationEvidence, MetaAttribution, MetaCheckpointRef, MetaTurnObservation, RefineEvaluator, RefinementRound, RoundEvaluationAttempt } from '../../src/types.js'
@@ -1977,7 +1982,120 @@ describe('RefineService evolution workspaces', () => {
     await service.dispose()
   })
 
-  it('retries immediately when an observable Meta turn ends without finalizing', async () => {
+  it('keeps one attempt and the same uncommitted workspace through two session activations', async () => {
+    const { service, evaluator, metas } = await setup()
+    const gate = Promise.withResolvers<void>()
+    const evaluate = evaluator.evaluate.bind(evaluator)
+    evaluator.evaluate = async (...args) => { await gate.promise; return evaluate(...args) }
+    const admission = await service.admit('api')
+    const meta = metas.get(admission.evolutionId)! as unknown as MetaSessionController
+    const idle = Promise.withResolvers<MetaTurnObservation>()
+    const oldIds: string[] = []
+    const workspaceIds: string[] = []
+    meta.wakeCandidate = async (_round, _candidate, _baseline, agent, binding) => {
+      let id = agent.id
+      for (let generation = 1; generation <= 2; generation += 1) {
+        const workspace = service.workspaceManager.resolve(id)
+        workspaceIds.push(workspace.workspaceId)
+        const path = join(workspace.targetPath, 'prompts', 'rotation.md')
+        await mkdir(join(workspace.targetPath, 'prompts'), { recursive: true })
+        if (generation === 2) expect(await readFile(path, 'utf8')).toBe('edit 1')
+        await service.workspaceManager.withOpenWorkspace(id, true, async () => writeFile(path, `edit ${generation}`))
+        await binding!.snapshot()
+        expect(binding!.signal.aborted).toBe(false)
+        const next = `${agent.id}-rotated-${generation}`
+        await binding!.activate(id, next, generation)
+        expect(service.activeEntryForSession(id)).toBeUndefined()
+        expect(() => service.workspaceManager.resolve(id)).toThrow(/no active/)
+        oldIds.push(id)
+        id = next
+      }
+      return { sessionId: agent.id, completion: idle.promise }
+    }
+    gate.resolve()
+    const store = service.registry.stateStore(admission.evolutionId)
+    const round = await eventually(() => store.readRound(admission.roundId) as Promise<RefinementRound>,
+      round => round.candidatePool[0]?.metaSessionId?.endsWith('-rotated-2') === true)
+    expect(new Set(workspaceIds).size).toBe(1)
+    expect(round.candidatePool[0]!.generationAttempts).toHaveLength(1)
+    await finalize(service, round)
+    idle.resolve({ reason: 'completed' })
+    const completed = await eventually(() => store.readRound(admission.roundId), round => round?.status === 'accepted')
+    expect(completed!.candidatePool[0]!.meta?.sessionId).toBe(round.candidatePool[0]!.metaSessionId)
+    expect(completed!.candidatePool[0]!.resultCheckpoint?.sourceSessionId).toBe(round.candidatePool[0]!.metaSessionId)
+    expect(completed!.candidatePool[0]!.generationAttempts).toHaveLength(1)
+    expect(oldIds).toHaveLength(2)
+    await service.dispose()
+  })
+
+  it('restores the sealed attempt parent when the default root checkpoint changes after restart', async () => {
+    const { service, evaluator, metas, registry } = await setup()
+    service.options.metaAgent.contextOffloading = resolveOffloadingPolicy({ mode: 'proactive', contextWindow: 10000 })
+    const gate = Promise.withResolvers<void>()
+    const evaluate = evaluator.evaluate.bind(evaluator)
+    evaluator.evaluate = async (...args) => { await gate.promise; return evaluate(...args) }
+    const admission = await service.admit('api')
+    const store = registry.stateStore(admission.evolutionId)
+    const meta = metas.get(admission.evolutionId)! as unknown as MetaSessionController
+    let saved: MetaExecutionState | undefined
+    meta.wakeCandidate = async (round, candidate, baseline, agent, binding) => {
+      const workspace = service.workspaceManager.resolve(agent.id)
+      await mkdir(join(workspace.targetPath, 'prompts'), { recursive: true })
+      await writeFile(join(workspace.targetPath, 'prompts', 'before-crash.md'), 'uncommitted work')
+      const checkpointState: MetaExecutionState = {
+        schemaVersion: 1, executionId: binding!.executionId, evolutionId: round.evolutionId,
+        specDigest: digestJson(await registry.requireSpec(round.evolutionId)), roundId: round.roundId,
+        candidateId: candidate!.candidateId, attempt: binding!.attempt, generation: 0, revision: 0,
+        activeSessionId: agent.id, sessions: [agent.id], status: 'rotating', deadlineAt: binding!.deadlineAt,
+        usage: { modelRequests: 1, tokens: 100, summaryRequests: 0, summaryTokens: 0 },
+        pending: [], deliveredIds: [], handoffs: [],
+        intent: { trigger: 'pressure', pressure: 9000, source: candidate!.parentCheckpoint!, successorSessionId: 'successor', phase: 'intent' },
+        recovery: { envelope: contextMessage('Continue the current candidate'), controller: await binding!.snapshot(),
+          evidence: { evolutionId: round.evolutionId, roundId: round.roundId, baselineEvalId: baseline!.evalId,
+            summaryAccessed: true, accessedRefs: [], diagnosedRunRefs: [], citedRefs: [] } },
+      }
+      await new MetaOffloadingStore(store.root).cas(undefined, checkpointState)
+      saved = checkpointState
+      return { sessionId: agent.id }
+    }
+    gate.resolve()
+    await eventually(async () => saved, value => value !== undefined)
+    const original = (await store.readRound(admission.roundId))!
+    const parent = original.candidatePool[0]!.parentCheckpoint!
+    expect((await store.readPopulation())!.members[0]!.metaCheckpoint).toBeUndefined()
+    await service.dispose()
+    const workspaces = new CandidateWorkspaceManager(service.workspaceManager.options)
+    let snapshot: unknown
+    let restoredExecutionId: string | undefined
+    const recovering = new RefineService(registry, service.builder, workspaces, (spec, digest, stateStore) => {
+      const cold = new FakeMeta(spec.evolutionId, stateStore, digest) as unknown as MetaSessionController
+      const checkpoint = cold.checkpoint.bind(cold)
+      cold.checkpoint = async id => id === undefined ? { ...parent, sourceSessionId: 'new-empty-root-after-restart' } : checkpoint(id)
+      cold.restore = async (id, executionId) => { restoredExecutionId = executionId; return { id } }
+      cold.wakeCandidate = async (_round, _candidate, _baseline, agent, binding) => {
+        snapshot = await binding!.snapshot()
+        return { sessionId: agent.id }
+      }
+      return cold
+    }, evaluator, service.options, service.components)
+    try {
+      await recovering.initialize()
+      await eventually(async () => snapshot, value => value !== undefined)
+      expect(snapshot).toEqual(saved!.recovery!.controller)
+      expect(restoredExecutionId).toBe(saved!.executionId)
+      const resumed = (await store.readRound(admission.roundId))!
+      expect(resumed.candidatePool[0]!.parentCheckpoint).toEqual(parent)
+      expect(resumed.candidatePool[0]!.generationAttempts).toHaveLength(1)
+      const workspace = workspaces.resolve(resumed.candidatePool[0]!.metaSessionId!)
+      expect(workspace.workspaceId).toBe(original.candidatePool[0]!.workspaceId)
+      expect(await readFile(join(workspace.targetPath, 'prompts', 'before-crash.md'), 'utf8')).toBe('uncommitted work')
+      expect(evaluator.calls).toEqual(['seed-baseline'])
+      await finalize(recovering, resumed)
+      await eventually(() => store.readRound(admission.roundId), value => value?.status === 'accepted')
+    } finally { await recovering.dispose() }
+  })
+
+  it.each(['max-tokens', 'error'])('retries when a Meta turn ends with %s and retains the cause', async reason => {
     const { service, evaluator, metas } = await setup(0.8, false, 1, 300_000, 1, 0, 2, 600_000)
     const baselineGate = Promise.withResolvers<void>()
     const evaluate = evaluator.evaluate.bind(evaluator)
@@ -1992,8 +2110,9 @@ describe('RefineService evolution workspaces', () => {
     const admission = await service.admit('api')
     const meta = metas.get(admission.evolutionId)
     if (meta === undefined) throw new Error('Meta fixture is unavailable')
+    const error = { code: 'CONTEXT_WINDOW_EXCEEDED', message: 'Your input exceeds the context window of this model.' }
     meta.turnCompletions.push({
-      reason: 'max-tokens', turn: 1, durationMs: 69_000, effectiveMaxTokens: 8192,
+      reason, ...(reason === 'error' ? { error } : {}), turn: 1, durationMs: 69_000, effectiveMaxTokens: 8192,
       usage: { inputTokens: 11_074, outputTokens: 8192, cacheReadTokens: 18_688, reasoningTokens: 8192 },
     })
     baselineGate.resolve()
@@ -2007,15 +2126,19 @@ describe('RefineService evolution workspaces', () => {
     expect(retried.candidatePool[0]?.generationAttempts?.[0]).toMatchObject({
       status: 'failed',
       metaTurn: {
-        reason: 'max-tokens', effectiveMaxTokens: 8192,
+        reason, ...(reason === 'error' ? { error } : {}), effectiveMaxTokens: 8192,
         usage: { outputTokens: 8192, reasoningTokens: 8192 },
       },
       failure: { message: expect.stringContaining('without candidate.finalize or candidate.decline') },
     })
+    if (reason === 'error') {
+      expect(retried.candidatePool[0]?.generationAttempts?.[0]?.failure?.message).toContain(error.code)
+      expect(retried.candidatePool[0]?.generationAttempts?.[0]?.failure?.message).toContain(error.message)
+    }
     expect((await service.status(admission.evolutionId, admission.roundId)).candidateGeneration)
       .toEqual(expect.arrayContaining([expect.objectContaining({
         attempts: expect.arrayContaining([expect.objectContaining({
-          status: 'failed', metaTurn: expect.objectContaining({ reason: 'max-tokens' }),
+          status: 'failed', metaTurn: expect.objectContaining({ reason }),
         })]),
       })]))
     await finalize(service, retried)
