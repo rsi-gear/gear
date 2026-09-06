@@ -86,7 +86,10 @@ jobs:
       - run: npm ci
       - run: npm ci
         working-directory: .hitch-contract
-      - run: npm run check
+      # Build the pinned dependency; Hitch's own CI owns its full unit suite.
+      # This job exercises the real CLI/daemon through Gear's contract below.
+      - name: Build the pinned Hitch contract
+        run: npm run build
         working-directory: .hitch-contract
       - name: Verify Gear against the real Hitch CLI and daemon
         run: npm test -- tests/integration/hitch-rerun-contract.spec.ts
