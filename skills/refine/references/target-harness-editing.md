@@ -88,32 +88,51 @@ task contract
   -> observed failure
 ```
 
+Locate what the Target Agent actually received and could act on. Missing or
+truncated output, lost state, misleading tool semantics, and an incorrect
+skill/workflow are different from misinterpreting complete, correct evidence.
+Expand relevant previews before attributing missing information to the harness:
+the diagnostic card's truncation does not prove the Target saw truncated output.
+
 Distinguish these cases:
 
-- **Harness-controllable behavior:** missing context, poor routing, unsafe
-  pre-action behavior, unexamined tool output, weak verification, a misleading
-  skill/workflow, or compaction loss. A candidate edit may be justified.
-- **Target task implementation bug with a reusable harness cause:** change the
-  general instruction, hook, skill, or verifier that led to the mistake; do not
-  encode the task's answer.
+- **Supported harness gap:** trace the decision to a specific instruction,
+  interface, routing, state, or feedback defect in the current harness. Explain
+  how an editable mechanism would change what the Target sees or does there.
+- **Task implementation or reasoning mistake:** an omitted check or ignored
+  result is a symptom, not sufficient evidence of a harness defect. A reminder
+  might help, but that alone does not justify adding one. Look for a reusable
+  cause and check whether existing guidance already addresses it.
 - **Infrastructure or invalid evaluation:** do not edit the harness to mask it.
   Finish the active assignment only as the evidence allows; after the round
   reports a repairable failed evaluation, `control.rerun` may be used for the
   exact advertised slot.
 - **No supported causal link:** decline the candidate.
 
+Test the explanation against relevant accessible seed evidence, including a
+successful run facing a similar decision or a failure with a different cause
+when available. Seek comparisons that could change the diagnosis; do not read
+every success by default. Note missing comparisons or contradictory evidence
+as uncertainty rather than treating repeated failures as proof of one cause.
+
 Held-out task identities, trajectories, and rewards are intentionally
 unavailable. Do not infer or optimize for hidden task contents.
 
 ### 3. Choose a generalizable intervention
 
-Before editing, state internally:
+Generalization concerns the mechanism and its applicability, not just removing
+task names. Before editing, establish:
 
-- the exact observed behavior that caused the failure;
-- the evidence reference and relevant event(s);
-- the harness artifact that controls that behavior;
-- why the proposed change should alter that behavior;
-- what unrelated behaviors must remain unchanged.
+- the observed decision, supporting evidence, and the harness gap;
+- why the proposed mechanism should change that decision on other tasks;
+- the observable conditions where it applies and where it should stay inactive;
+- the main regression risk or cost, including false triggers and extra context
+  or execution time.
+
+A mechanism may serve a recognizable class of tasks within a shared harness;
+it need not activate for every task. Limited seed evidence supports a hypothesis,
+not a claim of demonstrated generalization. Keep these conclusions concise in
+the finalization fields described below.
 
 Choose the mechanism from the causal boundary, not from whichever candidate
 file already exists:
@@ -133,11 +152,15 @@ unavailable. Create and wire the smallest supported artifact when the candidate
 toolchain exposes the necessary extension point. Conversely, do not invent an
 executable hook when the evidence supplies no deterministic trigger.
 
-When a failure appears at a tool-call or tool-result boundary, explicitly
-compare the applicable hook/verifier with prompt guidance. Choosing `context`
-is justified only when the behavior cannot be enforced or loaded more narrowly.
-Do not add a policy for infrastructure failures, or for behavior that the
-trajectory shows the Target Agent already performed correctly.
+Compare plausible mechanisms where the diagnosed gap is observable. Lack of
+one universal verifier does not by itself justify a shared prompt: bounded
+checks, clearer tool feedback, state retention, or an on-demand procedure may
+fit the evidence. Use the same standard for every option: causal fit, reliable
+activation, and cost outside the affected cases. Do not enumerate every option
+or add code merely to avoid a prompt edit. Retain a prompt change when guidance
+is the supported gap and a narrower mechanism offers no clear benefit.
+Do not add a policy for infrastructure failures or behavior already performed
+correctly in the cited trajectory.
 
 Prefer the smallest change that breaks the causal chain. Avoid:
 
@@ -236,15 +259,24 @@ bypass the check or modify the manifest manually.
 Finalize only after:
 
 - the baseline summary has been observed;
-- every failed baseline run has been queried at least once from offset zero;
+- every failed baseline run has been queried and required evidence reads are
+  complete, as reported by `finalizationReadiness`;
 - the evidence supports the proposed causal link;
 - the diff is coherent and nonempty;
 - `candidate.check` succeeds.
 
-The rationale should name the observed failure pattern and why this exact
-harness change addresses it. `expectedOutcome` should state a measurable
-behavioral expectation without promising a score. Cite only baseline `evalId`
-or `runId` values actually returned and inspected in the active assignment.
+Use the existing finalization fields; no separate report is needed:
+
+- `rationale`: summarize the observed harness gap, supporting or conflicting
+  evidence, why this mechanism fits better than plausible alternatives, its
+  applicability beyond the seed tasks, and the main risk or uncertainty.
+- `expectedOutcome`: predict an observable change at the affected decision or
+  tool boundary and what should remain unchanged outside it. State what result
+  would undermine the hypothesis; do not promise a score.
+
+Cite only baseline `evalId` or `runId` values actually returned and inspected in
+the active assignment. Build success establishes validity, and seed improvement
+is feedback on this hypothesis; neither alone demonstrates generalization.
 
 Decline when evidence is inconclusive, behavior is not harness-controllable, the
 only possible edit would expose a seed answer, or the required change needs
@@ -256,12 +288,25 @@ Finalization or decline concludes the assignment. Stop using that lease and poll
 `control.status`; Gear owns compilation sealing, candidate evaluation, held-out
 gating, selection, and promotion.
 
-## Worked reasoning example
+## Worked examples
 
-This example illustrates the method, not a universal rule. Suppose a public
-interface task uses an underspecified integer type. The trajectory shows that
-the Target Agent silently chooses a narrow representation and self-tests only
-small values. A generalizable candidate could strengthen an existing
-verification policy to surface interface ambiguity and test boundary/external
-compatibility. Hard-coding the wider type, naming the task, or embedding grader
-expectations would be seed-specific and should not be proposed.
+These examples illustrate evidence standards, not required interventions.
+Suppose failed runs on unrelated tasks treat a background command's launch
+acknowledgment as completion. Full transcripts and the current tool wrapper
+show that it labels a still-running process as finished. A successful foreground
+run shows that an actual exit status is interpreted correctly. This supports
+correcting the wrapper's structured state and feedback for background commands,
+if that wrapper is editable. The trigger is a live process without an exit
+status; completed foreground commands should keep their existing behavior.
+Check that the correction preserves the handle needed to await completion.
+
+The prediction is that the Target distinguishes launch from completion and
+retrieves the final result before relying on it. If it still treats a clearly
+reported running state as success, that weakens the feedback hypothesis. A
+generic reminder to verify would not repair the observed incorrect state.
+
+Conversely, suppose a failed run receives and understands complete test output
+but introduces an isolated algorithm error. Relevant successful runs already
+follow the same verification guidance, and no reusable harness gap is supported.
+Decline with that evidence and uncertainty instead of adding another "test
+carefully" rule or encoding the seed's correct algorithm.
