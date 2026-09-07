@@ -148,7 +148,7 @@ else process.exitCode = 2
     const candidates = await skillProvider!.list({}) as Array<{ name: string; rank: number }>
     expect(candidates).toContainEqual(expect.objectContaining({ name: 'refine', rank: 0 }))
     const skill = await skillProvider!.get(candidates[0], {}) as { content: string; resourceBase: { kind: string } }
-    expect(skill.content).toContain('current tree as a starting state')
+    expect(skill.content).toContain('Use Gear as the authority for evolution state')
     expect(skill.resourceBase.kind).toBe('directory')
   })
 })

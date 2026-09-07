@@ -131,6 +131,8 @@ export class CandidateFileSystem extends LocalFileSystem {
     if (path === '/candidate' || path === VIRTUAL_ROOT) path = '.'
     else if (path.startsWith(`${VIRTUAL_ROOT}/`)) path = path.slice(VIRTUAL_ROOT.length + 1)
     else if (isAbsolute(path)) throw new FsError('absolute host paths are unavailable in the candidate workspace', 'FS_PERMISSION_DENIED')
+    // Native grep/glob can return ./-prefixed paths when searching ".".
+    path = path.replace(/^(?:\.\/)+/u, '') || '.'
     const segments = path === '.' ? [] : path.split(/[\\/]/u)
     if (segments.some(segment => segment.length === 0 || segment === '.' || segment === '..')) {
       throw new FsError('candidate path must be normalized and cannot traverse parents', 'FS_PERMISSION_DENIED')

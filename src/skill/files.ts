@@ -107,14 +107,19 @@ export class SkillCandidateFiles {
       if (expectedDigest === null ? existing !== undefined : existing !== expectedDigest) {
         throw new Error('candidate file changed since it was observed')
       }
+      const mode = existing === undefined ? undefined : (await lstat(target.physical)).mode & 0o777
       await mkdir(dirname(target.physical), { recursive: true, mode: 0o700 })
       await this.assertNoLinks(target.root, dirname(target.physical))
       const canonicalParent = await realpath(dirname(target.physical))
       if (!contained(canonicalParent, target.root)) throw new Error('candidate path escapes the active workspace')
       const temporary = `${target.physical}.${process.pid}.${crypto.randomUUID()}.tmp`
-      const file = await open(temporary, 'wx', 0o600)
-      try { await file.writeFile(text, 'utf8'); await file.sync() } finally { await file.close() }
       try {
+        const file = await open(temporary, 'wx', 0o600)
+        try {
+          await file.writeFile(text, 'utf8')
+          if (mode !== undefined) await file.chmod(mode)
+          await file.sync()
+        } finally { await file.close() }
         const current = await this.existingDigest(target.physical)
         if (expectedDigest === null ? current !== undefined : current !== expectedDigest) {
           throw new Error('candidate file changed while it was being written')
@@ -143,7 +148,7 @@ export class SkillCandidateFiles {
     const occurrences = observed.text.split(oldString).length - 1
     if (occurrences === 0) throw new Error('oldString was not found in the candidate file')
     if (!replaceAll && occurrences !== 1) throw new Error('oldString is not unique; set replaceAll or provide more context')
-    const text = replaceAll ? observed.text.split(oldString).join(newString) : observed.text.replace(oldString, newString)
+    const text = replaceAll ? observed.text.split(oldString).join(newString) : observed.text.replace(oldString, () => newString)
     const written = await this.write(sessionId, path, text, expectedDigest)
     return { ...written, replacements: replaceAll ? occurrences : 1 }
   }
@@ -166,6 +171,7 @@ export class SkillCandidateFiles {
     if (path === '' || path === '.' || path === '/candidate' || path === VIRTUAL_ROOT) path = '.'
     else if (path.startsWith(`${VIRTUAL_ROOT}/`)) path = path.slice(VIRTUAL_ROOT.length + 1)
     else if (isAbsolute(path)) throw new Error('absolute host paths are unavailable in the candidate workspace')
+    path = path.replace(/^(?:\.\/)+/u, '') || '.'
     const segments = path === '.' ? [] : path.split(/[\\/]/u)
     if (segments.some(segment => segment.length === 0 || segment === '.' || segment === '..')) throw new Error('candidate path must be normalized')
     if (segments.length > 0 && !ALLOWED_ROOTS.has(segments[0]!)) throw new Error(`candidate path is fixed substrate: ${path}`)

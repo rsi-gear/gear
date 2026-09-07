@@ -21,6 +21,7 @@ import type {
   RefinementRound,
 } from '../../src/types.js'
 import { createGitHarnessFixture } from '../helpers/git-fixture.js'
+import { documentedHarnessCandidate, documentedSkillCandidate } from '../helpers/documented-skill-candidate.js'
 import { SHA } from '../helpers/research-fixture.js'
 import { trajectoryAnalysis, trajectoryEventsPage } from '../helpers/trajectory-fixture.js'
 
@@ -127,7 +128,13 @@ async function eventually<T>(read: () => Promise<T>, accept: (value: T) => boole
 }
 
 describe('refine skill end to end', () => {
-  it.each(['codex', 'claude-code', 'dsh'])('lets a %s Meta harness claim, edit, diagnose, finalize, evaluate, and promote', async runtimeType => {
+  it.each([
+    { runtimeType: 'codex', candidate: 'context' },
+    { runtimeType: 'claude-code', candidate: 'context' },
+    { runtimeType: 'dsh', candidate: 'context' },
+    { runtimeType: 'codex', candidate: 'documented skill' },
+    { runtimeType: 'codex', candidate: 'documented full harness' },
+  ])('lets a $runtimeType Meta harness check, finalize, and promote a $candidate candidate', async ({ runtimeType, candidate }) => {
     const fixture = await createGitHarnessFixture()
     cleanups.push(() => rm(fixture.root, { recursive: true, force: true }))
     const evaluator = new E2eEvaluator()
@@ -220,12 +227,51 @@ describe('refine skill end to end', () => {
         expectedDigest: observed.digest,
       },
     })
+    const documentedFiles = candidate === 'documented full harness' ? await documentedHarnessCandidate()
+      : candidate === 'documented skill' ? await documentedSkillCandidate() : {}
+    for (const [path, content] of Object.entries(documentedFiles)) {
+      const existing = path === 'preset/agent.cordis.yml'
+        ? await requestRefineSkill(socketPath, {
+            method: 'candidate.read', params: { ...lease, path },
+          }) as { digest: string }
+        : undefined
+      await requestRefineSkill(socketPath, {
+        method: 'candidate.write',
+        params: { ...lease, path, text: content, expectedDigest: existing?.digest ?? null },
+      })
+    }
+    if (candidate === 'documented full harness') {
+      const path = './skills/verify-change/scripts/__init__.py'
+      await requestRefineSkill(socketPath, {
+        method: 'candidate.write', params: { ...lease, path, text: '', expectedDigest: null },
+      })
+      const read = () => requestRefineSkill(socketPath, {
+        method: 'candidate.read', params: { ...lease, path },
+      }) as Promise<{ digest: string; text: string }>
+      const empty = await read()
+      await requestRefineSkill(socketPath, {
+        method: 'candidate.write', params: { ...lease, path, text: 'old', expectedDigest: empty.digest },
+      })
+      await requestRefineSkill(socketPath, {
+        method: 'candidate.edit', params: { ...lease, path, oldString: 'old', newString: '$&', expectedDigest: (await read()).digest },
+      })
+      expect((await read()).text).toBe('$&')
+      await requestRefineSkill(socketPath, {
+        method: 'candidate.write', params: { ...lease, path, text: '', expectedDigest: (await read()).digest },
+      })
+      expect(await read()).toEqual(empty)
+      await requestRefineSkill(socketPath, {
+        method: 'candidate.remove', params: { ...lease, path, expectedDigest: empty.digest },
+      })
+    }
     await expect(requestRefineSkill(socketPath, {
       method: 'meta.call', params: { ...lease, capability: 'candidate.check', arguments: { check: 'compiler' } },
     })).resolves.toMatchObject({ ok: true, finalizationReadiness: { ready: true, remainingRunCount: 0 } })
     await expect(requestRefineSkill(socketPath, {
       method: 'meta.call', params: { ...lease, capability: 'candidate.diff', arguments: {} },
-    })).resolves.toMatchObject({ summary: { files: [expect.objectContaining({ path: 'plugins/context.ts' })] } })
+    })).resolves.toMatchObject({ summary: { files: expect.arrayContaining(
+      ['plugins/context.ts', ...Object.keys(documentedFiles)].map(path => expect.objectContaining({ path })),
+    ) } })
     await requestRefineSkill(socketPath, {
       method: 'meta.call',
       params: {
@@ -252,5 +298,13 @@ describe('refine skill end to end', () => {
       kind: 'skill-lease', harness: runtimeType, clientId: `${runtimeType}-session`, leaseId: claim.leaseId,
     })
     expect((await service.registry.stateStore(admission.evolutionId).readChampion())?.ref).toBe(stored?.candidatePool[0]?.sealedVersion?.commitOid)
+    const sealed = stored!.candidatePool[0]!.sealedVersion!
+    const manifest = await service.builder.readManifest(sealed.commitOid)
+    expect(manifest.artifacts).toEqual(expect.arrayContaining(
+      Object.keys(documentedFiles).map(path => expect.objectContaining({ path })),
+    ))
+    for (const [path, content] of Object.entries(documentedFiles)) {
+      expect((await service.builder.readHarnessFile(sealed.commitOid, path)).content).toBe(content)
+    }
   })
 })

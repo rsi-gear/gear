@@ -38,8 +38,8 @@ Gear fixed target loader
        -> plugins/*.js
             -> prompts/*.md
             -> workflows/*.md or *.js
-       -> @deepseek-ai/dsh-skill-filesystem
-            -> skills/<skill-name>/SKILL.md
+            -> @deepseek-ai/dsh-skill-filesystem
+                 -> skills/<skill-name>/SKILL.md
 ```
 
 An unreferenced file in `plugins/`, `prompts/`, `skills/`, or `workflows/`
@@ -93,7 +93,7 @@ The important fields are:
 | `name` | Plugin module specifier |
 | `config` | Configuration passed to the plugin after its schema/default processing |
 | `inject` | Optional composition-level service dependency override; normally the plugin's exported `inject` is clearer |
-| `disabled` | Optional boolean/`!!js` expression; a disabled row has no effect |
+| `disabled` | Optional boolean; a disabled row has no effect |
 
 Resolution rules:
 
@@ -101,10 +101,15 @@ Resolution rules:
 - A bare package such as `@deepseek-ai/dsh-skill-filesystem` resolves from the
   fixed harness installation. It must already be in the locked toolchain; a
   candidate cannot add dependencies.
-- YAML `!!js` expressions may use the loader's `baseUrl`, which is the URL of
-  the preset directory. Use it when a package config needs an absolute path.
-- Use `process.getBuiltinModule(...)` inside `!!js` instead of assuming an
-  imported YAML helper.
+- Keep candidate presets as ordinary YAML. Gear's composition check does not
+  support the Cordis `!!js` tag, including in `config` or `disabled` fields.
+- Calculate absolute resource paths in a JavaScript loader plugin using
+  `import.meta.url`, as in the skill example below.
+- The default import allowlist permits `@deepseek-ai/` packages and valid
+  `node:` builtins such as `node:url` and `node:fs/promises`. Bare builtin names
+  such as `url` are not implicitly allowed. A custom allowlist replaces these
+  defaults; `node:` grants the builtin namespace, while `node:url` grants only
+  that exact import.
 
 Example composition connecting one policy plugin, one prompt loader, one
 isolated skill provider, and one workflow-guidance loader:
@@ -117,12 +122,7 @@ isolated skill provider, and one workflow-guidance loader:
   name: ../plugins/prompt-pack.js
 
 - id: target-skills
-  name: '@deepseek-ai/dsh-skill-filesystem'
-  config:
-    providerName: gear-target
-    includeDefaultRoots: false
-    customSkillDirs:
-      - !!js "process.getBuiltinModule('node:url').fileURLToPath(new URL('../skills/', baseUrl))"
+  name: ../plugins/skill-loader.js
 
 - id: target-workflow-guidance
   name: ../plugins/workflow-guidance.js
@@ -496,16 +496,33 @@ justifies it. Treat zero selected tests as no verification. Report the command,
 exit status, and any remaining gap.
 ```
 
-Connect the Gear-level `skills/` sibling directory with an isolated provider:
+Connect the Gear-level `skills/` sibling directory with an isolated provider
+through `plugins/skill-loader.js`. The fixed toolchain must already include
+`@deepseek-ai/dsh-skill-filesystem`.
+
+`plugins/skill-loader.js`:
+
+```js
+import { fileURLToPath } from 'node:url'
+import * as skillFilesystem from '@deepseek-ai/dsh-skill-filesystem'
+
+export const name = 'target-skill-loader'
+export const inject = ['skills']
+
+export function apply(ctx) {
+  ctx.plugin(skillFilesystem, {
+    providerName: 'gear-target',
+    includeDefaultRoots: false,
+    customSkillDirs: [fileURLToPath(new URL('../skills/', import.meta.url))],
+  })
+}
+```
+
+`preset/agent.cordis.yml`:
 
 ```yaml
 - id: target-skills
-  name: '@deepseek-ai/dsh-skill-filesystem'
-  config:
-    providerName: gear-target
-    includeDefaultRoots: false
-    customSkillDirs:
-      - !!js "process.getBuiltinModule('node:url').fileURLToPath(new URL('../skills/', baseUrl))"
+  name: ../plugins/skill-loader.js
 ```
 
 Why every config field matters here:
@@ -514,8 +531,9 @@ Why every config field matters here:
   normal filesystem provider.
 - `includeDefaultRoots: false` prevents this added provider from rediscovering
   project, user, and bundled skills under a second provider identity.
-- `../skills/` is relative to the `preset/` directory represented by
-  `baseUrl`; `fileURLToPath` produces the absolute path the provider expects.
+- `../skills/` is relative to the loader's `plugins/` directory through
+  `import.meta.url`; `fileURLToPath` produces the absolute path the provider
+  expects, independently of the process working directory.
 
 Skill names must be kebab-case. Frontmatter requires `name` and `description`;
 `whenToUse`, `metadata`, `disable-model-invocation`, and `user-invocable` are
@@ -640,6 +658,7 @@ plugins/
   pre-action.js
   action-verifier.js
   prompt-pack.js
+  skill-loader.js
   workflow-guidance.js
 prompts/
   verification.md
@@ -666,12 +685,7 @@ Its preset must connect every live resource:
   name: ../plugins/prompt-pack.js
 
 - id: target-skills
-  name: '@deepseek-ai/dsh-skill-filesystem'
-  config:
-    providerName: gear-target
-    includeDefaultRoots: false
-    customSkillDirs:
-      - !!js "process.getBuiltinModule('node:url').fileURLToPath(new URL('../skills/', baseUrl))"
+  name: ../plugins/skill-loader.js
 
 - id: target-workflow-guidance
   name: ../plugins/workflow-guidance.js
@@ -695,7 +709,7 @@ Inspect the authoritative diff with `candidate.diff` in skill mode or
   effect.
 - Every prompt, skill, and workflow resource has a live connection.
 - The skill provider uses a unique provider name and the correct
-  `../skills/` `baseUrl` path.
+  `../skills/` path relative to the loader's `import.meta.url`.
 - No candidate adds a package, edits fixed sandbox/approval behavior, or
   writes `manifest.json`.
 - The change is general to the observed failure pattern and contains no seed
@@ -703,6 +717,9 @@ Inspect the authoritative diff with `candidate.diff` in skill mode or
 
 Then use `meta.call` with capability `candidate.check` and arguments
 `{"check":"compiler"}` in skill mode, or call `candidate_check` in Native DSH
-Meta mode. A successful compiler check proves the carrier can load and validate
-the candidate; it does not prove the behavioral hypothesis, which remains
-subject to Gear evaluation.
+Meta mode. A successful check proves composition/import validation and the
+configured compiler pipeline passed. It proves runtime loading only if that
+pipeline actually loads the carrier; a no-op compiler does not. Verify new
+resource loaders against the locked DSH runtime, including skill discovery and
+native skill-tool reads. The behavioral hypothesis remains subject to Gear
+evaluation.

@@ -1,6 +1,8 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
+import { buildGrepCommand, parseGrepMatches, resolveRgPath } from '@deepseek-ai/dsh-tool-fs-search'
 import type { SubprocessHandle, SubprocessRuntime, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { afterEach, describe, expect, it } from 'vitest'
 import { CandidateFileSystem } from '../../src/candidate/filesystem.js'
@@ -34,6 +36,27 @@ async function setup() {
 }
 
 describe('candidate-scoped DSH providers', () => {
+  it('can read and edit the ./ paths returned by the native grep tool', async () => {
+    const { manager, handle } = await setup()
+    try {
+      const output = execFileSync(await resolveRgPath(), ['--no-config', ...buildGrepCommand({ pattern: 'value', path: '.' })], {
+        cwd: handle.targetPath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      const [match] = parseGrepMatches(output)
+      expect(match?.path).toBe('./plugins/context.ts')
+      const fs = new CandidateFileSystem(new Context(), manager, 'meta-1', 1_024)
+      const target = await fs.resolve(match!.path)
+      expect(await fs.readText(target)).toBe('export const value = 1\n')
+      await fs.editText(target, { oldString: 'value = 1', newString: 'value = 2', replaceAll: false })
+      expect(await fs.readText(target)).toBe('export const value = 2\n')
+      await expect(fs.resolve('./plugins/../../package.json')).rejects.toThrow(/traverse/)
+      await expect(fs.resolve('./manifest.json')).rejects.toThrow(/fixed substrate|protected/)
+    } finally {
+      manager.unbind('meta-1', handle.workspaceId)
+      await manager.dispose(handle.workspaceId)
+    }
+  })
+
   it('isolates candidate provider slots from inherited control-plane services', async () => {
     const { manager, handle } = await setup()
     const parent = new Context()

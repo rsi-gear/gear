@@ -1,8 +1,10 @@
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { readFile, readdir, writeFile } from 'node:fs/promises'
+import { isBuiltin } from 'node:module'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { load as loadYaml } from 'js-yaml'
+import ts from 'typescript'
 import type { CandidateDiffSummary, HarnessManifest, PreparedHarness, SealedCandidateVersion } from '../types.js'
 import { isExactGitCommit } from '../types.js'
 import type { CandidateWorkspaceHandle } from '../candidate/workspace.js'
@@ -262,17 +264,37 @@ export class HarnessBuilder {
 
   private async validateImports(root: string): Promise<void> {
     const allowed = this.options.allowedImports ?? ['@deepseek-ai/', 'node:']
-    const importPattern = /(?:\bfrom\s*|\bimport\s*(?:\(\s*)?|\brequire\s*\(\s*)['"]([^'"]+)['"]/gu
     for (const path of await files(root)) {
       if (!/\.[cm]?[jt]sx?$/u.test(path)) continue
       const source = await readFile(join(root, ...path.split('/')), 'utf8')
-      for (const match of source.matchAll(importPattern)) {
-        const specifier = match[1]
-        if (specifier === undefined || specifier.startsWith('.') || specifier.startsWith('/')) continue
-        if (!allowed.some(entry => specifier === entry || (entry.endsWith('/') && specifier.startsWith(entry)))) {
-          throw new SubstrateExpansionError(`import is outside the fixed dependency allowlist in ${path}: ${specifier}`)
+      // Parse JS/TS/JSX instead of treating examples in prompts, comments, or
+      // regular expressions as imports. The fixed compiler still owns builds.
+      const visit = (node: ts.Node): void => {
+        let module: ts.Node | undefined
+        if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+          module = node.moduleSpecifier
+        } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
+          module = node.moduleReference.expression
+        } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
+          module = node.argument.literal
+        } else if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword
+          || ts.isIdentifier(node.expression) && node.expression.text === 'require'
+          || ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'require'
+            && ts.isIdentifier(node.expression.expression) && node.expression.expression.text === 'module')) {
+          module = node.arguments[0]
         }
+        if (module !== undefined && ts.isStringLiteralLike(module)) {
+          const specifier = module.text
+          if (!specifier.startsWith('.') && !specifier.startsWith('/')
+            && !allowed.some(entry => entry === 'node:'
+              ? specifier.startsWith('node:') && isBuiltin(specifier)
+              : specifier === entry || (entry.endsWith('/') && specifier.startsWith(entry)))) {
+            throw new SubstrateExpansionError(`import is outside the fixed dependency allowlist in ${path}: ${specifier}`)
+          }
+        }
+        ts.forEachChild(node, visit)
       }
+      visit(ts.createSourceFile(path, source, ts.ScriptTarget.Latest))
     }
   }
 
