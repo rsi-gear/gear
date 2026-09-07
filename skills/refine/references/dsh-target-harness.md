@@ -544,6 +544,8 @@ file must therefore be exposed as guidance by a plugin or on-demand skill.
 
 Use only for a change broad enough to benefit from multiple independent
 reviews. Supply the DSH `workflow` tool with metadata separate from the script.
+Include the user's task, relevant repository paths, and observed failures in
+each subagent's prompt. This is a Target task workflow, not harness evolution.
 
 Metadata:
 
@@ -553,8 +555,8 @@ Script body:
 
     phase('diagnosis')
     const findings = await parallel([
-      () => agent('Inspect the failure evidence and identify the smallest causal harness change.', { label: 'diagnose-a', phase: 'diagnosis' }),
-      () => agent('Independently inspect the same evidence for alternative causes and regressions.', { label: 'diagnose-b', phase: 'diagnosis' }),
+      () => agent('For the user-requested repository change, inspect the failing behavior and relevant implementation; report the likely cause with evidence.', { label: 'diagnose-a', phase: 'diagnosis' }),
+      () => agent('Independently inspect the affected interfaces and tests for alternative causes and regression risks in the user-requested change.', { label: 'diagnose-b', phase: 'diagnosis' }),
     ])
     phase('review')
     const review = await agent(
