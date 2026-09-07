@@ -3,7 +3,7 @@ import { access, mkdir, open, readFile, readdir, rename, rm, stat, unlink, write
 import { dirname, join } from 'node:path'
 import type {
   CandidateAssessment, ChampionState, ComponentKind, ComponentRef, EvaluationEvidence, MetaSessionState,
-  PairedTrial, PairingAudit, PopulationState, RefinementRound, RoundEvaluationAttempt, EvaluationSubmissionIntent,
+  PairedTrial, PairingAudit, PopulationMember, PopulationState, RefinementRound, RoundEvaluationAttempt, EvaluationSubmissionIntent,
 } from '../types.js'
 import { isExactGitCommit } from '../types.js'
 import { digestJson } from './digest.js'
@@ -376,22 +376,34 @@ export class RefineStateStore {
       || typeof population.digest !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(population.digest)) {
       throw new TypeError('population identity is invalid')
     }
-    for (const member of population.members) {
-      if (typeof member.candidateId !== 'string' || member.candidateId.length === 0
-        || !isExactGitCommit(member.harnessRef) || !/^sha256:[0-9a-f]{64}$/u.test(member.harnessDigest)
-        || !Array.isArray(member.parentCandidateIds) || member.lineageRootId.length === 0
-        || !validMetricSet(member.metrics)
-        || member.selectedAt.length === 0) throw new TypeError('population member is invalid')
-      if (member.metaCheckpoint !== undefined
-        && (member.metaCheckpoint.sourceSessionId !== member.metaSessionId
-          || !Number.isSafeInteger(member.metaCheckpoint.eventCount) || member.metaCheckpoint.eventCount < 0
-          || !/^sha256:[0-9a-f]{64}$/u.test(member.metaCheckpoint.prefixDigest))) {
-        throw new TypeError('population member Meta checkpoint is invalid')
-      }
-    }
+    for (const member of population.members) this.validatePopulationMember(member)
     const identity = { evolutionId: population.evolutionId, generation: population.generation, members: population.members }
     if (digestJson(identity) !== population.digest) throw new TypeError('population digest mismatch')
     return population as PopulationState
+  }
+
+  private validatePopulationMember(value: unknown): PopulationMember {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError('population member is invalid')
+    const member = value as Partial<PopulationMember>
+    if (typeof member.candidateId !== 'string' || member.candidateId.length === 0
+      || typeof member.harnessRef !== 'string' || !isExactGitCommit(member.harnessRef)
+      || typeof member.harnessDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(member.harnessDigest)
+      || !Array.isArray(member.parentCandidateIds)
+      || member.parentCandidateIds.some(id => typeof id !== 'string' || id.length === 0)
+      || typeof member.lineageRootId !== 'string' || member.lineageRootId.length === 0
+      || !validMetricSet(member.metrics)
+      || typeof member.selectedAt !== 'string' || member.selectedAt.length === 0
+      || member.metaSessionId !== undefined && (typeof member.metaSessionId !== 'string' || member.metaSessionId.length === 0)) {
+      throw new TypeError('population member is invalid')
+    }
+    if (member.metaCheckpoint !== undefined
+      && (typeof member.metaCheckpoint !== 'object' || member.metaCheckpoint === null
+        || member.metaCheckpoint.sourceSessionId !== member.metaSessionId || member.metaSessionId === undefined
+        || !Number.isSafeInteger(member.metaCheckpoint.eventCount) || member.metaCheckpoint.eventCount < 0
+        || !/^sha256:[0-9a-f]{64}$/u.test(member.metaCheckpoint.prefixDigest))) {
+      throw new TypeError('population member Meta checkpoint is invalid')
+    }
+    return member as PopulationMember
   }
 
   private validateRound(value: unknown): RefinementRound {
@@ -631,6 +643,20 @@ export class RefineStateStore {
     if (['accepted', 'rejected', 'rejected-for-substrate', 'failed'].includes(round.status)
       && round.candidatePool.some(candidate => candidate.generationAttempts?.some(attempt => attempt.status === 'running'))) {
       throw new TypeError('terminal round cannot contain a running candidate generation attempt')
+    }
+    if (round.championParent !== undefined) {
+      const parent = this.validatePopulationMember(round.championParent)
+      if (parent.harnessRef !== round.targetHarnessRef || parent.harnessDigest !== round.targetHarnessDigest) {
+        throw new TypeError('round champion parent does not match its admitted champion')
+      }
+      if (!Array.isArray(round.parentAllocations)
+        || new Set(round.parentAllocations.map(allocation => allocation.candidateId)).size !== round.candidatePool.length
+        || round.parentAllocations.some(allocation => allocation.parentCandidateId !== parent.candidateId
+          || allocation.parentHarnessRef !== parent.harnessRef || allocation.parentHarnessDigest !== parent.harnessDigest)
+        || round.candidatePool.some(candidate => candidate.parentCandidateIds[0] !== parent.candidateId
+          || candidate.parentHarnessRef !== parent.harnessRef)) {
+        throw new TypeError('round champion parent allocation is invalid')
+      }
     }
     if (round.parentAllocations !== undefined) {
       if (round.parentAllocations.length !== round.candidatePool.length) throw new TypeError('round parent allocation is incomplete')

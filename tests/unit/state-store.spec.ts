@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { builtinComponentRef } from '../../src/evolution/components.js'
 import { digestJson } from '../../src/state/evolution.js'
 import { RefineStateStore, RoundAlreadyRunningError } from '../../src/state/store.js'
+import type { RefinementRound } from '../../src/types.js'
 import { evidence, roundFixture } from '../helpers/research-fixture.js'
 
 const roots: string[] = []
@@ -19,7 +20,99 @@ async function store(): Promise<RefineStateStore> {
   return new RefineStateStore(root)
 }
 
+function championParentRound(): RefinementRound {
+  const round = roundFixture()
+  const candidate = round.candidatePool[0]!
+  round.championParent = {
+    candidateId: candidate.parentCandidateIds[0]!,
+    harnessRef: round.targetHarnessRef,
+    harnessDigest: round.targetHarnessDigest,
+    parentCandidateIds: [],
+    lineageRootId: candidate.parentCandidateIds[0]!,
+    metrics: { quality: 0.4, taskSuccessRate: 0.4 },
+    selectedAt: 'before',
+    metaSessionId: 'champion-meta',
+    metaCheckpoint: { sourceSessionId: 'champion-meta', eventCount: 4, prefixDigest: `sha256:${'1'.repeat(64)}` },
+  }
+  round.parentAllocations = [{
+    candidateId: candidate.candidateId,
+    parentCandidateId: round.championParent.candidateId,
+    parentHarnessRef: round.championParent.harnessRef,
+    parentHarnessDigest: round.championParent.harnessDigest,
+  }]
+  return round
+}
+
 describe('RefineStateStore', () => {
+  it('persists an admitted champion parent without requiring it in the research population', async () => {
+    const state = await store()
+    const round = championParentRound()
+    await state.writeRound(round)
+    expect((await state.readRound(round.roundId))?.championParent).toEqual(round.championParent)
+    expect(await state.readPopulation()).toBeUndefined()
+  })
+
+  it('rejects malformed or substituted champion parent snapshots', async () => {
+    const state = await store()
+    const round = championParentRound()
+    const parent = round.championParent!
+    for (const championParent of [
+      { ...parent, candidateId: '' },
+      { ...parent, lineageRootId: '' },
+      { ...parent, metrics: { quality: Number.NaN, taskSuccessRate: 0.4 } },
+      { ...parent, harnessRef: 'b'.repeat(40) },
+      { ...parent, harnessDigest: `sha256:${'2'.repeat(64)}` },
+      { ...parent, metaCheckpoint: { ...parent.metaCheckpoint!, sourceSessionId: 'rejected-candidate-meta' } },
+    ]) {
+      await expect(state.writeRound({ ...round, championParent })).rejects.toThrow(/population member|champion parent/u)
+    }
+    await state.writeRound(round)
+    await writeFile(join(state.roundsPath, `${round.roundId}.json`), JSON.stringify({ ...round,
+      championParent: { ...parent, harnessDigest: `sha256:${'2'.repeat(64)}` },
+    }))
+    await expect(state.readRound(round.roundId)).rejects.toThrow(/champion parent/u)
+  })
+
+  it('binds every new candidate allocation to the single admitted champion parent', async () => {
+    const state = await store()
+    const original = championParentRound()
+    const alternate = structuredClone(original)
+    alternate.parentAllocations![0]!.parentCandidateId = 'unpromoted-candidate'
+    alternate.candidatePool[0]!.parentCandidateIds = ['unpromoted-candidate']
+    await expect(state.writeRound(alternate)).rejects.toThrow(/champion parent allocation/u)
+
+    const changedRef = structuredClone(original)
+    changedRef.parentAllocations![0]!.parentHarnessRef = 'b'.repeat(40)
+    changedRef.candidatePool[0]!.parentHarnessRef = 'b'.repeat(40)
+    await expect(state.writeRound(changedRef)).rejects.toThrow(/champion parent allocation/u)
+
+    const changedDigest = structuredClone(original)
+    changedDigest.parentAllocations![0]!.parentHarnessDigest = `sha256:${'2'.repeat(64)}`
+    await expect(state.writeRound(changedDigest)).rejects.toThrow(/champion parent allocation/u)
+    const missingAllocations = structuredClone(original)
+    delete missingAllocations.parentAllocations
+    await expect(state.writeRound(missingAllocations)).rejects.toThrow(/champion parent allocation/u)
+
+    const duplicated = structuredClone(original)
+    duplicated.candidatePool.push({ ...duplicated.candidatePool[0]!, candidateId: 'round-1-candidate-2' })
+    duplicated.parentAllocations!.push({ ...duplicated.parentAllocations![0]! })
+    await expect(state.writeRound(duplicated)).rejects.toThrow(/champion parent allocation/u)
+  })
+
+  it('keeps historical rounds with a non-champion research parent readable', async () => {
+    const state = await store()
+    const round = championParentRound()
+    delete round.championParent
+    round.candidatePool[0]!.parentCandidateIds = ['historical-research-parent']
+    round.candidatePool[0]!.parentHarnessRef = 'b'.repeat(40)
+    round.parentAllocations![0] = { ...round.parentAllocations![0]!,
+      parentCandidateId: 'historical-research-parent', parentHarnessRef: 'b'.repeat(40),
+      parentHarnessDigest: `sha256:${'2'.repeat(64)}`,
+    }
+    await state.writeRound(round)
+    expect(await state.readRound(round.roundId)).toEqual(round)
+  })
+
   it('validates durable evaluation starts without requiring a provider eval ID', async () => {
     const state = await store()
     const round = roundFixture({ status: 'baseline-running' })

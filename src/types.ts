@@ -1265,6 +1265,8 @@ export interface RefinementRound {
   advisoryFocus?: SemanticTarget[]
   plan: ResolvedRoundPlan
   parentPopulationDigest?: string
+  /** Immutable code parent for new rounds; research survivors remain separately recorded. */
+  championParent?: PopulationMember
   parentAllocations?: ParentAllocation[]
   parentBaselines?: ParentSeedBaseline[]
   baseline?: EvaluationEvidence
