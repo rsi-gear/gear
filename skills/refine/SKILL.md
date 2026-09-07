@@ -87,6 +87,9 @@ not infer missing field names or harness APIs from errors.
    `trajectory.query`; pass a returned `nextRef` back as the next `detailRef`,
    or add `find` to search that long content. Keep cited evidence limited to
    references actually returned for the active seed baseline.
+   Start with one diagnostic card and size later reads from its actual output.
+   Process the evidence before fetching more; use targeted detail reads instead
+   of accumulating transcripts that repeatedly force context compaction.
 6. Identify an evidenced harness gap before choosing an intervention. A failed
    task or omitted check alone does not establish that gap. Use relevant
    accessible seed comparisons to test the explanation, including successful
@@ -94,7 +97,11 @@ not infer missing field names or harness APIs from errors.
    guide, with an applicability boundary that transfers beyond the observed
    tasks. New files are allowed but must be wired into the existing load graph.
    Prompt changes, skills, hooks, and workflows need the same causal support;
-   do not force any artifact type. Record the evidence, mechanism choice,
+   do not force any artifact type. An implementation mistake can still expose
+   a reusable prevention or detection opportunity; existing guidance alone
+   does not show that an effective procedure or check exists. Apply the editing
+   guide's diagnosis before either choosing a prompt edit or declining.
+   Record the evidence, mechanism choice,
    applicability, and main uncertainty in `rationale`, and an observable
    behavioral prediction in `expectedOutcome`.
 7. Inspect `candidate.diff`, remove accidental or task-specific changes, and
