@@ -279,7 +279,8 @@ In particular, `candidate.diff`, `candidate.check`, `candidate.finalize`, and
 such as `gear-refine request candidate.diff ...` is invalid.
 
 All paths are logical paths below `/candidate/harness`. Relative paths such as
-`plugins/policy.js` are preferred. Absolute host paths are unavailable.
+`plugins/policy.js` are preferred; a leading `./` from search results is also
+accepted. Absolute host paths and parent traversal are unavailable.
 
 Only `preset/`, `plugins/`, `prompts/`, `skills/`, and `workflows/` are editable.
 `manifest.json`, package manifests, lockfiles, `.git`, symlinks, hardlinks, and
@@ -325,6 +326,9 @@ Replace a file only if it still matches a previous observation:
 }
 ```
 
+`text` may be empty to create an empty file or clear an existing one. Updating
+an existing file preserves its permission bits, including script executability.
+
 ### `candidate.edit`
 
 ```json
@@ -338,7 +342,8 @@ Replace a file only if it still matches a previous observation:
 ```
 
 `oldString` must be nonempty. Without `replaceAll: true`, it must occur exactly
-once. The response returns the new digest and replacement count.
+once. `newString` is literal text, including `$&` and `$$`; it may be empty.
+The response returns the new digest and replacement count.
 
 ### `candidate.remove`
 

@@ -41,6 +41,9 @@ describe('published Gear bundle', () => {
       resolve(dirname(skillPath), 'references/dsh-target-harness.md'),
       'utf8',
     )
+    for (const match of dshGuide.matchAll(/```yaml\n([\s\S]*?)```/gu)) {
+      expect(load(match[1]!)).toEqual(expect.arrayContaining([expect.objectContaining({ name: expect.any(String) })]))
+    }
     for (const required of [
       '`preset/`',
       '`plugins/`',
