@@ -87,7 +87,9 @@ export class SubprocessHarnessCompiler implements HarnessCompiler {
           allowRead: [
             ...sandboxSystemReadPaths(), dirname(resolve(command)), dirname(dirname(canonicalCommand)),
             ...(this.options.readPaths ?? []),
-            ...(snapshot === undefined ? [resolve(worktree)] : [snapshot.root, runtimeRoot!,
+            // Keep read-only and writable siblings separate: on Linux a later
+            // read-only bind of their parent would mask the scratch write bind.
+            ...(snapshot === undefined ? [resolve(worktree)] : [snapshot.repository, snapshot.writable, runtimeRoot!,
               ...args.filter(isAbsolute).map(path => dirname(path))]),
           ],
           allowWrite: [snapshot?.writable ?? join(resolve(worktree), this.options.targetRoot ?? 'harness')],
