@@ -94,26 +94,43 @@ skill/workflow are different from misinterpreting complete, correct evidence.
 Expand relevant previews before attributing missing information to the harness:
 the diagnostic card's truncation does not prove the Target saw truncated output.
 
-Distinguish these cases:
+Check what the verification actually established, not just whether a command
+ran or returned zero. Compare its inputs, assertions, execution conditions, and
+artifact with the public task requirements and the observed failure. Distinguish
+a missing check from a check of the wrong property. Check for conflicts between
+the public contract and the evaluator before treating a rejected result as an
+agent failure; evaluator-only knowledge must not become candidate behavior.
+
+Classify the failure and assess intervention opportunities separately:
 
 - **Supported harness gap:** trace the decision to a specific instruction,
   interface, routing, state, or feedback defect in the current harness. Explain
   how an editable mechanism would change what the Target sees or does there.
-- **Task implementation or reasoning mistake:** an omitted check or ignored
-  result is a symptom, not sufficient evidence of a harness defect. A reminder
-  might help, but that alone does not justify adding one. Look for a reusable
-  cause and check whether existing guidance already addresses it.
+- **Task implementation or reasoning mistake:** this identifies the immediate
+  cause, not whether the harness could help. Locate an earlier decision where
+  a reusable procedure, preserved state, structured operation, or bounded check
+  could have prevented or detected the mistake using information available to
+  the Target. An existing instruction does not establish that such support is
+  already effective. Conversely, the mistake alone does not justify a reminder
+  or an executable mechanism.
 - **Infrastructure or invalid evaluation:** do not edit the harness to mask it.
   Finish the active assignment only as the evidence allows; after the round
   reports a repairable failed evaluation, `control.rerun` may be used for the
   exact advertised slot.
-- **No supported causal link:** decline the candidate.
+- **No supported causal link:** decline after assessing the relevant observable
+  decision, not solely because the failure is labeled a reasoning error or the
+  harness already says to verify.
 
 Test the explanation against relevant accessible seed evidence, including a
 successful run facing a similar decision or a failure with a different cause
 when available. Seek comparisons that could change the diagnosis; do not read
 every success by default. Note missing comparisons or contradictory evidence
 as uncertainty rather than treating repeated failures as proof of one cause.
+
+Group evidence by the decision or missing capability, not just by task domain
+or the symptom "verification failed." Unrelated failures need not share one
+fix. A supported mechanism for a subset can justify a candidate; explain its
+trigger, what would change at the cited decision, and what remains unsolved.
 
 Held-out task identities, trajectories, and rewards are intentionally
 unavailable. Do not infer or optimize for hidden task contents.
@@ -172,6 +189,12 @@ Prefer the smallest change that breaks the causal chain. Avoid:
 - adding a file without registering or referencing it;
 - changing multiple semantic targets without evidence for each;
 - claiming an expected score or guaranteed improvement.
+
+Smallest refers to behavioral scope and cost, not line count. A scoped skill
+with a helper or a local hook may be smaller in effect than a rule injected into
+every request. Moving the same reminder into a skill is not a new mechanism:
+identify the procedure, operation, evidence, or feedback it adds, how it becomes
+active, and why it should help beyond the cited task.
 
 Use `semanticTargets` at finalization to describe the actual behavior changed,
 not merely the directory edited.
@@ -283,6 +306,9 @@ only possible edit would expose a seed answer, or the required change needs
 protected substrate. A decline still requires an evidence-based rationale and
 the observed baseline references. Never create a cosmetic diff merely to avoid
 declining.
+For a plausible intervention that the evidence does not support, briefly state
+the missing signal, comparison, or capability in the existing rationale. Do not
+enumerate every artifact type or invent a candidate merely to fill this account.
 
 Finalization or decline concludes the assignment. Stop using that lease and poll
 `control.status`; Gear owns compilation sealing, candidate evaluation, held-out
@@ -306,7 +332,8 @@ reported running state as success, that weakens the feedback hypothesis. A
 generic reminder to verify would not repair the observed incorrect state.
 
 Conversely, suppose a failed run receives and understands complete test output
-but introduces an isolated algorithm error. Relevant successful runs already
-follow the same verification guidance, and no reusable harness gap is supported.
+but introduces an isolated algorithm error. Its procedure already checks the
+relevant contract, and inspected comparisons reveal no supported reusable
+prevention or detection mechanism in the editable harness.
 Decline with that evidence and uncertainty instead of adding another "test
 carefully" rule or encoding the seed's correct algorithm.
