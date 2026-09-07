@@ -21,6 +21,7 @@ import { finalizationReadiness } from './finalization-readiness.js'
 import { BaselineReuseBlockedError } from './baseline-reuse.js'
 import { generationBudgetSnapshot } from './generation-budget.js'
 import { CandidateDiagnosisStore, type CandidateDiagnosisRecord } from '../state/candidate-diagnosis.js'
+import { resolveChampionParent } from './champion-parent.js'
 import type { CandidateGenerationBudgetStatus } from '../types.js'
 
 export interface RefineServiceOptions {
@@ -1286,9 +1287,9 @@ export class RefineService {
     const champion = await this.requireChampion(evolution.store).catch(async (error: unknown) => { await lock.release(); throw error })
     const population = await evolution.store.readPopulation().catch(async (error: unknown) => { await lock.release(); throw error })
     if (population === undefined) { await lock.release(); throw new Error('evolution has no research population') }
-    const round = this.newRound(
-      evolution.spec, champion, population, source, batchId, roundId, 1, roundCount, advisoryFocus,
-    )
+    const round = await this.newRound(
+      evolution.store, evolution.spec, champion, population, source, batchId, roundId, 1, roundCount, advisoryFocus,
+    ).catch(async (error: unknown) => { await lock.release(); throw error })
     const active = this.newActive(evolution, lock, source, batchId, 1, roundCount, advisoryFocus)
     this.active.set(roundId, active)
     try {
@@ -1303,7 +1304,8 @@ export class RefineService {
     return { evolutionId: evolution.spec.evolutionId, batchId, roundId, status: 'queued' }
   }
 
-  private newRound(
+  private async newRound(
+    store: RefineStateStore,
     spec: EvolutionSpec,
     champion: ChampionState,
     population: PopulationState,
@@ -1313,12 +1315,13 @@ export class RefineService {
     roundIndex: number,
     roundCount: number,
     advisoryFocus?: SemanticTarget[],
-  ): RefinementRound {
+  ): Promise<RefinementRound> {
+    const championParent = await resolveChampionParent(spec, champion, store)
     const timestamp = now()
     const taskSampler = this.components.taskSampler(spec.rollout.taskSampler)
     const plan = taskSampler.resolve(roundId, spec.datasets, spec.rollout, spec.taskBudgetMs)
     const slots = this.components.candidateGenerator(spec.candidateGeneration.strategy)
-      .plan(roundId, population.members.map(member => ({
+      .plan(roundId, [championParent].map(member => ({
         candidateId: member.candidateId,
         harnessRef: member.harnessRef,
         harnessDigest: member.harnessDigest,
@@ -1329,8 +1332,10 @@ export class RefineService {
     if (slots.length !== spec.candidateGeneration.maxCandidates) throw new Error('candidate generator returned the wrong number of slots')
     const parentAllocations = slots.map(slot => {
       if (slot.parentCandidateIds.length !== 1) throw new Error('each candidate must have exactly one research parent')
-      const parent = population.members.find(member => member.candidateId === slot.parentCandidateIds[0])
-      if (parent === undefined || parent.harnessRef !== slot.parentHarnessRef) throw new Error('candidate generator returned an unknown parent')
+      const parent = championParent
+      if (parent.candidateId !== slot.parentCandidateIds[0] || parent.harnessRef !== slot.parentHarnessRef) {
+        throw new Error('candidate generator must use the pinned champion parent')
+      }
       return {
         candidateId: slot.candidateId,
         parentCandidateId: parent.candidateId,
@@ -1346,6 +1351,7 @@ export class RefineService {
       taskBudgetMs: spec.taskBudgetMs, promotionPolicy: { ...spec.promotion.policy.config },
       batchId, roundIndex, roundCount, plan,
       parentPopulationDigest: population.digest,
+      championParent: structuredClone(championParent),
       parentAllocations,
       candidatePool: slots.map(slot => ({ ...slot, roundId, status: 'generating' })),
       ...(advisoryFocus === undefined ? {} : { advisoryFocus }),
@@ -1391,6 +1397,9 @@ export class RefineService {
       const population = await store.readPopulation()
       active.abort.signal.throwIfAborted()
       if (population === undefined || population.digest !== round.parentPopulationDigest) throw new Error('research population changed during round admission')
+      // New rounds pin the champion independently of research survivors. Legacy
+      // rounds retain their original parents when explicit repair resumes them.
+      const generationParents = round.championParent === undefined ? population.members : [round.championParent]
       const championCandidateId = round.parentAllocations?.find(allocation => allocation.parentHarnessRef === round.targetHarnessRef)?.parentCandidateId
         ?? `champion-${round.targetHarnessRef}`
       let championBaseline = round.baseline
@@ -1425,7 +1434,7 @@ export class RefineService {
       let parentBaselines = round.parentBaselines ?? []
       const allocatedParentIds = [...new Set((round.parentAllocations ?? []).map(allocation => allocation.parentCandidateId))]
       for (const parentCandidateId of allocatedParentIds) {
-        const parent = population.members.find(member => member.candidateId === parentCandidateId)
+        const parent = generationParents.find(member => member.candidateId === parentCandidateId)
         if (parent === undefined) throw new Error(`allocated research parent is unavailable: ${parentCandidateId}`)
         if (parentBaselines.some(value => value.parentCandidateId === parent.candidateId)) continue
         const reusable = await this.findReusableBaseline(
@@ -1458,7 +1467,7 @@ export class RefineService {
       const rootCheckpoint = await meta.checkpoint()
       active.abort.signal.throwIfAborted()
       const parentCheckpoints = new Map<string, MetaCheckpointRef>()
-      for (const member of population.members) parentCheckpoints.set(member.candidateId, member.metaCheckpoint ?? rootCheckpoint)
+      for (const member of generationParents) parentCheckpoints.set(member.candidateId, member.metaCheckpoint ?? rootCheckpoint)
       const generationBudget = effectiveCandidateGenerationBudget(active.evolution.spec.candidateGeneration)
       const generationDeadline = round.candidateGenerationDeadlineAt ?? Date.now() + generationBudget.roundTimeoutMs
       if (round.candidateGenerationDeadlineAt === undefined) {
@@ -2366,8 +2375,8 @@ export class RefineService {
     if (population === undefined) throw new Error('evolution has no research population')
     const roundId = crypto.randomUUID()
     const index = previous.roundIndex + 1
-    const round = this.newRound(
-      previous.evolution.spec, champion, population, previous.source, previous.batchId, roundId, index, previous.roundCount,
+    const round = await this.newRound(
+      previous.evolution.store, previous.evolution.spec, champion, population, previous.source, previous.batchId, roundId, index, previous.roundCount,
       previous.advisoryFocus,
     )
     const active = this.newActive(
@@ -2567,13 +2576,14 @@ export class RefineService {
   }
 
   private nextPopulation(round: RefinementRound, previous: PopulationState, selectedIds: readonly string[]): PopulationState {
+    const parents = round.championParent === undefined ? previous.members : [round.championParent]
     const members: PopulationMember[] = selectedIds.map(candidateId => {
       const candidate = round.candidatePool.find(value => value.candidateId === candidateId)
       if (candidate?.sealedVersion === undefined || candidate.metrics === undefined
         || candidate.metaSessionId === undefined || candidate.resultCheckpoint === undefined) {
         throw new Error(`selected candidate is missing durable seed state: ${candidateId}`)
       }
-      const parent = previous.members.find(value => value.candidateId === candidate.parentCandidateIds[0])
+      const parent = parents.find(value => value.candidateId === candidate.parentCandidateIds[0])
       if (parent === undefined) throw new Error(`selected candidate has unknown parent: ${candidateId}`)
       return {
         candidateId,

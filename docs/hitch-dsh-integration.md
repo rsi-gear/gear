@@ -110,7 +110,7 @@ daemon 提交前，Gear 先在 round 的 `pendingEvaluationSubmissions` 保存�
 
 不要求 Hitch Node exports 或 Gear 专用 plugin ABI。direct 与 daemon 都经过同一个 CLI JSON 合同；direct 要求 agent-hitch 0.2.5+，daemon 要求 0.2.6+。
 
-direct 模式可按语义配置身份复用跨轮次 baseline。daemon 的默认执行策略在提交后才冻结，当前不预先声明可复用身份，因此每轮重新评测 baseline，避免复用不同执行策略下的结果。
+direct 模式可按语义配置身份复用跨轮次 baseline。daemon 的默认执行策略在提交后才冻结，当前不预先声明可复用身份；已有该版本的 baseline 时明确阻塞，不能通过重新提交评测来探测执行策略。
 
 ## 4. Baseline、candidate与held-out
 
@@ -128,6 +128,10 @@ held-out candidate: eval(H1, held-out)
 
 追加轮次和同批次的后续轮次复用同一个 exact commit 已完成的 seed / held-out 结果，包括其晋升前作为 candidate 的评测。复用保留原始 eval ID、trial/run ID 和评分，不改写来源记录；优先查找当前 champion 的晋升轮次，然后按稳定历史顺序查找。零分但有效的 trial 属于完整结果。
 
+自动续轮和手动追加创建的新 round 都以当前 champion 为唯一代码父版本，并在 `championParent` 中保存其身份和研究上下文来源。seed-selected survivors 仍写入 research population，保留评分、谱系和研究记录，但未晋升候选不再成为下一轮工作区的父版本，也不会因为自己的 partial 评测要求另跑 parent baseline。冠军即使已经不在 research population 中，也从其晋升历史恢复父版本元数据。
+
+新候选的 Meta checkpoint 来自该 champion 的晋升候选；初始 champion 使用初始 Meta root。历史候选的研究记录继续保留，不把未晋升候选的代码上下文或诊断凭据冒充为当前冠军的基线。新 round 的父快照、工作区父 commit 和 baseline 归属保持一致。升级前已经封存的 round 仍按原父版本和 checkpoint 恢复，不改写其历史决策或已有执行。
+
 只有该 commit / partition 从未留下评测证据、执行开始记录、attempt 或待确认的提交，才自动启动新 baseline。已有结果无法复用时，round 进入 `failed`，`control.status` 的 `baselineReuseBlocker` 给出原因和恢复要求：
 
 - `BASELINE_IDENTITY_UNRESOLVED`：无法在执行前确认身份，例如当前 daemon 接口不能预先解析冻结后的执行策略；不会通过 submit 来探测身份。
@@ -136,7 +140,7 @@ held-out candidate: eval(H1, held-out)
 
 Direct 模式下，标准 benchmark 不再一律禁用复用；Gear 验证冻结的数据集完整目录（包含 adapter / scoring manifest）未变，再核对已有证据的有效配置。相对数据集路径按 evolution 的 workspace root 解析，与 Hitch 执行路径一致。旧实验若曾按错误工作目录封存了 opaque digest，会明确拒绝继续，不改写旧 spec 或 evidence。
 
-这项修复不增加 provider 的 partial 补齐接口，也不改变 population、pause/resume 或旧实验迁移语义。调用 provider 前先持久化执行开始记录，即使 provider 不支持预留 eval ID 或在返回 ID 前失败，后续轮次也不能将其误判为从未执行。已有失败评测的显式 rerun 修复入口继续保留；修复启动时清除旧阻塞诊断，恢复后重新校验 baseline；partial 的自动补齐需要 provider 能保证保留有效 trial 的独立支持。
+这项修复不增加 provider 的 partial 补齐接口、通用 pause/resume 或旧实验迁移机制。调用 provider 前先持久化执行开始记录，即使 provider 不支持预留 eval ID 或在返回 ID 前失败，后续轮次也不能将其误判为从未执行。已有失败评测的显式 rerun 修复入口继续保留；修复启动时清除旧阻塞诊断，恢复后重新校验 baseline；partial 的自动补齐需要 provider 能保证保留有效 trial 的独立支持。
 
 V1 promotion使用Harbor dataset verifier返回的reward。action verifier仍可属于TargetHarness并帮助agent自纠，但不能修改Harbor reward或Gear promotion policy。
 

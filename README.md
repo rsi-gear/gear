@@ -180,8 +180,17 @@ Task sampling
 ```
 
 The research population and deployment champion are separate. Multiple
-candidates may survive into the next generation, while only one finalist can
-pass the promotion gate and replace the current champion.
+seed-selected candidates remain in the research population, but every new
+round creates its candidate workspaces from the current champion. A candidate
+that was not promoted cannot become the next round's code parent or require a
+new parent baseline, including when its evaluation is partial. Only one finalist
+can pass the promotion gate and replace the champion.
+
+Each new round records its champion parent and forks Meta from that champion's
+checkpoint, or the initial Meta root for the initial champion. Research records
+remain available in history; they do not replace the current champion's code or
+baseline. Recovery of an already admitted round retains that round's sealed
+parent and checkpoint.
 
 Every evolution seals its datasets, Meta Agent preset, models, sampling,
 budgets, toolchain, sandbox, component implementations, and component

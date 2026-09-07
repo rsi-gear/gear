@@ -372,6 +372,28 @@ async function decline(service: RefineService, round: RefinementRound): Promise<
   })
 }
 
+async function continueWithLegacyPopulationParent(
+  service: RefineService,
+  evolutionId: string,
+  parent: import('../../src/types.js').PopulationMember,
+) {
+  const write = RefineStateStore.prototype.writeRound
+  const legacyWrite = vi.spyOn(RefineStateStore.prototype, 'writeRound').mockImplementation(async function (this: RefineStateStore, value: RefinementRound) {
+    if (value.evolutionId === evolutionId && value.status === 'queued') {
+      const legacy = structuredClone(value)
+      delete legacy.championParent
+      legacy.parentAllocations = legacy.candidatePool.map(candidate => ({ candidateId: candidate.candidateId,
+        parentCandidateId: parent.candidateId, parentHarnessRef: parent.harnessRef, parentHarnessDigest: parent.harnessDigest }))
+      legacy.candidatePool = legacy.candidatePool.map(candidate => ({ ...candidate,
+        parentCandidateIds: [parent.candidateId], parentHarnessRef: parent.harnessRef }))
+      return write.call(this, legacy)
+    }
+    return write.call(this, value)
+  })
+  try { return await service.continueEvolution('api', evolutionId) }
+  finally { legacyWrite.mockRestore() }
+}
+
 describe('RefineService evolution workspaces', () => {
   function durable(evaluator: FakeEvaluator): void {
     evaluator.prepareSubmission = (round, request) => ({
@@ -1499,6 +1521,237 @@ describe('RefineService evolution workspaces', () => {
     expect(second.metaHarnessRef).toBe('meta-v1')
     expect(second.plan.seed.model).toBe('deepseek-chat')
     await service.dispose()
+  })
+
+  it.each(['automatic', 'appended', 'restart'] as const)('continues from champion after a rejected candidate has four invalid trials (%s)', async mode => {
+    const { service, evaluator } = await setup(0.8, false, 1, 300_000, 1, -0.2)
+    evaluator.partialInvalidByPhase.set('seed-candidate', [6, 7, 8, 9])
+    let resumed = service
+    try {
+      const admission = await service.admit('api', { rounds: mode === 'automatic' ? 2 : 1 })
+      const store = service.registry.stateStore(admission.evolutionId)
+      const champion = await service.champion(admission.evolutionId)
+      await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
+      const rejected = await eventually(() => store.readRound(admission.roundId), r => r?.status === 'rejected')
+      const candidate = rejected!.candidatePool[0]!
+      expect(candidate.seedEvaluation?.invalidTrials).toHaveLength(4)
+      expect((await store.readPopulation())?.members[0]?.harnessRef).toBe(candidate.sealedVersion!.commitOid)
+      expect((await service.champion(admission.evolutionId)).ref).toBe(champion.ref)
+      if (mode !== 'automatic') {
+        await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
+        if (mode === 'restart') {
+          await service.dispose()
+          resumed = new RefineService(service.registry, service.builder, service.workspaceManager, service.createMetaSession, evaluator, service.options)
+          await resumed.initialize()
+        }
+        await resumed.continueEvolution('api', admission.evolutionId)
+      }
+      const next = await eventually(async () => (await store.listRounds()).find(r => r.roundId !== admission.roundId),
+        r => r?.status === 'candidate-editing' || r?.status === 'failed')
+      expect(next?.failure).toBeUndefined()
+      expect(next?.status).toBe('candidate-editing')
+      expect(next?.candidatePool.every(value => value.parentHarnessRef === champion.ref)).toBe(true)
+      expect(resumed.activeEntry(next!.roundId)?.workspace?.parentRef).toBe(champion.ref)
+      expect(next?.baseline).toEqual(rejected?.baseline)
+      expect(next?.parentBaselines).toHaveLength(1)
+      expect(evaluator.calls.filter(phase => phase === 'seed-baseline')).toHaveLength(1)
+      expect(await store.readRound(admission.roundId)).toEqual(rejected)
+      expect(next?.candidatePool[0]?.parentCheckpoint).not.toEqual(candidate.resultCheckpoint)
+      await finalize(resumed, next!)
+      const completed = await eventually(() => store.readRound(next!.roundId), r => r?.status === 'rejected' || r?.status === 'failed')
+      expect(completed?.status).toBe('rejected')
+      expect((await store.readPopulation())?.generation).toBe(2)
+      expect(evaluator.calls.filter(phase => phase === 'held-out-baseline')).toHaveLength(1)
+      expect(await store.readRound(admission.roundId)).toEqual(rejected)
+    } finally { await resumed.dispose(); await service.dispose() }
+  })
+
+  it('restores an evicted champion parent and its checkpoint across rejected rounds and restart', async () => {
+    const { service, evaluator } = await setup()
+    let resumed = service
+    try {
+      const admission = await service.admit('api')
+      const store = service.registry.stateStore(admission.evolutionId)
+      await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
+      const accepted = await eventually(() => store.readRound(admission.roundId), r => r?.status === 'accepted')
+      const championCandidate = accepted!.candidatePool.find(candidate => candidate.candidateId === accepted!.promotedCandidateId)!
+      const originParent = accepted!.commitIntent!.nextPopulation.members.find(member => member.candidateId === championCandidate.candidateId)!
+      const specBefore = await service.registry.requireSpec(admission.evolutionId)
+      evaluator.partialInvalidByPhase.set('seed-candidate', [6, 7, 8, 9])
+      const rejectedRounds: RefinementRound[] = []
+      for (let index = 0; index < 2; index++) {
+        await eventually(async () => resumed.activeEntry(index === 0 ? admission.roundId : rejectedRounds[index - 1]!.roundId), value => value === undefined)
+        if (index === 1) {
+          await service.dispose()
+          resumed = new RefineService(service.registry, service.builder, service.workspaceManager, service.createMetaSession, evaluator, service.options)
+          await resumed.initialize()
+        }
+        const next = await resumed.continueEvolution('api', admission.evolutionId)
+        const current = await editing(resumed, admission.evolutionId, next.roundId)
+        expect(current.championParent).toEqual(originParent)
+        expect(current.candidatePool[0]?.parentHarnessRef).toBe(championCandidate.sealedVersion!.commitOid)
+        expect(current.candidatePool[0]?.parentCheckpoint).toEqual(championCandidate.resultCheckpoint)
+        expect(current.baseline).toEqual(championCandidate.seedEvaluation)
+        await finalize(resumed, current)
+        const rejected = await eventually(() => store.readRound(next.roundId), r => r?.status === 'rejected' || r?.status === 'failed')
+        expect(rejected?.status).toBe('rejected')
+        rejectedRounds.push(rejected!)
+        expect((await store.readPopulation())?.members.every(member => member.harnessRef !== championCandidate.sealedVersion!.commitOid)).toBe(true)
+        expect((await resumed.champion(admission.evolutionId)).ref).toBe(championCandidate.sealedVersion!.commitOid)
+      }
+      expect(evaluator.calls.filter(phase => phase === 'seed-baseline')).toHaveLength(1)
+      expect(await store.readRound(admission.roundId)).toEqual(accepted)
+      expect(await service.registry.requireSpec(admission.evolutionId)).toEqual(specBefore)
+      for (const rejected of rejectedRounds) expect(await store.readRound(rejected.roundId)).toEqual(rejected)
+    } finally { await resumed.dispose(); await service.dispose() }
+  })
+
+  it('uses only the promoted champion when several research survivors are retained', async () => {
+    const { service, evaluator } = await setup(0.8, false, 3, 300_000, 2)
+    try {
+      const admission = await service.admit('api', { rounds: 2 })
+      const store = service.registry.stateStore(admission.evolutionId)
+      let previousWorkspace: string | undefined
+      for (let index = 0; index < 3; index++) {
+        const current = await eventually(() => store.readRound(admission.roundId), r => r?.status === 'candidate-editing'
+          && service.activeEntry(admission.roundId)?.workspace?.workspaceId !== previousWorkspace)
+        previousWorkspace = service.activeEntry(admission.roundId)!.workspace!.workspaceId
+        await finalize(service, current!)
+      }
+      const accepted = await eventually(() => store.readRound(admission.roundId), r => r?.status === 'accepted')
+      expect(accepted?.commitIntent?.nextPopulation.members).toHaveLength(2)
+      const championCandidate = accepted!.candidatePool.find(candidate => candidate.candidateId === accepted!.promotedCandidateId)!
+      const next = await eventually(async () => (await store.listRounds()).find(r => r.roundIndex === 2), r => r?.status === 'candidate-editing')
+      expect(next?.candidatePool).toHaveLength(3)
+      expect(next?.candidatePool.every(candidate => candidate.parentHarnessRef === championCandidate.sealedVersion!.commitOid
+        && candidate.parentCandidateIds.length === 1 && candidate.parentCandidateIds[0] === championCandidate.candidateId)).toBe(true)
+      expect(next?.parentBaselines).toHaveLength(1)
+      expect(next?.baseline).toEqual(championCandidate.seedEvaluation)
+      expect(evaluator.calls.filter(phase => phase === 'seed-baseline')).toHaveLength(1)
+    } finally { await service.dispose() }
+  })
+
+  it('continues from a rolled-back champion without using the latest research survivor', async () => {
+    const { service, evaluator } = await setup()
+    service.options.promotion.policy = builtinComponentRef('promotion-policy', 'paired-gate', {
+      ...service.options.promotion.policy.config, minimumAbsoluteGain: 0,
+    })
+    try {
+      const admission = await service.admit('api')
+      const store = service.registry.stateStore(admission.evolutionId)
+      await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
+      const original = await eventually(() => store.readRound(admission.roundId), r => r?.status === 'accepted')
+      const restoredCandidate = original!.candidatePool.find(candidate => candidate.candidateId === original!.promotedCandidateId)!
+      await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
+      const second = await service.continueEvolution('api', admission.evolutionId)
+      await finalize(service, await editing(service, admission.evolutionId, second.roundId))
+      const latest = await eventually(() => store.readRound(second.roundId), r => r?.status === 'accepted')
+      await eventually(async () => service.activeEntry(second.roundId), value => value === undefined)
+      await service.rollback(admission.evolutionId, restoredCandidate.sealedVersion!.commitOid)
+      const continuation = await service.continueEvolution('api', admission.evolutionId)
+      const next = await editing(service, admission.evolutionId, continuation.roundId)
+      expect(next.championParent?.candidateId).toBe(restoredCandidate.candidateId)
+      expect(next.candidatePool[0]?.parentHarnessRef).toBe(restoredCandidate.sealedVersion!.commitOid)
+      expect(next.candidatePool[0]?.parentCheckpoint).toEqual(restoredCandidate.resultCheckpoint)
+      expect(next.baseline).toEqual(restoredCandidate.seedEvaluation)
+      await finalize(service, next)
+      const completed = await eventually(() => store.readRound(next.roundId), r => r?.status === 'accepted' || r?.status === 'failed')
+      expect(completed?.status).toBe('accepted')
+      expect(completed?.evaluation?.heldOutBaseline).toEqual(restoredCandidate.heldOutEvaluation)
+      expect(evaluator.calls.filter(phase => phase === 'seed-baseline')).toHaveLength(1)
+      expect(evaluator.calls.filter(phase => phase === 'held-out-baseline')).toHaveLength(1)
+      expect(await store.readRound(admission.roundId)).toEqual(original)
+      expect(await store.readRound(second.roundId)).toEqual(latest)
+    } finally { await service.dispose() }
+  })
+
+  it('releases admission ownership if the champion promotion source cannot be verified', async () => {
+    const { service } = await setup()
+    try {
+      const admission = await service.admit('api')
+      const store = service.registry.stateStore(admission.evolutionId)
+      await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
+      await eventually(() => store.readRound(admission.roundId), r => r?.status === 'accepted')
+      await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
+      const champion = await store.readChampion()
+      await store.writeChampion({ ...champion!, roundId: 'missing-promotion-source' })
+      await expect(service.continueEvolution('api', admission.evolutionId)).rejects.toThrow(/champion parent/)
+      await store.writeChampion(champion!)
+      const next = await service.continueEvolution('api', admission.evolutionId)
+      expect((await editing(service, admission.evolutionId, next.roundId)).championParent?.harnessRef).toBe(champion!.ref)
+    } finally { await service.dispose() }
+  })
+
+  it('preserves the sealed parent of a legacy round when an explicit repair resumes after restart', async () => {
+    const { service, evaluator } = await setup(0.1)
+    let reservation = 0
+    evaluator.reserve = async () => ({ provider: 'hitch-cli', evalId: `eval_${(++reservation).toString(16).padStart(32, '0')}` })
+    const identity = evaluator.evaluationIdentity.bind(evaluator)
+    evaluator.evaluationIdentity = (round, request) => ({ ...identity(round, request), provider: 'hitch-cli' })
+    let resumed = service
+    try {
+      const admission = await service.admit('api')
+      const store = service.registry.stateStore(admission.evolutionId)
+      await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
+      const rejected = await eventually(() => store.readRound(admission.roundId), r => r?.status === 'rejected')
+      const researchParent = rejected!.commitIntent!.nextPopulation.members[0]!
+      await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
+      // Reconstruct a pre-upgrade admission; subsequent writes use normal code.
+      const continuation = await continueWithLegacyPopulationParent(service, admission.evolutionId, researchParent)
+      const editable = await editing(service, admission.evolutionId, continuation.roundId)
+      expect(editable.championParent).toBeUndefined()
+      expect(service.activeEntry(editable.roundId)?.workspace?.parentRef).toBe(researchParent.harnessRef)
+      evaluator.failurePhase = 'seed-candidate'
+      const parentBaseline = editable.parentBaselines!.find(value => value.parentCandidateId === researchParent.candidateId)!.evidence
+      await finalize(service, { ...editable, baseline: parentBaseline })
+      const failed = await eventually(() => store.readRound(editable.roundId), r => r?.status === 'failed')
+      const candidate = failed!.candidatePool[0]!
+      const attempt = failed!.evaluationAttempts!.find(value => value.phase === 'seed-candidate' && value.status === 'failed')!
+      expect((await service.builder.readManifest(candidate.sealedVersion!.commitOid)).parentRef).toBe(researchParent.harnessRef)
+      await service.dispose()
+      delete evaluator.failurePhase
+      resumed = new RefineService(service.registry, service.builder, service.workspaceManager, service.createMetaSession, evaluator, service.options)
+      await resumed.initialize()
+      await resumed.rerunEvaluation(admission.evolutionId, failed!.roundId, attempt.evalId, { mode: 'invalid' })
+      const terminal = await eventually(() => store.readRound(failed!.roundId), r => r?.status === 'rejected' || r?.status === 'failed')
+      expect(terminal?.status).toBe('rejected')
+      expect(terminal?.championParent).toBeUndefined()
+      expect(terminal?.parentAllocations).toEqual(failed?.parentAllocations)
+      expect(terminal?.candidatePool[0]?.sealedVersion).toEqual(candidate.sealedVersion)
+      expect(terminal?.candidatePool[0]?.parentCheckpoint).toEqual(candidate.parentCheckpoint)
+      expect(terminal?.candidatePool[0]?.seedEvaluation?.evalId).toBe(attempt.evalId)
+    } finally { await resumed.dispose(); await service.dispose() }
+  })
+
+  it('continues a legacy evolution already blocked by a rejected partial research parent', async () => {
+    const { service, evaluator } = await setup(0.8, false, 1, 300_000, 1, -0.2)
+    evaluator.partialInvalidByPhase.set('seed-candidate', [6, 7, 8, 9])
+    let resumed = service
+    try {
+      const admission = await service.admit('api')
+      const store = service.registry.stateStore(admission.evolutionId)
+      await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
+      const original = await eventually(() => store.readRound(admission.roundId), r => r?.status === 'rejected')
+      await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
+      const legacy = await continueWithLegacyPopulationParent(service, admission.evolutionId, original!.commitIntent!.nextPopulation.members[0]!)
+      const blocked = await eventually(() => store.readRound(legacy.roundId), r => r?.status === 'failed')
+      expect(blocked?.championParent).toBeUndefined()
+      expect(blocked?.baselineReuseBlocker?.code).toBe('BASELINE_EVIDENCE_UNAVAILABLE')
+      const spec = await service.registry.requireSpec(admission.evolutionId)
+      await service.dispose()
+      resumed = new RefineService(service.registry, service.builder, service.workspaceManager, service.createMetaSession, evaluator, service.options)
+      await resumed.initialize()
+      const appended = await resumed.continueEvolution('api', admission.evolutionId)
+      const next = await editing(resumed, admission.evolutionId, appended.roundId)
+      expect(next.championParent?.harnessRef).toBe(original!.targetHarnessRef)
+      expect(next.candidatePool[0]?.parentHarnessRef).toBe(original!.targetHarnessRef)
+      expect(next.baseline).toEqual(original?.baseline)
+      expect(next.parentBaselines).toHaveLength(1)
+      expect(evaluator.calls.filter(phase => phase === 'seed-baseline')).toHaveLength(1)
+      expect(await store.readRound(legacy.roundId)).toEqual(blocked)
+      expect(await store.readRound(admission.roundId)).toEqual(original)
+      expect(await service.registry.requireSpec(admission.evolutionId)).toEqual(spec)
+    } finally { await resumed.dispose(); await service.dispose() }
   })
 
   it('reuses an exact prior seed baseline when continuing the same harness and condition', async () => {
