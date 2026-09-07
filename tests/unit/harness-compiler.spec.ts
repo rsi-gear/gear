@@ -67,6 +67,27 @@ await writeFile(request.reportPath, JSON.stringify(report));`)
   await expect(compiler.compile(git.repository, new AbortController().signal, git.manifest)).resolves.toMatchObject({ ok: true })
 })
 
+it.each(['failed', 'incomplete'])('does not accept %s prompt assembly after successful loading', async mode => {
+  const { git, compiler } = await fixture(`${validReport}
+report.promptAssembly = ${mode === 'failed'
+    ? "{status:'failed', code:'PROMPT_ASSEMBLY_FAILED', message:'prompt sentinel'}"
+    : "{status:'not_checked', code:'PREVIOUS_STAGE_NOT_COMPLETED'}"};
+await writeFile(request.reportPath, JSON.stringify(report));`)
+  await expect(compiler.compile(git.repository, new AbortController().signal, git.manifest))
+    .rejects.toMatchObject({ report: { ok: false, runtime: { promptAssembly: {
+      status: mode === 'failed' ? 'failed' : 'not_checked',
+    } } } })
+})
+
+it('reports prompt assembly as unverified for an older checker without that stage', async () => {
+  const { git, compiler } = await fixture(`${validReport}
+await writeFile(request.reportPath, JSON.stringify(report));`)
+  await expect(compiler.compile(git.repository, new AbortController().signal, git.manifest))
+    .resolves.toMatchObject({ ok: true, runtime: {
+      promptAssembly: { status: 'not_checked', code: 'PROMPT_ASSEMBLY_NOT_REPORTED' },
+    } })
+})
+
 it('rejects runtime evidence produced after the snapshot content was changed', async () => {
   const { git, compiler } = await fixture(`${validReport}
 await writeFile(request.repository + '/harness/manifest.json', '{}');

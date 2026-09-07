@@ -24,7 +24,7 @@ process.env.TMP = process.env.TMPDIR
 process.env.TEMP = process.env.TMPDIR
 const report = {
   schemaVersion: 1, candidateDigest: request.candidateDigest,
-  load: notChecked(), skillDiscovery: notChecked(), skillRead: notChecked(), cleanup: notChecked(), skills: [],
+  load: notChecked(), promptAssembly: notChecked(), skillDiscovery: notChecked(), skillRead: notChecked(), cleanup: notChecked(), skills: [],
 }
 let phase = 'load'
 const checkpoint = () => writeFile(request.reportPath, JSON.stringify({ ...report, activeStage: phase }))
@@ -70,7 +70,10 @@ try {
   const nativeImport = name => import(pathToFileURL(dshRequire.resolve(name)).href)
   const appBoot = await nativeImport('@deepseek-ai/dsh-app-boot')
   const skillFilesystem = await nativeImport('@deepseek-ai/dsh-skill-filesystem')
-  for (const name of ['@deepseek-ai/dsh-app-boot', '@deepseek-ai/dsh-skill-filesystem', '@deepseek-ai/dsh-skill', '@deepseek-ai/dsh-tool-skill']) {
+  const agentRuntime = await nativeImport('@deepseek-ai/dsh-agent')
+  const systemPrompt = await nativeImport('@deepseek-ai/dsh-system-prompt')
+  for (const name of ['@deepseek-ai/dsh-app-boot', '@deepseek-ai/dsh-agent', '@deepseek-ai/dsh-system-prompt',
+    '@deepseek-ai/dsh-skill-filesystem', '@deepseek-ai/dsh-skill', '@deepseek-ai/dsh-tool-skill', '@deepseek-ai/dsh-tools']) {
     const installed = JSON.parse(await readFile(dshRequire.resolve(`${name}/package.json`), 'utf8'))
     if (installed.version !== pkg.version) throw new Error(`RUNTIME_VERSION_MISMATCH: ${name}@${installed.version}`)
   }
@@ -116,12 +119,27 @@ try {
   if (!ctx.get('targetHarness') || ctx.targetHarness.ref !== request.candidateDigest) throw new Error('CARRIER_NOT_LOADED: targetHarness identity was not registered')
   // Match headless's real session context without sending input or starting a
   // model turn. The native skill tool derives its cwd from the calling agent.
+  const selection = ctx.agentDefaultModel.currentSelection()
   agentHandle = await ctx.agents.create({ sessionId: 'gear-runtime-check', meta: { cwd: process.cwd() },
-    agentOptions: ctx.agentDefaultModel.currentSelection() })
+    agentOptions: { provider: selection.provider, model: selection.model },
+    setup: agentCtx => { agentRuntime.installModelSelection(agentCtx, { current: selection, assembled: undefined }) } })
   if (fatal) throw fatal
   if (runtimeErrors.length) throw new Error(runtimeErrors.map(item => item.text).join('\n'))
   if (prohibitedRequests) throw new Error('MODEL_OR_NETWORK_REQUEST_FORBIDDEN')
   report.load = { status: 'passed' }
+
+  phase = 'promptAssembly'
+  await checkpoint()
+  // Registration is lazy: callbacks, scoped tool schemas and {{variables}}
+  // may fail only when a real turn assembles/renders its model input.
+  const assembly = await agentHandle.agent.ctx.get('systemPrompt').assemble(
+    agentRuntime.assembleContextFor(agentHandle.agent, new AbortController().signal))
+  systemPrompt.renderPrompt(assembly)
+  systemPrompt.renderContextSnapshot(assembly)
+  if (fatal) throw fatal
+  if (runtimeErrors.length) throw new Error(runtimeErrors.map(item => item.text).join('\n'))
+  if (prohibitedRequests) throw new Error('MODEL_OR_NETWORK_REQUEST_FORBIDDEN')
+  report.promptAssembly = { status: 'passed', expected: 1, checked: 1 }
 
   phase = 'skillDiscovery'
   await checkpoint()
@@ -193,7 +211,8 @@ try {
   if (runtimeErrors.length) throw new Error(runtimeErrors.map(item => item.text).join('\n'))
   if (prohibitedRequests) throw new Error('MODEL_OR_NETWORK_REQUEST_FORBIDDEN')
 } catch (error) {
-  fail(phase, phase === 'load' ? 'RUNTIME_LOAD_FAILED' : phase === 'skillDiscovery' ? 'SKILL_DISCOVERY_FAILED' : 'SKILL_READ_FAILED', error)
+  fail(phase, { load: 'RUNTIME_LOAD_FAILED', promptAssembly: 'PROMPT_ASSEMBLY_FAILED',
+    skillDiscovery: 'SKILL_DISCOVERY_FAILED', skillRead: 'SKILL_READ_FAILED' }[phase], error)
 } finally {
   phase = 'cleanup'
   await checkpoint()
@@ -206,7 +225,9 @@ try {
         // This affects teardown only, after all runtime assertions completed.
         try {
           await expectedProvider?.dispose()
-          const codex = ctx && [...ctx.loader.entries()].find(entry => entry.options.id === 'llm-openai-codex')
+          // boot() may already have disposed its partial context on failure.
+          const loader = ctx?.get('loader')
+          const codex = loader && [...loader.entries()].find(entry => entry.options.id === 'llm-openai-codex')
           await codex?.fiber?.dispose()
           await agentHandle?.dispose()
         }

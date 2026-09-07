@@ -22,8 +22,8 @@ it.each(['skill', 'full harness'])('loads the documented %s with real DSH tools 
     expect(Object.keys(files).sort()).toEqual(layout === 'skill' ? [
       'skills/verify-change/SKILL.md',
     ] : [
-      'plugins/action-verifier.js', 'plugins/policy.js', 'plugins/post-action.js', 'plugins/pre-action.js',
-      'plugins/prompt-pack.js', 'plugins/workflow-guidance.js',
+      'plugins/action-verifier.js', 'plugins/check-summary.js', 'plugins/policy.js', 'plugins/post-action.js', 'plugins/pre-action.js',
+      'plugins/prompt-pack.js', 'plugins/task-context.js', 'plugins/workflow-guidance.js',
       'preset/agent.cordis.yml', 'prompts/verification.md', 'skills/verify-change/SKILL.md',
       'workflows/diagnose-and-verify.md',
     ])

@@ -142,8 +142,9 @@ export class SubprocessHarnessCompiler implements HarnessCompiler {
           let runtime
           try { runtime = await readReport(join(snapshot!.writable, 'report.json'), this.options.maxReportBytes ?? 128 * 1024, candidateDigest) }
           catch (error) { throw new Error(`runtime report invalid (${result.signal ?? result.code}): ${String(error)}\n${stderr.toString() || stdout.toString()}`) }
-          const failed = [runtime.load, runtime.skillDiscovery, runtime.skillRead, runtime.cleanup].find(stage => stage.status === 'failed')
+          const failed = [runtime.load, runtime.promptAssembly, runtime.skillDiscovery, runtime.skillRead, runtime.cleanup].find(stage => stage?.status === 'failed')
           const missing = runtime.load.status !== 'passed' || runtime.cleanup.status !== 'passed'
+            || runtime.promptAssembly?.status === 'not_checked' && runtime.promptAssembly.code !== 'PROMPT_ASSEMBLY_NOT_REPORTED'
             || [runtime.skillDiscovery, runtime.skillRead].some(stage => stage.status === 'not_checked'
               && !['NO_CANDIDATE_SKILLS', 'MODEL_INVOCATION_DISABLED'].includes(stage.code ?? ''))
           const ok = result.code === 0 && failed === undefined && !missing

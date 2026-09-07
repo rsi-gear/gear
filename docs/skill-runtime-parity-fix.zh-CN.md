@@ -1,5 +1,8 @@
 # Skill 接入与检查器依赖解析一致性修复
 
+后续对其它 Meta 干预动作的核验与 carrier `0.0.2` 修复见
+[DSH 扩展运行时审计](dsh-extension-runtime-audit.zh-CN.md)。下文是 `0.0.1` 的原始修复记录。
+
 ## 核验结论
 
 问题存在。核验基线为远端最新 `dev`：

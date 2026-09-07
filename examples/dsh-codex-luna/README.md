@@ -85,15 +85,30 @@ Keep `metaSandbox.mode: required` for candidate execution; no Meta shell or
 credentials are needed. Fixed toolchains outside system directories can declare
 additional absolute `compiler.readPaths` for their shared libraries.
 
+Carrier `0.0.2` also exposes `@deepseek-ai/dsh-tools@0.1.1-rc.2` directly for
+native `defineTool` authoring. The other DSH transitive packages remain outside
+the candidate import contract. The checker now installs the same per-Agent
+model selection as headless and reports `runtime.promptAssembly`: it assembles
+the Agent's visible tool schemas and renders its system prompt and dynamic
+context. Registration alone misses callback exceptions, invalid schemas and
+undefined `{{variables}}`. Older checker executables report missing assembly
+coverage as `not_checked`, never as passed.
+
+Arbitrary tool/hook bodies, routing, compaction and workflow behavior still
+require their own scenarios. The integration matrix executes the documented
+custom tool, native pre/post hooks and a non-delegating workflow through a
+packaged Target; the production checker does not invent arguments for arbitrary
+candidate actions. See the [extension audit](../../docs/dsh-extension-runtime-audit.zh-CN.md).
+
 Existing releases do not acquire this checker by upgrading source alone: update
 their compiler command, args, `reportProtocol: gear-runtime-check-v1`, and
 `runtimeRoot` before creating the next evolution. `/usr/bin/true` without a
 report protocol remains compatible but explicitly returns runtime `not_checked`;
 with the protocol enabled it fails because it produces no runtime report.
 
-Re-bootstrap the Target when adopting carrier `0.0.1`: the fixed patch changes
-the substrate commit, manifest identity, and packaged artifact. Record those
-new identities and reassess baseline comparability; do not rewrite old commits
+Re-bootstrap the Target when adopting carrier `0.0.2`: the fixed patch and
+dependency contract change the substrate commit, manifest identity, and packaged
+artifact. Record those new identities and reassess baseline comparability; do not rewrite old commits
 or evidence to reuse an earlier experiment identity.
 
 Run the full Target integration matrix without a model or benchmark:

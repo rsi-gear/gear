@@ -277,11 +277,14 @@ Review the authoritative patch, not a reconstruction from memory. Confirm:
 
 Then call `meta.call` with capability `candidate.check` and arguments
 `{"check":"compiler"}`. Inspect each coverage stage: `static`, `compiler`,
-`runtime.load`, `runtime.skillDiscovery`, `runtime.skillRead`, and
+`runtime.load`, `runtime.promptAssembly`, `runtime.skillDiscovery`, `runtime.skillRead`, and
 `runtime.cleanup`. `not_checked` means no evidence was collected for that
 stage; a successful no-op compiler does not prove runtime loading. Configured
 runtime checks use an isolated copy with a matching manifest; do not edit the
 manifest yourself. Check availability via `harness.current.validation`.
+Prompt assembly includes dynamic context, strict variables and visible tool
+schemas. It does not execute arbitrary tool/hook bodies, routing/compaction
+callbacks, or workflow scripts; record those remaining behavior checks.
 
 This is the fixed candidate build/validation pipeline;
 it does not prove task improvement. If it fails, repair only the candidate

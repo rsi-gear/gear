@@ -9,7 +9,7 @@ import { RefineCapabilities } from '../../src/capabilities.js'
 import { HarnessBuilder } from '../../src/harness/builder.js'
 import { SubprocessHarnessCompiler } from '../../src/harness/compiler.js'
 import { acquireAirGappedSandbox } from '../../src/sandbox.js'
-import { documentedSkillCandidate } from '../helpers/documented-skill-candidate.js'
+import { documentedHarnessCandidate, documentedSkillCandidate } from '../helpers/documented-skill-candidate.js'
 import { packagedTargetSkillSmoke } from '../helpers/packaged-target-skill-smoke.js'
 
 const execute = promisify(execFile)
@@ -18,8 +18,8 @@ const runtimeRoot = process.env.GEAR_TEST_DSH_RUNTIME_ROOT
 const sandboxMode = process.env.GEAR_TEST_RUNTIME_SANDBOX === 'required' ? 'required' : 'disabled'
 
 describe.skipIf(runtimeRoot === undefined)('fixed Target DSH rc.2 runtime check', () => {
-  it.each(['valid', 'direct dependency', 'session cwd', 'throws', 'missing dependency', 'transitive dependency', 'missing injection', 'wrong directory',
-    'invalid frontmatter', 'read blocked', 'cleanup throws', 'cleanup timeout', 'network request', 'no skills', 'invocation disabled', 'changed after check', 'no-op'])(
+  it.each(['valid', 'full harness', 'model context', 'direct dependency', 'session cwd', 'throws', 'missing dependency', 'transitive dependency', 'missing injection', 'wrong directory',
+    'prompt variable', 'context throws', 'tool parameters', 'invalid frontmatter', 'read blocked', 'cleanup throws', 'cleanup timeout', 'network request', 'no skills', 'invocation disabled', 'changed after check', 'no-op'])(
     'reports actual coverage and leaves the candidate unchanged: %s', async variant => {
       const lab = await mkdtemp(join(tmpdir(), 'gear-runtime-test-'))
       const repository = join(lab, 'target')
@@ -38,7 +38,7 @@ describe.skipIf(runtimeRoot === undefined)('fixed Target DSH rc.2 runtime check'
           parentHarnessRef: metadata.initialChampion.ref, parentHarnessDigest: metadata.initialChampion.manifestDigest }, new AbortController().signal)
         id = handle.workspaceId
         manager.bind(id, 'meta')
-        const files = await documentedSkillCandidate()
+        const files = await (variant === 'full harness' ? documentedHarnessCandidate() : documentedSkillCandidate())
         const addPlugin = (source: string) => {
           files['preset/agent.cordis.yml'] = '- id: runtime-fixture\n  name: ../plugins/runtime-fixture.js\n'
           files['plugins/runtime-fixture.js'] = source
@@ -49,6 +49,24 @@ describe.skipIf(runtimeRoot === undefined)('fixed Target DSH rc.2 runtime check'
         if (variant === 'direct dependency') addPlugin('import Include from "@deepseek-ai/cordis-plugin-include"; export function apply() { if (!Include) throw new Error("DIRECT_DEPENDENCY_MISSING") }\n')
         if (variant === 'missing injection') addPlugin('export const inject = ["missingGearService"]; export function apply() {}\n')
         if (variant === 'network request') addPlugin('export async function apply() { await fetch("https://example.invalid/") }\n')
+        if (variant === 'model context') addPlugin(`export const inject = ['systemPrompt']; export function apply(ctx) {
+          ctx.systemPrompt.section({ name: 'selected-model', order: 50, text: 'Selected: {{provider}}/{{model}}' })
+          ctx.systemPrompt.context({ name: 'real-agent-scope', order: 50, text: ({ agent, scope }) => {
+            if (!agent || scope !== agent || agent.session.header.cwd !== process.cwd()) throw new Error('ASSEMBLY_SCOPE_MISMATCH')
+            return 'Valid scoped context'
+          } })
+        }`)
+        if (variant === 'prompt variable') addPlugin(`export const inject = ['systemPrompt']; export function apply(ctx) {
+          ctx.systemPrompt.section({ name: 'broken-prompt', order: 50, text: '{{gear_missing_variable}}' })
+        }`)
+        if (variant === 'context throws') addPlugin(`export const inject = ['systemPrompt']; export function apply(ctx) {
+          ctx.systemPrompt.context({ name: 'broken-context', order: 50, text: () => { throw new Error('CONTEXT_SENTINEL') } })
+        }`)
+        if (variant === 'tool parameters') addPlugin(`export const inject = ['tools']; export function apply(ctx) {
+          ctx.tools.register({ name: 'broken_tool', description: 'Invalid lazy schema',
+            output: { schema: { type: 'string' }, render: (_, value) => [{ type: 'text', text: value }] },
+            execute: () => 'unused' })
+        }`)
         if (variant === 'wrong directory') {
           files['skills/group/verify-change/SKILL.md'] = files['skills/verify-change/SKILL.md']!
           delete files['skills/verify-change/SKILL.md']
@@ -87,9 +105,9 @@ describe.skipIf(runtimeRoot === undefined)('fixed Target DSH rc.2 runtime check'
           parentHarnessDigest: handle.parentDigest, evolutionId: 'evo', roundId: 'round' }), workspaceManager: manager }
         const capabilities = new RefineCapabilities(service as never, builder)
         const result = await capabilities.call('refine-meta', 'meta', 'candidate.check', { check: 'compiler' }) as any
-        if (['valid', 'direct dependency', 'session cwd', 'changed after check'].includes(variant)) {
+        if (['valid', 'full harness', 'model context', 'direct dependency', 'session cwd', 'changed after check'].includes(variant)) {
           expect(result, JSON.stringify(result)).toMatchObject({ ok: true, runtime: {
-            load: { status: 'passed' }, skillDiscovery: { status: 'passed', checked: 1 },
+            load: { status: 'passed' }, promptAssembly: { status: 'passed' }, skillDiscovery: { status: 'passed', checked: 1 },
             skillRead: { status: 'passed', checked: 1 }, cleanup: { status: 'passed' },
             identity: { version: '0.1.1-rc.2' },
           } })
@@ -101,22 +119,26 @@ describe.skipIf(runtimeRoot === undefined)('fixed Target DSH rc.2 runtime check'
           } })
         } else if (variant === 'invocation disabled') {
           expect(result, JSON.stringify(result)).toMatchObject({ ok: true, runtime: {
-            load: { status: 'passed' }, skillDiscovery: { status: 'passed', checked: 1 },
+            load: { status: 'passed' }, promptAssembly: { status: 'passed' }, skillDiscovery: { status: 'passed', checked: 1 },
             skillRead: { status: 'not_checked', code: 'MODEL_INVOCATION_DISABLED' },
           } })
         } else {
           expect(result, JSON.stringify(result)).toMatchObject({ ok: false })
           if (['throws', 'missing dependency', 'transitive dependency', 'missing injection', 'network request'].includes(variant)) expect(result.runtime.load.status, JSON.stringify(result)).toBe('failed')
+          if (['throws', 'missing dependency', 'transitive dependency', 'missing injection'].includes(variant)) {
+            expect(result.runtime.cleanup.status, JSON.stringify(result)).toBe('passed')
+          }
           if (['wrong directory', 'invalid frontmatter'].includes(variant)) {
             expect(result.runtime.load.status, JSON.stringify(result)).toBe('passed')
             expect(result.runtime.skillDiscovery.status, JSON.stringify(result)).toBe('failed')
           }
+          if (['prompt variable', 'context throws', 'tool parameters'].includes(variant)) expect(result.runtime.promptAssembly.status, JSON.stringify(result)).toBe('failed')
           if (variant === 'read blocked') expect(result.runtime.skillRead.status, JSON.stringify(result)).toBe('failed')
           if (variant.startsWith('cleanup')) expect(result.runtime.cleanup.status, JSON.stringify(result)).toBe('failed')
         }
         expect(await manager.preflight(id)).toEqual(before)
         expect(await readFile(join(handle.targetPath, 'manifest.json'), 'utf8')).toBe(manifest)
-        if (['valid', 'direct dependency', 'session cwd', 'changed after check'].includes(variant)) {
+        if (['valid', 'full harness', 'model context', 'direct dependency', 'session cwd', 'changed after check'].includes(variant)) {
           if (variant === 'changed after check') await writeFile(join(handle.targetPath, 'plugins/policy.js'),
             'export function apply() { throw new Error("EDITED_AFTER_CHECK") }\n')
           const sealed = await manager.seal(id, new AbortController().signal)
@@ -127,8 +149,8 @@ describe.skipIf(runtimeRoot === undefined)('fixed Target DSH rc.2 runtime check'
             const prepared = await finalization
             expect(prepared.validation?.runtime.candidateDigest).toBe(prepared.manifest.digest)
             expect(prepared.validation?.runtime.skillRead).toMatchObject({ status: 'passed', checked: 1 })
-            if (variant === 'valid') await packagedTargetSkillSmoke(lab, repository, prepared.ref,
-              prepared.manifest.digest, runtimeRoot!, files['skills/verify-change/SKILL.md']!)
+            if (['valid', 'full harness'].includes(variant)) await packagedTargetSkillSmoke(lab, repository, prepared.ref,
+              prepared.manifest.digest, runtimeRoot!, files['skills/verify-change/SKILL.md']!, variant === 'full harness')
           }
         }
       } finally {

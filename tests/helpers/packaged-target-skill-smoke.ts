@@ -9,7 +9,7 @@ import { expect } from 'vitest'
 const execute = promisify(execFile)
 
 export async function packagedTargetSkillSmoke(lab: string, repository: string, ref: string,
-  candidateDigest: string, runtimeRoot: string, skillMarkdown: string) {
+  candidateDigest: string, runtimeRoot: string, skillMarkdown: string, fullHarness = false) {
   const source = join(lab, 'artifact', 'source')
   const archive = join(lab, 'candidate.tar')
   await mkdir(source, { recursive: true })
@@ -37,7 +37,7 @@ globalThis.fetch = () => { globalThis.gearSmokeNetworkRequests++; throw new Erro
     { id: 'agent-default-model', config: { provider: 'openai-codex', model: 'gpt-5.6-luna' } },
     { insert: [{ id: 'packaged-skill-probe',
       name: pathToFileURL(join(import.meta.dirname, 'packaged-target-skill-probe.mjs')).href,
-      config: { reportPath, candidateDigest, expectedBody: skillMarkdown.split('---\n').slice(2).join('---\n').trim() } }] },
+      config: { reportPath, candidateDigest, fullHarness, expectedBody: skillMarkdown.split('---\n').slice(2).join('---\n').trim() } }] },
   ]))
   const result = await execute(process.execPath, ['--import', preload, join(source, 'apps/cli/lib/bin.js'),
     '--profile', 'headless', '--patch', patch], {
@@ -46,5 +46,7 @@ globalThis.fetch = () => { globalThis.gearSmokeNetworkRequests++; throw new Erro
   })
   expect(result.stderr).not.toContain('cannot create effect on inactive context')
   expect(JSON.parse(await readFile(reportPath, 'utf8'))).toEqual({ candidateDigest,
-    provider: 'filesystem', discovered: true, nativeRead: true, sessionCwd: await realpath(workspace), networkRequests: 0 })
+    provider: 'filesystem', discovered: true, nativeRead: true, promptAssembly: true,
+    ...(fullHarness ? { customTool: true, hooks: true, workflow: true } : {}),
+    sessionCwd: await realpath(workspace), networkRequests: 0 })
 }

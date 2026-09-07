@@ -11,8 +11,10 @@ export interface CheckStage {
 export interface RuntimeCheckReport {
   schemaVersion: 1
   candidateDigest: string
-  activeStage?: 'load' | 'skillDiscovery' | 'skillRead' | 'cleanup'
+  activeStage?: 'load' | 'promptAssembly' | 'skillDiscovery' | 'skillRead' | 'cleanup'
   load: CheckStage
+  /** Optional on older gear-runtime-check-v1 executables; absence is never passed coverage. */
+  promptAssembly?: CheckStage
   skillDiscovery: CheckStage
   skillRead: CheckStage
   cleanup: CheckStage
@@ -40,6 +42,7 @@ export function uncheckedRuntime(candidateDigest = '', code = 'RUNTIME_VALIDATIO
   return {
     schemaVersion: 1, candidateDigest,
     load: { status: 'not_checked', code },
+    promptAssembly: { status: 'not_checked', code },
     skillDiscovery: { status: 'not_checked', code },
     skillRead: { status: 'not_checked', code },
     cleanup: { status: 'not_checked', code },
@@ -66,8 +69,9 @@ export function parseRuntimeReport(text: string, candidateDigest: string): Runti
   if (typeof value !== 'object' || value === null) throw new Error('runtime report must be an object')
   const report = value as RuntimeCheckReport
   if (report.schemaVersion !== 1 || report.candidateDigest !== candidateDigest) throw new Error('runtime report identity mismatch')
-  if (report.activeStage !== undefined && !['load', 'skillDiscovery', 'skillRead', 'cleanup'].includes(report.activeStage)) throw new Error('invalid active runtime stage')
-  for (const key of ['load', 'skillDiscovery', 'skillRead', 'cleanup'] as const) {
+  if (report.activeStage !== undefined && !['load', 'promptAssembly', 'skillDiscovery', 'skillRead', 'cleanup'].includes(report.activeStage)) throw new Error('invalid active runtime stage')
+  if (report.promptAssembly === undefined) report.promptAssembly = { status: 'not_checked', code: 'PROMPT_ASSEMBLY_NOT_REPORTED' }
+  for (const key of ['load', 'promptAssembly', 'skillDiscovery', 'skillRead', 'cleanup'] as const) {
     const stage = report[key]
     if (stage === undefined || !['passed', 'failed', 'not_checked'].includes(stage.status)) throw new Error(`invalid runtime stage: ${key}`)
     for (const field of ['message', 'code'] as const) if (stage[field] !== undefined
