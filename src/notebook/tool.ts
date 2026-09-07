@@ -254,7 +254,7 @@ export function mountMetaCapabilityTools(
       'A diagnostic card contains the last 80,000 characters of the chronological message transcript. Use [earlier messages: detailRef] to read messages before that window. Each tool result is previewed at up to 2,000 characters; use its [more: detailRef] for the full result.',
       'When a card contains [required verifier details: detailRef], read that detail through its final page before finalizing. Continue with the returned nextRef by passing it as detailRef. Use find with detailRef to search long content.',
       'If trajectory_query or finalization returns TRAJECTORY_EVIDENCE_UNAVAILABLE with recoverable=false, stop retrying and report blockedRuns/operatorAction; Hitch or the recorded trajectory must be repaired first.',
-      'Before finalizing, inspect candidate_diff and run candidate_check; candidate_check reports compiler status and finalizationReadiness separately.',
+      'Before finalizing, inspect candidate_diff and run candidate_check; inspect static, compiler, runtime load/discovery/read/cleanup coverage, and finalizationReadiness separately. not_checked is not runtime success.',
       'finalize_candidate submits metadata only; Gear derives, seals, validates, and commits the code diff.',
       'If finalize_candidate or decline_candidate returns accepted=false and recoverable=true, execute nextAction exactly, then remainingActions, and retry with the same arguments. Do not end the turn until accepted=true.',
       'If accepted=false and recoverable=false, do not retry in a loop; report the exact operatorAction because an external prerequisite is missing.',
@@ -334,7 +334,7 @@ export function mountMetaCapabilityTools(
   }))
   agentCtx.tools.register(defineTool({
     name: 'candidate_check',
-    description: 'Run the compiler/check pipeline and report finalization readiness with exact recovery actions.',
+    description: 'Run the fixed check pipeline; report static/compiler and runtime load, Skill discovery/read, cleanup coverage separately from diagnostic finalization readiness.',
     parameters: { check: { type: 'string', description: 'Optional named check; unsupported names are rejected.' } },
     output: JSON_OUTPUT,
     async execute(args, exec) {

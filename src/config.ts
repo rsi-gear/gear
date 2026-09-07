@@ -116,6 +116,10 @@ export interface Config {
     args: string[]
     timeoutMs: number
     env: Record<string, string>
+    reportProtocol?: 'gear-runtime-check-v1'
+    runtimeRoot?: string
+    maxReportBytes?: number
+    readPaths?: string[]
   }
   hitch: HitchConfig
   promotion: PromotionPolicy
@@ -237,6 +241,10 @@ export const ConfigSchema: Schema<Config> = Schema.object({
     args: Schema.array(Schema.string()).default([]),
     timeoutMs: Schema.number().default(120_000),
     env: Schema.dict(Schema.string()).default({}),
+    reportProtocol: Schema.const('gear-runtime-check-v1'),
+    runtimeRoot: Schema.string(),
+    maxReportBytes: Schema.number(),
+    readPaths: Schema.array(Schema.string()),
   }).required(),
   hitch: Schema.object({
     executable: Schema.string().default('hitch'),

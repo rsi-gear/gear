@@ -9,11 +9,10 @@ import { createGitHarnessFixture } from '../../tests/helpers/git-fixture.js'
 import { documentedSkillCandidate } from '../../tests/helpers/documented-skill-candidate.js'
 import { roundFixture } from '../../tests/helpers/research-fixture.js'
 
-// Characterize the current gap, rather than enshrine it in the normal suite.
-// After implementing the proposal, replace these expectations with coverage
-// assertions and move the failure cases into the runtime smoke integration suite.
-it.each(['documented skill', 'initialization throws', 'missing dependency', 'wrong skill directory'])(
-  'candidate.check reports success without runtime coverage: %s', async variant => {
+// Legacy compiler success must not claim runtime coverage. The same negative
+// candidates are exercised by the real rc.2 runtime integration suite.
+it.each(['documented skill', 'initialization throws', 'missing dependency', 'wrong skill directory', 'invalid preset'])(
+  'candidate.check explicitly reports unverified runtime coverage: %s', async variant => {
     const fixture = await createGitHarnessFixture()
     const manager = new CandidateWorkspaceManager({
       repositoryPath: fixture.repository, targetRoot: fixture.targetRoot,
@@ -31,6 +30,7 @@ it.each(['documented skill', 'initialization throws', 'missing dependency', 'wro
       workspaceId = handle.workspaceId
       manager.bind(handle.workspaceId, 'repro-meta')
       const files = await documentedSkillCandidate()
+      if (variant === 'invalid preset') files['preset/agent.cordis.yml'] = 'not: a-list\n'
       if (variant === 'initialization throws') files['plugins/skill-loader.js'] =
         'export function apply() { throw new Error("RUNTIME_INITIALIZATION_SENTINEL") }\n'
       if (variant === 'missing dependency') files['plugins/skill-loader.js'] =
@@ -59,9 +59,11 @@ it.each(['documented skill', 'initialization throws', 'missing dependency', 'wro
       const service = { activeEntryForSession: () => active, workspaceManager: manager }
       const capabilities = new RefineCapabilities(service as never, builder)
       const result = await capabilities.call('refine-meta', 'repro-meta', 'candidate.check', { check: 'compiler' })
-      expect(result).toMatchObject({ ok: true, compiler: { ok: true } })
-      expect(result).not.toHaveProperty('runtime')
-      expect(result).not.toHaveProperty('coverage')
+      if (variant === 'invalid preset') expect(result).toMatchObject({ ok: false, static: { status: 'failed' }, compiler: { status: 'not_checked' } })
+      else expect(result).toMatchObject({ ok: true, compiler: { ok: true }, okScope: 'configured_checks', static: { status: 'passed' }, runtime: {
+        load: { status: 'not_checked', code: 'RUNTIME_VALIDATION_UNAVAILABLE' },
+        skillDiscovery: { status: 'not_checked' }, skillRead: { status: 'not_checked' },
+      } })
       expect(await manager.preflight(handle.workspaceId, signal)).toEqual(before)
       expect(await readFile(join(handle.targetPath, 'manifest.json'), 'utf8')).toBe(manifestBefore)
       expect(JSON.parse(manifestBefore).artifacts.some((item: { path: string }) => item.path.startsWith('skills/'))).toBe(false)
