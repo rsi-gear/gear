@@ -486,10 +486,18 @@ the summary and patch digest remain authoritative.
 ```
 
 `check` is optional; the only accepted value is `compiler`. Runs Gear's fixed
-workspace validation/compiler and returns the backward-compatible `ok:true`
-and summary plus separate `compiler` and `finalizationReadiness` objects. It
-does not run the seed or held-out benchmark. Do not finalize while readiness is
-false; execute its typed `nextActions` first.
+workspace validation/compiler and returns `ok`, `okScope: "configured_checks"`,
+the diff summary, `static`, `compiler`, `runtime`, and `finalizationReadiness`.
+Runtime stages (`load`, `skillDiscovery`, `skillRead`, `cleanup`) distinguish
+`passed`, `failed`, and `not_checked`. A legacy/no-op compiler can return
+`ok: true` while runtime stages remain `not_checked`; this is not proof of
+loading. The configured DSH checker runs the actual Target carrier in a
+disposable snapshot and reads Skills through the native tool. Its missing or
+invalid report is a failure, even with a zero process exit code. Failures
+include the failed stage and bounded diagnostics. Fix candidate errors and
+retry; missing fixed dependencies require deployment support, not candidate
+dependency edits. This check never runs a benchmark or requests a model.
+Do not finalize while readiness is false; execute its typed `nextActions` first.
 
 ### `candidate.finalize`
 

@@ -20,10 +20,10 @@ it.each(['skill', 'full harness'])('loads the documented %s with real DSH tools 
   try {
     const files = await (layout === 'skill' ? documentedSkillCandidate() : documentedHarnessCandidate())
     expect(Object.keys(files).sort()).toEqual(layout === 'skill' ? [
-      'plugins/skill-loader.js', 'preset/agent.cordis.yml', 'skills/verify-change/SKILL.md',
+      'skills/verify-change/SKILL.md',
     ] : [
       'plugins/action-verifier.js', 'plugins/policy.js', 'plugins/post-action.js', 'plugins/pre-action.js',
-      'plugins/prompt-pack.js', 'plugins/skill-loader.js', 'plugins/workflow-guidance.js',
+      'plugins/prompt-pack.js', 'plugins/workflow-guidance.js',
       'preset/agent.cordis.yml', 'prompts/verification.md', 'skills/verify-change/SKILL.md',
       'workflows/diagnose-and-verify.md',
     ])
@@ -41,14 +41,15 @@ it.each(['skill', 'full harness'])('loads the documented %s with real DSH tools 
     // The native skill tool declares agents but does not call the agent factory.
     ctx.provide('agents', {} as never)
     await ctx.plugin(toolSkill)
-    await ctx.plugin(skillFilesystem, { providerName: 'filesystem', includeDefaultRoots: false })
+    await ctx.plugin(skillFilesystem, { providerName: 'filesystem', includeDefaultRoots: false,
+      customSkillDirs: [join(root, 'skills')] })
     await ctx.plugin(Loader)
     ctx.loader.builtins.include = Include
-    await ctx.loader.create({ name: 'cordis:include', config: { path: './preset/agent.cordis.yml' } })
+    if (layout === 'full harness') await ctx.loader.create({ name: 'cordis:include', config: { path: './preset/agent.cordis.yml' } })
     await ctx.loader.await()
 
     const catalog = await ctx.skills.list({ cwd: process.cwd() })
-    expect(catalog).toEqual([expect.objectContaining({ name: 'verify-change', provider: 'gear-target' })])
+    expect(catalog).toEqual([expect.objectContaining({ name: 'verify-change', provider: 'filesystem' })])
     const skill = await ctx.skills.get('verify-change', { cwd: process.cwd() })
     expect(skill?.resourceBase).toEqual({ kind: 'directory', path: join(root, 'skills/verify-change') })
     const result = await ctx.tools.execute({
@@ -56,7 +57,7 @@ it.each(['skill', 'full harness'])('loads the documented %s with real DSH tools 
       callId: CallId('load-documented-skill'), signal: new AbortController().signal,
     })
     expect(result.isError).toBe(false)
-    expect(result.value).toMatchObject({ name: 'verify-change', provider: 'gear-target', content: skill?.content })
+    expect(result.value).toMatchObject({ name: 'verify-change', provider: 'filesystem', content: skill?.content })
     expect(result.content).toEqual([expect.objectContaining({
       type: 'text', text: expect.stringContaining('Treat zero selected tests as no verification.'),
     })])

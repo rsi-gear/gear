@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import type { HarnessBuilder } from './harness/builder.js'
+import { CompilerCheckError, candidateCheckReport, uncheckedRuntime, type CandidateCheckReport } from './harness/check-report.js'
 import type { RefineService } from './refine/service.js'
 import { projectTrajectory } from './evaluator/trajectory-projection.js'
 import { digestJson } from './state/digest.js'
@@ -236,7 +237,8 @@ export class RefineCapabilities {
       if (parentHarnessRef === undefined || parentHarnessDigest === undefined) throw new Error('candidate parent is unavailable')
       const manifest = await this.builder.readManifest(parentHarnessRef)
       if (manifest.digest !== parentHarnessDigest) throw new Error('candidate parent manifest digest does not match its Git commit')
-      return publicJson({ ref: parentHarnessRef, digest: parentHarnessDigest, manifest })
+      return publicJson({ ref: parentHarnessRef, digest: parentHarnessDigest, manifest,
+        validation: this.builder.validationCapabilities() })
     }
     if (method === 'harness.read') {
       if (parentHarnessRef === undefined) throw new Error('candidate parent is unavailable')
@@ -506,8 +508,20 @@ export class RefineCapabilities {
     if (method === 'candidate.check') {
       const check = this.optionalString(args, 'check')
       if (check !== undefined && check !== 'compiler') throw new TypeError('candidate_check only supports the fixed "compiler" pipeline')
-      await this.service.workspaceManager.withOpenWorkspace(sessionId, true, async handle => this.builder.checkWorkspace(handle, signal))
-      const summary = await this.service.workspaceManager.preflight(workspace.workspaceId, signal)
+      let report: CandidateCheckReport
+      let summary
+      try {
+        summary = await this.service.workspaceManager.preflight(workspace.workspaceId, signal)
+        report = await this.service.workspaceManager.withOpenWorkspace(sessionId, true, async handle => this.builder.checkWorkspace(handle, signal))
+        summary = await this.service.workspaceManager.preflight(workspace.workspaceId, signal)
+      } catch (error) {
+        signal.throwIfAborted()
+        report = error instanceof CompilerCheckError ? candidateCheckReport(error.report) : {
+          ok: false, okScope: 'configured_checks',
+          static: { status: 'failed', message: String(error instanceof Error ? error.message : error).slice(-4000) },
+          compiler: { ok: false, status: 'not_checked' }, runtime: uncheckedRuntime('', 'STATIC_CHECK_FAILED'),
+        }
+      }
       const readiness = baseline === undefined
         ? undefined
         : finalizationReadiness(
@@ -515,13 +529,13 @@ export class RefineCapabilities {
             meta.proposalEvidenceAudit(activeRoundId, sessionId, []),
             this.trajectoryBlockers(sessionId, activeRoundId, baseline),
           )
-      return {
-        ok: true,
+      return publicJson(this.sanitize({
+        ...report,
         summary,
-        compiler: { ok: true, summary },
+        compiler: { ...report.compiler, summary },
         ...(readiness === undefined ? {} : { finalizationReadiness: readiness }),
         ...this.generationBudgetStatus(sessionId),
-      }
+      }, undefined))
     }
     if (method === 'candidate.finalize' || method === 'candidate.decline') {
       const finalization = method === 'candidate.decline' ? null : this.finalization(args)

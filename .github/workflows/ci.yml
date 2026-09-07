@@ -53,6 +53,16 @@ jobs:
       - run: npm ci
       - name: Test as the production service user
         run: sudo env "PATH=$PATH" npm run test:sandbox:platform
+      - name: Install the fixed Target runtime
+        run: |
+          npm install --global pnpm@11.7.0
+          node examples/dsh-codex-luna/bootstrap-target.mjs
+        env:
+          GEAR_LAB_ROOT: ${{ runner.temp }}/gear-runtime-contract
+      - name: Check real Target loading and native Skill reads in the sandbox
+        run: sudo env "PATH=$PATH" "GEAR_TEST_DSH_RUNTIME_ROOT=$GEAR_TEST_DSH_RUNTIME_ROOT" GEAR_TEST_RUNTIME_SANDBOX=required node node_modules/vitest/vitest.mjs run tests/integration/dsh-runtime-check.spec.ts
+        env:
+          GEAR_TEST_DSH_RUNTIME_ROOT: ${{ runner.temp }}/gear-runtime-contract/target-dsh
 
   sandbox-macos:
     name: Sandbox / macOS

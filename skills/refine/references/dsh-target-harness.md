@@ -2,8 +2,9 @@
 
 This reference is mandatory when the Refine target is Gear's DeepSeek Harness
 (DSH) carrier. It describes the carrier shipped with Gear and the DSH
-`0.1.0-rc.8` APIs that the carrier locks. Do not transfer these exact APIs to a
-different DSH version without inspecting that version's source.
+`0.1.1-rc.2` Skill loading contract that the carrier locks. The general extension
+examples retain their rc8 API audit below; inspect the locked version before
+using another API or changing DSH versions.
 
 The API contracts and examples below were audited against the official
 `dsh-v0.1.0-rc.8` tag at commit
@@ -27,24 +28,26 @@ automatically scan all five:
 | `preset/` | Cordis composition: the list of plugins and providers that form the target overlay | Yes, but only `preset/agent.cordis.yml` | Gear's fixed loader includes this exact file |
 | `plugins/` | Native Cordis/DSH plugins: prompt sections, hooks, policies, tools, and resource loaders | No | Add a relative `name` row to the preset |
 | `prompts/` | Reusable model-facing prompt text | No | A loaded plugin must read it and register a prompt section or context |
-| `skills/` | On-demand Agent Skills and their bundle resources | No | A loaded `dsh-skill-filesystem` provider must scan the directory |
+| `skills/` | On-demand Agent Skills and their bundle resources | Yes | The fixed carrier configures the existing `skill-filesystem` provider to scan `harness/skills` |
 | `workflows/` | Reusable multi-step procedures or DSH workflow-tool script templates | No | A loaded plugin or skill must expose the procedure to the model |
 
 The effective graph is therefore:
 
 ```text
-Gear fixed target loader
-  -> preset/agent.cordis.yml
-       -> plugins/*.js
-            -> prompts/*.md
-            -> workflows/*.md or *.js
-            -> @deepseek-ai/dsh-skill-filesystem
-                 -> skills/<skill-name>/SKILL.md
+Gear fixed carrier profile
+  -> skill-filesystem (existing filesystem provider)
+       -> harness/skills/<skill-name>/SKILL.md
+  -> fixed target loader
+       -> preset/agent.cordis.yml
+            -> plugins/*.js
+                 -> prompts/*.md
+                 -> workflows/*.md or *.js
 ```
 
-An unreferenced file in `plugins/`, `prompts/`, `skills/`, or `workflows/`
-does nothing. Creating the file and creating its connection are one logical
-candidate change.
+An unreferenced file in `plugins/`, `prompts/`, or `workflows/` does nothing.
+Creating those files and their connections is one logical candidate change.
+Valid Skill files already have a connection through the fixed carrier; ordinary
+file Skills require no candidate loader or preset registration.
 
 The fixed carrier also owns the sandbox, approval mode, dependencies,
 toolchain, target loader, and `manifest.json`. Candidate code must not try to
@@ -98,21 +101,23 @@ The important fields are:
 Resolution rules:
 
 - `../plugins/policy.js` is relative to `preset/agent.cordis.yml`.
-- A bare package such as `@deepseek-ai/dsh-skill-filesystem` resolves from the
-  fixed harness installation. It must already be in the locked toolchain; a
-  candidate cannot add dependencies.
+- Candidate JavaScript imports resolve from the candidate file's own location.
+  Only directly exposed carrier dependencies are available. A transitive package
+  in pnpm's store or DSH's profile fallback is not a candidate dependency. The
+  import allowlist permits names; it does not install or expose those packages.
+  A candidate cannot add dependencies.
 - Keep candidate presets as ordinary YAML. Gear's composition check does not
   support the Cordis `!!js` tag, including in `config` or `disabled` fields.
-- Calculate absolute resource paths in a JavaScript loader plugin using
-  `import.meta.url`, as in the skill example below.
+- For prompt/workflow resource loaders, calculate absolute paths using
+  `import.meta.url`. File Skills need no loader.
 - The default import allowlist permits `@deepseek-ai/` packages and valid
   `node:` builtins such as `node:url` and `node:fs/promises`. Bare builtin names
   such as `url` are not implicitly allowed. A custom allowlist replaces these
   defaults; `node:` grants the builtin namespace, while `node:url` grants only
   that exact import.
 
-Example composition connecting one policy plugin, one prompt loader, one
-isolated skill provider, and one workflow-guidance loader:
+Example composition connecting a policy plugin, a prompt loader, and a
+workflow-guidance loader:
 
 ```yaml
 - id: target-policy
@@ -121,18 +126,14 @@ isolated skill provider, and one workflow-guidance loader:
 - id: target-prompt-pack
   name: ../plugins/prompt-pack.js
 
-- id: target-skills
-  name: ../plugins/skill-loader.js
-
 - id: target-workflow-guidance
   name: ../plugins/workflow-guidance.js
 ```
 
-The Gear rc8 carrier already supplies the main DSH services and model-facing
+The Gear carrier already supplies the main DSH services and model-facing
 tools. Do not duplicate base rows merely because a service is injected by a
-custom plugin. For example, the custom skill row above adds a uniquely named
-provider to the existing `ctx.skills` registry; it does not add a second skill
-registry or a second `tool-skill` row.
+custom plugin. Ordinary file Skills use the existing `filesystem` provider and
+`skill` tool without adding another registry, provider, or consumer.
 
 ## `plugins/`: native DSH extensions
 
@@ -469,7 +470,7 @@ and avoids an unnecessary file and registration edit.
 Use a skill when detailed instructions are useful only for a recognizable
 class of tasks. Skills keep the full body out of every request until selected.
 
-The rc8 filesystem provider recognizes exactly one level of either form:
+The locked rc.2 filesystem provider recognizes exactly one level of either form:
 
 ```text
 skills/<name>/SKILL.md
@@ -496,44 +497,30 @@ justifies it. Treat zero selected tests as no verification. Report the command,
 exit status, and any remaining gap.
 ```
 
-Connect the Gear-level `skills/` sibling directory with an isolated provider
-through `plugins/skill-loader.js`. The fixed toolchain must already include
-`@deepseek-ai/dsh-skill-filesystem`.
+The fixed carrier's `fixed/target.patch.yml` adds the absolute
+`<repositoryRoot>/harness/skills` directory to the existing `skill-filesystem`
+provider's `customSkillDirs`. Its provider name is `filesystem`. Task sessions
+may run elsewhere (for example `/app`); discovery does not depend on the task
+cwd being inside the carrier repository.
 
-`plugins/skill-loader.js`:
+To add this Skill, create only `skills/verify-change/SKILL.md` and any referenced
+bundle resources through the candidate tools. Do not create `skill-loader.js`
+or add a preset row for an ordinary file Skill. Do not change the fixed patch.
+The model sees the catalog summary and reads the body through the native tool:
 
-```js
-import { fileURLToPath } from 'node:url'
-import * as skillFilesystem from '@deepseek-ai/dsh-skill-filesystem'
-
-export const name = 'target-skill-loader'
-export const inject = ['skills']
-
-export function apply(ctx) {
-  ctx.plugin(skillFilesystem, {
-    providerName: 'gear-target',
-    includeDefaultRoots: false,
-    customSkillDirs: [fileURLToPath(new URL('../skills/', import.meta.url))],
-  })
-}
+```json
+{"name":"verify-change"}
 ```
 
-`preset/agent.cordis.yml`:
+This is the `skill` tool's argument object. Discovery and native reads are
+runtime checks; whether the model selects the Skill at the right time requires
+separate behavioral evaluation.
 
-```yaml
-- id: target-skills
-  name: ../plugins/skill-loader.js
-```
-
-Why every config field matters here:
-
-- `providerName` must be unique because the fixed carrier already has its
-  normal filesystem provider.
-- `includeDefaultRoots: false` prevents this added provider from rediscovering
-  project, user, and bundled skills under a second provider identity.
-- `../skills/` is relative to the loader's `plugins/` directory through
-  `import.meta.url`; `fileURLToPath` produces the absolute path the provider
-  expects, independently of the process working directory.
+A custom provider is an extension for other resource sources, not the default
+file Skill path. It needs a unique provider name, suitable directory isolation,
+and imports explicitly exposed by the fixed carrier. The mere presence of
+`@deepseek-ai/dsh-skill-filesystem` as a DSH transitive dependency does not make
+it importable by a candidate plugin.
 
 Skill names must be kebab-case. Frontmatter requires `name` and `description`;
 `whenToUse`, `metadata`, `disable-model-invocation`, and `user-invocable` are
@@ -658,7 +645,6 @@ plugins/
   pre-action.js
   action-verifier.js
   prompt-pack.js
-  skill-loader.js
   workflow-guidance.js
 prompts/
   verification.md
@@ -669,7 +655,7 @@ workflows/
   diagnose-and-verify.md
 ```
 
-Its preset must connect every live resource:
+Its preset connects the plugins; Skill discovery is supplied by the fixed carrier:
 
 ```yaml
 - id: target-policy
@@ -683,9 +669,6 @@ Its preset must connect every live resource:
 
 - id: target-prompt-pack
   name: ../plugins/prompt-pack.js
-
-- id: target-skills
-  name: ../plugins/skill-loader.js
 
 - id: target-workflow-guidance
   name: ../plugins/workflow-guidance.js
@@ -707,9 +690,9 @@ Inspect the authoritative diff with `candidate.diff` in skill mode or
 - A post-action decision does not specify both `content` and `value`.
 - A post-action block is not being mistaken for rollback of an executed side
   effect.
-- Every prompt, skill, and workflow resource has a live connection.
-- The skill provider uses a unique provider name and the correct
-  `../skills/` path relative to the loader's `import.meta.url`.
+- Every prompt and workflow resource has a live connection.
+- Each file Skill uses a supported single-level layout with valid frontmatter;
+  the fixed carrier supplies its provider connection.
 - No candidate adds a package, edits fixed sandbox/approval behavior, or
   writes `manifest.json`.
 - The change is general to the observed failure pattern and contains no seed
@@ -717,9 +700,14 @@ Inspect the authoritative diff with `candidate.diff` in skill mode or
 
 Then use `meta.call` with capability `candidate.check` and arguments
 `{"check":"compiler"}` in skill mode, or call `candidate_check` in Native DSH
-Meta mode. A successful check proves composition/import validation and the
-configured compiler pipeline passed. It proves runtime loading only if that
-pipeline actually loads the carrier; a no-op compiler does not. Verify new
-resource loaders against the locked DSH runtime, including skill discovery and
-native skill-tool reads. The behavioral hypothesis remains subject to Gear
-evaluation.
+Meta mode. Inspect `static`, `compiler`, and `runtime` separately. With the
+fixed DSH runtime checker configured, `runtime.load`, `runtime.skillDiscovery`,
+`runtime.skillRead`, and `runtime.cleanup` report actual execution against the
+Target installation, with candidate and dependency-lock digests. Repair a
+failed stage and check again. `not_checked` is not success: a legacy/no-op
+compiler leaves runtime coverage unverified. `harness.current.validation`
+exposes whether runtime validation is configured. If it is unavailable, record
+that limitation and request deployment support; this alone is not evidence
+that a Skill is invalid or that the intervention must become prompt-only.
+`finalizationReadiness` concerns diagnostic prerequisites, not runtime loading.
+The behavioral hypothesis remains subject to Gear evaluation.

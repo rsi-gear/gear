@@ -7,6 +7,11 @@
   config:
     policy: never
 
+- id: skill-filesystem
+  config:
+    customSkillDirs:
+      - !!js process.env.DSH_REFINE_REPOSITORY + '/harness/skills'
+
 - id: permission
   config:
     presets:

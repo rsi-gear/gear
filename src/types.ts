@@ -1094,6 +1094,7 @@ export interface MetaTurnObservation {
 }
 
 export interface CandidateRecord {
+  validation?: import('./harness/check-report.js').CandidateCheckReport
   candidateId: string
   roundId: string
   parentHarnessRef: HarnessRef
@@ -1427,6 +1428,7 @@ export interface RefineEvaluator {
 }
 
 export interface PreparedHarness {
+  validation?: import('./harness/check-report.js').CandidateCheckReport
   ref: HarnessRef
   digest: string
   treeOid: GitObjectId

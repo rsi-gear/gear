@@ -16,10 +16,12 @@ describe('published Gear bundle', () => {
     expect(pkg.files).toContain('cordis.patch.yml')
     expect(pkg.files).toContain('assets/llm-verifier-bridge.py')
     expect(pkg.files).toContain('assets/hitch-codex-wrapper.mjs')
+    expect(pkg.files).toContain('assets/dsh-runtime-check.mjs')
     expect(pkg.files).toContain('skills/refine/**')
     expect(pkg.bin).toEqual({
       'gear-refine': './lib/cli.js',
       'gear-hitch-codex': './assets/hitch-codex-wrapper.mjs',
+      'gear-dsh-runtime-check': './assets/dsh-runtime-check.mjs',
     })
     expect(pkg.exports).toHaveProperty('./skill')
     const skillPath = resolve(root, 'skills/refine/SKILL.md')
