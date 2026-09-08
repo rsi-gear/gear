@@ -7,7 +7,21 @@ import { projectTrajectory } from './evaluator/trajectory-projection.js'
 import { digestJson } from './state/digest.js'
 import type { CandidateDiagnosisRecord } from './state/candidate-diagnosis.js'
 import { finalizationReadiness, receiptIsValid, recoveryRequired } from './refine/finalization-readiness.js'
+import type { RefineStateStore } from './state/store.js'
 import { previewVerifierFeedback, previewVerifierProcess } from './meta/verifier-preview.js'
+import { PUBLIC_SENSITIVE_KEY, sanitizePublicValue } from './meta/sanitize.js'
+import {
+  EXPERIENCE_V1_MAX_CARD_BYTES,
+  EXPERIENCE_V1_MAX_QUERY_BYTES,
+  EXPERIENCE_V1_MAX_QUERY_RESULTS,
+  EXPERIENCE_V1_MAX_READ_BYTES,
+  EXPERIENCE_V1_MAX_READ_ITEMS,
+  experienceDigestFromRef,
+  loadSeedExperienceSnapshot,
+  rankSeedExperience,
+  renderSeedExperienceCard,
+  type SeedExperienceQuery,
+} from './experience/memory.js'
 import type {
   CandidateFinalization,
   ContentExcerpt,
@@ -19,6 +33,8 @@ import type {
   MetaFailureCard,
   RefineBridgeRequestMap,
   RefinementRound,
+  SeedExperienceEffect,
+  SeedExperienceRecord,
   SemanticTarget,
   SessionRole,
   TrajectoryEvidenceBlocker,
@@ -108,6 +124,16 @@ interface TrajectoryDetailRead {
   diagnosis?: { evalId: string; runId: string; receipt: DiagnosisReceipt; recovery?: Omit<CandidateDiagnosisRecord, 'receipt' | 'source'> }
 }
 
+interface ExperienceQueryCursor {
+  sessionId: string
+  roundId: string
+  snapshotDigest: string
+  queryDigest: string
+  query: SeedExperienceQuery
+  offset: number
+  limit: number
+}
+
 function objectValue(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -129,14 +155,26 @@ function readableMessage(value: unknown, depth = 0): string {
   return JSON.stringify(value, null, 2)
 }
 
-const SENSITIVE_KEY = /(?:api[_-]?key|authorization|credential|password|secret|token)/iu
-
 function boundedUtf8(value: string, maxBytes: number): string {
   if (Buffer.byteLength(value) <= maxBytes) return value
   const suffix = '…'
   const budget = Math.max(0, maxBytes - Buffer.byteLength(suffix))
   const prefix = Buffer.from(value).subarray(0, budget).toString('utf8').replace(/\uFFFD+$/u, '')
   return `${prefix}${suffix}`
+}
+
+function splitUtf8Tail(value: string, maxBytes: number): { earlier: string; tail: string } {
+  let start = value.length
+  let bytes = 0
+  const values = Array.from(value)
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    const character = values[index]!
+    const nextBytes = Buffer.byteLength(character)
+    if (bytes + nextBytes > maxBytes) break
+    start -= character.length
+    bytes += nextBytes
+  }
+  return { earlier: value.slice(0, start), tail: value.slice(start) }
 }
 
 function characters(value: string): string[] {
@@ -166,6 +204,7 @@ export class RefineCapabilities {
   private readonly trajectoryProjections = new Map<string, SharedProjectionLoad>()
   private readonly trajectoryEvidenceBlockers = new Map<string, TrajectoryEvidenceBlocker>()
   private readonly trajectoryDetailRefs = new Map<string, TrajectoryDetailRef>()
+  private readonly experienceQueryCursors = new Map<string, ExperienceQueryCursor>()
   private trajectoryProjectionCacheBytes = 0
 
   constructor(
@@ -264,6 +303,23 @@ export class RefineCapabilities {
       }
       if (this.options.seedTasksPath === undefined) return { tasks: [] }
       return publicJson(JSON.parse(await readFile(this.options.seedTasksPath, 'utf8')))
+    }
+    if (method === 'experience.query' || method === 'experience.read') {
+      if (spec.experienceMemory?.enabled !== true) {
+        throw new Error('seed experience memory is not enabled for this immutable evolution')
+      }
+      const activeRound = await store.readRound(activeRoundId)
+      if (activeRound?.experienceSnapshot === undefined) {
+        throw new Error('the active round has no sealed seed experience snapshot')
+      }
+      const response = await (method === 'experience.query'
+        ? this.queryExperience(sessionId, store, activeRound, parentHarnessRef, args)
+        : this.readExperience(sessionId, store, activeRound, args, signal))
+      return this.experienceResponse(
+        response,
+        activeRound.heldOutRef,
+        method === 'experience.query' ? EXPERIENCE_V1_MAX_QUERY_BYTES : EXPERIENCE_V1_MAX_READ_BYTES,
+      )
     }
     if (method === 'trajectory.query') {
       assertOnlyKeys(args, ['refs', 'detailRef', 'find'])
@@ -559,7 +615,7 @@ export class RefineCapabilities {
   }
 
   private sanitizationPolicyDigest(): string {
-    return digestJson({ sensitiveKeyPattern: SENSITIVE_KEY.source,
+    return digestJson({ sensitiveKeyPattern: PUBLIC_SENSITIVE_KEY.source,
       secretDigests: this.secretValues.map(value => digestJson(value)).sort() })
   }
 
@@ -651,6 +707,486 @@ export class RefineCapabilities {
           message: 'Remaining diagnosis may consume the time reserved for editing and validation. Deadlines do not reset on reconnect. A larger budget requires a new evolution.',
         } : {}),
     } }
+  }
+
+  private async queryExperience(
+    sessionId: string,
+    store: RefineStateStore,
+    round: RefinementRound,
+    parentHarnessRef: string | undefined,
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const snapshot = round.experienceSnapshot!
+    let query: SeedExperienceQuery
+    let queryDigest: string
+    let offset = 0
+    let limit: number
+    const cursorRef = this.optionalString(args, 'cursor')
+    if (cursorRef !== undefined) {
+      assertOnlyKeys(args, ['cursor'])
+      const cursor = this.experienceQueryCursors.get(cursorRef)
+      if (cursor === undefined || cursor.sessionId !== sessionId || cursor.roundId !== round.roundId
+        || cursor.snapshotDigest !== snapshot.digest) {
+        throw new Error('experience cursor is unknown or no longer valid for this Meta task')
+      }
+      query = structuredClone(cursor.query)
+      queryDigest = cursor.queryDigest
+      offset = cursor.offset
+      limit = cursor.limit
+    } else {
+      assertOnlyKeys(args, ['query', 'taskNames', 'semanticTargets', 'paths', 'effects', 'limit', 'cursor'])
+      const text = this.optionalString(args, 'query')
+      if (text !== undefined && Buffer.byteLength(text) > 1_000) throw new TypeError('experience query is limited to 1000 bytes')
+      const taskNames = this.optionalStrings(args, 'taskNames')
+      const semanticTargets = this.optionalStrings(args, 'semanticTargets')
+      const paths = this.optionalStrings(args, 'paths')
+      const effects = this.optionalStrings(args, 'effects')
+      for (const [name, values, maxLength] of [
+        ['taskNames', taskNames, 240], ['semanticTargets', semanticTargets, 32],
+        ['paths', paths, 500], ['effects', effects, 32],
+      ] as const) {
+        if ((values?.length ?? 0) > 20 || values?.some(value => value.length > maxLength)) {
+          throw new TypeError(`${name} accepts at most 20 bounded values`)
+        }
+      }
+      const allowedTargets = new Set<SemanticTarget>([
+        'context', 'pre_action', 'routing', 'post_action', 'action_verifier',
+        'skill', 'tool', 'workflow', 'compaction',
+      ])
+      if (semanticTargets?.some(value => !allowedTargets.has(value as SemanticTarget))) {
+        throw new TypeError('semanticTargets contains an unknown target')
+      }
+      const allowedEffects = new Set<SeedExperienceEffect>([
+        'improved', 'regressed', 'mixed', 'unchanged', 'insufficient',
+      ])
+      if (effects?.some(value => !allowedEffects.has(value as SeedExperienceEffect))) {
+        throw new TypeError('effects contains an unknown seed outcome')
+      }
+      if (paths?.some(path => path.startsWith('/') || path.includes('\\')
+        || path.split('/').some(segment => segment.length === 0 || segment === '.' || segment === '..'))) {
+        throw new TypeError('paths must contain normalized relative harness paths')
+      }
+      query = {
+        ...(text === undefined ? {} : { query: text }),
+        ...(taskNames === undefined ? {} : { taskNames: [...new Set(taskNames)].sort() }),
+        ...(semanticTargets === undefined ? {} : {
+          semanticTargets: [...new Set(semanticTargets)].sort() as SemanticTarget[],
+        }),
+        ...(paths === undefined ? {} : { paths: [...new Set(paths)].sort() }),
+        ...(effects === undefined ? {} : {
+          effects: [...new Set(effects)].sort() as SeedExperienceEffect[],
+        }),
+      }
+      const requestedLimit = this.optionalInteger(args, 'limit') ?? 5
+      if (requestedLimit < 1 || requestedLimit > EXPERIENCE_V1_MAX_QUERY_RESULTS) {
+        throw new TypeError(`experience query limit must be between 1 and ${EXPERIENCE_V1_MAX_QUERY_RESULTS}`)
+      }
+      limit = requestedLimit
+      queryDigest = digestJson({ snapshotDigest: snapshot.digest, query })
+    }
+
+    const loaded = await loadSeedExperienceSnapshot(store, snapshot)
+    if (loaded.unavailableRecordIds.length > 0) {
+      throw new Error(`seed experience snapshot is incomplete; unavailable record IDs: ${loaded.unavailableRecordIds.join(', ')}`)
+    }
+    const ranked = rankSeedExperience(loaded.records, query, parentHarnessRef)
+    const results: Array<Record<string, unknown>> = []
+    let nextOffset = offset
+    for (const item of ranked.slice(offset, offset + limit)) {
+      const card = renderSeedExperienceCard(item.record, item.matchReasons)
+      const result = {
+        ...card,
+        markdown: this.experienceText(card.markdown, round.heldOutRef, EXPERIENCE_V1_MAX_CARD_BYTES),
+        matchReasons: card.matchReasons.map(reason => this.experienceText(reason, round.heldOutRef, 300)),
+        recordDigest: item.record.recordDigest,
+        seedProjectionDigest: item.record.seedProjectionDigest,
+        relevanceScore: item.score,
+      }
+      const trial = {
+        schemaVersion: 1,
+        snapshotDigest: snapshot.digest,
+        queryDigest,
+        results: [...results, result],
+      }
+      if (this.experienceResponseBytes(trial, round.heldOutRef) > EXPERIENCE_V1_MAX_QUERY_BYTES - 256) break
+      results.push(result)
+      nextOffset += 1
+    }
+    let nextCursor: string | undefined
+    if (nextOffset < ranked.length) {
+      nextCursor = `experience_cursor_${randomBytes(16).toString('hex')}`
+      this.experienceQueryCursors.set(nextCursor, {
+        sessionId,
+        roundId: round.roundId,
+        snapshotDigest: snapshot.digest,
+        queryDigest,
+        query: structuredClone(query),
+        offset: nextOffset,
+        limit,
+      })
+      while (this.experienceQueryCursors.size > 4_096) {
+        const oldest = this.experienceQueryCursors.keys().next().value as string | undefined
+        if (oldest === undefined) break
+        this.experienceQueryCursors.delete(oldest)
+      }
+    }
+    const response = {
+      schemaVersion: 1,
+      snapshotDigest: snapshot.digest,
+      queryDigest,
+      results,
+      ...(nextCursor === undefined ? {} : { nextCursor }),
+    }
+    return response
+  }
+
+  private async readExperience(
+    sessionId: string,
+    store: RefineStateStore,
+    round: RefinementRound,
+    args: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    assertOnlyKeys(args, ['ref', 'view', 'offset', 'limit', 'runId', 'detailRef', 'find'])
+    const ref = this.string(args, 'ref')
+    const view = this.string(args, 'view')
+    if (!['record', 'card', 'task-results', 'diff', 'trajectory'].includes(view)) {
+      throw new TypeError('experience read view must be record, card, task-results, diff, or trajectory')
+    }
+    const digest = experienceDigestFromRef(ref)
+    const snapshot = round.experienceSnapshot!
+    const member = digest === undefined ? undefined : snapshot.members.find(item => item.recordDigest === digest)
+    if (member === undefined) throw new Error('experience ref is not authorized by the active round snapshot')
+    let experience: SeedExperienceRecord | undefined
+    try {
+      experience = await store.readExperienceRecord(member.recordDigest)
+    } catch {
+      experience = undefined
+    }
+    if (experience === undefined || experience.recordId !== member.recordId
+      || experience.source.evolutionId !== round.evolutionId
+      || experience.source.roundId !== member.sourceRoundId
+      || experience.source.candidateId !== member.candidateId
+      || experience.source.candidateHarnessRef !== member.candidateHarnessRef) {
+      return {
+        schemaVersion: 1,
+        available: false,
+        snapshotDigest: snapshot.digest,
+        ref,
+        reason: 'The exact seed experience revision sealed into this round is unavailable.',
+      }
+    }
+    const base = {
+      schemaVersion: 1,
+      available: true,
+      snapshotDigest: snapshot.digest,
+      ref,
+      recordId: experience.recordId,
+      recordDigest: experience.recordDigest,
+      seedProjectionDigest: experience.seedProjectionDigest,
+      view,
+    }
+    if (view === 'card') {
+      const card = renderSeedExperienceCard(experience)
+      return {
+        ...base,
+        card: {
+          ...card,
+          markdown: this.experienceText(card.markdown, round.heldOutRef, EXPERIENCE_V1_MAX_CARD_BYTES),
+        },
+      }
+    }
+
+    const offset = this.optionalInteger(args, 'offset') ?? 0
+    const limit = this.optionalInteger(args, 'limit') ?? 20
+    if (limit < 1 || limit > EXPERIENCE_V1_MAX_READ_ITEMS) {
+      throw new TypeError(`experience read limit must be between 1 and ${EXPERIENCE_V1_MAX_READ_ITEMS}`)
+    }
+    if (view === 'record') {
+      const page = this.experiencePage(base, experience.change.files.map(file => ({
+        ...file,
+        path: this.experienceText(file.path, round.heldOutRef, 500),
+      })), offset, limit)
+      const rationale = this.experienceText(experience.proposal.rationale, round.heldOutRef, 8 * 1024)
+      const expectedOutcome = this.experienceText(experience.proposal.expectedOutcome, round.heldOutRef, 8 * 1024)
+      const response = {
+        ...base,
+        record: {
+          schemaVersion: experience.schemaVersion,
+          source: experience.source,
+          applicability: experience.applicability,
+          proposal: {
+            rationale,
+            expectedOutcome,
+            semanticTargets: experience.proposal.semanticTargets,
+            ...(rationale !== experience.proposal.rationale || expectedOutcome !== experience.proposal.expectedOutcome
+              ? { claimsTruncated: true }
+              : {}),
+          },
+          change: {
+            patchDigest: experience.change.patchDigest,
+            totalBytes: experience.change.totalBytes,
+            files: page.items,
+          },
+          observation: {
+            comparison: experience.observation.comparison,
+            planned: experience.observation.planned,
+            valid: experience.observation.valid,
+            excluded: experience.observation.excluded,
+            baselineInvalid: experience.observation.baselineInvalid,
+            candidateInvalid: experience.observation.candidateInvalid,
+            ...(experience.observation.baselineMean === undefined ? {} : {
+              baselineMean: experience.observation.baselineMean,
+              candidateMean: experience.observation.candidateMean,
+              meanRewardDelta: experience.observation.meanRewardDelta,
+            }),
+          },
+          classification: experience.classification,
+        },
+        offset,
+        ...(page.nextOffset === undefined ? {} : { nextOffset: page.nextOffset }),
+      }
+      return response
+    }
+    if (view === 'task-results') {
+      const items = [
+        ...experience.observation.taskResults,
+        ...experience.observation.excludedTaskResults,
+      ].sort((left, right) => left.trialKey.localeCompare(right.trialKey)).map(item => this.publicExperienceTask(item, round.heldOutRef))
+      const page = this.experiencePage(base, items, offset, limit)
+      return {
+        ...base,
+        coverage: {
+          planned: experience.observation.planned,
+          valid: experience.observation.valid,
+          excluded: experience.observation.excluded,
+        },
+        offset,
+        results: page.items,
+        ...(page.nextOffset === undefined ? {} : { nextOffset: page.nextOffset }),
+      }
+    }
+    if (view === 'diff') {
+      const selectedFiles = experience.change.files.slice(offset, offset + limit)
+      if (selectedFiles.length === 0) throw new TypeError('experience diff offset is outside the changed-file list')
+      const visibleFiles = selectedFiles.map(file => ({
+        ...file,
+        path: this.experienceText(file.path, round.heldOutRef, 500),
+      }))
+      const nextOffset = offset + selectedFiles.length < experience.change.files.length
+        ? offset + selectedFiles.length
+        : undefined
+      try {
+        const diff = await this.builder.readHarnessDiff(
+          experience.source.parentHarnessRef,
+          experience.source.candidateHarnessRef,
+          selectedFiles.map(file => file.path),
+          EXPERIENCE_V1_MAX_READ_BYTES,
+          signal,
+        )
+        const safePatch = this.sanitize(diff.patch, round.heldOutRef) as string
+        const responseForPatch = (patch: string): Record<string, unknown> => ({
+          ...base,
+          change: {
+            patchDigest: experience.change.patchDigest,
+            totalBytes: experience.change.totalBytes,
+            fileCount: experience.change.files.length,
+            files: visibleFiles,
+          },
+          offset,
+          ...(nextOffset === undefined ? {} : { nextOffset }),
+          diff: {
+            parentRef: diff.parentRef,
+            candidateRef: diff.candidateRef,
+            paths: visibleFiles.map(file => file.path),
+            patch,
+            patchBytes: diff.patchBytes,
+            contentDigest: diff.contentDigest,
+            truncated: diff.truncated || patch !== safePatch,
+          },
+        })
+        const complete = responseForPatch(safePatch)
+        if (this.experienceResponseBytes(complete, round.heldOutRef) <= EXPERIENCE_V1_MAX_READ_BYTES) return complete
+
+        let low = 0
+        let high = Buffer.byteLength(safePatch)
+        let visiblePatch = ''
+        while (low <= high) {
+          const middle = Math.floor((low + high) / 2)
+          const candidatePatch = middle === 0 ? '' : boundedUtf8(safePatch, middle)
+          if (this.experienceResponseBytes(responseForPatch(candidatePatch), round.heldOutRef) <= EXPERIENCE_V1_MAX_READ_BYTES) {
+            visiblePatch = candidatePatch
+            low = middle + 1
+          } else {
+            high = middle - 1
+          }
+        }
+        return responseForPatch(visiblePatch)
+      } catch {
+        signal.throwIfAborted()
+        return {
+          ...base,
+          available: false,
+          reason: 'The verified candidate/parent Git objects for this historical diff are unavailable.',
+        }
+      }
+    }
+    return this.readExperienceTrajectory(sessionId, round, experience, base, args, signal)
+  }
+
+  private experiencePage(
+    base: Record<string, unknown>,
+    items: readonly unknown[],
+    offset: number,
+    limit: number,
+  ): { items: unknown[]; nextOffset?: number } {
+    const visible: unknown[] = []
+    let index = offset
+    while (index < items.length && visible.length < limit) {
+      const next = [...visible, items[index]]
+      if (Buffer.byteLength(JSON.stringify({ ...base, results: next })) > EXPERIENCE_V1_MAX_READ_BYTES - 512) break
+      visible.push(items[index])
+      index += 1
+    }
+    return { items: visible, ...(index < items.length ? { nextOffset: index } : {}) }
+  }
+
+  private publicExperienceTask(
+    item: SeedExperienceRecord['observation']['taskResults'][number]
+      | SeedExperienceRecord['observation']['excludedTaskResults'][number],
+    heldOutRef: string,
+  ): Record<string, unknown> {
+    const side = (value: typeof item.baseline): Record<string, unknown> => ({
+      status: value.status,
+      ...(value.trialName === undefined ? {} : { trialName: this.experienceText(value.trialName, heldOutRef, 300) }),
+      ...(value.runId === undefined ? {} : { runId: boundedUtf8(value.runId, 160) }),
+      ...(value.attempt === undefined ? {} : { attempt: value.attempt }),
+      ...(value.reward === undefined ? {} : { reward: value.reward }),
+    })
+    return {
+      valid: item.valid,
+      trialKey: boundedUtf8(item.trialKey, 600),
+      taskName: this.experienceText(item.taskName, heldOutRef, 300),
+      ...(item.attempt === undefined ? {} : { attempt: item.attempt }),
+      baseline: side(item.baseline),
+      candidate: side(item.candidate),
+      ...(item.valid ? { rewardDelta: item.rewardDelta } : { reasons: item.reasons }),
+    }
+  }
+
+  private async readExperienceTrajectory(
+    sessionId: string,
+    round: RefinementRound,
+    experience: SeedExperienceRecord,
+    base: Record<string, unknown>,
+    args: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    const detailRef = this.optionalString(args, 'detailRef')
+    const find = this.optionalString(args, 'find')
+    if (detailRef !== undefined) {
+      const detail = this.trajectoryDetailRefs.get(detailRef)
+      const allowedRuns = this.experienceRunIds(experience)
+      if (detail === undefined || detail.sessionId !== sessionId || detail.roundId !== experience.source.roundId
+        || !allowedRuns.has(detail.runId)) {
+        throw new Error('experience trajectory detailRef is unknown or not authorized by this record')
+      }
+      const read = await this.readTrajectoryDetail(
+        sessionId,
+        experience.source.roundId,
+        detailRef,
+        find,
+        round.heldOutRef,
+        signal,
+      )
+      // Historical reads deliberately do not record current-round diagnosis receipts.
+      return { ...base, runId: detail.runId, ...read.visible }
+    }
+    if (find !== undefined) throw new TypeError('find requires detailRef')
+    const runId = this.string(args, 'runId')
+    const item = this.experienceRunEvidence(experience, runId)
+    if (item === undefined) throw new Error('runId is not authorized by this seed experience record')
+    try {
+      const projection = await this.projectedTrajectory(runId, signal)
+      if (projection.runId !== runId || projection.coverage.surface !== 'complete' || projection.fidelity === 'unavailable') {
+        return {
+          ...base,
+          available: false,
+          runId,
+          reason: 'The bounded historical seed trajectory is incomplete or has an identity mismatch.',
+        }
+      }
+      const verifier = await this.loadVerifierEvidence(item, signal)
+      const card = this.failureCard(sessionId, item, projection, verifier, round.heldOutRef, 8 * 1024, 'bytes')
+      return {
+        ...base,
+        runId,
+        trajectoryDigest: projection.trajectoryDigest,
+        projectionVersion: 1,
+        card,
+      }
+    } catch {
+      signal.throwIfAborted()
+      return {
+        ...base,
+        available: false,
+        runId,
+        reason: 'The exact bounded trajectory for this recorded seed run is unavailable.',
+      }
+    }
+  }
+
+  private experienceRunIds(experience: SeedExperienceRecord): Set<string> {
+    return new Set([
+      ...experience.observation.taskResults,
+      ...experience.observation.excludedTaskResults,
+    ].flatMap(item => [item.baseline.runId, item.candidate.runId]
+      .filter((runId): runId is string => runId !== undefined)))
+  }
+
+  private experienceRunEvidence(experience: SeedExperienceRecord, runId: string): SeedRunEvidence | undefined {
+    for (const result of [
+      ...experience.observation.taskResults,
+      ...experience.observation.excludedTaskResults,
+    ]) {
+      for (const side of ['baseline', 'candidate'] as const) {
+        const trial = result[side]
+        if (trial.runId !== runId) continue
+        const invalidReason = result.valid ? undefined : result.reasons.join(', ')
+        return {
+          evolutionId: experience.source.evolutionId,
+          roundId: experience.source.roundId,
+          phase: side === 'baseline' ? 'seed-baseline' : 'seed-candidate',
+          evalId: side === 'baseline' ? experience.source.parentBaselineEvalId : experience.source.candidateEvalId,
+          trial: {
+            taskName: result.taskName,
+            ...(trial.trialName === undefined ? {} : { trialName: trial.trialName }),
+            runId,
+            ...(trial.attempt === undefined ? {} : { attempt: trial.attempt }),
+            status: trial.status === 'missing' ? 'errored' : trial.status,
+            ...(trial.reward === undefined ? {} : { rewards: { reward: trial.reward } }),
+            ...(invalidReason === undefined ? {} : { invalidReason }),
+          },
+        }
+      }
+    }
+    return undefined
+  }
+
+  private experienceText(value: string, heldOutRef: string, maxBytes: number): string {
+    return boundedUtf8(this.sanitize(value, heldOutRef) as string, maxBytes)
+  }
+
+  private experienceResponseBytes(value: unknown, heldOutRef: string): number {
+    return Buffer.byteLength(JSON.stringify(publicJson(this.sanitize(value, heldOutRef))))
+  }
+
+  private experienceResponse(value: unknown, heldOutRef: string, maxBytes: number): JsonValue {
+    const response = publicJson(this.sanitize(value, heldOutRef))
+    if (Buffer.byteLength(JSON.stringify(response)) > maxBytes) {
+      throw new Error(`bounded seed experience response exceeded its fixed ${maxBytes}-byte limit`)
+    }
+    return response
   }
 
   private async projectedTrajectory(
@@ -1050,6 +1586,8 @@ export class RefineCapabilities {
     projection: TrajectoryProjection,
     verifierEvidence: HitchVerifierEvidence,
     heldOutRef: string | undefined,
+    maxTranscript = 80_000,
+    transcriptBudget: 'characters' | 'bytes' = 'characters',
   ): MetaFailureCard {
     const reward = item.trial.rewards?.reward ?? Object.values(item.trial.rewards ?? {})[0]
     const actions = projection.semanticSteps.flatMap(step => step.toolActions)
@@ -1107,7 +1645,9 @@ export class RefineCapabilities {
         }),
       },
       verifier: this.verifierCard(sessionId, item, verifierEvidence, heldOutRef, 2_000),
-      transcript: this.transcriptWindow(sessionId, item, blocks.map(block => block.text)),
+      transcript: this.transcriptWindow(
+        sessionId, item, blocks.map(block => block.text), maxTranscript, transcriptBudget,
+      ),
     }, heldOutRef)) as unknown as MetaFailureCard
   }
 
@@ -1115,26 +1655,36 @@ export class RefineCapabilities {
     sessionId: string,
     item: SeedRunEvidence,
     blocks: readonly string[],
+    maxSize = 80_000,
+    budget: 'characters' | 'bytes' = 'characters',
   ): MetaFailureCard['transcript'] {
-    const maxCharacters = 80_000
     let firstVisible = blocks.length
-    let visibleCharacters = 0
+    let visibleSize = 0
     for (let index = blocks.length - 1; index >= 0; index -= 1) {
-      const separatorCharacters = firstVisible === blocks.length ? 0 : 2
-      const nextCharacters = characterLength(blocks[index]!) + separatorCharacters
-      if (visibleCharacters + nextCharacters > maxCharacters) break
+      const separatorSize = firstVisible === blocks.length ? 0 : 2
+      const blockSize = budget === 'bytes' ? Buffer.byteLength(blocks[index]!) : characterLength(blocks[index]!)
+      const nextSize = blockSize + separatorSize
+      if (visibleSize + nextSize > maxSize) break
       firstVisible = index
-      visibleCharacters += nextCharacters
+      visibleSize += nextSize
     }
     if (firstVisible === 0) return { text: blocks.join('\n\n') }
     if (firstVisible === blocks.length && blocks.length > 0) {
-      const finalCharacters = characters(blocks.at(-1)!)
-      const split = Math.max(0, finalCharacters.length - maxCharacters)
-      const earlier = [...blocks.slice(0, -1), finalCharacters.slice(0, split).join('')]
+      const split = budget === 'bytes'
+        ? splitUtf8Tail(blocks.at(-1)!, maxSize)
+        : (() => {
+            const finalCharacters = characters(blocks.at(-1)!)
+            const splitAt = Math.max(0, finalCharacters.length - maxSize)
+            return {
+              earlier: finalCharacters.slice(0, splitAt).join(''),
+              tail: finalCharacters.slice(splitAt).join(''),
+            }
+          })()
+      const earlier = [...blocks.slice(0, -1), split.earlier]
         .filter(Boolean)
         .join('\n\n')
       return {
-        text: finalCharacters.slice(split).join(''),
+        text: split.tail,
         earlierRef: this.inlineDetailRef(sessionId, item.roundId, item.trial.runId, earlier),
       }
     }
@@ -1350,36 +1900,7 @@ export class RefineCapabilities {
   }
 
   private sanitize(value: unknown, heldOutRef: string | undefined, key?: string): JsonValue {
-    if (key !== undefined && SENSITIVE_KEY.test(key)) return '[REDACTED]'
-    if (typeof value === 'string') {
-      let text = value
-      const trimmed = text.trim()
-      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-        try { text = JSON.stringify(this.sanitize(JSON.parse(text), heldOutRef), null, 2) }
-        catch { /* Ordinary text that merely starts like JSON. */ }
-      }
-      for (const secret of this.secretValues) text = text.split(secret).join('[REDACTED]')
-      if (heldOutRef !== undefined && heldOutRef.length > 0) text = text.split(heldOutRef).join('[REDACTED_HELD_OUT]')
-      return text
-    }
-    if (value === null || typeof value === 'number' || typeof value === 'boolean') return value
-    if (Array.isArray(value)) return value.map(item => this.sanitize(item, heldOutRef))
-    if (typeof value === 'object') {
-      return Object.fromEntries(Object.entries(value).map(([name, item]) => [
-        this.sanitizeKey(name, heldOutRef),
-        this.sanitize(item, heldOutRef, name),
-      ])) as JsonValue
-    }
-    return String(value)
-  }
-
-  private sanitizeKey(name: string, heldOutRef: string | undefined): string {
-    let result = name
-    for (const secret of this.secretValues) result = result.split(secret).join('[REDACTED]')
-    if (heldOutRef !== undefined && heldOutRef.length > 0) {
-      result = result.split(heldOutRef).join('[REDACTED_HELD_OUT]')
-    }
-    return result
+    return sanitizePublicValue(value, heldOutRef, this.secretValues, key)
   }
 
   private string(args: Record<string, unknown>, key: string): string {

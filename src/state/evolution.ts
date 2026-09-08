@@ -138,6 +138,10 @@ function validateSpec(value: EvolutionSpec): EvolutionSpec {
   if (!Number.isSafeInteger(value.taskBudgetMs) || value.taskBudgetMs <= 0) {
     throw new TypeError('evolution taskBudgetMs is invalid')
   }
+  if (value.experienceMemory !== undefined
+    && (value.experienceMemory.schemaVersion !== 1 || typeof value.experienceMemory.enabled !== 'boolean')) {
+    throw new TypeError('evolution seed experience memory policy is invalid')
+  }
   return value
 }
 

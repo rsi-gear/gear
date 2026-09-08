@@ -407,6 +407,41 @@ describe('RefineService evolution workspaces', () => {
       service.createMetaSession, evaluator, service.options, service.components)
   }
 
+  it('seals prior seed candidate outcomes before the next skill proposer starts', async () => {
+    const { service } = await setup()
+    const admission = await service.admit('skill', { rounds: 2 })
+    const store = service.registry.stateStore(admission.evolutionId)
+    const first = await editing(service, admission.evolutionId, admission.roundId)
+    expect((await service.registry.requireSpec(admission.evolutionId)).experienceMemory).toEqual({
+      schemaVersion: 1, enabled: true,
+    })
+    expect(first.experienceSnapshot).toMatchObject({ schemaVersion: 1, members: [] })
+    await finalize(service, first)
+
+    const second = await eventually(
+      async () => (await store.listRounds()).find(round => round.roundIndex === 2),
+      round => round?.status === 'candidate-editing',
+    )
+    expect(second?.experienceSnapshot?.members).toHaveLength(1)
+    const member = second!.experienceSnapshot!.members[0]!
+    expect(member.sourceRoundId).toBe(first.roundId)
+    const record = await store.readExperienceRecord(member.recordDigest)
+    expect(record).toMatchObject({
+      source: {
+        evolutionId: admission.evolutionId,
+        roundId: first.roundId,
+        candidateId: first.candidatePool[0]!.candidateId,
+        parentHarnessRef: first.candidatePool[0]!.parentHarnessRef,
+      },
+      observation: { comparison: 'candidate-vs-its-parent-seed', valid: 10 },
+      classification: { execution: 'evaluated' },
+    })
+    expect(second!.experienceSnapshot!.members.every(value => value.sourceRoundId !== second!.roundId)).toBe(true)
+    await finalize(service, second!)
+    await eventually(() => store.readRound(second!.roundId), round => round?.status === 'accepted' || round?.status === 'rejected')
+    await service.dispose()
+  })
+
   it('persists submission ownership before the first remote side effect', async () => {
     const { service, evaluator } = await setup()
     durable(evaluator)

@@ -520,6 +520,22 @@ describe('RefineCapabilities Git projection', () => {
     expect(windowCard.transcript.text).toContain('message-49')
     expect(windowCard.transcript.text).not.toContain('message-00')
     expect(windowCard.transcript.earlierRef).toMatch(/^detail_/u)
+    const unicodeProjection = structuredClone(windowProjection)
+    unicodeProjection.messages = [{
+      seq: 0,
+      eventType: 'user/message',
+      role: 'user',
+      message: excerpt(`PREFIX_MARKER${'界'.repeat(30_000)}`, 'data'),
+    }]
+    unicodeProjection.semanticSteps = []
+    const unicodeCard = internals.failureCard('meta', {
+      evolutionId: 'evo-1', roundId: round.roundId, phase: 'seed-baseline', evalId: seedBaseline.evalId,
+      trial: { taskName: 'unicode-window', runId: seedRun, status: 'completed', rewards: { reward: 0 } },
+    } as never, unicodeProjection, {
+      runId: seedRun, verifier: { status: 'result_only' },
+    }, undefined)
+    expect(unicodeCard.transcript.text).toContain('PREFIX_MARKER')
+    expect(unicodeCard.transcript.earlierRef).toBeUndefined()
     const toolOutput = windowCard.transcript.text.match(/output: ([\s\S]*?)\n\[more: (detail_[a-f0-9]+)\]/u)
     expect(toolOutput).toBeDefined()
     expect(Array.from(toolOutput![1]!)).toHaveLength(2_000)

@@ -242,7 +242,12 @@ successful response includes:
 - `evolutionId`, `roundId`, `candidateId`, `sessionId`, and `workspaceId`;
 - `parentHarnessRef` and `parentHarnessDigest`;
 - `baseline` with `evalId`, score summary, and seed trials/run ids;
-- `evidencePolicy`, optional `advisoryFocus`, and batch position.
+- `evidencePolicy`, optional `advisoryFocus`, and batch position;
+- for new skill-first evolutions, `experienceContext` with the sealed
+  `snapshotDigest`, available record count, an optional direct-parent outcome,
+  and relevant history cards (at most three cards total, including the direct
+  parent). Each card distinguishes prior claims from paired seed observations
+  and includes an `experienceRef` for drill-down.
 
 Treat all returned assignment identifiers as one inseparable capability. Use a
 stable `clientId` for the Meta harness session; never transfer or reuse a lease
@@ -404,6 +409,95 @@ configuration. The response includes `text`, `bytes`, `digest`, `offset`, and
 the configured public seed projection or `available:false` when no typed
 projection is configured. Held-out tasks are never available.
 
+### `experience.query`
+
+Queries only the immutable seed-outcome revisions sealed into this assignment's
+round snapshot. The evolution id and snapshot are derived from the active lease;
+do not send either one.
+
+```json
+{
+  "query":"tool output truncation loses diagnostics",
+  "taskNames":["task-a"],
+  "semanticTargets":["post_action"],
+  "paths":["plugins/output-limit.ts"],
+  "effects":["regressed","mixed","unchanged"],
+  "limit":5
+}
+```
+
+Every field is optional. Explicit filter arrays contain at most 20 values and
+are applied to recorded task names, semantic targets, changed paths, and the
+observed effect. Effects are `improved`, `regressed`, `mixed`, `unchanged`, or
+`insufficient`. Free text uses a deterministic fixed field weighting; it is not
+an embedding or an LLM judgment. `limit` defaults to 5 and is at most 10.
+
+The response contains `snapshotDigest`, `queryDigest`, bounded result cards,
+their match reasons and support, opaque `experienceRef` values, and optionally
+`nextCursor`. Continue exactly that query with a cursor-only call:
+
+```json
+{"cursor":"experience_cursor_<opaque>"}
+```
+
+A cursor is bound to the lease session, round snapshot, query, and offset. Do
+not combine it with filters or transfer it to another lease. If any immutable
+record in the sealed snapshot is missing or corrupt, the query fails with the
+unavailable record IDs rather than dropping it or substituting a newer revision.
+
+### `experience.read`
+
+Reads one record authorized by the active snapshot. `ref` must come from
+`experienceContext` or `experience.query`.
+
+```json
+{"ref":"experience_<opaque>","view":"card"}
+```
+
+The supported views are:
+
+- `record`: bounded claims, applicability, changed-file summary, coverage, and
+  classification; use `offset`, `limit`, and returned `nextOffset` for files;
+- `task-results`: actual valid parent/candidate rewards and deltas plus excluded
+  cells and non-score exclusion reasons; page with `offset` and `limit`;
+- `diff`: a bounded Git patch only after the exact candidate and named parent
+  commits are verified; changed files use `offset`, `limit`, and `nextOffset`;
+- `trajectory`: a bounded, sanitized Hitch projection for a recorded baseline
+  or candidate seed `runId`;
+- `card`: the compact Markdown rendering used in assignments and query results.
+
+Task/file page `limit` defaults to 20 and is at most 50. Read one authorized
+historical seed trajectory with:
+
+```json
+{
+  "ref":"experience_<opaque>",
+  "view":"trajectory",
+  "runId":"run_<recorded historical seed run>"
+}
+```
+
+Follow an opaque trajectory `detailRef` while retaining the same experience
+record authorization:
+
+```json
+{
+  "ref":"experience_<same opaque ref>",
+  "view":"trajectory",
+  "detailRef":"detail_<opaque>"
+}
+```
+
+Long historical transcripts retain the failure-side tail and return an
+`earlierRef`; read it as `detailRef` (and follow `nextRef`) to recover the
+omitted prefix. Verifier `detailRef` values remain available as well.
+
+`find` is accepted only with `detailRef`. If the exact content-addressed record,
+Git objects, or bounded trajectory cannot be verified, the response states
+`available:false`; Gear does not substitute current content or read a supplied
+host path. Historical reads never count as current-round diagnosis and their
+refs must not be put in `candidate.finalize.evidenceRefs`.
+
 ### `trajectory.query`
 
 List failed seed runs and diagnosis progress for the active round:
@@ -549,9 +643,11 @@ recoverable rejection follows the same action protocol as finalize.
 For each candidate assignment:
 
 1. Poll `control.status` and `meta.claim` until a matching lease is returned.
-2. Record the assignment and baseline; call `harness.current`, `candidate.tree`,
+2. Record the assignment and baseline. Review `experienceContext` when present,
+   and use `experience.query`/`experience.read` when a relevant prior result
+   needs verification. Then call `harness.current`, `candidate.tree`,
    `seed_tasks.load`, and `hitch.status`.
-3. Query a diagnostic card for every failed baseline run, following only the
+3. Query a current diagnostic card for every failed baseline run, following only the
    opaque `detailRef` values needed for focused drill-down.
 4. Follow [target-harness-editing.md](target-harness-editing.md) to select and
    apply an evidence-based edit, or decide to decline. For Gear's DSH carrier,

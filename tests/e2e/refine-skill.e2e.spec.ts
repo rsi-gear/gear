@@ -26,6 +26,8 @@ import { SHA } from '../helpers/research-fixture.js'
 import { trajectoryAnalysis, trajectoryEventsPage } from '../helpers/trajectory-fixture.js'
 
 const cleanups: Array<() => Promise<void>> = []
+const configuredSecretName = 'GEAR_STANDALONE_EXPERIENCE_TEST_SECRET'
+const configuredSecretValue = 'standalone-experience-secret-needle'
 const canListenLoopback = spawnSync(process.execPath, ['-e', "const n=require('node:net').createServer();n.listen(0,'127.0.0.1',()=>n.close(()=>process.exit(0)));n.on('error',()=>process.exit(1))"]).status === 0
 const hasSandbox = (process.platform === 'darwin' || process.platform === 'linux')
   && SandboxManager.checkDependencies().errors.length === 0 && canListenLoopback
@@ -135,6 +137,15 @@ describe('refine skill end to end', () => {
     { runtimeType: 'codex', candidate: 'documented skill' },
     { runtimeType: 'codex', candidate: 'documented full harness' },
   ])('lets a $runtimeType Meta harness check, finalize, and promote a $candidate candidate', async ({ runtimeType, candidate }) => {
+    const exerciseExperience = runtimeType === 'codex' && candidate === 'context'
+    const previousConfiguredSecret = process.env[configuredSecretName]
+    if (exerciseExperience) {
+      process.env[configuredSecretName] = configuredSecretValue
+      cleanups.push(async () => {
+        if (previousConfiguredSecret === undefined) delete process.env[configuredSecretName]
+        else process.env[configuredSecretName] = previousConfiguredSecret
+      })
+    }
     const fixture = await createGitHarnessFixture()
     cleanups.push(() => rm(fixture.root, { recursive: true, force: true }))
     const evaluator = new E2eEvaluator()
@@ -180,7 +191,11 @@ describe('refine skill end to end', () => {
       },
       selection: { survivors: 1, timeoutMs: 10_000 },
       compiler: { command: process.execPath, args: [], timeoutMs: 10_000, env: {} },
-      hitch: { model: 'target-model', allowUnavailableVerifierDiagnosis: true },
+      hitch: {
+        model: 'target-model',
+        allowUnavailableVerifierDiagnosis: true,
+        passEnv: exerciseExperience ? [configuredSecretName] : [],
+      },
       promotion: {
         minimumCandidateScore: 0.7,
         minimumAbsoluteGain: 0.1,
@@ -193,7 +208,7 @@ describe('refine skill end to end', () => {
     const { service } = controlPlane
 
     const admission = await requestRefineSkill(socketPath, {
-      method: 'control.start', params: { rounds: 1, focus: ['context'] },
+      method: 'control.start', params: { rounds: exerciseExperience ? 2 : 1, focus: ['context'] },
     }) as { evolutionId: string; roundId: string }
     const claim = await eventually(
       () => requestRefineSkill(socketPath, {
@@ -278,7 +293,9 @@ describe('refine skill end to end', () => {
         ...lease,
         capability: 'candidate.finalize',
         arguments: {
-          rationale: 'The failed seed run lacked the required context.',
+          rationale: exerciseExperience
+            ? `The failed seed run lacked the required context. ${configuredSecretValue}`
+            : 'The failed seed run lacked the required context.',
           expectedOutcome: 'The target uses the corrected context.',
           evidenceRefs: [claim.baseline.evalId, failedRun],
           semanticTargets: ['context'],
@@ -305,6 +322,106 @@ describe('refine skill end to end', () => {
     ))
     for (const [path, content] of Object.entries(documentedFiles)) {
       expect((await service.builder.readHarnessFile(sealed.commitOid, path)).content).toBe(content)
+    }
+
+    if (exerciseExperience) {
+      const next = await eventually(
+        () => requestRefineSkill(socketPath, {
+          method: 'meta.claim',
+          params: { clientId: `${runtimeType}-session`, evolutionId: admission.evolutionId, identity: identity(runtimeType) },
+        }) as Promise<Record<string, unknown>>,
+        value => typeof value.leaseToken === 'string' && value.roundId !== admission.roundId,
+      ) as Record<string, unknown> & {
+        leaseId: string
+        leaseToken: string
+        roundId: string
+        baseline: { evalId: string; trials: Array<{ runId?: string; reward?: number }> }
+        experienceContext: {
+          snapshotDigest: string
+          directParent: { experienceRef: string; source: { candidateId: string } }
+          relevantCards: Array<{ markdown: string }>
+        }
+      }
+      expect(next.experienceContext).toMatchObject({
+        snapshotDigest: expect.stringMatching(/^sha256:/u),
+        directParent: { source: { candidateId: stored!.candidatePool[0]!.candidateId } },
+      })
+      const claimedCards = JSON.stringify([
+        next.experienceContext.directParent,
+        ...next.experienceContext.relevantCards,
+      ])
+      expect(claimedCards).not.toContain(configuredSecretValue)
+      expect(claimedCards).toContain('[REDACTED]')
+      const nextLease = {
+        clientId: `${runtimeType}-session`, leaseId: next.leaseId, leaseToken: next.leaseToken,
+      }
+      const nextFailedRun = next.baseline.trials.find(trial => (trial.reward ?? 0) <= 0)?.runId
+      if (nextFailedRun === undefined) throw new Error('continued baseline has no failed run')
+      await requestRefineSkill(socketPath, {
+        method: 'meta.call',
+        params: { ...nextLease, capability: 'trajectory.query', arguments: { refs: [nextFailedRun] } },
+      })
+      const history = await requestRefineSkill(socketPath, {
+        method: 'meta.call',
+        params: {
+          ...nextLease,
+          capability: 'experience.query',
+          arguments: { taskNames: ['task-2'], effects: ['improved'], limit: 3 },
+        },
+      }) as { snapshotDigest: string; results: Array<{ experienceRef: string; effect: string }> }
+      expect(history).toMatchObject({
+        snapshotDigest: next.experienceContext.snapshotDigest,
+        results: [{ experienceRef: next.experienceContext.directParent.experienceRef, effect: 'improved' }],
+      })
+      await expect(requestRefineSkill(socketPath, {
+        method: 'meta.call',
+        params: {
+          ...nextLease,
+          capability: 'experience.read',
+          arguments: { ref: history.results[0]!.experienceRef, view: 'task-results', limit: 10 },
+        },
+      })).resolves.toMatchObject({
+        available: true,
+        snapshotDigest: next.experienceContext.snapshotDigest,
+        coverage: { planned: 2, valid: 2, excluded: 0 },
+      })
+
+      const nextObserved = await requestRefineSkill(socketPath, {
+        method: 'candidate.read', params: { ...nextLease, path: 'plugins/context.ts' },
+      }) as { digest: string }
+      await requestRefineSkill(socketPath, {
+        method: 'candidate.edit',
+        params: {
+          ...nextLease,
+          path: 'plugins/context.ts',
+          oldString: 'value = 2',
+          newString: 'value = 3',
+          expectedDigest: nextObserved.digest,
+        },
+      })
+      await requestRefineSkill(socketPath, {
+        method: 'meta.call', params: { ...nextLease, capability: 'candidate.check', arguments: { check: 'compiler' } },
+      })
+      await requestRefineSkill(socketPath, {
+        method: 'meta.call',
+        params: {
+          ...nextLease,
+          capability: 'candidate.finalize',
+          arguments: {
+            rationale: 'Try a further context refinement.',
+            expectedOutcome: 'Preserve the already improved seed behavior.',
+            evidenceRefs: [next.baseline.evalId, nextFailedRun],
+            semanticTargets: ['context'],
+          },
+        },
+      })
+      const nextTerminal = await eventually(
+        () => requestRefineSkill(socketPath, {
+          method: 'control.status', params: { evolutionId: admission.evolutionId, roundId: next.roundId },
+        }) as Promise<Record<string, unknown>>,
+        value => ['accepted', 'rejected', 'rejected-for-substrate', 'failed'].includes(String(value.status)),
+      )
+      expect(nextTerminal).toMatchObject({ status: expect.stringMatching(/^(?:accepted|rejected)$/u) })
     }
   })
 })

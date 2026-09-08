@@ -189,6 +189,12 @@ export interface RolloutSpec {
   agentConfig: JsonValue
 }
 
+/** Sealed only for evolutions whose Meta adapter receives seed experience. */
+export interface SeedExperienceMemoryPolicy {
+  schemaVersion: 1
+  enabled: boolean
+}
+
 export interface EvolutionSpec {
   evolutionId: EvolutionId
   createdAt: string
@@ -217,6 +223,8 @@ export interface EvolutionSpec {
   taskBudgetMs: number
   toolchainRef: string
   sandboxProfileRef: SandboxProfileRef
+  /** Absence preserves the behavior of evolutions created before experience memory. */
+  experienceMemory?: SeedExperienceMemoryPolicy
 }
 
 export interface EvolutionRegistryEntry {
@@ -1126,6 +1134,130 @@ export interface CandidateSeedComparison {
   requiredRegressions: number
 }
 
+export type SeedExperienceEffect = 'improved' | 'regressed' | 'mixed' | 'unchanged' | 'insufficient'
+
+export interface SeedExperienceTrialSide {
+  trialName?: string
+  runId?: string
+  attempt?: number
+  status: 'completed' | 'errored' | 'missing'
+  reward?: number
+}
+
+export interface SeedExperiencePairedTaskResult {
+  valid: true
+  trialKey: string
+  taskName: string
+  attempt?: number
+  baseline: SeedExperienceTrialSide & { reward: number }
+  candidate: SeedExperienceTrialSide & { reward: number }
+  rewardDelta: number
+}
+
+export interface SeedExperienceExcludedTaskResult {
+  valid: false
+  trialKey: string
+  taskName: string
+  attempt?: number
+  baseline: SeedExperienceTrialSide
+  candidate: SeedExperienceTrialSide
+  reasons: Array<'baseline-invalid' | 'candidate-invalid' | 'baseline-missing' | 'candidate-missing'>
+}
+
+/** Immutable, explicit allowlist projection of one candidate's paired seed outcome. */
+export interface SeedExperienceRecord {
+  schemaVersion: 1
+  recordId: string
+  seedProjectionDigest: string
+  source: {
+    evolutionId: EvolutionId
+    roundId: string
+    candidateId: string
+    parentCandidateId: string
+    parentHarnessRef: HarnessRef
+    candidateHarnessRef: HarnessRef
+    parentBaselineEvalId: string
+    candidateEvalId: string
+    parentRevisionIdentity: string
+    candidateRevisionIdentity: string
+    seedConditionId: string
+  }
+  applicability: {
+    model: string
+    provider: string
+    datasetDigest: string
+    rolloutProviderDigest: string
+    toolchainDigest: string
+  }
+  proposal: {
+    /** Proposer claim, not an observed explanation. */
+    rationale: string
+    /** Proposer claim, not an observed result. */
+    expectedOutcome: string
+    semanticTargets: SemanticTarget[]
+  }
+  change: {
+    patchDigest: string
+    totalBytes: number
+    files: CandidateDiffFile[]
+  }
+  observation: {
+    comparison: 'candidate-vs-its-parent-seed'
+    planned: number
+    valid: number
+    excluded: number
+    baselineInvalid: number
+    candidateInvalid: number
+    taskResults: SeedExperiencePairedTaskResult[]
+    excludedTaskResults: SeedExperienceExcludedTaskResult[]
+    baselineMean?: number
+    candidateMean?: number
+    meanRewardDelta?: number
+  }
+  classification: {
+    execution: 'evaluated'
+    effect: SeedExperienceEffect
+    coverage: 'complete' | 'partial' | 'none'
+    gainedTasks: string[]
+    regressedTasks: string[]
+    unchangedTasks: string[]
+  }
+  recordDigest: string
+}
+
+export interface SeedExperienceSnapshotMember {
+  recordId: string
+  recordDigest: string
+  sourceRoundId: string
+  candidateId: string
+  candidateHarnessRef: HarnessRef
+}
+
+/** Exact record revisions visible to every proposer attempt in one round. */
+export interface SeedExperienceSnapshot {
+  schemaVersion: 1
+  members: SeedExperienceSnapshotMember[]
+  digest: string
+}
+
+export interface SeedExperienceCard {
+  recordId: string
+  experienceRef: string
+  source: { roundId: string; candidateId: string }
+  effect: SeedExperienceEffect
+  coverage: { planned: number; valid: number; excluded: number }
+  matchReasons: string[]
+  markdown: string
+}
+
+export interface SeedExperienceContext {
+  schemaVersion: 1
+  snapshotDigest: string
+  availableRecordCount: number
+  directParent?: SeedExperienceCard
+  relevantCards: SeedExperienceCard[]
+}
+
 /** The complete seed-only projection visible to selection components. */
 export interface CandidateSelectionInput {
   candidateId: string
@@ -1263,6 +1395,7 @@ export interface RefinementRound {
   roundIndex: number
   roundCount: number
   advisoryFocus?: SemanticTarget[]
+  experienceSnapshot?: SeedExperienceSnapshot
   plan: ResolvedRoundPlan
   parentPopulationDigest?: string
   /** Immutable code parent for new rounds; research survivors remain separately recorded. */
@@ -1441,6 +1574,24 @@ export interface RefineBridgeRequestMap {
   'seed_tasks.load': { partition?: 'seed' }
   'trajectory.query': {
     refs?: string[]
+    detailRef?: string
+    find?: string
+  }
+  'experience.query': {
+    query?: string
+    taskNames?: string[]
+    semanticTargets?: SemanticTarget[]
+    paths?: string[]
+    effects?: SeedExperienceEffect[]
+    limit?: number
+    cursor?: string
+  }
+  'experience.read': {
+    ref: string
+    view: 'record' | 'card' | 'task-results' | 'diff' | 'trajectory'
+    offset?: number
+    limit?: number
+    runId?: string
     detailRef?: string
     find?: string
   }

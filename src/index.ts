@@ -522,6 +522,13 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       }
     }
   }
+  const secretValues = [...new Set([
+    ...config.hitch.passEnv,
+    ...(config.selection.llmVerifier?.passEnv ?? []),
+  ])].flatMap(name => {
+    const value = process.env[name]
+    return value === undefined || value.length === 0 ? [] : [value]
+  })
   const service = new RefineService(
     registry,
     builder,
@@ -533,7 +540,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
           evolutionId: spec.evolutionId,
           specDigest,
           metaAgent: spec.metaAgent,
-        })
+        }, secretValues)
       }
       return new MetaSessionManager(store, host, {
         evolutionId: spec.evolutionId,
@@ -558,6 +565,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       ...(config.initialChampion === undefined ? {} : { initialChampion: config.initialChampion }),
       publishedPointer: config.evolutionState.publishedPointer,
       maxLiveMetaSessions: config.evolutionState.maxLiveMetaSessions,
+      experienceMemoryEnabled: config.metaAdapter.kind === 'skill',
       validateRuntime: validateEvolutionRuntime,
     },
     components,
@@ -577,13 +585,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     ...(config.hitch.allowUnavailableVerifierDiagnosis === undefined ? {} : {
       allowUnavailableVerifierDiagnosis: config.hitch.allowUnavailableVerifierDiagnosis,
     }),
-    secretValues: [...new Set([
-      ...config.hitch.passEnv,
-      ...(config.selection.llmVerifier?.passEnv ?? []),
-    ])].flatMap(name => {
-      const value = process.env[name]
-      return value === undefined || value.length === 0 ? [] : [value]
-    }),
+    secretValues,
   })
   const skillGateway = config.metaAdapter.kind === 'skill'
     ? new RefineSkillGateway(

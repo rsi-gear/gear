@@ -218,6 +218,13 @@ export async function createSkillControlPlane(
       if (JSON.stringify(current) !== JSON.stringify(assessorConfig.runtime)) throw new Error('llm-verifier runtime identity changed; evolution cannot continue')
     }
   }
+  const secretValues = [...new Set([
+    ...config.hitch.passEnv,
+    ...(config.selection.llmVerifier?.passEnv ?? []),
+  ])].flatMap(name => {
+    const value = process.env[name]
+    return value === undefined || value.length === 0 ? [] : [value]
+  })
   const service = new RefineService(
     registry,
     builder,
@@ -228,7 +235,7 @@ export async function createSkillControlPlane(
         evolutionId: spec.evolutionId,
         specDigest,
         metaAgent: spec.metaAgent,
-      })
+      }, secretValues)
     },
     evaluator,
     {
@@ -276,10 +283,7 @@ export async function createSkillControlPlane(
     ...(config.hitch.allowUnavailableVerifierDiagnosis === undefined ? {} : {
       allowUnavailableVerifierDiagnosis: config.hitch.allowUnavailableVerifierDiagnosis,
     }),
-    secretValues: [...new Set([
-      ...config.hitch.passEnv,
-      ...(config.selection.llmVerifier?.passEnv ?? []),
-    ])].flatMap(name => process.env[name] === undefined ? [] : [process.env[name]!]),
+    secretValues,
   })
   const gateway = new RefineSkillGateway(
     service,

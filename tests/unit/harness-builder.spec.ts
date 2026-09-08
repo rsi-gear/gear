@@ -1,8 +1,8 @@
-import { rm, writeFile } from 'node:fs/promises'
+import { readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { CandidateWorkspaceManager } from '../../src/candidate/workspace.js'
-import { HarnessBuilder, NoopHarnessCompiler } from '../../src/harness/builder.js'
+import { digestContent, HarnessBuilder, NoopHarnessCompiler } from '../../src/harness/builder.js'
 import { createGitHarnessFixture, gitOutput } from '../helpers/git-fixture.js'
 import { roundFixture } from '../helpers/research-fixture.js'
 
@@ -83,6 +83,58 @@ describe('HarnessBuilder exact commit validation', () => {
     await builder.initialize()
     expect((await builder.readManifest(fixture.championRef)).digest).toBe(fixture.manifest.digest)
     expect((await builder.readHarnessFile(fixture.championRef, 'plugins/context.ts')).content).toBe('export const value = 1\n')
+  })
+
+  it('reads a bounded historical Git diff for exact added, modified, and deleted harness files', async () => {
+    const fixture = await createGitHarnessFixture()
+    roots.push(fixture.root)
+    const builder = new HarnessBuilder({
+      repositoryPath: fixture.repository, targetRoot: fixture.targetRoot, dshBaseRef: fixture.baseRef,
+      toolchainRef: 'node-22-tsc', sandboxProfileRef: 'sandbox-v1', compiler: new NoopHarnessCompiler(),
+    })
+    await builder.initialize()
+
+    await writeFile(join(fixture.repository, 'harness', 'plugins', 'added.ts'), 'export const added = true\n')
+    await writeFile(join(fixture.repository, 'harness', 'preset', 'agent.cordis.yml'), '- name: ./plugins/added.js\n')
+    await rm(join(fixture.repository, 'harness', 'plugins', 'context.ts'))
+    const artifacts = await Promise.all(['plugins/added.ts', 'preset/agent.cordis.yml'].map(async path => {
+      const content = await readFile(join(fixture.repository, 'harness', ...path.split('/')))
+      return { path, digest: digestContent(content), bytes: content.byteLength }
+    }))
+    const identity = {
+      schemaVersion: 1 as const,
+      parentRef: fixture.championRef,
+      dshBaseRef: fixture.baseRef,
+      toolchainRef: 'node-22-tsc',
+      sandboxProfileRef: 'sandbox-v1',
+      artifacts,
+    }
+    await writeFile(join(fixture.repository, 'harness', 'manifest.json'), `${JSON.stringify({
+      ...identity, digest: digestContent(JSON.stringify(identity)),
+    }, null, 2)}\n`)
+    gitOutput(fixture.repository, ['add', '-A', 'harness'])
+    gitOutput(fixture.repository, ['commit', '-m', 'historical candidate'])
+    const candidateRef = gitOutput(fixture.repository, ['rev-parse', 'HEAD'])
+
+    const result = await builder.readHarnessDiff(fixture.championRef, candidateRef, [
+      'plugins/context.ts', 'preset/agent.cordis.yml', 'plugins/added.ts', 'plugins/context.ts',
+    ], 256 * 1024)
+    expect(result).toMatchObject({
+      parentRef: fixture.championRef,
+      candidateRef,
+      paths: ['plugins/added.ts', 'plugins/context.ts', 'preset/agent.cordis.yml'],
+      patchBytes: Buffer.byteLength(result.patch),
+      contentDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      truncated: false,
+    })
+    expect(result.patch).toContain('diff --git a/harness/plugins/added.ts b/harness/plugins/added.ts')
+    expect(result.patch).toContain('+export const added = true')
+    expect(result.patch).toContain('-export const value = 1')
+    expect(result.patch).toContain('- name: ./plugins/context.js')
+    expect(result.patch).toContain('+- name: ./plugins/added.js')
+    expect(result.patch).toContain('deleted file mode')
+    await expect(builder.readHarnessDiff(fixture.baseRef, candidateRef, result.paths, 1024))
+      .rejects.toThrow(/does not name the recorded parent/u)
   })
 
   it('rejects a commit whose manifest does not match target bytes', async () => {

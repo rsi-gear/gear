@@ -23,6 +23,7 @@ import { generationBudgetSnapshot } from './generation-budget.js'
 import { CandidateDiagnosisStore, type CandidateDiagnosisRecord } from '../state/candidate-diagnosis.js'
 import { resolveChampionParent } from './champion-parent.js'
 import type { CandidateGenerationBudgetStatus } from '../types.js'
+import { prepareSeedExperienceSnapshot } from '../experience/memory.js'
 
 export interface RefineServiceOptions {
   workspaceRoot: string
@@ -40,6 +41,8 @@ export interface RefineServiceOptions {
   initialChampion?: ChampionState
   publishedPointer: boolean
   maxLiveMetaSessions: number
+  /** Enables the sealed V1 policy for newly-created skill-first evolutions. */
+  experienceMemoryEnabled?: boolean
   createEvaluator?: (spec: EvolutionSpec) => RefineEvaluator
   validateRuntime?: (spec: EvolutionSpec) => void | Promise<void>
 }
@@ -689,6 +692,9 @@ export class RefineService {
       promotion: structuredClone(this.options.promotion),
       taskBudgetMs,
       toolchainRef: this.options.toolchainRef, sandboxProfileRef: this.options.sandboxProfileRef,
+      ...((this.options.experienceMemoryEnabled === true || source === 'skill')
+        ? { experienceMemory: { schemaVersion: 1 as const, enabled: true } }
+        : {}),
     }
     this.resolveComponents(spec)
     await this.registry.createEvolution({ spec, champion: initial, ...(options.name === undefined ? {} : { name: options.name }) })
@@ -1287,12 +1293,18 @@ export class RefineService {
     const champion = await this.requireChampion(evolution.store).catch(async (error: unknown) => { await lock.release(); throw error })
     const population = await evolution.store.readPopulation().catch(async (error: unknown) => { await lock.release(); throw error })
     if (population === undefined) { await lock.release(); throw new Error('evolution has no research population') }
-    const round = await this.newRound(
+    let round = await this.newRound(
       evolution.store, evolution.spec, champion, population, source, batchId, roundId, 1, roundCount, advisoryFocus,
     ).catch(async (error: unknown) => { await lock.release(); throw error })
     const active = this.newActive(evolution, lock, source, batchId, 1, roundCount, advisoryFocus)
     this.active.set(roundId, active)
     try {
+      if (evolution.spec.experienceMemory?.enabled === true) {
+        round = {
+          ...round,
+          experienceSnapshot: await prepareSeedExperienceSnapshot(evolution.spec, evolution.store, roundId),
+        }
+      }
       await evolution.store.writeRound(round)
       await this.registry.touch(evolution.spec.evolutionId, { batchId, roundId })
     } catch (error) {
@@ -2375,7 +2387,7 @@ export class RefineService {
     if (population === undefined) throw new Error('evolution has no research population')
     const roundId = crypto.randomUUID()
     const index = previous.roundIndex + 1
-    const round = await this.newRound(
+    let round = await this.newRound(
       previous.evolution.store, previous.evolution.spec, champion, population, previous.source, previous.batchId, roundId, index, previous.roundCount,
       previous.advisoryFocus,
     )
@@ -2383,6 +2395,12 @@ export class RefineService {
       previous.evolution, previous.lock, previous.source, previous.batchId, index, previous.roundCount,
       previous.advisoryFocus,
     )
+    if (previous.evolution.spec.experienceMemory?.enabled === true) {
+      round = {
+        ...round,
+        experienceSnapshot: await prepareSeedExperienceSnapshot(previous.evolution.spec, previous.evolution.store, roundId),
+      }
+    }
     await previous.evolution.store.writeRound(round)
     previous.abort.signal.throwIfAborted()
     await previous.lock.retarget(roundId)

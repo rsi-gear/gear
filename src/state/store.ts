@@ -4,9 +4,11 @@ import { dirname, join } from 'node:path'
 import type {
   CandidateAssessment, ChampionState, ComponentKind, ComponentRef, EvaluationEvidence, MetaSessionState,
   PairedTrial, PairingAudit, PopulationMember, PopulationState, RefinementRound, RoundEvaluationAttempt, EvaluationSubmissionIntent,
+  SeedExperienceRecord,
 } from '../types.js'
 import { isExactGitCommit } from '../types.js'
 import { digestJson } from './digest.js'
+import { validateSeedExperienceRecord } from '../experience/memory.js'
 
 interface LockRecord {
   pid: number
@@ -146,6 +148,7 @@ export class RefineStateStore {
   readonly locksPath: string
   readonly workersPath: string
   readonly metaHarnessPath: string
+  readonly experienceRecordsPath: string
 
   constructor(
     readonly root: string,
@@ -156,6 +159,7 @@ export class RefineStateStore {
     this.locksPath = join(root, 'locks')
     this.workersPath = join(root, 'workers')
     this.metaHarnessPath = join(root, 'meta-harness')
+    this.experienceRecordsPath = join(root, 'experience', 'records')
   }
 
   async initialize(): Promise<void> {
@@ -164,6 +168,7 @@ export class RefineStateStore {
       mkdir(this.locksPath, { recursive: true }),
       mkdir(this.workersPath, { recursive: true }),
       mkdir(this.metaHarnessPath, { recursive: true }),
+      mkdir(this.experienceRecordsPath, { recursive: true }),
     ])
   }
 
@@ -229,6 +234,28 @@ export class RefineStateStore {
     const names = (await readdir(this.roundsPath)).filter(name => name.endsWith('.json')).sort()
     const rounds = await Promise.all(names.map(name => this.readJson<unknown>(join(this.roundsPath, name))))
     return rounds.filter((round): round is unknown => round !== undefined).map(round => this.validateRound(round))
+  }
+
+  async readExperienceRecord(recordDigest: string): Promise<SeedExperienceRecord | undefined> {
+    const value = await this.readJson<SeedExperienceRecord>(this.experienceRecordFile(recordDigest))
+    if (value === undefined) return undefined
+    const record = validateSeedExperienceRecord(value)
+    if (record.recordDigest !== recordDigest) throw new TypeError('seed experience record filename/digest mismatch')
+    return record
+  }
+
+  async writeExperienceRecord(value: SeedExperienceRecord): Promise<void> {
+    const record = validateSeedExperienceRecord(value)
+    const path = this.experienceRecordFile(record.recordDigest)
+    const existing = await this.readJson<SeedExperienceRecord>(path)
+    if (existing !== undefined) {
+      const validated = validateSeedExperienceRecord(existing)
+      if (digestJson(validated) !== digestJson(record)) {
+        throw new Error(`immutable seed experience record collision: ${record.recordDigest}`)
+      }
+      return
+    }
+    await this.atomicWrite(path, record)
   }
 
   async writeWorkerRecord(workerId: string, value: unknown): Promise<void> {
@@ -298,6 +325,11 @@ export class RefineStateStore {
   private roundFile(roundId: string): string {
     if (!/^[a-zA-Z0-9_-]+$/u.test(roundId)) throw new TypeError('invalid round id')
     return join(this.roundsPath, `${roundId}.json`)
+  }
+
+  private experienceRecordFile(recordDigest: string): string {
+    if (!/^sha256:[0-9a-f]{64}$/u.test(recordDigest)) throw new TypeError('invalid seed experience record digest')
+    return join(this.experienceRecordsPath, `${recordDigest.slice('sha256:'.length)}.json`)
   }
 
   private async readJson<T>(path: string): Promise<T | undefined> {
@@ -503,6 +535,28 @@ export class RefineStateStore {
     if (round.advisoryFocus !== undefined && (!Array.isArray(round.advisoryFocus)
       || new Set(round.advisoryFocus).size !== round.advisoryFocus.length)) {
       throw new TypeError('round advisoryFocus must be a deduplicated array')
+    }
+    if (round.experienceSnapshot !== undefined) {
+      const snapshot = round.experienceSnapshot
+      if (snapshot.schemaVersion !== 1 || !Array.isArray(snapshot.members)
+        || snapshot.members.length > 4_096 || !/^sha256:[0-9a-f]{64}$/u.test(snapshot.digest)
+        || new Set(snapshot.members.map(member => member.recordId)).size !== snapshot.members.length
+        || new Set(snapshot.members.map(member => member.recordDigest)).size !== snapshot.members.length) {
+        throw new TypeError('round seed experience snapshot is invalid')
+      }
+      for (const member of snapshot.members) {
+        if (typeof member.recordId !== 'string' || member.recordId.length === 0
+          || !/^sha256:[0-9a-f]{64}$/u.test(member.recordDigest)
+          || typeof member.sourceRoundId !== 'string' || member.sourceRoundId.length === 0
+          || typeof member.candidateId !== 'string' || member.candidateId.length === 0
+          || !isExactGitCommit(member.candidateHarnessRef)
+          || member.sourceRoundId === round.roundId) {
+          throw new TypeError('round seed experience snapshot member is invalid')
+        }
+      }
+      if (snapshot.digest !== digestJson({ schemaVersion: 1, members: snapshot.members })) {
+        throw new TypeError('round seed experience snapshot digest mismatch')
+      }
     }
     if (round.finalization !== undefined && round.finalization !== null) {
       if (typeof round.finalization.rationale !== 'string' || round.finalization.rationale.length === 0

@@ -12,9 +12,16 @@ import type {
   MetaSamplingConfig,
   ProposalEvidenceAudit,
   RefinementRound,
+  SeedExperienceContext,
 } from '../types.js'
 import type { MetaAgentSession, MetaSessionController, MetaExecutionBinding } from './controller.js'
 import { generationBudgetSnapshot } from '../refine/generation-budget.js'
+import {
+  EXPERIENCE_V1_MAX_ASSIGNMENT_BYTES,
+  EXPERIENCE_V1_MAX_CARD_BYTES,
+  buildSeedExperienceContext,
+} from '../experience/memory.js'
+import { sanitizePublicValue } from './sanitize.js'
 
 export interface SkillHarnessIdentity {
   runtime: { type: string; version: string; integrity: string }
@@ -57,6 +64,7 @@ export interface SkillAssignment {
     }>
   }
   advisoryFocus?: RefinementRound['advisoryFocus']
+  experienceContext?: SeedExperienceContext
   batch: { id: string; index: number; count: number }
 }
 
@@ -75,6 +83,38 @@ interface AssignmentEntry {
 
 function trialReward(trial: EvaluationEvidence['trials'][number]): number | undefined {
   return trial.rewards.reward ?? Object.values(trial.rewards)[0]
+}
+
+function boundedUtf8(value: string, maxBytes: number): string {
+  if (Buffer.byteLength(value) <= maxBytes) return value
+  const suffix = '…'
+  const budget = Math.max(0, maxBytes - Buffer.byteLength(suffix))
+  const prefix = Buffer.from(value).subarray(0, budget).toString('utf8').replace(/\uFFFD+$/u, '')
+  return `${prefix}${suffix}`
+}
+
+function publicExperienceContext(
+  value: SeedExperienceContext,
+  heldOutRef: string,
+  secretValues: readonly string[],
+): SeedExperienceContext {
+  const safe = sanitizePublicValue(value, heldOutRef, secretValues) as unknown as SeedExperienceContext
+  const boundCard = (card: NonNullable<SeedExperienceContext['directParent']>) => ({
+    ...card,
+    matchReasons: card.matchReasons.map(reason => boundedUtf8(reason, 300)),
+    markdown: boundedUtf8(card.markdown, EXPERIENCE_V1_MAX_CARD_BYTES),
+  })
+  const context: SeedExperienceContext = {
+    ...safe,
+    ...(safe.directParent === undefined ? {} : { directParent: boundCard(safe.directParent) }),
+    relevantCards: safe.relevantCards.map(boundCard),
+  }
+  while (Buffer.byteLength(JSON.stringify(context)) > EXPERIENCE_V1_MAX_ASSIGNMENT_BYTES
+    && context.relevantCards.length > 0) context.relevantCards.pop()
+  if (Buffer.byteLength(JSON.stringify(context)) > EXPERIENCE_V1_MAX_ASSIGNMENT_BYTES) {
+    throw new Error('sanitized direct parent seed experience exceeds the fixed assignment byte limit')
+  }
+  return context
 }
 
 export function skillHarnessIdentity(spec: MetaAgentSpec): SkillHarnessIdentity {
@@ -189,6 +229,7 @@ export class SkillMetaSessionManager implements MetaSessionController {
     private readonly store: RefineStateStore,
     private readonly coordinator: SkillMetaCoordinator,
     readonly options: SkillMetaSessionOptions,
+    private readonly secretValues: readonly string[] = [],
   ) {}
 
   async agent(): Promise<MetaAgentSession> {
@@ -290,6 +331,13 @@ export class SkillMetaSessionManager implements MetaSessionController {
       ...baseline.invalidTrials.map(trial => trial.runId),
     ]
     const leaseId = crypto.randomUUID()
+    const rawExperienceContext = await buildSeedExperienceContext(this.store, round, candidate, baseline)
+    const experienceContext = rawExperienceContext === undefined
+      ? undefined
+      : publicExperienceContext(rawExperienceContext, round.heldOutRef, this.secretValues)
+    if (this.wakes.get(session.id) !== state) {
+      throw new Error('Meta skill assignment was cancelled before publication')
+    }
     this.coordinator.publish({
       ...(execution?.generationBudget === undefined ? {} : {
         generationBudget: generationBudgetSnapshot(execution.generationBudget),
@@ -333,6 +381,7 @@ export class SkillMetaSessionManager implements MetaSessionController {
         ],
       },
       ...(round.advisoryFocus === undefined ? {} : { advisoryFocus: [...round.advisoryFocus] }),
+      ...(experienceContext === undefined ? {} : { experienceContext }),
       batch: { id: round.batchId, index: round.roundIndex, count: round.roundCount },
     }, skillHarnessIdentity(this.options.metaAgent), () => {
       state.summaryAccessed = true
