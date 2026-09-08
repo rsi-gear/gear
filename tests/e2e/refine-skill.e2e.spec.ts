@@ -47,6 +47,14 @@ function identity(runtimeType = 'codex'): SkillHarnessIdentity {
 class E2eEvaluator implements RefineEvaluator {
   private serial = 0
 
+  evaluationIdentity(_round: Readonly<RefinementRound>, request: Readonly<EvaluationRequest>) {
+    return {
+      provider: 'fake',
+      effectiveConfigDigest: request.condition.rolloutProviderDigest,
+      invocationFingerprint: request.condition.rolloutProviderDigest,
+    }
+  }
+
   async reserve(_round: Readonly<RefinementRound>, _request: Readonly<EvaluationRequest>): Promise<EvaluationReservation> {
     this.serial += 1
     return { provider: 'fake', evalId: `eval_${this.serial.toString(16).padStart(32, '0')}` }
@@ -355,12 +363,6 @@ describe('refine skill end to end', () => {
       const nextLease = {
         clientId: `${runtimeType}-session`, leaseId: next.leaseId, leaseToken: next.leaseToken,
       }
-      const nextFailedRun = next.baseline.trials.find(trial => (trial.reward ?? 0) <= 0)?.runId
-      if (nextFailedRun === undefined) throw new Error('continued baseline has no failed run')
-      await requestRefineSkill(socketPath, {
-        method: 'meta.call',
-        params: { ...nextLease, capability: 'trajectory.query', arguments: { refs: [nextFailedRun] } },
-      })
       const history = await requestRefineSkill(socketPath, {
         method: 'meta.call',
         params: {
@@ -386,6 +388,24 @@ describe('refine skill end to end', () => {
         coverage: { planned: 2, valid: 2, excluded: 0 },
       })
 
+      const nextFailedRuns = next.baseline.trials
+        .filter(trial => (trial.reward ?? 0) <= 0 && trial.runId !== undefined)
+        .map(trial => trial.runId!)
+      await expect(requestRefineSkill(socketPath, {
+        method: 'meta.call', params: { ...nextLease, capability: 'candidate.check', arguments: { check: 'compiler' } },
+      })).resolves.toMatchObject({
+        finalizationReadiness: {
+          ready: nextFailedRuns.length === 0,
+          remainingRunCount: nextFailedRuns.length,
+        },
+      })
+      if (nextFailedRuns.length > 0) {
+        await requestRefineSkill(socketPath, {
+          method: 'meta.call',
+          params: { ...nextLease, capability: 'trajectory.query', arguments: { refs: nextFailedRuns } },
+        })
+      }
+
       const nextObserved = await requestRefineSkill(socketPath, {
         method: 'candidate.read', params: { ...nextLease, path: 'plugins/context.ts' },
       }) as { digest: string }
@@ -410,7 +430,7 @@ describe('refine skill end to end', () => {
           arguments: {
             rationale: 'Try a further context refinement.',
             expectedOutcome: 'Preserve the already improved seed behavior.',
-            evidenceRefs: [next.baseline.evalId, nextFailedRun],
+            evidenceRefs: [next.baseline.evalId, ...nextFailedRuns],
             semanticTargets: ['context'],
           },
         },
