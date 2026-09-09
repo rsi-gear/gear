@@ -2597,7 +2597,11 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     return new Promise<ProcessResult>((resolvePromise, reject) => {
       const child = spawn(executablePath, args, {
         cwd,
-        env: process.env,
+        env: {
+          ...process.env,
+          // Hitch controller runtimes are immutable; their Python bridge must not write .pyc files.
+          PYTHONDONTWRITEBYTECODE: '1',
+        },
         stdio: ['ignore', 'pipe', 'pipe'],
       })
       const stdoutChunks: string[] = []

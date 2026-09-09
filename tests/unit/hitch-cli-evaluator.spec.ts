@@ -8,7 +8,7 @@ import { digestDatasetRef } from '../../src/state/dataset.js'
 import { RefineCapabilities } from '../../src/capabilities.js'
 import { renderTrajectoryResult } from '../../src/notebook/tool.js'
 import type { HitchConfig } from '../../src/config.js'
-import type { DiagnosisReceipt, EvaluationRequest, MetaFailureCard, RefinementRound } from '../../src/types.js'
+import type { DiagnosisReceipt, EvaluationRequest, MetaFailureCard, RefinementRound, RoundEvaluationAttempt } from '../../src/types.js'
 import { createGitHarnessFixture } from '../helpers/git-fixture.js'
 import { evaluationCondition, evidence as evidenceFixture, roundFixture } from '../helpers/research-fixture.js'
 import { trajectoryAnalysis } from '../helpers/trajectory-fixture.js'
@@ -136,6 +136,7 @@ async function setup(version = '0.2.5', inspectFixture: InspectFixture = {}, set
   roots.push(fixture.root)
   const executable = join(fixture.root, 'fake-hitch.mjs')
   const invocationLog = join(fixture.root, 'fake-hitch-invocations.jsonl')
+  const environmentLog = join(fixture.root, 'fake-hitch-environments.jsonl')
   const submissionState = join(fixture.root, 'fake-hitch-submission.json')
   const inspectedAttempts = inspectFixture.attempts ?? 1
   const inspectedTasks = inspectFixture.tasks ?? ['task-1']
@@ -154,6 +155,11 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs
 import { createHash } from 'node:crypto'
 const args = process.argv.slice(2)
 appendFileSync(${JSON.stringify(invocationLog)}, JSON.stringify(args) + '\\n')
+appendFileSync(${JSON.stringify(environmentLog)}, JSON.stringify({
+  args,
+  pythonDontWriteBytecode: process.env.PYTHONDONTWRITEBYTECODE ?? null,
+  sentinel: process.env.GEAR_HITCH_ENV_SENTINEL ?? null,
+}) + '\\n')
 const fault = ${JSON.stringify(setupOptions.fault ?? '')}
 if (args[0] === 'eval' && (
   (args[1] === 'watch' && fault === 'watch-invalid-json') ||
@@ -411,7 +417,7 @@ else {
     ...(setupOptions.controlPlane === undefined ? {} : { controlPlane: setupOptions.controlPlane }),
     repositoryPath: fixture.repository,
   })
-  return { fixture, evaluator, invocationLog, submissionState }
+  return { fixture, evaluator, invocationLog, environmentLog, submissionState }
 }
 
 describe('HitchCliEvaluator', () => {
@@ -875,6 +881,52 @@ describe('HitchCliEvaluator', () => {
       request('seed', fixture.championRef),
       new AbortController().signal,
     )).resolves.toMatchObject({ provider: 'hitch-cli', completeness: 'complete' })
+  })
+
+  it.each([
+    ['unset', undefined],
+    ['empty', ''],
+    ['non-one', '0'],
+  ] as const)('forces Python bytecode off for direct eval and invalid rerun when the parent value is %s', async (_case, inherited) => {
+    const originalBytecodeSetting = process.env.PYTHONDONTWRITEBYTECODE
+    const originalSentinel = process.env.GEAR_HITCH_ENV_SENTINEL
+    const sentinel = `preserved-${_case}`
+    try {
+      if (inherited === undefined) delete process.env.PYTHONDONTWRITEBYTECODE
+      else process.env.PYTHONDONTWRITEBYTECODE = inherited
+      process.env.GEAR_HITCH_ENV_SENTINEL = sentinel
+
+      const { fixture, evaluator, environmentLog } = await setup()
+      const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+      const input = request('seed', fixture.championRef)
+      const evidence = await evaluator.evaluate(state, input, new AbortController().signal)
+      const attempt: RoundEvaluationAttempt = {
+        provider: 'hitch-cli', evalId: evidence.evalId, phase: input.phase,
+        owner: { candidateId: `champion-${fixture.championRef}`, role: 'baseline', harnessRef: fixture.championRef },
+        conditionId: input.condition.conditionId, dataset: input.dataset,
+        requestedModelId: input.condition.model, requestedCommit: fixture.championRef,
+        status: 'failed', startedAt: new Date().toISOString(), completedAt: new Date().toISOString(),
+        failure: { code: 'hitch_infrastructure_failure', message: 'invalid task' },
+      }
+      await evaluator.rerun(state, input, attempt, { mode: 'invalid' }, new AbortController().signal)
+
+      const environments = (await readFile(environmentLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as {
+        args: string[]
+        pythonDontWriteBytecode: string | null
+        sentinel: string | null
+      })
+      const launched = environments.filter(({ args }) => args[0] === 'eval' && ['run', 'rerun'].includes(args[1]!))
+      expect(launched.map(({ args }) => args[1])).toEqual(['run', 'rerun'])
+      expect(launched.every(environment => environment.pythonDontWriteBytecode === '1')).toBe(true)
+      expect(launched.every(environment => environment.sentinel === sentinel)).toBe(true)
+      expect(process.env.PYTHONDONTWRITEBYTECODE).toBe(inherited)
+      expect(process.env.GEAR_HITCH_ENV_SENTINEL).toBe(sentinel)
+    } finally {
+      if (originalBytecodeSetting === undefined) delete process.env.PYTHONDONTWRITEBYTECODE
+      else process.env.PYTHONDONTWRITEBYTECODE = originalBytecodeSetting
+      if (originalSentinel === undefined) delete process.env.GEAR_HITCH_ENV_SENTINEL
+      else process.env.GEAR_HITCH_ENV_SENTINEL = originalSentinel
+    }
   })
 
   it('reruns invalid tasks under the original eval id and loads repaired evidence', async () => {

@@ -112,6 +112,12 @@ daemon 提交前，Gear 先在 round 的 `pendingEvaluationSubmissions` 保存�
 
 direct 模式可按语义配置身份复用跨轮次 baseline。daemon 的默认执行策略在提交后才冻结，当前不预先声明可复用身份；已有该版本的 baseline 时明确阻塞，不能通过重新提交评测来探测执行策略。
 
+### 3.1 Python 运行环境
+
+Gear 启动 Hitch CLI 子进程时固定 `PYTHONDONTWRITEBYTECODE=1`。这会保护由当前 Gear 进程启动的 direct `eval run` 和 direct `eval rerun`，避免 Hitch immutable controller runtime 中的 Python bridge 写入 `.pyc`。它不会改变已经运行的 Hitch daemon 或 remote worker 环境；这些路径仍需 Hitch 自身修复。
+
+该开关不会直接修复已经含 `.pyc` 的 CAS runtime，按原 runtime ID 的 rerun 仍会拒绝。不要由 Gear 清理或手工改写 CAS；使用 Hitch 支持的隔离和重建流程并保留原证据，或部署包含根修复的 Hitch 后构建新 runtime。只有 Hitch runtime 内容变化才会产生新的 runtime ID，Gear 的这项防护不会改变 Hitch CAS 身份。
+
 ## 4. Baseline、candidate与held-out
 
 Gear分别调用Hitch，不要求Hitch提供“对比两个candidate”的新命令：
