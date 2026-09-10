@@ -41,11 +41,12 @@ function identity() {
   }
 }
 
-async function fakeCodex(root: string, mode: 'blocked' | 'success' | 'sleep' | 'collision' | 'vanish') {
+async function fakeCodex(root: string, mode: 'blocked' | 'success' | 'hold' | 'collision' | 'vanish') {
   const executable = join(root, 'fake-codex.mjs')
   const logPath = join(root, 'codex-invocations.jsonl')
+  const releasePath = join(root, 'release-codex')
   const script = `#!/usr/bin/env node
-import { appendFileSync, existsSync, readFileSync, unlinkSync } from 'node:fs'
+import { appendFileSync, existsSync, readFileSync, unlinkSync, watch } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 const mode = ${JSON.stringify(mode)}
@@ -65,7 +66,21 @@ if (args[0] === 'login' && args[1] === 'status') {
   process.exit(0)
 }
 if (args[0] !== 'exec') process.exit(2)
-if (mode === 'sleep') { await new Promise(resolve => setTimeout(resolve, 600)); process.exit(0) }
+if (mode === 'hold') {
+  const releasePath = ${JSON.stringify(releasePath)}
+  await new Promise((resolve, reject) => {
+    if (existsSync(releasePath)) { resolve(); return }
+    const watcher = watch(${JSON.stringify(root)}, (_event, filename) => {
+      if (filename === 'release-codex' && existsSync(releasePath)) {
+        watcher.close()
+        resolve()
+      }
+    })
+    watcher.once('error', error => { watcher.close(); reject(error) })
+    if (existsSync(releasePath)) { watcher.close(); resolve() }
+  })
+  process.exit(0)
+}
 const encoded = args.find(value => value.startsWith('mcp_servers.gear_refine.args='))
 if (encoded === undefined) process.exit(3)
 const transportArgs = JSON.parse(encoded.slice(encoded.indexOf('=') + 1))
@@ -104,7 +119,7 @@ await ended
 `
   await writeFile(executable, script)
   await chmod(executable, 0o755)
-  return { executable, logPath }
+  return { executable, logPath, releasePath }
 }
 
 interface GearFixture {
@@ -117,7 +132,7 @@ interface GearFixture {
 
 async function fakeGear(
   root: string,
-  mode: 'blocked' | 'collision' | 'delayed' | 'success' | 'sleep' = 'blocked',
+  mode: 'blocked' | 'collision' | 'delayed' | 'success' = 'blocked',
 ): Promise<GearFixture> {
   const socketPath = join(root, 'gear.sock')
   const calls: Array<{ method: string, params: Record<string, unknown> }> = []
@@ -204,7 +219,7 @@ async function fakeGear(
   return { server, socketPath, calls, failCount: () => failures, claimCount: () => claims }
 }
 
-async function fixture(mode: 'blocked' | 'collision' | 'delayed' | 'success' | 'sleep' | 'vanish' = 'blocked') {
+async function fixture(mode: 'blocked' | 'collision' | 'delayed' | 'success' | 'hold' | 'vanish' = 'blocked') {
   const root = await mkdtemp(join(tmpdir(), 'gear-codex-meta-runner-'))
   roots.push(root)
   const runRoot = join(root, 'runs')
@@ -217,7 +232,7 @@ async function fixture(mode: 'blocked' | 'collision' | 'delayed' | 'success' | '
   const codex = await fakeCodex(root, mode === 'delayed' ? 'blocked' : mode)
   const gear = await fakeGear(root,
     mode === 'success' ? 'success' : mode === 'delayed' ? 'delayed'
-      : mode === 'sleep' ? 'sleep' : mode === 'collision' ? 'collision' : 'blocked')
+      : mode === 'collision' ? 'collision' : 'blocked')
   const environment: NodeJS.ProcessEnv = {
     PATH: process.env.PATH,
     HOME: root,
@@ -330,13 +345,19 @@ describe('Codex Skill Meta runner example', () => {
   })
 
   it('excludes a second runner for the same round', async () => {
-    const value = await fixture('sleep')
+    const value = await fixture('hold')
     await writeFile(join(value.codexHome, 'auth.json'), JSON.stringify({ accessToken: 'fixture-access' }))
     const first = runnerModule.runCodexSkillMetaRound(evolutionId, roundId, value.environment)
     await eventually(() => value.gear.claimCount() > 0)
-    await expect(runnerModule.runCodexSkillMetaRound(evolutionId, roundId, value.environment))
-      .rejects.toThrow('another runner already owns this Meta round')
-    expect((await first).status).toBe('failed')
+    let firstResult: Record<string, unknown> | undefined
+    try {
+      await expect(runnerModule.runCodexSkillMetaRound(evolutionId, roundId, value.environment))
+        .rejects.toThrow('another runner already owns this Meta round')
+    } finally {
+      await writeFile(value.releasePath, 'release\n')
+      firstResult = await first
+    }
+    expect(firstResult?.status).toBe('failed')
     expect(value.gear.failCount()).toBe(1)
   })
 
