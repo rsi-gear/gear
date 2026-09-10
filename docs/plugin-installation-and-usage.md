@@ -338,6 +338,8 @@ order: 50
     evolutionState:
       publishedPointer: true
       maxLiveMetaSessions: 8
+      # 只有恢复旧 identity-schema-v1 evolution 时才配置；必须是旧安装包的绝对路径。
+      legacyComponentRoots: []
 ```
 
 新部署不要在 Gear 中设置 `metaModel.maxTokens`。省略该字段可避免 Gear
@@ -394,8 +396,23 @@ Skill 模式由宿主设置实际请求参数；Gear 校验 identity，DSH skill
 | `hitch.allowUnavailableVerifierDiagnosis` | 默认 `false`；仅为缺少 `hitch verifier inspect` 的旧 Hitch 显式开启 trajectory-only 诊断兼容。诊断卡对应的内部 receipt 仍标记 verifier unavailable；升级后应关闭并重新读取诊断卡 |
 | `promotion` | seed/held-out gate 和 required-task 回归策略 |
 | `publishedPointer` | 是否维护 workspace 级显式 published pointer |
+| `evolutionState.legacyComponentRoots` | 可选的只读旧 Gear 包根目录列表，用于验证并恢复 V1 component identity；新 evolution 不依赖这些目录 |
 
 `initialChampion` 对全新部署实际上是必需的：没有它就无法创建第一个 evolution。以后每个普通 `/refine` 仍默认从这个固定初始版本开始；它不会偷偷继承另一个 evolution 的 champion。
+
+新建 evolution 的内置 component identity 与 Gear 的 npm 发布元数据分离：只绑定该组件的
+算法、执行 helper、相关 runtime assets 和 Node engine 约束。修改 package description、
+scripts、exports、files 或无关组件不会再改变它；算法或实际执行依赖变化仍会改变 identity，
+已有 evolution 会要求创建新实验。
+
+旧 identity-schema-v1 evolution 把整个 `package.json` 混入 identity。继续这类实验时，将创建
+该 sealed identity 的旧 Gear 安装包保留为只读目录，并把绝对包根目录加入
+`evolutionState.legacyComponentRoots`。目录必须包含原始 `package.json`、`lib/` 和相关
+`assets/`。Gear 会现场按 V1 公式重算完整 identity，再严格解析受支持的旧模块布局并比较实际
+执行闭包；它不会 import 或运行旧模块。缺文件、未知布局、initializer/import/helper/算法变化
+都会在 Meta 或 Target 执行前拒绝。这里没有 release SHA 白名单，也不会覆盖 sealed spec 中的
+原 component ref。Meta runtime、Meta preset/Skill、dataset 和 evaluator 的既有 continue 校验
+仍然独立生效。
 
 ### 6.2 在一次性 target 容器间复用 Codex 登录
 
@@ -675,6 +692,18 @@ agent config 和 sandbox 等语义条件仍一致，Gear 可以复用已完整 s
 identity 仍写入 `invocationFingerprint`，并在复用 attempt 的 `reuseAudit` 中同时记录历史与当前指纹；
 该信息只用于追溯，不参与复用判定。Hitch 仍必须通过最低版本和 CLI 合同校验。
 
+旧 V1 component identity 的 evolution 还需要在 profile 中保留原包产物的只读绝对路径，例如：
+
+```yaml
+evolutionState:
+  legacyComponentRoots:
+    - /srv/dsh/legacy-packages/dsh-plugin-refine-0.1.0
+```
+
+Gear 只读取这些原始文件来重算旧 identity 和比较执行闭包，不加载旧代码。通过下一节的
+`baselineSource` 新建实验不要求保留旧安装目录，因为该流程只读校验来源状态和当前 Target
+evaluator，不恢复来源 Meta 或组件 runtime。
+
 ### 8.5 从其他版本分叉
 
 普通新 evolution 默认从 `initialChampion` 开始，也可以显式选择：
@@ -684,7 +713,55 @@ identity 仍写入 `invocationFingerprint`，并在复用 attempt 的 `reuseAudi
 /refine --from <exact-git-commit> --rounds 1
 ```
 
-### 8.6 发布和回滚
+### 8.6 显式复用另一个 evolution 的 baseline
+
+创建新的 evolution 时，可以通过通用 control API 指定一个来源 round。下面的请求默认只复用
+seed baseline：
+
+```sh
+gear-refine request control.start '{
+  "baselineSource": {
+    "evolutionId": "<source-evolution-id>",
+    "roundId": "<source-round-id>"
+  },
+  "rounds": 1,
+  "name": "new-meta-with-existing-target-baseline"
+}'
+```
+
+省略 `from` 时，新 evolution 从来源 round 的 exact target commit 和 manifest 开始。
+显式提供 `from` 时，它必须与来源 target 完全一致。新 evolution 使用当前配置的 Meta
+模型、Skill 和候选生成算法；不会导入来源 Meta history 或经验 memory。
+
+只有明确请求时才复用 held-out baseline：
+
+```json
+{
+  "baselineSource": {
+    "evolutionId": "<source-evolution-id>",
+    "roundId": "<source-round-id>",
+    "partitions": ["seed", "held-out"]
+  }
+}
+```
+
+Gear 在创建新 evolution 前只读校验来源 registry/spec/round、exact target 和 manifest、
+所选 dataset ref/digest、repetitions、Target model/sampling/agent 参数、task budget、sandbox、
+Hitch provider/scoring identity，以及完整 settled 的逐 trial evidence。当前 Hitch 必须仍能从
+同一个规范化 storage root 读取所需 seed trajectory；不满足任一条件就明确拒绝，不创建
+evolution，也不启动新的 Target evaluation。来源可以归档，但其状态记录和 Hitch artifacts
+必须仍可读。
+
+来源 round 必须已经进入 terminal 状态，且不能遗留 pending evaluation、submission 或 repair。
+当前该入口只支持能够在不启动试验的情况下解析 `evaluationIdentity` 的 Hitch direct control
+plane；daemon 来源或目标会明确拒绝。
+
+导入后保留来源的 `evalId`、`conditionId`、逐 trial evidence 和 source evolution/round
+审计信息。held-out snapshot 在 seed gate 通过前不会进入 round evaluation 或 Meta 可见的
+assignment；未请求 held-out 时，后续 held-out baseline 按正常流程首次评测。该入口不缓存
+或自动搜索其他实验，也不会把完整旧经验带入新 Meta。
+
+### 8.7 发布和回滚
 
 自动 promotion 只更新当前 evolution 的 champion，不会自动改变 workspace 级默认版本。
 

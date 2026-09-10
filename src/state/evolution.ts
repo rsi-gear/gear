@@ -15,6 +15,7 @@ import { digestJson } from './digest.js'
 import { serializeExperimentsTsv } from './experiments.js'
 import { validateMetaSampling } from '../meta/sampling.js'
 import { validateOffloadingPolicy } from '../meta/offloading-policy.js'
+import { validateBaselineConditionSource } from '../refine/baseline-source.js'
 
 export { digestJson } from './digest.js'
 
@@ -109,6 +110,19 @@ function validateSpec(value: EvolutionSpec): EvolutionSpec {
   if (value.rollout.providerSemanticDigest !== undefined
     && !/^sha256:[0-9a-f]{64}$/u.test(value.rollout.providerSemanticDigest)) {
     throw new TypeError('evolution rollout provider semantic digest is invalid')
+  }
+  if (value.baselineConditionSource !== undefined) {
+    const source = validateBaselineConditionSource(value.baselineConditionSource)
+    const providerIdentity = {
+      kind: value.rollout.provider.kind,
+      id: value.rollout.provider.id,
+      apiVersion: value.rollout.provider.apiVersion,
+      implementation: value.rollout.provider.implementation,
+    }
+    if (source.inheritedRolloutProviderDigest !== value.rollout.providerSemanticDigest
+      || digestJson(source.destinationProvider) !== digestJson(providerIdentity)) {
+      throw new TypeError('evolution baseline condition source does not match its rollout provider')
+    }
   }
   const rolloutTemperature = value.rollout.sampling.temperature
   if (rolloutTemperature !== undefined

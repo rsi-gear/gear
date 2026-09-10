@@ -1,9 +1,5 @@
-import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import type {
-  ArtifactRef,
   CandidateAssessmentContext,
   CandidateAssessmentRequest,
   CandidateAssessmentResult,
@@ -11,7 +7,6 @@ import type {
   CandidateSelectionInput,
   ComponentKind,
   ComponentRef,
-  EvaluationCondition,
   EvolutionSpec,
   EvaluationEvidence,
   MetricSet,
@@ -23,44 +18,26 @@ import type {
   SelectionDecision,
 } from '../types.js'
 import { digestJson } from '../state/digest.js'
+import { assertComponentRef, componentRef, type ComponentImplementation } from './component-ref.js'
+import { builtinImplementation, LegacyComponentVerifier } from './component-identity.js'
+import {
+  DatasetTaskSampler,
+  EvaluationMetricsCandidateAssessor,
+  ForkedProposalCandidateGenerator,
+  HighestQualityCandidateSelector,
+  PairedGatePromotionPolicy,
+  TaskRewardJudge,
+} from './builtin-algorithms.js'
 
-const PACKAGE_NAME = 'dsh-plugin-refine'
-const PACKAGE_MANIFEST_BYTES = readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)))
-const PACKAGE_VERSION = (JSON.parse(PACKAGE_MANIFEST_BYTES.toString('utf8')) as { version: string }).version
-
-export type ComponentImplementation = ComponentRef<unknown>['implementation']
-
-function builtinImplementation(kind: ComponentKind, id: string): ComponentImplementation {
-  const moduleBytes = readFileSync(fileURLToPath(import.meta.url))
-  return {
-    package: PACKAGE_NAME,
-    version: PACKAGE_VERSION,
-    integrity: `sha256:${createHash('sha256')
-      .update(moduleBytes)
-      .update('\0')
-      .update(PACKAGE_MANIFEST_BYTES)
-      .update('\0')
-      .update(JSON.stringify({ package: PACKAGE_NAME, version: PACKAGE_VERSION, kind, id, apiVersion: 1 }))
-      .digest('hex')}`,
-  }
-}
-
-export function componentRef<C>(
-  kind: ComponentKind,
-  id: string,
-  implementation: ComponentImplementation,
-  config: C,
-): ComponentRef<C> {
-  const configDigest = digestJson(config)
-  return {
-    kind,
-    id,
-    apiVersion: 1,
-    implementation,
-    config,
-    configDigest,
-  }
-}
+export { assertComponentRef, componentRef, type ComponentImplementation } from './component-ref.js'
+export {
+  DatasetTaskSampler,
+  EvaluationMetricsCandidateAssessor,
+  ForkedProposalCandidateGenerator,
+  HighestQualityCandidateSelector,
+  PairedGatePromotionPolicy,
+  TaskRewardJudge,
+} from './builtin-algorithms.js'
 
 export function builtinComponentRef<C>(kind: ComponentKind, id: string, config: C): ComponentRef<C> {
   return componentRef(kind, id, builtinImplementation(kind, id), config)
@@ -88,19 +65,6 @@ export function rolloutProviderSemanticDigest(
   })
 }
 
-export function assertComponentRef(value: ComponentRef<unknown>, expectedKind?: ComponentKind): void {
-  if (expectedKind !== undefined && value.kind !== expectedKind) {
-    throw new TypeError(`component ${value.id} has kind ${value.kind}; expected ${expectedKind}`)
-  }
-  if (value.apiVersion !== 1 || value.id.length === 0 || value.implementation.package.length === 0
-    || value.implementation.version.length === 0 || value.implementation.integrity.length === 0) {
-    throw new TypeError('component identity is invalid')
-  }
-  if (digestJson(value.config) !== value.configDigest) {
-    throw new TypeError(`component config digest mismatch: ${value.id}`)
-  }
-}
-
 export interface CandidateGenerationSlot {
   candidateId: string
   parentHarnessRef: string
@@ -121,69 +85,9 @@ export interface CandidateGenerator {
   plan(roundId: string, parents: readonly CandidateGenerationParent[], maxCandidates: number): CandidateGenerationSlot[]
 }
 
-export class ForkedProposalCandidateGenerator implements CandidateGenerator {
-  readonly ref: ComponentRef<unknown>
-
-  constructor(ref: ComponentRef<unknown>) {
-    assertComponentRef(ref, 'candidate-generator')
-    this.ref = ref
-  }
-
-  plan(roundId: string, parents: readonly CandidateGenerationParent[], maxCandidates: number): CandidateGenerationSlot[] {
-    if (!Number.isSafeInteger(maxCandidates) || maxCandidates <= 0) {
-      throw new TypeError('candidateGeneration.maxCandidates must be a positive integer')
-    }
-    if (parents.length === 0) throw new TypeError('candidate generation requires at least one parent')
-    const ordered = [...parents].sort((left, right) => left.candidateId.localeCompare(right.candidateId))
-    return Array.from({ length: maxCandidates }, (_, index) => ({
-      candidateId: `${roundId}-candidate-${index + 1}`,
-      parentHarnessRef: ordered[index % ordered.length]!.harnessRef,
-      parentCandidateIds: [ordered[index % ordered.length]!.candidateId],
-    }))
-  }
-}
-
 export interface TaskSampler {
   readonly ref: ComponentRef<unknown>
   resolve(roundId: string, datasets: EvolutionSpec['datasets'], rollout: RolloutSpec, timeoutMs: number): ResolvedRoundPlan
-}
-
-function condition(
-  partition: EvaluationCondition['partition'],
-  dataset: ArtifactRef,
-  rollout: RolloutSpec,
-  timeoutMs: number,
-): EvaluationCondition {
-  const identity = {
-    partition,
-    dataset,
-    repetitions: rollout.repetitions,
-    ...(rollout.seeds === undefined ? {} : { seeds: rollout.seeds }),
-    model: rollout.model,
-    sampling: rollout.sampling,
-    timeoutMs,
-    // Legacy specs retain their original identity so they remain readable. New specs provide the
-    // path-independent semantic digest explicitly; their first round after this change establishes
-    // evidence under the new identity.
-    rolloutProviderDigest: rollout.providerSemanticDigest ?? digestJson(rollout.provider),
-  }
-  return { conditionId: digestJson(identity), ...identity }
-}
-
-export class DatasetTaskSampler implements TaskSampler {
-  readonly ref: ComponentRef<unknown>
-
-  constructor(ref: ComponentRef<unknown>) {
-    assertComponentRef(ref, 'task-sampler')
-    this.ref = ref
-  }
-
-  resolve(roundId: string, datasets: EvolutionSpec['datasets'], rollout: RolloutSpec, timeoutMs: number): ResolvedRoundPlan {
-    const seed = condition('seed', datasets.seed, rollout, timeoutMs)
-    const heldOut = condition('held-out', datasets.heldOut, rollout, timeoutMs)
-    const identity = { roundId, taskSampler: this.ref, seed, heldOut }
-    return { planId: `${roundId}-plan`, digest: digestJson(identity), taskSampler: this.ref, seed, heldOut }
-  }
 }
 
 export interface CandidateSelector {
@@ -210,81 +114,6 @@ export interface RolloutProvider {
   createEvaluator(spec: EvolutionSpec): RefineEvaluator
 }
 
-export class TaskRewardJudge implements Judge {
-  readonly ref: ComponentRef<unknown>
-
-  constructor(ref: ComponentRef<unknown>) {
-    assertComponentRef(ref, 'judge')
-    this.ref = ref
-  }
-
-  evaluate(evidence: EvaluationEvidence): Partial<MetricSet> {
-    return {
-      quality: evidence.primaryReward,
-      taskSuccessRate: evidence.summary.total === 0 ? 0 : evidence.summary.passed / evidence.summary.total,
-    }
-  }
-}
-
-export class EvaluationMetricsCandidateAssessor implements CandidateAssessor {
-  readonly ref: ComponentRef<unknown>
-
-  constructor(ref: ComponentRef<unknown>) {
-    assertComponentRef(ref, 'candidate-assessor')
-    this.ref = ref
-  }
-
-  async assess(
-    request: CandidateAssessmentRequest,
-    _context: CandidateAssessmentContext,
-    signal: AbortSignal,
-  ): Promise<CandidateAssessmentResult> {
-    signal.throwIfAborted()
-    const ordered = [...request.candidates].sort((left, right) => left.candidateId.localeCompare(right.candidateId))
-    return {
-      candidateMetrics: Object.fromEntries(ordered.map(candidate => [candidate.candidateId, structuredClone(candidate.metrics)])),
-      rankingCandidateIds: ordered
-        .sort((left, right) => right.metrics.quality - left.metrics.quality || left.candidateId.localeCompare(right.candidateId))
-        .map(candidate => candidate.candidateId),
-      reason: 'used persisted seed evaluation metrics without additional model calls',
-      evidence: {
-        kind: 'evaluation-metrics',
-        evalIds: Object.fromEntries(ordered.map(candidate => [candidate.candidateId, candidate.seedEvaluation.evalId])),
-      },
-      usage: { modelRequests: 0, inputTokens: 0, outputTokens: 0 },
-    }
-  }
-}
-
-export class HighestQualityCandidateSelector implements CandidateSelector {
-  readonly ref: ComponentRef<unknown>
-
-  constructor(ref: ComponentRef<unknown>) {
-    assertComponentRef(ref, 'candidate-selector')
-    this.ref = ref
-  }
-
-  select(request: CandidateSelectionRequest): SelectionDecision {
-    const { candidates, survivors, assessment } = request
-    if (!Number.isSafeInteger(survivors) || survivors <= 0) throw new TypeError('selection.survivors must be positive')
-    const scored = [...candidates]
-      .sort((left, right) => (right.metrics?.quality ?? right.seedEvaluation.primaryReward)
-        - (left.metrics?.quality ?? left.seedEvaluation.primaryReward)
-        || left.candidateId.localeCompare(right.candidateId))
-      .filter((candidate, index, ordered) => ordered.findIndex(value => value.sealedVersion.treeOid === candidate.sealedVersion.treeOid) === index)
-    if (scored.length < survivors) throw new Error(`selector needs ${survivors} evaluated candidates, found ${scored.length}`)
-    const selected = scored.slice(0, survivors)
-    return {
-      selectedCandidateIds: selected.map(candidate => candidate.candidateId),
-      promotionCandidateId: selected[0]!.candidateId,
-      reason: 'highest assessed quality on seed/dev evaluation',
-      component: this.ref,
-      assessmentDigest: assessment.digest,
-      metrics: Object.fromEntries(scored.map(candidate => [candidate.candidateId, candidate.metrics?.quality ?? candidate.seedEvaluation.primaryReward])),
-    }
-  }
-}
-
 export interface PromotionDecisionRequest {
   policy: PromotionPolicy
   seedBaseline: EvaluationEvidence
@@ -309,49 +138,6 @@ export interface PromotionPolicyProvider {
   decide(request: PromotionDecisionRequest): PromotionDecision
 }
 
-function pairedRewards(trials: readonly PairedTrial[], side: 'baseline' | 'candidate'): {
-  score: number
-  passed: number
-} {
-  const rewards = trials.map(trial => side === 'baseline' ? trial.baselineReward : trial.candidateReward)
-  return {
-    score: rewards.length === 0 ? 0 : rewards.reduce((sum, reward) => sum + reward, 0) / rewards.length,
-    passed: rewards.filter(reward => reward > 0).length,
-  }
-}
-
-export class PairedGatePromotionPolicy implements PromotionPolicyProvider {
-  readonly ref: ComponentRef<PromotionPolicy>
-
-  constructor(ref: ComponentRef<PromotionPolicy>) {
-    assertComponentRef(ref, 'promotion-policy')
-    this.ref = ref
-  }
-
-  decide(request: PromotionDecisionRequest): PromotionDecision {
-    if (request.pairedTrials.seed.length === 0 || request.pairedTrials.heldOut.length === 0) {
-      return { accepted: false, reason: 'paired promotion gate requires at least one valid seed and held-out pair' }
-    }
-    const seedBaseline = pairedRewards(request.pairedTrials.seed, 'baseline')
-    const seedCandidate = pairedRewards(request.pairedTrials.seed, 'candidate')
-    const heldOutBaseline = pairedRewards(request.pairedTrials.heldOut, 'baseline')
-    const heldOutCandidate = pairedRewards(request.pairedTrials.heldOut, 'candidate')
-    const seedDelta = seedCandidate.score - seedBaseline.score
-    const heldOutDelta = heldOutCandidate.score - heldOutBaseline.score
-    const accepted = seedCandidate.score >= request.policy.minimumCandidateScore
-      && seedDelta >= request.policy.minimumAbsoluteGain
-      && heldOutDelta >= -request.policy.maxHeldOutRegression
-      && request.requiredRegressions <= request.policy.maxRequiredRegressions
-      && (!request.policy.requireNoRegression
-        || (seedCandidate.passed >= seedBaseline.passed
-          && heldOutCandidate.passed >= heldOutBaseline.passed))
-    return {
-      accepted,
-      reason: accepted ? 'paired seed and held-out gates passed' : 'paired promotion gate rejected candidate',
-    }
-  }
-}
-
 interface RegisteredComponent<C, T> {
   implementation: ComponentImplementation
   factory: (ref: ComponentRef<C>) => T
@@ -365,8 +151,10 @@ export class ComponentRegistry {
   private readonly selectors = new Map<string, RegisteredComponent<unknown, CandidateSelector>>()
   private readonly judges = new Map<string, RegisteredComponent<unknown, Judge>>()
   private readonly promotionPolicies = new Map<string, RegisteredComponent<PromotionPolicy, PromotionPolicyProvider>>()
+  private readonly legacy: LegacyComponentVerifier
 
-  constructor() {
+  constructor(options: { legacyComponentRoots?: readonly string[] } = {}) {
+    this.legacy = new LegacyComponentVerifier(options.legacyComponentRoots)
     this.registerCandidateGenerator('dsh-meta-forked-proposals', builtinImplementation('candidate-generator', 'dsh-meta-forked-proposals'), ref => new ForkedProposalCandidateGenerator(ref))
     this.registerCandidateGenerator('meta-forked-proposals', builtinImplementation('candidate-generator', 'meta-forked-proposals'), ref => new ForkedProposalCandidateGenerator(ref))
     this.registerTaskSampler('dataset', builtinImplementation('task-sampler', 'dataset'), ref => new DatasetTaskSampler(ref))
@@ -444,7 +232,14 @@ export class ComponentRegistry {
     assertComponentRef(ref as ComponentRef<unknown>, kind)
     const registered = registry.get(ref.id)
     if (registered === undefined) throw new Error(`unknown ${kind} component: ${ref.id}`)
-    if (digestJson(registered.implementation) !== digestJson(ref.implementation)) {
+    if (digestJson(registered.implementation) !== digestJson(ref.implementation)
+      && !this.legacy.accepts(ref as ComponentRef<unknown>, registered.implementation, kind, ref.id)) {
+      if (ref.implementation.package === 'dsh-plugin-refine') {
+        const detail = this.legacy.roots.length === 0
+          ? 'opaque V1 identity requires an absolute evolutionState.legacyComponentRoots package path'
+          : 'configured legacy package artifacts do not prove the same implementation'
+        throw new Error(`component implementation identity mismatch: ${ref.id}; ${detail}`)
+      }
       throw new Error(`component implementation identity mismatch: ${ref.id}`)
     }
     return registered.factory(ref)

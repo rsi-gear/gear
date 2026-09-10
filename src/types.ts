@@ -1,4 +1,5 @@
 import type { JsonValue } from '@deepseek-ai/dsh-session'
+import type { BaselineConditionSource, BaselineSourceSnapshot } from './refine/baseline-source.js'
 
 export type HarnessRef = string
 export type MetaHarnessRef = string
@@ -207,6 +208,8 @@ export interface EvolutionSpec {
   metaAgent: MetaAgentSpec
   candidateGeneration: CandidateGenerationSpec
   rollout: RolloutSpec
+  /** Verified source for a provider condition digest inherited by this evolution. */
+  baselineConditionSource?: BaselineConditionSource
   evaluation: {
     judges: ComponentRef<unknown>[]
     primaryMetric: string
@@ -914,6 +917,8 @@ export interface RoundEvaluationAttempt {
   failure?: { code: string; message: string }
   /** A settled baseline imported from an earlier round instead of rerun. */
   reusedFromRoundId?: string
+  /** Present with reusedFromRoundId when the evidence came from another evolution. */
+  reusedFromEvolutionId?: EvolutionId
   cleanupFailure?: EvaluationFailure
   submissionIntent?: EvaluationSubmissionIntent
   /** Diagnostic provenance for a reuse decision; it does not determine semantic compatibility. */
@@ -1397,6 +1402,8 @@ export interface RefinementRound {
   roundCount: number
   advisoryFocus?: SemanticTarget[]
   experienceSnapshot?: SeedExperienceSnapshot
+  /** Admission-time evidence copied from an explicitly selected source round. */
+  baselineSource?: BaselineSourceSnapshot
   plan: ResolvedRoundPlan
   parentPopulationDigest?: string
   /** Immutable code parent for new rounds; research survivors remain separately recorded. */

@@ -71,6 +71,8 @@ export interface Config {
   evolutionState: {
     publishedPointer: boolean
     maxLiveMetaSessions: number
+    /** Read-only package roots used to prove opaque component identities created by identity schema V1. */
+    legacyComponentRoots: string[]
   }
   candidateWorkspace: {
     rootName: string
@@ -183,7 +185,8 @@ export const ConfigSchema: Schema<Config> = Schema.object({
   evolutionState: Schema.object({
     publishedPointer: Schema.boolean().default(true),
     maxLiveMetaSessions: Schema.number().default(8),
-  }).default({ publishedPointer: true, maxLiveMetaSessions: 8 }),
+    legacyComponentRoots: Schema.array(Schema.string()).default([]),
+  }).default({ publishedPointer: true, maxLiveMetaSessions: 8, legacyComponentRoots: [] }),
   candidateWorkspace: Schema.object({
     rootName: Schema.string().default('candidate-worktrees'),
     maxFiles: Schema.number().default(64),

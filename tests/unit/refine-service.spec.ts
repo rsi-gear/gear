@@ -16,7 +16,8 @@ import { RefineStateStore } from '../../src/state/store.js'
 import { EvolutionRegistryStore } from '../../src/state/evolution.js'
 import type { DiagnosisReceipt, EvaluationPhase, EvaluationRequest, EvaluationRerunResult, EvaluationRerunSelector, EvaluationReservation, HitchEvaluationEvidence, MetaAttribution, MetaCheckpointRef, MetaTurnObservation, RefineEvaluator, RefinementRound, RoundEvaluationAttempt } from '../../src/types.js'
 import { createGitHarnessFixture } from '../helpers/git-fixture.js'
-import { builtinComponentRef, componentRef } from '../../src/evolution/components.js'
+import { builtinComponentRef, componentRef, rolloutProviderSemanticDigest } from '../../src/evolution/components.js'
+import { hitchCliImplementation } from '../../src/evolution/component-identity.js'
 import { evolutionSpec } from '../helpers/research-fixture.js'
 import { SkillMetaCoordinator, SkillMetaSessionManager, skillHarnessIdentity } from '../../src/meta/skill.js'
 import { RefineCapabilities } from '../../src/capabilities.js'
@@ -309,6 +310,46 @@ async function setup(
   await builder.initialize()
   await service.initialize()
   return { git, registry, service, evaluator, metas }
+}
+
+function enableBaselineSources(service: RefineService, evaluator: FakeEvaluator): void {
+  const hitchRoot = join(service.options.workspaceRoot, 'hitch-data')
+  const agentConfig = { agentArgs: [] as string[] }
+  const config = {
+    executable: '/test/hitch',
+    harnessId: 'test',
+    root: hitchRoot,
+    model: 'deepseek-chat',
+    attempts: 1,
+    maxConcurrent: 1,
+    seeds: [] as number[],
+    sampling: {},
+    agentArgs: [] as string[],
+    allowUnavailableVerifierDiagnosis: true,
+    controlPlane: { mode: 'direct', requireModelCapture: false },
+  }
+  const provider = componentRef('rollout-provider', 'hitch-cli', hitchCliImplementation(), config)
+  service.options.rollout = {
+    provider,
+    providerSemanticDigest: rolloutProviderSemanticDigest(provider, { harnessId: config.harnessId }, agentConfig),
+    taskSampler: builtinComponentRef('task-sampler', 'dataset', {}),
+    repetitions: 1,
+    model: config.model,
+    sampling: {},
+    agentConfig,
+  }
+  Object.assign(evaluator, {
+    options: { root: hitchRoot },
+    async inspectCapabilities() {
+      return { schemaVersion: 1 as const, trajectoryAnalysis: 1 as const, trajectoryEventsPage: 1 as const }
+    },
+    async inspectTrajectoryAnalysis(runId: string) {
+      return trajectoryAnalysis(runId, [])
+    },
+    async inspectTrajectoryEvents() {
+      throw new Error('baseline source admission does not request trajectory event pages')
+    },
+  })
 }
 
 async function editing(service: RefineService, evolutionId: string, roundId: string): Promise<RefinementRound> {
@@ -3513,5 +3554,227 @@ describe('RefineService evolution workspaces', () => {
     })
     const lock = await store.acquireRoundLock()
     await lock.release()
+  })
+
+  it('starts a new Meta evolution from explicit source evidence without another Target baseline', async () => {
+    const { service, evaluator, registry } = await setup()
+    enableBaselineSources(service, evaluator)
+    const sourceAdmission = await service.admit('api')
+    const sourceEditing = await editing(service, sourceAdmission.evolutionId, sourceAdmission.roundId)
+    await decline(service, sourceEditing)
+    const sourceRound = await eventually(
+      () => registry.stateStore(sourceAdmission.evolutionId).readRound(sourceAdmission.roundId),
+      round => round?.status === 'rejected',
+    )
+    const sourceEvidence = structuredClone(sourceRound!.baseline!)
+    const callsBefore = evaluator.calls.length
+    service.options.metaAgent = {
+      ...structuredClone(service.options.metaAgent),
+      preset: { id: 'meta-v2', digest: `sha256:${'9'.repeat(64)}`, resources: [] },
+      model: { provider: 'different-meta', model: 'different-meta-model' },
+      sampling: { temperature: 0.7 },
+    }
+    const createMetaSession = service.createMetaSession
+    await service.dispose()
+    let sourceRuntimeRequested = false
+    const current = new RefineService(
+      registry, service.builder, service.workspaceManager,
+      (spec, digest, store) => {
+        if (spec.evolutionId === sourceAdmission.evolutionId) {
+          sourceRuntimeRequested = true
+          throw new Error('source Meta runtime must not be loaded for baseline import')
+        }
+        return createMetaSession(spec, digest, store)
+      },
+      evaluator, service.options, service.components,
+    )
+    await current.initialize()
+
+    const admission = await current.admit('api', {
+      baselineSource: { evolutionId: sourceAdmission.evolutionId, roundId: sourceAdmission.roundId },
+    })
+    const imported = await editing(current, admission.evolutionId, admission.roundId)
+    const spec = await registry.requireSpec(admission.evolutionId)
+
+    expect(evaluator.calls).toHaveLength(callsBefore)
+    expect(sourceRuntimeRequested).toBe(false)
+    expect(imported.baseline).toEqual(sourceEvidence)
+    expect(imported.baselineSource?.partitions.heldOut).toBeUndefined()
+    expect(imported.evaluationAttempts).toContainEqual(expect.objectContaining({
+      provider: sourceEvidence.provider,
+      evalId: sourceEvidence.evalId,
+      status: 'settled',
+      reusedFromEvolutionId: sourceAdmission.evolutionId,
+      reusedFromRoundId: sourceAdmission.roundId,
+    }))
+    expect(spec.metaAgent.model.model).toBe('different-meta-model')
+    expect(spec.baselineConditionSource).toMatchObject({
+      partitions: ['seed'],
+      source: { evolutionId: sourceAdmission.evolutionId, roundId: sourceAdmission.roundId },
+      inheritedRolloutProviderDigest: sourceRound!.plan.seed.rolloutProviderDigest,
+    })
+    await current.dispose()
+  })
+
+  it('keeps an opt-in held-out source sealed until held-out evaluation and reuses it after a failed first round', async () => {
+    const { service, evaluator, registry } = await setup()
+    enableBaselineSources(service, evaluator)
+    const sourceAdmission = await service.admit('api')
+    const sourceEditing = await editing(service, sourceAdmission.evolutionId, sourceAdmission.roundId)
+    await finalize(service, sourceEditing)
+    const sourceRound = await eventually(
+      () => registry.stateStore(sourceAdmission.evolutionId).readRound(sourceAdmission.roundId),
+      round => round?.status === 'accepted',
+    )
+    const sourceHeldOut = structuredClone(sourceRound!.evaluation!.heldOutBaseline!)
+    const callsBefore = evaluator.calls.length
+    service.options.metaAgent = {
+      ...structuredClone(service.options.metaAgent),
+      preset: { id: 'meta-held-out-v2', digest: `sha256:${'8'.repeat(64)}`, resources: [] },
+    }
+
+    const firstAdmission = await service.admit('api', {
+      baselineSource: {
+        evolutionId: sourceAdmission.evolutionId,
+        roundId: sourceAdmission.roundId,
+        partitions: ['seed', 'held-out'],
+      },
+    })
+    const first = await editing(service, firstAdmission.evolutionId, firstAdmission.roundId)
+    expect(evaluator.calls).toHaveLength(callsBefore)
+    expect(first.baselineSource?.partitions.heldOut?.evidence).toEqual(sourceHeldOut)
+    expect(first.evaluation).toBeUndefined()
+    expect(JSON.stringify(first.experienceSnapshot ?? {})).not.toContain(sourceHeldOut.evalId)
+    const firstCandidate = first.candidatePool[0]!
+    await service.failMetaExecution(
+      first.evolutionId,
+      first.roundId,
+      firstCandidate.candidateId,
+      firstCandidate.metaSessionId!,
+      'simulated failure',
+    )
+    await eventually(
+      () => registry.stateStore(firstAdmission.evolutionId).readRound(firstAdmission.roundId),
+      round => round?.status === 'failed',
+    )
+
+    const continued = await service.continueEvolution('api', firstAdmission.evolutionId)
+    const second = await editing(service, continued.evolutionId, continued.roundId)
+    expect(evaluator.calls).toHaveLength(callsBefore)
+    await finalize(service, second)
+    const terminal = await eventually(
+      () => registry.stateStore(continued.evolutionId).readRound(continued.roundId),
+      round => round?.status === 'accepted',
+    )
+    expect(evaluator.calls.slice(callsBefore)).toEqual(['seed-candidate', 'held-out-candidate'])
+    expect(terminal!.evaluation!.heldOutBaseline).toEqual(sourceHeldOut)
+    expect(terminal!.evaluationAttempts).toContainEqual(expect.objectContaining({
+      evalId: sourceHeldOut.evalId,
+      reusedFromEvolutionId: sourceAdmission.evolutionId,
+      reusedFromRoundId: sourceAdmission.roundId,
+    }))
+    const directAdmission = await service.admit('api', {
+      baselineSource: {
+        evolutionId: sourceAdmission.evolutionId,
+        roundId: sourceAdmission.roundId,
+        partitions: ['seed', 'held-out'],
+      },
+    })
+    const directEditing = await editing(service, directAdmission.evolutionId, directAdmission.roundId)
+    await finalize(service, directEditing)
+    const direct = await eventually(
+      () => registry.stateStore(directAdmission.evolutionId).readRound(directAdmission.roundId),
+      round => round?.status === 'accepted',
+    )
+    const tampered = structuredClone(direct!)
+    const importedHeldOutAttempt = tampered.evaluationAttempts!.find(attempt => attempt.evalId === sourceHeldOut.evalId)!
+    importedHeldOutAttempt.reusedFromRoundId = 'unrelated-round'
+    await expect(registry.stateStore(directAdmission.evolutionId).writeRound(tampered))
+      .rejects.toThrow('round held-out baseline differs from its source snapshot')
+    await service.dispose()
+  })
+
+  it('reconstructs a sealed baseline source after a crash before the first round write', async () => {
+    const { service, evaluator, registry } = await setup()
+    enableBaselineSources(service, evaluator)
+    const sourceAdmission = await service.admit('api')
+    const sourceEditing = await editing(service, sourceAdmission.evolutionId, sourceAdmission.roundId)
+    await decline(service, sourceEditing)
+    await eventually(
+      () => registry.stateStore(sourceAdmission.evolutionId).readRound(sourceAdmission.roundId),
+      round => round?.status === 'rejected',
+    )
+
+    const writeRound = RefineStateStore.prototype.writeRound
+    let interrupted = true
+    const write = vi.spyOn(RefineStateStore.prototype, 'writeRound').mockImplementation(async function (
+      this: RefineStateStore,
+      round: RefinementRound,
+    ) {
+      if (interrupted && round.status === 'queued' && round.baselineSource !== undefined) {
+        interrupted = false
+        throw new Error('simulated crash before first round became durable')
+      }
+      return writeRound.call(this, round)
+    })
+    await expect(service.admit('api', {
+      baselineSource: { evolutionId: sourceAdmission.evolutionId, roundId: sourceAdmission.roundId },
+    })).rejects.toThrow('simulated crash')
+    write.mockRestore()
+    const destination = (await registry.list()).find(entry => entry.evolutionId !== sourceAdmission.evolutionId)!
+    expect(await registry.stateStore(destination.evolutionId).listRounds()).toEqual([])
+    const callsBefore = evaluator.calls.length
+    const createMetaSession = service.createMetaSession
+    await service.dispose()
+    const recovering = new RefineService(
+      registry, service.builder, service.workspaceManager, createMetaSession,
+      evaluator, service.options, service.components,
+    )
+    await recovering.initialize()
+
+    const continued = await recovering.continueEvolution('api', destination.evolutionId)
+    const recovered = await editing(recovering, continued.evolutionId, continued.roundId)
+    expect(evaluator.calls).toHaveLength(callsBefore)
+    expect(recovered.baselineSource?.source).toMatchObject({
+      evolutionId: sourceAdmission.evolutionId,
+      roundId: sourceAdmission.roundId,
+    })
+    expect(recovered.baseline?.evalId).toBe(recovered.baselineSource?.partitions.seed.evidence.evalId)
+    await recovering.dispose()
+  })
+
+  it('rejects an explicit source Target mismatch before creating an evolution or running Target', async () => {
+    const { service, evaluator, registry } = await setup()
+    enableBaselineSources(service, evaluator)
+    const sourceAdmission = await service.admit('api')
+    const sourceEditing = await editing(service, sourceAdmission.evolutionId, sourceAdmission.roundId)
+    await decline(service, sourceEditing)
+    await eventually(
+      () => registry.stateStore(sourceAdmission.evolutionId).readRound(sourceAdmission.roundId),
+      round => round?.status === 'rejected',
+    )
+    const beforeEntries = await registry.list()
+    const callsBefore = evaluator.calls.length
+    const changedConfig = {
+      ...(service.options.rollout.provider.config as Record<string, unknown>),
+      model: 'different-target-model',
+    }
+    const provider = componentRef(
+      'rollout-provider', 'hitch-cli', hitchCliImplementation(), changedConfig,
+    )
+    const agentConfig = structuredClone(service.options.rollout.agentConfig)
+    service.options.rollout = {
+      ...service.options.rollout,
+      provider,
+      providerSemanticDigest: rolloutProviderSemanticDigest(provider, { harnessId: 'test' }, agentConfig),
+      model: 'different-target-model',
+    }
+
+    await expect(service.admit('api', {
+      baselineSource: { evolutionId: sourceAdmission.evolutionId, roundId: sourceAdmission.roundId },
+    })).rejects.toThrow(/Target parameters differ/u)
+    expect(await registry.list()).toEqual(beforeEntries)
+    expect(evaluator.calls).toHaveLength(callsBefore)
+    await service.dispose()
   })
 })

@@ -8,6 +8,7 @@ import {
   ComponentRegistry,
   rolloutProviderSemanticDigest,
 } from '../evolution/components.js'
+import { hitchCliImplementation, stableLlmVerifierImplementation } from '../evolution/component-identity.js'
 import { HitchCliEvaluator } from '../evaluator/hitch-cli.js'
 import { HarnessBuilder, type HarnessCompiler } from '../harness/builder.js'
 import { SubprocessHarnessCompiler } from '../harness/compiler.js'
@@ -18,7 +19,6 @@ import { validateMetaSampling } from '../meta/sampling.js'
 import { RefineService } from '../refine/service.js'
 import {
   LlmVerifierCandidateAssessor,
-  llmVerifierImplementation,
   resolveLlmVerifierRuntime,
   type LlmVerifierAssessorConfig,
 } from '../selection/llm-verifier.js'
@@ -121,7 +121,9 @@ export async function createSkillControlPlane(
   )
   const stateRoot = config.stateRoot ?? join(config.workspaceRoot, '.gear-refine')
   const registry = new EvolutionRegistryStore(stateRoot)
-  const components = dependencies.components ?? new ComponentRegistry()
+  const components = dependencies.components ?? new ComponentRegistry({
+    legacyComponentRoots: config.evolutionState.legacyComponentRoots,
+  })
   const candidateGeneration = {
     strategy: builtinComponentRef('candidate-generator', 'meta-forked-proposals', {}),
     maxCandidates,
@@ -134,7 +136,7 @@ export async function createSkillControlPlane(
       ...(config.candidateGeneration.finalizationReserveMs === undefined ? {} : { finalizationReserveMs: config.candidateGeneration.finalizationReserveMs }),
     },
   }
-  const rolloutProvider = builtinComponentRef('rollout-provider', 'hitch-cli', structuredClone(config.hitch))
+  const rolloutProvider = componentRef('rollout-provider', 'hitch-cli', hitchCliImplementation(), structuredClone(config.hitch))
   const rolloutAgentConfig = { agentArgs: [...config.hitch.agentArgs] }
   const rollout = {
     provider: rolloutProvider,
@@ -182,7 +184,7 @@ export async function createSkillControlPlane(
       maxTrajectoryChars: selected.maxTrajectoryChars,
       passEnv: [...selected.passEnv],
     }
-    const implementation = llmVerifierImplementation()
+    const implementation = stableLlmVerifierImplementation()
     selectionAssessor = componentRef('candidate-assessor', 'llm-verifier', implementation, assessorConfig)
     components.registerCandidateAssessor('llm-verifier', implementation, ref => new LlmVerifierCandidateAssessor(ref))
   }

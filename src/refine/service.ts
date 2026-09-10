@@ -24,6 +24,14 @@ import { CandidateDiagnosisStore, type CandidateDiagnosisRecord } from '../state
 import { resolveChampionParent } from './champion-parent.js'
 import type { CandidateGenerationBudgetStatus } from '../types.js'
 import { prepareSeedExperienceSnapshot } from '../experience/memory.js'
+import {
+  parseBaselineSourceRequest,
+  prepareBaselineSource,
+  validateBaselineSourceSnapshot,
+  type BaselineSourceRequest,
+  type BaselineSourceSnapshot,
+  type PreparedBaselineSource,
+} from './baseline-source.js'
 
 export interface RefineServiceOptions {
   workspaceRoot: string
@@ -54,6 +62,7 @@ export interface AdmissionOptions {
   focus?: SemanticTarget[]
   from?: 'initial' | 'published' | string
   name?: string
+  baselineSource?: BaselineSourceRequest
 }
 
 export interface ContinueOptions { rounds?: number; focus?: SemanticTarget[] }
@@ -133,6 +142,7 @@ interface PendingEvaluationResume {
 interface ReusableBaseline {
   evidence: EvaluationEvidence
   sourceRoundId: string
+  sourceEvolutionId?: string
   currentInvocationFingerprint?: string
 }
 
@@ -709,9 +719,20 @@ export class RefineService {
     const roundCount = validateCount(options.rounds ?? 1)
     const taskBudgetMs = options.taskBudgetMs ?? this.options.taskBudgetMs
     if (!Number.isSafeInteger(taskBudgetMs) || taskBudgetMs <= 0) throw new TypeError('taskBudgetMs must be a positive integer')
+    const baselineSource = options.baselineSource === undefined
+      ? undefined
+      : parseBaselineSourceRequest(options.baselineSource)
     const evolutionId = crypto.randomUUID()
     const batchId = crypto.randomUUID()
-    const initial = await this.resolveInitialChampion(options.from)
+    let from = options.from
+    if (from === undefined && baselineSource !== undefined) {
+      const sourceRound = await this.registry.stateStore(baselineSource.evolutionId).readRound(baselineSource.roundId)
+      if (sourceRound === undefined) {
+        throw new Error(`baseline source is incompatible: unknown source round: ${baselineSource.roundId}`)
+      }
+      from = sourceRound.targetHarnessRef
+    }
+    const initial = await this.resolveInitialChampion(from)
     const seedTaskRef = options.seedTaskRef ?? this.options.seedTaskRef
     const spec: EvolutionSpec = {
       evolutionId, createdAt: now(),
@@ -733,8 +754,16 @@ export class RefineService {
         : {}),
     }
     this.resolveComponents(spec)
+    let preparedBaseline: PreparedBaselineSource | undefined
+    if (baselineSource !== undefined) {
+      preparedBaseline = await this.prepareExternalBaseline(spec, initial, baselineSource)
+      spec.rollout.providerSemanticDigest = preparedBaseline.inheritedRolloutProviderDigest
+      spec.baselineConditionSource = preparedBaseline.conditionSource
+    }
     await this.registry.createEvolution({ spec, champion: initial, ...(options.name === undefined ? {} : { name: options.name }) })
-    return this.startBatch(await this.runtime(evolutionId), source, batchId, roundCount, normalizeFocus(options.focus))
+    return this.startBatch(
+      await this.runtime(evolutionId), source, batchId, roundCount, normalizeFocus(options.focus), preparedBaseline?.snapshot,
+    )
   }
 
   async continueEvolution(source: RefinementRound['source'], evolutionId: string, options: ContinueOptions = {}): Promise<AdmissionResult> {
@@ -752,7 +781,10 @@ export class RefineService {
     if (seedDigest !== evolution.spec.datasets.seed.digest || heldOutDigest !== evolution.spec.datasets.heldOut.digest) {
       throw new Error('evolution dataset content changed; create a new evolution')
     }
-    return this.startBatch(evolution, source, crypto.randomUUID(), validateCount(options.rounds ?? 1), normalizeFocus(options.focus))
+    const baselineSource = await this.recoverUnstagedBaselineSource(evolution)
+    return this.startBatch(
+      evolution, source, crypto.randomUUID(), validateCount(options.rounds ?? 1), normalizeFocus(options.focus), baselineSource,
+    )
   }
 
   async rerunEvaluation(
@@ -1367,6 +1399,7 @@ export class RefineService {
     batchId: string,
     roundCount: number,
     advisoryFocus?: SemanticTarget[],
+    baselineSource?: BaselineSourceSnapshot,
   ): Promise<AdmissionResult> {
     const roundId = crypto.randomUUID()
     const lock = await evolution.store.acquireRoundLock(roundId)
@@ -1376,6 +1409,14 @@ export class RefineService {
     let round = await this.newRound(
       evolution.store, evolution.spec, champion, population, source, batchId, roundId, 1, roundCount, advisoryFocus,
     ).catch(async (error: unknown) => { await lock.release(); throw error })
+    if (baselineSource !== undefined) {
+      try {
+        round = this.attachBaselineSource(evolution.spec, round, baselineSource)
+      } catch (error) {
+        await lock.release()
+        throw error
+      }
+    }
     const active = this.newActive(evolution, lock, source, batchId, 1, roundCount, advisoryFocus)
     this.active.set(roundId, active)
     try {
@@ -2077,9 +2118,17 @@ export class RefineService {
         active.abort.signal.throwIfAborted()
         let heldOutBaseline = evaluation.heldOutBaseline
         if (heldOutBaseline === undefined) {
-          const reusable = await this.findReusableBaseline(
+          const staged = round.baselineSource?.partitions.heldOut
+          const reusable = staged === undefined ? await this.findReusableBaseline(
             store, active.evolution.evaluator, round, round.targetHarnessRef, 'held-out', active.abort.signal,
-          )
+          ) : {
+            evidence: structuredClone(staged.evidence),
+            sourceEvolutionId: round.baselineSource!.source.evolutionId,
+            sourceRoundId: round.baselineSource!.source.roundId,
+            ...(staged.currentInvocationFingerprint === undefined
+              ? {}
+              : { currentInvocationFingerprint: staged.currentInvocationFingerprint }),
+          }
           if (reusable !== undefined) {
             active.abort.signal.throwIfAborted()
             round = await this.persistReusableHeldOutBaseline(
@@ -2270,7 +2319,13 @@ export class RefineService {
         - Number(left.roundId === preferredRoundId)
         || left.createdAt.localeCompare(right.createdAt)
         || left.roundId.localeCompare(right.roundId))
-    const sources: Array<{ previous: RefinementRound; evidence: EvaluationEvidence; attempt?: RoundEvaluationAttempt }> = []
+    const sources: Array<{
+      previous: RefinementRound
+      evidence: EvaluationEvidence
+      attempt?: RoundEvaluationAttempt
+      sourceEvolutionId?: string
+      sourceRoundId?: string
+    }> = []
     let hasPriorAttempt = false
     for (const previous of historyRounds) {
       signal.throwIfAborted()
@@ -2315,6 +2370,18 @@ export class RefineService {
         ))
         sources.push({ previous, evidence, ...(attempt === undefined ? {} : { attempt }) })
       }
+      const imported = partition === 'seed'
+        ? previous.baselineSource?.partitions.seed
+        : previous.baselineSource?.partitions.heldOut
+      if (imported !== undefined && previous.baselineSource?.target.harnessRef === harnessRef) {
+        sources.push({
+          previous,
+          evidence: imported.evidence,
+          attempt: imported.sourceAttempt,
+          sourceEvolutionId: previous.baselineSource.source.evolutionId,
+          sourceRoundId: previous.baselineSource.source.roundId,
+        })
+      }
     }
     // Only genuinely missing history authorizes a fresh baseline. Identity
     // resolution failures, partial results and failed attempts are not misses.
@@ -2350,7 +2417,7 @@ export class RefineService {
       })
     }
     let hasCompatibleEvidence = false
-    for (const { previous, evidence, attempt } of sources) {
+    for (const { previous, evidence, attempt, sourceEvolutionId, sourceRoundId } of sources) {
       if (evidence.provider !== evaluationIdentity.provider
         || evidence.conditionId !== condition.conditionId
         || evidence.dataset !== dataset
@@ -2365,7 +2432,8 @@ export class RefineService {
         || attempt.requestedModelId !== condition.model) continue
       return {
         evidence: structuredClone(evidence),
-        sourceRoundId: previous.roundId,
+        sourceRoundId: sourceRoundId ?? previous.roundId,
+        ...(sourceEvolutionId === undefined ? {} : { sourceEvolutionId }),
         ...(evaluationIdentity.invocationFingerprint === undefined
           ? {}
           : { currentInvocationFingerprint: evaluationIdentity.invocationFingerprint }),
@@ -2415,6 +2483,9 @@ export class RefineService {
           status: 'settled' as const,
           startedAt: timestamp,
           completedAt: timestamp,
+          ...(reusable.sourceEvolutionId === undefined
+            ? {}
+            : { reusedFromEvolutionId: reusable.sourceEvolutionId }),
           reusedFromRoundId: reusable.sourceRoundId,
           ...reuseInvocationAudit(reusable),
         }]
@@ -2459,6 +2530,9 @@ export class RefineService {
           status: 'settled' as const,
           startedAt: timestamp,
           completedAt: timestamp,
+          ...(reusable.sourceEvolutionId === undefined
+            ? {}
+            : { reusedFromEvolutionId: reusable.sourceEvolutionId }),
           reusedFromRoundId: reusable.sourceRoundId,
           ...reuseInvocationAudit(reusable),
         }]
@@ -2535,6 +2609,108 @@ export class RefineService {
     }
     this.runtimes.set(evolutionId, runtime)
     return runtime
+  }
+
+  private async prepareExternalBaseline(
+    spec: EvolutionSpec,
+    initialChampion: ChampionState,
+    source: BaselineSourceRequest,
+  ): Promise<PreparedBaselineSource> {
+    const evaluator = this.evaluatorForSpec(spec)
+    const reader = trajectoryReader(evaluator)
+    if (reader === undefined) {
+      throw new Error('baseline source is incompatible: current evaluator cannot read bounded Hitch trajectories')
+    }
+    const providerConfig = spec.rollout.provider.config as { allowUnavailableVerifierDiagnosis?: unknown }
+    return prepareBaselineSource({
+      registry: this.registry,
+      source,
+      newSpec: spec,
+      initialChampion,
+      evaluator,
+      trajectoryReader: reader,
+      workspaceRoot: this.options.workspaceRoot,
+      allowUnavailableVerifierDiagnosis: providerConfig.allowUnavailableVerifierDiagnosis === true,
+    })
+  }
+
+  private async recoverUnstagedBaselineSource(
+    evolution: EvolutionRuntime,
+  ): Promise<BaselineSourceSnapshot | undefined> {
+    const conditionSource = evolution.spec.baselineConditionSource
+    if (conditionSource === undefined) return undefined
+    const history = await evolution.store.listRounds()
+    if (history.some(round => round.baselineSource?.conditionSource.digest === conditionSource.digest)) return undefined
+    if (history.length > 0) {
+      throw new Error('baseline source snapshot is missing from evolution history; no baseline evaluation was started')
+    }
+    const champion = await this.requireChampion(evolution.store)
+    const prepared = await this.prepareExternalBaseline(evolution.spec, champion, {
+      evolutionId: conditionSource.source.evolutionId,
+      roundId: conditionSource.source.roundId,
+      partitions: conditionSource.partitions,
+    })
+    if (prepared.conditionSource.digest !== conditionSource.digest) {
+      throw new Error('baseline source condition proof changed; no baseline evaluation was started')
+    }
+    return prepared.snapshot
+  }
+
+  private attachBaselineSource(
+    spec: EvolutionSpec,
+    round: RefinementRound,
+    input: BaselineSourceSnapshot,
+  ): RefinementRound {
+    const snapshot = validateBaselineSourceSnapshot(input)
+    const proof = spec.baselineConditionSource
+    const seed = snapshot.partitions.seed
+    if (proof === undefined || proof.digest !== snapshot.conditionSource.digest
+      || proof.inheritedRolloutProviderDigest !== round.plan.seed.rolloutProviderDigest
+      || snapshot.source.evolutionId === round.evolutionId
+      || snapshot.target.harnessRef !== round.targetHarnessRef
+      || snapshot.target.manifestDigest !== round.targetHarnessDigest
+      || digestJson(seed.condition) !== digestJson(round.plan.seed)
+      || (snapshot.partitions.heldOut !== undefined
+        && digestJson(snapshot.partitions.heldOut.condition) !== digestJson(round.plan.heldOut))) {
+      throw new Error('baseline source snapshot does not match the admitted round')
+    }
+    const championCandidateId = round.championParent?.candidateId ?? `champion-${round.targetHarnessRef}`
+    const timestamp = now()
+    const reusable: ReusableBaseline = {
+      evidence: seed.evidence,
+      sourceEvolutionId: snapshot.source.evolutionId,
+      sourceRoundId: snapshot.source.roundId,
+      ...(seed.currentInvocationFingerprint === undefined
+        ? {}
+        : { currentInvocationFingerprint: seed.currentInvocationFingerprint }),
+    }
+    const attempt: RoundEvaluationAttempt = {
+      provider: seed.evidence.provider,
+      evalId: seed.evidence.evalId,
+      phase: 'seed-baseline',
+      owner: { candidateId: championCandidateId, role: 'baseline', harnessRef: round.targetHarnessRef },
+      conditionId: round.plan.seed.conditionId,
+      dataset: round.seedTaskRef,
+      requestedModelId: round.plan.seed.model,
+      requestedCommit: round.targetHarnessRef,
+      status: 'settled',
+      startedAt: timestamp,
+      completedAt: timestamp,
+      reusedFromEvolutionId: snapshot.source.evolutionId,
+      reusedFromRoundId: snapshot.source.roundId,
+      ...reuseInvocationAudit(reusable),
+    }
+    return {
+      ...round,
+      baselineSource: snapshot,
+      baseline: structuredClone(seed.evidence),
+      parentBaselines: [{
+        parentCandidateId: championCandidateId,
+        parentHarnessRef: round.targetHarnessRef,
+        evidence: structuredClone(seed.evidence),
+      }],
+      evaluationAttempts: [attempt],
+    }
   }
 
   private evaluatorForSpec(spec: EvolutionSpec): RefineEvaluator {

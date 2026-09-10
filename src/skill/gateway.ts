@@ -4,6 +4,7 @@ import { skillHarnessIdentity } from '../meta/identity.js'
 import type { SkillMetaCoordinator } from '../meta/skill.js'
 import type { EvaluationRerunSelector, SemanticTarget } from '../types.js'
 import type { SkillCandidateFiles } from './files.js'
+import { parseBaselineSourceRequest } from '../refine/baseline-source.js'
 
 function record(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError('params must be an object')
@@ -71,6 +72,9 @@ export class RefineSkillGateway {
       const taskBudgetMs = optionalInteger(params, 'taskBudgetMs')
       const selectedFocus = focus(params)
       const name = optionalString(params, 'name')
+      const baselineSource = params.baselineSource === undefined
+        ? undefined
+        : parseBaselineSourceRequest(params.baselineSource)
       if (from !== undefined && from !== 'initial' && from !== 'published' && !/^[0-9a-f]{40}$/u.test(from)) {
         throw new TypeError('from must be initial, published, or an exact Git commit')
       }
@@ -81,6 +85,7 @@ export class RefineSkillGateway {
         ...(selectedFocus === undefined ? {} : { focus: selectedFocus }),
         ...(from === undefined ? {} : { from }),
         ...(name === undefined ? {} : { name }),
+        ...(baselineSource === undefined ? {} : { baselineSource }),
       })
     }
     if (method === 'control.continue') {

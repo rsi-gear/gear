@@ -9,6 +9,7 @@ import type {
 import { isExactGitCommit } from '../types.js'
 import { digestJson } from './digest.js'
 import { validateSeedExperienceRecord } from '../experience/memory.js'
+import { validateBaselineSourceSnapshot } from '../refine/baseline-source.js'
 
 interface LockRecord {
   pid: number
@@ -530,6 +531,42 @@ export class RefineStateStore {
       }
       if (digestJson(conditionIdentity) !== condition.conditionId) {
         throw new TypeError(`round ${label} evaluation condition digest mismatch`)
+      }
+    }
+    if (round.baselineSource !== undefined) {
+      const snapshot = validateBaselineSourceSnapshot(round.baselineSource)
+      const seed = snapshot.partitions.seed
+      const seedAttempt = round.evaluationAttempts?.find(attempt => (
+        attempt.provider === seed.evidence.provider && attempt.evalId === seed.evidence.evalId
+      ))
+      const parentBaseline = round.parentBaselines?.find(parent => (
+        parent.parentHarnessRef === round.targetHarnessRef
+          && digestJson(parent.evidence) === seed.evidenceDigest
+      ))
+      if (snapshot.source.evolutionId === round.evolutionId
+        || snapshot.target.harnessRef !== round.targetHarnessRef
+        || snapshot.target.manifestDigest !== round.targetHarnessDigest
+        || digestJson(seed.condition) !== digestJson(round.plan.seed)
+        || round.baseline === undefined || digestJson(round.baseline) !== seed.evidenceDigest
+        || parentBaseline === undefined
+        || seedAttempt?.status !== 'settled' || seedAttempt.phase !== 'seed-baseline'
+        || seedAttempt.owner.role !== 'baseline' || seedAttempt.owner.harnessRef !== round.targetHarnessRef
+        || seedAttempt.reusedFromEvolutionId !== snapshot.source.evolutionId
+        || seedAttempt.reusedFromRoundId !== snapshot.source.roundId) {
+        throw new TypeError('round baseline source snapshot is not durably imported')
+      }
+      const heldOut = snapshot.partitions.heldOut
+      if (heldOut !== undefined && round.evaluation?.heldOutBaseline !== undefined) {
+        const heldOutAttempt = round.evaluationAttempts?.find(attempt => (
+          attempt.provider === heldOut.evidence.provider && attempt.evalId === heldOut.evidence.evalId
+        ))
+        if (digestJson(round.evaluation.heldOutBaseline) !== heldOut.evidenceDigest
+          || heldOutAttempt?.status !== 'settled' || heldOutAttempt.phase !== 'held-out-baseline'
+          || heldOutAttempt.owner.role !== 'baseline' || heldOutAttempt.owner.harnessRef !== round.targetHarnessRef
+          || heldOutAttempt.reusedFromEvolutionId !== snapshot.source.evolutionId
+          || heldOutAttempt.reusedFromRoundId !== snapshot.source.roundId) {
+          throw new TypeError('round held-out baseline differs from its source snapshot')
+        }
       }
     }
     if (round.advisoryFocus !== undefined && (!Array.isArray(round.advisoryFocus)
@@ -1105,8 +1142,14 @@ export class RefineStateStore {
       || ((attempt.status === 'settled' || attempt.status === 'repair-completed') && attempt.failure !== undefined)
       || (attempt.reusedFromRoundId !== undefined
         && (typeof attempt.reusedFromRoundId !== 'string' || attempt.reusedFromRoundId.length === 0
-          || attempt.reusedFromRoundId === round.roundId || !attempt.phase.endsWith('baseline')
+          || (attempt.reusedFromEvolutionId === undefined && attempt.reusedFromRoundId === round.roundId)
+          || !attempt.phase.endsWith('baseline')
           || attempt.status !== 'settled'))
+      || (attempt.reusedFromEvolutionId !== undefined
+        && (typeof attempt.reusedFromEvolutionId !== 'string'
+          || !/^[a-zA-Z0-9_-]+$/u.test(attempt.reusedFromEvolutionId)
+          || attempt.reusedFromEvolutionId === round.evolutionId
+          || attempt.reusedFromRoundId === undefined))
       || (attempt.reuseAudit !== undefined
         && (attempt.reusedFromRoundId === undefined
           || typeof attempt.reuseAudit !== 'object' || attempt.reuseAudit === null

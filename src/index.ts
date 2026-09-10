@@ -34,9 +34,9 @@ import {
   ComponentRegistry,
   rolloutProviderSemanticDigest,
 } from './evolution/components.js'
+import { hitchCliImplementation, stableLlmVerifierImplementation } from './evolution/component-identity.js'
 import {
   LlmVerifierCandidateAssessor,
-  llmVerifierImplementation,
   resolveLlmVerifierRuntime,
   type LlmVerifierAssessorConfig,
 } from './selection/llm-verifier.js'
@@ -168,7 +168,7 @@ export function parseEvaluationRerunInput(words: string[]): {
 }
 
 export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
-  const components = new ComponentRegistry()
+  const components = new ComponentRegistry({ legacyComponentRoots: config.evolutionState.legacyComponentRoots })
   const legacyCandidateBudget = config.candidateGeneration.timeoutMs !== undefined
     && config.candidateGeneration.attemptTimeoutMs === undefined
     && config.candidateGeneration.maxAttemptsPerCandidate === undefined
@@ -354,7 +354,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       ...(config.candidateGeneration.finalizationReserveMs === undefined ? {} : { finalizationReserveMs: config.candidateGeneration.finalizationReserveMs }),
     },
   }
-  const rolloutProvider = builtinComponentRef('rollout-provider', 'hitch-cli', structuredClone(config.hitch))
+  const rolloutProvider = componentRef('rollout-provider', 'hitch-cli', hitchCliImplementation(), structuredClone(config.hitch))
   const rolloutAgentConfig = { agentArgs: [...config.hitch.agentArgs] }
   const rollout = {
     provider: rolloutProvider,
@@ -399,7 +399,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       maxTrajectoryChars: configured.maxTrajectoryChars,
       passEnv: [...configured.passEnv],
     }
-    const implementation = llmVerifierImplementation()
+    const implementation = stableLlmVerifierImplementation()
     selectionAssessor = componentRef('candidate-assessor', 'llm-verifier', implementation, assessorConfig)
     components.registerCandidateAssessor('llm-verifier', implementation, ref => new LlmVerifierCandidateAssessor(ref))
   }

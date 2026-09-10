@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   assertSkillHarnessIdentityMatches,
   parseSkillHarnessIdentity,
@@ -102,6 +102,26 @@ describe('Skill harness identity', () => {
       identity: { ...identity(), preset: { ...identity().preset, resources: [] } },
     })).rejects.toThrow('identity.preset.resources')
     expect(coordinator.pending()).toEqual([])
+  })
+
+  it('parses and forwards only the supported baseline source selection', async () => {
+    const admit = vi.fn(async () => ({ status: 'queued' }))
+    const gateway = new RefineSkillGateway({ admit } as never, new SkillMetaCoordinator(), {} as never, {} as never)
+    await gateway.call('control.start', {
+      baselineSource: { evolutionId: 'source-evolution', roundId: 'source-round', partitions: ['seed', 'held-out'] },
+    })
+    expect(admit).toHaveBeenCalledWith('skill', {
+      baselineSource: {
+        evolutionId: 'source-evolution', roundId: 'source-round', partitions: ['seed', 'held-out'],
+      },
+    })
+    await expect(gateway.call('control.start', {
+      baselineSource: { evolutionId: 'source-evolution', roundId: 'source-round', resources: [] },
+    })).rejects.toThrow('selection has unknown fields')
+    await expect(gateway.call('control.start', {
+      baselineSource: { evolutionId: 'source-evolution', roundId: 'source-round', partitions: ['held-out'] },
+    })).rejects.toThrow('partitions must be either')
+    expect(admit).toHaveBeenCalledTimes(1)
   })
 })
 
