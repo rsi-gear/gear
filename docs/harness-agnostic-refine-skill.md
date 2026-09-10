@@ -220,8 +220,17 @@ node examples/codex-skill-meta-runner.mjs --preflight
 无 `evolutionId` 的 `control.identity` 与 `--preflight` 都针对 core 当前配置，
 所以这一步必须在 `control.start` 前成功。runner 验证 Codex 版本和该持久 home
 的登录状态，启动一次 transport 探针，并通过 MCP 调用 `control.identity` 后逐字段
-比较本地文件；探针不会创建 evolution、调用 evaluator 或领取 lease。不要用一次
-失败的 preflight 结果继续实验。
+比较本地文件。随后它启动一个短暂的 Codex 会话，在 Gear MCP 中仅暴露
+`read_refine_resource`，并要求 JSONL 事件证明模型已通过 Gear MCP 成功读取
+`SKILL.md`；模型输出 ready 文本或仅以零状态退出都不算成功。两项探针都不会创建
+evolution、调用 evaluator 或领取 lease，也不会调用 `meta.claim`。
+
+每次 preflight 都会增加一次短 Codex 会话和模型探针，一次会话可能包含多轮模型
+请求。正式的 round 命令会自行再次运行 preflight；即使之前单独运行过
+`--preflight`，也不会复用或缓存结果，因此调度时需要计入这段延迟和模型用量。
+Codex 仍使用 `approval_policy=never`；runner 只对受控 Gear MCP 的
+`read_refine_resource` 与 `refine_request` 设置逐工具授权，且 preflight 的 Gear MCP
+工具列表只包含前者。不要用一次失败的 preflight 结果继续实验。
 
 随后创建 evolution：
 

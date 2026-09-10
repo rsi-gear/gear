@@ -41,7 +41,10 @@ function identity() {
   }
 }
 
-async function fakeCodex(root: string, mode: 'blocked' | 'success' | 'hold' | 'collision' | 'vanish') {
+type CodexMode = 'blocked' | 'success' | 'hold' | 'collision' | 'vanish'
+  | 'preflight-text' | 'preflight-failed' | 'preflight-wrong-path' | 'preflight-invalid-resource'
+
+async function fakeCodex(root: string, mode: CodexMode) {
   const executable = join(root, 'fake-codex.mjs')
   const logPath = join(root, 'codex-invocations.jsonl')
   const releasePath = join(root, 'release-codex')
@@ -61,61 +64,108 @@ if (args[0] === 'login' && args[1] === 'status') {
     process.stderr.write('login failed with should-not-escape-auth-marker\\n')
     process.exit(1)
   }
-  if (mode === 'vanish') unlinkSync(fileURLToPath(import.meta.url))
   process.stdout.write('logged in\\n')
   process.exit(0)
 }
 if (args[0] !== 'exec') process.exit(2)
-if (mode === 'hold') {
-  const releasePath = ${JSON.stringify(releasePath)}
-  await new Promise((resolve, reject) => {
-    if (existsSync(releasePath)) { resolve(); return }
-    const watcher = watch(${JSON.stringify(root)}, (_event, filename) => {
-      if (filename === 'release-codex' && existsSync(releasePath)) {
-        watcher.close()
-        resolve()
-      }
-    })
-    watcher.once('error', error => { watcher.close(); reject(error) })
-    if (existsSync(releasePath)) { watcher.close(); resolve() }
-  })
-  process.exit(0)
-}
 const encoded = args.find(value => value.startsWith('mcp_servers.gear_refine.args='))
-if (encoded === undefined) process.exit(3)
+const enabled = args.find(value => value.startsWith('mcp_servers.gear_refine.enabled_tools='))
+if (encoded === undefined || enabled === undefined) process.exit(3)
 const transportArgs = JSON.parse(encoded.slice(encoded.indexOf('=') + 1))
-const transport = spawn(process.execPath, transportArgs, { stdio: ['pipe', 'pipe', 'inherit'] })
-const ended = new Promise((resolve, reject) => {
-  transport.once('error', reject)
-  transport.once('exit', (code, signal) => code === 0 && signal === null ? resolve() : reject(new Error('transport failed')))
+const enabledTools = JSON.parse(enabled.slice(enabled.indexOf('=') + 1))
+const resourcePreflight = enabledTools.length === 1 && enabledTools[0] === 'read_refine_resource'
+await new Promise((resolve, reject) => {
+  const timeout = setTimeout(() => {
+    process.stdin.destroy()
+    reject(new Error('exec stdin did not close'))
+  }, 1_000)
+  process.stdin.once('end', () => {
+    clearTimeout(timeout)
+    resolve()
+  })
+  process.stdin.resume()
 })
-let buffer = ''
-const pending = new Map()
-transport.stdout.setEncoding('utf8')
-transport.stdout.on('data', chunk => {
-  buffer += chunk
-  for (;;) {
-    const newline = buffer.indexOf('\\n')
-    if (newline < 0) break
-    const response = JSON.parse(buffer.slice(0, newline))
-    buffer = buffer.slice(newline + 1)
-    pending.get(response.id)?.(response)
-    pending.delete(response.id)
+const writeEvent = item => process.stdout.write(JSON.stringify({ type: 'item.completed', item }) + '\\n')
+const resourceItem = (path, structuredContent) => ({
+  id: 'item-resource', type: 'mcp_tool_call', server: 'gear_refine', tool: 'read_refine_resource',
+  arguments: { path },
+  result: { content: [{ type: 'text', text: 'fixture resource' }], structured_content: structuredContent },
+  error: null, status: 'completed',
+})
+if (resourcePreflight && mode === 'preflight-text') {
+  writeEvent({ id: 'item-message', type: 'agent_message', text: 'ready' })
+} else if (resourcePreflight && mode === 'preflight-failed') {
+  writeEvent({
+    id: 'item-resource', type: 'mcp_tool_call', server: 'gear_refine', tool: 'read_refine_resource',
+    arguments: { path: 'SKILL.md' }, result: null,
+    error: { message: 'MCP tool call requires approval, but approval policy is never' }, status: 'failed',
+  })
+} else if (resourcePreflight && mode === 'preflight-wrong-path') {
+  writeEvent(resourceItem('references/protocol.md', {
+    version: 1, path: 'references/protocol.md', text: 'fixture resource',
+  }))
+} else if (resourcePreflight && mode === 'preflight-invalid-resource') {
+  writeEvent(resourceItem('SKILL.md', { version: 1, path: 'SKILL.md', text: '' }))
+} else {
+  const transport = spawn(process.execPath, transportArgs, { stdio: ['pipe', 'pipe', 'inherit'] })
+  const ended = new Promise((resolve, reject) => {
+    transport.once('error', reject)
+    transport.once('exit', (code, signal) => code === 0 && signal === null ? resolve() : reject(new Error('transport failed')))
+  })
+  let buffer = ''
+  const pending = new Map()
+  transport.stdout.setEncoding('utf8')
+  transport.stdout.on('data', chunk => {
+    buffer += chunk
+    for (;;) {
+      const newline = buffer.indexOf('\\n')
+      if (newline < 0) break
+      const response = JSON.parse(buffer.slice(0, newline))
+      buffer = buffer.slice(newline + 1)
+      pending.get(response.id)?.(response)
+      pending.delete(response.id)
+    }
+  })
+  let nextId = 1
+  const rpc = (method, params) => new Promise(resolve => {
+    const id = nextId++
+    pending.set(id, resolve)
+    transport.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\\n')
+  })
+  await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'fixture', version: '1' } })
+  if (resourcePreflight) {
+    const response = await rpc('tools/call', { name: 'read_refine_resource', arguments: { path: 'SKILL.md' } })
+    writeEvent({
+      ...resourceItem('SKILL.md', response.result?.structuredContent),
+      result: { content: response.result?.content, structured_content: response.result?.structuredContent },
+    })
+    transport.stdin.end()
+    await ended
+    if (mode === 'vanish') unlinkSync(fileURLToPath(import.meta.url))
+  } else if (mode === 'hold') {
+    const releasePath = ${JSON.stringify(releasePath)}
+    await new Promise((resolve, reject) => {
+      if (existsSync(releasePath)) { resolve(); return }
+      const watcher = watch(${JSON.stringify(root)}, (_event, filename) => {
+        if (filename === 'release-codex' && existsSync(releasePath)) {
+          watcher.close()
+          resolve()
+        }
+      })
+      watcher.once('error', error => { watcher.close(); reject(error) })
+      if (existsSync(releasePath)) { watcher.close(); resolve() }
+    })
+    transport.stdin.end()
+    await ended
+  } else {
+    await rpc('tools/call', { name: 'refine_request', arguments: { method: 'meta.claim', params: {} } })
+    await rpc('tools/call', { name: 'refine_request', arguments: {
+      method: 'meta.call', params: { capability: 'candidate.decline', arguments: { reason: 'fixture result' } },
+    } })
+    transport.stdin.end()
+    await ended
   }
-})
-let nextId = 1
-const rpc = (method, params) => new Promise(resolve => {
-  const id = nextId++
-  pending.set(id, resolve)
-  transport.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\\n')
-})
-await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'fixture', version: '1' } })
-await rpc('tools/call', { name: 'refine_request', arguments: { method: 'meta.claim', params: {} } })
-await rpc('tools/call', { name: 'refine_request', arguments: {
-  method: 'meta.call', params: { capability: 'candidate.decline', arguments: { reason: 'fixture result' } },
-} })
-transport.stdin.end()
-await ended
+}
 `
   await writeFile(executable, script)
   await chmod(executable, 0o755)
@@ -221,7 +271,7 @@ async function fakeGear(
   return { server, socketPath, calls, failCount: () => failures, claimCount: () => claims }
 }
 
-async function fixture(mode: 'blocked' | 'collision' | 'delayed' | 'success' | 'hold' | 'vanish' = 'blocked') {
+async function fixture(mode: CodexMode | 'delayed' = 'blocked') {
   const root = await mkdtemp(join(tmpdir(), 'gear-codex-meta-runner-'))
   roots.push(root)
   const runRoot = join(root, 'runs')
@@ -276,7 +326,7 @@ async function eventually(predicate: () => boolean) {
 }
 
 describe('Codex Skill Meta runner example', () => {
-  it('checks a real Codex login and the executable MCP transport before admission', async () => {
+  it('checks login, identity, and a real resource call before admission', async () => {
     const value = await fixture()
     await writeFile(join(value.codexHome, 'auth.json'), '{}')
     await expect(runnerModule.preflightCodexSkillMeta(value.environment)).rejects.toThrow('Codex login preflight failed')
@@ -290,7 +340,40 @@ describe('Codex Skill Meta runner example', () => {
     const invocations = await loggedInvocations(value.logPath)
     expect(invocations.map(value => value.args)).toContainEqual(['login', 'status'])
     expect(invocations.every(invocation => invocation.codexHome === value.codexHome)).toBe(true)
-    expect(invocations.some(invocation => invocation.args[0] === 'exec')).toBe(false)
+    const executions = invocations.filter(invocation => invocation.args[0] === 'exec')
+    expect(executions).toHaveLength(2)
+    for (const execution of executions) {
+      expect(execution.args).toContain('--ephemeral')
+      expect(execution.args).toContain('--ignore-user-config')
+      expect(execution.args).toContain('--strict-config')
+      expect(execution.args).toContain('approval_policy="never"')
+      expect(execution.args).toContain('mcp_servers.gear_refine.required=true')
+      expect(execution.args).toContain('mcp_servers.gear_refine.enabled_tools=["read_refine_resource"]')
+      expect(execution.args).toContain('mcp_servers.gear_refine.tools.read_refine_resource.approval_mode="approve"')
+      expect(execution.args).toContain('mcp_servers.gear_refine.tools.refine_request.approval_mode="approve"')
+      expect(execution.args.at(-1)).toContain('read_refine_resource exactly once')
+    }
+    expect(value.gear.calls).toEqual([
+      { method: 'control.identity', params: {} },
+      { method: 'control.identity', params: { evolutionId } },
+    ])
+    expect(value.gear.claimCount()).toBe(0)
+    expect(await readdir(value.runRoot)).toEqual([])
+  })
+
+  it.each([
+    ['text-only readiness', 'preflight-text', 'did not call read_refine_resource'],
+    ['approval denial', 'preflight-failed', 'approval policy is never'],
+    ['the wrong resource path', 'preflight-wrong-path', 'did not call read_refine_resource'],
+    ['invalid resource evidence', 'preflight-invalid-resource', 'invalid resource evidence'],
+  ] as const)('rejects %s even when Codex exits successfully', async (_case, mode, expected) => {
+    const value = await fixture(mode)
+    await writeFile(join(value.codexHome, 'auth.json'), JSON.stringify({ accessToken: 'fixture-access' }))
+    await expect(runnerModule.preflightCodexSkillMeta(value.environment)).rejects.toThrow(expected)
+    expect(value.gear.calls).toEqual([{ method: 'control.identity', params: {} }])
+    expect(value.gear.claimCount()).toBe(0)
+    expect(value.gear.failCount()).toBe(0)
+    expect(await readdir(value.runRoot)).toEqual([])
   })
 
   it('rejects a malformed identity before running Codex or contacting Gear', async () => {
@@ -346,8 +429,16 @@ describe('Codex Skill Meta runner example', () => {
     expect(result.status).toBe('candidate-seed-running')
     expect(value.gear.failCount()).toBe(0)
     const invocations = await loggedInvocations(value.logPath)
-    const execution = invocations.find(invocation => invocation.args[0] === 'exec')
+    const execution = invocations.find(invocation => invocation.args[0] === 'exec'
+      && !invocation.args.includes('--ephemeral'))
     expect(execution?.args).toContain('--ignore-user-config')
+    expect(execution?.args).toContain('--strict-config')
+    expect(execution?.args).toContain('approval_policy="never"')
+    expect(execution?.args).toContain('mcp_servers.gear_refine.required=true')
+    expect(execution?.args).toContain('mcp_servers.gear_refine.enabled_tools=["read_refine_resource","refine_request"]')
+    expect(execution?.args).toContain('mcp_servers.gear_refine.tools.read_refine_resource.approval_mode="approve"')
+    expect(execution?.args).toContain('mcp_servers.gear_refine.tools.refine_request.approval_mode="approve"')
+    expect(execution?.args).not.toContain('--ephemeral')
     expect(execution?.codexHome).toBe(value.codexHome)
   })
 
@@ -368,7 +459,10 @@ describe('Codex Skill Meta runner example', () => {
     expect(result.status).toBe('failed')
     expect(value.gear.failCount()).toBe(1)
     expect(await transportModule.readRefineTransportSession(runDirectory, { optional: true })).toBeUndefined()
-    expect((await loggedInvocations(value.logPath)).some(invocation => invocation.args[0] === 'exec')).toBe(false)
+    const executions = (await loggedInvocations(value.logPath))
+      .filter(invocation => invocation.args[0] === 'exec')
+    expect(executions).toHaveLength(1)
+    expect(executions.every(invocation => invocation.args.includes('--ephemeral'))).toBe(true)
   })
 
   it('excludes a second runner for the same round', async () => {
@@ -411,7 +505,8 @@ describe('Codex Skill Meta runner example', () => {
     await expect(runnerModule.runCodexSkillMetaRound(evolutionId, roundId, value.environment))
       .rejects.toThrow('Codex process could not be started')
     expect(value.gear.failCount()).toBe(1)
-    const execution = (await loggedInvocations(value.logPath)).find(invocation => invocation.args[0] === 'exec')
+    const execution = (await loggedInvocations(value.logPath)).find(invocation => invocation.args[0] === 'exec'
+      && !invocation.args.includes('--ephemeral'))
     if (execution !== undefined) expect(() => process.kill(execution.pid, 0)).toThrow()
     const roundDirectory = (await readdir(value.runRoot)).find(name => name.startsWith('round-'))
     const runDirectory = (await readdir(join(value.runRoot, roundDirectory!))).find(name => name.startsWith('run-'))

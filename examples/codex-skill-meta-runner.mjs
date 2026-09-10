@@ -21,10 +21,14 @@ const transportScript = fileURLToPath(new URL('../skills/refine/scripts/transpor
 const terminalStatuses = new Set(['accepted', 'rejected', 'rejected-for-substrate', 'failed'])
 const pollIntervalMs = 2_000
 const terminationGraceMs = 5_000
+const resourcePreflightTimeoutMs = 120_000
+const resourcePreflightMaxOutputBytes = 1024 * 1024
 const prompt = `Use the installed refine skill to complete the current assigned candidate.
 Read SKILL.md and all three required references with read_refine_resource, then call refine_request meta.claim.
 The transport binds identity and private lease fields. Inspect the seed evidence and candidate, make and check one evidence-backed general harness improvement when justified, then finalize or decline.
 If a finalization response is recoverable, complete every requested action and retry it. Stop after accepted finalization or decline. Do not start, continue, publish, roll back, or repair an evolution.`
+const resourcePreflightPrompt = `Call the gear_refine MCP tool read_refine_resource exactly once with {"path":"SKILL.md"}, then stop.
+Do not call any other tool and do not report readiness without making this tool call.`
 
 function required(environment, name) {
   const value = environment[name]
@@ -208,6 +212,52 @@ async function runTransportPreflight(config, identity, environment, evolutionId)
   }
 }
 
+function assertResourcePreflightEvidence(output) {
+  let events
+  try {
+    events = output.trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+  } catch {
+    throw new Error('Codex MCP resource preflight returned invalid JSONL events')
+  }
+  const completed = events.find(event => event?.type === 'item.completed'
+    && event.item?.type === 'mcp_tool_call'
+    && event.item.server === 'gear_refine'
+    && event.item.tool === 'read_refine_resource'
+    && event.item.arguments?.path === 'SKILL.md')
+  if (completed === undefined) throw new Error('Codex did not call read_refine_resource during MCP preflight')
+  if (completed.item.status !== 'completed') {
+    const detail = typeof completed.item.error?.message === 'string' ? `: ${completed.item.error.message}` : ''
+    throw new Error(`Codex read_refine_resource MCP preflight did not complete${detail}`)
+  }
+  const resource = object(completed.item.result?.structured_content, 'Codex read_refine_resource result')
+  if (resource.version !== 1 || resource.path !== 'SKILL.md'
+    || typeof resource.text !== 'string' || resource.text.length === 0) {
+    throw new Error('Codex read_refine_resource MCP preflight returned invalid resource evidence')
+  }
+}
+
+async function runCodexResourcePreflight(config, identity, environment) {
+  const runDirectory = await privateDirectory(join(config.runRoot, `codex-preflight-${randomUUID()}`))
+  try {
+    const execution = execute(config.codex, codexArguments(config, identity, runDirectory, true), {
+      cwd: config.workspace,
+      env: restrictedEnvironment(environment, config.codexHome),
+      timeout: resourcePreflightTimeoutMs,
+      killSignal: 'SIGKILL',
+      maxBuffer: resourcePreflightMaxOutputBytes,
+      encoding: 'utf8',
+    })
+    execution.child.stdin.end()
+    const result = await execution
+    assertResourcePreflightEvidence(result.stdout)
+  } catch (error) {
+    const detail = error instanceof Error && error.message.startsWith('Codex ') ? `: ${error.message}` : ''
+    throw new Error(`Codex MCP resource preflight failed${detail}`)
+  } finally {
+    await rm(runDirectory, { recursive: true, force: true })
+  }
+}
+
 export async function preflightCodexSkillMeta(environment = process.env, evolutionId) {
   const config = configuration(environment)
   const identity = await readIdentity(config.identityFile)
@@ -225,6 +275,7 @@ export async function preflightCodexSkillMeta(environment = process.env, evoluti
     throw new Error('Codex login preflight failed')
   }
   await runTransportPreflight(config, identity, environment, evolutionId)
+  await runCodexResourcePreflight(config, identity, environment)
   return { config, identity }
 }
 
@@ -270,7 +321,7 @@ async function recoverPrivateSessions(config, jobRoot, roundId) {
   return recovered
 }
 
-function codexArguments(config, identity, runDirectory) {
+function codexArguments(config, identity, runDirectory, resourcePreflight = false) {
   const transportArgs = [
     transportScript,
     '--socket', config.socketPath,
@@ -278,15 +329,24 @@ function codexArguments(config, identity, runDirectory) {
     '--identity-file', config.identityFile,
   ]
   const effort = identity.sampling?.reasoningEffort
+  const enabledTools = resourcePreflight
+    ? ['read_refine_resource']
+    : ['read_refine_resource', 'refine_request']
   return [
-    'exec', '--ignore-user-config', '--strict-config', '--skip-git-repo-check', '--json',
+    'exec', ...(resourcePreflight ? ['--ephemeral'] : []),
+    '--ignore-user-config', '--strict-config', '--skip-git-repo-check', '--json',
     '-m', identity.model.model,
     ...(typeof effort === 'string' && effort.length > 0
       ? ['-c', `model_reasoning_effort=${JSON.stringify(effort)}`] : []),
+    '-c', `approval_policy=${JSON.stringify('never')}`,
     '-c', `mcp_servers.gear_refine.command=${JSON.stringify(process.execPath)}`,
     '-c', `mcp_servers.gear_refine.args=${JSON.stringify(transportArgs)}`,
+    '-c', 'mcp_servers.gear_refine.required=true',
+    '-c', `mcp_servers.gear_refine.enabled_tools=${JSON.stringify(enabledTools)}`,
+    '-c', `mcp_servers.gear_refine.tools.read_refine_resource.approval_mode=${JSON.stringify('approve')}`,
+    '-c', `mcp_servers.gear_refine.tools.refine_request.approval_mode=${JSON.stringify('approve')}`,
     '-C', config.workspace,
-    prompt,
+    resourcePreflight ? resourcePreflightPrompt : prompt,
   ]
 }
 
