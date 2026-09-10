@@ -172,7 +172,80 @@ server 在 stdout 输出一行 ready JSON。将其中的 `socketPath` 设置为 
 harness 的 `GEAR_REFINE_SOCKET`。server 收到 `SIGINT` 或 `SIGTERM` 后先关闭
 skill socket，再等待 RefineService 与 active evaluation 清理完成。
 
-## 5. Skill 工作流
+## 5. Codex Node runner 的最小操作顺序
+
+外部 Codex 使用版本化 Node stdio MCP transport
+`skills/refine/scripts/transport.mjs`，生产入口是
+`examples/codex-skill-meta-runner.mjs`。runner 只连接已运行的 Gear Core；
+它不启动或停止 core。先在一个独立终端启动上一节的 `gear-refine serve`，
+并在整个 round 期间保持该进程运行。
+
+Codex 凭据使用一个独立、持久且 owner-only 的 home。该目录跨 assignment
+复用，由 Codex 自己创建和更新其中的认证文件；runner 不从其他 home 复制
+`auth.json`，也不为每个 attempt 制作凭据副本。为 runner 设置下面这一套环境。
+所有路径都必须是绝对路径；identity 文件包含与 Gear 配置完全一致的 runtime、
+随包 skill digest、model 和 sampling：
+
+```bash
+export GEAR_REFINE_SOCKET=/absolute/control-workspace/.gear-refine/refine.sock
+export GEAR_REFINE_IDENTITY_FILE=/absolute/private/meta-identity.json
+export GEAR_META_CODEX_HOME=/absolute/private/gear-meta-codex-home
+export GEAR_META_RUN_ROOT=/absolute/private/gear-meta-runs
+export GEAR_META_WORKSPACE=/absolute/meta-workspace
+# Optional; defaults to codex from PATH.
+export GEAR_CODEX_EXECUTABLE=/absolute/path/to/codex
+
+install -d -m 0700 "$GEAR_META_CODEX_HOME" "$GEAR_META_RUN_ROOT"
+# 首次部署时由 Codex 在持久 home 内创建认证；
+# 后续不要为每个 attempt 重复登录。
+CODEX_HOME="$GEAR_META_CODEX_HOME" "$GEAR_CODEX_EXECUTABLE" login
+node examples/codex-skill-meta-runner.mjs --preflight
+```
+
+`--preflight` 必须成功后才能创建或继续 round。它验证 Codex 版本和该持久
+home 的登录状态，启动一次 transport 探针，并通过现有 core 执行
+`control.status`。不要用一次失败的 preflight 结果继续实验。
+
+随后创建 evolution；若已有 evolution，则改用 `control.continue`：
+
+```bash
+ADMISSION="$(gear-refine request control.start '{"rounds":1}')"
+
+# 继续已有 evolution 时，使用这一行替代上面的 control.start：
+# ADMISSION="$(gear-refine request control.continue "{\"evolutionId\":\"$EXISTING_EVOLUTION_ID\",\"rounds\":1}")"
+
+EVOLUTION_ID="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).evolutionId)' "$ADMISSION")"
+ROUND_ID="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).roundId)' "$ADMISSION")"
+
+node examples/codex-skill-meta-runner.mjs --evolution-id "$EVOLUTION_ID" --round-id "$ROUND_ID"
+```
+
+一次 runner 调用至多处理一个 assignment；当前跟踪的实验配置也固定
+`candidateGeneration.maxCandidates: 1`。assignment 持久化结算后 runner
+退出，stdout 返回当前 round status；`failed` 返回非零状态，合法的 accepted
+decline/rejected 保持成功退出。若 round 仍非终态，外层调度器先读取同一
+`evolutionId`/`roundId` 的 `control.status`，再调用同一条 runner 命令处理
+下一个 sibling 或恢复后的 assignment。不要通过启动另一个 core 来推进它。
+
+```bash
+gear-refine request control.status "{\"evolutionId\":\"$EVOLUTION_ID\",\"roundId\":\"$ROUND_ID\"}"
+node examples/codex-skill-meta-runner.mjs --evolution-id "$EVOLUTION_ID" --round-id "$ROUND_ID"
+```
+
+Codex 进程异常、正常退出但没有获得 `accepted:true`，以及
+`accepted:false,recoverable:false` 都属于未完成 assignment。runner 从私有
+session 读取 lease，并调用 supervisor-only `meta.fail(reason)`；该调用在
+generation attempt 和 round 已持久化为 `failed` 后才成功。若 status 表明该
+attempt 已由 accepted finalization 或其他路径结算，runner 把迟到的 fail 当作
+已处理，不会覆盖结果。
+
+每个 assignment 的 run 目录为 `0700`，`session.json`、Codex event/stderr
+文件和 transport audit 为 `0600`。`leaseToken` 只存在于私有 session 和发往
+core 的鉴权 envelope；模型响应、transport audit、runner 日志和报告均不得记录
+token。audit 仅记录 assignment 关联、method/capability 以及
+`accepted`/`recoverable`/`code`。
+
+## 6. Skill 工作流
 
 Meta harness 读取 `skills/refine/SKILL.md`，通过 DSH 的 `refine_request` 或
 standalone 的 `gear-refine request`：
@@ -198,7 +271,7 @@ Gear 的 DSH carrier，还必须读取
 `skills/`、`workflows/` 的真实加载关系、Cordis plugin 结构、skill provider
 接线，以及 `tools/pre-execute` / `tools/post-execute` 等 native hook 的完整示例。
 
-## 6. 安全边界
+## 7. 安全边界
 
 - local socket 所在目录为 `0700`，socket 为 `0600`；已有非-socket 路径不会
   被覆盖。
@@ -223,7 +296,7 @@ Gear 不向它授予 candidate
 worktree、state root 或 credential 的 host path；部署仍应让 Codex、Claude Code
 或其他宿主运行在与其职责匹配的 filesystem/network sandbox 中。
 
-## 7. DSH Skill-first 与兼容模式
+## 8. DSH Skill-first 与兼容模式
 
 `metaAdapter.kind: "skill"` 是默认值。在 DSH plugin 中，Gear 发布包内
 `refine` skill；由于不再注册同名 host command，用户输入 `/refine` 会走 DSH
@@ -238,7 +311,7 @@ worktree、state root 或 credential 的 host path；部署仍应让 Codex、Cla
 注册旧 `/refine` command。该兼容模式要求 `metaPreset`，保留 DSH session event
 attribution 和 preset isolation，但不再是默认启动方式。
 
-## 8. 验证范围
+## 9. 验证范围
 
 仓库测试覆盖：
 

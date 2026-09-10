@@ -150,10 +150,16 @@ export class SkillMetaCoordinator {
     this.bySession.set(assignment.sessionId, assignment.leaseId)
   }
 
-  claim(clientId: string, identity: SkillHarnessIdentity, evolutionId?: string): ClaimedSkillAssignment | undefined {
+  claim(
+    clientId: string,
+    identity: SkillHarnessIdentity,
+    evolutionId?: string,
+    roundId?: string,
+  ): ClaimedSkillAssignment | undefined {
     if (clientId.length === 0) throw new TypeError('clientId is required')
     const available = [...this.entries.values()].filter(value =>
       (evolutionId === undefined || value.assignment.evolutionId === evolutionId)
+      && (roundId === undefined || value.assignment.roundId === roundId)
       && (value.clientId === undefined || value.clientId === clientId),
     )
     const requestedDigest = identityDigest(identity)

@@ -424,6 +424,7 @@ state：
 ```sh
 export GEAR_HITCH_EXECUTABLE=/absolute/path/to/hitch
 export GEAR_TARGET_CODEX_AUTH_FILE=/absolute/path/to/.openai-codex-auth.json
+export GEAR_TARGET_CODEX_EXPECTED_ACCOUNT_ID=trusted-provisioned-account-id
 ```
 
 `GEAR_HITCH_EXECUTABLE` 未设置时默认调用 PATH 中的 `hitch`。
@@ -439,30 +440,36 @@ Hitch 子进程环境，满足 `passEnv` 校验。自定义名称时仍要在启
 `DSH_OPENAI_CODEX_ACCESS_TEAM_A_B64`；默认名仍为
 `DSH_OPENAI_CODEX_ACCESS_B64`。
 
-这个接入只支持 `hitch.controlPlane.mode: direct`。包装器在 direct
-`eval run` 或 `eval rerun` 启动前，通过 pi-ai 的公开认证生命周期取得覆盖
-setup budget、task budget和五分钟余量的 access token；需要刷新
-时，只更新带跨进程锁的宿主 OAuth 文件。随后传给 Hitch 的自定义 envelope 只含
-短期 access、到期时间和 account id，不含 rotating refresh token。target 为满足
-dsh-codex 文件格式写入不可用的 refresh 占位值，因此容器不能刷新或破坏宿主登录。
-包装器在宿主锁内读取 access、到期时间和 account id 的一致快照；若并发刷新
-恰好发生在导出期间，会重新获取一次。`--timeout` 和 `--setup-timeout` 必须为
-正数，因为 Hitch 中 setup timeout 为 `0` 表示不限制时长，无法安全导出一个
-不可刷新的短期 access token。
+这个接入只支持 `hitch.controlPlane.mode: direct`。包装器先检查宿主登录，并要求
+Hitch 的 `eval doctor --json` 明确返回
+`host-task-credential-helper-v1`；跟踪示例所钉的 `agent-hitch@0.2.7` 不具备该能力，
+在相应 Hitch 修改发布前必须安装经过审阅、包含该 capability 的构建，不能只按
+版本号假定支持。
 
-Codex access-only 路径只允许一次 logical attempt，并将未显式指定的 Hitch
-`infrastructure-retries` 安全地改为 `0`；显式配置多 attempt 或重试会被拒绝。
-这里没有把宿主进程枚举或 PID 强杀当作 credential 安全边界：它们无法撤销一个
-已经发出的 bearer，也无法跨平台无竞态地识别 Hitch 创建的 detached 后代。
-真正的边界是短期 access token 自带的服务端 expiry，以及 target 中不存在可用的
-refresh token。若 harness 解析或镜像准备耗时超过启动时估算，dsh-codex 会在
-五分钟刷新窗口内用不可用的占位值刷新并失败；它不能旋转或改写宿主凭据。
+包装器通过仅供可信宿主读取的配置注册随包 helper，不把 helper 参数或 credential
+value 写入 eval request、plan 或 candidate。每个真实 Target 完成排队和环境准备、
+即将启动时，Hitch 用该 task 的剩余预算加刷新余量请求 credential。helper 通过
+pi-ai 的公开认证生命周期和带跨进程锁的宿主 store 取得或刷新 access；若刷新后
+仍不足以覆盖请求预算，就以认证基础设施错误结束该 task。返回的 envelope 只有
+access、expiry 和 account id，不含 rotating refresh token；target 只能在自己的
+一次性 DSH home 中使用它。
 
-`eval submit`、`eval run --daemon` 和 daemon rerun 会明确拒绝；`--version`、
-capabilities、watch、inspect 等命令保持透明转发。一次 direct evaluation 中的
-容器共享同一个 access 快照，因此大批量、多波次评测应拆成能在 access 有效期内
-完成的小批次，否则模型调用会因不可刷新而失败；daemon 若要支持 Codex，应另行
-实现由 daemon 持有的 credential broker。
+`hitch.passEnv` 必须声明 `DSH_OPENAI_CODEX_ACCESS_B64`（或配置的专用名称），
+因为这是 Hitch 的 credential 名称白名单。宿主进程不得同时给这个名称设置非空
+值；包装器会拒绝把现成 bearer 作为整批 eval 环境传递。Hitch 只持久化名称和空
+占位，在每个 Target 启动前用 fresh helper 结果覆盖。这样一个 eval 可以使用
+`attempts > 1`，后启动的 task/attempt 会重新检查 credential；Gear 的
+`repetitions` 继续映射到同一个 Hitch eval 的原生 logical attempts。
+
+基础设施重试仍必须为 `0`；包装器会为未显式指定的 direct `eval run` 添加该值，
+并拒绝显式非零值。`eval submit`、`eval run --daemon` 和 daemon rerun 会明确
+拒绝；已经运行的 daemon/remote worker 不会获得这个 wrapper 进程的 helper。
+其他 Hitch 命令保持透明转发。
+
+包装器每次启动只把 preflight 读到的 account id 固定在该进程内。长期实验应由
+可信宿主配置显式设置 `GEAR_TARGET_CODEX_EXPECTED_ACCOUNT_ID`；这样独立启动的
+初跑和 rerun 都会在导出 access 前核对账号。若未设置，新 wrapper 进程会采用其
+启动时已经登录的账号，不会自动与旧 eval 建立跨进程账号映射。
 
 容器销毁不会丢失宿主登录，也不需要为每个 task 重新做设备验证。
 显式设置 `GEAR_TARGET_PROVIDER=deepseek-official` 时，包装器直接透传并使用配置的

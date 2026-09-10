@@ -16,6 +16,7 @@ describe('published Gear bundle', () => {
     expect(pkg.files).toContain('cordis.patch.yml')
     expect(pkg.files).toContain('assets/llm-verifier-bridge.py')
     expect(pkg.files).toContain('assets/hitch-codex-wrapper.mjs')
+    expect(pkg.files).toContain('assets/hitch-codex-credential-helper.mjs')
     expect(pkg.files).toContain('skills/refine/**')
     expect(pkg.bin).toEqual({
       'gear-refine': './lib/cli.js',

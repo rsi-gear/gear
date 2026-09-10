@@ -25,6 +25,21 @@ cp examples/dsh-codex-luna/runtime.pnpm-workspace.yaml .evolve-lab/runtime/pnpm-
 pnpm --dir .evolve-lab/runtime install
 ```
 
+The tracked runtime manifest still pins `agent-hitch@0.2.7`. That pinned release
+does not provide task-start credentials. Until
+the Hitch change is published, build the reviewed Hitch checkout that advertises
+`host-task-credential-helper-v1` and install that checkout into the ignored lab
+runtime before running a Codex target evaluation:
+
+```sh
+npm --prefix /absolute/path/to/agent-hitch ci
+npm --prefix /absolute/path/to/agent-hitch run build
+pnpm --dir .evolve-lab/runtime add /absolute/path/to/agent-hitch
+```
+
+`node examples/dsh-codex-luna/evolve.mjs doctor` verifies the capability. Do
+not infer support from an unreleased version number.
+
 Build Gear, then let DSH create the isolated profile and its runtime links:
 
 ```sh
@@ -60,24 +75,28 @@ node examples/dsh-codex-luna/evolve.mjs codex-status
 node examples/dsh-codex-luna/evolve.mjs codex-device-login
 ```
 
-The login is stored in the isolated DSH home. `gear-hitch-codex` refreshes it
-only on the host before a direct target evaluation. Each target container gets
-a short-lived access-only envelope, never the rotating refresh token. A
-container writes a non-refreshable credential to its disposable DSH home, so a
-new task does not require another device login and cannot invalidate the host
-login.
+The login is stored in the isolated DSH home. `gear-hitch-codex` configures a
+trusted host helper for direct target evaluations. Hitch calls that helper when
+each Target is ready to start and requests enough remaining validity for that
+task. Each target container gets a short-lived access-only envelope, never the
+rotating refresh token. A container writes a non-refreshable credential to its
+disposable DSH home, so a new task does not require another device login and
+cannot invalidate the host login.
 
 Daemon submission is intentionally unsupported: keep `hitch.controlPlane.mode`
-set to `direct`. Containers in one eval share an access snapshot, so split a
-long multi-wave dataset into direct evals. The wrapper preflights enough access
-lifetime for the declared setup and task budgets plus dsh-codex's five-minute
-refresh window. The target has no usable refresh token: if preparation outlives
-that estimate, dsh-codex fails its refresh rather than rotating or overwriting
-the host credential. The issuer-enforced access-token expiry is the final
-boundary; the wrapper deliberately does not enumerate or kill detached PIDs.
-The access-only path permits one attempt and zero infrastructure retries. Keep
-both task and setup timeouts positive; Hitch's zero setup timeout is unlimited
-and is rejected by the wrapper.
+set to `direct`. The wrapper verifies Hitch's
+`host-task-credential-helper-v1` capability and the host login before launch,
+then keeps the access value out of the eval-wide environment. Hitch refreshes
+later tasks through the same locked host credential store and rejects an
+account change during one wrapper process. For a long-lived experiment, set
+`GEAR_TARGET_CODEX_EXPECTED_ACCOUNT_ID` from the trusted host provisioning
+record so separately launched evaluations and reruns use the same account; a
+new wrapper process without that explicit constraint adopts the account that is
+logged in at its own preflight. The target has no usable refresh token and
+cannot rotate or overwrite the host login. The example uses one native Hitch
+eval with three attempts per task and concurrency 12. Infrastructure retries
+remain explicitly disabled; invalid logical slots are repaired with the normal
+Hitch rerun path.
 
 ## Check and run
 
@@ -102,7 +121,8 @@ configuration:
 
 - `GEAR_META_PROVIDER` / `GEAR_META_MODEL`
 - `GEAR_TARGET_PROVIDER` / `GEAR_TARGET_MODEL`
-- `GEAR_TARGET_CODEX_AUTH_FILE` / `GEAR_TARGET_CODEX_ENV`
+- `GEAR_TARGET_CODEX_AUTH_FILE` / `GEAR_TARGET_CODEX_ENV` /
+  `GEAR_TARGET_CODEX_EXPECTED_ACCOUNT_ID`
 - `GEAR_HITCH_EXECUTABLE` / `GEAR_HITCH_CODEX_EXECUTABLE`
 - `GEAR_DSH_CODEX_MODULE` / `DSH_CODEX_SEARCH_MODE`
 - `GEAR_LAB_ROOT`, dataset paths, state paths, task budget, and concurrency

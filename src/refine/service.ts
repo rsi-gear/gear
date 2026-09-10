@@ -85,6 +85,7 @@ interface CandidateExecution {
   abort: AbortController
   signal: AbortSignal
   finalization: PromiseWithResolvers<FinalizationValue>
+  finalizationPersisted: PromiseWithResolvers<void>
   finalizationSubmitted: boolean
   workspace?: CandidateWorkspaceHandle
   metaSessionId?: string
@@ -174,6 +175,13 @@ class MetaTurnEndedWithoutProposalError extends Error {
   }
 }
 
+class ExternalMetaFailureError extends Error {
+  constructor(readonly reason: string) {
+    super(`external Meta failed: ${reason}`)
+    this.name = 'ExternalMetaFailureError'
+  }
+}
+
 function effectiveCandidateGenerationBudget(spec: CandidateGenerationSpec): {
   attemptTimeoutMs: number
   maxAttemptsPerCandidate: number
@@ -232,8 +240,40 @@ function settleInterruptedCandidateGeneration(
   })
 }
 
+function resumableContextExecutions(
+  round: RefinementRound,
+  executions: readonly MetaExecutionState[],
+): MetaExecutionState[] {
+  return executions.filter(execution => execution.roundId === round.roundId
+    && execution.candidateId !== undefined
+    && execution.recovery !== undefined
+    && execution.deadlineAt > Date.now()
+    && (execution.status === 'rotating' || execution.status === 'running'
+      && (execution.intent?.phase === 'activated' || execution.intent?.phase === 'delivered')))
+}
+
+function hasContextRecoveryRoundStage(round: RefinementRound): boolean {
+  return ['candidate-editing', 'preparing-candidate', 'baseline-running'].includes(round.status)
+}
+
+function contextRecoveryOwnerMatches(
+  round: RefinementRound,
+  execution: MetaExecutionState,
+  specDigest: string,
+): boolean {
+  return execution.specDigest === specDigest
+    && round.candidatePool.some(candidate => candidate.candidateId === execution.candidateId
+      && candidate.status === 'generating')
+}
+
 function finalizationResolvers(): PromiseWithResolvers<FinalizationValue> {
   const value = Promise.withResolvers<FinalizationValue>()
+  void value.promise.catch(() => {})
+  return value
+}
+
+function completionResolvers(): PromiseWithResolvers<void> {
+  const value = Promise.withResolvers<void>()
   void value.promise.catch(() => {})
   return value
 }
@@ -613,16 +653,12 @@ export class RefineService {
             failure: { phase: 'recovery', message: errorMessage(error) },
           }))
         } else if (!TERMINAL.has(round.status)) {
-          const resumable = contextExecutions.filter(execution => execution.roundId === round.roundId
-            && execution.candidateId !== undefined
-            && execution.recovery !== undefined && execution.deadlineAt > Date.now()
-            && (execution.status === 'rotating' || execution.status === 'running'
-              && (execution.intent?.phase === 'activated' || execution.intent?.phase === 'delivered')))
-          if (resumable.length === 1 && ['candidate-editing', 'preparing-candidate', 'baseline-running'].includes(round.status)) {
+          const resumable = resumableContextExecutions(round, contextExecutions)
+          if (resumable.length === 1 && hasContextRecoveryRoundStage(round)) {
             const spec = await this.registry.requireSpec(entry.evolutionId)
             const execution = resumable[0]!
-            if (spec.metaAgent.contextOffloading !== undefined && execution.specDigest === digestJson(spec)
-              && round.candidatePool.some(candidate => candidate.candidateId === execution.candidateId && candidate.status === 'generating')) {
+            if (spec.metaAgent.contextOffloading !== undefined
+              && contextRecoveryOwnerMatches(round, execution, digestJson(spec))) {
               contextResumes.push({ evolutionId: entry.evolutionId, roundId: round.roundId, execution })
               continue
             }
@@ -1045,7 +1081,46 @@ export class RefineService {
       meta,
       evidence,
     })
+    if (meta.source?.kind === 'skill-lease') await execution.finalizationPersisted.promise
     return diff
+  }
+
+  async failMetaExecution(
+    evolutionId: string,
+    roundId: string,
+    candidateId: string,
+    sessionId: string,
+    reason: string,
+  ): Promise<{ failed: true; evolutionId: string; roundId: string; candidateId: string }> {
+    const active = this.active.get(roundId)
+    if (active === undefined || active.evolution.spec.evolutionId !== evolutionId) {
+      throw new Error(`stale or unknown refinement round: ${roundId}`)
+    }
+    const execution = active.executions.get(candidateId)
+    if (execution === undefined || execution.metaSessionId !== sessionId) {
+      throw new Error('Meta failure lease does not own the active candidate')
+    }
+    if (execution.finalizationSubmitted) {
+      throw new Error('candidate already received a finalization; inspect control.status')
+    }
+    if (active.abort.signal.aborted || execution.signal.aborted) {
+      throw new Error('candidate generation is already stopping; inspect control.status')
+    }
+    const failure = new ExternalMetaFailureError(reason)
+    execution.abort.abort(failure)
+    execution.finalization.reject(failure)
+    execution.finalizationPersisted.reject(failure)
+    active.abort.abort(failure)
+    const drive = active.drive
+    if (drive === undefined) throw new Error('active Meta execution has no owning drive')
+    await drive
+    const round = await active.evolution.store.readRound(roundId)
+    const attempt = round?.candidatePool.find(candidate => candidate.candidateId === candidateId)
+      ?.generationAttempts?.at(-1)
+    if (round?.status !== 'failed' || attempt?.status !== 'failed') {
+      throw new Error('Meta failure did not reach durable failed state; inspect control.status')
+    }
+    return { failed: true, evolutionId, roundId, candidateId }
   }
 
   async status(evolutionId: string, roundId?: string): Promise<PublicRoundStatus> {
@@ -1263,22 +1338,27 @@ export class RefineService {
   async dispose(): Promise<void> {
     this.disposed = true
     const error = new Error('RefineService disposed')
+    const runningDrives = [...this.drives]
     for (const repair of this.repairs.values()) repair.abort.abort(error)
     for (const active of this.active.values()) {
       active.abort.abort(error)
       for (const execution of active.executions.values()) {
         execution.abort.abort(error)
         execution.finalization.reject(error)
+        execution.finalizationPersisted.reject(error)
       }
     }
     await Promise.allSettled([...this.repairs.values()].flatMap(repair => repair.completion === undefined ? [] : [repair.completion]))
-    await Promise.allSettled([...this.drives])
+    const drives = [...new Set([...runningDrives, ...this.drives])]
+    const driveResults = await Promise.allSettled(drives)
     await Promise.all([...this.repairs.values()].map(repair => repair.lock.release().catch(() => {})))
     this.repairs.clear()
     await Promise.all([...this.active.values()].map(active => active.lock.release().catch(() => {})))
     this.active.clear()
     await Promise.allSettled([...this.runtimes.values()].map(runtime => runtime.meta.dispose()))
     this.runtimes.clear()
+    const failures = driveResults.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+    if (failures.length > 0) throw new AggregateError(failures, 'failed to settle refinement rounds during dispose')
   }
 
   private async startBatch(
@@ -1537,6 +1617,7 @@ export class RefineService {
             abort: executionAbort,
             signal: AbortSignal.any([active.abort.signal, executionAbort.signal]),
             finalization: finalizationResolvers(),
+            finalizationPersisted: completionResolvers(),
             finalizationSubmitted: false, baseline: parentBaseline,
           }
           active.executions.set(candidateId, execution)
@@ -1704,6 +1785,7 @@ export class RefineService {
                 ...(proposal.finalization === null ? { status: 'discarded' as const } : {}),
               }),
             })
+            execution.finalizationPersisted.resolve()
             execution.signal.throwIfAborted()
             if (proposal.finalization !== null && proposal.diff !== undefined) {
               round = await this.transition(store, roundId, { status: 'building-candidate' })
@@ -1723,7 +1805,11 @@ export class RefineService {
             }
             generationComplete = true
           } catch (error) {
-            if (active.evolution.spec.metaAgent.contextOffloading !== undefined && !completedCheckpoint) execution.preserveWorkspace = true
+            execution.finalizationPersisted.reject(error)
+            if (!(error instanceof ExternalMetaFailureError)
+              && active.evolution.spec.metaAgent.contextOffloading !== undefined && !completedCheckpoint) {
+              execution.preserveWorkspace = true
+            }
             active.abort.signal.throwIfAborted()
             // Close the attempt before persisting retry state so a late tool call
             // from the timed-out child cannot seal or submit the disposed workspace.
@@ -2117,24 +2203,28 @@ export class RefineService {
       const pendingRepair = active.abort.signal.aborted && active.repairAttempt !== undefined
         ? round?.evaluationAttempts?.find(attempt => this.sameAttempt(attempt, active.repairAttempt!))
         : undefined
-      if (round !== undefined && round.evaluationRepairResume !== undefined
+      if (!(error instanceof ExternalMetaFailureError) && round !== undefined && round.evaluationRepairResume !== undefined
         && active.repairAttempt !== undefined
         && this.sameAttempt(round.evaluationRepairResume, active.repairAttempt)
         && pendingRepair?.status === 'repair-completed'
         && this.attemptHasEvidence(round, pendingRepair)) return
+      if (!(error instanceof ExternalMetaFailureError) && round !== undefined
+        && await this.hasDurableContextRecovery(active, round)) return
       if (round !== undefined && !TERMINAL.has(round.status)) {
         if (round.commitIntent !== undefined) {
           await this.reconcileCommitIntent(store, round).catch(async recoveryError => store.writeRound({
             ...round, status: 'failed', updatedAt: now(),
             failure: { phase: 'commit-recovery', message: errorMessage(recoveryError) },
-          }).catch(() => {}))
+          }))
         } else {
+          const completedAt = now()
           await this.transition(store, roundId, {
             ...this.completeEvaluationRepairResume(active, round, {}),
             status: 'failed',
+            candidatePool: settleInterruptedCandidateGeneration(round, completedAt, errorMessage(error)),
             failure: { phase: round.status, message: errorMessage(error) },
             ...(error instanceof BaselineReuseBlockedError ? { baselineReuseBlocker: error.blocker } : {}),
-          }).catch(() => {})
+          })
         }
       }
     } finally {
@@ -2418,7 +2508,7 @@ export class RefineService {
     const active = this.active.get(roundId)
     if (active !== undefined) active.drive = drive
     this.drives.add(drive)
-    void drive.finally(() => this.drives.delete(drive))
+    void drive.finally(() => this.drives.delete(drive)).catch(() => {})
   }
 
   private async runtime(evolutionId: string): Promise<EvolutionRuntime> {
@@ -2627,6 +2717,7 @@ export class RefineService {
     const { meta } = active.evolution
     const sessionId = execution.metaSessionId
     const workspace = execution.workspace
+    if (cancelReason !== undefined) execution.finalizationPersisted.reject(new Error(cancelReason))
     await Promise.allSettled([...(execution.evidenceWrites ?? [])])
     if (cancelReason !== undefined && sessionId !== undefined) await meta.cancel(sessionId, cancelReason).catch(() => {})
     if (sessionId !== undefined && workspace !== undefined) {
@@ -2637,6 +2728,15 @@ export class RefineService {
     if (workspace !== undefined && execution.preserveWorkspace !== true) await this.workspaceManager.dispose(workspace.workspaceId).catch(() => {})
     active.executions.delete(execution.candidateId)
     if (active.currentCandidateId === execution.candidateId) delete active.currentCandidateId
+  }
+
+  private async hasDurableContextRecovery(active: ActiveRound, round: RefinementRound): Promise<boolean> {
+    if (!this.disposed || active.evolution.spec.metaAgent.contextOffloading === undefined) return false
+    const executions = await new MetaOffloadingStore(active.evolution.store.root).list()
+    const resumable = resumableContextExecutions(round, executions)
+    return resumable.length === 1
+      && hasContextRecoveryRoundStage(round)
+      && contextRecoveryOwnerMatches(round, resumable[0]!, active.evolution.specDigest)
   }
 
   private async reconcileCommitIntent(store: RefineStateStore, round: RefinementRound): Promise<void> {

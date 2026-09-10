@@ -118,12 +118,22 @@ export class RefineSkillGateway {
       return this.coordinator.claim(
         string(params, 'clientId'), record(params.identity) as unknown as SkillHarnessIdentity,
         optionalString(params, 'evolutionId'),
+        optionalString(params, 'roundId'),
       ) ?? { pending: false }
     }
 
     const assignment = this.coordinator.authorize(
       string(params, 'leaseId'), string(params, 'leaseToken'), string(params, 'clientId'),
     )
+    if (method === 'meta.fail') {
+      return this.service.failMetaExecution(
+        assignment.evolutionId,
+        assignment.roundId,
+        assignment.candidateId,
+        assignment.sessionId,
+        string(params, 'reason'),
+      )
+    }
     if (method === 'candidate.read') return this.files.read(assignment.sessionId, string(params, 'path'))
     if (method === 'candidate.tree') return this.files.tree(assignment.sessionId, optionalString(params, 'path'))
     if (method === 'candidate.write') {

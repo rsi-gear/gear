@@ -46,6 +46,7 @@
     "assets/ipython-kernel.py",
     "assets/llm-verifier-bridge.py",
     "assets/hitch-codex-wrapper.mjs",
+    "assets/hitch-codex-credential-helper.mjs",
     "skills/refine/**",
     "cordis.patch.yml",
     "README.md",

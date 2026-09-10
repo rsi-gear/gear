@@ -1,13 +1,18 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
+import { codexAccessEnvelope } from './hitch-codex-credential-helper.mjs'
 
-const EXPIRY_MARGIN_MS = 5 * 60 * 1000
-const DEFAULT_SETUP_BUDGET_MS = 30 * 60 * 1000
 const CODEX_ACCESS_ENV = process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_ACCESS_B64'
+const CREDENTIAL_CAPABILITY = 'host-task-credential-helper-v1'
+const CREDENTIAL_HELPER_ENV = 'HITCH_HOST_CREDENTIAL_HELPER_JSON'
+const CREDENTIAL_HELPER_TIMEOUT_MS = 60_000
+const execute = promisify(execFile)
+const credentialHelper = fileURLToPath(new URL('./hitch-codex-credential-helper.mjs', import.meta.url))
 
 function takeOption(args, name) {
   const index = args.indexOf(name)
@@ -29,13 +34,6 @@ function invocation(args) {
   }
 }
 
-function duration(value) {
-  const match = String(value).trim().match(/^(\d+(?:\.\d+)?)(ms|s|m|h)?$/u)
-  if (!match) throw new Error(`invalid duration: ${value}`)
-  const scales = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 }
-  return Math.round(Number(match[1]) * scales[match[2] ?? 'ms'])
-}
-
 function option(args, name) {
   const index = args.indexOf(name)
   return index < 0 ? undefined : args[index + 1]
@@ -51,21 +49,18 @@ function safeCodexArgs(args) {
   return args
 }
 
-async function trialValidity(args) {
+async function directCodexEvaluation(args) {
   const parsed = invocation(args)
-  if (parsed.command !== 'eval' || !['run', 'submit', 'rerun'].includes(parsed.action)) return undefined
+  if (parsed.command !== 'eval' || !['run', 'submit', 'rerun'].includes(parsed.action)) return false
+  if (!/^DSH_OPENAI_CODEX_ACCESS(?:_[A-Z0-9]+)*_B64$/u.test(CODEX_ACCESS_ENV)) {
+    throw new Error('GEAR_TARGET_CODEX_ENV must match DSH_OPENAI_CODEX_ACCESS_*_B64')
+  }
   if (parsed.action === 'submit' || parsed.actionArgs.includes('--daemon')) {
     throw new Error('Codex target credentials require direct Hitch evals; daemon submission is unsupported')
   }
 
-  let timeout
-  let setupTimeout
-  let attempts
   let infrastructureRetries
   if (parsed.action === 'run') {
-    timeout = option(parsed.actionArgs, '--timeout')
-    setupTimeout = option(parsed.actionArgs, '--setup-timeout')
-    attempts = option(parsed.actionArgs, '--attempts') ?? 1
     infrastructureRetries = option(parsed.actionArgs, '--infrastructure-retries') ?? 1
   } else {
     const evalId = parsed.actionArgs[0]
@@ -77,91 +72,76 @@ async function trialValidity(args) {
       if (error?.code !== 'ENOENT') throw error
     }
     const request = JSON.parse(await readFile(join(parsed.root, 'evals', evalId, 'request.json'), 'utf8'))
-    timeout = request.timeout_ms
-    setupTimeout = request.setup_timeout_ms
-    attempts = request.attempts ?? 1
     infrastructureRetries = request.infrastructure_retries ?? 1
   }
-  if (Number(attempts) !== 1 || Number(infrastructureRetries) !== 0) {
-    throw new Error('Codex target direct evals require one attempt and zero infrastructure retries')
+  if (Number(infrastructureRetries) !== 0) {
+    throw new Error('Codex target direct evals require zero infrastructure retries')
   }
-  if (timeout === undefined || duration(timeout) <= 0) {
-    throw new Error('Codex target direct evals require a positive --timeout')
+  if (parsed.actionArgs.some((value, index) => parsed.actionArgs[index - 1] === '--pass-env'
+    && value === CODEX_ACCESS_ENV)
+    && typeof process.env[CODEX_ACCESS_ENV] === 'string'
+    && process.env[CODEX_ACCESS_ENV].length > 0) {
+    throw new Error('refusing to expose a Codex access value across the whole Hitch eval')
   }
-  const setupBudgetMs = duration(setupTimeout ?? DEFAULT_SETUP_BUDGET_MS)
-  if (setupBudgetMs <= 0) {
-    throw new Error('Codex target direct evals require a positive --setup-timeout')
-  }
-  return duration(timeout) + setupBudgetMs + EXPIRY_MARGIN_MS
+  return true
 }
 
-async function codexAccessEnvelope(requiredValidityMs) {
+function credentialEnvironment(environment = process.env) {
   if (!/^DSH_OPENAI_CODEX_ACCESS(?:_[A-Z0-9]+)*_B64$/u.test(CODEX_ACCESS_ENV)) {
     throw new Error('GEAR_TARGET_CODEX_ENV must match DSH_OPENAI_CODEX_ACCESS_*_B64')
   }
-  const authFile = process.env.GEAR_TARGET_CODEX_AUTH_FILE
-    ?? (process.env.DSH_HOME === undefined ? undefined : join(process.env.DSH_HOME, '.openai-codex-auth.json'))
-  if (authFile === undefined) throw new Error('GEAR_TARGET_CODEX_AUTH_FILE or DSH_HOME is required')
-
-  const moduleName = process.env.GEAR_DSH_CODEX_MODULE ?? 'dsh-codex'
-  const moduleUrl = moduleName.startsWith('file:') ? moduleName : import.meta.resolve(moduleName)
-  const { OpenAICodexCredentialStore, OPENAI_CODEX_PROVIDER } = await import(moduleUrl)
-  let directory = dirname(fileURLToPath(moduleUrl))
-  let piAiRoot
-  for (;;) {
-    const candidate = join(directory, 'node_modules', '@earendil-works', 'pi-ai')
-    try {
-      await readFile(join(candidate, 'package.json'))
-      piAiRoot = candidate
-      break
-    } catch (error) {
-      const parent = dirname(directory)
-      if (error?.code !== 'ENOENT' || parent === directory) throw error
-      directory = parent
-    }
+  return {
+    ...environment,
+    [CREDENTIAL_HELPER_ENV]: JSON.stringify({
+      version: 1,
+      argv: [process.execPath, credentialHelper],
+      credentialNames: [CODEX_ACCESS_ENV],
+      timeoutMs: CREDENTIAL_HELPER_TIMEOUT_MS,
+    }),
   }
-  const { createModels } = await import(pathToFileURL(join(piAiRoot, 'dist', 'index.js')).href)
-  const { openaiCodexProvider } = await import(pathToFileURL(join(piAiRoot, 'dist', 'providers', 'openai-codex.js')).href)
-  const store = new OpenAICodexCredentialStore(authFile)
-  const models = createModels({ credentials: store })
-  models.setProvider(openaiCodexProvider())
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const auth = await models.getAuth(OPENAI_CODEX_PROVIDER, { minOAuthValidityMs: requiredValidityMs })
-    const credential = await store.modify(OPENAI_CODEX_PROVIDER, async () => undefined)
-    const access = auth?.auth.apiKey
-    if (credential?.type === 'oauth' && typeof credential.accountId === 'string'
-      && typeof access === 'string' && access.length > 0 && credential.access === access
-      && credential.expires > Date.now() + requiredValidityMs) {
-      return {
-        version: 1,
-        access,
-        expires: credential.expires,
-        accountId: credential.accountId,
-      }
-    }
-  }
-  throw new Error('OpenAI Codex credential changed while exporting target access')
 }
 
-async function targetEnvironment(args) {
-  const environment = { ...process.env, GEAR_TARGET_CODEX_ENV: CODEX_ACCESS_ENV }
-  if ((process.env.GEAR_TARGET_PROVIDER ?? 'openai-codex') !== 'openai-codex') return { environment }
-  const requiredValidityMs = await trialValidity(args)
-  if (requiredValidityMs === undefined) return { environment }
-  const envelope = await codexAccessEnvelope(requiredValidityMs)
-  return {
-    environment: {
-      ...environment,
-      [CODEX_ACCESS_ENV]: Buffer.from(JSON.stringify(envelope)).toString('base64'),
-    },
+async function requireCredentialCapability(parsed) {
+  const args = ['--root', parsed.root, 'eval', 'doctor', '--json']
+  const environment = { ...process.env }
+  delete environment[CREDENTIAL_HELPER_ENV]
+  let doctor
+  try {
+    const { stdout } = await execute(process.env.GEAR_HITCH_EXECUTABLE ?? 'hitch', args, {
+      env: environment,
+      maxBuffer: 1024 * 1024,
+    })
+    doctor = JSON.parse(stdout)
+  } catch {
+    throw new Error('Hitch credential capability preflight failed')
+  }
+  if (doctor.ready !== true) throw new Error('Hitch credential capability preflight is not ready')
+  if (!Array.isArray(doctor.capabilities) || !doctor.capabilities.includes(CREDENTIAL_CAPABILITY)) {
+    throw new Error(`Hitch does not advertise required capability ${CREDENTIAL_CAPABILITY}`)
   }
 }
 
 async function main() {
   const args = safeCodexArgs(process.argv.slice(2))
-  const target = await targetEnvironment(args)
+  let environment = { ...process.env, GEAR_TARGET_CODEX_ENV: CODEX_ACCESS_ENV }
+  if ((process.env.GEAR_TARGET_PROVIDER ?? 'openai-codex') === 'openai-codex'
+    && await directCodexEvaluation(args)) {
+    const parsed = invocation(args)
+    await requireCredentialCapability(parsed)
+    // Check the host login without pinning its access token to the whole eval.
+    let accountId
+    try {
+      accountId = (await codexAccessEnvelope(0)).accountId
+    } catch {
+      throw new Error('OpenAI Codex host credential preflight failed')
+    }
+    environment = credentialEnvironment({
+      ...environment,
+      GEAR_TARGET_CODEX_EXPECTED_ACCOUNT_ID: accountId,
+    })
+  }
   const child = spawn(process.env.GEAR_HITCH_EXECUTABLE ?? 'hitch', args, {
-    env: target.environment,
+    env: environment,
     stdio: 'inherit',
   })
   const forwardInterrupt = () => child.kill('SIGINT')

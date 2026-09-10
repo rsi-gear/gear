@@ -81,9 +81,25 @@ Set `GEAR_REFINE_SOCKET` when `--socket` is omitted. Standard output is one JSON
 value. A nonzero exit means the request failed; treat its message as a protocol
 error, not as permission to inspect host state.
 
-Both transports call the same gateway methods and receive the same results.
+All supported transports call the same gateway methods and receive the same results.
 Keep `leaseToken` secret. Do not print it in commentary, reports, diffs,
 prompts, or candidate files. It is sent only in requests for its assignment.
+
+### Versioned Codex Node runner
+
+External Codex uses `skills/refine/scripts/transport.mjs` through
+`examples/codex-skill-meta-runner.mjs`. The transport binds identity and lease
+fields, keeps `session.json` owner-only, removes the token from model-visible
+results, and records only assignment, method/capability, `accepted`,
+`recoverable`, and `code` in its audit. `meta.fail` is runner-only.
+
+One runner invocation settles at most one assignment. An exit without an
+`accepted:true` finalization, including `accepted:false,recoverable:false`, is
+settled through lease-authenticated `meta.fail`; a late failure cannot overwrite
+an already settled attempt. The runner connects to an existing core and never
+starts or stops it. The operator setup, persistent Codex home, required
+preflight-before-admission ordering, and copyable commands are documented in
+[`docs/harness-agnostic-refine-skill.md`](../../../docs/harness-agnostic-refine-skill.md).
 
 ## Control methods
 
@@ -206,6 +222,7 @@ omit both `clientId` and `identity` because the DSH bridge binds them:
 {
   "clientId": "stable-id-for-this-Meta-harness-session",
   "evolutionId": "optional evolution filter",
+  "roundId": "optional exact round filter",
   "identity": {
     "runtime": {
       "type": "codex-or-claude-code-or-dsh",
@@ -234,8 +251,10 @@ the sealed Gear configuration. When no sampling fields are configured, still
 send `"sampling": {}`. Identity equality is exact. Do not guess values or
 silently substitute another runtime/model.
 
+`roundId` is optional for compatibility, but supervising runners should send it
+with `evolutionId` so a delayed old process cannot claim a newer round.
 `{"pending":false}` means the baseline is still running or no matching
-assignment is currently available. Continue polling the same evolution. A
+assignment is currently available. Continue polling the same evolution/round. A
 successful response includes:
 
 - `leaseId` and secret `leaseToken`;
@@ -612,17 +631,20 @@ candidate workspace remain active. Execute the actions and retry.
 
 If strict verifier evidence is unavailable, Gear instead returns
 `accepted:false`, `recoverable:false`, `code:"VERIFIER_EVIDENCE_UNAVAILABLE"`,
-and an exact `operatorAction`. Do not loop on the same call. An operator must
-upgrade Hitch or explicitly enable the temporary
-`hitch.allowUnavailableVerifierDiagnosis=true` compatibility mode, then the
-affected diagnostic cards must be read again.
+and an exact `operatorAction`. This is not a completed decline/finalization.
+Do not loop on the same call or report the assignment as successful. The
+external runner treats it as an abnormal, unaccepted exit and uses the private
+lease to call `meta.fail`. An operator must then upgrade Hitch or explicitly
+enable the temporary `hitch.allowUnavailableVerifierDiagnosis=true`
+compatibility mode. After repairing the prerequisite, use `control.continue`
+to create a new round and read the affected diagnostic cards again.
 
 If bounded trajectory analysis previously failed, Gear returns the analogous
 non-recoverable `TRAJECTORY_EVIDENCE_UNAVAILABLE` response with
 `readiness.trajectoryBlockedRuns` and `operatorAction.runIds`. This is distinct
 from an unread run: repeating the suggested card query cannot fix it. Repair
-Hitch/the recorded evidence first, reread the affected cards, then retry the
-same finalization arguments.
+Hitch/the recorded evidence, then use `control.continue` and reread the
+affected cards in the new round.
 
 ### `candidate.decline`
 
@@ -658,10 +680,14 @@ For each candidate assignment:
    `meta.call` with capability `candidate.decline`.
 6. If finalize/decline returns a recoverable response, execute all actions and
    retry with the same arguments. Stop using the lease only after
-   `accepted:true`. Poll `control.status` through candidate seed,
-   selection, held-out, and promotion states.
-7. Claim every subsequent candidate/round in the requested batch. Finish only
-   at `accepted`, `rejected`, `rejected-for-substrate`, or `failed` for the last
+   `accepted:true`. An `accepted:false,recoverable:false` response is an
+   abnormal, unaccepted assignment result; the external runner must settle it
+   with lease-authenticated `meta.fail`. Poll `control.status` through
+   candidate seed, selection, held-out, and promotion states.
+7. A native DSH harness may claim subsequent candidates/rounds in the same
+   batch. The external Codex runner exits after one accepted submission; the
+   operator starts it again for the next assignment. The batch finishes only at
+   `accepted`, `rejected`, `rejected-for-substrate`, or `failed` for its last
    requested round.
 
 Do not call publish, rollback, rerun, start another evolution, or access host
@@ -677,7 +703,8 @@ state as a substitute for completing this sequence.
 - Compiler failure: repair the candidate within allowed roots or decline when
   no valid repair is possible.
 - `TRAJECTORY_EVIDENCE_UNAVAILABLE`: stop repeated card/finalization calls and
-  report `blockedRuns`/`operatorAction`; resume only after the prerequisite is repaired.
+  report `blockedRuns`/`operatorAction`; fail the current external assignment
+  and use `control.continue` only after the prerequisite is repaired.
 - Failed round with `repairableEvaluations`: use `control.rerun` only for the
   advertised evolution, round, evaluation, and logical slots.
 - Nonterminal status: continue polling the same round.
