@@ -1,8 +1,8 @@
 # Slime 模型训练接入
 
-这是 `docs/slime-model-training-spec.zh-CN.md` 的独立模型训练实现。模型训练没有复用 harness 进化的 coordinator、candidate 或 champion 状态。2026-09-10 已在 RTX 5090 / Qwen2.5-1.5B 上完成同一作业的两次更新、单卡故障恢复、信息隔离、HF 导出和独立 Hitch SGLang / Harbor 评估，并封存限定运行时的 16 项认证证据。见 [公开认证与验收摘要](certifications/2026-09-10-rtx5090-single-gpu/README.zh-CN.md)。独立评估有效但 reward=0，不代表质量提升或晋升；`pending-gpu` lock 仍不能提交正式训练。
+Gear 的模型训练独立于 harness 进化状态，通过固定 harness 和数据集执行 Slime GRPO 更新，再用不可变 HF 导出进行独立评估。新部署从 [v2 controller 配置](controller-v2.zh-CN.md) 开始；下文同时说明 v1 配置和通用训练合同。
 
-v2 当前验收范围是本地 Gear / Hitch / Harbor Docker 与远程训练、推理进程节点；远程 Docker / Harbor 和双卡回归延后。公开配置与命令见 [v2 controller 配置](controller-v2.zh-CN.md)，历史诊断和验收边界见 [实施记录](execution-placement-status.zh-CN.md)。认证绑定记录中的 checkout、源码摘要、节点、模型和 runtime；提交或合并后的新身份需要重新冻结和核验，不能沿用历史证书冒充新身份认证。下文保留 v1 配置说明。
+目前实机验收覆盖本地 Gear / Hitch / Harbor Docker 与远程 RTX 5090 单卡上的 Qwen2.5-1.5B 训练、恢复及推理。远程 Docker / Harbor 和双卡尚未验收。独立评估 reward=0，不代表质量提升或晋升。认证范围及证据见文末；`pending-gpu` lock 不能提交正式训练。
 
 ## 代码入口
 
@@ -163,7 +163,7 @@ v1 作业 GPU cost 按唯一分配设备数×存活墙钟计费，评估按第�
 
 `publish EXP_ID` 和 `rollback EXP_ID RELEASE_ID` 是显式命令，不会随 champion 自动执行。它们导入已批准的不可变模型，并原子更新 Gear 管理的 `activationPath`。业务 episode 在开始时读取一次其中 `hitchModel=local/sha256:…`，此后固定该 ID。这个发布接口不热替换正在执行的 SGLang 权重，也不部署外部业务流量入口。
 
-## 云 GPU 联调待办
+## GPU 验证与认证
 
 先在隔离设备上运行真实兼容探针，再把带原始证据的报告作为 CAS probeEvidenceRef：报告 `kind=gear-training-compatibility-probe`、`schemaVersion=1`，`runtimeLockIdentityDigest` 等于去掉 validation/probeEvidenceRefs 的 lock digest；checks 必须实际通过 `exactTokenIds`、`behaviorLogProbs`、`toolContinuity`、`exportReload`、`hitchHarbor`、`actorRolloutAlignment`。报告是验证结果，不是跳过验证的开关；CPU mock 不能提供这些结果。
 
@@ -177,14 +177,19 @@ v1 作业 GPU cost 按唯一分配设备数×存活墙钟计费，评估按第�
 
 完成相应范围的检查后才将 lock 设为 `validated` 并初始化正式实验。实际通过的模型、拓扑与数值门限以下方认证记录为准。
 
-### 当前认证范围与入口（2026-09-09）
+### 认证范围与入口
 
-2026-09-10 已完成本轮 R1 / R2 / R3：两次真实更新、单卡故障恢复、信息隔离、独立 Hitch / Harbor 评估及 16 项证据封存，正式 preflight 无阻塞，实例已停止并保留。锁文件、认证对象、数值与范围见 [RTX 5090 单卡验收](certifications/2026-09-10-rtx5090-single-gpu/README.zh-CN.md)。独立 canary reward 为 0，此结果不作为质量提升或晋升依据。
-
-本轮固定本地 Harbor / Docker + 远程单 GPU 训练 / 推理进程；远程 Docker 和双卡回归延后。验收顺序见 [执行位置方案](execution-placement-plan.zh-CN.md)。认证只覆盖实际冻结的模型 / recipe、Harness、节点 / GPU / provider 和代码身份，正常运行或 CPU 测试不能单独把 runtime 改为 validated。
+[RTX 5090 单卡认证记录](https://github.com/rsi-gear/gear/tree/b1baa88799771cafde5ec9704291e5dc2f25a601/docs/training/certifications/2026-09-10-rtx5090-single-gpu)保留 2026-09-10 的 runtime lock、认证对象和验收摘要，覆盖两次更新、故障恢复、信息隔离及独立 Hitch / Harbor 评估。认证绑定实际代码、节点、模型与 recipe；代码或运行时身份变化后需要重新冻结和核验，历史证书不证明新身份已通过。
 
 `python -m gear_training.certification --request REQUEST.json --audit AUDIT.json --store CONTROLLER_CAS --output LOCK.json` 在控制端核验全部审计文件的摘要、长度、身份、检查项与证据类型，完整通过才输出新 lock；原 request / lock 不改写。审计使用 `gear-runtime-certification-audit` schema 1，scope 由 `certification.scope(request)` 生成，必需检查与证据类型由 `certification.REQUIRED` 定义。每项 observations 包含 check / method / passed 和相对审计目录的 artifacts（path / sha256 / size）。原始审计制品留在控制端；Trainer 只接收公开证书，缺少实机恢复或隔离证据时入口拒绝封存。
 
 故障 canary 因 SSH 或控制端中断结束后，可用 `node scripts/canary-training-recovery.mjs INPUT_ROOT --resume` 继续尚未完成的阶段。续跑先核对原 request / node / runtime / GPU、已通过阶段的原始回执及旧进程释放，再将失败尝试另存；已通过阶段不重复执行。节点不可用或身份变化时保留原记录并拒绝启动。若远端已注入故障而控制端未取回完整回执，先协调证据，不自动覆盖该故障点。该入口仍为 pending-gpu 诊断，不能代替正式认证。
 
-首个封存边界探针错过窗口时，也可显式续跑：必须已有原封存批次、尚无 pending checkpoint / commit，旧执行已停止并释放。续跑重新验证故障边界，原失败与丢响应证据归档，不将失败算作验收通过。探针提前定位 driver 的 PID / 创建时间，在暂停后复核边界，避免遍历 Ray 进程耗时导致错过窗口。
+可复用探针位于源码仓库的 `python/probes/`，控制端编排入口位于 `scripts/`：
+
+- `hitch_native_gateway_smoke.py`：原生 token、工具轨迹与网关协议。
+- `slime_actor_smoke.py`、`sglang_colocated_smoke.py`：actor 更新和共卡切换。
+- `checkpoint_resume_smoke.py`、`single_gpu_recovery_smoke.py`：checkpoint 与单卡故障恢复。
+- `audit_training_capture.py`、`audit_recovery_resources.py`：训练数据及恢复资源的证据审计。
+
+探针不随 npm 包发布；请使用与待验证 runtime 对应的源码 checkout，并按各入口参数指定本次输入和输出目录。

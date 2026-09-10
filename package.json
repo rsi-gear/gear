@@ -60,7 +60,8 @@
     "python/gear_training/**/*.py",
     "python/pyproject.toml",
     "python/patches/*.patch",
-    "docs/training/**"
+    "docs/training/README.zh-CN.md",
+    "docs/training/controller-v2.zh-CN.md"
   ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",

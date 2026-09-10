@@ -1,10 +1,6 @@
 # Gear × Hitch × Slime 模型训练链路
 
-- 状态：**Draft v0.2，讨论稿**。本文定义目标合同，不表示训练功能已经实现。
-- 日期：2026-09-07。
-- 术语假设：用户所述 `smile` 暂按 **Slime（THUDM/slime）**理解。
-- 范围：Gear 路径 B 的模型权重训练，复用 Hitch 的 Agent 执行、Harbor 评分与 SGLang 本地模型评测。
-- 交付边界：架构、数据与执行合同、实现切片和验收；本次不启动训练、不修改运行配置。
+本文定义 Gear 模型权重训练的数据、执行、恢复与评估合同。模型训练复用 Hitch 的 Agent 执行、Harbor 评分和 SGLang 模型评测；实际配置和支持范围见 [训练指南](training/README.zh-CN.md)。
 
 ## 1. 建议先确定的方案
 
@@ -552,7 +548,7 @@ publication:
 
 ## 12. 实现顺序与验收
 
-**2026-09-09 实施范围调整**：当前部署固定为本地 Gear / Hitch / Harbor Docker，加远程 Slime / SGLang 训练与推理节点；不部署远程 Docker 主机，双卡回归延后。按“单卡故障恢复 → 信息隔离验证 → 对应 runtime 认证”完成本轮收尾，具体检查与已有证据见 [执行位置方案](training/execution-placement-plan.zh-CN.md) 和 [实施记录](training/execution-placement-status.zh-CN.md)。此调整不放宽下面的训练数据、checkpoint、模型晋升和发布合同；本轮单卡认证不覆盖延后拓扑或未测试模型。
+当前部署与配置见 [v2 controller 指南](training/controller-v2.zh-CN.md)，通过范围见 [单卡认证记录](training/certifications/2026-09-10-rtx5090-single-gpu/README.zh-CN.md)。已有认证仅覆盖记录中的模型、代码与拓扑；新增范围仍需满足下面的训练数据、checkpoint、模型晋升和发布合同。
 
 | 阶段 | 交付 | 通过条件 |
 | --- | --- | --- |
@@ -592,7 +588,7 @@ M0 是进入训练的前置门槛；M2 完成不等于模型质量提升。每�
 
 ## 14. 实现依据与证据导航
 
-- [Gear 路径 A / B 愿景](vision.md)：模型训练属于路径 B；旧 [RSI 草案](rsi-plugin-spec.md#55-路径-b-兼容边界) 的类型仅是规划，本文以上述当前代码为事实基线。
+- [Gear 路径 A / B 愿景](vision.md)：模型训练属于路径 B，当前接口以代码中的版本化训练合同为准。
 - [Gear 当前评测配对](../src/refine/service.ts)、[基线复用](../src/refine/baseline-reuse.ts)：模型轴应保留严格证据核验，同时拆开 subject 与共同条件。
 - [Slime 固定源码](https://github.com/THUDM/slime/tree/41014d1f29e201137fdffce737bb8bac65bc5219)：训练 hook、样本语义、权重同步；最终采用的版本由 M0 compatibility lock 决定。
 - [Hitch dev 推理源码](https://github.com/rsi-gear/agent-hitch/tree/9788b85199f3f087fa59fff85dd7ddfba8831ed4/src/inference)：模型导入、推理锁、进程与设备生命周期。
