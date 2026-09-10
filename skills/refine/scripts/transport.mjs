@@ -4,7 +4,11 @@ import { chmod, lstat, mkdir, open, readFile, realpath, rename, rm } from 'node:
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { requestRefineSkill as packageRequestRefineSkill } from 'dsh-plugin-refine/skill'
+import {
+  assertSkillHarnessIdentityMatches,
+  parseSkillHarnessIdentity,
+  requestRefineSkill as packageRequestRefineSkill,
+} from 'dsh-plugin-refine/skill'
 export const TRANSPORT_VERSION = 1
 export const MCP_PROTOCOL_VERSION = '2025-06-18'
 const CLIENT_FILE_NAME = 'client.json'
@@ -25,11 +29,6 @@ function requiredString(value, key, label = 'value') {
 }
 function message(error) { return error instanceof Error ? error.message : String(error) }
 function missing(error) { return typeof error === 'object' && error !== null && error.code === 'ENOENT' }
-function normalize(value) {
-  if (Array.isArray(value)) return value.map(normalize)
-  if (typeof value !== 'object' || value === null) return value
-  return Object.fromEntries(Object.keys(value).sort().map(key => [key, normalize(value[key])]))
-}
 function safe(value, secrets = []) {
   if (typeof value === 'string') {
     return secrets.reduce((text, secret) => text.split(secret).join('[REDACTED]'), value)
@@ -39,17 +38,6 @@ function safe(value, secrets = []) {
   return Object.fromEntries(Object.entries(value).flatMap(([key, item]) =>
     SENSITIVE_KEY.test(key) ? [] : [[key, safe(item, secrets)]],
   ))
-}
-function validateIdentity(input) {
-  const identity = object(input, 'identity')
-  const runtime = object(identity.runtime, 'identity.runtime')
-  for (const key of ['type', 'version', 'integrity']) requiredString(runtime, key, 'identity.runtime')
-  const preset = object(identity.preset, 'identity.preset')
-  for (const key of ['id', 'digest']) requiredString(preset, key, 'identity.preset')
-  const model = object(identity.model, 'identity.model')
-  for (const key of ['provider', 'model']) requiredString(model, key, 'identity.model')
-  object(identity.sampling, 'identity.sampling')
-  return structuredClone(identity)
 }
 export function refineTransportPaths(runDirectory) {
   const directory = resolve(runDirectory)
@@ -124,9 +112,14 @@ async function loadClient(runDirectory, identity) {
   const existing = await readPrivateJson(clientPath, true)
   if (existing !== undefined) {
     const value = object(existing, 'client state')
-    if (value.version !== TRANSPORT_VERSION || JSON.stringify(normalize(value.identity)) !== JSON.stringify(normalize(identity))) {
+    if (value.version !== TRANSPORT_VERSION) {
       throw new Error('configured identity does not match the private run directory')
     }
+    assertSkillHarnessIdentityMatches(
+      identity,
+      value.identity,
+      'configured identity does not match the private run directory',
+    )
     return { version: TRANSPORT_VERSION, clientId: requiredString(value, 'clientId', 'client state'), identity }
   }
   const client = { version: TRANSPORT_VERSION, clientId: `codex:${randomUUID()}`, identity }
@@ -276,7 +269,7 @@ export async function createRefineCodexTransport(options) {
   const values = object(options, 'transport options')
   const socketPath = requiredString(values, 'socketPath', 'transport options')
   const runDirectory = await privateDirectory(requiredString(values, 'runDirectory', 'transport options'))
-  const identity = validateIdentity(values.identity)
+  const identity = parseSkillHarnessIdentity(values.identity)
   const request = values.request ?? packageRequestRefineSkill
   if (typeof request !== 'function') throw new TypeError('transport options.request must be a function')
   const client = await loadClient(runDirectory, identity)
@@ -329,6 +322,7 @@ export async function createRefineCodexTransport(options) {
       const capability = method === 'meta.call' && typeof params.capability === 'string' ? params.capability : undefined
       await appendAudit(runDirectory, audit(session, method, capability, result))
     }
+    if (method === 'control.identity') return parseSkillHarnessIdentity(result)
     return safe(result, session === undefined ? [] : [session.leaseToken])
   })
   const tools = [

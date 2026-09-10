@@ -1,6 +1,7 @@
 import type { RefineCapabilities } from '../capabilities.js'
 import type { RefineService } from '../refine/service.js'
-import type { SkillHarnessIdentity, SkillMetaCoordinator } from '../meta/skill.js'
+import { skillHarnessIdentity } from '../meta/identity.js'
+import type { SkillMetaCoordinator } from '../meta/skill.js'
 import type { EvaluationRerunSelector, SemanticTarget } from '../types.js'
 import type { SkillCandidateFiles } from './files.js'
 
@@ -90,6 +91,12 @@ export class RefineSkillGateway {
         ...(selectedFocus === undefined ? {} : { focus: selectedFocus }),
       })
     }
+    if (method === 'control.identity') {
+      const evolutionId = optionalString(params, 'evolutionId')
+      return skillHarnessIdentity(evolutionId === undefined
+        ? this.service.options.metaAgent
+        : (await this.service.registry.requireSpec(evolutionId)).metaAgent)
+    }
     if (method === 'control.status') {
       const evolutionId = optionalString(params, 'evolutionId')
       return evolutionId === undefined
@@ -116,7 +123,7 @@ export class RefineSkillGateway {
     if (method === 'control.rollback') return this.service.rollback(string(params, 'evolutionId'), string(params, 'ref'))
     if (method === 'meta.claim') {
       return this.coordinator.claim(
-        string(params, 'clientId'), record(params.identity) as unknown as SkillHarnessIdentity,
+        string(params, 'clientId'), params.identity,
         optionalString(params, 'evolutionId'),
         optionalString(params, 'roundId'),
       ) ?? { pending: false }

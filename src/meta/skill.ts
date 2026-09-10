@@ -9,7 +9,6 @@ import type {
   MetaAgentSpec,
   MetaAttribution,
   MetaCheckpointRef,
-  MetaSamplingConfig,
   ProposalEvidenceAudit,
   RefinementRound,
   SeedExperienceContext,
@@ -22,13 +21,21 @@ import {
   buildSeedExperienceContext,
 } from '../experience/memory.js'
 import { sanitizePublicValue } from './sanitize.js'
+import {
+  assertSkillHarnessIdentityMatches,
+  parseSkillHarnessIdentity,
+  skillHarnessIdentitiesEqual,
+  skillHarnessIdentity,
+  type SkillHarnessIdentity,
+} from './identity.js'
 
-export interface SkillHarnessIdentity {
-  runtime: { type: string; version: string; integrity: string }
-  preset: { id: string; digest: string }
-  model: { provider: string; model: string; maxTokens?: number }
-  sampling?: MetaSamplingConfig
-}
+export {
+  assertSkillHarnessIdentityMatches,
+  parseSkillHarnessIdentity,
+  skillHarnessIdentitiesEqual,
+  skillHarnessIdentity,
+  type SkillHarnessIdentity,
+} from './identity.js'
 
 export interface SkillAssignment {
   generationBudget?: CandidateGenerationBudgetStatus
@@ -117,19 +124,6 @@ function publicExperienceContext(
   return context
 }
 
-export function skillHarnessIdentity(spec: MetaAgentSpec): SkillHarnessIdentity {
-  return {
-    runtime: { ...spec.runtime },
-    preset: { id: spec.preset.id, digest: spec.preset.digest },
-    model: { ...spec.model },
-    sampling: { ...spec.sampling },
-  }
-}
-
-function identityDigest(identity: SkillHarnessIdentity): string {
-  return digestJson(identity)
-}
-
 /** In-memory lease broker shared by every skill-backed evolution runtime. */
 export class SkillMetaCoordinator {
   private readonly entries = new Map<string, AssignmentEntry>()
@@ -141,9 +135,10 @@ export class SkillMetaCoordinator {
     onClaim: () => void,
   ): void {
     if (this.bySession.has(assignment.sessionId)) throw new Error('Meta skill session already has an assignment')
+    const expectedIdentity = parseSkillHarnessIdentity(identity)
     this.entries.set(assignment.leaseId, {
       assignment: structuredClone(assignment),
-      expectedIdentity: structuredClone(identity),
+      expectedIdentity,
       token: randomBytes(32).toString('hex'),
       onClaim,
     })
@@ -152,25 +147,31 @@ export class SkillMetaCoordinator {
 
   claim(
     clientId: string,
-    identity: SkillHarnessIdentity,
+    identity: unknown,
     evolutionId?: string,
     roundId?: string,
   ): ClaimedSkillAssignment | undefined {
     if (clientId.length === 0) throw new TypeError('clientId is required')
+    const requestedIdentity = parseSkillHarnessIdentity(identity)
     const available = [...this.entries.values()].filter(value =>
       (evolutionId === undefined || value.assignment.evolutionId === evolutionId)
       && (roundId === undefined || value.assignment.roundId === roundId)
       && (value.clientId === undefined || value.clientId === clientId),
     )
-    const requestedDigest = identityDigest(identity)
-    const entry = available.find(value => requestedDigest === identityDigest(value.expectedIdentity))
+    const entry = available.find(value => skillHarnessIdentitiesEqual(requestedIdentity, value.expectedIdentity))
     if (entry === undefined) {
-      if (available.length > 0) throw new Error('Meta harness identity does not match the immutable evolution spec')
+      if (available.length > 0) {
+        assertSkillHarnessIdentityMatches(
+          requestedIdentity,
+          available[0]!.expectedIdentity,
+          'Meta harness identity does not match the immutable evolution spec',
+        )
+      }
       return undefined
     }
     if (entry.clientId === undefined) {
       entry.clientId = clientId
-      entry.identity = structuredClone(identity)
+      entry.identity = requestedIdentity
       entry.onClaim()
     }
     return { ...structuredClone(entry.assignment), leaseToken: entry.token,

@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 interface RunnerModule {
-  preflightCodexSkillMeta(environment: NodeJS.ProcessEnv): Promise<unknown>
+  preflightCodexSkillMeta(environment: NodeJS.ProcessEnv, evolutionId?: string): Promise<unknown>
   runCodexSkillMetaRound(evolutionId: string, roundId: string, environment: NodeJS.ProcessEnv): Promise<Record<string, unknown>>
   main(argv: string[], environment: NodeJS.ProcessEnv): Promise<void>
 }
@@ -36,7 +36,7 @@ function identity() {
   return {
     runtime: { type: 'codex', version: '0.153.2', integrity: `sha256:${'1'.repeat(64)}` },
     preset: { id: 'refine', digest: `sha256:${'2'.repeat(64)}` },
-    model: { provider: 'openai-codex', model: 'gpt-6-astra' },
+    model: { provider: 'openai-codex', model: 'gpt-6-astra', maxTokens: 8192 },
     sampling: { reasoningEffort: 'ultra' },
   }
 }
@@ -157,7 +157,9 @@ async function fakeGear(
         const params = request.params ?? {}
         calls.push({ method: request.method, params })
         let result: unknown
-        if (request.method === 'control.status') {
+        if (request.method === 'control.identity') {
+          result = identity()
+        } else if (request.method === 'control.status') {
           result = params.evolutionId === undefined ? [] : {
             evolutionId, roundId, status,
             candidateGeneration: [{ candidateId: 'candidate-1', attempts: [{
@@ -282,11 +284,36 @@ describe('Codex Skill Meta runner example', () => {
 
     await writeFile(join(value.codexHome, 'auth.json'), JSON.stringify({ accessToken: 'fixture-access' }))
     await runnerModule.preflightCodexSkillMeta(value.environment)
-    expect(value.gear.calls).toContainEqual({ method: 'control.status', params: {} })
+    expect(value.gear.calls).toContainEqual({ method: 'control.identity', params: {} })
+    await runnerModule.preflightCodexSkillMeta(value.environment, evolutionId)
+    expect(value.gear.calls).toContainEqual({ method: 'control.identity', params: { evolutionId } })
     const invocations = await loggedInvocations(value.logPath)
     expect(invocations.map(value => value.args)).toContainEqual(['login', 'status'])
     expect(invocations.every(invocation => invocation.codexHome === value.codexHome)).toBe(true)
     expect(invocations.some(invocation => invocation.args[0] === 'exec')).toBe(false)
+  })
+
+  it('rejects a malformed identity before running Codex or contacting Gear', async () => {
+    const value = await fixture()
+    await writeFile(join(value.codexHome, 'auth.json'), JSON.stringify({ accessToken: 'fixture-access' }))
+    await writeFile(value.identityFile, JSON.stringify({ ...identity(), contextOffloading: {} }))
+    await expect(runnerModule.preflightCodexSkillMeta(value.environment)).rejects.toThrow('identity.contextOffloading')
+    expect(await loggedInvocations(value.logPath)).toEqual([])
+    expect(value.gear.calls).toEqual([])
+  })
+
+  it.each([
+    ['model', { ...identity(), model: { ...identity().model, model: 'gpt-6-terra' } }, 'identity.model.model'],
+    ['digest', { ...identity(), preset: { ...identity().preset, digest: `sha256:${'3'.repeat(64)}` } }, 'identity.preset.digest'],
+    ['effort', { ...identity(), sampling: { reasoningEffort: 'high' } }, 'identity.sampling.reasoningEffort'],
+  ])('rejects a well-formed identity with a different %s before claim', async (_field, configured, path) => {
+    const value = await fixture()
+    await writeFile(join(value.codexHome, 'auth.json'), JSON.stringify({ accessToken: 'fixture-access' }))
+    await writeFile(value.identityFile, JSON.stringify(configured))
+    await expect(runnerModule.preflightCodexSkillMeta(value.environment, evolutionId))
+      .rejects.toThrow(path)
+    expect(value.gear.calls).toContainEqual({ method: 'control.identity', params: { evolutionId } })
+    expect(value.gear.calls.some(call => call.method === 'meta.claim')).toBe(false)
   })
 
   it('durably fails an unrecoverable decline and keeps credentials out of private logs', async () => {

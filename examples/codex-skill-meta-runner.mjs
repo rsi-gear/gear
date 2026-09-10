@@ -5,7 +5,11 @@ import { chmod, link, lstat, mkdir, open, readFile, readdir, rm } from 'node:fs/
 import { isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
-import { requestRefineSkill } from 'dsh-plugin-refine/skill'
+import {
+  assertSkillHarnessIdentityMatches,
+  parseSkillHarnessIdentity,
+  requestRefineSkill,
+} from 'dsh-plugin-refine/skill'
 import {
   createRefineCodexTransport,
   failRefineTransportSession,
@@ -89,9 +93,8 @@ function configuration(environment) {
 }
 
 async function readIdentity(path) {
-  const identity = object(JSON.parse(await readFile(path, 'utf8')), 'Meta identity')
-  const model = object(identity.model, 'Meta identity.model')
-  if (model.provider !== 'openai-codex' || typeof model.model !== 'string' || model.model.length === 0) {
+  const identity = parseSkillHarnessIdentity(JSON.parse(await readFile(path, 'utf8')))
+  if (identity.model.provider !== 'openai-codex') {
     throw new Error('the example runner requires an openai-codex Meta identity')
   }
   return identity
@@ -117,7 +120,7 @@ async function terminateChild(child, completed) {
   }
 }
 
-async function runTransportPreflight(config, identity, environment) {
+async function runTransportPreflight(config, identity, environment, evolutionId) {
   const runDirectory = await privateDirectory(join(config.runRoot, `preflight-${randomUUID()}`))
   let child
   let completed
@@ -154,7 +157,9 @@ async function runTransportPreflight(config, identity, environment) {
         protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'gear-runner-preflight', version: '1' },
       } }),
       JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: {
-        name: 'refine_request', arguments: { method: 'control.status', params: {} },
+        name: 'refine_request', arguments: { method: 'control.identity', params: {
+          ...(evolutionId === undefined ? {} : { evolutionId }),
+        } },
       } }),
       '',
     ].join('\n'))
@@ -178,27 +183,38 @@ async function runTransportPreflight(config, identity, environment) {
     const checked = responses.find(response => response?.id === 2)
     if (initialized === undefined || checked === undefined
       || initialized.error !== undefined || initialized.result?.serverInfo?.name !== 'gear-refine-codex-transport'
-      || checked.error !== undefined || checked.result === undefined || checked.result.isError === true) {
-      throw new Error('transport did not complete its status request')
+      || checked.error !== undefined || checked.result === undefined) {
+      throw new Error('transport did not complete its identity request')
     }
+    if (checked.result.isError === true) {
+      const detail = Array.isArray(checked.result.content)
+        ? checked.result.content.find(item => item?.type === 'text' && typeof item.text === 'string')?.text
+        : undefined
+      throw new Error(detail ?? 'Gear rejected the identity request')
+    }
+    assertSkillHarnessIdentityMatches(
+      identity,
+      checked.result.structuredContent,
+      'configured Meta identity does not match Gear identity',
+    )
     return identity
-  } catch {
+  } catch (error) {
     if (child !== undefined && completed !== undefined) {
       await (stop?.() ?? terminateChild(child, completed))
     }
-    throw new Error('Gear Refine transport preflight failed')
+    throw new Error(`Gear Refine transport preflight failed: ${error instanceof Error ? error.message : String(error)}`)
   } finally {
     await rm(runDirectory, { recursive: true, force: true })
   }
 }
 
-export async function preflightCodexSkillMeta(environment = process.env) {
+export async function preflightCodexSkillMeta(environment = process.env, evolutionId) {
   const config = configuration(environment)
+  const identity = await readIdentity(config.identityFile)
   await privateDirectory(config.runRoot)
   await privateDirectory(config.codexHome)
   const workspace = await lstat(config.workspace)
   if (!workspace.isDirectory()) throw new Error('GEAR_META_WORKSPACE must be a directory')
-  const identity = await readIdentity(config.identityFile)
   try {
     const options = {
       env: restrictedEnvironment(environment, config.codexHome), timeout: 15_000, maxBuffer: 64 * 1024,
@@ -208,7 +224,7 @@ export async function preflightCodexSkillMeta(environment = process.env) {
   } catch {
     throw new Error('Codex login preflight failed')
   }
-  await runTransportPreflight(config, identity, environment)
+  await runTransportPreflight(config, identity, environment, evolutionId)
   return { config, identity }
 }
 
@@ -370,7 +386,7 @@ export async function runCodexSkillMetaRound(evolutionId, roundId, environment =
     || typeof roundId !== 'string' || roundId.length === 0) {
     throw new Error('evolutionId and roundId are required')
   }
-  const { config, identity } = await preflightCodexSkillMeta(environment)
+  const { config, identity } = await preflightCodexSkillMeta(environment, evolutionId)
   const jobRoot = await privateDirectory(join(config.runRoot, `round-${roundKey(evolutionId, roundId)}`))
   const recovered = await recoverPrivateSessions(config, jobRoot, roundId)
   const status = object(await requestRefineSkill(config.socketPath, {
@@ -390,13 +406,18 @@ export async function main(argv = process.argv.slice(2), environment = process.e
     process.stdout.write(`${JSON.stringify({ ready: true })}\n`)
     return
   }
+  if (argv.length === 3 && argv[0] === '--preflight' && argv[1] === '--evolution-id') {
+    await preflightCodexSkillMeta(environment, argv[2])
+    process.stdout.write(`${JSON.stringify({ ready: true, evolutionId: argv[2] })}\n`)
+    return
+  }
   if (argv.length === 4 && argv[0] === '--evolution-id' && argv[2] === '--round-id') {
     const status = await runCodexSkillMetaRound(argv[1], argv[3], environment)
     process.stdout.write(`${JSON.stringify(status)}\n`)
     if (status.status === 'failed') process.exitCode = 1
     return
   }
-  throw new Error('usage: codex-skill-meta-runner.mjs --preflight | --evolution-id ID --round-id ID')
+  throw new Error('usage: codex-skill-meta-runner.mjs --preflight [--evolution-id ID] | --evolution-id ID --round-id ID')
 }
 
 if (process.argv[1] !== undefined && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

@@ -63,7 +63,7 @@ function identity(model = 'gpt-6-astra') {
   return {
     runtime: { type: 'codex', version: '0.153.2', integrity: `sha256:${'1'.repeat(64)}` },
     preset: { id: 'refine', digest: `sha256:${'2'.repeat(64)}` },
-    model: { provider: 'openai-codex', model },
+    model: { provider: 'openai-codex', model, maxTokens: 8192 },
     sampling: { reasoningEffort: 'ultra' },
   }
 }
@@ -90,6 +90,24 @@ function requestParams(call: SkillRequest): Record<string, unknown> {
 }
 
 describe('Codex MCP refine transport', () => {
+  it('strictly parses configured identities and preserves maxTokens in control.identity', async () => {
+    const runDirectory = await privateDirectory()
+    await expect(transportModule.createRefineCodexTransport({
+      socketPath: '/tmp/refine.sock', runDirectory,
+      identity: { ...identity(), preset: { ...identity().preset, resources: [] } },
+      request: async () => identity(),
+    })).rejects.toThrow('identity.preset.resources')
+
+    const transport = await transportModule.createRefineCodexTransport({
+      socketPath: '/tmp/refine.sock', runDirectory, identity: identity(),
+      request: async (_socketPath: string, call: SkillRequest) => {
+        if (call.method !== 'control.identity') throw new Error(`unexpected request ${call.method}`)
+        return identity()
+      },
+    })
+    await expect(transport.refineRequest('control.identity', {})).resolves.toEqual(identity())
+  })
+
   it('binds a stable identity and private lease without exposing credentials', async () => {
     const runDirectory = await privateDirectory()
     const calls: SkillRequest[] = []

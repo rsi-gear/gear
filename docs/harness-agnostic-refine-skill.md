@@ -76,11 +76,22 @@ DSH plugin 中若未填写任何 identity 字段，Gear 会从当前 DSH runtime
 gear-refine skill-identity --path /absolute/path/to/skills/refine
 ```
 
-输出包含 `id`、`digest` 和每个资源的 `logicalPath`/`kind`/`digest`。
-资源按相对路径排序；总指纹是该 JSON 资源数组的 SHA-256，不含绝对安装路径。
-在配置和 `meta.claim` identity 中使用同一个带 `sha256:` 前缀的 `digest` 值。Gear
+输出是 bundle 资源清单：包含 `id`、`digest` 和每个资源的
+`logicalPath`/`kind`/`digest`。它用于填写 standalone 配置中的 harness id/digest，
+不是可以直接传给 `meta.claim` 的完整 identity；尤其不要把 `resources` 放进
+`identity.preset`。资源按相对路径排序；总指纹是该 JSON 资源数组的 SHA-256，
+不含绝对安装路径。在配置和 `meta.claim` identity 中使用同一个带
+`sha256:` 前缀的 `digest` 值。Gear
 会把这些字段写入 immutable `EvolutionSpec`；claim、continue 和恢复时不匹配
 都会 fail closed。
+
+Standalone core 启动后，使用只读 `control.identity` 生成 canonical identity。
+它把完整 `MetaAgentSpec` 投影为 runtime、preset id/digest、model 和显式
+`sampling` 对象；spec-only 的 `preset.resources` 与 `contextOffloading` 不进入
+结果。外部 identity 文件按这个窄 schema 严格解析，任何层级的未知字段都会被
+拒绝，不会静默删除。自定义 Node runner 可从 `dsh-plugin-refine/skill` 导入
+`parseSkillHarnessIdentity` 和 `assertSkillHarnessIdentityMatches`，避免复制一份
+不完整的校验器。
 
 旧版仅封存 `SKILL.md` 的 evolution 不会自动迁移到新指纹；升级后应创建新 evolution，
 不要修改旧实验 identity。Native bridge 会拒绝启动后发生的 bundle 内容变化。
@@ -184,7 +195,8 @@ Codex 凭据使用一个独立、持久且 owner-only 的 home。该目录跨 as
 复用，由 Codex 自己创建和更新其中的认证文件；runner 不从其他 home 复制
 `auth.json`，也不为每个 attempt 制作凭据副本。为 runner 设置下面这一套环境。
 所有路径都必须是绝对路径；identity 文件包含与 Gear 配置完全一致的 runtime、
-随包 skill digest、model 和 sampling：
+随包 skill digest、model 和 sampling。即使没有 sampling override，也必须保留
+`"sampling": {}`：
 
 ```bash
 export GEAR_REFINE_SOCKET=/absolute/control-workspace/.gear-refine/refine.sock
@@ -195,28 +207,46 @@ export GEAR_META_WORKSPACE=/absolute/meta-workspace
 # Optional; defaults to codex from PATH.
 export GEAR_CODEX_EXECUTABLE=/absolute/path/to/codex
 
-install -d -m 0700 "$GEAR_META_CODEX_HOME" "$GEAR_META_RUN_ROOT"
+install -d -m 0700 "$GEAR_META_CODEX_HOME" "$GEAR_META_RUN_ROOT" \
+  "$(dirname "$GEAR_REFINE_IDENTITY_FILE")"
+umask 077
+gear-refine request control.identity '{}' > "$GEAR_REFINE_IDENTITY_FILE"
 # 首次部署时由 Codex 在持久 home 内创建认证；
 # 后续不要为每个 attempt 重复登录。
 CODEX_HOME="$GEAR_META_CODEX_HOME" "$GEAR_CODEX_EXECUTABLE" login
 node examples/codex-skill-meta-runner.mjs --preflight
 ```
 
-`--preflight` 必须成功后才能创建或继续 round。它验证 Codex 版本和该持久
-home 的登录状态，启动一次 transport 探针，并通过现有 core 执行
-`control.status`。不要用一次失败的 preflight 结果继续实验。
+无 `evolutionId` 的 `control.identity` 与 `--preflight` 都针对 core 当前配置，
+所以这一步必须在 `control.start` 前成功。runner 验证 Codex 版本和该持久 home
+的登录状态，启动一次 transport 探针，并通过 MCP 调用 `control.identity` 后逐字段
+比较本地文件；探针不会创建 evolution、调用 evaluator 或领取 lease。不要用一次
+失败的 preflight 结果继续实验。
 
-随后创建 evolution；若已有 evolution，则改用 `control.continue`：
+随后创建 evolution：
 
 ```bash
 ADMISSION="$(gear-refine request control.start '{"rounds":1}')"
 
-# 继续已有 evolution 时，使用这一行替代上面的 control.start：
-# ADMISSION="$(gear-refine request control.continue "{\"evolutionId\":\"$EXISTING_EVOLUTION_ID\",\"rounds\":1}")"
-
 EVOLUTION_ID="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).evolutionId)' "$ADMISSION")"
 ROUND_ID="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).roundId)' "$ADMISSION")"
 
+node examples/codex-skill-meta-runner.mjs --evolution-id "$EVOLUTION_ID" --round-id "$ROUND_ID"
+```
+
+继续已有 evolution 时，先从 sealed spec 重新生成 identity，并把同一个 id 传给
+preflight；这样当前 core 配置已变化时，仍会针对即将继续的不可变配置检查。只有
+这一步成功后才调用 `control.continue`：
+
+```bash
+gear-refine request control.identity \
+  "{\"evolutionId\":\"$EXISTING_EVOLUTION_ID\"}" > "$GEAR_REFINE_IDENTITY_FILE"
+node examples/codex-skill-meta-runner.mjs --preflight \
+  --evolution-id "$EXISTING_EVOLUTION_ID"
+ADMISSION="$(gear-refine request control.continue \
+  "{\"evolutionId\":\"$EXISTING_EVOLUTION_ID\",\"rounds\":1}")"
+EVOLUTION_ID="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).evolutionId)' "$ADMISSION")"
+ROUND_ID="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).roundId)' "$ADMISSION")"
 node examples/codex-skill-meta-runner.mjs --evolution-id "$EVOLUTION_ID" --round-id "$ROUND_ID"
 ```
 
