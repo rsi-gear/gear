@@ -89,8 +89,10 @@ class JobService:
             else:
                 for other in self.root.glob("job_*/identity.json"):
                     other_handle = load(other)["handle"]
-                    status = self.inspect(other_handle)
-                    require(status["resourcesReleased"] and status["execution"] not in ("running", "pausing"), "training-job-active", "v1 permits one training job per service")
+                    old_config = load(other.parent / "config.json", {})
+                    status = (self.inspect(other_handle) if old_config.get("node") == self.config.get("node")
+                              else self._reconcile_previous_job(other.parent, other_handle, old_config))
+                    require(status["resourcesReleased"] and status["execution"] not in ("running", "pausing"), "training-job-active", "synchronous training permits one job per service")
             if identity:
                 if request["schemaVersion"] == 2:
                     from .episodes import EpisodeJournal
@@ -122,6 +124,38 @@ class JobService:
                     atomic_json(directory / "control.json", _control)
             self.ensure_worker(directory)
         return handle
+
+    def _reconcile_previous_job(self, directory, handle, config):
+        """Drain historical ownership without adopting the old job identity."""
+        from .node_generation import previous_boot_proof
+        require(directory.name == handle["jobId"] and config.get("nodeRoot") == self.config.get("nodeRoot"),
+                "job-node-generation-drift", "historical job belongs to another node root")
+        devices = device_ledger(self.config)
+        require(devices, "job-node-generation-drift", "historical jobs require node device ownership evidence")
+        with lock(directory / "launch.lock"):
+            previous_boot_proof(devices.root, self.config["node"], config.get("node"))
+            status = load(directory / "status.json")
+            require(status and status["handle"] == handle, "invalid-job-status", "historical job status is missing or mismatched")
+            worker = load(directory / "worker.json", {})
+            if not worker:
+                control = load(directory / "control.json", {})
+                require(control.get("admissionOnly") and status["execution"] == "paused" and status["resourcesReleased"],
+                        "previous-resources-not-released", "historical job has no worker or admission-only release evidence")
+                return status
+            owner = device_owner(directory, worker["incarnation"])
+            # An unspawned intent may precede device acquisition. A launched
+            # worker must retain its device ledger even across an OS restart.
+            unspawned = worker.get("pending") is True and not worker.get("process") and not load(directory / "owned-processes.json", [])
+            if not devices.exists(owner):
+                require(unspawned and not gpu_processes(training_devices(load(directory / "request.json"))),
+                        "previous-resources-not-released", "historical job has no confirmed device release")
+            devices.release_previous_owner(owner, config["node"], allow_missing=unspawned)
+            status["resourcesReleased"] = True
+            status["usage"]["gpuSeconds"] = max(status["usage"]["gpuSeconds"], devices.gpu_seconds("training/" + directory.name + "/"))
+            if status["execution"] in ("running", "pausing"):
+                status["execution"] = "interrupted"
+            atomic_json(directory / "status.json", status)
+            return status
 
     def ensure_worker(self, directory):
         with lock(directory / "launch.lock"):

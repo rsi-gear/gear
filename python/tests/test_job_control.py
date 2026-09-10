@@ -5,7 +5,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from gear_training.content import ContractError, atomic_json, digest_json
-from gear_training.job import JobService
+from gear_training.job import JobService, device_owner
+from gear_training.device_lease import NodeDeviceLedger
+from gear_training.node_generation import generation_path
 from gear_training.job_control import control_job
 from gear_training.node import NodeService
 from gear_training.state import load
@@ -113,6 +115,69 @@ class JobControlTests(unittest.TestCase):
         self.assertTrue(restarted.rpc(pause)["result"]["resourcesReleased"])
         self.assertEqual(restarted.rpc(envelope(2, "start"))["result"]["handle"], self.handle)
         with self.assertRaisesRegex(ContractError, "newer control intent"): restarted.rpc(pause)
+
+    def reboot(self):
+        with patch("gear_training.node.boot_identity", return_value="next-os-boot"):
+            node = NodeService(self.node_config)
+        service = JobService({**self.service.config, "node": node.identity})
+        request = copy.deepcopy(self.request)
+        request["deployment"]["modelRuntime"] = node.identity
+        return service, request
+
+    def submit_new_experiment(self, service, request):
+        return control_job(service, request, "new-experiment",
+                           {"schemaVersion": 2, "sequence": 0, "action": "start"})
+
+    def test_prior_boot_pause_tombstone_does_not_block_a_new_experiment(self):
+        self.control(1, "pause")
+        original = (self.directory / "identity.json").read_bytes()
+        service, request = self.reboot()
+        started = self.submit_new_experiment(service, request)
+        self.assertEqual(started["execution"], "running")
+        self.assertEqual((self.directory / "identity.json").read_bytes(), original)
+        with self.assertRaisesRegex(ContractError, "another model node/generation"):
+            service.inspect(self.handle)
+        with self.assertRaisesRegex(ContractError, "another model node generation"):
+            self.control(2, "start", service=service)
+
+    def test_prior_boot_worker_requires_physical_release_without_reading_old_pids(self):
+        self.control(0, "start")
+        worker = load(self.directory / "worker.json")
+        owner = device_owner(self.directory, worker["incarnation"])
+        devices = NodeDeviceLedger(self.node_config["nodeRoot"], self.node.identity)
+        with patch("gear_training.device_lease.gpu_processes", return_value=[]):
+            devices.acquire(owner, ["GPU-1"])
+        worker.update(pending=False, process={"pid": 123, "createdAt": 1})
+        atomic_json(self.directory / "worker.json", worker)
+        original = (self.directory / "config.json").read_bytes()
+        service, request = self.reboot()
+        with patch("gear_training.job.owned_alive", side_effect=AssertionError("old PID must not be inspected")), \
+             patch("gear_training.device_lease.owned_alive", side_effect=AssertionError("old PID must not be inspected")):
+            for occupants in ([{"device": "GPU-1", "pid": 123}], OSError("driver unavailable")):
+                with self.subTest(occupants=occupants), patch("gear_training.device_lease.gpu_processes",
+                        **({"side_effect": occupants} if isinstance(occupants, Exception) else {"return_value": occupants})):
+                    with self.assertRaises((ContractError, OSError)):
+                        self.submit_new_experiment(service, request)
+                    self.assertFalse(load(self.directory / "status.json")["resourcesReleased"])
+            with patch("gear_training.device_lease.gpu_processes", return_value=[]):
+                self.assertEqual(self.submit_new_experiment(service, request)["execution"], "running")
+        status = load(self.directory / "status.json")
+        self.assertTrue(status["resourcesReleased"])
+        self.assertEqual(status["execution"], "interrupted")
+        self.assertGreater(status["usage"]["gpuSeconds"], 0)
+        self.assertEqual((self.directory / "config.json").read_bytes(), original)
+
+    def test_missing_boot_or_launched_device_evidence_still_blocks_new_submission(self):
+        self.control(0, "start")
+        worker = load(self.directory / "worker.json")
+        worker.update(pending=False, process={"pid": 123, "createdAt": 1})
+        atomic_json(self.directory / "worker.json", worker)
+        service, request = self.reboot()
+        with self.assertRaisesRegex(ContractError, "no confirmed device release"):
+            self.submit_new_experiment(service, request)
+        generation_path(self.node_config["nodeRoot"], self.node.identity).unlink()
+        with self.assertRaisesRegex(ContractError, "distinct archived OS boot identity"):
+            self.submit_new_experiment(service, request)
 
 
 if __name__ == "__main__": unittest.main()
