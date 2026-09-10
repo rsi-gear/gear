@@ -26,6 +26,7 @@ async function environment(includeTarget = true) {
     GEAR_LAB_ROOT: labRoot,
     GEAR_HITCH_EXECUTABLE: hitch,
     GEAR_HITCH_CODEX_EXECUTABLE: hitchWrapper,
+    GEAR_RUNTIME_CHECK_EXECUTABLE: process.env.GEAR_RUNTIME_CHECK_EXECUTABLE ?? join(gearRoot, 'assets', 'dsh-runtime-check.mjs'),
     GEAR_DSH_CODEX_MODULE: process.env.GEAR_DSH_CODEX_MODULE ?? codexModule,
     GEAR_META_PROVIDER: process.env.GEAR_META_PROVIDER ?? 'openai-codex',
     GEAR_META_MODEL: process.env.GEAR_META_MODEL ?? 'gpt-5.6-luna',

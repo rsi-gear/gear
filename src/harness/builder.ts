@@ -8,6 +8,7 @@ import ts from 'typescript'
 import type { CandidateDiffSummary, HarnessManifest, PreparedHarness, SealedCandidateVersion } from '../types.js'
 import { isExactGitCommit } from '../types.js'
 import type { CandidateWorkspaceHandle } from '../candidate/workspace.js'
+import { candidateCheckReport, CompilerCheckError, type CandidateCheckReport, type CompilerCheckReport } from './check-report.js'
 
 const ALLOWED_ROOTS = new Set(['preset', 'plugins', 'prompts', 'skills', 'workflows'])
 const FORBIDDEN_NAMES = new Set([
@@ -15,7 +16,8 @@ const FORBIDDEN_NAMES = new Set([
 ])
 
 export interface HarnessCompiler {
-  compile(worktree: string, signal: AbortSignal): Promise<void>
+  readonly runtimeValidation?: boolean
+  compile(worktree: string, signal: AbortSignal, manifest?: HarnessManifest): Promise<void | CompilerCheckReport>
 }
 
 export interface HarnessBuilderOptions {
@@ -138,6 +140,10 @@ export class HarnessBuilder {
     await this.resolveExactCommit(this.options.dshBaseRef, true)
   }
 
+  validationCapabilities() {
+    return { pipeline: 'compiler', runtime: this.options.compiler.runtimeValidation === true ? 'configured' : 'unavailable' }
+  }
+
   async finalizeWorkspace(
     handle: CandidateWorkspaceHandle,
     sealed: CandidateDiffSummary,
@@ -160,7 +166,7 @@ export class HarnessBuilder {
     const harnessRoot = join(handle.worktreePath, ...this.targetRoot.split('/'))
     await this.validateComposition(harnessRoot)
     await this.validateImports(harnessRoot)
-    await this.options.compiler.compile(handle.worktreePath, signal)
+    const validation = await this.compileWorkspace(handle, signal)
     await this.assertCompilerStayedInTarget(handle.worktreePath)
     if (await this.resolveExactCommitAt(handle.worktreePath, 'HEAD') !== parentRef) {
       throw new SubstrateExpansionError('compiler changed candidate Git HEAD')
@@ -188,10 +194,10 @@ export class HarnessBuilder {
     if (!isExactGitCommit(treeOid)) throw new MutationValidationError('candidate root tree object id is invalid')
     const verified = await this.readManifest(ref)
     if (verified.digest !== manifest.digest) throw new MutationValidationError('candidate manifest changed while committing')
-    return { ref, digest: manifest.digest, treeOid, immutableRef, repositoryPath: this.repositoryPath, manifest }
+    return { ref, digest: manifest.digest, treeOid, immutableRef, repositoryPath: this.repositoryPath, manifest, validation }
   }
 
-  async checkWorkspace(handle: CandidateWorkspaceHandle, signal: AbortSignal): Promise<void> {
+  async checkWorkspace(handle: CandidateWorkspaceHandle, signal: AbortSignal): Promise<CandidateCheckReport> {
     if (handle.state !== 'open') throw new MutationValidationError(`candidate workspace must be open for checks, found ${handle.state}`)
     const parentRef = await this.resolveExactCommit(handle.parentRef, true)
     if (await this.resolveExactCommitAt(handle.worktreePath, 'HEAD') !== parentRef) {
@@ -200,8 +206,21 @@ export class HarnessBuilder {
     const harnessRoot = join(handle.worktreePath, ...this.targetRoot.split('/'))
     await this.validateComposition(harnessRoot)
     await this.validateImports(harnessRoot)
-    await this.options.compiler.compile(handle.worktreePath, signal)
+    const report = await this.compileWorkspace(handle, signal)
     await this.assertCompilerStayedInTarget(handle.worktreePath)
+    return report
+  }
+
+  private async compileWorkspace(handle: CandidateWorkspaceHandle, signal: AbortSignal): Promise<CandidateCheckReport> {
+    const root = join(handle.worktreePath, this.targetRoot)
+    const before = await this.createManifest(root, handle.parentRef)
+    const compiler = await this.options.compiler.compile(handle.worktreePath, signal, before)
+    if (compiler?.ok === false) throw new CompilerCheckError(compiler)
+    if (compiler?.runtime.load.status !== undefined && compiler.runtime.load.status !== 'not_checked') {
+      const after = await this.createManifest(root, handle.parentRef)
+      if (after.digest !== before.digest) throw new MutationValidationError('CANDIDATE_CHANGED_DURING_CHECK: candidate no longer matches runtime evidence')
+    }
+    return candidateCheckReport(compiler ?? undefined, before.digest)
   }
 
   async verifySealedCandidate(version: Readonly<SealedCandidateVersion>): Promise<void> {

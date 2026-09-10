@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "kind": "single-gpu-runtime-acceptance",
+  "date": "2026-09-10",
+  "profile": "local-harbor-process-single-gpu-v1",
+  "result": "passed",
+  "certificateRef": {
+    "digest": "sha256:18f55a8b22c8bf25c994d5571d89c3d6750b7fbe50e28072a0e8fab1bce9f1c9",
+    "mediaType": "application/json",
+    "uri": "cas:sha256:18f55a8b22c8bf25c994d5571d89c3d6750b7fbe50e28072a0e8fab1bce9f1c9"
+  },
+  "node": {
+    "generation": "850e3a281e2f48f7bf8227d634f52903",
+    "nodeId": "vast-50406574-recovery67"
+  },
+  "gpuUuid": "GPU-6535a338-f8ff-92dd-ab5d-605cdd4210c2",
+  "driverVersion": "580.178.04",
+  "training": {
+    "handle": {
+      "jobId": "job_48684da9829998a5c06c8eea9fd30e5d",
+      "provider": "slime",
+      "requestDigest": "sha256:b2d2508a76826ec855892bfe079b94ebfc2ac0454a340f71cdc308a89f421c02",
+      "schemaVersion": 1
+    },
+    "committedUpdates": 2,
+    "gpuSeconds": 1393.304631471634,
+    "actorNativeMeanAbsoluteDifferences": [
+      0.01089240903604371,
+      0.009297316330050074
+    ],
+    "optimizerSteps": [
+      [
+        1,
+        1
+      ],
+      [
+        2,
+        2
+      ]
+    ],
+    "schedulerSteps": [
+      2,
+      4
+    ],
+    "checkpointRef": {
+      "digest": "sha256:42892d762678ce9f4e3539baf33cbfd8f01b712d8a2b3f3e7921b10c6b1ce31b",
+      "mediaType": "application/json",
+      "uri": "cas:sha256:42892d762678ce9f4e3539baf33cbfd8f01b712d8a2b3f3e7921b10c6b1ce31b"
+    },
+    "candidateRef": {
+      "digest": "sha256:dc577cc8ff66cdb06bb6af96c24cbc8706f4b47b619455408cee6cff06e39835",
+      "mediaType": "application/json",
+      "uri": "cas:sha256:dc577cc8ff66cdb06bb6af96c24cbc8706f4b47b619455408cee6cff06e39835"
+    },
+    "hfSnapshotRef": {
+      "digest": "sha256:fe915673c0ffccc1c8ee3a999c5d4b03c6892980483141f87584d123dc3e62e1",
+      "mediaType": "application/json",
+      "uri": "cas:sha256:fe915673c0ffccc1c8ee3a999c5d4b03c6892980483141f87584d123dc3e62e1"
+    }
+  },
+  "evaluation": {
+    "evalId": "eval_32e74ff89d874ee78a6c401aa2d9b489",
+    "trials": [
+      {
+        "attempt": 1,
+        "inferenceError": false,
+        "reward": 0,
+        "runId": "run_f2f961fb54b9470a9d3c4446cd50f0aa",
+        "taskId": "one",
+        "valid": true
+      }
+    ],
+    "gpuSeconds": 89.10526180267334,
+    "stopReplyLossRecovered": true
+  },
+  "isolation": {
+    "controllerOnlyObjectsChecked": 4,
+    "credentialsChecked": 4,
+    "publicFilesScanned": 812,
+    "privateCasClasses": [
+      "dev",
+      "held-out",
+      "private-verifier",
+      "admin-credential"
+    ],
+    "generationNegativeChecks": 9
+  },
+  "disconnectedAccounting": {
+    "chargedSeconds": 6.715062618255615,
+    "physicalReleaseConfirmed": true
+  },
+  "formalPreflight": {
+    "requestDigest": "sha256:7ba9d92cc059496af491a6c4017a27aa60674e852781e9d35ba92fc15f0a6d10",
+    "blockers": [],
+    "artifactDigest": "sha256:7fa5f39f13b93a4a82e96cf953450b56919e7033443c6eeb1f18914279185dc8"
+  },
+  "privateAuditDigest": "sha256:7dd51401cfa894b07659e7e844d1fdba8a81125dcfb1907aa8fe873c1566ada7",
+  "finalInstanceState": {
+    "instanceId": 50406574,
+    "observedAt": 1788974515.089292,
+    "actual_status": "exited",
+    "intended_status": "stopped",
+    "cur_state": "stopped",
+    "dph_total": 0.7481481481481481,
+    "containerRetained": true
+  },
+  "limitations": [
+    "One Qwen2.5-1.5B recipe and the frozen single-GPU runtime only",
+    "Independent canary reward is zero; this is not a quality improvement or promotion decision",
+    "Remote Harbor/Docker host and dual-GPU certification are deferred"
+  ]
+}

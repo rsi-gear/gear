@@ -22,6 +22,16 @@ function requiredConfig(): Record<string, unknown> {
 }
 
 describe('Gear configuration defaults', () => {
+  it('keeps legacy compiler coverage unavailable unless a fixed report protocol is configured', () => {
+    const legacy = ConfigSchema(requiredConfig() as never)
+    expect(legacy.compiler.reportProtocol).toBeUndefined()
+    const configured = ConfigSchema({ ...requiredConfig(), compiler: {
+      command: '/usr/bin/node', args: ['/release/gear/assets/dsh-runtime-check.mjs'],
+      reportProtocol: 'gear-runtime-check-v1', runtimeRoot: '/release/target', maxReportBytes: 131072,
+      readPaths: ['/release/toolchain'],
+    } } as never)
+    expect(configured.compiler).toMatchObject({ reportProtocol: 'gear-runtime-check-v1', runtimeRoot: '/release/target', readPaths: ['/release/toolchain'] })
+  })
   it('defaults Meta integration to skill mode without requiring a preset', () => {
     const config = ConfigSchema(requiredConfig() as never)
     expect(config.metaAdapter.kind).toBe('skill')

@@ -61,7 +61,7 @@ describe('HarnessBuilder dependency allowlist', () => {
         toolchainRef: 'node-22-tsc', sandboxProfileRef: 'sandbox-v1', compiler: new NoopHarnessCompiler(),
         ...(allowedImports === undefined ? {} : { allowedImports }),
       })
-      if (accepted) await expect(builder.checkWorkspace(handle, signal)).resolves.toBeUndefined()
+      if (accepted) await expect(builder.checkWorkspace(handle, signal)).resolves.toMatchObject({ ok: true, static: { status: 'passed' } })
       else await expect(builder.checkWorkspace(handle, signal)).rejects.toThrow(
         `import is outside the fixed dependency allowlist in ${path}: ${specifier}`,
       )

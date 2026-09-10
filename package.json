@@ -19,7 +19,8 @@
   "types": "lib/index.d.ts",
   "bin": {
     "gear-refine": "./lib/cli.js",
-    "gear-hitch-codex": "./assets/hitch-codex-wrapper.mjs"
+    "gear-hitch-codex": "./assets/hitch-codex-wrapper.mjs",
+    "gear-dsh-runtime-check": "./assets/dsh-runtime-check.mjs"
   },
   "exports": {
     ".": {
@@ -38,7 +39,11 @@
       "types": "./lib/testing.d.ts",
       "default": "./lib/testing.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./training": {
+      "types": "./lib/training/index.d.ts",
+      "default": "./lib/training/index.js"
+    }
   },
   "files": [
     "lib/**/*.js",
@@ -47,13 +52,19 @@
     "assets/llm-verifier-bridge.py",
     "assets/hitch-codex-wrapper.mjs",
     "assets/hitch-codex-credential-helper.mjs",
+    "assets/dsh-runtime-check.mjs",
     "skills/refine/**",
     "cordis.patch.yml",
     "README.md",
     "LICENSE",
     "assets/gear-tool-fs.js",
     "assets/gear-tool-fs.d.ts",
-    "assets/gear-tool-fs.LICENSE"
+    "assets/gear-tool-fs.LICENSE",
+    "python/gear_training/**/*.py",
+    "python/pyproject.toml",
+    "python/patches/*.patch",
+    "docs/training/README.zh-CN.md",
+    "docs/training/controller-v2.zh-CN.md"
   ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",
@@ -67,7 +78,8 @@
     "pack:check": "npm run build && npm pack --dry-run",
     "prepack": "npm run build",
     "build:tool-fs": "node scripts/build-private-tool-fs.mjs",
-    "prepare": "npm run build:tool-fs"
+    "prepare": "npm run build:tool-fs",
+    "test:training": "vitest run tests/unit/training && PYTHONPATH=python \"${GEAR_TRAINING_TEST_PYTHON:-python3}\" -m unittest discover -s python/tests -v"
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "0.0.55",

@@ -11,6 +11,11 @@ function usage(): never {
 
 async function main(argv: string[]): Promise<void> {
   const args = [...argv]
+  if (args[0] === 'training') {
+    const { trainingCommand } = await import('./training/cli.js')
+    process.stdout.write(`${JSON.stringify(await trainingCommand(args.slice(1)), null, 2)}\n`)
+    return
+  }
   if (args[0] === 'skill-identity') {
     args.shift()
     let directory: string | undefined

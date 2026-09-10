@@ -32,6 +32,7 @@ describe('DSH Codex Luna example', () => {
     expect(runtime.dependencies['@earendil-works/pi-ai']).toBe('0.84.4')
     expect(target.dependencies).toMatchObject({
       '@deepseek-ai/dsh': '0.1.1-rc.2',
+      '@deepseek-ai/dsh-tools': '0.1.1-rc.2',
       '@earendil-works/pi-ai': '0.84.4',
       'dsh-codex': '0.2.6',
     })

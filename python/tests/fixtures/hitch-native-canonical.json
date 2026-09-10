@@ -1,0 +1,68 @@
+{
+  "kind": "actual-harbor-canonical-identity-replay",
+  "trainingAdmissionProven": false,
+  "sourceRunId": "run_19cbaa524e734473807aee85dccbd023",
+  "loaded": {
+    "record_status": "valid",
+    "trajectory_status": "valid",
+    "record": {
+      "run_id": "run_19cbaa524e734473807aee85dccbd023",
+      "parent": {
+        "kind": "eval",
+        "eval_id": "eval_c2f0747f33e445018b6c0be9547fb0b0",
+        "trial_id": "one__T6F5jyN",
+        "attempt": 1
+      },
+      "context": {
+        "kind": "benchmark_task",
+        "benchmark_id": "local:dataset",
+        "benchmark_revision": "sha256:bc7266499dcc2270b3ae6fdce72198ca2e92da245b94ac22c9f3ebdd2d5d05d0",
+        "task_id": "one",
+        "task_digest": "sha256:82e515d47bef00abd85f4cdaf6043673da28cdd96687a1410287119698e6098a",
+        "verifier_identity": "sha256:1b8867c90157f1d5862aa0bbf109f2c22ed3074821d04759f03925e0bacd293c"
+      },
+      "model": {
+        "requested_id": "training/binding_9de46faf223eb72e08df840f339f573b",
+        "effective_id": "native-diagnostic-47c6c0986bc91fe8470b7cc3/initial",
+        "provider": "slime-training",
+        "identity_resolved": true
+      },
+      "harness": {
+        "harness_id": "training-tool",
+        "requested_ref": "training-tool@commit:e32ec880b2b9e79065b8d2bb084409af367b45f0",
+        "revision_identity": "sha256:983e157963a9f077eb2f53f397f37812c6971659c4138b851b31f6826d63db5b",
+        "artifact_id": "sha256:f44454a26a55348a5aa9075652903933a8d06d95a6bee03f3dd0481793b5313e"
+      },
+      "observation": {
+        "status": "valid",
+        "reward": 0,
+        "verifier_result_ref": "verifier/result.json"
+      },
+      "protocol": {
+        "timeout_ms": 120000,
+        "workspace_mode": "shared",
+        "initial_workspace_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "environment_identity": "sha256:a3346c52927986fd2013f8d0ca843f4b33f32d7cdca5693d90bdc87369a2aaf7"
+      }
+    }
+  },
+  "expected": {
+    "context": {
+      "runId": "run_19cbaa524e734473807aee85dccbd023",
+      "taskId": "one",
+      "policyVersion": "native-diagnostic-47c6c0986bc91fe8470b7cc3/initial"
+    },
+    "evalId": "eval_c2f0747f33e445018b6c0be9547fb0b0",
+    "submittedHarnessRef": "training-tool@git+file:///var/folders/vr/wrfw08f92012yl64hzyb96br0000gn/T/hitch-native-remote-training-2oZk5Y/training-source#e32ec880b2b9e79065b8d2bb084409af367b45f0",
+    "environment": {
+      "taskDigest": "sha256:82e515d47bef00abd85f4cdaf6043673da28cdd96687a1410287119698e6098a",
+      "verifierIdentity": "sha256:1b8867c90157f1d5862aa0bbf109f2c22ed3074821d04759f03925e0bacd293c",
+      "hitchEnvironmentIdentity": "sha256:a3346c52927986fd2013f8d0ca843f4b33f32d7cdca5693d90bdc87369a2aaf7"
+    },
+    "harness": {
+      "harnessId": "training-tool",
+      "revisionIdentity": "sha256:983e157963a9f077eb2f53f397f37812c6971659c4138b851b31f6826d63db5b",
+      "artifactId": "sha256:f44454a26a55348a5aa9075652903933a8d06d95a6bee03f3dd0481793b5313e"
+    }
+  }
+}

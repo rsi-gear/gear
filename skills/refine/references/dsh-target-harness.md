@@ -2,16 +2,11 @@
 
 This reference is mandatory when the Refine target is Gear's DeepSeek Harness
 (DSH) carrier. It describes the carrier shipped with Gear and the DSH
-`0.1.0-rc.8` APIs that the carrier locks. Do not transfer these exact APIs to a
-different DSH version without inspecting that version's source.
-
-The API contracts and examples below were audited against the official
-`dsh-v0.1.0-rc.8` tag at commit
-`141eb6fef83422698aef7a981029e843e8161534`. The primary source locations are
-`packages/core/tools`, `packages/core/system-prompt`, `packages/core/agent`,
-`packages/skill/skill-filesystem`, `packages/workflow`,
-`packages/preset/agent-presets`, and `apps/cli/config/agent-presets` in the
-DeepSeek Harness repository.
+`0.1.1-rc.2` APIs that the carrier locks. The contracts below were checked
+against the installed rc.2 packages, including `dsh-tools`, `dsh-system-prompt`,
+`dsh-agent`, `dsh-agent-loop`, `dsh-agent-presets`, `dsh-tool-workflow`, and the
+base/headless compositions. Do not transfer these APIs to another DSH version
+without inspecting that version's source.
 
 The protocol and candidate mutation rules are in [protocol.md](protocol.md) and
 [target-harness-editing.md](target-harness-editing.md). This document explains
@@ -27,24 +22,26 @@ automatically scan all five:
 | `preset/` | Cordis composition: the list of plugins and providers that form the target overlay | Yes, but only `preset/agent.cordis.yml` | Gear's fixed loader includes this exact file |
 | `plugins/` | Native Cordis/DSH plugins: prompt sections, hooks, policies, tools, and resource loaders | No | Add a relative `name` row to the preset |
 | `prompts/` | Reusable model-facing prompt text | No | A loaded plugin must read it and register a prompt section or context |
-| `skills/` | On-demand Agent Skills and their bundle resources | No | A loaded `dsh-skill-filesystem` provider must scan the directory |
+| `skills/` | On-demand Agent Skills and their bundle resources | Yes | The fixed carrier configures the existing `skill-filesystem` provider to scan `harness/skills` |
 | `workflows/` | Reusable multi-step procedures or DSH workflow-tool script templates | No | A loaded plugin or skill must expose the procedure to the model |
 
 The effective graph is therefore:
 
 ```text
-Gear fixed target loader
-  -> preset/agent.cordis.yml
-       -> plugins/*.js
-            -> prompts/*.md
-            -> workflows/*.md or *.js
-            -> @deepseek-ai/dsh-skill-filesystem
-                 -> skills/<skill-name>/SKILL.md
+Gear fixed carrier profile
+  -> skill-filesystem (existing filesystem provider)
+       -> harness/skills/<skill-name>/SKILL.md
+  -> fixed target loader
+       -> preset/agent.cordis.yml
+            -> plugins/*.js
+                 -> prompts/*.md
+                 -> workflows/*.md or *.js
 ```
 
-An unreferenced file in `plugins/`, `prompts/`, `skills/`, or `workflows/`
-does nothing. Creating the file and creating its connection are one logical
-candidate change.
+An unreferenced file in `plugins/`, `prompts/`, or `workflows/` does nothing.
+Creating those files and their connections is one logical candidate change.
+Valid Skill files already have a connection through the fixed carrier; ordinary
+file Skills require no candidate loader or preset registration.
 
 The fixed carrier also owns the sandbox, approval mode, dependencies,
 toolchain, target loader, and `manifest.json`. Candidate code must not try to
@@ -98,21 +95,25 @@ The important fields are:
 Resolution rules:
 
 - `../plugins/policy.js` is relative to `preset/agent.cordis.yml`.
-- A bare package such as `@deepseek-ai/dsh-skill-filesystem` resolves from the
-  fixed harness installation. It must already be in the locked toolchain; a
-  candidate cannot add dependencies.
+- Candidate JavaScript imports resolve from the candidate file's own location.
+  Only directly exposed carrier dependencies are available. A transitive package
+  in pnpm's store or DSH's profile fallback is not a candidate dependency. The
+  import allowlist permits names; it does not install or expose those packages.
+  A candidate cannot add dependencies. Carrier `0.0.2` explicitly exposes
+  `@deepseek-ai/dsh-tools@0.1.1-rc.2` for `defineTool`; other DSH packages are
+  available only when the fixed substrate explicitly exposes them.
 - Keep candidate presets as ordinary YAML. Gear's composition check does not
   support the Cordis `!!js` tag, including in `config` or `disabled` fields.
-- Calculate absolute resource paths in a JavaScript loader plugin using
-  `import.meta.url`, as in the skill example below.
+- For prompt/workflow resource loaders, calculate absolute paths using
+  `import.meta.url`. File Skills need no loader.
 - The default import allowlist permits `@deepseek-ai/` packages and valid
   `node:` builtins such as `node:url` and `node:fs/promises`. Bare builtin names
   such as `url` are not implicitly allowed. A custom allowlist replaces these
   defaults; `node:` grants the builtin namespace, while `node:url` grants only
   that exact import.
 
-Example composition connecting one policy plugin, one prompt loader, one
-isolated skill provider, and one workflow-guidance loader:
+Example composition connecting a policy plugin, a prompt loader, and a
+workflow-guidance loader:
 
 ```yaml
 - id: target-policy
@@ -121,18 +122,14 @@ isolated skill provider, and one workflow-guidance loader:
 - id: target-prompt-pack
   name: ../plugins/prompt-pack.js
 
-- id: target-skills
-  name: ../plugins/skill-loader.js
-
 - id: target-workflow-guidance
   name: ../plugins/workflow-guidance.js
 ```
 
-The Gear rc8 carrier already supplies the main DSH services and model-facing
+The Gear carrier already supplies the main DSH services and model-facing
 tools. Do not duplicate base rows merely because a service is injected by a
-custom plugin. For example, the custom skill row above adds a uniquely named
-provider to the existing `ctx.skills` registry; it does not add a second skill
-registry or a second `tool-skill` row.
+custom plugin. Ordinary file Skills use the existing `filesystem` provider and
+`skill` tool without adding another registry, provider, or consumer.
 
 ## `plugins/`: native DSH extensions
 
@@ -169,7 +166,7 @@ Rules for local plugins:
 ### Static context example
 
 Use `systemPrompt.section` for stable instructions that should be present in
-every request. Sections render in ascending `order`. In rc8, `-100` is the
+every request. Sections render in ascending `order`. In rc.2, `-100` is the
 harness identity, `0` is the persona, and tool guidance normally occupies
 `100` through `199`; an overlay policy can use an otherwise unclaimed order
 such as `50`.
@@ -203,10 +200,95 @@ source-attributed context message that should be queued at a specific session
 or step boundary. Do not hide model-visible dynamic instructions in an
 unlogged in-memory variable.
 
+### Dynamic context and assembly-time failures
+
+Prompt/context callbacks run during assembly, not registration. They must
+return a string synchronously. For async resource loading, read the file in
+`apply()` or use the asynchronous `system-prompt/assemble` waterfall. Resolve
+artifact paths from `import.meta.url`; `process.cwd()` is the task workspace.
+
+`plugins/task-context.js`:
+
+```js
+export const name = 'target-task-context'
+export const inject = ['systemPrompt']
+
+export function apply(ctx) {
+  ctx.systemPrompt.context({
+    name: 'harness:task-location',
+    order: 50,
+    text: ({ agent }) => agent
+      ? `Task workspace: ${agent.session.header.cwd}`
+      : '',
+  })
+}
+```
+
+The assembly context carries `agent`, `scope` (the same Agent), and an optional
+`signal`. An unscoped diagnostic assembly is not an Agent's prompt. Template
+references such as `{{provider}}` and `{{model}}` are strict: the headless
+launcher installs the selected model variables, while unknown variables fail
+when rendered. `candidate.check` now performs this scoped assembly and renders
+both the system prompt and dynamic context.
+
+### Native custom tools
+
+Use `defineTool` from the carrier's explicit `@deepseek-ai/dsh-tools` dependency.
+Object specs must explicitly set `additionalProperties`. Its `parameters` is a property-spec map; a raw `ToolDefinition.parameters` is a
+JSON Schema object. These are different formats. Supply `output.schema` and
+`output.render`, and honor the execution signal. Do not return pre-rendered
+text in place of the declared canonical value.
+
+The following contract example aggregates supplied results; it does not run
+or prove the checks itself.
+
+`plugins/check-summary.js`:
+
+```js
+import { defineTool } from '@deepseek-ai/dsh-tools'
+
+export const name = 'target-check-summary'
+export const inject = ['tools']
+
+export function apply(ctx) {
+  ctx.tools.register(defineTool({
+    name: 'summarize_checks',
+    description: 'Summarize supplied check outcomes without executing checks.',
+    parameters: {
+      results: { type: 'array', required: true, items: {
+        type: 'object', additionalProperties: false, properties: {
+          name: { type: 'string', required: true },
+          passed: { type: 'boolean', required: true },
+        },
+      } },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: {
+        passed: { type: 'integer', required: true },
+        failed: { type: 'integer', required: true },
+      } },
+      render: (_args, value) => [{ type: 'text', text: `${value.passed} passed; ${value.failed} failed` }],
+    },
+    execute: ({ results }, exec) => {
+      exec.signal.throwIfAborted()
+      const passed = results.filter(result => result.passed).length
+      return { passed, failed: results.length - passed }
+    },
+  }))
+}
+```
+
+Register both example plugins in `preset/agent.cordis.yml` when using them.
+A global tool registration belongs to every Agent; `tools.restrict` and
+`tools.presentAs` require a scoped context. When composing an Agent-owned
+plugin, declare its `inject` services inside that scoped plugin. The candidate
+`preset/agent.cordis.yml` is Gear's top-level overlay, not an automatically
+mounted native Agent preset directory.
+
 ## Native pre-action and post-action hooks
 
 `pre_action` and `post_action` are Gear semantic target names. Their native DSH
-rc8 equivalents are the tool pipeline:
+rc.2 equivalents are the tool pipeline:
 
 ```text
 tools/pre-execute
@@ -236,7 +318,7 @@ execution and result objects without a shell/JSON compatibility boundary.
 
 ### `pre_action`: allow, deny, or ask
 
-Exact rc8 decision shapes:
+Exact rc.2 decision shapes:
 
 ```text
 { kind: 'allow' }
@@ -469,7 +551,7 @@ and avoids an unnecessary file and registration edit.
 Use a skill when detailed instructions are useful only for a recognizable
 class of tasks. Skills keep the full body out of every request until selected.
 
-The rc8 filesystem provider recognizes exactly one level of either form:
+The locked rc.2 filesystem provider recognizes exactly one level of either form:
 
 ```text
 skills/<name>/SKILL.md
@@ -496,44 +578,30 @@ justifies it. Treat zero selected tests as no verification. Report the command,
 exit status, and any remaining gap.
 ```
 
-Connect the Gear-level `skills/` sibling directory with an isolated provider
-through `plugins/skill-loader.js`. The fixed toolchain must already include
-`@deepseek-ai/dsh-skill-filesystem`.
+The fixed carrier's `fixed/target.patch.yml` adds the absolute
+`<repositoryRoot>/harness/skills` directory to the existing `skill-filesystem`
+provider's `customSkillDirs`. Its provider name is `filesystem`. Task sessions
+may run elsewhere (for example `/app`); discovery does not depend on the task
+cwd being inside the carrier repository.
 
-`plugins/skill-loader.js`:
+To add this Skill, create only `skills/verify-change/SKILL.md` and any referenced
+bundle resources through the candidate tools. Do not create `skill-loader.js`
+or add a preset row for an ordinary file Skill. Do not change the fixed patch.
+The model sees the catalog summary and reads the body through the native tool:
 
-```js
-import { fileURLToPath } from 'node:url'
-import * as skillFilesystem from '@deepseek-ai/dsh-skill-filesystem'
-
-export const name = 'target-skill-loader'
-export const inject = ['skills']
-
-export function apply(ctx) {
-  ctx.plugin(skillFilesystem, {
-    providerName: 'gear-target',
-    includeDefaultRoots: false,
-    customSkillDirs: [fileURLToPath(new URL('../skills/', import.meta.url))],
-  })
-}
+```json
+{"name":"verify-change"}
 ```
 
-`preset/agent.cordis.yml`:
+This is the `skill` tool's argument object. Discovery and native reads are
+runtime checks; whether the model selects the Skill at the right time requires
+separate behavioral evaluation.
 
-```yaml
-- id: target-skills
-  name: ../plugins/skill-loader.js
-```
-
-Why every config field matters here:
-
-- `providerName` must be unique because the fixed carrier already has its
-  normal filesystem provider.
-- `includeDefaultRoots: false` prevents this added provider from rediscovering
-  project, user, and bundled skills under a second provider identity.
-- `../skills/` is relative to the loader's `plugins/` directory through
-  `import.meta.url`; `fileURLToPath` produces the absolute path the provider
-  expects, independently of the process working directory.
+A custom provider is an extension for other resource sources, not the default
+file Skill path. It needs a unique provider name, suitable directory isolation,
+and imports explicitly exposed by the fixed carrier. The mere presence of
+`@deepseek-ai/dsh-skill-filesystem` as a DSH transitive dependency does not make
+it importable by a candidate plugin.
 
 Skill names must be kebab-case. Frontmatter requires `name` and `description`;
 `whenToUse`, `metadata`, `disable-model-invocation`, and `user-invocable` are
@@ -543,7 +611,7 @@ model-invocable skills; do not add a duplicate consumer row.
 
 ## `workflows/`: reusable procedures, not an auto-scanned registry
 
-DSH rc8's built-in model-facing `workflow` tool executes a model-supplied plain
+DSH rc.2's built-in model-facing `workflow` tool executes a model-supplied plain
 JavaScript orchestration body through `ctx.workflowEngine`. The tool accepts:
 
 - `meta`: `name`, `description`, optional `whenToUse`, and optional `phases`;
@@ -551,8 +619,9 @@ JavaScript orchestration body through `ctx.workflowEngine`. The tool accepts:
   return value;
 - optional object-shaped `args` exposed to the script.
 
-Inside the script, rc8 exposes `agent`, `parallel`, `pipeline`, `phase`, and
-`log`. It does not scan the Gear `workflows/` directory. A reusable workflow
+Inside the script, rc.2 exposes `agent`, `parallel`, `pipeline`, `phase`, and
+`log`. Workflow scripts have no Node imports, filesystem, network, or timers;
+they coordinate agents, and the agents perform task work. It does not scan the Gear `workflows/` directory. A reusable workflow
 file must therefore be exposed as guidance by a plugin or on-demand skill.
 
 `workflows/diagnose-and-verify.md`:
@@ -560,8 +629,8 @@ file must therefore be exposed as guidance by a plugin or on-demand skill.
 ```markdown
 ## Diagnose and verify workflow
 
-Use only for a change broad enough to benefit from multiple independent
-reviews. Supply the DSH `workflow` tool with metadata separate from the script.
+Use only when the user explicitly requests a workflow or large multi-agent
+orchestration, and the change benefits from multiple independent reviews. Supply the DSH `workflow` tool with metadata separate from the script.
 Include the user's task, relevant repository paths, and observed failures in
 each subagent's prompt. This is a Target task workflow, not harness evolution.
 
@@ -626,7 +695,7 @@ the fixed profile does not already provide them.
 
 Use these only when baseline evidence identifies the corresponding cause:
 
-| Gear semantic target | DSH rc8 mechanism | Notes |
+| Gear semantic target | DSH rc.2 mechanism | Notes |
 | --- | --- | --- |
 | `context` | `systemPrompt.section`, `systemPrompt.context`, `agent.inject`, `agent/pre-step` | Static prompt, runtime snapshot, queued durable context, or step decision are different lifecycles |
 | `routing` | Prompt/tool guidance, `agent/request`, tool restrictions in an agent scope | `agent/request` changes model call config, not messages |
@@ -655,10 +724,11 @@ preset/
   agent.cordis.yml
 plugins/
   policy.js
+  task-context.js
+  check-summary.js
   pre-action.js
   action-verifier.js
   prompt-pack.js
-  skill-loader.js
   workflow-guidance.js
 prompts/
   verification.md
@@ -669,9 +739,15 @@ workflows/
   diagnose-and-verify.md
 ```
 
-Its preset must connect every live resource:
+Its preset connects the plugins; Skill discovery is supplied by the fixed carrier:
 
 ```yaml
+- id: target-task-context
+  name: ../plugins/task-context.js
+
+- id: target-check-summary
+  name: ../plugins/check-summary.js
+
 - id: target-policy
   name: ../plugins/policy.js
 
@@ -683,9 +759,6 @@ Its preset must connect every live resource:
 
 - id: target-prompt-pack
   name: ../plugins/prompt-pack.js
-
-- id: target-skills
-  name: ../plugins/skill-loader.js
 
 - id: target-workflow-guidance
   name: ../plugins/workflow-guidance.js
@@ -707,9 +780,9 @@ Inspect the authoritative diff with `candidate.diff` in skill mode or
 - A post-action decision does not specify both `content` and `value`.
 - A post-action block is not being mistaken for rollback of an executed side
   effect.
-- Every prompt, skill, and workflow resource has a live connection.
-- The skill provider uses a unique provider name and the correct
-  `../skills/` path relative to the loader's `import.meta.url`.
+- Every prompt and workflow resource has a live connection.
+- Each file Skill uses a supported single-level layout with valid frontmatter;
+  the fixed carrier supplies its provider connection.
 - No candidate adds a package, edits fixed sandbox/approval behavior, or
   writes `manifest.json`.
 - The change is general to the observed failure pattern and contains no seed
@@ -717,9 +790,27 @@ Inspect the authoritative diff with `candidate.diff` in skill mode or
 
 Then use `meta.call` with capability `candidate.check` and arguments
 `{"check":"compiler"}` in skill mode, or call `candidate_check` in Native DSH
-Meta mode. A successful check proves composition/import validation and the
-configured compiler pipeline passed. It proves runtime loading only if that
-pipeline actually loads the carrier; a no-op compiler does not. Verify new
-resource loaders against the locked DSH runtime, including skill discovery and
-native skill-tool reads. The behavioral hypothesis remains subject to Gear
-evaluation.
+Meta mode. Inspect `static`, `compiler`, and `runtime` separately. With the
+fixed DSH runtime checker configured, `runtime.load`, `runtime.promptAssembly`,
+`runtime.skillDiscovery`,
+`runtime.skillRead`, and `runtime.cleanup` report actual execution against the
+Target installation, with candidate and dependency-lock digests. Repair a
+failed stage and check again. `not_checked` is not success: a legacy/no-op
+compiler leaves runtime coverage unverified. `harness.current.validation`
+exposes whether runtime validation is configured. If it is unavailable, record
+that limitation and request deployment support; this alone is not evidence
+that a Skill is invalid or that the intervention must become prompt-only.
+`finalizationReadiness` concerns diagnostic prerequisites, not runtime loading.
+`runtime.promptAssembly` verifies lazy prompt/context callbacks and the visible
+tool schemas, including strict variable interpolation. Older checker binaries
+report this stage as `not_checked` / `PROMPT_ASSEMBLY_NOT_REPORTED`.
+
+Loading and assembling a plugin does not execute every callback. Custom tool
+bodies, pre/post-action rules, routing, compaction, subagent requests, and
+workflow scripts are not generally executed by `candidate.check`; the checker
+has no safe universal arguments for arbitrary actions. Successful Skill reads
+exercise only the hooks reached by those calls. A lazy import inside an
+unexecuted tool/hook may still fail on actual invocation. Keep module imports
+at top level when possible, use only exposed fixed dependencies, and record
+these untested behavior paths. Do not treat `ok: true` as proof that every
+intervention ran. The behavioral hypothesis remains subject to Gear evaluation.
