@@ -81,6 +81,10 @@ class NodeDeviceLedger:
         with lock(self.root / "device-leases.lock"):
             return digest_json(owner) in self._read()["owners"]
 
+    def has_owners(self, prefix):
+        with lock(self.root / "device-leases.lock"):
+            return any(entry["owner"].startswith(prefix) for entry in self._read()["owners"].values())
+
     def verify_active(self, owner, devices, required_processes):
         """Read-only admission for reattaching an existing live engine."""
         with lock(self.root / "device-leases.lock"):

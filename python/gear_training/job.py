@@ -139,17 +139,25 @@ class JobService:
             worker = load(directory / "worker.json", {})
             if not worker:
                 control = load(directory / "control.json", {})
-                require(control.get("admissionOnly") and status["execution"] == "paused" and status["resourcesReleased"],
-                        "previous-resources-not-released", "historical job has no worker or admission-only release evidence")
-                return status
-            owner = device_owner(directory, worker["incarnation"])
-            # An unspawned intent may precede device acquisition. A launched
-            # worker must retain its device ledger even across an OS restart.
-            unspawned = worker.get("pending") is True and not worker.get("process") and not load(directory / "owned-processes.json", [])
-            if not devices.exists(owner):
-                require(unspawned and not gpu_processes(training_devices(load(directory / "request.json"))),
-                        "previous-resources-not-released", "historical job has no confirmed device release")
-            devices.release_previous_owner(owner, config["node"], allow_missing=unspawned)
+                if control.get("admissionOnly") and status["execution"] == "paused" and status["resourcesReleased"]:
+                    return status
+                # Identity can be durable before worker registration. Recover
+                # only an admission with no launch or device ownership history.
+                require(status["phase"] == "admitted" and status["committedUpdate"] == 0
+                        and (not control or control.get("phase") == "intent")
+                        and not load(directory / "owned-processes.json", [])
+                        and not devices.has_owners(device_owner(directory, ""))
+                        and not gpu_processes(training_devices(load(directory / "request.json"))),
+                        "previous-resources-not-released", "historical job has no confirmed unstarted admission")
+            else:
+                owner = device_owner(directory, worker["incarnation"])
+                # An unspawned intent may precede device acquisition. A launched
+                # worker must retain its device ledger even across an OS restart.
+                unspawned = worker.get("pending") is True and not worker.get("process") and not load(directory / "owned-processes.json", [])
+                if not devices.exists(owner):
+                    require(unspawned and not gpu_processes(training_devices(load(directory / "request.json"))),
+                            "previous-resources-not-released", "historical job has no confirmed device release")
+                devices.release_previous_owner(owner, config["node"], allow_missing=unspawned)
             status["resourcesReleased"] = True
             status["usage"]["gpuSeconds"] = max(status["usage"]["gpuSeconds"], devices.gpu_seconds("training/" + directory.name + "/"))
             if status["execution"] in ("running", "pausing"):

@@ -140,6 +140,38 @@ class JobControlTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractError, "another model node generation"):
             self.control(2, "start", service=service)
 
+    def test_prior_boot_interruption_before_worker_registration_does_not_block_new_jobs(self):
+        def interrupt_worker_write(path, value):
+            if path.name == "worker.json": raise OSError("OS stopped before worker registration")
+            return atomic_json(path, value)
+
+        with patch("gear_training.job.atomic_json", side_effect=interrupt_worker_write):
+            with self.assertRaisesRegex(OSError, "before worker registration"):
+                self.control(0, "start")
+        original = {name: (self.directory / name).read_bytes() for name in ("identity.json", "request.json", "config.json")}
+        self.assertFalse((self.directory / "worker.json").exists())
+        self.assertFalse((Path(self.node_config["nodeRoot"]) / "device-leases.json").exists())
+        self.assertFalse(load(self.directory / "control.json")["admissionOnly"])
+        self.assertFalse(load(self.directory / "status.json")["resourcesReleased"])
+        self.launch.assert_not_called()
+        service, request = self.reboot()
+        with patch("gear_training.job.owned_alive", side_effect=AssertionError("old PID must not be inspected")):
+            for occupants in ([{"device": "GPU-1", "pid": 123}], OSError("driver unavailable")):
+                with self.subTest(occupants=occupants), patch("gear_training.job.gpu_processes",
+                        **({"side_effect": occupants} if isinstance(occupants, Exception) else {"return_value": occupants})):
+                    with self.assertRaises((ContractError, OSError)):
+                        self.submit_new_experiment(service, request)
+                    self.assertFalse(load(self.directory / "status.json")["resourcesReleased"])
+                    self.launch.assert_not_called()
+            self.assertEqual(self.submit_new_experiment(service, request)["execution"], "running")
+        status = load(self.directory / "status.json")
+        self.assertTrue(status["resourcesReleased"])
+        self.assertEqual(status["execution"], "interrupted")
+        self.assertEqual(status["usage"]["gpuSeconds"], 0)
+        self.assertEqual({name: (self.directory / name).read_bytes() for name in original}, original)
+        with self.assertRaisesRegex(ContractError, "another model node/generation"):
+            service.inspect(self.handle)
+
     def test_prior_boot_worker_requires_physical_release_without_reading_old_pids(self):
         self.control(0, "start")
         worker = load(self.directory / "worker.json")
@@ -175,9 +207,31 @@ class JobControlTests(unittest.TestCase):
         service, request = self.reboot()
         with self.assertRaisesRegex(ContractError, "no confirmed device release"):
             self.submit_new_experiment(service, request)
+        (self.directory / "worker.json").unlink()
+        with self.assertRaises(ContractError) as raised:
+            self.submit_new_experiment(service, request)
+        self.assertEqual(raised.exception.code, "previous-resources-not-released")
         generation_path(self.node_config["nodeRoot"], self.node.identity).unlink()
         with self.assertRaisesRegex(ContractError, "distinct archived OS boot identity"):
             self.submit_new_experiment(service, request)
+
+    def test_missing_worker_with_device_history_is_not_an_unstarted_admission(self):
+        self.control(0, "start")
+        worker = load(self.directory / "worker.json")
+        devices = NodeDeviceLedger(self.node_config["nodeRoot"], self.node.identity)
+        owner = device_owner(self.directory, worker["incarnation"])
+        with patch("gear_training.device_lease.gpu_processes", return_value=[]):
+            devices.acquire(owner, ["GPU-1"])
+        (self.directory / "worker.json").unlink()
+        control = load(self.directory / "control.json")
+        control["phase"] = "intent"
+        atomic_json(self.directory / "control.json", control)
+        original = devices.path.read_bytes()
+        service, request = self.reboot()
+        with self.assertRaisesRegex(ContractError, "no confirmed unstarted admission"):
+            self.submit_new_experiment(service, request)
+        self.assertFalse(load(self.directory / "status.json")["resourcesReleased"])
+        self.assertEqual(devices.path.read_bytes(), original)
 
 
 if __name__ == "__main__": unittest.main()
