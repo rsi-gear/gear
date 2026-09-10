@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gear-training"
+version = "0.1.0"
+description = "Exact-token Hitch rollout bridge for a pinned Slime GRPO runtime"
+requires-python = ">=3.10"
+dependencies = ["psutil>=5.9,<8"]
+
+[project.optional-dependencies]
+gateway = ["aiohttp>=3.11,<4"]
+
+[project.scripts]
+gear-training = "gear_training.job:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gear_training*"]

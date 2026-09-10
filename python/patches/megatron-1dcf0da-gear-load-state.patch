@@ -1,0 +1,31 @@
+--- a/megatron/core/optimizer/distrib_optimizer.py
++++ b/megatron/core/optimizer/distrib_optimizer.py
+@@ -793,8 +793,15 @@
+ 
+                             # Allocate dummy tensors.
+                             numel = len(param_range_map["gbuf_world"])
++                            # TE recreates CUDA state in load_state_dict. Keep these
++                            # uninitialized placeholders on the host to avoid a second
++                            # complete optimizer allocation on the GPU during restore.
++                            placeholder_device = (
++                                "cpu" if type(self.optimizer).__module__.startswith("transformer_engine.")
++                                else torch.cuda.current_device()
++                            )
+                             init_shard = lambda dtype=torch.float32: torch.empty(
+-                                (numel,), dtype=dtype, device=torch.cuda.current_device()
++                                (numel,), dtype=dtype, device=placeholder_device
+                             )
+ 
+                             # For precision_aware_optimizer, the empty tensors should also be
+@@ -844,7 +851,10 @@
+                     v["step"] = step.detach().clone()
+ 
+         # Optimizer.
+-        self.optimizer.load_state_dict(
++        from gear_training.optimizer_restore import load_distributed_optimizer_state
++
++        load_distributed_optimizer_state(
++            self.optimizer,
+             {"state": state_dict_state, "param_groups": state_dict_param_groups}
+         )
+ 

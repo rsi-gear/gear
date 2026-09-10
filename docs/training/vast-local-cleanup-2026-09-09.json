@@ -1,0 +1,87 @@
+{
+  "completedAt": "2026-09-09T12:09:24.468966+00:00",
+  "artifactDirectoriesDeleted": 76,
+  "temporaryPathsDeleted": 244,
+  "deletedArtifactLogicalBytes": 260513587637,
+  "freeBytesBeforeDeletion": 67593129984,
+  "freeBytesAfterDeletion": 152623337472,
+  "observedFreeBytesIncrease": 128459329536,
+  "initialInventoryFreeBytes": 24164007936,
+  "remoteEvidence": {
+    "archive": "gear-evidence-20260909.tar.gz.aes256gcm",
+    "sha256": "9e7e530bc7d360f1597d654790d9e971e8f9690e4681db342bfeda5170557f66",
+    "bytes": 209177463,
+    "archivedFileCount": 24256,
+    "discardedBinaryCount": 183,
+    "discardedLogicalBytes": 260043815157,
+    "rootCount": 76,
+    "remoteDirectory": "/workspace/gear-evidence-20260909",
+    "instanceId": 50380854,
+    "instanceStoppedThroughout": true,
+    "archiveAuthenticatedAndReadable": true,
+    "checks": [
+      {
+        "name": "verify-parent",
+        "rsyncExit": 0,
+        "dryRun": true,
+        "fileContentDifferences": false
+      },
+      {
+        "name": "verify-megatron",
+        "rsyncExit": 0,
+        "dryRun": true,
+        "fileContentDifferences": false
+      },
+      {
+        "name": "upload-evidence",
+        "rsyncExit": 0,
+        "dryRun": false,
+        "fileContentDifferences": null
+      },
+      {
+        "name": "verify-evidence",
+        "rsyncExit": 0,
+        "dryRun": true,
+        "fileContentDifferences": false
+      }
+    ],
+    "verified": true,
+    "recoverySource": {
+      "file": "recovery-source-55.tar.gz",
+      "bytes": 12105148,
+      "sha256": "8944dafdf198104a510a669d20103b9fc92ecd1c0d904f421a98134436bb9f7e"
+    },
+    "rsyncVerificationSummaries": [
+      {
+        "check": "verify-parent",
+        "summary": [
+          "Number of files transferred: 0",
+          "Total transferred file size: 0 bytes"
+        ]
+      },
+      {
+        "check": "verify-megatron",
+        "summary": [
+          "Number of files transferred: 0",
+          "Total transferred file size: 0 bytes"
+        ]
+      },
+      {
+        "check": "verify-evidence",
+        "summary": [
+          "Number of files transferred: 0",
+          "Total transferred file size: 0 bytes"
+        ]
+      }
+    ]
+  },
+  "retained": [
+    "Project source and design documents",
+    "Vast CLI and authentication credentials",
+    "Local CPU test environments",
+    "Existing user-owned Hitch document backup"
+  ],
+  "historicalCheckpointsRetained": false,
+  "gpuStartedForCleanup": false,
+  "temporaryArchiveDeleted": true
+}

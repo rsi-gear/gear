@@ -38,7 +38,11 @@
       "types": "./lib/testing.d.ts",
       "default": "./lib/testing.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./training": {
+      "types": "./lib/training/index.d.ts",
+      "default": "./lib/training/index.js"
+    }
   },
   "files": [
     "lib/**/*.js",
@@ -52,7 +56,11 @@
     "LICENSE",
     "assets/gear-tool-fs.js",
     "assets/gear-tool-fs.d.ts",
-    "assets/gear-tool-fs.LICENSE"
+    "assets/gear-tool-fs.LICENSE",
+    "python/gear_training/**/*.py",
+    "python/pyproject.toml",
+    "python/patches/*.patch",
+    "docs/training/**"
   ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",
@@ -66,7 +74,8 @@
     "pack:check": "npm run build && npm pack --dry-run",
     "prepack": "npm run build",
     "build:tool-fs": "node scripts/build-private-tool-fs.mjs",
-    "prepare": "npm run build:tool-fs"
+    "prepare": "npm run build:tool-fs",
+    "test:training": "vitest run tests/unit/training && PYTHONPATH=python \"${GEAR_TRAINING_TEST_PYTHON:-python3}\" -m unittest discover -s python/tests -v"
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "0.0.55",
