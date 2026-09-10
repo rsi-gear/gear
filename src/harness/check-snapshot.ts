@@ -9,7 +9,7 @@ import type { HarnessManifest } from '../types.js'
 const execute = promisify(execFile)
 const digest = (bytes: Uint8Array): string => `sha256:${createHash('sha256').update(bytes).digest('hex')}`
 
-export async function createCheckSnapshot(worktree: string, targetRoot: string, manifest: HarnessManifest, signal: AbortSignal) {
+export async function createCheckSnapshot(worktree: string, targetRoot: string, manifest: HarnessManifest, signal: AbortSignal, runtimeRoot: string) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'gear-runtime-check-')))
   const repository = join(root, 'repository')
   const writable = join(root, 'writable')
@@ -45,10 +45,16 @@ export async function createCheckSnapshot(worktree: string, targetRoot: string, 
     await mkdir(join(home, 'profiles', 'node_modules'), { recursive: true })
     await mkdir(join(writable, 'workspace'), { recursive: true })
     await mkdir(join(writable, 'tmp'), { recursive: true })
-    // The checker populates this isolated module fallback using the locked DSH
-    // installation's own helper, exactly as the Target CLI does.
-    await symlink(join(home, 'profiles', 'node_modules'), join(repository, 'node_modules'), 'dir')
+    // Candidate imports resolve against the Target installation, including its
+    // pnpm visibility boundaries. The recursive DSH profile fallback belongs to
+    // the profile only: exposing it here makes transitive imports falsely pass.
+    const modules = await realpath(join(runtimeRoot, 'node_modules'))
+    await symlink(modules, join(repository, 'node_modules'), 'dir')
     const verify = async (): Promise<void> => {
+      if (!(await lstat(join(repository, 'node_modules'))).isSymbolicLink()
+        || await realpath(join(repository, 'node_modules')) !== modules) {
+        throw new Error('SNAPSHOT_CHANGED_DURING_CHECK: node_modules')
+      }
       const seen = new Set<string>()
       const visit = async (directory: string, prefix = ''): Promise<void> => {
         for (const entry of await readdir(directory, { withFileTypes: true })) {

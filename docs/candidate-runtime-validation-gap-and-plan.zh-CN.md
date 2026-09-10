@@ -1,5 +1,9 @@
 # 候选运行时验证：缺口、实现与部署
 
+后续核验发现原检查器的 profile fallback 会扩大候选依赖可见性；本分支已按
+[Skill 运行时一致性修复](skill-runtime-parity-fix.zh-CN.md) 改为 Target 依赖布局，
+并由固定 carrier 接入普通文件 Skill。下文保留初始验证接口与部署设计。
+
 ## 问题与修复范围
 
 修复前的核验基线为 `dev` 提交 `3cf26a8a36c386efbe14df2a6d1b5e1bfc433872`，包含 PR #15、#16。Meta 已能创建、修改和接入 Skill，但 `candidate.check` 只运行静态规则和配置的 compiler。配置为 `/usr/bin/true` 时，即使插件初始化抛错、依赖不存在或 Skill 目录错误，也会返回 `ok: true`，且没有运行时覆盖信息。
@@ -49,7 +53,7 @@ candidate.check({check: "compiler"})
 
 ## DSH 运行路径与限制
 
-检查器从固定 `runtimeRoot` 解析真实安装的 DSH 和 Skill 相关包，要求版本为 `0.1.1-rc.2`，记录该环境 `pnpm-lock.yaml` 的摘要。通过 DSH 自身的 profile 模块 fallback 装配依赖，避免意外使用 Gear 的 rc.8 开发依赖。检查不安装依赖，不修改 Target 安装目录。
+检查器从固定 `runtimeRoot` 解析真实安装的 DSH 和 Skill 相关包，要求版本为 `0.1.1-rc.2`，记录该环境 `pnpm-lock.yaml` 的摘要。DSH 自身的模块 fallback 仅供 profile 使用，候选根连接到真实 Target 的依赖目录，避免扩大候选导入范围或意外使用 Gear 的 rc.8 开发依赖。检查不安装依赖，不修改 Target 安装目录。
 
 检查加载 Target 的实际 headless 组合和 carrier patch。固定 smoke overlay 在启动前禁用 `headless-runner`、`headless-startup`、HMR 和遥测，并配置 Target 默认模型选择。模型服务仍为真实服务，检查器不调用生成方法；LLM stream 和 fetch 有禁止请求的守卫。没有占位的 `skills`、`tools` 或 `agents` 服务。
 

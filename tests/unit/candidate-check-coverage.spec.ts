@@ -35,8 +35,13 @@ it.each(['documented skill', 'initialization throws', 'missing dependency', 'wro
         'export function apply() { throw new Error("RUNTIME_INITIALIZATION_SENTINEL") }\n'
       if (variant === 'missing dependency') files['plugins/skill-loader.js'] =
         'import "@deepseek-ai/gear-runtime-gap-nonexistent"\nexport function apply() {}\n'
-      if (variant === 'wrong skill directory') files['plugins/skill-loader.js'] =
-        files['plugins/skill-loader.js']!.replace('../skills/', '../missing-skills/')
+      if (['initialization throws', 'missing dependency'].includes(variant)) {
+        files['preset/agent.cordis.yml'] = '- id: runtime-fixture\n  name: ../plugins/skill-loader.js\n'
+      }
+      if (variant === 'wrong skill directory') {
+        files['skills/group/verify-change/SKILL.md'] = files['skills/verify-change/SKILL.md']!
+        delete files['skills/verify-change/SKILL.md']
+      }
       for (const [path, content] of Object.entries(files)) {
         await mkdir(dirname(join(handle.targetPath, path)), { recursive: true })
         await writeFile(join(handle.targetPath, path), content)

@@ -106,7 +106,10 @@ not infer missing field names or harness APIs from errors.
    behavioral prediction in `expectedOutcome`.
 7. Inspect `candidate.diff`, remove accidental or task-specific changes, and
    run `candidate.check` before finalizing and require
-   `finalizationReadiness.ready: true`. Use `candidate.decline` when the
+   `finalizationReadiness.ready: true`. Inspect each runtime stage: loading,
+   prompt assembly and Skill reads cover different paths; they do not prove
+   that arbitrary tool/hook bodies, routing, compaction or workflows executed.
+   Record remaining behavior checks in the proposal. Use `candidate.decline` when the
    evidence does not justify a harness change or the required fix is outside
    the editable substrate.
 8. After finalization, stop using that lease and poll status. Claim and complete
