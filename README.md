@@ -266,6 +266,18 @@ for the extension contract.
 Expand and evolve seed tasks, then use the resulting trajectories and
 evaluation feedback to drive continuous model capability evolution.
 
+## Model training
+
+Gear also provides an experimental Slime GRPO training path through
+`gear-refine training` and the `dsh-plugin-refine/training` API. It freezes the
+harness and datasets, records exact policy tokens, saves a checkpoint after
+each update, and evaluates immutable model exports before promotion.
+
+Start with the [training guide](docs/training/README.zh-CN.md) and
+[controller and model-node configuration](docs/training/controller-v2.zh-CN.md)
+(Chinese). GPU execution requires a pinned, validated runtime and a compatible
+Hitch checkout; the guides describe the supported scope and certification process.
+
 ## Documentation
 
 - [Vision and architecture](docs/vision.md)
@@ -283,6 +295,21 @@ npm test
 npm run build
 npm run pack:check
 ```
+
+For the training bridge's CPU tests, use Python 3.12 and the pinned test
+dependencies. These versions are separate from a production GPU runtime lock:
+
+```bash
+python3.12 -m venv python/.venv
+. python/.venv/bin/activate
+python -m pip install './python[gateway]' -c python/constraints-test.txt
+python -m pip install torch -c python/constraints-test.txt --index-url https://download.pytorch.org/whl/cpu
+GEAR_TRAINING_TEST_PYTHON="$VIRTUAL_ENV/bin/python" npm run test:training
+```
+
+On macOS, omit `--index-url` when installing Torch. These tests cover the CPU
+bridge and controller contracts; real GPU certification uses the probes
+described in the training guide. CI runs the Python suite in `Training / CPU`.
 
 Focused issues and pull requests are welcome at
 [rsi-gear/gear](https://github.com/rsi-gear/gear). Because Gear is pre-alpha,
