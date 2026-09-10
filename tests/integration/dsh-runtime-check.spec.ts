@@ -1,0 +1,126 @@
+import { execFile } from 'node:child_process'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
+import { promisify } from 'node:util'
+import { describe, expect, it } from 'vitest'
+import { CandidateWorkspaceManager } from '../../src/candidate/workspace.js'
+import { RefineCapabilities } from '../../src/capabilities.js'
+import { HarnessBuilder } from '../../src/harness/builder.js'
+import { SubprocessHarnessCompiler } from '../../src/harness/compiler.js'
+import { acquireAirGappedSandbox } from '../../src/sandbox.js'
+import { documentedSkillCandidate } from '../helpers/documented-skill-candidate.js'
+
+const execute = promisify(execFile)
+const root = resolve(import.meta.dirname, '../..')
+const runtimeRoot = process.env.GEAR_TEST_DSH_RUNTIME_ROOT
+const sandboxMode = process.env.GEAR_TEST_RUNTIME_SANDBOX === 'required' ? 'required' : 'disabled'
+
+describe.skipIf(runtimeRoot === undefined)('fixed Target DSH rc.2 runtime check', () => {
+  it.each(['valid', 'throws', 'missing dependency', 'missing injection', 'wrong directory', 'missing registration',
+    'invalid frontmatter', 'read blocked', 'cleanup throws', 'cleanup timeout', 'network request', 'no skills', 'invocation disabled', 'changed after check', 'no-op'])(
+    'reports actual coverage and leaves the candidate unchanged: %s', async variant => {
+      const lab = await mkdtemp(join(tmpdir(), 'gear-runtime-test-'))
+      const repository = join(lab, 'target')
+      const lease = sandboxMode === 'required' ? await acquireAirGappedSandbox('bubblewrap-only', 'runtime-check test') : undefined
+      let manager: CandidateWorkspaceManager | undefined
+      let id: string | undefined
+      try {
+        const { stdout } = await execute(process.execPath, [join(root, 'examples/dsh-codex-luna/bootstrap-target.mjs'), repository], {
+          env: { ...process.env, GEAR_LAB_ROOT: lab, GEAR_SKIP_TARGET_INSTALL: '1' },
+        })
+        const metadata = JSON.parse(stdout)
+        manager = new CandidateWorkspaceManager({ repositoryPath: repository, targetRoot: 'harness',
+          rootForEvolution: () => join(lab, 'worktrees'), maxFiles: 20, maxBytes: 100_000, maxDiffBytes: 100_000 })
+        await manager.initialize()
+        const handle = await manager.create({ evolutionId: 'evo', roundId: 'round',
+          parentHarnessRef: metadata.initialChampion.ref, parentHarnessDigest: metadata.initialChampion.manifestDigest }, new AbortController().signal)
+        id = handle.workspaceId
+        manager.bind(id, 'meta')
+        const files = await documentedSkillCandidate()
+        if (variant === 'throws') files['plugins/skill-loader.js'] = 'export function apply() { throw new Error("INITIALIZATION_SENTINEL") }\n'
+        if (variant === 'missing dependency') files['plugins/skill-loader.js'] = 'import "@deepseek-ai/missing-runtime-fixture"\nexport function apply() {}\n'
+        if (variant === 'missing injection') files['plugins/skill-loader.js'] = 'export const inject = ["missingGearService"]; export function apply() {}\n'
+        if (variant === 'network request') files['plugins/skill-loader.js'] = 'export async function apply() { await fetch("https://example.invalid/") }\n'
+        if (variant === 'wrong directory') files['plugins/skill-loader.js'] = files['plugins/skill-loader.js']!.replace('../skills/', '../wrong-skills/')
+        if (variant === 'missing registration') files['preset/agent.cordis.yml'] = '[]\n'
+        if (variant === 'invalid frontmatter') files['skills/verify-change/SKILL.md'] = '# No frontmatter\n'
+        if (variant === 'no skills') { delete files['skills/verify-change/SKILL.md']; files['preset/agent.cordis.yml'] = '[]\n' }
+        if (variant === 'invocation disabled') files['skills/verify-change/SKILL.md'] = files['skills/verify-change/SKILL.md']!.replace('name: verify-change', 'disable-model-invocation: true\nname: verify-change')
+        if (['read blocked', 'cleanup throws', 'cleanup timeout'].includes(variant)) {
+          files['preset/agent.cordis.yml'] += '\n- id: runtime-fixture\n  name: ../plugins/runtime-fixture.js\n'
+          files['plugins/runtime-fixture.js'] = variant === 'read blocked'
+            ? 'export const inject=["tools"]; export function apply(ctx) { ctx.on("tools/pre-execute", (exec, next) => exec.name === "skill" ? { kind: "deny", reason: "READ_SENTINEL" } : next()) }\n'
+            : variant === 'cleanup throws'
+              ? 'export function apply(ctx) { ctx.effect(() => () => { throw new Error("DISPOSE_SENTINEL") }) }\n'
+              : 'export function apply(ctx) { ctx.effect(() => () => new Promise(() => {})) }\n'
+        }
+        for (const [path, content] of Object.entries(files)) {
+          await mkdir(dirname(join(handle.targetPath, path)), { recursive: true })
+          await writeFile(join(handle.targetPath, path), content)
+        }
+        const before = await manager.preflight(id)
+        const manifest = await readFile(join(handle.targetPath, 'manifest.json'), 'utf8')
+        const compiler = new SubprocessHarnessCompiler({
+          command: variant === 'no-op' ? '/usr/bin/true' : process.execPath,
+          args: variant === 'no-op' ? [] : [join(root, 'assets/dsh-runtime-check.mjs')],
+          reportProtocol: 'gear-runtime-check-v1', runtimeRoot: runtimeRoot!, timeoutMs: 20_000,
+          sandboxMode, linuxIsolation: 'bubblewrap-only',
+          readPaths: process.platform === 'darwin' ? ['/opt/homebrew/opt', '/opt/homebrew/Cellar', '/opt/homebrew/etc/openssl@3'] : [],
+        })
+        const builder = new HarnessBuilder({ repositoryPath: repository, targetRoot: 'harness', dshBaseRef: metadata.dshBaseRef,
+          toolchainRef: 'dsh-rc2-codex-pnpm-11.7.0', sandboxProfileRef: 'harbor-terminal-bench-2.0', compiler })
+        const service = { activeEntryForSession: () => ({ workspace: handle, parentHarnessRef: handle.parentRef,
+          parentHarnessDigest: handle.parentDigest, evolutionId: 'evo', roundId: 'round' }), workspaceManager: manager }
+        const capabilities = new RefineCapabilities(service as never, builder)
+        const result = await capabilities.call('refine-meta', 'meta', 'candidate.check', { check: 'compiler' }) as any
+        if (['valid', 'changed after check'].includes(variant)) {
+          expect(result, JSON.stringify(result)).toMatchObject({ ok: true, runtime: {
+            load: { status: 'passed' }, skillDiscovery: { status: 'passed', checked: 1 },
+            skillRead: { status: 'passed', checked: 1 }, cleanup: { status: 'passed' },
+            identity: { version: '0.1.1-rc.2' },
+          } })
+          expect(result.runtime.skills).toEqual([expect.objectContaining({ name: 'verify-change', provider: 'gear-target', read: 'passed' })])
+        } else if (variant === 'no skills') {
+          expect(result, JSON.stringify(result)).toMatchObject({ ok: true, runtime: {
+            load: { status: 'passed' }, skillDiscovery: { status: 'not_checked', code: 'NO_CANDIDATE_SKILLS' },
+            skillRead: { status: 'not_checked', checked: 0 }, cleanup: { status: 'passed' },
+          } })
+        } else if (variant === 'invocation disabled') {
+          expect(result, JSON.stringify(result)).toMatchObject({ ok: true, runtime: {
+            load: { status: 'passed' }, skillDiscovery: { status: 'passed', checked: 1 },
+            skillRead: { status: 'not_checked', code: 'MODEL_INVOCATION_DISABLED' },
+          } })
+        } else {
+          expect(result, JSON.stringify(result)).toMatchObject({ ok: false })
+          if (['throws', 'missing dependency', 'missing injection', 'network request'].includes(variant)) expect(result.runtime.load.status, JSON.stringify(result)).toBe('failed')
+          if (['wrong directory', 'missing registration', 'invalid frontmatter'].includes(variant)) {
+            expect(result.runtime.load.status, JSON.stringify(result)).toBe('passed')
+            expect(result.runtime.skillDiscovery.status, JSON.stringify(result)).toBe('failed')
+          }
+          if (variant === 'read blocked') expect(result.runtime.skillRead.status, JSON.stringify(result)).toBe('failed')
+          if (variant.startsWith('cleanup')) expect(result.runtime.cleanup.status, JSON.stringify(result)).toBe('failed')
+        }
+        expect(await manager.preflight(id)).toEqual(before)
+        expect(await readFile(join(handle.targetPath, 'manifest.json'), 'utf8')).toBe(manifest)
+        if (['valid', 'changed after check'].includes(variant)) {
+          if (variant === 'changed after check') await writeFile(join(handle.targetPath, 'plugins/skill-loader.js'),
+            'export function apply() { throw new Error("EDITED_AFTER_CHECK") }\n')
+          const sealed = await manager.seal(id, new AbortController().signal)
+          manager.markFinalizing(id)
+          const finalization = builder.finalizeWorkspace(handle, sealed, new AbortController().signal)
+          if (variant === 'changed after check') await expect(finalization).rejects.toThrow('EDITED_AFTER_CHECK')
+          else {
+            const prepared = await finalization
+            expect(prepared.validation?.runtime.candidateDigest).toBe(prepared.manifest.digest)
+            expect(prepared.validation?.runtime.skillRead).toMatchObject({ status: 'passed', checked: 1 })
+          }
+        }
+      } finally {
+        if (manager && id) await manager.dispose(id)
+        await rm(lab, { recursive: true, force: true })
+        await lease?.release()
+      }
+    }, 45_000,
+  )
+})

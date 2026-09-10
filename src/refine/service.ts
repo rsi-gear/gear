@@ -1706,6 +1706,7 @@ export class RefineService {
                     commitOid: sealed.ref, treeOid: sealed.treeOid, manifestDigest: sealed.digest,
                     patchDigest: proposal.diff.patchDigest, immutableRef: sealed.immutableRef,
                   },
+                  ...(sealed.validation === undefined ? {} : { validation: sealed.validation }),
                 }),
               })
             }

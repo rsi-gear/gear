@@ -272,7 +272,14 @@ Review the authoritative patch, not a reconstruction from memory. Confirm:
 - `semanticTargets` and `expectedOutcome` describe the diff accurately.
 
 Then call `meta.call` with capability `candidate.check` and arguments
-`{"check":"compiler"}`. This is the fixed candidate build/validation pipeline;
+`{"check":"compiler"}`. Inspect each coverage stage: `static`, `compiler`,
+`runtime.load`, `runtime.skillDiscovery`, `runtime.skillRead`, and
+`runtime.cleanup`. `not_checked` means no evidence was collected for that
+stage; a successful no-op compiler does not prove runtime loading. Configured
+runtime checks use an isolated copy with a matching manifest; do not edit the
+manifest yourself. Check availability via `harness.current.validation`.
+
+This is the fixed candidate build/validation pipeline;
 it does not prove task improvement. If it fails, repair only the candidate
 defect reported by the check, then inspect the diff and check again. Never
 bypass the check or modify the manifest manually.

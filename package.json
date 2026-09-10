@@ -19,7 +19,8 @@
   "types": "lib/index.d.ts",
   "bin": {
     "gear-refine": "./lib/cli.js",
-    "gear-hitch-codex": "./assets/hitch-codex-wrapper.mjs"
+    "gear-hitch-codex": "./assets/hitch-codex-wrapper.mjs",
+    "gear-dsh-runtime-check": "./assets/dsh-runtime-check.mjs"
   },
   "exports": {
     ".": {
@@ -50,6 +51,7 @@
     "assets/ipython-kernel.py",
     "assets/llm-verifier-bridge.py",
     "assets/hitch-codex-wrapper.mjs",
+    "assets/dsh-runtime-check.mjs",
     "skills/refine/**",
     "cordis.patch.yml",
     "README.md",

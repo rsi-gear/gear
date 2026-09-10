@@ -717,9 +717,14 @@ Inspect the authoritative diff with `candidate.diff` in skill mode or
 
 Then use `meta.call` with capability `candidate.check` and arguments
 `{"check":"compiler"}` in skill mode, or call `candidate_check` in Native DSH
-Meta mode. A successful check proves composition/import validation and the
-configured compiler pipeline passed. It proves runtime loading only if that
-pipeline actually loads the carrier; a no-op compiler does not. Verify new
-resource loaders against the locked DSH runtime, including skill discovery and
-native skill-tool reads. The behavioral hypothesis remains subject to Gear
-evaluation.
+Meta mode. Inspect `static`, `compiler`, and `runtime` separately. With the
+fixed DSH runtime checker configured, `runtime.load`, `runtime.skillDiscovery`,
+`runtime.skillRead`, and `runtime.cleanup` report actual execution against the
+Target installation, with candidate and dependency-lock digests. Repair a
+failed stage and check again. `not_checked` is not success: a legacy/no-op
+compiler leaves runtime coverage unverified. `harness.current.validation`
+exposes whether runtime validation is configured. If it is unavailable, record
+that limitation and request deployment support; this alone is not evidence
+that a Skill is invalid or that the intervention must become prompt-only.
+`finalizationReadiness` concerns diagnostic prerequisites, not runtime loading.
+The behavioral hypothesis remains subject to Gear evaluation.

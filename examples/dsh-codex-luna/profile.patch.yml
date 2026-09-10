@@ -26,10 +26,16 @@
       manifestDigest: !!js process.env.GEAR_TARGET_INITIAL_CHAMPION_DIGEST
       updatedAt: !!js process.env.GEAR_TARGET_INITIAL_CHAMPION_UPDATED_AT
     compiler:
-      command: /usr/bin/true
-      args: []
+      command: !!js process.execPath
+      args:
+        - !!js process.env.GEAR_RUNTIME_CHECK_EXECUTABLE
+      reportProtocol: gear-runtime-check-v1
+      runtimeRoot: !!js process.env.GEAR_TARGET_REPOSITORY ?? process.env.GEAR_LAB_ROOT + '/target-dsh'
+      maxReportBytes: 131072
       timeoutMs: 120000
-      env: {}
+      env:
+        GEAR_TARGET_PROVIDER: !!js process.env.GEAR_TARGET_PROVIDER ?? 'openai-codex'
+        GEAR_TARGET_MODEL: !!js process.env.GEAR_TARGET_MODEL ?? 'gpt-5.6-luna'
     candidateGeneration:
       maxCandidates: 1
       attemptTimeoutMs: 1200000
