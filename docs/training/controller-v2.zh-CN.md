@@ -156,6 +156,23 @@ daemon 经当前 worker bearer/generation 通道发出短期 challenge，包含�
 
 ## Hitch 的公开模型节点接口
 
+### 远程发布与回滚
+
+SSH 部署默认使用 `artifactStorage="model-node"`。`publish` 和 `rollback` 通过 Hitch 的 `models add-node` 注册并核验冻结节点上的 HF 快照，权重、tokenizer 和 config 文件继续保留在节点 CAS；控制端不下载这些文件。
+
+```sh
+gear-refine training publish EXP_ID --config /srv/gear-controller/controller.json
+gear-refine training rollback EXP_ID RELEASE_ID --config /srv/gear-controller/controller.json
+```
+
+成功后 `activationPath` 原子记录 `hitchModel` 和 `modelNode`。后者是公开的冻结节点绑定，不含 SSH/Python 连接配置或凭据。业务调用方在 episode 开始时读取这两个字段，将 `modelNode` 保存为 binding 文件，并向 Hitch 的 `local plan` / `eval submit` 传入 `--model-node-file BINDING.json`；Hitch 从其私有注册表解析连接。发布只切换后续 episode 使用的版本，已运行的推理服务保持原模型。
+
+回滚同样核验旧快照的远端文件。节点代际、runtime 或快照发生变化、文件缺失或 Hitch 不支持节点存储时，当前 activation 和 release 保持原样；不要通过下载到控制端绕过冻结身份。
+
+节点重启后，应重新冻结部署并创建新实验。历史作业的释放状态会结合 OS 启动证明和设备账本核验，确认释放后不再阻塞新提交；缺少证明或仍有 GPU 占用时继续阻塞。旧作业的身份和 checkpoint 不会自动改绑到新 generation。
+
+### 注册、规划与恢复
+
 `hitch model-node register --file CONNECTION.json` 接受 `schema_version="2"`、`binding` 和私有 `connection`。binding 含 `node_id`、`generation`、`runtime_digest`、`launcher="process"`；connection 含 transport、Python argv、configPath 和评估 gateway。注册时实测节点环境；连接信息保存在 Hitch 私有目录，不进入 inference lock。
 
 `hitch local plan local/MODEL --harness REF --gpu GPU-UUID --model-node-file BINDING.json` 生成 v2 inference lock。随后 eval 使用 `--inference DIGEST --model-node-file BINDING.json`，无需再传 device/profile。Gear evaluator 自动执行相应注册、规划和提交。

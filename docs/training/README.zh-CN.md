@@ -163,6 +163,8 @@ v1 作业 GPU cost 按唯一分配设备数×存活墙钟计费，评估按第�
 
 `publish EXP_ID` 和 `rollback EXP_ID RELEASE_ID` 是显式命令，不会随 champion 自动执行。它们导入已批准的不可变模型，并原子更新 Gear 管理的 `activationPath`。业务 episode 在开始时读取一次其中 `hitchModel=local/sha256:…`，此后固定该 ID。这个发布接口不热替换正在执行的 SGLang 权重，也不部署外部业务流量入口。
 
+v2 的 `artifactStorage="model-node"` 直接在冻结节点上注册、核验模型，发布和回滚都不需要将权重复制到控制端。activation 另带公开的 `modelNode` 绑定，后续推理须连同模型 ID 一起使用；配置与调用约定见 [远程发布与回滚](controller-v2.zh-CN.md#远程发布与回滚)。
+
 ## GPU 验证与认证
 
 先在隔离设备上运行真实兼容探针，再把带原始证据的报告作为 CAS probeEvidenceRef：报告 `kind=gear-training-compatibility-probe`、`schemaVersion=1`，`runtimeLockIdentityDigest` 等于去掉 validation/probeEvidenceRefs 的 lock digest；checks 必须实际通过 `exactTokenIds`、`behaviorLogProbs`、`toolContinuity`、`exportReload`、`hitchHarbor`、`actorRolloutAlignment`。报告是验证结果，不是跳过验证的开关；CPU mock 不能提供这些结果。

@@ -32,6 +32,9 @@ describe('versioned public training controller', () => {
     expect(evaluator.options.modelNode?.gateway).toEqual(config.evaluationGateway)
     expect(evaluator.options.modelNode?.python).toEqual(config.deployment.nodes.gpu!.python)
     expect(evaluator.options.python).toEqual(['controller-python'])
+    expect(controller.publisher.options.artifactStorage).toBe('model-node')
+    expect(controller.publisher.options.frozenNode).toEqual(spec.deployment.modelRuntime)
+    expect(controller.publisher.options.modelNode).toEqual(evaluator.options.modelNode)
     const file = join(root, 'controller.json'), specFile = join(root, 'spec.json')
     await writeFile(file, JSON.stringify(config)); await writeFile(specFile, JSON.stringify(spec))
     const created = await trainingCommand(['init', specFile, '--config', file]) as ModelExperimentState

@@ -61,7 +61,8 @@ export function trainingController(config: TrainingControllerConfig, spec: Model
   requireContract(config.schemaVersion === spec.schemaVersion, 'controller-spec-version-mismatch', 'select a matching controller version; existing experiments are not migrated implicitly')
   if (config.schemaVersion === 1) {
     const trainer = new SlimeModelTrainer(config.slime)
-    return { trainer, coordinator: new ModelTrainingCoordinator(store, trainer, new HitchModelEvaluator(store, config.hitch)) }
+    const publisher = new HitchModelPublisher(store, { ...config.hitch, activationPath: config.activationPath })
+    return { trainer, publisher, coordinator: new ModelTrainingCoordinator(store, trainer, new HitchModelEvaluator(store, config.hitch)) }
   }
   requireContract(spec.schemaVersion === 2, 'controller-spec-version-mismatch', 'v2 controller needs a v2 experiment')
   const placement = spec.deployment, node = placement.modelRuntime
@@ -76,7 +77,9 @@ export function trainingController(config: TrainingControllerConfig, spec: Model
   const trainer = new NodeSlimeModelTrainer(transport, store, episodes, artifactStorage)
   const { workspace: _workspace, ...inferenceConnection } = connection
   const evaluator = new HitchModelEvaluator(store, { ...config.hitch, artifactStorage, deployment: config.deployment, modelNode: { ...inferenceConnection, gateway: config.evaluationGateway } })
-  return { trainer, coordinator: new ModelTrainingCoordinator(store, trainer, evaluator) }
+  const publisher = new HitchModelPublisher(store, { ...config.hitch, activationPath: config.activationPath, artifactStorage,
+    frozenNode: node, modelNode: { ...inferenceConnection, gateway: config.evaluationGateway } })
+  return { trainer, publisher, coordinator: new ModelTrainingCoordinator(store, trainer, evaluator) }
 }
 export async function trainingCommand(argv: string[]): Promise<unknown> {
   const args = [...argv]; const action = args.shift()
@@ -132,11 +135,11 @@ export async function trainingCommand(argv: string[]): Promise<unknown> {
   const experimentId = args.shift()
   requireContract(experimentId, 'usage', 'an experiment ID is required')
   if (action === 'status' && args.length === 0) return store.load(experimentId)
-  const { coordinator, trainer } = trainingController(config, (await store.load(experimentId)).spec, store)
+  const { coordinator, trainer, publisher } = trainingController(config, (await store.load(experimentId)).spec, store)
   if (action === 'admit') { requireContract(args.length === 0, 'usage', 'admit accepts only an experiment ID'); return coordinator.admit(experimentId) }
   if (action === 'publish' || action === 'rollback') {
     requireContract(args.length === (action === 'rollback' ? 1 : 0) && !!config.activationPath, 'usage', 'publish EXP or rollback EXP RELEASE requires activationPath')
-    return coordinator.publish(experimentId, new HitchModelPublisher(store, { ...config.hitch, activationPath: config.activationPath }), args[0])
+    return coordinator.publish(experimentId, publisher, args[0])
   }
   const runId = args.shift()
   requireContract(runId && args.length === 0, 'usage', 'training preflight|advance|status|pause|resume|close EXP RUN --config CONTROLLER.json')

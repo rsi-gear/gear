@@ -13,6 +13,7 @@ import type { TrainingDeploymentConfig } from './types.js'
 import { verifyExecutionPlacement } from './placement-observation.js'
 import { controlEvaluation, type OrderedEvaluationControl } from './hitch-control.js'
 import type { TrainingControlIntent } from './types.js'
+import { hitchModelNodeBinding, registerHitchModelNode } from './hitch-model-node.js'
 
 type Json = Record<string, unknown>
 const object = (v: unknown): Json => { requireContract(!!v && typeof v === 'object' && !Array.isArray(v), 'invalid-hitch-evidence', 'expected a structured Hitch object'); return v as Json }
@@ -37,12 +38,12 @@ export interface HitchModelEvaluatorOptions {
 interface EvalJournal { key: string; requestDigest: string; startedAt: number; evalId?: string; inferenceId?: string; modelId?: string; evidence?: ModelEvaluationEvidence;
   submitted?: boolean; repairRounds?: number; repair?: { id: string; pending: boolean }; retainedTrials?: ModelEvaluationEvidence['trials']; serviceUsage?: Record<string, number>; serviceScopes?: string[] }
 
-export function evaluationModelNode(request: ModelEvaluationRequest): Json | undefined {
+export function evaluationModelNode(request: ModelEvaluationRequest): ReturnType<typeof hitchModelNodeBinding> | undefined {
   const node = request.deployment?.modelRuntime
   if (!node) return undefined
   requireContract(node.launcher === 'process', 'unsupported-model-launcher', 'v2 evaluation requires the process model-node launcher')
   requireContract(request.condition.deploymentDigest === digestJson(request.deployment), 'evaluation-deployment-drift', 'evaluation condition must bind its complete frozen placement')
-  return { schema_version: '2', node_id: node.nodeId, generation: node.generation, runtime_digest: node.runtimeDigest, launcher: 'process' }
+  return hitchModelNodeBinding(node)
 }
 
 /** Public Hitch CLI only. Each pass reconciles one durable eval; it never reruns valid failures. */
@@ -72,12 +73,7 @@ export class HitchModelEvaluator implements ModelEvaluator {
     if (request.deployment!.taskExecution.placement === 'remote') requireContract(capabilities.remote_managed_model_node === '2',
       'remote-model-capability-missing', 'remote Harbor requires a versioned managed-node model route')
     const directory = join(this.options.workspace, 'model-nodes', digestJson(binding).slice(7))
-    const file = join(directory, 'binding.json'), registration = join(directory, 'registration.json')
-    await atomicWrite(file, binding)
-    await atomicWrite(registration, { schema_version: '2', binding, connection: this.options.modelNode })
-    const observed = object(await this.call(['model-node', 'register', '--file', registration]))
-    requireContract(digestJson(observed.binding) === digestJson(binding), 'model-node-registration-drift', 'Hitch registered another model-node identity')
-    return file
+    return registerHitchModelNode(this.options, binding, directory)
   }
   private async services(request: ModelEvaluationRequest, journal: EvalJournal, stop: boolean): Promise<{ resourcesReleased: boolean; gpuSeconds: number }> {
     const binding = evaluationModelNode(request)
