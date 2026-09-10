@@ -4,7 +4,8 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from .content import atomic_json, require
+from .content import ContentStore, atomic_json, require
+from .export import dataset_destination
 from .hitch import frozen_harness_ref, HitchClient
 from .ledger import Ledger
 
@@ -25,7 +26,10 @@ async def reconcile_slots(directory, request, config):
             else:
                 # Replay the *identical* durable submission, including its old
                 # binding. A new runtime never revives that expired gateway.
-                eval_id = await client.submit(dataset=directory / "datasets" / intent["context"]["taskRef"]["digest"][7:],
+                task_ref = intent["context"]["taskRef"]
+                dataset = dataset_destination(ContentStore(config["storeRoot"]).read_json(task_ref),
+                                              directory / "datasets" / task_ref["digest"][7:])
+                eval_id = await client.submit(dataset=dataset,
                     harness=frozen_harness_ref(request, config),
                     binding_path=slot.parent / "binding.json", binding=intent["binding"], key=intent["key"], timeout_seconds=config["episodeTimeoutSeconds"])
                 atomic_json(handle_path, {"evalId": eval_id})
