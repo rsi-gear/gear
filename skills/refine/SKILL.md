@@ -87,17 +87,23 @@ not infer missing field names or harness APIs from errors.
    `trajectory.query`; pass a returned `nextRef` back as the next `detailRef`,
    or add `find` to search that long content. Keep cited evidence limited to
    references actually returned for the active seed baseline.
-6. Connect the observed failure to a harness-controlled cause, then choose the
-   narrowest intervention at the point where that cause is observable or
-   enforceable. Treat the current tree as a starting state, not a closed list
-   of available mechanisms: new files are allowed, but must be connected from
-   an existing preset, plugin, skill, or workflow entry. For a failure tied to
-   a tool call or result, compare a hook or action verifier with prompt guidance
-   before choosing `context`; if `context` is still best, explain why no narrower
-   enforceable or on-demand mechanism fits. Do not add guidance for an
-   infrastructure failure or behavior the Target Agent already performed
-   correctly. Use the routing criteria in the editing guide rather than copying
-   a seed-specific remedy into a shared prompt.
+   Start with one diagnostic card and size later reads from its actual output.
+   Process the evidence before fetching more; use targeted detail reads instead
+   of accumulating transcripts that repeatedly force context compaction.
+6. Identify an evidenced harness gap before choosing an intervention. A failed
+   task or omitted check alone does not establish that gap. Use relevant
+   accessible seed comparisons to test the explanation, including successful
+   runs when useful. Choose the smallest supported mechanism from the editing
+   guide, with an applicability boundary that transfers beyond the observed
+   tasks. New files are allowed but must be wired into the existing load graph.
+   Prompt changes, skills, hooks, and workflows need the same causal support;
+   do not force any artifact type. An implementation mistake can still expose
+   a reusable prevention or detection opportunity; existing guidance alone
+   does not show that an effective procedure or check exists. Apply the editing
+   guide's diagnosis before either choosing a prompt edit or declining.
+   Record the evidence, mechanism choice,
+   applicability, and main uncertainty in `rationale`, and an observable
+   behavioral prediction in `expectedOutcome`.
 7. Inspect `candidate.diff`, remove accidental or task-specific changes, and
    run `candidate.check` before finalizing and require
    `finalizationReadiness.ready: true`. Use `candidate.decline` when the

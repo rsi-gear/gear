@@ -129,7 +129,8 @@ export class RefineSkillGateway {
     if (method === 'candidate.write') {
       const expectedDigest = params.expectedDigest
       if (expectedDigest !== null && typeof expectedDigest !== 'string') throw new TypeError('expectedDigest must be a digest or null')
-      return this.files.write(assignment.sessionId, string(params, 'path'), string(params, 'text'), expectedDigest)
+      if (typeof params.text !== 'string') throw new TypeError('text must be a string')
+      return this.files.write(assignment.sessionId, string(params, 'path'), params.text, expectedDigest)
     }
     if (method === 'candidate.edit') {
       return this.files.edit(
