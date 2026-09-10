@@ -37,9 +37,9 @@ class EpisodeFixture:
         self.ledger.require_controller(self.lease["batchId"], 10)
         self.journal = EpisodeJournal(self.directory, self.ledger)
 
-    def persist(self):
+    def persist(self, rollout_id=0):
         for name, value in {"request": self.request, "config": self.config, "worker": {"incarnation": "incarnation-1"},
-                            "runtime": {"lease": self.lease, "replicas": self.replicas, "rolloutId": 0, "weightVersion": "0", "engineUrl": "http://native-fixture"}}.items():
+                            "runtime": {"lease": self.lease, "replicas": self.replicas, "rolloutId": rollout_id, "weightVersion": "0", "engineUrl": "http://native-fixture"}}.items():
             atomic_json(self.directory / (name + ".json"), value)
 
     def publish(self, slot=0):

@@ -10,12 +10,12 @@ import { chargeEvaluationUsage, refreshEvaluationUsage } from './evaluation-usag
 
 const emptyUsage = (): T.TrainingUsage => ({ gpuSeconds: 0, rolloutTokens: 0, groupResamples: 0 })
 const terminal = (run: T.ModelTrainingRun): boolean => !!run.decision
-export const trainingCompatibilityDigest = (r: T.TrainingRequest): string => digestJson({
-  backend: r.trainer.backend, runtimeLock: r.trainer.runtimeLock, hyperparametersRef: r.trainer.hyperparametersRef,
-  placement: r.trainer.placement ?? 'separate', trainingDeviceCount: r.trainingDevices.length,
-  referenceModelRef: r.referenceModelRef, architecture: r.parentModel.architecture, dtype: r.parentModel.dtype,
-  tokenizerDigest: r.parentModel.tokenizerDigest, chatTemplateDigest: r.parentModel.chatTemplateDigest,
-  ...(r.schemaVersion === 2 ? { deployment: r.deployment, trainingDevices: r.trainingDevices } : {}),
+export const trainingCompatibilityDigest = (request: T.TrainingRequest): string => digestJson({
+  backend: request.trainer.backend, runtimeLock: request.trainer.runtimeLock, hyperparametersRef: request.trainer.hyperparametersRef,
+  placement: request.trainer.placement ?? 'separate', trainingDeviceCount: request.trainingDevices.length,
+  referenceModelRef: request.referenceModelRef, architecture: request.parentModel.architecture, dtype: request.parentModel.dtype,
+  tokenizerDigest: request.parentModel.tokenizerDigest, chatTemplateDigest: request.parentModel.chatTemplateDigest,
+  ...(request.schemaVersion === 2 ? { deployment: request.deployment, trainingDevices: request.trainingDevices } : {}),
 })
 export interface ModelPublisher {
   /** Must reconcile the same activation id after an uncertain result. New episodes only. */
@@ -43,7 +43,7 @@ export class ModelTrainingCoordinator {
 
   async admit(experimentId: string): Promise<T.ModelTrainingRun> {
     return this.store.transaction(experimentId, async state => {
-      requireContract(!Object.values(state.runs).some(r => !terminal(r)), 'training-run-active', 'finish or close the existing training run before admitting another')
+      requireContract(!Object.values(state.runs).some(currentRun => !terminal(currentRun)), 'training-run-active', 'finish or close the existing training run before admitting another')
       const parentModel = parseModelVersion(await this.store.readJson(state.champion.modelRef))
       const spec = state.spec
       requireContract(state.usage.gpuSeconds < spec.budgets.totalGpuSeconds && state.usage.rolloutTokens < spec.budgets.maxRolloutTokens,
@@ -69,7 +69,7 @@ export class ModelTrainingCoordinator {
         idempotencyKey: `${experimentId}/${id}`, phase: 'admitted', execution: 'running', usage: emptyUsage(), resourcesReleased: true,
         heldOutQueries: 0, evaluationIntents: {}, evaluationResourcesReleased: true }
       if (spec.schemaVersion === 2) {
-        const sequence = Math.max(-1, ...Object.values(state.runs).map(r => evaluationControlIntent(r).sequence)) + 1
+        const sequence = Math.max(-1, ...Object.values(state.runs).map(currentRun => evaluationControlIntent(currentRun).sequence)) + 1
         requireContract(Number.isSafeInteger(sequence), 'evaluation-control-overflow', 'evaluation control sequence is exhausted')
         run.evaluationControl = { schemaVersion: 2, sequence, action: 'start' }
       }
@@ -79,7 +79,8 @@ export class ModelTrainingCoordinator {
   }
 
   async inspect(id: string, runId: string): Promise<T.ModelTrainingRun> {
-    const state = await this.store.load(id); const run = state.runs[runId]
+    const state = await this.store.load(id)
+    const run = state.runs[runId]
     requireContract(run, 'unknown-training-run', 'unknown model training run')
     return run
   }
@@ -108,26 +109,29 @@ export class ModelTrainingCoordinator {
           if (run.resourcesReleased) await this.preflight(run.request)
           // Persist submit intent before the external action. An uncertain
           // submission may already own GPUs and must go directly to reconciliation.
-          await this.store.transaction(id, s => {
-            const r = s.runs[runId]!
-            requireContract(!['pausing', 'paused'].includes(r.execution), 'training-run-paused', 'a paused run cannot admit a training submission')
-            if (r.resourcesReleased) {
-              const remaining = s.spec.budgets.totalGpuSeconds - s.usage.gpuSeconds
+          await this.store.transaction(id, transactionState => {
+            const currentRun = transactionState.runs[runId]!
+            requireContract(!['pausing', 'paused'].includes(currentRun.execution), 'training-run-paused', 'a paused run cannot admit a training submission')
+            if (currentRun.resourcesReleased) {
+              const remaining = transactionState.spec.budgets.totalGpuSeconds - transactionState.usage.gpuSeconds
               requireContract(remaining > 0, 'budget-exhausted', 'baseline evaluation exhausted the experiment GPU budget')
-              r.request.budgets.totalGpuSeconds = Math.min(r.request.budgets.totalGpuSeconds, remaining)
+              currentRun.request.budgets.totalGpuSeconds = Math.min(currentRun.request.budgets.totalGpuSeconds, remaining)
             }
-            r.resourcesReleased = false
+            currentRun.resourcesReleased = false
           })
         }
         run = await this.inspect(id, runId)
         if (run.execution === 'pausing' || run.execution === 'paused') return this.pause(id, runId)
         const handle = await this.submitTrainer(run)
         requireContract(handle.requestDigest === digestJson(run.request), 'job-request-mismatch', 'training job does not match the frozen request')
-        await this.store.transaction(id, s => {
-          const r = s.runs[runId]!
-          requireContract(!r.handle || digestJson(r.handle) === digestJson(handle), 'job-handle-conflict', 'idempotent submission returned another job')
-          r.handle = handle
-          if (sameTrainingControl(r, run) && !['pausing', 'paused'].includes(r.execution)) { r.phase = 'collecting'; delete r.error }
+        await this.store.transaction(id, transactionState => {
+          const currentRun = transactionState.runs[runId]!
+          requireContract(!currentRun.handle || digestJson(currentRun.handle) === digestJson(handle), 'job-handle-conflict', 'idempotent submission returned another job')
+          currentRun.handle = handle
+          if (sameTrainingControl(currentRun, run) && !['pausing', 'paused'].includes(currentRun.execution)) {
+            currentRun.phase = 'collecting'
+            delete currentRun.error
+          }
         })
       }
       run = await this.inspect(id, runId)
@@ -147,18 +151,24 @@ export class ModelTrainingCoordinator {
         requireContract(trainEvaluationMode(state.spec) !== 'sequential' || artifacts.resourcesReleased, 'gpu-not-released', 'training must confirm process termination and GPU release before evaluation')
         const artifactsRef = await this.store.putJson(artifacts)
         const candidateRef = await this.store.putJson(artifacts.model)
-        await this.store.transaction(id, s => {
-          const r = s.runs[runId]!
-          this.recordUsage(s, r, artifacts.usage)
-          r.artifactsRef = artifactsRef; r.candidateRef = candidateRef
-          r.resourcesReleased ||= artifacts.resourcesReleased
-          if (!['pausing', 'paused'].includes(r.execution)) { r.phase = 'evaluating'; r.execution = 'running' }
+        await this.store.transaction(id, transactionState => {
+          const currentRun = transactionState.runs[runId]!
+          this.recordUsage(transactionState, currentRun, artifacts.usage)
+          currentRun.artifactsRef = artifactsRef
+          currentRun.candidateRef = candidateRef
+          currentRun.resourcesReleased ||= artifacts.resourcesReleased
+          if (!['pausing', 'paused'].includes(currentRun.execution)) {
+            currentRun.phase = 'evaluating'
+            currentRun.execution = 'running'
+          }
         })
       }
-      run = await this.inspect(id, runId); state = await this.store.load(id)
+      run = await this.inspect(id, runId)
+      state = await this.store.load(id)
       if (!run.resourcesReleased) {
         if (!await this.recordStatus(id, runId, parseTrainingStatus(await this.trainer.inspect(run.handle!)), false, run)) return this.inspect(id, runId)
-        run = await this.inspect(id, runId); state = await this.store.load(id)
+        run = await this.inspect(id, runId)
+        state = await this.store.load(id)
       }
       const candidate = parseModelVersion(await this.store.readJson(run.candidateRef!))
       const baselineDev = await this.evaluate(id, runId, run.request.parentModel, run.parent.modelRef, 'dev', true)
@@ -181,20 +191,31 @@ export class ModelTrainingCoordinator {
         const metered = await this.store.load(id)
         if (metered.spec.schemaVersion === 2 && metered.usage.gpuSeconds >= metered.spec.budgets.totalGpuSeconds) {
           const paused = await this.pause(id, runId)
-          await this.store.transaction(id, s => { const r = s.runs[runId]!; if (sameTrainingControl(r, paused)) r.error = 'experiment GPU budget is exhausted' })
+          await this.store.transaction(id, transactionState => {
+            const currentRun = transactionState.runs[runId]!
+            if (sameTrainingControl(currentRun, paused)) currentRun.error = 'experiment GPU budget is exhausted'
+          })
           return this.inspect(id, runId)
         }
-      } catch (observationError) { error = observationError }
+      } catch (observationError) {
+        error = observationError
+      }
       if (error instanceof Error && 'code' in error && ['evaluation-pending', 'training-release-pending', 'training-run-paused', 'training-control-stale', 'eval_control_stale'].includes(String(error.code))) {
-        await this.store.transaction(id, s => {
-          const r = s.runs[runId]!
-          if (!terminal(r) && !['pausing', 'paused'].includes(r.execution)) { r.execution = 'running'; delete r.error }
+        await this.store.transaction(id, transactionState => {
+          const currentRun = transactionState.runs[runId]!
+          if (!terminal(currentRun) && !['pausing', 'paused'].includes(currentRun.execution)) {
+            currentRun.execution = 'running'
+            delete currentRun.error
+          }
         })
         return this.inspect(id, runId)
       }
-      await this.store.transaction(id, s => {
-        const r = s.runs[runId]!
-        if (!terminal(r) && !['paused', 'pausing'].includes(r.execution)) { r.execution = 'blocked'; r.error = error instanceof Error ? error.message : String(error) }
+      await this.store.transaction(id, transactionState => {
+        const currentRun = transactionState.runs[runId]!
+        if (!terminal(currentRun) && !['paused', 'pausing'].includes(currentRun.execution)) {
+          currentRun.execution = 'blocked'
+          currentRun.error = error instanceof Error ? error.message : String(error)
+        }
       })
       throw error
     }
@@ -228,27 +249,32 @@ export class ModelTrainingCoordinator {
   private recordUsage(state: T.ModelExperimentState, run: T.ModelTrainingRun, usage: T.TrainingUsage): void {
     for (const key of ['gpuSeconds', 'rolloutTokens', 'groupResamples'] as const) {
       requireContract(usage[key] >= run.usage[key], 'usage-regression', 'resumption must preserve cumulative training cost')
-      state.usage[key] += usage[key] - run.usage[key]; run.usage[key] = usage[key]
+      state.usage[key] += usage[key] - run.usage[key]
+      run.usage[key] = usage[key]
     }
   }
   private async recordStatus(id: string, runId: string, status: T.TrainingStatus, cleanupOnly = false, expected?: T.ModelTrainingRun): Promise<boolean> {
-    return this.store.transaction(id, s => {
-      const r = s.runs[runId]!
-      if (expected && !sameTrainingControl(r, expected)) return false
-      requireContract(digestJson(status.handle) === digestJson(r.handle), 'job-status-mismatch', 'trainer returned another job status')
-      requireContract(!r.status || status.committedUpdate >= r.status.committedUpdate, 'checkpoint-regression', 'committed update cursor cannot move backwards')
-      this.recordUsage(s, r, status.usage)
-      r.status = status
-      if (!['pausing', 'paused'].includes(r.execution) || !r.resourcesReleased) r.resourcesReleased = status.resourcesReleased
+    return this.store.transaction(id, transactionState => {
+      const currentRun = transactionState.runs[runId]!
+      if (expected && !sameTrainingControl(currentRun, expected)) return false
+      requireContract(digestJson(status.handle) === digestJson(currentRun.handle), 'job-status-mismatch', 'trainer returned another job status')
+      requireContract(!currentRun.status || status.committedUpdate >= currentRun.status.committedUpdate, 'checkpoint-regression', 'committed update cursor cannot move backwards')
+      this.recordUsage(transactionState, currentRun, status.usage)
+      currentRun.status = status
+      if (!['pausing', 'paused'].includes(currentRun.execution) || !currentRun.resourcesReleased) currentRun.resourcesReleased = status.resourcesReleased
       // After collection this status describes cleanup of the original trainer;
       // it cannot move the candidate back out of evaluation or undo a pause.
-      if (!r.artifactsRef && !cleanupOnly && !['pausing', 'paused'].includes(r.execution)) { r.phase = status.phase; r.execution = status.execution }
+      if (!currentRun.artifactsRef && !cleanupOnly && !['pausing', 'paused'].includes(currentRun.execution)) {
+        currentRun.phase = status.phase
+        currentRun.execution = status.execution
+      }
       return true
     })
   }
 
   private async evaluate(id: string, runId: string, model: T.ModelVersion, modelRef: T.ContentRef, partition: 'dev' | 'held-out', baseline: boolean): Promise<T.ModelEvaluationEvidence> {
-    const state = await this.store.load(id); const run = state.runs[runId]!
+    const state = await this.store.load(id)
+    const run = state.runs[runId]!
     requireContract(!['pausing', 'paused'].includes(run.execution), 'training-run-paused', 'a paused run cannot dispatch another evaluation')
     const request = modelEvaluationRequest(state.spec, model, modelRef, partition)
     const evidenceKey = modelEvidenceKey({ subject: request.subject, condition: request.condition })
@@ -260,75 +286,80 @@ export class ModelTrainingCoordinator {
     if (reusable) {
       const evidence = validateModelEvidence(await this.store.readJson(reusable), request)
       requireContract(evidence.complete, 'baseline-reuse-blocked', 'saved baseline is incomplete; explicitly repair its missing or invalid slots')
-      await this.store.transaction(id, s => { s.runs[runId]!.evaluationIntents[intentId] = { key: evidenceKey, evidenceRef: reusable } })
+      await this.store.transaction(id, transactionState => { transactionState.runs[runId]!.evaluationIntents[intentId] = { key: evidenceKey, evidenceRef: reusable } })
       return evidence
     }
     if (state.spec.schemaVersion === 2) requireContract(state.usage.gpuSeconds < state.spec.budgets.totalGpuSeconds, 'budget-exhausted', 'evaluation exhausted the experiment GPU budget')
     if (state.spec.schemaVersion === 2) requireContract(this.evaluator.observeUsage, 'evaluation-usage-unavailable', 'v2 evaluator must expose read-only cumulative GPU usage')
-    await this.store.transaction(id, s => {
-      const r = s.runs[runId]!
-      requireContract(!['pausing', 'paused'].includes(r.execution), 'training-run-paused', 'a paused run cannot admit another evaluation')
-      if (!r.evaluationIntents[intentId]) {
+    await this.store.transaction(id, transactionState => {
+      const currentRun = transactionState.runs[runId]!
+      requireContract(!['pausing', 'paused'].includes(currentRun.execution), 'training-run-paused', 'a paused run cannot admit another evaluation')
+      if (!currentRun.evaluationIntents[intentId]) {
         if (partition === 'held-out' && !baseline) {
-          const used = Object.values(s.runs).reduce((sum, item) => sum + item.heldOutQueries, 0)
-          requireContract(used < s.spec.evaluation.policy.maxHeldOutEvaluations, 'held-out-budget-exhausted', 'the sealed held-out query budget is exhausted')
-          r.heldOutQueries++
+          const used = Object.values(transactionState.runs).reduce((sum, item) => sum + item.heldOutQueries, 0)
+          requireContract(used < transactionState.spec.evaluation.policy.maxHeldOutEvaluations, 'held-out-budget-exhausted', 'the sealed held-out query budget is exhausted')
+          currentRun.heldOutQueries++
         }
-        r.evaluationIntents[intentId] = { key: evidenceKey }
+        currentRun.evaluationIntents[intentId] = { key: evidenceKey }
       }
-      requireContract(r.evaluationIntents[intentId]!.key === evidenceKey, 'evaluation-intent-drift', 'evaluation intent identity changed')
-      r.evaluationResourcesReleased = false
+      requireContract(currentRun.evaluationIntents[intentId]!.key === evidenceKey, 'evaluation-intent-drift', 'evaluation intent identity changed')
+      currentRun.evaluationResourcesReleased = false
     })
-    const e = validateModelEvidence(await this.evaluator.evaluate(request, `${id}/${evidenceKey}`, state.spec.schemaVersion === 2 ? evaluationControlIntent(run) : undefined), request)
+    const evidence = validateModelEvidence(await this.evaluator.evaluate(request, `${id}/${evidenceKey}`, state.spec.schemaVersion === 2 ? evaluationControlIntent(run) : undefined), request)
     if (previous) {
-      requireContract(e.gpuSeconds >= previous.gpuSeconds, 'evaluation-usage-regression', 'repair must retain cumulative evaluation cost')
-      for (const valid of previous.trials.filter(t => t.valid)) requireContract(e.trials.some(t => digestJson(t) === digestJson(valid)),
+      requireContract(evidence.gpuSeconds >= previous.gpuSeconds, 'evaluation-usage-regression', 'repair must retain cumulative evaluation cost')
+      for (const valid of previous.trials.filter(t => t.valid)) requireContract(evidence.trials.some(t => digestJson(t) === digestJson(valid)),
         'valid-slot-rerun', 'evaluation repair cannot replace a valid observation, including reward zero')
     }
-    const evidenceRef = await this.store.putJson(e)
-    await this.store.transaction(id, async s => {
-      const r = s.runs[runId]!; const saved = r.evaluationIntents[intentId]!
-      await chargeEvaluationUsage(this.store, s, runId, intentId, e.gpuSeconds)
+    const evidenceRef = await this.store.putJson(evidence)
+    await this.store.transaction(id, async transactionState => {
+      const currentRun = transactionState.runs[runId]!
+      const saved = currentRun.evaluationIntents[intentId]!
+      await chargeEvaluationUsage(this.store, transactionState, runId, intentId, evidence.gpuSeconds)
       saved.evidenceRef = evidenceRef
-      r.evaluationResourcesReleased = true
-      if (baseline && e.complete && s.champion.modelRef.digest === modelRef.digest) s.champion.baselineEvidence[partition] = evidenceRef
+      currentRun.evaluationResourcesReleased = true
+      if (baseline && evidence.complete && transactionState.champion.modelRef.digest === modelRef.digest) transactionState.champion.baselineEvidence[partition] = evidenceRef
     })
-    requireContract(e.complete, 'incomplete-evaluation', 'evaluation has missing or invalid slots; valid failures are retained and cannot be rerun')
-    return e
+    requireContract(evidence.complete, 'incomplete-evaluation', 'evaluation has missing or invalid slots; valid failures are retained and cannot be rerun')
+    return evidence
   }
 
-  private async validateArtifacts(run: T.ModelTrainingRun, a: T.TrainingArtifacts): Promise<void> {
-    requireContract(digestJson(a.handle) === digestJson(run.handle), 'job-artifacts-mismatch', 'artifacts belong to another job')
-    const model = parseModelVersion(a.model); const parent = run.request.parentModel
-    requireContract(model.parentModelVersionId === parent.id && model.trainingRunId === run.id && model.trainerCheckpointRef?.digest === a.checkpointRef.digest,
+  private async validateArtifacts(run: T.ModelTrainingRun, artifacts: T.TrainingArtifacts): Promise<void> {
+    requireContract(digestJson(artifacts.handle) === digestJson(run.handle), 'job-artifacts-mismatch', 'artifacts belong to another job')
+    const model = parseModelVersion(artifacts.model)
+    const parent = run.request.parentModel
+    requireContract(model.parentModelVersionId === parent.id && model.trainingRunId === run.id && model.trainerCheckpointRef?.digest === artifacts.checkpointRef.digest,
       'candidate-lineage-mismatch', 'candidate must descend from the frozen parent and completed trainer checkpoint')
     for (const key of ['architecture', 'dtype', 'tokenizerDigest', 'chatTemplateDigest'] as const) requireContract(model[key] === parent[key], 'candidate-semantics-drift', `candidate changed ${key}`)
-    const checkpoint = parseTrainerCheckpoint(await this.store.readJson(a.checkpointRef))
+    const checkpoint = parseTrainerCheckpoint(await this.store.readJson(artifacts.checkpointRef))
     requireContract(checkpoint.actorWeightsDigest === model.weightsDigest && checkpoint.hfExportRef.digest === model.hfSnapshotRef.digest
       && checkpoint.compatibilityDigest === trainingCompatibilityDigest(run.request), 'export-checkpoint-mismatch', 'HF export, actor and optimizer must describe one committed update')
     let baseUpdate = 0
     if (run.request.resumeCheckpointRef) baseUpdate = parseTrainerCheckpoint(await this.store.readJson(run.request.resumeCheckpointRef)).committedUpdate
-    requireContract(a.updateCommitRefs.length === run.request.trainer.updatesPerCandidate && checkpoint.committedUpdate === baseUpdate + a.updateCommitRefs.length,
+    requireContract(artifacts.updateCommitRefs.length === run.request.trainer.updatesPerCandidate && checkpoint.committedUpdate === baseUpdate + artifacts.updateCommitRefs.length,
       'incomplete-updates', 'candidate must include each configured complete update')
-    const batches = new Set<string>(); let previous: T.ContentRef | undefined
-    for (const [i, ref] of a.updateCommitRefs.entries()) {
+    const batches = new Set<string>()
+    let previous: T.ContentRef | undefined
+    for (const [i, ref] of artifacts.updateCommitRefs.entries()) {
       const commit = parseUpdateCommit(await this.store.readJson(ref))
       requireContract(commit.trainingRunId === run.id && commit.committedUpdate === baseUpdate + i + 1 && !batches.has(commit.consumedBatchDigest)
         && (i === 0 || commit.previousCommitRef?.digest === previous!.digest), 'invalid-update-ledger', 'update ledger has a duplicate batch, gap or wrong run')
-      const cp = parseTrainerCheckpoint(await this.store.readJson(commit.checkpointRef))
-      requireContract(cp.committedUpdate === commit.committedUpdate && cp.schedulerAndRngRef.digest === commit.rngRef.digest && cp.dataCursorRef.digest === commit.dataCursorRef.digest
-        && cp.compatibilityDigest === checkpoint.compatibilityDigest, 'invalid-update-commit', 'checkpoint, RNG and data cursor must advance atomically')
-      for (const content of [cp.hfExportRef, cp.actorStateRef, cp.optimizerStateRef, cp.schedulerAndRngRef, cp.dataCursorRef]) await this.store.readBytes(content)
+      const committedCheckpoint = parseTrainerCheckpoint(await this.store.readJson(commit.checkpointRef))
+      requireContract(committedCheckpoint.committedUpdate === commit.committedUpdate && committedCheckpoint.schedulerAndRngRef.digest === commit.rngRef.digest && committedCheckpoint.dataCursorRef.digest === commit.dataCursorRef.digest
+        && committedCheckpoint.compatibilityDigest === checkpoint.compatibilityDigest, 'invalid-update-commit', 'checkpoint, RNG and data cursor must advance atomically')
+      for (const content of [committedCheckpoint.hfExportRef, committedCheckpoint.actorStateRef, committedCheckpoint.optimizerStateRef, committedCheckpoint.schedulerAndRngRef, committedCheckpoint.dataCursorRef]) await this.store.readBytes(content)
       const batch = parseTrainingBatch(await this.store.readJson({ uri: `cas:${commit.consumedBatchDigest}`, digest: commit.consumedBatchDigest, mediaType: 'application/json' }))
       requireContract(batch.trainingRunId === run.id && batch.recipeDigest === run.request.recipeDigest && batch.datasetSplitDigest === run.request.datasetSplitDigest,
         'batch-provenance-mismatch', 'consumed batch differs from the frozen recipe or data partition')
-      await this.store.readBytes(batch.groupsRef); await this.store.readBytes(batch.samplesRef)
-      batches.add(commit.consumedBatchDigest); previous = ref
-      if (i === a.updateCommitRefs.length - 1) requireContract(commit.checkpointRef.digest === a.checkpointRef.digest, 'final-checkpoint-mismatch', 'candidate checkpoint is not the final committed update')
+      await this.store.readBytes(batch.groupsRef)
+      await this.store.readBytes(batch.samplesRef)
+      batches.add(commit.consumedBatchDigest)
+      previous = ref
+      if (i === artifacts.updateCommitRefs.length - 1) requireContract(commit.checkpointRef.digest === artifacts.checkpointRef.digest, 'final-checkpoint-mismatch', 'candidate checkpoint is not the final committed update')
     }
-    const validation = await this.store.readJson<Record<string, unknown>>(a.exportValidationRef)
+    const validation = await this.store.readJson<Record<string, unknown>>(artifacts.exportValidationRef)
     requireContract(validation.schemaVersion === 1 && validation.valid === true && validation.weightsDigest === model.weightsDigest
-      && validation.hfSnapshotDigest === model.hfSnapshotRef.digest && validation.checkpointDigest === a.checkpointRef.digest,
+      && validation.hfSnapshotDigest === model.hfSnapshotRef.digest && validation.checkpointDigest === artifacts.checkpointRef.digest,
     'export-not-validated', 'HF export integrity and actor-weight equality must be proven before evaluation')
     await this.store.readBytes(model.provenanceRef)
   }
@@ -338,10 +369,11 @@ export class ModelTrainingCoordinator {
     let finishing = current
     if (terminal(current) || !allowPaused && ['pausing', 'paused'].includes(current.execution)) return
     if (!current.resourcesReleased && current.handle) {
-      const stopping = await this.store.transaction(id, s => {
-        const r = s.runs[runId]!
-        requireContract(sameTrainingControl(r, current), 'training-control-stale', 'a newer command owns training cleanup')
-        setTrainingControl(r, 'pause'); return structuredClone(r)
+      const stopping = await this.store.transaction(id, transactionState => {
+        const currentRun = transactionState.runs[runId]!
+        requireContract(sameTrainingControl(currentRun, current), 'training-control-stale', 'a newer command owns training cleanup')
+        setTrainingControl(currentRun, 'pause')
+        return structuredClone(currentRun)
       })
       const status = await this.stopTrainer(stopping)
       await this.recordStatus(id, runId, status, true, stopping)
@@ -360,43 +392,51 @@ export class ModelTrainingCoordinator {
         if (state.champion.revision !== run.parent.revision || state.champion.modelRef.digest !== run.parent.modelRef.digest) {
           decision = { ...decision, outcome: 'superseded', reasons: [...decision.reasons, 'champion-cas-conflict'] }
         } else {
-          const dev = run.evaluationIntents['candidate:dev']?.evidenceRef; const held = run.evaluationIntents['candidate:held-out']?.evidenceRef
+          const dev = run.evaluationIntents['candidate:dev']?.evidenceRef
+          const held = run.evaluationIntents['candidate:held-out']?.evidenceRef
           requireContract(run.candidateRef && dev && held, 'missing-promotion-evidence', 'champion promotion requires both independent evaluations')
           state.champion = { modelRef: run.candidateRef, revision: run.parent.revision + 1, trainingRunId: runId, baselineEvidence: { dev, 'held-out': held } }
         }
       }
-      run.decision = decision; run.phase = decision.outcome === 'accepted' ? 'accepted' : decision.outcome === 'inconclusive' ? 'inconclusive' : 'rejected'
-      run.execution = 'completed'; delete run.error
+      run.decision = decision
+      run.phase = decision.outcome === 'accepted' ? 'accepted' : decision.outcome === 'inconclusive' ? 'inconclusive' : 'rejected'
+      run.execution = 'completed'
+      delete run.error
     })
   }
 
   async pause(id: string, runId: string): Promise<T.ModelTrainingRun> {
-    await this.store.transaction(id, s => {
-      const r = s.runs[runId]!
-      if (!terminal(r)) { setTrainingControl(r, 'pause'); setEvaluationControl(r, 'pause'); r.execution = 'pausing' }
+    await this.store.transaction(id, transactionState => {
+      const currentRun = transactionState.runs[runId]!
+      if (!terminal(currentRun)) {
+        setTrainingControl(currentRun, 'pause')
+        setEvaluationControl(currentRun, 'pause')
+        currentRun.execution = 'pausing'
+      }
     })
     let run = await this.inspect(id, runId)
     if (terminal(run)) return run
     const state = await this.store.load(id)
     const errors: unknown[] = []
-    let trainingReleased = run.resourcesReleased, evaluationReleased = true
+    let trainingReleased = run.resourcesReleased
+    let evaluationReleased = true
     // A pending/disconnected evaluation cannot prevent cancellation of its
     // independent trainer. Reconcile and charge each owner before returning.
     try {
       if (run.request.schemaVersion === 2 && (run.handle || !run.resourcesReleased)) {
         const status = await this.stopTrainer(run)
         requireContract(status.handle.requestDigest === digestJson(run.request), 'job-request-mismatch', 'cancelled job request changed')
-        await this.store.transaction(id, s => {
-          const r = s.runs[runId]!
-          requireContract(!r.handle || digestJson(r.handle) === digestJson(status.handle), 'job-handle-conflict', 'cancellation returned another job')
-          r.handle = status.handle
+        await this.store.transaction(id, transactionState => {
+          const currentRun = transactionState.runs[runId]!
+          requireContract(!currentRun.handle || digestJson(currentRun.handle) === digestJson(status.handle), 'job-handle-conflict', 'cancellation returned another job')
+          currentRun.handle = status.handle
         })
         await this.recordStatus(id, runId, status, false, run)
         trainingReleased = status.resourcesReleased && ['paused', 'completed', 'failed', 'interrupted'].includes(status.execution)
       } else if (!run.handle && !run.resourcesReleased) {
         const handle = parseTrainingHandle(await this.trainer.submit(run.request, run.idempotencyKey))
         requireContract(handle.requestDigest === digestJson(run.request), 'job-request-mismatch', 'reconciled job request changed')
-        await this.store.transaction(id, s => { s.runs[runId]!.handle = handle })
+        await this.store.transaction(id, transactionState => { transactionState.runs[runId]!.handle = handle })
         run = await this.inspect(id, runId)
       }
       if (run.request.schemaVersion === 1 && run.handle && (!run.resourcesReleased || !run.artifactsRef)) {
@@ -404,40 +444,50 @@ export class ModelTrainingCoordinator {
         await this.recordStatus(id, runId, status)
         trainingReleased = status.resourcesReleased && ['paused', 'completed', 'failed', 'interrupted'].includes(status.execution)
       }
-    } catch (error) { trainingReleased = false; errors.push(error) }
+    } catch (error) {
+      trainingReleased = false
+      errors.push(error)
+    }
     for (const [intentId, intent] of Object.entries(run.evaluationIntents)) {
       try {
         const previous = intent.evidenceRef ? validateModelEvidence(await this.store.readJson(intent.evidenceRef)) : undefined
         if (previous?.complete) continue
-        await this.store.transaction(id, s => { s.runs[runId]!.evaluationResourcesReleased = false })
+        await this.store.transaction(id, transactionState => { transactionState.runs[runId]!.evaluationResourcesReleased = false })
         requireContract(this.evaluator.cancel, 'evaluation-cancel-unavailable', 'pending evaluation must confirm cancellation before releasing this run')
         const [role, partition] = intentId.split(':') as [string, 'dev' | 'held-out']
         const modelRef = role === 'baseline' ? run.parent.modelRef : run.candidateRef!
         const model = parseModelVersion(await this.store.readJson(modelRef))
         const stopped = await this.evaluator.cancel(modelEvaluationRequest(state.spec, model, modelRef, partition), `${id}/${intent.key}`, state.spec.schemaVersion === 2 ? evaluationControlIntent(run) : undefined)
-        await this.store.transaction(id, s => chargeEvaluationUsage(this.store, s, runId, intentId, stopped.gpuSeconds))
+        await this.store.transaction(id, transactionState => chargeEvaluationUsage(this.store, transactionState, runId, intentId, stopped.gpuSeconds))
         evaluationReleased &&= stopped.resourcesReleased
-      } catch (error) { evaluationReleased = false; errors.push(error) }
+      } catch (error) {
+        evaluationReleased = false
+        errors.push(error)
+      }
     }
-    await this.store.transaction(id, s => {
-      const r = s.runs[runId]!
-      if (!sameTrainingControl(r, run)) return
-      r.evaluationResourcesReleased = evaluationReleased
-      if (trainingReleased && evaluationReleased && !errors.length) { r.execution = 'paused'; r.resourcesReleased = true }
+    await this.store.transaction(id, transactionState => {
+      const currentRun = transactionState.runs[runId]!
+      if (!sameTrainingControl(currentRun, run)) return
+      currentRun.evaluationResourcesReleased = evaluationReleased
+      if (trainingReleased && evaluationReleased && !errors.length) {
+        currentRun.execution = 'paused'
+        currentRun.resourcesReleased = true
+      }
     })
     if (errors.length && sameTrainingControl(await this.inspect(id, runId), run)) throw errors[0]
     return this.inspect(id, runId)
   }
   async resume(id: string, runId: string): Promise<T.ModelTrainingRun> {
     if ((await this.inspect(id, runId)).execution === 'pausing') await this.pause(id, runId)
-    await this.store.transaction(id, s => {
-      const r = s.runs[runId]!
-      requireContract(r && !terminal(r), 'run-not-resumable', 'completed model run cannot resume')
-      if (s.spec.schemaVersion === 2) requireContract(s.usage.gpuSeconds < s.spec.budgets.totalGpuSeconds, 'budget-exhausted', 'cannot resume after the experiment GPU budget is exhausted')
-      requireContract(r.execution !== 'pausing', 'previous-resources-not-released', 'finish the pending pause before resuming')
-      setTrainingControl(r, 'start', r.execution !== 'running')
-      setEvaluationControl(r, 'start', r.execution !== 'running')
-      r.execution = 'running'; delete r.error
+    await this.store.transaction(id, transactionState => {
+      const currentRun = transactionState.runs[runId]!
+      requireContract(currentRun && !terminal(currentRun), 'run-not-resumable', 'completed model run cannot resume')
+      if (transactionState.spec.schemaVersion === 2) requireContract(transactionState.usage.gpuSeconds < transactionState.spec.budgets.totalGpuSeconds, 'budget-exhausted', 'cannot resume after the experiment GPU budget is exhausted')
+      requireContract(currentRun.execution !== 'pausing', 'previous-resources-not-released', 'finish the pending pause before resuming')
+      setTrainingControl(currentRun, 'start', currentRun.execution !== 'running')
+      setEvaluationControl(currentRun, 'start', currentRun.execution !== 'running')
+      currentRun.execution = 'running'
+      delete currentRun.error
     })
     const run = await this.inspect(id, runId)
     // V2 resumes with a newer ordered intent; v1 retains its original submit API.
@@ -456,28 +506,30 @@ export class ModelTrainingCoordinator {
   }
 
   async publish(id: string, publisher: ModelPublisher, rollbackReleaseId?: string): Promise<T.ModelRelease> {
-    const intent = await this.store.transaction(id, s => {
-      if (s.activationIntent) {
-        requireContract(s.activationIntent.rollbackReleaseId === rollbackReleaseId, 'activation-pending', 'reconcile the pending activation before choosing a different release')
-        return s.activationIntent
+    const intent = await this.store.transaction(id, transactionState => {
+      if (transactionState.activationIntent) {
+        requireContract(transactionState.activationIntent.rollbackReleaseId === rollbackReleaseId, 'activation-pending', 'reconcile the pending activation before choosing a different release')
+        return transactionState.activationIntent
       }
-      const old = rollbackReleaseId ? s.releases.find(r => r.id === rollbackReleaseId) : undefined
+      const old = rollbackReleaseId ? transactionState.releases.find(release => release.id === rollbackReleaseId) : undefined
       requireContract(!rollbackReleaseId || old, 'unknown-release', 'rollback requires an existing sealed release')
-      const modelRef = old?.modelRef ?? s.champion.modelRef
-      s.activationIntent = { id: `activation_${randomUUID().replaceAll('-', '')}`, modelRef, expectedReleaseId: s.activeReleaseId ?? null,
+      const modelRef = old?.modelRef ?? transactionState.champion.modelRef
+      transactionState.activationIntent = { id: `activation_${randomUUID().replaceAll('-', '')}`, modelRef, expectedReleaseId: transactionState.activeReleaseId ?? null,
         ...(rollbackReleaseId ? { rollbackReleaseId } : {}) }
-      return structuredClone(s.activationIntent)
+      return structuredClone(transactionState.activationIntent)
     })
     const model = parseModelVersion(await this.store.readJson(intent.modelRef))
     const activated = await publisher.activate(model, intent.id)
     requireContract(activated.active === true && activated.activationId === intent.id && activated.modelVersionId === model.id, 'activation-unconfirmed', 'release remains unchanged until activation is confirmed')
-    return this.store.transaction(id, s => {
-      const existing = s.releases.find(r => r.activationId === intent.id)
+    return this.store.transaction(id, transactionState => {
+      const existing = transactionState.releases.find(release => release.activationId === intent.id)
       if (existing) return existing
-      requireContract(s.activationIntent?.id === intent.id && (s.activeReleaseId ?? null) === intent.expectedReleaseId, 'release-cas-conflict', 'active release changed during activation')
+      requireContract(transactionState.activationIntent?.id === intent.id && (transactionState.activeReleaseId ?? null) === intent.expectedReleaseId, 'release-cas-conflict', 'active release changed during activation')
       const release: T.ModelRelease = { id: `release_${randomUUID().replaceAll('-', '')}`, modelRef: intent.modelRef, activatedAt: new Date().toISOString(),
-        activationId: intent.id, ...(s.activeReleaseId ? { previousReleaseId: s.activeReleaseId } : {}) }
-      s.releases.push(release); s.activeReleaseId = release.id; delete s.activationIntent
+        activationId: intent.id, ...(transactionState.activeReleaseId ? { previousReleaseId: transactionState.activeReleaseId } : {}) }
+      transactionState.releases.push(release)
+      transactionState.activeReleaseId = release.id
+      delete transactionState.activationIntent
       return release
     })
   }
