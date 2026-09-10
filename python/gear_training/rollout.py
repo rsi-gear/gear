@@ -164,11 +164,16 @@ async def collect_rollout(args, rollout_id, job_dir):
 
     try:
         attempt = 0
+        # The committed update cursor also determines the next task window.
+        # Restarting at task zero would starve the dataset suffix whenever B is
+        # smaller than the task count. Recovery keeps rollout_id unchanged, and
+        # sealed replay bypasses collection entirely.
+        task_start = rollout_id * request["trainer"]["rolloutBatchSize"]
         while len(groups) < request["trainer"]["rolloutBatchSize"]:
             usage = ledger.usage()
             if time.monotonic() >= deadline or usage["rolloutTokens"] >= budget["maxRolloutTokens"] or usage["groupResamples"] > budget["maxGroupResamples"]:
                 raise NoUpdate("budget cannot supply B complete GRPO groups; last rejection: " + str(last_error))
-            task = request["trainDataset"]["tasks"][attempt % len(request["trainDataset"]["tasks"])]
+            task = request["trainDataset"]["tasks"][(task_start + attempt) % len(request["trainDataset"]["tasks"])]
             group_id = lease["batchId"] + "-group-" + str(attempt)
             attempt += 1
             samples = []

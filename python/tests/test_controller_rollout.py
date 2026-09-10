@@ -8,7 +8,7 @@ import types
 import unittest
 from unittest.mock import Mock, patch
 
-from gear_training.content import digest_bytes
+from gear_training.content import atomic_json, digest_bytes
 from gear_training.episodes import EpisodeJournal
 from gear_training.rollout import collect_rollout
 from episode_fixture import EpisodeFixture
@@ -16,6 +16,56 @@ from episode_fixture import EpisodeFixture
 
 @unittest.skipUnless(importlib.util.find_spec("aiohttp"), "install the gateway extra for the real HTTP fixture")
 class ControllerRolloutTest(unittest.IsolatedAsyncioTestCase):
+    async def collect_tasks(self, rollout_ids, batch_size=1):
+        with tempfile.TemporaryDirectory() as root:
+            f = EpisodeFixture(root)
+            self.addCleanup(f.close)
+            f.request["trainer"]["rolloutBatchSize"] = batch_size
+            f.request["trainDataset"]["tasks"] = [
+                {**f.request["trainDataset"]["tasks"][0], "id": name}
+                for name in ("train-a", "train-b", "train-c")]
+            with socket.socket() as bound:
+                bound.bind(("127.0.0.1", 0)); f.config["gatewayPort"] = bound.getsockname()[1]
+            args = types.SimpleNamespace(rollout_batch_size=batch_size, n_samples_per_prompt=2,
+                global_batch_size=2, advantage_estimator="grpo", hf_checkpoint="fixture")
+            selected = []
+            async def controller():
+                completed = set()
+                while len(completed) < batch_size * 2:
+                    for entry in f.journal.list(renew=True)["entries"]:
+                        intent = entry["intent"]
+                        if intent["id"] in completed: continue
+                        f.generate(intent)
+                        result = f.feedback(intent, reward=intent["context"]["slot"])
+                        f.journal.resolve(f.address(intent), result)
+                        if intent["context"]["slot"] == 0:
+                            selected.append(intent["context"]["taskId"])
+                        completed.add(intent["id"])
+                    await asyncio.sleep(.01)
+            transformer = types.SimpleNamespace(AutoTokenizer=types.SimpleNamespace(from_pretrained=Mock(return_value=object())))
+            with patch.dict(sys.modules, {"transformers": transformer}), \
+                 patch("gear_training.rollout.slime_protocol", return_value=(Mock(), Mock())):
+                for rollout_id in rollout_ids:
+                    f.lease["batchId"] = "batch-" + str(rollout_id)
+                    f.persist()
+                    runtime_path = f.directory / "runtime.json"
+                    runtime = json.loads(runtime_path.read_text())
+                    atomic_json(runtime_path, {**runtime, "rolloutId": rollout_id})
+                    # A resumed fixture has no preceding live lease.
+                    if rollout_id != 0 and f.ledger.lease("batch-0")["state"] == "serving":
+                        f.ledger.drain("batch-0"); f.ledger.close_lease("batch-0")
+                    await asyncio.wait_for(asyncio.gather(collect_rollout(args, rollout_id, f.directory), controller()), timeout=15)
+            return selected
+
+    async def test_successive_updates_cover_tasks_beyond_the_first_batch(self):
+        self.assertEqual(await self.collect_tasks([0, 1, 2]), ["train-a", "train-b", "train-c"])
+
+    async def test_resumed_update_starts_at_its_committed_task_position(self):
+        self.assertEqual(await self.collect_tasks([2]), ["train-c"])
+
+    async def test_multiple_groups_wrap_across_the_dataset_between_updates(self):
+        self.assertEqual(await self.collect_tasks([1, 2], batch_size=2), ["train-c", "train-a", "train-b", "train-c"])
+
     async def test_v2_full_batch_uses_controller_journal_and_exact_gateway_without_hitch_on_node(self):
         import aiohttp
         with tempfile.TemporaryDirectory() as root:

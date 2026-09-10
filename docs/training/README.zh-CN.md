@@ -23,6 +23,8 @@ Slime 管理训练 SGLang；Hitch 管理不可变 HF 模型的评估 SGLang。v1
 
 每次生成都保存原始 native 输入/输出 token IDs、生成时 weight_version、behavior logprobs、采样参数及请求/响应。工具观察的 loss mask 和 logprob 为 0；模型 token 才参与 loss。prefix 不连续、length/abort、缺少 terminal、verifier 无效或版本漂移会拒绝整个 episode/group。有效 reward=0 保留。凑不满完整 B×G batch 时明确 no-update，不将空/不足 batch 交给 Slime。
 
+训练任务按冻结列表循环选择，每个 update 从 `rollout_id × B` 开始，组重采样继续向后选择任务。恢复使用已提交的 update cursor，封存 batch 重放直接保留原样本；不会在每次 update 都退回训练集开头。
+
 精确数据只供已授权的 train split。dev/held-out 不进入 TrainingRequest；held-out 逐任务证据仅保存在控制端 CAS。跨 split 同 task、同内容或同 family 会被拒绝。reference 模型、tokenizer、template、verifier、recipe 和 optimizer compatibility 均固定。
 
 ## 配置和不可变输入

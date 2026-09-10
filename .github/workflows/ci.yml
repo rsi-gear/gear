@@ -29,7 +29,9 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install CPU training bridge dependencies
-        run: python -m pip install ./python
+        run: |
+          python -m pip install './python[gateway]'
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
       - name: Install sandbox dependencies
         run: |
           sudo apt-get update
