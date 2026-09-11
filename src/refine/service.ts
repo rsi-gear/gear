@@ -1,3 +1,4 @@
+import { isAbsolute } from 'node:path'
 import type { CandidateWorkspaceHandle, CandidateWorkspaceManager } from '../candidate/workspace.js'
 import { ComponentRegistry } from '../evolution/components.js'
 import type { HarnessBuilder } from '../harness/builder.js'
@@ -24,6 +25,8 @@ import { CandidateDiagnosisStore, type CandidateDiagnosisRecord } from '../state
 import { resolveChampionParent } from './champion-parent.js'
 import type { CandidateGenerationBudgetStatus } from '../types.js'
 import { prepareSeedExperienceSnapshot } from '../experience/memory.js'
+import type { ExperienceUsageReader } from '../experience/usage.js'
+import { HitchNativeExperienceUsageReader } from '../experience/hitch-native-usage.js'
 import {
   parseBaselineSourceRequest,
   prepareBaselineSource,
@@ -51,6 +54,8 @@ export interface RefineServiceOptions {
   maxLiveMetaSessions: number
   /** Enables the sealed V1 policy for newly-created skill-first evolutions. */
   experienceMemoryEnabled?: boolean
+  /** Optional read-only observer used to enrich newly prepared experience snapshots. */
+  experienceUsageReader?: ExperienceUsageReader
   createEvaluator?: (spec: EvolutionSpec) => RefineEvaluator
   validateRuntime?: (spec: EvolutionSpec) => void | Promise<void>
 }
@@ -514,6 +519,7 @@ export class RefineService {
   private readonly repairs = new Map<string, ActiveEvaluationRepair>()
   private readonly runtimes = new Map<string, EvolutionRuntime>()
   private readonly drives = new Set<Promise<void>>()
+  private readonly nativeExperienceUsageReaders = new Map<string, ExperienceUsageReader>()
   private disposed = false
 
   constructor(
@@ -525,6 +531,28 @@ export class RefineService {
     readonly options: RefineServiceOptions,
     readonly components = new ComponentRegistry(),
   ) {}
+
+  private experienceUsageReader(spec: Readonly<EvolutionSpec>): ExperienceUsageReader | undefined {
+    if (this.options.experienceUsageReader !== undefined) return this.options.experienceUsageReader
+    if (spec.rollout.provider.id !== 'hitch-cli') return undefined
+    const config = typeof spec.rollout.provider.config === 'object' && spec.rollout.provider.config !== null
+      && !Array.isArray(spec.rollout.provider.config)
+      ? spec.rollout.provider.config as Record<string, unknown>
+      : undefined
+    const controlPlane = typeof config?.controlPlane === 'object' && config.controlPlane !== null
+      && !Array.isArray(config.controlPlane)
+      ? config.controlPlane as Record<string, unknown>
+      : undefined
+    const root = config?.root
+    if (config?.harnessId !== 'deepseek' || typeof root !== 'string' || !isAbsolute(root)
+      || controlPlane?.mode === 'daemon') return undefined
+    let reader = this.nativeExperienceUsageReaders.get(root)
+    if (reader === undefined) {
+      reader = new HitchNativeExperienceUsageReader({ root })
+      this.nativeExperienceUsageReaders.set(root, reader)
+    }
+    return reader
+  }
 
   async initialize(): Promise<void> {
     this.assertAvailable()
@@ -1421,9 +1449,14 @@ export class RefineService {
     this.active.set(roundId, active)
     try {
       if (evolution.spec.experienceMemory?.enabled === true) {
+        const usageReader = this.experienceUsageReader(evolution.spec)
         round = {
           ...round,
-          experienceSnapshot: await prepareSeedExperienceSnapshot(evolution.spec, evolution.store, roundId),
+          experienceSnapshot: await prepareSeedExperienceSnapshot(evolution.spec, evolution.store, roundId, {
+            artifactReader: this.builder,
+            ...(usageReader === undefined ? {} : { usageReader }),
+            signal: active.abort.signal,
+          }),
         }
       }
       await evolution.store.writeRound(round)
@@ -2561,9 +2594,14 @@ export class RefineService {
       previous.advisoryFocus,
     )
     if (previous.evolution.spec.experienceMemory?.enabled === true) {
+      const usageReader = this.experienceUsageReader(previous.evolution.spec)
       round = {
         ...round,
-        experienceSnapshot: await prepareSeedExperienceSnapshot(previous.evolution.spec, previous.evolution.store, roundId),
+        experienceSnapshot: await prepareSeedExperienceSnapshot(previous.evolution.spec, previous.evolution.store, roundId, {
+          artifactReader: this.builder,
+          ...(usageReader === undefined ? {} : { usageReader }),
+          signal: active.abort.signal,
+        }),
       }
     }
     await previous.evolution.store.writeRound(round)

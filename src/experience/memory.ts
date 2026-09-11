@@ -1,5 +1,16 @@
 import { digestJson } from '../state/digest.js'
 import type { RefineStateStore } from '../state/store.js'
+import {
+  enrichSeedExperienceUse,
+  experienceCandidateRunIds,
+  isReusableSeedExperienceUse,
+  resolveExperienceChangedArtifacts,
+  seedExperienceUseBaseDigest,
+  type ExperienceArtifactReader,
+  type ExperienceChangedArtifactInput,
+  type ExperienceUsageReadResult,
+  type ExperienceUsageReader,
+} from './usage.js'
 import type {
   CandidateDiffFile,
   CandidateRecord,
@@ -49,6 +60,12 @@ export interface RankedSeedExperience {
   record: SeedExperienceRecord
   score: number
   matchReasons: string[]
+}
+
+export interface PrepareSeedExperienceSnapshotOptions {
+  artifactReader: ExperienceArtifactReader
+  usageReader?: ExperienceUsageReader
+  signal?: AbortSignal
 }
 
 function boundedUtf8(value: string, maxBytes: number): string {
@@ -322,11 +339,12 @@ export async function prepareSeedExperienceSnapshot(
   spec: Readonly<EvolutionSpec>,
   store: RefineStateStore,
   currentRoundId: string,
+  options?: PrepareSeedExperienceSnapshotOptions,
 ): Promise<SeedExperienceSnapshot> {
   const rounds = (await store.listRounds())
     .filter(round => round.evolutionId === spec.evolutionId && round.roundId !== currentRoundId)
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.roundId.localeCompare(right.roundId))
-  const records: SeedExperienceRecord[] = []
+  let records: SeedExperienceRecord[] = []
   for (const round of rounds) {
     for (const candidate of round.candidatePool) {
       const record = extractSeedExperienceRecord(spec, round, candidate)
@@ -335,6 +353,65 @@ export async function prepareSeedExperienceSnapshot(
   }
   if (records.length > EXPERIENCE_V1_MAX_SNAPSHOT_RECORDS) {
     throw new Error(`seed experience snapshot exceeds the V1 limit of ${EXPERIENCE_V1_MAX_SNAPSHOT_RECORDS} records`)
+  }
+  if (options !== undefined && records.length > 0) {
+    const signal = options.signal ?? new AbortController().signal
+    const reused = new Array<boolean>(records.length).fill(false)
+    const priorSnapshot = [...rounds].reverse().find(round => round.experienceSnapshot !== undefined)?.experienceSnapshot
+    if (priorSnapshot !== undefined) {
+      signal.throwIfAborted()
+      try {
+        const prior = await loadSeedExperienceSnapshot(store, priorSnapshot)
+        const byRecordId = new Map(prior.records.map(record => [record.recordId, record]))
+        records = records.map((record, index) => {
+          const candidate = byRecordId.get(record.recordId)
+          if (candidate === undefined || !isReusableSeedExperienceUse(candidate)
+            || seedExperienceUseBaseDigest(candidate) !== record.seedProjectionDigest) return record
+          reused[index] = true
+          return candidate
+        })
+      } catch {
+        // A prior frozen snapshot remains independently readable; retry derivation for this new snapshot.
+      }
+      signal.throwIfAborted()
+    }
+    const resolved = new Array<ExperienceChangedArtifactInput[] | undefined>(records.length)
+    let next = 0
+    const resolveWorker = async (): Promise<void> => {
+      while (true) {
+        signal.throwIfAborted()
+        const index = next++
+        if (index >= records.length) return
+        if (reused[index]) continue
+        try { resolved[index] = await resolveExperienceChangedArtifacts(records[index]!, options.artifactReader) }
+        catch {
+          signal.throwIfAborted()
+          resolved[index] = undefined
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(4, records.length) }, resolveWorker))
+    const runIds = uniqueSorted(records.flatMap((record, index) => reused[index] || resolved[index] === undefined
+      ? []
+      : experienceCandidateRunIds(record)))
+    let reads = new Map<string, ExperienceUsageReadResult>()
+    if (runIds.length > 0 && options.usageReader !== undefined && spec.rollout.provider.id === 'hitch-cli') {
+      try { reads = await options.usageReader.readRuns(runIds, signal) }
+      catch (error) {
+        signal.throwIfAborted()
+        if (error instanceof Error && error.name === 'AbortError') throw error
+      }
+    }
+    records = records.map((record, index) => reused[index]
+      ? record
+      : enrichSeedExperienceUse(
+          record,
+          resolved[index] ?? record.change.files.map(file => ({
+            identity: { path: file.path, change: file.change },
+          })),
+          reads,
+        ))
+    signal.throwIfAborted()
   }
   for (const record of records) await store.writeExperienceRecord(record)
   const members = records.map(record => ({
@@ -385,6 +462,91 @@ function compactList(values: readonly string[], maxItems = 6): string {
   return `${values.slice(0, maxItems).map(value => boundedUtf8(value, 160)).join(', ')}${values.length > maxItems ? ` (+${values.length - maxItems} more)` : ''}`
 }
 
+function quantitativeUseLines(record: Readonly<SeedExperienceRecord>): string[] {
+  const use = record.observation.modificationUse
+  if (use === undefined) return []
+  const counts = use.statusCounts
+  const conditionedObserved = use.conditionedResults.find(item => item.status === 'observed')
+  const lines = [
+    `Modified-resource use: exact use of any changed artifact was observed in ${counts.observed}/${use.candidateTrials} candidate trials; only failed attempts ${counts['attempted-failure']}; no exact match in fully verified listed files ${counts['not-observed']}; unknown ${counts.unknown}.`,
+  ]
+  if (conditionedObserved !== undefined && conditionedObserved.validPairs > 0) {
+    lines.push(`Observed-use paired results: ${conditionedObserved.validPairs} valid pairs across ${conditionedObserved.taskCount} tasks; parent mean ${conditionedObserved.baselineMean!.toFixed(6)} → candidate mean ${conditionedObserved.candidateMean!.toFixed(6)} (delta ${conditionedObserved.meanRewardDelta!.toFixed(6)}).`)
+  }
+  const groups = new Map<string, {
+    taskName: string
+    valid: SeedExperiencePairedTaskResult[]
+    excluded: SeedExperienceExcludedTaskResult[]
+  }>()
+  for (const item of record.observation.taskResults) {
+    const group = groups.get(item.taskName) ?? { taskName: item.taskName, valid: [], excluded: [] }
+    group.valid.push(item)
+    groups.set(item.taskName, group)
+  }
+  for (const item of record.observation.excludedTaskResults) {
+    const group = groups.get(item.taskName) ?? { taskName: item.taskName, valid: [], excluded: [] }
+    group.excluded.push(item)
+    groups.set(item.taskName, group)
+  }
+  const facts = [...groups.values()].filter(group => group.valid.length > 0).map(group => {
+    const all = [...group.valid, ...group.excluded]
+    const statusCounts = { observed: 0, failed: 0, noMatch: 0, unknown: 0 }
+    for (const item of all) {
+      const status = item.candidate.modificationUse?.status ?? 'unknown'
+      if (status === 'observed') statusCounts.observed += 1
+      else if (status === 'attempted-failure') statusCounts.failed += 1
+      else if (status === 'not-observed') statusCounts.noMatch += 1
+      else statusCounts.unknown += 1
+    }
+    const binary = group.valid.every(item => [0, 1].includes(item.baseline.reward)
+      && [0, 1].includes(item.candidate.reward))
+    const baselineMean = group.valid.reduce((sum, item) => sum + item.baseline.reward, 0) / group.valid.length
+    const candidateMean = group.valid.reduce((sum, item) => sum + item.candidate.reward, 0) / group.valid.length
+    return {
+      ...group,
+      statusCounts,
+      binary,
+      baselineMean,
+      candidateMean,
+      delta: candidateMean - baselineMean,
+      total: all.length,
+    }
+  })
+  const selected: typeof facts = []
+  const seen = new Set<string>()
+  const add = (items: readonly (typeof facts)[number][]): void => {
+    for (const item of items) {
+      if (selected.length >= 4) return
+      if (seen.has(item.taskName)) continue
+      seen.add(item.taskName)
+      selected.push(item)
+    }
+  }
+  const observed = facts.filter(item => item.statusCounts.observed > 0)
+  add([...observed].filter(item => item.delta > 0)
+    .sort((left, right) => right.delta - left.delta || left.taskName.localeCompare(right.taskName)).slice(0, 1))
+  add([...facts].filter(item => item.delta < 0)
+    .sort((left, right) => left.delta - right.delta || left.taskName.localeCompare(right.taskName)).slice(0, 1))
+  add([...observed].sort((left, right) => right.statusCounts.observed - left.statusCounts.observed
+    || Math.abs(right.delta) - Math.abs(left.delta) || left.taskName.localeCompare(right.taskName)))
+  add([...facts].sort((left, right) => Math.abs(right.delta) - Math.abs(left.delta)
+    || left.taskName.localeCompare(right.taskName)))
+  if (selected.length > 0) {
+    lines.push(`Paired task facts: ${selected.map(item => {
+      const outcome = item.binary
+        ? `successes ${item.valid.filter(row => row.baseline.reward === 1).length}/${item.valid.length}→${item.valid.filter(row => row.candidate.reward === 1).length}/${item.valid.length}`
+        : `mean ${item.baselineMean.toFixed(6)}→${item.candidateMean.toFixed(6)}`
+      const useFacts = [`use ${item.statusCounts.observed}/${item.total}`]
+      if (item.statusCounts.failed > 0) useFacts.push(`failed ${item.statusCounts.failed}`)
+      if (item.statusCounts.noMatch > 0) useFacts.push(`no-match ${item.statusCounts.noMatch}`)
+      if (item.statusCounts.unknown > 0) useFacts.push(`unknown ${item.statusCounts.unknown}`)
+      return `${boundedUtf8(item.taskName, 100)}: ${item.valid.length} valid, ${item.excluded.length} excluded; ${outcome}; ${useFacts.join(', ')}`
+    }).join('; ')}.`)
+  }
+  lines.push('Interpretation: exact recorded use is descriptive and does not prove that the changed branch or resource caused an outcome.')
+  return lines
+}
+
 export function renderSeedExperienceCard(
   record: Readonly<SeedExperienceRecord>,
   matchReasons: readonly string[] = [],
@@ -395,11 +557,14 @@ export function renderSeedExperienceCard(
   const markdown = boundedUtf8([
     `Experience ${record.recordId}`,
     `Observed candidate-vs-parent seed result: ${record.classification.effect} (${record.classification.coverage} coverage); ${observed}`,
+    `Changed paths: ${compactList(record.change.files.map(file => file.path))}`,
+    ...quantitativeUseLines(record),
     `Task support — gains: ${compactList(record.classification.gainedTasks)}; regressions: ${compactList(record.classification.regressedTasks)}; unchanged: ${compactList(record.classification.unchangedTasks)}.`,
-    'Interpretation: descriptive paired observations only; no causal or statistical-significance claim.',
+    ...(record.observation.modificationUse === undefined
+      ? ['Interpretation: descriptive paired observations only; no causal or statistical-significance claim.']
+      : []),
     `Claimed rationale: ${boundedUtf8(record.proposal.rationale, 420)}`,
     `Claimed expected outcome: ${boundedUtf8(record.proposal.expectedOutcome, 420)}`,
-    `Changed paths: ${compactList(record.change.files.map(file => file.path))}`,
   ].join('\n'), EXPERIENCE_V1_MAX_CARD_BYTES)
   return {
     recordId: record.recordId,

@@ -917,13 +917,13 @@ export class RefineCapabilities {
       throw new TypeError(`experience read limit must be between 1 and ${EXPERIENCE_V1_MAX_READ_ITEMS}`)
     }
     if (view === 'record') {
-      const page = this.experiencePage(base, experience.change.files.map(file => ({
+      const files = experience.change.files.map(file => ({
         ...file,
         path: this.experienceText(file.path, round.heldOutRef, 500),
-      })), offset, limit)
+      }))
       const rationale = this.experienceText(experience.proposal.rationale, round.heldOutRef, 8 * 1024)
       const expectedOutcome = this.experienceText(experience.proposal.expectedOutcome, round.heldOutRef, 8 * 1024)
-      const response = {
+      const response = (visibleFiles: readonly unknown[], nextOffset?: number) => ({
         ...base,
         record: {
           schemaVersion: experience.schemaVersion,
@@ -940,7 +940,7 @@ export class RefineCapabilities {
           change: {
             patchDigest: experience.change.patchDigest,
             totalBytes: experience.change.totalBytes,
-            files: page.items,
+            files: visibleFiles,
           },
           observation: {
             comparison: experience.observation.comparison,
@@ -954,28 +954,65 @@ export class RefineCapabilities {
               candidateMean: experience.observation.candidateMean,
               meanRewardDelta: experience.observation.meanRewardDelta,
             }),
+            ...(experience.observation.modificationUse === undefined ? {} : {
+              modificationUse: {
+                ...experience.observation.modificationUse,
+                artifacts: experience.observation.modificationUse.artifacts
+                  .slice(offset, offset + visibleFiles.length)
+                  .map(artifact => ({
+                    ...artifact,
+                    path: this.experienceText(artifact.path, round.heldOutRef, 500),
+                  })),
+              },
+            }),
           },
           classification: experience.classification,
         },
         offset,
-        ...(page.nextOffset === undefined ? {} : { nextOffset: page.nextOffset }),
+        ...(nextOffset === undefined ? {} : { nextOffset }),
+      })
+      const visibleFiles: unknown[] = []
+      let index = offset
+      while (index < files.length && visibleFiles.length < limit) {
+        const nextFiles = [...visibleFiles, files[index]]
+        const nextOffset = index + 1 < files.length ? index + 1 : undefined
+        if (this.experienceResponseBytes(response(nextFiles, nextOffset), round.heldOutRef)
+          > EXPERIENCE_V1_MAX_READ_BYTES - 256) break
+        visibleFiles.push(files[index])
+        index += 1
       }
-      return response
+      if (index < files.length && visibleFiles.length === 0) {
+        throw new Error('one seed experience record file exceeds the fixed response limit')
+      }
+      return response(visibleFiles, index < files.length ? index : undefined)
     }
     if (view === 'task-results') {
       const items = [
         ...experience.observation.taskResults,
         ...experience.observation.excludedTaskResults,
       ].sort((left, right) => left.trialKey.localeCompare(right.trialKey)).map(item => this.publicExperienceTask(item, round.heldOutRef))
-      const page = this.experiencePage(base, items, offset, limit)
-      return {
+      const pageBase = {
         ...base,
         coverage: {
           planned: experience.observation.planned,
           valid: experience.observation.valid,
           excluded: experience.observation.excluded,
         },
+        ...(experience.observation.modificationUse === undefined ? {} : {
+          modificationUse: {
+            schemaVersion: experience.observation.modificationUse.schemaVersion,
+            extractorVersion: experience.observation.modificationUse.extractorVersion,
+            candidateTrials: experience.observation.modificationUse.candidateTrials,
+            statusCounts: experience.observation.modificationUse.statusCounts,
+            validPairStatusCounts: experience.observation.modificationUse.validPairStatusCounts,
+            conditionedResults: experience.observation.modificationUse.conditionedResults,
+          },
+        }),
         offset,
+      }
+      const page = this.experiencePage(pageBase, items, offset, limit)
+      return {
+        ...pageBase,
         results: page.items,
         ...(page.nextOffset === undefined ? {} : { nextOffset: page.nextOffset }),
       }
@@ -1058,7 +1095,10 @@ export class RefineCapabilities {
     let index = offset
     while (index < items.length && visible.length < limit) {
       const next = [...visible, items[index]]
-      if (Buffer.byteLength(JSON.stringify({ ...base, results: next })) > EXPERIENCE_V1_MAX_READ_BYTES - 512) break
+      if (Buffer.byteLength(JSON.stringify({ ...base, results: next })) > EXPERIENCE_V1_MAX_READ_BYTES - 512) {
+        if (visible.length === 0) throw new Error('one seed experience item exceeds the fixed response limit')
+        break
+      }
       visible.push(items[index])
       index += 1
     }
@@ -1070,13 +1110,51 @@ export class RefineCapabilities {
       | SeedExperienceRecord['observation']['excludedTaskResults'][number],
     heldOutRef: string,
   ): Record<string, unknown> {
-    const side = (value: typeof item.baseline): Record<string, unknown> => ({
-      status: value.status,
-      ...(value.trialName === undefined ? {} : { trialName: this.experienceText(value.trialName, heldOutRef, 300) }),
-      ...(value.runId === undefined ? {} : { runId: boundedUtf8(value.runId, 160) }),
-      ...(value.attempt === undefined ? {} : { attempt: value.attempt }),
-      ...(value.reward === undefined ? {} : { reward: value.reward }),
-    })
+    const side = (value: typeof item.baseline): Record<string, unknown> => {
+      const modificationUse = value.modificationUse
+      const prioritizedArtifacts = modificationUse === undefined
+        ? []
+        : [...modificationUse.artifacts].sort((left, right) => {
+            const priority = { observed: 0, 'attempted-failure': 1, unknown: 2, 'not-observed': 3 }
+            return priority[left.status] - priority[right.status] || left.path.localeCompare(right.path)
+          })
+      let actionExamples = 8
+      const visibleArtifacts = prioritizedArtifacts.slice(0, 12).map(artifact => {
+        const actions = artifact.actions.slice(0, actionExamples)
+        actionExamples -= actions.length
+        return {
+          ...artifact,
+          path: this.experienceText(artifact.path, heldOutRef, 500),
+          actions: actions.map(action => ({
+            ...action,
+            sessionId: boundedUtf8(action.sessionId, 200),
+            sourcePath: this.experienceText(action.sourcePath, heldOutRef, 500),
+            ...(action.callId === undefined ? {} : { callId: boundedUtf8(action.callId, 300) }),
+            ...(action.toolName === undefined ? {} : { toolName: boundedUtf8(action.toolName, 100) }),
+          })),
+          ...((artifact.observedActionCount + artifact.failedActionCount) <= actions.length ? {} : {
+            actionExamplesOmitted: artifact.observedActionCount + artifact.failedActionCount - actions.length,
+          }),
+        }
+      })
+      return {
+        status: value.status,
+        ...(value.trialName === undefined ? {} : { trialName: this.experienceText(value.trialName, heldOutRef, 300) }),
+        ...(value.runId === undefined ? {} : { runId: boundedUtf8(value.runId, 160) }),
+        ...(value.attempt === undefined ? {} : { attempt: value.attempt }),
+        ...(value.reward === undefined ? {} : { reward: value.reward }),
+        ...(modificationUse === undefined ? {} : {
+          modificationUse: {
+            ...modificationUse,
+            artifactCount: modificationUse.artifacts.length,
+            artifacts: visibleArtifacts,
+            ...(prioritizedArtifacts.length <= visibleArtifacts.length ? {} : {
+              artifactsOmitted: prioritizedArtifacts.length - visibleArtifacts.length,
+            }),
+          },
+        }),
+      }
+    }
     return {
       valid: item.valid,
       trialKey: boundedUtf8(item.trialKey, 600),

@@ -1142,12 +1142,90 @@ export interface CandidateSeedComparison {
 
 export type SeedExperienceEffect = 'improved' | 'regressed' | 'mixed' | 'unchanged' | 'insufficient'
 
+export type SeedExperienceUseStatus = 'observed' | 'attempted-failure' | 'not-observed' | 'unknown'
+export type SeedExperienceUseAction = 'read' | 'execute' | 'injected'
+
+export interface SeedExperienceChangedArtifact {
+  path: string
+  change: CandidateDiffFile['change']
+  parentDigest?: string
+  candidateDigest?: string
+}
+
+export interface SeedExperienceUseActionEvidence {
+  action: SeedExperienceUseAction
+  outcome: 'completed' | 'errored'
+  sessionId: string
+  delegationDepth: number
+  sourcePath: string
+  sourceDigest: string
+  callSeq?: number
+  resultSeq?: number
+  callId?: string
+  toolName?: string
+  match:
+    | 'skill-name-and-body'
+    | 'skill-name-attempt'
+    | 'artifact-content'
+    | 'artifact-path-and-content'
+    | 'artifact-path-attempt'
+}
+
+export interface SeedExperienceArtifactUse {
+  path: string
+  status: SeedExperienceUseStatus
+  observedActionCount: number
+  failedActionCount: number
+  reason?: 'unsupported-artifact' | 'removed-artifact' | 'unverified-content' | 'source-unavailable'
+  /** Bounded examples; counts above retain the complete number of matches. */
+  actions: SeedExperienceUseActionEvidence[]
+}
+
+export interface SeedExperienceTrialUse {
+  status: SeedExperienceUseStatus
+  artifacts: SeedExperienceArtifactUse[]
+  source: {
+    extractorVersion: 'gear-experience-use-v1'
+    kind: 'dsh-native-events' | 'unavailable'
+    runId?: string
+    trajectoryManifestDigest?: string
+    mainSessionFiles: number
+    childSessionFiles: number
+    listedFiles: number
+    verifiedFiles: number
+    verifiedBytes: number
+    coverage: 'listed-files-complete' | 'partial' | 'unavailable'
+    reason?: string
+  }
+}
+
+export interface SeedExperienceUseConditionedResult {
+  status: SeedExperienceUseStatus
+  validPairs: number
+  taskCount: number
+  baselineMean?: number
+  candidateMean?: number
+  meanRewardDelta?: number
+}
+
+export interface SeedExperienceModificationUse {
+  schemaVersion: 1
+  extractorVersion: 'gear-experience-use-v1'
+  artifacts: SeedExperienceChangedArtifact[]
+  candidateTrials: number
+  statusCounts: Record<SeedExperienceUseStatus, number>
+  validPairStatusCounts: Record<SeedExperienceUseStatus, number>
+  conditionedResults: SeedExperienceUseConditionedResult[]
+}
+
 export interface SeedExperienceTrialSide {
   trialName?: string
   runId?: string
   attempt?: number
   status: 'completed' | 'errored' | 'missing'
   reward?: number
+  /** Observed use of this candidate's changed artifacts; absent on legacy records. */
+  modificationUse?: SeedExperienceTrialUse
 }
 
 export interface SeedExperiencePairedTaskResult {
@@ -1216,6 +1294,8 @@ export interface SeedExperienceRecord {
     candidateInvalid: number
     taskResults: SeedExperiencePairedTaskResult[]
     excludedTaskResults: SeedExperienceExcludedTaskResult[]
+    /** Immutable evidence derived before the containing round snapshot is frozen. */
+    modificationUse?: SeedExperienceModificationUse
     baselineMean?: number
     candidateMean?: number
     meanRewardDelta?: number

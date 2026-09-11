@@ -13,6 +13,7 @@ import {
   prepareSeedExperienceSnapshot,
   renderSeedExperienceCard,
 } from '../../src/experience/memory.js'
+import { enrichSeedExperienceUse, type ExperienceUsageReadResult } from '../../src/experience/usage.js'
 import { SkillMetaCoordinator, SkillMetaSessionManager, type SkillHarnessIdentity } from '../../src/meta/skill.js'
 import { RefineSkillGateway } from '../../src/skill/gateway.js'
 import { digestJson } from '../../src/state/digest.js'
@@ -350,6 +351,101 @@ describe('seed outcome experience memory', () => {
     expect((await store.readExperienceRecord(losingSecond.recordDigest))?.classification.effect).toBe('improved')
   })
 
+  it('enriches one shared historical scan and reuses complete frozen use evidence without IO', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'gear-experience-use-snapshot-'))
+    roots.push(root)
+    const store = new RefineStateStore(root, 'evo-1')
+    await store.initialize()
+    await store.writeRound(outcomeRound())
+    const contents = new Map([
+      [`${WINNER}:plugins/context.ts`, 'winner context'],
+      [`${LOSER}:plugins/tool.ts`, 'loser tool'],
+    ])
+    const artifact = (path: string, marker: string, content?: string) => ({
+      path,
+      digest: SHA(marker),
+      bytes: Buffer.byteLength(content ?? marker),
+    })
+    const manifests = new Map([
+      [PARENT, {
+        schemaVersion: 1 as const, dshBaseRef: 'dsh', toolchainRef: 'toolchain', sandboxProfileRef: 'sandbox',
+        artifacts: [artifact('plugins/context.ts', '1'), artifact('plugins/tool.ts', '2')], digest: SHA('a'),
+      }],
+      [WINNER, {
+        schemaVersion: 1 as const, dshBaseRef: 'dsh', toolchainRef: 'toolchain', sandboxProfileRef: 'sandbox',
+        artifacts: [artifact('plugins/context.ts', '3', 'winner context'), artifact('plugins/tool.ts', '2')], digest: SHA('b'),
+      }],
+      [LOSER, {
+        schemaVersion: 1 as const, dshBaseRef: 'dsh', toolchainRef: 'toolchain', sandboxProfileRef: 'sandbox',
+        artifacts: [artifact('plugins/context.ts', '1'), artifact('plugins/tool.ts', '4', 'loser tool')], digest: SHA('c'),
+      }],
+    ])
+    const artifactReader = {
+      readManifest: vi.fn(async (ref: string) => manifests.get(ref)!),
+      readHarnessFile: vi.fn(async (ref: string, path: string) => {
+        const content = contents.get(`${ref}:${path}`)!
+        const entry = manifests.get(ref)!.artifacts.find(item => item.path === path)!
+        return { content, digest: entry.digest, bytes: entry.bytes }
+      }),
+    }
+    const usageReader = {
+      readRuns: vi.fn(async (runIds: readonly string[]) => new Map(runIds.map(runId => {
+        const winner = ['4', '5', '6'].includes(runId.slice(4, 5))
+        const path = winner ? 'plugins/context.ts' : 'plugins/tool.ts'
+        const content = winner ? 'winner context' : 'loser tool'
+        const callId = `call-${runId}`
+        return [runId, { available: true as const, trace: {
+          schemaVersion: 1 as const,
+          kind: 'dsh-native-events' as const,
+          runId,
+          trajectoryManifestDigest: SHA('d'),
+          listedFiles: 1,
+          mainSessionFiles: 1,
+          childSessionFiles: 0,
+          coverage: 'listed-files-complete' as const,
+          files: [{
+            sourcePath: 'trajectory/provider/deepseek-session.jsonl',
+            sourceDigest: SHA('e'),
+            bytes: 10,
+            sessionId: 'session-main',
+            delegationDepth: 0,
+            events: [
+              { type: 'tool/call', seq: 1, data: { callId, name: 'read', arguments: { path } } },
+              { type: 'tool/result', seq: 2, data: { message: {
+                source: { kind: 'tool', callId },
+                content: [{ type: 'tool-result', toolCallId: callId, isError: false, content: [{ type: 'text', text: content }] }],
+              } } },
+            ],
+          }],
+        } }]
+      }))),
+    }
+    const first = await prepareSeedExperienceSnapshot(memorySpec(), store, 'first-future', {
+      artifactReader,
+      usageReader,
+    })
+    expect(usageReader.readRuns).toHaveBeenCalledTimes(1)
+    expect(usageReader.readRuns.mock.calls[0]![0]).toHaveLength(6)
+    for (const member of first.members) {
+      expect((await store.readExperienceRecord(member.recordDigest))?.observation.modificationUse?.statusCounts.observed).toBe(3)
+    }
+
+    const prior = currentRound(first).round
+    await store.writeRound(prior)
+    const unavailableArtifacts = {
+      readManifest: vi.fn(async () => { throw new Error('must reuse') }),
+      readHarnessFile: vi.fn(async () => { throw new Error('must reuse') }),
+    }
+    const unavailableUsage = { readRuns: vi.fn(async () => { throw new Error('must reuse') }) }
+    const second = await prepareSeedExperienceSnapshot(memorySpec(), store, 'second-future', {
+      artifactReader: unavailableArtifacts,
+      usageReader: unavailableUsage,
+    })
+    expect(second).toEqual(first)
+    expect(unavailableArtifacts.readManifest).not.toHaveBeenCalled()
+    expect(unavailableUsage.readRuns).not.toHaveBeenCalled()
+  })
+
   it('injects the direct parent plus only relevant losing cards under the hard assignment cap', async () => {
     const root = await mkdtemp(join(tmpdir(), 'gear-experience-context-'))
     roots.push(root)
@@ -677,6 +773,8 @@ describe('seed outcome experience memory', () => {
       }
     }
     const losing = source.candidatePool.find(item => item.candidateId === 'losing-candidate')!
+    losing.proposal!.rationale += 'r'.repeat(20 * 1024)
+    losing.proposal!.expectedOutcome += 'e'.repeat(20 * 1024)
     losing.diff!.files = Array.from({ length: 80 }, (_, index) => ({
       path: `plugins/"quoted-${index}-${secret}-${heldOut}-${'q'.repeat(410)}.ts`,
       change: 'modified' as const,
@@ -689,9 +787,55 @@ describe('seed outcome experience memory', () => {
     const current = currentRound(snapshot)
     await store.writeRound(current.round)
     const member = snapshot.members.find(item => item.candidateId === losing.candidateId)!
-    const ref = `experience_${member.recordDigest.slice('sha256:'.length)}`
     const record = (await store.readExperienceRecord(member.recordDigest))!
-    const historicalRun = record.observation.taskResults[0]!.candidate.runId!
+    const artifacts = record.change.files.map((file, index) => ({
+      identity: { path: file.path, change: file.change, candidateDigest: SHA((index % 10).toString()) },
+      candidateContent: `content-${index}`,
+    }))
+    const useReads = new Map<string, ExperienceUsageReadResult>()
+    for (const row of [...record.observation.taskResults, ...record.observation.excludedTaskResults]) {
+      const runId = row.candidate.runId
+      if (runId === undefined) continue
+      const events = artifacts.flatMap((artifact, index) => {
+        const callId = `call-${index}-${secret}`
+        return [
+          { type: 'tool/call', seq: index * 2 + 1, data: { callId, name: 'read', arguments: { path: artifact.identity.path } } },
+          { type: 'tool/result', seq: index * 2 + 2, data: { message: {
+            source: { kind: 'tool', callId },
+            content: [{
+              type: 'tool-result', toolCallId: callId, isError: false,
+              content: [{ type: 'text', text: artifact.candidateContent }],
+            }],
+          } } },
+        ]
+      })
+      useReads.set(runId, { available: true, trace: {
+        schemaVersion: 1,
+        kind: 'dsh-native-events',
+        runId,
+        trajectoryManifestDigest: SHA('8'),
+        listedFiles: 1,
+        mainSessionFiles: 1,
+        childSessionFiles: 0,
+        coverage: 'listed-files-complete',
+        files: [{
+          sourcePath: `trajectory/provider/${secret}-${heldOut}.jsonl`,
+          sourceDigest: SHA('9'),
+          bytes: 100,
+          sessionId: 'session-main',
+          delegationDepth: 0,
+          events: events as never,
+        }],
+      } })
+    }
+    const enriched = enrichSeedExperienceUse(record, artifacts, useReads)
+    await store.writeExperienceRecord(enriched)
+    member.recordDigest = enriched.recordDigest
+    snapshot.digest = digestJson({ schemaVersion: snapshot.schemaVersion, members: snapshot.members })
+    current.round.experienceSnapshot = snapshot
+    await store.writeRound(current.round)
+    const ref = `experience_${member.recordDigest.slice('sha256:'.length)}`
+    const historicalRun = enriched.observation.taskResults[0]!.candidate.runId!
     const historyMarker = 'HISTORY_DETAIL_MARKER'
     const tailMarker = 'HISTORY_FAILURE_TAIL'
     const longTranscript = `${'x'.repeat(20 * 1024)}${historyMarker}-${secret}-${heldOut}${'y'.repeat(20 * 1024)}${tailMarker}`
@@ -754,13 +898,24 @@ describe('seed outcome experience memory', () => {
     }) as { record: { classification: { regressedTasks: string[] }; change: { files: unknown[] } }; nextOffset: number }
     expect(assertPublic(visibleRecord)).toContain('[REDACTED_HELD_OUT]')
     expect(visibleRecord.record.classification.regressedTasks[0]).toContain('[REDACTED]')
-    expect(visibleRecord.record.change.files).toHaveLength(50)
-    expect(visibleRecord.nextOffset).toBe(50)
+    expect(visibleRecord.record.change.files.length).toBeGreaterThan(0)
+    expect(visibleRecord.record.change.files.length).toBeLessThan(50)
+    expect(visibleRecord.nextOffset).toBe(visibleRecord.record.change.files.length)
     const taskResults = await capabilities.call('refine-meta', 'meta', 'experience.read', {
       ref, view: 'task-results', limit: 50,
-    }) as { results: Array<{ trialKey: string }> }
+    }) as { results: Array<{ trialKey: string; candidate: { modificationUse: {
+      artifactCount: number
+      artifacts: Array<{ observedActionCount: number; actionExamplesOmitted?: number }>
+      artifactsOmitted: number
+    } } }> }
     assertPublic(taskResults)
     expect(taskResults.results.some(item => item.trialKey.includes('[REDACTED]'))).toBe(true)
+    expect(taskResults.results[0]!.candidate.modificationUse).toMatchObject({
+      artifactCount: 80,
+      artifactsOmitted: 68,
+    })
+    expect(taskResults.results[0]!.candidate.modificationUse.artifacts
+      .reduce((sum, artifact) => sum + (artifact.actionExamplesOmitted ?? 0), 0)).toBeGreaterThan(0)
 
     const firstDiff = await capabilities.call('refine-meta', 'meta', 'experience.read', {
       ref, view: 'diff', limit: 50,

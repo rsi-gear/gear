@@ -4,6 +4,23 @@
 
 已交付范围是 seed-only 不可变 record、逐轮 snapshot、最多三张自动卡片（含 direct parent）、确定性 `experience.query`、有界 `experience.read` 及历史 seed trajectory 下钻。现有未启用 evolution 保持原行为。尚未交付、也不属于本次 V1 的是 curator/跨案例 lesson、磁盘 Markdown 视图、可重建持久搜索索引或向量库、独立持久化的 experience access audit / `experienceRefs` attribution、跨 evolution 导入，以及 DSH-owned adapter 接入。文末公开源码核查仍是设计背景，并非重新运行论文实验。
 
+### 2026-09-11：已交付修改资源使用证据
+
+新生成的 V1 record 可选保存 `observation.modificationUse`，并在每个 candidate trial 上保存有界的逐资源证据。旧 record 不补写字段，旧 snapshot 仍指向原 digest。后续 snapshot 会在冻结前为可读取的历史 seed trial 派生证据；已经完整校验来源的派生记录可从最近的冻结 snapshot 复用。来源不完整、预算不足和临时读取失败会在未来 snapshot 重试；完整来源中的 unsupported 等 `unknown` 仍保持未知，提取器版本变化时再派生。
+
+状态语义如下：
+
+- `observed`：至少一个变更资源存在精确且成功的 read / injected 证据；多文件修改仍逐资源保留状态，不能由其中一个成功覆盖其他资源的 `unknown`。
+- `attempted-failure`：存在精确目标的失败尝试，且没有成功证据。
+- `not-observed`：在 manifest 列出的全部已校验 native session 文件中没有精确匹配。它只表示“未记录到匹配”，不表示资源未被使用或对结果无效。
+- `unknown`：来源缺失、覆盖不完整、内容无法校验、资源类型尚无可靠观察方式，或预算阻止读取。`unknown` 不转换成 `not-observed`。
+
+Skill 证据要求结构化 skill 名、同一 session 内按 `callId` 配对的成功 tool-result，以及与候选文件按运行时规则去掉 frontmatter 后完全相同的 instruction body。普通文件 read 要求精确路径和精确返回内容；prompt 注入只匹配明确的 model-visible system 内容或 skill-invocation 内容。日志中的子串、自述、同名工具调用、编译成功或一次通用工具调用都不是变更资源被实际使用的证据。资源 body 相同而只改 metadata 时，也不能据此声称变更后的 instruction 已执行。
+
+当前 Hitch trajectory analysis API（含 2026-09-11 核查的 `origin/dev` 11963b5）仍只投影单个 canonical session，并将 child-session coverage 标为 unavailable。Gear 因此仅对 sealed spec 中 direct DeepSeek Hitch root 启用独立的只读 native observer：它读取每个 run 的 `trajectory.ref.json`，只接受列出的 `provider_events` 文件，校验路径、字节数和 SHA-256，验证 main `provider_session_id` 及 child `parentSession` 链，并流式解析 main/child JSONL。其他 harness、daemon 模式或不可靠来源保持 `unknown`。扫描有共享 snapshot 字节预算、逐 run/file 上限和有界并发；只保留 skill/read、对应结果、skill invocation、`header.system` 与 session 身份，不保留无关长输出。
+
+持久证据中的 child `seq` 只属于它的 native source 文件/session。`sourcePath`、`sourceDigest`、`sessionId` 和 `seq` 必须一起解释，不能把 child seq 伪装成旧 canonical-main trajectory detail ref。`experience.read` 的 task-results 返回有界证据示例并明确给出 omitted 数量，完整的匹配计数和逐 task 配对结果仍保存在不可变 record 中。自动卡片先显示变更路径、逐 task 的 parent→candidate 定量结果、排除数和 use coverage；这些仍是描述性观察，不构成“变更分支运行”或因果结论。
+
 ## 1. 建议采用的形式
 
 保留现有 round JSON 作为实验事实来源；从中生成按候选分条、不可变的 experience JSON，建立可重建的检索索引，再为人和 Meta 渲染有长度上限的 Markdown。Meta 通过受控的 `experience.query` 和 `experience.read` 查询。
