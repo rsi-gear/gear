@@ -834,6 +834,12 @@ export interface EvaluationReservation {
   evalId: string
 }
 
+/** Read an existing evaluation without submitting, restarting or repairing it. */
+export type EvaluationInspection =
+  | { status: 'complete'; evidence: EvaluationEvidence }
+  | { status: 'running' | 'unknown'; reason?: string }
+  | { status: 'failed'; code: string; message: string }
+
 /** Prepared without side effects; persisted before a remote submission can start. */
 export interface EvaluationSubmissionIntent {
   provider: string
@@ -1370,8 +1376,13 @@ export interface PromotionPolicy {
 }
 
 export interface RefineEvaluator {
-  /** Optional v2 capability. Admission rejects unsupported evaluators before any rollout. */
+  /** Optional Gear search customization; the default adapter stages ordinary evaluator requests. */
   search?: { provider: import('./search/types.js').SearchProvider; diagnosis: import('./search/types.js').DiagnosisProvider }
+  /** Read an existing evaluation without submitting or restarting work. */
+  inspectResult?(
+    round: Readonly<RefinementRound>, request: Readonly<EvaluationRequest>, reservation: Readonly<EvaluationReservation>,
+    signal: AbortSignal, intent?: Readonly<EvaluationSubmissionIntent>,
+  ): Promise<EvaluationInspection>
   preflight?(): Promise<void>
 
   /** Resolve semantic evaluation identity plus diagnostic invocation provenance, or return undefined when not known yet. */

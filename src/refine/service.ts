@@ -29,6 +29,7 @@ import { seal, validateSettings, invariant } from '../search/contracts.js'
 import { legacySearchEvidence } from '../search/legacy.js'
 import { resolveRegressionSettings } from '../search/regression.js'
 import type { SearchSettings, Snapshot } from '../search/types.js'
+import { attachSearchEvaluation } from '../search/evaluation-adapter.js'
 import type { CandidateGenerationBudgetStatus } from '../types.js'
 
 export interface RefineServiceOptions {
@@ -2634,9 +2635,19 @@ export class RefineService {
   }
 
   private evaluatorForSpec(spec: EvolutionSpec): RefineEvaluator {
-    return this.components.hasRolloutProvider(spec.rollout.provider.id)
+    const evaluator = this.components.hasRolloutProvider(spec.rollout.provider.id)
       ? this.components.rolloutProvider(spec.rollout.provider).createEvaluator(spec)
       : this.options.createEvaluator?.(spec) ?? this.evaluator
+    if (!spec.searchSettings || evaluator.search) return evaluator
+    const state = this.registry.stateStore(spec.evolutionId), root = join(state.root, 'search')
+    return attachSearchEvaluation(evaluator, { spec, workspaceRoot: this.options.workspaceRoot, stateRoot: root,
+      manifest: snapshot => this.builder.readManifest(snapshot.commit),
+      round: async () => {
+        const current = await new SearchStore(root).read<{ roundId: string | null }>('active-round')
+        invariant(current?.roundId, 'staged evaluation has no active Gear round')
+        return this.requireRound(state, current.roundId)
+      },
+    })
   }
 
   private async evictRuntimeIfNeeded(): Promise<void> {

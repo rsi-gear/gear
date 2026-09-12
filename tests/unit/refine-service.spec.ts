@@ -25,6 +25,8 @@ import { trajectoryAnalysis } from '../helpers/trajectory-fixture.js'
 import type { HitchTrajectoryReader } from '../../src/types.js'
 import { fixtures as searchFixtures, settings as searchSettings, regressionSuiteFixture, revise } from '../helpers/search-fixture.js'
 import { SearchStore } from '../../src/search/store.js'
+import { standardSearchDataset } from '../helpers/standard-search-dataset.js'
+import { digestDatasetRef } from '../../src/state/dataset.js'
 
 const roots: string[] = []
 afterEach(async () => {
@@ -3088,6 +3090,54 @@ describe('RefineService evolution workspaces', () => {
 })
 
 describe('explicit staged search control-plane integration', () => {
+  it('runs the default Gear staging adapter through real Skill workspaces without evaluator search declarations', async () => {
+    const coordinator = new SkillMetaCoordinator()
+    const { service, evaluator, git } = await setup(0.8, false, 1, 300_000, 1, 0, 1, 300_000, coordinator)
+    const seed = await standardSearchDataset(git.root, 20, 'seed', false)
+    const heldOut = await standardSearchDataset(git.root, 5, 'held-out', false)
+    const requests: EvaluationRequest[] = [], runs = new Map<string, string>()
+    evaluator.evaluationIdentity = (_round, request) => ({ provider: 'fake', effectiveConfigDigest: digestJson(request.condition), invocationFingerprint: digestJson(request.condition) })
+    ;(evaluator as RefineEvaluator).evaluate = async (_round, request, _signal, reservation) => {
+      requests.push(request)
+      const manifest = JSON.parse(await readFile(join(request.dataset, 'benchmark.adapter.json'), 'utf8'))
+      const trials = manifest.tasks.map((task: { task_id: string }) => {
+        const runId = `${reservation!.evalId}-${task.task_id}`; runs.set(runId, task.task_id)
+        const score = request.harnessRef === git.championRef ? Number(task.task_id.slice(5)) % 5 === 0 ? 1 : 0.3 : 1
+        return { taskName: task.task_id, runId, trialName: runId, attempt: 1, status: 'completed' as const,
+          rewards: { reward: score }, scores: { totalScore: score, normalization: 'standard' as const } }
+      })
+      const score = trials.reduce((sum: number, trial: typeof trials[number]) => sum + trial.scores.totalScore, 0) / trials.length
+      return { provider: reservation!.provider, evalId: reservation!.evalId, conditionId: request.condition.conditionId,
+        effectiveConfigDigest: digestJson(request.condition), dataset: request.dataset, requestedCommit: request.harnessRef,
+        actualCommit: request.harnessRef, revisionIdentity: request.harnessRef, completeness: 'complete', plannedTrialCount: trials.length,
+        primaryReward: score, summary: { total: trials.length, passed: trials.length, failed: 0, score }, trials, invalidTrials: [] }
+    }
+    ;(evaluator as RefineEvaluator & Partial<HitchTrajectoryReader>).inspectVerifierEvidence = async runId => ({
+      runId, observation: { status: 'valid' }, verifier: { status: 'complete', feedback: { schemaVersion: 1,
+        items: [{ code: `workflow-${Number(runs.get(runId)!.slice(5)) % 4}`, severity: 'error', message: 'Fixture workflow failure' }] } },
+    } as Awaited<ReturnType<NonNullable<HitchTrajectoryReader['inspectVerifierEvidence']>>>)
+    service.options.searchSettings = searchSettings()
+    try {
+      const admitted = await service.admit('api'), store = service.registry.stateStore(admitted.evolutionId)
+      const round = await eventually(() => store.readRound(admitted.roundId), r => ['candidate-editing', 'failed', 'rejected'].includes(r?.status ?? ''))
+      expect(round?.status, round?.failure?.message).toBe('candidate-editing')
+      const assignment = (await eventually(async () => coordinator.claim('default-search-client', skillHarnessIdentity(service.options.metaAgent), admitted.evolutionId), a => a !== undefined))!
+      const workspace = service.workspaceManager.resolve(assignment.sessionId)
+      await writeFile(join(workspace.targetPath, 'plugins', 'context.ts'), 'export const context = "improved workflow"\n')
+      const active = service.activeEntry(admitted.roundId)!, refs = [assignment.baseline.evalId]
+      const attribution = await active.meta.proposalAttribution(admitted.roundId, assignment.sessionId, {})
+      const evidence = active.meta.proposalEvidenceAudit(admitted.roundId, assignment.sessionId, refs)
+      await service.submitFinalization(admitted.evolutionId, admitted.roundId, { rationale: 'Repair the assigned workflow', expectedOutcome: 'Complete the task', evidenceRefs: refs }, undefined, attribution, evidence)
+      const terminal = await eventually(() => store.readRound(admitted.roundId), r => ['accepted', 'rejected', 'failed'].includes(r?.status ?? ''))
+      expect(terminal?.status, JSON.stringify({ failure: terminal?.failure, search: terminal?.searchOutcome })).toBe('accepted')
+      expect(terminal?.searchOutcome?.championChanged).toBe(true)
+      expect((evaluator as RefineEvaluator).search).toBeUndefined()
+      expect(requests.every(r => r.dataset.startsWith(join(store.root, 'search', 'datasets')))).toBe(true)
+      expect(await digestDatasetRef(seed.ref)).toBe(seed.digest)
+      expect(await digestDatasetRef(heldOut.ref)).toBe(heldOut.digest)
+    } finally { await service.dispose() }
+  })
+
   it('[D05] preserves the original candidate, workplan and remaining attempts after a crash between generation retries', async () => {
     const { service, evaluator, git, metas } = await setup(0.8, false, 1, 300_000, 1, 0, 2, 600_000)
     const fixture = searchFixtures(20), gate = Promise.withResolvers<void>(), evaluate = fixture.provider.evaluate

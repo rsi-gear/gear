@@ -1,6 +1,6 @@
 # Candidate 晋升与任务专长 Archive 优化规范
 
-- 状态：Implemented，v1 修订 3；Gear 搜索、控制面、晋升及 65 行验收见[实现与接入说明](candidate-promotion-implementation.zh-CN.md)和[验收记录](candidate-promotion-acceptance.zh-CN.md)。新模式要求 provider 显式声明 subset/reuse 合同；当前内置 Hitch 未声明时按 E06 在 admission 拒绝。未对运行中的实验启用或迁移。
+- 状态：Implemented，v1 修订 3；Gear 搜索、控制面、晋升及 65 行验收见[实现与接入说明](candidate-promotion-implementation.zh-CN.md)和[验收记录](candidate-promotion-acceptance.zh-CN.md)。任务子集、逐题缓存和分阶段调度由 Gear 内部适配现有 evaluator 完成，无需 Hitch 新增能力声明或接口。未对运行中的实验启用或迁移。
 - 日期：2026-09-12。
 - 范围：Gear 共享失败诊断、分类分工与多 candidate 生成、分阶段评测、父代选择、跨轮研究归档、过程指标兼容、champion 晋升、失败回归任务、状态恢复。
 - 设计依据：当前 Gear 工作区实现；evolution `cf603144-c511-4a37-94aa-4986d7831616`；Reef 固定提交 `c7a00cadbdc0d8002f35c1d37b12232a3bec5388` 的 GEPA 实现。
@@ -773,7 +773,7 @@ repair 按阶段区分：
 
 ### 11.1 新模式配置示意
 
-以下配置由新模式解析并在 admission 时写入 spec；使用它还要求 evaluator 实现版本化的 subset/cell-reuse 合同，内置旧 Hitch adapter 不会静默降级。完整预算配置及接入方式见[实现说明](candidate-promotion-implementation.zh-CN.md)。
+以下配置由新模式解析并在 admission 时写入 spec；默认接入由 Gear 基于标准自包含 task dataset 准备子集、验证逐题结果和复用缓存，继续调用现有 evaluator。完整预算配置及接入方式见[实现说明](candidate-promotion-implementation.zh-CN.md)。
 
 ```yaml
 candidateGeneration:
@@ -909,7 +909,7 @@ round 视图同时列出 seed 全集 N、任务规模比例/限额/解析数量/
 | E03 | bridge 并集或 guards 超上限 | 按预定组配额减少参与者或不扩评；不隐式对全部候选全量运行 |
 | E04 | global/held-out 失败或预算不足 | 本轮不换下一个 finalist 重试；研究更新保留，性能拒绝/预算不足/执行故障分别记录 |
 | E05 | 局部平均退步但有独特改善 | 不被“严格胜过父代”前置门抹去专长；局部资格不冒充完整 seed 通过 |
-| E06 | 缺 subset/reuse 能力 | admission 明确失败，不使用整集缓存假扮 cell 复用；合法无 process 不受牵连 |
+| E06 | Gear 子集执行与逐题复用 | 默认通过现有 evaluator 完成 4→2→1；无需 Hitch 声明。源任务身份或结果槽位不可验证时拒绝，不使用整集缓存假扮 cell 复用；合法无 process 不受牵连 |
 | E07 | 互补候选 A/B | 前沿保留两者不代表已产生合成能力；任何显式合成版本不得拼接来源分数 |
 | E08 | 比例取整与可选限额 | 固定精度计算 ceil(N×ratio)，显式 min/max 生效且不超过 N；不把 bucketWeights 当规模比例 |
 | E09 | 小全集、空任务池、任务重叠 | 去重/同桶回填后按实际清单计分；不足不复制任务，取整超额按固定顺序裁剪并保存原因 |

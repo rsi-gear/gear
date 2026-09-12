@@ -1865,6 +1865,32 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     }
   }
 
+  async inspectResult(
+    round: Readonly<RefinementRound>, request: Readonly<EvaluationRequest>, reservation: Readonly<EvaluationReservation>,
+    signal: AbortSignal, intent?: Readonly<EvaluationSubmissionIntent>,
+  ): Promise<import('../types.js').EvaluationInspection> {
+    this.assertEvaluationRequest(round, request)
+    if (reservation.provider !== 'hitch-cli' || !/^eval_[0-9a-f]{32}$/u.test(reservation.evalId)) throw new TypeError('invalid evaluation reservation')
+    const inspection = await this.inspectEvaluation(reservation.evalId, round.workspaceRoot, signal, 'hitch_eval_recovery_inspect_failed',
+      intent === undefined ? this.options.root : this.submissionParameters(intent).root)
+    const control = inspection.control == null ? undefined : record(inspection.control, 'Hitch eval control')
+    if (control && (control.schema_version !== '1' || control.eval_id !== reservation.evalId)) throw new HitchEvaluationError('Hitch eval control identity changed', 'invalid_hitch_result')
+    const state = control?.state
+    if (['queued', 'planning', 'preparing', 'running', 'finalizing', 'cancelling'].includes(String(state))) return { status: 'running' }
+    if (!inspection.result) return ['failed', 'cancelled'].includes(String(state))
+      ? { status: 'failed', code: 'hitch_eval_terminal_failure', message: `Evaluation ${reservation.evalId} is ${String(state)}` }
+      : { status: 'unknown', reason: 'existing evaluation has no durable result' }
+    const result = record(inspection.result, 'Hitch existing eval result')
+    if (result.status === 'cancelled' || result.status === 'failed' && (!Array.isArray(result.trials) || result.trials.length === 0)) {
+      return { status: 'failed', code: 'hitch_eval_terminal_failure', message: `Evaluation ${reservation.evalId} is ${String(result.status)}` }
+    }
+    const identity = await this.resolveEvaluationIdentity(round, request, signal)
+    const evidence = this.parseResult(result, { stdout: JSON.stringify(result), stderr: '', exitCode: integer(result.exit_code, 'exit_code') }, request,
+      this.daemonMode ? this.daemonEvaluationIdentity(round, request, inspection, identity) : identity, true)
+    if (evidence.evalId !== reservation.evalId) throw new HitchEvaluationError('recovered evaluation identity changed', 'hitch_eval_identity_mismatch')
+    return { status: 'complete', evidence: { ...evidence, benchmark: this.assertCompleteTrialSlots(inspection, evidence, request) } }
+  }
+
   prepareRerun(
     _round: Readonly<RefinementRound>,
     _request: Readonly<EvaluationRequest>,

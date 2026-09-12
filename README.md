@@ -201,9 +201,10 @@ revalidates those identities instead of reading new global defaults.
 
 New evolutions can explicitly select `failure-cluster-gepa-v1` for shared failure
 diagnosis, scoped specialist archives, proportional task sampling, and staged
-multisignal promotion. It requires a provider that certifies task subsets and
-cell reuse; the built-in legacy Hitch adapter fails admission until that contract
-is supplied. Existing evolutions retain their sealed strategy. See the
+multisignal promotion. Gear prepares immutable subsets of standard compiled
+datasets and reuses per-task results through the existing evaluator interface.
+The built-in Hitch path needs no new CLI flags or capability declarations.
+Existing evolutions retain their sealed strategy. See the
 [implementation and provider guide](docs/candidate-promotion-implementation.zh-CN.md).
 
 Gear exposes six algorithm extension points through `ctx.evolutionComponents`.

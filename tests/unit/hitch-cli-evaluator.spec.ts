@@ -25,6 +25,7 @@ function request(dataset: string, harnessRef: string): EvaluationRequest {
 }
 
 interface InspectFixture {
+  controlStateWithoutResult?: string
   attempts?: number
   tasks?: string[]
   trials?: Array<{ taskId: string; attempt: number }>
@@ -306,6 +307,11 @@ else if (args[0] === 'capabilities') {
   process.stdout.write(JSON.stringify({ schema_version: '1', evals: submitted ? [{ eval_id: submitted.evalId }] : [] }))
 } else if (args[0] === 'eval' && args[1] === 'inspect') {
   const inspectedEvalId = args[2]
+  if (${JSON.stringify(inspectFixture.controlStateWithoutResult ?? null)} !== null) {
+    process.stdout.write(JSON.stringify({ schema_version: '1', eval_id: inspectedEvalId,
+      control: { schema_version: '1', eval_id: inspectedEvalId, state: ${JSON.stringify(inspectFixture.controlStateWithoutResult ?? null)} }, result: null }))
+    process.exit(0)
+  }
   const actual = ${JSON.stringify(fixture.championRef)}
   process.stdout.write(JSON.stringify({
     schema_version: '1', eval_id: inspectedEvalId,
@@ -415,6 +421,29 @@ else {
 }
 
 describe('HitchCliEvaluator', () => {
+  it.each(['queued', 'planning', 'running', 'finalizing', 'cancelling', 'failed', 'cancelled', 'succeeded'])('reads existing control state %s without a new execution', async controlStateWithoutResult => {
+    const { fixture, evaluator, invocationLog } = await setup('0.2.5', { controlStateWithoutResult })
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest), input = request('seed', fixture.championRef)
+    const reservation = await evaluator.reserve(state, input)
+    const result = await evaluator.inspectResult(state, input, reservation, new AbortController().signal)
+    expect(result.status).toBe(['failed', 'cancelled'].includes(controlStateWithoutResult) ? 'failed' : controlStateWithoutResult === 'succeeded' ? 'unknown' : 'running')
+    const calls = (await readFile(invocationLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as string[])
+    expect(calls.filter(c => c[0] === 'eval')).toEqual([['eval', 'inspect', reservation.evalId, '--json']])
+  })
+  it('reads an existing evaluation through the existing inspect command without starting or rerunning it', async () => {
+    const { fixture, evaluator, invocationLog } = await setup()
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest), input = request('seed', fixture.championRef)
+    const reservation = await evaluator.reserve(state, input)
+    const result = await evaluator.inspectResult(state, input, reservation, new AbortController().signal)
+    expect(result.status).toBe('complete')
+    if (result.status === 'complete') {
+      expect(result.evidence.evalId).toBe(reservation.evalId)
+      expect(result.evidence.actualCommit).toBe(fixture.championRef)
+    }
+    const calls = (await readFile(invocationLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as string[])
+    expect(calls).toContainEqual(['eval', 'inspect', reservation.evalId, '--json'])
+    expect(calls.some(c => c[0] === 'eval' && ['run', 'submit', 'rerun', 'watch', 'cancel'].includes(c[1]!))).toBe(false)
+  })
   it('recovers the owned eval by its stored key when changed daemon defaults reject replay', async () => {
     const { fixture, evaluator, invocationLog } = await setup('0.2.6', {}, {
       controlPlane: { mode: 'daemon', requireModelCapture: false }, fault: 'submit-replay-rejected',

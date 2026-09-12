@@ -2,7 +2,7 @@ import { digestJson } from '../state/digest.js'
 import { validateSearchSchema } from './schema.js'
 import type { EvaluationScope, MetricContract, SearchSettings, TaskUniverse, TaskSetResolution, TaskSetSizing, Snapshot, MetricObservation } from './types.js'
 
-export const integrity = digestJson({ algorithm: 'failure-cluster-gepa', apiVersion: 2, revision: 10 })
+export const integrity = digestJson({ algorithm: 'failure-cluster-gepa', apiVersion: 2, revision: 11 })
 export function seal<T extends object>(value: T): T & { digest: string } { return { ...value, digest: digestJson(value) } }
 export function verifyDigest(value: { digest: string }): void {
   const { digest, ...body } = value
@@ -87,7 +87,7 @@ export function validateUniverse(universe: TaskUniverse): void {
   invariant(unique(universe.tasks.map(t => t.id)).length === universe.tasks.length, 'duplicate task IDs')
   invariant(unique(universe.tasks.map(t => t.contentDigest)).length === universe.tasks.length, 'duplicate task content')
   invariant(universe.repetitions.length > 0 && unique(universe.repetitions.map(s => s.index)).length === universe.repetitions.length, 'invalid repetition slots')
-  for (const slot of universe.repetitions) { integer(slot.index, 'repetition'); integer(slot.seed, 'seed') }
+  for (const slot of universe.repetitions) { integer(slot.index, 'repetition'); if (slot.seed !== null) integer(slot.seed, 'seed') }
   for (const task of universe.tasks) {
     invariant(task.id.length > 0 && task.stratum.length > 0, 'task identity/stratum required'); digest(task.contentDigest)
     validateMetric(task.outcome); invariant(task.outcome.channel === 'outcome' && task.outcome.granularity !== 'dataset-aggregate', 'trial outcome is required')

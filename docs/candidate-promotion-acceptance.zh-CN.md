@@ -8,7 +8,7 @@
 
 规范 65 行及相关正文已逐项核对完成。核心路径、真实 Git/Skill 接入、持久化中断恢复和数值边界均由自包含 fixture 验证；真实案例另有只读 shadow replay，不作为 CI 依赖。
 
-内置 Hitch 未声明 subset/cell reuse 合同时明确拒绝启用，符合 E06。当前没有向运行中实验启用新模式，没有把合成 fixture 或历史回放解释为真实新实验收益。
+默认 evaluator 的任务子集、逐题复用与阶段调度由 Gear 内部适配，Hitch 无需新增能力声明。当前没有向运行中实验启用新模式，没有把合成 fixture 或历史回放解释为真实新实验收益。
 
 ## 逐项核对
 
@@ -40,7 +40,7 @@
 | E03 | bridge 并集或 guards 超上限 | 已验证：scope 并集/guards 超容量减少参与者；容量与费用分别记录原因。 |
 | E04 | global/held-out 失败或预算不足 | 已验证：cell/时间预算不足及 provider 确认的终态失败保留局部研究；未知状态不提交、不换 finalist，恢复原操作。专项覆盖 local/bridge/global/held-out 四阶段。 |
 | E05 | 局部平均退步但有独特改善 | 已验证：局部加权均分低于父代的版本仍保留单题专长并在下一轮被实际抽到；研究资格没有成为全局通过结论。 |
-| E06 | 缺 subset/reuse 能力 | 已验证：provider 不具备 subset/reuse/idempotency 时，在任何生成或评测前拒绝。 |
+| E06 | Gear 子集执行与逐题复用 | 已验证：普通 evaluator 无 search 声明时，默认 Gear 适配跑通 outcome-only / outcome+process 的 4→2→1（170 次 candidate seed）；真实 Git/Skill 默认入口可晋升，原数据哈希不变。自定义 provider 的合同检查保留，结果身份不明不重跑。 |
 | E07 | 互补候选 A/B | 已验证：互补 A/B 同时保留；无单题第一的 C 仍按自己的证据独立提名，拼接 A/B 原始 cells 冒充 C 被拒绝。 |
 | E08 | 比例取整与可选限额 | 已验证：精确 ceil(N×ratio)、min/max、全集上限与实际池不足记录均覆盖；改变 bucketWeights 不改变数量。见 search.spec.ts 和 search-contracts-final.spec.ts。 |
 | E09 | 小全集、空任务池、任务重叠 | 已验证：重复任务去重、同桶回填、池不足按实际成员计分；小全集按 shared/local/cross 优先序保存取整超额原因，既不复制任务也不虚报最低数量。 |
@@ -93,7 +93,7 @@
 
 ## 最终验证
 
-2026-09-12 最终代码验证（均在隔离工作区，最多两个 worker）：
+2026-09-12 算法主体验证（均在隔离工作区，最多两个 worker；默认适配补充验证另列）：
 
 - `search.spec.ts`：26 项通过，包含 1,000 seed 任务的完整 4→2→1 路径及准确的 1,700 candidate seed cells。
 - 其余 12 个 `search-*.spec.ts` 与完整 `refine-service.spec.ts`：13 文件、212 项通过。包含 15 个持久化中断窗口、真实 Skill 空 checkpoint 的历史代码/findings 继承、生成重试重启和 champion CAS 成功后的恢复。
@@ -101,3 +101,10 @@
 - `npm run typecheck`、标准 `npm run build`、搜索 SDK 导入、schema 重建一致性、`npm pack --ignore-scripts --dry-run` 和 `git diff --check` 通过；包内含搜索入口、声明文件及 JSON schema。
 - 标准构建依赖使用固定版本与完整性校验；沙箱中首次网络解析失败后在获准的隔离构建中成功，不更换依赖版本。
 - 主工作树只读核对仍为 `dev`，原有未提交文件清单未变。真实案例源文件前后哈希一致，没有执行新 benchmark、修改 champion 或发布产物到运行中实验。
+
+2026-09-12 Gear 默认适配修正后的最终回归：
+
+- 全部 14 个搜索测试文件、`refine-service.spec.ts`、`hitch-cli-evaluator.spec.ts`：16 文件、342 项通过，最多两个 worker。该集合包含前述算法主体验证，不与历史批次累加。
+- 新增普通 evaluator 的两种通道完整 4→2→1、无注入声明的真实 Git/Skill 晋升、原数据哈希不变、丢失响应只读恢复、未知提交不重发、无控随机重复身份、超时保留已完成 cells，以及缺少诊断产物时 unresolved。
+- Gear 的只读恢复复用现有 `eval inspect --json`，按实际 `control.state` 处理排队、规划、运行、收尾、取消和终态缺结果；fixture 验证不会发起 run/submit/rerun/watch/cancel。
+- 最终 `npm run typecheck`、标准 `npm run build`、schema 重建与格式检查、搜索 SDK 94 项导出和 npm dry-run 文件清单检查通过。打包检查使用临时 npm cache，未修改用户全局 cache 权限。

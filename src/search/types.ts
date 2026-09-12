@@ -41,7 +41,7 @@ export interface TaskUniverse {
   tasks: SearchTask[]
   /** Covers execution environment, model, sampling, scorer and per-task budgets. */
   conditionDigest: string
-  repetitions: Array<{ index: number; seed: number }>
+  repetitions: Array<{ index: number; seed: number | null }>
   digest: string
   regressionSuiteDigest?: string
   /** Immutable suite included only when admitting a new seed universe. */
@@ -149,7 +149,7 @@ export interface CellIdentity {
   taskId: string
   taskContentDigest: string
   repetition: number
-  seed: number
+  seed: number | null
   conditionDigest: string
   outcomeContractDigest: string
   processContractDigest?: string

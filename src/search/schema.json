@@ -360,7 +360,14 @@
                 "type": "number"
               },
               "seed": {
-                "type": "number"
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
               }
             },
             "required": [
@@ -1249,7 +1256,14 @@
           "type": "number"
         },
         "seed": {
-          "type": "number"
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
         },
         "conditionDigest": {
           "type": "string"

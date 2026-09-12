@@ -2,7 +2,7 @@
 
 本次变更实现 `failure-cluster-gepa-v1` 的 Gear 搜索驱动、控制面接入和独立晋升策略。仅对新建 evolution 显式启用；没有 `searchSettings` 的历史 spec 保持原路径、组件身份和 verdict。
 
-规范 65 行及相关正文已经核对，最终 238 项搜索、恢复与控制面测试通过，详见[验收记录](candidate-promotion-acceptance.zh-CN.md)。实际 provider 接入条件和当前内置 Hitch 的限制见下文。
+规范 65 行及相关正文已经核对，搜索、恢复、默认 evaluator 与控制面测试记录见[验收记录](candidate-promotion-acceptance.zh-CN.md)。默认路径由 Gear 内部处理分阶段评测，不需要为 Hitch 新增协议、参数或能力声明。
 
 实现位于独立分支 `codex/candidate-promotion`，基于 `e0e8a7f`。没有合并到正在运行实验的 `dev`，没有重建其 `lib`，没有修改实验配置、数据、champion 或 published pointer。开发和测试工作目录为 `/private/tmp/gear-candidate-promotion-20260912`。
 
@@ -71,16 +71,24 @@ search:
 
 `research.scopePreparation` 显示范围、参与者及 prepared、unchanged、budget-insufficient、baseline-ineligible 等原因。新视图只在本轮 archive 提交后供下一轮抽样；本轮父代抽签仍绑定旧 archive。原 scope、原证据、原概率所在的历史 archive 均保留，同一 family 仅一个 epoch 占外层权重。
 
-## Provider 接入条件
+## 默认接入与自定义 provider
 
-**当前内置 `HitchCliEvaluator` 尚未声明新合同，新模式会在 admission 明确拒绝它。** 这不是自动回退到全量评测。没有尝试替换或升级本机正在运行的 Hitch。
+启用 `search.mode: failure-cluster-gepa-v1` 后，`RefineService` 自动为普通 `RefineEvaluator` 包装 Gear 内部的 `EvaluationSearchAdapter`。原 evaluator 对象不被修改；已经注入 `RefineEvaluator.search` 的自定义实现继续使用原路径。
 
-通过 `RefineEvaluator.search` 提供 `{ provider, diagnosis }`。`createSkillControlPlane(config, { evaluator })` 已有的 evaluator 注入点可使用该实现。对旧 evaluator 不增加要求。
+默认输入为现有标准 compiler 生成的本地自包含 task dataset，包含 `benchmark.adapter.json` 和各题的 `task.toml`。Gear 从评分声明解析 outcome/process 合同，对原文件和逐题内容计算摘要；源数据变化、任务目录不完整或评分声明非法会在评测前拒绝。远程引用须先解析成本地标准数据集。这是 Gear 的输入准备条件。
+
+阶段调度只把缺少证据的任务复制到 evolution 的 `search/datasets/<digest>`，复制后再次核验内容，原目录保持只读。每个逻辑 repetition 通过现有 `evaluate` 发起普通单次评测，模型、采样、超时及代码版本沿用原计划。未显式指定随机种子时记录 `seed: null`，不伪造受控随机种子。新调用不会重复执行已经有效的逻辑槽位。
+
+Gear 在外部调用前持久化请求、提交意图和 reservation；完成后封存原始结果，核对 exact commit、配置、子集、任务及 attempt 身份。Hitch 路径直接复用已有 `eval run` / daemon submit/watch，恢复使用 Gear 新增的通用只读 `inspectResult` 端口，其实现调用 Hitch 已有 `eval inspect --json`。不修改 Hitch 程序或 CLI 协议。提交结果不明且无法恢复原 reservation 时保持 unknown，不新建评测。
+
+默认共享诊断读取已有 verifier 产物，仅用具体失败 code/component ID 建立有来源的研究假设，修改边界取实际 harness manifest。没有有效诊断证据时保持 unresolved（可能 K=0），不把低总分强行归为同一根因；不新增 LLM judge。结果通道合法且 benchmark 未声明 process 时可完整评测和晋升。旧 observation 整条 invalid 的语义保留。
+
+高级用法可继续通过 `RefineEvaluator.search` 注入 `{ provider, diagnosis }`，提供其他数据源、诊断方式、回归 suite 或独立 v2 证据。这些扩展合同属于 Gear 搜索模块，Hitch 不需要对外声明它们。
 
 `SearchProvider` 必须提供：
 
 1. `describe('seed' | 'held-out')`：冻结 task content、metric contract、模型/采样/环境/评分条件、逻辑 repetitions、稳定分层与成本估计。
-2. `capabilities`：明确证明 task subset plans、batch-independent cells、idempotent execution。
+2. `capabilities`：Gear 内部或自定义 provider 对 task subset plans、batch-independent cells、idempotent execution 的保证；默认包装自行实现，不读取 Hitch capability flags。
 3. `evaluate`：只执行列出的 cells；同一幂等键必须恢复同一执行，不能创建新随机尝试；遵守 abort 与调用预算。
 4. `verifyCell`：验证实际产物来源、任务/评分/执行条件及 `harnessCommit/harnessManifestDigest`，不能只相信 Gear 提交的字段。`snapshotDigest` 保留原始证据来源；另一角色复用时，必须证明 exact commit、manifest 和其余执行身份全部相同，不能仅凭同 tree 替代。
 5. 可选 `inspectEvaluation` / `inspectProcess`：按原幂等键只读查询已存在操作，返回 complete、not-started、running（原 handle）或 unknown。查询不能新建或重启 Target。超时后只有这类查询可用于恢复；没有查询能力时保留 unknown，不能猜测远端已经停止。
@@ -179,20 +187,4 @@ dossier、workplans、local 决定、nomination 与 archive 在发布引用前�
 - 覆盖精确比例、无效配置、局部稀疏证据、历史专长、固定抽样、过程零值/缺失/旧 invalid、独立划分、过程晋升、预算、无 bridge、advisory、commit crash、历史 completion 和 held-out repair。
 - 控制面测试实际通过 Skill claim、Git 修改/封存、v2 评测、champion 更新；旧生成、部分证据、champion baseline、状态、Meta 和能力测试继续运行。
 
-2026-09-12 验证记录：13 个相关测试文件共 237 项通过（最多两个 worker）；补评身份约束的最终修改另行重跑对应测试。`npm run typecheck`、标准构建、生成 schema 一致性和 npm 文件清单检查通过。发布清单包含新 SDK 入口及运行时 JSON schema。
-
-后续验收修复后的最终检查：新旧搜索测试及实际 Git/Skill 控制面测试共 143 项通过，包含新增的 27 项验收测试；类型检查、构建编译、SDK 导入和 schema 一致性再次通过。测试集合与前次记录有重叠。
-
-完整 spec 的 65 项矩阵与正文要求仍在逐项实现和验证，未完成项见验收跟踪，因此当前不标记整体验收完成。没有使用真实 Hitch 演化证明收益，也不把合成 fixture 的计算节约宣称为真实 token/时长节约；内置 Hitch 的 capability adapter 接入限制保持明确。
-
-本轮恢复专项验证：4 个文件共 167 项通过，包含 21 项外部执行恢复/超时测试和 93 项新旧控制面测试。额外补齐的 repair/completion 换 ID 防护另行跑对应两项测试；类型检查、构建编译、SDK 恢复入口与 schema 一致性检查通过。
-
-Scope 周期更新专项覆盖更新边界、只补差集、预算不足、准备中断、缺证据和终态失败；跨轮专项实际消费未晋升历史 specialist 的代码身份、诊断与 findings，并独立比较 champion。完整验收仍以跟踪表为准。
-
-指标与逻辑 slots 修复后，六个搜索测试文件共 94 项通过。固定精度比较直接使用量化整数 key，数值显示再转为十进制；异构过程组分别检查下界，宏平均候选可独立于研究前沿晋升，保护规则不能被均分增益抵消。
-
-阶段/回归集专项的 9 项测试通过；真实 Git/Skill 控制面另有 6 项通过，包含 suite 新 admission、运行阶段状态及 held-out 恢复。随后继续执行完整搜索回归。
-
-2026-09-12 阶段决策/回归集修复后，8 个搜索测试文件共 105 项通过（最多两个 worker）；实际 Git/Skill 接入专项另有 6 项通过。类型检查和构建 TypeScript 编译通过。测试集合与历史记录有重叠，不累加宣称总数。
-
-Sampler 全流程验证：9 个搜索测试文件共 108 项通过。成功反例特征与 dossier 交付的最后调整另行运行 4 文件 16 项测试，实际 Git/Skill 的 6 项也再次通过；类型检查和构建编译通过。
+最终验证以[验收记录](candidate-promotion-acceptance.zh-CN.md)为准，历史重叠测试批次不累加。默认普通 evaluator 路径有 outcome-only / outcome+process 的 4→2→1 测试、真实 Git/Skill 提交测试，以及只读结果恢复和不确定提交防重复测试。没有运行真实模型 benchmark，不将 fixture 的调用数量解释为真实 token 或时长收益。
