@@ -267,10 +267,12 @@ ADMISSION="$(gear-refine request control.continue \
 ```
 
 这种形式继续原 round，并保留它的 batch/round identity 和 durable state；`roundId`
-不能与新 batch 使用的 `rounds` 或 `focus` 同时提交。它不会创建 Meta assignment、
-启动 Meta runner 或继续原 batch 的剩余 rounds；调用后只轮询该 round 的
-`control.status`。已有 Gear 持有的 failed evaluation 使用 `control.rerun`；只有
-selected candidate 的 held-out evaluation 没有 execution trace 时才会启动缺失的 run。
+不能与新 batch 使用的 `rounds` 或 `focus` 同时提交。恢复中的 round 不创建 Meta
+assignment，也不需要 Meta runner；先轮询该 round 的 `control.status`。它正常结算后，
+Gear 沿用原 `batchId`、`roundCount` 和 focus 创建尚未完成的普通 rounds；外部
+Skill-first runner 应按正常的 claim/candidate 流程继续处理这些新 assignment，直到
+batch terminal。已有 Gear 持有的 failed evaluation 使用 `control.rerun`；只有 selected
+candidate 的 held-out evaluation 没有 execution trace 时才会启动缺失的 run。
 
 一次 runner 调用至多处理一个 assignment；当前跟踪的实验配置也固定
 `candidateGeneration.maxCandidates: 1`。assignment 持久化结算后 runner
@@ -311,8 +313,9 @@ standalone 的 `gear-refine request`：
 7. `candidate.finalize` 或 `candidate.decline`；
 8. 继续领取 sibling/next-round，直到 batch terminal。
 
-带 `roundId` 的 `control.continue` 是独立的 operator recovery 路径：调用后只轮询
-`control.status`，不执行上述 Meta claim/candidate 步骤。
+带 `roundId` 的 `control.continue` 是 operator recovery 入口：先轮询恢复 round 的
+`control.status`，该 round 不执行上述 Meta claim/candidate 步骤。若 Gear 随后创建原
+batch 的下一个普通 round，则继续执行步骤 2–8，直到 batch terminal。
 
 完整方法、逐字段参数和调用顺序见
 [`skills/refine/references/protocol.md`](../skills/refine/references/protocol.md)。

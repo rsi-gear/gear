@@ -1803,6 +1803,7 @@ export class RefineService {
           ?.find(allocation => allocation.parentHarnessRef === round.targetHarnessRef)?.parentCandidateId
           ?? `champion-${round.targetHarnessRef}`
         await this.finishSelectedRound(active, round, population, round.selection, round.baseline, championCandidateId)
+        continueBatch = true
         return
       }
       round = await this.transition(store, roundId, { status: 'baseline-running' })

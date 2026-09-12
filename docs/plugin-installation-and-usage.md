@@ -683,9 +683,9 @@ Hitch 0.2.4 创建的 `attempts=1` eval 仍可由 Hitch 的 legacy 路径处理�
 /refine continue <evolution-id> --round <round-id>
 ```
 
-不带 `--round` 的 `continue` 会复用该 evolution 的 Meta session/history 和当前 champion，并创建新 batch/round；它只能修改 `--rounds` 和 advisory `--focus`。`--round` 则让已完成 seed selection 的可恢复失败 round 从 held-out evaluation 继续，不创建新 batch/round，并保留其 durable state 和 identity。`--round` 不能与 `--rounds` 或 `--focus` 同时使用。dataset、模型、预算、sandbox 和 promotion policy 已被 evolution spec 固定。
+不带 `--round` 的 `continue` 会复用该 evolution 的 Meta session/history 和当前 champion，并创建新 batch/round；它只能修改 `--rounds` 和 advisory `--focus`。`--round` 则让已完成 seed selection 的可恢复失败 round 从 held-out evaluation 继续，不创建新 batch，并保留其 durable state 和 identity；该 round 正常结算后会沿用原 batch 计划继续剩余 rounds。`--round` 不能与 `--rounds` 或 `--focus` 同时使用。dataset、模型、预算、sandbox 和 promotion policy 已被 evolution spec 固定。
 
-`--round` 只恢复指定 round，不会继续原 batch 中剩余的 rounds，也不会创建 Meta assignment 或启动 Meta runner。调用后只轮询该 `evolutionId`/`roundId` 的 `control.status`。如果 selected candidate 已有 Gear 持有的 failed evaluation，使用 `control.rerun`；只有 selected candidate 的 held-out evaluation 没有任何既有 execution trace 时，恢复才会启动缺失的 held-out run。
+恢复中的指定 round 不创建 Meta assignment，也不需要 Meta runner；调用后先轮询该 `evolutionId`/`roundId` 的 `control.status`。如果它正常结算且 `roundIndex < roundCount`，Gear 会使用原 `batchId` 和 focus 创建下一个普通 round；外部 Skill-first runner 需要按正常 claim/runner 流程处理后续 assignment，直到原 `roundCount`。如果 selected candidate 已有 Gear 持有的 failed evaluation，使用 `control.rerun`；只有 selected candidate 的 held-out evaluation 没有任何既有 execution trace 时，恢复才会启动缺失的 held-out run。
 
 如果本地 seed 或 held-out dataset 内容发生变化，Gear 会拒绝 continue，并要求创建新的 evolution。
 

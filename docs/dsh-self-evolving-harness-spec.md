@@ -165,7 +165,7 @@ Meta proposal 超时属于可重试的基础设施失败。控制器在同一 ca
 /refine rollback <evolution-id> <verified-exact-ref>
 ```
 
-普通 `/refine` 永远创建新 evolution和batch，并拒绝 `--round`。`--from` 默认 configured initial champion；跨 lineage复用必须显式选择 published或 exact commit。不带 `--round` 的 `continue` 可改变新 batch 的 round count和 advisory focus；`--round` 只恢复指定的既有 round，不创建新 batch，且不能与 `--rounds` 或 `--focus` 组合。
+普通 `/refine` 永远创建新 evolution和batch，并拒绝 `--round`。`--from` 默认 configured initial champion；跨 lineage复用必须显式选择 published或 exact commit。不带 `--round` 的 `continue` 可改变新 batch 的 round count和 advisory focus；`--round` 恢复指定的既有 round，不创建新 batch，且不能与 `--rounds` 或 `--focus` 组合。恢复 round 正常结算后，控制器沿用原 `batchId`、`roundCount` 和 advisory focus，从其 `roundIndex` 继续原 batch 的剩余 rounds。
 
 published pointer不等于任何 evolution champion。`publish` 只接受该 evolution当前 champion或 accepted history并执行 CAS；`rollback` 只改变指定 evolution。
 

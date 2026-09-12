@@ -181,7 +181,7 @@ export interface EvolutionSpec {
 
 默认 `initialHarnessRef` 来自配置的 `initialChampion`，而不是最近一次其他 evolution 的结果。需要从已发布版本或任意 exact commit 分叉时必须显式使用 `--from published` 或 `--from <exact-commit>`。
 
-`/refine continue <evolution-id>` 默认创建新的 batch，但复用该 evolution 的 Meta session/history 和 evolution champion。`/refine continue <evolution-id> --round <round-id>` 让已完成 seed selection 的可恢复失败 round 从 held-out evaluation 继续，保留原 batch/round identity 和 durable state；`--round` 与 `--rounds`、`--focus` 互斥。continue 时禁止改变上述 immutable spec；CLI 若收到 seed、held-out、model、sampling、promotion、budget、toolchain 或 sandbox override，必须拒绝并提示创建新 evolution。`--rounds` 是新 batch 的长度，不属于 immutable spec。
+`/refine continue <evolution-id>` 默认创建新的 batch，但复用该 evolution 的 Meta session/history 和 evolution champion。`/refine continue <evolution-id> --round <round-id>` 让已完成 seed selection 的可恢复失败 round 从 held-out evaluation 继续，保留原 batch/round identity 和 durable state；该 round 正常结算后，控制器从原 `roundIndex` 自动推进到原 `roundCount`。`--round` 与 `--rounds`、`--focus` 互斥。continue 时禁止改变上述 immutable spec；CLI 若收到 seed、held-out、model、sampling、promotion、budget、toolchain 或 sandbox override，必须拒绝并提示创建新 evolution。`--rounds` 是新 batch 的长度，不属于 immutable spec。
 
 ### 6.2 状态目录
 
@@ -833,7 +833,7 @@ const cited = finalization?.evidenceRefs ?? []
 /refine rollback <evolution-id> <verified-exact-ref>
 ```
 
-第一种命令始终创建新 evolution、新 batch 和首个 round，返回三者 id，并拒绝 `--round`。`--from` 默认 `initial`；使用 `published` 或 exact ref 是显式 lineage reuse。不带 `--round` 的 `continue` 创建新 batch/round，复用指定 evolution 的 champion 和 Meta session；带 `--round` 的 `continue` 只恢复指定的既有 round，不创建新 batch/round。两种形式都按 §6.1 验证 immutable spec。
+第一种命令始终创建新 evolution、新 batch 和首个 round，返回三者 id，并拒绝 `--round`。`--from` 默认 `initial`；使用 `published` 或 exact ref 是显式 lineage reuse。不带 `--round` 的 `continue` 创建新 batch/round，复用指定 evolution 的 champion 和 Meta session；带 `--round` 的 `continue` 恢复指定的既有 round且不创建新 batch，成功结算后沿用原 batch 计划创建尚未完成的后续 rounds。两种形式都按 §6.1 验证 immutable spec。
 
 `publish` 只接受该 evolution 当前 champion 或其 accepted historical commit，并 CAS 更新 workspace-wide `published.json`。`rollback` 只移动指定 evolution 的 champion，不影响其他 evolution 或 published pointer。
 
@@ -960,7 +960,7 @@ Gear 作为可分发 DSH plugin，必须通过公开 package entrypoint 组合 `
 - 两次普通 `/refine` 创建不同 evolution、batch、Meta session 和 champion files；
 - 同一 `/refine --rounds N` 的所有 round 共享 evolution/batch/Meta session；
 - 不带 `--round` 的 `continue` 创建新 batch并复用指定 evolution 的 Meta session/champion；
-- 带 `--round` 的 `continue` 恢复指定既有 round、保留原 batch/round identity，且拒绝 `--rounds`/`--focus`；
+- 带 `--round` 的 `continue` 恢复指定既有 round、保留原 batch/round identity，正常结算后推进原 batch 剩余 rounds，且拒绝 `--rounds`/`--focus`；
 - continue 修改 immutable spec 任一字段时拒绝；
 - 新 evolution 默认从 configured initial champion，而不是其他 evolution champion 创建；
 - `--from published` 和 `--from <exact-ref>` 只有显式请求时生效；

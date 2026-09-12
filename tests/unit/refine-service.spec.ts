@@ -2754,7 +2754,7 @@ describe('RefineService evolution workspaces', () => {
     } finally { await service.dispose() }
   })
 
-  it('recovers the original selected round from a legacy held-out blocker after restart', async () => {
+  it('recovers the second selected round and completes the remaining original batch after restart', async () => {
     const { service, evaluator, metas } = await setup()
     evaluator.partialInvalidByCall.set(4, [8, 9])
     service.options.promotion.policy = builtinComponentRef('promotion-policy', 'paired-gate', {
@@ -2763,14 +2763,19 @@ describe('RefineService evolution workspaces', () => {
     const rerun = vi.spyOn(evaluator, 'rerun')
     let resumed = service
     try {
-      const first = await service.admit('api')
+      const first = await service.admit('api', { rounds: 3, focus: ['context'] })
       const store = service.registry.stateStore(first.evolutionId)
       await finalize(service, await editing(service, first.evolutionId, first.roundId))
       const original = await eventually(() => store.readRound(first.roundId), r => r?.status === 'accepted')
       const promoted = original!.candidatePool.find(candidate => candidate.candidateId === original!.promotedCandidateId)!
       const heldOutEvidence = structuredClone(promoted.heldOutEvaluation!)
       expect(heldOutEvidence.completeness).toBe('partial')
-      await eventually(async () => service.activeEntry(first.roundId), r => r === undefined)
+      const secondRounds = await eventually(
+        () => store.listRounds(),
+        rounds => rounds.some(round => round.batchId === first.batchId
+          && round.roundIndex === 2 && round.status === 'candidate-editing'),
+      )
+      const second = secondRounds.find(round => round.batchId === first.batchId && round.roundIndex === 2)!
 
       const identity = evaluator.evaluationIdentity.bind(evaluator)
       let blockHeldOutIdentity = true
@@ -2778,10 +2783,8 @@ describe('RefineService evolution workspaces', () => {
         if (blockHeldOutIdentity && request.phase === 'held-out-baseline') return undefined as never
         return identity(round, request)
       }
-      const legacyAdmission = await service.continueEvolution('api', first.evolutionId, { rounds: 2 })
-      const legacyEditing = await editing(service, first.evolutionId, legacyAdmission.roundId)
-      await finalize(service, legacyEditing)
-      const identityBlocked = await eventually(() => store.readRound(legacyAdmission.roundId), r => r?.status === 'failed')
+      await finalize(service, second)
+      const identityBlocked = await eventually(() => store.readRound(second.roundId), r => r?.status === 'failed')
       blockHeldOutIdentity = false
       const legacyReason = 'The existing held-out evaluation has no verifiable complete baseline; no baseline refresh was started.'
       const legacyBlocked: RefinementRound = {
@@ -2801,7 +2804,7 @@ describe('RefineService evolution workspaces', () => {
       const seedEvaluationBefore = structuredClone(legacyBlocked.evaluation)
       const attemptsBefore = structuredClone(legacyBlocked.evaluationAttempts ?? [])
       const startsBefore = structuredClone(legacyBlocked.evaluationStarts ?? [])
-      await eventually(async () => service.activeEntry(legacyAdmission.roundId), r => r === undefined)
+      await eventually(async () => service.activeEntry(second.roundId), r => r === undefined)
       await service.dispose()
 
       resumed = restart(service, evaluator)
@@ -2815,16 +2818,21 @@ describe('RefineService evolution workspaces', () => {
       vi.spyOn(resumed.components, 'selector').mockReturnValue(selector)
       const callsBefore = [...evaluator.calls]
       const nextAdmission = await resumed.continueEvolution('api', first.evolutionId, {
-        roundId: legacyAdmission.roundId,
+        roundId: second.roundId,
       })
       expect(nextAdmission).toEqual({
         evolutionId: first.evolutionId,
-        batchId: legacyAdmission.batchId,
-        roundId: legacyAdmission.roundId,
+        batchId: first.batchId,
+        roundId: second.roundId,
         status: 'queued',
       })
-      const terminal = await eventually(() => store.readRound(legacyAdmission.roundId), r => r?.status === 'accepted')
-      await eventually(async () => resumed.activeEntry(legacyAdmission.roundId), value => value === undefined)
+      const terminal = await eventually(() => store.readRound(second.roundId), r => r?.status === 'accepted')
+      const thirdRounds = await eventually(
+        () => store.listRounds(),
+        rounds => rounds.some(round => round.batchId === first.batchId
+          && round.roundIndex === 3 && round.status === 'candidate-editing'),
+      )
+      const third = thirdRounds.find(round => round.batchId === first.batchId && round.roundIndex === 3)!
       const selectedAfter = terminal!.candidatePool.find(candidate => candidate.candidateId === selectedBefore.candidateId)!
       expect(terminal?.evaluation?.heldOutBaseline).toEqual(heldOutEvidence)
       expect(terminal?.selection).toEqual(selectionBefore)
@@ -2851,9 +2859,25 @@ describe('RefineService evolution workspaces', () => {
       expect(evaluator.calls.filter(phase => phase === 'held-out-baseline')).toHaveLength(1)
       expect(assess).not.toHaveBeenCalled()
       expect(select).not.toHaveBeenCalled()
-      expect(metas.get(first.evolutionId)).toMatchObject({ wakes: [], forks: [] })
       expect(rerun).not.toHaveBeenCalled()
-      expect(await store.listRounds()).toHaveLength(2)
+      expect(third).toMatchObject({
+        batchId: first.batchId, roundIndex: 3, roundCount: 3, advisoryFocus: ['context'],
+      })
+
+      await finalize(resumed, third)
+      await eventually(() => store.readRound(third.roundId), round => round?.status === 'accepted')
+      await eventually(async () => resumed.activeEntry(third.roundId), value => value === undefined)
+      const completedBatch = (await store.listRounds()).filter(round => round.batchId === first.batchId)
+      expect(completedBatch.map(round => round.roundIndex).sort((left, right) => left - right)).toEqual([1, 2, 3])
+      expect(completedBatch.every(round => round.roundCount === 3
+        && round.advisoryFocus?.[0] === 'context')).toBe(true)
+      expect(evaluator.calls.slice(callsBefore.length)).toEqual([
+        'held-out-candidate', 'seed-candidate', 'held-out-candidate',
+      ])
+      expect(metas.get(first.evolutionId)!.wakes.length).toBeGreaterThan(0)
+      expect(new Set(metas.get(first.evolutionId)!.wakes)).toEqual(new Set([third.roundId]))
+      expect(assess).toHaveBeenCalledTimes(1)
+      expect(select).toHaveBeenCalledTimes(1)
       expect(await store.readRound(first.roundId)).toEqual(original)
     } finally { await resumed.dispose(); await service.dispose() }
   })
@@ -2947,16 +2971,43 @@ describe('RefineService evolution workspaces', () => {
 
       await service.continueEvolution('api', admission.evolutionId, { roundId: admission.roundId })
       const terminal = await eventually(() => store.readRound(admission.roundId), round => round?.status === 'accepted')
+      await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
 
       expect(terminal?.evaluation?.heldOutBaseline).toEqual(heldOutBaseline)
       expect(terminal?.evaluation?.heldOutCandidate).toEqual(heldOutCandidate)
       expect(terminal?.evaluationAttempts).toEqual(attempts)
       expect(terminal?.evaluationStarts).toEqual(starts)
       expect(evaluator.calls).toEqual(callsBefore)
+      expect(await store.listRounds()).toHaveLength(1)
     } finally {
       persistence.mockRestore()
       await service.dispose()
     }
+  })
+
+  it('does not continue the original batch when selected-round recovery fails', async () => {
+    const { service, evaluator } = await setup()
+    try {
+      const prepared = await reopenAcceptedRoundBeforeHeldOutCandidate(service)
+      const planned = { ...prepared.reopened, roundCount: 2 }
+      await prepared.store.writeRound(planned)
+      evaluator.failurePhase = 'held-out-candidate'
+      const callsBefore = evaluator.calls.length
+
+      await service.continueEvolution('api', prepared.admission.evolutionId, {
+        roundId: prepared.admission.roundId,
+      })
+      const failed = await eventually(
+        () => prepared.store.readRound(prepared.admission.roundId),
+        round => round?.status === 'failed' && round.evaluationAttempts?.some(attempt =>
+          attempt.phase === 'held-out-candidate' && attempt.status === 'failed') === true,
+      )
+      await eventually(async () => service.activeEntry(prepared.admission.roundId), value => value === undefined)
+
+      expect(failed?.roundCount).toBe(2)
+      expect(evaluator.calls.slice(callsBefore)).toEqual(['held-out-candidate'])
+      expect(await prepared.store.listRounds()).toHaveLength(1)
+    } finally { await service.dispose() }
   })
 
   it.each([
