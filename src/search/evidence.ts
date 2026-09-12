@@ -1,6 +1,6 @@
 import { digestJson } from '../state/digest.js'
 import { validateSearchSchema } from './schema.js'
-import { comparisonKey, invariant, numeric, observationValue, processTasks, rational, seal, sorted, validateSnapshot, verifyDigest, weightedMean } from './contracts.js'
+import { comparisonKey, digest, invariant, numeric, observationValue, processTasks, rational, seal, sorted, validateSnapshot, verifyDigest, weightedMean } from './contracts.js'
 import type { Rational } from './contracts.js'
 import type { CellIdentity, EvidenceCell, EvidenceProfile, ProcessMode, Snapshot, StageEvaluationPlan, StageResult, TaskProfile, TaskUniverse } from './types.js'
 
@@ -10,10 +10,14 @@ export function cellIdentity(universe: TaskUniverse, taskId: string, repetition:
   return {
     taskId, taskContentDigest: task.contentDigest, repetition, seed: slot.seed,
     conditionDigest: universe.conditionDigest, outcomeContractDigest: task.outcome.digest,
-    ...(task.process ? { processContractDigest: task.process.digest } : {}), snapshotDigest: snapshot.digest,
+    ...(task.process ? { processContractDigest: task.process.digest } : {}), harnessCommit: snapshot.commit,
+    harnessManifestDigest: snapshot.manifestDigest, snapshotDigest: snapshot.digest,
   }
 }
-export function cellKey(identity: CellIdentity): string { return digestJson(identity) }
+export function cellKey(identity: CellIdentity): string {
+  const { snapshotDigest: originRecord, ...executionIdentity } = identity
+  return digestJson(executionIdentity)
+}
 export function plannedCells(universe: TaskUniverse, plan: StageEvaluationPlan, snapshot: Snapshot): CellIdentity[] {
   verifyDigest(plan); validateSnapshot(snapshot)
   invariant(plan.universeDigest === universe.digest && plan.partition === universe.partition, 'stage universe/partition mismatch')
@@ -24,9 +28,19 @@ export function plannedCells(universe: TaskUniverse, plan: StageEvaluationPlan, 
 export function validOutcome(cell: EvidenceCell): boolean {
   return cell.status === 'available' && cell.outcomeCertified && cell.outcome.status === 'available'
 }
+/** Missing older views may coexist with complete views; two valid values may not conflict. */
+export function assertConsistentCells(a: EvidenceCell, b: EvidenceCell): void {
+  if (!validOutcome(a) || !validOutcome(b)) return
+  invariant(digestJson(a.identity) === digestJson(b.identity) && a.evidenceRef === b.evidenceRef && a.completedAt === b.completedAt
+    && digestJson(a.outcome) === digestJson(b.outcome) && a.outcomeCertified === b.outcomeCertified && a.envelope === b.envelope
+    && digestJson(a.assertions ?? null) === digestJson(b.assertions ?? null), 'evidence cannot rerun or replace a valid outcome')
+  if (a.process?.status === 'available' && b.process?.status === 'available') invariant(digestJson(a.process) === digestJson(b.process), 'evidence cannot replace valid process')
+}
 export function assertCell(cell: EvidenceCell, expected: CellIdentity): void {
   validateSearchSchema('EvidenceCell', cell)
   verifyDigest(cell)
+  digest(cell.identity.snapshotDigest); digest(cell.identity.harnessManifestDigest)
+  invariant(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(cell.identity.harnessCommit), 'cell requires an exact harness commit')
   invariant(cellKey(cell.identity) === cellKey(expected), 'cell condition/task/scorer/snapshot/slot identity mismatch')
   invariant(['available', 'missing', 'invalid'].includes(cell.status), 'invalid execution status')
   invariant(['legacy-v1', 'score-envelope-v2'].includes(cell.envelope), 'unsupported score envelope')
@@ -46,9 +60,10 @@ export function profile(universe: TaskUniverse, plan: StageEvaluationPlan, snaps
     invariant(identity && !cells.has(key), 'duplicate or unplanned evidence cell')
     assertCell(cell, identity); cells.set(key, cell)
   }
-  const applicable = processTasks(universe, mode).filter(id => plan.taskIds.includes(id))
+  const declaredProcess = processTasks(universe, mode), applicable = declaredProcess.filter(id => plan.taskIds.includes(id))
   const coverage = { planned: identities.length, available: 0, paired: 0, pending: 0, missing: 0, invalid: 0, notEvaluated: (universe.tasks.length - plan.taskIds.length) * universe.repetitions.length }
-  const processCoverage = { ...coverage, planned: applicable.length * universe.repetitions.length }
+  const processCoverage = { ...coverage, planned: applicable.length * universe.repetitions.length,
+    notEvaluated: (declaredProcess.length - applicable.length) * universe.repetitions.length }
   const tasks: TaskProfile[] = []
   const outcomes: Array<{ value: Rational; weight: number }> = []
   const processValues: Record<string, Array<{ value: Rational; weight: number }>> = {}
@@ -81,7 +96,7 @@ export function profile(universe: TaskUniverse, plan: StageEvaluationPlan, snaps
     if (applicable.includes(taskId) && process.length === universe.repetitions.length) {
       const value = weightedMean(process.map(value => ({ value, weight: 1 })))
       row.process = numeric(value); row.processKey = String(comparisonKey(value, task.process!.comparisonQuantum))
-      ;(processValues[task.process!.group] ??= []).push({ value, weight })
+      if (weight > 0) (processValues[task.process!.group] ??= []).push({ value, weight })
     }
     tasks.push(row)
   }
@@ -104,10 +119,8 @@ export function completeEvidence(original: StageResult, replacements: EvidenceCe
     verifyDigest(replacement)
     const key = cellKey(replacement.identity), old = cells.get(key)
     if (old && validOutcome(old)) {
-      invariant(replacement.evidenceRef === old.evidenceRef && replacement.completedAt === old.completedAt
-        && digestJson(replacement.outcome) === digestJson(old.outcome) && replacement.outcomeCertified === old.outcomeCertified
-        && replacement.status === old.status && replacement.envelope === old.envelope
-        && digestJson(replacement.assertions ?? null) === digestJson(old.assertions ?? null), 'completion cannot rerun or replace a valid outcome')
+      invariant(validOutcome(replacement), 'completion cannot rerun or replace a valid outcome')
+      assertConsistentCells(old, replacement)
       if (old.process?.status === 'available') invariant(digestJson(replacement.process) === digestJson(old.process), 'completion cannot replace valid process')
     }
     cells.set(key, replacement)

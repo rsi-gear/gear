@@ -1,8 +1,8 @@
 import { digestJson } from '../state/digest.js'
 import { validateSearchSchema } from './schema.js'
-import type { MetricContract, SearchSettings, TaskUniverse, TaskSetResolution, TaskSetSizing, Snapshot, MetricObservation } from './types.js'
+import type { EvaluationScope, MetricContract, SearchSettings, TaskUniverse, TaskSetResolution, TaskSetSizing, Snapshot, MetricObservation } from './types.js'
 
-export const integrity = digestJson({ algorithm: 'failure-cluster-gepa', apiVersion: 2, revision: 1 })
+export const integrity = digestJson({ algorithm: 'failure-cluster-gepa', apiVersion: 2, revision: 2 })
 export function seal<T extends object>(value: T): T & { digest: string } { return { ...value, digest: digestJson(value) } }
 export function verifyDigest(value: { digest: string }): void {
   const { digest, ...body } = value
@@ -114,6 +114,28 @@ export function processTasks(universe: TaskUniverse, mode: 'off' | 'auto' | 'req
   const ids = universe.tasks.filter(t => t.process && t.process.granularity !== 'dataset-aggregate').map(t => t.id)
   invariant(mode !== 'required' || ids.length > 0, 'required process metrics are unsupported')
   return ids
+}
+/** Semantic identity excludes family names, epoch labels, and sampling annotations. */
+export function scopeEquivalenceDigest(scope: Pick<EvaluationScope, 'universeDigest' | 'taskIds' | 'weights' | 'guards'>): string {
+  return digestJson({ universe: scope.universeDigest, taskIds: sorted(scope.taskIds), weights: scope.weights,
+    guards: [...scope.guards].sort((a, b) => digestJson(a).localeCompare(digestJson(b))) })
+}
+export function validateScope(scope: EvaluationScope, universe: TaskUniverse): void {
+  validateSearchSchema('EvaluationScope', scope); verifyDigest(scope)
+  invariant(universe.partition === 'seed' && scope.universeDigest === universe.digest, 'scope universe changed')
+  invariant(scope.familyId.length > 0, 'scope family is required'); integer(scope.epoch, 'scope epoch')
+  digest(scope.taskSetSizeResolutionDigest)
+  invariant(scope.taskIds.length > 0 && digestJson(scope.taskIds) === digestJson(sorted(scope.taskIds))
+    && scope.taskIds.every(id => universe.tasks.some(t => t.id === id)), 'invalid scope task manifest')
+  const bucketIds = Object.values(scope.buckets).flat()
+  invariant(unique(bucketIds).length === bucketIds.length, 'scope buckets must be deduplicated')
+  invariant(scope.guards.every(g => g.partition === 'seed' && (g.rule === 'must-pass' || g.rule === 'minimum-score'
+    && Number.isFinite(g.minimumUtility))), 'invalid scope exploration guards')
+  invariant(digestJson(sorted([...bucketIds, ...scope.guards.map(g => g.taskId)])) === digestJson(scope.taskIds), 'scope manifest must include every bucket and guard')
+  invariant(digestJson(Object.keys(scope.weights).sort()) === digestJson(scope.taskIds), 'scope weights do not match its task manifest')
+  const weights = Object.values(scope.weights)
+  invariant(weights.every(w => Number.isFinite(w) && w >= 0) && Math.abs(weights.reduce((a, b) => a + b, 0) - 1) <= 1e-12, 'scope weights must be normalized')
+  invariant(scope.equivalenceDigest === scopeEquivalenceDigest(scope), 'scope equivalence identity mismatch')
 }
 export function resolveSizing(universe: TaskUniverse, config: TaskSetSizing): TaskSetResolution {
   invariant(config.basis === 'seed-universe' && config.rounding === 'ceil', 'unsupported task sizing rule')

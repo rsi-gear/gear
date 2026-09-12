@@ -51,7 +51,14 @@ export class SearchStore {
   }
   async freeze<T extends { digest: string }>(roundId: string, name: string, create: () => Promise<T> | T): Promise<T> {
     safeId(roundId); safeId(name)
-    const key = `rounds/${roundId}/${name}`, saved = await this.read<{ ref: string }>(key)
+    return this.freezeKey(`rounds/${roundId}/${name}`, create)
+  }
+  async freezeEvolution<T extends { digest: string }>(name: string, create: () => Promise<T> | T): Promise<T> {
+    safeId(name)
+    return this.freezeKey(`evolution/${name}`, create)
+  }
+  private async freezeKey<T extends { digest: string }>(key: string, create: () => Promise<T> | T): Promise<T> {
+    const saved = await this.read<{ ref: string }>(key)
     if (saved) return this.object<T>(saved.ref)
     const value = await create(); await this.put(value); await this.write(key, { ref: value.digest }); return value
   }

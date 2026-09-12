@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { digestJson } from '../../src/state/digest.js'
-import { comparisonKey, rational, resolveSizing, seal, validateSettings, verifyDigest } from '../../src/search/contracts.js'
+import { comparisonKey, rational, resolveSizing, scopeEquivalenceDigest, seal, sorted, validateSettings, verifyDigest } from '../../src/search/contracts.js'
 import { buildArchive, selectParents } from '../../src/search/archive.js'
 import { cellIdentity, completeEvidence, profile } from '../../src/search/evidence.js'
 import { FailureClusterSearch } from '../../src/search/engine.js'
@@ -19,8 +19,10 @@ async function root() { const value = await mkdtemp(join(tmpdir(), 'gear-search-
 afterEach(async () => { await Promise.all(roots.splice(0).map(r => rm(r, { recursive: true, force: true }))) })
 
 function scored(u: TaskUniverse, s: Snapshot, values: number[], process?: Array<number | undefined>, stage: 'local' | 'global-seed' | 'held-out' = 'local', ids = u.tasks.map(t => t.id)) {
-  const scope: EvaluationScope = seal({ familyId: 'group', epoch: 1, universeDigest: u.digest, taskSetSizeResolutionDigest: digestJson('sizing'), buckets: { local: ids, shared: [], cross: [] }, taskIds: ids,
-    weights: Object.fromEntries(ids.map(id => [id, 1 / ids.length])), guards: [], sampling: { local: { requested: ids.length, selected: ids.length, reasons: [] }, shared: { requested: 0, selected: 0, reasons: [] }, cross: { requested: 0, selected: 0, reasons: [] } }, equivalenceDigest: digestJson(ids) })
+  const scopeWeights = Object.fromEntries(ids.map(id => [id, 1 / ids.length]))
+  const scope: EvaluationScope = seal({ familyId: 'group', epoch: 1, universeDigest: u.digest, taskSetSizeResolutionDigest: digestJson('sizing'), buckets: { local: ids, shared: [], cross: [] }, taskIds: sorted(ids),
+    weights: scopeWeights, guards: [], sampling: { local: { requested: ids.length, selected: ids.length, reasons: [] }, shared: { requested: 0, selected: 0, reasons: [] }, cross: { requested: 0, selected: 0, reasons: [] } },
+    equivalenceDigest: scopeEquivalenceDigest({ universeDigest: u.digest, taskIds: ids, weights: scopeWeights, guards: [] }) })
   const plan = stagePlan({ stage, partition: u.partition, universeDigest: u.digest, taskSetSizeResolutionDigest: digestJson('sizing'), scopeDigest: scope.digest, taskIds: ids, participantIds: ['A', 'B', 'C'], prerequisiteDecisionDigests: [], selectionRuleDigest: digestJson('rule') })
   const cells: EvidenceCell[] = ids.map((id, i) => seal({ identity: cellIdentity(u, id, 0, s), status: 'available' as const, envelope: 'score-envelope-v2' as const, outcomeCertified: true,
     outcome: { status: 'available' as const, rawValue: values[i]!, contractDigest: u.tasks.find(t => t.id === id)!.outcome.digest, evidenceRef: `${s.candidateId}-${id}` },

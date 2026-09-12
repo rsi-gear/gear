@@ -2,6 +2,8 @@
 
 本次变更实现 `failure-cluster-gepa-v1` 的 Gear 搜索驱动、控制面接入和独立晋升策略。仅对新建 evolution 显式启用；没有 `searchSettings` 的历史 spec 保持原路径、组件身份和 verdict。
 
+完整验收仍在继续，逐项状态见 [65 项验收跟踪](candidate-promotion-acceptance.zh-CN.md)。核心路径通过不等于全部规范已验收。
+
 实现位于独立分支 `codex/candidate-promotion`，基于 `e0e8a7f`。没有合并到正在运行实验的 `dev`，没有重建其 `lib`，没有修改实验配置、数据、champion 或 published pointer。开发和测试工作目录为 `/private/tmp/gear-candidate-promotion-20260912`。
 
 ## 已接入的流程
@@ -10,10 +12,13 @@
 
 - local/shared/cross/bridge 均根据去重 seed 全集计算比例，支持可选 min/max，精确十进制向上取整。任务数与桶计分权重独立。
 - outcome/process 分别建立逐任务前沿，以 scope 权重和 membership 概率抽父代。全同分使用有资格检查的确定性 fallback，历史专长和原始证据保留。
+- scope 的语义身份从任务、权重和 guards 重算；等价范围合并证据与抽样机会。每份局部计划必须覆盖完整 scope，跨计划的同一有效 cell 不得出现冲突值；较旧的 missing 视图仍可保存，不覆盖已补齐资格。
 - 过程能力在 admission 解析。原生 outcome-only、逐 trial scalar、过程缺失和旧版整条 invalid 分开处理；新模式不会添加 LLM judge。
 - 每个候选领取自己的工作计划、有来源的 dossier 摘要、共享约束和父代 findings。Skill claim 和 DSH 投递产生独立消费凭据，不填充伪造的旧诊断 receipts。修改边界是相对 harness 根目录的路径。
 - 所有候选生成结束后才评测。重试共享工作计划和总生成预算；无法认证实际 token 用量的外部 Skill 会按完整 reservation 计费。
 - 阶段计划、bindings、诊断、提名、结果和 commit intent 使用内容摘要持久化。每次外部执行先冻结请求和预算 reservation，provider 使用幂等键恢复；部分 cell 已写入或诊断已结算时的中断不会重算请求或重新执行。
+- evolution 级规则和任务身份跨轮固定，存在未解决 round 时不能新开 round。cell 缓存按 exact commit/manifest 与执行条件寻址，保留原始 snapshot 来源，候选角色或谱系标签变化不产生新执行槽位。
+- bridge 预算按所有参与者的实际缺失 cells 与 repair 成本计算，已完成的 local cells 不重复收费；组配额、容量不足和费用不足分别记录。
 - held-out 前先冻结 seed research；缺失 held-out 可以在 intent 之前补评。历史局部证据通过独立 completion 追加 revision，有效零分和有效过程分不可替换。
 - `shared-set-research` 只生成研究更新和 advisory 决定，不能自动更新 champion。
 - 回归收集默认关闭。provider 可声明冻结的 `regressionTemplate`；有效 seed 业务失败进入过滤、去重、有容量限制的 proposal 队列。物化 suite 必须经可重现性验证，只能在新 admission 纳入。
@@ -29,7 +34,7 @@
 1. `describe('seed' | 'held-out')`：冻结 task content、metric contract、模型/采样/环境/评分条件、逻辑 repetitions、稳定分层与成本估计。
 2. `capabilities`：明确证明 task subset plans、batch-independent cells、idempotent execution。
 3. `evaluate`：只执行列出的 cells；同一幂等键必须恢复同一执行，不能创建新随机尝试；遵守 abort 与调用预算。
-4. `verifyCell`：验证实际产物来源、任务/评分/执行条件和 exact snapshot 身份，不能只相信 Gear 提交的字段。
+4. `verifyCell`：验证实际产物来源、任务/评分/执行条件及 `harnessCommit/harnessManifestDigest`，不能只相信 Gear 提交的字段。`snapshotDigest` 保留原始证据来源；另一角色复用时，必须证明 exact commit、manifest 和其余执行身份全部相同，不能仅凭同 tree 替代。
 5. 可选 `completeProcess`：只从原 run 产物恢复过程证据，不重跑有效 outcome。
 6. 启用 `suiteRef` 时，用 `verifyRegressionSuite` 证明整个版本化 suite 已纳入该新 seed universe。
 
@@ -83,7 +88,7 @@ regression:
 
 ## 状态与恢复 API
 
-`control.status` 的 `search` 包含 sizing、实际 workplans、scope coverage、未评数量、前沿、父代概率、扩评状态、独立 promotion 决定和剩余预算。`experiments.tsv` 对新模式区分 `retained-local`、`global-nominee` 和发布决定。
+终态 `control.status` 的 `search` 包含 sizing、实际 workplans、scope coverage、未评数量、前沿、父代概率、扩评状态、独立 promotion 决定和剩余预算；`research.bridge` 另含冻结计划及各候选未扩评原因。scope 视图分开记录待补证据与探索门不合格。运行中的完整阶段展示仍见验收跟踪中的待办。`experiments.tsv` 对新模式区分 `retained-local`、`global-nominee` 和发布决定。
 
 缺失 held-out 时，状态返回 `searchPendingEvidence`。可通过 Skill 控制 API 调用：
 
@@ -103,6 +108,8 @@ regression:
 
 独立历史补齐使用 `completeArchivedEvidence`，调用方持有 evolution 写者锁。它不调用 Meta、不晋升；新 revision 在下一次 archive update 消费。不能用这个入口增加原计划外任务。两个补评入口都验证 provider 与任务身份，并遵守 round/evolution 的原有时间预算。
 
+dossier、workplans、local 决定、nomination 与 archive 在发布引用前保存证据消费记录。消费边界按 plan + participant 绑定，而不是等到整个后续阶段完成；已消费的 seed 证据只能走追加 revision 的历史补齐流程。
+
 异常退出时，已封存的候选与外部幂等执行继续复用。未完成且无法恢复的 Meta 生成 attempt 明确结算为失败，不悄悄重新生成同一候选。champion CAS 冲突保留外部版本和原 intent，需要明确处理冲突后才能继续。
 
 ## 验证与交付边界
@@ -115,4 +122,6 @@ regression:
 
 2026-09-12 验证记录：13 个相关测试文件共 237 项通过（最多两个 worker）；补评身份约束的最终修改另行重跑对应测试。`npm run typecheck`、标准构建、生成 schema 一致性和 npm 文件清单检查通过。发布清单包含新 SDK 入口及运行时 JSON schema。
 
-完整 spec 的全部验收矩阵仍是长期验收合同。此次没有使用真实 Hitch 演化证明收益，也不把合成 fixture 的计算节约宣称为真实 token/时长节约。内置 Hitch 的 capability adapter 尚需后续接入，因此原 spec 不标为整体验收完成。
+后续验收修复后的最终检查：新旧搜索测试及实际 Git/Skill 控制面测试共 143 项通过，包含新增的 27 项验收测试；类型检查、构建编译、SDK 导入和 schema 一致性再次通过。测试集合与前次记录有重叠。
+
+完整 spec 的 65 项矩阵与正文要求仍在逐项实现和验证，未完成项见验收跟踪，因此当前不标记整体验收完成。没有使用真实 Hitch 演化证明收益，也不把合成 fixture 的计算节约宣称为真实 token/时长节约；内置 Hitch 的 capability adapter 接入限制保持明确。

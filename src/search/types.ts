@@ -148,6 +148,9 @@ export interface CellIdentity {
   conditionDigest: string
   outcomeContractDigest: string
   processContractDigest?: string
+  harnessCommit: string
+  harnessManifestDigest: string
+  /** Originating record, retained for provenance; role/lineage labels do not create a new execution slot. */
   snapshotDigest: string
 }
 export interface EvidenceCell {
@@ -181,6 +184,19 @@ export interface StageResult {
   cells: EvidenceCell[]
   settled: boolean
   supersedesEvidenceDigest?: string
+  digest: string
+}
+export interface BridgeSelectionDecision {
+  plan?: StageEvaluationPlan
+  skipped: string[]
+  exclusions: Array<{ candidateId: string; scopeDigest: string; reason: 'group-quota' | 'bridge-disabled' | 'bridge-capacity' | 'bridge-budget' }>
+}
+export interface EvidenceConsumption {
+  stagePlanDigest: string
+  snapshotDigest: string
+  resultDigest: string
+  consumerDigest: string
+  consumer: 'bootstrap-archive' | 'diagnosis' | 'workplans' | 'local-decision' | 'nomination' | 'research-archive'
   digest: string
 }
 export interface Coverage {
@@ -301,6 +317,7 @@ export interface ScopeView {
   prunedIds: string[]
   conditionalParentProbabilities: Record<string, number>
   pendingEvidenceIds: string[]
+  ineligibleIds: string[]
   digest: string
 }
 export interface ResearchArchive {

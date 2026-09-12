@@ -1,6 +1,6 @@
 # Candidate 晋升与任务专长 Archive 优化规范
 
-- 状态：v1，修订 3；Gear 核心搜索、控制面与晋升实现见[实现与接入说明](candidate-promotion-implementation.zh-CN.md)。内置 Hitch capability adapter 尚未接入，本文完整验收矩阵尚未全部验收，不标记整体验收完成。
+- 状态：v1，修订 3；Gear 核心搜索、控制面与晋升实现见[实现与接入说明](candidate-promotion-implementation.zh-CN.md)，逐项完成证据见[验收跟踪](candidate-promotion-acceptance.zh-CN.md)。内置 Hitch capability adapter 尚未接入，本文完整验收矩阵尚未全部验收，不标记整体验收完成。
 - 日期：2026-09-12。
 - 范围：Gear 共享失败诊断、分类分工与多 candidate 生成、分阶段评测、父代选择、跨轮研究归档、过程指标兼容、champion 晋升、失败回归任务、状态恢复。
 - 设计依据：当前 Gear 工作区实现；evolution `cf603144-c511-4a37-94aa-4986d7831616`；Reef 固定提交 `c7a00cadbdc0d8002f35c1d37b12232a3bec5388` 的 GEPA 实现。

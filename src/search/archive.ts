@@ -1,7 +1,7 @@
 import { digestJson } from '../state/digest.js'
-import { comparisonKey, invariant, seal, sorted, verifyDigest } from './contracts.js'
-import { completeEvidence, profile } from './evidence.js'
-import type { EvidenceProfile, EvaluationScope, ParentSelectionDecision, ResearchArchive, ScopeView, SearchConfig, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from './types.js'
+import { comparisonKey, invariant, seal, sorted, validateScope, verifyDigest } from './contracts.js'
+import { assertConsistentCells, cellKey, completeEvidence, profile, validOutcome } from './evidence.js'
+import type { EvidenceCell, EvidenceProfile, EvaluationScope, ParentSelectionDecision, ResearchArchive, ScopeView, SearchConfig, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from './types.js'
 
 export function passesExploration(scope: EvaluationScope, p: EvidenceProfile, universe: TaskUniverse): boolean {
   return p.outcomeComplete && scope.guards.every(g => {
@@ -9,17 +9,21 @@ export function passesExploration(scope: EvaluationScope, p: EvidenceProfile, un
     return row?.outcome !== undefined && comparisonKey(row.outcome, task.outcome.comparisonQuantum) >= comparisonKey(g.rule === 'must-pass' ? task.successUtility : g.minimumUtility!, task.outcome.comparisonQuantum)
   })
 }
-export function scopeView(scope: EvaluationScope, universe: TaskUniverse, snapshots: Snapshot[], records: Array<{ snapshot: Snapshot; result: StageResult; plan: StageEvaluationPlan }>, config: SearchConfig, championId: string): ScopeView {
-  verifyDigest(scope)
+export function scopeView(scope: EvaluationScope, universe: TaskUniverse, snapshots: Snapshot[], records: Array<{ snapshot: Snapshot; result: StageResult; plan: StageEvaluationPlan }>, config: SearchConfig, championId: string, equivalentScopes: ReadonlySet<string> = new Set([scope.digest])): ScopeView {
+  validateScope(scope, universe)
   const profiles = new Map<string, EvidenceProfile>(), times = new Map<string, string>()
-  const pending: string[] = []
+  const observed = new Set<string>(), guardRejected = new Set<string>()
   for (const record of records) {
-    if (record.plan.scopeDigest !== scope.digest) continue
+    if (!equivalentScopes.has(record.plan.scopeDigest)) continue
+    invariant(digestJson(sorted(record.plan.taskIds)) === digestJson(scope.taskIds), 'stage task manifest does not cover its complete scope')
     const p = profile(universe, record.plan, record.snapshot, record.result, config.process.mode, scope.weights)
-    if (!passesExploration(scope, p, universe)) { pending.push(record.snapshot.candidateId); continue }
-    profiles.set(record.snapshot.candidateId, p)
-    times.set(record.snapshot.candidateId, record.result.cells.map(c => c.completedAt).sort().at(-1) ?? '')
-    if (!p.processComplete) pending.push(record.snapshot.candidateId)
+    const id = record.snapshot.candidateId
+    observed.add(id)
+    if (!passesExploration(scope, p, universe)) { if (p.outcomeComplete) guardRejected.add(id); continue }
+    const previous = profiles.get(id)
+    if (!previous || !previous.processComplete && p.processComplete) profiles.set(id, p)
+    const completedAt = record.result.cells.map(c => c.completedAt).sort().at(-1) ?? ''
+    if (!times.has(id) || completedAt < times.get(id)!) times.set(id, completedAt)
   }
   const representatives: Record<string, string> = {}, trees = new Map<string, string>()
   const ids = [...profiles.keys()].sort((a, b) => times.get(a)!.localeCompare(times.get(b)!) || a.localeCompare(b))
@@ -43,14 +47,21 @@ export function scopeView(scope: EvaluationScope, universe: TaskUniverse, snapsh
   }
   const informative = fronts.filter(f => f.informative && scope.weights[f.taskId]! > 0)
   const live = new Set(eligible), prunedIds: string[] = []
-  const traversal = [...eligible].sort((a, b) => profiles.get(a)!.outcome! - profiles.get(b)!.outcome! || a.localeCompare(b))
+  const compareOutcome = (a: string, b: string): number => {
+    const difference = BigInt(profiles.get(a)!.outcomeKey!) - BigInt(profiles.get(b)!.outcomeKey!)
+    return difference === 0n ? a.localeCompare(b) : difference < 0n ? -1 : 1
+  }
+  const traversal = [...eligible].sort(compareOutcome)
   if (informative.length) for (const id of traversal) {
     const memberships = informative.filter(f => f.candidateIds.includes(id))
     if (memberships.every(f => f.candidateIds.some(other => other !== id && live.has(other)))) { live.delete(id); prunedIds.push(id) }
   }
   const probability: Record<string, number> = {}
   if (!informative.length && eligible.length) {
-    const fallback = eligible.includes(championId) ? championId : [...eligible].sort((a, b) => profiles.get(b)!.outcome! - profiles.get(a)!.outcome! || a.localeCompare(b))[0]!
+    const fallback = eligible.includes(championId) ? championId : [...eligible].sort((a, b) => {
+      const difference = BigInt(profiles.get(b)!.outcomeKey!) - BigInt(profiles.get(a)!.outcomeKey!)
+      return difference === 0n ? a.localeCompare(b) : difference < 0n ? -1 : 1
+    })[0]!
     probability[fallback] = 1
   } else {
     const channels = {} as Record<'outcome' | 'process', Record<string, number>>
@@ -68,7 +79,9 @@ export function scopeView(scope: EvaluationScope, universe: TaskUniverse, snapsh
     }
   }
   return seal({ scopeDigest: scope.digest, outcomeEligibleIds: eligible, processEligibleIds: processEligible,
-    fronts, representatives, prunedIds, conditionalParentProbabilities: probability, pendingEvidenceIds: sorted(pending) })
+    fronts, representatives, prunedIds, conditionalParentProbabilities: probability,
+    pendingEvidenceIds: [...observed].filter(id => !guardRejected.has(id) && (!profiles.has(id) || !profiles.get(id)!.processComplete)).sort(),
+    ineligibleIds: [...guardRejected].filter(id => !profiles.has(id)).sort() })
 }
 
 export function buildArchive(input: { evolutionId: string; previous?: ResearchArchive; universe: TaskUniverse; snapshots: Snapshot[]; scopes: EvaluationScope[]; results: StageResult[]; plans: StageEvaluationPlan[]; config: SearchConfig; championId: string }): ResearchArchive {
@@ -84,10 +97,17 @@ export function buildArchive(input: { evolutionId: string; previous?: ResearchAr
   const plans = new Map([...(previous?.plans ?? []), ...input.plans].map(p => [p.digest, p]))
   const resultHistory = new Map([...(previous?.results ?? []), ...input.results].map(r => [r.digest, r]))
   const records = new Map<string, { snapshot: Snapshot; result: StageResult; plan: StageEvaluationPlan }>()
+  const cellHistory = new Map<string, EvidenceCell>()
   for (const result of resultHistory.values()) {
     verifyDigest(result)
     const plan = plans.get(result.stagePlanDigest), snapshot = [...snapshots.values()].find(s => s.digest === result.snapshotDigest)
     invariant(plan && snapshot && plan.partition === 'seed', 'archive evidence has no seed plan/snapshot')
+    profile(universe, plan, snapshot, result, input.config.process.mode)
+    for (const cell of result.cells) {
+      const identity = cellKey(cell.identity), oldCell = cellHistory.get(identity)
+      if (oldCell) assertConsistentCells(oldCell, cell)
+      if (!oldCell || !validOutcome(oldCell) || validOutcome(cell) && (oldCell.process?.status !== 'available' || cell.process?.status === 'available')) cellHistory.set(identity, cell)
+    }
     const key = `${plan.digest}:${snapshot.digest}`, old = records.get(key)
     if (old && old.result.digest !== result.digest) {
       invariant(result.supersedesEvidenceDigest === old.result.digest, 'evidence revision must explicitly supersede prior support')
@@ -96,16 +116,25 @@ export function buildArchive(input: { evolutionId: string; previous?: ResearchAr
     records.set(key, { snapshot, result, plan })
   }
   const scopes = new Map((previous?.scopes ?? []).map(s => [s.digest, s]))
-  for (const scope of input.scopes) { verifyDigest(scope); invariant(scope.universeDigest === universe.digest, 'scope universe changed'); scopes.set(scope.digest, scope) }
+  for (const scope of input.scopes) scopes.set(scope.digest, scope)
+  const epochs = new Map<string, string>(), equivalentScopes = new Map<string, Set<string>>()
+  for (const scope of scopes.values()) {
+    validateScope(scope, universe)
+    const epochKey = digestJson([scope.familyId, scope.epoch])
+    invariant(!epochs.has(epochKey) || epochs.get(epochKey) === scope.digest, 'scope epoch manifest changed')
+    epochs.set(epochKey, scope.digest)
+    const aliases = equivalentScopes.get(scope.equivalenceDigest) ?? new Set<string>()
+    aliases.add(scope.digest); equivalentScopes.set(scope.equivalenceDigest, aliases)
+  }
+  const scopeViews = [...scopes.values()].map(s => scopeView(s, universe, [...snapshots.values()], [...records.values()], input.config, input.championId, equivalentScopes.get(s.equivalenceDigest)!))
   const latest = new Map<string, EvaluationScope>(), equivalences = new Set<string>()
   for (const scope of [...scopes.values()].sort((a, b) => b.epoch - a.epoch || a.familyId.localeCompare(b.familyId))) {
     if (latest.has(scope.familyId) || equivalences.has(scope.equivalenceDigest)) continue
-    const view = scopeView(scope, universe, [...snapshots.values()], [...records.values()], input.config, input.championId)
+    const view = scopeViews.find(v => v.scopeDigest === scope.digest)!
     if (!Object.keys(view.conditionalParentProbabilities).length) continue
     latest.set(scope.familyId, scope); equivalences.add(scope.equivalenceDigest)
   }
   if (latest.size > 1) latest.delete('bootstrap')
-  const scopeViews = [...scopes.values()].map(s => scopeView(s, universe, [...snapshots.values()], [...records.values()], input.config, input.championId))
   const scopeProbabilities: Record<string, number> = {}, parentProbabilities: Record<string, number> = {}
   for (const scope of latest.values()) {
     scopeProbabilities[scope.digest] = 1 / latest.size

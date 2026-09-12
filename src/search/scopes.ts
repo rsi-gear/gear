@@ -1,6 +1,6 @@
 import { digestJson } from '../state/digest.js'
-import { invariant, seal, sorted, unique } from './contracts.js'
-import type { Bucket, EvaluationScope, FailureCluster, SearchConfig, StageEvaluationPlan, TaskSetResolution, TaskUniverse } from './types.js'
+import { invariant, scopeEquivalenceDigest, seal, sorted, unique } from './contracts.js'
+import type { BridgeSelectionDecision, Bucket, EvaluationScope, FailureCluster, SearchConfig, StageEvaluationPlan, TaskSetResolution, TaskUniverse } from './types.js'
 
 export function order(seed: string, ids: readonly string[]): string[] {
   return sorted(ids).sort((a, b) => digestJson([seed, a]).localeCompare(digestJson([seed, b])) || a.localeCompare(b))
@@ -50,7 +50,7 @@ export function createScope(universe: TaskUniverse, resolution: TaskSetResolutio
   }])) as EvaluationScope['sampling']
   return seal({ familyId: cluster.familyId, epoch, universeDigest: universe.digest, taskSetSizeResolutionDigest: resolution.digest,
     buckets, taskIds, weights, guards, sampling,
-    equivalenceDigest: digestJson({ universe: universe.digest, taskIds, weights, guards }),
+    equivalenceDigest: scopeEquivalenceDigest({ universeDigest: universe.digest, taskIds, weights, guards }),
   })
 }
 export function stagePlan(input: Omit<StageEvaluationPlan, 'digest'>): StageEvaluationPlan {
@@ -58,24 +58,29 @@ export function stagePlan(input: Omit<StageEvaluationPlan, 'digest'>): StageEval
   const { digest: ignored, ...body } = input as StageEvaluationPlan
   return seal({ ...body, taskIds: sorted(input.taskIds), participantIds: sorted(input.participantIds) })
 }
-export function bridgeSelection(universe: TaskUniverse, resolution: TaskSetResolution, config: SearchConfig, roundIndex: number, nominees: Array<{ candidateId: string; scope: EvaluationScope }>, championId: string, guards: string[], affordable: (ids: string[], tasks: string[]) => boolean): { plan?: StageEvaluationPlan; skipped: string[] } {
+export async function bridgeSelection(universe: TaskUniverse, resolution: TaskSetResolution, config: SearchConfig, roundIndex: number, nominees: Array<{ candidateId: string; scope: EvaluationScope }>, championId: string, guards: string[], affordable: (ids: string[], tasks: string[]) => boolean | Promise<boolean>): Promise<BridgeSelectionDecision> {
   const byFamily = [...nominees].sort((a, b) => a.scope.familyId.localeCompare(b.scope.familyId))
   const offset = byFamily.length ? roundIndex % byFamily.length : 0
-  const selected = [...byFamily.slice(offset), ...byFamily.slice(0, offset)].slice(0, config.evaluationStages.bridge.maxCandidates)
-  const skipped: string[] = []
+  const ordered = [...byFamily.slice(offset), ...byFamily.slice(0, offset)]
+  const selected = ordered.slice(0, config.evaluationStages.bridge.maxCandidates)
+  const exclusions: BridgeSelectionDecision['exclusions'] = ordered.slice(selected.length).map(c => ({ candidateId: c.candidateId,
+    scopeDigest: c.scope.digest, reason: config.evaluationStages.bridge.maxCandidates === 0 ? 'bridge-disabled' : 'group-quota' }))
   const capacity = resolution.quantities.bridge.resolved
   while (selected.length && capacity > 0) {
     const required = sorted([...selected.flatMap(c => c.scope.taskIds), ...guards])
     if (required.length <= capacity) {
       const tasks = [...required, ...stratified(universe, universe.tasks.map(t => t.id).filter(id => !required.includes(id)), `${config.seed}:bridge:${roundIndex}`)].slice(0, capacity)
       const ids = [...selected.map(c => c.candidateId), championId]
-      if (affordable(ids, tasks)) return { plan: stagePlan({
+      if (await affordable(ids, tasks)) return { plan: stagePlan({
         stage: 'bridge', partition: 'seed', universeDigest: universe.digest, taskSetSizeResolutionDigest: resolution.digest,
         scopeDigest: digestJson({ bridge: tasks }), taskIds: tasks, participantIds: ids, prerequisiteDecisionDigests: [],
         selectionRuleDigest: digestJson(config.evaluationStages.bridge),
-      }), skipped }
+      }), skipped: sorted(exclusions.map(e => e.candidateId)), exclusions }
     }
-    skipped.push(selected.pop()!.candidateId)
+    const excluded = selected.pop()!
+    exclusions.push({ candidateId: excluded.candidateId, scopeDigest: excluded.scope.digest,
+      reason: required.length > capacity ? 'bridge-capacity' : 'bridge-budget' })
   }
-  return { skipped: sorted([...skipped, ...selected.map(c => c.candidateId)]) }
+  exclusions.push(...selected.map(c => ({ candidateId: c.candidateId, scopeDigest: c.scope.digest, reason: 'bridge-disabled' as const })))
+  return { skipped: sorted(exclusions.map(e => e.candidateId)), exclusions }
 }

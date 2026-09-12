@@ -1235,6 +1235,12 @@
         "processContractDigest": {
           "type": "string"
         },
+        "harnessCommit": {
+          "type": "string"
+        },
+        "harnessManifestDigest": {
+          "type": "string"
+        },
         "snapshotDigest": {
           "type": "string"
         }
@@ -1246,6 +1252,8 @@
         "seed",
         "conditionDigest",
         "outcomeContractDigest",
+        "harnessCommit",
+        "harnessManifestDigest",
         "snapshotDigest"
       ],
       "additionalProperties": false
@@ -1505,6 +1513,112 @@
         "snapshotDigest",
         "cells",
         "settled",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "BridgeSelectionDecision": {
+      "type": "object",
+      "properties": {
+        "plan": {
+          "$ref": "#/$defs/StageEvaluationPlan"
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "exclusions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "candidateId": {
+                "type": "string"
+              },
+              "scopeDigest": {
+                "type": "string"
+              },
+              "reason": {
+                "anyOf": [
+                  {
+                    "const": "group-quota"
+                  },
+                  {
+                    "const": "bridge-disabled"
+                  },
+                  {
+                    "const": "bridge-capacity"
+                  },
+                  {
+                    "const": "bridge-budget"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "candidateId",
+              "scopeDigest",
+              "reason"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "skipped",
+        "exclusions"
+      ],
+      "additionalProperties": false
+    },
+    "EvidenceConsumption": {
+      "type": "object",
+      "properties": {
+        "stagePlanDigest": {
+          "type": "string"
+        },
+        "snapshotDigest": {
+          "type": "string"
+        },
+        "resultDigest": {
+          "type": "string"
+        },
+        "consumerDigest": {
+          "type": "string"
+        },
+        "consumer": {
+          "anyOf": [
+            {
+              "const": "bootstrap-archive"
+            },
+            {
+              "const": "diagnosis"
+            },
+            {
+              "const": "workplans"
+            },
+            {
+              "const": "local-decision"
+            },
+            {
+              "const": "nomination"
+            },
+            {
+              "const": "research-archive"
+            }
+          ]
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "stagePlanDigest",
+        "snapshotDigest",
+        "resultDigest",
+        "consumerDigest",
+        "consumer",
         "digest"
       ],
       "additionalProperties": false
@@ -2135,6 +2249,12 @@
             "type": "string"
           }
         },
+        "ineligibleIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "digest": {
           "type": "string"
         }
@@ -2148,6 +2268,7 @@
         "prunedIds",
         "conditionalParentProbabilities",
         "pendingEvidenceIds",
+        "ineligibleIds",
         "digest"
       ],
       "additionalProperties": false
@@ -2456,6 +2577,54 @@
       ],
       "additionalProperties": false
     },
+    "SearchEvolutionIdentity": {
+      "type": "object",
+      "properties": {
+        "evolutionId": {
+          "type": "string"
+        },
+        "settingsDigest": {
+          "type": "string"
+        },
+        "maxCandidates": {
+          "type": "number"
+        },
+        "seedUniverseDigest": {
+          "type": "string"
+        },
+        "heldOutUniverseDigest": {
+          "type": "string"
+        },
+        "providerIntegrity": {
+          "type": "string"
+        },
+        "diagnosisIntegrity": {
+          "type": "string"
+        },
+        "sanitizationPolicyDigest": {
+          "type": "string"
+        },
+        "algorithmIntegrity": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "evolutionId",
+        "settingsDigest",
+        "maxCandidates",
+        "seedUniverseDigest",
+        "heldOutUniverseDigest",
+        "providerIntegrity",
+        "diagnosisIntegrity",
+        "sanitizationPolicyDigest",
+        "algorithmIntegrity",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
     "SearchRoundOutcome": {
       "type": "object",
       "properties": {
@@ -2521,6 +2690,65 @@
               "additionalProperties": {
                 "type": "number"
               }
+            },
+            "bridge": {
+              "type": "object",
+              "properties": {
+                "plan": {
+                  "$ref": "#/$defs/StageEvaluationPlan"
+                },
+                "skipped": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "exclusions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "candidateId": {
+                        "type": "string"
+                      },
+                      "scopeDigest": {
+                        "type": "string"
+                      },
+                      "reason": {
+                        "anyOf": [
+                          {
+                            "const": "group-quota"
+                          },
+                          {
+                            "const": "bridge-disabled"
+                          },
+                          {
+                            "const": "bridge-capacity"
+                          },
+                          {
+                            "const": "bridge-budget"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "candidateId",
+                      "scopeDigest",
+                      "reason"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "digest": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "skipped",
+                "exclusions",
+                "digest"
+              ],
+              "additionalProperties": false
             },
             "candidates": {
               "type": "array",
@@ -2598,6 +2826,7 @@
             "workplans",
             "scopeViews",
             "parentProbabilities",
+            "bridge",
             "candidates",
             "remainingBudget"
           ],
