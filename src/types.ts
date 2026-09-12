@@ -440,6 +440,8 @@ export interface HitchTrajectoryReader {
     signal: AbortSignal,
   ): Promise<HitchTrajectoryEventsPage>
   inspectVerifierEvidence?(runId: string, signal: AbortSignal): Promise<HitchVerifierEvidence>
+  /** Gear-side provenance resolution for aggregate evidence; no Hitch protocol extension. */
+  resolveVerifierEvaluationId?(evalId: string, runId: string, signal: AbortSignal): Promise<string>
 }
 
 export interface HitchVerifierEvidence {

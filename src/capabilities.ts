@@ -826,7 +826,11 @@ export class RefineCapabilities {
         throw new Error(`verifier evidence run identity mismatch for ${item.trial.runId}`)
       }
       if (evidence.parent !== undefined) {
-        if (evidence.parent.evalId !== item.evalId) {
+        const resolveParent = this.options.trajectoryReader?.resolveVerifierEvaluationId
+        const expectedEvalId = resolveParent === undefined ? item.evalId
+          : await resolveParent.call(this.options.trajectoryReader, item.evalId, item.trial.runId, signal)
+        if (typeof expectedEvalId !== 'string' || expectedEvalId.length === 0
+          || evidence.parent.evalId !== expectedEvalId) {
           throw new Error(`verifier evidence eval identity mismatch for ${item.trial.runId}`)
         }
         if (item.trial.trialName !== undefined && evidence.parent.trialId !== item.trial.trialName) {
