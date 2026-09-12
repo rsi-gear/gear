@@ -3107,16 +3107,25 @@ describe('explicit staged search control-plane integration', () => {
       expect(JSON.stringify(fixture.seed)).toBe(originalSeed)
     } finally { await service.dispose() }
   })
-  it.each([{ process: false, recovery: 'none' }, { process: true, recovery: 'none' }, { process: true, recovery: 'resume' }, { process: true, recovery: 'restart' }, { process: false, recovery: 'timeout' }])('delivers a scoped workplan and recovers v2 promotion ($process/$recovery)', async ({ process, recovery }) => {
+  const cases: Array<{ process: boolean; recovery: string; variableRepetitions?: boolean }> = [{ process: false, recovery: 'none' }, { process: true, recovery: 'none' }, { process: true, recovery: 'resume' }, { process: true, recovery: 'restart' }, { process: false, recovery: 'timeout' }, { process: true, recovery: 'none', variableRepetitions: true }]
+  it.each(cases)('delivers a scoped workplan and recovers v2 promotion ($process/$recovery/$variableRepetitions)', async ({ process, recovery, variableRepetitions }) => {
     const coordinator = new SkillMetaCoordinator()
     const { service, evaluator, git } = await setup(0.8, false, 1, 300_000, 1, 0, 1, 300_000, coordinator)
     const fixture = searchFixtures(20, process)
+    if (variableRepetitions) {
+      const seed = revise(fixture.seed, { repetitions: [{ index: 0, seed: 0 }, { index: 1, seed: 1 }],
+        tasks: fixture.seed.tasks.map((task, i) => ({ ...task, repetitionIndices: i === 0 ? [0] : [0, 1] })) })
+      fixture.provider.describe = async partition => partition === 'seed' ? seed : fixture.heldOut
+    }
     const evaluate = fixture.provider.evaluate.bind(fixture.provider)
     let ready = recovery === 'none'
     let restarted: RefineService | undefined
     fixture.provider.inspectEvaluation = async () => ({ status: 'running', handle: 'remote-heldout-17' })
     fixture.provider.evaluate = async input => {
-      const cells = await evaluate({ ...input, snapshot: { ...input.snapshot, candidateId: input.snapshot.commit === git.championRef ? 'anchor' : input.snapshot.candidateId } })
+      let cells = await evaluate({ ...input, snapshot: { ...input.snapshot, candidateId: input.snapshot.commit === git.championRef ? 'anchor' : input.snapshot.candidateId } })
+      if (variableRepetitions && input.snapshot.commit === git.championRef) cells = cells.map(cell => revise(cell, {
+        process: { status: 'available', rawValue: Number(cell.identity.taskId.slice(5)) / 20, contractDigest: cell.identity.processContractDigest!, evidenceRef: cell.evidenceRef },
+      }))
       if (!ready && input.plan.stage === 'held-out' && input.snapshot.commit !== git.championRef) throw new Error('lost held-out transport')
       return cells
     }
@@ -3133,6 +3142,10 @@ describe('explicit staged search control-plane integration', () => {
       const assignment = (await eventually(async () => coordinator.claim('test-client', skillHarnessIdentity(service.options.metaAgent), admitted.evolutionId), a => a !== undefined))!
       expect(assignment.workplanDelivery?.workplan.hypothesis).toBeTruthy()
       expect(assignment.evidencePolicy.diagnoseEveryFailedRunBeforeProposal).toBe(false)
+      if (variableRepetitions) {
+        expect(assignment.baseline.plannedTrialCount).toBeGreaterThan(assignment.baseline.summary.total)
+        expect(assignment.baseline.scoringContext).toMatchObject({ summaryUnit: 'task', aggregateWeighting: 'frozen-scope-task-weights' })
+      }
       const workingStatus = await service.status(admitted.evolutionId, admitted.roundId)
       expect(workingStatus.searchProgress?.phase).toBe('generation')
       expect(workingStatus.searchProgress?.evaluations.some(e => e.stage === 'baseline-probe' && e.profile?.outcomeComplete)).toBe(true)

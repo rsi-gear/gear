@@ -46,6 +46,8 @@ export interface SkillAssignment {
     evalId: string
     primaryReward: number
     processScore?: number
+    plannedTrialCount?: number
+    scoringContext?: { metricSemantics: 'frozen-utility'; summaryUnit: 'task'; aggregateWeighting: 'frozen-scope-task-weights' }
     summary: EvaluationEvidence['summary']
     trials: Array<{
       taskName: string
@@ -319,6 +321,8 @@ export class SkillMetaSessionManager implements MetaSessionController {
       baseline: {
         evalId: baseline.evalId,
         primaryReward: baseline.primaryReward,
+        ...(candidate.workplanDelivery ? { plannedTrialCount: baseline.plannedTrialCount,
+          scoringContext: { metricSemantics: 'frozen-utility' as const, summaryUnit: 'task' as const, aggregateWeighting: 'frozen-scope-task-weights' as const } } : {}),
         ...(baseline.processScore === undefined ? {} : { processScore: baseline.processScore }),
         summary: structuredClone(baseline.summary),
         trials: [

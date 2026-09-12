@@ -1990,10 +1990,10 @@ export class RefineService {
         const actual = await this.builder.searchSnapshot(snapshot.candidateId, snapshot.commit, snapshot.parentIds)
         invariant(actual.tree === snapshot.tree && actual.manifestDigest === snapshot.manifestDigest, 'search snapshot does not match exact Git commit')
       },
-      generate: async ({ delivery, parent, baseline, signal }) => {
+      generate: async ({ delivery, parent, baseline, baselineContext, signal }) => {
         let current = await this.requireRound(store, roundId)
         const id = delivery.workplan.candidateId
-        const evidence = legacySearchEvidence(baseline, parent, current.plan.seed.conditionId, current.seedTaskRef)
+        const evidence = legacySearchEvidence(baseline, parent, current.plan.seed.conditionId, current.seedTaskRef, baselineContext)
         const previous = current.candidatePool.find(c => c.candidateId === id)
         if (!previous) current = await this.transition(store, roundId, {
           candidatePool: [...current.candidatePool, { candidateId: id, roundId, parentCandidateIds: [parent.candidateId], parentHarnessRef: parent.commit, status: 'generating', workplanDelivery: delivery }],

@@ -31,7 +31,9 @@ export interface SearchExecutionHooks {
   /** Verifies the exact commit/tree/manifest against the harness repository. */
   verifySnapshot(snapshot: Snapshot): Promise<void>
   /** Idempotent across restart; must settle all siblings before returning any rollout evidence. */
-  generate(input: { delivery: ReturnType<typeof deliveredWorkplan>; parent: Snapshot; baseline: StageResult; idempotencyKey: string; signal: AbortSignal }): Promise<GeneratedCandidate>
+  generate(input: { delivery: ReturnType<typeof deliveredWorkplan>; parent: Snapshot; baseline: StageResult;
+    baselineContext: { universe: TaskUniverse; plan: StageEvaluationPlan; scope: EvaluationScope; processMode: SearchSettings['search']['process']['mode'] };
+    idempotencyKey: string; signal: AbortSignal }): Promise<GeneratedCandidate>
   /** Read-only recovery; never start/restart a Meta generation from this hook. */
   inspectGeneration?(idempotencyKey: string, signal: AbortSignal): Promise<ExternalRecovery<GeneratedCandidate>>
   /** CAS compares the full revision identity, not just commit content. */
@@ -560,7 +562,8 @@ export class FailureClusterSearch {
         const recovered = await recoverExternal({ store: this.store, roundId: admission.roundId,
           operation: { operationKey: key, kind: 'generation', partition: 'seed', stagePlanDigest: work.plan.digest, candidateId: work.workplan.candidateId },
           signal, inspectionSignal, previouslyReserved,
-          run: () => this.hooks.generate({ delivery, parent: work.parent, baseline: work.baseline, idempotencyKey: key, signal }),
+          run: () => this.hooks.generate({ delivery, parent: work.parent, baseline: work.baseline,
+            baselineContext: { universe: seed, plan: work.plan, scope: work.scope, processMode: settings.search.process.mode }, idempotencyKey: key, signal }),
           ...(this.hooks.inspectGeneration ? { inspect: (signal: AbortSignal) => this.hooks.inspectGeneration!(key, signal) } : {}),
           failed: (failure) => seal({ changedPaths: [], reason: failure.message, usage: { tokens: reservation.reserved.generationTokens, requests: reservation.reserved.generationRequests } }),
         })

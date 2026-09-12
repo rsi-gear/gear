@@ -1,4 +1,5 @@
 import { validateSearchSchema } from '../search/schema.js'
+import { searchProjectionAggregates } from '../search/legacy.js'
 import { constants } from 'node:fs'
 import { access, mkdir, open, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -750,7 +751,7 @@ export class RefineStateStore {
     }
     if (round.parentBaselines !== undefined) {
       for (const baseline of round.parentBaselines) {
-        this.validateEvaluationEvidence(baseline.evidence, 'parent seed baseline')
+        this.validateEvaluationEvidence(baseline.evidence, 'parent seed baseline', round.searchMode === 'failure-cluster-gepa-v1')
         if (baseline.evidence.actualCommit !== baseline.parentHarnessRef
           || baseline.evidence.conditionId !== round.plan.seed.conditionId) throw new TypeError('parent seed baseline identity is invalid')
       }
@@ -1143,7 +1144,7 @@ export class RefineStateStore {
     }
   }
 
-  private validateEvaluationEvidence(value: EvaluationEvidence, label: string): void {
+  private validateEvaluationEvidence(value: EvaluationEvidence, label: string, searchMode = false): void {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError(`${label} must be an object`)
     if (typeof value.provider !== 'string' || value.provider.length === 0
       || !/^sha256:[0-9a-f]{64}$/u.test(value.conditionId)
@@ -1176,7 +1177,8 @@ export class RefineStateStore {
       || value.processScore !== undefined && value.summary.process?.score !== value.processScore) {
       throw new TypeError(`${label} process score summary is invalid`)
     }
-    if (!Array.isArray(value.trials) || value.trials.length !== value.summary.total
+    const scopedProjection = searchMode && value.provider === 'search-v2-seed-projection'
+    if (!Array.isArray(value.trials) || (!scopedProjection && value.trials.length !== value.summary.total)
       || value.trials.some(trial => typeof trial.taskName !== 'string' || trial.taskName.length === 0
       || trial.status !== 'completed'
       || (trial.runId !== undefined && (typeof trial.runId !== 'string' || trial.runId.length === 0))
@@ -1192,8 +1194,10 @@ export class RefineStateStore {
       )))) {
       throw new TypeError(`${label} trials are invalid`)
     }
+    const scoped = scopedProjection ? searchProjectionAggregates(value) : undefined
+    if (scoped && (value.summary.total !== scoped.taskCount || Math.abs(value.primaryReward - scoped.outcome) > 1e-12 || Math.abs(value.summary.score - scoped.outcome) > 1e-12)) throw new TypeError(`${label} search task aggregate is invalid`)
     const processScores = value.trials.flatMap(trial => trial.scores?.processScore === undefined ? [] : [trial.scores.processScore])
-    const expectedProcess = processScores.length === value.trials.length && processScores.length > 0
+    const expectedProcess = scopedProjection ? scoped?.process : processScores.length === value.trials.length && processScores.length > 0
       ? processScores.reduce((sum, score) => sum + score, 0) / processScores.length
       : undefined
     if ((value.processScore === undefined) !== (expectedProcess === undefined)

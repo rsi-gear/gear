@@ -18,6 +18,7 @@
 - `SearchTask.repetitionIndices` 可选择全局逻辑 repetition manifest 的非空子集；省略时使用全部 slots。重复更多的任务不获得更多统计权重，计划费用、coverage 和配对均按各任务实际 slots 计算，任务规模比例仍基于 N。
 - 过程能力在 admission 解析。原生 outcome-only、逐 trial scalar、过程缺失和旧版整条 invalid 分开处理；新模式不会添加 LLM judge。
 - 每个候选领取自己的工作计划、有来源的 dossier 摘要、共享约束和父代 findings。Skill claim 和 DSH 投递产生独立消费凭据，不填充伪造的旧诊断 receipts。修改边界是相对 harness 根目录的路径。
+- `SearchExecutionHooks.generate` 接收冻结的 `baselineContext`（universe、plan、scope 和过程模式）。Meta 基线只能投影完整 planned outcome；摘要按任务及 scope 权重计算，逻辑 slots 单独计数。只有单一、完整、可聚合的过程组才产生顶层过程均分。Skill 同时收到 `plannedTrialCount` 和 `scoringContext`，新模式的存储校验重算这些摘要，旧模式校验不变。
 - 所有候选生成结束后才评测。重试共享工作计划和总生成预算；无法认证实际 token 用量的外部 Skill 会按完整 reservation 计费。
 - 阶段计划、bindings、诊断、提名、结果和 commit intent 使用内容摘要持久化。每次外部执行先冻结请求和预算 reservation，provider 使用幂等键恢复；部分 cell 已写入或诊断已结算时的中断不会重算请求或重新执行。
 - evolution 级规则和任务身份跨轮固定，存在未解决 round 时不能新开 round。cell 缓存按 exact commit/manifest 与执行条件寻址，保留原始 snapshot 来源，候选角色或谱系标签变化不产生新执行槽位。

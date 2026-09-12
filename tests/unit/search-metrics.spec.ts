@@ -211,3 +211,25 @@ describe('metric contracts and independent release constraints', () => {
   })
 
 })
+
+it('[M06,M07] gives Meta a task-weighted complete baseline and removes unavailable process aggregates', async () => {
+  const { legacySearchEvidence, searchProjectionAggregates } = await import('../../src/search/legacy.js')
+  const base = universe(2, 'seed', true)
+  const u = revise(base, { repetitions: [{ index: 0, seed: 0 }, { index: 1, seed: 1 }], tasks: base.tasks.map((t, i) => ({ ...t, repetitionIndices: i ? [0, 1] : [0] })) })
+  const s = snapshot('parent'), scope = scopeFixture(u, ['task-0', 'task-1'])
+  const row = evaluatedFixture(u, scope, s, id => ({ outcome: id === 'task-0' ? 0 : 1 }))
+  const context = { universe: u, plan: row.plan, scope, processMode: 'auto' as const }
+  const projection = legacySearchEvidence(row.result, s, 'condition', 'seed', context)
+  expect(projection.primaryReward).toBe(0.5)
+  expect(projection.plannedTrialCount).toBe(3)
+  expect(projection.summary).toEqual({ total: 2, passed: 1, failed: 1, score: 0.5 })
+  expect(projection.processScore).toBeUndefined()
+  expect(projection.summary.process).toBeUndefined()
+  expect(projection.metadata).toMatchObject({ processAggregateStatus: 'unavailable', summaryUnit: 'task' })
+  expect(() => legacySearchEvidence(revise(row.result, { cells: row.result.cells.slice(0, 2) }), s, 'condition', 'seed', context)).toThrow('complete planned outcome')
+  const complete = evaluatedFixture(u, scope, s, id => ({ outcome: id === 'task-0' ? 0 : 1, process: id === 'task-0' ? 0 : 1 }))
+  const weighted = legacySearchEvidence(complete.result, s, 'condition', 'seed', context)
+  expect(weighted.processScore).toBe(0.5)
+  expect(searchProjectionAggregates(weighted)).toEqual({ taskCount: 2, outcome: 0.5, process: 0.5 })
+  expect(() => searchProjectionAggregates({ ...weighted, metadata: { ...weighted.metadata as object, taskWeights: { 'task-0': 1, 'task-1': 1 } } })).toThrow('task weights')
+})

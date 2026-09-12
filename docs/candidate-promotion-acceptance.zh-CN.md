@@ -64,7 +64,7 @@
 | M03 | process=0 / missing / invalid | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
 | M04 | process 部分缺失、candidate 子集不同 | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
 | M05 | direction/range/scorer/quantum 改变 | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
-| M06 | projection / repair 后不能聚合 | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
+| M06 | projection / repair 后不能聚合 | 已验证：Meta 投影重新计算完整性与过程组，不能聚合时不保留顶层 processScore/summary.process；缺 outcome 拒绝投影为完整 baseline。补评及过程恢复保留原有效值。 |
 | M07 | 不同重复次数、retry 与有效零分 | 已验证：支持每任务不同逻辑 slots，先任务内再任务间平均；统计分母、阶段费用、配对一致，duplicate/retry 不加权，有效零分不可替换。 |
 | M08 | 新旧 observation schema、promotion process off | 已验证：旧 invalid 无法抢救；v2 独立认证 outcome 在发布 process off 时通过完整晋升路径，研究视图仍如实保留过程缺失。 |
 | M09 | 多过程量纲的 outcome 并列 | 已验证：异构组要求显式各组阈值，分别检查下界；outcome 并列时不合成过程均分，按 canonical ID 排名，minimize 增益方向正确。 |
@@ -83,7 +83,7 @@
 | G02 | 提案重复、含凭证、超上限 | 已验证：按语义/fixture/grader 去重，过滤凭证与个人信息、限制提案容量；同 prompt 不同 grader 不错误合并。 |
 | G03 | suite 新版本 | 已验证：完整 suite manifest 和 provider 证明在新 admission 校验；protected guards 封存并强制执行、development 不隐式加门，换版本拒绝继续旧 evolution，新 evolution 重新取得成对证据。真实控制面 admission 不修改运行参数或源数据。 |
 | G04 | held-out 失败 | 已验证：held-out 来源不生成提案，已知 regression suite 不能作为 held-out；收集在 seed research 封存过程中完成。 |
-| C01 | 历史 spec / round / component v1 | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
+| C01 | 历史 spec / round / component v1 | 已验证：完整新旧 RefineService、state-store、Skill 及搜索验收回归通过；新基线摘要校验只由明确的 searchMode 启用，旧 champion-only、部分证据、baseline reuse 与恢复路径保持。 |
 | C02 | 案例 shadow replay | 已验证：对文档指定的真实第 4/5 轮 cache 完成只读回放，8 改善/10 退步与原报告一致，源文件前后逐字节一致；所有建议 advisory，不写 champion/archive，不认证 held-out 或 v2 cell reuse。详见案例回放报告。 |
 
 ## 矩阵之外仍需核对的正文要求

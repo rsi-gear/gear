@@ -300,7 +300,7 @@ describe('diagnosis acceptance: sourced workplans and adaptive slots', () => {
     f.hooks.generate = async input => {
       expect(input.delivery.dossier.facts.length).toBeLessThan(20)
       expect(input.delivery.dossier.facts.every(fact => input.delivery.workplan.targetTaskIds.includes(fact.taskId)
-        || input.delivery.scope!.buckets.shared.includes(fact.taskId))).toBe(true)
+        || input.delivery.scope!.taskIds.includes(fact.taskId))).toBe(true)
       expect(input.delivery.workplan.parentSnapshotDigest).toBe(f.anchor.digest)
       return generate(input)
     }
