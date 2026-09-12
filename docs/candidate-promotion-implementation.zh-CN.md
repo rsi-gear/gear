@@ -158,7 +158,7 @@ regression:
 
 它对应 `RefineService.repairSearchStage`：在同一写者锁下修复原无效 slots，再继续原 round；原 finalist、父代、seed research 和预算不变。存在未解决 round 时，`continue` 拒绝另开一轮。
 
-独立历史补齐使用 `completeArchivedEvidence`，调用方持有 evolution 写者锁。它不调用 Meta、不晋升；新 revision 在下一次 archive update 消费。不能用这个入口增加原计划外任务。两个补评入口先读取经过验证的完成缓存；即使用新 completion ID 引用旧的部分结果，也不重跑已完成的 outcome 或 process。两个补评入口都验证算法、provider 与任务身份，并遵守 round/evolution 的原有时间预算。它们也支持超时后查询原评测/过程恢复操作；不会重跑已有有效 outcome。
+独立历史补齐使用 `completeArchivedEvidence`，调用方持有 evolution 写者锁。已有 evolution 只能补齐其已提交 archive 中的原 result、plan 和 snapshot，未提交的证据在花费预算或写入队列前拒绝。它不调用 Meta、不晋升；新 revision 在下一次 archive update 消费。尚无 evolution/archive 的独立 SDK 补齐仅返回证据结果，不写研究队列。不能用这个入口增加原计划外任务。两个补评入口先读取经过验证的完成缓存；即使用新 completion ID 引用旧的部分结果，也不重跑已完成的 outcome 或 process。两个补评入口都验证算法、provider 与任务身份，并遵守 round/evolution 的原有时间预算。它们也支持超时后查询原评测/过程恢复操作；不会重跑已有有效 outcome。
 
 dossier、workplans、local 决定、nomination 与 archive 在发布引用前保存证据消费记录。消费边界按 plan + participant 绑定，而不是等到整个后续阶段完成；已消费的 seed 证据只能走追加 revision 的历史补齐流程。
 

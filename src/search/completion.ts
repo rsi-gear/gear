@@ -22,6 +22,10 @@ export async function completeArchivedEvidence(input: { id: string; store: Searc
   invariant((await provider.describe('seed')).digest === universe.digest, 'completion task universe changed')
   verifyDigest(original); profile(universe, plan, snapshot, original, 'auto')
   const identity = await store.read<{ ref: string }>('evolution/identity')
+  const archive = await store.archive()
+  if (identity || archive) invariant(archive && archive.universeDigest === universe.digest
+    && archive.results.some(r => r.digest === original.digest) && archive.plans.some(p => p.digest === plan.digest)
+    && archive.snapshots.some(s => s.digest === snapshot.digest), 'completion must reference committed archive evidence')
   if (identity) {
     const frozen = await store.object<{ providerIntegrity: string; seedUniverseDigest: string; settingsDigest: string; algorithmIntegrity: string; digest: string }>(identity.ref)
     invariant(frozen.algorithmIntegrity === integrity && frozen.providerIntegrity === provider.integrity && frozen.seedUniverseDigest === universe.digest && frozen.settingsDigest === digestJson(input.settings), 'completion evolution identity changed')
@@ -109,8 +113,12 @@ export async function completeArchivedEvidence(input: { id: string; store: Searc
     for (const cell of replacements.filter(validOutcome)) { await store.put(cell); await store.write(`cells/${cellKey(cell.identity).slice(7)}`, { ref: cell.digest }) }
     const result = seal({ kind: 'archive-evidence-completion' as const, id: input.id, originalResultDigest: original.digest, completedResultDigest: completed.digest, planDigest: plan.digest, snapshotDigest: snapshot.digest })
     await store.put(result)
-    const queue = await store.read<{ refs: string[] }>('pending-completions') ?? { refs: [] }
-    await store.write('pending-completions', { refs: [...new Set([...queue.refs, result.digest])] })
+    // Standalone evidence completion has no research admission to modify. Only
+    // an existing archive may receive a revision for its next committed update.
+    if (archive) {
+      const queue = await store.read<{ refs: string[] }>('pending-completions') ?? { refs: [] }
+      await store.write('pending-completions', { refs: [...new Set([...queue.refs, result.digest])] })
+    }
     return result
     } finally { timed.dispose() }
   })

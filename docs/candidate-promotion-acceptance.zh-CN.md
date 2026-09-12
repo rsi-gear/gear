@@ -26,7 +26,7 @@
 | A04 | 跨轮历史 specialist | 已验证：历史未晋升 specialist 保留在下一轮并成为真实代码/证据父代，未重新生成该版本；见 search-history.spec.ts。 |
 | A05 | 低 outcome、高 process | 已验证：低 outcome / 高 process 的版本获得独立过程前沿概率，默认发布仍因 outcome 回归拒绝，见 search-metrics.spec.ts。 |
 | A06 | 同 tree 不同 commit/评分 | 已验证：相同 tree 不同 commit 保留原证据与 lineage，不按幸运分挑代表；按实际完成时间比较不同时区的时间戳。执行缓存仍要求 exact commit/manifest。 |
-| A07 | archive 容量与冠军保活 | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
+| A07 | archive 容量与冠军保活 | 已验证：生成上限 4 不裁掉 16 个唯一专长；champion 被研究剪枝后仍保留不可变 snapshot，并可从持久化 archive 恢复。 |
 | A08 | exploration guard 与 bootstrap | 已验证：完整 baseline 与探索门在候选生成前生效；不合格版本不占前沿。 |
 | A09 | 候选只完成 15/100 全局任务 | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
 | A10 | 不同组难度、范围或规模不同 | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
@@ -53,7 +53,7 @@
 | E12 | 规模解析后 resume / 新全集版本 | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
 | P01 | 子代优于研究父代、弱于 champion | 已验证：相对历史父代生成并改善局部任务，bridge 仍使用独立 anchor，拒绝弱于 champion 的发布路径。 |
 | P02 | 宏平均最优但没有任务第一 | 已验证：宏平均 C 没有任务第一且被研究剪枝，仍可由独立排名提名，并通过自己的完整 seed/held-out 证据晋升。 |
-| P03 | outcome 持平、过程改善 | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
+| P03 | outcome 持平、过程改善 | 已验证：完整 driver 的 global seed 和 held-out 两阶段都接受结果持平、过程严格改善，没有旧 seed gate 提前阻断。 |
 | P04 | outcome 改善、过程回归 | 已验证：结果改善时过程下界仍可拒绝，独立于 outcome 均分。 |
 | P05 | protected task / assertion 退步 | 已验证：单任务/单 assertion 退步不能被总体增益抵消，缺 assertion 为不足证据，重复 assertion 身份被拒绝。 |
 | P06 | outcome-only 严格改善 / 完全中性 | 已验证：outcome-only 严格改善与中性拒绝、legacy 分支保留均有既有回归。 |
@@ -66,19 +66,19 @@
 | M05 | direction/range/scorer/quantum 改变 | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
 | M06 | projection / repair 后不能聚合 | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
 | M07 | 不同重复次数、retry 与有效零分 | 已验证：支持每任务不同逻辑 slots，先任务内再任务间平均；统计分母、阶段费用、配对一致，duplicate/retry 不加权，有效零分不可替换。 |
-| M08 | 新旧 observation schema、promotion process off | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
+| M08 | 新旧 observation schema、promotion process off | 已验证：旧 invalid 无法抢救；v2 独立认证 outcome 在发布 process off 时通过完整晋升路径，研究视图仍如实保留过程缺失。 |
 | M09 | 多过程量纲的 outcome 并列 | 已验证：异构组要求显式各组阈值，分别检查下界；outcome 并列时不合成过程均分，按 canonical ID 排名，minimize 增益方向正确。 |
 | M10 | 局部不适用 process，全局部分适用 | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
 | R01 | restart / resume / repair | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
 | R02 | archive CAS 后 crash、champion CAS 后 crash | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
-| R03 | champion 并发变更 | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
+| R03 | champion 并发变更 | 已验证：CAS 冲突保留外部版本、原 anchor 与 commit intent；重复恢复不生成、不评测、不偷换比较对象。 |
 | R04 | held-out 执行故障 | 已验证：明确失败保留 seed archive，使用独立执行原因码；未知状态保持原 handle，超时后仅查询原操作。实际 Git/Skill 手动恢复与重启路径也已通过。 |
 | R05 | Skill 模式空 checkpoint | 部分验证：历史 findings 被实际传入生成输入且诊断绑定父代；真实 Skill 空 checkpoint 的跨轮组合还需核对。 |
 | R06 | seed 已封存后的 held-out repair | 已验证：held-out 补评只运行一个原无效 cell；research digest、finalist 与 seed 执行不变。 |
 | R07 | 历史 pending completion | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
 | R08 | diagnosis/workplan/各 rung 后崩溃 | 未完成：已覆盖 cell/diagnosis 落盘、workplan 消费、未解决 round 与 CAS 中断；各 rung 的中断窗口尚未覆盖完。 |
 | R09 | n_local/n_local 完整，bridge n_local/n_bridge 未完 | 已验证：local 范围完整、bridge 仅部分完成时保留原局部资格；冻结不足证据的 bridge 决定，不临时改提名另一候选，状态分别报告两个计划的覆盖率。 |
-| R10 | stage 决策已消费后收到补证据 | 未完成：已加入显式消费记录和 diagnosis/workplans 中断测试；还需与各 rung/历史 completion 全链路组合核对。 |
+| R10 | stage 决策已消费后收到补证据 | 已验证：local、bridge、global seed 消费后追加 completion，原决定、nominee 和旧 archive 字节对象均不改写，新的 revision 在下一 archive update 才消费；diagnosis/workplans 的消费标记另有中断验证。 |
 | G01 | 在线失败只有 prompt | 已验证：只有 prompt 的在线失败保留 needs-fixture，不能物化评分；基础设施 invalid 进入执行修复分支。 |
 | G02 | 提案重复、含凭证、超上限 | 已验证：按语义/fixture/grader 去重，过滤凭证与个人信息、限制提案容量；同 prompt 不同 grader 不错误合并。 |
 | G03 | suite 新版本 | 已验证：完整 suite manifest 和 provider 证明在新 admission 校验；protected guards 封存并强制执行、development 不隐式加门，换版本拒绝继续旧 evolution，新 evolution 重新取得成对证据。真实控制面 admission 不修改运行参数或源数据。 |
