@@ -44,6 +44,8 @@ export interface TaskUniverse {
   repetitions: Array<{ index: number; seed: number }>
   digest: string
   regressionSuiteDigest?: string
+  /** Immutable suite included only when admitting a new seed universe. */
+  regressionSuite?: import('./regression.js').RegressionSuite
 }
 export interface TaskSetLimit { ratio: number; minTasks?: number | null; maxTasks?: number | null }
 export interface TaskSetSizing {
@@ -188,6 +190,30 @@ export interface StageResult {
   supersedesEvidenceDigest?: string
   failure?: SearchStageFailure
   digest: string
+}
+export interface EvaluationStageDecision {
+  stagePlanDigest: string
+  candidateId: string
+  outcome: 'advance' | 'retained-local' | 'ineligible' | 'insufficient-evidence'
+  reasonCodes: string[]
+  supportDigest: string
+  nextStagePlanDigest?: string
+  digest: string
+}
+/** Seed-only, rebuildable status projection; held-out evidence is never included. */
+export interface SearchProgress {
+  phase: 'bootstrap' | 'scope-preparation' | 'diagnosis-planning' | 'generation' | 'local' | 'bridge' | 'global-seed' | 'seed-research-complete'
+  evaluations: Array<{
+    stage: Exclude<Stage, 'held-out'>
+    stagePlanDigest: string
+    scopeDigest: string
+    candidateId: string
+    state: 'running' | 'settled'
+    plannedCells: number
+    profile?: Pick<EvidenceProfile, 'coverage' | 'processCoverage' | 'outcomeComplete' | 'processComplete' | 'processTaskIds' | 'tasks' | 'supportDigest'>
+    failure?: SearchStageFailure
+  }>
+  decisions: EvaluationStageDecision[]
 }
 export interface SearchStageFailure {
   kind: 'execution-failure' | 'budget-exhausted'

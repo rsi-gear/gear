@@ -77,12 +77,12 @@
 | R06 | seed 已封存后的 held-out repair | 已验证：held-out 补评只运行一个原无效 cell；research digest、finalist 与 seed 执行不变。 |
 | R07 | 历史 pending completion | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
 | R08 | diagnosis/workplan/各 rung 后崩溃 | 未完成：已覆盖 cell/diagnosis 落盘、workplan 消费、未解决 round 与 CAS 中断；各 rung 的中断窗口尚未覆盖完。 |
-| R09 | n_local/n_local 完整，bridge n_local/n_bridge 未完 | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
+| R09 | n_local/n_local 完整，bridge n_local/n_bridge 未完 | 已验证：local 范围完整、bridge 仅部分完成时保留原局部资格；冻结不足证据的 bridge 决定，不临时改提名另一候选，状态分别报告两个计划的覆盖率。 |
 | R10 | stage 决策已消费后收到补证据 | 未完成：已加入显式消费记录和 diagnosis/workplans 中断测试；还需与各 rung/历史 completion 全链路组合核对。 |
-| G01 | 在线失败只有 prompt | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
-| G02 | 提案重复、含凭证、超上限 | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
-| G03 | suite 新版本 | 未完成：suite materializer 与 provider 验证接口存在，需核对 protected 规则传递和真实新 admission 集成。 |
-| G04 | held-out 失败 | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
+| G01 | 在线失败只有 prompt | 已验证：只有 prompt 的在线失败保留 needs-fixture，不能物化评分；基础设施 invalid 进入执行修复分支。 |
+| G02 | 提案重复、含凭证、超上限 | 已验证：按语义/fixture/grader 去重，过滤凭证与个人信息、限制提案容量；同 prompt 不同 grader 不错误合并。 |
+| G03 | suite 新版本 | 已验证：完整 suite manifest 和 provider 证明在新 admission 校验；protected guards 封存并强制执行、development 不隐式加门，换版本拒绝继续旧 evolution，新 evolution 重新取得成对证据。真实控制面 admission 不修改运行参数或源数据。 |
+| G04 | held-out 失败 | 已验证：held-out 来源不生成提案，已知 regression suite 不能作为 held-out；收集在 seed research 封存过程中完成。 |
 | C01 | 历史 spec / round / component v1 | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
 | C02 | 案例 shadow replay | 未完成：案例只读 shadow replay 工具及字节不变证明尚未完成；不能把合成测试当作案例回放。 |
 
@@ -90,9 +90,9 @@
 
 - 各个持久化协议对象的运行时结构与语义验证；现有 JSON schema 与生成脚本需保持一致。
 - scope sampler 的子模式、模块、历史难度/成本与共享反例规则；确定周期 epoch 更新入口。
-- 各 stage 的可观察决定、coverage、未评/待补/未扩评/发布决定，以及运行中的状态展示。
+- local/bridge 的显式决定与运行中 seed coverage 已接入；继续核对阶段消费边界的全部中断组合。
 - 统一时间/生成/诊断/rollout/repair 预算的中断与恢复，不能因新的阶段或请求标签刷新。
-- regression suite 的角色、保护规则、可复现输入与新 evolution 接入，不改原数据集。
+- regression suite 的角色、保护规则与新 evolution 接入已验证；真实 provider 的物化证明仍由接入方负责。
 - old component identities 与既有规范同步；最终构建、打包和兼容回归。
 
 这些是原文已有要求的核对清单，不是新增需求。未验证、证据不足或已发现实现缺口时，目标保持进行中。
@@ -102,5 +102,7 @@
 1. 已补齐阶段终态失败/未知中断/时间耗尽的区分和恢复入口，继续核对各消费边界与生成重试的组合窗口。
 2. 周期 scope preparation 已实现并验证；继续核对 sampler 的模块/子模式/历史难度分层和成功反例要求。
 3. 历史 specialist 重复抽中、真实生成输入/findings 与独立 champion 已通过；两个不同历史父代同时参与也已验证；继续核对真实 Skill 跨轮空 checkpoint。
-4. global task weights 与异构 repetitions 已补齐；继续实现运行中阶段状态、显式 StageDecision 及回归 suite 保护规则传递。
+4. global task weights、异构 repetitions、运行中 seed 状态、显式 StageDecision 和回归 suite 保护规则传递已补齐；继续复核协议对象和消费链。
 5. 继续覆盖尚未验证的数值/采样/约束/恢复场景，并实现只读案例 shadow replay。最终再按全部 65 行和正文复核。
+
+2026-09-12 阶段决策/回归集修复后，8 个搜索测试文件共 105 项通过（最多两个 worker）；实际 Git/Skill 接入专项另有 6 项通过。类型检查和构建 TypeScript 编译通过。测试集合与历史记录有重叠，不累加宣称总数。

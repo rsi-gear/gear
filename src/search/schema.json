@@ -375,6 +375,9 @@
         },
         "regressionSuiteDigest": {
           "type": "string"
+        },
+        "regressionSuite": {
+          "$ref": "#/$defs/RegressionSuite"
         }
       },
       "required": [
@@ -1539,6 +1542,202 @@
       ],
       "additionalProperties": false
     },
+    "EvaluationStageDecision": {
+      "type": "object",
+      "properties": {
+        "stagePlanDigest": {
+          "type": "string"
+        },
+        "candidateId": {
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "const": "advance"
+            },
+            {
+              "const": "retained-local"
+            },
+            {
+              "const": "ineligible"
+            },
+            {
+              "const": "insufficient-evidence"
+            }
+          ]
+        },
+        "reasonCodes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "supportDigest": {
+          "type": "string"
+        },
+        "nextStagePlanDigest": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "stagePlanDigest",
+        "candidateId",
+        "outcome",
+        "reasonCodes",
+        "supportDigest",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "SearchProgress": {
+      "type": "object",
+      "properties": {
+        "phase": {
+          "anyOf": [
+            {
+              "const": "local"
+            },
+            {
+              "const": "bridge"
+            },
+            {
+              "const": "global-seed"
+            },
+            {
+              "const": "bootstrap"
+            },
+            {
+              "const": "scope-preparation"
+            },
+            {
+              "const": "diagnosis-planning"
+            },
+            {
+              "const": "generation"
+            },
+            {
+              "const": "seed-research-complete"
+            }
+          ]
+        },
+        "evaluations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "stage": {
+                "anyOf": [
+                  {
+                    "const": "local"
+                  },
+                  {
+                    "const": "baseline-probe"
+                  },
+                  {
+                    "const": "bridge"
+                  },
+                  {
+                    "const": "global-seed"
+                  }
+                ]
+              },
+              "stagePlanDigest": {
+                "type": "string"
+              },
+              "scopeDigest": {
+                "type": "string"
+              },
+              "candidateId": {
+                "type": "string"
+              },
+              "state": {
+                "anyOf": [
+                  {
+                    "const": "running"
+                  },
+                  {
+                    "const": "settled"
+                  }
+                ]
+              },
+              "plannedCells": {
+                "type": "number"
+              },
+              "profile": {
+                "type": "object",
+                "properties": {
+                  "coverage": {
+                    "$ref": "#/$defs/Coverage"
+                  },
+                  "processCoverage": {
+                    "$ref": "#/$defs/Coverage"
+                  },
+                  "outcomeComplete": {
+                    "type": "boolean"
+                  },
+                  "processComplete": {
+                    "type": "boolean"
+                  },
+                  "processTaskIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "tasks": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/$defs/TaskProfile"
+                    }
+                  },
+                  "supportDigest": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "coverage",
+                  "processCoverage",
+                  "outcomeComplete",
+                  "processComplete",
+                  "processTaskIds",
+                  "tasks",
+                  "supportDigest"
+                ],
+                "additionalProperties": false
+              },
+              "failure": {
+                "$ref": "#/$defs/SearchStageFailure"
+              }
+            },
+            "required": [
+              "stage",
+              "stagePlanDigest",
+              "scopeDigest",
+              "candidateId",
+              "state",
+              "plannedCells"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvaluationStageDecision"
+          }
+        }
+      },
+      "required": [
+        "phase",
+        "evaluations",
+        "decisions"
+      ],
+      "additionalProperties": false
+    },
     "SearchStageFailure": {
       "type": "object",
       "properties": {
@@ -1578,13 +1777,13 @@
         "kind": {
           "anyOf": [
             {
+              "const": "generation"
+            },
+            {
               "const": "evaluation"
             },
             {
               "const": "diagnosis"
-            },
-            {
-              "const": "generation"
             }
           ]
         },
@@ -1780,6 +1979,9 @@
         "consumer": {
           "anyOf": [
             {
+              "const": "scope-preparation"
+            },
+            {
               "const": "diagnosis"
             },
             {
@@ -1796,9 +1998,6 @@
             },
             {
               "const": "research-archive"
-            },
-            {
-              "const": "scope-preparation"
             }
           ]
         },
@@ -2625,6 +2824,9 @@
         "outcome": {
           "anyOf": [
             {
+              "const": "insufficient-evidence"
+            },
+            {
               "const": "eligible"
             },
             {
@@ -2632,9 +2834,6 @@
             },
             {
               "const": "rejected"
-            },
-            {
-              "const": "insufficient-evidence"
             }
           ]
         },
@@ -2956,6 +3155,12 @@
             "scopePreparation": {
               "$ref": "#/$defs/ScopeEpochPreparation"
             },
+            "stageDecisions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/EvaluationStageDecision"
+              }
+            },
             "candidates": {
               "type": "array",
               "items": {
@@ -3034,6 +3239,7 @@
             "parentProbabilities",
             "bridge",
             "scopePreparation",
+            "stageDecisions",
             "candidates",
             "remainingBudget"
           ],
@@ -3089,6 +3295,12 @@
         "prompt": {
           "type": "string"
         },
+        "promptDigest": {
+          "type": "string"
+        },
+        "sanitizedPromptRef": {
+          "type": "string"
+        },
         "fixtureRefs": {
           "type": "array",
           "items": {
@@ -3140,6 +3352,8 @@
         "id",
         "source",
         "prompt",
+        "promptDigest",
+        "sanitizedPromptRef",
         "fixtureRefs",
         "expectedBehavior",
         "failureCategory",

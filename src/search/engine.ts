@@ -8,8 +8,9 @@ import type { PromotionInput } from './promotion.js'
 import { bridgeSelection, createScope, sharedTasks, stagePlan } from './scopes.js'
 import { SearchBudgetExceeded, SearchStore, zeroUsage } from './store.js'
 import type { Usage } from './store.js'
+import type { EvaluationStageDecision, SearchProgress } from './types.js'
 import type { EvidenceCompletion } from './completion.js'
-import { collectFailure } from './regression.js'
+import { collectFailure, resolveRegressionSettings, sanitizedRegressionPrompt } from './regression.js'
 import type { RegressionProposal } from './regression.js'
 import { numeric, utility } from './contracts.js'
 import { prepareScopeEpochs, type ScopeEpochPreparation } from './epochs.js'
@@ -82,6 +83,7 @@ export interface SearchRoundOutcome {
     parentProbabilities: Record<string, number>
     bridge: BridgeSelectionDecision & { digest: string }
     scopePreparation: ScopeEpochPreparation
+    stageDecisions: EvaluationStageDecision[]
     candidates: Array<{ candidateId: string; scopeDigest: string; profile: ReturnType<typeof profile>; expansion: 'global-nominee' | 'not-selected-for-expansion' | 'requires-broader-evaluation' }>
     remainingBudget: Usage
   }
@@ -100,6 +102,36 @@ interface CommitIntent {
 export class FailureClusterSearch {
   constructor(readonly store: SearchStore, readonly provider: SearchProvider, readonly diagnosis: DiagnosisProvider, readonly hooks: SearchExecutionHooks) {}
 
+  private async progress(roundId: string, phase: SearchProgress['phase'] | 'held-out'): Promise<void> {
+    if (phase !== 'held-out') {
+      const previous = await this.store.read<SearchProgress>(`rounds/${roundId}/progress`)
+      await this.store.write(`rounds/${roundId}/progress`, { evaluations: [], decisions: [], ...previous, phase })
+    }
+    await this.hooks.progress?.(phase)
+  }
+  private async evaluationProgress(roundId: string, universe: TaskUniverse, plan: StageEvaluationPlan, snapshot: Snapshot, mode: SearchSettings['search']['process']['mode'], result?: StageResult): Promise<void> {
+    if (plan.stage === 'held-out') return
+    const progress = await this.store.read<SearchProgress>(`rounds/${roundId}/progress`) ?? { phase: 'bootstrap' as const, evaluations: [], decisions: [] }
+    const previous = progress.evaluations.find(e => e.stagePlanDigest === plan.digest && e.candidateId === snapshot.candidateId)
+    if (!result && previous?.state === 'settled') return
+    const p = result ? profile(universe, plan, snapshot, result, mode) : undefined
+    const coverage = p ? { coverage: p.coverage, processCoverage: p.processCoverage, outcomeComplete: p.outcomeComplete,
+      processComplete: p.processComplete, processTaskIds: p.processTaskIds, tasks: p.tasks, supportDigest: p.supportDigest } : undefined
+    const next: SearchProgress['evaluations'][number] = { stage: plan.stage, stagePlanDigest: plan.digest, scopeDigest: plan.scopeDigest, candidateId: snapshot.candidateId,
+      state: result ? 'settled' : 'running', plannedCells: plannedCellCount(universe, plan.taskIds),
+      ...(coverage ? { profile: coverage } : {}), ...(result?.failure ? { failure: result.failure } : {}) }
+    progress.evaluations = [...progress.evaluations.filter(e => e !== previous), next]
+    await this.store.write(`rounds/${roundId}/progress`, progress)
+  }
+  private async decisionProgress(roundId: string, decisions: EvaluationStageDecision[]): Promise<void> {
+    const progress = await this.store.read<SearchProgress>(`rounds/${roundId}/progress`)
+    invariant(progress, 'stage progress is unavailable')
+    for (const decision of decisions) { verifyDigest(decision); await this.store.put(decision) }
+    const byKey = new Map([...progress.decisions, ...decisions].map(d => [`${d.stagePlanDigest}/${d.candidateId}`, d]))
+    progress.decisions = [...byKey.values()]
+    await this.store.write(`rounds/${roundId}/progress`, progress)
+  }
+
   private consumptionKey(planDigest: string, snapshotDigest: string): string {
     return `consumed-${digestJson([planDigest, snapshotDigest]).slice(7)}`
   }
@@ -109,18 +141,19 @@ export class FailureClusterSearch {
     }))
   }
 
-  async validate(admission: SearchAdmission): Promise<{ seed: TaskUniverse; heldOut: TaskUniverse }> {
+  async validate(admission: SearchAdmission): Promise<{ seed: TaskUniverse; heldOut: TaskUniverse; resolvedSettings: SearchSettings }> {
     invariant(Number.isSafeInteger(admission.roundIndex) && admission.roundIndex >= 0, 'invalid search round index')
     digest(this.provider.integrity); digest(this.diagnosis.integrity); digest(this.diagnosis.sanitizationPolicyDigest)
     const c = this.provider.capabilities
     invariant(c.taskSubsetPlans && c.batchIndependentCells && c.idempotentExecution, 'failure-cluster-gepa-v1 requires provider-verified subset plans, batch-independent cell reuse and idempotent execution')
     const [seed, heldOut] = await Promise.all([this.provider.describe('seed'), this.provider.describe('held-out')])
-    validateSettings(admission.settings, seed, heldOut, admission.maxCandidates)
+    const resolvedSettings = resolveRegressionSettings(admission.settings, seed, heldOut)
+    validateSettings(resolvedSettings, seed, heldOut, admission.maxCandidates)
     if (admission.settings.regression.suiteRef) {
       invariant(seed.regressionSuiteDigest === admission.settings.regression.suiteRef && await this.provider.verifyRegressionSuite?.(admission.settings.regression.suiteRef, seed), 'provider must verify the frozen regression suite was included at new admission')
     }
     validateSnapshot(admission.anchor); await this.hooks.verifySnapshot(admission.anchor)
-    return { seed, heldOut }
+    return { seed, heldOut, resolvedSettings }
   }
   private async missingCost(universe: TaskUniverse, snapshots: Snapshot[], tasks: string[]): Promise<{ cells: number; repairCells: number }> {
     let cells = 0, repairCells = 0
@@ -378,15 +411,20 @@ export class FailureClusterSearch {
     invariant(admission.seed.digest === current.seed.digest && admission.heldOut.digest === current.heldOut.digest && admission.providerIntegrity === this.provider.integrity && admission.diagnosisIntegrity === this.diagnosis.integrity
       && admission.algorithmIntegrity === integrity && digestJson(admission.settings) === digestJson(request.settings) && admission.anchor.digest === request.anchor.digest
       && admission.maxCandidates === request.maxCandidates && admission.championRevisionDigest === request.championRevisionDigest, 'provider/task/settings identity changed on resume')
-    const { seed, heldOut, startedAt, settings, anchor } = admission
+    const { seed, heldOut, startedAt, resolvedSettings: settings, anchor } = admission
     const budgetStart = (await this.store.read<{ startedAt: number }>('budget'))?.startedAt ?? startedAt
     const deadline = Math.min(startedAt + settings.budgets.round.timeoutMs, budgetStart + settings.budgets.evolution.timeoutMs)
     const inspectionSignal = signal, timed = searchDeadline(signal, deadline)
     signal = timed.signal
     try {
     const resolution = resolveSizing(seed, settings.search.taskSetSizing)
-    const evaluate = (u: TaskUniverse, p: StageEvaluationPlan, s: Snapshot) => this.evaluate(admission, startedAt, u, p, s, signal, inspectionSignal)
-    await this.hooks.progress?.('bootstrap')
+    const evaluate = async (u: TaskUniverse, p: StageEvaluationPlan, s: Snapshot) => {
+      await this.evaluationProgress(request.roundId, u, p, s, settings.search.process.mode)
+      const result = await this.evaluate(admission, startedAt, u, p, s, signal, inspectionSignal)
+      await this.evaluationProgress(request.roundId, u, p, s, settings.search.process.mode, result)
+      return result
+    }
+    await this.progress(request.roundId, 'bootstrap')
     let archive = await this.store.archive()
     if (!archive) {
       const bootstrapTaskIds = sorted(seed.tasks.map(t => t.id))
@@ -417,7 +455,7 @@ export class FailureClusterSearch {
       completions.push(await this.store.object<StageResult>(completion.completedResultDigest))
     }
     const parents = await this.store.freeze(request.roundId, 'parents', () => selectParents(archive!, settings.search, admission.maxCandidates, admission.roundId))
-    await this.hooks.progress?.('scope-preparation')
+    await this.progress(request.roundId, 'scope-preparation')
     const preparation = await this.store.freeze(request.roundId, 'scope-preparation', async () => {
       const prepared = await prepareScopeEpochs({ store: this.store, roundId: request.roundId, roundIndex: admission.roundIndex, settings,
         archive: archive!, universe: seed, anchor, parents, resolution,
@@ -426,7 +464,7 @@ export class FailureClusterSearch {
       for (const result of prepared.results) await this.consume(admission.roundId, result, 'scope-preparation', prepared.digest)
       return prepared
     })
-    await this.hooks.progress?.('diagnosis-planning')
+    await this.progress(request.roundId, 'diagnosis-planning')
     const planning = await this.store.freeze(request.roundId, 'planning', async () => {
       const works: PreparedWork[] = [], cancelled: string[] = [], scopes = [...archive!.scopes, ...preparation.scopes]
       const diagnosedClusters: import('./types.js').FailureCluster[] = []
@@ -491,7 +529,7 @@ export class FailureClusterSearch {
       for (const work of works) await this.consume(admission.roundId, work.baseline, 'workplans', planned.digest)
       return planned
     })
-    await this.hooks.progress?.('generation')
+    await this.progress(request.roundId, 'generation')
     const generated: Array<{ work: PreparedWork; value: GeneratedCandidate }> = []
     for (const work of planning.works) {
       const value = await this.store.freeze(request.roundId, `generated-${work.workplan.candidateId}`, async () => {
@@ -531,7 +569,7 @@ export class FailureClusterSearch {
       })
       generated.push({ work, value })
     }
-    await this.hooks.progress?.('local')
+    await this.progress(request.roundId, 'local')
     const local = await this.store.freeze(request.roundId, 'local', async () => {
       const entries: Array<{ work: PreparedWork; snapshot: Snapshot; result: StageResult; outsideBoundary: boolean }> = []
       const reasons: string[] = []
@@ -552,7 +590,7 @@ export class FailureClusterSearch {
     })
     const nominees = new Map<string, typeof local.entries[number]>()
     for (const scope of planning.scopes) {
-      const eligible = local.entries.filter(e => e.work.scope.digest === scope.digest && !e.outsideBoundary)
+      const eligible = local.entries.filter(e => e.work.scope.digest === scope.digest && !e.outsideBoundary && !e.result.failure)
       const ranks = rankProfiles(seed, eligible.map(e => ({ id: e.snapshot.candidateId, profile: profile(seed, e.work.plan, e.snapshot, e.result, settings.promotion.process.mode, scope.weights) })))
       if (ranks.length) nominees.set(scope.digest, eligible.find(e => e.snapshot.candidateId === ranks[0])!)
     }
@@ -566,19 +604,42 @@ export class FailureClusterSearch {
         })
       return seal(bridge)
     })
+    const localDecisions = await this.store.freeze(request.roundId, 'local-stage-decisions', async () => {
+      const decisions: EvaluationStageDecision[] = []
+      for (const { work, value } of generated) {
+        const entry = local.entries.find(e => e.snapshot.candidateId === work.workplan.candidateId)
+        const p = entry ? profile(seed, work.plan, entry.snapshot, entry.result, settings.promotion.process.mode, work.scope.weights) : undefined
+        const support = seal({ scopeDigest: work.scope.digest, generatedDigest: value.digest, baselineDigest: work.baseline.digest,
+          ...(entry ? { resultDigest: entry.result.digest, profile: p } : {}) })
+        await this.store.put(support)
+        const advance = expansion.plan?.participantIds.includes(work.workplan.candidateId)
+        const incomplete = entry && (!p!.outcomeComplete || !p!.processComplete || entry.result.failure)
+        const exclusion = expansion.exclusions.find(e => e.candidateId === work.workplan.candidateId)?.reason
+        decisions.push(seal({ stagePlanDigest: work.plan.digest, candidateId: work.workplan.candidateId,
+          outcome: !entry || entry.outsideBoundary ? 'ineligible' as const : incomplete ? 'insufficient-evidence' as const : advance ? 'advance' as const : 'retained-local' as const,
+          reasonCodes: !entry ? [value.reason ?? 'generation-failed'] : entry.outsideBoundary ? ['requires-broader-evaluation']
+            : incomplete ? [entry.result.failure ? 'stage-execution-unavailable' : 'incomplete-local-evidence'] : advance ? ['selected-for-bridge'] : [exclusion ?? 'not-selected-within-scope'],
+          supportDigest: support.digest, ...(advance ? { nextStagePlanDigest: expansion.plan!.digest } : {}) }))
+      }
+      return seal({ decisions })
+    })
+    await this.decisionProgress(request.roundId, localDecisions.decisions)
+    const stageDecisions = [...localDecisions.decisions]
     const stages: StageEvaluationPlan[] = [], results: StageResult[] = [], reasons = [...planning.cancelled, ...local.reasons]
     let nominee: Snapshot | undefined, seedInput: PromotionInput | undefined, gate: GateDecision | undefined
     if (expansion.plan) {
-      await this.hooks.progress?.('bridge')
+      await this.progress(request.roundId, 'bridge')
       {
         const bp = expansion.plan, br = await evaluate(seed, bp, anchor)
         stages.push(bp); results.push(br)
         const rankings: Array<{ id: string; profile: ReturnType<typeof profile> }> = []
+        const bridgeGates: Array<{ candidateId: string; gate: GateDecision; result: StageResult }> = []
         let incomplete = false
         for (const id of bp.participantIds.filter(id => id !== anchor.candidateId)) {
           const s = local.entries.find(e => e.snapshot.candidateId === id)!.snapshot, result = await evaluate(seed, bp, s)
           results.push(result)
           const g = assessGate({ universe: seed, plan: bp, anchor, candidate: s, baseline: br, result }, settings.promotion, false)
+          bridgeGates.push({ candidateId: id, gate: g, result })
           if (g.outcome === 'eligible') rankings.push({ id, profile: profile(seed, bp, s, result, settings.promotion.process.mode) })
           else if (g.outcome === 'insufficient-evidence') incomplete = true
           if (result.failure) reasons.push(`${result.failure.kind}:${result.failure.code}`)
@@ -586,15 +647,29 @@ export class FailureClusterSearch {
         if (incomplete) reasons.push('incomplete-bridge-evidence')
         if (br.failure) reasons.push(`${br.failure.kind}:${br.failure.code}`)
         const nomination = await this.store.freeze(request.roundId, 'nomination', async () => {
-          const decision = seal({ candidateId: incomplete ? null : rankProfiles(seed, rankings)[0] ?? null, bridgeDigest: bp.digest })
+          const candidateId = incomplete ? null : rankProfiles(seed, rankings)[0] ?? null
+          const decisions: EvaluationStageDecision[] = []
+          for (const entry of bridgeGates) {
+            const support = seal({ scopeDigest: bp.scopeDigest, baselineDigest: br.digest, resultDigest: entry.result.digest, gate: entry.gate })
+            await this.store.put(support)
+            const advance = entry.candidateId === candidateId
+            const insufficient = entry.gate.outcome === 'insufficient-evidence' || incomplete && entry.gate.outcome === 'eligible'
+            decisions.push(seal({ stagePlanDigest: bp.digest, candidateId: entry.candidateId,
+              outcome: advance ? 'advance' as const : insufficient ? 'insufficient-evidence' as const : entry.gate.outcome === 'eligible' ? 'retained-local' as const : 'ineligible' as const,
+              reasonCodes: advance ? ['selected-for-global-seed'] : insufficient ? ['incomplete-bridge-evidence'] : entry.gate.outcome === 'eligible' ? ['not-selected-for-global-seed'] : entry.gate.reasonCodes,
+              supportDigest: support.digest, ...(advance ? { nextStagePlanDigest: this.fullPlan(admission, seed, 'global-seed', [anchor.candidateId, entry.candidateId], resolution.digest).digest } : {}) }))
+          }
+          const decision = seal({ candidateId, bridgeDigest: bp.digest, decisions })
           await this.store.put(decision)
           for (const result of results.filter(r => r.stagePlanDigest === bp.digest)) await this.consume(admission.roundId, result, 'nomination', decision.digest)
           return decision
         })
+        stageDecisions.push(...nomination.decisions)
+        await this.decisionProgress(request.roundId, nomination.decisions)
         if (nomination.candidateId) {
           nominee = local.entries.find(e => e.snapshot.candidateId === nomination.candidateId)!.snapshot
           const gp = this.fullPlan(admission, seed, 'global-seed', [anchor.candidateId, nominee.candidateId], resolution.digest)
-          await this.hooks.progress?.('global-seed')
+          await this.progress(request.roundId, 'global-seed')
           const baseline = await evaluate(seed, gp, anchor), result = await evaluate(seed, gp, nominee)
           stages.push(gp); results.push(baseline, result)
           seedInput = { universe: seed, plan: gp, anchor, candidate: nominee, baseline, result }
@@ -620,7 +695,10 @@ export class FailureClusterSearch {
         const task = seed.tasks.find(t => t.id === cell.identity.taskId)
         if (!task?.regressionTemplate || !validOutcome(cell) || cell.outcome.status !== 'available' || numeric(utility(cell.outcome.rawValue, task.outcome)) >= task.successUtility) continue
         const result = collectFailure({ ...task.regressionTemplate, source: { kind: 'seed-evaluation', evidenceRef: cell.evidenceRef }, outcome: 'business-failure' }, proposals, settings.regression)
-        if (result.proposal) proposals.push(result.proposal)
+        if (result.proposal) {
+          await this.store.put(sanitizedRegressionPrompt(result.proposal.prompt)); await this.store.put(result.proposal)
+          proposals.push(result.proposal)
+        }
         if (result.reason) reasons.push(result.reason)
       }
       await this.store.write('regression/proposals', { proposals })
@@ -640,9 +718,10 @@ export class FailureClusterSearch {
       for (const result of evidence) await this.consume(admission.roundId, result, 'research-archive', update.digest)
       return update
     })
+    await this.progress(request.roundId, 'seed-research-complete')
     // The complete seed archive is frozen before any held-out outcome is requested.
     if (nominee && seedInput && gate?.outcome === 'eligible') {
-      await this.hooks.progress?.('held-out')
+      await this.progress(request.roundId, 'held-out')
       {
         const hp = this.fullPlan(admission, heldOut, 'held-out', [anchor.candidateId, nominee.candidateId], resolution.digest)
         const baseline = await evaluate(heldOut, hp, anchor), result = await evaluate(heldOut, hp, nominee)
@@ -658,7 +737,7 @@ export class FailureClusterSearch {
     const outcome: SearchRoundOutcome = seal({ schemaVersion: 2 as const, roundId: request.roundId, archiveDigest: research.digest, championAnchorDigest: anchor.digest,
       ...(nominee ? { nomineeId: nominee.candidateId } : {}), ...(gate ? { promotion: gate } : {}), championChanged,
       advisory: settings.promotion.validationMode === 'shared-set-research', reasonCodes: reasons, findings,
-      research: { sizing: resolution, parents, workplans: planning.works.map(w => w.workplan), scopeViews: research.scopeViews, parentProbabilities: research.parentProbabilities, bridge: expansion, scopePreparation: preparation,
+      research: { sizing: resolution, parents, workplans: planning.works.map(w => w.workplan), scopeViews: research.scopeViews, parentProbabilities: research.parentProbabilities, bridge: expansion, scopePreparation: preparation, stageDecisions,
         candidates: local.entries.map(e => ({ candidateId: e.snapshot.candidateId, scopeDigest: e.work.scope.digest,
           profile: profile(seed, e.work.plan, e.snapshot, e.result, settings.search.process.mode, e.work.scope.weights),
           expansion: e.outsideBoundary ? 'requires-broader-evaluation' as const : nominee?.digest === e.snapshot.digest ? 'global-nominee' as const : 'not-selected-for-expansion' as const })),

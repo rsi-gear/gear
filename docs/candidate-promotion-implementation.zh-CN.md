@@ -24,7 +24,21 @@
 - bridge 预算按所有参与者的实际缺失 cells 与 repair 成本计算，已完成的 local cells 不重复收费；组配额、容量不足和费用不足分别记录。
 - held-out 前先冻结 seed research；缺失 held-out 可以在 intent 之前补评。历史局部证据通过独立 completion 追加 revision，有效零分和有效过程分不可替换。
 - `shared-set-research` 只生成研究更新和 advisory 决定，不能自动更新 champion。
-- 回归收集默认关闭。provider 可声明冻结的 `regressionTemplate`；有效 seed 业务失败进入过滤、去重、有容量限制的 proposal 队列。物化 suite 必须经可重现性验证，只能在新 admission 纳入。
+- 回归收集默认关闭。provider 可声明冻结的 `regressionTemplate`；有效 seed 业务失败进入过滤、去重、有容量限制的 proposal 队列。提案包含 prompt digest 和已过滤内容对象引用；收集器同步持久化对应对象。物化 suite 必须经可重现性验证，只能在新 admission 纳入。
+
+## 阶段状态与决定
+
+`RefineService.status` 返回的 `searchProgress` 是 seed 状态投影：当前研究阶段、各 participant 的计划 cells、运行/已结算状态、逐任务结果与 coverage，以及已封存的 local/bridge 决定。held-out 开始前阶段停在 `seed-research-complete`，该投影不包含 held-out 计划、证据或执行用量。操作员单独看到的 `searchPendingOperation` 保持原恢复用途。
+
+`research.stageDecisions` 与状态投影使用同一组 `EvaluationStageDecision`。每项绑定 `stagePlanDigest`、candidate、可读取的 `supportDigest`、原因码和可选下一计划引用。local 证据完整但未获扩评名额时记录 `retained-local`；缺证据记录 `insufficient-evidence`；越过修改范围记录 `ineligible / requires-broader-evaluation`。bridge 有未完成 participant 时不挑另一个 finalist。范围更大的评测尚未完成不撤销已证明的局部专长。
+
+## 不可变回归套件
+
+新实验设置 `regression.suiteRef` 时，seed provider 必须同时返回匹配的 `TaskUniverse.regressionSuiteDigest` 和完整 `regressionSuite` manifest，并通过 `verifyRegressionSuite` 证明任务、grader、环境等已实际物化。只提供 digest 不足以接入；每个成员必须匹配 seed 的任务 ID 和内容 digest，已知 suite 不得作为 held-out。
+
+`resolveRegressionSettings` 在 admission 合并所有 `protected-regression` 的明确 seed guard，保留已有 operator 规则。完全相同的 guard 去重，不用较弱规则替换较强规则；不同规则同时执行。`development` 成员参与 seed，不隐式变成硬门。控制面将合并后的策略写入新 `EvolutionSpec`；独立 SDK 另行封存 `resolvedSettings`。运行参数、源数据与已存在 evolution 的策略不变，换 suite 必须建立新 evolution 并取得成对 baseline/candidate 证据。
+
+独立使用 `collectFailure` 的调用方可用 `sanitizedRegressionPrompt` 取得提案引用的内容对象并一并保存。`materializeSuite` 验证来源提案、角色、保护规则、可重现输入与验证记录；验证回调收到副本，不能更改已封存套件。
 
 ## Scope 周期更新
 
@@ -161,3 +175,7 @@ dossier、workplans、local 决定、nomination 与 archive 在发布引用前�
 Scope 周期更新专项覆盖更新边界、只补差集、预算不足、准备中断、缺证据和终态失败；跨轮专项实际消费未晋升历史 specialist 的代码身份、诊断与 findings，并独立比较 champion。完整验收仍以跟踪表为准。
 
 指标与逻辑 slots 修复后，六个搜索测试文件共 94 项通过。固定精度比较直接使用量化整数 key，数值显示再转为十进制；异构过程组分别检查下界，宏平均候选可独立于研究前沿晋升，保护规则不能被均分增益抵消。
+
+阶段/回归集专项的 9 项测试通过；真实 Git/Skill 控制面另有 6 项通过，包含 suite 新 admission、运行阶段状态及 held-out 恢复。随后继续执行完整搜索回归。
+
+2026-09-12 阶段决策/回归集修复后，8 个搜索测试文件共 105 项通过（最多两个 worker）；实际 Git/Skill 接入专项另有 6 项通过。类型检查和构建 TypeScript 编译通过。测试集合与历史记录有重叠，不累加宣称总数。

@@ -23,7 +23,7 @@ import { RefineCapabilities } from '../../src/capabilities.js'
 import { renderTrajectoryResult } from '../../src/notebook/tool.js'
 import { trajectoryAnalysis } from '../helpers/trajectory-fixture.js'
 import type { HitchTrajectoryReader } from '../../src/types.js'
-import { fixtures as searchFixtures, settings as searchSettings } from '../helpers/search-fixture.js'
+import { fixtures as searchFixtures, settings as searchSettings, regressionSuiteFixture, revise } from '../helpers/search-fixture.js'
 
 const roots: string[] = []
 afterEach(async () => {
@@ -3087,6 +3087,26 @@ describe('RefineService evolution workspaces', () => {
 })
 
 describe('explicit staged search control-plane integration', () => {
+  it('freezes suite protection at new admission without changing runtime options or the source dataset', async () => {
+    const coordinator = new SkillMetaCoordinator()
+    const { service, evaluator } = await setup(0.8, false, 1, 300_000, 1, 0, 1, 300_000, coordinator)
+    const fixture = searchFixtures(20), suite = await regressionSuiteFixture(fixture.seed, 'protected-regression')
+    const originalSeed = JSON.stringify(fixture.seed)
+    const seed = revise(fixture.seed, { regressionSuite: suite, regressionSuiteDigest: suite.digest })
+    fixture.provider.describe = async p => p === 'seed' ? seed : fixture.heldOut
+    const verify = vi.fn(async () => true); fixture.provider.verifyRegressionSuite = verify
+    ;(evaluator as RefineEvaluator).search = { provider: fixture.provider, diagnosis: fixture.diagnosis }
+    service.options.searchSettings = searchSettings(); service.options.searchSettings.regression.suiteRef = suite.digest
+    try {
+      const admitted = await service.admit('api')
+      const spec = await service.registry.readSpec(admitted.evolutionId)
+      expect(spec?.searchSettings?.promotion.protectedTasks).toEqual([suite.tasks[0]!.guard])
+      expect(spec?.searchSettings?.regression.suiteRef).toBe(suite.digest)
+      expect(verify).toHaveBeenCalledWith(suite.digest, seed)
+      expect(service.options.searchSettings.promotion.protectedTasks).toEqual([])
+      expect(JSON.stringify(fixture.seed)).toBe(originalSeed)
+    } finally { await service.dispose() }
+  })
   it.each([{ process: false, recovery: 'none' }, { process: true, recovery: 'none' }, { process: true, recovery: 'resume' }, { process: true, recovery: 'restart' }, { process: false, recovery: 'timeout' }])('delivers a scoped workplan and recovers v2 promotion ($process/$recovery)', async ({ process, recovery }) => {
     const coordinator = new SkillMetaCoordinator()
     const { service, evaluator, git } = await setup(0.8, false, 1, 300_000, 1, 0, 1, 300_000, coordinator)
@@ -3113,6 +3133,9 @@ describe('explicit staged search control-plane integration', () => {
       const assignment = (await eventually(async () => coordinator.claim('test-client', skillHarnessIdentity(service.options.metaAgent), admitted.evolutionId), a => a !== undefined))!
       expect(assignment.workplanDelivery?.workplan.hypothesis).toBeTruthy()
       expect(assignment.evidencePolicy.diagnoseEveryFailedRunBeforeProposal).toBe(false)
+      const workingStatus = await service.status(admitted.evolutionId, admitted.roundId)
+      expect(workingStatus.searchProgress?.phase).toBe('generation')
+      expect(workingStatus.searchProgress?.evaluations.some(e => e.stage === 'baseline-probe' && e.profile?.outcomeComplete)).toBe(true)
       if (recovery === 'timeout') {
         const terminal = await eventually(() => store.readRound(admitted.roundId), r => r?.status === 'failed' || r?.status === 'rejected')
         expect(terminal?.status, terminal?.failure?.message).toBe('rejected')
@@ -3139,6 +3162,8 @@ describe('explicit staged search control-plane integration', () => {
         await eventually(async () => service.activeEntry(admitted.roundId), active => !active)
         const status = await service.status(admitted.evolutionId, admitted.roundId)
         expect(status.searchPendingOperation).toMatchObject({ state: 'running', partition: 'held-out', handle: 'remote-heldout-17' })
+        expect(status.searchProgress?.phase).toBe('seed-research-complete')
+        expect(status.searchProgress?.evaluations.some(e => (e.stage as string) === 'held-out')).toBe(false)
         ready = true
         if (recovery === 'resume') await service.resumeSearchRound(admitted.evolutionId, admitted.roundId)
         else {

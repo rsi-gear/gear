@@ -6,6 +6,7 @@ import { stagePlan } from '../../src/search/scopes.js'
 import { consumptionReceipt } from '../../src/search/diagnosis.js'
 import type { DiagnosisProvider, EvaluationScope, EvidenceCell, SearchProvider, SearchSettings, Snapshot, Stage, TaskGuard, TaskUniverse } from '../../src/search/types.js'
 import type { GeneratedCandidate, SearchExecutionHooks } from '../../src/search/engine.js'
+import { collectFailure, materializeSuite } from '../../src/search/regression.js'
 
 export function universe(N = 100, partition: 'seed' | 'held-out' = 'seed', process = false): TaskUniverse {
   const contents = Array.from({ length: N }, (_, i) => digestJson([partition, i]))
@@ -27,6 +28,17 @@ export function settings(): SearchSettings {
 export function revise<T extends { digest: string }>(record: T, patch: Partial<Omit<T, 'digest'>>): T {
   const { digest: ignored, ...body } = record
   return seal({ ...body, ...patch }) as T
+}
+export async function regressionSuiteFixture(u: TaskUniverse, role: 'development' | 'protected-regression', index = 16, parentSuiteDigest?: string) {
+  const proposal = collectFailure({ source: { kind: 'online-feedback', evidenceRef: 'feedback:simulation' }, outcome: 'business-failure',
+    prompt: 'Verify the isolated service state', fixtureRefs: ['fixture:initial-service-state'], environmentRef: 'environment:simulator-v1', graderRef: 'grader:state-assertions-v1',
+    expectedBehavior: 'The service state satisfies all frozen assertions', failureCategory: 'verification' }, [], { collectFailures: true, maxProposals: 50 }).proposal!
+  const task = u.tasks[index]!
+  return materializeSuite({ builderIntegrity: digestJson('fixture-suite-builder'), ...(parentSuiteDigest ? { parentSuiteDigest } : {}), tasks: [{
+    taskId: task.id, contentDigest: task.contentDigest, fixtureRefs: proposal.fixtureRefs, environmentRef: proposal.environmentRef!, graderRef: proposal.graderRef!,
+    isolationRef: 'isolation:fresh-simulator', validationEvidenceRef: 'evidence:counterexample-reproduced', proposalDigest: proposal.digest, role,
+    ...(role === 'protected-regression' ? { guard: { taskId: task.id, partition: 'seed' as const, rule: 'no-regression' as const } } : {}),
+  }] }, [proposal], async () => true)
 }
 export function scopeFixture(u: TaskUniverse, ids: string[], familyId = 'family', epoch = 1, guards: TaskGuard[] = []): EvaluationScope {
   const taskIds = sorted([...ids, ...guards.map(g => g.taskId)])

@@ -27,6 +27,7 @@ import { FailureClusterSearch, type GeneratedCandidate } from '../search/engine.
 import { SearchStore } from '../search/store.js'
 import { seal, validateSettings, invariant } from '../search/contracts.js'
 import { legacySearchEvidence } from '../search/legacy.js'
+import { resolveRegressionSettings } from '../search/regression.js'
 import type { SearchSettings, Snapshot } from '../search/types.js'
 import type { CandidateGenerationBudgetStatus } from '../types.js'
 
@@ -719,7 +720,9 @@ export class RefineService {
         throw new Error('failure-cluster-gepa-v1 requires provider-verified subset plans, cell reuse, idempotent execution and a diagnosis provider')
       }
       const [seed, heldOut] = await Promise.all([search.provider.describe('seed'), search.provider.describe('held-out')])
+      spec.searchSettings = resolveRegressionSettings(spec.searchSettings, seed, heldOut)
       validateSettings(spec.searchSettings, seed, heldOut, spec.candidateGeneration.maxCandidates)
+      if (spec.searchSettings.regression.suiteRef) invariant(await search.provider.verifyRegressionSuite?.(spec.searchSettings.regression.suiteRef, seed), 'provider must verify the frozen regression suite was included at new admission')
     }
     await this.registry.createEvolution({ spec, champion: initial, ...(options.name === undefined ? {} : { name: options.name }) })
     return this.startBatch(await this.runtime(evolutionId), source, batchId, roundCount, normalizeFocus(options.focus))
@@ -1178,10 +1181,14 @@ export class RefineService {
     const pendingSearchOperation = round.searchMode && !round.searchOutcome
       ? await new SearchStore(join(this.registry.stateStore(evolutionId).root, 'search')).read<import('../search/types.js').PendingSearchOperation | null>(`rounds/${round.roundId}/pending-operation`)
       : undefined
+    const searchProgress = round.searchMode
+      ? await new SearchStore(join(evolution.store.root, 'search')).read<import('../search/types.js').SearchProgress>(`rounds/${round.roundId}/progress`)
+      : undefined
     return {
       evolutionId, batchId: round.batchId, roundId: round.roundId, status: round.status,
       ...(pendingSearchOperation ? { searchPendingOperation: pendingSearchOperation } : {}),
       ...(pendingSearchEvidence ? { searchPendingEvidence: pendingSearchEvidence } : {}),
+      ...(searchProgress ? { searchProgress } : {}),
       ...(round.searchOutcome ? { search: structuredClone(round.searchOutcome) } : {}),
       ...(round.decision === undefined ? {} : { decision: round.decision }),
       ...(round.evaluation?.seedCandidate !== undefined
