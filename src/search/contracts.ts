@@ -2,7 +2,7 @@ import { digestJson } from '../state/digest.js'
 import { validateSearchSchema } from './schema.js'
 import type { EvaluationScope, MetricContract, SearchSettings, TaskUniverse, TaskSetResolution, TaskSetSizing, Snapshot, MetricObservation } from './types.js'
 
-export const integrity = digestJson({ algorithm: 'failure-cluster-gepa', apiVersion: 2, revision: 3 })
+export const integrity = digestJson({ algorithm: 'failure-cluster-gepa', apiVersion: 2, revision: 4 })
 export function seal<T extends object>(value: T): T & { digest: string } { return { ...value, digest: digestJson(value) } }
 export function verifyDigest(value: { digest: string }): void {
   const { digest, ...body } = value
@@ -173,7 +173,10 @@ export function validateSettings(settings: SearchSettings, universe: TaskUnivers
   invariant(s.parentSampling === 'scoped-frontier-membership-v1' && s.scopeWeights === 'uniform-by-family' && s.archiveCoverage === 'complete-scope', 'unsupported archive algorithm')
   invariant(s.diagnosis.sharing === 'parent-evidence-dossier' && s.diagnosis.planner === 'evidence-failure-clusters-v1', 'unsupported diagnosis policy')
   integer(s.diagnosis.candidatesPerFamily, 'candidatesPerFamily', 1)
-  invariant(s.scopeSampling.epochPolicy === 'stable', 'unsupported scope epoch policy')
+  invariant(['stable', 'periodic'].includes(s.scopeSampling.epochPolicy), 'unsupported scope epoch policy')
+  if (s.scopeSampling.epochPolicy === 'periodic') integer(s.scopeSampling.updateEveryRounds!, 'scope update period', 1)
+  if (s.scopeSampling.updateEveryRounds !== undefined) integer(s.scopeSampling.updateEveryRounds, 'scope update period', 1)
+  if (s.scopeSampling.maxHistoricalSpecialists !== undefined) integer(s.scopeSampling.maxHistoricalSpecialists, 'scope historical specialist limit')
   invariant(s.evaluationStages.reuseValidCells === true && s.evaluationStages.globalSeed.maxCandidates === 1, 'invalid staged evaluation policy')
   integer(s.evaluationStages.bridge.maxCandidates, 'bridge.maxCandidates')
   invariant(s.evaluationStages.bridge.groupAllocation === 'weighted-round-robin' && s.evaluationStages.bridge.taskSelection === 'nominated-scopes-union-then-stratified', 'unsupported bridge policy')

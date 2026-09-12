@@ -2027,7 +2027,7 @@ export class RefineService {
         await store.compareAndSwapChampion(champion.ref, { schemaVersion: 2, ref: next.commit, manifestDigest: next.manifestDigest, updatedAt: now(), roundId: sourceRoundId })
       },
       progress: async phase => {
-        const statuses: Record<string, RefinementRound['status']> = { bootstrap: 'baseline-running', 'diagnosis-planning': 'baseline-running', local: 'candidate-seed-running', bridge: 'candidate-seed-running', 'global-seed': 'candidate-seed-running', 'held-out': 'held-out-running' }
+        const statuses: Record<string, RefinementRound['status']> = { bootstrap: 'baseline-running', 'scope-preparation': 'baseline-running', 'diagnosis-planning': 'baseline-running', local: 'candidate-seed-running', bridge: 'candidate-seed-running', 'global-seed': 'candidate-seed-running', 'held-out': 'held-out-running' }
         if (statuses[phase]) await this.transition(store, roundId, { status: statuses[phase] })
       },
     })

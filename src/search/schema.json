@@ -805,7 +805,20 @@
               "additionalProperties": false
             },
             "epochPolicy": {
-              "const": "stable"
+              "anyOf": [
+                {
+                  "const": "stable"
+                },
+                {
+                  "const": "periodic"
+                }
+              ]
+            },
+            "updateEveryRounds": {
+              "type": "number"
+            },
+            "maxHistoricalSpecialists": {
+              "type": "number"
             },
             "sharedCoreTaskIds": {
               "type": "array",
@@ -1777,6 +1790,9 @@
             },
             {
               "const": "research-archive"
+            },
+            {
+              "const": "scope-preparation"
             }
           ]
         },
@@ -2512,6 +2528,12 @@
         },
         "digest": {
           "type": "string"
+        },
+        "clusters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FailureCluster"
+          }
         }
       },
       "required": [
@@ -2527,7 +2549,8 @@
         "scopeProbabilities",
         "parentProbabilities",
         "activeParentIds",
-        "digest"
+        "digest",
+        "clusters"
       ],
       "additionalProperties": false
     },
@@ -2924,6 +2947,9 @@
               ],
               "additionalProperties": false
             },
+            "scopePreparation": {
+              "$ref": "#/$defs/ScopeEpochPreparation"
+            },
             "candidates": {
               "type": "array",
               "items": {
@@ -3001,6 +3027,7 @@
             "scopeViews",
             "parentProbabilities",
             "bridge",
+            "scopePreparation",
             "candidates",
             "remainingBudget"
           ],
@@ -3304,6 +3331,122 @@
         "completedResultDigest",
         "planDigest",
         "snapshotDigest",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "ScopeEpochPreparation": {
+      "type": "object",
+      "properties": {
+        "archiveCutoffDigest": {
+          "type": "string"
+        },
+        "epoch": {
+          "type": "number"
+        },
+        "sharedTaskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ruleDigest": {
+          "type": "string"
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvaluationScope"
+          }
+        },
+        "plans": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StageEvaluationPlan"
+          }
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StageResult"
+          }
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "familyId": {
+                "type": "string"
+              },
+              "previousScopeDigest": {
+                "type": "string"
+              },
+              "proposedScopeDigest": {
+                "type": "string"
+              },
+              "participantIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "excludedHistoricalIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "status": {
+                "anyOf": [
+                  {
+                    "const": "prepared"
+                  },
+                  {
+                    "const": "unchanged"
+                  },
+                  {
+                    "const": "budget-insufficient"
+                  },
+                  {
+                    "const": "baseline-ineligible"
+                  },
+                  {
+                    "const": "no-history"
+                  }
+                ]
+              },
+              "reasonCodes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "familyId",
+              "previousScopeDigest",
+              "participantIds",
+              "excludedHistoricalIds",
+              "status",
+              "reasonCodes"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "archiveCutoffDigest",
+        "epoch",
+        "sharedTaskIds",
+        "ruleDigest",
+        "scopes",
+        "plans",
+        "results",
+        "decisions",
         "digest"
       ],
       "additionalProperties": false

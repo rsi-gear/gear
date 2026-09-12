@@ -12,6 +12,7 @@
 
 - local/shared/cross/bridge 均根据去重 seed 全集计算比例，支持可选 min/max，精确十进制向上取整。任务数与桶计分权重独立。
 - outcome/process 分别建立逐任务前沿，以 scope 权重和 membership 概率抽父代。全同分使用有资格检查的确定性 fallback，历史专长和原始证据保留。
+- 可选周期 scope 更新在 workplan 封存前完成准备，提交后的新视图供下一轮抽样；必要预算不足或证据不合格保留旧 epoch。
 - scope 的语义身份从任务、权重和 guards 重算；等价范围合并证据与抽样机会。每份局部计划必须覆盖完整 scope，跨计划的同一有效 cell 不得出现冲突值；较旧的 missing 视图仍可保存，不覆盖已补齐资格。
 - 过程能力在 admission 解析。原生 outcome-only、逐 trial scalar、过程缺失和旧版整条 invalid 分开处理；新模式不会添加 LLM judge。
 - 每个候选领取自己的工作计划、有来源的 dossier 摘要、共享约束和父代 findings。Skill claim 和 DSH 投递产生独立消费凭据，不填充伪造的旧诊断 receipts。修改边界是相对 harness 根目录的路径。
@@ -22,6 +23,24 @@
 - held-out 前先冻结 seed research；缺失 held-out 可以在 intent 之前补评。历史局部证据通过独立 completion 追加 revision，有效零分和有效过程分不可替换。
 - `shared-set-research` 只生成研究更新和 advisory 决定，不能自动更新 champion。
 - 回归收集默认关闭。provider 可声明冻结的 `regressionTemplate`；有效 seed 业务失败进入过滤、去重、有容量限制的 proposal 队列。物化 suite 必须经可重现性验证，只能在新 admission 纳入。
+
+## Scope 周期更新
+
+默认 `scopeSampling.epochPolicy: stable` 继续沿用旧范围。新实验可配置：
+
+```yaml
+search:
+  scopeSampling:
+    epochPolicy: periodic
+    updateEveryRounds: 5
+    maxHistoricalSpecialists: 1
+```
+
+`updateEveryRounds` 为正整数，首轮为 index 0，在 index 5、10 等规划边界准备新范围。候选数量与任务比例仍按原独立配置计算；`maxHistoricalSpecialists` 只限制额外补证的历史专长版本，可为 0。
+
+每次更新先冻结历史 archive 截止点、共享任务清单、family 历史诊断、原抽样决定、新范围与计划参与者。champion 和本轮实际抽中的代码父代为必要参与者，额外历史版本按旧 membership 排序选择；先按缓存差集检查预算，再执行。必要证据不足或探索门不通过时保留旧 epoch。预算不足可以在执行前减少额外历史版本，不能缩小已冻结任务清单。
+
+`research.scopePreparation` 显示范围、参与者及 prepared、unchanged、budget-insufficient、baseline-ineligible 等原因。新视图只在本轮 archive 提交后供下一轮抽样；本轮父代抽签仍绑定旧 archive。原 scope、原证据、原概率所在的历史 archive 均保留，同一 family 仅一个 epoch 占外层权重。
 
 ## Provider 接入条件
 
@@ -136,3 +155,5 @@ dossier、workplans、local 决定、nomination 与 archive 在发布引用前�
 完整 spec 的 65 项矩阵与正文要求仍在逐项实现和验证，未完成项见验收跟踪，因此当前不标记整体验收完成。没有使用真实 Hitch 演化证明收益，也不把合成 fixture 的计算节约宣称为真实 token/时长节约；内置 Hitch 的 capability adapter 接入限制保持明确。
 
 本轮恢复专项验证：4 个文件共 167 项通过，包含 21 项外部执行恢复/超时测试和 93 项新旧控制面测试。额外补齐的 repair/completion 换 ID 防护另行跑对应两项测试；类型检查、构建编译、SDK 恢复入口与 schema 一致性检查通过。
+
+Scope 周期更新专项覆盖更新边界、只补差集、预算不足、准备中断、缺证据和终态失败；跨轮专项实际消费未晋升历史 specialist 的代码身份、诊断与 findings，并独立比较 champion。完整验收仍以跟踪表为准。

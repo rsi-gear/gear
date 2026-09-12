@@ -91,7 +91,7 @@ export interface SearchConfig {
   archiveCoverage: 'complete-scope'
   diagnosis: { sharing: 'parent-evidence-dossier'; planner: 'evidence-failure-clusters-v1'; candidatesPerFamily: number }
   taskSetSizing: TaskSetSizing
-  scopeSampling: { bucketWeights: Record<Bucket, number>; epochPolicy: 'stable'; sharedCoreTaskIds?: string[] }
+  scopeSampling: { bucketWeights: Record<Bucket, number>; epochPolicy: 'stable' | 'periodic'; updateEveryRounds?: number; maxHistoricalSpecialists?: number; sharedCoreTaskIds?: string[] }
   evaluationStages: {
     bridge: { maxCandidates: number; groupAllocation: 'weighted-round-robin'; taskSelection: 'nominated-scopes-union-then-stratified' }
     globalSeed: { maxCandidates: 1 }
@@ -222,7 +222,7 @@ export interface EvidenceConsumption {
   snapshotDigest: string
   resultDigest: string
   consumerDigest: string
-  consumer: 'bootstrap-archive' | 'diagnosis' | 'workplans' | 'local-decision' | 'nomination' | 'research-archive'
+  consumer: 'bootstrap-archive' | 'diagnosis' | 'workplans' | 'local-decision' | 'nomination' | 'research-archive' | 'scope-preparation'
   digest: string
 }
 export interface Coverage {
@@ -362,6 +362,8 @@ export interface ResearchArchive {
   parentProbabilities: Record<string, number>
   activeParentIds: string[]
   digest: string
+  /** Only committed parent seed diagnoses can influence later scope sampling. */
+  clusters: FailureCluster[]
 }
 export interface ParentBatch {
   batchId: string

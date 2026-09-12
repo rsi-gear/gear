@@ -1,7 +1,7 @@
 import { digestJson } from '../state/digest.js'
 import { comparisonKey, invariant, seal, sorted, validateScope, verifyDigest } from './contracts.js'
 import { assertConsistentCells, cellKey, completeEvidence, profile, validOutcome } from './evidence.js'
-import type { EvidenceCell, EvidenceProfile, EvaluationScope, ParentSelectionDecision, ResearchArchive, ScopeView, SearchConfig, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from './types.js'
+import type { EvidenceCell, EvidenceProfile, FailureCluster, EvaluationScope, ParentSelectionDecision, ResearchArchive, ScopeView, SearchConfig, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from './types.js'
 
 export function passesExploration(scope: EvaluationScope, p: EvidenceProfile, universe: TaskUniverse): boolean {
   return p.outcomeComplete && scope.guards.every(g => {
@@ -84,7 +84,7 @@ export function scopeView(scope: EvaluationScope, universe: TaskUniverse, snapsh
     ineligibleIds: [...guardRejected].filter(id => !profiles.has(id)).sort() })
 }
 
-export function buildArchive(input: { evolutionId: string; previous?: ResearchArchive; universe: TaskUniverse; snapshots: Snapshot[]; scopes: EvaluationScope[]; results: StageResult[]; plans: StageEvaluationPlan[]; config: SearchConfig; championId: string }): ResearchArchive {
+export function buildArchive(input: { evolutionId: string; previous?: ResearchArchive; universe: TaskUniverse; snapshots: Snapshot[]; scopes: EvaluationScope[]; results: StageResult[]; plans: StageEvaluationPlan[]; config: SearchConfig; championId: string; clusters?: FailureCluster[] }): ResearchArchive {
   const { previous, universe } = input
   if (previous) { verifyDigest(previous); invariant(previous.universeDigest === universe.digest && previous.evolutionId === input.evolutionId, 'archive cohort identity changed') }
   invariant(universe.partition === 'seed' && input.plans.every(p => p.partition === 'seed' && p.universeDigest === universe.digest), 'held-out evidence is forbidden in archive')
@@ -141,7 +141,12 @@ export function buildArchive(input: { evolutionId: string; previous?: ResearchAr
     const view = scopeViews.find(v => v.scopeDigest === scope.digest)!
     for (const [id, p] of Object.entries(view.conditionalParentProbabilities)) parentProbabilities[id] = (parentProbabilities[id] ?? 0) + p / latest.size
   }
-  return seal({ schemaVersion: 1 as const, evolutionId: input.evolutionId, revision: (previous?.revision ?? -1) + 1, universeDigest: universe.digest,
+  const clusters = [...new Map([...(previous?.clusters ?? []), ...(input.clusters ?? [])].map(c => [c.digest, c])).values()]
+  for (const cluster of clusters) {
+    verifyDigest(cluster)
+    invariant(cluster.taskIds.every(id => universe.tasks.some(t => t.id === id)) && [...snapshots.values()].some(s => s.digest === cluster.parentSnapshotDigest), 'cluster is outside the committed parent seed cohort')
+  }
+  return seal({ schemaVersion: 1 as const, clusters, evolutionId: input.evolutionId, revision: (previous?.revision ?? -1) + 1, universeDigest: universe.digest,
     snapshots: [...snapshots.values()], scopes: [...scopes.values()], results: [...resultHistory.values()], plans: [...plans.values()], scopeViews,
     scopeProbabilities, parentProbabilities, activeParentIds: Object.keys(parentProbabilities).sort(),
   })

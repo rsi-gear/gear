@@ -337,7 +337,7 @@ admission 默认抽一个 parent batch，为它预留至多 4 个工作槽位；
 
 新 epoch 激活前先让其 champion/fallback 与预算内选定的历史 specialist 获得所需局部证据；通过 cell 复用只补差集，不全库补评。未补齐的旧候选保留旧 scope 资格和历史记录，但不能声称已在新范围领先。准备预算不足则维持旧 epoch，不能把同一组的新旧 epoch 同时计为两个抽样组。
 
-v1 默认 scope 在本次实验内保持稳定；允许配置确定的更新周期。持续固定小集合的偏置由跨组 bridge、后续 scope epoch 和最终全局验证共同检查，不能把共享开发样本当独立测试集。
+v1 默认 scope 在本次实验内保持稳定；允许配置确定的更新周期。实现配置为 `scopeSampling.epochPolicy: periodic` 和正整数 `updateEveryRounds`，从第 0 轮开始按周期边界准备；可用非负整数 `maxHistoricalSpecialists` 限制额外历史版本，必要 champion/实际父代不受该额外名额上限省略。持续固定小集合的偏置由跨组 bridge、后续 scope epoch 和最终全局验证共同检查，不能把共享开发样本当独立测试集。
 
 ## 7. 统一诊断、失败分类与多 Candidate 生成
 

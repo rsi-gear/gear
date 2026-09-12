@@ -23,18 +23,18 @@ export function stratified(universe: TaskUniverse, ids: readonly string[], seed:
   }
   return result
 }
-export function sharedTasks(universe: TaskUniverse, resolution: TaskSetResolution, config: SearchConfig, successfulIds: string[]): string[] {
+export function sharedTasks(universe: TaskUniverse, resolution: TaskSetResolution, config: SearchConfig, successfulIds: string[], epoch = 1): string[] {
   const core = sorted(config.scopeSampling.sharedCoreTaskIds ?? [])
   const count = resolution.quantities.shared.resolved
   invariant(core.length <= count, 'shared core exceeds capacity')
-  return [...core, ...stratified(universe, successfulIds.filter(id => !core.includes(id)), `${config.seed}:shared`)].slice(0, count)
+  return [...core, ...stratified(universe, successfulIds.filter(id => !core.includes(id)), `${config.seed}:shared${epoch === 1 ? '' : `:epoch-${epoch}`}`)].slice(0, count)
 }
-export function createScope(universe: TaskUniverse, resolution: TaskSetResolution, config: SearchConfig, cluster: FailureCluster, shared: string[], epoch = 1): EvaluationScope | undefined {
+export function createScope(universe: TaskUniverse, resolution: TaskSetResolution, config: SearchConfig, cluster: Pick<FailureCluster, 'familyId' | 'taskIds'>, shared: string[], epoch = 1): EvaluationScope | undefined {
   const used = new Set(shared)
-  const local = stratified(universe, cluster.taskIds.filter(id => !used.has(id)), `${config.seed}:${cluster.familyId}:local`).slice(0, resolution.quantities.local.resolved)
+  const local = stratified(universe, cluster.taskIds.filter(id => !used.has(id)), `${config.seed}:${cluster.familyId}:local${epoch === 1 ? '' : `:epoch-${epoch}`}`).slice(0, resolution.quantities.local.resolved)
   for (const id of local) used.add(id)
   if (!cluster.taskIds.some(id => used.has(id))) return undefined
-  const cross = stratified(universe, universe.tasks.map(t => t.id).filter(id => !used.has(id) && !cluster.taskIds.includes(id)), `${config.seed}:${cluster.familyId}:cross`).slice(0, resolution.quantities.cross.resolved)
+  const cross = stratified(universe, universe.tasks.map(t => t.id).filter(id => !used.has(id) && !cluster.taskIds.includes(id)), `${config.seed}:${cluster.familyId}:cross${epoch === 1 ? '' : `:epoch-${epoch}`}`).slice(0, resolution.quantities.cross.resolved)
   const buckets = { shared: [...shared], local, cross }
   const guards = structuredClone(config.explorationGuards)
   const taskIds = sorted([...Object.values(buckets).flat(), ...guards.map(g => g.taskId)])
