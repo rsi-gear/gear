@@ -3771,6 +3771,217 @@
         "digest"
       ],
       "additionalProperties": false
+    },
+    "SearchShadowReport": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "legacy-search-shadow-replay"
+        },
+        "advisory": {
+          "const": true
+        },
+        "championChanged": {
+          "const": false
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "bytes": {
+                "type": "number"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "evidenceDigest": {
+                "type": "string"
+              },
+              "evidenceDigestAlgorithm": {
+                "const": "json-stringify-sha256"
+              },
+              "commit": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "bytes",
+              "sha256",
+              "evidenceDigest",
+              "evidenceDigestAlgorithm",
+              "commit"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "sourceBytesUnchanged": {
+          "const": true
+        },
+        "assumptions": {
+          "type": "object",
+          "properties": {
+            "comparisonQuantum": {
+              "type": "number"
+            },
+            "weighting": {
+              "const": "uniform-per-task"
+            },
+            "repetitions": {
+              "const": "one-observed-trial-per-task"
+            },
+            "outcomeDirection": {
+              "const": "maximize"
+            },
+            "processDirection": {
+              "const": "maximize-assumed"
+            },
+            "process": {
+              "const": "observed-legacy-scalar-only"
+            }
+          },
+          "required": [
+            "comparisonQuantum",
+            "weighting",
+            "repetitions",
+            "outcomeDirection",
+            "processDirection",
+            "process"
+          ],
+          "additionalProperties": false
+        },
+        "comparison": {
+          "type": "object",
+          "properties": {
+            "pairedTasks": {
+              "type": "number"
+            },
+            "baselineOutcome": {
+              "type": "number"
+            },
+            "candidateOutcome": {
+              "type": "number"
+            },
+            "outcomeImprovedTaskIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "outcomeRegressedTaskIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "processImprovedTaskIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "processRegressedTaskIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "missingProcessTaskIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "baselineProcess": {
+              "type": "number"
+            },
+            "candidateProcess": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "pairedTasks",
+            "baselineOutcome",
+            "candidateOutcome",
+            "outcomeImprovedTaskIds",
+            "outcomeRegressedTaskIds",
+            "processImprovedTaskIds",
+            "processRegressedTaskIds",
+            "missingProcessTaskIds"
+          ],
+          "additionalProperties": false
+        },
+        "suggestions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "advisory": {
+                "const": true
+              },
+              "action": {
+                "anyOf": [
+                  {
+                    "const": "investigate-specialist"
+                  },
+                  {
+                    "const": "investigate-regressions"
+                  },
+                  {
+                    "const": "no-release-decision"
+                  }
+                ]
+              },
+              "taskIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "reasonCodes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "advisory",
+              "action",
+              "taskIds",
+              "reasonCodes"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "heldOut": {
+          "const": "not-evaluated"
+        },
+        "v2CellReuse": {
+          "const": "not-certified"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "advisory",
+        "championChanged",
+        "sources",
+        "sourceBytesUnchanged",
+        "assumptions",
+        "comparison",
+        "suggestions",
+        "heldOut",
+        "v2CellReuse",
+        "digest"
+      ],
+      "additionalProperties": false
     }
   }
 }

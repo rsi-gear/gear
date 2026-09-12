@@ -166,6 +166,8 @@ dossier、workplans、local 决定、nomination 与 archive 在发布引用前�
 
 ## 验证与交付边界
 
+`replaySearchCase` 与 `scripts/search-shadow-replay.mjs` 仅分析文档格式的 legacy 单次观测缓存，按旧 JSON.stringify hash 规则核验输入，返回含前后字节核对、指标假设和 source hashes 的 advisory 报告。CLI 只独占创建新输出文件，不调用生成、补评、archive、champion 或 publish。真实案例结果见 [只读回放报告](candidate-promotion-case-shadow.zh-CN.md)，另有 3 项合成协议测试。
+
 测试全部使用临时 Git 仓库和合成 provider，没有读取本机实验作为测试依赖，也没有调用真实模型。
 
 - outcome-only 与 outcome+process 的完整搜索均有集成测试；100/1,000 seed 任务的 4→2→1 路径分别产生 170/1,700 次 candidate seed 新执行。

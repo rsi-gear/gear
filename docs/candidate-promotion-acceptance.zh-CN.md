@@ -84,7 +84,7 @@
 | G03 | suite 新版本 | 已验证：完整 suite manifest 和 provider 证明在新 admission 校验；protected guards 封存并强制执行、development 不隐式加门，换版本拒绝继续旧 evolution，新 evolution 重新取得成对证据。真实控制面 admission 不修改运行参数或源数据。 |
 | G04 | held-out 失败 | 已验证：held-out 来源不生成提案，已知 regression suite 不能作为 held-out；收集在 seed research 封存过程中完成。 |
 | C01 | 历史 spec / round / component v1 | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
-| C02 | 案例 shadow replay | 未完成：案例只读 shadow replay 工具及字节不变证明尚未完成；不能把合成测试当作案例回放。 |
+| C02 | 案例 shadow replay | 已验证：对文档指定的真实第 4/5 轮 cache 完成只读回放，8 改善/10 退步与原报告一致，源文件前后逐字节一致；所有建议 advisory，不写 champion/archive，不认证 held-out 或 v2 cell reuse。详见案例回放报告。 |
 
 ## 矩阵之外仍需核对的正文要求
 
@@ -103,7 +103,7 @@
 2. 周期 scope preparation 已实现并验证；sampler 的模块/子模式/历史难度分层和成功反例已实现，专项 11 项通过，继续全流程回归。
 3. 历史 specialist 重复抽中、真实生成输入/findings 与独立 champion 已通过；两个不同历史父代同时参与也已验证；继续核对真实 Skill 跨轮空 checkpoint。
 4. global task weights、异构 repetitions、运行中 seed 状态、显式 StageDecision 和回归 suite 保护规则传递已补齐；继续复核协议对象和消费链。
-5. 继续覆盖尚未验证的数值/采样/约束/恢复场景，并实现只读案例 shadow replay。最终再按全部 65 行和正文复核。
+5. 真实案例只读 shadow replay 已完成；继续覆盖尚未验证的数值/采样/约束/恢复场景，最终再按全部 65 行和正文复核。
 
 2026-09-12 阶段决策/回归集修复后，8 个搜索测试文件共 105 项通过（最多两个 worker）；实际 Git/Skill 接入专项另有 6 项通过。类型检查和构建 TypeScript 编译通过。测试集合与历史记录有重叠，不累加宣称总数。
 
