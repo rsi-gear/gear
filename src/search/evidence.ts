@@ -1,11 +1,12 @@
 import { digestJson } from '../state/digest.js'
 import { validateSearchSchema } from './schema.js'
-import { comparisonKey, digest, invariant, numeric, observationValue, processTasks, rational, seal, sorted, validateSnapshot, verifyDigest, weightedMean } from './contracts.js'
+import { comparisonKey, repetitionsForTask, plannedCellCount, digest, invariant, numeric, observationValue, processTasks, rational, seal, sorted, validateSnapshot, verifyDigest, weightedMean } from './contracts.js'
+import type { SearchStore } from './store.js'
 import type { Rational } from './contracts.js'
-import type { CellIdentity, EvidenceCell, EvidenceProfile, ProcessMode, Snapshot, StageEvaluationPlan, StageResult, TaskProfile, TaskUniverse } from './types.js'
+import type { CellIdentity, EvidenceCell, EvidenceProfile, ProcessMode, Snapshot, StageEvaluationPlan, StageResult, TaskProfile, TaskUniverse, SearchProvider } from './types.js'
 
 export function cellIdentity(universe: TaskUniverse, taskId: string, repetition: number, snapshot: Snapshot): CellIdentity {
-  const task = universe.tasks.find(t => t.id === taskId), slot = universe.repetitions.find(s => s.index === repetition)
+  const task = universe.tasks.find(t => t.id === taskId), slot = repetitionsForTask(universe, taskId).find(s => s.index === repetition)
   invariant(task && slot, 'cell outside frozen task/slot manifest')
   return {
     taskId, taskContentDigest: task.contentDigest, repetition, seed: slot.seed,
@@ -23,7 +24,7 @@ export function plannedCells(universe: TaskUniverse, plan: StageEvaluationPlan, 
   invariant(plan.universeDigest === universe.digest && plan.partition === universe.partition, 'stage universe/partition mismatch')
   invariant(plan.participantIds.includes(snapshot.candidateId), 'snapshot is not a stage participant')
   invariant(plan.taskIds.length > 0 && sorted(plan.taskIds).length === plan.taskIds.length, 'invalid stage task manifest')
-  return plan.taskIds.flatMap(id => universe.repetitions.map(s => cellIdentity(universe, id, s.index, snapshot)))
+  return plan.taskIds.flatMap(id => repetitionsForTask(universe, id).map(s => cellIdentity(universe, id, s.index, snapshot)))
 }
 export function validOutcome(cell: EvidenceCell): boolean {
   return cell.status === 'available' && cell.outcomeCertified && cell.outcome.status === 'available'
@@ -45,6 +46,11 @@ export function assertCell(cell: EvidenceCell, expected: CellIdentity): void {
   invariant(['available', 'missing', 'invalid'].includes(cell.status), 'invalid execution status')
   invariant(['legacy-v1', 'score-envelope-v2'].includes(cell.envelope), 'unsupported score envelope')
   invariant(typeof cell.outcomeCertified === 'boolean' && !!cell.evidenceRef && !!cell.completedAt, 'missing cell provenance')
+  invariant(Number.isFinite(Date.parse(cell.completedAt)), 'invalid evidence completion time')
+  if (cell.assertions) {
+    invariant(new Set(cell.assertions.map(a => a.id)).size === cell.assertions.length, 'duplicate assertion identity')
+    for (const assertion of cell.assertions) { invariant(assertion.id.length > 0, 'empty assertion identity'); digest(assertion.schemaDigest) }
+  }
   if (cell.envelope === 'legacy-v1' && (cell.process?.status === 'missing' || cell.process?.status === 'invalid')) {
     invariant(!validOutcome(cell), 'legacy invalid observation cannot rescue outcome')
   }
@@ -54,6 +60,7 @@ export function profile(universe: TaskUniverse, plan: StageEvaluationPlan, snaps
   verifyDigest(result)
   invariant(result.stagePlanDigest === plan.digest && result.snapshotDigest === snapshot.digest, 'evidence support binding mismatch')
   const identities = plannedCells(universe, plan, snapshot)
+  if (weights) invariant(plan.taskIds.every(id => Number.isFinite(weights[id]) && weights[id]! >= 0) && Object.keys(weights).length === plan.taskIds.length, 'profile weights must cover the frozen task manifest')
   const expected = new Map(identities.map(i => [cellKey(i), i]))
   const cells = new Map<string, EvidenceCell>()
   for (const cell of result.cells) {
@@ -62,9 +69,9 @@ export function profile(universe: TaskUniverse, plan: StageEvaluationPlan, snaps
     assertCell(cell, identity); cells.set(key, cell)
   }
   const declaredProcess = processTasks(universe, mode), applicable = declaredProcess.filter(id => plan.taskIds.includes(id))
-  const coverage = { planned: identities.length, available: 0, paired: 0, pending: 0, missing: 0, invalid: 0, notEvaluated: (universe.tasks.length - plan.taskIds.length) * universe.repetitions.length }
-  const processCoverage = { ...coverage, planned: applicable.length * universe.repetitions.length,
-    notEvaluated: (declaredProcess.length - applicable.length) * universe.repetitions.length }
+  const coverage = { planned: identities.length, available: 0, paired: 0, pending: 0, missing: 0, invalid: 0, notEvaluated: plannedCellCount(universe, universe.tasks.filter(t => !plan.taskIds.includes(t.id)).map(t => t.id)) }
+  const processCoverage = { ...coverage, planned: plannedCellCount(universe, applicable),
+    notEvaluated: plannedCellCount(universe, declaredProcess.filter(id => !plan.taskIds.includes(id))) }
   const tasks: TaskProfile[] = []
   const outcomes: Array<{ value: Rational; weight: number }> = []
   const processValues: Record<string, Array<{ value: Rational; weight: number }>> = {}
@@ -88,13 +95,16 @@ export function profile(universe: TaskUniverse, plan: StageEvaluationPlan, snaps
       }
     }
     const row: TaskProfile = { taskId }
-    const weight = weights?.[taskId] ?? task.weight
-    if (outcome.length === universe.repetitions.length) {
+    // Global/bridge policy uses uniform task macro weights. Scoped callers supply
+    // their frozen bucket weights explicitly; repetition count never changes them.
+    const weight = weights?.[taskId] ?? 1
+    const expectedSlots = repetitionsForTask(universe, taskId).length
+    if (outcome.length === expectedSlots) {
       const value = weightedMean(outcome.map(value => ({ value, weight: 1 })))
       row.outcome = numeric(value); row.outcomeKey = String(comparisonKey(value, task.outcome.comparisonQuantum))
       outcomes.push({ value, weight })
     }
-    if (applicable.includes(taskId) && process.length === universe.repetitions.length) {
+    if (applicable.includes(taskId) && process.length === expectedSlots) {
       const value = weightedMean(process.map(value => ({ value, weight: 1 })))
       row.process = numeric(value); row.processKey = String(comparisonKey(value, task.process!.comparisonQuantum))
       if (weight > 0) (processValues[task.process!.group] ??= []).push({ value, weight })
@@ -111,6 +121,22 @@ export function profile(universe: TaskUniverse, plan: StageEvaluationPlan, snaps
     processGroupKeys: processComplete ? Object.fromEntries(Object.entries(processValues).map(([k, v]) => [k, String(comparisonKey(weightedMean(v), universe.tasks.find(t => t.process?.group === k)!.process!.comparisonQuantum))])) : {},
     supportDigest: digestJson({ universe: universe.digest, plan: plan.digest, result: result.digest, mode, weights: weights ?? null }),
   }
+}
+/** Reuse completion evidence across operation labels without rerunning an already valid slot. */
+export async function reusableCells(store: SearchStore, provider: SearchProvider, identities: CellIdentity[], current: EvidenceCell[]): Promise<EvidenceCell[]> {
+  const reusable: EvidenceCell[] = []
+  for (const identity of identities) {
+    const old = current.find(c => cellKey(c.identity) === cellKey(identity))
+    if (old && validOutcome(old) && (!identity.processContractDigest || old.process?.status === 'available')) continue
+    const pointer = await store.read<{ ref: string }>(`cells/${cellKey(identity).slice(7)}`)
+    if (!pointer) continue
+    const cell = await store.object<EvidenceCell>(pointer.ref)
+    if (!validOutcome(cell)) continue
+    assertCell(cell, identity); invariant(await provider.verifyCell(cell, identity), 'cached completion provenance rejected')
+    if (old && validOutcome(old)) { assertConsistentCells(old, cell); if (cell.process?.status !== 'available') continue }
+    reusable.push(cell)
+  }
+  return reusable
 }
 /** Appending a completion never changes an already valid outcome or its statistical slot. */
 export function completeEvidence(original: StageResult, replacements: EvidenceCell[]): StageResult {

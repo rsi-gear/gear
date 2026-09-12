@@ -261,4 +261,56 @@ describe('external execution recovery and budget settlement', () => {
     expect(await complete()).toEqual(completion)
   })
 
+  it('[R07,R10,M07] reuses completed slots and process when a new completion ID references the old partial result', async () => {
+    const f = await setup(true), scope = scopeFixture(f.seed, ['task-0', 'task-1'])
+    const row = evaluatedFixture(f.seed, scope, f.anchor, id => id === 'task-0' ? { outcome: 0 } : undefined)
+    let projections = 0
+    f.provider.completeProcess = async cell => {
+      projections++
+      return revise(cell, { process: { status: 'available', rawValue: 0.5, contractDigest: cell.identity.processContractDigest!, evidenceRef: cell.evidenceRef } })
+    }
+    const complete = (id: string) => completeArchivedEvidence({ id, store: f.store, provider: f.provider, universe: f.seed, plan: row.plan, snapshot: f.anchor, original: row.result, settings: f.config, signal: new AbortController().signal })
+    const first = await complete('first'), calls = f.executions.length
+    const second = await complete('second')
+    expect(second.completedResultDigest).toBe(first.completedResultDigest)
+    expect(f.executions).toHaveLength(calls)
+    expect(f.executions.map(e => e.count)).toEqual([1])
+    expect(projections).toBe(1)
+    expect(row.result.cells[0]!.outcome).toMatchObject({ rawValue: 0 })
+    expect(row.result.cells[0]!.process?.status).toBe('missing')
+  })
+
+  it('[R06,R08,M06] resumes projection of a freshly repaired outcome using the original repair operation', async () => {
+    const f = await setup(true), original = f.provider.evaluate, start = Date.now()
+    let repairing = false, ready = false, projections = 0, projected: EvidenceCell | undefined
+    f.provider.evaluate = async input => {
+      const cells = await original(input)
+      if (input.plan.stage === 'held-out' && input.snapshot.candidateId !== 'anchor') {
+        if (!repairing) return cells.slice(1)
+        return cells.map(c => revise(c, { process: { status: 'missing', contractDigest: c.identity.processContractDigest!, reason: 'projection pending' } }))
+      }
+      return cells
+    }
+    await expect(f.run()).rejects.toBeInstanceOf(SearchEvidencePending)
+    const originalRef = (await f.store.read<{ resultRefs: string[] }>('rounds/r/pending-evidence'))!.resultRefs[1]!
+    f.provider.completeProcess = async cell => {
+      projections++
+      projected = revise(cell, { process: { status: 'available', rawValue: 1, contractDigest: cell.identity.processContractDigest!, evidenceRef: cell.evidenceRef } })
+      throw new Error('lost fresh projection response')
+    }
+    f.provider.inspectProcess = async () => ready ? { status: 'complete', result: { cells: [projected!] } } : { status: 'running', handle: 'fresh-projection-1' }
+    const engine = new FailureClusterSearch(f.store, f.provider, f.diagnosis, f.hooks)
+    const complete = () => engine.repairEvaluation('r', 'fresh-1', originalRef, new AbortController().signal)
+    repairing = true
+    await expect(complete()).rejects.toBeInstanceOf(SearchOperationPending)
+    const count = f.executions.length
+    vi.spyOn(Date, 'now').mockReturnValue(start + f.config.budgets.round.timeoutMs + 1000)
+    ready = true
+    const result = await complete()
+    expect(result.cells.every(c => c.process?.status === 'available')).toBe(true)
+    expect(projections).toBe(1)
+    expect(f.executions).toHaveLength(count)
+    expect((await f.run()).championChanged).toBe(true)
+  })
+
 })

@@ -2,7 +2,7 @@ import { digestJson } from '../state/digest.js'
 import { validateSearchSchema } from './schema.js'
 import type { EvaluationScope, MetricContract, SearchSettings, TaskUniverse, TaskSetResolution, TaskSetSizing, Snapshot, MetricObservation } from './types.js'
 
-export const integrity = digestJson({ algorithm: 'failure-cluster-gepa', apiVersion: 2, revision: 4 })
+export const integrity = digestJson({ algorithm: 'failure-cluster-gepa', apiVersion: 2, revision: 5 })
 export function seal<T extends object>(value: T): T & { digest: string } { return { ...value, digest: digestJson(value) } }
 export function verifyDigest(value: { digest: string }): void {
   const { digest, ...body } = value
@@ -92,6 +92,7 @@ export function validateUniverse(universe: TaskUniverse): void {
     invariant(task.id.length > 0 && task.stratum.length > 0, 'task identity/stratum required'); digest(task.contentDigest)
     validateMetric(task.outcome); invariant(task.outcome.channel === 'outcome' && task.outcome.granularity !== 'dataset-aggregate', 'trial outcome is required')
     if (task.process) { validateMetric(task.process); invariant(task.process.channel === 'process', 'wrong process contract channel') }
+    repetitionsForTask(universe, task.id)
     finite(task.successUtility, 'success threshold')
     invariant(Number.isFinite(task.weight) && task.weight > 0 && Number.isFinite(task.estimatedCost) && task.estimatedCost > 0, 'invalid task weight/cost')
   }
@@ -108,6 +109,17 @@ export function validateUniverse(universe: TaskUniverse): void {
       invariant(contract.applicableTaskSetDigest === digestJson(applicable), 'metric applicability declaration mismatch')
     }
   }
+}
+export function repetitionsForTask(universe: TaskUniverse, taskId: string): TaskUniverse['repetitions'] {
+  const task = universe.tasks.find(t => t.id === taskId)
+  invariant(task, 'task outside repetition manifest')
+  if (task.repetitionIndices === undefined) return universe.repetitions
+  const slots = universe.repetitions.filter(s => task.repetitionIndices!.includes(s.index))
+  invariant(slots.length > 0 && slots.length === task.repetitionIndices.length && unique(task.repetitionIndices).length === slots.length, 'invalid per-task repetition slots')
+  return slots
+}
+export function plannedCellCount(universe: TaskUniverse, taskIds: readonly string[]): number {
+  return taskIds.reduce((sum, id) => sum + repetitionsForTask(universe, id).length, 0)
 }
 export function processTasks(universe: TaskUniverse, mode: 'off' | 'auto' | 'required'): string[] {
   if (mode === 'off') return []
@@ -198,10 +210,8 @@ export function validateSettings(settings: SearchSettings, universe: TaskUnivers
   for (const threshold of [p.outcome, p.process, ...Object.values(p.process.groups ?? {})]) {
     for (const value of [threshold.minimumGain, threshold.maxSeedRegression, threshold.maxHeldOutRegression]) invariant(Number.isFinite(value) && value >= 0, 'invalid promotion threshold')
   }
-  for (const u of [universe, heldOut]) {
-    const groups = unique(u.tasks.filter(t => processTasks(u, p.process.mode).includes(t.id)).map(t => t.process!.group))
-    if (groups.length > 1) invariant(groups.every(g => p.process.groups?.[g]), 'heterogeneous process metrics require explicit group thresholds')
-  }
+  const groups = unique([universe, heldOut].flatMap(u => u.tasks.filter(t => processTasks(u, p.process.mode).includes(t.id)).map(t => t.process!.group)))
+  if (groups.length > 1) invariant(groups.every(g => p.process.groups?.[g]), 'heterogeneous process metrics require explicit group thresholds')
   for (const guard of [...s.explorationGuards, ...p.protectedTasks]) {
     const u = guard.partition === 'seed' ? universe : heldOut
     invariant(u.tasks.some(t => t.id === guard.taskId) && ['no-regression', 'minimum-score', 'must-pass'].includes(guard.rule), 'invalid protected task')

@@ -11,7 +11,7 @@ export function passesExploration(scope: EvaluationScope, p: EvidenceProfile, un
 }
 export function scopeView(scope: EvaluationScope, universe: TaskUniverse, snapshots: Snapshot[], records: Array<{ snapshot: Snapshot; result: StageResult; plan: StageEvaluationPlan }>, config: SearchConfig, championId: string, equivalentScopes: ReadonlySet<string> = new Set([scope.digest])): ScopeView {
   validateScope(scope, universe)
-  const profiles = new Map<string, EvidenceProfile>(), times = new Map<string, string>()
+  const profiles = new Map<string, EvidenceProfile>(), times = new Map<string, number>()
   const observed = new Set<string>(), guardRejected = new Set<string>()
   for (const record of records) {
     if (!equivalentScopes.has(record.plan.scopeDigest)) continue
@@ -22,11 +22,11 @@ export function scopeView(scope: EvaluationScope, universe: TaskUniverse, snapsh
     if (!passesExploration(scope, p, universe)) { if (p.outcomeComplete) guardRejected.add(id); continue }
     const previous = profiles.get(id)
     if (!previous || !previous.processComplete && p.processComplete) profiles.set(id, p)
-    const completedAt = record.result.cells.map(c => c.completedAt).sort().at(-1) ?? ''
+    const completedAt = Math.max(...record.result.cells.map(c => Date.parse(c.completedAt)))
     if (!times.has(id) || completedAt < times.get(id)!) times.set(id, completedAt)
   }
   const representatives: Record<string, string> = {}, trees = new Map<string, string>()
-  const ids = [...profiles.keys()].sort((a, b) => times.get(a)!.localeCompare(times.get(b)!) || a.localeCompare(b))
+  const ids = [...profiles.keys()].sort((a, b) => times.get(a)! - times.get(b)! || a.localeCompare(b))
   for (const id of ids) {
     const snapshot = snapshots.find(s => s.candidateId === id)!
     const group = digestJson({ tree: snapshot.tree, manifest: snapshot.manifestDigest })

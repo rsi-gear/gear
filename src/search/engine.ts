@@ -1,8 +1,8 @@
 import { digestJson } from '../state/digest.js'
 import { buildArchive, passesExploration, selectParents } from './archive.js'
-import { invariant, integrity, processTasks, resolveSizing, scopeEquivalenceDigest, seal, sorted, validateSettings, validateSnapshot, verifyDigest, SearchProtocolError, digest } from './contracts.js'
+import { invariant, integrity, processTasks, repetitionsForTask, plannedCellCount, resolveSizing, scopeEquivalenceDigest, seal, sorted, validateSettings, validateSnapshot, verifyDigest, SearchProtocolError, digest } from './contracts.js'
 import { clusters, deliveredWorkplan, validateReceipt } from './diagnosis.js'
-import { assertCell, cellIdentity, cellKey, plannedCells, profile, validOutcome, completeEvidence } from './evidence.js'
+import { assertCell, reusableCells, cellIdentity, cellKey, plannedCells, profile, validOutcome, completeEvidence } from './evidence.js'
 import { assessGate, decideFinal, precheckSeed, rankProfiles } from './promotion.js'
 import type { PromotionInput } from './promotion.js'
 import { bridgeSelection, createScope, sharedTasks, stagePlan } from './scopes.js'
@@ -125,7 +125,7 @@ export class FailureClusterSearch {
   private async missingCost(universe: TaskUniverse, snapshots: Snapshot[], tasks: string[]): Promise<{ cells: number; repairCells: number }> {
     let cells = 0, repairCells = 0
     const seen = new Set<string>()
-    for (const snapshot of snapshots) for (const taskId of tasks) for (const slot of universe.repetitions) {
+    for (const snapshot of snapshots) for (const taskId of tasks) for (const slot of repetitionsForTask(universe, taskId)) {
       const identity = cellIdentity(universe, taskId, slot.index, snapshot), key = cellKey(identity)
       if (seen.has(key)) continue
       seen.add(key)
@@ -207,8 +207,9 @@ export class FailureClusterSearch {
   async repairEvaluation(roundId: string, repairId: string, originalRef: string, signal: AbortSignal): Promise<StageResult> {
     invariant(!await this.store.read(`rounds/${roundId}/commit`), 'cannot repair after commit intent')
     const saved = await this.store.read<{ ref: string }>(`rounds/${roundId}/admission`); invariant(saved, 'unknown search round')
-    const admission = await this.store.object<SearchAdmission & { seed: TaskUniverse; heldOut: TaskUniverse; startedAt: number; providerIntegrity: string; digest: string }>(saved.ref)
+    const admission = await this.store.object<SearchAdmission & { seed: TaskUniverse; heldOut: TaskUniverse; startedAt: number; providerIntegrity: string; algorithmIntegrity: string; digest: string }>(saved.ref)
     invariant(admission.providerIntegrity === this.provider.integrity, 'repair provider identity changed')
+    invariant(admission.algorithmIntegrity === integrity, 'repair algorithm identity changed')
     const currentUniverses = await this.validate(admission)
     invariant(currentUniverses.seed.digest === admission.seed.digest && currentUniverses.heldOut.digest === admission.heldOut.digest, 'repair task universe changed')
     const original = await this.store.object<StageResult>(originalRef), plan = await this.store.object<StageEvaluationPlan>(original.stagePlanDigest)
@@ -221,8 +222,9 @@ export class FailureClusterSearch {
     const input = await this.store.freeze(roundId, `repair-${repairId}-input`, async () => {
       const currentPointer = await this.store.read<{ ref: string }>(`rounds/${roundId}/repair-${original.digest.slice(7)}`)
       const current = currentPointer ? await this.store.object<StageResult>(currentPointer.ref) : original
-      const missing = plannedCells(universe, plan, snapshot).filter(i => !current.cells.some(c => cellKey(c.identity) === cellKey(i) && validOutcome(c)))
-      return seal({ originalRef, current, request: { plan, snapshot, cells: missing } })
+      const identities = plannedCells(universe, plan, snapshot), cached = await reusableCells(this.store, this.provider, identities, current.cells)
+      const missing = identities.filter(i => ![...current.cells, ...cached].some(c => cellKey(c.identity) === cellKey(i) && validOutcome(c)))
+      return seal({ originalRef, current, cached, request: { plan, snapshot, cells: missing } })
     })
     invariant(input.originalRef === originalRef, 'repair ID reused for different evidence')
     return this.store.freeze(roundId, `repair-${repairId}`, async () => {
@@ -233,9 +235,11 @@ export class FailureClusterSearch {
       try {
       const { current, request } = input, missing = request.cells
       const key = digestJson([roundId, repairId, current.digest])
+      const previousOperation = await this.store.operation(roundId, key)
+      const previousCells = previousOperation?.status === 'complete' ? (await this.store.object<EvaluationExecutionResult & { digest: string }>(previousOperation.outputDigest!)).cells : []
       const pending = await this.store.read<PendingSearchOperation | null>(`rounds/${roundId}/pending-operation`)
-      invariant(!pending || [key, ...current.cells.map(c => digestJson([key, c.digest]))].includes(pending.operationKey), 'another external operation is unresolved; resume its original repair ID')
-      const previouslyReserved = !!await this.store.operation(roundId, key)
+      invariant(!pending || [key, ...[...current.cells, ...input.cached, ...previousCells].map(c => digestJson([key, c.digest]))].includes(pending.operationKey), 'another external operation is unresolved; resume its original repair ID')
+      const previouslyReserved = !!previousOperation
       const reservation = await this.store.reserve(roundId, key, request, { ...zeroUsage(), cells: missing.length, repairCells: missing.length }, admission.settings.budgets, admission.startedAt)
       let output: EvaluationExecutionResult
       if (reservation.status === 'complete') output = await this.store.object<EvaluationExecutionResult & { digest: string }>(reservation.outputDigest!)
@@ -256,9 +260,12 @@ export class FailureClusterSearch {
         await this.store.settle(reservation, seal(output), recovered.notStarted ? zeroUsage() : reservation.reserved)
       }
       await resolvePendingOperation(this.store, roundId, key)
-      const cells = [...output.cells]
+      const cells = [...input.cached, ...output.cells]
       let failure = output.failure
-      for (const cell of current.cells.filter(c => validOutcome(c) && c.identity.processContractDigest && c.process?.status !== 'available')) {
+      const processMode = ['held-out', 'global-seed', 'bridge'].includes(plan.stage) ? admission.settings.promotion.process.mode : admission.settings.search.process.mode
+      const applicableProcess = new Set(processTasks(universe, processMode))
+      const projectionSource = completeEvidence(current, cells)
+      for (const cell of projectionSource.cells.filter(c => validOutcome(c) && applicableProcess.has(c.identity.taskId) && c.process?.status !== 'available')) {
         if (!this.provider.completeProcess) continue
         const projectionKey = digestJson([key, cell.digest])
         const previousProjection = !!await this.store.operation(roundId, projectionKey)
@@ -331,7 +338,7 @@ export class FailureClusterSearch {
       const facts = [...output.facts]
       for (const taskId of taskIds) if (!facts.some(f => f.taskId === taskId)) {
         const task = universe.tasks.find(t => t.id === taskId)!, cells = baseline.cells.filter(c => c.identity.taskId === taskId)
-        const complete = cells.length === universe.repetitions.length && cells.every(validOutcome)
+        const complete = cells.length === repetitionsForTask(universe, taskId).length && cells.every(validOutcome)
         const successful = complete && cells.every(c => c.outcome.status === 'available' && numeric(utility(c.outcome.rawValue, task.outcome)) >= task.successUtility)
         facts.push({ taskId, evidenceRefs: sorted(cells.map(c => c.evidenceRef)), status: !complete ? 'infrastructure-invalid' : successful ? 'successful-control' : 'unresolved' })
       }
@@ -457,8 +464,8 @@ export class FailureClusterSearch {
             const hypothesisKey = digestJson([parent.digest, cluster.familyId, hypothesis])
             if (usedHypotheses.has(hypothesisKey)) continue
             const remaining = await this.store.remaining(admission.roundId, settings.budgets)
-            const candidateCost = scope.taskIds.length * seed.repetitions.length
-            if (remaining.cells < candidateCost + works.reduce((sum, w) => sum + w.scope.taskIds.length * seed.repetitions.length, 0) || remaining.generationTokens <= 0 || remaining.generationRequests <= 0) { cancelled.push('budget-exhausted'); continue }
+            const candidateCost = plannedCellCount(seed, scope.taskIds)
+            if (remaining.cells < candidateCost + works.reduce((sum, w) => sum + plannedCellCount(seed, w.scope.taskIds), 0) || remaining.generationTokens <= 0 || remaining.generationRequests <= 0) { cancelled.push('budget-exhausted'); continue }
             const candidateId = `${admission.roundId}-candidate-${works.length}`
             const localPlan = stagePlan({ stage: 'local', partition: 'seed', universeDigest: seed.digest, taskSetSizeResolutionDigest: resolution.digest,
               scopeDigest: scope.digest, taskIds: scope.taskIds, participantIds: [candidateId, parent.candidateId], prerequisiteDecisionDigests: [parents.digest], selectionRuleDigest: integrity })

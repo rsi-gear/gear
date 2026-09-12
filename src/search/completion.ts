@@ -1,6 +1,6 @@
 import { digestJson } from '../state/digest.js'
-import { invariant, seal, verifyDigest } from './contracts.js'
-import { assertCell, cellKey, completeEvidence, plannedCells, profile, validOutcome } from './evidence.js'
+import { invariant, integrity, processTasks, seal, verifyDigest } from './contracts.js'
+import { assertCell, reusableCells, cellKey, completeEvidence, plannedCells, profile, validOutcome } from './evidence.js'
 import { SearchBudgetExceeded, SearchStore, zeroUsage } from './store.js'
 import { budgetFailure, recoverExternal, resolvePendingOperation, searchDeadline } from './recovery.js'
 import type { EvaluationExecutionResult, SearchStageFailure, SearchProvider, SearchSettings, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from './types.js'
@@ -23,15 +23,15 @@ export async function completeArchivedEvidence(input: { id: string; store: Searc
   verifyDigest(original); profile(universe, plan, snapshot, original, 'auto')
   const identity = await store.read<{ ref: string }>('evolution/identity')
   if (identity) {
-    const frozen = await store.object<{ providerIntegrity: string; seedUniverseDigest: string; settingsDigest: string; digest: string }>(identity.ref)
-    invariant(frozen.providerIntegrity === provider.integrity && frozen.seedUniverseDigest === universe.digest && frozen.settingsDigest === digestJson(input.settings), 'completion evolution identity changed')
+    const frozen = await store.object<{ providerIntegrity: string; seedUniverseDigest: string; settingsDigest: string; algorithmIntegrity: string; digest: string }>(identity.ref)
+    invariant(frozen.algorithmIntegrity === integrity && frozen.providerIntegrity === provider.integrity && frozen.seedUniverseDigest === universe.digest && frozen.settingsDigest === digestJson(input.settings), 'completion evolution identity changed')
   }
   const completionId = `completion-${input.id}`
   const active = await store.read<{ id: string }>('active-completion')
   invariant(!active || active.id === completionId || await store.read(`rounds/${active.id}/result`), 'another completion is unresolved; resume its original ID')
   await store.write('active-completion', { id: completionId })
-  const request = await store.freeze(completionId, 'request', () => seal({ id: input.id, originalResultDigest: original.digest, planDigest: plan.digest, snapshotDigest: snapshot.digest, providerIntegrity: provider.integrity, settingsDigest: digestJson(input.settings), startedAt: Date.now() }))
-  invariant(request.originalResultDigest === original.digest && request.planDigest === plan.digest && request.snapshotDigest === snapshot.digest && request.providerIntegrity === provider.integrity && request.settingsDigest === digestJson(input.settings), 'completion request identity changed')
+  const request = await store.freeze(completionId, 'request', () => seal({ id: input.id, originalResultDigest: original.digest, planDigest: plan.digest, snapshotDigest: snapshot.digest, providerIntegrity: provider.integrity, algorithmIntegrity: integrity, settingsDigest: digestJson(input.settings), startedAt: Date.now() }))
+  invariant(request.originalResultDigest === original.digest && request.planDigest === plan.digest && request.snapshotDigest === snapshot.digest && request.providerIntegrity === provider.integrity && request.algorithmIntegrity === integrity && request.settingsDigest === digestJson(input.settings), 'completion request identity changed')
   return store.freeze(completionId, 'result', async () => {
     const budgetStart = (await store.read<{ startedAt: number }>('budget'))?.startedAt ?? request.startedAt
     const deadline = Math.min(request.startedAt + input.settings.budgets.round.timeoutMs, budgetStart + input.settings.budgets.evolution.timeoutMs)
@@ -39,12 +39,17 @@ export async function completeArchivedEvidence(input: { id: string; store: Searc
     try {
     input.signal.throwIfAborted()
     const identities = plannedCells(universe, plan, snapshot)
-    const missing = identities.filter(i => !original.cells.some(c => cellKey(c.identity) === cellKey(i) && validOutcome(c)))
+    const cellRequest = await store.freeze(completionId, 'cell-request', async () => {
+      const cached = await reusableCells(store, provider, identities, original.cells)
+      const missing = identities.filter(i => ![...original.cells, ...cached].some(c => cellKey(c.identity) === cellKey(i) && validOutcome(c)))
+      return seal({ cached, missing })
+    })
+    const { cached, missing } = cellRequest
     const key = digestJson([request.digest, 'repair'])
-    let replacements: StageResult['cells'] = [], failure: SearchStageFailure | undefined
+    let replacements: StageResult['cells'] = [...cached], failure: SearchStageFailure | undefined
     if (missing.length) {
       const previouslyReserved = !!await store.operation(completionId, key)
-      const operation = await store.reserve(completionId, key, request, { ...zeroUsage(), cells: missing.length, repairCells: missing.length }, input.settings.budgets, request.startedAt)
+      const operation = await store.reserve(completionId, key, { requestDigest: request.digest, cellRequestDigest: cellRequest.digest }, { ...zeroUsage(), cells: missing.length, repairCells: missing.length }, input.settings.budgets, request.startedAt)
       let output: EvaluationExecutionResult
       if (operation.status === 'complete') output = await store.object<EvaluationExecutionResult & { digest: string }>(operation.outputDigest!)
       else {
@@ -64,10 +69,12 @@ export async function completeArchivedEvidence(input: { id: string; store: Searc
         }
         await store.settle(operation, seal(output), recovered.notStarted ? zeroUsage() : operation.reserved)
       }
-      replacements = [...output.cells]; failure = output.failure
+      replacements = [...cached, ...output.cells]; failure = output.failure
       await resolvePendingOperation(store, completionId, key)
     }
-    for (const cell of original.cells.filter(c => validOutcome(c) && c.identity.processContractDigest && c.process?.status !== 'available')) {
+    const applicableProcess = new Set(processTasks(universe, input.settings.search.process.mode))
+    const projectionSource = completeEvidence(original, replacements)
+    for (const cell of projectionSource.cells.filter(c => validOutcome(c) && applicableProcess.has(c.identity.taskId) && c.process?.status !== 'available')) {
       if (!provider.completeProcess) continue
       const projectionKey = digestJson([request.digest, cell.digest]), previouslyReserved = !!await store.operation(completionId, projectionKey)
       let operation

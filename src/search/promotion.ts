@@ -1,19 +1,18 @@
-import { comparisonKey, invariant, processTasks, seal, sorted, verifyDigest } from './contracts.js'
+import { comparisonKey, mul, numeric, rational, repetitionsForTask, invariant, processTasks, seal, sorted, verifyDigest } from './contracts.js'
 import { profile, validOutcome } from './evidence.js'
 import type { EvidenceProfile, GateDecision, MultisignalPromotionConfig, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from './types.js'
 
 export interface PromotionInput { universe: TaskUniverse; plan: StageEvaluationPlan; anchor: Snapshot; candidate: Snapshot; baseline: StageResult; result: StageResult }
 function thresholds(config: MultisignalPromotionConfig, group: string) { return config.process.groups?.[group] ?? config.process }
-function delta(a: number, b: number, q: number): number { return Number(comparisonKey(a, q) - comparisonKey(b, q)) * q }
+function gainValue(key: bigint, quantum: number): number { return numeric(mul({ n: key, d: 1n }, rational(quantum))) }
 export function rankProfiles(universe: TaskUniverse, entries: Array<{ id: string; profile: EvidenceProfile }>): string[] {
   const usable = entries.filter(e => e.profile.outcomeComplete && e.profile.processComplete)
   const groups = sorted(usable.flatMap(e => Object.keys(e.profile.processGroups)))
-  const outcomeQuantum = universe.tasks[0]!.outcome.comparisonQuantum
   return usable.sort((a, b) => {
     const o = BigInt(b.profile.outcomeKey!) - BigInt(a.profile.outcomeKey!)
     if (o) return o > 0n ? 1 : -1
     if (groups.length === 1) {
-      const g = groups[0]!, q = universe.tasks.find(t => t.process?.group === g)!.process!.comparisonQuantum
+      const g = groups[0]!
       const p = BigInt(b.profile.processGroupKeys[g]!) - BigInt(a.profile.processGroupKeys[g]!)
       if (p) return p > 0n ? 1 : -1
     }
@@ -42,7 +41,7 @@ export function assessGate(input: PromotionInput, config: MultisignalPromotionCo
   }
   let missingAssertion = false
   for (const guard of config.protectedAssertions.filter(g => g.partition === universe.partition && plan.taskIds.includes(g.taskId))) {
-    for (const repetition of universe.repetitions) {
+    for (const repetition of repetitionsForTask(universe, guard.taskId)) {
       const a = input.baseline.cells.find(c => c.identity.taskId === guard.taskId && c.identity.repetition === repetition.index)?.assertions?.find(a => a.id === guard.assertionId)
       const b = input.result.cells.find(c => c.identity.taskId === guard.taskId && c.identity.repetition === repetition.index)?.assertions?.find(a => a.id === guard.assertionId)
       if (!a || !b) { missingAssertion = true; continue }
@@ -52,20 +51,21 @@ export function assessGate(input: PromotionInput, config: MultisignalPromotionCo
   }
   if (missingAssertion) return seal({ ...base, outcome: 'insufficient-evidence' as const, reasonCodes: ['missing-protected-assertion'] })
   const q = universe.tasks[0]!.outcome.comparisonQuantum
-  comparison.outcomeGain = Number(BigInt(candidate.outcomeKey!) - BigInt(baseline.outcomeKey!)) * q
+  const outcomeGainKey = BigInt(candidate.outcomeKey!) - BigInt(baseline.outcomeKey!)
+  comparison.outcomeGain = gainValue(outcomeGainKey, q)
   const outcomeLimit = universe.partition === 'seed' ? config.outcome.maxSeedRegression : config.outcome.maxHeldOutRegression
-  if (comparisonKey(comparison.outcomeGain, q) < comparisonKey(-outcomeLimit, q)) reasons.push('outcome-regression')
+  if (outcomeGainKey < comparisonKey(-outcomeLimit, q)) reasons.push('outcome-regression')
   let processImproved = false, allProcessNonnegative = true
   for (const [group, value] of Object.entries(candidate.processGroups)) {
     const tq = universe.tasks.find(t => t.process?.group === group)!.process!.comparisonQuantum
-    const gain = Number(BigInt(candidate.processGroupKeys[group]!) - BigInt(baseline.processGroupKeys[group]!)) * tq, limits = thresholds(config, group)
-    comparison.processGains[group] = gain
-    if (comparisonKey(gain, tq) < comparisonKey(-(universe.partition === 'seed' ? limits.maxSeedRegression : limits.maxHeldOutRegression), tq)) reasons.push(`process-regression:${group}`)
-    if (comparisonKey(gain, tq) < 0n) allProcessNonnegative = false
-    if (comparisonKey(gain, tq) > comparisonKey(limits.minimumGain, tq)) processImproved = true
+    const gainKey = BigInt(candidate.processGroupKeys[group]!) - BigInt(baseline.processGroupKeys[group]!), limits = thresholds(config, group)
+    comparison.processGains[group] = gainValue(gainKey, tq)
+    if (gainKey < comparisonKey(-(universe.partition === 'seed' ? limits.maxSeedRegression : limits.maxHeldOutRegression), tq)) reasons.push(`process-regression:${group}`)
+    if (gainKey < 0n) allProcessNonnegative = false
+    if (gainKey > comparisonKey(limits.minimumGain, tq)) processImproved = true
   }
-  const improved = comparisonKey(comparison.outcomeGain, q) > comparisonKey(config.outcome.minimumGain, q) || processImproved && allProcessNonnegative
-  const neutral = comparisonKey(comparison.outcomeGain, q) === 0n && Object.values(comparison.processGains).every(g => g === 0)
+  const improved = outcomeGainKey > comparisonKey(config.outcome.minimumGain, q) || processImproved && allProcessNonnegative
+  const neutral = outcomeGainKey === 0n && Object.values(comparison.processGains).every(g => g === 0)
   if (requireImprovement && !improved && !(config.allowNeutral && neutral)) reasons.push('no-substantive-improvement')
   return seal({ ...base, outcome: reasons.length ? 'rejected' as const : 'eligible' as const })
 }

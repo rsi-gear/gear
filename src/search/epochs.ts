@@ -1,6 +1,6 @@
 import { digestJson } from '../state/digest.js'
 import { passesExploration } from './archive.js'
-import { integrity, invariant, numeric, seal, sorted, utility, verifyDigest } from './contracts.js'
+import { integrity, repetitionsForTask, invariant, numeric, seal, sorted, utility, verifyDigest } from './contracts.js'
 import { profile, validOutcome } from './evidence.js'
 import { createScope, sharedTasks, stagePlan } from './scopes.js'
 import type { SearchStore } from './store.js'
@@ -41,7 +41,7 @@ export async function prepareScopeEpochs(input: {
   const config = settings.search, epoch = scopeEpoch(settings, input.roundIndex)
   const parent = archive.snapshots.find(s => s.digest === parents.batches[0]?.parentSnapshotDigest) ?? anchor
   const parentCells = archive.results.filter(r => r.snapshotDigest === parent.digest).flatMap(r => r.cells)
-  const successful = universe.tasks.filter(task => universe.repetitions.every(slot => parentCells.some(c =>
+  const successful = universe.tasks.filter(task => repetitionsForTask(universe, task.id).every(slot => parentCells.some(c =>
     c.identity.taskId === task.id && c.identity.repetition === slot.index && validOutcome(c)
     && c.outcome.status === 'available' && numeric(utility(c.outcome.rawValue, task.outcome)) >= task.successUtility))).map(t => t.id)
   const shared = await store.freezeEvolution(`shared-epoch-${epoch}`, () => seal({ epoch, archiveCutoffDigest: archive.digest, parentSnapshotDigest: parent.digest,

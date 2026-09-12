@@ -24,8 +24,8 @@
 | A02 | 并列第一、联合冗余覆盖 | 已验证：联合覆盖剪枝、membership 归一化和可重建顺序均有针对性断言。 |
 | A03 | 全 0、全 1 或全同分 | 已验证：全 0/1/同分、固定精度 fallback、无合格父代拒绝均已验证。 |
 | A04 | 跨轮历史 specialist | 已验证：历史未晋升 specialist 保留在下一轮并成为真实代码/证据父代，未重新生成该版本；见 search-history.spec.ts。 |
-| A05 | 低 outcome、高 process | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
-| A06 | 同 tree 不同 commit/评分 | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
+| A05 | 低 outcome、高 process | 已验证：低 outcome / 高 process 的版本获得独立过程前沿概率，默认发布仍因 outcome 回归拒绝，见 search-metrics.spec.ts。 |
+| A06 | 同 tree 不同 commit/评分 | 已验证：相同 tree 不同 commit 保留原证据与 lineage，不按幸运分挑代表；按实际完成时间比较不同时区的时间戳。执行缓存仍要求 exact commit/manifest。 |
 | A07 | archive 容量与冠军保活 | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
 | A08 | exploration guard 与 bootstrap | 已验证：完整 baseline 与探索门在候选生成前生效；不合格版本不占前沿。 |
 | A09 | 候选只完成 15/100 全局任务 | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
@@ -40,34 +40,34 @@
 | D06 | 扩大 scope 的 baseline 推翻假设 | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
 | D07 | 独立 sibling 生成与越界修改 | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
 | E01 | 比例配置下 N=100 / 1,000，4→2→1 候选扩评 | 已验证：原完整 100/1,000 任务 fixture，170/1,700 candidate seed cells；本轮回归仍通过。 |
-| E02 | 跨组 bridge 比较 | 未完成：共同计划与准确差集预算已验证；globalTaskWeights 的配置语义仍需完整核对。 |
+| E02 | 跨组 bridge 比较 | 已验证：bridge 所有参与者与 anchor 使用同一清单、uniform 任务权重，费用按缓存差集；任务自带权重和不同重复次数均不改变这项宏平均规则。 |
 | E03 | bridge 并集或 guards 超上限 | 已验证：scope 并集/guards 超容量减少参与者；容量与费用分别记录原因。 |
 | E04 | global/held-out 失败或预算不足 | 已验证：cell/时间预算不足及 provider 确认的终态失败保留局部研究；未知状态不提交、不换 finalist，恢复原操作。专项覆盖 local/bridge/global/held-out 四阶段。 |
 | E05 | 局部平均退步但有独特改善 | 已验证：局部加权均分低于父代的版本仍保留单题专长并在下一轮被实际抽到；研究资格没有成为全局通过结论。 |
 | E06 | 缺 subset/reuse 能力 | 已验证：provider 不具备 subset/reuse/idempotency 时，在任何生成或评测前拒绝。 |
-| E07 | 互补候选 A/B | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
+| E07 | 互补候选 A/B | 已验证：互补 A/B 同时保留；无单题第一的 C 仍按自己的证据独立提名，拼接 A/B 原始 cells 冒充 C 被拒绝。 |
 | E08 | 比例取整与可选限额 | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
 | E09 | 小全集、空任务池、任务重叠 | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
 | E10 | 非法比例/限额、空 seed、关闭某桶 | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
 | E11 | bridge 按比例不足以容纳并集/guards | 已验证：按冻结比例限制 bridge；所有 guards 必须容纳，不临时增容或删题。 |
 | E12 | 规模解析后 resume / 新全集版本 | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
 | P01 | 子代优于研究父代、弱于 champion | 已验证：相对历史父代生成并改善局部任务，bridge 仍使用独立 anchor，拒绝弱于 champion 的发布路径。 |
-| P02 | 宏平均最优但没有任务第一 | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
+| P02 | 宏平均最优但没有任务第一 | 已验证：宏平均 C 没有任务第一且被研究剪枝，仍可由独立排名提名，并通过自己的完整 seed/held-out 证据晋升。 |
 | P03 | outcome 持平、过程改善 | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
 | P04 | outcome 改善、过程回归 | 已验证：结果改善时过程下界仍可拒绝，独立于 outcome 均分。 |
-| P05 | protected task / assertion 退步 | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
+| P05 | protected task / assertion 退步 | 已验证：单任务/单 assertion 退步不能被总体增益抵消，缺 assertion 为不足证据，重复 assertion 身份被拒绝。 |
 | P06 | outcome-only 严格改善 / 完全中性 | 已验证：outcome-only 严格改善与中性拒绝、legacy 分支保留均有既有回归。 |
 | P07 | seed 与 held-out 同集或同内容不同路径 | 已验证：内容重叠的独立验证拒绝；shared-set 模式 advisory 且不写 champion。 |
-| M01 | 不支持 process / dataset-aggregate | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
-| M01b | trial scalar、detail_status=aggregate-only | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
+| M01 | 不支持 process / dataset-aggregate | 已验证：dataset-aggregate 过程合同走合法 outcome 路径，不尝试逐任务 process 投影；原生无过程 fixture 的完整流程保持。 |
+| M01b | trial scalar、detail_status=aggregate-only | 已验证：无 assertion 的 trial scalar 仍可进入过程前沿并支持 outcome 持平时的晋升。 |
 | M02 | 混合 benchmark process 适用范围 | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
 | M03 | process=0 / missing / invalid | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
 | M04 | process 部分缺失、candidate 子集不同 | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
 | M05 | direction/range/scorer/quantum 改变 | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
 | M06 | projection / repair 后不能聚合 | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
-| M07 | 不同重复次数、retry 与有效零分 | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
+| M07 | 不同重复次数、retry 与有效零分 | 已验证：支持每任务不同逻辑 slots，先任务内再任务间平均；统计分母、阶段费用、配对一致，duplicate/retry 不加权，有效零分不可替换。 |
 | M08 | 新旧 observation schema、promotion process off | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
-| M09 | 多过程量纲的 outcome 并列 | 未完成：需要异构过程组的独立下界与 outcome 并列测试，不以合成均分代替。 |
+| M09 | 多过程量纲的 outcome 并列 | 已验证：异构组要求显式各组阈值，分别检查下界；outcome 并列时不合成过程均分，按 canonical ID 排名，minimize 增益方向正确。 |
 | M10 | 局部不适用 process，全局部分适用 | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
 | R01 | restart / resume / repair | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
 | R02 | archive CAS 后 crash、champion CAS 后 crash | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
@@ -102,5 +102,5 @@
 1. 已补齐阶段终态失败/未知中断/时间耗尽的区分和恢复入口，继续核对各消费边界与生成重试的组合窗口。
 2. 周期 scope preparation 已实现并验证；继续核对 sampler 的模块/子模式/历史难度分层和成功反例要求。
 3. 历史 specialist 重复抽中、真实生成输入/findings 与独立 champion 已通过；两个不同历史父代同时参与也已验证；继续核对真实 Skill 跨轮空 checkpoint。
-4. 补齐运行中阶段状态、显式 StageDecision、global task weights 语义及回归 suite 的保护规则传递。
+4. global task weights 与异构 repetitions 已补齐；继续实现运行中阶段状态、显式 StageDecision 及回归 suite 保护规则传递。
 5. 继续覆盖尚未验证的数值/采样/约束/恢复场景，并实现只读案例 shadow replay。最终再按全部 65 行和正文复核。

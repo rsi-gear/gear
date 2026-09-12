@@ -14,6 +14,8 @@
 - outcome/process 分别建立逐任务前沿，以 scope 权重和 membership 概率抽父代。全同分使用有资格检查的确定性 fallback，历史专长和原始证据保留。
 - 可选周期 scope 更新在 workplan 封存前完成准备，提交后的新视图供下一轮抽样；必要预算不足或证据不合格保留旧 epoch。
 - scope 的语义身份从任务、权重和 guards 重算；等价范围合并证据与抽样机会。每份局部计划必须覆盖完整 scope，跨计划的同一有效 cell 不得出现冲突值；较旧的 missing 视图仍可保存，不覆盖已补齐资格。
+- 全局与 bridge 按 `globalTaskWeights: uniform` 做逐任务等权宏平均；provider 的 task weight 不改变这项策略。scope 仍使用自己冻结的桶权重。
+- `SearchTask.repetitionIndices` 可选择全局逻辑 repetition manifest 的非空子集；省略时使用全部 slots。重复更多的任务不获得更多统计权重，计划费用、coverage 和配对均按各任务实际 slots 计算，任务规模比例仍基于 N。
 - 过程能力在 admission 解析。原生 outcome-only、逐 trial scalar、过程缺失和旧版整条 invalid 分开处理；新模式不会添加 LLM judge。
 - 每个候选领取自己的工作计划、有来源的 dossier 摘要、共享约束和父代 findings。Skill claim 和 DSH 投递产生独立消费凭据，不填充伪造的旧诊断 receipts。修改边界是相对 harness 根目录的路径。
 - 所有候选生成结束后才评测。重试共享工作计划和总生成预算；无法认证实际 token 用量的外部 Skill 会按完整 reservation 计费。
@@ -134,7 +136,7 @@ regression:
 
 它对应 `RefineService.repairSearchStage`：在同一写者锁下修复原无效 slots，再继续原 round；原 finalist、父代、seed research 和预算不变。存在未解决 round 时，`continue` 拒绝另开一轮。
 
-独立历史补齐使用 `completeArchivedEvidence`，调用方持有 evolution 写者锁。它不调用 Meta、不晋升；新 revision 在下一次 archive update 消费。不能用这个入口增加原计划外任务。两个补评入口都验证 provider 与任务身份，并遵守 round/evolution 的原有时间预算。它们也支持超时后查询原评测/过程恢复操作；不会重跑已有有效 outcome。
+独立历史补齐使用 `completeArchivedEvidence`，调用方持有 evolution 写者锁。它不调用 Meta、不晋升；新 revision 在下一次 archive update 消费。不能用这个入口增加原计划外任务。两个补评入口先读取经过验证的完成缓存；即使用新 completion ID 引用旧的部分结果，也不重跑已完成的 outcome 或 process。两个补评入口都验证算法、provider 与任务身份，并遵守 round/evolution 的原有时间预算。它们也支持超时后查询原评测/过程恢复操作；不会重跑已有有效 outcome。
 
 dossier、workplans、local 决定、nomination 与 archive 在发布引用前保存证据消费记录。消费边界按 plan + participant 绑定，而不是等到整个后续阶段完成；已消费的 seed 证据只能走追加 revision 的历史补齐流程。
 
@@ -157,3 +159,5 @@ dossier、workplans、local 决定、nomination 与 archive 在发布引用前�
 本轮恢复专项验证：4 个文件共 167 项通过，包含 21 项外部执行恢复/超时测试和 93 项新旧控制面测试。额外补齐的 repair/completion 换 ID 防护另行跑对应两项测试；类型检查、构建编译、SDK 恢复入口与 schema 一致性检查通过。
 
 Scope 周期更新专项覆盖更新边界、只补差集、预算不足、准备中断、缺证据和终态失败；跨轮专项实际消费未晋升历史 specialist 的代码身份、诊断与 findings，并独立比较 champion。完整验收仍以跟踪表为准。
+
+指标与逻辑 slots 修复后，六个搜索测试文件共 94 项通过。固定精度比较直接使用量化整数 key，数值显示再转为十进制；异构过程组分别检查下界，宏平均候选可独立于研究前沿晋升，保护规则不能被均分增益抵消。

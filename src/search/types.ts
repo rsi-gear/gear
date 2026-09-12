@@ -32,6 +32,8 @@ export interface SearchTask {
   weight: number
   stratum: string
   estimatedCost: number
+  /** Optional per-task subset of the frozen logical repetition manifest. */
+  repetitionIndices?: number[]
   regressionTemplate?: Omit<import('./regression.js').RegressionInput, 'source' | 'outcome'>
 }
 export interface TaskUniverse {

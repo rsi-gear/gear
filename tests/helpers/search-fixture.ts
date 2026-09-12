@@ -1,6 +1,6 @@
 import { digestJson } from '../../src/state/digest.js'
 import { defaultMultisignalPromotion, defaultSearchConfig } from '../../src/search/config.js'
-import { scopeEquivalenceDigest, seal, sorted } from '../../src/search/contracts.js'
+import { scopeEquivalenceDigest, repetitionsForTask, seal, sorted } from '../../src/search/contracts.js'
 import { cellIdentity, cellKey } from '../../src/search/evidence.js'
 import { stagePlan } from '../../src/search/scopes.js'
 import { consumptionReceipt } from '../../src/search/diagnosis.js'
@@ -42,7 +42,7 @@ export function evaluatedFixture(u: TaskUniverse, scope: EvaluationScope, s: Sna
   const plan = stagePlan({ stage: options.stage ?? 'local', partition: u.partition, universeDigest: u.digest,
     scopeDigest: scope.digest, taskSetSizeResolutionDigest: scope.taskSetSizeResolutionDigest,
     taskIds: options.taskIds ?? scope.taskIds, participantIds: options.participants ?? [s.candidateId], prerequisiteDecisionDigests: [], selectionRuleDigest: digestJson('fixture') })
-  const cells = plan.taskIds.flatMap(taskId => u.repetitions.flatMap(slot => {
+  const cells = plan.taskIds.flatMap(taskId => repetitionsForTask(u, taskId).flatMap(slot => {
     const value = score(taskId, slot.index)
     if (!value) return []
     const identity = cellIdentity(u, taskId, slot.index, s), evidenceRef = `fixture:${digestJson(identity)}`

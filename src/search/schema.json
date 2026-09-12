@@ -285,6 +285,12 @@
         "estimatedCost": {
           "type": "number"
         },
+        "repetitionIndices": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
         "regressionTemplate": {
           "type": "object",
           "properties": {
