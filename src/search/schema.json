@@ -1211,6 +1211,9 @@
           ],
           "additionalProperties": false
         },
+        "samplingEvidenceDigest": {
+          "type": "string"
+        },
         "equivalenceDigest": {
           "type": "string"
         },
@@ -2337,6 +2340,41 @@
             "type": "string"
           }
         },
+        "taskFeatures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "taskId": {
+                "type": "string"
+              },
+              "submodes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "modificationPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "taskId",
+              "submodes",
+              "modificationPaths"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "successfulControlTaskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "protectedFailure": {
           "type": "boolean"
         },
@@ -2357,6 +2395,69 @@
         "modificationPaths",
         "protectedFailure",
         "estimatedCost",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "ScopeSamplingEvidence": {
+      "type": "object",
+      "properties": {
+        "universeDigest": {
+          "type": "string"
+        },
+        "cutoffDigest": {
+          "type": "string"
+        },
+        "clusterDigests": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tasks": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "familyIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "submodes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "modificationPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "historicalDifficulty": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "familyIds",
+              "submodes",
+              "modificationPaths"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "universeDigest",
+        "cutoffDigest",
+        "clusterDigests",
+        "tasks",
         "digest"
       ],
       "additionalProperties": false

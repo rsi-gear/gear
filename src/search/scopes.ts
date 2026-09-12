@@ -1,6 +1,8 @@
 import { digestJson } from '../state/digest.js'
-import { invariant, scopeEquivalenceDigest, seal, sorted, unique } from './contracts.js'
+import { invariant, scopeEquivalenceDigest, seal, sorted, unique, verifyDigest } from './contracts.js'
 import type { BridgeSelectionDecision, Bucket, EvaluationScope, FailureCluster, SearchConfig, StageEvaluationPlan, TaskSetResolution, TaskUniverse } from './types.js'
+import type { ScopeSamplingEvidence } from './types.js'
+import { representativeOrder, crossOrder } from './scope-sampling.js'
 
 export function order(seed: string, ids: readonly string[]): string[] {
   return sorted(ids).sort((a, b) => digestJson([seed, a]).localeCompare(digestJson([seed, b])) || a.localeCompare(b))
@@ -29,12 +31,19 @@ export function sharedTasks(universe: TaskUniverse, resolution: TaskSetResolutio
   invariant(core.length <= count, 'shared core exceeds capacity')
   return [...core, ...stratified(universe, successfulIds.filter(id => !core.includes(id)), `${config.seed}:shared${epoch === 1 ? '' : `:epoch-${epoch}`}`)].slice(0, count)
 }
-export function createScope(universe: TaskUniverse, resolution: TaskSetResolution, config: SearchConfig, cluster: Pick<FailureCluster, 'familyId' | 'taskIds'>, shared: string[], epoch = 1): EvaluationScope | undefined {
+export function createScope(universe: TaskUniverse, resolution: TaskSetResolution, config: SearchConfig, cluster: Pick<FailureCluster, 'familyId' | 'taskIds'> & Partial<Pick<FailureCluster, 'successfulControlTaskIds' | 'modificationPaths'>>, shared: string[], epoch = 1, evidence?: ScopeSamplingEvidence): EvaluationScope | undefined {
+  if (evidence) { verifyDigest(evidence); invariant(evidence.universeDigest === universe.digest, 'sampling evidence universe changed') }
   const used = new Set(shared)
-  const local = stratified(universe, cluster.taskIds.filter(id => !used.has(id)), `${config.seed}:${cluster.familyId}:local${epoch === 1 ? '' : `:epoch-${epoch}`}`).slice(0, resolution.quantities.local.resolved)
+  const localSeed = `${config.seed}:${cluster.familyId}:local${epoch === 1 ? '' : `:epoch-${epoch}`}`
+  const controls = representativeOrder(universe, (cluster.successfulControlTaskIds ?? []).filter(id => !used.has(id) && !cluster.taskIds.includes(id)), `${localSeed}:controls`, evidence)
+  const localCount = resolution.quantities.local.resolved, controlSlots = localCount >= 2 && controls.length ? 1 : 0
+  const failures = representativeOrder(universe, cluster.taskIds.filter(id => !used.has(id)), localSeed, evidence)
+  const local = [...failures.slice(0, localCount - controlSlots), ...controls.slice(0, controlSlots)]
+  for (const id of [...failures, ...controls]) if (local.length < localCount && !local.includes(id)) local.push(id)
   for (const id of local) used.add(id)
   if (!cluster.taskIds.some(id => used.has(id))) return undefined
-  const cross = stratified(universe, universe.tasks.map(t => t.id).filter(id => !used.has(id) && !cluster.taskIds.includes(id)), `${config.seed}:${cluster.familyId}:cross${epoch === 1 ? '' : `:epoch-${epoch}`}`).slice(0, resolution.quantities.cross.resolved)
+  const crossSelection = crossOrder(universe, new Set([...used, ...cluster.taskIds]), cluster.familyId, cluster.modificationPaths ?? [], `${config.seed}:${cluster.familyId}:cross${epoch === 1 ? '' : `:epoch-${epoch}`}`, evidence)
+  const cross = crossSelection.ids.slice(0, resolution.quantities.cross.resolved)
   const buckets = { shared: [...shared], local, cross }
   const guards = structuredClone(config.explorationGuards)
   const taskIds = sorted([...Object.values(buckets).flat(), ...guards.map(g => g.taskId)])
@@ -48,8 +57,12 @@ export function createScope(universe: TaskUniverse, resolution: TaskSetResolutio
     requested: resolution.quantities[name].resolved, selected: buckets[name].length,
     reasons: buckets[name].length < resolution.quantities[name].resolved ? ['eligible-pool-exhausted-after-deduplication'] : [],
   }])) as EvaluationScope['sampling']
+  if (local.some(id => controls.includes(id))) sampling.local.reasons.push('successful-control-included')
+  else if (controls.length) sampling.local.reasons.push('successful-control-quota-unavailable')
+  if (cross.some(id => crossSelection.generalIds.includes(id))) sampling.cross.reasons.push('general-seed-sampling-fallback')
   return seal({ familyId: cluster.familyId, epoch, universeDigest: universe.digest, taskSetSizeResolutionDigest: resolution.digest,
     buckets, taskIds, weights, guards, sampling,
+    ...(evidence ? { samplingEvidenceDigest: evidence.digest } : {}),
     equivalenceDigest: scopeEquivalenceDigest({ universeDigest: universe.digest, taskIds, weights, guards }),
   })
 }

@@ -2,7 +2,7 @@ import { digestJson } from '../state/digest.js'
 import { validateSearchSchema } from './schema.js'
 import type { EvaluationScope, MetricContract, SearchSettings, TaskUniverse, TaskSetResolution, TaskSetSizing, Snapshot, MetricObservation } from './types.js'
 
-export const integrity = digestJson({ algorithm: 'failure-cluster-gepa', apiVersion: 2, revision: 6 })
+export const integrity = digestJson({ algorithm: 'failure-cluster-gepa', apiVersion: 2, revision: 7 })
 export function seal<T extends object>(value: T): T & { digest: string } { return { ...value, digest: digestJson(value) } }
 export function verifyDigest(value: { digest: string }): void {
   const { digest, ...body } = value
@@ -137,6 +137,7 @@ export function validateScope(scope: EvaluationScope, universe: TaskUniverse): v
   invariant(universe.partition === 'seed' && scope.universeDigest === universe.digest, 'scope universe changed')
   invariant(scope.familyId.length > 0, 'scope family is required'); integer(scope.epoch, 'scope epoch')
   digest(scope.taskSetSizeResolutionDigest)
+  if (scope.samplingEvidenceDigest) digest(scope.samplingEvidenceDigest)
   invariant(scope.taskIds.length > 0 && digestJson(scope.taskIds) === digestJson(sorted(scope.taskIds))
     && scope.taskIds.every(id => universe.tasks.some(t => t.id === id)), 'invalid scope task manifest')
   const bucketIds = Object.values(scope.buckets).flat()

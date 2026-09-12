@@ -14,6 +14,7 @@ import { collectFailure, resolveRegressionSettings, sanitizedRegressionPrompt } 
 import type { RegressionProposal } from './regression.js'
 import { numeric, utility } from './contracts.js'
 import { prepareScopeEpochs, type ScopeEpochPreparation } from './epochs.js'
+import { samplingEvidence } from './scope-sampling.js'
 import { budgetFailure, recoverExternal, resolvePendingOperation, searchDeadline } from './recovery.js'
 import type { BridgeSelectionDecision, CandidateWorkPlan, DiagnosisDossier, DiagnosisProvider, EvidenceCell, EvidenceConsumption, EvaluationExecutionResult, ExternalRecovery, EvaluationScope, GateDecision, ParentSelectionDecision, ResearchArchive, ResearchFinding, SearchProvider, SearchSettings, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse, WorkplanReceipt, SearchStageFailure, PendingSearchOperation } from './types.js'
 
@@ -366,7 +367,11 @@ export class FailureClusterSearch {
         const taskCells = baseline.cells.filter(c => c.identity.taskId === fact.taskId)
         const refs = new Set(taskCells.flatMap(c => [c.evidenceRef, ...(c.outcome.status === 'available' ? [c.outcome.evidenceRef] : []), ...(c.process?.status === 'available' ? [c.process.evidenceRef] : [])]))
         invariant(taskIds.includes(fact.taskId) && fact.evidenceRefs.every(ref => refs.has(ref)), 'diagnosis fact lacks parent seed provenance')
-        if (fact.status === 'supported-hypothesis') invariant(baseline.cells.some(c => c.identity.taskId === fact.taskId && validOutcome(c)), 'invalid infrastructure evidence cannot create a failure cluster')
+        const task = universe.tasks.find(t => t.id === fact.taskId)!
+        if (fact.status === 'supported-hypothesis') invariant(fact.evidenceRefs.length && taskCells.some(c => validOutcome(c) && c.outcome.status === 'available'
+          && numeric(utility(c.outcome.rawValue, task.outcome)) < task.successUtility), 'a failure cluster requires valid business failure evidence')
+        if (fact.status === 'successful-control') invariant(fact.evidenceRefs.length && taskCells.length === repetitionsForTask(universe, fact.taskId).length
+          && taskCells.every(c => validOutcome(c) && c.outcome.status === 'available' && numeric(utility(c.outcome.rawValue, task.outcome)) >= task.successUtility), 'successful control requires complete parent success evidence')
       }
       const facts = [...output.facts]
       for (const taskId of taskIds) if (!facts.some(f => f.taskId === taskId)) {
@@ -490,11 +495,15 @@ export class FailureClusterSearch {
         if (dossier.failure) { cancelled.push(`${dossier.failure.kind}:${dossier.failure.code}`); continue }
         const families = clusters(dossier, seed, settings.promotion.protectedTasks.filter(g => g.partition === 'seed').map(g => g.taskId))
         diagnosedClusters.push(...families)
+        const cutoff = seal({ archiveDigest: archive!.digest, baselineDigest: baseline.digest })
+        await this.store.put(cutoff)
+        const sampler = samplingEvidence(seed, cutoff.digest, [...archive!.clusters, ...families], [...archive!.results, baseline])
+        await this.store.put(sampler)
         if (!families.length) cancelled.push('no-actionable-cluster')
         let allocated = 0
         for (const cluster of families) {
           if (allocated >= batch.maxCandidateSlots) break
-          const scope = scopes.filter(s => s.familyId === cluster.familyId).sort((a, b) => b.epoch - a.epoch)[0] ?? createScope(seed, resolution, settings.search, cluster, shared, preparation.epoch)
+          const scope = scopes.filter(s => s.familyId === cluster.familyId).sort((a, b) => b.epoch - a.epoch)[0] ?? createScope(seed, resolution, settings.search, cluster, shared, preparation.epoch, sampler)
           if (!scope) { cancelled.push(`no-representative:${cluster.familyId}`); continue }
           await this.store.put(cluster)
           for (const hypothesis of cluster.hypotheses.slice(0, settings.search.diagnosis.candidatesPerFamily)) {

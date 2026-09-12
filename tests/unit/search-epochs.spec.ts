@@ -8,6 +8,7 @@ import { FailureClusterSearch } from '../../src/search/engine.js'
 import { SearchOperationPending, SearchExecutionFailure } from '../../src/search/recovery.js'
 import { SearchStore } from '../../src/search/store.js'
 import { createScope, sharedTasks } from '../../src/search/scopes.js'
+import { samplingEvidence } from '../../src/search/scope-sampling.js'
 import { validOutcome, cellKey } from '../../src/search/evidence.js'
 import { resolveSizing, sorted, validateSettings } from '../../src/search/contracts.js'
 import { fixtures, settings } from '../helpers/search-fixture.js'
@@ -78,7 +79,10 @@ describe('scope epoch preparation at the planning boundary', () => {
       const successful = f.seed.tasks.filter(t => cells.some(c => c.identity.taskId === t.id && validOutcome(c) && c.outcome.status === 'available' && c.outcome.rawValue === 1)).map(t => t.id)
       const resolution = resolveSizing(f.seed, f.config.search.taskSetSizing)
       const shared = sharedTasks(f.seed, resolution, f.config.search, successful, 2)
-      const proposed = createScope(f.seed, resolution, f.config.search, { familyId: source.familyId, taskIds: sorted(previous.clusters.filter(c => c.familyId === source.familyId).flatMap(c => c.taskIds)) }, shared, 2)!
+      const history = previous.clusters.filter(c => c.familyId === source.familyId)
+      const proposed = createScope(f.seed, resolution, f.config.search, { familyId: source.familyId, taskIds: sorted(history.flatMap(c => c.taskIds)),
+        modificationPaths: sorted(history.flatMap(c => c.modificationPaths)), successfulControlTaskIds: sorted(history.flatMap(c => c.successfulControlTaskIds ?? [])) }, shared, 2,
+        samplingEvidence(f.seed, previous.digest, previous.clusters, previous.results))!
       return parent.candidateId !== first.nomineeId && proposed.taskIds.some(id => !cells.some(c => c.identity.taskId === id && validOutcome(c)))
     })!
     expect(roundId).toBeDefined()

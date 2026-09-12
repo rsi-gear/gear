@@ -140,6 +140,7 @@ export interface EvaluationScope {
   weights: Record<string, number>
   guards: TaskGuard[]
   sampling: Record<Bucket, { requested: number; selected: number; reasons: string[] }>
+  samplingEvidenceDigest?: string
   /** Excludes family label, preventing renamed duplicate scopes from increasing probability. */
   equivalenceDigest: string
   digest: string
@@ -319,8 +320,17 @@ export interface FailureCluster {
   evidenceRefs: string[]
   hypotheses: string[]
   modificationPaths: string[]
+  taskFeatures?: Array<{ taskId: string; submodes: string[]; modificationPaths: string[] }>
+  successfulControlTaskIds?: string[]
   protectedFailure: boolean
   estimatedCost: number
+  digest: string
+}
+export interface ScopeSamplingEvidence {
+  universeDigest: string
+  cutoffDigest: string
+  clusterDigests: string[]
+  tasks: Record<string, { familyIds: string[]; submodes: string[]; modificationPaths: string[]; historicalDifficulty?: number }>
   digest: string
 }
 export interface CandidateWorkPlan {

@@ -13,13 +13,23 @@ export function clusters(dossier: DiagnosisDossier, universe: TaskUniverse, prot
     invariant(fact.modificationPaths.every(p => p && !p.startsWith('/') && !p.split('/').includes('..')), 'unsafe modification boundary')
     const values = families.get(fact.familyId) ?? []; values.push(fact); families.set(fact.familyId, values)
   }
-  return [...families.entries()].map(([familyId, facts]) => seal({
+  return [...families.entries()].map(([familyId, facts]) => {
+    const controls = dossier.facts.filter(f => f.status === 'successful-control'
+      && (f.familyId === familyId || facts.some(failure => universe.tasks.find(t => t.id === failure.taskId)!.stratum === universe.tasks.find(t => t.id === f.taskId)!.stratum)
+        || f.modificationPaths?.some(path => facts.some(failure => failure.modificationPaths!.includes(path)))))
+    const features = [...facts, ...controls]
+    return seal({
     familyId, parentSnapshotDigest: dossier.parentSnapshotDigest, dossierDigest: dossier.digest,
     taskIds: sorted(facts.map(f => f.taskId)), evidenceRefs: sorted(facts.flatMap(f => f.evidenceRefs)),
     hypotheses: sorted(facts.map(f => f.hypothesis!)), modificationPaths: sorted(facts.flatMap(f => f.modificationPaths!)),
+    taskFeatures: sorted(features.map(f => f.taskId)).map(taskId => ({ taskId,
+      submodes: sorted(features.filter(f => f.taskId === taskId).flatMap(f => f.submode ? [f.submode] : [])),
+      modificationPaths: sorted(features.filter(f => f.taskId === taskId).flatMap(f => f.modificationPaths ?? [])) })),
+    successfulControlTaskIds: sorted(controls.map(f => f.taskId)),
     protectedFailure: facts.some(f => protectedIds.includes(f.taskId)),
     estimatedCost: sorted(facts.map(f => f.taskId)).reduce((sum, id) => sum + universe.tasks.find(t => t.id === id)!.estimatedCost, 0),
-  })).sort((a, b) => Number(b.protectedFailure) - Number(a.protectedFailure) || b.taskIds.length - a.taskIds.length || a.familyId.localeCompare(b.familyId))
+    })
+  }).sort((a, b) => Number(b.protectedFailure) - Number(a.protectedFailure) || b.taskIds.length - a.taskIds.length || a.familyId.localeCompare(b.familyId))
 }
 export function deliveredWorkplan(workplan: CandidateWorkPlan, dossier: DiagnosisDossier, findings: unknown[], scope?: EvaluationScope): { workplan: CandidateWorkPlan; dossier: DossierExcerpt; findings: unknown[]; scope?: EvaluationScope; digest: string } {
   verifyDigest(workplan); verifyDigest(dossier)
@@ -27,7 +37,7 @@ export function deliveredWorkplan(workplan: CandidateWorkPlan, dossier: Diagnosi
   if (scope) invariant(scope.digest === workplan.scopeDigest, 'delivered scope does not match assigned workplan')
   const excerpt = seal({ sourceDossierDigest: dossier.digest, parentSnapshotDigest: dossier.parentSnapshotDigest,
     baselineEvidenceDigests: dossier.baselineEvidenceDigests,
-    facts: dossier.facts.filter(f => workplan.targetTaskIds.includes(f.taskId) || scope?.buckets.shared.includes(f.taskId)),
+    facts: dossier.facts.filter(f => workplan.targetTaskIds.includes(f.taskId) || scope?.taskIds.includes(f.taskId)),
     classifierIntegrity: dossier.classifierIntegrity, sanitizationPolicyDigest: dossier.sanitizationPolicyDigest })
   return seal({ workplan, dossier: excerpt, findings, ...(scope ? { scope } : {}) })
 }

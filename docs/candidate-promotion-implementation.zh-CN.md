@@ -26,6 +26,14 @@
 - `shared-set-research` 只生成研究更新和 advisory 决定，不能自动更新 champion。
 - 回归收集默认关闭。provider 可声明冻结的 `regressionTemplate`；有效 seed 业务失败进入过滤、去重、有容量限制的 proposal 队列。提案包含 prompt digest 和已过滤内容对象引用；收集器同步持久化对应对象。物化 suite 必须经可重现性验证，只能在新 admission 纳入。
 
+## 代表任务采样
+
+新 scope 从封存的父代 baseline 和已提交 seed history 构造 `ScopeSamplingEvidence`，记录历史截止点、诊断 cluster digests 与任务特征；scope 保存 `samplingEvidenceDigest`。当前 sibling 结果不会进入本轮采样。已有 scope 继续沿用原清单，仅在配置的 epoch 边界更新。
+
+local 先覆盖不同诊断子模式与受影响模块，再按历史难度和预计成本分层挑选。历史难度只统计逻辑 slots 完整的代码版本，同一次执行跨计划出现时不重复计数。存在相关成功反例且 local 名额允许时，至少保留一个；配额不足和无足够任务分别留原因码。shared 仍先纳入预声明核心，再从实际父代成功任务按能力类别选取，整个 epoch 共用。
+
+cross 对其他类别实行等权轮转，组内优先抽查共享修改模块的任务，再使用难度/成本顺序；无足够其他类别时从剩余 seed 抽取，记录 `general-seed-sampling-fallback`。三桶去重，所有数量仍由冻结的 N × ratio 决定，guards 单独加入。
+
 ## 阶段状态与决定
 
 `RefineService.status` 返回的 `searchProgress` 是 seed 状态投影：当前研究阶段、各 participant 的计划 cells、运行/已结算状态、逐任务结果与 coverage，以及已封存的 local/bridge 决定。held-out 开始前阶段停在 `seed-research-complete`，该投影不包含 held-out 计划、证据或执行用量。操作员单独看到的 `searchPendingOperation` 保持原恢复用途。
@@ -179,3 +187,5 @@ Scope 周期更新专项覆盖更新边界、只补差集、预算不足、准�
 阶段/回归集专项的 9 项测试通过；真实 Git/Skill 控制面另有 6 项通过，包含 suite 新 admission、运行阶段状态及 held-out 恢复。随后继续执行完整搜索回归。
 
 2026-09-12 阶段决策/回归集修复后，8 个搜索测试文件共 105 项通过（最多两个 worker）；实际 Git/Skill 接入专项另有 6 项通过。类型检查和构建 TypeScript 编译通过。测试集合与历史记录有重叠，不累加宣称总数。
+
+Sampler 全流程验证：9 个搜索测试文件共 108 项通过。成功反例特征与 dossier 交付的最后调整另行运行 4 文件 16 项测试，实际 Git/Skill 的 6 项也再次通过；类型检查和构建编译通过。

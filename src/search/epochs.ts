@@ -3,6 +3,7 @@ import { passesExploration } from './archive.js'
 import { integrity, repetitionsForTask, invariant, numeric, seal, sorted, utility, verifyDigest } from './contracts.js'
 import { profile, validOutcome } from './evidence.js'
 import { createScope, sharedTasks, stagePlan } from './scopes.js'
+import { samplingEvidence } from './scope-sampling.js'
 import type { SearchStore } from './store.js'
 import type { EvaluationScope, ParentSelectionDecision, ResearchArchive, SearchSettings, Snapshot, StageEvaluationPlan, StageResult, TaskSetResolution, TaskUniverse } from './types.js'
 
@@ -54,10 +55,13 @@ export async function prepareScopeEpochs(input: {
     const history = archive.clusters.filter(c => c.familyId === oldScope.familyId)
     if (!history.length) { decisions.push({ familyId: oldScope.familyId, previousScopeDigest: oldScope.digest, participantIds: [], excludedHistoricalIds: [], status: 'no-history', reasonCodes: ['no-committed-family-diagnosis'] }); continue }
     const proposed = await store.freezeEvolution(`scope-epoch-${digestJson([oldScope.familyId, epoch]).slice(7)}`, () => {
-      const scope = createScope(universe, resolution, config, { familyId: oldScope.familyId, taskIds: sorted(history.flatMap(c => c.taskIds)) }, shared.taskIds, epoch)
+      const sampler = samplingEvidence(universe, archive.digest, archive.clusters, archive.results)
+      const scope = createScope(universe, resolution, config, { familyId: oldScope.familyId, taskIds: sorted(history.flatMap(c => c.taskIds)),
+        modificationPaths: sorted(history.flatMap(c => c.modificationPaths)), successfulControlTaskIds: sorted(history.flatMap(c => c.successfulControlTaskIds ?? [])) }, shared.taskIds, epoch, sampler)
       invariant(scope, 'historical family has no representative in proposed epoch')
-      return seal({ scope, archiveCutoffDigest: archive.digest, clusterDigests: sorted(history.map(c => c.digest)), ruleDigest: base.ruleDigest })
+      return seal({ scope, sampler, archiveCutoffDigest: archive.digest, clusterDigests: sorted(history.map(c => c.digest)), ruleDigest: base.ruleDigest })
     })
+    await store.put(proposed.sampler)
     await store.put(proposed.scope)
     const decisionBase = { familyId: oldScope.familyId, previousScopeDigest: oldScope.digest, proposedScopeDigest: proposed.scope.digest }
     if (proposed.scope.equivalenceDigest === oldScope.equivalenceDigest) {
