@@ -6,6 +6,8 @@
 
 ## 1. 实验假设
 
+2026-09-12 兼容说明：本文的有效交集晋升仅适用于原策略。新建 evolution 显式采用 `failure-cluster-gepa-v1` 时，按[专长 archive 规范](candidate-promotion-and-specialist-archive-spec.zh-CN.md)要求局部 scope 完整才获得该范围资格、全局计划完整才发布；较大阶段缺证据不撤销已取得的局部资格。旧 verdict 不回溯改写。
+
 当前实现把“评测命令成功结束但包含 invalid observations”当成整个 evaluation 失败。这样可以避免把基础设施异常错误地计为零分，但也会让已经完成的有效 rollout 无法进入 candidate generation。
 
 本实验验证以下替代策略：

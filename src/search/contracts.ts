@@ -2,7 +2,7 @@ import { digestJson } from '../state/digest.js'
 import { validateSearchSchema } from './schema.js'
 import type { EvaluationScope, MetricContract, SearchSettings, TaskUniverse, TaskSetResolution, TaskSetSizing, Snapshot, MetricObservation } from './types.js'
 
-export const integrity = digestJson({ algorithm: 'failure-cluster-gepa', apiVersion: 2, revision: 9 })
+export const integrity = digestJson({ algorithm: 'failure-cluster-gepa', apiVersion: 2, revision: 10 })
 export function seal<T extends object>(value: T): T & { digest: string } { return { ...value, digest: digestJson(value) } }
 export function verifyDigest(value: { digest: string }): void {
   const { digest, ...body } = value
@@ -233,6 +233,7 @@ export function validateSettings(settings: SearchSettings, universe: TaskUnivers
   invariant(typeof settings.regression.collectFailures === 'boolean', 'invalid regression collection setting')
 }
 export function validateSnapshot(snapshot: Snapshot): void {
+  validateSearchSchema('Snapshot', snapshot)
   verifyDigest(snapshot); safeId(snapshot.candidateId)
   invariant(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(snapshot.commit) && /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(snapshot.tree), 'exact Git commit/tree required')
   digest(snapshot.manifestDigest)

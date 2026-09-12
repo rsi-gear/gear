@@ -2,7 +2,7 @@
 
 本次变更实现 `failure-cluster-gepa-v1` 的 Gear 搜索驱动、控制面接入和独立晋升策略。仅对新建 evolution 显式启用；没有 `searchSettings` 的历史 spec 保持原路径、组件身份和 verdict。
 
-完整验收仍在继续，逐项状态见 [65 项验收跟踪](candidate-promotion-acceptance.zh-CN.md)。核心路径通过不等于全部规范已验收。
+规范 65 行及相关正文已经核对，最终 238 项搜索、恢复与控制面测试通过，详见[验收记录](candidate-promotion-acceptance.zh-CN.md)。实际 provider 接入条件和当前内置 Hitch 的限制见下文。
 
 实现位于独立分支 `codex/candidate-promotion`，基于 `e0e8a7f`。没有合并到正在运行实验的 `dev`，没有重建其 `lib`，没有修改实验配置、数据、champion 或 published pointer。开发和测试工作目录为 `/private/tmp/gear-candidate-promotion-20260912`。
 
@@ -40,6 +40,10 @@ cross 对其他类别实行等权轮转，组内优先抽查共享修改模块�
 `RefineService.status` 返回的 `searchProgress` 是 seed 状态投影：当前研究阶段、各 participant 的计划 cells、运行/已结算状态、逐任务结果与 coverage，以及已封存的 local/bridge 决定。held-out 开始前阶段停在 `seed-research-complete`，该投影不包含 held-out 计划、证据或执行用量。操作员单独看到的 `searchPendingOperation` 保持原恢复用途。
 
 `research.stageDecisions` 与状态投影使用同一组 `EvaluationStageDecision`。每项绑定 `stagePlanDigest`、candidate、可读取的 `supportDigest`、原因码和可选下一计划引用。local 证据完整但未获扩评名额时记录 `retained-local`；缺证据记录 `insufficient-evidence`；越过修改范围记录 `ineligible / requires-broader-evaluation`。bridge 有未完成 participant 时不挑另一个 finalist。范围更大的评测尚未完成不撤销已证明的局部专长。
+
+每份 workplan 在生成前封存 `modificationBoundaryRule`：越界修改要求完整 seed 清单，原 local plan 没有覆盖时仅保留研究结果，不能凭狭窄范围继续发布。允许用新的 admission 预先安排全 seed 范围；若本轮冻结 scope 已覆盖全集，完成原计划后可进入通常的 bridge/global/held-out 门。实际变更路径与越界原因均保存，不在看到结果后临时缩减或扩大清单。
+
+生成尝试之间退出后，恢复保留原 candidate、workplan、父代、已失败 attempt、总截止时间及预算 reservation；只执行剩余尝试。终态写入后退出的恢复会清理所属 active-round 标记。阶段参与者绑定、工作计划、诊断、archive、预算账本和 commit intent 均有运行时结构校验，配合现有的摘要、完整性、来源与条件语义校验。
 
 ## 不可变回归套件
 

@@ -20,6 +20,7 @@ export function cellKey(identity: CellIdentity): string {
   return digestJson(executionIdentity)
 }
 export function plannedCells(universe: TaskUniverse, plan: StageEvaluationPlan, snapshot: Snapshot): CellIdentity[] {
+  validateSearchSchema('StageEvaluationPlan', plan)
   verifyDigest(plan); validateSnapshot(snapshot)
   invariant(plan.universeDigest === universe.digest && plan.partition === universe.partition, 'stage universe/partition mismatch')
   invariant(plan.participantIds.includes(snapshot.candidateId), 'snapshot is not a stage participant')

@@ -1,8 +1,10 @@
 import { digestJson } from '../state/digest.js'
+import { validateSearchSchema } from './schema.js'
 import { invariant, seal, sorted, verifyDigest } from './contracts.js'
 import type { CandidateWorkPlan, DiagnosisDossier, DossierExcerpt, EvaluationScope, FailureCluster, TaskUniverse, WorkplanReceipt } from './types.js'
 
 export function clusters(dossier: DiagnosisDossier, universe: TaskUniverse, protectedIds: string[]): FailureCluster[] {
+  validateSearchSchema('DiagnosisDossier', dossier)
   verifyDigest(dossier)
   invariant(dossier.universeDigest === universe.digest && universe.partition === 'seed', 'diagnosis must use the actual parent seed evidence')
   const families = new Map<string, typeof dossier.facts>()
@@ -32,6 +34,7 @@ export function clusters(dossier: DiagnosisDossier, universe: TaskUniverse, prot
   }).sort((a, b) => Number(b.protectedFailure) - Number(a.protectedFailure) || b.taskIds.length - a.taskIds.length || a.familyId.localeCompare(b.familyId))
 }
 export function deliveredWorkplan(workplan: CandidateWorkPlan, dossier: DiagnosisDossier, findings: unknown[], scope?: EvaluationScope): { workplan: CandidateWorkPlan; dossier: DossierExcerpt; findings: unknown[]; scope?: EvaluationScope; digest: string } {
+  validateSearchSchema('CandidateWorkPlan', workplan); validateSearchSchema('DiagnosisDossier', dossier)
   verifyDigest(workplan); verifyDigest(dossier)
   invariant(workplan.dossierDigest === dossier.digest && workplan.parentSnapshotDigest === dossier.parentSnapshotDigest, 'workplan dossier parent mismatch')
   if (scope) invariant(scope.digest === workplan.scopeDigest, 'delivered scope does not match assigned workplan')
@@ -48,6 +51,7 @@ export function consumptionReceipt(delivery: ReturnType<typeof deliveredWorkplan
     workplanDigest: delivery.workplan.digest, dossierDigest: delivery.dossier.sourceDossierDigest, deliveredDigest: delivery.digest, accessedRefs: sorted(accessedRefs) })
 }
 export function validateReceipt(receipt: WorkplanReceipt, delivery: ReturnType<typeof deliveredWorkplan>, sessionId: string): void {
+  validateSearchSchema('WorkplanReceipt', receipt)
   verifyDigest(receipt)
   invariant(receipt.kind === 'workplan-dossier-consumed' && receipt.sessionId === sessionId && receipt.candidateId === delivery.workplan.candidateId
     && receipt.workplanDigest === delivery.workplan.digest && receipt.dossierDigest === delivery.dossier.sourceDossierDigest && receipt.deliveredDigest === delivery.digest

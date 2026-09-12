@@ -92,11 +92,30 @@ describe('frozen stage decisions and seed progress', () => {
 
   it('records modification-boundary exclusions and never uses their local results to nominate release', async () => {
     const f = await setup(), generate = f.hooks.generate
-    f.hooks.generate = async input => revise(await generate(input), { changedPaths: ['outside/other-module.ts'] })
+    f.hooks.generate = async input => {
+      expect(input.delivery.workplan.modificationBoundaryRule).toEqual({ requiredSeedTaskIds: f.seed.tasks.map(t => t.id).sort(), onInsufficientScope: 'retain-research-only' })
+      expect(f.executions.every(e => e.participant === 'anchor')).toBe(true)
+      return revise(await generate(input), { changedPaths: ['outside/other-module.ts'] })
+    }
     const result = await f.run()
     expect(result.research.stageDecisions.every(d => d.outcome === 'ineligible' && d.reasonCodes.includes('requires-broader-evaluation'))).toBe(true)
     expect(result.research.candidates.every(c => c.expansion === 'requires-broader-evaluation')).toBe(true)
     expect(f.executions.some(e => e.stage === 'bridge' || e.stage === 'global-seed' || e.stage === 'held-out')).toBe(false)
+  })
+
+  it('[D07] admits a disclosed boundary change only when the frozen local plan already covers the entire seed universe', async () => {
+    const f = await setup(), generate = f.hooks.generate
+    f.config.search.explorationGuards = f.seed.tasks.map(t => ({ taskId: t.id, partition: 'seed', rule: 'minimum-score', minimumUtility: 0 }))
+    f.config.search.taskSetSizing.bridge.ratio = 1
+    f.hooks.generate = async input => {
+      expect(input.baselineContext.plan.taskIds).toEqual(input.delivery.workplan.modificationBoundaryRule.requiredSeedTaskIds)
+      return revise(await generate(input), { changedPaths: ['outside/other-module.ts'] })
+    }
+    const result = await f.run()
+    expect(result.reasonCodes.some(r => r.startsWith('modification-boundary-full-seed-covered:'))).toBe(true)
+    expect(result.research.stageDecisions.some(d => d.outcome === 'advance')).toBe(true)
+    expect(result.championChanged).toBe(true)
+    expect(f.executions.some(e => e.stage === 'held-out')).toBe(true)
   })
 
   it('[R09] keeps complete local specialization when one bridge expansion lacks evidence and freezes no finalist', async () => {

@@ -8,6 +8,8 @@
 
 ## 1. 摘要
 
+2026-09-12 兼容说明：`failure-cluster-gepa-v1` 的独立通道与逐 cell 复用使用显式的新 provider 合同，见[接入说明](candidate-promotion-implementation.zh-CN.md)。本文旧 observation 的整条 invalid 语义保留，Gear 不抢救其中未经独立认证的 outcome。当前内置 Hitch 未声明 subset/reuse 合同，新模式在 admission 拒绝；原生不提供 process 的合格 provider 可以正常使用 outcome 路径。
+
 所有 Hitch 当前支持且可供 Gear 运行的 benchmark 必须先由各自的 adapter/compiler 转换为**自包含的
 Harbor task dataset**。转换完成后，Gear 统一通过 Hitch 的普通 `--dataset` 路径
 运行，不为某个 benchmark 配置专用 verifier，也不依赖 `--benchmark-lock`、参数

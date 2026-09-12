@@ -1,4 +1,5 @@
 import { digestJson } from '../state/digest.js'
+import { validateSearchSchema } from './schema.js'
 import { buildArchive, passesExploration, selectParents } from './archive.js'
 import { invariant, integrity, processTasks, repetitionsForTask, plannedCellCount, resolveSizing, scopeEquivalenceDigest, seal, sorted, validateSettings, validateSnapshot, verifyDigest, SearchProtocolError, digest } from './contracts.js'
 import { clusters, deliveredWorkplan, validateReceipt } from './diagnosis.js'
@@ -92,7 +93,7 @@ export interface SearchRoundOutcome {
   }
   digest: string
 }
-interface CommitIntent {
+export interface CommitIntent {
   expectedArchiveDigest: string
   nextArchiveDigest: string
   expectedChampionRevisionDigest: string
@@ -175,7 +176,9 @@ export class FailureClusterSearch {
   private async evaluate(admission: SearchAdmission, startedAt: number, universe: TaskUniverse, plan: StageEvaluationPlan, snapshot: Snapshot, signal: AbortSignal, inspectionSignal: AbortSignal): Promise<StageResult> {
     inspectionSignal.throwIfAborted(); await this.hooks.verifySnapshot(snapshot); await this.store.put(plan); await this.store.put(snapshot)
     const binding = seal({ stagePlanDigest: plan.digest, participantId: snapshot.candidateId, sealedSnapshotDigest: snapshot.digest })
-    await this.store.freeze(admission.roundId, `binding-${digestJson([plan.digest, snapshot.candidateId]).slice(7)}`, () => binding)
+    const frozenBinding = await this.store.freeze(admission.roundId, `binding-${digestJson([plan.digest, snapshot.candidateId]).slice(7)}`, () => binding)
+    validateSearchSchema('StageParticipantBinding', frozenBinding)
+    invariant(frozenBinding.digest === binding.digest, 'stage participant is already bound to a different snapshot')
     const identities = plannedCells(universe, plan, snapshot)
     const cached: EvidenceCell[] = []
     let repairCells = 0
@@ -401,7 +404,13 @@ export class FailureClusterSearch {
       invariant(digestJson({ evolutionId, roundId, roundIndex, maxCandidates, anchor, championRevisionDigest, settings }) === digestJson(request), 'search round request changed on resume')
     }
     const terminal = await this.store.read<{ ref: string }>(`rounds/${request.roundId}/terminal`)
-    if (terminal) return this.store.object<SearchRoundOutcome>(terminal.ref)
+    if (terminal) {
+      const outcome = await this.store.object<SearchRoundOutcome>(terminal.ref)
+      validateSearchSchema('SearchRoundOutcome', outcome)
+      const advancing = await this.store.read<{ roundId: string | null }>('active-round')
+      if (advancing?.roundId === request.roundId) await this.store.write('active-round', { roundId: null })
+      return outcome
+    }
     const existingIntent = await this.store.read<{ ref: string }>(`rounds/${request.roundId}/commit`)
     if (existingIntent) return this.reconcile(request.roundId, await this.store.object<CommitIntent>(existingIntent.ref))
     const current = await this.validate(request)
@@ -462,6 +471,7 @@ export class FailureClusterSearch {
       completions.push(await this.store.object<StageResult>(completion.completedResultDigest))
     }
     const parents = await this.store.freeze(request.roundId, 'parents', () => selectParents(archive!, settings.search, admission.maxCandidates, admission.roundId))
+    validateSearchSchema('ParentSelectionDecision', parents)
     await this.progress(request.roundId, 'scope-preparation')
     const preparation = await this.store.freeze(request.roundId, 'scope-preparation', async () => {
       const prepared = await prepareScopeEpochs({ store: this.store, roundId: request.roundId, roundIndex: admission.roundIndex, settings,
@@ -528,6 +538,7 @@ export class FailureClusterSearch {
             const workplan: CandidateWorkPlan = seal({ candidateId, batchId: batch.batchId, parentSnapshotDigest: parent.digest, dossierDigest: dossier.digest,
               clusterDigest: cluster.digest, familyId: cluster.familyId, hypothesis, targetTaskIds: cluster.taskIds, requiredDiagnosisRefs: cluster.evidenceRefs,
               modificationPaths: cluster.modificationPaths, scopeDigest: scope.digest, localStagePlanDigest: localPlan.digest,
+              modificationBoundaryRule: { requiredSeedTaskIds: sorted(seed.tasks.map(t => t.id)), onInsufficientScope: 'retain-research-only' },
               generationBudget: { maxTokens: Math.floor(availableTokens / slots), maxModelRequests: Math.floor(availableRequests / slots), deadlineAt: startedAt + settings.budgets.round.timeoutMs } })
             works.push({ workplan, dossier, scope, plan: localPlan, parent, baseline: localBaseline }); allocated++; usedHypotheses.add(hypothesisKey)
             if (!scopes.some(s => s.digest === scope.digest)) scopes.push(scope)
@@ -543,6 +554,9 @@ export class FailureClusterSearch {
     await this.progress(request.roundId, 'generation')
     const generated: Array<{ work: PreparedWork; value: GeneratedCandidate }> = []
     for (const work of planning.works) {
+      validateSearchSchema('CandidateWorkPlan', work.workplan)
+      validateSearchSchema('DiagnosisDossier', work.dossier)
+      invariant(digestJson(work.workplan.modificationBoundaryRule.requiredSeedTaskIds) === digestJson(sorted(seed.tasks.map(t => t.id))), 'broader modification rule must require the frozen full seed manifest')
       const value = await this.store.freeze(request.roundId, `generated-${work.workplan.candidateId}`, async () => {
         const handoff = await this.store.read<{ refs: string[] }>(`findings/${work.parent.digest.slice(7)}`)
         const findings = await Promise.all(sorted([...work.parent.findingRefs, ...(handoff?.refs ?? [])]).map(ref => this.store.object<ResearchFinding>(ref)))
@@ -579,11 +593,12 @@ export class FailureClusterSearch {
         await resolvePendingOperation(this.store, admission.roundId, key)
         return value
       })
+      validateSearchSchema('GeneratedCandidate', value)
       generated.push({ work, value })
     }
     await this.progress(request.roundId, 'local')
     const local = await this.store.freeze(request.roundId, 'local', async () => {
-      const entries: Array<{ work: PreparedWork; snapshot: Snapshot; result: StageResult; outsideBoundary: boolean }> = []
+      const entries: Array<{ work: PreparedWork; snapshot: Snapshot; result: StageResult; outsideBoundary: boolean; broaderScopeSatisfied: boolean }> = []
       const reasons: string[] = []
       for (const { work, value } of generated) {
         if (!value.snapshot) { reasons.push(value.reason ?? 'generation-failed'); continue }
@@ -591,8 +606,9 @@ export class FailureClusterSearch {
           const result = await evaluate(seed, work.plan, value.snapshot)
           if (result.failure) reasons.push(`${result.failure.kind}:${result.failure.code}`)
           const outsideBoundary = value.changedPaths.some(path => !work.workplan.modificationPaths.some(root => path === root || path.startsWith(`${root}/`)))
-          if (outsideBoundary) reasons.push(`requires-broader-evaluation:${value.snapshot.candidateId}`)
-          entries.push({ work, snapshot: value.snapshot, result, outsideBoundary })
+          const broaderScopeSatisfied = work.workplan.modificationBoundaryRule.requiredSeedTaskIds.every(id => work.plan.taskIds.includes(id))
+          if (outsideBoundary) reasons.push(`${broaderScopeSatisfied ? 'modification-boundary-full-seed-covered' : 'requires-broader-evaluation'}:${value.snapshot.candidateId}`)
+          entries.push({ work, snapshot: value.snapshot, result, outsideBoundary, broaderScopeSatisfied })
         }
       }
       const decision = seal({ entries, reasons })
@@ -602,7 +618,7 @@ export class FailureClusterSearch {
     })
     const nominees = new Map<string, typeof local.entries[number]>()
     for (const scope of planning.scopes) {
-      const eligible = local.entries.filter(e => e.work.scope.digest === scope.digest && !e.outsideBoundary && !e.result.failure)
+      const eligible = local.entries.filter(e => e.work.scope.digest === scope.digest && (!e.outsideBoundary || e.broaderScopeSatisfied) && !e.result.failure)
       const ranks = rankProfiles(seed, eligible.map(e => ({ id: e.snapshot.candidateId, profile: profile(seed, e.work.plan, e.snapshot, e.result, settings.promotion.process.mode, scope.weights) })))
       if (ranks.length) nominees.set(scope.digest, eligible.find(e => e.snapshot.candidateId === ranks[0])!)
     }
@@ -626,10 +642,11 @@ export class FailureClusterSearch {
         await this.store.put(support)
         const advance = expansion.plan?.participantIds.includes(work.workplan.candidateId)
         const incomplete = entry && (!p!.outcomeComplete || !p!.processComplete || entry.result.failure)
+        const boundaryBlocked = entry?.outsideBoundary && !entry.broaderScopeSatisfied
         const exclusion = expansion.exclusions.find(e => e.candidateId === work.workplan.candidateId)?.reason
         decisions.push(seal({ stagePlanDigest: work.plan.digest, candidateId: work.workplan.candidateId,
-          outcome: !entry || entry.outsideBoundary ? 'ineligible' as const : incomplete ? 'insufficient-evidence' as const : advance ? 'advance' as const : 'retained-local' as const,
-          reasonCodes: !entry ? [value.reason ?? 'generation-failed'] : entry.outsideBoundary ? ['requires-broader-evaluation']
+          outcome: !entry || boundaryBlocked ? 'ineligible' as const : incomplete ? 'insufficient-evidence' as const : advance ? 'advance' as const : 'retained-local' as const,
+          reasonCodes: !entry ? [value.reason ?? 'generation-failed'] : boundaryBlocked ? ['requires-broader-evaluation']
             : incomplete ? [entry.result.failure ? 'stage-execution-unavailable' : 'incomplete-local-evidence'] : advance ? ['selected-for-bridge'] : [exclusion ?? 'not-selected-within-scope'],
           supportDigest: support.digest, ...(advance ? { nextStagePlanDigest: expansion.plan!.digest } : {}) }))
       }
@@ -752,7 +769,7 @@ export class FailureClusterSearch {
       research: { sizing: resolution, parents, workplans: planning.works.map(w => w.workplan), scopeViews: research.scopeViews, parentProbabilities: research.parentProbabilities, bridge: expansion, scopePreparation: preparation, stageDecisions,
         candidates: local.entries.map(e => ({ candidateId: e.snapshot.candidateId, scopeDigest: e.work.scope.digest,
           profile: profile(seed, e.work.plan, e.snapshot, e.result, settings.search.process.mode, e.work.scope.weights),
-          expansion: e.outsideBoundary ? 'requires-broader-evaluation' as const : nominee?.digest === e.snapshot.digest ? 'global-nominee' as const : 'not-selected-for-expansion' as const })),
+          expansion: e.outsideBoundary && !e.broaderScopeSatisfied ? 'requires-broader-evaluation' as const : nominee?.digest === e.snapshot.digest ? 'global-nominee' as const : 'not-selected-for-expansion' as const })),
         remainingBudget: await this.store.remaining(request.roundId, settings.budgets) } })
     inspectionSignal.throwIfAborted()
     const intent = await this.store.freeze(request.roundId, 'commit', () => seal({ expectedArchiveDigest: archive!.digest, nextArchiveDigest: research.digest,
@@ -761,6 +778,7 @@ export class FailureClusterSearch {
     } finally { timed.dispose() }
   }
   private async reconcile(roundId: string, intent: CommitIntent): Promise<SearchRoundOutcome> {
+    validateSearchSchema('CommitIntent', intent)
     verifyDigest(intent)
     const next = await this.store.object<ResearchArchive>(intent.nextArchiveDigest)
     await this.store.casArchive(intent.expectedArchiveDigest, next)

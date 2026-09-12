@@ -57,6 +57,9 @@ export function createScope(universe: TaskUniverse, resolution: TaskSetResolutio
     requested: resolution.quantities[name].resolved, selected: buckets[name].length,
     reasons: buckets[name].length < resolution.quantities[name].resolved ? ['eligible-pool-exhausted-after-deduplication'] : [],
   }])) as EvaluationScope['sampling']
+  if (resolution.quantities.shared.resolved + resolution.quantities.local.resolved + resolution.quantities.cross.resolved > universe.tasks.length) {
+    for (const name of ['shared', 'local', 'cross'] as const) if (sampling[name].selected < sampling[name].requested) sampling[name].reasons.push('rounded-targets-exceed-universe:shared-local-cross-priority')
+  }
   if (local.some(id => controls.includes(id))) sampling.local.reasons.push('successful-control-included')
   else if (controls.length) sampling.local.reasons.push('successful-control-quota-unavailable')
   if (cross.some(id => crossSelection.generalIds.includes(id))) sampling.cross.reasons.push('general-seed-sampling-fallback')

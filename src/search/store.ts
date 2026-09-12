@@ -1,6 +1,7 @@
 import { mkdir, open, readFile, rename, link, unlink } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { digestJson } from '../state/digest.js'
+import { validateSearchSchema } from './schema.js'
 import { digest, invariant, safeId, seal, verifyDigest } from './contracts.js'
 import type { BudgetLimits, ResearchArchive, Snapshot } from './types.js'
 
@@ -10,7 +11,7 @@ export const usageLimit = (v: BudgetLimits): Usage => ({ cells: v.maxNewRolloutC
 export interface Operation {
   key: string; roundId: string; requestDigest: string; reserved: Usage; status: 'reserved' | 'complete'; outputDigest?: string; actual?: Usage
 }
-interface Ledger { startedAt: number; operations: Operation[]; digest: string }
+export interface Ledger { startedAt: number; operations: Operation[]; digest: string }
 export class SearchBudgetExceeded extends Error { constructor(readonly resource: string) { super(`search budget exhausted: ${resource}`); this.name = 'SearchBudgetExceeded' } }
 
 /** All writers are called under the owning evolution's existing single-writer lock. */
@@ -25,7 +26,11 @@ export class SearchStore {
   }
   async read<T>(name: string): Promise<T | undefined> {
     invariant(/^[a-zA-Z0-9_/-]+$/u.test(name) && !name.includes('..'), 'unsafe state path')
-    try { return JSON.parse(await readFile(join(this.root, `${name}.json`), 'utf8')) as T }
+    try {
+      const value: unknown = JSON.parse(await readFile(join(this.root, `${name}.json`), 'utf8'))
+      if (name === 'budget') validateSearchSchema('Ledger', value)
+      return value as T
+    }
     catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e }
   }
   async write(name: string, value: unknown): Promise<void> {
@@ -64,9 +69,13 @@ export class SearchStore {
   }
   async archive(): Promise<ResearchArchive | undefined> {
     const pointer = await this.read<{ ref: string }>('archive')
-    return pointer ? this.object<ResearchArchive>(pointer.ref) : undefined
+    if (!pointer) return undefined
+    const archive = await this.object<ResearchArchive>(pointer.ref)
+    validateSearchSchema('ResearchArchive', archive)
+    return archive
   }
   async casArchive(expected: string | undefined, next: ResearchArchive): Promise<void> {
+    validateSearchSchema('ResearchArchive', next)
     const current = await this.archive()
     if (current?.digest === next.digest) return
     invariant(current?.digest === expected, 'archive CAS conflict')

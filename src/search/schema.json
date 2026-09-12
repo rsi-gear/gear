@@ -2462,6 +2462,30 @@
       ],
       "additionalProperties": false
     },
+    "StageParticipantBinding": {
+      "type": "object",
+      "properties": {
+        "stagePlanDigest": {
+          "type": "string"
+        },
+        "participantId": {
+          "type": "string"
+        },
+        "sealedSnapshotDigest": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "stagePlanDigest",
+        "participantId",
+        "sealedSnapshotDigest",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
     "CandidateWorkPlan": {
       "type": "object",
       "properties": {
@@ -2510,6 +2534,25 @@
         "localStagePlanDigest": {
           "type": "string"
         },
+        "modificationBoundaryRule": {
+          "type": "object",
+          "properties": {
+            "requiredSeedTaskIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "onInsufficientScope": {
+              "const": "retain-research-only"
+            }
+          },
+          "required": [
+            "requiredSeedTaskIds",
+            "onInsufficientScope"
+          ],
+          "additionalProperties": false
+        },
         "generationBudget": {
           "type": "object",
           "properties": {
@@ -2547,6 +2590,7 @@
         "modificationPaths",
         "scopeDigest",
         "localStagePlanDigest",
+        "modificationBoundaryRule",
         "generationBudget",
         "digest"
       ],
@@ -3300,36 +3344,7 @@
               }
             },
             "remainingBudget": {
-              "type": "object",
-              "properties": {
-                "cells": {
-                  "type": "number"
-                },
-                "repairCells": {
-                  "type": "number"
-                },
-                "diagnosisInputTokens": {
-                  "type": "number"
-                },
-                "diagnosisOutputTokens": {
-                  "type": "number"
-                },
-                "generationTokens": {
-                  "type": "number"
-                },
-                "generationRequests": {
-                  "type": "number"
-                }
-              },
-              "required": [
-                "cells",
-                "repairCells",
-                "diagnosisInputTokens",
-                "diagnosisOutputTokens",
-                "generationTokens",
-                "generationRequests"
-              ],
-              "additionalProperties": false
+              "$ref": "#/$defs/Usage"
             }
           },
           "required": [
@@ -3360,6 +3375,37 @@
         "reasonCodes",
         "findings",
         "research",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "CommitIntent": {
+      "type": "object",
+      "properties": {
+        "expectedArchiveDigest": {
+          "type": "string"
+        },
+        "nextArchiveDigest": {
+          "type": "string"
+        },
+        "expectedChampionRevisionDigest": {
+          "type": "string"
+        },
+        "nextChampion": {
+          "$ref": "#/$defs/Snapshot"
+        },
+        "outcome": {
+          "$ref": "#/$defs/SearchRoundOutcome"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "expectedArchiveDigest",
+        "nextArchiveDigest",
+        "expectedChampionRevisionDigest",
+        "outcome",
         "digest"
       ],
       "additionalProperties": false
@@ -3979,6 +4025,102 @@
         "suggestions",
         "heldOut",
         "v2CellReuse",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "Usage": {
+      "type": "object",
+      "properties": {
+        "cells": {
+          "type": "number"
+        },
+        "repairCells": {
+          "type": "number"
+        },
+        "diagnosisInputTokens": {
+          "type": "number"
+        },
+        "diagnosisOutputTokens": {
+          "type": "number"
+        },
+        "generationTokens": {
+          "type": "number"
+        },
+        "generationRequests": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "cells",
+        "repairCells",
+        "diagnosisInputTokens",
+        "diagnosisOutputTokens",
+        "generationTokens",
+        "generationRequests"
+      ],
+      "additionalProperties": false
+    },
+    "Operation": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "roundId": {
+          "type": "string"
+        },
+        "requestDigest": {
+          "type": "string"
+        },
+        "reserved": {
+          "$ref": "#/$defs/Usage"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "const": "complete"
+            },
+            {
+              "const": "reserved"
+            }
+          ]
+        },
+        "outputDigest": {
+          "type": "string"
+        },
+        "actual": {
+          "$ref": "#/$defs/Usage"
+        }
+      },
+      "required": [
+        "key",
+        "roundId",
+        "requestDigest",
+        "reserved",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "Ledger": {
+      "type": "object",
+      "properties": {
+        "startedAt": {
+          "type": "number"
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Operation"
+          }
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "startedAt",
+        "operations",
         "digest"
       ],
       "additionalProperties": false

@@ -1,4 +1,5 @@
 import { digestJson } from '../state/digest.js'
+import { validateSearchSchema } from './schema.js'
 import { comparisonKey, invariant, seal, sorted, validateScope, verifyDigest } from './contracts.js'
 import { assertConsistentCells, cellKey, completeEvidence, profile, validOutcome } from './evidence.js'
 import type { EvidenceCell, EvidenceProfile, FailureCluster, EvaluationScope, ParentSelectionDecision, ResearchArchive, ScopeView, SearchConfig, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from './types.js'
@@ -86,7 +87,7 @@ export function scopeView(scope: EvaluationScope, universe: TaskUniverse, snapsh
 
 export function buildArchive(input: { evolutionId: string; previous?: ResearchArchive; universe: TaskUniverse; snapshots: Snapshot[]; scopes: EvaluationScope[]; results: StageResult[]; plans: StageEvaluationPlan[]; config: SearchConfig; championId: string; clusters?: FailureCluster[] }): ResearchArchive {
   const { previous, universe } = input
-  if (previous) { verifyDigest(previous); invariant(previous.universeDigest === universe.digest && previous.evolutionId === input.evolutionId, 'archive cohort identity changed') }
+  if (previous) { validateSearchSchema('ResearchArchive', previous); verifyDigest(previous); invariant(previous.universeDigest === universe.digest && previous.evolutionId === input.evolutionId, 'archive cohort identity changed') }
   invariant(universe.partition === 'seed' && input.plans.every(p => p.partition === 'seed' && p.universeDigest === universe.digest), 'held-out evidence is forbidden in archive')
   const snapshots = new Map((previous?.snapshots ?? []).map(s => [s.candidateId, s]))
   for (const snapshot of input.snapshots) {
@@ -161,6 +162,7 @@ function draw(probabilities: Record<string, number>, seed: string, index: number
   return entries.at(-1)![0]
 }
 export function selectParents(archive: ResearchArchive, config: SearchConfig, maxCandidates: number, roundId: string): ParentSelectionDecision {
+  validateSearchSchema('ResearchArchive', archive)
   verifyDigest(archive)
   const randomSeed = digestJson([config.seed, roundId, archive.digest])
   const batches = Array.from({ length: config.parentBatchCount }, (_, i) => {

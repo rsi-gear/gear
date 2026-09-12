@@ -9,6 +9,8 @@
 
 ## 1. 决策与边界
 
+2026-09-12 兼容说明：本文的 champion 作为唯一代码父代约束继续适用于旧模式。显式启用 `failure-cluster-gepa-v1` 的新 evolution 使用[专长 archive 规范](candidate-promotion-and-specialist-archive-spec.zh-CN.md)选择实际代码父代，champion 独立冻结为发布比较 anchor；基线身份、恢复与 held-out 隔离要求继续适用，不迁移历史实验。
+
 统一迭代起点为：
 
 ```text

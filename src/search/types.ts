@@ -333,6 +333,12 @@ export interface ScopeSamplingEvidence {
   tasks: Record<string, { familyIds: string[]; submodes: string[]; modificationPaths: string[]; historicalDifficulty?: number }>
   digest: string
 }
+export interface StageParticipantBinding {
+  stagePlanDigest: string
+  participantId: string
+  sealedSnapshotDigest: string
+  digest: string
+}
 export interface CandidateWorkPlan {
   candidateId: string
   batchId: string
@@ -346,6 +352,7 @@ export interface CandidateWorkPlan {
   modificationPaths: string[]
   scopeDigest: string
   localStagePlanDigest: string
+  modificationBoundaryRule: { requiredSeedTaskIds: string[]; onInsufficientScope: 'retain-research-only' }
   generationBudget: { maxTokens: number; maxModelRequests: number; deadlineAt: number }
   digest: string
 }

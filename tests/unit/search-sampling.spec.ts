@@ -26,7 +26,9 @@ describe('scope representatives from frozen seed evidence', () => {
     expect(createScope(u, resolution, config, family, [], 1, evidence)).toEqual(scope)
     const workplan = seal({ candidateId: 'child', batchId: 'batch', parentSnapshotDigest: parent.digest, dossierDigest: dossier.digest,
       clusterDigest: family.digest, familyId: family.familyId, hypothesis: family.hypotheses[0]!, targetTaskIds: family.taskIds, requiredDiagnosisRefs: family.evidenceRefs,
-      modificationPaths: family.modificationPaths, scopeDigest: scope.digest, localStagePlanDigest: digestJson('local-plan'), generationBudget: { maxTokens: 100, maxModelRequests: 1, deadlineAt: 1000 } })
+      modificationPaths: family.modificationPaths, scopeDigest: scope.digest, localStagePlanDigest: digestJson('local-plan'),
+      modificationBoundaryRule: { requiredSeedTaskIds: u.tasks.map(t => t.id), onInsufficientScope: 'retain-research-only' as const },
+      generationBudget: { maxTokens: 100, maxModelRequests: 1, deadlineAt: 1000 } })
     expect(deliveredWorkplan(workplan, dossier, [], scope).dossier.facts.find(f => f.taskId === 'task-4')?.status).toBe('successful-control')
   })
 
