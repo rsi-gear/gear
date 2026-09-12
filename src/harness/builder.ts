@@ -542,7 +542,7 @@ export class HarnessBuilder {
       const abort = (): void => { child.kill('SIGTERM') }
       signal?.addEventListener('abort', abort, { once: true })
       child.once('error', reject)
-      child.once('exit', (code, childSignal) => {
+      child.once('close', (code, childSignal) => {
         signal?.removeEventListener('abort', abort)
         if (signal?.aborted === true) return reject(signal.reason)
         if (overflow) return reject(new Error(`${command} output exceeded ${this.maxGitOutputBytes} bytes`))
@@ -581,7 +581,7 @@ export class HarnessBuilder {
       const abort = (): void => { child.kill('SIGTERM') }
       signal?.addEventListener('abort', abort, { once: true })
       child.once('error', reject)
-      child.once('exit', (code, childSignal) => {
+      child.once('close', (code, childSignal) => {
         signal?.removeEventListener('abort', abort)
         if (signal?.aborted === true) return reject(signal.reason)
         if (overflow) return reject(new Error(`${command} output exceeded ${this.maxGitOutputBytes} bytes`))

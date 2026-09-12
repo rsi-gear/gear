@@ -1,4 +1,4 @@
-import { readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { CandidateWorkspaceManager } from '../../src/candidate/workspace.js'
@@ -8,6 +8,59 @@ import { roundFixture } from '../helpers/research-fixture.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
+
+interface BuilderProcessReaders {
+  command(command: string, args: string[]): Promise<{ stdout: string; stderr: string; code: number }>
+  gitBuffer(args: string[]): Promise<Buffer>
+}
+
+async function delayedOutputBuilder(): Promise<{ executable: string; readers: BuilderProcessReaders }> {
+  const fixture = await createGitHarnessFixture()
+  roots.push(fixture.root)
+  const executable = join(fixture.root, 'delayed-output-git.mjs')
+  const writerSource = `
+const payload = Buffer.from(process.argv[1], 'hex')
+const split = Math.ceil(payload.length / 2)
+setTimeout(() => {
+  process.stdout.write(payload.subarray(0, split))
+  setTimeout(() => process.stdout.end(payload.subarray(split)), 25)
+}, 50)
+`
+  await writeFile(executable, `#!/usr/bin/env node
+import { spawn } from 'node:child_process'
+const mode = process.argv.at(-1)
+const payload = mode === 'binary'
+  ? Buffer.from([0, 1, 2, 127, 128, 255, 10])
+  : Buffer.from('complete delayed text ✓\\n', 'utf8')
+const writer = spawn(process.execPath, ['-e', ${JSON.stringify(writerSource)}, payload.toString('hex')], {
+  detached: true,
+  stdio: ['ignore', 1, 2],
+})
+writer.unref()
+process.exit(0)
+`)
+  await chmod(executable, 0o755)
+  const builder = new HarnessBuilder({
+    repositoryPath: fixture.repository, targetRoot: fixture.targetRoot, dshBaseRef: fixture.baseRef,
+    toolchainRef: 'node-22-tsc', sandboxProfileRef: 'sandbox-v1', gitExecutable: executable,
+    compiler: new NoopHarnessCompiler(),
+  })
+  return { executable, readers: builder as unknown as BuilderProcessReaders }
+}
+
+describe('HarnessBuilder child output collection', () => {
+  it('waits for text stdout to close after the child exits', async () => {
+    const { executable, readers } = await delayedOutputBuilder()
+    await expect(readers.command(executable, ['text'])).resolves.toEqual({
+      stdout: 'complete delayed text ✓\n', stderr: '', code: 0,
+    })
+  })
+
+  it('waits for binary stdout to close after the child exits', async () => {
+    const { readers } = await delayedOutputBuilder()
+    await expect(readers.gitBuffer(['binary'])).resolves.toEqual(Buffer.from([0, 1, 2, 127, 128, 255, 10]))
+  })
+})
 
 describe('HarnessBuilder dependency allowlist', () => {
   const cases: Array<{ specifier: string; allowedImports?: string[]; accepted: boolean; source?: string; path?: string }> = [
