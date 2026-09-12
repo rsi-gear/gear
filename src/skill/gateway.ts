@@ -89,9 +89,14 @@ export class RefineSkillGateway {
       })
     }
     if (method === 'control.continue') {
+      const roundId = optionalString(params, 'roundId')
       const rounds = optionalInteger(params, 'rounds')
       const selectedFocus = focus(params)
+      if (roundId !== undefined && (rounds !== undefined || selectedFocus !== undefined)) {
+        throw new TypeError('roundId cannot be combined with rounds or focus')
+      }
       return this.service.continueEvolution('skill', string(params, 'evolutionId'), {
+        ...(roundId === undefined ? {} : { roundId }),
         ...(rounds === undefined ? {} : { rounds }),
         ...(selectedFocus === undefined ? {} : { focus: selectedFocus }),
       })

@@ -70,7 +70,7 @@ export interface AdmissionOptions {
   baselineSource?: BaselineSourceRequest
 }
 
-export interface ContinueOptions { rounds?: number; focus?: SemanticTarget[] }
+export interface ContinueOptions { rounds?: number; focus?: SemanticTarget[]; roundId?: string }
 export type MetaSessionFactory = (
   spec: EvolutionSpec,
   specDigest: string,
@@ -125,6 +125,7 @@ interface ActiveRound {
   advisoryFocus?: SemanticTarget[]
   source: RefinementRound['source']
   repairAttempt?: Pick<RoundEvaluationAttempt, 'provider' | 'evalId'>
+  resumeHeldOut?: boolean
   drive?: Promise<void>
 }
 
@@ -796,6 +797,9 @@ export class RefineService {
 
   async continueEvolution(source: RefinementRound['source'], evolutionId: string, options: ContinueOptions = {}): Promise<AdmissionResult> {
     this.assertAvailable()
+    if (options.roundId !== undefined && (options.rounds !== undefined || options.focus !== undefined)) {
+      throw new TypeError('roundId cannot be combined with rounds or focus')
+    }
     const entry = await this.registry.readEntry(evolutionId)
     if (entry === undefined) throw new Error(`unknown evolution: ${evolutionId}`)
     if (entry.status !== 'active') throw new Error(`evolution is archived and cannot continue: ${evolutionId}`)
@@ -809,10 +813,239 @@ export class RefineService {
     if (seedDigest !== evolution.spec.datasets.seed.digest || heldOutDigest !== evolution.spec.datasets.heldOut.digest) {
       throw new Error('evolution dataset content changed; create a new evolution')
     }
+    if (options.roundId !== undefined) return this.recoverSelectedRound(evolution, options.roundId)
     const baselineSource = await this.recoverUnstagedBaselineSource(evolution)
     return this.startBatch(
       evolution, source, crypto.randomUUID(), validateCount(options.rounds ?? 1), normalizeFocus(options.focus), baselineSource,
     )
+  }
+
+  private async recoverSelectedRound(evolution: EvolutionRuntime, roundId: string): Promise<AdmissionResult> {
+    if (!/^[a-zA-Z0-9_-]+$/u.test(roundId)) throw new TypeError('roundId is invalid')
+    if (this.repairs.has(roundId)) throw new Error(`refinement round is already active: ${roundId}`)
+    const live = this.active.get(roundId)
+    if (live !== undefined) {
+      const persisted = await live.evolution.store.readRound(roundId)
+      if (persisted === undefined || !TERMINAL.has(persisted.status)) {
+        throw new Error(`refinement round is already active: ${roundId}`)
+      }
+      await live.drive
+      if (this.active.has(roundId)) throw new Error(`refinement round is already active: ${roundId}`)
+    }
+    const lock = await evolution.store.acquireRoundLock(roundId)
+    let handedToDrive = false
+    try {
+      const entry = await this.registry.readEntry(evolution.spec.evolutionId)
+      if (entry?.status !== 'active') {
+        throw new Error(`evolution is archived and cannot continue: ${evolution.spec.evolutionId}`)
+      }
+      let round = await this.requireRound(evolution.store, roundId)
+      if (round.evolutionId !== evolution.spec.evolutionId || round.status !== 'failed') {
+        throw new Error(`round ${roundId} is not a failed selected round`)
+      }
+      if (round.decision !== undefined || round.commitIntent !== undefined) {
+        throw new Error(`round ${roundId} already has a durable decision or commit intent`)
+      }
+      if ((round.pendingEvaluationSubmissions?.length ?? 0) > 0
+        || round.pendingEvaluationRerun !== undefined
+        || round.evaluationRepairResume !== undefined
+        || round.evaluationAttempts?.some(attempt => attempt.status === 'running'
+          || attempt.status === 'rerunning' || attempt.status === 'repair-completed')) {
+        throw new Error(`round ${roundId} has unresolved evaluation or repair work`)
+      }
+      const [population, champion] = await Promise.all([
+        evolution.store.readPopulation(), evolution.store.readChampion(),
+      ])
+      if (population === undefined || population.digest !== round.parentPopulationDigest
+        || champion?.ref !== round.targetHarnessRef
+        || champion?.manifestDigest !== round.targetHarnessDigest) {
+        throw new Error(`round ${roundId} no longer matches its admitted population or champion`)
+      }
+      const selection = round.selection
+      const evaluation = round.evaluation
+      const finalist = round.candidatePool.find(candidate => candidate.candidateId === round.promotionCandidateId)
+      if (round.selectionAssessment === undefined || selection === undefined
+        || selection.assessmentDigest !== round.selectionAssessment.digest
+        || !selection.selectedCandidateIds.includes(selection.promotionCandidateId)
+        || round.promotionCandidateId !== selection.promotionCandidateId
+        || finalist?.status !== 'selected' || finalist.sealedVersion === undefined
+        || finalist.seedEvaluation === undefined || finalist.seedComparison === undefined
+        || evaluation === undefined || round.baseline === undefined
+        || digestJson(evaluation.seedBaseline) !== digestJson(round.baseline)
+        || digestJson(evaluation.seedCandidate) !== digestJson(finalist.seedEvaluation)) {
+        throw new Error(`round ${roundId} has no complete selected seed state to recover`)
+      }
+      for (const selectedId of selection.selectedCandidateIds) {
+        const selected = round.candidatePool.find(candidate => candidate.candidateId === selectedId)
+        if (selected?.status !== 'selected' || selected.sealedVersion === undefined
+          || selected.seedEvaluation === undefined || selected.seedComparison === undefined
+          || selected.metrics === undefined || selected.metaSessionId === undefined
+          || selected.resultCheckpoint === undefined) {
+          throw new Error(`round ${roundId} has incomplete selected candidate state: ${selectedId}`)
+        }
+      }
+      // Prove all selected parent links and population inputs before the one
+      // allowed held-out submission can be admitted.
+      this.nextPopulation(round, population, selection.selectedCandidateIds)
+      this.assertParity(evaluation.seedBaseline, evaluation.seedCandidate, 'seed')
+      const seedRequiredRegressions = evaluation.seedPairedTrials.length === 0
+        ? 0 : this.requiredRegressions(round, evaluation.seedPairedTrials)
+      if (!this.passesSeed(round, { ...evaluation, requiredRegressions: seedRequiredRegressions })) {
+        throw new Error(`round ${roundId} no longer passes its original seed gate`)
+      }
+
+      const selectedCommit = finalist.sealedVersion.commitOid
+      let reusableBaseline: ReusableBaseline | undefined
+      if (evaluation.heldOutBaseline === undefined) {
+        const starts = round.evaluationStarts?.some(start => start.phase === 'held-out-baseline'
+          && start.harnessRef === round.targetHarnessRef) ?? false
+        const attempts = (round.evaluationAttempts ?? []).filter(attempt => attempt.phase === 'held-out-baseline'
+          && attempt.owner.role === 'baseline' && attempt.requestedCommit === round.targetHarnessRef)
+        const failed = round.failedEvaluations?.some(record => record.phase === 'held-out-baseline'
+          && record.owner.role === 'baseline' && record.evidence.requestedCommit === round.targetHarnessRef) ?? false
+        if (starts || attempts.length > 0 || failed) {
+          const ownedFailure = attempts.find(attempt => attempt.status === 'failed')
+          if (ownedFailure !== undefined) {
+            throw new Error(`round ${roundId} already started its held-out baseline; use control.rerun for owned failed evaluation ${ownedFailure.evalId}`)
+          }
+          throw new Error(`round ${roundId} already started its held-out baseline and cannot replace it with historical evidence`)
+        }
+        const staged = round.baselineSource?.partitions.heldOut
+        reusableBaseline = staged === undefined
+          ? await this.findReusableBaseline(
+              evolution.store, evolution.evaluator, round, round.targetHarnessRef, 'held-out', AbortSignal.timeout(30_000),
+            )
+          : {
+              evidence: structuredClone(staged.evidence),
+              sourceEvolutionId: round.baselineSource!.source.evolutionId,
+              sourceRoundId: round.baselineSource!.source.roundId,
+              ...(staged.currentInvocationFingerprint === undefined
+                ? {}
+                : { currentInvocationFingerprint: staged.currentInvocationFingerprint }),
+            }
+        if (reusableBaseline === undefined) {
+          throw new Error(`round ${roundId} has no reusable held-out baseline; explicit recovery will not start a fresh baseline`)
+        }
+      }
+      const heldOutBaseline = evaluation.heldOutBaseline ?? reusableBaseline!.evidence
+      if (evaluation.heldOutBaseline !== undefined) {
+        const attempt = round.evaluationAttempts?.find(value => value.provider === heldOutBaseline.provider
+          && value.evalId === heldOutBaseline.evalId)
+        if (heldOutBaseline.trials.length === 0 || attempt?.status !== 'settled'
+          || attempt.phase !== 'held-out-baseline' || attempt.owner.role !== 'baseline'
+          || attempt.owner.harnessRef !== round.targetHarnessRef
+          || attempt.requestedModelId !== round.plan.heldOut.model) {
+          throw new Error(`round ${roundId} has no eligible settled held-out baseline evidence`)
+        }
+      }
+      const signal = AbortSignal.timeout(30_000)
+      const heldOutBaselineIdentity = await this.recoveryEvaluationIdentity(
+        evolution.evaluator, round, 'held-out-baseline', round.targetHarnessRef, signal,
+      )
+      this.assertRecoveryEvidenceIdentity(round, heldOutBaseline, 'held-out-baseline', round.targetHarnessRef, heldOutBaselineIdentity)
+      const heldOutCandidateIdentity = await this.recoveryEvaluationIdentity(
+        evolution.evaluator, round, 'held-out-candidate', selectedCommit, signal,
+      )
+      if (heldOutCandidateIdentity.provider !== heldOutBaseline.provider
+        || heldOutCandidateIdentity.effectiveConfigDigest !== heldOutBaseline.effectiveConfigDigest) {
+        throw new Error(`round ${roundId} held-out candidate evaluator identity is incompatible with its baseline`)
+      }
+      if (evaluation.heldOutCandidate !== undefined && finalist.heldOutEvaluation !== undefined
+        && digestJson(evaluation.heldOutCandidate) !== digestJson(finalist.heldOutEvaluation)) {
+        throw new Error(`round ${roundId} has conflicting selected held-out evidence`)
+      }
+      const existingHeldOutCandidate = evaluation.heldOutCandidate ?? finalist.heldOutEvaluation
+      if (existingHeldOutCandidate !== undefined) {
+        this.assertRecoveryEvidenceIdentity(
+          round, existingHeldOutCandidate, 'held-out-candidate', selectedCommit, heldOutCandidateIdentity,
+        )
+        this.assertParity(heldOutBaseline, existingHeldOutCandidate, 'held-out')
+      } else {
+        const starts = round.evaluationStarts?.some(start => start.phase === 'held-out-candidate'
+          && start.harnessRef === selectedCommit) ?? false
+        const attempts = (round.evaluationAttempts ?? []).filter(attempt => attempt.phase === 'held-out-candidate'
+          && attempt.requestedCommit === selectedCommit)
+        const failed = round.failedEvaluations?.some(record => record.phase === 'held-out-candidate'
+          && record.evidence.requestedCommit === selectedCommit) ?? false
+        if (starts || attempts.length > 0 || failed) {
+          const ownedFailure = attempts.find(attempt => attempt.status === 'failed')
+          if (ownedFailure !== undefined) {
+            throw new Error(`round ${roundId} already started the selected held-out evaluation; use control.rerun for owned failed evaluation ${ownedFailure.evalId}`)
+          }
+          throw new Error(`round ${roundId} already started the selected held-out evaluation and cannot safely submit it again`)
+        }
+      }
+
+      // Every check above is read-only. Mutate the existing round only after the
+      // original selected state and any reusable baseline are proven compatible.
+      this.assertAvailable()
+      if (reusableBaseline !== undefined) {
+        const championCandidateId = round.parentAllocations
+          ?.find(allocation => allocation.parentHarnessRef === round.targetHarnessRef)?.parentCandidateId
+          ?? `champion-${round.targetHarnessRef}`
+        round = await this.persistReusableHeldOutBaseline(
+          evolution.store, round, championCandidateId, round.targetHarnessRef, reusableBaseline,
+        )
+      }
+      this.assertAvailable()
+      await this.registry.touch(evolution.spec.evolutionId, { batchId: round.batchId, roundId })
+      this.assertAvailable()
+      const priorFailure = round.failure
+      const priorBaselineReuseBlocker = round.baselineReuseBlocker
+      round = await this.transition(evolution.store, roundId, {
+        status: 'held-out-running', failure: undefined, baselineReuseBlocker: undefined,
+      })
+      try {
+        this.assertAvailable()
+      } catch (error) {
+        await this.transition(evolution.store, roundId, {
+          status: 'failed', failure: priorFailure, baselineReuseBlocker: priorBaselineReuseBlocker,
+        })
+        throw error
+      }
+      const active = this.newActive(
+        evolution, lock, round.source, round.batchId, round.roundIndex, round.roundCount, round.advisoryFocus,
+      )
+      active.resumeHeldOut = true
+      this.active.set(roundId, active)
+      handedToDrive = true
+      queueMicrotask(() => this.startDrive(roundId))
+      return { evolutionId: evolution.spec.evolutionId, batchId: round.batchId, roundId, status: 'queued' }
+    } finally {
+      if (!handedToDrive) await lock.release().catch(() => {})
+    }
+  }
+
+  private async recoveryEvaluationIdentity(
+    evaluator: RefineEvaluator,
+    round: RefinementRound,
+    phase: 'held-out-baseline' | 'held-out-candidate',
+    harnessRef: string,
+    signal: AbortSignal,
+  ): Promise<{ provider: string; effectiveConfigDigest: string }> {
+    const identity = await evaluator.evaluationIdentity?.(round, {
+      phase, dataset: round.heldOutRef, harnessRef, condition: round.plan.heldOut,
+    }, signal)
+    signal.throwIfAborted()
+    if (identity === undefined) throw new Error(`round ${round.roundId} evaluator identity is unresolved for ${phase}`)
+    return identity
+  }
+
+  private assertRecoveryEvidenceIdentity(
+    round: RefinementRound,
+    evidence: EvaluationEvidence,
+    phase: 'held-out-baseline' | 'held-out-candidate',
+    harnessRef: string,
+    identity: { provider: string; effectiveConfigDigest: string },
+  ): void {
+    if (evidence.provider !== identity.provider
+      || evidence.effectiveConfigDigest !== identity.effectiveConfigDigest
+      || evidence.conditionId !== round.plan.heldOut.conditionId
+      || evidence.dataset !== round.heldOutRef
+      || evidence.requestedCommit !== harnessRef
+      || evidence.actualCommit !== harnessRef) {
+      throw new Error(`round ${round.roundId} ${phase} evidence is incompatible with the current evaluator identity`)
+    }
   }
 
   async rerunEvaluation(
@@ -1558,7 +1791,21 @@ export class RefineService {
           throw new Error(`round ${roundId} has no completed evaluation repair to resume`)
         }
       }
-      let round = await this.transition(store, roundId, { status: 'baseline-running' })
+      let round = beforeResume
+      if (active.resumeHeldOut === true) {
+        if (round.status !== 'held-out-running' || round.selection === undefined || round.baseline === undefined) {
+          throw new Error(`round ${roundId} lost its selected held-out recovery state`)
+        }
+        const population = await store.readPopulation()
+        active.abort.signal.throwIfAborted()
+        if (population === undefined || population.digest !== round.parentPopulationDigest) throw new Error('research population changed during round admission')
+        const championCandidateId = round.parentAllocations
+          ?.find(allocation => allocation.parentHarnessRef === round.targetHarnessRef)?.parentCandidateId
+          ?? `champion-${round.targetHarnessRef}`
+        await this.finishSelectedRound(active, round, population, round.selection, round.baseline, championCandidateId)
+        return
+      }
+      round = await this.transition(store, roundId, { status: 'baseline-running' })
       active.abort.signal.throwIfAborted()
       const population = await store.readPopulation()
       active.abort.signal.throwIfAborted()
@@ -2121,166 +2368,9 @@ export class RefineService {
           ? { ...candidate, status: 'selected' as const }
           : candidate.status === 'ready' ? { ...candidate, status: 'discarded' as const } : candidate),
       })
-      active.abort.signal.throwIfAborted()
-      const finalist = round.candidatePool.find(value => value.candidateId === selection.promotionCandidateId)
-      if (finalist?.sealedVersion === undefined || finalist.seedEvaluation === undefined) throw new Error('promotion finalist is not evaluable')
-      this.assertParity(championBaseline, finalist.seedEvaluation, 'seed')
-      const seedPairs = pairedTrials(championBaseline, finalist.seedEvaluation)
-      const seedBaselineAggregate = pairedAggregate(seedPairs, 'baseline')
-      const seedCandidateAggregate = pairedAggregate(seedPairs, 'candidate')
-      // A repaired seed candidate can change the finalist. Keep raw baseline
-      // evidence, but rebuild pairing/metrics for the newly selected candidate.
-      const priorHeldOutBaseline = round.evaluation?.heldOutBaseline
-      const priorHeldOutCandidate = round.evaluation?.heldOutCandidate?.actualCommit === finalist.sealedVersion.commitOid
-        ? round.evaluation.heldOutCandidate : finalist.heldOutEvaluation
-      let evaluation: RoundEvaluation = {
-        ...(priorHeldOutBaseline === undefined ? {} : { heldOutBaseline: priorHeldOutBaseline }),
-        seedBaseline: championBaseline,
-        seedCandidate: finalist.seedEvaluation,
-        seedPairedTrials: seedPairs,
-        seedPairing: pairingAudit(championBaseline, finalist.seedEvaluation, seedPairs),
-        scoreDelta: seedCandidateAggregate.score - seedBaselineAggregate.score,
-        ...(pairedProcessDelta(seedPairs) === undefined ? {} : { processScoreDelta: pairedProcessDelta(seedPairs)! }),
-        requiredRegressions: seedPairs.length === 0 ? 0 : this.requiredRegressions(round, seedPairs),
-      }
-      round = await this.transition(store, roundId, { evaluation })
-      active.abort.signal.throwIfAborted()
-      let accepted = false
-      if (this.passesSeed(round, evaluation)) {
-        round = await this.transition(store, roundId, { status: 'held-out-running' })
-        active.abort.signal.throwIfAborted()
-        let heldOutBaseline = evaluation.heldOutBaseline
-        if (heldOutBaseline === undefined) {
-          const staged = round.baselineSource?.partitions.heldOut
-          const reusable = staged === undefined ? await this.findReusableBaseline(
-            store, active.evolution.evaluator, round, round.targetHarnessRef, 'held-out', active.abort.signal,
-          ) : {
-            evidence: structuredClone(staged.evidence),
-            sourceEvolutionId: round.baselineSource!.source.evolutionId,
-            sourceRoundId: round.baselineSource!.source.roundId,
-            ...(staged.currentInvocationFingerprint === undefined
-              ? {}
-              : { currentInvocationFingerprint: staged.currentInvocationFingerprint }),
-          }
-          if (reusable !== undefined) {
-            active.abort.signal.throwIfAborted()
-            round = await this.persistReusableHeldOutBaseline(
-              store, round, championCandidateId, round.targetHarnessRef, reusable,
-            )
-            heldOutBaseline = reusable.evidence
-          } else {
-            const baselineEvaluation = await this.evaluateWithAttempt(active, round, {
-              phase: 'held-out-baseline', dataset: round.heldOutRef, harnessRef: round.targetHarnessRef,
-              condition: round.plan.heldOut,
-            }, {
-              candidateId: championCandidateId, role: 'baseline', harnessRef: round.targetHarnessRef,
-            }, (current, evidence) => ({ evaluation: { ...current.evaluation!, heldOutBaseline: evidence } }))
-            round = baselineEvaluation.round
-            heldOutBaseline = baselineEvaluation.evidence
-          }
-        }
-        // Candidate evidence remains durable in candidatePool while its paired
-        // projection is rebuilt below in one validated state transition.
-        let heldOutCandidate = priorHeldOutCandidate
-        if (heldOutCandidate === undefined) {
-          const candidateEvaluation = await this.evaluateWithAttempt(active, round, {
-            phase: 'held-out-candidate', dataset: round.heldOutRef, harnessRef: finalist.sealedVersion.commitOid,
-            condition: round.plan.heldOut,
-          }, {
-            candidateId: finalist.candidateId, role: 'candidate', harnessRef: finalist.sealedVersion.commitOid,
-          }, async (current, evidence) => {
-            this.assertParity(heldOutBaseline, evidence, 'held-out')
-            const heldOutPairs = pairedTrials(heldOutBaseline, evidence)
-            const heldOutBaselineAggregate = pairedAggregate(heldOutPairs, 'baseline')
-            const heldOutCandidateAggregate = pairedAggregate(heldOutPairs, 'candidate')
-            const completeEvaluation = {
-              ...evaluation, heldOutBaseline, heldOutCandidate: evidence,
-              heldOutPairedTrials: heldOutPairs,
-              heldOutPairing: pairingAudit(heldOutBaseline, evidence, heldOutPairs),
-              promotionMetrics: heldOutPairs.length === 0
-                ? { quality: 0, taskSuccessRate: 0 }
-                : await this.evaluateJudges(
-                    active.evolution.spec,
-                    projectPairedEvidence(evidence, heldOutPairs, 'candidate'),
-                  ),
-              heldOutScoreDelta: heldOutCandidateAggregate.score - heldOutBaselineAggregate.score,
-              ...(pairedProcessDelta(heldOutPairs) === undefined ? {} : { heldOutProcessScoreDelta: pairedProcessDelta(heldOutPairs)! }),
-              requiredRegressions: evaluation.requiredRegressions
-                + (heldOutPairs.length === 0 ? 0 : this.requiredRegressions(current, heldOutPairs)),
-            }
-            return {
-              evaluation: completeEvaluation,
-              candidatePool: this.patchCandidate(current, finalist.candidateId, { heldOutEvaluation: evidence }),
-            }
-          })
-          round = candidateEvaluation.round
-          heldOutCandidate = candidateEvaluation.evidence
-          evaluation = round.evaluation!
-        } else {
-          this.assertParity(heldOutBaseline, heldOutCandidate, 'held-out')
-          const heldOutPairs = pairedTrials(heldOutBaseline, heldOutCandidate)
-          const heldOutBaselineAggregate = pairedAggregate(heldOutPairs, 'baseline')
-          const heldOutCandidateAggregate = pairedAggregate(heldOutPairs, 'candidate')
-          const promotionMetrics = heldOutPairs.length === 0
-            ? { quality: 0, taskSuccessRate: 0 }
-            : await this.evaluateJudges(
-                active.evolution.spec,
-                projectPairedEvidence(heldOutCandidate, heldOutPairs, 'candidate'),
-              )
-          active.abort.signal.throwIfAborted()
-          evaluation = {
-            ...evaluation, heldOutBaseline, heldOutCandidate,
-            heldOutPairedTrials: heldOutPairs,
-            heldOutPairing: pairingAudit(heldOutBaseline, heldOutCandidate, heldOutPairs),
-            promotionMetrics,
-            heldOutScoreDelta: heldOutCandidateAggregate.score - heldOutBaselineAggregate.score,
-            ...(pairedProcessDelta(heldOutPairs) === undefined ? {} : { heldOutProcessScoreDelta: pairedProcessDelta(heldOutPairs)! }),
-            requiredRegressions: evaluation.requiredRegressions
-              + (heldOutPairs.length === 0 ? 0 : this.requiredRegressions(round, heldOutPairs)),
-          }
-          round = await this.transition(store, roundId, {
-            evaluation,
-            candidatePool: this.patchCandidate(round, finalist.candidateId, { heldOutEvaluation: heldOutCandidate }),
-          })
-        }
-        accepted = this.passesHeldOut(round, evaluation, active.evolution.spec)
-      }
-
-      active.abort.signal.throwIfAborted()
-      const nextPopulation = this.nextPopulation(round, population, selection.selectedCandidateIds)
-      const nextChampion = accepted ? {
-        schemaVersion: 2 as const,
-        ref: finalist.sealedVersion.commitOid,
-        manifestDigest: finalist.sealedVersion.manifestDigest,
-        updatedAt: now(), roundId,
-      } : undefined
-      round = await this.transition(store, roundId, this.completeEvaluationRepairResume(active, round, {
-        status: 'promoting',
-        commitIntent: {
-          expectedPopulationDigest: population.digest, nextPopulation,
-          expectedChampionRef: round.targetHarnessRef,
-          ...(nextChampion === undefined ? {} : { nextChampion }),
-          decision: accepted ? 'accepted' : 'rejected',
-          promotionCandidateId: finalist.candidateId,
-          phase: 'prepared',
-        },
-      }))
-      active.abort.signal.throwIfAborted()
-      await store.compareAndSwapPopulation(population.digest, nextPopulation)
-      active.abort.signal.throwIfAborted()
-      round = await this.transition(store, roundId, {
-        commitIntent: { ...round.commitIntent!, phase: 'population-committed' },
-      })
-      active.abort.signal.throwIfAborted()
-      if (nextChampion !== undefined) await store.compareAndSwapChampion(round.targetHarnessRef, nextChampion)
-      active.abort.signal.throwIfAborted()
-      round = await this.transition(store, roundId, {
-        commitIntent: { ...round.commitIntent!, phase: 'champion-committed' },
-      })
-      await this.transition(store, roundId, accepted
-        ? { status: 'accepted', decision: 'accepted', promotedCandidateId: finalist.candidateId }
-        : { status: 'rejected', decision: 'rejected' })
+      await this.finishSelectedRound(active, round, population, selection, championBaseline, championCandidateId)
       continueBatch = true
+      return
     } catch (error) {
       const round = await store.readRound(roundId)
       const pendingRepair = active.abort.signal.aborted && active.repairAttempt !== undefined
@@ -2327,6 +2417,181 @@ export class RefineService {
       await active.lock.release().catch(() => {})
       this.active.delete(roundId)
     }
+  }
+
+  private async finishSelectedRound(
+    active: ActiveRound,
+    initialRound: RefinementRound,
+    population: PopulationState,
+    selection: NonNullable<RefinementRound['selection']>,
+    championBaseline: EvaluationEvidence,
+    championCandidateId: string,
+  ): Promise<void> {
+    const { store } = active.evolution
+    const roundId = initialRound.roundId
+    let round = initialRound
+    active.abort.signal.throwIfAborted()
+    const finalist = round.candidatePool.find(value => value.candidateId === selection.promotionCandidateId)
+    if (finalist?.sealedVersion === undefined || finalist.seedEvaluation === undefined) throw new Error('promotion finalist is not evaluable')
+    this.assertParity(championBaseline, finalist.seedEvaluation, 'seed')
+    const seedPairs = pairedTrials(championBaseline, finalist.seedEvaluation)
+    const seedBaselineAggregate = pairedAggregate(seedPairs, 'baseline')
+    const seedCandidateAggregate = pairedAggregate(seedPairs, 'candidate')
+    // A repaired seed candidate can change the finalist. Keep raw baseline
+    // evidence, but rebuild pairing/metrics for the newly selected candidate.
+    const priorHeldOutBaseline = round.evaluation?.heldOutBaseline
+    const priorHeldOutCandidate = round.evaluation?.heldOutCandidate?.actualCommit === finalist.sealedVersion.commitOid
+      ? round.evaluation.heldOutCandidate : finalist.heldOutEvaluation
+    let evaluation: RoundEvaluation = {
+      ...(priorHeldOutBaseline === undefined ? {} : { heldOutBaseline: priorHeldOutBaseline }),
+      seedBaseline: championBaseline,
+      seedCandidate: finalist.seedEvaluation,
+      seedPairedTrials: seedPairs,
+      seedPairing: pairingAudit(championBaseline, finalist.seedEvaluation, seedPairs),
+      scoreDelta: seedCandidateAggregate.score - seedBaselineAggregate.score,
+      ...(pairedProcessDelta(seedPairs) === undefined ? {} : { processScoreDelta: pairedProcessDelta(seedPairs)! }),
+      requiredRegressions: seedPairs.length === 0 ? 0 : this.requiredRegressions(round, seedPairs),
+    }
+    round = await this.transition(store, roundId, { evaluation })
+    active.abort.signal.throwIfAborted()
+    let accepted = false
+    if (this.passesSeed(round, evaluation)) {
+      round = await this.transition(store, roundId, { status: 'held-out-running' })
+      active.abort.signal.throwIfAborted()
+      let heldOutBaseline = evaluation.heldOutBaseline
+      if (heldOutBaseline === undefined) {
+        const staged = round.baselineSource?.partitions.heldOut
+        const reusable = staged === undefined ? await this.findReusableBaseline(
+          store, active.evolution.evaluator, round, round.targetHarnessRef, 'held-out', active.abort.signal,
+        ) : {
+          evidence: structuredClone(staged.evidence),
+          sourceEvolutionId: round.baselineSource!.source.evolutionId,
+          sourceRoundId: round.baselineSource!.source.roundId,
+          ...(staged.currentInvocationFingerprint === undefined
+            ? {}
+            : { currentInvocationFingerprint: staged.currentInvocationFingerprint }),
+        }
+        if (reusable !== undefined) {
+          active.abort.signal.throwIfAborted()
+          round = await this.persistReusableHeldOutBaseline(
+            store, round, championCandidateId, round.targetHarnessRef, reusable,
+          )
+          heldOutBaseline = reusable.evidence
+        } else {
+          if (active.resumeHeldOut === true) {
+            throw new Error(`round ${roundId} recovery will not start a fresh held-out baseline`)
+          }
+          const baselineEvaluation = await this.evaluateWithAttempt(active, round, {
+            phase: 'held-out-baseline', dataset: round.heldOutRef, harnessRef: round.targetHarnessRef,
+            condition: round.plan.heldOut,
+          }, {
+            candidateId: championCandidateId, role: 'baseline', harnessRef: round.targetHarnessRef,
+          }, (current, evidence) => ({ evaluation: { ...current.evaluation!, heldOutBaseline: evidence } }))
+          round = baselineEvaluation.round
+          heldOutBaseline = baselineEvaluation.evidence
+        }
+      }
+      // Candidate evidence remains durable in candidatePool while its paired
+      // projection is rebuilt below in one validated state transition.
+      let heldOutCandidate = priorHeldOutCandidate
+      if (heldOutCandidate === undefined) {
+        const candidateEvaluation = await this.evaluateWithAttempt(active, round, {
+          phase: 'held-out-candidate', dataset: round.heldOutRef, harnessRef: finalist.sealedVersion.commitOid,
+          condition: round.plan.heldOut,
+        }, {
+          candidateId: finalist.candidateId, role: 'candidate', harnessRef: finalist.sealedVersion.commitOid,
+        }, async (current, evidence) => {
+          this.assertParity(heldOutBaseline, evidence, 'held-out')
+          const heldOutPairs = pairedTrials(heldOutBaseline, evidence)
+          const heldOutBaselineAggregate = pairedAggregate(heldOutPairs, 'baseline')
+          const heldOutCandidateAggregate = pairedAggregate(heldOutPairs, 'candidate')
+          const completeEvaluation = {
+            ...evaluation, heldOutBaseline, heldOutCandidate: evidence,
+            heldOutPairedTrials: heldOutPairs,
+            heldOutPairing: pairingAudit(heldOutBaseline, evidence, heldOutPairs),
+            promotionMetrics: heldOutPairs.length === 0
+              ? { quality: 0, taskSuccessRate: 0 }
+              : await this.evaluateJudges(
+                  active.evolution.spec,
+                  projectPairedEvidence(evidence, heldOutPairs, 'candidate'),
+                ),
+            heldOutScoreDelta: heldOutCandidateAggregate.score - heldOutBaselineAggregate.score,
+            ...(pairedProcessDelta(heldOutPairs) === undefined ? {} : { heldOutProcessScoreDelta: pairedProcessDelta(heldOutPairs)! }),
+            requiredRegressions: evaluation.requiredRegressions
+              + (heldOutPairs.length === 0 ? 0 : this.requiredRegressions(current, heldOutPairs)),
+          }
+          return {
+            evaluation: completeEvaluation,
+            candidatePool: this.patchCandidate(current, finalist.candidateId, { heldOutEvaluation: evidence }),
+          }
+        })
+        round = candidateEvaluation.round
+        heldOutCandidate = candidateEvaluation.evidence
+        evaluation = round.evaluation!
+      } else {
+        this.assertParity(heldOutBaseline, heldOutCandidate, 'held-out')
+        const heldOutPairs = pairedTrials(heldOutBaseline, heldOutCandidate)
+        const heldOutBaselineAggregate = pairedAggregate(heldOutPairs, 'baseline')
+        const heldOutCandidateAggregate = pairedAggregate(heldOutPairs, 'candidate')
+        const promotionMetrics = heldOutPairs.length === 0
+          ? { quality: 0, taskSuccessRate: 0 }
+          : await this.evaluateJudges(
+              active.evolution.spec,
+              projectPairedEvidence(heldOutCandidate, heldOutPairs, 'candidate'),
+            )
+        active.abort.signal.throwIfAborted()
+        evaluation = {
+          ...evaluation, heldOutBaseline, heldOutCandidate,
+          heldOutPairedTrials: heldOutPairs,
+          heldOutPairing: pairingAudit(heldOutBaseline, heldOutCandidate, heldOutPairs),
+          promotionMetrics,
+          heldOutScoreDelta: heldOutCandidateAggregate.score - heldOutBaselineAggregate.score,
+          ...(pairedProcessDelta(heldOutPairs) === undefined ? {} : { heldOutProcessScoreDelta: pairedProcessDelta(heldOutPairs)! }),
+          requiredRegressions: evaluation.requiredRegressions
+            + (heldOutPairs.length === 0 ? 0 : this.requiredRegressions(round, heldOutPairs)),
+        }
+        round = await this.transition(store, roundId, {
+          evaluation,
+          candidatePool: this.patchCandidate(round, finalist.candidateId, { heldOutEvaluation: heldOutCandidate }),
+        })
+      }
+      accepted = this.passesHeldOut(round, evaluation, active.evolution.spec)
+    }
+
+    active.abort.signal.throwIfAborted()
+    const nextPopulation = this.nextPopulation(round, population, selection.selectedCandidateIds)
+    const nextChampion = accepted ? {
+      schemaVersion: 2 as const,
+      ref: finalist.sealedVersion.commitOid,
+      manifestDigest: finalist.sealedVersion.manifestDigest,
+      updatedAt: now(), roundId,
+    } : undefined
+    round = await this.transition(store, roundId, this.completeEvaluationRepairResume(active, round, {
+      status: 'promoting',
+      commitIntent: {
+        expectedPopulationDigest: population.digest, nextPopulation,
+        expectedChampionRef: round.targetHarnessRef,
+        ...(nextChampion === undefined ? {} : { nextChampion }),
+        decision: accepted ? 'accepted' : 'rejected',
+        promotionCandidateId: finalist.candidateId,
+        phase: 'prepared',
+      },
+    }))
+    active.abort.signal.throwIfAborted()
+    await store.compareAndSwapPopulation(population.digest, nextPopulation)
+    active.abort.signal.throwIfAborted()
+    round = await this.transition(store, roundId, {
+      commitIntent: { ...round.commitIntent!, phase: 'population-committed' },
+    })
+    active.abort.signal.throwIfAborted()
+    if (nextChampion !== undefined) await store.compareAndSwapChampion(round.targetHarnessRef, nextChampion)
+    active.abort.signal.throwIfAborted()
+    round = await this.transition(store, roundId, {
+      commitIntent: { ...round.commitIntent!, phase: 'champion-committed' },
+    })
+    await this.transition(store, roundId, accepted
+      ? { status: 'accepted', decision: 'accepted', promotedCandidateId: finalist.candidateId }
+      : { status: 'rejected', decision: 'rejected' })
   }
 
   private async findReusableBaseline(

@@ -259,6 +259,19 @@ ROUND_ID="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).roundId)' 
 node examples/codex-skill-meta-runner.mjs --evolution-id "$EVOLUTION_ID" --round-id "$ROUND_ID"
 ```
 
+若要让已完成 seed selection 的可恢复失败 round 从 held-out evaluation 继续，传入它的精确 `roundId`：
+
+```bash
+ADMISSION="$(gear-refine request control.continue \
+  "{\"evolutionId\":\"$EXISTING_EVOLUTION_ID\",\"roundId\":\"$EXISTING_ROUND_ID\"}")"
+```
+
+这种形式继续原 round，并保留它的 batch/round identity 和 durable state；`roundId`
+不能与新 batch 使用的 `rounds` 或 `focus` 同时提交。它不会创建 Meta assignment、
+启动 Meta runner 或继续原 batch 的剩余 rounds；调用后只轮询该 round 的
+`control.status`。已有 Gear 持有的 failed evaluation 使用 `control.rerun`；只有
+selected candidate 的 held-out evaluation 没有 execution trace 时才会启动缺失的 run。
+
 一次 runner 调用至多处理一个 assignment；当前跟踪的实验配置也固定
 `candidateGeneration.maxCandidates: 1`。assignment 持久化结算后 runner
 退出，stdout 返回当前 round status；`failed` 返回非零状态，合法的 accepted
@@ -289,7 +302,7 @@ token。audit 仅记录 assignment 关联、method/capability 以及
 Meta harness 读取 `skills/refine/SKILL.md`，通过 DSH 的 `refine_request` 或
 standalone 的 `gear-refine request`：
 
-1. `control.start` 或显式 `control.continue`；
+1. `control.start` 或不带 `roundId`、创建新 batch 的 `control.continue`；
 2. 轮询 `control.status` 与 `meta.claim`；
 3. 使用 exact identity 领取短期 candidate lease；
 4. 通过 `candidate.tree/read/write/edit/remove` 操作受限 workspace；
@@ -297,6 +310,9 @@ standalone 的 `gear-refine request`：
 6. 检查 authoritative diff 和固定 compiler；
 7. `candidate.finalize` 或 `candidate.decline`；
 8. 继续领取 sibling/next-round，直到 batch terminal。
+
+带 `roundId` 的 `control.continue` 是独立的 operator recovery 路径：调用后只轮询
+`control.status`，不执行上述 Meta claim/candidate 步骤。
 
 完整方法、逐字段参数和调用顺序见
 [`skills/refine/references/protocol.md`](../skills/refine/references/protocol.md)。

@@ -134,6 +134,38 @@ export function parseAdmissionInput(words: string[]): {
   return parsed
 }
 
+export function parseContinueInput(words: string[]): {
+  roundId?: string
+  rounds?: number
+  focus?: SemanticTarget[]
+} {
+  let roundId: string | undefined
+  const admissionWords: string[] = []
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index]!
+    if (word !== '--round') {
+      admissionWords.push(word)
+      continue
+    }
+    const value = words[++index]
+    if (value === undefined || value.length === 0 || value.startsWith('--')) throw new TypeError('--round requires a value')
+    if (roundId !== undefined) throw new TypeError('--round may only be specified once')
+    roundId = value
+  }
+  const parsed = parseAdmissionInput(admissionWords)
+  if (parsed.seedTaskRef !== undefined || parsed.taskBudgetMs !== undefined || parsed.from !== undefined || parsed.name !== undefined) {
+    throw new TypeError('continue accepts only --round, --rounds, and --focus')
+  }
+  if (roundId !== undefined && (parsed.rounds !== undefined || parsed.focus !== undefined)) {
+    throw new TypeError('--round cannot be combined with --rounds or --focus')
+  }
+  return {
+    ...(roundId === undefined ? {} : { roundId }),
+    ...(parsed.rounds === undefined ? {} : { rounds: parsed.rounds }),
+    ...(parsed.focus === undefined ? {} : { focus: parsed.focus }),
+  }
+}
+
 export function parseEvaluationRerunInput(words: string[]): {
   evolutionId: string
   roundId: string
@@ -658,16 +690,16 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
             return { kind: 'success', text: JSON.stringify(await service.status(words[1], words[2])) }
           }
           if (words[0] === 'continue') {
-            if (words[1] === undefined) return { kind: 'error', text: 'usage: /refine continue <evolution-id> [--rounds N] [--focus FOCUS]' }
-            const parsed = parseAdmissionInput(words.slice(2))
-            if (parsed.seedTaskRef !== undefined || parsed.taskBudgetMs !== undefined || parsed.from !== undefined || parsed.name !== undefined) {
-              return { kind: 'error', text: 'continue accepts only --rounds and --focus' }
-            }
+            if (words[1] === undefined) return { kind: 'error', text: 'usage: /refine continue <evolution-id> (--round ROUND-ID | [--rounds N] [--focus FOCUS])' }
+            const parsed = parseContinueInput(words.slice(2))
             const accepted = await service.continueEvolution('command', words[1], {
+              ...(parsed.roundId === undefined ? {} : { roundId: parsed.roundId }),
               ...(parsed.rounds === undefined ? {} : { rounds: parsed.rounds }),
               ...(parsed.focus === undefined ? {} : { focus: parsed.focus }),
             })
-            return { kind: 'success', text: `queued evolution ${accepted.evolutionId}, batch ${accepted.batchId}, round ${accepted.roundId}` }
+            return parsed.roundId === undefined
+              ? { kind: 'success', text: `queued evolution ${accepted.evolutionId}, batch ${accepted.batchId}, round ${accepted.roundId}` }
+              : { kind: 'success', text: `continuing existing round ${accepted.roundId} in evolution ${accepted.evolutionId} from held-out evaluation` }
           }
           if (words[0] === 'rerun') {
             const parsed = parseEvaluationRerunInput(words.slice(1))

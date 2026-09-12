@@ -123,6 +123,26 @@ describe('Skill harness identity', () => {
     })).rejects.toThrow('partitions must be either')
     expect(admit).toHaveBeenCalledTimes(1)
   })
+
+  it('forwards one exact round for continuation without new-batch options', async () => {
+    const continueEvolution = vi.fn(async () => ({ status: 'queued' }))
+    const gateway = new RefineSkillGateway(
+      { continueEvolution } as never, new SkillMetaCoordinator(), {} as never, {} as never,
+    )
+    await gateway.call('control.continue', { evolutionId: 'evolution-1', roundId: 'round-1' })
+    expect(continueEvolution).toHaveBeenCalledWith('skill', 'evolution-1', { roundId: 'round-1' })
+
+    await expect(gateway.call('control.continue', {
+      evolutionId: 'evolution-1', roundId: 'round-1', rounds: 2,
+    })).rejects.toThrow(/roundId cannot be combined with rounds or focus/)
+    await expect(gateway.call('control.continue', {
+      evolutionId: 'evolution-1', roundId: 'round-1', focus: ['context'],
+    })).rejects.toThrow(/roundId cannot be combined with rounds or focus/)
+    await expect(gateway.call('control.continue', {
+      evolutionId: 'evolution-1', roundId: '',
+    })).rejects.toThrow(/roundId is required/)
+    expect(continueEvolution).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('SkillMetaSessionManager', () => {

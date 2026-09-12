@@ -158,13 +158,14 @@ Meta proposal 超时属于可重试的基础设施失败。控制器在同一 ca
 ```text
 /refine <seed-task-ref> [--rounds N] [--budget B] [--focus FOCUS] [--from initial|published|<exact-ref>] [--name NAME]
 /refine continue <evolution-id> [--rounds N] [--focus FOCUS]
+/refine continue <evolution-id> --round <round-id>
 /refine status
 /refine status <evolution-id> [<round-id>]
 /refine publish <evolution-id> [<exact-ref>]
 /refine rollback <evolution-id> <verified-exact-ref>
 ```
 
-普通 `/refine` 永远创建新 evolution和batch。`--from` 默认 configured initial champion；跨 lineage复用必须显式选择 published或 exact commit。`continue` 只能改变 batch round count和 advisory focus。
+普通 `/refine` 永远创建新 evolution和batch，并拒绝 `--round`。`--from` 默认 configured initial champion；跨 lineage复用必须显式选择 published或 exact commit。不带 `--round` 的 `continue` 可改变新 batch 的 round count和 advisory focus；`--round` 只恢复指定的既有 round，不创建新 batch，且不能与 `--rounds` 或 `--focus` 组合。
 
 published pointer不等于任何 evolution champion。`publish` 只接受该 evolution当前 champion或 accepted history并执行 CAS；`rollback` 只改变指定 evolution。
 
