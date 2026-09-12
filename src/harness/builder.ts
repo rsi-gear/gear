@@ -251,6 +251,13 @@ export class HarnessBuilder {
     return manifest
   }
 
+  async searchSnapshot(candidateId: string, ref: string, parentIds: string[] = []): Promise<import('../search/types.js').Snapshot> {
+    const manifest = await this.readManifest(ref)
+    const tree = (await this.git(['rev-parse', `${ref}^{tree}`])).stdout.trim()
+    const { seal } = await import('../search/contracts.js')
+    return seal({ candidateId, commit: ref, tree, manifestDigest: manifest.digest, parentIds, findingRefs: [] })
+  }
+
   async readHarnessFile(ref: string, path: string): Promise<{ content: string; digest: string; bytes: number }> {
     const normalized = safeRelativePath(path)
     const manifest = await this.readManifest(ref)

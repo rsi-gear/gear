@@ -190,6 +190,8 @@ export interface RolloutSpec {
 }
 
 export interface EvolutionSpec {
+  /** Explicit, frozen v2 search configuration; absent on every legacy evolution. */
+  searchSettings?: import('./search/types.js').SearchSettings
   evolutionId: EvolutionId
   createdAt: string
 
@@ -1002,6 +1004,8 @@ export interface MetaAttribution {
 }
 
 export interface ProposalEvidenceAudit {
+  workplanReceipt?: import('./search/types.js').WorkplanReceipt
+  workplanDelivery?: ReturnType<typeof import('./search/diagnosis.js').deliveredWorkplan>
   evolutionId: EvolutionId
   roundId: string
   candidateId?: string
@@ -1094,6 +1098,7 @@ export interface MetaTurnObservation {
 }
 
 export interface CandidateRecord {
+  workplanDelivery?: ReturnType<typeof import('./search/diagnosis.js').deliveredWorkplan>
   validation?: import('./harness/check-report.js').CandidateCheckReport
   candidateId: string
   roundId: string
@@ -1243,6 +1248,9 @@ export interface BaselineReuseBlocker {
 }
 
 export interface RefinementRound {
+  searchMode?: 'failure-cluster-gepa-v1'
+  searchAnchor?: { snapshot: import('./search/types.js').Snapshot; championRevisionDigest: string }
+  searchOutcome?: import('./search/engine.js').SearchRoundOutcome
   baselineReuseBlocker?: BaselineReuseBlocker
   candidateGenerationDeadlineAt?: number
   evolutionId: EvolutionId
@@ -1301,6 +1309,8 @@ export interface AdmissionResult {
 }
 
 export interface PublicRoundStatus {
+  searchPendingEvidence?: { planDigest: string; resultRefs: string[] }
+  search?: import('./search/engine.js').SearchRoundOutcome
   baselineReuseBlocker?: BaselineReuseBlocker
   evolutionId: EvolutionId
   batchId: string
@@ -1358,6 +1368,8 @@ export interface PromotionPolicy {
 }
 
 export interface RefineEvaluator {
+  /** Optional v2 capability. Admission rejects unsupported evaluators before any rollout. */
+  search?: { provider: import('./search/types.js').SearchProvider; diagnosis: import('./search/types.js').DiagnosisProvider }
   preflight?(): Promise<void>
 
   /** Resolve semantic evaluation identity plus diagnostic invocation provenance, or return undefined when not known yet. */

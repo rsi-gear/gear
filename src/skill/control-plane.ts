@@ -1,3 +1,4 @@
+import { resolveSearchSettings } from '../search/config.js'
 import { isAbsolute, join } from 'node:path'
 import { RefineCapabilities } from '../capabilities.js'
 import { CandidateWorkspaceManager } from '../candidate/workspace.js'
@@ -250,6 +251,7 @@ export async function createSkillControlPlane(
       heldOutRef: config.heldOutRef,
       taskBudgetMs: positive(config.taskBudgetMs, 'taskBudgetMs', 3_600_000),
       ...(config.initialChampion === undefined ? {} : { initialChampion: config.initialChampion }),
+      ...(config.search === undefined ? {} : { searchSettings: resolveSearchSettings(config)! }),
       publishedPointer: config.evolutionState.publishedPointer,
       maxLiveMetaSessions: positive(config.evolutionState.maxLiveMetaSessions, 'evolutionState.maxLiveMetaSessions', 8),
       validateRuntime,

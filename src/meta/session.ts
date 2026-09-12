@@ -1,3 +1,4 @@
+import { consumptionReceipt } from '../search/diagnosis.js'
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
@@ -242,6 +243,7 @@ export class MetaSessionManager implements MetaSessionController {
   private readonly handles = new Map<string, AgentHandle>()
   private readonly wakes = new Map<string, RoundWake>()
   private readonly evidenceAccess = new Map<string, RoundEvidenceAccess>()
+  private readonly workplanDeliveries = new Map<string, NonNullable<CandidateRecord['workplanDelivery']>>()
   private readonly executions = new Map<string, DshContextExecution>()
 
   constructor(
@@ -401,6 +403,7 @@ export class MetaSessionManager implements MetaSessionController {
       firstObservedSeq,
     })
     const baselineRefs = [
+      ...(candidate?.workplanDelivery?.workplan.requiredDiagnosisRefs ?? []),
       ...(baseline === undefined ? [] : [baseline.evalId]),
       ...(baseline?.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId]) ?? []),
     ]
@@ -411,9 +414,11 @@ export class MetaSessionManager implements MetaSessionController {
       diagnosedRunRefs: new Set(),
       diagnosisReceipts: new Map(),
     })
+    if (candidate?.workplanDelivery) this.workplanDeliveries.set(sessionId, candidate.workplanDelivery)
     const envelope = createUserMessage({
       content: [{ type: 'text', text: JSON.stringify({
         kind: 'refinement-round',
+        ...(candidate?.workplanDelivery ? { workplanDelivery: candidate.workplanDelivery } : {}),
         ...(execution?.generationBudget === undefined ? {} : { generationBudget: generationBudgetSnapshot(execution.generationBudget) }),
         ...(execution !== undefined && execution.attempt > 1 ? {
           retryRecovery: { workspace: 'fresh', diagnosis: 'query-current-baseline' },
@@ -431,7 +436,7 @@ export class MetaSessionManager implements MetaSessionController {
         evidencePolicy: {
           currentRoundOnly: true,
           citeObservedSeedRefs: true,
-          diagnoseEveryFailedRunBeforeProposal: true,
+          diagnoseEveryFailedRunBeforeProposal: candidate?.workplanDelivery === undefined,
           heldOutUnavailable: true,
         },
         baseline: baseline === undefined ? undefined : {
@@ -484,9 +489,11 @@ export class MetaSessionManager implements MetaSessionController {
               accessedRefs: new Set(audit.accessedRefs), diagnosedRunRefs: new Set(audit.diagnosedRunRefs),
               diagnosisReceipts: new Map((audit.diagnosisReceipts ?? []).map(receipt => [receipt.runId, structuredClone(receipt)])),
             })
+            if (audit.workplanDelivery) this.workplanDeliveries.set(nextId, audit.workplanDelivery)
             if (sourceId !== nextId) {
               this.wakes.delete(sourceId)
               this.evidenceAccess.delete(sourceId)
+              this.workplanDeliveries.delete(sourceId)
             }
             this.executions.set(nextId, offloader)
           },
@@ -540,6 +547,10 @@ export class MetaSessionManager implements MetaSessionController {
       throw new Error('proposal evidence did not originate from the active round meta session')
     }
     return {
+      ...(this.workplanDeliveries.has(sessionId) ? {
+        workplanDelivery: this.workplanDeliveries.get(sessionId)!,
+        workplanReceipt: consumptionReceipt(this.workplanDeliveries.get(sessionId)!, sessionId, [...access.accessedRefs]),
+      } : {}),
       evolutionId: this.options.evolutionId,
       roundId,
       ...(wake.candidateId === undefined ? {} : { candidateId: wake.candidateId }),

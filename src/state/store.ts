@@ -1,3 +1,4 @@
+import { validateSearchSchema } from '../search/schema.js'
 import { constants } from 'node:fs'
 import { access, mkdir, open, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -517,7 +518,21 @@ export class RefineStateStore {
       || round.decline.evidenceRefs.some(ref => typeof ref !== 'string' || ref.length === 0))) {
       throw new TypeError('round decline is invalid')
     }
-    if (!Array.isArray(round.candidatePool) || round.candidatePool.length === 0
+    if (round.searchMode !== undefined) {
+      if (round.searchMode !== 'failure-cluster-gepa-v1' || !round.searchAnchor) throw new TypeError('invalid search round admission')
+      const { digest: anchorDigest, ...snapshot } = round.searchAnchor.snapshot
+      if (digestJson(snapshot) !== anchorDigest || snapshot.commit !== round.targetHarnessRef || snapshot.manifestDigest !== round.targetHarnessDigest
+        || !/^sha256:[a-f0-9]{64}$/u.test(round.searchAnchor.championRevisionDigest)) throw new TypeError('search champion anchor identity mismatch')
+      if (round.searchOutcome) {
+        validateSearchSchema('SearchRoundOutcome', round.searchOutcome)
+        const { digest: outcomeDigest, ...outcome } = round.searchOutcome
+        if (digestJson(outcome) !== outcomeDigest || outcome.roundId !== round.roundId || outcome.schemaVersion !== 2
+          || outcome.championAnchorDigest !== anchorDigest || outcome.championChanged !== (round.status === 'accepted')) throw new TypeError('search terminal decision mismatch')
+        if (outcome.championChanged && (outcome.advisory || outcome.promotion?.outcome !== 'accepted'
+          || !round.candidatePool?.some(c => c.candidateId === outcome.nomineeId && c.sealedVersion))) throw new TypeError('search champion requires complete promotion')
+      } else if (round.status === 'accepted') throw new TypeError('search accepted round missing v2 outcome')
+    }
+    if (!Array.isArray(round.candidatePool) || round.candidatePool.length === 0 && round.searchMode === undefined
       || new Set(round.candidatePool.map(candidate => candidate.candidateId)).size !== round.candidatePool.length) {
       throw new TypeError('round candidatePool is invalid')
     }
@@ -953,7 +968,7 @@ export class RefineStateStore {
     const terminal = round.status === 'accepted' || round.status === 'rejected'
       || round.status === 'rejected-for-substrate' || round.status === 'failed'
     if (!terminal && round.decision !== undefined) throw new TypeError('non-terminal round cannot have a decision')
-    if (round.status === 'accepted') {
+    if (round.status === 'accepted' && round.searchMode === undefined) {
       const promoted = round.candidatePool.find(candidate => candidate.candidateId === round.promotedCandidateId)
       if (round.decision !== 'accepted' || promoted?.sealedVersion === undefined
         || round.evaluation?.heldOutBaseline === undefined || round.evaluation.heldOutCandidate === undefined

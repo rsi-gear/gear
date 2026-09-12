@@ -61,7 +61,19 @@ not infer missing field names or harness APIs from errors.
    top-level request methods. Read the active candidate files before selecting
    an edit. Do not discover or modify Gear state, Git metadata, held-out data,
    credentials, or host paths directly.
-5. Review the baseline summary. Start with `trajectory.query` without arguments
+5. Review the baseline summary. If the assignment contains `workplanDelivery`,
+   consume its hypothesis, parent identity, sourced dossier excerpt, scope guards,
+   generation budget, and seed-only findings first. Keep modifications within
+   `workplan.modificationPaths` (paths relative to the harness root), or explicitly
+   disclose the wider effect; a narrow scope does not qualify wider changes for
+   promotion. The claimed assignment records `workplan-dossier-consumed`, not
+   personal diagnosis of all parent failures. When
+   `evidencePolicy.diagnoseEveryFailedRunBeforeProposal` is false, the full-failure
+   reading loop below does not apply: read extra seed evidence only when needed,
+   and use `candidate.check` to confirm finalization readiness. Do not request or
+   use held-out promotion details to plan candidate changes.
+
+   For assignments without a workplan, start with `trajectory.query` without arguments
    on every assignment: it restores validated diagnostics from earlier attempts
    of this candidate and returns their summaries plus current-session detail
    refs. If `diagnosisRecovery.remaining` is positive, repeat that query to
@@ -126,6 +138,11 @@ by Gear's sealed promotion policy.
 - On a timeout or failed round, inspect status; do not create a replacement
   evolution unless the user asked for a new one.
 - Use `control.rerun` only for repairable evaluation slots reported by status.
+- For staged-search `searchPendingEvidence`, `control.search-repair` takes
+  `evolutionId`, `roundId`, a stable `repairId`, and `evidenceDigest`. It repairs
+  original invalid slots and resumes the same round; it is not a request for a
+  new candidate or a new experiment. Leave held-out repair to the operator flow,
+  and do not feed its results into a candidate lease.
 - If finalize or decline returns `accepted:false, recoverable:true`, execute
   `nextAction`, then `remainingActions`, and retry the same operation with the
   same arguments. The lease remains active until `accepted:true`.

@@ -7,6 +7,7 @@ import type {
   ProposalEvidenceAudit,
   TrajectoryEvidenceBlocker,
 } from '../types.js'
+import { validateReceipt } from '../search/diagnosis.js'
 
 function reward(rewards: Record<string, number>): number | undefined {
   return rewards.reward ?? Object.values(rewards)[0]
@@ -29,6 +30,24 @@ export function finalizationReadiness(
   audit: ProposalEvidenceAudit,
   trajectoryBlockedRuns: readonly TrajectoryEvidenceBlocker[] = [],
 ): FinalizationReadiness {
+  if (audit.workplanDelivery) {
+    let consumed = false
+    try {
+      if (audit.workplanReceipt) {
+        validateReceipt(audit.workplanReceipt, audit.workplanDelivery, audit.workplanReceipt.sessionId)
+        consumed = audit.candidateId === audit.workplanDelivery.workplan.candidateId
+      }
+    } catch { consumed = false }
+    const unaccessedCitedRefs = audit.citedRefs.filter(ref => !audit.accessedRefs.includes(ref))
+    const ready = consumed && audit.summaryAccessed && unaccessedCitedRefs.length === 0
+    return { ready, summaryAccessed: audit.summaryAccessed, baselineEvalId: baseline.evalId,
+      failedRunCount: audit.workplanDelivery.workplan.requiredDiagnosisRefs.length,
+      diagnosedRunCount: consumed ? audit.workplanDelivery.workplan.requiredDiagnosisRefs.length : 0,
+      remainingRunCount: consumed ? 0 : audit.workplanDelivery.workplan.requiredDiagnosisRefs.length,
+      missing: [], verifierBlockedRunIds: [], trajectoryBlockedRuns: [], unaccessedCitedRefs,
+      blockers: ready ? [] : [{ code: 'MISSING_BASELINE_DIAGNOSIS', message: 'Consume the assigned workplan, sourced dossier and shared constraints before finalizing; cited evidence must be accessed.' }],
+      nextActions: [] }
+  }
   const required = baseline.trials
     .filter(trial => (reward(trial.rewards) ?? 0) <= 0 && trial.runId !== undefined)
     .map(trial => {

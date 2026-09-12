@@ -23,6 +23,7 @@ import { RefineCapabilities } from '../../src/capabilities.js'
 import { renderTrajectoryResult } from '../../src/notebook/tool.js'
 import { trajectoryAnalysis } from '../helpers/trajectory-fixture.js'
 import type { HitchTrajectoryReader } from '../../src/types.js'
+import { fixtures as searchFixtures, settings as searchSettings } from '../helpers/search-fixture.js'
 
 const roots: string[] = []
 afterEach(async () => {
@@ -3082,5 +3083,43 @@ describe('RefineService evolution workspaces', () => {
       }],
     })
     await recovering.dispose()
+  })
+})
+
+describe('explicit staged search control-plane integration', () => {
+  it.each([false, true])('delivers a scoped workplan to Skill Meta and promotes via v2 (process=%s)', async process => {
+    const coordinator = new SkillMetaCoordinator()
+    const { service, evaluator, git } = await setup(0.8, false, 1, 300_000, 1, 0, 1, 300_000, coordinator)
+    const fixture = searchFixtures(20, process)
+    const evaluate = fixture.provider.evaluate.bind(fixture.provider)
+    fixture.provider.evaluate = input => evaluate({ ...input, snapshot: { ...input.snapshot, candidateId: input.snapshot.commit === git.championRef ? 'anchor' : input.snapshot.candidateId } })
+    const diagnose = fixture.diagnosis.diagnose.bind(fixture.diagnosis)
+    fixture.diagnosis.diagnose = async input => { const output = await diagnose(input); return { ...output, facts: output.facts.map(f => ({ ...f, modificationPaths: ['prompts'] })) } }
+    ;(evaluator as RefineEvaluator).search = { provider: fixture.provider, diagnosis: fixture.diagnosis }
+    service.options.searchSettings = searchSettings()
+    try {
+      const admitted = await service.admit('api')
+      const store = service.registry.stateStore(admitted.evolutionId)
+      const current = await eventually(() => store.readRound(admitted.roundId), r => r?.status === 'candidate-editing' || r?.status === 'failed' || r?.status === 'rejected')
+      expect(current?.status, current?.failure?.message).toBe('candidate-editing')
+      const assignment = (await eventually(async () => coordinator.claim('test-client', skillHarnessIdentity(service.options.metaAgent), admitted.evolutionId), a => a !== undefined))!
+      expect(assignment.workplanDelivery?.workplan.hypothesis).toBeTruthy()
+      expect(assignment.evidencePolicy.diagnoseEveryFailedRunBeforeProposal).toBe(false)
+      const active = service.activeEntry(admitted.roundId)!
+      const workspace = service.workspaceManager.resolve(assignment.sessionId)
+      await mkdir(join(workspace.targetPath, 'prompts'), { recursive: true })
+      await writeFile(join(workspace.targetPath, 'prompts', 'search-improvement.md'), 'Improve the assigned fixture workflow.\n')
+      const refs = [assignment.baseline.evalId]
+      const attribution = await active.meta.proposalAttribution(admitted.roundId, assignment.sessionId, {})
+      const evidence = active.meta.proposalEvidenceAudit(admitted.roundId, assignment.sessionId, refs)
+      expect(evidence.workplanReceipt?.kind).toBe('workplan-dossier-consumed')
+      expect(evidence.diagnosisReceipts).toEqual([])
+      await service.submitFinalization(admitted.evolutionId, admitted.roundId, { rationale: 'Repair the assigned workflow', expectedOutcome: 'Higher completion', evidenceRefs: refs }, undefined, attribution, evidence)
+      const terminal = await eventually(() => store.readRound(admitted.roundId), r => r?.status === 'accepted' || r?.status === 'failed' || r?.status === 'rejected')
+      expect(terminal?.status, JSON.stringify(terminal?.failure ?? terminal?.searchOutcome)).toBe('accepted')
+      expect(terminal?.searchOutcome?.championChanged).toBe(true)
+      expect(evaluator.calls).toEqual([])
+      expect(await store.readChampion()).toMatchObject({ ref: terminal!.candidatePool[0]!.sealedVersion!.commitOid })
+    } finally { await service.dispose() }
   })
 })

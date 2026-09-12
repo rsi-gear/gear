@@ -35,6 +35,10 @@
       "types": "./lib/skill/index.d.ts",
       "default": "./lib/skill/index.js"
     },
+    "./search": {
+      "types": "./lib/search/index.d.ts",
+      "default": "./lib/search/index.js"
+    },
     "./testing": {
       "types": "./lib/testing.d.ts",
       "default": "./lib/testing.js"
@@ -48,6 +52,7 @@
   "files": [
     "lib/**/*.js",
     "lib/**/*.d.ts",
+    "lib/**/*.json",
     "assets/ipython-kernel.py",
     "assets/llm-verifier-bridge.py",
     "assets/hitch-codex-wrapper.mjs",

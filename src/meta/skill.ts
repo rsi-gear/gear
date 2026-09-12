@@ -15,6 +15,7 @@ import type {
 } from '../types.js'
 import type { MetaAgentSession, MetaSessionController, MetaExecutionBinding } from './controller.js'
 import { generationBudgetSnapshot } from '../refine/generation-budget.js'
+import { consumptionReceipt } from '../search/diagnosis.js'
 
 export interface SkillHarnessIdentity {
   runtime: { type: string; version: string; integrity: string }
@@ -24,6 +25,7 @@ export interface SkillHarnessIdentity {
 }
 
 export interface SkillAssignment {
+  workplanDelivery?: CandidateRecord['workplanDelivery']
   generationBudget?: CandidateGenerationBudgetStatus
   retryRecovery?: { workspace: 'fresh'; diagnosis: 'query-current-baseline' }
   leaseId: string
@@ -37,7 +39,7 @@ export interface SkillAssignment {
   evidencePolicy: {
     currentRoundOnly: true
     citeObservedSeedRefs: true
-    diagnoseEveryFailedRunBeforeProposal: true
+    diagnoseEveryFailedRunBeforeProposal: boolean
     heldOutUnavailable: true
   }
   baseline: {
@@ -164,6 +166,8 @@ export class SkillMetaCoordinator {
 }
 
 interface WakeState {
+  workplanDelivery?: CandidateRecord['workplanDelivery']
+  workplanReceipt?: import('../search/types.js').WorkplanReceipt
   roundId: string
   candidateId?: string
   baselineEvalId: string
@@ -291,6 +295,7 @@ export class SkillMetaSessionManager implements MetaSessionController {
     ]
     const leaseId = crypto.randomUUID()
     this.coordinator.publish({
+      ...(candidate.workplanDelivery ? { workplanDelivery: structuredClone(candidate.workplanDelivery) } : {}),
       ...(execution?.generationBudget === undefined ? {} : {
         generationBudget: generationBudgetSnapshot(execution.generationBudget),
       }),
@@ -308,7 +313,7 @@ export class SkillMetaSessionManager implements MetaSessionController {
       evidencePolicy: {
         currentRoundOnly: true,
         citeObservedSeedRefs: true,
-        diagnoseEveryFailedRunBeforeProposal: true,
+        diagnoseEveryFailedRunBeforeProposal: candidate.workplanDelivery === undefined,
         heldOutUnavailable: true,
       },
       baseline: {
@@ -337,6 +342,11 @@ export class SkillMetaSessionManager implements MetaSessionController {
     }, skillHarnessIdentity(this.options.metaAgent), () => {
       state.summaryAccessed = true
       for (const ref of refs) state.accessedRefs.add(ref)
+      if (candidate.workplanDelivery) {
+        state.workplanDelivery = structuredClone(candidate.workplanDelivery)
+        state.workplanReceipt = consumptionReceipt(candidate.workplanDelivery, session.id, candidate.workplanDelivery.workplan.requiredDiagnosisRefs)
+        for (const ref of candidate.workplanDelivery.workplan.requiredDiagnosisRefs) state.accessedRefs.add(ref)
+      }
     })
     return { sessionId: session.id }
   }
@@ -374,6 +384,8 @@ export class SkillMetaSessionManager implements MetaSessionController {
       roundId,
       ...(state.candidateId === undefined ? {} : { candidateId: state.candidateId }),
       baselineEvalId: state.baselineEvalId,
+      ...(state.workplanDelivery ? { workplanDelivery: state.workplanDelivery } : {}),
+      ...(state.workplanReceipt ? { workplanReceipt: state.workplanReceipt } : {}),
       summaryAccessed: state.summaryAccessed,
       accessedRefs: [...state.accessedRefs].sort(),
       diagnosedRunRefs: [...state.diagnosedRunRefs].sort(),

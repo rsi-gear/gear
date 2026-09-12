@@ -1,0 +1,360 @@
+/** Versioned contracts for explicitly opted-in evolutions. Legacy records are unchanged. */
+export type Partition = 'seed' | 'held-out'
+export type ProcessMode = 'off' | 'auto' | 'required'
+export type Bucket = 'local' | 'shared' | 'cross'
+export type Stage = 'baseline-probe' | 'local' | 'bridge' | 'global-seed' | 'held-out'
+export interface MetricContract {
+  id: string
+  revision: string
+  digest: string
+  channel: 'outcome' | 'process'
+  evidenceKind: 'final-outcome' | 'final-state-partial-credit' | 'trajectory'
+  granularity: 'dataset-aggregate' | 'trial' | 'component'
+  direction: 'maximize' | 'minimize'
+  range?: { min: number; max: number }
+  normalization?: { kind: 'fixed-linear'; min: number; max: number }
+  comparisonQuantum: number
+  repetitionReducer: 'mean'
+  applicableTaskSetDigest: string
+  /** Equal group IDs assert equal utility units, including after normalization. */
+  group: string
+}
+export type MetricObservation =
+  | { status: 'available'; rawValue: number; contractDigest: string; evidenceRef: string }
+  | { status: 'unsupported' | 'not-applicable'; declarationDigest: string }
+  | { status: 'missing' | 'invalid'; contractDigest: string; reason: string }
+export interface SearchTask {
+  id: string
+  contentDigest: string
+  outcome: MetricContract
+  process?: MetricContract
+  successUtility: number
+  weight: number
+  stratum: string
+  estimatedCost: number
+  regressionTemplate?: Omit<import('./regression.js').RegressionInput, 'source' | 'outcome'>
+}
+export interface TaskUniverse {
+  partition: Partition
+  tasks: SearchTask[]
+  /** Covers execution environment, model, sampling, scorer and per-task budgets. */
+  conditionDigest: string
+  repetitions: Array<{ index: number; seed: number }>
+  digest: string
+  regressionSuiteDigest?: string
+}
+export interface TaskSetLimit { ratio: number; minTasks?: number | null; maxTasks?: number | null }
+export interface TaskSetSizing {
+  basis: 'seed-universe'
+  rounding: 'ceil'
+  local: TaskSetLimit
+  shared: TaskSetLimit
+  cross: TaskSetLimit
+  bridge: TaskSetLimit
+}
+export interface TaskSetResolution {
+  universeDigest: string
+  universeSize: number
+  config: TaskSetSizing
+  quantities: Record<Bucket | 'bridge', { requested: number; resolved: number; reasons: string[] }>
+  digest: string
+}
+export interface TaskGuard {
+  taskId: string
+  partition: Partition
+  rule: 'no-regression' | 'minimum-score' | 'must-pass'
+  minimumUtility?: number
+}
+export interface AssertionGuard {
+  taskId: string
+  partition: Partition
+  assertionId: string
+  schemaDigest: string
+  rule: 'must-pass' | 'no-new-violation'
+}
+export interface MetricThresholds { minimumGain: number; maxSeedRegression: number; maxHeldOutRegression: number }
+export interface MultisignalPromotionConfig {
+  policy: 'paired-multisignal-v1'
+  validationMode: 'independent-held-out' | 'shared-set-research'
+  outcome: MetricThresholds
+  process: MetricThresholds & { mode: ProcessMode; groups?: Record<string, MetricThresholds> }
+  allowNeutral: boolean
+  protectedTasks: TaskGuard[]
+  protectedAssertions: AssertionGuard[]
+}
+export interface SearchConfig {
+  mode: 'failure-cluster-gepa-v1'
+  seed: number
+  parentBatchCount: number
+  parentSampling: 'scoped-frontier-membership-v1'
+  scopeWeights: 'uniform-by-family'
+  archiveCoverage: 'complete-scope'
+  diagnosis: { sharing: 'parent-evidence-dossier'; planner: 'evidence-failure-clusters-v1'; candidatesPerFamily: number }
+  taskSetSizing: TaskSetSizing
+  scopeSampling: { bucketWeights: Record<Bucket, number>; epochPolicy: 'stable'; sharedCoreTaskIds?: string[] }
+  evaluationStages: {
+    bridge: { maxCandidates: number; groupAllocation: 'weighted-round-robin'; taskSelection: 'nominated-scopes-union-then-stratified' }
+    globalSeed: { maxCandidates: 1 }
+    reuseValidCells: true
+  }
+  process: { mode: ProcessMode; parentBudgetFraction: number }
+  globalTaskWeights: 'uniform'
+  explorationGuards: TaskGuard[]
+}
+export interface BudgetLimits {
+  maxNewRolloutCells: number
+  maxDiagnosisInputTokens: number
+  maxDiagnosisOutputTokens: number
+  maxGenerationTokens: number
+  maxGenerationRequests: number
+  maxRepairCells: number
+  timeoutMs: number
+}
+export interface SearchSettings {
+  search: SearchConfig
+  promotion: MultisignalPromotionConfig
+  budgets: { round: BudgetLimits; evolution: BudgetLimits }
+  regression: { collectFailures: boolean; maxProposals: number; suiteRef?: string | null }
+}
+export interface Snapshot {
+  candidateId: string
+  commit: string
+  tree: string
+  manifestDigest: string
+  parentIds: string[]
+  /** Seed-only, readable handoff. Never a held-out result or an empty checkpoint. */
+  findingRefs: string[]
+  digest: string
+}
+export interface EvaluationScope {
+  familyId: string
+  epoch: number
+  universeDigest: string
+  taskSetSizeResolutionDigest: string
+  buckets: Record<Bucket, string[]>
+  taskIds: string[]
+  weights: Record<string, number>
+  guards: TaskGuard[]
+  sampling: Record<Bucket, { requested: number; selected: number; reasons: string[] }>
+  /** Excludes family label, preventing renamed duplicate scopes from increasing probability. */
+  equivalenceDigest: string
+  digest: string
+}
+export interface CellIdentity {
+  taskId: string
+  taskContentDigest: string
+  repetition: number
+  seed: number
+  conditionDigest: string
+  outcomeContractDigest: string
+  processContractDigest?: string
+  snapshotDigest: string
+}
+export interface EvidenceCell {
+  identity: CellIdentity
+  status: 'available' | 'missing' | 'invalid'
+  outcome: MetricObservation
+  process?: MetricObservation
+  assertions?: Array<{ id: string; schemaDigest: string; status: 'passed' | 'failed' | 'excluded' }>
+  /** Legacy invalid observations cannot be rescued using embedded numeric values. */
+  envelope: 'legacy-v1' | 'score-envelope-v2'
+  outcomeCertified: boolean
+  evidenceRef: string
+  completedAt: string
+  digest: string
+}
+export interface StageEvaluationPlan {
+  stage: Stage
+  partition: Partition
+  universeDigest: string
+  taskSetSizeResolutionDigest: string
+  scopeDigest: string
+  taskIds: string[]
+  participantIds: string[]
+  prerequisiteDecisionDigests: string[]
+  selectionRuleDigest: string
+  digest: string
+}
+export interface StageResult {
+  stagePlanDigest: string
+  snapshotDigest: string
+  cells: EvidenceCell[]
+  settled: boolean
+  supersedesEvidenceDigest?: string
+  digest: string
+}
+export interface Coverage {
+  planned: number; available: number; paired: number; pending: number; missing: number; invalid: number
+  notEvaluated: number
+}
+export interface TaskProfile {
+  taskId: string
+  outcome?: number
+  process?: number
+  outcomeKey?: string
+  processKey?: string
+}
+export interface EvidenceProfile {
+  universeDigest: string
+  stagePlanDigest: string
+  scopeDigest: string
+  snapshotDigest: string
+  coverage: Coverage
+  processCoverage: Coverage
+  outcomeComplete: boolean
+  processComplete: boolean
+  processTaskIds: string[]
+  tasks: TaskProfile[]
+  outcome?: number
+  outcomeKey?: string
+  processGroups: Record<string, number>
+  processGroupKeys: Record<string, string>
+  supportDigest: string
+}
+export interface DiagnosisFact {
+  taskId: string
+  evidenceRefs: string[]
+  status: 'supported-hypothesis' | 'unresolved' | 'infrastructure-invalid' | 'successful-control'
+  familyId?: string
+  hypothesis?: string
+  modificationPaths?: string[]
+  mechanism?: string
+  submode?: string
+}
+export interface DiagnosisDossier {
+  parentSnapshotDigest: string
+  universeDigest: string
+  taskIds: string[]
+  baselineEvidenceDigests: string[]
+  facts: DiagnosisFact[]
+  classifierIntegrity: string
+  sanitizationPolicyDigest: string
+  digest: string
+}
+export interface DossierExcerpt {
+  sourceDossierDigest: string
+  parentSnapshotDigest: string
+  baselineEvidenceDigests: string[]
+  facts: DiagnosisFact[]
+  classifierIntegrity: string
+  sanitizationPolicyDigest: string
+  digest: string
+}
+export interface FailureCluster {
+  familyId: string
+  parentSnapshotDigest: string
+  dossierDigest: string
+  taskIds: string[]
+  evidenceRefs: string[]
+  hypotheses: string[]
+  modificationPaths: string[]
+  protectedFailure: boolean
+  estimatedCost: number
+  digest: string
+}
+export interface CandidateWorkPlan {
+  candidateId: string
+  batchId: string
+  parentSnapshotDigest: string
+  dossierDigest: string
+  clusterDigest: string
+  familyId: string
+  hypothesis: string
+  targetTaskIds: string[]
+  requiredDiagnosisRefs: string[]
+  modificationPaths: string[]
+  scopeDigest: string
+  localStagePlanDigest: string
+  generationBudget: { maxTokens: number; maxModelRequests: number; deadlineAt: number }
+  digest: string
+}
+export interface WorkplanReceipt {
+  kind: 'workplan-dossier-consumed'
+  candidateId: string
+  sessionId: string
+  workplanDigest: string
+  dossierDigest: string
+  deliveredDigest: string
+  accessedRefs: string[]
+  digest: string
+}
+export interface ResearchFinding {
+  candidateId: string
+  parentSnapshotDigest: string
+  hypothesis: string
+  scopeDigest: string
+  changedPaths: string[]
+  improvements: string[]
+  regressions: string[]
+  unverifiedTaskIds: string[]
+  workflowAdoption: 'unknown'
+  supportDigest: string
+  nextSteps: string[]
+  digest: string
+}
+export interface ScopeView {
+  scopeDigest: string
+  outcomeEligibleIds: string[]
+  processEligibleIds: string[]
+  fronts: Array<{ taskId: string; channel: 'outcome' | 'process'; candidateIds: string[]; informative: boolean }>
+  representatives: Record<string, string>
+  prunedIds: string[]
+  conditionalParentProbabilities: Record<string, number>
+  pendingEvidenceIds: string[]
+  digest: string
+}
+export interface ResearchArchive {
+  schemaVersion: 1
+  evolutionId: string
+  revision: number
+  universeDigest: string
+  snapshots: Snapshot[]
+  scopes: EvaluationScope[]
+  /** Only seed evidence is accepted by the archive builder. */
+  results: StageResult[]
+  plans: StageEvaluationPlan[]
+  scopeViews: ScopeView[]
+  scopeProbabilities: Record<string, number>
+  parentProbabilities: Record<string, number>
+  activeParentIds: string[]
+  digest: string
+}
+export interface ParentBatch {
+  batchId: string
+  sourceScopeDigest: string
+  parentSnapshotDigest: string
+  maxCandidateSlots: number
+  drawIndex: number
+}
+export interface ParentSelectionDecision {
+  archiveDigest: string
+  algorithmRef: 'sha256-counter-v1'
+  randomSeed: string
+  batches: ParentBatch[]
+  digest: string
+}
+export interface GateDecision {
+  outcome: 'eligible' | 'accepted' | 'rejected' | 'insufficient-evidence'
+  reasonCodes: string[]
+  supportDigest: string
+  metricContractDigests: string[]
+  comparison: { outcomeGain?: number; processGains: Record<string, number>; constraintCoverage: 'available' | 'unavailable' }
+  digest: string
+}
+export interface SearchProvider {
+  integrity: string
+  capabilities: { taskSubsetPlans: boolean; batchIndependentCells: boolean; idempotentExecution: boolean }
+  describe(partition: Partition): Promise<TaskUniverse>
+  /** Idempotent key identifies one invocation, including across controller crashes. */
+  evaluate(input: { plan: StageEvaluationPlan; snapshot: Snapshot; cells: CellIdentity[]; idempotencyKey: string; signal: AbortSignal }): Promise<EvidenceCell[]>
+  /** Verifies provider provenance as well as identity, before any reuse or scoring. */
+  verifyCell(cell: EvidenceCell, identity: CellIdentity): boolean | Promise<boolean>
+  /** Recover process only from the original run artifacts; must never execute another Target run. */
+  completeProcess?(cell: EvidenceCell, idempotencyKey: string, signal: AbortSignal): Promise<EvidenceCell>
+  verifyRegressionSuite?(suiteDigest: string, universe: TaskUniverse): boolean | Promise<boolean>
+}
+export interface DiagnosisProvider {
+  integrity: string
+  sanitizationPolicyDigest: string
+  diagnose(input: { snapshot: Snapshot; universe: TaskUniverse; taskIds: string[]; cells: EvidenceCell[]; idempotencyKey: string; maxInputTokens: number; maxOutputTokens: number; signal: AbortSignal }): Promise<{ facts: DiagnosisFact[]; inputTokens: number; outputTokens: number }>
+}

@@ -15,6 +15,7 @@ import { digestJson } from './digest.js'
 import { serializeExperimentsTsv } from './experiments.js'
 import { validateMetaSampling } from '../meta/sampling.js'
 import { validateOffloadingPolicy } from '../meta/offloading-policy.js'
+import { validateSearchSchema } from '../search/schema.js'
 
 export { digestJson } from './digest.js'
 
@@ -38,6 +39,7 @@ function validateChampion(value: ChampionState): ChampionState {
 }
 
 function validateSpec(value: EvolutionSpec): EvolutionSpec {
+  if (value.searchSettings) validateSearchSchema('SearchSettings', value.searchSettings)
   assertSafeId(value.evolutionId, 'evolutionId')
   if (!isExactGitCommit(value.initialHarness.ref) || !SHA256.test(value.initialHarness.digest)) {
     throw new TypeError('evolution initial harness identity is invalid')
