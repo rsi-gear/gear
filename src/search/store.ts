@@ -72,6 +72,14 @@ export class SearchStore {
     invariant(current?.digest === expected, 'archive CAS conflict')
     await this.put(next); await this.write('archive', { ref: next.digest })
   }
+  async operation(roundId: string, key: string): Promise<Operation | undefined> {
+    const ledger = await this.read<Ledger>('budget')
+    if (!ledger) return undefined
+    verifyDigest(ledger)
+    const operation = ledger.operations.find(o => o.key === key)
+    invariant(!operation || operation.roundId === roundId, 'operation belongs to another round')
+    return operation
+  }
   async reserve(roundId: string, key: string, request: unknown, cost: Usage, limits: { round: BudgetLimits; evolution: BudgetLimits }, roundStartedAt: number): Promise<Operation> {
     const ledger = await this.read<Ledger>('budget') ?? seal({ startedAt: Date.now(), operations: [] as Operation[] })
     verifyDigest(ledger)

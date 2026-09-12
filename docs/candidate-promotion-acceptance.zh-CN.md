@@ -6,11 +6,13 @@
 
 ## 当前结论
 
-完整验收尚未完成。已交付主流程并继续补齐细节；本轮核对实际修复了 scope 身份/完整性、证据一致性、过程覆盖率、bridge 差集费用、跨轮冻结身份、执行缓存与读取消费边界。新增证据主要在 [search-acceptance.spec.ts](../tests/unit/search-acceptance.spec.ts)，原核心回归在 [search.spec.ts](../tests/unit/search.spec.ts)，实际 Git/Skill 接入在 [refine-service.spec.ts](../tests/unit/refine-service.spec.ts)。
+完整验收尚未完成。已交付主流程并继续补齐细节；已修复 scope 身份/完整性、证据一致性、过程覆盖率、bridge 差集费用、跨轮冻结身份、执行缓存与读取消费边界。本轮继续补齐外部未知状态、终态失败和超时恢复，新增专项位于 `search-recovery.spec.ts`。新增证据主要在 [search-acceptance.spec.ts](../tests/unit/search-acceptance.spec.ts)，原核心回归在 [search.spec.ts](../tests/unit/search.spec.ts)，实际 Git/Skill 接入在 [refine-service.spec.ts](../tests/unit/refine-service.spec.ts)。
 
 内置 Hitch 未声明所需 subset/cell reuse 合同时明确拒绝启用，这是 E06 要求。真实 provider 接入和案例收益没有被合成 fixture 证明；当前没有向运行中实验启用该模式。
 
 2026-09-12 本轮最终验证：`search.spec.ts`、`search-acceptance.spec.ts` 与 `refine-service.spec.ts` 共 143 项通过（最多两个 worker），含 1,000 任务完整路径与真实 Git/Skill 接入。补充回归曾运行 6 文件共 172 项通过，两组有重叠，不相加统计。类型检查、构建 TypeScript 编译、SDK 导入和 JSON schema 重建一致性检查通过。
+
+本轮恢复专项检查：`search.spec.ts`、`search-acceptance.spec.ts`、`search-recovery.spec.ts` 和 `refine-service.spec.ts` 共 167 项通过；测试之间与前次记录有重叠。新增内容包含普通传输异常的原操作恢复、各阶段终态失败、超时只读查询、真实 Skill 停止与手动/重启恢复。
 
 ## 逐项核对
 
@@ -34,13 +36,13 @@
 | D02 | 多父代 / 重复抽中同父代 | 未完成：需要历史 specialist 真正成为下一轮代码父代的端到端验收，覆盖重复抽中父代。 |
 | D03 | 分类未知、只有 total score、基础设施 invalid | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
 | D04 | 共享诊断与候选读取 | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
-| D05 | 零个可执行类别、生成重试或超预算 | 未完成：零诊断预算、零 actionable workplans 已验证；阶段超时后的结算与恢复还需检查。 |
+| D05 | 零个可执行类别、生成重试或超预算 | 未完成：零诊断预算、零 actionable workplans、真实 Skill 截止停止与超时只读恢复已验证；跨重启的剩余生成尝试边界还需完整核对。 |
 | D06 | 扩大 scope 的 baseline 推翻假设 | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
 | D07 | 独立 sibling 生成与越界修改 | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
 | E01 | 比例配置下 N=100 / 1,000，4→2→1 候选扩评 | 已验证：原完整 100/1,000 任务 fixture，170/1,700 candidate seed cells；本轮回归仍通过。 |
 | E02 | 跨组 bridge 比较 | 未完成：共同计划与准确差集预算已验证；globalTaskWeights 的配置语义仍需完整核对。 |
 | E03 | bridge 并集或 guards 超上限 | 已验证：scope 并集/guards 超容量减少参与者；容量与费用分别记录原因。 |
-| E04 | global/held-out 失败或预算不足 | 未完成：cell 预算不足时保留局部研究已验证；外部执行终态失败与不明传输中断仍需区分。 |
+| E04 | global/held-out 失败或预算不足 | 已验证：cell/时间预算不足及 provider 确认的终态失败保留局部研究；未知状态不提交、不换 finalist，恢复原操作。专项覆盖 local/bridge/global/held-out 四阶段。 |
 | E05 | 局部平均退步但有独特改善 | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
 | E06 | 缺 subset/reuse 能力 | 已验证：provider 不具备 subset/reuse/idempotency 时，在任何生成或评测前拒绝。 |
 | E07 | 互补候选 A/B | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
@@ -70,7 +72,7 @@
 | R01 | restart / resume / repair | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
 | R02 | archive CAS 后 crash、champion CAS 后 crash | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
 | R03 | champion 并发变更 | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
-| R04 | held-out 执行故障 | 未完成：还需验证明确执行失败保留研究，以及不明执行状态只恢复原操作。 |
+| R04 | held-out 执行故障 | 已验证：明确失败保留 seed archive，使用独立执行原因码；未知状态保持原 handle，超时后仅查询原操作。实际 Git/Skill 手动恢复与重启路径也已通过。 |
 | R05 | Skill 模式空 checkpoint | 待完整核对：现有实现/测试不能直接作为该行全部要求的证明。 |
 | R06 | seed 已封存后的 held-out repair | 已验证：held-out 补评只运行一个原无效 cell；research digest、finalist 与 seed 执行不变。 |
 | R07 | 历史 pending completion | 部分验证：新增验收测试覆盖部分行为，需继续核对该行其余要求。 |
@@ -97,7 +99,7 @@
 
 ## 下一批实现优先级
 
-1. `engine.ts` 的阶段执行异常目前仍需区分“确定终态失败”与“未知传输中断”；后者应保留原操作并恢复原幂等键，不能按普通失败提交后重新启动。另需在时间预算用尽时正确结算已有研究。
+1. 已补齐阶段终态失败/未知中断/时间耗尽的区分和恢复入口，继续核对各消费边界与生成重试的组合窗口。
 2. `scopeSampling.epochPolicy` 当前仅支持 `stable`。补齐确定周期的 scope preparation / 差集预算与激活入口，并保持旧视图不变。
 3. 增加未晋升历史 specialist 实际被抽中、相对该父代生成并消费真实 findings、相对独立 champion 晋升的完整测试。
 4. 补齐运行中阶段状态、显式 StageDecision、global task weights 语义及回归 suite 的保护规则传递。

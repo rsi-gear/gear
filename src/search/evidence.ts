@@ -50,6 +50,7 @@ export function assertCell(cell: EvidenceCell, expected: CellIdentity): void {
   }
 }
 export function profile(universe: TaskUniverse, plan: StageEvaluationPlan, snapshot: Snapshot, result: StageResult, mode: ProcessMode, weights?: Record<string, number>): EvidenceProfile {
+  validateSearchSchema('StageResult', result)
   verifyDigest(result)
   invariant(result.stagePlanDigest === plan.digest && result.snapshotDigest === snapshot.digest, 'evidence support binding mismatch')
   const identities = plannedCells(universe, plan, snapshot)

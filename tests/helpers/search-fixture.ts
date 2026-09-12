@@ -5,7 +5,7 @@ import { cellIdentity, cellKey } from '../../src/search/evidence.js'
 import { stagePlan } from '../../src/search/scopes.js'
 import { consumptionReceipt } from '../../src/search/diagnosis.js'
 import type { DiagnosisProvider, EvaluationScope, EvidenceCell, SearchProvider, SearchSettings, Snapshot, Stage, TaskGuard, TaskUniverse } from '../../src/search/types.js'
-import type { SearchExecutionHooks } from '../../src/search/engine.js'
+import type { GeneratedCandidate, SearchExecutionHooks } from '../../src/search/engine.js'
 
 export function universe(N = 100, partition: 'seed' | 'held-out' = 'seed', process = false): TaskUniverse {
   const contents = Array.from({ length: N }, (_, i) => digestJson([partition, i]))
@@ -62,10 +62,13 @@ export function fixtures(N = 100, process = false) {
   const seed = universe(N, 'seed', process), heldOut = universe(Math.max(2, N / 10), 'held-out', process), anchor = snapshot('anchor')
   const executions: Array<{ participant: string; stage: string; count: number; key: string }> = []
   const generated: string[] = [], promotions: string[] = [], cache = new Map<string, EvidenceCell[]>()
+  const generations = new Map<string, GeneratedCandidate>()
+  const diagnoses = new Map<string, Awaited<ReturnType<DiagnosisProvider['diagnose']>>>()
   const provider: SearchProvider = {
     integrity: digestJson('fixture-provider'), capabilities: { taskSubsetPlans: true, batchIndependentCells: true, idempotentExecution: true },
     describe: async p => p === 'seed' ? seed : heldOut,
     verifyCell: (cell, expected) => cellKey(cell.identity) === cellKey(expected),
+    inspectEvaluation: async input => cache.has(input.idempotencyKey) ? { status: 'complete', result: { cells: cache.get(input.idempotencyKey)! } } : { status: 'not-started' },
     evaluate: async input => {
       const cached = cache.get(input.idempotencyKey); if (cached) return cached
       executions.push({ participant: input.snapshot.candidateId, stage: input.plan.stage, count: input.cells.length, key: input.idempotencyKey })
@@ -80,14 +83,22 @@ export function fixtures(N = 100, process = false) {
       cache.set(input.idempotencyKey, cells); return cells
     },
   }
-  const diagnosis: DiagnosisProvider = { integrity: digestJson('fixture-diagnosis'), sanitizationPolicyDigest: digestJson('fixture-sanitization'), diagnose: async input => ({
+  const diagnosis: DiagnosisProvider = { integrity: digestJson('fixture-diagnosis'), sanitizationPolicyDigest: digestJson('fixture-sanitization'),
+    inspectDiagnosis: async key => diagnoses.has(key) ? { status: 'complete', result: diagnoses.get(key)! } : { status: 'not-started' },
+    diagnose: async input => {
+    if (diagnoses.has(input.idempotencyKey)) return diagnoses.get(input.idempotencyKey)!
+    const result = {
     facts: input.cells.filter(c => c.outcome.status === 'available' && c.outcome.rawValue < 1).map(c => ({ taskId: c.identity.taskId, evidenceRefs: [c.evidenceRef], status: 'supported-hypothesis' as const,
       familyId: `family-${Number(c.identity.taskId.slice(5)) % 4}`, hypothesis: `Repair workflow ${Number(c.identity.taskId.slice(5)) % 4}`, modificationPaths: ['harness'], mechanism: 'Explicit fixture feedback identifies omitted verification' })), inputTokens: 10, outputTokens: 10,
-  }) }
-  const hooks: SearchExecutionHooks = { verifySnapshot: async () => {}, generate: async ({ delivery, parent }) => {
+  }; diagnoses.set(input.idempotencyKey, result); return result } }
+  const hooks: SearchExecutionHooks = { verifySnapshot: async () => {},
+    inspectGeneration: async key => generations.has(key) ? { status: 'complete', result: generations.get(key)! } : { status: 'not-started' },
+    generate: async ({ delivery, parent, idempotencyKey }) => {
+    if (generations.has(idempotencyKey)) return generations.get(idempotencyKey)!
     generated.push(delivery.workplan.candidateId)
-    return seal({ snapshot: snapshot(delivery.workplan.candidateId, [parent.candidateId]), changedPaths: ['harness/main.ts'],
+    const result = seal({ snapshot: snapshot(delivery.workplan.candidateId, [parent.candidateId]), changedPaths: ['harness/main.ts'],
       receipt: consumptionReceipt(delivery, 'fixture-session', delivery.workplan.requiredDiagnosisRefs), sessionId: 'fixture-session', usage: { tokens: 10, requests: 1 } })
+    generations.set(idempotencyKey, result); return result
   }, commitChampion: async (_expected, next) => { if (!promotions.includes(next.commit)) promotions.push(next.commit) } }
   return { seed, heldOut, anchor, provider, diagnosis, hooks, executions, generated, promotions }
 }

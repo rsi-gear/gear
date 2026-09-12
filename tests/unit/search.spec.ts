@@ -267,7 +267,7 @@ it('keeps shared-set validation advisory and never changes champion', async () =
 
 it('keeps operator promotion details and held-out repair refs out of research status', async () => {
   const { seedOnlyStatus } = await import('../../src/search/public-status.js')
-  const publicStatus = seedOnlyStatus({ evolutionId: 'test', batchId: 'batch', roundId: 'r', status: 'accepted',
+  const publicStatus = seedOnlyStatus({ searchPendingOperation: { operationKey: 'private-key', kind: 'evaluation', partition: 'held-out', stagePlanDigest: 'private-plan', candidateId: 'private-candidate', state: 'running', handle: 'private-handle', reason: 'private-reason' }, evolutionId: 'test', batchId: 'batch', roundId: 'r', status: 'accepted',
     searchPendingEvidence: { planDigest: 'held-out-private', resultRefs: ['held-out-results'] },
     search: { promotion: { secretHeldOutValue: 0.6 }, research: { remainingBudget: { cells: 7 }, parentProbabilities: { A: 1 } } } as never })
   expect(publicStatus).toEqual({ evolutionId: 'test', batchId: 'batch', roundId: 'r', status: 'accepted', research: { parentProbabilities: { A: 1 } } })

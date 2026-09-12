@@ -3087,16 +3087,24 @@ describe('RefineService evolution workspaces', () => {
 })
 
 describe('explicit staged search control-plane integration', () => {
-  it.each([false, true])('delivers a scoped workplan to Skill Meta and promotes via v2 (process=%s)', async process => {
+  it.each([{ process: false, recovery: 'none' }, { process: true, recovery: 'none' }, { process: true, recovery: 'resume' }, { process: true, recovery: 'restart' }, { process: false, recovery: 'timeout' }])('delivers a scoped workplan and recovers v2 promotion ($process/$recovery)', async ({ process, recovery }) => {
     const coordinator = new SkillMetaCoordinator()
     const { service, evaluator, git } = await setup(0.8, false, 1, 300_000, 1, 0, 1, 300_000, coordinator)
     const fixture = searchFixtures(20, process)
     const evaluate = fixture.provider.evaluate.bind(fixture.provider)
-    fixture.provider.evaluate = input => evaluate({ ...input, snapshot: { ...input.snapshot, candidateId: input.snapshot.commit === git.championRef ? 'anchor' : input.snapshot.candidateId } })
+    let ready = recovery === 'none'
+    let restarted: RefineService | undefined
+    fixture.provider.inspectEvaluation = async () => ({ status: 'running', handle: 'remote-heldout-17' })
+    fixture.provider.evaluate = async input => {
+      const cells = await evaluate({ ...input, snapshot: { ...input.snapshot, candidateId: input.snapshot.commit === git.championRef ? 'anchor' : input.snapshot.candidateId } })
+      if (!ready && input.plan.stage === 'held-out' && input.snapshot.commit !== git.championRef) throw new Error('lost held-out transport')
+      return cells
+    }
     const diagnose = fixture.diagnosis.diagnose.bind(fixture.diagnosis)
     fixture.diagnosis.diagnose = async input => { const output = await diagnose(input); return { ...output, facts: output.facts.map(f => ({ ...f, modificationPaths: ['prompts'] })) } }
     ;(evaluator as RefineEvaluator).search = { provider: fixture.provider, diagnosis: fixture.diagnosis }
     service.options.searchSettings = searchSettings()
+    if (recovery === 'timeout') service.options.searchSettings.budgets.round.timeoutMs = 2500
     try {
       const admitted = await service.admit('api')
       const store = service.registry.stateStore(admitted.evolutionId)
@@ -3105,6 +3113,16 @@ describe('explicit staged search control-plane integration', () => {
       const assignment = (await eventually(async () => coordinator.claim('test-client', skillHarnessIdentity(service.options.metaAgent), admitted.evolutionId), a => a !== undefined))!
       expect(assignment.workplanDelivery?.workplan.hypothesis).toBeTruthy()
       expect(assignment.evidencePolicy.diagnoseEveryFailedRunBeforeProposal).toBe(false)
+      if (recovery === 'timeout') {
+        const terminal = await eventually(() => store.readRound(admitted.roundId), r => r?.status === 'failed' || r?.status === 'rejected')
+        expect(terminal?.status, terminal?.failure?.message).toBe('rejected')
+        expect(terminal?.searchOutcome?.championChanged).toBe(false)
+        expect(terminal?.candidatePool[0]?.generationAttempts).toHaveLength(1)
+        expect(terminal?.candidatePool[0]?.generationAttempts?.[0]?.status).toBe('failed')
+        expect(fixture.executions.every(e => e.participant === 'anchor')).toBe(true)
+        expect(await store.readChampion()).toMatchObject({ ref: git.championRef })
+        return
+      }
       const active = service.activeEntry(admitted.roundId)!
       const workspace = service.workspaceManager.resolve(assignment.sessionId)
       await mkdir(join(workspace.targetPath, 'prompts'), { recursive: true })
@@ -3115,11 +3133,25 @@ describe('explicit staged search control-plane integration', () => {
       expect(evidence.workplanReceipt?.kind).toBe('workplan-dossier-consumed')
       expect(evidence.diagnosisReceipts).toEqual([])
       await service.submitFinalization(admitted.evolutionId, admitted.roundId, { rationale: 'Repair the assigned workflow', expectedOutcome: 'Higher completion', evidenceRefs: refs }, undefined, attribution, evidence)
+      if (recovery !== 'none') {
+        const failed = await eventually(() => store.readRound(admitted.roundId), r => r?.status === 'failed')
+        expect(failed?.failure?.message).toContain('operation pending')
+        await eventually(async () => service.activeEntry(admitted.roundId), active => !active)
+        const status = await service.status(admitted.evolutionId, admitted.roundId)
+        expect(status.searchPendingOperation).toMatchObject({ state: 'running', partition: 'held-out', handle: 'remote-heldout-17' })
+        ready = true
+        if (recovery === 'resume') await service.resumeSearchRound(admitted.evolutionId, admitted.roundId)
+        else {
+          await service.dispose()
+          restarted = new RefineService(service.registry, service.builder, service.workspaceManager, service.createMetaSession, evaluator, service.options)
+          await restarted.initialize()
+        }
+      }
       const terminal = await eventually(() => store.readRound(admitted.roundId), r => r?.status === 'accepted' || r?.status === 'failed' || r?.status === 'rejected')
       expect(terminal?.status, JSON.stringify(terminal?.failure ?? terminal?.searchOutcome)).toBe('accepted')
       expect(terminal?.searchOutcome?.championChanged).toBe(true)
       expect(evaluator.calls).toEqual([])
       expect(await store.readChampion()).toMatchObject({ ref: terminal!.candidatePool[0]!.sealedVersion!.commitOid })
-    } finally { await service.dispose() }
+    } finally { await restarted?.dispose(); await service.dispose() }
   })
 })

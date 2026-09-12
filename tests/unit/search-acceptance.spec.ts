@@ -170,7 +170,7 @@ describe('expansion acceptance: common plans and exact remaining budget', () => 
     expect(bridge.map(e => e.count)).toEqual([25, 25])
     expect(bridgePlans).toHaveLength(2); expect(bridgePlans[0]).toHaveLength(40); expect(bridgePlans[1]).toEqual(bridgePlans[0])
     expect(f.executions.reduce((sum, e) => sum + e.count, 0)).toBe(210)
-    expect(result.reasonCodes).toContain('search budget exhausted: round.cells')
+    expect(result.reasonCodes).toContain('budget-exhausted:round.cells')
     expect(result.championChanged).toBe(false); expect(f.promotions).toEqual([])
     expect(result.nomineeId).toBeDefined()
     expect(f.executions.every(e => e.stage !== 'held-out')).toBe(true)

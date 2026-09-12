@@ -32,6 +32,7 @@ export function assessGate(input: PromotionInput, config: MultisignalPromotionCo
   const comparison: GateDecision['comparison'] = { processGains: {}, constraintCoverage: config.protectedTasks.length || config.protectedAssertions.length ? 'available' : 'unavailable' }
   const base = { reasonCodes: reasons, supportDigest: seal({ baseline, candidate }).digest,
     metricContractDigests: sorted(universe.tasks.filter(t => plan.taskIds.includes(t.id)).flatMap(t => [t.outcome.digest, ...(processTasks(universe, config.process.mode).includes(t.id) ? [t.process!.digest] : [])])), comparison }
+  if (input.baseline.failure || input.result.failure) return seal({ ...base, outcome: 'insufficient-evidence' as const, reasonCodes: ['stage-execution-unavailable'] })
   if (!baseline.outcomeComplete || !candidate.outcomeComplete || !baseline.processComplete || !candidate.processComplete) return seal({ ...base, outcome: 'insufficient-evidence' as const, reasonCodes: ['incomplete-stage-evidence'] })
   for (const guard of config.protectedTasks.filter(g => g.partition === universe.partition && plan.taskIds.includes(g.taskId))) {
     const task = universe.tasks.find(t => t.id === guard.taskId)!, q = task.outcome.comparisonQuantum

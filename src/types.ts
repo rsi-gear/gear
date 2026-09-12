@@ -1309,6 +1309,7 @@ export interface AdmissionResult {
 }
 
 export interface PublicRoundStatus {
+  searchPendingOperation?: import('./search/types.js').PendingSearchOperation
   searchPendingEvidence?: { planDigest: string; resultRefs: string[] }
   search?: import('./search/engine.js').SearchRoundOutcome
   baselineReuseBlocker?: BaselineReuseBlocker

@@ -184,8 +184,34 @@ export interface StageResult {
   cells: EvidenceCell[]
   settled: boolean
   supersedesEvidenceDigest?: string
+  failure?: SearchStageFailure
   digest: string
 }
+export interface SearchStageFailure {
+  kind: 'execution-failure' | 'budget-exhausted'
+  code: string
+  message: string
+  evidenceRef?: string
+}
+export interface PendingSearchOperation {
+  operationKey: string
+  kind: 'evaluation' | 'diagnosis' | 'generation'
+  partition: Partition
+  stagePlanDigest: string
+  candidateId: string
+  state: 'running' | 'unknown' | 'not-started'
+  handle?: string
+  reason: string
+}
+export interface EvaluationExecutionResult {
+  cells: EvidenceCell[]
+  failure?: SearchStageFailure
+}
+export type ExternalRecovery<T> =
+  | { status: 'complete'; result: T }
+  | { status: 'not-started' }
+  | { status: 'running'; handle: string }
+  | { status: 'unknown'; reason?: string }
 export interface BridgeSelectionDecision {
   plan?: StageEvaluationPlan
   skipped: string[]
@@ -238,6 +264,7 @@ export interface DiagnosisFact {
   submode?: string
 }
 export interface DiagnosisDossier {
+  failure?: SearchStageFailure
   parentSnapshotDigest: string
   universeDigest: string
   taskIds: string[]
@@ -364,14 +391,20 @@ export interface SearchProvider {
   describe(partition: Partition): Promise<TaskUniverse>
   /** Idempotent key identifies one invocation, including across controller crashes. */
   evaluate(input: { plan: StageEvaluationPlan; snapshot: Snapshot; cells: CellIdentity[]; idempotencyKey: string; signal: AbortSignal }): Promise<EvidenceCell[]>
+  /** Read-only recovery: must never create or restart a Target run, including after its deadline. */
+  inspectEvaluation?(input: { plan: StageEvaluationPlan; snapshot: Snapshot; cells: CellIdentity[]; idempotencyKey: string; signal: AbortSignal }): Promise<ExternalRecovery<EvaluationExecutionResult>>
   /** Verifies provider provenance as well as identity, before any reuse or scoring. */
   verifyCell(cell: EvidenceCell, identity: CellIdentity): boolean | Promise<boolean>
   /** Recover process only from the original run artifacts; must never execute another Target run. */
   completeProcess?(cell: EvidenceCell, idempotencyKey: string, signal: AbortSignal): Promise<EvidenceCell>
+  /** Read-only lookup of the original process projection operation. */
+  inspectProcess?(cell: EvidenceCell, idempotencyKey: string, signal: AbortSignal): Promise<ExternalRecovery<EvaluationExecutionResult>>
   verifyRegressionSuite?(suiteDigest: string, universe: TaskUniverse): boolean | Promise<boolean>
 }
 export interface DiagnosisProvider {
   integrity: string
   sanitizationPolicyDigest: string
   diagnose(input: { snapshot: Snapshot; universe: TaskUniverse; taskIds: string[]; cells: EvidenceCell[]; idempotencyKey: string; maxInputTokens: number; maxOutputTokens: number; signal: AbortSignal }): Promise<{ facts: DiagnosisFact[]; inputTokens: number; outputTokens: number }>
+  /** Reads an existing classifier operation without initiating another model request. */
+  inspectDiagnosis?(idempotencyKey: string, signal: AbortSignal): Promise<ExternalRecovery<{ facts: DiagnosisFact[]; inputTokens: number; outputTokens: number; failure?: SearchStageFailure }>>
 }

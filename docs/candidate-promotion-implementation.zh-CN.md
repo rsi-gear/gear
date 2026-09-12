@@ -35,8 +35,13 @@
 2. `capabilities`：明确证明 task subset plans、batch-independent cells、idempotent execution。
 3. `evaluate`：只执行列出的 cells；同一幂等键必须恢复同一执行，不能创建新随机尝试；遵守 abort 与调用预算。
 4. `verifyCell`：验证实际产物来源、任务/评分/执行条件及 `harnessCommit/harnessManifestDigest`，不能只相信 Gear 提交的字段。`snapshotDigest` 保留原始证据来源；另一角色复用时，必须证明 exact commit、manifest 和其余执行身份全部相同，不能仅凭同 tree 替代。
-5. 可选 `completeProcess`：只从原 run 产物恢复过程证据，不重跑有效 outcome。
-6. 启用 `suiteRef` 时，用 `verifyRegressionSuite` 证明整个版本化 suite 已纳入该新 seed universe。
+5. 可选 `inspectEvaluation` / `inspectProcess`：按原幂等键只读查询已存在操作，返回 complete、not-started、running（原 handle）或 unknown。查询不能新建或重启 Target。超时后只有这类查询可用于恢复；没有查询能力时保留 unknown，不能猜测远端已经停止。
+6. 可选 `completeProcess`：只从原 run 产物恢复过程证据，不重跑有效 outcome。
+7. 启用 `suiteRef` 时，用 `verifyRegressionSuite` 证明整个版本化 suite 已纳入该新 seed universe。
+
+`evaluate` 的普通异常被视为传输/执行状态不明。只有 provider 核实外部操作已终止后，才可抛出带 `code`、`evidenceRef` 和可选部分 cells 的 `SearchExecutionFailure`；有效 cells 继续保留，发布门记录执行不可用。已确认失败、预算不足和性能拒绝分别记录。
+
+`DiagnosisProvider.inspectDiagnosis` 和 `SearchExecutionHooks.inspectGeneration` 使用相同的只读恢复约定。诊断、生成、评测、补评和原产物过程恢复均先记录 reservation，之后结算结果；未知操作保持原预算预留，不能靠重试或换标签刷新额度。
 
 `DiagnosisProvider` 接收实际父代的 seed cells 和预算，返回有证据引用的失败机制/假设/修改边界或 unresolved。它的实现和清洗策略摘要均冻结；不能把所有零分自动分为同一原因。生成的摘要只投递相关类别与共享任务内容。
 
@@ -90,6 +95,10 @@ regression:
 
 终态 `control.status` 的 `search` 包含 sizing、实际 workplans、scope coverage、未评数量、前沿、父代概率、扩评状态、独立 promotion 决定和剩余预算；`research.bridge` 另含冻结计划及各候选未扩评原因。scope 视图分开记录待补证据与探索门不合格。运行中的完整阶段展示仍见验收跟踪中的待办。`experiments.tsv` 对新模式区分 `retained-local`、`global-nominee` 和发布决定。
 
+外部状态未知时，操作员状态返回 `searchPendingOperation`，包含原操作、阶段、参与者、状态和原 handle。候选/研究可见状态不会暴露该字段或 held-out repair 引用。
+
+调用 `control.search-resume`，参数为 `{ "evolutionId": "...", "roundId": "..." }`，可恢复同一轮次；服务重启也会继续尚未结算的搜索轮次。截止前仍使用原幂等键，截止后只读查询已有操作；已完成的结果和 commit intent 可以继续对账，禁止新运行。没有能够证明终态的查询结果时保持 pending，不另选 finalist 或开启新一轮。补评操作本身需要用原 `repairId` / completion ID 再次调用；原操作未解决时拒绝换 ID 创建第二次执行。
+
 缺失 held-out 时，状态返回 `searchPendingEvidence`。可通过 Skill 控制 API 调用：
 
 ```json
@@ -106,11 +115,11 @@ regression:
 
 它对应 `RefineService.repairSearchStage`：在同一写者锁下修复原无效 slots，再继续原 round；原 finalist、父代、seed research 和预算不变。存在未解决 round 时，`continue` 拒绝另开一轮。
 
-独立历史补齐使用 `completeArchivedEvidence`，调用方持有 evolution 写者锁。它不调用 Meta、不晋升；新 revision 在下一次 archive update 消费。不能用这个入口增加原计划外任务。两个补评入口都验证 provider 与任务身份，并遵守 round/evolution 的原有时间预算。
+独立历史补齐使用 `completeArchivedEvidence`，调用方持有 evolution 写者锁。它不调用 Meta、不晋升；新 revision 在下一次 archive update 消费。不能用这个入口增加原计划外任务。两个补评入口都验证 provider 与任务身份，并遵守 round/evolution 的原有时间预算。它们也支持超时后查询原评测/过程恢复操作；不会重跑已有有效 outcome。
 
 dossier、workplans、local 决定、nomination 与 archive 在发布引用前保存证据消费记录。消费边界按 plan + participant 绑定，而不是等到整个后续阶段完成；已消费的 seed 证据只能走追加 revision 的历史补齐流程。
 
-异常退出时，已封存的候选与外部幂等执行继续复用。未完成且无法恢复的 Meta 生成 attempt 明确结算为失败，不悄悄重新生成同一候选。champion CAS 冲突保留外部版本和原 intent，需要明确处理冲突后才能继续。
+异常退出时，已封存的候选与外部幂等执行继续复用。已完成的 Meta 生成直接复用封存结果；仍在运行或终态不明的原 attempt 保留句柄与工作区，不重新生成。Skill 生成实际接收统一搜索截止信号；截止后原尝试关闭并结算，不能开始下一次尝试。champion CAS 冲突保留外部版本和原 intent，需要明确处理冲突后才能继续。
 
 ## 验证与交付边界
 
@@ -125,3 +134,5 @@ dossier、workplans、local 决定、nomination 与 archive 在发布引用前�
 后续验收修复后的最终检查：新旧搜索测试及实际 Git/Skill 控制面测试共 143 项通过，包含新增的 27 项验收测试；类型检查、构建编译、SDK 导入和 schema 一致性再次通过。测试集合与前次记录有重叠。
 
 完整 spec 的 65 项矩阵与正文要求仍在逐项实现和验证，未完成项见验收跟踪，因此当前不标记整体验收完成。没有使用真实 Hitch 演化证明收益，也不把合成 fixture 的计算节约宣称为真实 token/时长节约；内置 Hitch 的 capability adapter 接入限制保持明确。
+
+本轮恢复专项验证：4 个文件共 167 项通过，包含 21 项外部执行恢复/超时测试和 93 项新旧控制面测试。额外补齐的 repair/completion 换 ID 防护另行跑对应两项测试；类型检查、构建编译、SDK 恢复入口与 schema 一致性检查通过。

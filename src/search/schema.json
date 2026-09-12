@@ -1504,6 +1504,9 @@
         "supersedesEvidenceDigest": {
           "type": "string"
         },
+        "failure": {
+          "$ref": "#/$defs/SearchStageFailure"
+        },
         "digest": {
           "type": "string"
         }
@@ -1516,6 +1519,174 @@
         "digest"
       ],
       "additionalProperties": false
+    },
+    "SearchStageFailure": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "anyOf": [
+            {
+              "const": "execution-failure"
+            },
+            {
+              "const": "budget-exhausted"
+            }
+          ]
+        },
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "evidenceRef": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "code",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "PendingSearchOperation": {
+      "type": "object",
+      "properties": {
+        "operationKey": {
+          "type": "string"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "const": "evaluation"
+            },
+            {
+              "const": "diagnosis"
+            },
+            {
+              "const": "generation"
+            }
+          ]
+        },
+        "partition": {
+          "$ref": "#/$defs/Partition"
+        },
+        "stagePlanDigest": {
+          "type": "string"
+        },
+        "candidateId": {
+          "type": "string"
+        },
+        "state": {
+          "anyOf": [
+            {
+              "const": "running"
+            },
+            {
+              "const": "unknown"
+            },
+            {
+              "const": "not-started"
+            }
+          ]
+        },
+        "handle": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationKey",
+        "kind",
+        "partition",
+        "stagePlanDigest",
+        "candidateId",
+        "state",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "EvaluationExecutionResult": {
+      "type": "object",
+      "properties": {
+        "cells": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceCell"
+          }
+        },
+        "failure": {
+          "$ref": "#/$defs/SearchStageFailure"
+        }
+      },
+      "required": [
+        "cells"
+      ],
+      "additionalProperties": false
+    },
+    "ExternalRecovery": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "const": "complete"
+            },
+            "result": {}
+          },
+          "required": [
+            "status",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "const": "not-started"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "const": "running"
+            },
+            "handle": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "handle"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "const": "unknown"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "additionalProperties": false
+        }
+      ]
     },
     "BridgeSelectionDecision": {
       "type": "object",
@@ -1590,10 +1761,10 @@
         "consumer": {
           "anyOf": [
             {
-              "const": "bootstrap-archive"
+              "const": "diagnosis"
             },
             {
-              "const": "diagnosis"
+              "const": "bootstrap-archive"
             },
             {
               "const": "workplans"
@@ -1818,6 +1989,9 @@
     "DiagnosisDossier": {
       "type": "object",
       "properties": {
+        "failure": {
+          "$ref": "#/$defs/SearchStageFailure"
+        },
         "parentSnapshotDigest": {
           "type": "string"
         },
