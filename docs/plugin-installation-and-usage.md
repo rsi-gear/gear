@@ -688,7 +688,9 @@ Hitch 0.2.4 创建的 `attempts=1` eval 仍可由 Hitch 的 legacy 路径处理�
 
 历史 baseline 的复用以评测语义配置为准，不以 Hitch executable 的文件 digest 为准。Hitch
 二进制、版本或安装位置发生变化时，只要 dataset、target commit、model、sampling、seed、repetition、
-agent config 和 sandbox 等语义条件仍一致，Gear 可以复用已完整 settled 的 baseline。Hitch runtime
+agent config 和 sandbox 等语义条件仍一致，Gear 可以复用已 settled 且至少含一个有效 trial 的
+complete 或 partial baseline。复用会保留原始 completeness、有效与无效 trial 及 eval/run/attempt ID，
+后续比较仍只使用双方有效 trial 的交集；零有效 trial 的 partial baseline 会明确阻塞。Hitch runtime
 identity 仍写入 `invocationFingerprint`，并在复用 attempt 的 `reuseAudit` 中同时记录历史与当前指纹；
 该信息只用于追溯，不参与复用判定。Hitch 仍必须通过最低版本和 CLI 合同校验。
 

@@ -2458,7 +2458,7 @@ export class RefineService {
         || evidence.requestedCommit !== harnessRef
         || evidence.actualCommit !== harnessRef) continue
       hasCompatibleEvidence = true
-      if (evidence.completeness !== 'complete'
+      if (evidence.trials.length === 0
         || attempt?.status !== 'settled'
         || attempt.phase !== `${partition}-${attempt.owner.role}`
         || attempt.owner.harnessRef !== harnessRef
@@ -2475,8 +2475,8 @@ export class RefineService {
     if (hasCompatibleEvidence || sources.length === 0) {
       throw new BaselineReuseBlockedError({
         code: 'BASELINE_EVIDENCE_UNAVAILABLE',
-        reason: `The existing ${partition} evaluation has no verifiable complete baseline; no baseline refresh was started.`,
-        requiredAction: 'Recover complete settled evidence for the original evaluation. Partial results require a provider-supported repair that preserves valid trials.',
+        reason: `The existing ${partition} evaluation has no verifiable settled baseline with a valid trial; no baseline refresh was started.`,
+        requiredAction: 'Recover settled evidence with at least one valid trial for the original evaluation. Unsettled or zero-valid evidence requires a provider-supported repair that preserves valid trials.',
       })
     }
     throw new BaselineReuseBlockedError({

@@ -2048,8 +2048,31 @@ describe('RefineService evolution workspaces', () => {
       await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
       const original = await eventually(() => store.readRound(admission.roundId), r => r?.status === 'rejected')
       await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
-      const legacy = await continueWithLegacyPopulationParent(service, admission.evolutionId, original!.commitIntent!.nextPopulation.members[0]!)
-      const blocked = await eventually(() => store.readRound(legacy.roundId), r => r?.status === 'failed')
+      const researchParent = original!.commitIntent!.nextPopulation.members[0]!
+      expect(original!.candidatePool.find(candidate => candidate.candidateId === researchParent.candidateId)?.seedEvaluation)
+        .toMatchObject({ completeness: 'partial' })
+      const identity = evaluator.evaluationIdentity.bind(evaluator)
+      let blockResearchParentIdentity = true
+      evaluator.evaluationIdentity = (round, request) => {
+        if (blockResearchParentIdentity && request.phase === 'seed-baseline'
+          && request.harnessRef === researchParent.harnessRef) return undefined as never
+        return identity(round, request)
+      }
+      const legacy = await continueWithLegacyPopulationParent(service, admission.evolutionId, researchParent)
+      const identityBlocked = await eventually(() => store.readRound(legacy.roundId), r => r?.status === 'failed')
+      blockResearchParentIdentity = false
+      await eventually(async () => service.activeEntry(legacy.roundId), value => value === undefined)
+      const legacyReason = 'The existing seed evaluation has no verifiable complete baseline; no baseline refresh was started.'
+      const blocked: RefinementRound = {
+        ...identityBlocked!,
+        failure: { ...identityBlocked!.failure!, message: legacyReason },
+        baselineReuseBlocker: {
+          code: 'BASELINE_EVIDENCE_UNAVAILABLE',
+          reason: legacyReason,
+          requiredAction: 'Recover complete settled evidence for the original evaluation.',
+        },
+      }
+      await store.writeRound(blocked)
       expect(blocked?.championParent).toBeUndefined()
       expect(blocked?.baselineReuseBlocker?.code).toBe('BASELINE_EVIDENCE_UNAVAILABLE')
       const spec = await service.registry.requireSpec(admission.evolutionId)
@@ -2242,30 +2265,79 @@ describe('RefineService evolution workspaces', () => {
     await service.dispose()
   })
 
-  it('blocks a promoted candidate baseline when its prior seed evidence was partial', async () => {
-    const { service, evaluator } = await setup()
-    evaluator.partialInvalidByPhase.set('seed-candidate', [9])
-    const admission = await service.admit('api', { rounds: 2 })
-    const store = service.registry.stateStore(admission.evolutionId)
-    await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
-    const first = await eventually(
-      () => store.readRound(admission.roundId),
-      value => value?.status === 'accepted',
-    )
-    const promoted = first?.candidatePool.find(candidate => candidate.candidateId === first.promotedCandidateId)
-    if (promoted?.seedEvaluation === undefined) throw new Error('first round did not persist promoted seed evidence')
-    expect(promoted.seedEvaluation.completeness).toBe('partial')
+  it.each(['automatic', 'appended'] as const)(
+    'reuses promoted partial seed and held-out evidence in the %s round',
+    async mode => {
+      const { service, evaluator } = await setup()
+      const rerun = vi.spyOn(evaluator, 'rerun')
+      evaluator.partialInvalidByCall.set(2, [8, 9])
+      evaluator.partialInvalidByCall.set(4, [8, 9])
+      evaluator.partialInvalidByCall.set(5, [0, 9])
+      evaluator.partialInvalidByCall.set(6, [0, 9])
+      service.options.promotion.policy = builtinComponentRef('promotion-policy', 'paired-gate', {
+        ...service.options.promotion.policy.config,
+        minimumAbsoluteGain: 0,
+      })
+      try {
+        const admission = await service.admit('api', { rounds: mode === 'automatic' ? 2 : 1 })
+        const store = service.registry.stateStore(admission.evolutionId)
+        await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
+        const first = await eventually(
+          () => store.readRound(admission.roundId),
+          value => value?.status === 'accepted',
+        )
+        const promoted = first?.candidatePool.find(candidate => candidate.candidateId === first.promotedCandidateId)
+        if (first === undefined || promoted?.sealedVersion === undefined
+          || promoted.seedEvaluation === undefined || promoted.heldOutEvaluation === undefined) {
+          throw new Error('first round did not persist promoted candidate evidence')
+        }
+        const seedEvidence = structuredClone(promoted.seedEvaluation)
+        const heldOutEvidence = structuredClone(promoted.heldOutEvaluation)
+        expect(seedEvidence).toMatchObject({ completeness: 'partial', plannedTrialCount: 10 })
+        expect(heldOutEvidence).toMatchObject({ completeness: 'partial', plannedTrialCount: 10 })
 
-    const second = await eventually(
-      async () => (await store.listRounds()).find(value => value.roundIndex === 2),
-      value => value?.status === 'failed',
-    )
-    expect(second?.baselineReuseBlocker?.code).toBe('BASELINE_EVIDENCE_UNAVAILABLE')
-    expect(second?.evaluationAttempts ?? []).toEqual([])
-    expect(evaluator.calls.filter(phase => phase === 'seed-baseline')).toHaveLength(1)
-    expect(await store.readRound(first!.roundId)).toEqual(first)
-    await service.dispose()
-  })
+        if (mode === 'appended') {
+          await eventually(async () => service.activeEntry(first.roundId), value => value === undefined)
+          await service.continueEvolution('api', admission.evolutionId)
+        }
+        const second = await eventually(
+          async () => (await store.listRounds()).find(value => value.roundId !== first.roundId),
+          value => value?.status === 'candidate-editing',
+        )
+        expect(second?.targetHarnessRef).toBe(promoted.sealedVersion.commitOid)
+        expect(second?.baseline).toEqual(seedEvidence)
+        expect(second?.evaluationAttempts?.find(attempt => attempt.evalId === seedEvidence.evalId)).toMatchObject({
+          phase: 'seed-baseline',
+          owner: { role: 'baseline', harnessRef: promoted.sealedVersion.commitOid },
+          status: 'settled',
+          reusedFromRoundId: first.roundId,
+        })
+
+        await finalize(service, second!)
+        const terminal = await eventually(
+          () => store.readRound(second!.roundId),
+          value => value?.status === 'accepted',
+        )
+        expect(terminal?.evaluation?.heldOutBaseline).toEqual(heldOutEvidence)
+        expect(terminal?.evaluation?.seedPairing).toEqual({
+          planned: 10, paired: 7, excluded: 3, baselineInvalid: 2, candidateInvalid: 2,
+        })
+        expect(terminal?.evaluation?.heldOutPairing).toEqual({
+          planned: 10, paired: 7, excluded: 3, baselineInvalid: 2, candidateInvalid: 2,
+        })
+        expect(terminal?.evaluationAttempts?.find(attempt => attempt.evalId === heldOutEvidence.evalId)).toMatchObject({
+          phase: 'held-out-baseline',
+          owner: { role: 'baseline', harnessRef: promoted.sealedVersion.commitOid },
+          status: 'settled',
+          reusedFromRoundId: first.roundId,
+        })
+        expect(evaluator.calls.filter(phase => phase === 'seed-baseline')).toHaveLength(1)
+        expect(evaluator.calls.filter(phase => phase === 'held-out-baseline')).toHaveLength(1)
+        expect(rerun).not.toHaveBeenCalled()
+        expect(await store.readRound(first.roundId)).toEqual(first)
+      } finally { await service.dispose() }
+    },
+  )
 
   it('reuses a complete seed baseline after rerun repair and round completion', async () => {
     const { service, evaluator } = await setup()
@@ -2310,28 +2382,57 @@ describe('RefineService evolution workspaces', () => {
     await service.dispose()
   })
 
-  it('preserves partial baseline trials and blocks instead of starting a fresh evaluation', async () => {
+  it('reuses a partial baseline with valid trials without starting a fresh evaluation', async () => {
     const { service, evaluator } = await setup()
     evaluator.partialInvalidByCall.set(1, [9])
-    const admission = await service.admit('api')
-    const store = service.registry.stateStore(admission.evolutionId)
-    await decline(service, await editing(service, admission.evolutionId, admission.roundId))
-    const first = await eventually(
-      () => store.readRound(admission.roundId),
-      value => value?.status === 'rejected',
-    )
-    if (first?.baseline === undefined) throw new Error('first round has no baseline')
-    expect(first.baseline.completeness).toBe('partial')
-    await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
+    try {
+      const admission = await service.admit('api')
+      const store = service.registry.stateStore(admission.evolutionId)
+      await decline(service, await editing(service, admission.evolutionId, admission.roundId))
+      const first = await eventually(
+        () => store.readRound(admission.roundId),
+        value => value?.status === 'rejected',
+      )
+      if (first?.baseline === undefined) throw new Error('first round has no baseline')
+      const baseline = structuredClone(first.baseline)
+      expect(baseline.completeness).toBe('partial')
+      await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
 
-    const continued = await service.continueEvolution('api', admission.evolutionId)
-    const second = await eventually(() => store.readRound(continued.roundId), value => value?.status === 'failed')
+      const continued = await service.continueEvolution('api', admission.evolutionId)
+      const second = await editing(service, admission.evolutionId, continued.roundId)
 
-    expect(second?.baselineReuseBlocker?.code).toBe('BASELINE_EVIDENCE_UNAVAILABLE')
-    expect(second?.evaluationAttempts ?? []).toEqual([])
-    expect(evaluator.calls).toEqual(['seed-baseline'])
-    expect(await store.readRound(first.roundId)).toEqual(first)
-    await service.dispose()
+      expect(second.baseline).toEqual(baseline)
+      expect(second.evaluationAttempts?.find(attempt => attempt.evalId === baseline.evalId)).toMatchObject({
+        status: 'settled',
+        reusedFromRoundId: first.roundId,
+      })
+      expect(evaluator.calls).toEqual(['seed-baseline'])
+      expect(await store.readRound(first.roundId)).toEqual(first)
+    } finally { await service.dispose() }
+  })
+
+  it('blocks a partial baseline with no valid trials without starting a fresh evaluation', async () => {
+    const { service, evaluator } = await setup()
+    evaluator.partialInvalidByCall.set(1, Array.from({ length: 10 }, (_, index) => index))
+    try {
+      const admission = await service.admit('api')
+      const store = service.registry.stateStore(admission.evolutionId)
+      await decline(service, await editing(service, admission.evolutionId, admission.roundId))
+      const first = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'rejected')
+      expect(first?.baseline).toMatchObject({ completeness: 'partial', trials: [], plannedTrialCount: 10 })
+      await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
+
+      const continued = await service.continueEvolution('api', admission.evolutionId)
+      const second = await eventually(() => store.readRound(continued.roundId), value => value?.status === 'failed')
+
+      expect(second?.baselineReuseBlocker).toMatchObject({
+        code: 'BASELINE_EVIDENCE_UNAVAILABLE',
+        reason: expect.stringContaining('valid trial'),
+      })
+      expect(second?.evaluationAttempts ?? []).toEqual([])
+      expect(evaluator.calls).toEqual(['seed-baseline'])
+      expect(await store.readRound(first!.roundId)).toEqual(first)
+    } finally { await service.dispose() }
   })
 
   it.each(['unknown', 'throws', 'missing-method'] as const)('blocks %s identity resolution without reserving trials or waking Meta', async mode => {
@@ -2606,24 +2707,63 @@ describe('RefineService evolution workspaces', () => {
     } finally { await service.dispose() }
   })
 
-  it('blocks partial promoted held-out evidence without rerunning its valid trials', async () => {
+  it('reuses partial promoted held-out evidence after a legacy blocker and restart', async () => {
     const { service, evaluator } = await setup()
-    evaluator.partialInvalidByCall.set(4, [9])
+    evaluator.partialInvalidByCall.set(4, [8, 9])
     service.options.promotion.policy = builtinComponentRef('promotion-policy', 'paired-gate', {
       ...service.options.promotion.policy.config, minimumAbsoluteGain: 0,
     })
+    const rerun = vi.spyOn(evaluator, 'rerun')
+    let resumed = service
     try {
-      const first = await service.admit('api', { rounds: 2 })
+      const first = await service.admit('api')
       const store = service.registry.stateStore(first.evolutionId)
       await finalize(service, await editing(service, first.evolutionId, first.roundId))
       const original = await eventually(() => store.readRound(first.roundId), r => r?.status === 'accepted')
-      const next = await eventually(async () => (await store.listRounds()).find(r => r.roundIndex === 2), r => r?.status === 'candidate-editing')
-      await finalize(service, next!)
-      const blocked = await eventually(() => store.readRound(next!.roundId), r => r?.status === 'failed')
-      expect(blocked?.baselineReuseBlocker?.code).toBe('BASELINE_EVIDENCE_UNAVAILABLE')
-      expect(evaluator.calls).toEqual(['seed-baseline', 'seed-candidate', 'held-out-baseline', 'held-out-candidate', 'seed-candidate'])
+      const promoted = original!.candidatePool.find(candidate => candidate.candidateId === original!.promotedCandidateId)!
+      const heldOutEvidence = structuredClone(promoted.heldOutEvaluation!)
+      expect(heldOutEvidence.completeness).toBe('partial')
+      await eventually(async () => service.activeEntry(first.roundId), r => r === undefined)
+
+      const identity = evaluator.evaluationIdentity.bind(evaluator)
+      let blockHeldOutIdentity = true
+      evaluator.evaluationIdentity = (round, request) => {
+        if (blockHeldOutIdentity && request.phase === 'held-out-baseline') return undefined as never
+        return identity(round, request)
+      }
+      const legacyAdmission = await service.continueEvolution('api', first.evolutionId)
+      const legacyEditing = await editing(service, first.evolutionId, legacyAdmission.roundId)
+      await finalize(service, legacyEditing)
+      const identityBlocked = await eventually(() => store.readRound(legacyAdmission.roundId), r => r?.status === 'failed')
+      blockHeldOutIdentity = false
+      const legacyReason = 'The existing held-out evaluation has no verifiable complete baseline; no baseline refresh was started.'
+      const legacyBlocked: RefinementRound = {
+        ...identityBlocked!,
+        failure: { ...identityBlocked!.failure!, message: legacyReason },
+        baselineReuseBlocker: {
+          code: 'BASELINE_EVIDENCE_UNAVAILABLE',
+          reason: legacyReason,
+          requiredAction: 'Recover complete settled evidence for the original evaluation.',
+        },
+      }
+      await store.writeRound(legacyBlocked)
+      await eventually(async () => service.activeEntry(legacyAdmission.roundId), r => r === undefined)
+      await service.dispose()
+
+      resumed = restart(service, evaluator)
+      await resumed.initialize()
+      const nextAdmission = await resumed.continueEvolution('api', first.evolutionId)
+      const next = await editing(resumed, first.evolutionId, nextAdmission.roundId)
+      expect(next.baseline).toEqual(promoted.seedEvaluation)
+      await finalize(resumed, next)
+      const terminal = await eventually(() => store.readRound(next.roundId), r => r?.status === 'accepted')
+      expect(terminal?.evaluation?.heldOutBaseline).toEqual(heldOutEvidence)
+      expect(evaluator.calls.filter(phase => phase === 'seed-baseline')).toHaveLength(1)
+      expect(evaluator.calls.filter(phase => phase === 'held-out-baseline')).toHaveLength(1)
+      expect(rerun).not.toHaveBeenCalled()
       expect(await store.readRound(first.roundId)).toEqual(original)
-    } finally { await service.dispose() }
+      expect(await store.readRound(legacyAdmission.roundId)).toEqual(legacyBlocked)
+    } finally { await resumed.dispose(); await service.dispose() }
   })
 
   it.each(['absolute', 'relative'] as const)('reuses promoted standard benchmark evidence after restart with %s dataset paths', async pathMode => {
