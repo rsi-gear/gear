@@ -140,4 +140,39 @@ describe('component identity across formal builds', () => {
     expect(Object.fromEntries(unchanged.map(name => [name, actual[name]])))
       .toEqual(Object.fromEntries(unchanged.map(name => [name, expected[name]])))
   })
+
+  it('excludes only the read-only verifier page method from Hitch rollout identity', async () => {
+    const root = await packageCopy()
+    const path = join(root, 'src/evaluator/hitch-cli.ts')
+    const source = await readFile(path, 'utf8')
+    const changed = source.replace(
+      'Hitch verifier diagnostic capability schema is invalid',
+      'Hitch verifier diagnostic capability contract is invalid',
+    )
+    expect(changed).not.toBe(source)
+    await writeFile(path, changed)
+    await compile(root)
+    expect((await loadBuilt(root)).hitchCliImplementation()).toEqual(sourceApi.hitchCliImplementation())
+  })
+
+  it.each([
+    ['evaluate', (source: string) => source.replace(
+      'Hitch daemon evaluation requires a durable reservation',
+      'Hitch daemon evaluation requires a durable owned reservation',
+    )],
+    ['evaluation helper', (source: string) => source.replace("'--max-concurrent'", "'--parallelism'")],
+    ['evaluation call to diagnostic reader', (source: string) => source.replace(
+      '    try {\n      this.assertEvaluationRequest(round, request)',
+      '    try {\n      void this.inspectVerifierDiagnosticPage\n      this.assertEvaluationRequest(round, request)',
+    )],
+  ] as const)('changes Hitch rollout identity for an %s mutation', async (_label, mutate) => {
+    const root = await packageCopy()
+    const path = join(root, 'src/evaluator/hitch-cli.ts')
+    const source = await readFile(path, 'utf8')
+    const changed = mutate(source)
+    expect(changed).not.toBe(source)
+    await writeFile(path, changed)
+    await compile(root)
+    expect((await loadBuilt(root)).hitchCliImplementation()).not.toEqual(sourceApi.hitchCliImplementation())
+  })
 })

@@ -691,6 +691,105 @@ describe('RefineService evolution workspaces', () => {
     },
   )
 
+  it.each(['timeout', 'process-exit'] as const)(
+    'preserves a durable evidence prerequisite when Meta ends by %s', async mode => {
+      const attemptBudgetMs = 30_000
+      const originalSetTimeout = globalThis.setTimeout
+      let expireAttempt: (() => void) | undefined
+      const timerSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation((...args: Parameters<typeof setTimeout>) => {
+        const timer = originalSetTimeout(...args)
+        if (args[1] === attemptBudgetMs && expireAttempt === undefined) {
+          expireAttempt = () => { clearTimeout(timer); args[0]() }
+        }
+        return timer
+      })
+      const coordinator = new SkillMetaCoordinator()
+      const { service, registry } = await setup(0.8, false, 1, attemptBudgetMs, 1, 0, 2, 60_000, coordinator)
+      try {
+        const admission = await service.admit('skill', { rounds: 2 })
+        const editable = await editing(service, admission.evolutionId, admission.roundId)
+        const claim = await eventually(
+          async () => coordinator.claim('runner-blocked', skillHarnessIdentity(await registry.requireSpec(admission.evolutionId)
+            .then(spec => spec.metaAgent)), admission.evolutionId),
+          value => value !== undefined,
+        )
+        if (claim === undefined) throw new Error('skill assignment was not claimed')
+        const runId = editable.baseline!.trials[0]!.runId!
+        const runtimeStore = service.activeEntry(admission.roundId)!.store
+        const originalWrite = runtimeStore.writeRound.bind(runtimeStore)
+        const blockerWriteStarted = Promise.withResolvers<void>()
+        const releaseBlockerWrite = Promise.withResolvers<void>()
+        let gateBlockerWrite = true
+        const writeSpy = vi.spyOn(runtimeStore, 'writeRound').mockImplementation(async value => {
+          if (gateBlockerWrite && value.candidatePool.some(candidate => candidate.generationAttempts
+            ?.some(attempt => attempt.prerequisiteBlocker !== undefined))) {
+            gateBlockerWrite = false
+            blockerWriteStarted.resolve()
+            await releaseBlockerWrite.promise
+          }
+          return originalWrite(value)
+        })
+        const recording = service.recordMetaPrerequisiteBlocker(claim.sessionId, {
+          schemaVersion: 1,
+          code: 'TRAJECTORY_EVIDENCE_UNAVAILABLE',
+          failedOperation: 'trajectory.query',
+          blockedRuns: [{
+            runId,
+            code: 'hitch_verifier_diagnostic_source_incomplete',
+            cause: 'legacy_truncated',
+            resolution: 'repair-evidence',
+          }],
+        })
+        await blockerWriteStarted.promise
+        const settlement = mode === 'timeout'
+          ? (() => {
+              if (expireAttempt === undefined) throw new Error('candidate deadline was not scheduled')
+              expireAttempt()
+              return Promise.resolve()
+            })()
+          : service.failMetaExecution(
+              admission.evolutionId,
+              admission.roundId,
+              claim.candidateId,
+              claim.sessionId,
+              'codex-process-exited-0',
+            )
+        releaseBlockerWrite.resolve()
+        await Promise.all([recording, settlement])
+        writeSpy.mockRestore()
+
+        const failed = await eventually(
+          () => registry.stateStore(admission.evolutionId).readRound(admission.roundId),
+          value => value?.status === 'failed',
+        )
+        expect(failed).toMatchObject({
+          status: 'failed',
+          failure: {
+            message: expect.stringContaining('TRAJECTORY_EVIDENCE_UNAVAILABLE'),
+            prerequisite: {
+              failedOperation: 'trajectory.query',
+              blockedRuns: [{ runId, cause: 'legacy_truncated', resolution: 'repair-evidence' }],
+            },
+          },
+          candidatePool: [{
+            failure: { prerequisite: { blockedRuns: [{ runId, cause: 'legacy_truncated' }] } },
+            generationAttempts: [{
+              status: 'failed',
+              prerequisiteBlocker: { blockedRuns: [{ runId, cause: 'legacy_truncated' }] },
+              failure: { prerequisite: { blockedRuns: [{ runId, cause: 'legacy_truncated' }] } },
+            }],
+          }],
+        })
+        expect(failed?.failure?.message).not.toContain('codex-process-exited-0')
+        expect(failed?.candidatePool[0]?.generationAttempts).toHaveLength(1)
+        expect(await registry.stateStore(admission.evolutionId).listRounds()).toHaveLength(1)
+      } finally {
+        timerSpy.mockRestore()
+        await service.dispose()
+      }
+    },
+  )
+
   it.each(['decline', 'finalize'] as const)(
     'acknowledges a Skill %s only after its generation settlement is durable',
     async mode => {
@@ -4177,40 +4276,68 @@ describe('RefineService evolution workspaces', () => {
     await service.dispose()
   })
 
-  it('continues with a successful sibling when another candidate times out', async () => {
+  it('keeps a failed sibling prerequisite isolated from another candidate retry', async () => {
     const attemptBudgetMs = 30_000
-    const { service } = await setup(0.8, false, 2, attemptBudgetMs, 1, 0, 1, 90_000)
-    // Trigger only the first sibling's deadline; finalizing the successful
-    // sibling includes Git and evidence checks that must not race a 500ms timer.
+    const { service } = await setup(0.8, false, 2, attemptBudgetMs, 1, 0, 2, 120_000)
     const originalSetTimeout = globalThis.setTimeout
-    let expireFirstAttempt: (() => void) | undefined
+    const expireAttempts: Array<() => void> = []
     const timerSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation((...args: Parameters<typeof setTimeout>) => {
       const timer = originalSetTimeout(...args)
-      if (args[1] === attemptBudgetMs && expireFirstAttempt === undefined) {
-        expireFirstAttempt = () => { clearTimeout(timer); args[0]() }
-      }
+      if (args[1] === attemptBudgetMs) expireAttempts.push(() => { clearTimeout(timer); args[0]() })
       return timer
     })
     try {
       const admission = await service.admit('api')
       const first = await editing(service, admission.evolutionId, admission.roundId)
-      const firstCandidateId = first.candidatePool.find(candidate => candidate.metaSessionId !== undefined)?.candidateId
-      if (firstCandidateId === undefined) throw new Error('first sibling is unavailable')
-      if (expireFirstAttempt === undefined) throw new Error('candidate deadline was not scheduled')
+      const firstCandidate = first.candidatePool.find(candidate => candidate.metaSessionId !== undefined)
+      if (firstCandidate?.metaSessionId === undefined) throw new Error('first sibling is unavailable')
+      const blockedRunId = first.baseline!.trials.find(trial => (trial.rewards.reward ?? 0) <= 0)!.runId!
+      await service.recordMetaPrerequisiteBlocker(firstCandidate.metaSessionId, {
+        schemaVersion: 1,
+        code: 'TRAJECTORY_EVIDENCE_UNAVAILABLE',
+        failedOperation: 'trajectory.query',
+        blockedRuns: [{
+          runId: blockedRunId,
+          code: 'hitch_verifier_diagnostic_source_incomplete',
+          cause: 'legacy_truncated',
+          resolution: 'repair-evidence',
+        }],
+      })
+      const expireFirstAttempt = expireAttempts.shift()
+      if (expireFirstAttempt === undefined) throw new Error('first candidate deadline was not scheduled')
       expireFirstAttempt()
       const store = service.registry.stateStore(admission.evolutionId)
       const second = await eventually(
         () => store.readRound(admission.roundId) as Promise<RefinementRound>,
         value => value?.status === 'candidate-editing'
-          && value.candidatePool.some(candidate => candidate.candidateId !== firstCandidateId
+          && value.candidatePool.some(candidate => candidate.candidateId !== firstCandidate.candidateId
             && candidate.metaSessionId !== undefined
             && service.activeEntry(value.roundId)?.workspace?.workspaceId === candidate.workspaceId),
       )
-      await finalize(service, second)
+      const secondCandidate = second.candidatePool.find(candidate => candidate.candidateId !== firstCandidate.candidateId
+        && candidate.metaSessionId !== undefined)!
+      const expireSecondAttempt = expireAttempts.shift()
+      if (expireSecondAttempt === undefined) throw new Error('second candidate deadline was not scheduled')
+      expireSecondAttempt()
+      const retried = await eventually(
+        () => store.readRound(admission.roundId) as Promise<RefinementRound>,
+        value => value?.status === 'candidate-editing'
+          && value.candidatePool.some(candidate => candidate.candidateId === secondCandidate.candidateId
+            && candidate.metaSessionId !== secondCandidate.metaSessionId
+            && candidate.generationAttempts?.length === 2
+            && service.activeEntry(value.roundId)?.workspace?.workspaceId === candidate.workspaceId),
+      )
+      await finalize(service, retried)
       const terminal = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'accepted')
-      expect(terminal?.candidatePool.find(candidate => candidate.candidateId === firstCandidateId)).toMatchObject({
-        status: 'failed', failure: { phase: 'candidate-generation' },
+      expect(terminal?.candidatePool.find(candidate => candidate.candidateId === firstCandidate.candidateId)).toMatchObject({
+        status: 'failed',
+        failure: { prerequisite: { blockedRuns: [{ runId: blockedRunId, cause: 'legacy_truncated' }] } },
       })
+      const settledSecond = terminal?.candidatePool.find(candidate => candidate.candidateId === secondCandidate.candidateId)
+      expect(settledSecond?.generationAttempts).toHaveLength(2)
+      expect(settledSecond?.generationAttempts?.[0]).toMatchObject({ status: 'failed' })
+      expect(settledSecond?.generationAttempts?.[0]?.failure?.prerequisite).toBeUndefined()
+      expect(settledSecond?.generationAttempts?.[1]).toMatchObject({ status: 'succeeded' })
       expect(terminal?.candidatePool.filter(candidate => candidate.status === 'selected')).toHaveLength(1)
     } finally {
       timerSpy.mockRestore()

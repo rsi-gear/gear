@@ -179,7 +179,11 @@ describe('component implementation identity', () => {
     expect(generator).toMatchObject({ package: 'dsh-plugin-refine/components', version: '2.0.0' })
     expect(generator.integrity).toMatch(/^sha256:[0-9a-f]{64}$/u)
     expect(generator.integrity).not.toBe(sampler.integrity)
-    expect(hitchCliImplementation()).toMatchObject({ package: generator.package, version: generator.version })
+    expect(hitchCliImplementation()).toEqual({
+      package: generator.package,
+      version: generator.version,
+      integrity: 'sha256:753d557df19de7f203b08ea715e42ce63b8c75e21abfcb49ef31586530d86d1d',
+    })
     expect(stableLlmVerifierImplementation()).toMatchObject({ package: generator.package, version: generator.version })
   })
 })

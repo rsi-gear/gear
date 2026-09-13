@@ -451,6 +451,39 @@ export interface HitchTrajectoryReader {
     signal: AbortSignal,
   ): Promise<HitchTrajectoryEventsPage>
   inspectVerifierEvidence?(runId: string, signal: AbortSignal): Promise<HitchVerifierEvidence>
+  inspectVerifierDiagnosticPage?(
+    runId: string,
+    query: Readonly<HitchVerifierDiagnosticPageQuery>,
+    signal: AbortSignal,
+  ): Promise<HitchVerifierDiagnosticPage>
+}
+
+export interface HitchVerifierDiagnosticPageQuery {
+  name: 'ctrf.json' | 'test-stdout.txt' | 'test-stderr.txt' | 'stdout.txt' | 'stderr.txt'
+  offset?: number
+  limit?: number
+  sha256?: string
+}
+
+export interface HitchVerifierDiagnosticPage {
+  schemaVersion: 1
+  kind: 'verifier-diagnostic-page'
+  runId: string
+  artifact: {
+    name: HitchVerifierDiagnosticPageQuery['name']
+    mediaType: 'application/json' | 'text/plain'
+    bytes: number
+    sha256: string
+    sourceComplete: boolean
+    lossReason?: string
+  }
+  page: {
+    offset: number
+    bytes: number
+    text: string
+    eof: boolean
+    nextOffset?: number
+  }
 }
 
 export interface HitchVerifierEvidence {
@@ -735,7 +768,8 @@ export interface MetaPrerequisiteBlocked {
   message: string
   readiness: FinalizationReadiness
   operatorAction: {
-    upgrade: string
+    upgrade?: string
+    repair?: string
     compatibilityConfig?: 'hitch.allowUnavailableVerifierDiagnosis=true'
     runIds?: string[]
     reason?: string
@@ -747,10 +781,30 @@ export interface MetaPrerequisiteBlocked {
   }
 }
 
+export interface MetaPrerequisiteFailure {
+  schemaVersion: 1
+  code: MetaPrerequisiteBlocked['code']
+  failedOperation: MetaPrerequisiteBlocked['failedOperation'] | 'trajectory.query'
+  blockedRuns: Array<{
+    runId: string
+    code: string
+    cause?: string
+    resolution?: 'upgrade-hitch' | 'repair-evidence'
+  }>
+}
+
+export interface RefinementFailure {
+  phase: string
+  message: string
+  prerequisite?: MetaPrerequisiteFailure
+}
+
 export interface TrajectoryEvidenceBlocker {
   runId: string
   code: string
   message: string
+  resolution?: 'upgrade-hitch' | 'repair-evidence'
+  cause?: string
 }
 
 export interface LocalSourceTransportSummary {
@@ -1077,7 +1131,8 @@ export interface CandidateGenerationAttempt {
   workspaceId?: string
   metaSessionId?: string
   metaTurn?: MetaTurnObservation
-  failure?: { phase: string; message: string }
+  prerequisiteBlocker?: MetaPrerequisiteFailure
+  failure?: RefinementFailure
 }
 
 export interface CandidateGenerationBudgetStatus {
@@ -1130,7 +1185,7 @@ export interface CandidateRecord {
   heldOutEvaluation?: EvaluationEvidence
   metrics?: MetricSet
   generationAttempts?: CandidateGenerationAttempt[]
-  failure?: { phase: string; message: string }
+  failure?: RefinementFailure
   status: 'generating' | 'ready' | 'evaluating' | 'selected' | 'discarded' | 'failed'
 }
 
@@ -1514,7 +1569,7 @@ export interface RefinementRound {
   meta?: MetaAttribution
   proposalEvidence?: ProposalEvidenceAudit
   decision?: 'accepted' | 'rejected' | 'rejected-for-substrate' | 'no-change'
-  failure?: { phase: string; message: string }
+  failure?: RefinementFailure
 }
 
 export interface AdmissionResult {

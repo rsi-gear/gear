@@ -13,7 +13,8 @@ import type {
   AdmissionResult, CandidateAssessment, CandidateAssessmentResult, CandidateDecline, CandidateDiffSummary, CandidateFinalization, CandidateRecord, ChampionState,
   CandidateGenerationAttempt, CandidateGenerationSpec, ComponentRef, MetaAgentSpec, EvaluationEvidence, EvaluationRequest, EvaluationRerunResult, EvaluationRerunSelector, EvolutionRegistryEntry, EvolutionSpec, MetaAttribution,
   HitchTrajectoryReader, MetaCheckpointRef, MetaTurnObservation, MetricSet, PairedTrial, PairingAudit, PopulationState, ProposalEvidenceAudit, PromotionPolicy, PublicSeedEvidence, PublicRoundStatus,
-  RefineEvaluator, RefinementRound, RolloutSpec, RoundEvaluation, RoundEvaluationAttempt, SemanticTarget, PopulationMember,
+  RefineEvaluator, RefinementRound, RefinementFailure, RolloutSpec, RoundEvaluation, RoundEvaluationAttempt, SemanticTarget, PopulationMember,
+  MetaPrerequisiteFailure,
 } from '../types.js'
 import { isExactGitCommit } from '../types.js'
 import type { EvaluationReservation, PendingEvaluationSubmission, EvaluationFailure } from '../types.js'
@@ -107,6 +108,7 @@ interface CandidateExecution {
   preserveWorkspace?: boolean
   generationBudget?: CandidateGenerationBudgetStatus
   evidenceWrites?: Set<Promise<void>>
+  prerequisiteWrite?: Promise<void>
 }
 
 type CandidatePatch = { [Key in keyof CandidateRecord]?: CandidateRecord[Key] | undefined }
@@ -192,10 +194,40 @@ class MetaTurnEndedWithoutProposalError extends Error {
 }
 
 class ExternalMetaFailureError extends Error {
-  constructor(readonly reason: string) {
-    super(`external Meta failed: ${reason}`)
+  constructor(readonly reason: string, readonly prerequisite?: MetaPrerequisiteFailure) {
+    super(prerequisite === undefined
+      ? `external Meta failed: ${reason}`
+      : `external Meta blocked: ${prerequisite.code} (${prerequisite.blockedRuns
+          .map(item => `${item.runId}:${item.cause ?? item.code}`).join(', ')})`)
     this.name = 'ExternalMetaFailureError'
   }
+}
+
+function refinementFailure(phase: string, error: unknown): RefinementFailure {
+  return {
+    phase,
+    message: errorMessage(error),
+    ...(error instanceof ExternalMetaFailureError && error.prerequisite !== undefined
+      ? { prerequisite: structuredClone(error.prerequisite) }
+      : {}),
+  }
+}
+
+function runningPrerequisite(round: RefinementRound): MetaPrerequisiteFailure | undefined {
+  return round.candidatePool.flatMap(candidate => candidate.generationAttempts ?? [])
+    .find(attempt => attempt.status === 'running' && attempt.prerequisiteBlocker !== undefined)
+    ?.prerequisiteBlocker
+}
+
+function preferredFailure(phase: string, error: unknown, round: RefinementRound): RefinementFailure {
+  if (error instanceof ExternalMetaFailureError && error.prerequisite !== undefined) {
+    return refinementFailure(phase, error)
+  }
+  const prerequisite = runningPrerequisite(round)
+  return refinementFailure(
+    phase,
+    prerequisite === undefined ? error : new ExternalMetaFailureError(errorMessage(error), prerequisite),
+  )
 }
 
 function effectiveCandidateGenerationBudget(spec: CandidateGenerationSpec): {
@@ -237,11 +269,20 @@ function patchGenerationAttempt(
 function settleInterruptedCandidateGeneration(
   round: RefinementRound,
   completedAt: string,
-  message: string,
+  source: string | RefinementFailure,
 ): CandidateRecord[] {
   return round.candidatePool.map(candidate => {
     if (!candidate.generationAttempts?.some(attempt => attempt.status === 'running')) return candidate
-    const failure = { phase: 'candidate-generation', message }
+    const prerequisite = candidate.generationAttempts.find(attempt => attempt.status === 'running')?.prerequisiteBlocker
+    const baseFailure = typeof source === 'string'
+      ? { phase: 'candidate-generation', message: source }
+      : { ...source, phase: 'candidate-generation' }
+    const failure = prerequisite === undefined || baseFailure.prerequisite !== undefined
+      ? baseFailure
+      : refinementFailure(
+          'candidate-generation',
+          new ExternalMetaFailureError(baseFailure.message, prerequisite),
+        )
     return {
       ...candidate,
       status: 'failed',
@@ -604,7 +645,7 @@ export class RefineService {
               ...withoutResume,
               status: 'failed',
               updatedAt: completedAt,
-              failure: { phase: 'recovery', message: 'control plane restarted during an evaluation resumed from repair' },
+              failure: preferredFailure('recovery', 'control plane restarted during an evaluation resumed from repair', round),
               candidatePool: settleInterruptedCandidateGeneration(
                 round, completedAt, 'control plane restarted during candidate generation',
               ),
@@ -665,7 +706,7 @@ export class RefineService {
             ...round,
             status: 'failed',
             updatedAt: completedAt,
-            failure: { phase: 'recovery', message: 'control plane restarted during an evaluation' },
+            failure: preferredFailure('recovery', 'control plane restarted during an evaluation', round),
             candidatePool: settleInterruptedCandidateGeneration(
               round, completedAt, 'control plane restarted during candidate generation',
             ),
@@ -711,7 +752,7 @@ export class RefineService {
           const completedAt = now()
           await store.writeRound({
             ...round, status: 'failed', updatedAt: completedAt,
-            failure: { phase: 'recovery', message: 'control plane restarted before the round reached a durable commit intent' },
+            failure: preferredFailure('recovery', 'control plane restarted before the round reached a durable commit intent', round),
             candidatePool: settleInterruptedCandidateGeneration(
               round, completedAt, 'control plane restarted during candidate generation',
             ),
@@ -1399,7 +1440,12 @@ export class RefineService {
     if (active.abort.signal.aborted || execution.signal.aborted) {
       throw new Error('candidate generation is already stopping; inspect control.status')
     }
-    const failure = new ExternalMetaFailureError(reason)
+    await Promise.allSettled([...(execution.evidenceWrites ?? [])])
+    const persisted = await active.evolution.store.readRound(roundId)
+    const prerequisite = persisted?.candidatePool.find(candidate => candidate.candidateId === candidateId)
+      ?.generationAttempts?.find(attempt => attempt.metaSessionId === sessionId && attempt.status === 'running')
+      ?.prerequisiteBlocker
+    const failure = new ExternalMetaFailureError(reason, prerequisite)
     execution.abort.abort(failure)
     execution.finalization.reject(failure)
     execution.finalizationPersisted.reject(failure)
@@ -1414,6 +1460,76 @@ export class RefineService {
       throw new Error('Meta failure did not reach durable failed state; inspect control.status')
     }
     return { failed: true, evolutionId, roundId, candidateId }
+  }
+
+  async recordMetaPrerequisiteBlocker(
+    sessionId: string,
+    prerequisite: MetaPrerequisiteFailure,
+  ): Promise<void> {
+    const entry = this.activeEntryForSession(sessionId)
+    if (entry === undefined) throw new Error('stale candidate prerequisite owner')
+    const execution = this.active.get(entry.roundId)?.executions.get(entry.candidateId)
+    if (execution === undefined || execution.metaSessionId !== sessionId) throw new Error('stale candidate prerequisite owner')
+    await this.enqueueMetaPrerequisiteWrite(execution, async () => {
+      const round = await entry.store.readRound(entry.roundId)
+      if (round === undefined) throw new Error(`unknown refinement round: ${entry.roundId}`)
+      const candidate = round.candidatePool.find(value => value.candidateId === entry.candidateId)
+      if (candidate?.generationAttempts === undefined) throw new Error('candidate generation attempt is unavailable')
+      const attempt = candidate.generationAttempts.find(value => value.metaSessionId === sessionId && value.status === 'running')
+      if (attempt === undefined) throw new Error('stale candidate prerequisite attempt')
+      await this.transition(entry.store, entry.roundId, {
+        candidatePool: this.patchCandidate(round, entry.candidateId, {
+          generationAttempts: patchGenerationAttempt(candidate.generationAttempts, attempt.attempt, {
+            prerequisiteBlocker: structuredClone(prerequisite),
+          }),
+        }),
+      })
+    })
+  }
+
+  async clearMetaPrerequisiteBlocker(sessionId: string, runId?: string): Promise<void> {
+    const entry = this.activeEntryForSession(sessionId)
+    if (entry === undefined) return
+    const execution = this.active.get(entry.roundId)?.executions.get(entry.candidateId)
+    if (execution === undefined || execution.metaSessionId !== sessionId) return
+    await this.enqueueMetaPrerequisiteWrite(execution, async () => {
+      const round = await entry.store.readRound(entry.roundId)
+      const candidate = round?.candidatePool.find(value => value.candidateId === entry.candidateId)
+      const attempts = candidate?.generationAttempts
+      const attempt = attempts?.find(value => value.metaSessionId === sessionId && value.status === 'running')
+      const current = attempt?.prerequisiteBlocker
+      if (round === undefined || candidate === undefined || attempts === undefined || attempt === undefined || current === undefined) return
+      const blockedRuns = runId === undefined
+        ? []
+        : current.blockedRuns.filter(value => value.runId !== runId)
+      const generationAttempts = attempts.map(value => {
+        if (value.attempt !== attempt.attempt) return value
+        if (blockedRuns.length > 0) return { ...value, prerequisiteBlocker: { ...current, blockedRuns } }
+        const { prerequisiteBlocker: _prerequisiteBlocker, ...cleared } = value
+        return cleared
+      })
+      await this.transition(entry.store, entry.roundId, {
+        candidatePool: this.patchCandidate(round, entry.candidateId, {
+          generationAttempts,
+        }),
+      })
+    })
+  }
+
+  private async enqueueMetaPrerequisiteWrite(
+    execution: CandidateExecution,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    const previous = execution.prerequisiteWrite
+    const write = (previous === undefined ? Promise.resolve() : previous.catch(() => {})).then(operation)
+    execution.prerequisiteWrite = write
+    const writes = execution.evidenceWrites ??= new Set()
+    writes.add(write)
+    try { await write }
+    finally {
+      writes.delete(write)
+      if (execution.prerequisiteWrite === write) delete execution.prerequisiteWrite
+    }
   }
 
   async status(evolutionId: string, roundId?: string): Promise<PublicRoundStatus> {
@@ -2135,6 +2251,11 @@ export class RefineService {
               execution.preserveWorkspace = true
             }
             active.abort.signal.throwIfAborted()
+            await Promise.allSettled([...(execution.evidenceWrites ?? [])])
+            const persistedRound = await store.readRound(roundId)
+            const persistedAttempt = persistedRound?.candidatePool.find(value => value.candidateId === candidateId)
+              ?.generationAttempts?.find(value => value.attempt === attemptNumber)
+            if (persistedAttempt?.prerequisiteBlocker !== undefined) round = persistedRound!
             // Close the attempt before persisting retry state so a late tool call
             // from the timed-out child cannot seal or submit the disposed workspace.
             execution.finalizationSubmitted = true
@@ -2142,8 +2263,8 @@ export class RefineService {
             const phase = error instanceof SubstrateExpansionError
               ? 'rejected-for-substrate'
               : round.status === 'building-candidate' ? 'building-candidate' : 'candidate-generation'
-            const failure = { phase, message: errorMessage(error) }
-            shouldRetry = (error instanceof CandidateGenerationTimeoutError
+            const failure = preferredFailure(phase, error, round)
+            shouldRetry = failure.prerequisite === undefined && (error instanceof CandidateGenerationTimeoutError
               || error instanceof MetaTurnEndedWithoutProposalError
               || error instanceof MetaContextError && error.code === 'context-handoff-failed')
               && !completedCheckpoint
@@ -2313,6 +2434,9 @@ export class RefineService {
         const failedGenerationCandidates = round.candidatePool.filter(candidate => candidate.status === 'failed'
           && (candidate.failure?.phase === 'candidate-generation' || candidate.failure?.phase === 'building-candidate'))
         if (failedGenerationCandidates.length > 0) {
+          const prerequisite = failedGenerationCandidates
+            .map(candidate => candidate.failure?.prerequisite)
+            .find(value => value !== undefined)
           await this.transition(store, roundId, this.completeEvaluationRepairResume(active, round, {
             status: 'failed',
             failure: {
@@ -2320,6 +2444,7 @@ export class RefineService {
               message: failedGenerationCandidates
                 .map(candidate => `${candidate.candidateId}: ${candidate.failure!.message}`)
                 .join('; '),
+              ...(prerequisite === undefined ? {} : { prerequisite: structuredClone(prerequisite) }),
             },
           }))
           return
@@ -2393,11 +2518,12 @@ export class RefineService {
           }))
         } else {
           const completedAt = now()
+          const failure = preferredFailure(round.status, error, round)
           await this.transition(store, roundId, {
             ...this.completeEvaluationRepairResume(active, round, {}),
             status: 'failed',
-            candidatePool: settleInterruptedCandidateGeneration(round, completedAt, errorMessage(error)),
-            failure: { phase: round.status, message: errorMessage(error) },
+            candidatePool: settleInterruptedCandidateGeneration(round, completedAt, failure),
+            failure,
             ...(error instanceof BaselineReuseBlockedError ? { baselineReuseBlocker: error.blocker } : {}),
           })
         }

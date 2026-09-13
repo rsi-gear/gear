@@ -61,6 +61,24 @@ function validMetricSet(value: unknown): boolean {
   return true
 }
 
+function validMetaPrerequisiteFailure(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const blocker = value as Record<string, unknown>
+  if (blocker.schemaVersion !== 1
+    || blocker.code !== 'VERIFIER_EVIDENCE_UNAVAILABLE' && blocker.code !== 'TRAJECTORY_EVIDENCE_UNAVAILABLE'
+    || blocker.failedOperation !== 'candidate.finalize' && blocker.failedOperation !== 'candidate.decline'
+      && blocker.failedOperation !== 'trajectory.query'
+    || !Array.isArray(blocker.blockedRuns) || blocker.blockedRuns.length === 0) return false
+  return blocker.blockedRuns.every(item => {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) return false
+    const run = item as Record<string, unknown>
+    return typeof run.runId === 'string' && /^run_[0-9a-f]{32}$/u.test(run.runId)
+      && typeof run.code === 'string' && /^[a-z0-9_]{1,128}$/u.test(run.code)
+      && (run.cause === undefined || typeof run.cause === 'string' && /^[a-z0-9][a-z0-9._-]{0,127}$/u.test(run.cause))
+      && (run.resolution === undefined || run.resolution === 'upgrade-hitch' || run.resolution === 'repair-evidence')
+  })
+}
+
 function trialKey(trial: { taskName: string; attempt?: number }): string {
   return JSON.stringify([trial.taskName, trial.attempt ?? null])
 }
@@ -636,6 +654,8 @@ export class RefineStateStore {
           const hasValidFailure = attempt.failure !== undefined
             && typeof attempt.failure.phase === 'string' && attempt.failure.phase.length > 0
             && typeof attempt.failure.message === 'string' && attempt.failure.message.length > 0
+            && (attempt.failure.prerequisite === undefined
+              || validMetaPrerequisiteFailure(attempt.failure.prerequisite))
           const turnUsage = attempt.metaTurn?.usage
           const hasValidMetaTurn = attempt.metaTurn === undefined || (
             typeof attempt.metaTurn.reason === 'string' && attempt.metaTurn.reason.length > 0
@@ -655,6 +675,7 @@ export class RefineStateStore {
             || typeof attempt.startedAt !== 'string' || attempt.startedAt.length === 0
             || attempt.workspaceId !== undefined && (typeof attempt.workspaceId !== 'string' || attempt.workspaceId.length === 0)
             || attempt.metaSessionId !== undefined && (typeof attempt.metaSessionId !== 'string' || attempt.metaSessionId.length === 0)
+            || attempt.prerequisiteBlocker !== undefined && !validMetaPrerequisiteFailure(attempt.prerequisiteBlocker)
             || attempt.status === 'running' && (attempt.completedAt !== undefined || attempt.failure !== undefined)
             || attempt.status === 'succeeded' && (typeof attempt.completedAt !== 'string' || attempt.completedAt.length === 0 || attempt.failure !== undefined)
             || attempt.status === 'failed' && (typeof attempt.completedAt !== 'string' || attempt.completedAt.length === 0 || !hasValidFailure)

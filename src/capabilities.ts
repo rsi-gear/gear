@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import type { HarnessBuilder } from './harness/builder.js'
 import { CompilerCheckError, candidateCheckReport, uncheckedRuntime, type CandidateCheckReport } from './harness/check-report.js'
@@ -29,7 +29,10 @@ import type {
   DiagnosisReceipt,
   EvaluationEvidence,
   HitchTrajectoryReader,
+  HitchVerifierDiagnosticPageQuery,
   HitchVerifierEvidence,
+  MetaPrerequisiteBlocked,
+  MetaPrerequisiteFailure,
   MetaEvidenceText,
   MetaFailureCard,
   RefineBridgeRequestMap,
@@ -108,6 +111,16 @@ interface TrajectoryDetailRef {
     canonicalSha256: string
     bytes: number
   }
+  verifierSources?: {
+    baseText?: string
+    artifacts: Array<{
+      label: string
+      name: HitchVerifierDiagnosticPageQuery['name']
+      mediaType: 'application/json' | 'text/plain'
+      bytes: number
+      sha256: string
+    }>
+  }
   pendingDiagnosis?: {
     evalId: string
     cardDigest: string
@@ -120,9 +133,13 @@ interface TrajectoryDetailRef {
   }
 }
 
+const MAX_VERIFIER_DIAGNOSTIC_BYTES = 16 * 1024 * 1024
+const VERIFIER_DIAGNOSTIC_PAGE_BYTES = 64 * 1024
+
 interface TrajectoryDetailRead {
   visible: Record<string, unknown>
   diagnosis?: { evalId: string; runId: string; receipt: DiagnosisReceipt; recovery?: Omit<CandidateDiagnosisRecord, 'receipt' | 'source'> }
+  blocker?: TrajectoryEvidenceBlocker
 }
 
 interface ExperienceQueryCursor {
@@ -344,6 +361,9 @@ export class RefineCapabilities {
           roundHeldOutRef(rounds, activeRoundId),
           signal,
         )
+        if (read.blocker !== undefined && baseline !== undefined) {
+          await this.persistTrajectoryQueryBlockers(sessionId, activeRoundId, baseline)
+        }
         if (read.diagnosis !== undefined) {
           if (read.diagnosis.recovery !== undefined) await this.service.recordCandidateDiagnosis?.(sessionId, {
             ...read.diagnosis.recovery, receipt: read.diagnosis.receipt,
@@ -352,6 +372,7 @@ export class RefineCapabilities {
           meta.recordEvidenceAccess(activeRoundId, sessionId, {
             refs: [read.diagnosis.evalId, read.diagnosis.runId], diagnosisReceipts: [read.diagnosis.receipt],
           })
+          await this.service.clearMetaPrerequisiteBlocker?.(sessionId, read.diagnosis.runId)
           const pending = this.trajectoryDetailRefs.get(detailRef)?.pendingDiagnosis
           if (pending !== undefined) pending.recorded = true
         }
@@ -428,9 +449,14 @@ export class RefineCapabilities {
         let projection: TrajectoryProjection
         try {
           projection = await this.projectedTrajectory(item.trial.runId, signal)
-          this.trajectoryEvidenceBlockers.delete(this.trajectoryBlockerKey(sessionId, item.roundId, item.trial.runId))
+          const blockerKey = this.trajectoryBlockerKey(sessionId, item.roundId, item.trial.runId)
+          const existingBlocker = this.trajectoryEvidenceBlockers.get(blockerKey)
+          if (existingBlocker === undefined || !existingBlocker.code.includes('verifier_diagnostic')) {
+            this.trajectoryEvidenceBlockers.delete(blockerKey)
+          }
         } catch (error) {
           const blocker = this.recordTrajectoryBlocker(sessionId, item.roundId, item.trial.runId, error)
+          if (baseline !== undefined) await this.persistTrajectoryQueryBlockers(sessionId, activeRoundId, baseline)
           return publicJson(this.trajectoryEvidenceBlocked([blocker]))
         }
         if (projection.coverage.surface !== 'complete' || projection.fidelity === 'unavailable') {
@@ -442,6 +468,7 @@ export class RefineCapabilities {
               code: 'hitch_trajectory_analysis_incomplete',
             }),
           )
+          if (baseline !== undefined) await this.persistTrajectoryQueryBlockers(sessionId, activeRoundId, baseline)
           return publicJson(this.trajectoryEvidenceBlocked([blocker]))
         }
         const prompt = projection.messages.find(message => message.eventType === 'user/message' && message.role === 'user')
@@ -454,6 +481,7 @@ export class RefineCapabilities {
               code: 'hitch_trajectory_task_context_missing',
             }),
           )
+          if (baseline !== undefined) await this.persistTrajectoryQueryBlockers(sessionId, activeRoundId, baseline)
           return publicJson(this.trajectoryEvidenceBlocked([blocker]))
         }
         const verifier = await this.loadVerifierEvidence(item, signal)
@@ -510,6 +538,7 @@ export class RefineCapabilities {
       for (const { item, receipt } of receipts) meta.recordEvidenceAccess(item.roundId, sessionId, {
         refs: [item.evalId, item.trial.runId], diagnosisReceipts: [receipt],
       })
+      for (const { item } of receipts) await this.service.clearMetaPrerequisiteBlocker?.(sessionId, item.trial.runId)
       const readiness = baseline === undefined
         ? undefined
         : finalizationReadiness(
@@ -610,8 +639,14 @@ export class RefineCapabilities {
           readiness,
           method === 'candidate.decline' ? 'candidate.decline' : 'candidate.finalize',
         )
-        if (recovery !== undefined) return publicJson(recovery)
+        if (recovery !== undefined) {
+          if (!recovery.recoverable) {
+            await this.service.recordMetaPrerequisiteBlocker?.(sessionId, this.metaPrerequisiteFailure(recovery))
+          }
+          return publicJson(recovery)
+        }
       }
+      await this.service.clearMetaPrerequisiteBlocker?.(sessionId)
       const attribution = await meta.proposalAttribution(activeRoundId, sessionId, finalization)
       const diff = await this.service.submitFinalization(evolutionId, activeRoundId, finalization, decline, attribution, evidence)
       return publicJson({ accepted: true, evolutionId, roundId: activeRoundId, ...(diff === undefined ? {} : { diff }) })
@@ -1381,14 +1416,26 @@ export class RefineCapabilities {
     runId: string,
     error: unknown,
   ): TrajectoryEvidenceBlocker {
-    const source = error as { code?: unknown }
+    const source = error as { code?: unknown; cause?: unknown; resolution?: unknown }
     const code = typeof source?.code === 'string' && /^[a-z0-9_]{1,128}$/u.test(source.code)
       ? source.code
       : 'hitch_trajectory_project_failed'
+    const resolution: TrajectoryEvidenceBlocker['resolution'] = source?.resolution === 'upgrade-hitch'
+      || source?.resolution === 'repair-evidence'
+      ? source.resolution
+      : code === 'hitch_trajectory_capabilities_unavailable'
+        || code === 'hitch_verifier_diagnostic_pages_unavailable'
+        ? 'upgrade-hitch'
+        : 'repair-evidence'
+    const cause = typeof source?.cause === 'string' && /^[a-z0-9][a-z0-9._-]{0,127}$/u.test(source.cause)
+      ? source.cause
+      : code
     const blocker = {
       runId,
       code,
       message: `Bounded trajectory evidence could not be constructed for ${runId} (${code}).`,
+      resolution,
+      cause,
     }
     this.trajectoryEvidenceBlockers.set(this.trajectoryBlockerKey(sessionId, roundId, runId), blocker)
     return blocker
@@ -1402,7 +1449,6 @@ export class RefineCapabilities {
     const required = new Set([
       ...baseline.trials.filter(trial => (trial.rewards.reward ?? Object.values(trial.rewards)[0] ?? 0) <= 0)
         .flatMap(trial => trial.runId === undefined ? [] : [trial.runId]),
-      ...baseline.invalidTrials.map(trial => trial.runId),
     ])
     return [...required].flatMap(runId => {
       const blocker = this.trajectoryEvidenceBlockers.get(this.trajectoryBlockerKey(sessionId, roundId, runId))
@@ -1411,18 +1457,21 @@ export class RefineCapabilities {
   }
 
   private trajectoryEvidenceBlocked(blockers: readonly TrajectoryEvidenceBlocker[]): Record<string, unknown> {
+    const requiresUpgrade = blockers.some(item => item.resolution === 'upgrade-hitch')
+    const requiresRepair = blockers.some(item => item.resolution !== 'upgrade-hitch')
     return {
       schemaVersion: 1,
       runs: [],
       batchAccepted: false,
       recoverable: false,
       code: 'TRAJECTORY_EVIDENCE_UNAVAILABLE',
-      message: `Diagnostic cards could not be constructed for ${blockers.length} run${blockers.length === 1 ? '' : 's'}. Do not retry the same query until Hitch or the trajectory evidence is repaired.`,
+      message: `Diagnostic cards could not be constructed for ${blockers.length} run${blockers.length === 1 ? '' : 's'}. Resolve the reported prerequisite before retrying.`,
       blockedRuns: blockers,
       operatorAction: {
-        upgrade: 'Hitch bounded trajectory analysis capability',
+        ...(requiresUpgrade ? { upgrade: 'Upgrade Hitch to provide bounded verifier diagnostic pages.' } : {}),
+        ...(requiresRepair ? { repair: 'Repair or re-import the persisted trajectory or verifier evidence for the affected runs.' } : {}),
         runIds: blockers.map(item => item.runId),
-        reason: blockers.map(item => item.code).join(','),
+        reason: blockers.map(item => item.cause ?? item.code).join(','),
       },
     }
   }
@@ -1474,6 +1523,48 @@ export class RefineCapabilities {
       required: value.failedRunCount,
       remainingRunIds: value.missing.map(item => item.runId),
     }
+  }
+
+  private metaPrerequisiteFailure(value: MetaPrerequisiteBlocked): MetaPrerequisiteFailure {
+    const blockedRuns = value.code === 'TRAJECTORY_EVIDENCE_UNAVAILABLE'
+      ? value.readiness.trajectoryBlockedRuns.map(item => ({
+          runId: item.runId,
+          code: item.code,
+          ...(item.cause === undefined ? {} : { cause: item.cause }),
+          ...(item.resolution === undefined ? {} : { resolution: item.resolution }),
+        }))
+      : value.readiness.verifierBlockedRunIds.map(runId => ({
+          runId,
+          code: 'hitch_verifier_evidence_unavailable',
+          cause: 'verifier_evidence_capability_unavailable',
+          resolution: 'upgrade-hitch' as const,
+        }))
+    return {
+      schemaVersion: 1,
+      code: value.code,
+      failedOperation: value.failedOperation,
+      blockedRuns,
+    }
+  }
+
+  private async persistTrajectoryQueryBlockers(
+    sessionId: string,
+    roundId: string,
+    baseline: EvaluationEvidence,
+  ): Promise<void> {
+    const blockedRuns = this.trajectoryBlockers(sessionId, roundId, baseline).map(item => ({
+      runId: item.runId,
+      code: item.code,
+      ...(item.cause === undefined ? {} : { cause: item.cause }),
+      ...(item.resolution === undefined ? {} : { resolution: item.resolution }),
+    }))
+    if (blockedRuns.length === 0) return
+    await this.service.recordMetaPrerequisiteBlocker?.(sessionId, {
+      schemaVersion: 1,
+      code: 'TRAJECTORY_EVIDENCE_UNAVAILABLE',
+      failedOperation: 'trajectory.query',
+      blockedRuns,
+    })
   }
 
   private registerDetailRef(value: TrajectoryDetailRef): string {
@@ -1627,11 +1718,24 @@ export class RefineCapabilities {
         detailChunks.push(`${label}\n${JSON.stringify(publicJson(this.sanitize(value, heldOutRef)), null, 2)}`)
       }
     }
-    let diagnosticsComplete = true
+    const pagedArtifacts: NonNullable<TrajectoryDetailRef['verifierSources']>['artifacts'] = []
     const appendArtifact = (label: string, value: unknown): void => {
       const artifact = objectValue(value)
       if (artifact === undefined) return
-      if (artifact.truncated === true) diagnosticsComplete = false
+      if (artifact.truncated === true) {
+        const name = artifact.name
+        const mediaType = artifact.media_type
+        const bytes = artifact.bytes
+        const sha256 = artifact.sha256
+        if ((name === 'ctrf.json' || name === 'test-stdout.txt' || name === 'test-stderr.txt'
+          || name === 'stdout.txt' || name === 'stderr.txt')
+          && (mediaType === 'application/json' || mediaType === 'text/plain')
+          && Number.isSafeInteger(bytes) && (bytes as number) >= 0
+          && typeof sha256 === 'string' && /^sha256:[0-9a-f]{64}$/u.test(sha256)) {
+          pagedArtifacts.push({ label, name, mediaType, bytes: bytes as number, sha256 })
+          return
+        }
+      }
       if (artifact.json !== undefined) detailChunks.push(`${label}\n${JSON.stringify(artifact.json, null, 2)}`)
       else if (typeof artifact.text === 'string') detailChunks.push(`${label}\n${artifact.text}`)
     }
@@ -1653,8 +1757,9 @@ export class RefineCapabilities {
     const diagnosticsText = detailChunks.length === 0 ? undefined : detailChunks.join('\n\n')
     // Structured artifacts can be usable even without legacy diagnostics
     // (result_only). Omitted evidence must be read before issuing a receipt.
-    const needsDetail = (status === 'complete' || status === 'result_only') && diagnosticsText !== undefined
-      && ((status === 'complete' && failedTests.length === 0)
+    const hasDetails = diagnosticsText !== undefined || pagedArtifacts.length > 0
+    const needsDetail = (status === 'complete' || status === 'result_only') && hasDetails
+      && (pagedArtifacts.length > 0 || (status === 'complete' && failedTests.length === 0)
         || processPreview?.truncated === true || feedbackPreview?.truncated === true)
     return {
       status,
@@ -1663,10 +1768,19 @@ export class RefineCapabilities {
       ...(processPreview === undefined ? {} : { process: processPreview }),
       ...(feedbackPreview === undefined ? {} : { feedback: feedbackPreview }),
       ...(failedTests.length === 0 ? {} : { failures: failedTests }),
-      ...(diagnosticsText === undefined ? {} : {
-        detailRef: this.inlineDetailRef(
-          sessionId, item.roundId, item.trial.runId, diagnosticsText, diagnosticsComplete,
-        ),
+      ...(!hasDetails ? {} : {
+        detailRef: pagedArtifacts.length === 0
+          ? this.inlineDetailRef(sessionId, item.roundId, item.trial.runId, diagnosticsText!)
+          : this.registerDetailRef({
+              sessionId,
+              roundId: item.roundId,
+              runId: item.trial.runId,
+              offset: 0,
+              verifierSources: {
+                ...(diagnosticsText === undefined ? {} : { baseText: diagnosticsText }),
+                artifacts: pagedArtifacts,
+              },
+            }),
       }),
       ...(needsDetail ? { needsDetail: true as const } : {}),
     }
@@ -1823,6 +1937,16 @@ export class RefineCapabilities {
       throw new Error('detailRef is unknown or no longer valid for this Meta task')
     }
     if (find !== undefined && find.length > 500) throw new TypeError('find must be at most 500 characters')
+    if (detail.verifierSources !== undefined) {
+      try {
+        await this.materializeVerifierDetails(detail, heldOutRef, signal)
+        this.trajectoryEvidenceBlockers.delete(this.trajectoryBlockerKey(sessionId, roundId, detail.runId))
+      } catch (error) {
+        signal.throwIfAborted()
+        const blocker = this.recordTrajectoryBlocker(sessionId, roundId, detail.runId, error)
+        return { visible: this.trajectoryEvidenceBlocked([blocker]), blocker }
+      }
+    }
     let text = detail.text
     let sourceComplete = detail.sourceComplete ?? true
     if (text === undefined) {
@@ -1905,6 +2029,111 @@ export class RefineCapabilities {
       ...(nextRef === undefined ? {} : { nextRef }),
     }
     return this.completeTrajectoryDetailRead(detail, visible, sourceComplete && nextRef === undefined)
+  }
+
+  private async materializeVerifierDetails(
+    detail: TrajectoryDetailRef,
+    heldOutRef: string | undefined,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const sources = detail.verifierSources
+    if (sources === undefined) return
+    const inspect = this.options.trajectoryReader?.inspectVerifierDiagnosticPage
+    if (inspect === undefined) {
+      throw Object.assign(new Error('Hitch does not expose bounded verifier diagnostic pages'), {
+        code: 'hitch_verifier_diagnostic_pages_unavailable',
+        cause: 'verifier_diagnostic_pages_unsupported',
+        resolution: 'upgrade-hitch',
+      })
+    }
+    const chunks = sources.baseText === undefined ? [] : [sources.baseText]
+    let aggregateBytes = 0
+    for (const source of sources.artifacts) {
+      let offset = 0
+      let expectedSha256: string | undefined
+      let expectedBytes: number | undefined
+      const artifactChunks: string[] = []
+      const hash = createHash('sha256')
+      let bytes = 0
+      for (;;) {
+        const page = await inspect.call(this.options.trajectoryReader, detail.runId, {
+          name: source.name,
+          offset,
+          limit: VERIFIER_DIAGNOSTIC_PAGE_BYTES,
+          ...(expectedSha256 === undefined ? {} : { sha256: expectedSha256 }),
+        }, signal)
+        if (!page.artifact.sourceComplete) {
+          const cause = page.artifact.lossReason ?? 'source_incomplete'
+          throw Object.assign(new Error(`persisted verifier diagnostic source is incomplete (${cause})`), {
+            code: 'hitch_verifier_diagnostic_source_incomplete',
+            cause: /^[a-z0-9][a-z0-9._-]{0,127}$/u.test(cause) ? cause : 'source_incomplete',
+            resolution: 'repair-evidence',
+          })
+        }
+        if (expectedSha256 === undefined) {
+          expectedSha256 = page.artifact.sha256
+          expectedBytes = page.artifact.bytes
+          if (page.artifact.name !== source.name || page.artifact.mediaType !== source.mediaType
+            || page.artifact.sha256 !== source.sha256 || page.artifact.bytes !== source.bytes) {
+            throw Object.assign(new Error('verifier diagnostic identity changed after the diagnostic card was issued'), {
+              code: 'verifier_diagnostic_version_mismatch',
+              cause: 'verifier_diagnostic_version_mismatch',
+              resolution: 'repair-evidence',
+            })
+          }
+          if (expectedBytes > MAX_VERIFIER_DIAGNOSTIC_BYTES) {
+            throw Object.assign(new Error('verifier diagnostic exceeds the Gear evidence limit'), {
+              code: 'hitch_verifier_diagnostic_too_large',
+              cause: 'diagnostic_too_large',
+              resolution: 'repair-evidence',
+            })
+          }
+        } else if (page.artifact.sha256 !== expectedSha256 || page.artifact.bytes !== expectedBytes
+          || page.artifact.name !== source.name || page.artifact.mediaType !== source.mediaType) {
+          throw Object.assign(new Error('verifier diagnostic identity changed between pages'), {
+            code: 'verifier_diagnostic_version_mismatch',
+            cause: 'verifier_diagnostic_version_mismatch',
+            resolution: 'repair-evidence',
+          })
+        }
+        bytes += page.page.bytes
+        aggregateBytes += page.page.bytes
+        if (bytes > MAX_VERIFIER_DIAGNOSTIC_BYTES || aggregateBytes > MAX_VERIFIER_DIAGNOSTIC_BYTES) {
+          throw Object.assign(new Error('verifier diagnostics exceed the Gear evidence limit'), {
+            code: 'hitch_verifier_diagnostic_too_large',
+            cause: 'diagnostic_too_large',
+            resolution: 'repair-evidence',
+          })
+        }
+        hash.update(page.page.text)
+        artifactChunks.push(page.page.text)
+        if (page.page.eof) break
+        offset = page.page.nextOffset!
+      }
+      const digest = `sha256:${hash.digest('hex')}`
+      if (bytes !== expectedBytes || digest !== expectedSha256) {
+        throw Object.assign(new Error('verifier diagnostic bytes or digest do not match the completed page stream'), {
+          code: 'hitch_verifier_diagnostic_integrity_mismatch',
+          cause: 'verifier_diagnostic_integrity_mismatch',
+          resolution: 'repair-evidence',
+        })
+      }
+      const artifactText = artifactChunks.join('')
+      const safe = this.sanitize(artifactText, heldOutRef) as string
+      chunks.push(`${source.label}\n${safe}`)
+    }
+    const text = chunks.join('\n\n')
+    if (Buffer.byteLength(text) > MAX_VERIFIER_DIAGNOSTIC_BYTES) {
+      throw Object.assign(new Error('sanitized verifier diagnostics exceed the Gear evidence limit'), {
+        code: 'hitch_verifier_diagnostic_too_large',
+        cause: 'sanitized_diagnostic_too_large',
+        resolution: 'repair-evidence',
+      })
+    }
+    detail.text = text
+    detail.sourceComplete = true
+    Reflect.deleteProperty(detail, 'verifierSources')
+    this.trimDetailRefs()
   }
 
   private completeTrajectoryDetailRead(

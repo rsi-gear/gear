@@ -234,6 +234,7 @@ else if (args[0] === 'eval' && args[1] === 'rerun-cancel') {
 else if (args[0] === 'capabilities') {
   process.stdout.write(JSON.stringify({
     schema_version: '1', trajectory_analysis: '1', trajectory_events_page: '1', verifier_evidence: '1',
+    verifier_diagnostic_pages: '1',
   }) + '\\n')
 } else if (args[0] === 'trajectory' && args[1] === 'project') {
   const runId = args[2]
@@ -281,6 +282,24 @@ else if (args[0] === 'capabilities') {
       ...(args.includes('--seq-end') ? { seq_end: end } : {}) },
     events: page, total_matches: matches.length,
     ...(page.length < matches.length ? { next_cursor: 'cursor-1' } : {}), eof: page.length >= matches.length,
+  }) + '\\n')
+} else if (args[0] === 'verifier' && args[1] === 'artifact') {
+  const runId = args[2]
+  const name = args[3]
+  const offset = Number(value('--offset'))
+  const limit = Number(value('--limit'))
+  const content = '\\u0000'.repeat(65536)
+  const text = content.slice(offset, offset + limit)
+  const sha256 = 'sha256:' + createHash('sha256').update(content).digest('hex')
+  process.stdout.write(JSON.stringify({
+    schema_version: '1', kind: 'verifier-diagnostic-page', run_id: runId,
+    artifact: { name, media_type: name === 'ctrf.json' ? 'application/json' : 'text/plain',
+      bytes: Buffer.byteLength(content), sha256, source_complete: name !== 'test-stderr.txt',
+      ...(name === 'test-stderr.txt' ? { loss_reason: 'legacy_truncated' } : {}) },
+    page: name === 'test-stderr.txt'
+      ? { offset: 0, bytes: 0, text: '', eof: true }
+      : { offset, bytes: Buffer.byteLength(text), text, eof: offset + Buffer.byteLength(text) === Buffer.byteLength(content),
+          ...(offset + Buffer.byteLength(text) === Buffer.byteLength(content) ? {} : { next_offset: offset + Buffer.byteLength(text) }) },
   }) + '\\n')
 } else if (args[0] === 'verifier' && args[1] === 'inspect') {
   const runId = args[2]
@@ -1176,6 +1195,46 @@ process.stdout.write(${JSON.stringify(JSON.stringify(payload) + '\n')})
         }] },
       },
       redactions: [{ ruleId: 'absolute-path-v1', count: 2 }],
+    })
+  })
+
+  it('reads a maximally escaped bounded verifier diagnostic page', async () => {
+    const { evaluator, invocationLog } = await setup()
+    const runId = `run_${'5'.repeat(32)}`
+    const page = await evaluator.inspectVerifierDiagnosticPage(runId, {
+      name: 'test-stdout.txt', offset: 0, limit: 64 * 1024,
+    }, new AbortController().signal)
+    const content = '\u0000'.repeat(64 * 1024)
+    expect(page).toEqual({
+      schemaVersion: 1,
+      kind: 'verifier-diagnostic-page',
+      runId,
+      artifact: {
+        name: 'test-stdout.txt', mediaType: 'text/plain', bytes: Buffer.byteLength(content),
+        sha256: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+        sourceComplete: true,
+      },
+      page: { offset: 0, bytes: Buffer.byteLength(content), text: content, eof: true },
+    })
+    const invocations = (await readFile(invocationLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
+    expect(invocations).toContainEqual([
+      'verifier', 'artifact', runId, 'test-stdout.txt', '--offset', '0', '--limit', '65536', '--json',
+    ])
+  })
+
+  it('accepts a terminal empty page for a permanently incomplete verifier source', async () => {
+    const { evaluator } = await setup()
+    const runId = `run_${'5'.repeat(32)}`
+    const page = await evaluator.inspectVerifierDiagnosticPage(runId, {
+      name: 'test-stderr.txt', offset: 0, limit: 64 * 1024,
+    }, new AbortController().signal)
+    expect(page).toMatchObject({
+      runId,
+      artifact: {
+        name: 'test-stderr.txt', bytes: 64 * 1024,
+        sourceComplete: false, lossReason: 'legacy_truncated',
+      },
+      page: { offset: 0, bytes: 0, text: '', eof: true },
     })
   })
 

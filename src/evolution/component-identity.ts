@@ -9,7 +9,7 @@ type ComponentImplementation = ComponentRef<unknown>['implementation']
 type Artifact = {
   logicalName: string
   path: string
-  format: 'module' | 'declarations' | 'bytes'
+  format: 'module' | 'hitch-rollout-module' | 'declarations' | 'bytes'
   declarations?: readonly string[]
   omitDeclarations?: readonly string[]
   omitModuleSpecifiers?: readonly string[]
@@ -206,21 +206,45 @@ function canonicalModule(
     .join('\n')
 }
 
+function canonicalHitchRolloutModule(bytes: Uint8Array, label: string): string {
+  const source = sourceFile(bytes, label)
+  const evaluator = source.statements.filter((statement): statement is ts.ClassDeclaration =>
+    ts.isClassDeclaration(statement) && statement.name?.text === 'HitchCliEvaluator')
+  if (evaluator.length !== 1) throw new Error(`${label} has unsupported Hitch evaluator layout`)
+  // Bounded verifier reads cannot affect rollout submission or execution. Omit
+  // exactly this ordinary instance method while keeping every other member in
+  // the rollout implementation identity.
+  const diagnostic = evaluator[0]!.members.filter(member => ts.isMethodDeclaration(member)
+    && ts.isIdentifier(member.name) && member.name.text === 'inspectVerifierDiagnosticPage'
+    && !member.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.StaticKeyword)
+    && !(ts.canHaveDecorators(member) && (ts.getDecorators(member)?.length ?? 0) > 0))
+  if (diagnostic.length > 1) throw new Error(`${label} has duplicate verifier diagnostic page methods`)
+  return source.statements.map(statement => {
+    if (statement !== evaluator[0] || diagnostic.length === 0) return statement.getText(source)
+    const text = statement.getText(source)
+    const start = diagnostic[0]!.getFullStart() - statement.getStart(source)
+    const end = diagnostic[0]!.end - statement.getStart(source)
+    return `${text.slice(0, start)}${text.slice(end)}`
+  }).join('\n')
+}
+
 function artifactClosureDigest(artifacts: readonly Artifact[]): string {
   return sha256(artifacts.flatMap(artifact => {
     const bytes = readArtifact(artifact.path)
     const content = artifact.format === 'module'
       ? canonicalModule(bytes, artifact.path, artifact.omitDeclarations, artifact.omitModuleSpecifiers)
-      : artifact.format === 'declarations'
-        ? canonicalDeclarations(bytes, artifact.declarations ?? [], artifact.path)
-        : bytes
+      : artifact.format === 'hitch-rollout-module'
+        ? canonicalHitchRolloutModule(bytes, artifact.path)
+        : artifact.format === 'declarations'
+          ? canonicalDeclarations(bytes, artifact.declarations ?? [], artifact.path)
+          : bytes
     return [artifact.logicalName, content]
   }))
 }
 
 function currentArtifacts(kind: 'hitch-cli' | 'llm-verifier'): Artifact[] {
   if (kind === 'hitch-cli') return [
-    { logicalName: 'evaluator/hitch-cli', path: currentFile('../evaluator/hitch-cli.js'), format: 'module' },
+    { logicalName: 'evaluator/hitch-cli', path: currentFile('../evaluator/hitch-cli.js'), format: 'hitch-rollout-module' },
     { logicalName: 'evaluator/cleanup', path: currentFile('../evaluator/cleanup.js'), format: 'module' },
     { logicalName: 'state/digest', path: currentFile('../state/digest.js'), format: 'module' },
     { logicalName: 'state/dataset', path: currentFile('../state/dataset.js'), format: 'module' },

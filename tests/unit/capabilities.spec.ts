@@ -1,4 +1,5 @@
 import { rm } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RefineCapabilities } from '../../src/capabilities.js'
 import { projectTrajectory } from '../../src/evaluator/trajectory-projection.js'
@@ -9,6 +10,7 @@ import type {
   HitchEvaluationEvidence,
   HitchTrajectoryAnalysis,
   HitchTrajectoryReader,
+  HitchVerifierDiagnosticPageQuery,
   HitchVerifierEvidence,
   MetaFailureCard,
   RefinementRound,
@@ -359,10 +361,11 @@ describe('RefineCapabilities Git projection', () => {
         }),
       }),
     }
+    const recordMetaPrerequisiteBlocker = vi.fn(async () => {})
     const service = { activeEntryForSession: () => ({
       evolutionId: 'evo-1', roundId: round.roundId, store, meta, baseline: seedBaseline,
       workspace: { workspaceId: 'workspace-1' },
-    }) }
+    }), recordMetaPrerequisiteBlocker }
     const capabilities = new RefineCapabilities(service as never, builder, () => undefined, {
       trajectoryReader: reader,
       secretValues: ['top-secret'],
@@ -626,6 +629,12 @@ describe('RefineCapabilities Git projection', () => {
         blockedRuns: [{ runId: seedRun, code: 'trajectory_integrity_mismatch' }],
         operatorAction: { runIds: [seedRun], reason: 'trajectory_integrity_mismatch' },
       })
+    await expect(blockedCapabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [invalidSeedRun] }))
+      .resolves.toMatchObject({
+        code: 'TRAJECTORY_EVIDENCE_UNAVAILABLE',
+        blockedRuns: [{ runId: invalidSeedRun, code: 'trajectory_integrity_mismatch' }],
+      })
+    expect(recordMetaPrerequisiteBlocker).not.toHaveBeenCalled()
   })
 
   it.each(['scores', 'process', 'feedback', 'all'] as const)(
@@ -924,6 +933,170 @@ describe('RefineCapabilities Git projection', () => {
       expect(inspectTrajectoryEvents).not.toHaveBeenCalled()
     },
   )
+
+  it('verifies and sanitizes every paged verifier artifact before issuing a diagnosis receipt', async () => {
+    const round = roundFixture({ roundId: 'round-paged-verifier', status: 'candidate-editing', heldOutRef: 'held-out-secret' })
+    const baseline = evidenceFixture(round.plan.seed, round.targetHarnessRef, 0)
+    round.baseline = baseline
+    const runId = baseline.trials[0]!.runId!
+    const digest = (text: string) => `sha256:${createHash('sha256').update(text).digest('hex')}`
+    const ctrf = JSON.stringify({ results: {
+      summary: { passed: 1, failed: 3, skipped: 0 },
+      tests: [{ name: 'api starts', status: 'failed', message: 'connection refused', trace: 'z'.repeat(70_000) }],
+      api_token: 'nested-credential',
+    } })
+    // The Gear-only secret crosses the upstream 64 KiB page boundary.
+    const stdout = `${'x'.repeat(65_533)}top-secret held-out-secret tail`
+    const sources = new Map([
+      ['ctrf.json', { mediaType: 'application/json' as const, text: ctrf }],
+      ['test-stdout.txt', { mediaType: 'text/plain' as const, text: stdout }],
+    ])
+    const accesses: Array<{ diagnosisReceipts?: unknown[] }> = []
+    const receipts = () => accesses.flatMap(value => value.diagnosisReceipts ?? [])
+    const meta = {
+      recordEvidenceAccess: (_roundId: string, _sessionId: string, access: typeof accesses[number]) => { accesses.push(access) },
+      proposalEvidenceAudit: () => ({ summaryAccessed: true, accessedRefs: [baseline.evalId], diagnosedRunRefs: [],
+        citedRefs: [], diagnosisReceipts: receipts() }),
+    }
+    const service = { activeEntryForSession: () => ({ evolutionId: round.evolutionId, roundId: round.roundId,
+      parentHarnessRef: round.targetHarnessRef, workspace: {}, baseline, meta,
+      store: { listRounds: async () => [round] } }) }
+    const inspectVerifierDiagnosticPage = vi.fn(async (_runId: string, query: Readonly<HitchVerifierDiagnosticPageQuery>) => {
+      const source = sources.get(query.name)!
+      const offset = query.offset ?? 0
+      const limit = query.limit ?? 64 * 1024
+      const text = source.text.slice(offset, offset + limit)
+      const nextOffset = offset + Buffer.byteLength(text)
+      return {
+        schemaVersion: 1 as const,
+        kind: 'verifier-diagnostic-page' as const,
+        runId,
+        artifact: {
+          name: query.name,
+          mediaType: source.mediaType,
+          bytes: Buffer.byteLength(source.text),
+          sha256: digest(source.text),
+          sourceComplete: true,
+        },
+        page: {
+          offset,
+          bytes: Buffer.byteLength(text),
+          text,
+          eof: nextOffset === Buffer.byteLength(source.text),
+          ...(nextOffset === Buffer.byteLength(source.text) ? {} : { nextOffset }),
+        },
+      }
+    })
+    const capabilities = new RefineCapabilities(service as never, {} as HarnessBuilder, {
+      trajectoryReader: {
+        inspectCapabilities: async () => ({ schemaVersion: 1, trajectoryAnalysis: 1, trajectoryEventsPage: 1,
+          verifierEvidence: 1 }),
+        inspectTrajectoryAnalysis: async () => trajectoryAnalysis(runId, [
+          { type: 'user/message', data: { role: 'user', content: [{ type: 'text', text: 'Start the API.' }] } },
+        ]),
+        inspectTrajectoryEvents: async () => { throw new Error('verifier details must not use trajectory events') },
+        inspectVerifierEvidence: async () => ({ runId, verifier: {
+          status: 'complete',
+          result: { rewards: { reward: 0 } },
+          resultSha256: `sha256:${'8'.repeat(64)}`,
+          diagnostics: {
+            ctrf: { name: 'ctrf.json', media_type: 'application/json', bytes: Buffer.byteLength(ctrf),
+              sha256: digest(ctrf), truncated: true, text: 'clipped ctrf preview' },
+            stdout: [{ name: 'test-stdout.txt', media_type: 'text/plain', bytes: Buffer.byteLength(stdout),
+              sha256: digest(stdout), truncated: true, text: 'clipped stdout preview' }],
+          },
+        } }),
+        inspectVerifierDiagnosticPage,
+      },
+      secretValues: ['top-secret', 'nested-credential'],
+      maxTrajectoryPageBytes: 4096,
+    })
+    const result = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [runId] }) as { runs: MetaFailureCard[] }
+    const detailRef = result.runs[0]!.verifier.detailRef!
+    expect(result.runs[0]!.verifier).toMatchObject({ needsDetail: true })
+    expect(receipts()).toHaveLength(0)
+
+    const pages: string[] = []
+    let nextRef: string | undefined = detailRef
+    while (nextRef !== undefined) {
+      const page = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { detailRef: nextRef }) as {
+        detail: { text: string; complete: boolean }; nextRef?: string
+      }
+      pages.push(page.detail.text)
+      nextRef = page.nextRef
+      expect(receipts()).toHaveLength(page.detail.complete ? 1 : 0)
+    }
+    const detail = pages.join('')
+    expect(inspectVerifierDiagnosticPage.mock.calls.map(call => call[1].name)).toEqual([
+      'ctrf.json', 'ctrf.json', 'test-stdout.txt', 'test-stdout.txt',
+    ])
+    expect(detail).toContain('connection refused')
+    expect(detail).toContain('tail')
+    expect(detail).toContain('"api_token": "[REDACTED]"')
+    expect(detail).not.toMatch(/top-secret|held-out-secret|nested-credential/u)
+    expect(receipts()).toHaveLength(1)
+  })
+
+  it.each([
+    ['missing paging capability', undefined, 'upgrade', 'verifier_diagnostic_pages_unsupported'],
+    ['legacy truncated source', 'legacy_truncated', 'repair', 'legacy_truncated'],
+  ] as const)('classifies %s without accepting incomplete verifier evidence', async (_label, lossReason, action, cause) => {
+    const round = roundFixture({ roundId: `round-${action}-verifier`, status: 'candidate-editing' })
+    const baseline = evidenceFixture(round.plan.seed, round.targetHarnessRef, 0)
+    round.baseline = baseline
+    const runId = baseline.trials[0]!.runId!
+    const text = 'persisted excerpt'
+    const sha256 = `sha256:${createHash('sha256').update(text).digest('hex')}`
+    const meta = { recordEvidenceAccess: () => {}, proposalEvidenceAudit: () => ({ summaryAccessed: true,
+      accessedRefs: [baseline.evalId], diagnosedRunRefs: [], citedRefs: [], diagnosisReceipts: [] }) }
+    const recordMetaPrerequisiteBlocker = vi.fn(async () => {})
+    const service = { activeEntryForSession: () => ({ evolutionId: round.evolutionId, roundId: round.roundId,
+      parentHarnessRef: round.targetHarnessRef, workspace: {}, baseline, meta,
+      store: { listRounds: async () => [round] } }), recordMetaPrerequisiteBlocker }
+    const pageReader = lossReason === undefined ? {} : {
+      inspectVerifierDiagnosticPage: async () => ({
+        schemaVersion: 1 as const, kind: 'verifier-diagnostic-page' as const, runId,
+        artifact: { name: 'test-stdout.txt' as const, mediaType: 'text/plain' as const,
+          bytes: Buffer.byteLength(text), sha256, sourceComplete: false, lossReason },
+        page: { offset: 0, bytes: 0, text: '', eof: true },
+      }),
+    }
+    const capabilities = new RefineCapabilities(service as never, {} as HarnessBuilder, {
+      trajectoryReader: {
+        inspectCapabilities: async () => ({ schemaVersion: 1, trajectoryAnalysis: 1, trajectoryEventsPage: 1 }),
+        inspectTrajectoryAnalysis: async () => trajectoryAnalysis(runId, [
+          { type: 'user/message', data: { role: 'user', content: [{ type: 'text', text: 'task' }] } },
+        ]),
+        inspectTrajectoryEvents: async () => { throw new Error('unexpected trajectory event read') },
+        inspectVerifierEvidence: async () => ({ runId, verifier: { status: 'complete', result: {},
+          resultSha256: `sha256:${'8'.repeat(64)}`, diagnostics: { stdout: [{
+            name: 'test-stdout.txt', media_type: 'text/plain', bytes: Buffer.byteLength(text), sha256,
+            truncated: true, text,
+          }] } } }),
+        ...pageReader,
+      },
+    })
+    const card = await capabilities.call('refine-meta', 'meta', 'trajectory.query', { refs: [runId] }) as { runs: MetaFailureCard[] }
+    const blocked = await capabilities.call('refine-meta', 'meta', 'trajectory.query', {
+      detailRef: card.runs[0]!.verifier.detailRef!,
+    })
+    const resolution = action === 'upgrade' ? 'upgrade-hitch' : 'repair-evidence'
+    expect(blocked).toMatchObject({
+      code: 'TRAJECTORY_EVIDENCE_UNAVAILABLE',
+      blockedRuns: [{ runId, resolution, cause }],
+      operatorAction: { [action]: expect.any(String), runIds: [runId], reason: cause },
+    })
+    expect(blocked).not.toMatchObject({ operatorAction: { [action === 'upgrade' ? 'repair' : 'upgrade']: expect.anything() } })
+    await expect(capabilities.call('refine-meta', 'meta', 'candidate.decline', {
+      rationale: 'The required verifier evidence cannot be diagnosed.', evidenceRefs: [baseline.evalId],
+    })).resolves.toMatchObject({ accepted: false, recoverable: false, code: 'TRAJECTORY_EVIDENCE_UNAVAILABLE' })
+    expect(recordMetaPrerequisiteBlocker).toHaveBeenCalledWith('meta', {
+      schemaVersion: 1,
+      code: 'TRAJECTORY_EVIDENCE_UNAVAILABLE',
+      failedOperation: 'candidate.decline',
+      blockedRuns: [{ runId, code: expect.any(String), cause, resolution }],
+    })
+  })
 
   it('returns an executable recovery action instead of consuming an incomplete finalization', async () => {
     const round = roundFixture({ roundId: 'round-recovery', status: 'candidate-editing' })
