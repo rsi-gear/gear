@@ -133,6 +133,14 @@ function validateSpec(value: EvolutionSpec): EvolutionSpec {
     || typeof value.evaluation.primaryMetric !== 'string' || value.evaluation.primaryMetric.length === 0) {
     throw new TypeError('evolution evaluation configuration is invalid')
   }
+  if (value.evaluation.mode !== undefined && value.evaluation.mode !== 'reuse-seed') {
+    throw new TypeError('unknown evaluation mode')
+  }
+  if (value.evaluation.mode === 'reuse-seed'
+    && (value.datasets.seed.ref !== value.datasets.heldOut.ref
+      || value.datasets.seed.digest !== value.datasets.heldOut.digest)) {
+    throw new TypeError('reuse-seed requires identical seed and held-out datasets')
+  }
   const components = [
     ['candidate-generator', value.candidateGeneration.strategy],
     ['rollout-provider', value.rollout.provider],

@@ -211,6 +211,8 @@ export interface EvolutionSpec {
   /** Verified source for a provider condition digest inherited by this evolution. */
   baselineConditionSource?: BaselineConditionSource
   evaluation: {
+    /** Reuse seed evidence for promotion; no independent held-out evaluation. */
+    mode?: 'reuse-seed'
     judges: ComponentRef<unknown>[]
     primaryMetric: string
   }
@@ -981,6 +983,7 @@ export interface PairingAudit {
 }
 
 export interface RoundEvaluation {
+  heldOutReusedFromSeed?: true
   seedBaseline: EvaluationEvidence
   seedCandidate: EvaluationEvidence
   seedPairedTrials: PairedTrial[]
@@ -1475,6 +1478,7 @@ export interface RefinementRound {
   sandboxProfileRef: SandboxProfileRef
   seedTaskRef: string
   heldOutRef: string
+  evaluationMode?: 'reuse-seed'
   taskBudgetMs: number
   promotionPolicy: PromotionPolicy
   batchId: string

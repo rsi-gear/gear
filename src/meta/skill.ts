@@ -38,6 +38,7 @@ export {
 } from './identity.js'
 
 export interface SkillAssignment {
+  evaluationMode?: 'reuse-seed'
   generationBudget?: CandidateGenerationBudgetStatus
   retryRecovery?: { workspace: 'fresh'; diagnosis: 'query-current-baseline' }
   leaseId: string
@@ -352,6 +353,7 @@ export class SkillMetaSessionManager implements MetaSessionController {
       ...(execution !== undefined && execution.attempt > 1 ? {
         retryRecovery: { workspace: 'fresh' as const, diagnosis: 'query-current-baseline' as const },
       } : {}),
+      ...(round.evaluationMode === undefined ? {} : { evaluationMode: round.evaluationMode }),
       leaseId,
       evolutionId: round.evolutionId,
       roundId: round.roundId,

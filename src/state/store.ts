@@ -871,6 +871,22 @@ export class RefineStateStore {
       throw new TypeError('round proposal evidence evolution mismatch')
     }
     if (round.baseline !== undefined) this.validateEvaluationEvidence(round.baseline, 'round baseline')
+    if (round.evaluationMode !== undefined && round.evaluationMode !== 'reuse-seed') {
+      throw new TypeError('round evaluation mode is invalid')
+    }
+    if (round.evaluation?.heldOutReusedFromSeed !== undefined) {
+      const { conditionId: _seedId, partition: _seedPartition, ...seed } = round.plan.seed
+      const { conditionId: _heldOutId, partition: _heldOutPartition, ...heldOut } = round.plan.heldOut
+      if (round.evaluationMode !== 'reuse-seed' || round.evaluation.heldOutReusedFromSeed !== true
+        || digestJson(seed) !== digestJson(heldOut)
+        || digestJson(round.evaluation.seedBaseline) !== digestJson(round.evaluation.heldOutBaseline)
+        || digestJson(round.evaluation.seedCandidate) !== digestJson(round.evaluation.heldOutCandidate)
+        || digestJson(round.evaluation.seedPairedTrials) !== digestJson(round.evaluation.heldOutPairedTrials)) {
+        throw new TypeError('reused held-out evidence must exactly match seed evidence and conditions')
+      }
+    }
+    const heldOutConditionId = round.evaluation?.heldOutReusedFromSeed === true
+      ? round.plan.seed.conditionId : round.plan.heldOut.conditionId
     if (round.evaluation !== undefined) {
       this.validateEvaluationEvidence(round.evaluation.seedBaseline, 'seed baseline')
       this.validateEvaluationEvidence(round.evaluation.seedCandidate, 'seed candidate')
@@ -903,7 +919,7 @@ export class RefineStateStore {
           || round.evaluation.heldOutPairing === undefined) throw new TypeError('held-out pairs require paired evidence and audit')
         this.validatePairedTrials(
           round.evaluation.heldOutPairedTrials,
-          round.plan.heldOut.conditionId,
+          heldOutConditionId,
           round.evaluation.heldOutPairing.paired,
           'held-out',
         )
@@ -942,10 +958,10 @@ export class RefineStateStore {
       const expectedRequiredRegressions = requiredRegressionCount(
         promotionPolicy.requiredTaskIds ?? [],
         round.evaluation.seedPairedTrials,
-      ) + requiredRegressionCount(
+      ) + (round.evaluation.heldOutReusedFromSeed === true ? 0 : requiredRegressionCount(
         promotionPolicy.requiredTaskIds ?? [],
         round.evaluation.heldOutPairedTrials ?? [],
-      )
+      ))
       if (round.evaluation.requiredRegressions !== expectedRequiredRegressions) {
         throw new TypeError('round required regressions do not match paired evidence')
       }
@@ -1082,7 +1098,7 @@ export class RefineStateStore {
         && (heldOutBaseline.requestedCommit !== round.targetHarnessRef
           || heldOutBaseline.actualCommit !== round.targetHarnessRef
           || heldOutBaseline.dataset !== round.heldOutRef
-          || heldOutBaseline.conditionId !== round.plan.heldOut.conditionId)) {
+          || heldOutBaseline.conditionId !== heldOutConditionId)) {
         throw new TypeError('round held-out baseline does not match its pinned target/partition')
       }
       if (heldOutCandidate !== undefined
@@ -1090,7 +1106,7 @@ export class RefineStateStore {
           || heldOutCandidate.requestedCommit !== candidate
           || heldOutCandidate.actualCommit !== candidate
           || heldOutCandidate.dataset !== round.heldOutRef
-          || heldOutCandidate.conditionId !== round.plan.heldOut.conditionId
+          || heldOutCandidate.conditionId !== heldOutConditionId
           || heldOutBaseline.provider !== heldOutCandidate.provider
           || heldOutBaseline.effectiveConfigDigest !== heldOutCandidate.effectiveConfigDigest)) {
         throw new TypeError('round held-out evaluation does not match its pinned commits/partition/parity')

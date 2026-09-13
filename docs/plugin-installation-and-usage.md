@@ -927,3 +927,16 @@ DSH Web `0.1.0-rc.8` 的空白新会话存在展示边缘问题。先发送一�
 - [Gear ↔ Hitch CLI 集成设计](hitch-dsh-integration.md)
 - [Hitch Local Exact Commit → Harbor Transport](hitch-local-commit-harbor-requirements.md)
 - [Terminal-Bench 本地实验 runbook](evolve-lab-runbook.md)
+
+### Reuse training evaluation for promotion
+
+Set `evaluationMode: "reuse-seed"` and point `seedTaskRef` and `heldOutRef` to
+the same dataset. Gear validates both dataset identity and evaluation conditions,
+then uses each candidate's seed evaluation for promotion without submitting
+held-out jobs. Invalid samples remain invalid; promotion still uses the valid
+paired intersection. The mode is sealed in the evolution spec and exposed in
+the Meta assignment and experiment index. Round evidence records
+`heldOutReusedFromSeed: true`; the compatibility held-out fields reference the
+original seed evidence, not an independent measurement. These scores measure
+training-set performance and must not be described as held-out generalization.
+Omit `evaluationMode` to retain independent held-out evaluation.

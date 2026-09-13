@@ -1668,6 +1668,64 @@ describe('RefineService evolution workspaces', () => {
     await service.dispose()
   })
 
+  it('reuses seed evidence for promotion without submitting held-out evaluations', async () => {
+    const { service, evaluator } = await setup()
+    service.options.heldOutRef = service.options.seedTaskRef
+    service.options.evaluation = { ...service.options.evaluation, mode: 'reuse-seed' }
+    evaluator.partialInvalidByPhase.set('seed-baseline', [9])
+    evaluator.partialInvalidByPhase.set('seed-candidate', [8])
+    const admission = await service.admit('api')
+    const round = await editing(service, admission.evolutionId, admission.roundId)
+    await finalize(service, round)
+    const store = service.registry.stateStore(admission.evolutionId)
+    const terminal = await eventually(() => store.readRound(admission.roundId), value => ['accepted', 'failed', 'rejected'].includes(value?.status ?? ''))
+    expect(terminal?.status, JSON.stringify(terminal?.failure)).toBe('accepted')
+    expect(evaluator.calls).toEqual(['seed-baseline', 'seed-candidate'])
+    expect(terminal?.evaluationAttempts).toHaveLength(2)
+    expect(terminal?.evaluation?.heldOutReusedFromSeed).toBe(true)
+    expect(terminal?.evaluation?.heldOutBaseline).toEqual(terminal?.evaluation?.seedBaseline)
+    expect(terminal?.evaluation?.heldOutCandidate).toEqual(terminal?.evaluation?.seedCandidate)
+    expect(terminal?.evaluation?.heldOutPairedTrials).toHaveLength(8)
+    expect(terminal?.evaluation?.heldOutPairing).toEqual(terminal?.evaluation?.seedPairing)
+    await service.dispose()
+  })
+
+  it('runs five reuse-seed rounds with no held-out jobs and rejects forged reuse evidence', async () => {
+    const { service, evaluator } = await setup()
+    service.options.heldOutRef = service.options.seedTaskRef
+    service.options.evaluation = { ...service.options.evaluation, mode: 'reuse-seed' }
+    service.options.promotion.policy = builtinComponentRef('promotion-policy', 'paired-gate', {
+      ...service.options.promotion.policy.config, minimumAbsoluteGain: 0,
+    })
+    const admission = await service.admit('api', { rounds: 5 })
+    const store = service.registry.stateStore(admission.evolutionId)
+    for (let index = 1; index <= 5; index += 1) {
+      const round = await eventually(async () => (await store.listRounds()).find(r => r.roundIndex === index),
+        r => r?.status === 'candidate-editing')
+      await finalize(service, round!)
+      const done = await eventually(() => store.readRound(round!.roundId),
+        r => ['accepted', 'rejected', 'failed'].includes(r?.status ?? ''))
+      expect(done?.status, JSON.stringify(done?.failure)).toBe('accepted')
+      expect(done?.evaluation?.heldOutReusedFromSeed).toBe(true)
+      if (index === 5) {
+        const forged = structuredClone(done!)
+        forged.evaluation!.heldOutCandidate!.primaryReward = 0
+        await expect(store.writeRound(forged)).rejects.toThrow('exactly match seed evidence')
+      }
+    }
+    expect(evaluator.calls.filter(phase => phase === 'seed-candidate')).toHaveLength(5)
+    expect(evaluator.calls.some(phase => phase.startsWith('held-out'))).toBe(false)
+    await service.dispose()
+  })
+
+  it('rejects reuse-seed admission for different datasets before evaluating', async () => {
+    const { service, evaluator } = await setup()
+    service.options.evaluation = { ...service.options.evaluation, mode: 'reuse-seed' }
+    await expect(service.admit('api')).rejects.toThrow('reuse-seed requires identical')
+    expect(evaluator.calls).toEqual([])
+    await service.dispose()
+  })
+
   it('commits the sealed tree and promotes only its evolution champion', async () => {
     const { service, evaluator, git } = await setup()
     const admission = await service.admit('api')

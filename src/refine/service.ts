@@ -1747,6 +1747,7 @@ export class RefineService {
       status: 'queued', source, createdAt: timestamp, updatedAt: timestamp,
       metaHarnessRef: spec.metaAgent.preset.id, targetHarnessRef: champion.ref, targetHarnessDigest: champion.manifestDigest,
       sandboxProfileRef: spec.sandboxProfileRef, seedTaskRef: spec.datasets.seed.ref, heldOutRef: spec.datasets.heldOut.ref,
+      ...(spec.evaluation.mode === undefined ? {} : { evaluationMode: spec.evaluation.mode }),
       taskBudgetMs: spec.taskBudgetMs, promotionPolicy: { ...spec.promotion.policy.config },
       batchId, roundIndex, roundCount, plan,
       parentPopulationDigest: population.digest,
@@ -2456,7 +2457,32 @@ export class RefineService {
     round = await this.transition(store, roundId, { evaluation })
     active.abort.signal.throwIfAborted()
     let accepted = false
-    if (this.passesSeed(round, evaluation)) {
+    if (this.passesSeed(round, evaluation) && active.evolution.spec.evaluation.mode === 'reuse-seed') {
+      // Reuse the observed seed evidence, including invalid cells. Never claim an
+      // independent evaluation or create a second evaluation attempt for it.
+      const { conditionId: _seedId, partition: _seedPartition, ...seedCondition } = round.plan.seed
+      const { conditionId: _heldOutId, partition: _heldOutPartition, ...heldOutCondition } = round.plan.heldOut
+      if (digestJson(seedCondition) !== digestJson(heldOutCondition)) {
+        throw new Error('reuse-seed requires identical evaluation conditions')
+      }
+      evaluation = {
+        ...evaluation,
+        heldOutReusedFromSeed: true,
+        heldOutBaseline: championBaseline,
+        heldOutCandidate: finalist.seedEvaluation,
+        heldOutPairedTrials: seedPairs,
+        heldOutPairing: evaluation.seedPairing,
+        heldOutScoreDelta: evaluation.scoreDelta,
+        ...(evaluation.processScoreDelta === undefined ? {} : { heldOutProcessScoreDelta: evaluation.processScoreDelta }),
+        promotionMetrics: await this.evaluateJudges(active.evolution.spec,
+          projectPairedEvidence(finalist.seedEvaluation, seedPairs, 'candidate')),
+      }
+      round = await this.transition(store, roundId, {
+        evaluation,
+        candidatePool: this.patchCandidate(round, finalist.candidateId, { heldOutEvaluation: finalist.seedEvaluation }),
+      })
+      accepted = this.passesHeldOut(round, evaluation, active.evolution.spec)
+    } else if (this.passesSeed(round, evaluation)) {
       round = await this.transition(store, roundId, { status: 'held-out-running' })
       active.abort.signal.throwIfAborted()
       let heldOutBaseline = evaluation.heldOutBaseline

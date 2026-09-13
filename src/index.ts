@@ -410,6 +410,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     }),
   }))
   const evaluation = {
+    ...(config.evaluationMode === undefined ? {} : { mode: config.evaluationMode }),
     judges: [builtinComponentRef('judge', 'task-reward', {})],
     primaryMetric: 'primaryReward',
   }

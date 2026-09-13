@@ -163,6 +163,7 @@ export async function createSkillControlPlane(
     }))
   }
   const evaluation = {
+    ...(config.evaluationMode === undefined ? {} : { mode: config.evaluationMode }),
     judges: [builtinComponentRef('judge', 'task-reward', {})],
     primaryMetric: 'primaryReward',
   }
