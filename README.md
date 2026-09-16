@@ -12,9 +12,9 @@ Gear is an open-source algorithm framework that helps AI agents work on real tas
 
 ## A smaller model that can compete with the best
 
-On **AutomationBench's 100 public Marketing tasks**, Gear improved **GPT 5.6 Luna max to a process score of 88.88%, above Codex + GPT 6 Astra max's 84.08%**, and its **task pass rate reached 53%**.
+On AutomationBench's 100 public Marketing tasks, Gear improved **GPT 5.6 Luna max to a process score of 88.88%, above Codex + GPT 6 Astra max's 84.08%**, and its task pass rate reached 53%.
 
-![Example 2: the Gear-evolved harness with GPT 5.6 Luna max scores 88.88% on process and passes 53% of tasks, compared with 84.08% and 57% for Codex + GPT 6 Astra max.](docs/guide/assets/marketing-staged-search.svg)
+![Harness and GEPA evolution from original DSH: GPT 5.6 Luna max reaches an 88.88% process score and 53% task pass rate, compared with 84.08% and 57% for Codex + GPT 6 Astra max.](docs/guide/assets/marketing-staged-search.png)
 
 ### Tasks we have validated
 

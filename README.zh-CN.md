@@ -10,11 +10,11 @@
 
 Gear 是一套开源算法框架，帮助 AI Agent 在不同的软件环境中完成真实任务，并从成功和失败中积累经验。我们希望用这些经验改进 Agent 的指令和工具，再把经验整理成训练数据，让模型本身也能不断进步。
 
-## 小模型，也能和顶尖模型掰手腕
+## 小模型，也能和 SOTA 模型掰手腕
 
-在 **AutomationBench 的 100 个公开 Marketing 任务**上，Gear 将 **GPT 5.6 Luna max 的过程分提升到 88.88%，高于 Codex + GPT 6 Astra max 的 84.08%**，并且 **任务通过率达到 53%**。
+在 AutomationBench 的 100 个公开 Marketing 任务上，Gear 将 **GPT 5.6 Luna max 的过程分提升到 88.88%，高于 Codex + GPT 6 Astra max 的 84.08%**，并且任务通过率达到 53%。
 
-![案例二：Gear 优化后的 harness 搭配 GPT 5.6 Luna max，过程分为 88.88%、任务通过率为 53%；Codex 搭配 GPT 6 Astra max 的对应结果为 84.08% 和 57%。](docs/guide/assets/marketing-staged-search.svg)
+![从原始 DSH 开始的 Harness 与 GEPA 优化过程：GPT 5.6 Luna max 的过程分达到 88.88%、任务通过率为 53%；Codex 搭配 GPT 6 Astra max 的对应结果为 84.08% 和 57%。](docs/guide/assets/marketing-staged-search.png)
 
 ### 已验证的任务
 

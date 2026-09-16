@@ -60,11 +60,20 @@ def chart(key, name, title, effort_index):
     ref = ax
     # The same zoom in both examples makes their round-to-round gains comparable.
     axes_style(ax, (22, 62), (72, 94))
-    ax.set_title('Automation Bench / Marketing - 100 tasks', loc='left', fontsize=13, pad=24)
-    fig.suptitle(title, x=.085, y=.965, ha='left', fontsize=20, fontweight='bold', color=INK)
-    fig.text(.085, .91, 'Move right for more tasks passed; move up for more objectives completed.', color=GREY, fontsize=11)
+    if title:
+        ax.set_title('Automation Bench / Marketing - 100 tasks', loc='left', fontsize=13, pad=24)
+        fig.suptitle(title, x=.085, y=.965, ha='left', fontsize=20, fontweight='bold', color=INK)
+        fig.text(.085, .91, 'Move right for more tasks passed; move up for more objectives completed.', color=GREY, fontsize=11)
+    else:
+        ax.set_title('Automation Bench / Marketing · 100 tasks', loc='left',
+                     fontsize=20, fontweight='bold', color=INK, pad=24)
 
     accepted = [r for r in rows if r['round'] == 0 or r['decision'].startswith(('accepted', 'promoted'))]
+    if key == 'stagedEvolution':
+        harness_accepted = [r for r in DATA['harnessEvolution']
+                            if r['round'] == 0 or r['decision'].startswith('accepted')]
+        # Harness R4 and the GEPA baseline are the same retained version.
+        accepted = harness_accepted[:-1] + accepted
     points = [(r['candidatePassed'], r['partialCredit'] * 100) for r in accepted]
     for a, b in zip(points, points[1:]):
         arrow(ax, a, b)
@@ -74,26 +83,34 @@ def chart(key, name, title, effort_index):
                    4: (46, -2), 5: (-26, 23)}
         labels = {1: 'R1 · 24 / 75.15', 2: 'R2 · 33 / 77.42',
                   3: 'R3 · 36 / 80.40', 4: 'R4 · 36 / 81.19', 5: 'R5 · 34 / 82.30'}
+        annotations = [(row, labels[row['round']], offsets[row['round']], 'left')
+                       for row in rows if row['round'] != 0]
     else:
-        offsets = {0: (-12, 25), 1: (-16, -28), 3: (-57, 26)}
-        labels = {0: 'GEPA start · from Example 1\n36 / 81.19', 1: 'R1 · 36 / 80.59', 3: 'R3 · 40 / 83.87'}
+        offsets = {0: (-42, -6), 1: (40, 5), 3: (0, 30)}
+        labels = {0: 'Harness R4 / GEPA start\n36 / 81.19',
+                  1: 'GEPA R1\n36 / 80.59', 3: 'GEPA R3 · 40 / 83.87'}
+        annotations = [(row, labels[row['round']], offsets[row['round']],
+                        'right' if row['round'] == 0 else 'center' if row['round'] == 3 else 'left')
+                       for row in rows if row['candidatePassed'] is not None]
+        harness_offsets = {1: ((0, -28), 'center'), 2: ((-3, -33), 'center'),
+                           3: ((40, -28), 'left'), 5: ((-40, 38), 'right')}
+        for row in DATA['harnessEvolution']:
+            if row['round'] in harness_offsets:
+                offset, align = harness_offsets[row['round']]
+                text = f"Harness R{row['round']}\n{row['candidatePassed']} / {row['partialCredit'] * 100:.2f}"
+                annotations.append((row, text, offset, align))
     other_label = True
-    for row in rows:
-        if row['candidatePassed'] is None:
-            continue  # R2 staged search has no global score; never invent one.
-        if key == 'harnessEvolution' and row['round'] == 0:
-            continue  # The original DSH baseline is labeled consistently in both figures below.
+    for row, text, offset, align in annotations:
         xy = (row['candidatePassed'], row['partialCredit'] * 100)
         retained = row in accepted
         if not retained:
             ax.scatter(*xy, marker='D', s=55, facecolors='white', edgecolors=ORANGE,
                        linewidths=1.6, zorder=5, label='Explored, not retained' if other_label else None)
             other_label = False
-        align = 'right' if key == 'stagedEvolution' and row['round'] == 0 else 'left'
-        label(ax, labels[row['round']], xy, offsets[row['round']], BLUE if retained else ORANGE, align)
+        label(ax, text, xy, offset, BLUE if retained else ORANGE, align)
 
     # b4ce300 is the unoptimized DSH carrier, before any Marketing Harness mutation.
-    # In Example 2 it is a reference point, not another staged-search iteration.
+    # The combined chart connects it through the Harness and GEPA search stages.
     original = DATA['harnessEvolution'][0]
     original_xy = (original['candidatePassed'], original['partialCredit'] * 100)
     ax.scatter(*original_xy, s=85, facecolors='white', edgecolors=BLUE, linewidths=1.8, zorder=6)
@@ -109,7 +126,7 @@ def chart(key, name, title, effort_index):
         old = DATA['effortComparison'][0]
         oldxy = (old['max'], old['maxPartialCredit'] * 100)
         ax.scatter(*oldxy, s=55, facecolors='white', edgecolors=BLUE, zorder=5)
-        label(ax, 'Previous Harness · max\n50 / 88.98', oldxy, (-38, 40), BLUE, 'center')
+        label(ax, 'Harness R4 · Luna max\n50 / 88.98', oldxy, (-38, 40), BLUE, 'center')
     codex = DATA['codexAstraMaxReference']
     cxy = (codex['passed'], codex['partialCredit'] * 100)
     ax.scatter(*cxy, c=INK, marker='s', s=62, zorder=5)
@@ -142,7 +159,7 @@ def chart(key, name, title, effort_index):
 
 for key, name, title, index in [
     ('harnessEvolution', 'marketing-harness-evolution', 'Example 1 / Evolve a harness for Marketing', 0),
-    ('stagedEvolution', 'marketing-staged-search', 'Example 2 / Customize your evolve algorithm', 1),
+    ('stagedEvolution', 'marketing-staged-search', None, 1),
 ]:
     if ONLY in (None, name):
         chart(key, name, title, index)
