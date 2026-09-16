@@ -1,98 +1,90 @@
 # Gear
 
+**Adapt your agent to any task.**
+
 [![GitHub release](https://img.shields.io/github/v/release/rsi-gear/gear)](https://github.com/rsi-gear/gear/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-Join_chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/cZ4NBbHDk)
 
-[English](README.md) | [简体中文](README.zh-CN.md) · [User guide](https://rsigear.xyz/docs/gear) · [Examples](https://rsigear.xyz/docs/gear/examples/marketing-harness)
+[English](README.md) | [简体中文](README.zh-CN.md) · [User guide](https://rsigear.xyz/docs/gear) · [Examples](https://rsigear.xyz/docs/gear/examples/evolution-search)
 
-**Evolve agent harnesses with verifiable evaluation feedback.**
+Give Gear tasks with checkable results. It tests an AI agent, looks at what went wrong, and improves its instructions, tools, and workflow so it can do those tasks better.
 
-Gear uses a Meta agent to turn task trajectories into Harness changes, evaluates exact Git versions under paired conditions, and records which candidates to retain or promote. Improve prompts, skills, tools and workflows while preserving the evidence behind each decision.
+## A smaller model that can compete with the best
 
-```text
-Seed tasks → Baseline evidence → Harness changes → Paired evaluations → Selection
-```
+On **AutomationBench's 100 public Marketing tasks**, Gear helped **GPT 5.6 Luna complete 53 tasks**, close to **Codex + GPT 6 Astra max's 57**. A smaller model came within four completed tasks of a frontier model.
 
-> **Pre-alpha.** Gear 0.1.0 supports local research and integration. State formats and extension APIs may change. Install the npm package as `gear@latest`.
+![Example 2: Gear improves GPT 5.6 Luna from 27 tasks passed at medium effort to 40 at medium and 53 at max. Codex with GPT 6 Astra max passes 57; the Gear-evolved harness with Astra max passes 61.](docs/guide/assets/marketing-staged-search.svg)
 
-## Why Gear?
+| Agent setup | Model and reasoning effort | Tasks passed / 100 |
+| --- | --- | ---: |
+| Original DSH | GPT 5.6 Luna medium | 27 |
+| DSH improved by Gear | GPT 5.6 Luna medium | 40 |
+| DSH improved by Gear | GPT 5.6 Luna max | **53** |
+| Codex | GPT 6 Astra max | **57** |
+| DSH improved by Gear | GPT 6 Astra max | **61** |
 
-- **Improve from experience.** Meta diagnoses actual failures and proposes a reusable mechanism.
-- **Measure each change.** Compare exact candidates and baselines; retain useful research records and an accepted champion.
-- **Experiment with algorithms.** Compose generation, sampling, judging, assessment, selection and promotion components.
-- **Keep the result.** Export a versioned Harness with its manifest, diff and evaluation provenance.
+Gear raised Luna from 27 to 40 at the same reasoning effort. Giving the improved agent more time to reason (`max`) brought it to 53. The same improved instructions and tools also worked with Astra max, reaching 61.
 
-Gear manages search and promotion. [Hitch](https://github.com/rsi-gear/agent-hitch) runs evaluations and records evidence. [Rear](https://github.com/rsi-gear/rear) is an optional read-only workbench.
+A task passes only when every scored requirement is met. These public tasks also guided optimization; starred results in the chart use a separate official private test set. [Scoring and sources](docs/guide/en/results.md).
 
-## Two worked examples
+See [Example 2](docs/guide/en/example-algorithm.md) for the search algorithm, changes, and runnable code.
 
-### 1. Evolve a harness for Marketing
+## How it works
 
-Five rounds on the 100-task AutomationBench public Marketing research set improved **Luna medium from 27% to 36%** strict task pass rate. The final retained Harness separately scored **50% at max effort**.
+A model needs instructions, tools, and a way to use them. Together, these are its **harness**. Gear improves this harness through a simple loop:
 
-![Five-round Harness evolution with candidate and champion scores; separate max evaluation and private-set leaderboard reference.](docs/guide/assets/marketing-harness-evolution.svg)
+1. **Try the tasks.** Measure what the agent can already do.
+2. **Study the mistakes.** A second agent reads the failed attempts and suggests improvements.
+3. **Make a change.** Update instructions, tools, skills, or the steps used to finish a task.
+4. **Test again.** Compare the results, keep useful changes, and repeat.
 
-Read the [case study](docs/guide/en/example-harness.md) for the input instructions, final retained Meta change, rejected candidates, and [runnable Harness source](examples/automationbench-marketing/README.md).
+You choose the tasks and the number of rounds. Gear keeps the versions and results so you can see what changed and use the final harness.
 
-### 2. Customize your evolve algorithm
-
-Starting from that champion, three rounds of shared failure diagnosis and **4 → 2 → 1 staged evaluation** reached **40% at medium**. The resulting Harness scored **53% at max** in a separate evaluation.
-
-The [algorithm example](docs/guide/en/example-algorithm.md) explains individuals, parent selection, Meta mutations, fitness, research archives and promotion. It includes a runnable selector component and the exact configuration and final Harness from the measured staged implementation. This mutation-based variant does not implement crossover; all observed candidates in the three-round case shared the same parent.
-
-Both cases optimized on the public research set, with no independent held-out validation. The official leaderboard uses a different private set; its reference score is not evidence of official SOTA. [Metrics, sources and comparison rules](docs/guide/en/results.md).
+Gear is an optimization library you can call as a **Skill** from Codex, Claude Code, DSH, or another compatible agent. Use an existing benchmark, or bring your own tasks in [Harbor format](docs/guide/en/datasets.md).
 
 ## Quick start
 
-Install Gear and Hitch. This example uses DSH for rollouts:
+Install Gear and [Hitch](https://github.com/rsi-gear/agent-hitch), which runs the tests. This example uses DSH as the agent doing the tasks:
 
 ```bash
 npm install --global gear@latest agent-hitch@latest @deepseek-ai/dsh@latest
 hitch eval setup harbor
 ```
 
-Add the bundled [Refine Skill](skills/refine/SKILL.md) to Codex, Claude Code, DSH or another compatible agent. Follow the [Quick start](docs/guide/en/quickstart.md) to connect Gear, prepare your Harness and benchmark, and configure the Meta and rollout agents independently. Then load Refine through the host's Skill interface or `/refine` where supported, or ask in natural language:
+Follow the [setup guide](docs/guide/en/quickstart.md) to add the bundled [Refine Skill](skills/refine/SKILL.md) to your agent and connect your benchmark. Then use `/refine` where supported, or ask in plain language:
 
 ```text
-Use the Refine Skill to optimize the Marketing domain of AutomationBench.
-Use Codex + Astra as the Meta agent and DSH + Luna for rollouts.
+Use the Refine Skill to improve performance on AutomationBench's Marketing tasks.
+Use Codex + Astra to propose improvements and DSH + Luna to run the tasks.
 Run one round of optimization.
 ```
 
-Meta proposes Harness changes; the rollout agent executes benchmark tasks. [Meta connections](docs/guide/en/meta-agents.md) covers standalone and native DSH integration. Model weight optimization uses a separate [experimental training workflow](docs/guide/en/training.md).
+The agent proposing changes is called the **Meta agent**. It can use a different model from the agent doing the tasks.
 
-## How it works
+## Explore the examples
 
-An evolution seals its datasets, model/sampling settings, component implementations and budgets. Candidates are exact Git commits with verified manifests. The default search generates from the accepted champion, evaluates seed evidence, selects survivors and a finalist, and applies the configured promotion gate. Research retention, evolution promotion and workspace publication are separate decisions.
+- [Evolve a harness for Marketing](docs/guide/en/example-harness.md): follow five rounds of changes, from the initial prompt to the final harness.
+- [Customize your evolve algorithm](docs/guide/en/example-algorithm.md): change how Gear proposes improvements, chooses tasks to test, and keeps the best versions. The Marketing experiment uses a GEPA variant that tests several ideas, then spends more evaluation effort on the promising ones.
 
-Meta and Target are independent. The built-in Target builder currently uses DSH; additional Target types need a builder and rollout integration. Algorithm components operate within Gear's version, containment, evidence parity, held-out isolation and atomic state-update contracts. [Configuration](docs/guide/en/configuration.md) · [Operations](docs/guide/en/evolutions.md) · [Component interfaces](src/evolution/components.ts).
+## Build with us
 
-## Experimental model training
+Start with the [user guide](docs/guide/en/index.md), browse the [example code](examples/evolution-search/README.md), or join [Discord](https://discord.gg/cZ4NBbHDk).
 
-`gear-refine training` coordinates Slime GRPO updates, exact-token capture, complete checkpoints and immutable model evaluation. Its lifecycle is separate from Harness evolution. Start with the [training overview](docs/guide/en/training.md) for deployment and certification scope; the recorded GPU validation does not establish model-quality improvement.
-
-The longer-term direction includes evolving tasks and models alongside Harnesses. See the [vision](docs/vision.md).
-
-## Documentation and development
-
-- [User guide](docs/guide/en/index.md): setup, tasks, operation, results and troubleshooting.
-- [Harness example](examples/automationbench-marketing/README.md) and [algorithm example](examples/evolution-search/README.md).
-- [DSH integration lab](examples/dsh-codex-luna/README.md) and [detailed installation](docs/plugin-installation-and-usage.md).
-- [Training contracts and GPU certification](docs/training/README.zh-CN.md).
+For local development:
 
 ```bash
+npm ci
 npm run typecheck
-npm test
 npm run build
-npm run pack:check
-node --test examples/evolution-search/selection.test.mjs
+npm test
 ```
 
-Charts are generated from [versioned data](docs/guide/assets/marketing-results.json) with `python scripts/render-guide-charts.py` (matplotlib 3.7+). Guide source lives in `docs/guide`; gear-pages imports a checksummed snapshot. The [authoring notes](docs/guide/README.md) describe updates and validation. Training CPU test setup is in the [training guide](docs/guide/en/training.md).
+[Documentation authoring](docs/guide/README.md) · [GitHub issues](https://github.com/rsi-gear/gear/issues) · [MIT license](LICENSE)
 
-## Community and license
+## Roadmap
 
-Discuss experiments and contribute focused issues or pull requests at [rsi-gear/gear](https://github.com/rsi-gear/gear) and [Discord](https://discord.gg/cZ4NBbHDk). Describe the experiment or compatibility contract your change preserves.
+Gear can improve harnesses today. Two parts of the bigger learning loop are still in progress:
 
-[MIT](LICENSE).
+- [ ] **Improve the model itself.** Use task results to train the model, test the new version, and repeat. An [experimental training path](docs/guide/en/training.md) exists; the full model-iteration loop is not yet complete.
+- [ ] **Turn failures into new practice tasks.** Build focused starting tasks, or *seed tasks*, from the tasks an agent fails. Feed them into the next round so the agent can work on its weak spots. This automatic task-generation loop is not yet complete.

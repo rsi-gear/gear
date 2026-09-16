@@ -1,97 +1,90 @@
 # Gear
 
+**Adapt your agent to any task. 让你的 Agent 学会做好你的任务。**
+
 [![GitHub release](https://img.shields.io/github/v/release/rsi-gear/gear)](https://github.com/rsi-gear/gear/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-加入讨论-5865F2?logo=discord)](https://discord.gg/cZ4NBbHDk)
 
-[English](README.md) | [简体中文](README.zh-CN.md) · [用户指南](https://rsigear.xyz/docs/gear/zh) · [案例](https://rsigear.xyz/docs/gear/zh/examples/marketing-harness)
+[English](README.md) | [简体中文](README.zh-CN.md) · [用户指南](https://rsigear.xyz/docs/gear/zh) · [案例](https://rsigear.xyz/docs/gear/zh/examples/evolution-search)
 
-**用可验证的评测反馈，持续改进 Agent Harness。**
+给 Gear 一组能检查对错的任务。它会让 AI Agent 尝试完成任务，找出失败的原因，再改进指令、工具和做事步骤，让 Agent 越做越好。
 
-Gear 使用 Meta Agent 将任务轨迹转化为 Harness 修改，在配对条件下评测确切 Git 版本，记录应保留或晋升的候选。改进 Prompt、Skill、Tool 和 Workflow，并保存每项决定背后的证据。
+## 小模型，也能和顶尖模型掰手腕
 
-```text
-Seed 任务 → Baseline 证据 → Harness 修改 → 配对评测 → 选择
-```
+在 **AutomationBench 的 100 个公开 Marketing 任务**上，Gear 帮助 **GPT 5.6 Luna 完成了 53 个任务**，接近 **Codex + GPT 6 Astra max 的 57 个**。小模型与前沿模型的差距，缩小到了四个任务。
 
-> **Pre-alpha。** Gear 0.1.0 支持本地研究和集成；状态格式及扩展 API 可能变化。当前包名为 `gear`。
+![案例二：Gear 将 GPT 5.6 Luna 在 medium 档的通过数从 27 提升到 40，max 档达到 53；Codex 搭配 GPT 6 Astra max 通过 57 个任务，Gear 优化后的 harness 搭配 Astra max 通过 61 个。](docs/guide/assets/marketing-staged-search.svg)
 
-## 为什么使用 Gear？
+| Agent 配置 | 模型与推理档位 | 通过任务数 / 100 |
+| --- | --- | ---: |
+| 原始 DSH | GPT 5.6 Luna medium | 27 |
+| Gear 优化后的 DSH | GPT 5.6 Luna medium | 40 |
+| Gear 优化后的 DSH | GPT 5.6 Luna max | **53** |
+| Codex | GPT 6 Astra max | **57** |
+| Gear 优化后的 DSH | GPT 6 Astra max | **61** |
 
-- **从经验中改进。** Meta 诊断真实失败，提出可以复用的机制。
-- **衡量每项修改。** 比较确切候选和 baseline，保留研究记录与已接受 champion。
-- **研究不同算法。** 组合生成、采样、判分、评估、选择和晋升组件。
-- **保留可运行结果。** 导出带 manifest、diff 和评测来源的版本化 Harness。
+在相同推理档位下，Gear 把 Luna 的成绩从 27 提升到 40。再给优化后的 Agent 更多推理时间（`max` 档），成绩达到 53。同一套改进后的指令和工具，搭配 Astra max 时达到了 61。
 
-Gear 管理搜索和晋升，[Hitch](https://github.com/rsi-gear/agent-hitch)负责执行与证据，[Rear](https://github.com/rsi-gear/rear)提供可选的只读工作台。
+只有满足全部评分要求，任务才算通过。这组公开任务也用于指导优化；图中带星号的结果来自另一组官方私有测试任务。详见[评分方式与来源](docs/guide/zh-CN/results.md)。
 
-## 两个完整案例
+[案例二](docs/guide/zh-CN/example-algorithm.md)展示了使用的算法、具体改动和可运行代码。
 
-### 1. 优化 Marketing Harness
+## Gear 是怎么做到的？
 
-在 AutomationBench 公开 Marketing 100 题研究集上，五轮迭代将 **Luna medium 的严格通过率从 27% 提升到 36%**。最终保留 Harness 在独立 max 档评测中达到 **50%**。
+模型需要指令、工具，以及使用工具的方法。这些配套部分合称 **harness**。Gear 用一个简单的循环来改进它：
 
-![五轮 Harness 迭代的候选与 champion 分数；独立 max 评测与官方私有集榜单分别标注。](docs/guide/assets/marketing-harness-evolution.svg)
+1. **先试一遍。** 看看 Agent 已经能完成哪些任务。
+2. **找出原因。** 另一个 Agent 阅读失败记录，提出改进办法。
+3. **做出修改。** 调整指令、工具、技能或完成任务的步骤。
+4. **重新测试。** 对比成绩，保留有用的修改，再继续下一轮。
 
-[案例一](docs/guide/zh-CN/example-harness.md)展示输入指令、最后保留的 Meta 修改、被拒绝候选，以及[可运行 Harness 源码](examples/automationbench-marketing/README.zh-CN.md)。
+你来决定优化哪些任务、运行几轮。Gear 保存每一版改动和结果，你可以查看过程，也可以直接使用最终的 harness。
 
-### 2. 修改进化算法
-
-从前一个 champion 开始，通过共享失败诊断和 **4 → 2 → 1 分阶段评测**运行三轮，medium 达到 **40%**；最终 Harness 在独立 max 档评测中达到 **53%**。
-
-[算法案例](docs/guide/zh-CN/example-algorithm.md)解释个体、父代选择、Meta 变异、适应度、研究 archive 和晋升。提供可运行的选择器组件，以及实际分阶段实现的配置和最终 Harness。这个变异式进化版本没有 crossover；三轮实测候选都来自同一父代。
-
-两个案例均在公开研究集上获取优化反馈，没有独立 held-out 验证。官方榜单使用另一套私有集，参考分数不构成官方 SOTA 证据，见[指标、来源和比较规则](docs/guide/zh-CN/results.md)。
+Gear 是一个可以通过 **Skill** 调用的优化库，能接入 Codex、Claude Code、DSH 或其他兼容 Agent。你可以使用已有 benchmark，也可以用 [Harbor 格式](docs/guide/zh-CN/datasets.md)定义自己的任务。
 
 ## 快速开始
 
-安装 Gear 和 Hitch。本例使用 DSH 执行 rollout：
+安装 Gear 和负责运行评测的 [Hitch](https://github.com/rsi-gear/agent-hitch)。下面用 DSH 作为执行任务的 Agent：
 
 ```bash
 npm install --global gear@latest agent-hitch@latest @deepseek-ai/dsh@latest
 hitch eval setup harbor
 ```
 
-把随包 [Refine Skill](skills/refine/SKILL.md) 接入 Codex、Claude Code、DSH 或其他兼容 Agent。按照[快速开始](docs/guide/zh-CN/quickstart.md)连接 Gear、准备 Harness 和 benchmark，分别配置 Meta 与 rollout Agent。通过宿主的 Skill 入口或支持的 `/refine` 调用，也可以直接用自然语言说：
+按照[安装指南](docs/guide/zh-CN/quickstart.md)，把随包的 [Refine Skill](skills/refine/SKILL.md) 接入你的 Agent，并连接任务集。然后使用宿主支持的 `/refine`，或者直接用自然语言说：
 
 ```text
-使用 Refine Skill 优化 AutomationBench 中 Marketing 的部分。
-Meta Agent 用 Codex + Astra，rollout 用 DSH + Luna，优化 1 轮。
+使用 Refine Skill 优化 AutomationBench 中 Marketing 的任务表现。
+用 Codex + Astra 提出改进，用 DSH + Luna 执行任务。
+运行一轮优化。
 ```
 
-Meta 提出 Harness 修改，rollout Agent 执行 benchmark 任务。[Meta 接入](docs/guide/zh-CN/meta-agents.md)说明独立控制面与 DSH 原生接入。模型权重优化使用独立的[实验性训练流程](docs/guide/zh-CN/training.md)。
+负责提出改进的 Agent 叫作 **Meta Agent**。它和执行任务的 Agent 可以使用不同的模型。
 
-## 工作方式
+## 看看两个完整案例
 
-Evolution 封存数据集、模型/采样设置、组件实现和预算。Candidate 是带已验证 manifest 的确切 Git 提交。默认搜索从已接受 champion 生成候选，评估 seed 证据，选择 survivor 与 finalist，再应用配置的晋升规则。研究留档、evolution 晋升和工作区发布是三个不同决定。
+- [优化 Marketing harness](docs/guide/zh-CN/example-harness.md)：从初始指令开始，跟着五轮修改走到最终产物。
+- [定制进化算法](docs/guide/zh-CN/example-algorithm.md)：修改 Gear 如何提出改进、挑选测试任务、保留更好的版本。Marketing 实验采用 GEPA 的一种变体：先测试几个想法，再把更多评测机会分给有希望的方案。
 
-Meta 与 Target 分别配置。内置 Target builder 当前使用 DSH，新增类型需要 builder 和 rollout 集成。算法组件遵守版本、工作区边界、证据对等、held-out 隔离和原子状态更新合同。[配置](docs/guide/zh-CN/configuration.md) · [操作](docs/guide/zh-CN/evolutions.md) · [组件接口](src/evolution/components.ts)。
+## 一起完善 Gear
 
-## 实验性模型训练
+阅读[用户指南](docs/guide/zh-CN/index.md)，查看[示例代码](examples/evolution-search/README.zh-CN.md)，或加入 [Discord](https://discord.gg/cZ4NBbHDk) 讨论。
 
-`gear-refine training` 协调 Slime GRPO 更新、精确 token 捕获、完整 checkpoint 与不可变模型评估，生命周期独立于 Harness 进化。[训练概览](docs/guide/zh-CN/training.md)说明部署与认证范围；已有 GPU 验证记录不代表模型质量提升。
-
-长期方向包含与 Harness 一起演进任务和模型，见[愿景](docs/vision.md)。
-
-## 文档与开发
-
-- [用户指南](docs/guide/zh-CN/index.md)：配置、任务、操作、结果与排错。
-- [Harness 示例](examples/automationbench-marketing/README.zh-CN.md)和[算法示例](examples/evolution-search/README.zh-CN.md)。
-- [DSH 集成 lab](examples/dsh-codex-luna/README.md)与[详细安装](docs/plugin-installation-and-usage.md)。
-- [训练合同与 GPU 认证](docs/training/README.zh-CN.md)。
+本地开发：
 
 ```bash
+npm ci
 npm run typecheck
-npm test
 npm run build
-npm run pack:check
-node --test examples/evolution-search/selection.test.mjs
+npm test
 ```
 
-图表由[版本化数据](docs/guide/assets/marketing-results.json)通过 `python scripts/render-guide-charts.py` 生成，需要 matplotlib 3.7+。指南源位于 `docs/guide`，gear-pages 导入带校验和的快照。[文档维护说明](docs/guide/README.md)介绍同步与验证；训练 CPU 测试配置见[训练指南](docs/guide/zh-CN/training.md)。
+[文档维护说明](docs/guide/README.md) · [GitHub Issues](https://github.com/rsi-gear/gear/issues) · [MIT 许可](LICENSE)
 
-## 社区与许可
+## Roadmap
 
-欢迎在 [rsi-gear/gear](https://github.com/rsi-gear/gear) 提交具体问题和 PR，或加入 [Discord](https://discord.gg/cZ4NBbHDk)。说明修改希望保留的实验或兼容合同。
+Gear 现在已经可以改进 harness。更完整的学习循环，还有两块能力正在建设：
 
-[MIT](LICENSE)。
+- [ ] **迭代模型本身。** 用任务结果训练模型，再测试新版本，持续改进。已有[实验性训练流程](docs/guide/zh-CN/training.md)，但完整的模型迭代闭环尚未完成。
+- [ ] **把失败任务变成新的练习题。** 根据 Agent 做错的任务，构造有针对性的起始任务，也就是 *seed tasks*，用于下一轮优化，帮助它练习薄弱环节。这套自动生成任务的闭环尚未完成。
