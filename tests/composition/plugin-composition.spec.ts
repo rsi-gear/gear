@@ -140,6 +140,7 @@ else process.exitCode = 2
     expect(context.refine.options.metaAgent.preset.resources.map(value => value.logicalPath)).toEqual([
       'SKILL.md', 'agents/openai.yaml', 'references/dsh-target-harness.md',
       'references/protocol.md', 'references/target-harness-editing.md',
+      'scripts/transport.mjs',
     ])
     expect(context.refine.options.metaAgent.preset.digest).not.toBe(context.refine.options.metaAgent.preset.resources[0]?.digest)
     expect(commands).toEqual([])

@@ -49,8 +49,8 @@
       harnessId: deepseek
       root: !!js process.env.GEAR_HITCH_ROOT ?? process.env.GEAR_LAB_ROOT + '/hitch-home'
       model: !!js "(process.env.GEAR_TARGET_PROVIDER ?? 'openai-codex') + '/' + (process.env.GEAR_TARGET_MODEL ?? 'gpt-5.6-luna')"
-      attempts: 1
-      maxConcurrent: !!js Number(process.env.GEAR_TARGET_MAX_CONCURRENT ?? 8)
+      attempts: 3
+      maxConcurrent: !!js Number(process.env.GEAR_TARGET_MAX_CONCURRENT ?? 12)
       setupTimeoutMs: 1800000
       terminationGraceMs: 5000
       maxOutputBytes: 8388608

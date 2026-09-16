@@ -16,10 +16,12 @@ import { RefineStateStore } from '../../src/state/store.js'
 import { EvolutionRegistryStore } from '../../src/state/evolution.js'
 import type { DiagnosisReceipt, EvaluationPhase, EvaluationRequest, EvaluationRerunResult, EvaluationRerunSelector, EvaluationReservation, HitchEvaluationEvidence, MetaAttribution, MetaCheckpointRef, MetaTurnObservation, RefineEvaluator, RefinementRound, RoundEvaluationAttempt } from '../../src/types.js'
 import { createGitHarnessFixture } from '../helpers/git-fixture.js'
-import { builtinComponentRef, componentRef } from '../../src/evolution/components.js'
+import { builtinComponentRef, componentRef, rolloutProviderSemanticDigest } from '../../src/evolution/components.js'
+import { hitchCliImplementation } from '../../src/evolution/component-identity.js'
 import { evolutionSpec } from '../helpers/research-fixture.js'
 import { SkillMetaCoordinator, SkillMetaSessionManager, skillHarnessIdentity } from '../../src/meta/skill.js'
 import { RefineCapabilities } from '../../src/capabilities.js'
+import { RefineSkillGateway } from '../../src/skill/gateway.js'
 import { renderTrajectoryResult } from '../../src/notebook/tool.js'
 import { trajectoryAnalysis } from '../helpers/trajectory-fixture.js'
 import type { HitchTrajectoryReader } from '../../src/types.js'
@@ -310,6 +312,46 @@ async function setup(
   return { git, registry, service, evaluator, metas }
 }
 
+function enableBaselineSources(service: RefineService, evaluator: FakeEvaluator): void {
+  const hitchRoot = join(service.options.workspaceRoot, 'hitch-data')
+  const agentConfig = { agentArgs: [] as string[] }
+  const config = {
+    executable: '/test/hitch',
+    harnessId: 'test',
+    root: hitchRoot,
+    model: 'deepseek-chat',
+    attempts: 1,
+    maxConcurrent: 1,
+    seeds: [] as number[],
+    sampling: {},
+    agentArgs: [] as string[],
+    allowUnavailableVerifierDiagnosis: true,
+    controlPlane: { mode: 'direct', requireModelCapture: false },
+  }
+  const provider = componentRef('rollout-provider', 'hitch-cli', hitchCliImplementation(), config)
+  service.options.rollout = {
+    provider,
+    providerSemanticDigest: rolloutProviderSemanticDigest(provider, { harnessId: config.harnessId }, agentConfig),
+    taskSampler: builtinComponentRef('task-sampler', 'dataset', {}),
+    repetitions: 1,
+    model: config.model,
+    sampling: {},
+    agentConfig,
+  }
+  Object.assign(evaluator, {
+    options: { root: hitchRoot },
+    async inspectCapabilities() {
+      return { schemaVersion: 1 as const, trajectoryAnalysis: 1 as const, trajectoryEventsPage: 1 as const }
+    },
+    async inspectTrajectoryAnalysis(runId: string) {
+      return trajectoryAnalysis(runId, [])
+    },
+    async inspectTrajectoryEvents() {
+      throw new Error('baseline source admission does not request trajectory event pages')
+    },
+  })
+}
+
 async function editing(service: RefineService, evolutionId: string, roundId: string): Promise<RefinementRound> {
   const store = service.registry.stateStore(evolutionId)
   return eventually(() => store.readRound(roundId) as Promise<RefinementRound>, round => round?.status === 'candidate-editing')
@@ -372,6 +414,46 @@ async function decline(service: RefineService, round: RefinementRound): Promise<
   })
 }
 
+async function skillFinalization(
+  service: RefineService,
+  round: RefinementRound,
+  sessionId: string,
+  mode: 'decline' | 'finalize',
+): Promise<void> {
+  const active = service.activeEntry(round.roundId)
+  const candidate = round.candidatePool.find(value => value.metaSessionId === sessionId)
+  if (active?.workspace === undefined || round.baseline === undefined || candidate === undefined) {
+    throw new Error('skill candidate is not editable')
+  }
+  if (mode === 'finalize') {
+    await mkdir(join(active.workspace.targetPath, 'prompts'), { recursive: true })
+    await writeFile(join(active.workspace.targetPath, 'prompts', `${candidate.candidateId}.md`), 'improved context\n')
+  }
+  const failed = round.baseline.trials.flatMap(trial => (
+    (trial.rewards.reward ?? 0) <= 0 && trial.runId !== undefined ? [trial.runId] : []
+  ))
+  const runRefs = round.baseline.trials.flatMap(trial => trial.runId === undefined ? [] : [trial.runId])
+  const finalization = mode === 'finalize' ? {
+    rationale: 'fix observed failures', expectedOutcome: 'higher reward',
+    evidenceRefs: [round.baseline.evalId], semanticTargets: ['context' as const],
+  } : null
+  const decline = mode === 'decline' ? {
+    rationale: 'No evidence-grounded improvement is safe this round.', evidenceRefs: [],
+  } : undefined
+  await service.submitFinalization(round.evolutionId, round.roundId, finalization, decline,
+    await active.meta.proposalAttribution(round.roundId, sessionId, finalization), {
+    evolutionId: round.evolutionId,
+    roundId: round.roundId,
+    candidateId: candidate.candidateId,
+    baselineEvalId: round.baseline.evalId,
+    summaryAccessed: true,
+    accessedRefs: [round.baseline.evalId, ...runRefs],
+    diagnosedRunRefs: failed,
+    diagnosisReceipts: diagnosisReceipts(failed),
+    citedRefs: finalization?.evidenceRefs ?? [],
+  })
+}
+
 async function continueWithLegacyPopulationParent(
   service: RefineService,
   evolutionId: string,
@@ -407,6 +489,88 @@ describe('RefineService evolution workspaces', () => {
       service.createMetaSession, evaluator, service.options, service.components)
   }
 
+  async function reopenAcceptedRoundBeforeHeldOutCandidate(service: RefineService) {
+    const admission = await service.admit('api')
+    const store = service.registry.stateStore(admission.evolutionId)
+    const initialChampion = await store.readChampion()
+    const initialPopulation = await store.readPopulation()
+    await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
+    const accepted = await eventually(() => store.readRound(admission.roundId), round => round?.status === 'accepted')
+    await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
+    if (accepted?.evaluation?.heldOutBaseline === undefined || initialChampion === undefined || initialPopulation === undefined) {
+      throw new Error('accepted fixture is missing durable recovery state')
+    }
+    const finalist = accepted.candidatePool.find(candidate => candidate.candidateId === accepted.promotionCandidateId)
+    if (finalist?.seedComparison === undefined || finalist.sealedVersion === undefined) {
+      throw new Error('accepted fixture is missing its selected finalist')
+    }
+    const reopened = structuredClone(accepted)
+    reopened.status = 'failed'
+    reopened.failure = { phase: 'held-out-running', message: 'simulated interruption before the selected held-out evaluation' }
+    delete reopened.decision
+    delete reopened.commitIntent
+    delete reopened.promotedCandidateId
+    reopened.candidatePool = reopened.candidatePool.map(candidate => {
+      if (candidate.candidateId !== finalist.candidateId) return candidate
+      const { heldOutEvaluation: _heldOutEvaluation, ...selected } = candidate
+      return selected
+    })
+    const fullEvaluation = accepted.evaluation
+    reopened.evaluation = {
+      seedBaseline: fullEvaluation.seedBaseline,
+      seedCandidate: fullEvaluation.seedCandidate,
+      seedPairedTrials: fullEvaluation.seedPairedTrials,
+      seedPairing: fullEvaluation.seedPairing,
+      heldOutBaseline: fullEvaluation.heldOutBaseline!,
+      scoreDelta: fullEvaluation.scoreDelta,
+      ...(fullEvaluation.processScoreDelta === undefined ? {} : { processScoreDelta: fullEvaluation.processScoreDelta }),
+      requiredRegressions: finalist.seedComparison.requiredRegressions,
+    }
+    reopened.evaluationStarts = (reopened.evaluationStarts ?? []).filter(start =>
+      start.phase !== 'held-out-candidate' || start.harnessRef !== finalist.sealedVersion!.commitOid)
+    reopened.evaluationAttempts = (reopened.evaluationAttempts ?? []).filter(attempt =>
+      attempt.phase !== 'held-out-candidate' || attempt.requestedCommit !== finalist.sealedVersion!.commitOid)
+    await store.writeChampion(initialChampion)
+    await store.writePopulation(initialPopulation)
+    await store.writeRound(reopened)
+    return { admission, store, reopened, finalist, initialChampion, initialPopulation }
+  }
+
+  it('seals prior seed candidate outcomes before the next skill proposer starts', async () => {
+    const { service } = await setup()
+    const admission = await service.admit('skill', { rounds: 2 })
+    const store = service.registry.stateStore(admission.evolutionId)
+    const first = await editing(service, admission.evolutionId, admission.roundId)
+    expect((await service.registry.requireSpec(admission.evolutionId)).experienceMemory).toEqual({
+      schemaVersion: 1, enabled: true,
+    })
+    expect(first.experienceSnapshot).toMatchObject({ schemaVersion: 1, members: [] })
+    await finalize(service, first)
+
+    const second = await eventually(
+      async () => (await store.listRounds()).find(round => round.roundIndex === 2),
+      round => round?.status === 'candidate-editing',
+    )
+    expect(second?.experienceSnapshot?.members).toHaveLength(1)
+    const member = second!.experienceSnapshot!.members[0]!
+    expect(member.sourceRoundId).toBe(first.roundId)
+    const record = await store.readExperienceRecord(member.recordDigest)
+    expect(record).toMatchObject({
+      source: {
+        evolutionId: admission.evolutionId,
+        roundId: first.roundId,
+        candidateId: first.candidatePool[0]!.candidateId,
+        parentHarnessRef: first.candidatePool[0]!.parentHarnessRef,
+      },
+      observation: { comparison: 'candidate-vs-its-parent-seed', valid: 10 },
+      classification: { execution: 'evaluated' },
+    })
+    expect(second!.experienceSnapshot!.members.every(value => value.sourceRoundId !== second!.roundId)).toBe(true)
+    await finalize(service, second!)
+    await eventually(() => store.readRound(second!.roundId), round => round?.status === 'accepted' || round?.status === 'rejected')
+    await service.dispose()
+  })
+
   it('persists submission ownership before the first remote side effect', async () => {
     const { service, evaluator } = await setup()
     durable(evaluator)
@@ -424,6 +588,303 @@ describe('RefineService evolution workspaces', () => {
     expect(round.pendingEvaluationSubmissions).toEqual([])
     expect(round.evaluationAttempts?.[0]?.submissionIntent?.parameters).toEqual({ frozen: 'original' })
     await service.dispose()
+  })
+
+  it.each(['live', 'restart'] as const)(
+    'fails only the leased Meta round and reuses its complete baseline on %s continue',
+    async mode => {
+      const coordinator = new SkillMetaCoordinator()
+      const { service, evaluator, registry } = await setup(0.8, false, 1, 300_000, 1, 0, 2, 600_000, coordinator)
+      let resumed: RefineService | undefined
+      try {
+        const admission = await service.admit('skill')
+        const editable = await editing(service, admission.evolutionId, admission.roundId)
+        const identity = skillHarnessIdentity(await registry.requireSpec(admission.evolutionId).then(spec => spec.metaAgent))
+        const claim = await eventually(
+          async () => coordinator.claim('runner-1', identity, admission.evolutionId),
+          value => value !== undefined,
+        )
+        if (claim === undefined) throw new Error('skill assignment was not claimed')
+        const gateway = new RefineSkillGateway(service, coordinator, {} as never, {} as never)
+        const params = {
+          clientId: 'runner-1', leaseId: claim.leaseId, leaseToken: claim.leaseToken,
+          reason: 'runner exited without a confirmed submission',
+        }
+
+        await expect(gateway.call('meta.fail', { ...params, leaseToken: 'wrong' })).rejects.toThrow(/lease/)
+        expect((await registry.stateStore(admission.evolutionId).readRound(admission.roundId))?.status).toBe('candidate-editing')
+        await expect(gateway.call('meta.fail', params)).resolves.toMatchObject({
+          failed: true,
+          evolutionId: admission.evolutionId,
+          roundId: admission.roundId,
+          candidateId: claim.candidateId,
+        })
+
+        const store = registry.stateStore(admission.evolutionId)
+        const failed = await store.readRound(admission.roundId)
+        expect(failed).toMatchObject({
+          status: 'failed',
+          failure: { phase: 'candidate-editing', message: expect.stringMatching(/runner exited/) },
+          candidatePool: [{
+            candidateId: claim.candidateId,
+            status: 'failed',
+            failure: { phase: 'candidate-generation', message: expect.stringMatching(/runner exited/) },
+            generationAttempts: [{
+              status: 'failed', completedAt: expect.any(String),
+              failure: { phase: 'candidate-generation', message: expect.stringMatching(/runner exited/) },
+            }],
+          }],
+        })
+        expect(failed?.decision).toBeUndefined()
+        expect((await registry.readEntry(admission.evolutionId))?.status).toBe('active')
+        expect(evaluator.calls).toEqual(['seed-baseline'])
+        await expect(gateway.call('meta.fail', params)).rejects.toThrow(/stale/)
+
+        let current = service
+        if (mode === 'restart') {
+          await service.dispose()
+          resumed = restart(service, evaluator)
+          await resumed.initialize()
+          current = resumed
+        }
+        const continuation = await current.continueEvolution('skill', admission.evolutionId)
+        const next = await editing(current, admission.evolutionId, continuation.roundId)
+        expect(next.roundId).not.toBe(admission.roundId)
+        expect(next.baseline?.evalId).toBe(editable.baseline?.evalId)
+        expect(next.baseline?.trials.map(trial => trial.runId)).toEqual(editable.baseline?.trials.map(trial => trial.runId))
+        expect(evaluator.calls).toEqual(['seed-baseline'])
+        expect(await store.readRound(admission.roundId)).toEqual(failed)
+
+        await expect(new RefineSkillGateway(current, coordinator, {} as never, {} as never)
+          .call('meta.fail', params)).rejects.toThrow(/stale/)
+        expect((await store.readRound(continuation.roundId))?.status).toBe('candidate-editing')
+        const nextGateway = new RefineSkillGateway(current, coordinator, {} as never, {} as never)
+        const pendingNextRound = await eventually(
+          async () => coordinator.pending(),
+          assignments => assignments.some(assignment => assignment.roundId === continuation.roundId),
+        )
+        expect(pendingNextRound).toEqual([
+          expect.objectContaining({ roundId: continuation.roundId, candidateId: next.candidatePool[0]!.candidateId }),
+        ])
+        expect(await nextGateway.call('meta.claim', {
+          clientId: 'runner-1', identity, evolutionId: admission.evolutionId, roundId: admission.roundId,
+        })).toEqual({ pending: false })
+        expect(coordinator.pending()).toEqual([
+          expect.objectContaining({ roundId: continuation.roundId, candidateId: next.candidatePool[0]!.candidateId }),
+        ])
+        const nextClaim = await eventually(
+          async () => nextGateway.call('meta.claim', {
+            clientId: 'runner-1', identity, evolutionId: admission.evolutionId, roundId: continuation.roundId,
+          }),
+          value => typeof value === 'object' && value !== null && 'leaseToken' in value,
+        ) as Awaited<ReturnType<SkillMetaCoordinator['claim']>>
+        if (nextClaim === undefined) throw new Error('continued skill assignment was not claimed')
+        expect(nextClaim.sessionId).not.toBe(claim.sessionId)
+        await expect(nextGateway.call('meta.fail', {
+          clientId: 'runner-1', leaseId: nextClaim.leaseId, leaseToken: nextClaim.leaseToken,
+          reason: 'test cleanup',
+        })).resolves.toMatchObject({ failed: true, roundId: continuation.roundId })
+      } finally {
+        await resumed?.dispose()
+        await service.dispose()
+      }
+    },
+  )
+
+  it.each(['timeout', 'process-exit'] as const)(
+    'preserves a durable evidence prerequisite when Meta ends by %s', async mode => {
+      const attemptBudgetMs = 30_000
+      const originalSetTimeout = globalThis.setTimeout
+      let expireAttempt: (() => void) | undefined
+      const timerSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation((...args: Parameters<typeof setTimeout>) => {
+        const timer = originalSetTimeout(...args)
+        if (args[1] === attemptBudgetMs && expireAttempt === undefined) {
+          expireAttempt = () => { clearTimeout(timer); args[0]() }
+        }
+        return timer
+      })
+      const coordinator = new SkillMetaCoordinator()
+      const { service, registry } = await setup(0.8, false, 1, attemptBudgetMs, 1, 0, 2, 60_000, coordinator)
+      try {
+        const admission = await service.admit('skill', { rounds: 2 })
+        const editable = await editing(service, admission.evolutionId, admission.roundId)
+        const claim = await eventually(
+          async () => coordinator.claim('runner-blocked', skillHarnessIdentity(await registry.requireSpec(admission.evolutionId)
+            .then(spec => spec.metaAgent)), admission.evolutionId),
+          value => value !== undefined,
+        )
+        if (claim === undefined) throw new Error('skill assignment was not claimed')
+        const runId = editable.baseline!.trials[0]!.runId!
+        const runtimeStore = service.activeEntry(admission.roundId)!.store
+        const originalWrite = runtimeStore.writeRound.bind(runtimeStore)
+        const blockerWriteStarted = Promise.withResolvers<void>()
+        const releaseBlockerWrite = Promise.withResolvers<void>()
+        let gateBlockerWrite = true
+        const writeSpy = vi.spyOn(runtimeStore, 'writeRound').mockImplementation(async value => {
+          if (gateBlockerWrite && value.candidatePool.some(candidate => candidate.generationAttempts
+            ?.some(attempt => attempt.prerequisiteBlocker !== undefined))) {
+            gateBlockerWrite = false
+            blockerWriteStarted.resolve()
+            await releaseBlockerWrite.promise
+          }
+          return originalWrite(value)
+        })
+        const recording = service.recordMetaPrerequisiteBlocker(claim.sessionId, {
+          schemaVersion: 1,
+          code: 'TRAJECTORY_EVIDENCE_UNAVAILABLE',
+          failedOperation: 'trajectory.query',
+          blockedRuns: [{
+            runId,
+            code: 'hitch_verifier_diagnostic_source_incomplete',
+            cause: 'legacy_truncated',
+            resolution: 'repair-evidence',
+          }],
+        })
+        await blockerWriteStarted.promise
+        const settlement = mode === 'timeout'
+          ? (() => {
+              if (expireAttempt === undefined) throw new Error('candidate deadline was not scheduled')
+              expireAttempt()
+              return Promise.resolve()
+            })()
+          : service.failMetaExecution(
+              admission.evolutionId,
+              admission.roundId,
+              claim.candidateId,
+              claim.sessionId,
+              'codex-process-exited-0',
+            )
+        releaseBlockerWrite.resolve()
+        await Promise.all([recording, settlement])
+        writeSpy.mockRestore()
+
+        const failed = await eventually(
+          () => registry.stateStore(admission.evolutionId).readRound(admission.roundId),
+          value => value?.status === 'failed',
+        )
+        expect(failed).toMatchObject({
+          status: 'failed',
+          failure: {
+            message: expect.stringContaining('TRAJECTORY_EVIDENCE_UNAVAILABLE'),
+            prerequisite: {
+              failedOperation: 'trajectory.query',
+              blockedRuns: [{ runId, cause: 'legacy_truncated', resolution: 'repair-evidence' }],
+            },
+          },
+          candidatePool: [{
+            failure: { prerequisite: { blockedRuns: [{ runId, cause: 'legacy_truncated' }] } },
+            generationAttempts: [{
+              status: 'failed',
+              prerequisiteBlocker: { blockedRuns: [{ runId, cause: 'legacy_truncated' }] },
+              failure: { prerequisite: { blockedRuns: [{ runId, cause: 'legacy_truncated' }] } },
+            }],
+          }],
+        })
+        expect(failed?.failure?.message).not.toContain('codex-process-exited-0')
+        expect(failed?.candidatePool[0]?.generationAttempts).toHaveLength(1)
+        expect(await registry.stateStore(admission.evolutionId).listRounds()).toHaveLength(1)
+      } finally {
+        timerSpy.mockRestore()
+        await service.dispose()
+      }
+    },
+  )
+
+  it.each(['decline', 'finalize'] as const)(
+    'acknowledges a Skill %s only after its generation settlement is durable',
+    async mode => {
+      const coordinator = new SkillMetaCoordinator()
+      const { service, registry } = await setup(0.8, false, 1, 300_000, 1, 0, 2, 600_000, coordinator)
+      try {
+        const admission = await service.admit('skill')
+        const editable = await editing(service, admission.evolutionId, admission.roundId)
+        const identity = skillHarnessIdentity(await registry.requireSpec(admission.evolutionId).then(spec => spec.metaAgent))
+        const claim = await eventually(
+          async () => coordinator.claim('runner-ack', identity, admission.evolutionId),
+          value => value !== undefined,
+        )
+        if (claim === undefined) throw new Error('skill assignment was not claimed')
+        const store = registry.stateStore(admission.evolutionId)
+        const runtimeStore = service.activeEntry(admission.roundId)!.store
+        const originalWrite = runtimeStore.writeRound.bind(runtimeStore)
+        const settlementStarted = Promise.withResolvers<void>()
+        const releaseSettlement = Promise.withResolvers<void>()
+        let gateSettlement = true
+        const writeSpy = vi.spyOn(runtimeStore, 'writeRound').mockImplementation(async value => {
+          if (gateSettlement && value.candidatePool.some(candidate => candidate.generationAttempts?.some(attempt => attempt.status === 'succeeded'))) {
+            gateSettlement = false
+            settlementStarted.resolve()
+            await releaseSettlement.promise
+          }
+          return originalWrite(value)
+        })
+        try {
+          let acknowledged = false
+          const submission = skillFinalization(service, editable, claim.sessionId, mode).then(() => { acknowledged = true })
+          await settlementStarted.promise
+          await Promise.resolve()
+          expect(acknowledged).toBe(false)
+          expect(await store.readRound(admission.roundId)).toMatchObject({
+            status: 'candidate-editing',
+            candidatePool: [{ generationAttempts: [{ status: 'running' }] }],
+          })
+          releaseSettlement.resolve()
+          await submission
+          const persisted = await store.readRound(admission.roundId)
+          expect(persisted?.candidatePool[0]?.generationAttempts?.[0]?.status).toBe('succeeded')
+          if (mode === 'decline') {
+            expect(persisted?.candidatePool[0]?.decline).toMatchObject({
+              rationale: 'No evidence-grounded improvement is safe this round.',
+            })
+          } else expect(persisted?.candidatePool[0]?.proposal).toMatchObject({ rationale: 'fix observed failures' })
+
+          const gateway = new RefineSkillGateway(service, coordinator, {} as never, {} as never)
+          await expect(gateway.call('meta.fail', {
+            clientId: 'runner-ack', leaseId: claim.leaseId, leaseToken: claim.leaseToken, reason: 'late failure',
+          })).rejects.toThrow(/already received|stale/)
+          const expectedStatus = mode === 'decline' ? 'rejected' : 'accepted'
+          const terminal = await eventually(() => store.readRound(admission.roundId), round => round?.status === expectedStatus)
+          expect(terminal?.status).toBe(expectedStatus)
+          expect(terminal?.candidatePool[0]?.generationAttempts?.[0]?.status).toBe('succeeded')
+        } finally {
+          releaseSettlement.resolve()
+          writeSpy.mockRestore()
+        }
+      } finally { await service.dispose() }
+    },
+  )
+
+  it('rejects a Skill acknowledgement when its durable generation settlement cannot be written', async () => {
+    const coordinator = new SkillMetaCoordinator()
+    const { service, registry } = await setup(0.8, false, 1, 300_000, 1, 0, 2, 600_000, coordinator)
+    try {
+      const admission = await service.admit('skill')
+      const editable = await editing(service, admission.evolutionId, admission.roundId)
+      const identity = skillHarnessIdentity(await registry.requireSpec(admission.evolutionId).then(spec => spec.metaAgent))
+      const claim = await eventually(
+        async () => coordinator.claim('runner-write-failure', identity, admission.evolutionId),
+        value => value !== undefined,
+      )
+      if (claim === undefined) throw new Error('skill assignment was not claimed')
+      const store = registry.stateStore(admission.evolutionId)
+      const runtimeStore = service.activeEntry(admission.roundId)!.store
+      const originalWrite = runtimeStore.writeRound.bind(runtimeStore)
+      let failSettlement = true
+      const writeSpy = vi.spyOn(runtimeStore, 'writeRound').mockImplementation(async value => {
+        if (failSettlement && value.candidatePool.some(candidate => candidate.generationAttempts?.some(attempt => attempt.status === 'succeeded'))) {
+          failSettlement = false
+          throw new Error('generation settlement storage unavailable')
+        }
+        return originalWrite(value)
+      })
+      try {
+        await expect(skillFinalization(service, editable, claim.sessionId, 'decline')).rejects.toThrow(/storage unavailable/)
+        const terminal = await eventually(() => store.readRound(admission.roundId), round => round?.status === 'failed')
+        expect(terminal).toMatchObject({
+          candidatePool: [{ generationAttempts: [{ status: 'failed' }] }],
+        })
+      } finally { writeSpy.mockRestore() }
+    } finally { await service.dispose() }
   })
 
   it('recovers and cancels a submitted evaluation when the acknowledgement is lost', async () => {
@@ -1306,6 +1767,64 @@ describe('RefineService evolution workspaces', () => {
     await service.dispose()
   })
 
+  it('reuses seed evidence for promotion without submitting held-out evaluations', async () => {
+    const { service, evaluator } = await setup()
+    service.options.heldOutRef = service.options.seedTaskRef
+    service.options.evaluation = { ...service.options.evaluation, mode: 'reuse-seed' }
+    evaluator.partialInvalidByPhase.set('seed-baseline', [9])
+    evaluator.partialInvalidByPhase.set('seed-candidate', [8])
+    const admission = await service.admit('api')
+    const round = await editing(service, admission.evolutionId, admission.roundId)
+    await finalize(service, round)
+    const store = service.registry.stateStore(admission.evolutionId)
+    const terminal = await eventually(() => store.readRound(admission.roundId), value => ['accepted', 'failed', 'rejected'].includes(value?.status ?? ''))
+    expect(terminal?.status, JSON.stringify(terminal?.failure)).toBe('accepted')
+    expect(evaluator.calls).toEqual(['seed-baseline', 'seed-candidate'])
+    expect(terminal?.evaluationAttempts).toHaveLength(2)
+    expect(terminal?.evaluation?.heldOutReusedFromSeed).toBe(true)
+    expect(terminal?.evaluation?.heldOutBaseline).toEqual(terminal?.evaluation?.seedBaseline)
+    expect(terminal?.evaluation?.heldOutCandidate).toEqual(terminal?.evaluation?.seedCandidate)
+    expect(terminal?.evaluation?.heldOutPairedTrials).toHaveLength(8)
+    expect(terminal?.evaluation?.heldOutPairing).toEqual(terminal?.evaluation?.seedPairing)
+    await service.dispose()
+  })
+
+  it('runs five reuse-seed rounds with no held-out jobs and rejects forged reuse evidence', async () => {
+    const { service, evaluator } = await setup()
+    service.options.heldOutRef = service.options.seedTaskRef
+    service.options.evaluation = { ...service.options.evaluation, mode: 'reuse-seed' }
+    service.options.promotion.policy = builtinComponentRef('promotion-policy', 'paired-gate', {
+      ...service.options.promotion.policy.config, minimumAbsoluteGain: 0,
+    })
+    const admission = await service.admit('api', { rounds: 5 })
+    const store = service.registry.stateStore(admission.evolutionId)
+    for (let index = 1; index <= 5; index += 1) {
+      const round = await eventually(async () => (await store.listRounds()).find(r => r.roundIndex === index),
+        r => r?.status === 'candidate-editing')
+      await finalize(service, round!)
+      const done = await eventually(() => store.readRound(round!.roundId),
+        r => ['accepted', 'rejected', 'failed'].includes(r?.status ?? ''))
+      expect(done?.status, JSON.stringify(done?.failure)).toBe('accepted')
+      expect(done?.evaluation?.heldOutReusedFromSeed).toBe(true)
+      if (index === 5) {
+        const forged = structuredClone(done!)
+        forged.evaluation!.heldOutCandidate!.primaryReward = 0
+        await expect(store.writeRound(forged)).rejects.toThrow('exactly match seed evidence')
+      }
+    }
+    expect(evaluator.calls.filter(phase => phase === 'seed-candidate')).toHaveLength(5)
+    expect(evaluator.calls.some(phase => phase.startsWith('held-out'))).toBe(false)
+    await service.dispose()
+  })
+
+  it('rejects reuse-seed admission for different datasets before evaluating', async () => {
+    const { service, evaluator } = await setup()
+    service.options.evaluation = { ...service.options.evaluation, mode: 'reuse-seed' }
+    await expect(service.admit('api')).rejects.toThrow('reuse-seed requires identical')
+    expect(evaluator.calls).toEqual([])
+    await service.dispose()
+  })
+
   it('commits the sealed tree and promotes only its evolution champion', async () => {
     const { service, evaluator, git } = await setup()
     const admission = await service.admit('api')
@@ -1733,8 +2252,31 @@ describe('RefineService evolution workspaces', () => {
       await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
       const original = await eventually(() => store.readRound(admission.roundId), r => r?.status === 'rejected')
       await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
-      const legacy = await continueWithLegacyPopulationParent(service, admission.evolutionId, original!.commitIntent!.nextPopulation.members[0]!)
-      const blocked = await eventually(() => store.readRound(legacy.roundId), r => r?.status === 'failed')
+      const researchParent = original!.commitIntent!.nextPopulation.members[0]!
+      expect(original!.candidatePool.find(candidate => candidate.candidateId === researchParent.candidateId)?.seedEvaluation)
+        .toMatchObject({ completeness: 'partial' })
+      const identity = evaluator.evaluationIdentity.bind(evaluator)
+      let blockResearchParentIdentity = true
+      evaluator.evaluationIdentity = (round, request) => {
+        if (blockResearchParentIdentity && request.phase === 'seed-baseline'
+          && request.harnessRef === researchParent.harnessRef) return undefined as never
+        return identity(round, request)
+      }
+      const legacy = await continueWithLegacyPopulationParent(service, admission.evolutionId, researchParent)
+      const identityBlocked = await eventually(() => store.readRound(legacy.roundId), r => r?.status === 'failed')
+      blockResearchParentIdentity = false
+      await eventually(async () => service.activeEntry(legacy.roundId), value => value === undefined)
+      const legacyReason = 'The existing seed evaluation has no verifiable complete baseline; no baseline refresh was started.'
+      const blocked: RefinementRound = {
+        ...identityBlocked!,
+        failure: { ...identityBlocked!.failure!, message: legacyReason },
+        baselineReuseBlocker: {
+          code: 'BASELINE_EVIDENCE_UNAVAILABLE',
+          reason: legacyReason,
+          requiredAction: 'Recover complete settled evidence for the original evaluation.',
+        },
+      }
+      await store.writeRound(blocked)
       expect(blocked?.championParent).toBeUndefined()
       expect(blocked?.baselineReuseBlocker?.code).toBe('BASELINE_EVIDENCE_UNAVAILABLE')
       const spec = await service.registry.requireSpec(admission.evolutionId)
@@ -1927,30 +2469,79 @@ describe('RefineService evolution workspaces', () => {
     await service.dispose()
   })
 
-  it('blocks a promoted candidate baseline when its prior seed evidence was partial', async () => {
-    const { service, evaluator } = await setup()
-    evaluator.partialInvalidByPhase.set('seed-candidate', [9])
-    const admission = await service.admit('api', { rounds: 2 })
-    const store = service.registry.stateStore(admission.evolutionId)
-    await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
-    const first = await eventually(
-      () => store.readRound(admission.roundId),
-      value => value?.status === 'accepted',
-    )
-    const promoted = first?.candidatePool.find(candidate => candidate.candidateId === first.promotedCandidateId)
-    if (promoted?.seedEvaluation === undefined) throw new Error('first round did not persist promoted seed evidence')
-    expect(promoted.seedEvaluation.completeness).toBe('partial')
+  it.each(['automatic', 'appended'] as const)(
+    'reuses promoted partial seed and held-out evidence in the %s round',
+    async mode => {
+      const { service, evaluator } = await setup()
+      const rerun = vi.spyOn(evaluator, 'rerun')
+      evaluator.partialInvalidByCall.set(2, [8, 9])
+      evaluator.partialInvalidByCall.set(4, [8, 9])
+      evaluator.partialInvalidByCall.set(5, [0, 9])
+      evaluator.partialInvalidByCall.set(6, [0, 9])
+      service.options.promotion.policy = builtinComponentRef('promotion-policy', 'paired-gate', {
+        ...service.options.promotion.policy.config,
+        minimumAbsoluteGain: 0,
+      })
+      try {
+        const admission = await service.admit('api', { rounds: mode === 'automatic' ? 2 : 1 })
+        const store = service.registry.stateStore(admission.evolutionId)
+        await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
+        const first = await eventually(
+          () => store.readRound(admission.roundId),
+          value => value?.status === 'accepted',
+        )
+        const promoted = first?.candidatePool.find(candidate => candidate.candidateId === first.promotedCandidateId)
+        if (first === undefined || promoted?.sealedVersion === undefined
+          || promoted.seedEvaluation === undefined || promoted.heldOutEvaluation === undefined) {
+          throw new Error('first round did not persist promoted candidate evidence')
+        }
+        const seedEvidence = structuredClone(promoted.seedEvaluation)
+        const heldOutEvidence = structuredClone(promoted.heldOutEvaluation)
+        expect(seedEvidence).toMatchObject({ completeness: 'partial', plannedTrialCount: 10 })
+        expect(heldOutEvidence).toMatchObject({ completeness: 'partial', plannedTrialCount: 10 })
 
-    const second = await eventually(
-      async () => (await store.listRounds()).find(value => value.roundIndex === 2),
-      value => value?.status === 'failed',
-    )
-    expect(second?.baselineReuseBlocker?.code).toBe('BASELINE_EVIDENCE_UNAVAILABLE')
-    expect(second?.evaluationAttempts ?? []).toEqual([])
-    expect(evaluator.calls.filter(phase => phase === 'seed-baseline')).toHaveLength(1)
-    expect(await store.readRound(first!.roundId)).toEqual(first)
-    await service.dispose()
-  })
+        if (mode === 'appended') {
+          await eventually(async () => service.activeEntry(first.roundId), value => value === undefined)
+          await service.continueEvolution('api', admission.evolutionId)
+        }
+        const second = await eventually(
+          async () => (await store.listRounds()).find(value => value.roundId !== first.roundId),
+          value => value?.status === 'candidate-editing',
+        )
+        expect(second?.targetHarnessRef).toBe(promoted.sealedVersion.commitOid)
+        expect(second?.baseline).toEqual(seedEvidence)
+        expect(second?.evaluationAttempts?.find(attempt => attempt.evalId === seedEvidence.evalId)).toMatchObject({
+          phase: 'seed-baseline',
+          owner: { role: 'baseline', harnessRef: promoted.sealedVersion.commitOid },
+          status: 'settled',
+          reusedFromRoundId: first.roundId,
+        })
+
+        await finalize(service, second!)
+        const terminal = await eventually(
+          () => store.readRound(second!.roundId),
+          value => value?.status === 'accepted',
+        )
+        expect(terminal?.evaluation?.heldOutBaseline).toEqual(heldOutEvidence)
+        expect(terminal?.evaluation?.seedPairing).toEqual({
+          planned: 10, paired: 7, excluded: 3, baselineInvalid: 2, candidateInvalid: 2,
+        })
+        expect(terminal?.evaluation?.heldOutPairing).toEqual({
+          planned: 10, paired: 7, excluded: 3, baselineInvalid: 2, candidateInvalid: 2,
+        })
+        expect(terminal?.evaluationAttempts?.find(attempt => attempt.evalId === heldOutEvidence.evalId)).toMatchObject({
+          phase: 'held-out-baseline',
+          owner: { role: 'baseline', harnessRef: promoted.sealedVersion.commitOid },
+          status: 'settled',
+          reusedFromRoundId: first.roundId,
+        })
+        expect(evaluator.calls.filter(phase => phase === 'seed-baseline')).toHaveLength(1)
+        expect(evaluator.calls.filter(phase => phase === 'held-out-baseline')).toHaveLength(1)
+        expect(rerun).not.toHaveBeenCalled()
+        expect(await store.readRound(first.roundId)).toEqual(first)
+      } finally { await service.dispose() }
+    },
+  )
 
   it('reuses a complete seed baseline after rerun repair and round completion', async () => {
     const { service, evaluator } = await setup()
@@ -1995,28 +2586,57 @@ describe('RefineService evolution workspaces', () => {
     await service.dispose()
   })
 
-  it('preserves partial baseline trials and blocks instead of starting a fresh evaluation', async () => {
+  it('reuses a partial baseline with valid trials without starting a fresh evaluation', async () => {
     const { service, evaluator } = await setup()
     evaluator.partialInvalidByCall.set(1, [9])
-    const admission = await service.admit('api')
-    const store = service.registry.stateStore(admission.evolutionId)
-    await decline(service, await editing(service, admission.evolutionId, admission.roundId))
-    const first = await eventually(
-      () => store.readRound(admission.roundId),
-      value => value?.status === 'rejected',
-    )
-    if (first?.baseline === undefined) throw new Error('first round has no baseline')
-    expect(first.baseline.completeness).toBe('partial')
-    await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
+    try {
+      const admission = await service.admit('api')
+      const store = service.registry.stateStore(admission.evolutionId)
+      await decline(service, await editing(service, admission.evolutionId, admission.roundId))
+      const first = await eventually(
+        () => store.readRound(admission.roundId),
+        value => value?.status === 'rejected',
+      )
+      if (first?.baseline === undefined) throw new Error('first round has no baseline')
+      const baseline = structuredClone(first.baseline)
+      expect(baseline.completeness).toBe('partial')
+      await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
 
-    const continued = await service.continueEvolution('api', admission.evolutionId)
-    const second = await eventually(() => store.readRound(continued.roundId), value => value?.status === 'failed')
+      const continued = await service.continueEvolution('api', admission.evolutionId)
+      const second = await editing(service, admission.evolutionId, continued.roundId)
 
-    expect(second?.baselineReuseBlocker?.code).toBe('BASELINE_EVIDENCE_UNAVAILABLE')
-    expect(second?.evaluationAttempts ?? []).toEqual([])
-    expect(evaluator.calls).toEqual(['seed-baseline'])
-    expect(await store.readRound(first.roundId)).toEqual(first)
-    await service.dispose()
+      expect(second.baseline).toEqual(baseline)
+      expect(second.evaluationAttempts?.find(attempt => attempt.evalId === baseline.evalId)).toMatchObject({
+        status: 'settled',
+        reusedFromRoundId: first.roundId,
+      })
+      expect(evaluator.calls).toEqual(['seed-baseline'])
+      expect(await store.readRound(first.roundId)).toEqual(first)
+    } finally { await service.dispose() }
+  })
+
+  it('blocks a partial baseline with no valid trials without starting a fresh evaluation', async () => {
+    const { service, evaluator } = await setup()
+    evaluator.partialInvalidByCall.set(1, Array.from({ length: 10 }, (_, index) => index))
+    try {
+      const admission = await service.admit('api')
+      const store = service.registry.stateStore(admission.evolutionId)
+      await decline(service, await editing(service, admission.evolutionId, admission.roundId))
+      const first = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'rejected')
+      expect(first?.baseline).toMatchObject({ completeness: 'partial', trials: [], plannedTrialCount: 10 })
+      await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
+
+      const continued = await service.continueEvolution('api', admission.evolutionId)
+      const second = await eventually(() => store.readRound(continued.roundId), value => value?.status === 'failed')
+
+      expect(second?.baselineReuseBlocker).toMatchObject({
+        code: 'BASELINE_EVIDENCE_UNAVAILABLE',
+        reason: expect.stringContaining('valid trial'),
+      })
+      expect(second?.evaluationAttempts ?? []).toEqual([])
+      expect(evaluator.calls).toEqual(['seed-baseline'])
+      expect(await store.readRound(first!.roundId)).toEqual(first)
+    } finally { await service.dispose() }
   })
 
   it.each(['unknown', 'throws', 'missing-method'] as const)('blocks %s identity resolution without reserving trials or waking Meta', async mode => {
@@ -2291,23 +2911,570 @@ describe('RefineService evolution workspaces', () => {
     } finally { await service.dispose() }
   })
 
-  it('blocks partial promoted held-out evidence without rerunning its valid trials', async () => {
-    const { service, evaluator } = await setup()
-    evaluator.partialInvalidByCall.set(4, [9])
+  it('recovers the second selected round and completes the remaining original batch after restart', async () => {
+    const { service, evaluator, metas } = await setup()
+    evaluator.partialInvalidByCall.set(4, [8, 9])
     service.options.promotion.policy = builtinComponentRef('promotion-policy', 'paired-gate', {
       ...service.options.promotion.policy.config, minimumAbsoluteGain: 0,
     })
+    const rerun = vi.spyOn(evaluator, 'rerun')
+    let resumed = service
     try {
-      const first = await service.admit('api', { rounds: 2 })
+      const first = await service.admit('api', { rounds: 3, focus: ['context'] })
       const store = service.registry.stateStore(first.evolutionId)
       await finalize(service, await editing(service, first.evolutionId, first.roundId))
       const original = await eventually(() => store.readRound(first.roundId), r => r?.status === 'accepted')
-      const next = await eventually(async () => (await store.listRounds()).find(r => r.roundIndex === 2), r => r?.status === 'candidate-editing')
-      await finalize(service, next!)
-      const blocked = await eventually(() => store.readRound(next!.roundId), r => r?.status === 'failed')
-      expect(blocked?.baselineReuseBlocker?.code).toBe('BASELINE_EVIDENCE_UNAVAILABLE')
-      expect(evaluator.calls).toEqual(['seed-baseline', 'seed-candidate', 'held-out-baseline', 'held-out-candidate', 'seed-candidate'])
+      const promoted = original!.candidatePool.find(candidate => candidate.candidateId === original!.promotedCandidateId)!
+      const heldOutEvidence = structuredClone(promoted.heldOutEvaluation!)
+      expect(heldOutEvidence.completeness).toBe('partial')
+      const secondRounds = await eventually(
+        () => store.listRounds(),
+        rounds => rounds.some(round => round.batchId === first.batchId
+          && round.roundIndex === 2 && round.status === 'candidate-editing'),
+      )
+      const second = secondRounds.find(round => round.batchId === first.batchId && round.roundIndex === 2)!
+
+      const identity = evaluator.evaluationIdentity.bind(evaluator)
+      let blockHeldOutIdentity = true
+      evaluator.evaluationIdentity = (round, request) => {
+        if (blockHeldOutIdentity && request.phase === 'held-out-baseline') return undefined as never
+        return identity(round, request)
+      }
+      await finalize(service, second)
+      const identityBlocked = await eventually(() => store.readRound(second.roundId), r => r?.status === 'failed')
+      blockHeldOutIdentity = false
+      const legacyReason = 'The existing held-out evaluation has no verifiable complete baseline; no baseline refresh was started.'
+      const legacyBlocked: RefinementRound = {
+        ...identityBlocked!,
+        failure: { ...identityBlocked!.failure!, message: legacyReason },
+        baselineReuseBlocker: {
+          code: 'BASELINE_EVIDENCE_UNAVAILABLE',
+          reason: legacyReason,
+          requiredAction: 'Recover complete settled evidence for the original evaluation.',
+        },
+      }
+      await store.writeRound(legacyBlocked)
+      const selectedBefore = structuredClone(legacyBlocked.candidatePool.find(candidate =>
+        candidate.candidateId === legacyBlocked.promotionCandidateId)!)
+      const selectionBefore = structuredClone(legacyBlocked.selection)
+      const assessmentBefore = structuredClone(legacyBlocked.selectionAssessment)
+      const seedEvaluationBefore = structuredClone(legacyBlocked.evaluation)
+      const attemptsBefore = structuredClone(legacyBlocked.evaluationAttempts ?? [])
+      const startsBefore = structuredClone(legacyBlocked.evaluationStarts ?? [])
+      await eventually(async () => service.activeEntry(second.roundId), r => r === undefined)
+      await service.dispose()
+
+      resumed = restart(service, evaluator)
+      await resumed.initialize()
+      const spec = await resumed.registry.requireSpec(first.evolutionId)
+      const assessor = resumed.components.assessor(spec.selection.assessor)
+      const selector = resumed.components.selector(spec.selection.strategy)
+      const assess = vi.spyOn(assessor, 'assess')
+      const select = vi.spyOn(selector, 'select')
+      vi.spyOn(resumed.components, 'assessor').mockReturnValue(assessor)
+      vi.spyOn(resumed.components, 'selector').mockReturnValue(selector)
+      const callsBefore = [...evaluator.calls]
+      const nextAdmission = await resumed.continueEvolution('api', first.evolutionId, {
+        roundId: second.roundId,
+      })
+      expect(nextAdmission).toEqual({
+        evolutionId: first.evolutionId,
+        batchId: first.batchId,
+        roundId: second.roundId,
+        status: 'queued',
+      })
+      const terminal = await eventually(() => store.readRound(second.roundId), r => r?.status === 'accepted')
+      const thirdRounds = await eventually(
+        () => store.listRounds(),
+        rounds => rounds.some(round => round.batchId === first.batchId
+          && round.roundIndex === 3 && round.status === 'candidate-editing'),
+      )
+      const third = thirdRounds.find(round => round.batchId === first.batchId && round.roundIndex === 3)!
+      const selectedAfter = terminal!.candidatePool.find(candidate => candidate.candidateId === selectedBefore.candidateId)!
+      expect(terminal?.evaluation?.heldOutBaseline).toEqual(heldOutEvidence)
+      expect(terminal?.selection).toEqual(selectionBefore)
+      expect(terminal?.selectionAssessment).toEqual(assessmentBefore)
+      expect(terminal?.evaluation).toMatchObject({
+        seedBaseline: seedEvaluationBefore!.seedBaseline,
+        seedCandidate: seedEvaluationBefore!.seedCandidate,
+        seedPairedTrials: seedEvaluationBefore!.seedPairedTrials,
+        seedPairing: seedEvaluationBefore!.seedPairing,
+        scoreDelta: seedEvaluationBefore!.scoreDelta,
+      })
+      expect(selectedAfter).toMatchObject({
+        candidateId: selectedBefore.candidateId,
+        sealedVersion: selectedBefore.sealedVersion,
+        seedEvaluation: selectedBefore.seedEvaluation,
+        seedComparison: selectedBefore.seedComparison,
+        metaSessionId: selectedBefore.metaSessionId,
+        resultCheckpoint: selectedBefore.resultCheckpoint,
+      })
+      expect(terminal?.evaluationAttempts).toEqual(expect.arrayContaining(attemptsBefore))
+      expect(terminal?.evaluationStarts?.slice(0, startsBefore.length)).toEqual(startsBefore)
+      expect(evaluator.calls.slice(callsBefore.length)).toEqual(['held-out-candidate'])
+      expect(evaluator.calls.filter(phase => phase === 'seed-baseline')).toHaveLength(1)
+      expect(evaluator.calls.filter(phase => phase === 'held-out-baseline')).toHaveLength(1)
+      expect(assess).not.toHaveBeenCalled()
+      expect(select).not.toHaveBeenCalled()
+      expect(rerun).not.toHaveBeenCalled()
+      expect(third).toMatchObject({
+        batchId: first.batchId, roundIndex: 3, roundCount: 3, advisoryFocus: ['context'],
+      })
+
+      await finalize(resumed, third)
+      await eventually(() => store.readRound(third.roundId), round => round?.status === 'accepted')
+      await eventually(async () => resumed.activeEntry(third.roundId), value => value === undefined)
+      const completedBatch = (await store.listRounds()).filter(round => round.batchId === first.batchId)
+      expect(completedBatch.map(round => round.roundIndex).sort((left, right) => left - right)).toEqual([1, 2, 3])
+      expect(completedBatch.every(round => round.roundCount === 3
+        && round.advisoryFocus?.[0] === 'context')).toBe(true)
+      expect(evaluator.calls.slice(callsBefore.length)).toEqual([
+        'held-out-candidate', 'seed-candidate', 'held-out-candidate',
+      ])
+      expect(metas.get(first.evolutionId)!.wakes.length).toBeGreaterThan(0)
+      expect(new Set(metas.get(first.evolutionId)!.wakes)).toEqual(new Set([third.roundId]))
+      expect(assess).toHaveBeenCalledTimes(1)
+      expect(select).toHaveBeenCalledTimes(1)
       expect(await store.readRound(first.roundId)).toEqual(original)
+    } finally { await resumed.dispose(); await service.dispose() }
+  })
+
+  it('recovers with a staged held-out source without starting a new baseline', async () => {
+    const { service, evaluator, registry } = await setup()
+    enableBaselineSources(service, evaluator)
+    const writeRound = RefineStateStore.prototype.writeRound
+    let persistence: ReturnType<typeof vi.spyOn> | undefined
+    try {
+      const source = await service.admit('api')
+      await finalize(service, await editing(service, source.evolutionId, source.roundId))
+      const sourceRound = await eventually(
+        () => registry.stateStore(source.evolutionId).readRound(source.roundId),
+        round => round?.status === 'accepted',
+      )
+      await eventually(async () => service.activeEntry(source.roundId), value => value === undefined)
+      const sourceHeldOut = structuredClone(sourceRound!.evaluation!.heldOutBaseline!)
+      const destination = await service.admit('api', {
+        baselineSource: {
+          evolutionId: source.evolutionId,
+          roundId: source.roundId,
+          partitions: ['seed', 'held-out'],
+        },
+      })
+      const editable = await editing(service, destination.evolutionId, destination.roundId)
+      let interrupt = true
+      persistence = vi.spyOn(RefineStateStore.prototype, 'writeRound').mockImplementation(async function (
+        this: RefineStateStore,
+        value: RefinementRound,
+      ) {
+        if (interrupt && value.roundId === destination.roundId && value.status === 'held-out-running'
+          && value.evaluation?.heldOutBaseline === undefined) {
+          interrupt = false
+          throw new Error('simulated interruption before staged held-out baseline persistence')
+        }
+        return writeRound.call(this, value)
+      })
+      await finalize(service, editable)
+      const store = registry.stateStore(destination.evolutionId)
+      const blocked = await eventually(() => store.readRound(destination.roundId), round => round?.status === 'failed')
+      await eventually(async () => service.activeEntry(destination.roundId), value => value === undefined)
+      persistence.mockRestore()
+      expect(blocked?.baselineSource?.partitions.heldOut?.evidence).toEqual(sourceHeldOut)
+      expect(blocked?.evaluation?.heldOutBaseline).toBeUndefined()
+      const callsBeforeRecovery = evaluator.calls.length
+
+      await service.continueEvolution('api', destination.evolutionId, { roundId: destination.roundId })
+      const terminal = await eventually(() => store.readRound(destination.roundId), round => round?.status === 'accepted')
+
+      expect(terminal?.evaluation?.heldOutBaseline).toEqual(sourceHeldOut)
+      expect(terminal?.evaluationAttempts).toContainEqual(expect.objectContaining({
+        evalId: sourceHeldOut.evalId,
+        reusedFromEvolutionId: source.evolutionId,
+        reusedFromRoundId: source.roundId,
+      }))
+      expect(evaluator.calls.slice(callsBeforeRecovery)).toEqual(['held-out-candidate'])
+      expect(evaluator.calls.filter(phase => phase === 'held-out-baseline')).toHaveLength(1)
+    } finally {
+      persistence?.mockRestore()
+      await service.dispose()
+    }
+  })
+
+  it('reuses held-out evidence already owned by the selected round', async () => {
+    const { service, evaluator } = await setup()
+    const writeRound = RefineStateStore.prototype.writeRound
+    let stopBeforePromotion = true
+    const persistence = vi.spyOn(RefineStateStore.prototype, 'writeRound').mockImplementation(async function (
+      this: RefineStateStore,
+      value: RefinementRound,
+    ) {
+      if (stopBeforePromotion && value.status === 'promoting') {
+        stopBeforePromotion = false
+        throw new Error('simulated interruption before promotion')
+      }
+      return writeRound.call(this, value)
+    })
+    try {
+      const admission = await service.admit('api')
+      const store = service.registry.stateStore(admission.evolutionId)
+      await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
+      const failed = await eventually(() => store.readRound(admission.roundId), round => round?.status === 'failed')
+      await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
+      persistence.mockRestore()
+      const heldOutBaseline = structuredClone(failed!.evaluation!.heldOutBaseline)
+      const heldOutCandidate = structuredClone(failed!.evaluation!.heldOutCandidate)
+      const attempts = structuredClone(failed!.evaluationAttempts)
+      const starts = structuredClone(failed!.evaluationStarts)
+      const callsBefore = [...evaluator.calls]
+
+      await service.continueEvolution('api', admission.evolutionId, { roundId: admission.roundId })
+      const terminal = await eventually(() => store.readRound(admission.roundId), round => round?.status === 'accepted')
+      await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
+
+      expect(terminal?.evaluation?.heldOutBaseline).toEqual(heldOutBaseline)
+      expect(terminal?.evaluation?.heldOutCandidate).toEqual(heldOutCandidate)
+      expect(terminal?.evaluationAttempts).toEqual(attempts)
+      expect(terminal?.evaluationStarts).toEqual(starts)
+      expect(evaluator.calls).toEqual(callsBefore)
+      expect(await store.listRounds()).toHaveLength(1)
+    } finally {
+      persistence.mockRestore()
+      await service.dispose()
+    }
+  })
+
+  it('does not continue the original batch when selected-round recovery fails', async () => {
+    const { service, evaluator } = await setup()
+    try {
+      const prepared = await reopenAcceptedRoundBeforeHeldOutCandidate(service)
+      const planned = { ...prepared.reopened, roundCount: 2 }
+      await prepared.store.writeRound(planned)
+      evaluator.failurePhase = 'held-out-candidate'
+      const callsBefore = evaluator.calls.length
+
+      await service.continueEvolution('api', prepared.admission.evolutionId, {
+        roundId: prepared.admission.roundId,
+      })
+      const failed = await eventually(
+        () => prepared.store.readRound(prepared.admission.roundId),
+        round => round?.status === 'failed' && round.evaluationAttempts?.some(attempt =>
+          attempt.phase === 'held-out-candidate' && attempt.status === 'failed') === true,
+      )
+      await eventually(async () => service.activeEntry(prepared.admission.roundId), value => value === undefined)
+
+      expect(failed?.roundCount).toBe(2)
+      expect(evaluator.calls.slice(callsBefore)).toEqual(['held-out-candidate'])
+      expect(await prepared.store.listRounds()).toHaveLength(1)
+    } finally { await service.dispose() }
+  })
+
+  it.each([
+    ['identity', /evaluator identity/],
+    ['dataset', /dataset content changed/],
+    ['champion', /admitted population or champion/],
+    ['population', /admitted population or champion/],
+    ['no-baseline', /no reusable held-out baseline/],
+    ['zero-valid-baseline', /no eligible settled held-out baseline evidence/],
+    ['baseline-start', /cannot replace it with historical evidence/],
+    ['candidate-start', /cannot safely submit it again/],
+    ['candidate-failed', /control\.rerun/],
+  ] as const)('rejects unsafe selected-round recovery without mutation: %s', async (mode, expected) => {
+    const { service, evaluator } = await setup()
+    try {
+      const prepared = await reopenAcceptedRoundBeforeHeldOutCandidate(service)
+      let expectedRound = structuredClone(prepared.reopened)
+      if (mode === 'identity') evaluator.runtimeConfigDigest = `sha256:${'e'.repeat(64)}`
+      if (mode === 'dataset') {
+        const dataset = join(service.options.workspaceRoot, 'held-out')
+        await mkdir(dataset, { recursive: true })
+        await writeFile(join(dataset, 'changed.txt'), 'changed after admission')
+      }
+      if (mode === 'champion') {
+        await prepared.store.writeChampion({
+          schemaVersion: 2,
+          ref: prepared.finalist.sealedVersion!.commitOid,
+          manifestDigest: prepared.finalist.sealedVersion!.manifestDigest,
+          updatedAt: 'changed',
+        })
+      }
+      if (mode === 'population') {
+        const identity = {
+          evolutionId: prepared.initialPopulation.evolutionId,
+          generation: prepared.initialPopulation.generation + 1,
+          members: prepared.initialPopulation.members,
+        }
+        await prepared.store.writePopulation({ ...identity, digest: digestJson(identity) })
+      }
+      if (mode === 'no-baseline' || mode === 'baseline-start') {
+        const changed = structuredClone(prepared.reopened)
+        delete changed.evaluation!.heldOutBaseline
+        if (mode === 'no-baseline') {
+          changed.evaluationStarts = (changed.evaluationStarts ?? []).filter(start => start.phase !== 'held-out-baseline')
+        }
+        changed.evaluationAttempts = (changed.evaluationAttempts ?? []).filter(attempt => attempt.phase !== 'held-out-baseline')
+        await prepared.store.writeRound(changed)
+        expectedRound = changed
+      }
+      if (mode === 'zero-valid-baseline') {
+        const changed = structuredClone(prepared.reopened)
+        const baseline = changed.evaluation!.heldOutBaseline!
+        changed.evaluation!.heldOutBaseline = {
+          ...baseline,
+          completeness: 'partial', primaryReward: 0,
+          summary: { total: 0, passed: 0, failed: 0, score: 0 },
+          trials: [],
+          invalidTrials: baseline.trials.map(trial => ({
+            taskName: trial.taskName, trialName: trial.trialName!, runId: trial.runId!, attempt: trial.attempt!,
+            status: 'errored', invalidReason: 'simulated_failure',
+          })),
+        }
+        await prepared.store.writeRound(changed)
+        expectedRound = changed
+      }
+      if (mode === 'candidate-start' || mode === 'candidate-failed') {
+        const changed = structuredClone(prepared.reopened)
+        const harnessRef = prepared.finalist.sealedVersion!.commitOid
+        changed.evaluationStarts = [...(changed.evaluationStarts ?? []), {
+          phase: 'held-out-candidate', harnessRef,
+          conditionId: changed.plan.heldOut.conditionId, startedAt: 'simulated',
+        }]
+        if (mode === 'candidate-failed') {
+          changed.evaluationAttempts = [...(changed.evaluationAttempts ?? []), {
+            provider: 'fake', evalId: 'eval_failed_recovery', phase: 'held-out-candidate',
+            owner: { candidateId: prepared.finalist.candidateId, role: 'candidate', harnessRef },
+            conditionId: changed.plan.heldOut.conditionId, dataset: changed.heldOutRef,
+            requestedModelId: changed.plan.heldOut.model, requestedCommit: harnessRef,
+            status: 'failed', startedAt: 'simulated', completedAt: 'simulated',
+            failure: { code: 'simulated_failure', message: 'simulated failed evaluation' },
+          }]
+        }
+        await prepared.store.writeRound(changed)
+        expectedRound = changed
+      }
+      const callsBefore = [...evaluator.calls]
+
+      await expect(service.continueEvolution('api', prepared.admission.evolutionId, {
+        roundId: prepared.admission.roundId,
+      })).rejects.toThrow(expected)
+
+      expect(await prepared.store.readRound(prepared.admission.roundId)).toEqual(expectedRound)
+      expect(evaluator.calls).toEqual(callsBefore)
+      expect(service.activeEntry(prepared.admission.roundId)).toBeUndefined()
+    } finally { await service.dispose() }
+  })
+
+  it('ignores a failed seed evaluation owned only by an unselected sibling', async () => {
+    const { service, evaluator } = await setup()
+    try {
+      const prepared = await reopenAcceptedRoundBeforeHeldOutCandidate(service)
+      const changed = structuredClone(prepared.reopened)
+      const sibling = structuredClone(prepared.finalist)
+      sibling.candidateId = `${sibling.candidateId}-failed-sibling`
+      sibling.status = 'failed'
+      sibling.failure = { phase: 'candidate-seed-running', message: 'irrelevant sibling failure' }
+      delete sibling.seedEvaluation
+      delete sibling.seedComparison
+      delete sibling.heldOutEvaluation
+      delete sibling.metrics
+      changed.candidatePool.push(sibling)
+      changed.parentAllocations!.push({
+        candidateId: sibling.candidateId,
+        parentCandidateId: changed.championParent!.candidateId,
+        parentHarnessRef: changed.championParent!.harnessRef,
+        parentHarnessDigest: changed.championParent!.harnessDigest,
+      })
+      changed.evaluationStarts = [...(changed.evaluationStarts ?? []), {
+        phase: 'seed-candidate', harnessRef: sibling.sealedVersion!.commitOid,
+        conditionId: changed.plan.seed.conditionId, startedAt: 'simulated',
+      }]
+      changed.evaluationAttempts = [...(changed.evaluationAttempts ?? []), {
+        provider: 'fake', evalId: 'eval_failed_unselected_seed', phase: 'seed-candidate',
+        owner: { candidateId: sibling.candidateId, role: 'candidate', harnessRef: sibling.sealedVersion!.commitOid },
+        conditionId: changed.plan.seed.conditionId, dataset: changed.seedTaskRef,
+        requestedModelId: changed.plan.seed.model, requestedCommit: sibling.sealedVersion!.commitOid,
+        status: 'failed', startedAt: 'simulated', completedAt: 'simulated',
+        failure: { code: 'simulated_failure', message: 'irrelevant sibling failure' },
+      }]
+      await prepared.store.writeRound(changed)
+      const callsBefore = evaluator.calls.length
+
+      await service.continueEvolution('api', prepared.admission.evolutionId, { roundId: prepared.admission.roundId })
+      await eventually(() => prepared.store.readRound(prepared.admission.roundId), round => round?.status === 'accepted')
+
+      expect(evaluator.calls.slice(callsBefore)).toEqual(['held-out-candidate'])
+    } finally { await service.dispose() }
+  })
+
+  it('serializes repeated recovery without duplicating the selected held-out evaluation', async () => {
+    const { service, evaluator } = await setup()
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    try {
+      const prepared = await reopenAcceptedRoundBeforeHeldOutCandidate(service)
+      const evaluate = evaluator.evaluate.bind(evaluator)
+      evaluator.evaluate = async (...args) => {
+        if (args[1].phase === 'held-out-candidate') {
+          entered.resolve()
+          await release.promise
+        }
+        return evaluate(...args)
+      }
+      const callsBefore = evaluator.calls.length
+      await service.continueEvolution('api', prepared.admission.evolutionId, { roundId: prepared.admission.roundId })
+      await entered.promise
+
+      await expect(service.continueEvolution('api', prepared.admission.evolutionId, {
+        roundId: prepared.admission.roundId,
+      })).rejects.toThrow(/already active/)
+      release.resolve()
+      await eventually(() => prepared.store.readRound(prepared.admission.roundId), round => round?.status === 'accepted')
+      await eventually(async () => service.activeEntry(prepared.admission.roundId), value => value === undefined)
+      await expect(service.continueEvolution('api', prepared.admission.evolutionId, {
+        roundId: prepared.admission.roundId,
+      })).rejects.toThrow(/not a failed selected round/)
+
+      expect(evaluator.calls.slice(callsBefore)).toEqual(['held-out-candidate'])
+      expect(await prepared.store.listRounds()).toHaveLength(1)
+    } finally {
+      release.resolve()
+      await service.dispose()
+    }
+  })
+
+  it('can recover again after a crash before the first selected held-out evaluation', async () => {
+    const { service, evaluator } = await setup()
+    let resumed = service
+    let startDrive: ReturnType<typeof vi.spyOn> | undefined
+    try {
+      const prepared = await reopenAcceptedRoundBeforeHeldOutCandidate(service)
+      startDrive = vi.spyOn(
+        service as unknown as { startDrive(roundId: string): void },
+        'startDrive',
+      ).mockImplementation(() => {})
+      const callsBefore = evaluator.calls.length
+      await service.continueEvolution('api', prepared.admission.evolutionId, { roundId: prepared.admission.roundId })
+      await Promise.resolve()
+      expect(await prepared.store.readRound(prepared.admission.roundId)).toMatchObject({ status: 'held-out-running' })
+      expect(evaluator.calls).toHaveLength(callsBefore)
+      await service.dispose()
+      startDrive.mockRestore()
+
+      resumed = restart(service, evaluator)
+      await resumed.initialize()
+      expect(await prepared.store.readRound(prepared.admission.roundId)).toMatchObject({
+        status: 'failed', failure: { phase: 'recovery' },
+      })
+      await resumed.continueEvolution('api', prepared.admission.evolutionId, { roundId: prepared.admission.roundId })
+      await eventually(() => prepared.store.readRound(prepared.admission.roundId), round => round?.status === 'accepted')
+
+      expect(evaluator.calls.slice(callsBefore)).toEqual(['held-out-candidate'])
+    } finally {
+      startDrive?.mockRestore()
+      await resumed.dispose()
+      await service.dispose()
+    }
+  })
+
+  it('releases recovery admission when dispose wins a pending identity query', async () => {
+    const { service, evaluator } = await setup()
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    try {
+      const prepared = await reopenAcceptedRoundBeforeHeldOutCandidate(service)
+      const original = structuredClone(prepared.reopened)
+      const callsBefore = evaluator.calls.length
+      const identity = evaluator.evaluationIdentity.bind(evaluator)
+      evaluator.evaluationIdentity = (async (
+        round: Readonly<RefinementRound>,
+        request: Readonly<EvaluationRequest>,
+      ) => {
+        if (request.phase === 'held-out-candidate') {
+          entered.resolve()
+          await release.promise
+        }
+        return identity(round, request)
+      }) as unknown as FakeEvaluator['evaluationIdentity']
+      const continuation = service.continueEvolution('api', prepared.admission.evolutionId, {
+        roundId: prepared.admission.roundId,
+      }).then(value => ({ value }), error => ({ error }))
+      await entered.promise
+
+      await service.dispose()
+      release.resolve()
+      const result = await continuation
+
+      expect(result).toMatchObject({ error: expect.objectContaining({ message: 'RefineService is disposed' }) })
+      expect(await prepared.store.readRound(prepared.admission.roundId)).toEqual(original)
+      expect(evaluator.calls).toHaveLength(callsBefore)
+      const lock = await prepared.store.acquireRoundLock(prepared.admission.roundId)
+      await lock.release()
+    } finally {
+      release.resolve()
+      await service.dispose()
+    }
+  })
+
+  it('restores failed state when dispose wins the held-out admission write', async () => {
+    const { service, evaluator } = await setup()
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const writeRound = RefineStateStore.prototype.writeRound
+    let persistence: ReturnType<typeof vi.spyOn> | undefined
+    try {
+      const prepared = await reopenAcceptedRoundBeforeHeldOutCandidate(service)
+      const original = structuredClone(prepared.reopened)
+      const callsBefore = evaluator.calls.length
+      let block = true
+      persistence = vi.spyOn(RefineStateStore.prototype, 'writeRound').mockImplementation(async function (
+        this: RefineStateStore,
+        value: RefinementRound,
+      ) {
+        if (block && value.roundId === prepared.admission.roundId && value.status === 'held-out-running') {
+          block = false
+          entered.resolve()
+          await release.promise
+        }
+        return writeRound.call(this, value)
+      })
+      const continuation = service.continueEvolution('api', prepared.admission.evolutionId, {
+        roundId: prepared.admission.roundId,
+      }).then(value => ({ value }), error => ({ error }))
+      await entered.promise
+
+      await service.dispose()
+      release.resolve()
+      const result = await continuation
+
+      expect(result).toMatchObject({ error: expect.objectContaining({ message: 'RefineService is disposed' }) })
+      const restored = await prepared.store.readRound(prepared.admission.roundId)
+      expect(restored).toEqual({ ...original, updatedAt: restored!.updatedAt })
+      expect(evaluator.calls).toHaveLength(callsBefore)
+      const lock = await prepared.store.acquireRoundLock(prepared.admission.roundId)
+      await lock.release()
+    } finally {
+      release.resolve()
+      persistence?.mockRestore()
+      await service.dispose()
+    }
+  })
+
+  it('releases the round lock when registry touch rejects recovery admission', async () => {
+    const { service, evaluator } = await setup()
+    try {
+      const prepared = await reopenAcceptedRoundBeforeHeldOutCandidate(service)
+      const original = structuredClone(prepared.reopened)
+      const callsBefore = evaluator.calls.length
+      const touch = vi.spyOn(service.registry, 'touch').mockRejectedValueOnce(new Error('simulated registry failure'))
+
+      await expect(service.continueEvolution('api', prepared.admission.evolutionId, {
+        roundId: prepared.admission.roundId,
+      })).rejects.toThrow(/simulated registry failure/)
+      touch.mockRestore()
+
+      expect(await prepared.store.readRound(prepared.admission.roundId)).toEqual(original)
+      expect(evaluator.calls).toHaveLength(callsBefore)
+      expect(service.activeEntry(prepared.admission.roundId)).toBeUndefined()
+      const lock = await prepared.store.acquireRoundLock(prepared.admission.roundId)
+      await lock.release()
     } finally { await service.dispose() }
   })
 
@@ -2637,6 +3804,140 @@ describe('RefineService evolution workspaces', () => {
     expect(completed!.candidatePool[0]!.generationAttempts).toHaveLength(1)
     expect(oldIds).toHaveLength(2)
     await service.dispose()
+  })
+
+  it('terminates an ordinary candidate failure when context offloading is configured', async () => {
+    const { service, evaluator, metas } = await setup()
+    service.options.metaAgent.contextOffloading = resolveOffloadingPolicy({ mode: 'proactive', contextWindow: 10000 })
+    const baselineGate = Promise.withResolvers<void>()
+    const evaluate = evaluator.evaluate.bind(evaluator)
+    evaluator.evaluate = async (...args) => { await baselineGate.promise; return evaluate(...args) }
+    const admission = await service.admit('api')
+    const meta = metas.get(admission.evolutionId)
+    if (meta === undefined) throw new Error('Meta fixture is unavailable')
+    meta.wakeCandidate = async () => { throw new Error('ordinary context generation failure') }
+    baselineGate.resolve()
+
+    const store = service.registry.stateStore(admission.evolutionId)
+    const terminal = await eventually(() => store.readRound(admission.roundId), round => round?.status === 'failed')
+    expect(terminal).toMatchObject({
+      status: 'failed',
+      candidatePool: [{
+        status: 'failed',
+        generationAttempts: [{ status: 'failed', failure: { message: 'ordinary context generation failure' } }],
+      }],
+    })
+    await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
+    await service.dispose()
+  })
+
+  it.each(['duplicate-recovery', 'wrong-round-stage'] as const)(
+    'settles disposal instead of preserving an unusable context boundary (%s)',
+    async mode => {
+      const { service, evaluator, metas, registry } = await setup()
+      service.options.metaAgent.contextOffloading = resolveOffloadingPolicy({ mode: 'proactive', contextWindow: 10000 })
+      const baselineGate = Promise.withResolvers<void>()
+      const evaluate = evaluator.evaluate.bind(evaluator)
+      evaluator.evaluate = async (...args) => { await baselineGate.promise; return evaluate(...args) }
+      const admission = await service.admit('api')
+      const store = registry.stateStore(admission.evolutionId)
+      const meta = metas.get(admission.evolutionId)! as unknown as MetaSessionController
+      const published = Promise.withResolvers<MetaExecutionState>()
+      meta.wakeCandidate = async (round, candidate, baseline, agent, binding) => {
+        const state: MetaExecutionState = {
+          schemaVersion: 1,
+          executionId: binding!.executionId,
+          evolutionId: round.evolutionId,
+          specDigest: digestJson(await registry.requireSpec(round.evolutionId)),
+          roundId: round.roundId,
+          candidateId: candidate!.candidateId,
+          attempt: binding!.attempt,
+          generation: 0,
+          revision: 0,
+          activeSessionId: agent.id,
+          sessions: [agent.id],
+          status: 'rotating',
+          deadlineAt: binding!.deadlineAt,
+          usage: { modelRequests: 1, tokens: 1, summaryRequests: 0, summaryTokens: 0 },
+          pending: [],
+          deliveredIds: [],
+          handoffs: [],
+          recovery: {
+            envelope: contextMessage('Continue the candidate'),
+            controller: await binding!.snapshot(),
+            evidence: {
+              evolutionId: round.evolutionId,
+              roundId: round.roundId,
+              candidateId: candidate!.candidateId,
+              baselineEvalId: baseline!.evalId,
+              summaryAccessed: true,
+              accessedRefs: [],
+              diagnosedRunRefs: [],
+              citedRefs: [],
+            },
+          },
+        }
+        await new MetaOffloadingStore(store.root).cas(undefined, state)
+        published.resolve(state)
+        return { sessionId: agent.id }
+      }
+      baselineGate.resolve()
+      const state = await published.promise
+      if (mode === 'duplicate-recovery') {
+        await new MetaOffloadingStore(store.root).cas(undefined, {
+          ...structuredClone(state), executionId: 'duplicate-execution', revision: 0,
+        })
+      } else {
+        const current = (await store.readRound(admission.roundId))!
+        await store.writeRound({ ...current, status: 'candidate-seed-running' })
+      }
+
+      await service.dispose()
+      expect(await store.readRound(admission.roundId)).toMatchObject({
+        status: 'failed',
+        candidatePool: [{ status: 'failed', generationAttempts: [{ status: 'failed' }] }],
+      })
+    },
+  )
+
+  it('terminates a downstream failure after a context-enabled generation retry', async () => {
+    const { service, evaluator, metas } = await setup(0.8, false, 1, 300_000, 1, 0, 2, 600_000)
+    service.options.metaAgent.contextOffloading = resolveOffloadingPolicy({ mode: 'proactive', contextWindow: 10000 })
+    const baselineGate = Promise.withResolvers<void>()
+    const evaluate = evaluator.evaluate.bind(evaluator)
+    evaluator.evaluate = async (...args) => { await baselineGate.promise; return evaluate(...args) }
+    const admission = await service.admit('api')
+    const meta = metas.get(admission.evolutionId)
+    if (meta === undefined) throw new Error('Meta fixture is unavailable')
+    meta.turnCompletions.push({ reason: 'max-tokens', turn: 1, durationMs: 1 })
+    baselineGate.resolve()
+    const store = service.registry.stateStore(admission.evolutionId)
+    const retried = await eventually(
+      () => store.readRound(admission.roundId) as Promise<RefinementRound>,
+      round => round?.status === 'candidate-editing' && round.candidatePool[0]?.generationAttempts?.length === 2,
+    )
+    const runtimeStore = service.activeEntry(admission.roundId)!.store
+    const originalWrite = runtimeStore.writeRound.bind(runtimeStore)
+    let failDownstream = true
+    const writeSpy = vi.spyOn(runtimeStore, 'writeRound').mockImplementation(async value => {
+      if (failDownstream && value.status === 'candidate-seed-running') {
+        failDownstream = false
+        throw new Error('downstream transition unavailable')
+      }
+      return originalWrite(value)
+    })
+    try {
+      await finalize(service, retried)
+      const terminal = await eventually(() => store.readRound(admission.roundId), round => round?.status === 'failed')
+      expect(terminal).toMatchObject({
+        status: 'failed',
+        failure: { message: 'downstream transition unavailable' },
+        candidatePool: [{ generationAttempts: [{ status: 'failed' }, { status: 'succeeded' }] }],
+      })
+    } finally {
+      writeSpy.mockRestore()
+      await service.dispose()
+    }
   })
 
   it('restores the sealed attempt parent when the default root checkpoint changes after restart', async () => {
@@ -2975,40 +4276,68 @@ describe('RefineService evolution workspaces', () => {
     await service.dispose()
   })
 
-  it('continues with a successful sibling when another candidate times out', async () => {
+  it('keeps a failed sibling prerequisite isolated from another candidate retry', async () => {
     const attemptBudgetMs = 30_000
-    const { service } = await setup(0.8, false, 2, attemptBudgetMs, 1, 0, 1, 90_000)
-    // Trigger only the first sibling's deadline; finalizing the successful
-    // sibling includes Git and evidence checks that must not race a 500ms timer.
+    const { service } = await setup(0.8, false, 2, attemptBudgetMs, 1, 0, 2, 120_000)
     const originalSetTimeout = globalThis.setTimeout
-    let expireFirstAttempt: (() => void) | undefined
+    const expireAttempts: Array<() => void> = []
     const timerSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation((...args: Parameters<typeof setTimeout>) => {
       const timer = originalSetTimeout(...args)
-      if (args[1] === attemptBudgetMs && expireFirstAttempt === undefined) {
-        expireFirstAttempt = () => { clearTimeout(timer); args[0]() }
-      }
+      if (args[1] === attemptBudgetMs) expireAttempts.push(() => { clearTimeout(timer); args[0]() })
       return timer
     })
     try {
       const admission = await service.admit('api')
       const first = await editing(service, admission.evolutionId, admission.roundId)
-      const firstCandidateId = first.candidatePool.find(candidate => candidate.metaSessionId !== undefined)?.candidateId
-      if (firstCandidateId === undefined) throw new Error('first sibling is unavailable')
-      if (expireFirstAttempt === undefined) throw new Error('candidate deadline was not scheduled')
+      const firstCandidate = first.candidatePool.find(candidate => candidate.metaSessionId !== undefined)
+      if (firstCandidate?.metaSessionId === undefined) throw new Error('first sibling is unavailable')
+      const blockedRunId = first.baseline!.trials.find(trial => (trial.rewards.reward ?? 0) <= 0)!.runId!
+      await service.recordMetaPrerequisiteBlocker(firstCandidate.metaSessionId, {
+        schemaVersion: 1,
+        code: 'TRAJECTORY_EVIDENCE_UNAVAILABLE',
+        failedOperation: 'trajectory.query',
+        blockedRuns: [{
+          runId: blockedRunId,
+          code: 'hitch_verifier_diagnostic_source_incomplete',
+          cause: 'legacy_truncated',
+          resolution: 'repair-evidence',
+        }],
+      })
+      const expireFirstAttempt = expireAttempts.shift()
+      if (expireFirstAttempt === undefined) throw new Error('first candidate deadline was not scheduled')
       expireFirstAttempt()
       const store = service.registry.stateStore(admission.evolutionId)
       const second = await eventually(
         () => store.readRound(admission.roundId) as Promise<RefinementRound>,
         value => value?.status === 'candidate-editing'
-          && value.candidatePool.some(candidate => candidate.candidateId !== firstCandidateId
+          && value.candidatePool.some(candidate => candidate.candidateId !== firstCandidate.candidateId
             && candidate.metaSessionId !== undefined
             && service.activeEntry(value.roundId)?.workspace?.workspaceId === candidate.workspaceId),
       )
-      await finalize(service, second)
+      const secondCandidate = second.candidatePool.find(candidate => candidate.candidateId !== firstCandidate.candidateId
+        && candidate.metaSessionId !== undefined)!
+      const expireSecondAttempt = expireAttempts.shift()
+      if (expireSecondAttempt === undefined) throw new Error('second candidate deadline was not scheduled')
+      expireSecondAttempt()
+      const retried = await eventually(
+        () => store.readRound(admission.roundId) as Promise<RefinementRound>,
+        value => value?.status === 'candidate-editing'
+          && value.candidatePool.some(candidate => candidate.candidateId === secondCandidate.candidateId
+            && candidate.metaSessionId !== secondCandidate.metaSessionId
+            && candidate.generationAttempts?.length === 2
+            && service.activeEntry(value.roundId)?.workspace?.workspaceId === candidate.workspaceId),
+      )
+      await finalize(service, retried)
       const terminal = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'accepted')
-      expect(terminal?.candidatePool.find(candidate => candidate.candidateId === firstCandidateId)).toMatchObject({
-        status: 'failed', failure: { phase: 'candidate-generation' },
+      expect(terminal?.candidatePool.find(candidate => candidate.candidateId === firstCandidate.candidateId)).toMatchObject({
+        status: 'failed',
+        failure: { prerequisite: { blockedRuns: [{ runId: blockedRunId, cause: 'legacy_truncated' }] } },
       })
+      const settledSecond = terminal?.candidatePool.find(candidate => candidate.candidateId === secondCandidate.candidateId)
+      expect(settledSecond?.generationAttempts).toHaveLength(2)
+      expect(settledSecond?.generationAttempts?.[0]).toMatchObject({ status: 'failed' })
+      expect(settledSecond?.generationAttempts?.[0]?.failure?.prerequisite).toBeUndefined()
+      expect(settledSecond?.generationAttempts?.[1]).toMatchObject({ status: 'succeeded' })
       expect(terminal?.candidatePool.filter(candidate => candidate.status === 'selected')).toHaveLength(1)
     } finally {
       timerSpy.mockRestore()
@@ -3049,15 +4378,23 @@ describe('RefineService evolution workspaces', () => {
     await service.dispose()
   })
 
-  it('settles a running candidate generation attempt when recovering after restart', async () => {
+  it('atomically settles a running candidate generation attempt during disposal', async () => {
     const { service, evaluator, registry } = await setup()
     const admission = await service.admit('api')
     await editing(service, admission.evolutionId, admission.roundId)
     const store = registry.stateStore(admission.evolutionId)
     await service.dispose()
-    expect(await store.readRound(admission.roundId)).toMatchObject({
-      status: 'candidate-editing',
-      candidatePool: [{ generationAttempts: [{ status: 'running' }] }],
+    const settled = await store.readRound(admission.roundId)
+    expect(settled).toMatchObject({
+      status: 'failed',
+      failure: { phase: 'candidate-editing', message: 'RefineService disposed' },
+      candidatePool: [{
+        status: 'failed',
+        generationAttempts: [{
+          status: 'failed', completedAt: expect.any(String),
+          failure: { phase: 'candidate-generation', message: 'RefineService disposed' },
+        }],
+      }],
     })
 
     const recovering = new RefineService(
@@ -3070,17 +4407,254 @@ describe('RefineService evolution workspaces', () => {
       service.components,
     )
     await recovering.initialize()
-    expect(await store.readRound(admission.roundId)).toMatchObject({
-      status: 'failed',
-      failure: { phase: 'recovery' },
-      candidatePool: [{
-        status: 'failed',
-        generationAttempts: [{
-          status: 'failed', completedAt: expect.any(String),
-          failure: { phase: 'candidate-generation', message: 'control plane restarted during candidate generation' },
-        }],
-      }],
-    })
+    expect(await store.readRound(admission.roundId)).toEqual(settled)
     await recovering.dispose()
+  })
+
+  it('reports a disposal settlement write failure after releasing the round lock', async () => {
+    const { service, registry } = await setup()
+    const admission = await service.admit('api')
+    await editing(service, admission.evolutionId, admission.roundId)
+    const store = registry.stateStore(admission.evolutionId)
+    const runtimeStore = service.activeEntry(admission.roundId)!.store
+    const originalWrite = runtimeStore.writeRound.bind(runtimeStore)
+    let rejectFailureSettlement = true
+    const writeSpy = vi.spyOn(runtimeStore, 'writeRound').mockImplementation(async value => {
+      if (rejectFailureSettlement && value.status === 'failed') {
+        rejectFailureSettlement = false
+        throw new Error('round settlement storage unavailable')
+      }
+      return originalWrite(value)
+    })
+    await expect(service.dispose()).rejects.toThrow(/failed to settle refinement rounds during dispose/)
+    writeSpy.mockRestore()
+    expect(await store.readRound(admission.roundId)).toMatchObject({
+      status: 'candidate-editing',
+      candidatePool: [{ generationAttempts: [{ status: 'running' }] }],
+    })
+    const lock = await store.acquireRoundLock()
+    await lock.release()
+  })
+
+  it('starts a new Meta evolution from explicit source evidence without another Target baseline', async () => {
+    const { service, evaluator, registry } = await setup()
+    enableBaselineSources(service, evaluator)
+    const sourceAdmission = await service.admit('api')
+    const sourceEditing = await editing(service, sourceAdmission.evolutionId, sourceAdmission.roundId)
+    await decline(service, sourceEditing)
+    const sourceRound = await eventually(
+      () => registry.stateStore(sourceAdmission.evolutionId).readRound(sourceAdmission.roundId),
+      round => round?.status === 'rejected',
+    )
+    const sourceEvidence = structuredClone(sourceRound!.baseline!)
+    const callsBefore = evaluator.calls.length
+    service.options.metaAgent = {
+      ...structuredClone(service.options.metaAgent),
+      preset: { id: 'meta-v2', digest: `sha256:${'9'.repeat(64)}`, resources: [] },
+      model: { provider: 'different-meta', model: 'different-meta-model' },
+      sampling: { temperature: 0.7 },
+    }
+    const createMetaSession = service.createMetaSession
+    await service.dispose()
+    let sourceRuntimeRequested = false
+    const current = new RefineService(
+      registry, service.builder, service.workspaceManager,
+      (spec, digest, store) => {
+        if (spec.evolutionId === sourceAdmission.evolutionId) {
+          sourceRuntimeRequested = true
+          throw new Error('source Meta runtime must not be loaded for baseline import')
+        }
+        return createMetaSession(spec, digest, store)
+      },
+      evaluator, service.options, service.components,
+    )
+    await current.initialize()
+
+    const admission = await current.admit('api', {
+      baselineSource: { evolutionId: sourceAdmission.evolutionId, roundId: sourceAdmission.roundId },
+    })
+    const imported = await editing(current, admission.evolutionId, admission.roundId)
+    const spec = await registry.requireSpec(admission.evolutionId)
+
+    expect(evaluator.calls).toHaveLength(callsBefore)
+    expect(sourceRuntimeRequested).toBe(false)
+    expect(imported.baseline).toEqual(sourceEvidence)
+    expect(imported.baselineSource?.partitions.heldOut).toBeUndefined()
+    expect(imported.evaluationAttempts).toContainEqual(expect.objectContaining({
+      provider: sourceEvidence.provider,
+      evalId: sourceEvidence.evalId,
+      status: 'settled',
+      reusedFromEvolutionId: sourceAdmission.evolutionId,
+      reusedFromRoundId: sourceAdmission.roundId,
+    }))
+    expect(spec.metaAgent.model.model).toBe('different-meta-model')
+    expect(spec.baselineConditionSource).toMatchObject({
+      partitions: ['seed'],
+      source: { evolutionId: sourceAdmission.evolutionId, roundId: sourceAdmission.roundId },
+      inheritedRolloutProviderDigest: sourceRound!.plan.seed.rolloutProviderDigest,
+    })
+    await current.dispose()
+  })
+
+  it('keeps an opt-in held-out source sealed until held-out evaluation and reuses it after a failed first round', async () => {
+    const { service, evaluator, registry } = await setup()
+    enableBaselineSources(service, evaluator)
+    const sourceAdmission = await service.admit('api')
+    const sourceEditing = await editing(service, sourceAdmission.evolutionId, sourceAdmission.roundId)
+    await finalize(service, sourceEditing)
+    const sourceRound = await eventually(
+      () => registry.stateStore(sourceAdmission.evolutionId).readRound(sourceAdmission.roundId),
+      round => round?.status === 'accepted',
+    )
+    const sourceHeldOut = structuredClone(sourceRound!.evaluation!.heldOutBaseline!)
+    const callsBefore = evaluator.calls.length
+    service.options.metaAgent = {
+      ...structuredClone(service.options.metaAgent),
+      preset: { id: 'meta-held-out-v2', digest: `sha256:${'8'.repeat(64)}`, resources: [] },
+    }
+
+    const firstAdmission = await service.admit('api', {
+      baselineSource: {
+        evolutionId: sourceAdmission.evolutionId,
+        roundId: sourceAdmission.roundId,
+        partitions: ['seed', 'held-out'],
+      },
+    })
+    const first = await editing(service, firstAdmission.evolutionId, firstAdmission.roundId)
+    expect(evaluator.calls).toHaveLength(callsBefore)
+    expect(first.baselineSource?.partitions.heldOut?.evidence).toEqual(sourceHeldOut)
+    expect(first.evaluation).toBeUndefined()
+    expect(JSON.stringify(first.experienceSnapshot ?? {})).not.toContain(sourceHeldOut.evalId)
+    const firstCandidate = first.candidatePool[0]!
+    await service.failMetaExecution(
+      first.evolutionId,
+      first.roundId,
+      firstCandidate.candidateId,
+      firstCandidate.metaSessionId!,
+      'simulated failure',
+    )
+    await eventually(
+      () => registry.stateStore(firstAdmission.evolutionId).readRound(firstAdmission.roundId),
+      round => round?.status === 'failed',
+    )
+
+    const continued = await service.continueEvolution('api', firstAdmission.evolutionId)
+    const second = await editing(service, continued.evolutionId, continued.roundId)
+    expect(evaluator.calls).toHaveLength(callsBefore)
+    await finalize(service, second)
+    const terminal = await eventually(
+      () => registry.stateStore(continued.evolutionId).readRound(continued.roundId),
+      round => round?.status === 'accepted',
+    )
+    expect(evaluator.calls.slice(callsBefore)).toEqual(['seed-candidate', 'held-out-candidate'])
+    expect(terminal!.evaluation!.heldOutBaseline).toEqual(sourceHeldOut)
+    expect(terminal!.evaluationAttempts).toContainEqual(expect.objectContaining({
+      evalId: sourceHeldOut.evalId,
+      reusedFromEvolutionId: sourceAdmission.evolutionId,
+      reusedFromRoundId: sourceAdmission.roundId,
+    }))
+    const directAdmission = await service.admit('api', {
+      baselineSource: {
+        evolutionId: sourceAdmission.evolutionId,
+        roundId: sourceAdmission.roundId,
+        partitions: ['seed', 'held-out'],
+      },
+    })
+    const directEditing = await editing(service, directAdmission.evolutionId, directAdmission.roundId)
+    await finalize(service, directEditing)
+    const direct = await eventually(
+      () => registry.stateStore(directAdmission.evolutionId).readRound(directAdmission.roundId),
+      round => round?.status === 'accepted',
+    )
+    const tampered = structuredClone(direct!)
+    const importedHeldOutAttempt = tampered.evaluationAttempts!.find(attempt => attempt.evalId === sourceHeldOut.evalId)!
+    importedHeldOutAttempt.reusedFromRoundId = 'unrelated-round'
+    await expect(registry.stateStore(directAdmission.evolutionId).writeRound(tampered))
+      .rejects.toThrow('round held-out baseline differs from its source snapshot')
+    await service.dispose()
+  })
+
+  it('reconstructs a sealed baseline source after a crash before the first round write', async () => {
+    const { service, evaluator, registry } = await setup()
+    enableBaselineSources(service, evaluator)
+    const sourceAdmission = await service.admit('api')
+    const sourceEditing = await editing(service, sourceAdmission.evolutionId, sourceAdmission.roundId)
+    await decline(service, sourceEditing)
+    await eventually(
+      () => registry.stateStore(sourceAdmission.evolutionId).readRound(sourceAdmission.roundId),
+      round => round?.status === 'rejected',
+    )
+
+    const writeRound = RefineStateStore.prototype.writeRound
+    let interrupted = true
+    const write = vi.spyOn(RefineStateStore.prototype, 'writeRound').mockImplementation(async function (
+      this: RefineStateStore,
+      round: RefinementRound,
+    ) {
+      if (interrupted && round.status === 'queued' && round.baselineSource !== undefined) {
+        interrupted = false
+        throw new Error('simulated crash before first round became durable')
+      }
+      return writeRound.call(this, round)
+    })
+    await expect(service.admit('api', {
+      baselineSource: { evolutionId: sourceAdmission.evolutionId, roundId: sourceAdmission.roundId },
+    })).rejects.toThrow('simulated crash')
+    write.mockRestore()
+    const destination = (await registry.list()).find(entry => entry.evolutionId !== sourceAdmission.evolutionId)!
+    expect(await registry.stateStore(destination.evolutionId).listRounds()).toEqual([])
+    const callsBefore = evaluator.calls.length
+    const createMetaSession = service.createMetaSession
+    await service.dispose()
+    const recovering = new RefineService(
+      registry, service.builder, service.workspaceManager, createMetaSession,
+      evaluator, service.options, service.components,
+    )
+    await recovering.initialize()
+
+    const continued = await recovering.continueEvolution('api', destination.evolutionId)
+    const recovered = await editing(recovering, continued.evolutionId, continued.roundId)
+    expect(evaluator.calls).toHaveLength(callsBefore)
+    expect(recovered.baselineSource?.source).toMatchObject({
+      evolutionId: sourceAdmission.evolutionId,
+      roundId: sourceAdmission.roundId,
+    })
+    expect(recovered.baseline?.evalId).toBe(recovered.baselineSource?.partitions.seed.evidence.evalId)
+    await recovering.dispose()
+  })
+
+  it('rejects an explicit source Target mismatch before creating an evolution or running Target', async () => {
+    const { service, evaluator, registry } = await setup()
+    enableBaselineSources(service, evaluator)
+    const sourceAdmission = await service.admit('api')
+    const sourceEditing = await editing(service, sourceAdmission.evolutionId, sourceAdmission.roundId)
+    await decline(service, sourceEditing)
+    await eventually(
+      () => registry.stateStore(sourceAdmission.evolutionId).readRound(sourceAdmission.roundId),
+      round => round?.status === 'rejected',
+    )
+    const beforeEntries = await registry.list()
+    const callsBefore = evaluator.calls.length
+    const changedConfig = {
+      ...(service.options.rollout.provider.config as Record<string, unknown>),
+      model: 'different-target-model',
+    }
+    const provider = componentRef(
+      'rollout-provider', 'hitch-cli', hitchCliImplementation(), changedConfig,
+    )
+    const agentConfig = structuredClone(service.options.rollout.agentConfig)
+    service.options.rollout = {
+      ...service.options.rollout,
+      provider,
+      providerSemanticDigest: rolloutProviderSemanticDigest(provider, { harnessId: 'test' }, agentConfig),
+      model: 'different-target-model',
+    }
+
+    await expect(service.admit('api', {
+      baselineSource: { evolutionId: sourceAdmission.evolutionId, roundId: sourceAdmission.roundId },
+    })).rejects.toThrow(/Target parameters differ/u)
+    expect(await registry.list()).toEqual(beforeEntries)
+    expect(evaluator.calls).toHaveLength(callsBefore)
+    await service.dispose()
   })
 })

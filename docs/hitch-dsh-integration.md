@@ -112,6 +112,12 @@ daemon 提交前，Gear 先在 round 的 `pendingEvaluationSubmissions` 保存�
 
 direct 模式可按语义配置身份复用跨轮次 baseline。daemon 的默认执行策略在提交后才冻结，当前不预先声明可复用身份；已有该版本的 baseline 时明确阻塞，不能通过重新提交评测来探测执行策略。
 
+### 3.1 Python 运行环境
+
+Gear 启动 Hitch CLI 子进程时固定 `PYTHONDONTWRITEBYTECODE=1`。这会保护由当前 Gear 进程启动的 direct `eval run` 和 direct `eval rerun`，避免 Hitch immutable controller runtime 中的 Python bridge 写入 `.pyc`。它不会改变已经运行的 Hitch daemon 或 remote worker 环境；这些路径仍需 Hitch 自身修复。
+
+该开关不会直接修复已经含 `.pyc` 的 CAS runtime，按原 runtime ID 的 rerun 仍会拒绝。不要由 Gear 清理或手工改写 CAS；使用 Hitch 支持的隔离和重建流程并保留原证据，或部署包含根修复的 Hitch 后构建新 runtime。只有 Hitch runtime 内容变化才会产生新的 runtime ID，Gear 的这项防护不会改变 Hitch CAS 身份。
+
 ## 4. Baseline、candidate与held-out
 
 Gear分别调用Hitch，不要求Hitch提供“对比两个candidate”的新命令：
@@ -126,7 +132,7 @@ held-out candidate: eval(H1, held-out)
 
 四次调用使用相同的dataset materialization规则、model、attempts、timeout、setup timeout、concurrency和固定agent args；有意差异只有commit和seed/held-out partition。held-out eval只在proposal产生后由RefineService发起，其refs和aggregate不进入meta projection。
 
-追加轮次和同批次的后续轮次复用同一个 exact commit 已完成的 seed / held-out 结果，包括其晋升前作为 candidate 的评测。复用保留原始 eval ID、trial/run ID 和评分，不改写来源记录；优先查找当前 champion 的晋升轮次，然后按稳定历史顺序查找。零分但有效的 trial 属于完整结果。
+追加轮次和同批次的后续轮次复用同一个 exact commit 已 settled 且至少含一个有效 trial 的 seed / held-out 结果，包括其晋升前作为 candidate 的 complete 或 partial 评测。复用保留原始 completeness、eval ID、trial/run ID 和评分，不改写来源记录；优先查找当前 champion 的晋升轮次，然后按稳定历史顺序查找。后续比较仍只使用双方有效 trial 的交集；零分但有效的 trial 可复用。
 
 自动续轮和手动追加创建的新 round 都以当前 champion 为唯一代码父版本，并在 `championParent` 中保存其身份和研究上下文来源。seed-selected survivors 仍写入 research population，保留评分、谱系和研究记录，但未晋升候选不再成为下一轮工作区的父版本，也不会因为自己的 partial 评测要求另跑 parent baseline。冠军即使已经不在 research population 中，也从其晋升历史恢复父版本元数据。
 
@@ -136,7 +142,7 @@ held-out candidate: eval(H1, held-out)
 
 - `BASELINE_IDENTITY_UNRESOLVED`：无法在执行前确认身份，例如当前 daemon 接口不能预先解析冻结后的执行策略；不会通过 submit 来探测身份。
 - `BASELINE_CONDITION_MISMATCH`：数据集、评分合同或有效配置不兼容；需要恢复兼容条件，或明确创建新 evolution。
-- `BASELINE_EVIDENCE_UNAVAILABLE`：已有 partial / failed 评测，或缺少完整、已结算的来源证据；保留原有有效 trial，不能通过追加轮次触发全量重跑。
+- `BASELINE_EVIDENCE_UNAVAILABLE`：已有未 settled（包括 failed attempt）或零有效 trial 的评测，或缺少可验证的来源证据；保留原有证据，不能通过追加轮次触发全量重跑。已 settled 且仍含有效 trial 的 partial 证据可以原样复用。
 
 Direct 模式下，标准 benchmark 不再一律禁用复用；Gear 验证冻结的数据集完整目录（包含 adapter / scoring manifest）未变，再核对已有证据的有效配置。相对数据集路径按 evolution 的 workspace root 解析，与 Hitch 执行路径一致。旧实验若曾按错误工作目录封存了 opaque digest，会明确拒绝继续，不改写旧 spec 或 evidence。
 

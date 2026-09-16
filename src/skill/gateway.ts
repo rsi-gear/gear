@@ -1,8 +1,10 @@
 import type { RefineCapabilities } from '../capabilities.js'
 import type { RefineService } from '../refine/service.js'
-import type { SkillHarnessIdentity, SkillMetaCoordinator } from '../meta/skill.js'
+import { skillHarnessIdentity } from '../meta/identity.js'
+import type { SkillMetaCoordinator } from '../meta/skill.js'
 import type { EvaluationRerunSelector, SemanticTarget } from '../types.js'
 import type { SkillCandidateFiles } from './files.js'
+import { parseBaselineSourceRequest } from '../refine/baseline-source.js'
 
 function record(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError('params must be an object')
@@ -70,6 +72,9 @@ export class RefineSkillGateway {
       const taskBudgetMs = optionalInteger(params, 'taskBudgetMs')
       const selectedFocus = focus(params)
       const name = optionalString(params, 'name')
+      const baselineSource = params.baselineSource === undefined
+        ? undefined
+        : parseBaselineSourceRequest(params.baselineSource)
       if (from !== undefined && from !== 'initial' && from !== 'published' && !/^[0-9a-f]{40}$/u.test(from)) {
         throw new TypeError('from must be initial, published, or an exact Git commit')
       }
@@ -80,15 +85,27 @@ export class RefineSkillGateway {
         ...(selectedFocus === undefined ? {} : { focus: selectedFocus }),
         ...(from === undefined ? {} : { from }),
         ...(name === undefined ? {} : { name }),
+        ...(baselineSource === undefined ? {} : { baselineSource }),
       })
     }
     if (method === 'control.continue') {
+      const roundId = optionalString(params, 'roundId')
       const rounds = optionalInteger(params, 'rounds')
       const selectedFocus = focus(params)
+      if (roundId !== undefined && (rounds !== undefined || selectedFocus !== undefined)) {
+        throw new TypeError('roundId cannot be combined with rounds or focus')
+      }
       return this.service.continueEvolution('skill', string(params, 'evolutionId'), {
+        ...(roundId === undefined ? {} : { roundId }),
         ...(rounds === undefined ? {} : { rounds }),
         ...(selectedFocus === undefined ? {} : { focus: selectedFocus }),
       })
+    }
+    if (method === 'control.identity') {
+      const evolutionId = optionalString(params, 'evolutionId')
+      return skillHarnessIdentity(evolutionId === undefined
+        ? this.service.options.metaAgent
+        : (await this.service.registry.requireSpec(evolutionId)).metaAgent)
     }
     if (method === 'control.status') {
       const evolutionId = optionalString(params, 'evolutionId')
@@ -116,14 +133,24 @@ export class RefineSkillGateway {
     if (method === 'control.rollback') return this.service.rollback(string(params, 'evolutionId'), string(params, 'ref'))
     if (method === 'meta.claim') {
       return this.coordinator.claim(
-        string(params, 'clientId'), record(params.identity) as unknown as SkillHarnessIdentity,
+        string(params, 'clientId'), params.identity,
         optionalString(params, 'evolutionId'),
+        optionalString(params, 'roundId'),
       ) ?? { pending: false }
     }
 
     const assignment = this.coordinator.authorize(
       string(params, 'leaseId'), string(params, 'leaseToken'), string(params, 'clientId'),
     )
+    if (method === 'meta.fail') {
+      return this.service.failMetaExecution(
+        assignment.evolutionId,
+        assignment.roundId,
+        assignment.candidateId,
+        assignment.sessionId,
+        string(params, 'reason'),
+      )
+    }
     if (method === 'candidate.read') return this.files.read(assignment.sessionId, string(params, 'path'))
     if (method === 'candidate.tree') return this.files.tree(assignment.sessionId, optionalString(params, 'path'))
     if (method === 'candidate.write') {

@@ -76,11 +76,22 @@ DSH plugin 中若未填写任何 identity 字段，Gear 会从当前 DSH runtime
 gear-refine skill-identity --path /absolute/path/to/skills/refine
 ```
 
-输出包含 `id`、`digest` 和每个资源的 `logicalPath`/`kind`/`digest`。
-资源按相对路径排序；总指纹是该 JSON 资源数组的 SHA-256，不含绝对安装路径。
-在配置和 `meta.claim` identity 中使用同一个带 `sha256:` 前缀的 `digest` 值。Gear
+输出是 bundle 资源清单：包含 `id`、`digest` 和每个资源的
+`logicalPath`/`kind`/`digest`。它用于填写 standalone 配置中的 harness id/digest，
+不是可以直接传给 `meta.claim` 的完整 identity；尤其不要把 `resources` 放进
+`identity.preset`。资源按相对路径排序；总指纹是该 JSON 资源数组的 SHA-256，
+不含绝对安装路径。在配置和 `meta.claim` identity 中使用同一个带
+`sha256:` 前缀的 `digest` 值。Gear
 会把这些字段写入 immutable `EvolutionSpec`；claim、continue 和恢复时不匹配
 都会 fail closed。
+
+Standalone core 启动后，使用只读 `control.identity` 生成 canonical identity。
+它把完整 `MetaAgentSpec` 投影为 runtime、preset id/digest、model 和显式
+`sampling` 对象；spec-only 的 `preset.resources` 与 `contextOffloading` 不进入
+结果。外部 identity 文件按这个窄 schema 严格解析，任何层级的未知字段都会被
+拒绝，不会静默删除。自定义 Node runner 可从 `dsh-plugin-refine/skill` 导入
+`parseSkillHarnessIdentity` 和 `assertSkillHarnessIdentityMatches`，避免复制一份
+不完整的校验器。
 
 旧版仅封存 `SKILL.md` 的 evolution 不会自动迁移到新指纹；升级后应创建新 evolution，
 不要修改旧实验 identity。Native bridge 会拒绝启动后发生的 bundle 内容变化。
@@ -172,12 +183,128 @@ server 在 stdout 输出一行 ready JSON。将其中的 `socketPath` 设置为 
 harness 的 `GEAR_REFINE_SOCKET`。server 收到 `SIGINT` 或 `SIGTERM` 后先关闭
 skill socket，再等待 RefineService 与 active evaluation 清理完成。
 
-## 5. Skill 工作流
+## 5. Codex Node runner 的最小操作顺序
+
+外部 Codex 使用版本化 Node stdio MCP transport
+`skills/refine/scripts/transport.mjs`，生产入口是
+`examples/codex-skill-meta-runner.mjs`。runner 只连接已运行的 Gear Core；
+它不启动或停止 core。先在一个独立终端启动上一节的 `gear-refine serve`，
+并在整个 round 期间保持该进程运行。
+
+Codex 凭据使用一个独立、持久且 owner-only 的 home。该目录跨 assignment
+复用，由 Codex 自己创建和更新其中的认证文件；runner 不从其他 home 复制
+`auth.json`，也不为每个 attempt 制作凭据副本。为 runner 设置下面这一套环境。
+所有路径都必须是绝对路径；identity 文件包含与 Gear 配置完全一致的 runtime、
+随包 skill digest、model 和 sampling。即使没有 sampling override，也必须保留
+`"sampling": {}`：
+
+```bash
+export GEAR_REFINE_SOCKET=/absolute/control-workspace/.gear-refine/refine.sock
+export GEAR_REFINE_IDENTITY_FILE=/absolute/private/meta-identity.json
+export GEAR_META_CODEX_HOME=/absolute/private/gear-meta-codex-home
+export GEAR_META_RUN_ROOT=/absolute/private/gear-meta-runs
+export GEAR_META_WORKSPACE=/absolute/meta-workspace
+# Optional; defaults to codex from PATH.
+export GEAR_CODEX_EXECUTABLE=/absolute/path/to/codex
+
+install -d -m 0700 "$GEAR_META_CODEX_HOME" "$GEAR_META_RUN_ROOT" \
+  "$(dirname "$GEAR_REFINE_IDENTITY_FILE")"
+umask 077
+gear-refine request control.identity '{}' > "$GEAR_REFINE_IDENTITY_FILE"
+# 首次部署时由 Codex 在持久 home 内创建认证；
+# 后续不要为每个 attempt 重复登录。
+CODEX_HOME="$GEAR_META_CODEX_HOME" "$GEAR_CODEX_EXECUTABLE" login
+node examples/codex-skill-meta-runner.mjs --preflight
+```
+
+无 `evolutionId` 的 `control.identity` 与 `--preflight` 都针对 core 当前配置，
+所以这一步必须在 `control.start` 前成功。runner 验证 Codex 版本和该持久 home
+的登录状态，启动一次 transport 探针，并通过 MCP 调用 `control.identity` 后逐字段
+比较本地文件。随后它启动一个短暂的 Codex 会话，在 Gear MCP 中仅暴露
+`read_refine_resource`，并要求 JSONL 事件证明模型已通过 Gear MCP 成功读取
+`SKILL.md`；模型输出 ready 文本或仅以零状态退出都不算成功。两项探针都不会创建
+evolution、调用 evaluator 或领取 lease，也不会调用 `meta.claim`。
+
+每次 preflight 都会增加一次短 Codex 会话和模型探针，一次会话可能包含多轮模型
+请求。正式的 round 命令会自行再次运行 preflight；即使之前单独运行过
+`--preflight`，也不会复用或缓存结果，因此调度时需要计入这段延迟和模型用量。
+Codex 仍使用 `approval_policy=never`；runner 只对受控 Gear MCP 的
+`read_refine_resource` 与 `refine_request` 设置逐工具授权，且 preflight 的 Gear MCP
+工具列表只包含前者。不要用一次失败的 preflight 结果继续实验。
+
+随后创建 evolution：
+
+```bash
+ADMISSION="$(gear-refine request control.start '{"rounds":1}')"
+
+EVOLUTION_ID="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).evolutionId)' "$ADMISSION")"
+ROUND_ID="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).roundId)' "$ADMISSION")"
+
+node examples/codex-skill-meta-runner.mjs --evolution-id "$EVOLUTION_ID" --round-id "$ROUND_ID"
+```
+
+继续已有 evolution 时，先从 sealed spec 重新生成 identity，并把同一个 id 传给
+preflight；这样当前 core 配置已变化时，仍会针对即将继续的不可变配置检查。只有
+这一步成功后才调用 `control.continue`：
+
+```bash
+gear-refine request control.identity \
+  "{\"evolutionId\":\"$EXISTING_EVOLUTION_ID\"}" > "$GEAR_REFINE_IDENTITY_FILE"
+node examples/codex-skill-meta-runner.mjs --preflight \
+  --evolution-id "$EXISTING_EVOLUTION_ID"
+ADMISSION="$(gear-refine request control.continue \
+  "{\"evolutionId\":\"$EXISTING_EVOLUTION_ID\",\"rounds\":1}")"
+EVOLUTION_ID="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).evolutionId)' "$ADMISSION")"
+ROUND_ID="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).roundId)' "$ADMISSION")"
+node examples/codex-skill-meta-runner.mjs --evolution-id "$EVOLUTION_ID" --round-id "$ROUND_ID"
+```
+
+若要让已完成 seed selection 的可恢复失败 round 从 held-out evaluation 继续，传入它的精确 `roundId`：
+
+```bash
+ADMISSION="$(gear-refine request control.continue \
+  "{\"evolutionId\":\"$EXISTING_EVOLUTION_ID\",\"roundId\":\"$EXISTING_ROUND_ID\"}")"
+```
+
+这种形式继续原 round，并保留它的 batch/round identity 和 durable state；`roundId`
+不能与新 batch 使用的 `rounds` 或 `focus` 同时提交。恢复中的 round 不创建 Meta
+assignment，也不需要 Meta runner；先轮询该 round 的 `control.status`。它正常结算后，
+Gear 沿用原 `batchId`、`roundCount` 和 focus 创建尚未完成的普通 rounds；外部
+Skill-first runner 应按正常的 claim/candidate 流程继续处理这些新 assignment，直到
+batch terminal。已有 Gear 持有的 failed evaluation 使用 `control.rerun`；只有 selected
+candidate 的 held-out evaluation 没有 execution trace 时才会启动缺失的 run。
+
+一次 runner 调用至多处理一个 assignment；当前跟踪的实验配置也固定
+`candidateGeneration.maxCandidates: 1`。assignment 持久化结算后 runner
+退出，stdout 返回当前 round status；`failed` 返回非零状态，合法的 accepted
+decline/rejected 保持成功退出。若 round 仍非终态，外层调度器先读取同一
+`evolutionId`/`roundId` 的 `control.status`，再调用同一条 runner 命令处理
+下一个 sibling 或恢复后的 assignment。不要通过启动另一个 core 来推进它。
+
+```bash
+gear-refine request control.status "{\"evolutionId\":\"$EVOLUTION_ID\",\"roundId\":\"$ROUND_ID\"}"
+node examples/codex-skill-meta-runner.mjs --evolution-id "$EVOLUTION_ID" --round-id "$ROUND_ID"
+```
+
+Codex 进程异常、正常退出但没有获得 `accepted:true`，以及
+`accepted:false,recoverable:false` 都属于未完成 assignment。runner 从私有
+session 读取 lease，并调用 supervisor-only `meta.fail(reason)`；该调用在
+generation attempt 和 round 已持久化为 `failed` 后才成功。若 status 表明该
+attempt 已由 accepted finalization 或其他路径结算，runner 把迟到的 fail 当作
+已处理，不会覆盖结果。
+
+每个 assignment 的 run 目录为 `0700`，`session.json`、Codex event/stderr
+文件和 transport audit 为 `0600`。`leaseToken` 只存在于私有 session 和发往
+core 的鉴权 envelope；模型响应、transport audit、runner 日志和报告均不得记录
+token。audit 仅记录 assignment 关联、method/capability 以及
+`accepted`/`recoverable`/`code`。
+
+## 6. Skill 工作流
 
 Meta harness 读取 `skills/refine/SKILL.md`，通过 DSH 的 `refine_request` 或
 standalone 的 `gear-refine request`：
 
-1. `control.start` 或显式 `control.continue`；
+1. `control.start` 或不带 `roundId`、创建新 batch 的 `control.continue`；
 2. 轮询 `control.status` 与 `meta.claim`；
 3. 使用 exact identity 领取短期 candidate lease；
 4. 通过 `candidate.tree/read/write/edit/remove` 操作受限 workspace；
@@ -185,6 +312,10 @@ standalone 的 `gear-refine request`：
 6. 检查 authoritative diff 和固定 compiler；
 7. `candidate.finalize` 或 `candidate.decline`；
 8. 继续领取 sibling/next-round，直到 batch terminal。
+
+带 `roundId` 的 `control.continue` 是 operator recovery 入口：先轮询恢复 round 的
+`control.status`，该 round 不执行上述 Meta claim/candidate 步骤。若 Gear 随后创建原
+batch 的下一个普通 round，则继续执行步骤 2–8，直到 batch terminal。
 
 完整方法、逐字段参数和调用顺序见
 [`skills/refine/references/protocol.md`](../skills/refine/references/protocol.md)。
@@ -198,7 +329,7 @@ Gear 的 DSH carrier，还必须读取
 `skills/`、`workflows/` 的真实加载关系、Cordis plugin 结构、skill provider
 接线，以及 `tools/pre-execute` / `tools/post-execute` 等 native hook 的完整示例。
 
-## 6. 安全边界
+## 7. 安全边界
 
 - local socket 所在目录为 `0700`，socket 为 `0600`；已有非-socket 路径不会
   被覆盖。
@@ -223,7 +354,7 @@ Gear 不向它授予 candidate
 worktree、state root 或 credential 的 host path；部署仍应让 Codex、Claude Code
 或其他宿主运行在与其职责匹配的 filesystem/network sandbox 中。
 
-## 7. DSH Skill-first 与兼容模式
+## 8. DSH Skill-first 与兼容模式
 
 `metaAdapter.kind: "skill"` 是默认值。在 DSH plugin 中，Gear 发布包内
 `refine` skill；由于不再注册同名 host command，用户输入 `/refine` 会走 DSH
@@ -238,7 +369,7 @@ worktree、state root 或 credential 的 host path；部署仍应让 Codex、Cla
 注册旧 `/refine` command。该兼容模式要求 `metaPreset`，保留 DSH session event
 attribution 和 preset isolation，但不再是默认启动方式。
 
-## 8. 验证范围
+## 9. 验证范围
 
 仓库测试覆盖：
 

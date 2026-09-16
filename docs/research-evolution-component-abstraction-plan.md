@@ -1183,7 +1183,7 @@ Gear 的可复现目标是：实验计划可重放、配置和实现可验证、
 - rollout、task sampler、judges、selection 和 promotion 配置固化进不可变 spec；
 - `EvaluationCondition`、`ResolvedRoundPlan`、provider-neutral `EvaluationEvidence` 和逐 trial `PairedTrial` 已持久化，并在 baseline/candidate provider、condition 和有效配置不一致时 fail closed；
 - CandidateGenerator、TaskSampler、RolloutProvider、Judge、CandidateAssessor、CandidateSelector 和 PromotionPolicy 已进入公开 `ComponentRegistry`，registry 作为 `ctx.evolutionComponents` Cordis service 暴露，注册返回卸载函数；
-- 组件引用校验 `type/apiVersion/package/version/integrity/configDigest`。内置组件 integrity 来自实际发布模块和 package manifest bytes，而不是仅对版本字符串做摘要；
+- 组件引用校验 `type/apiVersion/package/version/integrity/configDigest`。新内置组件使用独立的 identity schema/version，并按各组件实际算法模块、执行 helper、相关 runtime asset 和 Node engine 约束计算 integrity；Gear 的发布版本、scripts、exports、files 等包元数据不参与。旧 V1 identity 只有在运维显式提供原包目录、按旧公式重算 sealed identity，并确认受支持布局中的执行闭包与当前实现一致时才能恢复；旧模块只读解析，不会被加载执行；
 - sealed candidate 标准记录并恢复校验 `commitOid/treeOid/manifestDigest/patchDigest/immutableRef`；
 - DSH Meta checkpoint 使用 `sourceSessionId/eventCount/prefixDigest`，在 `whenIdle + runMaintenance + sessions.flush` 后固化；缺少 durability listener 时拒绝 fork；child 通过 `agents.create(seed)` 创建并记录 `parentSession/seedLength/cwd/agentPreset`；
 - Meta capability、evidence audit、finalization 和 workspace binding 已按 `sessionId -> candidate` 隔离；非 champion survivor 的 child 读取自己的 research parent，而不是全局 champion；

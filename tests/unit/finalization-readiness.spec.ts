@@ -168,7 +168,7 @@ describe('finalization readiness', () => {
       recoverable: false,
       code: 'TRAJECTORY_EVIDENCE_UNAVAILABLE',
       operatorAction: {
-        upgrade: 'Hitch bounded trajectory analysis capability',
+        repair: 'Repair or re-import the persisted trajectory or verifier evidence for the affected runs.',
         runIds: [runId],
         reason: 'trajectory_integrity_mismatch',
       },

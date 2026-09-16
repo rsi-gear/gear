@@ -51,6 +51,7 @@
     "assets/ipython-kernel.py",
     "assets/llm-verifier-bridge.py",
     "assets/hitch-codex-wrapper.mjs",
+    "assets/hitch-codex-credential-helper.mjs",
     "assets/dsh-runtime-check.mjs",
     "skills/refine/**",
     "cordis.patch.yml",

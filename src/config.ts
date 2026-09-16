@@ -59,6 +59,7 @@ export interface Config {
   sandboxProfileRef: string
   seedTaskRef: string
   heldOutRef: string
+  evaluationMode?: 'reuse-seed'
   taskBudgetMs: number
   pythonExecutable?: string
   metaSandbox: {
@@ -71,6 +72,8 @@ export interface Config {
   evolutionState: {
     publishedPointer: boolean
     maxLiveMetaSessions: number
+    /** Read-only package roots used to prove opaque component identities created by identity schema V1. */
+    legacyComponentRoots: string[]
   }
   candidateWorkspace: {
     rootName: string
@@ -165,6 +168,7 @@ export const ConfigSchema: Schema<Config> = Schema.object({
   sandboxProfileRef: Schema.string().required(),
   seedTaskRef: Schema.string().required(),
   heldOutRef: Schema.string().required(),
+  evaluationMode: Schema.union(['reuse-seed'] as const),
   taskBudgetMs: Schema.number().default(3_600_000),
   pythonExecutable: Schema.string().default('python3'),
   metaSandbox: Schema.object({
@@ -183,7 +187,8 @@ export const ConfigSchema: Schema<Config> = Schema.object({
   evolutionState: Schema.object({
     publishedPointer: Schema.boolean().default(true),
     maxLiveMetaSessions: Schema.number().default(8),
-  }).default({ publishedPointer: true, maxLiveMetaSessions: 8 }),
+    legacyComponentRoots: Schema.array(Schema.string()).default([]),
+  }).default({ publishedPointer: true, maxLiveMetaSessions: 8, legacyComponentRoots: [] }),
   candidateWorkspace: Schema.object({
     rootName: Schema.string().default('candidate-worktrees'),
     maxFiles: Schema.number().default(64),

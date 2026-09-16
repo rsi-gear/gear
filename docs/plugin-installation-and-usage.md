@@ -338,6 +338,8 @@ order: 50
     evolutionState:
       publishedPointer: true
       maxLiveMetaSessions: 8
+      # 只有恢复旧 identity-schema-v1 evolution 时才配置；必须是旧安装包的绝对路径。
+      legacyComponentRoots: []
 ```
 
 新部署不要在 Gear 中设置 `metaModel.maxTokens`。省略该字段可避免 Gear
@@ -394,8 +396,23 @@ Skill 模式由宿主设置实际请求参数；Gear 校验 identity，DSH skill
 | `hitch.allowUnavailableVerifierDiagnosis` | 默认 `false`；仅为缺少 `hitch verifier inspect` 的旧 Hitch 显式开启 trajectory-only 诊断兼容。诊断卡对应的内部 receipt 仍标记 verifier unavailable；升级后应关闭并重新读取诊断卡 |
 | `promotion` | seed/held-out gate 和 required-task 回归策略 |
 | `publishedPointer` | 是否维护 workspace 级显式 published pointer |
+| `evolutionState.legacyComponentRoots` | 可选的只读旧 Gear 包根目录列表，用于验证并恢复 V1 component identity；新 evolution 不依赖这些目录 |
 
 `initialChampion` 对全新部署实际上是必需的：没有它就无法创建第一个 evolution。以后每个普通 `/refine` 仍默认从这个固定初始版本开始；它不会偷偷继承另一个 evolution 的 champion。
+
+新建 evolution 的内置 component identity 与 Gear 的 npm 发布元数据分离：只绑定该组件的
+算法、执行 helper、相关 runtime assets 和 Node engine 约束。修改 package description、
+scripts、exports、files 或无关组件不会再改变它；算法或实际执行依赖变化仍会改变 identity，
+已有 evolution 会要求创建新实验。
+
+旧 identity-schema-v1 evolution 把整个 `package.json` 混入 identity。继续这类实验时，将创建
+该 sealed identity 的旧 Gear 安装包保留为只读目录，并把绝对包根目录加入
+`evolutionState.legacyComponentRoots`。目录必须包含原始 `package.json`、`lib/` 和相关
+`assets/`。Gear 会现场按 V1 公式重算完整 identity，再严格解析受支持的旧模块布局并比较实际
+执行闭包；它不会 import 或运行旧模块。缺文件、未知布局、initializer/import/helper/算法变化
+都会在 Meta 或 Target 执行前拒绝。这里没有 release SHA 白名单，也不会覆盖 sealed spec 中的
+原 component ref。Meta runtime、Meta preset/Skill、dataset 和 evaluator 的既有 continue 校验
+仍然独立生效。
 
 ### 6.2 在一次性 target 容器间复用 Codex 登录
 
@@ -424,6 +441,7 @@ state：
 ```sh
 export GEAR_HITCH_EXECUTABLE=/absolute/path/to/hitch
 export GEAR_TARGET_CODEX_AUTH_FILE=/absolute/path/to/.openai-codex-auth.json
+export GEAR_TARGET_CODEX_EXPECTED_ACCOUNT_ID=trusted-provisioned-account-id
 ```
 
 `GEAR_HITCH_EXECUTABLE` 未设置时默认调用 PATH 中的 `hitch`。
@@ -439,30 +457,36 @@ Hitch 子进程环境，满足 `passEnv` 校验。自定义名称时仍要在启
 `DSH_OPENAI_CODEX_ACCESS_TEAM_A_B64`；默认名仍为
 `DSH_OPENAI_CODEX_ACCESS_B64`。
 
-这个接入只支持 `hitch.controlPlane.mode: direct`。包装器在 direct
-`eval run` 或 `eval rerun` 启动前，通过 pi-ai 的公开认证生命周期取得覆盖
-setup budget、task budget和五分钟余量的 access token；需要刷新
-时，只更新带跨进程锁的宿主 OAuth 文件。随后传给 Hitch 的自定义 envelope 只含
-短期 access、到期时间和 account id，不含 rotating refresh token。target 为满足
-dsh-codex 文件格式写入不可用的 refresh 占位值，因此容器不能刷新或破坏宿主登录。
-包装器在宿主锁内读取 access、到期时间和 account id 的一致快照；若并发刷新
-恰好发生在导出期间，会重新获取一次。`--timeout` 和 `--setup-timeout` 必须为
-正数，因为 Hitch 中 setup timeout 为 `0` 表示不限制时长，无法安全导出一个
-不可刷新的短期 access token。
+这个接入只支持 `hitch.controlPlane.mode: direct`。包装器先检查宿主登录，并要求
+Hitch 的 `eval doctor --json` 明确返回
+`host-task-credential-helper-v1`；跟踪示例所钉的 `agent-hitch@0.2.7` 不具备该能力，
+在相应 Hitch 修改发布前必须安装经过审阅、包含该 capability 的构建，不能只按
+版本号假定支持。
 
-Codex access-only 路径只允许一次 logical attempt，并将未显式指定的 Hitch
-`infrastructure-retries` 安全地改为 `0`；显式配置多 attempt 或重试会被拒绝。
-这里没有把宿主进程枚举或 PID 强杀当作 credential 安全边界：它们无法撤销一个
-已经发出的 bearer，也无法跨平台无竞态地识别 Hitch 创建的 detached 后代。
-真正的边界是短期 access token 自带的服务端 expiry，以及 target 中不存在可用的
-refresh token。若 harness 解析或镜像准备耗时超过启动时估算，dsh-codex 会在
-五分钟刷新窗口内用不可用的占位值刷新并失败；它不能旋转或改写宿主凭据。
+包装器通过仅供可信宿主读取的配置注册随包 helper，不把 helper 参数或 credential
+value 写入 eval request、plan 或 candidate。每个真实 Target 完成排队和环境准备、
+即将启动时，Hitch 用该 task 的剩余预算加刷新余量请求 credential。helper 通过
+pi-ai 的公开认证生命周期和带跨进程锁的宿主 store 取得或刷新 access；若刷新后
+仍不足以覆盖请求预算，就以认证基础设施错误结束该 task。返回的 envelope 只有
+access、expiry 和 account id，不含 rotating refresh token；target 只能在自己的
+一次性 DSH home 中使用它。
 
-`eval submit`、`eval run --daemon` 和 daemon rerun 会明确拒绝；`--version`、
-capabilities、watch、inspect 等命令保持透明转发。一次 direct evaluation 中的
-容器共享同一个 access 快照，因此大批量、多波次评测应拆成能在 access 有效期内
-完成的小批次，否则模型调用会因不可刷新而失败；daemon 若要支持 Codex，应另行
-实现由 daemon 持有的 credential broker。
+`hitch.passEnv` 必须声明 `DSH_OPENAI_CODEX_ACCESS_B64`（或配置的专用名称），
+因为这是 Hitch 的 credential 名称白名单。宿主进程不得同时给这个名称设置非空
+值；包装器会拒绝把现成 bearer 作为整批 eval 环境传递。Hitch 只持久化名称和空
+占位，在每个 Target 启动前用 fresh helper 结果覆盖。这样一个 eval 可以使用
+`attempts > 1`，后启动的 task/attempt 会重新检查 credential；Gear 的
+`repetitions` 继续映射到同一个 Hitch eval 的原生 logical attempts。
+
+基础设施重试仍必须为 `0`；包装器会为未显式指定的 direct `eval run` 添加该值，
+并拒绝显式非零值。`eval submit`、`eval run --daemon` 和 daemon rerun 会明确
+拒绝；已经运行的 daemon/remote worker 不会获得这个 wrapper 进程的 helper。
+其他 Hitch 命令保持透明转发。
+
+包装器每次启动只把 preflight 读到的 account id 固定在该进程内。长期实验应由
+可信宿主配置显式设置 `GEAR_TARGET_CODEX_EXPECTED_ACCOUNT_ID`；这样独立启动的
+初跑和 rerun 都会在导出 access 前核对账号。若未设置，新 wrapper 进程会采用其
+启动时已经登录的账号，不会自动与旧 eval 建立跨进程账号映射。
 
 容器销毁不会丢失宿主登录，也不需要为每个 task 重新做设备验证。
 显式设置 `GEAR_TARGET_PROVIDER=deepseek-official` 时，包装器直接透传并使用配置的
@@ -596,7 +620,7 @@ compaction
 
 `--focus` 可以重复，也可以使用逗号分隔。它只是给 Meta Agent 的 advisory focus，不会限制 candidate 只能修改一个文件或一个行为面。兼容选项 `--target` 仍可使用，但新文档建议统一使用 `--focus`。
 
-普通 `/refine` 每次都会创建新的 evolution。即使参数和 dataset 完全相同，也不会复用另一次请求的 Meta history、champion 或 worktree。
+普通 `/refine` 每次都会创建新的 evolution。即使参数和 dataset 完全相同，也不会复用另一次请求的 Meta history、champion 或 worktree；`--round` 只用于 `continue`，普通 `/refine` 会拒绝它。
 
 兼容模式的 host command 会立即返回类似结果：
 
@@ -656,17 +680,34 @@ Hitch 0.2.4 创建的 `attempts=1` eval 仍可由 Hitch 的 legacy 路径处理�
 
 ```text
 /refine continue <evolution-id> --rounds 2 --focus post_action,action_verifier
+/refine continue <evolution-id> --round <round-id>
 ```
 
-`continue` 会复用该 evolution 的 Meta session/history 和当前 champion。它只能修改 `--rounds` 和 advisory `--focus`；dataset、模型、预算、sandbox 和 promotion policy 已被 evolution spec 固定。
+不带 `--round` 的 `continue` 会复用该 evolution 的 Meta session/history 和当前 champion，并创建新 batch/round；它只能修改 `--rounds` 和 advisory `--focus`。`--round` 则让已完成 seed selection 的可恢复失败 round 从 held-out evaluation 继续，不创建新 batch，并保留其 durable state 和 identity；该 round 正常结算后会沿用原 batch 计划继续剩余 rounds。`--round` 不能与 `--rounds` 或 `--focus` 同时使用。dataset、模型、预算、sandbox 和 promotion policy 已被 evolution spec 固定。
+
+恢复中的指定 round 不创建 Meta assignment，也不需要 Meta runner；调用后先轮询该 `evolutionId`/`roundId` 的 `control.status`。如果它正常结算且 `roundIndex < roundCount`，Gear 会使用原 `batchId` 和 focus 创建下一个普通 round；外部 Skill-first runner 需要按正常 claim/runner 流程处理后续 assignment，直到原 `roundCount`。如果 selected candidate 已有 Gear 持有的 failed evaluation，使用 `control.rerun`；只有 selected candidate 的 held-out evaluation 没有任何既有 execution trace 时，恢复才会启动缺失的 held-out run。
 
 如果本地 seed 或 held-out dataset 内容发生变化，Gear 会拒绝 continue，并要求创建新的 evolution。
 
 历史 baseline 的复用以评测语义配置为准，不以 Hitch executable 的文件 digest 为准。Hitch
 二进制、版本或安装位置发生变化时，只要 dataset、target commit、model、sampling、seed、repetition、
-agent config 和 sandbox 等语义条件仍一致，Gear 可以复用已完整 settled 的 baseline。Hitch runtime
+agent config 和 sandbox 等语义条件仍一致，Gear 可以复用已 settled 且至少含一个有效 trial 的
+complete 或 partial baseline。复用会保留原始 completeness、有效与无效 trial 及 eval/run/attempt ID，
+后续比较仍只使用双方有效 trial 的交集；零有效 trial 的 partial baseline 会明确阻塞。Hitch runtime
 identity 仍写入 `invocationFingerprint`，并在复用 attempt 的 `reuseAudit` 中同时记录历史与当前指纹；
 该信息只用于追溯，不参与复用判定。Hitch 仍必须通过最低版本和 CLI 合同校验。
+
+旧 V1 component identity 的 evolution 还需要在 profile 中保留原包产物的只读绝对路径，例如：
+
+```yaml
+evolutionState:
+  legacyComponentRoots:
+    - /srv/dsh/legacy-packages/dsh-plugin-refine-0.1.0
+```
+
+Gear 只读取这些原始文件来重算旧 identity 和比较执行闭包，不加载旧代码。通过下一节的
+`baselineSource` 新建实验不要求保留旧安装目录，因为该流程只读校验来源状态和当前 Target
+evaluator，不恢复来源 Meta 或组件 runtime。
 
 ### 8.5 从其他版本分叉
 
@@ -677,7 +718,55 @@ identity 仍写入 `invocationFingerprint`，并在复用 attempt 的 `reuseAudi
 /refine --from <exact-git-commit> --rounds 1
 ```
 
-### 8.6 发布和回滚
+### 8.6 显式复用另一个 evolution 的 baseline
+
+创建新的 evolution 时，可以通过通用 control API 指定一个来源 round。下面的请求默认只复用
+seed baseline：
+
+```sh
+gear-refine request control.start '{
+  "baselineSource": {
+    "evolutionId": "<source-evolution-id>",
+    "roundId": "<source-round-id>"
+  },
+  "rounds": 1,
+  "name": "new-meta-with-existing-target-baseline"
+}'
+```
+
+省略 `from` 时，新 evolution 从来源 round 的 exact target commit 和 manifest 开始。
+显式提供 `from` 时，它必须与来源 target 完全一致。新 evolution 使用当前配置的 Meta
+模型、Skill 和候选生成算法；不会导入来源 Meta history 或经验 memory。
+
+只有明确请求时才复用 held-out baseline：
+
+```json
+{
+  "baselineSource": {
+    "evolutionId": "<source-evolution-id>",
+    "roundId": "<source-round-id>",
+    "partitions": ["seed", "held-out"]
+  }
+}
+```
+
+Gear 在创建新 evolution 前只读校验来源 registry/spec/round、exact target 和 manifest、
+所选 dataset ref/digest、repetitions、Target model/sampling/agent 参数、task budget、sandbox、
+Hitch provider/scoring identity，以及完整 settled 的逐 trial evidence。当前 Hitch 必须仍能从
+同一个规范化 storage root 读取所需 seed trajectory；不满足任一条件就明确拒绝，不创建
+evolution，也不启动新的 Target evaluation。来源可以归档，但其状态记录和 Hitch artifacts
+必须仍可读。
+
+来源 round 必须已经进入 terminal 状态，且不能遗留 pending evaluation、submission 或 repair。
+当前该入口只支持能够在不启动试验的情况下解析 `evaluationIdentity` 的 Hitch direct control
+plane；daemon 来源或目标会明确拒绝。
+
+导入后保留来源的 `evalId`、`conditionId`、逐 trial evidence 和 source evolution/round
+审计信息。held-out snapshot 在 seed gate 通过前不会进入 round evaluation 或 Meta 可见的
+assignment；未请求 held-out 时，后续 held-out baseline 按正常流程首次评测。该入口不缓存
+或自动搜索其他实验，也不会把完整旧经验带入新 Meta。
+
+### 8.7 发布和回滚
 
 自动 promotion 只更新当前 evolution 的 champion，不会自动改变 workspace 级默认版本。
 
@@ -838,3 +927,16 @@ DSH Web `0.1.0-rc.8` 的空白新会话存在展示边缘问题。先发送一�
 - [Gear ↔ Hitch CLI 集成设计](hitch-dsh-integration.md)
 - [Hitch Local Exact Commit → Harbor Transport](hitch-local-commit-harbor-requirements.md)
 - [Terminal-Bench 本地实验 runbook](evolve-lab-runbook.md)
+
+### Reuse training evaluation for promotion
+
+Set `evaluationMode: "reuse-seed"` and point `seedTaskRef` and `heldOutRef` to
+the same dataset. Gear validates both dataset identity and evaluation conditions,
+then uses each candidate's seed evaluation for promotion without submitting
+held-out jobs. Invalid samples remain invalid; promotion still uses the valid
+paired intersection. The mode is sealed in the evolution spec and exposed in
+the Meta assignment and experiment index. Round evidence records
+`heldOutReusedFromSeed: true`; the compatibility held-out fields reference the
+original seed evidence, not an independent measurement. These scores measure
+training-set performance and must not be described as held-out generalization.
+Omit `evaluationMode` to retain independent held-out evaluation.

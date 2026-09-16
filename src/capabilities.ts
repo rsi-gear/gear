@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import type { HarnessBuilder } from './harness/builder.js'
 import { CompilerCheckError, candidateCheckReport, uncheckedRuntime, type CandidateCheckReport } from './harness/check-report.js'
@@ -8,18 +8,37 @@ import { projectTrajectory } from './evaluator/trajectory-projection.js'
 import { digestJson } from './state/digest.js'
 import type { CandidateDiagnosisRecord } from './state/candidate-diagnosis.js'
 import { finalizationReadiness, receiptIsValid, recoveryRequired } from './refine/finalization-readiness.js'
+import type { RefineStateStore } from './state/store.js'
 import { previewVerifierFeedback, previewVerifierProcess } from './meta/verifier-preview.js'
+import { PUBLIC_SENSITIVE_KEY, sanitizePublicValue } from './meta/sanitize.js'
+import {
+  EXPERIENCE_V1_MAX_CARD_BYTES,
+  EXPERIENCE_V1_MAX_QUERY_BYTES,
+  EXPERIENCE_V1_MAX_QUERY_RESULTS,
+  EXPERIENCE_V1_MAX_READ_BYTES,
+  EXPERIENCE_V1_MAX_READ_ITEMS,
+  experienceDigestFromRef,
+  loadSeedExperienceSnapshot,
+  rankSeedExperience,
+  renderSeedExperienceCard,
+  type SeedExperienceQuery,
+} from './experience/memory.js'
 import type {
   CandidateFinalization,
   ContentExcerpt,
   DiagnosisReceipt,
   EvaluationEvidence,
   HitchTrajectoryReader,
+  HitchVerifierDiagnosticPageQuery,
   HitchVerifierEvidence,
+  MetaPrerequisiteBlocked,
+  MetaPrerequisiteFailure,
   MetaEvidenceText,
   MetaFailureCard,
   RefineBridgeRequestMap,
   RefinementRound,
+  SeedExperienceEffect,
+  SeedExperienceRecord,
   SemanticTarget,
   SessionRole,
   TrajectoryEvidenceBlocker,
@@ -92,6 +111,16 @@ interface TrajectoryDetailRef {
     canonicalSha256: string
     bytes: number
   }
+  verifierSources?: {
+    baseText?: string
+    artifacts: Array<{
+      label: string
+      name: HitchVerifierDiagnosticPageQuery['name']
+      mediaType: 'application/json' | 'text/plain'
+      bytes: number
+      sha256: string
+    }>
+  }
   pendingDiagnosis?: {
     evalId: string
     cardDigest: string
@@ -104,9 +133,23 @@ interface TrajectoryDetailRef {
   }
 }
 
+const MAX_VERIFIER_DIAGNOSTIC_BYTES = 16 * 1024 * 1024
+const VERIFIER_DIAGNOSTIC_PAGE_BYTES = 64 * 1024
+
 interface TrajectoryDetailRead {
   visible: Record<string, unknown>
   diagnosis?: { evalId: string; runId: string; receipt: DiagnosisReceipt; recovery?: Omit<CandidateDiagnosisRecord, 'receipt' | 'source'> }
+  blocker?: TrajectoryEvidenceBlocker
+}
+
+interface ExperienceQueryCursor {
+  sessionId: string
+  roundId: string
+  snapshotDigest: string
+  queryDigest: string
+  query: SeedExperienceQuery
+  offset: number
+  limit: number
 }
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {
@@ -130,14 +173,26 @@ function readableMessage(value: unknown, depth = 0): string {
   return JSON.stringify(value, null, 2)
 }
 
-const SENSITIVE_KEY = /(?:api[_-]?key|authorization|credential|password|secret|token)/iu
-
 function boundedUtf8(value: string, maxBytes: number): string {
   if (Buffer.byteLength(value) <= maxBytes) return value
   const suffix = '…'
   const budget = Math.max(0, maxBytes - Buffer.byteLength(suffix))
   const prefix = Buffer.from(value).subarray(0, budget).toString('utf8').replace(/\uFFFD+$/u, '')
   return `${prefix}${suffix}`
+}
+
+function splitUtf8Tail(value: string, maxBytes: number): { earlier: string; tail: string } {
+  let start = value.length
+  let bytes = 0
+  const values = Array.from(value)
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    const character = values[index]!
+    const nextBytes = Buffer.byteLength(character)
+    if (bytes + nextBytes > maxBytes) break
+    start -= character.length
+    bytes += nextBytes
+  }
+  return { earlier: value.slice(0, start), tail: value.slice(start) }
 }
 
 function characters(value: string): string[] {
@@ -167,6 +222,7 @@ export class RefineCapabilities {
   private readonly trajectoryProjections = new Map<string, SharedProjectionLoad>()
   private readonly trajectoryEvidenceBlockers = new Map<string, TrajectoryEvidenceBlocker>()
   private readonly trajectoryDetailRefs = new Map<string, TrajectoryDetailRef>()
+  private readonly experienceQueryCursors = new Map<string, ExperienceQueryCursor>()
   private trajectoryProjectionCacheBytes = 0
 
   constructor(
@@ -267,6 +323,23 @@ export class RefineCapabilities {
       if (this.options.seedTasksPath === undefined) return { tasks: [] }
       return publicJson(JSON.parse(await readFile(this.options.seedTasksPath, 'utf8')))
     }
+    if (method === 'experience.query' || method === 'experience.read') {
+      if (spec.experienceMemory?.enabled !== true) {
+        throw new Error('seed experience memory is not enabled for this immutable evolution')
+      }
+      const activeRound = await store.readRound(activeRoundId)
+      if (activeRound?.experienceSnapshot === undefined) {
+        throw new Error('the active round has no sealed seed experience snapshot')
+      }
+      const response = await (method === 'experience.query'
+        ? this.queryExperience(sessionId, store, activeRound, parentHarnessRef, args)
+        : this.readExperience(sessionId, store, activeRound, args, signal))
+      return this.experienceResponse(
+        response,
+        activeRound.heldOutRef,
+        method === 'experience.query' ? EXPERIENCE_V1_MAX_QUERY_BYTES : EXPERIENCE_V1_MAX_READ_BYTES,
+      )
+    }
     if (method === 'trajectory.query') {
       assertOnlyKeys(args, ['refs', 'detailRef', 'find'])
       const refs = this.optionalStrings(args, 'refs')
@@ -288,6 +361,9 @@ export class RefineCapabilities {
           roundHeldOutRef(rounds, activeRoundId),
           signal,
         )
+        if (read.blocker !== undefined && baseline !== undefined) {
+          await this.persistTrajectoryQueryBlockers(sessionId, activeRoundId, baseline)
+        }
         if (read.diagnosis !== undefined) {
           if (read.diagnosis.recovery !== undefined) await this.service.recordCandidateDiagnosis?.(sessionId, {
             ...read.diagnosis.recovery, receipt: read.diagnosis.receipt,
@@ -296,6 +372,7 @@ export class RefineCapabilities {
           meta.recordEvidenceAccess(activeRoundId, sessionId, {
             refs: [read.diagnosis.evalId, read.diagnosis.runId], diagnosisReceipts: [read.diagnosis.receipt],
           })
+          await this.service.clearMetaPrerequisiteBlocker?.(sessionId, read.diagnosis.runId)
           const pending = this.trajectoryDetailRefs.get(detailRef)?.pendingDiagnosis
           if (pending !== undefined) pending.recorded = true
         }
@@ -372,9 +449,14 @@ export class RefineCapabilities {
         let projection: TrajectoryProjection
         try {
           projection = await this.projectedTrajectory(item.trial.runId, signal)
-          this.trajectoryEvidenceBlockers.delete(this.trajectoryBlockerKey(sessionId, item.roundId, item.trial.runId))
+          const blockerKey = this.trajectoryBlockerKey(sessionId, item.roundId, item.trial.runId)
+          const existingBlocker = this.trajectoryEvidenceBlockers.get(blockerKey)
+          if (existingBlocker === undefined || !existingBlocker.code.includes('verifier_diagnostic')) {
+            this.trajectoryEvidenceBlockers.delete(blockerKey)
+          }
         } catch (error) {
           const blocker = this.recordTrajectoryBlocker(sessionId, item.roundId, item.trial.runId, error)
+          if (baseline !== undefined) await this.persistTrajectoryQueryBlockers(sessionId, activeRoundId, baseline)
           return publicJson(this.trajectoryEvidenceBlocked([blocker]))
         }
         if (projection.coverage.surface !== 'complete' || projection.fidelity === 'unavailable') {
@@ -386,6 +468,7 @@ export class RefineCapabilities {
               code: 'hitch_trajectory_analysis_incomplete',
             }),
           )
+          if (baseline !== undefined) await this.persistTrajectoryQueryBlockers(sessionId, activeRoundId, baseline)
           return publicJson(this.trajectoryEvidenceBlocked([blocker]))
         }
         const prompt = projection.messages.find(message => message.eventType === 'user/message' && message.role === 'user')
@@ -398,6 +481,7 @@ export class RefineCapabilities {
               code: 'hitch_trajectory_task_context_missing',
             }),
           )
+          if (baseline !== undefined) await this.persistTrajectoryQueryBlockers(sessionId, activeRoundId, baseline)
           return publicJson(this.trajectoryEvidenceBlocked([blocker]))
         }
         const verifier = await this.loadVerifierEvidence(item, signal)
@@ -454,6 +538,7 @@ export class RefineCapabilities {
       for (const { item, receipt } of receipts) meta.recordEvidenceAccess(item.roundId, sessionId, {
         refs: [item.evalId, item.trial.runId], diagnosisReceipts: [receipt],
       })
+      for (const { item } of receipts) await this.service.clearMetaPrerequisiteBlocker?.(sessionId, item.trial.runId)
       const readiness = baseline === undefined
         ? undefined
         : finalizationReadiness(
@@ -554,8 +639,14 @@ export class RefineCapabilities {
           readiness,
           method === 'candidate.decline' ? 'candidate.decline' : 'candidate.finalize',
         )
-        if (recovery !== undefined) return publicJson(recovery)
+        if (recovery !== undefined) {
+          if (!recovery.recoverable) {
+            await this.service.recordMetaPrerequisiteBlocker?.(sessionId, this.metaPrerequisiteFailure(recovery))
+          }
+          return publicJson(recovery)
+        }
       }
+      await this.service.clearMetaPrerequisiteBlocker?.(sessionId)
       const attribution = await meta.proposalAttribution(activeRoundId, sessionId, finalization)
       const diff = await this.service.submitFinalization(evolutionId, activeRoundId, finalization, decline, attribution, evidence)
       return publicJson({ accepted: true, evolutionId, roundId: activeRoundId, ...(diff === undefined ? {} : { diff }) })
@@ -573,7 +664,7 @@ export class RefineCapabilities {
   }
 
   private sanitizationPolicyDigest(): string {
-    return digestJson({ sensitiveKeyPattern: SENSITIVE_KEY.source,
+    return digestJson({ sensitiveKeyPattern: PUBLIC_SENSITIVE_KEY.source,
       secretDigests: this.secretValues.map(value => digestJson(value)).sort() })
   }
 
@@ -665,6 +756,564 @@ export class RefineCapabilities {
           message: 'Remaining diagnosis may consume the time reserved for editing and validation. Deadlines do not reset on reconnect. A larger budget requires a new evolution.',
         } : {}),
     } }
+  }
+
+  private async queryExperience(
+    sessionId: string,
+    store: RefineStateStore,
+    round: RefinementRound,
+    parentHarnessRef: string | undefined,
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const snapshot = round.experienceSnapshot!
+    let query: SeedExperienceQuery
+    let queryDigest: string
+    let offset = 0
+    let limit: number
+    const cursorRef = this.optionalString(args, 'cursor')
+    if (cursorRef !== undefined) {
+      assertOnlyKeys(args, ['cursor'])
+      const cursor = this.experienceQueryCursors.get(cursorRef)
+      if (cursor === undefined || cursor.sessionId !== sessionId || cursor.roundId !== round.roundId
+        || cursor.snapshotDigest !== snapshot.digest) {
+        throw new Error('experience cursor is unknown or no longer valid for this Meta task')
+      }
+      query = structuredClone(cursor.query)
+      queryDigest = cursor.queryDigest
+      offset = cursor.offset
+      limit = cursor.limit
+    } else {
+      assertOnlyKeys(args, ['query', 'taskNames', 'semanticTargets', 'paths', 'effects', 'limit', 'cursor'])
+      const text = this.optionalString(args, 'query')
+      if (text !== undefined && Buffer.byteLength(text) > 1_000) throw new TypeError('experience query is limited to 1000 bytes')
+      const taskNames = this.optionalStrings(args, 'taskNames')
+      const semanticTargets = this.optionalStrings(args, 'semanticTargets')
+      const paths = this.optionalStrings(args, 'paths')
+      const effects = this.optionalStrings(args, 'effects')
+      for (const [name, values, maxLength] of [
+        ['taskNames', taskNames, 240], ['semanticTargets', semanticTargets, 32],
+        ['paths', paths, 500], ['effects', effects, 32],
+      ] as const) {
+        if ((values?.length ?? 0) > 20 || values?.some(value => value.length > maxLength)) {
+          throw new TypeError(`${name} accepts at most 20 bounded values`)
+        }
+      }
+      const allowedTargets = new Set<SemanticTarget>([
+        'context', 'pre_action', 'routing', 'post_action', 'action_verifier',
+        'skill', 'tool', 'workflow', 'compaction',
+      ])
+      if (semanticTargets?.some(value => !allowedTargets.has(value as SemanticTarget))) {
+        throw new TypeError('semanticTargets contains an unknown target')
+      }
+      const allowedEffects = new Set<SeedExperienceEffect>([
+        'improved', 'regressed', 'mixed', 'unchanged', 'insufficient',
+      ])
+      if (effects?.some(value => !allowedEffects.has(value as SeedExperienceEffect))) {
+        throw new TypeError('effects contains an unknown seed outcome')
+      }
+      if (paths?.some(path => path.startsWith('/') || path.includes('\\')
+        || path.split('/').some(segment => segment.length === 0 || segment === '.' || segment === '..'))) {
+        throw new TypeError('paths must contain normalized relative harness paths')
+      }
+      query = {
+        ...(text === undefined ? {} : { query: text }),
+        ...(taskNames === undefined ? {} : { taskNames: [...new Set(taskNames)].sort() }),
+        ...(semanticTargets === undefined ? {} : {
+          semanticTargets: [...new Set(semanticTargets)].sort() as SemanticTarget[],
+        }),
+        ...(paths === undefined ? {} : { paths: [...new Set(paths)].sort() }),
+        ...(effects === undefined ? {} : {
+          effects: [...new Set(effects)].sort() as SeedExperienceEffect[],
+        }),
+      }
+      const requestedLimit = this.optionalInteger(args, 'limit') ?? 5
+      if (requestedLimit < 1 || requestedLimit > EXPERIENCE_V1_MAX_QUERY_RESULTS) {
+        throw new TypeError(`experience query limit must be between 1 and ${EXPERIENCE_V1_MAX_QUERY_RESULTS}`)
+      }
+      limit = requestedLimit
+      queryDigest = digestJson({ snapshotDigest: snapshot.digest, query })
+    }
+
+    const loaded = await loadSeedExperienceSnapshot(store, snapshot)
+    if (loaded.unavailableRecordIds.length > 0) {
+      throw new Error(`seed experience snapshot is incomplete; unavailable record IDs: ${loaded.unavailableRecordIds.join(', ')}`)
+    }
+    const ranked = rankSeedExperience(loaded.records, query, parentHarnessRef)
+    const results: Array<Record<string, unknown>> = []
+    let nextOffset = offset
+    for (const item of ranked.slice(offset, offset + limit)) {
+      const card = renderSeedExperienceCard(item.record, item.matchReasons)
+      const result = {
+        ...card,
+        markdown: this.experienceText(card.markdown, round.heldOutRef, EXPERIENCE_V1_MAX_CARD_BYTES),
+        matchReasons: card.matchReasons.map(reason => this.experienceText(reason, round.heldOutRef, 300)),
+        recordDigest: item.record.recordDigest,
+        seedProjectionDigest: item.record.seedProjectionDigest,
+        relevanceScore: item.score,
+      }
+      const trial = {
+        schemaVersion: 1,
+        snapshotDigest: snapshot.digest,
+        queryDigest,
+        results: [...results, result],
+      }
+      if (this.experienceResponseBytes(trial, round.heldOutRef) > EXPERIENCE_V1_MAX_QUERY_BYTES - 256) break
+      results.push(result)
+      nextOffset += 1
+    }
+    let nextCursor: string | undefined
+    if (nextOffset < ranked.length) {
+      nextCursor = `experience_cursor_${randomBytes(16).toString('hex')}`
+      this.experienceQueryCursors.set(nextCursor, {
+        sessionId,
+        roundId: round.roundId,
+        snapshotDigest: snapshot.digest,
+        queryDigest,
+        query: structuredClone(query),
+        offset: nextOffset,
+        limit,
+      })
+      while (this.experienceQueryCursors.size > 4_096) {
+        const oldest = this.experienceQueryCursors.keys().next().value as string | undefined
+        if (oldest === undefined) break
+        this.experienceQueryCursors.delete(oldest)
+      }
+    }
+    const response = {
+      schemaVersion: 1,
+      snapshotDigest: snapshot.digest,
+      queryDigest,
+      results,
+      ...(nextCursor === undefined ? {} : { nextCursor }),
+    }
+    return response
+  }
+
+  private async readExperience(
+    sessionId: string,
+    store: RefineStateStore,
+    round: RefinementRound,
+    args: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    assertOnlyKeys(args, ['ref', 'view', 'offset', 'limit', 'runId', 'detailRef', 'find'])
+    const ref = this.string(args, 'ref')
+    const view = this.string(args, 'view')
+    if (!['record', 'card', 'task-results', 'diff', 'trajectory'].includes(view)) {
+      throw new TypeError('experience read view must be record, card, task-results, diff, or trajectory')
+    }
+    const digest = experienceDigestFromRef(ref)
+    const snapshot = round.experienceSnapshot!
+    const member = digest === undefined ? undefined : snapshot.members.find(item => item.recordDigest === digest)
+    if (member === undefined) throw new Error('experience ref is not authorized by the active round snapshot')
+    let experience: SeedExperienceRecord | undefined
+    try {
+      experience = await store.readExperienceRecord(member.recordDigest)
+    } catch {
+      experience = undefined
+    }
+    if (experience === undefined || experience.recordId !== member.recordId
+      || experience.source.evolutionId !== round.evolutionId
+      || experience.source.roundId !== member.sourceRoundId
+      || experience.source.candidateId !== member.candidateId
+      || experience.source.candidateHarnessRef !== member.candidateHarnessRef) {
+      return {
+        schemaVersion: 1,
+        available: false,
+        snapshotDigest: snapshot.digest,
+        ref,
+        reason: 'The exact seed experience revision sealed into this round is unavailable.',
+      }
+    }
+    const base = {
+      schemaVersion: 1,
+      available: true,
+      snapshotDigest: snapshot.digest,
+      ref,
+      recordId: experience.recordId,
+      recordDigest: experience.recordDigest,
+      seedProjectionDigest: experience.seedProjectionDigest,
+      view,
+    }
+    if (view === 'card') {
+      const card = renderSeedExperienceCard(experience)
+      return {
+        ...base,
+        card: {
+          ...card,
+          markdown: this.experienceText(card.markdown, round.heldOutRef, EXPERIENCE_V1_MAX_CARD_BYTES),
+        },
+      }
+    }
+
+    const offset = this.optionalInteger(args, 'offset') ?? 0
+    const limit = this.optionalInteger(args, 'limit') ?? 20
+    if (limit < 1 || limit > EXPERIENCE_V1_MAX_READ_ITEMS) {
+      throw new TypeError(`experience read limit must be between 1 and ${EXPERIENCE_V1_MAX_READ_ITEMS}`)
+    }
+    if (view === 'record') {
+      const files = experience.change.files.map(file => ({
+        ...file,
+        path: this.experienceText(file.path, round.heldOutRef, 500),
+      }))
+      const rationale = this.experienceText(experience.proposal.rationale, round.heldOutRef, 8 * 1024)
+      const expectedOutcome = this.experienceText(experience.proposal.expectedOutcome, round.heldOutRef, 8 * 1024)
+      const response = (visibleFiles: readonly unknown[], nextOffset?: number) => ({
+        ...base,
+        record: {
+          schemaVersion: experience.schemaVersion,
+          source: experience.source,
+          applicability: experience.applicability,
+          proposal: {
+            rationale,
+            expectedOutcome,
+            semanticTargets: experience.proposal.semanticTargets,
+            ...(rationale !== experience.proposal.rationale || expectedOutcome !== experience.proposal.expectedOutcome
+              ? { claimsTruncated: true }
+              : {}),
+          },
+          change: {
+            patchDigest: experience.change.patchDigest,
+            totalBytes: experience.change.totalBytes,
+            files: visibleFiles,
+          },
+          observation: {
+            comparison: experience.observation.comparison,
+            planned: experience.observation.planned,
+            valid: experience.observation.valid,
+            excluded: experience.observation.excluded,
+            baselineInvalid: experience.observation.baselineInvalid,
+            candidateInvalid: experience.observation.candidateInvalid,
+            ...(experience.observation.baselineMean === undefined ? {} : {
+              baselineMean: experience.observation.baselineMean,
+              candidateMean: experience.observation.candidateMean,
+              meanRewardDelta: experience.observation.meanRewardDelta,
+            }),
+            ...(experience.observation.modificationUse === undefined ? {} : {
+              modificationUse: {
+                ...experience.observation.modificationUse,
+                artifacts: experience.observation.modificationUse.artifacts
+                  .slice(offset, offset + visibleFiles.length)
+                  .map(artifact => ({
+                    ...artifact,
+                    path: this.experienceText(artifact.path, round.heldOutRef, 500),
+                  })),
+              },
+            }),
+          },
+          classification: experience.classification,
+        },
+        offset,
+        ...(nextOffset === undefined ? {} : { nextOffset }),
+      })
+      const visibleFiles: unknown[] = []
+      let index = offset
+      while (index < files.length && visibleFiles.length < limit) {
+        const nextFiles = [...visibleFiles, files[index]]
+        const nextOffset = index + 1 < files.length ? index + 1 : undefined
+        if (this.experienceResponseBytes(response(nextFiles, nextOffset), round.heldOutRef)
+          > EXPERIENCE_V1_MAX_READ_BYTES - 256) break
+        visibleFiles.push(files[index])
+        index += 1
+      }
+      if (index < files.length && visibleFiles.length === 0) {
+        throw new Error('one seed experience record file exceeds the fixed response limit')
+      }
+      return response(visibleFiles, index < files.length ? index : undefined)
+    }
+    if (view === 'task-results') {
+      const items = [
+        ...experience.observation.taskResults,
+        ...experience.observation.excludedTaskResults,
+      ].sort((left, right) => left.trialKey.localeCompare(right.trialKey)).map(item => this.publicExperienceTask(item, round.heldOutRef))
+      const pageBase = {
+        ...base,
+        coverage: {
+          planned: experience.observation.planned,
+          valid: experience.observation.valid,
+          excluded: experience.observation.excluded,
+        },
+        ...(experience.observation.modificationUse === undefined ? {} : {
+          modificationUse: {
+            schemaVersion: experience.observation.modificationUse.schemaVersion,
+            extractorVersion: experience.observation.modificationUse.extractorVersion,
+            candidateTrials: experience.observation.modificationUse.candidateTrials,
+            statusCounts: experience.observation.modificationUse.statusCounts,
+            validPairStatusCounts: experience.observation.modificationUse.validPairStatusCounts,
+            conditionedResults: experience.observation.modificationUse.conditionedResults,
+          },
+        }),
+        offset,
+      }
+      const page = this.experiencePage(pageBase, items, offset, limit)
+      return {
+        ...pageBase,
+        results: page.items,
+        ...(page.nextOffset === undefined ? {} : { nextOffset: page.nextOffset }),
+      }
+    }
+    if (view === 'diff') {
+      const selectedFiles = experience.change.files.slice(offset, offset + limit)
+      if (selectedFiles.length === 0) throw new TypeError('experience diff offset is outside the changed-file list')
+      const visibleFiles = selectedFiles.map(file => ({
+        ...file,
+        path: this.experienceText(file.path, round.heldOutRef, 500),
+      }))
+      const nextOffset = offset + selectedFiles.length < experience.change.files.length
+        ? offset + selectedFiles.length
+        : undefined
+      try {
+        const diff = await this.builder.readHarnessDiff(
+          experience.source.parentHarnessRef,
+          experience.source.candidateHarnessRef,
+          selectedFiles.map(file => file.path),
+          EXPERIENCE_V1_MAX_READ_BYTES,
+          signal,
+        )
+        const safePatch = this.sanitize(diff.patch, round.heldOutRef) as string
+        const responseForPatch = (patch: string): Record<string, unknown> => ({
+          ...base,
+          change: {
+            patchDigest: experience.change.patchDigest,
+            totalBytes: experience.change.totalBytes,
+            fileCount: experience.change.files.length,
+            files: visibleFiles,
+          },
+          offset,
+          ...(nextOffset === undefined ? {} : { nextOffset }),
+          diff: {
+            parentRef: diff.parentRef,
+            candidateRef: diff.candidateRef,
+            paths: visibleFiles.map(file => file.path),
+            patch,
+            patchBytes: diff.patchBytes,
+            contentDigest: diff.contentDigest,
+            truncated: diff.truncated || patch !== safePatch,
+          },
+        })
+        const complete = responseForPatch(safePatch)
+        if (this.experienceResponseBytes(complete, round.heldOutRef) <= EXPERIENCE_V1_MAX_READ_BYTES) return complete
+
+        let low = 0
+        let high = Buffer.byteLength(safePatch)
+        let visiblePatch = ''
+        while (low <= high) {
+          const middle = Math.floor((low + high) / 2)
+          const candidatePatch = middle === 0 ? '' : boundedUtf8(safePatch, middle)
+          if (this.experienceResponseBytes(responseForPatch(candidatePatch), round.heldOutRef) <= EXPERIENCE_V1_MAX_READ_BYTES) {
+            visiblePatch = candidatePatch
+            low = middle + 1
+          } else {
+            high = middle - 1
+          }
+        }
+        return responseForPatch(visiblePatch)
+      } catch {
+        signal.throwIfAborted()
+        return {
+          ...base,
+          available: false,
+          reason: 'The verified candidate/parent Git objects for this historical diff are unavailable.',
+        }
+      }
+    }
+    return this.readExperienceTrajectory(sessionId, round, experience, base, args, signal)
+  }
+
+  private experiencePage(
+    base: Record<string, unknown>,
+    items: readonly unknown[],
+    offset: number,
+    limit: number,
+  ): { items: unknown[]; nextOffset?: number } {
+    const visible: unknown[] = []
+    let index = offset
+    while (index < items.length && visible.length < limit) {
+      const next = [...visible, items[index]]
+      if (Buffer.byteLength(JSON.stringify({ ...base, results: next })) > EXPERIENCE_V1_MAX_READ_BYTES - 512) {
+        if (visible.length === 0) throw new Error('one seed experience item exceeds the fixed response limit')
+        break
+      }
+      visible.push(items[index])
+      index += 1
+    }
+    return { items: visible, ...(index < items.length ? { nextOffset: index } : {}) }
+  }
+
+  private publicExperienceTask(
+    item: SeedExperienceRecord['observation']['taskResults'][number]
+      | SeedExperienceRecord['observation']['excludedTaskResults'][number],
+    heldOutRef: string,
+  ): Record<string, unknown> {
+    const side = (value: typeof item.baseline): Record<string, unknown> => {
+      const modificationUse = value.modificationUse
+      const prioritizedArtifacts = modificationUse === undefined
+        ? []
+        : [...modificationUse.artifacts].sort((left, right) => {
+            const priority = { observed: 0, 'attempted-failure': 1, unknown: 2, 'not-observed': 3 }
+            return priority[left.status] - priority[right.status] || left.path.localeCompare(right.path)
+          })
+      let actionExamples = 8
+      const visibleArtifacts = prioritizedArtifacts.slice(0, 12).map(artifact => {
+        const actions = artifact.actions.slice(0, actionExamples)
+        actionExamples -= actions.length
+        return {
+          ...artifact,
+          path: this.experienceText(artifact.path, heldOutRef, 500),
+          actions: actions.map(action => ({
+            ...action,
+            sessionId: boundedUtf8(action.sessionId, 200),
+            sourcePath: this.experienceText(action.sourcePath, heldOutRef, 500),
+            ...(action.callId === undefined ? {} : { callId: boundedUtf8(action.callId, 300) }),
+            ...(action.toolName === undefined ? {} : { toolName: boundedUtf8(action.toolName, 100) }),
+          })),
+          ...((artifact.observedActionCount + artifact.failedActionCount) <= actions.length ? {} : {
+            actionExamplesOmitted: artifact.observedActionCount + artifact.failedActionCount - actions.length,
+          }),
+        }
+      })
+      return {
+        status: value.status,
+        ...(value.trialName === undefined ? {} : { trialName: this.experienceText(value.trialName, heldOutRef, 300) }),
+        ...(value.runId === undefined ? {} : { runId: boundedUtf8(value.runId, 160) }),
+        ...(value.attempt === undefined ? {} : { attempt: value.attempt }),
+        ...(value.reward === undefined ? {} : { reward: value.reward }),
+        ...(modificationUse === undefined ? {} : {
+          modificationUse: {
+            ...modificationUse,
+            artifactCount: modificationUse.artifacts.length,
+            artifacts: visibleArtifacts,
+            ...(prioritizedArtifacts.length <= visibleArtifacts.length ? {} : {
+              artifactsOmitted: prioritizedArtifacts.length - visibleArtifacts.length,
+            }),
+          },
+        }),
+      }
+    }
+    return {
+      valid: item.valid,
+      trialKey: boundedUtf8(item.trialKey, 600),
+      taskName: this.experienceText(item.taskName, heldOutRef, 300),
+      ...(item.attempt === undefined ? {} : { attempt: item.attempt }),
+      baseline: side(item.baseline),
+      candidate: side(item.candidate),
+      ...(item.valid ? { rewardDelta: item.rewardDelta } : { reasons: item.reasons }),
+    }
+  }
+
+  private async readExperienceTrajectory(
+    sessionId: string,
+    round: RefinementRound,
+    experience: SeedExperienceRecord,
+    base: Record<string, unknown>,
+    args: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    const detailRef = this.optionalString(args, 'detailRef')
+    const find = this.optionalString(args, 'find')
+    if (detailRef !== undefined) {
+      const detail = this.trajectoryDetailRefs.get(detailRef)
+      const allowedRuns = this.experienceRunIds(experience)
+      if (detail === undefined || detail.sessionId !== sessionId || detail.roundId !== experience.source.roundId
+        || !allowedRuns.has(detail.runId)) {
+        throw new Error('experience trajectory detailRef is unknown or not authorized by this record')
+      }
+      const read = await this.readTrajectoryDetail(
+        sessionId,
+        experience.source.roundId,
+        detailRef,
+        find,
+        round.heldOutRef,
+        signal,
+      )
+      // Historical reads deliberately do not record current-round diagnosis receipts.
+      return { ...base, runId: detail.runId, ...read.visible }
+    }
+    if (find !== undefined) throw new TypeError('find requires detailRef')
+    const runId = this.string(args, 'runId')
+    const item = this.experienceRunEvidence(experience, runId)
+    if (item === undefined) throw new Error('runId is not authorized by this seed experience record')
+    try {
+      const projection = await this.projectedTrajectory(runId, signal)
+      if (projection.runId !== runId || projection.coverage.surface !== 'complete' || projection.fidelity === 'unavailable') {
+        return {
+          ...base,
+          available: false,
+          runId,
+          reason: 'The bounded historical seed trajectory is incomplete or has an identity mismatch.',
+        }
+      }
+      const verifier = await this.loadVerifierEvidence(item, signal)
+      const card = this.failureCard(sessionId, item, projection, verifier, round.heldOutRef, 8 * 1024, 'bytes')
+      return {
+        ...base,
+        runId,
+        trajectoryDigest: projection.trajectoryDigest,
+        projectionVersion: 1,
+        card,
+      }
+    } catch {
+      signal.throwIfAborted()
+      return {
+        ...base,
+        available: false,
+        runId,
+        reason: 'The exact bounded trajectory for this recorded seed run is unavailable.',
+      }
+    }
+  }
+
+  private experienceRunIds(experience: SeedExperienceRecord): Set<string> {
+    return new Set([
+      ...experience.observation.taskResults,
+      ...experience.observation.excludedTaskResults,
+    ].flatMap(item => [item.baseline.runId, item.candidate.runId]
+      .filter((runId): runId is string => runId !== undefined)))
+  }
+
+  private experienceRunEvidence(experience: SeedExperienceRecord, runId: string): SeedRunEvidence | undefined {
+    for (const result of [
+      ...experience.observation.taskResults,
+      ...experience.observation.excludedTaskResults,
+    ]) {
+      for (const side of ['baseline', 'candidate'] as const) {
+        const trial = result[side]
+        if (trial.runId !== runId) continue
+        const invalidReason = result.valid ? undefined : result.reasons.join(', ')
+        return {
+          evolutionId: experience.source.evolutionId,
+          roundId: experience.source.roundId,
+          phase: side === 'baseline' ? 'seed-baseline' : 'seed-candidate',
+          evalId: side === 'baseline' ? experience.source.parentBaselineEvalId : experience.source.candidateEvalId,
+          trial: {
+            taskName: result.taskName,
+            ...(trial.trialName === undefined ? {} : { trialName: trial.trialName }),
+            runId,
+            ...(trial.attempt === undefined ? {} : { attempt: trial.attempt }),
+            status: trial.status === 'missing' ? 'errored' : trial.status,
+            ...(trial.reward === undefined ? {} : { rewards: { reward: trial.reward } }),
+            ...(invalidReason === undefined ? {} : { invalidReason }),
+          },
+        }
+      }
+    }
+    return undefined
+  }
+
+  private experienceText(value: string, heldOutRef: string, maxBytes: number): string {
+    return boundedUtf8(this.sanitize(value, heldOutRef) as string, maxBytes)
+  }
+
+  private experienceResponseBytes(value: unknown, heldOutRef: string): number {
+    return Buffer.byteLength(JSON.stringify(publicJson(this.sanitize(value, heldOutRef))))
+  }
+
+  private experienceResponse(value: unknown, heldOutRef: string, maxBytes: number): JsonValue {
+    const response = publicJson(this.sanitize(value, heldOutRef))
+    if (Buffer.byteLength(JSON.stringify(response)) > maxBytes) {
+      throw new Error(`bounded seed experience response exceeded its fixed ${maxBytes}-byte limit`)
+    }
+    return response
   }
 
   private async projectedTrajectory(
@@ -767,14 +1416,26 @@ export class RefineCapabilities {
     runId: string,
     error: unknown,
   ): TrajectoryEvidenceBlocker {
-    const source = error as { code?: unknown }
+    const source = error as { code?: unknown; cause?: unknown; resolution?: unknown }
     const code = typeof source?.code === 'string' && /^[a-z0-9_]{1,128}$/u.test(source.code)
       ? source.code
       : 'hitch_trajectory_project_failed'
+    const resolution: TrajectoryEvidenceBlocker['resolution'] = source?.resolution === 'upgrade-hitch'
+      || source?.resolution === 'repair-evidence'
+      ? source.resolution
+      : code === 'hitch_trajectory_capabilities_unavailable'
+        || code === 'hitch_verifier_diagnostic_pages_unavailable'
+        ? 'upgrade-hitch'
+        : 'repair-evidence'
+    const cause = typeof source?.cause === 'string' && /^[a-z0-9][a-z0-9._-]{0,127}$/u.test(source.cause)
+      ? source.cause
+      : code
     const blocker = {
       runId,
       code,
       message: `Bounded trajectory evidence could not be constructed for ${runId} (${code}).`,
+      resolution,
+      cause,
     }
     this.trajectoryEvidenceBlockers.set(this.trajectoryBlockerKey(sessionId, roundId, runId), blocker)
     return blocker
@@ -788,7 +1449,6 @@ export class RefineCapabilities {
     const required = new Set([
       ...baseline.trials.filter(trial => (trial.rewards.reward ?? Object.values(trial.rewards)[0] ?? 0) <= 0)
         .flatMap(trial => trial.runId === undefined ? [] : [trial.runId]),
-      ...baseline.invalidTrials.map(trial => trial.runId),
     ])
     return [...required].flatMap(runId => {
       const blocker = this.trajectoryEvidenceBlockers.get(this.trajectoryBlockerKey(sessionId, roundId, runId))
@@ -797,18 +1457,21 @@ export class RefineCapabilities {
   }
 
   private trajectoryEvidenceBlocked(blockers: readonly TrajectoryEvidenceBlocker[]): Record<string, unknown> {
+    const requiresUpgrade = blockers.some(item => item.resolution === 'upgrade-hitch')
+    const requiresRepair = blockers.some(item => item.resolution !== 'upgrade-hitch')
     return {
       schemaVersion: 1,
       runs: [],
       batchAccepted: false,
       recoverable: false,
       code: 'TRAJECTORY_EVIDENCE_UNAVAILABLE',
-      message: `Diagnostic cards could not be constructed for ${blockers.length} run${blockers.length === 1 ? '' : 's'}. Do not retry the same query until Hitch or the trajectory evidence is repaired.`,
+      message: `Diagnostic cards could not be constructed for ${blockers.length} run${blockers.length === 1 ? '' : 's'}. Resolve the reported prerequisite before retrying.`,
       blockedRuns: blockers,
       operatorAction: {
-        upgrade: 'Hitch bounded trajectory analysis capability',
+        ...(requiresUpgrade ? { upgrade: 'Upgrade Hitch to provide bounded verifier diagnostic pages.' } : {}),
+        ...(requiresRepair ? { repair: 'Repair or re-import the persisted trajectory or verifier evidence for the affected runs.' } : {}),
         runIds: blockers.map(item => item.runId),
-        reason: blockers.map(item => item.code).join(','),
+        reason: blockers.map(item => item.cause ?? item.code).join(','),
       },
     }
   }
@@ -860,6 +1523,48 @@ export class RefineCapabilities {
       required: value.failedRunCount,
       remainingRunIds: value.missing.map(item => item.runId),
     }
+  }
+
+  private metaPrerequisiteFailure(value: MetaPrerequisiteBlocked): MetaPrerequisiteFailure {
+    const blockedRuns = value.code === 'TRAJECTORY_EVIDENCE_UNAVAILABLE'
+      ? value.readiness.trajectoryBlockedRuns.map(item => ({
+          runId: item.runId,
+          code: item.code,
+          ...(item.cause === undefined ? {} : { cause: item.cause }),
+          ...(item.resolution === undefined ? {} : { resolution: item.resolution }),
+        }))
+      : value.readiness.verifierBlockedRunIds.map(runId => ({
+          runId,
+          code: 'hitch_verifier_evidence_unavailable',
+          cause: 'verifier_evidence_capability_unavailable',
+          resolution: 'upgrade-hitch' as const,
+        }))
+    return {
+      schemaVersion: 1,
+      code: value.code,
+      failedOperation: value.failedOperation,
+      blockedRuns,
+    }
+  }
+
+  private async persistTrajectoryQueryBlockers(
+    sessionId: string,
+    roundId: string,
+    baseline: EvaluationEvidence,
+  ): Promise<void> {
+    const blockedRuns = this.trajectoryBlockers(sessionId, roundId, baseline).map(item => ({
+      runId: item.runId,
+      code: item.code,
+      ...(item.cause === undefined ? {} : { cause: item.cause }),
+      ...(item.resolution === undefined ? {} : { resolution: item.resolution }),
+    }))
+    if (blockedRuns.length === 0) return
+    await this.service.recordMetaPrerequisiteBlocker?.(sessionId, {
+      schemaVersion: 1,
+      code: 'TRAJECTORY_EVIDENCE_UNAVAILABLE',
+      failedOperation: 'trajectory.query',
+      blockedRuns,
+    })
   }
 
   private registerDetailRef(value: TrajectoryDetailRef): string {
@@ -1013,11 +1718,24 @@ export class RefineCapabilities {
         detailChunks.push(`${label}\n${JSON.stringify(publicJson(this.sanitize(value, heldOutRef)), null, 2)}`)
       }
     }
-    let diagnosticsComplete = true
+    const pagedArtifacts: NonNullable<TrajectoryDetailRef['verifierSources']>['artifacts'] = []
     const appendArtifact = (label: string, value: unknown): void => {
       const artifact = objectValue(value)
       if (artifact === undefined) return
-      if (artifact.truncated === true) diagnosticsComplete = false
+      if (artifact.truncated === true) {
+        const name = artifact.name
+        const mediaType = artifact.media_type
+        const bytes = artifact.bytes
+        const sha256 = artifact.sha256
+        if ((name === 'ctrf.json' || name === 'test-stdout.txt' || name === 'test-stderr.txt'
+          || name === 'stdout.txt' || name === 'stderr.txt')
+          && (mediaType === 'application/json' || mediaType === 'text/plain')
+          && Number.isSafeInteger(bytes) && (bytes as number) >= 0
+          && typeof sha256 === 'string' && /^sha256:[0-9a-f]{64}$/u.test(sha256)) {
+          pagedArtifacts.push({ label, name, mediaType, bytes: bytes as number, sha256 })
+          return
+        }
+      }
       if (artifact.json !== undefined) detailChunks.push(`${label}\n${JSON.stringify(artifact.json, null, 2)}`)
       else if (typeof artifact.text === 'string') detailChunks.push(`${label}\n${artifact.text}`)
     }
@@ -1039,8 +1757,9 @@ export class RefineCapabilities {
     const diagnosticsText = detailChunks.length === 0 ? undefined : detailChunks.join('\n\n')
     // Structured artifacts can be usable even without legacy diagnostics
     // (result_only). Omitted evidence must be read before issuing a receipt.
-    const needsDetail = (status === 'complete' || status === 'result_only') && diagnosticsText !== undefined
-      && ((status === 'complete' && failedTests.length === 0)
+    const hasDetails = diagnosticsText !== undefined || pagedArtifacts.length > 0
+    const needsDetail = (status === 'complete' || status === 'result_only') && hasDetails
+      && (pagedArtifacts.length > 0 || (status === 'complete' && failedTests.length === 0)
         || processPreview?.truncated === true || feedbackPreview?.truncated === true)
     return {
       status,
@@ -1049,10 +1768,19 @@ export class RefineCapabilities {
       ...(processPreview === undefined ? {} : { process: processPreview }),
       ...(feedbackPreview === undefined ? {} : { feedback: feedbackPreview }),
       ...(failedTests.length === 0 ? {} : { failures: failedTests }),
-      ...(diagnosticsText === undefined ? {} : {
-        detailRef: this.inlineDetailRef(
-          sessionId, item.roundId, item.trial.runId, diagnosticsText, diagnosticsComplete,
-        ),
+      ...(!hasDetails ? {} : {
+        detailRef: pagedArtifacts.length === 0
+          ? this.inlineDetailRef(sessionId, item.roundId, item.trial.runId, diagnosticsText!)
+          : this.registerDetailRef({
+              sessionId,
+              roundId: item.roundId,
+              runId: item.trial.runId,
+              offset: 0,
+              verifierSources: {
+                ...(diagnosticsText === undefined ? {} : { baseText: diagnosticsText }),
+                artifacts: pagedArtifacts,
+              },
+            }),
       }),
       ...(needsDetail ? { needsDetail: true as const } : {}),
     }
@@ -1064,6 +1792,8 @@ export class RefineCapabilities {
     projection: TrajectoryProjection,
     verifierEvidence: HitchVerifierEvidence,
     heldOutRef: string | undefined,
+    maxTranscript = 80_000,
+    transcriptBudget: 'characters' | 'bytes' = 'characters',
   ): MetaFailureCard {
     const reward = item.trial.rewards?.reward ?? Object.values(item.trial.rewards ?? {})[0]
     const actions = projection.semanticSteps.flatMap(step => step.toolActions)
@@ -1121,7 +1851,9 @@ export class RefineCapabilities {
         }),
       },
       verifier: this.verifierCard(sessionId, item, verifierEvidence, heldOutRef, 2_000),
-      transcript: this.transcriptWindow(sessionId, item, blocks.map(block => block.text)),
+      transcript: this.transcriptWindow(
+        sessionId, item, blocks.map(block => block.text), maxTranscript, transcriptBudget,
+      ),
     }, heldOutRef)) as unknown as MetaFailureCard
   }
 
@@ -1129,26 +1861,36 @@ export class RefineCapabilities {
     sessionId: string,
     item: SeedRunEvidence,
     blocks: readonly string[],
+    maxSize = 80_000,
+    budget: 'characters' | 'bytes' = 'characters',
   ): MetaFailureCard['transcript'] {
-    const maxCharacters = 80_000
     let firstVisible = blocks.length
-    let visibleCharacters = 0
+    let visibleSize = 0
     for (let index = blocks.length - 1; index >= 0; index -= 1) {
-      const separatorCharacters = firstVisible === blocks.length ? 0 : 2
-      const nextCharacters = characterLength(blocks[index]!) + separatorCharacters
-      if (visibleCharacters + nextCharacters > maxCharacters) break
+      const separatorSize = firstVisible === blocks.length ? 0 : 2
+      const blockSize = budget === 'bytes' ? Buffer.byteLength(blocks[index]!) : characterLength(blocks[index]!)
+      const nextSize = blockSize + separatorSize
+      if (visibleSize + nextSize > maxSize) break
       firstVisible = index
-      visibleCharacters += nextCharacters
+      visibleSize += nextSize
     }
     if (firstVisible === 0) return { text: blocks.join('\n\n') }
     if (firstVisible === blocks.length && blocks.length > 0) {
-      const finalCharacters = characters(blocks.at(-1)!)
-      const split = Math.max(0, finalCharacters.length - maxCharacters)
-      const earlier = [...blocks.slice(0, -1), finalCharacters.slice(0, split).join('')]
+      const split = budget === 'bytes'
+        ? splitUtf8Tail(blocks.at(-1)!, maxSize)
+        : (() => {
+            const finalCharacters = characters(blocks.at(-1)!)
+            const splitAt = Math.max(0, finalCharacters.length - maxSize)
+            return {
+              earlier: finalCharacters.slice(0, splitAt).join(''),
+              tail: finalCharacters.slice(splitAt).join(''),
+            }
+          })()
+      const earlier = [...blocks.slice(0, -1), split.earlier]
         .filter(Boolean)
         .join('\n\n')
       return {
-        text: finalCharacters.slice(split).join(''),
+        text: split.tail,
         earlierRef: this.inlineDetailRef(sessionId, item.roundId, item.trial.runId, earlier),
       }
     }
@@ -1195,6 +1937,16 @@ export class RefineCapabilities {
       throw new Error('detailRef is unknown or no longer valid for this Meta task')
     }
     if (find !== undefined && find.length > 500) throw new TypeError('find must be at most 500 characters')
+    if (detail.verifierSources !== undefined) {
+      try {
+        await this.materializeVerifierDetails(detail, heldOutRef, signal)
+        this.trajectoryEvidenceBlockers.delete(this.trajectoryBlockerKey(sessionId, roundId, detail.runId))
+      } catch (error) {
+        signal.throwIfAborted()
+        const blocker = this.recordTrajectoryBlocker(sessionId, roundId, detail.runId, error)
+        return { visible: this.trajectoryEvidenceBlocked([blocker]), blocker }
+      }
+    }
     let text = detail.text
     let sourceComplete = detail.sourceComplete ?? true
     if (text === undefined) {
@@ -1277,6 +2029,111 @@ export class RefineCapabilities {
       ...(nextRef === undefined ? {} : { nextRef }),
     }
     return this.completeTrajectoryDetailRead(detail, visible, sourceComplete && nextRef === undefined)
+  }
+
+  private async materializeVerifierDetails(
+    detail: TrajectoryDetailRef,
+    heldOutRef: string | undefined,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const sources = detail.verifierSources
+    if (sources === undefined) return
+    const inspect = this.options.trajectoryReader?.inspectVerifierDiagnosticPage
+    if (inspect === undefined) {
+      throw Object.assign(new Error('Hitch does not expose bounded verifier diagnostic pages'), {
+        code: 'hitch_verifier_diagnostic_pages_unavailable',
+        cause: 'verifier_diagnostic_pages_unsupported',
+        resolution: 'upgrade-hitch',
+      })
+    }
+    const chunks = sources.baseText === undefined ? [] : [sources.baseText]
+    let aggregateBytes = 0
+    for (const source of sources.artifacts) {
+      let offset = 0
+      let expectedSha256: string | undefined
+      let expectedBytes: number | undefined
+      const artifactChunks: string[] = []
+      const hash = createHash('sha256')
+      let bytes = 0
+      for (;;) {
+        const page = await inspect.call(this.options.trajectoryReader, detail.runId, {
+          name: source.name,
+          offset,
+          limit: VERIFIER_DIAGNOSTIC_PAGE_BYTES,
+          ...(expectedSha256 === undefined ? {} : { sha256: expectedSha256 }),
+        }, signal)
+        if (!page.artifact.sourceComplete) {
+          const cause = page.artifact.lossReason ?? 'source_incomplete'
+          throw Object.assign(new Error(`persisted verifier diagnostic source is incomplete (${cause})`), {
+            code: 'hitch_verifier_diagnostic_source_incomplete',
+            cause: /^[a-z0-9][a-z0-9._-]{0,127}$/u.test(cause) ? cause : 'source_incomplete',
+            resolution: 'repair-evidence',
+          })
+        }
+        if (expectedSha256 === undefined) {
+          expectedSha256 = page.artifact.sha256
+          expectedBytes = page.artifact.bytes
+          if (page.artifact.name !== source.name || page.artifact.mediaType !== source.mediaType
+            || page.artifact.sha256 !== source.sha256 || page.artifact.bytes !== source.bytes) {
+            throw Object.assign(new Error('verifier diagnostic identity changed after the diagnostic card was issued'), {
+              code: 'verifier_diagnostic_version_mismatch',
+              cause: 'verifier_diagnostic_version_mismatch',
+              resolution: 'repair-evidence',
+            })
+          }
+          if (expectedBytes > MAX_VERIFIER_DIAGNOSTIC_BYTES) {
+            throw Object.assign(new Error('verifier diagnostic exceeds the Gear evidence limit'), {
+              code: 'hitch_verifier_diagnostic_too_large',
+              cause: 'diagnostic_too_large',
+              resolution: 'repair-evidence',
+            })
+          }
+        } else if (page.artifact.sha256 !== expectedSha256 || page.artifact.bytes !== expectedBytes
+          || page.artifact.name !== source.name || page.artifact.mediaType !== source.mediaType) {
+          throw Object.assign(new Error('verifier diagnostic identity changed between pages'), {
+            code: 'verifier_diagnostic_version_mismatch',
+            cause: 'verifier_diagnostic_version_mismatch',
+            resolution: 'repair-evidence',
+          })
+        }
+        bytes += page.page.bytes
+        aggregateBytes += page.page.bytes
+        if (bytes > MAX_VERIFIER_DIAGNOSTIC_BYTES || aggregateBytes > MAX_VERIFIER_DIAGNOSTIC_BYTES) {
+          throw Object.assign(new Error('verifier diagnostics exceed the Gear evidence limit'), {
+            code: 'hitch_verifier_diagnostic_too_large',
+            cause: 'diagnostic_too_large',
+            resolution: 'repair-evidence',
+          })
+        }
+        hash.update(page.page.text)
+        artifactChunks.push(page.page.text)
+        if (page.page.eof) break
+        offset = page.page.nextOffset!
+      }
+      const digest = `sha256:${hash.digest('hex')}`
+      if (bytes !== expectedBytes || digest !== expectedSha256) {
+        throw Object.assign(new Error('verifier diagnostic bytes or digest do not match the completed page stream'), {
+          code: 'hitch_verifier_diagnostic_integrity_mismatch',
+          cause: 'verifier_diagnostic_integrity_mismatch',
+          resolution: 'repair-evidence',
+        })
+      }
+      const artifactText = artifactChunks.join('')
+      const safe = this.sanitize(artifactText, heldOutRef) as string
+      chunks.push(`${source.label}\n${safe}`)
+    }
+    const text = chunks.join('\n\n')
+    if (Buffer.byteLength(text) > MAX_VERIFIER_DIAGNOSTIC_BYTES) {
+      throw Object.assign(new Error('sanitized verifier diagnostics exceed the Gear evidence limit'), {
+        code: 'hitch_verifier_diagnostic_too_large',
+        cause: 'sanitized_diagnostic_too_large',
+        resolution: 'repair-evidence',
+      })
+    }
+    detail.text = text
+    detail.sourceComplete = true
+    Reflect.deleteProperty(detail, 'verifierSources')
+    this.trimDetailRefs()
   }
 
   private completeTrajectoryDetailRead(
@@ -1364,36 +2221,7 @@ export class RefineCapabilities {
   }
 
   private sanitize(value: unknown, heldOutRef: string | undefined, key?: string): JsonValue {
-    if (key !== undefined && SENSITIVE_KEY.test(key)) return '[REDACTED]'
-    if (typeof value === 'string') {
-      let text = value
-      const trimmed = text.trim()
-      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-        try { text = JSON.stringify(this.sanitize(JSON.parse(text), heldOutRef), null, 2) }
-        catch { /* Ordinary text that merely starts like JSON. */ }
-      }
-      for (const secret of this.secretValues) text = text.split(secret).join('[REDACTED]')
-      if (heldOutRef !== undefined && heldOutRef.length > 0) text = text.split(heldOutRef).join('[REDACTED_HELD_OUT]')
-      return text
-    }
-    if (value === null || typeof value === 'number' || typeof value === 'boolean') return value
-    if (Array.isArray(value)) return value.map(item => this.sanitize(item, heldOutRef))
-    if (typeof value === 'object') {
-      return Object.fromEntries(Object.entries(value).map(([name, item]) => [
-        this.sanitizeKey(name, heldOutRef),
-        this.sanitize(item, heldOutRef, name),
-      ])) as JsonValue
-    }
-    return String(value)
-  }
-
-  private sanitizeKey(name: string, heldOutRef: string | undefined): string {
-    let result = name
-    for (const secret of this.secretValues) result = result.split(secret).join('[REDACTED]')
-    if (heldOutRef !== undefined && heldOutRef.length > 0) {
-      result = result.split(heldOutRef).join('[REDACTED_HELD_OUT]')
-    }
-    return result
+    return sanitizePublicValue(value, heldOutRef, this.secretValues, key)
   }
 
   private string(args: Record<string, unknown>, key: string): string {

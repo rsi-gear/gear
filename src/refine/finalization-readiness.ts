@@ -176,18 +176,21 @@ export function recoveryRequired(
     }
   }
   if (first.code === 'TRAJECTORY_EVIDENCE_UNAVAILABLE') {
+    const requiresUpgrade = readiness.trajectoryBlockedRuns.some(item => item.resolution === 'upgrade-hitch')
+    const requiresRepair = readiness.trajectoryBlockedRuns.some(item => item.resolution !== 'upgrade-hitch')
     return {
       schemaVersion: 1,
       accepted: false,
       recoverable: false,
       code: first.code,
       failedOperation,
-      message: `The operation was not submitted because bounded trajectory evidence is unavailable for ${readiness.trajectoryBlockedRuns.length} failed baseline run${readiness.trajectoryBlockedRuns.length === 1 ? '' : 's'}. Do not retry until Hitch or the recorded trajectory has been repaired, then read the affected diagnostic cards again.`,
+      message: `The operation was not submitted because bounded trajectory evidence is unavailable for ${readiness.trajectoryBlockedRuns.length} failed baseline run${readiness.trajectoryBlockedRuns.length === 1 ? '' : 's'}. Resolve the reported prerequisite, then read the affected diagnostic cards again.`,
       readiness,
       operatorAction: {
-        upgrade: 'Hitch bounded trajectory analysis capability',
+        ...(requiresUpgrade ? { upgrade: 'Upgrade Hitch to provide the required bounded evidence capability.' } : {}),
+        ...(requiresRepair ? { repair: 'Repair or re-import the persisted trajectory or verifier evidence for the affected runs.' } : {}),
         runIds: readiness.trajectoryBlockedRuns.map(item => item.runId),
-        reason: readiness.trajectoryBlockedRuns.map(item => item.code).join(','),
+        reason: readiness.trajectoryBlockedRuns.map(item => item.cause ?? item.code).join(','),
       },
       retry: { tool: retryTool, reusePreviousArguments: true, afterPrerequisite: true },
     }
