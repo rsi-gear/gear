@@ -1,5 +1,5 @@
 {
-  "name": "dsh-plugin-refine",
+  "name": "gear",
   "version": "0.1.0",
   "description": "Skill-first Gear refinement control plane with native DSH and harness-neutral adapters",
   "type": "module",

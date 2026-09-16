@@ -1,0 +1,345 @@
+diff --git a/harness/manifest.json b/harness/manifest.json
+index 7e3ea8d..6f29d20 100644
+--- a/harness/manifest.json
++++ b/harness/manifest.json
+@@ -1,14 +1,14 @@
+ {
+   "schemaVersion": 1,
+-  "parentRef": "d88ce57d3636e2c81515b8cf9cd3cf772004c344",
++  "parentRef": "4c681116f338e169af1a0acca9a8eb6ec9551570",
+   "dshBaseRef": "b611388ce046292085abbabdbd951bbe608f0f1d",
+   "toolchainRef": "dsh-rc2-codex-pnpm-11.7.0",
+   "sandboxProfileRef": "harbor-terminal-bench-2.0",
+   "artifacts": [
+     {
+       "path": "plugins/policy.js",
+-      "digest": "sha256:713c9fc13affb0f3eb1e86abfa02852a78fcf056669c7d89e2c114ee9a2d94a8",
+-      "bytes": 2100
++      "digest": "sha256:aa711e784ff843cc234bc15e8b82a9a275166da2610b6e2151375012c7094c51",
++      "bytes": 3109
+     },
+     {
+       "path": "preset/agent.cordis.yml",
+@@ -22,9 +22,19 @@
+     },
+     {
+       "path": "workflows/source-backed-operations.md",
+-      "digest": "sha256:274ec8fc085a5fc33d1e13f9e67680a8e3d1508b3d57955794eafcac510c9656",
+-      "bytes": 6580
++      "digest": "sha256:47d0a4473252385ef78eba9821a36bf59ac2b0596f234bb74da4b431a22d5cdd",
++      "bytes": 6809
++    },
++    {
++      "path": "workflows/structured-cli-requests.md",
++      "digest": "sha256:dd5a6caa6c6c4211f545ada068b02822ea3b15b27a554373523d90e8be763a92",
++      "bytes": 5375
++    },
++    {
++      "path": "workflows/structured-cli-requests/request.py",
++      "digest": "sha256:eb8414934e79115a74bac85fb3ee87d40918de1f29b4cc02160ca99b55c3e829",
++      "bytes": 5458
+     }
+   ],
+-  "digest": "sha256:82a2d6636b7c8b09ba19e6b991f3d2f359c8eab6bda25d446ab7852c0d343780"
++  "digest": "sha256:7dbe79d30e96acef61a271be936ba635ef02312d2c4f5f0b6baf2e2a8b4640ff"
+ }
+diff --git a/harness/plugins/policy.js b/harness/plugins/policy.js
+index 00e723e..fb5184c 100644
+--- a/harness/plugins/policy.js
++++ b/harness/plugins/policy.js
+@@ -11,6 +11,19 @@ export async function apply(ctx) {
+     text: `For repository tasks, first inspect the relevant files and existing tests. Make the smallest complete change that satisfies the task, preserve unrelated work, and run focused verification before answering. Treat test failures and command output as evidence: diagnose them instead of guessing.`,
+   })
+ 
++  const requestProcedureUrl = new URL('../workflows/structured-cli-requests.md', import.meta.url)
++  const requestHelperUrl = new URL('../workflows/structured-cli-requests/request.py', import.meta.url)
++  if (!(await readFile(requestProcedureUrl, 'utf8')).trim()) throw new Error('Structured request procedure is empty')
++  if (!(await readFile(requestHelperUrl, 'utf8')).trim()) throw new Error('Structured request helper is empty')
++  ctx.systemPrompt.section({
++    name: 'harness:structured-cli-requests',
++    order: 52,
++    text: `When a CLI tool takes JSON containing nested JSON strings, multiline/quoted text, or base64url fields, read the structured CLI requests procedure before composing that request:
++${fileURLToPath(requestProcedureUrl)}
++Use its helper to serialize the reviewed arguments and carry encoded values directly into the existing adapter call. Reuse the procedure once read. Native tools with structured arguments need no wrapper.
++Request helper: ${fileURLToPath(requestHelperUrl)}`,
++  })
++
+   const workflowUrl = new URL('../workflows/source-backed-operations.md', import.meta.url)
+   const workflowText = (await readFile(workflowUrl, 'utf8')).trim()
+   if (!workflowText) throw new Error('Source-backed operations workflow is empty')
+diff --git a/harness/workflows/source-backed-operations.md b/harness/workflows/source-backed-operations.md
+index 9d9e77d..d2b45c9 100644
+--- a/harness/workflows/source-backed-operations.md
++++ b/harness/workflows/source-backed-operations.md
+@@ -91,9 +91,12 @@ Before sending or mutating, check in both directions:
+    before writing; use an authorized schema change when appropriate rather
+    than silently dropping a required field.
+ 
+-Construct structured payloads programmatically when quoting, encoding or
+-multi-record generation is needed. Preserve the reviewed content through
+-serialization. Do not manually reconstruct long encoded payloads.
++Construct structured payloads programmatically from the reviewed ledger. For
++CLI requests with nested JSON, multiline/quoted text, or encoded fields, read
++**structured CLI requests** and use its request helper at the paths supplied in
++the harness guidance. It serializes nested objects and passes encoder output
++directly into the existing adapter without copying long encoded strings.
++Native tools with structured arguments need no wrapper.
+ 
+ ## 5. Execute and close the ledger
+ 
+diff --git a/harness/workflows/structured-cli-requests.md b/harness/workflows/structured-cli-requests.md
+new file mode 100644
+index 0000000..9f30c66
+--- /dev/null
++++ b/harness/workflows/structured-cli-requests.md
+@@ -0,0 +1,116 @@
++# Structured CLI requests
++
++Keep the reviewed request as readable JSON. Let code handle quoting, nested
++serialization, and encoding; carry encoded output directly into the destination
++call without copying it through a model message.
++
++Use this procedure only with the adapter, tool names, and argument schema
++provided by the current task. It does not discover endpoints, decide recipients,
++select records, or authorize writes. Resolve those with the operational workflow.
++
++## Prepare and invoke
++
++1. Read the actual tool schema and any endpoint schema. Identify which CLI
++   fields require JSON strings, and which leaf fields require base64url.
++   Native structured tools should receive objects directly; do not wrap them.
++2. Prepare one request JSON file in the task's permitted scratch area using the
++   normal file-writing tool. Keep text and source values exactly as reviewed.
++   Use objects/arrays for nested request data, not escaped JSON inside strings.
++   A single-quoted here-document on stdin also works; do not interpolate message
++   content into a shell command or change punctuation to make quoting easier.
++3. Invoke the absolute helper path supplied in the harness guidance:
++
++   ~~~sh
++   python HELPER_PATH REQUEST_FILE
++   ~~~
++
++   Both paths must be actual paths, shell-quoted as needed. The helper also accepts
++   a dash (-) for JSON on stdin. It calls the task's existing CLI using an argv
++   array with one serialized JSON argument, without a shell.
++4. Inspect the actual adapter response. The helper forwards its output and exit
++   status; exit zero is not delivery proof. Inspect application error fields and
++   reconcile the returned ID/content or focused readback with the reviewed
++   request. Record the receipt before any dependent update.
++
++Request shape (replace explanatory placeholders with values from the task):
++
++~~~json
++{
++  "command": ["python", "ACTUAL_ADAPTER_PATH", "ACTUAL_TOOL_NAME"],
++  "arguments": {
++    "method": "POST",
++    "url": "EXACT_DISCOVERED_ENDPOINT",
++    "params": null,
++    "body": {"text": "Reviewed text with an apostrophe: it's ready.\nSecond line."}
++  },
++  "json_fields": ["params", "body"]
++}
++~~~
++
++The command array is the exact existing CLI prefix and tool name, without its
++final JSON argument. Never use a shell command string here. Only invoke tools the
++task permits; this helper adds no network client or alternate app access.
++
++The arguments object is the tool's argument object. The json_fields array lists
++only top-level fields whose schema requires a JSON string. The helper serializes
++those fields once, preserving null, empty objects/arrays and their contents, then
++serializes the outer object. Omit json_fields for a CLI that accepts nested objects.
++Do not use literal placeholders, encode the whole request, or guess field names.
++
++## Base64url without manual copying
++
++If a listed local encoding tool accepts a plaintext text argument and returns
++a base64url string, add its exact CLI argv as encoder_command. Put the original
++plaintext in each field to encode and list the path as an array of object keys.
++The helper runs that encoder, validates that decoding reproduces the exact UTF-8
++plaintext, and passes the returned value directly into the destination request.
++It performs all encoding before the single destination call.
++
++For an endpoint whose schema explicitly accepts a message payload with
++headers and body.data, the request can have this form:
++
++~~~json
++{
++  "command": ["python", "ACTUAL_ADAPTER_PATH", "ACTUAL_SEND_TOOL"],
++  "arguments": {
++    "method": "POST",
++    "url": "EXACT_DISCOVERED_SEND_ENDPOINT",
++    "params": null,
++    "body": {
++      "payload": {
++        "headers": [
++          {"name": "To", "value": "ACTUAL_AUTHORIZED_RECIPIENT"},
++          {"name": "Subject", "value": "REVIEWED_SUBJECT"}
++        ],
++        "body": {"data": "REVIEWED_PLAINTEXT_BODY"}
++      }
++    }
++  },
++  "json_fields": ["params", "body"],
++  "encoder_command": ["python", "ACTUAL_ADAPTER_PATH", "ACTUAL_ENCODING_TOOL"],
++  "base64url_fields": [["body", "payload", "body", "data"]]
++}
++~~~
++
++These are schema examples, not assumed API contracts. For a raw message field,
++the plaintext must be a complete valid RFC message, including headers and body.
++Construct MIME headers with a standard library when needed, especially for
++non-ASCII subjects; base64 encoding alone does not make malformed MIME valid.
++For an encoding tool with a different schema or return shape, use a small
++programmatic pipeline through that listed tool and validate the round-trip;
++do not guess a response shape or copy a long encoded string by hand.
++
++For multi-record requests, build the readable arguments from the existing
++source/action ledger in code and reuse that same object. A serializer preserves
++the supplied values; it cannot catch selecting the wrong record or omitting a
++required field. Reconcile recipients, record keys, counts and required literals
++before invoking it.
++
++## Recovery
++
++Preparation failure means this helper did not call the destination. Fix the
++readable request and retry preparation. Once the destination was invoked,
++use its response or existing-state lookup to distinguish rejection from success
++or uncertainty before repeating a write. The helper never retries automatically.
++For a confirmed send, changing or deleting the local request does not recall it.
++Do not issue another send solely to repair cosmetic wording.
+diff --git a/harness/workflows/structured-cli-requests/request.py b/harness/workflows/structured-cli-requests/request.py
+new file mode 100644
+index 0000000..999760e
+--- /dev/null
++++ b/harness/workflows/structured-cli-requests/request.py
+@@ -0,0 +1,128 @@
++"""Serialize JSON CLI requests without shell interpolation or encoded-text copying."""
++import base64
++import binascii
++import json
++import re
++import subprocess
++import sys
++
++
++def json_text(value):
++    return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
++
++
++def command_vector(value, label):
++    if not isinstance(value, list) or not value or any(
++        not isinstance(part, str) or not part or "\x00" in part for part in value
++    ):
++        raise ValueError(label + " must be a nonempty argv array of nonempty strings")
++    return value
++
++
++def field_location(arguments, path):
++    if not isinstance(path, list) or not path:
++        raise ValueError("Each base64url field path must be a nonempty array")
++    parent = arguments
++    for key in path[:-1]:
++        if not isinstance(parent, dict) or not isinstance(key, str) or key not in parent:
++            raise ValueError("Missing object in base64url field path")
++        parent = parent[key]
++    key = path[-1]
++    if not isinstance(parent, dict) or not isinstance(key, str) or key not in parent:
++        raise ValueError("Missing base64url field")
++    if not isinstance(parent[key], str):
++        raise ValueError("A base64url field must contain the reviewed plaintext string")
++    return parent, key
++
++
++def encode_text(command, plaintext):
++    # The task's listed encoder is called through the same authorized CLI.
++    result = subprocess.run(
++        command + [json_text({"text": plaintext})],
++        capture_output=True, text=True, encoding="utf-8", shell=False,
++    )
++    if result.returncode:
++        sys.stderr.write(result.stderr)
++        raise ValueError("Encoder failed; destination command was not called")
++    output = result.stdout.strip()
++    try:
++        encoded = json.loads(output)
++    except json.JSONDecodeError:
++        encoded = output
++    if not isinstance(encoded, str) or not re.fullmatch(r"[A-Za-z0-9_-]*={0,2}", encoded):
++        raise ValueError("Encoder did not return a base64url string; destination was not called")
++    try:
++        decoded = base64.b64decode(
++            encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True
++        )
++    except (ValueError, binascii.Error) as exc:
++        raise ValueError("Encoder returned invalid base64url; destination was not called") from exc
++    if decoded != plaintext.encode("utf-8"):
++        raise ValueError("Encoder round-trip changed the plaintext; destination was not called")
++    return encoded
++
++
++def prepare(spec):
++    if not isinstance(spec, dict):
++        raise ValueError("Request must be a JSON object")
++    allowed = {"command", "arguments", "json_fields", "base64url_fields", "encoder_command"}
++    if set(spec) - allowed:
++        raise ValueError("Unknown request fields: " + ", ".join(sorted(set(spec) - allowed)))
++    command = command_vector(spec.get("command"), "command")
++    arguments = spec.get("arguments")
++    if not isinstance(arguments, dict):
++        raise ValueError("arguments must be an object")
++    # A separate tree prevents transformations from changing the reviewed request.
++    arguments = json.loads(json_text(arguments))
++    fields = spec.get("json_fields", [])
++    if not isinstance(fields, list) or any(not isinstance(field, str) for field in fields):
++        raise ValueError("json_fields must be an array of top-level field names")
++    if len(fields) != len(set(fields)):
++        raise ValueError("json_fields must not contain duplicates")
++    for field in fields:
++        if field not in arguments or (
++            arguments[field] is not None and not isinstance(arguments[field], (dict, list))
++        ):
++            raise ValueError("Each json_fields value must be an object, array, or null; do not pre-serialize")
++    paths = spec.get("base64url_fields", [])
++    if not isinstance(paths, list):
++        raise ValueError("base64url_fields must be an array of field paths")
++    # Validate every field before invoking even the local encoder.
++    locations = [field_location(arguments, path) for path in paths]
++    keys = [json_text(path) for path in paths]
++    if len(keys) != len(set(keys)):
++        raise ValueError("base64url_fields must not contain duplicates")
++    encoder = command_vector(spec.get("encoder_command"), "encoder_command") if paths else None
++    for parent, key in locations:
++        parent[key] = encode_text(encoder, parent[key])
++    for field in fields:
++        if arguments[field] is not None:
++            arguments[field] = json_text(arguments[field])
++    return command + [json_text(arguments)]
++
++
++def main():
++    if len(sys.argv) != 2:
++        sys.stderr.write("Usage: python request.py REQUEST.json (or - for JSON on stdin)\n")
++        return 2
++    try:
++        if sys.argv[1] == "-":
++            spec = json.load(sys.stdin)
++        else:
++            with open(sys.argv[1], encoding="utf-8") as source:
++                spec = json.load(source)
++        argv = prepare(spec)
++    except (ValueError, OSError) as exc:
++        sys.stderr.write("Request preparation failed: " + str(exc) + "\n")
++        return 2
++    # One destination call, no retries. Preserve its stdout, stderr, and exit status.
++    # An API can report an application error in JSON even when this status is zero.
++    try:
++        return subprocess.run(argv, shell=False).returncode
++    except OSError as exc:
++        sys.stderr.write("Could not start destination command: " + str(exc) + "\n")
++        return 2
++
++
++if __name__ == "__main__":
++    sys.exit(main())

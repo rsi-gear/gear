@@ -79,10 +79,33 @@ describe('DSH Codex Luna example', () => {
     expect(metadata.initialChampion.manifestDigest).toBe(manifest.digest)
   })
 
+  it.each(['automationbench-marketing', 'evolution-search'])('imports the %s harness with fresh carrier identity and unchanged artifact bytes', async name => {
+    const labRoot = await mkdtemp(join(tmpdir(), 'gear-imported-example-'))
+    temporaryRoots.push(labRoot)
+    const targetRoot = join(labRoot, 'target-dsh')
+    const source = join(root, 'examples', name, 'harness')
+    const original = JSON.parse(await readFile(join(source, 'manifest.json'), 'utf8'))
+    const { stdout } = await execute(process.execPath, [join(example, 'bootstrap-target.mjs'), targetRoot], {
+      cwd: root,
+      env: { ...process.env, GEAR_LAB_ROOT: labRoot, GEAR_SKIP_TARGET_INSTALL: '1', GEAR_INITIAL_HARNESS: source },
+    })
+    const metadata = JSON.parse(stdout)
+    const imported = JSON.parse(await readFile(join(targetRoot, 'harness', 'manifest.json'), 'utf8'))
+    expect(imported.digest).not.toBe(original.digest)
+    expect(imported.parentRef).toBe(metadata.dshBaseRef)
+    expect(imported.artifacts).toEqual(original.artifacts)
+    for (const artifact of original.artifacts) {
+      expect(await readFile(join(targetRoot, 'harness', artifact.path))).toEqual(await readFile(join(source, artifact.path)))
+    }
+    expect(JSON.parse(await readFile(join(source, 'manifest.json'), 'utf8'))).toEqual(original)
+  })
+
   it('defaults both Meta and target agents to configurable Luna models', async () => {
     const patch = await readFile(join(example, 'profile.patch.yml'), 'utf8')
     const targetPatch = await readFile(join(example, 'target-carrier', 'fixed', 'target.patch.yml'), 'utf8')
     const launcher = await readFile(join(example, 'evolve.mjs'), 'utf8')
+    expect(patch).toMatch(/metaAdapter:\n\s+kind: skill/u)
+    expect(patch).not.toContain('metaPreset:')
     expect(patch).toContain("process.env.GEAR_META_MODEL ?? 'gpt-5.6-luna'")
     expect(patch).toContain("process.env.GEAR_TARGET_MODEL ?? 'gpt-5.6-luna'")
     expect(patch).toMatch(/metaSampling:\n\s+temperature: 1\n\s+reasoningEffort: medium/u)

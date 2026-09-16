@@ -1,0 +1,100 @@
+{
+  "search": {
+    "mode": "failure-cluster-gepa-v1",
+    "seed": 0,
+    "parentBatchCount": 1,
+    "parentSampling": "scoped-frontier-membership-v1",
+    "scopeWeights": "uniform-by-family",
+    "archiveCoverage": "complete-scope",
+    "diagnosis": {
+      "sharing": "parent-evidence-dossier",
+      "planner": "evidence-failure-clusters-v1",
+      "candidatesPerFamily": 1
+    },
+    "taskSetSizing": {
+      "basis": "seed-universe",
+      "rounding": "ceil",
+      "local": {
+        "ratio": 0.08
+      },
+      "shared": {
+        "ratio": 0.04
+      },
+      "cross": {
+        "ratio": 0.03
+      },
+      "bridge": {
+        "ratio": 0.4
+      }
+    },
+    "scopeSampling": {
+      "bucketWeights": {
+        "local": 0.6,
+        "shared": 0.25,
+        "cross": 0.15
+      },
+      "epochPolicy": "stable"
+    },
+    "evaluationStages": {
+      "bridge": {
+        "maxCandidates": 2,
+        "groupAllocation": "weighted-round-robin",
+        "taskSelection": "nominated-scopes-union-then-stratified"
+      },
+      "globalSeed": {
+        "maxCandidates": 1
+      },
+      "reuseValidCells": true
+    },
+    "process": {
+      "mode": "auto",
+      "parentBudgetFraction": 0.25
+    },
+    "globalTaskWeights": "uniform",
+    "explorationGuards": []
+  },
+  "budgets": {
+    "round": {
+      "maxNewRolloutCells": 300,
+      "maxRepairCells": 30,
+      "maxDiagnosisInputTokens": 1000000,
+      "maxDiagnosisOutputTokens": 100000,
+      "maxGenerationTokens": 800000,
+      "maxGenerationRequests": 800,
+      "timeoutMs": 172800000
+    },
+    "evolution": {
+      "maxNewRolloutCells": 900,
+      "maxRepairCells": 90,
+      "maxDiagnosisInputTokens": 3000000,
+      "maxDiagnosisOutputTokens": 300000,
+      "maxGenerationTokens": 2400000,
+      "maxGenerationRequests": 2400,
+      "timeoutMs": 518400000
+    }
+  },
+  "promotion": {
+    "policy": "paired-multisignal-v1",
+    "validationMode": "shared-set-research",
+    "outcome": {
+      "minimumGain": 0,
+      "maxSeedRegression": 0,
+      "maxHeldOutRegression": 0
+    },
+    "process": {
+      "mode": "auto",
+      "minimumGain": 0,
+      "maxSeedRegression": 0,
+      "maxHeldOutRegression": 0
+    },
+    "allowNeutral": false,
+    "protectedTasks": [],
+    "protectedAssertions": [],
+    "minimumCandidateScore": 0,
+    "minimumAbsoluteGain": 0,
+    "requireNoRegression": true,
+    "maxHeldOutRegression": 0,
+    "maxRequiredRegressions": 0,
+    "requiredTaskIds": []
+  }
+}

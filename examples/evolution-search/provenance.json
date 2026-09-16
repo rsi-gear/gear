@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "a07408001d978e580bbdeab3d7f08d4d2034fb1a",
+  "parentCommit": "8b651c53cadfe70de39078e93d8cb9c3958b9c38",
+  "harnessTree": "c4fd2f50ac7939219bd7baa7287d16ec2a19cd65",
+  "manifestDigest": "sha256:ca4704fcd483e3eb271bd7b79ab5d020f4809f7c5f79bb866691cca105c470cc",
+  "scope": "AutomationBench public Marketing, 100 tasks, shared-set research",
+  "independentHeldOut": false,
+  "files": {
+    "harness/manifest.json": "sha256:54110baae0a423cb1e55378c45d8ee3a221ff7136142ecde7b8895ae19d1b027",
+    "harness/plugins/policy.js": "sha256:aa711e784ff843cc234bc15e8b82a9a275166da2610b6e2151375012c7094c51",
+    "harness/preset/agent.cordis.yml": "sha256:a691a8839788059f0b2cbaf26e967eeb5159ae24dd652d51ac96da06710ef5a6",
+    "harness/workflows/resolve-workflow-sources.md": "sha256:896b18aa30458343975366c9f3d5af2a86f507bd1011db1a9ac8dc95cba3a668",
+    "harness/workflows/source-backed-operations.md": "sha256:81b4e4c9e10d70ab759d8868611155e0fdd90b09ad140ac644a0cad81f8cb1a4",
+    "harness/workflows/structured-cli-requests/request.py": "sha256:eb8414934e79115a74bac85fb3ee87d40918de1f29b4cc02160ca99b55c3e829",
+    "harness/workflows/structured-cli-requests.md": "sha256:dd5a6caa6c6c4211f545ada068b02822ea3b15b27a554373523d90e8be763a92",
+    "last-meta-change.patch": "sha256:1e5bdc143dc777af4ff985d153a1d8016859ac6f2c96071b7f58f8da665bcc37",
+    "meta-input.txt": "sha256:12c4be18ba9b3c3c3fe9ee08dffc9cc5fefacc075b4a85c95ff4fb297a46cce3"
+  }
+}

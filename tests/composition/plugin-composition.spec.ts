@@ -75,7 +75,7 @@ else process.exitCode = 2
     const q = (value: string): string => JSON.stringify(value)
     await writeFile(configPath, [
       '- name: refine-test-services',
-      '- name: dsh-plugin-refine',
+      '- name: gear',
       '  config:',
       `    workspaceRoot: ${q(root)}`,
       `    dshRepository: ${q(fixture.repository)}`,
@@ -117,7 +117,7 @@ else process.exitCode = 2
     context.loader.builtins.include = Include
     const modules = new Map<string, unknown>([
       ['refine-test-services', fakeServices],
-      ['dsh-plugin-refine', refine],
+      ['gear', refine],
     ])
     context.loader.internal = {
       version: 'v2',

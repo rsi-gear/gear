@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cp, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { cp, lstat, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -56,8 +56,32 @@ await stat(targetRoot).then(
   () => { throw new Error(`target repository already exists: ${targetRoot}`) },
   error => { if (error?.code !== 'ENOENT') throw error },
 )
+// Import reviewed harness source into this new carrier. Its old manifest belongs
+// to a different substrate; writeManifest below creates a fresh experiment identity.
+let initialHarness
+if (process.env.GEAR_INITIAL_HARNESS !== undefined) {
+  if (!process.env.GEAR_INITIAL_HARNESS.trim()) throw new Error('GEAR_INITIAL_HARNESS must name a harness directory')
+  const source = resolve(process.env.GEAR_INITIAL_HARNESS)
+  if (!(await lstat(source)).isDirectory()) throw new Error('initial harness must be a regular directory')
+  if (targetRoot === source || targetRoot.startsWith(`${source}${sep}`) || source.startsWith(`${targetRoot}${sep}`)) {
+    throw new Error('initial harness and target repository must not overlap')
+  }
+  async function validate(directory) {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (entry.isDirectory()) await validate(join(directory, entry.name))
+      else if (!entry.isFile()) throw new Error(`unsupported harness entry: ${entry.name}`)
+    }
+  }
+  await validate(source)
+  await stat(join(source, 'preset', 'agent.cordis.yml'))
+  initialHarness = source
+}
 await mkdir(dirname(targetRoot), { recursive: true })
 await cp(templateRoot, targetRoot, { recursive: true })
+if (initialHarness) {
+  await rm(join(targetRoot, 'harness'), { recursive: true })
+  await cp(initialHarness, join(targetRoot, 'harness'), { recursive: true })
+}
 await writeManifest('0000000000000000000000000000000000000000')
 run('git', ['init', '-b', 'dev'])
 run('git', ['config', 'user.name', 'Gear Lab'])

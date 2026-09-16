@@ -452,7 +452,7 @@ export class MetaSessionManager implements MetaSessionController {
         advisoryFocus: round.advisoryFocus,
         batch: { id: round.batchId, index: round.roundIndex, count: round.roundCount },
       }) }],
-      source: { kind: 'plugin', plugin: 'dsh-plugin-refine' },
+      source: { kind: 'plugin', plugin: 'gear' },
     })
     if (this.options.metaAgent.contextOffloading !== undefined) {
       if (this.host.offloading === undefined) throw new Error('DSH host does not implement context offloading')

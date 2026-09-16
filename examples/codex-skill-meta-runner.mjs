@@ -9,7 +9,7 @@ import {
   assertSkillHarnessIdentityMatches,
   parseSkillHarnessIdentity,
   requestRefineSkill,
-} from 'dsh-plugin-refine/skill'
+} from 'gear/skill'
 import {
   createRefineCodexTransport,
   failRefineTransportSession,
