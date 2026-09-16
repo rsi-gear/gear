@@ -34,7 +34,7 @@ Gear 是一个可以通过 **Skill** 调用的优化库，能接入 Codex、Clau
 
 ```text
 请按照 https://rsigear.xyz/docs/gear/zh/quickstart 在当前环境中安装 Gear。
-通过 npm 安装 gear@latest 和 agent-hitch@latest，并检查所需依赖。
+通过 npm 安装 rsi-gear@latest 和 agent-hitch@latest，并检查所需依赖。
 把 Gear 自带的完整 Refine Skill 接入我当前使用的 Agent，并配置它与 Gear 的连接。
 使用我实际的任务路径、目标 harness 和模型配置；缺少必要信息时再询问我。
 完成后验证 Skill 能否连接 Gear，告诉我检查结果，以及如何开始第一次优化。
@@ -43,7 +43,7 @@ Gear 是一个可以通过 **Skill** 调用的优化库，能接入 Codex、Clau
 也可以手动安装 Gear 和负责运行评测的 [Hitch](https://github.com/rsi-gear/agent-hitch)。下面用 DSH 作为执行任务的 Agent：
 
 ```bash
-npm install --global gear@latest agent-hitch@latest @deepseek-ai/dsh@latest
+npm install --global rsi-gear@latest agent-hitch@latest @deepseek-ai/dsh@latest
 hitch eval setup harbor
 ```
 

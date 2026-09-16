@@ -7,8 +7,8 @@ Meta 宿主和 Target 模型可以分别选择。两条接入路径使用同一�
 安装 Gear，准备 Target 和数据集，再按 [Standalone 完整字段示例](../../harness-agnostic-refine-skill.md)创建配置。示例中的路径和摘要均需替换成真实值。
 
 ```bash
-npm install --global gear@latest
-GEAR_SKILL_PATH="$(npm root -g)/gear/skills/refine"
+npm install --global rsi-gear@latest
+GEAR_SKILL_PATH="$(npm root -g)/rsi-gear/skills/refine"
 gear-refine skill-identity --path "$GEAR_SKILL_PATH"
 gear-refine serve --config /absolute/path/to/gear-refine.json
 ```
@@ -26,7 +26,7 @@ gear-refine request control.status '{}'
 
 ## DSH 原生 Skill
 
-按[快速开始](quickstart.md)安装 Gear，再通过 `dsh plugin --profile web add gear@latest` 加入 DSH profile，按照 [DSH 配置说明](../../plugin-installation-and-usage.md#6-启用并配置-profile)配置并启用 `refine` 行。默认使用 Skill 模式，DSH 发布随包 Skill 和 `refine_request` bridge；原生 `/refine` 手势将 Skill 加载到当前 Agent。
+按[快速开始](quickstart.md)安装 Gear，再通过 `dsh plugin --profile web add rsi-gear@latest` 加入 DSH profile，按照 [DSH 配置说明](../../plugin-installation-and-usage.md#6-启用并配置-profile)配置并启用 `refine` 行。默认使用 Skill 模式，DSH 发布随包 Skill 和 `refine_request` bridge；原生 `/refine` 手势将 Skill 加载到当前 Agent。
 
 ```text
 /refine --rounds 1 --focus workflow,tool

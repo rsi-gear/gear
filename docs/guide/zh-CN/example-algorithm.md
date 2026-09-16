@@ -57,7 +57,7 @@ node --test examples/evolution-search/selection.test.mjs
 replay 先展示历史轮次，再在明确标注的合成 fixture 上运行组件；不会调用模型或写入实验状态。
 
 ```javascript
-import { ComponentRegistry } from 'gear';
+import { ComponentRegistry } from 'rsi-gear';
 import { registerElitistSelector } from './examples/evolution-search/selection.mjs';
 const registry = new ComponentRegistry();
 const selectorRef = registerElitistSelector(registry);

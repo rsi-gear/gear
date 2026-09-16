@@ -8,7 +8,7 @@ import {
   assertSkillHarnessIdentityMatches,
   parseSkillHarnessIdentity,
   requestRefineSkill as packageRequestRefineSkill,
-} from 'gear/skill'
+} from 'rsi-gear/skill'
 export const TRANSPORT_VERSION = 1
 export const MCP_PROTOCOL_VERSION = '2025-06-18'
 const CLIENT_FILE_NAME = 'client.json'

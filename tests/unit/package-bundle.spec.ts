@@ -14,7 +14,7 @@ describe('published Gear bundle', () => {
       bin?: Record<string, string>
       exports?: Record<string, unknown>
     }
-    expect(pkg.name).toBe('gear')
+    expect(pkg.name).toBe('rsi-gear')
     expect(pkg.version).toBe('0.1.0')
     expect(pkg.dsh?.bundle?.patch).toBe('./cordis.patch.yml')
     expect(pkg.files).toContain('cordis.patch.yml')
@@ -72,6 +72,6 @@ describe('published Gear bundle', () => {
     const patch = load(await readFile(resolve(root, 'cordis.patch.yml'), 'utf8')) as Array<{
       insert?: Array<{ id?: string; name?: string; disabled?: boolean }>
     }>
-    expect(patch).toEqual([{ insert: [{ id: 'refine', name: 'gear', disabled: true }] }])
+    expect(patch).toEqual([{ insert: [{ id: 'refine', name: 'rsi-gear', disabled: true }] }])
   })
 })

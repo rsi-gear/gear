@@ -1,10 +1,10 @@
-# gear 安装与使用指南
+# Gear 安装与使用指南
 
-本文说明如何把 `gear` 安装到 DeepSeek Harness（DSH），准备运行依赖，配置 Skill-first Meta Agent 和目标 Harness 仓库，并通过 `/refine` 执行完整演进。
+本文说明如何把 `rsi-gear` 安装到 DeepSeek Harness（DSH），准备运行依赖，配置 Skill-first Meta Agent 和目标 Harness 仓库，并通过 `/refine` 执行完整演进。
 
 ## 1. 组件职责
 
-`gear` 是运行在 DSH control plane 中的插件。它负责：
+`rsi-gear` 是运行在 DSH control plane 中的插件。它负责：
 
 - 创建相互隔离的 evolution、batch 和 round；
 - 维护每个 evolution 独立的 Meta Agent session 和 champion；
@@ -76,7 +76,7 @@ Gear 安装包携带私有 ToolFs：构建时校验固定的上游 `0.1.1-rc.2` 
 安装到需要承载 `/refine` control plane 的 profile，例如 `web`：
 
 ```sh
-dsh plugin --profile web add gear@0.1.0
+dsh plugin --profile web add rsi-gear@0.1.0
 ```
 
 DSH 会把插件安装到指定 profile，并识别包内声明的 `cordis.patch.yml` bundle。
@@ -92,7 +92,7 @@ npm run typecheck
 npm test
 npm run build
 npm pack
-dsh plugin --profile web add /absolute/path/to/gear/gear-0.1.0.tgz
+dsh plugin --profile web add /absolute/path/to/gear/rsi-gear-0.1.0.tgz
 ```
 
 也可以在已完成 `npm run build` 的 Gear checkout 中直接执行：
@@ -106,8 +106,8 @@ DSH 会把相对路径锚定到执行命令时的目录，因此这里的 `.` �
 更新和卸载仍使用 DSH 的 plugin 命令；其余参数会原样转发给 pnpm：
 
 ```sh
-dsh plugin --profile web update gear
-dsh plugin --profile web remove gear
+dsh plugin --profile web update rsi-gear
+dsh plugin --profile web remove rsi-gear
 ```
 
 ## 4. 配置 Meta Agent

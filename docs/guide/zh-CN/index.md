@@ -4,7 +4,7 @@ Gear 是一个可通过 Skill 调用的 Agent 优化算法库。给定现有 ben
 
 ## 选择阅读路径
 
-- [快速开始](quickstart.md)：安装 `gear@latest`，将 Refine Skill 接入 Codex、Claude Code 等 Agent，用自然语言发起优化。
+- [快速开始](quickstart.md)：安装 `rsi-gear@latest`，将 Refine Skill 接入 Codex、Claude Code 等 Agent，用自然语言发起优化。
 - [案例一：优化 Marketing Harness](example-harness.md)：五轮迭代、初始指令、最终保留修改；固定 Luna medium，通过率从 27% 到 36%。
 - [案例二：定制进化算法](example-algorithm.md)：七类可定制算法模块、精英选择器，以及实际的 4 → 2 → 1 分阶段搜索实验。
 - [模型训练](training.md)：实验性 Slime 训练路径、部署条件与验证范围。
@@ -38,7 +38,7 @@ Gear 是一个可通过 Skill 调用的 Agent 优化算法库。给定现有 ben
 
 ## 支持范围与版本
 
-本指南对应 Gear 0.1.0，包名为 `gear`，目前为 pre-alpha。Standalone 的 Meta 接口不绑定宿主 Harness；内置 Target builder 当前围绕 DSH。Hitch 支持某个 Harness，并不自动意味着 Gear 已有对应的 Target builder。
+本指南对应 Gear 0.1.0，包名为 `rsi-gear`，目前为 pre-alpha。Standalone 的 Meta 接口不绑定宿主 Harness；内置 Target builder 当前围绕 DSH。Hitch 支持某个 Harness，并不自动意味着 Gear 已有对应的 Target builder。
 
 分阶段搜索案例使用[来源记录](example-algorithm.md#实现与版本)中固定的实现；不能将其配置当成所有 0.1.0 checkout 都支持的开关。历史 Marketing 实验使用公开研究集，并从同一批任务获取优化反馈，没有独立 held-out 结果。
 

@@ -33,14 +33,14 @@ Hitch rollout provider，而不需要改动 Refine Skill 协议。
 ```bash
 npm ci
 npm pack
-npm install --global ./gear-0.1.0.tgz
+npm install --global ./rsi-gear-0.1.0.tgz
 ```
 
 包内包含：
 
 - `gear-refine`：独立 server 与通用 client；
 - `skills/refine/SKILL.md`：Agent Skills 入口；
-- `gear`：发布同一 Skill 的 DSH plugin，并保留旧 adapter。
+- `rsi-gear`：发布同一 Skill 的 DSH plugin，并保留旧 adapter。
 
 使用 standalone server 时，把 `skills/refine` 复制或链接到 Meta harness 的
 skill 目录。不同产品的 skill 安装位置由该产品决定；不要复制一份并修改协议
@@ -89,7 +89,7 @@ Standalone core 启动后，使用只读 `control.identity` 生成 canonical ide
 它把完整 `MetaAgentSpec` 投影为 runtime、preset id/digest、model 和显式
 `sampling` 对象；spec-only 的 `preset.resources` 与 `contextOffloading` 不进入
 结果。外部 identity 文件按这个窄 schema 严格解析，任何层级的未知字段都会被
-拒绝，不会静默删除。自定义 Node runner 可从 `gear/skill` 导入
+拒绝，不会静默删除。自定义 Node runner 可从 `rsi-gear/skill` 导入
 `parseSkillHarnessIdentity` 和 `assertSkillHarnessIdentityMatches`，避免复制一份
 不完整的校验器。
 

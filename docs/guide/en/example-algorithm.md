@@ -57,7 +57,7 @@ node --test examples/evolution-search/selection.test.mjs
 The replay first displays the historical rounds, then exercises the component on a clearly labeled synthetic fixture. It makes no model calls and writes no experiment state.
 
 ```javascript
-import { ComponentRegistry } from 'gear';
+import { ComponentRegistry } from 'rsi-gear';
 import { registerElitistSelector } from './examples/evolution-search/selection.mjs';
 const registry = new ComponentRegistry();
 const selectorRef = registerElitistSelector(registry);

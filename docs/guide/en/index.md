@@ -4,7 +4,7 @@ Gear is an algorithm library for agent optimization that you can invoke through 
 
 ## Choose a path
 
-- [Quick start](quickstart.md): install `gear@latest`, connect the Refine Skill to Codex, Claude Code or another agent, and request an optimization in natural language.
+- [Quick start](quickstart.md): install `rsi-gear@latest`, connect the Refine Skill to Codex, Claude Code or another agent, and request an optimization in natural language.
 - [Example 1: evolve a harness for Marketing](example-harness.md): five rounds, the initial prompt, the retained change, and a 27% → 36% strict pass rate at fixed Luna medium.
 - [Example 2: customize your evolve algorithm](example-algorithm.md): seven editable algorithm modules, an elitist selector, and the measured 4 → 2 → 1 staged-search experiment.
 - [Model training](training.md): the experimental Slime training path, its deployment requirements and validation boundary.
@@ -38,7 +38,7 @@ Compose these components to define your search algorithm. [Example 2](example-al
 
 ## Support and version
 
-This guide accompanies Gear 0.1.0, packaged as `gear`. Gear is pre-alpha. The standalone Meta connection is Harness-neutral; the built-in Target builder is currently DSH-oriented. Supporting a Harness in Hitch does not automatically add a Gear Target builder.
+This guide accompanies Gear 0.1.0, packaged as `rsi-gear`. Gear is pre-alpha. The standalone Meta connection is Harness-neutral; the built-in Target builder is currently DSH-oriented. Supporting a Harness in Hitch does not automatically add a Gear Target builder.
 
 The staged-search case used the implementation pinned in its [source record](example-algorithm.md#implementation-and-version). Its configuration is not advertised as a switch supported by every 0.1.0 checkout. Historical Marketing scores use a public research set that also supplied optimization evidence; they are not independent held-out results.
 

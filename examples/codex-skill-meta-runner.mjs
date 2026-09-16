@@ -9,7 +9,7 @@ import {
   assertSkillHarnessIdentityMatches,
   parseSkillHarnessIdentity,
   requestRefineSkill,
-} from 'gear/skill'
+} from 'rsi-gear/skill'
 import {
   createRefineCodexTransport,
   failRefineTransportSession,

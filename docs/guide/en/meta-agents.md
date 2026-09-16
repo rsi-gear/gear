@@ -7,8 +7,8 @@ Choose a Meta host independently of the Target model. Both connection paths use 
 Install the package, prepare the Target and datasets, and create a configuration using the [standalone field-by-field example](../../harness-agnostic-refine-skill.md). Replace every path and digest with real values; the sample is a template.
 
 ```bash
-npm install --global gear@latest
-GEAR_SKILL_PATH="$(npm root -g)/gear/skills/refine"
+npm install --global rsi-gear@latest
+GEAR_SKILL_PATH="$(npm root -g)/rsi-gear/skills/refine"
 gear-refine skill-identity --path "$GEAR_SKILL_PATH"
 gear-refine serve --config /absolute/path/to/gear-refine.json
 ```
@@ -26,7 +26,7 @@ Invoke Refine through your host's Skill interface or `/refine` where supported. 
 
 ## DSH native Skill
 
-Install Gear as shown in [Quick start](quickstart.md), then add it to the DSH profile with `dsh plugin --profile web add gear@latest` and enable the configured `refine` row using the [DSH profile setup](../../plugin-installation-and-usage.md#6-启用并配置-profile). Skill mode is the default. DSH publishes the packaged Skill and a `refine_request` bridge. The native `/refine` gesture loads the Skill into the current agent.
+Install Gear as shown in [Quick start](quickstart.md), then add it to the DSH profile with `dsh plugin --profile web add rsi-gear@latest` and enable the configured `refine` row using the [DSH profile setup](../../plugin-installation-and-usage.md#6-启用并配置-profile). Skill mode is the default. DSH publishes the packaged Skill and a `refine_request` bridge. The native `/refine` gesture loads the Skill into the current agent.
 
 ```text
 /refine --rounds 1 --focus workflow,tool

@@ -6,7 +6,7 @@ Gear 的模型训练独立于 harness 进化状态，通过固定 harness 和数
 
 ## 代码入口
 
-- `gear/training`：版本化合同、CAS、`ModelTrainingCoordinator`、`SlimeModelTrainer`、`HitchModelEvaluator` 和显式发布适配器。
+- `rsi-gear/training`：版本化合同、CAS、`ModelTrainingCoordinator`、`SlimeModelTrainer`、`HitchModelEvaluator` 和显式发布适配器。
 - `gear-refine training`：v2 冻结前用 `preflight-deployment` 分别检查控制端、Harbor worker 和模型节点，再用 `freeze-deployment` 固定部署；实验执行使用 `put-json`、`seal-hf`、`seal-dataset`、`validate`、`init`、`admit`、`preflight`、`advance`、`status`、`pause`、`resume`、`close`、`publish`、`rollback`。
 - `python/gear_training`：Slime job RPC、私有作业监督进程、精确 token gateway、rollout hook、完整 checkpoint/HF export、恢复账本。
 - Hitch 新增 `training register` / `training evidence`；`local plan` / `local inspect` 用于在提交前读取并固定真实 inference lock。

@@ -8,7 +8,7 @@
 
 ```text
 请按照 https://rsigear.xyz/docs/gear/zh/quickstart 在当前环境中安装 Gear。
-通过 npm 安装 gear@latest 和 agent-hitch@latest，并检查所需依赖。
+通过 npm 安装 rsi-gear@latest 和 agent-hitch@latest，并检查所需依赖。
 把 Gear 自带的完整 Refine Skill 接入我当前使用的 Agent，并配置它与 Gear 的连接。
 使用我实际的任务路径、目标 harness 和模型配置；缺少必要信息时再询问我。
 完成后验证 Skill 能否连接 Gear，告诉我检查结果，以及如何开始第一次优化。
@@ -21,7 +21,7 @@
 需要 Node.js 22.19+ 或 24+、Git。安装 Gear 和 Hitch；本例同时安装 DSH，作为 rollout Agent：
 
 ```bash
-npm install --global gear@latest agent-hitch@latest @deepseek-ai/dsh@latest
+npm install --global rsi-gear@latest agent-hitch@latest @deepseek-ai/dsh@latest
 hitch eval setup harbor
 ```
 
@@ -32,7 +32,7 @@ Harbor 任务需要 Docker 已启动，Python/IPython 和 sandbox 依赖见[平�
 找到已安装的 Skill bundle：
 
 ```bash
-GEAR_REFINE_SKILL="$(npm root -g)/gear/skills/refine"
+GEAR_REFINE_SKILL="$(npm root -g)/rsi-gear/skills/refine"
 gear-refine skill-identity --path "$GEAR_REFINE_SKILL"
 ```
 

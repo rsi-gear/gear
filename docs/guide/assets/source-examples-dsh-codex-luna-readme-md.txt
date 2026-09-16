@@ -51,7 +51,7 @@ export DSH_HOME="$PWD/.evolve-lab/dsh-home"
 cp examples/dsh-codex-luna/profile.patch.yml .evolve-lab/dsh-home/profiles/web/cordis.patch.yml
 ```
 
-The profile links `gear` to this checkout and uses `metaAdapter.kind: skill`. Run `/refine` in the configured DSH agent session; no `refine-meta` preset is required. Match the active session model and sampling to `metaModel` and `metaSampling`. The commands pin DSH
+The profile links `rsi-gear` to this checkout and uses `metaAdapter.kind: skill`. Run `/refine` in the configured DSH agent session; no `refine-meta` preset is required. Match the active session model and sampling to `metaModel` and `metaSampling`. The commands pin DSH
 `0.1.1-rc.2` and `dsh-codex` `0.2.6`; the isolated runtime supplies the
 compatible `pi-ai` `0.84.4` to the profile through DSH's runtime links.
 

@@ -34,7 +34,7 @@ Gear is an optimization library you can call as a **Skill** from Codex, Claude C
 
 ```text
 Follow https://rsigear.xyz/docs/gear/quickstart to install Gear in my environment.
-Install gear@latest and agent-hitch@latest with npm and check the required dependencies.
+Install rsi-gear@latest and agent-hitch@latest with npm and check the required dependencies.
 Add Gear's complete Refine Skill to my current agent and configure its connection to Gear.
 Use my actual task paths, target harness and model settings; ask me for any missing information.
 Verify that the Skill can connect to Gear, then report the result and how to start my first optimization.
@@ -43,7 +43,7 @@ Verify that the Skill can connect to Gear, then report the result and how to sta
 To install manually, start with Gear and [Hitch](https://github.com/rsi-gear/agent-hitch), which runs the tests. This example uses DSH as the agent doing the tasks:
 
 ```bash
-npm install --global gear@latest agent-hitch@latest @deepseek-ai/dsh@latest
+npm install --global rsi-gear@latest agent-hitch@latest @deepseek-ai/dsh@latest
 hitch eval setup harbor
 ```
 
