@@ -2,6 +2,20 @@
 
 在 Codex、Claude Code、DSH，或其他能够加载 Skill 并调用 Gear 的 Agent 中使用 Refine Skill。用自然语言说明 benchmark、Meta Agent、rollout Agent 和优化轮数，即可开始优化。
 
+## 让 Agent 帮你安装
+
+把下面的 prompt 复制给你正在使用的 Agent，让它完成安装和配置：
+
+```text
+请按照 https://rsigear.xyz/docs/gear/zh/quickstart 在当前环境中安装 Gear。
+通过 npm 安装 gear@latest 和 agent-hitch@latest，并检查所需依赖。
+把 Gear 自带的完整 Refine Skill 接入我当前使用的 Agent，并配置它与 Gear 的连接。
+使用我实际的任务路径、目标 harness 和模型配置；缺少必要信息时再询问我。
+完成后验证 Skill 能否连接 Gear，告诉我检查结果，以及如何开始第一次优化。
+```
+
+下面是手动安装和发起第一次优化的步骤。
+
 ## 1. 安装 Gear
 
 需要 Node.js 22.19+ 或 24+、Git。安装 Gear 和 Hitch；本例同时安装 DSH，作为 rollout Agent：

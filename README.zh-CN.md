@@ -8,32 +8,39 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md) · [用户指南](https://rsigear.xyz/docs/gear/zh) · [案例](https://rsigear.xyz/docs/gear/zh/examples/evolution-search)
 
-给 Gear 一组能检查对错的任务。它会让 AI Agent 尝试完成任务，找出失败的原因，再改进指令、工具和做事步骤，让 Agent 越做越好。
+Gear 是一套开源算法框架，帮助 AI Agent 在不同的软件环境中完成真实任务，并从成功和失败中积累经验。我们希望用这些经验改进 Agent 的指令和工具，再把经验整理成训练数据，让模型本身也能不断进步。
 
 ## 小模型，也能和顶尖模型掰手腕
 
-在 **AutomationBench 的 100 个公开 Marketing 任务**上，Gear 将 **GPT 5.6 Luna max 的过程分提升到 88.88%，高于 Codex + GPT 6 Astra max 的 84.08%**；**任务通过率达到 53%，接近 Astra 的 57%**。小模型平均完成了更多评分要求，整题通过率也已接近前沿模型。
+在 **AutomationBench 的 100 个公开 Marketing 任务**上，Gear 将 **GPT 5.6 Luna max 的过程分提升到 88.88%，高于 Codex + GPT 6 Astra max 的 84.08%**，并且 **任务通过率达到 53%**。
 
 ![案例二：Gear 优化后的 harness 搭配 GPT 5.6 Luna max，过程分为 88.88%、任务通过率为 53%；Codex 搭配 GPT 6 Astra max 的对应结果为 84.08% 和 57%。](docs/guide/assets/marketing-staged-search.svg)
 
-## 已验证的任务
+### 已验证的任务
 
-当前算力预算有限，我们先在下面的任务集上验证优化效果，并公开优化前、优化后和领先模型（SOTA）的对照结果。
+当前算力预算有限，我们先在下面的任务集上验证优化效果，并公开优化前后的结果。
 
-| 已验证任务集 | 指标 | 优化前 · medium | 优化后 · medium → max | SOTA 模型参考 |
-| --- | --- | ---: | ---: | ---: |
-| AutomationBench / Marketing · 100 题 | 任务通过率 | 27% | **40% → 53%** | 57% |
-| AutomationBench / Marketing · 100 题 | 过程分 | 75.37% | **83.87% → 88.88%** | 84.08% |
+| 已验证任务集 | 模型 + harness 组合 | 指标 | 优化前 | 优化后 | Δ |
+| --- | --- | --- | --- | --- | --- |
+| AutomationBench / Marketing  | GPT 5.6 Luna medium+ DSH | 任务通过率 / 过程分 |27% / 75.37% |40% / 83.87% |**+13% / +8.50%** |
 
-优化前后使用 DSH + GPT 5.6 Luna，对照使用 Codex + GPT 6 Astra max，均在同一组 100 个公开任务上评测。**Medium → medium 展示 harness 改进的效果；max 档额外增加了推理预算。** 过程分表示完成了多少评分要求，任务通过则要求整道题的评分要求全部满足。
-
-这组公开任务也用于指导优化。表中的 SOTA 模型参考是我们对 Astra 的实测，官方榜单使用另一组私有测试任务，在图中以星号标出。[评分方式与来源](docs/guide/zh-CN/results.md) · [完整实验](docs/guide/zh-CN/example-algorithm.md)。
+这组公开任务也用于指导优化。图中带星号的结果来自另一组官方私有测试任务。[评分方式与来源](docs/guide/zh-CN/results.md) · [完整实验](docs/guide/zh-CN/example-algorithm.md)。
 
 ## 快速开始
 
 Gear 是一个可以通过 **Skill** 调用的优化库，能接入 Codex、Claude Code、DSH 或其他兼容 Agent。你可以使用已有 benchmark，也可以用 [Harbor 格式](docs/guide/zh-CN/datasets.md)定义自己的任务。
 
-安装 Gear 和负责运行评测的 [Hitch](https://github.com/rsi-gear/agent-hitch)。下面用 DSH 作为执行任务的 Agent：
+**让 Agent 帮你安装。** 把下面的 prompt 复制给你正在使用的 Agent：
+
+```text
+请按照 https://rsigear.xyz/docs/gear/zh/quickstart 在当前环境中安装 Gear。
+通过 npm 安装 gear@latest 和 agent-hitch@latest，并检查所需依赖。
+把 Gear 自带的完整 Refine Skill 接入我当前使用的 Agent，并配置它与 Gear 的连接。
+使用我实际的任务路径、目标 harness 和模型配置；缺少必要信息时再询问我。
+完成后验证 Skill 能否连接 Gear，告诉我检查结果，以及如何开始第一次优化。
+```
+
+也可以手动安装 Gear 和负责运行评测的 [Hitch](https://github.com/rsi-gear/agent-hitch)。下面用 DSH 作为执行任务的 Agent：
 
 ```bash
 npm install --global gear@latest agent-hitch@latest @deepseek-ai/dsh@latest
@@ -52,10 +59,10 @@ hitch eval setup harbor
 
 ## 算法设计：学习如何改进自己
 
-Gear 采用 **meta-learning（元学习）**的设计：一层负责做任务，另一层学习如何改进做任务的 Agent。
+Gear 采用 **meta-learning（元学习）** 的设计：一层负责做任务，另一层学习如何改进做任务的 Agent。
 
 - **内层：完成任务。** 执行任务的 Agent 使用当前模型、指令和工具，尝试解题。
-- **外层：改进 Agent。** Meta Agent 阅读成绩和失败记录，提出修改，再通过评测找出更好的版本。
+- **外层：改进 Agent。** Meta Agent 阅读成绩和失败记录，提出修改或构造新的 seed task（练习任务），再通过评测找出更好的版本。
 
 模型周围的指令、工具和工作流程，合称 **harness**。Gear 的设计目标是让**模型与 harness 共同进化**：修改 harness，改善做事方法；训练模型，提升模型本身的能力；两者都由任务结果指导。当前已实现 harness 进化，模型训练已有实验性路径，完整的联合迭代闭环仍在建设中。
 

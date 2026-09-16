@@ -2,6 +2,20 @@
 
 Use Gear's Refine Skill from Codex, Claude Code, DSH, or another agent that can load Skills and call Gear. Describe the benchmark, Meta agent, rollout agent and number of rounds in natural language to start optimizing.
 
+## Let your agent install Gear
+
+Copy this prompt into your agent to have it handle setup:
+
+```text
+Follow https://rsigear.xyz/docs/gear/quickstart to install Gear in my environment.
+Install gear@latest and agent-hitch@latest with npm and check the required dependencies.
+Add Gear's complete Refine Skill to my current agent and configure its connection to Gear.
+Use my actual task paths, target harness and model settings; ask me for any missing information.
+Verify that the Skill can connect to Gear, then report the result and how to start my first optimization.
+```
+
+The steps below cover manual installation and the first optimization.
+
 ## 1. Install Gear
 
 Use Node.js 22.19+ or 24+ and Git. Install Gear and Hitch; this example also installs DSH as the rollout agent:

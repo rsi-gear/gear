@@ -8,32 +8,39 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md) · [User guide](https://rsigear.xyz/docs/gear) · [Examples](https://rsigear.xyz/docs/gear/examples/evolution-search)
 
-Give Gear tasks with checkable results. It tests an AI agent, looks at what went wrong, and improves its instructions, tools, and workflow so it can do those tasks better.
+Gear is an open-source algorithm framework that helps AI agents work on real tasks across different software environments and learn from what goes right or wrong. We aim to use that experience to improve their instructions and tools, and turn it into training data that makes the models themselves better.
 
 ## A smaller model that can compete with the best
 
-On **AutomationBench's 100 public Marketing tasks**, Gear improved **GPT 5.6 Luna max to a process score of 88.88%, above Codex + GPT 6 Astra max's 84.08%**. Its **task pass rate reached 53%, close to Astra's 57%**. The smaller model met more of the scoring requirements on average and came close on fully completed tasks.
+On **AutomationBench's 100 public Marketing tasks**, Gear improved **GPT 5.6 Luna max to a process score of 88.88%, above Codex + GPT 6 Astra max's 84.08%**, and its **task pass rate reached 53%**.
 
 ![Example 2: the Gear-evolved harness with GPT 5.6 Luna max scores 88.88% on process and passes 53% of tasks, compared with 84.08% and 57% for Codex + GPT 6 Astra max.](docs/guide/assets/marketing-staged-search.svg)
 
-## Tasks we have validated
+### Tasks we have validated
 
-Our compute budget is limited, so we are starting with the task set below. We report results before and after optimization, alongside a leading-model (SOTA) reference.
+Our compute budget is limited, so we are starting with the task set below and reporting its results before and after optimization.
 
-| Validated task set | Metric | Before · medium | After · medium → max | SOTA model reference |
-| --- | --- | ---: | ---: | ---: |
-| AutomationBench / Marketing · 100 tasks | Task pass rate | 27% | **40% → 53%** | 57% |
-| AutomationBench / Marketing · 100 tasks | Process score | 75.37% | **83.87% → 88.88%** | 84.08% |
+| Validated task set | Model + harness combination | Metric | Before | After | Δ |
+| --- | --- | --- | --- | --- | --- |
+| AutomationBench / Marketing  | GPT 5.6 Luna medium + DSH | Task pass rate / process score |  27% / 75.37% |  40% / 83.87% |**+13% / +8.50%** |
 
-The before/after agent uses DSH + GPT 5.6 Luna; the reference uses Codex + GPT 6 Astra max on the same 100 public tasks. **Medium → medium shows the harness improvement; max uses a higher reasoning budget.** Process score measures the share of scoring requirements met; a task passes only when all its scored requirements are met.
-
-These public tasks also guided optimization. The reference column uses our Codex + Astra measurement on this public set; starred points in the chart come from a separate official private test set. [Scoring and sources](docs/guide/en/results.md) · [Full experiment](docs/guide/en/example-algorithm.md).
+These public tasks also guided optimization. Starred points in the chart come from a separate official private test set. [Scoring and sources](docs/guide/en/results.md) · [Full experiment](docs/guide/en/example-algorithm.md).
 
 ## Quick start
 
 Gear is an optimization library you can call as a **Skill** from Codex, Claude Code, DSH, or another compatible agent. Use an existing benchmark, or bring your own tasks in [Harbor format](docs/guide/en/datasets.md).
 
-Install Gear and [Hitch](https://github.com/rsi-gear/agent-hitch), which runs the tests. This example uses DSH as the agent doing the tasks:
+**Let your agent install Gear.** Copy this prompt into the agent you use:
+
+```text
+Follow https://rsigear.xyz/docs/gear/quickstart to install Gear in my environment.
+Install gear@latest and agent-hitch@latest with npm and check the required dependencies.
+Add Gear's complete Refine Skill to my current agent and configure its connection to Gear.
+Use my actual task paths, target harness and model settings; ask me for any missing information.
+Verify that the Skill can connect to Gear, then report the result and how to start my first optimization.
+```
+
+To install manually, start with Gear and [Hitch](https://github.com/rsi-gear/agent-hitch), which runs the tests. This example uses DSH as the agent doing the tasks:
 
 ```bash
 npm install --global gear@latest agent-hitch@latest @deepseek-ai/dsh@latest
@@ -55,7 +62,7 @@ The agent proposing changes is called the **Meta agent**. It can use a different
 Gear follows a **meta-learning** design: one loop does the tasks, and another learns how to improve the agent doing them.
 
 - **Inner loop: do the work.** The task agent uses its current model, instructions, and tools to attempt the tasks.
-- **Outer loop: improve the worker.** The Meta agent reads the results and failed attempts, proposes changes, and tests which versions work better.
+- **Outer loop: improve the worker.** The Meta agent reads the results and failed attempts, proposes changes or creates new seed tasks (practice tasks), and tests which versions work better.
 
 The instructions, tools, and workflow around a model are called its **harness**. Gear's design aims to **evolve the model and harness together**: improve how the agent works through harness changes, and improve the model's ability through training, using task results to guide both. Harness evolution works today. Model training has an experimental path; the complete joint loop is still in progress.
 
