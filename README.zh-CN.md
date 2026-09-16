@@ -14,7 +14,7 @@ Gear 是一套开源算法框架，帮助 AI Agent 在不同的软件环境中�
 
 在 AutomationBench 的 100 个公开 Marketing 任务上，Gear 将 **GPT 5.6 Luna max 的过程分提升到 88.88%，高于 Codex + GPT 6 Astra max 的 84.08%**，并且任务通过率达到 53%。
 
-![从原始 DSH 开始的 Harness 与 GEPA 优化过程：GPT 5.6 Luna max 的过程分达到 88.88%、任务通过率为 53%；Codex 搭配 GPT 6 Astra max 的对应结果为 84.08% 和 57%。](docs/guide/assets/marketing-staged-search.png)
+![从原始 DSH 开始的 Harness 与 GEPA 优化过程：GPT 5.6 Luna max 的过程分达到 88.88%、任务通过率为 53%；Codex 搭配 GPT 6 Astra max 的对应结果为 84.08% 和 57%。](docs/guide/assets/marketing-evolution-overview.png)
 
 ### 已验证的任务
 

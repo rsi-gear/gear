@@ -12,7 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / 'docs/guide/assets'
 DATA = json.loads((ASSETS / 'marketing-results.json').read_text())
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--only', choices=['marketing-harness-evolution', 'marketing-staged-search', 'staged-search-flow'])
+parser.add_argument('--only', choices=['marketing-harness-evolution', 'marketing-staged-search',
+                                     'marketing-evolution-overview', 'staged-search-flow'])
 ONLY = parser.parse_args().only
 BLUE, ORANGE, INK, GREY, GREEN = '#3155d9', '#b35518', '#182438', '#606b7b', '#287567'
 plt.rcParams.update({'font.family': 'DejaVu Sans', 'font.size': 11,
@@ -53,7 +54,7 @@ def arrow(ax, start, end, **kwargs):
                 'lw': 2, 'shrinkA': 5, 'shrinkB': 5, **kwargs})
 
 
-def chart(key, name, title, effort_index):
+def chart(key, name, title, effort_index, *, include_harness=False):
     rows = DATA[key]
     fig = plt.figure(figsize=(13.5, 8.2))
     ax = fig.add_axes([.085, .32, .89, .50])
@@ -69,7 +70,7 @@ def chart(key, name, title, effort_index):
                      fontsize=20, fontweight='bold', color=INK, pad=24)
 
     accepted = [r for r in rows if r['round'] == 0 or r['decision'].startswith(('accepted', 'promoted'))]
-    if key == 'stagedEvolution':
+    if include_harness:
         harness_accepted = [r for r in DATA['harnessEvolution']
                             if r['round'] == 0 or r['decision'].startswith('accepted')]
         # Harness R4 and the GEPA baseline are the same retained version.
@@ -85,7 +86,7 @@ def chart(key, name, title, effort_index):
                   3: 'R3 · 36 / 80.40', 4: 'R4 · 36 / 81.19', 5: 'R5 · 34 / 82.30'}
         annotations = [(row, labels[row['round']], offsets[row['round']], 'left')
                        for row in rows if row['round'] != 0]
-    else:
+    elif include_harness:
         offsets = {0: (-42, -6), 1: (40, 5), 3: (0, 30)}
         labels = {0: 'Harness R4 / GEPA start\n36 / 81.19',
                   1: 'GEPA R1\n36 / 80.59', 3: 'GEPA R3 · 40 / 83.87'}
@@ -99,6 +100,13 @@ def chart(key, name, title, effort_index):
                 offset, align = harness_offsets[row['round']]
                 text = f"Harness R{row['round']}\n{row['candidatePassed']} / {row['partialCredit'] * 100:.2f}"
                 annotations.append((row, text, offset, align))
+    else:
+        offsets = {0: (-12, 25), 1: (-16, -28), 3: (-57, 26)}
+        labels = {0: 'GEPA start · from Example 1\n36 / 81.19',
+                  1: 'R1 · 36 / 80.59', 3: 'R3 · 40 / 83.87'}
+        annotations = [(row, labels[row['round']], offsets[row['round']],
+                        'right' if row['round'] == 0 else 'left')
+                       for row in rows if row['candidatePassed'] is not None]
     other_label = True
     for row, text, offset, align in annotations:
         xy = (row['candidatePassed'], row['partialCredit'] * 100)
@@ -126,7 +134,8 @@ def chart(key, name, title, effort_index):
         old = DATA['effortComparison'][0]
         oldxy = (old['max'], old['maxPartialCredit'] * 100)
         ax.scatter(*oldxy, s=55, facecolors='white', edgecolors=BLUE, zorder=5)
-        label(ax, 'Harness R4 · Luna max\n50 / 88.98', oldxy, (-38, 40), BLUE, 'center')
+        previous_label = 'Harness R4 · Luna max' if include_harness else 'Previous Harness · max'
+        label(ax, f'{previous_label}\n50 / 88.98', oldxy, (-38, 40), BLUE, 'center')
     codex = DATA['codexAstraMaxReference']
     cxy = (codex['passed'], codex['partialCredit'] * 100)
     ax.scatter(*cxy, c=INK, marker='s', s=62, zorder=5)
@@ -157,12 +166,13 @@ def chart(key, name, title, effort_index):
     save(fig, name)
 
 
-for key, name, title, index in [
-    ('harnessEvolution', 'marketing-harness-evolution', 'Example 1 / Evolve a harness for Marketing', 0),
-    ('stagedEvolution', 'marketing-staged-search', None, 1),
+for key, name, title, index, include_harness in [
+    ('harnessEvolution', 'marketing-harness-evolution', 'Example 1 / Evolve a harness for Marketing', 0, False),
+    ('stagedEvolution', 'marketing-staged-search', 'Example 2 / Customize your evolve algorithm', 1, False),
+    ('stagedEvolution', 'marketing-evolution-overview', None, 1, True),
 ]:
     if ONLY in (None, name):
-        chart(key, name, title, index)
+        chart(key, name, title, index, include_harness=include_harness)
 
 if ONLY in (None, 'staged-search-flow'):
     fig, ax = plt.subplots(figsize=(11.8, 2.9))
