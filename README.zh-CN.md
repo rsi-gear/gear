@@ -12,38 +12,26 @@
 
 ## 小模型，也能和顶尖模型掰手腕
 
-在 **AutomationBench 的 100 个公开 Marketing 任务**上，Gear 帮助 **GPT 5.6 Luna 完成了 53 个任务**，接近 **Codex + GPT 6 Astra max 的 57 个**。小模型与前沿模型的差距，缩小到了四个任务。
+在 **AutomationBench 的 100 个公开 Marketing 任务**上，Gear 将 **GPT 5.6 Luna max 的过程分提升到 88.88%，高于 Codex + GPT 6 Astra max 的 84.08%**；**任务通过率达到 53%，接近 Astra 的 57%**。小模型平均完成了更多评分要求，整题通过率也已接近前沿模型。
 
-![案例二：Gear 将 GPT 5.6 Luna 在 medium 档的通过数从 27 提升到 40，max 档达到 53；Codex 搭配 GPT 6 Astra max 通过 57 个任务，Gear 优化后的 harness 搭配 Astra max 通过 61 个。](docs/guide/assets/marketing-staged-search.svg)
+![案例二：Gear 优化后的 harness 搭配 GPT 5.6 Luna max，过程分为 88.88%、任务通过率为 53%；Codex 搭配 GPT 6 Astra max 的对应结果为 84.08% 和 57%。](docs/guide/assets/marketing-staged-search.svg)
 
-| Agent 配置 | 模型与推理档位 | 通过任务数 / 100 |
-| --- | --- | ---: |
-| 原始 DSH | GPT 5.6 Luna medium | 27 |
-| Gear 优化后的 DSH | GPT 5.6 Luna medium | 40 |
-| Gear 优化后的 DSH | GPT 5.6 Luna max | **53** |
-| Codex | GPT 6 Astra max | **57** |
-| Gear 优化后的 DSH | GPT 6 Astra max | **61** |
+## 已验证的任务
 
-在相同推理档位下，Gear 把 Luna 的成绩从 27 提升到 40。再给优化后的 Agent 更多推理时间（`max` 档），成绩达到 53。同一套改进后的指令和工具，搭配 Astra max 时达到了 61。
+当前算力预算有限，我们先在下面的任务集上验证优化效果，并公开优化前、优化后和领先模型（SOTA）的对照结果。
 
-只有满足全部评分要求，任务才算通过。这组公开任务也用于指导优化；图中带星号的结果来自另一组官方私有测试任务。详见[评分方式与来源](docs/guide/zh-CN/results.md)。
+| 已验证任务集 | 指标 | 优化前 · medium | 优化后 · medium → max | SOTA 模型参考 |
+| --- | --- | ---: | ---: | ---: |
+| AutomationBench / Marketing · 100 题 | 任务通过率 | 27% | **40% → 53%** | 57% |
+| AutomationBench / Marketing · 100 题 | 过程分 | 75.37% | **83.87% → 88.88%** | 84.08% |
 
-[案例二](docs/guide/zh-CN/example-algorithm.md)展示了使用的算法、具体改动和可运行代码。
+优化前后使用 DSH + GPT 5.6 Luna，对照使用 Codex + GPT 6 Astra max，均在同一组 100 个公开任务上评测。**Medium → medium 展示 harness 改进的效果；max 档额外增加了推理预算。** 过程分表示完成了多少评分要求，任务通过则要求整道题的评分要求全部满足。
 
-## Gear 是怎么做到的？
-
-模型需要指令、工具，以及使用工具的方法。这些配套部分合称 **harness**。Gear 用一个简单的循环来改进它：
-
-1. **先试一遍。** 看看 Agent 已经能完成哪些任务。
-2. **找出原因。** 另一个 Agent 阅读失败记录，提出改进办法。
-3. **做出修改。** 调整指令、工具、技能或完成任务的步骤。
-4. **重新测试。** 对比成绩，保留有用的修改，再继续下一轮。
-
-你来决定优化哪些任务、运行几轮。Gear 保存每一版改动和结果，你可以查看过程，也可以直接使用最终的 harness。
-
-Gear 是一个可以通过 **Skill** 调用的优化库，能接入 Codex、Claude Code、DSH 或其他兼容 Agent。你可以使用已有 benchmark，也可以用 [Harbor 格式](docs/guide/zh-CN/datasets.md)定义自己的任务。
+这组公开任务也用于指导优化。表中的 SOTA 模型参考是我们对 Astra 的实测，官方榜单使用另一组私有测试任务，在图中以星号标出。[评分方式与来源](docs/guide/zh-CN/results.md) · [完整实验](docs/guide/zh-CN/example-algorithm.md)。
 
 ## 快速开始
+
+Gear 是一个可以通过 **Skill** 调用的优化库，能接入 Codex、Claude Code、DSH 或其他兼容 Agent。你可以使用已有 benchmark，也可以用 [Harbor 格式](docs/guide/zh-CN/datasets.md)定义自己的任务。
 
 安装 Gear 和负责运行评测的 [Hitch](https://github.com/rsi-gear/agent-hitch)。下面用 DSH 作为执行任务的 Agent：
 
@@ -61,6 +49,32 @@ hitch eval setup harbor
 ```
 
 负责提出改进的 Agent 叫作 **Meta Agent**。它和执行任务的 Agent 可以使用不同的模型。
+
+## 算法设计：学习如何改进自己
+
+Gear 采用 **meta-learning（元学习）**的设计：一层负责做任务，另一层学习如何改进做任务的 Agent。
+
+- **内层：完成任务。** 执行任务的 Agent 使用当前模型、指令和工具，尝试解题。
+- **外层：改进 Agent。** Meta Agent 阅读成绩和失败记录，提出修改，再通过评测找出更好的版本。
+
+模型周围的指令、工具和工作流程，合称 **harness**。Gear 的设计目标是让**模型与 harness 共同进化**：修改 harness，改善做事方法；训练模型，提升模型本身的能力；两者都由任务结果指导。当前已实现 harness 进化，模型训练已有实验性路径，完整的联合迭代闭环仍在建设中。
+
+### 哪些组件可以进化？
+
+在你允许 Gear 编辑的范围内：
+
+| 组件 | 可以改变什么 | 当前状态 |
+| --- | --- | --- |
+| Prompt 与策略 | 任务指令、系统提示、采取行动时遵循的规则。 | 已支持 |
+| 工具与 hooks | 工具代码，以及工具运行前后的检查和处理。 | 已支持 |
+| Skills 与工作流 | 可复用的操作方法、辅助脚本和执行步骤。 | 已支持 |
+| 上下文管理 | 让 Agent 看到哪些信息，如何压缩和总结较长的历史记录。 | 已支持 |
+| Harness 组合 | 使用哪些插件和服务，以及如何配置它们。 | 已支持 |
+| 模型权重 | 利用任务反馈训练模型本身。 | 实验性；完整迭代闭环尚未完成 |
+
+你还可以修改**优化算法本身**：如何提出修改、挑选任务、执行和评分、比较候选，以及决定保留哪个版本。[案例二](docs/guide/zh-CN/example-algorithm.md)用基于 GEPA 的搜索展示了这些可替换模块。
+
+Gear 保存每一版改动和结果，你可以查看过程，也可以直接使用最终的 harness。
 
 ## 看看两个完整案例
 
