@@ -15,8 +15,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Select CI jobs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.select.outputs.code }}
+      macos: ${{ steps.select.outputs.macos }}
+      full_tests: ${{ steps.select.outputs.full_tests }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Compare the entire push or PR, including deleted and renamed files.
+          fetch-depth: 0
+      - name: Check CI selection rules
+        run: node --test .github/scripts/ci-changes.test.mjs
+      - name: Select jobs from changed paths
+        id: select
+        run: node .github/scripts/ci-changes.mjs
+
   quality:
     name: Quality
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -26,25 +47,33 @@ jobs:
           node-version: 22.22.1
           cache: npm
       - uses: actions/setup-python@v5
+        if: needs.changes.outputs.full_tests == 'true'
         with:
           python-version: '3.12'
       - name: Install Python RPC dependencies
+        if: needs.changes.outputs.full_tests == 'true'
         run: python -m pip install ./python -c python/constraints-test.txt
       - name: Install sandbox dependencies
+        if: needs.changes.outputs.full_tests == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y bubblewrap ripgrep socat
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
+      # Keep dev checks fast; run regression tests for main or manual runs.
       - name: Test as the production service user
+        if: needs.changes.outputs.full_tests == 'true'
         run: sudo env "PATH=$PATH" npm test
-      - run: npm pack --dry-run
+      # The build above already ran the same command as the prepack hook.
+      - run: npm pack --dry-run --ignore-scripts
       - name: Test the published search API from an external package
         run: node scripts/check-search-package.mjs
 
   training-cpu:
     name: Training / CPU
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -67,6 +96,8 @@ jobs:
 
   sandbox-linux:
     name: Sandbox / Linux
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -95,6 +126,8 @@ jobs:
 
   sandbox-macos:
     name: Sandbox / macOS
+    needs: changes
+    if: needs.changes.outputs.macos == 'true'
     runs-on: macos-14
     timeout-minutes: 15
     steps:
@@ -108,6 +141,8 @@ jobs:
 
   hitch-rerun-contract:
     name: Hitch rerun contract
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
