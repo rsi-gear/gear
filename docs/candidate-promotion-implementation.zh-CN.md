@@ -1,10 +1,16 @@
 # Candidate 晋升策略实现与接入
 
+## 算法扩展入口
+
+新增父代策略、公开测试工具和包消费示例见 [搜索算法作者指南](search-algorithm-authoring.zh-CN.md)。下文保留实现与验收记录；新的插件扩展应使用作者指南中的 `search/api`、`search/presets/failure-cluster-gepa` 和 `search/testing` 入口。
+
+新增可选的 [champion 与 GEPA 混合父代抽样](champion-gepa-parent-sampling.zh-CN.md)：默认 50% 直接选择当前 champion，剩余 50% 按 GEPA 权重抽样；每个候选独立选择父代。以下未特别说明的 scope membership 规则描述原策略及新策略的 GEPA 探索分支。
+
 本次变更实现 `failure-cluster-gepa-v1` 的 Gear 搜索驱动、控制面接入和独立晋升策略。仅对新建 evolution 显式启用；没有 `searchSettings` 的历史 spec 保持原路径、组件身份和 verdict。
 
 规范 65 行及相关正文已经核对，搜索、恢复、默认 evaluator 与控制面测试记录见[验收记录](candidate-promotion-acceptance.zh-CN.md)。默认路径由 Gear 内部处理分阶段评测，不需要为 Hitch 新增协议、参数或能力声明。
 
-实现位于独立分支 `codex/candidate-promotion`，基于 `e0e8a7f`。没有合并到正在运行实验的 `dev`，没有重建其 `lib`，没有修改实验配置、数据、champion 或 published pointer。开发和测试工作目录为 `/private/tmp/gear-candidate-promotion-20260912`。
+实现位于独立分支 `codex/candidate-promotion`，基于 `e0e8a7f`。没有合并到正在运行实验的 `dev`，没有重建其 `lib`，没有修改实验配置、数据、champion 或 published pointer。初始开发和测试工作目录为 `/private/tmp/gear-candidate-promotion-20260912`；算法包重构已迁移到 `/Users/tangyehui/gear-candidate-promotion`。
 
 ## 已接入的流程
 
@@ -15,16 +21,17 @@
 - 可选周期 scope 更新在 workplan 封存前完成准备，提交后的新视图供下一轮抽样；必要预算不足或证据不合格保留旧 epoch。
 - scope 的语义身份从任务、权重和 guards 重算；等价范围合并证据与抽样机会。每份局部计划必须覆盖完整 scope，跨计划的同一有效 cell 不得出现冲突值；较旧的 missing 视图仍可保存，不覆盖已补齐资格。
 - 全局与 bridge 按 `globalTaskWeights: uniform` 做逐任务等权宏平均；provider 的 task weight 不改变这项策略。scope 仍使用自己冻结的桶权重。
+- bridge → global-seed 不因过程分退步而否决候选，最多一个候选进入全量评测。revision 15 恢复原全量晋升标准：默认 outcome 和每个可比较的过程组都不能退步，且 outcome 或过程至少一项严格提升；outcome 提升不再豁免过程分退步。比较继续使用冻结的量化整数键，并恢复原配置 minimumGain、回退容差与 allowNeutral 的语义（本实验容差为 0，allowNeutral 为 false）。完整证据与保护任务/断言检查仍生效，独立 held-out 保留非退步复核。shared-set research 的显式 champion CAS 接入保持不变。回退晋升通过新 evolution 的初始 champion 记录，旧实验冻结决定和证据不改写。
 - `SearchTask.repetitionIndices` 可选择全局逻辑 repetition manifest 的非空子集；省略时使用全部 slots。重复更多的任务不获得更多统计权重，计划费用、coverage 和配对均按各任务实际 slots 计算，任务规模比例仍基于 N。
 - 过程能力在 admission 解析。原生 outcome-only、逐 trial scalar、过程缺失和旧版整条 invalid 分开处理；新模式不会添加 LLM judge。
 - 每个候选领取自己的工作计划、有来源的 dossier 摘要、共享约束和父代 findings。Skill claim 和 DSH 投递产生独立消费凭据，不填充伪造的旧诊断 receipts。修改边界是相对 harness 根目录的路径。
 - `SearchExecutionHooks.generate` 接收冻结的 `baselineContext`（universe、plan、scope 和过程模式）。Meta 基线只能投影完整 planned outcome；摘要按任务及 scope 权重计算，逻辑 slots 单独计数。只有单一、完整、可聚合的过程组才产生顶层过程均分。Skill 同时收到 `plannedTrialCount` 和 `scoringContext`，新模式的存储校验重算这些摘要，旧模式校验不变。
-- 所有候选生成结束后才评测。重试共享工作计划和总生成预算；无法认证实际 token 用量的外部 Skill 会按完整 reservation 计费。
+- 所有候选生成结束后才评测。重试共享工作计划和总生成预算；显式配置 token/request 限额时要求 Meta 适配器可强制执行。DSH 的独立计量支持普通与 context offloading 两条路径；Skill 可以省略这些可选限额运行，显式不支持的限额仍拒绝接纳。账本按完整、可执行的 reservation 保守计费，不把该上界宣称为实测用量。
 - 阶段计划、bindings、诊断、提名、结果和 commit intent 使用内容摘要持久化。每次外部执行先冻结请求和预算 reservation，provider 使用幂等键恢复；部分 cell 已写入或诊断已结算时的中断不会重算请求或重新执行。
 - evolution 级规则和任务身份跨轮固定，存在未解决 round 时不能新开 round。cell 缓存按 exact commit/manifest 与执行条件寻址，保留原始 snapshot 来源，候选角色或谱系标签变化不产生新执行槽位。
 - bridge 预算按所有参与者的实际缺失 cells 与 repair 成本计算，已完成的 local cells 不重复收费；组配额、容量不足和费用不足分别记录。
 - held-out 前先冻结 seed research；缺失 held-out 可以在 intent 之前补评。历史局部证据通过独立 completion 追加 revision，有效零分和有效过程分不可替换。
-- `shared-set-research` 只生成研究更新和 advisory 决定，不能自动更新 champion。
+- `shared-set-research` 默认只生成研究更新和 advisory 决定。明确配置 `promotion.allowSharedSetPromotion: true` 后，达标候选可通过原有 CAS 更新研究 champion；此时结果不再是仅建议，`advisory` 为 false，`validationMode: shared-set-research` 保留共享研究集标记，不声称具有独立 held-out 验证。未配置该选项的旧流程行为不变。
 - 回归收集默认关闭。provider 可声明冻结的 `regressionTemplate`；有效 seed 业务失败进入过滤、去重、有容量限制的 proposal 队列。提案包含 prompt digest 和已过滤内容对象引用；收集器同步持久化对应对象。物化 suite 必须经可重现性验证，只能在新 admission 纳入。
 
 ## 代表任务采样
@@ -80,6 +87,8 @@ search:
 阶段调度只把缺少证据的任务复制到 evolution 的 `search/datasets/<digest>`，复制后再次核验内容，原目录保持只读。每个逻辑 repetition 通过现有 `evaluate` 发起普通单次评测，模型、采样、超时及代码版本沿用原计划。未显式指定随机种子时记录 `seed: null`，不伪造受控随机种子。新调用不会重复执行已经有效的逻辑槽位。
 
 Gear 在外部调用前持久化请求、提交意图和 reservation；完成后封存原始结果，核对 exact commit、配置、子集、任务及 attempt 身份。Hitch 路径直接复用已有 `eval run` / daemon submit/watch，恢复使用 Gear 新增的通用只读 `inspectResult` 端口，其实现调用 Hitch 已有 `eval inspect --json`。不修改 Hitch 程序或 CLI 协议。提交结果不明且无法恢复原 reservation 时保持 unknown，不新建评测。
+
+直接模式在执行前冻结实际配置。daemon 模式通过 Gear 的 `submittedEvaluationIdentity` 读取已有提交记录中的实际执行配置，在接纳结果前将所有 seed/held-out batch 绑定到同一 cohort；不同候选和任务子集不改变这个共享配置摘要。配置漂移的提交会被拒绝并取消，旧证据不能与新配置的结果混用。这使 daemon 无需在提交前提供它原本没有的身份查询能力。
 
 默认共享诊断读取已有 verifier 产物，仅用具体失败 code/component ID 建立有来源的研究假设，修改边界取实际 harness manifest。没有有效诊断证据时保持 unresolved（可能 K=0），不把低总分强行归为同一根因；不新增 LLM judge。结果通道合法且 benchmark 未声明 process 时可完整评测和晋升。旧 observation 整条 invalid 的语义保留。
 
@@ -146,6 +155,8 @@ regression:
 ```
 
 `resolveSearchSettings` 补全新模式的规则默认值，并写入 `EvolutionSpec.searchSettings`。显式 `bridge.ratio: 0` 关闭发布扩评；局部研究仍可提交。改动超出分配模块的候选记录 `requires-broader-evaluation`，不能凭狭窄证据进入本轮发布路径。
+
+上面的 token/request 数值适用于可计量的 Meta。使用 Skill 时，从 `budgets.round` 和 `budgets.evolution` 删除 `maxGenerationTokens`、`maxGenerationRequests`，并省略 `candidateGeneration.budget` 中的 `maxTokens`、`maxModelRequests`。这些字段分别可选，任一层显式配置即要求执行；`0` 表示耗尽，不等于省略。未配置的生成资源在 `remainingBudget` 中为 `null`，生成结果缺少对应 `usage` 字段，表示未知用量。评测、诊断、修复和时间预算仍按配置约束。
 
 ## 状态与恢复 API
 

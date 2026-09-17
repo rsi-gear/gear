@@ -38,7 +38,7 @@ function summaryFixture() {
     spec: { ...metaAgent(), contextOffloading: resolveOffloadingPolicy({ mode: 'proactive', contextWindow: 10000 }) } }
 }
 
-async function setup(options: { summary?: string; overflow?: boolean; maxRequests?: number; abortSummary?: boolean; summaryGate?: Promise<void>; largeOutput?: boolean;
+async function setup(options: { summary?: string; overflow?: boolean; offloading?: boolean; requestMaxTokens?: number; maxRequests?: number; maxTokens?: number; abortSummary?: boolean; summaryGate?: Promise<void>; largeOutput?: boolean;
   nonshrinking?: boolean; oversizedFixed?: boolean; persistence?: MemorySessionBackend; abortReason?: unknown;
   restore?: { state: MetaExecutionState; bundle?: HandoffBundle; workText?: string }
 } = {}) {
@@ -87,10 +87,11 @@ async function setup(options: { summary?: string; overflow?: boolean; maxRequest
     }
   }
   ctx.llm.registerAdapter(['p'], new Adapter())
-  const spec = { ...metaAgent(), contextOffloading: resolveOffloadingPolicy({
+  const spec = { ...metaAgent(), ...(options.offloading === false ? {} : { contextOffloading: resolveOffloadingPolicy({
     mode: options.overflow ? 'overflow-only' : 'proactive', contextWindow: 10000,
     summaryMaxTokens: 1000, reserveTokens: 1500,
-  }) }
+  }) }) }
+  if (options.requestMaxTokens !== undefined) spec.model.maxTokens = options.requestMaxTokens
   const retired: string[] = []
   const setupCapabilities = (agentCtx: Context) => {
     agentCtx.tools.register(defineTool({
@@ -133,7 +134,8 @@ async function setup(options: { summary?: string; overflow?: boolean; maxRequest
   const switches: string[] = []
   const handle = await manager.wakeCandidate(round, round.candidatePool[0], baseline, agent, {
     executionId: 'execution-test', attempt: 1, deadlineAt: options.restore?.state.deadlineAt ?? Date.now() + 60000, signal: abort.signal,
-    budget: options.maxRequests === undefined ? {} : { maxModelRequests: options.maxRequests },
+    budget: { ...(options.maxRequests === undefined ? {} : { maxModelRequests: options.maxRequests }),
+      ...(options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }) },
     isComplete: () => completed,
     snapshot: async () => ({ workspaceId: 'same-workspace', text: await readFile(join(root, 'work.txt'), 'utf8').catch(() => '') }),
     activate: (source, next) => { expect(source).toBe(activeId); switches.push(next); activeId = next },
@@ -230,11 +232,53 @@ describe('DSH context offloading', () => {
     expect((await fixture.journal.read('execution-test'))!.status).toBe('stopped')
   })
 
+  it.each(['tokens', 'requests', 'complete'] as const)('enforces generation budgets without enabling context offloading (%s)', async mode => {
+    const fixture = await setup({ offloading: false,
+      ...(mode === 'tokens' ? { maxTokens: 1 } : mode === 'requests' ? { maxRequests: 1 } : { maxTokens: 100000, maxRequests: 3 }) })
+    expect(fixture.manager.options.metaAgent.contextOffloading).toBeUndefined()
+    expect(fixture.manager.capabilities.aggregateGenerationBudget).toBe(true)
+    if (mode === 'complete') await fixture.handle.completion
+    else await expect(fixture.handle.completion).rejects.toThrow(/context-budget-exhausted/)
+    expect(fixture.switches).toHaveLength(0)
+    expect(fixture.calls).toHaveLength(mode === 'tokens' ? 0 : mode === 'requests' ? 1 : 3)
+    expect(fixture.calls.some(call => call.purpose === 'compaction')).toBe(false)
+    expect(await fixture.journal.read('execution-test')).toMatchObject({ status: mode === 'complete' ? 'completed' : 'stopped',
+      usage: { summaryRequests: 0, summaryTokens: 0 } })
+    if (mode === 'complete') {
+      const attribution = fixture.manager.proposalAttribution('round-1', fixture.activeId, {})
+      expect(attribution.maxTokens).toBe(fixture.calls.at(-1)!.maxTokens)
+      expect(new Set(fixture.calls.map(call => call.maxTokens)).size).toBeGreaterThan(1)
+      expect(await fixture.journal.read('execution-test')).toMatchObject({ usage: { modelRequests: 3, tokens: 360 } })
+    }
+  })
+
+  it('attributes budget-capped requests to the sealed model while retaining their effective output limit', async () => {
+    const fixture = await setup({ offloading: false, maxTokens: 100000, requestMaxTokens: 100000 })
+    await fixture.handle.completion
+    const attribution = fixture.manager.proposalAttribution('round-1', fixture.activeId, {})
+    expect(attribution.maxTokens).toBeLessThan(100000)
+    expect(attribution.maxTokens).toBe(fixture.calls.at(-1)!.maxTokens)
+    const agent = fixture.host.getLive(fixture.activeId)!
+    const effective = agent.session.events.findLast(event => event.type === 'request/header')!
+    if (effective.type !== 'request/header') throw new Error('missing request header')
+    agent.session.append('request/header', { ...effective.data, header: { ...effective.data.header,
+      config: { ...effective.data.header.config, model: 'unsealed-model' } }, reason: 'change' })
+    expect(() => fixture.manager.proposalAttribution('round-1', fixture.activeId, {})).toThrow(/lacks a generation budget reservation/)
+  })
+
   it('charges summaries to the original request limit', async () => {
     const fixture = await setup({ maxRequests: 1 })
     await expect(fixture.handle.completion).rejects.toThrow(/context-budget-exhausted/)
     expect(fixture.switches).toHaveLength(0)
     expect(fixture.calls).toHaveLength(1)
+  })
+
+  it('blocks the first model request when its token reservation exceeds the aggregate limit', async () => {
+    const fixture = await setup({ maxTokens: 1 })
+    expect(fixture.manager.capabilities.aggregateGenerationBudget).toBe(true)
+    await expect(fixture.handle.completion).rejects.toThrow(/context-budget-exhausted/)
+    expect(fixture.calls).toHaveLength(0)
+    expect(await fixture.journal.read('execution-test')).toMatchObject({ status: 'stopped', usage: { modelRequests: 0, tokens: 0 } })
   })
 
   it('does not activate a late summary after cancellation', async () => {

@@ -98,12 +98,13 @@ describe('scope archive and process compatibility', () => {
 })
 
 describe('multisignal gates', () => {
-  it('allows process improvement at outcome tie and blocks outcome regression or process regression', () => {
+  it('requires outcome and process non-regression, and allows either strict gain', () => {
     const u = universe(2, 'seed', true), a = snapshot('A'), b = snapshot('B'), base = scored(u, a, [1, 0], [0.5, 0.5], 'global-seed')
     const run = (values: number[], partial: number[]) => precheckSeed({ universe: u, plan: base.plan, anchor: a, candidate: b, baseline: base.result, result: scored(u, b, values, partial, 'global-seed').result }, settings().promotion)
     expect(run([1, 0], [0.6, 0.6]).outcome).toBe('eligible')
     expect(run([0, 0], [1, 1]).reasonCodes).toContain('outcome-regression')
     expect(run([1, 1], [0.4, 0.4]).reasonCodes).toContain('process-regression:process')
+    expect(run([1, 0], [0.4, 0.4]).reasonCodes).toContain('process-regression:process')
   })
   it('requires strict improvement with outcome only, preserving legacy gates separately', () => {
     const u = universe(2), a = snapshot('A'), b = snapshot('B'), ar = scored(u, a, [0, 0], undefined, 'global-seed')
@@ -263,6 +264,25 @@ it('keeps shared-set validation advisory and never changes champion', async () =
   const engine = new FailureClusterSearch(new SearchStore(await root()), f.provider, f.diagnosis, f.hooks)
   const result = await engine.run({ evolutionId: 'advisory', roundId: 'r', roundIndex: 0, maxCandidates: 1, anchor: f.anchor, championRevisionDigest: digestJson('revision'), settings: config }, new AbortController().signal)
   expect(result.promotion?.outcome).toBe('accepted'); expect(result.advisory).toBe(true); expect(result.championChanged).toBe(false); expect(f.promotions).toEqual([])
+})
+
+it('updates a shared-set research champion only with explicit promotion authorization', async () => {
+  const { resolveSearchSettings } = await import('../../src/search/config.js')
+  const f = fixtures(20), config = settings()
+  config.promotion.validationMode = 'shared-set-research'
+  config.promotion.allowSharedSetPromotion = true
+  const resolved = resolveSearchSettings(config)!
+  expect(resolved.promotion.allowSharedSetPromotion).toBe(true)
+  const engine = new FailureClusterSearch(new SearchStore(await root()), f.provider, f.diagnosis, f.hooks)
+  const request = { evolutionId: 'research-promotion', roundId: 'r', roundIndex: 0, maxCandidates: 1, anchor: f.anchor, championRevisionDigest: digestJson('revision'), settings: resolved }
+  const result = await engine.run(request, new AbortController().signal)
+  expect(result.promotion?.outcome).toBe('accepted')
+  expect(result.advisory).toBe(false)
+  expect(result.validationMode).toBe('shared-set-research')
+  expect(result.championChanged).toBe(true)
+  expect(f.promotions).toHaveLength(1)
+  expect(await engine.run(request, new AbortController().signal)).toEqual(result)
+  expect(f.promotions).toHaveLength(1)
 })
 
 it('keeps operator promotion details and held-out repair refs out of research status', async () => {

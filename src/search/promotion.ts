@@ -60,7 +60,8 @@ export function assessGate(input: PromotionInput, config: MultisignalPromotionCo
     const tq = universe.tasks.find(t => t.process?.group === group)!.process!.comparisonQuantum
     const gainKey = BigInt(candidate.processGroupKeys[group]!) - BigInt(baseline.processGroupKeys[group]!), limits = thresholds(config, group)
     comparison.processGains[group] = gainValue(gainKey, tq)
-    if (gainKey < comparisonKey(-(universe.partition === 'seed' ? limits.maxSeedRegression : limits.maxHeldOutRegression), tq)) reasons.push(`process-regression:${group}`)
+    // Bridge process regression does not block collecting full-evaluation evidence.
+    if (plan.stage !== 'bridge' && gainKey < comparisonKey(-(universe.partition === 'seed' ? limits.maxSeedRegression : limits.maxHeldOutRegression), tq)) reasons.push(`process-regression:${group}`)
     if (gainKey < 0n) allProcessNonnegative = false
     if (gainKey > comparisonKey(limits.minimumGain, tq)) processImproved = true
   }

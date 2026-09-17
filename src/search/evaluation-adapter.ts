@@ -4,33 +4,39 @@ import { digestJson } from '../state/digest.js'
 import { digestDatasetRef } from '../state/dataset.js'
 import { describeDataset, projectDataset, type DatasetDescription } from './dataset-projection.js'
 import { cellKey, validOutcome } from './evidence.js'
-import { invariant, numeric, seal, sorted, utility, verifyDigest } from './contracts.js'
+import { digest, invariant, numeric, seal, sorted, utility, verifyDigest } from './contracts.js'
 import { SearchBudgetExceeded, SearchStore } from './store.js'
 import { SearchExecutionFailure, budgetFailure } from './recovery.js'
-import type { CellIdentity, DiagnosisFact, DiagnosisProvider, EvidenceCell, ExternalRecovery, EvaluationExecutionResult, SearchProvider, Snapshot, TaskUniverse } from './types.js'
+import type { CellIdentity, DiagnosisFact, DiagnosisProvider, EvidenceCell, ExternalRecovery, EvaluationExecutionResult, SearchProvider, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from './types.js'
 
 type Input = Parameters<SearchProvider['evaluate']>[0]
+type ExecutionIdentity = NonNullable<Awaited<ReturnType<NonNullable<RefineEvaluator['evaluationIdentity']>>>>
+type SubmittedIdentity = NonNullable<Awaited<ReturnType<NonNullable<RefineEvaluator['submittedEvaluationIdentity']>>>>
 interface Batch {
   cells: CellIdentity[]; request: EvaluationRequest; round: RefinementRound; intent?: EvaluationSubmissionIntent; key: string
-  identity?: { provider: string; effectiveConfigDigest: string }
+  identity?: ExecutionIdentity
+  cohortDigest: string
 }
 interface Source {
-  batch: Batch; evidence: EvaluationEvidence; completedAt: string; cells: EvidenceCell[]; digest: string
+  batch: Batch; executionIdentity: ExecutionIdentity; submittedIdentity?: SubmittedIdentity; evidence: EvaluationEvidence; completedAt: string; cells: EvidenceCell[]; digest: string
 }
-interface Operation { reservation?: EvaluationReservation; reserving?: boolean; started: boolean; sourceDigest?: string }
+interface Operation { submittedIdentity?: SubmittedIdentity; reservation?: EvaluationReservation; reserving?: boolean; started: boolean; sourceDigest?: string }
 export interface EvaluationSearchOptions {
   spec: EvolutionSpec; workspaceRoot: string; stateRoot: string
+  /** Stable full-dataset request context, available before the first round exists. */
+  identityRound: Readonly<RefinementRound>
   round(): Promise<RefinementRound>
   manifest(snapshot: Snapshot): Promise<HarnessManifest>
 }
 
 /** Gear owns task selection, cache identity and staging. The evaluator receives ordinary requests. */
 export class EvaluationSearchAdapter implements SearchProvider {
-  readonly integrity = digestJson({ implementation: 'gear-existing-evaluator-search', revision: 1 })
+  readonly integrity = digestJson({ implementation: 'gear-existing-evaluator-search', revision: 4 })
   readonly capabilities = { taskSubsetPlans: true, batchIndependentCells: true, idempotentExecution: true }
   readonly store: SearchStore
   readonly diagnosis: DiagnosisProvider
   private readonly datasets = new Map<string, Promise<DatasetDescription>>()
+  private readonly cohorts = new Map<string, { digest: string }>()
   constructor(readonly evaluator: RefineEvaluator, readonly options: EvaluationSearchOptions) {
     this.store = new SearchStore(options.stateRoot)
     this.diagnosis = {
@@ -39,14 +45,39 @@ export class EvaluationSearchAdapter implements SearchProvider {
       diagnose: input => this.diagnose(input),
     }
   }
-  private dataset(partition: 'seed' | 'held-out'): Promise<DatasetDescription> {
+  private async executionIdentity(round: Readonly<RefinementRound>, request: EvaluationRequest, signal?: AbortSignal): Promise<ExecutionIdentity | undefined> {
+    const identity = await this.evaluator.evaluationIdentity?.(round, request, signal)
+    if (!identity) {
+      invariant(this.evaluator.submittedEvaluationIdentity, 'staged search requires a resolvable evaluation runtime identity before admission or from a verified submission')
+      return undefined
+    }
+    invariant(typeof identity.provider === 'string' && identity.provider.length > 0, 'invalid evaluation provider identity')
+    digest(identity.effectiveConfigDigest)
+    if (identity.invocationFingerprint !== undefined) digest(identity.invocationFingerprint)
+    return structuredClone(identity)
+  }
+  private async dataset(partition: 'seed' | 'held-out'): Promise<DatasetDescription> {
     let value = this.datasets.get(partition)
     if (!value) { value = describeDataset(this.options.spec, partition, this.options.workspaceRoot); this.datasets.set(partition, value) }
-    return value
+    const source = await value, round = this.options.identityRound
+    const condition = partition === 'seed' ? round.plan.seed : round.plan.heldOut
+    const request: EvaluationRequest = { phase: partition === 'seed' ? 'seed-baseline' : 'held-out-baseline',
+      dataset: condition.dataset.ref, harnessRef: round.targetHarnessRef, condition }
+    const identity = await this.executionIdentity(round, request)
+    const binding = identity ?? { mode: 'verified-submission', evolutionId: this.options.spec.evolutionId }
+    const cohort = seal({ round, request, identity: binding })
+    const pointer = await this.store.read<{ ref: string }>(`evolution/evaluator-cohort-${partition}`)
+    const frozen = pointer ? await this.store.object<{ digest: string }>(pointer.ref) : this.cohorts.get(partition) ?? cohort
+    invariant(frozen.digest === cohort.digest, 'evaluation runtime configuration changed; start a new evolution')
+    this.cohorts.set(partition, cohort)
+    const { digest: ignored, ...universe } = source.universe
+    return { ...source, universe: seal({ ...universe, conditionDigest: digestJson({ declared: universe.conditionDigest, execution: binding }) }) }
   }
   async describe(partition: 'seed' | 'held-out'): Promise<TaskUniverse> { return structuredClone((await this.dataset(partition)).universe) }
 
   private async batches(input: Input, create: boolean): Promise<Batch[] | undefined> {
+    const source = await this.dataset(input.plan.partition)
+    invariant(source.universe.digest === input.plan.universeDigest, 'evaluation universe changed')
     const name = `evaluator-input-${input.idempotencyKey.slice(7)}`
     const pointer = await this.store.read<{ ref: string }>(`evolution/${name}`)
     if (pointer) {
@@ -55,8 +86,8 @@ export class EvaluationSearchAdapter implements SearchProvider {
       return saved.batches
     }
     if (!create) return undefined
-    const source = await this.dataset(input.plan.partition), round = await this.options.round()
-    invariant(source.universe.digest === input.plan.universeDigest, 'evaluation universe changed')
+    await this.store.freezeEvolution(`evaluator-cohort-${input.plan.partition}`, () => this.cohorts.get(input.plan.partition)!)
+    const round = await this.options.round()
     invariant((await this.options.manifest(input.snapshot)).digest === input.snapshot.manifestDigest, 'evaluation harness manifest changed')
     const prepared = await this.store.freezeEvolution(name, async () => {
       const batches: Batch[] = []
@@ -72,18 +103,23 @@ export class EvaluationSearchAdapter implements SearchProvider {
         const request: EvaluationRequest = { phase: input.plan.partition === 'seed' ? 'seed-candidate' : 'held-out-candidate', dataset: dataset.ref, harnessRef: input.snapshot.commit, condition }
         const context = { ...round, roundId: `${round.roundId}-stage-${key.slice(7, 23)}` }
         const intent = this.evaluator.prepareSubmission?.(context, request)
-        const identity = await this.evaluator.evaluationIdentity?.(context, request, input.signal)
-        batches.push({ cells, request, round: context, key, ...(intent ? { intent } : {}), ...(identity ? { identity } : {}) })
+        const identity = await this.executionIdentity(context, request, input.signal)
+        batches.push({ cells, request, round: context, key, ...(intent ? { intent } : {}), ...(identity ? { identity } : {}), cohortDigest: source.universe.conditionDigest })
       }
       return seal({ inputDigest: digestJson({ plan: input.plan, snapshot: input.snapshot, cells: input.cells }), batches })
     })
     return prepared.batches
   }
 
-  private async source(batch: Batch, evidence: EvaluationEvidence): Promise<Source> {
+  private async source(batch: Batch, evidence: EvaluationEvidence, submittedIdentity?: SubmittedIdentity): Promise<Source> {
+    await this.verifyBatch(batch)
     invariant(evidence.requestedCommit === batch.request.harnessRef && evidence.actualCommit === batch.request.harnessRef
       && evidence.dataset === batch.request.dataset && evidence.conditionId === batch.request.condition.conditionId, 'evaluation evidence does not match its frozen request')
-    if (batch.identity) invariant(evidence.provider === batch.identity.provider && evidence.effectiveConfigDigest === batch.identity.effectiveConfigDigest, 'evaluation runtime configuration changed')
+    const executionIdentity = batch.identity ?? submittedIdentity
+    invariant(executionIdentity, 'evaluation has no verified runtime identity')
+    if (submittedIdentity) await this.verifySubmittedCohort(submittedIdentity)
+    invariant(evidence.provider === executionIdentity.provider && evidence.effectiveConfigDigest === executionIdentity.effectiveConfigDigest
+      && (executionIdentity.invocationFingerprint === undefined || evidence.invocationFingerprint === executionIdentity.invocationFingerprint), 'evaluation runtime configuration changed')
     invariant(await digestDatasetRef(batch.request.dataset) === batch.request.condition.dataset.digest, 'evaluated task subset changed')
     const ids = batch.cells.map(c => c.taskId), seen = new Set<string>()
     const rows = [...evidence.trials, ...evidence.invalidTrials]
@@ -108,7 +144,7 @@ export class EvaluationSearchAdapter implements SearchProvider {
           : { status: 'invalid', contractDigest: identity.processContractDigest, reason: invalid?.invalidReason ?? 'legacy process unavailable' } } : {}),
         evidenceRef, completedAt } as Omit<EvidenceCell, 'digest'>)
     })
-    const source = seal({ batch, evidence, completedAt, cells })
+    const source = seal({ batch, executionIdentity, ...(submittedIdentity ? { submittedIdentity } : {}), evidence, completedAt, cells })
     await this.store.put(source)
     for (const cell of cells) {
       await this.store.write(`evaluator-cells/${cellKey(cell.identity).slice(7)}`, { ref: source.digest })
@@ -117,17 +153,55 @@ export class EvaluationSearchAdapter implements SearchProvider {
     return source
   }
 
+  private async verifyBatch(batch: Batch, signal?: AbortSignal): Promise<void> {
+    const source = await this.dataset(batch.request.condition.partition)
+    invariant(batch.cohortDigest === source.universe.conditionDigest && batch.cells.every(cell => cell.conditionDigest === batch.cohortDigest), 'evaluation cell cohort changed')
+    const current = await this.executionIdentity(batch.round, batch.request, signal)
+    invariant(batch.identity ? current && digestJson(current) === digestJson(batch.identity) : !current, 'evaluation runtime configuration changed')
+  }
+  private async verifySubmittedCohort(identity: SubmittedIdentity): Promise<void> {
+    digest(identity.cohortDigest); digest(identity.effectiveConfigDigest)
+    if (identity.invocationFingerprint !== undefined) digest(identity.invocationFingerprint)
+    invariant(typeof identity.provider === 'string' && identity.provider.length > 0, 'invalid submitted provider')
+    const expected = seal({ provider: identity.provider, cohortDigest: identity.cohortDigest })
+    const frozen = await this.store.freezeEvolution('evaluator-submitted-cohort', () => expected)
+    invariant(frozen.digest === expected.digest, 'evaluation runtime cohort changed; results cannot be paired')
+  }
+  private async bindSubmittedIdentity(batch: Batch, operation: Operation, signal: AbortSignal, cancelOnFailure: boolean): Promise<Operation> {
+    invariant(operation.reservation, 'deferred evaluation identity requires a durable reservation')
+    let identity: SubmittedIdentity | undefined
+    try {
+      identity = await this.evaluator.submittedEvaluationIdentity!(batch.round, batch.request, operation.reservation, signal, batch.intent)
+      invariant(identity, 'submitted evaluation runtime identity is unresolved')
+      await this.verifySubmittedCohort(identity)
+      invariant(!operation.submittedIdentity || digestJson(operation.submittedIdentity) === digestJson(identity), 'submitted evaluation identity changed')
+    } catch (error) {
+      // The daemon may have started after submit; stop the mismatching reservation.
+      // Inspection reports uncertainty without mutating the external execution.
+      if (cancelOnFailure) await this.evaluator.cancelReservation?.(operation.reservation, batch.intent)
+      throw error
+    }
+    const next = { ...operation, submittedIdentity: identity }
+    await this.store.write(`evaluator-operations/${batch.key.slice(7)}`, next)
+    return next
+  }
   private async batch(batch: Batch, signal: AbortSignal, inspectOnly: boolean): Promise<ExternalRecovery<EvaluationExecutionResult>> {
+    await this.verifyBatch(batch, signal)
     const path = `evaluator-operations/${batch.key.slice(7)}`
     let operation = await this.store.read<Operation>(path)
-    if (operation?.sourceDigest) return { status: 'complete', result: { cells: (await this.store.object<Source>(operation.sourceDigest)).cells } }
-    if (operation?.started) {
+    if (operation?.sourceDigest) {
+      const source = await this.store.object<Source>(operation.sourceDigest)
+      if (source.submittedIdentity) await this.verifySubmittedCohort(source.submittedIdentity)
+      return { status: 'complete', result: { cells: source.cells } }
+    }
+    if (operation?.reservation && !batch.identity) operation = await this.bindSubmittedIdentity(batch, operation, signal, !inspectOnly)
+    if (operation?.started || operation?.reservation && !batch.identity) {
       if (!operation.reservation || !this.evaluator.inspectResult) return { status: 'unknown', reason: 'original evaluation requires recovery; no new execution was started' }
       const inspection = await this.evaluator.inspectResult(batch.round, batch.request, operation.reservation, signal, batch.intent)
       if (inspection.status === 'failed') throw new SearchExecutionFailure(inspection.code, inspection.message, operation.reservation.evalId)
       if (inspection.status !== 'complete') return inspection.status === 'running' ? { status: 'running', handle: operation.reservation.evalId }
         : { status: 'unknown', ...(inspection.reason ? { reason: inspection.reason } : {}) }
-      const source = await this.source(batch, inspection.evidence)
+      const source = await this.source(batch, inspection.evidence, operation.submittedIdentity)
       await this.store.write(path, { ...operation, sourceDigest: source.digest })
       return { status: 'complete', result: { cells: source.cells } }
     }
@@ -144,11 +218,12 @@ export class EvaluationSearchAdapter implements SearchProvider {
       operation = { ...(reservation ? { reservation } : {}), started: false }
       await this.store.write(path, operation)
     }
+    if (!batch.identity) operation = await this.bindSubmittedIdentity(batch, operation, signal, true)
     operation = { ...operation, started: true }
     await this.store.write(path, operation)
     const evidence = await this.evaluator.evaluate(batch.round, batch.request, signal, operation.reservation)
     if (operation.reservation) invariant(evidence.evalId === operation.reservation.evalId && evidence.provider === operation.reservation.provider, 'evaluation reservation changed')
-    const source = await this.source(batch, evidence)
+    const source = await this.source(batch, evidence, operation.submittedIdentity)
     await this.store.write(path, { ...operation, sourceDigest: source.digest })
     return { status: 'complete', result: { cells: source.cells } }
   }
@@ -194,7 +269,31 @@ export class EvaluationSearchAdapter implements SearchProvider {
     const pointer = await this.store.read<{ ref: string }>(`evaluator-cells/${cellKey(identity).slice(7)}`)
     if (!pointer) return false
     const source = await this.store.object<Source>(pointer.ref)
+    await this.verifyBatch(source.batch)
+    if (source.submittedIdentity) await this.verifySubmittedCohort(source.submittedIdentity)
     return source.evidence.actualCommit === identity.harnessCommit && source.cells.some(c => c.digest === cell.digest && cellKey(c.identity) === cellKey(identity))
+  }
+
+  async resolveVerifierRun(evalId: string, runId: string, signal: AbortSignal) {
+    signal.throwIfAborted()
+    if (!/^sha256:[0-9a-f]{64}$/u.test(evalId)) return undefined
+    // Meta sees a StageResult digest, which can combine physical evaluations
+    // across subsets and repetitions. Never compare that digest to Hitch's ID.
+    const result = await this.store.object<StageResult>(evalId)
+    const plan = await this.store.object<StageEvaluationPlan>(result.stagePlanDigest)
+    invariant(plan.partition === 'seed', 'Meta verifier resolution requires seed evidence')
+    const cells = result.cells.filter(cell => cell.evidenceRef === runId)
+    invariant(cells.length === 1, 'run is not uniquely bound to the projected seed result')
+    const cell = cells[0]!
+    invariant(plan.taskIds.includes(cell.identity.taskId) && await this.verifyCell(cell, cell.identity), 'projected run provenance could not be verified')
+    const pointer = await this.store.read<{ ref: string }>(`evaluator-cells/${cellKey(cell.identity).slice(7)}`)
+    const source = await this.store.object<Source>(pointer!.ref)
+    invariant(source.batch.request.condition.partition === 'seed', 'Meta verifier resolution requires a seed source')
+    const trial = [...source.evidence.trials, ...source.evidence.invalidTrials].find(row => row.runId === runId)
+    invariant(trial && trial.taskName === cell.identity.taskId, 'physical trial does not match projected run')
+    signal.throwIfAborted()
+    return { evalId: source.evidence.evalId, ...(trial.trialName === undefined ? {} : { trialName: trial.trialName }),
+      ...(trial.attempt === undefined ? {} : { attempt: trial.attempt }) }
   }
 
   private async diagnose(input: Parameters<DiagnosisProvider['diagnose']>[0]): Promise<Awaited<ReturnType<DiagnosisProvider['diagnose']>>> {
@@ -227,5 +326,12 @@ export class EvaluationSearchAdapter implements SearchProvider {
 export function attachSearchEvaluation(evaluator: RefineEvaluator, options: EvaluationSearchOptions): RefineEvaluator {
   if (evaluator.search) return evaluator
   const provider = new EvaluationSearchAdapter(evaluator, options), search = { provider, diagnosis: provider.diagnosis }
-  return new Proxy(evaluator, { get(target, property) { if (property === 'search') return search; const value = Reflect.get(target, property, target); return typeof value === 'function' ? value.bind(target) : value } })
+  return new Proxy(evaluator, { get(target, property) {
+    if (property === 'search') return search
+    if (property === 'resolveVerifierRun') return async (evalId: string, runId: string, signal: AbortSignal) =>
+      await provider.resolveVerifierRun(evalId, runId, signal)
+        ?? await (target as Partial<HitchTrajectoryReader>).resolveVerifierRun?.(evalId, runId, signal)
+    const value = Reflect.get(target, property, target)
+    return typeof value === 'function' ? value.bind(target) : value
+  } })
 }

@@ -1,9 +1,9 @@
 import { digestJson } from '../state/digest.js'
-import { validateSearchSchema } from './schema.js'
-import { comparisonKey, repetitionsForTask, plannedCellCount, digest, invariant, numeric, observationValue, processTasks, rational, seal, sorted, validateSnapshot, verifyDigest, weightedMean } from './contracts.js'
-import type { SearchStore } from './store.js'
 import type { Rational } from './contracts.js'
-import type { CellIdentity, EvidenceCell, EvidenceProfile, ProcessMode, Snapshot, StageEvaluationPlan, StageResult, TaskProfile, TaskUniverse, SearchProvider } from './types.js'
+import { comparisonKey, digest, invariant, numeric, observationValue, plannedCellCount, processTasks, repetitionsForTask, seal, sorted, validateSnapshot, verifyDigest, weightedMean } from './contracts.js'
+import { validateSearchSchema } from './schema.js'
+import type { SearchJournal } from './store.js'
+import type { CellIdentity, EvidenceCell, EvidenceProfile, ProcessMode, SearchProvider, Snapshot, StageEvaluationPlan, StageResult, TaskProfile, TaskUniverse } from './types.js'
 
 export function cellIdentity(universe: TaskUniverse, taskId: string, repetition: number, snapshot: Snapshot): CellIdentity {
   const task = universe.tasks.find(t => t.id === taskId), slot = repetitionsForTask(universe, taskId).find(s => s.index === repetition)
@@ -124,7 +124,7 @@ export function profile(universe: TaskUniverse, plan: StageEvaluationPlan, snaps
   }
 }
 /** Reuse completion evidence across operation labels without rerunning an already valid slot. */
-export async function reusableCells(store: SearchStore, provider: SearchProvider, identities: CellIdentity[], current: EvidenceCell[]): Promise<EvidenceCell[]> {
+export async function reusableCells(store: SearchJournal, provider: SearchProvider, identities: CellIdentity[], current: EvidenceCell[]): Promise<EvidenceCell[]> {
   const reusable: EvidenceCell[] = []
   for (const identity of identities) {
     const old = current.find(c => cellKey(c.identity) === cellKey(identity))

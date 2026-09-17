@@ -1,105 +1,29 @@
-import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
-import type { JsonValue } from '@deepseek-ai/dsh-session'
-import type {
-  ArtifactRef,
-  CandidateAssessmentContext,
-  CandidateAssessmentRequest,
-  CandidateAssessmentResult,
-  CandidateSelectionRequest,
-  CandidateSelectionInput,
-  ComponentKind,
-  ComponentRef,
-  EvaluationCondition,
-  EvolutionSpec,
-  EvaluationEvidence,
-  MetricSet,
-  PairedTrial,
-  PromotionPolicy,
-  RefineEvaluator,
-  ResolvedRoundPlan,
-  RolloutSpec,
-  SelectionDecision,
-} from '../types.js'
+import type { ParentSelectionPolicy } from '../search/parent-selection.js'
+import { championGepaPolicy, parentPolicyImplementation, scopedFrontierPolicy } from '../search/policies/parents.js'
 import { digestJson } from '../state/digest.js'
+import type {
+ArtifactRef,
+CandidateAssessmentContext,
+CandidateAssessmentRequest,
+CandidateAssessmentResult,
+CandidateSelectionRequest,
+ComponentKind,
+ComponentRef,
+EvaluationCondition,
+EvaluationEvidence,
+EvolutionSpec,
+MetricSet,
+PairedTrial,
+PromotionPolicy,
+RefineEvaluator,
+ResolvedRoundPlan,
+RolloutSpec,
+SelectionDecision
+} from '../types.js'
+import { assertComponentRef, builtinImplementation, type ComponentImplementation } from './component-ref.js'
 
-const PACKAGE_NAME = 'dsh-plugin-refine'
-const PACKAGE_MANIFEST_BYTES = readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)))
-const PACKAGE_VERSION = (JSON.parse(PACKAGE_MANIFEST_BYTES.toString('utf8')) as { version: string }).version
-
-export type ComponentImplementation = ComponentRef<unknown>['implementation']
-
-function builtinImplementation(kind: ComponentKind, id: string): ComponentImplementation {
-  const moduleBytes = readFileSync(fileURLToPath(import.meta.url))
-  return {
-    package: PACKAGE_NAME,
-    version: PACKAGE_VERSION,
-    integrity: `sha256:${createHash('sha256')
-      .update(moduleBytes)
-      .update('\0')
-      .update(PACKAGE_MANIFEST_BYTES)
-      .update('\0')
-      .update(JSON.stringify({ package: PACKAGE_NAME, version: PACKAGE_VERSION, kind, id, apiVersion: 1 }))
-      .digest('hex')}`,
-  }
-}
-
-export function componentRef<C>(
-  kind: ComponentKind,
-  id: string,
-  implementation: ComponentImplementation,
-  config: C,
-): ComponentRef<C> {
-  const configDigest = digestJson(config)
-  return {
-    kind,
-    id,
-    apiVersion: 1,
-    implementation,
-    config,
-    configDigest,
-  }
-}
-
-export function builtinComponentRef<C>(kind: ComponentKind, id: string, config: C): ComponentRef<C> {
-  return componentRef(kind, id, builtinImplementation(kind, id), config)
-}
-
-/**
- * Builds the stable identity used to decide whether rollout evidence is semantically reusable.
- * Callers must pass only settings that can change the evaluated result. Operational placement,
- * credentials, concurrency, and logging/output limits belong in the provider config, not here.
- */
-export function rolloutProviderSemanticDigest(
-  provider: ComponentRef<unknown>,
-  semanticConfig: JsonValue,
-  agentConfig: JsonValue,
-): string {
-  return digestJson({
-    provider: {
-      kind: provider.kind,
-      id: provider.id,
-      apiVersion: provider.apiVersion,
-      implementation: provider.implementation,
-    },
-    semanticConfig,
-    agentConfig,
-  })
-}
-
-export function assertComponentRef(value: ComponentRef<unknown>, expectedKind?: ComponentKind): void {
-  if (expectedKind !== undefined && value.kind !== expectedKind) {
-    throw new TypeError(`component ${value.id} has kind ${value.kind}; expected ${expectedKind}`)
-  }
-  if (value.apiVersion !== 1 || value.id.length === 0 || value.implementation.package.length === 0
-    || value.implementation.version.length === 0 || value.implementation.integrity.length === 0) {
-    throw new TypeError('component identity is invalid')
-  }
-  if (digestJson(value.config) !== value.configDigest) {
-    throw new TypeError(`component config digest mismatch: ${value.id}`)
-  }
-}
+export { assertComponentRef, builtinComponentRef, componentRef, implementationFromFiles, rolloutProviderSemanticDigest } from './component-ref.js'
+export type { ComponentImplementation } from './component-ref.js'
 
 export interface CandidateGenerationSlot {
   candidateId: string
@@ -358,6 +282,7 @@ interface RegisteredComponent<C, T> {
 }
 
 export class ComponentRegistry {
+  private readonly parentPolicies = new Map<string, RegisteredComponent<unknown, ParentSelectionPolicy>>()
   private readonly candidateGenerators = new Map<string, RegisteredComponent<unknown, CandidateGenerator>>()
   private readonly taskSamplers = new Map<string, RegisteredComponent<unknown, TaskSampler>>()
   private readonly rolloutProviders = new Map<string, RegisteredComponent<unknown, RolloutProvider>>()
@@ -367,6 +292,8 @@ export class ComponentRegistry {
   private readonly promotionPolicies = new Map<string, RegisteredComponent<PromotionPolicy, PromotionPolicyProvider>>()
 
   constructor() {
+    this.registerParentSelectionPolicy('scoped-frontier-membership-v1', parentPolicyImplementation, scopedFrontierPolicy)
+    this.registerParentSelectionPolicy('epsilon-greedy-gepa-v1', parentPolicyImplementation, championGepaPolicy)
     this.registerCandidateGenerator('dsh-meta-forked-proposals', builtinImplementation('candidate-generator', 'dsh-meta-forked-proposals'), ref => new ForkedProposalCandidateGenerator(ref))
     this.registerCandidateGenerator('meta-forked-proposals', builtinImplementation('candidate-generator', 'meta-forked-proposals'), ref => new ForkedProposalCandidateGenerator(ref))
     this.registerTaskSampler('dataset', builtinImplementation('task-sampler', 'dataset'), ref => new DatasetTaskSampler(ref))
@@ -374,6 +301,18 @@ export class ComponentRegistry {
     this.registerCandidateSelector('highest-quality', builtinImplementation('candidate-selector', 'highest-quality'), ref => new HighestQualityCandidateSelector(ref))
     this.registerJudge('task-reward', builtinImplementation('judge', 'task-reward'), ref => new TaskRewardJudge(ref))
     this.registerPromotionPolicy('paired-gate', builtinImplementation('promotion-policy', 'paired-gate'), ref => new PairedGatePromotionPolicy(ref))
+  }
+
+  registerParentSelectionPolicy(id: string, implementation: ComponentImplementation, factory: (ref: ComponentRef<unknown>) => ParentSelectionPolicy): () => void {
+    return this.register(this.parentPolicies, id, implementation, factory)
+  }
+
+  parentSelectionPolicy(ref: ComponentRef<unknown>): ParentSelectionPolicy {
+    const policy = this.resolve(this.parentPolicies, ref, 'parent-selection')
+    if (digestJson(policy.ref) !== digestJson(ref) || typeof policy.requiresChampion !== 'boolean' || typeof policy.select !== 'function') {
+      throw new TypeError('parent policy factory returned a different identity or invalid implementation')
+    }
+    return policy
   }
 
   registerCandidateGenerator(id: string, implementation: ComponentImplementation, factory: (ref: ComponentRef<unknown>) => CandidateGenerator): () => void {

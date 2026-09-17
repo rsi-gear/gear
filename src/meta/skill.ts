@@ -276,6 +276,9 @@ export class SkillMetaSessionManager implements MetaSessionController {
     session: MetaAgentSession,
     execution?: MetaExecutionBinding,
   ): Promise<import('./controller.js').MetaWakeHandle> {
+    if (execution?.budget.maxTokens !== undefined || execution?.budget.maxModelRequests !== undefined) {
+      throw new Error('Skill Meta adapter cannot enforce aggregate generation budgets')
+    }
     if (round.evolutionId !== this.options.evolutionId) throw new Error('Meta skill session received a foreign evolution')
     if (candidate?.workspaceId === undefined || baseline === undefined) throw new Error('Meta skill assignment is incomplete')
     const allocation = round.parentAllocations?.find(value => value.candidateId === candidate.candidateId)

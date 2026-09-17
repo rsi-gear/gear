@@ -1,9 +1,9 @@
 import { digestJson } from '../state/digest.js'
-import { invariant, integrity, processTasks, seal, verifyDigest } from './contracts.js'
-import { assertCell, reusableCells, cellKey, completeEvidence, plannedCells, profile, validOutcome } from './evidence.js'
-import { SearchBudgetExceeded, SearchStore, zeroUsage } from './store.js'
+import { integrity, invariant, processTasks, seal, verifyDigest } from './contracts.js'
+import { assertCell, cellKey, completeEvidence, plannedCells, profile, reusableCells, validOutcome } from './evidence.js'
 import { budgetFailure, recoverExternal, resolvePendingOperation, searchDeadline } from './recovery.js'
-import type { EvaluationExecutionResult, SearchStageFailure, SearchProvider, SearchSettings, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from './types.js'
+import { SearchBudgetExceeded, type SearchJournal, zeroUsage } from './store.js'
+import type { EvaluationExecutionResult, SearchProvider, SearchSettings, SearchStageFailure, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from './types.js'
 
 export interface EvidenceCompletion {
   kind: 'archive-evidence-completion'
@@ -15,7 +15,7 @@ export interface EvidenceCompletion {
   digest: string
 }
 /** The caller holds the evolution writer lock. This API cannot generate code or promote a champion. */
-export async function completeArchivedEvidence(input: { id: string; store: SearchStore; provider: SearchProvider; universe: TaskUniverse; plan: StageEvaluationPlan; snapshot: Snapshot; original: StageResult; settings: SearchSettings; signal: AbortSignal }): Promise<EvidenceCompletion> {
+export async function completeArchivedEvidence(input: { id: string; store: SearchJournal; provider: SearchProvider; universe: TaskUniverse; plan: StageEvaluationPlan; snapshot: Snapshot; original: StageResult; settings: SearchSettings; signal: AbortSignal }): Promise<EvidenceCompletion> {
   const { store, original, plan, snapshot, provider, universe } = input
   invariant(universe.partition === 'seed' && plan.partition === 'seed', 'archive completion accepts seed evidence only')
   invariant(provider.capabilities.taskSubsetPlans && provider.capabilities.batchIndependentCells && provider.capabilities.idempotentExecution, 'completion requires subset plans, reusable cells and idempotent execution')

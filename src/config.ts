@@ -305,6 +305,7 @@ export const ConfigSchema: Schema<Config> = Schema.object({
   promotion: Schema.object({
     policy: Schema.string(),
     validationMode: Schema.string(),
+    allowSharedSetPromotion: Schema.boolean(),
     outcome: Schema.any(),
     process: Schema.any(),
     allowNeutral: Schema.boolean(),

@@ -15,6 +15,10 @@ export const defaultMultisignalPromotion: MultisignalPromotionConfig = {
   process: { mode: 'auto', minimumGain: 0, maxSeedRegression: 0, maxHeldOutRegression: 0 },
   allowNeutral: false, protectedTasks: [], protectedAssertions: [],
 }
+/** Explicit opt-in: existing experiment configurations keep their original selector. */
+export const defaultEpsilonGreedySearchConfig: SearchConfig = {
+  ...structuredClone(defaultSearchConfig), parentSampling: 'epsilon-greedy-gepa-v1', championProbability: 0.5,
+}
 export function resolveSearchSettings(input: { search?: SearchConfig; promotion: unknown; budgets?: SearchSettings['budgets']; regression?: SearchSettings['regression'] }): SearchSettings | undefined {
   if (input.search === undefined) return undefined
   if (input.search.mode !== 'failure-cluster-gepa-v1') throw new Error('unsupported search.mode')
@@ -24,6 +28,7 @@ export function resolveSearchSettings(input: { search?: SearchConfig; promotion:
   for (const legacy of ['localTasks', 'sharedTasks', 'crossTasks']) if (legacy in s) throw new Error(`${legacy} is unsupported; use taskSetSizing ratios`)
   return {
     search: { ...structuredClone(defaultSearchConfig), ...s,
+      ...(s.parentSampling === 'epsilon-greedy-gepa-v1' ? { championProbability: s.championProbability ?? 0.5 } : {}),
       diagnosis: { ...defaultSearchConfig.diagnosis, ...s.diagnosis },
       taskSetSizing: { ...defaultSearchConfig.taskSetSizing, ...s.taskSetSizing },
       scopeSampling: { ...defaultSearchConfig.scopeSampling, ...s.scopeSampling, bucketWeights: { ...defaultSearchConfig.scopeSampling.bucketWeights, ...s.scopeSampling?.bucketWeights } },
@@ -31,6 +36,7 @@ export function resolveSearchSettings(input: { search?: SearchConfig; promotion:
       process: { ...defaultSearchConfig.process, ...s.process },
     },
     promotion: { policy: 'paired-multisignal-v1', validationMode: p.validationMode ?? defaultMultisignalPromotion.validationMode,
+      ...(p.allowSharedSetPromotion === undefined ? {} : { allowSharedSetPromotion: p.allowSharedSetPromotion }),
       allowNeutral: p.allowNeutral ?? false, protectedTasks: p.protectedTasks ?? [], protectedAssertions: p.protectedAssertions ?? [],
       outcome: { ...defaultMultisignalPromotion.outcome, ...p.outcome }, process: { ...defaultMultisignalPromotion.process, ...p.process } },
     budgets: structuredClone(input.budgets), regression: structuredClone(input.regression ?? { collectFailures: false, maxProposals: 50 }),

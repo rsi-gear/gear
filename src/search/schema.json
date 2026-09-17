@@ -693,6 +693,16 @@
             }
           ]
         },
+        "allowSharedSetPromotion": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
         "outcome": {
           "$ref": "#/$defs/MetricThresholds"
         },
@@ -766,7 +776,89 @@
           "type": "number"
         },
         "parentSampling": {
-          "const": "scoped-frontier-membership-v1"
+          "anyOf": [
+            {
+              "const": "scoped-frontier-membership-v1"
+            },
+            {
+              "const": "epsilon-greedy-gepa-v1"
+            }
+          ]
+        },
+        "parentPolicy": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "anyOf": [
+                {
+                  "const": "candidate-generator"
+                },
+                {
+                  "const": "task-sampler"
+                },
+                {
+                  "const": "rollout-provider"
+                },
+                {
+                  "const": "judge"
+                },
+                {
+                  "const": "candidate-assessor"
+                },
+                {
+                  "const": "candidate-selector"
+                },
+                {
+                  "const": "promotion-policy"
+                },
+                {
+                  "const": "parent-selection"
+                }
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "apiVersion": {
+              "const": 1
+            },
+            "implementation": {
+              "type": "object",
+              "properties": {
+                "package": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "integrity": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "package",
+                "version",
+                "integrity"
+              ],
+              "additionalProperties": false
+            },
+            "config": {},
+            "configDigest": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "apiVersion",
+            "implementation",
+            "config",
+            "configDigest"
+          ],
+          "additionalProperties": false
+        },
+        "championProbability": {
+          "type": "number"
         },
         "scopeWeights": {
           "const": "uniform-by-family"
@@ -967,8 +1059,6 @@
         "maxNewRolloutCells",
         "maxDiagnosisInputTokens",
         "maxDiagnosisOutputTokens",
-        "maxGenerationTokens",
-        "maxGenerationRequests",
         "maxRepairCells",
         "timeoutMs"
       ],
@@ -2581,8 +2671,6 @@
             }
           },
           "required": [
-            "maxTokens",
-            "maxModelRequests",
             "deadlineAt"
           ],
           "additionalProperties": false
@@ -2884,6 +2972,37 @@
             "type": "number"
           }
         },
+        "parentMixture": {
+          "type": "object",
+          "properties": {
+            "strategy": {
+              "const": "epsilon-greedy-gepa-v1"
+            },
+            "championId": {
+              "type": "string"
+            },
+            "championProbability": {
+              "type": "number"
+            },
+            "championScopeDigest": {
+              "type": "string"
+            },
+            "explorationParentProbabilities": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "number"
+              }
+            }
+          },
+          "required": [
+            "strategy",
+            "championId",
+            "championProbability",
+            "championScopeDigest",
+            "explorationParentProbabilities"
+          ],
+          "additionalProperties": false
+        },
         "activeParentIds": {
           "type": "array",
           "items": {
@@ -2935,6 +3054,16 @@
         },
         "drawIndex": {
           "type": "number"
+        },
+        "selectionBranch": {
+          "anyOf": [
+            {
+              "const": "champion"
+            },
+            {
+              "const": "gepa"
+            }
+          ]
         }
       },
       "required": [
@@ -2946,6 +3075,105 @@
       ],
       "additionalProperties": false
     },
+    "ParentPolicyAudit": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "anyOf": [
+                {
+                  "const": "candidate-generator"
+                },
+                {
+                  "const": "task-sampler"
+                },
+                {
+                  "const": "rollout-provider"
+                },
+                {
+                  "const": "judge"
+                },
+                {
+                  "const": "candidate-assessor"
+                },
+                {
+                  "const": "candidate-selector"
+                },
+                {
+                  "const": "promotion-policy"
+                },
+                {
+                  "const": "parent-selection"
+                }
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "apiVersion": {
+              "const": 1
+            },
+            "implementation": {
+              "type": "object",
+              "properties": {
+                "package": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "integrity": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "package",
+                "version",
+                "integrity"
+              ],
+              "additionalProperties": false
+            },
+            "config": {},
+            "configDigest": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "apiVersion",
+            "implementation",
+            "config",
+            "configDigest"
+          ],
+          "additionalProperties": false
+        },
+        "inputDigest": {
+          "type": "string"
+        },
+        "parentProbabilities": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "reasonCodes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "ref",
+        "inputDigest",
+        "parentProbabilities",
+        "reasonCodes"
+      ],
+      "additionalProperties": false
+    },
     "ParentSelectionDecision": {
       "type": "object",
       "properties": {
@@ -2954,6 +3182,9 @@
         },
         "algorithmRef": {
           "const": "sha256-counter-v1"
+        },
+        "policy": {
+          "$ref": "#/$defs/ParentPolicyAudit"
         },
         "randomSeed": {
           "type": "string"
@@ -3054,93 +3285,12 @@
       ],
       "additionalProperties": false
     },
-    "GeneratedCandidate": {
-      "type": "object",
-      "properties": {
-        "snapshot": {
-          "$ref": "#/$defs/Snapshot"
-        },
-        "changedPaths": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "receipt": {
-          "$ref": "#/$defs/WorkplanReceipt"
-        },
-        "sessionId": {
-          "type": "string"
-        },
-        "reason": {
-          "type": "string"
-        },
-        "usage": {
-          "type": "object",
-          "properties": {
-            "tokens": {
-              "type": "number"
-            },
-            "requests": {
-              "type": "number"
-            }
-          },
-          "required": [
-            "tokens",
-            "requests"
-          ],
-          "additionalProperties": false
-        },
-        "digest": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "changedPaths",
-        "usage",
-        "digest"
-      ],
-      "additionalProperties": false
-    },
-    "SearchAdmission": {
-      "type": "object",
-      "properties": {
-        "evolutionId": {
-          "type": "string"
-        },
-        "roundId": {
-          "type": "string"
-        },
-        "roundIndex": {
-          "type": "number"
-        },
-        "maxCandidates": {
-          "type": "number"
-        },
-        "anchor": {
-          "$ref": "#/$defs/Snapshot"
-        },
-        "championRevisionDigest": {
-          "type": "string"
-        },
-        "settings": {
-          "$ref": "#/$defs/SearchSettings"
-        }
-      },
-      "required": [
-        "evolutionId",
-        "roundId",
-        "roundIndex",
-        "maxCandidates",
-        "anchor",
-        "championRevisionDigest",
-        "settings"
-      ],
-      "additionalProperties": false
-    },
     "SearchEvolutionIdentity": {
       "type": "object",
       "properties": {
+        "protocolVersion": {
+          "const": 2
+        },
         "evolutionId": {
           "type": "string"
         },
@@ -3167,6 +3317,78 @@
         },
         "algorithmIntegrity": {
           "type": "string"
+        },
+        "parentPolicy": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "anyOf": [
+                {
+                  "const": "candidate-generator"
+                },
+                {
+                  "const": "task-sampler"
+                },
+                {
+                  "const": "rollout-provider"
+                },
+                {
+                  "const": "judge"
+                },
+                {
+                  "const": "candidate-assessor"
+                },
+                {
+                  "const": "candidate-selector"
+                },
+                {
+                  "const": "promotion-policy"
+                },
+                {
+                  "const": "parent-selection"
+                }
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "apiVersion": {
+              "const": 1
+            },
+            "implementation": {
+              "type": "object",
+              "properties": {
+                "package": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "integrity": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "package",
+                "version",
+                "integrity"
+              ],
+              "additionalProperties": false
+            },
+            "config": {},
+            "configDigest": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "apiVersion",
+            "implementation",
+            "config",
+            "configDigest"
+          ],
+          "additionalProperties": false
         },
         "digest": {
           "type": "string"
@@ -3212,6 +3434,16 @@
         },
         "advisory": {
           "type": "boolean"
+        },
+        "validationMode": {
+          "anyOf": [
+            {
+              "const": "independent-held-out"
+            },
+            {
+              "const": "shared-set-research"
+            }
+          ]
         },
         "reasonCodes": {
           "type": "array",
@@ -3358,7 +3590,7 @@
               }
             },
             "remainingBudget": {
-              "$ref": "#/$defs/Usage"
+              "$ref": "#/$defs/RemainingBudget"
             }
           },
           "required": [
@@ -3421,6 +3653,118 @@
         "expectedChampionRevisionDigest",
         "outcome",
         "digest"
+      ],
+      "additionalProperties": false
+    },
+    "GeneratedCandidate": {
+      "type": "object",
+      "properties": {
+        "snapshot": {
+          "$ref": "#/$defs/Snapshot"
+        },
+        "changedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "receipt": {
+          "$ref": "#/$defs/WorkplanReceipt"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "usage": {
+          "type": "object",
+          "properties": {
+            "tokens": {
+              "type": "number"
+            },
+            "requests": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "changedPaths",
+        "usage",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "SearchAdmission": {
+      "type": "object",
+      "properties": {
+        "evolutionId": {
+          "type": "string"
+        },
+        "roundId": {
+          "type": "string"
+        },
+        "roundIndex": {
+          "type": "number"
+        },
+        "maxCandidates": {
+          "type": "number"
+        },
+        "anchor": {
+          "$ref": "#/$defs/Snapshot"
+        },
+        "championRevisionDigest": {
+          "type": "string"
+        },
+        "settings": {
+          "$ref": "#/$defs/SearchSettings"
+        }
+      },
+      "required": [
+        "evolutionId",
+        "roundId",
+        "roundIndex",
+        "maxCandidates",
+        "anchor",
+        "championRevisionDigest",
+        "settings"
+      ],
+      "additionalProperties": false
+    },
+    "PreparedWork": {
+      "type": "object",
+      "properties": {
+        "workplan": {
+          "$ref": "#/$defs/CandidateWorkPlan"
+        },
+        "dossier": {
+          "$ref": "#/$defs/DiagnosisDossier"
+        },
+        "scope": {
+          "$ref": "#/$defs/EvaluationScope"
+        },
+        "plan": {
+          "$ref": "#/$defs/StageEvaluationPlan"
+        },
+        "parent": {
+          "$ref": "#/$defs/Snapshot"
+        },
+        "baseline": {
+          "$ref": "#/$defs/StageResult"
+        }
+      },
+      "required": [
+        "workplan",
+        "dossier",
+        "scope",
+        "plan",
+        "parent",
+        "baseline"
       ],
       "additionalProperties": false
     },
@@ -4075,6 +4419,52 @@
       ],
       "additionalProperties": false
     },
+    "RemainingBudget": {
+      "type": "object",
+      "properties": {
+        "cells": {
+          "type": "number"
+        },
+        "repairCells": {
+          "type": "number"
+        },
+        "diagnosisInputTokens": {
+          "type": "number"
+        },
+        "diagnosisOutputTokens": {
+          "type": "number"
+        },
+        "generationTokens": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "generationRequests": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        }
+      },
+      "required": [
+        "cells",
+        "repairCells",
+        "diagnosisInputTokens",
+        "diagnosisOutputTokens",
+        "generationTokens",
+        "generationRequests"
+      ],
+      "additionalProperties": false
+    },
     "Operation": {
       "type": "object",
       "properties": {
@@ -4137,6 +4527,10 @@
         "operations",
         "digest"
       ],
+      "additionalProperties": false
+    },
+    "SearchJournal": {
+      "type": "object",
       "additionalProperties": false
     }
   }

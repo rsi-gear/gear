@@ -655,20 +655,26 @@ describe('HitchCliEvaluator', () => {
     const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
     const input = request('seed', fixture.championRef)
     const reservation = await evaluator.reserve(state, input, undefined, evaluator.prepareSubmission(state, input))
+    await expect(evaluator.submittedEvaluationIdentity(state, input, reservation, new AbortController().signal)).rejects.toMatchObject({
+      code: 'invalid_hitch_result', message: expect.stringMatching(/provider differs/u),
+    })
     await expect(evaluator.evaluate(state, input, new AbortController().signal, reservation)).rejects.toMatchObject({
       code: 'invalid_hitch_result', message: expect.stringMatching(/provider differs/u),
     })
   })
 
   it('includes frozen daemon policy in semantic identity and skips reuse lookup', async () => {
-    const { fixture, evaluator, submissionState } = await setup('0.2.6', {
+    const { fixture, evaluator, submissionState, invocationLog } = await setup('0.2.6', {
       attemptExecution: 'harbor-task-slots-v1',
     }, { controlPlane: { mode: 'daemon', requireModelCapture: false } })
     const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
     const input = request('seed', fixture.championRef)
     await expect(evaluator.evaluationIdentity(state, input)).resolves.toBeUndefined()
     const reservation = await evaluator.reserve(state, input, undefined, evaluator.prepareSubmission(state, input))
+    const submitted = await evaluator.submittedEvaluationIdentity(state, input, reservation, new AbortController().signal)
     const baseline = await evaluator.evaluate(state, input, new AbortController().signal, reservation)
+    expect(submitted).toMatchObject({ effectiveConfigDigest: baseline.effectiveConfigDigest, cohortDigest: expect.stringMatching(/^sha256:/u) })
+    expect(await evaluator.submittedEvaluationIdentity(state, input, reservation, new AbortController().signal)).toEqual(submitted)
     const repeated = await evaluator.evaluate(state, input, new AbortController().signal, reservation)
     expect(repeated.effectiveConfigDigest).toBe(baseline.effectiveConfigDigest)
     await expect(evaluator.evaluationIdentity(state, input)).resolves.toBeUndefined()
@@ -684,6 +690,12 @@ describe('HitchCliEvaluator', () => {
     await writeFile(submissionState, JSON.stringify({ ...submission, executionProvider: 'remote-worker' }))
     const changed = await evaluator.evaluate(state, input, new AbortController().signal, reservation)
     expect(changed.effectiveConfigDigest).not.toBe(baseline.effectiveConfigDigest)
+    const changedSubmission = await evaluator.submittedEvaluationIdentity(state, input, reservation, new AbortController().signal)
+    expect(changedSubmission?.effectiveConfigDigest).toBe(changed.effectiveConfigDigest)
+    expect(changedSubmission?.cohortDigest).not.toBe(submitted?.cohortDigest)
+    const invocations = (await readFile(invocationLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as string[])
+    expect(invocations.filter(args => args[0] === 'eval' && args[1] === 'submit')).toHaveLength(1)
+    expect(invocations.filter(args => args[0] === 'eval').every(args => ['submit', 'watch', 'inspect'].includes(args[1]!))).toBe(true)
   })
 
   it.each(['before watching', 'while watching'])('cancels a submitted daemon eval aborted %s', async timing => {

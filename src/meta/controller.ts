@@ -60,10 +60,13 @@ export function compatibleSkillMetaAgent(sealed: MetaAgentSpec, current: MetaAge
  * durable identities and lifecycle operations below.
  */
 export interface MetaSessionController {
+  /** True only when every proposal request is metered and stopped at the binding's aggregate limits. */
+  readonly capabilities?: { aggregateGenerationBudget: boolean }
   agent(): Promise<MetaAgentSession>
   checkpoint(sessionId?: string): Promise<MetaCheckpointRef>
   fork(checkpoint: MetaCheckpointRef): Promise<MetaAgentSession>
   restore?(sessionId: string, executionId?: string): Promise<MetaAgentSession>
+  /** Resolve only after the owned execution is quiescent or proven absent; reject if its state is uncertain. */
   cancel(sessionId: string, reason: string): Promise<void>
   release(sessionId: string): Promise<void>
   dispose(): Promise<void>

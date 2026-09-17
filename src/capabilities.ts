@@ -826,17 +826,20 @@ export class RefineCapabilities {
         throw new Error(`verifier evidence run identity mismatch for ${item.trial.runId}`)
       }
       if (evidence.parent !== undefined) {
+        const resolveRun = this.options.trajectoryReader?.resolveVerifierRun
+        const physical = await resolveRun?.call(this.options.trajectoryReader, item.evalId, item.trial.runId, signal)
         const resolveParent = this.options.trajectoryReader?.resolveVerifierEvaluationId
-        const expectedEvalId = resolveParent === undefined ? item.evalId
-          : await resolveParent.call(this.options.trajectoryReader, item.evalId, item.trial.runId, signal)
+        const expectedEvalId = physical?.evalId ?? (resolveParent === undefined ? item.evalId
+          : await resolveParent.call(this.options.trajectoryReader, item.evalId, item.trial.runId, signal))
+        const expectedTrial = physical ?? item.trial
         if (typeof expectedEvalId !== 'string' || expectedEvalId.length === 0
           || evidence.parent.evalId !== expectedEvalId) {
           throw new Error(`verifier evidence eval identity mismatch for ${item.trial.runId}`)
         }
-        if (item.trial.trialName !== undefined && evidence.parent.trialId !== item.trial.trialName) {
+        if (expectedTrial.trialName !== undefined && evidence.parent.trialId !== expectedTrial.trialName) {
           throw new Error(`verifier evidence trial identity mismatch for ${item.trial.runId}`)
         }
-        if (item.trial.attempt !== undefined && evidence.parent.attempt !== item.trial.attempt) {
+        if (expectedTrial.attempt !== undefined && evidence.parent.attempt !== expectedTrial.attempt) {
           throw new Error(`verifier evidence attempt identity mismatch for ${item.trial.runId}`)
         }
       }

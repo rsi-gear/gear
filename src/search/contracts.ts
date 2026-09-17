@@ -1,8 +1,10 @@
+import { assertComponentRef } from '../evolution/component-ref.js'
 import { digestJson } from '../state/digest.js'
+import { searchImplementationIntegrity } from './identity.js'
 import { validateSearchSchema } from './schema.js'
-import type { EvaluationScope, MetricContract, SearchSettings, TaskUniverse, TaskSetResolution, TaskSetSizing, Snapshot, MetricObservation } from './types.js'
+import type { EvaluationScope, MetricContract, MetricObservation, SearchSettings, Snapshot, TaskSetResolution, TaskSetSizing, TaskUniverse } from './types.js'
 
-export const integrity = digestJson({ algorithm: 'failure-cluster-gepa', apiVersion: 2, revision: 11 })
+export const integrity = searchImplementationIntegrity
 export function seal<T extends object>(value: T): T & { digest: string } { return { ...value, digest: digestJson(value) } }
 export function verifyDigest(value: { digest: string }): void {
   const { digest, ...body } = value
@@ -182,8 +184,12 @@ export function validateSettings(settings: SearchSettings, universe: TaskUnivers
   const s = settings.search, p = settings.promotion
   invariant(s.mode === 'failure-cluster-gepa-v1', 'unknown search mode')
   integer(s.seed, 'search.seed'); integer(maxCandidates, 'maxCandidates', 1); integer(s.parentBatchCount, 'parentBatchCount', 1)
-  invariant(s.parentBatchCount <= maxCandidates, 'parent batches exceed candidate limit')
-  invariant(s.parentSampling === 'scoped-frontier-membership-v1' && s.scopeWeights === 'uniform-by-family' && s.archiveCoverage === 'complete-scope', 'unsupported archive algorithm')
+  if (s.parentPolicy) assertComponentRef(s.parentPolicy, 'parent-selection')
+  if (!s.parentPolicy && s.parentSampling === 'scoped-frontier-membership-v1') invariant(s.parentBatchCount <= maxCandidates, 'parent batches exceed candidate limit')
+  invariant(['scoped-frontier-membership-v1', 'epsilon-greedy-gepa-v1'].includes(s.parentSampling) && s.scopeWeights === 'uniform-by-family' && s.archiveCoverage === 'complete-scope', 'unsupported archive algorithm')
+  if (s.championProbability !== undefined) invariant(s.parentSampling === 'epsilon-greedy-gepa-v1', 'championProbability requires epsilon-greedy-gepa-v1')
+  const championProbability = s.championProbability ?? 0.5
+  invariant(Number.isFinite(championProbability) && championProbability >= 0 && championProbability <= 1, 'invalid champion probability')
   invariant(s.diagnosis.sharing === 'parent-evidence-dossier' && s.diagnosis.planner === 'evidence-failure-clusters-v1', 'unsupported diagnosis policy')
   integer(s.diagnosis.candidatesPerFamily, 'candidatesPerFamily', 1)
   invariant(['stable', 'periodic'].includes(s.scopeSampling.epochPolicy), 'unsupported scope epoch policy')
@@ -208,6 +214,7 @@ export function validateSettings(settings: SearchSettings, universe: TaskUnivers
     invariant(!heldOut.tasks.some(t => identities.has(t.contentDigest)), 'independent held-out overlaps seed task content')
   }
   invariant(typeof p.allowNeutral === 'boolean', 'invalid neutral promotion rule')
+  invariant(p.allowSharedSetPromotion === undefined || typeof p.allowSharedSetPromotion === 'boolean', 'invalid shared-set promotion authorization')
   for (const threshold of [p.outcome, p.process, ...Object.values(p.process.groups ?? {})]) {
     for (const value of [threshold.minimumGain, threshold.maxSeedRegression, threshold.maxHeldOutRegression]) invariant(Number.isFinite(value) && value >= 0, 'invalid promotion threshold')
   }
@@ -227,7 +234,8 @@ export function validateSettings(settings: SearchSettings, universe: TaskUnivers
   const core = sorted(s.scopeSampling.sharedCoreTaskIds ?? [])
   invariant(core.every(id => universe.tasks.some(t => t.id === id)) && core.length <= resolution.quantities.shared.resolved, 'shared core exceeds configured capacity or universe')
   for (const limits of [settings.budgets.round, settings.budgets.evolution]) {
-    for (const key of ['maxNewRolloutCells', 'maxDiagnosisInputTokens', 'maxDiagnosisOutputTokens', 'maxGenerationTokens', 'maxGenerationRequests', 'maxRepairCells', 'timeoutMs'] as const) integer(limits[key], key, key === 'timeoutMs' ? 1 : 0)
+    for (const key of ['maxNewRolloutCells', 'maxDiagnosisInputTokens', 'maxDiagnosisOutputTokens', 'maxRepairCells', 'timeoutMs'] as const) integer(limits[key], key, key === 'timeoutMs' ? 1 : 0)
+    for (const key of ['maxGenerationTokens', 'maxGenerationRequests'] as const) if (limits[key] !== undefined) integer(limits[key], key, 0)
   }
   integer(settings.regression.maxProposals, 'maxProposals')
   invariant(typeof settings.regression.collectFailures === 'boolean', 'invalid regression collection setting')

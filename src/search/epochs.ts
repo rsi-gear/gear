@@ -1,10 +1,10 @@
 import { digestJson } from '../state/digest.js'
 import { passesExploration } from './archive.js'
-import { integrity, repetitionsForTask, invariant, numeric, seal, sorted, utility, verifyDigest } from './contracts.js'
+import { integrity, invariant, numeric, repetitionsForTask, seal, sorted, utility, verifyDigest } from './contracts.js'
 import { profile, validOutcome } from './evidence.js'
-import { createScope, sharedTasks, stagePlan } from './scopes.js'
 import { samplingEvidence } from './scope-sampling.js'
-import type { SearchStore } from './store.js'
+import { createScope, sharedTasks, stagePlan } from './scopes.js'
+import type { SearchJournal } from './store.js'
 import type { EvaluationScope, ParentSelectionDecision, ResearchArchive, SearchSettings, Snapshot, StageEvaluationPlan, StageResult, TaskSetResolution, TaskUniverse } from './types.js'
 
 export interface ScopeEpochPreparation {
@@ -30,7 +30,7 @@ export function scopeEpoch(settings: SearchSettings, roundIndex: number): number
 }
 /** Called at the round planning boundary, under its writer lock and shared budget. */
 export async function prepareScopeEpochs(input: {
-  store: SearchStore; roundId: string; roundIndex: number; settings: SearchSettings
+  store: SearchJournal; roundId: string; roundIndex: number; settings: SearchSettings
   archive: ResearchArchive; universe: TaskUniverse; anchor: Snapshot; parents: ParentSelectionDecision; resolution: TaskSetResolution
   missingCost(snapshots: Snapshot[], taskIds: string[]): Promise<{ cells: number; repairCells: number }>
   evaluate(plan: StageEvaluationPlan, snapshot: Snapshot): Promise<StageResult>

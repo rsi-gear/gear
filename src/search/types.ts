@@ -80,6 +80,8 @@ export interface MetricThresholds { minimumGain: number; maxSeedRegression: numb
 export interface MultisignalPromotionConfig {
   policy: 'paired-multisignal-v1'
   validationMode: 'independent-held-out' | 'shared-set-research'
+  /** Explicit authorization to update the research champion on a shared task set. */
+  allowSharedSetPromotion?: boolean
   outcome: MetricThresholds
   process: MetricThresholds & { mode: ProcessMode; groups?: Record<string, MetricThresholds> }
   allowNeutral: boolean
@@ -90,7 +92,11 @@ export interface SearchConfig {
   mode: 'failure-cluster-gepa-v1'
   seed: number
   parentBatchCount: number
-  parentSampling: 'scoped-frontier-membership-v1'
+  parentSampling: 'scoped-frontier-membership-v1' | 'epsilon-greedy-gepa-v1'
+  /** A registered strategy overrides the legacy parentSampling preset. */
+  parentPolicy?: import('../types.js').ComponentRef<unknown>
+  /** Direct champion branch probability; GEPA exploration may also select it. Defaults to 0.5. */
+  championProbability?: number
   scopeWeights: 'uniform-by-family'
   archiveCoverage: 'complete-scope'
   diagnosis: { sharing: 'parent-evidence-dossier'; planner: 'evidence-failure-clusters-v1'; candidatesPerFamily: number }
@@ -109,8 +115,9 @@ export interface BudgetLimits {
   maxNewRolloutCells: number
   maxDiagnosisInputTokens: number
   maxDiagnosisOutputTokens: number
-  maxGenerationTokens: number
-  maxGenerationRequests: number
+  /** Omit when the external Meta runtime cannot enforce this resource. Explicit numbers are hard limits. */
+  maxGenerationTokens?: number
+  maxGenerationRequests?: number
   maxRepairCells: number
   timeoutMs: number
 }
@@ -353,7 +360,7 @@ export interface CandidateWorkPlan {
   scopeDigest: string
   localStagePlanDigest: string
   modificationBoundaryRule: { requiredSeedTaskIds: string[]; onInsufficientScope: 'retain-research-only' }
-  generationBudget: { maxTokens: number; maxModelRequests: number; deadlineAt: number }
+  generationBudget: { maxTokens?: number; maxModelRequests?: number; deadlineAt: number }
   digest: string
 }
 export interface WorkplanReceipt {
@@ -405,6 +412,14 @@ export interface ResearchArchive {
   scopeViews: ScopeView[]
   scopeProbabilities: Record<string, number>
   parentProbabilities: Record<string, number>
+  /** Present only for the opt-in champion/GEPA mixture. Scope views retain their GEPA weights. */
+  parentMixture?: {
+    strategy: 'epsilon-greedy-gepa-v1'
+    championId: string
+    championProbability: number
+    championScopeDigest: string
+    explorationParentProbabilities: Record<string, number>
+  }
   activeParentIds: string[]
   digest: string
   /** Only committed parent seed diagnoses can influence later scope sampling. */
@@ -416,10 +431,18 @@ export interface ParentBatch {
   parentSnapshotDigest: string
   maxCandidateSlots: number
   drawIndex: number
+  selectionBranch?: 'champion' | 'gepa'
+}
+export interface ParentPolicyAudit {
+  ref: import('../types.js').ComponentRef<unknown>
+  inputDigest: string
+  parentProbabilities: Record<string, number>
+  reasonCodes: string[]
 }
 export interface ParentSelectionDecision {
   archiveDigest: string
   algorithmRef: 'sha256-counter-v1'
+  policy?: ParentPolicyAudit
   randomSeed: string
   batches: ParentBatch[]
   digest: string

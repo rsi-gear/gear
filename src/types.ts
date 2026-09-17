@@ -69,6 +69,7 @@ export type ComponentKind =
   | 'candidate-assessor'
   | 'candidate-selector'
   | 'promotion-policy'
+  | 'parent-selection'
 
 export interface ComponentRef<C = JsonValue> {
   kind: ComponentKind
@@ -442,6 +443,10 @@ export interface HitchTrajectoryReader {
   inspectVerifierEvidence?(runId: string, signal: AbortSignal): Promise<HitchVerifierEvidence>
   /** Gear-side provenance resolution for aggregate evidence; no Hitch protocol extension. */
   resolveVerifierEvaluationId?(evalId: string, runId: string, signal: AbortSignal): Promise<string>
+  /** Resolve a projected seed run to its verified physical evaluation and trial. */
+  resolveVerifierRun?(evalId: string, runId: string, signal: AbortSignal): Promise<{
+    evalId: string; trialName?: string; attempt?: number
+  } | undefined>
 }
 
 export interface HitchVerifierEvidence {
@@ -1386,6 +1391,14 @@ export interface RefineEvaluator {
     signal: AbortSignal, intent?: Readonly<EvaluationSubmissionIntent>,
   ): Promise<EvaluationInspection>
   preflight?(): Promise<void>
+
+  /** Gear-side inspection of an existing submission; never submits work.
+   * cohortDigest excludes task subset and candidate identity, and binds the actual shared execution configuration.
+   */
+  submittedEvaluationIdentity?(
+    round: Readonly<RefinementRound>, request: Readonly<EvaluationRequest>, reservation: Readonly<EvaluationReservation>,
+    signal: AbortSignal, intent?: Readonly<EvaluationSubmissionIntent>,
+  ): Promise<{ provider: string; effectiveConfigDigest: string; invocationFingerprint?: string; cohortDigest: string } | undefined>
 
   /** Resolve semantic evaluation identity plus diagnostic invocation provenance, or return undefined when not known yet. */
   evaluationIdentity?(

@@ -1,329 +1,111 @@
 # Gear
 
+**Adapt your agent to any task.**
+
 [![GitHub release](https://img.shields.io/github/v/release/rsi-gear/gear)](https://github.com/rsi-gear/gear/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-Join_chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/cZ4NBbHDk)
 
-Gear is an extensible experiment control plane for evolving agent harnesses. It
-generates candidate harness revisions, evaluates them under paired conditions,
-selects a research population, and promotes at most one deployment champion.
+[English](README.md) | [简体中文](README.zh-CN.md) · [User guide](https://rsigear.xyz/docs/gear) · [Examples](https://rsigear.xyz/docs/gear/examples/evolution-search)
 
-> **Status:** pre-alpha. Gear is ready for local research and integration work,
-> but its state format and extension APIs may change between releases.
+Gear is an open-source algorithm framework that helps AI agents work on real tasks across different software environments and learn from what goes right or wrong. We aim to use that experience to improve their instructions and tools, and turn it into training data that makes the models themselves better.
+
+## A smaller model that can compete with the best
+
+On AutomationBench's 100 public Marketing tasks, Gear improved **GPT 5.6 Luna max to a process score of 88.88%, above Codex + GPT 6 Astra max's 84.08%**, and its task pass rate reached 53%.
+
+![Harness and GEPA evolution from original DSH: GPT 5.6 Luna max reaches an 88.88% process score and 53% task pass rate, compared with 84.08% and 57% for Codex + GPT 6 Astra max.](docs/guide/assets/marketing-evolution-overview.png)
+
+### Tasks we have validated
+
+Our compute budget is limited, so we are starting with the task set below and reporting its results before and after optimization.
+
+| Validated task set | Model + harness combination | Metric | Before | After | Δ |
+| --- | --- | --- | --- | --- | --- |
+| AutomationBench / Marketing  | GPT 5.6 Luna medium + DSH | Task pass rate / process score |  27% / 75.37% |  40% / 83.87% |**+13% / +8.50%** |
+
+These public tasks also guided optimization. Starred points in the chart come from a separate official private test set. [Scoring and sources](docs/guide/en/results.md) · [Full experiment](docs/guide/en/example-algorithm.md).
 
 ## Quick start
 
-Gear uses the packaged `refine` Agent Skill as its primary Meta entrypoint for
-Codex, Claude Code, DSH, and other Agent Skills-compatible harnesses. The DSH
-plugin publishes that same skill through DSH's native skill catalog; its older
-direct-session adapter remains available only as an explicit compatibility
-mode. The Meta harness and the Target harness are independent; Hitch starts the
-configured Target harness for isolated rollouts.
+Gear is an optimization library you can call as a **Skill** from Codex, Claude Code, DSH, or another compatible agent. Use an existing benchmark, or bring your own tasks in [Harbor format](docs/guide/en/datasets.md).
 
-Gear requires Node.js 22.19+ (or 24+), Git, Docker, and an installed Hitch CLI.
-The DSH plugin deployment supports DSH `0.1.0-rc.8` and `0.1.1-rc.2`. Python,
-IPython, Bubblewrap, `socat`, and ripgrep are required only by the configured
-compiler, verifier, or DSH Meta sandbox features that use them.
+**Let your agent install Gear.** Copy this prompt into the agent you use:
 
-### 1. Install Hitch
+```text
+Follow https://rsigear.xyz/docs/gear/quickstart to install Gear in my environment.
+Install rsi-gear@latest and agent-hitch@latest with npm and check the required dependencies.
+Add Gear's complete Refine Skill to my current agent and configure its connection to Gear.
+Use my actual task paths, target harness and model settings; ask me for any missing information.
+Verify that the Skill can connect to Gear, then report the result and how to start my first optimization.
+```
 
-[Hitch](https://github.com/rsi-gear/agent-hitch) is Gear's required rollout and
-evidence backend. It installs and manages Harbor for containerized evaluations.
+To install manually, start with Gear and [Hitch](https://github.com/rsi-gear/agent-hitch), which runs the tests. This example uses DSH as the agent doing the tasks:
 
 ```bash
-npm install --global 'agent-hitch@>=0.2.5'
+npm install --global rsi-gear@latest agent-hitch@latest @deepseek-ai/dsh@latest
 hitch eval setup harbor
-hitch eval doctor --json
 ```
 
-Gear uses Hitch's direct eval CLI by default. To share one bounded scheduler
-with other Hitch work, install agent-hitch 0.2.6 or newer, start a daemon for
-the configured Hitch root, and select daemon mode:
-
-```bash
-hitch --root /absolute/path/to/hitch-state daemon start --max-concurrent 4
-```
-
-```yaml
-hitch:
-  root: /absolute/path/to/hitch-state
-  controlPlane:
-    mode: daemon
-```
-
-Daemon mode uses durable, idempotent `eval submit`, `eval watch`, `eval cancel`,
-and daemon rerun operations. Gear verifies the frozen Hitch execution policy
-before accepting evidence. Keep `mode: direct` when no daemon owns that root.
-
-### 2. Build Gear
-
-Until the package is published, install Gear from a source checkout:
-
-```bash
-git clone https://github.com/rsi-gear/gear.git
-cd gear
-npm ci
-npm pack
-npm install --global ./dsh-plugin-refine-0.1.0.tgz
-```
-
-### 3. Choose the Meta entrypoint
-
-For Codex, Claude Code, or another external harness, configure skill mode and
-start the standalone control plane:
-
-```bash
-gear-refine serve --config /absolute/path/to/gear-refine.json
-```
-
-Install or link the packaged [`refine` skill](skills/refine/SKILL.md) into the
-Meta harness and point `GEAR_REFINE_SOCKET` at the socket reported by the
-server. The skill creates or continues evolutions, claims candidate leases, and
-uses Gear's restricted evidence and candidate APIs. See the
-[standalone and skill guide](docs/harness-agnostic-refine-skill.md).
-
-For DSH, install the package as a plugin:
-
-```bash
-dsh plugin --profile web add ./dsh-plugin-refine-0.1.0.tgz
-dsh --profile web --dump-config
-dsh --profile web --no-open
-```
-
-The bundled plugin row is disabled by default. Complete its one-time setup in
-the [DSH installation guide](docs/plugin-installation-and-usage.md). Skill mode
-is the default: the plugin publishes the bundled skill and `refine_request`
-bridge, and DSH's native `/refine` gesture loads it into the current agent:
+Follow the [setup guide](docs/guide/en/quickstart.md) to add the bundled [Refine Skill](skills/refine/SKILL.md) to your agent and connect your benchmark. Then use `/refine` where supported, or ask in plain language:
 
 ```text
-/refine --rounds 1 --focus context,routing
-/refine status
+Use the Refine Skill to improve performance on AutomationBench's Marketing tasks.
+Use Codex + Astra to propose improvements and DSH + Luna to run the tasks.
+Run one round of optimization.
 ```
 
-### Optional: install Rear
+The agent proposing changes is called the **Meta agent**. It can use a different model from the agent doing the tasks.
 
-[Rear](https://github.com/rsi-gear/rear) is a read-only web workbench for Gear
-experiments and Hitch trajectories. Gear does not require it for refinement,
-selection, or promotion.
+## Algorithm design: learning how to improve
 
-```bash
-git clone https://github.com/rsi-gear/rear.git
-cd rear
-npm ci
-npm pack
-dsh plugin --profile web add ./dsh-plugin-rear-0.1.0.tgz
-```
+Gear follows a **meta-learning** design: one loop does the tasks, and another learns how to improve the agent doing them.
 
-Enable Rear's dormant plugin row and point `gear.root` and `hitch.root` at the
-same state directories used by Gear and Hitch.
+- **Inner loop: do the work.** The task agent uses its current model, instructions, and tools to attempt the tasks.
+- **Outer loop: improve the worker.** The Meta agent reads the results and failed attempts, proposes changes or creates new seed tasks (practice tasks), and tests which versions work better.
 
-## Using refine
+The instructions, tools, and workflow around a model are called its **harness**. Gear's design aims to **evolve the model and harness together**: improve how the agent works through harness changes, and improve the model's ability through training, using task results to guide both. Harness evolution works today. Model training has an experimental path; the complete joint loop is still in progress.
 
-The `refine` skill calls the structured Gear protocol. In DSH skill mode,
-`/refine` is a native skill invocation; in explicit legacy mode, the same text
-is handled by Gear's compatibility command.
+### What can evolve?
 
-Start a new isolated evolution with:
+Within the parts of the agent you allow Gear to edit:
 
-```text
-/refine [seed-task-ref] [--rounds N] [--budget MILLISECONDS] [--focus FOCUS] [--from SOURCE] [--name NAME]
-/refine rerun <evolution-id> <round-id> --eval <eval-id> (--invalid | --task TASK...)
-```
-
-| Argument | Description |
-| --- | --- |
-| `seed-task-ref` | Optional seed dataset override; otherwise the configured dataset is used |
-| `--rounds N` | Number of complete refinement rounds to run serially |
-| `--budget MILLISECONDS` | Per-trial timeout for the new evolution; defaults to 3600000 (60 minutes) |
-| `--focus FOCUS` | Advisory focus for the Meta Agent; repeat the option or use comma-separated values |
-| `--from SOURCE` | Start from `initial`, `published`, or an exact Git commit |
-| `--name NAME` | Human-readable name for the new evolution |
-
-Supported focus values are `context`, `pre_action`, `routing`, `post_action`,
-`action_verifier`, `skill`, `tool`, `workflow`, and `compaction`. The legacy
-`--target` option is an alias for a single `--focus` value.
-
-Manage an evolution with:
-
-| Command | Purpose |
-| --- | --- |
-| `/refine continue <evolution-id> [--rounds N] [--focus FOCUS]` | Continue with the same spec, Meta history, and champion |
-| `/refine status [evolution-id [round-id]]` | List evolutions or inspect one evolution or round |
-| `/refine rerun <evolution-id> <round-id> --eval <eval-id> (--invalid \| --task TASK...)` | Repair invalid/missing logical trial slots in a failed Hitch evaluation |
-| `/refine publish <evolution-id> [exact-ref]` | Publish an accepted champion as the workspace default |
-| `/refine rollback <evolution-id> <exact-ref>` | Return an evolution to a previously accepted commit |
-
-A plain `/refine` always creates a new evolution. `continue` accepts only
-`--rounds` and `--focus`; datasets, models, budgets, sandboxes, and promotion
-policy remain sealed by the original experiment spec. See the
-[installation and usage guide](docs/plugin-installation-and-usage.md#8-使用-refine)
-for command output, lifecycle states, and operational details.
-
-Gear checks the Hitch CLI version at startup. Direct mode requires agent-hitch
-0.2.5 or newer; daemon mode requires 0.2.6 or newer and a running daemon. For
-multi-attempt evaluations, `--task TASK` repairs every invalid or missing
-`(task, attempt)` slot for that task while preserving already-valid slots.
-
-## How it works
-
-A Gear round is an evolutionary search step over exact, Git-addressed harness
-versions:
-
-```text
-Task sampling
-  -> Candidate generation
-  -> Paired baseline/candidate rollouts
-  -> Judging
-  -> Survivor and finalist selection
-  -> Held-out promotion gate
-  -> Population update + optional champion update
-```
-
-The research population and deployment champion are separate. Multiple
-seed-selected candidates remain in the research population, but every new
-round creates its candidate workspaces from the current champion. A candidate
-that was not promoted cannot become the next round's code parent or require a
-new parent baseline, including when its evaluation is partial. Only one finalist
-can pass the promotion gate and replace the champion.
-
-Each new round records its champion parent and forks Meta from that champion's
-checkpoint, or the initial Meta root for the initial champion. Research records
-remain available in history; they do not replace the current champion's code or
-baseline. Recovery of an already admitted round retains that round's sealed
-parent and checkpoint.
-
-Every evolution seals its datasets, Meta Agent preset, models, sampling,
-budgets, toolchain, sandbox, component implementations, and component
-configuration in an immutable `EvolutionSpec`. Continuing an evolution
-revalidates those identities instead of reading new global defaults.
-
-## Pluggable algorithm components
-
-New evolutions can explicitly select `failure-cluster-gepa-v1` for shared failure
-diagnosis, scoped specialist archives, proportional task sampling, and staged
-multisignal promotion. Gear prepares immutable subsets of standard compiled
-datasets and reuses per-task results through the existing evaluator interface.
-The built-in Hitch path needs no new CLI flags or capability declarations.
-Existing evolutions retain their sealed strategy. See the
-[implementation and provider guide](docs/candidate-promotion-implementation.zh-CN.md).
-
-Gear exposes six algorithm extension points through `ctx.evolutionComponents`.
-Developer plugins can register alternative implementations without replacing
-the experiment state machine.
-
-| Component | Algorithmic responsibility | Built-in implementation |
+| Component | What can change | Status |
 | --- | --- | --- |
-| `CandidateGenerator` | Allocate parents and propose candidate harnesses | Forked Meta Agent proposals |
-| `TaskSampler` | Resolve seed and held-out tasks into evaluation conditions | Dataset sampler |
-| `RolloutProvider` | Execute exact harness versions and collect evidence | Hitch CLI |
-| `Judge` | Convert rollout evidence into comparable metrics | Task reward and success rate |
-| `CandidateSelector` | Choose survivors and one promotion finalist | Highest quality |
-| `PromotionPolicy` | Decide whether the finalist replaces the champion | Paired seed/held-out gate |
+| Prompts and policies | Task instructions, system prompts, and rules for taking action. | Supported |
+| Tools and hooks | Tool code and checks before or after a tool runs. | Supported |
+| Skills and workflows | Reusable procedures, helper scripts, and the order of steps. | Supported |
+| Context management | What information the agent sees and how it summarizes long histories. | Supported |
+| Harness composition | Which plugins and providers the agent uses and how they are configured. | Supported |
+| Model weights | Train the model itself using feedback from tasks. | Experimental; full iteration loop incomplete |
 
-The Meta Agent runtime, model, skill/preset, sampling, and content digests are
-part of the experiment identity. Skill mode seals the configured harness and
-skill-bundle identity, including references and invocation metadata; the DSH
-plugin derives these from its runtime and packaged skill. Its native bridge
-also verifies the loaded skill and current model settings, but does not attest
-or restrict the rest of the host session's tools, history, or OS permissions.
-Legacy Native DSH mode instead resolves identity from a configured DSH preset.
-Changing either creates a different evolution rather than silently altering an
-existing one. Bundles sealed with the old `SKILL.md`-only digest require a new
-evolution after upgrading; Gear does not rewrite existing experiment identities.
+You can also customize the **optimization algorithm**: how it proposes changes, selects tasks, runs and scores attempts, compares candidates, and decides which version to keep. [Example 2](docs/guide/en/example-algorithm.md) shows these modules through a GEPA-based search.
 
-Native DSH Meta can opt into fresh-session context handoff:
+Gear saves each version and its results, so you can inspect the changes and use the final harness.
 
-```yaml
-metaAdapter:
-  kind: dsh
-metaContextOffloading:
-  mode: proactive
-  contextWindow: 128000 # actual capacity of your configured model, not its output limit
-```
+## Explore the examples
 
-Omit `contextWindow` only when the adapter supplies capacity metadata, or select
-`mode: overflow-only` explicitly. Offloading is disabled when this configuration
-is absent and is never retroactively enabled for an existing evolution. Defaults
-trigger at 80% pressure, target a bootstrap below 50%, and cap summaries at 4k
-tokens (scaled down for smaller windows). The Meta preset must not also mount an
-independent DSH compaction plugin. Session persistence is required.
+- [Evolve a harness for Marketing](docs/guide/en/example-harness.md): follow five rounds of changes, from the initial prompt to the final harness.
+- [Customize your evolve algorithm](docs/guide/en/example-algorithm.md): change how Gear proposes improvements, chooses tasks to test, and keeps the best versions. The Marketing experiment uses a GEPA variant that tests several ideas, then spends more evaluation effort on the promising ones.
 
-An attempt keeps its worktree, evidence receipts, deadline and aggregate request
-and token budgets across handoffs. Without an explicit `metaModel.maxTokens`,
-offloading limits each conversation response to its sealed `reserveTokens`.
-Notebook kernels are recreated. Journals, immutable handoff bundles and bounded
-tool-output artifacts live under the evolution's `meta-context/` directory;
-Meta reads them only through owner-scoped `meta_context_read` references.
-See the [implementation and recovery details](docs/dsh-meta-context-offloading-spec.zh-CN.md#13-v1-实现与使用).
+## Build with us
 
-Algorithm plugins cannot bypass Gear's reproducibility and safety core:
+Start with the [user guide](docs/guide/en/index.md), browse the [example code](examples/evolution-search/README.md), or join [Discord](https://discord.gg/cZ4NBbHDk).
 
-- exact Git commit and manifest verification;
-- candidate workspace containment and fixed toolchain boundaries;
-- held-out data isolation;
-- baseline/candidate condition parity and auditable evidence;
-- atomic population and champion compare-and-swap updates;
-- terminal cleanup and recovery rules.
-
-See the [component abstraction design](docs/research-evolution-component-abstraction-plan.md)
-and the public interfaces in [`src/evolution/components.ts`](src/evolution/components.ts)
-for the extension contract.
-
-## Roadmap
-
-Expand and evolve seed tasks, then use the resulting trajectories and
-evaluation feedback to drive continuous model capability evolution.
-
-## Model training
-
-Gear also provides an experimental Slime GRPO training path through
-`gear-refine training` and the `dsh-plugin-refine/training` API. It freezes the
-harness and datasets, records exact policy tokens, saves a checkpoint after
-each update, and evaluates immutable model exports before promotion.
-
-Start with the [training guide](docs/training/README.zh-CN.md) and
-[controller and model-node configuration](docs/training/controller-v2.zh-CN.md)
-(Chinese). GPU execution requires a pinned, validated runtime and a compatible
-Hitch checkout; the guides describe the supported scope and certification process.
-
-## Documentation
-
-- [Vision and architecture](docs/vision.md)
-- [Harness-neutral Refine Skill and standalone control plane](docs/harness-agnostic-refine-skill.md)
-- [Installation and usage](docs/plugin-installation-and-usage.md)
-- [Gear and Hitch integration](docs/hitch-dsh-integration.md)
-- [Local evolution lab runbook](docs/evolve-lab-runbook.md)
-
-## Development
+For local development:
 
 ```bash
 npm ci
 npm run typecheck
-npm test
 npm run build
-npm run pack:check
+npm test
 ```
 
-For the training bridge's CPU tests, use Python 3.12 and the pinned test
-dependencies. These versions are separate from a production GPU runtime lock:
+[Documentation authoring](docs/guide/README.md) · [GitHub issues](https://github.com/rsi-gear/gear/issues) · [MIT license](LICENSE)
 
-```bash
-python3.12 -m venv python/.venv
-. python/.venv/bin/activate
-python -m pip install './python[gateway]' -c python/constraints-test.txt
-python -m pip install torch -c python/constraints-test.txt --index-url https://download.pytorch.org/whl/cpu
-GEAR_TRAINING_TEST_PYTHON="$VIRTUAL_ENV/bin/python" npm run test:training
-```
+## Roadmap
 
-On macOS, omit `--index-url` when installing Torch. These tests cover the CPU
-bridge and controller contracts; real GPU certification uses the probes
-described in the training guide. CI runs the Python suite in `Training / CPU`.
+Gear can improve harnesses today. Two parts of the bigger learning loop are still in progress:
 
-Focused issues and pull requests are welcome at
-[rsi-gear/gear](https://github.com/rsi-gear/gear). Because Gear is pre-alpha,
-please describe the experiment or compatibility contract that a change is
-intended to preserve.
-
-## License
-
-[MIT](LICENSE)
+- [ ] **Improve the model itself.** Use task results to train the model, test the new version, and repeat. An [experimental training path](docs/guide/en/training.md) exists; the full model-iteration loop is not yet complete.
+- [ ] **Turn failures into new practice tasks.** Build focused starting tasks, or *seed tasks*, from the tasks an agent fails. Feed them into the next round so the agent can work on its weak spots. This automatic task-generation loop is not yet complete.

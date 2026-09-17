@@ -1,6 +1,6 @@
-import type { EvidenceCell, ExternalRecovery, PendingSearchOperation, SearchStageFailure } from './types.js'
-import { SearchBudgetExceeded, SearchStore } from './store.js'
-import { invariant, SearchProtocolError } from './contracts.js'
+import { invariant, SearchProtocolError } from './contracts.js';
+import { SearchBudgetExceeded, type SearchJournal } from './store.js';
+import type { EvidenceCell, ExternalRecovery, PendingSearchOperation, SearchStageFailure } from './types.js';
 
 /** Providers may throw this only after verifying that the external execution is terminal. */
 export class SearchExecutionFailure extends Error {
@@ -34,7 +34,7 @@ export function searchDeadline(caller: AbortSignal, deadlineAt: number): { signa
 }
 /** Only provider calls belong inside run. Journal/verification errors must escape unchanged. */
 export async function recoverExternal<T>(input: {
-  store: SearchStore; roundId: string; operation: Omit<PendingSearchOperation, 'state' | 'reason'>
+  store: SearchJournal; roundId: string; operation: Omit<PendingSearchOperation, 'state' | 'reason'>
   signal: AbortSignal; inspectionSignal: AbortSignal; previouslyReserved: boolean
   run(): Promise<T>; inspect?(signal: AbortSignal): Promise<ExternalRecovery<T>>
   failed(failure: SearchStageFailure, cells: EvidenceCell[]): T
@@ -72,11 +72,11 @@ export async function recoverExternal<T>(input: {
     state: state.status, ...(state.status === 'running' ? { handle: state.handle } : {}),
     reason: state.status === 'unknown' ? state.reason ?? reason : reason })
 }
-export async function pendingOperation(store: SearchStore, roundId: string, operation: PendingSearchOperation): Promise<never> {
+export async function pendingOperation(store: SearchJournal, roundId: string, operation: PendingSearchOperation): Promise<never> {
   await store.write(`rounds/${roundId}/pending-operation`, operation)
   throw new SearchOperationPending(operation)
 }
-export async function resolvePendingOperation(store: SearchStore, roundId: string, key: string): Promise<void> {
+export async function resolvePendingOperation(store: SearchJournal, roundId: string, key: string): Promise<void> {
   const pending = await store.read<PendingSearchOperation | null>(`rounds/${roundId}/pending-operation`)
   if (pending?.operationKey === key) await store.write(`rounds/${roundId}/pending-operation`, null)
 }

@@ -1,8 +1,10 @@
 import { digestJson } from '../state/digest.js'
+import { comparisonKey, invariant, repetitionsForTask, seal, sorted, validateScope, verifyDigest } from './contracts.js'
+import { assertConsistentCells, cellIdentity, cellKey, completeEvidence, profile, validOutcome } from './evidence.js'
+import { selectParentsWithPolicy } from './parent-selection.js'
+import { championGepaPolicy, resolveParentPolicyRef, scopedFrontierPolicy } from './policies/parents.js'
 import { validateSearchSchema } from './schema.js'
-import { comparisonKey, invariant, seal, sorted, validateScope, verifyDigest } from './contracts.js'
-import { assertConsistentCells, cellKey, completeEvidence, profile, validOutcome } from './evidence.js'
-import type { EvidenceCell, EvidenceProfile, FailureCluster, EvaluationScope, ParentSelectionDecision, ResearchArchive, ScopeView, SearchConfig, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from './types.js'
+import type { EvaluationScope, EvidenceCell, EvidenceProfile, FailureCluster, ParentSelectionDecision, ResearchArchive, ScopeView, SearchConfig, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from './types.js'
 
 export function passesExploration(scope: EvaluationScope, p: EvidenceProfile, universe: TaskUniverse): boolean {
   return p.outcomeComplete && scope.guards.every(g => {
@@ -85,8 +87,9 @@ export function scopeView(scope: EvaluationScope, universe: TaskUniverse, snapsh
     ineligibleIds: [...guardRejected].filter(id => !profiles.has(id)).sort() })
 }
 
-export function buildArchive(input: { evolutionId: string; previous?: ResearchArchive; universe: TaskUniverse; snapshots: Snapshot[]; scopes: EvaluationScope[]; results: StageResult[]; plans: StageEvaluationPlan[]; config: SearchConfig; championId: string; clusters?: FailureCluster[] }): ResearchArchive {
+export function buildArchive(input: { evolutionId: string; previous?: ResearchArchive; universe: TaskUniverse; snapshots: Snapshot[]; scopes: EvaluationScope[]; results: StageResult[]; plans: StageEvaluationPlan[]; config: SearchConfig; championId: string; includeChampion?: boolean; clusters?: FailureCluster[] }): ResearchArchive {
   const { previous, universe } = input
+  const legacyMixture = !input.config.parentPolicy && input.config.parentSampling === 'epsilon-greedy-gepa-v1'
   if (previous) { validateSearchSchema('ResearchArchive', previous); verifyDigest(previous); invariant(previous.universeDigest === universe.digest && previous.evolutionId === input.evolutionId, 'archive cohort identity changed') }
   invariant(universe.partition === 'seed' && input.plans.every(p => p.partition === 'seed' && p.universeDigest === universe.digest), 'held-out evidence is forbidden in archive')
   const snapshots = new Map((previous?.snapshots ?? []).map(s => [s.candidateId, s]))
@@ -127,7 +130,24 @@ export function buildArchive(input: { evolutionId: string; previous?: ResearchAr
     const aliases = equivalentScopes.get(scope.equivalenceDigest) ?? new Set<string>()
     aliases.add(scope.digest); equivalentScopes.set(scope.equivalenceDigest, aliases)
   }
-  const scopeViews = [...scopes.values()].map(s => scopeView(s, universe, [...snapshots.values()], [...records.values()], input.config, input.championId, equivalentScopes.get(s.equivalenceDigest)!))
+  const viewRecords = [...records.values()]
+  // A promoted champion's global seed cells can support its existing bootstrap
+  // diagnosis scope. This creates no rollout and does not broaden GEPA scopes.
+  if (input.includeChampion ?? legacyMixture) {
+    const champion = snapshots.get(input.championId)
+    const bootstrap = [...scopes.values()].find(s => s.familyId === 'bootstrap')
+    if (champion && bootstrap) {
+      const cells = bootstrap.taskIds.flatMap(id => repetitionsForTask(universe, id).flatMap(slot => {
+        const cell = cellHistory.get(cellKey(cellIdentity(universe, id, slot.index, champion)))
+        return cell ? [cell] : []
+      }))
+      const plan: StageEvaluationPlan = seal({ stage: 'baseline-probe' as const, partition: 'seed' as const, universeDigest: universe.digest,
+        taskSetSizeResolutionDigest: bootstrap.taskSetSizeResolutionDigest, scopeDigest: bootstrap.digest, taskIds: bootstrap.taskIds,
+        participantIds: [champion.candidateId], prerequisiteDecisionDigests: [], selectionRuleDigest: digestJson('champion-baseline-projection-v1') })
+      viewRecords.push({ snapshot: champion, plan, result: seal({ stagePlanDigest: plan.digest, snapshotDigest: champion.digest, cells, settled: true }) })
+    }
+  }
+  const scopeViews = [...scopes.values()].map(s => scopeView(s, universe, [...snapshots.values()], viewRecords, input.config, input.championId, equivalentScopes.get(s.equivalenceDigest)!))
   const latest = new Map<string, EvaluationScope>(), equivalences = new Set<string>()
   for (const scope of [...scopes.values()].sort((a, b) => b.epoch - a.epoch || a.familyId.localeCompare(b.familyId))) {
     if (latest.has(scope.familyId) || equivalences.has(scope.equivalenceDigest)) continue
@@ -142,6 +162,20 @@ export function buildArchive(input: { evolutionId: string; previous?: ResearchAr
     const view = scopeViews.find(v => v.scopeDigest === scope.digest)!
     for (const [id, p] of Object.entries(view.conditionalParentProbabilities)) parentProbabilities[id] = (parentProbabilities[id] ?? 0) + p / latest.size
   }
+  let parentMixture: ResearchArchive['parentMixture']
+  if (legacyMixture) {
+    const championProbability = input.config.championProbability ?? 0.5
+    invariant(Number.isFinite(championProbability) && championProbability >= 0 && championProbability <= 1, 'invalid champion probability')
+    const championScope = [...scopes.values()].filter(s => scopeViews.find(v => v.scopeDigest === s.digest)!.representatives[input.championId] !== undefined)
+      .sort((a, b) => b.taskIds.length - a.taskIds.length || b.epoch - a.epoch || a.digest.localeCompare(b.digest))[0]
+    invariant(championScope && snapshots.has(input.championId), 'champion has no complete eligible seed scope')
+    parentMixture = { strategy: 'epsilon-greedy-gepa-v1', championId: input.championId, championProbability,
+      championScopeDigest: championScope.digest, explorationParentProbabilities: { ...parentProbabilities } }
+    for (const id of Object.keys(parentProbabilities)) parentProbabilities[id] = parentProbabilities[id]! * (1 - championProbability)
+    parentProbabilities[input.championId] = (parentProbabilities[input.championId] ?? 0) + championProbability
+    if (!Object.keys(parentMixture.explorationParentProbabilities).length) parentProbabilities[input.championId] = 1
+    for (const id of Object.keys(parentProbabilities)) if (parentProbabilities[id] === 0) delete parentProbabilities[id]
+  }
   const clusters = [...new Map([...(previous?.clusters ?? []), ...(input.clusters ?? [])].map(c => [c.digest, c])).values()]
   for (const cluster of clusters) {
     verifyDigest(cluster)
@@ -149,29 +183,18 @@ export function buildArchive(input: { evolutionId: string; previous?: ResearchAr
   }
   return seal({ schemaVersion: 1 as const, clusters, evolutionId: input.evolutionId, revision: (previous?.revision ?? -1) + 1, universeDigest: universe.digest,
     snapshots: [...snapshots.values()], scopes: [...scopes.values()], results: [...resultHistory.values()], plans: [...plans.values()], scopeViews,
-    scopeProbabilities, parentProbabilities, activeParentIds: Object.keys(parentProbabilities).sort(),
+    scopeProbabilities, parentProbabilities, activeParentIds: Object.keys(parentProbabilities).sort(), ...(parentMixture ? { parentMixture } : {}),
   })
 }
 
-function draw(probabilities: Record<string, number>, seed: string, index: number): string {
-  const entries = Object.entries(probabilities).sort(([a], [b]) => a.localeCompare(b))
-  invariant(entries.length > 0, 'blocked-no-eligible-parent')
-  const sample = parseInt(digestJson([seed, index]).slice(7, 20), 16) / 0x10000000000000
-  let total = 0
-  for (const [id, p] of entries) { total += p; if (sample < total) return id }
-  return entries.at(-1)![0]
-}
+/** Compatibility entry point for the built-in presets. Custom policies use the registry/runtime. */
 export function selectParents(archive: ResearchArchive, config: SearchConfig, maxCandidates: number, roundId: string): ParentSelectionDecision {
-  validateSearchSchema('ResearchArchive', archive)
-  verifyDigest(archive)
-  const randomSeed = digestJson([config.seed, roundId, archive.digest])
-  const batches = Array.from({ length: config.parentBatchCount }, (_, i) => {
-    const scope = draw(archive.scopeProbabilities, randomSeed, i * 2)
-    const view = archive.scopeViews.find(v => v.scopeDigest === scope)!
-    const parent = draw(view.conditionalParentProbabilities, randomSeed, i * 2 + 1)
-    return { batchId: `${roundId}-batch-${i}`, sourceScopeDigest: scope, parentSnapshotDigest: archive.snapshots.find(s => s.candidateId === parent)!.digest,
-      maxCandidateSlots: Math.floor(maxCandidates / config.parentBatchCount) + (i < maxCandidates % config.parentBatchCount ? 1 : 0), drawIndex: i * 2,
-    }
-  })
-  return seal({ archiveDigest: archive.digest, algorithmRef: 'sha256-counter-v1' as const, randomSeed, batches })
+  invariant(!config.parentPolicy, 'resolve custom parent policies through ComponentRegistry')
+  const ref = resolveParentPolicyRef(config)
+  if (config.parentSampling === 'epsilon-greedy-gepa-v1') {
+    invariant(archive.parentMixture?.championProbability === (config.championProbability ?? 0.5), 'parent mixture does not match frozen settings')
+    return selectParentsWithPolicy(archive, championGepaPolicy(ref), maxCandidates, roundId, config.seed, archive.parentMixture.championId)
+  }
+  invariant(!archive.parentMixture, 'legacy selector cannot consume a mixed archive')
+  return selectParentsWithPolicy(archive, scopedFrontierPolicy(ref), maxCandidates, roundId, config.seed)
 }

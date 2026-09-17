@@ -1075,6 +1075,22 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     return this.resolveEvaluationIdentity(round, request, signal)
   }
 
+  /** Reads the existing Hitch submission record; this adds no Hitch CLI command or protocol. */
+  async submittedEvaluationIdentity(
+    round: Readonly<RefinementRound>, request: Readonly<EvaluationRequest>, reservation: Readonly<EvaluationReservation>,
+    signal: AbortSignal, intent?: Readonly<EvaluationSubmissionIntent>,
+  ): Promise<(HitchEvaluationIdentity & { cohortDigest: string }) | undefined> {
+    if (!this.daemonMode) return undefined
+    this.assertEvaluationRequest(round, request)
+    if (reservation.provider !== 'hitch-cli' || !/^eval_[0-9a-f]{32}$/u.test(reservation.evalId)) throw new TypeError('invalid evaluation reservation')
+    const inspection = await this.inspectEvaluation(reservation.evalId, round.workspaceRoot, signal, 'hitch_eval_inspect_failed',
+      intent === undefined ? this.options.root : this.submissionParameters(intent).root)
+    const identity = this.daemonEvaluationIdentity(round, request, inspection, await this.resolveEvaluationIdentity(round, request, signal))
+    const execution = record(inspection.submission, 'Hitch eval submission').execution
+    return { ...identity, cohortDigest: digestJson({ provider: identity.provider, executionMode: 'daemon', execution,
+      harnessId: this.options.harnessId, scoringContract: 'benchmark-scores-v1', runtime: await this.runtimeIdentity(signal) }) }
+  }
+
   private async hasStandardBenchmarkManifest(
     round: Readonly<RefinementRound>,
     request: Readonly<EvaluationRequest>,

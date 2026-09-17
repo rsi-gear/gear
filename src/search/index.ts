@@ -17,3 +17,7 @@ export * from './scope-sampling.js'
 export * from './shadow.js'
 export * from './dataset-projection.js'
 export * from './evaluation-adapter.js'
+
+export * from './parent-selection.js'
+export * from './parent-random.js'
+export * from './policies/parents.js'

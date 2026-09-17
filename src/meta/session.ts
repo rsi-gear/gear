@@ -19,8 +19,12 @@ import { DshContextExecution } from './offloading-execution.js'
 import { MetaOffloadingStore } from './offloading-store.js'
 import { MetaContextError } from './offloading-policy.js'
 import { generationBudgetSnapshot } from '../refine/generation-budget.js'
+import { DshGenerationExecution, type MetaGenerationBudgetHost } from './generation-execution.js'
 
 export interface MetaAgentHost {
+  generationBudget?: MetaGenerationBudgetHost
+  /** Positive proof that the owned session is absent from both live and durable state. */
+  isSessionAbsent?(sessionId: string): Promise<boolean>
   offloading?: MetaOffloadingHost
   retire?(sessionId: string): Promise<void>
   quiesce?(sessionId: string): Promise<void>
@@ -101,13 +105,24 @@ function observeTurn(events: readonly SessionEvent[], firstObservedSeq: number):
 
 export class DshMetaAgentHost implements MetaAgentHost {
   readonly offloading: MetaOffloadingHost
+  readonly generationBudget: MetaGenerationBudgetHost
   private readonly permitted = new Set<string>()
   private readonly quiesced = new Set<string>()
   constructor(
     private readonly ctx: Context,
     private readonly setupMetaCapabilities: (agentCtx: Context, sessionId: string) => void | Promise<void>,
     private readonly retireRuntime?: (sessionId: string) => Promise<void>,
-  ) { this.offloading = new DshOffloadingHost(ctx, this.permitted) }
+  ) {
+    this.offloading = new DshOffloadingHost(ctx, this.permitted)
+    this.generationBudget = { pressure: (...args) => this.offloading.pressure(...args), flush: agent => this.offloading.flush(agent),
+      permit: agent => { this.permitted.add(String(agent.id)) }, revoke: id => { this.permitted.delete(id) } }
+  }
+
+  async isSessionAbsent(sessionId: string): Promise<boolean> {
+    if (this.getLive(sessionId)) return false
+    const persistence = this.ctx.get('sessionPersistence')
+    return persistence !== undefined && !(await persistence.list()).some(header => String(header.id) === sessionId)
+  }
 
   async quiesce(sessionId: string): Promise<void> {
     if (this.quiesced.has(sessionId)) return
@@ -198,6 +213,7 @@ export class DshMetaAgentHost implements MetaAgentHost {
   }
 
   async cancelAndFlush(agent: Agent, reason: string): Promise<void> {
+    this.permitted.delete(String(agent.id))
     agent.cancel({ kind: 'hook', reason })
     await agent.whenIdle()
     const participated = await this.ctx.sessions.flush(agent.session)
@@ -208,7 +224,7 @@ export class DshMetaAgentHost implements MetaAgentHost {
     validateMetaSampling(spec.sampling)
     await this.ctx.agentPresets.mount(agentCtx, spec.preset.id)
     await this.setupMetaCapabilities(agentCtx, sessionId)
-    if (spec.contextOffloading !== undefined) {
+    {
       agentCtx.on('tools/pre-execute', async (exec, next) => {
         if (exec.agent === undefined || !this.permitted.has(String(exec.agent.id))) throw new Error('Meta session has no active execution permission')
         return next()
@@ -217,7 +233,7 @@ export class DshMetaAgentHost implements MetaAgentHost {
         if (this.permitted.has(String(payload.agent.id))) return next()
         // Preset startup/resume hooks may wake a staged agent. Park claimed input
         // durably until the logical controller has installed ownership checks.
-        payload.agent.cancel({ kind: 'hook', reason: 'Meta context activation pending' }, { keepInbox: true })
+        payload.agent.cancel({ kind: 'hook', reason: 'Meta execution activation pending' }, { keepInbox: true })
         const ids = new Set([...payload.agent.inbox.nextStep, ...payload.agent.inbox.nextTurn].map(message => message.id))
         for (const message of payload.messages) if (!ids.has(message.id)) payload.agent.inject(message)
         return { kind: 'reject' }
@@ -244,7 +260,12 @@ export class MetaSessionManager implements MetaSessionController {
   private readonly wakes = new Map<string, RoundWake>()
   private readonly evidenceAccess = new Map<string, RoundEvidenceAccess>()
   private readonly workplanDeliveries = new Map<string, NonNullable<CandidateRecord['workplanDelivery']>>()
-  private readonly executions = new Map<string, DshContextExecution>()
+  private readonly executions = new Map<string, DshContextExecution | DshGenerationExecution>()
+
+  get capabilities() {
+    return { aggregateGenerationBudget: this.host.generationBudget !== undefined
+      || this.options.metaAgent.contextOffloading !== undefined && this.host.offloading !== undefined }
+  }
 
   constructor(
     private readonly store: RefineStateStore,
@@ -335,7 +356,14 @@ export class MetaSessionManager implements MetaSessionController {
   async cancel(sessionId: string, reason: string): Promise<void> {
     const execution = this.executions.get(sessionId)
     execution?.stop(reason)
-    const agent = await this.ensureAgent(execution?.activeSessionId ?? sessionId)
+    const ownedId = execution?.activeSessionId ?? sessionId
+    let agent: Agent
+    try { agent = await this.ensureAgent(ownedId) }
+    catch (error) {
+      if (await this.host.isSessionAbsent?.(ownedId) !== true) throw error
+      await this.host.retire?.(ownedId)
+      return
+    }
     await this.host.cancelAndFlush(agent, reason)
   }
 
@@ -390,6 +418,8 @@ export class MetaSessionManager implements MetaSessionController {
     agent: MetaAgentSession,
     execution?: MetaExecutionBinding,
   ): Promise<import('./controller.js').MetaWakeHandle> {
+    if ((execution?.budget.maxTokens !== undefined || execution?.budget.maxModelRequests !== undefined)
+      && !this.capabilities.aggregateGenerationBudget) throw new Error('Meta adapter cannot enforce aggregate generation budgets')
     if (round.evolutionId !== this.options.evolutionId) {
       throw new Error(`Meta session for evolution ${this.options.evolutionId} cannot wake round from ${round.evolutionId}`)
     }
@@ -505,10 +535,20 @@ export class MetaSessionManager implements MetaSessionController {
       this.executions.set(sessionId, offloader)
       return { sessionId, completion: offloader.run(dshAgent, envelope, firstObservedSeq) }
     }
+    if (execution && (execution.budget.maxTokens !== undefined || execution.budget.maxModelRequests !== undefined)) {
+      if (!this.host.generationBudget) throw new Error('DSH host does not implement generation metering')
+      const bounded = new DshGenerationExecution(new MetaOffloadingStore(this.store.root), this.host.generationBudget,
+        { evolutionId: round.evolutionId, specDigest: this.options.specDigest, roundId: round.roundId,
+          ...(candidate ? { candidateId: candidate.candidateId } : {}) }, execution)
+      this.executions.set(sessionId, bounded)
+      return { sessionId, completion: bounded.run(dshAgent, envelope, firstObservedSeq, () => observeTurn([...dshAgent.session.events], firstObservedSeq)) }
+    }
+    this.host.generationBudget?.permit(dshAgent)
     dshAgent.followup(envelope)
     return {
       sessionId,
-      completion: dshAgent.whenIdle().then(() => observeTurn([...dshAgent.session.events], firstObservedSeq)),
+      completion: dshAgent.whenIdle().then(() => observeTurn([...dshAgent.session.events], firstObservedSeq))
+        .finally(() => this.host.generationBudget?.revoke(sessionId)),
     }
   }
 
@@ -573,8 +613,11 @@ export class MetaSessionManager implements MetaSessionController {
     const events = [...agent.session.events]
     const headers = events.filter(event => event.type === 'request/header')
     const relevant = headers.filter(event => event.seq >= wake.firstObservedSeq)
+    const execution = this.executions.get(sessionId)
+    const attributionConfig = (config: (typeof headers)[number]['data']['header']['config']) =>
+      execution instanceof DshGenerationExecution ? execution.attributionConfig(config) : config
     const distinct = new Set(relevant.map(event => stableJson({
-      config: event.data.header.config,
+      config: attributionConfig(event.data.header.config),
       system: event.data.header.system,
       tools: event.data.header.tools,
     })))
@@ -588,12 +631,13 @@ export class MetaSessionManager implements MetaSessionController {
     const proposal = events.findLast(event => event.type === 'tool/call' && event.seq >= wake.firstObservedSeq)
     if (proposal === undefined) throw new Error('proposal has no attributable tool/call event')
     const config = effective.data.header.config
-    if (config.provider !== this.options.metaAgent.model.provider || config.model !== this.options.metaAgent.model.model
-      || (this.options.metaAgent.model.maxTokens !== undefined && config.maxTokens !== this.options.metaAgent.model.maxTokens)
+    const original = attributionConfig(config)
+    if (original.provider !== this.options.metaAgent.model.provider || original.model !== this.options.metaAgent.model.model
+      || (this.options.metaAgent.model.maxTokens !== undefined && original.maxTokens !== this.options.metaAgent.model.maxTokens)
       || (this.options.metaAgent.sampling.temperature !== undefined
-        && config.temperature !== this.options.metaAgent.sampling.temperature)
+        && original.temperature !== this.options.metaAgent.sampling.temperature)
       || (this.options.metaAgent.sampling.reasoningEffort !== undefined
-        && config.reasoningEffort !== this.options.metaAgent.sampling.reasoningEffort)) {
+        && original.reasoningEffort !== this.options.metaAgent.sampling.reasoningEffort)) {
       throw new Error('effective Meta request config does not match immutable evolution spec')
     }
     return {

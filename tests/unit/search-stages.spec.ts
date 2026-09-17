@@ -7,19 +7,45 @@ import { FailureClusterSearch } from '../../src/search/engine.js'
 import { SearchOperationPending } from '../../src/search/recovery.js'
 import { SearchStore } from '../../src/search/store.js'
 import { validateSearchSchema } from '../../src/search/schema.js'
-import type { SearchProgress, StageEvaluationPlan } from '../../src/search/types.js'
+import type { GateDecision, SearchProgress, StageEvaluationPlan } from '../../src/search/types.js'
 import { fixtures, revise, settings } from '../helpers/search-fixture.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
-async function setup() {
-  const f = fixtures(20), config = settings(), root = await mkdtemp(join(tmpdir(), 'gear-stage-')); roots.push(root)
+async function setup(process = false) {
+  const f = fixtures(20, process), config = settings(), root = await mkdtemp(join(tmpdir(), 'gear-stage-')); roots.push(root)
   const store = new SearchStore(root), request = { evolutionId: 'stage', roundId: 'r', roundIndex: 0, maxCandidates: 4, anchor: f.anchor, championRevisionDigest: digestJson('revision'), settings: config }
   const run = () => new FailureClusterSearch(store, f.provider, f.diagnosis, f.hooks).run(request, new AbortController().signal)
   return { ...f, config, store, run }
 }
 
 describe('frozen stage decisions and seed progress', () => {
+  it.each([0.25, 1])('evaluates a bridge process regression on the full seed before deciding promotion with remaining-task process %s', async remainingProcess => {
+    const f = await setup(true), evaluate = f.provider.evaluate
+    f.provider.evaluate = async input => {
+      const cells = await evaluate(input)
+      if (input.snapshot.candidateId === 'anchor') return cells
+      return cells.map(c => revise(c, { process: {
+        status: 'available', contractDigest: c.identity.processContractDigest!, evidenceRef: c.evidenceRef,
+        rawValue: input.plan.stage === 'local' || input.plan.stage === 'bridge' ? 0.25 : remainingProcess,
+      } }))
+    }
+    const result = await f.run(), bridge = result.research.bridge.plan!
+    const decisions = result.research.stageDecisions.filter(d => d.stagePlanDigest === bridge.digest)
+    expect(decisions.filter(d => d.outcome === 'advance')).toHaveLength(1)
+    for (const decision of decisions) {
+      const support = await f.store.object<{ digest: string; gate: GateDecision }>(decision.supportDigest)
+      expect(support.gate).toMatchObject({ outcome: 'eligible', comparison: { processGains: { process: -0.25 } } })
+    }
+    const progress = await f.store.read<SearchProgress>('rounds/r/progress')
+    expect(progress?.evaluations.find(e => e.stage === 'global-seed' && e.candidateId === result.nomineeId)?.profile?.coverage.available).toBe(20)
+    expect(f.executions.some(e => e.stage === 'global-seed' && e.participant === result.nomineeId)).toBe(true)
+    expect(result.championChanged).toBe(remainingProcess === 1)
+    expect(result.promotion?.reasonCodes).toEqual(remainingProcess === 1 ? [] : ['process-regression:process'])
+    expect(f.executions.some(e => e.stage === 'held-out')).toBe(remainingProcess === 1)
+    expect(await f.run()).toEqual(result)
+  })
+
   it('publishes scoped decisions and completed coverage before held-out while keeping that evidence isolated', async () => {
     const f = await setup(), evaluate = f.provider.evaluate
     let beforeHeldOut: SearchProgress | undefined

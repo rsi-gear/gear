@@ -1,3 +1,4 @@
+import { resolveParentPolicyRef } from '../search/policies/parents.js'
 import type { CandidateWorkspaceHandle, CandidateWorkspaceManager } from '../candidate/workspace.js'
 import { ComponentRegistry } from '../evolution/components.js'
 import type { HarnessBuilder } from '../harness/builder.js'
@@ -63,6 +64,7 @@ export interface AdmissionOptions {
 }
 
 export interface ContinueOptions { rounds?: number; focus?: SemanticTarget[] }
+/** Construct an inert controller; admission inspects capabilities before creating its state directory. */
 export type MetaSessionFactory = (
   spec: EvolutionSpec,
   specDigest: string,
@@ -725,8 +727,13 @@ export class RefineService {
       validateSettings(spec.searchSettings, seed, heldOut, spec.candidateGeneration.maxCandidates)
       if (spec.searchSettings.regression.suiteRef) invariant(await search.provider.verifyRegressionSuite?.(spec.searchSettings.regression.suiteRef, seed), 'provider must verify the frozen regression suite was included at new admission')
     }
-    await this.registry.createEvolution({ spec, champion: initial, ...(options.name === undefined ? {} : { name: options.name }) })
-    return this.startBatch(await this.runtime(evolutionId), source, batchId, roundCount, normalizeFocus(options.focus))
+    const state = this.registry.stateStore(evolutionId)
+    const meta = await this.createMetaSession(spec, digestJson(spec), state)
+    try {
+      this.assertGenerationBudgetCapability(spec, meta)
+      await this.registry.createEvolution({ spec, champion: initial, ...(options.name === undefined ? {} : { name: options.name }) })
+      return await this.startBatch(await this.runtime(evolutionId, { meta, store: state }), source, batchId, roundCount, normalizeFocus(options.focus))
+    } catch (error) { await meta.dispose(); throw error }
   }
 
   async continueEvolution(source: RefinementRound['source'], evolutionId: string, options: ContinueOptions = {}): Promise<AdmissionResult> {
@@ -788,7 +795,7 @@ export class RefineService {
         },
         generate: async () => { throw new Error('evidence repair cannot generate candidates') },
         commitChampion: async () => { throw new Error('evidence repair cannot promote') },
-      })
+      }, this.components)
       const result = await engine.repairEvaluation(roundId, repairId, originalEvidenceDigest, new AbortController().signal)
       await this.transition(evolution.store, roundId, { status: 'baseline-running', failure: undefined })
       this.active.set(roundId, this.newActive(evolution, lock, round.source, round.batchId, round.roundIndex, round.roundCount, round.advisoryFocus))
@@ -1946,7 +1953,8 @@ export class RefineService {
         } else {
           await this.transition(store, roundId, {
             ...this.completeEvaluationRepairResume(active, round, {}),
-            status: 'failed',
+            status: round.searchMode && round.candidatePool.some(candidate => candidate.generationAttempts?.some(attempt => attempt.status === 'running'))
+              ? round.status : 'failed',
             failure: { phase: round.status, message: errorMessage(error) },
             ...(error instanceof BaselineReuseBlockedError ? { baselineReuseBlocker: error.blocker } : {}),
           }).catch(() => {})
@@ -1971,16 +1979,80 @@ export class RefineService {
     }
   }
 
+  /** Stop the original owner even when restoring its session or workspace failed. */
+  private async stopRecoveredMeta(evolution: EvolutionRuntime, execution: MetaExecutionState, reason: string): Promise<void> {
+    await evolution.meta.cancel(execution.activeSessionId, reason)
+    const store = new MetaOffloadingStore(evolution.store.root), current = await store.read(execution.executionId)
+    if (current && (current.status === 'running' || current.status === 'rotating')) {
+      await store.cas(current.revision, { ...current, revision: current.revision + 1, status: 'stopped', failure: reason })
+    }
+  }
+
+  /** Resume a verified handoff, or cancel the original owner before settling its attempt. */
+  private async recoverSearchGeneration(active: ActiveRound, roundId: string): Promise<void> {
+    const { store, spec, meta } = active.evolution
+    const round = await this.requireRound(store, roundId)
+    const contextStore = new MetaOffloadingStore(store.root), contexts = await contextStore.list()
+    const journal = new SearchStore(join(store.root, 'search'))
+    const budgetStart = (await journal.read<{ startedAt: number }>('budget'))?.startedAt
+    for (const candidate of round.candidatePool) {
+      const attempts = candidate.generationAttempts?.filter(attempt => attempt.status === 'running') ?? []
+      if (!attempts.length || active.executions.has(candidate.candidateId)) continue
+      const owned = contexts.filter(context => context.roundId === roundId && context.candidateId === candidate.candidateId
+        && attempts.some(attempt => attempt.attempt === context.attempt))
+      const expired = Date.now() >= (candidate.workplanDelivery?.workplan.generationBudget.deadlineAt ?? Infinity)
+        || Date.now() >= (round.candidateGenerationDeadlineAt ?? Infinity)
+        || budgetStart !== undefined && Date.now() >= budgetStart + spec.searchSettings!.budgets.evolution.timeoutMs
+      const resumable = owned.filter(context => !expired && context.deadlineAt > Date.now()
+        && context.specDigest === active.evolution.specDigest && context.recovery !== undefined
+        && (context.status === 'rotating' || context.status === 'running' && ['activated', 'delivered'].includes(context.intent?.phase ?? ''))
+        && attempts.some(attempt => attempt.attempt === context.attempt && attempt.deadlineAt === context.deadlineAt)
+        && (context.recovery.controller as { workspaceId?: string }).workspaceId === candidate.workspaceId)
+      if (!candidate.sealedVersion && candidate.status === 'generating' && attempts.length === 1 && resumable.length === 1
+        && spec.metaAgent.contextOffloading !== undefined && meta.restore) {
+        invariant(!active.contextResume, 'multiple concurrent Meta recoveries are not supported')
+        active.contextResume = resumable[0]!
+        continue
+      }
+      // A persisted session ID is ownership information, not a liveness observation.
+      // Cancellation must acknowledge quiescence; failures leave the round unresolved.
+      const sessions = new Set([candidate.metaSessionId, ...attempts.map(a => a.metaSessionId), ...owned.map(c => c.activeSessionId)])
+      const message = expired ? 'search budget exhausted: time' : 'search generation stopped after restart outside a recoverable Meta boundary'
+      try { for (const session of sessions) if (session) await meta.cancel(session, message) }
+      catch (error) {
+        await journal.write(`rounds/${roundId}/pending-operation`, {
+          operationKey: digestJson([roundId, candidate.workplanDelivery!.workplan.digest, 'generation']), kind: 'generation',
+          candidateId: candidate.candidateId, state: 'unknown', reason: errorMessage(error),
+        })
+        throw error
+      }
+      for (const context of owned) if (context.status === 'running' || context.status === 'rotating') {
+        await contextStore.cas(context.revision, { ...context, revision: context.revision + 1, status: 'stopped', failure: message })
+      }
+      const current = await this.requireRound(store, roundId), failure = { phase: 'candidate-generation', message }
+      await this.transition(store, roundId, { candidatePool: this.patchCandidate(current, candidate.candidateId, {
+        ...(candidate.sealedVersion ? {} : { status: 'failed', failure }),
+        generationAttempts: candidate.generationAttempts!.map(attempt => attempt.status === 'running'
+          ? { ...attempt, status: 'failed', completedAt: now(), failure } : attempt),
+      }) })
+    }
+  }
+
   private async driveSearch(active: ActiveRound, roundId: string): Promise<void> {
     const { spec, store, evaluator } = active.evolution
     const adapter = evaluator.search
     if (!adapter || !spec.searchSettings) throw new Error('search provider capabilities unavailable')
+    await this.recoverSearchGeneration(active, roundId)
     const round = await this.requireRound(store, roundId)
     if (!round.searchAnchor) throw new Error('search round has no pinned champion anchor')
     const journal = new SearchStore(join(store.root, 'search'))
     const generatedResult = async (candidate: RefinementRound['candidatePool'][number], reason?: string): Promise<GeneratedCandidate> => {
       const delivery = candidate.workplanDelivery!
-      const usage = { tokens: delivery.workplan.generationBudget.maxTokens, requests: delivery.workplan.generationBudget.maxModelRequests }
+      // Charge the full enforced reservation conservatively. This is an upper
+      // bound, not a claim of measured model usage; adapters must enforce it.
+      const budget = delivery.workplan.generationBudget
+      const usage = { ...(budget.maxTokens === undefined ? {} : { tokens: budget.maxTokens }),
+        ...(budget.maxModelRequests === undefined ? {} : { requests: budget.maxModelRequests }) }
       if (!candidate.sealedVersion) return seal({ changedPaths: [], usage, reason: reason ?? candidate.failure?.message ?? candidate.decline?.rationale ?? 'candidate-declined' })
       if (!candidate.proposalEvidence?.workplanReceipt || !candidate.metaSessionId) throw new Error('candidate has no workplan consumption receipt')
       const snapshot = await this.builder.searchSnapshot(candidate.candidateId, candidate.sealedVersion.commitOid, candidate.parentCandidateIds)
@@ -2006,11 +2078,13 @@ export class RefineService {
           lineageRootId: parent.parentIds[0] ?? parent.candidateId, metrics: { quality: 0, taskSuccessRate: 0 }, selectedAt: now(),
           ...(parentRecord?.resultCheckpoint && parentRecord.metaSessionId ? { metaCheckpoint: parentRecord.resultCheckpoint, metaSessionId: parentRecord.metaSessionId } : {}) }
         // Restart never silently generates another proposal for a consumed attempt.
-        if (previous?.generationAttempts?.some(a => a.status === 'running') && !previous.sealedVersion) {
+        if (previous?.generationAttempts?.some(a => a.status === 'running') && !previous.sealedVersion
+          && active.contextResume?.candidateId !== id) {
           throw new Error('search generation interrupted: restore the original Meta attempt before resuming')
         }
         if (previous?.sealedVersion || previous?.status === 'failed' || previous?.decline) return generatedResult(previous)
         current = await this.generateCandidates(active, current, [member], id, signal)
+        delete active.contextResume
         const candidate = current.candidatePool.find(c => c.candidateId === id)!
         return generatedResult(candidate)
       },
@@ -2025,7 +2099,8 @@ export class RefineService {
         const expired = Date.now() >= candidate.workplanDelivery!.workplan.generationBudget.deadlineAt
           || budgetStart !== undefined && Date.now() >= budgetStart + spec.searchSettings!.budgets.evolution.timeoutMs
         if (expired && candidate.generationAttempts.every(a => a.status !== 'running')) return { status: 'complete', result: await generatedResult(candidate, 'search budget exhausted: time') }
-        if (candidate.metaSessionId) return { status: 'running', handle: candidate.metaSessionId }
+        const execution = active.executions.get(candidate.candidateId)
+        if (execution?.metaSessionId && !execution.signal.aborted) return { status: 'running', handle: execution.metaSessionId }
         return { status: 'unknown', reason: 'original Meta attempt needs recovery' }
       },
       commitChampion: async (expected, next, sourceRoundId) => {
@@ -2038,7 +2113,7 @@ export class RefineService {
         const statuses: Record<string, RefinementRound['status']> = { bootstrap: 'baseline-running', 'scope-preparation': 'baseline-running', 'diagnosis-planning': 'baseline-running', local: 'candidate-seed-running', bridge: 'candidate-seed-running', 'global-seed': 'candidate-seed-running', 'held-out': 'held-out-running' }
         if (statuses[phase]) await this.transition(store, roundId, { status: statuses[phase] })
       },
-    })
+    }, this.components)
     const outcome = await engine.run({ evolutionId: spec.evolutionId, roundId, roundIndex: round.roundIndex - 1,
       maxCandidates: spec.candidateGeneration.maxCandidates, anchor: round.searchAnchor.snapshot, championRevisionDigest: round.searchAnchor.championRevisionDigest, settings: spec.searchSettings }, active.abort.signal)
     await this.transition(store, roundId, { searchOutcome: outcome, status: outcome.championChanged ? 'accepted' : 'rejected', decision: outcome.championChanged ? 'accepted' : 'rejected', ...(outcome.championChanged && outcome.nomineeId ? { promotedCandidateId: outcome.nomineeId } : {}) })
@@ -2066,7 +2141,7 @@ export class RefineService {
         const candidateId = initialCandidate.candidateId
         const workBudget = initialCandidate.workplanDelivery?.workplan.generationBudget
         const allowedGenerationAttempts = workBudget
-          ? Math.min(generationBudget.maxAttemptsPerCandidate, workBudget.maxModelRequests, workBudget.maxTokens)
+          ? Math.min(generationBudget.maxAttemptsPerCandidate, workBudget.maxModelRequests ?? Infinity, workBudget.maxTokens ?? Infinity)
           : generationBudget.maxAttemptsPerCandidate
         const allocation = round.parentAllocations?.find(value => value.candidateId === candidateId)
         if (allocation === undefined) throw new Error(`candidate has no parent allocation: ${candidateId}`)
@@ -2095,6 +2170,7 @@ export class RefineService {
           const remainingBeforeAttempt = generationDeadline - Date.now()
           if (remainingBeforeAttempt <= 0) {
             const timeout = new CandidateGenerationTimeoutError('round', generationBudget.roundTimeoutMs)
+            if (recovered) await this.stopRecoveredMeta(active.evolution, recovered, timeout.message)
             const failure = { phase: 'candidate-generation', message: timeout.message }
             round = await this.transition(store, roundId, {
               candidatePool: this.patchCandidate(round, candidateId, {
@@ -2222,10 +2298,8 @@ export class RefineService {
               generationBudget: execution.generationBudget,
               signal: execution.signal, budget: {
                 ...active.evolution.spec.candidateGeneration.budget,
-                ...(currentCandidate.workplanDelivery ? {
-                  maxTokens: Math.floor(currentCandidate.workplanDelivery.workplan.generationBudget.maxTokens / allowedGenerationAttempts),
-                  maxModelRequests: Math.floor(currentCandidate.workplanDelivery.workplan.generationBudget.maxModelRequests / allowedGenerationAttempts),
-                } : {}),
+                ...(workBudget?.maxTokens === undefined ? {} : { maxTokens: Math.min(active.evolution.spec.candidateGeneration.budget.maxTokens ?? Infinity, Math.floor(workBudget.maxTokens / allowedGenerationAttempts)) }),
+                ...(workBudget?.maxModelRequests === undefined ? {} : { maxModelRequests: Math.min(active.evolution.spec.candidateGeneration.budget.maxModelRequests ?? Infinity, Math.floor(workBudget.maxModelRequests / allowedGenerationAttempts)) }),
               },
               isComplete: () => execution.finalizationSubmitted,
               snapshot: async () => {
@@ -2297,6 +2371,7 @@ export class RefineService {
               await this.workspaceManager.markCommitted(workspace.workspaceId)
               round = await this.transition(store, roundId, {
                 candidatePool: this.patchCandidate(round, candidateId, {
+                  status: 'ready',
                   sealedVersion: {
                     commitOid: sealed.ref, treeOid: sealed.treeOid, manifestDigest: sealed.digest,
                     patchDigest: proposal.diff.patchDigest, immutableRef: sealed.immutableRef,
@@ -2309,6 +2384,9 @@ export class RefineService {
           } catch (error) {
             if (active.evolution.spec.metaAgent.contextOffloading !== undefined && !completedCheckpoint) execution.preserveWorkspace = true
             active.abort.signal.throwIfAborted()
+            // Restoration can fail before this controller adopts the session.
+            // Do not declare its durable attempt failed until the old owner stops.
+            if (recovered && execution.metaSessionId === undefined) await this.stopRecoveredMeta(active.evolution, recovered, errorMessage(error))
             // Close the attempt before persisting retry state so a late tool call
             // from the timed-out child cannot seal or submit the disposed workspace.
             execution.finalizationSubmitted = true
@@ -2609,7 +2687,7 @@ export class RefineService {
     void drive.finally(() => this.drives.delete(drive))
   }
 
-  private async runtime(evolutionId: string): Promise<EvolutionRuntime> {
+  private async runtime(evolutionId: string, admitted?: { meta: MetaSessionController; store: RefineStateStore }): Promise<EvolutionRuntime> {
     const existing = this.runtimes.get(evolutionId)
     if (existing !== undefined) { existing.lastUsedAt = Date.now(); return existing }
     await this.evictRuntimeIfNeeded()
@@ -2617,16 +2695,19 @@ export class RefineService {
     const specDigest = digestJson(spec)
     const entry = await this.registry.readEntry(evolutionId)
     if (entry === undefined || entry.specDigest !== specDigest) throw new Error(`evolution spec digest mismatch: ${evolutionId}`)
-    const store = this.registry.stateStore(evolutionId)
+    const store = admitted?.store ?? this.registry.stateStore(evolutionId)
     await store.initialize()
     this.resolveComponents(spec)
     const evaluator = this.evaluatorForSpec(spec)
     await evaluator.preflight?.()
+    const meta = admitted?.meta ?? await this.createMetaSession(spec, specDigest, store)
+    try { this.assertGenerationBudgetCapability(spec, meta) }
+    catch (error) { await meta.dispose(); throw error }
     const runtime = {
       spec,
       specDigest,
       store,
-      meta: await this.createMetaSession(spec, specDigest, store),
+      meta,
       evaluator,
       lastUsedAt: Date.now(),
     }
@@ -2640,7 +2721,18 @@ export class RefineService {
       : this.options.createEvaluator?.(spec) ?? this.evaluator
     if (!spec.searchSettings || evaluator.search) return evaluator
     const state = this.registry.stateStore(spec.evolutionId), root = join(state.root, 'search')
+    const roundId = 'search-evaluation-identity'
+    const identityRound: RefinementRound = {
+      evolutionId: spec.evolutionId, roundId, workspaceRoot: this.options.workspaceRoot, status: 'queued', source: 'api',
+      createdAt: spec.createdAt, updatedAt: spec.createdAt, metaHarnessRef: spec.metaAgent.preset.id,
+      targetHarnessRef: spec.initialHarness.ref, targetHarnessDigest: spec.initialHarness.digest,
+      sandboxProfileRef: spec.sandboxProfileRef, seedTaskRef: spec.datasets.seed.ref, heldOutRef: spec.datasets.heldOut.ref,
+      taskBudgetMs: spec.taskBudgetMs, promotionPolicy: spec.promotion.policy.config,
+      batchId: roundId, roundIndex: 1, roundCount: 1, candidatePool: [], parentPopulationDigest: digestJson([]),
+      plan: this.components.taskSampler(spec.rollout.taskSampler).resolve(roundId, spec.datasets, spec.rollout, spec.taskBudgetMs),
+    }
     return attachSearchEvaluation(evaluator, { spec, workspaceRoot: this.options.workspaceRoot, stateRoot: root,
+      identityRound,
       manifest: snapshot => this.builder.readManifest(snapshot.commit),
       round: async () => {
         const current = await new SearchStore(root).read<{ roundId: string | null }>('active-round')
@@ -3256,24 +3348,32 @@ export class RefineService {
   }
 
   private resolveComponents(spec: EvolutionSpec): void {
-    this.components.candidateGenerator(spec.candidateGeneration.strategy)
+    if (spec.searchSettings) this.components.parentSelectionPolicy(resolveParentPolicyRef(spec.searchSettings.search))
+    else this.components.candidateGenerator(spec.candidateGeneration.strategy)
     this.components.taskSampler(spec.rollout.taskSampler)
-    this.components.assessor(spec.selection.assessor)
-    this.components.selector(spec.selection.strategy)
-    this.components.promotionPolicy(spec.promotion.policy)
+    if (!spec.searchSettings) {
+      this.components.assessor(spec.selection.assessor)
+      this.components.selector(spec.selection.strategy)
+      this.components.promotionPolicy(spec.promotion.policy)
+    }
     if (this.components.hasRolloutProvider(spec.rollout.provider.id)) {
       this.components.rolloutProvider(spec.rollout.provider)
     } else if (this.options.createEvaluator === undefined && spec.rollout.provider.id !== 'hitch-cli') {
       throw new Error(`unsupported rollout provider: ${spec.rollout.provider.id}`)
     }
-    for (const judge of spec.evaluation.judges) this.components.judge(judge)
+    if (!spec.searchSettings) for (const judge of spec.evaluation.judges) this.components.judge(judge)
     if (spec.rollout.seeds !== undefined) throw new Error('current Hitch adapter does not support typed rollout seeds')
     if (spec.rollout.sampling.temperature !== undefined) {
       throw new Error('current Hitch adapter does not support typed rollout temperature')
     }
-    if ((spec.candidateGeneration.budget.maxModelRequests !== undefined
-      || spec.candidateGeneration.budget.maxTokens !== undefined) && spec.metaAgent.contextOffloading === undefined) {
-      throw new Error('current Meta harness adapter does not expose aggregate proposal usage; maxModelRequests and maxTokens are unsupported')
+  }
+
+  private assertGenerationBudgetCapability(spec: EvolutionSpec, meta: MetaSessionController): void {
+    const searchHasLimits = spec.searchSettings && [spec.searchSettings.budgets.round, spec.searchSettings.budgets.evolution]
+      .some(budget => budget.maxGenerationTokens !== undefined || budget.maxGenerationRequests !== undefined)
+    if ((searchHasLimits || spec.candidateGeneration.budget.maxModelRequests !== undefined
+      || spec.candidateGeneration.budget.maxTokens !== undefined) && meta.capabilities?.aggregateGenerationBudget !== true) {
+      throw new Error('Meta adapter cannot enforce aggregate generation budgets; omit unsupported token/request limits or use a metered adapter')
     }
   }
 

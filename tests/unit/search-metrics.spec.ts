@@ -37,6 +37,46 @@ function groupedUniverse(): TaskUniverse {
 }
 
 describe('metric contracts and independent release constraints', () => {
+  it.each([0.5, 1])('allows bridge process regression but vetoes it at both full gates at outcome %s', candidateOutcome => {
+    const u = universe(2, 'seed', true), config = settings().promotion
+    const values = { A: { outcome: [0.5, 0.5], process: [0.8, 0.8] }, B: { outcome: [candidateOutcome, candidateOutcome], process: [0.6, 0.6] } }
+    expect(assessGate(pair(u, values, 'bridge'), config, false)).toMatchObject({
+      outcome: 'eligible', reasonCodes: [], comparison: { outcomeGain: candidateOutcome - 0.5, processGains: { process: -0.2 } },
+    })
+    const global = precheckSeed(pair(u, values), config)
+    expect(global.outcome).toBe('rejected')
+    expect(global.reasonCodes).toContain('process-regression:process')
+    const passingSeed = pair(u, { A: values.A, B: { outcome: [1, 1], process: [1, 1] } })
+    const heldOut = pair(universe(2, 'held-out', true), values, 'held-out')
+    expect(decideFinal(passingSeed, heldOut, config)).toMatchObject({ outcome: 'rejected', reasonCodes: ['process-regression:process'] })
+  })
+
+  it.each([
+    [0.44, 0.835871696, 'rejected'],
+    [0.44, 0.838669818, 'eligible'],
+    [0.44, 0.84, 'eligible'],
+    [0.4, 0.84, 'eligible'],
+    [0.4, 0.838669818, 'rejected'],
+    [0.4, 0.83, 'rejected'],
+    [0.39, 1, 'rejected'],
+  ] as const)('requires non-regressing full outcome and process, with a strict gain: outcome %s and process %s => %s', (outcome, process, expected) => {
+    const u = universe(2, 'seed', true), config = settings().promotion
+    const input = pair(u, { A: { outcome: [0.4, 0.4], process: [0.838669818, 0.838669818] }, B: { outcome: [outcome, outcome], process: [process, process] } })
+    expect(precheckSeed(input, config).outcome).toBe(expected)
+  })
+
+  it('keeps bridge admission blocked by outcome regression, protected tasks and missing process evidence', () => {
+    const u = universe(2, 'seed', true), config = settings().promotion
+    const base = { outcome: [0.5, 0.5], process: [0.8, 0.8] }
+    const regressed = pair(u, { A: base, B: { outcome: [0.4, 0.4], process: [0.6, 0.6] } }, 'bridge')
+    expect(assessGate(regressed, config, false).reasonCodes).toEqual(['outcome-regression'])
+    const missing = pair(u, { A: base, B: { outcome: [1, 1] } }, 'bridge')
+    expect(assessGate(missing, config, false)).toMatchObject({ outcome: 'insufficient-evidence', reasonCodes: ['incomplete-stage-evidence'] })
+    config.protectedTasks = [{ taskId: 'task-0', partition: 'seed', rule: 'no-regression' }]
+    const protectedRegression = pair(u, { A: base, B: { outcome: [0.4, 1], process: [0.6, 0.6] } }, 'bridge')
+    expect(assessGate(protectedRegression, config, false).reasonCodes).toEqual(['protected-task:task-0'])
+  })
+
   it('[E02,M07] uses uniform task macro weights even when provider metadata contains unequal weights', () => {
     const base = universe(2), u = revise(base, { tasks: base.tasks.map((t, i) => ({ ...t, weight: i ? 1 : 1000 })) })
     const input = pair(u, { A: { outcome: [1, 0] }, B: { outcome: [0.9, 0.9] } })
