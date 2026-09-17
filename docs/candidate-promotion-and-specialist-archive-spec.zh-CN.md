@@ -2,7 +2,7 @@
 
 - 实现与接入见[接入说明](candidate-promotion-implementation.zh-CN.md)。任务子集、逐题缓存和分阶段调度由 Gear 内部适配现有 evaluator 完成，无需 Hitch 新增能力声明或接口。
 - 范围：Gear 共享失败诊断、分类分工与多 candidate 生成、分阶段评测、父代选择、跨轮研究归档、过程指标兼容、champion 晋升、失败回归任务、状态恢复。
-- 设计依据：Gear 搜索与评测接口；Reef 固定提交 `c7a00cadbdc0d8002f35c1d37b12232a3bec5388` 的 GEPA 实现。
+- 设计依据：Gear 搜索与评测接口及 GEPA 任务专长前沿机制。
 - 文中的 MUST / MUST NOT 是验收要求；SHOULD 是允许说明理由后调整的建议。
 
 ## 1. 决策摘要
@@ -70,25 +70,21 @@ GEPA 选择父代（初始为 champion）
 - [部分证据实验](partial-evidence-promotion-experiment-plan.md) 的“有效交集可继续晋升”保留给原策略；新模式的研究要求局部计划完整、发布要求全局计划完整，不回溯修改旧决定。
 - [Benchmark 结果规范](hitch-evaluation-source-and-evidence-contract-spec.zh-CN.md) 的 total / process / feedback 分离继续适用；本文定义这些信号如何用于搜索和晋升，不接管 verifier。其旧版整条 observation 有效性规则继续保留；第 5 节的独立通道有效性须通过新的 adapter/result schema 显式启用。
 
-## 3. GEPA 参考机制与 Gear 改编
+## 3. GEPA 搜索机制
 
-Reef 固定版本为每道验证任务维护得分最高的候选集合，精确并列均进入集合。随后按均分从低到高反复移除冗余候选：只有当该候选出现的每个前沿都还有其他存活候选覆盖时才可移除。覆盖可以由不同候选共同提供，并非通常的逐坐标 Pareto dominance。
+Gear 使用逐任务前沿保留候选的局部专长，通过冗余剪枝和 membership 权重选择后续迭代的父代。研究 archive 与 champion 晋升分别决策：前者按第 6 节的 scope 与通道规则选择父代，后者按第 8 节与固定 champion 做完整配对验证。
 
-其父代概率按剪枝后候选的前沿 membership 次数计算：`P(c) = memberships(c) / sum(memberships)`。它不等于“均匀抽一道任务，再均匀抽该任务的赢家”，并列时两者可能不同。[固定版本抽样实现](https://github.com/Human-Agent-Society/reef/blob/c7a00cadbdc0d8002f35c1d37b12232a3bec5388/recipes/gepa/archive.py#L275)
-
-Reef 还使用反思 minibatch 筛选子代，并在验证均分严格改善时发布。[固定版本 GEPA 流程](https://github.com/Human-Agent-Society/reef/blob/c7a00cadbdc0d8002f35c1d37b12232a3bec5388/docs/user-guide/recipes/gepa.rst)
-
-Gear 的明确改编如下，不宣称与上游全流程等价：
+各机制的设计如下：
 
 | 机制 | Gear v1 决定 |
 | --- | --- |
-| 逐任务前沿、冗余剔除、membership 抽样 | 保留核心机制，增加固定精度处理与确定性回放 |
+| 逐任务前沿、冗余剔除、membership 抽样 | 使用固定精度处理与确定性回放 |
 | 过程通道 | 可选、独立前沿；不把过程分覆盖写入 `quality` |
 | 小批量候选筛选 | 采用冻结的 local/shared/cross scope；以任务前沿与显式回归门保留专长，不要求子代局部总均分严格胜过父代才记录证据 |
 | 多 candidate 的改进方向 | 基于共享诊断与失败类别分工，不依赖同一提示的重复随机提案 |
 | 稀疏评测 | 每个 scope 独立前沿；跨组以共同 bridge 比较，额外评测不自动获得更多父代权重 |
 | 发布 | 固定 champion 的 seed + held-out 配对门，不使用研究父代替代 champion |
-| 在线失败提升为任务 | 保留提案和积累思想，增加可复现任务封装、套件版本和不可变实验边界 |
+| 在线失败提升为任务 | 收集失败提案，封装可复现任务，使用套件版本和不可变实验边界 |
 
 ## 4. 术语与不变量
 
@@ -532,9 +528,7 @@ type GateDecision = {
 
 ### 9.1 失败提案
 
-Reef 的 `promote_failures` 会提取失败交互的 prompt、去重、过滤疑似凭证并限制数量，持久化后加入后续评测；默认关闭，默认上限 50。它不自动保证完整可复现环境，也不自动让失败任务成为硬门。[提取实现](https://github.com/Human-Agent-Society/reef/blob/c7a00cadbdc0d8002f35c1d37b12232a3bec5388/reef/train/cordis_backend/__init__.py#L436)、[配置](https://github.com/Human-Agent-Society/reef/blob/c7a00cadbdc0d8002f35c1d37b12232a3bec5388/reef/train/cordis_backend/recipe.py#L142)
-
-这一功能属于 Reef 通用 backend，不是 GEPA archive 的父代算法；默认失败过滤发生在上游 batch processor，提取器本身不证明任务失败。固定版本也没有提供本文所需的历史 archive 新任务补评合同，因此 Gear 不直接叠加可增长 prompt 列表和旧评分向量。Gear 收集器必须核验业务失败的来源；基础设施 invalid 默认进入执行诊断，不自动物化为业务回归任务。
+Gear 收集器必须核验业务失败的来源；基础设施 invalid 默认进入执行诊断，不自动物化为业务回归任务。新增任务须通过版本化套件与补评规则纳入后续实验，不直接叠加可增长 prompt 列表和旧评分向量。
 
 Gear 默认关闭失败自动收集；显式启用后，收集器只产生提案，不修改当前 plan。提案至少包含：
 

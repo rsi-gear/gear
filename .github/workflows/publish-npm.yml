@@ -1,0 +1,98 @@
+name: Publish npm package
+
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+
+permissions:
+  contents: read
+  id-token: write
+
+# Do not interrupt an npm upload when another merge finishes CI.
+concurrency:
+  group: publish-npm
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: >-
+      github.repository == 'rsi-gear/gear' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # workflow_run's github.sha can differ from the revision CI tested.
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Select an unpublished version from current main
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          main_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          if [[ "$main_sha" != "$RELEASE_SHA" ]]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Skip: main has advanced beyond this CI run." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          node .github/scripts/npm-release.mjs
+
+      - name: Install npm with trusted publishing support
+        if: steps.release.outputs.publish == 'true'
+        run: npm install --global npm@11
+
+      - name: Install dependencies
+        if: steps.release.outputs.publish == 'true'
+        run: npm ci
+
+      - name: Typecheck and build the package
+        if: steps.release.outputs.publish == 'true'
+        run: |
+          npm run typecheck
+          npm run build
+
+      - name: Validate package contents and external consumer
+        if: steps.release.outputs.publish == 'true'
+        run: |
+          npm pack --dry-run --ignore-scripts
+          node scripts/check-search-package.mjs
+
+      - name: Check main again before publishing
+        id: current
+        if: steps.release.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          main_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          if [[ "$main_sha" == "$RELEASE_SHA" ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Skip: main advanced while building the release." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Publish to npm
+        if: steps.current.outputs.publish == 'true'
+        env:
+          # Optional bootstrap credential for the first publish; OIDC is used
+          # once rsi-gear trusts this workflow on npm, as in Hitch.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_DIST_TAG: ${{ steps.release.outputs.tag }}
+        # prepack's build already ran above; publish the validated build.
+        run: npm publish --ignore-scripts --access public --tag "$NPM_DIST_TAG"

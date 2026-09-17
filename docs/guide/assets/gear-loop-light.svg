@@ -1,0 +1,283 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="580" viewBox="0 100 1440 580" fill="none" role="img" aria-labelledby="gear-title gear-desc" style="font-family:-apple-system, BlinkMacSystemFont, &#x27;Segoe UI&#x27;, Helvetica, Arial, sans-serif"><title id="gear-title">Gear — inner and outer evolution loops</title><desc id="gear-desc">A twelve-second animation of Gear&#x27;s evolution architecture. Inner loop: a Rollout Agent, composed of a harness and model, serves each task by exchanging actions, observations and rewards with an environment. Outer loop: the Meta Agent diagnoses cross-task trajectories and feedback, then edits the harness, designs seed tasks and drives model training. The evolved harness, tasks and model feed directly back into the inner loop for the next iteration.</desc><style>
+      @keyframes gear-serve {
+        0%, 0% { opacity: 0; }
+        4.16667%, 95.83333% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+      @keyframes gear-draw-serve {
+        0%, 0% { stroke-dashoffset: 100; }
+        4.16667%, 100% { stroke-dashoffset: 0; }
+      }
+      .gear-serve { animation: gear-serve 12s linear infinite; }
+      .gear-draw-serve {
+        animation: gear-serve 12s linear infinite, gear-draw-serve 12s linear infinite;
+      }
+
+
+      @keyframes gear-innerAction {
+        0%, 5% { opacity: 0; }
+        10%, 95.83333% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+      @keyframes gear-draw-innerAction {
+        0%, 5% { stroke-dashoffset: 100; }
+        10%, 100% { stroke-dashoffset: 0; }
+      }
+      .gear-innerAction { animation: gear-innerAction 12s linear infinite; }
+      .gear-draw-innerAction {
+        animation: gear-innerAction 12s linear infinite, gear-draw-innerAction 12s linear infinite;
+      }
+
+
+      @keyframes gear-innerReturn {
+        0%, 9.16667% { opacity: 0; }
+        14.72222%, 95.83333% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+      @keyframes gear-draw-innerReturn {
+        0%, 9.16667% { stroke-dashoffset: 100; }
+        14.72222%, 100% { stroke-dashoffset: 0; }
+      }
+      .gear-innerReturn { animation: gear-innerReturn 12s linear infinite; }
+      .gear-draw-innerReturn {
+        animation: gear-innerReturn 12s linear infinite, gear-draw-innerReturn 12s linear infinite;
+      }
+
+
+      @keyframes gear-innerFlow {
+        0%, 12.5% { opacity: 0; }
+        15%, 95.83333% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+      @keyframes gear-draw-innerFlow {
+        0%, 12.5% { stroke-dashoffset: 100; }
+        15%, 100% { stroke-dashoffset: 0; }
+      }
+      .gear-innerFlow { animation: gear-innerFlow 12s linear infinite; }
+      .gear-draw-innerFlow {
+        animation: gear-innerFlow 12s linear infinite, gear-draw-innerFlow 12s linear infinite;
+      }
+
+
+      @keyframes gear-trajectory {
+        0%, 16.94444% { opacity: 0; }
+        22.5%, 95.83333% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+      @keyframes gear-draw-trajectory {
+        0%, 16.94444% { stroke-dashoffset: 100; }
+        22.5%, 100% { stroke-dashoffset: 0; }
+      }
+      .gear-trajectory { animation: gear-trajectory 12s linear infinite; }
+      .gear-draw-trajectory {
+        animation: gear-trajectory 12s linear infinite, gear-draw-trajectory 12s linear infinite;
+      }
+
+
+      @keyframes gear-diagnose {
+        0%, 21.66667% { opacity: 0; }
+        25.83333%, 95.83333% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+      @keyframes gear-draw-diagnose {
+        0%, 21.66667% { stroke-dashoffset: 100; }
+        25.83333%, 100% { stroke-dashoffset: 0; }
+      }
+      .gear-diagnose { animation: gear-diagnose 12s linear infinite; }
+      .gear-draw-diagnose {
+        animation: gear-diagnose 12s linear infinite, gear-draw-diagnose 12s linear infinite;
+      }
+
+
+      @keyframes gear-plan {
+        0%, 30% { opacity: 0; }
+        35%, 95.83333% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+      @keyframes gear-draw-plan {
+        0%, 30% { stroke-dashoffset: 100; }
+        35%, 100% { stroke-dashoffset: 0; }
+      }
+      .gear-plan { animation: gear-plan 12s linear infinite; }
+      .gear-draw-plan {
+        animation: gear-plan 12s linear infinite, gear-draw-plan 12s linear infinite;
+      }
+
+
+      @keyframes gear-evolve {
+        0%, 30% { opacity: 0; }
+        35%, 95.83333% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+      @keyframes gear-draw-evolve {
+        0%, 30% { stroke-dashoffset: 100; }
+        35%, 100% { stroke-dashoffset: 0; }
+      }
+      .gear-evolve { animation: gear-evolve 12s linear infinite; }
+      .gear-draw-evolve {
+        animation: gear-evolve 12s linear infinite, gear-draw-evolve 12s linear infinite;
+      }
+
+
+      @keyframes gear-harnessPath {
+        0%, 36.11111% { opacity: 0; }
+        41.66667%, 95.83333% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+      @keyframes gear-draw-harnessPath {
+        0%, 36.11111% { stroke-dashoffset: 100; }
+        41.66667%, 100% { stroke-dashoffset: 0; }
+      }
+      .gear-harnessPath { animation: gear-harnessPath 12s linear infinite; }
+      .gear-draw-harnessPath {
+        animation: gear-harnessPath 12s linear infinite, gear-draw-harnessPath 12s linear infinite;
+      }
+
+
+      @keyframes gear-harness {
+        0%, 39.16667% { opacity: 0; }
+        44.16667%, 95.83333% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+      @keyframes gear-draw-harness {
+        0%, 39.16667% { stroke-dashoffset: 100; }
+        44.16667%, 100% { stroke-dashoffset: 0; }
+      }
+      .gear-harness { animation: gear-harness 12s linear infinite; }
+      .gear-draw-harness {
+        animation: gear-harness 12s linear infinite, gear-draw-harness 12s linear infinite;
+      }
+
+
+      @keyframes gear-seedPath {
+        0%, 44.44444% { opacity: 0; }
+        50.83333%, 95.83333% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+      @keyframes gear-draw-seedPath {
+        0%, 44.44444% { stroke-dashoffset: 100; }
+        50.83333%, 100% { stroke-dashoffset: 0; }
+      }
+      .gear-seedPath { animation: gear-seedPath 12s linear infinite; }
+      .gear-draw-seedPath {
+        animation: gear-seedPath 12s linear infinite, gear-draw-seedPath 12s linear infinite;
+      }
+
+
+      @keyframes gear-seeds {
+        0%, 48.33333% { opacity: 0; }
+        53.33333%, 95.83333% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+      @keyframes gear-draw-seeds {
+        0%, 48.33333% { stroke-dashoffset: 100; }
+        53.33333%, 100% { stroke-dashoffset: 0; }
+      }
+      .gear-seeds { animation: gear-seeds 12s linear infinite; }
+      .gear-draw-seeds {
+        animation: gear-seeds 12s linear infinite, gear-draw-seeds 12s linear infinite;
+      }
+
+
+      @keyframes gear-modelPath {
+        0%, 56.66667% { opacity: 0; }
+        63.33333%, 95.83333% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+      @keyframes gear-draw-modelPath {
+        0%, 56.66667% { stroke-dashoffset: 100; }
+        63.33333%, 100% { stroke-dashoffset: 0; }
+      }
+      .gear-modelPath { animation: gear-modelPath 12s linear infinite; }
+      .gear-draw-modelPath {
+        animation: gear-modelPath 12s linear infinite, gear-draw-modelPath 12s linear infinite;
+      }
+
+
+      @keyframes gear-model {
+        0%, 61.66667% { opacity: 0; }
+        66.66667%, 95.83333% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+      @keyframes gear-draw-model {
+        0%, 61.66667% { stroke-dashoffset: 100; }
+        66.66667%, 100% { stroke-dashoffset: 0; }
+      }
+      .gear-model { animation: gear-model 12s linear infinite; }
+      .gear-draw-model {
+        animation: gear-model 12s linear infinite, gear-draw-model 12s linear infinite;
+      }
+
+
+      @keyframes gear-merge {
+        0%, 66.66667% { opacity: 0; }
+        71.66667%, 95.83333% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+      @keyframes gear-draw-merge {
+        0%, 66.66667% { stroke-dashoffset: 100; }
+        71.66667%, 100% { stroke-dashoffset: 0; }
+      }
+      .gear-merge { animation: gear-merge 12s linear infinite; }
+      .gear-draw-merge {
+        animation: gear-merge 12s linear infinite, gear-draw-merge 12s linear infinite;
+      }
+
+
+      @keyframes gear-return {
+        0%, 71.66667% { opacity: 0; }
+        83.33333%, 95.83333% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+      @keyframes gear-draw-return {
+        0%, 71.66667% { stroke-dashoffset: 100; }
+        83.33333%, 100% { stroke-dashoffset: 0; }
+      }
+      .gear-return { animation: gear-return 12s linear infinite; }
+      .gear-draw-return {
+        animation: gear-return 12s linear infinite, gear-draw-return 12s linear infinite;
+      }
+
+
+      @keyframes gear-refreshed {
+        0%, 83.33333% { opacity: 0; }
+        86.66667%, 95.83333% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+      @keyframes gear-draw-refreshed {
+        0%, 83.33333% { stroke-dashoffset: 100; }
+        86.66667%, 100% { stroke-dashoffset: 0; }
+      }
+      .gear-refreshed { animation: gear-refreshed 12s linear infinite; }
+      .gear-draw-refreshed {
+        animation: gear-refreshed 12s linear infinite, gear-draw-refreshed 12s linear infinite;
+      }
+
+
+      @keyframes gear-versions {
+        0%, 85.83333% { opacity: 0; }
+        89.16667%, 95.83333% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+      @keyframes gear-draw-versions {
+        0%, 85.83333% { stroke-dashoffset: 100; }
+        89.16667%, 100% { stroke-dashoffset: 0; }
+      }
+      .gear-versions { animation: gear-versions 12s linear infinite; }
+      .gear-draw-versions {
+        animation: gear-versions 12s linear infinite, gear-draw-versions 12s linear infinite;
+      }
+
+    @keyframes gear-circulate {
+      0%, 12.5% { stroke-dashoffset: 0; }
+      100% { stroke-dashoffset: -500; }
+    }
+    .gear-flow {
+      animation: gear-innerFlow 12s linear infinite, gear-circulate 12s linear infinite;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .gear-flow { display: none !important; }
+      .gear-motion { animation: none !important; opacity: 1 !important; stroke-dashoffset: 0 !important; }
+    }
+  </style><rect y="100" width="1440" height="580" fill="#fcfdfd"></rect><g class="gear-motion gear-serve" data-cue="serve"><rect x="114" y="214" width="536" height="282" rx="23" fill="#f0f3f9" stroke="#d6dfeb" stroke-width="1.2"></rect><rect x="102" y="226" width="536" height="282" rx="23" fill="#faf6ed" stroke="#e8dfcc" stroke-width="1.2"></rect><rect x="90" y="238" width="536" height="282" rx="23" fill="#f3f9f8" stroke="#b8d7d3" stroke-width="1.5"></rect><text x="116" y="277" font-size="23" fill="#197f83" font-weight="600" text-anchor="start">Inner loop</text><text x="254" y="277" font-size="17" fill="#73898f" font-weight="400" text-anchor="start">Interact within each task</text><text x="356" y="202" font-size="27" fill="#263d44" font-weight="600" text-anchor="middle">Serve</text><text x="595" y="276" font-size="14" fill="#73898f" font-weight="400" text-anchor="end">Task i</text><path d="M116 294H598" stroke="#dce9e6"></path><rect x="112" y="333" width="215" height="116" rx="12" stroke="#b5c7ca" stroke-width="1.4" fill="white"></rect><text x="219.5" y="365" font-size="21" fill="#263d44" font-weight="600" text-anchor="middle">Rollout Agent</text><rect x="130" y="387" width="83" height="39" rx="6" fill="#eaf5f4"></rect><text x="171.5" y="412" font-size="16" fill="#197f83" font-weight="500" text-anchor="middle">Harness</text><rect x="225" y="387" width="83" height="39" rx="6" fill="#f2eef8"></rect><text x="266.5" y="412" font-size="16" fill="#7c6b9f" font-weight="500" text-anchor="middle">Model</text><circle cx="523" cy="367" r="34" fill="white" stroke="#197f83" stroke-width="1.5"></circle><ellipse cx="523" cy="367" rx="15" ry="34" stroke="#197f83" stroke-width="1.3"></ellipse><path d="M490 367H556M496 349H550M496 385H550" stroke="#197f83" stroke-width="1.3"></path><text x="523" y="432" font-size="19" fill="#263d44" font-weight="500" text-anchor="middle">Environment</text></g><path d="M338 350C376 310 454 310 487 337" fill="none" stroke="#8ebdb8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" pathLength="100" stroke-dasharray="100 100" class="gear-motion gear-draw-innerAction" data-cue="innerAction"></path><g class="gear-motion gear-innerAction" data-cue="innerAction"><path d="M478 337L488 339 486 329" stroke="#197f83" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path><text x="412" y="313" font-size="14" fill="#197f83" font-weight="400" text-anchor="middle">actions</text></g><path d="M485 398C451 460 377 465 338 416" fill="none" stroke="#8ebdb8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" pathLength="100" stroke-dasharray="100 100" class="gear-motion gear-draw-innerReturn" data-cue="innerReturn"></path><g class="gear-motion gear-innerReturn" data-cue="innerReturn"><path d="M337 426L337 415 348 418" stroke="#197f83" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path><text x="447" y="476" font-size="13" fill="#197f83" font-weight="400" text-anchor="middle">observations + rewards</text></g><path d="M338 350C376 310 454 310 487 337" fill="none" stroke="#197f83" stroke-width="4" stroke-linecap="round" pathLength="100" stroke-dasharray="4 96" class="gear-motion gear-flow" data-cue="innerFlow"></path><path d="M485 398C451 460 377 465 338 416" fill="none" stroke="#197f83" stroke-width="4" stroke-linecap="round" pathLength="100" stroke-dasharray="4 96" class="gear-motion gear-flow" data-cue="innerFlow"></path><g class="gear-motion gear-trajectory" data-cue="trajectory"><text x="116" y="138" font-size="23" fill="#5a718a" font-weight="600" text-anchor="start">Outer loop</text><text x="254" y="138" font-size="17" fill="#73898f" font-weight="400" text-anchor="start">Improve across tasks</text><text x="678" y="337" font-size="13" fill="#73898f" font-weight="400" text-anchor="middle">trajectories</text><text x="678" y="354" font-size="13" fill="#73898f" font-weight="400" text-anchor="middle">+ feedback</text><path d="M703 362.5 L710 367 L703 371.5" stroke="#5a718a" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></g><path d="M639 367H710" fill="none" stroke="#5a718a" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" pathLength="100" stroke-dasharray="100 100" class="gear-motion gear-draw-trajectory" data-cue="trajectory"></path><g class="gear-motion gear-diagnose" data-cue="diagnose"><text x="756" y="202" font-size="27" fill="#263d44" font-weight="600" text-anchor="middle">Diagnose</text><text x="756" y="318" font-size="21" fill="#263d44" font-weight="600" text-anchor="middle">Meta Agent</text><circle cx="756" cy="367" r="32" stroke="#5a718a" stroke-width="1.7" fill="white"></circle><g stroke="#5a718a" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M744 379L756 356 769 375M744 379L769 375"></path><circle cx="744" cy="379" r="4" fill="white"></circle><circle cx="756" cy="356" r="4" fill="white"></circle><circle cx="769" cy="375" r="4" fill="white"></circle></g><text x="756" y="421" font-size="16" fill="#73898f" font-weight="400" text-anchor="middle">Analyze &amp; plan</text></g><path d="M801 367H908" fill="none" stroke="#263d44" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" pathLength="100" stroke-dasharray="100 100" class="gear-motion gear-draw-plan" data-cue="plan"></path><g class="gear-motion gear-evolve" data-cue="evolve"><text x="1154" y="202" font-size="27" fill="#263d44" font-weight="600" text-anchor="middle">Evolve</text></g><path d="M908 367Q930 367 930 345V270Q930 248 952 248H1031" fill="none" stroke="#197f83" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" pathLength="100" stroke-dasharray="100 100" class="gear-motion gear-draw-harnessPath" data-cue="harnessPath"></path><g class="gear-motion gear-harness" data-cue="harness"><circle cx="1042" cy="248" r="5.5" fill="#197f83"></circle><text x="1063" y="255" font-size="25" fill="#197f83" font-weight="600" text-anchor="start">Harness</text><text x="1063" y="282" font-size="15" fill="#73898f" font-weight="400" text-anchor="start">Prompts · Tools · Hooks</text><text x="1063" y="302" font-size="15" fill="#73898f" font-weight="400" text-anchor="start">Skills</text><text x="1063" y="322" font-size="15" fill="#73898f" font-weight="400" text-anchor="start">Context management</text></g><path d="M908 367H1031" fill="none" stroke="#ab7b35" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" pathLength="100" stroke-dasharray="100 100" class="gear-motion gear-draw-seedPath" data-cue="seedPath"></path><g class="gear-motion gear-seeds" data-cue="seeds"><circle cx="1042" cy="367" r="5.5" fill="#ab7b35"></circle><text x="1063" y="374" font-size="25" fill="#ab7b35" font-weight="600" text-anchor="start">Seed Tasks</text><text x="1063" y="401" font-size="16" fill="#73898f" font-weight="400" text-anchor="start">Design targeted tasks</text></g><path d="M908 367Q930 367 930 389V425Q930 447 952 447H1031" fill="none" stroke="#7c6b9f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" pathLength="100" stroke-dasharray="100 100" class="gear-motion gear-draw-modelPath" data-cue="modelPath"></path><g class="gear-motion gear-model" data-cue="model"><circle cx="1042" cy="447" r="5.5" fill="#7c6b9f"></circle><text x="1063" y="454" font-size="25" fill="#7c6b9f" font-weight="600" text-anchor="start">Model</text><text x="1063" y="481" font-size="16" fill="#73898f" font-weight="400" text-anchor="start">Train the model</text></g><path d="M1270 248H1299Q1320 248 1320 269V447" fill="none" stroke="#b5c7ca" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" pathLength="100" stroke-dasharray="100 100" class="gear-motion gear-draw-merge" data-cue="merge"></path><path d="M1270 367H1320" fill="none" stroke="#b5c7ca" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" pathLength="100" stroke-dasharray="100 100" class="gear-motion gear-draw-merge" data-cue="merge"></path><path d="M1270 447H1320" fill="none" stroke="#b5c7ca" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" pathLength="100" stroke-dasharray="100 100" class="gear-motion gear-draw-merge" data-cue="merge"></path><path d="M1320 447V531Q1320 553 1298 553H68Q44 553 44 529V196Q44 172 70 172H114Q138 172 138 196V242" fill="none" stroke="#5a718a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" pathLength="100" stroke-dasharray="100 100" class="gear-motion gear-draw-return" data-cue="return"></path><g class="gear-motion gear-return" data-cue="return"><path d="M133 235L138 242 143 235" stroke="#5a718a" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"></path></g><g class="gear-motion gear-refreshed" data-cue="refreshed"><rect x="110" y="331" width="219" height="120" rx="14" stroke="#197f83" stroke-width="1.8"></rect><circle cx="318" cy="335" r="10" fill="#197f83"></circle><path d="M314 335l3 3 6-6" stroke="white" stroke-width="1.5" stroke-linecap="round"></path></g><path d="M64 613H1376" stroke="#e0e9ea"></path><text x="64" y="650" font-size="15" fill="#73898f" font-weight="400" text-anchor="start">Serve → Diagnose → Evolve → Repeat</text><g class="gear-motion gear-versions" data-cue="versions"><text x="972" y="650" font-size="14" fill="#73898f" font-weight="400" text-anchor="end">Evaluated versions</text><circle cx="1022" cy="644" r="17" stroke="#b5c7ca"></circle><text x="1022" y="649" font-size="13" fill="#73898f" font-weight="400" text-anchor="middle">v1</text><path d="M1048 644H1077" stroke="#b5c7ca" stroke-width="1.5"></path><path d="M1070 639.5 L1077 644 L1070 648.5" stroke="#b5c7ca" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"></path><circle cx="1105" cy="644" r="17" stroke="#5a718a" fill="#edf2f7"></circle><text x="1105" y="649" font-size="13" fill="#5a718a" font-weight="600" text-anchor="middle">v2</text><path d="M1131 644H1160" stroke="#5a718a" stroke-width="1.5" stroke-dasharray="4 5"></path><path d="M1153 639.5 L1160 644 L1153 648.5" stroke="#5a718a" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"></path><text x="1184" y="649" font-size="14" fill="#5a718a" font-weight="400" text-anchor="start">v3…</text><text x="1376" y="650" font-size="13" fill="#73898f" font-weight="400" text-anchor="end">keep learning</text></g></svg>

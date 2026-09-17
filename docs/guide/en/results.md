@@ -23,6 +23,10 @@ AA's completion pools achieved objectives, regardless of guardrail violations. O
 
 Our experiments use 100 public Marketing tasks that also supplied optimization evidence; the starred references use private held-out tasks. The overlaid points provide context and do not establish official SOTA. See the [public/private split](https://github.com/zapier/AutomationBench#public-vs-official-scores).
 
+## Terminal-Bench 2.1 references
+
+The README's leading-model scores for Terminal-Bench 2.1 come from the [official Terminal-Bench 2.1 leaderboard](https://www.tbench.ai/?version=2.1), using its Resolution Rate metric. Gear's scores come from our local evaluations.
+
 ## Read the decision and provenance
 
 Check candidate commit/manifest, model and actual effort, dataset identity, runtime, valid slots and original failures. Retained candidates and champions serve different purposes. A human-authorized promotion after evidence repair should not be described as an uninterrupted automatic held-out success.

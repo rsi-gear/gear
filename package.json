@@ -4,6 +4,10 @@
   "description": "Skill-first Gear refinement control plane with native DSH and harness-neutral adapters",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rsi-gear/gear.git"
+  },
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
   },

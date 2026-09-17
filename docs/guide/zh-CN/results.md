@@ -23,6 +23,10 @@ AA 的完成度汇总已达成的 objectives，不考虑 guardrail 是否违反�
 
 本地实验使用参与过优化的 100 道公开 Marketing 题，带星号的参考使用私有 held-out 题。同图展示提供背景参考，不构成官方 SOTA 证明。见[公开与私有集说明](https://github.com/zapier/AutomationBench#public-vs-official-scores)。
 
+## Terminal-Bench 2.1 参考来源
+
+README 中 Terminal-Bench 2.1 的领先模型成绩来自 [Terminal-Bench 2.1 官方榜单](https://www.tbench.ai/?version=2.1)，使用榜单的 Resolution Rate（任务通过率）指标。Gear 的成绩来自本地评测。
+
 ## 阅读决定与来源
 
 检查 candidate commit/manifest、模型与实际 effort、数据身份、runtime、有效槽位和原始失败。研究候选留档与 champion 用途不同。补证后由用户授权的晋升，也应如实记录，不能描述为无中断的自动 held-out 晋升。

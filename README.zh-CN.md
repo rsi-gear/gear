@@ -12,7 +12,7 @@
 
 </div>
 
-Gear 是一套开源算法框架，帮助 AI Agent 在不同的软件环境中完成真实任务，并从成功和失败中积累经验。我们希望用这些经验改进 Agent 的指令和工具，再把经验整理成训练数据，让模型本身也能不断进步。
+Gear 是一套开源算法框架，帮助 AI Agent 持续提升完成真实世界任务的能力。我们希望首先用这些经验改进 Agent 的 harness，再把经验整理成训练数据，让模型本身也能不断进步。
 
 ## 小模型，也能和 SOTA 模型掰手腕
 
@@ -24,10 +24,10 @@ Gear 是一套开源算法框架，帮助 AI Agent 在不同的软件环境中�
 
 受制于当前算力预算，我们仅在下面的任务集上验证优化效果，并公开优化前后的结果。我们欢迎大家提交更多有趣的结果。
 
-| 已验证任务集 | 模型 + harness 组合 | 指标 | 优化前 | 优化后 | 相对提升 (Rel. Δ) |
-| --- | --- | --- | --- | --- | --- |
-| AutomationBench / Marketing  | GPT 5.6 Luna medium+ DSH | 任务通过率 / 目标完成率 |27% / 75.37% |40% / 83.87% |**+48.15% / +11.28%** |
-| Terminal-Bench 2.1 | GPT 5.6 Luna medium + DSH | 任务通过率 | 52.87% | 62.92% | **+19.01%** |
+| 任务集 | 配置 | 指标 | 优化前 | 优化后 | 提升 | Max reasoning | 领先模型 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| AutomationBench / Marketing  | GPT 5.6 Luna medium+ DSH | 任务通过率 / 目标完成率 |27% / 75.37% |40% / 83.87% |**+48.15% / +11.28%** | **53% / 88.88%** | Astra max：57% / 84.08% |
+| Terminal-Bench 2.1 | GPT 5.6 Luna medium + DSH | 任务通过率 | 52.87% | 62.92% | **+19.01%** | **84.26%** | Astra high: 87.4%；Fable 5 xhigh: 83.8%；GPT-5.5 xhigh: 83.2% |
 
 相对提升 =（优化后 − 优化前）/ 优化前 × 100%。
 
@@ -66,6 +66,8 @@ hitch eval setup harbor
 
 ## 算法设计：学习如何改进自己
 
+![Gear's inner and outer learning loops: Serve, Diagnose, and Evolve the harness, seed tasks, and model.](docs/guide/assets/gear-loop-light.svg)
+
 Gear 采用 **meta-learning（元学习）** 的设计：一层负责做任务，另一层学习如何改进做任务的 Agent。
 
 - **内层：完成任务。** 执行任务的 Agent 使用当前模型、指令和工具，尝试解题。
@@ -95,6 +97,18 @@ Gear 保存每一版改动和结果，你可以查看过程，也可以直接使
 - [优化 Marketing harness](docs/guide/zh-CN/example-harness.md)：从初始指令开始，跟着五轮修改走到最终产物。
 - [定制进化算法](docs/guide/zh-CN/example-algorithm.md)：修改 Gear 如何提出改进、挑选测试任务、保留更好的版本。Marketing 实验采用 GEPA 的一种变体：先测试几个想法，再把更多评测机会分给有希望的方案。
 
+## 架构
+
+![Gear 架构：Task Registry 与 Agent 汇入优化引擎，Evaluator 将轨迹写入 Trajectory Storage，存储向引擎返回反馈并为 Trainer 提供训练数据。引擎更新 seed task 和 harness，Trainer 更新模型；右上角的 Serve、Diagnose、Evolve 圆形循环与数据流动画同步，底层由 Hitch 支持。](docs/guide/assets/gear-architecture-light.svg)
+[深入了解 Hitch。](https://github.com/rsi-gear/agent-hitch)
+
+## Roadmap
+
+Gear 现在已经可以改进 harness。更完整的学习循环，还有两块能力正在建设：
+
+- [ ] **迭代模型本身。** 用任务结果训练模型，再测试新版本，持续改进。已有[实验性训练流程](docs/guide/zh-CN/training.md)，但完整的模型迭代闭环尚未完成。
+- [ ] **把失败任务变成新的练习题。** 根据 Agent 做错的任务，构造有针对性的起始任务，也就是 *seed tasks*，用于下一轮优化，帮助它练习薄弱环节。这套自动生成任务的闭环尚未完成。
+
 ## 一起完善 Gear
 
 阅读[用户指南](docs/guide/zh-CN/index.md)，查看[示例代码](examples/evolution-search/README.zh-CN.md)，或加入 [Discord](https://discord.gg/cZ4NBbHDk) 讨论。
@@ -108,11 +122,4 @@ npm run build
 npm test
 ```
 
-[文档维护说明](docs/guide/README.md) · [GitHub Issues](https://github.com/rsi-gear/gear/issues) · [MIT 许可](LICENSE)
-
-## Roadmap
-
-Gear 现在已经可以改进 harness。更完整的学习循环，还有两块能力正在建设：
-
-- [ ] **迭代模型本身。** 用任务结果训练模型，再测试新版本，持续改进。已有[实验性训练流程](docs/guide/zh-CN/training.md)，但完整的模型迭代闭环尚未完成。
-- [ ] **把失败任务变成新的练习题。** 根据 Agent 做错的任务，构造有针对性的起始任务，也就是 *seed tasks*，用于下一轮优化，帮助它练习薄弱环节。这套自动生成任务的闭环尚未完成。
+[贡献指南](CONTRIBUTING.md) · [文档维护说明](docs/guide/README.md) · [GitHub Issues](https://github.com/rsi-gear/gear/issues) · [MIT 许可](LICENSE)

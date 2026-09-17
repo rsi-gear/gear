@@ -12,7 +12,7 @@
 
 </div>
 
-Gear is an open-source algorithm framework that helps AI agents work on real tasks across different software environments and learn from what goes right or wrong. We aim to use that experience to improve their instructions and tools, and turn it into training data that makes the models themselves better.
+Gear is an open-source infrastructure for continuously improving AI agents' ability to solve real-world tasks. We aim to use task experience to improve their harness, and turn it into training data that makes the models themselves better.
 
 ## A smaller model that can compete with the best
 
@@ -24,10 +24,10 @@ On AutomationBench's 100 public Marketing tasks, Gear improved **GPT 5.6 Luna ma
 
 Due to limited compute budget, we are starting with the task set below and reporting its results before and after optimization. We welcome submissions of more exciting results.
 
-| Validated task set | Model + harness combination | Metric | Before | After | Relative improvement (Rel. Δ) |
-| --- | --- | --- | --- | --- | --- |
-| AutomationBench / Marketing  | GPT 5.6 Luna medium + DSH | Task pass rate / object completion |  27% / 75.37% |  40% / 83.87% |**+48.15% / +11.28%** |
-| Terminal-Bench 2.1 | GPT 5.6 Luna medium + DSH | Task pass rate | 52.87% | 62.92% | **+19.01%** |
+| Benchmark | Setup | Metric | Before | After | Gain | Max reasoning | Leading models |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| AutomationBench / Marketing  | GPT 5.6 Luna medium + DSH | Task pass rate / object completion |  27% / 75.37% |  40% / 83.87% |**+48.15% / +11.28%** | **53% / 88.88%** | Astra max: 57% / 84.08% |
+| Terminal-Bench 2.1 | GPT 5.6 Luna medium + DSH | Task pass rate | 52.87% | 62.92% | **+19.01%** | **84.26%** | Astra high: 87.4%; Fable 5 xhigh: 83.8%; GPT-5.5 xhigh: 83.2% |
 
 Relative improvement = (After − Before) / Before × 100%.
 
@@ -66,6 +66,8 @@ The agent proposing changes is called the **Meta agent**. It can use a different
 
 ## Algorithm design: learning how to improve
 
+![Gear's inner and outer learning loops: Serve, Diagnose, and Evolve the harness, seed tasks, and model.](docs/guide/assets/gear-loop-light.svg)
+
 Gear follows a **meta-learning** design: one loop does the tasks, and another learns how to improve the agent doing them.
 
 - **Inner loop: do the work.** The task agent uses its current model, instructions, and tools to attempt the tasks.
@@ -95,6 +97,18 @@ Gear saves each version and its results, so you can inspect the changes and use 
 - [Evolve a harness for Marketing](docs/guide/en/example-harness.md): follow five rounds of changes, from the initial prompt to the final harness.
 - [Customize your evolve algorithm](docs/guide/en/example-algorithm.md): change how Gear proposes improvements, chooses tasks to test, and keeps the best versions. The Marketing experiment uses a GEPA variant that tests several ideas, then spends more evaluation effort on the promising ones.
 
+## Architecture
+
+![Gear architecture: Task Registry and Agent feed the Optimization Engine; Evaluator writes Trajectory Storage, which feeds back to the engine and supplies Trainer. The engine updates seed tasks and the harness; Trainer updates the model. A circular Serve, Diagnose, Evolve indicator follows the animated data flow. Powered by Hitch.](docs/guide/assets/gear-architecture-light.svg)
+[Learn More about Hitch.](https://github.com/rsi-gear/agent-hitch)
+
+## Roadmap
+
+Gear can improve harnesses today. Two parts of the bigger learning loop are still in progress:
+
+- [ ] **Improve the model itself.** Use task results to train the model, test the new version, and repeat. An [experimental training path](docs/guide/en/training.md) exists; the full model-iteration loop is not yet complete.
+- [ ] **Turn failures into new practice tasks.** Build focused starting tasks, or *seed tasks*, from the tasks an agent fails. Feed them into the next round so the agent can work on its weak spots. This automatic task-generation loop is not yet complete.
+
 ## Build with us
 
 Start with the [user guide](docs/guide/en/index.md), browse the [example code](examples/evolution-search/README.md), or join [Discord](https://discord.gg/cZ4NBbHDk).
@@ -108,11 +122,4 @@ npm run build
 npm test
 ```
 
-[Documentation authoring](docs/guide/README.md) · [GitHub issues](https://github.com/rsi-gear/gear/issues) · [MIT license](LICENSE)
-
-## Roadmap
-
-Gear can improve harnesses today. Two parts of the bigger learning loop are still in progress:
-
-- [ ] **Improve the model itself.** Use task results to train the model, test the new version, and repeat. An [experimental training path](docs/guide/en/training.md) exists; the full model-iteration loop is not yet complete.
-- [ ] **Turn failures into new practice tasks.** Build focused starting tasks, or *seed tasks*, from the tasks an agent fails. Feed them into the next round so the agent can work on its weak spots. This automatic task-generation loop is not yet complete.
+[Contributing](CONTRIBUTING.md) · [Documentation authoring](docs/guide/README.md) · [GitHub issues](https://github.com/rsi-gear/gear/issues) · [MIT license](LICENSE)
