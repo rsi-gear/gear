@@ -1,0 +1,4559 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gear.local/schemas/search-v2",
+  "title": "Failure cluster GEPA v1 persisted contracts",
+  "$defs": {
+    "Partition": {
+      "anyOf": [
+        {
+          "const": "seed"
+        },
+        {
+          "const": "held-out"
+        }
+      ]
+    },
+    "ProcessMode": {
+      "anyOf": [
+        {
+          "const": "off"
+        },
+        {
+          "const": "auto"
+        },
+        {
+          "const": "required"
+        }
+      ]
+    },
+    "Bucket": {
+      "anyOf": [
+        {
+          "const": "local"
+        },
+        {
+          "const": "shared"
+        },
+        {
+          "const": "cross"
+        }
+      ]
+    },
+    "Stage": {
+      "anyOf": [
+        {
+          "const": "held-out"
+        },
+        {
+          "const": "local"
+        },
+        {
+          "const": "baseline-probe"
+        },
+        {
+          "const": "bridge"
+        },
+        {
+          "const": "global-seed"
+        }
+      ]
+    },
+    "MetricContract": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        },
+        "channel": {
+          "anyOf": [
+            {
+              "const": "outcome"
+            },
+            {
+              "const": "process"
+            }
+          ]
+        },
+        "evidenceKind": {
+          "anyOf": [
+            {
+              "const": "final-outcome"
+            },
+            {
+              "const": "final-state-partial-credit"
+            },
+            {
+              "const": "trajectory"
+            }
+          ]
+        },
+        "granularity": {
+          "anyOf": [
+            {
+              "const": "dataset-aggregate"
+            },
+            {
+              "const": "trial"
+            },
+            {
+              "const": "component"
+            }
+          ]
+        },
+        "direction": {
+          "anyOf": [
+            {
+              "const": "maximize"
+            },
+            {
+              "const": "minimize"
+            }
+          ]
+        },
+        "range": {
+          "type": "object",
+          "properties": {
+            "min": {
+              "type": "number"
+            },
+            "max": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "min",
+            "max"
+          ],
+          "additionalProperties": false
+        },
+        "normalization": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "fixed-linear"
+            },
+            "min": {
+              "type": "number"
+            },
+            "max": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "min",
+            "max"
+          ],
+          "additionalProperties": false
+        },
+        "comparisonQuantum": {
+          "type": "number"
+        },
+        "repetitionReducer": {
+          "const": "mean"
+        },
+        "applicableTaskSetDigest": {
+          "type": "string"
+        },
+        "group": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "digest",
+        "channel",
+        "evidenceKind",
+        "granularity",
+        "direction",
+        "comparisonQuantum",
+        "repetitionReducer",
+        "applicableTaskSetDigest",
+        "group"
+      ],
+      "additionalProperties": false
+    },
+    "MetricObservation": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "const": "available"
+            },
+            "rawValue": {
+              "type": "number"
+            },
+            "contractDigest": {
+              "type": "string"
+            },
+            "evidenceRef": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "rawValue",
+            "contractDigest",
+            "evidenceRef"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "anyOf": [
+                {
+                  "const": "unsupported"
+                },
+                {
+                  "const": "not-applicable"
+                }
+              ]
+            },
+            "declarationDigest": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "declarationDigest"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "anyOf": [
+                {
+                  "const": "missing"
+                },
+                {
+                  "const": "invalid"
+                }
+              ]
+            },
+            "contractDigest": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "contractDigest",
+            "reason"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "SearchTask": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "contentDigest": {
+          "type": "string"
+        },
+        "outcome": {
+          "$ref": "#/$defs/MetricContract"
+        },
+        "process": {
+          "$ref": "#/$defs/MetricContract"
+        },
+        "successUtility": {
+          "type": "number"
+        },
+        "weight": {
+          "type": "number"
+        },
+        "stratum": {
+          "type": "string"
+        },
+        "estimatedCost": {
+          "type": "number"
+        },
+        "repetitionIndices": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "regressionTemplate": {
+          "type": "object",
+          "properties": {
+            "prompt": {
+              "type": "string"
+            },
+            "fixtureRefs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "environmentRef": {
+              "type": "string"
+            },
+            "graderRef": {
+              "type": "string"
+            },
+            "expectedBehavior": {
+              "type": "string"
+            },
+            "failureCategory": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "prompt",
+            "fixtureRefs",
+            "expectedBehavior",
+            "failureCategory"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "contentDigest",
+        "outcome",
+        "successUtility",
+        "weight",
+        "stratum",
+        "estimatedCost"
+      ],
+      "additionalProperties": false
+    },
+    "TaskUniverse": {
+      "type": "object",
+      "properties": {
+        "partition": {
+          "$ref": "#/$defs/Partition"
+        },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SearchTask"
+          }
+        },
+        "conditionDigest": {
+          "type": "string"
+        },
+        "repetitions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "index": {
+                "type": "number"
+              },
+              "seed": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "index",
+              "seed"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "digest": {
+          "type": "string"
+        },
+        "regressionSuiteDigest": {
+          "type": "string"
+        },
+        "regressionSuite": {
+          "$ref": "#/$defs/RegressionSuite"
+        }
+      },
+      "required": [
+        "partition",
+        "tasks",
+        "conditionDigest",
+        "repetitions",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "TaskSetLimit": {
+      "type": "object",
+      "properties": {
+        "ratio": {
+          "type": "number"
+        },
+        "minTasks": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "maxTasks": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        }
+      },
+      "required": [
+        "ratio"
+      ],
+      "additionalProperties": false
+    },
+    "TaskSetSizing": {
+      "type": "object",
+      "properties": {
+        "basis": {
+          "const": "seed-universe"
+        },
+        "rounding": {
+          "const": "ceil"
+        },
+        "local": {
+          "$ref": "#/$defs/TaskSetLimit"
+        },
+        "shared": {
+          "$ref": "#/$defs/TaskSetLimit"
+        },
+        "cross": {
+          "$ref": "#/$defs/TaskSetLimit"
+        },
+        "bridge": {
+          "$ref": "#/$defs/TaskSetLimit"
+        }
+      },
+      "required": [
+        "basis",
+        "rounding",
+        "local",
+        "shared",
+        "cross",
+        "bridge"
+      ],
+      "additionalProperties": false
+    },
+    "TaskSetResolution": {
+      "type": "object",
+      "properties": {
+        "universeDigest": {
+          "type": "string"
+        },
+        "universeSize": {
+          "type": "number"
+        },
+        "config": {
+          "$ref": "#/$defs/TaskSetSizing"
+        },
+        "quantities": {
+          "type": "object",
+          "properties": {
+            "local": {
+              "type": "object",
+              "properties": {
+                "requested": {
+                  "type": "number"
+                },
+                "resolved": {
+                  "type": "number"
+                },
+                "reasons": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "requested",
+                "resolved",
+                "reasons"
+              ],
+              "additionalProperties": false
+            },
+            "shared": {
+              "type": "object",
+              "properties": {
+                "requested": {
+                  "type": "number"
+                },
+                "resolved": {
+                  "type": "number"
+                },
+                "reasons": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "requested",
+                "resolved",
+                "reasons"
+              ],
+              "additionalProperties": false
+            },
+            "cross": {
+              "type": "object",
+              "properties": {
+                "requested": {
+                  "type": "number"
+                },
+                "resolved": {
+                  "type": "number"
+                },
+                "reasons": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "requested",
+                "resolved",
+                "reasons"
+              ],
+              "additionalProperties": false
+            },
+            "bridge": {
+              "type": "object",
+              "properties": {
+                "requested": {
+                  "type": "number"
+                },
+                "resolved": {
+                  "type": "number"
+                },
+                "reasons": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "requested",
+                "resolved",
+                "reasons"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "local",
+            "shared",
+            "cross",
+            "bridge"
+          ],
+          "additionalProperties": false
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "universeDigest",
+        "universeSize",
+        "config",
+        "quantities",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "TaskGuard": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string"
+        },
+        "partition": {
+          "$ref": "#/$defs/Partition"
+        },
+        "rule": {
+          "anyOf": [
+            {
+              "const": "no-regression"
+            },
+            {
+              "const": "minimum-score"
+            },
+            {
+              "const": "must-pass"
+            }
+          ]
+        },
+        "minimumUtility": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "taskId",
+        "partition",
+        "rule"
+      ],
+      "additionalProperties": false
+    },
+    "AssertionGuard": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string"
+        },
+        "partition": {
+          "$ref": "#/$defs/Partition"
+        },
+        "assertionId": {
+          "type": "string"
+        },
+        "schemaDigest": {
+          "type": "string"
+        },
+        "rule": {
+          "anyOf": [
+            {
+              "const": "must-pass"
+            },
+            {
+              "const": "no-new-violation"
+            }
+          ]
+        }
+      },
+      "required": [
+        "taskId",
+        "partition",
+        "assertionId",
+        "schemaDigest",
+        "rule"
+      ],
+      "additionalProperties": false
+    },
+    "MetricThresholds": {
+      "type": "object",
+      "properties": {
+        "minimumGain": {
+          "type": "number"
+        },
+        "maxSeedRegression": {
+          "type": "number"
+        },
+        "maxHeldOutRegression": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "minimumGain",
+        "maxSeedRegression",
+        "maxHeldOutRegression"
+      ],
+      "additionalProperties": false
+    },
+    "MultisignalPromotionConfig": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "const": "paired-multisignal-v1"
+        },
+        "validationMode": {
+          "anyOf": [
+            {
+              "const": "independent-held-out"
+            },
+            {
+              "const": "shared-set-research"
+            }
+          ]
+        },
+        "allowSharedSetPromotion": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "outcome": {
+          "$ref": "#/$defs/MetricThresholds"
+        },
+        "process": {
+          "type": "object",
+          "properties": {
+            "minimumGain": {
+              "type": "number"
+            },
+            "maxSeedRegression": {
+              "type": "number"
+            },
+            "maxHeldOutRegression": {
+              "type": "number"
+            },
+            "mode": {
+              "$ref": "#/$defs/ProcessMode"
+            },
+            "groups": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/MetricThresholds"
+              }
+            }
+          },
+          "required": [
+            "minimumGain",
+            "maxSeedRegression",
+            "maxHeldOutRegression",
+            "mode"
+          ],
+          "additionalProperties": false
+        },
+        "allowNeutral": {
+          "type": "boolean"
+        },
+        "protectedTasks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TaskGuard"
+          }
+        },
+        "protectedAssertions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AssertionGuard"
+          }
+        }
+      },
+      "required": [
+        "policy",
+        "validationMode",
+        "outcome",
+        "process",
+        "allowNeutral",
+        "protectedTasks",
+        "protectedAssertions"
+      ],
+      "additionalProperties": false
+    },
+    "SearchConfig": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "const": "failure-cluster-gepa-v1"
+        },
+        "seed": {
+          "type": "number"
+        },
+        "parentBatchCount": {
+          "type": "number"
+        },
+        "parentSampling": {
+          "anyOf": [
+            {
+              "const": "scoped-frontier-membership-v1"
+            },
+            {
+              "const": "epsilon-greedy-gepa-v1"
+            }
+          ]
+        },
+        "parentPolicy": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "anyOf": [
+                {
+                  "const": "candidate-generator"
+                },
+                {
+                  "const": "task-sampler"
+                },
+                {
+                  "const": "rollout-provider"
+                },
+                {
+                  "const": "judge"
+                },
+                {
+                  "const": "candidate-assessor"
+                },
+                {
+                  "const": "candidate-selector"
+                },
+                {
+                  "const": "promotion-policy"
+                },
+                {
+                  "const": "parent-selection"
+                }
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "apiVersion": {
+              "const": 1
+            },
+            "implementation": {
+              "type": "object",
+              "properties": {
+                "package": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "integrity": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "package",
+                "version",
+                "integrity"
+              ],
+              "additionalProperties": false
+            },
+            "config": {},
+            "configDigest": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "apiVersion",
+            "implementation",
+            "config",
+            "configDigest"
+          ],
+          "additionalProperties": false
+        },
+        "championProbability": {
+          "type": "number"
+        },
+        "scopeWeights": {
+          "const": "uniform-by-family"
+        },
+        "archiveCoverage": {
+          "const": "complete-scope"
+        },
+        "diagnosis": {
+          "type": "object",
+          "properties": {
+            "sharing": {
+              "const": "parent-evidence-dossier"
+            },
+            "planner": {
+              "const": "evidence-failure-clusters-v1"
+            },
+            "candidatesPerFamily": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "sharing",
+            "planner",
+            "candidatesPerFamily"
+          ],
+          "additionalProperties": false
+        },
+        "taskSetSizing": {
+          "$ref": "#/$defs/TaskSetSizing"
+        },
+        "scopeSampling": {
+          "type": "object",
+          "properties": {
+            "bucketWeights": {
+              "type": "object",
+              "properties": {
+                "local": {
+                  "type": "number"
+                },
+                "shared": {
+                  "type": "number"
+                },
+                "cross": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "local",
+                "shared",
+                "cross"
+              ],
+              "additionalProperties": false
+            },
+            "epochPolicy": {
+              "anyOf": [
+                {
+                  "const": "stable"
+                },
+                {
+                  "const": "periodic"
+                }
+              ]
+            },
+            "updateEveryRounds": {
+              "type": "number"
+            },
+            "maxHistoricalSpecialists": {
+              "type": "number"
+            },
+            "sharedCoreTaskIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "bucketWeights",
+            "epochPolicy"
+          ],
+          "additionalProperties": false
+        },
+        "evaluationStages": {
+          "type": "object",
+          "properties": {
+            "bridge": {
+              "type": "object",
+              "properties": {
+                "maxCandidates": {
+                  "type": "number"
+                },
+                "groupAllocation": {
+                  "const": "weighted-round-robin"
+                },
+                "taskSelection": {
+                  "const": "nominated-scopes-union-then-stratified"
+                }
+              },
+              "required": [
+                "maxCandidates",
+                "groupAllocation",
+                "taskSelection"
+              ],
+              "additionalProperties": false
+            },
+            "globalSeed": {
+              "type": "object",
+              "properties": {
+                "maxCandidates": {
+                  "const": 1
+                }
+              },
+              "required": [
+                "maxCandidates"
+              ],
+              "additionalProperties": false
+            },
+            "reuseValidCells": {
+              "const": true
+            }
+          },
+          "required": [
+            "bridge",
+            "globalSeed",
+            "reuseValidCells"
+          ],
+          "additionalProperties": false
+        },
+        "process": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "$ref": "#/$defs/ProcessMode"
+            },
+            "parentBudgetFraction": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "mode",
+            "parentBudgetFraction"
+          ],
+          "additionalProperties": false
+        },
+        "globalTaskWeights": {
+          "const": "uniform"
+        },
+        "explorationGuards": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TaskGuard"
+          }
+        }
+      },
+      "required": [
+        "mode",
+        "seed",
+        "parentBatchCount",
+        "parentSampling",
+        "scopeWeights",
+        "archiveCoverage",
+        "diagnosis",
+        "taskSetSizing",
+        "scopeSampling",
+        "evaluationStages",
+        "process",
+        "globalTaskWeights",
+        "explorationGuards"
+      ],
+      "additionalProperties": false
+    },
+    "BudgetLimits": {
+      "type": "object",
+      "properties": {
+        "maxNewRolloutCells": {
+          "type": "number"
+        },
+        "maxDiagnosisInputTokens": {
+          "type": "number"
+        },
+        "maxDiagnosisOutputTokens": {
+          "type": "number"
+        },
+        "maxGenerationTokens": {
+          "type": "number"
+        },
+        "maxGenerationRequests": {
+          "type": "number"
+        },
+        "maxRepairCells": {
+          "type": "number"
+        },
+        "timeoutMs": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "maxNewRolloutCells",
+        "maxDiagnosisInputTokens",
+        "maxDiagnosisOutputTokens",
+        "maxRepairCells",
+        "timeoutMs"
+      ],
+      "additionalProperties": false
+    },
+    "SearchSettings": {
+      "type": "object",
+      "properties": {
+        "search": {
+          "$ref": "#/$defs/SearchConfig"
+        },
+        "promotion": {
+          "$ref": "#/$defs/MultisignalPromotionConfig"
+        },
+        "budgets": {
+          "type": "object",
+          "properties": {
+            "round": {
+              "$ref": "#/$defs/BudgetLimits"
+            },
+            "evolution": {
+              "$ref": "#/$defs/BudgetLimits"
+            }
+          },
+          "required": [
+            "round",
+            "evolution"
+          ],
+          "additionalProperties": false
+        },
+        "regression": {
+          "type": "object",
+          "properties": {
+            "collectFailures": {
+              "type": "boolean"
+            },
+            "maxProposals": {
+              "type": "number"
+            },
+            "suiteRef": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "required": [
+            "collectFailures",
+            "maxProposals"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "search",
+        "promotion",
+        "budgets",
+        "regression"
+      ],
+      "additionalProperties": false
+    },
+    "Snapshot": {
+      "type": "object",
+      "properties": {
+        "candidateId": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string"
+        },
+        "tree": {
+          "type": "string"
+        },
+        "manifestDigest": {
+          "type": "string"
+        },
+        "parentIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "findingRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "candidateId",
+        "commit",
+        "tree",
+        "manifestDigest",
+        "parentIds",
+        "findingRefs",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "EvaluationScope": {
+      "type": "object",
+      "properties": {
+        "familyId": {
+          "type": "string"
+        },
+        "epoch": {
+          "type": "number"
+        },
+        "universeDigest": {
+          "type": "string"
+        },
+        "taskSetSizeResolutionDigest": {
+          "type": "string"
+        },
+        "buckets": {
+          "type": "object",
+          "properties": {
+            "local": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "shared": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "cross": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "local",
+            "shared",
+            "cross"
+          ],
+          "additionalProperties": false
+        },
+        "taskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "weights": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "guards": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TaskGuard"
+          }
+        },
+        "sampling": {
+          "type": "object",
+          "properties": {
+            "local": {
+              "type": "object",
+              "properties": {
+                "requested": {
+                  "type": "number"
+                },
+                "selected": {
+                  "type": "number"
+                },
+                "reasons": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "requested",
+                "selected",
+                "reasons"
+              ],
+              "additionalProperties": false
+            },
+            "shared": {
+              "type": "object",
+              "properties": {
+                "requested": {
+                  "type": "number"
+                },
+                "selected": {
+                  "type": "number"
+                },
+                "reasons": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "requested",
+                "selected",
+                "reasons"
+              ],
+              "additionalProperties": false
+            },
+            "cross": {
+              "type": "object",
+              "properties": {
+                "requested": {
+                  "type": "number"
+                },
+                "selected": {
+                  "type": "number"
+                },
+                "reasons": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "requested",
+                "selected",
+                "reasons"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "local",
+            "shared",
+            "cross"
+          ],
+          "additionalProperties": false
+        },
+        "samplingEvidenceDigest": {
+          "type": "string"
+        },
+        "equivalenceDigest": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "familyId",
+        "epoch",
+        "universeDigest",
+        "taskSetSizeResolutionDigest",
+        "buckets",
+        "taskIds",
+        "weights",
+        "guards",
+        "sampling",
+        "equivalenceDigest",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "CellIdentity": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string"
+        },
+        "taskContentDigest": {
+          "type": "string"
+        },
+        "repetition": {
+          "type": "number"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "conditionDigest": {
+          "type": "string"
+        },
+        "outcomeContractDigest": {
+          "type": "string"
+        },
+        "processContractDigest": {
+          "type": "string"
+        },
+        "harnessCommit": {
+          "type": "string"
+        },
+        "harnessManifestDigest": {
+          "type": "string"
+        },
+        "snapshotDigest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "taskId",
+        "taskContentDigest",
+        "repetition",
+        "seed",
+        "conditionDigest",
+        "outcomeContractDigest",
+        "harnessCommit",
+        "harnessManifestDigest",
+        "snapshotDigest"
+      ],
+      "additionalProperties": false
+    },
+    "EvidenceCell": {
+      "type": "object",
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/CellIdentity"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "const": "available"
+            },
+            {
+              "const": "missing"
+            },
+            {
+              "const": "invalid"
+            }
+          ]
+        },
+        "outcome": {
+          "$ref": "#/$defs/MetricObservation"
+        },
+        "process": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "const": "available"
+                },
+                "rawValue": {
+                  "type": "number"
+                },
+                "contractDigest": {
+                  "type": "string"
+                },
+                "evidenceRef": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "rawValue",
+                "contractDigest",
+                "evidenceRef"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "anyOf": [
+                    {
+                      "const": "unsupported"
+                    },
+                    {
+                      "const": "not-applicable"
+                    }
+                  ]
+                },
+                "declarationDigest": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "declarationDigest"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "anyOf": [
+                    {
+                      "const": "missing"
+                    },
+                    {
+                      "const": "invalid"
+                    }
+                  ]
+                },
+                "contractDigest": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "contractDigest",
+                "reason"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "assertions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "schemaDigest": {
+                "type": "string"
+              },
+              "status": {
+                "anyOf": [
+                  {
+                    "const": "passed"
+                  },
+                  {
+                    "const": "failed"
+                  },
+                  {
+                    "const": "excluded"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "schemaDigest",
+              "status"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "envelope": {
+          "anyOf": [
+            {
+              "const": "legacy-v1"
+            },
+            {
+              "const": "score-envelope-v2"
+            }
+          ]
+        },
+        "outcomeCertified": {
+          "type": "boolean"
+        },
+        "evidenceRef": {
+          "type": "string"
+        },
+        "completedAt": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "identity",
+        "status",
+        "outcome",
+        "envelope",
+        "outcomeCertified",
+        "evidenceRef",
+        "completedAt",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "StageEvaluationPlan": {
+      "type": "object",
+      "properties": {
+        "stage": {
+          "$ref": "#/$defs/Stage"
+        },
+        "partition": {
+          "$ref": "#/$defs/Partition"
+        },
+        "universeDigest": {
+          "type": "string"
+        },
+        "taskSetSizeResolutionDigest": {
+          "type": "string"
+        },
+        "scopeDigest": {
+          "type": "string"
+        },
+        "taskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "participantIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "prerequisiteDecisionDigests": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "selectionRuleDigest": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "stage",
+        "partition",
+        "universeDigest",
+        "taskSetSizeResolutionDigest",
+        "scopeDigest",
+        "taskIds",
+        "participantIds",
+        "prerequisiteDecisionDigests",
+        "selectionRuleDigest",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "StageResult": {
+      "type": "object",
+      "properties": {
+        "stagePlanDigest": {
+          "type": "string"
+        },
+        "snapshotDigest": {
+          "type": "string"
+        },
+        "cells": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceCell"
+          }
+        },
+        "settled": {
+          "type": "boolean"
+        },
+        "supersedesEvidenceDigest": {
+          "type": "string"
+        },
+        "failure": {
+          "$ref": "#/$defs/SearchStageFailure"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "stagePlanDigest",
+        "snapshotDigest",
+        "cells",
+        "settled",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "EvaluationStageDecision": {
+      "type": "object",
+      "properties": {
+        "stagePlanDigest": {
+          "type": "string"
+        },
+        "candidateId": {
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "const": "advance"
+            },
+            {
+              "const": "retained-local"
+            },
+            {
+              "const": "ineligible"
+            },
+            {
+              "const": "insufficient-evidence"
+            }
+          ]
+        },
+        "reasonCodes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "supportDigest": {
+          "type": "string"
+        },
+        "nextStagePlanDigest": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "stagePlanDigest",
+        "candidateId",
+        "outcome",
+        "reasonCodes",
+        "supportDigest",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "SearchProgress": {
+      "type": "object",
+      "properties": {
+        "phase": {
+          "anyOf": [
+            {
+              "const": "local"
+            },
+            {
+              "const": "bridge"
+            },
+            {
+              "const": "global-seed"
+            },
+            {
+              "const": "bootstrap"
+            },
+            {
+              "const": "scope-preparation"
+            },
+            {
+              "const": "diagnosis-planning"
+            },
+            {
+              "const": "generation"
+            },
+            {
+              "const": "seed-research-complete"
+            }
+          ]
+        },
+        "evaluations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "stage": {
+                "anyOf": [
+                  {
+                    "const": "local"
+                  },
+                  {
+                    "const": "baseline-probe"
+                  },
+                  {
+                    "const": "bridge"
+                  },
+                  {
+                    "const": "global-seed"
+                  }
+                ]
+              },
+              "stagePlanDigest": {
+                "type": "string"
+              },
+              "scopeDigest": {
+                "type": "string"
+              },
+              "candidateId": {
+                "type": "string"
+              },
+              "state": {
+                "anyOf": [
+                  {
+                    "const": "running"
+                  },
+                  {
+                    "const": "settled"
+                  }
+                ]
+              },
+              "plannedCells": {
+                "type": "number"
+              },
+              "profile": {
+                "type": "object",
+                "properties": {
+                  "coverage": {
+                    "$ref": "#/$defs/Coverage"
+                  },
+                  "processCoverage": {
+                    "$ref": "#/$defs/Coverage"
+                  },
+                  "outcomeComplete": {
+                    "type": "boolean"
+                  },
+                  "processComplete": {
+                    "type": "boolean"
+                  },
+                  "processTaskIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "tasks": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/$defs/TaskProfile"
+                    }
+                  },
+                  "supportDigest": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "coverage",
+                  "processCoverage",
+                  "outcomeComplete",
+                  "processComplete",
+                  "processTaskIds",
+                  "tasks",
+                  "supportDigest"
+                ],
+                "additionalProperties": false
+              },
+              "failure": {
+                "$ref": "#/$defs/SearchStageFailure"
+              }
+            },
+            "required": [
+              "stage",
+              "stagePlanDigest",
+              "scopeDigest",
+              "candidateId",
+              "state",
+              "plannedCells"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvaluationStageDecision"
+          }
+        }
+      },
+      "required": [
+        "phase",
+        "evaluations",
+        "decisions"
+      ],
+      "additionalProperties": false
+    },
+    "SearchStageFailure": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "anyOf": [
+            {
+              "const": "execution-failure"
+            },
+            {
+              "const": "budget-exhausted"
+            }
+          ]
+        },
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "evidenceRef": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "code",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "PendingSearchOperation": {
+      "type": "object",
+      "properties": {
+        "operationKey": {
+          "type": "string"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "const": "generation"
+            },
+            {
+              "const": "evaluation"
+            },
+            {
+              "const": "diagnosis"
+            }
+          ]
+        },
+        "partition": {
+          "$ref": "#/$defs/Partition"
+        },
+        "stagePlanDigest": {
+          "type": "string"
+        },
+        "candidateId": {
+          "type": "string"
+        },
+        "state": {
+          "anyOf": [
+            {
+              "const": "running"
+            },
+            {
+              "const": "unknown"
+            },
+            {
+              "const": "not-started"
+            },
+            {
+              "const": "partially-complete"
+            }
+          ]
+        },
+        "handle": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationKey",
+        "kind",
+        "partition",
+        "stagePlanDigest",
+        "candidateId",
+        "state",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "EvaluationExecutionResult": {
+      "type": "object",
+      "properties": {
+        "cells": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceCell"
+          }
+        },
+        "failure": {
+          "$ref": "#/$defs/SearchStageFailure"
+        }
+      },
+      "required": [
+        "cells"
+      ],
+      "additionalProperties": false
+    },
+    "ExternalRecovery": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "const": "complete"
+            },
+            "result": {}
+          },
+          "required": [
+            "status",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "const": "not-started"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "const": "partially-complete"
+            },
+            "cells": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/EvidenceCell"
+              }
+            }
+          },
+          "required": [
+            "status",
+            "cells"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "const": "running"
+            },
+            "handle": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "handle"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "const": "unknown"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "BridgeSelectionDecision": {
+      "type": "object",
+      "properties": {
+        "plan": {
+          "$ref": "#/$defs/StageEvaluationPlan"
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "exclusions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "candidateId": {
+                "type": "string"
+              },
+              "scopeDigest": {
+                "type": "string"
+              },
+              "reason": {
+                "anyOf": [
+                  {
+                    "const": "group-quota"
+                  },
+                  {
+                    "const": "bridge-disabled"
+                  },
+                  {
+                    "const": "bridge-capacity"
+                  },
+                  {
+                    "const": "bridge-budget"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "candidateId",
+              "scopeDigest",
+              "reason"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "skipped",
+        "exclusions"
+      ],
+      "additionalProperties": false
+    },
+    "EvidenceConsumption": {
+      "type": "object",
+      "properties": {
+        "stagePlanDigest": {
+          "type": "string"
+        },
+        "snapshotDigest": {
+          "type": "string"
+        },
+        "resultDigest": {
+          "type": "string"
+        },
+        "consumerDigest": {
+          "type": "string"
+        },
+        "consumer": {
+          "anyOf": [
+            {
+              "const": "scope-preparation"
+            },
+            {
+              "const": "diagnosis"
+            },
+            {
+              "const": "bootstrap-archive"
+            },
+            {
+              "const": "workplans"
+            },
+            {
+              "const": "local-decision"
+            },
+            {
+              "const": "nomination"
+            },
+            {
+              "const": "research-archive"
+            }
+          ]
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "stagePlanDigest",
+        "snapshotDigest",
+        "resultDigest",
+        "consumerDigest",
+        "consumer",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "Coverage": {
+      "type": "object",
+      "properties": {
+        "planned": {
+          "type": "number"
+        },
+        "available": {
+          "type": "number"
+        },
+        "paired": {
+          "type": "number"
+        },
+        "pending": {
+          "type": "number"
+        },
+        "missing": {
+          "type": "number"
+        },
+        "invalid": {
+          "type": "number"
+        },
+        "notEvaluated": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "planned",
+        "available",
+        "paired",
+        "pending",
+        "missing",
+        "invalid",
+        "notEvaluated"
+      ],
+      "additionalProperties": false
+    },
+    "TaskProfile": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string"
+        },
+        "outcome": {
+          "type": "number"
+        },
+        "process": {
+          "type": "number"
+        },
+        "outcomeKey": {
+          "type": "string"
+        },
+        "processKey": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "taskId"
+      ],
+      "additionalProperties": false
+    },
+    "EvidenceProfile": {
+      "type": "object",
+      "properties": {
+        "universeDigest": {
+          "type": "string"
+        },
+        "stagePlanDigest": {
+          "type": "string"
+        },
+        "scopeDigest": {
+          "type": "string"
+        },
+        "snapshotDigest": {
+          "type": "string"
+        },
+        "coverage": {
+          "$ref": "#/$defs/Coverage"
+        },
+        "processCoverage": {
+          "$ref": "#/$defs/Coverage"
+        },
+        "outcomeComplete": {
+          "type": "boolean"
+        },
+        "processComplete": {
+          "type": "boolean"
+        },
+        "processTaskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TaskProfile"
+          }
+        },
+        "outcome": {
+          "type": "number"
+        },
+        "outcomeKey": {
+          "type": "string"
+        },
+        "processGroups": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "processGroupKeys": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "supportDigest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "universeDigest",
+        "stagePlanDigest",
+        "scopeDigest",
+        "snapshotDigest",
+        "coverage",
+        "processCoverage",
+        "outcomeComplete",
+        "processComplete",
+        "processTaskIds",
+        "tasks",
+        "processGroups",
+        "processGroupKeys",
+        "supportDigest"
+      ],
+      "additionalProperties": false
+    },
+    "DiagnosisFact": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string"
+        },
+        "evidenceRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "status": {
+          "anyOf": [
+            {
+              "const": "supported-hypothesis"
+            },
+            {
+              "const": "unresolved"
+            },
+            {
+              "const": "infrastructure-invalid"
+            },
+            {
+              "const": "successful-control"
+            }
+          ]
+        },
+        "familyId": {
+          "type": "string"
+        },
+        "hypothesis": {
+          "type": "string"
+        },
+        "modificationPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mechanism": {
+          "type": "string"
+        },
+        "submode": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "taskId",
+        "evidenceRefs",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "DiagnosisDossier": {
+      "type": "object",
+      "properties": {
+        "failure": {
+          "$ref": "#/$defs/SearchStageFailure"
+        },
+        "parentSnapshotDigest": {
+          "type": "string"
+        },
+        "universeDigest": {
+          "type": "string"
+        },
+        "taskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "baselineEvidenceDigests": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "facts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DiagnosisFact"
+          }
+        },
+        "classifierIntegrity": {
+          "type": "string"
+        },
+        "sanitizationPolicyDigest": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "parentSnapshotDigest",
+        "universeDigest",
+        "taskIds",
+        "baselineEvidenceDigests",
+        "facts",
+        "classifierIntegrity",
+        "sanitizationPolicyDigest",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "DossierExcerpt": {
+      "type": "object",
+      "properties": {
+        "sourceDossierDigest": {
+          "type": "string"
+        },
+        "parentSnapshotDigest": {
+          "type": "string"
+        },
+        "baselineEvidenceDigests": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "facts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DiagnosisFact"
+          }
+        },
+        "classifierIntegrity": {
+          "type": "string"
+        },
+        "sanitizationPolicyDigest": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sourceDossierDigest",
+        "parentSnapshotDigest",
+        "baselineEvidenceDigests",
+        "facts",
+        "classifierIntegrity",
+        "sanitizationPolicyDigest",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "FailureCluster": {
+      "type": "object",
+      "properties": {
+        "familyId": {
+          "type": "string"
+        },
+        "parentSnapshotDigest": {
+          "type": "string"
+        },
+        "dossierDigest": {
+          "type": "string"
+        },
+        "taskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidenceRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "hypotheses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "modificationPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "taskFeatures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "taskId": {
+                "type": "string"
+              },
+              "submodes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "modificationPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "taskId",
+              "submodes",
+              "modificationPaths"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "successfulControlTaskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "protectedFailure": {
+          "type": "boolean"
+        },
+        "estimatedCost": {
+          "type": "number"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "familyId",
+        "parentSnapshotDigest",
+        "dossierDigest",
+        "taskIds",
+        "evidenceRefs",
+        "hypotheses",
+        "modificationPaths",
+        "protectedFailure",
+        "estimatedCost",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "ScopeSamplingEvidence": {
+      "type": "object",
+      "properties": {
+        "universeDigest": {
+          "type": "string"
+        },
+        "cutoffDigest": {
+          "type": "string"
+        },
+        "clusterDigests": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tasks": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "familyIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "submodes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "modificationPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "historicalDifficulty": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "familyIds",
+              "submodes",
+              "modificationPaths"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "universeDigest",
+        "cutoffDigest",
+        "clusterDigests",
+        "tasks",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "StageParticipantBinding": {
+      "type": "object",
+      "properties": {
+        "stagePlanDigest": {
+          "type": "string"
+        },
+        "participantId": {
+          "type": "string"
+        },
+        "sealedSnapshotDigest": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "stagePlanDigest",
+        "participantId",
+        "sealedSnapshotDigest",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "CandidateWorkPlan": {
+      "type": "object",
+      "properties": {
+        "candidateId": {
+          "type": "string"
+        },
+        "batchId": {
+          "type": "string"
+        },
+        "parentSnapshotDigest": {
+          "type": "string"
+        },
+        "dossierDigest": {
+          "type": "string"
+        },
+        "clusterDigest": {
+          "type": "string"
+        },
+        "familyId": {
+          "type": "string"
+        },
+        "hypothesis": {
+          "type": "string"
+        },
+        "targetTaskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requiredDiagnosisRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "modificationPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scopeDigest": {
+          "type": "string"
+        },
+        "localStagePlanDigest": {
+          "type": "string"
+        },
+        "modificationBoundaryRule": {
+          "type": "object",
+          "properties": {
+            "requiredSeedTaskIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "onInsufficientScope": {
+              "const": "retain-research-only"
+            }
+          },
+          "required": [
+            "requiredSeedTaskIds",
+            "onInsufficientScope"
+          ],
+          "additionalProperties": false
+        },
+        "generationBudget": {
+          "type": "object",
+          "properties": {
+            "maxTokens": {
+              "type": "number"
+            },
+            "maxModelRequests": {
+              "type": "number"
+            },
+            "deadlineAt": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "deadlineAt"
+          ],
+          "additionalProperties": false
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "candidateId",
+        "batchId",
+        "parentSnapshotDigest",
+        "dossierDigest",
+        "clusterDigest",
+        "familyId",
+        "hypothesis",
+        "targetTaskIds",
+        "requiredDiagnosisRefs",
+        "modificationPaths",
+        "scopeDigest",
+        "localStagePlanDigest",
+        "modificationBoundaryRule",
+        "generationBudget",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "WorkplanReceipt": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "workplan-dossier-consumed"
+        },
+        "candidateId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "workplanDigest": {
+          "type": "string"
+        },
+        "dossierDigest": {
+          "type": "string"
+        },
+        "deliveredDigest": {
+          "type": "string"
+        },
+        "accessedRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "candidateId",
+        "sessionId",
+        "workplanDigest",
+        "dossierDigest",
+        "deliveredDigest",
+        "accessedRefs",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "ResearchFinding": {
+      "type": "object",
+      "properties": {
+        "candidateId": {
+          "type": "string"
+        },
+        "parentSnapshotDigest": {
+          "type": "string"
+        },
+        "hypothesis": {
+          "type": "string"
+        },
+        "scopeDigest": {
+          "type": "string"
+        },
+        "changedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "improvements": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "regressions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "unverifiedTaskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "workflowAdoption": {
+          "const": "unknown"
+        },
+        "supportDigest": {
+          "type": "string"
+        },
+        "nextSteps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "candidateId",
+        "parentSnapshotDigest",
+        "hypothesis",
+        "scopeDigest",
+        "changedPaths",
+        "improvements",
+        "regressions",
+        "unverifiedTaskIds",
+        "workflowAdoption",
+        "supportDigest",
+        "nextSteps",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "ScopeView": {
+      "type": "object",
+      "properties": {
+        "scopeDigest": {
+          "type": "string"
+        },
+        "outcomeEligibleIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "processEligibleIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "fronts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "taskId": {
+                "type": "string"
+              },
+              "channel": {
+                "anyOf": [
+                  {
+                    "const": "outcome"
+                  },
+                  {
+                    "const": "process"
+                  }
+                ]
+              },
+              "candidateIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "informative": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "taskId",
+              "channel",
+              "candidateIds",
+              "informative"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "representatives": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "prunedIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "conditionalParentProbabilities": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "pendingEvidenceIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ineligibleIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "scopeDigest",
+        "outcomeEligibleIds",
+        "processEligibleIds",
+        "fronts",
+        "representatives",
+        "prunedIds",
+        "conditionalParentProbabilities",
+        "pendingEvidenceIds",
+        "ineligibleIds",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "ResearchArchive": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "evolutionId": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "number"
+        },
+        "universeDigest": {
+          "type": "string"
+        },
+        "snapshots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Snapshot"
+          }
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvaluationScope"
+          }
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StageResult"
+          }
+        },
+        "plans": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StageEvaluationPlan"
+          }
+        },
+        "scopeViews": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ScopeView"
+          }
+        },
+        "scopeProbabilities": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "parentProbabilities": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "parentMixture": {
+          "type": "object",
+          "properties": {
+            "strategy": {
+              "const": "epsilon-greedy-gepa-v1"
+            },
+            "championId": {
+              "type": "string"
+            },
+            "championProbability": {
+              "type": "number"
+            },
+            "championScopeDigest": {
+              "type": "string"
+            },
+            "explorationParentProbabilities": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "number"
+              }
+            }
+          },
+          "required": [
+            "strategy",
+            "championId",
+            "championProbability",
+            "championScopeDigest",
+            "explorationParentProbabilities"
+          ],
+          "additionalProperties": false
+        },
+        "activeParentIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "digest": {
+          "type": "string"
+        },
+        "clusters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FailureCluster"
+          }
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "evolutionId",
+        "revision",
+        "universeDigest",
+        "snapshots",
+        "scopes",
+        "results",
+        "plans",
+        "scopeViews",
+        "scopeProbabilities",
+        "parentProbabilities",
+        "activeParentIds",
+        "digest",
+        "clusters"
+      ],
+      "additionalProperties": false
+    },
+    "ParentBatch": {
+      "type": "object",
+      "properties": {
+        "batchId": {
+          "type": "string"
+        },
+        "sourceScopeDigest": {
+          "type": "string"
+        },
+        "parentSnapshotDigest": {
+          "type": "string"
+        },
+        "maxCandidateSlots": {
+          "type": "number"
+        },
+        "drawIndex": {
+          "type": "number"
+        },
+        "selectionBranch": {
+          "anyOf": [
+            {
+              "const": "champion"
+            },
+            {
+              "const": "gepa"
+            }
+          ]
+        }
+      },
+      "required": [
+        "batchId",
+        "sourceScopeDigest",
+        "parentSnapshotDigest",
+        "maxCandidateSlots",
+        "drawIndex"
+      ],
+      "additionalProperties": false
+    },
+    "ParentPolicyAudit": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "anyOf": [
+                {
+                  "const": "candidate-generator"
+                },
+                {
+                  "const": "task-sampler"
+                },
+                {
+                  "const": "rollout-provider"
+                },
+                {
+                  "const": "judge"
+                },
+                {
+                  "const": "candidate-assessor"
+                },
+                {
+                  "const": "candidate-selector"
+                },
+                {
+                  "const": "promotion-policy"
+                },
+                {
+                  "const": "parent-selection"
+                }
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "apiVersion": {
+              "const": 1
+            },
+            "implementation": {
+              "type": "object",
+              "properties": {
+                "package": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "integrity": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "package",
+                "version",
+                "integrity"
+              ],
+              "additionalProperties": false
+            },
+            "config": {},
+            "configDigest": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "apiVersion",
+            "implementation",
+            "config",
+            "configDigest"
+          ],
+          "additionalProperties": false
+        },
+        "inputDigest": {
+          "type": "string"
+        },
+        "parentProbabilities": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "reasonCodes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "ref",
+        "inputDigest",
+        "parentProbabilities",
+        "reasonCodes"
+      ],
+      "additionalProperties": false
+    },
+    "ParentSelectionDecision": {
+      "type": "object",
+      "properties": {
+        "archiveDigest": {
+          "type": "string"
+        },
+        "algorithmRef": {
+          "const": "sha256-counter-v1"
+        },
+        "policy": {
+          "$ref": "#/$defs/ParentPolicyAudit"
+        },
+        "randomSeed": {
+          "type": "string"
+        },
+        "batches": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ParentBatch"
+          }
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "archiveDigest",
+        "algorithmRef",
+        "randomSeed",
+        "batches",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "GateDecision": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "anyOf": [
+            {
+              "const": "insufficient-evidence"
+            },
+            {
+              "const": "eligible"
+            },
+            {
+              "const": "accepted"
+            },
+            {
+              "const": "rejected"
+            }
+          ]
+        },
+        "reasonCodes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "supportDigest": {
+          "type": "string"
+        },
+        "metricContractDigests": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "comparison": {
+          "type": "object",
+          "properties": {
+            "outcomeGain": {
+              "type": "number"
+            },
+            "processGains": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "number"
+              }
+            },
+            "constraintCoverage": {
+              "anyOf": [
+                {
+                  "const": "available"
+                },
+                {
+                  "const": "unavailable"
+                }
+              ]
+            }
+          },
+          "required": [
+            "processGains",
+            "constraintCoverage"
+          ],
+          "additionalProperties": false
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "outcome",
+        "reasonCodes",
+        "supportDigest",
+        "metricContractDigests",
+        "comparison",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "SearchEvolutionIdentity": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 2
+        },
+        "evolutionId": {
+          "type": "string"
+        },
+        "settingsDigest": {
+          "type": "string"
+        },
+        "maxCandidates": {
+          "type": "number"
+        },
+        "seedUniverseDigest": {
+          "type": "string"
+        },
+        "heldOutUniverseDigest": {
+          "type": "string"
+        },
+        "providerIntegrity": {
+          "type": "string"
+        },
+        "diagnosisIntegrity": {
+          "type": "string"
+        },
+        "sanitizationPolicyDigest": {
+          "type": "string"
+        },
+        "algorithmIntegrity": {
+          "type": "string"
+        },
+        "parentPolicy": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "anyOf": [
+                {
+                  "const": "candidate-generator"
+                },
+                {
+                  "const": "task-sampler"
+                },
+                {
+                  "const": "rollout-provider"
+                },
+                {
+                  "const": "judge"
+                },
+                {
+                  "const": "candidate-assessor"
+                },
+                {
+                  "const": "candidate-selector"
+                },
+                {
+                  "const": "promotion-policy"
+                },
+                {
+                  "const": "parent-selection"
+                }
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "apiVersion": {
+              "const": 1
+            },
+            "implementation": {
+              "type": "object",
+              "properties": {
+                "package": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "integrity": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "package",
+                "version",
+                "integrity"
+              ],
+              "additionalProperties": false
+            },
+            "config": {},
+            "configDigest": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "apiVersion",
+            "implementation",
+            "config",
+            "configDigest"
+          ],
+          "additionalProperties": false
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "evolutionId",
+        "settingsDigest",
+        "maxCandidates",
+        "seedUniverseDigest",
+        "heldOutUniverseDigest",
+        "providerIntegrity",
+        "diagnosisIntegrity",
+        "sanitizationPolicyDigest",
+        "algorithmIntegrity",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "SearchRoundOutcome": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 2
+        },
+        "roundId": {
+          "type": "string"
+        },
+        "archiveDigest": {
+          "type": "string"
+        },
+        "championAnchorDigest": {
+          "type": "string"
+        },
+        "nomineeId": {
+          "type": "string"
+        },
+        "promotion": {
+          "$ref": "#/$defs/GateDecision"
+        },
+        "championChanged": {
+          "type": "boolean"
+        },
+        "advisory": {
+          "type": "boolean"
+        },
+        "validationMode": {
+          "anyOf": [
+            {
+              "const": "independent-held-out"
+            },
+            {
+              "const": "shared-set-research"
+            }
+          ]
+        },
+        "reasonCodes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ResearchFinding"
+          }
+        },
+        "research": {
+          "type": "object",
+          "properties": {
+            "sizing": {
+              "$ref": "#/$defs/TaskSetResolution"
+            },
+            "parents": {
+              "$ref": "#/$defs/ParentSelectionDecision"
+            },
+            "workplans": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/CandidateWorkPlan"
+              }
+            },
+            "scopeViews": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ScopeView"
+              }
+            },
+            "parentProbabilities": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "number"
+              }
+            },
+            "bridge": {
+              "type": "object",
+              "properties": {
+                "plan": {
+                  "$ref": "#/$defs/StageEvaluationPlan"
+                },
+                "skipped": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "exclusions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "candidateId": {
+                        "type": "string"
+                      },
+                      "scopeDigest": {
+                        "type": "string"
+                      },
+                      "reason": {
+                        "anyOf": [
+                          {
+                            "const": "group-quota"
+                          },
+                          {
+                            "const": "bridge-disabled"
+                          },
+                          {
+                            "const": "bridge-capacity"
+                          },
+                          {
+                            "const": "bridge-budget"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "candidateId",
+                      "scopeDigest",
+                      "reason"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "digest": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "skipped",
+                "exclusions",
+                "digest"
+              ],
+              "additionalProperties": false
+            },
+            "scopePreparation": {
+              "$ref": "#/$defs/ScopeEpochPreparation"
+            },
+            "stageDecisions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/EvaluationStageDecision"
+              }
+            },
+            "candidates": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "candidateId": {
+                    "type": "string"
+                  },
+                  "scopeDigest": {
+                    "type": "string"
+                  },
+                  "profile": {
+                    "$ref": "#/$defs/EvidenceProfile"
+                  },
+                  "expansion": {
+                    "anyOf": [
+                      {
+                        "const": "global-nominee"
+                      },
+                      {
+                        "const": "not-selected-for-expansion"
+                      },
+                      {
+                        "const": "requires-broader-evaluation"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "candidateId",
+                  "scopeDigest",
+                  "profile",
+                  "expansion"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "remainingBudget": {
+              "$ref": "#/$defs/RemainingBudget"
+            }
+          },
+          "required": [
+            "sizing",
+            "parents",
+            "workplans",
+            "scopeViews",
+            "parentProbabilities",
+            "bridge",
+            "scopePreparation",
+            "stageDecisions",
+            "candidates",
+            "remainingBudget"
+          ],
+          "additionalProperties": false
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "roundId",
+        "archiveDigest",
+        "championAnchorDigest",
+        "championChanged",
+        "advisory",
+        "reasonCodes",
+        "findings",
+        "research",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "CommitIntent": {
+      "type": "object",
+      "properties": {
+        "expectedArchiveDigest": {
+          "type": "string"
+        },
+        "nextArchiveDigest": {
+          "type": "string"
+        },
+        "expectedChampionRevisionDigest": {
+          "type": "string"
+        },
+        "nextChampion": {
+          "$ref": "#/$defs/Snapshot"
+        },
+        "outcome": {
+          "$ref": "#/$defs/SearchRoundOutcome"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "expectedArchiveDigest",
+        "nextArchiveDigest",
+        "expectedChampionRevisionDigest",
+        "outcome",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "GeneratedCandidate": {
+      "type": "object",
+      "properties": {
+        "snapshot": {
+          "$ref": "#/$defs/Snapshot"
+        },
+        "changedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "receipt": {
+          "$ref": "#/$defs/WorkplanReceipt"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "usage": {
+          "type": "object",
+          "properties": {
+            "tokens": {
+              "type": "number"
+            },
+            "requests": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "changedPaths",
+        "usage",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "SearchAdmission": {
+      "type": "object",
+      "properties": {
+        "evolutionId": {
+          "type": "string"
+        },
+        "roundId": {
+          "type": "string"
+        },
+        "roundIndex": {
+          "type": "number"
+        },
+        "maxCandidates": {
+          "type": "number"
+        },
+        "anchor": {
+          "$ref": "#/$defs/Snapshot"
+        },
+        "championRevisionDigest": {
+          "type": "string"
+        },
+        "settings": {
+          "$ref": "#/$defs/SearchSettings"
+        }
+      },
+      "required": [
+        "evolutionId",
+        "roundId",
+        "roundIndex",
+        "maxCandidates",
+        "anchor",
+        "championRevisionDigest",
+        "settings"
+      ],
+      "additionalProperties": false
+    },
+    "PreparedWork": {
+      "type": "object",
+      "properties": {
+        "workplan": {
+          "$ref": "#/$defs/CandidateWorkPlan"
+        },
+        "dossier": {
+          "$ref": "#/$defs/DiagnosisDossier"
+        },
+        "scope": {
+          "$ref": "#/$defs/EvaluationScope"
+        },
+        "plan": {
+          "$ref": "#/$defs/StageEvaluationPlan"
+        },
+        "parent": {
+          "$ref": "#/$defs/Snapshot"
+        },
+        "baseline": {
+          "$ref": "#/$defs/StageResult"
+        }
+      },
+      "required": [
+        "workplan",
+        "dossier",
+        "scope",
+        "plan",
+        "parent",
+        "baseline"
+      ],
+      "additionalProperties": false
+    },
+    "RegressionProposal": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "source": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "anyOf": [
+                {
+                  "const": "seed-evaluation"
+                },
+                {
+                  "const": "online-feedback"
+                }
+              ]
+            },
+            "evidenceRef": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "evidenceRef"
+          ],
+          "additionalProperties": false
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "promptDigest": {
+          "type": "string"
+        },
+        "sanitizedPromptRef": {
+          "type": "string"
+        },
+        "fixtureRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "environmentRef": {
+          "type": "string"
+        },
+        "graderRef": {
+          "type": "string"
+        },
+        "expectedBehavior": {
+          "type": "string"
+        },
+        "failureCategory": {
+          "type": "string"
+        },
+        "deduplicationKey": {
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "const": "rejected"
+            },
+            {
+              "const": "proposed"
+            },
+            {
+              "const": "needs-fixture"
+            },
+            {
+              "const": "validated"
+            }
+          ]
+        },
+        "reasonCodes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "source",
+        "prompt",
+        "promptDigest",
+        "sanitizedPromptRef",
+        "fixtureRefs",
+        "expectedBehavior",
+        "failureCategory",
+        "deduplicationKey",
+        "status",
+        "reasonCodes",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "RegressionInput": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "anyOf": [
+                {
+                  "const": "held-out"
+                },
+                {
+                  "const": "seed-evaluation"
+                },
+                {
+                  "const": "online-feedback"
+                }
+              ]
+            },
+            "evidenceRef": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "evidenceRef"
+          ],
+          "additionalProperties": false
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "const": "infrastructure-invalid"
+            },
+            {
+              "const": "business-failure"
+            }
+          ]
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "fixtureRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "environmentRef": {
+          "type": "string"
+        },
+        "graderRef": {
+          "type": "string"
+        },
+        "expectedBehavior": {
+          "type": "string"
+        },
+        "failureCategory": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "outcome",
+        "prompt",
+        "fixtureRefs",
+        "expectedBehavior",
+        "failureCategory"
+      ],
+      "additionalProperties": false
+    },
+    "RegressionSuite": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "parentSuiteDigest": {
+          "type": "string"
+        },
+        "builderIntegrity": {
+          "type": "string"
+        },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "taskId": {
+                "type": "string"
+              },
+              "contentDigest": {
+                "type": "string"
+              },
+              "fixtureRefs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "environmentRef": {
+                "type": "string"
+              },
+              "graderRef": {
+                "type": "string"
+              },
+              "isolationRef": {
+                "type": "string"
+              },
+              "validationEvidenceRef": {
+                "type": "string"
+              },
+              "proposalDigest": {
+                "type": "string"
+              },
+              "role": {
+                "anyOf": [
+                  {
+                    "const": "development"
+                  },
+                  {
+                    "const": "protected-regression"
+                  }
+                ]
+              },
+              "guard": {
+                "$ref": "#/$defs/TaskGuard"
+              }
+            },
+            "required": [
+              "taskId",
+              "contentDigest",
+              "fixtureRefs",
+              "environmentRef",
+              "graderRef",
+              "isolationRef",
+              "validationEvidenceRef",
+              "proposalDigest",
+              "role"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "builderIntegrity",
+        "tasks",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "EvidenceCompletion": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "archive-evidence-completion"
+        },
+        "id": {
+          "type": "string"
+        },
+        "originalResultDigest": {
+          "type": "string"
+        },
+        "completedResultDigest": {
+          "type": "string"
+        },
+        "planDigest": {
+          "type": "string"
+        },
+        "snapshotDigest": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "originalResultDigest",
+        "completedResultDigest",
+        "planDigest",
+        "snapshotDigest",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "ScopeEpochPreparation": {
+      "type": "object",
+      "properties": {
+        "archiveCutoffDigest": {
+          "type": "string"
+        },
+        "epoch": {
+          "type": "number"
+        },
+        "sharedTaskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ruleDigest": {
+          "type": "string"
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvaluationScope"
+          }
+        },
+        "plans": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StageEvaluationPlan"
+          }
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StageResult"
+          }
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "familyId": {
+                "type": "string"
+              },
+              "previousScopeDigest": {
+                "type": "string"
+              },
+              "proposedScopeDigest": {
+                "type": "string"
+              },
+              "participantIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "excludedHistoricalIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "status": {
+                "anyOf": [
+                  {
+                    "const": "prepared"
+                  },
+                  {
+                    "const": "unchanged"
+                  },
+                  {
+                    "const": "budget-insufficient"
+                  },
+                  {
+                    "const": "baseline-ineligible"
+                  },
+                  {
+                    "const": "no-history"
+                  }
+                ]
+              },
+              "reasonCodes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "familyId",
+              "previousScopeDigest",
+              "participantIds",
+              "excludedHistoricalIds",
+              "status",
+              "reasonCodes"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "archiveCutoffDigest",
+        "epoch",
+        "sharedTaskIds",
+        "ruleDigest",
+        "scopes",
+        "plans",
+        "results",
+        "decisions",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "SearchShadowReport": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "legacy-search-shadow-replay"
+        },
+        "advisory": {
+          "const": true
+        },
+        "championChanged": {
+          "const": false
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "bytes": {
+                "type": "number"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "evidenceDigest": {
+                "type": "string"
+              },
+              "evidenceDigestAlgorithm": {
+                "const": "json-stringify-sha256"
+              },
+              "commit": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "bytes",
+              "sha256",
+              "evidenceDigest",
+              "evidenceDigestAlgorithm",
+              "commit"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "sourceBytesUnchanged": {
+          "const": true
+        },
+        "assumptions": {
+          "type": "object",
+          "properties": {
+            "comparisonQuantum": {
+              "type": "number"
+            },
+            "weighting": {
+              "const": "uniform-per-task"
+            },
+            "repetitions": {
+              "const": "one-observed-trial-per-task"
+            },
+            "outcomeDirection": {
+              "const": "maximize"
+            },
+            "processDirection": {
+              "const": "maximize-assumed"
+            },
+            "process": {
+              "const": "observed-legacy-scalar-only"
+            }
+          },
+          "required": [
+            "comparisonQuantum",
+            "weighting",
+            "repetitions",
+            "outcomeDirection",
+            "processDirection",
+            "process"
+          ],
+          "additionalProperties": false
+        },
+        "comparison": {
+          "type": "object",
+          "properties": {
+            "pairedTasks": {
+              "type": "number"
+            },
+            "baselineOutcome": {
+              "type": "number"
+            },
+            "candidateOutcome": {
+              "type": "number"
+            },
+            "outcomeImprovedTaskIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "outcomeRegressedTaskIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "processImprovedTaskIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "processRegressedTaskIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "missingProcessTaskIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "baselineProcess": {
+              "type": "number"
+            },
+            "candidateProcess": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "pairedTasks",
+            "baselineOutcome",
+            "candidateOutcome",
+            "outcomeImprovedTaskIds",
+            "outcomeRegressedTaskIds",
+            "processImprovedTaskIds",
+            "processRegressedTaskIds",
+            "missingProcessTaskIds"
+          ],
+          "additionalProperties": false
+        },
+        "suggestions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "advisory": {
+                "const": true
+              },
+              "action": {
+                "anyOf": [
+                  {
+                    "const": "investigate-specialist"
+                  },
+                  {
+                    "const": "investigate-regressions"
+                  },
+                  {
+                    "const": "no-release-decision"
+                  }
+                ]
+              },
+              "taskIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "reasonCodes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "advisory",
+              "action",
+              "taskIds",
+              "reasonCodes"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "heldOut": {
+          "const": "not-evaluated"
+        },
+        "v2CellReuse": {
+          "const": "not-certified"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "advisory",
+        "championChanged",
+        "sources",
+        "sourceBytesUnchanged",
+        "assumptions",
+        "comparison",
+        "suggestions",
+        "heldOut",
+        "v2CellReuse",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "Usage": {
+      "type": "object",
+      "properties": {
+        "cells": {
+          "type": "number"
+        },
+        "repairCells": {
+          "type": "number"
+        },
+        "diagnosisInputTokens": {
+          "type": "number"
+        },
+        "diagnosisOutputTokens": {
+          "type": "number"
+        },
+        "generationTokens": {
+          "type": "number"
+        },
+        "generationRequests": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "cells",
+        "repairCells",
+        "diagnosisInputTokens",
+        "diagnosisOutputTokens",
+        "generationTokens",
+        "generationRequests"
+      ],
+      "additionalProperties": false
+    },
+    "RemainingBudget": {
+      "type": "object",
+      "properties": {
+        "cells": {
+          "type": "number"
+        },
+        "repairCells": {
+          "type": "number"
+        },
+        "diagnosisInputTokens": {
+          "type": "number"
+        },
+        "diagnosisOutputTokens": {
+          "type": "number"
+        },
+        "generationTokens": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "generationRequests": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        }
+      },
+      "required": [
+        "cells",
+        "repairCells",
+        "diagnosisInputTokens",
+        "diagnosisOutputTokens",
+        "generationTokens",
+        "generationRequests"
+      ],
+      "additionalProperties": false
+    },
+    "Operation": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "roundId": {
+          "type": "string"
+        },
+        "requestDigest": {
+          "type": "string"
+        },
+        "reserved": {
+          "$ref": "#/$defs/Usage"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "const": "complete"
+            },
+            {
+              "const": "reserved"
+            }
+          ]
+        },
+        "outputDigest": {
+          "type": "string"
+        },
+        "actual": {
+          "$ref": "#/$defs/Usage"
+        }
+      },
+      "required": [
+        "key",
+        "roundId",
+        "requestDigest",
+        "reserved",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "Ledger": {
+      "type": "object",
+      "properties": {
+        "startedAt": {
+          "type": "number"
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Operation"
+          }
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "startedAt",
+        "operations",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "SearchJournal": {
+      "type": "object",
+      "additionalProperties": false
+    }
+  }
+}

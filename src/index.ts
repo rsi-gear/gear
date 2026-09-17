@@ -1,3 +1,4 @@
+import { resolveSearchSettings } from './search/config.js'
 import { isAbsolute, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import * as ToolFs from '../assets/gear-tool-fs.js'
@@ -597,6 +598,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       heldOutRef: config.heldOutRef,
       taskBudgetMs: config.taskBudgetMs,
       ...(config.initialChampion === undefined ? {} : { initialChampion: config.initialChampion }),
+      ...(config.search === undefined ? {} : { searchSettings: resolveSearchSettings(config)! }),
       publishedPointer: config.evolutionState.publishedPointer,
       maxLiveMetaSessions: config.evolutionState.maxLiveMetaSessions,
       experienceMemoryEnabled: config.metaAdapter.kind === 'skill',

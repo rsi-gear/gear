@@ -37,6 +37,11 @@ function cell(value: string | number | undefined): string {
 
 function decision(round: RefinementRound, candidateId: string): string | undefined {
   if (round.promotedCandidateId === candidateId) return 'promoted'
+  if (round.searchMode) {
+    if (round.searchOutcome?.nomineeId === candidateId) return round.searchOutcome.promotion?.outcome ?? 'insufficient-evidence'
+    if (round.searchOutcome?.findings.some(f => f.candidateId === candidateId)) return 'retained-local'
+    return round.candidatePool.find(c => c.candidateId === candidateId)?.status === 'failed' ? 'generation-failed' : undefined
+  }
   if (round.decision !== undefined) return round.decision
   if (round.status === 'failed') return 'failed'
   if (round.selection?.selectedCandidateIds.includes(candidateId) === true) return 'selected'
@@ -44,6 +49,8 @@ function decision(round: RefinementRound, candidateId: string): string | undefin
 }
 
 function selectionRole(round: RefinementRound, candidateId: string): string | undefined {
+  if (round.searchMode) return round.searchOutcome?.nomineeId === candidateId ? 'global-nominee'
+    : round.searchOutcome?.findings.some(f => f.candidateId === candidateId) ? 'local-research' : undefined
   if (round.promotionCandidateId === candidateId || round.selection?.promotionCandidateId === candidateId) return 'finalist'
   if (round.selection?.selectedCandidateIds.includes(candidateId) === true) return 'survivor'
   return undefined

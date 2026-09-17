@@ -257,6 +257,40 @@ describe('MetaSessionManager', () => {
     await manager.dispose()
   })
 
+  it.each([true, false])('settles a missing session only when host absence is verified (%s)', async absent => {
+    const root = await mkdtemp(join(tmpdir(), 'refine-meta-absent-'))
+    roots.push(root)
+    const store = new RefineStateStore(root)
+    await store.initialize()
+    const host: MetaAgentHost = new FakeHost()
+    host.resume = async () => { throw new Error('session restore unavailable') }
+    host.isSessionAbsent = async () => absent
+    const manager = new MetaSessionManager(store, host, META_OPTIONS)
+    try {
+      const cancelled = manager.cancel('interrupted-original-session', 'recover interrupted attempt')
+      if (absent) await expect(cancelled).resolves.toBeUndefined()
+      else await expect(cancelled).rejects.toThrow('session restore unavailable')
+    } finally { await manager.dispose() }
+  })
+
+  it('rejects aggregate generation limits before an unmetered DSH turn can start', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'refine-meta-budget-'))
+    roots.push(root)
+    const store = new RefineStateStore(root)
+    await store.initialize()
+    const manager = new MetaSessionManager(store, new FakeHost(), META_OPTIONS)
+    const agent = await manager.agent(), state = round()
+    const before = [...agent.session.events]
+    try {
+      expect(manager.capabilities.aggregateGenerationBudget).toBe(false)
+      await expect(manager.wakeCandidate(state, state.candidatePool[0], state.baseline, agent, {
+        executionId: 'bounded-attempt', attempt: 1, deadlineAt: Date.now() + 10000, signal: new AbortController().signal,
+        budget: { maxTokens: 1, maxModelRequests: 1 }, isComplete: () => false, snapshot: async () => ({}), activate: () => {},
+      })).rejects.toThrow('cannot enforce aggregate generation budgets')
+      expect([...agent.session.events]).toEqual(before)
+    } finally { await manager.dispose() }
+  })
+
   it('observes the owned DSH turn ending with its effective limit and usage', async () => {
     const root = await mkdtemp(join(tmpdir(), 'refine-meta-'))
     roots.push(root)

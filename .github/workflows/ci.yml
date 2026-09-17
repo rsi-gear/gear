@@ -67,6 +67,8 @@ jobs:
         run: sudo env "PATH=$PATH" npm test
       # The build above already ran the same command as the prepack hook.
       - run: npm pack --dry-run --ignore-scripts
+      - name: Test the published search API from an external package
+        run: node scripts/check-search-package.mjs
 
   training-cpu:
     name: Training / CPU

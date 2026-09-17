@@ -146,6 +146,23 @@ describe('Skill harness identity', () => {
 })
 
 describe('SkillMetaSessionManager', () => {
+  it('rejects aggregate generation limits before publishing an external assignment', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'gear-skill-budget-'))
+    roots.push(root)
+    const store = new RefineStateStore(root)
+    await store.initialize()
+    const coordinator = new SkillMetaCoordinator()
+    const manager = new SkillMetaSessionManager(store, coordinator, { evolutionId: 'evo-1', specDigest: SHA('9'), metaAgent: spec() })
+    const state = roundFixture(), session = await manager.agent()
+    try {
+      await expect(manager.wakeCandidate(state, state.candidatePool[0], state.baseline, session, {
+        executionId: 'bounded-attempt', attempt: 1, deadlineAt: Date.now() + 10000, signal: new AbortController().signal,
+        budget: { maxTokens: 1, maxModelRequests: 1 }, isComplete: () => false, snapshot: async () => ({}), activate: () => {},
+      })).rejects.toThrow('cannot enforce aggregate generation budgets')
+      expect(coordinator.claim('external-client', identity(), 'evo-1')).toBeUndefined()
+    } finally { await manager.dispose() }
+  })
+
   it('requires the same sealed reasoning effort when resuming an external Meta harness', () => {
     const medium = { ...spec(), sampling: { reasoningEffort: 'medium' } }
     expect(compatibleSkillMetaAgent(medium, structuredClone(medium))).toBe(true)

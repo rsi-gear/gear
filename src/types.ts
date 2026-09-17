@@ -70,6 +70,7 @@ export type ComponentKind =
   | 'candidate-assessor'
   | 'candidate-selector'
   | 'promotion-policy'
+  | 'parent-selection'
 
 export interface ComponentRef<C = JsonValue> {
   kind: ComponentKind
@@ -197,6 +198,8 @@ export interface SeedExperienceMemoryPolicy {
 }
 
 export interface EvolutionSpec {
+  /** Explicit, frozen v2 search configuration; absent on every legacy evolution. */
+  searchSettings?: import('./search/types.js').SearchSettings
   evolutionId: EvolutionId
   createdAt: string
 
@@ -451,6 +454,12 @@ export interface HitchTrajectoryReader {
     signal: AbortSignal,
   ): Promise<HitchTrajectoryEventsPage>
   inspectVerifierEvidence?(runId: string, signal: AbortSignal): Promise<HitchVerifierEvidence>
+  /** Gear-side provenance resolution for aggregate evidence; no Hitch protocol extension. */
+  resolveVerifierEvaluationId?(evalId: string, runId: string, signal: AbortSignal): Promise<string>
+  /** Resolve a projected seed run to its verified physical evaluation and trial. */
+  resolveVerifierRun?(evalId: string, runId: string, signal: AbortSignal): Promise<{
+    evalId: string; trialName?: string; attempt?: number
+  } | undefined>
   inspectVerifierDiagnosticPage?(
     runId: string,
     query: Readonly<HitchVerifierDiagnosticPageQuery>,
@@ -899,6 +908,12 @@ export interface EvaluationReservation {
   evalId: string
 }
 
+/** Read an existing evaluation without submitting, restarting or repairing it. */
+export type EvaluationInspection =
+  | { status: 'complete'; evidence: EvaluationEvidence }
+  | { status: 'running' | 'unknown'; reason?: string }
+  | { status: 'failed'; code: string; message: string }
+
 /** Prepared without side effects; persisted before a remote submission can start. */
 export interface EvaluationSubmissionIntent {
   provider: string
@@ -1072,6 +1087,8 @@ export interface MetaAttribution {
 }
 
 export interface ProposalEvidenceAudit {
+  workplanReceipt?: import('./search/types.js').WorkplanReceipt
+  workplanDelivery?: ReturnType<typeof import('./search/diagnosis.js').deliveredWorkplan>
   evolutionId: EvolutionId
   roundId: string
   candidateId?: string
@@ -1165,6 +1182,7 @@ export interface MetaTurnObservation {
 }
 
 export interface CandidateRecord {
+  workplanDelivery?: ReturnType<typeof import('./search/diagnosis.js').deliveredWorkplan>
   validation?: import('./harness/check-report.js').CandidateCheckReport
   candidateId: string
   roundId: string
@@ -1518,6 +1536,9 @@ export interface BaselineReuseBlocker {
 }
 
 export interface RefinementRound {
+  searchMode?: 'failure-cluster-gepa-v1'
+  searchAnchor?: { snapshot: import('./search/types.js').Snapshot; championRevisionDigest: string }
+  searchOutcome?: import('./search/engine.js').SearchRoundOutcome
   baselineReuseBlocker?: BaselineReuseBlocker
   candidateGenerationDeadlineAt?: number
   evolutionId: EvolutionId
@@ -1580,6 +1601,10 @@ export interface AdmissionResult {
 }
 
 export interface PublicRoundStatus {
+  searchPendingOperation?: import('./search/types.js').PendingSearchOperation
+  searchPendingEvidence?: { planDigest: string; resultRefs: string[] }
+  searchProgress?: import('./search/types.js').SearchProgress
+  search?: import('./search/engine.js').SearchRoundOutcome
   baselineReuseBlocker?: BaselineReuseBlocker
   evolutionId: EvolutionId
   batchId: string
@@ -1637,7 +1662,22 @@ export interface PromotionPolicy {
 }
 
 export interface RefineEvaluator {
+  /** Optional Gear search customization; the default adapter stages ordinary evaluator requests. */
+  search?: { provider: import('./search/types.js').SearchProvider; diagnosis: import('./search/types.js').DiagnosisProvider }
+  /** Read an existing evaluation without submitting or restarting work. */
+  inspectResult?(
+    round: Readonly<RefinementRound>, request: Readonly<EvaluationRequest>, reservation: Readonly<EvaluationReservation>,
+    signal: AbortSignal, intent?: Readonly<EvaluationSubmissionIntent>,
+  ): Promise<EvaluationInspection>
   preflight?(): Promise<void>
+
+  /** Gear-side inspection of an existing submission; never submits work.
+   * cohortDigest excludes task subset and candidate identity, and binds the actual shared execution configuration.
+   */
+  submittedEvaluationIdentity?(
+    round: Readonly<RefinementRound>, request: Readonly<EvaluationRequest>, reservation: Readonly<EvaluationReservation>,
+    signal: AbortSignal, intent?: Readonly<EvaluationSubmissionIntent>,
+  ): Promise<{ provider: string; effectiveConfigDigest: string; invocationFingerprint?: string; cohortDigest: string } | undefined>
 
   /** Resolve semantic evaluation identity plus diagnostic invocation provenance, or return undefined when not known yet. */
   evaluationIdentity?(

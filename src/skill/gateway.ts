@@ -126,6 +126,12 @@ export class RefineSkillGateway {
         string(params, 'evolutionId'), string(params, 'roundId'), string(params, 'evalId'), parsed,
       )
     }
+    if (method === 'control.search-resume') {
+      return this.service.resumeSearchRound(string(params, 'evolutionId'), string(params, 'roundId'))
+    }
+    if (method === 'control.search-repair') {
+      return this.service.repairSearchStage(string(params, 'evolutionId'), string(params, 'roundId'), string(params, 'repairId'), string(params, 'evidenceDigest'))
+    }
     if (method === 'control.publish') {
       await this.service.publish(string(params, 'evolutionId'), optionalString(params, 'ref'))
       return { published: true }

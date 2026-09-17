@@ -24,6 +24,24 @@ const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 
 describe('RefineCapabilities Git projection', () => {
+  it('validates a resolved physical verifier parent without weakening default identity checks', async () => {
+    const actual: HitchVerifierEvidence = { runId: 'run-a', parent: { evalId: 'physical-a', trialId: 'trial-a', attempt: 1 }, verifier: { status: 'complete' } }
+    const item = { evalId: 'shared-a', trial: { runId: 'run-a', trialName: 'trial-a', attempt: 1 } }
+    const check = async (resolveVerifierEvaluationId?: HitchTrajectoryReader['resolveVerifierEvaluationId']) => {
+      const reader = { inspectVerifierEvidence: async () => actual, ...(resolveVerifierEvaluationId ? { resolveVerifierEvaluationId } : {}) } as unknown as HitchTrajectoryReader
+      const capabilities = new RefineCapabilities({} as never, {} as never, { trajectoryReader: reader })
+      return (capabilities as unknown as { loadVerifierEvidence(item: unknown, signal: AbortSignal): Promise<HitchVerifierEvidence> })
+        .loadVerifierEvidence(item, new AbortController().signal)
+    }
+    expect((await check()).verifier.status).toBe('corrupt')
+    const resolve = vi.fn(async () => 'physical-a')
+    expect(await check(resolve)).toEqual(actual)
+    expect(resolve).toHaveBeenCalledWith('shared-a', 'run-a', expect.any(AbortSignal))
+    expect((await check(async () => 'wrong-parent')).verifier.status).toBe('corrupt')
+    actual.parent!.trialId = 'foreign-trial'
+    expect((await check(resolve)).verifier.status).toBe('corrupt')
+  })
+
   it('reads only manifest-indexed files from the candidate parent, not the deployment champion', async () => {
     const fixture = await createGitHarnessFixture()
     roots.push(fixture.root)

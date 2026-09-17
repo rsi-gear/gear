@@ -63,7 +63,7 @@ function registerExternalBuiltins(registry: ComponentRegistry): void {
 }
 
 describe('component implementation identity', () => {
-  it('proves all real 812195f V1 components from raw artifacts and preserves their sealed refs', async () => {
+  it('preserves unchanged 812195f V1 components and rejects the changed Gear Hitch adapter', async () => {
     expect(createHash('sha256').update(await readFile(join(FIXTURE, 'package.json'))).digest('hex'))
       .toBe('1cc82968e633da5e6d7d766da8bc1231719c3f8e7f9ee5eae2fbf47c801f2a48')
     expect(createHash('sha256').update(await readFile(join(FIXTURE, 'lib/evolution/components.js'))).digest('hex'))
@@ -85,10 +85,13 @@ describe('component implementation identity', () => {
     const resolved = [
       registry.candidateGenerator(refs[0]!), registry.candidateGenerator(refs[1]!),
       registry.taskSampler(refs[2]!), registry.assessor(refs[3]!), registry.selector(refs[4]!),
-      registry.judge(refs[5]!), registry.promotionPolicy(refs[6]! as ComponentRef<PromotionPolicy>), registry.rolloutProvider(refs[7]!),
+      registry.judge(refs[5]!), registry.promotionPolicy(refs[6]! as ComponentRef<PromotionPolicy>),
       registry.assessor(refs[8]!),
     ]
-    expect(resolved.map(value => value.ref)).toEqual(refs)
+    expect(resolved.map(value => value.ref)).toEqual(refs.filter((_, index) => index !== 7))
+    // Search submission identity and recovery now extend Gear's evaluator closure.
+    // Do not accept an old opaque rollout identity as proof of these new bytes.
+    expect(() => registry.rolloutProvider(refs[7]!)).toThrow(/do not prove the same implementation/u)
   })
 
   it('accepts publishing metadata drift but rejects freshly sealed algorithm drift', async () => {
@@ -182,7 +185,7 @@ describe('component implementation identity', () => {
     expect(hitchCliImplementation()).toEqual({
       package: generator.package,
       version: generator.version,
-      integrity: 'sha256:753d557df19de7f203b08ea715e42ce63b8c75e21abfcb49ef31586530d86d1d',
+      integrity: 'sha256:957f231b51d86aae28fc86933ce5aef00c4f26cdc67b0db030b6207dc1bbd593',
     })
     expect(stableLlmVerifierImplementation()).toMatchObject({ package: generator.package, version: generator.version })
   })

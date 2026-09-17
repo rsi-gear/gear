@@ -1,3 +1,4 @@
+import { scopedFrontierPolicy } from '../../src/search/policies/parents.js'
 import { createHash } from 'node:crypto'
 import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -25,6 +26,10 @@ import { RefineSkillGateway } from '../../src/skill/gateway.js'
 import { renderTrajectoryResult } from '../../src/notebook/tool.js'
 import { trajectoryAnalysis } from '../helpers/trajectory-fixture.js'
 import type { HitchTrajectoryReader } from '../../src/types.js'
+import { fixtures as searchFixtures, settings as searchSettings, regressionSuiteFixture, revise } from '../helpers/search-fixture.js'
+import { SearchStore } from '../../src/search/store.js'
+import { standardSearchDataset } from '../helpers/standard-search-dataset.js'
+import { digestDatasetRef } from '../../src/state/dataset.js'
 
 const roots: string[] = []
 afterEach(async () => {
@@ -49,6 +54,7 @@ function diagnosisReceipts(runIds: readonly string[]): DiagnosisReceipt[] {
 }
 
 class FakeMeta {
+  readonly capabilities = { aggregateGenerationBudget: true }
   wakes: string[] = []
   forks: MetaCheckpointRef[] = []
   turnCompletions: MetaTurnObservation[] = []
@@ -85,6 +91,15 @@ class FakeMeta {
   async cancel(): Promise<void> {}
   async release(sessionId: string): Promise<void> { this.agents.delete(sessionId) }
   async dispose(): Promise<void> {}
+}
+
+function skillSearchSettings() {
+  const settings = searchSettings()
+  for (const budget of [settings.budgets.round, settings.budgets.evolution]) {
+    delete budget.maxGenerationTokens
+    delete budget.maxGenerationRequests
+  }
+  return settings
 }
 
 class FakeEvaluator implements RefineEvaluator {
@@ -3755,7 +3770,13 @@ describe('RefineService evolution workspaces', () => {
   it('rejects proposal usage budgets that the Meta harness adapter cannot verify instead of recording them as effective', async () => {
     const { service } = await setup()
     service.options.candidateGeneration.budget.maxModelRequests = 2
-    await expect(service.admit('api')).rejects.toThrow(/aggregate proposal usage/)
+    const unsupported = new RefineService(service.registry, service.builder, service.workspaceManager, (spec, digest, store) => {
+      const meta = new FakeMeta(spec.evolutionId, store, digest)
+      meta.capabilities.aggregateGenerationBudget = false
+      return meta as never
+    }, service.evaluator, service.options)
+    await expect(unsupported.admit('api')).rejects.toThrow(/aggregate generation budgets/)
+    await unsupported.dispose()
     expect(await service.listEvolutions()).toEqual([])
     await service.dispose()
   })
@@ -4254,26 +4275,40 @@ describe('RefineService evolution workspaces', () => {
   })
 
   it('enforces the attempt deadline while Meta fork is still pending', async () => {
-    const { service, evaluator, metas } = await setup(0.8, false, 1, 40, 1, 0, 1, 100)
-    const baselineGate = Promise.withResolvers<void>()
+    const attemptBudgetMs = 30_000
+    const { service, evaluator, metas } = await setup(0.8, false, 1, attemptBudgetMs, 1, 0, 1, 90_000)
+    const baselineGate = Promise.withResolvers<void>(), forkStarted = Promise.withResolvers<void>()
     const evaluate = evaluator.evaluate.bind(evaluator)
-    evaluator.evaluate = async (...args) => {
-      await baselineGate.promise
-      return evaluate(...args)
+    evaluator.evaluate = async (...args) => { await baselineGate.promise; return evaluate(...args) }
+    const originalSetTimeout = globalThis.setTimeout
+    let expireAttempt: (() => void) | undefined
+    // Exercise the attempt deadline only after fork has started. Real Git/IO work
+    // must not decide whether a tiny round or attempt timer wins this test.
+    const timerSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation((...args: Parameters<typeof setTimeout>) => {
+      const timer = originalSetTimeout(...args)
+      if (args[1] === attemptBudgetMs && expireAttempt === undefined) expireAttempt = () => { clearTimeout(timer); args[0]() }
+      return timer
+    })
+    try {
+      const admission = await service.admit('api')
+      const meta = metas.get(admission.evolutionId)
+      if (meta === undefined) throw new Error('Meta fixture is unavailable')
+      meta.fork = async () => { forkStarted.resolve(); return new Promise<never>(() => {}) }
+      baselineGate.resolve()
+      await forkStarted.promise
+      if (!expireAttempt) throw new Error('attempt deadline was not scheduled')
+      expireAttempt()
+      const store = service.registry.stateStore(admission.evolutionId)
+      const terminal = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
+      expect(terminal?.candidatePool[0]?.generationAttempts).toMatchObject([
+        { attempt: 1, status: 'failed', failure: { message: expect.stringMatching(/30000ms attempt budget/) } },
+      ])
+      await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
+    } finally {
+      baselineGate.resolve()
+      timerSpy.mockRestore()
+      await service.dispose()
     }
-    const admission = await service.admit('api')
-    const meta = metas.get(admission.evolutionId)
-    if (meta === undefined) throw new Error('Meta fixture is unavailable')
-    meta.fork = async () => new Promise<never>(() => {})
-    baselineGate.resolve()
-
-    const store = service.registry.stateStore(admission.evolutionId)
-    const terminal = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
-    expect(terminal?.candidatePool[0]?.generationAttempts).toMatchObject([
-      { attempt: 1, status: 'failed', failure: { message: expect.stringMatching(/40ms attempt budget/) } },
-    ])
-    await eventually(async () => service.activeEntry(admission.roundId), value => value === undefined)
-    await service.dispose()
   })
 
   it('keeps a failed sibling prerequisite isolated from another candidate retry', async () => {
@@ -4656,5 +4691,462 @@ describe('RefineService evolution workspaces', () => {
     expect(await registry.list()).toEqual(beforeEntries)
     expect(evaluator.calls).toHaveLength(callsBefore)
     await service.dispose()
+  })
+})
+
+describe('explicit staged search control-plane integration', () => {
+  it.each(['skill', 'unmetered', 'unknown'] as const)('rejects search-only token/request budgets before admission with %s Meta', async kind => {
+    const { service, evaluator } = await setup(), fixture = searchFixtures(20)
+    ;(evaluator as RefineEvaluator).search = { provider: fixture.provider, diagnosis: fixture.diagnosis }
+    service.options.searchSettings = searchSettings()
+    // A policy flag alone must not let a Skill adapter claim enforcement.
+    service.options.metaAgent.contextOffloading = resolveOffloadingPolicy({ mode: 'proactive', contextWindow: 10000 })
+    const unsupported = new RefineService(service.registry, service.builder, service.workspaceManager, (spec, digest, store) => {
+      if (kind === 'skill') return new SkillMetaSessionManager(store, new SkillMetaCoordinator(), { evolutionId: spec.evolutionId, specDigest: digest, metaAgent: spec.metaAgent })
+      const meta = new FakeMeta(spec.evolutionId, store, digest)
+      meta.capabilities.aggregateGenerationBudget = false
+      if (kind === 'unknown') Reflect.deleteProperty(meta, 'capabilities')
+      return meta as never
+    }, evaluator, service.options)
+    try {
+      await expect(unsupported.admit('api')).rejects.toThrow('cannot enforce aggregate generation budgets')
+      expect(await service.listEvolutions()).toEqual([])
+      expect(fixture.executions).toEqual([])
+      expect(service.options.candidateGeneration.budget.maxTokens).toBeUndefined()
+      expect(service.options.candidateGeneration.budget.maxModelRequests).toBeUndefined()
+    } finally { await unsupported.dispose(); await service.dispose() }
+  })
+
+  it.each(['restart', 'explicit-resume', 'expired', 'unrecoverable', 'cancel-unknown', 'restore-failed', 'restore-cancel-unknown'] as const)('recovers an interrupted search generation without orphaning its original attempt (%s)', async mode => {
+    const { service, evaluator, git, metas } = await setup(0.8, false, 1, 300_000, 1, 0, 1, 300_000)
+    const fixture = searchFixtures(20), gate = Promise.withResolvers<void>(), evaluate = fixture.provider.evaluate
+    fixture.provider.evaluate = async input => { await gate.promise; return evaluate({ ...input, snapshot: { ...input.snapshot, candidateId: input.snapshot.commit === git.championRef ? 'anchor' : input.snapshot.candidateId } }) }
+    ;(evaluator as RefineEvaluator).search = { provider: fixture.provider, diagnosis: fixture.diagnosis }
+    service.options.searchSettings = searchSettings()
+    service.options.metaAgent.contextOffloading = resolveOffloadingPolicy({ mode: 'proactive', contextWindow: 10000 })
+    let recovered: RefineService | undefined, clock: ReturnType<typeof vi.spyOn> | undefined
+    try {
+      const admitted = await service.admit('api'), store = service.registry.stateStore(admitted.evolutionId)
+      const meta = metas.get(admitted.evolutionId)! as unknown as MetaSessionController
+      let saved: MetaExecutionState | undefined
+      meta.wakeCandidate = async (round, candidate, baseline, agent, binding) => {
+        const workspace = service.workspaceManager.resolve(agent.id)
+        await mkdir(join(workspace.targetPath, 'prompts'), { recursive: true })
+        await writeFile(join(workspace.targetPath, 'prompts', 'interrupted.md'), 'original uncommitted proposal')
+        saved = {
+          schemaVersion: 1, executionId: binding!.executionId, evolutionId: round.evolutionId,
+          specDigest: digestJson(await service.registry.requireSpec(round.evolutionId)), roundId: round.roundId,
+          candidateId: candidate!.candidateId, attempt: binding!.attempt, generation: 0, revision: 0,
+          activeSessionId: agent.id, sessions: [agent.id], status: 'rotating', deadlineAt: binding!.deadlineAt,
+          usage: { modelRequests: 1, tokens: 100, summaryRequests: 0, summaryTokens: 0 }, pending: [], deliveredIds: [], handoffs: [],
+          ...(mode === 'unrecoverable' || mode === 'cancel-unknown' ? {} : { recovery: {
+            envelope: contextMessage('Continue the original proposal'), controller: await binding!.snapshot(),
+            evidence: { evolutionId: round.evolutionId, roundId: round.roundId, baselineEvalId: baseline!.evalId,
+              summaryAccessed: true, accessedRefs: [], diagnosedRunRefs: [], citedRefs: [] },
+          } }),
+        }
+        await new MetaOffloadingStore(store.root).cas(undefined, saved)
+        return { sessionId: agent.id }
+      }
+      gate.resolve()
+      await eventually(async () => saved && await new MetaOffloadingStore(store.root).read(saved.executionId), value => value !== undefined)
+      const original = (await store.readRound(admitted.roundId))!, originalCandidate = original.candidatePool[0]!
+      await service.dispose()
+      if (mode === 'expired') {
+        const originalNow = Date.now, offset = originalCandidate.workplanDelivery!.workplan.generationBudget.deadlineAt - originalNow() + 1
+        clock = vi.spyOn(Date, 'now').mockImplementation(() => originalNow() + offset)
+      }
+      let restored: string | undefined, restoredSnapshot: unknown, forks = 0
+      const cancellations: string[] = []
+      const workspaces = new CandidateWorkspaceManager(service.workspaceManager.options)
+      recovered = new RefineService(service.registry, service.builder, workspaces, (spec, digest, state) => {
+        const cold = new FakeMeta(spec.evolutionId, state, digest) as unknown as MetaSessionController
+        cold.restore = async (id, executionId) => {
+          expect(id).toBe(saved!.activeSessionId)
+          if (mode.startsWith('restore-')) throw new Error('original session could not be restored')
+          restored = executionId; return { id }
+        }
+        cold.fork = async () => { forks++; throw new Error('recovery must not fork a new attempt') }
+        cold.cancel = async id => { if (mode.endsWith('cancel-unknown')) throw new Error('cancellation could not be confirmed'); cancellations.push(id) }
+        cold.wakeCandidate = async (_round, _candidate, _baseline, agent, binding) => {
+          restoredSnapshot = await binding!.snapshot()
+          expect(await readFile(join(workspaces.resolve(agent.id).targetPath, 'prompts', 'interrupted.md'), 'utf8')).toBe('original uncommitted proposal')
+          return { sessionId: agent.id, completion: Promise.resolve({ reason: 'max-tokens' }) }
+        }
+        return cold
+      }, evaluator, service.options)
+      if (mode === 'explicit-resume') await recovered.resumeSearchRound(admitted.evolutionId, admitted.roundId)
+      else await recovered.initialize()
+      const journal = new SearchStore(join(store.root, 'search'))
+      if (mode.endsWith('cancel-unknown')) {
+        await eventually(async () => recovered!.activeEntry(admitted.roundId), active => !active)
+        expect((await store.readRound(admitted.roundId))!.failure?.message).toMatch(/cancellation could not be confirmed|operation pending/)
+        expect(await journal.read(`rounds/${admitted.roundId}/terminal`)).toBeUndefined()
+        expect((await store.readRound(admitted.roundId))!.candidatePool[0]!.generationAttempts![0]!.status).toBe('running')
+        return
+      }
+      const terminal = (await eventually(() => store.readRound(admitted.roundId), round => round?.status === 'rejected'))!
+      expect(await journal.read(`rounds/${admitted.roundId}/terminal`)).toBeDefined()
+      expect(terminal.candidatePool[0]!.generationAttempts).toHaveLength(1)
+      expect(terminal.candidatePool[0]!.generationAttempts![0]).toMatchObject({ attempt: 1, status: 'failed' })
+      expect(terminal.candidatePool[0]!.workplanDelivery).toEqual(originalCandidate.workplanDelivery)
+      expect(forks).toBe(0)
+      if (mode === 'restart' || mode === 'explicit-resume') {
+        expect(restored).toBe(saved!.executionId)
+        expect(restoredSnapshot).toEqual(saved!.recovery!.controller)
+      } else {
+        expect(restored).toBeUndefined()
+        expect(cancellations).toContain(saved!.activeSessionId)
+        expect(await new MetaOffloadingStore(store.root).read(saved!.executionId)).toMatchObject({ status: 'stopped' })
+      }
+      const count = fixture.executions.length
+      await eventually(async () => recovered!.activeEntry(admitted.roundId), active => !active)
+      await expect(recovered.resumeSearchRound(admitted.evolutionId, admitted.roundId)).resolves.toMatchObject({ resumed: false })
+      expect(fixture.executions).toHaveLength(count)
+    } finally { clock?.mockRestore(); gate.resolve(); await recovered?.dispose(); await service.dispose() }
+  })
+
+  it.each([false, true])('runs the Gear staging adapter through real Skill workspaces without model usage claims (custom parent policy=%s)', async customPolicy => {
+    const coordinator = new SkillMetaCoordinator()
+    const { service, evaluator, git } = await setup(0.8, false, 1, 300_000, 1, 0, 1, 300_000, coordinator)
+    const seed = await standardSearchDataset(git.root, 20, 'seed', false)
+    const heldOut = await standardSearchDataset(git.root, 5, 'held-out', false)
+    const requests: EvaluationRequest[] = [], runs = new Map<string, string>()
+    evaluator.evaluationIdentity = (_round, request) => ({ provider: 'fake', effectiveConfigDigest: digestJson(request.condition), invocationFingerprint: digestJson(request.condition) })
+    ;(evaluator as RefineEvaluator).evaluate = async (_round, request, _signal, reservation) => {
+      requests.push(request)
+      const manifest = JSON.parse(await readFile(join(request.dataset, 'benchmark.adapter.json'), 'utf8'))
+      const trials = manifest.tasks.map((task: { task_id: string }) => {
+        const runId = `${reservation!.evalId}-${task.task_id}`; runs.set(runId, task.task_id)
+        const score = request.harnessRef === git.championRef ? Number(task.task_id.slice(5)) % 5 === 0 ? 1 : 0.3 : 1
+        return { taskName: task.task_id, runId, trialName: runId, attempt: 1, status: 'completed' as const,
+          rewards: { reward: score }, scores: { totalScore: score, normalization: 'standard' as const } }
+      })
+      const score = trials.reduce((sum: number, trial: typeof trials[number]) => sum + trial.scores.totalScore, 0) / trials.length
+      return { provider: reservation!.provider, evalId: reservation!.evalId, conditionId: request.condition.conditionId,
+        effectiveConfigDigest: digestJson(request.condition), invocationFingerprint: digestJson(request.condition), dataset: request.dataset, requestedCommit: request.harnessRef,
+        actualCommit: request.harnessRef, revisionIdentity: request.harnessRef, completeness: 'complete', plannedTrialCount: trials.length,
+        primaryReward: score, summary: { total: trials.length, passed: trials.length, failed: 0, score }, trials, invalidTrials: [] }
+    }
+    ;(evaluator as RefineEvaluator & Partial<HitchTrajectoryReader>).inspectVerifierEvidence = async runId => ({
+      runId, observation: { status: 'valid' }, verifier: { status: 'complete', feedback: { schemaVersion: 1,
+        items: [{ code: `workflow-${Number(runs.get(runId)!.slice(5)) % 4}`, severity: 'error', message: 'Fixture workflow failure' }] } },
+    } as Awaited<ReturnType<NonNullable<HitchTrajectoryReader['inspectVerifierEvidence']>>>)
+    service.options.searchSettings = skillSearchSettings()
+    let policyCalls = 0
+    if (customPolicy) {
+      const implementation = { package: 'test-control-plane-policy', version: '1', integrity: digestJson('control-plane-policy') }
+      const ref = componentRef('parent-selection', 'control-plane-parent', implementation, { batchCount: 1 })
+      service.components.registerParentSelectionPolicy(ref.id, implementation, component => {
+        const base = scopedFrontierPolicy(component)
+        return { ...base, select(input, random) { policyCalls++; return base.select(input, random) } }
+      })
+      service.options.searchSettings.search.parentPolicy = ref
+      service.options.selection.strategy = componentRef('candidate-selector', 'unused-in-staged-search', implementation, {})
+    }
+    try {
+      const admitted = await service.admit('api'), store = service.registry.stateStore(admitted.evolutionId)
+      const round = await eventually(() => store.readRound(admitted.roundId), r => ['candidate-editing', 'failed', 'rejected'].includes(r?.status ?? ''))
+      expect(round?.status, round?.failure?.message).toBe('candidate-editing')
+      const assignment = (await eventually(async () => coordinator.claim('default-search-client', skillHarnessIdentity(service.options.metaAgent), admitted.evolutionId), a => a !== undefined))!
+      const workspace = service.workspaceManager.resolve(assignment.sessionId)
+      await writeFile(join(workspace.targetPath, 'plugins', 'context.ts'), 'export const context = "improved workflow"\n')
+      const active = service.activeEntry(admitted.roundId)!, refs = [assignment.baseline.evalId]
+      const attribution = await active.meta.proposalAttribution(admitted.roundId, assignment.sessionId, {})
+      const evidence = active.meta.proposalEvidenceAudit(admitted.roundId, assignment.sessionId, refs)
+      await service.submitFinalization(admitted.evolutionId, admitted.roundId, { rationale: 'Repair the assigned workflow', expectedOutcome: 'Complete the task', evidenceRefs: refs }, undefined, attribution, evidence)
+      const terminal = await eventually(() => store.readRound(admitted.roundId), r => ['accepted', 'rejected', 'failed'].includes(r?.status ?? ''))
+      expect(terminal?.status, JSON.stringify({ failure: terminal?.failure, search: terminal?.searchOutcome })).toBe('accepted')
+      expect(terminal?.searchOutcome?.championChanged).toBe(true)
+      expect(terminal!.candidatePool.filter(candidate => candidate.sealedVersion).map(candidate => candidate.status)).toEqual(['ready'])
+      expect(terminal?.searchOutcome?.research.remainingBudget).toMatchObject({ generationTokens: null, generationRequests: null })
+      const journal = new SearchStore(join(store.root, 'search'))
+      for (const workplan of terminal!.searchOutcome!.research.workplans) {
+        expect(workplan.generationBudget.maxTokens).toBeUndefined()
+        expect(workplan.generationBudget.maxModelRequests).toBeUndefined()
+        const generated = await journal.read<{ ref: string }>(`rounds/${admitted.roundId}/generated-${workplan.candidateId}`)
+        expect((await journal.object<{ digest: string; usage: object }>(generated!.ref)).usage).toEqual({})
+      }
+      expect(policyCalls).toBe(customPolicy ? 1 : 0)
+      if (customPolicy) expect(terminal?.searchOutcome?.research.parents.policy?.ref.id).toBe('control-plane-parent')
+      expect((evaluator as RefineEvaluator).search).toBeUndefined()
+      expect(requests.every(r => r.dataset.startsWith(join(store.root, 'search', 'datasets')))).toBe(true)
+      expect(await digestDatasetRef(seed.ref)).toBe(seed.digest)
+      expect(await digestDatasetRef(heldOut.ref)).toBe(heldOut.digest)
+    } finally { await service.dispose() }
+  })
+
+  it('settles an externally failed Skill search attempt before acknowledging meta.fail', async () => {
+    const coordinator = new SkillMetaCoordinator()
+    const { service, evaluator, git } = await setup(0.8, false, 1, 300_000, 1, 0, 2, 600_000, coordinator)
+    const fixture = searchFixtures(20), evaluate = fixture.provider.evaluate
+    fixture.provider.evaluate = input => evaluate({ ...input, snapshot: {
+      ...input.snapshot, candidateId: input.snapshot.commit === git.championRef ? 'anchor' : input.snapshot.candidateId,
+    } })
+    ;(evaluator as RefineEvaluator).search = { provider: fixture.provider, diagnosis: fixture.diagnosis }
+    service.options.searchSettings = skillSearchSettings()
+    try {
+      const admission = await service.admit('skill')
+      await editing(service, admission.evolutionId, admission.roundId)
+      const claim = (await eventually(
+        async () => coordinator.claim('failed-search-runner', skillHarnessIdentity(service.options.metaAgent), admission.evolutionId),
+        value => value !== undefined,
+      ))!
+      const gateway = new RefineSkillGateway(service, coordinator, {} as never, {} as never)
+      await expect(gateway.call('meta.fail', {
+        clientId: 'failed-search-runner', leaseId: claim.leaseId, leaseToken: claim.leaseToken,
+        reason: 'search runner exited',
+      })).resolves.toMatchObject({ failed: true, roundId: admission.roundId })
+      const round = await service.registry.stateStore(admission.evolutionId).readRound(admission.roundId)
+      expect(round).toMatchObject({ status: 'failed', candidatePool: [{
+        candidateId: claim.candidateId, status: 'failed', generationAttempts: [{ status: 'failed' }],
+      }] })
+      expect(round!.candidatePool[0]!.generationAttempts).toHaveLength(1)
+    } finally { await service.dispose() }
+  })
+
+  it('[D05] preserves the original candidate, workplan and remaining attempts after a crash between generation retries', async () => {
+    const { service, evaluator, git, metas } = await setup(0.8, false, 1, 300_000, 1, 0, 2, 600_000)
+    const fixture = searchFixtures(20), gate = Promise.withResolvers<void>(), evaluate = fixture.provider.evaluate
+    fixture.provider.evaluate = async input => { await gate.promise; return evaluate({ ...input, snapshot: { ...input.snapshot, candidateId: input.snapshot.commit === git.championRef ? 'anchor' : input.snapshot.candidateId } }) }
+    ;(evaluator as RefineEvaluator).search = { provider: fixture.provider, diagnosis: fixture.diagnosis }
+    service.options.searchSettings = searchSettings()
+    let restarted: RefineService | undefined
+    try {
+      const admitted = await service.admit('api'), active = service.activeEntry(admitted.roundId)!, store = active.store
+      const firstMeta = metas.get(admitted.evolutionId)!
+      firstMeta.turnCompletions.push({ reason: 'max-tokens', turn: 1, durationMs: 1, effectiveMaxTokens: 50 })
+      const write = store.writeRound.bind(store)
+      let crashed = false
+      store.writeRound = async round => {
+        await write(round)
+        if (!crashed && round.candidatePool[0]?.status === 'generating' && round.candidatePool[0]?.generationAttempts?.[0]?.status === 'failed') {
+          crashed = true; throw new Error('injected crash between generation attempts')
+        }
+      }
+      gate.resolve()
+      const stopped = await eventually(() => store.readRound(admitted.roundId), r => r?.status === 'failed')
+      expect(crashed).toBe(true)
+      expect(stopped!.candidatePool[0]!.generationAttempts).toHaveLength(1)
+      await eventually(async () => service.activeEntry(admitted.roundId), a => !a)
+      const journal = new SearchStore(join(store.root, 'search'))
+      const remaining = await journal.remaining(admitted.roundId, service.options.searchSettings.budgets)
+      const counts = fixture.executions.length
+      await service.dispose()
+      restarted = new RefineService(service.registry, service.builder, service.workspaceManager, (spec, digest, state) => {
+        const meta = new FakeMeta(spec.evolutionId, state, digest)
+        meta.turnCompletions.push({ reason: 'max-tokens', turn: 1, durationMs: 1, effectiveMaxTokens: 50 })
+        return meta as never
+      }, evaluator, service.options)
+      await restarted.initialize()
+      const finished = await eventually(() => store.readRound(admitted.roundId), r => r?.status === 'rejected')
+      expect(finished!.candidatePool).toHaveLength(1)
+      const before = stopped!.candidatePool[0]!, after = finished!.candidatePool[0]!
+      expect(after.candidateId).toBe(before.candidateId)
+      expect(after.parentHarnessRef).toBe(before.parentHarnessRef)
+      expect(after.workplanDelivery).toEqual(before.workplanDelivery)
+      expect(after.generationAttempts?.map(a => [a.attempt, a.status])).toEqual([[1, 'failed'], [2, 'failed']])
+      expect(after.generationAttempts![0]).toEqual(before.generationAttempts![0])
+      expect(finished!.candidateGenerationDeadlineAt).toBe(stopped!.candidateGenerationDeadlineAt)
+      expect(await journal.remaining(admitted.roundId, service.options.searchSettings.budgets)).toEqual(remaining)
+      expect(fixture.executions).toHaveLength(counts)
+      expect(await store.readChampion()).toMatchObject({ ref: git.championRef })
+    } finally { gate.resolve(); await restarted?.dispose(); await service.dispose() }
+  })
+  it('[R05] inherits actual specialist code and findings after a Skill restart with an empty checkpoint', async () => {
+    const coordinator = new SkillMetaCoordinator()
+    const { service, evaluator, git } = await setup(0.8, false, 1, 300_000, 1, 0, 1, 300_000, coordinator)
+    const f = searchFixtures(20), evaluate = f.provider.evaluate
+    const versions = new Map<string, { tasks: Set<string>; score: number }>()
+    f.provider.evaluate = async input => {
+      if (input.plan.stage === 'local' && input.snapshot.commit !== git.championRef && !versions.has(input.snapshot.commit)) {
+        versions.set(input.snapshot.commit, { tasks: new Set(input.plan.taskIds), score: versions.size ? 0.95 : 0.9 })
+      }
+      return (await evaluate(input)).map(cell => {
+        const specialist = versions.get(input.snapshot.commit)
+        const score = input.snapshot.commit === git.championRef ? 0.85 : specialist?.tasks.has(cell.identity.taskId) ? specialist.score : 0.1
+        return revise(cell, { outcome: { status: 'available', rawValue: score, contractDigest: cell.identity.outcomeContractDigest, evidenceRef: cell.evidenceRef } })
+      })
+    }
+    const diagnose = f.diagnosis.diagnose
+    f.diagnosis.diagnose = async input => {
+      const result = await diagnose(input)
+      return { ...result, facts: result.facts.map(fact => ({ ...fact, modificationPaths: ['prompts'] })) }
+    }
+    ;(evaluator as RefineEvaluator).search = { provider: f.provider, diagnosis: f.diagnosis }
+    service.options.searchSettings = skillSearchSettings()
+    let restarted: RefineService | undefined
+    try {
+      const admitted = await service.admit('api'), store = service.registry.stateStore(admitted.evolutionId)
+      const finish = async (runner: RefineService, roundId: string, filename: string,
+        inherited?: { commit: string; snapshotDigest: string; findings: unknown[] }) => {
+        const round = await eventually(() => store.readRound(roundId), r => r?.status === 'candidate-editing' || r?.status === 'failed' || r?.status === 'rejected')
+        expect(round?.status, round?.failure?.message).toBe('candidate-editing')
+        const assignment = (await eventually(async () => coordinator.claim('history-client', skillHarnessIdentity(runner.options.metaAgent), admitted.evolutionId), a => a !== undefined))!
+        const workspace = runner.workspaceManager.resolve(assignment.sessionId)
+        if (inherited) {
+          expect(assignment.parentHarnessRef).toBe(inherited.commit)
+          expect(assignment.workplanDelivery?.dossier.parentSnapshotDigest).toBe(inherited.snapshotDigest)
+          expect(assignment.workplanDelivery?.findings).toEqual(inherited.findings)
+          expect(assignment.workplanDelivery?.findings).not.toEqual([])
+          expect(assignment.baseline.primaryReward).toBeCloseTo(0.9)
+          expect(await readFile(join(workspace.targetPath, 'prompts', 'first-specialist.md'), 'utf8')).toContain('First specialist retained for local improvements')
+        }
+        await mkdir(join(workspace.targetPath, 'prompts'), { recursive: true })
+        await writeFile(join(workspace.targetPath, 'prompts', filename), inherited ? 'Second specialist consumes the inherited findings.\n' : 'First specialist retained for local improvements.\n')
+        const active = runner.activeEntry(roundId)!, refs = [assignment.baseline.evalId]
+        const attribution = await active.meta.proposalAttribution(roundId, assignment.sessionId, {})
+        const evidence = active.meta.proposalEvidenceAudit(roundId, assignment.sessionId, refs)
+        await runner.submitFinalization(admitted.evolutionId, roundId, { rationale: 'Improve the assigned local tasks', expectedOutcome: 'Higher local completion', evidenceRefs: refs }, undefined, attribution, evidence)
+        const terminal = (await eventually(() => store.readRound(roundId), r => r?.status === 'rejected' || r?.status === 'failed'))!
+        expect(terminal.status, terminal.failure?.message).toBe('rejected')
+        expect(terminal.searchOutcome?.championChanged).toBe(false)
+        await eventually(async () => runner.activeEntry(roundId), active => !active)
+        return terminal
+      }
+      const first = await finish(service, admitted.roundId, 'first-specialist.md')
+      const candidate = first.candidatePool[0]!
+      expect(candidate.resultCheckpoint?.eventCount).toBe(0)
+      expect(first.searchOutcome?.research.parentProbabilities).toEqual({ [candidate.candidateId]: 1 })
+      const archive = (await new SearchStore(join(store.root, 'search')).archive())!
+      const parent = archive.snapshots.find(s => s.candidateId === candidate.candidateId)!
+      await service.dispose()
+      restarted = new RefineService(service.registry, service.builder, service.workspaceManager, service.createMetaSession, evaluator, service.options)
+      await restarted.initialize()
+      const continued = await restarted.continueEvolution('api', admitted.evolutionId)
+      const second = await finish(restarted, continued.roundId, 'second-specialist.md', {
+        commit: candidate.sealedVersion!.commitOid, snapshotDigest: parent.digest, findings: first.searchOutcome!.findings,
+      })
+      expect(second.candidatePool[0]!.parentCandidateIds).toEqual([candidate.candidateId])
+      expect(second.candidatePool[0]!.resultCheckpoint?.eventCount).toBe(0)
+      expect(await store.readChampion()).toMatchObject({ ref: git.championRef })
+      expect(versions.size).toBe(2)
+      expect(f.executions.some(e => e.stage === 'held-out')).toBe(false)
+    } finally { await restarted?.dispose(); await service.dispose() }
+  })
+
+  it('freezes suite protection at new admission without changing runtime options or the source dataset', async () => {
+    const coordinator = new SkillMetaCoordinator()
+    const { service, evaluator } = await setup(0.8, false, 1, 300_000, 1, 0, 1, 300_000, coordinator)
+    const fixture = searchFixtures(20), suite = await regressionSuiteFixture(fixture.seed, 'protected-regression')
+    const originalSeed = JSON.stringify(fixture.seed)
+    const seed = revise(fixture.seed, { regressionSuite: suite, regressionSuiteDigest: suite.digest })
+    fixture.provider.describe = async p => p === 'seed' ? seed : fixture.heldOut
+    const verify = vi.fn(async () => true); fixture.provider.verifyRegressionSuite = verify
+    ;(evaluator as RefineEvaluator).search = { provider: fixture.provider, diagnosis: fixture.diagnosis }
+    service.options.searchSettings = skillSearchSettings(); service.options.searchSettings.regression.suiteRef = suite.digest
+    try {
+      const admitted = await service.admit('api')
+      const spec = await service.registry.readSpec(admitted.evolutionId)
+      expect(spec?.searchSettings?.promotion.protectedTasks).toEqual([suite.tasks[0]!.guard])
+      expect(spec?.searchSettings?.regression.suiteRef).toBe(suite.digest)
+      expect(verify).toHaveBeenCalledWith(suite.digest, seed)
+      expect(service.options.searchSettings.promotion.protectedTasks).toEqual([])
+      expect(JSON.stringify(fixture.seed)).toBe(originalSeed)
+    } finally { await service.dispose() }
+  })
+  const cases: Array<{ process: boolean; recovery: string; variableRepetitions?: boolean; sharedSetPromotion?: boolean }> = [{ process: false, recovery: 'none' }, { process: true, recovery: 'none' }, { process: true, recovery: 'resume' }, { process: true, recovery: 'restart' }, { process: false, recovery: 'timeout' }, { process: true, recovery: 'none', variableRepetitions: true }, { process: false, recovery: 'champion-commit' }, { process: true, recovery: 'champion-commit', sharedSetPromotion: true }]
+  it.each(cases)('delivers a scoped workplan and recovers v2 promotion ($process/$recovery/$variableRepetitions/$sharedSetPromotion)', async ({ process, recovery, variableRepetitions, sharedSetPromotion }) => {
+    const coordinator = new SkillMetaCoordinator()
+    const { service, evaluator, git } = await setup(0.8, false, 1, 300_000, 1, 0, 1, 300_000, coordinator)
+    const fixture = searchFixtures(20, process)
+    if (variableRepetitions) {
+      const seed = revise(fixture.seed, { repetitions: [{ index: 0, seed: 0 }, { index: 1, seed: 1 }],
+        tasks: fixture.seed.tasks.map((task, i) => ({ ...task, repetitionIndices: i === 0 ? [0] : [0, 1] })) })
+      fixture.provider.describe = async partition => partition === 'seed' ? seed : fixture.heldOut
+    }
+    const evaluate = fixture.provider.evaluate.bind(fixture.provider)
+    let ready = recovery === 'none' || recovery === 'champion-commit', championWrites = 0
+    let restarted: RefineService | undefined
+    fixture.provider.inspectEvaluation = async () => ({ status: 'running', handle: 'remote-heldout-17' })
+    fixture.provider.evaluate = async input => {
+      let cells = await evaluate({ ...input, snapshot: { ...input.snapshot, candidateId: input.snapshot.commit === git.championRef ? 'anchor' : input.snapshot.candidateId } })
+      if (variableRepetitions && input.snapshot.commit === git.championRef) cells = cells.map(cell => revise(cell, {
+        process: { status: 'available', rawValue: Number(cell.identity.taskId.slice(5)) / 20, contractDigest: cell.identity.processContractDigest!, evidenceRef: cell.evidenceRef },
+      }))
+      if (!ready && input.plan.stage === 'held-out' && input.snapshot.commit !== git.championRef) throw new Error('lost held-out transport')
+      return cells
+    }
+    const diagnose = fixture.diagnosis.diagnose.bind(fixture.diagnosis)
+    fixture.diagnosis.diagnose = async input => { const output = await diagnose(input); return { ...output, facts: output.facts.map(f => ({ ...f, modificationPaths: ['prompts'] })) } }
+    ;(evaluator as RefineEvaluator).search = { provider: fixture.provider, diagnosis: fixture.diagnosis }
+    service.options.searchSettings = skillSearchSettings()
+    if (sharedSetPromotion) {
+      service.options.searchSettings.promotion.validationMode = 'shared-set-research'
+      service.options.searchSettings.promotion.allowSharedSetPromotion = true
+    }
+    if (recovery === 'timeout') service.options.searchSettings.budgets.round.timeoutMs = 2500
+    try {
+      const admitted = await service.admit('api')
+      const store = service.registry.stateStore(admitted.evolutionId)
+      const current = await eventually(() => store.readRound(admitted.roundId), r => r?.status === 'candidate-editing' || r?.status === 'failed' || r?.status === 'rejected')
+      expect(current?.status, current?.failure?.message).toBe('candidate-editing')
+      const assignment = (await eventually(async () => coordinator.claim('test-client', skillHarnessIdentity(service.options.metaAgent), admitted.evolutionId), a => a !== undefined))!
+      expect(assignment.workplanDelivery?.workplan.hypothesis).toBeTruthy()
+      expect(assignment.evidencePolicy.diagnoseEveryFailedRunBeforeProposal).toBe(false)
+      if (variableRepetitions) {
+        expect(assignment.baseline.plannedTrialCount).toBeGreaterThan(assignment.baseline.summary.total)
+        expect(assignment.baseline.scoringContext).toMatchObject({ summaryUnit: 'task', aggregateWeighting: 'frozen-scope-task-weights' })
+      }
+      const workingStatus = await service.status(admitted.evolutionId, admitted.roundId)
+      expect(workingStatus.searchProgress?.phase).toBe('generation')
+      expect(workingStatus.searchProgress?.evaluations.some(e => e.stage === 'baseline-probe' && e.profile?.outcomeComplete)).toBe(true)
+      if (recovery === 'timeout') {
+        const terminal = await eventually(() => store.readRound(admitted.roundId), r => r?.status === 'failed' || r?.status === 'rejected')
+        expect(terminal?.status, terminal?.failure?.message).toBe('rejected')
+        expect(terminal?.searchOutcome?.championChanged).toBe(false)
+        expect(terminal?.candidatePool[0]?.generationAttempts).toHaveLength(1)
+        expect(terminal?.candidatePool[0]?.generationAttempts?.[0]?.status).toBe('failed')
+        expect(fixture.executions.every(e => e.participant === 'anchor')).toBe(true)
+        expect(await store.readChampion()).toMatchObject({ ref: git.championRef })
+        return
+      }
+      const active = service.activeEntry(admitted.roundId)!
+      if (recovery === 'champion-commit') {
+        const cas = active.store.compareAndSwapChampion.bind(active.store)
+        active.store.compareAndSwapChampion = async (...args) => {
+          await cas(...args); championWrites++
+          if (championWrites === 1) throw new Error('injected crash after champion CAS')
+        }
+      }
+      const workspace = service.workspaceManager.resolve(assignment.sessionId)
+      await mkdir(join(workspace.targetPath, 'prompts'), { recursive: true })
+      await writeFile(join(workspace.targetPath, 'prompts', 'search-improvement.md'), 'Improve the assigned fixture workflow.\n')
+      const refs = [assignment.baseline.evalId]
+      const attribution = await active.meta.proposalAttribution(admitted.roundId, assignment.sessionId, {})
+      const evidence = active.meta.proposalEvidenceAudit(admitted.roundId, assignment.sessionId, refs)
+      expect(evidence.workplanReceipt?.kind).toBe('workplan-dossier-consumed')
+      expect(evidence.diagnosisReceipts).toEqual([])
+      await service.submitFinalization(admitted.evolutionId, admitted.roundId, { rationale: 'Repair the assigned workflow', expectedOutcome: 'Higher completion', evidenceRefs: refs }, undefined, attribution, evidence)
+      if (recovery !== 'none') {
+        const failed = await eventually(() => store.readRound(admitted.roundId), r => r?.status === 'failed')
+        expect(failed?.failure?.message).toContain(recovery === 'champion-commit' ? 'injected crash after champion CAS' : 'operation pending')
+        await eventually(async () => service.activeEntry(admitted.roundId), active => !active)
+        const status = await service.status(admitted.evolutionId, admitted.roundId)
+        if (recovery === 'champion-commit') {
+          expect(status.searchPendingOperation).toBeUndefined()
+          expect(await store.readChampion()).toMatchObject({ ref: failed!.candidatePool[0]!.sealedVersion!.commitOid })
+        } else expect(status.searchPendingOperation).toMatchObject({ state: 'running', partition: 'held-out', handle: 'remote-heldout-17' })
+        expect(status.searchProgress?.phase).toBe('seed-research-complete')
+        expect(status.searchProgress?.evaluations.some(e => (e.stage as string) === 'held-out')).toBe(false)
+        ready = true
+        if (recovery === 'resume' || recovery === 'champion-commit') await service.resumeSearchRound(admitted.evolutionId, admitted.roundId)
+        else {
+          await service.dispose()
+          restarted = new RefineService(service.registry, service.builder, service.workspaceManager, service.createMetaSession, evaluator, service.options)
+          await restarted.initialize()
+        }
+      }
+      const terminal = await eventually(() => store.readRound(admitted.roundId), r => r?.status === 'accepted' || r?.status === 'failed' || r?.status === 'rejected')
+      expect(terminal?.status, JSON.stringify(terminal?.failure ?? terminal?.searchOutcome)).toBe('accepted')
+      expect(terminal?.searchOutcome?.championChanged).toBe(true)
+      if (sharedSetPromotion) {
+        expect(terminal?.searchOutcome).toMatchObject({ advisory: false, validationMode: 'shared-set-research' })
+        expect(await service.registry.readSpec(admitted.evolutionId)).toMatchObject({ searchSettings: { promotion: { allowSharedSetPromotion: true } } })
+      }
+      expect(evaluator.calls).toEqual([])
+      expect(await store.readChampion()).toMatchObject({ ref: terminal!.candidatePool[0]!.sealedVersion!.commitOid })
+      if (recovery === 'champion-commit') expect(championWrites).toBe(1)
+    } finally { await restarted?.dispose(); await service.dispose() }
   })
 })

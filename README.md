@@ -1,12 +1,16 @@
+<div align="center">
+
 # Gear
 
-**Adapt your agent to any task.**
+**Adapt your agent to real-world task.**
 
 [![GitHub release](https://img.shields.io/github/v/release/rsi-gear/gear)](https://github.com/rsi-gear/gear/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-Join_chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/cZ4NBbHDk)
 
 [English](README.md) | [简体中文](README.zh-CN.md) · [User guide](https://rsigear.xyz/docs/gear) · [Examples](https://rsigear.xyz/docs/gear/examples/evolution-search)
+
+</div>
 
 Gear is an open-source algorithm framework that helps AI agents work on real tasks across different software environments and learn from what goes right or wrong. We aim to use that experience to improve their instructions and tools, and turn it into training data that makes the models themselves better.
 
@@ -18,11 +22,14 @@ On AutomationBench's 100 public Marketing tasks, Gear improved **GPT 5.6 Luna ma
 
 ### Tasks we have validated
 
-Our compute budget is limited, so we are starting with the task set below and reporting its results before and after optimization.
+Due to limited compute budget, we are starting with the task set below and reporting its results before and after optimization. We welcome submissions of more exciting results.
 
-| Validated task set | Model + harness combination | Metric | Before | After | Δ |
+| Validated task set | Model + harness combination | Metric | Before | After | Relative improvement (Rel. Δ) |
 | --- | --- | --- | --- | --- | --- |
-| AutomationBench / Marketing  | GPT 5.6 Luna medium + DSH | Task pass rate / process score |  27% / 75.37% |  40% / 83.87% |**+13% / +8.50%** |
+| AutomationBench / Marketing  | GPT 5.6 Luna medium + DSH | Task pass rate / object completion |  27% / 75.37% |  40% / 83.87% |**+48.15% / +11.28%** |
+| Terminal-Bench 2.1 | GPT 5.6 Luna medium + DSH | Task pass rate | 52.87% | 62.92% | **+19.01%** |
+
+Relative improvement = (After − Before) / Before × 100%.
 
 These public tasks also guided optimization. Starred points in the chart come from a separate official private test set. [Scoring and sources](docs/guide/en/results.md) · [Full experiment](docs/guide/en/example-algorithm.md).
 

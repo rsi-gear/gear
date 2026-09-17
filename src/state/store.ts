@@ -1,3 +1,5 @@
+import { validateSearchSchema } from '../search/schema.js'
+import { searchProjectionAggregates } from '../search/legacy.js'
 import { constants } from 'node:fs'
 import { access, mkdir, open, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -626,7 +628,21 @@ export class RefineStateStore {
       || round.decline.evidenceRefs.some(ref => typeof ref !== 'string' || ref.length === 0))) {
       throw new TypeError('round decline is invalid')
     }
-    if (!Array.isArray(round.candidatePool) || round.candidatePool.length === 0
+    if (round.searchMode !== undefined) {
+      if (round.searchMode !== 'failure-cluster-gepa-v1' || !round.searchAnchor) throw new TypeError('invalid search round admission')
+      const { digest: anchorDigest, ...snapshot } = round.searchAnchor.snapshot
+      if (digestJson(snapshot) !== anchorDigest || snapshot.commit !== round.targetHarnessRef || snapshot.manifestDigest !== round.targetHarnessDigest
+        || !/^sha256:[a-f0-9]{64}$/u.test(round.searchAnchor.championRevisionDigest)) throw new TypeError('search champion anchor identity mismatch')
+      if (round.searchOutcome) {
+        validateSearchSchema('SearchRoundOutcome', round.searchOutcome)
+        const { digest: outcomeDigest, ...outcome } = round.searchOutcome
+        if (digestJson(outcome) !== outcomeDigest || outcome.roundId !== round.roundId || outcome.schemaVersion !== 2
+          || outcome.championAnchorDigest !== anchorDigest || outcome.championChanged !== (round.status === 'accepted')) throw new TypeError('search terminal decision mismatch')
+        if (outcome.championChanged && (outcome.advisory || outcome.promotion?.outcome !== 'accepted'
+          || !round.candidatePool?.some(c => c.candidateId === outcome.nomineeId && c.sealedVersion))) throw new TypeError('search champion requires complete promotion')
+      } else if (round.status === 'accepted') throw new TypeError('search accepted round missing v2 outcome')
+    }
+    if (!Array.isArray(round.candidatePool) || round.candidatePool.length === 0 && round.searchMode === undefined
       || new Set(round.candidatePool.map(candidate => candidate.candidateId)).size !== round.candidatePool.length) {
       throw new TypeError('round candidatePool is invalid')
     }
@@ -847,7 +863,7 @@ export class RefineStateStore {
     }
     if (round.parentBaselines !== undefined) {
       for (const baseline of round.parentBaselines) {
-        this.validateEvaluationEvidence(baseline.evidence, 'parent seed baseline')
+        this.validateEvaluationEvidence(baseline.evidence, 'parent seed baseline', round.searchMode === 'failure-cluster-gepa-v1')
         if (baseline.evidence.actualCommit !== baseline.parentHarnessRef
           || baseline.evidence.conditionId !== round.plan.seed.conditionId) throw new TypeError('parent seed baseline identity is invalid')
       }
@@ -1081,7 +1097,7 @@ export class RefineStateStore {
     const terminal = round.status === 'accepted' || round.status === 'rejected'
       || round.status === 'rejected-for-substrate' || round.status === 'failed'
     if (!terminal && round.decision !== undefined) throw new TypeError('non-terminal round cannot have a decision')
-    if (round.status === 'accepted') {
+    if (round.status === 'accepted' && round.searchMode === undefined) {
       const promoted = round.candidatePool.find(candidate => candidate.candidateId === round.promotedCandidateId)
       if (round.decision !== 'accepted' || promoted?.sealedVersion === undefined
         || round.evaluation?.heldOutBaseline === undefined || round.evaluation.heldOutCandidate === undefined
@@ -1262,7 +1278,7 @@ export class RefineStateStore {
     }
   }
 
-  private validateEvaluationEvidence(value: EvaluationEvidence, label: string): void {
+  private validateEvaluationEvidence(value: EvaluationEvidence, label: string, searchMode = false): void {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError(`${label} must be an object`)
     if (typeof value.provider !== 'string' || value.provider.length === 0
       || !/^sha256:[0-9a-f]{64}$/u.test(value.conditionId)
@@ -1295,7 +1311,8 @@ export class RefineStateStore {
       || value.processScore !== undefined && value.summary.process?.score !== value.processScore) {
       throw new TypeError(`${label} process score summary is invalid`)
     }
-    if (!Array.isArray(value.trials) || value.trials.length !== value.summary.total
+    const scopedProjection = searchMode && value.provider === 'search-v2-seed-projection'
+    if (!Array.isArray(value.trials) || (!scopedProjection && value.trials.length !== value.summary.total)
       || value.trials.some(trial => typeof trial.taskName !== 'string' || trial.taskName.length === 0
       || trial.status !== 'completed'
       || (trial.runId !== undefined && (typeof trial.runId !== 'string' || trial.runId.length === 0))
@@ -1311,8 +1328,10 @@ export class RefineStateStore {
       )))) {
       throw new TypeError(`${label} trials are invalid`)
     }
+    const scoped = scopedProjection ? searchProjectionAggregates(value) : undefined
+    if (scoped && (value.summary.total !== scoped.taskCount || Math.abs(value.primaryReward - scoped.outcome) > 1e-12 || Math.abs(value.summary.score - scoped.outcome) > 1e-12)) throw new TypeError(`${label} search task aggregate is invalid`)
     const processScores = value.trials.flatMap(trial => trial.scores?.processScore === undefined ? [] : [trial.scores.processScore])
-    const expectedProcess = processScores.length === value.trials.length && processScores.length > 0
+    const expectedProcess = scopedProjection ? scoped?.process : processScores.length === value.trials.length && processScores.length > 0
       ? processScores.reduce((sum, score) => sum + score, 0) / processScores.length
       : undefined
     if ((value.processScore === undefined) !== (expectedProcess === undefined)

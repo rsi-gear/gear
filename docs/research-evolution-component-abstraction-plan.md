@@ -6,6 +6,8 @@
 
 ## 1. 背景与结论
 
+2026-09-12：新增显式 `failure-cluster-gepa-v1` 搜索驱动，具体合同见[专长 archive 规范](candidate-promotion-and-specialist-archive-spec.zh-CN.md)。它允许历史局部 specialist 成为父代，独立提名发布 candidate，并使用新的 implementation integrity 与持久化 schema。本文既有 `apiVersion: 1` 组件和旧 population 路径保持原义。
+
 当前 Gear 已经具备一组可靠的执行基础：candidate 使用完整 Git commit 标识，dataset 和 evolution spec 带有 digest，Meta 与 target 隔离，seed/held-out 分区受到控制，promotion 通过 champion compare-and-swap 完成。
 
 本方案启动时识别出的缺口不在于能否运行一次安全的 harness refinement，而在于实验算法和实际运行参数没有形成统一、不可变、可恢复的研究接口：

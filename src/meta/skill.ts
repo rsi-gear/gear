@@ -15,6 +15,7 @@ import type {
 } from '../types.js'
 import type { MetaAgentSession, MetaSessionController, MetaExecutionBinding } from './controller.js'
 import { generationBudgetSnapshot } from '../refine/generation-budget.js'
+import { consumptionReceipt } from '../search/diagnosis.js'
 import {
   EXPERIENCE_V1_MAX_ASSIGNMENT_BYTES,
   EXPERIENCE_V1_MAX_CARD_BYTES,
@@ -38,6 +39,7 @@ export {
 } from './identity.js'
 
 export interface SkillAssignment {
+  workplanDelivery?: CandidateRecord['workplanDelivery']
   evaluationMode?: 'reuse-seed'
   generationBudget?: CandidateGenerationBudgetStatus
   retryRecovery?: { workspace: 'fresh'; diagnosis: 'query-current-baseline' }
@@ -52,13 +54,15 @@ export interface SkillAssignment {
   evidencePolicy: {
     currentRoundOnly: true
     citeObservedSeedRefs: true
-    diagnoseEveryFailedRunBeforeProposal: true
+    diagnoseEveryFailedRunBeforeProposal: boolean
     heldOutUnavailable: true
   }
   baseline: {
     evalId: string
     primaryReward: number
     processScore?: number
+    plannedTrialCount?: number
+    scoringContext?: { metricSemantics: 'frozen-utility'; summaryUnit: 'task'; aggregateWeighting: 'frozen-scope-task-weights' }
     summary: EvaluationEvidence['summary']
     trials: Array<{
       taskName: string
@@ -212,6 +216,8 @@ export class SkillMetaCoordinator {
 }
 
 interface WakeState {
+  workplanDelivery?: CandidateRecord['workplanDelivery']
+  workplanReceipt?: import('../search/types.js').WorkplanReceipt
   roundId: string
   candidateId?: string
   baselineEvalId: string
@@ -319,6 +325,9 @@ export class SkillMetaSessionManager implements MetaSessionController {
     session: MetaAgentSession,
     execution?: MetaExecutionBinding,
   ): Promise<import('./controller.js').MetaWakeHandle> {
+    if (execution?.budget.maxTokens !== undefined || execution?.budget.maxModelRequests !== undefined) {
+      throw new Error('Skill Meta adapter cannot enforce aggregate generation budgets')
+    }
     if (round.evolutionId !== this.options.evolutionId) throw new Error('Meta skill session received a foreign evolution')
     if (candidate?.workspaceId === undefined || baseline === undefined) throw new Error('Meta skill assignment is incomplete')
     const allocation = round.parentAllocations?.find(value => value.candidateId === candidate.candidateId)
@@ -347,6 +356,7 @@ export class SkillMetaSessionManager implements MetaSessionController {
       throw new Error('Meta skill assignment was cancelled before publication')
     }
     this.coordinator.publish({
+      ...(candidate.workplanDelivery ? { workplanDelivery: structuredClone(candidate.workplanDelivery) } : {}),
       ...(execution?.generationBudget === undefined ? {} : {
         generationBudget: generationBudgetSnapshot(execution.generationBudget),
       }),
@@ -365,12 +375,14 @@ export class SkillMetaSessionManager implements MetaSessionController {
       evidencePolicy: {
         currentRoundOnly: true,
         citeObservedSeedRefs: true,
-        diagnoseEveryFailedRunBeforeProposal: true,
+        diagnoseEveryFailedRunBeforeProposal: candidate.workplanDelivery === undefined,
         heldOutUnavailable: true,
       },
       baseline: {
         evalId: baseline.evalId,
         primaryReward: baseline.primaryReward,
+        ...(candidate.workplanDelivery ? { plannedTrialCount: baseline.plannedTrialCount,
+          scoringContext: { metricSemantics: 'frozen-utility' as const, summaryUnit: 'task' as const, aggregateWeighting: 'frozen-scope-task-weights' as const } } : {}),
         ...(baseline.processScore === undefined ? {} : { processScore: baseline.processScore }),
         summary: structuredClone(baseline.summary),
         trials: [
@@ -395,6 +407,11 @@ export class SkillMetaSessionManager implements MetaSessionController {
     }, skillHarnessIdentity(this.options.metaAgent), () => {
       state.summaryAccessed = true
       for (const ref of refs) state.accessedRefs.add(ref)
+      if (candidate.workplanDelivery) {
+        state.workplanDelivery = structuredClone(candidate.workplanDelivery)
+        state.workplanReceipt = consumptionReceipt(candidate.workplanDelivery, session.id, candidate.workplanDelivery.workplan.requiredDiagnosisRefs)
+        for (const ref of candidate.workplanDelivery.workplan.requiredDiagnosisRefs) state.accessedRefs.add(ref)
+      }
     })
     return { sessionId: session.id }
   }
@@ -432,6 +449,8 @@ export class SkillMetaSessionManager implements MetaSessionController {
       roundId,
       ...(state.candidateId === undefined ? {} : { candidateId: state.candidateId }),
       baselineEvalId: state.baselineEvalId,
+      ...(state.workplanDelivery ? { workplanDelivery: state.workplanDelivery } : {}),
+      ...(state.workplanReceipt ? { workplanReceipt: state.workplanReceipt } : {}),
       summaryAccessed: state.summaryAccessed,
       accessedRefs: [...state.accessedRefs].sort(),
       diagnosedRunRefs: [...state.diagnosedRunRefs].sort(),

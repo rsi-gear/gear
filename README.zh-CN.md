@@ -1,12 +1,16 @@
+<div align="center">
+
 # Gear
 
-**Adapt your agent to any task. 让你的 Agent 学会做好你的任务。**
+**让你的 Agent 适应真实世界的任务。**
 
 [![GitHub release](https://img.shields.io/github/v/release/rsi-gear/gear)](https://github.com/rsi-gear/gear/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-加入讨论-5865F2?logo=discord)](https://discord.gg/cZ4NBbHDk)
 
 [English](README.md) | [简体中文](README.zh-CN.md) · [用户指南](https://rsigear.xyz/docs/gear/zh) · [案例](https://rsigear.xyz/docs/gear/zh/examples/evolution-search)
+
+</div>
 
 Gear 是一套开源算法框架，帮助 AI Agent 在不同的软件环境中完成真实任务，并从成功和失败中积累经验。我们希望用这些经验改进 Agent 的指令和工具，再把经验整理成训练数据，让模型本身也能不断进步。
 
@@ -18,11 +22,14 @@ Gear 是一套开源算法框架，帮助 AI Agent 在不同的软件环境中�
 
 ### 已验证的任务
 
-当前算力预算有限，我们先在下面的任务集上验证优化效果，并公开优化前后的结果。
+受制于当前算力预算，我们仅在下面的任务集上验证优化效果，并公开优化前后的结果。我们欢迎大家提交更多有趣的结果。
 
-| 已验证任务集 | 模型 + harness 组合 | 指标 | 优化前 | 优化后 | Δ |
+| 已验证任务集 | 模型 + harness 组合 | 指标 | 优化前 | 优化后 | 相对提升 (Rel. Δ) |
 | --- | --- | --- | --- | --- | --- |
-| AutomationBench / Marketing  | GPT 5.6 Luna medium+ DSH | 任务通过率 / 过程分 |27% / 75.37% |40% / 83.87% |**+13% / +8.50%** |
+| AutomationBench / Marketing  | GPT 5.6 Luna medium+ DSH | 任务通过率 / 目标完成率 |27% / 75.37% |40% / 83.87% |**+48.15% / +11.28%** |
+| Terminal-Bench 2.1 | GPT 5.6 Luna medium + DSH | 任务通过率 | 52.87% | 62.92% | **+19.01%** |
+
+相对提升 =（优化后 − 优化前）/ 优化前 × 100%。
 
 这组公开任务也用于指导优化。图中带星号的结果来自另一组官方私有测试任务。[评分方式与来源](docs/guide/zh-CN/results.md) · [完整实验](docs/guide/zh-CN/example-algorithm.md)。
 

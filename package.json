@@ -35,6 +35,22 @@
       "types": "./lib/skill/index.d.ts",
       "default": "./lib/skill/index.js"
     },
+    "./search": {
+      "types": "./lib/search/index.d.ts",
+      "default": "./lib/search/index.js"
+    },
+    "./search/api": {
+      "types": "./lib/search/api.d.ts",
+      "default": "./lib/search/api.js"
+    },
+    "./search/testing": {
+      "types": "./lib/search/testing.d.ts",
+      "default": "./lib/search/testing.js"
+    },
+    "./search/presets/failure-cluster-gepa": {
+      "types": "./lib/search/presets/failure-cluster-gepa.d.ts",
+      "default": "./lib/search/presets/failure-cluster-gepa.js"
+    },
     "./testing": {
       "types": "./lib/testing.d.ts",
       "default": "./lib/testing.js"
@@ -48,6 +64,7 @@
   "files": [
     "lib/**/*.js",
     "lib/**/*.d.ts",
+    "lib/**/*.json",
     "assets/ipython-kernel.py",
     "assets/llm-verifier-bridge.py",
     "assets/hitch-codex-wrapper.mjs",
@@ -64,13 +81,17 @@
     "python/pyproject.toml",
     "python/patches/*.patch",
     "docs/training/README.zh-CN.md",
-    "docs/training/controller-v2.zh-CN.md"
+    "docs/training/controller-v2.zh-CN.md",
+    "docs/search-algorithm-authoring.zh-CN.md",
+    "examples/parent-policy/**"
   ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",
     "build": "npm run clean && npm run build:tool-fs && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "test:search": "vitest run tests/unit/search*.spec.ts --maxWorkers=2",
+    "test:search:package": "npm run build && node scripts/check-search-package.mjs",
     "test:unit": "vitest run tests/unit",
     "test:composition": "vitest run tests/composition",
     "test:e2e": "vitest run tests/e2e",
