@@ -11,6 +11,9 @@ coverage/
 knowledge/
 .DS_Store
 
+# Local diagram authoring project; commit exported documentation SVGs only.
+/media/gear-loop/
+
 # Built from the pinned upstream ToolFs package.
 assets/gear-tool-fs.js
 assets/gear-tool-fs.LICENSE

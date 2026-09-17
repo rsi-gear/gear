@@ -54,8 +54,7 @@ Follow nearby TypeScript style: two-space indentation, single quotes, no
 semicolons, and `.js` suffixes for local ESM imports. Use descriptive names and
 explicit types for substantial contracts. Split large operations by
 responsibility, reuse rules that share an owner, and keep formatting changes
-focused. The core package has no repository-wide formatter or lint command;
-the Remotion project under `media/gear-loop/` has its own configuration.
+focused. The core package has no repository-wide formatter or lint command.
 
 Explain invariants and non-obvious decisions in comments, especially ownership,
 persistence, cancellation, and evidence reuse. Avoid comments that narrate the
@@ -140,9 +139,9 @@ or hardware tests.
 Follow the [documentation authoring guide](docs/guide/README.md). Update both
 READMEs or both language versions of a guide when a shared user-facing behavior
 changes. Keep current setup instructions separate from design proposals and
-dated experiment records. For diagram changes, edit the shared source in
-`media/gear-loop/`, regenerate the SVG assets, and inspect the preview; see its
-[README](media/gear-loop/README.md).
+dated experiment records. For diagram changes, commit only the SVG assets in
+`docs/guide/assets/` and inspect their rendering and animation in a browser.
+Keep diagram authoring projects and rendered video files outside version control.
 
 When reporting benchmark improvements, include the dataset and split, harness
 and model versions, reasoning effort, evaluation budget, metric definitions,
