@@ -2,10 +2,10 @@
 
 This example registers a third parent sampler through the public search API. It runs a synthetic search, interrupts after the parent decision is stored, resumes from a journal checkpoint, and verifies replay without new evaluations.
 
-Install a built `dsh-plugin-refine` tarball in this directory and run:
+Install a built `rsi-gear` tarball in this directory and run:
 
 ```sh
-npm install /path/to/dsh-plugin-refine-0.1.0.tgz
+npm install /path/to/rsi-gear-0.1.0.tgz
 npm start
 ```
 

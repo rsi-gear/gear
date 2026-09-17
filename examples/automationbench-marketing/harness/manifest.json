@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "parentRef": "4c681116f338e169af1a0acca9a8eb6ec9551570",
+  "dshBaseRef": "b611388ce046292085abbabdbd951bbe608f0f1d",
+  "toolchainRef": "dsh-rc2-codex-pnpm-11.7.0",
+  "sandboxProfileRef": "harbor-terminal-bench-2.0",
+  "artifacts": [
+    {
+      "path": "plugins/policy.js",
+      "digest": "sha256:aa711e784ff843cc234bc15e8b82a9a275166da2610b6e2151375012c7094c51",
+      "bytes": 3109
+    },
+    {
+      "path": "preset/agent.cordis.yml",
+      "digest": "sha256:a691a8839788059f0b2cbaf26e967eeb5159ae24dd652d51ac96da06710ef5a6",
+      "bytes": 57
+    },
+    {
+      "path": "workflows/resolve-workflow-sources.md",
+      "digest": "sha256:ac6c20088e1c4813e54011c8fee913d42a1874ada850a5b991e2f264674f1952",
+      "bytes": 5346
+    },
+    {
+      "path": "workflows/source-backed-operations.md",
+      "digest": "sha256:47d0a4473252385ef78eba9821a36bf59ac2b0596f234bb74da4b431a22d5cdd",
+      "bytes": 6809
+    },
+    {
+      "path": "workflows/structured-cli-requests.md",
+      "digest": "sha256:dd5a6caa6c6c4211f545ada068b02822ea3b15b27a554373523d90e8be763a92",
+      "bytes": 5375
+    },
+    {
+      "path": "workflows/structured-cli-requests/request.py",
+      "digest": "sha256:eb8414934e79115a74bac85fb3ee87d40918de1f29b4cc02160ca99b55c3e829",
+      "bytes": 5458
+    }
+  ],
+  "digest": "sha256:7dbe79d30e96acef61a271be936ba635ef02312d2c4f5f0b6baf2e2a8b4640ff"
+}

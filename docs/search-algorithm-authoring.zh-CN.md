@@ -6,11 +6,11 @@ Gear 将搜索分为算法流程、决策策略和执行层。当前内置流程
 
 | 入口 | 用途 |
 | --- | --- |
-| `dsh-plugin-refine/search/api` | 组件注册、父代策略合同、随机源、journal 和 provider 类型 |
-| `dsh-plugin-refine/search/presets/failure-cluster-gepa` | 内置搜索流程、默认配置、两种父代策略 |
-| `dsh-plugin-refine/search/testing` | toy 数据、内存 provider/journal、策略合同检查 |
+| `rsi-gear/search/api` | 组件注册、父代策略合同、随机源、journal 和 provider 类型 |
+| `rsi-gear/search/presets/failure-cluster-gepa` | 内置搜索流程、默认配置、两种父代策略 |
+| `rsi-gear/search/testing` | toy 数据、内存 provider/journal、策略合同检查 |
 
-原 `dsh-plugin-refine/search` 入口继续兼容，包括已有的低层工具。新扩展应优先使用上表入口；`runtime.ts` 等内部模块不作为策略插件的调用接口。
+原 `rsi-gear/search` 入口继续兼容，包括已有的低层工具。新扩展应优先使用上表入口；`runtime.ts` 等内部模块不作为策略插件的调用接口。
 
 可运行示例在 [`examples/parent-policy`](../examples/parent-policy)。它是第三种父代策略：先均匀选择有效 scope，再均匀选择其中已通过证据和探索约束的父代。它只依赖公开入口。
 
@@ -23,7 +23,7 @@ npm run test:search:package
 
 这个命令构建真实 tgz，在临时外部项目安装它，对示例执行 TypeScript 检查，再运行完整 toy round、中断恢复和终态重放。示例不需要模型密钥、Hitch 或 Docker。
 
-独立使用时复制示例目录，在其中安装 `dsh-plugin-refine` 的构建产物，然后执行 `npm start`。
+独立使用时复制示例目录，在其中安装 `rsi-gear` 的构建产物，然后执行 `npm start`。
 
 ## 算法流程
 

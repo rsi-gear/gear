@@ -8,7 +8,7 @@ import type { DshMetaAgentSpec, DshContextOffloadingPolicy } from '../types.js'
 import { handoffPrompt, MetaContextError } from './offloading-policy.js'
 
 export function contextMessage(text: string): UserMessage {
-  return createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'plugin', plugin: 'dsh-plugin-refine' } })
+  return createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'plugin', plugin: 'gear' } })
 }
 
 export function usageTokens(usage: TokenUsage): number {

@@ -75,7 +75,7 @@ else process.exitCode = 2
     const q = (value: string): string => JSON.stringify(value)
     await writeFile(configPath, [
       '- name: refine-test-services',
-      '- name: dsh-plugin-refine',
+      '- name: rsi-gear',
       '  config:',
       `    workspaceRoot: ${q(root)}`,
       `    dshRepository: ${q(fixture.repository)}`,
@@ -117,7 +117,7 @@ else process.exitCode = 2
     context.loader.builtins.include = Include
     const modules = new Map<string, unknown>([
       ['refine-test-services', fakeServices],
-      ['dsh-plugin-refine', refine],
+      ['rsi-gear', refine],
     ])
     context.loader.internal = {
       version: 'v2',
@@ -140,6 +140,7 @@ else process.exitCode = 2
     expect(context.refine.options.metaAgent.preset.resources.map(value => value.logicalPath)).toEqual([
       'SKILL.md', 'agents/openai.yaml', 'references/dsh-target-harness.md',
       'references/protocol.md', 'references/target-harness-editing.md',
+      'scripts/transport.mjs',
     ])
     expect(context.refine.options.metaAgent.preset.digest).not.toBe(context.refine.options.metaAgent.preset.resources[0]?.digest)
     expect(commands).toEqual([])

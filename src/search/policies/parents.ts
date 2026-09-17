@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import type { ComponentRef } from '../../types.js'
-import { componentRef, implementationFromFiles } from '../../evolution/component-ref.js'
+import { componentRef } from '../../evolution/component-ref.js'
+import { implementationFromFiles } from '../../evolution/implementation-files.js'
 import type { ParentSelectionInput, ParentSelectionPolicy } from '../parent-selection.js'
 import type { SearchConfig } from '../types.js'
 

@@ -2,7 +2,7 @@
 
 核验日期：2026-09-17。审查对象为 [PR #21](https://github.com/rsi-gear/gear/pull/21)，远端 head 为 `e172456672414bfe0a14c8b94fd1b640b6493c30`。该 head 的 CI 通过，但三条行内问题均未解决；CI 通过不能替代这三条问题的定向验证。
 
-以下修复位于 `codex/candidate-promotion` 本地工作区，尚未提交或推送，也未修改 GitHub review thread 的状态。
+以下修复已提交到 `codex/candidate-promotion`，并在合并 `dev` 时保留。未修改 GitHub review thread 的状态。
 
 | 审查意见 | 修复 | 回归验证 |
 | --- | --- | --- |

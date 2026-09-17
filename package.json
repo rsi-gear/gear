@@ -1,5 +1,5 @@
 {
-  "name": "dsh-plugin-refine",
+  "name": "rsi-gear",
   "version": "0.1.0",
   "description": "Skill-first Gear refinement control plane with native DSH and harness-neutral adapters",
   "type": "module",
@@ -68,6 +68,7 @@
     "assets/ipython-kernel.py",
     "assets/llm-verifier-bridge.py",
     "assets/hitch-codex-wrapper.mjs",
+    "assets/hitch-codex-credential-helper.mjs",
     "assets/dsh-runtime-check.mjs",
     "skills/refine/**",
     "cordis.patch.yml",

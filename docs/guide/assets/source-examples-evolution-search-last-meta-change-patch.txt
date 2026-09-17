@@ -1,0 +1,113 @@
+diff --git a/harness/manifest.json b/harness/manifest.json
+index 6f29d20..09bcd38 100644
+--- a/harness/manifest.json
++++ b/harness/manifest.json
+@@ -1,6 +1,6 @@
+ {
+   "schemaVersion": 1,
+-  "parentRef": "4c681116f338e169af1a0acca9a8eb6ec9551570",
++  "parentRef": "8b651c53cadfe70de39078e93d8cb9c3958b9c38",
+   "dshBaseRef": "b611388ce046292085abbabdbd951bbe608f0f1d",
+   "toolchainRef": "dsh-rc2-codex-pnpm-11.7.0",
+   "sandboxProfileRef": "harbor-terminal-bench-2.0",
+@@ -17,13 +17,13 @@
+     },
+     {
+       "path": "workflows/resolve-workflow-sources.md",
+-      "digest": "sha256:ac6c20088e1c4813e54011c8fee913d42a1874ada850a5b991e2f264674f1952",
+-      "bytes": 5346
++      "digest": "sha256:896b18aa30458343975366c9f3d5af2a86f507bd1011db1a9ac8dc95cba3a668",
++      "bytes": 6780
+     },
+     {
+       "path": "workflows/source-backed-operations.md",
+-      "digest": "sha256:47d0a4473252385ef78eba9821a36bf59ac2b0596f234bb74da4b431a22d5cdd",
+-      "bytes": 6809
++      "digest": "sha256:81b4e4c9e10d70ab759d8868611155e0fdd90b09ad140ac644a0cad81f8cb1a4",
++      "bytes": 7260
+     },
+     {
+       "path": "workflows/structured-cli-requests.md",
+@@ -36,5 +36,5 @@
+       "bytes": 5458
+     }
+   ],
+-  "digest": "sha256:7dbe79d30e96acef61a271be936ba635ef02312d2c4f5f0b6baf2e2a8b4640ff"
++  "digest": "sha256:ca4704fcd483e3eb271bd7b79ab5d020f4809f7c5f79bb866691cca105c470cc"
+ }
+diff --git a/harness/workflows/resolve-workflow-sources.md b/harness/workflows/resolve-workflow-sources.md
+index 4781c8a..8bcc1d3 100644
+--- a/harness/workflows/resolve-workflow-sources.md
++++ b/harness/workflows/resolve-workflow-sources.md
+@@ -25,6 +25,31 @@ A single source may resolve several roles. The user request may already supply
+ a complete rule or destination; do not invent another prerequisite. A subject,
+ search snippet, or endpoint description alone does not resolve a content need.
+ 
++### Separate processing scope from guidance scope
++
++When additional instructions need lookup, prepare two query scopes before
++selecting records for action:
++
++| Purpose | Query scope | Evidence retained |
++| --- | --- | --- |
++| Processing | The requested queue, statuses, labels, and record period | Candidate record IDs and original values |
++| Guidance | The workflow topic and any supplied source reference; apply only filters justified for finding its instructions | Full applicable source content and the rules it establishes |
++
++Do not inherit unread-only, inbox-only, active-record, or processing-date filters
++into the guidance query. Governing instructions can be already read, outside
++the queue, or older than the records they govern. Keep the processing scope
++unchanged when broadening guidance discovery; an extra search hit is not itself
++a record to act on.
++
++For unnamed requirements, use the available app-content search with the workflow
++topic, then read relevant instructions in full. Use the bounded fallback ladder
++below if that adds no relevant evidence. The queue listing and endpoint search
++do not count as this lookup. Independent record and guidance reads may run in
++parallel. Close the guidance dependency with the source reference and extracted
++rules, or record the attempted lookup and what remains unknown. If the task only
++suggests optional notes, a bounded search finds none, and the supplied rules
++suffice, continue using those rules without inventing additional requirements.
++
+ ## 2. Choose the next read from the unresolved question
+ 
+ Discover an endpoint schema once, then use its app-content search/read operation.
+@@ -40,7 +65,7 @@ IDs in path parameters; do not guess endpoint names.
+ | A topic search is empty or unrelated | Remove extra words and restrictive date, unread, sender, or exact-phrase filters not required by the task. Try a distinctive topic term. |
+ | A named channel search still misses the source | Resolve the channel ID and read bounded relevant history, including referenced threads. |
+ | Chat supplies only a short update or no procedure | Search an available mailbox/document store for the standing procedure using the topic or referenced title. Read matching messages/documents in full. |
+-| Mailbox search misses a referenced communication | Broaden the topic or inspect a bounded relevant message listing, then fetch promising IDs. Do not restrict discovery of standing guidance to unread messages. |
++| Mailbox search misses a referenced communication | Broaden the topic or inspect a bounded relevant message listing, then fetch promising IDs. |
+ | An existing queue/log/gallery cannot be found by title | Use the available file-list operation; simplify name/type filters, inspect returned metadata, then read candidate workbook tabs and headers. |
+ 
+ Do not exhaust synonyms in one store while another likely store remains
+diff --git a/harness/workflows/source-backed-operations.md b/harness/workflows/source-backed-operations.md
+index d2b45c9..43d8682 100644
+--- a/harness/workflows/source-backed-operations.md
++++ b/harness/workflows/source-backed-operations.md
+@@ -16,12 +16,20 @@ Record actual IDs and their roles. Use supplied IDs directly once the endpoint
+ is known; read metadata to map worksheet IDs to titles and inspect columns.
+ Endpoint discovery finds operations; app-content reads establish business facts.
+ 
+-If a referenced procedure or prior format has not been read in full, only a
+-partial update is available, or an existing destination is unresolved, read the
+-**resolve workflow sources** subprocedure at the absolute path supplied in the
+-harness workflow guidance. Reuse it once read in the current task.
+-It provides the dependency record, next-read ladder, and source-completeness
+-test. Reuse resolved evidence; fully specified inputs need no additional lookup.
++If the task refers to additional rules, current criteria, batch requirements,
++or shared process notes whose contents are not supplied, record governing
++guidance as a lookup dependency even when no document is named. Supplied
++recipients and a populated processing queue do not resolve that dependency:
++the requirements may govern eligibility, routing, and content as well as how
++actions are grouped.
++
++Read the **resolve workflow sources** subprocedure at the absolute path supplied
++in the harness workflow guidance before the first dependent mutation whenever
++that guidance, a referenced procedure or prior format, or an existing
++destination remains unresolved, including when only a partial update is read.
++It separates the processing query from the guidance query and provides the
++source-completeness test. Reuse resolved evidence and the procedure once read;
++fully specified inputs need no additional lookup.
+ 
+ Carry its resolved sources into the contract below. Keep remaining dependencies
+ explicit and complete independent authorized work without inventing missing

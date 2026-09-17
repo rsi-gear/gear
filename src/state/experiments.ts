@@ -18,6 +18,7 @@ export const EXPERIMENTS_TSV_COLUMNS = [
   'selection_role',
   'record_path',
   'updated_at',
+  'evaluation_mode',
 ] as const
 
 export interface ExperimentIndexEvolution {
@@ -77,6 +78,7 @@ export function serializeExperimentsTsv(evolutions: readonly ExperimentIndexEvol
         selectionRole(round, candidate.candidateId),
         `evolutions/${entry.evolutionId}/rounds/${round.roundId}.json`,
         round.updatedAt,
+        round.evaluationMode ?? 'held-out',
       ],
     }))))
     .sort((left, right) => left.sortKey < right.sortKey ? -1 : left.sortKey > right.sortKey ? 1 : 0)

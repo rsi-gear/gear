@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
-import { ComponentRegistry, parentSelectionInput } from 'dsh-plugin-refine/search/api'
-import { FailureClusterSearch } from 'dsh-plugin-refine/search/presets/failure-cluster-gepa'
-import { MemorySearchStore, createToySearch, createToySettings, checkParentSelectionPolicy } from 'dsh-plugin-refine/search/testing'
+import { ComponentRegistry, parentSelectionInput } from 'rsi-gear/search/api'
+import { FailureClusterSearch } from 'rsi-gear/search/presets/failure-cluster-gepa'
+import { MemorySearchStore, createToySearch, createToySettings, checkParentSelectionPolicy } from 'rsi-gear/search/testing'
 import { implementation, ref, uniformParentPolicy } from './uniform-parent.mjs'
 
 const components = new ComponentRegistry()

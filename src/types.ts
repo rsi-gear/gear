@@ -1,4 +1,5 @@
 import type { JsonValue } from '@deepseek-ai/dsh-session'
+import type { BaselineConditionSource, BaselineSourceSnapshot } from './refine/baseline-source.js'
 
 export type HarnessRef = string
 export type MetaHarnessRef = string
@@ -190,6 +191,12 @@ export interface RolloutSpec {
   agentConfig: JsonValue
 }
 
+/** Sealed only for evolutions whose Meta adapter receives seed experience. */
+export interface SeedExperienceMemoryPolicy {
+  schemaVersion: 1
+  enabled: boolean
+}
+
 export interface EvolutionSpec {
   /** Explicit, frozen v2 search configuration; absent on every legacy evolution. */
   searchSettings?: import('./search/types.js').SearchSettings
@@ -204,7 +211,11 @@ export interface EvolutionSpec {
   metaAgent: MetaAgentSpec
   candidateGeneration: CandidateGenerationSpec
   rollout: RolloutSpec
+  /** Verified source for a provider condition digest inherited by this evolution. */
+  baselineConditionSource?: BaselineConditionSource
   evaluation: {
+    /** Reuse seed evidence for promotion; no independent held-out evaluation. */
+    mode?: 'reuse-seed'
     judges: ComponentRef<unknown>[]
     primaryMetric: string
   }
@@ -220,6 +231,8 @@ export interface EvolutionSpec {
   taskBudgetMs: number
   toolchainRef: string
   sandboxProfileRef: SandboxProfileRef
+  /** Absence preserves the behavior of evolutions created before experience memory. */
+  experienceMemory?: SeedExperienceMemoryPolicy
 }
 
 export interface EvolutionRegistryEntry {
@@ -447,6 +460,39 @@ export interface HitchTrajectoryReader {
   resolveVerifierRun?(evalId: string, runId: string, signal: AbortSignal): Promise<{
     evalId: string; trialName?: string; attempt?: number
   } | undefined>
+  inspectVerifierDiagnosticPage?(
+    runId: string,
+    query: Readonly<HitchVerifierDiagnosticPageQuery>,
+    signal: AbortSignal,
+  ): Promise<HitchVerifierDiagnosticPage>
+}
+
+export interface HitchVerifierDiagnosticPageQuery {
+  name: 'ctrf.json' | 'test-stdout.txt' | 'test-stderr.txt' | 'stdout.txt' | 'stderr.txt'
+  offset?: number
+  limit?: number
+  sha256?: string
+}
+
+export interface HitchVerifierDiagnosticPage {
+  schemaVersion: 1
+  kind: 'verifier-diagnostic-page'
+  runId: string
+  artifact: {
+    name: HitchVerifierDiagnosticPageQuery['name']
+    mediaType: 'application/json' | 'text/plain'
+    bytes: number
+    sha256: string
+    sourceComplete: boolean
+    lossReason?: string
+  }
+  page: {
+    offset: number
+    bytes: number
+    text: string
+    eof: boolean
+    nextOffset?: number
+  }
 }
 
 export interface HitchVerifierEvidence {
@@ -731,7 +777,8 @@ export interface MetaPrerequisiteBlocked {
   message: string
   readiness: FinalizationReadiness
   operatorAction: {
-    upgrade: string
+    upgrade?: string
+    repair?: string
     compatibilityConfig?: 'hitch.allowUnavailableVerifierDiagnosis=true'
     runIds?: string[]
     reason?: string
@@ -743,10 +790,30 @@ export interface MetaPrerequisiteBlocked {
   }
 }
 
+export interface MetaPrerequisiteFailure {
+  schemaVersion: 1
+  code: MetaPrerequisiteBlocked['code']
+  failedOperation: MetaPrerequisiteBlocked['failedOperation'] | 'trajectory.query'
+  blockedRuns: Array<{
+    runId: string
+    code: string
+    cause?: string
+    resolution?: 'upgrade-hitch' | 'repair-evidence'
+  }>
+}
+
+export interface RefinementFailure {
+  phase: string
+  message: string
+  prerequisite?: MetaPrerequisiteFailure
+}
+
 export interface TrajectoryEvidenceBlocker {
   runId: string
   code: string
   message: string
+  resolution?: 'upgrade-hitch' | 'repair-evidence'
+  cause?: string
 }
 
 export interface LocalSourceTransportSummary {
@@ -921,6 +988,8 @@ export interface RoundEvaluationAttempt {
   failure?: { code: string; message: string }
   /** A settled baseline imported from an earlier round instead of rerun. */
   reusedFromRoundId?: string
+  /** Present with reusedFromRoundId when the evidence came from another evolution. */
+  reusedFromEvolutionId?: EvolutionId
   cleanupFailure?: EvaluationFailure
   submissionIntent?: EvaluationSubmissionIntent
   /** Diagnostic provenance for a reuse decision; it does not determine semantic compatibility. */
@@ -983,6 +1052,7 @@ export interface PairingAudit {
 }
 
 export interface RoundEvaluation {
+  heldOutReusedFromSeed?: true
   seedBaseline: EvaluationEvidence
   seedCandidate: EvaluationEvidence
   seedPairedTrials: PairedTrial[]
@@ -1078,7 +1148,8 @@ export interface CandidateGenerationAttempt {
   workspaceId?: string
   metaSessionId?: string
   metaTurn?: MetaTurnObservation
-  failure?: { phase: string; message: string }
+  prerequisiteBlocker?: MetaPrerequisiteFailure
+  failure?: RefinementFailure
 }
 
 export interface CandidateGenerationBudgetStatus {
@@ -1132,7 +1203,7 @@ export interface CandidateRecord {
   heldOutEvaluation?: EvaluationEvidence
   metrics?: MetricSet
   generationAttempts?: CandidateGenerationAttempt[]
-  failure?: { phase: string; message: string }
+  failure?: RefinementFailure
   status: 'generating' | 'ready' | 'evaluating' | 'selected' | 'discarded' | 'failed'
 }
 
@@ -1143,6 +1214,210 @@ export interface CandidateSeedComparison {
   scoreDelta: number
   processScoreDelta?: number
   requiredRegressions: number
+}
+
+export type SeedExperienceEffect = 'improved' | 'regressed' | 'mixed' | 'unchanged' | 'insufficient'
+
+export type SeedExperienceUseStatus = 'observed' | 'attempted-failure' | 'not-observed' | 'unknown'
+export type SeedExperienceUseAction = 'read' | 'execute' | 'injected'
+
+export interface SeedExperienceChangedArtifact {
+  path: string
+  change: CandidateDiffFile['change']
+  parentDigest?: string
+  candidateDigest?: string
+}
+
+export interface SeedExperienceUseActionEvidence {
+  action: SeedExperienceUseAction
+  outcome: 'completed' | 'errored'
+  sessionId: string
+  delegationDepth: number
+  sourcePath: string
+  sourceDigest: string
+  callSeq?: number
+  resultSeq?: number
+  callId?: string
+  toolName?: string
+  match:
+    | 'skill-name-and-body'
+    | 'skill-name-attempt'
+    | 'artifact-content'
+    | 'artifact-path-and-content'
+    | 'artifact-path-attempt'
+}
+
+export interface SeedExperienceArtifactUse {
+  path: string
+  status: SeedExperienceUseStatus
+  observedActionCount: number
+  failedActionCount: number
+  reason?: 'unsupported-artifact' | 'removed-artifact' | 'unverified-content' | 'source-unavailable'
+  /** Bounded examples; counts above retain the complete number of matches. */
+  actions: SeedExperienceUseActionEvidence[]
+}
+
+export interface SeedExperienceTrialUse {
+  status: SeedExperienceUseStatus
+  artifacts: SeedExperienceArtifactUse[]
+  source: {
+    extractorVersion: 'gear-experience-use-v1'
+    kind: 'dsh-native-events' | 'unavailable'
+    runId?: string
+    trajectoryManifestDigest?: string
+    mainSessionFiles: number
+    childSessionFiles: number
+    listedFiles: number
+    verifiedFiles: number
+    verifiedBytes: number
+    coverage: 'listed-files-complete' | 'partial' | 'unavailable'
+    reason?: string
+  }
+}
+
+export interface SeedExperienceUseConditionedResult {
+  status: SeedExperienceUseStatus
+  validPairs: number
+  taskCount: number
+  baselineMean?: number
+  candidateMean?: number
+  meanRewardDelta?: number
+}
+
+export interface SeedExperienceModificationUse {
+  schemaVersion: 1
+  extractorVersion: 'gear-experience-use-v1'
+  artifacts: SeedExperienceChangedArtifact[]
+  candidateTrials: number
+  statusCounts: Record<SeedExperienceUseStatus, number>
+  validPairStatusCounts: Record<SeedExperienceUseStatus, number>
+  conditionedResults: SeedExperienceUseConditionedResult[]
+}
+
+export interface SeedExperienceTrialSide {
+  trialName?: string
+  runId?: string
+  attempt?: number
+  status: 'completed' | 'errored' | 'missing'
+  reward?: number
+  /** Observed use of this candidate's changed artifacts; absent on legacy records. */
+  modificationUse?: SeedExperienceTrialUse
+}
+
+export interface SeedExperiencePairedTaskResult {
+  valid: true
+  trialKey: string
+  taskName: string
+  attempt?: number
+  baseline: SeedExperienceTrialSide & { reward: number }
+  candidate: SeedExperienceTrialSide & { reward: number }
+  rewardDelta: number
+}
+
+export interface SeedExperienceExcludedTaskResult {
+  valid: false
+  trialKey: string
+  taskName: string
+  attempt?: number
+  baseline: SeedExperienceTrialSide
+  candidate: SeedExperienceTrialSide
+  reasons: Array<'baseline-invalid' | 'candidate-invalid' | 'baseline-missing' | 'candidate-missing'>
+}
+
+/** Immutable, explicit allowlist projection of one candidate's paired seed outcome. */
+export interface SeedExperienceRecord {
+  schemaVersion: 1
+  recordId: string
+  seedProjectionDigest: string
+  source: {
+    evolutionId: EvolutionId
+    roundId: string
+    candidateId: string
+    parentCandidateId: string
+    parentHarnessRef: HarnessRef
+    candidateHarnessRef: HarnessRef
+    parentBaselineEvalId: string
+    candidateEvalId: string
+    parentRevisionIdentity: string
+    candidateRevisionIdentity: string
+    seedConditionId: string
+  }
+  applicability: {
+    model: string
+    provider: string
+    datasetDigest: string
+    rolloutProviderDigest: string
+    toolchainDigest: string
+  }
+  proposal: {
+    /** Proposer claim, not an observed explanation. */
+    rationale: string
+    /** Proposer claim, not an observed result. */
+    expectedOutcome: string
+    semanticTargets: SemanticTarget[]
+  }
+  change: {
+    patchDigest: string
+    totalBytes: number
+    files: CandidateDiffFile[]
+  }
+  observation: {
+    comparison: 'candidate-vs-its-parent-seed'
+    planned: number
+    valid: number
+    excluded: number
+    baselineInvalid: number
+    candidateInvalid: number
+    taskResults: SeedExperiencePairedTaskResult[]
+    excludedTaskResults: SeedExperienceExcludedTaskResult[]
+    /** Immutable evidence derived before the containing round snapshot is frozen. */
+    modificationUse?: SeedExperienceModificationUse
+    baselineMean?: number
+    candidateMean?: number
+    meanRewardDelta?: number
+  }
+  classification: {
+    execution: 'evaluated'
+    effect: SeedExperienceEffect
+    coverage: 'complete' | 'partial' | 'none'
+    gainedTasks: string[]
+    regressedTasks: string[]
+    unchangedTasks: string[]
+  }
+  recordDigest: string
+}
+
+export interface SeedExperienceSnapshotMember {
+  recordId: string
+  recordDigest: string
+  sourceRoundId: string
+  candidateId: string
+  candidateHarnessRef: HarnessRef
+}
+
+/** Exact record revisions visible to every proposer attempt in one round. */
+export interface SeedExperienceSnapshot {
+  schemaVersion: 1
+  members: SeedExperienceSnapshotMember[]
+  digest: string
+}
+
+export interface SeedExperienceCard {
+  recordId: string
+  experienceRef: string
+  source: { roundId: string; candidateId: string }
+  effect: SeedExperienceEffect
+  coverage: { planned: number; valid: number; excluded: number }
+  matchReasons: string[]
+  markdown: string
+}
+
+export interface SeedExperienceContext {
+  schemaVersion: 1
+  snapshotDigest: string
+  availableRecordCount: number
+  directParent?: SeedExperienceCard
+  relevantCards: SeedExperienceCard[]
 }
 
 /** The complete seed-only projection visible to selection components. */
@@ -1279,12 +1554,16 @@ export interface RefinementRound {
   sandboxProfileRef: SandboxProfileRef
   seedTaskRef: string
   heldOutRef: string
+  evaluationMode?: 'reuse-seed'
   taskBudgetMs: number
   promotionPolicy: PromotionPolicy
   batchId: string
   roundIndex: number
   roundCount: number
   advisoryFocus?: SemanticTarget[]
+  experienceSnapshot?: SeedExperienceSnapshot
+  /** Admission-time evidence copied from an explicitly selected source round. */
+  baselineSource?: BaselineSourceSnapshot
   plan: ResolvedRoundPlan
   parentPopulationDigest?: string
   /** Immutable code parent for new rounds; research survivors remain separately recorded. */
@@ -1311,7 +1590,7 @@ export interface RefinementRound {
   meta?: MetaAttribution
   proposalEvidence?: ProposalEvidenceAudit
   decision?: 'accepted' | 'rejected' | 'rejected-for-substrate' | 'no-change'
-  failure?: { phase: string; message: string }
+  failure?: RefinementFailure
 }
 
 export interface AdmissionResult {
@@ -1483,6 +1762,24 @@ export interface RefineBridgeRequestMap {
   'seed_tasks.load': { partition?: 'seed' }
   'trajectory.query': {
     refs?: string[]
+    detailRef?: string
+    find?: string
+  }
+  'experience.query': {
+    query?: string
+    taskNames?: string[]
+    semanticTargets?: SemanticTarget[]
+    paths?: string[]
+    effects?: SeedExperienceEffect[]
+    limit?: number
+    cursor?: string
+  }
+  'experience.read': {
+    ref: string
+    view: 'record' | 'card' | 'task-results' | 'diff' | 'trajectory'
+    offset?: number
+    limit?: number
+    runId?: string
     detailRef?: string
     find?: string
   }

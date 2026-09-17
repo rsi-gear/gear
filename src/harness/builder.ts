@@ -276,6 +276,59 @@ export class HarnessBuilder {
     return { content, digest, bytes }
   }
 
+  async readHarnessDiff(
+    parentRef: string,
+    candidateRef: string,
+    paths: readonly string[],
+    maxBytes: number,
+    signal?: AbortSignal,
+  ): Promise<{
+    parentRef: string
+    candidateRef: string
+    paths: string[]
+    patch: string
+    patchBytes: number
+    contentDigest: string
+    truncated: boolean
+  }> {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new TypeError('historical diff maxBytes must be positive')
+    const parent = await this.resolveExactCommit(parentRef, true)
+    const candidate = await this.resolveExactCommit(candidateRef, true)
+    const manifest = await this.readManifest(candidate)
+    if (manifest.parentRef !== parent) throw new MutationValidationError('historical candidate does not name the recorded parent')
+    await this.readManifest(parent)
+    const selected = [...new Set(paths.map(safeRelativePath))].sort()
+    if (selected.length === 0) throw new MutationValidationError('historical candidate has no recorded changed paths')
+    const patch = (await this.git([
+      'diff', '--no-ext-diff', '--no-color', '--unified=3', parent, candidate, '--',
+      ...selected.map(path => `${this.targetRoot}/${path}`),
+    ], signal)).stdout
+    const raw = Buffer.from(patch)
+    if (raw.byteLength <= maxBytes) {
+      return {
+        parentRef: parent,
+        candidateRef: candidate,
+        paths: selected,
+        patch,
+        patchBytes: raw.byteLength,
+        contentDigest: sha256(raw),
+        truncated: false,
+      }
+    }
+    let end = maxBytes
+    let visible = raw.subarray(0, end).toString('utf8')
+    while (visible.endsWith('\uFFFD') && end > 0) visible = raw.subarray(0, --end).toString('utf8')
+    return {
+      parentRef: parent,
+      candidateRef: candidate,
+      paths: selected,
+      patch: visible,
+      patchBytes: raw.byteLength,
+      contentDigest: sha256(raw),
+      truncated: true,
+    }
+  }
+
 
   private async validateComposition(root: string): Promise<void> {
     const compositionPath = join(root, 'preset', 'agent.cordis.yml')
@@ -496,7 +549,7 @@ export class HarnessBuilder {
       const abort = (): void => { child.kill('SIGTERM') }
       signal?.addEventListener('abort', abort, { once: true })
       child.once('error', reject)
-      child.once('exit', (code, childSignal) => {
+      child.once('close', (code, childSignal) => {
         signal?.removeEventListener('abort', abort)
         if (signal?.aborted === true) return reject(signal.reason)
         if (overflow) return reject(new Error(`${command} output exceeded ${this.maxGitOutputBytes} bytes`))
@@ -535,7 +588,7 @@ export class HarnessBuilder {
       const abort = (): void => { child.kill('SIGTERM') }
       signal?.addEventListener('abort', abort, { once: true })
       child.once('error', reject)
-      child.once('exit', (code, childSignal) => {
+      child.once('close', (code, childSignal) => {
         signal?.removeEventListener('abort', abort)
         if (signal?.aborted === true) return reject(signal.reason)
         if (overflow) return reject(new Error(`${command} output exceeded ${this.maxGitOutputBytes} bytes`))

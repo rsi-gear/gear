@@ -24,6 +24,7 @@ describe('packaged skill resource identity', () => {
     expect(copy.resources.map(value => value.logicalPath)).toEqual([
       'SKILL.md', 'agents/openai.yaml', 'references/dsh-target-harness.md',
       'references/protocol.md', 'references/target-harness-editing.md',
+      'scripts/transport.mjs',
     ])
     expect(copy.digest).toBe(`sha256:${createHash('sha256').update(JSON.stringify(copy.resources)).digest('hex')}`)
   })
@@ -40,8 +41,8 @@ describe('packaged skill resource identity', () => {
   it('includes added resources and detects removal', async () => {
     const root = await fixture()
     const before = await loadBundledRefineSkill(root)
-    await mkdir(join(root, 'scripts'))
-    await writeFile(join(root, 'scripts/helper.js'), 'export const version = 1\n')
+    await mkdir(join(root, 'helpers'))
+    await writeFile(join(root, 'helpers/helper.js'), 'export const version = 1\n')
     const added = await loadBundledRefineSkill(root)
     expect(added.digest).not.toBe(before.digest)
     await rm(join(root, 'references/protocol.md'))

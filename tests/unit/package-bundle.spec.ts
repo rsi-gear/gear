@@ -7,15 +7,20 @@ describe('published Gear bundle', () => {
   it('ships the standalone skill entry and an install-safe dormant DSH row', async () => {
     const root = resolve(import.meta.dirname, '../..')
     const pkg = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8')) as {
+      name: string
+      version: string
       dsh?: { bundle?: { patch?: string } }
       files?: string[]
       bin?: Record<string, string>
       exports?: Record<string, unknown>
     }
+    expect(pkg.name).toBe('rsi-gear')
+    expect(pkg.version).toBe('0.1.0')
     expect(pkg.dsh?.bundle?.patch).toBe('./cordis.patch.yml')
     expect(pkg.files).toContain('cordis.patch.yml')
     expect(pkg.files).toContain('assets/llm-verifier-bridge.py')
     expect(pkg.files).toContain('assets/hitch-codex-wrapper.mjs')
+    expect(pkg.files).toContain('assets/hitch-codex-credential-helper.mjs')
     expect(pkg.files).toContain('assets/dsh-runtime-check.mjs')
     expect(pkg.files).toContain('skills/refine/**')
     expect(pkg.bin).toEqual({
@@ -67,6 +72,6 @@ describe('published Gear bundle', () => {
     const patch = load(await readFile(resolve(root, 'cordis.patch.yml'), 'utf8')) as Array<{
       insert?: Array<{ id?: string; name?: string; disabled?: boolean }>
     }>
-    expect(patch).toEqual([{ insert: [{ id: 'refine', name: 'dsh-plugin-refine', disabled: true }] }])
+    expect(patch).toEqual([{ insert: [{ id: 'refine', name: 'rsi-gear', disabled: true }] }])
   })
 })

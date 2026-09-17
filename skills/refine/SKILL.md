@@ -56,12 +56,20 @@ not infer missing field names or harness APIs from errors.
    direct candidate methods are exactly `candidate.tree`, `candidate.read`,
    `candidate.write`, `candidate.edit`, and `candidate.remove`. Invoke
    `harness.current`, `harness.read`, `seed_tasks.load`, `trajectory.query`,
-   `hitch.status`, `candidate.diff`, `candidate.check`, `candidate.finalize`,
-   and `candidate.decline` only as `meta.call` capabilities; they are not
-   top-level request methods. Read the active candidate files before selecting
-   an edit. Do not discover or modify Gear state, Git metadata, held-out data,
-   credentials, or host paths directly.
-5. Review the baseline summary. If the assignment contains `workplanDelivery`,
+   `experience.query`, `experience.read`, `hitch.status`, `candidate.diff`,
+   `candidate.check`, `candidate.finalize`, and `candidate.decline` only as
+   `meta.call` capabilities; they are not top-level request methods. Read the
+   active candidate files before selecting an edit. Do not discover or modify
+   Gear state, Git metadata, held-out data, credentials, or host paths directly.
+5. Review the assignment's optional `experienceContext`. It contains the
+   actual paired seed result of the direct parent's last edit when available,
+   plus only relevant bounded history cards. Treat rationale and expected
+   outcome as the earlier proposer's claims; treat task reward changes as
+   observations, not causal or statistically significant conclusions. Use
+   `experience.query` and `experience.read` for focused history. Historical
+   `experienceRef` values never belong in `evidenceRefs` and never satisfy the
+   active baseline diagnosis requirement.
+6. Review the baseline summary. If the assignment contains `workplanDelivery`,
    consume its hypothesis, parent identity, sourced dossier excerpt, scope guards,
    generation budget, and seed-only findings first. Keep modifications within
    `workplan.modificationPaths` (paths relative to the harness root), or explicitly
@@ -102,7 +110,7 @@ not infer missing field names or harness APIs from errors.
    Start with one diagnostic card and size later reads from its actual output.
    Process the evidence before fetching more; use targeted detail reads instead
    of accumulating transcripts that repeatedly force context compaction.
-6. Identify an evidenced harness gap before choosing an intervention. A failed
+7. Identify an evidenced harness gap before choosing an intervention. A failed
    task or omitted check alone does not establish that gap. Use relevant
    accessible seed comparisons to test the explanation, including successful
    runs when useful. Choose the smallest supported mechanism from the editing
@@ -116,7 +124,7 @@ not infer missing field names or harness APIs from errors.
    Record the evidence, mechanism choice,
    applicability, and main uncertainty in `rationale`, and an observable
    behavioral prediction in `expectedOutcome`.
-7. Inspect `candidate.diff`, remove accidental or task-specific changes, and
+8. Inspect `candidate.diff`, remove accidental or task-specific changes, and
    run `candidate.check` before finalizing and require
    `finalizationReadiness.ready: true`. Inspect each runtime stage: loading,
    prompt assembly and Skill reads cover different paths; they do not prove
@@ -124,7 +132,7 @@ not infer missing field names or harness APIs from errors.
    Record remaining behavior checks in the proposal. Use `candidate.decline` when the
    evidence does not justify a harness change or the required fix is outside
    the editable substrate.
-8. After finalization, stop using that lease and poll status. Claim and complete
+9. After finalization, stop using that lease and poll status. Claim and complete
    every subsequent candidate or round until the requested batch reaches a
    terminal state.
 

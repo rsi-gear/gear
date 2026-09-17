@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseAdmissionInput, parseEvaluationRerunInput } from '../../src/index.js'
+import { parseAdmissionInput, parseContinueInput, parseEvaluationRerunInput } from '../../src/index.js'
 
 describe('/refine admission input', () => {
   it('parses seed ref, rounds, wall-clock budget, and semantic target', () => {
@@ -11,6 +11,23 @@ describe('/refine admission input', () => {
   it('rejects unknown options and targets', () => {
     expect(() => parseAdmissionInput(['--unknown', 'x'])).toThrow(/unknown refine option/)
     expect(() => parseAdmissionInput(['--target', 'evaluator'])).toThrow(/unknown semantic focus/)
+    expect(() => parseAdmissionInput(['--round', 'round-1'])).toThrow(/unknown refine option/)
+  })
+})
+
+describe('/refine continue input', () => {
+  it('parses a specific round to recover', () => {
+    expect(parseContinueInput(['--round', 'round-1'])).toEqual({ roundId: 'round-1' })
+  })
+
+  it('keeps new-batch options separate from round recovery', () => {
+    expect(parseContinueInput(['--rounds', '2', '--focus', 'context,routing'])).toEqual({
+      rounds: 2, focus: ['context', 'routing'],
+    })
+    expect(() => parseContinueInput(['--round', 'round-1', '--rounds', '2'])).toThrow(/cannot be combined/)
+    expect(() => parseContinueInput(['--round', 'round-1', '--focus', 'context'])).toThrow(/cannot be combined/)
+    expect(() => parseContinueInput(['--round'])).toThrow(/requires a value/)
+    expect(() => parseContinueInput(['--round', '--focus', 'context'])).toThrow(/requires a value/)
   })
 })
 

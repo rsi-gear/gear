@@ -1,11 +1,19 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import { SkillMetaCoordinator, SkillMetaSessionManager, type SkillHarnessIdentity } from '../../src/meta/skill.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import {
+  assertSkillHarnessIdentityMatches,
+  parseSkillHarnessIdentity,
+  skillHarnessIdentity,
+  SkillMetaCoordinator,
+  SkillMetaSessionManager,
+  type SkillHarnessIdentity,
+} from '../../src/meta/skill.js'
 import { RefineStateStore } from '../../src/state/store.js'
 import type { MetaAgentSpec } from '../../src/types.js'
 import { compatibleSkillMetaAgent } from '../../src/meta/controller.js'
+import { RefineSkillGateway } from '../../src/skill/gateway.js'
 import { evidence, roundFixture, SHA } from '../helpers/research-fixture.js'
 
 const roots: string[] = []
@@ -29,6 +37,113 @@ function spec(): MetaAgentSpec {
     sampling: {},
   }
 }
+
+describe('Skill harness identity', () => {
+  it('projects only the public fields and returns a detached canonical identity', () => {
+    const source = {
+      ...spec(),
+      model: { provider: 'openai', model: 'gpt-test', maxTokens: 8192 },
+      sampling: { temperature: 0.5, reasoningEffort: 'medium' },
+      contextOffloading: { ignored: true },
+    } as unknown as MetaAgentSpec
+    const projected = skillHarnessIdentity(source)
+    expect(projected).toEqual({
+      runtime: identity().runtime,
+      preset: identity().preset,
+      model: { provider: 'openai', model: 'gpt-test', maxTokens: 8192 },
+      sampling: { temperature: 0.5, reasoningEffort: 'medium' },
+    })
+    expect(projected).not.toBe(source)
+    expect(projected.runtime).not.toBe(source.runtime)
+  })
+
+  it.each([
+    [{ ...identity(), contextOffloading: {} }, 'identity.contextOffloading'],
+    [{ ...identity(), runtime: { ...identity().runtime, extra: true } }, 'identity.runtime.extra'],
+    [{ ...identity(), preset: { ...identity().preset, resources: [] } }, 'identity.preset.resources'],
+    [{ ...identity(), model: { ...identity().model, maxTokens: 0 } }, 'identity.model.maxTokens'],
+    [{ ...identity(), sampling: { unknown: true } }, 'identity.sampling.unknown'],
+    [{ ...identity(), sampling: { temperature: 3 } }, 'identity.sampling.temperature'],
+    [{ ...identity(), sampling: { reasoningEffort: ' medium' } }, 'identity.sampling.reasoningEffort'],
+    [{ ...identity(), runtime: { ...identity().runtime, integrity: 'not-a-digest' } }, 'identity.runtime.integrity'],
+    [{ ...identity(), preset: { ...identity().preset, digest: SHA('A') } }, 'identity.preset.digest'],
+    [{ runtime: identity().runtime, preset: identity().preset, model: identity().model }, 'identity.sampling'],
+  ])('strictly rejects an invalid public identity at %s', (value, path) => {
+    expect(() => parseSkillHarnessIdentity(value)).toThrow(path as string)
+  })
+
+  it('reports the first mismatched canonical field without printing either identity', () => {
+    expect(() => assertSkillHarnessIdentityMatches(
+      { ...identity(), model: { ...identity().model, model: 'other' } },
+      identity(),
+      'configured identity mismatch',
+    )).toThrow('configured identity mismatch at identity.model.model')
+  })
+
+  it('serves current and sealed projections without creating a coordinator lease', async () => {
+    const current = spec()
+    const sealed = { ...spec(), model: { ...spec().model, maxTokens: 4096 } }
+    const coordinator = new SkillMetaCoordinator()
+    const gateway = new RefineSkillGateway({
+      options: { metaAgent: current },
+      registry: {
+        async requireSpec(evolutionId: string) {
+          if (evolutionId !== 'sealed') throw new Error(`unknown evolution: ${evolutionId}`)
+          return { metaAgent: sealed }
+        },
+      },
+    } as never, coordinator, {} as never, {} as never)
+
+    await expect(gateway.call('control.identity', {})).resolves.toEqual(skillHarnessIdentity(current))
+    await expect(gateway.call('control.identity', { evolutionId: 'sealed' })).resolves.toEqual(skillHarnessIdentity(sealed))
+    await expect(gateway.call('control.identity', { evolutionId: 'missing' })).rejects.toThrow('unknown evolution: missing')
+    await expect(gateway.call('meta.claim', {
+      clientId: 'codex-client',
+      identity: { ...identity(), preset: { ...identity().preset, resources: [] } },
+    })).rejects.toThrow('identity.preset.resources')
+    expect(coordinator.pending()).toEqual([])
+  })
+
+  it('parses and forwards only the supported baseline source selection', async () => {
+    const admit = vi.fn(async () => ({ status: 'queued' }))
+    const gateway = new RefineSkillGateway({ admit } as never, new SkillMetaCoordinator(), {} as never, {} as never)
+    await gateway.call('control.start', {
+      baselineSource: { evolutionId: 'source-evolution', roundId: 'source-round', partitions: ['seed', 'held-out'] },
+    })
+    expect(admit).toHaveBeenCalledWith('skill', {
+      baselineSource: {
+        evolutionId: 'source-evolution', roundId: 'source-round', partitions: ['seed', 'held-out'],
+      },
+    })
+    await expect(gateway.call('control.start', {
+      baselineSource: { evolutionId: 'source-evolution', roundId: 'source-round', resources: [] },
+    })).rejects.toThrow('selection has unknown fields')
+    await expect(gateway.call('control.start', {
+      baselineSource: { evolutionId: 'source-evolution', roundId: 'source-round', partitions: ['held-out'] },
+    })).rejects.toThrow('partitions must be either')
+    expect(admit).toHaveBeenCalledTimes(1)
+  })
+
+  it('forwards one exact round for continuation without new-batch options', async () => {
+    const continueEvolution = vi.fn(async () => ({ status: 'queued' }))
+    const gateway = new RefineSkillGateway(
+      { continueEvolution } as never, new SkillMetaCoordinator(), {} as never, {} as never,
+    )
+    await gateway.call('control.continue', { evolutionId: 'evolution-1', roundId: 'round-1' })
+    expect(continueEvolution).toHaveBeenCalledWith('skill', 'evolution-1', { roundId: 'round-1' })
+
+    await expect(gateway.call('control.continue', {
+      evolutionId: 'evolution-1', roundId: 'round-1', rounds: 2,
+    })).rejects.toThrow(/roundId cannot be combined with rounds or focus/)
+    await expect(gateway.call('control.continue', {
+      evolutionId: 'evolution-1', roundId: 'round-1', focus: ['context'],
+    })).rejects.toThrow(/roundId cannot be combined with rounds or focus/)
+    await expect(gateway.call('control.continue', {
+      evolutionId: 'evolution-1', roundId: '',
+    })).rejects.toThrow(/roundId is required/)
+    expect(continueEvolution).toHaveBeenCalledTimes(1)
+  })
+})
 
 describe('SkillMetaSessionManager', () => {
   it('rejects aggregate generation limits before publishing an external assignment', async () => {

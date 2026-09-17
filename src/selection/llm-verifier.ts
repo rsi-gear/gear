@@ -1,6 +1,4 @@
 import { spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
 import { isAbsolute, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
@@ -13,7 +11,8 @@ import type {
   HitchTrajectoryAnalysis,
   MetricSet,
 } from '../types.js'
-import { assertComponentRef, type CandidateAssessor } from '../evolution/components.js'
+import type { CandidateAssessor } from '../evolution/components.js'
+import { assertComponentRef } from '../evolution/component-ref.js'
 import { digestJson } from '../state/digest.js'
 
 const BRIDGE_PATH = fileURLToPath(new URL('../../assets/llm-verifier-bridge.py', import.meta.url))
@@ -524,20 +523,4 @@ export class LlmVerifierCandidateAssessor implements CandidateAssessor {
   }
 }
 
-export function llmVerifierImplementation(): ComponentRef<unknown>['implementation'] {
-  const moduleBytes = readFileSync(fileURLToPath(import.meta.url))
-  const bridgeBytes = readFileSync(BRIDGE_PATH)
-  const manifestBytes = readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)))
-  const manifest = JSON.parse(manifestBytes.toString('utf8')) as { name: string; version: string }
-  return {
-    package: manifest.name,
-    version: manifest.version,
-    integrity: `sha256:${createHash('sha256')
-      .update(moduleBytes)
-      .update('\0')
-      .update(bridgeBytes)
-      .update('\0')
-      .update(manifestBytes)
-      .digest('hex')}`,
-  }
-}
+export { stableLlmVerifierImplementation as llmVerifierImplementation } from '../evolution/component-identity.js'

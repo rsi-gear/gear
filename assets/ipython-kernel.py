@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Persistent, line-framed IPython execution helper for dsh-plugin-refine."""
+"""Persistent, line-framed IPython execution helper for gear."""
 
 import contextlib
 import io
@@ -11,7 +11,7 @@ import traceback
 try:
     from IPython.core.interactiveshell import InteractiveShell
 except Exception as error:
-    sys.stderr.write("IPython is required by dsh-plugin-refine: %s\n" % error)
+    sys.stderr.write("IPython is required by gear: %s\n" % error)
     raise
 
 WIRE_OUT = sys.stdout

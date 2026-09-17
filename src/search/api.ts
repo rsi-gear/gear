@@ -1,6 +1,7 @@
 /** Supported contributor API. Historical ./search exports remain available for compatibility. */
 export { ComponentRegistry } from '../evolution/components.js'
-export { componentRef, implementationFromFiles } from '../evolution/component-ref.js'
+export { componentRef } from '../evolution/component-ref.js'
+export { implementationFromFiles } from '../evolution/implementation-files.js'
 export type { ComponentImplementation } from '../evolution/component-ref.js'
 export type { ComponentRef } from '../types.js'
 export { createParentRandom } from './parent-random.js'

@@ -16,6 +16,7 @@ import { serializeExperimentsTsv } from './experiments.js'
 import { validateMetaSampling } from '../meta/sampling.js'
 import { validateOffloadingPolicy } from '../meta/offloading-policy.js'
 import { validateSearchSchema } from '../search/schema.js'
+import { validateBaselineConditionSource } from '../refine/baseline-source.js'
 
 export { digestJson } from './digest.js'
 
@@ -112,6 +113,19 @@ function validateSpec(value: EvolutionSpec): EvolutionSpec {
     && !/^sha256:[0-9a-f]{64}$/u.test(value.rollout.providerSemanticDigest)) {
     throw new TypeError('evolution rollout provider semantic digest is invalid')
   }
+  if (value.baselineConditionSource !== undefined) {
+    const source = validateBaselineConditionSource(value.baselineConditionSource)
+    const providerIdentity = {
+      kind: value.rollout.provider.kind,
+      id: value.rollout.provider.id,
+      apiVersion: value.rollout.provider.apiVersion,
+      implementation: value.rollout.provider.implementation,
+    }
+    if (source.inheritedRolloutProviderDigest !== value.rollout.providerSemanticDigest
+      || digestJson(source.destinationProvider) !== digestJson(providerIdentity)) {
+      throw new TypeError('evolution baseline condition source does not match its rollout provider')
+    }
+  }
   const rolloutTemperature = value.rollout.sampling.temperature
   if (rolloutTemperature !== undefined
     && (!Number.isFinite(rolloutTemperature) || rolloutTemperature < 0 || rolloutTemperature > 2)) {
@@ -120,6 +134,14 @@ function validateSpec(value: EvolutionSpec): EvolutionSpec {
   if (!Array.isArray(value.evaluation.judges) || value.evaluation.judges.length === 0
     || typeof value.evaluation.primaryMetric !== 'string' || value.evaluation.primaryMetric.length === 0) {
     throw new TypeError('evolution evaluation configuration is invalid')
+  }
+  if (value.evaluation.mode !== undefined && value.evaluation.mode !== 'reuse-seed') {
+    throw new TypeError('unknown evaluation mode')
+  }
+  if (value.evaluation.mode === 'reuse-seed'
+    && (value.datasets.seed.ref !== value.datasets.heldOut.ref
+      || value.datasets.seed.digest !== value.datasets.heldOut.digest)) {
+    throw new TypeError('reuse-seed requires identical seed and held-out datasets')
   }
   const components = [
     ['candidate-generator', value.candidateGeneration.strategy],
@@ -139,6 +161,10 @@ function validateSpec(value: EvolutionSpec): EvolutionSpec {
   }
   if (!Number.isSafeInteger(value.taskBudgetMs) || value.taskBudgetMs <= 0) {
     throw new TypeError('evolution taskBudgetMs is invalid')
+  }
+  if (value.experienceMemory !== undefined
+    && (value.experienceMemory.schemaVersion !== 1 || typeof value.experienceMemory.enabled !== 'boolean')) {
+    throw new TypeError('evolution seed experience memory policy is invalid')
   }
   return value
 }

@@ -1,15 +1,15 @@
-import { componentRef, implementationFromFiles } from 'dsh-plugin-refine/search/api'
+import { componentRef, implementationFromFiles } from 'rsi-gear/search/api'
 
 // Include every local implementation dependency when this example grows into a package.
 export const implementation = implementationFromFiles('gear-example-parent-policy', '1.0.0', [new URL(import.meta.url)])
 export const ref = componentRef('parent-selection', 'example-uniform-parent', implementation, {})
 
-/** @param {import('dsh-plugin-refine/search/api').ComponentRef<unknown>} component */
+/** @param {import('rsi-gear/search/api').ComponentRef<unknown>} component */
 export function uniformParentPolicy(component) {
   if (!component.config || typeof component.config !== 'object' || Array.isArray(component.config) || Object.keys(component.config).length) {
     throw new TypeError('uniform parent policy accepts an empty config')
   }
-  /** @type {import('dsh-plugin-refine/search/api').ParentSelectionPolicy} */
+  /** @type {import('rsi-gear/search/api').ParentSelectionPolicy} */
   const policy = {
     ref: component,
     requiresChampion: false,
