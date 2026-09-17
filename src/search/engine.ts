@@ -3,11 +3,11 @@ import { ComponentRegistry } from '../evolution/components.js'
 import { digestJson } from '../state/digest.js'
 import { buildArchive, passesExploration } from './archive.js'
 import type { EvidenceCompletion } from './completion.js'
-import { integrity, invariant, numeric, plannedCellCount, resolveSizing, scopeEquivalenceDigest, seal, sorted, utility } from './contracts.js'
+import { integrity, invariant, numeric, plannedCellCount, resolveSizing, safeId, scopeEquivalenceDigest, seal, sorted, utility } from './contracts.js'
 import { clusters } from './diagnosis.js'
-import { prepareScopeEpochs, type ScopeEpochPreparation } from './epochs.js'
+import { prepareScopeEpochs, scopeEpoch, type ScopeEpochPreparation } from './epochs.js'
 import { profile, validOutcome } from './evidence.js'
-import { selectParentsWithPolicy } from './parent-selection.js'
+import { parentSelectionInput, selectParentsWithPolicy } from './parent-selection.js'
 import { resolveParentPolicyRef } from './policies/parents.js'
 import type { PromotionInput } from './promotion.js'
 import { assessGate, decideFinal, precheckSeed, rankProfiles } from './promotion.js'
@@ -43,6 +43,7 @@ export class SearchEvidencePending extends Error {
 export interface SearchRoundOutcome {
   schemaVersion: 2
   roundId: string
+  /** Seed research artifact; an unsuccessful bootstrap is not installed as the parent archive. */
   archiveDigest: string
   championAnchorDigest: string
   nomineeId?: string
@@ -93,6 +94,7 @@ export class FailureClusterSearch {
       scopeDigest: digestJson([universe.digest, stage]), taskIds: universe.tasks.map(t => t.id), participantIds: ids, prerequisiteDecisionDigests: [], selectionRuleDigest: integrity })
   }
   async run(request: SearchAdmission, signal: AbortSignal): Promise<SearchRoundOutcome> {
+    safeId(request.roundId)
     const parentPolicy = this.components.parentSelectionPolicy(resolveParentPolicyRef(request.settings.search))
     const saved = await this.store.read<{ ref: string }>(`rounds/${request.roundId}/admission`)
     if (saved) {
@@ -113,9 +115,17 @@ export class FailureClusterSearch {
       invariant(previous.algorithmIntegrity === integrity, 'search algorithm identity changed; start a new evolution')
       invariant(previous.parentPolicyRef && digestJson(previous.parentPolicyRef) === digestJson(parentPolicy.ref), 'parent policy changed on resume')
     }
+    const completion = await this.store.read<{ id: string }>('active-completion')
+    invariant(!completion || await this.store.read(`rounds/${completion.id}/result`), 'search has an unresolved completion; resume its original completion ID')
+    const repair = await this.store.read<{ id: string }>(`rounds/${request.roundId}/active-repair`)
+    invariant(!repair || await this.store.read(`rounds/${request.roundId}/repair-result-${digestJson(repair.id).slice(7)}`), 'round has an unresolved repair; resume its original repair ID')
     const existingIntent = await this.store.read<{ ref: string }>(`rounds/${request.roundId}/commit`)
     if (existingIntent) return this.runtime.reconcile(request.roundId, await this.store.object<CommitIntent>(existingIntent.ref))
+    signal.throwIfAborted()
     const current = await this.validate(request)
+    signal.throwIfAborted()
+    const owner = await this.store.freeze(request.roundId, 'operation-kind', () => seal({ kind: 'search-round' }))
+    invariant(owner.kind === 'search-round', 'record ID belongs to a different operation kind')
     const identity: SearchEvolutionIdentity = seal({ protocolVersion: searchProtocolVersion, evolutionId: request.evolutionId, settingsDigest: digestJson(request.settings), maxCandidates: request.maxCandidates,
       seedUniverseDigest: current.seed.digest, heldOutUniverseDigest: current.heldOut.digest, providerIntegrity: this.provider.integrity,
       diagnosisIntegrity: this.diagnosis.integrity, sanitizationPolicyDigest: this.diagnosis.sanitizationPolicyDigest, algorithmIntegrity: integrity, parentPolicy: parentPolicy.ref })
@@ -156,6 +166,32 @@ export class FailureClusterSearch {
       const { digest: discarded, ...body } = plan
       const baselinePlan = seal(body)
       const result = await evaluate(seed, baselinePlan, anchor)
+      if (result.failure) {
+        // Keep incomplete bootstrap evidence with this round. Installing it as the
+        // parent archive would prevent the next round from completing its baseline.
+        const research = buildArchive({ evolutionId: admission.evolutionId, universe: seed, snapshots: [anchor], scopes: [bootstrapScope],
+          results: [result], plans: [baselinePlan], config: { ...settings.search, parentPolicy: parentPolicy.ref },
+          championId: anchor.candidateId, includeChampion: parentPolicy.requiresChampion })
+        const selectionInput = parentSelectionInput(research, request.roundId, admission.maxCandidates, settings.search.seed, anchor.candidateId)
+        const reasonCodes = [`${result.failure.kind}:${result.failure.code}`, 'bootstrap-execution-unavailable']
+        const parents: ParentSelectionDecision = seal({ archiveDigest: research.digest, algorithmRef: 'sha256-counter-v1' as const,
+          randomSeed: selectionInput.randomSeed, batches: [], policy: { ref: parentPolicy.ref, inputDigest: digestJson(selectionInput), parentProbabilities: {}, reasonCodes } })
+        const preparation: ScopeEpochPreparation = seal({ archiveCutoffDigest: research.digest, epoch: scopeEpoch(settings, request.roundIndex),
+          sharedTaskIds: [], ruleDigest: digestJson(settings.search.scopeSampling), scopes: [], plans: [], results: [], decisions: [] })
+        const decision: EvaluationStageDecision = seal({ stagePlanDigest: baselinePlan.digest, candidateId: anchor.candidateId,
+          outcome: 'insufficient-evidence' as const, reasonCodes, supportDigest: result.digest })
+        for (const record of [research, parents, preparation]) await this.store.put(record)
+        await this.runtime.decisionProgress(request.roundId, [decision])
+        const outcome: SearchRoundOutcome = seal({ schemaVersion: 2 as const, roundId: request.roundId, archiveDigest: research.digest,
+          championAnchorDigest: anchor.digest, championChanged: false,
+          advisory: settings.promotion.validationMode === 'shared-set-research' && settings.promotion.allowSharedSetPromotion !== true,
+          validationMode: settings.promotion.validationMode, reasonCodes, findings: [],
+          research: { sizing: resolution, parents, workplans: [], scopeViews: research.scopeViews, parentProbabilities: {},
+            bridge: seal({ skipped: [], exclusions: [] }), scopePreparation: preparation, stageDecisions: [decision], candidates: [],
+            remainingBudget: await this.store.remaining(request.roundId, settings.budgets) } })
+        inspectionSignal.throwIfAborted()
+        return this.runtime.recordTerminal(request.roundId, outcome)
+      }
       const p = profile(seed, baselinePlan, anchor, result, settings.search.process.mode, bootstrapScope.weights)
       invariant(passesExploration(bootstrapScope, p, seed), 'bootstrap baseline is incomplete or fails exploration guards')
       archive = buildArchive({ evolutionId: admission.evolutionId, universe: seed, snapshots: [anchor], scopes: [bootstrapScope], results: [result], plans: [baselinePlan], config: settings.search, championId: anchor.candidateId, includeChampion: parentPolicy.requiresChampion })
@@ -172,7 +208,7 @@ export class FailureClusterSearch {
       invariant(archive.results.some(r => r.digest === completion.originalResultDigest), 'completion does not reference existing archive evidence')
       completions.push(await this.store.object<StageResult>(completion.completedResultDigest))
     }
-    if (parentPolicy.requiresChampion) {
+    if (parentPolicy.requiresChampion || completions.some(result => !archive!.results.some(saved => saved.digest === result.digest))) {
       // Freeze a seed-only selection view before drawing parents. The committed
       // archive stays unchanged until the round's original CAS succeeds.
       archive = await this.store.freeze(request.roundId, 'parent-archive', () => buildArchive({ evolutionId: admission.evolutionId,

@@ -1,6 +1,6 @@
 import { ComponentRegistry } from '../evolution/components.js'
 import { digestJson } from '../state/digest.js'
-import { digest, integrity, invariant, numeric, plannedCellCount, processTasks, repetitionsForTask, seal, sorted, utility, validateSettings, validateSnapshot, verifyDigest } from './contracts.js'
+import { digest, integrity, invariant, numeric, plannedCellCount, processTasks, repetitionsForTask, safeId, seal, sorted, utility, validateSettings, validateSnapshot, verifyDigest } from './contracts.js'
 import { deliveredWorkplan, validateReceipt } from './diagnosis.js'
 import { assertCell, cellIdentity, cellKey, completeEvidence, plannedCells, profile, reusableCells, validOutcome } from './evidence.js'
 import { resolveParentPolicyRef } from './policies/parents.js'
@@ -188,9 +188,11 @@ export class SearchExecutionRuntime {
     return repair ? this.store.object<StageResult>(repair.ref) : original
   }
 
-  /** Repairs an unconsumed stage revision under the same round/evolution budget. */
+  /** Repairs this nonterminal round's unconsumed original stage result under its existing budget. */
   async repairEvaluation(roundId: string, repairId: string, originalRef: string, signal: AbortSignal): Promise<StageResult> {
+    safeId(roundId); safeId(repairId); signal.throwIfAborted()
     invariant(!await this.store.read(`rounds/${roundId}/commit`), 'cannot repair after commit intent')
+    invariant(!await this.store.read(`rounds/${roundId}/terminal`), 'cannot repair a terminal round')
     const saved = await this.store.read<{ ref: string }>(`rounds/${roundId}/admission`); invariant(saved, 'unknown search round')
     const admission = await this.store.object<SearchAdmission & { seed: TaskUniverse; heldOut: TaskUniverse; startedAt: number; providerIntegrity: string; algorithmIntegrity: string; digest: string }>(saved.ref)
     invariant(admission.providerIntegrity === this.provider.integrity, 'repair provider identity changed')
@@ -204,7 +206,14 @@ export class SearchExecutionRuntime {
     invariant(!consumer || !await this.store.read(`rounds/${roundId}/${consumer}`), 'stage already consumed; append an archive evidence completion instead')
     const universe = plan.partition === 'seed' ? admission.seed : admission.heldOut
     invariant(!await this.store.read(`rounds/${roundId}/${this.consumptionKey(plan.digest, snapshot.digest)}`), 'stage already consumed; append an archive evidence completion instead')
-    const input = await this.store.freeze(roundId, `repair-${repairId}-input`, async () => {
+    const evaluation = await this.store.read<{ ref: string }>(`rounds/${roundId}/evaluation-${digestJson([plan.digest, snapshot.digest]).slice(7)}`)
+    invariant(evaluation?.ref === originalRef, 'repair must reference this round\'s original evaluation')
+    const active = await this.store.read<{ id: string }>(`rounds/${roundId}/active-repair`)
+    invariant(!active || active.id === repairId || await this.store.read(`rounds/${roundId}/repair-result-${digestJson(active.id).slice(7)}`), 'another repair is unresolved; resume its original repair ID')
+    signal.throwIfAborted()
+    // Caller IDs cannot alias frozen input records or evidence revision pointers.
+    const repairKey = digestJson(repairId).slice(7)
+    const input = await this.store.freeze(roundId, `repair-input-${repairKey}`, async () => {
       const currentPointer = await this.store.read<{ ref: string }>(`rounds/${roundId}/repair-${original.digest.slice(7)}`)
       const current = currentPointer ? await this.store.object<StageResult>(currentPointer.ref) : original
       const identities = plannedCells(universe, plan, snapshot), cached = await reusableCells(this.store, this.provider, identities, current.cells)
@@ -212,23 +221,30 @@ export class SearchExecutionRuntime {
       return seal({ originalRef, current, cached, request: { plan, snapshot, cells: missing } })
     })
     invariant(input.originalRef === originalRef, 'repair ID reused for different evidence')
-    return this.store.freeze(roundId, `repair-${repairId}`, async () => {
+    const key = digestJson([roundId, repairId, input.current.digest])
+    const previousOperation = await this.store.operation(roundId, key)
+    const previousCells = previousOperation?.status === 'complete' ? (await this.store.object<EvaluationExecutionResult & { digest: string }>(previousOperation.outputDigest!)).cells : []
+    const pending = await this.store.read<PendingSearchOperation | null>(`rounds/${roundId}/pending-operation`)
+    invariant(!pending || [key, ...[...input.current.cells, ...input.cached, ...previousCells].map(c => digestJson([key, c.digest]))].includes(pending.operationKey), 'another external operation is unresolved; resume its original repair ID')
+    // Persist ownership before external execution, including the crash window
+    // before an uncertain response can produce a pending-operation marker.
+    await this.store.write(`rounds/${roundId}/active-repair`, { id: repairId })
+    return this.store.freeze(roundId, `repair-result-${repairKey}`, async () => {
       const budgetStart = (await this.store.read<{ startedAt: number }>('budget'))?.startedAt ?? admission.startedAt
       const deadline = Math.min(admission.startedAt + admission.settings.budgets.round.timeoutMs, budgetStart + admission.settings.budgets.evolution.timeoutMs)
       const inspectionSignal = signal, timed = searchDeadline(signal, deadline)
       signal = timed.signal
       try {
       const { current, request } = input, missing = request.cells
-      const key = digestJson([roundId, repairId, current.digest])
-      const previousOperation = await this.store.operation(roundId, key)
-      const previousCells = previousOperation?.status === 'complete' ? (await this.store.object<EvaluationExecutionResult & { digest: string }>(previousOperation.outputDigest!)).cells : []
-      const pending = await this.store.read<PendingSearchOperation | null>(`rounds/${roundId}/pending-operation`)
-      invariant(!pending || [key, ...[...current.cells, ...input.cached, ...previousCells].map(c => digestJson([key, c.digest]))].includes(pending.operationKey), 'another external operation is unresolved; resume its original repair ID')
       const previouslyReserved = !!previousOperation
-      const reservation = await this.store.reserve(roundId, key, request, { ...zeroUsage(), cells: missing.length, repairCells: missing.length }, admission.settings.budgets, admission.startedAt)
-      let output: EvaluationExecutionResult
-      if (reservation.status === 'complete') output = await this.store.object<EvaluationExecutionResult & { digest: string }>(reservation.outputDigest!)
-      else {
+      let reservation, output: EvaluationExecutionResult = { cells: [] }
+      try { reservation = await this.store.reserve(roundId, key, request, { ...zeroUsage(), cells: missing.length, repairCells: missing.length }, admission.settings.budgets, admission.startedAt) }
+      catch (error) {
+        if (!(error instanceof SearchBudgetExceeded)) throw error
+        output.failure = budgetFailure(error.resource)
+      }
+      if (reservation?.status === 'complete') output = await this.store.object<EvaluationExecutionResult & { digest: string }>(reservation.outputDigest!)
+      else if (reservation) {
         const recovered = await recoverExternal({ store: this.store, roundId,
           operation: { operationKey: key, kind: 'evaluation', partition: plan.partition, stagePlanDigest: plan.digest, candidateId: snapshot.candidateId },
           signal, inspectionSignal, previouslyReserved,
@@ -390,9 +406,13 @@ export class SearchExecutionRuntime {
     const next = await this.store.object<ResearchArchive>(intent.nextArchiveDigest)
     await this.store.casArchive(intent.expectedArchiveDigest, next)
     if (intent.nextChampion) await this.hooks.commitChampion(intent.expectedChampionRevisionDigest, intent.nextChampion, roundId)
-    await this.store.put(intent.outcome); await this.store.write(`rounds/${roundId}/terminal`, { ref: intent.outcome.digest })
+    return this.recordTerminal(roundId, intent.outcome)
+  }
+  async recordTerminal(roundId: string, outcome: SearchRoundOutcome): Promise<SearchRoundOutcome> {
+    validateSearchSchema('SearchRoundOutcome', outcome)
+    await this.store.put(outcome); await this.store.write(`rounds/${roundId}/terminal`, { ref: outcome.digest })
     const advancing = await this.store.read<{ roundId: string | null }>('active-round')
     if (advancing?.roundId === roundId) await this.store.write('active-round', { roundId: null })
-    return intent.outcome
+    return outcome
   }
 }

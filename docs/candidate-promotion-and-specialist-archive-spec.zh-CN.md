@@ -1,9 +1,8 @@
 # Candidate 晋升与任务专长 Archive 优化规范
 
-- 状态：Implemented，v1 修订 3；Gear 搜索、控制面、晋升及 65 行验收见[实现与接入说明](candidate-promotion-implementation.zh-CN.md)和[验收记录](candidate-promotion-acceptance.zh-CN.md)。任务子集、逐题缓存和分阶段调度由 Gear 内部适配现有 evaluator 完成，无需 Hitch 新增能力声明或接口。未对运行中的实验启用或迁移。
-- 日期：2026-09-12。
+- 实现与接入见[接入说明](candidate-promotion-implementation.zh-CN.md)。任务子集、逐题缓存和分阶段调度由 Gear 内部适配现有 evaluator 完成，无需 Hitch 新增能力声明或接口。
 - 范围：Gear 共享失败诊断、分类分工与多 candidate 生成、分阶段评测、父代选择、跨轮研究归档、过程指标兼容、champion 晋升、失败回归任务、状态恢复。
-- 设计依据：当前 Gear 工作区实现；evolution `cf603144-c511-4a37-94aa-4986d7831616`；Reef 固定提交 `c7a00cadbdc0d8002f35c1d37b12232a3bec5388` 的 GEPA 实现。
+- 设计依据：Gear 搜索与评测接口；Reef 固定提交 `c7a00cadbdc0d8002f35c1d37b12232a3bec5388` 的 GEPA 实现。
 - 文中的 MUST / MUST NOT 是验收要求；SHOULD 是允许说明理由后调整的建议。
 
 ## 1. 决策摘要
@@ -45,11 +44,11 @@ GEPA 选择父代（初始为 champion）
 - 失败任务先入提案队列，再形成新的任务集版本；不原地扩充正在运行的 evolution。
 - v1 保持每个候选一个代码父代，生成默认串行；并行执行和自动代码合并不是此次交付前提。分工使改动保持模块边界，为后续合并提供输入。
 
-## 2. 当前行为、实验证据与相关规范
+## 2. 旧模式行为与相关规范
 
-### 2.1 当前实现
+### 2.1 旧模式与新模式的差异
 
-| 位置 | 当前行为 | 新模式需要的变化 |
+| 位置 | 旧模式行为 | 新模式行为 |
 | --- | --- | --- |
 | [CandidateGenerator / config](../src/evolution/components.ts) | 已支持 `maxCandidates` 个 sibling 槽位，默认 1；当前校验返回数量必须相等 | 新模式中它是上限；baseline 诊断后按有效工作计划确定实际数量 |
 | [finalizationReadiness](../src/refine/finalization-readiness.ts) | 每个 candidate 都要取得全部父代失败的诊断 receipt | 引入共享 DiagnosisDossier 和真实的 candidate 级消费凭据 |
@@ -62,32 +61,11 @@ GEPA 选择父代（初始为 champion）
 | [store validation](../src/state/store.ts) | finalist 必须是 survivor；population 成员必须出自本轮 | v2 合同分别校验 archive 来源与 finalist 来源 |
 | [champion parent resolver](../src/refine/champion-parent.ts) | champion 恢复依赖来源轮 population 中的成员 | champion 父代快照独立保活，不受 archive 剪枝影响 |
 
-当前 generator 在 baseline 读取前分配槽位，生成器输入不含失败证据；因此仅提高 `maxCandidates` 或增加 selector 插件不能实现本规范。案例 evolution 的 `maxCandidates=1`，`maxAttemptsPerCandidate=2` 是同一候选的生成重试上限，不是两个独立候选。
+旧模式的 generator 在 baseline 读取前分配槽位，生成器输入不含失败证据；因此仅提高 `maxCandidates` 或增加 selector 插件不能实现本规范。`maxCandidates` 控制候选数量，`maxAttemptsPerCandidate` 控制同一候选的生成重试上限。
 
-### 2.2 案例 evolution
+### 2.2 与已有规范的关系
 
-以下是累计第 3～5 轮的已记录结果，不是新策略的回放决定：
-
-| 轮次 / commit | 任务通过率 | 过程均分 | 原决定 |
-| --- | ---: | ---: | --- |
-| 3 / `4c68111` | 36/100 | 80.40% | accepted |
-| 4 / `8b651c5` | 36/100 | 81.19% | accepted |
-| 5 / `59e4892` | 34/100 | 82.30% | rejected |
-
-第 4→5 轮有 8 项失败转成功、10 项成功转失败；56 项两次均失败的任务，其过程均分上升约 4.28 个百分点。第 5 轮具备值得研究的局部进展，也存在真实观测到的回归。
-
-- `video_repurpose`：结果仍为 0，部分完成度从 0/13 变为 12/13。
-- `app_review_triage`：从 9/12 变为 12/13，补齐三个建票要求，同时新增一个禁止建票约束的失败。
-
-AutomationBench 此处的过程分来自终态断言的部分完成率，不是执行轨迹评分。初始已满足且终态仍满足的断言可能被排除；若被执行破坏则计入失败，所以分母也可能变化。不能用过程均分代替约束分析，也不能把多个字符串断言解释为多项独立能力。
-
-证据：[追加三轮报告](../.evolve-lab/marketing-unified-20260911/continuation-20260911/final-report.md)、[第 4 轮快照](../.evolve-lab/marketing-unified-20260911/cache/commits/8b651c53cadfe70de39078e93d8cb9c3958b9c38.json)、[第 5 轮快照](../.evolve-lab/marketing-unified-20260911/cache/commits/59e4892f843fb4851386335bd3b5d801ac01e4bc.json)。这些忽略于 Git 的文件是本机研究证据，不是实现或测试的必需依赖。
-
-本次实验使用同一批 100 个任务作为 seed/gate，且每任务只有一次尝试。它可以用于策略离线分析，不能证明独立泛化或稳定因果改善。新模式的发布验证默认要求独立 held-out，见第 8 节。
-
-### 2.3 与已有规范的关系
-
-- [Champion 迭代合同](continue-resume-champion-baseline-spec.md) 第 1 节第 2/6 条和 INV-01/INV-06 在 **新模式** 下被本文的显式父代抽样替代；在旧模式下继续有效。基线复用、身份验证、恢复和 held-out 隔离要求保持。
+- 旧模式从 champion 生成候选；新模式按本文规则显式抽取父代，champion 独立作为晋升比较基准。两条路径都遵守基线复用、身份验证、恢复和 held-out 隔离要求。
 - [可组合实验框架](research-evolution-component-abstraction-plan.md) 的研究 population / 唯一 champion 分离原则继续适用；本文具体定义跨轮 archive 的算法与合同。
 - [部分证据实验](partial-evidence-promotion-experiment-plan.md) 的“有效交集可继续晋升”保留给原策略；新模式的研究要求局部计划完整、发布要求全局计划完整，不回溯修改旧决定。
 - [Benchmark 结果规范](hitch-evaluation-source-and-evidence-contract-spec.zh-CN.md) 的 total / process / feedback 分离继续适用；本文定义这些信号如何用于搜索和晋升，不接管 verifier。其旧版整条 observation 有效性规则继续保留；第 5 节的独立通道有效性须通过新的 adapter/result schema 显式启用。
@@ -337,7 +315,7 @@ admission 默认抽一个 parent batch，为它预留至多 4 个工作槽位；
 
 新 epoch 激活前先让其 champion/fallback 与预算内选定的历史 specialist 获得所需局部证据；通过 cell 复用只补差集，不全库补评。未补齐的旧候选保留旧 scope 资格和历史记录，但不能声称已在新范围领先。准备预算不足则维持旧 epoch，不能把同一组的新旧 epoch 同时计为两个抽样组。
 
-v1 默认 scope 在本次实验内保持稳定；允许配置确定的更新周期。实现配置为 `scopeSampling.epochPolicy: periodic` 和正整数 `updateEveryRounds`，从第 0 轮开始按周期边界准备；可用非负整数 `maxHistoricalSpecialists` 限制额外历史版本，必要 champion/实际父代不受该额外名额上限省略。持续固定小集合的偏置由跨组 bridge、后续 scope epoch 和最终全局验证共同检查，不能把共享开发样本当独立测试集。
+v1 默认 scope 在同一 evolution 内保持稳定；允许配置确定的更新周期。实现配置为 `scopeSampling.epochPolicy: periodic` 和正整数 `updateEveryRounds`，从第 0 轮开始按周期边界准备；可用非负整数 `maxHistoricalSpecialists` 限制额外历史版本，必要 champion/实际父代不受该额外名额上限省略。持续固定小集合的偏置由跨组 bridge、后续 scope epoch 和最终全局验证共同检查，不能把共享开发样本当独立测试集。
 
 ## 7. 统一诊断、失败分类与多 Candidate 生成
 

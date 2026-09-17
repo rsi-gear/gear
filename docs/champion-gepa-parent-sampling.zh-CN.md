@@ -56,9 +56,3 @@ GEPA 分支覆盖整个归档分布，也包含 champion；未取得 GEPA 抽样
 `ResearchArchive.parentMixture` 保存策略、champion、配置概率、champion 诊断 scope 和原始 `explorationParentProbabilities`；顶层 `parentProbabilities` 保存混合后的实际概率。上一轮的 champion 和概率记录保持不变；晋升后的身份在下一轮选择前进入新视图。Held-out 分数和轨迹不参与概率计算。
 
 共同父代选择任务集、历史候选跨 scope 对称准入属于后续证据覆盖改造。本策略沿用现有 GEPA 探索分布，混合后仍保留其覆盖偏差，不能把混合概率解释为全量能力排名。
-
-## 验证
-
-新增 `tests/unit/search-parent-mixture.spec.ts`，覆盖加权混合、被 GEPA 剪除的合法 champion、概率 0/1 边界、逐候选抽样、配置默认值与非法配置、证据及硬门检查、global seed 复用、晋升后的下一轮选择，以及补证在抽样前生效。中断恢复覆盖 parent-archive、parents、archive CAS 和 champion CAS，不重复抽样或执行有效 rollout。
-
-类型检查通过；全部 search 单元测试、capabilities 和 refine-service 回归测试共 17 个文件、273 项通过。

@@ -12,6 +12,14 @@ import type { DiagnosisReceipt, EvaluationRequest, MetaFailureCard, RefinementRo
 import { createGitHarnessFixture } from '../helpers/git-fixture.js'
 import { evaluationCondition, evidence as evidenceFixture, roundFixture } from '../helpers/research-fixture.js'
 import { trajectoryAnalysis } from '../helpers/trajectory-fixture.js'
+import { EvaluationSearchAdapter } from '../../src/search/evaluation-adapter.js'
+import { cellIdentity } from '../../src/search/evidence.js'
+import { stagePlan } from '../../src/search/scopes.js'
+import { digestJson } from '../../src/state/digest.js'
+import { seal } from '../../src/search/contracts.js'
+import { fixtures } from '../helpers/search-fixture.js'
+import { evolutionSpec } from '../helpers/research-fixture.js'
+import { standardSearchDataset } from '../helpers/standard-search-dataset.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
@@ -40,6 +48,7 @@ interface InspectFixture {
 }
 
 interface SetupOptions {
+  followSubmission?: boolean
   controlPlane?: HitchConfig['controlPlane']
   daemonStatus?: 'running' | 'stopped'
   fault?: 'submit-reply-lost' | 'submit-replay-rejected' | 'submit-wait' | 'watch-invalid-json' | 'watch-overflow' | 'watch-exit' | 'inspect-failure' | 'rerun-invalid-json'
@@ -196,6 +205,9 @@ const inspectionRequest = {
   max_concurrent: 2, infrastructure_retries: 0, infrastructure_retry_backoff_ms: 0,
   timeout_ms: 30000, setup_timeout_ms: 10000, agent_args: [], pass_env: [],
   benchmark_id: 'benchmark-1', benchmark_revision: 'revision-1',
+  ...(${JSON.stringify(setupOptions.followSubmission ?? false)} && submitted ? {
+    dataset: submitted.dataset, harness_ref: submitted.harness, setup_timeout_ms: submitted.setupTimeoutMs,
+  } : {}),
 }
 const inspectionExecution = {
   provider: submitted?.executionProvider ?? ${JSON.stringify(inspectFixture.executionProvider ?? 'local-docker')}, max_parallelism: 2,
@@ -221,6 +233,7 @@ else if (args[0] === 'daemon' && args[1] === 'status') {
   const idempotencyKey = value('--idempotency-key')
   writeFileSync(statePath, JSON.stringify({
     evalId: acceptedEvalId, dataset, harness,
+    setupTimeoutMs: Number(value('--setup-timeout')?.replace('ms', '')),
     idempotencyKeyHash: 'sha256:' + createHash('sha256').update(idempotencyKey).digest('hex'),
   }))
   if (!submitted && fault === 'submit-reply-lost') { process.stderr.write('lost submission reply'); process.exit(9) }
@@ -348,7 +361,7 @@ else if (args[0] === 'capabilities') {
       submitted_at: new Date().toISOString(),
     } } : {}),
     plan: { schema_version: '1', eval_id: inspectedEvalId,
-      backend: 'harbor', dataset: ${JSON.stringify(planDataset)}, benchmark_id: 'benchmark-1',
+      backend: 'harbor', dataset: ${JSON.stringify(setupOptions.followSubmission ?? false)} ? inspectionRequest.dataset : ${JSON.stringify(planDataset)}, benchmark_id: 'benchmark-1',
       benchmark_revision: ${JSON.stringify(planBenchmarkRevision)}, attempts: ${JSON.stringify(inspectedAttempts)},
       ${attemptExecution} tasks: ${JSON.stringify(inspectedTasks)},
       candidate: { requested_harness_ref: ${JSON.stringify(requestedHarnessRef)},
@@ -671,6 +684,61 @@ describe('HitchCliEvaluator', () => {
       '--build-mode', 'prebuild-preferred', '--model-capture', 'native',
     ]))
     expect(invocations).toContainEqual(['eval', 'watch', first.evalId, '--output', 'json'])
+  })
+
+  it('rejects a new daemon batch after only setup timeout changes, while preserving old cells', async () => {
+    const { fixture, evaluator, invocationLog } = await setup('0.2.6', {
+      attemptExecution: 'harbor-task-slots-v1',
+    }, { controlPlane: { mode: 'daemon', requireModelCapture: false }, followSubmission: true })
+    const spec = evolutionSpec()
+    spec.datasets = { seed: await standardSearchDataset(fixture.root, 2, 'seed', false),
+      heldOut: await standardSearchDataset(fixture.root, 2, 'held-out', false) }
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
+    const { digest: ignored, ...anchor } = fixtures(2, false).anchor
+    const snapshot = seal({ ...anchor, commit: fixture.championRef, manifestDigest: fixture.manifest.digest })
+    const options = { spec, workspaceRoot: fixture.root, stateRoot: join(fixture.root, 'search'), identityRound: state,
+      round: async () => state, manifest: async () => fixture.manifest }
+    const provider = new EvaluationSearchAdapter(evaluator, options), universe = await provider.describe('seed')
+    const plan = stagePlan({ stage: 'local', partition: 'seed', universeDigest: universe.digest,
+      taskSetSizeResolutionDigest: digestJson('sizing'), scopeDigest: digestJson('scope'), taskIds: ['task-1'],
+      participantIds: [snapshot.candidateId], prerequisiteDecisionDigests: [], selectionRuleDigest: digestJson('rule') })
+    const input = { plan, snapshot, cells: [cellIdentity(universe, 'task-1', 0, snapshot)],
+      idempotencyKey: digestJson('baseline'), signal: new AbortController().signal }
+    const [original] = await provider.evaluate(input)
+    expect(await provider.verifyCell(original!, input.cells[0]!)).toBe(true)
+    // A same-config batch still joins the cohort after restarting the adapter.
+    const [cell] = await new EvaluationSearchAdapter(evaluator, options).evaluate({ ...input, idempotencyKey: digestJson('same-config') })
+    const changed = new HitchCliEvaluator({ ...evaluator.options, setupTimeoutMs: evaluator.options.setupTimeoutMs + 12345 })
+    const restarted = new EvaluationSearchAdapter(changed, options)
+    expect(await restarted.verifyCell(cell!, input.cells[0]!)).toBe(true)
+    const next = { ...input, idempotencyKey: digestJson('changed-setup-timeout') }
+    await expect(restarted.evaluate(next)).rejects.toThrow('runtime cohort changed')
+    await expect(restarted.inspectEvaluation(next)).rejects.toThrow('runtime cohort changed')
+    expect(await restarted.verifyCell(cell!, input.cells[0]!)).toBe(true)
+    const calls = (await readFile(invocationLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as string[])
+    const submissions = calls.filter(args => args[0] === 'eval' && args[1] === 'submit')
+    expect(submissions).toHaveLength(3)
+    expect(submissions.at(-1)).toEqual(expect.arrayContaining(['--setup-timeout', '22345ms']))
+    expect(calls.filter(args => args[0] === 'eval' && args[1] === 'watch')).toHaveLength(2)
+    expect(calls.filter(args => args[0] === 'eval' && args[1] === 'cancel')).toHaveLength(1)
+  })
+
+  it('keeps the daemon cohort stable across task projections and candidate commits', async () => {
+    const { fixture, evaluator } = await setup('0.2.6', {}, {
+      controlPlane: { mode: 'daemon', requireModelCapture: false }, followSubmission: true,
+    })
+    const state = round(fixture.root, fixture.championRef, fixture.manifest.digest), signal = new AbortController().signal
+    const identity = async (input: EvaluationRequest) => {
+      const reservation = await evaluator.reserve(state, input, signal, evaluator.prepareSubmission(state, input))
+      return evaluator.submittedEvaluationIdentity(state, input, reservation, signal)
+    }
+    const baseline = await identity(request('seed', fixture.championRef))
+    const candidate = request('projected-held-out', 'f'.repeat(40))
+    candidate.phase = 'held-out-candidate'
+    candidate.condition = evaluationCondition('held-out', candidate.dataset)
+    const next = await identity(candidate)
+    expect(next?.cohortDigest).toBe(baseline?.cohortDigest)
+    expect(next?.effectiveConfigDigest).not.toBe(baseline?.effectiveConfigDigest)
   })
 
   it('rejects daemon execution policy drift from the submitted Gear condition', async () => {

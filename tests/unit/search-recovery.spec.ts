@@ -8,7 +8,7 @@ import { SearchExecutionFailure, SearchOperationPending } from '../../src/search
 import { completeArchivedEvidence } from '../../src/search/completion.js'
 import { buildArchive } from '../../src/search/archive.js'
 import { SearchStore } from '../../src/search/store.js'
-import type { EvidenceCell, PendingSearchOperation, Stage } from '../../src/search/types.js'
+import type { EvidenceCell, PendingSearchOperation, Stage, StageResult } from '../../src/search/types.js'
 import { fixtures, settings, evaluatedFixture, scopeFixture, revise } from '../helpers/search-fixture.js'
 
 const roots: string[] = []
@@ -198,6 +198,30 @@ describe('external execution recovery and budget settlement', () => {
     expect(await f.store.read('rounds/r/pending-operation')).toMatchObject({ kind: 'generation', state: 'running' })
   })
 
+  it('settles a held-out repair started after expiry without blocking round completion', async () => {
+    const f = await setup(), original = f.provider.evaluate, start = Date.now()
+    f.provider.evaluate = async input => {
+      const cells = await original(input)
+      return input.plan.stage === 'held-out' && input.snapshot.candidateId !== 'anchor' ? cells.slice(1) : cells
+    }
+    await expect(f.run()).rejects.toBeInstanceOf(SearchEvidencePending)
+    const pending = (await f.store.read<{ resultRefs: string[] }>('rounds/r/pending-evidence'))!
+    const before = await f.store.object<StageResult>(pending.resultRefs[1]!), calls = f.executions.length
+    const ledger = await f.store.read('budget')
+    vi.spyOn(Date, 'now').mockReturnValue(start + f.config.budgets.round.timeoutMs + 1000)
+    const engine = new FailureClusterSearch(f.store, f.provider, f.diagnosis, f.hooks)
+    const repaired = await engine.repairEvaluation('r', 'expired-repair', before.digest, new AbortController().signal)
+    expect(repaired.failure).toMatchObject({ kind: 'budget-exhausted', code: 'time' })
+    expect(repaired.cells).toEqual(before.cells)
+    expect(await f.store.read('budget')).toEqual(ledger)
+    const result = await f.run()
+    expect(result.reasonCodes).toContain('budget-exhausted:time')
+    expect(result.championChanged).toBe(false)
+    expect(f.executions).toHaveLength(calls)
+    expect(await f.store.read('active-round')).toEqual({ roundId: null })
+    expect(await f.run()).toEqual(result)
+  })
+
   it('[R06,R08] recovers a held-out repair after deadline using only its original cell request', async () => {
     const f = await setup(), original = f.provider.evaluate, inspect = f.provider.inspectEvaluation!, start = Date.now()
     let repair = false, ready = false, calls = 0
@@ -231,6 +255,34 @@ describe('external execution recovery and budget settlement', () => {
     expect(await f.store.read('rounds/r/research')).toEqual(research)
   })
 
+  it('retains repair ownership after a crash before settlement or the pending marker', async () => {
+    const f = await setup(), evaluate = f.provider.evaluate, start = Date.now()
+    f.provider.evaluate = async input => {
+      const cells = await evaluate(input)
+      return input.plan.stage === 'held-out' && input.snapshot.candidateId !== 'anchor' ? cells.slice(1) : cells
+    }
+    await expect(f.run()).rejects.toBeInstanceOf(SearchEvidencePending)
+    const pending = (await f.store.read<{ resultRefs: string[] }>('rounds/r/pending-evidence'))!
+    const originalRef = pending.resultRefs[1]!
+    f.provider.evaluate = evaluate
+    const repair = (id: string) => new FailureClusterSearch(f.store, f.provider, f.diagnosis, f.hooks)
+      .repairEvaluation('r', id, originalRef, new AbortController().signal)
+    vi.spyOn(f.store, 'settle').mockRejectedValueOnce(new Error('crash before repair settlement'))
+    await expect(repair('first')).rejects.toThrow('crash before repair settlement')
+    expect(await f.store.read('rounds/r/pending-operation')).toBeUndefined()
+    const calls = f.executions.length, ledger = await f.store.read('budget')
+    await expect(repair('second')).rejects.toThrow('original repair ID')
+    expect(await f.store.read('budget')).toEqual(ledger)
+    expect(f.executions).toHaveLength(calls)
+    vi.spyOn(Date, 'now').mockReturnValue(start + f.config.budgets.round.timeoutMs + 1000)
+    await expect(f.run()).rejects.toThrow('original repair ID')
+    const completed = await repair('first')
+    expect(completed.cells).toHaveLength(f.heldOut.tasks.length)
+    expect(await repair('first')).toEqual(completed)
+    expect(f.executions).toHaveLength(calls)
+    expect((await f.run()).championChanged).toBe(true)
+  })
+
   it('[R07,R08,M06] recovers historical process projection without rerunning valid outcome or changing the old archive', async () => {
     const f = await setup(true), start = Date.now()
     const scope = scopeFixture(f.seed, ['task-0', 'task-1'])
@@ -259,6 +311,36 @@ describe('external execution recovery and budget settlement', () => {
     expect(f.executions.map(e => e.count)).toEqual([1])
     expect(await f.store.archive()).toEqual(archived)
     expect(await complete()).toEqual(completion)
+  })
+
+  it.each(['time', 'cells'] as const)('settles an archive completion when its %s budget expires before reservation', async resource => {
+    const f = await setup(), scope = scopeFixture(f.seed, ['task-0', 'task-1']), start = Date.now()
+    f.config.budgets.round.timeoutMs = 30000
+    if (resource === 'cells') f.config.budgets.round.maxNewRolloutCells = 0
+    const row = evaluatedFixture(f.seed, scope, f.anchor, id => id === 'task-0' ? { outcome: 0 } : undefined)
+    const archived = buildArchive({ evolutionId: 'recovery', universe: f.seed, snapshots: [f.anchor], scopes: [scope],
+      results: [row.result], plans: [row.plan], config: f.config.search, championId: f.anchor.candidateId })
+    await f.store.casArchive(undefined, archived)
+    const write = f.store.write.bind(f.store)
+    const fault = vi.spyOn(f.store, 'write').mockImplementation(async (path, value) => {
+      await write(path, value)
+      if (path === 'rounds/completion-first/cell-request') throw new Error('crashed before reservation')
+    })
+    const complete = (id = 'first') => completeArchivedEvidence({ id, store: f.store, provider: f.provider, universe: f.seed,
+      plan: row.plan, snapshot: f.anchor, original: row.result, settings: f.config, signal: new AbortController().signal })
+    await expect(complete()).rejects.toThrow('crashed before reservation')
+    fault.mockRestore()
+    if (resource === 'time') vi.spyOn(Date, 'now').mockReturnValue(start + f.config.budgets.round.timeoutMs + 1000)
+    const completion = await complete()
+    const result = await f.store.object<StageResult>(completion.completedResultDigest)
+    expect(result.failure).toMatchObject({ kind: 'budget-exhausted', code: resource === 'time' ? 'time' : 'round.cells' })
+    expect(result.cells).toEqual(row.result.cells)
+    expect(f.executions).toHaveLength(0)
+    expect(await f.store.read('budget')).toBeUndefined()
+    expect(await f.store.archive()).toEqual(archived)
+    expect(await complete()).toEqual(completion)
+    // A settled completion cannot lock out the next operation ID.
+    await complete('next')
   })
 
   it('[R07,R10,M07] reuses completed slots and process when a new completion ID references the old partial result', async () => {

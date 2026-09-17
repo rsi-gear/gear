@@ -1913,6 +1913,9 @@
             },
             {
               "const": "not-started"
+            },
+            {
+              "const": "partially-complete"
             }
           ]
         },
@@ -1977,6 +1980,25 @@
           },
           "required": [
             "status"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "const": "partially-complete"
+            },
+            "cells": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/EvidenceCell"
+              }
+            }
+          },
+          "required": [
+            "status",
+            "cells"
           ],
           "additionalProperties": false
         },

@@ -7,6 +7,8 @@ import { FailureClusterSearch } from '../../src/search/engine.js'
 import { SearchStore } from '../../src/search/store.js'
 import { buildArchive, selectParents } from '../../src/search/archive.js'
 import { completeArchivedEvidence } from '../../src/search/completion.js'
+import { cellKey } from '../../src/search/evidence.js'
+import type { StageResult } from '../../src/search/types.js'
 import { fixtures, settings, universe, snapshot, scopeFixture, evaluatedFixture, revise } from '../helpers/search-fixture.js'
 
 const roots: string[] = []
@@ -103,6 +105,56 @@ describe('remaining publication and immutable-history acceptance', () => {
     await f.engine().run({ ...f.request, roundId: 'r2', roundIndex: 1 }, new AbortController().signal)
     expect((await f.journal.archive())!.results.some(r => r.digest === completion.completedResultDigest)).toBe(true)
     expect(await f.journal.object(originalArchive.digest)).toEqual(originalArchive)
+  })
+
+  it.each([[false, false], [false, true], [true, false], [true, true]])('merges successive partial completions (commitBetween=%s, crashAfterQueue=%s)', async (commitBetween, crashAfterQueue) => {
+    const f = await setup(), scope = scopeFixture(f.seed, ['task-0', 'task-1', 'task-2'])
+    const row = evaluatedFixture(f.seed, scope, f.anchor, id => id === 'task-0' ? { outcome: 0 } : undefined)
+    const original = buildArchive({ evolutionId: 'acceptance', universe: f.seed, snapshots: [f.anchor], scopes: [scope],
+      plans: [row.plan], results: [row.result], config: f.config.search, championId: f.anchor.candidateId })
+    await f.journal.casArchive(undefined, original)
+    for (const cell of row.result.cells) {
+      await f.journal.put(cell)
+      await f.journal.write(`cells/${cellKey(cell.identity).slice(7)}`, { ref: cell.digest })
+    }
+    const evaluate = f.provider.evaluate
+    let first = true
+    f.provider.evaluate = async input => {
+      const cells = await evaluate(input)
+      if (first) { first = false; return cells.slice(0, 1) }
+      return cells
+    }
+    const complete = (id: string) => completeArchivedEvidence({ id, store: f.journal, provider: f.provider, universe: f.seed,
+      plan: row.plan, snapshot: f.anchor, original: row.result, settings: f.config, signal: new AbortController().signal })
+    const a = await complete('first'), partial = await f.journal.object<StageResult>(a.completedResultDigest)
+    expect(partial.cells).toHaveLength(2)
+    const merge = (previous: typeof original, results: typeof original.results) => buildArchive({ evolutionId: 'acceptance', previous,
+      universe: f.seed, snapshots: [], scopes: [], plans: [], results, config: f.config.search, championId: f.anchor.candidateId })
+    const intermediate = commitBetween ? merge(original, [partial]) : original
+    if (commitBetween) await f.journal.casArchive(original.digest, intermediate)
+    if (crashAfterQueue) {
+      const write = f.journal.write.bind(f.journal)
+      let crash = true
+      f.journal.write = async (name, value) => {
+        if (crash && name === 'rounds/completion-second/result') { crash = false; throw new Error('crash after queue update') }
+        await write(name, value)
+      }
+      await expect(complete('second')).rejects.toThrow('crash after queue update')
+      expect(f.executions.map(e => e.count)).toEqual([2, 1])
+    }
+    const b = await complete('second'), full = await f.journal.object<StageResult>(b.completedResultDigest)
+    expect(full.cells).toHaveLength(3)
+    expect(full.supersedesEvidenceDigest).toBe(partial.digest)
+    const combined = merge(intermediate, [partial, full])
+    expect(combined.results).toContainEqual(full)
+    expect(combined.activeParentIds).toEqual([f.anchor.candidateId])
+    expect(f.executions.map(e => e.count)).toEqual([2, 1])
+    expect(await complete('second')).toEqual(b)
+    expect((await complete('third')).completedResultDigest).toBe(full.digest)
+    expect(f.executions.map(e => e.count)).toEqual([2, 1])
+    await f.run()
+    expect((await f.journal.archive())!.results).toContainEqual(full)
+    expect(await f.journal.object(original.digest)).toEqual(original)
   })
 
   it('[R07] rejects uncommitted evidence before it can consume budget or poison the next completion queue', async () => {

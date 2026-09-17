@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { EvaluationEvidence, EvaluationRequest, HitchTrajectoryReader, HitchVerifierEvidence, RefineEvaluator } from '../../src/types.js'
 import { RefineCapabilities } from '../../src/capabilities.js'
 import { digestJson } from '../../src/state/digest.js'
@@ -9,20 +9,21 @@ import { digestDatasetRef } from '../../src/state/dataset.js'
 import { attachSearchEvaluation, EvaluationSearchAdapter } from '../../src/search/evaluation-adapter.js'
 import { FailureClusterSearch } from '../../src/search/engine.js'
 import { SearchBudgetExceeded, SearchStore } from '../../src/search/store.js'
+import { recoverExternal, SearchOperationPending } from '../../src/search/recovery.js'
 import { cellIdentity } from '../../src/search/evidence.js'
 import { stagePlan } from '../../src/search/scopes.js'
 import { resolveSizing, seal } from '../../src/search/contracts.js'
 import { settings, fixtures } from '../helpers/search-fixture.js'
 import { evolutionSpec, roundFixture } from '../helpers/research-fixture.js'
 import { standardSearchDataset } from '../helpers/standard-search-dataset.js'
-import type { Snapshot } from '../../src/search/types.js'
+import type { EvaluationExecutionResult, Snapshot } from '../../src/search/types.js'
 
 const roots: string[] = []
-afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
-async function setup(process = true, repetitions = 1, deferred = false) {
+afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
+async function setup(process = true, repetitions = 1, deferred = false, taskCount = 100) {
   const root = await mkdtemp(join(tmpdir(), 'gear-evaluation-bridge-')); roots.push(root)
-  const source = fixtures(100, process), spec = evolutionSpec(), search = settings()
-  spec.datasets = { seed: await standardSearchDataset(root, 100, 'seed', process), heldOut: await standardSearchDataset(root, 10, 'held-out', process) }
+  const source = fixtures(taskCount, process), spec = evolutionSpec(), search = settings()
+  spec.datasets = { seed: await standardSearchDataset(root, taskCount, 'seed', process), heldOut: await standardSearchDataset(root, 10, 'held-out', process) }
   spec.rollout.repetitions = repetitions
   const requests: EvaluationRequest[] = [], observations = new Map<string, EvaluationEvidence>(), runs = new Map<string, string>()
   let serial = 0
@@ -56,7 +57,7 @@ async function setup(process = true, repetitions = 1, deferred = false) {
     round: async () => roundFixture({ workspaceRoot: root }), manifest: async (snapshot: Snapshot) => ({ schemaVersion: 1 as const, dshBaseRef: source.anchor.commit, toolchainRef: 'fixture', sandboxProfileRef: 'fixture', digest: snapshot.manifestDigest,
       artifacts: [{ path: 'harness/main.ts', bytes: 1, digest: digestJson('file') }] }) }
   const provider = new EvaluationSearchAdapter(evaluator, options)
-  const run = () => new FailureClusterSearch(store, provider, provider.diagnosis, source.hooks).run({ evolutionId: spec.evolutionId, roundId: 'r', roundIndex: 0, maxCandidates: 4,
+  const run = (current = provider, roundIndex = 0) => new FailureClusterSearch(store, current, current.diagnosis, source.hooks).run({ evolutionId: spec.evolutionId, roundId: roundIndex ? `r-${roundIndex}` : 'r', roundIndex, maxCandidates: 4,
     anchor: source.anchor, championRevisionDigest: digestJson('champion'), settings: search }, new AbortController().signal)
   return { root, spec, source, requests, evaluator, provider, options, store, run, observations, search, reservations, cancelled, changeRuntime: () => { runtime = 'runtime-B' } }
 }
@@ -175,6 +176,128 @@ describe('Gear-owned staging through the existing evaluation interface', () => {
     if (firstResult.status === 'complete') expect(await recovered.verifyCell(firstResult.result.cells[0]!, input.cells[0]!)).toBe(true)
   })
 
+  it.each([{ deferred: false, expired: true }, { deferred: true, expired: true }, { deferred: false, expired: false }])(
+    'recovers a crash between repetitions without a budget-stop marker (deferred=$deferred, expired=$expired)', async ({ deferred, expired: deadlinePassed }) => {
+    const f = await setup(false, 2, deferred), u = await f.provider.describe('seed')
+    const plan = stagePlan({ stage: 'local', partition: 'seed', universeDigest: u.digest, taskSetSizeResolutionDigest: digestJson('sizing'),
+      scopeDigest: digestJson('scope'), taskIds: ['task-1'], participantIds: [f.source.anchor.candidateId], prerequisiteDecisionDigests: [], selectionRuleDigest: digestJson('rule') })
+    const input = { plan, snapshot: f.source.anchor, cells: [0, 1].map(index => cellIdentity(u, 'task-1', index, f.source.anchor)),
+      idempotencyKey: digestJson('crash-between-repetitions'), signal: new AbortController().signal }
+    const write = f.provider.store.write.bind(f.provider.store)
+    const fault = vi.spyOn(f.provider.store, 'write').mockImplementation(async (path, value) => {
+      await write(path, value)
+      if (path.startsWith('evaluator-operations/') && (value as { sourceDigest?: string }).sourceDigest) throw new Error('process exited after first source was saved')
+    })
+    await expect(f.provider.evaluate(input)).rejects.toThrow('process exited')
+    fault.mockRestore()
+    expect(await f.store.read(`evaluator-budget-stops/${input.idempotencyKey.slice(7)}`)).toBeUndefined()
+    const restarted = new EvaluationSearchAdapter(f.evaluator, f.options)
+    const partial = await restarted.inspectEvaluation(input)
+    expect(partial).toMatchObject({ status: 'partially-complete', cells: [{ identity: { repetition: 0 } }] })
+    if (!deadlinePassed) {
+      const cells = await restarted.evaluate(input)
+      expect(cells).toHaveLength(2)
+      if (partial.status === 'partially-complete') expect(cells.slice(0, 1)).toEqual(partial.cells)
+      expect(f.requests).toHaveLength(2)
+      expect(await restarted.evaluate(input)).toEqual(cells)
+      expect(f.requests).toHaveLength(2)
+      return
+    }
+    const expired = new AbortController(); expired.abort(new SearchBudgetExceeded('time'))
+    const result = await recoverExternal({ store: f.store, roundId: 'r',
+      operation: { operationKey: input.idempotencyKey, kind: 'evaluation', partition: 'seed', stagePlanDigest: plan.digest, candidateId: f.source.anchor.candidateId },
+      signal: expired.signal, inspectionSignal: input.signal, previouslyReserved: true,
+      run: async (): Promise<EvaluationExecutionResult> => { throw new Error('expired recovery must not execute') },
+      inspect: signal => new EvaluationSearchAdapter(f.evaluator, f.options).inspectEvaluation({ ...input, signal }),
+      failed: (failure, cells) => ({ failure, cells }) })
+    expect(result).toMatchObject({ notStarted: false, value: { failure: { kind: 'budget-exhausted', code: 'time' }, cells: [{ identity: { repetition: 0 } }] } })
+    if (partial.status === 'partially-complete') expect(result.value.cells).toEqual(partial.cells)
+    expect(f.requests).toHaveLength(1)
+    expect(f.reservations.size).toBe(1)
+  })
+
+  it.each(['reserving', 'running'] as const)('keeps a later %s batch pending even when an earlier repetition has not started', async state => {
+    const f = await setup(false, 3), u = await f.provider.describe('seed')
+    const plan = stagePlan({ stage: 'local', partition: 'seed', universeDigest: u.digest, taskSetSizeResolutionDigest: digestJson('sizing'),
+      scopeDigest: digestJson('scope'), taskIds: ['task-1'], participantIds: [f.source.anchor.candidateId], prerequisiteDecisionDigests: [], selectionRuleDigest: digestJson('rule') })
+    const controller = new AbortController(), evaluate = f.evaluator.evaluate
+    f.evaluator.evaluate = async (...args) => { const result = await evaluate(...args); controller.abort(new SearchBudgetExceeded('time')); return result }
+    const input = { plan, snapshot: f.source.anchor, cells: [0, 1, 2].map(index => cellIdentity(u, 'task-1', index, f.source.anchor)),
+      idempotencyKey: digestJson('later-unresolved-repetition'), signal: controller.signal }
+    await expect(f.provider.evaluate(input)).rejects.toThrow('time')
+    // A later durable operation rules out declaring all remaining work unstarted.
+    await f.store.write(`evaluator-operations/${digestJson([input.idempotencyKey, 2]).slice(7)}`, state === 'reserving'
+      ? { started: false, reserving: true } : { started: true, reservation: { provider: 'fixture-existing-evaluator', evalId: 'eval-2' } })
+    const restarted = new EvaluationSearchAdapter(f.evaluator, f.options)
+    const signal = new AbortController().signal
+    expect(await restarted.inspectEvaluation({ ...input, signal })).toMatchObject({ status: state === 'reserving' ? 'unknown' : 'running' })
+    await expect(recoverExternal({ store: f.store, roundId: 'r',
+      operation: { operationKey: input.idempotencyKey, kind: 'evaluation', partition: 'seed', stagePlanDigest: plan.digest, candidateId: f.source.anchor.candidateId },
+      signal: controller.signal, inspectionSignal: signal, previouslyReserved: true,
+      run: async (): Promise<EvaluationExecutionResult> => { throw new Error('expired recovery must not execute') },
+      inspect: signal => restarted.inspectEvaluation({ ...input, signal }), failed: (failure, cells) => ({ failure, cells }),
+    })).rejects.toBeInstanceOf(SearchOperationPending)
+    expect(f.requests).toHaveLength(1)
+  })
+
+  it('finishes an expired round after a crash between candidate repetitions and resumes idempotently', async () => {
+    const f = await setup(false, 2), start = Date.now(), write = f.provider.store.write.bind(f.provider.store)
+    const fault = vi.spyOn(f.provider.store, 'write').mockImplementation(async (path, value) => {
+      await write(path, value)
+      if (path.startsWith('evaluator-operations/') && (value as { sourceDigest?: string }).sourceDigest
+        && f.requests.at(-1)?.harnessRef !== f.source.anchor.commit) throw new Error('process exited between repetitions')
+    })
+    await expect(f.run()).rejects.toBeInstanceOf(SearchOperationPending)
+    fault.mockRestore()
+    const count = f.requests.length
+    expect(f.requests.filter(r => r.harnessRef !== f.source.anchor.commit)).toHaveLength(1)
+    vi.spyOn(Date, 'now').mockReturnValue(start + f.search.budgets.round.timeoutMs + 1000)
+    const run = () => f.run(new EvaluationSearchAdapter(f.evaluator, f.options))
+    const result = await run()
+    expect(result.reasonCodes).toContain('budget-exhausted:time')
+    expect(result.championChanged).toBe(false)
+    const archive = await f.store.archive()
+    const partial = archive!.results.find(r => r.failure?.kind === 'budget-exhausted' && r.cells.length > 0)
+    expect(partial).toBeDefined()
+    expect(partial!.cells.every(cell => cell.identity.repetition === 0)).toBe(true)
+    expect(await f.store.read('rounds/r/pending-operation')).toBeNull()
+    expect(await f.store.read('active-round')).toEqual({ roundId: null })
+    expect(await run()).toEqual(result)
+    expect(f.requests).toHaveLength(count)
+  })
+
+  it.each(['scoped-frontier-membership-v1', 'epsilon-greedy-gepa-v1'] as const)('settles an expired bootstrap and reuses its cells in a later round (%s)', async parentSampling => {
+    const f = await setup(false, 2, false, 20), write = f.provider.store.write.bind(f.provider.store), start = Date.now()
+    f.search.search.parentSampling = parentSampling
+    f.search.budgets.round.timeoutMs = 30000
+    const fault = vi.spyOn(f.provider.store, 'write').mockImplementation(async (path, value) => {
+      await write(path, value)
+      if (path.startsWith('evaluator-operations/') && (value as { sourceDigest?: string }).sourceDigest) throw new Error('process exited during bootstrap')
+    })
+    await expect(f.run()).rejects.toBeInstanceOf(SearchOperationPending)
+    fault.mockRestore()
+    vi.spyOn(Date, 'now').mockReturnValue(start + f.search.budgets.round.timeoutMs + 1000)
+    const current = () => new EvaluationSearchAdapter(f.evaluator, f.options)
+    const stopped = await f.run(current())
+    expect(stopped.reasonCodes).toContain('budget-exhausted:time')
+    expect(stopped.championChanged).toBe(false)
+    expect(stopped.research.parents.batches).toEqual([])
+    expect(stopped.research.workplans).toEqual([])
+    expect(await f.store.archive()).toBeUndefined()
+    expect(await f.store.read('active-round')).toEqual({ roundId: null })
+    expect(await f.run(current())).toEqual(stopped)
+    expect(f.requests).toHaveLength(1)
+    const partial = await f.store.object<import('../../src/search/types.js').ResearchArchive>(stopped.archiveDigest)
+    expect(partial.results[0]!.cells).toHaveLength(20)
+    expect(partial.activeParentIds).toEqual([])
+    const resumed = await f.run(current(), 1)
+    expect(resumed.championChanged).toBe(true)
+    const complete = await f.store.archive()
+    for (const cell of partial.results[0]!.cells) expect(complete!.results.flatMap(r => r.cells)).toContainEqual(cell)
+    // The second round evaluates only the missing baseline repetition.
+    expect(f.requests.filter(r => r.harnessRef === f.source.anchor.commit && r.phase === 'seed-candidate' && r.dataset === f.requests[0]!.dataset)).toHaveLength(2)
+  })
+
   it('preserves uncontrolled repetition identities and reads partial results after a verified deadline', async () => {
     const f = await setup(false, 2), u = await f.provider.describe('seed')
     expect(u.repetitions).toEqual([{ index: 0, seed: null }, { index: 1, seed: null }])
@@ -184,7 +307,7 @@ describe('Gear-owned staging through the existing evaluation interface', () => {
     const input = { plan, snapshot: f.source.anchor, cells: [0, 1].map(index => cellIdentity(u, 'task-1', index, f.source.anchor)), idempotencyKey: digestJson('two-repetitions'), signal: controller.signal }
     await expect(f.provider.evaluate(input)).rejects.toThrow('time')
     const recovered = await new EvaluationSearchAdapter(f.evaluator, f.options).inspectEvaluation({ ...input, signal: new AbortController().signal })
-    expect(recovered).toMatchObject({ status: 'complete', result: { failure: { kind: 'budget-exhausted' }, cells: [{ identity: { repetition: 0, seed: null } }] } })
+    expect(recovered).toMatchObject({ status: 'partially-complete', cells: [{ identity: { repetition: 0, seed: null } }] })
     expect(f.requests).toHaveLength(1)
     expect(f.requests[0]!.condition.seeds).toBeUndefined()
   })

@@ -1088,9 +1088,18 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     const inspection = await this.inspectEvaluation(reservation.evalId, round.workspaceRoot, signal, 'hitch_eval_inspect_failed',
       intent === undefined ? this.options.root : this.submissionParameters(intent).root)
     const identity = this.daemonEvaluationIdentity(round, request, inspection, await this.resolveEvaluationIdentity(round, request, signal))
-    const execution = record(inspection.submission, 'Hitch eval submission').execution
-    return { ...identity, cohortDigest: digestJson({ provider: identity.provider, executionMode: 'daemon', execution,
-      harnessId: this.options.harnessId, scoringContract: 'benchmark-scores-v1', runtime: await this.runtimeIdentity(signal) }) }
+    const submission = record(inspection.submission, 'Hitch eval submission')
+    // Task projections and candidate commits vary within one paired cohort.
+    // All other submitted execution parameters (including daemon defaults) must agree.
+    const { dataset: _dataset, harness_ref: _harness, attempts: _attempts,
+      benchmark_id: _benchmark, benchmark_revision: _revision, ...submittedConfig } = record(submission.request, 'Hitch eval submitted request')
+    const { conditionId: _condition, dataset: _projection, attempts: _repetitions, ...invocation } = this.baseParity(round, request)
+    const runtime = await this.runtimeIdentity(signal)
+    // Also bind Gear's invocation controls, such as setup timeout and output limits,
+    // without including the per-batch conditionId in the common identity.
+    return { ...identity, cohortDigest: digestJson({ provider: identity.provider, executionMode: 'daemon', execution: submission.execution,
+      request: submittedConfig, scoringContract: 'benchmark-scores-v1',
+      invocationFingerprint: this.invocationFingerprint(digestJson(invocation), runtime) }) }
   }
 
   private async hasStandardBenchmarkManifest(

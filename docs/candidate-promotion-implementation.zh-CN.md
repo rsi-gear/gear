@@ -2,15 +2,13 @@
 
 ## 算法扩展入口
 
-新增父代策略、公开测试工具和包消费示例见 [搜索算法作者指南](search-algorithm-authoring.zh-CN.md)。下文保留实现与验收记录；新的插件扩展应使用作者指南中的 `search/api`、`search/presets/failure-cluster-gepa` 和 `search/testing` 入口。
+新增父代策略、公开测试工具和包消费示例见 [搜索算法作者指南](search-algorithm-authoring.zh-CN.md)。下文说明内置流程与接入方式；插件扩展应使用作者指南中的 `search/api`、`search/presets/failure-cluster-gepa` 和 `search/testing` 入口。
 
 新增可选的 [champion 与 GEPA 混合父代抽样](champion-gepa-parent-sampling.zh-CN.md)：默认 50% 直接选择当前 champion，剩余 50% 按 GEPA 权重抽样；每个候选独立选择父代。以下未特别说明的 scope membership 规则描述原策略及新策略的 GEPA 探索分支。
 
-本次变更实现 `failure-cluster-gepa-v1` 的 Gear 搜索驱动、控制面接入和独立晋升策略。仅对新建 evolution 显式启用；没有 `searchSettings` 的历史 spec 保持原路径、组件身份和 verdict。
+`failure-cluster-gepa-v1` 实现 Gear 搜索驱动、控制面接入和独立晋升策略。仅对新建 evolution 显式启用；没有 `searchSettings` 的历史 spec 保持原路径、组件身份和 verdict。
 
-规范 65 行及相关正文已经核对，搜索、恢复、默认 evaluator 与控制面测试记录见[验收记录](candidate-promotion-acceptance.zh-CN.md)。默认路径由 Gear 内部处理分阶段评测，不需要为 Hitch 新增协议、参数或能力声明。
-
-实现位于独立分支 `codex/candidate-promotion`，基于 `e0e8a7f`。没有合并到正在运行实验的 `dev`，没有重建其 `lib`，没有修改实验配置、数据、champion 或 published pointer。初始开发和测试工作目录为 `/private/tmp/gear-candidate-promotion-20260912`；算法包重构已迁移到 `/Users/tangyehui/gear-candidate-promotion`。
+默认路径由 Gear 内部处理分阶段评测，不需要为 Hitch 新增协议、参数或能力声明。
 
 ## 已接入的流程
 
@@ -21,7 +19,7 @@
 - 可选周期 scope 更新在 workplan 封存前完成准备，提交后的新视图供下一轮抽样；必要预算不足或证据不合格保留旧 epoch。
 - scope 的语义身份从任务、权重和 guards 重算；等价范围合并证据与抽样机会。每份局部计划必须覆盖完整 scope，跨计划的同一有效 cell 不得出现冲突值；较旧的 missing 视图仍可保存，不覆盖已补齐资格。
 - 全局与 bridge 按 `globalTaskWeights: uniform` 做逐任务等权宏平均；provider 的 task weight 不改变这项策略。scope 仍使用自己冻结的桶权重。
-- bridge → global-seed 不因过程分退步而否决候选，最多一个候选进入全量评测。revision 15 恢复原全量晋升标准：默认 outcome 和每个可比较的过程组都不能退步，且 outcome 或过程至少一项严格提升；outcome 提升不再豁免过程分退步。比较继续使用冻结的量化整数键，并恢复原配置 minimumGain、回退容差与 allowNeutral 的语义（本实验容差为 0，allowNeutral 为 false）。完整证据与保护任务/断言检查仍生效，独立 held-out 保留非退步复核。shared-set research 的显式 champion CAS 接入保持不变。回退晋升通过新 evolution 的初始 champion 记录，旧实验冻结决定和证据不改写。
+- bridge → global-seed 不因过程分退步而否决候选，最多一个候选进入全量评测。全量晋升标准为：默认 outcome 和每个可比较的过程组都不能退步，且 outcome 或过程至少一项严格提升；outcome 提升不能豁免过程分退步。比较继续使用冻结的量化整数键，并遵守配置中的 `minimumGain`、回退容差与 `allowNeutral`。完整证据与保护任务/断言检查仍生效，独立 held-out 保留非退步复核。shared-set research 的显式 champion CAS 仍需满足相应配置条件。
 - `SearchTask.repetitionIndices` 可选择全局逻辑 repetition manifest 的非空子集；省略时使用全部 slots。重复更多的任务不获得更多统计权重，计划费用、coverage 和配对均按各任务实际 slots 计算，任务规模比例仍基于 N。
 - 过程能力在 admission 解析。原生 outcome-only、逐 trial scalar、过程缺失和旧版整条 invalid 分开处理；新模式不会添加 LLM judge。
 - 每个候选领取自己的工作计划、有来源的 dossier 摘要、共享约束和父代 findings。Skill claim 和 DSH 投递产生独立消费凭据，不填充伪造的旧诊断 receipts。修改边界是相对 harness 根目录的路径。
@@ -160,7 +158,7 @@ regression:
 
 ## 状态与恢复 API
 
-终态 `control.status` 的 `search` 包含 sizing、实际 workplans、scope coverage、未评数量、前沿、父代概率、扩评状态、独立 promotion 决定和剩余预算；`research.bridge` 另含冻结计划及各候选未扩评原因。scope 视图分开记录待补证据与探索门不合格。运行中的完整阶段展示仍见验收跟踪中的待办。`experiments.tsv` 对新模式区分 `retained-local`、`global-nominee` 和发布决定。
+终态 `control.status` 的 `search` 包含 sizing、实际 workplans、scope coverage、未评数量、前沿、父代概率、扩评状态、独立 promotion 决定和剩余预算；`research.bridge` 另含冻结计划及各候选未扩评原因。scope 视图分开记录待补证据与探索门不合格。运行中的阶段信息通过 `searchProgress` 展示。`experiments.tsv` 对新模式区分 `retained-local`、`global-nominee` 和发布决定。
 
 外部状态未知时，操作员状态返回 `searchPendingOperation`，包含原操作、阶段、参与者、状态和原 handle。候选/研究可见状态不会暴露该字段或 held-out repair 引用。
 
@@ -188,14 +186,13 @@ dossier、workplans、local 决定、nomination 与 archive 在发布引用前�
 
 异常退出时，已封存的候选与外部幂等执行继续复用。已完成的 Meta 生成直接复用封存结果；仍在运行或终态不明的原 attempt 保留句柄与工作区，不重新生成。Skill 生成实际接收统一搜索截止信号；截止后原尝试关闭并结算，不能开始下一次尝试。champion CAS 冲突保留外部版本和原 intent，需要明确处理冲突后才能继续。
 
-## 验证与交付边界
+## 历史证据只读回放
 
-`replaySearchCase` 与 `scripts/search-shadow-replay.mjs` 仅分析文档格式的 legacy 单次观测缓存，按旧 JSON.stringify hash 规则核验输入，返回含前后字节核对、指标假设和 source hashes 的 advisory 报告。CLI 只独占创建新输出文件，不调用生成、补评、archive、champion 或 publish。真实案例结果见 [只读回放报告](candidate-promotion-case-shadow.zh-CN.md)，另有 3 项合成协议测试。
+`replaySearchCase` 与 `scripts/search-shadow-replay.mjs` 可读取 legacy 单次观测缓存，核验输入摘要，返回包含指标假设、来源摘要和输入未变更检查的 advisory 报告。
 
-测试全部使用临时 Git 仓库和合成 provider，没有读取本机实验作为测试依赖，也没有调用真实模型。
+```sh
+npm run build
+node scripts/search-shadow-replay.mjs BASELINE_CACHE CANDIDATE_CACHE NEW_OUTPUT_JSON
+```
 
-- outcome-only 与 outcome+process 的完整搜索均有集成测试；100/1,000 seed 任务的 4→2→1 路径分别产生 170/1,700 次 candidate seed 新执行。
-- 覆盖精确比例、无效配置、局部稀疏证据、历史专长、固定抽样、过程零值/缺失/旧 invalid、独立划分、过程晋升、预算、无 bridge、advisory、commit crash、历史 completion 和 held-out repair。
-- 控制面测试实际通过 Skill claim、Git 修改/封存、v2 评测、champion 更新；旧生成、部分证据、champion baseline、状态、Meta 和能力测试继续运行。
-
-最终验证以[验收记录](candidate-promotion-acceptance.zh-CN.md)为准，历史重叠测试批次不累加。默认普通 evaluator 路径有 outcome-only / outcome+process 的 4→2→1 测试、真实 Git/Skill 提交测试，以及只读结果恢复和不确定提交防重复测试。没有运行真实模型 benchmark，不将 fixture 的调用数量解释为真实 token 或时长收益。
+该命令只创建新的输出文件，不生成候选、补评或更新 archive、champion、published pointer。回放结果不构成晋升证据。

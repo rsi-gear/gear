@@ -5,8 +5,8 @@ import { digestDatasetRef } from '../state/dataset.js'
 import { describeDataset, projectDataset, type DatasetDescription } from './dataset-projection.js'
 import { cellKey, validOutcome } from './evidence.js'
 import { digest, invariant, numeric, seal, sorted, utility, verifyDigest } from './contracts.js'
-import { SearchBudgetExceeded, SearchStore } from './store.js'
-import { SearchExecutionFailure, budgetFailure } from './recovery.js'
+import { SearchStore } from './store.js'
+import { SearchExecutionFailure } from './recovery.js'
 import type { CellIdentity, DiagnosisFact, DiagnosisProvider, EvidenceCell, ExternalRecovery, EvaluationExecutionResult, SearchProvider, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from './types.js'
 
 type Input = Parameters<SearchProvider['evaluate']>[0]
@@ -31,7 +31,7 @@ export interface EvaluationSearchOptions {
 
 /** Gear owns task selection, cache identity and staging. The evaluator receives ordinary requests. */
 export class EvaluationSearchAdapter implements SearchProvider {
-  readonly integrity = digestJson({ implementation: 'gear-existing-evaluator-search', revision: 4 })
+  readonly integrity = digestJson({ implementation: 'gear-existing-evaluator-search', revision: 5 })
   readonly capabilities = { taskSubsetPlans: true, batchIndependentCells: true, idempotentExecution: true }
   readonly store: SearchStore
   readonly diagnosis: DiagnosisProvider
@@ -235,7 +235,6 @@ export class EvaluationSearchAdapter implements SearchProvider {
         if (result.status !== 'complete') throw new Error(`existing evaluation ${result.status}; recover its original operation`)
         cells.push(...result.result.cells)
       } catch (error) {
-        if (error instanceof SearchBudgetExceeded) await this.store.write(`evaluator-budget-stops/${input.idempotencyKey.slice(7)}`, true)
         if (error instanceof SearchExecutionFailure) throw new SearchExecutionFailure(error.failure.code, error.message, error.failure.evidenceRef!, [...cells, ...error.cells])
         throw error
       }
@@ -246,6 +245,7 @@ export class EvaluationSearchAdapter implements SearchProvider {
     const batches = await this.batches(input, false)
     if (!batches) return { status: 'not-started' }
     const cells: EvidenceCell[] = []
+    let notStarted = false
     for (const batch of batches) {
       let result: ExternalRecovery<EvaluationExecutionResult>
       try { result = await this.batch(batch, input.signal, true) }
@@ -254,14 +254,15 @@ export class EvaluationSearchAdapter implements SearchProvider {
         throw error
       }
       if (result.status === 'not-started') {
-        if (!cells.length) return result
-        return await this.store.read<boolean>(`evaluator-budget-stops/${input.idempotencyKey.slice(7)}`)
-          ? { status: 'complete', result: { cells, failure: budgetFailure('time') } }
-          : { status: 'unknown', reason: 'remaining repetitions have not started; no terminal failure is recorded' }
+        notStarted = true
+        continue
       }
       if (result.status !== 'complete') return result
       cells.push(...result.result.cells)
     }
+    // Check every batch before claiming the remainder is unstarted: a reserved
+    // or running batch must still go through its original recovery protocol.
+    if (notStarted) return cells.length ? { status: 'partially-complete', cells } : { status: 'not-started' }
     return { status: 'complete', result: { cells } }
   }
   async verifyCell(cell: EvidenceCell, identity: CellIdentity): Promise<boolean> {

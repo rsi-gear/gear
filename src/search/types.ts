@@ -235,7 +235,7 @@ export interface PendingSearchOperation {
   partition: Partition
   stagePlanDigest: string
   candidateId: string
-  state: 'running' | 'unknown' | 'not-started'
+  state: 'running' | 'unknown' | 'not-started' | 'partially-complete'
   handle?: string
   reason: string
 }
@@ -246,6 +246,8 @@ export interface EvaluationExecutionResult {
 export type ExternalRecovery<T> =
   | { status: 'complete'; result: T }
   | { status: 'not-started' }
+  /** Evaluation cells are durable; every remaining batch is verified not started, with no unresolved submission. */
+  | { status: 'partially-complete'; cells: EvidenceCell[] }
   | { status: 'running'; handle: string }
   | { status: 'unknown'; reason?: string }
 export interface BridgeSelectionDecision {
