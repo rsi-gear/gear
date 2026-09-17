@@ -15,8 +15,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Select CI jobs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.select.outputs.code }}
+      macos: ${{ steps.select.outputs.macos }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Compare the entire push or PR, including deleted and renamed files.
+          fetch-depth: 0
+      - name: Check CI selection rules
+        run: node --test .github/scripts/ci-changes.test.mjs
+      - name: Select jobs from changed paths
+        id: select
+        run: node .github/scripts/ci-changes.mjs
+
   quality:
     name: Quality
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -39,10 +59,13 @@ jobs:
       - run: npm run build
       - name: Test as the production service user
         run: sudo env "PATH=$PATH" npm test
-      - run: npm pack --dry-run
+      # The build above already ran the same command as the prepack hook.
+      - run: npm pack --dry-run --ignore-scripts
 
   training-cpu:
     name: Training / CPU
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -65,6 +88,8 @@ jobs:
 
   sandbox-linux:
     name: Sandbox / Linux
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -93,6 +118,8 @@ jobs:
 
   sandbox-macos:
     name: Sandbox / macOS
+    needs: changes
+    if: needs.changes.outputs.macos == 'true'
     runs-on: macos-14
     timeout-minutes: 15
     steps:
@@ -106,6 +133,8 @@ jobs:
 
   hitch-rerun-contract:
     name: Hitch rerun contract
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
