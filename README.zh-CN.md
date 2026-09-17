@@ -31,7 +31,7 @@ Gear 是一套开源算法框架，帮助 AI Agent 持续提升完成真实世�
 
 相对提升 =（优化后 − 优化前）/ 优化前 × 100%。
 
-这组公开任务也用于指导优化。图中带星号的结果来自另一组官方私有测试任务。[评分方式与来源](docs/guide/zh-CN/results.md) · [完整实验](docs/guide/zh-CN/example-algorithm.md)。
+[评分方式与来源](docs/guide/zh-CN/results.md) · [完整实验](docs/guide/zh-CN/example-algorithm.md)。
 
 ## 快速开始
 

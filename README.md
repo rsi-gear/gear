@@ -31,7 +31,7 @@ Due to limited compute budget, we are starting with the task set below and repor
 
 Relative improvement = (After − Before) / Before × 100%.
 
-These public tasks also guided optimization. Starred points in the chart come from a separate official private test set. [Scoring and sources](docs/guide/en/results.md) · [Full experiment](docs/guide/en/example-algorithm.md).
+[Scoring and sources](docs/guide/en/results.md) · [Full experiment](docs/guide/en/example-algorithm.md).
 
 ## Quick start
 
