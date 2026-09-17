@@ -24,10 +24,12 @@ Gear 是一套开源算法框架，帮助 AI Agent 在不同的软件环境中�
 
 受制于当前算力预算，我们仅在下面的任务集上验证优化效果，并公开优化前后的结果。我们欢迎大家提交更多有趣的结果。
 
-| 已验证任务集 | 模型 + harness 组合 | 指标 | 优化前 | 优化后 | Δ |
+| 已验证任务集 | 模型 + harness 组合 | 指标 | 优化前 | 优化后 | 相对提升 (Rel. Δ) |
 | --- | --- | --- | --- | --- | --- |
-| AutomationBench / Marketing  | GPT 5.6 Luna medium+ DSH | 任务通过率 / 目标完成率 |27% / 75.37% |40% / 83.87% |**+13% / +8.50%** |
-| Terminal-Bench 2.1 | GPT 5.6 Luna medium + DSH | 任务通过率 | 52.87% | 62.92% | **+10.05%** |
+| AutomationBench / Marketing  | GPT 5.6 Luna medium+ DSH | 任务通过率 / 目标完成率 |27% / 75.37% |40% / 83.87% |**+48.15% / +11.28%** |
+| Terminal-Bench 2.1 | GPT 5.6 Luna medium + DSH | 任务通过率 | 52.87% | 62.92% | **+19.01%** |
+
+相对提升 =（优化后 − 优化前）/ 优化前 × 100%。
 
 这组公开任务也用于指导优化。图中带星号的结果来自另一组官方私有测试任务。[评分方式与来源](docs/guide/zh-CN/results.md) · [完整实验](docs/guide/zh-CN/example-algorithm.md)。
 

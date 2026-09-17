@@ -24,10 +24,12 @@ On AutomationBench's 100 public Marketing tasks, Gear improved **GPT 5.6 Luna ma
 
 Due to limited compute budget, we are starting with the task set below and reporting its results before and after optimization. We welcome submissions of more exciting results.
 
-| Validated task set | Model + harness combination | Metric | Before | After | Δ |
+| Validated task set | Model + harness combination | Metric | Before | After | Relative improvement (Rel. Δ) |
 | --- | --- | --- | --- | --- | --- |
-| AutomationBench / Marketing  | GPT 5.6 Luna medium + DSH | Task pass rate / object completion |  27% / 75.37% |  40% / 83.87% |**+13% / +8.50%** |
-| Terminal-Bench 2.1 | GPT 5.6 Luna medium + DSH | Task pass rate | 52.87% | 62.92% | **+10.05%** |
+| AutomationBench / Marketing  | GPT 5.6 Luna medium + DSH | Task pass rate / object completion |  27% / 75.37% |  40% / 83.87% |**+48.15% / +11.28%** |
+| Terminal-Bench 2.1 | GPT 5.6 Luna medium + DSH | Task pass rate | 52.87% | 62.92% | **+19.01%** |
+
+Relative improvement = (After − Before) / Before × 100%.
 
 These public tasks also guided optimization. Starred points in the chart come from a separate official private test set. [Scoring and sources](docs/guide/en/results.md) · [Full experiment](docs/guide/en/example-algorithm.md).
 
