@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
-import { changedPaths, selectJobs } from './ci-changes.mjs'
+import { changedPaths, selectJobs, selectWorkflowJobs } from './ci-changes.mjs'
 
 test('documentation-only changes skip heavy jobs, but mixed changes keep them', () => {
   const docs = ['README.md', 'README.zh-CN.md', 'docs/guide/zh-CN/index.md',
@@ -41,7 +41,7 @@ test('Python, other test suites and examples keep Linux validation without macOS
   }
 })
 
-test('manual runs and unavailable comparisons fall back to full CI', () => {
+test('manual runs and unavailable comparisons select all platform jobs', () => {
   assert.deepEqual(selectJobs(['README.md'], { full: true }), { code: true, macos: true })
   assert.deepEqual(selectJobs(null), { code: true, macos: true })
   assert.equal(changedPaths('workflow_dispatch', {}), null)
@@ -50,6 +50,30 @@ test('manual runs and unavailable comparisons fall back to full CI', () => {
   assert.equal(changedPaths('push', { before: '1'.repeat(40), after: '2'.repeat(40) }, () => {
     throw new Error('missing history')
   }), null)
+})
+
+test('dev code changes keep quick checks but defer full regression tests to main', () => {
+  const paths = ['src/refine/service.ts']
+  assert.deepEqual(selectWorkflowJobs('push', { ref: 'refs/heads/dev' }, paths),
+    { code: true, macos: true, full_tests: false })
+  // A PR's target branch determines the policy, not its source branch.
+  assert.equal(selectWorkflowJobs('pull_request', { pull_request: {
+    base: { ref: 'dev' }, head: { ref: 'main' },
+  } }, paths).full_tests, false)
+  assert.equal(selectWorkflowJobs('pull_request', { pull_request: {
+    base: { ref: 'main' }, head: { ref: 'dev' },
+  } }, paths).full_tests, true)
+  assert.equal(selectWorkflowJobs('push', { ref: 'refs/heads/main' }, paths).full_tests, true)
+  assert.equal(selectWorkflowJobs('push', { ref: 'refs/heads/not-main' }, paths).full_tests, false)
+})
+
+test('docs still skip heavy checks while manual runs always include the full suite', () => {
+  assert.deepEqual(selectWorkflowJobs('push', { ref: 'refs/heads/main' }, ['README.md']),
+    { code: false, macos: false, full_tests: false })
+  assert.deepEqual(selectWorkflowJobs('workflow_dispatch', { ref: 'refs/heads/dev' }, ['README.md']),
+    { code: true, macos: true, full_tests: true })
+  assert.equal(selectWorkflowJobs('push', { ref: 'refs/heads/main' }, null).full_tests, true)
+  assert.equal(selectWorkflowJobs('push', { ref: 'refs/heads/dev' }, null).full_tests, false)
 })
 
 test('real git comparisons cover whole pushes, PR merge bases, deletions and renames', () => {

@@ -37,6 +37,17 @@ export function selectJobs(paths, { full = false } = {}) {
   }
 }
 
+export function selectWorkflowJobs(eventName, event, paths) {
+  const manual = eventName === 'workflow_dispatch'
+  const jobs = selectJobs(paths, { full: manual })
+  return {
+    ...jobs,
+    full_tests: jobs.code && (manual
+      || (eventName === 'pull_request' && event.pull_request?.base?.ref === 'main')
+      || (eventName === 'push' && event.ref === 'refs/heads/main')),
+  }
+}
+
 export function changedPaths(eventName, event, git = args => execFileSync('git', args, { encoding: 'utf8' })) {
   let base
   let head
@@ -49,7 +60,8 @@ export function changedPaths(eventName, event, git = args => execFileSync('git',
   } else {
     return null
   }
-  // New branches, missing history and unknown events run all jobs.
+  // New branches, missing history and unknown events select all platform jobs.
+  // The full regression suite still follows the main/manual event policy.
   if (![base, head].every(sha => /^[a-f0-9]{40}$/u.test(sha ?? '') && !/^0+$/u.test(sha))) return null
   try {
     if (eventName === 'pull_request') base = git(['merge-base', base, head]).trim()
@@ -64,11 +76,12 @@ export function changedPaths(eventName, event, git = args => execFileSync('git',
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'))
   const paths = changedPaths(process.env.GITHUB_EVENT_NAME, event)
-  const jobs = selectJobs(paths, { full: process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' })
+  const jobs = selectWorkflowJobs(process.env.GITHUB_EVENT_NAME, event, paths)
   appendFileSync(process.env.GITHUB_OUTPUT, Object.entries(jobs).map(([key, value]) => `${key}=${value}\n`).join(''))
-  const summary = paths === null
-    ? 'Full CI: manual/unknown event, new branch or unavailable comparison.'
-    : `Compared ${paths.length} changed paths. Linux jobs: ${jobs.code}; macOS: ${jobs.macos}.`
+  const comparison = paths === null
+    ? 'Manual/unknown event, new branch or unavailable comparison.'
+    : `Compared ${paths.length} changed paths.`
+  const summary = `${comparison} Linux jobs: ${jobs.code}; macOS: ${jobs.macos}; full regression tests: ${jobs.full_tests}.`
   console.log(summary)
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${summary}\n`)
 }
