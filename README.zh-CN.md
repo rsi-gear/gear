@@ -16,6 +16,23 @@ Gear 是一套开源优化框架，用于提升 AI Agent 在真实世界任务�
 
 首先，定义你的优化目标并准备一个能代表目标场景的 benchmark：可以使用现有 benchmark，也可以[构建带明确验收规则的任务集](docs/guide/zh-CN/datasets.md)。然后，使用 [Refine Skill](skills/refine/SKILL.md)，围绕这个 benchmark 优化你的 Agent。Gear 会反复评测并改进 Agent 的指令、工具和工作流程，最终得到一个针对该场景调优的 Agent。
 
+下面两个案例对比了 Luna Max 搭配 Gear 优化的 harness，与 Astra Max 搭配 Codex 在相同 AutomationBench 任务中的执行轨迹，展示它们如何读取信息、应用规则，并交付最终结果。
+
+<table>
+  <tr>
+    <th width="50%">落地页告警</th>
+    <th width="50%">每周线索评分</th>
+  </tr>
+  <tr>
+    <td><a href="docs/guide/assets/landing-page-alerts-replay.mp4"><img src="docs/guide/assets/landing-page-alerts-replay.gif" width="100%" alt="轨迹回放：Luna Max 搭配 GEAR 将 Careers 纳入告警，Astra Max 搭配 Codex 则遗漏了该页面。"></a></td>
+    <td><a href="docs/guide/assets/weekly-lead-scoring-replay.mp4"><img src="docs/guide/assets/weekly-lead-scoring-replay.gif" width="100%" alt="轨迹回放：Luna Max 搭配 GEAR 发送了每周报告，Astra Max 搭配 Codex 则保存为草稿。"></a></td>
+  </tr>
+  <tr>
+    <td>计分项通过数：Luna <strong>5/5</strong> · Astra <strong>4/5</strong><br><a href="docs/guide/assets/landing-page-alerts-replay.mp4">观看完整尺寸视频</a></td>
+    <td>计分项通过数：Luna <strong>11/11</strong> · Astra <strong>0/11</strong><br><a href="docs/guide/assets/weekly-lead-scoring-replay.mp4">观看完整尺寸视频</a></td>
+  </tr>
+</table>
+
 ## 小模型也可以和 SOTA 模型掰手腕
 
 在 AutomationBench 的 100 个公开 Marketing 任务上，GPT 5.6 Luna 使用 max 推理档位和经过 Gear 优化的 DSH harness，取得了 **88.88% 的目标完成率**，高于 GPT 6 Astra 使用 max 档位和 Codex 时的 **84.08%**。Luna 的任务通过率为 **53%**。

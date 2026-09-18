@@ -16,6 +16,23 @@ Gear is an open-source optimization framework for improving AI agent performance
 
 First, define the optimization objective for your workflow and prepare a benchmark that represents your target scenario. Use an existing benchmark or [build your own task set with clear success criteria](docs/guide/en/datasets.md). Then use the [Refine Skill](skills/refine/SKILL.md) to optimize your agent using that benchmark. Gear iteratively evaluates and refines the agent's instructions, tools, and workflows to produce an agent tailored to your target scenario.
 
+The two examples below compare Luna Max with a Gear-optimized harness against Astra Max with Codex on the same AutomationBench tasks. Follow their execution from reading source information and applying rules to delivering the final result.
+
+<table>
+  <tr>
+    <th width="50%">Landing page alerts</th>
+    <th width="50%">Weekly lead scoring</th>
+  </tr>
+  <tr>
+    <td><a href="docs/guide/assets/landing-page-alerts-replay.mp4"><img src="docs/guide/assets/landing-page-alerts-replay.gif" width="100%" alt="Trajectory replay: Luna Max with GEAR includes Careers in the alert; Astra Max with Codex misses it."></a></td>
+    <td><a href="docs/guide/assets/weekly-lead-scoring-replay.mp4"><img src="docs/guide/assets/weekly-lead-scoring-replay.gif" width="100%" alt="Trajectory replay: Luna Max with GEAR sends the weekly report; Astra Max with Codex saves a draft."></a></td>
+  </tr>
+  <tr>
+    <td>Luna: <strong>5/5</strong> scored checks · Astra: <strong>4/5</strong><br><a href="docs/guide/assets/landing-page-alerts-replay.mp4">Watch full-size video</a></td>
+    <td>Luna: <strong>11/11</strong> scored checks · Astra: <strong>0/11</strong><br><a href="docs/guide/assets/weekly-lead-scoring-replay.mp4">Watch full-size video</a></td>
+  </tr>
+</table>
+
 ## Competitive performance with a smaller model
 
 On AutomationBench's 100 public Marketing tasks, GPT 5.6 Luna at max reasoning effort achieved a **partial-credit score of 88.88%** with Gear's optimized DSH harness, compared with **84.08%** for GPT 6 Astra at max effort in Codex. Luna's task pass rate was **53%**.
