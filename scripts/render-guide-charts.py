@@ -36,7 +36,7 @@ def axes_style(ax, xlim, ylim):
     ax.xaxis.set_major_formatter(PercentFormatter(100, decimals=0))
     ax.yaxis.set_major_formatter(PercentFormatter(100, decimals=0))
     ax.set_xlabel('Pass rate', labelpad=10)
-    ax.set_ylabel('Object completion', labelpad=10)
+    ax.set_ylabel('Objective completion', labelpad=10)
     ax.grid(alpha=.14)
     ax.tick_params(length=0, pad=7, colors=GREY)
     for spine in ax.spines.values():

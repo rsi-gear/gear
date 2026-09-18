@@ -2,9 +2,9 @@
 
 Customize Gear's algorithm components with a small elitist selector, then study a Marketing experiment using Gear's [GEPA](https://arxiv.org/abs/2507.19457) variant to optimize the Harness through shared failure diagnosis and staged evaluation.
 
-![Pass rate versus object completion: original DSH with GPT 5.6 Luna medium, Marketing evolution, then dashed arrows to GPT 5.6 Luna max and GPT 6 Astra max at 61% / 86.30%, native Codex + Astra, and starred official Marketing model references.](../assets/marketing-staged-search.svg)
+![Pass rate versus objective completion: original DSH with GPT 5.6 Luna medium, Marketing evolution, then dashed arrows to GPT 5.6 Luna max and GPT 6 Astra max at 61% / 86.30%, native Codex + Astra, and starred official Marketing model references.](../assets/marketing-staged-search.svg)
 
-The horizontal axis is strict pass rate; the vertical axis is object completion (local `partial_credit`). Solid arrows connect retained iterations; dashed arrows connect separate evaluations with different effort settings or models, without another Meta round. Champion `a0740800` with GPT 6 Astra max passed 61/100 tasks with 86.30% object completion. Model references marked `*` use official held-out Marketing results: pass rate from Zapier and objectives completed from AA. [Metric definitions](results.md). The figures use zoomed axes with the same limits in both examples. [Chart data and sources](../assets/marketing-results.json).
+The horizontal axis is strict pass rate; the vertical axis is objective completion (local `partial_credit`). Solid arrows connect retained iterations; dashed arrows connect separate evaluations with different effort settings or models, without another Meta round. Champion `a0740800` with GPT 6 Astra max passed 61/100 tasks with 86.30% objective completion. Model references marked `*` use official held-out Marketing results: pass rate from Zapier and objectives completed from AA. [Metric definitions](results.md). The figures use zoomed axes with the same limits in both examples. [Chart data and sources](../assets/marketing-results.json).
 
 ## Choose the module to customize
 
@@ -129,7 +129,7 @@ One key rule from the actual patch:
 +a record to act on.
 ```
 
-The resulting champion is `a07408001d978e580bbdeab3d7f08d4d2034fb1a`. Relative to its baseline at medium, 14 tasks improved, 10 regressed and 76 kept the same pass/fail state: 36% → 40%. Partial credit was 0.811943599 → 0.838669818. The original automatic round rejected incomplete evidence; the later completion and operator promotion are distinct preserved records.
+The resulting champion is `a07408001d978e580bbdeab3d7f08d4d2034fb1a`. Relative to its baseline at medium, 14 tasks improved, 10 regressed and 76 kept the same pass/fail state: 36% → 40%. Objective completion was 0.811943599 → 0.838669818. The original automatic round rejected incomplete evidence; the later completion and operator promotion are distinct preserved records.
 
 A separate max evaluation scored 53/100 versus the previous Harness's 50/100 at max: 11 improvements, 8 regressions, 81 unchanged. It had no new Meta round and repaired one infrastructure-invalid slot, for 101 physical executions and 100 valid scored tasks. [Final audit summary](../../../examples/evolution-search/max-evaluation.json).
 

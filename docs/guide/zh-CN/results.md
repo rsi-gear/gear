@@ -4,15 +4,15 @@
 
 ## Marketing 的两个指标
 
-严格通过率是 `task_completed_correctly` 的均值：一题的全部计分断言满足才算通过。`partial_credit` 是断言完成比例，仅用于诊断，不是轨迹质量分，也不能替代完整任务成功。断言排除规则可能改变分母，解释变化前应查看 verifier 详情，见[上游评分定义](https://github.com/zapier/AutomationBench#scoring)。
+严格通过率是 `task_completed_correctly` 的均值：一题的全部计分断言满足才算通过。目标完成率（`partial_credit`）是每题计分断言完成比例的均值，仅用于诊断，不是轨迹质量分，也不能替代完整任务成功。断言排除规则可能改变分母，解释变化前应查看 verifier 详情，见[上游评分定义](https://github.com/zapier/AutomationBench#scoring)。
 
 报告通过数/有效题数、无效槽位、物理执行数、配对改善与退步。不能把一个候选的 9 题 local 分数与另一个候选的不同 15 题直接比较。
 
 ## 官方 Marketing 参考
 
-图中横轴为通过率、纵轴为目标完成度；官方私有 held-out 参考用 `*` 标记。两个参考指标均为 Marketing 分项，查询日期为 2026-09-14：
+图中横轴为通过率、纵轴为目标完成率；官方私有 held-out 参考用 `*` 标记。两个参考指标均为 Marketing 分项，查询日期为 2026-09-14：
 
-| 官方配置 | 通过率 · Zapier | 目标完成度 · AA |
+| 官方配置 | 通过率 · Zapier | 目标完成率 · AA |
 | --- | --- | --- |
 | GPT-6 Astra max* | 50.00% | 83.68% |
 | Gemini 3.8 Flash high* | 43.00% | 77.98% |

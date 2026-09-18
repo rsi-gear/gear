@@ -4,13 +4,13 @@ Read coverage and scoring together. A useful improvement claim identifies the ex
 
 ## Two Marketing metrics
 
-The strict pass rate is the mean of `task_completed_correctly`: every scored assertion must pass for a task to count. `partial_credit` measures the fraction of assertions satisfied and is diagnostic. It is not a trajectory-quality score and does not replace strict completion. Assertion exclusions can change the denominator; inspect verifier details before interpreting a change. See [upstream scoring](https://github.com/zapier/AutomationBench#scoring).
+The strict pass rate is the mean of `task_completed_correctly`: every scored assertion must pass for a task to count. Objective completion (`partial_credit`) averages the fraction of scored assertions satisfied per task and is diagnostic. It is not a trajectory-quality score and does not replace strict completion. Assertion exclusions can change the denominator; inspect verifier details before interpreting a change. See [upstream scoring](https://github.com/zapier/AutomationBench#scoring).
 
 Report passed/valid tasks, invalid slots, physical executions and paired wins/regressions. Do not compare a nine-task local score directly with another candidate's different fifteen-task scope.
 
 ## Official Marketing references
 
-The figures plot pass rate against object completion and mark official private held-out references with `*`. Both reference metrics are Marketing-specific, retrieved on 2026-09-14:
+The figures plot pass rate against objective completion and mark official private held-out references with `*`. Both reference metrics are Marketing-specific, retrieved on 2026-09-14:
 
 | Official configuration | Pass rate · Zapier | Objectives completed · AA |
 | --- | --- | --- |

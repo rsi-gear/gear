@@ -35,9 +35,13 @@ The two examples below compare Luna Max with a Gear-optimized harness against As
 
 ## Competitive performance with a smaller model
 
-On AutomationBench's 100 public Marketing tasks, GPT 5.6 Luna at max reasoning effort achieved a **partial-credit score of 88.88%** with Gear's optimized DSH harness, compared with **84.08%** for GPT 6 Astra at max effort in Codex. Luna's task pass rate was **53%**.
+On AutomationBench's 100 public Marketing tasks, GPT 5.6 Luna at max reasoning effort achieved **88.88% objective completion** with Gear's optimized DSH harness, compared with **84.08%** for GPT 6 Astra at max effort in Codex. Luna's task pass rate was **53%**.
 
-![Harness optimization and GEPA-based search, starting from the original DSH harness: GPT 5.6 Luna at max effort achieves an 88.88% partial-credit score and a 53% task pass rate, compared with 84.08% and 57%, respectively, for GPT 6 Astra at max effort in Codex.](docs/guide/assets/marketing-evolution-overview.png)
+With both models using the same optimized DSH harness (`a0740800`), **Luna max's API cost averaged $0.0568 per task, versus $1.1858 for Astra max — 95.21% lower**.
+
+[Token usage and cost methodology](docs/marketing-token-cost.md)
+
+![Harness optimization and GEPA-based search, starting from the original DSH harness: GPT 5.6 Luna at max effort achieves 88.88% objective completion and a 53% task pass rate, compared with 84.08% and 57%, respectively, for GPT 6 Astra at max effort in Codex.](docs/guide/assets/marketing-evolution-overview.png)
 
 ### Benchmark results
 
@@ -46,15 +50,15 @@ Given our limited compute budget, our evaluations currently cover the benchmarks
 | Benchmark | Before | After | Gain | Setup | Metric |
 | --- | --- | --- | --- | --- | --- |
 | AutomationBench / Marketing | 27% | **53%** | **+96.30%** | GPT 5.6 Luna + DSH | [Task pass rate](https://github.com/zapier/AutomationBench#scoring) |
-| AutomationBench / Marketing | 75.37% | **88.88%** | **+17.92%** | GPT 5.6 Luna + DSH | [Partial-credit score (`partial_credit`)](https://github.com/zapier/AutomationBench#scoring) |
+| AutomationBench / Marketing | 75.37% | **88.88%** | **+17.92%** | GPT 5.6 Luna + DSH | [Objective completion (`partial_credit`)](https://github.com/zapier/AutomationBench#scoring) |
 | AutomationBench / Marketing | 57% | **61%** | **+7.02%** | GPT 6 Astra (max) | [Task pass rate](https://github.com/zapier/AutomationBench#scoring) |
-| AutomationBench / Marketing | 84.08% | **86.30%** | **+2.64%** | GPT 6 Astra (max) | [Partial-credit score (`partial_credit`)](https://github.com/zapier/AutomationBench#scoring) |
+| AutomationBench / Marketing | 84.08% | **86.30%** | **+2.64%** | GPT 6 Astra (max) | [Objective completion (`partial_credit`)](https://github.com/zapier/AutomationBench#scoring) |
 | Terminal-Bench 2.1 | 52.87% | **84.26%** | **+59.37%** | GPT 5.6 Luna + DSH | [Task pass rate](https://www.tbench.ai/?version=2.1) |
 | Terminal-Bench 2.1 | 87.4% | — | — | [GPT 6 Astra (high) + Codex](https://www.tbench.ai/?version=2.1) | [Task pass rate](https://www.tbench.ai/?version=2.1) |
 | Terminal-Bench 2.1 | 83.8% | — | — | [Fable 5 (xhigh) + Claude Code](https://www.tbench.ai/?version=2.1) | [Task pass rate](https://www.tbench.ai/?version=2.1) |
 | Terminal-Bench 2.1 | 83.2% | — | — | [GPT-5.5 (xhigh) + Codex](https://www.tbench.ai/?version=2.1) | [Task pass rate](https://www.tbench.ai/?version=2.1) |
 
-Gain is the relative improvement: (After − Before) / Before × 100%, calculated from the displayed values. The partial-credit score is the average fraction of scored assertions satisfied per task.
+Gain is the relative improvement: (After − Before) / Before × 100%, calculated from the displayed values. Objective completion is the average fraction of scored assertions satisfied per task.
 
 For Luna, the comparison is between the original harness at medium reasoning effort and the optimized harness at max effort. Astra's Marketing results compare [native Codex](examples/evolution-search/codex-astra-max-evaluation.json) with the [optimized DSH harness](docs/guide/en/example-algorithm.md), both at max effort. The optimized harness was evaluated with Astra without an additional optimization round. Terminal-Bench reference configurations were not optimized with Gear; their scores appear in the Before column, while After and Gain are not applicable. Reasoning effort for these reference configurations is listed in Setup.
 

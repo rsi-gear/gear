@@ -2,9 +2,9 @@
 
 定制 Gear 的算法组件：先实现一个最小精英选择器，再研究使用 [GEPA](https://arxiv.org/abs/2507.19457) 算法的 Marketing 实验。实验采用 Gear 的 GEPA 变体，通过共享失败诊断与分阶段评测优化 Harness。
 
-![通过率与目标完成度二维图：原始 DSH 搭配 GPT 5.6 Luna medium 的基线、Marketing 迭代，以及虚线依次连接的 GPT 5.6 Luna max 和 GPT 6 Astra max（61% / 86.30%）、原生 Codex + Astra、带星号的官方 held-out Marketing 模型结果。](../assets/marketing-staged-search.svg)
+![通过率与目标完成率二维图：原始 DSH 搭配 GPT 5.6 Luna medium 的基线、Marketing 迭代，以及虚线依次连接的 GPT 5.6 Luna max 和 GPT 6 Astra max（61% / 86.30%）、原生 Codex + Astra、带星号的官方 held-out Marketing 模型结果。](../assets/marketing-staged-search.svg)
 
-横轴为严格通过率，纵轴为目标完成度（本地 `partial_credit`）。实线连接保留的迭代，虚线连接切换 effort 或模型后的独立评测，没有新增 Meta 轮次。Champion `a0740800` 搭配 GPT 6 Astra max 通过 61/100 个任务，目标完成度为 86.30%。模型名后的 `*` 表示官方 held-out Marketing 参考，通过率取自 Zapier，目标完成度取自 AA；[指标口径](results.md)。两图使用相同的放大坐标范围。[图表数据与来源](../assets/marketing-results.json)。
+横轴为严格通过率，纵轴为目标完成率（本地 `partial_credit`）。实线连接保留的迭代，虚线连接切换 effort 或模型后的独立评测，没有新增 Meta 轮次。Champion `a0740800` 搭配 GPT 6 Astra max 通过 61/100 个任务，目标完成率为 86.30%。模型名后的 `*` 表示官方 held-out Marketing 参考，通过率取自 Zapier，目标完成率取自 AA；[指标口径](results.md)。两图使用相同的放大坐标范围。[图表数据与来源](../assets/marketing-results.json)。
 
 ## 选择要定制的算法模块
 
@@ -129,7 +129,7 @@ You are the real Meta agent for ONE Gear candidate. The user requests three Auto
 +a record to act on.
 ```
 
-最终 champion 为 `a07408001d978e580bbdeab3d7f08d4d2034fb1a`。相对 medium baseline，14 题改善、10 题退步、76 题通过状态不变，36% → 40%；partial credit 从 0.811943599 到 0.838669818。原自动 round 因证据不足拒绝，后续补证和操作者晋升分别保留记录。
+最终 champion 为 `a07408001d978e580bbdeab3d7f08d4d2034fb1a`。相对 medium baseline，14 题改善、10 题退步、76 题通过状态不变，36% → 40%；目标完成率 从 0.811943599 到 0.838669818。原自动 round 因证据不足拒绝，后续补证和操作者晋升分别保留记录。
 
 独立 max 评测得到 53/100，旧 Harness 的 max 为 50/100：11 题改善、8 题退步、81 题不变。没有新增 Meta 轮次，仅修复 1 个基础设施无效槽位，共 101 次物理执行、100 条有效计分结果，见[最终审计摘要](../../../examples/evolution-search/max-evaluation.json)。
 

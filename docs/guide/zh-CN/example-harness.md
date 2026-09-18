@@ -2,9 +2,9 @@
 
 使用 Gear 根据真实失败证据改进 Agent Harness。五轮迭代中，Luna medium 在 Marketing 公开研究集上的严格通过率从 27% 提升到 36%；最终保留 Harness 后续以 Luna max 评测达到 50%。
 
-![通过率与目标完成度二维图：原始 DSH 搭配 Luna medium 的基线、Marketing 迭代、独立 max 评测、原生 Codex + Astra，以及带星号的 官方 held-out Marketing 模型结果。](../assets/marketing-harness-evolution.svg)
+![通过率与目标完成率二维图：原始 DSH 搭配 Luna medium 的基线、Marketing 迭代、独立 max 评测、原生 Codex + Astra，以及带星号的 官方 held-out Marketing 模型结果。](../assets/marketing-harness-evolution.svg)
 
-横轴为严格通过率，纵轴为目标完成度（本地 `partial_credit`）。实线连接保留的迭代，虚线表示单独切换到 max effort 的评测，没有新增 Meta 轮次。模型名后的 `*` 表示官方 held-out Marketing 参考，通过率取自 Zapier，目标完成度取自 AA；[指标口径](results.md)。两图使用相同的放大坐标范围。[图表数据与来源](../assets/marketing-results.json)。
+横轴为严格通过率，纵轴为目标完成率（本地 `partial_credit`）。实线连接保留的迭代，虚线表示单独切换到 max effort 的评测，没有新增 Meta 轮次。模型名后的 `*` 表示官方 held-out Marketing 参考，通过率取自 Zapier，目标完成率取自 AA；[指标口径](results.md)。两图使用相同的放大坐标范围。[图表数据与来源](../assets/marketing-results.json)。
 
 ## 初始指令
 
@@ -22,7 +22,7 @@ Meta 使用 Astra ultra，rollout 使用 DSH + Luna medium。
 | 1 | 24/100 | 27/100 | endpoint discovery 后继续读取业务内容；CLI 退出故障后回收真实结果，保留原 failed 轮次。 |
 | 2 | 33/100 | 33/100 | 来源驱动业务操作：读取流程，记录处理范围和目的地内容要求。原决定在 33/99 时接受，图中使用后来补齐零分后的全量结果。 |
 | 3 | 36/100 | 36/100 | 修改前解析常设流程、补充修订和已有目的地。 |
-| 4 | 36/100 | 36/100 | 结构化 CLI 请求传输，partial credit 提高，按已封存的零最小增益策略接受。 |
+| 4 | 36/100 | 36/100 | 结构化 CLI 请求传输，目标完成率 提高，按已封存的零最小增益策略接受。 |
 | 5 | 34/100 | 36/100 | 记录集合与载荷一致性辅助程序，严格通过率下降，被拒绝。 |
 
 最终保留第 4 轮 `8b651c53cadfe70de39078e93d8cb9c3958b9c38`，第 5 轮修改没有进入导出 champion。[图表数据与注释](../assets/marketing-results.json)区分原始决定、证据回收与补齐。
@@ -70,7 +70,7 @@ node examples/automationbench-marketing/inspect.mjs
 
 ## 结果与范围
 
-五轮期间保持 Target 模型、medium 档、公开题集与评测合同固定。原始与最终全量通过率为 27% 和 36%，观察到 9 个百分点提升；partial credit 约从 75.37% 到 81.19%。
+五轮期间保持 Target 模型、medium 档、公开题集与评测合同固定。原始与最终全量通过率为 27% 和 36%，观察到 9 个百分点提升；目标完成率 约从 75.37% 到 81.19%。
 
 最终 Harness 在单独一次 max 档评测中达到 50/100，全部有效，没有新增 Meta 轮次。因此 36% → 50% 的变化应归入 effort 对照，不记为另一次 Harness 修改收益。
 

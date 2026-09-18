@@ -37,7 +37,11 @@ Gear 是一套开源优化框架，用于提升 AI Agent 在真实世界任务�
 
 在 AutomationBench 的 100 个公开 Marketing 任务上，GPT 5.6 Luna 使用 max 推理档位和经过 Gear 优化的 DSH harness，取得了 **88.88% 的目标完成率**，高于 GPT 6 Astra 使用 max 档位和 Codex 时的 **84.08%**。Luna 的任务通过率为 **53%**。
 
-![从原始 DSH harness 开始的 harness 优化与 GEPA 搜索：GPT 5.6 Luna 使用 max 档位，断言完成率达到 88.88%、任务通过率为 53%；GPT 6 Astra 使用 max 档位和 Codex 时，对应结果为 84.08% 和 57%。](docs/guide/assets/marketing-evolution-overview.png)
+两种模型使用同一版优化后的 DSH harness（`a0740800`）时，**Luna max 平均每题 API 等价费用约为 $0.0568，Astra max 为 $1.1858，Luna 低 95.21%**。
+
+[Token 消耗与计费口径](docs/marketing-token-cost.zh-CN.md)
+
+![从原始 DSH harness 开始的 harness 优化与 GEPA 搜索：GPT 5.6 Luna 使用 max 档位，目标完成率达到 88.88%、任务通过率为 53%；GPT 6 Astra 使用 max 档位和 Codex 时，对应结果为 84.08% 和 57%。](docs/guide/assets/marketing-evolution-overview.png)
 
 ### 基准评测结果
 
