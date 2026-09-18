@@ -21,15 +21,15 @@ Gear 是一套开源优化框架，用于提升 AI Agent 在真实世界任务�
 <table>
   <tr>
     <th width="50%">落地页告警</th>
-    <th width="50%">每周线索评分</th>
+    <th width="50%">精选摘要优化</th>
   </tr>
   <tr>
     <td><a href="docs/guide/assets/landing-page-alerts-replay.mp4"><img src="docs/guide/assets/landing-page-alerts-replay.gif" width="100%" alt="轨迹回放：Luna Max 搭配 GEAR 将 Careers 纳入告警，Astra Max 搭配 Codex 则遗漏了该页面。"></a></td>
-    <td><a href="docs/guide/assets/weekly-lead-scoring-replay.mp4"><img src="docs/guide/assets/weekly-lead-scoring-replay.gif" width="100%" alt="轨迹回放：Luna Max 搭配 GEAR 发送了每周报告，Astra Max 搭配 Codex 则保存为草稿。"></a></td>
+    <td><a href="docs/guide/assets/featured-snippet-replay.mp4"><img src="docs/guide/assets/featured-snippet-replay.gif" width="100%" alt="轨迹回放：Luna Max 搭配 GEAR 将用户点名的 crm pricing 加入队列，Astra Max 搭配 Codex 则遗漏了该关键词。"></a></td>
   </tr>
   <tr>
     <td>计分项通过数：Luna <strong>5/5</strong> · Astra <strong>4/5</strong><br><a href="docs/guide/assets/landing-page-alerts-replay.mp4">观看完整尺寸视频</a></td>
-    <td>计分项通过数：Luna <strong>11/11</strong> · Astra <strong>0/11</strong><br><a href="docs/guide/assets/weekly-lead-scoring-replay.mp4">观看完整尺寸视频</a></td>
+    <td>计分项通过数：Luna <strong>2/2</strong> · Astra <strong>1/2</strong><br><a href="docs/guide/assets/featured-snippet-replay.mp4">观看完整尺寸视频</a></td>
   </tr>
 </table>
 

@@ -21,15 +21,15 @@ The two examples below compare Luna Max with a Gear-optimized harness against As
 <table>
   <tr>
     <th width="50%">Landing page alerts</th>
-    <th width="50%">Weekly lead scoring</th>
+    <th width="50%">Featured snippet opportunities</th>
   </tr>
   <tr>
     <td><a href="docs/guide/assets/landing-page-alerts-replay.mp4"><img src="docs/guide/assets/landing-page-alerts-replay.gif" width="100%" alt="Trajectory replay: Luna Max with GEAR includes Careers in the alert; Astra Max with Codex misses it."></a></td>
-    <td><a href="docs/guide/assets/weekly-lead-scoring-replay.mp4"><img src="docs/guide/assets/weekly-lead-scoring-replay.gif" width="100%" alt="Trajectory replay: Luna Max with GEAR sends the weekly report; Astra Max with Codex saves a draft."></a></td>
+    <td><a href="docs/guide/assets/featured-snippet-replay.mp4"><img src="docs/guide/assets/featured-snippet-replay.gif" width="100%" alt="Trajectory replay: Luna Max with GEAR queues crm pricing; Astra Max with Codex omits the user-requested keyword."></a></td>
   </tr>
   <tr>
     <td>Luna: <strong>5/5</strong> scored checks · Astra: <strong>4/5</strong><br><a href="docs/guide/assets/landing-page-alerts-replay.mp4">Watch full-size video</a></td>
-    <td>Luna: <strong>11/11</strong> scored checks · Astra: <strong>0/11</strong><br><a href="docs/guide/assets/weekly-lead-scoring-replay.mp4">Watch full-size video</a></td>
+    <td>Luna: <strong>2/2</strong> scored checks · Astra: <strong>1/2</strong><br><a href="docs/guide/assets/featured-snippet-replay.mp4">Watch full-size video</a></td>
   </tr>
 </table>
 
