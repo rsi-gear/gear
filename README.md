@@ -14,7 +14,7 @@
 
 Gear is an open-source optimization framework for improving AI agent performance on real-world tasks.
 
-You choose the agent harness to optimize and a benchmark that represents your target scenario. Use an existing benchmark or [build your own task set with clear success criteria](docs/guide/en/datasets.md). Then ask an agent to use the [Refine Skill](skills/refine/SKILL.md) to run the optimization. That agent uses evaluation feedback to revise the harness's instructions, tools, and workflows, while Gear runs the evaluations, compares candidate versions, and selects which changes to retain.
+To tailor an agent to a target scenario, first prepare a benchmark of representative tasks with clear success criteria. You can use an existing benchmark or [build your own task set](docs/guide/en/datasets.md). Run the [Refine Skill](skills/refine/SKILL.md) on that benchmark. Gear uses its evaluation results to iteratively improve the agent’s model, instructions, tools, and workflows.
 
 The two examples below compare Luna Max with a Gear-optimized harness against Astra Max with Codex on the same AutomationBench tasks. Follow their execution from reading source information and applying rules to delivering the final result.
 
