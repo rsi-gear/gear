@@ -39,8 +39,6 @@ On AutomationBench's 100 public Marketing tasks, GPT 5.6 Luna at max reasoning e
 
 With both models using the same optimized DSH harness (`a0740800`), **Luna max's API cost averaged $0.0568 per task, versus $1.1858 for Astra max — 95.21% lower**.
 
-[Token usage and cost methodology](docs/marketing-token-cost.md)
-
 ![Harness optimization and GEPA-based search, starting from the original DSH harness: GPT 5.6 Luna at max effort achieves 88.88% objective completion and a 53% task pass rate, compared with 84.08% and 57%, respectively, for GPT 6 Astra at max effort in Codex.](docs/guide/assets/marketing-evolution-overview.png)
 
 ### Benchmark results
@@ -62,7 +60,7 @@ Gain is the relative improvement: (After − Before) / Before × 100%, calculate
 
 For Luna, the comparison is between the original harness at medium reasoning effort and the optimized harness at max effort. Astra's Marketing results compare [native Codex](examples/evolution-search/codex-astra-max-evaluation.json) with the [optimized DSH harness](docs/guide/en/example-algorithm.md), both at max effort. The optimized harness was evaluated with Astra without an additional optimization round. Terminal-Bench reference configurations were not optimized with Gear; their scores appear in the Before column, while After and Gain are not applicable. Reasoning effort for these reference configurations is listed in Setup.
 
-[Scoring and sources](docs/guide/en/results.md) · [Full experiment](docs/guide/en/example-algorithm.md)
+[Scoring and sources](docs/guide/en/results.md) · [Token usage and cost methodology](docs/marketing-token-cost.md) · [Full experiment](docs/guide/en/example-algorithm.md)
 
 ## Quick start
 

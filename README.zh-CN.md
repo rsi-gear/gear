@@ -39,8 +39,6 @@ Gear 是一套开源优化框架，用于提升 AI Agent 在真实世界任务�
 
 两种模型使用同一版优化后的 DSH harness（`a0740800`）时，**Luna max 平均每题 API 等价费用约为 $0.0568，Astra max 为 $1.1858，Luna 低 95.21%**。
 
-[Token 消耗与计费口径](docs/marketing-token-cost.zh-CN.md)
-
 ![从原始 DSH harness 开始的 harness 优化与 GEPA 搜索：GPT 5.6 Luna 使用 max 档位，目标完成率达到 88.88%、任务通过率为 53%；GPT 6 Astra 使用 max 档位和 Codex 时，对应结果为 84.08% 和 57%。](docs/guide/assets/marketing-evolution-overview.png)
 
 ### 基准评测结果
@@ -62,7 +60,7 @@ Gear 是一套开源优化框架，用于提升 AI Agent 在真实世界任务�
 
 Luna 对比的是原始 harness 的 medium 推理档位与优化后 harness 的 max 档位。Astra 的 Marketing 成绩对比[原生 Codex](examples/evolution-search/codex-astra-max-evaluation.json) 与[优化后的 DSH harness](docs/guide/zh-CN/example-algorithm.md)，均使用 max 档位。优化后的 harness 直接使用 Astra 评测，没有新增优化轮次。Terminal-Bench 对照配置未经过 Gear 优化，成绩列在「优化前」，「优化后」与「提升」不适用；这些对照配置的推理档位见「配置」。
 
-[评分方式与来源](docs/guide/zh-CN/results.md) · [完整实验](docs/guide/zh-CN/example-algorithm.md)
+[评分方式与来源](docs/guide/zh-CN/results.md) · [Token 消耗与计费口径](docs/marketing-token-cost.zh-CN.md) · [完整实验](docs/guide/zh-CN/example-algorithm.md)
 
 ## 快速开始
 
