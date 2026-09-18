@@ -1,0 +1,21 @@
+{
+  "name": "gear-dsh-codex-target-carrier",
+  "private": true,
+  "version": "0.0.2",
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "build": "node fixed/verify-carrier.mjs"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/cordis-plugin-include": "1.0.6",
+    "@deepseek-ai/dsh": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-tools": "0.1.1-rc.2",
+    "@earendil-works/pi-ai": "0.84.4",
+    "dsh-codex": "0.2.6"
+  }
+}

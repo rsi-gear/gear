@@ -1,0 +1,252 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="760" viewBox="0 0 1440 760" role="img" aria-labelledby="architecture-title architecture-description" style="font-family:Inter, -apple-system, BlinkMacSystemFont, &#x27;Segoe UI&#x27;, Arial, sans-serif"><title id="architecture-title">Gear architecture</title><desc id="architecture-description">Algorithm Registry configures the Optimization Engine. Task Registry and Agent feed the engine, which sends candidates to Evaluator. Evaluator writes Trajectory Storage. Storage returns feedback to the engine and supplies Trainer. The engine updates seed tasks in Task Registry and the harness in Agent. Trainer returns model updates to Agent. The circular Serve, Diagnose, Evolve overview is synchronized with highlighted components and moving data on the corresponding paths. Hitch&#x27;s four shared infrastructure capabilities stay static.</desc><style>
+      @keyframes arch-active-serve {
+
+        0% { visibility: visible; }
+        33.33333%, 100% { visibility: hidden; }
+      }
+      @keyframes arch-draw-serve {
+        0%, 0% { stroke-dashoffset: 100; }
+        32.5%, 100% { stroke-dashoffset: 0; }
+      }
+      @keyframes arch-dot-serve {
+        0%, 0% { stroke-dashoffset: 0; }
+        32.5%, 100% { stroke-dashoffset: -99.9; }
+      }
+      .arch-active-serve {
+        animation: arch-active-serve 12s steps(1, end) infinite;
+      }
+      .arch-draw-serve { animation: arch-draw-serve 12s linear infinite; }
+      .arch-dot-serve { animation: arch-dot-serve 12s linear infinite; }
+
+
+      @keyframes arch-active-diagnose {
+        0% { visibility: hidden; }
+        33.33333% { visibility: visible; }
+        66.66667%, 100% { visibility: hidden; }
+      }
+      @keyframes arch-draw-diagnose {
+        0%, 33.33333% { stroke-dashoffset: 100; }
+        65.83333%, 100% { stroke-dashoffset: 0; }
+      }
+      @keyframes arch-dot-diagnose {
+        0%, 33.33333% { stroke-dashoffset: 0; }
+        65.83333%, 100% { stroke-dashoffset: -99.9; }
+      }
+      .arch-active-diagnose {
+        animation: arch-active-diagnose 12s steps(1, end) infinite;
+      }
+      .arch-draw-diagnose { animation: arch-draw-diagnose 12s linear infinite; }
+      .arch-dot-diagnose { animation: arch-dot-diagnose 12s linear infinite; }
+
+
+      @keyframes arch-active-evolve {
+        0% { visibility: hidden; }
+        66.66667% { visibility: visible; }
+        100%, 100% { visibility: hidden; }
+      }
+      @keyframes arch-draw-evolve {
+        0%, 66.66667% { stroke-dashoffset: 100; }
+        99.16667%, 100% { stroke-dashoffset: 0; }
+      }
+      @keyframes arch-dot-evolve {
+        0%, 66.66667% { stroke-dashoffset: 0; }
+        99.16667%, 100% { stroke-dashoffset: -99.9; }
+      }
+      .arch-active-evolve {
+        animation: arch-active-evolve 12s steps(1, end) infinite;
+      }
+      .arch-draw-evolve { animation: arch-draw-evolve 12s linear infinite; }
+      .arch-dot-evolve { animation: arch-dot-evolve 12s linear infinite; }
+
+
+      @keyframes arch-active-inputs {
+
+        0% { visibility: visible; }
+        10%, 100% { visibility: hidden; }
+      }
+      @keyframes arch-draw-inputs {
+        0%, 0% { stroke-dashoffset: 100; }
+        9.16667%, 100% { stroke-dashoffset: 0; }
+      }
+      @keyframes arch-dot-inputs {
+        0%, 0% { stroke-dashoffset: 0; }
+        9.16667%, 100% { stroke-dashoffset: -99.9; }
+      }
+      .arch-active-inputs {
+        animation: arch-active-inputs 12s steps(1, end) infinite;
+      }
+      .arch-draw-inputs { animation: arch-draw-inputs 12s linear infinite; }
+      .arch-dot-inputs { animation: arch-dot-inputs 12s linear infinite; }
+
+
+      @keyframes arch-active-dispatch {
+        0% { visibility: hidden; }
+        10% { visibility: visible; }
+        22.22222%, 100% { visibility: hidden; }
+      }
+      @keyframes arch-draw-dispatch {
+        0%, 10% { stroke-dashoffset: 100; }
+        21.38889%, 100% { stroke-dashoffset: 0; }
+      }
+      @keyframes arch-dot-dispatch {
+        0%, 10% { stroke-dashoffset: 0; }
+        21.38889%, 100% { stroke-dashoffset: -99.9; }
+      }
+      .arch-active-dispatch {
+        animation: arch-active-dispatch 12s steps(1, end) infinite;
+      }
+      .arch-draw-dispatch { animation: arch-draw-dispatch 12s linear infinite; }
+      .arch-dot-dispatch { animation: arch-dot-dispatch 12s linear infinite; }
+
+
+      @keyframes arch-active-capture {
+        0% { visibility: hidden; }
+        22.22222% { visibility: visible; }
+        33.33333%, 100% { visibility: hidden; }
+      }
+      @keyframes arch-draw-capture {
+        0%, 22.22222% { stroke-dashoffset: 100; }
+        32.5%, 100% { stroke-dashoffset: 0; }
+      }
+      @keyframes arch-dot-capture {
+        0%, 22.22222% { stroke-dashoffset: 0; }
+        32.5%, 100% { stroke-dashoffset: -99.9; }
+      }
+      .arch-active-capture {
+        animation: arch-active-capture 12s steps(1, end) infinite;
+      }
+      .arch-draw-capture { animation: arch-draw-capture 12s linear infinite; }
+      .arch-dot-capture { animation: arch-dot-capture 12s linear infinite; }
+
+
+      @keyframes arch-active-feedback {
+        0% { visibility: hidden; }
+        33.33333% { visibility: visible; }
+        60.55556%, 100% { visibility: hidden; }
+      }
+      @keyframes arch-draw-feedback {
+        0%, 33.33333% { stroke-dashoffset: 100; }
+        59.72222%, 100% { stroke-dashoffset: 0; }
+      }
+      @keyframes arch-dot-feedback {
+        0%, 33.33333% { stroke-dashoffset: 0; }
+        59.72222%, 100% { stroke-dashoffset: -99.9; }
+      }
+      .arch-active-feedback {
+        animation: arch-active-feedback 12s steps(1, end) infinite;
+      }
+      .arch-draw-feedback { animation: arch-draw-feedback 12s linear infinite; }
+      .arch-dot-feedback { animation: arch-dot-feedback 12s linear infinite; }
+
+
+      @keyframes arch-active-seedUpdates {
+        0% { visibility: hidden; }
+        66.66667% { visibility: visible; }
+        88.33333%, 100% { visibility: hidden; }
+      }
+      @keyframes arch-draw-seedUpdates {
+        0%, 66.66667% { stroke-dashoffset: 100; }
+        87.5%, 100% { stroke-dashoffset: 0; }
+      }
+      @keyframes arch-dot-seedUpdates {
+        0%, 66.66667% { stroke-dashoffset: 0; }
+        87.5%, 100% { stroke-dashoffset: -99.9; }
+      }
+      .arch-active-seedUpdates {
+        animation: arch-active-seedUpdates 12s steps(1, end) infinite;
+      }
+      .arch-draw-seedUpdates { animation: arch-draw-seedUpdates 12s linear infinite; }
+      .arch-dot-seedUpdates { animation: arch-dot-seedUpdates 12s linear infinite; }
+
+
+      @keyframes arch-active-harnessUpdates {
+        0% { visibility: hidden; }
+        66.66667% { visibility: visible; }
+        88.33333%, 100% { visibility: hidden; }
+      }
+      @keyframes arch-draw-harnessUpdates {
+        0%, 66.66667% { stroke-dashoffset: 100; }
+        87.5%, 100% { stroke-dashoffset: 0; }
+      }
+      @keyframes arch-dot-harnessUpdates {
+        0%, 66.66667% { stroke-dashoffset: 0; }
+        87.5%, 100% { stroke-dashoffset: -99.9; }
+      }
+      .arch-active-harnessUpdates {
+        animation: arch-active-harnessUpdates 12s steps(1, end) infinite;
+      }
+      .arch-draw-harnessUpdates { animation: arch-draw-harnessUpdates 12s linear infinite; }
+      .arch-dot-harnessUpdates { animation: arch-dot-harnessUpdates 12s linear infinite; }
+
+
+      @keyframes arch-active-trainingData {
+        0% { visibility: hidden; }
+        66.66667% { visibility: visible; }
+        77.77778%, 100% { visibility: hidden; }
+      }
+      @keyframes arch-draw-trainingData {
+        0%, 66.66667% { stroke-dashoffset: 100; }
+        76.94444%, 100% { stroke-dashoffset: 0; }
+      }
+      @keyframes arch-dot-trainingData {
+        0%, 66.66667% { stroke-dashoffset: 0; }
+        76.94444%, 100% { stroke-dashoffset: -99.9; }
+      }
+      .arch-active-trainingData {
+        animation: arch-active-trainingData 12s steps(1, end) infinite;
+      }
+      .arch-draw-trainingData { animation: arch-draw-trainingData 12s linear infinite; }
+      .arch-dot-trainingData { animation: arch-dot-trainingData 12s linear infinite; }
+
+
+      @keyframes arch-active-modelUpdates {
+        0% { visibility: hidden; }
+        77.77778% { visibility: visible; }
+        100%, 100% { visibility: hidden; }
+      }
+      @keyframes arch-draw-modelUpdates {
+        0%, 77.77778% { stroke-dashoffset: 100; }
+        99.16667%, 100% { stroke-dashoffset: 0; }
+      }
+      @keyframes arch-dot-modelUpdates {
+        0%, 77.77778% { stroke-dashoffset: 0; }
+        99.16667%, 100% { stroke-dashoffset: -99.9; }
+      }
+      .arch-active-modelUpdates {
+        animation: arch-active-modelUpdates 12s steps(1, end) infinite;
+      }
+      .arch-draw-modelUpdates { animation: arch-draw-modelUpdates 12s linear infinite; }
+      .arch-dot-modelUpdates { animation: arch-dot-modelUpdates 12s linear infinite; }
+
+
+      @keyframes arch-word-serve {
+
+        0% { fill: #a03729; }
+        33.33333%, 100% { fill: #7d766e; }
+      }
+      .arch-word-serve { animation: arch-word-serve 12s steps(1, end) infinite; }
+
+
+      @keyframes arch-word-diagnose {
+        0% { fill: #7d766e; }
+        33.33333% { fill: #a03729; }
+        66.66667%, 100% { fill: #7d766e; }
+      }
+      .arch-word-diagnose { animation: arch-word-diagnose 12s steps(1, end) infinite; }
+
+
+      @keyframes arch-word-evolve {
+        0% { fill: #7d766e; }
+        66.66667% { fill: #a03729; }
+        100%, 100% { fill: #7d766e; }
+      }
+      .arch-word-evolve { animation: arch-word-evolve 12s steps(1, end) infinite; }
+
+    @keyframes arch-orbit { from { rotate: 0deg; } to { rotate: 360deg; } }
+    .arch-orbit { animation: arch-orbit 12s linear infinite; }
+    @media (prefers-reduced-motion: reduce) {
+      .arch-motion { animation: none !important; visibility: hidden !important; }
+      .arch-loop-word { animation: none !important; fill: #14110e !important; }
+    }
+  </style><defs><marker id="arch-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse" markerUnits="userSpaceOnUse"><path d="M1 1L7 4L1 7" fill="none" stroke="#7d766e" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"></path></marker><marker id="arch-active-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse" markerUnits="userSpaceOnUse"><path d="M1 1L7 4L1 7" fill="none" stroke="#a03729" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"></path></marker></defs><rect width="1440" height="760" fill="#ffffff"></rect><g data-component="Algorithm Registry"><rect x="400" y="42" width="640" height="96" rx="10" fill="#ffffff" stroke="#3c3630" stroke-width="1.3"></rect><text x="422" y="81" font-size="26" fill="#14110e" font-weight="600">Algorithm Registry</text><text x="1018" y="80" font-size="17" fill="#7d766e" font-weight="400" text-anchor="end">GEPA · Your algorithm</text><text x="422" y="114" font-size="17" fill="#7d766e" font-weight="400">Customize the modules below to improve agents</text></g><g data-component="Evolution overview"><circle cx="1216" cy="118" r="82" fill="none" stroke="#ddd8d2" stroke-width="1.8"></circle><g data-phase="serve"><path d="M1216 36A82 82 0 0 1 1287.014083 159" fill="none" stroke="#7d766e" stroke-width="1.5" marker-end="url(#arch-arrow)"></path><g data-cue="serve" class="arch-motion arch-active-serve"><path d="M1216 36A82 82 0 0 1 1287.014083 159" fill="none" stroke="#a03729" stroke-width="3.8" marker-end="url(#arch-active-arrow)"></path><rect x="1172" y="4" width="88" height="30" rx="7" fill="#fff4ef"></rect></g><text x="1216" y="26" font-size="19" fill="#7d766e" font-weight="600" text-anchor="middle" class="arch-loop-word arch-word-serve">Serve</text></g><g data-phase="diagnose"><path d="M1287.014083 159A82 82 0 0 1 1144.985917 159" fill="none" stroke="#7d766e" stroke-width="1.5" marker-end="url(#arch-arrow)"></path><g data-cue="diagnose" class="arch-motion arch-active-diagnose"><path d="M1287.014083 159A82 82 0 0 1 1144.985917 159" fill="none" stroke="#a03729" stroke-width="3.8" marker-end="url(#arch-active-arrow)"></path><rect x="1288" y="143" width="104" height="30" rx="7" fill="#fff4ef"></rect></g><text x="1340" y="165" font-size="19" fill="#7d766e" font-weight="600" text-anchor="middle" class="arch-loop-word arch-word-diagnose">Diagnose</text></g><g data-phase="evolve"><path d="M1144.985917 159A82 82 0 0 1 1216 36" fill="none" stroke="#7d766e" stroke-width="1.5" marker-end="url(#arch-arrow)"></path><g data-cue="evolve" class="arch-motion arch-active-evolve"><path d="M1144.985917 159A82 82 0 0 1 1216 36" fill="none" stroke="#a03729" stroke-width="3.8" marker-end="url(#arch-active-arrow)"></path><rect x="1040" y="143" width="104" height="30" rx="7" fill="#fff4ef"></rect></g><text x="1092" y="165" font-size="19" fill="#7d766e" font-weight="600" text-anchor="middle" class="arch-loop-word arch-word-evolve">Evolve</text></g><g class="arch-motion arch-orbit" style="transform-origin:1216px 118px"><circle cx="1216" cy="36" r="5.5" fill="#a03729" stroke="#ffffff" stroke-width="2"></circle></g></g><g data-component="Task Registry"><rect x="48" y="281" width="352" height="112" rx="10" fill="#ffffff" stroke="#3c3630" stroke-width="1.3"></rect><g data-cue="inputs" class="arch-motion arch-active-inputs"><rect x="48" y="281" width="352" height="112" rx="10" fill="#fff4ef" stroke="#a03729" stroke-width="2.4"></rect></g><g data-cue="seedUpdates" class="arch-motion arch-active-seedUpdates"><rect x="48" y="281" width="352" height="112" rx="10" fill="#fff4ef" stroke="#a03729" stroke-width="2.4"></rect></g><text x="68" y="320" font-size="24" fill="#14110e" font-weight="600">Task Registry</text><text x="68" y="351" font-size="17" fill="#7d766e" font-weight="400">Seed tasks · Environments</text></g><g data-component="Agent"><rect x="48" y="510" width="352" height="112" rx="10" fill="#ffffff" stroke="#3c3630" stroke-width="1.3"></rect><g data-cue="inputs" class="arch-motion arch-active-inputs"><rect x="48" y="510" width="352" height="112" rx="10" fill="#fff4ef" stroke="#a03729" stroke-width="2.4"></rect></g><g data-cue="harnessUpdates" class="arch-motion arch-active-harnessUpdates"><rect x="48" y="510" width="352" height="112" rx="10" fill="#fff4ef" stroke="#a03729" stroke-width="2.4"></rect></g><g data-cue="modelUpdates" class="arch-motion arch-active-modelUpdates"><rect x="48" y="510" width="352" height="112" rx="10" fill="#fff4ef" stroke="#a03729" stroke-width="2.4"></rect></g><text x="68" y="549" font-size="24" fill="#14110e" font-weight="600">Agent</text><text x="68" y="580" font-size="17" fill="#7d766e" font-weight="400">Harness · Model</text></g><g data-component="Optimization Engine"><rect x="544" y="281" width="352" height="112" rx="10" fill="#ffffff" stroke="#3c3630" stroke-width="1.3"></rect><g data-cue="dispatch" class="arch-motion arch-active-dispatch"><rect x="544" y="281" width="352" height="112" rx="10" fill="#fff4ef" stroke="#a03729" stroke-width="2.4"></rect></g><g data-cue="diagnose" class="arch-motion arch-active-diagnose"><rect x="544" y="281" width="352" height="112" rx="10" fill="#fff4ef" stroke="#a03729" stroke-width="2.4"></rect></g><g data-cue="seedUpdates" class="arch-motion arch-active-seedUpdates"><rect x="544" y="281" width="352" height="112" rx="10" fill="#fff4ef" stroke="#a03729" stroke-width="2.4"></rect></g><text x="564" y="320" font-size="24" fill="#14110e" font-weight="600">Optimization Engine</text><text x="564" y="351" font-size="17" fill="#7d766e" font-weight="400">Propose and compare candidates</text><text x="564" y="375" font-size="17" fill="#7d766e" font-weight="400">Select agent improvements</text></g><g data-component="Evaluator"><rect x="1040" y="281" width="352" height="112" rx="10" fill="#ffffff" stroke="#3c3630" stroke-width="1.3"></rect><g data-cue="dispatch" class="arch-motion arch-active-dispatch"><rect x="1040" y="281" width="352" height="112" rx="10" fill="#fff4ef" stroke="#a03729" stroke-width="2.4"></rect></g><g data-cue="capture" class="arch-motion arch-active-capture"><rect x="1040" y="281" width="352" height="112" rx="10" fill="#fff4ef" stroke="#a03729" stroke-width="2.4"></rect></g><text x="1060" y="320" font-size="24" fill="#14110e" font-weight="600">Evaluator</text><text x="1060" y="351" font-size="17" fill="#7d766e" font-weight="400">Execute tasks</text><text x="1060" y="375" font-size="17" fill="#7d766e" font-weight="400">Collect trajectories and feedback</text></g><g data-component="Trajectory Storage"><rect x="1040" y="510" width="352" height="112" rx="10" fill="#ffffff" stroke="#3c3630" stroke-width="1.3"></rect><g data-cue="capture" class="arch-motion arch-active-capture"><rect x="1040" y="510" width="352" height="112" rx="10" fill="#fff4ef" stroke="#a03729" stroke-width="2.4"></rect></g><g data-cue="feedback" class="arch-motion arch-active-feedback"><rect x="1040" y="510" width="352" height="112" rx="10" fill="#fff4ef" stroke="#a03729" stroke-width="2.4"></rect></g><g data-cue="trainingData" class="arch-motion arch-active-trainingData"><rect x="1040" y="510" width="352" height="112" rx="10" fill="#fff4ef" stroke="#a03729" stroke-width="2.4"></rect></g><text x="1060" y="549" font-size="24" fill="#14110e" font-weight="600">Trajectory Storage</text><text x="1060" y="580" font-size="17" fill="#7d766e" font-weight="400">Trajectories · Rewards · Feedback</text></g><g data-component="Trainer"><rect x="544" y="510" width="352" height="112" rx="10" fill="#ffffff" stroke="#3c3630" stroke-width="1.3"></rect><g data-cue="trainingData" class="arch-motion arch-active-trainingData"><rect x="544" y="510" width="352" height="112" rx="10" fill="#fff4ef" stroke="#a03729" stroke-width="2.4"></rect></g><g data-cue="modelUpdates" class="arch-motion arch-active-modelUpdates"><rect x="544" y="510" width="352" height="112" rx="10" fill="#fff4ef" stroke="#a03729" stroke-width="2.4"></rect></g><text x="564" y="549" font-size="24" fill="#14110e" font-weight="600">Trainer</text><text x="876" y="548" font-size="16" fill="#7d766e" font-weight="400" text-anchor="end">Slime</text><text x="564" y="580" font-size="17" fill="#7d766e" font-weight="400">Update model weights</text></g><g data-relationship="Algorithm Registry to Optimization Engine"><g><path d="M720 142V275" fill="none" stroke="#7d766e" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arch-arrow)"></path></g></g><g data-relationship="Task Registry and Agent to Optimization Engine"><g><path d="M404 337H538" fill="none" stroke="#7d766e" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arch-arrow)"></path><g data-cue="inputs" class="arch-motion arch-active-inputs"><path d="M404 337H538" fill="none" stroke="#a03729" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" pathLength="100" stroke-dasharray="100 100" class="arch-draw-inputs"></path><path d="M404 337H538" fill="none" stroke="#a03729" stroke-width="7" stroke-linecap="round" pathLength="100" stroke-dasharray="0.01 200" class="arch-dot-inputs"></path></g></g><g><path d="M382 506V476Q382 464 394 464H644Q656 464 656 452V399" fill="none" stroke="#7d766e" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arch-arrow)"></path><g data-cue="inputs" class="arch-motion arch-active-inputs"><path d="M382 506V476Q382 464 394 464H644Q656 464 656 452V399" fill="none" stroke="#a03729" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" pathLength="100" stroke-dasharray="100 100" class="arch-draw-inputs"></path><path d="M382 506V476Q382 464 394 464H644Q656 464 656 452V399" fill="none" stroke="#a03729" stroke-width="7" stroke-linecap="round" pathLength="100" stroke-dasharray="0.01 200" class="arch-dot-inputs"></path></g></g></g><g data-relationship="Optimization Engine updates seed tasks in Task Registry"><g><path d="M600 277V252Q600 240 588 240H236Q224 240 224 252V275" fill="none" stroke="#7d766e" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arch-arrow)"></path><g data-cue="seedUpdates" class="arch-motion arch-active-seedUpdates"><path d="M600 277V252Q600 240 588 240H236Q224 240 224 252V275" fill="none" stroke="#a03729" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" pathLength="100" stroke-dasharray="100 100" class="arch-draw-seedUpdates"></path><path d="M600 277V252Q600 240 588 240H236Q224 240 224 252V275" fill="none" stroke="#a03729" stroke-width="7" stroke-linecap="round" pathLength="100" stroke-dasharray="0.01 200" class="arch-dot-seedUpdates"></path></g></g><text x="412" y="226" font-size="15" fill="#7d766e" font-weight="400" text-anchor="middle">seed task updates</text></g><g data-relationship="Optimization Engine updates harness in Agent"><g><path d="M600 397V422Q600 434 588 434H236Q224 434 224 446V504" fill="none" stroke="#7d766e" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arch-arrow)"></path><g data-cue="harnessUpdates" class="arch-motion arch-active-harnessUpdates"><path d="M600 397V422Q600 434 588 434H236Q224 434 224 446V504" fill="none" stroke="#a03729" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" pathLength="100" stroke-dasharray="100 100" class="arch-draw-harnessUpdates"></path><path d="M600 397V422Q600 434 588 434H236Q224 434 224 446V504" fill="none" stroke="#a03729" stroke-width="7" stroke-linecap="round" pathLength="100" stroke-dasharray="0.01 200" class="arch-dot-harnessUpdates"></path></g></g><text x="412" y="420" font-size="15" fill="#7d766e" font-weight="400" text-anchor="middle">harness updates</text></g><g data-relationship="Optimization Engine to Evaluator"><g><path d="M900 337H1034" fill="none" stroke="#7d766e" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arch-arrow)"></path><g data-cue="dispatch" class="arch-motion arch-active-dispatch"><path d="M900 337H1034" fill="none" stroke="#a03729" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" pathLength="100" stroke-dasharray="100 100" class="arch-draw-dispatch"></path><path d="M900 337H1034" fill="none" stroke="#a03729" stroke-width="7" stroke-linecap="round" pathLength="100" stroke-dasharray="0.01 200" class="arch-dot-dispatch"></path></g></g><text x="967" y="323" font-size="16" fill="#7d766e" font-weight="400" text-anchor="middle">candidates</text></g><g data-relationship="Evaluator to Trajectory Storage"><g><path d="M1216 397V504" fill="none" stroke="#7d766e" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arch-arrow)"></path><g data-cue="capture" class="arch-motion arch-active-capture"><path d="M1216 397V504" fill="none" stroke="#a03729" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" pathLength="100" stroke-dasharray="100 100" class="arch-draw-capture"></path><path d="M1216 397V504" fill="none" stroke="#a03729" stroke-width="7" stroke-linecap="round" pathLength="100" stroke-dasharray="0.01 200" class="arch-dot-capture"></path></g></g></g><g data-relationship="Trajectory Storage feedback to Optimization Engine"><g><path d="M1058 506V476Q1058 464 1046 464H796Q784 464 784 452V399" fill="none" stroke="#7d766e" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arch-arrow)"></path><g data-cue="feedback" class="arch-motion arch-active-feedback"><path d="M1058 506V476Q1058 464 1046 464H796Q784 464 784 452V399" fill="none" stroke="#a03729" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" pathLength="100" stroke-dasharray="100 100" class="arch-draw-feedback"></path><path d="M1058 506V476Q1058 464 1046 464H796Q784 464 784 452V399" fill="none" stroke="#a03729" stroke-width="7" stroke-linecap="round" pathLength="100" stroke-dasharray="0.01 200" class="arch-dot-feedback"></path></g></g><text x="922" y="450" font-size="16" fill="#7d766e" font-weight="400" text-anchor="middle">feedback</text></g><g data-relationship="Trajectory Storage to Trainer"><g><path d="M1036 566H902" fill="none" stroke="#7d766e" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arch-arrow)"></path><g data-cue="trainingData" class="arch-motion arch-active-trainingData"><path d="M1036 566H902" fill="none" stroke="#a03729" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" pathLength="100" stroke-dasharray="100 100" class="arch-draw-trainingData"></path><path d="M1036 566H902" fill="none" stroke="#a03729" stroke-width="7" stroke-linecap="round" pathLength="100" stroke-dasharray="0.01 200" class="arch-dot-trainingData"></path></g></g><text x="968" y="552" font-size="16" fill="#7d766e" font-weight="400" text-anchor="middle">training data</text></g><g data-relationship="Trainer model updates to Agent"><g><path d="M540 566H406" fill="none" stroke="#7d766e" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arch-arrow)"></path><g data-cue="modelUpdates" class="arch-motion arch-active-modelUpdates"><path d="M540 566H406" fill="none" stroke="#a03729" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" pathLength="100" stroke-dasharray="100 100" class="arch-draw-modelUpdates"></path><path d="M540 566H406" fill="none" stroke="#a03729" stroke-width="7" stroke-linecap="round" pathLength="100" stroke-dasharray="0.01 200" class="arch-dot-modelUpdates"></path></g></g><text x="472" y="552" font-size="16" fill="#7d766e" font-weight="400" text-anchor="middle">model updates</text></g><g data-layer="Powered by Hitch"><text x="48" y="656" font-size="18" fill="#7d766e" font-weight="500">Powered by Hitch</text><path d="M48 674H1392" stroke="#ddd8d2" stroke-width="1"></path><g><text x="48" y="709" font-size="21" fill="#14110e" font-weight="600">Harness versions</text><text x="48" y="737" font-size="16" fill="#7d766e" font-weight="400">Resolve · Build · Cache</text></g><g><text x="392" y="709" font-size="21" fill="#14110e" font-weight="600">Model inference</text><text x="392" y="737" font-size="16" fill="#7d766e" font-weight="400">API routing · Local serving</text></g><g><text x="736" y="709" font-size="21" fill="#14110e" font-weight="600">Parallel execution</text><text x="736" y="737" font-size="16" fill="#7d766e" font-weight="400">Isolated tasks · Resource scheduling</text></g><g><text x="1080" y="709" font-size="21" fill="#14110e" font-weight="600">Benchmark evaluation</text><text x="1080" y="737" font-size="16" fill="#7d766e" font-weight="400">Rewards · Verifier feedback</text></g></g></svg>

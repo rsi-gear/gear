@@ -1,0 +1,7 @@
+# Installing rsi-gear adds a dormant control-plane row. A deployment
+# enables and configures it from the selected profile's own cordis.patch.yml;
+# keeping the package layer disabled makes installation side-effect free.
+- insert:
+    - id: refine
+      name: rsi-gear
+      disabled: true

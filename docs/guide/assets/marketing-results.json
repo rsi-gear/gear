@@ -1,0 +1,269 @@
+{
+  "schemaVersion": 1,
+  "updated": "2026-09-16",
+  "benchmark": "AutomationBench public Marketing",
+  "tasks": 100,
+  "metric": "task_completed_correctly",
+  "validationMode": "shared-set-research",
+  "independentHeldOut": false,
+  "meta": {
+    "model": "gpt-6-astra",
+    "effort": "ultra"
+  },
+  "target": {
+    "model": "gpt-5.6-luna",
+    "effort": "medium"
+  },
+  "sources": {
+    "initial": {
+      "file": "marketing-unified-20260911/final-report.md",
+      "sha256": "sha256:a2e6b3776d1fe3354ff3a1296318b410c4f918a83854db65be1a3f5f3a85c99a"
+    },
+    "continuation": {
+      "file": "marketing-unified-20260911/continuation-20260911/final-report.md",
+      "sha256": "sha256:93034e878662ad00c6265c0ee17855e7a649bd5c76e1769c058c571a28eb3da8"
+    },
+    "staged": {
+      "file": "marketing-staged-20260912/final-report.md",
+      "sha256": "sha256:5d2a732b9b1235422f884a5841b875f91d883f0db0d3e83a91476c507a00dfc5"
+    },
+    "max": {
+      "file": "marketing-champion-luna-max-20260914/checks/final-evidence.json",
+      "sha256": "sha256:3529a44aadd694bad932d8331409e4efacf91c0c2508c36c9c542f76a62c1ec5"
+    },
+    "previousMax": {
+      "file": "marketing-luna-max-20260912/final-report.md",
+      "sha256": "sha256:3238c7458b02b8aa9e902a00f1c5cdd5d078d24882c4c85bc1fbb01ee31ffb49"
+    },
+    "codexAstraMax": {
+      "file": "marketing-codex-astra-max-20260914/checks/final-evidence.json",
+      "sha256": "sha256:f7d3fd33b89901b5ac7a8d57f1032b191994a7643b56ada90b1d52f7a327852c"
+    },
+    "championAstraMax": {
+      "file": "marketing-aliyun-astra-max-champion-20260916/recovery/final-result.json",
+      "sha256": "sha256:0a461e76e526424b64a3c079f44eab414772fc23f8e25405fa488f68d92638c0"
+    },
+    "championAstraMaxAudit": {
+      "file": "marketing-aliyun-astra-max-champion-20260916/recovery/final-summary.json",
+      "sha256": "sha256:9e4eff3a0d300019c65b09ddb2ecc9f37ffe85dc18612626114837693bfdde96"
+    }
+  },
+  "harnessEvolution": [
+    {
+      "round": 0,
+      "candidatePassed": 27,
+      "championPassed": 27,
+      "valid": 100,
+      "partialCredit": 0.7537,
+      "decision": "initial",
+      "commit": "b4ce300"
+    },
+    {
+      "round": 1,
+      "candidatePassed": 24,
+      "championPassed": 27,
+      "valid": 100,
+      "partialCredit": 0.7515,
+      "decision": "execution-failure; result recovered",
+      "commit": "a72dd39"
+    },
+    {
+      "round": 2,
+      "candidatePassed": 33,
+      "championPassed": 33,
+      "valid": 100,
+      "partialCredit": 0.7742,
+      "decision": "accepted; invalid slot later completed",
+      "commit": "d88ce57"
+    },
+    {
+      "round": 3,
+      "candidatePassed": 36,
+      "championPassed": 36,
+      "valid": 100,
+      "partialCredit": 0.804,
+      "decision": "accepted",
+      "commit": "4c68111"
+    },
+    {
+      "round": 4,
+      "candidatePassed": 36,
+      "championPassed": 36,
+      "valid": 100,
+      "partialCredit": 0.8119435988418185,
+      "decision": "accepted",
+      "commit": "8b651c5"
+    },
+    {
+      "round": 5,
+      "candidatePassed": 34,
+      "championPassed": 36,
+      "valid": 100,
+      "partialCredit": 0.823,
+      "decision": "rejected",
+      "commit": "59e4892"
+    }
+  ],
+  "stagedEvolution": [
+    {
+      "round": 0,
+      "candidatePassed": 36,
+      "championPassed": 36,
+      "valid": 100,
+      "partialCredit": 0.8119435988418185,
+      "decision": "baseline"
+    },
+    {
+      "round": 1,
+      "candidatePassed": 36,
+      "championPassed": 36,
+      "valid": 100,
+      "partialCredit": 0.805917,
+      "decision": "not promoted"
+    },
+    {
+      "round": 2,
+      "candidatePassed": null,
+      "championPassed": 36,
+      "valid": null,
+      "partialCredit": null,
+      "decision": "no global evaluation"
+    },
+    {
+      "round": 3,
+      "candidatePassed": 40,
+      "championPassed": 40,
+      "valid": 100,
+      "partialCredit": 0.838669818,
+      "decision": "promoted by operator after evidence completion"
+    }
+  ],
+  "effortComparison": [
+    {
+      "harness": "8b651c5",
+      "medium": 36,
+      "max": 50,
+      "maxPartialCredit": 0.889788
+    },
+    {
+      "harness": "a0740800",
+      "medium": 40,
+      "max": 53,
+      "maxPartialCredit": 0.888802379242704
+    }
+  ],
+  "publicLeaderboardReference": {
+    "source": "https://zapier.com/benchmarks",
+    "methodology": "https://github.com/zapier/AutomationBench#public-vs-official-scores",
+    "retrieved": "2026-09-14",
+    "version": "1.0.6",
+    "model": "GPT 6 Astra (Max)",
+    "marketingPassRate": 50,
+    "dataset": "private held-out",
+    "directlyComparable": false
+  },
+  "notes": [
+    "Round 2 originally accepted at 33/99. The 33/100 chart point uses later completed evidence; the missing slot scored zero. Original decision is preserved.",
+    "Partial-credit values from reports are rounded except where exact audit values are available.",
+    "Each staged round used the same parent 8b651c5. No multi-generation archive parent reproduction or crossover was observed.",
+    "Final staged promotion followed five invalid-slot completions and explicit operator authorization.",
+    "Max is a separate evaluation with no additional Meta iteration. New max batch: 101 physical executions, 100 valid scored tasks, one invalid-slot repair."
+  ],
+  "datasetIdentity": {
+    "upstreamRevision": "4a8e1061254004d9dac807054eed33fad7d1ff14",
+    "adapter": {
+      "id": "automationbench-public-source",
+      "revision": "sha256:f112cd0c892f3376fad129fc350eb76e085e6fa182b3b71832257445784e9dee",
+      "output_protocol": "gear-harbor-eval-result-v1"
+    },
+    "datasetDigest": "sha256:70ad308dc117aaf91c4e0ac4d10646fb9a627804371d05892cfebd1f44201edf"
+  },
+  "codexAstraMaxReference": {
+    "harnessRef": "codex@version:0.154.0",
+    "model": "gpt-6-astra",
+    "effort": "max",
+    "passed": 57,
+    "total": 100,
+    "partialCredit": 0.8407607959206256,
+    "physicalTrials": 101,
+    "invalidTrials": 0,
+    "repairedTask": "marketing-social_contest",
+    "usedEvolvedHarness": false,
+    "metaRuns": 0,
+    "datasetDigest": "sha256:b6ebdacccdf8b6c07399cca05ad96ff7cbb8205fdc8a66bd1975dceda8d19262",
+    "hitchRuntimeDigest": "sha256:cf0d07de5d971ba635eb43620d1fd7092a0ec5d0c5133c390e90ea5473e1ba48",
+    "comparisonToEvolvedLunaMax": {
+      "sameTaskIds": true,
+      "sameDatasetDigest": true,
+      "sameHitchRuntimeDigest": true,
+      "codexOnlyPassed": 15,
+      "evolvedOnlyPassed": 11,
+      "bothPassed": 42,
+      "bothFailed": 32,
+      "codexMinusEvolvedPassRatePercentagePoints": 4,
+      "codexMinusEvolvedPartialCreditPercentagePoints": -4.804158332207842,
+      "isolatesHarnessEffect": false
+    }
+  },
+  "officialModelReferences": {
+    "retrieved": "2026-09-14",
+    "benchmarkVersion": "1.0.6",
+    "sourceHtmlSha256": "sha256:f7d0fd510e051e8647caa9e8e91a29b8d128d033cd9f1a8b900cdbbc9f33bca2",
+    "passRateField": "By domain / Marketing / Score",
+    "objectiveCompletionField": "automationBenchBreakdown.byDomain.marketing.completion",
+    "objectiveCompletionDefinition": "Pooled share of objectives achieved, regardless of guardrail violations. This differs from the local per-task mean partial_credit across all assertions.",
+    "scope": "Marketing only; official private held-out references. Pass rate from Zapier; objective completion from AA. Coordinates combine separately published reports, not a single paired evaluation.",
+    "models": [
+      {
+        "model": "GPT-6 Astra (max)",
+        "slug": "gpt-6-astra",
+        "passRate": 50,
+        "objectiveCompletion": 83.68171021377671,
+        "domain": "Marketing",
+        "tasks": 100,
+        "officialHeldOut": true
+      },
+      {
+        "model": "Gemini 3.8 Flash (high)",
+        "slug": "gemini-3-8-flash",
+        "passRate": 43,
+        "objectiveCompletion": 77.98099762470308,
+        "domain": "Marketing",
+        "tasks": 100,
+        "officialHeldOut": true
+      }
+    ],
+    "passRateSource": "https://zapier.com/benchmarks",
+    "objectiveCompletionSource": "https://artificialanalysis.ai/evaluations/automationbench-aa",
+    "omittedModels": [
+      {
+        "model": "Fable 5.1",
+        "reason": "Marketing pass rate not published in the referenced Zapier domain table."
+      }
+    ]
+  },
+  "championAstraMaxEvaluation": {
+    "sourceChampion": "a07408001d978e580bbdeab3d7f08d4d2034fb1a",
+    "evaluationCommit": "d486cddb7b0165b2207d2897b1cd951477b99b8d",
+    "harnessTreeUnchanged": true,
+    "model": "openai-codex/gpt-6-astra",
+    "effort": "max",
+    "host": "Aliyun",
+    "evalId": "eval_636d3169772246c6a244c58182a56f34",
+    "completedAt": "2026-09-16T13:52:13.129Z",
+    "passed": 61,
+    "total": 100,
+    "valid": 100,
+    "invalidTrials": 0,
+    "partialCredit": 0.862990729385853,
+    "datasetDigest": "sha256:70ad308dc117aaf91c4e0ac4d10646fb9a627804371d05892cfebd1f44201edf",
+    "independentHeldOut": false,
+    "metaRuns": 0,
+    "preservedOriginalScoredRuns": 28,
+    "notes": [
+      "Independent evaluation of the staged champion on Aliyun with Astra max; no additional Meta iteration.",
+      "The evaluation carrier changes the fixed effort setting and model registration; the champion Harness tree is unchanged.",
+      "The final result preserves 28 original scored runs and completes 72 missing or invalid tasks. No valid score was retried."
+    ]
+  }
+}

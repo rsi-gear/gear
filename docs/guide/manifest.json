@@ -1,0 +1,251 @@
+{
+  "schemaVersion": 1,
+  "product": "Gear",
+  "version": "0.1.0",
+  "updated": "2026-09-16",
+  "defaultLanguage": "en",
+  "languages": [
+    {
+      "id": "en",
+      "label": "English",
+      "prefix": ""
+    },
+    {
+      "id": "zh-CN",
+      "label": "简体中文",
+      "prefix": "zh"
+    }
+  ],
+  "pages": [
+    {
+      "slug": "",
+      "file": "index.md",
+      "translations": {
+        "en": {
+          "title": "Gear user guide",
+          "description": "Gear is an algorithm library for agent optimization that you can invoke through a Skill. Provide an existing benchmark or define your own in Harbor format, and Gear can automatically optimize both the agent's Harness and its model using evaluation feedback."
+        },
+        "zh-CN": {
+          "title": "Gear 用户指南",
+          "description": "Gear 是一个可通过 Skill 调用的 Agent 优化算法库。给定现有 benchmark，或使用 Harbor 格式定义自己的 benchmark，Gear 就能根据评测反馈自动优化 Agent Harness 和模型。"
+        }
+      }
+    },
+    {
+      "slug": "quickstart",
+      "file": "quickstart.md",
+      "translations": {
+        "en": {
+          "title": "Quick start",
+          "description": "Use Gear's Refine Skill from Codex, Claude Code, DSH, or another agent that can load Skills and call Gear. Describe the benchmark, Meta agent, rollout agent and number of rounds in natural language to start optimizing."
+        },
+        "zh-CN": {
+          "title": "快速开始",
+          "description": "在 Codex、Claude Code、DSH，或其他能够加载 Skill 并调用 Gear 的 Agent 中使用 Refine Skill。用自然语言说明 benchmark、Meta Agent、rollout Agent 和优化轮数，即可开始优化。"
+        }
+      }
+    },
+    {
+      "slug": "examples/marketing-harness",
+      "file": "example-harness.md",
+      "translations": {
+        "en": {
+          "title": "Example 1: evolve a harness for Marketing",
+          "description": "Use Gear to improve an agent's Harness from real failure evidence. Five rounds raised Luna medium's strict pass rate from 27% to 36% on the public Marketing research set; the retained Harness later scored 50% with Luna max."
+        },
+        "zh-CN": {
+          "title": "案例一：优化 Marketing Harness",
+          "description": "使用 Gear 根据真实失败证据改进 Agent Harness。五轮迭代中，Luna medium 在 Marketing 公开研究集上的严格通过率从 27% 提升到 36%；最终保留 Harness 后续以 Luna max 评测达到 50%。"
+        }
+      }
+    },
+    {
+      "slug": "examples/evolution-search",
+      "file": "example-algorithm.md",
+      "translations": {
+        "en": {
+          "title": "Example 2: customize your evolve algorithm",
+          "description": "Customize Gear's algorithm components with a small elitist selector, then study a Marketing experiment using Gear's GEPA variant to optimize the Harness through shared failure diagnosis and staged evaluation."
+        },
+        "zh-CN": {
+          "title": "案例二：定制进化算法",
+          "description": "定制 Gear 的算法组件：先实现一个最小精英选择器，再研究使用 GEPA 算法的 Marketing 实验。实验采用 Gear 的 GEPA 变体，通过共享失败诊断与分阶段评测优化 Harness。"
+        }
+      }
+    },
+    {
+      "slug": "meta-agents",
+      "file": "meta-agents.md",
+      "translations": {
+        "en": {
+          "title": "Connect your Meta agent",
+          "description": "Choose a Meta host independently of the Target model. Both connection paths use the same bundled Refine Skill and restricted candidate/evidence protocol."
+        },
+        "zh-CN": {
+          "title": "连接 Meta Agent",
+          "description": "Meta 宿主和 Target 模型可以分别选择。两条接入路径使用同一个随包 Refine Skill，以及受限的候选和证据协议。"
+        }
+      }
+    },
+    {
+      "slug": "target-harness",
+      "file": "target-harness.md",
+      "translations": {
+        "en": {
+          "title": "Prepare a Target harness",
+          "description": "A Target is a buildable, exact Git revision. Gear edits the declared Harness tree while a fixed carrier supplies the runtime and evaluation entrypoint."
+        },
+        "zh-CN": {
+          "title": "准备 Target Harness",
+          "description": "Target 是可构建的确切 Git 版本。Gear 修改声明的 Harness 目录，固定载体提供 runtime 与评测入口。"
+        }
+      }
+    },
+    {
+      "slug": "datasets",
+      "file": "datasets.md",
+      "translations": {
+        "en": {
+          "title": "Tasks and evaluations",
+          "description": "Prepare the task set before starting an evolution. Gear freezes dataset content and evaluation settings so a later round cannot silently change the experiment."
+        },
+        "zh-CN": {
+          "title": "任务与评测",
+          "description": "开始进化前先准备任务集。Gear 固定数据内容和评测配置，后续轮次不能静默改变实验条件。"
+        }
+      }
+    },
+    {
+      "slug": "evolutions",
+      "file": "evolutions.md",
+      "translations": {
+        "en": {
+          "title": "Run and manage evolutions",
+          "description": "Start a new experiment, inspect its state, then explicitly continue, repair or publish the result. The examples below are DSH Skill invocations."
+        },
+        "zh-CN": {
+          "title": "运行与管理进化",
+          "description": "创建新实验、检查状态，再明确选择继续、修复或发布。以下命令是 DSH 的 Skill 调用。"
+        }
+      }
+    },
+    {
+      "slug": "results",
+      "file": "results.md",
+      "translations": {
+        "en": {
+          "title": "Understand results and evidence",
+          "description": "Read coverage and scoring together. A useful improvement claim identifies the exact versions, comparable tasks and the decision that followed."
+        },
+        "zh-CN": {
+          "title": "理解结果与证据",
+          "description": "一起检查覆盖率和分数。一个有用的改进结论应明确版本、可比任务，以及随后作出的决定。"
+        }
+      }
+    },
+    {
+      "slug": "configuration",
+      "file": "configuration.md",
+      "translations": {
+        "en": {
+          "title": "Configuration reference",
+          "description": "Configure the first evolution explicitly. Gear seals experiment identity at admission and revalidates it when continuing."
+        },
+        "zh-CN": {
+          "title": "配置参考",
+          "description": "首次创建 evolution 时明确配置。Gear 在 admission 封存实验身份，continue 时重新核验。"
+        }
+      }
+    },
+    {
+      "slug": "troubleshooting",
+      "file": "troubleshooting.md",
+      "translations": {
+        "en": {
+          "title": "Troubleshoot a run",
+          "description": "Inspect the existing evolution and evaluation IDs before starting replacement work. Preserve the evidence that explains the failure."
+        },
+        "zh-CN": {
+          "title": "排查运行问题",
+          "description": "启动替代工作前，先检查现有 evolution 与 evaluation ID，保留能够解释故障的证据。"
+        }
+      }
+    },
+    {
+      "slug": "training",
+      "file": "training.md",
+      "translations": {
+        "en": {
+          "title": "Model training · experimental",
+          "description": "Gear also coordinates Slime GRPO model updates while freezing the Harness and datasets. This is a separate experiment lifecycle from Harness evolution."
+        },
+        "zh-CN": {
+          "title": "模型训练 · 实验性",
+          "description": "Gear 也可在固定 Harness 和数据集的条件下协调 Slime GRPO 模型更新。它使用独立于 Harness 进化的实验生命周期。"
+        }
+      }
+    }
+  ],
+  "assets": [
+    "assets/evolution-search-example.zip",
+    "assets/marketing-evolution-overview.png",
+    "assets/marketing-evolution-overview.svg",
+    "assets/marketing-harness-evolution.png",
+    "assets/marketing-harness-evolution.svg",
+    "assets/marketing-harness-example.zip",
+    "assets/marketing-results.json",
+    "assets/marketing-staged-search.png",
+    "assets/marketing-staged-search.svg",
+    "assets/source-docs-dsh-meta-context-offloading-spec-zh-cn-md.txt",
+    "assets/source-docs-harness-agnostic-refine-skill-md.txt",
+    "assets/source-docs-plugin-installation-and-usage-md.txt",
+    "assets/source-docs-training-certifications-2026-09-10-rtx5090-single-gpu-readme-zh-cn-md.txt",
+    "assets/source-docs-training-controller-v2-zh-cn-md.txt",
+    "assets/source-docs-training-readme-zh-cn-md.txt",
+    "assets/source-examples-automationbench-marketing-last-meta-change-patch.txt",
+    "assets/source-examples-automationbench-marketing-meta-input-txt.txt",
+    "assets/source-examples-automationbench-marketing-readme-md.txt",
+    "assets/source-examples-dsh-codex-luna-profile-patch-yml.txt",
+    "assets/source-examples-dsh-codex-luna-readme-md.txt",
+    "assets/source-examples-evolution-search-algorithm-settings-json.json",
+    "assets/source-examples-evolution-search-codex-astra-max-evaluation-json.json",
+    "assets/source-examples-evolution-search-last-meta-change-patch.txt",
+    "assets/source-examples-evolution-search-max-evaluation-json.json",
+    "assets/source-examples-evolution-search-meta-input-txt.txt",
+    "assets/source-examples-evolution-search-readme-md.txt",
+    "assets/source-examples-evolution-search-selection-mjs.txt",
+    "assets/source-skills-refine-references-dsh-target-harness-md.txt",
+    "assets/source-skills-refine-references-protocol-md.txt",
+    "assets/source-src-config-ts.txt",
+    "assets/source-src-evolution-components-ts.txt",
+    "assets/source-src-skill-control-plane-ts.txt",
+    "assets/staged-search-flow.png",
+    "assets/staged-search-flow.svg",
+    "assets/staged-search-source.zip"
+  ],
+  "sourceAssets": {
+    "docs/dsh-meta-context-offloading-spec.zh-CN.md": "assets/source-docs-dsh-meta-context-offloading-spec-zh-cn-md.txt",
+    "docs/harness-agnostic-refine-skill.md": "assets/source-docs-harness-agnostic-refine-skill-md.txt",
+    "docs/plugin-installation-and-usage.md": "assets/source-docs-plugin-installation-and-usage-md.txt",
+    "docs/training/README.zh-CN.md": "assets/source-docs-training-readme-zh-cn-md.txt",
+    "docs/training/certifications/2026-09-10-rtx5090-single-gpu/README.zh-CN.md": "assets/source-docs-training-certifications-2026-09-10-rtx5090-single-gpu-readme-zh-cn-md.txt",
+    "docs/training/controller-v2.zh-CN.md": "assets/source-docs-training-controller-v2-zh-cn-md.txt",
+    "examples/automationbench-marketing/README.md": "assets/source-examples-automationbench-marketing-readme-md.txt",
+    "examples/automationbench-marketing/last-meta-change.patch": "assets/source-examples-automationbench-marketing-last-meta-change-patch.txt",
+    "examples/automationbench-marketing/meta-input.txt": "assets/source-examples-automationbench-marketing-meta-input-txt.txt",
+    "examples/dsh-codex-luna/README.md": "assets/source-examples-dsh-codex-luna-readme-md.txt",
+    "examples/dsh-codex-luna/profile.patch.yml": "assets/source-examples-dsh-codex-luna-profile-patch-yml.txt",
+    "examples/evolution-search/README.md": "assets/source-examples-evolution-search-readme-md.txt",
+    "examples/evolution-search/algorithm-settings.json": "assets/source-examples-evolution-search-algorithm-settings-json.json",
+    "examples/evolution-search/codex-astra-max-evaluation.json": "assets/source-examples-evolution-search-codex-astra-max-evaluation-json.json",
+    "examples/evolution-search/last-meta-change.patch": "assets/source-examples-evolution-search-last-meta-change-patch.txt",
+    "examples/evolution-search/max-evaluation.json": "assets/source-examples-evolution-search-max-evaluation-json.json",
+    "examples/evolution-search/meta-input.txt": "assets/source-examples-evolution-search-meta-input-txt.txt",
+    "examples/evolution-search/selection.mjs": "assets/source-examples-evolution-search-selection-mjs.txt",
+    "skills/refine/references/dsh-target-harness.md": "assets/source-skills-refine-references-dsh-target-harness-md.txt",
+    "skills/refine/references/protocol.md": "assets/source-skills-refine-references-protocol-md.txt",
+    "src/config.ts": "assets/source-src-config-ts.txt",
+    "src/evolution/components.ts": "assets/source-src-evolution-components-ts.txt",
+    "src/skill/control-plane.ts": "assets/source-src-skill-control-plane-ts.txt"
+  }
+}

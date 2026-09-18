@@ -1,0 +1,43 @@
+- id: sandbox-policy
+  config:
+    mode: danger-full-access
+    workspaceRoot: !!js process.cwd()
+
+- id: approval
+  config:
+    policy: never
+
+- id: skill-filesystem
+  config:
+    customSkillDirs:
+      - !!js process.env.DSH_REFINE_REPOSITORY + '/harness/skills'
+
+- id: permission
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+    defaultPreset: danger-full-access
+
+- insert:
+    - id: llm-openai-codex
+      name: dsh-codex
+
+- insert:
+    - id: target-harness-loader
+      name: ./target-loader-shim.js
+      config:
+        repositoryRoot: !!js process.env.DSH_REFINE_REPOSITORY
+        reasoningEffort: medium
+
+- id: headless-runner
+  inject: [headlessStartup, targetHarness]
+  config:
+    task: !!js ctx.headlessStartup.task

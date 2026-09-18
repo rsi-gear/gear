@@ -1,0 +1,4 @@
+interface:
+  display_name: "Refine Harness"
+  short_description: "Evolve and evaluate an agent harness with Gear"
+  default_prompt: "Use $refine to improve this harness with a measured Gear evolution."

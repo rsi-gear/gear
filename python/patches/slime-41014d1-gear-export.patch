@@ -1,0 +1,35 @@
+--- a/slime/backends/megatron_utils/actor.py
++++ b/slime/backends/megatron_utils/actor.py
+@@ -589,6 +589,19 @@
+             self.sleep()
+ 
+     @timer
++    def export_hf(self, path: str) -> None:
++        """Export already committed actor weights without another optimizer step."""
++        if self.role != "actor":
++            return
++        if self.args.offload_train:
++            self.wake_up()
++        try:
++            save_hf_model_to_path(self.args, Path(path), self.model)
++        finally:
++            if self.args.offload_train:
++                self.sleep()
++
++    @timer
+     def update_weights(self) -> None:
+         if self.args.debug_train_only or self.args.debug_rollout_only:
+             return
+--- a/slime/ray/actor_group.py
++++ b/slime/ray/actor_group.py
+@@ -159,6 +159,10 @@
+             self.args.no_load_rng = False
+         return ret
+ 
++    def export_hf(self, path: str):
++        """Synchronous HF export at an existing checkpoint boundary."""
++        return ray.get([actor.export_hf.remote(path) for actor in self._actor_handlers])
++
+     def update_weights(self):
+         """Broadcast weights from rank 0 to all other ranks."""
+         if not self._full_disk_weight_update_enabled():

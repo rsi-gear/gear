@@ -1,0 +1,2 @@
+- id: terminal-bench-policy
+  name: ../plugins/policy.js

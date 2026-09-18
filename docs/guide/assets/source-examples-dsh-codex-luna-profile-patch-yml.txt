@@ -1,0 +1,74 @@
+- id: refine
+  disabled: false
+  config:
+    workspaceRoot: !!js process.env.GEAR_WORKSPACE_ROOT ?? process.env.GEAR_LAB_ROOT + '/workspace'
+    dshRepository: !!js process.env.GEAR_TARGET_REPOSITORY ?? process.env.GEAR_LAB_ROOT + '/target-dsh'
+    targetRoot: harness
+    stateRoot: !!js process.env.GEAR_STATE_ROOT ?? process.env.GEAR_LAB_ROOT + '/state/refine'
+    metaAdapter:
+      kind: skill
+    metaModel:
+      provider: !!js process.env.GEAR_META_PROVIDER ?? 'openai-codex'
+      model: !!js process.env.GEAR_META_MODEL ?? 'gpt-5.6-luna'
+    metaSampling:
+      temperature: 1
+      reasoningEffort: medium
+    dshBaseRef: !!js process.env.GEAR_TARGET_DSH_BASE_REF
+    toolchainRef: !!js process.env.GEAR_TOOLCHAIN_REF ?? 'dsh-rc2-codex-pnpm-11.7.0'
+    sandboxProfileRef: !!js process.env.GEAR_SANDBOX_PROFILE_REF ?? 'harbor-terminal-bench-2.0'
+    seedTaskRef: !!js process.env.GEAR_SEED_TASK_REF ?? process.env.GEAR_LAB_ROOT + '/datasets/seed'
+    heldOutRef: !!js process.env.GEAR_HELD_OUT_REF ?? process.env.GEAR_LAB_ROOT + '/datasets/held-out'
+    taskBudgetMs: !!js Number(process.env.GEAR_TASK_BUDGET_MS ?? 900000)
+    pythonExecutable: !!js process.env.GEAR_PYTHON_EXECUTABLE ?? process.env.GEAR_LAB_ROOT + '/python/bin/python'
+    allowedImports: ['@deepseek-ai/', 'node:']
+    initialChampion:
+      schemaVersion: 2
+      ref: !!js process.env.GEAR_TARGET_INITIAL_CHAMPION_REF
+      manifestDigest: !!js process.env.GEAR_TARGET_INITIAL_CHAMPION_DIGEST
+      updatedAt: !!js process.env.GEAR_TARGET_INITIAL_CHAMPION_UPDATED_AT
+    compiler:
+      command: !!js process.execPath
+      args:
+        - !!js process.env.GEAR_RUNTIME_CHECK_EXECUTABLE
+      reportProtocol: gear-runtime-check-v1
+      runtimeRoot: !!js process.env.GEAR_TARGET_REPOSITORY ?? process.env.GEAR_LAB_ROOT + '/target-dsh'
+      maxReportBytes: 131072
+      timeoutMs: 120000
+      env:
+        GEAR_TARGET_PROVIDER: !!js process.env.GEAR_TARGET_PROVIDER ?? 'openai-codex'
+        GEAR_TARGET_MODEL: !!js process.env.GEAR_TARGET_MODEL ?? 'gpt-5.6-luna'
+    candidateGeneration:
+      maxCandidates: 1
+      attemptTimeoutMs: 1200000
+      maxAttemptsPerCandidate: 2
+      roundTimeoutMs: 2400000
+    selection:
+      survivors: 1
+      timeoutMs: 900000
+    hitch:
+      executable: !!js process.env.GEAR_HITCH_CODEX_EXECUTABLE
+      harnessId: deepseek
+      root: !!js process.env.GEAR_HITCH_ROOT ?? process.env.GEAR_LAB_ROOT + '/hitch-home'
+      model: !!js "(process.env.GEAR_TARGET_PROVIDER ?? 'openai-codex') + '/' + (process.env.GEAR_TARGET_MODEL ?? 'gpt-5.6-luna')"
+      attempts: 3
+      maxConcurrent: !!js Number(process.env.GEAR_TARGET_MAX_CONCURRENT ?? 12)
+      setupTimeoutMs: 1800000
+      terminationGraceMs: 5000
+      maxOutputBytes: 8388608
+      maxTrajectoryOutputBytes: 67108864
+      sampling: {}
+      agentArgs: []
+      controlPlane:
+        mode: direct
+      passEnv:
+        - !!js "(process.env.GEAR_TARGET_PROVIDER ?? 'openai-codex') === 'openai-codex' ? (process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_ACCESS_B64') : 'DEEPSEEK_API_KEY'"
+        - GEAR_TARGET_CODEX_ENV
+
+- id: agent-default-model
+  config:
+    provider: !!js process.env.GEAR_META_PROVIDER ?? 'openai-codex'
+    model: !!js process.env.GEAR_META_MODEL ?? 'gpt-5.6-luna'
+
+- id: llm-openai-codex
+  config:
+    searchMode: !!js process.env.DSH_CODEX_SEARCH_MODE ?? 'live'

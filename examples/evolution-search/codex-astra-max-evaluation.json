@@ -1,0 +1,63 @@
+{
+  "at": "2026-09-14T11:01:53.469083+00:00",
+  "completed": true,
+  "evalId": "eval_fb9b75e382f242b89970e65a9343afa6",
+  "resultSha256": "sha256:763a39fecd936e12cac319f89d9fe5d8b44b67472503c2752730e16c7c2ceb39",
+  "harnessRef": "codex@version:0.154.0",
+  "codexResolutionIdentity": "sha256:fdf33b690131cd366341bec9aaf7131c985e23a39557aa2e3745d48e143aa6ae",
+  "datasetDigest": "sha256:b6ebdacccdf8b6c07399cca05ad96ff7cbb8205fdc8a66bd1975dceda8d19262",
+  "hitchRuntimeDigest": "sha256:cf0d07de5d971ba635eb43620d1fd7092a0ec5d0c5133c390e90ea5473e1ba48",
+  "model": "gpt-6-astra",
+  "effort": "max",
+  "passed": 57,
+  "total": 100,
+  "processScore": 0.8407607959206256,
+  "invalidTrials": 0,
+  "metaRuns": 0,
+  "physicalTrials": 101,
+  "initialValidTrials": 99,
+  "historicalInvalidTrials": 1,
+  "initialPassed": 57,
+  "repairRerunId": "rerun_599be24e46894251891375865bd4b481",
+  "repairedTask": "marketing-social_contest",
+  "originalInvalidRun": "run_5b58b6d530cd426a9284be5c0aaf5dfa",
+  "validTrialsPreserved": 99,
+  "schemaVersion": 1,
+  "role": "same-set reference; native Codex, not the evolved Harness",
+  "independentHeldOut": false,
+  "conditions": {
+    "attempts": 1,
+    "maxConcurrent": 4,
+    "timeoutMs": 3600000,
+    "setupTimeoutMs": 1200000,
+    "infrastructureRetries": 0
+  },
+  "nativeEvidenceVerification": {
+    "verifiedTasks": 100,
+    "versions": [
+      "codex-cli 0.154.0"
+    ],
+    "models": [
+      "gpt-6-astra"
+    ],
+    "allHaveNativeEvents": true,
+    "completeWireRequestCapture": false
+  },
+  "sourceAuditSha256": "sha256:f7d3fd33b89901b5ac7a8d57f1032b191994a7643b56ada90b1d52f7a327852c",
+  "comparisonToEvolvedLunaMax": {
+    "evalId": "eval_1d7838ff79d74cc8a74cb8e1c4994c98",
+    "championRef": "a07408001d978e580bbdeab3d7f08d4d2034fb1a",
+    "passed": 53,
+    "partialCredit": 0.888802379242704,
+    "sameTaskIds": true,
+    "sameDatasetDigest": true,
+    "sameHitchRuntimeDigest": true,
+    "codexOnlyPassed": 15,
+    "evolvedOnlyPassed": 11,
+    "bothPassed": 42,
+    "bothFailed": 32,
+    "codexMinusEvolvedPassRatePercentagePoints": 4,
+    "codexMinusEvolvedPartialCreditPercentagePoints": -4.804158332207842,
+    "isolatesHarnessEffect": false
+  }
+}

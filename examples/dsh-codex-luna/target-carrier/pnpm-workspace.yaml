@@ -1,0 +1,14 @@
+allowBuilds:
+  '@deepseek-ai/dsh-subprocess-local': true
+  '@google/genai': true
+  koffi: true
+  node-pty: true
+  protobufjs: true
+onlyBuiltDependencies:
+  - '@deepseek-ai/dsh-subprocess-local'
+  - '@google/genai'
+  - koffi
+  - node-pty
+  - protobufjs
+overrides:
+  '@earendil-works/pi-ai': 0.84.4

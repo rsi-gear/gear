@@ -1,181 +1,205 @@
-# prime-agent IPython Kernel 移植决策
+# Prime Agent IPython Kernel 移植决策
 
-- 状态：Draft v0.2
-- 目的：为 DSH 自进化 harness 插件（[spec](dsh-self-evolving-harness-spec.md)）的 `PythonNotebookRuntime` 组件提供移植决策
-- 参考实现：`../prime-agent/packages/coding-agent/src/core/kernel/`（KernelManager，1605 行）+ `src/core/tools/ipython.ts`（工具层）+ `prime-agent-runtime`（Python 侧 rlm shim）
-- 更新：2026-08-19 — 基于对 prime-agent 源码的完整阅读与四轮探索调研
-- 更新：2026-08-19 — v0.2：按 DSH 源码核查修正一处事实（"Python SDK 渲染器"实为 TS 侧 codegen `py-types.ts`，`python/` 目录无渲染器）；补 zeromq 原生依赖进 DSH 仓库的工程代价与决策记录
+- 状态：Implemented seam；高级 Jupyter wire/snapshot 仍为后续方向
+- 目的：为 [DSH Self-Evolving Harness Plugin Spec](dsh-self-evolving-harness-spec.md) 定义 session-aware `NotebookRuntime`
+- 参考实现：Prime Agent `KernelManager`、`IpythonKernelProvisioner`、state snapshot 与 Python comm runtime
+- 更新：2026-08-20 — 最终选择独立 `NotebookRuntime` capability seam；不在 one-shot `CodeRuntime` provider 内隐藏 session kernel map；补全 Meta/TargetWorker/rollout 生命周期、角色化 Host Bridge 与无 UI busy-kernel 策略。
 
 ## 1. 结论
 
-prime-agent 的 IPython kernel 是一套**自研的 Jupyter wire protocol 客户端**（ZMQ 三通道 + HMAC 签名），配合 uv venv 自举、Linux fork-server 快启、dill 逐变量命名空间快照，构成"常驻内核 + 上下文外置"的 RLM 执行层。**核心（KernelManager + 工具层 + 快照）整体可移植到 DSH**，需要替换的外围只有三处：进程/会话生命周期钩子、`rlm` Python shim（替换为 spec 的预加载 typed API）、以及（可选）fork-server。
+移植 Prime Agent 的 Jupyter wire client、kernel lifecycle、uv/venv bootstrap、Host Bridge comm 与可选 dill snapshot，但不移植它的 Python-skill 安装模型，也不把 IPython 做成 DSH 唯一工具。
 
-移植边界论证：持久 kernel 落在 `ctx.codeRuntime` 缝的 **Provider** 角色上（`language: 'python'` 是 well-known 值、为 Python 语言生成模型可见 SDK 的 codegen 已就绪——注意实现在 TS 侧 `packages/core/tools/src/py-types.ts`，`python/` 目录本身无渲染器、只含 SDK 客户端与捆绑运行时定位器——README 明言 persistent kernel 是 future work）；与 `ctx.terminals` 缝的边界是：**状态性像 terminal、语义像 code-runtime**——结果必须是结构化 `{value, logs, error}`（入 `tool/result` 日志可重放），而不是 PTY 字节流。
+DSH 新增独立、明确携带 `SessionId` 的 `NotebookRuntime` capability seam。它与现有 `CodeRuntime` 并列：
 
-## 2. 引入方式（wiring）
+- `CodeRuntime.run(request)` 是 one-shot program execution，`CodeRunRequest` 刻意没有 session/owner；
+- `NotebookRuntime.execute(request)` 是 session-owned stateful execution，namespace 与进程必须跨多次 tool call 延续；
+- terminal 是 PTY/字节流，Notebook 返回结构化 cell result，不落到 terminal seam。
 
-per-session 一个 kernel，模型侧只有一个 `ipython` 工具（`executionMode: "sequential"`，kernel 单线程）。
+因此不采用“provider 内按 session 延续 kernel”的隐藏实现。那种方案需要 provider 从一个不含 session id 的 `CodeRunRequest` 猜 owner，或者依赖 ambient Cordis scope；这与 DSH 明确跨边界传 `Agent`/`Session` 的约定冲突，也无法可靠处理 resume、worker crash 和 disposal。
 
-```
-agent-session.ts _buildRuntime()
-  → new IpythonKernelProvisioner(cwd, { sessionId, hostHandlers, pythonSkills,
-      snapshotDir, readyGate: previousDispose, onRestore })
-  → createIpythonToolDefinition(cwd, { provisioner })   // ctx.tools.register 等价物
-```
+## 2. Prime Agent 实际如何拥有 kernel
 
-`IpythonKernelProvisioner`（`tools/ipython.ts:329-545`）职责：
+Prime Agent 不是一个全局解释器服务按字符串查 session。`AgentSession` 持有自己的 `_ipythonKernelProvisioner`；构建 session runtime 时把 `cwd`、`sessionId`、Host Bridge handlers、snapshot 目录和 previous-dispose gate 交给 provisioner，随后 `ipython` tool closure 直接捕获它。`KernelManager.sessionId` 用于全局 live-kernel cleanup 与 snapshot ownership。
 
-| 能力 | 实现 | 移植到 DSH 的落点 |
-| --- | --- | --- |
-| 懒启动 + 并发去重 | `ensure()` memoized startup promise，失败清 memo 重试 | provider `run()` 内首次调用时启动 |
-| 后台预热 | `prewarm()` 吞错，下次 ensure 暴露 | 可做可不做（V1 不做） |
-| 启动进度 | startup listeners，中途加入可重放当前阶段 | 经工具 `onUpdate` 流式推 UI |
-| 生命周期 | `dispose()` / `kill()`，`readyGate` 防新旧 kernel 竞争快照文件 | DSH session dispose（参照 `ctx.terminals` 的 owner-isolated dispose） |
-| 全局 boot 限流 | `withKernelBootPermit` **只包 spawn**，restore/bootstrap 在门外 | 保留（防 fan-out 打爆 OS 进程数） |
+这提供了两个可移植原则：
 
-## 3. 实现核心：KernelManager
+1. kernel owner 必须是明确 session，不是全局 provider 的隐式调用者；
+2. tool execution 必须把 exact `exec.agent.session.id` 传进 NotebookRuntime，resume 后同 id 才能选择同一 namespace/snapshot。
 
-`kernel/index.ts` — 自研 Jupyter 客户端，无 JS jupyter 库依赖。
+DSH 的 `ToolRunContext.agent` 已提供 exact Agent；`tool-ipython` consumer 缺少 agent 时必须 fail loud，不能回退到 process cwd 或共享 kernel。
 
-### 3.1 通信协议（保留原样）
+## 3. Capability seam 与 packages
 
-- 多帧报文 `[<IDS|MSG>, HMAC-SHA256 签名, header, parent_header, metadata, content]`，`createHmac("sha256", key)` 对 4 个 JSON 帧签名（`index.ts:427-478`）
-- 三通道：`shell` Dealer（execute request/reply）、`iopub` Subscriber（输出流）、`control` Dealer（interrupt/shutdown）；SUB 订阅后 50ms slow-joiner
-- connection.json 端口先写 0，ipykernel 回填真实端口，Node 每 25ms 轮询等待（5s 超时，失败带 stderr 尾部 1024 字诊断）
+建议包布局：
 
-### 3.2 进程启动
-
-```
-直接路径: spawn(python, ["-m", "ipykernel_launcher", "-f", connection.json],
-                { cwd, env, stdio: ["ignore","pipe","pipe"] })
-Linux 快路径: fork-server — 常驻模板进程（付一次 ~1.2s 导入成本）+
-              gc.freeze() COW 共享 + os.fork()（~ms 级）
+```text
+packages/notebook/
+  notebook-runtime/           # Service Definition
+  notebook-runtime-ipython/   # Provider: KernelManager + bootstrap + snapshot
+  tool-ipython/               # Consumer: ipython_input tool
+  notebook-host-bridge/       # Provider-neutral role/capability registration
 ```
 
-- fork 请求超时可能已 fork 出占用端口的孤儿：回退直接 spawn 前 `rmSync` 旧 tempDir + **重新 mint connection** 防端口冲突（`index.ts:708-719`）
-- fork-server 仅 Linux（macOS 上 fork-without-exec 不安全）；env 覆盖 `PYTHON*`/`VIRTUAL_ENV`/`CONDA_PREFIX` 时拒绝 fork 走直接 spawn（sys.path 导入时已固化）；fork 后必须 `IPKernelApp.clear_instance()`（jupyter_client Session 要在子进程 pid 内创建，否则 `check_pid` 静默丢消息）
-- **V1 决策：不做 fork-server**，直接 spawn 够用
+Definition 最小接口：
 
-### 3.3 执行与输出采集
+```ts
+interface NotebookExecuteRequest {
+  sessionId: SessionId
+  cwd: string
+  role: NotebookRole
+  code: string
+  signal: AbortSignal
+}
 
-- `execute()` promise 链全串行（Jupyter shell 是 request/reply）
-- iopub pump 以 `status→idle` 为 cell 结束信号；收集 `stream`/`execute_result`/`display_data`/`error`；stdout/stderr 截断 64K 字符 + 尾部标记
-- `display_data` 自定义 MIME 提取结构化产物（edit 的 diff、attach-image 的附件、agent-message 的消息）——**移植时映射到 DSH 的 `tool/result` 结构化结果**
-- 内部 execute（快照/恢复/列名）打 `internal: true` 标记，不计入 `lastCellCode`
+interface NotebookResult {
+  generation: number
+  value?: JsonValue
+  stdout: string
+  stderr: string
+  displays: JsonValue[]
+  error?: { name: string; message: string; traceback?: string[] }
+  reset?: boolean
+}
 
-### 3.4 中断与崩溃恢复
+abstract class NotebookRuntime extends Service {
+  abstract execute(request: NotebookExecuteRequest): Promise<NotebookResult>
+  abstract interrupt(sessionId: SessionId): Promise<void>
+  abstract restart(sessionId: SessionId): Promise<void>
+  abstract disposeSession(sessionId: SessionId): Promise<void>
+}
+```
 
-| 场景 | 处理 |
+Provider 的内部 `Map<SessionId, KernelRecord>` 是该显式接口的正常实现细节：key 来自 request，而不是 ambient context。`KernelRecord` 至少包含 cwd、role、generation、provisioner、snapshot identity 和 memoized disposal。相同 session id 使用不同 cwd/role/harness identity 时拒绝，不能静默重绑。
+
+`tool-ipython` 注册 `ipython_input`，`executionMode` 为 exclusive/sequential，`presentCall` 使用 terminal card。它从 `exec.agent.session` 取 id/cwd，从 session setup 写入的固定 role descriptor 取 role，然后调用 `ctx.notebookRuntime.execute()`。Gear 的 refine-meta scope 同时挂载只读 evidence tools、DSH 原生 `read/write/edit/glob/grep/bash` 和 Gear 的 `candidate_diff/candidate_check/finalize_candidate/decline_candidate`。这些工具与 Python dotted control API 调用同一 capability implementation；coding tools 则通过 session-bound Candidate provider 操作 Git worktree。IPython 的 OS sandbox scratch 与 candidate worktree 是两个不同权限域，Python 自身不能直接打开 candidate 或 control-plane host path。
+
+## 4. Session 与进程生命周期
+
+| 角色 | Notebook owner | snapshot | Host Bridge | disposal |
+| --- | --- | --- | --- | --- |
+| Meta | Control Plane 的 persistent meta session | 可选，绑定 `MetaHarnessRef` | meta typed API | MetaHarness rotate 或 RefineService dispose |
+| Target interactive | isolated TargetWorker 内的 target session | 可选，绑定 `TargetHarnessRef` | 仅 `refine.run/status` RPC proxy | session close；worker crash 后按同 ref/session resume |
+| Rollout | Harbor trial 内的 ephemeral session | 默认关闭 | 无控制 API | trial 结束无条件回收 |
+
+每个 DSH process 运行自己的 NotebookRuntime provider；Control Plane 不远程代管 TargetWorker 的 kernel。这样 target plugin 与其 IPython 都处于同一隔离 profile，worker crash 时 kernel 随进程退出，不会在 host 留下子进程。
+
+Provider 监听 authoritative agent/session lifecycle，调用 `disposeSession()` 并等待 kernel shutdown。根 Cordis fiber dispose 时先拒绝新 execute，再 interrupt/flush/terminate 全部 kernels，最后等待进程退出。相同 session 的新 generation 启动前必须等待旧 generation disposal，避免两个 kernel 竞争同一 snapshot。
+
+## 5. KernelManager 保留部分
+
+### 5.1 Jupyter wire protocol
+
+保留 Prime Agent 自研实现：
+
+- ZMQ `shell` Dealer、`iopub` Subscriber、`control` Dealer 三通道；
+- Jupyter multipart frame 与 HMAC-SHA256 签名；
+- connection file 零端口回填、bounded poll 与 stderr tail 诊断；
+- shell request/reply 串行，iopub `status: idle` 作为 cell 完成条件；
+- `stream`、`execute_result`、`display_data`、`error` 的结构化采集；
+- stdout/stderr/output 按完整结果位置执行 byte bounds 和 spill，而不是逐 chunk 截断。
+
+V1 只用直接 `python -m ipykernel_launcher` spawn，不移植 Linux fork-server。fork-server 是启动优化，不影响语义；macOS fork safety、模板进程环境固化与 orphan port recovery 会显著扩大首版范围。
+
+### 5.2 Bootstrap
+
+保留 uv + venv、自举锁与 bootstrap version digest：
+
+1. 解析 Config 指定 Python 或用 uv 安装固定 Python 版本；
+2. 创建 owner-private venv；
+3. 安装 pinned `ipykernel`、`dill` 与 DSH notebook runtime shim；
+4. runtime shim 源码/lock digest 变化时原子重建；
+5. 并发 bootstrap single-flight，失败输出有界诊断和 override 指引。
+
+不安装 Prime Agent 的 editable Python skills。DSH skills 仍是 `SKILL.md` + SkillProvider/catalog；kernel 只安装固定 Host Bridge shim 和明确列入 provider Config/lock 的分析库。TargetHarness 不能通过 candidate 修改 venv dependencies。
+
+`zeromq` 是新的原生 Node dependency。实现前必须验证 DSH engines/CI 覆盖的 macOS arm64/x64、Linux 和 Windows prebuild；没有可靠 prebuild 时先评估维护中的替代依赖。该选择是独立 substrate PR，不能让 candidate 自行添加。
+
+## 6. Host Bridge 与角色化能力
+
+Python shim 通过 Jupyter comm `target_name="host.request"` 发请求；Node 在 control channel 回复，避免占用正在等待的 shell execute request而死锁。每个 handler 调用携带：
+
+```ts
+interface HostRequestContext {
+  sessionId: SessionId
+  requestId: string
+  generation: number
+  signal: AbortSignal
+  isCurrent(): boolean
+}
+```
+
+handler registry 在 session setup 时按角色固定，不能由 Python payload 选择角色：
+
+| role | handlers |
 | --- | --- |
-| abort | control 通道 `interrupt_request` + 1s grace 后强制以 `"aborted"` settle |
-| busy kernel | 5s 内每 500ms 重发 interrupt → 超时抛 `KernelBusyAfterInterruptError` → UI 选择「等待保留状态 / 杀掉重启」；杀后结果带 `<ipython_kernel_reset>` 提示变量已丢失 |
-| 直接 spawn 意外退出 | `error`/`exit` 事件记诊断、置 shutdown、清理资源 |
-| forked 意外死亡 | 1s 轮询 `process.kill(pid, 0)`（ESRCH 才算死） |
-| iopub 泵失败 | reject 当前 execute |
-| 进程信号 | `beforeExit`/`SIGINT`/`SIGTERM` 异步 shutdown（flush 快照）、`exit` 同步 disposeSync；`liveKernels` 全局 Set + session 级资源清理按 sessionId 匹配 |
+| meta | `harness.current`、`harness.read`、`seed_tasks.load`、`trajectory.query`、`hitch.status`、`candidate.diff/check/finalize/decline`；源码编辑走同 session 的 DSH coding tools |
+| target | `refine.run`、`refine.status` |
+| rollout | 空 |
 
-busy-kernel wait/kill 选择 + `<ipython_kernel_reset>` 通知是**设计上直接照搬**的部分。
+Meta handler 是 Control Plane 内部 typed calls。Target handler 不持有 RefineService object；它通过 TargetWorker SDK JSON-RPC 的 server→client capability request 到 Control Plane，后者校验 worker id、session id、pinned harness ref、参数和 admission policy。Rollout 即使构造原始 comm payload也因 handler 不存在而拒绝。
 
-## 4. venv 自举（bootstrap.ts）
+generation 变化后旧 comm handle 全部失效；handler 必须在开始和 commit 前检查 `isCurrent()`。kernel 进程不接收模型、Hitch、Git 或 host credential，返回值也不得包含 authority-bearing object。
 
-`ensureKernelPython()`（memoized，key = env + pythonSkills JSON）：
+## 7. Cell 日志与 snapshot 语义
 
-- 默认：`uv python install 3.11` → `uv venv --seed` → `uv pip install ipykernel prime-agent-runtime dill + 12 个默认包`（venv 在 `~/.prime/agent/kernel-venv`）
-- `.bootstrap-version` 文件记录 runtime 源码 sha256——**runtime 源码任何改动自动重建 venv**
-- Python skills 按 pyproject 依赖拓扑增量 `--editable` 安装，pyproject hash 未变则跳过
-- `PRIME_AGENT_KERNEL_PYTHON` override：校验 ipykernel + 13 个 `rlm.harness` 方法签名 + 12 个默认包
-- 锁目录 + pid 文件防并发 bootstrap；失败统一 `formatBootstrapFailure` 说明需联网/可设 override
+`ipython_input` 是普通 DSH tool：源码写入 `tool/call.arguments`，完整模型可见结果写入 `tool/result`。不新增 `cell/run` 事件，避免同一执行有两套 durable truth。
 
-**移植决策**：机制保留；`prime-agent-runtime` 替换为 spec 的 Python API 包（`harness.current()`、`seed_tasks.load()`、`trajectory.query()`、`hitch.status()`、`refine.run()`）；12 个默认包裁剪为 seed-task 实际需要的；kernel python 路径进 provider `Config`（DSH 约定：部署级变量必须可配置）。
+模型决策可以从 session log 重建，因为它看到过的 stdout/result/error 已在 `tool/result`；这不表示系统会自动再次执行历史 cell。自动执行历史代码可能重复写文件、发网络请求或启动 refinement，属于不安全副作用。resume 时只有两种合法状态：
 
-## 5. 状态保持：dill 逐变量快照（state-snapshot.ts）
+- snapshot 安全恢复成功：记录恢复的变量/失败变量摘要；
+- 无 snapshot、identity 不匹配或恢复失败：空 namespace + durable notice，模型按需要显式重算。
 
-- **逐顶层变量独立 pickle**（`dill.settings["recurse"]=True`）——单个不可序列化对象（打开的文件、GPU tensor）只跳过该变量并上报，不毁整个快照
-- 跳过 `_` 开头、`user_ns_hidden`、`always_skip = {rlm, asyncio, In, Out, get_ipython, exit, quit, open}`（rlm/asyncio 每次启动由 bootstrap 重建）
-- 上限 256MiB；payload 原子写（`.tmp` + `os.replace`）+ manifest（saved/skipped/bytes/pythonVersion）
-- 触发：每次 execute 成功后 debounce 1500ms；dispose/退出前有界 flush（5s）；`kill()` 不 flush
-- restore 在 bootstrap **之前**（bootstrap 随后用活的 rlm/skills 句柄覆盖旧句柄）；恢复结果 `RestoreResult{restored, failed, path}` 经 `<ipython_state_restored>` 上下文消息告知模型
-- 生成代码内 builtins 走本地 `_b` 别名，用户 shadow `list`/`open` 不影响
+snapshot 使用 dill 逐顶层变量存储，跳过隐藏名、runtime shim、open handles 等不可恢复对象；设置总大小上限、atomic replace 和 owner-only permissions。manifest 绑定 Python/runtime version、SessionId、role 和 `MetaHarnessRef`/`TargetHarnessRef`。pickle 是可执行格式，只能读取该 session 自己在相同隔离域内生成的文件；不得从 TargetHarness repo、Seed Task 或用户 workspace 自动发现 snapshot。
 
-**与 spec 的一致性**：spec §4 明确"snapshot 是可丢弃的恢复便利，不是真相源；变量缺失可重算，session 日志不可丢"——prime-agent 的降级语义（跳过不可序列化 + 上报）完全吻合。**直接照搬**。
+## 8. Interrupt、busy kernel 与 crash
 
-## 6. Host Bridge：comm 协议走 control 通道
-
-```
-Python 侧:  rlm.host_request(type, payload)
-            → ipykernel.comm.Comm(target_name="host.request", primary=False)
-            → comm.open(data={**payload, "type": type}) → 等 comm_msg 回复
-Node 侧:    handleCommMessage → handleHostRequest（按 data.type 查 hostHandlers 注册表）
-            → 注入 cellSourceCode（触发 cell 源码）→ 回复走 control 通道
-```
-
-- 回复走 control 而非 shell 通道：**避免"admission 回复死锁活跃 execute_request"**（`docs/rlm-runtime.md:121-128`）
-- hostHandlers 注册表（`agent-session.ts:8760`）：`rlm.run`、`rlm.find_models`、`rlm.list_subagents`、`rlm.delete_subagent`、`model.info`、`goal.*`、`compact.run`、`refine.run`、`refine.status`、`rlm_heartbeat.*`、`agent_message.*`
-- handler 安全：symbol + WeakSet 品牌校验，`HostRequestContext` 带 `requestId`/`generation`/`signal`/`isCurrent()`
-
-**移植决策**：comm 机制保留（它让 kernel 内 async 任务也能发起 host 调用）；`rlm.*` handlers 替换为 spec §4 的预加载 typed API。**与 prime-agent 的差别**：spec 禁止 kernel 直接写 harness repo（prime-agent 的 `rlm.harness.*` 是纯 Python 直写 JSON——spec 明确不采纳，改为 `HarnessMutation` 校验后走 git commit）。
-
-## 7. 依赖清单与替换表
-
-| prime-agent 依赖 | DSH 侧 | 决策 |
-| --- | --- | --- |
-| `zeromq`（Dealer/Subscriber） | DSH 无 ZMQ 依赖 | 新增 `zeromq` npm 依赖（代码原样移植）。注意：**原生模块**——DSH 仓库当前零 ZMQ 依赖，且带 hygiene/publint 门禁与 Windows wine CI；引入前需确认预构建二进制的平台覆盖（macOS arm64/x64、Linux、Windows），必要时评估 prebuildify 或改用纯 JS 的 `js-zeromq` 替代（性能损失可接受性待基准） |
-| `@earendil-works/pi-ai` 的 `registerSessionResourceCleanup`/`cleanupSessionResources` | DSH session 生命周期 | 替换：挂 `session/disposed` 事件或 provider dispose |
-| `uv` + venv | 保留 | 机制原样，`PRIME_AGENT_KERNEL_PYTHON` → provider `Config.python` |
-| `prime-agent-runtime`（rlm shim） | 新建 spec 的 Python API 包 | 替换（见 §4） |
-| `ipykernel` / `dill` | 保留 | 不变 |
-| fork-server（Linux） | — | V1 不做 |
-
-## 8. 移植到 DSH 的完整落点
-
-| prime-agent 组件 | DSH 落点 | 说明 |
-| --- | --- | --- |
-| `ipython` 工具 | `ctx.tools.register(defineTool({ name: 'ipython_input', ... }))` | `presentCall` → `{ card: 'terminal' }` render intent；避开保留名 `run_code` |
-| KernelManager | `packages/code-runtime/code-runtime-ipython/`（Provider） | `class IpythonCodeRuntime extends CodeRuntime`，`language='python'`，`isolation='process'`（标签非安全声明） |
-| busy kernel wait/kill + `<ipython_kernel_reset>` | 工具 execute 内 | 直接照搬 |
-| dill snapshot | provider 内 | 直接照搬；与 spec §4 语义一致 |
-| venv 自举 | provider 内 | 机制保留，python 路径 Config 化 |
-| host bridge comm | provider 内 | comm 机制保留，handlers 换 spec API |
-| `rlm.harness.*` 直写 | **不做** | 改为 `HarnessMutation` + git commit（spec §5） |
-| `_rebuildSystemPrompt` 热生效 | `systemPrompt.section()` 注册（agent scope） | 见 harness 装配分析 |
-| cell 结果入日志 | `SessionEventMap` 的 `cell/run` 事件 + `session.append` | 新增事件域后必须跑 `pnpm run gen-persistence-catalog`（否则 resume 拒绝日志） |
-
-## 9. 需要论证的边界（spec §10 要求）
-
-1. **与 code-runtime 缝**：定义是 one-shot（`CodeRunRequest` 无 streaming/会话句柄）。持久 kernel 两条路：(a) 保持 `run()` 单次语义、kernel 内部按 session 延续命名空间（每次 `run()` 只是往同一 kernel 塞一段 program）；(b) 扩展 `CodeRuntime` 加 session 方法（属破坏性定义变更，需评审）。V1 建议 (a)。
-2. **与 terminal 缝**：terminal 是"进程树 + 字节流"，code-runtime 是"program + bindings + 结构化结果"。持久 kernel 的**模型可见输出必须是结构化结果**（经 `tool/result` 入日志），不能是 PTY 字节流——这是"cell/run 可重放"契约的前提。
-3. **进程安全**：kernel 不是安全沙箱（prime-agent 与 spec §11 一致）；不可信 hook/tool 代码走 Harbor Docker，与 kernel 隔离正交。
-
-## 10. 参考文件索引
-
-### prime-agent（`../prime-agent/`）
-
-| 文件 | 用途 |
+| 场景 | V1 行为 |
 | --- | --- |
-| `packages/coding-agent/src/core/kernel/index.ts` | KernelManager：Jupyter 协议客户端、生命周期、comm 桥 |
-| `packages/coding-agent/src/core/kernel/bootstrap.ts` | uv venv 自举、runtime 校验 |
-| `packages/coding-agent/src/core/kernel/boot-gate.ts` | 全局 boot 信号量 |
-| `packages/coding-agent/src/core/kernel/fork-server.ts` / `fork-server-script.ts` | Linux fork 快启（V1 不做） |
-| `packages/coding-agent/src/core/kernel/state-snapshot.ts` | dill 逐变量快照/恢复 |
-| `packages/coding-agent/src/core/tools/ipython.ts` | 工具层 + provisioner + bootstrap code |
-| `packages/coding-agent/src/core/refinement/refinement.ts` | Continual Harness 状态机（无评测循环——spec 的 Hitch 部分是新增） |
-| `packages/coding-agent/docs/rlm.md` | RLM 编程模型（4 条不变量） |
-| `prime-agent-runtime/src/rlm/__init__.py` | Python 侧 `host_request` comm 对称实现 |
-| `test/ipython-provisioner.test.ts` | 测试策略：stub python 可执行文件 + spawn 计数 |
+| caller abort | control `interrupt_request`；grace 后当前 execute 以 aborted settle |
+| meta/rollout 仍 busy | fixed wait → repeated interrupt → kill/restart；在 `tool/result` 标记 namespace reset |
+| interactive target 仍 busy | UI 可选择继续等待或 restart；UI 断开不放弃 owned cleanup |
+| kernel process exit/iopub failure | 当前 execute error，generation 失效，下一次 lazy start fresh kernel |
+| TargetWorker crash | container 回收其完整进程树；manager 按旧 TargetHarnessRef resume DSH session，snapshot best-effort |
+| root/service dispose | 停止 admission，bounded snapshot flush，shutdown，最后 terminate process tree并等待 |
 
-### DSH（`../deepseek-harness/`）
+Prime Agent 的 `<ipython_kernel_reset>` / restore notice 语义保留，但在 DSH 中作为结构化 tool result/context 投影并进入日志。无交互环境禁止弹 UI 或无限等待。
 
-| 文件 | 用途 |
-| --- | --- |
-| `packages/code-runtime/code-runtime/src/index.ts` | `CodeRuntime` Service Definition（Provider 落点） |
-| `packages/code-runtime/code-runtime-worker-thread/src/index.ts` | Provider 模板 |
-| `packages/terminal/terminal/src/index.ts` | owner-isolated 会话生命周期模板 |
-| `packages/core/tools/src/index.ts` / `presentation.ts` | 工具注册 + render intent |
-| `packages/interaction/commands/src/index.ts` | `/refine` 命令注册 |
-| `packages/core/session/src/types.ts` | `SessionEventMap` 事件域 |
-| `packages/plan/plan-mode/src/index.ts` | 插件事件域最小范例 |
+## 9. 与安全隔离的关系
 
-## 11. 相关历史
+Prime Agent 的 direct-spawn IPython kernel 不是 sandbox，`isolation: process` 也不是安全声明。Gear 只复用它的 session ownership、持久 namespace 与 lifecycle 结构，不复用其“kernel 拥有用户 OS 权限”的 trust model。
 
-- [DSH 自进化 harness spec](dsh-self-evolving-harness-spec.md)（v0.2，2026-08-19）
-- prime-agent 顶部 TODO（`kernel/index.ts:1`、`ipython.ts:1`）："reconsider persistent kernel vs stateless `python -c` once RLM-1 weights land"——持久 kernel 是为 RLM 推理设计，移植时保留该决策点
+`refine-meta` helper 的整个进程树必须运行在 OS sandbox 内，而不是只包装 `bash`/`%%bash`。kernel 的实际 cwd 是 per-session scratch；read 默认 deny root，只放行 Python runtime、packaged helper 与当前 scratch；write 只放行当前 scratch；network 全禁；host environment 采用白名单重建，HOME/TMPDIR/XDG/IPython state 指向 scratch。Control Plane 的 workspace、DSH repo、state/session logs、Hitch state、held-out 与 credentials 均不在这个可见集合中。Meta 访问 champion、seed public projection 和 trajectory public projection只能经过固定 Host Bridge。
+
+macOS provider 使用 `sandbox-exec`，Linux provider 使用 Bubblewrap；依赖缺失、sandbox 初始化失败或 unsupported platform 必须在插件初始化时 fail closed。`metaSandbox.mode: disabled` 只能用于明确选择 Prime-style trusted local diagnosis 的场景；启用后不得宣称 held-out secrecy、typed-API-only input 或有效 promotion attribution。
+
+Target/rollout kernel 的安全来自整个 DSH process 所在的 TargetWorker/Harbor container。candidate code 与 kernel 权限相同，因此必须共用固定 filesystem/network/credential profile。
+
+NotebookRuntime 不提供任意 host file mount、credential lookup 或 package installation handler。需要这些能力的 proposal 属于 `rejected-for-substrate`。
+
+## 10. 实施顺序与测试
+
+1. `NotebookRuntime` Definition + fake provider，证明 session id/cwd/role 显式传递、dispose ownership 和 consumer composition。
+2. IPython provider：target/rollout direct spawn、meta whole-process sandbox launch、wire protocol、structured result、interrupt/restart/teardown；加入原生依赖平台 gate。
+3. `tool-ipython` REAL composition + keyless snapshot，证明 `tool/call`/`tool/result` replay 和 exact agent session routing。
+4. role Host Bridge：meta/target/rollout denial tests；target 反向 RPC 集成在 TargetWorker protocol PR。
+5. snapshot：identity/permission/size/partial restore/crash tests；rollout disabled path。
+
+必须覆盖两个 session 并发不共享变量、同 session 连续执行保留变量、resume identity 匹配、cwd/role mismatch fail loud、dispose 与 execute race、旧 generation comm 被拒绝、busy meta 自动 reset、TargetWorker crash 不遗留 host kernel。
+
+## 11. 参考
+
+### Prime Agent
+
+- `packages/coding-agent/src/core/kernel/index.ts` — KernelManager/Jupyter client
+- `packages/coding-agent/src/core/kernel/bootstrap.ts` — uv/venv bootstrap
+- `packages/coding-agent/src/core/kernel/state-snapshot.ts` — dill snapshots
+- `packages/coding-agent/src/core/tools/ipython.ts` — provisioner/tool wiring
+- `prime-agent-runtime/src/rlm/__init__.py` — Python comm peer
+
+### DSH
+
+- [CodeRuntime Definition](../deepseek-harness/packages/code-runtime/code-runtime/src/index.ts)
+- [Tool execution context](../deepseek-harness/packages/core/tools/src/index.ts)
+- [Agent create/resume lifecycle](../deepseek-harness/packages/core/agent-loop/README.md)
+- [Terminal ownership reference](../deepseek-harness/packages/terminal/terminal/src/index.ts)
+- [SDK TargetWorker transport basis](../deepseek-harness/packages/sdk/protocol/README.md)

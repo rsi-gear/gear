@@ -1,2 +1,19 @@
 deepseek-harness/
 .workbuddy/
+node_modules/
+.pnpm-store/
+lib/
+coverage/
+*.tgz
+.dsh-refine/
+.evolve-lab/
+.debug/
+knowledge/
+.DS_Store
+
+# Local diagram authoring project; commit exported documentation SVGs only.
+/media/gear-loop/
+
+# Built from the pinned upstream ToolFs package.
+assets/gear-tool-fs.js
+assets/gear-tool-fs.LICENSE
