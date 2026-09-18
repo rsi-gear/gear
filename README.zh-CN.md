@@ -14,7 +14,7 @@
 
 Gear 是一套开源优化框架，用于提升 AI Agent 在真实世界任务中的表现。
 
-首先，定义你的优化目标并准备一个能代表目标场景的 benchmark：可以使用现有 benchmark，也可以[构建带明确验收规则的任务集](docs/guide/zh-CN/datasets.md)。然后，使用 [Refine Skill](skills/refine/SKILL.md)，围绕这个 benchmark 优化你的 Agent。Gear 会反复评测并改进 Agent 的指令、工具和工作流程，最终得到一个针对该场景调优的 Agent。
+你需要选择待优化的 Agent Harness，以及能代表目标场景的 benchmark：可以使用现有 benchmark，也可以[构建带明确验收规则的任务集](docs/guide/zh-CN/datasets.md)。然后，让负责优化的 Agent 使用 [Refine Skill](skills/refine/SKILL.md) 启动优化。这个 Agent 根据评测反馈修改 Harness 的指令、工具和工作流程；Gear 则负责运行评测、比较候选版本，并决定保留哪些改动。
 
 下面两个案例对比了 Luna Max 搭配 Gear 优化的 harness，与 Astra Max 搭配 Codex 在相同 AutomationBench 任务中的执行轨迹，展示它们如何读取信息、应用规则，并交付最终结果。
 
