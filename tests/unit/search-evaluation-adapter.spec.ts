@@ -144,6 +144,8 @@ describe('Gear-owned staging through the existing evaluation interface', () => {
     f.evaluator.evaluationIdentity = () => undefined
     await expect(new EvaluationSearchAdapter(f.evaluator, f.options).describe('seed')).rejects.toThrow('resolvable evaluation runtime identity')
   })
+  // A complete 100-task search plus replay hashes and persists real datasets;
+  // shared CI runners can exceed the default 20s timeout for this integration path.
   it.each([{ process: false, deferred: false }, { process: true, deferred: false }, { process: false, deferred: true }, { process: true, deferred: true }])('runs 4→2→1 with verified execution identities (process=$process, deferred=$deferred)', async ({ process, deferred }) => {
     const f = await setup(process, 1, deferred), result = await f.run()
     expect(f.evaluator.search).toBeUndefined()
@@ -158,7 +160,7 @@ describe('Gear-owned staging through the existing evaluation interface', () => {
     expect(await digestDatasetRef(f.spec.datasets.heldOut.ref)).toBe(f.spec.datasets.heldOut.digest)
     const count = f.requests.length
     expect(await f.run()).toEqual(result); expect(f.requests).toHaveLength(count)
-  })
+  }, 60_000)
 
   it.each([false, true])('recovers a lost result through a read-only lookup without a second evaluation or timestamp change (deferred=%s)', async deferred => {
     const f = await setup(true, 1, deferred), evaluate = f.evaluator.evaluate
