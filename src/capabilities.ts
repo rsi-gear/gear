@@ -79,6 +79,7 @@ interface SeedRunEvidence {
   phase: 'seed-baseline' | 'seed-candidate'
   evalId: string
   trial: {
+    passStatus?: EvaluationEvidence['trials'][number]['passStatus']
     taskName: string
     trialName?: string
     runId: string
@@ -380,14 +381,14 @@ export class RefineCapabilities {
         return publicJson(read.visible)
       }
       const evidence: SeedRunEvidence[] = baseline === undefined ? this.seedRunEvidence(rounds) : [
-        ...baseline.trials.flatMap(trial => trial.runId === undefined ? [] : [{
+        ...baseline.trials.flatMap(({ originalResult: privateOriginal, ...trial }) => trial.runId === undefined ? [] : [{
           evolutionId,
           roundId: activeRoundId,
           phase: 'seed-baseline' as const,
           evalId: baseline.evalId,
           trial: { ...trial, runId: trial.runId },
         }]),
-        ...baseline.invalidTrials.map(trial => ({
+        ...baseline.invalidTrials.map(({ originalResult: privateOriginal, ...trial }) => ({
           evolutionId,
           roundId: activeRoundId,
           phase: 'seed-baseline' as const,
@@ -401,7 +402,8 @@ export class RefineCapabilities {
         const failedRuns = evidence
           .filter(item => item.roundId === activeRoundId && (
             item.trial.status === 'errored'
-            || (item.trial.rewards?.reward ?? Object.values(item.trial.rewards ?? {})[0] ?? 0) <= 0
+            || (item.trial.passStatus !== undefined ? item.trial.passStatus === 'failed'
+              : (item.trial.rewards?.reward ?? Object.values(item.trial.rewards ?? {})[0] ?? 0) <= 0)
           ))
           .map(item => ({
             task: item.trial.taskName,
@@ -433,6 +435,9 @@ export class RefineCapabilities {
             status: visibleBaseline?.completeness ?? 'unavailable',
             ...(visibleBaseline?.primaryReward === undefined ? {} : { score: visibleBaseline.primaryReward }),
             ...(visibleBaseline?.processScore === undefined ? {} : { processScore: visibleBaseline.processScore }),
+            ...(visibleBaseline?.rawMetrics ? { rawMetrics: visibleBaseline.rawMetrics } : {}),
+            ...(visibleBaseline?.objectiveScore ? { objectiveScore: visibleBaseline.objectiveScore } : {}),
+            ...(visibleBaseline?.summary.passRateStatus ? { passRateStatus: visibleBaseline.summary.passRateStatus, passRate: visibleBaseline.summary.passRate } : {}),
             failedRuns,
           },
           ...(readiness === undefined ? {} : { diagnosisProgress: this.compactDiagnosisProgress(readiness) }),
@@ -565,6 +570,8 @@ export class RefineCapabilities {
           completeness: baseline.completeness,
           plannedTrialCount: baseline.plannedTrialCount,
           primaryReward: baseline.primaryReward,
+          ...(baseline.rawMetrics ? { rawMetrics: baseline.rawMetrics } : {}),
+          ...(baseline.objectiveScore ? { objectiveScore: baseline.objectiveScore } : {}),
           summary: baseline.summary,
           trials: [
             ...baseline.trials.map(trial => ({
@@ -575,7 +582,7 @@ export class RefineCapabilities {
               status: trial.status,
               reward: trial.rewards.reward ?? Object.values(trial.rewards)[0],
             })),
-            ...baseline.invalidTrials.map(trial => ({ ...trial })),
+            ...baseline.invalidTrials.map(({ originalResult: privateOriginal, ...trial }) => trial),
           ],
         },
       }
@@ -1448,7 +1455,7 @@ export class RefineCapabilities {
     baseline: EvaluationEvidence,
   ): TrajectoryEvidenceBlocker[] {
     const required = new Set([
-      ...baseline.trials.filter(trial => (trial.rewards.reward ?? Object.values(trial.rewards)[0] ?? 0) <= 0)
+      ...baseline.trials.filter(trial => trial.passStatus !== undefined ? trial.passStatus === 'failed' : (trial.rewards.reward ?? Object.values(trial.rewards)[0] ?? 0) <= 0)
         .flatMap(trial => trial.runId === undefined ? [] : [trial.runId]),
     ])
     return [...required].flatMap(runId => {
@@ -2191,10 +2198,10 @@ export class RefineCapabilities {
     for (const round of rounds) {
       const append = (phase: SeedRunEvidence['phase'], evidence: EvaluationEvidence | undefined): void => {
         if (evidence === undefined) return
-        for (const trial of evidence.trials) {
+        for (const { originalResult: privateOriginal, ...trial } of evidence.trials) {
           if (trial.runId !== undefined) values.push({ evolutionId: round.evolutionId, roundId: round.roundId, phase, evalId: evidence.evalId, trial: { ...trial, runId: trial.runId } })
         }
-        for (const trial of evidence.invalidTrials) {
+        for (const { originalResult: privateOriginal, ...trial } of evidence.invalidTrials) {
           values.push({ evolutionId: round.evolutionId, roundId: round.roundId, phase, evalId: evidence.evalId, trial: { ...trial } })
         }
       }

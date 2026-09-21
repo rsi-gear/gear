@@ -1,3 +1,4 @@
+import { admitHistoricalFixture } from '../helpers/historical-admission.js'
 import { scopedFrontierPolicy } from '../../src/search/policies/parents.js'
 import { createHash } from 'node:crypto'
 import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
@@ -492,6 +493,38 @@ async function continueWithLegacyPopulationParent(
 }
 
 describe('RefineService evolution workspaces', () => {
+  it('rejects new admission on an unsupported objective path without creating state or running Target', async () => {
+    const { service, evaluator, registry } = await setup()
+    try {
+      await expect(service.admit('api')).rejects.toThrow('new objectives require failure-cluster-gepa-v1')
+      await expect(service.admit('api', { objective: { terms: [{ metric: 'pass_rate', weight: 0 }] } })).rejects.toThrow('all be zero')
+      expect(await registry.list()).toEqual([])
+      expect(evaluator.calls).toEqual([])
+    } finally { await service.dispose() }
+  })
+
+  it('rejects an undeclared default pass predicate but admits an explicit total-only objective', async () => {
+    const { service, evaluator, registry, git } = await setup()
+    for (const partition of ['seed', 'held-out']) {
+      const dataset = await standardSearchDataset(git.root, 20, partition, false)
+      const path = join(dataset.ref, 'benchmark.adapter.json')
+      const manifest = JSON.parse(await readFile(path, 'utf8'))
+      delete manifest.raw_metrics
+      delete manifest.dataset_digest
+      await writeFile(path, JSON.stringify({ ...manifest, dataset_digest: digestJson(manifest) }))
+    }
+    service.options.searchSettings = skillSearchSettings()
+    evaluator.evaluationIdentity = (_round, request) => ({ provider: 'fake', effectiveConfigDigest: digestJson(request.condition), invocationFingerprint: digestJson(request.condition) })
+    try {
+      await expect(service.admit('api')).rejects.toThrow('unknown or unsupported objective metric pass_rate')
+      await expect(service.admit('api', { objective: { terms: [{ metric: 'invented', weight: 1 }] } })).rejects.toThrow('unknown or unsupported objective metric invented')
+      expect(await registry.list()).toEqual([])
+      expect(evaluator.calls).toEqual([])
+      const admitted = await service.admit('api', { objective: { terms: [{ metric: 'total_score', weight: 1 }] } })
+      expect(admitted.resolvedObjective).toMatchObject({ terms: [{ metric: 'total_score', weight: 1, scale: 1 }] })
+      expect((await registry.requireSpec(admitted.evolutionId)).objective).toEqual(admitted.resolvedObjective)
+    } finally { await service.dispose() }
+  })
   function durable(evaluator: FakeEvaluator): void {
     evaluator.prepareSubmission = (round, request) => ({
       provider: 'fake', idempotencyKey: `intent-${round.roundId}-${request.phase}`,
@@ -505,7 +538,7 @@ describe('RefineService evolution workspaces', () => {
   }
 
   async function reopenAcceptedRoundBeforeHeldOutCandidate(service: RefineService) {
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const store = service.registry.stateStore(admission.evolutionId)
     const initialChampion = await store.readChampion()
     const initialPopulation = await store.readPopulation()
@@ -553,7 +586,7 @@ describe('RefineService evolution workspaces', () => {
 
   it('seals prior seed candidate outcomes before the next skill proposer starts', async () => {
     const { service } = await setup()
-    const admission = await service.admit('skill', { rounds: 2 })
+    const admission = await admitHistoricalFixture(service, 'skill', { rounds: 2 })
     const store = service.registry.stateStore(admission.evolutionId)
     const first = await editing(service, admission.evolutionId, admission.roundId)
     expect((await service.registry.requireSpec(admission.evolutionId)).experienceMemory).toEqual({
@@ -598,7 +631,7 @@ describe('RefineService evolution workspaces', () => {
       expect(signal?.aborted).toBe(false)
       return originalReserve(round, request)
     }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const round = await editing(service, admission.evolutionId, admission.roundId)
     expect(round.pendingEvaluationSubmissions).toEqual([])
     expect(round.evaluationAttempts?.[0]?.submissionIntent?.parameters).toEqual({ frozen: 'original' })
@@ -612,7 +645,7 @@ describe('RefineService evolution workspaces', () => {
       const { service, evaluator, registry } = await setup(0.8, false, 1, 300_000, 1, 0, 2, 600_000, coordinator)
       let resumed: RefineService | undefined
       try {
-        const admission = await service.admit('skill')
+        const admission = await admitHistoricalFixture(service, 'skill')
         const editable = await editing(service, admission.evolutionId, admission.roundId)
         const identity = skillHarnessIdentity(await registry.requireSpec(admission.evolutionId).then(spec => spec.metaAgent))
         const claim = await eventually(
@@ -721,7 +754,7 @@ describe('RefineService evolution workspaces', () => {
       const coordinator = new SkillMetaCoordinator()
       const { service, registry } = await setup(0.8, false, 1, attemptBudgetMs, 1, 0, 2, 60_000, coordinator)
       try {
-        const admission = await service.admit('skill', { rounds: 2 })
+        const admission = await admitHistoricalFixture(service, 'skill', { rounds: 2 })
         const editable = await editing(service, admission.evolutionId, admission.roundId)
         const claim = await eventually(
           async () => coordinator.claim('runner-blocked', skillHarnessIdentity(await registry.requireSpec(admission.evolutionId)
@@ -811,7 +844,7 @@ describe('RefineService evolution workspaces', () => {
       const coordinator = new SkillMetaCoordinator()
       const { service, registry } = await setup(0.8, false, 1, 300_000, 1, 0, 2, 600_000, coordinator)
       try {
-        const admission = await service.admit('skill')
+        const admission = await admitHistoricalFixture(service, 'skill')
         const editable = await editing(service, admission.evolutionId, admission.roundId)
         const identity = skillHarnessIdentity(await registry.requireSpec(admission.evolutionId).then(spec => spec.metaAgent))
         const claim = await eventually(
@@ -873,7 +906,7 @@ describe('RefineService evolution workspaces', () => {
     const coordinator = new SkillMetaCoordinator()
     const { service, registry } = await setup(0.8, false, 1, 300_000, 1, 0, 2, 600_000, coordinator)
     try {
-      const admission = await service.admit('skill')
+      const admission = await admitHistoricalFixture(service, 'skill')
       const editable = await editing(service, admission.evolutionId, admission.roundId)
       const identity = skillHarnessIdentity(await registry.requireSpec(admission.evolutionId).then(spec => spec.metaAgent))
       const claim = await eventually(
@@ -913,7 +946,7 @@ describe('RefineService evolution workspaces', () => {
       return { provider: 'fake', evalId: 'remote-eval' }
     }
     evaluator.cancelReservation = async reservation => { cancellations.push(reservation.evalId) }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const round = await eventually(() => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId), value => value?.status === 'failed')
     expect(submissions).toHaveLength(2)
     expect(new Set(submissions).size).toBe(1)
@@ -942,7 +975,7 @@ describe('RefineService evolution workspaces', () => {
       return { provider: 'fake', evalId: 'remote-eval' }
     }
     evaluator.cancelReservation = async reservation => { cancelled.push(reservation.evalId) }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const round = await eventually(() => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId), value => value?.status === 'failed')
     expect(cancelled).toEqual(['remote-eval'])
     expect(round?.pendingEvaluationSubmissions).toEqual([])
@@ -967,7 +1000,7 @@ describe('RefineService evolution workspaces', () => {
       return { provider: 'fake', evalId: 'remote-eval' }
     }
     evaluator.cancelReservation = async () => { cancelled = true }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     await started.promise
     await service.dispose()
     expect(calls).toBe(2)
@@ -994,7 +1027,7 @@ describe('RefineService evolution workspaces', () => {
       if (unavailable) throw Object.assign(new Error('cancel unavailable'), { code: 'cancel_unavailable' })
       cancelled.push(reservation.evalId)
     }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const store = service.registry.stateStore(admission.evolutionId)
     const failed = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
     expect(failed?.pendingEvaluationSubmissions).toHaveLength(1)
@@ -1022,7 +1055,7 @@ describe('RefineService evolution workspaces', () => {
     const { service, evaluator } = await setup()
     durable(evaluator)
     evaluator.evaluate = async () => { throw new Error('observer stopped') }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const store = service.registry.stateStore(admission.evolutionId)
     const failed = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
     await service.dispose()
@@ -1062,7 +1095,7 @@ describe('RefineService evolution workspaces', () => {
       }
       return original(...args)
     }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const store = service.registry.stateStore(admission.evolutionId)
     const running = await eventually(
       () => store.readRound(admission.roundId),
@@ -1082,7 +1115,7 @@ describe('RefineService evolution workspaces', () => {
   it('retains a failed reserved evaluation attempt for diagnosis', async () => {
     const { service, evaluator } = await setup()
     evaluator.evaluate = async () => { throw Object.assign(new Error('reserved evaluation failed'), { code: 'fixture_failure' }) }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const terminal = await eventually(
       () => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId),
       value => value?.status === 'failed',
@@ -1108,7 +1141,7 @@ describe('RefineService evolution workspaces', () => {
       if (first) { first = false; throw new Error('invalid baseline') }
       return evaluate(...args)
     }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const store = service.registry.stateStore(admission.evolutionId)
     await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
     let remoteActive = false
@@ -1153,7 +1186,7 @@ describe('RefineService evolution workspaces', () => {
     const reservation: EvaluationRerunReservation = { provider: 'hitch-cli', evalId, rerunId: `rerun_${'8'.repeat(32)}`, parameters: { root: 'frozen-root' } }
     evaluator.reserve = async () => ({ provider: 'hitch-cli', evalId })
     evaluator.evaluate = async () => { throw new Error('invalid baseline') }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const store = service.registry.stateStore(admission.evolutionId)
     await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
     let unavailable = true
@@ -1214,7 +1247,7 @@ describe('RefineService evolution workspaces', () => {
       }
       return originalEvaluate(...args)
     }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const store = service.registry.stateStore(admission.evolutionId)
     await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
     const rerunReservation: EvaluationRerunReservation = { provider: 'hitch-cli', evalId, rerunId: `rerun_${'4'.repeat(32)}`, parameters: { root: '' } }
@@ -1252,7 +1285,7 @@ describe('RefineService evolution workspaces', () => {
     }
     evaluator.partialInvalidByCall.set(1, [9])
 
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const store = service.registry.stateStore(admission.evolutionId)
     await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
     const rerun = await service.rerunEvaluation(admission.evolutionId, admission.roundId, evalId, { mode: 'invalid' })
@@ -1278,7 +1311,7 @@ describe('RefineService evolution workspaces', () => {
     const evalId = `eval_${'6'.repeat(32)}`
     evaluator.reserve = async () => ({ provider: 'hitch-cli', evalId })
     evaluator.evaluate = async () => { throw Object.assign(new Error('invalid baseline'), { code: 'hitch_infrastructure_failure' }) }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const store = service.registry.stateStore(admission.evolutionId)
     const failed = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
 
@@ -1302,7 +1335,7 @@ describe('RefineService evolution workspaces', () => {
       rerunCalled = true
       throw new Error('Hitch must not be invoked for an archived evolution')
     }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const store = metas.get(admission.evolutionId)?.store
     if (store === undefined) throw new Error('evolution runtime store is unavailable')
     const failed = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
@@ -1326,7 +1359,7 @@ describe('RefineService evolution workspaces', () => {
       rerunCalled = true
       throw new Error('Hitch must not be invoked for stale champion identity')
     }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const store = metas.get(admission.evolutionId)?.store
     if (store === undefined) throw new Error('evolution runtime store is unavailable')
     const failed = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
@@ -1358,7 +1391,7 @@ describe('RefineService evolution workspaces', () => {
       }
       return originalEvaluate(...args)
     }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const initial = await editing(service, admission.evolutionId, admission.roundId)
     await finalize(service, initial)
     const store = service.registry.stateStore(admission.evolutionId)
@@ -1388,7 +1421,7 @@ describe('RefineService evolution workspaces', () => {
     const evalId = `eval_${'9'.repeat(32)}`
     evaluator.reserve = async () => ({ provider: 'hitch-cli', evalId })
     evaluator.evaluate = async () => { throw Object.assign(new Error('invalid baseline'), { code: 'hitch_infrastructure_failure' }) }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const store = service.registry.stateStore(admission.evolutionId)
     await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
     evaluator.rerun = async (_round, _request, _attempt, _selector, signal) => new Promise((_resolve, reject) => {
@@ -1422,7 +1455,7 @@ describe('RefineService evolution workspaces', () => {
       }
       return originalEvaluate(...args)
     }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const store = metas.get(admission.evolutionId)?.store
     if (store === undefined) throw new Error('evolution runtime store is unavailable')
     await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
@@ -1515,7 +1548,7 @@ describe('RefineService evolution workspaces', () => {
       }
       return originalEvaluate(...args)
     }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const store = metas.get(admission.evolutionId)?.store
     if (store === undefined) throw new Error('evolution runtime store is unavailable')
     await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
@@ -1602,7 +1635,7 @@ describe('RefineService evolution workspaces', () => {
       }
       return originalEvaluate(...args)
     }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const store = service.registry.stateStore(admission.evolutionId)
     const failed = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
     if (failed === undefined) throw new Error('failed round disappeared')
@@ -1645,7 +1678,7 @@ describe('RefineService evolution workspaces', () => {
       const originalEvaluate = evaluator.evaluate.bind(evaluator)
       evaluator.reserve = async () => ({ provider: 'hitch-cli', evalId })
       evaluator.evaluate = async () => { throw Object.assign(new Error('invalid baseline'), { code: 'hitch_infrastructure_failure' }) }
-      const admission = await service.admit('api')
+      const admission = await admitHistoricalFixture(service, 'api')
       const store = service.registry.stateStore(admission.evolutionId)
       const failed = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
       const attempt = failed?.evaluationAttempts?.[0]
@@ -1708,7 +1741,7 @@ describe('RefineService evolution workspaces', () => {
 
     const admissions = []
     for (let index = 0; index < 2; index += 1) {
-      const admission = await service.admit('api')
+      const admission = await admitHistoricalFixture(service, 'api')
       admissions.push(admission)
       const store = registry.stateStore(admission.evolutionId)
       const failed = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
@@ -1772,8 +1805,8 @@ describe('RefineService evolution workspaces', () => {
 
   it('creates a fresh isolated evolution for every admission', async () => {
     const { service } = await setup()
-    const first = await service.admit('api', { name: 'first' })
-    const second = await service.admit('api', { name: 'second', focus: ['context', 'routing'] })
+    const first = await admitHistoricalFixture(service, 'api', { name: 'first' })
+    const second = await admitHistoricalFixture(service, 'api', { name: 'second', focus: ['context', 'routing'] })
     expect(first.evolutionId).not.toBe(second.evolutionId)
     const [left, right] = await Promise.all([editing(service, first.evolutionId, first.roundId), editing(service, second.evolutionId, second.roundId)])
     expect(left.advisoryFocus).toBeUndefined()
@@ -1788,7 +1821,7 @@ describe('RefineService evolution workspaces', () => {
     service.options.evaluation = { ...service.options.evaluation, mode: 'reuse-seed' }
     evaluator.partialInvalidByPhase.set('seed-baseline', [9])
     evaluator.partialInvalidByPhase.set('seed-candidate', [8])
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const round = await editing(service, admission.evolutionId, admission.roundId)
     await finalize(service, round)
     const store = service.registry.stateStore(admission.evolutionId)
@@ -1811,7 +1844,7 @@ describe('RefineService evolution workspaces', () => {
     service.options.promotion.policy = builtinComponentRef('promotion-policy', 'paired-gate', {
       ...service.options.promotion.policy.config, minimumAbsoluteGain: 0,
     })
-    const admission = await service.admit('api', { rounds: 5 })
+    const admission = await admitHistoricalFixture(service, 'api', { rounds: 5 })
     const store = service.registry.stateStore(admission.evolutionId)
     for (let index = 1; index <= 5; index += 1) {
       const round = await eventually(async () => (await store.listRounds()).find(r => r.roundIndex === index),
@@ -1835,14 +1868,14 @@ describe('RefineService evolution workspaces', () => {
   it('rejects reuse-seed admission for different datasets before evaluating', async () => {
     const { service, evaluator } = await setup()
     service.options.evaluation = { ...service.options.evaluation, mode: 'reuse-seed' }
-    await expect(service.admit('api')).rejects.toThrow('reuse-seed requires identical')
+    await expect(admitHistoricalFixture(service, 'api')).rejects.toThrow('reuse-seed requires identical')
     expect(evaluator.calls).toEqual([])
     await service.dispose()
   })
 
   it('commits the sealed tree and promotes only its evolution champion', async () => {
     const { service, evaluator, git } = await setup()
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const round = await editing(service, admission.evolutionId, admission.roundId)
     await finalize(service, round)
     const store = service.registry.stateStore(admission.evolutionId)
@@ -1893,7 +1926,7 @@ describe('RefineService evolution workspaces', () => {
     evaluator.partialInvalidByPhase.set('seed-candidate', [8])
     evaluator.partialInvalidByPhase.set('held-out-baseline', [9])
     evaluator.partialInvalidByPhase.set('held-out-candidate', [8])
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const round = await editing(service, admission.evolutionId, admission.roundId)
     expect(round.baseline).toMatchObject({
       completeness: 'partial', plannedTrialCount: 10,
@@ -1924,7 +1957,7 @@ describe('RefineService evolution workspaces', () => {
     const policy = { ...service.options.promotion.policy.config, requiredTaskIds: ['task-0'] }
     service.options.promotion.policy = builtinComponentRef('promotion-policy', 'paired-gate', policy)
     evaluator.partialInvalidByCall.set(2, Array.from({ length: 10 }, (_, index) => index))
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     let previousWorkspace: string | undefined
     for (let index = 0; index < 2; index += 1) {
       const round = await eventually(
@@ -1969,7 +2002,7 @@ describe('RefineService evolution workspaces', () => {
     const policy = { ...service.options.promotion.policy.config, requiredTaskIds: ['task-0'] }
     service.options.promotion.policy = builtinComponentRef('promotion-policy', 'paired-gate', policy)
     evaluator.partialInvalidByCall.set(4, Array.from({ length: 10 }, (_, index) => index))
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const round = await editing(service, admission.evolutionId, admission.roundId)
     await finalize(service, round)
     const terminal = await eventually(
@@ -1991,7 +2024,7 @@ describe('RefineService evolution workspaces', () => {
     evaluator.partialInvalidByPhase.set('seed-candidate', [8])
     const policy = { ...service.options.promotion.policy.config, requiredTaskIds: ['task-required'] }
     service.options.promotion.policy = builtinComponentRef('promotion-policy', 'paired-gate', policy)
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const round = await editing(service, admission.evolutionId, admission.roundId)
     await finalize(service, round)
     const terminal = await eventually(
@@ -2005,7 +2038,7 @@ describe('RefineService evolution workspaces', () => {
 
   it('continues a multi-round batch with a fresh workspace and persistent evolution', async () => {
     const { service } = await setup()
-    const admission = await service.admit('command', { rounds: 2, focus: ['workflow'] })
+    const admission = await admitHistoricalFixture(service, 'command', { rounds: 2, focus: ['workflow'] })
     const first = await editing(service, admission.evolutionId, admission.roundId)
     const active = service.activeEntry(first.roundId)!
     const current = await active.store.readRound(first.roundId)
@@ -2040,7 +2073,7 @@ describe('RefineService evolution workspaces', () => {
 
   it('continues from the immutable EvolutionSpec after global defaults change', async () => {
     const { service } = await setup()
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const first = await editing(service, admission.evolutionId, admission.roundId)
     await finalize(service, first)
     await eventually(
@@ -2062,7 +2095,7 @@ describe('RefineService evolution workspaces', () => {
     evaluator.partialInvalidByPhase.set('seed-candidate', [6, 7, 8, 9])
     let resumed = service
     try {
-      const admission = await service.admit('api', { rounds: mode === 'automatic' ? 2 : 1 })
+      const admission = await admitHistoricalFixture(service, 'api', { rounds: mode === 'automatic' ? 2 : 1 })
       const store = service.registry.stateStore(admission.evolutionId)
       const champion = await service.champion(admission.evolutionId)
       await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
@@ -2104,7 +2137,7 @@ describe('RefineService evolution workspaces', () => {
     const { service, evaluator } = await setup()
     let resumed = service
     try {
-      const admission = await service.admit('api')
+      const admission = await admitHistoricalFixture(service, 'api')
       const store = service.registry.stateStore(admission.evolutionId)
       await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
       const accepted = await eventually(() => store.readRound(admission.roundId), r => r?.status === 'accepted')
@@ -2143,7 +2176,7 @@ describe('RefineService evolution workspaces', () => {
   it('uses only the promoted champion when several research survivors are retained', async () => {
     const { service, evaluator } = await setup(0.8, false, 3, 300_000, 2)
     try {
-      const admission = await service.admit('api', { rounds: 2 })
+      const admission = await admitHistoricalFixture(service, 'api', { rounds: 2 })
       const store = service.registry.stateStore(admission.evolutionId)
       let previousWorkspace: string | undefined
       for (let index = 0; index < 3; index++) {
@@ -2171,7 +2204,7 @@ describe('RefineService evolution workspaces', () => {
       ...service.options.promotion.policy.config, minimumAbsoluteGain: 0,
     })
     try {
-      const admission = await service.admit('api')
+      const admission = await admitHistoricalFixture(service, 'api')
       const store = service.registry.stateStore(admission.evolutionId)
       await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
       const original = await eventually(() => store.readRound(admission.roundId), r => r?.status === 'accepted')
@@ -2202,7 +2235,7 @@ describe('RefineService evolution workspaces', () => {
   it('releases admission ownership if the champion promotion source cannot be verified', async () => {
     const { service } = await setup()
     try {
-      const admission = await service.admit('api')
+      const admission = await admitHistoricalFixture(service, 'api')
       const store = service.registry.stateStore(admission.evolutionId)
       await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
       await eventually(() => store.readRound(admission.roundId), r => r?.status === 'accepted')
@@ -2224,7 +2257,7 @@ describe('RefineService evolution workspaces', () => {
     evaluator.evaluationIdentity = (round, request) => ({ ...identity(round, request), provider: 'hitch-cli' })
     let resumed = service
     try {
-      const admission = await service.admit('api')
+      const admission = await admitHistoricalFixture(service, 'api')
       const store = service.registry.stateStore(admission.evolutionId)
       await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
       const rejected = await eventually(() => store.readRound(admission.roundId), r => r?.status === 'rejected')
@@ -2262,7 +2295,7 @@ describe('RefineService evolution workspaces', () => {
     evaluator.partialInvalidByPhase.set('seed-candidate', [6, 7, 8, 9])
     let resumed = service
     try {
-      const admission = await service.admit('api')
+      const admission = await admitHistoricalFixture(service, 'api')
       const store = service.registry.stateStore(admission.evolutionId)
       await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
       const original = await eventually(() => store.readRound(admission.roundId), r => r?.status === 'rejected')
@@ -2313,7 +2346,7 @@ describe('RefineService evolution workspaces', () => {
 
   it('reuses an exact prior seed baseline when continuing the same harness and condition', async () => {
     const { service, evaluator } = await setup()
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const store = service.registry.stateStore(admission.evolutionId)
     await decline(service, await editing(service, admission.evolutionId, admission.roundId))
     const first = await eventually(
@@ -2346,7 +2379,7 @@ describe('RefineService evolution workspaces', () => {
 
   it('blocks without rerunning the baseline when the evaluator runtime identity changes', async () => {
     const { service, evaluator } = await setup()
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const store = service.registry.stateStore(admission.evolutionId)
     await decline(service, await editing(service, admission.evolutionId, admission.roundId))
     const first = await eventually(
@@ -2388,7 +2421,7 @@ describe('RefineService evolution workspaces', () => {
         })).digest('hex')}`
         return { provider: 'fake', effectiveConfigDigest, invocationFingerprint: effectiveConfigDigest }
       }
-      const admission = await service.admit('api')
+      const admission = await admitHistoricalFixture(service, 'api')
       const store = service.registry.stateStore(admission.evolutionId)
       await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
       const first = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'accepted')
@@ -2438,7 +2471,7 @@ describe('RefineService evolution workspaces', () => {
       ...service.options.promotion.policy.config,
       minimumAbsoluteGain: 0,
     })
-    const admission = await service.admit('api', { rounds: mode === 'automatic' ? 2 : 1 })
+    const admission = await admitHistoricalFixture(service, 'api', { rounds: mode === 'automatic' ? 2 : 1 })
     const store = service.registry.stateStore(admission.evolutionId)
     await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
     const first = await eventually(
@@ -2498,7 +2531,7 @@ describe('RefineService evolution workspaces', () => {
         minimumAbsoluteGain: 0,
       })
       try {
-        const admission = await service.admit('api', { rounds: mode === 'automatic' ? 2 : 1 })
+        const admission = await admitHistoricalFixture(service, 'api', { rounds: mode === 'automatic' ? 2 : 1 })
         const store = service.registry.stateStore(admission.evolutionId)
         await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
         const first = await eventually(
@@ -2577,7 +2610,7 @@ describe('RefineService evolution workspaces', () => {
       return originalEvaluate(...args)
     }
 
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const store = service.registry.stateStore(admission.evolutionId)
     await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
     await service.rerunEvaluation(admission.evolutionId, admission.roundId, evalId, { mode: 'invalid' })
@@ -2605,7 +2638,7 @@ describe('RefineService evolution workspaces', () => {
     const { service, evaluator } = await setup()
     evaluator.partialInvalidByCall.set(1, [9])
     try {
-      const admission = await service.admit('api')
+      const admission = await admitHistoricalFixture(service, 'api')
       const store = service.registry.stateStore(admission.evolutionId)
       await decline(service, await editing(service, admission.evolutionId, admission.roundId))
       const first = await eventually(
@@ -2634,7 +2667,7 @@ describe('RefineService evolution workspaces', () => {
     const { service, evaluator } = await setup()
     evaluator.partialInvalidByCall.set(1, Array.from({ length: 10 }, (_, index) => index))
     try {
-      const admission = await service.admit('api')
+      const admission = await admitHistoricalFixture(service, 'api')
       const store = service.registry.stateStore(admission.evolutionId)
       await decline(service, await editing(service, admission.evolutionId, admission.roundId))
       const first = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'rejected')
@@ -2662,7 +2695,7 @@ describe('RefineService evolution workspaces', () => {
       })
     }
     try {
-      const first = await service.admit('api')
+      const first = await admitHistoricalFixture(service, 'api')
       const store = service.registry.stateStore(first.evolutionId)
       await decline(service, await editing(service, first.evolutionId, first.roundId))
       const original = await eventually(() => store.readRound(first.roundId), r => r?.status === 'rejected')
@@ -2690,7 +2723,7 @@ describe('RefineService evolution workspaces', () => {
     const { service, evaluator } = await setup()
     try {
       evaluator.failurePhase = 'seed-baseline'
-      const first = await service.admit('api')
+      const first = await admitHistoricalFixture(service, 'api')
       const store = service.registry.stateStore(first.evolutionId)
       const original = await eventually(() => store.readRound(first.roundId), r => r?.status === 'failed')
       await eventually(async () => service.activeEntry(first.roundId), r => r === undefined)
@@ -2711,7 +2744,7 @@ describe('RefineService evolution workspaces', () => {
     })
     let resumed = service
     try {
-      const first = await service.admit('api')
+      const first = await admitHistoricalFixture(service, 'api')
       const store = service.registry.stateStore(first.evolutionId)
       const original = await eventually(() => store.readRound(first.roundId), r => r?.status === 'failed')
       await eventually(async () => service.activeEntry(first.roundId), r => r === undefined)
@@ -2747,7 +2780,7 @@ describe('RefineService evolution workspaces', () => {
       return evaluate(...args)
     }
     try {
-      const admission = await service.admit('api')
+      const admission = await admitHistoricalFixture(service, 'api')
       const store = service.registry.stateStore(admission.evolutionId)
       const first = await editing(service, admission.evolutionId, admission.roundId)
       const workspaceId = service.activeEntry(first.roundId)!.workspace!.workspaceId
@@ -2792,7 +2825,7 @@ describe('RefineService evolution workspaces', () => {
     evaluator.reserve = async () => ({ provider: 'hitch-cli', evalId: `eval_${(++reservation).toString(16).padStart(32, '0')}` })
     evaluator.failurePhase = 'held-out-candidate'
     try {
-      const first = await service.admit('api')
+      const first = await admitHistoricalFixture(service, 'api')
       const store = service.registry.stateStore(first.evolutionId)
       await finalize(service, await editing(service, first.evolutionId, first.roundId))
       const failed = await eventually(() => store.readRound(first.roundId), r => r?.status === 'failed')
@@ -2841,7 +2874,7 @@ describe('RefineService evolution workspaces', () => {
       await finalize(service, second!)
     }
     try {
-      const first = await service.admit('api')
+      const first = await admitHistoricalFixture(service, 'api')
       const store = service.registry.stateStore(first.evolutionId)
       await generate(first.evolutionId, first.roundId)
       const original = await eventually(() => store.readRound(first.roundId), r => r?.status === 'accepted')
@@ -2872,7 +2905,7 @@ describe('RefineService evolution workspaces', () => {
   it('uses original promotion evidence despite a newer cancelled duplicate baseline', async () => {
     const { service, evaluator } = await setup()
     try {
-      const first = await service.admit('api')
+      const first = await admitHistoricalFixture(service, 'api')
       const store = service.registry.stateStore(first.evolutionId)
       await finalize(service, await editing(service, first.evolutionId, first.roundId))
       const original = await eventually(() => store.readRound(first.roundId), r => r?.status === 'accepted')
@@ -2913,7 +2946,7 @@ describe('RefineService evolution workspaces', () => {
         trials: evidence.trials.map(trial => ({ ...trial, rewards: { reward: 0 } })) }
     }
     try {
-      const first = await service.admit('api')
+      const first = await admitHistoricalFixture(service, 'api')
       const store = service.registry.stateStore(first.evolutionId)
       await decline(service, await editing(service, first.evolutionId, first.roundId))
       const original = await eventually(() => store.readRound(first.roundId), r => r?.status === 'rejected')
@@ -2935,7 +2968,7 @@ describe('RefineService evolution workspaces', () => {
     const rerun = vi.spyOn(evaluator, 'rerun')
     let resumed = service
     try {
-      const first = await service.admit('api', { rounds: 3, focus: ['context'] })
+      const first = await admitHistoricalFixture(service, 'api', { rounds: 3, focus: ['context'] })
       const store = service.registry.stateStore(first.evolutionId)
       await finalize(service, await editing(service, first.evolutionId, first.roundId))
       const original = await eventually(() => store.readRound(first.roundId), r => r?.status === 'accepted')
@@ -3060,7 +3093,7 @@ describe('RefineService evolution workspaces', () => {
     const writeRound = RefineStateStore.prototype.writeRound
     let persistence: ReturnType<typeof vi.spyOn> | undefined
     try {
-      const source = await service.admit('api')
+      const source = await admitHistoricalFixture(service, 'api')
       await finalize(service, await editing(service, source.evolutionId, source.roundId))
       const sourceRound = await eventually(
         () => registry.stateStore(source.evolutionId).readRound(source.roundId),
@@ -3068,7 +3101,7 @@ describe('RefineService evolution workspaces', () => {
       )
       await eventually(async () => service.activeEntry(source.roundId), value => value === undefined)
       const sourceHeldOut = structuredClone(sourceRound!.evaluation!.heldOutBaseline!)
-      const destination = await service.admit('api', {
+      const destination = await admitHistoricalFixture(service, 'api', {
         baselineSource: {
           evolutionId: source.evolutionId,
           roundId: source.roundId,
@@ -3129,7 +3162,7 @@ describe('RefineService evolution workspaces', () => {
       return writeRound.call(this, value)
     })
     try {
-      const admission = await service.admit('api')
+      const admission = await admitHistoricalFixture(service, 'api')
       const store = service.registry.stateStore(admission.evolutionId)
       await finalize(service, await editing(service, admission.evolutionId, admission.roundId))
       const failed = await eventually(() => store.readRound(admission.roundId), round => round?.status === 'failed')
@@ -3530,7 +3563,7 @@ describe('RefineService evolution workspaces', () => {
       service.options.promotion.policy = builtinComponentRef('promotion-policy', 'paired-gate', {
         ...service.options.promotion.policy.config, minimumAbsoluteGain: 0,
       })
-      const first = await service.admit('api')
+      const first = await admitHistoricalFixture(service, 'api')
       const store = service.registry.stateStore(first.evolutionId)
       await finalize(service, await editing(service, first.evolutionId, first.roundId))
       const original = await eventually(() => store.readRound(first.roundId), r => r?.status === 'accepted')
@@ -3552,7 +3585,7 @@ describe('RefineService evolution workspaces', () => {
 
   it('revalidates the resolved Meta runtime before every continue', async () => {
     const { service } = await setup()
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const first = await editing(service, admission.evolutionId, admission.roundId)
     await finalize(service, first)
     await eventually(
@@ -3567,7 +3600,7 @@ describe('RefineService evolution workspaces', () => {
 
   it('rejects below the seed gate without spending held-out evaluations', async () => {
     const { service, evaluator } = await setup(0.55)
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const round = await editing(service, admission.evolutionId, admission.roundId)
     await finalize(service, round)
     const store = service.registry.stateStore(admission.evolutionId)
@@ -3578,7 +3611,7 @@ describe('RefineService evolution workspaces', () => {
 
   it('fails the candidate closed when baseline and candidate do not share the same evaluation condition identity', async () => {
     const { service, evaluator } = await setup(0.8, true)
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const state = await editing(service, admission.evolutionId, admission.roundId)
     await finalize(service, state)
     const terminal = await eventually(
@@ -3592,7 +3625,7 @@ describe('RefineService evolution workspaces', () => {
 
   it('generates all best-of-N proposals before running candidate evaluations', async () => {
     const { service, evaluator } = await setup(0.8, false, 2)
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const first = await editing(service, admission.evolutionId, admission.roundId)
     const firstWorkspace = service.activeEntry(first.roundId)?.workspace?.workspaceId
     await finalize(service, first)
@@ -3640,7 +3673,7 @@ describe('RefineService evolution workspaces', () => {
       },
     }))
     service.options.selection.assessor = assessorRef
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     let previousWorkspace: string | undefined
     for (let index = 0; index < 2; index += 1) {
       const round = await eventually(
@@ -3670,7 +3703,7 @@ describe('RefineService evolution workspaces', () => {
 
   it('keeps multiple seed-selected survivors while promotion still has one finalist', async () => {
     const { service, git } = await setup(0.8, false, 3, 300_000, 2, -0.2)
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     let previousWorkspace: string | undefined
     for (let index = 0; index < 3; index += 1) {
       const round = await eventually(
@@ -3698,7 +3731,7 @@ describe('RefineService evolution workspaces', () => {
   it('persists the failed reserved baseline attempt before failing the round', async () => {
     const { service, evaluator } = await setup()
     evaluator.failurePhase = 'seed-baseline'
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const terminal = await eventually(
       () => service.registry.stateStore(admission.evolutionId).readRound(admission.roundId),
       value => value?.status === 'failed',
@@ -3717,7 +3750,7 @@ describe('RefineService evolution workspaces', () => {
 
   it('retains a successful held-out baseline when the held-out candidate evaluation fails', async () => {
     const { service, evaluator } = await setup()
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const round = await editing(service, admission.evolutionId, admission.roundId)
     evaluator.failurePhase = 'held-out-candidate'
     await finalize(service, round)
@@ -3739,7 +3772,7 @@ describe('RefineService evolution workspaces', () => {
 
   it('reconciles a prepared population/champion commit intent idempotently on startup', async () => {
     const { service } = await setup()
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const store = service.registry.stateStore(admission.evolutionId)
     const initialChampion = await store.readChampion()
     const initialPopulation = await store.readPopulation()
@@ -3775,7 +3808,7 @@ describe('RefineService evolution workspaces', () => {
       meta.capabilities.aggregateGenerationBudget = false
       return meta as never
     }, service.evaluator, service.options)
-    await expect(unsupported.admit('api')).rejects.toThrow(/aggregate generation budgets/)
+    await expect(admitHistoricalFixture(unsupported, 'api')).rejects.toThrow(/aggregate generation budgets/)
     await unsupported.dispose()
     expect(await service.listEvolutions()).toEqual([])
     await service.dispose()
@@ -3786,7 +3819,7 @@ describe('RefineService evolution workspaces', () => {
     const gate = Promise.withResolvers<void>()
     const evaluate = evaluator.evaluate.bind(evaluator)
     evaluator.evaluate = async (...args) => { await gate.promise; return evaluate(...args) }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const meta = metas.get(admission.evolutionId)! as unknown as MetaSessionController
     const idle = Promise.withResolvers<MetaTurnObservation>()
     const oldIds: string[] = []
@@ -3833,7 +3866,7 @@ describe('RefineService evolution workspaces', () => {
     const baselineGate = Promise.withResolvers<void>()
     const evaluate = evaluator.evaluate.bind(evaluator)
     evaluator.evaluate = async (...args) => { await baselineGate.promise; return evaluate(...args) }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const meta = metas.get(admission.evolutionId)
     if (meta === undefined) throw new Error('Meta fixture is unavailable')
     meta.wakeCandidate = async () => { throw new Error('ordinary context generation failure') }
@@ -3860,7 +3893,7 @@ describe('RefineService evolution workspaces', () => {
       const baselineGate = Promise.withResolvers<void>()
       const evaluate = evaluator.evaluate.bind(evaluator)
       evaluator.evaluate = async (...args) => { await baselineGate.promise; return evaluate(...args) }
-      const admission = await service.admit('api')
+      const admission = await admitHistoricalFixture(service, 'api')
       const store = registry.stateStore(admission.evolutionId)
       const meta = metas.get(admission.evolutionId)! as unknown as MetaSessionController
       const published = Promise.withResolvers<MetaExecutionState>()
@@ -3927,7 +3960,7 @@ describe('RefineService evolution workspaces', () => {
     const baselineGate = Promise.withResolvers<void>()
     const evaluate = evaluator.evaluate.bind(evaluator)
     evaluator.evaluate = async (...args) => { await baselineGate.promise; return evaluate(...args) }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const meta = metas.get(admission.evolutionId)
     if (meta === undefined) throw new Error('Meta fixture is unavailable')
     meta.turnCompletions.push({ reason: 'max-tokens', turn: 1, durationMs: 1 })
@@ -3967,7 +4000,7 @@ describe('RefineService evolution workspaces', () => {
     const gate = Promise.withResolvers<void>()
     const evaluate = evaluator.evaluate.bind(evaluator)
     evaluator.evaluate = async (...args) => { await gate.promise; return evaluate(...args) }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const store = registry.stateStore(admission.evolutionId)
     const meta = metas.get(admission.evolutionId)! as unknown as MetaSessionController
     let saved: MetaExecutionState | undefined
@@ -4040,7 +4073,7 @@ describe('RefineService evolution workspaces', () => {
       }
       return evaluate(...args)
     }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const meta = metas.get(admission.evolutionId)
     if (meta === undefined) throw new Error('Meta fixture is unavailable')
     const error = { code: 'CONTEXT_WINDOW_EXCEEDED', message: 'Your input exceeds the context window of this model.' }
@@ -4116,7 +4149,7 @@ describe('RefineService evolution workspaces', () => {
       return handle
     })
     try {
-      const admission = await service.admit('skill')
+      const admission = await admitHistoricalFixture(service, 'skill')
       const first = await editing(service, admission.evolutionId, admission.roundId)
       const claim = await eventually(async () => coordinator.claim('same-client', skillHarnessIdentity(service.options.metaAgent)), value => value !== undefined)
       const sessionId = claim!.sessionId
@@ -4182,7 +4215,7 @@ describe('RefineService evolution workspaces', () => {
       return timer
     })
     try {
-      const admission = await service.admit('api', { rounds: 2 })
+      const admission = await admitHistoricalFixture(service, 'api', { rounds: 2 })
       const first = await editing(service, admission.evolutionId, admission.roundId)
       const firstWorkspaceId = service.activeEntry(first.roundId)?.workspace?.workspaceId
       const firstSessionId = first.candidatePool[0]?.metaSessionId
@@ -4225,7 +4258,7 @@ describe('RefineService evolution workspaces', () => {
 
   it('does not start a continuation when disposal overlaps its final registry write', async () => {
     const { service, registry, metas } = await setup()
-    const admission = await service.admit('api', { rounds: 2 })
+    const admission = await admitHistoricalFixture(service, 'api', { rounds: 2 })
     const first = await editing(service, admission.evolutionId, admission.roundId)
     const store = metas.get(admission.evolutionId)!.store
     const touchStarted = Promise.withResolvers<void>()
@@ -4290,7 +4323,7 @@ describe('RefineService evolution workspaces', () => {
       return timer
     })
     try {
-      const admission = await service.admit('api')
+      const admission = await admitHistoricalFixture(service, 'api')
       const meta = metas.get(admission.evolutionId)
       if (meta === undefined) throw new Error('Meta fixture is unavailable')
       meta.fork = async () => { forkStarted.resolve(); return new Promise<never>(() => {}) }
@@ -4322,7 +4355,7 @@ describe('RefineService evolution workspaces', () => {
       return timer
     })
     try {
-      const admission = await service.admit('api')
+      const admission = await admitHistoricalFixture(service, 'api')
       const first = await editing(service, admission.evolutionId, admission.roundId)
       const firstCandidate = first.candidatePool.find(candidate => candidate.metaSessionId !== undefined)
       if (firstCandidate?.metaSessionId === undefined) throw new Error('first sibling is unavailable')
@@ -4385,7 +4418,7 @@ describe('RefineService evolution workspaces', () => {
     service.builder.finalizeWorkspace = async () => {
       throw new SubstrateExpansionError('candidate requires a fixed substrate change')
     }
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     const round = await editing(service, admission.evolutionId, admission.roundId)
     await finalize(service, round)
     const terminal = await eventually(
@@ -4401,7 +4434,7 @@ describe('RefineService evolution workspaces', () => {
 
   it('fails the round and stops the batch after candidate generation retries are exhausted', async () => {
     const { service } = await setup(0.8, false, 1, 40, 1, 0, 2, 200)
-    const admission = await service.admit('api', { rounds: 2 })
+    const admission = await admitHistoricalFixture(service, 'api', { rounds: 2 })
     const store = service.registry.stateStore(admission.evolutionId)
     const terminal = await eventually(() => store.readRound(admission.roundId), value => value?.status === 'failed')
     expect(terminal?.decision).toBeUndefined()
@@ -4415,7 +4448,7 @@ describe('RefineService evolution workspaces', () => {
 
   it('atomically settles a running candidate generation attempt during disposal', async () => {
     const { service, evaluator, registry } = await setup()
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     await editing(service, admission.evolutionId, admission.roundId)
     const store = registry.stateStore(admission.evolutionId)
     await service.dispose()
@@ -4448,7 +4481,7 @@ describe('RefineService evolution workspaces', () => {
 
   it('reports a disposal settlement write failure after releasing the round lock', async () => {
     const { service, registry } = await setup()
-    const admission = await service.admit('api')
+    const admission = await admitHistoricalFixture(service, 'api')
     await editing(service, admission.evolutionId, admission.roundId)
     const store = registry.stateStore(admission.evolutionId)
     const runtimeStore = service.activeEntry(admission.roundId)!.store
@@ -4474,7 +4507,7 @@ describe('RefineService evolution workspaces', () => {
   it('starts a new Meta evolution from explicit source evidence without another Target baseline', async () => {
     const { service, evaluator, registry } = await setup()
     enableBaselineSources(service, evaluator)
-    const sourceAdmission = await service.admit('api')
+    const sourceAdmission = await admitHistoricalFixture(service, 'api')
     const sourceEditing = await editing(service, sourceAdmission.evolutionId, sourceAdmission.roundId)
     await decline(service, sourceEditing)
     const sourceRound = await eventually(
@@ -4505,7 +4538,7 @@ describe('RefineService evolution workspaces', () => {
     )
     await current.initialize()
 
-    const admission = await current.admit('api', {
+    const admission = await admitHistoricalFixture(current, 'api', {
       baselineSource: { evolutionId: sourceAdmission.evolutionId, roundId: sourceAdmission.roundId },
     })
     const imported = await editing(current, admission.evolutionId, admission.roundId)
@@ -4534,7 +4567,7 @@ describe('RefineService evolution workspaces', () => {
   it('keeps an opt-in held-out source sealed until held-out evaluation and reuses it after a failed first round', async () => {
     const { service, evaluator, registry } = await setup()
     enableBaselineSources(service, evaluator)
-    const sourceAdmission = await service.admit('api')
+    const sourceAdmission = await admitHistoricalFixture(service, 'api')
     const sourceEditing = await editing(service, sourceAdmission.evolutionId, sourceAdmission.roundId)
     await finalize(service, sourceEditing)
     const sourceRound = await eventually(
@@ -4548,7 +4581,7 @@ describe('RefineService evolution workspaces', () => {
       preset: { id: 'meta-held-out-v2', digest: `sha256:${'8'.repeat(64)}`, resources: [] },
     }
 
-    const firstAdmission = await service.admit('api', {
+    const firstAdmission = await admitHistoricalFixture(service, 'api', {
       baselineSource: {
         evolutionId: sourceAdmission.evolutionId,
         roundId: sourceAdmission.roundId,
@@ -4588,7 +4621,7 @@ describe('RefineService evolution workspaces', () => {
       reusedFromEvolutionId: sourceAdmission.evolutionId,
       reusedFromRoundId: sourceAdmission.roundId,
     }))
-    const directAdmission = await service.admit('api', {
+    const directAdmission = await admitHistoricalFixture(service, 'api', {
       baselineSource: {
         evolutionId: sourceAdmission.evolutionId,
         roundId: sourceAdmission.roundId,
@@ -4612,7 +4645,7 @@ describe('RefineService evolution workspaces', () => {
   it('reconstructs a sealed baseline source after a crash before the first round write', async () => {
     const { service, evaluator, registry } = await setup()
     enableBaselineSources(service, evaluator)
-    const sourceAdmission = await service.admit('api')
+    const sourceAdmission = await admitHistoricalFixture(service, 'api')
     const sourceEditing = await editing(service, sourceAdmission.evolutionId, sourceAdmission.roundId)
     await decline(service, sourceEditing)
     await eventually(
@@ -4632,7 +4665,7 @@ describe('RefineService evolution workspaces', () => {
       }
       return writeRound.call(this, round)
     })
-    await expect(service.admit('api', {
+    await expect(admitHistoricalFixture(service, 'api', {
       baselineSource: { evolutionId: sourceAdmission.evolutionId, roundId: sourceAdmission.roundId },
     })).rejects.toThrow('simulated crash')
     write.mockRestore()
@@ -4661,7 +4694,7 @@ describe('RefineService evolution workspaces', () => {
   it('rejects an explicit source Target mismatch before creating an evolution or running Target', async () => {
     const { service, evaluator, registry } = await setup()
     enableBaselineSources(service, evaluator)
-    const sourceAdmission = await service.admit('api')
+    const sourceAdmission = await admitHistoricalFixture(service, 'api')
     const sourceEditing = await editing(service, sourceAdmission.evolutionId, sourceAdmission.roundId)
     await decline(service, sourceEditing)
     await eventually(
@@ -4685,7 +4718,7 @@ describe('RefineService evolution workspaces', () => {
       model: 'different-target-model',
     }
 
-    await expect(service.admit('api', {
+    await expect(admitHistoricalFixture(service, 'api', {
       baselineSource: { evolutionId: sourceAdmission.evolutionId, roundId: sourceAdmission.roundId },
     })).rejects.toThrow(/Target parameters differ/u)
     expect(await registry.list()).toEqual(beforeEntries)
@@ -4709,7 +4742,7 @@ describe('explicit staged search control-plane integration', () => {
       return meta as never
     }, evaluator, service.options)
     try {
-      await expect(unsupported.admit('api')).rejects.toThrow('cannot enforce aggregate generation budgets')
+      await expect(admitHistoricalFixture(unsupported, 'api')).rejects.toThrow('cannot enforce aggregate generation budgets')
       expect(await service.listEvolutions()).toEqual([])
       expect(fixture.executions).toEqual([])
       expect(service.options.candidateGeneration.budget.maxTokens).toBeUndefined()
@@ -4726,7 +4759,7 @@ describe('explicit staged search control-plane integration', () => {
     service.options.metaAgent.contextOffloading = resolveOffloadingPolicy({ mode: 'proactive', contextWindow: 10000 })
     let recovered: RefineService | undefined, clock: ReturnType<typeof vi.spyOn> | undefined
     try {
-      const admitted = await service.admit('api'), store = service.registry.stateStore(admitted.evolutionId)
+      const admitted = await admitHistoricalFixture(service, 'api'), store = service.registry.stateStore(admitted.evolutionId)
       const meta = metas.get(admitted.evolutionId)! as unknown as MetaSessionController
       let saved: MetaExecutionState | undefined
       meta.wakeCandidate = async (round, candidate, baseline, agent, binding) => {
@@ -4846,9 +4879,13 @@ describe('explicit staged search control-plane integration', () => {
     }
     try {
       const admitted = await service.admit('api'), store = service.registry.stateStore(admitted.evolutionId)
+      expect(admitted.resolvedObjective).toMatchObject({ terms: [{ metric: 'pass_rate', weight: 1, scale: 1 }] })
+      expect((await service.registry.requireSpec(admitted.evolutionId)).objective).toEqual(admitted.resolvedObjective)
+      await expect(service.continueEvolution('api', admitted.evolutionId, { objective: { terms: [{ metric: 'total_score', weight: 1 }] } } as never)).rejects.toThrow('frozen objective')
       const round = await eventually(() => store.readRound(admitted.roundId), r => ['candidate-editing', 'failed', 'rejected'].includes(r?.status ?? ''))
       expect(round?.status, round?.failure?.message).toBe('candidate-editing')
       const assignment = (await eventually(async () => coordinator.claim('default-search-client', skillHarnessIdentity(service.options.metaAgent), admitted.evolutionId), a => a !== undefined))!
+      expect(assignment.baseline.trials.some(t => (t.reward ?? 0) > 0 && t.passStatus === 'failed')).toBe(true)
       const workspace = service.workspaceManager.resolve(assignment.sessionId)
       await writeFile(join(workspace.targetPath, 'plugins', 'context.ts'), 'export const context = "improved workflow"\n')
       const active = service.activeEntry(admitted.roundId)!, refs = [assignment.baseline.evalId]
@@ -4859,6 +4896,12 @@ describe('explicit staged search control-plane integration', () => {
       expect(terminal?.status, JSON.stringify({ failure: terminal?.failure, search: terminal?.searchOutcome })).toBe('accepted')
       expect(terminal?.searchOutcome?.championChanged).toBe(true)
       expect(terminal!.candidatePool.filter(candidate => candidate.sealedVersion).map(candidate => candidate.status)).toEqual(['ready'])
+      await eventually(async () => service.activeEntry(admitted.roundId), value => value === undefined)
+      const [header, ...rows] = (await readFile(service.registry.experimentsPath, 'utf8')).trimEnd().split('\n').map(line => line.split('\t'))
+      const objectiveHistory = rows.map(row => row[header!.indexOf('seed_objective')]!).filter(Boolean).map(value => JSON.parse(value))
+      expect(objectiveHistory).toHaveLength(1)
+      expect(objectiveHistory[0]).toMatchObject({ scope: 'local', evidence: { objectiveDigest: admitted.resolvedObjective!.digest, score: 1, contributions: [{ metric: 'pass_rate', contribution: 1 }] } })
+      expect(rows[0]![header!.indexOf('seed_raw_metrics')]).toContain('total_score')
       expect(terminal?.searchOutcome?.research.remainingBudget).toMatchObject({ generationTokens: null, generationRequests: null })
       const journal = new SearchStore(join(store.root, 'search'))
       for (const workplan of terminal!.searchOutcome!.research.workplans) {
@@ -4886,7 +4929,7 @@ describe('explicit staged search control-plane integration', () => {
     ;(evaluator as RefineEvaluator).search = { provider: fixture.provider, diagnosis: fixture.diagnosis }
     service.options.searchSettings = skillSearchSettings()
     try {
-      const admission = await service.admit('skill')
+      const admission = await admitHistoricalFixture(service, 'skill')
       await editing(service, admission.evolutionId, admission.roundId)
       const claim = (await eventually(
         async () => coordinator.claim('failed-search-runner', skillHarnessIdentity(service.options.metaAgent), admission.evolutionId),
@@ -4913,7 +4956,7 @@ describe('explicit staged search control-plane integration', () => {
     service.options.searchSettings = searchSettings()
     let restarted: RefineService | undefined
     try {
-      const admitted = await service.admit('api'), active = service.activeEntry(admitted.roundId)!, store = active.store
+      const admitted = await admitHistoricalFixture(service, 'api'), active = service.activeEntry(admitted.roundId)!, store = active.store
       const firstMeta = metas.get(admitted.evolutionId)!
       firstMeta.turnCompletions.push({ reason: 'max-tokens', turn: 1, durationMs: 1, effectiveMaxTokens: 50 })
       const write = store.writeRound.bind(store)
@@ -4977,7 +5020,7 @@ describe('explicit staged search control-plane integration', () => {
     service.options.searchSettings = skillSearchSettings()
     let restarted: RefineService | undefined
     try {
-      const admitted = await service.admit('api'), store = service.registry.stateStore(admitted.evolutionId)
+      const admitted = await admitHistoricalFixture(service, 'api'), store = service.registry.stateStore(admitted.evolutionId)
       const finish = async (runner: RefineService, roundId: string, filename: string,
         inherited?: { commit: string; snapshotDigest: string; findings: unknown[] }) => {
         const round = await eventually(() => store.readRound(roundId), r => r?.status === 'candidate-editing' || r?.status === 'failed' || r?.status === 'rejected')
@@ -5036,7 +5079,7 @@ describe('explicit staged search control-plane integration', () => {
     ;(evaluator as RefineEvaluator).search = { provider: fixture.provider, diagnosis: fixture.diagnosis }
     service.options.searchSettings = skillSearchSettings(); service.options.searchSettings.regression.suiteRef = suite.digest
     try {
-      const admitted = await service.admit('api')
+      const admitted = await admitHistoricalFixture(service, 'api')
       const spec = await service.registry.readSpec(admitted.evolutionId)
       expect(spec?.searchSettings?.promotion.protectedTasks).toEqual([suite.tasks[0]!.guard])
       expect(spec?.searchSettings?.regression.suiteRef).toBe(suite.digest)
@@ -5077,7 +5120,7 @@ describe('explicit staged search control-plane integration', () => {
     }
     if (recovery === 'timeout') service.options.searchSettings.budgets.round.timeoutMs = 2500
     try {
-      const admitted = await service.admit('api')
+      const admitted = await admitHistoricalFixture(service, 'api')
       const store = service.registry.stateStore(admitted.evolutionId)
       const current = await eventually(() => store.readRound(admitted.roundId), r => r?.status === 'candidate-editing' || r?.status === 'failed' || r?.status === 'rejected')
       expect(current?.status, current?.failure?.message).toBe('candidate-editing')

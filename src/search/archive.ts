@@ -5,10 +5,17 @@ import { selectParentsWithPolicy } from './parent-selection.js'
 import { championGepaPolicy, resolveParentPolicyRef, scopedFrontierPolicy } from './policies/parents.js'
 import { validateSearchSchema } from './schema.js'
 import type { EvaluationScope, EvidenceCell, EvidenceProfile, FailureCluster, ParentSelectionDecision, ResearchArchive, ScopeView, SearchConfig, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from './types.js'
+import { scoringComplete, scoringKey } from './objective.js'
 
 export function passesExploration(scope: EvaluationScope, p: EvidenceProfile, universe: TaskUniverse): boolean {
-  return p.outcomeComplete && scope.guards.every(g => {
+  return (universe.objective ? scoringComplete(p) : p.outcomeComplete) && scope.guards.every(g => {
     const task = universe.tasks.find(t => t.id === g.taskId)!, row = p.tasks.find(t => t.taskId === g.taskId)
+    if (universe.objective) {
+      const metric = g.rule === 'must-pass' ? 'pass_rate' : g.metric!, value = row?.rawMetrics?.[metric], contract = universe.rawMetricContracts!.find(c => c.id === metric)
+      if (!contract || value?.status !== 'available') return false
+      const difference = comparisonKey(value.value!, contract.comparisonPrecision) - comparisonKey(g.rule === 'must-pass' ? 1 : g.minimumUtility!, contract.comparisonPrecision)
+      return contract.direction === 'maximize' ? difference >= 0n : difference <= 0n
+    }
     return row?.outcome !== undefined && comparisonKey(row.outcome, task.outcome.comparisonQuantum) >= comparisonKey(g.rule === 'must-pass' ? task.successUtility : g.minimumUtility!, task.outcome.comparisonQuantum)
   })
 }
@@ -24,7 +31,7 @@ export function scopeView(scope: EvaluationScope, universe: TaskUniverse, snapsh
     observed.add(id)
     if (!passesExploration(scope, p, universe)) { if (p.outcomeComplete) guardRejected.add(id); continue }
     const previous = profiles.get(id)
-    if (!previous || !previous.processComplete && p.processComplete) profiles.set(id, p)
+    if (!previous || !universe.objective && !previous.processComplete && p.processComplete) profiles.set(id, p)
     const completedAt = Math.max(...record.result.cells.map(c => Date.parse(c.completedAt)))
     if (!times.has(id) || completedAt < times.get(id)!) times.set(id, completedAt)
   }
@@ -37,11 +44,11 @@ export function scopeView(scope: EvaluationScope, universe: TaskUniverse, snapsh
     trees.set(group, representative); representatives[id] = representative
   }
   const eligible = ids.filter(id => representatives[id] === id).sort()
-  const processEligible = eligible.filter(id => profiles.get(id)!.processComplete)
+  const processEligible = universe.objective ? [] : eligible.filter(id => profiles.get(id)!.processComplete)
   const fronts: ScopeView['fronts'] = []
-  for (const channel of ['outcome', 'process'] as const) for (const taskId of scope.taskIds) {
-    const values = (channel === 'outcome' ? eligible : processEligible).flatMap(id => {
-      const value = profiles.get(id)!.tasks.find(t => t.taskId === taskId)?.[channel === 'outcome' ? 'outcomeKey' : 'processKey']
+  for (const channel of universe.objective ? ['objective'] as const : ['outcome', 'process'] as const) for (const taskId of scope.taskIds) {
+    const values = (channel !== 'process' ? eligible : processEligible).flatMap(id => {
+      const value = profiles.get(id)!.tasks.find(t => t.taskId === taskId)?.[channel === 'objective' ? 'objectiveKey' : channel === 'outcome' ? 'outcomeKey' : 'processKey']
       return value === undefined ? [] : [{ id, key: BigInt(value) }]
     })
     if (!values.length) continue
@@ -51,7 +58,7 @@ export function scopeView(scope: EvaluationScope, universe: TaskUniverse, snapsh
   const informative = fronts.filter(f => f.informative && scope.weights[f.taskId]! > 0)
   const live = new Set(eligible), prunedIds: string[] = []
   const compareOutcome = (a: string, b: string): number => {
-    const difference = BigInt(profiles.get(a)!.outcomeKey!) - BigInt(profiles.get(b)!.outcomeKey!)
+    const difference = BigInt(scoringKey(profiles.get(a)!)!) - BigInt(scoringKey(profiles.get(b)!)!)
     return difference === 0n ? a.localeCompare(b) : difference < 0n ? -1 : 1
   }
   const traversal = [...eligible].sort(compareOutcome)
@@ -62,10 +69,14 @@ export function scopeView(scope: EvaluationScope, universe: TaskUniverse, snapsh
   const probability: Record<string, number> = {}
   if (!informative.length && eligible.length) {
     const fallback = eligible.includes(championId) ? championId : [...eligible].sort((a, b) => {
-      const difference = BigInt(profiles.get(b)!.outcomeKey!) - BigInt(profiles.get(a)!.outcomeKey!)
+      const difference = BigInt(scoringKey(profiles.get(b)!)!) - BigInt(scoringKey(profiles.get(a)!)!)
       return difference === 0n ? a.localeCompare(b) : difference < 0n ? -1 : 1
     })[0]!
     probability[fallback] = 1
+  } else if (universe.objective) {
+    for (const front of informative) for (const id of front.candidateIds.filter(id => live.has(id))) probability[id] = (probability[id] ?? 0) + scope.weights[front.taskId]!
+    const total = Object.values(probability).reduce((a, b) => a + b, 0)
+    for (const id of Object.keys(probability)) probability[id] = probability[id]! / total
   } else {
     const channels = {} as Record<'outcome' | 'process', Record<string, number>>
     for (const channel of ['outcome', 'process'] as const) {
@@ -83,7 +94,7 @@ export function scopeView(scope: EvaluationScope, universe: TaskUniverse, snapsh
   }
   return seal({ scopeDigest: scope.digest, outcomeEligibleIds: eligible, processEligibleIds: processEligible,
     fronts, representatives, prunedIds, conditionalParentProbabilities: probability,
-    pendingEvidenceIds: [...observed].filter(id => !guardRejected.has(id) && (!profiles.has(id) || !profiles.get(id)!.processComplete)).sort(),
+    pendingEvidenceIds: [...observed].filter(id => !guardRejected.has(id) && (!profiles.has(id) || !scoringComplete(profiles.get(id)!))).sort(),
     ineligibleIds: [...guardRejected].filter(id => !profiles.has(id)).sort() })
 }
 

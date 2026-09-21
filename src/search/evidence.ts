@@ -4,6 +4,7 @@ import { comparisonKey, digest, invariant, numeric, observationValue, plannedCel
 import { validateSearchSchema } from './schema.js'
 import type { SearchJournal } from './store.js'
 import type { CellIdentity, EvidenceCell, EvidenceProfile, ProcessMode, SearchProvider, Snapshot, StageEvaluationPlan, StageResult, TaskProfile, TaskUniverse } from './types.js'
+import { objectiveProfile } from './objective.js'
 
 export function cellIdentity(universe: TaskUniverse, taskId: string, repetition: number, snapshot: Snapshot): CellIdentity {
   const task = universe.tasks.find(t => t.id === taskId), slot = repetitionsForTask(universe, taskId).find(s => s.index === repetition)
@@ -11,6 +12,7 @@ export function cellIdentity(universe: TaskUniverse, taskId: string, repetition:
   return {
     taskId, taskContentDigest: task.contentDigest, repetition, seed: slot.seed,
     conditionDigest: universe.conditionDigest, outcomeContractDigest: task.outcome.digest,
+    ...(universe.rawMetricContracts ? { rawMetricContractsDigest: digestJson(universe.rawMetricContracts) } : {}),
     ...(task.process ? { processContractDigest: task.process.digest } : {}), harnessCommit: snapshot.commit,
     harnessManifestDigest: snapshot.manifestDigest, snapshotDigest: snapshot.digest,
   }
@@ -36,6 +38,16 @@ export function assertConsistentCells(a: EvidenceCell, b: EvidenceCell): void {
   invariant(digestJson(a.identity) === digestJson(b.identity) && a.evidenceRef === b.evidenceRef && a.completedAt === b.completedAt
     && digestJson(a.outcome) === digestJson(b.outcome) && a.outcomeCertified === b.outcomeCertified && a.envelope === b.envelope
     && digestJson(a.assertions ?? null) === digestJson(b.assertions ?? null), 'evidence cannot rerun or replace a valid outcome')
+  if (a.rawMetrics) {
+    invariant(b.rawMetrics, 'evidence cannot discard raw metrics')
+    const before = a.rawMetrics, after = b.rawMetrics
+    for (const key of ['taskId', 'repetition', 'runId', 'attempt', 'harnessCommit', 'conditionDigest'] as const) invariant(before[key] === after[key], 'raw metric completion changed its execution slot')
+    invariant(before.originalArtifactRefs.every(ref => after.originalArtifactRefs.includes(ref)), 'raw metric completion discarded original artifacts')
+    for (const [id, metric] of Object.entries(before.metrics)) {
+      invariant(after.metrics[id]?.contractDigest === metric.contractDigest, 'raw metric completion changed its contract')
+      if (metric.status === 'available') invariant(digestJson(after.metrics[id]) === digestJson(metric), 'evidence cannot replace valid raw metrics')
+    }
+  }
   if (a.process?.status === 'available' && b.process?.status === 'available') invariant(digestJson(a.process) === digestJson(b.process), 'evidence cannot replace valid process')
 }
 export function assertCell(cell: EvidenceCell, expected: CellIdentity): void {
@@ -69,7 +81,7 @@ export function profile(universe: TaskUniverse, plan: StageEvaluationPlan, snaps
     invariant(identity && !cells.has(key), 'duplicate or unplanned evidence cell')
     assertCell(cell, identity); cells.set(key, cell)
   }
-  const declaredProcess = processTasks(universe, mode), applicable = declaredProcess.filter(id => plan.taskIds.includes(id))
+  const declaredProcess = processTasks(universe, universe.objective ? 'auto' : mode), applicable = declaredProcess.filter(id => plan.taskIds.includes(id))
   const coverage = { planned: identities.length, available: 0, paired: 0, pending: 0, missing: 0, invalid: 0, notEvaluated: plannedCellCount(universe, universe.tasks.filter(t => !plan.taskIds.includes(t.id)).map(t => t.id)) }
   const processCoverage = { ...coverage, planned: plannedCellCount(universe, applicable),
     notEvaluated: plannedCellCount(universe, declaredProcess.filter(id => !plan.taskIds.includes(id))) }
@@ -95,7 +107,7 @@ export function profile(universe: TaskUniverse, plan: StageEvaluationPlan, snaps
         else processCoverage[cell.process?.status === 'invalid' || !validOutcome(cell) ? 'invalid' : 'missing']++
       }
     }
-    const row: TaskProfile = { taskId }
+    const row: TaskProfile = { taskId, ...objectiveProfile(universe, [taskId], result.cells) }
     // Global/bridge policy uses uniform task macro weights. Scoped callers supply
     // their frozen bucket weights explicitly; repetition count never changes them.
     const weight = weights?.[taskId] ?? 1
@@ -115,6 +127,7 @@ export function profile(universe: TaskUniverse, plan: StageEvaluationPlan, snaps
   const outcomeComplete = coverage.available === coverage.planned
   const processComplete = outcomeComplete && processCoverage.available === processCoverage.planned
   return {
+    ...objectiveProfile(universe, plan.taskIds, result.cells, weights),
     universeDigest: universe.digest, stagePlanDigest: plan.digest, scopeDigest: plan.scopeDigest, snapshotDigest: snapshot.digest,
     coverage, processCoverage, outcomeComplete, processComplete, processTaskIds: applicable, tasks,
     ...(outcomeComplete ? { outcome: numeric(weightedMean(outcomes)), outcomeKey: String(comparisonKey(weightedMean(outcomes), universe.tasks[0]!.outcome.comparisonQuantum)) } : {}),

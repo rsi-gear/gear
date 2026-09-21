@@ -7,7 +7,7 @@ const extension = import.meta.url.endsWith('.ts') ? '.ts' : '.js'
 // Testkit, docs and public export facades do not affect running experiments.
 const modules = ['identity', 'contracts', 'engine', 'runtime', 'archive', 'parent-selection', 'parent-random',
   'policies/parents', 'config', 'completion', 'dataset-projection', 'diagnosis', 'epochs', 'evaluation-adapter',
-  'evidence', 'promotion', 'recovery', 'regression', 'schema', 'scope-sampling', 'scopes', 'store', '../state/digest', '../evolution/component-ref', '../evolution/implementation-files', '../evolution/component-identity', '../evolution/builtin-algorithms', '../evolution/components']
+  'evidence', 'objective', '../objective/contracts', '../objective/scoring', 'promotion', 'recovery', 'regression', 'schema', 'scope-sampling', 'scopes', 'store', '../state/digest', '../evolution/component-ref', '../evolution/implementation-files', '../evolution/component-identity', '../evolution/builtin-algorithms', '../evolution/components']
 const hash = createHash('sha256').update(`gear-search-protocol:${searchProtocolVersion}\0`)
 for (const file of [...modules.map(name => `${name}${extension}`), 'schema.json']) {
   const bytes = readFileSync(new URL(file, import.meta.url))

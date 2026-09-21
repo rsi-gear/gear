@@ -1,17 +1,19 @@
 import { comparisonKey, mul, numeric, rational, repetitionsForTask, invariant, processTasks, seal, sorted, verifyDigest } from './contracts.js'
 import { profile, validOutcome } from './evidence.js'
 import type { EvidenceProfile, GateDecision, MultisignalPromotionConfig, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from './types.js'
+import { scoringComplete, scoringKey } from './objective.js'
+import { scoreObjective, type ObjectiveBaseline } from '../objective/scoring.js'
 
-export interface PromotionInput { universe: TaskUniverse; plan: StageEvaluationPlan; anchor: Snapshot; candidate: Snapshot; baseline: StageResult; result: StageResult }
+export interface PromotionInput { universe: TaskUniverse; plan: StageEvaluationPlan; anchor: Snapshot; candidate: Snapshot; baseline: StageResult; result: StageResult; initialBaseline?: ObjectiveBaseline | undefined }
 function thresholds(config: MultisignalPromotionConfig, group: string) { return config.process.groups?.[group] ?? config.process }
 function gainValue(key: bigint, quantum: number): number { return numeric(mul({ n: key, d: 1n }, rational(quantum))) }
 export function rankProfiles(universe: TaskUniverse, entries: Array<{ id: string; profile: EvidenceProfile }>): string[] {
-  const usable = entries.filter(e => e.profile.outcomeComplete && e.profile.processComplete)
+  const usable = entries.filter(e => scoringComplete(e.profile))
   const groups = sorted(usable.flatMap(e => Object.keys(e.profile.processGroups)))
   return usable.sort((a, b) => {
-    const o = BigInt(b.profile.outcomeKey!) - BigInt(a.profile.outcomeKey!)
+    const o = BigInt(scoringKey(b.profile)!) - BigInt(scoringKey(a.profile)!)
     if (o) return o > 0n ? 1 : -1
-    if (groups.length === 1) {
+    if (!universe.objective && groups.length === 1) {
       const g = groups[0]!
       const p = BigInt(b.profile.processGroupKeys[g]!) - BigInt(a.profile.processGroupKeys[g]!)
       if (p) return p > 0n ? 1 : -1
@@ -32,9 +34,19 @@ export function assessGate(input: PromotionInput, config: MultisignalPromotionCo
   const base = { reasonCodes: reasons, supportDigest: seal({ baseline, candidate }).digest,
     metricContractDigests: sorted(universe.tasks.filter(t => plan.taskIds.includes(t.id)).flatMap(t => [t.outcome.digest, ...(processTasks(universe, config.process.mode).includes(t.id) ? [t.process!.digest] : [])])), comparison }
   if (input.baseline.failure || input.result.failure) return seal({ ...base, outcome: 'insufficient-evidence' as const, reasonCodes: ['stage-execution-unavailable'] })
-  if (!baseline.outcomeComplete || !candidate.outcomeComplete || !baseline.processComplete || !candidate.processComplete) return seal({ ...base, outcome: 'insufficient-evidence' as const, reasonCodes: ['incomplete-stage-evidence'] })
+  if (!scoringComplete(baseline) || !scoringComplete(candidate)) return seal({ ...base, outcome: 'insufficient-evidence' as const, reasonCodes: ['incomplete-stage-evidence'] })
   for (const guard of config.protectedTasks.filter(g => g.partition === universe.partition && plan.taskIds.includes(g.taskId))) {
     const task = universe.tasks.find(t => t.id === guard.taskId)!, q = task.outcome.comparisonQuantum
+    const metric = guard.rule === 'must-pass' ? 'pass_rate' : guard.metric
+    if (universe.objective) {
+      const contract = universe.rawMetricContracts!.find(c => c.id === metric)!
+      const a = baseline.tasks.find(t => t.taskId === guard.taskId)!.rawMetrics?.[metric!], b = candidate.tasks.find(t => t.taskId === guard.taskId)!.rawMetrics?.[metric!]
+      if (!contract || a?.status !== 'available' || b?.status !== 'available') return seal({ ...base, outcome: 'insufficient-evidence' as const, reasonCodes: ['missing-protected-metric'] })
+      const boundary = guard.rule === 'no-regression' ? a.value! : guard.rule === 'must-pass' ? 1 : guard.minimumUtility!
+      const difference = comparisonKey(b.value!, contract.comparisonPrecision) - comparisonKey(boundary, contract.comparisonPrecision)
+      if (contract.direction === 'maximize' ? difference < 0n : difference > 0n) reasons.push(`protected-task:${guard.taskId}`)
+      continue
+    }
     const a = baseline.tasks.find(t => t.taskId === guard.taskId)!.outcome!, b = candidate.tasks.find(t => t.taskId === guard.taskId)!.outcome!
     const minimum = guard.rule === 'no-regression' ? a : guard.rule === 'must-pass' ? task.successUtility : guard.minimumUtility!
     if (comparisonKey(b, q) < comparisonKey(minimum, q)) reasons.push(`protected-task:${guard.taskId}`)
@@ -50,6 +62,18 @@ export function assessGate(input: PromotionInput, config: MultisignalPromotionCo
     }
   }
   if (missingAssertion) return seal({ ...base, outcome: 'insufficient-evidence' as const, reasonCodes: ['missing-protected-assertion'] })
+  if (universe.objective) {
+    const objectiveScore = scoreObjective(universe.objective, candidate.rawMetrics!, candidate.objectiveScore!.scopeDigest, input.initialBaseline)
+    const q = universe.objective.comparisonPrecision, limits = config.objective ?? { minimumGain: 0, maxSeedRegression: 0, maxHeldOutRegression: 0 }
+    const gain = BigInt(candidate.objectiveKey!) - BigInt(baseline.objectiveKey!)
+    const resultBase = { ...base, objectiveScore, metricContractDigests: sorted([...universe.objective.terms.filter(t => t.weight !== 0).map(t => t.metricContractDigest), ...universe.objective.constraints.map(c => c.metricContractDigest)]),
+      comparison: { ...comparison, objectiveGain: gainValue(gain, q), constraintCoverage: universe.objective.constraints.length ? 'available' as const : comparison.constraintCoverage } }
+    if (objectiveScore.status !== 'available') return seal({ ...resultBase, outcome: 'insufficient-evidence' as const, reasonCodes: ['incomplete-objective-constraints'] })
+    for (const c of objectiveScore.constraintResults) if (c.status === 'failed') reasons.push(`objective-constraint:${c.constraintDigest}`)
+    if (gain < comparisonKey(-(universe.partition === 'seed' ? limits.maxSeedRegression : limits.maxHeldOutRegression), q)) reasons.push('objective-regression')
+    if (requireImprovement && gain <= comparisonKey(limits.minimumGain, q) && !(config.allowNeutral && gain === 0n)) reasons.push('no-substantive-objective-improvement')
+    return seal({ ...resultBase, outcome: reasons.length ? 'rejected' as const : 'eligible' as const })
+  }
   const q = universe.tasks[0]!.outcome.comparisonQuantum
   const outcomeGainKey = BigInt(candidate.outcomeKey!) - BigInt(baseline.outcomeKey!)
   comparison.outcomeGain = gainValue(outcomeGainKey, q)

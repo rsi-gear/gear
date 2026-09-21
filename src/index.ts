@@ -53,6 +53,7 @@ import { loadBundledRefineSkill, mountDshRefineSkill } from './skill/dsh.js'
 import './context.js'
 
 export * from './types.js'
+export * from './objective/index.js'
 export * from './config.js'
 export * from './capabilities.js'
 export * from './harness/builder.js'

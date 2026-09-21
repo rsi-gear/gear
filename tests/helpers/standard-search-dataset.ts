@@ -15,6 +15,9 @@ export async function standardSearchDataset(root: string, count: number, partiti
   const score = { direction: 'maximize', range: [0, 1], reducer: 'task-macro-mean' }
   const manifest = { schema_version: '1', kind: 'gear-harbor-benchmark', benchmark: { id: 'self-contained-fixture', revision: 'v1' },
     adapter: { id: 'fixture', revision: 'v1', output_protocol: 'gear-harbor-eval-result-v1' },
+    raw_metrics: { schema_version: '1', metrics: [{ id: 'pass_rate', revision: '1', unit: 'ratio', direction: 'maximize',
+      source: { path: 'scores.totalScore', extractor: 'equals-v1', equals: 1 }, range: { min: 0, max: 1 },
+      granularity: 'trial', repetitionReducer: 'mean', taskReducer: 'weighted-mean', comparisonPrecision: 1e-9 }] },
     scoring: { total_score: { ...score, source_metric: 'completion' }, ...(process ? { process_score: { ...score, source_metric: 'partial_credit' } } : {}) }, tasks }
   await writeFile(join(ref, 'benchmark.adapter.json'), JSON.stringify({ ...manifest, dataset_digest: digestJson(manifest) }))
   return { ref, digest: await digestDatasetRef(ref) }

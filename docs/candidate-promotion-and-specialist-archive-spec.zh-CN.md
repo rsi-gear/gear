@@ -5,6 +5,10 @@
 - 设计依据：Gear 搜索与评测接口及 GEPA 任务专长前沿机制。
 - 文中的 MUST / MUST NOT 是验收要求；SHOULD 是允许说明理由后调整的建议。
 
+目标扩展：[Refine 原始指标与加权优化目标规范](refine-objective-spec.zh-CN.md) 要求完整保留各种原始得分与 usage，再由用户在 Refine 启动时直接定义加权 objective，默认通过率，也可配置 `0.5 × pass_rate + 0.5 × process_score`。改变权重无需修改 benchmark 或预先定义 profile。启用该版本后，本文的前沿、诊断、排序和晋级使用封存目标；原始指标含义、显式约束、证据隔离及旧 sealed evolution 保持原合同。V1 已实现于 `failure-cluster-gepa-v1`，使用方式见[加权目标指南](refine-objectives.zh-CN.md)。
+
+SoL-Pi 式优化通过费用、token、耗时等普通原始指标接入同一加权机制，需要质量保持时由用户显式配置约束。`objective_score` 独立派生，不覆盖原 process_score，不裁剪未选中的原始指标；父代选择和晋级消费相同目标投影。完整兼容的原始证据可按新权重重算，新目标不能复用旧排名或晋级决定。
+
 ## 1. 决策摘要
 
 新增显式启用的 `failure-cluster-gepa-v1` 搜索模式，将四个问题分别建模：

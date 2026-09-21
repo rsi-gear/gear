@@ -49,6 +49,13 @@ not infer missing field names or harness APIs from errors.
    continuation must name the evolution explicitly.
 2. Call `control.start` or `control.continue`, then poll `control.status` and
    `meta.claim`. Baseline evaluation can finish before an assignment appears.
+   Translate optimization preferences into `control.start.objective.terms` and
+   optional explicit constraints. For example, equal pass/process weights are
+   two terms with weight 0.5; cost/token penalties use negative weights and fixed
+   scales in their original units. Do not put a different objective only in the
+   prompt, invent a metric, infer passes from positive rewards, or alter the
+   objective during search. Omission means strict pass rate. Check the returned
+   `resolvedObjective`; inspect available raw metrics if admission rejects a term.
 3. Treat the returned lease id, token, session id, candidate id, and (for CLI
    clients) client id as one inseparable capability. Never reuse them for
    another assignment.
@@ -69,7 +76,13 @@ not infer missing field names or harness APIs from errors.
    `experience.query` and `experience.read` for focused history. Historical
    `experienceRef` values never belong in `evidenceRefs` and never satisfy the
    active baseline diagnosis requirement.
-6. Review the baseline summary. If the assignment contains `workplanDelivery`,
+6. Review the baseline summary. Also read `baseline.rawMetrics` and
+   `baseline.objectiveScore` when present:
+   the raw scores, units and contributions explain the frozen objective. A
+   successful but expensive task can still warrant an improvement. State which
+   measured term the proposal is expected to improve and verify its explicit
+   constraints. Never replace a missing metric with zero or change the weights.
+   If the assignment contains `workplanDelivery`,
    consume its hypothesis, parent identity, sourced dossier excerpt, scope guards,
    generation budget, and seed-only findings first. Keep modifications within
    `workplan.modificationPaths` (paths relative to the harness root), or explicitly

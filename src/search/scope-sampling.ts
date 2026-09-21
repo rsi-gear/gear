@@ -32,6 +32,9 @@ export function samplingEvidence(universe: TaskUniverse, cutoffDigest: string, c
     }
   }
   for (const task of universe.tasks) {
+    // Unbounded weighted objectives have no implicit success threshold. Do not
+    // bias their scope sampling with the legacy outcome-only difficulty score.
+    if (universe.objective) continue
     const versions = new Map<string, EvidenceCell[]>()
     for (const cell of cells.values()) if (cell.identity.taskId === task.id) {
       const version = digestJson([cell.identity.harnessCommit, cell.identity.harnessManifestDigest])

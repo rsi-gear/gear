@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import type { EvaluationCondition, EvaluationEvidence, EvaluationRequest, EvaluationReservation, EvaluationSubmissionIntent, EvolutionSpec, HarnessManifest, HitchTrajectoryReader, RefineEvaluator, RefinementRound } from '../types.js'
+import type { EvaluationCondition, EvaluationEvidence, EvaluationRequest, EvaluationReservation, EvaluationSubmissionIntent, EvolutionSpec, HarnessManifest, HitchTrajectoryReader, HitchVerifierEvidence, RefineEvaluator, RefinementRound } from '../types.js'
 import { digestJson } from '../state/digest.js'
 import { digestDatasetRef } from '../state/dataset.js'
 import { describeDataset, projectDataset, type DatasetDescription } from './dataset-projection.js'
@@ -8,6 +8,9 @@ import { digest, invariant, numeric, seal, sorted, utility, verifyDigest } from 
 import { SearchStore } from './store.js'
 import { SearchExecutionFailure } from './recovery.js'
 import type { CellIdentity, DiagnosisFact, DiagnosisProvider, EvidenceCell, ExternalRecovery, EvaluationExecutionResult, SearchProvider, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from './types.js'
+import { extractRawMetrics } from '../objective/scoring.js'
+import { objectiveProfile } from './objective.js'
+import { objectiveFormula } from '../objective/contracts.js'
 
 type Input = Parameters<SearchProvider['evaluate']>[0]
 type ExecutionIdentity = NonNullable<Awaited<ReturnType<NonNullable<RefineEvaluator['evaluationIdentity']>>>>
@@ -19,6 +22,7 @@ interface Batch {
 }
 interface Source {
   batch: Batch; executionIdentity: ExecutionIdentity; submittedIdentity?: SubmittedIdentity; evidence: EvaluationEvidence; completedAt: string; cells: EvidenceCell[]; digest: string
+  verifierArtifactRefs?: Record<string, string>
 }
 interface Operation { submittedIdentity?: SubmittedIdentity; reservation?: EvaluationReservation; reserving?: boolean; started: boolean; sourceDigest?: string }
 export interface EvaluationSearchOptions {
@@ -32,7 +36,7 @@ export interface EvaluationSearchOptions {
 /** Gear owns task selection, cache identity and staging. The evaluator receives ordinary requests. */
 export class EvaluationSearchAdapter implements SearchProvider {
   readonly integrity = digestJson({ implementation: 'gear-existing-evaluator-search', revision: 5 })
-  readonly capabilities = { taskSubsetPlans: true, batchIndependentCells: true, idempotentExecution: true }
+  readonly capabilities = { taskSubsetPlans: true, batchIndependentCells: true, idempotentExecution: true, objectives: 1 as const }
   readonly store: SearchStore
   readonly diagnosis: DiagnosisProvider
   private readonly datasets = new Map<string, Promise<DatasetDescription>>()
@@ -60,6 +64,12 @@ export class EvaluationSearchAdapter implements SearchProvider {
     let value = this.datasets.get(partition)
     if (!value) { value = describeDataset(this.options.spec, partition, this.options.workspaceRoot); this.datasets.set(partition, value) }
     const source = await value, round = this.options.identityRound
+    if (source.universe.objective) {
+      const required = new Set([...source.universe.objective.terms.filter(t => t.weight !== 0).map(t => t.metric), ...source.universe.objective.constraints.map(c => c.metric)])
+      if (source.universe.rawMetricContracts?.some(c => required.has(c.id) && c.source.path.startsWith('verifier.'))) {
+        invariant(typeof (this.evaluator as Partial<HitchTrajectoryReader>).inspectVerifierEvidence === 'function', 'verifier metric sources require the verifier evidence capability')
+      }
+    }
     const condition = partition === 'seed' ? round.plan.seed : round.plan.heldOut
     const request: EvaluationRequest = { phase: partition === 'seed' ? 'seed-baseline' : 'held-out-baseline',
       dataset: condition.dataset.ref, harnessRef: round.targetHarnessRef, condition }
@@ -111,7 +121,7 @@ export class EvaluationSearchAdapter implements SearchProvider {
     return prepared.batches
   }
 
-  private async source(batch: Batch, evidence: EvaluationEvidence, submittedIdentity?: SubmittedIdentity): Promise<Source> {
+  private async source(batch: Batch, evidence: EvaluationEvidence, signal: AbortSignal, submittedIdentity?: SubmittedIdentity): Promise<Source> {
     await this.verifyBatch(batch)
     invariant(evidence.requestedCommit === batch.request.harnessRef && evidence.actualCommit === batch.request.harnessRef
       && evidence.dataset === batch.request.dataset && evidence.conditionId === batch.request.condition.conditionId, 'evaluation evidence does not match its frozen request')
@@ -131,20 +141,44 @@ export class EvaluationSearchAdapter implements SearchProvider {
     const saved = await this.store.freezeEvolution(`evaluator-result-${batch.key.slice(7)}`, () => seal({ evidence, completedAt: new Date().toISOString() }))
     invariant(digestJson(saved.evidence) === digestJson(evidence), 'settled evaluation changed during result recovery')
     const completedAt = saved.completedAt
+    const universe = (await this.dataset(batch.request.condition.partition)).universe
+    const verifierArtifacts = new Map<string, { evidence: HitchVerifierEvidence; digest: string }>()
+    const reader = this.evaluator as Partial<HitchTrajectoryReader>
+    // Preserve full verifier results and rubric evidence for every run, including
+    // successful runs and fields the current objective does not select.
+    if (universe.rawMetricContracts && reader.inspectVerifierEvidence) for (const row of rows) {
+      signal.throwIfAborted()
+      const artifact = await this.store.freezeEvolution(`verifier-${digestJson(row.runId!).slice(7)}`, async () => {
+        const original = await reader.inspectVerifierEvidence!(row.runId!, signal)
+        invariant(original.runId === row.runId, 'raw verifier artifact does not match its run')
+        invariant(!original.parent || original.parent.evalId === evidence.evalId && original.parent.trialId === row.trialName && original.parent.attempt === row.attempt,
+          'raw verifier artifact does not match its trial/attempt')
+        return seal({ evidence: original })
+      })
+      verifierArtifacts.set(row.runId!, artifact)
+    }
     const cells = batch.cells.map(identity => {
       const trial = evidence.trials.find(t => t.taskName === identity.taskId), invalid = evidence.invalidTrials.find(t => t.taskName === identity.taskId)
       const evidenceRef = (trial ?? invalid)!.runId!
       const raw = trial?.scores?.totalScore
       const process = trial?.scores?.processScore
+      const artifact = verifierArtifacts.get(evidenceRef), verifier = artifact?.evidence.verifier
       const available = raw !== undefined && Number.isFinite(raw) && (!identity.processContractDigest || process !== undefined && Number.isFinite(process))
+        && verifier?.status !== 'corrupt' && artifact?.evidence.observation?.status !== 'invalid'
+      const rawMetrics = universe.rawMetricContracts && extractRawMetrics({ contracts: universe.rawMetricContracts,
+        trial: { ...(trial ?? invalid), ...(artifact?.evidence.observation?.status === 'valid' && (verifier?.status === 'complete' || verifier?.status === 'result_only') ? { verifier } : {}) },
+        certified: available, identity: { taskId: identity.taskId, repetition: identity.repetition, runId: evidenceRef, attempt: (trial ?? invalid)!.attempt!,
+          harnessCommit: identity.harnessCommit, conditionDigest: identity.conditionDigest, originalArtifactRefs: [saved.digest, ...(artifact ? [artifact.digest] : [])] } })
       return seal({ identity, status: available ? 'available' : 'invalid', envelope: 'legacy-v1', outcomeCertified: available,
+        ...(rawMetrics ? { rawMetrics } : {}),
         outcome: available ? { status: 'available', rawValue: raw, contractDigest: identity.outcomeContractDigest, evidenceRef }
           : { status: 'invalid', contractDigest: identity.outcomeContractDigest, reason: invalid?.invalidReason ?? 'legacy observation lacks declared scores' },
         ...(identity.processContractDigest ? { process: process !== undefined && available ? { status: 'available', rawValue: process, contractDigest: identity.processContractDigest, evidenceRef }
           : { status: 'invalid', contractDigest: identity.processContractDigest, reason: invalid?.invalidReason ?? 'legacy process unavailable' } } : {}),
         evidenceRef, completedAt } as Omit<EvidenceCell, 'digest'>)
     })
-    const source = seal({ batch, executionIdentity, ...(submittedIdentity ? { submittedIdentity } : {}), evidence, completedAt, cells })
+    const source = seal({ batch, executionIdentity, ...(submittedIdentity ? { submittedIdentity } : {}), evidence, completedAt, cells,
+      ...(universe.rawMetricContracts ? { verifierArtifactRefs: Object.fromEntries([...verifierArtifacts].map(([run, artifact]) => [run, artifact.digest])) } : {}) })
     await this.store.put(source)
     for (const cell of cells) {
       await this.store.write(`evaluator-cells/${cellKey(cell.identity).slice(7)}`, { ref: source.digest })
@@ -201,7 +235,7 @@ export class EvaluationSearchAdapter implements SearchProvider {
       if (inspection.status === 'failed') throw new SearchExecutionFailure(inspection.code, inspection.message, operation.reservation.evalId)
       if (inspection.status !== 'complete') return inspection.status === 'running' ? { status: 'running', handle: operation.reservation.evalId }
         : { status: 'unknown', ...(inspection.reason ? { reason: inspection.reason } : {}) }
-      const source = await this.source(batch, inspection.evidence, operation.submittedIdentity)
+      const source = await this.source(batch, inspection.evidence, signal, operation.submittedIdentity)
       await this.store.write(path, { ...operation, sourceDigest: source.digest })
       return { status: 'complete', result: { cells: source.cells } }
     }
@@ -223,7 +257,7 @@ export class EvaluationSearchAdapter implements SearchProvider {
     await this.store.write(path, operation)
     const evidence = await this.evaluator.evaluate(batch.round, batch.request, signal, operation.reservation)
     if (operation.reservation) invariant(evidence.evalId === operation.reservation.evalId && evidence.provider === operation.reservation.provider, 'evaluation reservation changed')
-    const source = await this.source(batch, evidence, operation.submittedIdentity)
+    const source = await this.source(batch, evidence, signal, operation.submittedIdentity)
     await this.store.write(path, { ...operation, sourceDigest: source.digest })
     return { status: 'complete', result: { cells: source.cells } }
   }
@@ -301,6 +335,16 @@ export class EvaluationSearchAdapter implements SearchProvider {
     const reader = this.evaluator as RefineEvaluator & Partial<HitchTrajectoryReader>
     const facts: DiagnosisFact[] = [], manifest = await this.options.manifest(input.snapshot)
     const paths = sorted(manifest.artifacts.map(a => a.path.split('/')[0]!).filter(p => p !== 'manifest.json'))
+    if (input.universe.objective && paths.length) for (const taskId of input.taskIds) {
+      const projected = objectiveProfile(input.universe, [taskId], input.cells)
+      if (!projected.objectiveComplete) continue
+      const objective = input.universe.objective, evidenceRefs = sorted(input.cells.filter(c => c.identity.taskId === taskId).map(c => c.evidenceRef))
+      const terms = projected.objectiveScore!.contributions.filter(c => c.weight !== 0).map(c => `${c.metric}: raw=${projected.rawMetrics![c.metric]!.value} ${projected.rawMetrics![c.metric]!.unit}, contribution=${c.contribution}`).join('; ')
+      facts.push({ taskId, evidenceRefs, status: 'supported-hypothesis', familyId: `objective-${objective.digest.slice(7, 23)}`, modificationPaths: paths,
+        hypothesis: `Improve the frozen objective ${objectiveFormula(objective)}. Inspect this seed trajectory for changes to the measured terms (${terms}); verify the proposed mechanism and all explicit constraints.`,
+        mechanism: 'A complete raw-metric observation supports investigating weighted objective contributions, including successful but expensive trials.',
+        submode: 'objective-contributions', objectiveEvidence: projected.objectiveScore! })
+    }
     for (const cell of input.cells) {
       input.signal.throwIfAborted()
       const task = input.universe.tasks.find(t => t.id === cell.identity.taskId)!

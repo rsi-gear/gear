@@ -49,7 +49,7 @@ export function finalizationReadiness(
       nextActions: [] }
   }
   const required = baseline.trials
-    .filter(trial => (reward(trial.rewards) ?? 0) <= 0 && trial.runId !== undefined)
+    .filter(trial => (trial.passStatus !== undefined ? trial.passStatus === 'failed' : (reward(trial.rewards) ?? 0) <= 0) && trial.runId !== undefined)
     .map(trial => {
       const trialReward = reward(trial.rewards)
       return {

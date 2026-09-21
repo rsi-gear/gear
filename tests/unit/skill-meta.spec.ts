@@ -104,6 +104,18 @@ describe('Skill harness identity', () => {
     expect(coordinator.pending()).toEqual([])
   })
 
+  it('parses, defaults and freezes inline objective requests at the gateway boundary', async () => {
+    const admit = vi.fn(async () => ({ status: 'queued' })), continuation = vi.fn()
+    const gateway = new RefineSkillGateway({ admit, continueEvolution: continuation } as never, new SkillMetaCoordinator(), {} as never, {} as never)
+    await gateway.call('control.start', { objective: { terms: [{ metric: 'api_cost_usd', weight: -.1, scale: 2 }, { metric: 'pass_rate', weight: .5 }] } })
+    expect(admit).toHaveBeenCalledWith('skill', { objective: { terms: [{ metric: 'api_cost_usd', weight: -.1, scale: 2 }, { metric: 'pass_rate', weight: .5, scale: 1 }], constraints: [] } })
+    await expect(gateway.call('control.start', { objective: 'pass_rate' })).rejects.toThrow('object')
+    await expect(gateway.call('control.start', { objective: { terms: [{ metric: 'pass_rate', weight: 0 }] } })).rejects.toThrow('all be zero')
+    await expect(gateway.call('control.continue', { evolutionId: 'e', objective: { terms: [{ metric: 'pass_rate', weight: 1 }] } })).rejects.toThrow('frozen objective')
+    expect(continuation).not.toHaveBeenCalled()
+    expect(admit).toHaveBeenCalledTimes(1)
+  })
+
   it('parses and forwards only the supported baseline source selection', async () => {
     const admit = vi.fn(async () => ({ status: 'queued' }))
     const gateway = new RefineSkillGateway({ admit } as never, new SkillMetaCoordinator(), {} as never, {} as never)
@@ -111,6 +123,7 @@ describe('Skill harness identity', () => {
       baselineSource: { evolutionId: 'source-evolution', roundId: 'source-round', partitions: ['seed', 'held-out'] },
     })
     expect(admit).toHaveBeenCalledWith('skill', {
+      objective: { terms: [{ metric: 'pass_rate', weight: 1, scale: 1 }], constraints: [] },
       baselineSource: {
         evolutionId: 'source-evolution', roundId: 'source-round', partitions: ['seed', 'held-out'],
       },

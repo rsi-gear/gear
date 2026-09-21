@@ -29,14 +29,22 @@ function requiredString(value, key, label = 'value') {
 }
 function message(error) { return error instanceof Error ? error.message : String(error) }
 function missing(error) { return typeof error === 'object' && error !== null && error.code === 'ENOENT' }
-function safe(value, secrets = []) {
+function rawMetric(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && /^sha256:[a-f0-9]{64}$/u.test(value.contractDigest ?? '') && typeof value.unit === 'string'
+    && ['available', 'missing', 'invalid', 'unsupported'].includes(value.status)
+    && (value.status !== 'available' || Number.isFinite(value.value))
+    && Array.isArray(value.evidenceRefs) && value.evidenceRefs.every(ref => /^sha256:[a-f0-9]{64}$/u.test(ref))
+    && Object.keys(value).every(key => ['contractDigest', 'unit', 'status', 'value', 'reason', 'evidenceRefs', 'observationTotal', 'observationTotalExact'].includes(key))
+}
+function safe(value, secrets = [], context) {
   if (typeof value === 'string') {
     return secrets.reduce((text, secret) => text.split(secret).join('[REDACTED]'), value)
   }
   if (Array.isArray(value)) return value.map(item => safe(item, secrets))
   if (typeof value !== 'object' || value === null) return value
   return Object.fromEntries(Object.entries(value).flatMap(([key, item]) =>
-    SENSITIVE_KEY.test(key) ? [] : [[key, safe(item, secrets)]],
+    SENSITIVE_KEY.test(key) && !(context === 'rawMetrics' && rawMetric(item)) ? [] : [[key, safe(item, secrets, key)]],
   ))
 }
 export function refineTransportPaths(runDirectory) {

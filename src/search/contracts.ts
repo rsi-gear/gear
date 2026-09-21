@@ -3,6 +3,7 @@ import { digestJson } from '../state/digest.js'
 import { searchImplementationIntegrity } from './identity.js'
 import { validateSearchSchema } from './schema.js'
 import type { EvaluationScope, MetricContract, MetricObservation, SearchSettings, Snapshot, TaskSetResolution, TaskSetSizing, TaskUniverse } from './types.js'
+import { resolveMetric, resolveObjective } from '../objective/contracts.js'
 
 export const integrity = searchImplementationIntegrity
 export function seal<T extends object>(value: T): T & { digest: string } { return { ...value, digest: digestJson(value) } }
@@ -84,6 +85,21 @@ export function validateMetric(contract: MetricContract): void {
 export function validateUniverse(universe: TaskUniverse): void {
   validateSearchSchema('TaskUniverse', universe)
   verifyDigest(universe); digest(universe.conditionDigest)
+  if (universe.rawMetricContracts) {
+    invariant(new Set(universe.rawMetricContracts.map(c => c.id)).size === universe.rawMetricContracts.length, 'duplicate raw metric contract')
+    for (const c of universe.rawMetricContracts) {
+      verifyDigest(c)
+      const { schemaVersion, digest: ignored, ...definition } = c
+      invariant(schemaVersion === 1 && resolveMetric(definition).digest === c.digest, 'invalid raw metric contract')
+    }
+  }
+  if (universe.objective) {
+    invariant(universe.rawMetricContracts, 'objective requires raw metric contracts')
+    const o = universe.objective
+    const resolved = resolveObjective({ terms: o.terms.map(({ metric, weight, scale }) => ({ metric, weight, scale })),
+      constraints: o.constraints.map(c => c.rule === 'minimum' ? { metric: c.metric, rule: c.rule, value: c.value } : { metric: c.metric, rule: c.rule, reference: c.reference, tolerance: c.tolerance }) }, universe.rawMetricContracts)
+    invariant(resolved.digest === o.digest, 'objective definition changed')
+  }
   invariant(['seed', 'held-out'].includes(universe.partition), 'invalid partition')
   invariant(universe.tasks.length > 0, 'empty task universe')
   invariant(unique(universe.tasks.map(t => t.id)).length === universe.tasks.length, 'duplicate task IDs')
@@ -124,6 +140,7 @@ export function plannedCellCount(universe: TaskUniverse, taskIds: readonly strin
   return taskIds.reduce((sum, id) => sum + repetitionsForTask(universe, id).length, 0)
 }
 export function processTasks(universe: TaskUniverse, mode: 'off' | 'auto' | 'required'): string[] {
+  if (universe.objective) mode = 'auto'
   if (mode === 'off') return []
   const ids = universe.tasks.filter(t => t.process && t.process.granularity !== 'dataset-aggregate').map(t => t.id)
   invariant(mode !== 'required' || ids.length > 0, 'required process metrics are unsupported')
@@ -207,7 +224,8 @@ export function validateSettings(settings: SearchSettings, universe: TaskUnivers
   validateUniverse(universe); validateUniverse(heldOut)
   invariant(universe.partition === 'seed' && heldOut.partition === 'held-out', 'incorrect task partitions')
   resolveSizing(universe, s.taskSetSizing)
-  processTasks(universe, s.process.mode); processTasks(universe, p.process.mode); processTasks(heldOut, p.process.mode)
+  if (!universe.objective) { processTasks(universe, s.process.mode); processTasks(universe, p.process.mode); processTasks(heldOut, p.process.mode) }
+  invariant(universe.objective?.digest === heldOut.objective?.digest, 'seed/held-out objective semantics differ')
   invariant(p.policy === 'paired-multisignal-v1' && ['independent-held-out', 'shared-set-research'].includes(p.validationMode), 'invalid promotion policy')
   if (p.validationMode === 'independent-held-out') {
     const identities = new Set(universe.tasks.map(t => t.contentDigest))
@@ -215,13 +233,14 @@ export function validateSettings(settings: SearchSettings, universe: TaskUnivers
   }
   invariant(typeof p.allowNeutral === 'boolean', 'invalid neutral promotion rule')
   invariant(p.allowSharedSetPromotion === undefined || typeof p.allowSharedSetPromotion === 'boolean', 'invalid shared-set promotion authorization')
-  for (const threshold of [p.outcome, p.process, ...Object.values(p.process.groups ?? {})]) {
+  for (const threshold of [p.outcome, p.process, ...Object.values(p.process.groups ?? {}), ...(p.objective ? [p.objective] : [])]) {
     for (const value of [threshold.minimumGain, threshold.maxSeedRegression, threshold.maxHeldOutRegression]) invariant(Number.isFinite(value) && value >= 0, 'invalid promotion threshold')
   }
   const groups = unique([universe, heldOut].flatMap(u => u.tasks.filter(t => processTasks(u, p.process.mode).includes(t.id)).map(t => t.process!.group)))
-  if (groups.length > 1) invariant(groups.every(g => p.process.groups?.[g]), 'heterogeneous process metrics require explicit group thresholds')
+  if (!universe.objective && groups.length > 1) invariant(groups.every(g => p.process.groups?.[g]), 'heterogeneous process metrics require explicit group thresholds')
   for (const guard of [...s.explorationGuards, ...p.protectedTasks]) {
     const u = guard.partition === 'seed' ? universe : heldOut
+    if (u.objective) invariant(u.rawMetricContracts?.some(c => c.id === (guard.rule === 'must-pass' ? 'pass_rate' : guard.metric) && c.granularity === 'trial'), 'objective task guards require an explicit raw metric binding or a pass predicate')
     invariant(u.tasks.some(t => t.id === guard.taskId) && ['no-regression', 'minimum-score', 'must-pass'].includes(guard.rule), 'invalid protected task')
     if (guard.rule === 'minimum-score') finite(guard.minimumUtility!, 'guard minimum')
   }

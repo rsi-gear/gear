@@ -42,6 +42,15 @@ function audit(overrides: Partial<ProposalEvidenceAudit> = {}): ProposalEvidence
 }
 
 describe('finalization readiness', () => {
+  it('uses declared pass status even when reward is positive and leaves unknown pass status unavailable', () => {
+    const evidence = baseline(3)
+    evidence.trials[0] = { ...evidence.trials[0]!, rewards: { reward: 0.6 }, passStatus: 'failed' }
+    evidence.trials[1] = { ...evidence.trials[1]!, passStatus: 'passed' }
+    evidence.trials[2] = { ...evidence.trials[2]!, passStatus: 'unavailable' }
+    const readiness = finalizationReadiness(evidence, audit())
+    expect(readiness.failedRunCount).toBe(1)
+    expect(readiness.missing).toMatchObject([{ taskName: 'task-01', reward: 0.6 }])
+  })
   it('returns task-labelled executable actions in complete batches', () => {
     const readiness = finalizationReadiness(baseline(11), audit())
     expect(readiness).toMatchObject({

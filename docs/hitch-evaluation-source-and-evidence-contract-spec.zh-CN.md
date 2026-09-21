@@ -2,6 +2,8 @@
 
 状态：V1 实现待评审
 
+目标扩展：第 7.4 节定义 V1 已实现的完整 `raw_metrics` 保留与独立 `objective_score` 证据。Refine 启动时直接传入目标权重及可选固定 scale，不要求 benchmark 预定义评分 profile；SoL-Pi 式成本、token 与时延优化使用同一合同。原有 V1 verifier、`total_score`、`process_score` 与 assertion component 保持原义。
+
 适用仓库：Gear、agent-hitch、各 benchmark adapter
 
 目标读者：benchmark adapter、Harbor/Hitch evaluator、Gear refinement 维护者
@@ -249,6 +251,10 @@ Compiler 必须从 package manifest 的 `primary_metric` 生成 `total_score` �
 - Gear 不得把 `total_score` 复制为缺失的 `process_score`；
 - reducer 在 dataset 级别分别计算存在的指标，不能先混合两个指标。
 
+后续 [Refine 优化目标规范](refine-objective-spec.zh-CN.md) 允许在 Refine 启动时直接传入 `objective.terms`，例如 `0.5 × pass_rate + 0.5 × process_score`。benchmark/adapter 负责声明原始指标的身份、单位、来源、聚合和有效性，不必预先定义评分组合。目标分另存为 `objective_score`，不得覆盖或重命名本节的 `total_score`、`process_score` 与通过状态。
+
+第 7.4 节定义完整原始指标与派生结果的证据合同。所有实际产生的原始分数、usage 及其原始产物必须保留，不因未被选中或权重为零而裁剪；原始指标按各自合同分别聚合，Refine 依据启动时传入并封存的权重、固定线性 scale 和显式约束计算目标分。
+
 ### 7.2 过程得分组件
 
 `process.json` 只在 `reward.json.process_score` 存在时出现：
@@ -335,6 +341,130 @@ Feedback 是解释和诊断，不是分数。语义上必须区分：
 
 禁止用 LLM 在 verifier 内临时生成不可复现 feedback。V1 feedback 必须由确定性规则
 或 verifier 已有结构化结果产生。
+
+### 7.4 完整原始指标与 Refine 目标分（V1）
+
+benchmark/adapter 声明原始指标的 identity、单位、来源、聚合方式、适用范围与有效性，Refine 启动时直接接收优化目标。benchmark 不需要预定义评分 profile，公式也不隐藏在 benchmark 名称后。具体请求与生命周期见 [Refine 优化目标规范](refine-objective-spec.zh-CN.md)。
+
+所有实际产生的原始分数、usage 及原始产物完整保留在独立 `raw_metrics` 证据中；未选中指标和零权重指标也不得丢弃。派生目标分写入单独的 `objective_score.json` artifact，不覆盖 `reward.json.total_score`、`reward.json.process_score`、原 partial、通过状态或原始 usage。现有 `ProcessScoreEvidenceV1` 与 `ProcessComponentV1` 保持原义，不要求改造为连续评分组件。
+
+`control.start` 参数示例：
+
+```json
+{
+  "objective": {
+    "terms": [
+      { "metric": "pass_rate", "weight": 0.5 },
+      { "metric": "process_score", "weight": 0.5 }
+    ]
+  }
+}
+```
+
+每项还可声明固定 `scale`。省略整个 objective 时，新建 evolution 使用 `terms: [{ metric: 'pass_rate', weight: 1 }]`；省略某项 scale 时使用 1，单位与该原始指标相同。目标方向统一为 maximize：
+
+```text
+S = Σ weight_i × (m_i / scale_i)
+scale_i 为有限正数；weight_i 为有限实数，允许负数
+```
+
+terms 必须非空、metric 不重复、权重不能全零。权重不要求和为 1，不自动归一化；负权重直接表达对费用、token 或时延的惩罚，不根据指标名称另行翻转符号。目标分不必落在 `[0,1]`，也不做 clipping。V1 只支持上述线性定标，不接收非线性转换、动态 scale、任意表达式或脚本。`pass_rate` 必须有明确通过判定，不能根据 `[0,1]` 范围或 `reward > 0` 推断。
+
+SoL-Pi 式优化使用普通 raw metric，例如：
+
+```json
+{
+  "objective": {
+    "terms": [
+      { "metric": "pass_rate", "weight": 0.5 },
+      { "metric": "process_score", "weight": 0.5 },
+      { "metric": "api_cost_usd", "weight": -0.1, "scale": 1 },
+      { "metric": "total_tokens", "weight": -0.1, "scale": 100000 }
+    ]
+  }
+}
+```
+
+该例的指标 ID、权重和 scale 仅用于说明，必须解析到真实 metric contract；不要求所有 benchmark 提供这些指标。latency 可用相同方式纳入。SoL-Pi 不再对应固定乘法、效率变换或伪装的 `process_score`。加权分允许质量与消耗交换；用户需要质量守门时，在 objective 的 `constraints` 中显式声明原 `pass_rate` 或 `process_score` 的要求与比较基准。不自动添加质量约束，也不能声称该公式保证质量不回退或零进展不得高分。
+
+指标聚合规则由各自的 metric contract 固定，不随 objective 改变。支持 staged 搜索的目标必须提供兼容共同任务/重复槽位范围的逐 trial、逐任务均值宏平均证据；先按合同聚合同任务重复，再按冻结任务权重形成当前 scope 的指标值 `m_i`，最后线性求和。相同 scope 内可以生成等价的逐任务目标投影，但不同 scope 的局部均值不能直接排名。原始 token/费用/耗时 totals 仍完整保存，不能把总量改名冒充每任务均值；只有 dataset 总量或不兼容 reducer 的指标应拒绝该 staged 用法，不伪造逐任务证据。
+
+证据分为两个独立 artifact。以下结构仅示意边界；`ObjectiveDefinitionV1` 使用目标规范中的完整定义，包含 terms 和可选 constraints：
+
+```ts
+interface RawMetricsEvidenceV1 {
+  schema_version: '1'
+  kind: 'raw-metrics'
+  scope_digest: string
+  original_artifact_refs: string[] // 完整原始评分、usage、明细及来源
+  metrics: Array<{
+    id: string
+    contract_digest?: string // 未声明的原始字段仍保留，但不能直接用于评分
+    status: 'available' | 'missing' | 'invalid' | 'unsupported'
+    unit?: string
+    observations: Array<{
+      task_id: string
+      repetition: number
+      run_id: string
+      attempt: number
+      value: number
+      evidence_refs: string[]
+    }>
+    aggregate_value?: number
+    aggregate_evidence_refs: string[]
+  }>
+}
+
+interface ObjectiveScoreEvidenceV1 {
+  schema_version: '1'
+  kind: 'refine-objective-score'
+  objective: ObjectiveDefinitionV1
+  objective_digest: string
+  projector_digest: string
+  status: 'available' | 'missing' | 'invalid'
+  score?: number // 所需输入完整有效时存在；约束失败不改写分数
+  scope: {
+    task_manifest_digest: string
+    repetition_manifest_digest: string
+    condition_digest: string
+    harness_commit: string
+  }
+  raw_metrics_refs: string[]
+  inputs: Array<{
+    metric: string
+    contract_digest: string
+    raw_input_refs: string[]
+    value?: number
+  }>
+  contributions: Array<{
+    metric: string
+    weight: number
+    scale: number
+    scaled_value?: number
+    contribution?: number
+  }>
+  constraint_results: Array<{
+    constraint_digest: string
+    reference_digest?: string
+    status: 'passed' | 'failed' | 'unavailable'
+    evidence_refs: string[]
+  }>
+}
+```
+
+合同要求：
+
+- `raw_metrics` 与原始 artifact 的保留不依赖 objective。实际产生的原始 total/process、其他评分、通过判定、全部 usage 桶、费用与耗时数据均须保留；不是只抽取本次参与公式的列。缺失、无效或不支持的状态也保留，不写假数值。未知原始字段保留来源但不可未经声明直接评分，原始敏感证据的访问与脱敏边界不因保留要求扩大。
+- 每条已声明 metric 的身份包含单位、来源提取器、计量范围、聚合与有效性合同。每条 observation 绑定任务、逻辑 repetition、run/attempt 和不可变原始 artifact digest；原始 totals 与其均值投影有各自明确来源及聚合说明。scale 仅定标，不修改原始值、单位或聚合语义。
+- 新建 evolution 时封存传入或默认解析的 objective，包括正负权重、scale、约束、比较精度和投影实现身份。scale 不能从当前候选 min/max、champion 或后续结果动态计算。目标变化需新 evolution；旧 sealed evolution 缺少新字段时维持原评分行为，不解释为新默认值。
+- scope 内任何非零权重项或约束所需指标 missing/invalid 时，目标证据不完整，不填零、不删任务、不忽略该项或重分权。未选中或权重为零且未用于约束的指标缺失，只保留其状态，不阻止目标计算；零权重不代表可伪造其 scaled value。已有 V1 envelope 将整条 observation 判为 invalid 时，不能从中抢救未经独立认证的指标。
+- `inputs`、`contributions` 和 `score` 必须能由冻结 objective、metric contracts 与原始证据重算。约束完整且判为 failed 时，目标分仍可有效，候选不能绕过显式约束晋升；约束证据缺失与约束未通过必须区分。
+- 费用、token 与时延都作为有合同的普通 raw metric 保存。若参与目标或约束，证据须覆盖声明范围内的主模型、辅助模型、摘要/压缩与内部重试；计费模型、价格快照、token 桶、wall-clock 边界及基础设施修复费用归属均须可核验。真实费用与 API 等价估算明确区分；缺失 usage 不当零消耗，也不能挑选最便宜的运行替代既有有效槽位。
+- 独立目标 artifact 在所需原始证据完整后由版本化投影器生成。若 usage 在 Target 结束后才收齐，可在原 verifier 之后评分；不要求任务 verifier 读取 Gear 控制状态，不按 benchmark 名称增加隐藏分支。
+- 接入通过显式 schema 与能力核验。无法理解 objective 定义、metric contract 或目标分 artifact 的消费者必须拒绝该评分路径，不得静默忽略权重、退回 `total_score` 或覆盖 `process_score`；不启用扩展的旧 V1 路径保持原行为。
+- 更换 objective 时，兼容、完整、可验证的原始 baseline/candidate 指标与 usage 可在新 evolution 中重算目标分，不要求改写 V1 verifier 证据或重跑未变的任务。缺少所需原始指标则不能复用为有效新目标；旧 objective_score、排名、archive 派生视图与晋级决定不得改写或跨目标身份复用。仅改变 objective 不改变 task/verifier 字节；原始 metric contract 改变时须按其版本身份重新核验。
+
+验收至少覆盖：默认通过率、直接传入 `0.5 × pass_rate + 0.5 × process_score`、负费用/token 权重、固定 scale、拒绝全零权重和重复 metric、不自动归一化、未选原始指标完整保留、未选项缺失不阻止目标、选中项或约束缺失拒绝评分、原始 totals 与宏平均区分、显式质量约束、未知定义/artifact 拒绝、原 V1 证据重新评分及旧结果不变。
 
 ## 8. Benchmark 映射
 

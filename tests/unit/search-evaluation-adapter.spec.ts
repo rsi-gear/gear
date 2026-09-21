@@ -17,6 +17,8 @@ import { settings, fixtures } from '../helpers/search-fixture.js'
 import { evolutionSpec, roundFixture } from '../helpers/research-fixture.js'
 import { standardSearchDataset } from '../helpers/standard-search-dataset.js'
 import type { EvaluationExecutionResult, Snapshot } from '../../src/search/types.js'
+import { resolveObjective } from '../../src/objective/contracts.js'
+import { objectiveProfile } from '../../src/search/objective.js'
 
 const roots: string[] = []
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
@@ -63,6 +65,98 @@ async function setup(process = true, repetitions = 1, deferred = false, taskCoun
 }
 
 describe('Gear-owned staging through the existing evaluation interface', () => {
+  it.each(['valid', 'corrupt', 'foreign-run'] as const)('imports complete verifier artifacts and binds custom metrics to their original run (%s)', async mode => {
+    const f = await setup(false, 1, false, 5)
+    const path = join(f.spec.datasets.seed.ref, 'benchmark.adapter.json'), manifest = JSON.parse(await readFile(path, 'utf8'))
+    manifest.raw_metrics.metrics.push({ id: 'rubric_quality', revision: '1', unit: 'points', direction: 'maximize',
+      source: { path: 'verifier.result.rewards.quality', extractor: 'number-v1' }, granularity: 'trial',
+      repetitionReducer: 'mean', taskReducer: 'weighted-mean', comparisonPrecision: 1e-9 })
+    const { dataset_digest: ignored, ...body } = manifest
+    await writeFile(path, JSON.stringify({ ...body, dataset_digest: digestJson(body) }))
+    f.spec.datasets.seed.digest = await digestDatasetRef(f.spec.datasets.seed.ref)
+    f.spec.rawMetricsVersion = 1
+    f.spec.objective = resolveObjective({ terms: [{ metric: 'rubric_quality', weight: 1 }] }, (await f.provider.describe('seed')).rawMetricContracts!)
+    const original = { rewards: { quality: 23, unused: 81 }, rubric: { components: [{ id: 'optional', status: 'excluded', weight: 3 }] } }
+    Reflect.deleteProperty(f.evaluator, 'inspectVerifierEvidence')
+    await expect(new EvaluationSearchAdapter(f.evaluator, f.options).describe('seed')).rejects.toThrow('verifier evidence capability')
+    expect(f.requests).toHaveLength(0)
+    f.evaluator.inspectVerifierEvidence = async (runId: string) => {
+      const evidence = [...f.observations.values()].find(e => e.trials.some(t => t.runId === runId))!
+      return { runId: mode === 'foreign-run' ? 'foreign' : runId, parent: { evalId: evidence.evalId, trialId: runId, attempt: 1 },
+        observation: { status: 'valid' }, verifier: { status: mode === 'corrupt' ? 'corrupt' : 'result_only', result: original, resultSha256: digestJson(original) } }
+    }
+    const provider = new EvaluationSearchAdapter(f.evaluator, f.options), universe = await provider.describe('seed')
+    const plan = stagePlan({ stage: 'local', partition: 'seed', universeDigest: universe.digest, taskSetSizeResolutionDigest: digestJson('sizing'), scopeDigest: digestJson('scope'),
+      taskIds: ['task-0'], participantIds: [f.source.anchor.candidateId], prerequisiteDecisionDigests: [], selectionRuleDigest: digestJson('rule') })
+    const input = { plan, snapshot: f.source.anchor, cells: [cellIdentity(universe, 'task-0', 0, f.source.anchor)], idempotencyKey: digestJson('raw-verifier'), signal: new AbortController().signal }
+    if (mode === 'foreign-run') { await expect(provider.evaluate(input)).rejects.toThrow('does not match its run'); return }
+    const cells = await provider.evaluate(input), projected = objectiveProfile(universe, plan.taskIds, cells)
+    expect(projected.objectiveScore).toMatchObject(mode === 'valid' ? { status: 'available', score: 23 } : { status: 'invalid' })
+    const pointer = await f.store.read<{ ref: string }>(`evolution/verifier-${digestJson(cells[0]!.evidenceRef).slice(7)}`)
+    const artifact = await f.store.object<{ digest: string; evidence: HitchVerifierEvidence }>(pointer!.ref)
+    expect(artifact.evidence.verifier.result).toEqual(original)
+    expect(cells[0]!.rawMetrics!.originalArtifactRefs).toContain(artifact.digest)
+    await provider.evaluate(input)
+    expect(f.requests).toHaveLength(1)
+  })
+  it('investigates successful but expensive tasks and retains unselected runtime data', async () => {
+    const f = await setup(false, 1, false, 10)
+    for (const partition of ['seed', 'heldOut'] as const) {
+      const path = join(f.spec.datasets[partition].ref, 'benchmark.adapter.json')
+      const manifest = JSON.parse(await readFile(path, 'utf8'))
+      manifest.raw_metrics.metrics.push({ id: 'api_cost_usd', revision: '1', unit: 'USD', direction: 'minimize',
+        source: { path: 'originalResult.usage.cost', extractor: 'number-v1' }, granularity: 'trial', repetitionReducer: 'mean', taskReducer: 'weighted-mean', comparisonPrecision: 1e-9,
+        measurement: { kind: 'actual', scope: 'all target, auxiliary, reducer, compaction and child calls including internal retries', providerModels: ['test/model'],
+          priceSnapshot: digestJson('fixture-prices'), tokenAccounting: 'all input/output and cache buckets, reasoning included in output', timeBoundary: 'trial start to settlement', retryAccounting: 'all internal retries; infrastructure reruns separate' } })
+      const { dataset_digest: ignored, ...body } = manifest
+      await writeFile(path, JSON.stringify({ ...body, dataset_digest: digestJson(body) }))
+      f.spec.datasets[partition].digest = await digestDatasetRef(f.spec.datasets[partition].ref)
+    }
+    const evaluate = f.evaluator.evaluate.bind(f.evaluator)
+    f.evaluator.evaluate = async (...args) => {
+      const evidence = await evaluate(...args), cheap = args[1].harnessRef !== f.source.anchor.commit
+      evidence.trials = evidence.trials.map(t => ({ ...t, rewards: { reward: 1, unselected: 17 }, scores: { totalScore: 1, normalization: 'standard' },
+        originalResult: { usage: { cost: cheap ? .5 : 1, tokens: 12345, cacheReadTokens: 1000, auxiliaryCalls: 2 }, extraRubric: { unselected: 17 } } }))
+      evidence.primaryReward = 1; evidence.summary.score = 1
+      return evidence
+    }
+    f.spec.rawMetricsVersion = 1
+    const described = await f.provider.describe('seed')
+    f.spec.objective = resolveObjective({ terms: [{ metric: 'api_cost_usd', weight: -1 }], constraints: [{ metric: 'pass_rate', rule: 'no_regression', reference: 'initial_baseline' }] }, described.rawMetricContracts!)
+    const provider = new EvaluationSearchAdapter(f.evaluator, f.options)
+    const outcome = await f.run(provider)
+    expect(outcome).toMatchObject({ championChanged: true, promotion: { objectiveScore: { score: -.5 } } })
+    const archive = (await f.store.archive())!
+    expect(archive.clusters.some(c => c.familyId.startsWith('objective-'))).toBe(true)
+    const baseline = archive.results.find(r => r.snapshotDigest === f.source.anchor.digest)!
+    expect(baseline.cells.every(c => c.outcome.status === 'available' && c.outcome.rawValue === 1)).toBe(true)
+    const pointer = await f.store.read<{ ref: string }>(`evaluator-cells/${digestJson((({ snapshotDigest, ...identity }) => identity)(baseline.cells[0]!.identity)).slice(7)}`)
+    const source = await f.store.object<{ digest: string; evidence: EvaluationEvidence }>(pointer!.ref)
+    expect(source.evidence.trials[0]!.originalResult).toMatchObject({ usage: { tokens: 12345, cacheReadTokens: 1000, auxiliaryCalls: 2 }, extraRubric: { unselected: 17 } })
+    expect(outcome.research.candidates[0]!.profile.rawMetrics!.api_cost_usd).toMatchObject({ value: .5, status: 'available' })
+  }, 30000)
+  it('runs inline weighted objectives through real dataset projection, diagnosis, all stages and frozen constraints', async () => {
+    const f = await setup(true, 1, false, 10)
+    f.spec.rawMetricsVersion = 1
+    const described = await f.provider.describe('seed')
+    f.spec.objective = resolveObjective({ terms: [{ metric: 'pass_rate', weight: .5 }, { metric: 'process_score', weight: .5 }],
+      constraints: [{ metric: 'pass_rate', rule: 'no_regression', reference: 'initial_baseline' }] }, described.rawMetricContracts!)
+    const provider = new EvaluationSearchAdapter(f.evaluator, f.options)
+    const result = await f.run(provider)
+    expect(result.championChanged).toBe(true)
+    expect(result.promotion).toMatchObject({ outcome: 'accepted', objectiveScore: { score: 1, constraintResults: [{ status: 'passed' }] } })
+    expect(result.research.candidates.length).toBeGreaterThan(0)
+    expect(result.research.candidates.every(c => c.profile.objectiveComplete)).toBe(true)
+    expect(result.research.scopeViews.flatMap(s => s.fronts).every(front => front.channel === 'objective')).toBe(true)
+    const checkpoint = f.requests.length
+    expect((await f.run(new EvaluationSearchAdapter(f.evaluator, f.options))).digest).toBe(result.digest)
+    expect(f.requests).toHaveLength(checkpoint)
+    const archive = await f.store.archive()
+    expect(archive!.results.every(r => r.cells.every(c => c.rawMetrics?.metrics.total_score?.status === 'available'))).toBe(true)
+    const progress = await f.store.read<{ evaluations: Array<{ stage: string; profile?: { objectiveScore?: unknown } }> }>('rounds/r/progress')
+    expect(progress!.evaluations.every(e => e.stage !== 'held-out')).toBe(true)
+    expect(progress!.evaluations.some(e => e.profile?.objectiveScore)).toBe(true)
+  }, 30000)
   it('resolves projected verifier runs after restart, including physical attempt 1 for the second repetition', async () => {
     const f = await setup(false, 2), universe = await f.provider.describe('seed'), signal = new AbortController().signal
     const plan = stagePlan({ stage: 'local', partition: 'seed', universeDigest: universe.digest,

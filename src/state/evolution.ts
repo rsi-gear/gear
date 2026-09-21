@@ -17,6 +17,7 @@ import { validateMetaSampling } from '../meta/sampling.js'
 import { validateOffloadingPolicy } from '../meta/offloading-policy.js'
 import { validateSearchSchema } from '../search/schema.js'
 import { validateBaselineConditionSource } from '../refine/baseline-source.js'
+import { validateResolvedObjective } from '../objective/contracts.js'
 
 export { digestJson } from './digest.js'
 
@@ -40,6 +41,12 @@ function validateChampion(value: ChampionState): ChampionState {
 }
 
 function validateSpec(value: EvolutionSpec): EvolutionSpec {
+  if (value.rawMetricsVersion !== undefined && value.rawMetricsVersion !== 1) throw new TypeError('unsupported raw metric version')
+  if (value.objective) {
+    if (value.rawMetricsVersion !== 1 || !value.searchSettings) throw new TypeError('objective requires the raw metric staged execution path')
+    validateSearchSchema('ResolvedObjective', value.objective)
+    validateResolvedObjective(value.objective)
+  }
   if (value.searchSettings) validateSearchSchema('SearchSettings', value.searchSettings)
   assertSafeId(value.evolutionId, 'evolutionId')
   if (!isExactGitCommit(value.initialHarness.ref) || !SHA256.test(value.initialHarness.digest)) {

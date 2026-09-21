@@ -313,6 +313,7 @@ export const ConfigSchema: Schema<Config> = Schema.object({
     allowSharedSetPromotion: Schema.boolean(),
     outcome: Schema.any(),
     process: Schema.any(),
+    objective: Schema.any(),
     allowNeutral: Schema.boolean(),
     protectedTasks: Schema.any(),
     protectedAssertions: Schema.any(),
