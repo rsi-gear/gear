@@ -118,7 +118,7 @@
     "@deepseek-ai/dsh-tool-fs-search": "^0.1.0-rc.8 || ^0.1.1-rc.2",
     "@deepseek-ai/schemastery": "^3.18.1",
     "diff": "^8.0.2",
-    "js-yaml": "^4.1.0",
+    "js-yaml": "^4.3.2",
     "typescript": "^6.0.0"
   },
   "peerDependencies": {
@@ -171,7 +171,7 @@
     "vitest": "^4.1.8",
     "@deepseek-ai/dsh-attachment": "0.1.0-rc.8",
     "@deepseek-ai/dsh-sandbox": "0.1.0-rc.8",
-    "esbuild": "0.27.4",
+    "esbuild": "0.28.1",
     "gear-tool-fs-diff": "npm:diff@9.0.0",
     "@deepseek-ai/dsh-scope": "0.1.0-rc.8"
   }
