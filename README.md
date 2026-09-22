@@ -12,10 +12,10 @@
 
 </div>
 
-[![RSI in Action: AutomationBench Evolution Replay — animated preview](docs/guide/assets/automationbench-evolution-replay-en.gif)](docs/guide/assets/automationbench-evolution-replay-en.mp4?raw=1)
+![RSI in Action: AutomationBench Evolution Replay — animated replay](docs/guide/assets/automationbench-evolution-replay-en.gif)
 
 <p align="center">
-  <a href="docs/guide/assets/automationbench-evolution-replay-en.mp4?raw=1"><strong>▶ Watch RSI in Action: AutomationBench Evolution Replay</strong></a> · English · 72 seconds
+  <strong>RSI in Action: AutomationBench Evolution Replay</strong> · English · 72 seconds
 </p>
 
 Gear is an open-source optimization framework for improving AI agent performance on real-world tasks.
