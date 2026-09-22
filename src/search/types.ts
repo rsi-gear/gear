@@ -474,6 +474,7 @@ export interface GateDecision {
   comparison: { objectiveGain?: number; outcomeGain?: number; processGains: Record<string, number>; constraintCoverage: 'available' | 'unavailable' }
   digest: string
 }
+export interface CellVerification { cell: EvidenceCell; identity: CellIdentity }
 export interface SearchProvider {
   integrity: string
   capabilities: { taskSubsetPlans: boolean; batchIndependentCells: boolean; idempotentExecution: boolean; objectives?: 1 }
@@ -484,6 +485,10 @@ export interface SearchProvider {
   inspectEvaluation?(input: { plan: StageEvaluationPlan; snapshot: Snapshot; cells: CellIdentity[]; idempotencyKey: string; signal: AbortSignal }): Promise<ExternalRecovery<EvaluationExecutionResult>>
   /** Verifies provider provenance as well as identity, before any reuse or scoring. */
   verifyCell(cell: EvidenceCell, identity: CellIdentity): boolean | Promise<boolean>
+  /** Optional batch equivalent, after callers validate each planned identity.
+   * Shared runtime/dataset checks must be fresh for every invocation; success
+   * must still verify the provenance of every supplied cell. */
+  verifyCells?(cells: readonly CellVerification[]): boolean | Promise<boolean>
   /** Recover process only from the original run artifacts; must never execute another Target run. */
   completeProcess?(cell: EvidenceCell, idempotencyKey: string, signal: AbortSignal): Promise<EvidenceCell>
   /** Read-only lookup of the original process projection operation. */

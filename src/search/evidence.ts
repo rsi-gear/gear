@@ -3,7 +3,7 @@ import type { Rational } from './contracts.js'
 import { comparisonKey, digest, invariant, numeric, observationValue, plannedCellCount, processTasks, repetitionsForTask, seal, sorted, validateSnapshot, verifyDigest, weightedMean } from './contracts.js'
 import { validateSearchSchema } from './schema.js'
 import type { SearchJournal } from './store.js'
-import type { CellIdentity, EvidenceCell, EvidenceProfile, ProcessMode, SearchProvider, Snapshot, StageEvaluationPlan, StageResult, TaskProfile, TaskUniverse } from './types.js'
+import type { CellIdentity, CellVerification, EvidenceCell, EvidenceProfile, ProcessMode, SearchProvider, Snapshot, StageEvaluationPlan, StageResult, TaskProfile, TaskUniverse } from './types.js'
 import { objectiveProfile } from './objective.js'
 
 export function cellIdentity(universe: TaskUniverse, taskId: string, repetition: number, snapshot: Snapshot): CellIdentity {
@@ -31,6 +31,13 @@ export function plannedCells(universe: TaskUniverse, plan: StageEvaluationPlan, 
 }
 export function validOutcome(cell: EvidenceCell): boolean {
   return cell.status === 'available' && cell.outcomeCertified && cell.outcome.status === 'available'
+}
+/** Amortize shared provenance checks without retaining verification across calls. */
+export async function verifyCells(provider: SearchProvider, cells: readonly CellVerification[]): Promise<boolean> {
+  if (!cells.length) return true
+  if (provider.verifyCells) return provider.verifyCells(cells)
+  for (const { cell, identity } of cells) if (!await provider.verifyCell(cell, identity)) return false
+  return true
 }
 /** Missing older views may coexist with complete views; two valid values may not conflict. */
 export function assertConsistentCells(a: EvidenceCell, b: EvidenceCell): void {
@@ -138,7 +145,7 @@ export function profile(universe: TaskUniverse, plan: StageEvaluationPlan, snaps
 }
 /** Reuse completion evidence across operation labels without rerunning an already valid slot. */
 export async function reusableCells(store: SearchJournal, provider: SearchProvider, identities: CellIdentity[], current: EvidenceCell[]): Promise<EvidenceCell[]> {
-  const reusable: EvidenceCell[] = []
+  const reusable: EvidenceCell[] = [], checked: CellVerification[] = []
   for (const identity of identities) {
     const old = current.find(c => cellKey(c.identity) === cellKey(identity))
     // Complete legacy channels do not imply complete raw metrics. Older views
@@ -148,7 +155,7 @@ export async function reusableCells(store: SearchJournal, provider: SearchProvid
     if (!pointer) continue
     const cell = await store.object<EvidenceCell>(pointer.ref)
     if (!validOutcome(cell)) continue
-    assertCell(cell, identity); invariant(await provider.verifyCell(cell, identity), 'cached completion provenance rejected')
+    assertCell(cell, identity); checked.push({ cell, identity })
     if (old && validOutcome(old)) {
       const processCompleted = identity.processContractDigest && old.process?.status !== 'available' && cell.process?.status === 'available'
       const rawMetricCompleted = Object.entries(cell.rawMetrics?.metrics ?? {}).some(([id, metric]) =>
@@ -158,6 +165,7 @@ export async function reusableCells(store: SearchJournal, provider: SearchProvid
     }
     reusable.push(cell)
   }
+  invariant(await verifyCells(provider, checked), 'cached completion provenance rejected')
   return reusable
 }
 /** Appending a completion never changes an already valid outcome or its statistical slot. */

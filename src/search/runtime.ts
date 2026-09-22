@@ -2,14 +2,14 @@ import { ComponentRegistry } from '../evolution/components.js'
 import { digestJson } from '../state/digest.js'
 import { digest, integrity, invariant, numeric, plannedCellCount, processTasks, repetitionsForTask, safeId, seal, sorted, utility, validateSettings, validateSnapshot, verifyDigest } from './contracts.js'
 import { deliveredWorkplan, validateReceipt } from './diagnosis.js'
-import { assertCell, cellIdentity, cellKey, completeEvidence, plannedCells, profile, reusableCells, validOutcome } from './evidence.js'
+import { assertCell, cellIdentity, cellKey, completeEvidence, plannedCells, profile, reusableCells, validOutcome, verifyCells } from './evidence.js'
 import { objectiveProfile, trialPassed } from './objective.js'
 import { resolveParentPolicyRef } from './policies/parents.js'
 import { budgetFailure, recoverExternal, resolvePendingOperation, searchDeadline } from './recovery.js'
 import { resolveRegressionSettings } from './regression.js'
 import { validateSearchSchema } from './schema.js'
 import { SearchBudgetExceeded, zeroUsage, type SearchJournal } from './store.js'
-import type { CandidateWorkPlan, DiagnosisDossier, DiagnosisProvider, EvaluationExecutionResult, EvaluationScope, EvaluationStageDecision, EvidenceCell, EvidenceConsumption, ExternalRecovery, PendingSearchOperation, ResearchArchive, ResearchFinding, SearchProgress, SearchProvider, SearchSettings, SearchStageFailure, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse, WorkplanReceipt } from './types.js'
+import type { CandidateWorkPlan, CellVerification, DiagnosisDossier, DiagnosisProvider, EvaluationExecutionResult, EvaluationScope, EvaluationStageDecision, EvidenceCell, EvidenceConsumption, ExternalRecovery, PendingSearchOperation, ResearchArchive, ResearchFinding, SearchProgress, SearchProvider, SearchSettings, SearchStageFailure, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse, WorkplanReceipt } from './types.js'
 
 import type { CommitIntent, SearchRoundOutcome } from './engine.js'
 
@@ -111,6 +111,7 @@ export class SearchExecutionRuntime {
   }
   async missingCost(universe: TaskUniverse, snapshots: Snapshot[], tasks: string[]): Promise<{ cells: number; repairCells: number }> {
     let cells = 0, repairCells = 0
+    const checked: CellVerification[] = []
     const seen = new Set<string>()
     for (const snapshot of snapshots) for (const taskId of tasks) for (const slot of repetitionsForTask(universe, taskId)) {
       const identity = cellIdentity(universe, taskId, slot.index, snapshot), key = cellKey(identity)
@@ -118,9 +119,10 @@ export class SearchExecutionRuntime {
       seen.add(key)
       const pointer = await this.store.read<{ ref: string }>(`cells/${key.slice(7)}`)
       const cell = pointer ? await this.store.object<EvidenceCell>(pointer.ref) : undefined
-      if (cell) { assertCell(cell, identity); invariant(await this.provider.verifyCell(cell, identity), 'provider cannot verify reusable cell provenance') }
+      if (cell) { assertCell(cell, identity); checked.push({ cell, identity }) }
       if (!cell || !validOutcome(cell)) { cells++; if (cell) repairCells++ }
     }
+    invariant(await verifyCells(this.provider, checked), 'provider cannot verify reusable cell provenance')
     return { cells, repairCells }
   }
   async evaluate(admission: SearchAdmission, startedAt: number, universe: TaskUniverse, plan: StageEvaluationPlan, snapshot: Snapshot, signal: AbortSignal, inspectionSignal: AbortSignal): Promise<StageResult> {
@@ -130,16 +132,17 @@ export class SearchExecutionRuntime {
     validateSearchSchema('StageParticipantBinding', frozenBinding)
     invariant(frozenBinding.digest === binding.digest, 'stage participant is already bound to a different snapshot')
     const identities = plannedCells(universe, plan, snapshot)
-    const cached: EvidenceCell[] = []
+    const cached: EvidenceCell[] = [], checked: CellVerification[] = []
     let repairCells = 0
     for (const identity of identities) {
       const entry = await this.store.read<{ ref: string }>(`cells/${cellKey(identity).slice(7)}`)
       if (!entry) continue
       const cell = await this.store.object<EvidenceCell>(entry.ref)
-      assertCell(cell, identity); invariant(await this.provider.verifyCell(cell, identity), 'provider cannot verify reusable cell provenance')
+      assertCell(cell, identity); checked.push({ cell, identity })
       if (validOutcome(cell)) cached.push(cell)
       else repairCells++
     }
+    invariant(await verifyCells(this.provider, checked), 'provider cannot verify reusable cell provenance')
     const missing = identities.filter(i => !cached.some(c => cellKey(c.identity) === cellKey(i)))
     const name = `evaluation-${digestJson([plan.digest, snapshot.digest]).slice(7)}`
     // Freeze the cache split before execution: a crash may occur between writing
@@ -169,12 +172,14 @@ export class SearchExecutionRuntime {
           })
           output = recovered.value
           const seen = new Set<string>()
-          for (const cell of output.cells) {
+          const verification = output.cells.map(cell => {
             const identity = request.cells.find(i => cellKey(i) === cellKey(cell.identity))
             invariant(identity && !seen.has(cellKey(identity)), 'provider returned duplicate/unrequested cells')
-            assertCell(cell, identity); invariant(await this.provider.verifyCell(cell, identity), 'provider rejected cell provenance')
+            assertCell(cell, identity)
             seen.add(cellKey(identity))
-          }
+            return { cell, identity }
+          })
+          invariant(await verifyCells(this.provider, verification), 'provider rejected cell provenance')
           if (output.failure) invariant(output.failure.code.length > 0 && output.failure.message.length > 0
             && (output.failure.kind === 'budget-exhausted' || output.failure.kind === 'execution-failure' && !!output.failure.evidenceRef), 'failure lacks terminal execution provenance')
           await this.store.settle(operation, seal(output), recovered.notStarted ? zeroUsage() : operation.reserved)
@@ -259,10 +264,12 @@ export class SearchExecutionRuntime {
         })
         output = recovered.value
         invariant(new Set(output.cells.map(c => cellKey(c.identity))).size === output.cells.length, 'duplicate repair cells')
-        for (const cell of output.cells) {
+        const verification = output.cells.map(cell => {
           const expected = missing.find(i => cellKey(i) === cellKey(cell.identity)); invariant(expected, 'repair attempted to replace a valid cell')
-          assertCell(cell, expected); invariant(await this.provider.verifyCell(cell, expected), 'repair provenance rejected')
-        }
+          assertCell(cell, expected)
+          return { cell, identity: expected }
+        })
+        invariant(await verifyCells(this.provider, verification), 'repair provenance rejected')
         await this.store.settle(reservation, seal(output), recovered.notStarted ? zeroUsage() : reservation.reserved)
       }
       await resolvePendingOperation(this.store, roundId, key)
@@ -303,7 +310,9 @@ export class SearchExecutionRuntime {
       const { digest: ignored, ...body } = complete
       const result = failure ? seal({ ...body, failure }) : complete
       profile(universe, plan, snapshot, result, 'auto'); await this.store.put(result)
-      for (const cell of result.cells.filter(validOutcome)) { invariant(await this.provider.verifyCell(cell, cell.identity), 'repair provenance rejected'); await this.store.put(cell); await this.store.write(`cells/${cellKey(cell.identity).slice(7)}`, { ref: cell.digest }) }
+      const valid = result.cells.filter(validOutcome)
+      invariant(await verifyCells(this.provider, valid.map(cell => ({ cell, identity: cell.identity }))), 'repair provenance rejected')
+      for (const cell of valid) { await this.store.put(cell); await this.store.write(`cells/${cellKey(cell.identity).slice(7)}`, { ref: cell.digest }) }
       await this.store.write(`rounds/${roundId}/repair-${original.digest.slice(7)}`, { ref: result.digest })
       return result
       } finally { timed.dispose() }

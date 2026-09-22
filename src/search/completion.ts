@@ -1,6 +1,6 @@
 import { digestJson } from '../state/digest.js'
 import { integrity, invariant, processTasks, safeId, seal, verifyDigest } from './contracts.js'
-import { assertCell, cellKey, completeEvidence, plannedCells, profile, reusableCells, validOutcome } from './evidence.js'
+import { assertCell, cellKey, completeEvidence, plannedCells, profile, reusableCells, validOutcome, verifyCells } from './evidence.js'
 import { budgetFailure, recoverExternal, resolvePendingOperation, searchDeadline } from './recovery.js'
 import { SearchBudgetExceeded, type SearchJournal, zeroUsage } from './store.js'
 import type { EvaluationExecutionResult, SearchProvider, SearchSettings, SearchStageFailure, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from './types.js'
@@ -107,10 +107,12 @@ export async function completeArchivedEvidence(input: { id: string; store: Searc
           output = recovered.value
           replacements = output.cells
           invariant(new Set(replacements.map(c => cellKey(c.identity))).size === replacements.length, 'completion returned duplicate slots')
-          for (const cell of replacements) {
+          const verification = replacements.map(cell => {
             const identity = missing.find(i => cellKey(i) === cellKey(cell.identity)); invariant(identity, 'completion returned an unplanned or valid slot')
-            assertCell(cell, identity); invariant(await provider.verifyCell(cell, identity), 'completion provenance rejected')
-          }
+            assertCell(cell, identity)
+            return { cell, identity }
+          })
+          invariant(await verifyCells(provider, verification), 'completion provenance rejected')
           await store.settle(operation, seal(output), recovered.notStarted ? zeroUsage() : operation.reserved)
         }
         replacements = [...cached, ...output.cells]; failure = output.failure
