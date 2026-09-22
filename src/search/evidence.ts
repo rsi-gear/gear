@@ -141,13 +141,21 @@ export async function reusableCells(store: SearchJournal, provider: SearchProvid
   const reusable: EvidenceCell[] = []
   for (const identity of identities) {
     const old = current.find(c => cellKey(c.identity) === cellKey(identity))
-    if (old && validOutcome(old) && (!identity.processContractDigest || old.process?.status === 'available')) continue
+    // Complete legacy channels do not imply complete raw metrics. Older views
+    // may omit a declared metric (or its entire record), so inspect the cache.
+    if (old && validOutcome(old) && (!identity.processContractDigest || old.process?.status === 'available') && !identity.rawMetricContractsDigest) continue
     const pointer = await store.read<{ ref: string }>(`cells/${cellKey(identity).slice(7)}`)
     if (!pointer) continue
     const cell = await store.object<EvidenceCell>(pointer.ref)
     if (!validOutcome(cell)) continue
     assertCell(cell, identity); invariant(await provider.verifyCell(cell, identity), 'cached completion provenance rejected')
-    if (old && validOutcome(old)) { assertConsistentCells(old, cell); if (cell.process?.status !== 'available') continue }
+    if (old && validOutcome(old)) {
+      const processCompleted = identity.processContractDigest && old.process?.status !== 'available' && cell.process?.status === 'available'
+      const rawMetricCompleted = Object.entries(cell.rawMetrics?.metrics ?? {}).some(([id, metric]) =>
+        metric.status === 'available' && old.rawMetrics?.metrics[id]?.status !== 'available')
+      if (!processCompleted && !rawMetricCompleted) continue
+      assertConsistentCells(old, cell)
+    }
     reusable.push(cell)
   }
   return reusable
