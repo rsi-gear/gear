@@ -72,6 +72,7 @@ type JsonRecord = Record<string, unknown>
 type HitchControlPlaneOptions = NonNullable<HitchConfig['controlPlane']>
 
 interface ParsedRunTrial {
+  originalResult: import('@deepseek-ai/dsh-session').JsonValue
   taskName: string
   trialName: string
   runId: string
@@ -2606,6 +2607,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       summary,
       trials,
       invalidTrials: [],
+      originalResult: jsonValue(result, 'result'),
       localSourceTransport: transport,
     }
   }
@@ -2634,6 +2636,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       )
     }
     const trials: HitchTrialSummary[] = valid.map(trial => ({
+      originalResult: trial.originalResult,
       taskName: trial.taskName,
       trialName: trial.trialName,
       runId: trial.runId,
@@ -2647,6 +2650,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       scores: trial.scores ?? { totalScore: trial.reward!, normalization: 'legacy-reward' },
     }))
     const invalidTrials: InvalidEvaluationTrialSummary[] = invalidObservations.map(trial => ({
+      originalResult: trial.originalResult,
       taskName: trial.taskName,
       trialName: trial.trialName,
       runId: trial.runId,
@@ -2693,6 +2697,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       summary,
       trials,
       invalidTrials,
+      originalResult: jsonValue(result, 'result'),
       localSourceTransport: transport,
     }
   }
@@ -2723,6 +2728,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       if (attempt <= 0) throw new HitchEvaluationError(`trials[${index}].attempt must be positive`, 'invalid_hitch_result')
       return {
         taskName: string(trial.task_id, `trials[${index}].task_id`),
+        originalResult: jsonValue(trial, `trials[${index}]`),
         trialName: string(trial.trial_id, `trials[${index}].trial_id`),
         runId,
         attempt,
@@ -2756,7 +2762,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
         ...(rewards.process_score === undefined ? {} : { processScore: rewards.process_score }),
         normalization: rewards.total_score === undefined ? 'legacy-reward' : 'standard',
       }
-      return { taskName, ...(trialName === undefined ? {} : { trialName }), status: 'completed', rewards, scores }
+      return { taskName, ...(trialName === undefined ? {} : { trialName }), status: 'completed', rewards, scores, originalResult: jsonValue(trial, `summary.trials[${index}]`) }
     })
   }
 

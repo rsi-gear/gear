@@ -1,6 +1,7 @@
 import { digestJson } from '../state/digest.js'
 import { passesExploration } from './archive.js'
-import { integrity, invariant, numeric, repetitionsForTask, seal, sorted, utility, verifyDigest } from './contracts.js'
+import { integrity, invariant, repetitionsForTask, seal, sorted, verifyDigest } from './contracts.js'
+import { trialPassed } from './objective.js'
 import { profile, validOutcome } from './evidence.js'
 import { samplingEvidence } from './scope-sampling.js'
 import { createScope, sharedTasks, stagePlan } from './scopes.js'
@@ -44,7 +45,7 @@ export async function prepareScopeEpochs(input: {
   const parentCells = archive.results.filter(r => r.snapshotDigest === parent.digest).flatMap(r => r.cells)
   const successful = universe.tasks.filter(task => repetitionsForTask(universe, task.id).every(slot => parentCells.some(c =>
     c.identity.taskId === task.id && c.identity.repetition === slot.index && validOutcome(c)
-    && c.outcome.status === 'available' && numeric(utility(c.outcome.rawValue, task.outcome)) >= task.successUtility))).map(t => t.id)
+    && trialPassed(c, universe)))).map(t => t.id)
   const shared = await store.freezeEvolution(`shared-epoch-${epoch}`, () => seal({ epoch, archiveCutoffDigest: archive.digest, parentSnapshotDigest: parent.digest,
     taskIds: sharedTasks(universe, resolution, config, successful, epoch) }))
   const base = { archiveCutoffDigest: archive.digest, epoch, sharedTaskIds: shared.taskIds, ruleDigest: digestJson(config.scopeSampling) }

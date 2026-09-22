@@ -198,6 +198,9 @@ export interface SeedExperienceMemoryPolicy {
 }
 
 export interface EvolutionSpec {
+  /** Absent on legacy records; raw metric and objective identities are separate. */
+  rawMetricsVersion?: 1
+  objective?: import('./objective/types.js').ResolvedObjective
   /** Explicit, frozen v2 search configuration; absent on every legacy evolution. */
   searchSettings?: import('./search/types.js').SearchSettings
   evolutionId: EvolutionId
@@ -277,6 +280,8 @@ export type RoundStatus =
   | 'failed'
 
 export interface ScoreSummary {
+  passRateStatus?: 'available' | 'unavailable'
+  passRate?: number
   total: number
   passed: number
   failed: number
@@ -292,6 +297,10 @@ export interface EvaluationTrialScores {
 }
 
 export interface EvaluationTrialSummary {
+  /** Derived only from the declared pass predicate; absent on historical evidence. */
+  passStatus?: 'passed' | 'failed' | 'unavailable'
+  /** Complete immutable source row, including unadapted scores and usage. */
+  originalResult?: JsonValue
   taskName: string
   trialName?: string
   runId?: string
@@ -304,6 +313,7 @@ export interface EvaluationTrialSummary {
 export type HitchTrialSummary = EvaluationTrialSummary
 
 export interface InvalidEvaluationTrialSummary {
+  originalResult?: JsonValue
   taskName: string
   trialName: string
   runId: string
@@ -826,6 +836,9 @@ export interface LocalSourceTransportSummary {
 }
 
 export interface EvaluationEvidence {
+  originalResult?: JsonValue
+  rawMetrics?: Record<string, import('./objective/types.js').RawMetricAggregate>
+  objectiveScore?: import('./objective/types.js').ObjectiveScoreEvidence
   provider: string
   conditionId: string
   /** Path- and credential-independent semantic rollout configuration identity. */
@@ -1594,6 +1607,7 @@ export interface RefinementRound {
 }
 
 export interface AdmissionResult {
+  resolvedObjective?: import('./objective/types.js').ResolvedObjective
   evolutionId: EvolutionId
   batchId: string
   roundId: string
@@ -1601,6 +1615,7 @@ export interface AdmissionResult {
 }
 
 export interface PublicRoundStatus {
+  resolvedObjective?: import('./objective/types.js').ResolvedObjective
   searchPendingOperation?: import('./search/types.js').PendingSearchOperation
   searchPendingEvidence?: { planDigest: string; resultRefs: string[] }
   searchProgress?: import('./search/types.js').SearchProgress
@@ -1634,6 +1649,8 @@ export interface PublicRoundStatus {
 }
 
 export interface PublicSeedEvidence {
+  rawMetrics?: EvaluationEvidence['rawMetrics']
+  objectiveScore?: EvaluationEvidence['objectiveScore']
   evalId: string
   completeness: 'complete' | 'partial'
   plannedTrialCount: number
@@ -1641,6 +1658,7 @@ export interface PublicSeedEvidence {
   processScore?: number
   summary: ScoreSummary
   trials: Array<{
+    passStatus?: EvaluationTrialSummary['passStatus']
     taskName: string
     trialName?: string
     runId?: string

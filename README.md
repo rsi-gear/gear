@@ -127,6 +127,8 @@ You can also customize the **optimization algorithm**: how it proposes changes, 
 
 Gear records each harness version and its evaluation results, so you can inspect the changes and reuse the resulting harness.
 
+[Define a weighted objective](docs/refine-objectives.md) to combine declared pass rate, process scores, cost or tokens while retaining the original measurements.
+
 ## Explore the examples
 
 - [Optimize a harness for Marketing](docs/guide/en/example-harness.md): follow five rounds of harness optimization, from the initial configuration to the final retained harness.

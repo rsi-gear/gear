@@ -33,6 +33,7 @@ import { legacySearchEvidence } from '../search/legacy.js'
 import { resolveRegressionSettings } from '../search/regression.js'
 import type { SearchSettings, Snapshot } from '../search/types.js'
 import { attachSearchEvaluation } from '../search/evaluation-adapter.js'
+import { parseObjective, resolveObjective } from '../objective/contracts.js'
 import type { CandidateGenerationBudgetStatus } from '../types.js'
 import { prepareSeedExperienceSnapshot } from '../experience/memory.js'
 import type { ExperienceUsageReader } from '../experience/usage.js'
@@ -72,6 +73,7 @@ export interface RefineServiceOptions {
 }
 
 export interface AdmissionOptions {
+  objective?: import('../objective/types.js').ObjectiveDefinition
   seedTaskRef?: string
   rounds?: number
   taskBudgetMs?: number
@@ -424,6 +426,8 @@ function trajectoryReader(evaluator: RefineEvaluator): HitchTrajectoryReader | u
 
 function publicSeedEvidence(evidence: EvaluationEvidence): PublicSeedEvidence {
   return {
+    ...(evidence.rawMetrics ? { rawMetrics: evidence.rawMetrics } : {}),
+    ...(evidence.objectiveScore ? { objectiveScore: evidence.objectiveScore } : {}),
     evalId: evidence.evalId,
     completeness: evidence.completeness,
     plannedTrialCount: evidence.plannedTrialCount,
@@ -439,11 +443,12 @@ function publicSeedEvidence(evidence: EvaluationEvidence): PublicSeedEvidence {
           ...(trial.runId === undefined ? {} : { runId: trial.runId }),
           ...(trial.attempt === undefined ? {} : { attempt: trial.attempt }),
           status: trial.status,
+          ...(trial.passStatus === undefined ? {} : { passStatus: trial.passStatus }),
           ...(reward === undefined ? {} : { reward }),
           ...(trial.scores === undefined ? {} : { scores: trial.scores }),
         }
       }),
-      ...evidence.invalidTrials.map(trial => ({ ...trial })),
+      ...evidence.invalidTrials.map(({ originalResult: privateOriginal, ...trial }) => trial),
     ],
   }
 }
@@ -811,6 +816,8 @@ export class RefineService {
 
   async admit(source: RefinementRound['source'], options: AdmissionOptions = {}): Promise<AdmissionResult> {
     this.assertAvailable()
+    const objectiveDefinition = parseObjective(options.objective)
+    if (!this.options.searchSettings) throw new TypeError('new objectives require failure-cluster-gepa-v1 search; the legacy execution path supports continuing existing evolutions only')
     const roundCount = validateCount(options.rounds ?? 1)
     const taskBudgetMs = options.taskBudgetMs ?? this.options.taskBudgetMs
     if (!Number.isSafeInteger(taskBudgetMs) || taskBudgetMs <= 0) throw new TypeError('taskBudgetMs must be a positive integer')
@@ -830,6 +837,7 @@ export class RefineService {
     const initial = await this.resolveInitialChampion(from)
     const seedTaskRef = options.seedTaskRef ?? this.options.seedTaskRef
     const spec: EvolutionSpec = {
+      rawMetricsVersion: 1,
       ...(this.options.searchSettings === undefined ? {} : { searchSettings: structuredClone(this.options.searchSettings) }),
       evolutionId, createdAt: now(),
       initialHarness: { ref: initial.ref, digest: initial.manifestDigest },
@@ -856,8 +864,15 @@ export class RefineService {
         throw new Error('failure-cluster-gepa-v1 requires provider-verified subset plans, cell reuse, idempotent execution and a diagnosis provider')
       }
       const [seed, heldOut] = await Promise.all([search.provider.describe('seed'), search.provider.describe('held-out')])
-      spec.searchSettings = resolveRegressionSettings(spec.searchSettings, seed, heldOut)
-      validateSettings(spec.searchSettings, seed, heldOut, spec.candidateGeneration.maxCandidates)
+      invariant(search.provider.capabilities.objectives === 1, 'search provider does not support objective schema version 1')
+      invariant(seed.rawMetricContracts && heldOut.rawMetricContracts, 'search provider does not support raw metric/objective evidence')
+      spec.objective = resolveObjective(objectiveDefinition, seed.rawMetricContracts)
+      invariant(resolveObjective(objectiveDefinition, heldOut.rawMetricContracts).digest === spec.objective.digest, 'seed and held-out metric contracts are incompatible with the objective')
+      const resolvedProvider = this.evaluatorForSpec(spec).search!.provider
+      const [projectedSeed, projectedHeldOut] = await Promise.all([resolvedProvider.describe('seed'), resolvedProvider.describe('held-out')])
+      invariant(projectedSeed.objective?.digest === spec.objective.digest && projectedHeldOut.objective?.digest === spec.objective.digest, 'provider ignored the frozen objective')
+      spec.searchSettings = resolveRegressionSettings(spec.searchSettings, projectedSeed, projectedHeldOut)
+      validateSettings(spec.searchSettings, projectedSeed, projectedHeldOut, spec.candidateGeneration.maxCandidates)
       if (spec.searchSettings.regression.suiteRef) invariant(await search.provider.verifyRegressionSuite?.(spec.searchSettings.regression.suiteRef, seed), 'provider must verify the frozen regression suite was included at new admission')
     }
     let preparedBaseline: PreparedBaselineSource | undefined
@@ -877,6 +892,7 @@ export class RefineService {
 
   async continueEvolution(source: RefinementRound['source'], evolutionId: string, options: ContinueOptions = {}): Promise<AdmissionResult> {
     this.assertAvailable()
+    if ('objective' in options) throw new TypeError('continue cannot change the frozen objective; create a new evolution')
     if (options.roundId !== undefined && (options.rounds !== undefined || options.focus !== undefined)) {
       throw new TypeError('roundId cannot be combined with rounds or focus')
     }
@@ -1682,6 +1698,7 @@ export class RefineService {
       : undefined
     return {
       evolutionId, batchId: round.batchId, roundId: round.roundId, status: round.status,
+      ...(evolution.spec.objective ? { resolvedObjective: evolution.spec.objective } : {}),
       ...(pendingSearchOperation ? { searchPendingOperation: pendingSearchOperation } : {}),
       ...(pendingSearchEvidence ? { searchPendingEvidence: pendingSearchEvidence } : {}),
       ...(searchProgress ? { searchProgress } : {}),
@@ -1921,7 +1938,7 @@ export class RefineService {
       throw error
     }
     queueMicrotask(() => this.startDrive(roundId))
-    return { evolutionId: evolution.spec.evolutionId, batchId, roundId, status: 'queued' }
+    return { evolutionId: evolution.spec.evolutionId, batchId, roundId, status: 'queued', ...(evolution.spec.objective ? { resolvedObjective: evolution.spec.objective } : {}) }
   }
 
   private async newRound(

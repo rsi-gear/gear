@@ -5,6 +5,8 @@ import { digestDatasetRef } from '../state/dataset.js'
 import { digestJson } from '../state/digest.js'
 import { digest, invariant, seal, sorted } from './contracts.js'
 import type { MetricContract, Partition, TaskUniverse } from './types.js'
+import { resolveMetric, resolveObjective } from '../objective/contracts.js'
+import type { RawMetricDefinition } from '../objective/types.js'
 
 interface ScoreDefinition { source_metric: string; direction: 'maximize' | 'minimize'; range: [number, number]; reducer: 'task-macro-mean' }
 export interface DatasetDescription {
@@ -14,6 +16,7 @@ export interface DatasetDescription {
     schema_version: '1'; kind: 'gear-harbor-benchmark'; benchmark: { id: string; revision: string }
     adapter: { id: string; revision: string; output_protocol: 'gear-harbor-eval-result-v1' }
     scoring: { total_score: ScoreDefinition; process_score?: ScoreDefinition }
+    raw_metrics?: { schema_version: '1'; metrics: RawMetricDefinition[] }
     tasks: Array<{ task_id: string; task_digest: string }>; dataset_digest: string
   }
   universe: TaskUniverse
@@ -50,8 +53,26 @@ export async function describeDataset(spec: EvolutionSpec, partition: Partition,
       group: digestJson({ channel, score, adapter: manifest.adapter }) })
   }
   const outcome = contract('outcome', manifest.scoring?.total_score), process = manifest.scoring.process_score && contract('process', manifest.scoring.process_score)
+  let rawMetricContracts: TaskUniverse['rawMetricContracts']
+  if (spec.rawMetricsVersion === 1) {
+    const registry = manifest.raw_metrics
+    invariant(!registry || registry.schema_version === '1' && Array.isArray(registry.metrics), 'unsupported raw metric registry')
+    const standard = (id: string, score: ScoreDefinition, field: string): RawMetricDefinition => ({ id, revision: manifest.adapter.revision,
+      unit: 'score', direction: score.direction, source: { path: `scores.${field}`, extractor: 'number-v1' }, range: { min: score.range[0], max: score.range[1] },
+      granularity: 'trial', repetitionReducer: 'mean', taskReducer: 'weighted-mean', comparisonPrecision: 1e-9 })
+    const declarations = registry?.metrics ?? []
+    invariant(new Set(declarations.map(d => d.id)).size === declarations.length, 'duplicate raw metric declaration')
+    rawMetricContracts = [...declarations, ...[standard('total_score', manifest.scoring.total_score, 'totalScore'),
+      ...(manifest.scoring.process_score ? [standard('process_score', manifest.scoring.process_score, 'processScore')] : [])].filter(d => !declarations.some(m => m.id === d.id))].map(resolveMetric)
+    if (spec.objective) {
+      const definition = { terms: spec.objective.terms.map(({ metric, weight, scale }) => ({ metric, weight, scale })),
+        constraints: spec.objective.constraints.map(c => c.rule === 'minimum' ? { metric: c.metric, rule: c.rule, value: c.value }
+          : { metric: c.metric, rule: c.rule, reference: c.reference, tolerance: c.tolerance }) }
+      invariant(resolveObjective(definition, rawMetricContracts).digest === spec.objective.digest, 'dataset raw metric semantics differ from the frozen objective')
+    }
+  }
   invariant(await digestDatasetRef(root) === sourceDigest, 'source dataset changed while resolving task identities')
-  const universe = seal({ partition, tasks: tasks.map(t => ({ ...t, outcome, ...(process ? { process } : {}), successUtility: 1, weight: 1, stratum: manifest.benchmark.id, estimatedCost: spec.taskBudgetMs })),
+  const universe = seal({ partition, ...(rawMetricContracts ? { rawMetricContracts } : {}), ...(spec.objective ? { objective: spec.objective } : {}), tasks: tasks.map(t => ({ ...t, outcome, ...(process ? { process } : {}), successUtility: 1, weight: 1, stratum: manifest.benchmark.id, estimatedCost: spec.taskBudgetMs })),
     conditionDigest: digestJson({ sourceDigest, scoring: manifest.scoring, rollout: spec.rollout, taskBudgetMs: spec.taskBudgetMs, toolchain: spec.toolchainRef, sandbox: spec.sandboxProfileRef }),
     // null means the existing evaluator controls randomness; do not invent a recorded seed.
     repetitions: Array.from({ length: spec.rollout.repetitions }, (_, index) => ({ index, seed: spec.rollout.seeds?.[index] ?? null })) })

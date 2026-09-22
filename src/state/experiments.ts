@@ -18,6 +18,8 @@ export const EXPERIMENTS_TSV_COLUMNS = [
   'selection_role',
   'record_path',
   'updated_at',
+  'seed_raw_metrics',
+  'seed_objective',
   'evaluation_mode',
 ] as const
 
@@ -56,6 +58,17 @@ function selectionRole(round: RefinementRound, candidateId: string): string | un
   return undefined
 }
 
+function seedMetrics(round: RefinementRound, candidateId: string): [string | undefined, string | undefined] {
+  const local = round.searchOutcome?.research.candidates.find(c => c.candidateId === candidateId)
+  const evaluation = round.candidatePool.find(c => c.candidateId === candidateId)?.seedEvaluation
+  const source = local?.profile ?? evaluation
+  return [source?.rawMetrics && JSON.stringify(source.rawMetrics), source?.objectiveScore && JSON.stringify({
+    scope: local ? 'local' : 'seed-evaluation',
+    ...(local ? { scopeDigest: local.scopeDigest } : {}),
+    evidence: source.objectiveScore,
+  })]
+}
+
 export function serializeExperimentsTsv(evolutions: readonly ExperimentIndexEvolution[]): string {
   const rows = evolutions
     .flatMap(({ entry, rounds }) => rounds.flatMap(round => round.candidatePool.map(candidate => ({
@@ -78,6 +91,7 @@ export function serializeExperimentsTsv(evolutions: readonly ExperimentIndexEvol
         selectionRole(round, candidate.candidateId),
         `evolutions/${entry.evolutionId}/rounds/${round.roundId}.json`,
         round.updatedAt,
+        ...seedMetrics(round, candidate.candidateId),
         round.evaluationMode ?? 'held-out',
       ],
     }))))

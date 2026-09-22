@@ -5,6 +5,7 @@ import type { SkillMetaCoordinator } from '../meta/skill.js'
 import type { EvaluationRerunSelector, SemanticTarget } from '../types.js'
 import type { SkillCandidateFiles } from './files.js'
 import { parseBaselineSourceRequest } from '../refine/baseline-source.js'
+import { parseObjective } from '../objective/contracts.js'
 
 function record(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError('params must be an object')
@@ -72,6 +73,7 @@ export class RefineSkillGateway {
       const taskBudgetMs = optionalInteger(params, 'taskBudgetMs')
       const selectedFocus = focus(params)
       const name = optionalString(params, 'name')
+      const objective = parseObjective(params.objective)
       const baselineSource = params.baselineSource === undefined
         ? undefined
         : parseBaselineSourceRequest(params.baselineSource)
@@ -79,6 +81,7 @@ export class RefineSkillGateway {
         throw new TypeError('from must be initial, published, or an exact Git commit')
       }
       return this.service.admit('skill', {
+        objective,
         ...(seedTaskRef === undefined ? {} : { seedTaskRef }),
         ...(rounds === undefined ? {} : { rounds }),
         ...(taskBudgetMs === undefined ? {} : { taskBudgetMs }),
@@ -89,6 +92,7 @@ export class RefineSkillGateway {
       })
     }
     if (method === 'control.continue') {
+      if (params.objective !== undefined) throw new TypeError('continue cannot change the frozen objective; create a new evolution')
       const roundId = optionalString(params, 'roundId')
       const rounds = optionalInteger(params, 'rounds')
       const selectedFocus = focus(params)

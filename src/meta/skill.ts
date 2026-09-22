@@ -58,13 +58,16 @@ export interface SkillAssignment {
     heldOutUnavailable: true
   }
   baseline: {
+    rawMetrics?: EvaluationEvidence['rawMetrics']
+    objectiveScore?: EvaluationEvidence['objectiveScore']
     evalId: string
     primaryReward: number
     processScore?: number
     plannedTrialCount?: number
-    scoringContext?: { metricSemantics: 'frozen-utility'; summaryUnit: 'task'; aggregateWeighting: 'frozen-scope-task-weights' }
+    scoringContext?: { metricSemantics: 'frozen-utility' | 'raw-metric'; summaryUnit: 'task'; aggregateWeighting: 'frozen-scope-task-weights' }
     summary: EvaluationEvidence['summary']
     trials: Array<{
+      passStatus?: EvaluationEvidence['trials'][number]['passStatus']
       taskName: string
       trialName?: string
       runId?: string
@@ -380,9 +383,11 @@ export class SkillMetaSessionManager implements MetaSessionController {
       },
       baseline: {
         evalId: baseline.evalId,
+        ...(baseline.rawMetrics ? { rawMetrics: structuredClone(baseline.rawMetrics) } : {}),
+        ...(baseline.objectiveScore ? { objectiveScore: structuredClone(baseline.objectiveScore) } : {}),
         primaryReward: baseline.primaryReward,
         ...(candidate.workplanDelivery ? { plannedTrialCount: baseline.plannedTrialCount,
-          scoringContext: { metricSemantics: 'frozen-utility' as const, summaryUnit: 'task' as const, aggregateWeighting: 'frozen-scope-task-weights' as const } } : {}),
+          scoringContext: { metricSemantics: baseline.objectiveScore ? 'raw-metric' as const : 'frozen-utility' as const, summaryUnit: 'task' as const, aggregateWeighting: 'frozen-scope-task-weights' as const } } : {}),
         ...(baseline.processScore === undefined ? {} : { processScore: baseline.processScore }),
         summary: structuredClone(baseline.summary),
         trials: [
@@ -394,11 +399,12 @@ export class SkillMetaSessionManager implements MetaSessionController {
               ...(trial.runId === undefined ? {} : { runId: trial.runId }),
               ...(trial.attempt === undefined ? {} : { attempt: trial.attempt }),
               status: trial.status,
+              ...(trial.passStatus === undefined ? {} : { passStatus: trial.passStatus }),
               ...(reward === undefined ? {} : { reward }),
               ...(trial.scores === undefined ? {} : { scores: structuredClone(trial.scores) }),
             }
           }),
-          ...baseline.invalidTrials.map(trial => ({ ...trial })),
+          ...baseline.invalidTrials.map(({ originalResult: privateOriginal, ...trial }) => trial),
         ],
       },
       ...(round.advisoryFocus === undefined ? {} : { advisoryFocus: [...round.advisoryFocus] }),

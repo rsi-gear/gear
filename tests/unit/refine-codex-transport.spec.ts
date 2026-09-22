@@ -90,6 +90,19 @@ function requestParams(call: SkillRequest): Record<string, unknown> {
 }
 
 describe('Codex MCP refine transport', () => {
+  it('preserves contracted token metrics while removing credentials from the same response', async () => {
+    const tokens = { contractDigest: `sha256:${'1'.repeat(64)}`, unit: 'token', status: 'available', value: 1234,
+      observationTotal: 2468, evidenceRefs: [`sha256:${'2'.repeat(64)}`] }
+    const transport = await transportModule.createRefineCodexTransport({
+      socketPath: '/tmp/refine.sock', runDirectory: await privateDirectory(), identity: identity(),
+      request: async (_socket: string, call: SkillRequest) => call.method === 'control.identity' ? identity()
+        : { ...assignment(), baseline: { rawMetrics: { total_tokens: tokens, secretToken: secret }, leaseToken: secret } },
+    })
+    const claim = await transport.refineRequest('meta.claim', { evolutionId: 'evolution-1' })
+    expect(claim.baseline).toEqual({ rawMetrics: { total_tokens: tokens } })
+    expect(JSON.stringify(claim)).not.toContain(secret)
+    expect(claim).not.toHaveProperty('leaseToken')
+  })
   it('strictly parses configured identities and preserves maxTokens in control.identity', async () => {
     const runDirectory = await privateDirectory()
     await expect(transportModule.createRefineCodexTransport({

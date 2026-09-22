@@ -12,20 +12,31 @@ export function legacySearchEvidence(result: StageResult, snapshot: Snapshot, co
   invariant(p.outcomeComplete, 'Meta baseline requires complete planned outcome evidence')
   const trials = result.cells.filter(validOutcome).map(c => {
     const task = universe.tasks.find(t => t.id === c.identity.taskId)!
-    const score = numeric(utility((c.outcome as { rawValue: number }).rawValue, task.outcome))
+    const score = universe.objective ? (c.outcome as { rawValue: number }).rawValue : numeric(utility((c.outcome as { rawValue: number }).rawValue, task.outcome))
     const process = p.processTaskIds.includes(task.id) && c.process?.status === 'available' && task.process
-      ? numeric(utility(c.process.rawValue, task.process)) : undefined
+      ? universe.objective ? c.process.rawValue : numeric(utility(c.process.rawValue, task.process)) : undefined
+    const pass = c.rawMetrics?.metrics.pass_rate
     return { taskName: task.id, runId: c.evidenceRef, attempt: c.identity.repetition + 1, status: 'completed' as const,
+      ...(universe.objective ? { passStatus: pass?.status !== 'available' ? 'unavailable' as const : pass.value === 1 ? 'passed' as const : 'failed' as const } : {}),
       rewards: { reward: score }, scores: { totalScore: score, normalization: 'standard' as const, ...(process === undefined ? {} : { processScore: process }) } }
   })
-  const passed = p.tasks.filter(row => row.outcome! >= universe.tasks.find(t => t.id === row.taskId)!.successUtility).length
+  const passed = p.tasks.filter(row => universe.objective ? row.rawMetrics?.pass_rate?.status === 'available' && row.rawMetrics.pass_rate.value === 1
+    : row.outcome! >= universe.tasks.find(t => t.id === row.taskId)!.successUtility).length
   const groups = Object.values(p.processGroups)
-  const processScore = p.processComplete && groups.length === 1 ? groups[0] : undefined
+  const rawMean = (taskIds: string[], channel: 'totalScore' | 'processScore') => numeric(weightedMean(taskIds.map(id => ({
+    value: weightedMean(trials.filter(t => t.taskName === id).map(t => ({ value: t.scores[channel]!, weight: 1 }))), weight: scope.weights[id]!,
+  }))))
+  const processScore = p.processComplete && groups.length === 1 ? universe.objective ? rawMean(p.processTaskIds, 'processScore') : groups[0] : undefined
+  const primaryReward = universe.objective ? rawMean(plan.taskIds, 'totalScore') : p.outcome!
   return { provider: 'search-v2-seed-projection', conditionId, effectiveConfigDigest: plan.digest,
+    ...(p.rawMetrics ? { rawMetrics: p.rawMetrics } : {}), ...(p.objectiveScore ? { objectiveScore: p.objectiveScore } : {}),
     evalId: result.digest, dataset, requestedCommit: snapshot.commit, actualCommit: snapshot.commit, revisionIdentity: snapshot.commit,
-    completeness: 'complete', plannedTrialCount: p.coverage.planned, primaryReward: p.outcome!, ...(processScore === undefined ? {} : { processScore }),
-    summary: { total: plan.taskIds.length, passed, failed: plan.taskIds.length - passed, score: p.outcome!, ...(processScore === undefined ? {} : { process: { score: processScore } }) }, trials,
-    invalidTrials: [], metadata: { metricSemantics: 'frozen-utility', aggregateWeighting: 'frozen-scope-task-weights', summaryUnit: 'task',
+    completeness: 'complete', plannedTrialCount: p.coverage.planned, primaryReward, ...(processScore === undefined ? {} : { processScore }),
+    summary: { total: plan.taskIds.length, passed, failed: plan.taskIds.length - passed, score: primaryReward,
+      ...(universe.objective ? { passRateStatus: p.rawMetrics?.pass_rate?.status === 'available' ? 'available' as const : 'unavailable' as const,
+        ...(p.rawMetrics?.pass_rate?.value === undefined ? {} : { passRate: p.rawMetrics.pass_rate.value }) } : {}),
+      ...(processScore === undefined ? {} : { process: { score: processScore } }) }, trials,
+    invalidTrials: [], metadata: { metricSemantics: universe.objective ? 'raw-metric' : 'frozen-utility', aggregateWeighting: 'frozen-scope-task-weights', summaryUnit: 'task',
       plannedTaskCount: plan.taskIds.length, plannedLogicalSlots: p.coverage.planned, processAggregateStatus: processScore === undefined ? 'unavailable' : 'available',
       taskWeights: scope.weights, processTaskGroups: Object.fromEntries(p.processTaskIds.map(id => [id, universe.tasks.find(t => t.id === id)!.process!.group])) } }
 }
@@ -35,7 +46,7 @@ export function searchProjectionAggregates(value: EvaluationEvidence): { taskCou
   const m = value.metadata as unknown as { metricSemantics: string; aggregateWeighting: string; summaryUnit: string; plannedTaskCount: number; plannedLogicalSlots: number;
     taskWeights: Record<string, number>; processTaskGroups: Record<string, string>; processAggregateStatus: string } | undefined
   const ids = sorted(value.trials.map(t => t.taskName))
-  invariant(m && m.metricSemantics === 'frozen-utility' && m.aggregateWeighting === 'frozen-scope-task-weights' && m.summaryUnit === 'task'
+  invariant(m && ['frozen-utility', 'raw-metric'].includes(m.metricSemantics) && m.aggregateWeighting === 'frozen-scope-task-weights' && m.summaryUnit === 'task'
     && value.completeness === 'complete' && m.plannedTaskCount === ids.length && m.plannedLogicalSlots === value.plannedTrialCount, 'invalid search baseline projection metadata')
   invariant(m.taskWeights && !Array.isArray(m.taskWeights) && typeof m.taskWeights === 'object' && m.processTaskGroups && typeof m.processTaskGroups === 'object' && !Array.isArray(m.processTaskGroups), 'invalid search baseline weights/groups')
   invariant(JSON.stringify(Object.keys(m.taskWeights).sort()) === JSON.stringify(ids) && Object.values(m.taskWeights).every(w => Number.isFinite(w) && w >= 0)

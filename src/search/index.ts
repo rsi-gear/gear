@@ -1,4 +1,5 @@
 export * from './types.js'
+export * from '../objective/index.js'
 export * from './contracts.js'
 export * from './config.js'
 export * from './evidence.js'

@@ -37,6 +37,8 @@ export interface SearchTask {
   regressionTemplate?: Omit<import('./regression.js').RegressionInput, 'source' | 'outcome'>
 }
 export interface TaskUniverse {
+  rawMetricContracts?: import('../objective/types.js').RawMetricContract[]
+  objective?: import('../objective/types.js').ResolvedObjective
   partition: Partition
   tasks: SearchTask[]
   /** Covers execution environment, model, sampling, scorer and per-task budgets. */
@@ -64,6 +66,8 @@ export interface TaskSetResolution {
   digest: string
 }
 export interface TaskGuard {
+  /** Required for non-pass guards in objective evolutions. */
+  metric?: string
   taskId: string
   partition: Partition
   rule: 'no-regression' | 'minimum-score' | 'must-pass'
@@ -78,6 +82,7 @@ export interface AssertionGuard {
 }
 export interface MetricThresholds { minimumGain: number; maxSeedRegression: number; maxHeldOutRegression: number }
 export interface MultisignalPromotionConfig {
+  objective?: MetricThresholds
   policy: 'paired-multisignal-v1'
   validationMode: 'independent-held-out' | 'shared-set-research'
   /** Explicit authorization to update the research champion on a shared task set. */
@@ -153,6 +158,7 @@ export interface EvaluationScope {
   digest: string
 }
 export interface CellIdentity {
+  rawMetricContractsDigest?: string
   taskId: string
   taskContentDigest: string
   repetition: number
@@ -166,6 +172,7 @@ export interface CellIdentity {
   snapshotDigest: string
 }
 export interface EvidenceCell {
+  rawMetrics?: import('../objective/types.js').RawTrialMetrics
   identity: CellIdentity
   status: 'available' | 'missing' | 'invalid'
   outcome: MetricObservation
@@ -218,7 +225,7 @@ export interface SearchProgress {
     candidateId: string
     state: 'running' | 'settled'
     plannedCells: number
-    profile?: Pick<EvidenceProfile, 'coverage' | 'processCoverage' | 'outcomeComplete' | 'processComplete' | 'processTaskIds' | 'tasks' | 'supportDigest'>
+    profile?: Pick<EvidenceProfile, 'coverage' | 'processCoverage' | 'outcomeComplete' | 'processComplete' | 'processTaskIds' | 'tasks' | 'supportDigest' | 'objectiveScore' | 'rawMetrics' | 'objectiveComplete'>
     failure?: SearchStageFailure
   }>
   decisions: EvaluationStageDecision[]
@@ -268,6 +275,10 @@ export interface Coverage {
   notEvaluated: number
 }
 export interface TaskProfile {
+  objectiveComplete?: boolean
+  rawMetrics?: Record<string, import('../objective/types.js').RawMetricAggregate>
+  objectiveScore?: import('../objective/types.js').ObjectiveScoreEvidence
+  objectiveKey?: string
   taskId: string
   outcome?: number
   process?: number
@@ -275,6 +286,10 @@ export interface TaskProfile {
   processKey?: string
 }
 export interface EvidenceProfile {
+  rawMetrics?: Record<string, import('../objective/types.js').RawMetricAggregate>
+  objectiveScore?: import('../objective/types.js').ObjectiveScoreEvidence
+  objectiveComplete?: boolean
+  objectiveKey?: string
   universeDigest: string
   stagePlanDigest: string
   scopeDigest: string
@@ -292,6 +307,7 @@ export interface EvidenceProfile {
   supportDigest: string
 }
 export interface DiagnosisFact {
+  objectiveEvidence?: import('../objective/types.js').ObjectiveScoreEvidence
   taskId: string
   evidenceRefs: string[]
   status: 'supported-hypothesis' | 'unresolved' | 'infrastructure-invalid' | 'successful-control'
@@ -393,7 +409,7 @@ export interface ScopeView {
   scopeDigest: string
   outcomeEligibleIds: string[]
   processEligibleIds: string[]
-  fronts: Array<{ taskId: string; channel: 'outcome' | 'process'; candidateIds: string[]; informative: boolean }>
+  fronts: Array<{ taskId: string; channel: 'outcome' | 'process' | 'objective'; candidateIds: string[]; informative: boolean }>
   representatives: Record<string, string>
   prunedIds: string[]
   conditionalParentProbabilities: Record<string, number>
@@ -450,16 +466,17 @@ export interface ParentSelectionDecision {
   digest: string
 }
 export interface GateDecision {
+  objectiveScore?: import('../objective/types.js').ObjectiveScoreEvidence
   outcome: 'eligible' | 'accepted' | 'rejected' | 'insufficient-evidence'
   reasonCodes: string[]
   supportDigest: string
   metricContractDigests: string[]
-  comparison: { outcomeGain?: number; processGains: Record<string, number>; constraintCoverage: 'available' | 'unavailable' }
+  comparison: { objectiveGain?: number; outcomeGain?: number; processGains: Record<string, number>; constraintCoverage: 'available' | 'unavailable' }
   digest: string
 }
 export interface SearchProvider {
   integrity: string
-  capabilities: { taskSubsetPlans: boolean; batchIndependentCells: boolean; idempotentExecution: boolean }
+  capabilities: { taskSubsetPlans: boolean; batchIndependentCells: boolean; idempotentExecution: boolean; objectives?: 1 }
   describe(partition: Partition): Promise<TaskUniverse>
   /** Idempotent key identifies one invocation, including across controller crashes. */
   evaluate(input: { plan: StageEvaluationPlan; snapshot: Snapshot; cells: CellIdentity[]; idempotencyKey: string; signal: AbortSignal }): Promise<EvidenceCell[]>

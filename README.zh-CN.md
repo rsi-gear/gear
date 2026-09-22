@@ -127,6 +127,8 @@ Gear 采用受 **meta-learning（元学习）** 启发的双层架构，将任�
 
 Gear 记录每一版 harness 及其评测结果，你可以检查改动并复用优化后的 harness。
 
+你可以[定义加权优化目标](docs/refine-objectives.zh-CN.md)，组合已声明的通过率、过程分、费用或 token，并保留所有原始计量。
+
 ## 看看两个完整案例
 
 - [优化 Marketing harness](docs/guide/zh-CN/example-harness.md)：了解五轮 harness 优化，从初始配置到最终保留的 harness。

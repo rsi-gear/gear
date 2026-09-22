@@ -339,6 +339,15 @@
     "TaskUniverse": {
       "type": "object",
       "properties": {
+        "rawMetricContracts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RawMetricContract"
+          }
+        },
+        "objective": {
+          "$ref": "#/$defs/ResolvedObjective"
+        },
         "partition": {
           "$ref": "#/$defs/Partition"
         },
@@ -592,6 +601,9 @@
     "TaskGuard": {
       "type": "object",
       "properties": {
+        "metric": {
+          "type": "string"
+        },
         "taskId": {
           "type": "string"
         },
@@ -680,6 +692,9 @@
     "MultisignalPromotionConfig": {
       "type": "object",
       "properties": {
+        "objective": {
+          "$ref": "#/$defs/MetricThresholds"
+        },
         "policy": {
           "const": "paired-multisignal-v1"
         },
@@ -1336,6 +1351,9 @@
     "CellIdentity": {
       "type": "object",
       "properties": {
+        "rawMetricContractsDigest": {
+          "type": "string"
+        },
         "taskId": {
           "type": "string"
         },
@@ -1390,6 +1408,9 @@
     "EvidenceCell": {
       "type": "object",
       "properties": {
+        "rawMetrics": {
+          "$ref": "#/$defs/RawTrialMetrics"
+        },
         "identity": {
           "$ref": "#/$defs/CellIdentity"
         },
@@ -1803,6 +1824,25 @@
                   },
                   "supportDigest": {
                     "type": "string"
+                  },
+                  "objectiveScore": {
+                    "$ref": "#/$defs/ObjectiveScoreEvidence"
+                  },
+                  "rawMetrics": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "$ref": "#/$defs/RawMetricAggregate"
+                    }
+                  },
+                  "objectiveComplete": {
+                    "anyOf": [
+                      {
+                        "const": false
+                      },
+                      {
+                        "const": true
+                      }
+                    ]
                   }
                 },
                 "required": [
@@ -2183,6 +2223,28 @@
     "TaskProfile": {
       "type": "object",
       "properties": {
+        "objectiveComplete": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "rawMetrics": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/RawMetricAggregate"
+          }
+        },
+        "objectiveScore": {
+          "$ref": "#/$defs/ObjectiveScoreEvidence"
+        },
+        "objectiveKey": {
+          "type": "string"
+        },
         "taskId": {
           "type": "string"
         },
@@ -2207,6 +2269,28 @@
     "EvidenceProfile": {
       "type": "object",
       "properties": {
+        "rawMetrics": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/RawMetricAggregate"
+          }
+        },
+        "objectiveScore": {
+          "$ref": "#/$defs/ObjectiveScoreEvidence"
+        },
+        "objectiveComplete": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "objectiveKey": {
+          "type": "string"
+        },
         "universeDigest": {
           "type": "string"
         },
@@ -2285,6 +2369,9 @@
     "DiagnosisFact": {
       "type": "object",
       "properties": {
+        "objectiveEvidence": {
+          "$ref": "#/$defs/ObjectiveScoreEvidence"
+        },
         "taskId": {
           "type": "string"
         },
@@ -2867,6 +2954,9 @@
                   },
                   {
                     "const": "process"
+                  },
+                  {
+                    "const": "objective"
                   }
                 ]
               },
@@ -3233,6 +3323,9 @@
     "GateDecision": {
       "type": "object",
       "properties": {
+        "objectiveScore": {
+          "$ref": "#/$defs/ObjectiveScoreEvidence"
+        },
         "outcome": {
           "anyOf": [
             {
@@ -3267,6 +3360,9 @@
         "comparison": {
           "type": "object",
           "properties": {
+            "objectiveGain": {
+              "type": "number"
+            },
             "outcomeGain": {
               "type": "number"
             },
@@ -4553,6 +4649,908 @@
     },
     "SearchJournal": {
       "type": "object",
+      "additionalProperties": false
+    },
+    "RawMetricDefinition": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "unit": {
+          "type": "string"
+        },
+        "direction": {
+          "anyOf": [
+            {
+              "const": "maximize"
+            },
+            {
+              "const": "minimize"
+            }
+          ]
+        },
+        "source": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "extractor": {
+              "anyOf": [
+                {
+                  "const": "number-v1"
+                },
+                {
+                  "const": "boolean-v1"
+                },
+                {
+                  "const": "equals-v1"
+                }
+              ]
+            },
+            "equals": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "const": false
+                },
+                {
+                  "const": true
+                }
+              ]
+            }
+          },
+          "required": [
+            "path",
+            "extractor"
+          ],
+          "additionalProperties": false
+        },
+        "range": {
+          "type": "object",
+          "properties": {
+            "min": {
+              "type": "number"
+            },
+            "max": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "min",
+            "max"
+          ],
+          "additionalProperties": false
+        },
+        "granularity": {
+          "anyOf": [
+            {
+              "const": "dataset-aggregate"
+            },
+            {
+              "const": "trial"
+            }
+          ]
+        },
+        "repetitionReducer": {
+          "const": "mean"
+        },
+        "taskReducer": {
+          "const": "weighted-mean"
+        },
+        "comparisonPrecision": {
+          "type": "number"
+        },
+        "measurement": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "anyOf": [
+                {
+                  "const": "actual"
+                },
+                {
+                  "const": "api-equivalent"
+                },
+                {
+                  "const": "counter"
+                },
+                {
+                  "const": "wall-clock"
+                }
+              ]
+            },
+            "scope": {
+              "type": "string"
+            },
+            "providerModels": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "priceSnapshot": {
+              "type": "string"
+            },
+            "tokenAccounting": {
+              "type": "string"
+            },
+            "timeBoundary": {
+              "type": "string"
+            },
+            "retryAccounting": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "scope",
+            "providerModels",
+            "tokenAccounting",
+            "timeBoundary",
+            "retryAccounting"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "unit",
+        "direction",
+        "source",
+        "granularity",
+        "repetitionReducer",
+        "taskReducer",
+        "comparisonPrecision"
+      ],
+      "additionalProperties": false
+    },
+    "RawMetricContract": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "digest": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "unit": {
+          "type": "string"
+        },
+        "direction": {
+          "anyOf": [
+            {
+              "const": "maximize"
+            },
+            {
+              "const": "minimize"
+            }
+          ]
+        },
+        "source": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "extractor": {
+              "anyOf": [
+                {
+                  "const": "number-v1"
+                },
+                {
+                  "const": "boolean-v1"
+                },
+                {
+                  "const": "equals-v1"
+                }
+              ]
+            },
+            "equals": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "const": false
+                },
+                {
+                  "const": true
+                }
+              ]
+            }
+          },
+          "required": [
+            "path",
+            "extractor"
+          ],
+          "additionalProperties": false
+        },
+        "range": {
+          "type": "object",
+          "properties": {
+            "min": {
+              "type": "number"
+            },
+            "max": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "min",
+            "max"
+          ],
+          "additionalProperties": false
+        },
+        "granularity": {
+          "anyOf": [
+            {
+              "const": "dataset-aggregate"
+            },
+            {
+              "const": "trial"
+            }
+          ]
+        },
+        "repetitionReducer": {
+          "const": "mean"
+        },
+        "taskReducer": {
+          "const": "weighted-mean"
+        },
+        "comparisonPrecision": {
+          "type": "number"
+        },
+        "measurement": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "anyOf": [
+                {
+                  "const": "actual"
+                },
+                {
+                  "const": "api-equivalent"
+                },
+                {
+                  "const": "counter"
+                },
+                {
+                  "const": "wall-clock"
+                }
+              ]
+            },
+            "scope": {
+              "type": "string"
+            },
+            "providerModels": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "priceSnapshot": {
+              "type": "string"
+            },
+            "tokenAccounting": {
+              "type": "string"
+            },
+            "timeBoundary": {
+              "type": "string"
+            },
+            "retryAccounting": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "scope",
+            "providerModels",
+            "tokenAccounting",
+            "timeBoundary",
+            "retryAccounting"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "digest",
+        "id",
+        "revision",
+        "unit",
+        "direction",
+        "source",
+        "granularity",
+        "repetitionReducer",
+        "taskReducer",
+        "comparisonPrecision"
+      ],
+      "additionalProperties": false
+    },
+    "ObjectiveDefinition": {
+      "type": "object",
+      "properties": {
+        "terms": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "metric": {
+                "type": "string"
+              },
+              "weight": {
+                "type": "number"
+              },
+              "scale": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "metric",
+              "weight"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "constraints": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "metric": {
+                    "type": "string"
+                  },
+                  "rule": {
+                    "const": "minimum"
+                  },
+                  "value": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "metric",
+                  "rule",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "metric": {
+                    "type": "string"
+                  },
+                  "rule": {
+                    "const": "no_regression"
+                  },
+                  "reference": {
+                    "const": "initial_baseline"
+                  },
+                  "tolerance": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "metric",
+                  "rule",
+                  "reference"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        }
+      },
+      "required": [
+        "terms"
+      ],
+      "additionalProperties": false
+    },
+    "ResolvedMetricConstraint": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "metric": {
+              "type": "string"
+            },
+            "rule": {
+              "const": "minimum"
+            },
+            "value": {
+              "type": "number"
+            },
+            "metricContractDigest": {
+              "type": "string"
+            },
+            "direction": {
+              "anyOf": [
+                {
+                  "const": "maximize"
+                },
+                {
+                  "const": "minimize"
+                }
+              ]
+            },
+            "comparisonPrecision": {
+              "type": "number"
+            },
+            "digest": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "metric",
+            "rule",
+            "value",
+            "metricContractDigest",
+            "direction",
+            "comparisonPrecision",
+            "digest"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "metric": {
+              "type": "string"
+            },
+            "rule": {
+              "const": "no_regression"
+            },
+            "reference": {
+              "const": "initial_baseline"
+            },
+            "tolerance": {
+              "type": "number"
+            },
+            "metricContractDigest": {
+              "type": "string"
+            },
+            "direction": {
+              "anyOf": [
+                {
+                  "const": "maximize"
+                },
+                {
+                  "const": "minimize"
+                }
+              ]
+            },
+            "comparisonPrecision": {
+              "type": "number"
+            },
+            "digest": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "metric",
+            "rule",
+            "reference",
+            "metricContractDigest",
+            "direction",
+            "comparisonPrecision",
+            "digest"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ResolvedObjective": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "direction": {
+          "const": "maximize"
+        },
+        "terms": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "metric": {
+                "type": "string"
+              },
+              "weight": {
+                "type": "number"
+              },
+              "scale": {
+                "type": "number"
+              },
+              "metricContractDigest": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "metric",
+              "weight",
+              "scale",
+              "metricContractDigest"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "constraints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ResolvedMetricConstraint"
+          }
+        },
+        "scorerVersion": {
+          "const": "linear-raw-v1"
+        },
+        "comparisonPrecision": {
+          "type": "number"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "direction",
+        "terms",
+        "constraints",
+        "scorerVersion",
+        "comparisonPrecision",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "RawMetricValue": {
+      "type": "object",
+      "properties": {
+        "contractDigest": {
+          "type": "string"
+        },
+        "unit": {
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "const": "available"
+            },
+            {
+              "const": "unsupported"
+            },
+            {
+              "const": "missing"
+            },
+            {
+              "const": "invalid"
+            }
+          ]
+        },
+        "value": {
+          "type": "number"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "evidenceRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "contractDigest",
+        "unit",
+        "status",
+        "evidenceRefs"
+      ],
+      "additionalProperties": false
+    },
+    "RawTrialMetrics": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "raw-metrics"
+        },
+        "taskId": {
+          "type": "string"
+        },
+        "repetition": {
+          "type": "number"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "attempt": {
+          "type": "number"
+        },
+        "harnessCommit": {
+          "type": "string"
+        },
+        "conditionDigest": {
+          "type": "string"
+        },
+        "originalArtifactRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/RawMetricValue"
+          }
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "kind",
+        "taskId",
+        "repetition",
+        "runId",
+        "attempt",
+        "harnessCommit",
+        "conditionDigest",
+        "originalArtifactRefs",
+        "metrics",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "RawMetricAggregate": {
+      "type": "object",
+      "properties": {
+        "observationTotal": {
+          "type": "number"
+        },
+        "observationTotalExact": {
+          "type": "object",
+          "properties": {
+            "numerator": {
+              "type": "string"
+            },
+            "denominator": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "numerator",
+            "denominator"
+          ],
+          "additionalProperties": false
+        },
+        "contractDigest": {
+          "type": "string"
+        },
+        "unit": {
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "const": "available"
+            },
+            {
+              "const": "unsupported"
+            },
+            {
+              "const": "missing"
+            },
+            {
+              "const": "invalid"
+            }
+          ]
+        },
+        "value": {
+          "type": "number"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "evidenceRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "contractDigest",
+        "unit",
+        "status",
+        "evidenceRefs"
+      ],
+      "additionalProperties": false
+    },
+    "ObjectiveScoreEvidence": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "refine-objective-score"
+        },
+        "objective": {
+          "$ref": "#/$defs/ResolvedObjective"
+        },
+        "objectiveDigest": {
+          "type": "string"
+        },
+        "projectorDigest": {
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "const": "available"
+            },
+            {
+              "const": "missing"
+            },
+            {
+              "const": "invalid"
+            }
+          ]
+        },
+        "score": {
+          "type": "number"
+        },
+        "scopeDigest": {
+          "type": "string"
+        },
+        "rawMetricsRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "metric": {
+                "type": "string"
+              },
+              "contractDigest": {
+                "type": "string"
+              },
+              "rawInputRefs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "value": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "metric",
+              "contractDigest",
+              "rawInputRefs"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "contributions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "metric": {
+                "type": "string"
+              },
+              "weight": {
+                "type": "number"
+              },
+              "scale": {
+                "type": "number"
+              },
+              "scaledValue": {
+                "type": "number"
+              },
+              "contribution": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "metric",
+              "weight",
+              "scale"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "constraintResults": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "constraintDigest": {
+                "type": "string"
+              },
+              "referenceDigest": {
+                "type": "string"
+              },
+              "status": {
+                "anyOf": [
+                  {
+                    "const": "passed"
+                  },
+                  {
+                    "const": "failed"
+                  },
+                  {
+                    "const": "unavailable"
+                  }
+                ]
+              },
+              "evidenceRefs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "constraintDigest",
+              "status",
+              "evidenceRefs"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "kind",
+        "objective",
+        "objectiveDigest",
+        "projectorDigest",
+        "status",
+        "scopeDigest",
+        "rawMetricsRefs",
+        "inputs",
+        "contributions",
+        "constraintResults",
+        "digest"
+      ],
       "additionalProperties": false
     }
   }

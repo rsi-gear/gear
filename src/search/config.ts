@@ -36,6 +36,7 @@ export function resolveSearchSettings(input: { search?: SearchConfig; promotion:
       process: { ...defaultSearchConfig.process, ...s.process },
     },
     promotion: { policy: 'paired-multisignal-v1', validationMode: p.validationMode ?? defaultMultisignalPromotion.validationMode,
+      ...(p.objective ? { objective: structuredClone(p.objective) } : {}),
       ...(p.allowSharedSetPromotion === undefined ? {} : { allowSharedSetPromotion: p.allowSharedSetPromotion }),
       allowNeutral: p.allowNeutral ?? false, protectedTasks: p.protectedTasks ?? [], protectedAssertions: p.protectedAssertions ?? [],
       outcome: { ...defaultMultisignalPromotion.outcome, ...p.outcome }, process: { ...defaultMultisignalPromotion.process, ...p.process } },

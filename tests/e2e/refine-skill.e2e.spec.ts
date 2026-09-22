@@ -24,6 +24,7 @@ import { createGitHarnessFixture } from '../helpers/git-fixture.js'
 import { documentedHarnessCandidate, documentedSkillCandidate } from '../helpers/documented-skill-candidate.js'
 import { SHA } from '../helpers/research-fixture.js'
 import { trajectoryAnalysis, trajectoryEventsPage } from '../helpers/trajectory-fixture.js'
+import { admitHistoricalFixture } from '../helpers/historical-admission.js'
 
 const cleanups: Array<() => Promise<void>> = []
 const configuredSecretName = 'GEAR_STANDALONE_EXPERIENCE_TEST_SECRET'
@@ -215,9 +216,9 @@ describe('refine skill end to end', () => {
     cleanups.push(() => controlPlane.dispose())
     const { service } = controlPlane
 
-    const admission = await requestRefineSkill(socketPath, {
-      method: 'control.start', params: { rounds: exerciseExperience ? 2 : 1, focus: ['context'] },
-    }) as { evolutionId: string; roundId: string }
+    // This fixture exercises the historical non-staged workflow over the live
+    // socket; objective V1 admission is covered by the staged control-plane tests.
+    const admission = await admitHistoricalFixture(service, 'skill', { rounds: exerciseExperience ? 2 : 1, focus: ['context'] })
     const claim = await eventually(
       () => requestRefineSkill(socketPath, {
         method: 'meta.claim',

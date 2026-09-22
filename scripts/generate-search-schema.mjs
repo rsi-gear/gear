@@ -6,7 +6,7 @@ const cfg=ts.readConfigFile(`${base}/tsconfig.json`,ts.sys.readFile).config;
 const parsed=ts.parseJsonConfigFileContent(cfg,ts.sys,base);
 const program=ts.createProgram(parsed.fileNames,parsed.options), checker=program.getTypeChecker();
 const named=new Map(), defs={};
-for(const file of ['types.ts','engine.ts','runtime.ts','regression.ts','completion.ts','epochs.ts','shadow.ts','store.ts']) {
+for(const file of ['types.ts','engine.ts','runtime.ts','regression.ts','completion.ts','epochs.ts','shadow.ts','store.ts','../objective/types.ts']) {
  const source=program.getSourceFile(`${base}/src/search/${file}`);
  for(const symbol of checker.getExportsOfModule(checker.getSymbolAtLocation(source))) {
   const decl=symbol.declarations?.[0];

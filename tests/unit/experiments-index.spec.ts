@@ -31,7 +31,7 @@ describe('experiments.tsv materialized index', () => {
     expect(header).toBe(EXPERIMENTS_TSV_COLUMNS.join('\t'))
     expect(row?.split('\t')).toEqual([
       'evo-1', 'line\\tone\\nline two', 'round-1', 'round-1-candidate-1', 'selected', 'a'.repeat(40),
-      '', '', '', '', '', '', '', 'promoted', 'finalist', 'evolutions/evo-1/rounds/round-1.json', 'later', 'held-out',
+      '', '', '', '', '', '', '', 'promoted', 'finalist', 'evolutions/evo-1/rounds/round-1.json', 'later', '', '', 'held-out',
     ])
   })
 
@@ -64,7 +64,7 @@ describe('experiments.tsv materialized index', () => {
     expect(cells).toEqual([
       'evo-1', 'experiment one', 'round-1', 'round-1-candidate-1', 'evaluating', 'a'.repeat(40),
       candidateCommit, 'd'.repeat(40), `refs/dsh-refine/evolutions/evo-1/candidates/${candidateCommit}`,
-      `eval_${'2'.repeat(32)}`, '0.5', '', '', '', '', 'evolutions/evo-1/rounds/round-1.json', 'later', 'held-out',
+      `eval_${'2'.repeat(32)}`, '0.5', '', '', '', '', 'evolutions/evo-1/rounds/round-1.json', 'later', '', '', 'held-out',
     ])
 
     await rm(registry.experimentsPath)

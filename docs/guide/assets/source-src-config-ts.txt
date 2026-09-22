@@ -35,6 +35,9 @@ export interface HitchConfig {
 }
 
 export interface Config {
+  search?: import('./search/types.js').SearchConfig
+  budgets?: import('./search/types.js').SearchSettings['budgets']
+  regression?: import('./search/types.js').SearchSettings['regression']
   workspaceRoot: string
   dshRepository: string
   targetRoot: string
@@ -125,10 +128,13 @@ export interface Config {
     readPaths?: string[]
   }
   hitch: HitchConfig
-  promotion: PromotionPolicy
+  promotion: PromotionPolicy & Partial<import('./search/types.js').MultisignalPromotionConfig>
 }
 
 export const ConfigSchema: Schema<Config> = Schema.object({
+  search: Schema.any().default(undefined as never),
+  budgets: Schema.any().default(undefined as never),
+  regression: Schema.any().default(undefined as never),
   workspaceRoot: Schema.string().required(),
   dshRepository: Schema.string().required(),
   targetRoot: Schema.string().default('harness'),
@@ -302,6 +308,15 @@ export const ConfigSchema: Schema<Config> = Schema.object({
     controlPlane: { mode: 'direct', requireModelCapture: false },
   } as never),
   promotion: Schema.object({
+    policy: Schema.string(),
+    validationMode: Schema.string(),
+    allowSharedSetPromotion: Schema.boolean(),
+    outcome: Schema.any(),
+    process: Schema.any(),
+    objective: Schema.any(),
+    allowNeutral: Schema.boolean(),
+    protectedTasks: Schema.any(),
+    protectedAssertions: Schema.any(),
     minimumCandidateScore: Schema.number().default(0),
     minimumAbsoluteGain: Schema.number().default(0),
     requireNoRegression: Schema.boolean().default(true),
@@ -315,5 +330,5 @@ export const ConfigSchema: Schema<Config> = Schema.object({
     maxHeldOutRegression: 0,
     maxRequiredRegressions: 0,
     requiredTaskIds: [],
-  }),
+  } as never),
 }) as Schema<Config>

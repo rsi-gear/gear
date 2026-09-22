@@ -125,7 +125,44 @@ All fields are optional. `focus` must be an array containing any of `context`,
 `pre_action`, `routing`, `post_action`, `action_verifier`, `skill`, `tool`,
 `workflow`, or `compaction`. `from` is `initial`, `published`, or an exact
 40-character Git commit. The response contains `evolutionId`, `batchId`,
-`roundId`, and `status: "queued"`.
+`roundId`, `status: "queued"`, and `resolvedObjective`.
+
+New evolutions require the `failure-cluster-gepa-v1` execution path and declared
+raw metric contracts. `objective` is an optional inline weighted sum, for example:
+
+```json
+{
+  "objective": {
+    "terms": [
+      {"metric": "pass_rate", "weight": 0.5},
+      {"metric": "process_score", "weight": 0.5},
+      {"metric": "api_cost_usd", "weight": -0.1},
+      {"metric": "total_tokens", "weight": -0.1, "scale": 100000}
+    ],
+    "constraints": [
+      {"metric": "pass_rate", "rule": "no_regression", "reference": "initial_baseline", "tolerance": 0}
+    ]
+  }
+}
+```
+
+The score is `sum(weight * raw_metric / scale)`, maximized. Scale defaults to 1;
+weights may be negative and need not sum to 1. Scores are never clipped. Omitting
+the objective selects `pass_rate` with weight 1. Gear requires an explicit pass
+predicate; positive reward does not establish a pass. Unknown metrics, duplicate
+terms, all-zero/nonfinite weights and nonpositive/nonfinite scales are rejected.
+Constraints can also use `{ "metric": "process_score", "rule": "minimum",
+"value": 0.8 }`; bounds follow the metric's declared direction. A failing
+constraint blocks promotion without changing the reported objective score.
+
+All original scores and usage remain recorded, including unselected metrics.
+Missing selected values make the evidence incomplete; missing unselected values
+remain visible. `resolvedObjective` freezes metric contract digests, weights,
+scales, constraints, precision and the scorer version. Review this definition and
+the seed `rawMetrics` / `objectiveScore` contributions when diagnosing results.
+The optional `promotion.objective` settings freeze `minimumGain`,
+`maxSeedRegression`, and `maxHeldOutRegression`; each defaults to zero. Process
+scores are not an extra acceptance branch or tiebreak for objective evolutions.
 
 ### `control.continue`
 
@@ -141,6 +178,10 @@ budgets, toolchain, sandbox, or promotion policy.
 ```
 
 Only `evolutionId` is required.
+
+`objective` cannot be supplied to continue. Create a new evolution to change
+weights or scales. Historical evolutions without a sealed objective retain their
+original scoring behavior.
 
 ### `control.status`
 

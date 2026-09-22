@@ -3,6 +3,7 @@ import { digestJson } from '../state/digest.js'
 import { digest, integrity, invariant, numeric, plannedCellCount, processTasks, repetitionsForTask, safeId, seal, sorted, utility, validateSettings, validateSnapshot, verifyDigest } from './contracts.js'
 import { deliveredWorkplan, validateReceipt } from './diagnosis.js'
 import { assertCell, cellIdentity, cellKey, completeEvidence, plannedCells, profile, reusableCells, validOutcome } from './evidence.js'
+import { objectiveProfile, trialPassed } from './objective.js'
 import { resolveParentPolicyRef } from './policies/parents.js'
 import { budgetFailure, recoverExternal, resolvePendingOperation, searchDeadline } from './recovery.js'
 import { resolveRegressionSettings } from './regression.js'
@@ -65,12 +66,14 @@ export class SearchExecutionRuntime {
     if (!result && previous?.state === 'settled') return
     const p = result ? profile(universe, plan, snapshot, result, mode) : undefined
     const coverage = p ? { coverage: p.coverage, processCoverage: p.processCoverage, outcomeComplete: p.outcomeComplete,
+      ...(p.objectiveScore ? { objectiveScore: p.objectiveScore, rawMetrics: p.rawMetrics!, objectiveComplete: p.objectiveComplete! } : {}),
       processComplete: p.processComplete, processTaskIds: p.processTaskIds, tasks: p.tasks, supportDigest: p.supportDigest } : undefined
     const next: SearchProgress['evaluations'][number] = { stage: plan.stage, stagePlanDigest: plan.digest, scopeDigest: plan.scopeDigest, candidateId: snapshot.candidateId,
       state: result ? 'settled' : 'running', plannedCells: plannedCellCount(universe, plan.taskIds),
       ...(coverage ? { profile: coverage } : {}), ...(result?.failure ? { failure: result.failure } : {}) }
     progress.evaluations = [...progress.evaluations.filter(e => e !== previous), next]
     await this.store.write(`rounds/${roundId}/progress`, progress)
+    if (p?.objectiveScore) await this.store.put(p.objectiveScore)
   }
   async decisionProgress(roundId: string, decisions: EvaluationStageDecision[]): Promise<void> {
     const progress = await this.store.read<SearchProgress>(`rounds/${roundId}/progress`)
@@ -98,6 +101,7 @@ export class SearchExecutionRuntime {
     const [seed, heldOut] = await Promise.all([this.provider.describe('seed'), this.provider.describe('held-out')])
     const resolvedSettings = resolveRegressionSettings(admission.settings, seed, heldOut)
     validateSettings(resolvedSettings, seed, heldOut, admission.maxCandidates)
+    if (seed.objective) invariant(this.provider.capabilities.objectives === 1, 'provider does not support objective schema version 1')
     this.components.parentSelectionPolicy(resolveParentPolicyRef(resolvedSettings.search))
     if (admission.settings.regression.suiteRef) {
       invariant(seed.regressionSuiteDigest === admission.settings.regression.suiteRef && await this.provider.verifyRegressionSuite?.(admission.settings.regression.suiteRef, seed), 'provider must verify the frozen regression suite was included at new admission')
@@ -177,6 +181,7 @@ export class SearchExecutionRuntime {
         }
         await resolvePendingOperation(this.store, admission.roundId, key)
         for (const cell of output.cells) {
+          if (cell.rawMetrics) await this.store.put(cell.rawMetrics)
           await this.store.put(cell)
           await this.store.write(`cells/${cellKey(cell.identity).slice(7)}`, { ref: cell.digest })
         }
@@ -335,16 +340,22 @@ export class SearchExecutionRuntime {
         const refs = new Set(taskCells.flatMap(c => [c.evidenceRef, ...(c.outcome.status === 'available' ? [c.outcome.evidenceRef] : []), ...(c.process?.status === 'available' ? [c.process.evidenceRef] : [])]))
         invariant(taskIds.includes(fact.taskId) && fact.evidenceRefs.every(ref => refs.has(ref)), 'diagnosis fact lacks parent seed provenance')
         const task = universe.tasks.find(t => t.id === fact.taskId)!
-        if (fact.status === 'supported-hypothesis') invariant(fact.evidenceRefs.length && taskCells.some(c => validOutcome(c) && c.outcome.status === 'available'
-          && numeric(utility(c.outcome.rawValue, task.outcome)) < task.successUtility), 'a failure cluster requires valid business failure evidence')
+        if (fact.status === 'supported-hypothesis') {
+          if (universe.objective) {
+            const projected = objectiveProfile(universe, [fact.taskId], taskCells)
+            invariant(fact.evidenceRefs.length && projected.objectiveComplete, 'an objective hypothesis requires complete parent metric evidence')
+            if (fact.objectiveEvidence) invariant(fact.objectiveEvidence.digest === projected.objectiveScore!.digest, 'diagnosis objective evidence does not match the parent')
+          } else invariant(fact.evidenceRefs.length && taskCells.some(c => validOutcome(c) && c.outcome.status === 'available'
+            && numeric(utility(c.outcome.rawValue, task.outcome)) < task.successUtility), 'a failure cluster requires valid business failure evidence')
+        }
         if (fact.status === 'successful-control') invariant(fact.evidenceRefs.length && taskCells.length === repetitionsForTask(universe, fact.taskId).length
-          && taskCells.every(c => validOutcome(c) && c.outcome.status === 'available' && numeric(utility(c.outcome.rawValue, task.outcome)) >= task.successUtility), 'successful control requires complete parent success evidence')
+          && taskCells.every(c => validOutcome(c) && trialPassed(c, universe)), 'successful control requires complete parent success evidence')
       }
       const facts = [...output.facts]
       for (const taskId of taskIds) if (!facts.some(f => f.taskId === taskId)) {
         const task = universe.tasks.find(t => t.id === taskId)!, cells = baseline.cells.filter(c => c.identity.taskId === taskId)
         const complete = cells.length === repetitionsForTask(universe, taskId).length && cells.every(validOutcome)
-        const successful = complete && cells.every(c => c.outcome.status === 'available' && numeric(utility(c.outcome.rawValue, task.outcome)) >= task.successUtility)
+        const successful = complete && cells.every(c => trialPassed(c, universe))
         facts.push({ taskId, evidenceRefs: sorted(cells.map(c => c.evidenceRef)), status: !complete ? 'infrastructure-invalid' : successful ? 'successful-control' : 'unresolved' })
       }
       const dossier = seal({ parentSnapshotDigest: snapshot.digest, universeDigest: universe.digest, taskIds,
