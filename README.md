@@ -12,7 +12,7 @@
 
 </div>
 
-[![RSI in Action: AutomationBench Evolution Replay — watch the English video](docs/guide/assets/automationbench-evolution-replay-en.png)](docs/guide/assets/automationbench-evolution-replay-en.mp4?raw=1)
+[![RSI in Action: AutomationBench Evolution Replay — animated preview](docs/guide/assets/automationbench-evolution-replay-en.gif)](docs/guide/assets/automationbench-evolution-replay-en.mp4?raw=1)
 
 <p align="center">
   <a href="docs/guide/assets/automationbench-evolution-replay-en.mp4?raw=1"><strong>▶ Watch RSI in Action: AutomationBench Evolution Replay</strong></a> · English · 72 seconds
