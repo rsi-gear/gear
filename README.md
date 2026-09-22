@@ -12,6 +12,12 @@
 
 </div>
 
+[![RSI in Action: AutomationBench Evolution Replay — watch the English video](docs/guide/assets/automationbench-evolution-replay-en.png)](docs/guide/assets/automationbench-evolution-replay-en.mp4?raw=1)
+
+<p align="center">
+  <a href="docs/guide/assets/automationbench-evolution-replay-en.mp4?raw=1"><strong>▶ Watch RSI in Action: AutomationBench Evolution Replay</strong></a> · English · 72 seconds
+</p>
+
 Gear is an open-source optimization framework for improving AI agent performance on real-world tasks.
 
 To tailor an agent to a target scenario, first prepare a benchmark of representative tasks with clear success criteria. You can use an existing benchmark or [build your own task set](docs/guide/en/datasets.md). Run the [Refine Skill](skills/refine/SKILL.md) on that benchmark. Gear uses its evaluation results to iteratively improve the agent’s model, instructions, tools, and workflows.
