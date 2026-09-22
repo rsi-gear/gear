@@ -7,7 +7,7 @@ import { cellKey, validOutcome } from './evidence.js'
 import { digest, invariant, numeric, seal, sorted, utility, verifyDigest } from './contracts.js'
 import { SearchStore } from './store.js'
 import { SearchExecutionFailure } from './recovery.js'
-import type { CellIdentity, DiagnosisFact, DiagnosisProvider, EvidenceCell, ExternalRecovery, EvaluationExecutionResult, SearchProvider, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from './types.js'
+import type { CellIdentity, CellVerification, DiagnosisFact, DiagnosisProvider, EvidenceCell, ExternalRecovery, EvaluationExecutionResult, SearchProvider, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from './types.js'
 import { extractRawMetrics } from '../objective/scoring.js'
 import { objectiveProfile } from './objective.js'
 import { objectiveFormula } from '../objective/contracts.js'
@@ -187,8 +187,8 @@ export class EvaluationSearchAdapter implements SearchProvider {
     return source
   }
 
-  private async verifyBatch(batch: Batch, signal?: AbortSignal): Promise<void> {
-    const source = await this.dataset(batch.request.condition.partition)
+  private async verifyBatch(batch: Batch, signal?: AbortSignal, source?: DatasetDescription): Promise<void> {
+    source ??= await this.dataset(batch.request.condition.partition)
     invariant(batch.cohortDigest === source.universe.conditionDigest && batch.cells.every(cell => cell.conditionDigest === batch.cohortDigest), 'evaluation cell cohort changed')
     const current = await this.executionIdentity(batch.round, batch.request, signal)
     invariant(batch.identity ? current && digestJson(current) === digestJson(batch.identity) : !current, 'evaluation runtime configuration changed')
@@ -300,13 +300,39 @@ export class EvaluationSearchAdapter implements SearchProvider {
     return { status: 'complete', result: { cells } }
   }
   async verifyCell(cell: EvidenceCell, identity: CellIdentity): Promise<boolean> {
-    verifyDigest(cell)
-    const pointer = await this.store.read<{ ref: string }>(`evaluator-cells/${cellKey(identity).slice(7)}`)
-    if (!pointer) return false
-    const source = await this.store.object<Source>(pointer.ref)
-    await this.verifyBatch(source.batch)
-    if (source.submittedIdentity) await this.verifySubmittedCohort(source.submittedIdentity)
-    return source.evidence.actualCommit === identity.harnessCommit && source.cells.some(c => c.digest === cell.digest && cellKey(c.identity) === cellKey(identity))
+    return this.verifyCells([{ cell, identity }])
+  }
+
+  async verifyCells(cells: readonly CellVerification[]): Promise<boolean> {
+    // These caches live for one read-only verification call only. A later call
+    // must re-resolve mutable datasets and runtime configuration, even when it
+    // refers to the same source digest (including after a failed check).
+    const sources = new Map<string, Source>()
+    const datasets = new Map<'seed' | 'held-out', DatasetDescription>()
+    const batches = new Set<string>()
+    for (const { cell, identity } of cells) {
+      verifyDigest(cell)
+      if (cellKey(cell.identity) !== cellKey(identity)) return false
+      const pointer = await this.store.read<{ ref: string }>(`evaluator-cells/${cellKey(cell.identity).slice(7)}`)
+      if (!pointer) return false
+      let source = sources.get(pointer.ref)
+      if (!source) {
+        source = await this.store.object<Source>(pointer.ref)
+        sources.set(pointer.ref, source)
+      }
+      const batchDigest = digestJson(source.batch)
+      if (!batches.has(batchDigest)) {
+        const partition = source.batch.request.condition.partition
+        let dataset = datasets.get(partition)
+        if (!dataset) { dataset = await this.dataset(partition); datasets.set(partition, dataset) }
+        await this.verifyBatch(source.batch, undefined, dataset)
+        batches.add(batchDigest)
+      }
+      if (source.submittedIdentity) await this.verifySubmittedCohort(source.submittedIdentity)
+      if (source.evidence.actualCommit !== cell.identity.harnessCommit
+        || !source.cells.some(c => c.digest === cell.digest && cellKey(c.identity) === cellKey(cell.identity))) return false
+    }
+    return true
   }
 
   async resolveVerifierRun(evalId: string, runId: string, signal: AbortSignal) {

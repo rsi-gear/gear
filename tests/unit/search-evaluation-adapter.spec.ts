@@ -10,7 +10,7 @@ import { attachSearchEvaluation, EvaluationSearchAdapter } from '../../src/searc
 import { FailureClusterSearch } from '../../src/search/engine.js'
 import { SearchBudgetExceeded, SearchStore } from '../../src/search/store.js'
 import { recoverExternal, SearchOperationPending } from '../../src/search/recovery.js'
-import { cellIdentity } from '../../src/search/evidence.js'
+import { cellIdentity, cellKey, verifyCells } from '../../src/search/evidence.js'
 import { stagePlan } from '../../src/search/scopes.js'
 import { resolveSizing, seal } from '../../src/search/contracts.js'
 import { settings, fixtures } from '../helpers/search-fixture.js'
@@ -64,7 +64,103 @@ async function setup(process = true, repetitions = 1, deferred = false, taskCoun
   return { root, spec, source, requests, evaluator, provider, options, store, run, observations, search, reservations, cancelled, changeRuntime: () => { runtime = 'runtime-B' } }
 }
 
+async function batchInput(f: Awaited<ReturnType<typeof setup>>, taskIds: string[], key = 'batch-verification') {
+  const universe = await f.provider.describe('seed')
+  const plan = stagePlan({ stage: 'local', partition: 'seed', universeDigest: universe.digest,
+    taskSetSizeResolutionDigest: digestJson('sizing'), scopeDigest: digestJson('scope'), taskIds,
+    participantIds: [f.source.anchor.candidateId], prerequisiteDecisionDigests: [], selectionRuleDigest: digestJson('rule') })
+  return { plan, snapshot: f.source.anchor, cells: taskIds.map(id => cellIdentity(universe, id, 0, f.source.anchor)),
+    idempotencyKey: digestJson(key), signal: new AbortController().signal }
+}
+
 describe('Gear-owned staging through the existing evaluation interface', () => {
+  it('checks shared dataset/runtime identity twice per 100-cell batch instead of twice per cell', async () => {
+    const f = await setup(false)
+    const input = await batchInput(f, Array.from({ length: 100 }, (_, i) => `task-${i}`))
+    const cells = await f.provider.evaluate(input), checks = cells.map(cell => ({ cell, identity: cell.identity }))
+    const identity = vi.spyOn(f.evaluator, 'evaluationIdentity')
+    for (const { cell, identity: expected } of checks) expect(await f.provider.verifyCell(cell, expected)).toBe(true)
+    expect(identity).toHaveBeenCalledTimes(200)
+    identity.mockClear()
+    expect(await f.provider.verifyCells(checks)).toBe(true)
+    expect(identity).toHaveBeenCalledTimes(2)
+    // No success cache survives the call boundary.
+    f.changeRuntime()
+    await expect(f.provider.verifyCells(checks)).rejects.toThrow('runtime configuration changed')
+    expect(f.requests).toHaveLength(1)
+  })
+
+  it.each(['full', 'projected'] as const)('detects %s dataset changes on the next batch and does not cache failures', async changed => {
+    const f = await setup(false, 1, false, 5)
+    f.options.identityRound.plan.seed.dataset = f.spec.datasets.seed
+    const original = f.evaluator.evaluationIdentity!
+    f.evaluator.evaluationIdentity = async (round, request, signal) => {
+      const identity = (await original(round, request, signal))!
+      return { ...identity, effectiveConfigDigest: digestJson([identity, await digestDatasetRef(request.dataset, round.workspaceRoot)]) }
+    }
+    const evaluate = f.evaluator.evaluate.bind(f.evaluator)
+    f.evaluator.evaluate = async (round, request, signal, reservation) => {
+      const evidence = await evaluate(round, request, signal, reservation)
+      return Object.assign(evidence, await f.evaluator.evaluationIdentity!(round, request, signal))
+    }
+    const input = await batchInput(f, ['task-0', 'task-1'])
+    const cells = await f.provider.evaluate(input), checks = cells.map(cell => ({ cell, identity: cell.identity }))
+    expect(await f.provider.verifyCells(checks)).toBe(true)
+    const path = join(changed === 'full' ? f.spec.datasets.seed.ref : f.requests[0]!.dataset, 'extra.txt')
+    await writeFile(path, 'changed after successful validation')
+    await expect(f.provider.verifyCells(checks)).rejects.toThrow('runtime configuration changed')
+    await rm(path)
+    expect(await f.provider.verifyCells(checks)).toBe(true)
+  })
+
+  it('checks every source batch while sharing only its partition verification', async () => {
+    const f = await setup(false, 1, false, 5)
+    const first = await f.provider.evaluate(await batchInput(f, ['task-0', 'task-1'], 'first'))
+    const second = await f.provider.evaluate(await batchInput(f, ['task-2', 'task-3'], 'second'))
+    const checks = [...first, ...second].map(cell => ({ cell, identity: cell.identity }))
+    const original = f.evaluator.evaluationIdentity!
+    const identity = vi.spyOn(f.evaluator, 'evaluationIdentity')
+    expect(await f.provider.verifyCells(checks)).toBe(true)
+    expect(identity).toHaveBeenCalledTimes(3) // one full dataset, two physical batches
+    identity.mockImplementation(async (round, request, signal) => request.dataset === f.requests[1]!.dataset
+      ? { provider: 'changed-second-batch', effectiveConfigDigest: digestJson('changed') }
+      : original(round, request, signal))
+    await expect(f.provider.verifyCells(checks)).rejects.toThrow('runtime configuration changed')
+  })
+
+  it('still rejects corrupt, foreign, missing and incorrectly bound individual cells', async () => {
+    const f = await setup(false, 1, false, 5)
+    const cells = await f.provider.evaluate(await batchInput(f, ['task-0', 'task-1']))
+    const checks = cells.map(cell => ({ cell, identity: cell.identity })), last = cells[1]!
+    await expect(f.provider.verifyCells([checks[0]!, { cell: { ...last, evidenceRef: 'tampered' }, identity: last.identity }])).rejects.toThrow('digest mismatch')
+    const { digest: ignored, ...body } = last
+    expect(await f.provider.verifyCells([checks[0]!, { cell: seal({ ...body, evidenceRef: 'foreign' }), identity: last.identity }])).toBe(false)
+    expect(await f.provider.verifyCells([checks[0]!, { cell: last, identity: cells[0]!.identity }])).toBe(false)
+    await rm(join(f.store.root, `evaluator-cells/${cellKey(last.identity).slice(7)}.json`))
+    expect(await f.provider.verifyCells(checks)).toBe(false)
+  })
+
+  it('preserves the expected identity and rejection semantics for providers without batching', async () => {
+    const f = await setup(false, 1, false, 5)
+    const cells = await f.provider.evaluate(await batchInput(f, ['task-0', 'task-1']))
+    const checks = cells.map(cell => ({ cell, identity: { ...cell.identity, snapshotDigest: digestJson('new-lineage') } }))
+    const single = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false)
+    const provider = { ...f.provider, describe: f.provider.describe.bind(f.provider), evaluate: f.provider.evaluate.bind(f.provider), verifyCell: single }
+    expect(await verifyCells(provider, checks)).toBe(false)
+    expect(single.mock.calls).toEqual(checks.map(({ cell, identity }) => [cell, identity]))
+    expect(await verifyCells(provider, [])).toBe(true)
+    expect(single).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not settle evaluation evidence when the batch provider rejects any cell', async () => {
+    const f = await setup(false)
+    const verify = vi.spyOn(f.provider, 'verifyCells').mockResolvedValue(false)
+    await expect(f.run()).rejects.toThrow('provider rejected cell provenance')
+    expect(verify).toHaveBeenCalledTimes(1)
+    expect(verify.mock.calls[0]![0]).toHaveLength(100)
+    expect(await f.store.archive()).toBeUndefined()
+    expect((await f.store.read<{ operations: Array<{ status: string }> }>('budget'))!.operations[0]!.status).toBe('reserved')
+  })
   it.each(['valid', 'corrupt', 'foreign-run'] as const)('imports complete verifier artifacts and binds custom metrics to their original run (%s)', async mode => {
     const f = await setup(false, 1, false, 5)
     const path = join(f.spec.datasets.seed.ref, 'benchmark.adapter.json'), manifest = JSON.parse(await readFile(path, 'utf8'))
