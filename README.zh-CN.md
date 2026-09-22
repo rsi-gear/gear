@@ -12,6 +12,12 @@
 
 </div>
 
+![RSI 实践：AutomationBench 进化实验回放](docs/guide/assets/automationbench-evolution-replay-zh.gif)
+
+<p align="center">
+  <strong>RSI 实践：AutomationBench 进化实验回放</strong>
+</p>
+
 Gear 是一套开源优化框架，用于提升 AI Agent 在真实世界任务中的表现。
 
 要让 Agent 适应目标场景，首先准备一个包含代表性任务、具有明确验收标准的 benchmark。你可以使用现有 benchmark，也可以[构建自己的任务集](docs/guide/zh-CN/datasets.md)。在这个 benchmark 上运行 [Refine Skill](skills/refine/SKILL.md)。Gear 会利用评测结果，迭代改进 Agent 的模型、指令、工具和工作流程。
