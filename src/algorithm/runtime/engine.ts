@@ -8,6 +8,7 @@ import { CampaignStore } from './store.js';
 import type { ArtifactCheckpoint, CampaignStoreLike } from './persistence.js';
 import { BindingDeriveProvider } from './providers.js';
 import { kernelImplementationDigest } from './identity.js';
+import { ProviderProtocolError } from '../provider-errors.js';
 
 type OperationRecord = {
   envelope: OperationEnvelope;
@@ -21,7 +22,8 @@ type OperationRecord = {
 type ReceiptCursor = { cursor: string; cumulative: Record<string, number> };
 type Observation = { kind: 'inspect'; value: ProviderInspection }
   | { kind: 'submit'; value: ProviderSubmission; priorReceipt?: UsageReceipt }
-  | { kind: 'submit-unknown'; priorReceipt?: UsageReceipt };
+  | { kind: 'submit-unknown'; priorReceipt?: UsageReceipt }
+  | { kind: 'submit-protocol-error'; error: ProviderProtocolError; priorReceipt?: UsageReceipt };
 export type CampaignState = {
   version: 1;
   spec: CampaignSpec;
@@ -34,6 +36,8 @@ export type CampaignState = {
   state: JsonValue;
   decisionIndex: number;
   operations: Record<string, OperationRecord>;
+  /** External repair groups share this Campaign's receipts and budget without advancing the reducer. */
+  auxiliaryOperations?: Record<string, Record<string, OperationRecord>>;
   spent: Record<string, number>;
   receiptSources: Record<string, ReceiptCursor>;
   phase: 'running' | 'complete';
@@ -152,7 +156,9 @@ export class AlgorithmRuntime {
     // must still be persisted so the campaign can report its final accounting.
     if (intents.length === 0) return;
     const needed: Record<string, number> = {};
-    for (const operation of Object.values(state.operations)) if (!operation.released) {
+    const existing = [...Object.values(state.operations),
+      ...Object.values(state.auxiliaryOperations ?? {}).flatMap(group => Object.values(group))];
+    for (const operation of existing) if (!operation.released) {
       for (const [dimension, amount] of Object.entries(operation.envelope.limits)) needed[dimension] = (needed[dimension] ?? 0) + Math.max(0, amount - (operation.accounted[dimension] ?? 0));
     }
     for (const intent of intents) for (const [dimension, amount] of Object.entries(intent.limits ?? {})) {
@@ -165,7 +171,9 @@ export class AlgorithmRuntime {
 
   private budgetSnapshot(state: CampaignState): BudgetSnapshot {
     const reserved: Record<string, number> = {};
-    for (const operation of Object.values(state.operations)) if (!operation.released) {
+    const existing = [...Object.values(state.operations),
+      ...Object.values(state.auxiliaryOperations ?? {}).flatMap(group => Object.values(group))];
+    for (const operation of existing) if (!operation.released) {
       for (const [dimension, amount] of Object.entries(operation.envelope.limits)) {
         reserved[dimension] = (reserved[dimension] ?? 0) + Math.max(0, amount - (operation.accounted[dimension] ?? 0));
       }
@@ -174,6 +182,32 @@ export class AlgorithmRuntime {
       const spent = state.spent[dimension] ?? 0, held = reserved[dimension] ?? 0;
       return [dimension, { ...plan, spent, reserved: held, remaining: Math.max(0, plan.limit - spent - held) }];
     })) };
+  }
+
+  private makeOperation(state: CampaignState, intent: OperationIntent, operationId: string,
+    decisionIndex: number, defaultBinding: BindingSetRef): OperationRecord {
+    validName(intent.localKey);
+    validName(intent.kind);
+    if (!Object.hasOwn(intent, 'input')) throw new Error('Operation input required');
+    if (intent.limits !== undefined && (typeof intent.limits !== 'object' || intent.limits === null || Array.isArray(intent.limits)))
+      throw new Error('Operation limits must be an object');
+    const { manifest, digest } = this.provider(intent.kind);
+    validateSchema(manifest.inputSchema, intent.input);
+    this.artifacts.verifyContentRefs(intent.input, this.bindings);
+    const bindingSetRef = intent.bindingSetRef ?? defaultBinding;
+    this.validateBinding(bindingSetRef, state.initialBindingSetRef);
+    const limits = intent.limits ?? {};
+    for (const dimension of manifest.meteredDimensions) if (!Object.hasOwn(limits, dimension)) throw new Error(`Missing reservation ${dimension}`);
+    for (const dimension of Object.keys(limits)) {
+      if (!manifest.meteredDimensions.includes(dimension)) throw new Error(`Provider does not meter ${dimension}`);
+      if (state.spec.budget[dimension]?.capability === 'hard' && !manifest.hardLimitDimensions?.includes(dimension))
+        throw new Error(`Provider cannot enforce hard limit ${dimension}`);
+    }
+    const envelope: OperationEnvelope = { operationId, idempotencyKey: operationId,
+      campaignId: state.spec.campaignId, decisionIndex, localKey: intent.localKey,
+      kind: intent.kind, input: intent.input, inputDigest: jsonDigest(intent.input),
+      implementationDigest: manifest.implementationDigest, bindingSetRef, limits };
+    return { envelope, providerManifestDigest: digest, status: 'intent', accounted: {}, released: false };
   }
 
   private applyDecision(state: CampaignState, decision: AlgorithmDecision): CampaignState {
@@ -192,29 +226,9 @@ export class AlgorithmRuntime {
     if (!decision.complete && intents.length === 0) throw new Error('Nonterminal decision needs operations');
     this.budgetAdmission(next, intents);
     for (const intent of intents) {
-      validName(intent.localKey);
-      validName(intent.kind);
-      if (!Object.hasOwn(intent, 'input')) throw new Error('Operation input required');
-      if (intent.limits !== undefined && (typeof intent.limits !== 'object' || intent.limits === null || Array.isArray(intent.limits))) throw new Error('Operation limits must be an object');
       if (next.operations[intent.localKey]) throw new Error(`Duplicate local key ${intent.localKey}`);
-      const { manifest, digest } = this.provider(intent.kind);
-      validateSchema(manifest.inputSchema, intent.input);
-      this.artifacts.verifyContentRefs(intent.input, this.bindings);
-      const bindingSetRef = intent.bindingSetRef ?? active;
-      this.validateBinding(bindingSetRef, next.initialBindingSetRef);
-      const limits = intent.limits ?? {};
-      for (const dimension of manifest.meteredDimensions) if (!Object.hasOwn(limits, dimension)) throw new Error(`Missing reservation ${dimension}`);
-      for (const dimension of Object.keys(limits)) {
-        if (!manifest.meteredDimensions.includes(dimension)) throw new Error(`Provider does not meter ${dimension}`);
-        if (next.spec.budget[dimension]?.capability === 'hard' && !manifest.hardLimitDimensions?.includes(dimension)) throw new Error(`Provider cannot enforce hard limit ${dimension}`);
-      }
       const operationId = id([next.spec.campaignId, next.decisionIndex, intent.localKey]);
-      const envelope: OperationEnvelope = {
-        operationId, idempotencyKey: operationId, campaignId: next.spec.campaignId, decisionIndex: next.decisionIndex,
-        localKey: intent.localKey, kind: intent.kind, input: intent.input, inputDigest: jsonDigest(intent.input),
-        implementationDigest: manifest.implementationDigest, bindingSetRef, limits,
-      };
-      next.operations[intent.localKey] = { envelope, providerManifestDigest: digest, status: 'intent', accounted: {}, released: false };
+      next.operations[intent.localKey] = this.makeOperation(next, intent, operationId, next.decisionIndex, active);
     }
     if (decision.complete) next.phase = 'complete';
     return next;
@@ -228,7 +242,9 @@ export class AlgorithmRuntime {
     if (state.version !== 1 || canonicalJson(state.spec) !== canonicalJson(this.spec) || state.algorithmManifestDigest !== jsonDigest(this.manifest) || state.kernelImplementationDigest !== kernelImplementationDigest() || state.providerCatalogDigest !== this.providerCatalogDigest || state.storageBackendDigest !== this.storageBackendDigest) throw new Error('Campaign identity drift');
     this.validateBinding(state.activeBindingSetRef, state.initialBindingSetRef);
     validateSchema(this.manifest.stateSchema, state.state);
-    for (const record of Object.values(state.operations)) {
+    const records = [...Object.values(state.operations),
+      ...Object.values(state.auxiliaryOperations ?? {}).flatMap(group => Object.values(group))];
+    for (const record of records) {
       const { manifest, digest } = this.provider(record.envelope.kind);
       if (digest !== record.providerManifestDigest || manifest.implementationDigest !== record.envelope.implementationDigest || jsonDigest(record.envelope.input) !== record.envelope.inputDigest) throw new Error('Operation identity drift');
       this.validateBinding(record.envelope.bindingSetRef, state.initialBindingSetRef);
@@ -324,7 +340,10 @@ export class AlgorithmRuntime {
     if (record.status === 'cancel-pending' || (record.status === 'cancelled' && !record.released)) {
       let cancelled: ProviderInspection;
       try { cancelled = await provider.cancel(record.envelope); }
-      catch { return { kind: 'inspect', value: { status: 'unknown' } }; }
+      catch (error) {
+        if (error instanceof ProviderProtocolError) throw error;
+        return { kind: 'inspect', value: { status: 'unknown' } };
+      }
       this.validateInspection(cancelled);
       return { kind: 'inspect', value: cancelled };
     }
@@ -340,7 +359,12 @@ export class AlgorithmRuntime {
     this.store.assertLease();
     let submitted;
     try { submitted = await provider.submit(record.envelope); }
-    catch { return priorReceipt ? { kind: 'submit-unknown', priorReceipt } : { kind: 'submit-unknown' }; }
+    catch (error) {
+      if (error instanceof ProviderProtocolError) return priorReceipt
+        ? { kind: 'submit-protocol-error', error, priorReceipt }
+        : { kind: 'submit-protocol-error', error };
+      return priorReceipt ? { kind: 'submit-unknown', priorReceipt } : { kind: 'submit-unknown' };
+    }
     assertJson(submitted);
     if (submitted.status !== 'running' && submitted.status !== 'completed') throw new Error('Invalid provider submit status');
     return priorReceipt ? { kind: 'submit', value: submitted, priorReceipt }
@@ -349,7 +373,9 @@ export class AlgorithmRuntime {
 
   private applyObservation(state: CampaignState, record: OperationRecord, observation: Observation): void {
     if (observation.kind !== 'inspect') this.applyReceipt(state, record, observation.priorReceipt);
-    if (observation.kind === 'submit-unknown') { record.status = 'unknown'; return; }
+    if (observation.kind === 'submit-unknown' || observation.kind === 'submit-protocol-error') {
+      record.status = 'unknown'; return;
+    }
     const result = observation.value;
     if (result.status === 'completed') { this.complete(state, record, result.completion); return; }
     this.applyReceipt(state, record, result.receipt);
@@ -378,6 +404,9 @@ export class AlgorithmRuntime {
       }
       let state: CampaignState = loaded;
       if (state.phase === 'complete') return 'complete';
+      if (Object.values(state.auxiliaryOperations ?? {}).some(group =>
+        Object.values(group).some(record => record.status !== 'completed' && !(record.status === 'cancelled' && record.released))))
+        return 'waiting';
       const pending = Object.entries(state.operations).filter(([, record]) => record.status !== 'completed' && !(record.status === 'cancelled' && record.released)).sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
       for (let offset = 0; offset < pending.length; offset += 8) {
         const batch = pending.slice(offset, offset + 8);
@@ -394,6 +423,7 @@ export class AlgorithmRuntime {
           await (this.artifacts as FileArtifactStore & Partial<ArtifactCheckpoint>).flush?.();
           await this.store.commit(candidate as unknown as JsonValue, `operation.${record.status}`);
           state = candidate;
+          if (result.value.kind === 'submit-protocol-error') failure ??= result.value.error;
         }
         if (failure) throw failure;
       }
@@ -413,6 +443,94 @@ export class AlgorithmRuntime {
   async runUntilBlocked(maxTicks = 100): Promise<'complete' | 'waiting'> {
     for (let i = 0; i < maxTicks; i++) { const result = await this.tick(); if (result !== 'advanced') return result; }
     throw new Error('Maximum decisions exceeded');
+  }
+
+  /** Adds one host-authorized repair group without changing a scientific decision. */
+  async enqueueAuxiliary(groupId: string, intents: OperationIntent[]): Promise<void> {
+    validName(groupId);
+    if (!Array.isArray(intents) || intents.length === 0) throw new Error('Auxiliary group needs operations');
+    const keys = intents.map(intent => intent.localKey);
+    for (const key of keys) validName(key);
+    if (new Set(keys).size !== keys.length) throw new Error('Duplicate auxiliary local key');
+    await this.hydrate();
+    await this.store.withWriter(async () => {
+      const state = this.load();
+      if (!state || state.phase !== 'running') throw new Error('Auxiliary operation requires an active campaign');
+      const previous = state.auxiliaryOperations?.[groupId];
+      if (previous) {
+        if (Object.keys(previous).length !== intents.length) throw new Error('Auxiliary group identity drift');
+        for (const intent of intents) {
+          const saved = previous[intent.localKey];
+          if (!saved) throw new Error('Auxiliary group identity drift');
+          const expected = this.makeOperation(state, intent, saved.envelope.operationId,
+            saved.envelope.decisionIndex, saved.envelope.bindingSetRef);
+          if (canonicalJson(expected.envelope) !== canonicalJson(saved.envelope)
+            || expected.providerManifestDigest !== saved.providerManifestDigest)
+            throw new Error('Auxiliary group identity drift');
+        }
+        return;
+      }
+      for (const group of Object.values(state.auxiliaryOperations ?? {}))
+        if (Object.values(group).some(record => record.status !== 'completed' && !(record.status === 'cancelled' && record.released)))
+          throw new Error('Another auxiliary group is unresolved; resume its original group ID');
+      this.budgetAdmission(state, intents);
+      const group: Record<string, OperationRecord> = {};
+      for (const intent of intents) {
+        const operationId = id([state.spec.campaignId, 'auxiliary', groupId, intent.localKey]);
+        group[intent.localKey] = this.makeOperation(state, intent, operationId,
+          state.decisionIndex, state.activeBindingSetRef);
+      }
+      state.auxiliaryOperations = { ...(state.auxiliaryOperations ?? {}), [groupId]: group };
+      await (this.artifacts as FileArtifactStore & Partial<ArtifactCheckpoint>).flush?.();
+      await this.store.commit(state as unknown as JsonValue, `auxiliary.${groupId}.intent`);
+    });
+  }
+
+  /** Advances only one auxiliary group without calling algorithm.reduce. The host must admit safe provider kinds. */
+  private async tickAuxiliary(groupId: string): Promise<'complete' | 'waiting'> {
+    await this.hydrate();
+    return this.store.withWriter(async () => {
+      const loaded = this.load();
+      if (!loaded || loaded.phase !== 'running') throw new Error('Auxiliary operation requires an active campaign');
+      let state: CampaignState = loaded;
+      const group = state.auxiliaryOperations?.[groupId];
+      if (!group) throw new Error(`Unknown auxiliary group ${groupId}`);
+      const pending = Object.entries(group).filter(([, record]) =>
+        record.status !== 'completed' && !(record.status === 'cancelled' && record.released))
+        .sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+      if (pending.length === 0) return 'complete';
+      for (let offset = 0; offset < pending.length; offset += 8) {
+        const batch = pending.slice(offset, offset + 8);
+        const observed = await Promise.allSettled(batch.map(([, record]) => this.observe(record)));
+        let failure: unknown;
+        for (let index = 0; index < batch.length; index++) {
+          const result = observed[index]!;
+          if (result.status === 'rejected') { failure ??= result.reason; continue; }
+          const key = batch[index]![0];
+          const candidate: CampaignState = clone(state);
+          const record = candidate.auxiliaryOperations![groupId]![key]!;
+          try { this.applyObservation(candidate, record, result.value); }
+          catch (error) { failure ??= error; continue; }
+          if (canonicalJson(candidate) !== canonicalJson(state)) {
+            await (this.artifacts as FileArtifactStore & Partial<ArtifactCheckpoint>).flush?.();
+            await this.store.commit(candidate as unknown as JsonValue, `auxiliary.${groupId}.${record.status}`);
+            state = candidate;
+          }
+          if (result.value.kind === 'submit-protocol-error') failure ??= result.value.error;
+        }
+        if (failure) throw failure;
+      }
+      if (Object.values(state.auxiliaryOperations![groupId]!).every(record =>
+        record.status === 'completed' || (record.status === 'cancelled' && record.released))) return 'complete';
+      // A still-running physical effect needs an explicit next caller/resume;
+      // progress receipts alone do not authorize immediate re-inspection.
+      return 'waiting';
+    });
+  }
+
+  async runAuxiliaryUntilBlocked(groupId: string): Promise<'complete' | 'waiting'> {
+    validName(groupId);
+    return this.tickAuxiliary(groupId);
   }
 
   async cancel(localKey: string): Promise<void> {
