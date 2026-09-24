@@ -120,7 +120,9 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
       return !cell || !validOutcome(cell)
     })
     const repairCells = missing.filter(identity => known.has(cellKey(identity))).length
-    return task(key, 'gepa.evaluate', { universe, plan, snapshot } as unknown as JsonValue,
+    const processMode = ['bridge', 'global-seed', 'held-out'].includes(plan.stage)
+      ? options.settings.promotion.process.mode : options.settings.search.process.mode
+    return task(key, 'gepa.evaluate', { universe, plan, snapshot, processMode } as unknown as JsonValue,
       { bindingSetRef: reference(state, snapshot), limits: { rolloutCells: missing.length, repairCells } })
   }
   const result = (completed: Record<string, OperationOutcome>, key: string, plan: StageEvaluationPlan, snapshot: Snapshot): StageResult | null => {

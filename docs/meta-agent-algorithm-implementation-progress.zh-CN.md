@@ -178,3 +178,9 @@ AlgorithmManifest 新增通用 requiredOperationKindsFromConfig，由冻结配�
 ## Skill 预检查无副作用补充
 
 公开 validateSkillOverlaySelection 只读当前绑定、库成员与封存 Skill 内容，不创建工作区或 operation 记录；实际物化仍在持久开始意图后执行。返回注入摘要采用名称排序，不能将检索器的排序直接当作物理执行顺序。主 agent 独立快照验证 Skill suite 9/9，完整 typecheck 通过。
+
+## S6A 原始运行的证据补全
+
+主 agent 在只含已提交 HEAD 与三个冻结文件的独立快照中验证：GEPA 16/16、完整 typecheck 通过。每个评估操作冻结 search/promotion 的 process mode，先持久保存原始 rollout cells，再以固定 key 请求该次运行的 process/raw-metric 投影；丢回包后先查询同一 key，不能用新 rollout 替换已有有效 outcome。缺少所需补全能力或仍缺证据时返回类型化执行错误并结算已发生用量。
+
+主审发现并修复了两类证据降级：恢复时原始回包覆盖已补全缓存，以及跨轮 archive 与本地旧缓存的顺序影响。合并现在只接受不改变有效字段的单调补全；两个 archive 顺序都验证零新增 rollout/投影。测试覆盖固定投影 key、unknown/running 恢复、原始 raw metrics、拒绝改写 outcome 与阶段 process mode。实际物理 generation bridge 和正式包入口仍在后续阶段；未据此声称真实模型或论文效果已验证。

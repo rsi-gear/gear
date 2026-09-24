@@ -8,9 +8,9 @@ import { canonicalJson, jsonDigest, type JsonValue } from '../schema.js'
 import { implementationClosureDigest } from '../data/identity.js'
 import { durableCreate } from './provider-record.js'
 import { digestJson } from '../../state/digest.js'
-import { assertCell, assertConsistentCells, cellKey, plannedCells, profile, validOutcome, verifyCells } from '../../search/evidence.js'
+import { assertCell, assertConsistentCells, cellKey, completeEvidence, plannedCells, profile, validOutcome, verifyCells } from '../../search/evidence.js'
 import { deliveredWorkplan, validateReceipt } from '../../search/diagnosis.js'
-import { numeric, repetitionsForTask, seal, sorted, SearchProtocolError, utility, validateSnapshot, verifyDigest } from '../../search/contracts.js'
+import { numeric, processTasks, repetitionsForTask, seal, sorted, SearchProtocolError, utility, validateSnapshot, verifyDigest } from '../../search/contracts.js'
 import { objectiveProfile, trialPassed } from '../../search/objective.js'
 import type { CandidateWorkPlan, CellIdentity, DiagnosisDossier, DiagnosisFact, DiagnosisProvider, EvaluationScope, EvidenceCell,
   ResearchArchive, SearchProvider, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from '../../search/types.js'
@@ -20,7 +20,8 @@ import type { GeneratedCandidate, SearchExecutionHooks } from '../../search/runt
 type GepaKind = 'gepa.evaluate' | 'gepa.diagnose' | 'gepa.generate'
 type RecordValue = { schemaVersion: 1; operationId: string; inputDigest: string; implementationDigest: string;
   bindingDigest: string; idempotencyKey: string; stage: 'started' | 'cancelled-before-start' | 'complete';
-  request?: JsonValue; requestDigest?: string; completion?: CompletionEnvelope }
+  request?: JsonValue; requestDigest?: string; evaluationCells?: EvidenceCell[]; evaluationCellsDigest?: string;
+  completion?: CompletionEnvelope }
 type Result = { outcome: OperationOutcome; usage: Record<string, number> }
 
 /** Old physical services remain responsible for their durable original-key lookup. This adapter never retries an unknown started effect. */
@@ -70,7 +71,8 @@ abstract class GepaOperationProvider implements OperationProvider {
       || record.operationId !== envelope.operationId || record.inputDigest !== envelope.inputDigest
       || record.implementationDigest !== envelope.implementationDigest || record.bindingDigest !== envelope.bindingSetRef.digest
       || record.idempotencyKey !== envelope.idempotencyKey
-      || record.requestDigest !== (record.request === undefined ? undefined : jsonDigest(record.request)))
+      || record.requestDigest !== (record.request === undefined ? undefined : jsonDigest(record.request))
+      || record.evaluationCellsDigest !== (record.evaluationCells === undefined ? undefined : digestJson(record.evaluationCells)))
       throw new Error('GEPA operation record drift')
     return record
   }
@@ -141,29 +143,53 @@ abstract class GepaOperationProvider implements OperationProvider {
   }
 }
 
-type EvaluateInput = { universe: TaskUniverse; plan: StageEvaluationPlan; snapshot: Snapshot }
+type EvaluateInput = { universe: TaskUniverse; plan: StageEvaluationPlan; snapshot: Snapshot;
+  processMode: 'off' | 'auto' | 'required' }
 type FrozenEvaluationRequest = { missing: CellIdentity[]; cached: EvidenceCell[]; repairCells: number }
+type ProjectionRecord = { schemaVersion: 1; operationId: string; inputDigest: string; baseCellDigest: string;
+  key: string; stage: 'started' | 'complete'; cell?: EvidenceCell }
+class ProjectionPending extends Error {
+  constructor(readonly status: 'running' | 'unknown') { super(`GEPA process projection ${status}`) }
+}
+function richerCell(previous: EvidenceCell, candidate: EvidenceCell): EvidenceCell {
+  if (!validOutcome(previous)) return candidate
+  if (!validOutcome(candidate)) throw new SearchProtocolError('GEPA recovery cannot discard a valid outcome')
+  const extendsEvidence = (base: EvidenceCell, next: EvidenceCell): boolean => {
+    try {
+      assertConsistentCells(base, next)
+      return base.process?.status !== 'available' || next.process?.status === 'available'
+    } catch { return false }
+  }
+  if (extendsEvidence(previous, candidate)) return candidate
+  if (extendsEvidence(candidate, previous)) return previous
+  throw new SearchProtocolError('GEPA cached and original evidence cannot be merged without changing a valid field')
+}
 export class GepaEvaluationProvider extends GepaOperationProvider {
   private readonly cellRoot: string
+  private readonly projectionRoot: string
   private readonly initialCells = new Map<string, EvidenceCell>()
   private readonly physicalIntegrity: string
   private readonly capabilitiesDigest: string
   constructor(root: string, artifacts: FileArtifactStore, bindings: BindingStore, readonly physical: SearchProvider,
     initialArchive?: ResearchArchive) {
     super(root, 'gepa.evaluate', { providerIntegrity: physical.integrity, capabilities: physical.capabilities,
+      processCompletion: !!physical.completeProcess, processInspection: !!physical.inspectProcess,
       initialArchiveDigest: initialArchive?.digest ?? null } as unknown as JsonValue,
       artifacts, bindings, ['rolloutCells', 'repairCells'],
-      { type: 'object', required: ['universe', 'plan', 'snapshot'], properties: { universe: { type: 'any' }, plan: { type: 'any' }, snapshot: { type: 'any' } }, additionalProperties: false },
+      { type: 'object', required: ['universe', 'plan', 'snapshot', 'processMode'], properties: { universe: { type: 'any' }, plan: { type: 'any' },
+        snapshot: { type: 'any' }, processMode: { type: 'string', enum: ['off', 'auto', 'required'] } }, additionalProperties: false },
       { type: 'object', required: ['resultRef'], properties: { resultRef: { type: 'any' } }, additionalProperties: false })
     this.cellRoot = join(root, 'gepa-cells'); mkdirSync(this.cellRoot, { recursive: true })
+    this.projectionRoot = join(root, 'gepa-process'); mkdirSync(this.projectionRoot, { recursive: true })
     this.physicalIntegrity = physical.integrity
-    this.capabilitiesDigest = digestJson(physical.capabilities)
+    this.capabilitiesDigest = digestJson([physical.capabilities, !!physical.completeProcess, !!physical.inspectProcess])
     if (initialArchive) {
       verifyDigest(initialArchive)
       for (const result of initialArchive.results) for (const cell of result.cells) {
         const key = cellKey(cell.identity), previous = this.initialCells.get(key)
-        if (previous && validOutcome(previous) && validOutcome(cell)) assertConsistentCells(previous, cell)
-        if (!previous || validOutcome(cell)) this.initialCells.set(key, cell)
+        if (!previous) this.initialCells.set(key, cell)
+        else if (validOutcome(previous) && validOutcome(cell)) this.initialCells.set(key, richerCell(previous, cell))
+        else if (validOutcome(cell)) this.initialCells.set(key, cell)
       }
     }
   }
@@ -173,9 +199,14 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     let repairCells = 0
     for (const identity of expected) {
       const path = join(this.cellRoot, `${cellKey(identity).slice(7)}.json`)
-      const cell = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) as EvidenceCell : this.initialCells.get(cellKey(identity))
+      const persisted = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) as EvidenceCell : undefined
+      const archived = this.initialCells.get(cellKey(identity))
+      for (const item of [persisted, archived]) if (item) { assertCell(item, identity); inspected.push(item) }
+      const cell = persisted && archived
+        ? validOutcome(persisted) && validOutcome(archived) ? richerCell(archived, persisted)
+          : validOutcome(persisted) ? persisted : validOutcome(archived) ? archived : persisted
+        : persisted ?? archived
       if (!cell) { missing.push(identity); continue }
-      assertCell(cell, identity); inspected.push(cell)
       if (!validOutcome(cell)) { missing.push(identity); repairCells++; continue }
       cells.push(cell)
     }
@@ -189,10 +220,12 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     return { missing, cached: cells, repairCells } as unknown as JsonValue
   }
   protected async validate(envelope: OperationEnvelope): Promise<void> {
-    const { universe, plan, snapshot } = this.input(envelope)
+    const { universe, plan, snapshot, processMode } = this.input(envelope)
     verifyDigest(universe); verifyDigest(plan); validateSnapshot(snapshot)
+    if (!['off', 'auto', 'required'].includes(processMode)) throw new Error('GEPA process mode is not frozen')
     this.checkSnapshotBinding(envelope, snapshot)
-    if (this.physical.integrity !== this.physicalIntegrity || digestJson(this.physical.capabilities) !== this.capabilitiesDigest)
+    if (this.physical.integrity !== this.physicalIntegrity
+      || digestJson([this.physical.capabilities, !!this.physical.completeProcess, !!this.physical.inspectProcess]) !== this.capabilitiesDigest)
       throw new Error('GEPA physical evaluator identity drift')
     if (plan.universeDigest !== universe.digest || plan.partition !== universe.partition || !plan.participantIds.includes(snapshot.candidateId)
       || digestJson(await this.physical.describe(universe.partition)) !== digestJson(universe)) throw new Error('GEPA evaluation input/provider drift')
@@ -202,8 +235,75 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
       || !Number.isSafeInteger(envelope.limits.repairCells) || envelope.limits.repairCells! < 0)
       throw new Error('GEPA evaluation reservation invalid')
   }
+  /** One durable projection key names the original run's process/raw-metric read, never a fresh Target rollout. */
+  private async project(envelope: OperationEnvelope, base: EvidenceCell): Promise<EvidenceCell> {
+    if (!this.physical.completeProcess) throw new Error('GEPA process completion capability is absent')
+    const key = digestJson([envelope.operationId, 'process', base.digest])
+    const path = join(this.projectionRoot, `${envelope.operationId}-${cellKey(base.identity).slice(7)}.json`)
+    const intent: ProjectionRecord = { schemaVersion: 1, operationId: envelope.operationId,
+      inputDigest: envelope.inputDigest, baseCellDigest: base.digest, key, stage: 'started' }
+    const created = durableCreate(path, canonicalJson(intent))
+    const record = created ? intent : JSON.parse(readFileSync(path, 'utf8')) as ProjectionRecord
+    if (record.schemaVersion !== 1 || record.operationId !== intent.operationId
+      || record.inputDigest !== intent.inputDigest || record.baseCellDigest !== intent.baseCellDigest
+      || record.key !== key || !['started', 'complete'].includes(record.stage))
+      throw new Error('GEPA process projection identity drift')
+    const settle = async (cell: EvidenceCell): Promise<EvidenceCell> => {
+      assertCell(cell, base.identity)
+      if (!validOutcome(cell)) throw new SearchProtocolError('GEPA process completion replaced a valid outcome')
+      assertConsistentCells(base, cell)
+      if (!await verifyCells(this.physical, [{ cell, identity: base.identity }]))
+        throw new Error('GEPA process completion provenance rejected')
+      durableWrite(path, canonicalJson({ ...intent, stage: 'complete', cell }))
+      const cellPath = join(this.cellRoot, `${cellKey(cell.identity).slice(7)}.json`)
+      let chosen = cell
+      if (existsSync(cellPath)) {
+        const previous = JSON.parse(readFileSync(cellPath, 'utf8')) as EvidenceCell
+        assertCell(previous, base.identity)
+        chosen = richerCell(previous, cell)
+      }
+      durableWrite(cellPath, canonicalJson(chosen))
+      return chosen
+    }
+    if (record.stage === 'complete') {
+      if (!record.cell) throw new SearchProtocolError('GEPA completed process projection omitted evidence')
+      return settle(record.cell)
+    }
+    if (!created) {
+      if (!this.physical.inspectProcess) throw new ProjectionPending('unknown')
+      let observed: Awaited<ReturnType<NonNullable<SearchProvider['inspectProcess']>>>
+      try { observed = await this.physical.inspectProcess(base, key, new AbortController().signal) }
+      catch (error) { if (error instanceof SearchProtocolError) throw error; throw new ProjectionPending('unknown') }
+      if (observed.status === 'complete') {
+        if (observed.result.cells.length !== 1) throw new Error('GEPA process inspection returned unexpected cells')
+        return settle(observed.result.cells[0]!)
+      }
+      if (observed.status !== 'not-started') throw new ProjectionPending(observed.status === 'running' ? 'running' : 'unknown')
+      // The old SearchProvider promises the same key is idempotent; do not make a new projection key.
+    }
+    let projected: EvidenceCell
+    try { projected = await this.physical.completeProcess(base, key, new AbortController().signal) }
+    catch (error) {
+      if (error instanceof SearchProtocolError) throw error
+      if (this.physical.inspectProcess) {
+        let observed: Awaited<ReturnType<NonNullable<SearchProvider['inspectProcess']>>> | undefined
+        try {
+          observed = await this.physical.inspectProcess(base, key, new AbortController().signal)
+        } catch (inspectionError) {
+          if (inspectionError instanceof SearchProtocolError) throw inspectionError
+        }
+        if (observed?.status === 'complete') {
+          if (observed.result.cells.length !== 1) throw new Error('GEPA process inspection returned unexpected cells')
+          return settle(observed.result.cells[0]!)
+        }
+        if (observed?.status === 'running') throw new ProjectionPending('running')
+      }
+      throw new ProjectionPending('unknown')
+    }
+    return settle(projected)
+  }
   private async result(envelope: OperationEnvelope, record: RecordValue, received: EvidenceCell[]): Promise<Result> {
-    const { universe, plan, snapshot } = this.input(envelope)
+    const { universe, plan, snapshot, processMode } = this.input(envelope)
     const expected = plannedCells(universe, plan, snapshot)
     const request = record.request as unknown as FrozenEvaluationRequest
     if (!request || !Array.isArray(request.missing) || !Array.isArray(request.cached)
@@ -221,26 +321,54 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     }
     if (!await verifyCells(this.physical, received.map(cell => ({ cell, identity: byKey.get(cellKey(cell.identity))! }))))
       throw new Error('GEPA evaluation cell provenance rejected')
+    if (record.evaluationCells) {
+      if (digestJson(record.evaluationCells) !== digestJson(received))
+        throw new Error('GEPA original evaluation cells changed on recovery')
+    } else {
+      record.evaluationCells = received
+      record.evaluationCellsDigest = digestJson(received)
+      durableWrite(this.path(envelope), canonicalJson(record))
+    }
     const existing = await this.cached(expected)
     const cellsByKey = new Map(existing.cells.map(cell => [cellKey(cell.identity), cell]))
     for (const cell of received) {
       const key = cellKey(cell.identity), previous = cellsByKey.get(key)
-      if (previous) assertConsistentCells(previous, cell)
-      cellsByKey.set(key, cell)
+      const selected = previous ? richerCell(previous, cell) : cell
+      cellsByKey.set(key, selected)
       const path = join(this.cellRoot, `${key.slice(7)}.json`)
-      if (!durableCreate(path, canonicalJson(cell))) {
+      if (!durableCreate(path, canonicalJson(selected))) {
         const persisted = JSON.parse(readFileSync(path, 'utf8')) as EvidenceCell
         assertCell(persisted, byKey.get(key)!)
-        if (validOutcome(persisted)) assertConsistentCells(persisted, cell)
-        else durableWrite(path, canonicalJson(cell))
+        const latest = richerCell(persisted, selected)
+        cellsByKey.set(key, latest)
+        if (latest.digest !== persisted.digest) durableWrite(path, canonicalJson(latest))
       }
     }
-    const cells = [...request.cached, ...received]
+    const originals = [...request.cached, ...received]
+    let cells = originals.map(cell => cellsByKey.get(cellKey(cell.identity)) ?? cell)
+    const usage = { rolloutCells: requested.length, repairCells: request.repairCells }
+    const applicable = new Set(processTasks(universe, processMode))
+    const requiredMetrics = new Set([...(universe.objective?.terms.filter(term => term.weight !== 0).map(term => term.metric) ?? []),
+      ...(universe.objective?.constraints.map(constraint => constraint.metric) ?? [])])
+    const missingProjection = (cell: EvidenceCell): boolean => validOutcome(cell) && (
+      applicable.has(cell.identity.taskId) && cell.process?.status !== 'available'
+      || [...requiredMetrics].some(metric => cell.rawMetrics?.metrics[metric]?.status !== 'available'))
+    for (const cell of [...cells]) {
+      const original = originals.find(item => cellKey(item.identity) === cellKey(cell.identity))!
+      const projectionPath = join(this.projectionRoot, `${envelope.operationId}-${cellKey(cell.identity).slice(7)}.json`)
+      if (!missingProjection(cell) && !existsSync(projectionPath)) continue
+      if (!this.physical.completeProcess) return { outcome: { kind: 'error', code: 'PROCESS_COMPLETION_UNSUPPORTED',
+        message: 'Original-run process/raw-metric completion is unavailable from this provider' }, usage }
+      const projected = await this.project(envelope, original)
+      const before: StageResult = seal({ stagePlanDigest: plan.digest, snapshotDigest: snapshot.digest, cells, settled: true })
+      cells = completeEvidence(before, [projected]).cells
+      if (missingProjection(projected)) return { outcome: { kind: 'error', code: 'PROCESS_COMPLETION_INCOMPLETE',
+        message: 'Original-run process/raw-metric completion did not supply the required evidence' }, usage }
+    }
     const result: StageResult = seal({ stagePlanDigest: plan.digest, snapshotDigest: snapshot.digest, cells, settled: true })
-    profile(universe, plan, snapshot, result, 'auto')
+    profile(universe, plan, snapshot, result, processMode)
     const resultRef = this.artifacts.putJson(result as unknown as JsonValue, 'gepa.stage-result.v1')
-    return { outcome: { kind: 'result', value: { resultRef } },
-      usage: { rolloutCells: requested.length, repairCells: request.repairCells } }
+    return { outcome: { kind: 'result', value: { resultRef } }, usage }
   }
   protected async execute(envelope: OperationEnvelope, record: RecordValue): Promise<Result> {
     const { plan, snapshot, universe } = this.input(envelope)
@@ -261,11 +389,21 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     if (requested.length > envelope.limits.rolloutCells! || request.repairCells > envelope.limits.repairCells!)
       return { outcome: { kind: 'no-result', reason: 'rollout-cell-budget-exhausted' },
       usage: { rolloutCells: 0, repairCells: 0 } }
-    if (!requested.length) return this.result(envelope, record, [])
+    if (record.evaluationCells) {
+      try { return await this.result(envelope, record, record.evaluationCells) }
+      catch (error) { if (error instanceof ProjectionPending) return error.status; throw error }
+    }
+    if (!requested.length) {
+      try { return await this.result(envelope, record, []) }
+      catch (error) { if (error instanceof ProjectionPending) return error.status; throw error }
+    }
     if (!this.physical.inspectEvaluation) return 'unknown'
     const observed = await this.physical.inspectEvaluation({ plan, snapshot, cells: requested,
       idempotencyKey: envelope.idempotencyKey, signal: new AbortController().signal })
-    if (observed.status === 'complete') return this.result(envelope, record, observed.result.cells)
+    if (observed.status === 'complete') {
+      try { return await this.result(envelope, record, observed.result.cells) }
+      catch (error) { if (error instanceof ProjectionPending) return error.status; throw error }
+    }
     return observed.status === 'running' ? 'running' : 'unknown'
   }
 }

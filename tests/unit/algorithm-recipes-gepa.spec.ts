@@ -1,37 +1,41 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { cpSync, mkdtempSync, rmSync } from 'node:fs'
+import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AlgorithmRuntime, BindingStore, FileArtifactStore } from '../../src/algorithm/index.js'
-import type { BindingSchema, CampaignSpec } from '../../src/algorithm/contracts.js'
+import type { BindingSchema, CampaignSpec, OperationEnvelope } from '../../src/algorithm/contracts.js'
 import { GepaDiagnosisProvider, GepaEvaluationProvider, GepaGenerationProvider } from '../../src/algorithm/providers/gepa-operations.js'
 import { createGepaRound, nextGepaRound } from '../../src/algorithm/recipes/gepa-round.js'
 import { chooseGepaParents } from '../../src/algorithm/recipes/gepa-policy.js'
 import { buildArchive } from '../../src/search/archive.js'
 import { FailureClusterSearch } from '../../src/search/engine.js'
-import { cellKey } from '../../src/search/evidence.js'
+import { cellKey, completeEvidence } from '../../src/search/evidence.js'
 import { MemorySearchStore } from '../../src/search/testing.js'
 import { resolveParentPolicyRef, scopedFrontierPolicy } from '../../src/search/policies/parents.js'
-import { evaluatedFixture, fixtures, scopeFixture, settings } from '../helpers/search-fixture.js'
+import { evaluatedFixture, fixtures, revise, scopeFixture, settings } from '../helpers/search-fixture.js'
+import { resolveMetric, resolveObjective } from '../../src/objective/contracts.js'
+import { extractRawMetrics } from '../../src/objective/scoring.js'
 import { digestJson } from '../../src/state/digest.js'
 import { seal } from '../../src/search/contracts.js'
 import { jsonDigest } from '../../src/algorithm/schema.js'
-import type { CandidateWorkPlan } from '../../src/search/types.js'
+import type { CandidateWorkPlan, EvidenceCell, TaskUniverse } from '../../src/search/types.js'
+import type { JsonValue } from '../../src/algorithm/schema.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 const schema: BindingSchema = { id: 'gepa-harness.v1', slots: { harness: { schemaId: 'harness.directory.v1', required: true, replaceable: true } } }
-function setup(maxCandidates = 2, periodic = false) {
+function setup(maxCandidates = 2, periodic = false, process = false) {
   const root = mkdtempSync(join(tmpdir(), 'gear-algorithm-gepa-')); roots.push(root)
   const artifacts = new FileArtifactStore(join(root, 'artifacts'))
   const bindings = new BindingStore(artifacts, schema)
-  const fixture = fixtures(20)
+  const fixture = fixtures(20, process)
   const config = settings()
+  if (process) { config.search.process.mode = 'required'; config.promotion.process.mode = 'off' }
   if (periodic) config.search.scopeSampling = { ...config.search.scopeSampling,
     epochPolicy: 'periodic', updateEveryRounds: 1 }
   const scope = scopeFixture(fixture.seed, fixture.seed.tasks.map(task => task.id), 'bootstrap', 0)
   const baseline = evaluatedFixture(fixture.seed, scope, fixture.anchor,
-    id => ({ outcome: Number(id.slice(5)) >= 16 ? 1 : 0 }), { stage: 'baseline-probe' })
+    id => ({ outcome: Number(id.slice(5)) >= 16 ? 1 : 0, ...(process ? { process: 0.5 } : {}) }), { stage: 'baseline-probe' })
   const archive = buildArchive({ evolutionId: 'algorithm-gepa-fixture', universe: fixture.seed, snapshots: [fixture.anchor],
     scopes: [scope], plans: [baseline.plan], results: [baseline.result], config: config.search,
     championId: fixture.anchor.candidateId })
@@ -58,6 +62,39 @@ function setup(maxCandidates = 2, periodic = false) {
   return { root, artifacts, bindings, fixture, config, archive, options, spec, recipe, providers }
 }
 
+function processSetup(objective = false) {
+  const f = setup()
+  const physical = fixtures(4, true)
+  let seed: TaskUniverse = physical.seed
+  if (objective) {
+    const contract = resolveMetric({ id: 'quality', revision: '1', unit: 'score', direction: 'maximize',
+      source: { path: 'originalResult.quality', extractor: 'number-v1' }, granularity: 'trial',
+      repetitionReducer: 'mean', taskReducer: 'weighted-mean', comparisonPrecision: 1e-9 })
+    seed = revise(seed, { rawMetricContracts: [contract], objective: resolveObjective({ terms: [{ metric: 'quality', weight: 1 }] }, [contract]) })
+  }
+  physical.provider.describe = async partition => partition === 'seed' ? seed : physical.heldOut
+  const evaluate = physical.provider.evaluate
+  let originalCell: EvidenceCell | undefined
+  physical.provider.evaluate = async input => (await evaluate(input)).map(cell => {
+    originalCell = revise(cell, { process: { status: 'missing', contractDigest: cell.identity.processContractDigest!, reason: 'original run lacks projection' } })
+    return originalCell
+  })
+  const row = evaluatedFixture(seed, scopeFixture(seed, ['task-0']), physical.anchor, () => ({ outcome: 0 }), { stage: 'baseline-probe' })
+  const harness = f.artifacts.putJson({ schemaVersion: 1, kind: 'git-harness', commitOid: physical.anchor.commit,
+    manifestDigest: physical.anchor.manifestDigest }, 'harness.directory.v1')
+  const bindingSetRef = f.bindings.create({ harness })
+  const root = join(f.root, 'process-operations')
+  const makeProvider = () => new GepaEvaluationProvider(root, f.artifacts, f.bindings, physical.provider)
+  const makeEnvelope = (provider: GepaEvaluationProvider): OperationEnvelope => {
+    const input = { universe: seed, plan: row.plan, snapshot: physical.anchor, processMode: 'required' } as unknown as JsonValue
+    const operationId = digestJson(['gepa-process-op', f.root]).slice(7)
+    return { operationId, idempotencyKey: operationId, campaignId: 'gepa-process-fixture', decisionIndex: 1,
+      localKey: 'process', kind: 'gepa.evaluate', input, inputDigest: jsonDigest(input),
+      implementationDigest: provider.describe().implementationDigest, bindingSetRef, limits: { rolloutCells: 1, repairCells: 0 } }
+  }
+  return { ...f, physical, seed, row, root, makeProvider, makeEnvelope, get originalCell() { return originalCell } }
+}
+
 describe('common-operation failure-cluster GEPA', () => {
   it('draws exactly the old validated parent plan before any operation', () => {
     const f = setup()
@@ -69,6 +106,25 @@ describe('common-operation failure-cluster GEPA', () => {
     const actual = decision.nextState as unknown as { parents: typeof expected }
     expect(actual.parents).toEqual(expected)
     expect(decision.operations?.map(operation => operation.kind)).toEqual(['gepa.evaluate'])
+  })
+
+  it('freezes search and promotion process modes separately in each physical evaluation intent', async () => {
+    const f = setup(2, false, true)
+    const physical = f.providers[0] as GepaEvaluationProvider
+    const submit = physical.submit.bind(physical)
+    const seen: Array<{ stage: string; mode: string }> = []
+    physical.submit = async envelope => {
+      const input = envelope.input as unknown as { plan: { stage: string }; processMode: string }
+      seen.push({ stage: input.plan.stage, mode: input.processMode })
+      return submit(envelope)
+    }
+    const runtime = new AlgorithmRuntime(f.root, f.recipe, f.providers, f.spec)
+    expect(await runtime.runUntilBlocked(75)).toBe('complete')
+    expect(seen.some(item => item.stage === 'baseline-probe' && item.mode === 'required')).toBe(true)
+    expect(seen.some(item => item.stage === 'local' && item.mode === 'required')).toBe(true)
+    expect(seen.filter(item => ['bridge', 'global-seed', 'held-out'].includes(item.stage)).length).toBeGreaterThan(0)
+    expect(seen.filter(item => ['bridge', 'global-seed', 'held-out'].includes(item.stage))
+      .every(item => item.mode === 'off')).toBe(true)
   })
 
   it('prepares the second periodic epoch from the first round archive with a carried budget', async () => {
@@ -303,5 +359,108 @@ describe('common-operation failure-cluster GEPA', () => {
     expect(complete).toBe(true)
     expect(dispatched.size).toBeGreaterThan(0)
     expect([...dispatched.values()].every(count => count === 1)).toBe(true)
+  })
+
+  it('recovers original-key process and raw-metric projection after a lost response without replaying rollout', async () => {
+    const f = processSetup(true)
+    let calls = 0, projectionState: 'unknown' | 'running' | 'complete' = 'unknown'
+    let projectionKey = '', projected: EvidenceCell | undefined
+    f.physical.provider.completeProcess = async (cell, key) => {
+      calls++; projectionKey = key
+      const metrics = extractRawMetrics({ contracts: f.seed.rawMetricContracts!, certified: true,
+        trial: { originalResult: { quality: 0.75 } }, identity: {
+          taskId: cell.identity.taskId, repetition: cell.identity.repetition, runId: cell.evidenceRef, attempt: 1,
+          harnessCommit: cell.identity.harnessCommit, conditionDigest: cell.identity.conditionDigest,
+          originalArtifactRefs: [digestJson(['projection', key])],
+        } })
+      projected = revise(cell, { process: { status: 'available', rawValue: 0.5,
+        contractDigest: cell.identity.processContractDigest!, evidenceRef: cell.evidenceRef }, rawMetrics: metrics })
+      throw new Error('projection response lost after original artifact read')
+    }
+    f.physical.provider.inspectProcess = async (_cell, key) => {
+      expect(key).toBe(projectionKey)
+      return projectionState === 'complete' ? { status: 'complete', result: { cells: [projected!] } }
+        : projectionState === 'running' ? { status: 'running', handle: 'original-projection' }
+          : { status: 'unknown', reason: 'original response not visible yet' }
+    }
+    const provider = f.makeProvider(), envelope = f.makeEnvelope(provider)
+    expect((await provider.submit(envelope)).status).toBe('running')
+    expect((await provider.inspect(envelope)).status).toBe('unknown')
+    projectionState = 'running'
+    expect((await provider.inspect(envelope)).status).toBe('running')
+    expect(calls).toBe(1)
+    expect(f.physical.executions).toHaveLength(1)
+    projectionState = 'complete'
+    const restarted = f.makeProvider()
+    const observed = await restarted.inspect(envelope)
+    expect(observed.status).toBe('completed')
+    if (observed.status !== 'completed') throw new Error('expected completed process projection')
+    expect(observed.completion.receipt?.cumulative).toEqual({ rolloutCells: 1, repairCells: 0 })
+    expect(observed.completion.outcome.kind).toBe('result')
+    if (observed.completion.outcome.kind !== 'result') throw new Error('expected stage result')
+    const stage = f.artifacts.getJson((observed.completion.outcome.value as { resultRef: { kind: 'artifact'; digest: string;
+      size: number; mediaType: string; schemaId?: string } }).resultRef) as unknown as { cells: EvidenceCell[] }
+    expect(stage.cells[0]!.outcome).toEqual(f.originalCell!.outcome)
+    expect(stage.cells[0]!.evidenceRef).toBe(f.originalCell!.evidenceRef)
+    expect(stage.cells[0]!.process?.status).toBe('available')
+    expect(stage.cells[0]!.rawMetrics?.metrics.quality?.status).toBe('available')
+    expect((await f.makeProvider().inspect(envelope)).status).toBe('completed')
+    expect(calls).toBe(1)
+    expect(f.physical.executions).toHaveLength(1)
+  })
+
+  it.each(['original-first', 'completed-first'] as const)(
+    'seeds a cross-round archive with monotonic enriched cells in %s order without new work', async order => {
+      const f = processSetup(true), original = f.row.result.cells[0]!
+      const metrics = extractRawMetrics({ contracts: f.seed.rawMetricContracts!, certified: true,
+        trial: { originalResult: { quality: 0.75 } }, identity: {
+          taskId: original.identity.taskId, repetition: original.identity.repetition, runId: original.evidenceRef,
+          attempt: 1, harnessCommit: original.identity.harnessCommit,
+          conditionDigest: original.identity.conditionDigest, originalArtifactRefs: [digestJson('archive-projection')],
+        } })
+      const enriched = revise(original, { process: { status: 'available', rawValue: 0.5,
+        contractDigest: original.identity.processContractDigest!, evidenceRef: original.evidenceRef }, rawMetrics: metrics })
+      const completed = completeEvidence(f.row.result, [enriched])
+      const archive = buildArchive({ evolutionId: 'process-archive', universe: f.seed,
+        snapshots: [f.physical.anchor], scopes: [f.row.scope], plans: [f.row.plan],
+        results: [f.row.result, completed], config: f.config.search, championId: f.physical.anchor.candidateId })
+      const reordered = order === 'original-first' ? archive
+        : revise(archive, { results: [...archive.results].reverse() })
+      const provider = new GepaEvaluationProvider(f.root, f.artifacts, f.bindings, f.physical.provider, reordered)
+      // A prior process can leave an older local cache view even when the
+      // next round's sealed archive already contains the completed projection.
+      writeFileSync(join(f.root, 'gepa-cells', `${cellKey(original.identity).slice(7)}.json`), JSON.stringify(original))
+      const envelope = f.makeEnvelope(provider)
+      const submitted = await provider.submit(envelope)
+      expect(submitted.status).toBe('completed')
+      if (submitted.status !== 'completed' || submitted.completion.outcome.kind !== 'result')
+        throw new Error('expected archived evidence reuse')
+      const ref = (submitted.completion.outcome.value as { resultRef: { kind: 'artifact'; digest: string;
+        size: number; mediaType: string; schemaId?: string } }).resultRef
+      const stage = f.artifacts.getJson(ref) as unknown as { cells: EvidenceCell[] }
+      expect(stage.cells).toEqual([enriched])
+      expect(submitted.completion.receipt?.cumulative).toEqual({ rolloutCells: 0, repairCells: 0 })
+      expect(f.physical.executions).toHaveLength(0)
+    })
+
+  it('reports a missing original-run completion capability as execution error, not scientific loss', async () => {
+    const f = processSetup()
+    const provider = f.makeProvider(), envelope = f.makeEnvelope(provider)
+    const submitted = await provider.submit(envelope)
+    expect(submitted.status).toBe('completed')
+    if (submitted.status !== 'completed') throw new Error('expected capability completion')
+    expect(submitted.completion.outcome).toMatchObject({ kind: 'error', code: 'PROCESS_COMPLETION_UNSUPPORTED' })
+    expect(submitted.completion.receipt?.cumulative).toEqual({ rolloutCells: 1, repairCells: 0 })
+    expect(f.physical.executions).toHaveLength(1)
+  })
+
+  it('rejects a process projection that changes an already valid original outcome', async () => {
+    const f = processSetup()
+    f.physical.provider.completeProcess = async cell => revise(cell, {
+      outcome: { status: 'available', rawValue: 0.75, contractDigest: cell.identity.outcomeContractDigest,
+        evidenceRef: cell.evidenceRef } })
+    const provider = f.makeProvider(), envelope = f.makeEnvelope(provider)
+    await expect(provider.submit(envelope)).rejects.toThrow(/cannot rerun or replace a valid outcome/)
+    expect(f.physical.executions).toHaveLength(1)
   })
 })
