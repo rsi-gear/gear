@@ -284,3 +284,9 @@ verifyPinnedLegacySearchClosure 核验已归档 f715748 的 search/parent/packag
 主 agent 在只含 HEAD 与两个冻结文件的独立快照运行配置/default/fresh 宿主 6/6，完整 typecheck 通过。createConfiguredFreshHostProfile 读取封闭源目录中的 JSON 配置，构造实际 HarnessBuilder/SubprocessHarnessCompiler/Hitch/workspace 与受限 DSH。管理员一次性提供模型注册和运行资源，普通算法继续仅接触科学参数与宿主封存 refs。
 
 审计发现仅返回 destinationId 不能证明 adapter 可用，现验证实际 DSH provider 路由并解析 model info；未注册明确拒绝。配置、模型模块、执行文件、显式 runtimeResources 与实际继承环境进入身份；模型/资源源码变化在角色准入前拒绝。环境仅记录摘要。runtimeResources 的传递依赖仍由可信管理员完整声明，不提供自动闭包发现；路由与声明校验不证明远端模型权重身份。公开 CLI/安装包的宿主加载另行验收。
+
+## S4g 完整 Python RHO 验收
+
+主 agent 在冻结的最终独立快照执行 RHO 完整流程 1/1，完整 typecheck 通过。实际 Python recipe 使用授权任务报告选择 coreset，并行完成两次固定基线 rollout，经诊断与受限 DSH editor 修改真实 Git Harness，再测候选。成对偏好角色实际 query/read 两侧报告与轨迹，核验来自不同已完成 producer/版本，正偏好才替换绑定。最终只计 3 次 rollout；重建 Python worker/runtime 后没有新模型请求或 Hitch submit。
+
+实现测试阶段发现的卡点是离线模型依赖 prompt 中不存在的角色字样；修正测试的显式角色标记，并将作者源码与可变状态目录分离。没有为此放宽生产 unknown 或用量校验；adapter 抛错且无最终用量时仍不伪造终态。测试使用离线模型、真实 DSH/Git 和录制 Hitch，无真实模型效果结论。
