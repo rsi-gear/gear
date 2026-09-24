@@ -208,3 +208,11 @@ AlgorithmManifest 新增通用 requiredOperationKindsFromConfig，由冻结配�
 主 agent 在只含已提交 HEAD 与三个冻结文件的独立快照中运行 Evo capabilities、既有 DSH roles 和 Skill overlay：3 文件 24/24、完整 typecheck 通过。宿主通过窄 skills_list/skills_read 工具授权读取当前绑定库；每次核验角色/session、宿主 policy 和成员，交付前计入持久 evidence 用量并执行 hard limit。普通算法无需自行拼装 CAS ref 或发布库。
 
 内置 publisher 验证 retriever 的成员/数量，curator 的 ADD、REVISE、MERGE、SKIP；生成封存单文件 Skill 与名称排序的新库，保留未修改成员的原 ref。测试覆盖未授权成员、错误角色、policy 变化、硬交付预算和库继承。这里只注册通用能力并使用合成数据测试，没有读取实际用户技能库或调用模型；默认宿主装配以及已知模型输出校验失败的终态处理继续审计。
+
+## S3b7 独立 DSH 工作区编辑
+
+主 agent 在只含已提交 HEAD 与三个冻结文件的独立快照中验证：workspace edit 8/8、完整 typecheck 通过。每个操作拥有独立 Git 工作区和 DSH session，公开受限 tree/read/write/edit/remove/check 工具，不依赖旧 candidate lease。检查通过后封存真实 Harness commit、变更清单、模型科学输出和验证回执；仅宣称实际编辑的 Harness 绑定。模型请求与 token 用量由持久 generation 状态及会话事件交叉核验。
+
+主审修复：精确宿主输入在任何工作区/模型副作用前只计算一次，验证后把 prompt 和摘要写入 intent；resume 不重新生成。builder/workspace 来源必须一致，具体配置进入身份；实际 check/finalize 使用冻结截止时间。无变更或固定 compiler 拒绝有明确 no-result 和最终用量，科学 JSON 格式错误是执行错误；finalization 回包不明保留 unknown、禁止重做。
+
+测试使用真实 DSH/Git 机制、离线模型及 compiler fixture，覆盖产物字节、计量、预启动取消、无变更、检查失败、科学输出独立封存、过大输入和不确定 finalization。开始后的取消确认、精确版本回滚及 GEPA production bridge 继续增量交付；未调用实际模型或容器。
