@@ -159,6 +159,37 @@ export class GepaPublicationProvider implements OperationProvider {
   private receipt(input: GepaPublicationInput, next: ResearchArchive): ArtifactRef {
     return this.artifacts.putJson(this.receiptValue(input, next) as unknown as JsonValue, 'gepa.publication-receipt.v1')
   }
+  private async freezeLegacyPrepublication(input: GepaPublicationInput, next: ResearchArchive,
+    terminal: SearchRoundOutcome | null): Promise<void> {
+    if (await this.publication.put(next) !== next.digest
+      || canonicalJson(await this.publication.object<ResearchArchive>(next.digest) as unknown as JsonValue)
+        !== canonicalJson(next as unknown as JsonValue))
+      throw new ProviderProtocolError('GEPA next archive object drift')
+    if (!terminal) {
+      const [result] = next.results
+      if (next.results.length !== 1 || !result
+        || next.plans.filter(plan => plan.digest === result.stagePlanDigest && plan.stage === 'baseline-probe').length !== 1
+        || next.snapshots.filter(snapshot => snapshot.digest === result.snapshotDigest).length !== 1)
+        throw new ProviderProtocolError('GEPA bootstrap archive has no unique verified baseline result')
+      verifyDigest(result)
+      const name = `consumed-${digestJson([result.stagePlanDigest, result.snapshotDigest]).slice(7)}`
+      const expected = seal({ stagePlanDigest: result.stagePlanDigest, snapshotDigest: result.snapshotDigest,
+        resultDigest: result.digest, consumer: 'bootstrap-archive' as const, consumerDigest: next.digest })
+      const frozen = await this.publication.freeze(input.roundId, name, () => expected)
+      verifyDigest(frozen)
+      if (canonicalJson(frozen as unknown as JsonValue) !== canonicalJson(expected as unknown as JsonValue))
+        throw new ProviderProtocolError('GEPA bootstrap evidence consumption drift')
+      return
+    }
+    if (input.publishArchive === false || input.expectedArchiveDigest === null) return
+    const expected = seal({ expectedArchiveDigest: input.expectedArchiveDigest, nextArchiveDigest: next.digest,
+      expectedChampionRevisionDigest: input.expectedChampionRevisionDigest,
+      ...(input.nextChampion ? { nextChampion: input.nextChampion } : {}), outcome: terminal })
+    const frozen = await this.publication.freeze(input.roundId, 'commit', () => expected)
+    verifyDigest(frozen)
+    if (canonicalJson(frozen as unknown as JsonValue) !== canonicalJson(expected as unknown as JsonValue))
+      throw new ProviderProtocolError('GEPA commit intent drift')
+  }
   private verifyReceipt(record: RecordValue, input: GepaPublicationInput, next: ResearchArchive): void {
     if (!record.publicationReceiptRef || record.publicationReceiptRef.schemaId !== 'gepa.publication-receipt.v1'
       || canonicalJson(this.artifacts.getJson(record.publicationReceiptRef))
@@ -273,6 +304,7 @@ export class GepaPublicationProvider implements OperationProvider {
         return { status: 'completed', completion: record.completion! }
       }
       await this.beforePublication?.()
+      await this.freezeLegacyPrepublication(input, next, terminal)
       if (input.publishArchive !== false) {
         if (await this.archiveState(input, next) === 'expected') {
           try { await this.publication.casArchive(input.expectedArchiveDigest ?? undefined, next) }
@@ -324,6 +356,7 @@ export class GepaPublicationProvider implements OperationProvider {
       if (input.nextChampion) return { status: 'unknown' }
       if (input.publishArchive !== false && await this.archiveState(input, next) === 'published') {
         await this.beforePublication?.()
+        await this.freezeLegacyPrepublication(input, next, terminal)
         await this.writePointer(input, next, terminal)
         const completion = this.completion(envelope, record)
         await this.flushArtifacts()

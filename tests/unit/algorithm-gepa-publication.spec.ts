@@ -70,17 +70,104 @@ describe('GEPA publication provider', () => {
 
   it('publishes a bootstrap checkpoint before a final outcome using distinct frozen operations', async () => {
     const f = await setup()
+    const baselinePlan = f.archive.plans.find(plan => plan.stage === 'baseline-probe')
+    const baseline = f.archive.results.find(result => result.stagePlanDigest === baselinePlan?.digest)
+    const anchor = f.archive.snapshots.find(snapshot => snapshot.digest === baseline?.snapshotDigest)
+    if (!baselinePlan || !baseline || !anchor) throw new Error('fixture baseline archive missing')
+    const { digest: ignoredArchiveDigest, ...archiveBody } = f.archive
+    const bootstrapArchive = seal({ ...archiveBody, plans: [baselinePlan], results: [baseline], snapshots: [anchor] })
+    const bootstrapArchiveRef = f.artifacts.putJson(bootstrapArchive as unknown as JsonValue, 'gepa.research-archive.v1')
     const bootstrap: GepaBootstrapPublication = { schemaVersion: 1, kind: 'bootstrap-archive',
-      roundId: 'r', archiveDigest: f.archive.digest }
+      roundId: 'r', archiveDigest: bootstrapArchive.digest }
     const bootstrapRef = f.artifacts.putJson(bootstrap as unknown as JsonValue, 'gepa.bootstrap-publication.v1')
-    const first = f.envelope({ ...f.base, outcomeRef: bootstrapRef })
+    const first = f.envelope({ ...f.base, nextArchiveRef: bootstrapArchiveRef, outcomeRef: bootstrapRef })
+    const originalWrite = f.publication.write.bind(f.publication)
+    const originalCas = f.publication.casArchive.bind(f.publication)
+    let failConsumption = true, casCalls = 0, archiveReadable = false
+    f.publication.write = async (name, value) => {
+      await originalWrite(name, value)
+      if (name.startsWith('rounds/r/consumed-') && failConsumption) {
+        archiveReadable = (await f.publication.object(bootstrapArchive.digest)).digest === bootstrapArchive.digest
+        failConsumption = false
+        throw new Error('consumption pointer acknowledgement lost')
+      }
+    }
+    f.publication.casArchive = async (...args) => { casCalls++; return originalCas(...args) }
+    await expect(f.provider().submit(first)).rejects.toThrow('consumption pointer acknowledgement lost')
+    expect(archiveReadable).toBe(true)
+    expect(casCalls).toBe(0)
+    expect(await f.publication.archive()).toBeUndefined()
     expect((await f.provider().submit(first)).status).toBe('completed')
-    expect((await f.publication.archive())?.digest).toBe(f.archive.digest)
+    expect(casCalls).toBe(1)
+    expect((await f.publication.archive())?.digest).toBe(bootstrapArchive.digest)
     expect(await f.publication.read('rounds/r/bootstrap-publication')).toBeDefined()
+    const consumed = await f.publication.read<{ ref: string }>(
+      `rounds/r/consumed-${digestJson([baseline.stagePlanDigest, baseline.snapshotDigest]).slice(7)}`)
+    expect(await f.publication.object(consumed!.ref)).toMatchObject({ resultDigest: baseline.digest,
+      consumer: 'bootstrap-archive', consumerDigest: bootstrapArchive.digest })
     expect(await f.publication.read('rounds/r/terminal')).toBeUndefined()
-    const second = f.envelope({ ...f.base, expectedArchiveDigest: f.archive.digest })
+    const second = f.envelope({ ...f.base, expectedArchiveDigest: bootstrapArchive.digest })
     expect((await f.provider().submit(second)).status).toBe('completed')
+    const commit = await f.publication.read<{ ref: string }>('rounds/r/commit')
+    expect(await f.publication.object(commit!.ref)).toMatchObject({ expectedArchiveDigest: bootstrapArchive.digest,
+      nextArchiveDigest: f.archive.digest, outcome: f.outcome })
     expect((await f.provider().inspect(first)).status).toBe('completed')
+  })
+
+  it('freezes the exact final commit intent before archive CAS and resumes after its pointer write loses acknowledgement', async () => {
+    const f = await setup()
+    const baselinePlan = f.archive.plans.find(plan => plan.stage === 'baseline-probe')
+    const baseline = f.archive.results.find(result => result.stagePlanDigest === baselinePlan?.digest)
+    const anchor = f.archive.snapshots.find(snapshot => snapshot.digest === baseline?.snapshotDigest)
+    if (!baselinePlan || !baseline || !anchor) throw new Error('fixture baseline archive missing')
+    const { digest: ignoredArchiveDigest, ...archiveBody } = f.archive
+    const bootstrapArchive = seal({ ...archiveBody, plans: [baselinePlan], results: [baseline], snapshots: [anchor] })
+    const bootstrapArchiveRef = f.artifacts.putJson(bootstrapArchive as unknown as JsonValue, 'gepa.research-archive.v1')
+    const bootstrapRef = f.artifacts.putJson({ schemaVersion: 1, kind: 'bootstrap-archive',
+      roundId: 'r', archiveDigest: bootstrapArchive.digest }, 'gepa.bootstrap-publication.v1')
+    await f.provider().submit(f.envelope({ ...f.base, nextArchiveRef: bootstrapArchiveRef, outcomeRef: bootstrapRef }))
+    const finalInput = { ...f.base, expectedArchiveDigest: bootstrapArchive.digest }
+    let barriers = 0
+    const finalProvider = () => new GepaPublicationProvider(join(f.root, 'final-provider'), f.artifacts,
+      f.publication, { commitChampion: async () => {} }, { beforePublication: async () => { barriers++ },
+        publicationBarrierIdentityDigest: digestJson('frozen-budget-barrier').slice(7) })
+    const final = { ...f.envelope(finalInput), implementationDigest: finalProvider().describe().implementationDigest }
+    const originalWrite = f.publication.write.bind(f.publication)
+    const originalCas = f.publication.casArchive.bind(f.publication)
+    let failCommit = true, casCalls = 0
+    f.publication.write = async (name, value) => {
+      if (name === 'rounds/r/commit') {
+        expect(barriers).toBeGreaterThan(0)
+        expect((await f.publication.object(f.archive.digest)).digest).toBe(f.archive.digest)
+      }
+      await originalWrite(name, value)
+      if (name === 'rounds/r/commit' && failCommit) {
+        failCommit = false
+        throw new Error('commit pointer acknowledgement lost')
+      }
+    }
+    f.publication.casArchive = async (...args) => { casCalls++; return originalCas(...args) }
+    await expect(finalProvider().submit(final)).rejects.toMatchObject({ name: 'ProviderReconcileError',
+      cause: { message: 'commit pointer acknowledgement lost' } })
+    expect(casCalls).toBe(0)
+    expect((await f.publication.archive())?.digest).toBe(bootstrapArchive.digest)
+    const pointer = await f.publication.read<{ ref: string }>('rounds/r/commit')
+    expect(await f.publication.object(pointer!.ref)).toEqual(seal({
+      expectedArchiveDigest: bootstrapArchive.digest, nextArchiveDigest: f.archive.digest,
+      expectedChampionRevisionDigest: finalInput.expectedChampionRevisionDigest, outcome: f.outcome }))
+    expect((await finalProvider().submit(final)).status).toBe('completed')
+    expect(casCalls).toBe(1)
+    expect((await f.publication.archive())?.digest).toBe(f.archive.digest)
+  })
+
+  it('rejects a bootstrap checkpoint whose archive has no unique baseline evidence', async () => {
+    const f = await setup()
+    const bootstrapRef = f.artifacts.putJson({ schemaVersion: 1, kind: 'bootstrap-archive',
+      roundId: 'r', archiveDigest: f.archive.digest }, 'gepa.bootstrap-publication.v1')
+    await expect(f.provider().submit(f.envelope({ ...f.base, outcomeRef: bootstrapRef })))
+      .rejects.toThrow('unique verified baseline result')
+    expect(await f.publication.archive()).toBeUndefined()
+    expect(await f.publication.read('rounds/r/commit')).toBeUndefined()
   })
 
   it('records an unsuccessful bootstrap terminal without installing its incomplete archive', async () => {
