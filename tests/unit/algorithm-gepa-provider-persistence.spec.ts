@@ -13,6 +13,7 @@ import { cellKey, plannedCells } from '../../src/search/evidence.js'
 import { evaluatedFixture, fixtures, revise, scopeFixture } from '../../src/search/testing.js'
 import { MemorySearchStore } from '../../src/search/testing.js'
 import { SearchBudgetExceeded } from '../../src/search/store.js'
+import { SearchExecutionFailure } from '../../src/search/recovery.js'
 import { digestJson } from '../../src/state/digest.js'
 
 const roots: string[] = []
@@ -159,8 +160,13 @@ it('uses the timed physical signal but the original caller signal for recovery i
     expect(physicalCalls).toBe(1)
     expect(runSignal?.aborted).toBe(true)
     expect(runSignal?.reason).toBeInstanceOf(SearchBudgetExceeded)
-    expect(inspectionSignal).toBe(caller.signal)
+    expect(inspectionSignal).not.toBe(caller.signal)
+    expect(inspectionSignal?.aborted).toBe(false)
     expect(caller.signal.aborted).toBe(false)
+    const stopped = new Error('caller stopped')
+    caller.abort(stopped)
+    expect(inspectionSignal?.aborted).toBe(true)
+    expect(inspectionSignal?.reason).toBe(stopped)
   } finally { dispose() }
 })
 
@@ -321,4 +327,193 @@ it('uses the legacy diagnosis key and conditionally meters configured generation
     expect(provider.describe().meteredDimensions).toEqual(Object.entries(metering)
       .filter(([, enabled]) => enabled).map(([dimension]) => dimension))
   }
+})
+
+it('materializes an inspected diagnosis completion in the same call after a lost response', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'gepa-diagnosis-lost-response-')); roots.push(root)
+  const fixture = fixtures(4)
+  const { result: baseline } = evaluatedFixture(fixture.seed,
+    scopeFixture(fixture.seed, ['task-0']), fixture.anchor, () => ({ outcome: 0 }), { stage: 'baseline-probe' })
+  const artifacts = new FileArtifactStore(join(root, 'artifacts'))
+  const bindings = new BindingStore(artifacts, { id: 'harness', slots: {
+    harness: { schemaId: 'harness.directory.v1', required: true, replaceable: true },
+  } })
+  const harness = artifacts.putJson({ commitOid: fixture.anchor.commit,
+    manifestDigest: fixture.anchor.manifestDigest }, 'harness.directory.v1')
+  const journal = new MemorySearchStore()
+  const provider = new GepaDiagnosisProvider(join(root, 'operations'), artifacts, bindings,
+    fixture.diagnosis, undefined, journal)
+  const input = { roundIdentity: { evolutionId: 'e', roundId: 'r' }, snapshot: fixture.anchor,
+    universe: fixture.seed, taskIds: ['task-0'], baseline } as unknown as JsonValue
+  const operationId = digestJson(['diagnosis-lost-response', root]).slice(7)
+  const envelope: OperationEnvelope = { campaignId: 'search-r', decisionIndex: 0, localKey: 'diagnose',
+    operationId, idempotencyKey: operationId, kind: 'gepa.diagnose', input, inputDigest: jsonDigest(input),
+    implementationDigest: provider.describe().implementationDigest, bindingSetRef: bindings.create({ harness }),
+    limits: { diagnosisInputTokens: 100, diagnosisOutputTokens: 100 } }
+  const realDiagnose = fixture.diagnosis.diagnose
+  const realInspect = fixture.diagnosis.inspectDiagnosis!
+  let physicalCalls = 0, inspectCalls = 0
+  fixture.diagnosis.diagnose = async request => {
+    physicalCalls++
+    await realDiagnose(request)
+    throw new Error('diagnosis response lost')
+  }
+  fixture.diagnosis.inspectDiagnosis = async (key, signal) => {
+    inspectCalls++
+    return realInspect(key, signal)
+  }
+  const dispose = provider.beginLegacyInvocation()
+  try {
+    const submission = await provider.submit(envelope)
+    expect(submission.status).toBe('completed')
+    expect(physicalCalls).toBe(1)
+    expect(inspectCalls).toBe(1)
+    expect((await provider.inspect(envelope)).status).toBe('completed')
+    expect(inspectCalls).toBe(1)
+  } finally { dispose() }
+})
+
+it('replays a sealed diagnosis response after a pointer write fault without another physical call', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'gepa-diagnosis-pointer-fault-')); roots.push(root)
+  const fixture = fixtures(4)
+  const { result: baseline } = evaluatedFixture(fixture.seed,
+    scopeFixture(fixture.seed, ['task-0']), fixture.anchor, () => ({ outcome: 0 }), { stage: 'baseline-probe' })
+  const artifacts = new FileArtifactStore(join(root, 'artifacts'))
+  const bindings = new BindingStore(artifacts, { id: 'harness', slots: {
+    harness: { schemaId: 'harness.directory.v1', required: true, replaceable: true },
+  } })
+  const harness = artifacts.putJson({ commitOid: fixture.anchor.commit,
+    manifestDigest: fixture.anchor.manifestDigest }, 'harness.directory.v1')
+  const journal = new MemorySearchStore()
+  const originalWrite = journal.write.bind(journal)
+  let failPointer = true
+  journal.write = async (name, value) => {
+    if (name.startsWith('rounds/r/diagnosis-') && failPointer) {
+      failPointer = false
+      throw new Error('diagnosis pointer disk unavailable')
+    }
+    return originalWrite(name, value)
+  }
+  const provider = new GepaDiagnosisProvider(join(root, 'operations'), artifacts, bindings,
+    fixture.diagnosis, undefined, journal)
+  const input = { roundIdentity: { evolutionId: 'e', roundId: 'r' }, snapshot: fixture.anchor,
+    universe: fixture.seed, taskIds: ['task-0'], baseline } as unknown as JsonValue
+  const operationId = digestJson(['diagnosis-pointer-fault', root]).slice(7)
+  const envelope: OperationEnvelope = { campaignId: 'search-r', decisionIndex: 0, localKey: 'diagnose',
+    operationId, idempotencyKey: operationId, kind: 'gepa.diagnose', input, inputDigest: jsonDigest(input),
+    implementationDigest: provider.describe().implementationDigest, bindingSetRef: bindings.create({ harness }),
+    limits: { diagnosisInputTokens: 100, diagnosisOutputTokens: 100 } }
+  const realDiagnose = fixture.diagnosis.diagnose
+  let physicalCalls = 0
+  fixture.diagnosis.diagnose = async request => { physicalCalls++; return realDiagnose(request) }
+  await expect(provider.submit(envelope)).rejects.toMatchObject({ name: 'ProviderReconcileError',
+    cause: { message: 'diagnosis pointer disk unavailable' } })
+  expect(physicalCalls).toBe(1)
+  expect((await provider.inspect(envelope)).status).toBe('replay-safe')
+  expect((await provider.submit(envelope)).status).toBe('completed')
+  expect(physicalCalls).toBe(1)
+})
+
+it.each(['running', 'partially-complete', 'complete', 'not-started'] as const)(
+  'inspects an expired started evaluation exactly once when physical status is %s', async status => {
+    const root = mkdtempSync(join(tmpdir(), `gepa-expired-${status}-`)); roots.push(root)
+    const fixture = fixtures(4)
+    const { plan, result } = evaluatedFixture(fixture.seed,
+      scopeFixture(fixture.seed, ['task-0']), fixture.anchor, () => ({ outcome: 0 }), { stage: 'baseline-probe' })
+    const artifacts = new FileArtifactStore(join(root, 'artifacts'))
+    const bindings = new BindingStore(artifacts, { id: 'harness', slots: {
+      harness: { schemaId: 'harness.directory.v1', required: true, replaceable: true },
+    } })
+    const harness = artifacts.putJson({ commitOid: fixture.anchor.commit,
+      manifestDigest: fixture.anchor.manifestDigest }, 'harness.directory.v1')
+    const provider = new GepaEvaluationProvider(join(root, 'operations'), artifacts, bindings, fixture.provider)
+    const input = { roundIdentity: { evolutionId: 'e', roundId: 'r' }, universe: fixture.seed,
+      plan, snapshot: fixture.anchor, processMode: 'off' } as unknown as JsonValue
+    const operationId = digestJson(['expired-status', status, root]).slice(7)
+    const envelope: OperationEnvelope = { campaignId: 'search-r', decisionIndex: 0, localKey: 'evaluate',
+      operationId, idempotencyKey: operationId, kind: 'gepa.evaluate', input, inputDigest: jsonDigest(input),
+      implementationDigest: provider.describe().implementationDigest, bindingSetRef: bindings.create({ harness }),
+      limits: { rolloutCells: 1, repairCells: 0 } }
+    let physicalCalls = 0, inspectCalls = 0, phase: 'initial' | 'expired' = 'initial'
+    fixture.provider.evaluate = async () => { physicalCalls++; throw new Error('initial physical response lost') }
+    fixture.provider.inspectEvaluation = async () => {
+      inspectCalls++
+      if (phase === 'initial') return { status: 'running', handle: 'original-worker' }
+      if (status === 'running') return { status: 'running', handle: 'original-worker' }
+      if (status === 'partially-complete') return { status, cells: result.cells }
+      if (status === 'complete') return { status, result: { cells: result.cells } }
+      return { status: 'not-started' }
+    }
+    const first = provider.beginLegacyInvocation({ callerSignal: new AbortController().signal,
+      deadlineAt: Date.now() + 10_000 })
+    expect((await provider.submit(envelope)).status).toBe('running')
+    first()
+    phase = 'expired'
+    inspectCalls = 0
+    const expired = provider.beginLegacyInvocation({ callerSignal: new AbortController().signal,
+      deadlineAt: Date.now() - 1 })
+    try {
+      await provider.inspect(envelope)
+      const pending = await provider.legacyPending(envelope)
+      if (status === 'complete') expect(pending).toBeNull()
+      else if (status === 'partially-complete') expect(pending).toEqual({ state: status,
+        reason: 'completed evaluation cells are saved; remaining batches have not started' })
+      else expect(pending).toEqual({ state: status,
+        ...(status === 'running' ? { handle: 'original-worker' } : {}),
+        reason: 'deadline reached while external execution was unresolved' })
+      const submission = await provider.submit(envelope)
+      expect(submission.status).toBe(status === 'running' ? 'running' : 'completed')
+      expect(physicalCalls).toBe(1)
+      expect(inspectCalls).toBe(1)
+      if (status === 'partially-complete') {
+        if (submission.status !== 'completed' || submission.completion.outcome.kind !== 'result')
+          throw new Error('partial timeout was not sealed')
+        const resultRef = (submission.completion.outcome.value as { resultRef: Parameters<FileArtifactStore['getJson']>[0] }).resultRef
+        expect(artifacts.getJson(resultRef)).toMatchObject({ cells: result.cells,
+          failure: { kind: 'budget-exhausted', code: 'time' } })
+      }
+    } finally { expired() }
+  })
+
+it('uses one terminal inspection failure without reinspecting or rerunning the original evaluation', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'gepa-terminal-inspection-')); roots.push(root)
+  const fixture = fixtures(4)
+  const { plan } = evaluatedFixture(fixture.seed,
+    scopeFixture(fixture.seed, ['task-0']), fixture.anchor, () => ({ outcome: 0 }), { stage: 'baseline-probe' })
+  const artifacts = new FileArtifactStore(join(root, 'artifacts'))
+  const bindings = new BindingStore(artifacts, { id: 'harness', slots: {
+    harness: { schemaId: 'harness.directory.v1', required: true, replaceable: true },
+  } })
+  const harness = artifacts.putJson({ commitOid: fixture.anchor.commit,
+    manifestDigest: fixture.anchor.manifestDigest }, 'harness.directory.v1')
+  const provider = new GepaEvaluationProvider(join(root, 'operations'), artifacts, bindings, fixture.provider)
+  const input = { roundIdentity: { evolutionId: 'e', roundId: 'r' }, universe: fixture.seed,
+    plan, snapshot: fixture.anchor, processMode: 'off' } as unknown as JsonValue
+  const operationId = digestJson(['terminal-inspection', root]).slice(7)
+  const envelope: OperationEnvelope = { campaignId: 'search-r', decisionIndex: 0, localKey: 'evaluate',
+    operationId, idempotencyKey: operationId, kind: 'gepa.evaluate', input, inputDigest: jsonDigest(input),
+    implementationDigest: provider.describe().implementationDigest, bindingSetRef: bindings.create({ harness }),
+    limits: { rolloutCells: 1, repairCells: 0 } }
+  let physicalCalls = 0, inspectCalls = 0, terminal = false
+  fixture.provider.evaluate = async () => { physicalCalls++; throw new Error('evaluation response lost') }
+  fixture.provider.inspectEvaluation = async () => {
+    inspectCalls++
+    if (terminal) throw new SearchExecutionFailure('worker-exited', 'worker exited', 'worker:failure-17')
+    return { status: 'running', handle: 'worker-17' }
+  }
+  const first = provider.beginLegacyInvocation()
+  expect((await provider.submit(envelope)).status).toBe('running')
+  first()
+  terminal = true; inspectCalls = 0
+  const resumed = provider.beginLegacyInvocation({ callerSignal: new AbortController().signal,
+    deadlineAt: Date.now() - 1 })
+  try {
+    await provider.inspect(envelope)
+    const submission = await provider.submit(envelope)
+    expect(submission.status).toBe('completed')
+    if (submission.status !== 'completed') throw new Error('terminal result missing')
+    expect(submission.completion.outcome.kind).toBe('result')
+    expect(physicalCalls).toBe(1)
+    expect(inspectCalls).toBe(1)
+  } finally { resumed() }
 })
