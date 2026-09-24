@@ -354,6 +354,14 @@ export class CampaignFailureClusterSearch {
       }
     } while (status === 'advanced')
     if (status !== 'complete') {
+      const pendingReference = Object.values(runtime.snapshot()?.operations ?? {}).find(record =>
+        record.envelope.kind === 'gepa.objective-reference'
+        && (record.envelope.input as { mode?: unknown }).mode === 'baseline'
+        && record.status !== 'completed' && record.status !== 'cancelled')
+      if (pendingReference) {
+        const input = pendingReference.envelope.input as unknown as { referencePlan: { digest: string } }
+        throw new SearchEvidencePending(input.referencePlan.digest)
+      }
       const pendingRepair = Object.values(runtime.snapshot()?.operations ?? {}).find(record =>
         record.envelope.kind === 'gepa.await-repair' && record.status !== 'completed')
       if (pendingRepair) {
