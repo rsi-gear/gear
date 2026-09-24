@@ -272,3 +272,9 @@ verifyPinnedLegacySearchClosure 核验已归档 f715748 的 search/parent/packag
 主 agent 在仅含 HEAD 与两份冻结文件的独立快照运行 Hitch 四套测试及完整 Python Evo：13/13，完整 typecheck 通过。RHO 并行重复测量暴露同一投影目录的原子发布竞争；新适配层仅在 EEXIST/ENOTEMPTY 时重新进入原投影验证一次，验证已发布内容后复用，不增加评测提交。并发 12 次预检通过；投影内容损坏仍拒绝。旧 search/dataset-projection 和 Hitch evaluator 源码未改。
 
 物理身份现在包含 Hitch CLI 实际继承的整个子进程环境摘要（覆盖 PYTHONDONTWRITEBYTECODE=1），并在操作准备时重新核对 evaluator/builder 配置。未列入 passEnv 的变量、评测配置或 builder 配置变化都拒绝；不保存或打印环境值。该策略保守要求恢复时保持相同环境，不能把配置中仅供运行容器转发的 passEnv 当作 CLI 自身全部环境。
+
+## S4f 完整 Python AHE 三轮验收
+
+主 agent 在独立冻结快照执行 AHE 完整流程 1/1，完整 typecheck 通过。实际 Python recipe/default host 在三个执行版本上完成 12 次独立任务测量；evolver 返回非空预测，attributor 查询并读取已授权 rollout 的失败 trace。第二轮任务退化触发指定文件的精确 Git 恢复，未列出的 marker 保留；下一候选进一步编辑 marker，第三轮实际测量该新 commit，未把未测候选当成测量结果。
+
+重建 Python worker/Campaign runtime 后恢复完成，模型调用与 Hitch submit 次数均不增加。测试使用真实 DSH/Git、按实际提交 commit 内容取值的录制 Hitch 与离线模型，证明预测、归因、选择性回滚、后续测量和持久恢复的接线；没有外部模型或科学效果认证。
