@@ -26,6 +26,7 @@ class Evo:
             }, "required": ["taskViewRef", "batchSize", "injectionBudget",
                              "samplingDigest", "environmentDigest"], "additionalProperties": False,
         }, {"id": "evo.bindings.v1", "slots": {
+            "harness": {"schemaId": "harness.directory.v1", "required": True, "replaceable": False},
             "skills": {"schemaId": "skills.library.v1", "required": True, "replaceable": True},
         }}, requiredOperationKinds=tuple(sorted(_KINDS)))
 

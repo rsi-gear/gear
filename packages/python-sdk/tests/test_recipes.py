@@ -185,6 +185,8 @@ class RecipeTests(unittest.TestCase):
         self.assertEqual(verify_predictions({"predictedFixes": ["t2"], "riskTasks": ["t1"]},
                          {"t1": True, "t2": False}, {"t1": False, "t2": True}),
                          {"confirmedFixes": ["t2"], "missedFixes": [], "regressions": ["t1"]})
+        with self.assertRaisesRegex(ValidationError, "testable task prediction"):
+            verify_predictions({"predictedFixes": [], "riskTasks": []}, {"t1": False}, {"t1": False})
         recipe = Ahe()
         old = binding("a", "ahe.bindings.v1")
         new = binding("b", "ahe.bindings.v1")
@@ -280,11 +282,30 @@ class RecipeTests(unittest.TestCase):
         self.assertEqual(proposal.operations[0].bindingSetRef.digest, executed["digest"])
         self.assertEqual(proposal.operations[0].input["baseBindingSetRef"], executed)
         derive = reduce(recipe, proposal, config, {"propose": execution("p", {
-            "predictedFixes": [], "riskTasks": []}, ref("c", "harness.directory.v1"))})
+            "predictedFixes": ["t1"], "riskTasks": []}, ref("c", "harness.directory.v1"))})
         self.assertEqual(derive.operations[0].input["baseRef"], executed)
+
+    def test_ahe_rollback_reads_only_the_prior_measured_revision(self):
+        recipe = Ahe()
+        old = binding("a", "ahe.bindings.v1")
+        executed = binding("b", "ahe.bindings.v1")
+        state = {"phase": "attribute", "executedRevision": executed,
+                 "previousMeasurement": {"bindingSetRef": old, "taskPassed": {"t1": False}},
+                 "measurement": {"bindingSetRef": executed, "taskPassed": {"t1": True}},
+                 "bestMeasured": {"bindingSetRef": executed},
+                 "predictionVerdict": {"confirmedFixes": ["t1"], "missedFixes": [], "regressions": []}}
+        decision = recipe.reduce({"state": state, "config": {"operationLimits": METERED_LIMITS},
+                                  "completed": {"attribute": execution("a", {"rollbackFiles": ["prompt.md"]})}})
+        self.assertEqual(decision.operations[0].kind, "execution.workspace-edit")
+        self.assertEqual(decision.operations[0].bindingSetRef.digest, executed["digest"])
+        self.assertEqual(decision.operations[0].input["baseBindingSetRef"], executed)
+        self.assertEqual(decision.operations[0].input["restoreFromBindingSetRef"], old)
+        self.assertEqual(decision.operations[0].input["previousMeasurement"], state["previousMeasurement"])
 
     def test_evo_freezes_batch_skills_and_commits_cursor_with_new_binding(self):
         recipe = Evo()
+        self.assertEqual(recipe.describe().bindingSchema["slots"]["harness"],
+                         {"schemaId": "harness.directory.v1", "required": True, "replaceable": False})
         old = binding("a", "evo.bindings.v1")
         new = binding("b", "evo.bindings.v1")
         task_view = ref("t", "task.view.v1")

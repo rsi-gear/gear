@@ -222,3 +222,9 @@ AlgorithmManifest 新增通用 requiredOperationKindsFromConfig，由冻结配�
 主 agent 在只含已提交 HEAD 与四个冻结文件的独立快照运行 DSH role 与 Evo capabilities：21/21，完整 typecheck 通过。模型完成且最终用量可核验时，非法 JSON、schema 错误和确定性的 curator 校验失败现封存为类型化执行错误；恢复复用原结果，不再次请求模型。缺少最终用量或 publisher 存储结果不明时仍保留 unknown，不伪造零用量。
 
 主审追加要求把库容量等纯校验放在写入任何 Skill body 之前；负例验证超限不发布产物。测试使用实际 DSH 会话机制和离线模型，没有调用外部模型。
+
+## S4c 预测与回滚来源
+
+主 agent 在独立冻结快照运行 Python SDK/recipes/真实 Optuna unittest：21/21，无跳过；RHO/AHE 跨语言 Campaign 测试 2/2 通过。AHE 的已变更版本必须给出非空、无重复且属于测量 cohort 的可检验预测；回滚明确引用先前实际测量的 BindingSet，并保留当前执行版本作为编辑基底。Evo 同时声明固定 Harness 与可更新技能库。
+
+本提交验证科学意图与绑定协议；逐文件 Git 恢复和默认宿主的完整多轮算法测试分开验收。

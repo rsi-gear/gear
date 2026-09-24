@@ -18,12 +18,16 @@ _KINDS = frozenset({"tasks.consume", "evidence.query", "evidence.read", "executi
 
 def verify_predictions(manifest: dict[str, Any], before: dict[str, bool], after: dict[str, bool]) -> dict[str, Any]:
     """Task deltas verify predictions; a rationale alone cannot count as evidence."""
-    fixes = manifest.get("predictedFixes", [])
-    risks = manifest.get("riskTasks", [])
+    fixes = manifest.get("predictedFixes")
+    risks = manifest.get("riskTasks")
     if not isinstance(fixes, list) or not isinstance(risks, list) or any(
         not isinstance(item, str) for item in fixes + risks
     ):
         raise ValidationError("AHE change manifest needs task ID prediction lists")
+    if not fixes and not risks:
+        raise ValidationError("AHE changed revision needs a testable task prediction")
+    if len(set(fixes + risks)) != len(fixes + risks):
+        raise ValidationError("AHE prediction contains duplicate task IDs")
     if any(task_id not in before or task_id not in after for task_id in fixes + risks):
         raise ValidationError("AHE prediction names a task outside measured cohort")
     return {"confirmedFixes": [task_id for task_id in fixes if not before[task_id] and after[task_id]],
@@ -147,10 +151,15 @@ class Ahe:
             if not isinstance(files, list) or any(not isinstance(file, str) for file in files):
                 raise ValidationError("AHE rollback file list is malformed")
             if files:
+                previous = state.get("previousMeasurement")
+                if not isinstance(previous, dict) or not isinstance(previous.get("bindingSetRef"), dict):
+                    raise ValidationError("AHE rollback needs the previously measured revision")
                 return advance_state({**state, "phase": "rollback", "attribution": attribution}, [
                     operation(key="rollback", kind="execution.workspace-edit", input={
                         "roleId": "ahe.rollback", "files": files,
                         "baseBindingSetRef": state["executedRevision"],
+                        "restoreFromBindingSetRef": previous["bindingSetRef"],
+                        "previousMeasurement": previous,
                         "predictionVerdict": state["predictionVerdict"]},
                         binding_set_ref=BindingSetRef(state["executedRevision"]["digest"],
                                                       state["executedRevision"]["schemaId"]))])
