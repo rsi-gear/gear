@@ -278,3 +278,9 @@ verifyPinnedLegacySearchClosure 核验已归档 f715748 的 search/parent/packag
 主 agent 在独立冻结快照执行 AHE 完整流程 1/1，完整 typecheck 通过。实际 Python recipe/default host 在三个执行版本上完成 12 次独立任务测量；evolver 返回非空预测，attributor 查询并读取已授权 rollout 的失败 trace。第二轮任务退化触发指定文件的精确 Git 恢复，未列出的 marker 保留；下一候选进一步编辑 marker，第三轮实际测量该新 commit，未把未测候选当成测量结果。
 
 重建 Python worker/Campaign runtime 后恢复完成，模型调用与 Hitch submit 次数均不增加。测试使用真实 DSH/Git、按实际提交 commit 内容取值的录制 Hitch 与离线模型，证明预测、归因、选择性回滚、后续测量和持久恢复的接线；没有外部模型或科学效果认证。
+
+## S2/S3 管理员配置宿主
+
+主 agent 在只含 HEAD 与两个冻结文件的独立快照运行配置/default/fresh 宿主 6/6，完整 typecheck 通过。createConfiguredFreshHostProfile 读取封闭源目录中的 JSON 配置，构造实际 HarnessBuilder/SubprocessHarnessCompiler/Hitch/workspace 与受限 DSH。管理员一次性提供模型注册和运行资源，普通算法继续仅接触科学参数与宿主封存 refs。
+
+审计发现仅返回 destinationId 不能证明 adapter 可用，现验证实际 DSH provider 路由并解析 model info；未注册明确拒绝。配置、模型模块、执行文件、显式 runtimeResources 与实际继承环境进入身份；模型/资源源码变化在角色准入前拒绝。环境仅记录摘要。runtimeResources 的传递依赖仍由可信管理员完整声明，不提供自动闭包发现；路由与声明校验不证明远端模型权重身份。公开 CLI/安装包的宿主加载另行验收。
