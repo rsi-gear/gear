@@ -14,7 +14,7 @@ import { usageTokens } from '../../meta/offloading-host.js';
 import { FileArtifactStore, assertDigest, durableWrite } from '../artifacts.js';
 import { BindingStore } from '../bindings.js';
 import type { ArtifactRef, BudgetPlan, CompletionEnvelope, OperationEnvelope, ProviderInspection, ProviderManifest, ProviderSubmission, UsageReceipt } from '../contracts.js';
-import { assertJson, canonicalJson, jsonDigest, validateSchema, type JsonSchema, type JsonValue } from '../schema.js';
+import { assertJson, assertSchema, canonicalJson, jsonDigest, validateSchema, type JsonSchema, type JsonValue } from '../schema.js';
 import { implementationClosureDigest } from '../data/identity.js';
 import { EvidenceService, type EvidenceQuery, type EvidenceRead } from '../data/evidence.js';
 import { createRoleEvidenceTools, type EvidenceGrantResolver } from './evidence.js';
@@ -28,6 +28,17 @@ export type StructuredRoleDefinition = { id: string; spec: DshMetaAgentSpec; ins
 export type RoleArtifactPublisher = { implementationDigest: string;
   /** Must be idempotent for an operationId: recovery may finish a completed DSH turn again. */
   publish(roleId: string, result: JsonValue, envelope: OperationEnvelope): Promise<ArtifactRef | undefined> };
+/** Only deterministic, side-effect-free output validation may use this error. */
+export class RoleOutputValidationError extends Error {
+  constructor(readonly code: 'dsh_role_invalid_json' | 'dsh_role_schema_mismatch' | 'dsh_role_publisher_validation',
+    message: string) { super(message); this.name = 'RoleOutputValidationError'; }
+}
+class RolePublicationUnknownError extends Error {
+  constructor(error: unknown) {
+    super(error instanceof Error ? error.message : 'DSH role publisher outcome unknown');
+    this.name = 'RolePublicationUnknownError';
+  }
+}
 export type DshRolePortOptions = { root: string; kind: 'execution.role' | 'execution.feedback';
   host: DshMetaAgentHost; sessionRoles: DshRoleSessionRegistry; artifacts: FileArtifactStore; bindings: BindingStore;
   roles: StructuredRoleDefinition[]; accessPolicyDigest: string; hostRuntimeDigest: string; campaignBudget: BudgetPlan;
@@ -197,10 +208,14 @@ function assistantJson(agent: Agent, firstSeq: number): JsonValue {
   const message = agent.session.deriveEventMessage(last);
   if (!message || message.role !== 'assistant' || message.source.kind !== 'model') throw new Error('DSH role result lacks model provenance');
   const texts = message.content.filter(block => block.type === 'text').map(block => block.text);
-  if (texts.length !== 1 || Buffer.byteLength(texts[0]!) > 16 * 1024) throw new Error('DSH role result is not one bounded JSON message');
+  if (texts.length !== 1 || Buffer.byteLength(texts[0]!) > 16 * 1024) {
+    throw new RoleOutputValidationError('dsh_role_invalid_json', 'DSH role result is not one bounded JSON message');
+  }
   let value: unknown;
-  try { value = JSON.parse(texts[0]!); } catch { throw new Error('DSH role result is not strict JSON'); }
-  assertJson(value);
+  try { value = JSON.parse(texts[0]!); }
+  catch { throw new RoleOutputValidationError('dsh_role_invalid_json', 'DSH role result is not strict JSON'); }
+  try { assertJson(value); }
+  catch { throw new RoleOutputValidationError('dsh_role_invalid_json', 'DSH role result is not bounded JSON'); }
   return value;
 }
 
@@ -233,6 +248,7 @@ export class DshStructuredRolePort implements PhysicalExecutionPort {
         || !Number.isSafeInteger(role.maxModelRequests) || role.maxModelRequests <= 0
         || !Number.isSafeInteger(role.maxTokens) || role.maxTokens <= 0
         || !Number.isSafeInteger(role.timeoutMs) || role.timeoutMs <= 0) throw new Error('Invalid DSH role definition');
+      assertSchema(role.inputSchema); assertSchema(role.resultSchema);
       this.definitions.set(role.id, structuredClone(role));
     }
     this.records = join(options.root, 'operations'); mkdirSync(this.records, { recursive: true });
@@ -338,13 +354,40 @@ export class DshStructuredRolePort implements PhysicalExecutionPort {
     return { source: this.meterSource, scope: 'operation', operationId: envelope.operationId,
       cursor: jsonDigest({ operationId: envelope.operationId, revision: state?.revision ?? 0, cumulative }), cumulative };
   }
-  private async finish(envelope: OperationEnvelope, intent: RoleIntent, agent: Agent): Promise<CompletionEnvelope> {
+  private async invalidOutput(envelope: OperationEnvelope, intent: RoleIntent, agent: Agent,
+    error: RoleOutputValidationError): Promise<CompletionEnvelope | undefined> {
+    const state = await this.generationStore.read(envelope.operationId);
+    if (state?.status !== 'completed') return undefined;
+    let usage: UsageReceipt | undefined;
+    try { usage = await this.usageReceipt(envelope, agent, intent.firstSeq); }
+    catch { return undefined; } // Unknown final spending must stay unsettled, even for malformed output.
+    if (this.meteredDimensions.length > 0 && !usage) return undefined;
+    const completion: CompletionEnvelope = { operationId: envelope.operationId, idempotencyKey: envelope.idempotencyKey,
+      inputDigest: envelope.inputDigest, implementationDigest: this.manifest.implementationDigest,
+      outcome: { kind: 'error', code: error.code, message: error.message.slice(0, 1_000), retryable: false },
+      ...(usage ? { receipt: usage } : {}) };
+    durableWrite(this.path(envelope), canonicalJson({ status: 'completed', envelope, completion }));
+    return completion;
+  }
+  private async finish(envelope: OperationEnvelope, intent: RoleIntent, agent: Agent): Promise<CompletionEnvelope | undefined> {
     const role = this.definitions.get(intent.roleId)!;
     const checkpoint = await this.options.host.checkpoint(agent);
-    const result = assistantJson(agent, intent.firstSeq ?? 0);
-    validateSchema(role.resultSchema, result);
+    let result: JsonValue;
+    try { result = assistantJson(agent, intent.firstSeq ?? 0); }
+    catch (error) {
+      if (error instanceof RoleOutputValidationError) return this.invalidOutput(envelope, intent, agent, error);
+      throw error;
+    }
+    try { validateSchema(role.resultSchema, result); }
+    catch { return this.invalidOutput(envelope, intent, agent,
+      new RoleOutputValidationError('dsh_role_schema_mismatch', 'DSH role result does not match its declared schema')); }
     const structuredResultRef = this.options.artifacts.putJson(result, 'execution.structured-result.v1');
-    const producedArtifactRef = await this.options.publisher?.publish(role.id, result, envelope);
+    let producedArtifactRef: ArtifactRef | undefined;
+    try { producedArtifactRef = await this.options.publisher?.publish(role.id, result, envelope); }
+    catch (error) {
+      if (error instanceof RoleOutputValidationError) return this.invalidOutput(envelope, intent, agent, error);
+      throw new RolePublicationUnknownError(error);
+    }
     if (role.producedSchemaId && producedArtifactRef?.schemaId !== role.producedSchemaId) {
       throw new Error(`DSH role ${role.id} did not publish ${role.producedSchemaId}`);
     }
@@ -417,7 +460,8 @@ export class DshStructuredRolePort implements PhysicalExecutionPort {
         if (terminal) return { status: 'completed', completion: terminal };
         throw error;
       }
-      return { status: 'completed', completion: await this.finish(envelope, { ...intent, firstSeq }, handle.agent) };
+      const completion = await this.finish(envelope, { ...intent, firstSeq }, handle.agent);
+      return completion ? { status: 'completed', completion } : { status: 'running', handle: sessionId };
     } finally { await handle?.dispose(); this.options.sessionRoles.release(sessionId); }
   }
   async inspect(envelope: OperationEnvelope): Promise<ProviderInspection> {
@@ -447,12 +491,27 @@ export class DshStructuredRolePort implements PhysicalExecutionPort {
     if (execution?.status === 'completed') {
       const role = this.definitions.get(record.roleId)!;
       const live = this.options.host.getLive(record.sessionId);
-      if (live) return { status: 'completed', completion: await this.finish(envelope, record, live) };
+      if (live) {
+        try {
+          const completion = await this.finish(envelope, record, live);
+          return completion ? { status: 'completed', completion } : { status: 'unknown' };
+        } catch (error) {
+          if (error instanceof RolePublicationUnknownError) return { status: 'unknown' };
+          throw error;
+        }
+      }
       this.options.sessionRoles.bind(record.sessionId, role.id, envelope);
       let handle: Awaited<ReturnType<DshMetaAgentHost['resume']>> | undefined;
       try {
-        handle = await this.options.host.resume(record.sessionId, role.spec);
-        return { status: 'completed', completion: await this.finish(envelope, record, handle.agent) };
+        try { handle = await this.options.host.resume(record.sessionId, role.spec); }
+        catch { return { status: 'unknown' }; }
+        try {
+          const completion = await this.finish(envelope, record, handle.agent);
+          return completion ? { status: 'completed', completion } : { status: 'unknown' };
+        } catch (error) {
+          if (error instanceof RolePublicationUnknownError) return { status: 'unknown' };
+          throw error;
+        }
       } finally { await handle?.dispose(); this.options.sessionRoles.release(record.sessionId); }
     }
     return execution?.status === 'running' && this.options.host.getLive(record.sessionId)

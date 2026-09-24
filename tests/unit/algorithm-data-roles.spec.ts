@@ -14,13 +14,16 @@ import { BindingStore } from '../../src/algorithm/bindings.js';
 import { EvidenceService } from '../../src/algorithm/data/evidence.js';
 import { jsonDigest } from '../../src/algorithm/schema.js';
 import { DshRoleSessionRegistry, createDshStructuredAdapter, createEvidenceDshRoleHost } from '../../src/algorithm/providers/roles.js';
+import { createEvoSkillCapabilities } from '../../src/algorithm/providers/evo-skills.js';
 import { metaAgent } from '../helpers/research-fixture.js';
 import type { OperationEnvelope } from '../../src/algorithm/contracts.js';
 
 const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
-async function setup(meterEvidence = false, hang = false, timeoutMs = 20_000) {
+async function setup(meterEvidence = false, hang = false, timeoutMs = 20_000,
+  responseText = JSON.stringify({ difficulty: 4.5, fingerprint: [0.1, 0.2] }), curator = false,
+  emitUsage = true) {
   const root = await mkdtemp(join(tmpdir(), 'gear-algorithm-role-'));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const ctx = new Context();
@@ -48,8 +51,8 @@ async function setup(meterEvidence = false, hang = false, timeoutMs = 20_000) {
         });
         return;
       }
-      yield { type: 'text-delta', index: 0, text: JSON.stringify({ difficulty: 4.5, fingerprint: [0.1, 0.2] }) };
-      yield { type: 'usage', usage: { inputTokens: 30, outputTokens: 12 } };
+      yield { type: 'text-delta', index: 0, text: responseText };
+      if (emitUsage) yield { type: 'usage', usage: { inputTokens: 30, outputTokens: 12 } };
       yield { type: 'finish', reason: { kind: 'stop' } };
     }
   }
@@ -60,11 +63,21 @@ async function setup(meterEvidence = false, hang = false, timeoutMs = 20_000) {
   const host = createEvidenceDshRoleHost(ctx, sessionRoles, evidence,
     principalId => ({ principalId, viewDigests: [], projections: [] }));
   vi.spyOn(host.offloading, 'pressure').mockResolvedValue({ tokens: 10, fixedTokens: 5, basis: 'offline-fixture' });
-  const bindings = new BindingStore(artifacts, { id: 'rho.bindings.v1', slots: {
+  const bindings = new BindingStore(artifacts, { id: curator ? 'evo.bindings.v1' : 'rho.bindings.v1', slots: {
     harness: { schemaId: 'harness.directory.v1', required: true, replaceable: true },
+    ...(curator ? { skills: { schemaId: 'skills.library.v1', required: true, replaceable: true } } : {}),
   } });
-  const harness = artifacts.putJson({ schemaVersion: 1, kind: 'fixture-harness' }, 'harness.directory.v1');
-  const bindingSetRef = bindings.create({ harness });
+  const harness = artifacts.putJson(curator
+    ? { schemaVersion: 1, kind: 'git-harness', commitOid: 'a'.repeat(40), manifestDigest: `sha256:${'b'.repeat(64)}` }
+    : { schemaVersion: 1, kind: 'fixture-harness' }, 'harness.directory.v1');
+  const skillBody = curator ? artifacts.putJson({ schemaVersion: 1,
+    markdown: '---\nname: alpha\ndescription: Existing Skill.\n---\nKnown content.' }, 'skills.body.v1') : undefined;
+  const skillLibrary = skillBody ? artifacts.putJson({ schemaVersion: 1,
+    skills: [{ name: 'alpha', contentRef: skillBody }] }, 'skills.library.v1') : undefined;
+  const bindingSetRef = bindings.create({ harness, ...(skillLibrary ? { skills: skillLibrary } : {}) });
+  const publisher = curator ? createEvoSkillCapabilities({ artifacts, bindings,
+    disclosure: { policyDigest: sha256('offline-skill-policy'), currentPolicyDigest: () => sha256('offline-skill-policy'),
+      authorize: () => {} } }).publisher : undefined;
   let runtimeDigest = sha256('offline-dsh-host-v1');
   const options = { root: join(root, 'role'), kind: 'execution.role' as const, host, sessionRoles, artifacts, bindings,
     accessPolicyDigest: sha256('role-access-v1'), hostRuntimeDigest: runtimeDigest,
@@ -73,18 +86,23 @@ async function setup(meterEvidence = false, hang = false, timeoutMs = 20_000) {
       ...(meterEvidence ? { 'evidence.items': { unit: 'items', limit: 20, source: 'dsh-generation', capability: 'hard' as const },
         'evidence.bytes': { unit: 'bytes', limit: 10_000, source: 'dsh-generation', capability: 'hard' as const } } : {}) },
     currentHostRuntimeDigest: () => runtimeDigest,
-    authorize: (id: string) => { if (id !== 'rho.difficulty') throw new Error('role denied'); },
-    requiredSlots: ['harness'], roles: [{ id: 'rho.difficulty', spec: metaAgent(),
+    authorize: (id: string) => { if (id !== (curator ? 'evo.curator' : 'rho.difficulty')) throw new Error('role denied'); },
+    ...(publisher ? { publisher } : {}),
+    requiredSlots: curator ? ['harness', 'skills'] : ['harness'], roles: [{ id: curator ? 'evo.curator' : 'rho.difficulty', spec: metaAgent(),
       instruction: 'Assess historical difficulty.', maxModelRequests: 1, maxTokens: 500, timeoutMs,
       inputSchema: { type: 'object' as const, required: ['roleId'], properties: {
-        roleId: { type: 'string' as const, enum: ['rho.difficulty'] },
+        roleId: { type: 'string' as const, enum: [curator ? 'evo.curator' : 'rho.difficulty'] },
       }, additionalProperties: true },
-      resultSchema: { type: 'object' as const, required: ['difficulty', 'fingerprint'], properties: {
+      resultSchema: curator ? { type: 'object' as const, required: ['action', 'skills'], properties: {
+        action: { type: 'string' as const }, skills: { type: 'array' as const, items: { type: 'any' as const } },
+      }, additionalProperties: false } : { type: 'object' as const, required: ['difficulty', 'fingerprint'], properties: {
         difficulty: { type: 'number' as const }, fingerprint: { type: 'array' as const, items: { type: 'number' as const } },
       }, additionalProperties: false },
     }] };
   const adapter = createDshStructuredAdapter(options);
-  const input = { roleId: 'rho.difficulty', historySummary: 'fixture only' };
+  const input = curator ? { roleId: 'evo.curator', skillsBindingSetRef: bindingSetRef,
+    proposals: [{ action: 'NEW', lesson: 'fixture' }], batchTaskIds: ['task-a'] }
+    : { roleId: 'rho.difficulty', historySummary: 'fixture only' };
   const envelope: OperationEnvelope = { operationId: sha256('role-op'), idempotencyKey: sha256('role-op'),
     campaignId: 'role-campaign', decisionIndex: 0, localKey: 'difficulty', kind: 'execution.role', input,
     inputDigest: jsonDigest(input), implementationDigest: adapter.describe().implementationDigest, bindingSetRef,
@@ -216,5 +234,64 @@ describe('S3b DSH role bridge offline protocol (fixture LLM, no external model)'
     expect(stopped.completion.receipt?.cumulative).toEqual({ 'model.requests': 0, 'model.tokens': 0 });
     expect((await fixture.adapter.inspect(fixture.envelope)).status).toBe('completed');
     expect(fixture.calls).toHaveLength(0);
+  });
+
+  it('settles malformed model JSON with measured usage and resumes without another request', async () => {
+    const fixture = await setup(false, false, 20_000, '{not-json');
+    const submitted = await fixture.adapter.submit(fixture.envelope);
+    expect(submitted.status).toBe('completed');
+    if (submitted.status !== 'completed') throw new Error('malformed output did not settle');
+    expect(submitted.completion.outcome).toMatchObject({ kind: 'error', code: 'dsh_role_invalid_json', retryable: false });
+    expect(submitted.completion.receipt?.cumulative).toEqual({ 'model.requests': 1, 'model.tokens': 42 });
+    const reopened = createDshStructuredAdapter(fixture.options);
+    expect(await reopened.inspect(fixture.envelope)).toMatchObject({ status: 'completed', completion: submitted.completion });
+    expect(fixture.calls).toHaveLength(1);
+  });
+
+  it('keeps malformed output unsettled when the model omits final billed usage', async () => {
+    const fixture = await setup(false, false, 20_000, '{not-json', false, false);
+    const submitted = await fixture.adapter.submit(fixture.envelope);
+    expect(submitted.status).toBe('running');
+    expect((await fixture.adapter.inspect(fixture.envelope)).status).toBe('unknown');
+    expect(fixture.calls).toHaveLength(1);
+  });
+
+  it('settles an output schema mismatch with measured usage and no repeat turn', async () => {
+    const fixture = await setup(false, false, 20_000, JSON.stringify({ difficulty: 'hard', fingerprint: [0.1] }));
+    const submitted = await fixture.adapter.submit(fixture.envelope);
+    expect(submitted.status).toBe('completed');
+    if (submitted.status !== 'completed') throw new Error('schema mismatch did not settle');
+    expect(submitted.completion.outcome).toMatchObject({ kind: 'error', code: 'dsh_role_schema_mismatch', retryable: false });
+    expect(submitted.completion.receipt?.cumulative).toEqual({ 'model.requests': 1, 'model.tokens': 42 });
+    const reopened = createDshStructuredAdapter(fixture.options);
+    expect((await reopened.inspect(fixture.envelope)).status).toBe('completed');
+    expect(fixture.calls).toHaveLength(1);
+  });
+
+  it('settles an invalid curator publication only after its known final usage', async () => {
+    const fixture = await setup(false, false, 20_000, JSON.stringify({ action: 'ADD',
+      skills: [{ name: 'alpha', markdown: '---\nname: alpha\ndescription: Overwrite.\n---\nNew content.' }] }), true);
+    const submitted = await fixture.adapter.submit(fixture.envelope);
+    expect(submitted.status).toBe('completed');
+    if (submitted.status !== 'completed') throw new Error('curator rejection did not settle');
+    expect(submitted.completion.outcome).toMatchObject({ kind: 'error',
+      code: 'dsh_role_publisher_validation', retryable: false });
+    expect(submitted.completion.receipt?.cumulative).toEqual({ 'model.requests': 1, 'model.tokens': 42 });
+    const reopened = createDshStructuredAdapter(fixture.options);
+    expect((await reopened.inspect(fixture.envelope)).status).toBe('completed');
+    expect(fixture.calls).toHaveLength(1);
+  });
+
+  it('does not settle an arbitrary publisher storage failure as output validation', async () => {
+    const fixture = await setup(false, false, 20_000, JSON.stringify({ action: 'ADD',
+      skills: [{ name: 'beta', markdown: '---\nname: beta\ndescription: New Skill.\n---\nNew content.' }] }), true);
+    const putJson = fixture.artifacts.putJson.bind(fixture.artifacts);
+    vi.spyOn(fixture.artifacts, 'putJson').mockImplementation((value, schemaId) => {
+      if (schemaId === 'skills.library.v1') throw new Error('fixture storage failure after body seal');
+      return putJson(value, schemaId);
+    });
+    await expect(fixture.adapter.submit(fixture.envelope)).rejects.toThrow(/storage failure/u);
+    expect((await fixture.adapter.inspect(fixture.envelope)).status).toBe('unknown');
+    expect(fixture.calls).toHaveLength(1);
   });
 });

@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FileArtifactStore, sha256 } from '../../src/algorithm/artifacts.js';
 import { BindingStore } from '../../src/algorithm/bindings.js';
 import type { ArtifactRef, BindingSetRef, OperationEnvelope } from '../../src/algorithm/contracts.js';
@@ -162,5 +162,22 @@ describe('host-authorized bound Evo Skill capabilities (synthetic only)', () => 
     await expect(f.capabilities.publisher.publish('evo.curator', { action: 'SKIP',
       skills: [{ name: 'gamma', markdown: skill('gamma', 'Invalid.') }] }, envelope))
       .rejects.toThrow(/SKIP/);
+  });
+
+  it('rejects an oversized curated library before writing any new Skill body', async () => {
+    const f = await fixture();
+    const policyDigest = sha256('bounded-curator-policy');
+    const bounded = createEvoSkillCapabilities({ artifacts: f.artifacts, bindings: f.bindings, maxSkills: 2,
+      disclosure: { policyDigest, currentPolicyDigest: () => policyDigest, authorize: () => {} } });
+    const actualPut = f.artifacts.putJson.bind(f.artifacts);
+    let bodyWrites = 0;
+    vi.spyOn(f.artifacts, 'putJson').mockImplementation((value, schemaId) => {
+      if (schemaId === 'skills.body.v1') bodyWrites++;
+      return actualPut(value, schemaId);
+    });
+    await expect(bounded.publisher.publish('evo.curator', { action: 'ADD',
+      skills: [{ name: 'gamma', markdown: skill('gamma', 'New guidance.') }] }, f.envelope('evo.curator')))
+      .rejects.toThrow(/host limit/);
+    expect(bodyWrites).toBe(0);
   });
 });

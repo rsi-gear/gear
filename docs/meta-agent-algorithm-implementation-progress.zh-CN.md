@@ -216,3 +216,9 @@ AlgorithmManifest 新增通用 requiredOperationKindsFromConfig，由冻结配�
 主审修复：精确宿主输入在任何工作区/模型副作用前只计算一次，验证后把 prompt 和摘要写入 intent；resume 不重新生成。builder/workspace 来源必须一致，具体配置进入身份；实际 check/finalize 使用冻结截止时间。无变更或固定 compiler 拒绝有明确 no-result 和最终用量，科学 JSON 格式错误是执行错误；finalization 回包不明保留 unknown、禁止重做。
 
 测试使用真实 DSH/Git 机制、离线模型及 compiler fixture，覆盖产物字节、计量、预启动取消、无变更、检查失败、科学输出独立封存、过大输入和不确定 finalization。开始后的取消确认、精确版本回滚及 GEPA production bridge 继续增量交付；未调用实际模型或容器。
+
+## S3b8 已知模型输出失败的终态
+
+主 agent 在只含已提交 HEAD 与四个冻结文件的独立快照运行 DSH role 与 Evo capabilities：21/21，完整 typecheck 通过。模型完成且最终用量可核验时，非法 JSON、schema 错误和确定性的 curator 校验失败现封存为类型化执行错误；恢复复用原结果，不再次请求模型。缺少最终用量或 publisher 存储结果不明时仍保留 unknown，不伪造零用量。
+
+主审追加要求把库容量等纯校验放在写入任何 Skill body 之前；负例验证超限不发布产物。测试使用实际 DSH 会话机制和离线模型，没有调用外部模型。

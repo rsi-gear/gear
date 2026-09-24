@@ -7,7 +7,7 @@ import { BindingStore } from '../bindings.js';
 import { canonicalJson, type JsonValue } from '../schema.js';
 import { implementationClosureDigest } from '../data/identity.js';
 import { validateSkillOverlaySelection, type SkillsLibrary } from './skill-overlay.js';
-import type { DshRoleSessionRegistry, RoleArtifactPublisher } from './roles.js';
+import { RoleOutputValidationError, type DshRoleSessionRegistry, type RoleArtifactPublisher } from './roles.js';
 
 type EvoRoleId = 'evo.retriever' | 'evo.proposer' | 'evo.curator';
 type SkillEntry = SkillsLibrary['skills'][number];
@@ -101,6 +101,21 @@ function markdown(name: string, value: unknown): string {
   }
   return value;
 }
+function invalidOutput(message: string): never {
+  throw new RoleOutputValidationError('dsh_role_publisher_validation', message);
+}
+function outputObject(value: unknown): Record<string, unknown> {
+  try { return object(value); } catch { return invalidOutput('Invalid Evo Skill role output object'); }
+}
+function outputKeys(value: Record<string, unknown>, expected: readonly string[], optional: readonly string[] = []): void {
+  try { keys(value, expected, optional); } catch { invalidOutput('Unexpected Evo Skill role output fields'); }
+}
+function outputRef(value: unknown, schemaId: string): ArtifactRef {
+  try { return ref(value, schemaId); } catch { return invalidOutput('Invalid Evo Skill role output reference'); }
+}
+function outputMarkdown(name: string, value: unknown): string {
+  try { return markdown(name, value); } catch { return invalidOutput('Invalid Evo Skill frontmatter or Markdown'); }
+}
 
 /** Does not reveal a bound library until the host verifies role and model destination for this call. */
 export function createEvoSkillCapabilities(options: EvoSkillCapabilityOptions): EvoSkillCapabilities {
@@ -124,18 +139,18 @@ export function createEvoSkillCapabilities(options: EvoSkillCapabilityOptions): 
       requirePolicy();
       if (roleId !== role(envelope)) throw new Error('Evo Skill publisher role identity drift');
       const library = bound(options, envelope, maxSkills);
-      const value = object(result);
+      const value = outputObject(result);
       if (roleId === 'evo.retriever') {
-        keys(value, ['skillRefs']);
+        outputKeys(value, ['skillRefs']);
         const requested = value.skillRefs;
         const budget = object(envelope.input).injectionBudget;
         if (!Array.isArray(requested) || !Number.isSafeInteger(budget) || (budget as number) < 0
-          || requested.length > (budget as number)) throw new Error('Evo retriever exceeded bound injection budget');
+          || requested.length > (budget as number)) invalidOutput('Evo retriever exceeded bound injection budget');
         const members = new Set(library.entries.map(item => canonicalJson(item.contentRef)));
         const selected = new Set<string>();
         for (const item of requested) {
-          const key = canonicalJson(ref(item, 'skills.body.v1'));
-          if (!members.has(key) || selected.has(key)) throw new Error('Evo retriever chose an unbound or repeated Skill');
+          const key = canonicalJson(outputRef(item, 'skills.body.v1'));
+          if (!members.has(key) || selected.has(key)) invalidOutput('Evo retriever chose an unbound or repeated Skill');
           selected.add(key);
         }
         return undefined;
@@ -149,61 +164,64 @@ export function createEvoSkillCapabilities(options: EvoSkillCapabilityOptions): 
         || new Set(sourceInput.batchTaskIds).size !== sourceInput.batchTaskIds.length) {
         throw new Error('Evo curator has no frozen proposal batch');
       }
-      keys(value, ['action'], ['skills']);
+      outputKeys(value, ['action'], ['skills']);
       const action = value.action;
-      if (!['ADD', 'MERGE', 'REVISE', 'SKIP'].includes(String(action))) throw new Error('Invalid Evo curator action');
+      if (!['ADD', 'MERGE', 'REVISE', 'SKIP'].includes(String(action))) invalidOutput('Invalid Evo curator action');
       if (action === 'SKIP') {
         if (value.skills !== undefined && (!Array.isArray(value.skills) || value.skills.length !== 0)) {
-          throw new Error('Evo curator SKIP cannot publish Skills');
+          invalidOutput('Evo curator SKIP cannot publish Skills');
         }
         return undefined;
       }
       if (sourceInput.proposals.length === 0) throw new Error('Evo curator cannot publish without proposals');
       if (!Array.isArray(value.skills) || value.skills.length < 1 || value.skills.length > 32) {
-        throw new Error('Evo curator needs bounded Skill changes');
+        invalidOutput('Evo curator needs bounded Skill changes');
       }
       const existing = new Map(library.entries.map(item => [item.name, item.contentRef]));
       const next = new Map(existing);
       const changed = new Set<string>(), mergedSources = new Set<string>();
       const prepared: Array<{ name: string; markdown: string; sourceNames: string[] }> = [];
       for (const raw of value.skills) {
-        const item = object(raw);
-        keys(item, ['name', 'markdown'], action === 'MERGE' ? ['sourceNames'] : []);
-        if (typeof item.name !== 'string' || changed.has(item.name)) throw new Error('Duplicate or invalid Evo curated Skill name');
+        const item = outputObject(raw);
+        outputKeys(item, ['name', 'markdown'], action === 'MERGE' ? ['sourceNames'] : []);
+        if (typeof item.name !== 'string' || changed.has(item.name)) invalidOutput('Duplicate or invalid Evo curated Skill name');
         changed.add(item.name);
-        const body = markdown(item.name, item.markdown);
+        const body = outputMarkdown(item.name, item.markdown);
         let sourceNames: string[] = [];
         if (action === 'ADD') {
-          if (existing.has(item.name)) throw new Error('Evo ADD cannot overwrite an existing Skill');
+          if (existing.has(item.name)) invalidOutput('Evo ADD cannot overwrite an existing Skill');
         } else if (action === 'REVISE') {
           const previous = existing.get(item.name);
           if (!previous || (options.artifacts.getJson(previous) as { markdown: string }).markdown === body) {
-            throw new Error('Evo REVISE requires a changed bound Skill');
+            invalidOutput('Evo REVISE requires a changed bound Skill');
           }
         } else {
           if (!Array.isArray(item.sourceNames) || item.sourceNames.length < 2
             || item.sourceNames.some(name => typeof name !== 'string')
             || new Set(item.sourceNames).size !== item.sourceNames.length
             || [...item.sourceNames].sort().join('\0') !== item.sourceNames.join('\0')) {
-            throw new Error('Evo MERGE needs distinct sorted source names');
+            invalidOutput('Evo MERGE needs distinct sorted source names');
           }
           sourceNames = item.sourceNames as string[];
           if (existing.has(item.name) && !sourceNames.includes(item.name)) {
-            throw new Error('Evo MERGE target would overwrite an unrelated Skill');
+            invalidOutput('Evo MERGE target would overwrite an unrelated Skill');
           }
           for (const name of sourceNames) {
-            if (!existing.has(name) || mergedSources.has(name)) throw new Error('Evo MERGE source is absent or reused');
+            if (!existing.has(name) || mergedSources.has(name)) invalidOutput('Evo MERGE source is absent or reused');
             mergedSources.add(name);
           }
         }
         prepared.push({ name: item.name, markdown: body, sourceNames });
       }
+      const projectedNames = new Set(existing.keys());
+      if (action === 'MERGE') for (const source of mergedSources) projectedNames.delete(source);
+      for (const item of prepared) projectedNames.add(item.name);
+      if (projectedNames.size > maxSkills) invalidOutput('Evo curated library exceeds host limit');
       if (action === 'MERGE') for (const source of mergedSources) next.delete(source);
       for (const item of prepared) {
         const bodyRef = options.artifacts.putJson({ schemaVersion: 1, markdown: item.markdown }, 'skills.body.v1');
         next.set(item.name, bodyRef);
       }
-      if (next.size > maxSkills) throw new Error('Evo curated library exceeds host limit');
       const sealed: SkillsLibrary = { schemaVersion: 1,
         skills: [...next].sort(([a], [b]) => a.localeCompare(b)).map(([name, contentRef]) => ({ name, contentRef })) };
       return options.artifacts.putJson(sealed as unknown as JsonValue, 'skills.library.v1');
