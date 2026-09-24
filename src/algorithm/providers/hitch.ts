@@ -8,6 +8,7 @@ import { BindingStore } from '../bindings.js';
 import { assertJson, canonicalJson, jsonDigest, type JsonValue } from '../schema.js';
 import { implementationClosureDigest } from '../data/identity.js';
 import { TaskViewAuthority, readTaskView, type TaskEntry, type TaskViewRef } from '../data/tasks.js';
+import type { FreshHitchRolloutContext } from '../data/fresh-rollout-context.js';
 import { VerifiedExecutionAdapter, executionResultSchema, type ExecutionReceipt, type ExecutionResult, type PhysicalExecutionPort } from './execution.js';
 import { EvolutionRegistryStore } from '../../state/evolution.js';
 import { HarnessBuilder } from '../../harness/builder.js';
@@ -22,10 +23,12 @@ export type GitHarnessBinding = { schemaVersion: 1; kind: 'git-harness'; commitO
 export type HitchRolloutInput = { task: TaskEntry; taskViewRef: TaskViewRef; repeatIndex?: number;
   samplingDigest: string; environmentDigest: string; recipePhase: string; executedRevisionDigest?: string;
   skillBindingSetDigest?: string; injectedSkillRefs?: ArtifactRef[] };
-export type HitchRolloutHostOptions = { registry: EvolutionRegistryStore; evolutionId: string; roundId: string;
-  workspaceRoot: string; stateRoot: string; artifacts: FileArtifactStore; bindings: BindingStore;
+type HitchRolloutHostCommon = { workspaceRoot: string; stateRoot: string; artifacts: FileArtifactStore; bindings: BindingStore;
   taskAuthority: TaskViewAuthority; allowedExperienceViewDigests(campaignId: string): readonly string[];
   accessPolicyDigest: string; builder: HarnessBuilder; evaluator: HitchCliEvaluator; campaignBudget: BudgetPlan };
+export type HitchRolloutHostOptions = HitchRolloutHostCommon & (
+  { registry: EvolutionRegistryStore; evolutionId: string; roundId: string; freshContext?: never }
+  | { freshContext: FreshHitchRolloutContext; registry?: never; evolutionId?: never; roundId?: never });
 
 type Prepared = { input: HitchRolloutInput; task: TaskEntry; bindingSlots: Record<string, ArtifactRef>;
   request: EvaluationRequest; contextRound: RefinementRound; intent: EvaluationSubmissionIntent };
@@ -69,6 +72,7 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
     mkdirSync(this.records, { recursive: true });
     this.manifest = { kind: 'execution.rollout',
       implementationDigest: implementationClosureDigest(['providers/hitch', 'providers/execution'], {
+        sourceKind: options.freshContext ? 'fresh-context' : 'legacy-round',
         sourceSpecDigest: this.sourceSpecDigest, sourceRoundDigest: this.sourceRoundDigest,
         environmentDigest: this.environmentDigest, samplingDigest: this.samplingDigest,
         accessPolicyDigest: options.accessPolicyDigest, issuerId: options.taskAuthority.issuerId,
@@ -85,6 +89,17 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
   }
 
   static async create(options: HitchRolloutHostOptions): Promise<HitchRolloutPort> {
+    if (options.freshContext) {
+      const { spec, round, specDigest, roundDigest, datasetDigest } = options.freshContext;
+      if (options.freshContext.schemaVersion !== 1 || digestJson(spec) !== specDigest
+        || digestJson(round) !== roundDigest || round.evolutionId !== spec.evolutionId
+        || round.seedTaskRef !== spec.datasets.seed.ref || round.plan.seed.dataset.digest !== spec.datasets.seed.digest
+        || round.plan.seed.partition !== 'seed') throw new Error('Fresh Hitch rollout context identity mismatch');
+      const description = await describeDataset(spec, 'seed', options.workspaceRoot);
+      if (description.sourceDigest !== datasetDigest) throw new Error('Fresh Hitch rollout context dataset drift');
+      await mkdir(options.stateRoot, { recursive: true });
+      return new HitchRolloutPort(options, structuredClone(spec), structuredClone(round));
+    }
     const spec = await options.registry.requireSpec(options.evolutionId);
     const entry = await options.registry.readEntry(options.evolutionId);
     const round = await options.registry.stateStore(options.evolutionId).readRound(options.roundId);
@@ -101,11 +116,21 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
   }
   describe(): ProviderManifest & { kind: 'execution.rollout' } { return structuredClone(this.manifest); }
   private async currentRound(): Promise<RefinementRound> {
+    if (this.options.freshContext) {
+      if (digestJson(this.options.freshContext.round) !== this.sourceRoundDigest)
+        throw new Error('Fresh Hitch rollout context round changed');
+      return this.round;
+    }
     const current = await this.options.registry.stateStore(this.options.evolutionId).readRound(this.options.roundId);
     if (!current || digestJson(current) !== this.sourceRoundDigest) throw new Error('Hitch rollout source round changed');
     return current;
   }
   private async currentSpec(): Promise<void> {
+    if (this.options.freshContext) {
+      if (digestJson(this.options.freshContext.spec) !== this.sourceSpecDigest)
+        throw new Error('Fresh Hitch rollout context spec changed');
+      return;
+    }
     const current = await this.options.registry.requireSpec(this.options.evolutionId);
     if (digestJson(current) !== this.sourceSpecDigest) throw new Error('Hitch rollout source spec changed');
   }

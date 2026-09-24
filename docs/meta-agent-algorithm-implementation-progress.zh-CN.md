@@ -168,3 +168,9 @@ AlgorithmManifest 新增通用 requiredOperationKindsFromConfig，由冻结配�
 主 agent 在独立冻结快照中验证 Skill overlay：8/8、完整 typecheck 通过。helper 验证所选 Skill 属于当前绑定的库，将封存 Markdown 写入独立 Git 工作区的 skills/<name>/SKILL.md，经 HarnessBuilder 检查与运行时 discovery/read 回执校验后封存新 commit。它同时验证固定基础 Harness 和技能库绑定；复用 operationId 时输入变化会拒绝。
 
 测试实际创建 Git 工作区、读写技能文件和候选 ref，运行时检查器为离线 fixture。覆盖库成员/绑定错误、运行时未确认读取、重启复用、符号链接拒绝、损坏 workspace sidecar，以及 finalization 成功但回包丢失。最后一种状态保持 unknown、不会生成第二个候选；此版本没有自动对账该 Git 完成窗口。Evo→Hitch 的最终调用接线仍在后续阶段，不将 helper 验证等同于真实模型消费技能。
+
+## S3b5 新 Campaign 的 Hitch 执行上下文
+
+主 agent 在独立冻结快照中运行 fresh 与既有 Hitch 物理接线测试：7/7、完整 typecheck 通过。宿主可从 EvolutionSpec 和实际编译任务创建确定性的只读评估上下文，不写旧 registry/round，也不依赖旧 candidate lease；初始化检查任务摘要与算法所需 repetition 数，运行沿用已验证的 daemon 协议、绑定回执及恢复。
+
+本路径当前接受冻结的无显式 seed/temperature 覆盖的 repetition 计划，不将无法兑现的采样条件伪装成已支持。测试使用合成任务、真实 HitchCliEvaluator 类和录制 CLI fixture；没有启动真实 Hitch 容器或调用模型。
