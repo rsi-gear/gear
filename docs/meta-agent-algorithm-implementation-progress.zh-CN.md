@@ -202,3 +202,9 @@ AlgorithmManifest 新增通用 requiredOperationKindsFromConfig，由冻结配�
 主 agent 在只含已提交 HEAD 与两个冻结文件的独立快照复测：可信反馈 6/6、完整 typecheck 通过。AHE 反馈仅聚合相同 task/view/binding/sampling/environment 的固定 repetition slots；从已完成、standard normalized 的物理 trial 计算均值和宿主阈值判定。Evo 仅接受该批固定技能绑定的实际 overlay 证据，检索顺序与物理规范排序按同一选择集合核对，反馈仍保留原请求选择。
 
 测试覆盖重复/缺失次数、错误任务/绑定/Campaign、非标准或不完整分数、阈值配置被调用者后续修改、两个技能反序选择及错误 commit。审计追加拒绝不同 producer operation 指向相同 evalId 或同一 (runId, attempt)，防止一次物理执行被计算为两次独立实验；同一 runId 的不同 attempt 不误判。此阶段使用合成完成 journal，真实完整算法和默认宿主仍在后续验收。
+
+## S4b4 Evo 宿主技能读取与库产物
+
+主 agent 在只含已提交 HEAD 与三个冻结文件的独立快照中运行 Evo capabilities、既有 DSH roles 和 Skill overlay：3 文件 24/24、完整 typecheck 通过。宿主通过窄 skills_list/skills_read 工具授权读取当前绑定库；每次核验角色/session、宿主 policy 和成员，交付前计入持久 evidence 用量并执行 hard limit。普通算法无需自行拼装 CAS ref 或发布库。
+
+内置 publisher 验证 retriever 的成员/数量，curator 的 ADD、REVISE、MERGE、SKIP；生成封存单文件 Skill 与名称排序的新库，保留未修改成员的原 ref。测试覆盖未授权成员、错误角色、policy 变化、硬交付预算和库继承。这里只注册通用能力并使用合成数据测试，没有读取实际用户技能库或调用模型；默认宿主装配以及已知模型输出校验失败的终态处理继续审计。

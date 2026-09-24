@@ -113,9 +113,11 @@ export class DshRoleSessionRegistry {
 }
 
 /** Mount bounded evidence tools in a DSH context whose preset and other tools the host has already restricted. */
+export type DshRoleToolRegistrar = (agentCtx: Context, sessionId: string,
+  sessions: DshRoleSessionRegistry) => void | Promise<void>;
 export function createEvidenceDshRoleHost(ctx: Context, sessions: DshRoleSessionRegistry,
   evidence: EvidenceService, resolveGrant: EvidenceGrantResolver, maxEvidenceRequests = 100,
-  rolloutEvidence?: RolloutEvidenceToolOptions): DshMetaAgentHost {
+  rolloutEvidence?: RolloutEvidenceToolOptions, extraTools?: DshRoleToolRegistrar): DshMetaAgentHost {
   if (!Number.isSafeInteger(maxEvidenceRequests) || maxEvidenceRequests < 1) throw new Error('Invalid role evidence request cap');
   return new DshMetaAgentHost(ctx, async (agentCtx, sessionId) => {
     const roleId = sessions.require(sessionId);
@@ -173,6 +175,7 @@ export function createEvidenceDshRoleHost(ctx: Context, sessions: DshRoleSession
         },
       }));
     }
+    await extraTools?.(agentCtx, sessionId, sessions);
   });
 }
 
