@@ -1,0 +1,202 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, expect, it } from 'vitest'
+import { BindingStore } from '../../src/algorithm/bindings.js'
+import { FileArtifactStore } from '../../src/algorithm/artifacts.js'
+import type { OperationEnvelope } from '../../src/algorithm/contracts.js'
+import { GepaDiagnosisProvider, GepaEvaluationProvider, GepaGenerationProvider } from '../../src/algorithm/providers/gepa-operations.js'
+import { JournalArtifactStore, SearchJournalProviderRecordBackend } from '../../src/algorithm/runtime/persistence.js'
+import { jsonDigest, type JsonValue } from '../../src/algorithm/schema.js'
+import { cellKey, plannedCells } from '../../src/search/evidence.js'
+import { evaluatedFixture, fixtures, revise, scopeFixture } from '../../src/search/testing.js'
+import { MemorySearchStore } from '../../src/search/testing.js'
+import { digestJson } from '../../src/state/digest.js'
+
+const roots: string[] = []
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+
+it('restores GEPA started intent and sealed artifacts from a SearchJournal checkpoint under the original physical key', async () => {
+  const fixture = fixtures(4)
+  const { plan } = evaluatedFixture(fixture.seed, scopeFixture(fixture.seed, ['task-0']), fixture.anchor,
+    () => ({ outcome: 0 }), { stage: 'baseline-probe' })
+  const roundId = 'round-a', evolutionId = 'evolution-a'
+  const originalKey = digestJson([evolutionId, roundId,
+    `evaluation-${digestJson([plan.digest, fixture.anchor.digest]).slice(7)}`])
+  const schema = { id: 'harness', slots: { harness: { schemaId: 'harness.directory.v1', required: true, replaceable: true } } } as const
+  let journal = new MemorySearchStore()
+  const makeHost = async () => {
+    const root = mkdtempSync(join(tmpdir(), 'gepa-journal-provider-')); roots.push(root)
+    const artifacts = new JournalArtifactStore(join(root, 'artifacts'), journal, roundId)
+    await artifacts.hydrate()
+    const bindings = new BindingStore(artifacts, schema)
+    const harness = artifacts.putJson({ commitOid: fixture.anchor.commit,
+      manifestDigest: fixture.anchor.manifestDigest }, 'harness.directory.v1')
+    const bindingSetRef = bindings.create({ harness })
+    const records = new SearchJournalProviderRecordBackend(journal, roundId)
+    const provider = new GepaEvaluationProvider(join(root, 'operations'), artifacts, bindings, fixture.provider,
+      undefined, records, journal)
+    return { artifacts, bindingSetRef, provider }
+  }
+  const first = await makeHost()
+  const input = { roundIdentity: { evolutionId, roundId }, universe: fixture.seed,
+    plan, snapshot: fixture.anchor, processMode: 'off' } as unknown as JsonValue
+  const operationId = digestJson(['journal-provider', roundId]).slice(7)
+  const envelope: OperationEnvelope = { campaignId: 'search-round-a', decisionIndex: 0, localKey: 'evaluate',
+    operationId, idempotencyKey: operationId, kind: 'gepa.evaluate', input, inputDigest: jsonDigest(input),
+    implementationDigest: first.provider.describe().implementationDigest, bindingSetRef: first.bindingSetRef,
+    limits: { rolloutCells: plannedCells(fixture.seed, plan, fixture.anchor).length, repairCells: 0 } }
+  const realEvaluate = fixture.provider.evaluate
+  const realInspect = fixture.provider.inspectEvaluation!
+  let loseResponse = true
+  let inspectionReady = false
+  fixture.provider.inspectEvaluation = async request => inspectionReady
+    ? realInspect(request) : { status: 'running', handle: 'original-key-running' }
+  fixture.provider.evaluate = async request => {
+    const cells = await realEvaluate(request)
+    if (loseResponse) { loseResponse = false; throw new Error('lost physical response after durable execution') }
+    return cells
+  }
+  expect((await first.provider.submit(envelope)).status).toBe('running')
+  expect(fixture.executions).toHaveLength(1)
+  expect(fixture.executions[0]?.key).toBe(originalKey)
+  inspectionReady = true
+  journal = new MemorySearchStore(journal.checkpoint())
+  const resumed = await makeHost()
+  expect(resumed.bindingSetRef).toEqual(envelope.bindingSetRef)
+  expect(resumed.provider.describe().implementationDigest).toBe(envelope.implementationDigest)
+  expect((await resumed.provider.inspect(envelope)).status).toBe('replay-safe')
+  const submitted = await resumed.provider.submit(envelope)
+  expect(submitted.status).toBe('completed')
+  expect(fixture.executions).toHaveLength(1)
+  journal = new MemorySearchStore(journal.checkpoint())
+  const finalHost = await makeHost()
+  const final = await finalHost.provider.inspect(envelope)
+  expect(final.status).toBe('completed')
+  if (final.status !== 'completed' || final.completion.outcome.kind !== 'result') throw new Error('missing durable GEPA result')
+  const resultRef = (final.completion.outcome.value as { resultRef: Parameters<JournalArtifactStore['getJson']>[0] }).resultRef
+  expect((finalHost.artifacts.getJson(resultRef) as { cells: unknown[] }).cells).toHaveLength(1)
+  const physicalCell = (finalHost.artifacts.getJson(resultRef) as unknown as {
+    cells: Array<{ identity: Parameters<typeof cellKey>[0]; digest: string }> }).cells[0]!
+  expect(await journal.read(`cells/${cellKey(physicalCell.identity).slice(7)}`)).toEqual({ ref: physicalCell.digest })
+  expect(await journal.read(`rounds/${roundId}/evaluation-${digestJson([plan.digest, fixture.anchor.digest]).slice(7)}`))
+    .toEqual({ ref: (finalHost.artifacts.getJson(resultRef) as { digest: string }).digest })
+})
+
+it('seals the original evaluation without starting process repair when projection is deferred', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'gepa-deferred-projection-')); roots.push(root)
+  const fixture = fixtures(4, true)
+  const { plan } = evaluatedFixture(fixture.seed, scopeFixture(fixture.seed, ['task-0']), fixture.anchor,
+    () => ({ outcome: 0 }), { stage: 'baseline-probe' })
+  const physical = fixture.provider.evaluate
+  fixture.provider.evaluate = async request => (await physical(request)).map(cell => revise(cell, {
+    process: { status: 'missing', contractDigest: cell.identity.processContractDigest!, reason: 'original has no projection' },
+  }))
+  let projections = 0
+  fixture.provider.completeProcess = async () => { projections++; throw new Error('repair must be an independent operation') }
+  const artifacts = new FileArtifactStore(join(root, 'artifacts'))
+  const bindings = new BindingStore(artifacts, { id: 'harness', slots: {
+    harness: { schemaId: 'harness.directory.v1', required: true, replaceable: true },
+  } })
+  const harness = artifacts.putJson({ commitOid: fixture.anchor.commit,
+    manifestDigest: fixture.anchor.manifestDigest }, 'harness.directory.v1')
+  const provider = new GepaEvaluationProvider(join(root, 'operations'), artifacts, bindings, fixture.provider)
+  const input = { roundIdentity: { evolutionId: 'e', roundId: 'r' }, universe: fixture.seed,
+    plan, snapshot: fixture.anchor, processMode: 'required', projectionPolicy: 'defer' } as unknown as JsonValue
+  const operationId = digestJson(['defer-process', root]).slice(7)
+  const envelope: OperationEnvelope = { campaignId: 'search-r', decisionIndex: 0, localKey: 'evaluate',
+    operationId, idempotencyKey: operationId, kind: 'gepa.evaluate', input, inputDigest: jsonDigest(input),
+    implementationDigest: provider.describe().implementationDigest, bindingSetRef: bindings.create({ harness }),
+    limits: { rolloutCells: 1, repairCells: 0 } }
+  const submitted = await provider.submit(envelope)
+  expect(submitted.status).toBe('completed')
+  if (submitted.status !== 'completed' || submitted.completion.outcome.kind !== 'result') throw new Error('missing original evaluation')
+  const resultRef = (submitted.completion.outcome.value as { resultRef: Parameters<FileArtifactStore['getJson']>[0] }).resultRef
+  const stage = artifacts.getJson(resultRef) as { cells: Array<{ process?: { status: string } }> }
+  expect(stage.cells[0]?.process?.status).toBe('missing')
+  expect(projections).toBe(0)
+})
+
+it('retries a legacy running evaluation once per explicit public invocation using the original key', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'gepa-legacy-running-')); roots.push(root)
+  const fixture = fixtures(4)
+  const { plan } = evaluatedFixture(fixture.seed, scopeFixture(fixture.seed, ['task-0']), fixture.anchor,
+    () => ({ outcome: 0 }), { stage: 'baseline-probe' })
+  const artifacts = new FileArtifactStore(join(root, 'artifacts'))
+  const bindings = new BindingStore(artifacts, { id: 'harness', slots: {
+    harness: { schemaId: 'harness.directory.v1', required: true, replaceable: true },
+  } })
+  const harness = artifacts.putJson({ commitOid: fixture.anchor.commit,
+    manifestDigest: fixture.anchor.manifestDigest }, 'harness.directory.v1')
+  const provider = new GepaEvaluationProvider(join(root, 'operations'), artifacts, bindings, fixture.provider)
+  const input = { roundIdentity: { evolutionId: 'legacy:evolution', roundId: 'round-a' }, universe: fixture.seed,
+    plan, snapshot: fixture.anchor, processMode: 'off' } as unknown as JsonValue
+  const operationId = digestJson(['legacy-running', root]).slice(7)
+  const envelope: OperationEnvelope = { campaignId: 'search-round-a', decisionIndex: 0, localKey: 'evaluate',
+    operationId, idempotencyKey: operationId, kind: 'gepa.evaluate', input, inputDigest: jsonDigest(input),
+    implementationDigest: provider.describe().implementationDigest, bindingSetRef: bindings.create({ harness }),
+    limits: { rolloutCells: 1, repairCells: 0 } }
+  const realEvaluate = fixture.provider.evaluate
+  let ready = false
+  const calls: string[] = []
+  fixture.provider.inspectEvaluation = async () => ({ status: 'running', handle: 'physical-handle' })
+  fixture.provider.evaluate = async request => {
+    calls.push(request.idempotencyKey)
+    if (!ready) throw new Error('physical work still running')
+    return realEvaluate(request)
+  }
+  provider.beginLegacyInvocation()
+  expect((await provider.submit(envelope)).status).toBe('running')
+  expect((await provider.inspect(envelope)).status).toBe('running')
+  expect(await provider.legacyPending(envelope)).toEqual({ state: 'running', handle: 'physical-handle',
+    reason: 'physical work still running' })
+  expect(calls).toHaveLength(1)
+  provider.beginLegacyInvocation()
+  expect((await provider.inspect(envelope)).status).toBe('replay-safe')
+  ready = true
+  expect((await provider.submit(envelope)).status).toBe('completed')
+  expect(calls).toEqual([calls[0], calls[0]])
+  expect(calls[0]).toBe(digestJson(['legacy:evolution', 'round-a',
+    `evaluation-${digestJson([plan.digest, fixture.anchor.digest]).slice(7)}`]))
+  expect((await provider.inspect(envelope)).status).toBe('completed')
+})
+
+it('uses the legacy diagnosis key and conditionally meters configured generation resources', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'gepa-legacy-key-')); roots.push(root)
+  const fixture = fixtures(4)
+  const { result: baseline } = evaluatedFixture(fixture.seed,
+    scopeFixture(fixture.seed, ['task-0']), fixture.anchor, () => ({ outcome: 0 }), { stage: 'baseline-probe' })
+  const artifacts = new FileArtifactStore(join(root, 'artifacts'))
+  const bindings = new BindingStore(artifacts, { id: 'harness', slots: {
+    harness: { schemaId: 'harness.directory.v1', required: true, replaceable: true },
+  } })
+  const harness = artifacts.putJson({ commitOid: fixture.anchor.commit,
+    manifestDigest: fixture.anchor.manifestDigest }, 'harness.directory.v1')
+  const physical = fixture.diagnosis.diagnose
+  let key = ''
+  fixture.diagnosis.diagnose = async request => { key = request.idempotencyKey; return physical(request) }
+  const diagnosis = new GepaDiagnosisProvider(join(root, 'operations'), artifacts, bindings, fixture.diagnosis)
+  const taskIds = ['task-0']
+  const input = { roundIdentity: { evolutionId: 'legacy:evolution', roundId: 'round-a' }, snapshot: fixture.anchor,
+    universe: fixture.seed, taskIds, baseline } as unknown as JsonValue
+  const operationId = digestJson(['diagnosis', root]).slice(7)
+  const envelope: OperationEnvelope = { campaignId: 'search-round-a', decisionIndex: 0, localKey: 'diagnose',
+    operationId, idempotencyKey: operationId, kind: 'gepa.diagnose', input, inputDigest: jsonDigest(input),
+    implementationDigest: diagnosis.describe().implementationDigest, bindingSetRef: bindings.create({ harness }),
+    limits: { diagnosisInputTokens: 100, diagnosisOutputTokens: 100 } }
+  expect((await diagnosis.submit(envelope)).status).toBe('completed')
+  expect(key).toBe(digestJson(['round-a',
+    `diagnosis-${digestJson([fixture.anchor.digest, baseline.digest, taskIds]).slice(7)}`]))
+  const combinations = [
+    { generationTokens: false, generationRequests: false },
+    { generationTokens: true, generationRequests: false },
+    { generationTokens: false, generationRequests: true },
+    { generationTokens: true, generationRequests: true },
+  ]
+  for (const metering of combinations) {
+    const provider = new GepaGenerationProvider(join(root, 'generation'), artifacts, bindings, fixture.hooks,
+      digestJson('hooks').slice(7), undefined, metering)
+    expect(provider.describe().meteredDimensions).toEqual(Object.entries(metering)
+      .filter(([, enabled]) => enabled).map(([dimension]) => dimension))
+  }
+})

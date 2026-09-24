@@ -7,3 +7,11 @@ export class ProviderProtocolError extends Error {
     this.name = 'ProviderProtocolError'
   }
 }
+
+/** An idempotent publication failed in this invocation; its durable intent must be reconciled. */
+export class ProviderReconcileError extends ProviderProtocolError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = 'ProviderReconcileError'
+  }
+}

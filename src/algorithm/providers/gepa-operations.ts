@@ -1,46 +1,76 @@
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { FileArtifactStore, assertDigest, durableWrite } from '../artifacts.js'
+import { FileArtifactStore, assertDigest } from '../artifacts.js'
 import { BindingStore } from '../bindings.js'
+import { ProviderProtocolError, ProviderReconcileError } from '../provider-errors.js'
+import { FileProviderRecordBackend, type ArtifactCheckpoint, type ProviderRecordBackend } from '../runtime/persistence.js'
 import type { CompletionEnvelope, OperationEnvelope, OperationOutcome, OperationProvider, ProviderInspection,
   ProviderManifest, ProviderSubmission, UsageReceipt } from '../contracts.js'
-import { canonicalJson, jsonDigest, type JsonValue } from '../schema.js'
+import { jsonDigest, type JsonValue } from '../schema.js'
 import { implementationClosureDigest } from '../data/identity.js'
-import { durableCreate } from './provider-record.js'
 import { digestJson } from '../../state/digest.js'
 import { assertCell, assertConsistentCells, cellKey, completeEvidence, plannedCells, profile, validOutcome, verifyCells } from '../../search/evidence.js'
 import { deliveredWorkplan, validateReceipt } from '../../search/diagnosis.js'
-import { numeric, processTasks, repetitionsForTask, seal, sorted, SearchProtocolError, utility, validateSnapshot, verifyDigest } from '../../search/contracts.js'
+import { numeric, processTasks, repetitionsForTask, safeId, seal, sorted, SearchProtocolError, utility, validateSnapshot, verifyDigest } from '../../search/contracts.js'
 import { objectiveProfile, trialPassed } from '../../search/objective.js'
-import type { CandidateWorkPlan, CellIdentity, DiagnosisDossier, DiagnosisFact, DiagnosisProvider, EvaluationScope, EvidenceCell,
-  ResearchArchive, SearchProvider, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from '../../search/types.js'
+import type { CandidateWorkPlan, CellIdentity, DiagnosisDossier, DiagnosisFact, DiagnosisProvider, EvaluationScope, EvidenceCell, ExternalRecovery,
+  ResearchArchive, SearchProvider, SearchStageFailure, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from '../../search/types.js'
 import type { ResearchFinding } from '../../search/types.js'
 import type { GeneratedCandidate, SearchExecutionHooks } from '../../search/runtime.js'
+import type { SearchJournal } from '../../search/store.js'
 import { GepaPhysicalExecutionError, hasPhysicalGenerationInspection } from './gepa-hooks.js'
+import { SearchExecutionFailure } from '../../search/recovery.js'
 
 type GepaKind = 'gepa.evaluate' | 'gepa.diagnose' | 'gepa.generate'
+export type GepaPhysicalRoundIdentity = { evolutionId: string; roundId: string }
+export type GepaLegacyPendingState = { state: 'running' | 'unknown' | 'not-started' | 'partially-complete';
+  reason: string; handle?: string }
 type RecordValue = { schemaVersion: 1; operationId: string; inputDigest: string; implementationDigest: string;
-  bindingDigest: string; idempotencyKey: string; stage: 'started' | 'cancelled-before-start' | 'complete';
+  bindingDigest: string; idempotencyKey: string; externalKey: string;
+  stage: 'started' | 'cancelled-before-start' | 'complete';
   request?: JsonValue; requestDigest?: string; evaluationCells?: EvidenceCell[]; evaluationCellsDigest?: string;
-  completion?: CompletionEnvelope }
+  evaluationFailure?: SearchStageFailure; evaluationFailureDigest?: string;
+  pendingReason?: string; completion?: CompletionEnvelope }
 type Result = { outcome: OperationOutcome; usage: Record<string, number> }
+class PhysicalTransportPending extends Error {
+  constructor(error: unknown) { super(error instanceof Error ? error.message : String(error), { cause: error }) }
+}
 
 /** Old physical services remain responsible for their durable original-key lookup. This adapter never retries an unknown started effect. */
 abstract class GepaOperationProvider implements OperationProvider {
-  private readonly records: string
   private readonly manifest: ProviderManifest
+  private readonly attemptedThisInvocation = new Set<string>()
+  protected legacyInvocationEnabled = false
+  protected readonly records: ProviderRecordBackend
   protected constructor(root: string, kind: GepaKind, implementationConfiguration: JsonValue,
     readonly artifacts: FileArtifactStore, readonly bindings: BindingStore,
-    dimensions: string[], inputSchema: ProviderManifest['inputSchema'], outputSchema: ProviderManifest['outputSchema']) {
-    this.records = join(root, kind); mkdirSync(this.records, { recursive: true })
+    dimensions: string[], inputSchema: ProviderManifest['inputSchema'], outputSchema: ProviderManifest['outputSchema'],
+    records?: ProviderRecordBackend) {
+    this.records = records ?? new FileProviderRecordBackend(root, { 'gepa.cell': 'gepa-cells', 'gepa.process': 'gepa-process' })
+    const persistenceIdentity = 'identityDigest' in this.records ? this.records.identityDigest : null
     this.manifest = { kind, implementationDigest: implementationClosureDigest(['providers/gepa-operations'],
-      { kind, implementationConfiguration }), inputSchema, outputSchema, meteredDimensions: dimensions,
-      hardLimitDimensions: [], execution: 'external', supportsInspect: true }
+      { kind, implementationConfiguration, persistenceIdentity }), inputSchema, outputSchema, meteredDimensions: dimensions,
+      hardLimitDimensions: [], execution: 'external', supportsInspect: true,
+      supportsIdempotentReplay: true }
   }
   describe(): ProviderManifest { return structuredClone(this.manifest) }
-  protected path(envelope: OperationEnvelope): string {
-    assertDigest(envelope.operationId)
-    return join(this.records, `${envelope.operationId}.json`)
+  /** Call once at the start of each explicit legacy public run, never between kernel ticks. */
+  beginLegacyInvocation(): void { this.legacyInvocationEnabled = true; this.attemptedThisInvocation.clear() }
+  protected markPhysicalAttempt(envelope: OperationEnvelope): void {
+    if (this.legacyInvocationEnabled) this.attemptedThisInvocation.add(envelope.operationId)
+  }
+  protected wasPhysicalAttempted(envelope: OperationEnvelope): boolean {
+    return this.attemptedThisInvocation.has(envelope.operationId)
+  }
+  protected async flushArtifacts(): Promise<void> {
+    await (this.artifacts as FileArtifactStore & Partial<ArtifactCheckpoint>).flush?.()
+  }
+  protected physicalKey(envelope: OperationEnvelope): string { return envelope.idempotencyKey }
+  protected roundIdentity(identity: GepaPhysicalRoundIdentity | undefined): GepaPhysicalRoundIdentity | undefined {
+    if (!identity) return undefined
+    if (typeof identity.evolutionId !== 'string' || !identity.evolutionId) throw new Error('GEPA evolution identity missing')
+    safeId(identity.roundId)
+    return identity
   }
   protected check(envelope: OperationEnvelope): void {
     if (envelope.kind !== this.manifest.kind || envelope.implementationDigest !== this.manifest.implementationDigest
@@ -60,86 +90,127 @@ abstract class GepaOperationProvider implements OperationProvider {
       const amount = usage[dimension]
       if (!Number.isSafeInteger(amount) || amount! < 0)
         throw new Error(`GEPA usage invalid for ${dimension}`)
+      if ((envelope.input as Record<string, unknown>).roundIdentity && amount! > envelope.limits[dimension]!)
+        throw new SearchProtocolError('provider exceeded reserved budget')
     }
     return { source: this.manifest.kind, scope: 'operation', operationId: envelope.operationId,
       cursor: digestJson(usage), cumulative: usage }
   }
-  private read(envelope: OperationEnvelope): RecordValue | null {
-    const path = this.path(envelope)
-    if (!existsSync(path)) return null
-    const record = JSON.parse(readFileSync(path, 'utf8')) as RecordValue
+  private async read(envelope: OperationEnvelope): Promise<RecordValue | null> {
+    const record = await this.records.read<RecordValue>(envelope.kind, envelope.operationId)
+    if (!record) return null
     if (!record || record.schemaVersion !== 1 || !['started', 'cancelled-before-start', 'complete'].includes(record.stage)
       || record.operationId !== envelope.operationId || record.inputDigest !== envelope.inputDigest
       || record.implementationDigest !== envelope.implementationDigest || record.bindingDigest !== envelope.bindingSetRef.digest
-      || record.idempotencyKey !== envelope.idempotencyKey
+      || record.idempotencyKey !== envelope.idempotencyKey || record.externalKey !== this.physicalKey(envelope)
       || record.requestDigest !== (record.request === undefined ? undefined : jsonDigest(record.request))
-      || record.evaluationCellsDigest !== (record.evaluationCells === undefined ? undefined : digestJson(record.evaluationCells)))
+      || record.pendingReason !== undefined && typeof record.pendingReason !== 'string'
+      || record.evaluationCellsDigest !== (record.evaluationCells === undefined ? undefined : digestJson(record.evaluationCells))
+      || record.evaluationFailureDigest !== (record.evaluationFailure === undefined ? undefined : digestJson(record.evaluationFailure)))
       throw new Error('GEPA operation record drift')
     return record
   }
-  private create(envelope: OperationEnvelope, stage: RecordValue['stage'], request?: JsonValue): { record: RecordValue; created: boolean } {
+  private async create(envelope: OperationEnvelope, stage: RecordValue['stage'], request?: JsonValue): Promise<{ record: RecordValue; created: boolean }> {
     const value: RecordValue = { schemaVersion: 1, operationId: envelope.operationId, inputDigest: envelope.inputDigest,
       implementationDigest: envelope.implementationDigest, bindingDigest: envelope.bindingSetRef.digest,
-      idempotencyKey: envelope.idempotencyKey, stage,
+      idempotencyKey: envelope.idempotencyKey, externalKey: this.physicalKey(envelope), stage,
       ...(request === undefined ? {} : { request, requestDigest: jsonDigest(request) }) }
-    const created = durableCreate(this.path(envelope), canonicalJson(value))
-    return { record: created ? value : this.read(envelope)!, created }
+    await this.flushArtifacts()
+    const { created } = await this.records.create(envelope.kind, envelope.operationId, value)
+    return { record: (await this.read(envelope))!, created }
   }
-  private complete(envelope: OperationEnvelope, value: Result): CompletionEnvelope {
+  private async complete(envelope: OperationEnvelope, value: Result): Promise<CompletionEnvelope> {
     const completion: CompletionEnvelope = { operationId: envelope.operationId, idempotencyKey: envelope.idempotencyKey,
       inputDigest: envelope.inputDigest, implementationDigest: envelope.implementationDigest, outcome: value.outcome,
       receipt: this.receipt(envelope, value.usage) }
-    const record = this.read(envelope)!
+    const record = (await this.read(envelope))!
     if (record.stage === 'cancelled-before-start') throw new Error('GEPA operation was cancelled before starting')
+    await this.flushArtifacts()
     record.stage = 'complete'; record.completion = completion
-    durableWrite(this.path(envelope), canonicalJson(record))
+    await this.records.write(envelope.kind, envelope.operationId, record)
     return completion
   }
   protected abstract validate(envelope: OperationEnvelope): Promise<void>
   protected freezeRequest(_envelope: OperationEnvelope): Promise<JsonValue | undefined> | JsonValue | undefined { return undefined }
   protected abstract execute(envelope: OperationEnvelope, record: RecordValue): Promise<Result>
-  protected abstract recover(envelope: OperationEnvelope, record: RecordValue): Promise<Result | 'running' | 'unknown' | 'not-started'>
-  protected cancelStarted(envelope: OperationEnvelope, record: RecordValue): Promise<Result | 'running' | 'unknown' | 'not-started'> {
+  protected abstract recover(envelope: OperationEnvelope, record: RecordValue): Promise<'not-started' | 'replay-safe' | 'running' | 'unknown'>
+  protected lookupLegacyPending(_envelope: OperationEnvelope, _record: RecordValue): Promise<ExternalRecovery<unknown> | undefined> {
+    return Promise.resolve(undefined)
+  }
+  /** A read-only compatibility view; the facade owns the old pending-operation journal pointer. */
+  async legacyPending(envelope: OperationEnvelope): Promise<GepaLegacyPendingState | null> {
+    await this.preflight(envelope)
+    const record = await this.read(envelope)
+    if (!record || record.completion || record.stage === 'cancelled-before-start') return null
+    const fallback = record.pendingReason ?? 'deadline reached while external execution was unresolved'
+    let inspected: ExternalRecovery<unknown> | undefined
+    try { inspected = await this.lookupLegacyPending(envelope, record) }
+    catch (error) {
+      if (error instanceof SearchProtocolError) throw new ProviderProtocolError(error.message, { cause: error })
+      return { state: 'unknown', reason: error instanceof Error ? error.message : String(error) }
+    }
+    if (inspected?.status === 'complete') return null
+    if (inspected?.status === 'running') return { state: 'running', handle: inspected.handle, reason: fallback }
+    if (inspected?.status === 'partially-complete') return { state: 'partially-complete',
+      reason: 'completed evaluation cells are saved; remaining batches have not started' }
+    if (inspected?.status === 'not-started') return { state: 'not-started', reason: fallback }
+    return { state: 'unknown', reason: inspected?.status === 'unknown' ? inspected.reason ?? fallback : fallback }
+  }
+  protected cancelStarted(envelope: OperationEnvelope, record: RecordValue): Promise<Result | 'not-started' | 'replay-safe' | 'running' | 'unknown'> {
     return this.recover(envelope, record)
   }
   async preflight(envelope: OperationEnvelope): Promise<void> { this.check(envelope); await this.validate(envelope) }
   async inspect(envelope: OperationEnvelope): Promise<ProviderInspection> {
     await this.preflight(envelope)
-    const record = this.read(envelope)
+    const record = await this.read(envelope)
     if (!record) return { status: 'not-started' }
     if (record.stage === 'cancelled-before-start') return { status: 'cancelled', releaseConfirmed: true,
       receipt: this.receipt(envelope, Object.fromEntries(this.manifest.meteredDimensions.map(d => [d, 0]))) }
     if (record.completion) return { status: 'completed', completion: record.completion }
+    if (this.wasPhysicalAttempted(envelope)) return { status: 'running' }
     const recovered = await this.recover(envelope, record)
-    if (recovered === 'running' || recovered === 'unknown' || recovered === 'not-started') return { status: recovered }
-    return { status: 'completed', completion: this.complete(envelope, recovered) }
+    return { status: recovered }
   }
   async submit(envelope: OperationEnvelope): Promise<ProviderSubmission> {
     await this.preflight(envelope)
-    const { record, created } = this.create(envelope, 'started', await this.freezeRequest(envelope))
+    const existing = await this.read(envelope)
+    let createdRecord: { record: RecordValue; created: boolean }
+    try { createdRecord = await this.create(envelope, 'started', existing ? undefined : await this.freezeRequest(envelope)) }
+    catch (error) {
+      if (error instanceof ProviderProtocolError) throw error
+      if (error instanceof SearchProtocolError) throw new ProviderProtocolError(error.message, { cause: error })
+      throw new ProviderReconcileError(error instanceof Error ? error.message : String(error), { cause: error })
+    }
+    const { record, created } = createdRecord
     if (record.stage === 'cancelled-before-start') throw new Error('Cancelled GEPA operation cannot be submitted')
     const observed = created ? { status: 'not-started' as const } : await this.inspect(envelope)
     if (observed.status === 'completed') return { status: 'completed', completion: observed.completion }
-    if (!created && observed.status !== 'not-started') return { status: 'running' }
-    try { return { status: 'completed', completion: this.complete(envelope, await this.execute(envelope, record)) } }
+    if (!created && observed.status !== 'not-started' && observed.status !== 'replay-safe') return { status: 'running' }
+    try { return { status: 'completed', completion: await this.complete(envelope, await this.execute(envelope, record)) } }
     catch (error) {
-      if (error instanceof SearchProtocolError) throw error
-      if (error instanceof Error && /drift|invalid|mismatch|forged|provenance|budget|reserved|exceeds/u.test(error.message)) throw error
-      return { status: 'running' }
+      if (error instanceof PhysicalTransportPending || error instanceof ProjectionPending) {
+        const pending = await this.read(envelope)
+        if (pending?.stage === 'started') await this.records.write(envelope.kind, envelope.operationId, {
+          ...pending, pendingReason: error.message })
+        return { status: 'running' }
+      }
+      if (error instanceof ProviderProtocolError) throw error
+      if (error instanceof SearchProtocolError) throw new ProviderProtocolError(error.message, { cause: error })
+      throw new ProviderReconcileError(error instanceof Error ? error.message : String(error), { cause: error })
     }
   }
   async cancel(envelope: OperationEnvelope): Promise<ProviderInspection> {
     await this.preflight(envelope)
-    const { record } = this.create(envelope, 'cancelled-before-start')
+    const { record } = await this.create(envelope, 'cancelled-before-start')
     if (record.stage === 'cancelled-before-start') return { status: 'cancelled', releaseConfirmed: true,
       receipt: this.receipt(envelope, Object.fromEntries(this.manifest.meteredDimensions.map(d => [d, 0]))) }
     if (record.completion) return { status: 'completed', completion: record.completion }
     // The old physical SPI has no cancel acknowledgement. Inspect the original key
     // so that a completed result can settle, but retain reservations while unknown.
     const recovered = await this.cancelStarted(envelope, record)
-    if (recovered === 'running' || recovered === 'unknown' || recovered === 'not-started')
-      return { status: recovered === 'not-started' ? 'unknown' : recovered }
-    return { status: 'completed', completion: this.complete(envelope, recovered) }
+    if (recovered === 'running' || recovered === 'unknown' || recovered === 'replay-safe' || recovered === 'not-started')
+      return { status: recovered === 'replay-safe' || recovered === 'not-started' ? 'unknown' : recovered }
+    return { status: 'completed', completion: await this.complete(envelope, recovered) }
   }
   async collect(envelope: OperationEnvelope): Promise<CompletionEnvelope> {
     const observed = await this.inspect(envelope)
@@ -148,8 +219,8 @@ abstract class GepaOperationProvider implements OperationProvider {
   }
 }
 
-type EvaluateInput = { universe: TaskUniverse; plan: StageEvaluationPlan; snapshot: Snapshot;
-  processMode: 'off' | 'auto' | 'required' }
+type EvaluateInput = { roundIdentity?: GepaPhysicalRoundIdentity; universe: TaskUniverse; plan: StageEvaluationPlan; snapshot: Snapshot;
+  processMode: 'off' | 'auto' | 'required'; projectionPolicy?: 'complete' | 'defer' }
 type FrozenEvaluationRequest = { missing: CellIdentity[]; cached: EvidenceCell[]; repairCells: number }
 type ProjectionRecord = { schemaVersion: 1; operationId: string; inputDigest: string; baseCellDigest: string;
   key: string; stage: 'started' | 'complete'; cell?: EvidenceCell }
@@ -170,24 +241,24 @@ function richerCell(previous: EvidenceCell, candidate: EvidenceCell): EvidenceCe
   throw new SearchProtocolError('GEPA cached and original evidence cannot be merged without changing a valid field')
 }
 export class GepaEvaluationProvider extends GepaOperationProvider {
-  private readonly cellRoot: string
-  private readonly projectionRoot: string
   private readonly initialCells = new Map<string, EvidenceCell>()
   private readonly physicalIntegrity: string
   private readonly capabilitiesDigest: string
   constructor(root: string, artifacts: FileArtifactStore, bindings: BindingStore, readonly physical: SearchProvider,
-    initialArchive?: ResearchArchive) {
+    initialArchive?: ResearchArchive, records?: ProviderRecordBackend, readonly legacyJournal?: SearchJournal) {
     super(root, 'gepa.evaluate', { providerIntegrity: physical.integrity, capabilities: physical.capabilities,
       processCompletion: !!physical.completeProcess, processInspection: !!physical.inspectProcess,
-      initialArchiveDigest: initialArchive?.digest ?? null } as unknown as JsonValue,
+      initialArchiveDigest: initialArchive?.digest ?? null, legacyGlobalCache: !!legacyJournal } as unknown as JsonValue,
       artifacts, bindings, ['rolloutCells', 'repairCells'],
-      { type: 'object', required: ['universe', 'plan', 'snapshot', 'processMode'], properties: { universe: { type: 'any' }, plan: { type: 'any' },
-        snapshot: { type: 'any' }, processMode: { type: 'string', enum: ['off', 'auto', 'required'] } }, additionalProperties: false },
-      { type: 'object', required: ['resultRef'], properties: { resultRef: { type: 'any' } }, additionalProperties: false })
-    this.cellRoot = join(root, 'gepa-cells'); mkdirSync(this.cellRoot, { recursive: true })
-    this.projectionRoot = join(root, 'gepa-process'); mkdirSync(this.projectionRoot, { recursive: true })
+      { type: 'object', required: ['universe', 'plan', 'snapshot', 'processMode'], properties: { roundIdentity: { type: 'object',
+        required: ['evolutionId', 'roundId'], properties: { evolutionId: { type: 'string' }, roundId: { type: 'string' } },
+        additionalProperties: false }, universe: { type: 'any' }, plan: { type: 'any' },
+        snapshot: { type: 'any' }, processMode: { type: 'string', enum: ['off', 'auto', 'required'] },
+        projectionPolicy: { type: 'string', enum: ['complete', 'defer'] } }, additionalProperties: false },
+      { type: 'object', required: ['resultRef'], properties: { resultRef: { type: 'any' } }, additionalProperties: false }, records)
     this.physicalIntegrity = physical.integrity
     this.capabilitiesDigest = digestJson([physical.capabilities, !!physical.completeProcess, !!physical.inspectProcess])
+    if (!records) for (const directory of ['gepa-cells', 'gepa-process']) mkdirSync(join(root, directory), { recursive: true })
     if (initialArchive) {
       verifyDigest(initialArchive)
       for (const result of initialArchive.results) for (const cell of result.cells) {
@@ -199,12 +270,46 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     }
   }
   private input(envelope: OperationEnvelope): EvaluateInput { return envelope.input as unknown as EvaluateInput }
+  private cellId(identity: CellIdentity): string { return cellKey(identity).slice(7) }
+  private projectionId(envelope: OperationEnvelope, identity: CellIdentity): string {
+    return digestJson([envelope.operationId, cellKey(identity)]).slice(7)
+  }
+  private async readCell(identity: CellIdentity): Promise<EvidenceCell | undefined> {
+    if (this.legacyJournal) {
+      const pointer = await this.legacyJournal.read<{ ref: string }>(`cells/${this.cellId(identity)}`)
+      return pointer ? this.legacyJournal.object<EvidenceCell>(pointer.ref) : undefined
+    }
+    return this.records.read<EvidenceCell>('gepa.cell', this.cellId(identity))
+  }
+  private async writeCell(cell: EvidenceCell): Promise<void> {
+    if (this.legacyJournal) {
+      const key = `cells/${this.cellId(cell.identity)}`
+      const current = await this.legacyJournal.read<{ ref: string }>(key)
+      const previous = current ? await this.legacyJournal.object<EvidenceCell>(current.ref) : undefined
+      if (previous) assertCell(previous, cell.identity)
+      const selected = previous ? richerCell(previous, cell) : cell
+      if (selected.rawMetrics) await this.legacyJournal.put(selected.rawMetrics)
+      await this.legacyJournal.put(selected)
+      if (current?.ref !== selected.digest) await this.legacyJournal.write(key, { ref: selected.digest })
+      return
+    }
+    await this.records.write('gepa.cell', this.cellId(cell.identity), cell)
+  }
+  private async readProjection(envelope: OperationEnvelope, identity: CellIdentity): Promise<ProjectionRecord | undefined> {
+    return this.records.read<ProjectionRecord>('gepa.process', this.projectionId(envelope, identity))
+  }
+  protected override physicalKey(envelope: OperationEnvelope): string {
+    const { roundIdentity, plan, snapshot } = this.input(envelope)
+    const round = this.roundIdentity(roundIdentity)
+    if (!round) return envelope.idempotencyKey
+    const name = `evaluation-${digestJson([plan.digest, snapshot.digest]).slice(7)}`
+    return digestJson([round.evolutionId, round.roundId, name])
+  }
   private async cached(expected: CellIdentity[]): Promise<{ cells: EvidenceCell[]; missing: CellIdentity[]; repairCells: number }> {
     const cells: EvidenceCell[] = [], missing: CellIdentity[] = [], inspected: EvidenceCell[] = []
     let repairCells = 0
     for (const identity of expected) {
-      const path = join(this.cellRoot, `${cellKey(identity).slice(7)}.json`)
-      const persisted = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) as EvidenceCell : undefined
+      const persisted = await this.readCell(identity)
       const archived = this.initialCells.get(cellKey(identity))
       for (const item of [persisted, archived]) if (item) { assertCell(item, identity); inspected.push(item) }
       const cell = persisted && archived
@@ -216,18 +321,35 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
       cells.push(cell)
     }
     if (!await verifyCells(this.physical, inspected.map(cell => ({ cell, identity: expected.find(i => cellKey(i) === cellKey(cell.identity))! }))))
-      throw new Error('GEPA cached cell provenance rejected')
+      throw new ProviderProtocolError('GEPA cached cell provenance rejected')
     return { cells, missing, repairCells }
   }
   protected override async freezeRequest(envelope: OperationEnvelope): Promise<JsonValue> {
     const { universe, plan, snapshot } = this.input(envelope)
     const { cells, missing, repairCells } = await this.cached(plannedCells(universe, plan, snapshot))
+    if (this.legacyJournal) {
+      const round = this.roundIdentity(this.input(envelope).roundIdentity)
+      if (!round) throw new ProviderProtocolError('Legacy GEPA evaluation requires frozen round identity')
+      await this.legacyJournal.put(plan)
+      await this.legacyJournal.put(snapshot)
+      const binding = seal({ stagePlanDigest: plan.digest, participantId: snapshot.candidateId, sealedSnapshotDigest: snapshot.digest })
+      const bindingName = `binding-${digestJson([plan.digest, snapshot.candidateId]).slice(7)}`
+      const frozenBinding = await this.legacyJournal.freeze(round.roundId, bindingName, () => binding)
+      if (frozenBinding.digest !== binding.digest)
+        throw new SearchProtocolError('stage participant is already bound to a different snapshot')
+      const inputName = `evaluation-${digestJson([plan.digest, snapshot.digest]).slice(7)}-input`
+      const frozen = seal({ request: { plan, snapshot, cells: missing }, cached: cells, repairCells })
+      const saved = await this.legacyJournal.freeze(round.roundId, inputName, () => frozen)
+      if (saved.digest !== frozen.digest) throw new ProviderProtocolError('GEPA evaluation cache split changed')
+    }
     return { missing, cached: cells, repairCells } as unknown as JsonValue
   }
   protected async validate(envelope: OperationEnvelope): Promise<void> {
-    const { universe, plan, snapshot, processMode } = this.input(envelope)
+    const { universe, plan, snapshot, processMode, projectionPolicy } = this.input(envelope)
     verifyDigest(universe); verifyDigest(plan); validateSnapshot(snapshot)
     if (!['off', 'auto', 'required'].includes(processMode)) throw new Error('GEPA process mode is not frozen')
+    if (projectionPolicy !== undefined && !['complete', 'defer'].includes(projectionPolicy))
+      throw new Error('GEPA projection policy is not frozen')
     this.checkSnapshotBinding(envelope, snapshot)
     if (this.physical.integrity !== this.physicalIntegrity
       || digestJson([this.physical.capabilities, !!this.physical.completeProcess, !!this.physical.inspectProcess]) !== this.capabilitiesDigest)
@@ -241,14 +363,14 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
       throw new Error('GEPA evaluation reservation invalid')
   }
   /** One durable projection key names the original run's process/raw-metric read, never a fresh Target rollout. */
-  private async project(envelope: OperationEnvelope, base: EvidenceCell): Promise<EvidenceCell> {
+  private async project(envelope: OperationEnvelope, evaluationRecord: RecordValue, base: EvidenceCell): Promise<EvidenceCell> {
     if (!this.physical.completeProcess) throw new Error('GEPA process completion capability is absent')
-    const key = digestJson([envelope.operationId, 'process', base.digest])
-    const path = join(this.projectionRoot, `${envelope.operationId}-${cellKey(base.identity).slice(7)}.json`)
+    const key = digestJson([evaluationRecord.externalKey, base.digest])
+    const projectionId = this.projectionId(envelope, base.identity)
     const intent: ProjectionRecord = { schemaVersion: 1, operationId: envelope.operationId,
       inputDigest: envelope.inputDigest, baseCellDigest: base.digest, key, stage: 'started' }
-    const created = durableCreate(path, canonicalJson(intent))
-    const record = created ? intent : JSON.parse(readFileSync(path, 'utf8')) as ProjectionRecord
+    const createdRecord = await this.records.create('gepa.process', projectionId, intent)
+    const created = createdRecord.created, record = createdRecord.record
     if (record.schemaVersion !== 1 || record.operationId !== intent.operationId
       || record.inputDigest !== intent.inputDigest || record.baseCellDigest !== intent.baseCellDigest
       || record.key !== key || !['started', 'complete'].includes(record.stage))
@@ -258,16 +380,15 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
       if (!validOutcome(cell)) throw new SearchProtocolError('GEPA process completion replaced a valid outcome')
       assertConsistentCells(base, cell)
       if (!await verifyCells(this.physical, [{ cell, identity: base.identity }]))
-        throw new Error('GEPA process completion provenance rejected')
-      durableWrite(path, canonicalJson({ ...intent, stage: 'complete', cell }))
-      const cellPath = join(this.cellRoot, `${cellKey(cell.identity).slice(7)}.json`)
+        throw new ProviderProtocolError('GEPA process completion provenance rejected')
+      await this.records.write('gepa.process', projectionId, { ...intent, stage: 'complete', cell })
       let chosen = cell
-      if (existsSync(cellPath)) {
-        const previous = JSON.parse(readFileSync(cellPath, 'utf8')) as EvidenceCell
+      const previous = await this.readCell(cell.identity)
+      if (previous) {
         assertCell(previous, base.identity)
         chosen = richerCell(previous, cell)
       }
-      durableWrite(cellPath, canonicalJson(chosen))
+      await this.writeCell(chosen)
       return chosen
     }
     if (record.stage === 'complete') {
@@ -307,8 +428,9 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     }
     return settle(projected)
   }
-  private async result(envelope: OperationEnvelope, record: RecordValue, received: EvidenceCell[]): Promise<Result> {
-    const { universe, plan, snapshot, processMode } = this.input(envelope)
+  private async result(envelope: OperationEnvelope, record: RecordValue, received: EvidenceCell[],
+    failure?: SearchStageFailure): Promise<Result> {
+    const { universe, plan, snapshot, processMode, projectionPolicy } = this.input(envelope)
     const expected = plannedCells(universe, plan, snapshot)
     const request = record.request as unknown as FrozenEvaluationRequest
     if (!request || !Array.isArray(request.missing) || !Array.isArray(request.cached)
@@ -321,18 +443,23 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     const seen = new Set<string>()
     for (const cell of received) {
       const key = cellKey(cell.identity), identity = byKey.get(key)
-      if (!identity || !requestKeys.has(key) || seen.has(key)) throw new Error('GEPA evaluation returned unrequested or duplicate cells')
+      if (!identity || !requestKeys.has(key) || seen.has(key)) throw new ProviderProtocolError('GEPA evaluation returned unrequested or duplicate cells')
       assertCell(cell, identity); seen.add(key)
     }
     if (!await verifyCells(this.physical, received.map(cell => ({ cell, identity: byKey.get(cellKey(cell.identity))! }))))
-      throw new Error('GEPA evaluation cell provenance rejected')
+      throw this.input(envelope).roundIdentity
+        ? new SearchProtocolError('provider rejected cell provenance')
+        : new ProviderProtocolError('GEPA evaluation cell provenance rejected')
     if (record.evaluationCells) {
       if (digestJson(record.evaluationCells) !== digestJson(received))
-        throw new Error('GEPA original evaluation cells changed on recovery')
+        throw new ProviderProtocolError('GEPA original evaluation cells changed on recovery')
+      if (digestJson(record.evaluationFailure ?? null) !== digestJson(failure ?? null))
+        throw new ProviderProtocolError('GEPA original evaluation failure changed on recovery')
     } else {
       record.evaluationCells = received
       record.evaluationCellsDigest = digestJson(received)
-      durableWrite(this.path(envelope), canonicalJson(record))
+      if (failure) { record.evaluationFailure = failure; record.evaluationFailureDigest = digestJson(failure) }
+      await this.records.write(envelope.kind, envelope.operationId, record)
     }
     const existing = await this.cached(expected)
     const cellsByKey = new Map(existing.cells.map(cell => [cellKey(cell.identity), cell]))
@@ -340,13 +467,16 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
       const key = cellKey(cell.identity), previous = cellsByKey.get(key)
       const selected = previous ? richerCell(previous, cell) : cell
       cellsByKey.set(key, selected)
-      const path = join(this.cellRoot, `${key.slice(7)}.json`)
-      if (!durableCreate(path, canonicalJson(selected))) {
-        const persisted = JSON.parse(readFileSync(path, 'utf8')) as EvidenceCell
-        assertCell(persisted, byKey.get(key)!)
-        const latest = richerCell(persisted, selected)
-        cellsByKey.set(key, latest)
-        if (latest.digest !== persisted.digest) durableWrite(path, canonicalJson(latest))
+      if (this.legacyJournal) await this.writeCell(selected)
+      else {
+        const persistedRecord = await this.records.create('gepa.cell', this.cellId(selected.identity), selected)
+        if (!persistedRecord.created) {
+          const persisted = persistedRecord.record
+          assertCell(persisted, byKey.get(key)!)
+          const latest = richerCell(persisted, selected)
+          cellsByKey.set(key, latest)
+          if (latest.digest !== persisted.digest) await this.writeCell(latest)
+        }
       }
     }
     const originals = [...request.cached, ...received]
@@ -358,20 +488,28 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     const missingProjection = (cell: EvidenceCell): boolean => validOutcome(cell) && (
       applicable.has(cell.identity.taskId) && cell.process?.status !== 'available'
       || [...requiredMetrics].some(metric => cell.rawMetrics?.metrics[metric]?.status !== 'available'))
-    for (const cell of [...cells]) {
+    for (const cell of projectionPolicy === 'defer' ? [] : [...cells]) {
       const original = originals.find(item => cellKey(item.identity) === cellKey(cell.identity))!
-      const projectionPath = join(this.projectionRoot, `${envelope.operationId}-${cellKey(cell.identity).slice(7)}.json`)
-      if (!missingProjection(cell) && !existsSync(projectionPath)) continue
+      if (!missingProjection(cell) && !await this.readProjection(envelope, cell.identity)) continue
       if (!this.physical.completeProcess) return { outcome: { kind: 'error', code: 'PROCESS_COMPLETION_UNSUPPORTED',
         message: 'Original-run process/raw-metric completion is unavailable from this provider' }, usage }
-      const projected = await this.project(envelope, original)
+      const projected = await this.project(envelope, record, original)
       const before: StageResult = seal({ stagePlanDigest: plan.digest, snapshotDigest: snapshot.digest, cells, settled: true })
       cells = completeEvidence(before, [projected]).cells
       if (missingProjection(projected)) return { outcome: { kind: 'error', code: 'PROCESS_COMPLETION_INCOMPLETE',
         message: 'Original-run process/raw-metric completion did not supply the required evidence' }, usage }
     }
-    const result: StageResult = seal({ stagePlanDigest: plan.digest, snapshotDigest: snapshot.digest, cells, settled: true })
+    const result: StageResult = seal({ stagePlanDigest: plan.digest, snapshotDigest: snapshot.digest, cells,
+      settled: true, ...(failure ? { failure } : {}) })
     profile(universe, plan, snapshot, result, processMode)
+    if (this.legacyJournal) {
+      const round = this.roundIdentity(this.input(envelope).roundIdentity)!
+      await this.legacyJournal.put(result)
+      const key = `rounds/${round.roundId}/evaluation-${digestJson([plan.digest, snapshot.digest]).slice(7)}`
+      const saved = await this.legacyJournal.read<{ ref: string }>(key)
+      if (saved && saved.ref !== result.digest) throw new ProviderProtocolError('GEPA original evaluation pointer conflict')
+      if (!saved) await this.legacyJournal.write(key, { ref: result.digest })
+    }
     const resultRef = this.artifacts.putJson(result as unknown as JsonValue, 'gepa.stage-result.v1')
     return { outcome: { kind: 'result', value: { resultRef } }, usage }
   }
@@ -382,49 +520,123 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     if (requested.length > envelope.limits.rolloutCells! || request.repairCells > envelope.limits.repairCells!)
       return { outcome: { kind: 'no-result', reason: 'rollout-cell-budget-exhausted' },
       usage: { rolloutCells: 0, repairCells: 0 } }
+    // A durable original result may still need process projections. Resume from
+    // that exact evidence; a projection response loss must not rerun rollout.
+    if (record.evaluationCells) return this.result(envelope, record, record.evaluationCells, record.evaluationFailure)
     if (!requested.length) return this.result(envelope, record, [])
-    const cells = await this.physical.evaluate({ plan, snapshot, cells: requested,
-      idempotencyKey: envelope.idempotencyKey, signal: new AbortController().signal })
-    return this.result(envelope, record, cells)
+    if (this.physical.inspectEvaluation) {
+      try {
+        const observed = await this.physical.inspectEvaluation({ plan, snapshot, cells: requested,
+          idempotencyKey: record.externalKey, signal: new AbortController().signal })
+        if (observed.status === 'complete') return this.result(envelope, record, observed.result.cells)
+      } catch (error) {
+        if (error instanceof SearchExecutionFailure)
+          return this.result(envelope, record, error.cells, error.failure)
+        if (error instanceof SearchProtocolError) throw error
+      }
+    }
+    try {
+      this.markPhysicalAttempt(envelope)
+      const cells = await this.physical.evaluate({ plan, snapshot, cells: requested,
+        idempotencyKey: record.externalKey, signal: new AbortController().signal })
+      return this.result(envelope, record, cells)
+    } catch (error) {
+      if (error instanceof SearchExecutionFailure)
+        return this.result(envelope, record, error.cells, error.failure)
+      if (!(error instanceof SearchProtocolError) && this.physical.inspectEvaluation) {
+        try {
+          const observed = await this.physical.inspectEvaluation({ plan, snapshot, cells: requested,
+            idempotencyKey: record.externalKey, signal: new AbortController().signal })
+          if (observed.status === 'complete') return this.result(envelope, record, observed.result.cells)
+        } catch (inspectionError) {
+          if (inspectionError instanceof SearchExecutionFailure)
+            return this.result(envelope, record, inspectionError.cells, inspectionError.failure)
+          if (inspectionError instanceof SearchProtocolError) throw inspectionError
+        }
+      }
+      throw error instanceof SearchProtocolError ? error : new PhysicalTransportPending(error)
+    }
   }
-  protected async recover(envelope: OperationEnvelope, record: RecordValue): Promise<Result | 'running' | 'unknown'> {
+  protected async recover(envelope: OperationEnvelope, record: RecordValue): Promise<'replay-safe' | 'running' | 'unknown'> {
     const { plan, snapshot } = this.input(envelope)
     const request = record.request as unknown as FrozenEvaluationRequest
     const requested = request.missing
-    if (requested.length > envelope.limits.rolloutCells! || request.repairCells > envelope.limits.repairCells!)
-      return { outcome: { kind: 'no-result', reason: 'rollout-cell-budget-exhausted' },
-      usage: { rolloutCells: 0, repairCells: 0 } }
+    if (requested.length > envelope.limits.rolloutCells! || request.repairCells > envelope.limits.repairCells!
+      || !requested.length) return 'replay-safe'
     if (record.evaluationCells) {
-      try { return await this.result(envelope, record, record.evaluationCells) }
-      catch (error) { if (error instanceof ProjectionPending) return error.status; throw error }
+      if (this.input(envelope).projectionPolicy === 'defer') return 'replay-safe'
+      // Once the original evaluation has been sealed, replay may only finish its
+      // process projections. A started projection with an unknown physical effect
+      // is not evidence that re-dispatch is safe.
+      const originals = [...request.cached, ...record.evaluationCells]
+      let running = false
+      for (const base of originals) {
+        const projection = await this.readProjection(envelope, base.identity)
+        if (!projection) continue
+        const key = digestJson([record.externalKey, base.digest])
+        if (projection.schemaVersion !== 1 || projection.operationId !== envelope.operationId
+          || projection.inputDigest !== envelope.inputDigest || projection.baseCellDigest !== base.digest
+          || projection.key !== key || !['started', 'complete'].includes(projection.stage))
+          throw new Error('GEPA process projection identity drift')
+        if (projection.stage === 'complete') continue
+        if (!this.physical.inspectProcess) return 'unknown'
+        const observed = await this.physical.inspectProcess(base, key, new AbortController().signal)
+        if (observed.status === 'unknown') return 'unknown'
+        if (observed.status === 'running') running = true
+      }
+      return running ? 'running' : 'replay-safe'
     }
-    if (!requested.length) {
-      try { return await this.result(envelope, record, []) }
-      catch (error) { if (error instanceof ProjectionPending) return error.status; throw error }
+    // The old SearchProvider contract requires same-key idempotent execution even
+    // when it has no inspection capability. Only this verified GEPA adapter opts
+    // into the kernel's explicit replay path; other unknown effects stay unknown.
+    if (!this.physical.inspectEvaluation)
+      return this.legacyInvocationEnabled && !!this.input(envelope).roundIdentity ? 'replay-safe' : 'unknown'
+    let observed: Awaited<ReturnType<NonNullable<SearchProvider['inspectEvaluation']>>>
+    try { observed = await this.physical.inspectEvaluation({ plan, snapshot, cells: requested,
+      idempotencyKey: record.externalKey, signal: new AbortController().signal }) }
+    catch (error) {
+      if (error instanceof SearchExecutionFailure) return 'replay-safe'
+      throw error
     }
-    if (!this.physical.inspectEvaluation) return 'unknown'
-    const observed = await this.physical.inspectEvaluation({ plan, snapshot, cells: requested,
-      idempotencyKey: envelope.idempotencyKey, signal: new AbortController().signal })
-    if (observed.status === 'complete') {
-      try { return await this.result(envelope, record, observed.result.cells) }
-      catch (error) { if (error instanceof ProjectionPending) return error.status; throw error }
-    }
-    return observed.status === 'running' ? 'running' : 'unknown'
+    // The old SearchProvider explicitly promises same-key idempotent execution.
+    // A subsequent *public* run may call it once even while inspection says
+    // running/unknown; the in-memory invocation gate stops a second kernel tick.
+    if (this.legacyInvocationEnabled && this.input(envelope).roundIdentity) return 'replay-safe'
+    return observed.status === 'complete' ? 'replay-safe'
+      : observed.status === 'running' ? 'running' : 'unknown'
+  }
+  protected override async lookupLegacyPending(envelope: OperationEnvelope, record: RecordValue): Promise<ExternalRecovery<unknown> | undefined> {
+    if (!this.physical.inspectEvaluation) return undefined
+    const { plan, snapshot } = this.input(envelope)
+    const request = record.request as unknown as FrozenEvaluationRequest
+    return this.physical.inspectEvaluation({ plan, snapshot, cells: request.missing,
+      idempotencyKey: record.externalKey, signal: new AbortController().signal })
   }
 }
 
-type DiagnoseInput = { snapshot: Snapshot; universe: TaskUniverse; taskIds: string[]; baseline: StageResult }
+type DiagnoseInput = { roundIdentity?: GepaPhysicalRoundIdentity; snapshot: Snapshot; universe: TaskUniverse;
+  taskIds: string[]; baseline: StageResult }
 export class GepaDiagnosisProvider extends GepaOperationProvider {
   private readonly identityDigest: string
-  constructor(root: string, artifacts: FileArtifactStore, bindings: BindingStore, readonly physical: DiagnosisProvider) {
+  constructor(root: string, artifacts: FileArtifactStore, bindings: BindingStore, readonly physical: DiagnosisProvider,
+    records?: ProviderRecordBackend) {
     super(root, 'gepa.diagnose', { integrity: physical.integrity, sanitizationPolicyDigest: physical.sanitizationPolicyDigest } as JsonValue,
       artifacts, bindings, ['diagnosisInputTokens', 'diagnosisOutputTokens'],
       { type: 'object', required: ['snapshot', 'universe', 'taskIds', 'baseline'], properties: {
+        roundIdentity: { type: 'object', required: ['evolutionId', 'roundId'], properties: {
+          evolutionId: { type: 'string' }, roundId: { type: 'string' } }, additionalProperties: false },
         snapshot: { type: 'any' }, universe: { type: 'any' }, taskIds: { type: 'array', items: { type: 'string' } }, baseline: { type: 'any' } }, additionalProperties: false },
-      { type: 'object', required: ['dossierRef'], properties: { dossierRef: { type: 'any' } }, additionalProperties: false })
+      { type: 'object', required: ['dossierRef'], properties: { dossierRef: { type: 'any' } }, additionalProperties: false }, records)
     this.identityDigest = digestJson([physical.integrity, physical.sanitizationPolicyDigest])
   }
   private input(envelope: OperationEnvelope): DiagnoseInput { return envelope.input as unknown as DiagnoseInput }
+  protected override physicalKey(envelope: OperationEnvelope): string {
+    const { roundIdentity, snapshot, baseline, taskIds } = this.input(envelope)
+    const round = this.roundIdentity(roundIdentity)
+    if (!round) return envelope.idempotencyKey
+    const name = `diagnosis-${digestJson([snapshot.digest, baseline.digest, taskIds]).slice(7)}`
+    return digestJson([round.roundId, name])
+  }
   protected async validate(envelope: OperationEnvelope): Promise<void> {
     const { snapshot, universe, taskIds, baseline } = this.input(envelope)
     if (digestJson([this.physical.integrity, this.physical.sanitizationPolicyDigest]) !== this.identityDigest)
@@ -437,7 +649,8 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
       || !Number.isSafeInteger(envelope.limits.diagnosisOutputTokens) || envelope.limits.diagnosisOutputTokens! < 0)
       throw new Error('GEPA diagnosis input or reservation invalid')
   }
-  private result(envelope: OperationEnvelope, value: { facts: DiagnosisFact[]; inputTokens: number; outputTokens: number }): Result {
+  private result(envelope: OperationEnvelope, value: { facts: DiagnosisFact[]; inputTokens: number; outputTokens: number;
+    failure?: SearchStageFailure }): Result {
     const { snapshot, universe, taskIds, baseline } = this.input(envelope)
     for (const fact of value.facts) {
       const cells = baseline.cells.filter(cell => cell.identity.taskId === fact.taskId)
@@ -445,21 +658,21 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
         ...(cell.outcome.status === 'available' ? [cell.outcome.evidenceRef] : []),
         ...(cell.process?.status === 'available' ? [cell.process.evidenceRef] : [])]))
       if (!taskIds.includes(fact.taskId) || fact.evidenceRefs.some(ref => !refs.has(ref)))
-        throw new Error('GEPA diagnosis fact lacks parent evidence provenance')
+        throw new ProviderProtocolError('GEPA diagnosis fact lacks parent evidence provenance')
       if (fact.status === 'supported-hypothesis') {
         if (universe.objective) {
           const projected = objectiveProfile(universe, [fact.taskId], cells)
-          if (!fact.evidenceRefs.length || !projected.objectiveComplete) throw new Error('GEPA objective hypothesis missing evidence')
+          if (!fact.evidenceRefs.length || !projected.objectiveComplete) throw new ProviderProtocolError('GEPA objective hypothesis missing evidence')
           if (fact.objectiveEvidence && fact.objectiveEvidence.digest !== projected.objectiveScore?.digest)
-            throw new Error('GEPA objective hypothesis evidence mismatch')
+            throw new ProviderProtocolError('GEPA objective hypothesis evidence mismatch')
         } else if (!fact.evidenceRefs.length || !cells.some(cell => cell.outcome.status === 'available'
           && numeric(utility(cell.outcome.rawValue, universe.tasks.find(task => task.id === fact.taskId)!.outcome))
             < universe.tasks.find(task => task.id === fact.taskId)!.successUtility))
-          throw new Error('GEPA failure cluster lacks valid business failure')
+          throw new ProviderProtocolError('GEPA failure cluster lacks valid business failure')
       }
       if (fact.status === 'successful-control' && (!fact.evidenceRefs.length
         || cells.length !== repetitionsForTask(universe, fact.taskId).length || !cells.every(cell => trialPassed(cell, universe))))
-        throw new Error('GEPA successful control lacks complete evidence')
+        throw new ProviderProtocolError('GEPA successful control lacks complete evidence')
     }
     const facts = [...value.facts]
     for (const taskId of taskIds) if (!facts.some(fact => fact.taskId === taskId)) {
@@ -471,52 +684,94 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
     }
     const dossier: DiagnosisDossier = seal({ parentSnapshotDigest: snapshot.digest, universeDigest: universe.digest,
       taskIds, baselineEvidenceDigests: [baseline.digest], facts, classifierIntegrity: this.physical.integrity,
-      sanitizationPolicyDigest: this.physical.sanitizationPolicyDigest })
+      sanitizationPolicyDigest: this.physical.sanitizationPolicyDigest,
+      ...(value.failure ? { failure: value.failure } : {}) })
     const dossierRef = this.artifacts.putJson(dossier as unknown as JsonValue, 'gepa.dossier.v1')
     return { outcome: { kind: 'result', value: { dossierRef } },
       usage: { diagnosisInputTokens: value.inputTokens, diagnosisOutputTokens: value.outputTokens } }
   }
-  protected async execute(envelope: OperationEnvelope): Promise<Result> {
+  protected async execute(envelope: OperationEnvelope, record: RecordValue): Promise<Result> {
     if (envelope.limits.diagnosisInputTokens === 0 || envelope.limits.diagnosisOutputTokens === 0)
       return { outcome: { kind: 'no-result', reason: 'diagnosis-budget-exhausted' },
         usage: { diagnosisInputTokens: 0, diagnosisOutputTokens: 0 } }
     const { snapshot, universe, taskIds, baseline } = this.input(envelope)
-    const value = await this.physical.diagnose({ snapshot, universe, taskIds, cells: baseline.cells,
-      idempotencyKey: envelope.idempotencyKey, maxInputTokens: envelope.limits.diagnosisInputTokens!,
-      maxOutputTokens: envelope.limits.diagnosisOutputTokens!, signal: new AbortController().signal })
+    if (this.physical.inspectDiagnosis) {
+      try {
+        const observed = await this.physical.inspectDiagnosis(record.externalKey, new AbortController().signal)
+        if (observed.status === 'complete') return this.result(envelope, observed.result)
+      } catch (error) {
+        if (error instanceof SearchExecutionFailure) return this.result(envelope, { facts: [], failure: error.failure,
+          inputTokens: envelope.limits.diagnosisInputTokens!, outputTokens: envelope.limits.diagnosisOutputTokens! })
+        if (error instanceof SearchProtocolError) throw error
+      }
+    }
+    let value: Awaited<ReturnType<DiagnosisProvider['diagnose']>>
+    try {
+      this.markPhysicalAttempt(envelope)
+      value = await this.physical.diagnose({ snapshot, universe, taskIds, cells: baseline.cells,
+        idempotencyKey: record.externalKey, maxInputTokens: envelope.limits.diagnosisInputTokens!,
+        maxOutputTokens: envelope.limits.diagnosisOutputTokens!, signal: new AbortController().signal })
+    } catch (error) {
+      if (error instanceof SearchExecutionFailure) return this.result(envelope, { facts: [], failure: error.failure,
+        inputTokens: envelope.limits.diagnosisInputTokens!, outputTokens: envelope.limits.diagnosisOutputTokens! })
+      throw error instanceof SearchProtocolError ? error : new PhysicalTransportPending(error)
+    }
     return this.result(envelope, value)
   }
-  protected async recover(envelope: OperationEnvelope): Promise<Result | 'running' | 'unknown'> {
+  protected async recover(envelope: OperationEnvelope, record: RecordValue): Promise<'replay-safe' | 'running' | 'unknown'> {
     if (envelope.limits.diagnosisInputTokens === 0 || envelope.limits.diagnosisOutputTokens === 0)
-      return { outcome: { kind: 'no-result', reason: 'diagnosis-budget-exhausted' },
-        usage: { diagnosisInputTokens: 0, diagnosisOutputTokens: 0 } }
-    if (!this.physical.inspectDiagnosis) return 'unknown'
-    const observed = await this.physical.inspectDiagnosis(envelope.idempotencyKey, new AbortController().signal)
-    if (observed.status === 'complete') return this.result(envelope, observed.result)
-    return observed.status === 'running' ? 'running' : 'unknown'
+      return 'replay-safe'
+    if (!this.physical.inspectDiagnosis)
+      return this.legacyInvocationEnabled && !!this.input(envelope).roundIdentity ? 'replay-safe' : 'unknown'
+    let observed: Awaited<ReturnType<NonNullable<DiagnosisProvider['inspectDiagnosis']>>>
+    try { observed = await this.physical.inspectDiagnosis(record.externalKey, new AbortController().signal) }
+    catch (error) {
+      if (error instanceof SearchExecutionFailure) return 'replay-safe'
+      throw error
+    }
+    if (this.legacyInvocationEnabled && this.input(envelope).roundIdentity) return 'replay-safe'
+    return observed.status === 'complete' ? 'replay-safe'
+      : observed.status === 'running' ? 'running' : 'unknown'
+  }
+  protected override async lookupLegacyPending(_envelope: OperationEnvelope, record: RecordValue): Promise<ExternalRecovery<unknown> | undefined> {
+    return this.physical.inspectDiagnosis?.(record.externalKey, new AbortController().signal)
   }
 }
 
-type GenerateInput = { workplan: CandidateWorkPlan; dossier: DiagnosisDossier; scope: EvaluationScope;
+type GenerateInput = { roundIdentity?: GepaPhysicalRoundIdentity; workplan: CandidateWorkPlan; dossier: DiagnosisDossier; scope: EvaluationScope;
   parent: Snapshot; plan: StageEvaluationPlan; baseline: StageResult; universe: TaskUniverse;
-  findings: ResearchFinding[]; processMode: 'off' | 'auto' | 'required' }
+  findings: ResearchFinding[]; handoffFindingDigests?: string[]; processMode: 'off' | 'auto' | 'required' }
+export type GepaGenerationMetering = { generationTokens: boolean; generationRequests: boolean }
 export class GepaGenerationProvider extends GepaOperationProvider {
   constructor(root: string, artifacts: FileArtifactStore, bindings: BindingStore, readonly hooks: SearchExecutionHooks,
-    readonly hookImplementationDigest: string) {
+    readonly hookImplementationDigest: string, records?: ProviderRecordBackend,
+    readonly metering: GepaGenerationMetering = { generationTokens: true, generationRequests: true },
+    readonly legacyJournal?: SearchJournal) {
     assertDigest(hookImplementationDigest)
+    if (typeof metering.generationTokens !== 'boolean' || typeof metering.generationRequests !== 'boolean')
+      throw new Error('GEPA generation metering configuration invalid')
     super(root, 'gepa.generate', { hookImplementationDigest,
-      typedPhysicalInspection: hasPhysicalGenerationInspection(hooks) }, artifacts, bindings,
-      ['generationTokens', 'generationRequests'],
+      typedPhysicalInspection: hasPhysicalGenerationInspection(hooks), metering,
+      legacyHandoff: !!legacyJournal }, artifacts, bindings,
+      Object.entries(metering).filter(([, enabled]) => enabled).map(([dimension]) => dimension),
       { type: 'object', required: ['workplan', 'dossier', 'scope', 'parent', 'plan', 'baseline', 'universe', 'findings', 'processMode'],
-        properties: { workplan: { type: 'any' }, dossier: { type: 'any' }, scope: { type: 'any' }, parent: { type: 'any' },
+        properties: { roundIdentity: { type: 'object', required: ['evolutionId', 'roundId'], properties: {
+          evolutionId: { type: 'string' }, roundId: { type: 'string' } }, additionalProperties: false },
+          workplan: { type: 'any' }, dossier: { type: 'any' }, scope: { type: 'any' }, parent: { type: 'any' },
           plan: { type: 'any' }, baseline: { type: 'any' }, universe: { type: 'any' }, findings: { type: 'array', items: { type: 'any' } },
+          handoffFindingDigests: { type: 'array', items: { type: 'string' } },
           processMode: { type: 'string' } }, additionalProperties: false },
-      { type: 'object', required: ['generatedRef', 'candidateSetRef'], properties: {
-        generatedRef: { type: 'any' }, candidateSetRef: { type: 'any' } }, additionalProperties: false })
+      { type: 'object', required: ['generatedRef'], properties: {
+        generatedRef: { type: 'any' }, candidateSetRef: { type: 'any' } }, additionalProperties: false }, records)
   }
   private input(envelope: OperationEnvelope): GenerateInput { return envelope.input as unknown as GenerateInput }
+  protected override physicalKey(envelope: OperationEnvelope): string {
+    const { roundIdentity, workplan } = this.input(envelope)
+    const round = this.roundIdentity(roundIdentity)
+    return round ? digestJson([round.roundId, workplan.digest, 'generation']) : envelope.idempotencyKey
+  }
   protected async validate(envelope: OperationEnvelope): Promise<void> {
-    const { workplan, dossier, scope, parent, plan, baseline, universe, findings } = this.input(envelope)
+    const { workplan, dossier, scope, parent, plan, baseline, universe, findings, handoffFindingDigests } = this.input(envelope)
     for (const value of [workplan, dossier, scope, plan, baseline, universe]) verifyDigest(value)
     validateSnapshot(parent)
     this.checkSnapshotBinding(envelope, parent)
@@ -524,25 +779,64 @@ export class GepaGenerationProvider extends GepaOperationProvider {
       || workplan.scopeDigest !== scope.digest || workplan.localStagePlanDigest !== plan.digest
       || baseline.stagePlanDigest !== plan.digest
       || baseline.snapshotDigest !== parent.digest || universe.partition !== 'seed') throw new Error('GEPA generation context drift')
-    if (!Array.isArray(findings) || digestJson(findings.map(item => item.digest)) !== digestJson(parent.findingRefs))
+    const handoff = handoffFindingDigests ?? []
+    if (!Array.isArray(handoff) || handoff.some(digest => typeof digest !== 'string'))
+      throw new Error('GEPA generation handoff findings malformed')
+    if (this.legacyJournal) {
+      const frozen = await this.legacyJournal.read<{ refs: string[] }>(`findings/${parent.digest.slice(7)}`)
+      if (digestJson(handoff) !== digestJson(frozen?.refs ?? []))
+        throw new Error('GEPA generation handoff findings changed')
+    } else if (handoff.length) throw new Error('GEPA generation handoff requires a trusted journal')
+    if (!Array.isArray(findings) || digestJson(findings.map(item => item.digest))
+      !== digestJson(sorted([...parent.findingRefs, ...handoff])))
       throw new Error('GEPA generation parent findings drift')
     for (const finding of findings) verifyDigest(finding)
-    if (!Number.isSafeInteger(envelope.limits.generationTokens) || envelope.limits.generationTokens! < 0
-      || !Number.isSafeInteger(envelope.limits.generationRequests) || envelope.limits.generationRequests! < 0)
+    if (this.metering.generationTokens && (!Number.isSafeInteger(envelope.limits.generationTokens) || envelope.limits.generationTokens! < 0)
+      || this.metering.generationRequests && (!Number.isSafeInteger(envelope.limits.generationRequests) || envelope.limits.generationRequests! < 0))
       throw new Error('GEPA generation reservation invalid')
+  }
+  private usage(tokens: number | undefined, requests: number | undefined): Record<string, number> {
+    const usage: Record<string, number> = {}
+    if (this.metering.generationTokens) {
+      if (!Number.isSafeInteger(tokens) || tokens! < 0) throw new ProviderProtocolError('GEPA generation omitted measured token usage')
+      usage.generationTokens = tokens!
+    }
+    if (this.metering.generationRequests) {
+      if (!Number.isSafeInteger(requests) || requests! < 0) throw new ProviderProtocolError('GEPA generation omitted measured request usage')
+      usage.generationRequests = requests!
+    }
+    return usage
+  }
+  private budgetInsufficient(envelope: OperationEnvelope, workplan: CandidateWorkPlan): boolean {
+    return this.metering.generationTokens && envelope.limits.generationTokens! < (workplan.generationBudget.maxTokens ?? 0)
+      || this.metering.generationRequests && envelope.limits.generationRequests! < (workplan.generationBudget.maxModelRequests ?? 0)
+  }
+  private executionFailure(envelope: OperationEnvelope, error: SearchExecutionFailure): GeneratedCandidate {
+    const input = this.input(envelope)
+    return seal({ changedPaths: [], reason: error.message,
+      usage: { ...(input.workplan.generationBudget.maxTokens === undefined ? {}
+        : { tokens: envelope.limits.generationTokens ?? input.workplan.generationBudget.maxTokens }),
+      ...(input.workplan.generationBudget.maxModelRequests === undefined ? {}
+        : { requests: envelope.limits.generationRequests ?? input.workplan.generationBudget.maxModelRequests }) } })
   }
   private async result(envelope: OperationEnvelope, value: GeneratedCandidate): Promise<Result> {
     verifyDigest(value)
     const input = this.input(envelope)
-    if (!Number.isSafeInteger(value.usage.tokens) || value.usage.tokens! < 0
-      || !Number.isSafeInteger(value.usage.requests) || value.usage.requests! < 0)
-      throw new Error('GEPA generation omitted measured final usage')
-    const usage = { generationTokens: value.usage.tokens!, generationRequests: value.usage.requests! }
-    if (!value.snapshot) return { outcome: { kind: 'no-result', reason: value.reason ?? 'GEPA generated no candidate' }, usage }
+    if (input.roundIdentity) {
+      if (input.workplan.generationBudget.maxTokens !== undefined && value.usage.tokens === undefined)
+        throw new SearchProtocolError('bounded generation requires token accounting')
+      if (input.workplan.generationBudget.maxModelRequests !== undefined && value.usage.requests === undefined)
+        throw new SearchProtocolError('bounded generation requires request accounting')
+    }
+    const usage = this.usage(value.usage.tokens, value.usage.requests)
+    if (!value.snapshot) {
+      const generatedRef = this.artifacts.putJson(value as unknown as JsonValue, 'gepa.generated.v1')
+      return { outcome: { kind: 'result', value: { generatedRef } }, usage }
+    }
     validateSnapshot(value.snapshot); await this.hooks.verifySnapshot(value.snapshot)
     if (value.snapshot.candidateId !== input.workplan.candidateId || value.snapshot.parentIds.length !== 1
       || value.snapshot.parentIds[0] !== input.parent.candidateId || !value.receipt || !value.sessionId)
-      throw new Error('GEPA generated candidate parent or receipt mismatch')
+      throw new ProviderProtocolError('GEPA generated candidate parent or receipt mismatch')
     const delivery = deliveredWorkplan(input.workplan, input.dossier, input.findings, input.scope)
     validateReceipt(value.receipt, delivery, value.sessionId)
     const candidateRef = this.artifacts.putJson({ schemaVersion: 1, kind: 'git-harness', commitOid: value.snapshot.commit,
@@ -551,60 +845,84 @@ export class GepaGenerationProvider extends GepaOperationProvider {
     const generatedRef = this.artifacts.putJson(value as unknown as JsonValue, 'gepa.generated.v1')
     return { outcome: { kind: 'result', value: { generatedRef, candidateSetRef } as unknown as JsonValue }, usage }
   }
-  protected async execute(envelope: OperationEnvelope): Promise<Result> {
+  protected async execute(envelope: OperationEnvelope, record: RecordValue): Promise<Result> {
     const input = this.input(envelope)
-    if (envelope.limits.generationTokens! < (input.workplan.generationBudget.maxTokens ?? 0)
-      || envelope.limits.generationRequests! < (input.workplan.generationBudget.maxModelRequests ?? 0))
+    if (this.budgetInsufficient(envelope, input.workplan))
       return { outcome: { kind: 'no-result', reason: 'generation-budget-exhausted' },
-        usage: { generationTokens: 0, generationRequests: 0 } }
-    const delivery = deliveredWorkplan(input.workplan, input.dossier, input.findings, input.scope)
-    try {
-      const value = await this.hooks.generate({ delivery, parent: input.parent, baseline: input.baseline,
-        baselineContext: { universe: input.universe, plan: input.plan,
-          scope: input.scope, processMode: input.processMode }, idempotencyKey: envelope.idempotencyKey,
-        signal: new AbortController().signal })
-      return this.result(envelope, value)
-    } catch (error) {
-      if (error instanceof GepaPhysicalExecutionError) return { outcome: { kind: 'error', code: error.code,
-        message: error.message, retryable: false }, usage: {
-          generationTokens: error.usage.tokens, generationRequests: error.usage.requests } }
-      throw error
-    }
-  }
-  protected async recover(envelope: OperationEnvelope): Promise<Result | 'running' | 'unknown' | 'not-started'> {
-    const input = this.input(envelope)
-    if (envelope.limits.generationTokens! < (input.workplan.generationBudget.maxTokens ?? 0)
-      || envelope.limits.generationRequests! < (input.workplan.generationBudget.maxModelRequests ?? 0))
-      return { outcome: { kind: 'no-result', reason: 'generation-budget-exhausted' },
-        usage: { generationTokens: 0, generationRequests: 0 } }
+        usage: this.usage(0, 0) }
     if (hasPhysicalGenerationInspection(this.hooks)) {
-      const observed = await this.hooks.inspectGenerationOutcome(envelope.idempotencyKey)
-      if (observed.status === 'error') return { outcome: { kind: 'error', code: observed.code,
-        message: observed.message, retryable: false }, usage: {
-          generationTokens: observed.usage.tokens, generationRequests: observed.usage.requests } }
-      if (observed.status === 'complete') return this.result(envelope, observed.result)
-      if (observed.status === 'not-started') return 'not-started'
-      return 'unknown'
+      try {
+        const observed = await this.hooks.inspectGenerationOutcome(record.externalKey)
+        if (observed.status === 'complete') return this.result(envelope, observed.result)
+        if (observed.status === 'error') return { outcome: { kind: 'error', code: observed.code,
+          message: observed.message, retryable: false }, usage: this.usage(observed.usage.tokens, observed.usage.requests) }
+      } catch (error) {
+        if (error instanceof SearchExecutionFailure) return this.result(envelope, this.executionFailure(envelope, error))
+        if (error instanceof SearchProtocolError) throw error
+      }
+    } else if (this.hooks.inspectGeneration) {
+      try {
+        const observed = await this.hooks.inspectGeneration(record.externalKey, new AbortController().signal)
+        if (observed.status === 'complete') return this.result(envelope, observed.result)
+      } catch (error) {
+        if (error instanceof SearchExecutionFailure) return this.result(envelope, this.executionFailure(envelope, error))
+        if (error instanceof SearchProtocolError) throw error
+      }
     }
-    if (!this.hooks.inspectGeneration) return 'unknown'
-    const observed = await this.hooks.inspectGeneration(envelope.idempotencyKey, new AbortController().signal)
-    if (observed.status === 'complete') return this.result(envelope, observed.result)
-    return observed.status === 'running' ? 'running' : 'unknown'
+    const delivery = deliveredWorkplan(input.workplan, input.dossier, input.findings, input.scope)
+    let value: GeneratedCandidate
+    try {
+      this.markPhysicalAttempt(envelope)
+      value = await this.hooks.generate({ delivery, parent: input.parent, baseline: input.baseline,
+        baselineContext: { universe: input.universe, plan: input.plan,
+          scope: input.scope, processMode: input.processMode }, idempotencyKey: record.externalKey,
+        signal: new AbortController().signal })
+    } catch (error) {
+      if (error instanceof SearchExecutionFailure)
+        return this.result(envelope, this.executionFailure(envelope, error))
+      if (error instanceof GepaPhysicalExecutionError) return { outcome: { kind: 'error', code: error.code,
+        message: error.message, retryable: false }, usage: this.usage(error.usage.tokens, error.usage.requests) }
+      throw error instanceof SearchProtocolError ? error : new PhysicalTransportPending(error)
+    }
+    return this.result(envelope, value)
   }
-  protected async cancelStarted(envelope: OperationEnvelope, record: RecordValue): Promise<Result | 'running' | 'unknown'> {
+  protected async recover(envelope: OperationEnvelope, record: RecordValue): Promise<'not-started' | 'replay-safe' | 'running' | 'unknown'> {
+    const input = this.input(envelope)
+    if (this.budgetInsufficient(envelope, input.workplan))
+      return 'replay-safe'
+    if (hasPhysicalGenerationInspection(this.hooks)) {
+      const observed = await this.hooks.inspectGenerationOutcome(record.externalKey)
+      if (observed.status === 'not-started') return 'not-started'
+      if (observed.status === 'error' || observed.status === 'complete') return 'replay-safe'
+      return this.legacyInvocationEnabled && input.roundIdentity ? 'replay-safe' : 'unknown'
+    }
+    if (!this.hooks.inspectGeneration)
+      return this.legacyInvocationEnabled && !!input.roundIdentity ? 'replay-safe' : 'unknown'
+    const observed = await this.hooks.inspectGeneration(record.externalKey, new AbortController().signal)
+    if (this.legacyInvocationEnabled && input.roundIdentity) return 'replay-safe'
+    return observed.status === 'complete' ? 'replay-safe'
+      : observed.status === 'running' ? 'running' : 'unknown'
+  }
+  protected override async lookupLegacyPending(_envelope: OperationEnvelope, record: RecordValue): Promise<ExternalRecovery<unknown> | undefined> {
+    if (hasPhysicalGenerationInspection(this.hooks)) {
+      const observed = await this.hooks.inspectGenerationOutcome(record.externalKey)
+      return observed.status === 'complete' || observed.status === 'error' ? { status: 'complete', result: observed }
+        : observed.status === 'not-started' ? { status: 'not-started' } : { status: 'unknown' }
+    }
+    return this.hooks.inspectGeneration?.(record.externalKey, new AbortController().signal)
+  }
+  protected async cancelStarted(envelope: OperationEnvelope, record: RecordValue): Promise<Result | 'not-started' | 'replay-safe' | 'running' | 'unknown'> {
     if (!hasPhysicalGenerationInspection(this.hooks)) {
-      const recovered = await this.recover(envelope)
-      return recovered === 'not-started' ? 'unknown' : recovered
+      return this.recover(envelope, record)
     }
     const input = this.input(envelope)
     const delivery = deliveredWorkplan(input.workplan, input.dossier, input.findings, input.scope)
     const observed = await this.hooks.cancelGenerationOutcome({ delivery, parent: input.parent,
       baseline: input.baseline, baselineContext: { universe: input.universe, plan: input.plan,
-        scope: input.scope, processMode: input.processMode }, idempotencyKey: envelope.idempotencyKey,
+        scope: input.scope, processMode: input.processMode }, idempotencyKey: record.externalKey,
       signal: new AbortController().signal })
     if (observed.status === 'error') return { outcome: { kind: 'error', code: observed.code,
-      message: observed.message, retryable: false }, usage: {
-        generationTokens: observed.usage.tokens, generationRequests: observed.usage.requests } }
+      message: observed.message, retryable: false }, usage: this.usage(observed.usage.tokens, observed.usage.requests) }
     if (observed.status === 'complete') return this.result(envelope, observed.result)
     return 'unknown'
   }

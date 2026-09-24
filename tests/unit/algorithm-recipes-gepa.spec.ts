@@ -316,7 +316,9 @@ describe('common-operation failure-cluster GEPA', () => {
     expect(await restarted.runUntilBlocked(5)).toBe('waiting')
     expect(f.fixture.executions).toEqual(before)
     f.fixture.provider.inspectEvaluation = inspect
-    expect(await restarted.runUntilBlocked(50)).toBe('complete')
+    // The cursor now persists each scientific step separately; the test bound
+    // covers those decisions while the physical dedup assertion remains exact.
+    expect(await restarted.runUntilBlocked(500)).toBe('complete')
     expect(new Set(f.fixture.executions.map(item => item.key)).size).toBe(f.fixture.executions.length)
   })
 
@@ -393,12 +395,14 @@ describe('common-operation failure-cluster GEPA', () => {
     projectionState = 'complete'
     const restarted = f.makeProvider()
     const observed = await restarted.inspect(envelope)
-    expect(observed.status).toBe('completed')
-    if (observed.status !== 'completed') throw new Error('expected completed process projection')
-    expect(observed.completion.receipt?.cumulative).toEqual({ rolloutCells: 1, repairCells: 0 })
-    expect(observed.completion.outcome.kind).toBe('result')
-    if (observed.completion.outcome.kind !== 'result') throw new Error('expected stage result')
-    const stage = f.artifacts.getJson((observed.completion.outcome.value as { resultRef: { kind: 'artifact'; digest: string;
+    expect(observed.status).toBe('replay-safe')
+    const sealed = await restarted.submit(envelope)
+    expect(sealed.status).toBe('completed')
+    if (sealed.status !== 'completed') throw new Error('expected completed process projection')
+    expect(sealed.completion.receipt?.cumulative).toEqual({ rolloutCells: 1, repairCells: 0 })
+    expect(sealed.completion.outcome.kind).toBe('result')
+    if (sealed.completion.outcome.kind !== 'result') throw new Error('expected stage result')
+    const stage = f.artifacts.getJson((sealed.completion.outcome.value as { resultRef: { kind: 'artifact'; digest: string;
       size: number; mediaType: string; schemaId?: string } }).resultRef) as unknown as { cells: EvidenceCell[] }
     expect(stage.cells[0]!.outcome).toEqual(f.originalCell!.outcome)
     expect(stage.cells[0]!.evidenceRef).toBe(f.originalCell!.evidenceRef)
