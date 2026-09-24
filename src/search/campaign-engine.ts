@@ -246,7 +246,8 @@ export class CampaignFailureClusterSearch {
       } })
     const evaluationProvider = new GepaEvaluationProvider(operationRoot, artifacts, bindings,
       this.provider, undefined, records, this.store)
-    const diagnosisProvider = new GepaDiagnosisProvider(operationRoot, artifacts, bindings, this.diagnosis, records)
+    const diagnosisProvider = new GepaDiagnosisProvider(operationRoot, artifacts, bindings,
+      this.diagnosis, records, this.store)
     const generationProvider = new GepaGenerationProvider(operationRoot, artifacts, bindings,
       this.hooks, providerIdentity, records, {
         generationTokens: roundHasLimit(resolvedSettings, 'maxGenerationTokens'),

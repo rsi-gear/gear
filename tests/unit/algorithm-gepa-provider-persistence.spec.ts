@@ -14,6 +14,7 @@ import { evaluatedFixture, fixtures, revise, scopeFixture } from '../../src/sear
 import { MemorySearchStore } from '../../src/search/testing.js'
 import { SearchBudgetExceeded } from '../../src/search/store.js'
 import { SearchExecutionFailure } from '../../src/search/recovery.js'
+import { seal } from '../../src/search/contracts.js'
 import { digestJson } from '../../src/state/digest.js'
 
 const roots: string[] = []
@@ -311,10 +312,18 @@ it('uses the legacy diagnosis key and conditionally meters configured generation
   expect(diagnosisSubmission.status).toBe('completed')
   expect(key).toBe(digestJson(['round-a',
     `diagnosis-${digestJson([fixture.anchor.digest, baseline.digest, taskIds]).slice(7)}`]))
+  const diagnosisName = `diagnosis-${digestJson([fixture.anchor.digest, baseline.digest, taskIds]).slice(7)}`
+  const inputPointer = await journal.read<{ ref: string }>(`rounds/round-a/${diagnosisName}-input`)
+  expect(await journal.object(inputPointer!.ref)).toMatchObject({ snapshot: fixture.anchor,
+    universe: fixture.seed, taskIds, cells: baseline.cells, maxInputTokens: 100, maxOutputTokens: 100 })
   const diagnosisPointer = await journal.read<{ ref: string }>(
-    `rounds/round-a/diagnosis-${digestJson([fixture.anchor.digest, baseline.digest, taskIds]).slice(7)}`)
+    `rounds/round-a/${diagnosisName}`)
   expect(diagnosisPointer?.ref).toMatch(/^sha256:/)
   expect((await journal.object<{ digest: string }>(diagnosisPointer!.ref)).digest).toBe(diagnosisPointer?.ref)
+  const consumed = await journal.read<{ ref: string }>(
+    `rounds/round-a/consumed-${digestJson([baseline.stagePlanDigest, baseline.snapshotDigest]).slice(7)}`)
+  expect(await journal.object(consumed!.ref)).toMatchObject({ resultDigest: baseline.digest,
+    consumer: 'diagnosis', consumerDigest: diagnosisPointer?.ref })
   const combinations = [
     { generationTokens: false, generationRequests: false },
     { generationTokens: true, generationRequests: false },
@@ -327,6 +336,38 @@ it('uses the legacy diagnosis key and conditionally meters configured generation
     expect(provider.describe().meteredDimensions).toEqual(Object.entries(metering)
       .filter(([, enabled]) => enabled).map(([dimension]) => dimension))
   }
+})
+
+it('keeps an earlier evidence consumer when diagnosis reuses the same verified baseline', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'gepa-diagnosis-consumer-')); roots.push(root)
+  const fixture = fixtures(4)
+  const { result: baseline } = evaluatedFixture(fixture.seed,
+    scopeFixture(fixture.seed, ['task-0']), fixture.anchor, () => ({ outcome: 0 }), { stage: 'baseline-probe' })
+  const artifacts = new FileArtifactStore(join(root, 'artifacts'))
+  const bindings = new BindingStore(artifacts, { id: 'harness', slots: {
+    harness: { schemaId: 'harness.directory.v1', required: true, replaceable: true },
+  } })
+  const harness = artifacts.putJson({ commitOid: fixture.anchor.commit,
+    manifestDigest: fixture.anchor.manifestDigest }, 'harness.directory.v1')
+  const journal = new MemorySearchStore()
+  const consumedName = `consumed-${digestJson([baseline.stagePlanDigest, baseline.snapshotDigest]).slice(7)}`
+  const firstConsumption = seal({ stagePlanDigest: baseline.stagePlanDigest,
+    snapshotDigest: baseline.snapshotDigest, resultDigest: baseline.digest,
+    consumer: 'scope-preparation' as const, consumerDigest: digestJson('prepared-scope') })
+  await journal.freeze('r', consumedName, () => firstConsumption)
+  const provider = new GepaDiagnosisProvider(join(root, 'operations'), artifacts, bindings,
+    fixture.diagnosis, undefined, journal)
+  const input = { roundIdentity: { evolutionId: 'e', roundId: 'r' }, snapshot: fixture.anchor,
+    universe: fixture.seed, taskIds: ['task-0'], baseline } as unknown as JsonValue
+  const operationId = digestJson(['diagnosis-earlier-consumer', root]).slice(7)
+  const envelope: OperationEnvelope = { campaignId: 'search-r', decisionIndex: 0, localKey: 'diagnose',
+    operationId, idempotencyKey: operationId, kind: 'gepa.diagnose', input, inputDigest: jsonDigest(input),
+    implementationDigest: provider.describe().implementationDigest, bindingSetRef: bindings.create({ harness }),
+    limits: { diagnosisInputTokens: 100, diagnosisOutputTokens: 100 } }
+  expect((await provider.submit(envelope)).status).toBe('completed')
+  const pointer = await journal.read<{ ref: string }>(`rounds/r/${consumedName}`)
+  expect(pointer?.ref).toBe(firstConsumption.digest)
+  expect(await journal.object(pointer!.ref)).toEqual(firstConsumption)
 })
 
 it('materializes an inspected diagnosis completion in the same call after a lost response', async () => {
@@ -373,7 +414,8 @@ it('materializes an inspected diagnosis completion in the same call after a lost
   } finally { dispose() }
 })
 
-it('replays a sealed diagnosis response after a pointer write fault without another physical call', async () => {
+it.each(['consumption', 'result'] as const)(
+  'replays a sealed diagnosis response after a %s pointer write fault without another physical call', async fault => {
   const root = mkdtempSync(join(tmpdir(), 'gepa-diagnosis-pointer-fault-')); roots.push(root)
   const fixture = fixtures(4)
   const { result: baseline } = evaluatedFixture(fixture.seed,
@@ -388,7 +430,9 @@ it('replays a sealed diagnosis response after a pointer write fault without anot
   const originalWrite = journal.write.bind(journal)
   let failPointer = true
   journal.write = async (name, value) => {
-    if (name.startsWith('rounds/r/diagnosis-') && failPointer) {
+    const target = fault === 'consumption' ? name.startsWith('rounds/r/consumed-')
+      : name.startsWith('rounds/r/diagnosis-') && !name.endsWith('-input')
+    if (target && failPointer) {
       failPointer = false
       throw new Error('diagnosis pointer disk unavailable')
     }
@@ -412,6 +456,9 @@ it('replays a sealed diagnosis response after a pointer write fault without anot
   expect((await provider.inspect(envelope)).status).toBe('replay-safe')
   expect((await provider.submit(envelope)).status).toBe('completed')
   expect(physicalCalls).toBe(1)
+  const consumed = await journal.read<{ ref: string }>(
+    `rounds/r/consumed-${digestJson([baseline.stagePlanDigest, baseline.snapshotDigest]).slice(7)}`)
+  expect(consumed?.ref).toMatch(/^sha256:/)
 })
 
 it.each(['running', 'partially-complete', 'complete', 'not-started'] as const)(
@@ -516,4 +563,37 @@ it('uses one terminal inspection failure without reinspecting or rerunning the o
     expect(physicalCalls).toBe(1)
     expect(inspectCalls).toBe(1)
   } finally { resumed() }
+})
+
+it.each([
+  ['undefined response', undefined],
+  ['unknown status', { status: 'bogus' }],
+  ['empty running handle', { status: 'running', handle: '' }],
+  ['empty partial cells', { status: 'partially-complete', cells: [] }],
+] as const)('rejects an invalid %s from physical evaluation inspection', async (_label, observed) => {
+  const root = mkdtempSync(join(tmpdir(), 'gepa-invalid-inspection-')); roots.push(root)
+  const fixture = fixtures(4)
+  const { plan } = evaluatedFixture(fixture.seed,
+    scopeFixture(fixture.seed, ['task-0']), fixture.anchor, () => ({ outcome: 0 }), { stage: 'baseline-probe' })
+  const artifacts = new FileArtifactStore(join(root, 'artifacts'))
+  const bindings = new BindingStore(artifacts, { id: 'harness', slots: {
+    harness: { schemaId: 'harness.directory.v1', required: true, replaceable: true },
+  } })
+  const harness = artifacts.putJson({ commitOid: fixture.anchor.commit,
+    manifestDigest: fixture.anchor.manifestDigest }, 'harness.directory.v1')
+  const provider = new GepaEvaluationProvider(join(root, 'operations'), artifacts, bindings, fixture.provider)
+  const input = { roundIdentity: { evolutionId: 'e', roundId: 'r' }, universe: fixture.seed,
+    plan, snapshot: fixture.anchor, processMode: 'off' } as unknown as JsonValue
+  const operationId = digestJson(['invalid-inspection', root]).slice(7)
+  const envelope: OperationEnvelope = { campaignId: 'search-r', decisionIndex: 0, localKey: 'evaluate',
+    operationId, idempotencyKey: operationId, kind: 'gepa.evaluate', input, inputDigest: jsonDigest(input),
+    implementationDigest: provider.describe().implementationDigest, bindingSetRef: bindings.create({ harness }),
+    limits: { rolloutCells: 1, repairCells: 0 } }
+  fixture.provider.evaluate = async () => { throw new Error('physical response lost') }
+  fixture.provider.inspectEvaluation = async () => observed as never
+  const dispose = provider.beginLegacyInvocation()
+  try {
+    await expect(provider.submit(envelope)).rejects.toMatchObject({ name: 'ProviderProtocolError',
+      cause: { name: 'SearchProtocolError' } })
+  } finally { dispose() }
 })

@@ -6,7 +6,7 @@ import { ProviderProtocolError, ProviderReconcileError } from '../provider-error
 import { FileProviderRecordBackend, type ArtifactCheckpoint, type ProviderRecordBackend } from '../runtime/persistence.js'
 import type { CompletionEnvelope, OperationEnvelope, OperationOutcome, OperationProvider, ProviderInspection,
   ProviderManifest, ProviderSubmission, UsageReceipt } from '../contracts.js'
-import { jsonDigest, type JsonValue } from '../schema.js'
+import { canonicalJson, jsonDigest, type JsonValue } from '../schema.js'
 import { implementationClosureDigest } from '../data/identity.js'
 import { digestJson } from '../../state/digest.js'
 import { assertCell, assertConsistentCells, cellKey, completeEvidence, plannedCells, profile, validOutcome, verifyCells } from '../../search/evidence.js'
@@ -41,8 +41,9 @@ class PhysicalTransportPending extends Error {
     super(error instanceof Error ? error.message : String(error), { cause: error })
   }
 }
-function validateObservedState(observed: ExternalRecovery<unknown> | undefined, allowPartial: boolean): void {
-  if (observed === undefined) return
+function validateObservedState(observed: ExternalRecovery<unknown> | undefined,
+  allowPartial: boolean, allowAbsent = false): void {
+  if (observed === undefined && allowAbsent) return
   if (observed === null || typeof observed !== 'object'
     || !['complete', 'not-started', 'partially-complete', 'running', 'unknown'].includes(observed.status))
     throw new SearchProtocolError('invalid external recovery state')
@@ -54,7 +55,7 @@ function validateObservedState(observed: ExternalRecovery<unknown> | undefined, 
 }
 function pendingObservation(observed: ExternalRecovery<unknown> | undefined,
   reason: string, allowPartial = false): Pick<GepaLegacyPendingState, 'state' | 'handle' | 'reason'> {
-  validateObservedState(observed, allowPartial)
+  validateObservedState(observed, allowPartial, true)
   if (observed?.status === 'running') return { state: 'running', handle: observed.handle, reason }
   if (observed?.status === 'partially-complete') return { state: 'partially-complete',
     reason: 'completed evaluation cells are saved; remaining batches have not started' }
@@ -244,7 +245,7 @@ abstract class GepaOperationProvider implements OperationProvider {
     let inspected: ExternalRecovery<unknown> | undefined
     try {
       inspected = captured ?? await this.lookupLegacyPending(envelope, record)
-      validateObservedState(inspected, this.manifest.kind === 'gepa.evaluate')
+      validateObservedState(inspected, this.manifest.kind === 'gepa.evaluate', true)
     }
     catch (error) {
       if (error instanceof ProviderProtocolError) throw error
@@ -648,18 +649,20 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     let observed = (this.legacyInvocationEnabled ? this.capturedObservation(envelope) : undefined) as
       Awaited<ReturnType<NonNullable<SearchProvider['inspectEvaluation']>>> | undefined
     if (this.physical.inspectEvaluation && (!this.legacyInvocationEnabled || this.deadlineExpired())) {
+      let inspectionFailed = false
       if (!observed) {
         try {
           observed = await this.physical.inspectEvaluation({ plan, snapshot, cells: requested,
             idempotencyKey: record.externalKey, signal: this.inspectionSignal() })
         } catch (error) {
+          inspectionFailed = true
           this.inspectionSignal()
           if (error instanceof SearchExecutionFailure)
             return this.result(envelope, record, error.cells, error.failure)
           if (error instanceof SearchProtocolError) throw error
         }
       }
-      validateObservedState(observed, true)
+      if (!inspectionFailed) validateObservedState(observed, true)
       if (observed) this.captureObservation(envelope, observed)
       if (observed?.status === 'complete') return this.result(envelope, record, observed.result.cells)
       if (observed?.status === 'not-started' && this.deadlineExpired())
@@ -684,6 +687,7 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
         try {
           inspected = await this.physical.inspectEvaluation({ plan, snapshot, cells: requested,
             idempotencyKey: record.externalKey, signal: this.inspectionSignal() })
+          validateObservedState(inspected, true)
         } catch (inspectionError) {
           this.inspectionSignal()
           if (inspectionError instanceof SearchExecutionFailure)
@@ -764,8 +768,10 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     if (!this.physical.inspectEvaluation) return undefined
     const { plan, snapshot } = this.input(envelope)
     const request = record.request as unknown as FrozenEvaluationRequest
-    return this.physical.inspectEvaluation({ plan, snapshot, cells: request.missing,
+    const observed = await this.physical.inspectEvaluation({ plan, snapshot, cells: request.missing,
       idempotencyKey: record.externalKey, signal: this.inspectionSignal() })
+    validateObservedState(observed, true)
+    return observed
   }
 }
 
@@ -786,12 +792,27 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
     this.identityDigest = digestJson([physical.integrity, physical.sanitizationPolicyDigest])
   }
   private input(envelope: OperationEnvelope): DiagnoseInput { return envelope.input as unknown as DiagnoseInput }
+  private legacyName(envelope: OperationEnvelope): string {
+    const { snapshot, baseline, taskIds } = this.input(envelope)
+    return `diagnosis-${digestJson([snapshot.digest, baseline.digest, taskIds]).slice(7)}`
+  }
+  protected override async freezeRequest(envelope: OperationEnvelope): Promise<JsonValue> {
+    const { snapshot, universe, taskIds, baseline } = this.input(envelope)
+    const request = seal({ snapshot, universe, taskIds, cells: baseline.cells,
+      maxInputTokens: envelope.limits.diagnosisInputTokens!, maxOutputTokens: envelope.limits.diagnosisOutputTokens! })
+    if (this.legacyJournal) {
+      const round = this.roundIdentity(this.input(envelope).roundIdentity)!
+      const frozen = await this.legacyJournal.freeze(round.roundId, `${this.legacyName(envelope)}-input`, () => request)
+      verifyDigest(frozen)
+      if (canonicalJson(frozen as unknown as JsonValue) !== canonicalJson(request as unknown as JsonValue))
+        throw new ProviderProtocolError('GEPA diagnosis input pointer drift')
+    }
+    return request as unknown as JsonValue
+  }
   protected override physicalKey(envelope: OperationEnvelope): string {
     const { roundIdentity, snapshot, baseline, taskIds } = this.input(envelope)
     const round = this.roundIdentity(roundIdentity)
-    if (!round) return envelope.idempotencyKey
-    const name = `diagnosis-${digestJson([snapshot.digest, baseline.digest, taskIds]).slice(7)}`
-    return digestJson([round.roundId, name])
+    return round ? digestJson([round.roundId, this.legacyName(envelope)]) : envelope.idempotencyKey
   }
   protected async validate(envelope: OperationEnvelope): Promise<void> {
     const { snapshot, universe, taskIds, baseline } = this.input(envelope)
@@ -857,9 +878,18 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
     }
     if (this.legacyJournal) {
       const round = this.roundIdentity(this.input(envelope).roundIdentity)!
-      const name = `diagnosis-${digestJson([snapshot.digest, baseline.digest, taskIds]).slice(7)}`
+      const name = this.legacyName(envelope)
       const path = `rounds/${round.roundId}/${name}`
+      await this.legacyJournal.put(seal(value))
       await this.legacyJournal.put(dossier)
+      const consumed = seal({ stagePlanDigest: baseline.stagePlanDigest, snapshotDigest: baseline.snapshotDigest,
+        resultDigest: baseline.digest, consumer: 'diagnosis' as const, consumerDigest: dossier.digest })
+      const frozen = await this.legacyJournal.freeze(round.roundId,
+        `consumed-${digestJson([baseline.stagePlanDigest, baseline.snapshotDigest]).slice(7)}`, () => consumed)
+      verifyDigest(frozen)
+      if (frozen.stagePlanDigest !== baseline.stagePlanDigest || frozen.snapshotDigest !== baseline.snapshotDigest
+        || frozen.resultDigest !== baseline.digest)
+        throw new ProviderProtocolError('GEPA diagnosis evidence consumption drift')
       const saved = await this.legacyJournal.read<{ ref: string }>(path)
       if (saved && saved.ref !== dossier.digest) throw new ProviderProtocolError('GEPA diagnosis pointer conflict')
       if (!saved) await this.legacyJournal.write(path, { ref: dossier.digest })
@@ -869,6 +899,11 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
   }
   protected async execute(envelope: OperationEnvelope, record: RecordValue, newlyStarted: boolean): Promise<Result> {
     if (record.diagnosisValue) return this.result(envelope, record, record.diagnosisValue)
+    if (record.request && canonicalJson(record.request) !== canonicalJson(seal({
+      snapshot: this.input(envelope).snapshot, universe: this.input(envelope).universe,
+      taskIds: this.input(envelope).taskIds, cells: this.input(envelope).baseline.cells,
+      maxInputTokens: envelope.limits.diagnosisInputTokens!, maxOutputTokens: envelope.limits.diagnosisOutputTokens!,
+    }) as unknown as JsonValue)) throw new ProviderProtocolError('GEPA diagnosis frozen request drift')
     const inspectedFailure = this.legacyInvocationEnabled ? this.capturedInspectionFailure(envelope) : undefined
     if (inspectedFailure) return this.result(envelope, record, { facts: [], failure: inspectedFailure.failure,
       inputTokens: envelope.limits.diagnosisInputTokens!, outputTokens: envelope.limits.diagnosisOutputTokens! })
@@ -884,17 +919,19 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
     let observed = (this.legacyInvocationEnabled ? this.capturedObservation(envelope) : undefined) as
       Awaited<ReturnType<NonNullable<DiagnosisProvider['inspectDiagnosis']>>> | undefined
     if (this.physical.inspectDiagnosis && (!this.legacyInvocationEnabled || this.deadlineExpired())) {
+      let inspectionFailed = false
       if (!observed) {
         try {
           observed = await this.physical.inspectDiagnosis(record.externalKey, this.inspectionSignal())
         } catch (error) {
+          inspectionFailed = true
           this.inspectionSignal()
           if (error instanceof SearchExecutionFailure) return this.result(envelope, record, { facts: [], failure: error.failure,
             inputTokens: envelope.limits.diagnosisInputTokens!, outputTokens: envelope.limits.diagnosisOutputTokens! })
           if (error instanceof SearchProtocolError) throw error
         }
       }
-      validateObservedState(observed, false)
+      if (!inspectionFailed) validateObservedState(observed, false)
       if (observed) this.captureObservation(envelope, observed)
       if (observed?.status === 'complete') return this.result(envelope, record, observed.result)
       if (observed?.status === 'not-started' && this.deadlineExpired()) return timedOut()
@@ -917,7 +954,10 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
       let reason = error instanceof Error ? error.message : String(error)
       let inspected: Awaited<ReturnType<NonNullable<DiagnosisProvider['inspectDiagnosis']>>> | undefined
       if (this.physical.inspectDiagnosis) {
-        try { inspected = await this.physical.inspectDiagnosis(record.externalKey, this.inspectionSignal()) }
+        try {
+          inspected = await this.physical.inspectDiagnosis(record.externalKey, this.inspectionSignal())
+          validateObservedState(inspected, false)
+        }
         catch (inspectionError) {
           this.inspectionSignal()
           if (inspectionError instanceof SearchExecutionFailure) return this.result(envelope, record, {
@@ -958,7 +998,10 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
       : observed.status === 'running' ? 'running' : 'unknown'
   }
   protected override async lookupLegacyPending(_envelope: OperationEnvelope, record: RecordValue): Promise<ExternalRecovery<unknown> | undefined> {
-    return this.physical.inspectDiagnosis?.(record.externalKey, this.inspectionSignal())
+    if (!this.physical.inspectDiagnosis) return undefined
+    const observed = await this.physical.inspectDiagnosis(record.externalKey, this.inspectionSignal())
+    validateObservedState(observed, false)
+    return observed
   }
 }
 
@@ -1102,7 +1145,11 @@ export class GepaGenerationProvider extends GepaOperationProvider {
     return new Promise<PhysicalGenerationInspection>((resolve, reject) => {
       const abort = () => reject(signal.reason)
       signal.addEventListener('abort', abort, { once: true })
-      hooks.inspectGenerationOutcome(key).then(resolve, reject).finally(() => signal.removeEventListener('abort', abort))
+      hooks.inspectGenerationOutcome(key).then(value => {
+        if (!value || !['complete', 'error', 'not-started', 'unknown'].includes(value.status))
+          reject(new SearchProtocolError('invalid external recovery state'))
+        else resolve(value)
+      }, reject).finally(() => signal.removeEventListener('abort', abort))
     })
   }
   protected async execute(envelope: OperationEnvelope, record: RecordValue, newlyStarted: boolean): Promise<Result> {
@@ -1196,6 +1243,7 @@ export class GepaGenerationProvider extends GepaOperationProvider {
       } else if (this.hooks.inspectGeneration) {
         try {
           const inspected = await this.hooks.inspectGeneration(record.externalKey, this.inspectionSignal())
+          validateObservedState(inspected, false)
           if (inspected.status === 'complete') return this.result(envelope, record, inspected.result)
           if (inspected.status === 'not-started' && this.deadlineExpired()) return timedOut()
           throw new PhysicalTransportPending(error, pendingObservation(inspected, reason))
@@ -1264,7 +1312,10 @@ export class GepaGenerationProvider extends GepaOperationProvider {
       return observed.status === 'complete' || observed.status === 'error' ? { status: 'complete', result: observed }
         : observed.status === 'not-started' ? { status: 'not-started' } : { status: 'unknown' }
     }
-    return this.hooks.inspectGeneration?.(record.externalKey, this.inspectionSignal())
+    if (!this.hooks.inspectGeneration) return undefined
+    const observed = await this.hooks.inspectGeneration(record.externalKey, this.inspectionSignal())
+    validateObservedState(observed, false)
+    return observed
   }
   protected async cancelStarted(envelope: OperationEnvelope, record: RecordValue): Promise<Result | 'not-started' | 'replay-safe' | 'running' | 'unknown'> {
     if (!hasPhysicalGenerationInspection(this.hooks)) {
