@@ -25,7 +25,8 @@ import { metaAgent } from '../helpers/research-fixture.js'
 const cleanups: Array<() => Promise<unknown>> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
 
-async function setup(edit = true, loseFinalize = false, science: boolean | 'invalid' = false) {
+async function setup(edit = true, loseFinalize = false, science: boolean | 'invalid' = false,
+  hangAtCall?: number) {
   const fixture = await createGitHarnessFixture()
   cleanups.push(() => rm(fixture.root, { recursive: true, force: true }))
   const root = await mkdtemp(join(tmpdir(), 'gear-workspace-edit-'))
@@ -40,8 +41,15 @@ async function setup(edit = true, loseFinalize = false, science: boolean | 'inva
   ctx.provide('agentPresets', { mount: async () => {} } as never)
   let calls = 0
   class Adapter extends LlmAdapter {
-    async *stream(_request: GenerateOptions): AsyncGenerator<StreamChunk> {
+    async *stream(request: GenerateOptions): AsyncGenerator<StreamChunk> {
       calls++
+      if (calls === hangAtCall) {
+        await new Promise<void>(resolve => {
+          if (request.signal?.aborted) resolve()
+          else request.signal?.addEventListener('abort', () => resolve(), { once: true })
+        })
+        return
+      }
       if (edit && calls <= 2) {
         const name = calls === 1 ? 'workspace_read' : 'workspace_edit'
         const args = calls === 1 ? { path: 'plugins/context.ts' }
@@ -102,7 +110,25 @@ async function setup(edit = true, loseFinalize = false, science: boolean | 'inva
     decisionIndex: 0, localKey: 'edit', kind: 'execution.workspace-edit', input,
     inputDigest: jsonDigest(input), implementationDigest: adapter.describe().implementationDigest,
     bindingSetRef, limits: { 'model.requests': 3, 'model.tokens': 500 } }
-  return { root, fixture, artifacts, builder, adapter, envelope, portOptions, modelCalls: () => calls }
+  return { root, fixture, artifacts, bindings, builder, manager, adapter, envelope, portOptions, modelCalls: () => calls }
+}
+
+async function manualRevision(f: Awaited<ReturnType<typeof setup>>, parent: { commitOid: string; manifestDigest: string },
+  update: (files: SkillCandidateFiles, sessionId: string) => Promise<void>) {
+  const handle = await f.manager.create({ evolutionId: 'manualrevision', roundId: 'test',
+    parentHarnessRef: parent.commitOid, parentHarnessDigest: parent.manifestDigest }, new AbortController().signal)
+  const sessionId = `manual-${handle.workspaceId}`
+  f.manager.bind(handle.workspaceId, sessionId)
+  const files = new SkillCandidateFiles(f.manager, { maxReadBytes: 50_000 })
+  await update(files, sessionId)
+  await f.builder.checkWorkspace(handle, new AbortController().signal)
+  const summary = await f.manager.seal(handle.workspaceId)
+  f.manager.markFinalizing(handle.workspaceId)
+  await f.manager.verifySealed(handle.workspaceId, summary)
+  const prepared = await f.builder.finalizeWorkspace(handle, summary, new AbortController().signal)
+  await f.manager.markCommitted(handle.workspaceId)
+  await f.manager.dispose(handle.workspaceId)
+  return { commitOid: prepared.ref, manifestDigest: prepared.digest }
 }
 
 describe('physical DSH workspace edit operation', () => {
@@ -130,6 +156,18 @@ describe('physical DSH workspace edit operation', () => {
       receipt: { cumulative: { 'model.requests': 0, 'model.tokens': 0 } } })
     await expect(f.adapter.submit(f.envelope)).rejects.toThrow(/cancelled/)
     expect(f.modelCalls()).toBe(0)
+  })
+
+  it('does not release a started edit with unconfirmed model usage after cancellation', async () => {
+    const f = await setup(true, false, false, 1)
+    const submit = f.adapter.submit(f.envelope)
+    for (let attempt = 0; attempt < 100 && f.modelCalls() === 0; attempt++)
+      await new Promise(resolve => setTimeout(resolve, 10))
+    expect(f.modelCalls()).toBe(1)
+    expect(await f.adapter.cancel(f.envelope)).toMatchObject({ status: 'unknown' })
+    expect((await submit).status).toBe('running')
+    expect((await f.adapter.inspect(f.envelope)).status).toBe('unknown')
+    expect(f.modelCalls()).toBe(1)
   })
 
   it('settles a model turn with no edit as a measured no-result', async () => {
@@ -172,6 +210,19 @@ describe('physical DSH workspace edit operation', () => {
       receipt: { cumulative: { 'model.requests': 3, 'model.tokens': 120 } } } })
   })
 
+  it('rejects a physical edit that never reads its assigned workplan with final measured usage', async () => {
+    const f = await setup()
+    const input = { ...f.envelope.input as Record<string, unknown>, delivery: {
+      digest: sha256('delivery'), workplan: { digest: sha256('workplan'), requiredDiagnosisRefs: [] },
+      dossier: { digest: sha256('dossier') }, findings: [] }, diagnosisEvidence: [] }
+    const envelope = { ...f.envelope, input, inputDigest: jsonDigest(input) }
+    expect(await f.adapter.submit(envelope)).toMatchObject({ status: 'completed', completion: {
+      outcome: { kind: 'error', code: 'workspace_edit_workplan_not_consumed' },
+      receipt: { cumulative: { 'model.requests': 3, 'model.tokens': 120 } } } })
+    expect((await f.adapter.inspect(envelope)).status).toBe('completed')
+    expect(f.modelCalls()).toBe(3)
+  })
+
   it('freezes exactly one validated host projection before any workspace/model effect', async () => {
     const f = await setup()
     let projections = 0
@@ -188,6 +239,113 @@ describe('physical DSH workspace edit operation', () => {
       idempotencyKey: sha256('other-editor-op'), implementationDigest: rejected.describe().implementationDigest }
     await expect(rejected.submit(other)).rejects.toThrow(/projection exceeds prompt limit/)
     expect(f.modelCalls()).toBe(3)
+  })
+
+  it('restores exact named files from a prior sealed Git binding without another model request', async () => {
+    const f = await setup()
+    const edited = await f.adapter.submit(f.envelope)
+    if (edited.status !== 'completed' || edited.completion.outcome.kind !== 'result') throw new Error('edit missing')
+    const editedValue = edited.completion.outcome.value as unknown as {
+      producedArtifactRef: Parameters<FileArtifactStore['getJson']>[0] }
+    const editedHarness = f.artifacts.getJson(editedValue.producedArtifactRef) as {
+      commitOid: string; manifestDigest: string }
+    const currentGit = await manualRevision(f, editedHarness, async (files, sessionId) => {
+      await files.write(sessionId, 'plugins/temporary.ts', 'export const temporary = true\n', null)
+    })
+    const current = f.bindings.create({ harness: f.artifacts.putJson({ schemaVersion: 1,
+      kind: 'git-harness', ...currentGit }, 'harness.directory.v1') })
+    const files = new SkillCandidateFiles(f.portOptions.workspaceManager, { maxReadBytes: 50_000 })
+    const restore = createWorkspaceEditAdapter({ ...f.portOptions, root: join(f.root, 'restore-port'), files,
+      roles: [{ id: 'ahe.rollback', spec: metaAgent(), instruction: 'Restore measured predecessor files.',
+        maxModelRequests: 1, maxTokens: 100, timeoutMs: 20_000,
+        restore: { sourceBindingField: 'restoreFromBindingSetRef', filesField: 'files' } }],
+      authorize: (roleId: string) => { if (roleId !== 'ahe.rollback') throw new Error('restore role denied') } })
+    const input = { roleId: 'ahe.rollback', baseBindingSetRef: current,
+      restoreFromBindingSetRef: f.envelope.bindingSetRef, files: ['plugins/context.ts', 'plugins/temporary.ts'] }
+    const operationId = sha256('offline-restore-operation')
+    const envelope: OperationEnvelope = { ...f.envelope, operationId, idempotencyKey: operationId,
+      localKey: 'rollback', input, inputDigest: jsonDigest(input),
+      implementationDigest: restore.describe().implementationDigest, bindingSetRef: current,
+      limits: { 'model.requests': 0, 'model.tokens': 0 } }
+    const result = await restore.submit(envelope)
+    expect(result.status).toBe('completed')
+    if (result.status !== 'completed' || result.completion.outcome.kind !== 'result') throw new Error('restore missing')
+    const value = result.completion.outcome.value as unknown as { producedArtifactRef: Parameters<FileArtifactStore['getJson']>[0];
+      structuredResult: { restoredFiles: string[]; restoredFromCommit: string } }
+    const physical = f.artifacts.getJson(value.producedArtifactRef) as { commitOid: string }
+    expect((await f.builder.readHarnessFile(physical.commitOid, 'plugins/context.ts')).content)
+      .toBe('export const value = 1\n')
+    await expect(f.builder.readHarnessFile(physical.commitOid, 'plugins/temporary.ts')).rejects.toThrow()
+    expect((await f.builder.readHarnessFile(physical.commitOid, 'preset/agent.cordis.yml')).content)
+      .toBe('- name: ./plugins/context.js\n')
+    expect(value.structuredResult.restoredFiles).toEqual(['plugins/context.ts', 'plugins/temporary.ts'])
+    expect(value.structuredResult.restoredFromCommit).toBe(f.fixture.championRef)
+    expect(result.completion.receipt?.cumulative).toEqual({ 'model.requests': 0, 'model.tokens': 0 })
+    expect((await restore.inspect(envelope)).status).toBe('completed')
+    expect(f.modelCalls()).toBe(3)
+  })
+
+  it('recreates a deleted source file while preserving every unlisted harness file', async () => {
+    const f = await setup(false)
+    const initial = { commitOid: f.fixture.championRef, manifestDigest: f.fixture.manifest.digest }
+    const source = await manualRevision(f, initial, async (files, sessionId) => {
+      await files.write(sessionId, 'prompts/restore.md', 'measured guidance\n', null)
+    })
+    const current = await manualRevision(f, source, async (files, sessionId) => {
+      const item = await files.read(sessionId, 'prompts/restore.md')
+      await files.remove(sessionId, 'prompts/restore.md', item.digest)
+    })
+    const sourceRef = f.bindings.create({ harness: f.artifacts.putJson({ schemaVersion: 1,
+      kind: 'git-harness', ...source }, 'harness.directory.v1') })
+    const currentRef = f.bindings.create({ harness: f.artifacts.putJson({ schemaVersion: 1,
+      kind: 'git-harness', ...current }, 'harness.directory.v1') })
+    const restore = createWorkspaceEditAdapter({ ...f.portOptions, root: join(f.root, 'restore-deleted'),
+      files: new SkillCandidateFiles(f.manager, { maxReadBytes: 50_000 }),
+      roles: [{ id: 'restore', spec: metaAgent(), instruction: 'Restore exact files.', maxModelRequests: 1,
+        maxTokens: 100, timeoutMs: 20_000,
+        restore: { sourceBindingField: 'source', filesField: 'files' } }], authorize: () => {} })
+    const input = { roleId: 'restore', baseBindingSetRef: currentRef,
+      source: sourceRef, files: ['prompts/restore.md'] }
+    const operationId = sha256('restore-deleted')
+    const envelope: OperationEnvelope = { ...f.envelope, operationId, idempotencyKey: operationId,
+      kind: 'execution.workspace-edit', localKey: 'restore-deleted', input,
+      inputDigest: jsonDigest(input), implementationDigest: restore.describe().implementationDigest,
+      bindingSetRef: currentRef, limits: { 'model.requests': 0, 'model.tokens': 0 } }
+    const result = await restore.submit(envelope)
+    if (result.status !== 'completed' || result.completion.outcome.kind !== 'result')
+      throw new Error('deleted file was not restored')
+    const output = result.completion.outcome.value as unknown as {
+      producedArtifactRef: Parameters<FileArtifactStore['getJson']>[0] }
+    const git = f.artifacts.getJson(output.producedArtifactRef) as { commitOid: string }
+    expect((await f.builder.readHarnessFile(git.commitOid, 'prompts/restore.md')).content).toBe('measured guidance\n')
+    expect((await f.builder.readHarnessFile(git.commitOid, 'plugins/context.ts')).content)
+      .toBe('export const value = 1\n')
+    expect(f.modelCalls()).toBe(0)
+  })
+
+  it('rejects protected restore paths and foreign source schemas before creating a workspace', async () => {
+    const f = await setup(false)
+    const adapter = createWorkspaceEditAdapter({ ...f.portOptions, root: join(f.root, 'restore-invalid'),
+      files: new SkillCandidateFiles(f.manager, { maxReadBytes: 50_000 }),
+      roles: [{ id: 'restore', spec: metaAgent(), instruction: 'Restore exact files.', maxModelRequests: 1,
+        maxTokens: 100, timeoutMs: 20_000,
+        restore: { sourceBindingField: 'source', filesField: 'files' } }], authorize: () => {} })
+    const create = vi.spyOn(f.manager, 'create')
+    for (const path of ['plugins/.git/config', 'plugins/package.json', 'plugins/foo//bar',
+      'plugins/context.ts/', 'plugins/../context.ts']) {
+      const input = { roleId: 'restore', baseBindingSetRef: f.envelope.bindingSetRef,
+        source: f.envelope.bindingSetRef, files: [path] }
+      const envelope = { ...f.envelope, input, inputDigest: jsonDigest(input),
+        implementationDigest: adapter.describe().implementationDigest }
+      await expect(adapter.submit(envelope)).rejects.toThrow(/restore source or file list is invalid/)
+    }
+    const input = { roleId: 'restore', baseBindingSetRef: f.envelope.bindingSetRef,
+      source: { ...f.envelope.bindingSetRef, schemaId: 'foreign-schema' }, files: ['plugins/context.ts'] }
+    const envelope = { ...f.envelope, input, inputDigest: jsonDigest(input),
+      implementationDigest: adapter.describe().implementationDigest }
+    await expect(adapter.submit(envelope)).rejects.toThrow()
+    expect(create).not.toHaveBeenCalled()
+    expect(f.modelCalls()).toBe(0)
   })
 
   it('never redoes the Git edit after an uncertain finalization response', async () => {

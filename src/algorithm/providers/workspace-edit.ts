@@ -7,13 +7,14 @@ import type { DshMetaAgentSpec } from '../../types.js'
 import type { CandidateWorkspaceManager, CandidateWorkspaceRequest } from '../../candidate/workspace.js'
 import { HarnessBuilder } from '../../harness/builder.js'
 import { CompilerCheckError } from '../../harness/check-report.js'
+import { SkillCandidateFiles } from '../../skill/files.js'
 import { DshMetaAgentHost } from '../../meta/session.js'
 import { DshGenerationExecution } from '../../meta/generation-execution.js'
 import { MetaOffloadingStore } from '../../meta/offloading-store.js'
 import { usageTokens } from '../../meta/offloading-host.js'
-import { FileArtifactStore, assertDigest, durableWrite } from '../artifacts.js'
+import { FileArtifactStore, assertDigest, durableWrite, sha256 } from '../artifacts.js'
 import { BindingStore } from '../bindings.js'
-import type { ArtifactRef, BudgetPlan, CompletionEnvelope, OperationEnvelope, ProviderInspection,
+import type { ArtifactRef, BindingSetRef, BudgetPlan, CompletionEnvelope, OperationEnvelope, ProviderInspection,
   ProviderManifest, ProviderSubmission, UsageReceipt } from '../contracts.js'
 import { assertJson, assertSchema, canonicalJson, jsonDigest, validateSchema, type JsonSchema, type JsonValue } from '../schema.js'
 import { implementationClosureDigest } from '../data/identity.js'
@@ -25,13 +26,16 @@ import type { EvidenceCell } from '../../search/types.js'
 export type WorkspaceEditRoleDefinition = { id: string; spec: DshMetaAgentSpec; instruction: string;
   maxModelRequests: number; maxTokens: number; timeoutMs: number;
   /** A scientific model result; host physical metadata is sealed separately and cannot be overwritten. */
-  resultSchema?: JsonSchema }
+  resultSchema?: JsonSchema;
+  /** Deterministic host restore from another sealed binding. No model turn is started. */
+  restore?: { sourceBindingField: string; filesField: string } }
 export type WorkspaceEditPortOptions = { root: string; host: DshMetaAgentHost; sessions: WorkspaceEditSessionRegistry;
   artifacts: FileArtifactStore; bindings: BindingStore; builder: HarnessBuilder;
   workspaceManager: CandidateWorkspaceManager; roles: WorkspaceEditRoleDefinition[];
   hostRuntimeDigest: string; currentHostRuntimeDigest(): string; accessPolicyDigest: string;
   campaignBudget: BudgetPlan; requiredSlots: string[];
   authorize(roleId: string, envelope: OperationEnvelope): Promise<void> | void;
+  files?: SkillCandidateFiles;
   /** Host-owned, audited projection of scientific inputs; raw bindings/evidence never enter the prompt. */
   editorContextDigest?: string; editorContext?(roleId: string, envelope: OperationEnvelope): JsonValue }
 export type WorkspaceEditResult = { schemaVersion: 1; roleId: string; sessionId: string;
@@ -48,6 +52,16 @@ type EditDone = { status: 'completed'; envelope: OperationEnvelope; completion: 
   checkReportRef?: ArtifactRef }
 type EditCancelled = { status: 'cancelled'; envelope: OperationEnvelope; receipt?: UsageReceipt }
 type EditRecord = EditIntent | EditDone | EditCancelled
+const RESTORE_ROOTS = new Set(['preset', 'plugins', 'prompts', 'skills', 'workflows'])
+const RESTORE_PROTECTED = new Set(['manifest.json', 'package.json', 'package-lock.json',
+  'pnpm-lock.yaml', 'yarn.lock', 'bun.lock', 'bun.lockb', '.git'])
+
+function restorePath(path: unknown): path is string {
+  if (typeof path !== 'string' || !/^[A-Za-z0-9._/-]+$/u.test(path)) return false
+  const parts = path.split('/')
+  return parts.length >= 2 && RESTORE_ROOTS.has(parts[0]!)
+    && parts.every(part => part !== '' && part !== '.' && part !== '..' && !RESTORE_PROTECTED.has(part))
+}
 
 function inputOf(envelope: OperationEnvelope): Input {
   if (!envelope.input || typeof envelope.input !== 'object' || Array.isArray(envelope.input))
@@ -139,6 +153,8 @@ export class DshWorkspaceEditPort implements PhysicalExecutionPort {
         || !Number.isSafeInteger(role.timeoutMs) || role.timeoutMs < 1)
         throw new Error('Invalid workspace editor role')
       if (role.resultSchema) assertSchema(role.resultSchema)
+      if (role.restore && (!options.files || !role.restore.sourceBindingField || !role.restore.filesField
+        || role.resultSchema)) throw new Error('Invalid deterministic workspace restore role')
       this.roles.set(role.id, structuredClone(role))
     }
     if (!options.campaignBudget['model.requests'] || !options.campaignBudget['model.tokens'])
@@ -221,6 +237,30 @@ export class DshWorkspaceEditPort implements PhysicalExecutionPort {
     for (const artifact of Object.values(slots)) this.options.artifacts.getBytes(artifact)
     return { commitOid: value.commitOid, manifestDigest: value.manifestDigest }
   }
+  private async restoreSource(envelope: OperationEnvelope, role: WorkspaceEditRoleDefinition): Promise<{
+    commitOid: string; manifestDigest: string; files: string[] } | undefined> {
+    if (!role.restore) return undefined
+    const input = inputOf(envelope)
+    const ref = input[role.restore.sourceBindingField] as BindingSetRef | undefined
+    const files = input[role.restore.filesField]
+    if (!ref || ref.kind !== 'binding-set' || !Array.isArray(files) || files.length === 0
+      || files.some(path => !restorePath(path))
+      || new Set(files).size !== files.length)
+      throw new Error('Workspace restore source or file list is invalid')
+    const sourceSlots = this.options.bindings.read(ref).slots
+    if (canonicalJson(Object.keys(sourceSlots).sort()) !== canonicalJson(['harness']))
+      throw new Error('Workspace restore source must contain only a sealed harness')
+    const sourceHarness = sourceSlots.harness
+    if (!sourceHarness || sourceHarness.schemaId !== 'harness.directory.v1')
+      throw new Error('Workspace restore source has no sealed harness')
+    const value = this.options.artifacts.getJson(sourceHarness) as Record<string, unknown>
+    if (value.schemaVersion !== 1 || value.kind !== 'git-harness'
+      || typeof value.commitOid !== 'string' || typeof value.manifestDigest !== 'string')
+      throw new Error('Workspace restore source artifact malformed')
+    const manifest = await this.options.builder.readManifest(value.commitOid)
+    if (manifest.digest !== value.manifestDigest) throw new Error('Workspace restore source Git identity drift')
+    return { commitOid: value.commitOid, manifestDigest: value.manifestDigest, files: files as string[] }
+  }
   private currentPhysicalConfigurationDigest(): string {
     const { builder, workspaceManager } = this.options
     return jsonDigest({ builder: { repositoryPath: builder.repositoryPath, targetRoot: builder.targetRoot,
@@ -234,6 +274,7 @@ export class DshWorkspaceEditPort implements PhysicalExecutionPort {
     const role = this.role(envelope)
     await this.parent(envelope)
     const input = inputOf(envelope)
+    await this.restoreSource(envelope, role)
     if (input.delivery) {
       if (!Array.isArray(input.delivery.workplan?.requiredDiagnosisRefs) || !Array.isArray(input.diagnosisEvidence)
         || input.delivery.workplan.requiredDiagnosisRefs.some(ref => !input.diagnosisEvidence!.some(cell => cell.evidenceRef === ref)))
@@ -309,7 +350,26 @@ export class DshWorkspaceEditPort implements PhysicalExecutionPort {
     await this.options.workspaceManager.dispose(handle.workspaceId)
     return completion
   }
-  private async finish(envelope: OperationEnvelope, record: EditIntent, agent: Agent): Promise<CompletionEnvelope> {
+  private async applyRestore(envelope: OperationEnvelope, record: EditIntent,
+    role: WorkspaceEditRoleDefinition): Promise<{ sourceCommit: string; files: string[] }> {
+    const source = await this.restoreSource(envelope, role)
+    if (!source || !this.options.files) throw new Error('Workspace restore configuration is missing')
+    const manifest = await this.options.builder.readManifest(source.commitOid)
+    for (const path of source.files) {
+      const expected = manifest.artifacts.some(item => item.path === path)
+        ? await this.options.builder.readHarnessFile(source.commitOid, path) : undefined
+      let current: Awaited<ReturnType<SkillCandidateFiles['read']>> | undefined
+      try { current = await this.options.files.read(record.sessionId, path) }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+      if (expected === undefined) {
+        if (current) await this.options.files.remove(record.sessionId, path, current.digest)
+      } else if (current?.digest !== `sha256:${sha256(expected.content)}`) {
+        await this.options.files.write(record.sessionId, path, expected.content, current?.digest ?? null)
+      }
+    }
+    return { sourceCommit: source.commitOid, files: source.files }
+  }
+  private async finish(envelope: OperationEnvelope, record: EditIntent, agent?: Agent): Promise<CompletionEnvelope> {
     if (!record.workspaceId) throw new Error('Workspace editor workspace identity missing')
     const manager = this.options.workspaceManager
     const request: CandidateWorkspaceRequest = { evolutionId: this.evolution(envelope), roundId: 'edit',
@@ -319,6 +379,9 @@ export class DshWorkspaceEditPort implements PhysicalExecutionPort {
     catch { handle = await manager.restore(record.workspaceId, request); manager.bind(handle.workspaceId, record.sessionId) }
     if (handle.workspaceId !== record.workspaceId || handle.parentRef !== record.parentCommit)
       throw new Error('Workspace editor restored different workspace')
+    const role = this.roles.get(record.roleId)!
+    const restoration = role.restore ? await this.applyRestore(envelope, record, role) : undefined
+    if (!restoration && !agent) throw new Error('Workspace editor model session unavailable')
     const usage = await this.receipt(envelope, agent, record.firstSeq)
     const access = this.options.sessions.access(envelope)
     const input = inputOf(envelope)
@@ -338,13 +401,16 @@ export class DshWorkspaceEditPort implements PhysicalExecutionPort {
     const summary = await manager.preflight(handle.workspaceId)
     if (summary.files.length === 0) return terminal('workspace-edit-no-change')
     if (input.delivery && (!access.workplanRead || input.delivery.workplan.requiredDiagnosisRefs.some(ref => !access.accessedRefs.includes(ref))))
-      return terminal('workspace-edit-workplan-not-consumed')
+      return terminal('workspace_edit_workplan_not_consumed', true)
     if (Date.now() >= record.deadlineAt) return terminal('workspace-edit-deadline-exhausted')
     let science
-    try { science = this.modelResult(record, agent) }
+    try { science = restoration ? { value: {} as Record<string, JsonValue> }
+      : this.modelResult(record, agent!) }
     catch { return terminal('workspace_edit_invalid_scientific_result', true) }
     const signal = AbortSignal.timeout(Math.max(1, record.deadlineAt - Date.now()))
-    const checkpoint = await this.options.host.checkpoint(agent)
+    const checkpoint = restoration
+      ? { prefixDigest: jsonDigest({ operationId: envelope.operationId, restoration }) }
+      : await this.options.host.checkpoint(agent!)
     let report
     try { report = await this.options.builder.checkWorkspace(handle, signal) }
     catch (error) {
@@ -367,6 +433,7 @@ export class DshWorkspaceEditPort implements PhysicalExecutionPort {
       sessionId: record.sessionId, changedPaths: sealed.files.map(file => file.path), patchDigest: sealed.patchDigest,
       accessedRefs: access.accessedRefs, workplanRead: access.workplanRead,
       commitOid: prepared.ref, manifestDigest: prepared.digest,
+      ...(restoration ? { restoredFromCommit: restoration.sourceCommit, restoredFiles: restoration.files } : {}),
       ...(science.ref ? { modelResultRef: science.ref } : {}) }
     const structuredResultRef = this.options.artifacts.putJson(structuredResult as unknown as JsonValue,
       'execution.workspace-edit.result.v1')
@@ -420,6 +487,10 @@ export class DshWorkspaceEditPort implements PhysicalExecutionPort {
       durableWrite(this.path(envelope), canonicalJson(editing))
       this.options.workspaceManager.bind(handle.workspaceId, sessionId)
       this.options.sessions.bind(sessionId, envelope, handle.workspaceId, intent.deadlineAt)
+      if (role.restore) {
+        try { return { status: 'completed', completion: await this.finish(envelope, editing) } }
+        finally { this.options.sessions.release(sessionId) }
+      }
       const agentHandle = await this.options.host.create(sessionId, role.spec, true)
       try {
         const firstSeq = agentHandle.agent.session.events.length
@@ -453,8 +524,13 @@ export class DshWorkspaceEditPort implements PhysicalExecutionPort {
     if (record.status === 'completed') return { status: 'completed', completion: record.completion }
     if (record.status === 'cancelled') return { status: 'cancelled', releaseConfirmed: true,
       ...(record.receipt ? { receipt: record.receipt } : {}) }
-    if (record.status === 'intent' || record.status === 'finalizing' || !record.workspaceId || record.firstSeq === undefined)
+    if (record.status === 'intent' || record.status === 'finalizing' || !record.workspaceId)
       return { status: 'unknown' }
+    if (this.roles.get(record.roleId)?.restore) {
+      try { return { status: 'completed', completion: await this.finish(envelope, record) } }
+      catch { return { status: 'unknown' } }
+    }
+    if (record.firstSeq === undefined) return { status: 'unknown' }
     const generation = await this.generationStore.read(envelope.operationId)
     if (generation?.status === 'stopped') {
       const live = this.options.host.getLive(record.sessionId)
@@ -508,6 +584,10 @@ export class DshWorkspaceEditPort implements PhysicalExecutionPort {
       ...(record.receipt ? { receipt: record.receipt } : {}) }
     const live = this.options.host.getLive(record.sessionId)
     if (live) await this.options.host.cancelAndFlush(live, 'algorithm workspace edit cancelled')
+    if (!this.roles.get(record.roleId)?.restore) {
+      const settled = await this.inspect(envelope)
+      if (settled.status === 'completed' || settled.status === 'cancelled') return settled
+    }
     // A started edit can have an unobserved Git effect. Without a durable stopped
     // generation and known workspace, cancellation cannot release reservation.
     return { status: 'unknown' }
