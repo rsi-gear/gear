@@ -293,6 +293,7 @@ export async function repairCampaignEvaluation(options: {
   const bindingSetRef = runtime.bindings.derive(state.initialBindingSetRef, { harness })
   const evaluationKey = 'evaluation'
   const evaluationIntent: OperationIntent = { localKey: evaluationKey, kind: 'gepa.repair-evaluate',
+    startsBudgetClock: true,
     input: { roundIdentity: { evolutionId: prepared.admission.evolutionId, roundId: prepared.roundId },
       repairId: prepared.repairId, ...refs, plan: prepared.plan, snapshot: prepared.snapshot,
       universe: prepared.universe, missing: prepared.missing,
@@ -352,6 +353,7 @@ export async function repairCampaignEvaluation(options: {
       }
       const cellRef = runtime.artifacts.putJson(base as unknown as JsonValue, 'gepa.evidence-cell.v1')
       const intent: OperationIntent = { localKey: 'projection', kind: 'gepa.process-complete',
+        startsBudgetClock: true,
         input: { roundIdentity: { evolutionId: prepared.admission.evolutionId, roundId: prepared.roundId },
           repairId: prepared.repairId, currentRef: refs.currentRef, cachedRef: refs.cachedRef,
           ...(evaluationProof ?? {}), baseKey: prepared.externalKey,
