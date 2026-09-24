@@ -2,7 +2,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ArtifactRef, CompletionEnvelope, OperationEnvelope } from '../contracts.js';
 import { FileArtifactStore, assertDigest } from '../artifacts.js';
-import { assertJson, canonicalJson, type JsonValue } from '../schema.js';
+import { assertJson, canonicalJson, jsonDigest, type JsonValue } from '../schema.js';
 import type { ExecutionReceipt, ExecutionResult } from './execution.js';
 import type { EvaluationEvidence, HitchTrajectoryReader } from '../../types.js';
 import { sanitizePublicValue } from '../../meta/sanitize.js';
@@ -35,10 +35,17 @@ type ProducerJournal = {
   requestDigest: string;
   identity?: JsonValue;
   status: string;
+  overlay?: { receiptRef: ArtifactRef; commitOid: string; manifestDigest: string;
+    injectedSkillDigests: string[] };
   completion?: CompletionEnvelope;
 };
 type SealedRollout = { schemaVersion: 1; kind: 'hitch-daemon-evaluation';
   evidence: EvaluationEvidence; submittedIdentity: JsonValue; requestDigest: string };
+export type VerifiedRolloutProducerInput = Readonly<{
+  task: { id: string }; taskViewRef: ArtifactRef; repeatIndex?: number;
+  samplingDigest: string; environmentDigest: string; recipePhase: string;
+  executedRevisionDigest?: string; skillBindingSetDigest?: string; injectedSkillRefs?: ArtifactRef[];
+}>;
 
 const EVENT_TYPES = ['assistant/message', 'tool/error', 'tool/result', 'user/message'];
 const PRIVATE_KEY = /(?:grader|label|reward|score|verifier|held.?out)/iu;
@@ -83,7 +90,7 @@ function inRoleInput(input: JsonValue, request: RolloutEvidenceAuthorization): b
   return visit(input, 0);
 }
 
-function completedProducer(options: RolloutEvidenceToolOptions, role: OperationEnvelope,
+function completedProducer(options: Pick<RolloutEvidenceToolOptions, 'stateRoot' | 'artifacts'>, role: OperationEnvelope,
   authorization: RolloutEvidenceAuthorization): { journal: ProducerJournal; sealed: SealedRollout } {
   if (!isRef(authorization.evidenceRef) || !isRef(authorization.receiptRef)
     || authorization.evidenceRef.schemaId !== 'execution.rollout.evidence.v1'
@@ -103,6 +110,7 @@ function completedProducer(options: RolloutEvidenceToolOptions, role: OperationE
     || completion.operationId !== receipt.operationId
     || completion.idempotencyKey !== journal.envelope.idempotencyKey
     || completion.inputDigest !== journal.envelope.inputDigest
+    || journal.envelope.inputDigest !== jsonDigest(journal.envelope.input)
     || completion.implementationDigest !== journal.envelope.implementationDigest) {
     throw new Error('Rollout producer is not a completed operation in this campaign');
   }
@@ -132,7 +140,90 @@ function completedProducer(options: RolloutEvidenceToolOptions, role: OperationE
     || identity.evalId !== undefined && sealed.evidence.evalId !== identity.evalId) {
     throw new Error('Rollout physical task or evaluation mismatch');
   }
+  const physicalReceipt = receipt as ExecutionReceipt & { executedHarnessCommit?: string;
+    skillOverlayReceiptRef?: ArtifactRef; injectedSkillDigests?: string[] };
+  if (physicalReceipt.executedHarnessCommit !== undefined &&
+    (physicalReceipt.executedHarnessCommit !== sealed.evidence.requestedCommit
+      || physicalReceipt.executedHarnessCommit !== sealed.evidence.actualCommit)) {
+    throw new Error('Rollout executed Git commit does not match physical evidence');
+  }
+  const producerInput = journal.envelope.input as { skillBindingSetDigest?: unknown; injectedSkillRefs?: unknown };
+  const skillRun = producerInput.skillBindingSetDigest !== undefined || producerInput.injectedSkillRefs !== undefined;
+  if (skillRun) {
+    const outputBindings = output.actualBindings;
+    const selected = producerInput.injectedSkillRefs;
+    const overlay = journal.overlay;
+    const overlayRef = physicalReceipt.skillOverlayReceiptRef;
+    if (producerInput.skillBindingSetDigest !== journal.envelope.bindingSetRef.digest
+      || !Array.isArray(selected) || !selected.every(isRef)
+      || selected.some(ref => ref.schemaId !== 'skills.body.v1')
+      || new Set(selected.map(ref => ref.digest)).size !== selected.length
+      || !overlay || !isRef(overlay.receiptRef) || !isRef(overlayRef)
+      || overlayRef.schemaId !== 'skills.overlay.receipt.v1'
+      || !same(overlayRef, overlay.receiptRef)
+      || !isRef(outputBindings?.harness) || !isRef(outputBindings?.skills)
+      || outputBindings.harness.schemaId !== 'harness.directory.v1'
+      || outputBindings.skills.schemaId !== 'skills.library.v1'
+      || typeof physicalReceipt.executedHarnessCommit !== 'string'
+      || !Array.isArray(physicalReceipt.injectedSkillDigests)
+      || !same(physicalReceipt.injectedSkillDigests, overlay.injectedSkillDigests)) {
+      throw new Error('Rollout skill injection has no verified physical overlay');
+    }
+    const overlayReceipt = options.artifacts.getJson(overlayRef) as Record<string, unknown>;
+    const baseHarness = options.artifacts.getJson(outputBindings.harness);
+    const digests = physicalReceipt.injectedSkillDigests;
+    const paths = overlayReceipt.paths;
+    if (overlayReceipt.schemaVersion !== 1 || overlayReceipt.operationId !== receipt.operationId
+      || overlayReceipt.bindingSetDigest !== journal.envelope.bindingSetRef.digest
+      || overlayReceipt.skillsLibraryDigest !== outputBindings.skills.digest
+      || !same(overlayReceipt.baseHarness, baseHarness)
+      || overlayReceipt.commitOid !== physicalReceipt.executedHarnessCommit
+      || overlayReceipt.commitOid !== overlay.commitOid
+      || overlayReceipt.manifestDigest !== overlay.manifestDigest
+      || !same(overlayReceipt.injectedSkillDigests, digests)
+      || !Array.isArray(paths) || paths.length !== digests.length
+      || paths.some(path => typeof path !== 'string' || !/^skills\/[a-z0-9]+(?:-[a-z0-9]+)*\/SKILL\.md$/u.test(path))
+      || paths.some((path, index) => index > 0 && path <= paths[index - 1])
+      || !same([...digests].sort(), selected.map(ref => ref.digest).sort())) {
+      throw new Error('Rollout skill overlay receipt or selected skills mismatch');
+    }
+  } else if (journal.overlay || physicalReceipt.skillOverlayReceiptRef || physicalReceipt.injectedSkillDigests) {
+    throw new Error('Rollout has an unrequested skill overlay');
+  }
   return { journal, sealed };
+}
+
+/** Host-only trusted feedback input; no trajectory or grader projection reaches a role. */
+export function verifyCompletedRolloutProducer(
+  options: Pick<RolloutEvidenceToolOptions, 'stateRoot' | 'artifacts'>,
+  feedbackEnvelope: OperationEnvelope, authorization: RolloutEvidenceAuthorization,
+): Readonly<{ producerOperationId: string; taskId: string; bindingSetDigest: string;
+  producerInput: VerifiedRolloutProducerInput; receipt: ExecutionReceipt; evidence: EvaluationEvidence }> {
+  const { journal, sealed } = completedProducer(options, feedbackEnvelope, authorization);
+  const raw = journal.envelope.input as unknown as Record<string, unknown>;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !raw.task || typeof raw.task !== 'object'
+    || typeof (raw.task as { id?: unknown }).id !== 'string' || !isRef(raw.taskViewRef)
+    || typeof raw.samplingDigest !== 'string' || typeof raw.environmentDigest !== 'string'
+    || typeof raw.recipePhase !== 'string'
+    || raw.repeatIndex !== undefined && (!Number.isSafeInteger(raw.repeatIndex) || (raw.repeatIndex as number) < 0)
+    || raw.executedRevisionDigest !== undefined && typeof raw.executedRevisionDigest !== 'string'
+    || raw.skillBindingSetDigest !== undefined && typeof raw.skillBindingSetDigest !== 'string'
+    || raw.injectedSkillRefs !== undefined && (!Array.isArray(raw.injectedSkillRefs)
+      || !raw.injectedSkillRefs.every(isRef))) throw new Error('Rollout producer input is incomplete');
+  const producerInput = JSON.parse(canonicalJson(Object.fromEntries([
+    'task', 'taskViewRef', 'repeatIndex', 'samplingDigest', 'environmentDigest', 'recipePhase',
+    'executedRevisionDigest', 'skillBindingSetDigest', 'injectedSkillRefs',
+  ].filter(key => raw[key] !== undefined).map(key => [key, raw[key]])))) as VerifiedRolloutProducerInput;
+  const copy = JSON.parse(canonicalJson(sealed.evidence)) as EvaluationEvidence;
+  const freeze = (value: unknown): void => {
+    if (!value || typeof value !== 'object' || Object.isFrozen(value)) return;
+    for (const child of Object.values(value)) freeze(child);
+    Object.freeze(value);
+  };
+  const receipt = JSON.parse(canonicalJson(options.artifacts.getJson(authorization.receiptRef))) as ExecutionReceipt;
+  freeze(copy); freeze(producerInput); freeze(receipt);
+  return Object.freeze({ producerOperationId: journal.envelope.operationId, taskId: producerInput.task.id,
+    bindingSetDigest: journal.envelope.bindingSetRef.digest, producerInput, receipt, evidence: copy });
 }
 
 function chunks(text: string, maxBytes = 12 * 1024): string[] {

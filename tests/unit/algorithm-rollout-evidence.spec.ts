@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { FileArtifactStore, sha256 } from '../../src/algorithm/artifacts.js';
 import type { ArtifactRef, OperationEnvelope } from '../../src/algorithm/contracts.js';
 import { jsonDigest } from '../../src/algorithm/schema.js';
-import { createRoleRolloutEvidenceTools, type RolloutEvidenceAuthorization } from '../../src/algorithm/providers/rollout-evidence.js';
+import { createRoleRolloutEvidenceTools, verifyCompletedRolloutProducer,
+  type RolloutEvidenceAuthorization } from '../../src/algorithm/providers/rollout-evidence.js';
 import type { HitchTrajectoryReader } from '../../src/types.js';
 
 const paths: string[] = [];
@@ -33,7 +34,8 @@ async function fixture() {
     evidence, submittedIdentity: identity, requestDigest }, 'execution.rollout.evidence.v1');
   const producerId = sha256('rollout-producer');
   const bindingSetRef = { kind: 'binding-set' as const, digest: sha256('binding'), schemaId: 'test.bindings.v1' };
-  const producerInput = { task: { id: 'task-1' } };
+  const producerInput = { task: { id: 'task-1' }, taskViewRef: artifacts.putJson({ view: true }, 'task.view.v1'),
+    samplingDigest: sha256('sampling'), environmentDigest: sha256('environment'), recipePhase: 'test' };
   const producer: OperationEnvelope = { operationId: producerId, idempotencyKey: producerId,
     campaignId: 'same-campaign', decisionIndex: 0, localKey: 'rollout', kind: 'execution.rollout',
     input: producerInput, inputDigest: jsonDigest(producerInput), implementationDigest: sha256('physical-Hitch'),
@@ -110,6 +112,64 @@ describe('recorded physical Hitch rollout evidence for role-bound tools', () => 
     const otherReceipt = f.artifacts.putJson({ operationId: sha256('other') }, 'execution.receipt.v1');
     await expect(tools.query({ evidenceRef: f.evidenceRef, receiptRef: otherReceipt })).rejects.toThrow(/not named/);
     expect(f.calls).toContain('capabilities');
+  });
+
+  it('gives host feedback the verified physical score and producer binding without trace projection', async () => {
+    const f = await fixture();
+    const verified = verifyCompletedRolloutProducer(f.options, f.role, f.authorization);
+    expect(verified).toMatchObject({ producerOperationId: f.producerId, taskId: 'task-1',
+      bindingSetDigest: f.role.bindingSetRef.digest, producerInput: { recipePhase: 'test' },
+      receipt: { operationId: f.producerId }, evidence: { primaryReward: 0.75 } });
+    expect(Object.isFrozen(verified.evidence)).toBe(true);
+    expect(Object.isFrozen(verified.producerInput)).toBe(true);
+    expect(f.calls).toEqual([]);
+    const otherReceipt = f.artifacts.putJson({ operationId: sha256('other') }, 'execution.receipt.v1');
+    expect(() => verifyCompletedRolloutProducer(f.options, f.role,
+      { evidenceRef: f.evidenceRef, receiptRef: otherReceipt })).toThrow('not named');
+  });
+
+  it('accepts a skill run only with the completed overlay journal, selected bodies and executed commit', async () => {
+    const f = await fixture();
+    const baseHarness = { schemaVersion: 1, kind: 'git-harness', commitOid: 'commit',
+      manifestDigest: sha256('manifest') };
+    const harnessRef = f.artifacts.putJson(baseHarness, 'harness.directory.v1');
+    const bodyRef = f.artifacts.putJson({ schemaVersion: 1,
+      markdown: '---\nname: one\ndescription: Recorded fixture skill\n---\nA recorded skill.\n' }, 'skills.body.v1');
+    const skillsRef = f.artifacts.putJson({ schemaVersion: 1, skills: [{ name: 'one', contentRef: bodyRef }] },
+      'skills.library.v1');
+    const producerInput = { ...(f.journal.envelope.input as Record<string, unknown>),
+      skillBindingSetDigest: f.role.bindingSetRef.digest,
+      injectedSkillRefs: [bodyRef] };
+    const producer = { ...f.journal.envelope, input: producerInput, inputDigest: jsonDigest(producerInput) };
+    const overlayReceiptRef = f.artifacts.putJson({ schemaVersion: 1, operationId: f.producerId,
+      baseHarness, bindingSetDigest: producer.bindingSetRef.digest, skillsLibraryDigest: skillsRef.digest,
+      injectedSkillDigests: [bodyRef.digest], paths: ['skills/one/SKILL.md'],
+      commitOid: 'commit', manifestDigest: sha256('manifest') }, 'skills.overlay.receipt.v1');
+    const receiptRef = f.artifacts.putJson({ schemaVersion: 1, providerImplementationDigest: producer.implementationDigest,
+      operationId: f.producerId, inputDigest: producer.inputDigest,
+      loadedBindingSetDigest: producer.bindingSetRef.digest, evidenceDigest: f.evidenceRef.digest,
+      actualBindings: { harness: harnessRef.digest, skills: skillsRef.digest },
+      executionIdentity: sha256('physical-overlay'), executedHarnessCommit: 'commit',
+      skillOverlayReceiptRef: overlayReceiptRef, injectedSkillDigests: [bodyRef.digest] }, 'execution.receipt.v1');
+    const authorization = { evidenceRef: f.evidenceRef, receiptRef };
+    const roleInput = { roleId: 'evo.feedback', authorizedRollouts: [authorization] };
+    const role = { ...f.role, input: roleInput, inputDigest: jsonDigest(roleInput) };
+    const completion = { ...f.journal.completion, inputDigest: producer.inputDigest,
+      outcome: { kind: 'result', value: { requestedBindingSetDigest: producer.bindingSetRef.digest,
+        actualBindings: { harness: harnessRef, skills: skillsRef }, evidenceRef: f.evidenceRef, receiptRef } } };
+    const overlay = { receiptRef: overlayReceiptRef, commitOid: 'commit', manifestDigest: sha256('manifest'),
+      injectedSkillDigests: [bodyRef.digest] };
+    const journal = { ...f.journal, envelope: producer, completion, overlay };
+    await writeFile(f.journalPath, JSON.stringify(journal));
+    expect(verifyCompletedRolloutProducer(f.options, role, authorization).receipt)
+      .toMatchObject({ skillOverlayReceiptRef: overlayReceiptRef, injectedSkillDigests: [bodyRef.digest] });
+    await writeFile(f.journalPath, JSON.stringify({ ...journal, overlay: undefined }));
+    expect(() => verifyCompletedRolloutProducer(f.options, role, authorization))
+      .toThrow('no verified physical overlay');
+    await writeFile(f.journalPath, JSON.stringify({ ...journal, overlay: {
+      ...overlay, injectedSkillDigests: [sha256('wrong-skill')] } }));
+    expect(() => verifyCompletedRolloutProducer(f.options, role, authorization))
+      .toThrow('no verified physical overlay');
   });
 
   it('rejects unfinished, foreign-campaign and mismatched producer journals before opening a trace', async () => {

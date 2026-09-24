@@ -190,3 +190,9 @@ AlgorithmManifest 新增通用 requiredOperationKindsFromConfig，由冻结配�
 主 agent 在独立冻结快照执行新增技能测试 4/4、既有 physical/fresh 两个测试文件 7/7，完整 typecheck 通过。Hitch rollout 对 Evo 验证固定基础 Harness、批内 Skill BindingSet 及库成员；预检只验证，持久开始意图后才物化派生 Git 版本。daemon request 使用该派生 commit，完成回执封存实际执行 commit、Skill overlay receipt 与规范排序的注入摘要。
 
 测试使用真实 Git/HarnessBuilder、离线 runtime checker 和录制 Hitch CLI，验证派生 commit 的技能字节、request/evidence/receipt 一致、恢复仅提交一次、伪造 Skill 拒绝、开始前取消不建工作区，以及 Git finalization 回包丢失保持 unknown 且不退回基础 Harness。此为物理协议接线验证，没有调用真实模型。测量反馈和默认作者宿主继续分开交付。
+
+## S2/S3 宿主研究视图与物理证据绑定
+
+主 agent 在已提交 HEAD 加冻结研究/反馈文件的独立快照联合验证 12/12，完整 typecheck 通过；本提交的 research profile 与 rollout evidence 两个文件为其中 7/7，反馈实现单独审查提交。宿主可从授权来源封存首个研究视图，以原子完整记录固定选择；来源后续追加历史不会在 resume 时改变 Campaign 输入。稳定密钥和 policy identity 绑定 Campaign、任务授权、视图和实现闭包；tasks.select 与 tasks.consume 都执行同样任务范围约束。
+
+新增窄 producer 验证 helper 只接受同 Campaign 已完成 Hitch operation 的 evidence/receipt 配对，并返回冻结的生产条件供宿主反馈计算。Evo 额外核对基础 Harness/Skill 库、实际选择、规范排序的 overlay receipt 和物理执行 commit；拒绝把逻辑绑定当作技能实际执行证明。此处输入/结果均为合成或录制协议 fixture，默认宿主装配和真实服务仍另行验收。
