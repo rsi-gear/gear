@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const files = ['contracts', 'schema', 'artifacts', 'bindings', 'steps', 'runtime/engine', 'runtime/store', 'runtime/providers', 'runtime/identity'];
+const files = ['contracts', 'schema', 'artifacts', 'bindings', 'steps', 'runtime/engine', 'runtime/store', 'runtime/persistence', 'runtime/providers', 'runtime/identity'];
 
 /** Exact source/build closure used by the persisted kernel, independent of package metadata. */
 export function kernelImplementationDigest(root = dirname(dirname(fileURLToPath(import.meta.url)))): string {

@@ -5,6 +5,7 @@ import { FileArtifactStore } from '../artifacts.js';
 import { BindingStore } from '../bindings.js';
 import { assertJson, assertSchema, canonicalJson, jsonDigest, validateSchema, type JsonValue } from '../schema.js';
 import { CampaignStore } from './store.js';
+import type { ArtifactCheckpoint, CampaignStoreLike } from './persistence.js';
 import { BindingDeriveProvider } from './providers.js';
 import { kernelImplementationDigest } from './identity.js';
 
@@ -24,6 +25,7 @@ type Observation = { kind: 'inspect'; value: ProviderInspection }
 export type CampaignState = {
   version: 1;
   spec: CampaignSpec;
+  storageBackendDigest?: string;
   algorithmManifestDigest: string;
   kernelImplementationDigest: string;
   providerCatalogDigest: string;
@@ -44,14 +46,26 @@ function clone<T>(value: T): T { return JSON.parse(canonicalJson(value)) as T; }
 export class AlgorithmRuntime {
   readonly artifacts: FileArtifactStore;
   readonly bindings: BindingStore;
-  readonly store: CampaignStore<JsonValue>;
+  readonly store: CampaignStoreLike<JsonValue>;
   private readonly providers = new Map<string, OperationProvider>();
   private readonly providerManifestDigests = new Map<string, string>();
   private readonly providerCatalogDigest: string;
   private readonly manifest: AlgorithmManifest;
+  private readonly storageBackendDigest?: string;
 
-  constructor(readonly root: string, readonly algorithm: Algorithm, providers: OperationProvider[], readonly spec: CampaignSpec) {
-    this.artifacts = new FileArtifactStore(`${root}/artifacts`);
+  constructor(readonly root: string, readonly algorithm: Algorithm, providers: OperationProvider[], readonly spec: CampaignSpec,
+    storage: { store?: CampaignStoreLike<JsonValue>; artifacts?: FileArtifactStore } = {}) {
+    this.artifacts = storage.artifacts ?? new FileArtifactStore(`${root}/artifacts`);
+    if (storage.store?.requiresArtifactCheckpoint
+      && (typeof (this.artifacts as FileArtifactStore & Partial<ArtifactCheckpoint>).hydrate !== 'function'
+        || typeof (this.artifacts as FileArtifactStore & Partial<ArtifactCheckpoint>).flush !== 'function'))
+      throw new Error('Journal-backed Campaign requires a hydratable artifact checkpoint');
+    if (storage.store?.requiresArtifactCheckpoint) {
+      const artifactIdentity = (this.artifacts as FileArtifactStore & Partial<ArtifactCheckpoint>).identityDigest;
+      if (!storage.store.identityDigest || !artifactIdentity)
+        throw new Error('Journal-backed Campaign storage identity required');
+      this.storageBackendDigest = jsonDigest([storage.store.identityDigest, artifactIdentity]);
+    }
     this.manifest = algorithm.describe();
     if (this.manifest.apiVersion !== ALGORITHM_API_VERSION) throw new Error('Algorithm API version mismatch');
     validName(this.manifest.id); validName(spec.campaignId);
@@ -59,7 +73,7 @@ export class AlgorithmRuntime {
     assertSchema(this.manifest.stateSchema);
     validateSchema(this.manifest.configSchema, spec.config);
     this.bindings = new BindingStore(this.artifacts, this.manifest.bindingSchema);
-    this.store = new CampaignStore<JsonValue>(`${root}/campaign`);
+    this.store = storage.store ?? new CampaignStore<JsonValue>(`${root}/campaign`);
     for (const provider of [new BindingDeriveProvider(this.bindings), ...providers]) {
       const manifest = provider.describe(); this.validateProviderManifest(manifest);
       if (this.providers.has(manifest.kind)) throw new Error(`Duplicate provider ${manifest.kind}`);
@@ -211,7 +225,7 @@ export class AlgorithmRuntime {
     if (!saved) return null;
     for (const kind of this.providers.keys()) this.provider(kind);
     const state = saved.state as unknown as CampaignState;
-    if (state.version !== 1 || canonicalJson(state.spec) !== canonicalJson(this.spec) || state.algorithmManifestDigest !== jsonDigest(this.manifest) || state.kernelImplementationDigest !== kernelImplementationDigest() || state.providerCatalogDigest !== this.providerCatalogDigest) throw new Error('Campaign identity drift');
+    if (state.version !== 1 || canonicalJson(state.spec) !== canonicalJson(this.spec) || state.algorithmManifestDigest !== jsonDigest(this.manifest) || state.kernelImplementationDigest !== kernelImplementationDigest() || state.providerCatalogDigest !== this.providerCatalogDigest || state.storageBackendDigest !== this.storageBackendDigest) throw new Error('Campaign identity drift');
     this.validateBinding(state.activeBindingSetRef, state.initialBindingSetRef);
     validateSchema(this.manifest.stateSchema, state.state);
     for (const record of Object.values(state.operations)) {
@@ -223,6 +237,14 @@ export class AlgorithmRuntime {
   }
 
   snapshot(): CampaignState | null { return this.load(); }
+
+  /** Hydrates a SearchJournal-backed store before synchronous recipe/artifact reads. */
+  async hydrate(): Promise<void> {
+    await (this.artifacts as FileArtifactStore & Partial<ArtifactCheckpoint>).hydrate?.();
+    await this.store.hydrate?.();
+    this.load();
+    await this.store.recoverProjection?.();
+  }
 
   private applyReceipt(state: CampaignState, record: OperationRecord, receipt?: UsageReceipt): void {
     if (!receipt) return;
@@ -342,13 +364,15 @@ export class AlgorithmRuntime {
   }
 
   async tick(): Promise<'complete' | 'waiting' | 'advanced'> {
+    await this.hydrate();
     return this.store.withWriter(async () => {
       const loaded = this.load();
       if (!loaded) {
         this.validateBinding(this.spec.initialBindingSetRef, this.spec.initialBindingSetRef);
-        const base: CampaignState = { version: 1, spec: clone(this.spec), algorithmManifestDigest: jsonDigest(this.manifest), kernelImplementationDigest: kernelImplementationDigest(), providerCatalogDigest: this.providerCatalogDigest, activeBindingSetRef: this.spec.initialBindingSetRef, initialBindingSetRef: this.spec.initialBindingSetRef, state: null, decisionIndex: 0, operations: {}, spent: {}, receiptSources: {}, phase: 'running' };
+        const base: CampaignState = { version: 1, spec: clone(this.spec), ...(this.storageBackendDigest ? { storageBackendDigest: this.storageBackendDigest } : {}), algorithmManifestDigest: jsonDigest(this.manifest), kernelImplementationDigest: kernelImplementationDigest(), providerCatalogDigest: this.providerCatalogDigest, activeBindingSetRef: this.spec.initialBindingSetRef, initialBindingSetRef: this.spec.initialBindingSetRef, state: null, decisionIndex: 0, operations: {}, spent: {}, receiptSources: {}, phase: 'running' };
         const decision = await this.algorithm.initialize({ campaignId: this.spec.campaignId, decisionIndex: 0, activeBindingSetRef: this.spec.initialBindingSetRef, config: clone(this.spec.config), budget: this.budgetSnapshot(base) });
         const initialized = this.applyDecision(base, decision);
+        await (this.artifacts as FileArtifactStore & Partial<ArtifactCheckpoint>).flush?.();
         await this.store.commit(initialized as unknown as JsonValue, 'decision.initialize');
         return initialized.phase === 'complete' ? 'complete' : 'advanced';
       }
@@ -367,6 +391,7 @@ export class AlgorithmRuntime {
           const record = candidate.operations[key]!;
           try { this.applyObservation(candidate, record, result.value); }
           catch (error) { failure ??= error; continue; }
+          await (this.artifacts as FileArtifactStore & Partial<ArtifactCheckpoint>).flush?.();
           await this.store.commit(candidate as unknown as JsonValue, `operation.${record.status}`);
           state = candidate;
         }
@@ -377,6 +402,7 @@ export class AlgorithmRuntime {
         const decision = await this.algorithm.reduce({ campaignId: state.spec.campaignId, decisionIndex: state.decisionIndex + 1, activeBindingSetRef: state.activeBindingSetRef, config: clone(state.spec.config), budget: this.budgetSnapshot(state), state: clone(state.state), completed });
         state.decisionIndex++;
         state = this.applyDecision(state, decision);
+        await (this.artifacts as FileArtifactStore & Partial<ArtifactCheckpoint>).flush?.();
         await this.store.commit(state as unknown as JsonValue, 'decision.reduce');
         return state.phase === 'complete' ? 'complete' : 'advanced';
       }
@@ -390,16 +416,20 @@ export class AlgorithmRuntime {
   }
 
   async cancel(localKey: string): Promise<void> {
+    await this.hydrate();
     await this.store.withWriter(async () => {
       const state = this.load(); if (!state) throw new Error('Campaign not started');
       const record = state.operations[localKey]; if (!record) throw new Error(`Unknown operation ${localKey}`);
       if (record.status === 'completed' || record.status === 'cancelled') return;
-      record.status = 'cancel-pending'; await this.store.commit(state as unknown as JsonValue, 'operation.cancel-intent');
+      record.status = 'cancel-pending';
+      await (this.artifacts as FileArtifactStore & Partial<ArtifactCheckpoint>).flush?.();
+      await this.store.commit(state as unknown as JsonValue, 'operation.cancel-intent');
       const result: ProviderInspection = await this.provider(record.envelope.kind).provider.cancel(record.envelope);
       this.validateInspection(result);
       if (result.status === 'completed') this.complete(state, record, result.completion);
       else if (result.status === 'cancelled') { if (result.releaseConfirmed) this.requireFinalReceipt(record, result.receipt, this.provider(record.envelope.kind).manifest); this.applyReceipt(state, record, result.receipt); record.status = 'cancelled'; record.released = result.releaseConfirmed; }
       else this.applyReceipt(state, record, result.receipt);
+      await (this.artifacts as FileArtifactStore & Partial<ArtifactCheckpoint>).flush?.();
       await this.store.commit(state as unknown as JsonValue, 'operation.cancel-response');
     });
   }
