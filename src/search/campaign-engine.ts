@@ -11,6 +11,7 @@ import { GepaAwaitRepairProvider } from '../algorithm/providers/gepa-await-repai
 import { GepaRepairEvaluationProvider } from '../algorithm/providers/gepa-repair-evaluation.js'
 import { GepaProcessCompletionProvider } from '../algorithm/providers/gepa-process-completion.js'
 import { GepaArchiveViewProvider } from '../algorithm/providers/gepa-archive-view.js'
+import { GepaScienceCheckpointProvider } from '../algorithm/providers/gepa-science-checkpoint.js'
 import { projectGepaCampaignBudget } from '../algorithm/providers/gepa-budget-projection.js'
 import { campaignFailureClusterRecipe } from '../algorithm/recipes/gepa-search.js'
 import { AlgorithmRuntime, type CampaignState } from '../algorithm/runtime/engine.js'
@@ -19,11 +20,12 @@ import type { JsonValue } from '../algorithm/schema.js'
 import { implementationClosureDigest } from '../algorithm/data/identity.js'
 import { ComponentRegistry } from '../evolution/components.js'
 import { digestJson } from '../state/digest.js'
-import { integrity, invariant, safeId, seal } from './contracts.js'
+import { integrity, invariant, safeId, seal, verifyDigest } from './contracts.js'
 import { buildArchive } from './archive.js'
 import { scopeEpoch } from './epochs.js'
 import type { GepaSharedEpoch } from '../algorithm/recipes/gepa-policy.js'
 import type { EvidenceCompletion } from './completion.js'
+import type { RegressionProposal } from './regression.js'
 import { resolveParentPolicyRef } from './policies/parents.js'
 import { SearchExecutionRuntime, type SearchAdmission, type SearchExecutionHooks } from './runtime.js'
 import { validateSearchSchema } from './schema.js'
@@ -134,7 +136,7 @@ export class CampaignFailureClusterSearch {
     type FrozenCampaignAdmission = SearchAdmission & { digest: string; campaignDriver?: string;
       startedAt: number; startingArchiveDigest?: string | null; completionRefs?: string[];
       campaignBudget?: BudgetPlan; sharedEpochs?: Record<string, GepaSharedEpoch>;
-      handoffFindingDigests?: Record<string, string[]> }
+      handoffFindingDigests?: Record<string, string[]>; startingRegressionProposals?: RegressionProposal[] }
     const frozenAdmission = savedAdmission
       ? await this.store.object<FrozenCampaignAdmission>(savedAdmission.ref) : null
     if (savedAdmission) {
@@ -205,12 +207,20 @@ export class CampaignFailureClusterSearch {
       }
       return { baseArchiveRef: artifacts.putJson(installedArchive as unknown as JsonValue, 'gepa.research-archive.v1'),
         parentArchiveRef: artifacts.putJson(parentArchive as unknown as JsonValue, 'gepa.research-archive.v1'),
-        completionRefs, publishParentView: parentArchive.digest !== installedArchive.digest,
+        completionRefs, publishParentView: policy.requiresChampion
+          || completedEvidence.some(row => !installedArchive.results.some(saved => saved.digest === row.digest)),
         snapshotBindings }
     })() : undefined
+    const startingRegressionProposals = frozenAdmission?.startingRegressionProposals
+      ?? (await this.store.read<{ proposals: RegressionProposal[] }>('regression/proposals'))?.proposals ?? []
+    for (const proposal of startingRegressionProposals) {
+      validateSearchSchema('RegressionProposal', proposal)
+      verifyDigest(proposal)
+    }
     const recipe = campaignFailureClusterRecipe({ admission: admitted, seed, heldOut, settings: resolvedSettings,
       artifacts, bindingSchema: harnessBindingSchema, anchorBindingSetRef, deadlineAt, parentPolicy: policy,
-      findings, handoffFindingDigests, sharedEpochs, ...(archiveStart ? { archiveStart } : {}) })
+      findings, handoffFindingDigests, sharedEpochs, startingRegressionProposals,
+      ...(archiveStart ? { archiveStart } : {}) })
     const spec: CampaignSpec = { campaignId: campaignSearchId(request.roundId),
       config: { request: admitted, seedDigest: seed.digest, heldOutDigest: heldOut.digest, deadlineAt,
         trustedHostIdentity: this.host.hookImplementationDigest ?? null } as unknown as JsonValue,
@@ -245,6 +255,7 @@ export class CampaignFailureClusterSearch {
         { hookIdentityDigest: providerIdentity, records,
           beforePublication: () => runtime.hydrate(), publicationBarrierIdentityDigest: projectorIdentityDigest }),
       new GepaResearchCheckpointProvider(operationRoot, artifacts, this.store, records),
+      new GepaScienceCheckpointProvider(operationRoot, artifacts, this.store, records),
       new GepaAwaitRepairProvider(this.store, operationRoot, records),
       new GepaArchiveViewProvider(operationRoot, artifacts, this.store, records),
       repairProvider,
@@ -253,7 +264,7 @@ export class CampaignFailureClusterSearch {
     await runtime.hydrate()
     return { runtime, validator: this.validator, artifacts, admitted, seed, heldOut, resolvedSettings,
       recipe, policy, startedAt, savedAdmission, installedArchive, completionRefs, startingBudget,
-      sharedEpochs, handoffFindingDigests,
+      sharedEpochs, handoffFindingDigests, startingRegressionProposals,
       legacyProviders: [evaluationProvider, diagnosisProvider, generationProvider] as const,
       repairProvider, processProvider }
   }
@@ -287,7 +298,8 @@ export class CampaignFailureClusterSearch {
     signal.throwIfAborted()
     const { runtime, artifacts, admitted, seed, heldOut, resolvedSettings,
       recipe, policy, startedAt, legacyProviders, installedArchive, completionRefs,
-      startingBudget, sharedEpochs, handoffFindingDigests } = await this.openCampaignSearchRuntime(request)
+      startingBudget, sharedEpochs, handoffFindingDigests,
+      startingRegressionProposals } = await this.openCampaignSearchRuntime(request)
     signal.throwIfAborted()
     for (const provider of legacyProviders) provider.beginLegacyInvocation()
     const existing = runtime.snapshot()
@@ -301,7 +313,8 @@ export class CampaignFailureClusterSearch {
         diagnosisIntegrity: this.diagnosis.integrity, algorithmIntegrity: recipe.describe().implementationDigest,
         parentPolicyRef: policy.ref, startedAt, campaignDriver: 'failure-cluster-campaign-v1',
         startingArchiveDigest: installedArchive?.digest ?? null, completionRefs,
-        campaignBudget: startingBudget, sharedEpochs, handoffFindingDigests }))
+        campaignBudget: startingBudget, sharedEpochs, handoffFindingDigests,
+        startingRegressionProposals }))
       await this.store.write('active-round', { roundId: request.roundId })
     }
     let status: Awaited<ReturnType<AlgorithmRuntime['tick']>>

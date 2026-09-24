@@ -48,7 +48,8 @@ type State = { phase: Phase; parents: ParentSelectionDecision; scopePlan: GepaPr
   heldOutOriginalRefs: [string, string] | null;
   nomineeId: string | null; seedGate: GateDecision | null; finalGate: GateDecision | null;
   archiveRef: ArtifactRef | null; reasons: string[]; snapshotBindings: Record<string, BindingSetRef>;
-  stageDecisions: EvaluationStageDecision[]; findings: ResearchFinding[] }
+  stageDecisions: EvaluationStageDecision[]; findings: ResearchFinding[];
+  supportObjects: Array<{ digest: string; [key: string]: unknown }> }
 
 export type GepaRecipeOptions = { evolutionId: string; roundId: string; roundIndex: number; maxCandidates: number;
   anchor: Snapshot; seed: TaskUniverse; heldOut: TaskUniverse; archive: ResearchArchive; settings: SearchSettings;
@@ -521,6 +522,7 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
               ?? digestJson([work.workplan.digest, 'no-candidate']),
             baselineDigest: work.parentBaseline.digest,
             ...(entry ? { resultDigest: entry.result.digest, profile: p } : {}) })
+          state.supportObjects.push(support)
           const advance = state.bridge.plan?.participantIds.includes(work.workplan.candidateId) ?? false
           const incomplete = entry && (!scoringComplete(p!) || !!entry.result.failure)
           const boundaryBlocked = entry?.outsideBoundary && !entry.broaderScopeSatisfied
@@ -572,6 +574,7 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
         for (const item of gates) {
           const support = seal({ scopeDigest: plan.scopeDigest, baselineDigest: baseline.digest,
             resultDigest: item.result.digest, gate: item.gate })
+          state.supportObjects.push(support)
           const advance = item.snapshot.candidateId === state.nomineeId
           const insufficient = item.gate.outcome === 'insufficient-evidence'
             || state.nomineeId === null && item.gate.outcome === 'eligible'
@@ -678,7 +681,8 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
         generated: {}, generatedAttempts: {}, locals: [], bridge: null, bridgePlan: null, bridgeResults: {}, globalPlan: null,
         globalResults: {}, heldOutPlan: null, heldOutResults: {}, heldOutOriginalRefs: null,
         nomineeId: null, seedGate: null, finalGate: null,
-        archiveRef: null, reasons: [], snapshotBindings: { ...options.snapshotBindings }, stageDecisions: [], findings: [] }
+        archiveRef: null, reasons: [], snapshotBindings: { ...options.snapshotBindings }, stageDecisions: [], findings: [],
+        supportObjects: [] }
       const operations = scopePlan.pending.length ? scopePlan.pending.flatMap((proposal, index) =>
         proposal.participants.map((snapshot, participantIndex) => evaluation(`prepare-${index}-${participantIndex}`,
           options.seed, proposal.plan, snapshot, state))) : []
