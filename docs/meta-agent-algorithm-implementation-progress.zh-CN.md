@@ -10,7 +10,7 @@
 | S1 合同/内核 | 已提交 `f1ac3ef`；恢复修补 `e8979eb` | 最终 17 项内核测试；旧 search/identity 95 项；完整 typecheck 通过 |
 | S2 Python/作者入口 | 主审通过，阶段提交 | 20 项跨语言、5 项 Python SDK；完整 typecheck；正式 package exports 待 S6 |
 | S3 历史/任务/执行 | S3a、S3b1 主审通过，阶段提交；物理桥实现中 | 数据层与历史源 14 项通过；真实 Hitch 与角色桥待独立验收 |
-| S4 非 GEPA recipes/Optuna | 实现中 | Python 单实现，公共操作与真实 Optuna 适配 |
+| S4 非 GEPA recipes/Optuna | S4a 主审通过，阶段提交；物理接线继续 | Python 19 项、RHO/AHE/Optuna 跨语言 3 项通过；真实技能注入与 host profile 待验收 |
 | S5 训练接入 | 主审通过，阶段提交 | 独立训练/评测/GRPO；44 项联合回归、2 项纯步骤测试与完整 typecheck 通过 |
 | S6 GEPA/包发布验证 | 实现中 | 公共 GEPA recipe 与外部作者入口分开推进 |
 | S7 真实运行/稳定性决定 | 未开始 | 无运行证据前 SDK 保持 experimental |
@@ -100,3 +100,11 @@ S5 接入审计发现：持久化 cancel-intent 后、发送取消命令前崩�
 执行适配边界新增至多 16 KiB 的结构化结果、独立封存 artifact 与 receipt digest 校验，使 reducer 可消费角色 JSON，同时保留独立的 Harness 产物。安装包身份解析允许仅声明 module type 的子目录 package.json，继续定位带 name/version 的实际依赖包根。
 
 本提交为后续 recipes 的数据依赖；Hitch/DSH/workspace-edit 物理端、新 rollout 证据读取与 fresh Campaign 装配继续独立验收。另在只含已提交 HEAD 的临时归档中复测 S5 training：13/13 通过，确认训练提交不依赖本阶段未提交文件。
+
+## S4a Python recipes 与 Optuna 验收
+
+主 agent 独立运行轻量 Python SDK/recipe/Optuna unittest：19/19 通过；使用 Python 3.11 与 Optuna 4.9.0 执行 RHO、AHE、Optuna 三项 TS Campaign 集成：3/3 通过。Optuna 测试明确设置 `GEAR_ALGORITHM_OPTUNA_TEST_PYTHON`；只设置通用 Python 变量的一次尝试跳过了它，未计作通过。
+
+RHO/AHE/Evo 各只有一个 Python 科学实现，TS 仅提供装配描述；命名 workflow 能有界推进纯决策步骤。RHO 的难度角色读取真实授权报告/轨迹，AHE 区分已测版本与下一候选，并对当前执行版本归因；Evo 固定批内技能绑定并原子提交任务 cursor 与技能更新。每种 operation 的配置预约必须匹配 provider 声明的预算维度。Optuna ask/tell 使用真实 4.9.0 库、独立 study 副本和有 HMAC 的受信 provider checkpoint，跨进程恢复复用封存结果。
+
+实现者另构建独立 wheel，并用安装的 wheel 完成仓库外两次 Optuna trial、check/run/resume；正式 npm 发布包与 root 的包外复验仍归 S6。本次 CPU 验证不能代替真实模型效果或人类作者使用验收。RHO/AHE 新 rollout 证据读取、Evo 真实技能注入、默认 host profile 仍在后续接线阶段，示例当前明确标为 host 模板。

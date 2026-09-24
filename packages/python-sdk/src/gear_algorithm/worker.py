@@ -205,6 +205,8 @@ def run_worker(port: int, module: str, export: str, config_dir: Path, mode: str)
                 if startup_error is not None:
                     if isinstance(startup_error, ModuleNotFoundError):
                         raise GearAlgorithmError("MISSING_DEPENDENCY", f"Missing Python dependency {startup_error.name or '<unknown>'}") from startup_error
+                    if isinstance(startup_error, GearAlgorithmError):
+                        raise startup_error
                     raise GearAlgorithmError("IMPORT_ERROR", f"{type(startup_error).__name__} while loading Python export") from startup_error
                 result = _environment_info(source) if method == "environment.describe" else _dispatch(target, mode, method, frame.get("params"))
                 validate_json(result)
