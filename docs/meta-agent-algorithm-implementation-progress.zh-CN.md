@@ -11,8 +11,8 @@
 | S2 Python/作者入口 | 主审通过，阶段提交 | 20 项跨语言、5 项 Python SDK；完整 typecheck；正式 package exports 待 S6 |
 | S3 历史/任务/执行 | S3a 主审通过，阶段提交；S3b 实现中 | 11 项数据层测试；真实历史/物理 Hitch 与角色桥待独立验收 |
 | S4 非 GEPA recipes/Optuna | 实现中 | Python 单实现，公共操作与真实 Optuna 适配 |
-| S5 训练接入 | 实现中 | 共享旧校验、独立 frozen learner 请求映射与 Slime provider |
-| S6 GEPA/包发布验证 | 未开始 | — |
+| S5 训练接入 | 主审通过，阶段提交 | 独立训练/评测/GRPO；44 项联合回归、2 项纯步骤测试与完整 typecheck 通过 |
+| S6 GEPA/包发布验证 | 实现中 | 公共 GEPA recipe 与外部作者入口分开推进 |
 | S7 真实运行/稳定性决定 | 未开始 | 无运行证据前 SDK 保持 experimental |
 
 ## S0 已确认的基线约束
@@ -82,3 +82,13 @@ S5 接入审计发现：持久化 cancel-intent 后、发送取消命令前崩�
 ## S1/S2 本地取消完成记录修补
 
 主审独立执行 TS 内核 18/18 与 Python SDK 7/7 通过。两个语言的本地 provider 在开始执行和取消之间使用互斥的持久记录；取消先完成时，重启和延迟 submit 都不会执行用户函数。未确认完成的 started 状态仍保持 unknown。取消返回操作作用域的最终零用量；Python metered provider 必须明确提供实际完成用量。此提交不包含仍在验收的论文 recipes、物理桥或训练适配。
+
+## S5 训练接入验收
+
+主 agent 独立执行 `tests/unit/algorithm-training.spec.ts`、`tests/unit/algorithm/kernel.spec.ts` 和 `tests/unit/training/coordinator.spec.ts`：3 文件 44/44 通过；`tests/unit/algorithm/workflow.spec.ts`：2/2 通过；完整 `tsc -p tsconfig.json --noEmit` 通过。共享校验抽取后，主 agent 此前还运行完整旧 TS training suite：17 文件 127/127 通过；之后只调整新增 provider 和 workflow helper，没有继续修改旧 coordinator。
+
+独立 `training.slime` 从显式冻结的 learner BindingSet 构造请求，不读取旧 champion；训练、候选 BindingSet 派生、dev/held-out 评测和接受决定分别进入持久步骤。固定 Harness GRPO 复用旧训练/checkpoint/export/batch 校验与模型选择函数。命名 workflow 支持有界推进纯步骤，dev gate 失败保留 rejected、不会发出 held-out 查询。
+
+恢复验证包括丢 submit 回包、实际 backend key lookup、V2 node generation/runtime 校验、顺序 pause 重放、显式评测资源释放、取消先于 submit 的持久完成记录，以及旧周期单 run 的独占计费归属。旧 cycle adapter 保留旧 coordinator 作为其 champion 的唯一写入者，独立 recipe 不触碰它。
+
+真实 Slime/Hitch/GPU 作业未执行。当前实测为 CPU 合同与恢复语义，训练使用前仍须旧 Python bridge/runtime lock 和真实设备/数据校验；2026-09-10 的旧 GPU 归档不能替代新路径验收。

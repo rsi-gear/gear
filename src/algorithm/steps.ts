@@ -39,10 +39,24 @@ export function defineWorkflow(options: {
     required: ['stepIndex', 'business'], additionalProperties: false,
   };
   function plan(index: number, business: JsonValue, context: DecisionContext, bindingTransition?: BindingSetRef): AlgorithmDecision {
-    const state: WorkflowState = { stepIndex: index, business };
-    if (index === options.steps.length) return { nextState: state, complete: true, ...(bindingTransition ? { bindingTransition } : {}) };
-    const operations = parallel(...options.steps[index]!.plan({ ...context, activeBindingSetRef: bindingTransition ?? context.activeBindingSetRef, state: business }));
-    return { nextState: state, operations, ...(bindingTransition ? { bindingTransition } : {}) };
+    let current = business;
+    let transition = bindingTransition;
+    // A named pure step may have no operations. Join it in this decision and
+    // continue at most once per declared step, keeping the transition visible
+    // to later plans without asking authors to write an event loop.
+    for (let cursor = index; cursor < options.steps.length; cursor++) {
+      const activeBindingSetRef = transition ?? context.activeBindingSetRef;
+      const step = options.steps[cursor]!;
+      const operations = parallel(...step.plan({ ...context, activeBindingSetRef, state: current }));
+      if (operations.length) return { nextState: { stepIndex: cursor, business: current }, operations,
+        ...(transition ? { bindingTransition: transition } : {}) };
+      const joined = step.join({ ...context, activeBindingSetRef, state: current, completed: {} });
+      validateSchema(options.businessStateSchema, joined.state);
+      current = joined.state;
+      if (joined.bindingTransition) transition = joined.bindingTransition;
+    }
+    const state: WorkflowState = { stepIndex: options.steps.length, business: current };
+    return { nextState: state, complete: true, ...(transition ? { bindingTransition: transition } : {}) };
   }
   return {
     describe: () => ({ ...options.manifest, stateSchema, implementationDigest: options.manifest.implementationDigest ?? '' }),
