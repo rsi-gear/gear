@@ -134,3 +134,9 @@ RHO/AHE/Evo 角色输入现携带 evidenceRef 与 producer receiptRef 配对。�
 AlgorithmManifest 可声明 requiredOperationKinds，运行时在创建 Campaign 前验证 provider catalog，含内建 bindings.derive。Python hook 明确返回的远端业务异常封存为类型化完成错误；超时/连接丢失仍与业务异常区分。Python DurableLocalProvider 支持显式 error outcome 并在恢复时复用；任意 execute 抛出异常不会被一律伪装成已完成。
 
 本提交不包含正式 package exports、CLI factory 或旧 runtime 分派，它们须与兼容验证一起交付。
+
+## S3b3 新 Campaign 的任务输入
+
+FreshSeedExperienceSource 可从宿主指定的已编译 seed dataset 创建任务快照，不需要先运行旧 GEPA 或准备旧 round；保存任务与数据集摘要、真实指令的授权投影及 Campaign cursor，不合成轨迹。主 agent 独立运行合成数据测试：2/2 通过，覆盖封存、修改后拒绝和任务数量上限。
+
+该通用代码最初被自动审批误判为实际数据披露；经确认仅定义库类、未读取用户任务且没有网络/模型调用后，同动作复核放行。只使用生成的本地测试数据。本提交不执行真实模型任务，Hitch fresh evaluation context 与默认 host profile 在后续装配阶段接入。
