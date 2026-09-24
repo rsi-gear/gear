@@ -89,6 +89,8 @@ export type AlgorithmManifest = {
   bindingSchema: BindingSchema;
   /** Operation kinds required before a campaign can be admitted. */
   requiredOperationKinds?: string[];
+  /** Top-level frozen config keys whose string values name required operation providers. */
+  requiredOperationKindsFromConfig?: string[];
 };
 export type CampaignSpec = {
   campaignId: string;

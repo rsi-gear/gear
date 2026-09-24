@@ -22,7 +22,8 @@ class OptunaSearch:
             }, "required": ["studyName", "direction", "sampler", "seed", "space", "trials", "evaluationKind"],
             "additionalProperties": False,
         }, {"id": "optuna.bindings.v1", "slots": {}},
-        requiredOperationKinds=("optuna.ask", "optuna.tell"))
+        requiredOperationKinds=("optuna.ask", "optuna.tell"),
+        requiredOperationKindsFromConfig=("evaluationKind",))
 
     @staticmethod
     def _ask(state: dict[str, Any], config: dict[str, Any]):

@@ -140,3 +140,9 @@ AlgorithmManifest 可声明 requiredOperationKinds，运行时在创建 Campaign
 FreshSeedExperienceSource 可从宿主指定的已编译 seed dataset 创建任务快照，不需要先运行旧 GEPA 或准备旧 round；保存任务与数据集摘要、真实指令的授权投影及 Campaign cursor，不合成轨迹。主 agent 独立运行合成数据测试：2/2 通过，覆盖封存、修改后拒绝和任务数量上限。
 
 该通用代码最初被自动审批误判为实际数据披露；经确认仅定义库类、未读取用户任务且没有网络/模型调用后，同动作复核放行。只使用生成的本地测试数据。本提交不执行真实模型任务，Hitch fresh evaluation context 与默认 host profile 在后续装配阶段接入。
+
+## S2/S6 配置指定的 provider 准入
+
+AlgorithmManifest 新增通用 requiredOperationKindsFromConfig，由冻结配置的顶层自有字符串字段指定所需 operation kind；Optuna 的 evaluationKind 使用此合同。缺字段、非字符串和未注册 provider 都在创建 Campaign 前拒绝，避免运行到第一个 trial 才发现缺能力。
+
+主 agent 在仅含 HEAD 与本次六个冻结文件的独立快照中复验：准入测试 2/2、真实 Optuna 跨语言测试 1/1、Python SDK/recipes/Optuna 20/20，完整 typecheck 通过。Optuna 首次执行受沙箱限制无法监听本地 IPC 端口；获准运行本地测试后通过，没有外部模型或训练调用。

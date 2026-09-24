@@ -67,7 +67,20 @@ export class AlgorithmRuntime {
     const requiredKinds = this.manifest.requiredOperationKinds ?? [];
     if (!Array.isArray(requiredKinds) || new Set(requiredKinds).size !== requiredKinds.length)
       throw new Error('Algorithm requiredOperationKinds must be a unique array');
-    for (const kind of requiredKinds) {
+    const configKeys = this.manifest.requiredOperationKindsFromConfig ?? [];
+    if (!Array.isArray(configKeys) || new Set(configKeys).size !== configKeys.length)
+      throw new Error('Algorithm requiredOperationKindsFromConfig must be a unique array');
+    const config = spec.config;
+    const configuredKinds: string[] = [];
+    for (const key of configKeys) {
+      validName(key);
+      if (!config || Array.isArray(config) || typeof config !== 'object' || !Object.hasOwn(config, key)
+        || typeof config[key] !== 'string') {
+        throw new Error(`Required operation kind config must be an own string value: ${key}`);
+      }
+      configuredKinds.push(config[key]);
+    }
+    for (const kind of new Set([...requiredKinds, ...configuredKinds])) {
       validName(kind);
       if (!this.providers.has(kind)) throw new Error(`Required operation provider missing: ${kind}`);
     }

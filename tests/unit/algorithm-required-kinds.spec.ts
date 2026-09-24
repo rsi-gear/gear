@@ -25,3 +25,25 @@ it('admits only a complete required operation catalog before a campaign is creat
   const admitted = new AlgorithmRuntime(join(root, 'campaign'), algorithm, [provider], spec);
   expect(admitted.snapshot()).toBeNull();
 });
+
+it('resolves required provider kinds from own frozen config strings', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'gear-required-config-kind-')); paths.push(root);
+  const algorithm: Algorithm = { describe: () => ({ id: 'configured-kind', apiVersion: ALGORITHM_API_VERSION,
+    implementationDigest: sha256('configured-recipe'), stateSchema: { type: 'object' },
+    configSchema: { type: 'object' }, bindingSchema: { id: 'empty', slots: {} },
+    requiredOperationKindsFromConfig: ['evaluationKind'] }),
+  initialize: () => ({ nextState: {}, complete: true }), reduce: () => ({ nextState: {}, complete: true }) };
+  const spec = (config: CampaignSpec['config']): CampaignSpec => ({ campaignId: 'configured-kind', config,
+    initialBindingSetRef: { kind: 'binding-set', digest: sha256('empty-bindings'), schemaId: 'empty' }, budget: {} });
+  expect(() => new AlgorithmRuntime(join(root, 'campaign'), algorithm, [], spec({})))
+    .toThrow('Required operation kind config must be an own string value: evaluationKind');
+  expect(() => new AlgorithmRuntime(join(root, 'campaign'), algorithm, [], spec({ evaluationKind: 4 })))
+    .toThrow('Required operation kind config must be an own string value: evaluationKind');
+  expect(() => new AlgorithmRuntime(join(root, 'campaign'), algorithm, [], spec({ evaluationKind: 'trial.evaluate' })))
+    .toThrow('Required operation provider missing: trial.evaluate');
+  const provider = new LocalDurableProvider(join(root, 'provider'), { kind: 'trial.evaluate',
+    implementationDigest: sha256('evaluation-provider'), execution: 'trusted-local', supportsInspect: true,
+    meteredDimensions: [], inputSchema: { type: 'any' }, outputSchema: { type: 'any' } },
+  () => ({ outcome: { kind: 'result', value: null } }));
+  expect(new AlgorithmRuntime(join(root, 'campaign'), algorithm, [provider], spec({ evaluationKind: 'trial.evaluate' })).snapshot()).toBeNull();
+});

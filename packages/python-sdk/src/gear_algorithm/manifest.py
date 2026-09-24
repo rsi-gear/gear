@@ -27,6 +27,7 @@ class AlgorithmManifest:
     apiVersion: str = API_VERSION
     requiredHooks: dict[str, dict[str, Any]] = field(default_factory=dict)
     requiredOperationKinds: tuple[str, ...] = ()
+    requiredOperationKindsFromConfig: tuple[str, ...] = ()
 
     def to_wire(self) -> dict[str, Any]:
         _check_schema(self.stateSchema)
@@ -42,8 +43,13 @@ class AlgorithmManifest:
             or any(not isinstance(kind, str) or not kind for kind in self.requiredOperationKinds)
             or len(set(self.requiredOperationKinds)) != len(self.requiredOperationKinds)):
             raise ValidationError("requiredOperationKinds must contain unique nonempty kinds")
+        if (not isinstance(self.requiredOperationKindsFromConfig, (tuple, list))
+            or any(not isinstance(key, str) or not key for key in self.requiredOperationKindsFromConfig)
+            or len(set(self.requiredOperationKindsFromConfig)) != len(self.requiredOperationKindsFromConfig)):
+            raise ValidationError("requiredOperationKindsFromConfig must contain unique nonempty keys")
         result = vars(self).copy()
         result["requiredOperationKinds"] = list(self.requiredOperationKinds)
+        result["requiredOperationKindsFromConfig"] = list(self.requiredOperationKindsFromConfig)
         validate_json(result)
         return result
 
