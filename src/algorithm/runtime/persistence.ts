@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { FileArtifactStore, assertDigest, durableWrite, sha256 } from '../artifacts.js'
-import { assertJson, canonicalJson, type JsonValue } from '../schema.js'
+import { assertJson, assertSafeKey, canonicalJson, type JsonValue } from '../schema.js'
 import { implementationClosureDigest } from '../data/identity.js'
 import { durableCreate } from '../providers/provider-record.js'
 import type { SearchJournal } from '../../search/store.js'
@@ -25,7 +25,86 @@ export interface ArtifactCheckpoint {
 }
 
 type Head = { seq: number; digest: string }
-type RecordValue<T extends JsonValue> = { seq: number; previous: string | null; event: string; state: T }
+type FullRecord<T extends JsonValue> = { seq: number; previous: string | null; event: string; state: T }
+type StatePatch = { path: string[]; kind: 'set'; value: JsonValue } | { path: string[]; kind: 'delete' }
+type DeltaRecord = { format: 2; seq: number; previous: string; event: string;
+  patch: StatePatch[]; stateDigest: string }
+type RecordValue<T extends JsonValue> = FullRecord<T> | DeltaRecord
+
+function objectValue(value: JsonValue): value is Record<string, JsonValue> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+/** A nested immutable-state delta; arrays are replaced as one value. */
+function statePatch(before: JsonValue, after: JsonValue): StatePatch[] {
+  const patch: StatePatch[] = []
+  const visit = (oldValue: JsonValue, newValue: JsonValue, path: string[]): void => {
+    if (oldValue === newValue) return
+    if (objectValue(oldValue) && objectValue(newValue)) {
+      // Native JSON serialization cheaply skips large unchanged subtrees.
+      // Unequal serialization only asks the walker to inspect them; ordering
+      // differences cannot cause a false equality or omit a changed value.
+      if (JSON.stringify(oldValue) === JSON.stringify(newValue)) return
+      const keys = [...new Set([...Object.keys(oldValue), ...Object.keys(newValue)])].sort()
+      for (const key of keys) {
+        const child = [...path, key]
+        if (!Object.hasOwn(newValue, key)) patch.push({ path: child, kind: 'delete' })
+        else if (!Object.hasOwn(oldValue, key)) patch.push({ path: child, kind: 'set', value: newValue[key]! })
+        else visit(oldValue[key]!, newValue[key]!, child)
+      }
+    } else if (Array.isArray(oldValue) && Array.isArray(newValue)) {
+      if (JSON.stringify(oldValue) !== JSON.stringify(newValue)) patch.push({ path, kind: 'set', value: newValue })
+    } else if (!Object.is(oldValue, newValue)) patch.push({ path, kind: 'set', value: newValue })
+  }
+  visit(before, after, [])
+  return patch
+}
+
+function applyStatePatch<T extends JsonValue>(previous: T, patch: StatePatch[]): T {
+  if (!Array.isArray(patch)) throw new Error('Journal-backed campaign patch drift')
+  // The journal read gave us a private JSON tree. Mutating that reconstruction
+  // avoids cloning the complete growing Campaign state for every small delta.
+  let next: JsonValue = previous
+  type PathNode = { terminal: boolean; children: Map<string, PathNode> }
+  const seen: PathNode = { terminal: false, children: new Map() }
+  for (const operation of patch) {
+    if (!operation || !Array.isArray(operation.path)
+      || !operation.path.every(segment => typeof segment === 'string'))
+      throw new Error('Journal-backed campaign patch path drift')
+    for (const segment of operation.path) assertSafeKey(segment)
+    let node = seen
+    for (const segment of operation.path) {
+      if (node.terminal) throw new Error('Journal-backed campaign overlapping patch paths')
+      let child = node.children.get(segment)
+      if (!child) { child = { terminal: false, children: new Map() }; node.children.set(segment, child) }
+      node = child
+    }
+    if (node.terminal || node.children.size) throw new Error('Journal-backed campaign overlapping patch paths')
+    node.terminal = true
+    if (!operation.path.length) {
+      if (operation.kind !== 'set' || !Object.hasOwn(operation, 'value'))
+        throw new Error('Journal-backed campaign root patch drift')
+      next = structuredClone(operation.value)
+      continue
+    }
+    let parent: JsonValue = next
+    for (const segment of operation.path.slice(0, -1)) {
+      if (!objectValue(parent) || !Object.hasOwn(parent, segment))
+        throw new Error('Journal-backed campaign patch parent drift')
+      parent = parent[segment]!
+    }
+    if (!objectValue(parent)) throw new Error('Journal-backed campaign patch parent drift')
+    const key = operation.path.at(-1)!
+    if (operation.kind === 'set') {
+      if (!Object.hasOwn(operation, 'value')) throw new Error('Journal-backed campaign patch value drift')
+      parent[key] = structuredClone(operation.value)
+    } else if (operation.kind === 'delete') {
+      if (!Object.hasOwn(parent, key)) throw new Error('Journal-backed campaign patch deletion drift')
+      delete parent[key]
+    } else throw new Error('Journal-backed campaign patch operation drift')
+  }
+  return next as T
+}
 
 function safeRoundId(roundId: string): void {
   if (!/^[A-Za-z0-9_-]+$/u.test(roundId)) throw new Error('Unsafe campaign round id')
@@ -80,21 +159,51 @@ export class JournalCampaignStore<T extends JsonValue> implements CampaignStoreL
     assertDigest(head.digest)
     let current: string | null = head.digest
     let expected = head.seq
-    let latest: T | undefined
+    const chain: Array<{ record: RecordValue<T>; privateBytes: boolean }> = []
     const seen = new Set<string>()
     while (current !== null) {
       assertDigest(current)
       if (seen.has(current)) throw new Error('Journal-backed campaign cycle')
       seen.add(current)
-      const record: RecordValue<T> | undefined = await this.journal.read<RecordValue<T>>(this.recordKey(current))
-      if (!record || sha256(canonicalJson(record)) !== current || record.seq !== expected
+      const saved: RecordValue<T> | string | undefined =
+        await this.journal.read<RecordValue<T> | string>(this.recordKey(current))
+      // New records store their exact canonical bytes. Hashing those bytes on
+      // every resume verifies the complete chain without re-rendering every
+      // historical Campaign state. Older object records remain readable.
+      const bytes = typeof saved === 'string' ? saved : saved === undefined ? null : canonicalJson(saved)
+      if (bytes === null || sha256(bytes) !== current) throw new Error('Journal-backed campaign record drift')
+      let record: RecordValue<T>
+      try { record = typeof saved === 'string' ? JSON.parse(saved) as RecordValue<T> : saved! }
+      catch (error) { throw new Error('Journal-backed campaign record drift', { cause: error }) }
+      if (!record || record.seq !== expected
         || typeof record.event !== 'string') throw new Error('Journal-backed campaign record drift')
       assertJson(record as unknown)
-      if (latest === undefined) latest = record.state
+      if ('state' in record) {
+        if (Object.hasOwn(record, 'format') || Object.hasOwn(record, 'patch'))
+          throw new Error('Journal-backed campaign full record drift')
+      } else if (record.format !== 2 || !Array.isArray(record.patch)
+        || !Object.hasOwn(record, 'stateDigest') || typeof record.stateDigest !== 'string'
+        || typeof record.previous !== 'string') throw new Error('Journal-backed campaign delta record drift')
+      chain.push({ record, privateBytes: typeof saved === 'string' })
       current = record.previous
       expected--
     }
-    if (expected !== -1 || latest === undefined) throw new Error('Incomplete journal-backed campaign chain')
+    if (expected !== -1 || !chain.length) throw new Error('Incomplete journal-backed campaign chain')
+    let latest: T | undefined
+    for (const entry of chain.reverse()) {
+      const { record } = entry
+      // SearchJournal.read does not promise a detached object. A legacy full
+      // record may be a shared reference; detach it once before delta replay.
+      if ('state' in record) latest = entry.privateBytes ? record.state : structuredClone(record.state)
+      else {
+        if (latest === undefined) throw new Error('Journal-backed campaign delta lacks a base state')
+        latest = applyStatePatch(latest, record.patch)
+      }
+    }
+    if (latest === undefined) throw new Error('Incomplete journal-backed campaign chain')
+    const headRecord = chain.at(-1)!.record
+    if (!('state' in headRecord) && sha256(canonicalJson(latest)) !== headRecord.stateDigest)
+      throw new Error('Journal-backed campaign reconstructed state drift')
     this.cached = { state: latest, seq: head.seq, digest: head.digest }
     this.hydrated = true
   }
@@ -136,12 +245,16 @@ export class JournalCampaignStore<T extends JsonValue> implements CampaignStoreL
     if ((published?.digest ?? null) !== (this.cached?.digest ?? null)
       || (published?.seq ?? -1) !== (this.cached?.seq ?? -1))
       throw new Error('Journal-backed campaign head changed under writer')
-    const record: RecordValue<T> = { seq: this.cached === null ? 0 : this.cached.seq + 1,
-      previous: this.cached?.digest ?? null, event, state }
-    const digest = sha256(canonicalJson(record))
-    const existing = await this.journal.read<RecordValue<T>>(this.recordKey(digest))
-    if (existing && canonicalJson(existing) !== canonicalJson(record)) throw new Error('Immutable campaign record conflict')
-    if (!existing) await publish(this.journal, this.recordKey(digest), record)
+    const record: RecordValue<T> = this.cached === null
+      ? { seq: 0, previous: null, event, state }
+      : { format: 2, seq: this.cached.seq + 1, previous: this.cached.digest, event,
+        patch: statePatch(this.cached.state, state), stateDigest: sha256(canonicalJson(state)) }
+    const bytes = canonicalJson(record)
+    const digest = sha256(bytes)
+    const existing = await this.journal.read<RecordValue<T> | string>(this.recordKey(digest))
+    if (existing !== undefined && (typeof existing === 'string' ? existing : canonicalJson(existing)) !== bytes)
+      throw new Error('Immutable campaign record conflict')
+    if (existing === undefined) await publish(this.journal, this.recordKey(digest), bytes)
     await publish(this.journal, this.headKey(), { seq: record.seq, digest })
     this.cached = { state: structuredClone(state), seq: record.seq, digest }
     await this.options.afterCommit?.(structuredClone(state), 'commit')
