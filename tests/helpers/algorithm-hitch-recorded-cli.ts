@@ -246,7 +246,7 @@ else if (args[0] === 'capabilities') {
       control: { schema_version: '1', eval_id: inspectedEvalId, state: ${JSON.stringify(inspectFixture.controlStateWithoutResult ?? null)} }, result: null }))
     process.exit(0)
   }
-  const actual = ${JSON.stringify(fixture.championRef)}
+  const actual = ${JSON.stringify(setupOptions.followSubmission ?? false)} ? commit : ${JSON.stringify(fixture.championRef)}
   process.stdout.write(JSON.stringify({
     schema_version: '1', eval_id: inspectedEvalId,
     request: inspectionRequest,
@@ -260,8 +260,8 @@ else if (args[0] === 'capabilities') {
       backend: 'harbor', dataset: ${JSON.stringify(setupOptions.followSubmission ?? false)} ? inspectionRequest.dataset : ${JSON.stringify(planDataset)}, benchmark_id: 'benchmark-1',
       benchmark_revision: ${JSON.stringify(planBenchmarkRevision)}, attempts: ${JSON.stringify(inspectedAttempts)},
       ${attemptExecution} tasks: ${JSON.stringify(inspectedTasks)},
-      candidate: { requested_harness_ref: ${JSON.stringify(requestedHarnessRef)},
-        harness_ref: 'deepseek@commit:' + ${JSON.stringify(planCommit)}, harness_id: 'deepseek',
+      candidate: { requested_harness_ref: ${JSON.stringify(setupOptions.followSubmission ?? false)} ? inspectionRequest.harness_ref : ${JSON.stringify(requestedHarnessRef)},
+        harness_ref: 'deepseek@commit:' + (${JSON.stringify(setupOptions.followSubmission ?? false)} ? actual : ${JSON.stringify(planCommit)}), harness_id: 'deepseek',
         revision_identity: 'sha256:' + '2'.repeat(64) } },
     result: {
       schema_version: '1', eval_id: inspectedEvalId,

@@ -14,6 +14,9 @@ import { EvolutionRegistryStore } from '../../state/evolution.js';
 import { HarnessBuilder } from '../../harness/builder.js';
 import { HitchCliEvaluator } from '../../evaluator/hitch-cli.js';
 import { findSubmittedHitchReservationReadOnly } from './hitch-readonly.js';
+import { materializeSkillOverlay, validateSkillOverlaySelection, SkillOverlayUnknown,
+  type SkillOverlayResult } from './skill-overlay.js';
+import type { CandidateWorkspaceManager } from '../../candidate/workspace.js';
 import { describeDataset, projectDataset } from '../../search/dataset-projection.js';
 import { digestJson } from '../../state/digest.js';
 import { digestDatasetRef } from '../../state/dataset.js';
@@ -25,17 +28,20 @@ export type HitchRolloutInput = { task: TaskEntry; taskViewRef: TaskViewRef; rep
   skillBindingSetDigest?: string; injectedSkillRefs?: ArtifactRef[] };
 type HitchRolloutHostCommon = { workspaceRoot: string; stateRoot: string; artifacts: FileArtifactStore; bindings: BindingStore;
   taskAuthority: TaskViewAuthority; allowedExperienceViewDigests(campaignId: string): readonly string[];
-  accessPolicyDigest: string; builder: HarnessBuilder; evaluator: HitchCliEvaluator; campaignBudget: BudgetPlan };
+  accessPolicyDigest: string; builder: HarnessBuilder; evaluator: HitchCliEvaluator; campaignBudget: BudgetPlan;
+  skillOverlay?: { workspaceManager: CandidateWorkspaceManager; hostIdentityDigest: string } };
 export type HitchRolloutHostOptions = HitchRolloutHostCommon & (
   { registry: EvolutionRegistryStore; evolutionId: string; roundId: string; freshContext?: never }
   | { freshContext: FreshHitchRolloutContext; registry?: never; evolutionId?: never; roundId?: never });
 
 type Prepared = { input: HitchRolloutInput; task: TaskEntry; bindingSlots: Record<string, ArtifactRef>;
-  request: EvaluationRequest; contextRound: RefinementRound; intent: EvaluationSubmissionIntent };
+  request: EvaluationRequest; contextRound: RefinementRound; intent: EvaluationSubmissionIntent;
+  baseHarness: GitHarnessBinding; skillsLibraryRef?: ArtifactRef; selectedSkillDigests?: string[] };
 type SubmittedIdentity = NonNullable<Awaited<ReturnType<HitchCliEvaluator['submittedEvaluationIdentity']>>>;
 type Journal = { envelope: OperationEnvelope; requestDigest: string; intent: EvaluationSubmissionIntent;
   status: 'intent' | 'reserved' | 'cancelling' | 'cancelled' | 'completed';
-  reservation?: EvaluationReservation; identity?: SubmittedIdentity; completion?: CompletionEnvelope; receipt?: UsageReceipt };
+  overlay?: SkillOverlayResult; reservation?: EvaluationReservation; identity?: SubmittedIdentity;
+  completion?: CompletionEnvelope; receipt?: UsageReceipt };
 
 /** Physical seed rollout. It reuses Gear's durable staged search bridge into Hitch daemon, not a synthetic result. */
 export class HitchRolloutPort implements PhysicalExecutionPort {
@@ -54,6 +60,7 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
     if (resolve(options.workspaceRoot) !== resolve(round.workspaceRoot)
       || options.builder.repositoryPath !== options.evaluator.repositoryPath) throw new Error('Hitch rollout host/source workspace mismatch');
     assertDigest(options.accessPolicyDigest);
+    if (options.skillOverlay) assertDigest(options.skillOverlay.hostIdentityDigest);
     const budget = options.campaignBudget['rollout.trials'];
     this.meterSource = budget?.source;
     this.metered = budget !== undefined;
@@ -77,7 +84,14 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
         environmentDigest: this.environmentDigest, samplingDigest: this.samplingDigest,
         accessPolicyDigest: options.accessPolicyDigest, issuerId: options.taskAuthority.issuerId,
         keyDigest: options.taskAuthority.keyDigest, meterSource: this.meterSource ?? null,
-        metered: this.metered, hard: budget?.capability === 'hard' }),
+        metered: this.metered, hard: budget?.capability === 'hard',
+        skillOverlay: options.skillOverlay ? { hostIdentityDigest: options.skillOverlay.hostIdentityDigest,
+          workspaceRoot: options.skillOverlay.workspaceManager.options.rootForEvolution('algorithm-skill-overlay-identity'),
+          repositoryPath: options.skillOverlay.workspaceManager.options.repositoryPath,
+          targetRoot: options.skillOverlay.workspaceManager.options.targetRoot,
+          maxFiles: options.skillOverlay.workspaceManager.options.maxFiles,
+          maxBytes: options.skillOverlay.workspaceManager.options.maxBytes,
+          maxDiffBytes: options.skillOverlay.workspaceManager.options.maxDiffBytes } : null }),
       execution: 'external', supportsInspect: true, meteredDimensions: this.metered ? ['rollout.trials'] : [],
       hardLimitDimensions: budget?.capability === 'hard' ? ['rollout.trials'] : [],
       inputSchema: { type: 'object', required: ['task', 'taskViewRef', 'samplingDigest', 'environmentDigest', 'recipePhase'],
@@ -142,8 +156,8 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
       throw new Error('Hitch trial reservation missing or insufficient');
     const input = envelope.input as HitchRolloutInput;
     if (input.samplingDigest !== this.samplingDigest || input.environmentDigest !== this.environmentDigest
-      || !input.recipePhase || input.injectedSkillRefs?.length || input.skillBindingSetDigest) {
-      throw new Error('Hitch rollout configuration or unsupported skill injection mismatch');
+      || !input.recipePhase) {
+      throw new Error('Hitch rollout configuration mismatch');
     }
     if (input.executedRevisionDigest && input.executedRevisionDigest !== envelope.bindingSetRef.digest)
       throw new Error('Hitch executed revision does not match bound version');
@@ -162,7 +176,17 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
       throw new Error('Hitch rollout task source bytes are not physically bound');
     }
     const bindingSlots = this.options.bindings.read(envelope.bindingSetRef).slots;
-    if (Object.keys(bindingSlots).sort().join('\0') !== 'harness') throw new Error('Hitch rollout requires an exact harness binding');
+    const skillRun = input.skillBindingSetDigest !== undefined || input.injectedSkillRefs !== undefined;
+    if (skillRun) {
+      if (!this.options.skillOverlay || input.recipePhase !== 'evo.batch'
+        || input.skillBindingSetDigest !== envelope.bindingSetRef.digest
+        || !Array.isArray(input.injectedSkillRefs)
+        || Object.keys(bindingSlots).sort().join('\0') !== 'harness\0skills') {
+        throw new Error('Hitch unsupported skill injection: requires a bound overlay host and exact harness/skills slots');
+      }
+    } else if (Object.keys(bindingSlots).sort().join('\0') !== 'harness') {
+      throw new Error('Hitch rollout requires an exact harness binding');
+    }
     const harnessRef = bindingSlots.harness!;
     if (harnessRef.schemaId !== 'harness.directory.v1') throw new Error('Hitch harness binding schema mismatch');
     const harness = this.options.artifacts.getJson(harnessRef) as unknown as GitHarnessBinding;
@@ -172,6 +196,10 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
     }
     const actualManifest = await this.options.builder.readManifest(harness.commitOid);
     if (actualManifest.digest !== harness.manifestDigest) throw new Error('Hitch harness manifest version drift');
+    const selectedSkillDigests = skillRun ? validateSkillOverlaySelection({ baseHarness: harness,
+      bindingSetRef: envelope.bindingSetRef, skillsLibraryRef: bindingSlots.skills!,
+      selectedSkillRefs: input.injectedSkillRefs!, artifacts: this.options.artifacts,
+      bindings: this.options.bindings }).injectedSkillDigests : undefined;
     const repeatIndex = input.repeatIndex ?? 0;
     const repetition = description.universe.repetitions.find(item => item.index === repeatIndex);
     if (!repetition || repetition.seed !== null) throw new Error('Hitch repetition not in supported frozen plan');
@@ -183,7 +211,8 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
     const contextRound: RefinementRound = { ...this.round, roundId: `${this.round.roundId}-algorithm-${envelope.operationId.slice(0, 16)}` };
     const intent = this.options.evaluator.prepareSubmission(contextRound, request);
     if (!intent) throw new Error('Hitch daemon submission has no idempotent intent');
-    return { input, task, bindingSlots, request, contextRound, intent };
+    return { input, task, bindingSlots, request, contextRound, intent, baseHarness: harness,
+      ...(skillRun ? { skillsLibraryRef: bindingSlots.skills!, selectedSkillDigests: selectedSkillDigests! } : {}) };
   }
   async preflight(envelope: OperationEnvelope): Promise<void> {
     await this.prepared(envelope);
@@ -217,7 +246,68 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
     return { source: this.meterSource, scope: 'operation', operationId: envelope.operationId,
       cursor: jsonDigest({ operationId: envelope.operationId, cumulative }), cumulative };
   }
+  /** The overlay is an operation-owned Git effect. It is never created by preflight. */
+  private async withOverlay(envelope: OperationEnvelope, prepared: Prepared,
+    overlay: SkillOverlayResult): Promise<Prepared> {
+    if (!prepared.skillsLibraryRef || !prepared.selectedSkillDigests || !this.options.skillOverlay)
+      throw new Error('Unexpected Hitch Skill overlay');
+    const receipt = this.options.artifacts.getJson(overlay.receiptRef) as Record<string, unknown>;
+    if (overlay.receiptRef.schemaId !== 'skills.overlay.receipt.v1'
+      || receipt.operationId !== envelope.operationId
+      || canonicalJson(receipt.baseHarness as JsonValue) !== canonicalJson(prepared.baseHarness)
+      || receipt.bindingSetDigest !== envelope.bindingSetRef.digest
+      || receipt.skillsLibraryDigest !== prepared.skillsLibraryRef.digest
+      || canonicalJson(receipt.injectedSkillDigests as JsonValue) !== canonicalJson(prepared.selectedSkillDigests)
+      || canonicalJson(overlay.injectedSkillDigests) !== canonicalJson(prepared.selectedSkillDigests)
+      || receipt.commitOid !== overlay.commitOid || receipt.manifestDigest !== overlay.manifestDigest) {
+      throw new Error('Hitch Skill overlay receipt identity mismatch');
+    }
+    const actual = await this.options.builder.readManifest(overlay.commitOid);
+    if (actual.digest !== overlay.manifestDigest) throw new Error('Hitch Skill overlay Git manifest changed');
+    const request: EvaluationRequest = { ...prepared.request, harnessRef: overlay.commitOid };
+    const intent = this.options.evaluator.prepareSubmission(prepared.contextRound, request);
+    if (!intent) throw new Error('Hitch Skill overlay has no durable daemon submission intent');
+    return { ...prepared, request, intent };
+  }
+
+  private async materialize(envelope: OperationEnvelope, prepared: Prepared): Promise<SkillOverlayResult> {
+    const overlay = this.options.skillOverlay;
+    if (!overlay || !prepared.skillsLibraryRef || !prepared.input.injectedSkillRefs)
+      throw new Error('Hitch Skill overlay host unavailable');
+    return materializeSkillOverlay({ operationId: envelope.operationId, baseHarness: prepared.baseHarness,
+      bindingSetRef: envelope.bindingSetRef, skillsLibraryRef: prepared.skillsLibraryRef,
+      selectedSkillRefs: prepared.input.injectedSkillRefs, artifacts: this.options.artifacts,
+      bindings: this.options.bindings, builder: this.options.builder,
+      workspaceManager: overlay.workspaceManager, stateRoot: this.options.stateRoot,
+      hostIdentityDigest: overlay.hostIdentityDigest });
+  }
+
+  private async journalPrepared(envelope: OperationEnvelope, base: Prepared,
+    saved: Journal, createOverlay: boolean): Promise<{ prepared: Prepared; saved: Journal } | null> {
+    if (!base.skillsLibraryRef) {
+      if (saved.overlay) throw new Error('Hitch unrequested Skill overlay');
+      return { prepared: base, saved };
+    }
+    if (!saved.overlay) {
+      if (!['intent', 'cancelling'].includes(saved.status) || saved.requestDigest !== digestJson(base.request)
+        || canonicalJson(saved.intent) !== canonicalJson(base.intent))
+        throw new Error('Hitch Skill overlay intent or lifecycle drift');
+      if (!createOverlay) return null;
+      let overlay: SkillOverlayResult;
+      try { overlay = await this.materialize(envelope, base); }
+      catch (error) {
+        if (error instanceof SkillOverlayUnknown) return null;
+        throw error;
+      }
+      const prepared = await this.withOverlay(envelope, base, overlay);
+      saved = { ...saved, overlay, requestDigest: digestJson(prepared.request), intent: prepared.intent };
+      durableWrite(this.path(envelope), canonicalJson(saved));
+      return { prepared, saved };
+    }
+    return { prepared: await this.withOverlay(envelope, base, saved.overlay), saved };
+  }
   private async settle(envelope: OperationEnvelope, prepared: Prepared, saved: Journal): Promise<ProviderInspection> {
+    if (prepared.skillsLibraryRef && !saved.overlay) throw new Error('Hitch Skill rollout has no sealed overlay');
     if (!saved.reservation) return { status: 'unknown' };
     const reservation = saved.reservation;
     const identity = await this.options.evaluator.submittedEvaluationIdentity(prepared.contextRound,
@@ -256,11 +346,16 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
     const evidenceRef = this.options.artifacts.putJson({ schemaVersion: 1, kind: 'hitch-daemon-evaluation',
       evidence: evidence as unknown as JsonValue, submittedIdentity: identity as unknown as JsonValue,
       requestDigest: digestJson(prepared.request) } as unknown as JsonValue, 'execution.rollout.evidence.v1');
-    const receipt: ExecutionReceipt = { schemaVersion: 1, providerImplementationDigest: this.manifest.implementationDigest,
+    const receipt: ExecutionReceipt & { executedHarnessCommit: string; skillOverlayReceiptRef?: ArtifactRef;
+      injectedSkillDigests?: string[] } = { schemaVersion: 1, providerImplementationDigest: this.manifest.implementationDigest,
       operationId: envelope.operationId, inputDigest: envelope.inputDigest, loadedBindingSetDigest: envelope.bindingSetRef.digest,
       evidenceDigest: evidenceRef.digest, actualBindings: Object.fromEntries(Object.entries(prepared.bindingSlots).map(([slot, ref]) => [slot, ref.digest])),
-      executionIdentity: digestJson({ evalId: evidence.evalId, submittedIdentity: identity, evidenceDigest: evidenceRef.digest }),
-      samplingDigest: this.samplingDigest, environmentDigest: this.environmentDigest };
+      bindingUse: 'executed', executedHarnessCommit: prepared.request.harnessRef,
+      executionIdentity: digestJson({ evalId: evidence.evalId, submittedIdentity: identity,
+        evidenceDigest: evidenceRef.digest, overlayReceiptDigest: saved.overlay?.receiptRef.digest ?? null }),
+      samplingDigest: this.samplingDigest, environmentDigest: this.environmentDigest,
+      ...(saved.overlay ? { skillOverlayReceiptRef: saved.overlay.receiptRef,
+        injectedSkillDigests: saved.overlay.injectedSkillDigests } : {}) };
     const receiptRef = this.options.artifacts.putJson(receipt as unknown as JsonValue, 'execution.receipt.v1');
     const result: ExecutionResult = { requestedBindingSetDigest: envelope.bindingSetRef.digest,
       actualBindings: prepared.bindingSlots, evidenceRef, receiptRef };
@@ -271,7 +366,7 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
     return { status: 'completed', completion };
   }
   async submit(envelope: OperationEnvelope): Promise<ProviderSubmission> {
-    const prepared = await this.prepared(envelope);
+    const base = await this.prepared(envelope);
     const existing = this.read(envelope);
     if (existing?.status === 'cancelled') throw new Error('Hitch operation was cancelled before submission');
     if (existing?.status === 'completed') return { status: 'completed', completion: existing.completion! };
@@ -281,22 +376,29 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
       if (inspected.status === 'running') return inspected;
       throw new Error('Existing Hitch submission is unresolved; inspect before retrying');
     }
-    const initial: Journal = { envelope, requestDigest: digestJson(prepared.request), intent: prepared.intent, status: 'intent' };
+    const initial: Journal = { envelope, requestDigest: digestJson(base.request), intent: base.intent, status: 'intent' };
     if (!this.establish(initial)) return this.submit(envelope);
+    const stage = await this.journalPrepared(envelope, base, initial, true);
+    if (!stage) throw new SkillOverlayUnknown('Hitch Skill overlay operation outcome is unresolved');
+    const { prepared, saved } = stage;
     const reservation = await this.options.evaluator.reserve(prepared.contextRound, prepared.request,
       new AbortController().signal, prepared.intent);
-    durableWrite(this.path(envelope), canonicalJson({ ...initial, status: 'reserved', reservation }));
+    durableWrite(this.path(envelope), canonicalJson({ ...saved, status: 'reserved', reservation }));
     return { status: 'running', handle: reservation.evalId };
   }
   async inspect(envelope: OperationEnvelope): Promise<ProviderInspection> {
-    const prepared = await this.prepared(envelope);
+    const base = await this.prepared(envelope);
     let saved = this.read(envelope);
     if (!saved) return { status: 'not-started' };
+    if (saved.status === 'cancelled') return { status: 'cancelled', releaseConfirmed: true,
+      ...(saved.receipt ? { receipt: saved.receipt } : {}) };
+    const stage = await this.journalPrepared(envelope, base, saved, saved.status === 'intent');
+    if (!stage) return { status: 'unknown' };
+    const prepared = stage.prepared;
+    saved = stage.saved;
     if (saved.requestDigest !== digestJson(prepared.request) || canonicalJson(saved.intent) !== canonicalJson(prepared.intent)) {
       throw new Error('Hitch frozen submission request drift');
     }
-    if (saved.status === 'cancelled') return { status: 'cancelled', releaseConfirmed: true,
-      ...(saved.receipt ? { receipt: saved.receipt } : {}) };
     if (saved.status === 'completed') return { status: 'completed', completion: saved.completion! };
     if (!saved.reservation) {
       const reservation = saved.status === 'cancelling'
@@ -310,11 +412,11 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
     return this.settle(envelope, prepared, saved);
   }
   async cancel(envelope: OperationEnvelope): Promise<ProviderInspection> {
-    const prepared = await this.prepared(envelope);
+    const base = await this.prepared(envelope);
     let saved = this.read(envelope);
     if (!saved) {
       const receipt = this.usage(envelope, 0);
-      const tombstone: Journal = { envelope, requestDigest: digestJson(prepared.request), intent: prepared.intent,
+      const tombstone: Journal = { envelope, requestDigest: digestJson(base.request), intent: base.intent,
         status: 'cancelled', ...(receipt ? { receipt } : {}) };
       if (this.establish(tombstone)) return { status: 'cancelled', releaseConfirmed: true,
         ...(receipt ? { receipt } : {}) };
@@ -325,6 +427,10 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
       ...(saved.receipt ? { receipt: saved.receipt } : {}) };
     if (saved.status === 'completed') return { status: 'completed', completion: saved.completion! };
     if (saved.status !== 'cancelling') { saved = { ...saved, status: 'cancelling' }; durableWrite(this.path(envelope), canonicalJson(saved)); }
+    const stage = await this.journalPrepared(envelope, base, saved, false);
+    if (!stage) return { status: 'unknown' };
+    const prepared = stage.prepared;
+    saved = stage.saved;
     if (!saved.reservation) {
       try {
         // A cancel request must never turn a pre-reservation crash into a new

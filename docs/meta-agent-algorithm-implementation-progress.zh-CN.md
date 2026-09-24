@@ -184,3 +184,9 @@ AlgorithmManifest 新增通用 requiredOperationKindsFromConfig，由冻结配�
 主 agent 在只含已提交 HEAD 与三个冻结文件的独立快照中验证：GEPA 16/16、完整 typecheck 通过。每个评估操作冻结 search/promotion 的 process mode，先持久保存原始 rollout cells，再以固定 key 请求该次运行的 process/raw-metric 投影；丢回包后先查询同一 key，不能用新 rollout 替换已有有效 outcome。缺少所需补全能力或仍缺证据时返回类型化执行错误并结算已发生用量。
 
 主审发现并修复了两类证据降级：恢复时原始回包覆盖已补全缓存，以及跨轮 archive 与本地旧缓存的顺序影响。合并现在只接受不改变有效字段的单调补全；两个 archive 顺序都验证零新增 rollout/投影。测试覆盖固定投影 key、unknown/running 恢复、原始 raw metrics、拒绝改写 outcome 与阶段 process mode。实际物理 generation bridge 和正式包入口仍在后续阶段；未据此声称真实模型或论文效果已验证。
+
+## S4b3 Evo 技能版本的实际 Hitch 提交
+
+主 agent 在独立冻结快照执行新增技能测试 4/4、既有 physical/fresh 两个测试文件 7/7，完整 typecheck 通过。Hitch rollout 对 Evo 验证固定基础 Harness、批内 Skill BindingSet 及库成员；预检只验证，持久开始意图后才物化派生 Git 版本。daemon request 使用该派生 commit，完成回执封存实际执行 commit、Skill overlay receipt 与规范排序的注入摘要。
+
+测试使用真实 Git/HarnessBuilder、离线 runtime checker 和录制 Hitch CLI，验证派生 commit 的技能字节、request/evidence/receipt 一致、恢复仅提交一次、伪造 Skill 拒绝、开始前取消不建工作区，以及 Git finalization 回包丢失保持 unknown 且不退回基础 Harness。此为物理协议接线验证，没有调用真实模型。测量反馈和默认作者宿主继续分开交付。
