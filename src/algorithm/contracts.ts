@@ -56,9 +56,12 @@ export type ProviderManifest = {
   hardLimitDimensions?: string[];
   execution: 'trusted-local' | 'external';
   supportsInspect: true;
+  /** A started effect can be safely resumed by submit with the same frozen envelope. */
+  supportsIdempotentReplay?: true;
 };
 export type ProviderInspection =
   | { status: 'not-started' | 'unknown'; receipt?: UsageReceipt }
+  | { status: 'replay-safe'; receipt?: UsageReceipt }
   | { status: 'running'; handle?: string; receipt?: UsageReceipt }
   | { status: 'completed'; completion: CompletionEnvelope }
   | { status: 'cancelled'; releaseConfirmed: boolean; receipt?: UsageReceipt };

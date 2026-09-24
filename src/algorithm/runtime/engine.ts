@@ -18,7 +18,9 @@ type OperationRecord = {
   released: boolean;
 };
 type ReceiptCursor = { cursor: string; cumulative: Record<string, number> };
-type Observation = { kind: 'inspect'; value: ProviderInspection } | { kind: 'submit'; value: ProviderSubmission } | { kind: 'submit-unknown' };
+type Observation = { kind: 'inspect'; value: ProviderInspection }
+  | { kind: 'submit'; value: ProviderSubmission; priorReceipt?: UsageReceipt }
+  | { kind: 'submit-unknown'; priorReceipt?: UsageReceipt };
 export type CampaignState = {
   version: 1;
   spec: CampaignSpec;
@@ -96,7 +98,9 @@ export class AlgorithmRuntime {
   private validateProviderManifest(manifest: ProviderManifest): void {
     validName(manifest.kind);
     if (!/^[a-f0-9]{64}$/.test(manifest.implementationDigest)) throw new Error('Provider implementation digest required');
-    if (manifest.supportsInspect !== true || !['trusted-local', 'external'].includes(manifest.execution)) throw new Error('Invalid provider capabilities');
+    if (manifest.supportsInspect !== true || !['trusted-local', 'external'].includes(manifest.execution)
+      || (manifest.supportsIdempotentReplay !== undefined && manifest.supportsIdempotentReplay !== true))
+      throw new Error('Invalid provider capabilities');
     if (!Array.isArray(manifest.meteredDimensions) || !manifest.meteredDimensions.every(dimension => typeof dimension === 'string') || new Set(manifest.meteredDimensions).size !== manifest.meteredDimensions.length) throw new Error('Invalid provider metered dimensions');
     for (const dimension of manifest.meteredDimensions) validName(dimension);
     for (const dimension of manifest.hardLimitDimensions ?? []) if (!manifest.meteredDimensions.includes(dimension)) throw new Error('Hard limit dimension must be metered');
@@ -288,12 +292,12 @@ export class AlgorithmRuntime {
     if (value.status === 'completed') { if (!value.completion || typeof value.completion !== 'object') throw new Error('Missing provider completion'); return; }
     if (value.status === 'cancelled') { if (typeof value.releaseConfirmed !== 'boolean') throw new Error('Invalid cancellation release'); return; }
     if (value.status === 'running') { if (value.handle !== undefined && typeof value.handle !== 'string') throw new Error('Invalid provider handle'); return; }
-    if (value.status === 'unknown' || value.status === 'not-started') return;
+    if (value.status === 'unknown' || value.status === 'not-started' || value.status === 'replay-safe') return;
     throw new Error('Invalid provider inspect status');
   }
 
   private async observe(record: OperationRecord): Promise<Observation> {
-    const { provider, digest } = this.provider(record.envelope.kind);
+    const { provider, manifest, digest } = this.provider(record.envelope.kind);
     if (digest !== record.providerManifestDigest) throw new Error('Provider manifest drift');
     if (record.status === 'cancel-pending' || (record.status === 'cancelled' && !record.released)) {
       let cancelled: ProviderInspection;
@@ -304,18 +308,25 @@ export class AlgorithmRuntime {
     }
     const inspected = await provider.inspect(record.envelope);
     this.validateInspection(inspected);
-    if (inspected.status !== 'not-started' || record.status === 'cancelled') return { kind: 'inspect', value: inspected };
+    if (inspected.status === 'replay-safe' && manifest.supportsIdempotentReplay !== true)
+      throw new Error(`Provider did not declare idempotent replay: ${record.envelope.kind}`);
+    if (!['not-started', 'replay-safe'].includes(inspected.status) || record.status === 'cancelled')
+      return { kind: 'inspect', value: inspected };
+    const priorReceipt = inspected.status === 'replay-safe' || inspected.status === 'not-started'
+      ? inspected.receipt : undefined;
     await provider.preflight(record.envelope);
     this.store.assertLease();
     let submitted;
     try { submitted = await provider.submit(record.envelope); }
-    catch { return { kind: 'submit-unknown' }; }
+    catch { return priorReceipt ? { kind: 'submit-unknown', priorReceipt } : { kind: 'submit-unknown' }; }
     assertJson(submitted);
     if (submitted.status !== 'running' && submitted.status !== 'completed') throw new Error('Invalid provider submit status');
-    return { kind: 'submit', value: submitted };
+    return priorReceipt ? { kind: 'submit', value: submitted, priorReceipt }
+      : { kind: 'submit', value: submitted };
   }
 
   private applyObservation(state: CampaignState, record: OperationRecord, observation: Observation): void {
+    if (observation.kind !== 'inspect') this.applyReceipt(state, record, observation.priorReceipt);
     if (observation.kind === 'submit-unknown') { record.status = 'unknown'; return; }
     const result = observation.value;
     if (result.status === 'completed') { this.complete(state, record, result.completion); return; }
@@ -323,7 +334,7 @@ export class AlgorithmRuntime {
     if (observation.kind === 'inspect') {
       if (result.status === 'cancelled') { if (result.releaseConfirmed) this.requireFinalReceipt(record, result.receipt, this.provider(record.envelope.kind).manifest); record.status = 'cancelled'; record.released = result.releaseConfirmed; return; }
       if (record.status === 'cancel-pending' || record.status === 'cancelled') return;
-      if (result.status === 'unknown') { record.status = 'unknown'; return; }
+      if (result.status === 'unknown' || result.status === 'replay-safe') { record.status = 'unknown'; return; }
       if (result.status === 'running') { record.status = 'running'; if (result.handle) record.handle = result.handle; return; }
       return;
     }
