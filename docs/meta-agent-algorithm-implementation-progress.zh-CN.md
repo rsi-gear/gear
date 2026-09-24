@@ -260,3 +260,9 @@ verifyPinnedLegacySearchClosure 核验已归档 f715748 的 search/parent/packag
 主审核对并修正：inspect 只读，不能在取消查询中偷偷启动编辑；只有确认 not-started 才允许同 key 重发，取消先写持久墓碑。冻结工作计划的截止时间限制实际编辑；已有不明副作用不能仅因过期伪造零用量。已确认完成但证明缺失、格式非法或为 null，返回类型化错误及实际用量，不能当作科学无改进或永久 pending。
 
 测试使用离线模型、真实 DSH 工具/Git 和检查 fixture；重建 provider 不增加模型请求。公开装配示例说明旧 SearchJournal 的额外 finding handoff、standalone repair 与 pending import 尚未迁移，需冻结显式 findings 或继续原 runtime。正式包导出另行验收；没有验证真实模型质量。
+
+## S4e 完整 Python Evo 两批验收
+
+主 agent 在独立冻结快照执行完整 Evo 测试 1/1，完整 typecheck 通过。实际 Python recipe 经默认 DSH 宿主运行两批：首批失败后 proposer 查询并读取物理 tool-result trace、确认真实错误内容，再由 curator ADD 非空技能；第二批 retriever 通过 skills_list/read 读取新增内容，真实 Git overlay 的 commit/技能字节与 Hitch request、证据和回执一致。第二批 SKIP 保留原库。
+
+两个批次有独立的原始 key、evalId 和 runId。重建 Python worker 与 Campaign runtime 后恢复完成，模型请求和 Hitch submit 次数不增加。测试使用真实 DSH/Git 与多运行录制 CLI，模型、runtime checker 和任务反馈为离线 fixture；验证完整接线和恢复，不证明模型实际学习效果。
