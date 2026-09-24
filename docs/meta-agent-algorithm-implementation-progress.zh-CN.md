@@ -118,3 +118,11 @@ GEPA 接入审计要求科学策略使用实际剩余预算。initialize/reduce 
 RHO/AHE/Evo 角色输入现携带 evidenceRef 与 producer receiptRef 配对。新增窄工具验证同一 Campaign 的 Hitch 完成 journal、输入/实现/绑定摘要及封存结果，再读取实际 run 的有界轨迹；默认不暴露测量分数，只有宿主明确授权的测量角色可读取。读取只接受该操作已授权投影的内容摘要；单角色实例缓存投影并返回用量统计。
 
 主 agent 独立执行记录的 Hitch 协议证据测试与 RHO/AHE 跨语言集成：3 文件 5/5 通过。此处是受控协议验证；DSH 工具注册、角色最终回执中的持久用量与真实服务运行在物理角色阶段继续验收。
+
+## S3b2 Hitch daemon 物理接线
+
+主 agent 独立执行物理 Hitch 与角色 rollout 证据两个测试文件：9/9 通过。测试以实际 HitchCliEvaluator 类驱动本地录制 CLI 协议，覆盖真实 Git Harness、编译任务投影、提交后返回运行句柄、完成证据与版本回执、恢复不重复提交，以及取消前后故障窗口。它验证协议接线，没有启动真实容器或付费模型。
+
+取消恢复使用只读 eval list/inspect 查找已提交的幂等键，不调用可能创建作业的 recoverReservation 重放；整个查找有 15 秒截止、单命令至多 5 秒和 256 条限制，超限或无法确认保留 unknown。取消先于提交时持久记录零用量，延迟 submit 被拒绝；已提交作业取得停止确认后才释放。`rollout.trials` 计已接受的单任务逻辑提交，包括失败/取消，不能解读为执行时长或成功 trial 数。
+
+本端当前验证 Harness 绑定与已授权 seed TaskView。Evo 动态技能注入、新 Campaign 初始化及 DSH 角色/workspace-edit 接线继续独立交付；未把缺少这些能力的模板标为可直接运行的完整物理流程。
