@@ -17,3 +17,6 @@ knowledge/
 # Built from the pinned upstream ToolFs package.
 assets/gear-tool-fs.js
 assets/gear-tool-fs.LICENSE
+
+# Local dependency links used by isolated worktrees.
+/node_modules
