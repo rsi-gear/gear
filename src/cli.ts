@@ -1,22 +1,24 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises'
-import { ConfigSchema } from './config.js'
-import { requestRefineSkill } from './skill/client.js'
-import { createSkillControlPlane } from './skill/control-plane.js'
-import { loadBundledRefineSkill } from './skill/bundle.js'
 
 function usage(): never {
-  throw new Error('usage: gear-refine serve --config PATH | gear-refine skill-identity [--path DIRECTORY] | gear-refine [--socket PATH] request <method> [json-params]')
+  throw new Error('usage: gear-refine algorithm <init|check|run|resume> ... | gear-refine serve --config PATH | gear-refine skill-identity [--path DIRECTORY] | gear-refine [--socket PATH] request <method> [json-params]')
 }
 
 async function main(argv: string[]): Promise<void> {
   const args = [...argv]
+  if (args[0] === 'algorithm') {
+    const { algorithmCommand } = await import('./algorithm/cli.js')
+    await algorithmCommand(args.slice(1))
+    return
+  }
   if (args[0] === 'training') {
     const { trainingCommand } = await import('./training/cli.js')
     process.stdout.write(`${JSON.stringify(await trainingCommand(args.slice(1)), null, 2)}\n`)
     return
   }
   if (args[0] === 'skill-identity') {
+    const { loadBundledRefineSkill } = await import('./skill/bundle.js')
     args.shift()
     let directory: string | undefined
     if (args.length > 0) {
@@ -29,6 +31,8 @@ async function main(argv: string[]): Promise<void> {
     return
   }
   if (args[0] === 'serve') {
+    const [{ ConfigSchema }, { createSkillControlPlane }] = await Promise.all([
+      import('./config.js'), import('./skill/control-plane.js')])
     args.shift()
     if (args.shift() !== '--config') usage()
     const configPath = args.shift()
@@ -57,6 +61,7 @@ async function main(argv: string[]): Promise<void> {
   if (method === undefined || args.length > 1) usage()
   let params: unknown = {}
   if (args[0] !== undefined) params = JSON.parse(args[0])
+  const { requestRefineSkill } = await import('./skill/client.js')
   const result = await requestRefineSkill(socketPath, { method, params })
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
 }

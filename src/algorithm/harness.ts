@@ -1,4 +1,14 @@
 /** Host-owned research evidence, tasks, and physical execution adapters. */
+export { HarnessBuilder, digestContent } from '../harness/builder.js';
+export type { HarnessCompiler, HarnessBuilderOptions } from '../harness/builder.js';
+export { SubprocessHarnessCompiler } from '../harness/compiler.js';
+export type { SubprocessCompilerOptions } from '../harness/compiler.js';
+export { CandidateWorkspaceManager } from '../candidate/workspace.js';
+export { HitchCliEvaluator } from '../evaluator/hitch-cli.js';
+export { digestDatasetRef } from '../state/dataset.js';
+export { digestJson as digestLegacyDatasetJson } from '../state/digest.js';
+export { builtinComponentRef, rolloutProviderSemanticDigest } from '../evolution/components.js';
+export type { HitchCliEvaluatorOptions } from '../evaluator/hitch-cli.js';
 export * from './data/experience.js';
 export * from './data/evidence.js';
 export * from './data/tasks.js';
@@ -12,6 +22,7 @@ export * from './providers/rollout-evidence.js';
 export * from './research-profile.js';
 export * from './fresh-profile.js';
 export * from './default-host.js';
+export * from './configured-host.js';
 export * from './dsh-host.js';
 export * from './providers/evo-skills.js';
 export * from './providers/trusted-feedback.js';

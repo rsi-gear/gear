@@ -290,3 +290,13 @@ verifyPinnedLegacySearchClosure 核验已归档 f715748 的 search/parent/packag
 主 agent 在冻结的最终独立快照执行 RHO 完整流程 1/1，完整 typecheck 通过。实际 Python recipe 使用授权任务报告选择 coreset，并行完成两次固定基线 rollout，经诊断与受限 DSH editor 修改真实 Git Harness，再测候选。成对偏好角色实际 query/read 两侧报告与轨迹，核验来自不同已完成 producer/版本，正偏好才替换绑定。最终只计 3 次 rollout；重建 Python worker/runtime 后没有新模型请求或 Hitch submit。
 
 实现测试阶段发现的卡点是离线模型依赖 prompt 中不存在的角色字样；修正测试的显式角色标记，并将作者源码与可变状态目录分离。没有为此放宽生产 unknown 或用量校验；adapter 抛错且无最终用量时仍不伪造终态。测试使用离线模型、真实 DSH/Git 和录制 Hitch，无真实模型效果结论。
+
+## S6C 正式公开入口、安装包与作者说明
+
+主 agent 在独立冻结快照完成完整离线 npm build、完整 typecheck、公开包验收。核心入口不再默认载入训练物理依赖；harness/training/gepa/recipes/legacy/testing 各有公开出口。gear-refine algorithm 分派到 check/run/resume/init，旧 skill-identity 命令独立冒烟检查通过。作者指南说明单份 Python 科学实现、TS/跨语言 hook、一次性宿主配置、历史与 fresh 数据、真实资源声明和恢复边界。
+
+实际从新构建打包并在两个仓库外 consumer 安装 npm tgz；独立构建并安装 gear_algorithm-0.1.0a0 wheel，确认基础环境没有 Torch/Optuna。三类外部 Campaign（Python+provider、TS+Python hook、TS+TS hook）均完成 check/run/resume。完整 DSH peers 的独立 consumer 通过公开 host.mjs/model.mjs、配置工厂和已安装 wheel 的 Python RHO 执行 CLI check；此项只验证真实公开准入入口，不生成模型或提交 Hitch。另在 Optuna 4.9.0 环境使用安装 wheel 完成两个 ask/evaluate/tell trial 与恢复。
+
+旧 f715748 tgz、原 lock 与精确 Node v26.5.1/npm 11.17.0/TypeScript 6.0.3 的源码/构建/parent 身份均核验；旧 FailureClusterSearch/SearchStore fixture 分三个独立进程 interrupt→resume→replay，最终无新增评估。此为保存的旧 runtime 继续旧状态，不修改或隐式迁移旧 journal。其他历史身份仍须其匹配制品。
+
+最后发现作者指南链接的 Python README 与基线说明未入 npm 包，已补入 files，并在实际安装后验证四份文档/manifest 存在。修改仅涉及打包清单与断言，主 agent 再次完整运行外部包验收通过。测试产物没有发布到包仓库。
