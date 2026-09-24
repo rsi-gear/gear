@@ -278,7 +278,7 @@ export class CampaignFailureClusterSearch {
           beforePublication: () => runtime.hydrate(), publicationBarrierIdentityDigest: projectorIdentityDigest }),
       new GepaResearchCheckpointProvider(operationRoot, artifacts, this.store, records),
       new GepaScienceCheckpointProvider(operationRoot, artifacts, this.store, records),
-      new GepaObjectiveReferenceProvider(operationRoot, artifacts, this.store, records),
+      ...(seed.objective ? [new GepaObjectiveReferenceProvider(operationRoot, artifacts, this.store, records)] : []),
       new GepaAwaitRepairProvider(this.store, operationRoot, records),
       new GepaArchiveViewProvider(operationRoot, artifacts, this.store, records),
       repairProvider,
@@ -301,6 +301,7 @@ export class CampaignFailureClusterSearch {
     // projection barrier. The old single-purpose reconcile replays this exact
     // archive/champion tuple without admitting a new run or invoking science.
     if (inspected.kind === 'commit') return this.validator.reconcile(request.roundId, inspected.intent)
+    let preparedHost: Awaited<ReturnType<CampaignFailureClusterSearch['openCampaignSearchRuntime']>> | undefined
     const claimed = await claimCampaignRun<SearchCampaignExtensions>({ store: this.store,
       request, signal, inspected, providerIntegrity: this.provider.integrity,
       diagnosisIntegrity: this.diagnosis.integrity,
@@ -308,6 +309,7 @@ export class CampaignFailureClusterSearch {
       validate: () => this.validate(request),
       prepareExtensions: async (current, startedAt) => {
         const prepared = await this.openCampaignSearchRuntime(request, { current, startedAt, preview: true })
+        preparedHost = prepared
         return { startingArchiveDigest: prepared.installedArchive?.digest ?? null,
           completionRefs: prepared.completionRefs, sharedEpochs: prepared.sharedEpochs,
           handoffFindingDigests: prepared.handoffFindingDigests,
@@ -321,9 +323,21 @@ export class CampaignFailureClusterSearch {
           frozenAdmission: admission, preview: true })
         invariant(prepared.roundRecipeIdentity === admission.roundRecipeIdentity,
           'campaign round recipe identity changed on resume')
+        preparedHost = prepared
       } })
-    const { runtime, artifacts, resolvedSettings, startedAt, legacyProviders } = await this.openCampaignSearchRuntime(request, {
-        current: claimed.current, frozenAdmission: claimed.admission })
+    const host = preparedHost ?? await this.openCampaignSearchRuntime(request, {
+      current: claimed.current, frozenAdmission: claimed.admission })
+    invariant(host.startedAt === claimed.admission.startedAt
+      && host.roundRecipeIdentity === claimed.admission.roundRecipeIdentity
+      && host.initialSnapshotDigest === claimed.admission.initialSnapshotDigest
+      && digestJson(host.completionRefs) === digestJson(claimed.admission.completionRefs)
+      && digestJson(host.sharedEpochs) === digestJson(claimed.admission.sharedEpochs)
+      && digestJson(host.handoffFindingDigests) === digestJson(claimed.admission.handoffFindingDigests)
+      && digestJson(host.startingRegressionProposals) === digestJson(claimed.admission.startingRegressionProposals)
+      && digestJson(host.startingBudget) === digestJson(claimed.admission.campaignBudget),
+    'campaign host differs from frozen admission')
+    if (preparedHost) await host.runtime.hydrate()
+    const { runtime, artifacts, resolvedSettings, startedAt, legacyProviders } = host
     const budgetStart = (await this.store.read<{ startedAt: number }>('budget'))?.startedAt ?? startedAt
     const deadlineAt = Math.min(startedAt + resolvedSettings.budgets.round.timeoutMs,
       budgetStart + resolvedSettings.budgets.evolution.timeoutMs)
