@@ -88,3 +88,9 @@ def require_execution(value: Any, label: str) -> dict[str, Any]:
     require_ref(value.get("evidenceRef"), f"{label}.evidenceRef")
     require_ref(value.get("receiptRef"), f"{label}.receiptRef")
     return value
+
+
+def rollout_authorization(value: dict[str, Any]) -> dict[str, Any]:
+    """Carry the physical producer receipt with evidence for role-bound reads."""
+    return {"evidenceRef": require_ref(value.get("evidenceRef"), "rollout evidence"),
+            "receiptRef": require_ref(value.get("receiptRef"), "rollout receipt")}

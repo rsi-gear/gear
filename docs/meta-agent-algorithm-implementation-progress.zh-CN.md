@@ -112,3 +112,9 @@ RHO/AHE/Evo 各只有一个 Python 科学实现，TS 仅提供装配描述；命
 ## S1 预算观察接口补充
 
 GEPA 接入审计要求科学策略使用实际剩余预算。initialize/reduce 现收到通用预算快照，含 spent、尚未释放的 reserved 和扣除两者后的 remaining；这是账本副本，修改它不会改动内核预算。stop 能力发生超额时如实保留 spent，remaining 归零，允许完成结算但不准入新增有成本操作。主 agent 独立运行内核与预算视图测试：20/20 通过；未为 GEPA 在内核添加算法分支。
+
+## S4b 本轮 rollout 证据授权
+
+RHO/AHE/Evo 角色输入现携带 evidenceRef 与 producer receiptRef 配对。新增窄工具验证同一 Campaign 的 Hitch 完成 journal、输入/实现/绑定摘要及封存结果，再读取实际 run 的有界轨迹；默认不暴露测量分数，只有宿主明确授权的测量角色可读取。读取只接受该操作已授权投影的内容摘要；单角色实例缓存投影并返回用量统计。
+
+主 agent 独立执行记录的 Hitch 协议证据测试与 RHO/AHE 跨语言集成：3 文件 5/5 通过。此处是受控协议验证；DSH 工具注册、角色最终回执中的持久用量与真实服务运行在物理角色阶段继续验收。

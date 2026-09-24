@@ -10,7 +10,7 @@ from gear_algorithm.manifest import AlgorithmManifest
 from gear_algorithm.protocol import BindingSetRef
 from gear_algorithm.steps import operation
 from .common import (OPERATION_LIMITS_SCHEMA, advance_state, apply_operation_limits,
-                     require_execution, require_ref, result, structured)
+                     require_execution, require_ref, result, rollout_authorization, structured)
 
 _KINDS = frozenset({"tasks.consume", "evidence.query", "evidence.read", "execution.rollout",
                     "execution.feedback", "execution.role", "execution.workspace-edit", "bindings.derive"})
@@ -95,6 +95,7 @@ class Ahe:
                 feedback.append(operation(key=f"feedback.{task['id']}", kind="execution.feedback", input={
                     "mode": "ahe.task-measurement", "task": task, "taskViewRef": config["taskViewRef"],
                     "rolloutEvidenceRefs": [value["evidenceRef"] for value in values],
+                    "authorizedRollouts": [rollout_authorization(value) for value in values],
                     "executedRevisionDigest": state["executedRevision"]["digest"]},
                     binding_set_ref=BindingSetRef(state["executedRevision"]["digest"],
                                                   state["executedRevision"]["schemaId"])))
@@ -114,7 +115,9 @@ class Ahe:
             measurement = {"bindingSetRef": state["executedRevision"], "score": sum(scores) / len(scores),
                            "taskPassed": per_task, "round": state["round"],
                            "rolloutEvidenceRefs": {task_id: [run["evidenceRef"] for run in runs]
-                                                   for task_id, runs in state["rollouts"].items()}}
+                                                   for task_id, runs in state["rollouts"].items()},
+                           "authorizedRollouts": {task_id: [rollout_authorization(run) for run in runs]
+                                                  for task_id, runs in state["rollouts"].items()}}
             best = state["bestMeasured"]
             if best is None or measurement["score"] > best["score"]:
                 best = measurement

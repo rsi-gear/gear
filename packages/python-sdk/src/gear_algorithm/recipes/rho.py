@@ -10,7 +10,7 @@ from gear_algorithm.manifest import AlgorithmManifest
 from gear_algorithm.protocol import BindingSetRef
 from gear_algorithm.steps import operation
 from .common import (OPERATION_LIMITS_SCHEMA, advance_state, apply_operation_limits,
-                     require_execution, require_ref, result, structured)
+                     require_execution, require_ref, result, rollout_authorization, structured)
 
 _KINDS = frozenset({"evidence.query", "evidence.read", "tasks.select", "tasks.consume",
                     "execution.role", "execution.rollout", "execution.feedback",
@@ -222,6 +222,7 @@ class Rho:
                 baseline[task["id"]] = runs
                 operations.append(operation(key=f"diagnose.{index}", kind="execution.role", input={
                     "roleId": "rho.diagnoser", "task": task, "rolloutEvidenceRefs": [run["evidenceRef"] for run in runs],
+                    "authorizedRollouts": [rollout_authorization(run) for run in runs],
                     "taskViewRef": state["taskViewRef"]}))
             return advance_state({**state, "phase": "diagnose", "baseline": baseline}, operations)
         if phase == "diagnose":
@@ -271,6 +272,7 @@ class Rho:
                         "mode": "rho.self-preference", "task": task,
                         "candidateEvidenceRef": trial["evidenceRef"],
                         "baselineEvidenceRef": baseline["evidenceRef"],
+                        "authorizedRollouts": [rollout_authorization(baseline), rollout_authorization(trial)],
                         "taskViewRef": state["taskViewRef"]}))
             return advance_state({**state, "phase": "preference", "candidateRuns": candidate_runs}, preferences)
         if phase == "preference":

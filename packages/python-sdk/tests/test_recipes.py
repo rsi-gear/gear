@@ -153,6 +153,9 @@ class RecipeTests(unittest.TestCase):
             "rollout.baseline.task1.0": execution("x"),
             "rollout.baseline.task1.1": execution("y"),
         })
+        self.assertEqual(decision.operations[0].input["authorizedRollouts"], [
+            {"evidenceRef": ref("x"), "receiptRef": ref("X")},
+            {"evidenceRef": ref("y"), "receiptRef": ref("Y")}])
         decision = reduce(algorithm, decision, config, {"diagnose.0": execution("d", {
             "severity": 0.8, "hypothesis": "tool call failed"})})
         proposed = ref("c", "harness.directory.v1")
@@ -165,6 +168,9 @@ class RecipeTests(unittest.TestCase):
             "rollout.candidate.0.task1.0": execution("z")})
         self.assertEqual(decision.operations[0].input["baselineEvidenceRef"], ref("x"))
         assert decision.operations[0].input["candidateEvidenceRef"] == ref("z")
+        self.assertEqual(decision.operations[0].input["authorizedRollouts"], [
+            {"evidenceRef": ref("x"), "receiptRef": ref("X")},
+            {"evidenceRef": ref("z"), "receiptRef": ref("Z")}])
         positive = reduce(algorithm, decision, config, {"prefer.0.task1": execution("f", {
             "preference": 3, "rationale": "candidate is better"})})
         self.assertTrue(positive.complete)
@@ -193,6 +199,8 @@ class RecipeTests(unittest.TestCase):
         self.assertTrue(all(op.bindingSetRef.digest == old["digest"] for op in evaluated.operations))
         feedback = reduce(recipe, evaluated, config, {
             "rollout.t1.0": execution("x"), "rollout.t2.0": execution("y")})
+        self.assertEqual(feedback.operations[0].input["authorizedRollouts"], [
+            {"evidenceRef": ref("x"), "receiptRef": ref("X")}])
         measured = reduce(recipe, feedback, config, {
             "feedback.t1": execution("f", {"score": 1, "passed": True}),
             "feedback.t2": execution("g", {"score": 0, "passed": False})})
@@ -227,6 +235,8 @@ class RecipeTests(unittest.TestCase):
         attribution = reduce(recipe, attribution, config, {"history.read.0": value({
             "text": json.dumps({"sequence": 0, "text": "bad tool call"}), "receiptRef": ref("z")})})
         self.assertEqual(attribution.operations[0].bindingSetRef.digest, new["digest"])
+        self.assertEqual(attribution.operations[0].input["currentMeasurement"]["authorizedRollouts"]["t1"], [
+            {"evidenceRef": ref("u"), "receiptRef": ref("U")}])
         self.assertEqual(attribution.operations[0].input["evidenceReports"][0]["body"]["narrative"], "regressed on t1")
         self.assertEqual(attribution.operations[0].input["evidenceTraces"][0]["body"]["text"], "bad tool call")
         done = reduce(recipe, attribution, config, {"attribute": execution("a", {"rollbackFiles": ["prompt.md"]})})
@@ -295,6 +305,8 @@ class RecipeTests(unittest.TestCase):
         self.assertEqual(retrieved.operations[0].input["injectedSkillRefs"], [skill])
         rolled = reduce(recipe, retrieved, config, {
             "rollout.t1": execution("x"), "rollout.t2": execution("y")})
+        self.assertEqual(rolled.operations[0].input["authorizedRollouts"], [
+            {"evidenceRef": ref("x"), "receiptRef": ref("X")}])
         feedback = reduce(recipe, rolled, config, {
             "feedback.t1": execution("f", {"score": 0, "passed": False}),
             "feedback.t2": execution("g", {"score": 1, "passed": True})})

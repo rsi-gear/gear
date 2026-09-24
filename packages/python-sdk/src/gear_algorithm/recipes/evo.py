@@ -9,7 +9,7 @@ from gear_algorithm.manifest import AlgorithmManifest
 from gear_algorithm.protocol import BindingSetRef
 from gear_algorithm.steps import operation
 from .common import (OPERATION_LIMITS_SCHEMA, advance_state, apply_operation_limits,
-                     require_execution, require_ref, result, structured)
+                     require_execution, require_ref, result, rollout_authorization, structured)
 
 _KINDS = frozenset({"tasks.consume", "execution.role", "execution.rollout",
                     "execution.feedback", "bindings.derive"})
@@ -95,6 +95,7 @@ class Evo:
                 feedback.append(operation(key=f"feedback.{task['id']}", kind="execution.feedback", input={
                     "mode": "evo.task-feedback", "task": task, "taskViewRef": config["taskViewRef"],
                     "rolloutEvidenceRef": run["evidenceRef"],
+                    "authorizedRollouts": [rollout_authorization(run)],
                     "injectedSkillRefs": state["retrievals"][task["id"]]},
                     binding_set_ref=BindingSetRef(frozen["digest"], frozen["schemaId"])))
             return advance_state({**state, "phase": "feedback", "rollouts": runs}, feedback)
@@ -113,6 +114,7 @@ class Evo:
                     reflections.append(operation(key=f"reflect.{task['id']}", kind="execution.role", input={
                         "roleId": "evo.proposer", "task": task, "feedback": value,
                         "rolloutEvidenceRef": state["rollouts"][task["id"]]["evidenceRef"],
+                        "authorizedRollouts": [rollout_authorization(state["rollouts"][task["id"]])],
                         "injectedSkillRefs": state["retrievals"][task["id"]],
                         "skillsBindingSetRef": frozen},
                         binding_set_ref=BindingSetRef(frozen["digest"], frozen["schemaId"])))
