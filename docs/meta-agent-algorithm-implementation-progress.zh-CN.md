@@ -9,7 +9,7 @@
 | S0 方案/基线 | 已提交 `e5dfeb2` | V3、离线精确重建、source/build/parent/package 身份；6 文件 95 测试通过；重复捕获匹配，漂移期望拒绝 |
 | S1 合同/内核 | 已提交 `f1ac3ef`；恢复修补 `e8979eb` | 最终 17 项内核测试；旧 search/identity 95 项；完整 typecheck 通过 |
 | S2 Python/作者入口 | 主审通过，阶段提交 | 20 项跨语言、5 项 Python SDK；完整 typecheck；正式 package exports 待 S6 |
-| S3 历史/任务/执行 | 实现与主审修订中 | 历史授权、任务暴露、测量合同；物理 Hitch/角色桥尚未完成 |
+| S3 历史/任务/执行 | S3a 主审通过，阶段提交；S3b 实现中 | 11 项数据层测试；真实历史/物理 Hitch 与角色桥待独立验收 |
 | S4 非 GEPA recipes/Optuna | 实现中 | Python 单实现，公共操作与真实 Optuna 适配 |
 | S5 训练接入 | 实现中 | 共享旧校验、独立 frozen learner 请求映射与 Slime provider |
 | S6 GEPA/包发布验证 | 未开始 | — |
@@ -68,3 +68,13 @@ S5 接入审计发现：持久化 cancel-intent 后、发送取消命令前崩�
 本阶段提供轻量 wheel 源码、Python worker/IPC、公开 provider/组件协议和 testkit、Python/TS CLI 模板、check/run/resume、跨语言 hooks。源码、安装模块、解释器和 TS 宿主桥接字节进入身份；同进程 ESM 缓存与修改后源码不一致时拒绝执行，要求新进程。未封存 TS workflow 可省略 implementationDigest，loader 自动封存；直接 Runtime 仍拒绝缺失身份。测试覆盖 Python stdout 噪声、缺依赖、类型错误、丢回包、started/unknown、并行 artifact RPC、实现漂移和重复恢复。
 
 实现者另构建约 14 KB wheel，安装到无 Torch/Optuna 的干净环境，并在仓库外完成候选 npm 包的公开 helper→Python hook→check/run/resume。候选包仅在临时目录添加出口；正式 manifest/兼容恢复以及 root 独立包外验收留到 S6。本阶段不声称论文算法或 GPU 训练已经验收。
+
+## S3a 数据层验收
+
+主 agent 独立执行 `node node_modules/vitest/vitest.mjs run tests/unit/algorithm-data.spec.ts tests/unit/algorithm-data-providers.spec.ts --maxWorkers=2`：2 文件 11/11 通过；完整 typecheck 通过。本阶段交付封存 ExperienceView、带授权/分页/用途投影的 evidence.query/read、受管理 TaskView 选择/发布/消费、测量条件与严格比较、执行版本回执校验边界。
+
+主审纠正两项语义错误：旧 SeedExperienceRecord 仅输出 proposal summary，不合成任务 prompt，也不将文件变更清单当作真实轨迹；tasks.select 拒绝 summary-only 条目。新选择/派生 TaskView 由宿主 authority 签名，consume 根据已授权 ExperienceView 根验证，算法不必手动登记新 digest；同 Campaign 两个 decision 已验证闭环。密钥复制后封存，避免调用者修改原缓冲区造成摘要与实际签名漂移。
+
+实现身份按实际本地依赖和已安装外部包封存，不依赖消费项目 package-lock；无 lock 的构建包有回归测试。旧经验摘要只保留显式允许的 proposer claims，无 reward/effect 投影；不承诺自由文本绝无评价信息。API 授权不等于 OS 沙箱。
+
+本提交仅含数据层和 VerifiedExecutionAdapter 校验边界。真实 seed dataset 快照、Hitch trajectory 读取、物理 rollout/role/workspace-edit 适配在 S3b 继续，不以测试 port 冒充实际服务。完整 SDK 仍为 experimental。
