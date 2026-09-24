@@ -234,3 +234,9 @@ AlgorithmManifest 新增通用 requiredOperationKindsFromConfig，由冻结配�
 主 agent 在只含 HEAD 与两份冻结文件的独立快照验证 workspace suite 13/13，完整 typecheck 通过。通用 restore role 从指定封存 Git BindingSet 恢复列出的文件，不启动模型；测试验证修改恢复、新增文件删除、已删文件重建，以及未列文件保留。非法路径、保护文件和异 schema 来源在创建工作区前拒绝。
 
 挂起模型请求收到取消后，若最终用量仍无法确认，保留 unknown 且不再次请求；已确认终态可以复用原回执。未消费必需 workplan 的编辑返回执行错误和实际用量，不算科学无改进。恢复角色通过公共配置使用，没有在内核添加 AHE 分支。Git finalization 结果不明仍需对账；本测试没有外部模型调用。
+
+## S6B CLI 宿主装配与旧闭包核验
+
+主 agent 在只含 HEAD 与四份冻结文件的独立快照验证 CLI host profile、legacy verifier 和既有 Python 桥：28/28，完整 typecheck 通过。host profile 可在创建 Campaign 前准备受管理 refs、provider 和冻结配置；TS provider 保留其物理实现身份，作者源码身份另外纳入 Campaign components。check/run/resume 都关闭宿主资源，准入失败也清理；未知能力和不支持的 CommonJS 导入明确拒绝。
+
+verifyPinnedLegacySearchClosure 核验已归档 f715748 的 search/parent/package 字节，并拒绝缺失或漂移制品；该单测实际读取保存的旧 tgz，没有跳过。此 helper 不是整个 CLI/环境认证，也不隐式迁移历史状态。正式 npm 出口、包外 wheel/TS 使用及旧 runtime 跨进程恢复仍由后续发布包验收负责。
