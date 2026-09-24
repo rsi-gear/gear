@@ -22,6 +22,8 @@
 
 显式 copy 和普通 fallback 使用最多 1 MiB 的读写缓冲，处理短写并在取消后关闭句柄；避免 Linux `copy_file_range` 在 copy 对照中隐式共享块。
 
+投影发布先原子写入完整 ownership sidecar，再重命名正式目录；报告失败时不会发布无所有权证明的投影。报告已完成而目录尚未发布的中断状态可以重新物化，统计来自重试的实际复制过程。复用既有无 sidecar 的投影不会自动补造所有权证明。
+
 v2 数据集由 Hitch producer 封存，Gear evaluator 必须实现 `resourcePreflight`；Hitch CLI adapter 已实现。Gear 使用公共 schema/摘要合同，不导入 Hitch 私有运行时。能力、对象、平台或计划不匹配时，在预约评测和冻结前失败。`search/selections/<digest>.json` 保存所选任务描述与资源 roots；普通目录仍使用 `search/datasets/<digest>`，不会将 JSON 冒充旧目录。
 
 `search/resource-retention/{seed,held-out}.json` 保存已确认 pin 的 owner/generation。Hitch pin 先完成，Gear 才发布 frozen 指针。取消和崩溃允许多保留引用；已经冻结的历史不因 complete/failed 自动释放。
@@ -34,6 +36,8 @@ gear-refine storage release-resources --state-root /absolute/evolution --hitch-r
 ```
 
 cleanup 默认 dry-run，`--apply` 先隔离，后续经过宽限期再确认无引用后删除。缺失/损坏历史会停止清理；unknown 与旧 absolute refs 一样受到保护。没有本实现 ownership sidecar 的历史投影、未知临时目录和 selection 默认保留。资源释放先在 Gear 锁内核查完整历史并写入 releasing，再逐个调用 Hitch 的 generation checked release；中断后原 generation 可幂等重试。released owner 不用于新 evolution。
+
+隔离记录与目录移动之间的中断由投影重获和 cleanup 共用的校验逻辑处理：仅当正式目录完整匹配记录摘要、隔离树不存在时，才允许在锁内清除残留记录。dry-run 不修改记录；已有历史引用继续保留正式目录，无引用投影重新隔离并重新计算宽限期。两份树并存、树丢失、摘要不符或隔离目录含未知文件时停止清理。删除记录后留下的空隔离目录可安全重试。
 
 此实现没有删除、迁移或重新评测 `.evolve-lab` 中的实验。运行实现身份变化仍按既有组件身份合同处理，不假造旧实现身份以强行复用不可确认的结果；原 ref、dataset digest 和已有评测证据保留。
 

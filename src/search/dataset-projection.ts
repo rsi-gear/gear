@@ -1,5 +1,5 @@
 import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { materializeTrees, removeOwnedTree, type MaterializationPolicy } from '../state/materialize-tree.js'
 import type { WorkspaceLock } from '../state/store.js'
 import type { EvolutionSpec } from '../types.js'
@@ -11,6 +11,7 @@ import { resolveMetric, resolveObjective } from '../objective/contracts.js'
 import type { RawMetricDefinition } from '../objective/types.js'
 import { parseResourceDataset, selectResources, type ResourceDataset } from '../state/resource-contract.js'
 import { parseStrictJson } from '../state/resource-protocol.js'
+import { readProjectionQuarantine } from '../state/projection-quarantine.js'
 
 interface ScoreDefinition { source_metric: string; direction: 'maximize' | 'minimize'; range: readonly [number, number]; reducer: 'task-macro-mean' }
 export interface DatasetDescription {
@@ -125,15 +126,22 @@ export async function projectDataset(description: DatasetDescription, taskIds: s
   const body = { ...base, tasks: description.manifest.tasks.filter(t => ids.includes(t.task_id)) }
   const projectedManifest = { ...body, dataset_digest: digestJson(body) }
   const exists = async () => { try { await lstat(ref); return true } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; return false } }
+  const quarantine = await readProjectionQuarantine(stateRoot, basename(ref))
   // An ENOENT inside an existing canonical is corruption, never a cache miss.
-  if (await exists()) return verify(ref)
-  const quarantined = join(stateRoot, 'storage-quarantine', ref.split('/').at(-1)!)
-  const quarantineRecord = await readFile(join(quarantined, 'record.json'), 'utf8').catch(error => { if (error.code !== 'ENOENT') throw error; return undefined })
-  if (quarantineRecord) {
-    const record = JSON.parse(quarantineRecord), prepared = await verify(join(quarantined, 'tree'))
-    invariant(record.protocol === 'gear-storage-quarantine@1' && record.ref === ref && record.digest === prepared.digest, 'quarantine projection identity mismatch')
+  if (await exists()) {
+    const prepared = await verify(ref)
+    if (quarantine) {
+      invariant(quarantine.location === 'canonical' && quarantine.digest === prepared.digest, 'quarantine projection identity mismatch')
+      await options.lock.assertHeld(dirname(stateRoot)); options.signal.throwIfAborted()
+      await rm(quarantine.directory, { recursive: true })
+    }
+    return prepared
+  }
+  if (quarantine) {
+    const prepared = await verify(quarantine.tree)
+    invariant(quarantine.location === 'quarantine' && quarantine.digest === prepared.digest, 'quarantine projection identity mismatch')
     await options.lock.assertHeld(dirname(stateRoot)); options.signal.throwIfAborted()
-    await rename(join(quarantined, 'tree'), ref); await rm(quarantined, { recursive: true })
+    await rename(quarantine.tree, ref); await rm(quarantine.directory, { recursive: true })
     return prepared
   }
   await mkdir(join(stateRoot, 'datasets'), { recursive: true })
@@ -154,16 +162,20 @@ export async function projectDataset(description: DatasetDescription, taskIds: s
     // rename may replace an empty directory. All producers/GC hold this lock;
     // check immediately before publication and preserve even empty corruption.
     if (await exists()) return verify(ref)
-    try { await rename(temp, ref) } catch (error) {
-      if (!['EEXIST', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error
-      return verify(ref)
-    }
+    // Publish ownership first. A failed/interrupted report write must never
+    // leave a canonical tree that GC mistakes for an unowned legacy projection.
+    // An unused report is harmless and the next materialization replaces it.
     const reportTemp = join(reports, `${owner}.tmp`)
     try {
       await writeFile(reportTemp, `${JSON.stringify({ schemaVersion: 1, kind: 'gear-materialization', ref, digest: prepared.digest,
         sourceRef: description.root, sourceDigest: description.sourceDigest, taskIds: ids, createdAt: new Date().toISOString(), report }, null, 2)}\n`, { flag: 'wx' })
-      await rename(reportTemp, join(reports, `${ref.split('/').at(-1)}.json`))
+      await rename(reportTemp, join(reports, `${basename(ref)}.json`))
     } finally { await rm(reportTemp, { force: true }) }
+    await options.lock.assertHeld(dirname(stateRoot)); options.signal.throwIfAborted()
+    try { await rename(temp, ref) } catch (error) {
+      if (!['EEXIST', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error
+      return verify(ref)
+    }
     options.signal.throwIfAborted()
     return prepared
   } finally { await removeOwnedTree(temp); await rm(ownerPath, { force: true }) }

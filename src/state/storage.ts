@@ -4,6 +4,7 @@ import { digestDatasetRef } from './dataset.js'
 import { removeOwnedTree } from './materialize-tree.js'
 import { RefineStateStore } from './store.js'
 import { digestJson } from './digest.js'
+import { readProjectionQuarantine } from './projection-quarantine.js'
 
 export interface StorageAudit {
   protocol: 'gear-storage-audit@1'; dryRun: boolean
@@ -51,6 +52,7 @@ export async function auditStorage(stateRoot: string, options: { apply?: boolean
     for (const pointer of pointers) if (!references.has(pointer) || !await lstat(join(search, 'objects', `${pointer.slice(7)}.json`)).catch(() => undefined)) throw new Error('missing immutable history; cleanup stopped')
     const referenced = (ref: string) => [...references].some(value => value === ref || value.startsWith(`${ref}/`))
     const owned: Array<{ ref: string; digest: string }> = [], isolated: Array<{ ref: string; directory: string; digest: string; at: number }> = []
+    const reconciled: string[] = []
     for (const name of await names(datasets)) {
       const ref = join(datasets, name)
       if (!/^[a-f0-9]{64}$/.test(name)) { audit.retained.push({ ref, reason: 'unpublished or unknown owner; explicit end confirmation required' }); continue }
@@ -66,14 +68,16 @@ export async function auditStorage(stateRoot: string, options: { apply?: boolean
     }
     // Validate all quarantine records before making any change.
     for (const name of await names(quarantine)) {
-      if (!/^[a-f0-9]{64}$/.test(name)) throw new Error('unknown storage quarantine entry')
-      const directory = join(quarantine, name), record = JSON.parse(await readFile(join(directory, 'record.json'), 'utf8'))
-      const ref = join(datasets, name)
-      if (record.protocol !== 'gear-storage-quarantine@1' || record.ref !== ref || !Number.isSafeInteger(record.at) || await digestDatasetRef(join(directory, 'tree')) !== record.digest || referenced(ref)) throw new Error('invalid or referenced storage quarantine; cleanup stopped')
-      isolated.push({ ref, directory, digest: record.digest, at: record.at })
+      const record = await readProjectionQuarantine(search, name)
+      if (!record || record.location === 'canonical') { reconciled.push(join(quarantine, name)); continue }
+      if (referenced(record.ref)) throw new Error('referenced storage quarantine; cleanup stopped')
+      isolated.push(record)
     }
     if (!options.apply) return audit
     await lock.assertHeld(stateRoot)
+    // A restored canonical can already have new history references. Finish only
+    // its journal removal; the ordinary reference scan decides its retention.
+    for (const directory of reconciled) await rm(directory, { recursive: true })
     for (const item of owned) {
       const directory = join(quarantine, item.ref.split('/').at(-1)!)
       await mkdir(directory, { recursive: true }); await writeFile(join(directory, 'record.json'), JSON.stringify({ protocol: 'gear-storage-quarantine@1', ...item, at: Date.now() }), { flag: 'wx' })
