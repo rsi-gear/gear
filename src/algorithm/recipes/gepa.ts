@@ -18,6 +18,7 @@ import { resolveParentPolicyRef, scopedFrontierPolicy, championGepaPolicy } from
 import { createScope, stagePlan } from '../../search/scopes.js'
 import { samplingEvidence } from '../../search/scope-sampling.js'
 import type { ScopeEpochPreparation } from '../../search/epochs.js'
+import type { ObjectiveBaseline } from '../../objective/scoring.js'
 import type { ParentSelectionPolicy } from '../../search/parent-selection.js'
 import type { BridgeSelectionDecision, CandidateWorkPlan, DiagnosisDossier, EvaluationScope, FailureCluster, GateDecision,
   EvaluationStageDecision, ParentSelectionDecision, ResearchArchive, ResearchFinding, SearchSettings, Snapshot, StageEvaluationPlan,
@@ -26,7 +27,11 @@ import { chooseGepaBridge, chooseGepaParents, completeGepaScopePreparation, plan
   updateGepaArchive, type GepaBaseline, type GepaLocal, type GepaPreparationPlan, type GepaWork } from './gepa-policy.js'
 import type { GepaSharedEpoch } from './gepa-policy.js'
 
-type Phase = 'scope-preparation' | 'parent-probe' | 'diagnosis' | 'planning-probe' | 'generation' | 'local' | 'bridge' | 'global-seed' | 'seed-research' | 'held-out' | 'await-repair' | 'done'
+type Phase = 'scope-preparation' | 'parent-probe' | 'diagnosis' | 'planning-probe' | 'generation' | 'local'
+  | 'bridge-reference-lookup' | 'bridge-reference-resolve' | 'bridge-reference' | 'bridge-reference-checkpoint' | 'bridge'
+  | 'global-seed' | 'global-reference-lookup' | 'global-reference' | 'global-reference-checkpoint'
+  | 'seed-research' | 'held-out' | 'held-out-reference-lookup' | 'held-out-reference' | 'held-out-reference-checkpoint'
+  | 'await-repair' | 'done'
 type Generated = { snapshot: Snapshot; candidateSetRef: BindingSetRef; changedPaths: string[]; digest: string }
 type Proposal = { batchId: string; parent: Snapshot; dossier: DiagnosisDossier; cluster: FailureCluster;
   scope: EvaluationScope; hypothesis: string }
@@ -49,14 +54,17 @@ type State = { phase: Phase; parents: ParentSelectionDecision; scopePlan: GepaPr
   nomineeId: string | null; seedGate: GateDecision | null; finalGate: GateDecision | null;
   archiveRef: ArtifactRef | null; reasons: string[]; snapshotBindings: Record<string, BindingSetRef>;
   stageDecisions: EvaluationStageDecision[]; findings: ResearchFinding[];
-  supportObjects: Array<{ digest: string; [key: string]: unknown }> }
+  supportObjects: Array<{ digest: string; [key: string]: unknown }>;
+  objectiveReferences: Record<string, ObjectiveBaseline> }
 
 export type GepaRecipeOptions = { evolutionId: string; roundId: string; roundIndex: number; maxCandidates: number;
   anchor: Snapshot; seed: TaskUniverse; heldOut: TaskUniverse; archive: ResearchArchive; settings: SearchSettings;
   bindingSchema: BindingSchema; snapshotBindings: Record<string, BindingSetRef>; artifacts: FileArtifactStore;
   deadlineAt: number; parentPolicy?: ParentSelectionPolicy; findings?: Record<string, ResearchFinding>;
   handoffFindingDigests?: Record<string, string[]>;
-  sharedEpochs?: Record<string, GepaSharedEpoch>; preserveLegacyExternalKeys?: boolean }
+  sharedEpochs?: Record<string, GepaSharedEpoch>; preserveLegacyExternalKeys?: boolean;
+  initialSnapshot?: Snapshot; initialSnapshotBindingSetRef?: BindingSetRef;
+  objectiveReferences?: Record<string, ObjectiveBaseline> }
 
 function resultRef(outcome: OperationOutcome | undefined, field: string): ArtifactRef | null {
   if (outcome?.kind !== 'result' || !outcome.value || typeof outcome.value !== 'object' || Array.isArray(outcome.value)) return null
@@ -78,6 +86,7 @@ function unique(intents: OperationIntent[]): OperationIntent[] {
   if (keys.size !== intents.length) throw new Error('GEPA operation keys collided')
   return intents
 }
+const clocked = (intent: OperationIntent): OperationIntent => ({ ...intent, startsBudgetClock: true })
 
 /** One GEPA round in the common campaign journal. Old policy functions remain the source of scientific decisions. */
 export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
@@ -85,8 +94,14 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
     archive: structuredClone(input.archive), settings: structuredClone(input.settings),
     snapshotBindings: structuredClone(input.snapshotBindings), findings: structuredClone(input.findings ?? {}),
     handoffFindingDigests: structuredClone(input.handoffFindingDigests ?? {}),
-    sharedEpochs: structuredClone(input.sharedEpochs ?? {}) }
+    sharedEpochs: structuredClone(input.sharedEpochs ?? {}),
+    initialSnapshot: structuredClone(input.initialSnapshot ?? input.anchor),
+    initialSnapshotBindingSetRef: input.initialSnapshotBindingSetRef ?? input.snapshotBindings[input.anchor.digest],
+    objectiveReferences: structuredClone(input.objectiveReferences ?? {}) }
   validateSnapshot(options.anchor); verifyDigest(options.seed); verifyDigest(options.heldOut); verifyDigest(options.archive)
+  validateSnapshot(options.initialSnapshot)
+  const initialSnapshotBindingSetRef = options.initialSnapshotBindingSetRef
+  if (!initialSnapshotBindingSetRef) throw new Error('GEPA initial objective snapshot binding is missing')
   validateSettings(options.settings, options.seed, options.heldOut, options.maxCandidates)
   if (options.archive.universeDigest !== options.seed.digest || !options.archive.snapshots.some(item => item.digest === options.anchor.digest))
     throw new Error('GEPA archive must contain the frozen seed anchor')
@@ -96,6 +111,12 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
     ? championGepaPolicy(policyRef) : scopedFrontierPolicy(policyRef))
   if (digestJson(policy.ref) !== digestJson(policyRef)) throw new Error('GEPA parent policy differs from frozen settings')
   const bindings = new BindingStore(options.artifacts, options.bindingSchema)
+  const initialHarnessRef = bindings.read(initialSnapshotBindingSetRef).slots.harness
+  if (!initialHarnessRef) throw new Error('GEPA initial objective snapshot lacks a harness binding')
+  const initialHarness = options.artifacts.getJson(initialHarnessRef) as Record<string, unknown>
+  if (initialHarness.commitOid !== options.initialSnapshot.commit
+    || initialHarness.manifestDigest !== options.initialSnapshot.manifestDigest)
+    throw new Error('GEPA initial objective snapshot binding drift')
   for (const snapshot of options.archive.snapshots) {
     const ref = options.snapshotBindings[snapshot.digest]
     if (!ref) throw new Error(`GEPA parent binding missing: ${snapshot.candidateId}`)
@@ -118,7 +139,10 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
     bindingSchema: options.bindingSchema, snapshotBindings: options.snapshotBindings, deadlineAt: options.deadlineAt,
     policyRef: policy.ref, findings: options.findings,
     handoffFindingDigests: options.handoffFindingDigests, sharedEpochs: options.sharedEpochs,
-    preserveLegacyExternalKeys: options.preserveLegacyExternalKeys === true })
+    preserveLegacyExternalKeys: options.preserveLegacyExternalKeys === true,
+    initialSnapshotDigest: options.initialSnapshot.digest,
+    initialSnapshotBindingSetRef,
+    objectiveReferences: options.objectiveReferences })
   const resolution = resolveSizing(options.seed, options.settings.search.taskSetSizing)
   const reference = (state: State, snapshot: Snapshot): BindingSetRef => {
     const found = state.snapshotBindings[snapshot.digest]
@@ -139,11 +163,11 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
     const repairCells = missing.filter(identity => known.has(cellKey(identity))).length
     const processMode = ['bridge', 'global-seed', 'held-out'].includes(plan.stage)
       ? options.settings.promotion.process.mode : options.settings.search.process.mode
-    return task(key, 'gepa.evaluate', {
+    return clocked(task(key, 'gepa.evaluate', {
       ...(options.preserveLegacyExternalKeys ? { roundIdentity: { evolutionId: options.evolutionId, roundId: options.roundId } } : {}),
       ...(options.preserveLegacyExternalKeys ? { projectionPolicy: 'defer' } : {}),
       universe, plan, snapshot, processMode } as unknown as JsonValue,
-      { bindingSetRef: reference(state, snapshot), limits: { rolloutCells: missing.length, repairCells } })
+      { bindingSetRef: reference(state, snapshot), limits: { rolloutCells: missing.length, repairCells } }))
   }
   const result = (completed: Record<string, OperationOutcome>, key: string, plan: StageEvaluationPlan, snapshot: Snapshot): StageResult | null => {
     const ref = resultRef(completed[key], 'resultRef')
@@ -161,6 +185,55 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
       scopeDigest, taskIds, participantIds: ids, prerequisiteDecisionDigests: prerequisites, selectionRuleDigest: integrity })
   const fullPlan = (universe: TaskUniverse, stage: StageEvaluationPlan['stage'], ids: string[]): StageEvaluationPlan =>
     basePlan(universe, stage, digestJson([universe.digest, stage]), universe.tasks.map(task => task.id), ids)
+  const referenceKey = (universe: TaskUniverse, plan: StageEvaluationPlan): string =>
+    digestJson([universe.digest, sorted(plan.taskIds)])
+  const needsInitialReference = (universe: TaskUniverse, state: State, plan: StageEvaluationPlan): boolean =>
+    !!universe.objective?.constraints.some(constraint => constraint.rule === 'no_regression')
+    && !state.objectiveReferences[referenceKey(universe, plan)]
+  const initialReferencePlan = (plan: StageEvaluationPlan): StageEvaluationPlan => {
+    const { digest: ignored, ...body } = plan
+    return seal({ ...body, participantIds: [options.initialSnapshot.candidateId],
+      prerequisiteDecisionDigests: [], selectionRuleDigest: digestJson('objective-initial-reference-v1') })
+  }
+  const referenceEvaluation = (key: string, universe: TaskUniverse, plan: StageEvaluationPlan,
+    state: State): OperationIntent => evaluation(key, universe, initialReferencePlan(plan), options.initialSnapshot, state)
+  const lookupReference = (key: string, universe: TaskUniverse, plan: StageEvaluationPlan): OperationIntent =>
+    task(key, 'gepa.objective-reference', { roundId: options.roundId, mode: 'lookup', universe, plan } as unknown as JsonValue,
+      { bindingSetRef: initialSnapshotBindingSetRef })
+  const consumeLookup = (key: string, universe: TaskUniverse, plan: StageEvaluationPlan,
+    completed: Record<string, OperationOutcome>, state: State): boolean => {
+    const outcome = completed[key]
+    if (outcome?.kind !== 'result' || !outcome.value || typeof outcome.value !== 'object'
+      || Array.isArray(outcome.value)) throw new Error('GEPA objective baseline lookup has no sealed result')
+    const found = (outcome.value as Record<string, unknown>).found
+    if (typeof found !== 'boolean') throw new Error('GEPA objective baseline lookup is malformed')
+    if (!found) return false
+    const ref = resultRef(outcome, 'ref')
+    if (!ref || ref.schemaId !== 'gepa.objective-baseline.v1')
+      throw new Error('GEPA objective baseline lookup lacks its sealed reference')
+    const baseline = readOld<ObjectiveBaseline & { initialSnapshotDigest: string }>(options.artifacts, ref)
+    if (baseline.initialSnapshotDigest !== options.initialSnapshot.digest)
+      throw new Error('GEPA objective baseline lookup changed its initial harness')
+    state.objectiveReferences[referenceKey(universe, plan)] = baseline
+    return true
+  }
+  const freezeReference = (key: string, universe: TaskUniverse, plan: StageEvaluationPlan,
+    completed: Record<string, OperationOutcome>): OperationIntent => {
+    const ref = resultRef(completed[key], 'resultRef')
+    if (!ref) throw new Error('GEPA initial objective reference evaluation is unavailable')
+    return task(`${key}-freeze`, 'gepa.objective-reference', { roundId: options.roundId,
+      mode: 'baseline', universe, plan, referencePlan: initialReferencePlan(plan), resultRef: ref } as unknown as JsonValue,
+    { bindingSetRef: initialSnapshotBindingSetRef })
+  }
+  const consumeReference = (key: string, universe: TaskUniverse, plan: StageEvaluationPlan,
+    completed: Record<string, OperationOutcome>, state: State): ObjectiveBaseline => {
+    const ref = resultRef(completed[`${key}-freeze`], 'ref')
+    if (!ref || ref.schemaId !== 'gepa.objective-baseline.v1')
+      throw new Error('GEPA initial objective baseline is unconfirmed')
+    const baseline = readOld<ObjectiveBaseline>(options.artifacts, ref)
+    state.objectiveReferences[referenceKey(universe, plan)] = baseline
+    return baseline
+  }
   const output = (state: State, operations: OperationIntent[] = [], complete = false, transition?: BindingSetRef,
     budget?: BudgetSnapshot): AlgorithmDecision => {
     if (!complete) {
@@ -198,7 +271,7 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
     return evaluation(`parent-${index}`, options.seed, plan, parent, state)
   }
   const generationOperations = (state: State): OperationIntent[] => state.works.map((work, index) =>
-    task(`generate-${index}`, 'gepa.generate', {
+    clocked(task(`generate-${index}`, 'gepa.generate', {
       ...(options.preserveLegacyExternalKeys ? { roundIdentity: { evolutionId: options.evolutionId, roundId: options.roundId } } : {}),
       workplan: work.workplan, dossier: work.dossier, scope: work.scope, parent: work.parent,
       plan: work.plan, baseline: state.localBaselines[work.workplan.candidateId], universe: options.seed,
@@ -209,7 +282,7 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
       processMode: options.settings.search.process.mode } as unknown as JsonValue,
     { bindingSetRef: reference(state, work.parent), limits: {
       ...(work.workplan.generationBudget.maxTokens === undefined ? {} : { generationTokens: work.workplan.generationBudget.maxTokens }),
-      ...(work.workplan.generationBudget.maxModelRequests === undefined ? {} : { generationRequests: work.workplan.generationBudget.maxModelRequests }) } }))
+      ...(work.workplan.generationBudget.maxModelRequests === undefined ? {} : { generationRequests: work.workplan.generationBudget.maxModelRequests }) } })))
   const remaining = (budget: BudgetSnapshot | undefined, dimension: string, roundLimit: number | undefined,
     evolutionLimit: number | undefined): number | null => {
     const recorded = budget?.dimensions[dimension]
@@ -223,9 +296,11 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
     const observed = state.heldOutResults[nominee.candidateId]!
     const seedInput: PromotionInput = { universe: options.seed, plan: state.globalPlan!, anchor: options.anchor,
       candidate: nominee, baseline: state.globalResults[options.anchor.candidateId]!,
-      result: state.globalResults[nominee.candidateId]! }
+      result: state.globalResults[nominee.candidateId]!,
+      initialBaseline: state.objectiveReferences[referenceKey(options.seed, state.globalPlan!)] }
     const heldInput: PromotionInput = { universe: options.heldOut, plan, anchor: options.anchor,
-      candidate: nominee, baseline, result: observed }
+      candidate: nominee, baseline, result: observed,
+      initialBaseline: state.objectiveReferences[referenceKey(options.heldOut, plan)] }
     state.finalGate = decideFinal(seedInput, heldInput, options.settings.promotion)
     if (options.preserveLegacyExternalKeys && state.finalGate.outcome === 'insufficient-evidence'
       && !baseline.failure && !observed.failure) {
@@ -237,6 +312,19 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
         currentResultDigests: [baseline.digest, observed.digest],
       } as unknown as JsonValue)], false, undefined, context.budget)
     }
+    return finish(state)
+  }
+  const completeGlobalSeed = (state: State): AlgorithmDecision => {
+    const plan = state.globalPlan!, nominee = state.locals.find(item => item.snapshot.candidateId === state.nomineeId)!.snapshot
+    const baseline = state.globalResults[options.anchor.candidateId]
+    const observed = state.globalResults[nominee.candidateId]
+    if (!baseline || !observed) { state.reasons.push('global-seed-evidence-unavailable'); return finish(state) }
+    for (const row of [baseline, observed]) if (row.failure) state.reasons.push(`${row.failure.kind}:${row.failure.code}`)
+    const seedInput: PromotionInput = { universe: options.seed, plan, anchor: options.anchor,
+      candidate: nominee, baseline, result: observed,
+      initialBaseline: state.objectiveReferences[referenceKey(options.seed, plan)] }
+    state.seedGate = precheckSeed(seedInput, options.settings.promotion)
+    if (state.seedGate.outcome !== 'eligible') state.finalGate = state.seedGate
     return finish(state)
   }
   const startBatch = (state: State, context: DecisionContext): AlgorithmDecision => {
@@ -382,12 +470,12 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
           state.reasons.push('parent-baseline-incomplete'); state.batchIndex++; return startBatch(state, context)
         }
         state.phase = 'diagnosis'
-        return output(state, [task(`diagnose-${index}`, 'gepa.diagnose', {
+        return output(state, [clocked(task(`diagnose-${index}`, 'gepa.diagnose', {
           ...(options.preserveLegacyExternalKeys ? { roundIdentity: { evolutionId: options.evolutionId, roundId: options.roundId } } : {}),
           snapshot: parent, universe: options.seed, taskIds: plan.taskIds, baseline: observed } as unknown as JsonValue,
         { bindingSetRef: reference(state, parent), limits: {
           diagnosisInputTokens: options.settings.budgets.round.maxDiagnosisInputTokens,
-          diagnosisOutputTokens: options.settings.budgets.round.maxDiagnosisOutputTokens } })], false, undefined, context.budget)
+          diagnosisOutputTokens: options.settings.budgets.round.maxDiagnosisOutputTokens } }))], false, undefined, context.budget)
       }
       case 'diagnosis': {
         const index = state.batchIndex, batch = state.parents.batches[index]!
@@ -538,13 +626,57 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
             supportDigest: support.digest, ...(advance ? { nextStagePlanDigest: state.bridge.plan!.digest } : {}) }))
         }
         if (!state.bridge.plan) { state.reasons.push('no-bridge-quota'); return finish(state) }
-        state.bridgePlan = state.bridge.plan; state.phase = 'bridge'
+        state.bridgePlan = state.bridge.plan
+        if (needsInitialReference(options.seed, state, state.bridgePlan)) {
+          state.phase = 'bridge-reference-lookup'
+          return output(state, [evaluation('bridge-0', options.seed, state.bridgePlan, options.anchor, state)],
+            false, undefined, context.budget)
+        }
+        state.phase = 'bridge'
         // The frozen plan lists selected candidates before the anchor. The old
         // execution order evaluates the anchor first, then each participant.
         const snapshots = [options.anchor, ...state.bridge.plan.participantIds
           .filter(id => id !== options.anchor.candidateId)
           .map(id => state.locals.find(item => item.snapshot.candidateId === id)!.snapshot)]
         return output(state, snapshots.map((snapshot, index) => evaluation(`bridge-${index}`, options.seed, state.bridgePlan!, snapshot, state)), false, undefined, context.budget)
+      }
+      case 'bridge-reference-lookup': {
+        const plan = state.bridgePlan!
+        const baseline = result(completed, 'bridge-0', plan, options.anchor)
+        if (!baseline) throw new Error('GEPA bridge anchor evidence is unavailable')
+        state.bridgeResults[options.anchor.candidateId] = baseline
+        state.phase = 'bridge-reference-resolve'
+        return output(state, [lookupReference('bridge-reference-lookup', options.seed, plan)],
+          false, undefined, context.budget)
+      }
+      case 'bridge-reference-resolve': {
+        const plan = state.bridgePlan!
+        if (consumeLookup('bridge-reference-lookup', options.seed, plan, completed, state)) {
+          state.phase = 'bridge'
+          const candidates = plan.participantIds.filter(id => id !== options.anchor.candidateId)
+            .map(id => state.locals.find(item => item.snapshot.candidateId === id)!.snapshot)
+          return output(state, candidates.map((snapshot, index) => evaluation(`bridge-${index + 1}`,
+            options.seed, plan, snapshot, state)), false, undefined, context.budget)
+        }
+        state.phase = 'bridge-reference'
+        return output(state, [referenceEvaluation('bridge-reference', options.seed, plan, state)],
+          false, undefined, context.budget)
+      }
+      case 'bridge-reference': {
+        const plan = state.bridgePlan!
+        const referenceResult = result(completed, 'bridge-reference', initialReferencePlan(plan), options.initialSnapshot)
+        if (!referenceResult) throw new Error('GEPA bridge objective reference evidence is unavailable')
+        state.phase = 'bridge-reference-checkpoint'
+        return output(state, [freezeReference('bridge-reference', options.seed, plan, completed)], false, undefined, context.budget)
+      }
+      case 'bridge-reference-checkpoint': {
+        const plan = state.bridgePlan!
+        consumeReference('bridge-reference', options.seed, plan, completed, state)
+        state.phase = 'bridge'
+        const candidates = plan.participantIds.filter(id => id !== options.anchor.candidateId)
+          .map(id => state.locals.find(item => item.snapshot.candidateId === id)!.snapshot)
+        return output(state, candidates.map((snapshot, index) => evaluation(`bridge-${index + 1}`,
+          options.seed, plan, snapshot, state)), false, undefined, context.budget)
       }
       case 'bridge': {
         const plan = state.bridgePlan!
@@ -561,7 +693,8 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
           const observed = state.bridgeResults[snapshot.candidateId]
           if (!observed) return []
           const gate = assessGate({ universe: options.seed, plan, anchor: options.anchor, candidate: snapshot,
-            baseline, result: observed }, options.settings.promotion, false)
+            baseline, result: observed,
+            initialBaseline: state.objectiveReferences[referenceKey(options.seed, plan)] }, options.settings.promotion, false)
           if (observed.failure) state.reasons.push(`${observed.failure.kind}:${observed.failure.code}`)
           return [{ snapshot, result: observed, gate }]
         })
@@ -602,16 +735,42 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
         if (baseline) state.globalResults[options.anchor.candidateId] = baseline
         if (observed) state.globalResults[nominee.candidateId] = observed
         if (!baseline || !observed) { state.reasons.push('global-seed-evidence-unavailable'); return finish(state) }
-        for (const row of [baseline, observed]) if (row.failure) state.reasons.push(`${row.failure.kind}:${row.failure.code}`)
-        const seedInput: PromotionInput = { universe: options.seed, plan, anchor: options.anchor, candidate: nominee, baseline, result: observed }
-        state.seedGate = precheckSeed(seedInput, options.settings.promotion)
-        if (state.seedGate.outcome !== 'eligible') state.finalGate = state.seedGate
-        return finish(state)
+        if (needsInitialReference(options.seed, state, plan)) {
+          state.phase = 'global-reference-lookup'
+          return output(state, [lookupReference('global-reference-lookup', options.seed, plan)],
+            false, undefined, context.budget)
+        }
+        return completeGlobalSeed(state)
+      }
+      case 'global-reference-lookup': {
+        const plan = state.globalPlan!
+        if (consumeLookup('global-reference-lookup', options.seed, plan, completed, state))
+          return completeGlobalSeed(state)
+        state.phase = 'global-reference'
+        return output(state, [referenceEvaluation('global-reference', options.seed, plan, state)],
+          false, undefined, context.budget)
+      }
+      case 'global-reference': {
+        const plan = state.globalPlan!
+        if (!result(completed, 'global-reference', initialReferencePlan(plan), options.initialSnapshot))
+          throw new Error('GEPA global seed objective reference evidence is unavailable')
+        state.phase = 'global-reference-checkpoint'
+        return output(state, [freezeReference('global-reference', options.seed, plan, completed)],
+          false, undefined, context.budget)
+      }
+      case 'global-reference-checkpoint': {
+        consumeReference('global-reference', options.seed, state.globalPlan!, completed, state)
+        return completeGlobalSeed(state)
       }
       case 'seed-research': {
         if (state.seedGate?.outcome !== 'eligible' || !state.nomineeId) return finish(state)
         const nominee = state.locals.find(item => item.snapshot.candidateId === state.nomineeId)!.snapshot
         state.heldOutPlan = fullPlan(options.heldOut, 'held-out', [options.anchor.candidateId, nominee.candidateId])
+        if (needsInitialReference(options.heldOut, state, state.heldOutPlan)) {
+          state.phase = 'held-out-reference-lookup'
+          return output(state, [lookupReference('held-out-reference-lookup', options.heldOut,
+            state.heldOutPlan)], false, undefined, context.budget)
+        }
         state.phase = 'held-out'
         return output(state, [evaluation('held-out-anchor', options.heldOut, state.heldOutPlan, options.anchor, state),
           evaluation('held-out-nominee', options.heldOut, state.heldOutPlan, nominee, state)], false, undefined, context.budget)
@@ -625,6 +784,32 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
         if (!baseline || !observed) { state.reasons.push('held-out-evidence-unavailable'); return finish(state) }
         for (const row of [baseline, observed]) if (row.failure) state.reasons.push(`${row.failure.kind}:${row.failure.code}`)
         return finishHeldOut(state, context)
+      }
+      case 'held-out-reference-lookup': {
+        const plan = state.heldOutPlan!, nominee = state.locals.find(item => item.snapshot.candidateId === state.nomineeId)!.snapshot
+        if (consumeLookup('held-out-reference-lookup', options.heldOut, plan, completed, state)) {
+          state.phase = 'held-out'
+          return output(state, [evaluation('held-out-anchor', options.heldOut, plan, options.anchor, state),
+            evaluation('held-out-nominee', options.heldOut, plan, nominee, state)], false, undefined, context.budget)
+        }
+        state.phase = 'held-out-reference'
+        return output(state, [referenceEvaluation('held-out-reference', options.heldOut, plan, state)],
+          false, undefined, context.budget)
+      }
+      case 'held-out-reference': {
+        const plan = state.heldOutPlan!
+        if (!result(completed, 'held-out-reference', initialReferencePlan(plan), options.initialSnapshot))
+          throw new Error('GEPA held-out objective reference evidence is unavailable')
+        state.phase = 'held-out-reference-checkpoint'
+        return output(state, [freezeReference('held-out-reference', options.heldOut, plan, completed)],
+          false, undefined, context.budget)
+      }
+      case 'held-out-reference-checkpoint': {
+        const plan = state.heldOutPlan!, nominee = state.locals.find(item => item.snapshot.candidateId === state.nomineeId)!.snapshot
+        consumeReference('held-out-reference', options.heldOut, plan, completed, state)
+        state.phase = 'held-out'
+        return output(state, [evaluation('held-out-anchor', options.heldOut, plan, options.anchor, state),
+          evaluation('held-out-nominee', options.heldOut, plan, nominee, state)], false, undefined, context.budget)
       }
       case 'await-repair': {
         const outcome = completed['await-held-out-repair']
@@ -654,6 +839,7 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
     describe: () => ({ id: 'failure-cluster-gepa', apiVersion: ALGORITHM_API_VERSION, implementationDigest,
       stateSchema: { type: 'object', additionalProperties: true }, configSchema: { type: 'object', additionalProperties: true },
       bindingSchema: options.bindingSchema, requiredOperationKinds: ['gepa.evaluate', 'gepa.diagnose', 'gepa.generate',
+        ...(options.seed.objective || options.heldOut.objective ? ['gepa.objective-reference'] : []),
         ...(options.preserveLegacyExternalKeys ? ['gepa.await-repair'] : [])] }),
     initialize(context: DecisionContext) {
       if (context.activeBindingSetRef.digest !== options.snapshotBindings[options.anchor.digest]?.digest)
@@ -681,8 +867,10 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
         generated: {}, generatedAttempts: {}, locals: [], bridge: null, bridgePlan: null, bridgeResults: {}, globalPlan: null,
         globalResults: {}, heldOutPlan: null, heldOutResults: {}, heldOutOriginalRefs: null,
         nomineeId: null, seedGate: null, finalGate: null,
-        archiveRef: null, reasons: [], snapshotBindings: { ...options.snapshotBindings }, stageDecisions: [], findings: [],
-        supportObjects: [] }
+        archiveRef: null, reasons: [], snapshotBindings: { ...options.snapshotBindings,
+          [options.initialSnapshot.digest]: initialSnapshotBindingSetRef },
+        stageDecisions: [], findings: [], supportObjects: [],
+        objectiveReferences: { ...options.objectiveReferences } }
       const operations = scopePlan.pending.length ? scopePlan.pending.flatMap((proposal, index) =>
         proposal.participants.map((snapshot, participantIndex) => evaluation(`prepare-${index}-${participantIndex}`,
           options.seed, proposal.plan, snapshot, state))) : []

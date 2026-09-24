@@ -26,7 +26,7 @@ import { failureClusterGepaRecipe, type GepaRecipeOptions } from './gepa.js'
 import type { GepaSharedEpoch, GepaWork } from './gepa-policy.js'
 
 type ScienceStage = 'parents' | 'scope-preparation' | 'planning' | 'local' | 'nomination'
-type Phase = 'bootstrap' | 'bootstrap-failure-progress' | 'bootstrap-publication' | 'archive-view-checkpoint' |
+type Phase = 'objective-initial-harness' | 'bootstrap' | 'bootstrap-failure-progress' | 'bootstrap-publication' | 'archive-view-checkpoint' |
   'science-checkpoint' | 'research' | 'seed-research-checkpoint' | 'terminal-publication' | 'complete'
 type InnerState = { phase: string; works: unknown[]; archiveRef: ArtifactRef | null; parents: ParentSelectionDecision;
   sharedEpochs: Record<string, GepaSharedEpoch>;
@@ -55,6 +55,7 @@ export type CampaignFailureClusterRecipeOptions = {
   findings?: Record<string, ResearchFinding>; handoffFindingDigests?: Record<string, string[]>;
   sharedEpochs?: Record<string, GepaSharedEpoch>;
   startingRegressionProposals?: RegressionProposal[];
+  initialSnapshot?: Snapshot; initialSnapshotBindingSetRef?: BindingSetRef;
   archiveStart?: { baseArchiveRef: ArtifactRef; parentArchiveRef: ArtifactRef;
     completionRefs: string[]; publishParentView: boolean;
     snapshotBindings: Record<string, BindingSetRef> };
@@ -109,6 +110,8 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
     parentPolicyRef: options.parentPolicy.ref, findings: options.findings ?? {},
     handoffFindingDigests: options.handoffFindingDigests ?? {}, sharedEpochs: options.sharedEpochs ?? {},
     startingRegressionProposals: options.startingRegressionProposals,
+    initialSnapshotDigest: options.initialSnapshot?.digest ?? options.admission.anchor.digest,
+    initialSnapshotBindingSetRef: options.initialSnapshotBindingSetRef ?? options.anchorBindingSetRef,
     archiveStart: options.archiveStart ?? null,
   })
   const archiveRef = (archive: ResearchArchive): ArtifactRef =>
@@ -137,6 +140,8 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
       artifacts: options.artifacts, deadlineAt: options.deadlineAt, parentPolicy: options.parentPolicy,
       findings: options.findings ?? {}, handoffFindingDigests: options.handoffFindingDigests ?? {},
       sharedEpochs: options.sharedEpochs ?? {},
+      initialSnapshot: options.initialSnapshot ?? options.admission.anchor,
+      initialSnapshotBindingSetRef: options.initialSnapshotBindingSetRef ?? options.anchorBindingSetRef,
       preserveLegacyExternalKeys: true }
     const recipe = failureClusterGepaRecipe(innerOptions)
     innerRecipes.set(initialArchiveRef.digest, recipe)
@@ -366,13 +371,7 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
     state.phase = 'research'
     return { nextState: state as unknown as JsonValue, operations: decision.operations ?? [] }
   }
-  return {
-    describe: () => ({ id: 'failure-cluster-campaign', apiVersion: ALGORITHM_API_VERSION,
-      implementationDigest, stateSchema: { type: 'object', additionalProperties: true },
-      configSchema: { type: 'object', additionalProperties: true }, bindingSchema: options.bindingSchema,
-      requiredOperationKinds: ['gepa.evaluate', 'gepa.diagnose', 'gepa.generate', 'gepa.publish',
-        'gepa.research-checkpoint', 'gepa.science-checkpoint', 'gepa.await-repair', 'gepa.archive-view'] }),
-    initialize(context: DecisionContext) {
+  const startCampaign = (context: DecisionContext): AlgorithmDecision => {
       if (context.activeBindingSetRef.digest !== options.anchorBindingSetRef.digest)
         throw new Error('Campaign search anchor binding changed')
       if (options.archiveStart) {
@@ -406,17 +405,45 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
         bootstrapResultRef: null, initialArchiveRef: null, inner: null, outcomeRef: null, finalArchiveRef: null,
         scienceCheckpointed: [], deferredOperations: null, pendingScienceStage: null,
         planningReasonsCount: 0, localDecisionCount: 0 }
-      return { nextState: state as unknown as JsonValue, operations: [task('bootstrap-evaluate', 'gepa.evaluate', {
+      return { nextState: state as unknown as JsonValue, operations: [{ ...task('bootstrap-evaluate', 'gepa.evaluate', {
         roundIdentity: { evolutionId: options.admission.evolutionId, roundId: options.admission.roundId },
         universe: options.seed, plan, snapshot: anchor, processMode: options.settings.search.process.mode,
         projectionPolicy: 'defer',
       } as unknown as JsonValue, { bindingSetRef: options.anchorBindingSetRef,
         limits: { rolloutCells: Math.min(plannedCells(options.seed, plan, anchor).length,
           context.budget?.dimensions.rolloutCells?.remaining ?? options.settings.budgets.round.maxNewRolloutCells),
-          repairCells: 0 } })] }
+          repairCells: 0 } }), startsBudgetClock: true }] }
+  }
+  return {
+    describe: () => ({ id: 'failure-cluster-campaign', apiVersion: ALGORITHM_API_VERSION,
+      implementationDigest, stateSchema: { type: 'object', additionalProperties: true },
+      configSchema: { type: 'object', additionalProperties: true }, bindingSchema: options.bindingSchema,
+      requiredOperationKinds: ['gepa.evaluate', 'gepa.diagnose', 'gepa.generate', 'gepa.publish',
+        'gepa.research-checkpoint', 'gepa.science-checkpoint', 'gepa.await-repair', 'gepa.archive-view',
+        ...(options.seed.objective ? ['gepa.objective-reference'] : [])] }),
+    initialize(context: DecisionContext) {
+      if (options.seed.objective) {
+        const state: State = { phase: 'objective-initial-harness', bootstrapScope: null, bootstrapPlan: null,
+          bootstrapResultRef: null, initialArchiveRef: null, inner: null, outcomeRef: null,
+          finalArchiveRef: null, scienceCheckpointed: [], deferredOperations: null,
+          pendingScienceStage: null, planningReasonsCount: 0, localDecisionCount: 0 }
+        const snapshot = options.initialSnapshot ?? options.admission.anchor
+        return { nextState: state as unknown as JsonValue,
+          operations: [task('freeze-objective-initial-harness', 'gepa.objective-reference', {
+            roundId: options.admission.roundId, mode: 'anchor',
+            snapshotRef: options.artifacts.putJson(snapshot as unknown as JsonValue,
+              'gepa.objective-initial-snapshot.v1') } as unknown as JsonValue,
+          { bindingSetRef: options.initialSnapshotBindingSetRef ?? options.anchorBindingSetRef })] }
+      }
+      return startCampaign(context)
     },
     async reduce(context: ReduceContext) {
       const state = context.state as unknown as State
+      if (state.phase === 'objective-initial-harness') {
+        if (context.completed['freeze-objective-initial-harness']?.kind !== 'result')
+          throw new Error('Campaign initial objective harness is not durable')
+        return startCampaign(context)
+      }
       if (state.phase === 'science-checkpoint') {
         const stage = state.pendingScienceStage
         if (!stage || context.completed[`checkpoint-science-${stage}`]?.kind !== 'result' || !state.inner)

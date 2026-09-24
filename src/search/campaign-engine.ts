@@ -12,6 +12,7 @@ import { GepaRepairEvaluationProvider } from '../algorithm/providers/gepa-repair
 import { GepaProcessCompletionProvider } from '../algorithm/providers/gepa-process-completion.js'
 import { GepaArchiveViewProvider } from '../algorithm/providers/gepa-archive-view.js'
 import { GepaScienceCheckpointProvider } from '../algorithm/providers/gepa-science-checkpoint.js'
+import { GepaObjectiveReferenceProvider } from '../algorithm/providers/gepa-objective-reference.js'
 import { ProviderProtocolError, ProviderReconcileError } from '../algorithm/provider-errors.js'
 import { projectGepaCampaignBudget } from '../algorithm/providers/gepa-budget-projection.js'
 import { campaignFailureClusterRecipe } from '../algorithm/recipes/gepa-search.js'
@@ -21,7 +22,7 @@ import type { JsonValue } from '../algorithm/schema.js'
 import { implementationClosureDigest } from '../algorithm/data/identity.js'
 import { ComponentRegistry } from '../evolution/components.js'
 import { digestJson } from '../state/digest.js'
-import { integrity, invariant, safeId, seal, SearchProtocolError, verifyDigest } from './contracts.js'
+import { integrity, invariant, safeId, seal, SearchProtocolError, validateSnapshot, verifyDigest } from './contracts.js'
 import { buildArchive } from './archive.js'
 import { scopeEpoch } from './epochs.js'
 import type { GepaSharedEpoch } from '../algorithm/recipes/gepa-policy.js'
@@ -45,6 +46,7 @@ export type CampaignSearchHost = { root?: string; hookImplementationDigest?: str
 
 type SearchCampaignExtensions = CampaignAdmissionExtensions & {
   sharedEpochs: Record<string, GepaSharedEpoch>
+  initialSnapshotDigest: string | null
 }
 type SearchCampaignAdmission = FrozenCampaignAdmission<SearchCampaignExtensions>
 type ValidatedSearch = Awaited<ReturnType<SearchExecutionRuntime['validate']>>
@@ -142,6 +144,17 @@ export class CampaignFailureClusterSearch {
     const harness = artifacts.putJson({ commitOid: request.anchor.commit,
       manifestDigest: request.anchor.manifestDigest }, 'harness.directory.v1')
     const anchorBindingSetRef = bindings.create({ harness })
+    const initialPointer = options.frozenAdmission || !seed.objective ? null
+      : await this.store.read<{ ref: string }>('evolution/objective-initial-harness')
+    const initialSnapshotDigest = seed.objective
+      ? options.frozenAdmission?.initialSnapshotDigest ?? initialPointer?.ref ?? null : null
+    const initialSnapshot = initialSnapshotDigest
+      ? await this.store.object<typeof request.anchor>(initialSnapshotDigest) : request.anchor
+    validateSnapshot(initialSnapshot)
+    const initialHarness = artifacts.putJson({ commitOid: initialSnapshot.commit,
+      manifestDigest: initialSnapshot.manifestDigest }, 'harness.directory.v1')
+    const initialSnapshotBindingSetRef = initialSnapshot.digest === request.anchor.digest
+      ? anchorBindingSetRef : bindings.create({ harness: initialHarness })
     const policy = this.components.parentSelectionPolicy(resolveParentPolicyRef(resolvedSettings.search))
     const savedAdmission = await this.store.read<{ ref: string }>(`rounds/${request.roundId}/admission`)
     const frozenAdmission = options.frozenAdmission ?? (savedAdmission
@@ -226,6 +239,7 @@ export class CampaignFailureClusterSearch {
     }
     const recipe = campaignFailureClusterRecipe({ admission: admitted, seed, heldOut, settings: resolvedSettings,
       artifacts, bindingSchema: harnessBindingSchema, anchorBindingSetRef, deadlineAt, parentPolicy: policy,
+      initialSnapshot, initialSnapshotBindingSetRef,
       findings, handoffFindingDigests, sharedEpochs, startingRegressionProposals,
       ...(archiveStart ? { archiveStart } : {}) })
     const spec: CampaignSpec = { campaignId: campaignSearchId(request.roundId),
@@ -264,6 +278,7 @@ export class CampaignFailureClusterSearch {
           beforePublication: () => runtime.hydrate(), publicationBarrierIdentityDigest: projectorIdentityDigest }),
       new GepaResearchCheckpointProvider(operationRoot, artifacts, this.store, records),
       new GepaScienceCheckpointProvider(operationRoot, artifacts, this.store, records),
+      new GepaObjectiveReferenceProvider(operationRoot, artifacts, this.store, records),
       new GepaAwaitRepairProvider(this.store, operationRoot, records),
       new GepaArchiveViewProvider(operationRoot, artifacts, this.store, records),
       repairProvider,
@@ -272,7 +287,7 @@ export class CampaignFailureClusterSearch {
     if (!options.preview) await runtime.hydrate()
     return { runtime, validator: this.validator, artifacts, admitted, seed, heldOut, resolvedSettings,
       recipe, policy, startedAt, savedAdmission, installedArchive, completionRefs, startingBudget,
-      sharedEpochs, handoffFindingDigests, startingRegressionProposals,
+      sharedEpochs, handoffFindingDigests, startingRegressionProposals, initialSnapshotDigest,
       roundRecipeIdentity: digestJson(recipe.describe()),
       legacyProviders: [evaluationProvider, diagnosisProvider, generationProvider] as const,
       repairProvider, processProvider }
@@ -298,6 +313,7 @@ export class CampaignFailureClusterSearch {
           handoffFindingDigests: prepared.handoffFindingDigests,
           campaignBudget: prepared.startingBudget,
           startingRegressionProposals: prepared.startingRegressionProposals,
+          initialSnapshotDigest: prepared.initialSnapshotDigest,
           roundRecipeIdentity: prepared.roundRecipeIdentity }
       },
       verifyFrozenRecipe: async (admission, current) => {
