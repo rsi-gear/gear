@@ -146,3 +146,11 @@ FreshSeedExperienceSource 可从宿主指定的已编译 seed dataset 创建任�
 AlgorithmManifest 新增通用 requiredOperationKindsFromConfig，由冻结配置的顶层自有字符串字段指定所需 operation kind；Optuna 的 evaluationKind 使用此合同。缺字段、非字符串和未注册 provider 都在创建 Campaign 前拒绝，避免运行到第一个 trial 才发现缺能力。
 
 主 agent 在仅含 HEAD 与本次六个冻结文件的独立快照中复验：准入测试 2/2、真实 Optuna 跨语言测试 1/1、Python SDK/recipes/Optuna 20/20，完整 typecheck 通过。Optuna 首次执行受沙箱限制无法监听本地 IPC 端口；获准运行本地测试后通过，没有外部模型或训练调用。
+
+## S6A GEPA 公共决策与持久操作
+
+主 agent 在只包含已提交 HEAD 与本次五个冻结文件的独立快照验证：GEPA 10/10、完整 typecheck 通过。一个 Campaign 执行一轮，nextGepaRound 传递封存 archive、当前绑定、同 epoch 的共享任务抽样与累计用量；复用原父代、cluster、scope、bridge、archive 和 promotion 规则。两候选与跨轮 stable/periodic epoch 使用旧引擎做差分对照，另覆盖不匹配绑定、零预算、实际超额和丢回包恢复。
+
+主审发现并修复两项问题：同阶段重叠 cell 原先可能并发重复评估，现通过持久队列逐项执行并复用已验证缓存；同一 epoch 的 shared tasks 原先会跨轮重采样，现沿 lineage 固定。此版本 GEPA 操作串行发出；通用内核的并行能力保留。
+
+本提交为公共策略和操作合同，尚非完整生产迁移：实际 workspace-edit/generation 接线、原始 rollout 的 process/raw-metric 补全、旧额外 finding handoff 及正式包导出继续审计。有效 outcome 的缺失 process 不当作科学成功或失败，但当前不提供原旧接口的全部补全能力。测试使用受控物理 provider，不能据此声称真实模型运行或论文效果已经验证。
