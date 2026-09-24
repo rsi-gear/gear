@@ -28,7 +28,7 @@ export type GepaLegacyPendingState = { state: 'running' | 'unknown' | 'not-start
   reason: string; handle?: string }
 type RecordValue = { schemaVersion: 1; operationId: string; inputDigest: string; implementationDigest: string;
   bindingDigest: string; idempotencyKey: string; externalKey: string;
-  stage: 'started' | 'cancelled-before-start' | 'complete';
+  stage: 'prepared' | 'started' | 'cancelled-before-start' | 'complete';
   request?: JsonValue; requestDigest?: string; evaluationCells?: EvidenceCell[]; evaluationCellsDigest?: string;
   evaluationFailure?: SearchStageFailure; evaluationFailureDigest?: string; evaluationNotStarted?: boolean;
   diagnosisValue?: { facts: DiagnosisFact[]; inputTokens: number; outputTokens: number; failure?: SearchStageFailure };
@@ -188,7 +188,7 @@ abstract class GepaOperationProvider implements OperationProvider {
   private async read(envelope: OperationEnvelope): Promise<RecordValue | null> {
     const record = await this.records.read<RecordValue>(envelope.kind, envelope.operationId)
     if (!record) return null
-    if (!record || record.schemaVersion !== 1 || !['started', 'cancelled-before-start', 'complete'].includes(record.stage)
+    if (!record || record.schemaVersion !== 1 || !['prepared', 'started', 'cancelled-before-start', 'complete'].includes(record.stage)
       || record.operationId !== envelope.operationId || record.inputDigest !== envelope.inputDigest
       || record.implementationDigest !== envelope.implementationDigest || record.bindingDigest !== envelope.bindingSetRef.digest
       || record.idempotencyKey !== envelope.idempotencyKey || record.externalKey !== this.physicalKey(envelope)
@@ -226,6 +226,9 @@ abstract class GepaOperationProvider implements OperationProvider {
   }
   protected abstract validate(envelope: OperationEnvelope): Promise<void>
   protected freezeRequest(_envelope: OperationEnvelope): Promise<JsonValue | undefined> | JsonValue | undefined { return undefined }
+  protected startsBudgetClock(_envelope: OperationEnvelope, _record: RecordValue): boolean {
+    return !this.deadlineExpired()
+  }
   protected abstract execute(envelope: OperationEnvelope, record: RecordValue, newlyStarted: boolean): Promise<Result>
   protected abstract recover(envelope: OperationEnvelope, record: RecordValue): Promise<'not-started' | 'replay-safe' | 'running' | 'unknown'>
   protected lookupLegacyPending(_envelope: OperationEnvelope, _record: RecordValue): Promise<ExternalRecovery<unknown> | undefined> {
@@ -235,7 +238,7 @@ abstract class GepaOperationProvider implements OperationProvider {
   async legacyPending(envelope: OperationEnvelope): Promise<GepaLegacyPendingState | null> {
     await this.preflight(envelope)
     const record = await this.read(envelope)
-    if (!record || record.completion || record.stage === 'cancelled-before-start') return null
+    if (!record || record.completion || record.stage === 'cancelled-before-start' || record.stage === 'prepared') return null
     const captured = this.legacyInvocationEnabled ? this.capturedObservation(envelope) : undefined
     const fallback = captured && this.deadlineExpired()
       ? 'deadline reached while external execution was unresolved'
@@ -262,13 +265,25 @@ abstract class GepaOperationProvider implements OperationProvider {
   protected cancelStarted(envelope: OperationEnvelope, record: RecordValue): Promise<Result | 'not-started' | 'replay-safe' | 'running' | 'unknown'> {
     return this.recover(envelope, record)
   }
-  async preflight(envelope: OperationEnvelope): Promise<void> { this.check(envelope); await this.validate(envelope) }
+  async preflight(envelope: OperationEnvelope): Promise<void | { startsBudgetClock: boolean }> {
+    this.check(envelope); await this.validate(envelope)
+    return this.deadlineExpired() ? { startsBudgetClock: false } : undefined
+  }
+  async prepareForDispatch(envelope: OperationEnvelope): Promise<{ startsBudgetClock: boolean }> {
+    // Preparation may freeze a trusted cache split, but cannot start a physical
+    // effect. A crash before the Campaign clock commit reuses this exact plan.
+    await this.preflight(envelope)
+    const existing = await this.read(envelope)
+    const record = existing ?? (await this.create(envelope, 'prepared', await this.freezeRequest(envelope))).record
+    return { startsBudgetClock: envelope.startsBudgetClock === true && this.startsBudgetClock(envelope, record) }
+  }
   async inspect(envelope: OperationEnvelope): Promise<ProviderInspection> {
     await this.preflight(envelope)
     const record = await this.read(envelope)
     if (!record) return { status: 'not-started' }
     if (record.stage === 'cancelled-before-start') return { status: 'cancelled', releaseConfirmed: true,
       receipt: this.receipt(envelope, Object.fromEntries(this.manifest.meteredDimensions.map(d => [d, 0]))) }
+    if (record.stage === 'prepared') return { status: 'not-started' }
     if (record.completion) return { status: 'completed', completion: record.completion }
     if (record.diagnosisValue || record.generatedValue) return { status: 'replay-safe' }
     if (this.wasPhysicalAttempted(envelope)) return { status: 'running' }
@@ -288,10 +303,17 @@ abstract class GepaOperationProvider implements OperationProvider {
     }
     const { record, created } = createdRecord
     if (record.stage === 'cancelled-before-start') throw new Error('Cancelled GEPA operation cannot be submitted')
-    const observed = created ? { status: 'not-started' as const } : await this.inspect(envelope)
+    const prepared = record.stage === 'prepared'
+    if (prepared) {
+      record.stage = 'started'
+      try { await this.records.write(envelope.kind, envelope.operationId, record) }
+      catch (error) { throw new ProviderReconcileError(error instanceof Error ? error.message : String(error), { cause: error }) }
+    }
+    const newlyStarted = created || prepared
+    const observed = newlyStarted ? { status: 'not-started' as const } : await this.inspect(envelope)
     if (observed.status === 'completed') return { status: 'completed', completion: observed.completion }
     if (!created && observed.status !== 'not-started' && observed.status !== 'replay-safe') return { status: 'running' }
-    try { return { status: 'completed', completion: await this.complete(envelope, await this.execute(envelope, record, created)) } }
+    try { return { status: 'completed', completion: await this.complete(envelope, await this.execute(envelope, record, newlyStarted)) } }
     catch (error) {
       if (error instanceof PhysicalTransportPending || error instanceof ProjectionPending) {
         const pending = await this.read(envelope)
@@ -315,6 +337,10 @@ abstract class GepaOperationProvider implements OperationProvider {
   async cancel(envelope: OperationEnvelope): Promise<ProviderInspection> {
     await this.preflight(envelope)
     const { record } = await this.create(envelope, 'cancelled-before-start')
+    if (record.stage === 'prepared') {
+      record.stage = 'cancelled-before-start'
+      await this.records.write(envelope.kind, envelope.operationId, record)
+    }
     if (record.stage === 'cancelled-before-start') return { status: 'cancelled', releaseConfirmed: true,
       receipt: this.receipt(envelope, Object.fromEntries(this.manifest.meteredDimensions.map(d => [d, 0]))) }
     if (record.completion) return { status: 'completed', completion: record.completion }
@@ -360,7 +386,6 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
   constructor(root: string, artifacts: FileArtifactStore, bindings: BindingStore, readonly physical: SearchProvider,
     initialArchive?: ResearchArchive, records?: ProviderRecordBackend, readonly legacyJournal?: SearchJournal) {
     super(root, 'gepa.evaluate', { providerIntegrity: physical.integrity, capabilities: physical.capabilities,
-      processCompletion: !!physical.completeProcess, processInspection: !!physical.inspectProcess,
       initialArchiveDigest: initialArchive?.digest ?? null, legacyGlobalCache: !!legacyJournal } as unknown as JsonValue,
       artifacts, bindings, ['rolloutCells', 'repairCells'],
       { type: 'object', required: ['universe', 'plan', 'snapshot', 'processMode'], properties: { roundIdentity: { type: 'object',
@@ -370,7 +395,7 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
         projectionPolicy: { type: 'string', enum: ['complete', 'defer'] } }, additionalProperties: false },
       { type: 'object', required: ['resultRef'], properties: { resultRef: { type: 'any' } }, additionalProperties: false }, records)
     this.physicalIntegrity = physical.integrity
-    this.capabilitiesDigest = digestJson([physical.capabilities, !!physical.completeProcess, !!physical.inspectProcess])
+    this.capabilitiesDigest = digestJson(physical.capabilities)
     if (!records) for (const directory of ['gepa-cells', 'gepa-process']) mkdirSync(join(root, directory), { recursive: true })
     if (initialArchive) {
       verifyDigest(initialArchive)
@@ -457,6 +482,13 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     }
     return { missing, cached: cells, repairCells } as unknown as JsonValue
   }
+  protected override startsBudgetClock(envelope: OperationEnvelope, record: RecordValue): boolean {
+    if (this.deadlineExpired()) return false
+    const request = record.request as unknown as FrozenEvaluationRequest | undefined
+    if (!request) throw new ProviderProtocolError('GEPA evaluation dispatch plan missing')
+    return request.missing.length > 0 && request.missing.length <= envelope.limits.rolloutCells!
+      && request.repairCells <= envelope.limits.repairCells!
+  }
   protected async validate(envelope: OperationEnvelope): Promise<void> {
     const { universe, plan, snapshot, processMode, projectionPolicy } = this.input(envelope)
     verifyDigest(universe); verifyDigest(plan); validateSnapshot(snapshot)
@@ -465,7 +497,7 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
       throw new Error('GEPA projection policy is not frozen')
     this.checkSnapshotBinding(envelope, snapshot)
     if (this.physical.integrity !== this.physicalIntegrity
-      || digestJson([this.physical.capabilities, !!this.physical.completeProcess, !!this.physical.inspectProcess]) !== this.capabilitiesDigest)
+      || digestJson(this.physical.capabilities) !== this.capabilitiesDigest)
       throw new Error('GEPA physical evaluator identity drift')
     if (plan.universeDigest !== universe.digest || plan.partition !== universe.partition || !plan.participantIds.includes(snapshot.candidateId)
       || digestJson(await this.physical.describe(universe.partition)) !== digestJson(universe)) throw new Error('GEPA evaluation input/provider drift')
@@ -809,6 +841,10 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
     }
     return request as unknown as JsonValue
   }
+  protected override startsBudgetClock(envelope: OperationEnvelope, _record: RecordValue): boolean {
+    return !this.deadlineExpired() && envelope.limits.diagnosisInputTokens! > 0
+      && envelope.limits.diagnosisOutputTokens! > 0
+  }
   protected override physicalKey(envelope: OperationEnvelope): string {
     const { roundIdentity, snapshot, baseline, taskIds } = this.input(envelope)
     const round = this.roundIdentity(roundIdentity)
@@ -1032,6 +1068,9 @@ export class GepaGenerationProvider extends GepaOperationProvider {
         generatedRef: { type: 'any' }, candidateSetRef: { type: 'any' } }, additionalProperties: false }, records)
   }
   private input(envelope: OperationEnvelope): GenerateInput { return envelope.input as unknown as GenerateInput }
+  protected override startsBudgetClock(envelope: OperationEnvelope, _record: RecordValue): boolean {
+    return !this.deadlineExpired() && !this.budgetInsufficient(envelope, this.input(envelope).workplan)
+  }
   protected override physicalKey(envelope: OperationEnvelope): string {
     const { roundIdentity, workplan } = this.input(envelope)
     const round = this.roundIdentity(roundIdentity)

@@ -42,11 +42,15 @@ it('only projects an owned cell under its original per-cell key, then seals the 
   const envelope: OperationEnvelope = { campaignId: 'search-r', decisionIndex: 0, localKey: 'process',
     operationId, idempotencyKey: operationId, kind: 'gepa.process-complete',
     input: input as unknown as JsonValue, inputDigest: jsonDigest(input as unknown as JsonValue),
-    implementationDigest: provider.describe().implementationDigest, bindingSetRef: bindings.create({ harness }), limits: {} }
+    implementationDigest: provider.describe().implementationDigest, bindingSetRef: bindings.create({ harness }),
+    limits: {}, startsBudgetClock: true }
   const forged = revise(base, { evidenceRef: 'unowned-cell' })
   const forgedInput = { ...input, cellRef: artifacts.putJson(forged as unknown as JsonValue, 'gepa.evidence-cell.v1') }
   await expect(provider.preflight({ ...envelope, input: forgedInput as unknown as JsonValue,
     inputDigest: jsonDigest(forgedInput as unknown as JsonValue) })).rejects.toThrow('not part of this repair')
+  expect(await provider.prepareForDispatch(envelope)).toEqual({ startsBudgetClock: true })
+  expect((await provider.inspect(envelope)).status).toBe('not-started')
+  expect(observedKeys).toHaveLength(0)
   expect((await provider.submit(envelope)).status).toBe('completed')
   expect(observedKeys).toEqual([digestJson([baseKey, base.digest])])
   const completed = await provider.inspect(envelope)

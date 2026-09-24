@@ -96,3 +96,20 @@ it('preserves the original repair transport reason and physical handle for publi
   expect(await provider.legacyPending(envelope)).toEqual({ state: 'running', handle: 'frozen-repair-worker',
     reason: 'lost original repair response' })
 })
+
+it('starts a zero-cell repair reservation only after preparation and cancels its unstarted intent', async () => {
+  const { fixture, provider, envelope, input, artifacts, sampleCell } = setup()
+  const current = seal({ stagePlanDigest: input.plan.digest, snapshotDigest: input.snapshot.digest,
+    cells: [sampleCell], settled: true })
+  const zeroInput: GepaRepairEvaluationInput = { ...input,
+    currentRef: artifacts.putJson(current as unknown as JsonValue, 'gepa.stage-result.v1'), missing: [] }
+  const zeroEnvelope: OperationEnvelope = { ...envelope, input: zeroInput as unknown as JsonValue,
+    inputDigest: jsonDigest(zeroInput as unknown as JsonValue),
+    limits: { rolloutCells: 0, repairCells: 0 }, startsBudgetClock: true }
+  expect(await provider.prepareForDispatch(zeroEnvelope)).toEqual({ startsBudgetClock: true })
+  expect((await provider.inspect(zeroEnvelope)).status).toBe('not-started')
+  expect(fixture.executions).toHaveLength(0)
+  expect(await provider.cancel(zeroEnvelope)).toMatchObject({ status: 'cancelled', releaseConfirmed: true })
+  await expect(provider.submit(zeroEnvelope)).rejects.toThrow('Cancelled GEPA repair')
+  expect(fixture.executions).toHaveLength(0)
+})

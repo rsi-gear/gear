@@ -40,8 +40,7 @@ export class GepaProcessCompletionProvider implements OperationProvider {
   constructor(root: string, readonly artifacts: FileArtifactStore, readonly bindings: BindingStore,
     readonly physical: SearchProvider, records?: ProviderRecordBackend, readonly legacyJournal?: SearchJournal) {
     this.records = records ?? new FileProviderRecordBackend(root)
-    this.physicalIdentity = digestJson([physical.integrity, physical.capabilities,
-      !!physical.completeProcess, !!physical.inspectProcess])
+    this.physicalIdentity = digestJson([physical.integrity, physical.capabilities])
     const persistenceIdentity = 'identityDigest' in this.records ? this.records.identityDigest : null
     this.manifest = { kind: 'gepa.process-complete', implementationDigest: implementationClosureDigest(
       ['providers/gepa-process-completion'], { physicalIdentity: this.physicalIdentity,
@@ -141,14 +140,27 @@ export class GepaProcessCompletionProvider implements OperationProvider {
       throw new ProviderProtocolError('GEPA process cell is not part of this repair')
     if (!await verifyCells(this.physical, [{ cell: base, identity: base.identity }]))
       throw new ProviderProtocolError('GEPA process source provenance rejected')
-    if (digestJson([this.physical.integrity, this.physical.capabilities,
-      !!this.physical.completeProcess, !!this.physical.inspectProcess]) !== this.physicalIdentity
+    if (digestJson([this.physical.integrity, this.physical.capabilities]) !== this.physicalIdentity
       || !this.physical.completeProcess || !this.physical.capabilities.idempotentExecution)
       throw new ProviderProtocolError('GEPA process provider identity or capability drift')
     this.bindings.read(envelope.bindingSetRef)
     return { input, base }
   }
-  async preflight(envelope: OperationEnvelope): Promise<void> { await this.checked(envelope) }
+  async preflight(envelope: OperationEnvelope): Promise<void | { startsBudgetClock: boolean }> {
+    const { input } = await this.checked(envelope)
+    return Date.now() >= input.deadlineAt ? { startsBudgetClock: false } : undefined
+  }
+  async prepareForDispatch(envelope: OperationEnvelope): Promise<{ startsBudgetClock: boolean }> {
+    const { input, base } = await this.checked(envelope)
+    const initial: RecordValue = { schemaVersion: 1, operationId: envelope.operationId,
+      inputDigest: envelope.inputDigest, implementationDigest: envelope.implementationDigest,
+      bindingDigest: envelope.bindingSetRef.digest, externalKey: this.key(input, base),
+      stage: 'intent', effectStarted: false }
+    await this.flushArtifacts()
+    await this.records.create(this.manifest.kind, envelope.operationId, initial)
+    await this.read(envelope, input, base)
+    return { startsBudgetClock: envelope.startsBudgetClock === true && Date.now() < input.deadlineAt }
+  }
   private async read(envelope: OperationEnvelope, input: GepaProcessCompletionInput, base: EvidenceCell): Promise<RecordValue | undefined> {
     const record = await this.records.read<RecordValue>(this.manifest.kind, envelope.operationId)
     if (record && (record.schemaVersion !== 1 || record.operationId !== envelope.operationId
@@ -173,7 +185,7 @@ export class GepaProcessCompletionProvider implements OperationProvider {
     if (record.stage === 'cancelled-before-start') return { status: 'cancelled', releaseConfirmed: true }
     if (record.completion) return { status: 'completed', completion: record.completion }
     if (this.legacyInvocationEnabled && this.attemptedThisInvocation.has(envelope.operationId)) return { status: 'running' }
-    if (!record.effectStarted) return { status: 'replay-safe' }
+    if (!record.effectStarted) return { status: 'not-started' }
     if (this.legacyInvocationEnabled && Date.now() < input.deadlineAt) return { status: 'replay-safe' }
     const observed = await this.inspectPhysical(base, record.externalKey)
     if (observed?.status === 'complete') return { status: 'replay-safe' }
@@ -185,7 +197,7 @@ export class GepaProcessCompletionProvider implements OperationProvider {
   async legacyPending(envelope: OperationEnvelope): Promise<GepaProcessPendingState | null> {
     const { input, base } = await this.checked(envelope)
     const record = await this.read(envelope, input, base)
-    if (!record || record.completion || record.stage === 'cancelled-before-start') return null
+    if (!record || record.completion || record.stage === 'cancelled-before-start' || !record.effectStarted) return null
     const fallback = record.pendingReason ?? 'deadline reached while external execution was unresolved'
     if (record.pendingState) return { state: record.pendingState, reason: fallback,
       ...(record.pendingHandle ? { handle: record.pendingHandle } : {}) }
@@ -309,6 +321,10 @@ export class GepaProcessCompletionProvider implements OperationProvider {
     await this.flushArtifacts()
     await this.records.create(this.manifest.kind, envelope.operationId, initial)
     const record = (await this.read(envelope, input, base))!
+    if (!record.effectStarted && record.stage === 'intent') {
+      record.stage = 'cancelled-before-start'
+      await this.records.write(this.manifest.kind, envelope.operationId, record)
+    }
     if (record.stage === 'cancelled-before-start') return { status: 'cancelled', releaseConfirmed: true }
     if (record.completion) return { status: 'completed', completion: record.completion }
     return { status: 'unknown' }
