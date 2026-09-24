@@ -244,3 +244,11 @@ verifyPinnedLegacySearchClosure 核验已归档 f715748 的 search/parent/packag
 ## S4d Fresh 与历史轨迹能力区分
 
 主 agent 在独立冻结快照运行 Python SDK/recipe/Optuna unittest：22/22，无跳过。RHO/AHE 增加宿主明确指定的 historyTraceAvailable；false 时跳过不存在的历史 trace 查询，历史配置默认保留原下钻流程。FreshSeed 仍只授权真实任务内容，没有生成假轨迹或扩宽源权限；新 rollout 的轨迹继续用 producer 配对授权访问。
+
+## S2/S3 默认物理宿主装配
+
+主 agent 在已提交 HEAD 加冻结文件的独立快照验证 fresh/default profile：5/5，完整 typecheck 通过；同快照的 Python SDK 22/22 单独提交。默认宿主组合真实 seed TaskView、Hitch、DSH 角色、编辑、可信反馈和 Evo Skill 能力；宿主配置预算/模型目的地/角色，算法配置只保留科学参数。初始产物和任务 refs 由宿主创建，拒绝作者覆盖宿主管理字段。
+
+配置在创建时复制，运行前检查身份漂移；角色 catalog 错误和装配失败会清理宿主且仅一次。AHE restore 使用既有 Git 恢复能力，并核验来源的实际完成 rollout。restricted DSH helper 可用于独立宿主，但不保存任意 DSH 会话；已封存 operation 可恢复，进程在未封存 turn 中退出仍需 unknown 对账。
+
+这 5 项测试证明宿主装配、真实 Git/Hitch 录制协议及反馈接线，不等同于完整 Python 论文 recipe 的多轮运行。完整 RHO/AHE/Evo 流程、公开安装包构造示例和模型/GPU 实测继续各自验收。
