@@ -1,0 +1,132 @@
+{
+  "protocol": "gear-hitch-storage-continued-validation@1",
+  "date": "2026-09-24",
+  "node": "v26.7.0",
+  "regressions": {
+    "beforeFix": {
+      "tests": 4,
+      "pass": 0,
+      "fail": 4,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    "afterFixWithExecutionAndOci": {
+      "tests": 16,
+      "pass": 16,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    "fixes": [
+      "Reject missing, duplicate, undeclared or substituted OCI resources before object transfer or provider mutation",
+      "Interrupt stalled reader/iterator waits on cancellation or timeout; clean staging and release store lock while retaining recovery leases"
+    ]
+  },
+  "hitch": {
+    "fullSuiteBeforeFix": {
+      "tests": 846,
+      "pass": 838,
+      "fail": 1,
+      "cancelled": 0,
+      "skipped": 7
+    },
+    "fullSuiteAfterFix": {
+      "tests": 850,
+      "pass": 842,
+      "fail": 1,
+      "cancelled": 0,
+      "skipped": 7,
+      "concurrency": 2,
+      "durationMs": 261775.332166
+    },
+    "cleanBuild": "passed",
+    "typecheck": "passed",
+    "architecture": {
+      "passed": true,
+      "sourceFiles": 433,
+      "crossModuleEdges": 936
+    },
+    "syntax": "passed",
+    "package": {
+      "files": 1024,
+      "requiredProtocolFilesPresent": true,
+      "historicalExperimentsExcluded": true
+    },
+    "previousEnvironmentFailure": {
+      "test": "a cold DeepSeek commit build uses the dedicated builder and runs in a real task image without pnpm",
+      "stage": "Docker task image FROM node:22.23.0-bookworm-slim",
+      "error": "failed to fetch anonymous token: lookup auth.docker.io: i/o timeout",
+      "classification": "external Docker DNS failure"
+    },
+    "coldBuilderProxyRetry": {
+      "completedAt": "2026-09-24T02:16:53.816Z",
+      "test": "a cold DeepSeek commit build uses the dedicated builder and runs in a real task image without pnpm",
+      "tests": 1,
+      "pass": 1,
+      "fail": 0,
+      "skipped": 0,
+      "durationMs": 40393.525916,
+      "environment": {
+        "HTTP_PROXY": "http://127.0.0.1:6152",
+        "HTTPS_PROXY": "http://127.0.0.1:6152",
+        "NO_PROXY": "localhost,127.0.0.1",
+        "scope": "test process only; lowercase aliases also set"
+      },
+      "verified": [
+        "first artifact preparation is a cache miss using the dedicated builder",
+        "second artifact preparation hits the identical cached artifact",
+        "artifact runs in a real linux/amd64 task image without pnpm"
+      ],
+      "paidModelCalls": 0,
+      "rawOutput": "✔ a cold DeepSeek commit build uses the dedicated builder and runs in a real task image without pnpm (40193.7265ms)\nℹ tests 1\nℹ suites 0\nℹ pass 1\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 40393.525916\n"
+    },
+    "deduplicatedOutcome": {
+      "tests": 850,
+      "passed": 843,
+      "unresolvedFailures": 0,
+      "skipped": 7,
+      "basis": "Full suite plus one isolated proxy-configured retry; not a new full-suite run"
+    }
+  },
+  "gitDiffCheck": "passed",
+  "logs": {
+    "before": "/tmp/hitch-transfer-negative-before.log",
+    "focused": "/tmp/hitch-transfer-fix-focused.log",
+    "full": "/tmp/hitch-storage-continued-final-full.log",
+    "historical": "/tmp/gear-historical-storage-continued.log",
+    "coldBuilderProxyRetry": "/tmp/hitch-cold-builder-proxy-retry.log"
+  },
+  "testedFiles": {
+    "/Users/tangyehui/agent-hitch/src/resources/transfer.ts": "sha256:0023bfbc327dc3e9b71afca52e63d476bfe70a5efd7d7efa76edef369b57f3fb",
+    "/Users/tangyehui/agent-hitch/dist/src/resources/transfer.js": "sha256:9c0bf133206423d3d1adc28fc0e999db50f0ab02cc5788420be4dcdc9c7d0784",
+    "/Users/tangyehui/agent-hitch/test/resource-transfer.test.ts": "sha256:39a14c8c593412034b4d47c96f7a2dd8099eb75e51567e16eaec4dcdbb8f752a",
+    "/Users/tangyehui/gear/scripts/canary-historical-storage.mjs": "sha256:2ca6d642a6a495dd5fd604fb9913bcc73f23352ab6815958251a900115e6341e"
+  },
+  "logDigests": {
+    "before": "sha256:ae43baded14322c7eb639cae9471bba6b0fbf8cfa7912a30ba3525ae4cb70737",
+    "focused": "sha256:9f854788bf1dad0326831948650390dcf324d9d86e1b9a499e03352ce59757ce",
+    "full": "sha256:feab63979995103b82a2ddf433d1627265643cc0e4672bfa8b6ca7c9f5cb2b52",
+    "historical": "sha256:40b660cdd4a973c9c019a3d62cfa66c5fe77d3704fbd42ba524564536972432d",
+    "coldBuilderProxyRetry": "sha256:9ac312edcf47d4a2e1235c4f862b35b6ccba176afd6b82b539eb2074cb6ec70a"
+  },
+  "historical": {
+    "artifact": "historical-recovery-continued.json",
+    "directory": "/var/folders/vr/wrfw08f92012yl64hzyb96br0000gn/T/gear-historical-storage-afh2yG",
+    "rounds": 8,
+    "projections": 20,
+    "recoveries": 29,
+    "originalFilesUnchanged": 273,
+    "paidModelCalls": 0,
+    "forbiddenSubmissionAttempts": 0
+  },
+  "completedAt": "2026-09-24T02:16:53.816Z",
+  "gear": {
+    "package": {
+      "files": 356,
+      "continuedEvidenceIncluded": true,
+      "historicalExperimentsExcluded": true
+    },
+    "prepackBuild": "passed",
+    "unitSuite": "not rerun; no Gear implementation changes in this continuation"
+  }
+}

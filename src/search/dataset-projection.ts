@@ -1,5 +1,7 @@
-import { cp, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
+import { materializeTrees, removeOwnedTree, type MaterializationPolicy } from '../state/materialize-tree.js'
+import type { WorkspaceLock } from '../state/store.js'
 import type { EvolutionSpec } from '../types.js'
 import { digestDatasetRef } from '../state/dataset.js'
 import { digestJson } from '../state/digest.js'
@@ -7,13 +9,16 @@ import { digest, invariant, seal, sorted } from './contracts.js'
 import type { MetricContract, Partition, TaskUniverse } from './types.js'
 import { resolveMetric, resolveObjective } from '../objective/contracts.js'
 import type { RawMetricDefinition } from '../objective/types.js'
+import { parseResourceDataset, selectResources, type ResourceDataset } from '../state/resource-contract.js'
+import { parseStrictJson } from '../state/resource-protocol.js'
 
-interface ScoreDefinition { source_metric: string; direction: 'maximize' | 'minimize'; range: [number, number]; reducer: 'task-macro-mean' }
+interface ScoreDefinition { source_metric: string; direction: 'maximize' | 'minimize'; range: readonly [number, number]; reducer: 'task-macro-mean' }
 export interface DatasetDescription {
   root: string
   sourceDigest: string
+  resourceManifest?: ResourceDataset
   manifest: {
-    schema_version: '1'; kind: 'gear-harbor-benchmark'; benchmark: { id: string; revision: string }
+    schema_version: '1' | '2'; kind: 'gear-harbor-benchmark'; benchmark: { id: string; revision: string }
     adapter: { id: string; revision: string; output_protocol: 'gear-harbor-eval-result-v1' }
     scoring: { total_score: ScoreDefinition; process_score?: ScoreDefinition }
     raw_metrics?: { schema_version: '1'; metrics: RawMetricDefinition[] }
@@ -30,8 +35,9 @@ export async function describeDataset(spec: EvolutionSpec, partition: Partition,
   invariant(sourceDigest === source.digest, 'task dataset changed after evolution admission')
   const text = await readFile(join(root, 'benchmark.adapter.json'), 'utf8').catch(error => { if (error.code === 'ENOENT') return undefined; throw error })
   invariant(text, 'Gear staged search requires benchmark.adapter.json from the standard dataset compiler')
-  const manifest = JSON.parse(text) as DatasetDescription['manifest']
-  invariant(manifest.schema_version === '1' && manifest.kind === 'gear-harbor-benchmark' && manifest.adapter?.output_protocol === 'gear-harbor-eval-result-v1', 'staged search requires the existing standard benchmark manifest')
+  const raw = JSON.parse(text), resourceManifest = raw.schema_version === '2' ? parseResourceDataset(parseStrictJson(text)) : undefined
+  const manifest = (resourceManifest ?? raw) as DatasetDescription['manifest']
+  invariant((manifest.schema_version === '1' || resourceManifest) && manifest.kind === 'gear-harbor-benchmark' && manifest.adapter?.output_protocol === 'gear-harbor-eval-result-v1', 'staged search requires a supported standard benchmark manifest')
   invariant(typeof manifest.benchmark?.id === 'string' && typeof manifest.benchmark.revision === 'string'
     && typeof manifest.adapter.id === 'string' && typeof manifest.adapter.revision === 'string' && Array.isArray(manifest.tasks) && manifest.tasks.length > 0, 'invalid benchmark manifest')
   const ids = sorted(manifest.tasks.map(t => t.task_id))
@@ -40,7 +46,7 @@ export async function describeDataset(spec: EvolutionSpec, partition: Partition,
   for (const id of ids) {
     digest(manifest.tasks.find(t => t.task_id === id)!.task_digest)
     invariant((await lstat(join(root, id))).isDirectory() && (await lstat(join(root, id, 'task.toml'))).isFile(), 'each task must be a self-contained standard task directory')
-    tasks.push({ id, contentDigest: await digestDatasetRef(join(root, id)) })
+    tasks.push({ id, contentDigest: resourceManifest ? resourceManifest.tasks.find(t => t.task_id === id)!.task_digest : await digestDatasetRef(join(root, id)) })
   }
   const contract = (channel: 'outcome' | 'process', score: ScoreDefinition): MetricContract => {
     invariant(score && typeof score.source_metric === 'string' && ['maximize', 'minimize'].includes(score.direction)
@@ -76,35 +82,89 @@ export async function describeDataset(spec: EvolutionSpec, partition: Partition,
     conditionDigest: digestJson({ sourceDigest, scoring: manifest.scoring, rollout: spec.rollout, taskBudgetMs: spec.taskBudgetMs, toolchain: spec.toolchainRef, sandbox: spec.sandboxProfileRef }),
     // null means the existing evaluator controls randomness; do not invent a recorded seed.
     repetitions: Array.from({ length: spec.rollout.repetitions }, (_, index) => ({ index, seed: spec.rollout.seeds?.[index] ?? null })) })
-  return { root, sourceDigest, manifest, universe }
+  return { root, sourceDigest, manifest, universe, ...(resourceManifest ? { resourceManifest } : {}) }
 }
 
 /** Copies immutable task bytes into Gear-owned state, leaving the source dataset untouched. */
-export async function projectDataset(description: DatasetDescription, taskIds: string[], stateRoot: string): Promise<{ ref: string; digest: string }> {
+export async function projectDataset(description: DatasetDescription, taskIds: string[], stateRoot: string,
+  options: { lock: WorkspaceLock; signal: AbortSignal; policy?: MaterializationPolicy }): Promise<{ ref: string; digest: string }> {
+  await options.lock.assertHeld(dirname(stateRoot))
+  options.signal.throwIfAborted()
   const ids = sorted(taskIds)
   invariant(ids.length > 0 && ids.length === taskIds.length && ids.every(id => description.universe.tasks.some(t => t.id === id)), 'invalid subset task manifest')
   invariant(await digestDatasetRef(description.root) === description.sourceDigest, 'source dataset changed before subset preparation')
-  const ref = join(stateRoot, 'datasets', digestJson({ source: description.sourceDigest, ids }).slice(7))
-  const verify = async () => {
-    for (const id of ids) invariant(await digestDatasetRef(join(ref, id)) === description.universe.tasks.find(t => t.id === id)!.contentDigest, 'prepared task content changed')
-    const manifest = JSON.parse(await readFile(join(ref, 'benchmark.adapter.json'), 'utf8'))
-    invariant(digestJson(manifest) === digestJson(projectedManifest), 'prepared dataset manifest changed')
-    const entries = (await readdir(ref)).sort()
-    invariant(digestJson(entries) === digestJson([...ids, 'benchmark.adapter.json'].sort()), 'prepared dataset has unexpected tasks or files')
+  if (description.resourceManifest) {
+    const selection = selectResources(description.resourceManifest, ids)
+    const directory = join(stateRoot, 'selections'), ref = join(directory, `${selection.digest.slice(7)}.json`)
+    const bytes = `${JSON.stringify(selection, null, 2)}\n`
+    await mkdir(directory, { recursive: true })
+    const existing = await lstat(ref).catch((e: NodeJS.ErrnoException) => { if (e.code !== 'ENOENT') throw e; return undefined })
+    if (existing) invariant(existing.isFile() && await readFile(ref, 'utf8') === bytes, 'resource selection changed')
+    else {
+      const temp = `${ref}.${crypto.randomUUID()}.tmp`
+      try {
+        await writeFile(temp, bytes, { flag: 'wx' })
+        invariant(await digestDatasetRef(description.root) === description.sourceDigest, 'source dataset changed during selection preparation')
+        await options.lock.assertHeld(dirname(stateRoot)); options.signal.throwIfAborted(); await rename(temp, ref)
+      }
+      finally { await rm(temp, { force: true }) }
+    }
     return { ref, digest: await digestDatasetRef(ref) }
+  }
+  const ref = join(stateRoot, 'datasets', digestJson({ source: description.sourceDigest, ids }).slice(7))
+  const verify = async (directory: string) => {
+    invariant((await lstat(directory)).isDirectory(), 'prepared dataset is not a directory')
+    for (const id of ids) invariant(await digestDatasetRef(join(directory, id)) === description.universe.tasks.find(t => t.id === id)!.contentDigest, 'prepared task content changed')
+    const manifest = JSON.parse(await readFile(join(directory, 'benchmark.adapter.json'), 'utf8'))
+    invariant(digestJson(manifest) === digestJson(projectedManifest), 'prepared dataset manifest changed')
+    const entries = (await readdir(directory)).sort()
+    invariant(digestJson(entries) === digestJson([...ids, 'benchmark.adapter.json'].sort()), 'prepared dataset has unexpected tasks or files')
+    return { ref, digest: await digestDatasetRef(directory) }
   }
   const { dataset_digest: ignored, ...base } = description.manifest
   const body = { ...base, tasks: description.manifest.tasks.filter(t => ids.includes(t.task_id)) }
   const projectedManifest = { ...body, dataset_digest: digestJson(body) }
-  try { await lstat(ref); return await verify() } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+  const exists = async () => { try { await lstat(ref); return true } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; return false } }
+  // An ENOENT inside an existing canonical is corruption, never a cache miss.
+  if (await exists()) return verify(ref)
+  const quarantined = join(stateRoot, 'storage-quarantine', ref.split('/').at(-1)!)
+  const quarantineRecord = await readFile(join(quarantined, 'record.json'), 'utf8').catch(error => { if (error.code !== 'ENOENT') throw error; return undefined })
+  if (quarantineRecord) {
+    const record = JSON.parse(quarantineRecord), prepared = await verify(join(quarantined, 'tree'))
+    invariant(record.protocol === 'gear-storage-quarantine@1' && record.ref === ref && record.digest === prepared.digest, 'quarantine projection identity mismatch')
+    await options.lock.assertHeld(dirname(stateRoot)); options.signal.throwIfAborted()
+    await rename(join(quarantined, 'tree'), ref); await rm(quarantined, { recursive: true })
+    return prepared
+  }
   await mkdir(join(stateRoot, 'datasets'), { recursive: true })
-  const temp = `${ref}.${crypto.randomUUID()}.tmp`
+  const owner = crypto.randomUUID(), temp = `${ref}.${owner}.tmp`
+  const reports = join(stateRoot, 'materializations'), ownerPath = join(reports, 'owners', `${owner}.json`)
+  await mkdir(dirname(ownerPath), { recursive: true })
+  await writeFile(ownerPath, JSON.stringify({ schemaVersion: 1, kind: 'gear-materialization-owner', temp, ref,
+    pid: process.pid, token: options.lock.token, createdAt: new Date().toISOString() }), { flag: 'wx' })
   try {
     await mkdir(temp)
-    for (const id of ids) await cp(join(description.root, id), join(temp, id), { recursive: true, errorOnExist: true, force: false })
+    const report = await materializeTrees(ids.map(id => ({ source: join(description.root, id), destination: join(temp, id) })), options)
+    options.signal.throwIfAborted()
     await writeFile(join(temp, 'benchmark.adapter.json'), `${JSON.stringify(projectedManifest, null, 2)}\n`)
+    const prepared = await verify(temp)
     invariant(await digestDatasetRef(description.root) === description.sourceDigest, 'source dataset changed during subset preparation')
-    await rename(temp, ref)
-    return await verify()
-  } finally { await rm(temp, { recursive: true, force: true }) }
+    await options.lock.assertHeld(dirname(stateRoot))
+    options.signal.throwIfAborted()
+    // rename may replace an empty directory. All producers/GC hold this lock;
+    // check immediately before publication and preserve even empty corruption.
+    if (await exists()) return verify(ref)
+    try { await rename(temp, ref) } catch (error) {
+      if (!['EEXIST', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error
+      return verify(ref)
+    }
+    const reportTemp = join(reports, `${owner}.tmp`)
+    try {
+      await writeFile(reportTemp, `${JSON.stringify({ schemaVersion: 1, kind: 'gear-materialization', ref, digest: prepared.digest,
+        sourceRef: description.root, sourceDigest: description.sourceDigest, taskIds: ids, createdAt: new Date().toISOString(), report }, null, 2)}\n`, { flag: 'wx' })
+      await rename(reportTemp, join(reports, `${ref.split('/').at(-1)}.json`))
+    } finally { await rm(reportTemp, { force: true }) }
+    options.signal.throwIfAborted()
+    return prepared
+  } finally { await removeOwnedTree(temp); await rm(ownerPath, { force: true }) }
 }

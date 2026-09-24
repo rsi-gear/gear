@@ -1,0 +1,162 @@
+{
+  "protocol": "gear-clone-filesystem-canary@1",
+  "filesystem": "XFS reflink=1",
+  "node": "v22.23.0",
+  "digest": "sha256:0452b459e8db167c3f1fb72e6e3d4ddd057197a7e579af2232dfd62bd68a0977",
+  "reports": {
+    "require-clone": [
+      {
+        "schemaVersion": 1,
+        "sourceLogicalBytes": 33554432,
+        "clonedFiles": 2,
+        "clonedLogicalBytes": 33554432,
+        "copiedFiles": 0,
+        "copiedLogicalBytes": 0,
+        "fallbackReasons": {},
+        "elapsedMs": 3.9032499999999573
+      },
+      {
+        "schemaVersion": 1,
+        "sourceLogicalBytes": 33554432,
+        "clonedFiles": 2,
+        "clonedLogicalBytes": 33554432,
+        "copiedFiles": 0,
+        "copiedLogicalBytes": 0,
+        "fallbackReasons": {},
+        "elapsedMs": 1.9440419999999676
+      },
+      {
+        "schemaVersion": 1,
+        "sourceLogicalBytes": 33554432,
+        "clonedFiles": 2,
+        "clonedLogicalBytes": 33554432,
+        "copiedFiles": 0,
+        "copiedLogicalBytes": 0,
+        "fallbackReasons": {},
+        "elapsedMs": 2.175457999999935
+      }
+    ],
+    "copy": [
+      {
+        "schemaVersion": 1,
+        "sourceLogicalBytes": 33554432,
+        "clonedFiles": 0,
+        "clonedLogicalBytes": 0,
+        "copiedFiles": 2,
+        "copiedLogicalBytes": 33554432,
+        "fallbackReasons": {},
+        "elapsedMs": 13.401292000000012
+      },
+      {
+        "schemaVersion": 1,
+        "sourceLogicalBytes": 33554432,
+        "clonedFiles": 0,
+        "clonedLogicalBytes": 0,
+        "copiedFiles": 2,
+        "copiedLogicalBytes": 33554432,
+        "fallbackReasons": {},
+        "elapsedMs": 12.080000000000041
+      },
+      {
+        "schemaVersion": 1,
+        "sourceLogicalBytes": 33554432,
+        "clonedFiles": 0,
+        "clonedLogicalBytes": 0,
+        "copiedFiles": 2,
+        "copiedLogicalBytes": 33554432,
+        "fallbackReasons": {},
+        "elapsedMs": 11.814374999999927
+      }
+    ]
+  },
+  "automatic": {
+    "schemaVersion": 1,
+    "sourceLogicalBytes": 33554432,
+    "clonedFiles": 2,
+    "clonedLogicalBytes": 33554432,
+    "copiedFiles": 0,
+    "copiedLogicalBytes": 0,
+    "fallbackReasons": {},
+    "elapsedMs": 2.366333000000168
+  },
+  "cross": {
+    "schemaVersion": 1,
+    "sourceLogicalBytes": 33554432,
+    "clonedFiles": 0,
+    "clonedLogicalBytes": 0,
+    "copiedFiles": 2,
+    "copiedLogicalBytes": 33554432,
+    "fallbackReasons": {
+      "EXDEV": 2
+    },
+    "elapsedMs": 12.670790999999781
+  },
+  "physicalDeltaBytes": {
+    "require-clone": 65536,
+    "copy": 100728832
+  },
+  "peakObservedBytes": {
+    "require-clone": 65536,
+    "copy": 101294080
+  },
+  "allocationSamples": {
+    "require-clone": [
+      0,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536
+    ],
+    "copy": [
+      0,
+      16805888,
+      25255936,
+      33742848,
+      33742848,
+      33742848,
+      33742848,
+      33742848,
+      33742848,
+      50581504,
+      67485696,
+      67551232,
+      67551232,
+      67551232,
+      67551232,
+      67551232,
+      84357120,
+      101228544,
+      101294080,
+      101294080,
+      101294080,
+      101294080,
+      101294080,
+      100728832
+    ]
+  },
+  "cloneToCopyPhysicalRatio": 0.0006506180871828237,
+  "writeIsolation": true,
+  "crossDeviceRequireCloneRejected": true,
+  "measurement": "statfs available bytes on an exclusively owned 1 GiB loopback filesystem; three 32 MiB projections per mode; final delta after sync; peak sampled every 5 ms and after each projection, may miss shorter transients; metadata included",
+  "helperImage": "sha256:d8172970f45b2f99cadf528226e092fd0c5ec8fb2bbee1cd2826e720e75bf6ef",
+  "nodeImage": "sha256:b775111cdc1a20c88f9026daf7452e286cf651057e1c81d81413006c43eb0e7f"
+}
