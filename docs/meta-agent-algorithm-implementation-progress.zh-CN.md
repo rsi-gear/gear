@@ -9,10 +9,10 @@
 | S0 方案/基线 | 已提交 `e5dfeb2` | V3、离线精确重建、source/build/parent/package 身份；6 文件 95 测试通过；重复捕获匹配，漂移期望拒绝 |
 | S1 合同/内核 | 已提交；预算观察与取消恢复修补完成 | 内核/预算观察 20 项；旧 search/identity 95 项；阶段 typecheck 通过 |
 | S2 Python/作者入口 | SDK、类型化错误、provider 准入已提交；默认宿主开发中 | 独立快照跨语言 23 项、Python 20 项；动态能力与真实 Optuna 3 项 |
-| S3 历史/任务/执行 | 历史/fresh 数据、Hitch、DSH 角色已提交；反馈/编辑接线中 | 数据层 14 项、Hitch 7 项、角色/执行边界 15 项；均有独立复验 |
-| S4 非 GEPA recipes/Optuna | Python recipes、证据授权、Git Skill helper 已提交 | Python 20 项、跨语言 3 项；Skill 9 项；Evo 实际 rollout 接线待审 |
+| S3 历史/任务/执行 | 历史/fresh 数据、Hitch、DSH 角色及可信反馈已提交；编辑接线中 | 数据层 14 项、Hitch 7 项、角色/执行边界 15 项；均有独立复验 |
+| S4 非 GEPA recipes/Optuna | Python recipes、证据授权、Git Skill 与 Hitch 注入已提交 | Python 20 项、跨语言 3 项；Skill 9 项；Evo/Hitch 11 项，可信反馈 6 项 |
 | S5 训练接入 | 已提交 `9f65b79` | CPU 合同 44 项联合回归、2 项 workflow；真实 GPU 未验证 |
-| S6 GEPA/包发布验证 | GEPA 公共决策 `c9703f7` 已提交；补全/默认宿主/正式包待审 | 主审 GEPA 10 项；包外作者和旧包跨进程恢复由实现者验证，待主审 |
+| S6 GEPA/包发布验证 | GEPA 公共决策与补全已提交；编辑桥/默认宿主/正式包待审 | 主审 GEPA 16 项；包外作者和旧包跨进程恢复由实现者验证，待主审 |
 | S7 真实运行/稳定性决定 | 已检查本机条件；尚无新路径真实运行证据 | Hitch daemon 未运行、无本机 GPU/Slime 配置；SDK 继续 experimental |
 
 ## S0 已确认的基线约束
@@ -196,3 +196,9 @@ AlgorithmManifest 新增通用 requiredOperationKindsFromConfig，由冻结配�
 主 agent 在已提交 HEAD 加冻结研究/反馈文件的独立快照联合验证 12/12，完整 typecheck 通过；本提交的 research profile 与 rollout evidence 两个文件为其中 7/7，反馈实现单独审查提交。宿主可从授权来源封存首个研究视图，以原子完整记录固定选择；来源后续追加历史不会在 resume 时改变 Campaign 输入。稳定密钥和 policy identity 绑定 Campaign、任务授权、视图和实现闭包；tasks.select 与 tasks.consume 都执行同样任务范围约束。
 
 新增窄 producer 验证 helper 只接受同 Campaign 已完成 Hitch operation 的 evidence/receipt 配对，并返回冻结的生产条件供宿主反馈计算。Evo 额外核对基础 Harness/Skill 库、实际选择、规范排序的 overlay receipt 和物理执行 commit；拒绝把逻辑绑定当作技能实际执行证明。此处输入/结果均为合成或录制协议 fixture，默认宿主装配和真实服务仍另行验收。
+
+## S3b6 宿主可信测量反馈
+
+主 agent 在只含已提交 HEAD 与两个冻结文件的独立快照复测：可信反馈 6/6、完整 typecheck 通过。AHE 反馈仅聚合相同 task/view/binding/sampling/environment 的固定 repetition slots；从已完成、standard normalized 的物理 trial 计算均值和宿主阈值判定。Evo 仅接受该批固定技能绑定的实际 overlay 证据，检索顺序与物理规范排序按同一选择集合核对，反馈仍保留原请求选择。
+
+测试覆盖重复/缺失次数、错误任务/绑定/Campaign、非标准或不完整分数、阈值配置被调用者后续修改、两个技能反序选择及错误 commit。审计追加拒绝不同 producer operation 指向相同 evalId 或同一 (runId, attempt)，防止一次物理执行被计算为两次独立实验；同一 runId 的不同 attempt 不误判。此阶段使用合成完成 journal，真实完整算法和默认宿主仍在后续验收。
