@@ -51,6 +51,28 @@ EVO_LIMITS = {kind: METERED_LIMITS[kind] for kind in (
 
 
 class RecipeTests(unittest.TestCase):
+    def test_fresh_seed_disables_only_unavailable_historical_trace_projection(self):
+        rho_state = {"detailProjection": "task-report", "detailRecords": {"t1": {
+            "taskReports": [{"body": {"narrative": "real seed instruction"}}], "traceChunks": []}},
+            "history": [{"taskId": "t1", "summary": "seed prompt"}]}
+        rho_config = {"experienceViewRef": ref("v", "experience.view.v1"), "asOf": {},
+                      "historyPageSize": 1, "historyTraceAvailable": False}
+        without_trace = Rho._after_detail_projection(rho_state, rho_config)
+        self.assertEqual(without_trace.operations[0].kind, "execution.role")
+        self.assertEqual(without_trace.operations[0].input["history"]["traceChunks"], [])
+        with_trace = Rho._after_detail_projection(rho_state, {**rho_config, "historyTraceAvailable": True})
+        self.assertEqual(with_trace.operations[0].input["projection"], "trace-chunk")
+        ahe_state = {"evidenceProjection": "task-report", "afterEvidence": "propose",
+                     "historyScope": [], "executedRevision": binding("a", "ahe.bindings.v1"),
+                     "measurement": {}, "bestMeasured": None, "predictionVerdict": None,
+                     "evidenceReports": [], "evidenceTraces": [], "attribution": None}
+        ahe_config = {"experienceViewRef": ref("v", "experience.view.v1"), "asOf": {},
+                      "taskCount": 1, "historyTraceAvailable": False}
+        self.assertEqual(Ahe._after_evidence_projection(ahe_state, ahe_config).operations[0].kind,
+                         "execution.workspace-edit")
+        self.assertEqual(Ahe._after_evidence_projection(ahe_state, {**ahe_config,
+            "historyTraceAvailable": True}).operations[0].input["projection"], "trace-chunk")
+
     def test_recipe_limits_reject_unknown_kinds_and_invalid_amounts(self):
         base = {"experienceViewRef": ref("e"), "asOf": {"namespace": "n", "value": "1"},
                 "coresetSize": 1, "historyPageSize": 1, "baselineRepeats": 2,

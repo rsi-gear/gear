@@ -240,3 +240,7 @@ AlgorithmManifest 新增通用 requiredOperationKindsFromConfig，由冻结配�
 主 agent 在只含 HEAD 与四份冻结文件的独立快照验证 CLI host profile、legacy verifier 和既有 Python 桥：28/28，完整 typecheck 通过。host profile 可在创建 Campaign 前准备受管理 refs、provider 和冻结配置；TS provider 保留其物理实现身份，作者源码身份另外纳入 Campaign components。check/run/resume 都关闭宿主资源，准入失败也清理；未知能力和不支持的 CommonJS 导入明确拒绝。
 
 verifyPinnedLegacySearchClosure 核验已归档 f715748 的 search/parent/package 字节，并拒绝缺失或漂移制品；该单测实际读取保存的旧 tgz，没有跳过。此 helper 不是整个 CLI/环境认证，也不隐式迁移历史状态。正式 npm 出口、包外 wheel/TS 使用及旧 runtime 跨进程恢复仍由后续发布包验收负责。
+
+## S4d Fresh 与历史轨迹能力区分
+
+主 agent 在独立冻结快照运行 Python SDK/recipe/Optuna unittest：22/22，无跳过。RHO/AHE 增加宿主明确指定的 historyTraceAvailable；false 时跳过不存在的历史 trace 查询，历史配置默认保留原下钻流程。FreshSeed 仍只授权真实任务内容，没有生成假轨迹或扩宽源权限；新 rollout 的轨迹继续用 producer 配对授权访问。

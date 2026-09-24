@@ -84,6 +84,7 @@ class Rho:
                 "coresetSize": {"type": "integer"}, "historyPageSize": {"type": "integer"},
                 "baselineRepeats": {"type": "integer"}, "proposalCount": {"type": "integer"},
                 "samplingDigest": {"type": "string"}, "environmentDigest": {"type": "string"},
+                "historyTraceAvailable": {"type": "boolean"},
                 "operationLimits": OPERATION_LIMITS_SCHEMA,
             }, "required": ["experienceViewRef", "asOf", "coresetSize", "historyPageSize",
                              "baselineRepeats", "proposalCount", "samplingDigest", "environmentDigest"],
@@ -323,7 +324,7 @@ class Rho:
 
     @staticmethod
     def _after_detail_projection(state: dict[str, Any], config: dict[str, Any]):
-        if state["detailProjection"] == "task-report":
+        if state["detailProjection"] == "task-report" and config.get("historyTraceAvailable", True):
             return Rho._detail_query({**state, "detailProjection": "trace-chunk",
                                       "detailPageToken": None}, config, None)
         histories = [{**item, **state["detailRecords"][item["taskId"]]} for item in state["history"]]

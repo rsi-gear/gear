@@ -43,6 +43,7 @@ class Ahe:
                 "asOf": {"type": "any"}, "taskCount": {"type": "integer"},
                 "rounds": {"type": "integer"}, "rolloutsPerTask": {"type": "integer"},
                 "samplingDigest": {"type": "string"}, "environmentDigest": {"type": "string"},
+                "historyTraceAvailable": {"type": "boolean"},
                 "operationLimits": OPERATION_LIMITS_SCHEMA,
             }, "required": ["taskViewRef", "experienceViewRef", "asOf", "taskCount",
                              "rounds", "rolloutsPerTask", "samplingDigest", "environmentDigest"],
@@ -251,7 +252,7 @@ class Ahe:
 
     @staticmethod
     def _after_evidence_projection(state: dict[str, Any], config: dict[str, Any]):
-        if state["evidenceProjection"] == "task-report":
+        if state["evidenceProjection"] == "task-report" and config.get("historyTraceAvailable", True):
             return Ahe._history_query({**state, "evidenceProjection": "trace-chunk",
                                        "historyPageToken": None}, config, None)
         if state["afterEvidence"] == "propose":
