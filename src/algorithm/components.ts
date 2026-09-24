@@ -1,6 +1,6 @@
 import type { CompletionEnvelope, ComponentManifest, OperationEnvelope, OperationProvider, ProviderInspection, ProviderManifest, ProviderSubmission } from './contracts.js';
 import { assertJson, validateSchema, type JsonValue } from './schema.js';
-import { PythonHostError, PythonWorker } from './hosts/python.js';
+import { PythonRemoteError, PythonWorker } from './hosts/python.js';
 import { LocalDurableProvider, type LocalProviderFaults } from './runtime/providers.js';
 
 function completion(envelope: OperationEnvelope, outcome: CompletionEnvelope['outcome']): CompletionEnvelope {
@@ -23,7 +23,7 @@ export class PythonPolicyProvider implements OperationProvider {
         validateSchema(this.manifest.outputSchema, output);
         return { outcome: { kind: 'result' as const, value: output } };
       } catch (error) {
-        if (!(error instanceof PythonHostError) || !['PYTHON_ERROR', 'VALIDATION'].includes(error.code)) throw error;
+        if (!(error instanceof PythonRemoteError)) throw error;
         return { outcome: { kind: 'error' as const, code: error.code, message: error.message } };
       }
     }, faults);

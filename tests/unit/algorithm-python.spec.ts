@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { afterEach, beforeAll, expect, it } from 'vitest';
 import { build } from 'esbuild';
 import { algorithmCommand } from '../../src/algorithm/cli.js';
-import { PythonWorker, PythonHostError } from '../../src/algorithm/hosts/python.js';
+import { PythonWorker, PythonHostError, PythonRemoteError } from '../../src/algorithm/hosts/python.js';
 import { AlgorithmRuntime, defineWorkflow } from '../../src/algorithm/index.js';
 import { loadPythonAlgorithm, pythonHostBridgeDigest } from '../../src/algorithm/loader.js';
 
@@ -225,6 +225,44 @@ it('recovers a Python hook after its completed response is lost and host restart
     expect(await after.inspect(envelope)).toMatchObject({ status: 'completed', completion: { outcome: { kind: 'result', value: 4 } } });
     expect(await readFile(join(dir, 'hook.count'), 'utf8')).toBe('1');
   } finally { await restarted.close(); }
+});
+
+it('seals a custom Python hook error while preserving transport failure as unknown', async () => {
+  const { loadPythonComponent } = await import('../../src/algorithm/loader.js');
+  const { PythonPolicyProvider } = await import('../../src/algorithm/components.js');
+  const { jsonDigest } = await import('../../src/algorithm/schema.js');
+  const dir = await directory();
+  await writeFile(join(dir, 'hook.py'), `from gear_algorithm import component, GearAlgorithmError\nfrom pathlib import Path\n@component(id='choose', input_schema={'type':'integer'}, output_schema={'type':'integer'})\ndef choose(value):\n    marker = Path(__file__).with_suffix('.count')\n    marker.write_text(str(int(marker.read_text()) + 1) if marker.exists() else '1')\n    raise GearAlgorithmError('SCIENTIFIC_INPUT', 'no admissible candidate')\n`);
+  const entry = { configDir: dir, module: './hook.py', export: 'choose', interpreter, sdkPath };
+  const loaded = await loadPythonComponent(entry);
+  const root = join(dir, '.gear', 'hook-records');
+  const provider = new PythonPolicyProvider(loaded.value, loaded.worker, root);
+  const key = jsonDigest('typed-error');
+  const envelope = { operationId: key, idempotencyKey: key, campaignId: 'test', decisionIndex: 0,
+    localKey: 'choose', kind: 'policy.decide', input: 1, inputDigest: jsonDigest(1),
+    implementationDigest: loaded.value.implementationDigest,
+    bindingSetRef: { kind: 'binding-set' as const, digest: 'a'.repeat(64), schemaId: 'test' }, limits: {} };
+  await expect(loaded.worker.call('component.invoke', 1)).rejects.toBeInstanceOf(PythonRemoteError);
+  const first = await provider.submit(envelope);
+  expect(first).toMatchObject({ status: 'completed', completion: {
+    outcome: { kind: 'error', code: 'SCIENTIFIC_INPUT' } } });
+  await loaded.close();
+  const restarted = await loadPythonComponent(entry);
+  try {
+    const after = new PythonPolicyProvider(restarted.value, restarted.worker, root);
+    expect(await after.inspect(envelope)).toEqual(first);
+    expect(await readFile(join(dir, 'hook.count'), 'utf8')).toBe('2');
+  } finally { await restarted.close(); }
+});
+
+it('delivers a completed Python business error to the TS reducer', async () => {
+  const { dir, configPath } = await prepare('typescript');
+  await writeFile(join(dir, 'choose.py'), `from gear_algorithm import component, GearAlgorithmError\n@component(id='choose', input_schema={'type':'object','properties':{'options':{'type':'array','items':{'type':'string'}}},'required':['options'],'additionalProperties':False}, output_schema={'type':'object','properties':{'choice':{'type':'string'}},'required':['choice'],'additionalProperties':False})\ndef choose(value):\n    raise GearAlgorithmError('NO_CANDIDATE', 'no admissible choice')\n`);
+  const output: string[] = [];
+  await algorithmCommand(['check', configPath], line => output.push(line));
+  await algorithmCommand(['run', configPath], line => output.push(line));
+  expect(JSON.parse(output[1]!).snapshot.state.business.decision).toMatchObject({
+    kind: 'error', code: 'NO_CANDIDATE' });
 });
 
 it('serializes concurrent provider requests while artifact.put uses nested RPC', async () => {

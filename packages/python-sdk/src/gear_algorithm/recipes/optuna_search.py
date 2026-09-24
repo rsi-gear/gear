@@ -21,7 +21,8 @@ class OptunaSearch:
                 "operationLimits": OPERATION_LIMITS_SCHEMA,
             }, "required": ["studyName", "direction", "sampler", "seed", "space", "trials", "evaluationKind"],
             "additionalProperties": False,
-        }, {"id": "optuna.bindings.v1", "slots": {}})
+        }, {"id": "optuna.bindings.v1", "slots": {}},
+        requiredOperationKinds=("optuna.ask", "optuna.tell"))
 
     @staticmethod
     def _ask(state: dict[str, Any], config: dict[str, Any]):

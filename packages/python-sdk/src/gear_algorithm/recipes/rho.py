@@ -90,7 +90,7 @@ class Rho:
             "additionalProperties": False,
         }, {"id": "rho.bindings.v1", "slots": {
             "harness": {"schemaId": "harness.directory.v1", "required": True, "replaceable": True},
-        }})
+        }}, requiredOperationKinds=tuple(sorted(_KINDS)))
 
     def initialize(self, context: dict[str, Any]):
         return apply_operation_limits(self._initialize(context), context["config"], _KINDS)

@@ -64,6 +64,13 @@ export class AlgorithmRuntime {
       this.providers.set(manifest.kind, provider);
       this.providerManifestDigests.set(manifest.kind, jsonDigest(manifest));
     }
+    const requiredKinds = this.manifest.requiredOperationKinds ?? [];
+    if (!Array.isArray(requiredKinds) || new Set(requiredKinds).size !== requiredKinds.length)
+      throw new Error('Algorithm requiredOperationKinds must be a unique array');
+    for (const kind of requiredKinds) {
+      validName(kind);
+      if (!this.providers.has(kind)) throw new Error(`Required operation provider missing: ${kind}`);
+    }
     this.providerCatalogDigest = jsonDigest(Object.fromEntries([...this.providerManifestDigests].sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b)))));
     this.validateBudget(spec.budget);
     assertJson(spec);

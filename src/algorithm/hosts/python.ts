@@ -12,6 +12,11 @@ export class PythonHostError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = 'PythonHostError'; }
 }
 
+/** A framed exception from Python author code, distinct from timeout or lost connection. */
+export class PythonRemoteError extends PythonHostError {
+  constructor(code: string, message: string) { super(code, message); this.name = 'PythonRemoteError'; }
+}
+
 export type PythonWorkerOptions = {
   configDir: string;
   module: string;
@@ -162,7 +167,7 @@ export class PythonWorker {
       const error = frame.error;
       if (error === null || Array.isArray(error) || typeof error !== 'object' || typeof error.code !== 'string' || typeof error.message !== 'string') {
         pending.reject(new PythonHostError('PROTOCOL', 'invalid Python error envelope'));
-      } else pending.reject(new PythonHostError(error.code, error.message));
+      } else pending.reject(new PythonRemoteError(error.code, error.message));
     } else if (Object.hasOwn(frame, 'result')) pending.resolve(frame.result!);
     else pending.reject(new PythonHostError('PROTOCOL', 'Python response has no result'));
   }

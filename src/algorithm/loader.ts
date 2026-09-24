@@ -98,8 +98,14 @@ export async function loadPythonAlgorithm(entry: PythonEntry): Promise<LoadedPyt
     const stateSchema = schema(declared.stateSchema!, 'stateSchema');
     const configSchema = schema(declared.configSchema!, 'configSchema');
     const bindingSchema = record(declared.bindingSchema!, 'bindingSchema') as unknown as AlgorithmManifest['bindingSchema'];
+    const requiredKinds = declared.requiredOperationKinds ?? [];
+    if (!Array.isArray(requiredKinds) || !requiredKinds.every(kind => typeof kind === 'string')
+      || new Set(requiredKinds).size !== requiredKinds.length) {
+      throw new Error('Python algorithm requiredOperationKinds must be a unique string array');
+    }
     const manifest: AlgorithmManifest = { id: declared.id, apiVersion: ALGORITHM_API_VERSION,
-      implementationDigest: identity.implementationDigest, stateSchema, configSchema, bindingSchema };
+      implementationDigest: identity.implementationDigest, stateSchema, configSchema, bindingSchema,
+      requiredOperationKinds: requiredKinds as string[] };
     const rawRequirements = declared.requiredHooks ?? {};
     const requirementsObject = record(rawRequirements, 'requiredHooks');
     const requiredHooks: Record<string, { inputSchema: JsonSchema; outputSchema: JsonSchema; scope: 'campaign' | 'decision'; operationKind?: string }> = {};

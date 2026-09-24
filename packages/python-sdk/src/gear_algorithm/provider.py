@@ -49,10 +49,15 @@ class ArtifactClient:
 
 def validate_scientific_outcome(value: Any) -> dict[str, Any]:
     validate_json(value)
-    if not isinstance(value, dict) or value.get("kind") not in ("result", "no-result", "inconclusive"):
-        raise ValidationError("scientific outcome kind must be result, no-result or inconclusive")
+    if not isinstance(value, dict) or value.get("kind") not in ("result", "no-result", "inconclusive", "error"):
+        raise ValidationError("scientific outcome kind must be result, no-result, inconclusive or error")
     if value["kind"] == "result" and "value" not in value:
         raise ValidationError("result requires value")
+    if value["kind"] == "error":
+        if (not isinstance(value.get("code"), str) or not value["code"]
+            or not isinstance(value.get("message"), str) or not value["message"]
+            or ("retryable" in value and not isinstance(value["retryable"], bool))):
+            raise ValidationError("execution error needs code, message and optional boolean retryable")
     return value
 
 

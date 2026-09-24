@@ -126,3 +126,11 @@ RHO/AHE/Evo 角色输入现携带 evidenceRef 与 producer receiptRef 配对。�
 取消恢复使用只读 eval list/inspect 查找已提交的幂等键，不调用可能创建作业的 recoverReservation 重放；整个查找有 15 秒截止、单命令至多 5 秒和 256 条限制，超限或无法确认保留 unknown。取消先于提交时持久记录零用量，延迟 submit 被拒绝；已提交作业取得停止确认后才释放。`rollout.trials` 计已接受的单任务逻辑提交，包括失败/取消，不能解读为执行时长或成功 trial 数。
 
 本端当前验证 Harness 绑定与已授权 seed TaskView。Evo 动态技能注入、新 Campaign 初始化及 DSH 角色/workspace-edit 接线继续独立交付；未把缺少这些能力的模板标为可直接运行的完整物理流程。
+
+## S2/S6 跨语言错误与能力准入补充
+
+主 agent 用仅包含已提交 HEAD 与本次冻结文件的独立快照验证，排除了仍在开发的 CLI/package/physical-host 改动：跨语言和 required-kind 两个测试文件 23/23、Python SDK/recipes/Optuna 20/20（无跳过），完整 typecheck 通过。
+
+AlgorithmManifest 可声明 requiredOperationKinds，运行时在创建 Campaign 前验证 provider catalog，含内建 bindings.derive。Python hook 明确返回的远端业务异常封存为类型化完成错误；超时/连接丢失仍与业务异常区分。Python DurableLocalProvider 支持显式 error outcome 并在恢复时复用；任意 execute 抛出异常不会被一律伪装成已完成。
+
+本提交不包含正式 package exports、CLI factory 或旧 runtime 分派，它们须与兼容验证一起交付。

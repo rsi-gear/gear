@@ -26,6 +26,7 @@ class AlgorithmManifest:
     bindingSchema: dict[str, Any]
     apiVersion: str = API_VERSION
     requiredHooks: dict[str, dict[str, Any]] = field(default_factory=dict)
+    requiredOperationKinds: tuple[str, ...] = ()
 
     def to_wire(self) -> dict[str, Any]:
         _check_schema(self.stateSchema)
@@ -37,7 +38,12 @@ class AlgorithmManifest:
             _check_schema(requirement.get("outputSchema"))
             if requirement.get("scope") not in ("campaign", "decision"):
                 raise ValidationError("hook scope must be campaign or decision")
+        if (not isinstance(self.requiredOperationKinds, (tuple, list))
+            or any(not isinstance(kind, str) or not kind for kind in self.requiredOperationKinds)
+            or len(set(self.requiredOperationKinds)) != len(self.requiredOperationKinds)):
+            raise ValidationError("requiredOperationKinds must contain unique nonempty kinds")
         result = vars(self).copy()
+        result["requiredOperationKinds"] = list(self.requiredOperationKinds)
         validate_json(result)
         return result
 

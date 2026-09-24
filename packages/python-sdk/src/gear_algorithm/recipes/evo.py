@@ -27,7 +27,7 @@ class Evo:
                              "samplingDigest", "environmentDigest"], "additionalProperties": False,
         }, {"id": "evo.bindings.v1", "slots": {
             "skills": {"schemaId": "skills.library.v1", "required": True, "replaceable": True},
-        }})
+        }}, requiredOperationKinds=tuple(sorted(_KINDS)))
 
     def initialize(self, context: dict[str, Any]):
         return apply_operation_limits(self._initialize(context), context["config"], _KINDS)

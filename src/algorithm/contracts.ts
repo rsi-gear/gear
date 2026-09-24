@@ -87,6 +87,8 @@ export type AlgorithmManifest = {
   stateSchema: JsonSchema;
   configSchema: JsonSchema;
   bindingSchema: BindingSchema;
+  /** Operation kinds required before a campaign can be admitted. */
+  requiredOperationKinds?: string[];
 };
 export type CampaignSpec = {
   campaignId: string;

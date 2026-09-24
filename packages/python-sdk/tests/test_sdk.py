@@ -67,6 +67,25 @@ class SdkTests(unittest.TestCase):
                 with self.assertRaises(ValidationError):
                     restarted.inspect(drift)
 
+    def test_explicit_execution_error_is_sealed_and_replayed(self):
+        class Failed(DurableLocalProvider):
+            calls = 0
+            def execute(self, request):
+                self.calls += 1
+                return {"kind": "error", "code": "DATASET_INVALID",
+                        "message": "task payload failed validation", "retryable": False}
+        with tempfile.TemporaryDirectory() as root:
+            manifest = ProviderManifest("toy.error", {"type": "object"}, {"type": "object"})
+            request = {"operationId": "op", "idempotencyKey": "key", "inputDigest": "a" * 64,
+                       "implementationDigest": "b" * 64, "kind": "toy.error", "input": {}}
+            first = Failed(manifest, root)
+            completed = first.submit(request)
+            self.assertEqual(completed["completion"]["outcome"]["code"], "DATASET_INVALID")
+            restarted = Failed(manifest, root)
+            self.assertEqual(restarted.inspect(request), completed)
+            self.assertEqual(restarted.submit(request), completed)
+            self.assertEqual(restarted.calls, 0)
+
     def test_cancelled_before_submit_is_durable_and_never_executes(self):
         class Counted(DurableLocalProvider):
             calls = 0
