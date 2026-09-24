@@ -2,7 +2,7 @@ import { validateSearchSchema } from '../search/schema.js'
 import { searchProjectionAggregates } from '../search/legacy.js'
 import { constants } from 'node:fs'
 import { access, mkdir, open, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import type {
   CandidateAssessment, ChampionState, ComponentKind, ComponentRef, EvaluationEvidence, MetaSessionState,
   PairedTrial, PairingAudit, PopulationMember, PopulationState, RefinementRound, RoundEvaluationAttempt, EvaluationSubmissionIntent,
@@ -22,6 +22,7 @@ interface LockRecord {
 
 export interface WorkspaceLock {
   readonly token: string
+  assertHeld(stateRoot: string): Promise<void>
   retarget(roundId: string): Promise<void>
   release(): Promise<void>
 }
@@ -304,6 +305,11 @@ export class RefineStateStore {
         let released = false
         return {
           token,
+          assertHeld: async (stateRoot: string): Promise<void> => {
+            if (released || resolve(stateRoot) !== resolve(this.root)) throw new Error('workspace lock is released or belongs to another evolution')
+            const current = await this.readJson<LockRecord>(lockPath)
+            if (current?.token !== token || current.pid !== process.pid) throw new Error('workspace lock ownership changed')
+          },
           retarget: async (roundId: string): Promise<void> => {
             if (released) throw new Error('cannot retarget a released workspace lock')
             const current = await this.readJson<LockRecord>(lockPath)
@@ -328,9 +334,16 @@ export class RefineStateStore {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
         const owner = await this.readJson<LockRecord>(lockPath)
         if (attempt === 0 && owner !== undefined && !isAlive(owner.pid)) {
-          await unlink(lockPath).catch((unlinkError: NodeJS.ErrnoException) => {
-            if (unlinkError.code !== 'ENOENT') throw unlinkError
-          })
+          // Serialize stale-owner recovery. A crashed recovery guard requires
+          // explicit inspection; it may retain a lock, never delete a new one.
+          const guardPath = `${lockPath}.recovery`
+          let guard
+          try { guard = await open(guardPath, 'wx', 0o600) }
+          catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new RoundAlreadyRunningError(owner); throw error }
+          try {
+            const current = await this.readJson<LockRecord>(lockPath)
+            if (current?.token === owner.token && current.pid === owner.pid && !isAlive(current.pid)) await unlink(lockPath)
+          } finally { await guard.close(); await unlink(guardPath) }
           continue
         }
         throw new RoundAlreadyRunningError(owner)

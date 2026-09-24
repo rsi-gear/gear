@@ -1,0 +1,130 @@
+{
+  "protocol": "hitch-empty-daemon-canary@1",
+  "directory": "/var/folders/vr/wrfw08f92012yl64hzyb96br0000gn/T/hitch-empty-daemon-a2xeSq",
+  "paidModelCalls": 0,
+  "samples": [
+    {
+      "phase": "empty-daemon",
+      "daemonAllocatedKiB": 312,
+      "dockerAccounting": "{\"Active\":\"0\",\"Reclaimable\":\"0B\",\"Size\":\"0B\",\"TotalCount\":\"0\",\"Type\":\"Images\"}\n{\"Active\":\"0\",\"Reclaimable\":\"0B\",\"Size\":\"0B\",\"TotalCount\":\"0\",\"Type\":\"Containers\"}\n{\"Active\":\"0\",\"Reclaimable\":\"0B\",\"Size\":\"0B\",\"TotalCount\":\"0\",\"Type\":\"Local Volumes\"}\n{\"Active\":\"0\",\"Reclaimable\":\"0B\",\"Size\":\"0B\",\"TotalCount\":\"0\",\"Type\":\"Build Cache\"}"
+    },
+    {
+      "phase": "registry-infrastructure-only",
+      "daemonAllocatedKiB": 146436,
+      "dockerAccounting": "{\"Active\":\"1\",\"Reclaimable\":\"0B (0%)\",\"Size\":\"24.94MB\",\"TotalCount\":\"1\",\"Type\":\"Images\"}\n{\"Active\":\"1\",\"Reclaimable\":\"0B\",\"Size\":\"0B\",\"TotalCount\":\"1\",\"Type\":\"Containers\"}\n{\"Active\":\"1\",\"Reclaimable\":\"0B\",\"Size\":\"0B\",\"TotalCount\":\"1\",\"Type\":\"Local Volumes\"}\n{\"Active\":\"0\",\"Reclaimable\":\"0B\",\"Size\":\"0B\",\"TotalCount\":\"0\",\"Type\":\"Build Cache\"}"
+    },
+    {
+      "phase": "imported",
+      "daemonAllocatedKiB": 626444,
+      "dockerAccounting": "{\"Active\":\"1\",\"Reclaimable\":\"121MB (82%)\",\"Size\":\"145.9MB\",\"TotalCount\":\"2\",\"Type\":\"Images\"}\n{\"Active\":\"1\",\"Reclaimable\":\"0B\",\"Size\":\"0B\",\"TotalCount\":\"1\",\"Type\":\"Containers\"}\n{\"Active\":\"1\",\"Reclaimable\":\"0B (0%)\",\"Size\":\"44.37MB\",\"TotalCount\":\"1\",\"Type\":\"Local Volumes\"}\n{\"Active\":\"0\",\"Reclaimable\":\"0B\",\"Size\":\"0B\",\"TotalCount\":\"0\",\"Type\":\"Build Cache\"}"
+    },
+    {
+      "phase": "offline-executed",
+      "daemonAllocatedKiB": 1018628,
+      "dockerAccounting": "{\"Active\":\"1\",\"Reclaimable\":\"121MB (82%)\",\"Size\":\"145.9MB\",\"TotalCount\":\"4\",\"Type\":\"Images\"}\n{\"Active\":\"0\",\"Reclaimable\":\"0B\",\"Size\":\"0B\",\"TotalCount\":\"1\",\"Type\":\"Containers\"}\n{\"Active\":\"1\",\"Reclaimable\":\"0B (0%)\",\"Size\":\"44.37MB\",\"TotalCount\":\"1\",\"Type\":\"Local Volumes\"}\n{\"Active\":\"0\",\"Reclaimable\":\"43.49kB\",\"Size\":\"43.49kB\",\"TotalCount\":\"11\",\"Type\":\"Build Cache\"}"
+    }
+  ],
+  "infrastructureImage": "sha256:d8172970f45b2f99cadf528226e092fd0c5ec8fb2bbee1cd2826e720e75bf6ef",
+  "emptyInitialDockerStore": true,
+  "emptyInitialFileCAS": true,
+  "emptyTargetRegistry": true,
+  "sharedHostDockerLayers": false,
+  "externalNetworkDisconnected": true,
+  "registryStoppedDuringExecution": true,
+  "answer": 3,
+  "score": {
+    "reward": 1
+  },
+  "transferredBytes": 3619,
+  "repeatTransferredBytes": 0,
+  "materializedTaskDigest": "sha256:cf1455d2c40f6e58cf46df0da27fd703ffa501dd336e6654175d426608cc9f22",
+  "storage": {
+    "protocol": "hitch-resource-storage@1",
+    "scopes": {
+      "objects": {
+        "files": 15,
+        "logicalBytes": 6064,
+        "allocatedBlockBytes": 61440
+      },
+      "oci-manifests": {
+        "files": 1,
+        "logicalBytes": 1907,
+        "allocatedBlockBytes": 4096
+      },
+      "descriptor-views": {
+        "files": 9,
+        "logicalBytes": 1837,
+        "allocatedBlockBytes": 36864
+      },
+      "view-quarantine": {
+        "files": 0,
+        "logicalBytes": 0,
+        "allocatedBlockBytes": 0
+      },
+      "quarantine": {
+        "files": 0,
+        "logicalBytes": 0,
+        "allocatedBlockBytes": 0
+      },
+      "workspaces": {
+        "files": 10,
+        "logicalBytes": 2172,
+        "allocatedBlockBytes": 40960
+      },
+      "staging": {
+        "files": 0,
+        "logicalBytes": 0,
+        "allocatedBlockBytes": 0
+      },
+      "workspace-records": {
+        "files": 1,
+        "logicalBytes": 3298,
+        "allocatedBlockBytes": 4096
+      },
+      "roots": {
+        "files": 2,
+        "logicalBytes": 7478,
+        "allocatedBlockBytes": 8192
+      },
+      "leases": {
+        "files": 13,
+        "logicalBytes": 11780,
+        "allocatedBlockBytes": 53248
+      },
+      "transactions": {
+        "files": 0,
+        "logicalBytes": 0,
+        "allocatedBlockBytes": 0
+      }
+    },
+    "roots": [
+      {
+        "owner": "empty-daemon:sum-0002",
+        "generation": 1,
+        "state": "active",
+        "purpose": "frozen-task"
+      },
+      {
+        "owner": "offline-execution",
+        "generation": 1,
+        "state": "active",
+        "purpose": "frozen-task"
+      }
+    ],
+    "leases": [
+      {
+        "id": "4f96c289-b32d-4684-9b8f-522ced97f0bb",
+        "owner": "offline-execution",
+        "state": "active",
+        "purpose": "execution"
+      }
+    ],
+    "physicalAccounting": "allocated blocks may overlap under CoW; no exclusive-byte or saved-byte claim",
+    "externalScopes": [
+      "source dataset/projections",
+      "OCI image layers",
+      "BuildKit cache",
+      "sealed run evidence"
+    ]
+  }
+}

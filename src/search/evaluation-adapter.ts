@@ -1,4 +1,8 @@
 import { join } from 'node:path'
+import type { WorkspaceLock } from '../state/store.js'
+import type { MaterializationPolicy } from '../state/materialize-tree.js'
+import { identity as resourceIdentity } from '../state/resource-protocol.js'
+import { parseResourceTask } from '../state/resource-contract.js'
 import type { EvaluationCondition, EvaluationEvidence, EvaluationRequest, EvaluationReservation, EvaluationSubmissionIntent, EvolutionSpec, HarnessManifest, HitchTrajectoryReader, HitchVerifierEvidence, RefineEvaluator, RefinementRound } from '../types.js'
 import { digestJson } from '../state/digest.js'
 import { digestDatasetRef } from '../state/dataset.js'
@@ -27,6 +31,8 @@ interface Source {
 interface Operation { submittedIdentity?: SubmittedIdentity; reservation?: EvaluationReservation; reserving?: boolean; started: boolean; sourceDigest?: string }
 export interface EvaluationSearchOptions {
   spec: EvolutionSpec; workspaceRoot: string; stateRoot: string
+  lock(): Promise<WorkspaceLock>
+  materialization?: MaterializationPolicy
   /** Stable full-dataset request context, available before the first round exists. */
   identityRound: Readonly<RefinementRound>
   round(): Promise<RefinementRound>
@@ -41,6 +47,7 @@ export class EvaluationSearchAdapter implements SearchProvider {
   readonly diagnosis: DiagnosisProvider
   private readonly datasets = new Map<string, Promise<DatasetDescription>>()
   private readonly cohorts = new Map<string, { digest: string }>()
+  private readonly retentions = new Map<string, { protocol: 'gear-resource-retention@1'; state: 'active'; owner: string; generation: number; sourceRef: string; inputDigest: string; planDigest: string; tasks: string[] }>()
   constructor(readonly evaluator: RefineEvaluator, readonly options: EvaluationSearchOptions) {
     this.store = new SearchStore(options.stateRoot)
     this.diagnosis = {
@@ -60,10 +67,29 @@ export class EvaluationSearchAdapter implements SearchProvider {
     if (identity.invocationFingerprint !== undefined) digest(identity.invocationFingerprint)
     return structuredClone(identity)
   }
-  private async dataset(partition: 'seed' | 'held-out'): Promise<DatasetDescription> {
+  private async dataset(partition: 'seed' | 'held-out', signal?: AbortSignal): Promise<DatasetDescription> {
     let value = this.datasets.get(partition)
     if (!value) { value = describeDataset(this.options.spec, partition, this.options.workspaceRoot); this.datasets.set(partition, value) }
     const source = await value, round = this.options.identityRound
+    let resourcePlanDigest: string | undefined
+    if (source.resourceManifest) {
+      invariant(this.evaluator.resourcePreflight, 'resource-aware datasets require Hitch resource preflight capability before freezing cells')
+      const owner = `gear:${digestJson(this.options.stateRoot).slice(7)}:${this.options.spec.evolutionId}:${partition}`
+      const retained = await this.store.read<{ state: string }>(`resource-retention/${partition}`)
+      invariant(!retained || retained.state === 'active', 'resource retention was released; create a new evolution')
+      const preflight = await this.evaluator.resourcePreflight({ ref: source.root, owner, generation: 1 }, signal)
+      invariant(preflight.protocol === 'hitch-resource-preflight@1' && preflight.inputDigest === source.resourceManifest.dataset_digest, 'resource preflight input identity mismatch')
+      invariant(preflight.plans.length === source.resourceManifest.tasks.length, 'resource preflight task membership mismatch')
+      for (const [index, plan] of preflight.plans.entries()) {
+        const task = parseResourceTask(plan.task), { digest: planDigest, ...body } = plan
+        invariant(plan.protocol === 'hitch-resource-plan@1' && plan.resolver === source.resourceManifest.execution.resolver
+          && plan.backend === source.resourceManifest.execution.backend && plan.platform === source.resourceManifest.execution.platform
+          && digestJson(task) === digestJson(source.resourceManifest.tasks[index]) && resourceIdentity(plan.protocol, body) === planDigest, 'resource preflight plan mismatch')
+      }
+      invariant(preflight.planDigest === resourceIdentity(preflight.protocol, { inputDigest: preflight.inputDigest, plans: preflight.plans.map(p => ({ taskId: p.task.task_id, digest: p.digest })) }), 'resource preflight aggregate mismatch')
+      resourcePlanDigest = preflight.planDigest
+      this.retentions.set(partition, { protocol: 'gear-resource-retention@1', state: 'active', owner, generation: 1, sourceRef: source.root, inputDigest: preflight.inputDigest, planDigest: preflight.planDigest, tasks: preflight.plans.map(p => p.task.task_id) })
+    }
     if (source.universe.objective) {
       const required = new Set([...source.universe.objective.terms.filter(t => t.weight !== 0).map(t => t.metric), ...source.universe.objective.constraints.map(c => c.metric)])
       if (source.universe.rawMetricContracts?.some(c => required.has(c.id) && c.source.path.startsWith('verifier.'))) {
@@ -74,7 +100,8 @@ export class EvaluationSearchAdapter implements SearchProvider {
     const request: EvaluationRequest = { phase: partition === 'seed' ? 'seed-baseline' : 'held-out-baseline',
       dataset: condition.dataset.ref, harnessRef: round.targetHarnessRef, condition }
     const identity = await this.executionIdentity(round, request)
-    const binding = identity ?? { mode: 'verified-submission', evolutionId: this.options.spec.evolutionId }
+    const baseBinding = identity ?? { mode: 'verified-submission', evolutionId: this.options.spec.evolutionId }
+    const binding = resourcePlanDigest ? { ...baseBinding, resourcePlanDigest } : baseBinding
     const cohort = seal({ round, request, identity: binding })
     const pointer = await this.store.read<{ ref: string }>(`evolution/evaluator-cohort-${partition}`)
     const frozen = pointer ? await this.store.object<{ digest: string }>(pointer.ref) : this.cohorts.get(partition) ?? cohort
@@ -86,7 +113,7 @@ export class EvaluationSearchAdapter implements SearchProvider {
   async describe(partition: 'seed' | 'held-out'): Promise<TaskUniverse> { return structuredClone((await this.dataset(partition)).universe) }
 
   private async batches(input: Input, create: boolean): Promise<Batch[] | undefined> {
-    const source = await this.dataset(input.plan.partition)
+    const source = await this.dataset(input.plan.partition, input.signal)
     invariant(source.universe.digest === input.plan.universeDigest, 'evaluation universe changed')
     const name = `evaluator-input-${input.idempotencyKey.slice(7)}`
     const pointer = await this.store.read<{ ref: string }>(`evolution/${name}`)
@@ -96,7 +123,10 @@ export class EvaluationSearchAdapter implements SearchProvider {
       return saved.batches
     }
     if (!create) return undefined
-    await this.store.freezeEvolution(`evaluator-cohort-${input.plan.partition}`, () => this.cohorts.get(input.plan.partition)!)
+    const lock = await this.options.lock()
+    const retention = this.retentions.get(input.plan.partition)
+    if (retention) await this.store.write(`resource-retention/${input.plan.partition}`, retention, async () => { await lock.assertHeld(join(this.options.stateRoot, '..')); input.signal.throwIfAborted() })
+    await this.store.freezeEvolution(`evaluator-cohort-${input.plan.partition}`, () => this.cohorts.get(input.plan.partition)!, async () => { await lock.assertHeld(join(this.options.stateRoot, '..')); input.signal.throwIfAborted() })
     const round = await this.options.round()
     invariant((await this.options.manifest(input.snapshot)).digest === input.snapshot.manifestDigest, 'evaluation harness manifest changed')
     const prepared = await this.store.freezeEvolution(name, async () => {
@@ -105,7 +135,8 @@ export class EvaluationSearchAdapter implements SearchProvider {
         input.signal.throwIfAborted()
         const cells = input.cells.filter(c => c.repetition === repetition)
         invariant(cells.every(c => c.harnessCommit === input.snapshot.commit && c.conditionDigest === source.universe.conditionDigest), 'requested cells have inconsistent execution identity')
-        const dataset = await projectDataset(source, cells.map(c => c.taskId), this.options.stateRoot)
+        const dataset = await projectDataset(source, cells.map(c => c.taskId), this.options.stateRoot,
+          { lock, signal: input.signal, ...(this.options.materialization ? { policy: this.options.materialization } : {}) })
         const key = digestJson([input.idempotencyKey, repetition]), base = input.plan.partition === 'seed' ? round.plan.seed : round.plan.heldOut
         const { conditionId: ignored, seeds: ignoredSeeds, ...body } = base
         const conditionBody = { ...body, dataset, repetitions: 1, ...(cells[0]!.seed === null ? {} : { seeds: [cells[0]!.seed!] }) }
@@ -116,8 +147,10 @@ export class EvaluationSearchAdapter implements SearchProvider {
         const identity = await this.executionIdentity(context, request, input.signal)
         batches.push({ cells, request, round: context, key, ...(intent ? { intent } : {}), ...(identity ? { identity } : {}), cohortDigest: source.universe.conditionDigest })
       }
+      input.signal.throwIfAborted()
+      await lock.assertHeld(join(this.options.stateRoot, '..'))
       return seal({ inputDigest: digestJson({ plan: input.plan, snapshot: input.snapshot, cells: input.cells }), batches })
-    })
+    }, async () => { await lock.assertHeld(join(this.options.stateRoot, '..')); input.signal.throwIfAborted() })
     return prepared.batches
   }
 

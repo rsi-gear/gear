@@ -1,10 +1,12 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { identity as resourceIdentity } from '../../src/state/resource-protocol.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { EvaluationEvidence, EvaluationRequest, HitchTrajectoryReader, HitchVerifierEvidence, RefineEvaluator } from '../../src/types.js'
 import { RefineCapabilities } from '../../src/capabilities.js'
 import { digestJson } from '../../src/state/digest.js'
+import { RefineStateStore } from '../../src/state/store.js'
 import { digestDatasetRef } from '../../src/state/dataset.js'
 import { attachSearchEvaluation, EvaluationSearchAdapter } from '../../src/search/evaluation-adapter.js'
 import { FailureClusterSearch } from '../../src/search/engine.js'
@@ -39,7 +41,7 @@ async function setup(process = true, repetitions = 1, deferred = false, taskCoun
     reserve: async () => { const evalId = `eval-${++serial}`; reservations.set(evalId, runtime); return { provider: 'fixture-existing-evaluator', evalId } },
     async evaluate(_round, request, _signal, reservation) {
       requests.push(request)
-      const manifest = JSON.parse(await readFile(join(request.dataset, 'benchmark.adapter.json'), 'utf8'))
+      const manifest = JSON.parse(await readFile((await lstat(request.dataset)).isFile() ? request.dataset : join(request.dataset, 'benchmark.adapter.json'), 'utf8'))
       const trials = manifest.tasks.map((t: { task_id: string }) => {
         const runId = `${reservation!.evalId}-${t.task_id}`; runs.set(runId, t.task_id)
         const score = request.harnessRef === source.anchor.commit ? Number(t.task_id.slice(5)) % 5 === 0 ? 1 : 0.3 : 1
@@ -55,7 +57,8 @@ async function setup(process = true, repetitions = 1, deferred = false, taskCoun
     inspectVerifierEvidence: async (runId: string) => ({ runId, observation: { status: 'valid' }, verifier: { status: 'complete', feedback: { schemaVersion: 1,
       items: [{ code: `workflow-${Number(runs.get(runId)!.slice(5)) % 4}`, severity: 'error', message: 'Failed the fixture workflow' }] } } }),
   }
-  const store = new SearchStore(join(root, 'search')), options = { spec, workspaceRoot: root, stateRoot: store.root, identityRound: roundFixture({ workspaceRoot: root }),
+  const lock = await new RefineStateStore(root).acquireRoundLock()
+  const store = new SearchStore(join(root, 'search')), options = { lock: async () => lock, spec, workspaceRoot: root, stateRoot: store.root, identityRound: roundFixture({ workspaceRoot: root }),
     round: async () => roundFixture({ workspaceRoot: root }), manifest: async (snapshot: Snapshot) => ({ schemaVersion: 1 as const, dshBaseRef: source.anchor.commit, toolchainRef: 'fixture', sandboxProfileRef: 'fixture', digest: snapshot.manifestDigest,
       artifacts: [{ path: 'harness/main.ts', bytes: 1, digest: digestJson('file') }] }) }
   const provider = new EvaluationSearchAdapter(evaluator, options)
@@ -72,6 +75,93 @@ async function batchInput(f: Awaited<ReturnType<typeof setup>>, taskIds: string[
   return { plan, snapshot: f.source.anchor, cells: taskIds.map(id => cellIdentity(universe, id, 0, f.source.anchor)),
     idempotencyKey: digestJson(key), signal: new AbortController().signal }
 }
+
+async function resourceSetup() {
+  const f = await setup(false, 1, false, 1)
+  const fixture = JSON.parse(await readFile('test-contracts/hitch-resources-v1.json', 'utf8'))
+  const { task_digest: unused, ...taskBody } = fixture.dataset.tasks[0]
+  const task = { ...taskBody, task_id: 'task-0' }
+  const { dataset_digest: ignored, ...body } = fixture.dataset
+  body.tasks = [{ ...task, task_digest: unused }]
+  const dataset = { ...body, dataset_digest: resourceIdentity('hitch-resource-dataset@2', body) }
+  await writeFile(join(f.spec.datasets.seed.ref, 'benchmark.adapter.json'), JSON.stringify(dataset))
+  f.spec.datasets.seed.digest = await digestDatasetRef(f.spec.datasets.seed.ref)
+  f.options.identityRound.plan.seed.dataset = f.spec.datasets.seed
+  const planBody = { protocol: 'hitch-resource-plan@1' as const, resolver: dataset.execution.resolver, backend: dataset.execution.backend, platform: dataset.execution.platform, task: body.tasks[0] }
+  const plans = [{ ...planBody, digest: resourceIdentity(planBody.protocol, planBody) }]
+  const preflight = { protocol: 'hitch-resource-preflight@1' as const, inputDigest: dataset.dataset_digest, plans, planDigest: resourceIdentity('hitch-resource-preflight@1', { inputDigest: dataset.dataset_digest, plans: plans.map(p => ({ taskId: p.task.task_id, digest: p.digest })) }) }
+  return { ...f, preflight }
+}
+
+describe('resource-aware admission and selection', () => {
+  it.each(['pin-ack', 'retention', 'cohort', 'batch'].flatMap(point => ['before', 'after'].map(phase => ({ point, phase }))))(
+    'recovers a resource freeze failure $phase $point without dangling frozen inputs or duplicate evaluation', async ({ point, phase }) => {
+      const f = await resourceSetup(), pins = new Map<string, number>()
+      let armed = false, interrupted = false
+      f.evaluator.resourcePreflight = async input => {
+        const crash = armed && !interrupted && point === 'pin-ack'
+        if (crash && phase === 'before') { interrupted = true; throw new Error('resource freeze crash') }
+        pins.set(input.owner, input.generation)
+        if (crash) { interrupted = true; throw new Error('resource freeze crash') }
+        return f.preflight
+      }
+      const input = await batchInput(f, ['task-0']); pins.clear(); armed = true
+      const original = SearchStore.prototype.write
+      const spy = vi.spyOn(SearchStore.prototype, 'write').mockImplementation(async function (this: SearchStore, name, value, beforePublish) {
+        const boundary = name === 'resource-retention/seed' ? 'retention' : name === 'evolution/evaluator-cohort-seed' ? 'cohort'
+          : name.startsWith('evolution/evaluator-input-') ? 'batch' : undefined
+        if (boundary) expect(pins.size).toBe(1)
+        const crash = armed && !interrupted && boundary === point
+        if (crash && phase === 'before') { interrupted = true; throw new Error('resource freeze crash') }
+        await original.call(this, name, value, beforePublish)
+        if (crash) { interrupted = true; throw new Error('resource freeze crash') }
+      })
+      await expect(f.provider.evaluate(input)).rejects.toThrow('resource freeze crash')
+      expect(interrupted).toBe(true); expect(f.requests).toHaveLength(0); expect(f.reservations.size).toBe(0)
+      const key = `evolution/evaluator-input-${input.idempotencyKey.slice(7)}`
+      const frozen = await f.store.read<{ ref: string }>(key)
+      if (frozen) {
+        expect(pins.size).toBe(1)
+        expect(await f.store.read('resource-retention/seed')).toMatchObject({ state: 'active', planDigest: f.preflight.planDigest })
+        expect((await f.store.object<{ digest: string }>(frozen.ref)).digest).toBe(frozen.ref)
+      }
+      spy.mockRestore()
+      const recovered = new EvaluationSearchAdapter(f.evaluator, f.options)
+      const result = await recovered.evaluate(input)
+      expect(result).toHaveLength(1); expect(f.requests).toHaveLength(1)
+      const resumed = new EvaluationSearchAdapter(f.evaluator, f.options)
+      expect(await resumed.evaluate(input)).toEqual(result)
+      expect(f.requests).toHaveLength(1); expect(f.reservations.size).toBe(1); expect(pins.size).toBe(1)
+      if (frozen) expect(await f.store.read(key)).toEqual(frozen)
+    },
+  )
+  it('rejects missing capability and mismatched plans before reservation or freezing', async () => {
+    const f = await resourceSetup()
+    await expect(f.provider.describe('seed')).rejects.toThrow(/preflight capability/)
+    f.evaluator.resourcePreflight = async () => ({ ...f.preflight, planDigest: digestJson('corrupt') })
+    await expect(f.provider.describe('seed')).rejects.toThrow(/aggregate/)
+    expect(f.reservations.size).toBe(0)
+    expect(await f.store.read('evolution/evaluator-cohort-seed')).toBeUndefined()
+  })
+  it('freezes metadata-only selections after pin acknowledgement and rechecks recovered plans', async () => {
+    const f = await resourceSetup()
+    f.evaluator.resourcePreflight = vi.fn(async () => f.preflight)
+    const input = await batchInput(f, ['task-0'])
+    const cells = await f.provider.evaluate(input)
+    expect(cells).toHaveLength(1)
+    expect((await lstat(f.requests[0]!.dataset)).isFile()).toBe(true)
+    const selection = JSON.parse(await readFile(f.requests[0]!.dataset, 'utf8'))
+    expect(selection.protocol).toBe('hitch-resource-selection@1')
+    expect(selection.tasks.map((t: {task_id: string}) => t.task_id)).toEqual(['task-0'])
+    const receipt = await f.store.read<{state: string; planDigest: string}>('resource-retention/seed')
+    expect(receipt).toMatchObject({ state: 'active', planDigest: f.preflight.planDigest })
+    const recovered = new EvaluationSearchAdapter(f.evaluator, f.options)
+    expect(await recovered.verifyCells(cells.map(cell => ({ cell, identity: cell.identity })))).toBe(true)
+    f.evaluator.resourcePreflight = async () => ({ ...f.preflight, plans: f.preflight.plans.map(p => ({ ...p, platform: 'linux/arm64' })) })
+    await expect(recovered.verifyCells(cells.map(cell => ({ cell, identity: cell.identity })))).rejects.toThrow(/plan mismatch/)
+    expect(f.requests).toHaveLength(1)
+  })
+})
 
 describe('Gear-owned staging through the existing evaluation interface', () => {
   it('checks shared dataset/runtime identity twice per 100-cell batch instead of twice per cell', async () => {

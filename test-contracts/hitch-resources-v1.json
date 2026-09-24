@@ -1,0 +1,197 @@
+{
+  "protocol": "hitch-resource-contract-fixtures@1",
+  "lock": {
+    "protocol": "hitch-resource-lock@1",
+    "resources": {
+      "dataset": {
+        "kind": "blob",
+        "digest": "sha256:cf99975aa7995fad86fae7f3b0905143f30a52501944dff26002afc99c3b8419",
+        "size": 7
+      }
+    },
+    "bindings": [
+      {
+        "resource": "dataset",
+        "consumer": {
+          "role": "candidate"
+        },
+        "use": "input-file",
+        "target": "data/input.txt",
+        "executable": false,
+        "access": "private-copy"
+      }
+    ],
+    "requiredCapabilities": [
+      "blob@1",
+      "private-copy@1"
+    ]
+  },
+  "lockCanonical": "{\"bindings\":[{\"access\":\"private-copy\",\"consumer\":{\"role\":\"candidate\"},\"executable\":false,\"resource\":\"dataset\",\"target\":\"data/input.txt\",\"use\":\"input-file\"}],\"protocol\":\"hitch-resource-lock@1\",\"requiredCapabilities\":[\"blob@1\",\"private-copy@1\"],\"resources\":{\"dataset\":{\"digest\":\"sha256:cf99975aa7995fad86fae7f3b0905143f30a52501944dff26002afc99c3b8419\",\"kind\":\"blob\",\"size\":7}}}",
+  "lockIdentity": "sha256:4324da740609473d93cb5fca50f8b133c11c96a2e6774b9b7920aae7ce312d3d",
+  "dataset": {
+    "schema_version": "2",
+    "kind": "gear-harbor-benchmark",
+    "resource_protocol": "hitch-resource-lock@1",
+    "execution": {
+      "backend": "harbor-role-context@1",
+      "resolver": "hitch-resource-resolver@1",
+      "platform": "linux/amd64"
+    },
+    "required_capabilities": [
+      "private-copy@1"
+    ],
+    "benchmark": {
+      "id": "contract-fixture",
+      "revision": "1"
+    },
+    "adapter": {
+      "id": "contract-fixture",
+      "revision": "1",
+      "output_protocol": "gear-harbor-eval-result-v1"
+    },
+    "scoring": {
+      "total_score": {
+        "source_metric": "reward",
+        "direction": "maximize",
+        "range": [
+          0,
+          1
+        ],
+        "reducer": "task-macro-mean"
+      }
+    },
+    "tasks": [
+      {
+        "task_id": "case-1",
+        "sourceTree": {
+          "kind": "tree",
+          "format": "hitch-tree@1",
+          "manifestDigest": "sha256:d7ccf7f1dff78efe94043c98b9a0ed6fb5f5c530cff48de9302aa95f5e8fe90b"
+        },
+        "source_task_digest": "sha256:3b2fdb929648fe20d5f5520fca95dc04510a1aa30f2a8325e77f1e31d3e91f17",
+        "resource_closure_digest": "sha256:c0ccb5cc9c2d988a55863d6d2c643abc44ce8e30bf10940887f53db3dddcdcbb",
+        "task_digest": "sha256:0aa2e1c090389f18c7ff4f0f063b2daa410ae1af10710a846e0efa2eb407654c",
+        "lock": {
+          "protocol": "hitch-resource-lock@1",
+          "resources": {
+            "dataset": {
+              "kind": "blob",
+              "digest": "sha256:cf99975aa7995fad86fae7f3b0905143f30a52501944dff26002afc99c3b8419",
+              "size": 7
+            }
+          },
+          "bindings": [
+            {
+              "resource": "dataset",
+              "consumer": {
+                "role": "candidate"
+              },
+              "use": "input-file",
+              "target": "data/input.txt",
+              "executable": false,
+              "access": "private-copy"
+            }
+          ],
+          "requiredCapabilities": [
+            "blob@1",
+            "private-copy@1"
+          ]
+        }
+      }
+    ],
+    "dataset_digest": "sha256:eae64d6bdfe5e43ee4ddd88a1a50d146a986c019751e8fba9f976d076f9edef4"
+  },
+  "selection": {
+    "protocol": "hitch-resource-selection@1",
+    "sourceDatasetDigest": "sha256:eae64d6bdfe5e43ee4ddd88a1a50d146a986c019751e8fba9f976d076f9edef4",
+    "manifest": {
+      "schema_version": "2",
+      "kind": "gear-harbor-benchmark",
+      "resource_protocol": "hitch-resource-lock@1",
+      "execution": {
+        "backend": "harbor-role-context@1",
+        "resolver": "hitch-resource-resolver@1",
+        "platform": "linux/amd64"
+      },
+      "required_capabilities": [
+        "private-copy@1"
+      ],
+      "benchmark": {
+        "id": "contract-fixture",
+        "revision": "1"
+      },
+      "adapter": {
+        "id": "contract-fixture",
+        "revision": "1",
+        "output_protocol": "gear-harbor-eval-result-v1"
+      },
+      "scoring": {
+        "total_score": {
+          "source_metric": "reward",
+          "direction": "maximize",
+          "range": [
+            0,
+            1
+          ],
+          "reducer": "task-macro-mean"
+        }
+      }
+    },
+    "tasks": [
+      {
+        "task_id": "case-1",
+        "sourceTree": {
+          "kind": "tree",
+          "format": "hitch-tree@1",
+          "manifestDigest": "sha256:d7ccf7f1dff78efe94043c98b9a0ed6fb5f5c530cff48de9302aa95f5e8fe90b"
+        },
+        "source_task_digest": "sha256:3b2fdb929648fe20d5f5520fca95dc04510a1aa30f2a8325e77f1e31d3e91f17",
+        "resource_closure_digest": "sha256:c0ccb5cc9c2d988a55863d6d2c643abc44ce8e30bf10940887f53db3dddcdcbb",
+        "task_digest": "sha256:0aa2e1c090389f18c7ff4f0f063b2daa410ae1af10710a846e0efa2eb407654c",
+        "lock": {
+          "protocol": "hitch-resource-lock@1",
+          "resources": {
+            "dataset": {
+              "kind": "blob",
+              "digest": "sha256:cf99975aa7995fad86fae7f3b0905143f30a52501944dff26002afc99c3b8419",
+              "size": 7
+            }
+          },
+          "bindings": [
+            {
+              "resource": "dataset",
+              "consumer": {
+                "role": "candidate"
+              },
+              "use": "input-file",
+              "target": "data/input.txt",
+              "executable": false,
+              "access": "private-copy"
+            }
+          ],
+          "requiredCapabilities": [
+            "blob@1",
+            "private-copy@1"
+          ]
+        }
+      }
+    ],
+    "digest": "sha256:21ab6142b2176ddd942ab592480c62be26e3a815d228e91c33fc81aac6244ead"
+  },
+  "tree": {
+    "protocol": "hitch-tree@1",
+    "entries": [
+      {
+        "kind": "directory",
+        "path": "empty"
+      },
+      {
+        "kind": "file",
+        "path": "input.txt",
+        "digest": "sha256:cf99975aa7995fad86fae7f3b0905143f30a52501944dff26002afc99c3b8419",
+        "size": 7,
+        "executable": false
+      }
+    ]
+  }
+}
