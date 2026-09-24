@@ -9,7 +9,7 @@
 | S0 方案/基线 | 已提交 `e5dfeb2` | V3、离线精确重建、source/build/parent/package 身份；6 文件 95 测试通过；重复捕获匹配，漂移期望拒绝 |
 | S1 合同/内核 | 已提交 `f1ac3ef`；恢复修补 `e8979eb` | 最终 17 项内核测试；旧 search/identity 95 项；完整 typecheck 通过 |
 | S2 Python/作者入口 | 主审通过，阶段提交 | 20 项跨语言、5 项 Python SDK；完整 typecheck；正式 package exports 待 S6 |
-| S3 历史/任务/执行 | S3a 主审通过，阶段提交；S3b 实现中 | 11 项数据层测试；真实历史/物理 Hitch 与角色桥待独立验收 |
+| S3 历史/任务/执行 | S3a、S3b1 主审通过，阶段提交；物理桥实现中 | 数据层与历史源 14 项通过；真实 Hitch 与角色桥待独立验收 |
 | S4 非 GEPA recipes/Optuna | 实现中 | Python 单实现，公共操作与真实 Optuna 适配 |
 | S5 训练接入 | 主审通过，阶段提交 | 独立训练/评测/GRPO；44 项联合回归、2 项纯步骤测试与完整 typecheck 通过 |
 | S6 GEPA/包发布验证 | 实现中 | 公共 GEPA recipe 与外部作者入口分开推进 |
@@ -92,3 +92,11 @@ S5 接入审计发现：持久化 cancel-intent 后、发送取消命令前崩�
 恢复验证包括丢 submit 回包、实际 backend key lookup、V2 node generation/runtime 校验、顺序 pause 重放、显式评测资源释放、取消先于 submit 的持久完成记录，以及旧周期单 run 的独占计费归属。旧 cycle adapter 保留旧 coordinator 作为其 champion 的唯一写入者，独立 recipe 不触碰它。
 
 真实 Slime/Hitch/GPU 作业未执行。当前实测为 CPU 合同与恢复语义，训练使用前仍须旧 Python bridge/runtime lock 和真实设备/数据校验；2026-09-10 的旧 GPU 归档不能替代新路径验收。
+
+## S3b1 历史输入与结构化结果验收
+
+主 agent 独立执行数据层、provider 和历史源三个测试文件：14/14 通过。HistoricalSeedExperienceSource 校验旧 registry、round、seed dataset 与任务内容摘要，从真实 instruction 构造授权 task-report；可读取已保存 seed evaluation 的 Hitch 轨迹，限定 run、canonical digest、分页和字段下钻，并记录投影删减。测试使用真实本地 registry/dataset 与受控 Hitch reader，没有连接运行中的 Hitch 服务。
+
+执行适配边界新增至多 16 KiB 的结构化结果、独立封存 artifact 与 receipt digest 校验，使 reducer 可消费角色 JSON，同时保留独立的 Harness 产物。安装包身份解析允许仅声明 module type 的子目录 package.json，继续定位带 name/version 的实际依赖包根。
+
+本提交为后续 recipes 的数据依赖；Hitch/DSH/workspace-edit 物理端、新 rollout 证据读取与 fresh Campaign 装配继续独立验收。另在只含已提交 HEAD 的临时归档中复测 S5 training：13/13 通过，确认训练提交不依赖本阶段未提交文件。

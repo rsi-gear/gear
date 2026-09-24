@@ -158,3 +158,17 @@ S1 合同明确后 S2/S3 可在不共享文件的条件下并行，S4/S5 同理�
 安装/包验证记录 Python/Node/依赖身份；Node 宿主与轻量 Python SDK 分开验证。独立开发者可用性验收未完成时如实列出，不以代码行数或 agent 自测冒充人工使用证据。
 
 实施状态与命令结果记录到 `docs/meta-agent-algorithm-implementation-progress.zh-CN.md`，每个阶段写 commit、验证范围、未通过/未执行项。本文创建时 S1–S7 尚未实施；旧 GPU 验收仍仅为原冻结训练路径的归档证据。
+
+## 12. 实施审计补充（2026-09-24）
+
+以下是实现中发现的必要接线要求，不改变首版的科学范围：
+
+- 算法声明需要的 operation kinds，`check` 在组装 provider 后验证缺失能力，不能仅 import 成功就报告可运行。公共作者入口允许 host profile 和 algorithm factory；由宿主导入初始产物、创建授权/绑定/存储，普通 recipe 作者不手写 CAS 路径和摘要。
+- 决策可读取已冻结的预算观察（已花费、未释放 reservation、可用额度）。该观察来自同一 Campaign 账本，用于算法规划；新的意图仍由内核做实际准入。GEPA 不以整轮总额冒充剩余额度；保守预留与真实用量分别报告。
+- TypeScript 与 Python 的命名 workflow 均在单个有界 decision 内推进无外部操作的纯步骤，保留中间绑定转换；不存在非终结的空轮询步骤。
+- 物理 provider 在收到开始意图前的取消也须持久记录，恢复后的延迟 submit 不能绕过取消。计量 provider 的取消/无候选分支同样返回正确来源的最终用量，包括零用量。
+- Hitch daemon 使用实际 reserve/inspect/cancel 协议；测试须经过真实适配类的协议处理，不能由结构相似的假对象替代全部路径。长任务异步返回、宿主关闭、取消和资源释放分别验证。无法确认的远端状态保持 unknown。
+- 历史任务投影必须提供实际授权任务内容和受限轨迹。新 rollout 的诊断/偏好角色也需要其对应的授权证据入口；只传 opaque digest 而没有可用读取工具不算接通。新证据读取验证 producer 与 role/input 归属，不开放任意 CAS 读取。
+- GEPA 迁移分别对照科学选择、跨轮 scope/epoch、缓存来源与预算，受限子阶段明确标注，不能替代最终迁移验收。历史 pending completion 不隐式导入新 Campaign；继续使用匹配旧 runtime。
+
+上述要求的实际完成状态以实施进度记录与阶段测试为准。

@@ -16,7 +16,7 @@ export type SourceExperience = {
   kind?: 'task-trajectory' | 'seed-summary';
   taskId?: string;
   exposure: { seenInTraining: boolean; graderLabelExposed: boolean };
-  task?: { prompt: string };
+  task?: { prompt: string; executionSource?: { kind: 'compiled-seed-dataset'; datasetDigest: string; taskContentDigest: string } };
   overview: { summary: string; tags: string[] };
   taskReport: { narrative: string; outcomeSummary?: string };
   traceChunks: Array<{ text: string; sequence: number }>;
@@ -130,6 +130,13 @@ export async function sealExperienceView(
     if (kind === 'task-trajectory') {
       if (!raw.taskId || !raw.task || typeof raw.task.prompt !== 'string') throw new Error('Physical task content required');
       name(raw.taskId, 'task ID');
+      if (raw.task.executionSource) {
+        if (raw.task.executionSource.kind !== 'compiled-seed-dataset'
+          || !/^sha256:[0-9a-f]{64}$/u.test(raw.task.executionSource.datasetDigest)
+          || !/^sha256:[0-9a-f]{64}$/u.test(raw.task.executionSource.taskContentDigest)) {
+          throw new Error('Invalid physical task execution source');
+        }
+      }
     } else if (kind === 'seed-summary') {
       if (raw.taskId !== undefined || raw.task !== undefined || raw.grader !== undefined || raw.traceChunks.length !== 0) throw new Error('Seed summary cannot claim task or trace');
     } else throw new Error('Unknown experience kind');
@@ -141,7 +148,8 @@ export async function sealExperienceView(
       || !Array.isArray(raw.traceChunks)) throw new Error('Malformed source experience');
     assertJson(raw);
     const entry: ExperienceEntry = { id: raw.id, kind, exposure: { ...raw.exposure },
-      ...(kind === 'task-trajectory' ? { taskId: raw.taskId!, taskRef: artifacts.putJson({ prompt: raw.task!.prompt }, 'experience.task.v1') } : {}) };
+      ...(kind === 'task-trajectory' ? { taskId: raw.taskId!, taskRef: artifacts.putJson({ prompt: raw.task!.prompt,
+        ...(raw.task!.executionSource ? { executionSource: raw.task!.executionSource } : {}) }, 'experience.task.v1') } : {}) };
     if (requested.includes('overview')) entry.overviewRef = artifacts.putJson({ summary: raw.overview.summary, tags: raw.overview.tags }, 'experience.overview.v1');
     if (requested.includes('task-report')) entry.taskReportRef = artifacts.putJson({ narrative: raw.taskReport.narrative,
       ...(raw.taskReport.outcomeSummary === undefined ? {} : { outcomeSummary: raw.taskReport.outcomeSummary }) }, 'experience.task-report.v1');

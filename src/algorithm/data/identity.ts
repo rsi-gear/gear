@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs';
 import { builtinModules, createRequire } from 'node:module';
-import { dirname, extname, join, relative, resolve } from 'node:path';
+import { basename, dirname, extname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { canonicalJson } from '../schema.js';
 
@@ -12,12 +12,15 @@ function externalName(path: string, repositoryRoot: string): { name: string; pac
   if (path.startsWith(`${repositoryRoot}/`) && !path.includes('/node_modules/')) return { name: relative(repositoryRoot, path) };
   let directory = dirname(path);
   while (directory !== dirname(directory)) {
+    if (basename(directory) === 'node_modules') throw new Error(`External implementation package identity missing: ${path}`);
     const packagePath = join(directory, 'package.json');
     if (existsSync(packagePath)) {
       const packageInfo = JSON.parse(readFileSync(packagePath, 'utf8')) as { name?: string; version?: string };
-      if (!packageInfo.name || !packageInfo.version) throw new Error(`External implementation package identity missing: ${packagePath}`);
-      const packageId = `external/${packageInfo.name}@${packageInfo.version}`;
-      return { name: `${packageId}/${relative(directory, path)}`, packagePath, packageId };
+      // Subpath package.json files commonly declare only module type; keep walking to the installed package root.
+      if (packageInfo.name && packageInfo.version) {
+        const packageId = `external/${packageInfo.name}@${packageInfo.version}`;
+        return { name: `${packageId}/${relative(directory, path)}`, packagePath, packageId };
+      }
     }
     directory = dirname(directory);
   }

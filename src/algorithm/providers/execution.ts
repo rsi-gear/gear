@@ -1,7 +1,7 @@
 import type { ArtifactRef, CompletionEnvelope, OperationEnvelope, OperationProvider, ProviderInspection, ProviderManifest, ProviderSubmission } from '../contracts.js';
 import { FileArtifactStore, assertDigest } from '../artifacts.js';
 import { BindingStore } from '../bindings.js';
-import { canonicalJson, type JsonSchema } from '../schema.js';
+import { assertSchema, canonicalJson, jsonDigest, validateSchema, type JsonSchema, type JsonValue } from '../schema.js';
 import { s3ImplementationDigest } from '../data/identity.js';
 
 export type ExecutionKind = 'execution.rollout' | 'execution.feedback' | 'execution.role' | 'execution.workspace-edit';
@@ -11,6 +11,9 @@ export type ExecutionResult = {
   evidenceRef: ArtifactRef;
   receiptRef: ArtifactRef;
   producedArtifactRef?: ArtifactRef;
+  /** Bounded reducer-visible JSON; the same bytes are sealed separately from any edited harness. */
+  structuredResult?: JsonValue;
+  structuredResultRef?: ArtifactRef;
   validationReceiptRef?: ArtifactRef;
 };
 export type ExecutionReceipt = {
@@ -24,21 +27,23 @@ export type ExecutionReceipt = {
   executionIdentity: string;
   samplingDigest?: string;
   environmentDigest?: string;
+  structuredResultDigest?: string;
 };
 
 /** A physical port owns submit/inspect/cancel and must retain its result under the operation's idempotency key. */
 export interface PhysicalExecutionPort extends OperationProvider {
-  describe(): ProviderManifest & { kind: ExecutionKind };
+  describe(): ProviderManifest & { kind: ExecutionKind; structuredResultSchema?: JsonSchema };
 }
 
 /** Shared operation boundary used by recipes; it refuses a result loaded with a different version. */
 export class VerifiedExecutionAdapter implements OperationProvider {
   private readonly manifest: ProviderManifest;
-  private readonly sourceManifest: ProviderManifest;
+  private readonly sourceManifest: ProviderManifest & { kind: ExecutionKind; structuredResultSchema?: JsonSchema };
   constructor(readonly port: PhysicalExecutionPort, readonly artifacts: FileArtifactStore, readonly bindings: BindingStore,
     readonly requiredSlots: readonly string[]) {
     const source = port.describe();
     assertDigest(source.implementationDigest);
+    if (source.structuredResultSchema) assertSchema(source.structuredResultSchema);
     if (new Set(requiredSlots).size !== requiredSlots.length || requiredSlots.length === 0) throw new Error('Execution required slots are invalid');
     this.sourceManifest = structuredClone(source);
     this.manifest = { ...structuredClone(source), implementationDigest: s3ImplementationDigest('execution.adapter',
@@ -82,6 +87,21 @@ export class VerifiedExecutionAdapter implements OperationProvider {
     const input = envelope.input as Record<string, unknown>;
     if (typeof input.samplingDigest === 'string' && receipt.samplingDigest !== input.samplingDigest) throw new Error('Execution sampling identity mismatch');
     if (typeof input.environmentDigest === 'string' && receipt.environmentDigest !== input.environmentDigest) throw new Error('Execution environment identity mismatch');
+    if (this.sourceManifest.structuredResultSchema) {
+      if (value.structuredResult === undefined || !value.structuredResultRef || !receipt.structuredResultDigest) {
+        throw new Error('Structured execution result or sealed artifact missing');
+      }
+      validateSchema(this.sourceManifest.structuredResultSchema, value.structuredResult);
+      if (Buffer.byteLength(canonicalJson(value.structuredResult)) > 16 * 1024) throw new Error('Structured execution result too large');
+      const sealed = this.artifacts.getJson(value.structuredResultRef);
+      if (canonicalJson(sealed) !== canonicalJson(value.structuredResult)
+        || receipt.structuredResultDigest !== jsonDigest(value.structuredResult)) {
+        throw new Error('Structured execution result seal mismatch');
+      }
+    } else if (value.structuredResult !== undefined || value.structuredResultRef !== undefined
+      || receipt.structuredResultDigest !== undefined) {
+      throw new Error('Unannounced structured execution result');
+    }
     if (value.producedArtifactRef) this.artifacts.getBytes(value.producedArtifactRef);
     if (this.manifest.kind === 'execution.workspace-edit') {
       if (!value.producedArtifactRef || !value.validationReceiptRef) throw new Error('Workspace edit requires checked sealed artifact');
@@ -115,4 +135,6 @@ export class VerifiedExecutionAdapter implements OperationProvider {
 /** Physical adapters can share the same JSON result contract while declaring their own input schema. */
 export const executionResultSchema: JsonSchema = { type: 'object', required: ['requestedBindingSetDigest', 'actualBindings', 'evidenceRef', 'receiptRef'],
   properties: { requestedBindingSetDigest: { type: 'string' }, actualBindings: { type: 'object', additionalProperties: { type: 'any' } },
-    evidenceRef: { type: 'any' }, receiptRef: { type: 'any' }, producedArtifactRef: { type: 'any' }, validationReceiptRef: { type: 'any' } }, additionalProperties: false };
+    evidenceRef: { type: 'any' }, receiptRef: { type: 'any' }, producedArtifactRef: { type: 'any' },
+    structuredResult: { type: 'any' }, structuredResultRef: { type: 'any' },
+    validationReceiptRef: { type: 'any' } }, additionalProperties: false };
