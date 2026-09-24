@@ -6,6 +6,7 @@ import { BindingStore } from '../../src/algorithm/bindings.js'
 import { FileArtifactStore } from '../../src/algorithm/artifacts.js'
 import type { OperationEnvelope } from '../../src/algorithm/contracts.js'
 import { GepaDiagnosisProvider, GepaEvaluationProvider, GepaGenerationProvider } from '../../src/algorithm/providers/gepa-operations.js'
+import { ProviderReconcileError } from '../../src/algorithm/provider-errors.js'
 import { JournalArtifactStore, SearchJournalProviderRecordBackend } from '../../src/algorithm/runtime/persistence.js'
 import { jsonDigest, type JsonValue } from '../../src/algorithm/schema.js'
 import { cellKey, plannedCells } from '../../src/search/evidence.js'
@@ -81,6 +82,40 @@ it('restores GEPA started intent and sealed artifacts from a SearchJournal check
   expect(await journal.read(`cells/${cellKey(physicalCell.identity).slice(7)}`)).toEqual({ ref: physicalCell.digest })
   expect(await journal.read(`rounds/${roundId}/evaluation-${digestJson([plan.digest, fixture.anchor.digest]).slice(7)}`))
     .toEqual({ ref: (finalHost.artifacts.getJson(resultRef) as { digest: string }).digest })
+})
+
+it('surfaces a journal cache write failure in the same call without repeating the physical rollout', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'gepa-journal-write-failure-')); roots.push(root)
+  const fixture = fixtures(4)
+  const { plan } = evaluatedFixture(fixture.seed, scopeFixture(fixture.seed, ['task-0']), fixture.anchor,
+    () => ({ outcome: 0 }), { stage: 'baseline-probe' })
+  const journal = new MemorySearchStore()
+  const originalWrite = journal.write.bind(journal)
+  let fail = true
+  journal.write = async (name, value) => {
+    if (name.startsWith('cells/') && fail) { fail = false; throw new Error('disk unavailable') }
+    return originalWrite(name, value)
+  }
+  const artifacts = new FileArtifactStore(join(root, 'artifacts'))
+  const bindings = new BindingStore(artifacts, { id: 'harness', slots: {
+    harness: { schemaId: 'harness.directory.v1', required: true, replaceable: true },
+  } })
+  const harness = artifacts.putJson({ commitOid: fixture.anchor.commit,
+    manifestDigest: fixture.anchor.manifestDigest }, 'harness.directory.v1')
+  const provider = new GepaEvaluationProvider(join(root, 'operations'), artifacts, bindings,
+    fixture.provider, undefined, undefined, journal)
+  const input = { roundIdentity: { evolutionId: 'e', roundId: 'r' }, universe: fixture.seed,
+    plan, snapshot: fixture.anchor, processMode: 'off' } as unknown as JsonValue
+  const operationId = digestJson(['journal-write-failure', root]).slice(7)
+  const envelope: OperationEnvelope = { campaignId: 'search-r', decisionIndex: 0, localKey: 'evaluate',
+    operationId, idempotencyKey: operationId, kind: 'gepa.evaluate', input, inputDigest: jsonDigest(input),
+    implementationDigest: provider.describe().implementationDigest, bindingSetRef: bindings.create({ harness }),
+    limits: { rolloutCells: 1, repairCells: 0 } }
+  await expect(provider.submit(envelope)).rejects.toMatchObject({ name: 'ProviderReconcileError',
+    cause: { message: 'disk unavailable' } } satisfies Partial<ProviderReconcileError>)
+  expect(fixture.executions).toHaveLength(1)
+  expect((await provider.submit(envelope)).status).toBe('completed')
+  expect(fixture.executions).toHaveLength(1)
 })
 
 it('seals the original evaluation without starting process repair when projection is deferred', async () => {

@@ -525,37 +525,40 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     if (record.evaluationCells) return this.result(envelope, record, record.evaluationCells, record.evaluationFailure)
     if (!requested.length) return this.result(envelope, record, [])
     if (this.physical.inspectEvaluation) {
+      let observed: Awaited<ReturnType<NonNullable<SearchProvider['inspectEvaluation']>>> | undefined
       try {
-        const observed = await this.physical.inspectEvaluation({ plan, snapshot, cells: requested,
+        observed = await this.physical.inspectEvaluation({ plan, snapshot, cells: requested,
           idempotencyKey: record.externalKey, signal: new AbortController().signal })
-        if (observed.status === 'complete') return this.result(envelope, record, observed.result.cells)
       } catch (error) {
         if (error instanceof SearchExecutionFailure)
           return this.result(envelope, record, error.cells, error.failure)
         if (error instanceof SearchProtocolError) throw error
       }
+      if (observed?.status === 'complete') return this.result(envelope, record, observed.result.cells)
     }
+    let cells: EvidenceCell[]
     try {
       this.markPhysicalAttempt(envelope)
-      const cells = await this.physical.evaluate({ plan, snapshot, cells: requested,
+      cells = await this.physical.evaluate({ plan, snapshot, cells: requested,
         idempotencyKey: record.externalKey, signal: new AbortController().signal })
-      return this.result(envelope, record, cells)
     } catch (error) {
       if (error instanceof SearchExecutionFailure)
         return this.result(envelope, record, error.cells, error.failure)
+      let inspected: Awaited<ReturnType<NonNullable<SearchProvider['inspectEvaluation']>>> | undefined
       if (!(error instanceof SearchProtocolError) && this.physical.inspectEvaluation) {
         try {
-          const observed = await this.physical.inspectEvaluation({ plan, snapshot, cells: requested,
+          inspected = await this.physical.inspectEvaluation({ plan, snapshot, cells: requested,
             idempotencyKey: record.externalKey, signal: new AbortController().signal })
-          if (observed.status === 'complete') return this.result(envelope, record, observed.result.cells)
         } catch (inspectionError) {
           if (inspectionError instanceof SearchExecutionFailure)
             return this.result(envelope, record, inspectionError.cells, inspectionError.failure)
           if (inspectionError instanceof SearchProtocolError) throw inspectionError
         }
       }
+      if (inspected?.status === 'complete') return this.result(envelope, record, inspected.result.cells)
       throw error instanceof SearchProtocolError ? error : new PhysicalTransportPending(error)
     }
+    return this.result(envelope, record, cells)
   }
   protected async recover(envelope: OperationEnvelope, record: RecordValue): Promise<'replay-safe' | 'running' | 'unknown'> {
     const { plan, snapshot } = this.input(envelope)
@@ -696,14 +699,15 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
         usage: { diagnosisInputTokens: 0, diagnosisOutputTokens: 0 } }
     const { snapshot, universe, taskIds, baseline } = this.input(envelope)
     if (this.physical.inspectDiagnosis) {
+      let observed: Awaited<ReturnType<NonNullable<DiagnosisProvider['inspectDiagnosis']>>> | undefined
       try {
-        const observed = await this.physical.inspectDiagnosis(record.externalKey, new AbortController().signal)
-        if (observed.status === 'complete') return this.result(envelope, observed.result)
+        observed = await this.physical.inspectDiagnosis(record.externalKey, new AbortController().signal)
       } catch (error) {
         if (error instanceof SearchExecutionFailure) return this.result(envelope, { facts: [], failure: error.failure,
           inputTokens: envelope.limits.diagnosisInputTokens!, outputTokens: envelope.limits.diagnosisOutputTokens! })
         if (error instanceof SearchProtocolError) throw error
       }
+      if (observed?.status === 'complete') return this.result(envelope, observed.result)
     }
     let value: Awaited<ReturnType<DiagnosisProvider['diagnose']>>
     try {
@@ -851,23 +855,25 @@ export class GepaGenerationProvider extends GepaOperationProvider {
       return { outcome: { kind: 'no-result', reason: 'generation-budget-exhausted' },
         usage: this.usage(0, 0) }
     if (hasPhysicalGenerationInspection(this.hooks)) {
+      let observed: Awaited<ReturnType<typeof this.hooks.inspectGenerationOutcome>> | undefined
       try {
-        const observed = await this.hooks.inspectGenerationOutcome(record.externalKey)
-        if (observed.status === 'complete') return this.result(envelope, observed.result)
-        if (observed.status === 'error') return { outcome: { kind: 'error', code: observed.code,
-          message: observed.message, retryable: false }, usage: this.usage(observed.usage.tokens, observed.usage.requests) }
+        observed = await this.hooks.inspectGenerationOutcome(record.externalKey)
       } catch (error) {
         if (error instanceof SearchExecutionFailure) return this.result(envelope, this.executionFailure(envelope, error))
         if (error instanceof SearchProtocolError) throw error
       }
+      if (observed?.status === 'complete') return this.result(envelope, observed.result)
+      if (observed?.status === 'error') return { outcome: { kind: 'error', code: observed.code,
+        message: observed.message, retryable: false }, usage: this.usage(observed.usage.tokens, observed.usage.requests) }
     } else if (this.hooks.inspectGeneration) {
+      let observed: Awaited<ReturnType<NonNullable<SearchExecutionHooks['inspectGeneration']>>> | undefined
       try {
-        const observed = await this.hooks.inspectGeneration(record.externalKey, new AbortController().signal)
-        if (observed.status === 'complete') return this.result(envelope, observed.result)
+        observed = await this.hooks.inspectGeneration(record.externalKey, new AbortController().signal)
       } catch (error) {
         if (error instanceof SearchExecutionFailure) return this.result(envelope, this.executionFailure(envelope, error))
         if (error instanceof SearchProtocolError) throw error
       }
+      if (observed?.status === 'complete') return this.result(envelope, observed.result)
     }
     const delivery = deliveredWorkplan(input.workplan, input.dossier, input.findings, input.scope)
     let value: GeneratedCandidate
