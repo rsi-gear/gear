@@ -1,0 +1,95 @@
+import importlib.util
+from pathlib import Path
+import tempfile
+import unittest
+
+from gear_algorithm import (AlgorithmDecision, DurableLocalProvider, ProviderManifest, OperationIntent, ValidationError,
+                            check_durable_provider, check_repeated_usage, check_unreleased_cancel, MemoryArtifactBridge,
+                            assert_schema, validate_json, validate_schema)
+
+EXAMPLE = Path(__file__).parents[3] / "examples/algorithms/python-provider/provider.py"
+
+
+class SdkTests(unittest.TestCase):
+    def test_json_and_schema_negative(self):
+        for value in (float("nan"), 2**53, {"__proto__": 1}, chr(0xD800)):
+            with self.assertRaises(ValidationError):
+                validate_json(value)
+        with self.assertRaises(ValidationError):
+            assert_schema({"type": "any", "minimum": 0})
+        with self.assertRaises(ValidationError):
+            validate_schema({"type": "integer", "enum": [True]}, 1)
+        with self.assertRaises(ValidationError):
+            validate_schema({"type": "object", "properties": {"x": {"type": "integer"}},
+                             "required": ["x"], "additionalProperties": False}, {"x": "1"})
+
+    def test_parallel_key_uniqueness(self):
+        with self.assertRaises(ValidationError):
+            AlgorithmDecision(None, (OperationIntent("same", "a", 1), OperationIntent("same", "b", 2))).to_wire()
+
+    def test_external_usage_and_unreleased_cancel_probes(self):
+        class External:
+            def inspect(self, request):
+                return {"status": "running", "receipt": {"source": "external", "scope": "operation",
+                        "operationId": request["operationId"], "cursor": "1", "cumulative": {"tokens": 3}}}
+            def cancel(self, request):
+                return {"status": "cancelled", "releaseConfirmed": False}
+        request = {"operationId": "op"}
+        check_repeated_usage(External(), request)
+        check_unreleased_cancel(External(), request)
+        class Incorrect(External):
+            def cancel(self, request):
+                return {"status": "cancelled", "releaseConfirmed": True}
+        with self.assertRaises(AssertionError):
+            check_unreleased_cancel(Incorrect(), request)
+
+    def test_started_provider_stays_unknown_and_checks_full_identity(self):
+        class Failing(DurableLocalProvider):
+            calls = 0
+            def execute(self, request):
+                self.calls += 1
+                raise RuntimeError("lost local computation")
+        with tempfile.TemporaryDirectory() as root:
+            manifest = ProviderManifest("toy.fail", {"type": "object"}, {"type": "object"})
+            provider = Failing(manifest, root)
+            request = {"operationId": "op", "idempotencyKey": "key", "inputDigest": "a" * 64,
+                       "implementationDigest": "b" * 64, "kind": "toy.fail", "input": {}}
+            with self.assertRaises(RuntimeError):
+                provider.submit(request)
+            restarted = Failing(manifest, root)
+            self.assertEqual(restarted.inspect(request), {"status": "unknown"})
+            self.assertEqual(restarted.cancel(request), {"status": "unknown"})
+            with self.assertRaises(ValidationError):
+                restarted.submit(request)
+            self.assertEqual(restarted.calls, 0)
+            for field in ("operationId", "inputDigest", "implementationDigest"):
+                drift = dict(request, **{field: "changed"})
+                with self.assertRaises(ValidationError):
+                    restarted.inspect(drift)
+
+    def test_fake_provider_durable_and_no_candidate(self):
+        spec = importlib.util.spec_from_file_location("fake_provider_test", EXAMPLE)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as root:
+            bridge = MemoryArtifactBridge()
+            def factory():
+                instance = module.FakeTrainer(root)
+                instance.bind_artifacts(bridge.client())
+                return instance
+            base = {"operationId": "op", "idempotencyKey": "key", "inputDigest": "a" * 64,
+                    "implementationDigest": "b" * 64, "kind": "training.fake_sft_dpo",
+                    "input": {"mode": "dpo", "samples": 2}}
+            result = check_durable_provider(factory, base)
+            self.assertEqual(result["outcome"]["kind"], "result")
+            ref = result["outcome"]["value"]["checkpoint"]
+            self.assertEqual(bridge.client().read(__import__("gear_algorithm").ArtifactRef(
+                digest=ref["digest"], size=ref["size"], mediaType=ref["mediaType"], schemaId=ref["schemaId"])),
+                b'{"fakeWeights": 2, "mode": "dpo"}')
+            empty = dict(base, idempotencyKey="empty", inputDigest="c" * 64,
+                         input={"mode": "sft", "samples": 0})
+            self.assertEqual(check_durable_provider(factory, empty)["outcome"]["kind"], "no-result")
+
+
+if __name__ == "__main__":
+    unittest.main()

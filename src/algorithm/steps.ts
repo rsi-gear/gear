@@ -24,7 +24,9 @@ type WorkflowState = { stepIndex: number; business: JsonValue };
 
 /** Named steps keep cursor/join recovery inside the SDK; callbacks remain pure decisions. */
 export function defineWorkflow(options: {
-  manifest: Omit<AlgorithmManifest, 'stateSchema'>;
+  // Author-facing loader paths seal this from the actual source closure.
+  // Direct AlgorithmRuntime callers must still provide a valid digest.
+  manifest: Omit<AlgorithmManifest, 'stateSchema' | 'implementationDigest'> & { implementationDigest?: string };
   businessStateSchema: JsonSchema;
   initialState(context: DecisionContext): JsonValue;
   steps: WorkflowStep[];
@@ -43,7 +45,7 @@ export function defineWorkflow(options: {
     return { nextState: state, operations, ...(bindingTransition ? { bindingTransition } : {}) };
   }
   return {
-    describe: () => ({ ...options.manifest, stateSchema }),
+    describe: () => ({ ...options.manifest, stateSchema, implementationDigest: options.manifest.implementationDigest ?? '' }),
     initialize(context) {
       const business = options.initialState(context); validateSchema(options.businessStateSchema, business);
       return plan(0, business, context);

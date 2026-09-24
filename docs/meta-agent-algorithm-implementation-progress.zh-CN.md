@@ -7,11 +7,11 @@
 | 阶段 | 状态 | 提交与验证 |
 | --- | --- | --- |
 | S0 方案/基线 | 已提交 `e5dfeb2` | V3、离线精确重建、source/build/parent/package 身份；6 文件 95 测试通过；重复捕获匹配，漂移期望拒绝 |
-| S1 合同/内核 | 主审通过，阶段提交 | 最终 16 项内核测试；旧 search/identity 95 项；构建 typecheck 通过 |
-| S2 Python/作者入口 | 主审中 | 持久 hook、实现闭包、准入检查、TS/Python 组件装配；尚未提交 |
+| S1 合同/内核 | 已提交 `f1ac3ef`；恢复修补 `e8979eb` | 最终 17 项内核测试；旧 search/identity 95 项；完整 typecheck 通过 |
+| S2 Python/作者入口 | 主审通过，阶段提交 | 20 项跨语言、5 项 Python SDK；完整 typecheck；正式 package exports 待 S6 |
 | S3 历史/任务/执行 | 实现与主审修订中 | 历史授权、任务暴露、测量合同；物理 Hitch/角色桥尚未完成 |
-| S4 非 GEPA recipes/Optuna | 未开始 | — |
-| S5 训练接入 | 未开始 | — |
+| S4 非 GEPA recipes/Optuna | 实现中 | Python 单实现，公共操作与真实 Optuna 适配 |
+| S5 训练接入 | 实现中 | 共享旧校验、独立 frozen learner 请求映射与 Slime provider |
 | S6 GEPA/包发布验证 | 未开始 | — |
 | S7 真实运行/稳定性决定 | 未开始 | 无运行证据前 SDK 保持 experimental |
 
@@ -60,3 +60,11 @@
 ## S1 取消恢复修补
 
 S5 接入审计发现：持久化 cancel-intent 后、发送取消命令前崩溃，原恢复路径只 inspect，无法确保取消命令送达。现对 cancel-pending 和尚未释放的 cancelled 操作反复调用同一幂等 cancel；收到释放确认与最终用量后才结算。主 agent 独立执行内核 17/17 通过，完整 typecheck 通过。此为单独修复提交，Slime 接口另在 S5 验证相同窗口。
+
+## S2 验收
+
+主 agent 独立运行 `GEAR_ALGORITHM_TEST_PYTHON=/opt/homebrew/bin/python3.11 node node_modules/vitest/vitest.mjs run tests/unit/algorithm-python.spec.ts --maxWorkers=2`：20/20 通过；轻量 Python SDK unittest 5/5 通过；完整 `tsc -p tsconfig.json --noEmit` 通过。为恢复完整类型检查，工作树 node_modules 改指独立临时副本，补充两项缺失开发包，并验证下载内容与既有 lock 的 sha512 完全相符；原 checkout 依赖、manifest 和 lock 均未改动。
+
+本阶段提供轻量 wheel 源码、Python worker/IPC、公开 provider/组件协议和 testkit、Python/TS CLI 模板、check/run/resume、跨语言 hooks。源码、安装模块、解释器和 TS 宿主桥接字节进入身份；同进程 ESM 缓存与修改后源码不一致时拒绝执行，要求新进程。未封存 TS workflow 可省略 implementationDigest，loader 自动封存；直接 Runtime 仍拒绝缺失身份。测试覆盖 Python stdout 噪声、缺依赖、类型错误、丢回包、started/unknown、并行 artifact RPC、实现漂移和重复恢复。
+
+实现者另构建约 14 KB wheel，安装到无 Torch/Optuna 的干净环境，并在仓库外完成候选 npm 包的公开 helper→Python hook→check/run/resume。候选包仅在临时目录添加出口；正式 manifest/兼容恢复以及 root 独立包外验收留到 S6。本阶段不声称论文算法或 GPU 训练已经验收。
