@@ -213,7 +213,8 @@ describe('physical DSH workspace edit operation', () => {
   it('rejects a physical edit that never reads its assigned workplan with final measured usage', async () => {
     const f = await setup()
     const input = { ...f.envelope.input as Record<string, unknown>, delivery: {
-      digest: sha256('delivery'), workplan: { digest: sha256('workplan'), requiredDiagnosisRefs: [] },
+      digest: sha256('delivery'), workplan: { digest: sha256('workplan'), requiredDiagnosisRefs: [],
+        generationBudget: { deadlineAt: Date.now() + 20_000 } },
       dossier: { digest: sha256('dossier') }, findings: [] }, diagnosisEvidence: [] }
     const envelope = { ...f.envelope, input, inputDigest: jsonDigest(input) }
     expect(await f.adapter.submit(envelope)).toMatchObject({ status: 'completed', completion: {

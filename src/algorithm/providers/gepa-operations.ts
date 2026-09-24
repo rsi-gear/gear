@@ -16,6 +16,7 @@ import type { CandidateWorkPlan, CellIdentity, DiagnosisDossier, DiagnosisFact, 
   ResearchArchive, SearchProvider, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from '../../search/types.js'
 import type { ResearchFinding } from '../../search/types.js'
 import type { GeneratedCandidate, SearchExecutionHooks } from '../../search/runtime.js'
+import { GepaPhysicalExecutionError, hasPhysicalGenerationInspection } from './gepa-hooks.js'
 
 type GepaKind = 'gepa.evaluate' | 'gepa.diagnose' | 'gepa.generate'
 type RecordValue = { schemaVersion: 1; operationId: string; inputDigest: string; implementationDigest: string;
@@ -97,7 +98,10 @@ abstract class GepaOperationProvider implements OperationProvider {
   protected abstract validate(envelope: OperationEnvelope): Promise<void>
   protected freezeRequest(_envelope: OperationEnvelope): Promise<JsonValue | undefined> | JsonValue | undefined { return undefined }
   protected abstract execute(envelope: OperationEnvelope, record: RecordValue): Promise<Result>
-  protected abstract recover(envelope: OperationEnvelope, record: RecordValue): Promise<Result | 'running' | 'unknown'>
+  protected abstract recover(envelope: OperationEnvelope, record: RecordValue): Promise<Result | 'running' | 'unknown' | 'not-started'>
+  protected cancelStarted(envelope: OperationEnvelope, record: RecordValue): Promise<Result | 'running' | 'unknown' | 'not-started'> {
+    return this.recover(envelope, record)
+  }
   async preflight(envelope: OperationEnvelope): Promise<void> { this.check(envelope); await this.validate(envelope) }
   async inspect(envelope: OperationEnvelope): Promise<ProviderInspection> {
     await this.preflight(envelope)
@@ -107,7 +111,7 @@ abstract class GepaOperationProvider implements OperationProvider {
       receipt: this.receipt(envelope, Object.fromEntries(this.manifest.meteredDimensions.map(d => [d, 0]))) }
     if (record.completion) return { status: 'completed', completion: record.completion }
     const recovered = await this.recover(envelope, record)
-    if (recovered === 'running' || recovered === 'unknown') return { status: recovered }
+    if (recovered === 'running' || recovered === 'unknown' || recovered === 'not-started') return { status: recovered }
     return { status: 'completed', completion: this.complete(envelope, recovered) }
   }
   async submit(envelope: OperationEnvelope): Promise<ProviderSubmission> {
@@ -116,7 +120,7 @@ abstract class GepaOperationProvider implements OperationProvider {
     if (record.stage === 'cancelled-before-start') throw new Error('Cancelled GEPA operation cannot be submitted')
     const observed = created ? { status: 'not-started' as const } : await this.inspect(envelope)
     if (observed.status === 'completed') return { status: 'completed', completion: observed.completion }
-    if (!created) return { status: 'running' }
+    if (!created && observed.status !== 'not-started') return { status: 'running' }
     try { return { status: 'completed', completion: this.complete(envelope, await this.execute(envelope, record)) } }
     catch (error) {
       if (error instanceof SearchProtocolError) throw error
@@ -132,8 +136,9 @@ abstract class GepaOperationProvider implements OperationProvider {
     if (record.completion) return { status: 'completed', completion: record.completion }
     // The old physical SPI has no cancel acknowledgement. Inspect the original key
     // so that a completed result can settle, but retain reservations while unknown.
-    const recovered = await this.recover(envelope, record)
-    if (recovered === 'running' || recovered === 'unknown') return { status: recovered }
+    const recovered = await this.cancelStarted(envelope, record)
+    if (recovered === 'running' || recovered === 'unknown' || recovered === 'not-started')
+      return { status: recovered === 'not-started' ? 'unknown' : recovered }
     return { status: 'completed', completion: this.complete(envelope, recovered) }
   }
   async collect(envelope: OperationEnvelope): Promise<CompletionEnvelope> {
@@ -499,7 +504,8 @@ export class GepaGenerationProvider extends GepaOperationProvider {
   constructor(root: string, artifacts: FileArtifactStore, bindings: BindingStore, readonly hooks: SearchExecutionHooks,
     readonly hookImplementationDigest: string) {
     assertDigest(hookImplementationDigest)
-    super(root, 'gepa.generate', { hookImplementationDigest }, artifacts, bindings,
+    super(root, 'gepa.generate', { hookImplementationDigest,
+      typedPhysicalInspection: hasPhysicalGenerationInspection(hooks) }, artifacts, bindings,
       ['generationTokens', 'generationRequests'],
       { type: 'object', required: ['workplan', 'dossier', 'scope', 'parent', 'plan', 'baseline', 'universe', 'findings', 'processMode'],
         properties: { workplan: { type: 'any' }, dossier: { type: 'any' }, scope: { type: 'any' }, parent: { type: 'any' },
@@ -552,21 +558,54 @@ export class GepaGenerationProvider extends GepaOperationProvider {
       return { outcome: { kind: 'no-result', reason: 'generation-budget-exhausted' },
         usage: { generationTokens: 0, generationRequests: 0 } }
     const delivery = deliveredWorkplan(input.workplan, input.dossier, input.findings, input.scope)
-    const value = await this.hooks.generate({ delivery, parent: input.parent, baseline: input.baseline,
-      baselineContext: { universe: input.universe, plan: input.plan,
-        scope: input.scope, processMode: input.processMode }, idempotencyKey: envelope.idempotencyKey,
-      signal: new AbortController().signal })
-    return this.result(envelope, value)
+    try {
+      const value = await this.hooks.generate({ delivery, parent: input.parent, baseline: input.baseline,
+        baselineContext: { universe: input.universe, plan: input.plan,
+          scope: input.scope, processMode: input.processMode }, idempotencyKey: envelope.idempotencyKey,
+        signal: new AbortController().signal })
+      return this.result(envelope, value)
+    } catch (error) {
+      if (error instanceof GepaPhysicalExecutionError) return { outcome: { kind: 'error', code: error.code,
+        message: error.message, retryable: false }, usage: {
+          generationTokens: error.usage.tokens, generationRequests: error.usage.requests } }
+      throw error
+    }
   }
-  protected async recover(envelope: OperationEnvelope): Promise<Result | 'running' | 'unknown'> {
+  protected async recover(envelope: OperationEnvelope): Promise<Result | 'running' | 'unknown' | 'not-started'> {
     const input = this.input(envelope)
     if (envelope.limits.generationTokens! < (input.workplan.generationBudget.maxTokens ?? 0)
       || envelope.limits.generationRequests! < (input.workplan.generationBudget.maxModelRequests ?? 0))
       return { outcome: { kind: 'no-result', reason: 'generation-budget-exhausted' },
         usage: { generationTokens: 0, generationRequests: 0 } }
+    if (hasPhysicalGenerationInspection(this.hooks)) {
+      const observed = await this.hooks.inspectGenerationOutcome(envelope.idempotencyKey)
+      if (observed.status === 'error') return { outcome: { kind: 'error', code: observed.code,
+        message: observed.message, retryable: false }, usage: {
+          generationTokens: observed.usage.tokens, generationRequests: observed.usage.requests } }
+      if (observed.status === 'complete') return this.result(envelope, observed.result)
+      if (observed.status === 'not-started') return 'not-started'
+      return 'unknown'
+    }
     if (!this.hooks.inspectGeneration) return 'unknown'
     const observed = await this.hooks.inspectGeneration(envelope.idempotencyKey, new AbortController().signal)
     if (observed.status === 'complete') return this.result(envelope, observed.result)
     return observed.status === 'running' ? 'running' : 'unknown'
+  }
+  protected async cancelStarted(envelope: OperationEnvelope, record: RecordValue): Promise<Result | 'running' | 'unknown'> {
+    if (!hasPhysicalGenerationInspection(this.hooks)) {
+      const recovered = await this.recover(envelope)
+      return recovered === 'not-started' ? 'unknown' : recovered
+    }
+    const input = this.input(envelope)
+    const delivery = deliveredWorkplan(input.workplan, input.dossier, input.findings, input.scope)
+    const observed = await this.hooks.cancelGenerationOutcome({ delivery, parent: input.parent,
+      baseline: input.baseline, baselineContext: { universe: input.universe, plan: input.plan,
+        scope: input.scope, processMode: input.processMode }, idempotencyKey: envelope.idempotencyKey,
+      signal: new AbortController().signal })
+    if (observed.status === 'error') return { outcome: { kind: 'error', code: observed.code,
+      message: observed.message, retryable: false }, usage: {
+        generationTokens: observed.usage.tokens, generationRequests: observed.usage.requests } }
+    if (observed.status === 'complete') return this.result(envelope, observed.result)
+    return 'unknown'
   }
 }

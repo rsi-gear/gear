@@ -252,3 +252,11 @@ verifyPinnedLegacySearchClosure 核验已归档 f715748 的 search/parent/packag
 配置在创建时复制，运行前检查身份漂移；角色 catalog 错误和装配失败会清理宿主且仅一次。AHE restore 使用既有 Git 恢复能力，并核验来源的实际完成 rollout。restricted DSH helper 可用于独立宿主，但不保存任意 DSH 会话；已封存 operation 可恢复，进程在未封存 turn 中退出仍需 unknown 对账。
 
 这 5 项测试证明宿主装配、真实 Git/Hitch 录制协议及反馈接线，不等同于完整 Python 论文 recipe 的多轮运行。完整 RHO/AHE/Evo 流程、公开安装包构造示例和模型/GPU 实测继续各自验收。
+
+## S6A 物理 GEPA 编辑桥
+
+主 agent 在只含已提交 HEAD 与五份冻结代码/测试文件的独立快照复验：GEPA recipe、workspace edit 与物理 bridge 共 38/38，完整 typecheck 通过。物理 hook 通过独立 DSH 编辑操作生成并检查真实 Git Harness，验证实际 workplan/diagnosis 工具消费后封存证明；inner 的实际 model.requests/tokens 只映射到外层 GEPA operation 结算一次。
+
+主审核对并修正：inspect 只读，不能在取消查询中偷偷启动编辑；只有确认 not-started 才允许同 key 重发，取消先写持久墓碑。冻结工作计划的截止时间限制实际编辑；已有不明副作用不能仅因过期伪造零用量。已确认完成但证明缺失、格式非法或为 null，返回类型化错误及实际用量，不能当作科学无改进或永久 pending。
+
+测试使用离线模型、真实 DSH 工具/Git 和检查 fixture；重建 provider 不增加模型请求。公开装配示例说明旧 SearchJournal 的额外 finding handoff、standalone repair 与 pending import 尚未迁移，需冻结显式 findings 或继续原 runtime。正式包导出另行验收；没有验证真实模型质量。

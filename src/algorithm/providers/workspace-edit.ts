@@ -41,7 +41,8 @@ export type WorkspaceEditPortOptions = { root: string; host: DshMetaAgentHost; s
 export type WorkspaceEditResult = { schemaVersion: 1; roleId: string; sessionId: string;
   changedPaths: string[]; patchDigest: string; accessedRefs: string[]; workplanRead: boolean;
   commitOid: string; manifestDigest: string; modelResultRef?: ArtifactRef; [key: string]: unknown }
-export type WorkspaceEditDelivery = { digest: string; workplan: { requiredDiagnosisRefs: string[]; digest: string };
+export type WorkspaceEditDelivery = { digest: string; workplan: { requiredDiagnosisRefs: string[]; digest: string;
+  generationBudget: { deadlineAt: number } };
   dossier: { digest: string }; findings: JsonValue[]; scope?: JsonValue }
 type Input = { roleId: string; baseBindingSetRef: { digest: string; schemaId: string };
   delivery?: WorkspaceEditDelivery; diagnosisEvidence?: EvidenceCell[]; [key: string]: unknown }
@@ -277,6 +278,7 @@ export class DshWorkspaceEditPort implements PhysicalExecutionPort {
     await this.restoreSource(envelope, role)
     if (input.delivery) {
       if (!Array.isArray(input.delivery.workplan?.requiredDiagnosisRefs) || !Array.isArray(input.diagnosisEvidence)
+        || !Number.isSafeInteger(input.delivery.workplan.generationBudget?.deadlineAt)
         || input.delivery.workplan.requiredDiagnosisRefs.some(ref => !input.diagnosisEvidence!.some(cell => cell.evidenceRef === ref)))
         throw new Error('Workspace edit workplan has unresolvable diagnosis evidence')
     }
@@ -477,7 +479,9 @@ export class DshWorkspaceEditPort implements PhysicalExecutionPort {
     const prompt = `${role.instruction}\nUse only the mounted workspace tools. For GEPA, call workplan_read and diagnosis_read.\n${visibleBytes}`
     const intent: EditIntent = { status: 'intent', envelope, sessionId, roleId: role.id,
       parentCommit: parent.commitOid, parentDigest: parent.manifestDigest,
-      deadlineAt: Date.now() + role.timeoutMs, prompt, promptDigest: jsonDigest(prompt) }
+      deadlineAt: Math.min(Date.now() + role.timeoutMs,
+        inputOf(envelope).delivery?.workplan.generationBudget?.deadlineAt ?? Number.MAX_SAFE_INTEGER),
+      prompt, promptDigest: jsonDigest(prompt) }
     if (!this.create(intent)) return this.submit(envelope)
     let handle
     try {
