@@ -5,7 +5,7 @@ import type { JsonValue } from '../algorithm/schema.js'
 import { implementationClosureDigest } from '../algorithm/data/identity.js'
 import { digestJson } from '../state/digest.js'
 import { campaignSearchId } from './campaign-identity.js'
-import { invariant, processTasks, safeId, seal, SearchProtocolError, validateSnapshot, verifyDigest } from './contracts.js'
+import { integrity, invariant, processTasks, safeId, seal, SearchProtocolError, validateSnapshot, verifyDigest } from './contracts.js'
 import { assertCell, cellKey, completeEvidence, plannedCells, profile, reusableCells, validOutcome, verifyCells } from './evidence.js'
 import { budgetFailure, pendingOperation, resolvePendingOperation } from './recovery.js'
 import type { SearchAdmission, SearchExecutionRuntime } from './runtime.js'
@@ -14,7 +14,8 @@ import type { EvidenceCell, PendingSearchOperation, Snapshot, StageEvaluationPla
 
 type FrozenAdmission = SearchAdmission & { seed: TaskUniverse; heldOut: TaskUniverse;
   startedAt: number; providerIntegrity: string; diagnosisIntegrity: string;
-  algorithmIntegrity: string; campaignDriver: string; digest: string }
+  resolvedSettings: SearchAdmission['settings']; algorithmIntegrity: string;
+  roundRecipeIdentity: string; campaignDriver: string; digest: string }
 
 export type PreparedCampaignRepair = {
   roundId: string; repairId: string; repairKey: string; groupId: string;
@@ -50,9 +51,10 @@ export async function prepareCampaignRepair(options: {
     && digestJson(config.request) === digestJson({ evolutionId: admission.evolutionId,
       roundId: admission.roundId, roundIndex: admission.roundIndex,
       maxCandidates: admission.maxCandidates, anchor: admission.anchor,
-      championRevisionDigest: admission.championRevisionDigest, settings: admission.settings }),
+      championRevisionDigest: admission.championRevisionDigest, settings: admission.resolvedSettings }),
   'repair Campaign admission changed')
-  invariant(admission.algorithmIntegrity === runtime.algorithm.describe().implementationDigest,
+  invariant(admission.algorithmIntegrity === integrity
+    && admission.roundRecipeIdentity === digestJson(runtime.algorithm.describe()),
     'repair algorithm identity changed')
   const { seed, heldOut } = await validator.validate(admission)
   invariant(seed.digest === admission.seed.digest && heldOut.digest === admission.heldOut.digest,

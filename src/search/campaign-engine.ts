@@ -12,6 +12,7 @@ import { GepaRepairEvaluationProvider } from '../algorithm/providers/gepa-repair
 import { GepaProcessCompletionProvider } from '../algorithm/providers/gepa-process-completion.js'
 import { GepaArchiveViewProvider } from '../algorithm/providers/gepa-archive-view.js'
 import { GepaScienceCheckpointProvider } from '../algorithm/providers/gepa-science-checkpoint.js'
+import { ProviderProtocolError, ProviderReconcileError } from '../algorithm/provider-errors.js'
 import { projectGepaCampaignBudget } from '../algorithm/providers/gepa-budget-projection.js'
 import { campaignFailureClusterRecipe } from '../algorithm/recipes/gepa-search.js'
 import { AlgorithmRuntime, type CampaignState } from '../algorithm/runtime/engine.js'
@@ -20,7 +21,7 @@ import type { JsonValue } from '../algorithm/schema.js'
 import { implementationClosureDigest } from '../algorithm/data/identity.js'
 import { ComponentRegistry } from '../evolution/components.js'
 import { digestJson } from '../state/digest.js'
-import { integrity, invariant, safeId, seal, verifyDigest } from './contracts.js'
+import { integrity, invariant, safeId, seal, SearchProtocolError, verifyDigest } from './contracts.js'
 import { buildArchive } from './archive.js'
 import { scopeEpoch } from './epochs.js'
 import type { GepaSharedEpoch } from '../algorithm/recipes/gepa-policy.js'
@@ -35,10 +36,18 @@ import { SearchEvidencePending, type SearchRoundOutcome } from './engine.js'
 import { repairCampaignEvaluation } from './campaign-repair.js'
 import { pendingOperation } from './recovery.js'
 import { campaignSearchDirectory, campaignSearchId } from './campaign-identity.js'
+import { claimCampaignRun, inspectCampaignRun, type CampaignAdmissionExtensions,
+  type FrozenCampaignAdmission } from './campaign-admission.js'
 import type { PendingSearchOperation, ResearchArchive, ResearchFinding, StageResult } from './types.js'
 
 /** Optional local cache root. Campaign state/artifacts/intent records are durably stored in SearchJournal. */
 export type CampaignSearchHost = { root?: string; hookImplementationDigest?: string }
+
+type SearchCampaignExtensions = CampaignAdmissionExtensions & {
+  sharedEpochs: Record<string, GepaSharedEpoch>
+}
+type SearchCampaignAdmission = FrozenCampaignAdmission<SearchCampaignExtensions>
+type ValidatedSearch = Awaited<ReturnType<SearchExecutionRuntime['validate']>>
 
 export class CampaignSearchPending extends Error {
   constructor(readonly roundId: string) {
@@ -121,9 +130,11 @@ export class CampaignFailureClusterSearch {
   }
 
   /** Rebuilds the exact frozen Campaign host for the public run and auxiliary repair entrypoints. */
-  async openCampaignSearchRuntime(request: SearchAdmission) {
+  async openCampaignSearchRuntime(request: SearchAdmission, options: {
+    current?: ValidatedSearch; frozenAdmission?: SearchCampaignAdmission;
+    startedAt?: number; preview?: boolean } = {}) {
     safeId(request.roundId)
-    const { seed, heldOut, resolvedSettings } = await this.validate(request)
+    const { seed, heldOut, resolvedSettings } = options.current ?? await this.validate(request)
     const admitted: SearchAdmission = { ...request, settings: resolvedSettings }
     const root = campaignRoot(this.store, request.roundId, this.host)
     const artifacts = new JournalArtifactStore(join(root, 'artifacts'), this.store, request.roundId)
@@ -133,12 +144,8 @@ export class CampaignFailureClusterSearch {
     const anchorBindingSetRef = bindings.create({ harness })
     const policy = this.components.parentSelectionPolicy(resolveParentPolicyRef(resolvedSettings.search))
     const savedAdmission = await this.store.read<{ ref: string }>(`rounds/${request.roundId}/admission`)
-    type FrozenCampaignAdmission = SearchAdmission & { digest: string; campaignDriver?: string;
-      startedAt: number; startingArchiveDigest?: string | null; completionRefs?: string[];
-      campaignBudget?: BudgetPlan; sharedEpochs?: Record<string, GepaSharedEpoch>;
-      handoffFindingDigests?: Record<string, string[]>; startingRegressionProposals?: RegressionProposal[] }
-    const frozenAdmission = savedAdmission
-      ? await this.store.object<FrozenCampaignAdmission>(savedAdmission.ref) : null
+    const frozenAdmission = options.frozenAdmission ?? (savedAdmission
+      ? await this.store.object<SearchCampaignAdmission>(savedAdmission.ref) : null)
     if (savedAdmission) {
       const frozen = frozenAdmission!
       if (frozen.campaignDriver !== 'failure-cluster-campaign-v1')
@@ -146,9 +153,9 @@ export class CampaignFailureClusterSearch {
       if (digestJson({ evolutionId: frozen.evolutionId, roundId: frozen.roundId,
         roundIndex: frozen.roundIndex, maxCandidates: frozen.maxCandidates, anchor: frozen.anchor,
         championRevisionDigest: frozen.championRevisionDigest, settings: frozen.settings })
-        !== digestJson(admitted)) throw new Error('Campaign search request changed on resume')
+        !== digestJson(request)) throw new Error('Campaign search request changed on resume')
     }
-    const startedAt = frozenAdmission?.startedAt ?? Date.now()
+    const startedAt = options.startedAt ?? frozenAdmission?.startedAt ?? Date.now()
     const installedArchive = frozenAdmission
       ? (frozenAdmission.startingArchiveDigest
         ? await this.store.object<ResearchArchive>(frozenAdmission.startingArchiveDigest) : null)
@@ -261,62 +268,50 @@ export class CampaignFailureClusterSearch {
       repairProvider,
       processProvider,
     ], spec, { store: campaignStore, artifacts })
-    await runtime.hydrate()
+    if (!options.preview) await runtime.hydrate()
     return { runtime, validator: this.validator, artifacts, admitted, seed, heldOut, resolvedSettings,
       recipe, policy, startedAt, savedAdmission, installedArchive, completionRefs, startingBudget,
       sharedEpochs, handoffFindingDigests, startingRegressionProposals,
+      roundRecipeIdentity: digestJson(recipe.describe()),
       legacyProviders: [evaluationProvider, diagnosisProvider, generationProvider] as const,
       repairProvider, processProvider }
   }
 
   async run(request: SearchAdmission, signal: AbortSignal): Promise<SearchRoundOutcome> {
-    safeId(request.roundId)
-    this.components.parentSelectionPolicy(resolveParentPolicyRef(request.settings.search))
-    const frozenPointer = await this.store.read<{ ref: string }>(`rounds/${request.roundId}/admission`)
-    if (frozenPointer) {
-      const frozen = await this.store.object<SearchAdmission & { digest: string; campaignDriver?: string;
-        requestDigest?: string }>(frozenPointer.ref)
-      if (frozen.campaignDriver !== 'failure-cluster-campaign-v1')
-        throw new Error('Existing legacy search round must resume with its original engine and operation keys')
-      const expected = frozen.requestDigest ?? digestJson({ evolutionId: frozen.evolutionId, roundId: frozen.roundId,
-        roundIndex: frozen.roundIndex, maxCandidates: frozen.maxCandidates, anchor: frozen.anchor,
-        championRevisionDigest: frozen.championRevisionDigest, settings: frozen.settings })
-      if (digestJson(request) !== expected) throw new Error('Campaign search request changed on resume')
-    }
-    const terminal = await this.store.read<{ ref: string }>(`rounds/${request.roundId}/terminal`)
-    if (terminal) {
-      const outcome = await this.store.object<SearchRoundOutcome>(terminal.ref)
-      validateSearchSchema('SearchRoundOutcome', outcome)
-      if (outcome.roundId !== request.roundId) throw new Error('Campaign search terminal round mismatch')
-      const active = await this.store.read<{ roundId: string | null }>('active-round')
-      if (active?.roundId === request.roundId) await this.store.write('active-round', { roundId: null })
-      return outcome
-    }
-    const repair = await this.store.read<{ id: string }>(`rounds/${request.roundId}/active-repair`)
-    invariant(!repair || await this.store.read(`rounds/${request.roundId}/repair-result-${digestJson(repair.id).slice(7)}`),
-      'round has an unresolved repair; resume its original repair ID')
-    signal.throwIfAborted()
-    const { runtime, artifacts, admitted, seed, heldOut, resolvedSettings,
-      recipe, policy, startedAt, legacyProviders, installedArchive, completionRefs,
-      startingBudget, sharedEpochs, handoffFindingDigests,
-      startingRegressionProposals } = await this.openCampaignSearchRuntime(request)
-    signal.throwIfAborted()
-    for (const provider of legacyProviders) provider.beginLegacyInvocation()
-    const existing = runtime.snapshot()
-    if (!existing) {
-      const current = await this.store.read<{ roundId: string | null }>('active-round')
-      if (current?.roundId && current.roundId !== request.roundId)
-        throw new Error('Another search round remains active')
-      await this.store.freeze(request.roundId, 'admission', () => seal({ ...admitted,
-        requestDigest: digestJson(request), requestedSettings: request.settings,
-        seed, heldOut, resolvedSettings, providerIntegrity: this.provider.integrity,
-        diagnosisIntegrity: this.diagnosis.integrity, algorithmIntegrity: recipe.describe().implementationDigest,
-        parentPolicyRef: policy.ref, startedAt, campaignDriver: 'failure-cluster-campaign-v1',
-        startingArchiveDigest: installedArchive?.digest ?? null, completionRefs,
-        campaignBudget: startingBudget, sharedEpochs, handoffFindingDigests,
-        startingRegressionProposals }))
-      await this.store.write('active-round', { roundId: request.roundId })
-    }
+    const inspected = await inspectCampaignRun<SearchCampaignExtensions>({ store: this.store,
+      request, components: this.components, signal })
+    if (inspected.kind === 'terminal') return inspected.outcome
+    // Publication's commit intent is frozen only after Campaign's budget
+    // projection barrier. The old single-purpose reconcile replays this exact
+    // archive/champion tuple without admitting a new run or invoking science.
+    if (inspected.kind === 'commit') return this.validator.reconcile(request.roundId, inspected.intent)
+    const claimed = await claimCampaignRun<SearchCampaignExtensions>({ store: this.store,
+      request, signal, inspected, providerIntegrity: this.provider.integrity,
+      diagnosisIntegrity: this.diagnosis.integrity,
+      sanitizationPolicyDigest: this.diagnosis.sanitizationPolicyDigest,
+      validate: () => this.validate(request),
+      prepareExtensions: async (current, startedAt) => {
+        const prepared = await this.openCampaignSearchRuntime(request, { current, startedAt, preview: true })
+        return { startingArchiveDigest: prepared.installedArchive?.digest ?? null,
+          completionRefs: prepared.completionRefs, sharedEpochs: prepared.sharedEpochs,
+          handoffFindingDigests: prepared.handoffFindingDigests,
+          campaignBudget: prepared.startingBudget,
+          startingRegressionProposals: prepared.startingRegressionProposals,
+          roundRecipeIdentity: prepared.roundRecipeIdentity }
+      },
+      verifyFrozenRecipe: async (admission, current) => {
+        const prepared = await this.openCampaignSearchRuntime(request, { current,
+          frozenAdmission: admission, preview: true })
+        invariant(prepared.roundRecipeIdentity === admission.roundRecipeIdentity,
+          'campaign round recipe identity changed on resume')
+      } })
+    const { runtime, artifacts, resolvedSettings, startedAt, legacyProviders } = await this.openCampaignSearchRuntime(request, {
+        current: claimed.current, frozenAdmission: claimed.admission })
+    const budgetStart = (await this.store.read<{ startedAt: number }>('budget'))?.startedAt ?? startedAt
+    const deadlineAt = Math.min(startedAt + resolvedSettings.budgets.round.timeoutMs,
+      budgetStart + resolvedSettings.budgets.evolution.timeoutMs)
+    const dispose = legacyProviders.map(provider => provider.beginLegacyInvocation({ callerSignal: signal, deadlineAt }))
+    try {
     let status: Awaited<ReturnType<AlgorithmRuntime['tick']>>
     do {
       signal.throwIfAborted(); status = await runtime.tick()
@@ -380,5 +375,12 @@ export class CampaignFailureClusterSearch {
     validateSearchSchema('SearchRoundOutcome', outcome)
     if (outcome.roundId !== request.roundId) throw new Error('Campaign search terminal round mismatch')
     return outcome
+    } catch (error) {
+      if (error instanceof ProviderReconcileError && error.cause instanceof Error) throw error.cause
+      if (error instanceof ProviderProtocolError && error.cause instanceof SearchProtocolError) throw error.cause
+      throw error
+    } finally {
+      for (const release of dispose.reverse()) release()
+    }
   }
 }
