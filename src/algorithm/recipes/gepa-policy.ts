@@ -254,10 +254,11 @@ export async function chooseGepaBridge(input: { locals: GepaLocal[]; anchor: Sna
 export function updateGepaArchive(input: { previous: ResearchArchive; seed: TaskUniverse; settings: SearchSettings;
   anchor: Snapshot; championId: string; locals: GepaLocal[]; works: GepaWork[]; clusters: FailureCluster[];
   scopes: EvaluationScope[]; parentBaselines: GepaBaseline[]; stagePlans: StageEvaluationPlan[];
-  stageResults: StageResult[]; evolutionId: string }): ResearchArchive {
+  stageResultsBeforeLocal: StageResult[]; stageResultsAfterLocal: StageResult[]; evolutionId: string }): ResearchArchive {
   return buildArchive({ evolutionId: input.evolutionId, previous: input.previous, universe: input.seed,
     snapshots: [input.anchor, ...input.locals.map(item => item.snapshot)], scopes: input.scopes, clusters: input.clusters,
-    results: [...input.parentBaselines.map(item => item.result), ...input.locals.map(item => item.result), ...input.stageResults],
+    results: [...input.parentBaselines.map(item => item.result), ...input.stageResultsBeforeLocal,
+      ...input.locals.map(item => item.result), ...input.stageResultsAfterLocal],
     plans: [...input.parentBaselines.map(item => item.plan), ...input.works.map(item => item.plan), ...input.stagePlans], config: input.settings.search,
     championId: input.championId })
 }
