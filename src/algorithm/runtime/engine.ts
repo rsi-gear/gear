@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Algorithm, AlgorithmDecision, AlgorithmManifest, BudgetPlan, BudgetSnapshot, CampaignSpec, CompletionEnvelope, OperationEnvelope, OperationIntent, OperationOutcome, OperationProvider, ProviderInspection, ProviderManifest, ProviderSubmission, UsageReceipt, BindingSetRef } from '../contracts.js';
+import type { Algorithm, AlgorithmDecision, AlgorithmManifest, BudgetPlan, BudgetSnapshot, CampaignSpec, CompletionEnvelope, OperationEnvelope, OperationIntent, OperationOutcome, OperationProvider, ProviderInspection, ProviderManifest, ProviderPreflight, ProviderSubmission, UsageReceipt, BindingSetRef } from '../contracts.js';
 import { ALGORITHM_API_VERSION } from '../contracts.js';
 import { FileArtifactStore } from '../artifacts.js';
 import { BindingStore } from '../bindings.js';
@@ -23,7 +23,11 @@ type ReceiptCursor = { cursor: string; cumulative: Record<string, number> };
 type Observation = { kind: 'inspect'; value: ProviderInspection }
   | { kind: 'submit'; value: ProviderSubmission; priorReceipt?: UsageReceipt }
   | { kind: 'submit-unknown'; priorReceipt?: UsageReceipt }
-  | { kind: 'submit-protocol-error'; error: ProviderProtocolError; priorReceipt?: UsageReceipt };
+  | { kind: 'submit-protocol-error'; error: ProviderProtocolError; priorReceipt?: UsageReceipt }
+  | { kind: 'preflight-error'; error: unknown; priorReceipt?: UsageReceipt };
+type PreparedObservation = { kind: 'observed'; observation: Observation }
+  | { kind: 'ready'; provider: OperationProvider; envelope: OperationEnvelope;
+    priorReceipt?: UsageReceipt; startsBudgetClock: boolean };
 export type CampaignState = {
   version: 1;
   spec: CampaignSpec;
@@ -38,6 +42,8 @@ export type CampaignState = {
   operations: Record<string, OperationRecord>;
   /** External repair groups share this Campaign's receipts and budget without advancing the reducer. */
   auxiliaryOperations?: Record<string, Record<string, OperationRecord>>;
+  /** First admitted physical reservation, shared by main and auxiliary operations. */
+  budgetStartedAt?: number;
   spent: Record<string, number>;
   receiptSources: Record<string, ReceiptCursor>;
   phase: 'running' | 'complete';
@@ -191,6 +197,8 @@ export class AlgorithmRuntime {
     if (!Object.hasOwn(intent, 'input')) throw new Error('Operation input required');
     if (intent.limits !== undefined && (typeof intent.limits !== 'object' || intent.limits === null || Array.isArray(intent.limits)))
       throw new Error('Operation limits must be an object');
+    if (intent.startsBudgetClock !== undefined && typeof intent.startsBudgetClock !== 'boolean')
+      throw new Error('Operation budget clock intent must be boolean');
     const { manifest, digest } = this.provider(intent.kind);
     validateSchema(manifest.inputSchema, intent.input);
     this.artifacts.verifyContentRefs(intent.input, this.bindings);
@@ -206,7 +214,8 @@ export class AlgorithmRuntime {
     const envelope: OperationEnvelope = { operationId, idempotencyKey: operationId,
       campaignId: state.spec.campaignId, decisionIndex, localKey: intent.localKey,
       kind: intent.kind, input: intent.input, inputDigest: jsonDigest(intent.input),
-      implementationDigest: manifest.implementationDigest, bindingSetRef, limits };
+      implementationDigest: manifest.implementationDigest, bindingSetRef, limits,
+      ...(intent.startsBudgetClock === undefined ? {} : { startsBudgetClock: intent.startsBudgetClock }) };
     return { envelope, providerManifestDigest: digest, status: 'intent', accounted: {}, released: false };
   }
 
@@ -240,6 +249,8 @@ export class AlgorithmRuntime {
     for (const kind of this.providers.keys()) this.provider(kind);
     const state = saved.state as unknown as CampaignState;
     if (state.version !== 1 || canonicalJson(state.spec) !== canonicalJson(this.spec) || state.algorithmManifestDigest !== jsonDigest(this.manifest) || state.kernelImplementationDigest !== kernelImplementationDigest() || state.providerCatalogDigest !== this.providerCatalogDigest || state.storageBackendDigest !== this.storageBackendDigest) throw new Error('Campaign identity drift');
+    if (state.budgetStartedAt !== undefined && (!Number.isSafeInteger(state.budgetStartedAt) || state.budgetStartedAt < 0))
+      throw new Error('Campaign budget clock drift');
     this.validateBinding(state.activeBindingSetRef, state.initialBindingSetRef);
     validateSchema(this.manifest.stateSchema, state.state);
     const records = [...Object.values(state.operations),
@@ -247,6 +258,8 @@ export class AlgorithmRuntime {
     for (const record of records) {
       const { manifest, digest } = this.provider(record.envelope.kind);
       if (digest !== record.providerManifestDigest || manifest.implementationDigest !== record.envelope.implementationDigest || jsonDigest(record.envelope.input) !== record.envelope.inputDigest) throw new Error('Operation identity drift');
+      if (record.envelope.startsBudgetClock !== undefined && typeof record.envelope.startsBudgetClock !== 'boolean')
+        throw new Error('Operation budget clock identity drift');
       this.validateBinding(record.envelope.bindingSetRef, state.initialBindingSetRef);
     }
     return state;
@@ -334,7 +347,17 @@ export class AlgorithmRuntime {
     throw new Error('Invalid provider inspect status');
   }
 
-  private async observe(record: OperationRecord): Promise<Observation> {
+  private dispatchClockDisposition(value: void | ProviderPreflight, envelope: OperationEnvelope): boolean {
+    if (value === undefined) return true;
+    assertJson(value);
+    if (!value || typeof value !== 'object' || typeof value.startsBudgetClock !== 'boolean'
+      || Object.keys(value).length !== 1) throw new Error('Invalid provider dispatch disposition');
+    if (value.startsBudgetClock && envelope.startsBudgetClock !== true)
+      throw new Error('Provider cannot start an unrequested budget clock');
+    return value.startsBudgetClock;
+  }
+
+  private async prepareObservation(record: OperationRecord): Promise<PreparedObservation> {
     const { provider, manifest, digest } = this.provider(record.envelope.kind);
     if (digest !== record.providerManifestDigest) throw new Error('Provider manifest drift');
     if (record.status === 'cancel-pending' || (record.status === 'cancelled' && !record.released)) {
@@ -342,23 +365,41 @@ export class AlgorithmRuntime {
       try { cancelled = await provider.cancel(record.envelope); }
       catch (error) {
         if (error instanceof ProviderProtocolError) throw error;
-        return { kind: 'inspect', value: { status: 'unknown' } };
+        return { kind: 'observed', observation: { kind: 'inspect', value: { status: 'unknown' } } };
       }
       this.validateInspection(cancelled);
-      return { kind: 'inspect', value: cancelled };
+      return { kind: 'observed', observation: { kind: 'inspect', value: cancelled } };
     }
     const inspected = await provider.inspect(record.envelope);
     this.validateInspection(inspected);
     if (inspected.status === 'replay-safe' && manifest.supportsIdempotentReplay !== true)
       throw new Error(`Provider did not declare idempotent replay: ${record.envelope.kind}`);
     if (!['not-started', 'replay-safe'].includes(inspected.status) || record.status === 'cancelled')
-      return { kind: 'inspect', value: inspected };
+      return { kind: 'observed', observation: { kind: 'inspect', value: inspected } };
     const priorReceipt = inspected.status === 'replay-safe' || inspected.status === 'not-started'
       ? inspected.receipt : undefined;
-    await provider.preflight(record.envelope);
+    try {
+      const preflight = await provider.preflight(record.envelope);
+      const preflightClock = this.dispatchClockDisposition(preflight, record.envelope);
+      this.store.assertLease();
+      const prepared = provider.prepareForDispatch
+        ? await provider.prepareForDispatch(record.envelope) : undefined;
+      const preparedClock = this.dispatchClockDisposition(prepared, record.envelope);
+      return { kind: 'ready', provider, envelope: record.envelope,
+        ...(priorReceipt ? { priorReceipt } : {}),
+        startsBudgetClock: record.envelope.startsBudgetClock === true && preflightClock && preparedClock };
+    } catch (error) {
+      return { kind: 'observed', observation: priorReceipt
+        ? { kind: 'preflight-error', error, priorReceipt }
+        : { kind: 'preflight-error', error } };
+    }
+  }
+
+  private async submitPrepared(prepared: Extract<PreparedObservation, { kind: 'ready' }>): Promise<Observation> {
+    const { provider, envelope, priorReceipt } = prepared;
     this.store.assertLease();
     let submitted;
-    try { submitted = await provider.submit(record.envelope); }
+    try { submitted = await provider.submit(envelope); }
     catch (error) {
       if (error instanceof ProviderProtocolError) return priorReceipt
         ? { kind: 'submit-protocol-error', error, priorReceipt }
@@ -371,8 +412,30 @@ export class AlgorithmRuntime {
       : { kind: 'submit', value: submitted };
   }
 
+  private async dispatchBatch(batch: Array<[string, OperationRecord]>, state: CampaignState):
+    Promise<{ state: CampaignState; observed: PromiseSettledResult<Observation>[] }> {
+    const prepared = await Promise.allSettled(batch.map(([, record]) => this.prepareObservation(record)));
+    if (state.budgetStartedAt === undefined && prepared.some(result =>
+      result.status === 'fulfilled' && result.value.kind === 'ready' && result.value.startsBudgetClock)) {
+      const candidate = clone(state);
+      candidate.budgetStartedAt = Date.now();
+      if (!Number.isSafeInteger(candidate.budgetStartedAt) || candidate.budgetStartedAt < 0)
+        throw new Error('Invalid Campaign budget clock timestamp');
+      await (this.artifacts as FileArtifactStore & Partial<ArtifactCheckpoint>).flush?.();
+      await this.store.commit(candidate as unknown as JsonValue, 'budget.clock-start');
+      state = candidate;
+    }
+    const observed = await Promise.allSettled(prepared.map(result => {
+      if (result.status === 'rejected') return Promise.reject(result.reason);
+      if (result.value.kind === 'observed') return Promise.resolve(result.value.observation);
+      return this.submitPrepared(result.value);
+    }));
+    return { state, observed };
+  }
+
   private applyObservation(state: CampaignState, record: OperationRecord, observation: Observation): void {
     if (observation.kind !== 'inspect') this.applyReceipt(state, record, observation.priorReceipt);
+    if (observation.kind === 'preflight-error') return;
     if (observation.kind === 'submit-unknown' || observation.kind === 'submit-protocol-error') {
       record.status = 'unknown'; return;
     }
@@ -410,7 +473,9 @@ export class AlgorithmRuntime {
       const pending = Object.entries(state.operations).filter(([, record]) => record.status !== 'completed' && !(record.status === 'cancelled' && record.released)).sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
       for (let offset = 0; offset < pending.length; offset += 8) {
         const batch = pending.slice(offset, offset + 8);
-        const observed = await Promise.allSettled(batch.map(([, record]) => this.observe(record)));
+        const dispatched = await this.dispatchBatch(batch, state);
+        state = dispatched.state;
+        const observed = dispatched.observed;
         let failure: unknown;
         for (let index = 0; index < batch.length; index++) {
           const result = observed[index]!;
@@ -423,7 +488,8 @@ export class AlgorithmRuntime {
           await (this.artifacts as FileArtifactStore & Partial<ArtifactCheckpoint>).flush?.();
           await this.store.commit(candidate as unknown as JsonValue, `operation.${record.status}`);
           state = candidate;
-          if (result.value.kind === 'submit-protocol-error') failure ??= result.value.error;
+          if (result.value.kind === 'submit-protocol-error' || result.value.kind === 'preflight-error')
+            failure ??= result.value.error;
         }
         if (failure) throw failure;
       }
@@ -501,7 +567,9 @@ export class AlgorithmRuntime {
       if (pending.length === 0) return 'complete';
       for (let offset = 0; offset < pending.length; offset += 8) {
         const batch = pending.slice(offset, offset + 8);
-        const observed = await Promise.allSettled(batch.map(([, record]) => this.observe(record)));
+        const dispatched = await this.dispatchBatch(batch, state);
+        state = dispatched.state;
+        const observed = dispatched.observed;
         let failure: unknown;
         for (let index = 0; index < batch.length; index++) {
           const result = observed[index]!;
@@ -516,7 +584,8 @@ export class AlgorithmRuntime {
             await this.store.commit(candidate as unknown as JsonValue, `auxiliary.${groupId}.${record.status}`);
             state = candidate;
           }
-          if (result.value.kind === 'submit-protocol-error') failure ??= result.value.error;
+          if (result.value.kind === 'submit-protocol-error' || result.value.kind === 'preflight-error')
+            failure ??= result.value.error;
         }
         if (failure) throw failure;
       }

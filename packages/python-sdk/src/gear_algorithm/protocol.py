@@ -204,6 +204,7 @@ class OperationIntent:
     input: Any
     bindingSetRef: BindingSetRef | None = None
     limits: dict[str, Any] | None = None
+    startsBudgetClock: bool | None = None
 
     def to_wire(self) -> dict[str, Any]:
         if not self.localKey or not self.kind:
@@ -213,6 +214,10 @@ class OperationIntent:
             result["bindingSetRef"] = self.bindingSetRef.to_wire()
         if self.limits is not None:
             result["limits"] = self.limits
+        if self.startsBudgetClock is not None:
+            if type(self.startsBudgetClock) is not bool:
+                raise ValidationError("startsBudgetClock must be a boolean")
+            result["startsBudgetClock"] = self.startsBudgetClock
         validate_json(result)
         return result
 

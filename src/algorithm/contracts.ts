@@ -18,6 +18,8 @@ export type OperationIntent = {
   input: JsonValue;
   bindingSetRef?: BindingSetRef;
   limits?: Record<string, number>;
+  /** This dispatch may start the host's budget clock even when its reservation is zero. */
+  startsBudgetClock?: boolean;
 };
 export type OperationOutcome =
   | { kind: 'result'; value: JsonValue }
@@ -38,6 +40,7 @@ export type OperationEnvelope = {
   implementationDigest: string;
   bindingSetRef: BindingSetRef;
   limits: Record<string, number>;
+  startsBudgetClock?: boolean;
 };
 export type CompletionEnvelope = {
   operationId: string;
@@ -68,9 +71,15 @@ export type ProviderInspection =
 export type ProviderSubmission =
   | { status: 'running'; handle?: string; receipt?: UsageReceipt }
   | { status: 'completed'; completion: CompletionEnvelope };
+/** Read-only admission before dispatch; false downgrades a frozen clock candidate. */
+export type ProviderPreflight = { startsBudgetClock: boolean };
 export interface OperationProvider {
   describe(): ProviderManifest;
-  preflight(envelope: OperationEnvelope): Promise<void> | void;
+  preflight(envelope: OperationEnvelope): Promise<void | ProviderPreflight> | void | ProviderPreflight;
+  /** Optional dispatch preparation. May persist an immutable plan, but must not start a physical effect.
+   * It is called only after inspect/preflight and before the Campaign clock is committed;
+   * a prepared plan must still inspect as not-started and be safe to cancel or resume. */
+  prepareForDispatch?(envelope: OperationEnvelope): Promise<ProviderPreflight> | ProviderPreflight;
   submit(envelope: OperationEnvelope): Promise<ProviderSubmission>;
   inspect(envelope: OperationEnvelope): Promise<ProviderInspection>;
   cancel(envelope: OperationEnvelope): Promise<ProviderInspection>;

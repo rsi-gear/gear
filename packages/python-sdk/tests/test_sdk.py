@@ -27,6 +27,14 @@ class SdkTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             AlgorithmDecision(None, (OperationIntent("same", "a", 1), OperationIntent("same", "b", 2))).to_wire()
 
+    def test_optional_budget_clock_intent_requires_a_real_boolean(self):
+        self.assertNotIn("startsBudgetClock", OperationIntent("one", "a", {}).to_wire())
+        self.assertIs(OperationIntent("one", "a", {}, startsBudgetClock=False).to_wire()["startsBudgetClock"], False)
+        self.assertIs(OperationIntent("one", "a", {}, startsBudgetClock=True).to_wire()["startsBudgetClock"], True)
+        for invalid in (0, 1, "true"):
+            with self.assertRaisesRegex(ValidationError, "startsBudgetClock must be a boolean"):
+                OperationIntent("one", "a", {}, startsBudgetClock=invalid).to_wire()
+
     def test_external_usage_and_unreleased_cancel_probes(self):
         class External:
             def inspect(self, request):

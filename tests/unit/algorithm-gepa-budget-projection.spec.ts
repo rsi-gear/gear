@@ -8,8 +8,9 @@ const limits: BudgetLimits = { maxNewRolloutCells: 100, maxRepairCells: 10,
   maxDiagnosisInputTokens: 1000, maxDiagnosisOutputTokens: 100,
   timeoutMs: 60000 }
 
-function state(roundId: string, cells: number, heldCells = 0): CampaignState {
+function state(roundId: string, cells: number, heldCells = 0, budgetStartedAt?: number): CampaignState {
   return { spec: { campaignId: `search-${roundId}`, config: { request: { roundId } } }, spent: { rolloutCells: cells },
+    ...(budgetStartedAt === undefined ? {} : { budgetStartedAt }),
     operations: heldCells ? { active: { released: false, accounted: { rolloutCells: 2 },
       envelope: { limits: { rolloutCells: heldCells + 2 } } } } : {},
     auxiliaryOperations: heldCells ? { repair: { pending: { released: false, accounted: {},
@@ -20,21 +21,40 @@ function state(roundId: string, cells: number, heldCells = 0): CampaignState {
 describe('GEPA Campaign budget compatibility projection', () => {
   it('projects cumulative spent and unreleased main/aux reservations without a second reserve', async () => {
     const journal = new MemorySearchStore()
-    await projectGepaCampaignBudget(journal, 'r1', state('r1', 20, 5), 1000)
+    await projectGepaCampaignBudget(journal, 'r1', state('r1', 20, 5, 1000), 1000)
     const first = await journal.remaining('r1', { round: limits, evolution: limits })
     expect(first.cells).toBe(75)
     expect(first.repairCells).toBe(8)
     expect(first.generationTokens).toBeNull()
     const checkpoint = journal.checkpoint()
     const resumed = new MemorySearchStore(checkpoint)
-    await projectGepaCampaignBudget(resumed, 'r1', state('r1', 25), 1000)
+    await projectGepaCampaignBudget(resumed, 'r1', state('r1', 25, 0, 1000), 1000)
     expect((await resumed.remaining('r1', { round: limits, evolution: limits })).cells).toBe(75)
-    await projectGepaCampaignBudget(resumed, 'r1', state('r1', 25), 1000)
+    await projectGepaCampaignBudget(resumed, 'r1', state('r1', 25, 0, 1000), 1000)
     expect((await resumed.read<{ operations: unknown[] }>('budget'))?.operations).toHaveLength(1)
-    await projectGepaCampaignBudget(resumed, 'r2', state('r2', 10), 2000)
+    await projectGepaCampaignBudget(resumed, 'r2', state('r2', 10, 0, 2000), 2000)
     const second = await resumed.remaining('r2', { round: limits, evolution: limits })
     expect(second.cells).toBe(65)
     expect((await resumed.remaining('r1', { round: limits, evolution: limits })).cells).toBe(65)
     expect((await resumed.read<{ operations: unknown[] }>('budget'))?.operations).toHaveLength(2)
+  })
+
+  it('does not create a ledger for admission or mutate another round before first dispatch', async () => {
+    const journal = new MemorySearchStore()
+    expect(await projectGepaCampaignBudget(journal, 'r1', state('r1', 0), 1000)).toBeNull()
+    expect(await journal.read('budget')).toBeUndefined()
+    await projectGepaCampaignBudget(journal, 'r1', state('r1', 0, 0, 1200), 1000)
+    const before = await journal.read('budget')
+    expect(await projectGepaCampaignBudget(journal, 'r2', state('r2', 0), 2000)).toEqual(before)
+    expect(await journal.read('budget')).toEqual(before)
+    await expect(projectGepaCampaignBudget(journal, 'r1', state('r1', 0), 1000))
+      .rejects.toThrow('clock missing')
+  })
+
+  it('rejects metered Campaign spending if no operation started the legacy clock', async () => {
+    const journal = new MemorySearchStore()
+    await expect(projectGepaCampaignBudget(journal, 'r1', state('r1', 1), 1000))
+      .rejects.toThrow('mapped spending without a Campaign budget clock')
+    expect(await journal.read('budget')).toBeUndefined()
   })
 })
