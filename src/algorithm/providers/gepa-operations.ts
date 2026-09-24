@@ -11,10 +11,10 @@ import { implementationClosureDigest } from '../data/identity.js'
 import { digestJson } from '../../state/digest.js'
 import { assertCell, assertConsistentCells, cellKey, completeEvidence, plannedCells, profile, validOutcome, verifyCells } from '../../search/evidence.js'
 import { deliveredWorkplan, validateReceipt } from '../../search/diagnosis.js'
-import { numeric, processTasks, repetitionsForTask, safeId, seal, sorted, SearchProtocolError, utility, validateSnapshot, verifyDigest } from '../../search/contracts.js'
+import { numeric, plannedCellCount, processTasks, repetitionsForTask, safeId, seal, sorted, SearchProtocolError, utility, validateSnapshot, verifyDigest } from '../../search/contracts.js'
 import { objectiveProfile, trialPassed } from '../../search/objective.js'
 import type { CandidateWorkPlan, CellIdentity, DiagnosisDossier, DiagnosisFact, DiagnosisProvider, EvaluationScope, EvidenceCell, ExternalRecovery,
-  ResearchArchive, SearchProvider, SearchStageFailure, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from '../../search/types.js'
+  ResearchArchive, SearchProgress, SearchProvider, SearchStageFailure, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse } from '../../search/types.js'
 import type { ResearchFinding } from '../../search/types.js'
 import type { GeneratedCandidate, SearchExecutionHooks } from '../../search/runtime.js'
 import type { SearchJournal } from '../../search/store.js'
@@ -383,6 +383,8 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
   private readonly initialCells = new Map<string, EvidenceCell>()
   private readonly physicalIntegrity: string
   private readonly capabilitiesDigest: string
+  private progressTail: Promise<void> = Promise.resolve()
+  private readonly runningProjectedThisInvocation = new Set<string>()
   constructor(root: string, artifacts: FileArtifactStore, bindings: BindingStore, readonly physical: SearchProvider,
     initialArchive?: ResearchArchive, records?: ProviderRecordBackend, readonly legacyJournal?: SearchJournal) {
     super(root, 'gepa.evaluate', { providerIntegrity: physical.integrity, capabilities: physical.capabilities,
@@ -408,6 +410,55 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     }
   }
   private input(envelope: OperationEnvelope): EvaluateInput { return envelope.input as unknown as EvaluateInput }
+  override beginLegacyInvocation(context?: { callerSignal: AbortSignal; deadlineAt: number }): () => void {
+    const dispose = super.beginLegacyInvocation(context)
+    this.runningProjectedThisInvocation.clear()
+    return () => {
+      dispose()
+      this.runningProjectedThisInvocation.clear()
+    }
+  }
+  private async progress(envelope: OperationEnvelope, result?: StageResult): Promise<void> {
+    if (!this.legacyJournal) return
+    const { roundIdentity, universe, plan, snapshot, processMode } = this.input(envelope)
+    const stage = plan.stage
+    if (stage === 'held-out') return
+    const round = this.roundIdentity(roundIdentity)
+    if (!round) throw new ProviderProtocolError('Legacy GEPA progress requires frozen round identity')
+    const update = async () => {
+      const key = `rounds/${round.roundId}/progress`
+      const progress = await this.legacyJournal!.read<SearchProgress>(key)
+        ?? { phase: 'bootstrap' as const, evaluations: [], decisions: [] }
+      const previous = progress.evaluations.find(row => row.stagePlanDigest === plan.digest
+        && row.candidateId === snapshot.candidateId)
+      if (!result && (previous?.state === 'settled'
+        || this.legacyInvocationEnabled && this.runningProjectedThisInvocation.has(envelope.operationId))) return
+      const projected = result ? profile(universe, plan, snapshot, result, processMode) : undefined
+      const coverage = projected ? { coverage: projected.coverage, processCoverage: projected.processCoverage,
+        outcomeComplete: projected.outcomeComplete,
+        ...(projected.objectiveScore ? { objectiveScore: projected.objectiveScore,
+          rawMetrics: projected.rawMetrics!, objectiveComplete: projected.objectiveComplete! } : {}),
+        processComplete: projected.processComplete, processTaskIds: projected.processTaskIds,
+        tasks: projected.tasks, supportDigest: projected.supportDigest } : undefined
+      const row: SearchProgress['evaluations'][number] = { stage, stagePlanDigest: plan.digest,
+        scopeDigest: plan.scopeDigest, candidateId: snapshot.candidateId,
+        state: result ? 'settled' : 'running', plannedCells: plannedCellCount(universe, plan.taskIds),
+        ...(coverage ? { profile: coverage } : {}), ...(result?.failure ? { failure: result.failure } : {}) }
+      progress.evaluations = [...progress.evaluations.filter(item => item !== previous), row]
+      await this.legacyJournal!.write(key, progress)
+      if (!result && this.legacyInvocationEnabled) this.runningProjectedThisInvocation.add(envelope.operationId)
+      if (projected?.objectiveScore) await this.legacyJournal!.put(projected.objectiveScore)
+    }
+    const current = this.progressTail.then(update, update)
+    this.progressTail = current.catch(() => {})
+    try { await current }
+    catch (error) { throw new ProviderReconcileError(error instanceof Error ? error.message : String(error), { cause: error }) }
+  }
+  override async prepareForDispatch(envelope: OperationEnvelope): Promise<{ startsBudgetClock: boolean }> {
+    await this.preflight(envelope)
+    await this.progress(envelope)
+    return super.prepareForDispatch(envelope)
+  }
   private cellId(identity: CellIdentity): string { return cellKey(identity).slice(7) }
   private projectionId(envelope: OperationEnvelope, identity: CellIdentity): string {
     return digestJson([envelope.operationId, cellKey(identity)]).slice(7)
@@ -463,6 +514,7 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     return { cells, missing, repairCells }
   }
   protected override async freezeRequest(envelope: OperationEnvelope): Promise<JsonValue> {
+    await this.progress(envelope)
     const { universe, plan, snapshot } = this.input(envelope)
     const { cells, missing, repairCells } = await this.cached(plannedCells(universe, plan, snapshot))
     if (this.legacyJournal) {
@@ -659,6 +711,7 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
       if (saved && saved.ref !== result.digest) throw new ProviderProtocolError('GEPA original evaluation pointer conflict')
       if (!saved) await this.legacyJournal.write(key, { ref: result.digest })
     }
+    await this.progress(envelope, result)
     const resultRef = this.artifacts.putJson(result as unknown as JsonValue, 'gepa.stage-result.v1')
     return { outcome: { kind: 'result', value: { resultRef } }, usage }
   }
