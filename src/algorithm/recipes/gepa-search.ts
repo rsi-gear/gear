@@ -21,9 +21,11 @@ import type { BridgeSelectionDecision, EvaluationScope, EvaluationStageDecision,
   ParentSelectionDecision, ResearchArchive, SearchProgress, SearchSettings, Snapshot,
   StageEvaluationPlan, StageResult, TaskUniverse } from '../../search/types.js'
 import { failureClusterGepaRecipe, type GepaRecipeOptions } from './gepa.js'
+import type { GepaSharedEpoch } from './gepa-policy.js'
 
-type Phase = 'bootstrap' | 'bootstrap-failure-progress' | 'bootstrap-publication' | 'research' | 'seed-research-checkpoint' | 'terminal-publication' | 'complete'
+type Phase = 'bootstrap' | 'bootstrap-failure-progress' | 'bootstrap-publication' | 'archive-view-checkpoint' | 'research' | 'seed-research-checkpoint' | 'terminal-publication' | 'complete'
 type InnerState = { phase: string; works: unknown[]; archiveRef: ArtifactRef | null; parents: ParentSelectionDecision;
+  sharedEpochs: Record<string, GepaSharedEpoch>;
   preparation: ScopeEpochPreparation | null; baselines: Record<string, { plan: StageEvaluationPlan; result: StageResult }>;
   localBaselines: Record<string, StageResult>;
   locals: Array<{ work: { plan: StageEvaluationPlan }; snapshot: Snapshot; result: StageResult;
@@ -35,7 +37,7 @@ type InnerState = { phase: string; works: unknown[]; archiveRef: ArtifactRef | n
     workplan: import('../../search/types.js').CandidateWorkPlan }>;
   stageDecisions: EvaluationStageDecision[]; findings: ResearchFinding[];
   nomineeId: string | null; finalGate: GateDecision | null }
-type State = { phase: Phase; bootstrapScope: EvaluationScope; bootstrapPlan: StageEvaluationPlan;
+type State = { phase: Phase; bootstrapScope: EvaluationScope | null; bootstrapPlan: StageEvaluationPlan | null;
   bootstrapResultRef: ArtifactRef | null; initialArchiveRef: ArtifactRef | null;
   inner: JsonValue | null; outcomeRef: ArtifactRef | null; finalArchiveRef: ArtifactRef | null }
 
@@ -44,6 +46,10 @@ export type CampaignFailureClusterRecipeOptions = {
   artifacts: FileArtifactStore; bindingSchema: BindingSchema; anchorBindingSetRef: BindingSetRef;
   deadlineAt: number; parentPolicy: ParentSelectionPolicy;
   findings?: Record<string, ResearchFinding>; handoffFindingDigests?: Record<string, string[]>;
+  sharedEpochs?: Record<string, GepaSharedEpoch>;
+  archiveStart?: { baseArchiveRef: ArtifactRef; parentArchiveRef: ArtifactRef;
+    completionRefs: string[]; publishParentView: boolean;
+    snapshotBindings: Record<string, BindingSetRef> };
 }
 
 function stageResult(artifacts: FileArtifactStore, outcome: OperationOutcome | undefined,
@@ -92,7 +98,8 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
     settings: options.settings, bindingSchema: options.bindingSchema,
     anchorBindingSetRef: options.anchorBindingSetRef, deadlineAt: options.deadlineAt,
     parentPolicyRef: options.parentPolicy.ref, findings: options.findings ?? {},
-    handoffFindingDigests: options.handoffFindingDigests ?? {},
+    handoffFindingDigests: options.handoffFindingDigests ?? {}, sharedEpochs: options.sharedEpochs ?? {},
+    archiveStart: options.archiveStart ?? null,
   })
   const archiveRef = (archive: ResearchArchive): ArtifactRef =>
     options.artifacts.putJson(archive as unknown as JsonValue, 'gepa.research-archive.v1')
@@ -104,7 +111,10 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
       expectedChampionRevisionDigest: options.admission.championRevisionDigest, outcomeRef: reference,
       ...(publishArchive ? {} : { publishArchive: false }),
     } as unknown as JsonValue)]
+  const innerRecipes = new Map<string, Algorithm>()
   const innerRecipe = (initialArchiveRef: ArtifactRef): Algorithm => {
+    const cached = innerRecipes.get(initialArchiveRef.digest)
+    if (cached) return cached
     const archive = options.artifacts.getJson(initialArchiveRef) as unknown as ResearchArchive
     verifyDigest(archive)
     const innerOptions: GepaRecipeOptions = { evolutionId: options.admission.evolutionId,
@@ -112,15 +122,17 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
       maxCandidates: options.admission.maxCandidates, anchor: options.admission.anchor,
       seed: options.seed, heldOut: options.heldOut, archive, settings: options.settings,
       bindingSchema: options.bindingSchema,
-      snapshotBindings: { [options.admission.anchor.digest]: options.anchorBindingSetRef },
+      snapshotBindings: options.archiveStart?.snapshotBindings
+        ?? { [options.admission.anchor.digest]: options.anchorBindingSetRef },
       artifacts: options.artifacts, deadlineAt: options.deadlineAt, parentPolicy: options.parentPolicy,
       findings: options.findings ?? {}, handoffFindingDigests: options.handoffFindingDigests ?? {},
+      sharedEpochs: options.sharedEpochs ?? {},
       preserveLegacyExternalKeys: true }
-    return failureClusterGepaRecipe(innerOptions)
+    const recipe = failureClusterGepaRecipe(innerOptions)
+    innerRecipes.set(initialArchiveRef.digest, recipe)
+    return recipe
   }
   const seedProgress = (state: State, inner: InnerState): SearchProgress => {
-    if (!state.bootstrapResultRef) throw new Error('Campaign seed progress lacks bootstrap result')
-    const bootstrap = options.artifacts.getJson(state.bootstrapResultRef) as unknown as StageResult
     const evaluations: SearchProgress['evaluations'] = []
     const add = (plan: StageEvaluationPlan, snapshot: Snapshot, result: StageResult): void => {
       const p = profile(options.seed, plan, snapshot, result,
@@ -134,7 +146,10 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
           ...(p.objectiveScore ? { objectiveScore: p.objectiveScore, rawMetrics: p.rawMetrics!, objectiveComplete: p.objectiveComplete! } : {}) },
         ...(result.failure ? { failure: result.failure } : {}) })
     }
-    add(state.bootstrapPlan, options.admission.anchor, bootstrap)
+    if (state.bootstrapPlan && state.bootstrapResultRef) {
+      const bootstrap = options.artifacts.getJson(state.bootstrapResultRef) as unknown as StageResult
+      add(state.bootstrapPlan, options.admission.anchor, bootstrap)
+    }
     for (const plan of inner.preparation?.plans ?? []) for (const result of inner.preparation?.results ?? []) {
       if (result.stagePlanDigest !== plan.digest) continue
       const snapshot = [options.admission.anchor, ...inner.plannedWorks.map(work => work.parent)]
@@ -200,7 +215,10 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
     state.phase = 'terminal-publication'
     return { nextState: state as unknown as JsonValue,
       operations: [task('publish-final', 'gepa.publish', {
-        roundId: options.admission.roundId, expectedArchiveDigest: initial.digest,
+        roundId: options.admission.roundId,
+        expectedArchiveDigest: options.archiveStart
+          ? (options.artifacts.getJson(options.archiveStart.baseArchiveRef) as unknown as ResearchArchive).digest
+          : initial.digest,
         nextArchiveRef: inner.archiveRef,
         expectedChampionRevisionDigest: options.admission.championRevisionDigest,
         ...(championChanged && nominee ? { nextChampion: nominee } : {}),
@@ -220,9 +238,12 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
           findingRef: options.artifacts.putJson(finding as unknown as JsonValue, 'gepa.research-finding.v1') }
       })
       state.phase = 'seed-research-checkpoint'
+      const epoch = inner.preparation?.epoch
+      const sharedEpoch = epoch === undefined ? undefined : inner.sharedEpochs[String(epoch)]
       return { nextState: state as unknown as JsonValue,
         operations: [task('checkpoint-seed-research', 'gepa.research-checkpoint', {
           roundId: options.admission.roundId, archiveRef: inner.archiveRef, findings, progressRef,
+          ...(sharedEpoch ? { sharedEpoch } : {}),
         } as unknown as JsonValue)] }
     }
     state.phase = 'research'
@@ -233,10 +254,23 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
       implementationDigest, stateSchema: { type: 'object', additionalProperties: true },
       configSchema: { type: 'object', additionalProperties: true }, bindingSchema: options.bindingSchema,
       requiredOperationKinds: ['gepa.evaluate', 'gepa.diagnose', 'gepa.generate', 'gepa.publish',
-        'gepa.research-checkpoint', 'gepa.await-repair'] }),
+        'gepa.research-checkpoint', 'gepa.await-repair',
+        ...(options.archiveStart ? ['gepa.archive-view'] : [])] }),
     initialize(context: DecisionContext) {
       if (context.activeBindingSetRef.digest !== options.anchorBindingSetRef.digest)
         throw new Error('Campaign search anchor binding changed')
+      if (options.archiveStart) {
+        const state: State = { phase: 'archive-view-checkpoint', bootstrapScope: null, bootstrapPlan: null,
+          bootstrapResultRef: null, initialArchiveRef: options.archiveStart.parentArchiveRef,
+          inner: null, outcomeRef: null, finalArchiveRef: null }
+        return { nextState: state as unknown as JsonValue,
+          operations: [task('checkpoint-archive-view', 'gepa.archive-view', {
+            roundId: options.admission.roundId, baseArchiveRef: options.archiveStart.baseArchiveRef,
+            parentArchiveRef: options.archiveStart.parentArchiveRef,
+            completionRefs: options.archiveStart.completionRefs,
+            publishParentView: options.archiveStart.publishParentView,
+          } as unknown as JsonValue)] }
+      }
       const anchor = options.admission.anchor
       const taskIds = sorted(options.seed.tasks.map(task => task.id))
       const weights = Object.fromEntries(taskIds.map(id => [id, 1 / options.seed.tasks.length]))
@@ -264,13 +298,18 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
     },
     async reduce(context: ReduceContext) {
       const state = context.state as unknown as State
+      if (state.phase === 'archive-view-checkpoint') {
+        if (context.completed['checkpoint-archive-view']?.kind !== 'result' || !state.initialArchiveRef)
+          throw new Error('Campaign parent archive view is not durable')
+        return wrapInner(state, await innerRecipe(state.initialArchiveRef).initialize(context), context.budget)
+      }
       if (state.phase === 'bootstrap') {
         const { ref, value: result } = stageResult(options.artifacts, context.completed['bootstrap-evaluate'],
-          state.bootstrapPlan, options.admission.anchor.digest)
+          state.bootstrapPlan!, options.admission.anchor.digest)
         state.bootstrapResultRef = ref
         const archive = buildArchive({ evolutionId: options.admission.evolutionId, universe: options.seed,
-          snapshots: [options.admission.anchor], scopes: [state.bootstrapScope], results: [result],
-          plans: [state.bootstrapPlan], config: result.failure
+          snapshots: [options.admission.anchor], scopes: [state.bootstrapScope!], results: [result],
+          plans: [state.bootstrapPlan!], config: result.failure
             ? { ...options.settings.search, parentPolicy: options.parentPolicy.ref } : options.settings.search,
           championId: options.admission.anchor.candidateId, includeChampion: options.parentPolicy.requiresChampion })
         const next = archiveRef(archive); state.initialArchiveRef = next
@@ -284,7 +323,7 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
           const preparation: ScopeEpochPreparation = seal({ archiveCutoffDigest: archive.digest,
             epoch: scopeEpoch(options.settings, options.admission.roundIndex), sharedTaskIds: [],
             ruleDigest: digestJson(options.settings.search.scopeSampling), scopes: [], plans: [], results: [], decisions: [] })
-          const decision = seal({ stagePlanDigest: state.bootstrapPlan.digest,
+          const decision = seal({ stagePlanDigest: state.bootstrapPlan!.digest,
             candidateId: options.admission.anchor.candidateId, outcome: 'insufficient-evidence' as const,
             reasonCodes, supportDigest: result.digest })
           const outcome: SearchRoundOutcome = seal({ schemaVersion: 2 as const, roundId: options.admission.roundId,
@@ -296,12 +335,12 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
               parentProbabilities: {}, bridge: seal({ skipped: [], exclusions: [] }),
               scopePreparation: preparation, stageDecisions: [decision], candidates: [],
               remainingBudget: remainingBudget(context.budget, options.settings) } })
-          const p = profile(options.seed, state.bootstrapPlan, options.admission.anchor, result,
+          const p = profile(options.seed, state.bootstrapPlan!, options.admission.anchor, result,
             options.settings.search.process.mode)
           const progress: SearchProgress = { phase: 'bootstrap', evaluations: [{ stage: 'baseline-probe',
-            stagePlanDigest: state.bootstrapPlan.digest, scopeDigest: state.bootstrapPlan.scopeDigest,
+            stagePlanDigest: state.bootstrapPlan!.digest, scopeDigest: state.bootstrapPlan!.scopeDigest,
             candidateId: options.admission.anchor.candidateId, state: 'settled',
-            plannedCells: plannedCellCount(options.seed, state.bootstrapPlan.taskIds),
+            plannedCells: plannedCellCount(options.seed, state.bootstrapPlan!.taskIds),
             profile: { coverage: p.coverage, processCoverage: p.processCoverage,
               outcomeComplete: p.outcomeComplete, processComplete: p.processComplete,
               processTaskIds: p.processTaskIds, tasks: p.tasks, supportDigest: p.supportDigest,
@@ -314,9 +353,9 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
               roundId: options.admission.roundId, publishResearch: false,
               archiveRef: next, findings: [], progressRef } as unknown as JsonValue)] }
         }
-        const p = profile(options.seed, state.bootstrapPlan, options.admission.anchor, result,
-          options.settings.search.process.mode, state.bootstrapScope.weights)
-        if (!passesExploration(state.bootstrapScope, p, options.seed))
+        const p = profile(options.seed, state.bootstrapPlan!, options.admission.anchor, result,
+          options.settings.search.process.mode, state.bootstrapScope!.weights)
+        if (!passesExploration(state.bootstrapScope!, p, options.seed))
           throw new Error('bootstrap baseline is incomplete or fails exploration guards')
         const checkpoint = options.artifacts.putJson({ schemaVersion: 1, kind: 'bootstrap-archive',
           roundId: options.admission.roundId, archiveDigest: archive.digest }, 'gepa.bootstrap-publication.v1')

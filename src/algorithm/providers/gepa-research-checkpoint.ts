@@ -4,10 +4,11 @@ import type { ArtifactRef, CompletionEnvelope, OperationEnvelope, OperationProvi
   ProviderManifest, ProviderSubmission } from '../contracts.js'
 import { canonicalJson, jsonDigest, type JsonValue } from '../schema.js'
 import { implementationClosureDigest } from '../data/identity.js'
+import { ProviderReconcileError } from '../provider-errors.js'
 import { CampaignStore } from '../runtime/store.js'
 import { FileProviderRecordBackend, type ProviderRecordBackend } from '../runtime/persistence.js'
 import { digestJson } from '../../state/digest.js'
-import { digest, safeId, verifyDigest } from '../../search/contracts.js'
+import { digest, safeId, seal, verifyDigest } from '../../search/contracts.js'
 import { validateSearchSchema } from '../../search/schema.js'
 import type { SearchJournal } from '../../search/store.js'
 import type { ResearchArchive, ResearchFinding, SearchProgress } from '../../search/types.js'
@@ -20,6 +21,7 @@ export type GepaResearchCheckpointInput = {
   findings: Array<{ snapshotDigest: string; findingRef: ArtifactRef }>
   progressRef: ArtifactRef
   regressionRef?: ArtifactRef
+  sharedEpoch?: { epoch: number; archiveCutoffDigest: string; parentSnapshotDigest: string; taskIds: string[] }
 }
 export type GepaResearchCheckpointOutput = { archiveRef: ArtifactRef; checkpointRef: ArtifactRef }
 type Frozen = { input: GepaResearchCheckpointInput; archive: ResearchArchive; findings: ResearchFinding[];
@@ -44,7 +46,7 @@ export class GepaResearchCheckpointProvider implements OperationProvider {
       inputSchema: { type: 'object', required: ['roundId', 'archiveRef', 'findings', 'progressRef'], properties: {
         roundId: { type: 'string' }, publishResearch: { type: 'boolean', enum: [false] },
         archiveRef: { type: 'any' }, findings: { type: 'array', items: { type: 'any' } },
-        progressRef: { type: 'any' }, regressionRef: { type: 'any' },
+        progressRef: { type: 'any' }, regressionRef: { type: 'any' }, sharedEpoch: { type: 'any' },
       }, additionalProperties: false },
       outputSchema: { type: 'object', required: ['archiveRef', 'checkpointRef'], properties: {
         archiveRef: { type: 'any' }, checkpointRef: { type: 'any' },
@@ -72,6 +74,12 @@ export class GepaResearchCheckpointProvider implements OperationProvider {
       throw new Error('GEPA seed progress invalid')
     if (input.publishResearch === false && (input.findings.length || input.regressionRef))
       throw new Error('Failed bootstrap cannot publish seed findings or regression')
+    if (input.sharedEpoch && (!Number.isSafeInteger(input.sharedEpoch.epoch) || input.sharedEpoch.epoch < 1
+      || !/^sha256:[a-f0-9]{64}$/u.test(input.sharedEpoch.archiveCutoffDigest)
+      || !/^sha256:[a-f0-9]{64}$/u.test(input.sharedEpoch.parentSnapshotDigest)
+      || !Array.isArray(input.sharedEpoch.taskIds)
+      || input.sharedEpoch.taskIds.some(id => typeof id !== 'string')))
+      throw new Error('GEPA shared epoch checkpoint invalid')
     const findings = input.findings.map(({ snapshotDigest, findingRef }) => {
       digest(snapshotDigest)
       if (findingRef.schemaId !== 'gepa.research-finding.v1') throw new Error('GEPA finding schema invalid')
@@ -111,7 +119,8 @@ export class GepaResearchCheckpointProvider implements OperationProvider {
     return this.artifacts.putJson({ schemaVersion: 1, roundId: frozen.input.roundId,
       publishResearch: frozen.input.publishResearch !== false,
       archiveDigest: frozen.archive.digest, findings: frozen.input.findings,
-      progressDigest: jsonDigest(frozen.progress), regressionDigest: frozen.input.regressionRef?.digest ?? null },
+      progressDigest: jsonDigest(frozen.progress), regressionDigest: frozen.input.regressionRef?.digest ?? null,
+      sharedEpochDigest: frozen.input.sharedEpoch ? digestJson(frozen.input.sharedEpoch) : null },
     'gepa.research-checkpoint.v1')
   }
   private completion(envelope: OperationEnvelope, frozen: Frozen): CompletionEnvelope {
@@ -121,6 +130,15 @@ export class GepaResearchCheckpointProvider implements OperationProvider {
         checkpointRef: this.checkpointRef(frozen) } as unknown as JsonValue } }
   }
   private async published(frozen: Frozen): Promise<boolean> {
+    if (frozen.input.sharedEpoch) {
+      const pointer = await this.journal.read<{ ref: string }>(`evolution/shared-epoch-${frozen.input.sharedEpoch.epoch}`)
+      if (!pointer) return false
+      const value = await this.journal.object<{ digest: string; epoch: number; archiveCutoffDigest: string;
+        parentSnapshotDigest: string; taskIds: string[] }>(pointer.ref)
+      if (digestJson({ epoch: value.epoch, archiveCutoffDigest: value.archiveCutoffDigest,
+        parentSnapshotDigest: value.parentSnapshotDigest, taskIds: value.taskIds })
+        !== digestJson(frozen.input.sharedEpoch)) throw new Error('GEPA shared epoch lineage conflict')
+    }
     const saved = await this.journal.read<{ ref: string }>(`rounds/${frozen.input.roundId}/research`)
     if (frozen.input.publishResearch === false) {
       if (saved) throw new Error('Failed bootstrap installed seed research')
@@ -149,6 +167,13 @@ export class GepaResearchCheckpointProvider implements OperationProvider {
     return true
   }
   private async publish(frozen: Frozen): Promise<void> {
+    if (frozen.input.sharedEpoch) {
+      const shared = frozen.input.sharedEpoch
+      const installed = await this.journal.freezeEvolution(`shared-epoch-${shared.epoch}`, () => seal(shared))
+      if (digestJson({ epoch: installed.epoch, archiveCutoffDigest: installed.archiveCutoffDigest,
+        parentSnapshotDigest: installed.parentSnapshotDigest, taskIds: installed.taskIds }) !== digestJson(shared))
+        throw new Error('GEPA shared epoch lineage conflict')
+    }
     const existing = await this.journal.read<{ ref: string }>(`rounds/${frozen.input.roundId}/research`)
     if (existing && (frozen.input.publishResearch === false || existing.ref !== frozen.archive.digest))
       throw new Error('GEPA research pointer conflict')
@@ -194,11 +219,13 @@ export class GepaResearchCheckpointProvider implements OperationProvider {
         if (!await this.published(frozen)) throw new Error('GEPA completed research checkpoint missing')
         return { status: 'completed', completion: record.completion! }
       }
-      await this.publish(frozen)
-      if (!await this.published(frozen)) throw new Error('GEPA research checkpoint unresolved')
-      const completion = this.completion(envelope, frozen)
-      await this.records.write(this.manifest.kind, envelope.operationId, { ...record, stage: 'complete', completion })
-      return { status: 'completed', completion }
+      try {
+        await this.publish(frozen)
+        if (!await this.published(frozen)) throw new Error('GEPA research checkpoint unresolved')
+        const completion = this.completion(envelope, frozen)
+        await this.records.write(this.manifest.kind, envelope.operationId, { ...record, stage: 'complete', completion })
+        return { status: 'completed', completion }
+      } catch (error) { throw new ProviderReconcileError('GEPA research checkpoint publication failed', { cause: error }) }
     })
   }
   async cancel(envelope: OperationEnvelope): Promise<ProviderInspection> {

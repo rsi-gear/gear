@@ -1,6 +1,6 @@
 import type { ArtifactRef, OperationEnvelope, OperationIntent, OperationOutcome } from '../algorithm/contracts.js'
 import { AlgorithmRuntime } from '../algorithm/runtime/engine.js'
-import { ProviderProtocolError } from '../algorithm/provider-errors.js'
+import { ProviderProtocolError, ProviderReconcileError } from '../algorithm/provider-errors.js'
 import type { JsonValue } from '../algorithm/schema.js'
 import { implementationClosureDigest } from '../algorithm/data/identity.js'
 import { digestJson } from '../state/digest.js'
@@ -199,6 +199,7 @@ async function runRepairGroup(options: { runtime: AlgorithmRuntime; store: Searc
   let status: Awaited<ReturnType<AlgorithmRuntime['runAuxiliaryUntilBlocked']>>
   try { status = await runtime.runAuxiliaryUntilBlocked(groupId) }
   catch (error) {
+    if (error instanceof ProviderReconcileError) throw error.cause ?? error
     if (error instanceof ProviderProtocolError) throw new SearchProtocolError(error.message)
     throw error
   }
@@ -256,8 +257,12 @@ type CampaignRepairPendingProvider = {
 /** Repairs one frozen StageResult through the same Campaign budget, without reducing science. */
 export async function repairCampaignEvaluation(options: {
   store: SearchJournal; validator: SearchExecutionRuntime; runtime: AlgorithmRuntime;
-  repairProvider: CampaignRepairPendingProvider & { beginLegacyInvocation(): void };
-  processProvider?: CampaignRepairPendingProvider & { beginLegacyInvocation(): void };
+  repairProvider: CampaignRepairPendingProvider & { beginLegacyInvocation(context: {
+    callerSignal: AbortSignal; deadlineAt: number;
+  }): () => void };
+  processProvider?: CampaignRepairPendingProvider & { beginLegacyInvocation(context: {
+    callerSignal: AbortSignal; deadlineAt: number;
+  }): () => void };
   roundId: string; repairId: string; originalRef: string; signal: AbortSignal;
 }): Promise<StageResult> {
   const { store, runtime, signal } = options
@@ -272,8 +277,11 @@ export async function repairCampaignEvaluation(options: {
     invariant(await store.read(revisionPath), 'repair result lacks its published evidence revision')
     return result
   }
-  options.repairProvider.beginLegacyInvocation()
-  options.processProvider?.beginLegacyInvocation()
+  const disposers: Array<() => void> = []
+  try {
+  const invocation = { callerSignal: signal, deadlineAt: prepared.deadlineAt }
+  disposers.push(options.repairProvider.beginLegacyInvocation(invocation))
+  if (options.processProvider) disposers.push(options.processProvider.beginLegacyInvocation(invocation))
   await claimCampaignRepair(store, prepared)
   const refs = sealRepairInputs(runtime, prepared)
   const harness = runtime.artifacts.putJson({ commitOid: prepared.snapshot.commit,
@@ -379,4 +387,5 @@ export async function repairCampaignEvaluation(options: {
   const frozen = await store.freeze(prepared.roundId, `repair-result-${prepared.repairKey}`, () => result)
   invariant(frozen.digest === result.digest, 'repair result changed during publication')
   return frozen
+  } finally { for (const dispose of disposers.reverse()) dispose() }
 }

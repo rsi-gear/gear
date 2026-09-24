@@ -7,7 +7,7 @@ import { implementationClosureDigest } from '../data/identity.js'
 import { FileProviderRecordBackend, type ArtifactCheckpoint, type ProviderRecordBackend } from '../runtime/persistence.js'
 import { jsonDigest, type JsonValue } from '../schema.js'
 import { assertCell, assertConsistentCells, cellKey, plannedCells, validOutcome, verifyCells } from '../../search/evidence.js'
-import { budgetFailure, SearchExecutionFailure } from '../../search/recovery.js'
+import { budgetFailure, SearchExecutionFailure, searchDeadline } from '../../search/recovery.js'
 import { safeId, SearchProtocolError, verifyDigest, validateSnapshot } from '../../search/contracts.js'
 import type { CellIdentity, EvidenceCell, SearchProvider, SearchStageFailure, Snapshot,
   StageEvaluationPlan, StageResult, TaskUniverse } from '../../search/types.js'
@@ -41,6 +41,8 @@ export class GepaRepairEvaluationProvider implements OperationProvider {
   private readonly records: ProviderRecordBackend
   private readonly physicalIdentity: string
   private readonly attemptedThisInvocation = new Set<string>()
+  private legacyInvocationEnabled = false
+  private invocation: { runSignal: AbortSignal; inspectSignal: AbortSignal; dispose(): void } | undefined
   constructor(root: string, readonly artifacts: FileArtifactStore, readonly bindings: BindingStore,
     readonly physical: SearchProvider, records?: ProviderRecordBackend) {
     this.records = records ?? new FileProviderRecordBackend(root)
@@ -62,7 +64,29 @@ export class GepaRepairEvaluationProvider implements OperationProvider {
   }
   describe(): ProviderManifest { return structuredClone(this.manifest) }
   /** Reset only for a new explicit public repair call, never between auxiliary kernel ticks. */
-  beginLegacyInvocation(): void { this.attemptedThisInvocation.clear() }
+  beginLegacyInvocation(context?: { callerSignal: AbortSignal; deadlineAt: number }): () => void {
+    this.invocation?.dispose()
+    this.attemptedThisInvocation.clear()
+    this.legacyInvocationEnabled = true
+    const timed = context ? searchDeadline(context.callerSignal, context.deadlineAt) : undefined
+    const invocation = context && timed ? { runSignal: timed.signal, inspectSignal: context.callerSignal,
+      dispose: () => timed.dispose() } : undefined
+    this.invocation = invocation
+    return () => {
+      if (this.invocation === invocation) {
+        invocation?.dispose()
+        this.invocation = undefined
+        this.legacyInvocationEnabled = false
+        this.attemptedThisInvocation.clear()
+      }
+    }
+  }
+  private physicalSignal(): AbortSignal { return this.invocation?.runSignal ?? new AbortController().signal }
+  private inspectionSignal(): AbortSignal {
+    const signal = this.invocation?.inspectSignal ?? new AbortController().signal
+    signal.throwIfAborted()
+    return signal
+  }
   private input(envelope: OperationEnvelope): GepaRepairEvaluationInput {
     return envelope.input as unknown as GepaRepairEvaluationInput
   }
@@ -196,7 +220,7 @@ export class GepaRepairEvaluationProvider implements OperationProvider {
     const { input } = await this.checked(envelope)
     if (!this.physical.inspectEvaluation) return undefined
     return this.physical.inspectEvaluation({ plan: input.plan, snapshot: input.snapshot,
-      cells: input.missing, idempotencyKey: record.externalKey, signal: new AbortController().signal })
+      cells: input.missing, idempotencyKey: record.externalKey, signal: this.inspectionSignal() })
   }
   async inspect(envelope: OperationEnvelope): Promise<ProviderInspection> {
     await this.preflight(envelope)
@@ -206,6 +230,7 @@ export class GepaRepairEvaluationProvider implements OperationProvider {
     if (record.completion) return { status: 'completed', completion: record.completion }
     if (this.attemptedThisInvocation.has(envelope.operationId)) return { status: 'running' }
     if (!record.effectStarted) return { status: 'replay-safe' }
+    if (this.legacyInvocationEnabled && Date.now() < this.input(envelope).deadlineAt) return { status: 'replay-safe' }
     const observed = await this.physicalInspection(envelope, record)
     if (!observed) return Date.now() < this.input(envelope).deadlineAt ? { status: 'replay-safe' } : { status: 'unknown' }
     if (observed.status === 'running') return Date.now() < this.input(envelope).deadlineAt
@@ -262,7 +287,8 @@ export class GepaRepairEvaluationProvider implements OperationProvider {
     if (record.completion) return { status: 'completed', completion: record.completion }
     if (this.attemptedThisInvocation.has(envelope.operationId)) return { status: 'running' }
     let observed: Awaited<ReturnType<NonNullable<SearchProvider['inspectEvaluation']>>> | undefined
-    if (record.effectStarted && this.physical.inspectEvaluation) {
+    if (record.effectStarted && this.physical.inspectEvaluation
+      && (!this.legacyInvocationEnabled || Date.now() >= input.deadlineAt)) {
       try { observed = await this.physicalInspection(envelope, record) }
       catch (error) {
         if (error instanceof SearchExecutionFailure) return { status: 'completed', completion: await this.complete(envelope,
@@ -292,8 +318,9 @@ export class GepaRepairEvaluationProvider implements OperationProvider {
     try {
       this.attemptedThisInvocation.add(envelope.operationId)
       cells = await this.physical.evaluate({ plan: input.plan, snapshot: input.snapshot, cells: input.missing,
-        idempotencyKey: record.externalKey, signal: new AbortController().signal })
+        idempotencyKey: record.externalKey, signal: this.physicalSignal() })
     } catch (error) {
+      this.inspectionSignal()
       if (error instanceof SearchExecutionFailure) return { status: 'completed', completion: await this.complete(envelope,
         record, { schemaVersion: 1, cells: error.cells, failure: error.failure }, input.missing.length) }
       if (error instanceof ProviderProtocolError) throw error

@@ -8,7 +8,7 @@ import { FileProviderRecordBackend, type ArtifactCheckpoint, type ProviderRecord
 import { jsonDigest, type JsonValue } from '../schema.js'
 import { assertCell, assertConsistentCells, cellKey, validOutcome, verifyCells } from '../../search/evidence.js'
 import { digest, safeId, SearchProtocolError, verifyDigest } from '../../search/contracts.js'
-import { budgetFailure, SearchExecutionFailure } from '../../search/recovery.js'
+import { budgetFailure, SearchExecutionFailure, searchDeadline } from '../../search/recovery.js'
 import type { EvidenceCell, SearchProvider, StageResult } from '../../search/types.js'
 import type { SearchJournal } from '../../search/store.js'
 import { digestJson } from '../../state/digest.js'
@@ -36,6 +36,7 @@ export class GepaProcessCompletionProvider implements OperationProvider {
   private readonly physicalIdentity: string
   private readonly attemptedThisInvocation = new Set<string>()
   private legacyInvocationEnabled = false
+  private invocation: { runSignal: AbortSignal; inspectSignal: AbortSignal; dispose(): void } | undefined
   constructor(root: string, readonly artifacts: FileArtifactStore, readonly bindings: BindingStore,
     readonly physical: SearchProvider, records?: ProviderRecordBackend, readonly legacyJournal?: SearchJournal) {
     this.records = records ?? new FileProviderRecordBackend(root)
@@ -58,7 +59,29 @@ export class GepaProcessCompletionProvider implements OperationProvider {
     supportsIdempotentReplay: true }
   }
   describe(): ProviderManifest { return structuredClone(this.manifest) }
-  beginLegacyInvocation(): void { this.legacyInvocationEnabled = true; this.attemptedThisInvocation.clear() }
+  beginLegacyInvocation(context?: { callerSignal: AbortSignal; deadlineAt: number }): () => void {
+    this.invocation?.dispose()
+    this.legacyInvocationEnabled = true
+    this.attemptedThisInvocation.clear()
+    const timed = context ? searchDeadline(context.callerSignal, context.deadlineAt) : undefined
+    const invocation = context && timed ? { runSignal: timed.signal, inspectSignal: context.callerSignal,
+      dispose: () => timed.dispose() } : undefined
+    this.invocation = invocation
+    return () => {
+      if (this.invocation === invocation) {
+        invocation?.dispose()
+        this.invocation = undefined
+        this.legacyInvocationEnabled = false
+        this.attemptedThisInvocation.clear()
+      }
+    }
+  }
+  private physicalSignal(): AbortSignal { return this.invocation?.runSignal ?? new AbortController().signal }
+  private inspectionSignal(): AbortSignal {
+    const signal = this.invocation?.inspectSignal ?? new AbortController().signal
+    signal.throwIfAborted()
+    return signal
+  }
   private input(envelope: OperationEnvelope): GepaProcessCompletionInput {
     return envelope.input as unknown as GepaProcessCompletionInput
   }
@@ -141,7 +164,7 @@ export class GepaProcessCompletionProvider implements OperationProvider {
     return record
   }
   private async inspectPhysical(base: EvidenceCell, key: string) {
-    return this.physical.inspectProcess?.(base, key, new AbortController().signal)
+    return this.physical.inspectProcess?.(base, key, this.inspectionSignal())
   }
   async inspect(envelope: OperationEnvelope): Promise<ProviderInspection> {
     const { input, base } = await this.checked(envelope)
@@ -151,6 +174,7 @@ export class GepaProcessCompletionProvider implements OperationProvider {
     if (record.completion) return { status: 'completed', completion: record.completion }
     if (this.legacyInvocationEnabled && this.attemptedThisInvocation.has(envelope.operationId)) return { status: 'running' }
     if (!record.effectStarted) return { status: 'replay-safe' }
+    if (this.legacyInvocationEnabled && Date.now() < input.deadlineAt) return { status: 'replay-safe' }
     const observed = await this.inspectPhysical(base, record.externalKey)
     if (observed?.status === 'complete') return { status: 'replay-safe' }
     if (Date.now() < input.deadlineAt) return { status: 'replay-safe' }
@@ -226,7 +250,8 @@ export class GepaProcessCompletionProvider implements OperationProvider {
     if (record.completion) return { status: 'completed', completion: record.completion }
     if (this.legacyInvocationEnabled && this.attemptedThisInvocation.has(envelope.operationId)) return { status: 'running' }
     let observed: Awaited<ReturnType<NonNullable<SearchProvider['inspectProcess']>>> | undefined
-    if (record.effectStarted && this.physical.inspectProcess) {
+    if (record.effectStarted && this.physical.inspectProcess
+      && (!this.legacyInvocationEnabled || Date.now() >= input.deadlineAt)) {
       try { observed = await this.inspectPhysical(base, record.externalKey) }
       catch (error) {
         if (error instanceof SearchExecutionFailure) return { status: 'completed', completion: await this.complete(envelope,
@@ -250,8 +275,9 @@ export class GepaProcessCompletionProvider implements OperationProvider {
     let cell: EvidenceCell
     try {
       if (this.legacyInvocationEnabled) this.attemptedThisInvocation.add(envelope.operationId)
-      cell = await this.physical.completeProcess!(base, record.externalKey, new AbortController().signal)
+      cell = await this.physical.completeProcess!(base, record.externalKey, this.physicalSignal())
     } catch (error) {
+      this.inspectionSignal()
       if (error instanceof SearchExecutionFailure) return { status: 'completed', completion: await this.complete(envelope,
         record, base, { schemaVersion: 1, cells: error.cells, failure: error.failure }) }
       if (error instanceof ProviderProtocolError) throw error

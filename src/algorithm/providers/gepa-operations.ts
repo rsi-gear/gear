@@ -19,7 +19,8 @@ import type { ResearchFinding } from '../../search/types.js'
 import type { GeneratedCandidate, SearchExecutionHooks } from '../../search/runtime.js'
 import type { SearchJournal } from '../../search/store.js'
 import { GepaPhysicalExecutionError, hasPhysicalGenerationInspection } from './gepa-hooks.js'
-import { SearchExecutionFailure } from '../../search/recovery.js'
+import { budgetFailure, SearchExecutionFailure, searchDeadline } from '../../search/recovery.js'
+import { SearchBudgetExceeded } from '../../search/store.js'
 
 type GepaKind = 'gepa.evaluate' | 'gepa.diagnose' | 'gepa.generate'
 export type GepaPhysicalRoundIdentity = { evolutionId: string; roundId: string }
@@ -29,7 +30,7 @@ type RecordValue = { schemaVersion: 1; operationId: string; inputDigest: string;
   bindingDigest: string; idempotencyKey: string; externalKey: string;
   stage: 'started' | 'cancelled-before-start' | 'complete';
   request?: JsonValue; requestDigest?: string; evaluationCells?: EvidenceCell[]; evaluationCellsDigest?: string;
-  evaluationFailure?: SearchStageFailure; evaluationFailureDigest?: string;
+  evaluationFailure?: SearchStageFailure; evaluationFailureDigest?: string; evaluationNotStarted?: boolean;
   pendingReason?: string; completion?: CompletionEnvelope }
 type Result = { outcome: OperationOutcome; usage: Record<string, number> }
 class PhysicalTransportPending extends Error {
@@ -41,6 +42,7 @@ abstract class GepaOperationProvider implements OperationProvider {
   private readonly manifest: ProviderManifest
   private readonly attemptedThisInvocation = new Set<string>()
   protected legacyInvocationEnabled = false
+  private invocation: { runSignal: AbortSignal; inspectSignal: AbortSignal; dispose(): void } | undefined
   protected readonly records: ProviderRecordBackend
   protected constructor(root: string, kind: GepaKind, implementationConfiguration: JsonValue,
     readonly artifacts: FileArtifactStore, readonly bindings: BindingStore,
@@ -55,7 +57,33 @@ abstract class GepaOperationProvider implements OperationProvider {
   }
   describe(): ProviderManifest { return structuredClone(this.manifest) }
   /** Call once at the start of each explicit legacy public run, never between kernel ticks. */
-  beginLegacyInvocation(): void { this.legacyInvocationEnabled = true; this.attemptedThisInvocation.clear() }
+  beginLegacyInvocation(context?: { callerSignal: AbortSignal; deadlineAt: number }): () => void {
+    this.invocation?.dispose()
+    this.legacyInvocationEnabled = true
+    this.attemptedThisInvocation.clear()
+    const timed = context ? searchDeadline(context.callerSignal, context.deadlineAt) : undefined
+    const invocation = context && timed ? { runSignal: timed.signal, inspectSignal: context.callerSignal,
+      dispose: () => timed.dispose() } : undefined
+    this.invocation = invocation
+    return () => {
+      if (this.invocation === invocation) {
+        invocation?.dispose()
+        this.invocation = undefined
+        this.legacyInvocationEnabled = false
+        this.attemptedThisInvocation.clear()
+      }
+    }
+  }
+  protected physicalSignal(): AbortSignal { return this.invocation?.runSignal ?? new AbortController().signal }
+  protected deadlineExpired(): boolean {
+    const signal = this.invocation?.runSignal
+    return !!signal?.aborted && signal.reason instanceof SearchBudgetExceeded
+  }
+  protected inspectionSignal(): AbortSignal {
+    const signal = this.invocation?.inspectSignal ?? new AbortController().signal
+    signal.throwIfAborted()
+    return signal
+  }
   protected markPhysicalAttempt(envelope: OperationEnvelope): void {
     if (this.legacyInvocationEnabled) this.attemptedThisInvocation.add(envelope.operationId)
   }
@@ -105,6 +133,7 @@ abstract class GepaOperationProvider implements OperationProvider {
       || record.idempotencyKey !== envelope.idempotencyKey || record.externalKey !== this.physicalKey(envelope)
       || record.requestDigest !== (record.request === undefined ? undefined : jsonDigest(record.request))
       || record.pendingReason !== undefined && typeof record.pendingReason !== 'string'
+      || record.evaluationNotStarted !== undefined && typeof record.evaluationNotStarted !== 'boolean'
       || record.evaluationCellsDigest !== (record.evaluationCells === undefined ? undefined : digestJson(record.evaluationCells))
       || record.evaluationFailureDigest !== (record.evaluationFailure === undefined ? undefined : digestJson(record.evaluationFailure)))
       throw new Error('GEPA operation record drift')
@@ -132,7 +161,7 @@ abstract class GepaOperationProvider implements OperationProvider {
   }
   protected abstract validate(envelope: OperationEnvelope): Promise<void>
   protected freezeRequest(_envelope: OperationEnvelope): Promise<JsonValue | undefined> | JsonValue | undefined { return undefined }
-  protected abstract execute(envelope: OperationEnvelope, record: RecordValue): Promise<Result>
+  protected abstract execute(envelope: OperationEnvelope, record: RecordValue, newlyStarted: boolean): Promise<Result>
   protected abstract recover(envelope: OperationEnvelope, record: RecordValue): Promise<'not-started' | 'replay-safe' | 'running' | 'unknown'>
   protected lookupLegacyPending(_envelope: OperationEnvelope, _record: RecordValue): Promise<ExternalRecovery<unknown> | undefined> {
     return Promise.resolve(undefined)
@@ -168,6 +197,7 @@ abstract class GepaOperationProvider implements OperationProvider {
       receipt: this.receipt(envelope, Object.fromEntries(this.manifest.meteredDimensions.map(d => [d, 0]))) }
     if (record.completion) return { status: 'completed', completion: record.completion }
     if (this.wasPhysicalAttempted(envelope)) return { status: 'running' }
+    if (this.legacyInvocationEnabled && !this.deadlineExpired()) return { status: 'replay-safe' }
     const recovered = await this.recover(envelope, record)
     return { status: recovered }
   }
@@ -186,7 +216,7 @@ abstract class GepaOperationProvider implements OperationProvider {
     const observed = created ? { status: 'not-started' as const } : await this.inspect(envelope)
     if (observed.status === 'completed') return { status: 'completed', completion: observed.completion }
     if (!created && observed.status !== 'not-started' && observed.status !== 'replay-safe') return { status: 'running' }
-    try { return { status: 'completed', completion: await this.complete(envelope, await this.execute(envelope, record)) } }
+    try { return { status: 'completed', completion: await this.complete(envelope, await this.execute(envelope, record, created)) } }
     catch (error) {
       if (error instanceof PhysicalTransportPending || error instanceof ProjectionPending) {
         const pending = await this.read(envelope)
@@ -398,7 +428,7 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     if (!created) {
       if (!this.physical.inspectProcess) throw new ProjectionPending('unknown')
       let observed: Awaited<ReturnType<NonNullable<SearchProvider['inspectProcess']>>>
-      try { observed = await this.physical.inspectProcess(base, key, new AbortController().signal) }
+      try { observed = await this.physical.inspectProcess(base, key, this.inspectionSignal()) }
       catch (error) { if (error instanceof SearchProtocolError) throw error; throw new ProjectionPending('unknown') }
       if (observed.status === 'complete') {
         if (observed.result.cells.length !== 1) throw new Error('GEPA process inspection returned unexpected cells')
@@ -408,13 +438,13 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
       // The old SearchProvider promises the same key is idempotent; do not make a new projection key.
     }
     let projected: EvidenceCell
-    try { projected = await this.physical.completeProcess(base, key, new AbortController().signal) }
+    try { projected = await this.physical.completeProcess(base, key, this.physicalSignal()) }
     catch (error) {
       if (error instanceof SearchProtocolError) throw error
       if (this.physical.inspectProcess) {
         let observed: Awaited<ReturnType<NonNullable<SearchProvider['inspectProcess']>>> | undefined
         try {
-          observed = await this.physical.inspectProcess(base, key, new AbortController().signal)
+          observed = await this.physical.inspectProcess(base, key, this.inspectionSignal())
         } catch (inspectionError) {
           if (inspectionError instanceof SearchProtocolError) throw inspectionError
         }
@@ -429,7 +459,7 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     return settle(projected)
   }
   private async result(envelope: OperationEnvelope, record: RecordValue, received: EvidenceCell[],
-    failure?: SearchStageFailure): Promise<Result> {
+    failure?: SearchStageFailure, notStarted = false): Promise<Result> {
     const { universe, plan, snapshot, processMode, projectionPolicy } = this.input(envelope)
     const expected = plannedCells(universe, plan, snapshot)
     const request = record.request as unknown as FrozenEvaluationRequest
@@ -455,9 +485,12 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
         throw new ProviderProtocolError('GEPA original evaluation cells changed on recovery')
       if (digestJson(record.evaluationFailure ?? null) !== digestJson(failure ?? null))
         throw new ProviderProtocolError('GEPA original evaluation failure changed on recovery')
+      if (record.evaluationNotStarted !== notStarted)
+        throw new ProviderProtocolError('GEPA original evaluation execution status changed on recovery')
     } else {
       record.evaluationCells = received
       record.evaluationCellsDigest = digestJson(received)
+      record.evaluationNotStarted = notStarted
       if (failure) { record.evaluationFailure = failure; record.evaluationFailureDigest = digestJson(failure) }
       await this.records.write(envelope.kind, envelope.operationId, record)
     }
@@ -481,7 +514,7 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     }
     const originals = [...request.cached, ...received]
     let cells = originals.map(cell => cellsByKey.get(cellKey(cell.identity)) ?? cell)
-    const usage = { rolloutCells: requested.length, repairCells: request.repairCells }
+    const usage = { rolloutCells: notStarted ? 0 : requested.length, repairCells: notStarted ? 0 : request.repairCells }
     const applicable = new Set(processTasks(universe, processMode))
     const requiredMetrics = new Set([...(universe.objective?.terms.filter(term => term.weight !== 0).map(term => term.metric) ?? []),
       ...(universe.objective?.constraints.map(constraint => constraint.metric) ?? [])])
@@ -513,7 +546,7 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     const resultRef = this.artifacts.putJson(result as unknown as JsonValue, 'gepa.stage-result.v1')
     return { outcome: { kind: 'result', value: { resultRef } }, usage }
   }
-  protected async execute(envelope: OperationEnvelope, record: RecordValue): Promise<Result> {
+  protected async execute(envelope: OperationEnvelope, record: RecordValue, newlyStarted: boolean): Promise<Result> {
     const { plan, snapshot, universe } = this.input(envelope)
     const request = record.request as unknown as FrozenEvaluationRequest
     const requested = request.missing
@@ -522,33 +555,40 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
       usage: { rolloutCells: 0, repairCells: 0 } }
     // A durable original result may still need process projections. Resume from
     // that exact evidence; a projection response loss must not rerun rollout.
-    if (record.evaluationCells) return this.result(envelope, record, record.evaluationCells, record.evaluationFailure)
+    if (record.evaluationCells) return this.result(envelope, record, record.evaluationCells,
+      record.evaluationFailure, record.evaluationNotStarted)
     if (!requested.length) return this.result(envelope, record, [])
-    if (this.physical.inspectEvaluation) {
+    if (this.deadlineExpired() && newlyStarted)
+      return this.result(envelope, record, [], budgetFailure('time'), true)
+    if (this.physical.inspectEvaluation && (!this.legacyInvocationEnabled || this.deadlineExpired())) {
       let observed: Awaited<ReturnType<NonNullable<SearchProvider['inspectEvaluation']>>> | undefined
       try {
         observed = await this.physical.inspectEvaluation({ plan, snapshot, cells: requested,
-          idempotencyKey: record.externalKey, signal: new AbortController().signal })
+          idempotencyKey: record.externalKey, signal: this.inspectionSignal() })
       } catch (error) {
         if (error instanceof SearchExecutionFailure)
           return this.result(envelope, record, error.cells, error.failure)
         if (error instanceof SearchProtocolError) throw error
       }
       if (observed?.status === 'complete') return this.result(envelope, record, observed.result.cells)
+      if (observed?.status === 'not-started' && this.deadlineExpired())
+        return this.result(envelope, record, [], budgetFailure('time'), true)
     }
+    if (this.deadlineExpired()) throw new PhysicalTransportPending(new SearchBudgetExceeded('time'))
     let cells: EvidenceCell[]
     try {
       this.markPhysicalAttempt(envelope)
       cells = await this.physical.evaluate({ plan, snapshot, cells: requested,
-        idempotencyKey: record.externalKey, signal: new AbortController().signal })
+        idempotencyKey: record.externalKey, signal: this.physicalSignal() })
     } catch (error) {
+      this.inspectionSignal()
       if (error instanceof SearchExecutionFailure)
         return this.result(envelope, record, error.cells, error.failure)
       let inspected: Awaited<ReturnType<NonNullable<SearchProvider['inspectEvaluation']>>> | undefined
       if (!(error instanceof SearchProtocolError) && this.physical.inspectEvaluation) {
         try {
           inspected = await this.physical.inspectEvaluation({ plan, snapshot, cells: requested,
-            idempotencyKey: record.externalKey, signal: new AbortController().signal })
+            idempotencyKey: record.externalKey, signal: this.inspectionSignal() })
         } catch (inspectionError) {
           if (inspectionError instanceof SearchExecutionFailure)
             return this.result(envelope, record, inspectionError.cells, inspectionError.failure)
@@ -583,7 +623,7 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
           throw new Error('GEPA process projection identity drift')
         if (projection.stage === 'complete') continue
         if (!this.physical.inspectProcess) return 'unknown'
-        const observed = await this.physical.inspectProcess(base, key, new AbortController().signal)
+        const observed = await this.physical.inspectProcess(base, key, this.inspectionSignal())
         if (observed.status === 'unknown') return 'unknown'
         if (observed.status === 'running') running = true
       }
@@ -596,7 +636,7 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
       return this.legacyInvocationEnabled && !!this.input(envelope).roundIdentity ? 'replay-safe' : 'unknown'
     let observed: Awaited<ReturnType<NonNullable<SearchProvider['inspectEvaluation']>>>
     try { observed = await this.physical.inspectEvaluation({ plan, snapshot, cells: requested,
-      idempotencyKey: record.externalKey, signal: new AbortController().signal }) }
+      idempotencyKey: record.externalKey, signal: this.inspectionSignal() }) }
     catch (error) {
       if (error instanceof SearchExecutionFailure) return 'replay-safe'
       throw error
@@ -604,7 +644,8 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     // The old SearchProvider explicitly promises same-key idempotent execution.
     // A subsequent *public* run may call it once even while inspection says
     // running/unknown; the in-memory invocation gate stops a second kernel tick.
-    if (this.legacyInvocationEnabled && this.input(envelope).roundIdentity) return 'replay-safe'
+    if (observed.status === 'not-started' && this.deadlineExpired()) return 'replay-safe'
+    if (this.legacyInvocationEnabled && !this.deadlineExpired() && this.input(envelope).roundIdentity) return 'replay-safe'
     return observed.status === 'complete' ? 'replay-safe'
       : observed.status === 'running' ? 'running' : 'unknown'
   }
@@ -613,7 +654,7 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     const { plan, snapshot } = this.input(envelope)
     const request = record.request as unknown as FrozenEvaluationRequest
     return this.physical.inspectEvaluation({ plan, snapshot, cells: request.missing,
-      idempotencyKey: record.externalKey, signal: new AbortController().signal })
+      idempotencyKey: record.externalKey, signal: this.inspectionSignal() })
   }
 }
 
@@ -622,8 +663,9 @@ type DiagnoseInput = { roundIdentity?: GepaPhysicalRoundIdentity; snapshot: Snap
 export class GepaDiagnosisProvider extends GepaOperationProvider {
   private readonly identityDigest: string
   constructor(root: string, artifacts: FileArtifactStore, bindings: BindingStore, readonly physical: DiagnosisProvider,
-    records?: ProviderRecordBackend) {
-    super(root, 'gepa.diagnose', { integrity: physical.integrity, sanitizationPolicyDigest: physical.sanitizationPolicyDigest } as JsonValue,
+    records?: ProviderRecordBackend, readonly legacyJournal?: SearchJournal) {
+    super(root, 'gepa.diagnose', { integrity: physical.integrity,
+      sanitizationPolicyDigest: physical.sanitizationPolicyDigest, legacyPointers: !!legacyJournal } as JsonValue,
       artifacts, bindings, ['diagnosisInputTokens', 'diagnosisOutputTokens'],
       { type: 'object', required: ['snapshot', 'universe', 'taskIds', 'baseline'], properties: {
         roundIdentity: { type: 'object', required: ['evolutionId', 'roundId'], properties: {
@@ -652,8 +694,8 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
       || !Number.isSafeInteger(envelope.limits.diagnosisOutputTokens) || envelope.limits.diagnosisOutputTokens! < 0)
       throw new Error('GEPA diagnosis input or reservation invalid')
   }
-  private result(envelope: OperationEnvelope, value: { facts: DiagnosisFact[]; inputTokens: number; outputTokens: number;
-    failure?: SearchStageFailure }): Result {
+  private async result(envelope: OperationEnvelope, value: { facts: DiagnosisFact[]; inputTokens: number; outputTokens: number;
+    failure?: SearchStageFailure }): Promise<Result> {
     const { snapshot, universe, taskIds, baseline } = this.input(envelope)
     for (const fact of value.facts) {
       const cells = baseline.cells.filter(cell => cell.identity.taskId === fact.taskId)
@@ -661,7 +703,9 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
         ...(cell.outcome.status === 'available' ? [cell.outcome.evidenceRef] : []),
         ...(cell.process?.status === 'available' ? [cell.process.evidenceRef] : [])]))
       if (!taskIds.includes(fact.taskId) || fact.evidenceRefs.some(ref => !refs.has(ref)))
-        throw new ProviderProtocolError('GEPA diagnosis fact lacks parent evidence provenance')
+        throw this.input(envelope).roundIdentity
+          ? new SearchProtocolError('diagnosis fact lacks parent seed provenance')
+          : new ProviderProtocolError('GEPA diagnosis fact lacks parent evidence provenance')
       if (fact.status === 'supported-hypothesis') {
         if (universe.objective) {
           const projected = objectiveProfile(universe, [fact.taskId], cells)
@@ -689,33 +733,50 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
       taskIds, baselineEvidenceDigests: [baseline.digest], facts, classifierIntegrity: this.physical.integrity,
       sanitizationPolicyDigest: this.physical.sanitizationPolicyDigest,
       ...(value.failure ? { failure: value.failure } : {}) })
+    if (this.legacyJournal) {
+      const round = this.roundIdentity(this.input(envelope).roundIdentity)!
+      const name = `diagnosis-${digestJson([snapshot.digest, baseline.digest, taskIds]).slice(7)}`
+      const path = `rounds/${round.roundId}/${name}`
+      await this.legacyJournal.put(dossier)
+      const saved = await this.legacyJournal.read<{ ref: string }>(path)
+      if (saved && saved.ref !== dossier.digest) throw new ProviderProtocolError('GEPA diagnosis pointer conflict')
+      if (!saved) await this.legacyJournal.write(path, { ref: dossier.digest })
+    }
     const dossierRef = this.artifacts.putJson(dossier as unknown as JsonValue, 'gepa.dossier.v1')
     return { outcome: { kind: 'result', value: { dossierRef } },
       usage: { diagnosisInputTokens: value.inputTokens, diagnosisOutputTokens: value.outputTokens } }
   }
-  protected async execute(envelope: OperationEnvelope, record: RecordValue): Promise<Result> {
+  protected async execute(envelope: OperationEnvelope, record: RecordValue, newlyStarted: boolean): Promise<Result> {
     if (envelope.limits.diagnosisInputTokens === 0 || envelope.limits.diagnosisOutputTokens === 0)
-      return { outcome: { kind: 'no-result', reason: 'diagnosis-budget-exhausted' },
+      return { outcome: { kind: 'no-result', reason: this.input(envelope).roundIdentity
+        ? budgetFailure(envelope.limits.diagnosisInputTokens === 0 ? 'diagnosisInputTokens' : 'diagnosisOutputTokens').message
+        : 'diagnosis-budget-exhausted' },
         usage: { diagnosisInputTokens: 0, diagnosisOutputTokens: 0 } }
+    const timedOut = () => this.result(envelope, { facts: [], failure: budgetFailure('time'),
+      inputTokens: 0, outputTokens: 0 })
+    if (this.deadlineExpired() && newlyStarted) return timedOut()
     const { snapshot, universe, taskIds, baseline } = this.input(envelope)
-    if (this.physical.inspectDiagnosis) {
+    if (this.physical.inspectDiagnosis && (!this.legacyInvocationEnabled || this.deadlineExpired())) {
       let observed: Awaited<ReturnType<NonNullable<DiagnosisProvider['inspectDiagnosis']>>> | undefined
       try {
-        observed = await this.physical.inspectDiagnosis(record.externalKey, new AbortController().signal)
+        observed = await this.physical.inspectDiagnosis(record.externalKey, this.inspectionSignal())
       } catch (error) {
         if (error instanceof SearchExecutionFailure) return this.result(envelope, { facts: [], failure: error.failure,
           inputTokens: envelope.limits.diagnosisInputTokens!, outputTokens: envelope.limits.diagnosisOutputTokens! })
         if (error instanceof SearchProtocolError) throw error
       }
       if (observed?.status === 'complete') return this.result(envelope, observed.result)
+      if (observed?.status === 'not-started' && this.deadlineExpired()) return timedOut()
     }
+    if (this.deadlineExpired()) throw new PhysicalTransportPending(new SearchBudgetExceeded('time'))
     let value: Awaited<ReturnType<DiagnosisProvider['diagnose']>>
     try {
       this.markPhysicalAttempt(envelope)
       value = await this.physical.diagnose({ snapshot, universe, taskIds, cells: baseline.cells,
         idempotencyKey: record.externalKey, maxInputTokens: envelope.limits.diagnosisInputTokens!,
-        maxOutputTokens: envelope.limits.diagnosisOutputTokens!, signal: new AbortController().signal })
+        maxOutputTokens: envelope.limits.diagnosisOutputTokens!, signal: this.physicalSignal() })
     } catch (error) {
+      this.inspectionSignal()
       if (error instanceof SearchExecutionFailure) return this.result(envelope, { facts: [], failure: error.failure,
         inputTokens: envelope.limits.diagnosisInputTokens!, outputTokens: envelope.limits.diagnosisOutputTokens! })
       throw error instanceof SearchProtocolError ? error : new PhysicalTransportPending(error)
@@ -728,17 +789,18 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
     if (!this.physical.inspectDiagnosis)
       return this.legacyInvocationEnabled && !!this.input(envelope).roundIdentity ? 'replay-safe' : 'unknown'
     let observed: Awaited<ReturnType<NonNullable<DiagnosisProvider['inspectDiagnosis']>>>
-    try { observed = await this.physical.inspectDiagnosis(record.externalKey, new AbortController().signal) }
+    try { observed = await this.physical.inspectDiagnosis(record.externalKey, this.inspectionSignal()) }
     catch (error) {
       if (error instanceof SearchExecutionFailure) return 'replay-safe'
       throw error
     }
-    if (this.legacyInvocationEnabled && this.input(envelope).roundIdentity) return 'replay-safe'
+    if (observed.status === 'not-started' && this.deadlineExpired()) return 'replay-safe'
+    if (this.legacyInvocationEnabled && !this.deadlineExpired() && this.input(envelope).roundIdentity) return 'replay-safe'
     return observed.status === 'complete' ? 'replay-safe'
       : observed.status === 'running' ? 'running' : 'unknown'
   }
   protected override async lookupLegacyPending(_envelope: OperationEnvelope, record: RecordValue): Promise<ExternalRecovery<unknown> | undefined> {
-    return this.physical.inspectDiagnosis?.(record.externalKey, new AbortController().signal)
+    return this.physical.inspectDiagnosis?.(record.externalKey, this.inspectionSignal())
   }
 }
 
@@ -834,6 +896,7 @@ export class GepaGenerationProvider extends GepaOperationProvider {
     }
     const usage = this.usage(value.usage.tokens, value.usage.requests)
     if (!value.snapshot) {
+      await this.persistGenerated(envelope, value)
       const generatedRef = this.artifacts.putJson(value as unknown as JsonValue, 'gepa.generated.v1')
       return { outcome: { kind: 'result', value: { generatedRef } }, usage }
     }
@@ -843,18 +906,32 @@ export class GepaGenerationProvider extends GepaOperationProvider {
       throw new ProviderProtocolError('GEPA generated candidate parent or receipt mismatch')
     const delivery = deliveredWorkplan(input.workplan, input.dossier, input.findings, input.scope)
     validateReceipt(value.receipt, delivery, value.sessionId)
+    await this.persistGenerated(envelope, value)
     const candidateRef = this.artifacts.putJson({ schemaVersion: 1, kind: 'git-harness', commitOid: value.snapshot.commit,
       manifestDigest: value.snapshot.manifestDigest } as JsonValue, 'harness.directory.v1')
     const candidateSetRef = this.bindings.derive(envelope.bindingSetRef, { harness: candidateRef })
     const generatedRef = this.artifacts.putJson(value as unknown as JsonValue, 'gepa.generated.v1')
     return { outcome: { kind: 'result', value: { generatedRef, candidateSetRef } as unknown as JsonValue }, usage }
   }
-  protected async execute(envelope: OperationEnvelope, record: RecordValue): Promise<Result> {
+  private async persistGenerated(envelope: OperationEnvelope, value: GeneratedCandidate): Promise<void> {
+    if (!this.legacyJournal) return
+    const { roundIdentity, workplan } = this.input(envelope)
+    const round = this.roundIdentity(roundIdentity)!
+    const path = `rounds/${round.roundId}/generated-${workplan.candidateId}`
+    await this.legacyJournal.put(value)
+    const saved = await this.legacyJournal.read<{ ref: string }>(path)
+    if (saved && saved.ref !== value.digest) throw new ProviderProtocolError('GEPA generated pointer conflict')
+    if (!saved) await this.legacyJournal.write(path, { ref: value.digest })
+  }
+  protected async execute(envelope: OperationEnvelope, record: RecordValue, newlyStarted: boolean): Promise<Result> {
     const input = this.input(envelope)
     if (this.budgetInsufficient(envelope, input.workplan))
       return { outcome: { kind: 'no-result', reason: 'generation-budget-exhausted' },
         usage: this.usage(0, 0) }
-    if (hasPhysicalGenerationInspection(this.hooks)) {
+    const timedOut = () => this.result(envelope, seal({ changedPaths: [],
+      reason: budgetFailure('time').message, usage: { tokens: 0, requests: 0 } }))
+    if (this.deadlineExpired() && newlyStarted) return timedOut()
+    if (hasPhysicalGenerationInspection(this.hooks) && (!this.legacyInvocationEnabled || this.deadlineExpired())) {
       let observed: Awaited<ReturnType<typeof this.hooks.inspectGenerationOutcome>> | undefined
       try {
         observed = await this.hooks.inspectGenerationOutcome(record.externalKey)
@@ -863,18 +940,21 @@ export class GepaGenerationProvider extends GepaOperationProvider {
         if (error instanceof SearchProtocolError) throw error
       }
       if (observed?.status === 'complete') return this.result(envelope, observed.result)
+      if (observed?.status === 'not-started' && this.deadlineExpired()) return timedOut()
       if (observed?.status === 'error') return { outcome: { kind: 'error', code: observed.code,
         message: observed.message, retryable: false }, usage: this.usage(observed.usage.tokens, observed.usage.requests) }
-    } else if (this.hooks.inspectGeneration) {
+    } else if (this.hooks.inspectGeneration && (!this.legacyInvocationEnabled || this.deadlineExpired())) {
       let observed: Awaited<ReturnType<NonNullable<SearchExecutionHooks['inspectGeneration']>>> | undefined
       try {
-        observed = await this.hooks.inspectGeneration(record.externalKey, new AbortController().signal)
+        observed = await this.hooks.inspectGeneration(record.externalKey, this.inspectionSignal())
       } catch (error) {
         if (error instanceof SearchExecutionFailure) return this.result(envelope, this.executionFailure(envelope, error))
         if (error instanceof SearchProtocolError) throw error
       }
       if (observed?.status === 'complete') return this.result(envelope, observed.result)
+      if (observed?.status === 'not-started' && this.deadlineExpired()) return timedOut()
     }
+    if (this.deadlineExpired()) throw new PhysicalTransportPending(new SearchBudgetExceeded('time'))
     const delivery = deliveredWorkplan(input.workplan, input.dossier, input.findings, input.scope)
     let value: GeneratedCandidate
     try {
@@ -882,8 +962,9 @@ export class GepaGenerationProvider extends GepaOperationProvider {
       value = await this.hooks.generate({ delivery, parent: input.parent, baseline: input.baseline,
         baselineContext: { universe: input.universe, plan: input.plan,
           scope: input.scope, processMode: input.processMode }, idempotencyKey: record.externalKey,
-        signal: new AbortController().signal })
+        signal: this.physicalSignal() })
     } catch (error) {
+      this.inspectionSignal()
       if (error instanceof SearchExecutionFailure)
         return this.result(envelope, this.executionFailure(envelope, error))
       if (error instanceof GepaPhysicalExecutionError) return { outcome: { kind: 'error', code: error.code,
@@ -898,14 +979,15 @@ export class GepaGenerationProvider extends GepaOperationProvider {
       return 'replay-safe'
     if (hasPhysicalGenerationInspection(this.hooks)) {
       const observed = await this.hooks.inspectGenerationOutcome(record.externalKey)
-      if (observed.status === 'not-started') return 'not-started'
+      if (observed.status === 'not-started') return this.deadlineExpired() ? 'replay-safe' : 'not-started'
       if (observed.status === 'error' || observed.status === 'complete') return 'replay-safe'
-      return this.legacyInvocationEnabled && input.roundIdentity ? 'replay-safe' : 'unknown'
+      return this.legacyInvocationEnabled && !this.deadlineExpired() && input.roundIdentity ? 'replay-safe' : 'unknown'
     }
     if (!this.hooks.inspectGeneration)
-      return this.legacyInvocationEnabled && !!input.roundIdentity ? 'replay-safe' : 'unknown'
-    const observed = await this.hooks.inspectGeneration(record.externalKey, new AbortController().signal)
-    if (this.legacyInvocationEnabled && input.roundIdentity) return 'replay-safe'
+      return this.legacyInvocationEnabled && !this.deadlineExpired() && !!input.roundIdentity ? 'replay-safe' : 'unknown'
+    const observed = await this.hooks.inspectGeneration(record.externalKey, this.inspectionSignal())
+    if (observed.status === 'not-started' && this.deadlineExpired()) return 'replay-safe'
+    if (this.legacyInvocationEnabled && !this.deadlineExpired() && input.roundIdentity) return 'replay-safe'
     return observed.status === 'complete' ? 'replay-safe'
       : observed.status === 'running' ? 'running' : 'unknown'
   }
@@ -915,7 +997,7 @@ export class GepaGenerationProvider extends GepaOperationProvider {
       return observed.status === 'complete' || observed.status === 'error' ? { status: 'complete', result: observed }
         : observed.status === 'not-started' ? { status: 'not-started' } : { status: 'unknown' }
     }
-    return this.hooks.inspectGeneration?.(record.externalKey, new AbortController().signal)
+    return this.hooks.inspectGeneration?.(record.externalKey, this.inspectionSignal())
   }
   protected async cancelStarted(envelope: OperationEnvelope, record: RecordValue): Promise<Result | 'not-started' | 'replay-safe' | 'running' | 'unknown'> {
     if (!hasPhysicalGenerationInspection(this.hooks)) {
@@ -926,7 +1008,7 @@ export class GepaGenerationProvider extends GepaOperationProvider {
     const observed = await this.hooks.cancelGenerationOutcome({ delivery, parent: input.parent,
       baseline: input.baseline, baselineContext: { universe: input.universe, plan: input.plan,
         scope: input.scope, processMode: input.processMode }, idempotencyKey: record.externalKey,
-      signal: new AbortController().signal })
+      signal: this.physicalSignal() })
     if (observed.status === 'error') return { outcome: { kind: 'error', code: observed.code,
       message: observed.message, retryable: false }, usage: this.usage(observed.usage.tokens, observed.usage.requests) }
     if (observed.status === 'complete') return this.result(envelope, observed.result)

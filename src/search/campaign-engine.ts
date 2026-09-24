@@ -9,6 +9,8 @@ import { GepaPublicationProvider } from '../algorithm/providers/gepa-publication
 import { GepaResearchCheckpointProvider } from '../algorithm/providers/gepa-research-checkpoint.js'
 import { GepaAwaitRepairProvider } from '../algorithm/providers/gepa-await-repair.js'
 import { GepaRepairEvaluationProvider } from '../algorithm/providers/gepa-repair-evaluation.js'
+import { GepaProcessCompletionProvider } from '../algorithm/providers/gepa-process-completion.js'
+import { GepaArchiveViewProvider } from '../algorithm/providers/gepa-archive-view.js'
 import { projectGepaCampaignBudget } from '../algorithm/providers/gepa-budget-projection.js'
 import { campaignFailureClusterRecipe } from '../algorithm/recipes/gepa-search.js'
 import { AlgorithmRuntime, type CampaignState } from '../algorithm/runtime/engine.js'
@@ -17,17 +19,21 @@ import type { JsonValue } from '../algorithm/schema.js'
 import { implementationClosureDigest } from '../algorithm/data/identity.js'
 import { ComponentRegistry } from '../evolution/components.js'
 import { digestJson } from '../state/digest.js'
-import { integrity, safeId, seal } from './contracts.js'
+import { integrity, invariant, safeId, seal } from './contracts.js'
+import { buildArchive } from './archive.js'
+import { scopeEpoch } from './epochs.js'
+import type { GepaSharedEpoch } from '../algorithm/recipes/gepa-policy.js'
+import type { EvidenceCompletion } from './completion.js'
 import { resolveParentPolicyRef } from './policies/parents.js'
 import { SearchExecutionRuntime, type SearchAdmission, type SearchExecutionHooks } from './runtime.js'
 import { validateSearchSchema } from './schema.js'
-import { SearchStore, type SearchJournal } from './store.js'
+import { SearchStore, type RemainingBudget, type SearchJournal } from './store.js'
 import type { DiagnosisProvider, SearchProvider } from './types.js'
 import { SearchEvidencePending, type SearchRoundOutcome } from './engine.js'
 import { repairCampaignEvaluation } from './campaign-repair.js'
 import { pendingOperation } from './recovery.js'
 import { campaignSearchDirectory, campaignSearchId } from './campaign-identity.js'
-import type { PendingSearchOperation, ResearchFinding, StageResult } from './types.js'
+import type { PendingSearchOperation, ResearchArchive, ResearchFinding, StageResult } from './types.js'
 
 /** Optional local cache root. Campaign state/artifacts/intent records are durably stored in SearchJournal. */
 export type CampaignSearchHost = { root?: string; hookImplementationDigest?: string }
@@ -46,24 +52,26 @@ function roundHasLimit(settings: SearchAdmission['settings'], key: 'maxGeneratio
   return settings.budgets.round[key] !== undefined || settings.budgets.evolution[key] !== undefined
 }
 
-function budget(admission: SearchAdmission): BudgetPlan {
+function budget(admission: SearchAdmission, starting?: RemainingBudget): BudgetPlan {
   const round = admission.settings.budgets.round, evolution = admission.settings.budgets.evolution
   const cap = (a: number, b: number): number => Math.min(a, b)
+  const available = (dimension: keyof RemainingBudget, fallback: number): number =>
+    starting?.[dimension] ?? fallback
   return {
-    rolloutCells: { unit: 'cells', limit: cap(round.maxNewRolloutCells, evolution.maxNewRolloutCells),
+    rolloutCells: { unit: 'cells', limit: available('cells', cap(round.maxNewRolloutCells, evolution.maxNewRolloutCells)),
       source: 'gepa.evaluate', capability: 'stop' },
-    repairCells: { unit: 'cells', limit: cap(round.maxRepairCells, evolution.maxRepairCells),
+    repairCells: { unit: 'cells', limit: available('repairCells', cap(round.maxRepairCells, evolution.maxRepairCells)),
       source: 'gepa.evaluate', capability: 'stop' },
-    diagnosisInputTokens: { unit: 'tokens', limit: cap(round.maxDiagnosisInputTokens, evolution.maxDiagnosisInputTokens),
+    diagnosisInputTokens: { unit: 'tokens', limit: available('diagnosisInputTokens', cap(round.maxDiagnosisInputTokens, evolution.maxDiagnosisInputTokens)),
       source: 'gepa.diagnose', capability: 'stop' },
-    diagnosisOutputTokens: { unit: 'tokens', limit: cap(round.maxDiagnosisOutputTokens, evolution.maxDiagnosisOutputTokens),
+    diagnosisOutputTokens: { unit: 'tokens', limit: available('diagnosisOutputTokens', cap(round.maxDiagnosisOutputTokens, evolution.maxDiagnosisOutputTokens)),
       source: 'gepa.diagnose', capability: 'stop' },
     ...(round.maxGenerationTokens === undefined && evolution.maxGenerationTokens === undefined ? {} : {
-      generationTokens: { unit: 'tokens', limit: cap(round.maxGenerationTokens ?? Number.MAX_SAFE_INTEGER,
-        evolution.maxGenerationTokens ?? Number.MAX_SAFE_INTEGER), source: 'gepa.generate', capability: 'stop' as const } }),
+      generationTokens: { unit: 'tokens', limit: available('generationTokens', cap(round.maxGenerationTokens ?? Number.MAX_SAFE_INTEGER,
+        evolution.maxGenerationTokens ?? Number.MAX_SAFE_INTEGER)), source: 'gepa.generate', capability: 'stop' as const } }),
     ...(round.maxGenerationRequests === undefined && evolution.maxGenerationRequests === undefined ? {} : {
-      generationRequests: { unit: 'requests', limit: cap(round.maxGenerationRequests ?? Number.MAX_SAFE_INTEGER,
-        evolution.maxGenerationRequests ?? Number.MAX_SAFE_INTEGER), source: 'gepa.generate', capability: 'stop' as const } }),
+      generationRequests: { unit: 'requests', limit: available('generationRequests', cap(round.maxGenerationRequests ?? Number.MAX_SAFE_INTEGER,
+        evolution.maxGenerationRequests ?? Number.MAX_SAFE_INTEGER)), source: 'gepa.generate', capability: 'stop' as const } }),
   }
 }
 
@@ -105,9 +113,9 @@ export class CampaignFailureClusterSearch {
     const request: SearchAdmission = { evolutionId: frozen.evolutionId, roundId: frozen.roundId,
       roundIndex: frozen.roundIndex, maxCandidates: frozen.maxCandidates, anchor: frozen.anchor,
       championRevisionDigest: frozen.championRevisionDigest, settings: frozen.requestedSettings ?? frozen.settings }
-    const { runtime, repairProvider } = await this.openCampaignSearchRuntime(request)
+    const { runtime, repairProvider, processProvider } = await this.openCampaignSearchRuntime(request)
     return repairCampaignEvaluation({ store: this.store, validator: this.validator, runtime,
-      repairProvider, roundId, repairId, originalRef, signal })
+      repairProvider, processProvider, roundId, repairId, originalRef, signal })
   }
 
   /** Rebuilds the exact frozen Campaign host for the public run and auxiliary repair entrypoints. */
@@ -123,8 +131,14 @@ export class CampaignFailureClusterSearch {
     const anchorBindingSetRef = bindings.create({ harness })
     const policy = this.components.parentSelectionPolicy(resolveParentPolicyRef(resolvedSettings.search))
     const savedAdmission = await this.store.read<{ ref: string }>(`rounds/${request.roundId}/admission`)
+    type FrozenCampaignAdmission = SearchAdmission & { digest: string; campaignDriver?: string;
+      startedAt: number; startingArchiveDigest?: string | null; completionRefs?: string[];
+      campaignBudget?: BudgetPlan; sharedEpochs?: Record<string, GepaSharedEpoch>;
+      handoffFindingDigests?: Record<string, string[]> }
+    const frozenAdmission = savedAdmission
+      ? await this.store.object<FrozenCampaignAdmission>(savedAdmission.ref) : null
     if (savedAdmission) {
-      const frozen = await this.store.object<SearchAdmission & { digest: string; campaignDriver?: string }>(savedAdmission.ref)
+      const frozen = frozenAdmission!
       if (frozen.campaignDriver !== 'failure-cluster-campaign-v1')
         throw new Error('Existing legacy search round must resume with its original engine and operation keys')
       if (digestJson({ evolutionId: frozen.evolutionId, roundId: frozen.roundId,
@@ -132,20 +146,47 @@ export class CampaignFailureClusterSearch {
         championRevisionDigest: frozen.championRevisionDigest, settings: frozen.settings })
         !== digestJson(admitted)) throw new Error('Campaign search request changed on resume')
     }
-    const startedAt = savedAdmission
-      ? (await this.store.object<SearchAdmission & { digest: string; startedAt: number }>(savedAdmission.ref)).startedAt
-      : Date.now()
-    const oldBudget = await this.store.read<{ operations: Array<{ key: string; roundId: string }> }>('budget')
-    if (oldBudget?.operations.some(operation => operation.key
-      !== digestJson(['campaign-budget-projection-v1', operation.roundId])))
-      throw new Error('Campaign search cannot import an unprojected legacy budget ledger')
+    const startedAt = frozenAdmission?.startedAt ?? Date.now()
+    const installedArchive = frozenAdmission
+      ? (frozenAdmission.startingArchiveDigest
+        ? await this.store.object<ResearchArchive>(frozenAdmission.startingArchiveDigest) : null)
+      : await this.store.archive() ?? null
+    const completionRefs = frozenAdmission?.completionRefs
+      ?? (installedArchive ? (await this.store.read<{ refs: string[] }>('pending-completions'))?.refs ?? [] : [])
+    if (new Set(completionRefs).size !== completionRefs.length)
+      throw new Error('Campaign search completion queue has duplicate references')
+    const completedEvidence: StageResult[] = []
+    for (const ref of completionRefs) {
+      const completion = await this.store.object<EvidenceCompletion>(ref)
+      if (!installedArchive?.results.some(row => row.digest === completion.originalResultDigest))
+        throw new Error('Campaign completion does not reference installed archive evidence')
+      completedEvidence.push(await this.store.object<StageResult>(completion.completedResultDigest))
+    }
+    const parentArchive = installedArchive && (policy.requiresChampion
+      || completedEvidence.some(row => !installedArchive.results.some(saved => saved.digest === row.digest)))
+      ? buildArchive({ evolutionId: request.evolutionId, previous: installedArchive, universe: seed,
+        snapshots: [request.anchor], scopes: [], plans: [], results: completedEvidence,
+        config: resolvedSettings.search, championId: request.anchor.candidateId,
+        includeChampion: policy.requiresChampion }) : installedArchive
+    const startingBudget = frozenAdmission?.campaignBudget
+      ?? budget(admitted, await this.store.remaining(request.roundId, resolvedSettings.budgets))
     const deadlineAt = startedAt + resolvedSettings.budgets.round.timeoutMs
+    const epoch = scopeEpoch(resolvedSettings, request.roundIndex)
+    const sharedPointer = frozenAdmission ? null
+      : await this.store.read<{ ref: string }>(`evolution/shared-epoch-${epoch}`)
+    const sharedEpoch = sharedPointer
+      ? await this.store.object<{ digest: string; epoch: number; archiveCutoffDigest: string;
+        parentSnapshotDigest: string; taskIds: string[] }>(sharedPointer.ref) : null
+    const sharedEpochs = frozenAdmission?.sharedEpochs ?? (sharedEpoch ? { [String(epoch)]: { epoch: sharedEpoch.epoch,
+      archiveCutoffDigest: sharedEpoch.archiveCutoffDigest,
+      parentSnapshotDigest: sharedEpoch.parentSnapshotDigest, taskIds: sharedEpoch.taskIds } } : {})
     const findings: Record<string, ResearchFinding> = {}
     const handoffFindingDigests: Record<string, string[]> = {}
-    const existingArchive = await this.store.archive()
-    for (const snapshot of existingArchive?.snapshots ?? [request.anchor]) {
-      const handoff = await this.store.read<{ refs: string[] }>(`findings/${snapshot.digest.slice(7)}`)
-      const refs = handoff?.refs ?? []
+    for (const snapshot of parentArchive?.snapshots ?? [request.anchor]) {
+      const handoff = frozenAdmission ? null
+        : await this.store.read<{ refs: string[] }>(`findings/${snapshot.digest.slice(7)}`)
+      const refs = frozenAdmission
+        ? frozenAdmission.handoffFindingDigests?.[snapshot.digest] ?? [] : handoff?.refs ?? []
       if (!Array.isArray(refs) || refs.some(ref => typeof ref !== 'string'))
         throw new Error('Campaign search parent finding handoff is invalid')
       handoffFindingDigests[snapshot.digest] = refs
@@ -155,13 +196,25 @@ export class CampaignFailureClusterSearch {
         findings[ref] = finding
       }
     }
+    const archiveStart = installedArchive && parentArchive ? (() => {
+      const snapshotBindings: Record<string, import('../algorithm/contracts.js').BindingSetRef> = {}
+      for (const snapshot of parentArchive.snapshots) {
+        const snapshotHarness = artifacts.putJson({ commitOid: snapshot.commit,
+          manifestDigest: snapshot.manifestDigest }, 'harness.directory.v1')
+        snapshotBindings[snapshot.digest] = bindings.create({ harness: snapshotHarness })
+      }
+      return { baseArchiveRef: artifacts.putJson(installedArchive as unknown as JsonValue, 'gepa.research-archive.v1'),
+        parentArchiveRef: artifacts.putJson(parentArchive as unknown as JsonValue, 'gepa.research-archive.v1'),
+        completionRefs, publishParentView: parentArchive.digest !== installedArchive.digest,
+        snapshotBindings }
+    })() : undefined
     const recipe = campaignFailureClusterRecipe({ admission: admitted, seed, heldOut, settings: resolvedSettings,
       artifacts, bindingSchema: harnessBindingSchema, anchorBindingSetRef, deadlineAt, parentPolicy: policy,
-      findings, handoffFindingDigests })
+      findings, handoffFindingDigests, sharedEpochs, ...(archiveStart ? { archiveStart } : {}) })
     const spec: CampaignSpec = { campaignId: campaignSearchId(request.roundId),
       config: { request: admitted, seedDigest: seed.digest, heldOutDigest: heldOut.digest, deadlineAt,
         trustedHostIdentity: this.host.hookImplementationDigest ?? null } as unknown as JsonValue,
-      initialBindingSetRef: anchorBindingSetRef, budget: budget(admitted) }
+      initialBindingSetRef: anchorBindingSetRef, budget: startingBudget }
     const operationRoot = join(root, 'operations')
     const providerIdentity = this.host.hookImplementationDigest ?? implementationClosureDigest(['../search/campaign-engine'], {
       trustedHost: true, providerIntegrity: this.provider.integrity, diagnosisIntegrity: this.diagnosis.integrity,
@@ -183,6 +236,8 @@ export class CampaignFailureClusterSearch {
         generationRequests: roundHasLimit(resolvedSettings, 'maxGenerationRequests') }, this.store)
     const repairProvider = new GepaRepairEvaluationProvider(operationRoot, artifacts, bindings,
       this.provider, records)
+    const processProvider = new GepaProcessCompletionProvider(operationRoot, artifacts, bindings,
+      this.provider, records, this.store)
     let runtime!: AlgorithmRuntime
     runtime = new AlgorithmRuntime(root, recipe, [
       evaluationProvider, diagnosisProvider, generationProvider,
@@ -191,12 +246,16 @@ export class CampaignFailureClusterSearch {
           beforePublication: () => runtime.hydrate(), publicationBarrierIdentityDigest: projectorIdentityDigest }),
       new GepaResearchCheckpointProvider(operationRoot, artifacts, this.store, records),
       new GepaAwaitRepairProvider(this.store, operationRoot, records),
+      new GepaArchiveViewProvider(operationRoot, artifacts, this.store, records),
       repairProvider,
+      processProvider,
     ], spec, { store: campaignStore, artifacts })
     await runtime.hydrate()
     return { runtime, validator: this.validator, artifacts, admitted, seed, heldOut, resolvedSettings,
-      recipe, policy, startedAt, savedAdmission,
-      legacyProviders: [evaluationProvider, diagnosisProvider, generationProvider] as const, repairProvider }
+      recipe, policy, startedAt, savedAdmission, installedArchive, completionRefs, startingBudget,
+      sharedEpochs, handoffFindingDigests,
+      legacyProviders: [evaluationProvider, diagnosisProvider, generationProvider] as const,
+      repairProvider, processProvider }
   }
 
   async run(request: SearchAdmission, signal: AbortSignal): Promise<SearchRoundOutcome> {
@@ -222,13 +281,17 @@ export class CampaignFailureClusterSearch {
       if (active?.roundId === request.roundId) await this.store.write('active-round', { roundId: null })
       return outcome
     }
+    const repair = await this.store.read<{ id: string }>(`rounds/${request.roundId}/active-repair`)
+    invariant(!repair || await this.store.read(`rounds/${request.roundId}/repair-result-${digestJson(repair.id).slice(7)}`),
+      'round has an unresolved repair; resume its original repair ID')
     signal.throwIfAborted()
     const { runtime, artifacts, admitted, seed, heldOut, resolvedSettings,
-      recipe, policy, startedAt, legacyProviders } = await this.openCampaignSearchRuntime(request)
+      recipe, policy, startedAt, legacyProviders, installedArchive, completionRefs,
+      startingBudget, sharedEpochs, handoffFindingDigests } = await this.openCampaignSearchRuntime(request)
+    signal.throwIfAborted()
     for (const provider of legacyProviders) provider.beginLegacyInvocation()
     const existing = runtime.snapshot()
     if (!existing) {
-      if (await this.store.archive()) throw new Error('Campaign search existing archive rounds are not migrated yet')
       const current = await this.store.read<{ roundId: string | null }>('active-round')
       if (current?.roundId && current.roundId !== request.roundId)
         throw new Error('Another search round remains active')
@@ -236,7 +299,9 @@ export class CampaignFailureClusterSearch {
         requestDigest: digestJson(request), requestedSettings: request.settings,
         seed, heldOut, resolvedSettings, providerIntegrity: this.provider.integrity,
         diagnosisIntegrity: this.diagnosis.integrity, algorithmIntegrity: recipe.describe().implementationDigest,
-        parentPolicyRef: policy.ref, startedAt, campaignDriver: 'failure-cluster-campaign-v1' }))
+        parentPolicyRef: policy.ref, startedAt, campaignDriver: 'failure-cluster-campaign-v1',
+        startingArchiveDigest: installedArchive?.digest ?? null, completionRefs,
+        campaignBudget: startingBudget, sharedEpochs, handoffFindingDigests }))
       await this.store.write('active-round', { roundId: request.roundId })
     }
     let status: Awaited<ReturnType<AlgorithmRuntime['tick']>>

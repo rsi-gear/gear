@@ -639,6 +639,8 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
             || revision.result.snapshotDigest !== snapshot.digest)
             throw new Error('GEPA repair barrier revision identity drift')
           state.heldOutResults[snapshot.candidateId] = revision.result
+          if (revision.result.failure)
+            state.reasons.push(`${revision.result.failure.kind}:${revision.result.failure.code}`)
         }
         return finishHeldOut(state, context)
       }
