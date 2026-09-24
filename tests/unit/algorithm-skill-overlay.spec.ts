@@ -6,7 +6,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { FileArtifactStore } from '../../src/algorithm/artifacts.js'
 import { BindingStore } from '../../src/algorithm/bindings.js'
 import type { ArtifactRef, BindingSchema } from '../../src/algorithm/contracts.js'
-import { materializeSkillOverlay, SkillOverlayUnknown, type SkillOverlayInput } from '../../src/algorithm/providers/skill-overlay.js'
+import { materializeSkillOverlay, SkillOverlayUnknown, validateSkillOverlaySelection,
+  type SkillOverlayInput } from '../../src/algorithm/providers/skill-overlay.js'
 import { CandidateWorkspaceManager } from '../../src/candidate/workspace.js'
 import { HarnessBuilder, type HarnessCompiler } from '../../src/harness/builder.js'
 import type { CompilerCheckReport } from '../../src/harness/check-report.js'
@@ -69,6 +70,12 @@ async function setup(reportRead = true) {
 }
 
 describe('physical Skill overlay', () => {
+  it('checks bound library membership without creating a workspace or operation record', async () => {
+    const f = await setup()
+    expect(validateSkillOverlaySelection(f.input)).toEqual({ injectedSkillDigests: [f.bodyRef.digest] })
+    expect(await readdir(f.stateRoot)).toEqual(['artifacts'])
+  })
+
   it('injects exact library bytes into the DSH-recognized path, checks them, seals Git, and restarts idempotently', async () => {
     const f = await setup()
     const result = await materializeSkillOverlay(f.input)

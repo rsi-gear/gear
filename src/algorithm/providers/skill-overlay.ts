@@ -57,7 +57,9 @@ function readBody(artifacts: FileArtifactStore, ref: ArtifactRef, name: string):
   return { name, ref, markdown, digest: sha256(markdown), path: `skills/${name}/SKILL.md` }
 }
 
-function chosen(input: SkillOverlayInput): Chosen[] {
+type SkillSelection = Pick<SkillOverlayInput, 'baseHarness' | 'bindingSetRef' | 'skillsLibraryRef'
+  | 'selectedSkillRefs' | 'artifacts' | 'bindings'>
+function chosen(input: SkillSelection): Chosen[] {
   const slots = input.bindings.read(input.bindingSetRef).slots
   const harnessRef = slots.harness, libraryRef = slots.skills
   if (!harnessRef || !libraryRef || canonicalJson(libraryRef) !== canonicalJson(input.skillsLibraryRef)
@@ -90,6 +92,11 @@ function chosen(input: SkillOverlayInput): Chosen[] {
     selected.push(readBody(input.artifacts, ref, entry.name))
   }
   return selected.sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/** Pure bound-library/member validation for a provider's admission path. */
+export function validateSkillOverlaySelection(input: SkillSelection): { injectedSkillDigests: string[] } {
+  return { injectedSkillDigests: chosen(input).map(skill => skill.ref.digest) }
 }
 
 function checkReport(report: CandidateCheckReport, skills: Chosen[]): void {

@@ -7,13 +7,13 @@
 | 阶段 | 状态 | 提交与验证 |
 | --- | --- | --- |
 | S0 方案/基线 | 已提交 `e5dfeb2` | V3、离线精确重建、source/build/parent/package 身份；6 文件 95 测试通过；重复捕获匹配，漂移期望拒绝 |
-| S1 合同/内核 | 已提交 `f1ac3ef`；恢复修补 `e8979eb` | 最终 17 项内核测试；旧 search/identity 95 项；完整 typecheck 通过 |
-| S2 Python/作者入口 | 主审通过，阶段提交 | 20 项跨语言、5 项 Python SDK；完整 typecheck；正式 package exports 待 S6 |
-| S3 历史/任务/执行 | S3a、S3b1 主审通过，阶段提交；物理桥实现中 | 数据层与历史源 14 项通过；真实 Hitch 与角色桥待独立验收 |
-| S4 非 GEPA recipes/Optuna | S4a 主审通过，阶段提交；物理接线继续 | Python 19 项、RHO/AHE/Optuna 跨语言 3 项通过；真实技能注入与 host profile 待验收 |
-| S5 训练接入 | 主审通过，阶段提交 | 独立训练/评测/GRPO；44 项联合回归、2 项纯步骤测试与完整 typecheck 通过 |
-| S6 GEPA/包发布验证 | 实现中 | 公共 GEPA recipe 与外部作者入口分开推进 |
-| S7 真实运行/稳定性决定 | 未开始 | 无运行证据前 SDK 保持 experimental |
+| S1 合同/内核 | 已提交；预算观察与取消恢复修补完成 | 内核/预算观察 20 项；旧 search/identity 95 项；阶段 typecheck 通过 |
+| S2 Python/作者入口 | SDK、类型化错误、provider 准入已提交；默认宿主开发中 | 独立快照跨语言 23 项、Python 20 项；动态能力与真实 Optuna 3 项 |
+| S3 历史/任务/执行 | 历史/fresh 数据、Hitch、DSH 角色已提交；反馈/编辑接线中 | 数据层 14 项、Hitch 7 项、角色/执行边界 15 项；均有独立复验 |
+| S4 非 GEPA recipes/Optuna | Python recipes、证据授权、Git Skill helper 已提交 | Python 20 项、跨语言 3 项；Skill 9 项；Evo 实际 rollout 接线待审 |
+| S5 训练接入 | 已提交 `9f65b79` | CPU 合同 44 项联合回归、2 项 workflow；真实 GPU 未验证 |
+| S6 GEPA/包发布验证 | GEPA 公共决策 `c9703f7` 已提交；补全/默认宿主/正式包待审 | 主审 GEPA 10 项；包外作者和旧包跨进程恢复由实现者验证，待主审 |
+| S7 真实运行/稳定性决定 | 已检查本机条件；尚无新路径真实运行证据 | Hitch daemon 未运行、无本机 GPU/Slime 配置；SDK 继续 experimental |
 
 ## S0 已确认的基线约束
 
@@ -174,3 +174,7 @@ AlgorithmManifest 新增通用 requiredOperationKindsFromConfig，由冻结配�
 主 agent 在独立冻结快照中运行 fresh 与既有 Hitch 物理接线测试：7/7、完整 typecheck 通过。宿主可从 EvolutionSpec 和实际编译任务创建确定性的只读评估上下文，不写旧 registry/round，也不依赖旧 candidate lease；初始化检查任务摘要与算法所需 repetition 数，运行沿用已验证的 daemon 协议、绑定回执及恢复。
 
 本路径当前接受冻结的无显式 seed/temperature 覆盖的 repetition 计划，不将无法兑现的采样条件伪装成已支持。测试使用合成任务、真实 HitchCliEvaluator 类和录制 CLI fixture；没有启动真实 Hitch 容器或调用模型。
+
+## Skill 预检查无副作用补充
+
+公开 validateSkillOverlaySelection 只读当前绑定、库成员与封存 Skill 内容，不创建工作区或 operation 记录；实际物化仍在持久开始意图后执行。返回注入摘要采用名称排序，不能将检索器的排序直接当作物理执行顺序。主 agent 独立快照验证 Skill suite 9/9，完整 typecheck 通过。
