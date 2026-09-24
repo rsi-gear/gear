@@ -57,12 +57,12 @@ export function createEvidenceProviders(root: string, service: EvidenceService, 
     const page = service.query(envelope.input as EvidenceQuery, grantFor(resolveGrant, envelope.campaignId));
     const usageReceipt = receipt(envelope, page, source, dimensions);
     return { outcome: { kind: 'result', value: page as unknown as JsonValue }, ...(usageReceipt ? { receipt: usageReceipt } : {}) };
-  });
+  }, {}, source ?? queryManifest.kind);
   const read = new LocalDurableProvider(`${root}/read`, readManifest, envelope => {
     const content = service.read(envelope.input as EvidenceRead, grantFor(resolveGrant, envelope.campaignId));
     const usageReceipt = receipt(envelope, content, source, dimensions);
     return { outcome: { kind: 'result', value: content as unknown as JsonValue }, ...(usageReceipt ? { receipt: usageReceipt } : {}) };
-  });
+  }, {}, source ?? readManifest.kind);
   return [new GuardedEvidenceProvider(query, envelope => service.checkQuery(envelope.input as EvidenceQuery, grantFor(resolveGrant, envelope.campaignId))),
     new GuardedEvidenceProvider(read, envelope => service.checkRead(envelope.input as EvidenceRead, grantFor(resolveGrant, envelope.campaignId)))];
 }
@@ -71,10 +71,19 @@ export function createEvidenceProviders(root: string, service: EvidenceService, 
 export function createRoleEvidenceTools(service: EvidenceService, resolveGrant: EvidenceGrantResolver, roleId: string): {
   query(request: EvidenceQuery): EvidencePage;
   read(request: EvidenceRead): EvidenceContent;
+  usage(): { returnedItems: number; returnedBytes: number; requests: number };
 } {
   if (!roleId) throw new Error('Role identity required');
+  const cumulative = { returnedItems: 0, returnedBytes: 0, requests: 0 };
+  const account = <T extends EvidencePage | EvidenceContent>(value: T): T => {
+    cumulative.returnedItems += value.usage.returnedItems;
+    cumulative.returnedBytes += value.usage.returnedBytes;
+    cumulative.requests += value.usage.requests;
+    return value;
+  };
   return {
-    query: request => service.query(request, grantFor(resolveGrant, roleId)),
-    read: request => service.read(request, grantFor(resolveGrant, roleId)),
+    query: request => account(service.query(request, grantFor(resolveGrant, roleId))),
+    read: request => account(service.read(request, grantFor(resolveGrant, roleId))),
+    usage: () => ({ ...cumulative }),
   };
 }

@@ -154,3 +154,11 @@ AlgorithmManifest 新增通用 requiredOperationKindsFromConfig，由冻结配�
 主审发现并修复两项问题：同阶段重叠 cell 原先可能并发重复评估，现通过持久队列逐项执行并复用已验证缓存；同一 epoch 的 shared tasks 原先会跨轮重采样，现沿 lineage 固定。此版本 GEPA 操作串行发出；通用内核的并行能力保留。
 
 本提交为公共策略和操作合同，尚非完整生产迁移：实际 workspace-edit/generation 接线、原始 rollout 的 process/raw-metric 补全、旧额外 finding handoff 及正式包导出继续审计。有效 outcome 的缺失 process 不当作科学成功或失败，但当前不提供原旧接口的全部补全能力。测试使用受控物理 provider，不能据此声称真实模型运行或论文效果已经验证。
+
+## S3b4 DSH 角色与持久证据计量
+
+主 agent 在独立冻结快照中执行角色与 execution/data provider 两个测试文件：15/15，完整 typecheck 通过。DSH 角色有独立 operation/session 记录、原意图恢复、实际模型用量与持久证据用量，返回封存结构化 JSON；开始前取消会阻止延迟 submit。角色仅验证宿主绑定，receipt 明确标记 host-admission-only，不把独立角色推理冒充 Harness 的实际执行。
+
+模型请求数可硬限制；token 用量按实际报告以 stop 能力结算，不宣称严格硬上限。主审追加的超时测试证明 AbortSignal 到达挂起的离线模型适配器；已开始但用量无法确认时保持 unknown、无伪造最终回执且不重新请求。请求前已确认停止可返回类型化错误与零用量。异步证据读取逐 session 排队，防止并发累计计数重复相加；恢复后的最终回执包括已持久计数。
+
+此接口当前是有截止时间的同步角色调用，Campaign writer 在调用期间持锁；不宣称另一个 CLI 可即时中断。测试使用真实 DSH 会话/工具机制和离线 LLM fixture，无外部模型。fresh 默认宿主、可信测量反馈与 workspace-edit 在后续阶段继续。

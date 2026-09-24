@@ -24,6 +24,8 @@ export type ExecutionReceipt = {
   loadedBindingSetDigest: string;
   evidenceDigest: string;
   actualBindings: Record<string, string>;
+  /** Whether bound artifacts were executed or only verified by the host before an independent role turn. */
+  bindingUse?: 'executed' | 'host-admission-only';
   executionIdentity: string;
   samplingDigest?: string;
   environmentDigest?: string;
@@ -83,6 +85,9 @@ export class VerifiedExecutionAdapter implements OperationProvider {
       || receipt.loadedBindingSetDigest !== envelope.bindingSetRef.digest || receipt.evidenceDigest !== value.evidenceRef.digest
       || !receipt.executionIdentity) throw new Error('Execution receipt identity mismatch');
     if (Object.keys(receipt.actualBindings ?? {}).sort().join('\0') !== Object.keys(bound.slots).sort().join('\0')) throw new Error('Execution receipt binding slots drift');
+    if (receipt.bindingUse !== undefined && !['executed', 'host-admission-only'].includes(receipt.bindingUse)) {
+      throw new Error('Execution receipt binding-use claim invalid');
+    }
     for (const slot of Object.keys(bound.slots)) if (receipt.actualBindings[slot] !== value.actualBindings[slot]!.digest) throw new Error('Execution receipt loaded version mismatch');
     const input = envelope.input as Record<string, unknown>;
     if (typeof input.samplingDigest === 'string' && receipt.samplingDigest !== input.samplingDigest) throw new Error('Execution sampling identity mismatch');
