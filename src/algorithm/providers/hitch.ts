@@ -22,6 +22,22 @@ import { digestJson } from '../../state/digest.js';
 import { digestDatasetRef } from '../../state/dataset.js';
 import type { EvaluationCondition, EvaluationRequest, EvaluationReservation, EvaluationSubmissionIntent, RefinementRound, EvolutionSpec } from '../../types.js';
 
+/** Another caller may win the same atomic dataset rename after our initial lstat. Re-enter the old verifier once. */
+async function projectAfterConcurrentPublish(...args: Parameters<typeof projectDataset>): ReturnType<typeof projectDataset> {
+  try { return await projectDataset(...args); }
+  catch (error) {
+    if (!['EEXIST', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+    return projectDataset(...args);
+  }
+}
+
+/** Match HitchCliEvaluator.run's child env exactly; only the digest is persisted or exposed. */
+function hitchSubprocessEnvironmentDigest(): string {
+  const environment = { ...process.env, PYTHONDONTWRITEBYTECODE: '1' };
+  return digestJson(Object.fromEntries(Object.entries(environment).filter((entry): entry is [string, string] =>
+    entry[1] !== undefined)));
+}
+
 export type GitHarnessBinding = { schemaVersion: 1; kind: 'git-harness'; commitOid: string; manifestDigest: string };
 export type HitchRolloutInput = { task: TaskEntry; taskViewRef: TaskViewRef; repeatIndex?: number;
   samplingDigest: string; environmentDigest: string; recipePhase: string; executedRevisionDigest?: string;
@@ -68,13 +84,7 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
     this.sourceRoundDigest = digestJson(round);
     this.sourceSpecDigest = digestJson(spec);
     this.samplingDigest = digestJson(round.plan.seed.sampling);
-    this.environmentDigest = digestJson({ evolution: this.sourceSpecDigest, roundPlan: round.plan.digest,
-      evaluator: JSON.parse(JSON.stringify(options.evaluator.options)),
-      forwardedEnvironment: Object.fromEntries(options.evaluator.options.passEnv.map(name =>
-        [name, process.env[name] === undefined ? null : jsonDigest(process.env[name])])),
-      builder: { repositoryPath: options.builder.repositoryPath,
-        targetRoot: options.builder.targetRoot, toolchainRef: options.builder.options.toolchainRef,
-        sandboxProfileRef: options.builder.options.sandboxProfileRef } });
+    this.environmentDigest = this.currentEnvironmentDigest();
     this.records = join(options.stateRoot, 'algorithm-hitch-operations');
     mkdirSync(this.records, { recursive: true });
     this.manifest = { kind: 'execution.rollout',
@@ -129,6 +139,15 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
     return { samplingDigest: this.samplingDigest, environmentDigest: this.environmentDigest };
   }
   describe(): ProviderManifest & { kind: 'execution.rollout' } { return structuredClone(this.manifest); }
+  private currentEnvironmentDigest(): string {
+    const { compiler, ...builderOptions } = this.options.builder.options;
+    return digestJson({ evolution: this.sourceSpecDigest, roundPlan: this.round.plan.digest,
+      evaluator: JSON.parse(JSON.stringify(this.options.evaluator.options)),
+      subprocessEnvironmentDigest: hitchSubprocessEnvironmentDigest(),
+      builder: { repositoryPath: this.options.builder.repositoryPath, targetRoot: this.options.builder.targetRoot,
+        options: builderOptions, compiler: { name: compiler.constructor.name,
+          runtimeValidation: compiler.runtimeValidation === true } } });
+  }
   private async currentRound(): Promise<RefinementRound> {
     if (this.options.freshContext) {
       if (digestJson(this.options.freshContext.round) !== this.sourceRoundDigest)
@@ -151,6 +170,8 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
   private async prepared(envelope: OperationEnvelope): Promise<Prepared> {
     if (envelope.kind !== this.manifest.kind || envelope.implementationDigest !== this.manifest.implementationDigest)
       throw new Error('Hitch rollout implementation identity drift');
+    if (this.currentEnvironmentDigest() !== this.environmentDigest)
+      throw new Error('Hitch rollout evaluator, builder, or subprocess environment drift');
     await this.currentSpec(); await this.currentRound();
     if (this.metered && (!Number.isSafeInteger(envelope.limits['rollout.trials']) || envelope.limits['rollout.trials']! < 1))
       throw new Error('Hitch trial reservation missing or insufficient');
@@ -203,7 +224,7 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
     const repeatIndex = input.repeatIndex ?? 0;
     const repetition = description.universe.repetitions.find(item => item.index === repeatIndex);
     if (!repetition || repetition.seed !== null) throw new Error('Hitch repetition not in supported frozen plan');
-    const projected = await projectDataset(description, [task.id], this.options.stateRoot);
+    const projected = await projectAfterConcurrentPublish(description, [task.id], this.options.stateRoot);
     const { conditionId: _ignored, seeds: _seeds, ...base } = this.round.plan.seed;
     const body = { ...base, dataset: projected, repetitions: 1 };
     const condition: EvaluationCondition = { ...body, conditionId: digestJson(body) };

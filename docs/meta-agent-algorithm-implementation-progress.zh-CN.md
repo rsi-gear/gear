@@ -266,3 +266,9 @@ verifyPinnedLegacySearchClosure 核验已归档 f715748 的 search/parent/packag
 主 agent 在独立冻结快照执行完整 Evo 测试 1/1，完整 typecheck 通过。实际 Python recipe 经默认 DSH 宿主运行两批：首批失败后 proposer 查询并读取物理 tool-result trace、确认真实错误内容，再由 curator ADD 非空技能；第二批 retriever 通过 skills_list/read 读取新增内容，真实 Git overlay 的 commit/技能字节与 Hitch request、证据和回执一致。第二批 SKIP 保留原库。
 
 两个批次有独立的原始 key、evalId 和 runId。重建 Python worker 与 Campaign runtime 后恢复完成，模型请求和 Hitch submit 次数不增加。测试使用真实 DSH/Git 与多运行录制 CLI，模型、runtime checker 和任务反馈为离线 fixture；验证完整接线和恢复，不证明模型实际学习效果。
+
+## S3b10 并发任务投影与执行环境身份
+
+主 agent 在仅含 HEAD 与两份冻结文件的独立快照运行 Hitch 四套测试及完整 Python Evo：13/13，完整 typecheck 通过。RHO 并行重复测量暴露同一投影目录的原子发布竞争；新适配层仅在 EEXIST/ENOTEMPTY 时重新进入原投影验证一次，验证已发布内容后复用，不增加评测提交。并发 12 次预检通过；投影内容损坏仍拒绝。旧 search/dataset-projection 和 Hitch evaluator 源码未改。
+
+物理身份现在包含 Hitch CLI 实际继承的整个子进程环境摘要（覆盖 PYTHONDONTWRITEBYTECODE=1），并在操作准备时重新核对 evaluator/builder 配置。未列入 passEnv 的变量、评测配置或 builder 配置变化都拒绝；不保存或打印环境值。该策略保守要求恢复时保持相同环境，不能把配置中仅供运行容器转发的 passEnv 当作 CLI 自身全部环境。
