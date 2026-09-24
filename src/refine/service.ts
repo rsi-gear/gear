@@ -48,6 +48,7 @@ import {
 } from './baseline-source.js'
 
 export interface RefineServiceOptions {
+  datasetStorage?: import('../state/materialize-tree.js').MaterializationPolicy
   searchSettings?: SearchSettings
   workspaceRoot: string
   metaAgent: MetaAgentSpec
@@ -3486,6 +3487,13 @@ export class RefineService {
       plan: this.components.taskSampler(spec.rollout.taskSampler).resolve(roundId, spec.datasets, spec.rollout, spec.taskBudgetMs),
     }
     return attachSearchEvaluation(evaluator, { spec, workspaceRoot: this.options.workspaceRoot, stateRoot: root,
+      ...(this.options.datasetStorage ? { materialization: this.options.datasetStorage } : {}),
+      lock: async () => {
+        const current = await new SearchStore(root).read<{ roundId: string | null }>('active-round')
+        const owner = current?.roundId && (this.active.get(current.roundId) ?? this.repairs.get(current.roundId))
+        invariant(owner && owner.evolution.spec.evolutionId === spec.evolutionId, 'staged materialization requires the active evolution lock')
+        return owner.lock
+      },
       identityRound,
       manifest: snapshot => this.builder.readManifest(snapshot.commit),
       round: async () => {

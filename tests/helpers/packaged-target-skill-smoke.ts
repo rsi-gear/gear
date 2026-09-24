@@ -33,7 +33,10 @@ globalThis.fetch = () => { globalThis.gearSmokeNetworkRequests++; throw new Erro
 `)
   const patch = join(lab, 'cli-smoke.patch.json')
   await writeFile(patch, JSON.stringify([
-    ...['headless-runner', 'headless-startup', 'session-telemetry-otel', 'hmr'].map(id => ({ id, disabled: true })),
+    // Activate HMR during boot so the real CLI can register its patch watchers
+    // after the loader settles, without racing a late fallback activation.
+    { id: 'hmr', disabled: false, config: { root: [] } },
+    ...['headless-runner', 'headless-startup', 'session-telemetry-otel'].map(id => ({ id, disabled: true })),
     { id: 'agent-default-model', config: { provider: 'openai-codex', model: 'gpt-5.6-luna' } },
     { insert: [{ id: 'packaged-skill-probe',
       name: pathToFileURL(join(import.meta.dirname, 'packaged-target-skill-probe.mjs')).href,

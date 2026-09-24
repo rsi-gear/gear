@@ -2,7 +2,7 @@
 import { readFile } from 'node:fs/promises'
 
 function usage(): never {
-  throw new Error('usage: gear-refine algorithm <init|check|run|resume> ... | gear-refine serve --config PATH | gear-refine skill-identity [--path DIRECTORY] | gear-refine [--socket PATH] request <method> [json-params]')
+  throw new Error('usage: gear-refine algorithm <init|check|run|resume> ... | gear-refine storage ... | gear-refine serve --config PATH | gear-refine skill-identity [--path DIRECTORY] | gear-refine [--socket PATH] request <method> [json-params]')
 }
 
 async function main(argv: string[]): Promise<void> {
@@ -10,6 +10,11 @@ async function main(argv: string[]): Promise<void> {
   if (args[0] === 'algorithm') {
     const { algorithmCommand } = await import('./algorithm/cli.js')
     await algorithmCommand(args.slice(1))
+    return
+  }
+  if (args[0] === 'storage') {
+    const { storageCommand } = await import('./state/storage-cli.js')
+    process.stdout.write(`${JSON.stringify(await storageCommand(args.slice(1)), null, 2)}\n`)
     return
   }
   if (args[0] === 'training') {

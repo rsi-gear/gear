@@ -1,6 +1,6 @@
-import { appendFile, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { FileArtifactStore, sha256 } from '../../src/algorithm/artifacts.js';
 import { BindingStore } from '../../src/algorithm/bindings.js';
@@ -15,6 +15,9 @@ import { createGitHarnessFixture } from '../helpers/git-fixture.js';
 import { createRecordedHitchCliFixture } from '../helpers/algorithm-hitch-recorded-cli.js';
 import { standardSearchDataset } from '../helpers/standard-search-dataset.js';
 import { evolutionSpec } from '../helpers/research-fixture.js';
+import { RefineStateStore } from '../../src/state/store.js';
+import { auditStorage } from '../../src/state/storage.js';
+import { digestDatasetRef } from '../../src/state/dataset.js';
 import type { OperationEnvelope } from '../../src/algorithm/contracts.js';
 
 const roots: string[] = [];
@@ -50,7 +53,8 @@ it('admits concurrent repetitions after one exact dataset publication and reject
   const recorded = await createRecordedHitchCliFixture('0.2.8', {},
     { followSubmission: true, controlPlane: { mode: 'daemon', requireModelCapture: false } }, git);
   const stateRoot = join(root, 'state');
-  const port = await HitchRolloutPort.create({ freshContext: context, workspaceRoot: root, stateRoot,
+  const port = await HitchRolloutPort.create({ freshContext: context, workspaceRoot: root,
+    stateRoot: relative(process.cwd(), stateRoot),
     artifacts, bindings, taskAuthority: authority, allowedExperienceViewDigests: () => [experience.digest],
     accessPolicyDigest: sha256('projection-policy'), builder, evaluator: recorded.evaluator,
     campaignBudget: { 'rollout.trials': { unit: 'trials', limit: 12, source: 'hitch-rollout', capability: 'hard' } } });
@@ -63,8 +67,22 @@ it('admits concurrent repetitions after one exact dataset publication and reject
       implementationDigest: port.describe().implementationDigest, bindingSetRef, limits: { 'rollout.trials': 1 } };
   });
   await Promise.all(envelopes.map(envelope => port.preflight(envelope)));
-  const published = await readdir(join(stateRoot, 'datasets'));
+  const storageRoot = join(stateRoot, 'hitch-storage');
+  const published = await readdir(join(storageRoot, 'search', 'datasets'));
   expect(published).toHaveLength(1);
+  const projectionRef = join(storageRoot, 'search', 'datasets', published[0]!);
+  const projectionLock = await new RefineStateStore(storageRoot).acquireRoundLock();
+  try {
+    await projectionLock.assertHeld(storageRoot);
+    await expect(port.preflight(envelopes[0]!)).rejects.toThrow(/lock/u);
+  } finally { await projectionLock.release(); }
+  await port.preflight(envelopes[0]!);
+  const audit = await auditStorage(storageRoot, { apply: true, graceMs: 0 });
+  expect(audit.retained).toContainEqual({ ref: projectionRef, reason: 'durable history reference' });
+  expect(audit.quarantined).toEqual([]);
+  const invocations = (await readFile(recorded.invocationLog, 'utf8')).split('\n').filter(Boolean)
+    .map(line => JSON.parse(line) as string[]);
+  expect(invocations.filter(args => args[0] === 'eval' && args[1] === 'submit')).toEqual([]);
   const priorConcurrent = recorded.evaluator.options.maxConcurrent;
   try {
     recorded.evaluator.options.maxConcurrent = priorConcurrent + 1;
@@ -85,6 +103,21 @@ it('admits concurrent repetitions after one exact dataset publication and reject
     if (previous === undefined) delete process.env[unlistedVariable];
     else process.env[unlistedVariable] = previous;
   }
-  await appendFile(join(stateRoot, 'datasets', published[0]!, 'task-1', 'task.toml'), '\n# damaged after publication\n');
+  await appendFile(join(projectionRef, 'task-1', 'task.toml'), '\n# damaged after publication\n');
   await expect(port.preflight(envelopes[0]!)).rejects.toThrow(/prepared task content changed/u);
+
+  const resource = await standardSearchDataset(root, 1, 'resource');
+  await mkdir(join(resource.ref, 'case-1'));
+  await writeFile(join(resource.ref, 'case-1', 'task.toml'), 'version = "1.0"\n');
+  const contract = JSON.parse(await readFile('test-contracts/hitch-resources-v1.json', 'utf8')) as { dataset: unknown };
+  await writeFile(join(resource.ref, 'benchmark.adapter.json'), JSON.stringify(contract.dataset));
+  const resourceSpec = { ...spec, datasets: { ...spec.datasets,
+    seed: { ref: 'resource', digest: await digestDatasetRef(resource.ref) } } };
+  const resourceContext = await createFreshHitchRolloutContext({ spec: resourceSpec,
+    campaignId: 'projection-resource-v2', workspaceRoot: root, minRepetitions: 2 });
+  await expect(HitchRolloutPort.create({ freshContext: resourceContext, workspaceRoot: root, stateRoot,
+    artifacts, bindings, taskAuthority: authority, allowedExperienceViewDigests: () => [experience.digest],
+    accessPolicyDigest: sha256('projection-policy'), builder, evaluator: recorded.evaluator,
+    campaignBudget: { 'rollout.trials': { unit: 'trials', limit: 12, source: 'hitch-rollout', capability: 'hard' } } }))
+    .rejects.toThrow(/schema v1 only; resource v2 requires algorithm resource preflight/u);
 });

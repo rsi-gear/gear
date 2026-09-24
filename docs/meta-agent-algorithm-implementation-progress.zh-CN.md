@@ -324,3 +324,21 @@ verifyPinnedLegacySearchClosure 核验已归档 f715748 的 search/parent/packag
 - 首版不自动导入旧 GEPA extra finding handoff、standalone repair 或旧 pending completion；冻结 findings 可显式提供，旧不确定运行继续原封存 runtime。
 
 原始 `/Users/zgq/Desktop/projs/gear` 保持 `dev`，既有未跟踪架构笔记与 `repros/` 未改动。当前实现位于独立 `codex/meta-agent-algorithm-plan` 工作树；旧 `src/search`、`src/meta`、`src/evaluator`、`python` 和 package-lock.json 与 f715748 源码字节保持一致。旧 TS training 仅抽取共享合同校验，相关 127 项回归已包括在最终测试内。
+
+
+## 合入最新 dev（2026-09-24）
+
+在 `codex/meta-agent-algorithm-plan` 上将 `origin/dev` 的 `18e2055b1ca314b8073637e8962aa18f7a735544` 合入原实现 `7a54ea7`。保留 dev 的通用资源存储、0.1.1 版本和 storage CLI，同时保留算法公开出口、作者文件与 lazy algorithm CLI。上节关于旧 Search/evaluator/package-lock 与 f715748 字节一致的结论仅描述合并前状态；本次这些文件按 dev 正式更新，不把新 runtime 冒充封存的旧实现。
+
+GPT-6 Sol / xhigh 完成冲突解决与 Hitch adapter 兼容修复，主 agent 独立审查、修正要求并复验。算法投影改为 `stateRoot/hitch-storage/search`，以 RefineStateStore 的真实锁保护投影发布和持久引用；同进程短操作排队，跨进程保持真实互斥。绝对路径统一消除相对 stateRoot 对 GC 引用识别的影响。回归验证 12 个并发预检、外部锁冲突后恢复、实际 storage audit apply 保留投影、字节漂移拒绝和零额外提交。算法 Hitch adapter 尚未实现资源 v2 的完整 preflight、plan identity 与 retention 协议，因此在准入明确拒绝；原 Search 的资源 v2 支持保留。
+
+主 agent 的独立最终快照为 `/var/folders/9c/gchqm16921v_skhc29s5w1_h0000gn/T/gear-dev-merge-review-3a8d2olv`。构建后核对全部 767 个跟踪文件，与工作树字节无差异（本节验证记录在检查后追加）。验证结果：
+
+- 存储、资源协议、评估与身份回归：6 文件 194/194。
+- 其余 Search、状态存储、数据身份与构建身份回归：23 文件 268/268。
+- 完整算法单测与包清单回归：35 文件 187/187，包含 Python RHO/AHE/Evo、Optuna 和恢复。三个范围无重叠，合计 64 文件 649 项通过，无跳过。
+- 完整 typecheck 与 npm build 通过。首次离线构建因缺 Tool FS npm 缓存未完成，正常构建补齐后通过；首次算法运行因沙箱禁止本机回环监听失败，允许本机端口后整组重跑通过，没有为环境问题修改实现。
+- `check-algorithm-package.mjs` 从最终构建安装 `rsi-gear-0.1.1.tgz` 与 `gear_algorithm-0.1.0a0` wheel；三个外部 Campaign、配置宿主 CLI check、实际 Optuna、封存旧 Search 的跨进程 interrupt/resume/replay 全部通过。
+- 构建后的 storage inspect 与 skill-identity CLI 冒烟通过。冲突解决和兼容修复片段的 diff 检查通过；上游存储方案文档保留原有 Markdown 双空格换行。
+
+本次没有执行真实模型或 GPU 作业，没有发布包、推送分支或改动原 dev 工作树的既有未跟踪文件。

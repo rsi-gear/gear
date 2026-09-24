@@ -18,16 +18,34 @@ import { materializeSkillOverlay, validateSkillOverlaySelection, SkillOverlayUnk
   type SkillOverlayResult } from './skill-overlay.js';
 import type { CandidateWorkspaceManager } from '../../candidate/workspace.js';
 import { describeDataset, projectDataset } from '../../search/dataset-projection.js';
+import type { DatasetDescription } from '../../search/dataset-projection.js';
+import { RefineStateStore, type WorkspaceLock } from '../../state/store.js';
 import { digestJson } from '../../state/digest.js';
 import { digestDatasetRef } from '../../state/dataset.js';
+import { durableCreate } from './provider-record.js';
 import type { EvaluationCondition, EvaluationRequest, EvaluationReservation, EvaluationSubmissionIntent, RefinementRound, EvolutionSpec } from '../../types.js';
 
-/** Another caller may win the same atomic dataset rename after our initial lstat. Re-enter the old verifier once. */
-async function projectAfterConcurrentPublish(...args: Parameters<typeof projectDataset>): ReturnType<typeof projectDataset> {
-  try { return await projectDataset(...args); }
-  catch (error) {
-    if (!['EEXIST', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
-    return projectDataset(...args);
+function requireAlgorithmDatasetV1(description: DatasetDescription): void {
+  if (description.resourceManifest || description.manifest.schema_version !== '1')
+    throw new Error('Algorithm Hitch rollout supports compiled dataset schema v1 only; resource v2 requires algorithm resource preflight, plan identity, and retention support');
+}
+
+/** The upstream projector and storage audit share a real lock. Queue only this process's short projection sections. */
+const projectionQueues = new Map<string, Promise<void>>();
+async function withProjectionLock<T>(root: string, work: (lock: WorkspaceLock) => Promise<T>): Promise<T> {
+  root = resolve(root);
+  const prior = projectionQueues.get(root) ?? Promise.resolve();
+  let releaseQueue!: () => void;
+  const turn = new Promise<void>(resolveTurn => { releaseQueue = resolveTurn; });
+  projectionQueues.set(root, turn);
+  await prior;
+  try {
+    const lock = await new RefineStateStore(root).acquireRoundLock();
+    try { return await work(lock); }
+    finally { await lock.release(); }
+  } finally {
+    releaseQueue();
+    if (projectionQueues.get(root) === turn) projectionQueues.delete(root);
   }
 }
 
@@ -120,6 +138,7 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
         || round.seedTaskRef !== spec.datasets.seed.ref || round.plan.seed.dataset.digest !== spec.datasets.seed.digest
         || round.plan.seed.partition !== 'seed') throw new Error('Fresh Hitch rollout context identity mismatch');
       const description = await describeDataset(spec, 'seed', options.workspaceRoot);
+      requireAlgorithmDatasetV1(description);
       if (description.sourceDigest !== datasetDigest) throw new Error('Fresh Hitch rollout context dataset drift');
       await mkdir(options.stateRoot, { recursive: true });
       return new HitchRolloutPort(options, structuredClone(spec), structuredClone(round));
@@ -130,6 +149,7 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
     if (!entry || entry.specDigest !== digestJson(spec) || !round || round.evolutionId !== spec.evolutionId
       || round.seedTaskRef !== spec.datasets.seed.ref || round.plan.seed.dataset.digest !== spec.datasets.seed.digest)
       throw new Error('Hitch rollout source evolution/round unavailable or mismatched');
+    requireAlgorithmDatasetV1(await describeDataset(spec, 'seed', options.workspaceRoot));
     await mkdir(options.stateRoot, { recursive: true });
     return new HitchRolloutPort(options, spec, round);
   }
@@ -190,6 +210,7 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
     const content = this.options.artifacts.getJson(task.contentRef) as unknown as { prompt?: string; executionSource?: {
       kind?: string; datasetDigest?: string; taskContentDigest?: string } };
     const description = await describeDataset(this.spec, 'seed', this.options.workspaceRoot);
+    requireAlgorithmDatasetV1(description);
     const declared = description.universe.tasks.find(item => item.id === task.id);
     if (!declared || content.executionSource?.kind !== 'compiled-seed-dataset'
       || content.executionSource.datasetDigest !== description.sourceDigest
@@ -224,7 +245,28 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
     const repeatIndex = input.repeatIndex ?? 0;
     const repetition = description.universe.repetitions.find(item => item.index === repeatIndex);
     if (!repetition || repetition.seed !== null) throw new Error('Hitch repetition not in supported frozen plan');
-    const projected = await projectAfterConcurrentPublish(description, [task.id], this.options.stateRoot);
+    const storageRoot = resolve(this.options.stateRoot, 'hitch-storage');
+    const projected = await withProjectionLock(storageRoot, async lock => {
+      const result = await projectDataset(description, [task.id], join(storageRoot, 'search'),
+        { lock, signal: new AbortController().signal });
+      // A preflight may be followed by another process's storage audit before the
+      // operation journal exists. Publish this campaign-owned reference under the
+      // same lock so an accepted projection is never treated as an orphan.
+      const reference = { protocol: 'algorithm-hitch-projection@1', campaignId: envelope.campaignId,
+        sourceDigest: description.sourceDigest, taskIds: [task.id], ref: result.ref, digest: result.digest };
+      const key = jsonDigest({ campaignId: envelope.campaignId, sourceDigest: description.sourceDigest,
+        taskIds: [task.id] }).slice(7);
+      const path = join(storageRoot, 'projection-refs', `${key}.json`);
+      mkdirSync(join(storageRoot, 'projection-refs'), { recursive: true });
+      await lock.assertHeld(storageRoot);
+      if (!durableCreate(path, canonicalJson(reference))) {
+        const previous = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+        assertJson(previous);
+        if (canonicalJson(previous) !== canonicalJson(reference))
+          throw new Error('Hitch campaign projection reference drift');
+      }
+      return result;
+    });
     const { conditionId: _ignored, seeds: _seeds, ...base } = this.round.plan.seed;
     const body = { ...base, dataset: projected, repetitions: 1 };
     const condition: EvaluationCondition = { ...body, conditionId: digestJson(body) };

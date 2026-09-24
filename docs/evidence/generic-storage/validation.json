@@ -1,0 +1,96 @@
+{
+  "protocol": "gear-hitch-storage-validation@1",
+  "date": "2026-09-24",
+  "node": "26.7.0",
+  "gear": {
+    "unitFiles": 86,
+    "totalTests": 1163,
+    "fullRun": {
+      "passed": 1158,
+      "failed": 1,
+      "skipped": 4
+    },
+    "failure": "notebook sandbox correctly refused Python executable under .codex; validation PATH issue",
+    "notebookRetryWithSystemPython": {
+      "passed": 5,
+      "failed": 0,
+      "skipped": 1
+    },
+    "deduplicatedOutcome": {
+      "passed": 1159,
+      "unresolvedFailures": 0,
+      "skipped": 4
+    },
+    "typecheck": "passed"
+  },
+  "hitch": {
+    "selectedResourceImageRemoteTests": {
+      "passed": 144,
+      "failed": 0,
+      "skipped": 0,
+      "concurrency": 2
+    },
+    "build": "passed",
+    "typecheck": "passed",
+    "architecture": {
+      "passed": true,
+      "sourceFiles": 433,
+      "crossModuleEdges": 936
+    },
+    "syntax": "passed",
+    "unrelatedFullSuiteLimitation": "Resolved by an isolated retry with process-local HTTP(S)_PROXY. The full-suite run remains recorded as 842 pass, 1 fail, 7 skip; the previously failed cold-builder test subsequently passed in 40.4 seconds without test/code changes.",
+    "latestFullSuite": {
+      "tests": 850,
+      "pass": 842,
+      "fail": 1,
+      "cancelled": 0,
+      "skipped": 7,
+      "concurrency": 2,
+      "durationMs": 261775.332166
+    },
+    "coldBuilderProxyRetry": {
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "durationMs": 40393.525916
+    },
+    "deduplicatedOutcome": {
+      "tests": 850,
+      "passed": 843,
+      "unresolvedFailures": 0,
+      "skipped": 7,
+      "basis": "Full suite plus one isolated proxy-configured retry; not a new full-suite run"
+    }
+  },
+  "canaries": {
+    "historical": {
+      "rounds": 8,
+      "canonicalProjections": 20,
+      "physicalEvaluationsRecovered": 29,
+      "originalRecordFilesUnchanged": 273,
+      "paidModelCalls": 0
+    },
+    "jointSpace": "joint-space.json",
+    "realClone": "xfs-clone.json",
+    "emptyDocker": "empty-daemon.json",
+    "historicalRerun": {
+      "artifact": "historical-recovery-continued.json",
+      "directory": "/var/folders/vr/wrfw08f92012yl64hzyb96br0000gn/T/gear-historical-storage-afh2yG",
+      "rounds": 8,
+      "projections": 20,
+      "recoveries": 29,
+      "originalFilesUnchanged": 273,
+      "paidModelCalls": 0,
+      "forbiddenSubmissionAttempts": 0
+    }
+  },
+  "packaging": {
+    "gearFiles": 354,
+    "hitchFiles": 1024,
+    "schemasAndContractsIncluded": true,
+    "historicalExperimentDirectoriesExcluded": true
+  },
+  "earlierParallelValidation": "Concurrent full runs overloaded timed tests; stopped and reran at bounded concurrency. No production timeout was relaxed.",
+  "gitDiffCheck": "passed",
+  "continuedValidation": "continued-validation.json"
+}

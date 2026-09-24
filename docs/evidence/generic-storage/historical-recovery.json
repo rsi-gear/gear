@@ -1,0 +1,461 @@
+{
+  "protocol": "gear-historical-storage-canary@1",
+  "directory": "/var/folders/vr/wrfw08f92012yl64hzyb96br0000gn/T/gear-historical-storage-nOrkxp",
+  "paidModelCalls": 0,
+  "forbiddenSubmissionAttempts": 0,
+  "preservedProviderPolicy": "original executable bytes and --version; no identity translation",
+  "rounds": [
+    {
+      "name": "marketing-unified-20260911",
+      "roundId": "62e25aef-ad7c-4ad9-b316-e01b7d15ed56",
+      "status": "rejected",
+      "digest": "sha256:7c5743b10b24eb7751cddd27258cd8842675e8d30c25f6a1289cdf8de86e6086"
+    },
+    {
+      "name": "marketing-unified-20260911",
+      "roundId": "6b2c9744-736c-4bd5-92b2-4de440e1b2f7",
+      "status": "accepted",
+      "digest": "sha256:54902a5abd9baefa5aef804b51e25e55de8434699a4fb166c9fcd8cfbe35a1be"
+    },
+    {
+      "name": "marketing-unified-20260911",
+      "roundId": "89f53f42-43eb-45c8-954b-e879f3037a45",
+      "status": "rejected",
+      "digest": "sha256:3c6ea167cfeee83a4e30b3e1cde9f64a06e84a40009af1446ab7494dd13d9d10"
+    },
+    {
+      "name": "marketing-unified-20260911",
+      "roundId": "a69936b5-59a0-4963-b782-abf2353ab081",
+      "status": "accepted",
+      "digest": "sha256:6da46b3ca54e471da1b7686d8e2454ea55298e66e5e6fcf1e84007e931b4f3bc"
+    },
+    {
+      "name": "marketing-unified-20260911",
+      "roundId": "ae15f941-ffae-4652-8297-616cdaf3685f",
+      "status": "accepted",
+      "digest": "sha256:3a81f68ae4933dbf1d2eba725f08fe30a0d9ba374ed840b51e91357657e56b3b"
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "roundId": "519a32f0-6937-4456-afe6-b461a8639f2d",
+      "status": "rejected",
+      "digest": "sha256:d62a1706c156b6be21ff313d37e63977a9cdd15345fcb7f305e26dc207e8f0a2"
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "roundId": "57a4e8ef-ab47-498c-9248-e44894bde436",
+      "status": "rejected",
+      "digest": "sha256:bf0524f56c1a586904f407a585d2815318c57bbfa9da1320750db9f99e29ef87"
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "roundId": "776c35b4-9464-4606-8552-6211647c4920",
+      "status": "rejected",
+      "digest": "sha256:d8394d0972f8246fbbd2dea3f97efc2cb8bc917fb3dcae6a97aca8141c3aceb2"
+    }
+  ],
+  "projections": [
+    {
+      "ref": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/ea9792a086ed304056dbd042f17ad4a0f92f9a44df941747830be95359c4a38c",
+      "digest": "sha256:4a7bd5b8b4b0ef6023336400791654e7fe3bb1161c75dc8ada6d829757956119"
+    },
+    {
+      "ref": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/b6b8896b6673f61739f6af45a91cfba29669adef29a0a99afacc286d676ed67c",
+      "digest": "sha256:5cd3d7b392dbd2b1eab3a567f6de05e43724207444d052ca4a5cafc780f02aa5"
+    },
+    {
+      "ref": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/66539004ba4c90791e0649cd01261ba1091db62601fe7a324763bc9c2ac56fb5",
+      "digest": "sha256:b716d0e4828cab53548ad680b6f62faf71c1b4185b30014e9badb445f97418c0"
+    },
+    {
+      "ref": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/0432a1dd79e4991b1451fb16ca8645d1ba6e64fd0b182873d13c64298434bee5",
+      "digest": "sha256:0f47aa539ebcc120997a952993916c1ecc8fc78638785caec057bcbb5fef0e12"
+    },
+    {
+      "ref": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/a9130e0961d270c0bc03591c69e257ae3dcfbd36ce76a2515ad13aade85fd538",
+      "digest": "sha256:0a35329d91c43df8c208212664853f127b4cc28e6920fcad56ca6d8fdce266e6"
+    },
+    {
+      "ref": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/21cfdbf382585cb6d88257fc393a4ee9b107c810232b840e16ac18cd4098dbc6",
+      "digest": "sha256:c66dad7ce4a2199daaa12c3c79bd267b5a46c101fec9204940944a2756e82bbd"
+    },
+    {
+      "ref": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/bd55b1857f6f7d615d3d1d83d37d237718fa8e92b7b9b55465248351e8cdbbc1",
+      "digest": "sha256:4d96cd51929e98d1db637227e529bba2606f1ff05ca1efc34c253620cb971011"
+    },
+    {
+      "ref": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/a992a78a867bd7365028da06e071692bb854b3e7d8236a0f996c7b1f8b8b90b4",
+      "digest": "sha256:a0acb616fa2c3cce8225d2c617a4d5b4d4ea61441d1bb9ceec60597b9b11fb9a"
+    },
+    {
+      "ref": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/b77b3123a7d8e0951cf71a7978c5937279e845966bd143d289b11fc0c499f316",
+      "digest": "sha256:2dc00cad95364ddc45344fc3dd4e5eff4fe80938e23480402966572fcb9979e7"
+    },
+    {
+      "ref": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/5fc0c5dffdd0fbfaa3954dea8226a664730a30d14a263e023d4e008ab236a9f9",
+      "digest": "sha256:abc7771a4cf0ef31ce03289a5e64913002e9428ca05bc066cec1a2e9063c7cbb"
+    },
+    {
+      "ref": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/3b8c2c8506beea273ff1b7055d74977ff291d81567343df85e4b0f8a36f2b832",
+      "digest": "sha256:5f667e36feb6c47bb813c57aaafee3fd447a9a384a1d87c5533985dd045e33a7"
+    },
+    {
+      "ref": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/040597f90f583acf743e204ea3e9eb5fe058a3b28f104d4220dc4846fb90f673",
+      "digest": "sha256:18ca409864f6ddf975e111ab92efbed219e0ee28bfa2219a55d4cb458dde59a0"
+    },
+    {
+      "ref": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/19115b6763960a7e2c47d020e2366bdb72deccdf623d795d0e1fa3029fe9776f",
+      "digest": "sha256:135d066897dd71da0b31f4c6ceff9f95200f1b7913a9a7e77183ab5d671dc4a5"
+    },
+    {
+      "ref": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/7e79f9a426f589d5bfd1ab91c7fd2640cc247cb3f532d8795e8ab75de799be45",
+      "digest": "sha256:4c91f208c7126b2e5cee4c2b5fec7119de38e79f604c58c7f61025a36732a194"
+    },
+    {
+      "ref": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/947cc9e221d4a83bba7219a7e29a6fd110cb377f8828d1d756568c64c29a043a",
+      "digest": "sha256:a6f8fa79bc18f9e3d5cb04632c740168eadeb8134708abf597e5d11c89252895"
+    },
+    {
+      "ref": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/4f139e03a9288cfddbb49b95a6540bef76d1be7a7db3a4e3c5d1ea3fa932042e",
+      "digest": "sha256:64b589c7f90a7b990c4950963c7d12ed7d3735048e382b5aeb6967edd3df58ea"
+    },
+    {
+      "ref": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/ec5d3168e0141e6fdb666e539b0c7667e31efc2f3a938ec33a2763918e6a2265",
+      "digest": "sha256:963719a30c02e40dea6fe2e64c68f408a69e54f5c45dcf95896974ddb38b3fa1"
+    },
+    {
+      "ref": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/2e859fd8d1d98ccd6cbc2c9a19ab892f45a102c71dbd596312f8a049476913f3",
+      "digest": "sha256:b54433abce3b782ff5731d39d60a896d878d76dde54bd7e2591441743ac2f0d7"
+    },
+    {
+      "ref": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/885991a3172ba64a2125ad31a0f10493168e7818d17f6b6405b652b3648d4d97",
+      "digest": "sha256:f1c8c39fb86006b63653d324eccc7c8530281e1b5c03ce3e75a913389b4dfccc"
+    },
+    {
+      "ref": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/20ad43a733e91ca26a41be1073e19d1179841f0c654ac2da572253760f3b1947",
+      "digest": "sha256:44ea6c9b60c2bc907566a56345a45aa4d8fbe80a872955747c2d84099805117c"
+    }
+  ],
+  "recoveries": [
+    {
+      "name": "marketing-unified-20260911",
+      "evalId": "eval_9935caea885d409fb963250f9d139e06",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-all-20260905/dataset-all",
+      "conditionId": "sha256:13d7a5145fefcc8b7dc46dbd424c79042ba93ab49a438df55b521c8085c40a08",
+      "trials": 100,
+      "primaryReward": 0.36,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-unified-20260911",
+      "evalId": "eval_349a7c10ca6f497d9a23ad68118d0cf3",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-all-20260905/dataset-all",
+      "conditionId": "sha256:13d7a5145fefcc8b7dc46dbd424c79042ba93ab49a438df55b521c8085c40a08",
+      "trials": 100,
+      "primaryReward": 0.34,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-unified-20260911",
+      "evalId": "eval_5ec0ea98c27840d18b01db53a9a03e6a",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-all-20260905/dataset-all",
+      "conditionId": "sha256:13d7a5145fefcc8b7dc46dbd424c79042ba93ab49a438df55b521c8085c40a08",
+      "trials": 99,
+      "primaryReward": 0.3333333333333333,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-unified-20260911",
+      "evalId": "eval_b4c5ebd0709c40f69891b8d1e205c737",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-all-20260905/dataset-all",
+      "conditionId": "sha256:13d7a5145fefcc8b7dc46dbd424c79042ba93ab49a438df55b521c8085c40a08",
+      "trials": 100,
+      "primaryReward": 0.36,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "evalId": "eval_56d86287a25d4886b10b053e03ea61a8",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/ea9792a086ed304056dbd042f17ad4a0f92f9a44df941747830be95359c4a38c",
+      "conditionId": "sha256:6405949edbf17d72fa7df8ea9a02376b4df79916301835b20844a6538760a7f2",
+      "trials": 9,
+      "primaryReward": 0.4444444444444444,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "evalId": "eval_8f8de5149ec149cba9137f3df705f14d",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/b6b8896b6673f61739f6af45a91cfba29669adef29a0a99afacc286d676ed67c",
+      "conditionId": "sha256:c57d59651b61f65af5a7b8c9c5a2dc1e3c49f7e2bdefcf9a794f482202993924",
+      "trials": 31,
+      "primaryReward": 0.1935483870967742,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "evalId": "eval_0ec65b0765444cc4948100c600ecc9e6",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/ea9792a086ed304056dbd042f17ad4a0f92f9a44df941747830be95359c4a38c",
+      "conditionId": "sha256:6405949edbf17d72fa7df8ea9a02376b4df79916301835b20844a6538760a7f2",
+      "trials": 9,
+      "primaryReward": 0.3333333333333333,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "evalId": "eval_424208b6781a420db6f7d16df971d3ce",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/66539004ba4c90791e0649cd01261ba1091db62601fe7a324763bc9c2ac56fb5",
+      "conditionId": "sha256:0da034f154e730de807b6e894791ffaa9ceda3c6e92603a700ddadadfddfbac7",
+      "trials": 1,
+      "primaryReward": 0,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "evalId": "eval_adcb32ecda174dbf9667f371f3d425ed",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/0432a1dd79e4991b1451fb16ca8645d1ba6e64fd0b182873d13c64298434bee5",
+      "conditionId": "sha256:1f1d3916e5f5972bd2008025ebbdb8d24e478797f9e04a861c1d71a96ec8987d",
+      "trials": 31,
+      "primaryReward": 0.3225806451612903,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "evalId": "eval_240ca966fffa4b3baf68e5166c8fdd7a",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/a9130e0961d270c0bc03591c69e257ae3dcfbd36ce76a2515ad13aade85fd538",
+      "conditionId": "sha256:452314d6d0075fd07a34ca095bf0ceb8ed6ff8639aec0e6f7c67903f3ab0ce78",
+      "trials": 15,
+      "primaryReward": 0.4,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "evalId": "eval_081554be3ee7471bbeab25d697c4326f",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/21cfdbf382585cb6d88257fc393a4ee9b107c810232b840e16ac18cd4098dbc6",
+      "conditionId": "sha256:076b2aa700a19ec551cdd8d49b2485ef3e2ac31c20564da70f088641bebe1db6",
+      "trials": 30,
+      "primaryReward": 0.26666666666666666,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "evalId": "eval_4b928768ef9240ed95126f69723feb87",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/bd55b1857f6f7d615d3d1d83d37d237718fa8e92b7b9b55465248351e8cdbbc1",
+      "conditionId": "sha256:744075a3f678fef2aac3d9ced3fd6d5b3b855a85d1c4c3bf9f13adb2a4963e7f",
+      "trials": 1,
+      "primaryReward": 0,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "evalId": "eval_f4d9fedc9dce4cdb8289c31848af6d40",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/a992a78a867bd7365028da06e071692bb854b3e7d8236a0f996c7b1f8b8b90b4",
+      "conditionId": "sha256:d38c6f2742780932652e5aac4388bce6a645b28c0249e4a0b8aa7c6b40424d2d",
+      "trials": 10,
+      "primaryReward": 0.6,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "evalId": "eval_4efc0ec9c6b14dc7a923561aaf11c433",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/b77b3123a7d8e0951cf71a7978c5937279e845966bd143d289b11fc0c499f316",
+      "conditionId": "sha256:bb79df9c1f012e62b10eee2f71257e07e194c68d3d6b85a0d35997981c5932a1",
+      "trials": 55,
+      "primaryReward": 0.43636363636363634,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "evalId": "eval_716666689c27497e88b518494980a66c",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/5fc0c5dffdd0fbfaa3954dea8226a664730a30d14a263e023d4e008ab236a9f9",
+      "conditionId": "sha256:09050a20a4908978cc716995aafa9bc8f97f668220006576723c45b5eba63456",
+      "trials": 25,
+      "primaryReward": 0.36,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "evalId": "eval_2b8e207d53524ab9bd2749462acfc21f",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/3b8c2c8506beea273ff1b7055d74977ff291d81567343df85e4b0f8a36f2b832",
+      "conditionId": "sha256:0f8c5f92c5e2eedd9958e67b34f9ca860fdcf0f0b2b0da81a62291ecfb60174a",
+      "trials": 25,
+      "primaryReward": 0.28,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "evalId": "eval_97296dbd169741e7a78d7144830e09fb",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/040597f90f583acf743e204ea3e9eb5fe058a3b28f104d4220dc4846fb90f673",
+      "conditionId": "sha256:3c13c185d510b07d17d6ecae64de2906cf935f9b50c54a5b1ac82364c8392c9b",
+      "trials": 15,
+      "primaryReward": 0.4,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "evalId": "eval_783f16fefafe4f8f989cd0800ba4f79d",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/19115b6763960a7e2c47d020e2366bdb72deccdf623d795d0e1fa3029fe9776f",
+      "conditionId": "sha256:f48cdf5167b53716a9994acaa792f360a182c8bb6acb2001de78b9d8d1725c65",
+      "trials": 15,
+      "primaryReward": 0.2,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "evalId": "eval_303a7fc22fc849c480a296292119d78f",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/7e79f9a426f589d5bfd1ab91c7fd2640cc247cb3f532d8795e8ab75de799be45",
+      "conditionId": "sha256:0c6af23402deaec1b32ed4c3936fdb8af6d961ad0f617d42e1a9dd1ea888d37f",
+      "trials": 1,
+      "primaryReward": 0,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "evalId": "eval_7c3929d2f15649b68b680f81f9c25b69",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/040597f90f583acf743e204ea3e9eb5fe058a3b28f104d4220dc4846fb90f673",
+      "conditionId": "sha256:3c13c185d510b07d17d6ecae64de2906cf935f9b50c54a5b1ac82364c8392c9b",
+      "trials": 15,
+      "primaryReward": 0.26666666666666666,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "evalId": "eval_eace368dd1d64655adf2a74f1dff7698",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/947cc9e221d4a83bba7219a7e29a6fd110cb377f8828d1d756568c64c29a043a",
+      "conditionId": "sha256:e60a97391304f611857e3156f6cba3d05d7915436b58343edd560533444d739d",
+      "trials": 1,
+      "primaryReward": 1,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "evalId": "eval_32f1707971074ecda171853ae23045cf",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/4f139e03a9288cfddbb49b95a6540bef76d1be7a7db3a4e3c5d1ea3fa932042e",
+      "conditionId": "sha256:55dc605322a2cc77ad38da1c8a344b93b607a0cb699a594c031826aec9daf81e",
+      "trials": 60,
+      "primaryReward": 0.31666666666666665,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "evalId": "eval_b8426dc4e4114170996a740c24993fe8",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/a9130e0961d270c0bc03591c69e257ae3dcfbd36ce76a2515ad13aade85fd538",
+      "conditionId": "sha256:452314d6d0075fd07a34ca095bf0ceb8ed6ff8639aec0e6f7c67903f3ab0ce78",
+      "trials": 15,
+      "primaryReward": 0.4666666666666667,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "evalId": "eval_fbb713f5f6d448b5a12e4fe0b41d90f4",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/ec5d3168e0141e6fdb666e539b0c7667e31efc2f3a938ec33a2763918e6a2265",
+      "conditionId": "sha256:6d2e7feb9deebec02b8a6c1ef279043b43d6ffe58dcf58fc4e55d4261e8fd18d",
+      "trials": 9,
+      "primaryReward": 0.4444444444444444,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "evalId": "eval_36f82598375242018ab502fe0b8c4407",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/2e859fd8d1d98ccd6cbc2c9a19ab892f45a102c71dbd596312f8a049476913f3",
+      "conditionId": "sha256:8cef55b289ce4d940d02f81a50ca76d0d52dbfc6f6636ee36b3274d8c0346148",
+      "trials": 1,
+      "primaryReward": 1,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "evalId": "eval_966dc4da5f9e4951913875b77f0e6de8",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/885991a3172ba64a2125ad31a0f10493168e7818d17f6b6405b652b3648d4d97",
+      "conditionId": "sha256:c1880f7aa735fe36cd377f32e78734e89cab80924dc9d5844b0ccd9dcd237fec",
+      "trials": 15,
+      "primaryReward": 0.26666666666666666,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-staged-20260912",
+      "evalId": "eval_cf04e33548a14a0b94ef384bc9107ada",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-staged-20260912/state/evolutions/6e7c54fd-d2f0-428d-bb64-f2730278fa10/search/datasets/20ad43a733e91ca26a41be1073e19d1179841f0c654ac2da572253760f3b1947",
+      "conditionId": "sha256:e1de6c8f8ed2898c8c766e9bdb8b823d6aa50586b45636111b8b6089305bb338",
+      "trials": 25,
+      "primaryReward": 0.44,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-luna-max-20260912",
+      "evalId": "eval_58e95e47baf849c0909ed24addb0add2",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-all-20260905/dataset-all",
+      "conditionId": "sha256:d6515a396eac4d945c0efd40aeb52ac853d08cd93eabc95a7da127f1c6ebe1c6",
+      "trials": 100,
+      "primaryReward": 0.5,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    },
+    {
+      "name": "marketing-champion-luna-max-20260914",
+      "evalId": "eval_1d7838ff79d74cc8a74cb8e1c4994c98",
+      "dataset": "/Users/tangyehui/gear/.evolve-lab/marketing-all-20260905/dataset-all",
+      "conditionId": "sha256:ab04e28796e641156f8b497ecc561c9e8b24b71c2112e97256711196025c6359",
+      "trials": 100,
+      "primaryReward": 0.53,
+      "exactIdentityAndTrials": true,
+      "repeatedRecovery": true,
+      "unknownReservationPreserved": true
+    }
+  ],
+  "originalFilesUnchanged": 273
+}

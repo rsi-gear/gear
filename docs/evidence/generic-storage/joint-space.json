@@ -1,0 +1,2419 @@
+{
+  "protocol": "hitch-empty-daemon-canary@1",
+  "directory": "/var/folders/vr/wrfw08f92012yl64hzyb96br0000gn/T/hitch-empty-daemon-bkpjuK",
+  "paidModelCalls": 0,
+  "samples": [
+    {
+      "phase": "empty-daemon",
+      "daemonAllocatedKiB": 312,
+      "dockerAccounting": "{\"Active\":\"0\",\"Reclaimable\":\"0B\",\"Size\":\"0B\",\"TotalCount\":\"0\",\"Type\":\"Images\"}\n{\"Active\":\"0\",\"Reclaimable\":\"0B\",\"Size\":\"0B\",\"TotalCount\":\"0\",\"Type\":\"Containers\"}\n{\"Active\":\"0\",\"Reclaimable\":\"0B\",\"Size\":\"0B\",\"TotalCount\":\"0\",\"Type\":\"Local Volumes\"}\n{\"Active\":\"0\",\"Reclaimable\":\"0B\",\"Size\":\"0B\",\"TotalCount\":\"0\",\"Type\":\"Build Cache\"}"
+    },
+    {
+      "phase": "registry-infrastructure-only",
+      "daemonAllocatedKiB": 146436,
+      "dockerAccounting": "{\"Active\":\"1\",\"Reclaimable\":\"0B (0%)\",\"Size\":\"24.94MB\",\"TotalCount\":\"1\",\"Type\":\"Images\"}\n{\"Active\":\"1\",\"Reclaimable\":\"0B\",\"Size\":\"0B\",\"TotalCount\":\"1\",\"Type\":\"Containers\"}\n{\"Active\":\"1\",\"Reclaimable\":\"0B\",\"Size\":\"0B\",\"TotalCount\":\"1\",\"Type\":\"Local Volumes\"}\n{\"Active\":\"0\",\"Reclaimable\":\"0B\",\"Size\":\"0B\",\"TotalCount\":\"0\",\"Type\":\"Build Cache\"}"
+    },
+    {
+      "phase": "imported",
+      "daemonAllocatedKiB": 626448,
+      "dockerAccounting": "{\"Active\":\"1\",\"Reclaimable\":\"121MB (82%)\",\"Size\":\"145.9MB\",\"TotalCount\":\"2\",\"Type\":\"Images\"}\n{\"Active\":\"1\",\"Reclaimable\":\"0B\",\"Size\":\"0B\",\"TotalCount\":\"1\",\"Type\":\"Containers\"}\n{\"Active\":\"1\",\"Reclaimable\":\"0B (0%)\",\"Size\":\"44.37MB\",\"TotalCount\":\"1\",\"Type\":\"Local Volumes\"}\n{\"Active\":\"0\",\"Reclaimable\":\"0B\",\"Size\":\"0B\",\"TotalCount\":\"0\",\"Type\":\"Build Cache\"}"
+    },
+    {
+      "phase": "offline-executed",
+      "daemonAllocatedKiB": 1018516,
+      "dockerAccounting": "{\"Active\":\"1\",\"Reclaimable\":\"121MB (82%)\",\"Size\":\"145.9MB\",\"TotalCount\":\"4\",\"Type\":\"Images\"}\n{\"Active\":\"0\",\"Reclaimable\":\"0B\",\"Size\":\"0B\",\"TotalCount\":\"1\",\"Type\":\"Containers\"}\n{\"Active\":\"1\",\"Reclaimable\":\"0B (0%)\",\"Size\":\"44.37MB\",\"TotalCount\":\"1\",\"Type\":\"Local Volumes\"}\n{\"Active\":\"0\",\"Reclaimable\":\"43.49kB\",\"Size\":\"43.49kB\",\"TotalCount\":\"11\",\"Type\":\"Build Cache\"}"
+    }
+  ],
+  "infrastructureImage": "sha256:d8172970f45b2f99cadf528226e092fd0c5ec8fb2bbee1cd2826e720e75bf6ef",
+  "emptyInitialDockerStore": true,
+  "emptyInitialFileCAS": true,
+  "emptyTargetRegistry": true,
+  "sharedHostDockerLayers": false,
+  "externalNetworkDisconnected": true,
+  "registryStoppedDuringExecution": true,
+  "answer": 3,
+  "score": {
+    "reward": 1
+  },
+  "transferredBytes": 3619,
+  "repeatTransferredBytes": 0,
+  "materializedTaskDigest": "sha256:cf1455d2c40f6e58cf46df0da27fd703ffa501dd336e6654175d426608cc9f22",
+  "storage": {
+    "protocol": "hitch-resource-storage@1",
+    "scopes": {
+      "objects": {
+        "files": 15,
+        "logicalBytes": 6064,
+        "allocatedBlockBytes": 61440
+      },
+      "oci-manifests": {
+        "files": 1,
+        "logicalBytes": 1907,
+        "allocatedBlockBytes": 4096
+      },
+      "descriptor-views": {
+        "files": 9,
+        "logicalBytes": 1837,
+        "allocatedBlockBytes": 36864
+      },
+      "view-quarantine": {
+        "files": 0,
+        "logicalBytes": 0,
+        "allocatedBlockBytes": 0
+      },
+      "quarantine": {
+        "files": 0,
+        "logicalBytes": 0,
+        "allocatedBlockBytes": 0
+      },
+      "workspaces": {
+        "files": 10,
+        "logicalBytes": 2172,
+        "allocatedBlockBytes": 40960
+      },
+      "staging": {
+        "files": 0,
+        "logicalBytes": 0,
+        "allocatedBlockBytes": 0
+      },
+      "workspace-records": {
+        "files": 1,
+        "logicalBytes": 3298,
+        "allocatedBlockBytes": 4096
+      },
+      "roots": {
+        "files": 3,
+        "logicalBytes": 11873,
+        "allocatedBlockBytes": 16384
+      },
+      "leases": {
+        "files": 14,
+        "logicalBytes": 13316,
+        "allocatedBlockBytes": 57344
+      },
+      "transactions": {
+        "files": 0,
+        "logicalBytes": 0,
+        "allocatedBlockBytes": 0
+      }
+    },
+    "roots": [
+      {
+        "owner": "empty-daemon:sum-0002",
+        "generation": 1,
+        "state": "active",
+        "purpose": "frozen-task"
+      },
+      {
+        "owner": "joint-space-canary-sealed-run",
+        "generation": 1,
+        "state": "active",
+        "purpose": "sealed-run"
+      },
+      {
+        "owner": "offline-execution",
+        "generation": 1,
+        "state": "active",
+        "purpose": "frozen-task"
+      }
+    ],
+    "leases": [
+      {
+        "id": "767ffab3-102b-4513-a212-ea3ed39535b9",
+        "owner": "offline-execution",
+        "state": "active",
+        "purpose": "execution"
+      }
+    ],
+    "physicalAccounting": "allocated blocks may overlap under CoW; no exclusive-byte or saved-byte claim",
+    "externalScopes": [
+      "source dataset/projections",
+      "OCI image layers",
+      "BuildKit cache",
+      "sealed run evidence"
+    ]
+  },
+  "jointSpace": {
+    "protocol": "hitch-joint-space-canary@1",
+    "accounting": "allocated blocks, not exclusive physical bytes; hardlinks counted once; disjoint scopes; Docker umbrella counted once; Docker df detail must not be added",
+    "peakLimit": "sampled lower bound; short transients may be missed; scopes are sequential, not an atomic filesystem snapshot",
+    "requestedIntervalMs": 250,
+    "maxSampleGapMs": 412,
+    "sampleCount": 43,
+    "baseline": {
+      "elapsedMs": 2858,
+      "durationMs": 71,
+      "phase": "baseline-with-infrastructure-and-bundle",
+      "scopes": {
+        "source-dataset-descriptors": {
+          "files": 28,
+          "logicalBytes": 11861,
+          "allocatedBlockBytes": 118784
+        },
+        "offline-bundle-input": {
+          "files": 14,
+          "logicalBytes": 44376253,
+          "allocatedBlockBytes": 44425216
+        },
+        "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+          "files": null,
+          "logicalBytes": null,
+          "allocatedBlockBytes": 149950464
+        }
+      },
+      "allocatedBlockBytes": 194494464
+    },
+    "peak": {
+      "elapsedMs": 14148,
+      "durationMs": 142,
+      "phase": "active-workspace-and-builds",
+      "scopes": {
+        "source-dataset-descriptors": {
+          "files": 28,
+          "logicalBytes": 11861,
+          "allocatedBlockBytes": 118784
+        },
+        "gear-selection-projections": {
+          "files": 1,
+          "logicalBytes": 2010,
+          "allocatedBlockBytes": 4096
+        },
+        "offline-bundle-input": {
+          "files": 14,
+          "logicalBytes": 44376253,
+          "allocatedBlockBytes": 44425216
+        },
+        "host-configuration-and-records": {
+          "files": 5,
+          "logicalBytes": 2029,
+          "allocatedBlockBytes": 20480
+        },
+        "directory-views-and-unpack-cache": {
+          "files": 9,
+          "logicalBytes": 1837,
+          "allocatedBlockBytes": 36864
+        },
+        "resource-references-and-quarantine": {
+          "files": 17,
+          "logicalBytes": 24463,
+          "allocatedBlockBytes": 69632
+        },
+        "file-CAS": {
+          "files": 15,
+          "logicalBytes": 6064,
+          "allocatedBlockBytes": 61440
+        },
+        "temporary-import-staging": {
+          "files": 0,
+          "logicalBytes": 0,
+          "allocatedBlockBytes": 0
+        },
+        "active-private-workspaces": {
+          "files": 10,
+          "logicalBytes": 2172,
+          "allocatedBlockBytes": 40960
+        },
+        "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+          "files": null,
+          "logicalBytes": null,
+          "allocatedBlockBytes": 1310285824
+        }
+      },
+      "allocatedBlockBytes": 1355063296
+    },
+    "sampledPeakIncrementBytes": 1160568832,
+    "scopePeaksNotAdditive": {
+      "source-dataset-descriptors": 118784,
+      "offline-bundle-input": 44425216,
+      "docker-umbrella-including-images-buildkit-registry-and-container-writes": 1310285824,
+      "gear-selection-projections": 4096,
+      "host-configuration-and-records": 28672,
+      "resource-references-and-quarantine": 81920,
+      "file-CAS": 61440,
+      "temporary-import-staging": 0,
+      "directory-views-and-unpack-cache": 36864,
+      "active-private-workspaces": 40960,
+      "retained-run-evidence": 24576
+    },
+    "samples": [
+      {
+        "elapsedMs": 2858,
+        "durationMs": 71,
+        "phase": "baseline-with-infrastructure-and-bundle",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 149950464
+          }
+        },
+        "allocatedBlockBytes": 194494464
+      },
+      {
+        "elapsedMs": 2929,
+        "durationMs": 69,
+        "phase": "baseline-with-infrastructure-and-bundle",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 149950464
+          }
+        },
+        "allocatedBlockBytes": 194498560
+      },
+      {
+        "elapsedMs": 2930,
+        "durationMs": 68,
+        "phase": "selection-published",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 149950464
+          }
+        },
+        "allocatedBlockBytes": 194498560
+      },
+      {
+        "elapsedMs": 3014,
+        "durationMs": 66,
+        "phase": "importing",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 1,
+            "logicalBytes": 410,
+            "allocatedBlockBytes": 4096
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 149950464
+          }
+        },
+        "allocatedBlockBytes": 194502656
+      },
+      {
+        "elapsedMs": 3247,
+        "durationMs": 64,
+        "phase": "importing",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 1,
+            "logicalBytes": 410,
+            "allocatedBlockBytes": 4096
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 149950464
+          }
+        },
+        "allocatedBlockBytes": 194502656
+      },
+      {
+        "elapsedMs": 3560,
+        "durationMs": 66,
+        "phase": "importing",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 4,
+            "logicalBytes": 736,
+            "allocatedBlockBytes": 16384
+          },
+          "resource-references-and-quarantine": {
+            "files": 1,
+            "logicalBytes": 246,
+            "allocatedBlockBytes": 4096
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 149950464
+          }
+        },
+        "allocatedBlockBytes": 194519040
+      },
+      {
+        "elapsedMs": 3877,
+        "durationMs": 66,
+        "phase": "importing",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 4,
+            "logicalBytes": 736,
+            "allocatedBlockBytes": 16384
+          },
+          "resource-references-and-quarantine": {
+            "files": 1,
+            "logicalBytes": 246,
+            "allocatedBlockBytes": 4096
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 151478272
+          }
+        },
+        "allocatedBlockBytes": 196046848
+      },
+      {
+        "elapsedMs": 4193,
+        "durationMs": 62,
+        "phase": "importing",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 4,
+            "logicalBytes": 736,
+            "allocatedBlockBytes": 16384
+          },
+          "resource-references-and-quarantine": {
+            "files": 1,
+            "logicalBytes": 246,
+            "allocatedBlockBytes": 4096
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 190926848
+          }
+        },
+        "allocatedBlockBytes": 235495424
+      },
+      {
+        "elapsedMs": 4506,
+        "durationMs": 70,
+        "phase": "importing",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 4,
+            "logicalBytes": 736,
+            "allocatedBlockBytes": 16384
+          },
+          "resource-references-and-quarantine": {
+            "files": 2,
+            "logicalBytes": 2153,
+            "allocatedBlockBytes": 8192
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 194502656
+          }
+        },
+        "allocatedBlockBytes": 239075328
+      },
+      {
+        "elapsedMs": 4828,
+        "durationMs": 65,
+        "phase": "importing",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 4,
+            "logicalBytes": 736,
+            "allocatedBlockBytes": 16384
+          },
+          "resource-references-and-quarantine": {
+            "files": 2,
+            "logicalBytes": 2153,
+            "allocatedBlockBytes": 8192
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 249745408
+          }
+        },
+        "allocatedBlockBytes": 294318080
+      },
+      {
+        "elapsedMs": 5144,
+        "durationMs": 66,
+        "phase": "importing",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 4,
+            "logicalBytes": 736,
+            "allocatedBlockBytes": 16384
+          },
+          "resource-references-and-quarantine": {
+            "files": 2,
+            "logicalBytes": 2153,
+            "allocatedBlockBytes": 8192
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 300376064
+          }
+        },
+        "allocatedBlockBytes": 344948736
+      },
+      {
+        "elapsedMs": 5460,
+        "durationMs": 81,
+        "phase": "importing",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 4,
+            "logicalBytes": 736,
+            "allocatedBlockBytes": 16384
+          },
+          "resource-references-and-quarantine": {
+            "files": 2,
+            "logicalBytes": 2153,
+            "allocatedBlockBytes": 8192
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 317255680
+          }
+        },
+        "allocatedBlockBytes": 361828352
+      },
+      {
+        "elapsedMs": 5792,
+        "durationMs": 79,
+        "phase": "importing",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 4,
+            "logicalBytes": 736,
+            "allocatedBlockBytes": 16384
+          },
+          "resource-references-and-quarantine": {
+            "files": 2,
+            "logicalBytes": 2153,
+            "allocatedBlockBytes": 8192
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 389029888
+          }
+        },
+        "allocatedBlockBytes": 433602560
+      },
+      {
+        "elapsedMs": 6123,
+        "durationMs": 92,
+        "phase": "importing",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 4,
+            "logicalBytes": 736,
+            "allocatedBlockBytes": 16384
+          },
+          "resource-references-and-quarantine": {
+            "files": 2,
+            "logicalBytes": 2153,
+            "allocatedBlockBytes": 8192
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 497774592
+          }
+        },
+        "allocatedBlockBytes": 542347264
+      },
+      {
+        "elapsedMs": 6468,
+        "durationMs": 100,
+        "phase": "importing",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 4,
+            "logicalBytes": 736,
+            "allocatedBlockBytes": 16384
+          },
+          "resource-references-and-quarantine": {
+            "files": 2,
+            "logicalBytes": 2153,
+            "allocatedBlockBytes": 8192
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 607920128
+          }
+        },
+        "allocatedBlockBytes": 652492800
+      },
+      {
+        "elapsedMs": 6817,
+        "durationMs": 86,
+        "phase": "importing",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 4,
+            "logicalBytes": 736,
+            "allocatedBlockBytes": 16384
+          },
+          "resource-references-and-quarantine": {
+            "files": 2,
+            "logicalBytes": 2153,
+            "allocatedBlockBytes": 8192
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 641474560
+          }
+        },
+        "allocatedBlockBytes": 686047232
+      },
+      {
+        "elapsedMs": 7152,
+        "durationMs": 113,
+        "phase": "importing",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 4,
+            "logicalBytes": 1698,
+            "allocatedBlockBytes": 16384
+          },
+          "resource-references-and-quarantine": {
+            "files": 4,
+            "logicalBytes": 4559,
+            "allocatedBlockBytes": 16384
+          },
+          "file-CAS": {
+            "files": 12,
+            "logicalBytes": 3619,
+            "allocatedBlockBytes": 49152
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 641474560
+          }
+        },
+        "allocatedBlockBytes": 686104576
+      },
+      {
+        "elapsedMs": 7412,
+        "durationMs": 95,
+        "phase": "imported",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 3,
+            "logicalBytes": 1595,
+            "allocatedBlockBytes": 12288
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 6,
+            "logicalBytes": 8980,
+            "allocatedBlockBytes": 24576
+          },
+          "file-CAS": {
+            "files": 12,
+            "logicalBytes": 3619,
+            "allocatedBlockBytes": 49152
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 641474560
+          }
+        },
+        "allocatedBlockBytes": 686145536
+      },
+      {
+        "elapsedMs": 7515,
+        "durationMs": 115,
+        "phase": "imported",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 3,
+            "logicalBytes": 1595,
+            "allocatedBlockBytes": 12288
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 6,
+            "logicalBytes": 8980,
+            "allocatedBlockBytes": 24576
+          },
+          "file-CAS": {
+            "files": 12,
+            "logicalBytes": 3619,
+            "allocatedBlockBytes": 49152
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 641474560
+          }
+        },
+        "allocatedBlockBytes": 686145536
+      },
+      {
+        "elapsedMs": 7880,
+        "durationMs": 121,
+        "phase": "imported",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 3,
+            "logicalBytes": 1595,
+            "allocatedBlockBytes": 12288
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 6,
+            "logicalBytes": 8980,
+            "allocatedBlockBytes": 24576
+          },
+          "file-CAS": {
+            "files": 12,
+            "logicalBytes": 3619,
+            "allocatedBlockBytes": 49152
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 641474560
+          }
+        },
+        "allocatedBlockBytes": 686145536
+      },
+      {
+        "elapsedMs": 8251,
+        "durationMs": 102,
+        "phase": "imported",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 6,
+            "logicalBytes": 1921,
+            "allocatedBlockBytes": 24576
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 7,
+            "logicalBytes": 9226,
+            "allocatedBlockBytes": 28672
+          },
+          "file-CAS": {
+            "files": 12,
+            "logicalBytes": 3619,
+            "allocatedBlockBytes": 49152
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 641478656
+          }
+        },
+        "allocatedBlockBytes": 686166016
+      },
+      {
+        "elapsedMs": 8602,
+        "durationMs": 85,
+        "phase": "imported",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 6,
+            "logicalBytes": 1921,
+            "allocatedBlockBytes": 24576
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 7,
+            "logicalBytes": 9226,
+            "allocatedBlockBytes": 28672
+          },
+          "file-CAS": {
+            "files": 12,
+            "logicalBytes": 3619,
+            "allocatedBlockBytes": 49152
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 641482752
+          }
+        },
+        "allocatedBlockBytes": 686170112
+      },
+      {
+        "elapsedMs": 8937,
+        "durationMs": 100,
+        "phase": "imported",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 7,
+            "logicalBytes": 2147,
+            "allocatedBlockBytes": 28672
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 10,
+            "logicalBytes": 12225,
+            "allocatedBlockBytes": 40960
+          },
+          "file-CAS": {
+            "files": 12,
+            "logicalBytes": 3619,
+            "allocatedBlockBytes": 49152
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 641482752
+          }
+        },
+        "allocatedBlockBytes": 686186496
+      },
+      {
+        "elapsedMs": 9207,
+        "durationMs": 98,
+        "phase": "repeat-imported",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 3,
+            "logicalBytes": 1595,
+            "allocatedBlockBytes": 12288
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 10,
+            "logicalBytes": 12312,
+            "allocatedBlockBytes": 40960
+          },
+          "file-CAS": {
+            "files": 12,
+            "logicalBytes": 3619,
+            "allocatedBlockBytes": 49152
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 641482752
+          }
+        },
+        "allocatedBlockBytes": 686170112
+      },
+      {
+        "elapsedMs": 9287,
+        "durationMs": 106,
+        "phase": "repeat-imported",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 3,
+            "logicalBytes": 1595,
+            "allocatedBlockBytes": 12288
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 10,
+            "logicalBytes": 12312,
+            "allocatedBlockBytes": 40960
+          },
+          "file-CAS": {
+            "files": 12,
+            "logicalBytes": 3619,
+            "allocatedBlockBytes": 49152
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 641478656
+          }
+        },
+        "allocatedBlockBytes": 686166016
+      },
+      {
+        "elapsedMs": 9642,
+        "durationMs": 98,
+        "phase": "repeat-imported",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 5,
+            "logicalBytes": 1892,
+            "allocatedBlockBytes": 20480
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 13,
+            "logicalBytes": 17603,
+            "allocatedBlockBytes": 53248
+          },
+          "file-CAS": {
+            "files": 12,
+            "logicalBytes": 3619,
+            "allocatedBlockBytes": 49152
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 641478656
+          }
+        },
+        "allocatedBlockBytes": 686186496
+      },
+      {
+        "elapsedMs": 9991,
+        "durationMs": 103,
+        "phase": "repeat-imported",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 7,
+            "logicalBytes": 2129,
+            "allocatedBlockBytes": 28672
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 15,
+            "logicalBytes": 19560,
+            "allocatedBlockBytes": 61440
+          },
+          "file-CAS": {
+            "files": 12,
+            "logicalBytes": 3619,
+            "allocatedBlockBytes": 49152
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 641478656
+          }
+        },
+        "allocatedBlockBytes": 686202880
+      },
+      {
+        "elapsedMs": 10334,
+        "durationMs": 129,
+        "phase": "active-workspace-and-builds",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 5,
+            "logicalBytes": 2029,
+            "allocatedBlockBytes": 20480
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 17,
+            "logicalBytes": 24463,
+            "allocatedBlockBytes": 69632
+          },
+          "file-CAS": {
+            "files": 15,
+            "logicalBytes": 6064,
+            "allocatedBlockBytes": 61440
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "active-private-workspaces": {
+            "files": 10,
+            "logicalBytes": 2172,
+            "allocatedBlockBytes": 40960
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 641478656
+          }
+        },
+        "allocatedBlockBytes": 686256128
+      },
+      {
+        "elapsedMs": 10343,
+        "durationMs": 123,
+        "phase": "active-workspace-and-builds",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 5,
+            "logicalBytes": 2029,
+            "allocatedBlockBytes": 20480
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 17,
+            "logicalBytes": 24463,
+            "allocatedBlockBytes": 69632
+          },
+          "file-CAS": {
+            "files": 15,
+            "logicalBytes": 6064,
+            "allocatedBlockBytes": 61440
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "active-private-workspaces": {
+            "files": 10,
+            "logicalBytes": 2172,
+            "allocatedBlockBytes": 40960
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 641478656
+          }
+        },
+        "allocatedBlockBytes": 686256128
+      },
+      {
+        "elapsedMs": 10716,
+        "durationMs": 119,
+        "phase": "active-workspace-and-builds",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 5,
+            "logicalBytes": 2029,
+            "allocatedBlockBytes": 20480
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 17,
+            "logicalBytes": 24463,
+            "allocatedBlockBytes": 69632
+          },
+          "file-CAS": {
+            "files": 15,
+            "logicalBytes": 6064,
+            "allocatedBlockBytes": 61440
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "active-private-workspaces": {
+            "files": 10,
+            "logicalBytes": 2172,
+            "allocatedBlockBytes": 40960
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 768438272
+          }
+        },
+        "allocatedBlockBytes": 813215744
+      },
+      {
+        "elapsedMs": 11086,
+        "durationMs": 119,
+        "phase": "active-workspace-and-builds",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 5,
+            "logicalBytes": 2029,
+            "allocatedBlockBytes": 20480
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 17,
+            "logicalBytes": 24463,
+            "allocatedBlockBytes": 69632
+          },
+          "file-CAS": {
+            "files": 15,
+            "logicalBytes": 6064,
+            "allocatedBlockBytes": 61440
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "active-private-workspaces": {
+            "files": 10,
+            "logicalBytes": 2172,
+            "allocatedBlockBytes": 40960
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 775299072
+          }
+        },
+        "allocatedBlockBytes": 820076544
+      },
+      {
+        "elapsedMs": 11457,
+        "durationMs": 118,
+        "phase": "active-workspace-and-builds",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 5,
+            "logicalBytes": 2029,
+            "allocatedBlockBytes": 20480
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 17,
+            "logicalBytes": 24463,
+            "allocatedBlockBytes": 69632
+          },
+          "file-CAS": {
+            "files": 15,
+            "logicalBytes": 6064,
+            "allocatedBlockBytes": 61440
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "active-private-workspaces": {
+            "files": 10,
+            "logicalBytes": 2172,
+            "allocatedBlockBytes": 40960
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 908959744
+          }
+        },
+        "allocatedBlockBytes": 953737216
+      },
+      {
+        "elapsedMs": 11825,
+        "durationMs": 133,
+        "phase": "active-workspace-and-builds",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 5,
+            "logicalBytes": 2029,
+            "allocatedBlockBytes": 20480
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 17,
+            "logicalBytes": 24463,
+            "allocatedBlockBytes": 69632
+          },
+          "file-CAS": {
+            "files": 15,
+            "logicalBytes": 6064,
+            "allocatedBlockBytes": 61440
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "active-private-workspaces": {
+            "files": 10,
+            "logicalBytes": 2172,
+            "allocatedBlockBytes": 40960
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 909008896
+          }
+        },
+        "allocatedBlockBytes": 953786368
+      },
+      {
+        "elapsedMs": 12210,
+        "durationMs": 132,
+        "phase": "active-workspace-and-builds",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 5,
+            "logicalBytes": 2029,
+            "allocatedBlockBytes": 20480
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 17,
+            "logicalBytes": 24463,
+            "allocatedBlockBytes": 69632
+          },
+          "file-CAS": {
+            "files": 15,
+            "logicalBytes": 6064,
+            "allocatedBlockBytes": 61440
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "active-private-workspaces": {
+            "files": 10,
+            "logicalBytes": 2172,
+            "allocatedBlockBytes": 40960
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 1042845696
+          }
+        },
+        "allocatedBlockBytes": 1087623168
+      },
+      {
+        "elapsedMs": 12592,
+        "durationMs": 138,
+        "phase": "active-workspace-and-builds",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 5,
+            "logicalBytes": 2029,
+            "allocatedBlockBytes": 20480
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 17,
+            "logicalBytes": 24463,
+            "allocatedBlockBytes": 69632
+          },
+          "file-CAS": {
+            "files": 15,
+            "logicalBytes": 6064,
+            "allocatedBlockBytes": 61440
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "active-private-workspaces": {
+            "files": 10,
+            "logicalBytes": 2172,
+            "allocatedBlockBytes": 40960
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 1042845696
+          }
+        },
+        "allocatedBlockBytes": 1087623168
+      },
+      {
+        "elapsedMs": 12982,
+        "durationMs": 120,
+        "phase": "active-workspace-and-builds",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 5,
+            "logicalBytes": 2029,
+            "allocatedBlockBytes": 20480
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 17,
+            "logicalBytes": 24463,
+            "allocatedBlockBytes": 69632
+          },
+          "file-CAS": {
+            "files": 15,
+            "logicalBytes": 6064,
+            "allocatedBlockBytes": 61440
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "active-private-workspaces": {
+            "files": 10,
+            "logicalBytes": 2172,
+            "allocatedBlockBytes": 40960
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 1108553728
+          }
+        },
+        "allocatedBlockBytes": 1153331200
+      },
+      {
+        "elapsedMs": 13353,
+        "durationMs": 161,
+        "phase": "active-workspace-and-builds",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 5,
+            "logicalBytes": 2029,
+            "allocatedBlockBytes": 20480
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 17,
+            "logicalBytes": 24463,
+            "allocatedBlockBytes": 69632
+          },
+          "file-CAS": {
+            "files": 15,
+            "logicalBytes": 6064,
+            "allocatedBlockBytes": 61440
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "active-private-workspaces": {
+            "files": 10,
+            "logicalBytes": 2172,
+            "allocatedBlockBytes": 40960
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 1310236672
+          }
+        },
+        "allocatedBlockBytes": 1355014144
+      },
+      {
+        "elapsedMs": 13765,
+        "durationMs": 132,
+        "phase": "active-workspace-and-builds",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 5,
+            "logicalBytes": 2029,
+            "allocatedBlockBytes": 20480
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 17,
+            "logicalBytes": 24463,
+            "allocatedBlockBytes": 69632
+          },
+          "file-CAS": {
+            "files": 15,
+            "logicalBytes": 6064,
+            "allocatedBlockBytes": 61440
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "active-private-workspaces": {
+            "files": 10,
+            "logicalBytes": 2172,
+            "allocatedBlockBytes": 40960
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 1042960384
+          }
+        },
+        "allocatedBlockBytes": 1087737856
+      },
+      {
+        "elapsedMs": 14148,
+        "durationMs": 142,
+        "phase": "active-workspace-and-builds",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 5,
+            "logicalBytes": 2029,
+            "allocatedBlockBytes": 20480
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 17,
+            "logicalBytes": 24463,
+            "allocatedBlockBytes": 69632
+          },
+          "file-CAS": {
+            "files": 15,
+            "logicalBytes": 6064,
+            "allocatedBlockBytes": 61440
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "active-private-workspaces": {
+            "files": 10,
+            "logicalBytes": 2172,
+            "allocatedBlockBytes": 40960
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 1310285824
+          }
+        },
+        "allocatedBlockBytes": 1355063296
+      },
+      {
+        "elapsedMs": 14541,
+        "durationMs": 120,
+        "phase": "active-workspace-and-builds",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "host-configuration-and-records": {
+            "files": 5,
+            "logicalBytes": 2029,
+            "allocatedBlockBytes": 20480
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 17,
+            "logicalBytes": 24463,
+            "allocatedBlockBytes": 69632
+          },
+          "file-CAS": {
+            "files": 15,
+            "logicalBytes": 6064,
+            "allocatedBlockBytes": 61440
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "active-private-workspaces": {
+            "files": 10,
+            "logicalBytes": 2172,
+            "allocatedBlockBytes": 40960
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 1042960384
+          }
+        },
+        "allocatedBlockBytes": 1087737856
+      },
+      {
+        "elapsedMs": 14912,
+        "durationMs": 133,
+        "phase": "active-workspace-and-builds",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "retained-run-evidence": {
+            "files": 5,
+            "logicalBytes": 8472,
+            "allocatedBlockBytes": 20480
+          },
+          "host-configuration-and-records": {
+            "files": 6,
+            "logicalBytes": 2249,
+            "allocatedBlockBytes": 24576
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 19,
+            "logicalBytes": 30394,
+            "allocatedBlockBytes": 81920
+          },
+          "file-CAS": {
+            "files": 15,
+            "logicalBytes": 6064,
+            "allocatedBlockBytes": 61440
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "active-private-workspaces": {
+            "files": 10,
+            "logicalBytes": 2172,
+            "allocatedBlockBytes": 40960
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 1043075072
+          }
+        },
+        "allocatedBlockBytes": 1087889408
+      },
+      {
+        "elapsedMs": 14916,
+        "durationMs": 129,
+        "phase": "executed-and-evidence-sealed",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "retained-run-evidence": {
+            "files": 6,
+            "logicalBytes": 8505,
+            "allocatedBlockBytes": 24576
+          },
+          "host-configuration-and-records": {
+            "files": 6,
+            "logicalBytes": 2249,
+            "allocatedBlockBytes": 24576
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 19,
+            "logicalBytes": 30394,
+            "allocatedBlockBytes": 81920
+          },
+          "file-CAS": {
+            "files": 15,
+            "logicalBytes": 6064,
+            "allocatedBlockBytes": 61440
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "active-private-workspaces": {
+            "files": 10,
+            "logicalBytes": 2172,
+            "allocatedBlockBytes": 40960
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 1043075072
+          }
+        },
+        "allocatedBlockBytes": 1087893504
+      },
+      {
+        "elapsedMs": 15074,
+        "durationMs": 129,
+        "phase": "workspace-reclaimed-evidence-retained",
+        "scopes": {
+          "source-dataset-descriptors": {
+            "files": 28,
+            "logicalBytes": 11861,
+            "allocatedBlockBytes": 118784
+          },
+          "gear-selection-projections": {
+            "files": 1,
+            "logicalBytes": 2010,
+            "allocatedBlockBytes": 4096
+          },
+          "offline-bundle-input": {
+            "files": 14,
+            "logicalBytes": 44376253,
+            "allocatedBlockBytes": 44425216
+          },
+          "retained-run-evidence": {
+            "files": 6,
+            "logicalBytes": 8505,
+            "allocatedBlockBytes": 24576
+          },
+          "host-configuration-and-records": {
+            "files": 5,
+            "logicalBytes": 2023,
+            "allocatedBlockBytes": 20480
+          },
+          "directory-views-and-unpack-cache": {
+            "files": 9,
+            "logicalBytes": 1837,
+            "allocatedBlockBytes": 36864
+          },
+          "resource-references-and-quarantine": {
+            "files": 19,
+            "logicalBytes": 30397,
+            "allocatedBlockBytes": 81920
+          },
+          "file-CAS": {
+            "files": 15,
+            "logicalBytes": 6064,
+            "allocatedBlockBytes": 61440
+          },
+          "temporary-import-staging": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "active-private-workspaces": {
+            "files": 0,
+            "logicalBytes": 0,
+            "allocatedBlockBytes": 0
+          },
+          "docker-umbrella-including-images-buildkit-registry-and-container-writes": {
+            "files": null,
+            "logicalBytes": null,
+            "allocatedBlockBytes": 1043075072
+          }
+        },
+        "allocatedBlockBytes": 1087848448
+      }
+    ],
+    "accountingRetries": 0
+  },
+  "materialization": {
+    "copiedBytes": 1849,
+    "clonedBytes": 0,
+    "fallbackReasons": {}
+  },
+  "finalStorage": {
+    "protocol": "hitch-resource-storage@1",
+    "scopes": {
+      "objects": {
+        "files": 15,
+        "logicalBytes": 6064,
+        "allocatedBlockBytes": 61440
+      },
+      "oci-manifests": {
+        "files": 1,
+        "logicalBytes": 1907,
+        "allocatedBlockBytes": 4096
+      },
+      "descriptor-views": {
+        "files": 9,
+        "logicalBytes": 1837,
+        "allocatedBlockBytes": 36864
+      },
+      "view-quarantine": {
+        "files": 0,
+        "logicalBytes": 0,
+        "allocatedBlockBytes": 0
+      },
+      "quarantine": {
+        "files": 0,
+        "logicalBytes": 0,
+        "allocatedBlockBytes": 0
+      },
+      "workspaces": {
+        "files": 0,
+        "logicalBytes": 0,
+        "allocatedBlockBytes": 0
+      },
+      "staging": {
+        "files": 0,
+        "logicalBytes": 0,
+        "allocatedBlockBytes": 0
+      },
+      "workspace-records": {
+        "files": 1,
+        "logicalBytes": 3299,
+        "allocatedBlockBytes": 4096
+      },
+      "roots": {
+        "files": 3,
+        "logicalBytes": 11873,
+        "allocatedBlockBytes": 16384
+      },
+      "leases": {
+        "files": 14,
+        "logicalBytes": 13318,
+        "allocatedBlockBytes": 57344
+      },
+      "transactions": {
+        "files": 0,
+        "logicalBytes": 0,
+        "allocatedBlockBytes": 0
+      }
+    },
+    "roots": [
+      {
+        "owner": "empty-daemon:sum-0002",
+        "generation": 1,
+        "state": "active",
+        "purpose": "frozen-task"
+      },
+      {
+        "owner": "joint-space-canary-sealed-run",
+        "generation": 1,
+        "state": "active",
+        "purpose": "sealed-run"
+      },
+      {
+        "owner": "offline-execution",
+        "generation": 1,
+        "state": "active",
+        "purpose": "frozen-task"
+      }
+    ],
+    "leases": [],
+    "physicalAccounting": "allocated blocks may overlap under CoW; no exclusive-byte or saved-byte claim",
+    "externalScopes": [
+      "source dataset/projections",
+      "OCI image layers",
+      "BuildKit cache",
+      "sealed run evidence"
+    ]
+  }
+}

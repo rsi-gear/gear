@@ -35,6 +35,8 @@ Fresh seed 接入读取已编译数据集和精确 Git Harness，不要求先跑
 
 新 Campaign 的 Hitch daemon rollout 验证任务内容、实际 Git commit、采样、环境和用量；Evo 的选中 Skill 从绑定库物化到受限 Git 工作区，封存后由 Hitch 执行该 commit。AHE/Evo 的 score 来自受信物理 rollout 证据，模型不能自行填写计分。DSH 角色、workspace editor、证据读取和模型请求按实际回执计量。`operationLimits` 按操作种类预留 Campaign budget 中相同来源的维度；`model.tokens` 等不能严格预知的消耗使用 stop 能力，不能宣称硬上限。新 rollout 会把**完整 Hitch 子进程环境**（含 evaluator 固定覆盖的变量）摘要纳入执行身份，恢复时环境变化会拒绝；摘要不公开环境值。
 
+合入通用存储后的算法 Hitch adapter 仍只接收 schema v1 的编译数据集；schema v2 资源数据集需要完整的 resource preflight、执行计划身份与 retention 协议，目前请使用原 Search 路径。算法投影位于 Campaign 状态目录的 `hitch-storage/search`，真实工作区锁保护发布，并在释放锁前保存持久引用。可对 `hitch-storage` 运行 `gear-refine storage inspect --state-root PATH`；引用随 Campaign 保留，普通清理不会删除仍被引用的投影。
+
 配置宿主工厂校验 `host.settings.json`、声明的 `runtimeResources`、编译器/Hitch 可执行文件、Node 版本、模型模块与已注册的 DSH provider/模型路由。管理员必须完整列出传递的脚本及本地运行时依赖；这些字段的摘要不自动证明所有未列依赖。模型模块与路由核验也**不能证明远端模型权重未变**，真实服务的身份与准入仍由宿主负责。配置的 provider 只能在管理员认可的数据目的地运行，不由 recipe 输入扩大授权。
 
 默认受限 DSH 宿主不持久化任意模型会话。已封存的 operation 可重放；进程在未封存的模型 turn 中退出，或 Git finalization 回包不明时，当前路径保留 `unknown`，需要外部对账，不能保证自动接续或自动重做。已有持久 DSH 宿主可由管理员通过低层接口接入。
