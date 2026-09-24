@@ -67,6 +67,52 @@ class SdkTests(unittest.TestCase):
                 with self.assertRaises(ValidationError):
                     restarted.inspect(drift)
 
+    def test_cancelled_before_submit_is_durable_and_never_executes(self):
+        class Counted(DurableLocalProvider):
+            calls = 0
+            def execute(self, request):
+                self.calls += 1
+                return {"kind": "result", "value": {}}
+        with tempfile.TemporaryDirectory() as root:
+            manifest = ProviderManifest("toy.cancel", {"type": "object"}, {"type": "object"})
+            request = {"operationId": "op", "idempotencyKey": "key", "inputDigest": "a" * 64,
+                       "implementationDigest": "b" * 64, "kind": "toy.cancel", "input": {}}
+            first = Counted(manifest, root)
+            zero = {"source": "toy.cancel", "scope": "operation", "operationId": "op",
+                    "cursor": "cancelled-before-start", "cumulative": {}}
+            self.assertEqual(first.cancel(request), {"status": "cancelled", "releaseConfirmed": True,
+                                                     "receipt": zero})
+            restarted = Counted(manifest, root)
+            self.assertEqual(restarted.inspect(request), {"status": "cancelled", "releaseConfirmed": True,
+                                                          "receipt": zero})
+            with self.assertRaisesRegex(ValidationError, "cancelled"):
+                restarted.submit(request)
+            self.assertEqual(restarted.calls, 0)
+
+    def test_metered_cancel_has_zero_final_receipt_and_success_requires_usage(self):
+        class Metered(DurableLocalProvider):
+            calls = 0
+            def execute(self, request):
+                self.calls += 1
+                return {"kind": "result", "value": {}}
+            def usage_receipt(self, request, outcome):
+                return {"source": "host-budget", "scope": "operation", "operationId": request["operationId"],
+                        "cursor": "finished", "cumulative": {"tokens": 2}}
+        manifest = ProviderManifest("toy.metered", {"type": "object"}, {"type": "object"},
+                                    meteredDimensions=("tokens",))
+        request = {"operationId": "op", "idempotencyKey": "key", "inputDigest": "a" * 64,
+                   "implementationDigest": "b" * 64, "kind": "toy.metered", "input": {}}
+        with tempfile.TemporaryDirectory() as root:
+            provider = Metered(manifest, root, metering_source="host-budget")
+            cancelled = provider.cancel(request)
+            self.assertEqual(cancelled["receipt"]["cumulative"], {"tokens": 0})
+            self.assertEqual(cancelled["receipt"]["source"], "host-budget")
+            self.assertEqual(Metered(manifest, root, metering_source="host-budget").inspect(request), cancelled)
+        with tempfile.TemporaryDirectory() as root:
+            provider = Metered(manifest, root, metering_source="host-budget")
+            completed = provider.submit(request)["completion"]
+            self.assertEqual(completed["receipt"]["cumulative"], {"tokens": 2})
+
     def test_fake_provider_durable_and_no_candidate(self):
         spec = importlib.util.spec_from_file_location("fake_provider_test", EXAMPLE)
         module = importlib.util.module_from_spec(spec)

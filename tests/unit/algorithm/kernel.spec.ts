@@ -154,6 +154,22 @@ describe('algorithm kernel', () => {
     expect(recovered.snapshot()?.operations.only).toBeUndefined();
   });
 
+  it('atomically tombstones a local operation cancelled before submit', async () => {
+    const root = makeRoot(); const b = bindings(root);
+    const runtime = new AlgorithmRuntime(root, algorithm(b.h0, b.h1), [local(root)], spec(b.h0));
+    await runtime.tick();
+    const envelope = runtime.snapshot()!.operations.H0!.envelope;
+    let executions = 0;
+    const provider = () => new LocalDurableProvider(join(root, 'cancel-before-start'), providerManifest,
+      () => { executions++; return { outcome: { kind: 'result', value: { score: 1 } } }; }, {}, 'toy');
+    expect(await provider().cancel(envelope)).toMatchObject({ status: 'cancelled', releaseConfirmed: true,
+      receipt: { source: 'toy', cumulative: { calls: 0 } } });
+    const restarted = provider();
+    expect(await restarted.inspect(envelope)).toMatchObject({ status: 'cancelled', releaseConfirmed: true });
+    await expect(restarted.submit(envelope)).rejects.toThrow('Cancelled local operation');
+    expect(executions).toBe(0);
+  });
+
   it('dispatches parallel operations concurrently and deduplicates operation-scoped receipts', async () => {
     const root = makeRoot(); const b = bindings(root);
     let arrivals = 0; let release!: () => void;

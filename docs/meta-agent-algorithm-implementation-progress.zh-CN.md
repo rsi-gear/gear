@@ -78,3 +78,7 @@ S5 接入审计发现：持久化 cancel-intent 后、发送取消命令前崩�
 实现身份按实际本地依赖和已安装外部包封存，不依赖消费项目 package-lock；无 lock 的构建包有回归测试。旧经验摘要只保留显式允许的 proposer claims，无 reward/effect 投影；不承诺自由文本绝无评价信息。API 授权不等于 OS 沙箱。
 
 本提交仅含数据层和 VerifiedExecutionAdapter 校验边界。真实 seed dataset 快照、Hitch trajectory 读取、物理 rollout/role/workspace-edit 适配在 S3b 继续，不以测试 port 冒充实际服务。完整 SDK 仍为 experimental。
+
+## S1/S2 本地取消完成记录修补
+
+主审独立执行 TS 内核 18/18 与 Python SDK 7/7 通过。两个语言的本地 provider 在开始执行和取消之间使用互斥的持久记录；取消先完成时，重启和延迟 submit 都不会执行用户函数。未确认完成的 started 状态仍保持 unknown。取消返回操作作用域的最终零用量；Python metered provider 必须明确提供实际完成用量。此提交不包含仍在验收的论文 recipes、物理桥或训练适配。

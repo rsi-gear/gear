@@ -98,18 +98,30 @@ class DurableLocalProvider(LocalProvider):
     """
 
     def __init__(self, manifest: ProviderManifest, record_dir: str | None = None,
-                 artifacts: ArtifactClient | None = None) -> None:
+                 artifacts: ArtifactClient | None = None, metering_source: str | None = None) -> None:
         import os
         super().__init__(manifest, artifacts)
         from pathlib import Path
         location = record_dir or os.environ.get("GEAR_ALGORITHM_PROVIDER_RECORD_DIR")
         self.record_dir = Path(location).resolve() if location else None
+        self.metering_source = metering_source or manifest.kind
         if self.record_dir is not None:
             self.record_dir.mkdir(parents=True, exist_ok=True)
 
     def execute(self, request: dict[str, Any]) -> dict[str, Any]:
         """Return a scientific outcome; override in a local provider."""
         raise NotImplementedError
+
+    def usage_receipt(self, request: dict[str, Any], outcome: dict[str, Any]) -> dict[str, Any] | None:
+        """Metered subclasses must report actual final cumulative usage, including zeroes."""
+        if self.manifest.meteredDimensions:
+            raise ValidationError("metered local provider must implement usage_receipt")
+        return None
+
+    def _zero_receipt(self, request: dict[str, Any]) -> dict[str, Any]:
+        return {"source": self.metering_source, "scope": "operation",
+                "operationId": request["operationId"], "cursor": "cancelled-before-start",
+                "cumulative": {name: 0 for name in self.manifest.meteredDimensions}}
 
     def _path(self, request: dict[str, Any]):
         import hashlib
@@ -137,7 +149,7 @@ class DurableLocalProvider(LocalProvider):
         if not path.exists():
             return None
         record = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(record, dict) or record.get("identity") != self._identity(request) or record.get("status") not in ("started", "completed"):
+        if not isinstance(record, dict) or record.get("identity") != self._identity(request) or record.get("status") not in ("started", "completed", "cancelled"):
             raise ValidationError("provider record identity drift or corruption")
         return record
 
@@ -167,6 +179,8 @@ class DurableLocalProvider(LocalProvider):
         if record is not None:
             if record["status"] == "started":
                 raise ValidationError("started local operation has unknown outcome; inspect or reconcile")
+            if record["status"] == "cancelled":
+                raise ValidationError("cancelled local operation cannot be submitted")
             return {"status": "completed", "completion": record["completion"]}
         path = self._path(request)
         identity = self._identity(request)
@@ -190,7 +204,21 @@ class DurableLocalProvider(LocalProvider):
         if outcome["kind"] == "result":
             from .protocol import validate_schema
             validate_schema(self.manifest.outputSchema, outcome["value"], "$.outcome.value")
-        completion = {**identity, "outcome": outcome}
+        receipt = self.usage_receipt(request, outcome)
+        if self.manifest.meteredDimensions and receipt is None:
+            raise ValidationError("metered local provider omitted final usage receipt")
+        if receipt is not None:
+            validate_json(receipt)
+            if (not isinstance(receipt, dict) or receipt.get("source") != self.metering_source
+                or receipt.get("scope") != "operation" or receipt.get("operationId") != request["operationId"]
+                or not isinstance(receipt.get("cursor"), str) or not receipt["cursor"]
+                or not isinstance(receipt.get("cumulative"), dict)
+                or set(receipt["cumulative"]) != set(self.manifest.meteredDimensions)
+                or any(name not in receipt["cumulative"] or not isinstance(receipt["cumulative"][name], (int, float))
+                       or isinstance(receipt["cumulative"][name], bool) or receipt["cumulative"][name] < 0
+                       for name in self.manifest.meteredDimensions)):
+                raise ValidationError("invalid final local-provider usage receipt")
+        completion = {**identity, "outcome": outcome, **({"receipt": receipt} if receipt is not None else {})}
         record = {"status": "completed", "identity": identity, "completion": completion}
         fd, temporary = tempfile.mkstemp(prefix=".gear-provider-", dir=self.record_dir)
         try:
@@ -211,11 +239,37 @@ class DurableLocalProvider(LocalProvider):
             return {"status": "not-started"}
         if record["status"] == "started":
             return {"status": "unknown"}
+        if record["status"] == "cancelled":
+            return {"status": "cancelled", "releaseConfirmed": True,
+                    "receipt": self._zero_receipt(request)}
         return {"status": "completed", "completion": record["completion"]}
 
     def cancel(self, request: dict[str, Any]) -> dict[str, Any]:
+        import json
+        import os
+        import tempfile
+        self.preflight(request)
         status = self.inspect(request)
-        return status if status["status"] in ("completed", "unknown") else {"status": "cancelled", "releaseConfirmed": True}
+        if status["status"] != "not-started":
+            return status
+        path = self._path(request)
+        fd, temporary = tempfile.mkstemp(prefix=".gear-cancelled-", dir=self.record_dir)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as output:
+                json.dump({"status": "cancelled", "identity": self._identity(request)}, output,
+                          ensure_ascii=True, separators=(",", ":"))
+                output.flush()
+                os.fsync(output.fileno())
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                return self.cancel(request)
+            self._fsync_directory()
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        return {"status": "cancelled", "releaseConfirmed": True,
+                "receipt": self._zero_receipt(request)}
 
     def collect(self, request: dict[str, Any]) -> dict[str, Any]:
         record = self._existing(request)
