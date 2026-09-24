@@ -56,3 +56,7 @@
 本阶段交付公开 JSON/schema/ref、artifact/binding、命名步骤、provider SPI/testkit 和持久内核。主审核对并补测：显式/默认绑定、不可变 slot、实际并行 dispatch、丢回包、started/unknown、锁持有进程死亡、同进程争抢、内容破坏、提供者及内核身份漂移、坏回执不污染其他完成结果、最终零用量、硬预算单操作限制和取消未释放。单 writer 的提交由持锁 helper 执行，提交回包不明立即终止该 tick，由下一次 load/inspect 恢复。
 
 边界：仅 trusted-local；Python 3/fcntl 为 POSIX 宿主依赖。同步 helper 在副作用后没有完成记录时保持 unknown，需要外部确认；不提供任意程序的自动重复执行。stop 预算如实记录超额并阻止后续准入；hard 依赖 provider 的实际强制能力并拒绝越界回执。直接 API 调用者须提供全局唯一 campaignId，普通作者由 CLI 模板生成。公共 package exports 尚待 S6，与历史运行身份兼容同时交付。
+
+## S1 取消恢复修补
+
+S5 接入审计发现：持久化 cancel-intent 后、发送取消命令前崩溃，原恢复路径只 inspect，无法确保取消命令送达。现对 cancel-pending 和尚未释放的 cancelled 操作反复调用同一幂等 cancel；收到释放确认与最终用量后才结算。主 agent 独立执行内核 17/17 通过，完整 typecheck 通过。此为单独修复提交，Slime 接口另在 S5 验证相同窗口。

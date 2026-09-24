@@ -259,9 +259,16 @@ export class AlgorithmRuntime {
   private async observe(record: OperationRecord): Promise<Observation> {
     const { provider, digest } = this.provider(record.envelope.kind);
     if (digest !== record.providerManifestDigest) throw new Error('Provider manifest drift');
+    if (record.status === 'cancel-pending' || (record.status === 'cancelled' && !record.released)) {
+      let cancelled: ProviderInspection;
+      try { cancelled = await provider.cancel(record.envelope); }
+      catch { return { kind: 'inspect', value: { status: 'unknown' } }; }
+      this.validateInspection(cancelled);
+      return { kind: 'inspect', value: cancelled };
+    }
     const inspected = await provider.inspect(record.envelope);
     this.validateInspection(inspected);
-    if (inspected.status !== 'not-started' || record.status === 'cancel-pending' || record.status === 'cancelled') return { kind: 'inspect', value: inspected };
+    if (inspected.status !== 'not-started' || record.status === 'cancelled') return { kind: 'inspect', value: inspected };
     await provider.preflight(record.envelope);
     this.store.assertLease();
     let submitted;

@@ -123,6 +123,37 @@ describe('algorithm kernel', () => {
     expect(runtime.snapshot()?.operations.only?.status).toBe('cancelled');
   });
 
+  it('replays a persisted cancellation intent after restart until release is confirmed', async () => {
+    const root = makeRoot(); const b = bindings(root);
+    const single: Algorithm = { ...algorithm(b.h0, b.h1), initialize: () => ({ nextState: {}, operations: [task('only', 'toy.measure', { subject: 'H0' }, { limits: { calls: 1 } })] }), reduce: () => ({ nextState: {}, complete: true }) };
+    let cancels = 0;
+    const provider: OperationProvider = {
+      describe: () => providerManifest, preflight: () => {}, submit: async () => ({ status: 'running' }),
+      inspect: async () => ({ status: 'running' }),
+      cancel: async envelope => {
+        cancels++;
+        return { status: 'cancelled', releaseConfirmed: cancels > 1,
+          ...(cancels > 1 ? { receipt: { source: 'toy', scope: 'operation' as const, operationId: envelope.operationId, cursor: 'final', cumulative: { calls: 0 } } } : {}) };
+      },
+      collect: async () => { throw new Error('unavailable'); },
+    };
+    const original = new AlgorithmRuntime(root, single, [provider], spec(b.h0));
+    await original.tick();
+    await original.store.withWriter(async () => {
+      const state = original.snapshot()!;
+      state.operations.only!.status = 'cancel-pending';
+      await original.store.commit(state as never, 'operation.cancel-intent');
+    });
+    const recovered = new AlgorithmRuntime(root, single, [provider], spec(b.h0));
+    expect(await recovered.tick()).toBe('waiting');
+    expect(cancels).toBe(1);
+    expect(recovered.snapshot()?.operations.only?.released).toBe(false);
+    expect(recovered.snapshot()?.spent.calls ?? 0).toBe(0);
+    expect(await recovered.tick()).toBe('complete');
+    expect(cancels).toBe(2);
+    expect(recovered.snapshot()?.operations.only).toBeUndefined();
+  });
+
   it('dispatches parallel operations concurrently and deduplicates operation-scoped receipts', async () => {
     const root = makeRoot(); const b = bindings(root);
     let arrivals = 0; let release!: () => void;
