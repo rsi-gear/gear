@@ -9,17 +9,17 @@ import { GepaEvaluationProvider } from '../../src/algorithm/providers/gepa-opera
 import { jsonDigest, type JsonValue } from '../../src/algorithm/schema.js'
 import { resolveMetric, resolveObjective } from '../../src/objective/contracts.js'
 import { extractRawMetrics } from '../../src/objective/scoring.js'
-import { plannedCells } from '../../src/search/evidence.js'
+import { plannedCells, profile } from '../../src/search/evidence.js'
 import { MemorySearchStore, evaluatedFixture, fixtures, revise, scopeFixture } from '../../src/search/testing.js'
-import type { SearchProgress, StageEvaluationPlan, TaskUniverse } from '../../src/search/types.js'
+import type { SearchProgress, StageEvaluationPlan, StageResult, TaskUniverse } from '../../src/search/types.js'
 import { digestJson } from '../../src/state/digest.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
-function setup() {
+function setup(process = false) {
   const root = mkdtempSync(join(tmpdir(), 'gepa-progress-')); roots.push(root)
-  const fixture = fixtures(4)
+  const fixture = fixtures(4, process)
   const artifacts = new FileArtifactStore(join(root, 'artifacts'))
   const bindings = new BindingStore(artifacts, { id: 'harness', slots: {
     harness: { schemaId: 'harness.directory.v1', required: true, replaceable: true },
@@ -30,9 +30,11 @@ function setup() {
   const journal = new MemorySearchStore()
   const provider = new GepaEvaluationProvider(join(root, 'operations'), artifacts, bindings,
     fixture.provider, undefined, undefined, journal)
-  const envelope = (universe: TaskUniverse, plan: StageEvaluationPlan): OperationEnvelope => {
+  const envelope = (universe: TaskUniverse, plan: StageEvaluationPlan,
+    progressProcessMode?: 'off' | 'auto' | 'required'): OperationEnvelope => {
     const input = { roundIdentity: { evolutionId: 'e', roundId: 'r' }, universe,
-      plan, snapshot: fixture.anchor, processMode: 'off' } as unknown as JsonValue
+      plan, snapshot: fixture.anchor, processMode: 'off',
+      ...(progressProcessMode ? { progressProcessMode } : {}) } as unknown as JsonValue
     const operationId = digestJson(['progress', plan.digest, root]).slice(7)
     return { campaignId: 'search-r', decisionIndex: 0, localKey: `evaluate-${plan.stage}`,
       operationId, idempotencyKey: operationId, kind: 'gepa.evaluate', input,
@@ -142,4 +144,21 @@ it('persists objective score evidence referenced by settled seed progress', asyn
   const score = progress?.evaluations[0]?.profile?.objectiveScore
   expect(score?.score).toBeCloseTo(.8)
   expect(await journal.object(score!.digest)).toEqual(score)
+})
+
+it('uses the frozen search process mode for legacy progress without changing the physical mode', async () => {
+  const { fixture, artifacts, journal, provider, envelope } = setup(true)
+  const { plan } = evaluatedFixture(fixture.seed, scopeFixture(fixture.seed, ['task-0']), fixture.anchor,
+    () => ({ outcome: 1 }), { stage: 'bridge' })
+  const operation = envelope(fixture.seed, plan, 'required')
+  const submitted = await provider.submit(operation)
+  expect(submitted.status).toBe('completed')
+  if (submitted.status !== 'completed' || submitted.completion.outcome.kind !== 'result') return
+  const resultRef = submitted.completion.outcome.value as { resultRef: Parameters<typeof artifacts.getJson>[0] }
+  const result = artifacts.getJson(resultRef.resultRef) as unknown as StageResult
+  const progress = await journal.read<SearchProgress>('rounds/r/progress')
+  const actual = progress?.evaluations[0]?.profile
+  expect(actual?.supportDigest).toBe(profile(fixture.seed, plan, fixture.anchor, result, 'required').supportDigest)
+  expect(actual?.supportDigest).not.toBe(profile(fixture.seed, plan, fixture.anchor, result, 'off').supportDigest)
+  expect((operation.input as Record<string, unknown>).processMode).toBe('off')
 })

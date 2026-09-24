@@ -150,8 +150,9 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
   const seedProgress = (state: State, inner: InnerState): SearchProgress => {
     const evaluations: SearchProgress['evaluations'] = []
     const add = (plan: StageEvaluationPlan, snapshot: Snapshot, result: StageResult): void => {
-      const p = profile(options.seed, plan, snapshot, result,
-        ['bridge', 'global-seed'].includes(plan.stage) ? options.settings.promotion.process.mode : options.settings.search.process.mode)
+      // The legacy public progress projection uses the search process contract
+      // even when the promotion gate requested a different physical process mode.
+      const p = profile(options.seed, plan, snapshot, result, options.settings.search.process.mode)
       evaluations.push({ stage: plan.stage as SearchProgress['evaluations'][number]['stage'],
         stagePlanDigest: plan.digest, scopeDigest: plan.scopeDigest, candidateId: snapshot.candidateId,
         state: 'settled', plannedCells: plannedCellCount(options.seed, plan.taskIds),
@@ -408,6 +409,7 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
       return { nextState: state as unknown as JsonValue, operations: [{ ...task('bootstrap-evaluate', 'gepa.evaluate', {
         roundIdentity: { evolutionId: options.admission.evolutionId, roundId: options.admission.roundId },
         universe: options.seed, plan, snapshot: anchor, processMode: options.settings.search.process.mode,
+        progressProcessMode: options.settings.search.process.mode,
         projectionPolicy: 'defer',
       } as unknown as JsonValue, { bindingSetRef: options.anchorBindingSetRef,
         limits: { rolloutCells: Math.min(plannedCells(options.seed, plan, anchor).length,

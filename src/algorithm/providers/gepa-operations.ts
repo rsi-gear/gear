@@ -359,7 +359,8 @@ abstract class GepaOperationProvider implements OperationProvider {
 }
 
 type EvaluateInput = { roundIdentity?: GepaPhysicalRoundIdentity; universe: TaskUniverse; plan: StageEvaluationPlan; snapshot: Snapshot;
-  processMode: 'off' | 'auto' | 'required'; projectionPolicy?: 'complete' | 'defer' }
+  processMode: 'off' | 'auto' | 'required'; progressProcessMode?: 'off' | 'auto' | 'required';
+  projectionPolicy?: 'complete' | 'defer' }
 type FrozenEvaluationRequest = { missing: CellIdentity[]; cached: EvidenceCell[]; repairCells: number }
 type ProjectionRecord = { schemaVersion: 1; operationId: string; inputDigest: string; baseCellDigest: string;
   key: string; stage: 'started' | 'complete'; cell?: EvidenceCell }
@@ -394,6 +395,7 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
         required: ['evolutionId', 'roundId'], properties: { evolutionId: { type: 'string' }, roundId: { type: 'string' } },
         additionalProperties: false }, universe: { type: 'any' }, plan: { type: 'any' },
         snapshot: { type: 'any' }, processMode: { type: 'string', enum: ['off', 'auto', 'required'] },
+        progressProcessMode: { type: 'string', enum: ['off', 'auto', 'required'] },
         projectionPolicy: { type: 'string', enum: ['complete', 'defer'] } }, additionalProperties: false },
       { type: 'object', required: ['resultRef'], properties: { resultRef: { type: 'any' } }, additionalProperties: false }, records)
     this.physicalIntegrity = physical.integrity
@@ -420,7 +422,7 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
   }
   private async progress(envelope: OperationEnvelope, result?: StageResult): Promise<void> {
     if (!this.legacyJournal) return
-    const { roundIdentity, universe, plan, snapshot, processMode } = this.input(envelope)
+    const { roundIdentity, universe, plan, snapshot, processMode, progressProcessMode } = this.input(envelope)
     const stage = plan.stage
     if (stage === 'held-out') return
     const round = this.roundIdentity(roundIdentity)
@@ -433,7 +435,7 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
         && row.candidateId === snapshot.candidateId)
       if (!result && (previous?.state === 'settled'
         || this.legacyInvocationEnabled && this.runningProjectedThisInvocation.has(envelope.operationId))) return
-      const projected = result ? profile(universe, plan, snapshot, result, processMode) : undefined
+      const projected = result ? profile(universe, plan, snapshot, result, progressProcessMode ?? processMode) : undefined
       const coverage = projected ? { coverage: projected.coverage, processCoverage: projected.processCoverage,
         outcomeComplete: projected.outcomeComplete,
         ...(projected.objectiveScore ? { objectiveScore: projected.objectiveScore,

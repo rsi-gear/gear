@@ -166,6 +166,7 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
     return clocked(task(key, 'gepa.evaluate', {
       ...(options.preserveLegacyExternalKeys ? { roundIdentity: { evolutionId: options.evolutionId, roundId: options.roundId } } : {}),
       ...(options.preserveLegacyExternalKeys ? { projectionPolicy: 'defer' } : {}),
+      ...(options.preserveLegacyExternalKeys ? { progressProcessMode: options.settings.search.process.mode } : {}),
       universe, plan, snapshot, processMode } as unknown as JsonValue,
       { bindingSetRef: reference(state, snapshot), limits: { rolloutCells: missing.length, repairCells } }))
   }
