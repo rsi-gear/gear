@@ -6,14 +6,14 @@
 
 | 阶段 | 状态 | 提交与验证 |
 | --- | --- | --- |
-| S0 方案/基线 | 已提交 `e5dfeb2` | V3、离线精确重建、source/build/parent/package 身份；6 文件 95 测试通过；重复捕获匹配，漂移期望拒绝 |
-| S1 合同/内核 | 已提交；预算观察与取消恢复修补完成 | 内核/预算观察 20 项；旧 search/identity 95 项；阶段 typecheck 通过 |
-| S2 Python/作者入口 | SDK、类型化错误、provider 准入已提交；默认宿主开发中 | 独立快照跨语言 23 项、Python 20 项；动态能力与真实 Optuna 3 项 |
-| S3 历史/任务/执行 | 历史/fresh 数据、Hitch、DSH 角色及可信反馈已提交；编辑接线中 | 数据层 14 项、Hitch 7 项、角色/执行边界 15 项；均有独立复验 |
-| S4 非 GEPA recipes/Optuna | Python recipes、证据授权、Git Skill 与 Hitch 注入已提交 | Python 20 项、跨语言 3 项；Skill 9 项；Evo/Hitch 11 项，可信反馈 6 项 |
-| S5 训练接入 | 已提交 `9f65b79` | CPU 合同 44 项联合回归、2 项 workflow；真实 GPU 未验证 |
-| S6 GEPA/包发布验证 | GEPA 公共决策与补全已提交；编辑桥/默认宿主/正式包待审 | 主审 GEPA 16 项；包外作者和旧包跨进程恢复由实现者验证，待主审 |
-| S7 真实运行/稳定性决定 | 已检查本机条件；尚无新路径真实运行证据 | Hitch daemon 未运行、无本机 GPU/Slime 配置；SDK 继续 experimental |
+| S0 方案/基线 | 已完成 `e5dfeb2` | V3、旧源码/构建/parent/package 身份与精确旧制品保存 |
+| S1 合同/内核 | 已完成并修补预算/取消边界 | 持久步骤、并行操作、绑定、实际用量、unknown 与恢复；最终相关回归通过 |
+| S2 Python/作者入口 | 已完成；公开包 `630c6ef` | TS/Python SDK、hook/provider、CLI、默认与配置宿主；安装 wheel/公开 CLI 验收通过 |
+| S3 历史/任务/执行 | 已完成；最后修复 `69a1c1f` | 历史/fresh 输入、授权证据、Hitch、DSH、Git 编辑、可信反馈和执行环境身份 |
+| S4 recipes/Optuna | 已完成离线完整流程验收 | RHO `d3431a2`、AHE `35e5d00`、Evo `5010a78`；真实 Optuna 4.9.0 两轮及恢复 |
+| S5 训练接入 | 已完成 CPU 合同与旧 TS 回归；`9f65b79` | 独立 Slime/legacy cycle、固定 Harness GRPO；真实 GPU 未验收 |
+| S6 GEPA/包验收 | 已完成首版范围；`66aad22`、`630c6ef` | GEPA 物理编辑/证据与预算、公开 tgz/wheel、旧 runtime 三进程恢复；历史 extra findings 等显式迁移边界见下文 |
+| S7 真实运行/稳定性 | 未验收；SDK 保持 experimental | 无新路径真实模型/GPU/独立人工作者验收；环境条件与已知限制见末节 |
 
 ## S0 已确认的基线约束
 
@@ -300,3 +300,27 @@ verifyPinnedLegacySearchClosure 核验已归档 f715748 的 search/parent/packag
 旧 f715748 tgz、原 lock 与精确 Node v26.5.1/npm 11.17.0/TypeScript 6.0.3 的源码/构建/parent 身份均核验；旧 FailureClusterSearch/SearchStore fixture 分三个独立进程 interrupt→resume→replay，最终无新增评估。此为保存的旧 runtime 继续旧状态，不修改或隐式迁移旧 journal。其他历史身份仍须其匹配制品。
 
 最后发现作者指南链接的 Python README 与基线说明未入 npm 包，已补入 files，并在实际安装后验证四份文档/manifest 存在。修改仅涉及打包清单与断言，主 agent 再次完整运行外部包验收通过。测试产物没有发布到包仓库。
+
+## 最终独立复验与交付状态（2026-09-24）
+
+实现代码均由 GPT-6 Sol / xhigh agents 完成；主 agent 审查冻结切片、在独立 HEAD 归档加精确切片的快照中复验，核对字节一致后分阶段提交。最终快照为 `/var/folders/9c/gchqm16921v_skhc29s5w1_h0000gn/T/gear-package-final-review-f5ipczv4`，最后的打包清单/文档更改单独重跑包验收。
+
+最终执行结果：
+
+- `npm_config_offline=true npm run build`：完整构建通过；`tsc -p tsconfig.json --noEmit`：通过，加入最终 RHO 测试后再次通过。
+- Vitest 新算法测试、旧 TS training 和 S0 六份 search/identity 回归，`--maxWorkers=2`：56 文件 407/407；随后独立运行最终 RHO 完整测试 1/1。合计 57 文件 408 项相关 TS 测试通过，无跳过；没有将此前多次阶段测试重复加总。
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=packages/python-sdk/src /private/tmp/gear-algorithm-training-test-env/bin/python -m unittest discover -s packages/python-sdk/tests -v`：22/22，包含实际 Optuna，无跳过。
+- `GEAR_ALGORITHM_TEST_PYTHON=/opt/homebrew/bin/python3.11 GEAR_ALGORITHM_OPTUNA_TEST_PYTHON=/private/tmp/gear-algorithm-training-test-env/bin/python GEAR_ALGORITHM_BASELINE_GIT_ROOT=/Users/zgq/.codex/worktrees/meta-agent-algorithm-plan/gear node scripts/check-algorithm-package.mjs`：最终包外验收通过；文档清单修正后又通过一次。
+- 构建后的 `node lib/cli.js skill-identity` 返回原 refine skill 身份；`git diff --check` 通过。
+
+上述 407 项联合回归命令以 `GEAR_ALGORITHM_TEST_PYTHON=/opt/homebrew/bin/python3.11`、`GEAR_ALGORITHM_OPTUNA_TEST_PYTHON=/private/tmp/gear-algorithm-training-test-env/bin/python`、`GEAR_TRAINING_TEST_PYTHON=/private/tmp/gear-algorithm-training-test-env/bin/python` 运行，PATH 前置同一 CPU venv；测试范围为 `tests/unit/algorithm*.spec.ts`、`tests/unit/algorithm`、`tests/unit/training`、`search-freeze-recovery`、`search-recovery`、`search-policies`、`search-acceptance`、`component-identity`、`component-identity-build`。联合启动时最终 RHO 文件尚未加入该快照，故它单独复验，不声称执行过 408 项单一命令。
+
+边界保持明确：
+
+- 新路径的真实 Hitch/模型请求、Slime/GPU 作业及独立人工作者上手没有验收；本机检查到 Hitch daemon 未运行，也没有可用的 GPU/Slime 配置。已有历史 GPU 归档不能认证新代码。SDK 继续 experimental。
+- 旧 Python training 基线仍为 175 通过、3 个无 Torch 跳过、2 个 CPU fixture 启动超时；两个既有失败在实现前单独重跑仍失败，未修改该 Python 训练源码，也未把它们记为本次通过。具体名称见前文训练基线。
+- 默认 restricted DSH 不持久化任意会话；未封存模型 turn、未知外部响应或 Git finalization 回包丢失保留 unknown，不自动重做。已封存操作可以恢复去重。
+- 物理身份/权限依赖可信宿主管理；完整子进程环境变化会保守拒绝恢复，runtimeResources 需要管理员完整声明，模型路由校验不能证明远端权重身份。
+- 首版不自动导入旧 GEPA extra finding handoff、standalone repair 或旧 pending completion；冻结 findings 可显式提供，旧不确定运行继续原封存 runtime。
+
+原始 `/Users/zgq/Desktop/projs/gear` 保持 `dev`，既有未跟踪架构笔记与 `repros/` 未改动。当前实现位于独立 `codex/meta-agent-algorithm-plan` 工作树；旧 `src/search`、`src/meta`、`src/evaluator`、`python` 和 package-lock.json 与 f715748 源码字节保持一致。旧 TS training 仅抽取共享合同校验，相关 127 项回归已包括在最终测试内。

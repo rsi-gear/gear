@@ -1,6 +1,6 @@
 # Gear 可扩展算法框架：实施方案 V3
 
-- 日期：2026-09-24；状态：进入分阶段实施，公共 SDK 为 experimental。
+- 日期：2026-09-24；状态：S0–S6 首版实现与离线验收完成；S7 真实运行未验收，公共 SDK 保持 experimental。
 - 工作树：`/Users/zgq/.codex/worktrees/meta-agent-algorithm-plan/gear`；分支：`codex/meta-agent-algorithm-plan`；起始代码：`f715748dad576d3055e4a9eaab21b36015348aee`。
 - 本文是当前统一实施入口，合并并取代 [V2](meta-agent-algorithm-implementation-plan-v2.zh-CN.md) 与[训练补充](gear-rsi-model-training-architecture-assessment.zh-CN.md)中的实施安排。原文保留，供[独立 ultra 审查](meta-agent-unified-architecture-ultra-review.zh-CN.md)的引用与身份核对。
 - 用户授权 GPT-6 Sol / xhigh 负责实现，主 agent 负责架构修订、审计、review 和阶段 commit。实现者不自行提交；主 agent 审核通过后提交。本轮没有 GPU 资源/凭据可用时不伪造实机认证。
@@ -157,7 +157,7 @@ S1 合同明确后 S2/S3 可在不共享文件的条件下并行，S4/S5 同理�
 
 安装/包验证记录 Python/Node/依赖身份；Node 宿主与轻量 Python SDK 分开验证。独立开发者可用性验收未完成时如实列出，不以代码行数或 agent 自测冒充人工使用证据。
 
-实施状态与命令结果记录到 `docs/meta-agent-algorithm-implementation-progress.zh-CN.md`，每个阶段写 commit、验证范围、未通过/未执行项。本文创建时 S1–S7 尚未实施；旧 GPU 验收仍仅为原冻结训练路径的归档证据。
+实施状态与命令结果记录到 `docs/meta-agent-algorithm-implementation-progress.zh-CN.md`，每个阶段写 commit、验证范围、未通过/未执行项。S0–S6 的首版实现、阶段审计与离线验收已经完成；最终独立验证为 408 项相关 TS 测试、22 项 Python SDK/recipe 测试、公开包外安装/恢复、真实 Optuna 及精确旧 runtime 跨进程恢复。S7 的真实模型/GPU/独立人工作者验收尚未完成；旧 GPU 验收仍仅为原冻结训练路径的归档证据。详情、既有失败和首版边界见实施进度记录。
 
 ## 12. 实施审计补充（2026-09-24）
 
