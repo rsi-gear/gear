@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Algorithm, AlgorithmDecision, AlgorithmManifest, BudgetPlan, CampaignSpec, CompletionEnvelope, OperationEnvelope, OperationIntent, OperationOutcome, OperationProvider, ProviderInspection, ProviderManifest, ProviderSubmission, UsageReceipt, BindingSetRef } from '../contracts.js';
+import type { Algorithm, AlgorithmDecision, AlgorithmManifest, BudgetPlan, BudgetSnapshot, CampaignSpec, CompletionEnvelope, OperationEnvelope, OperationIntent, OperationOutcome, OperationProvider, ProviderInspection, ProviderManifest, ProviderSubmission, UsageReceipt, BindingSetRef } from '../contracts.js';
 import { ALGORITHM_API_VERSION } from '../contracts.js';
 import { FileArtifactStore } from '../artifacts.js';
 import { BindingStore } from '../bindings.js';
@@ -110,6 +110,9 @@ export class AlgorithmRuntime {
   }
 
   private budgetAdmission(state: CampaignState, intents: OperationIntent[]): void {
+    // A stop-capability overrun forbids further work, but a terminal decision
+    // must still be persisted so the campaign can report its final accounting.
+    if (intents.length === 0) return;
     const needed: Record<string, number> = {};
     for (const operation of Object.values(state.operations)) if (!operation.released) {
       for (const [dimension, amount] of Object.entries(operation.envelope.limits)) needed[dimension] = (needed[dimension] ?? 0) + Math.max(0, amount - (operation.accounted[dimension] ?? 0));
@@ -120,6 +123,19 @@ export class AlgorithmRuntime {
       needed[dimension] = (needed[dimension] ?? 0) + amount;
     }
     for (const [dimension, plan] of Object.entries(state.spec.budget)) if ((state.spent[dimension] ?? 0) + (needed[dimension] ?? 0) > plan.limit) throw new Error(`Budget exceeded: ${dimension}`);
+  }
+
+  private budgetSnapshot(state: CampaignState): BudgetSnapshot {
+    const reserved: Record<string, number> = {};
+    for (const operation of Object.values(state.operations)) if (!operation.released) {
+      for (const [dimension, amount] of Object.entries(operation.envelope.limits)) {
+        reserved[dimension] = (reserved[dimension] ?? 0) + Math.max(0, amount - (operation.accounted[dimension] ?? 0));
+      }
+    }
+    return { dimensions: Object.fromEntries(Object.entries(state.spec.budget).map(([dimension, plan]) => {
+      const spent = state.spent[dimension] ?? 0, held = reserved[dimension] ?? 0;
+      return [dimension, { ...plan, spent, reserved: held, remaining: Math.max(0, plan.limit - spent - held) }];
+    })) };
   }
 
   private applyDecision(state: CampaignState, decision: AlgorithmDecision): CampaignState {
@@ -300,7 +316,7 @@ export class AlgorithmRuntime {
       if (!loaded) {
         this.validateBinding(this.spec.initialBindingSetRef, this.spec.initialBindingSetRef);
         const base: CampaignState = { version: 1, spec: clone(this.spec), algorithmManifestDigest: jsonDigest(this.manifest), kernelImplementationDigest: kernelImplementationDigest(), providerCatalogDigest: this.providerCatalogDigest, activeBindingSetRef: this.spec.initialBindingSetRef, initialBindingSetRef: this.spec.initialBindingSetRef, state: null, decisionIndex: 0, operations: {}, spent: {}, receiptSources: {}, phase: 'running' };
-        const decision = await this.algorithm.initialize({ campaignId: this.spec.campaignId, decisionIndex: 0, activeBindingSetRef: this.spec.initialBindingSetRef, config: clone(this.spec.config) });
+        const decision = await this.algorithm.initialize({ campaignId: this.spec.campaignId, decisionIndex: 0, activeBindingSetRef: this.spec.initialBindingSetRef, config: clone(this.spec.config), budget: this.budgetSnapshot(base) });
         const initialized = this.applyDecision(base, decision);
         await this.store.commit(initialized as unknown as JsonValue, 'decision.initialize');
         return initialized.phase === 'complete' ? 'complete' : 'advanced';
@@ -327,7 +343,7 @@ export class AlgorithmRuntime {
       }
       if (Object.values(state.operations).every(record => record.status === 'completed' || (record.status === 'cancelled' && record.released))) {
         const completed = Object.fromEntries(Object.entries(state.operations).sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b))).map(([key, record]) => [key, record.outcome ?? { kind: 'cancelled' }])) as Record<string, OperationOutcome>;
-        const decision = await this.algorithm.reduce({ campaignId: state.spec.campaignId, decisionIndex: state.decisionIndex + 1, activeBindingSetRef: state.activeBindingSetRef, config: clone(state.spec.config), state: clone(state.state), completed });
+        const decision = await this.algorithm.reduce({ campaignId: state.spec.campaignId, decisionIndex: state.decisionIndex + 1, activeBindingSetRef: state.activeBindingSetRef, config: clone(state.spec.config), budget: this.budgetSnapshot(state), state: clone(state.state), completed });
         state.decisionIndex++;
         state = this.applyDecision(state, decision);
         await this.store.commit(state as unknown as JsonValue, 'decision.reduce');

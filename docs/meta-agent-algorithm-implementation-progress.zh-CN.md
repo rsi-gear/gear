@@ -108,3 +108,7 @@ S5 接入审计发现：持久化 cancel-intent 后、发送取消命令前崩�
 RHO/AHE/Evo 各只有一个 Python 科学实现，TS 仅提供装配描述；命名 workflow 能有界推进纯决策步骤。RHO 的难度角色读取真实授权报告/轨迹，AHE 区分已测版本与下一候选，并对当前执行版本归因；Evo 固定批内技能绑定并原子提交任务 cursor 与技能更新。每种 operation 的配置预约必须匹配 provider 声明的预算维度。Optuna ask/tell 使用真实 4.9.0 库、独立 study 副本和有 HMAC 的受信 provider checkpoint，跨进程恢复复用封存结果。
 
 实现者另构建独立 wheel，并用安装的 wheel 完成仓库外两次 Optuna trial、check/run/resume；正式 npm 发布包与 root 的包外复验仍归 S6。本次 CPU 验证不能代替真实模型效果或人类作者使用验收。RHO/AHE 新 rollout 证据读取、Evo 真实技能注入、默认 host profile 仍在后续接线阶段，示例当前明确标为 host 模板。
+
+## S1 预算观察接口补充
+
+GEPA 接入审计要求科学策略使用实际剩余预算。initialize/reduce 现收到通用预算快照，含 spent、尚未释放的 reserved 和扣除两者后的 remaining；这是账本副本，修改它不会改动内核预算。stop 能力发生超额时如实保留 spent，remaining 归零，允许完成结算但不准入新增有成本操作。主 agent 独立运行内核与预算视图测试：20/20 通过；未为 GEPA 在内核添加算法分支。

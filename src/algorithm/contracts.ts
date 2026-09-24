@@ -8,6 +8,8 @@ export type BindingSchema = { id: string; slots: Record<string, { schemaId: stri
 
 export type ResourceLimit = { unit: string; limit: number; source: string; capability: 'hard' | 'stop' };
 export type BudgetPlan = Record<string, ResourceLimit>;
+/** Read-only accounting view at a decision boundary; remaining excludes live reservations. */
+export type BudgetSnapshot = { dimensions: Record<string, ResourceLimit & { spent: number; reserved: number; remaining: number }> };
 export type UsageReceipt = { source: string; scope?: 'operation' | 'campaign'; operationId?: string; cursor: string; cumulative: Record<string, number> };
 
 export type OperationIntent = {
@@ -98,6 +100,7 @@ export type DecisionContext = {
   decisionIndex: number;
   activeBindingSetRef: BindingSetRef;
   config: JsonValue;
+  budget?: BudgetSnapshot;
 };
 export type ReduceContext = DecisionContext & {
   state: JsonValue;
