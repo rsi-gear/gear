@@ -162,3 +162,9 @@ AlgorithmManifest 新增通用 requiredOperationKindsFromConfig，由冻结配�
 模型请求数可硬限制；token 用量按实际报告以 stop 能力结算，不宣称严格硬上限。主审追加的超时测试证明 AbortSignal 到达挂起的离线模型适配器；已开始但用量无法确认时保持 unknown、无伪造最终回执且不重新请求。请求前已确认停止可返回类型化错误与零用量。异步证据读取逐 session 排队，防止并发累计计数重复相加；恢复后的最终回执包括已持久计数。
 
 此接口当前是有截止时间的同步角色调用，Campaign writer 在调用期间持锁；不宣称另一个 CLI 可即时中断。测试使用真实 DSH 会话/工具机制和离线 LLM fixture，无外部模型。fresh 默认宿主、可信测量反馈与 workspace-edit 在后续阶段继续。
+
+## S4b2 Evo 的 Git 技能产物
+
+主 agent 在独立冻结快照中验证 Skill overlay：8/8、完整 typecheck 通过。helper 验证所选 Skill 属于当前绑定的库，将封存 Markdown 写入独立 Git 工作区的 skills/<name>/SKILL.md，经 HarnessBuilder 检查与运行时 discovery/read 回执校验后封存新 commit。它同时验证固定基础 Harness 和技能库绑定；复用 operationId 时输入变化会拒绝。
+
+测试实际创建 Git 工作区、读写技能文件和候选 ref，运行时检查器为离线 fixture。覆盖库成员/绑定错误、运行时未确认读取、重启复用、符号链接拒绝、损坏 workspace sidecar，以及 finalization 成功但回包丢失。最后一种状态保持 unknown、不会生成第二个候选；此版本没有自动对账该 Git 完成窗口。Evo→Hitch 的最终调用接线仍在后续阶段，不将 helper 验证等同于真实模型消费技能。
