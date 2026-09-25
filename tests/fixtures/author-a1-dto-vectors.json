@@ -43,6 +43,25 @@
         }
       },
       "operationLimits": {
+        "tasks.sample": {}
+      },
+      "execution": {}
+    }
+  },
+  {
+    "name": "capabilities-sample-nonempty-limit-invalid",
+    "validator": "capabilities",
+    "valid": false,
+    "value": {
+      "version": "gear.author.capabilities.v1",
+      "lockDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "roles": {
+        "analyst": {
+          "template": "read-only-analyst",
+          "kind": "execution.role"
+        }
+      },
+      "operationLimits": {
         "tasks.sample": {
           "calls": 2
         }
@@ -64,9 +83,7 @@
         }
       },
       "operationLimits": {
-        "tasks.sample": {
-          "calls": 2
-        }
+        "tasks.sample": {}
       },
       "execution": {}
     }
@@ -941,7 +958,7 @@
         }
       },
       "operationLimits": {
-        "tasks.sample": {
+        "execution.role": {
           "calls": 2.0
         }
       },
@@ -962,7 +979,7 @@
         }
       },
       "operationLimits": {
-        "tasks.sample": {
+        "execution.role": {
           "calls": true
         }
       },

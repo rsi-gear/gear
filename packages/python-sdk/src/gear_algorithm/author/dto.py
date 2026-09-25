@@ -272,7 +272,11 @@ def assert_author_capabilities_v1(value: Any) -> None:
     for kind, raw in _object(item["operationLimits"], "$.AuthorCapabilities.operationLimits").items():
         if _NAME.fullmatch(kind) is None:
             raise ValidationError("invalid operation kind", f"$.AuthorCapabilities.operationLimits.{kind}")
-        for dimension, limit in _object(raw, f"$.AuthorCapabilities.operationLimits.{kind}").items():
+        limits = _object(raw, f"$.AuthorCapabilities.operationLimits.{kind}")
+        if kind == "tasks.sample" and limits:
+            raise ValidationError("tasks.sample is a pure operation and cannot carry limits",
+                                  "$.AuthorCapabilities.operationLimits.tasks.sample")
+        for dimension, limit in limits.items():
             _nonnegative(limit, f"$.AuthorCapabilities.operationLimits.{kind}.{dimension}")
     _object(item["execution"], "$.AuthorCapabilities.execution")
 

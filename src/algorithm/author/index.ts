@@ -112,7 +112,7 @@ export class AuthorContext<TConfig = JsonValue, TVersion extends 'v1' | 'v2' = '
         || !Number.isSafeInteger(options.count) || options.count < 1 || !Number.isSafeInteger(options.seed))
         this.scope.runner.recordFatal('tasks.sample requires a task view, positive count and safe seed');
       return this.typedOperation<AuthorTaskSelection>('tasks.sample', { sourceTaskViewRef, count: options.count, seed: options.seed },
-        { limits: this.capabilities.operationLimits['tasks.sample'] ?? {} }, value => {
+        { limits: {}, startsBudgetClock: false }, value => {
           assertTaskSelectionV1(value);
           if (value.selectedTaskIds.length !== options.count) throw new Error('TaskSelection count mismatch');
           return value;

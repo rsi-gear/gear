@@ -429,14 +429,13 @@ class TaskTools:
         seed_value = json_safe_integer(seed)
         if seed_value is None:
             raise AuthorError("AUTHOR_INPUT", "tasks.sample seed must be a safe integer", _site(2))
-        limits = _plain(self._context.capabilities.operation_limits.get("tasks.sample", {}))
         def decode(value: Any) -> Any:
             assert_task_selection_v1(value)
             if len(value["selectedTaskIds"]) != count_value:
                 raise AuthorError("AUTHOR_RESULT", "tasks.sample returned a different count", _site(2))
             return value
         return self._context.operation("tasks.sample", {"sourceTaskViewRef": ref, "count": count_value, "seed": seed_value},
-                                       limits=limits, _decoder=decode)
+                                       limits={}, starts_budget_clock=False, _decoder=decode)
 
 
 class AuthorContext:

@@ -13,7 +13,7 @@
 
 新增显式 `gear.author.replay.v2`，定义 HarnessAgent、TaskSelection、RoleResult、ProposalBatch 和 Evaluation 的公共数据合同。`ctx.role` 与 `ctx.tasks.sample` 已生成对应的正式 operation 意图并验证返回结构；具体服务装配仍在下一切片。配置 schema 在第一次意图之前校验，TS 普通 `interface` 配置可直接使用。只读结果可以原样传入 workflow、checkpoint、operation 和 result；Python 提供 snake_case 属性访问。
 
-两端共用 36 个 DTO 正反例，并通过真实 Python worker 的三次重放对照。Python 将 v2 的有限安全整数值统一为 int，允许 JSON `2.0` 用于 `range`，保留科学计算的小数值，拒绝 bool 及越界整数。数据结构校验不代表模型调用或评估产物已获得物理验证；这些检查属于通用宿主。
+两端目前共用 37 个 DTO 正反例（任务采样集成后增加一个限额负例），并通过真实 Python worker 的三次重放对照。Python 将 v2 的有限安全整数值统一为 int，允许 JSON `2.0` 用于 `range`，保留科学计算的小数值，拒绝 bool 及越界整数。数据结构校验不代表模型调用或评估产物已获得物理验证；这些检查属于通用宿主。
 
 独立复审结论为本片段无剩余功能阻塞，见 [A1.1 审计](experiments/author-a1-contract-review-20260926.zh-CN.md)。主审另外验证了 4 文件 47 项受影响回归，以及仓库外 npm/Python wheel 安装和既有跨语言 worker 接线。类型 fixture 使用仓库相对导入，仅证明 API 类型可组合，不作为外部作者试用通过的证据。
 
@@ -23,9 +23,15 @@
 
 当前仅支持新 profile 固定使用同一个物理 Git 仓库。新 CAS 必须与旧 state、原仓库及 Git common dir 分离；跨仓库搬运尚未实现。patchDigest 仅保留原记录，不声称重新构造验证。独立 history/state 回归 3 文件 44 项通过，见 [历史读取审计](experiments/author-a1-history-reader-review-20260926.zh-CN.md)。真实阿里云旧候选的导入探针及后续构建/执行仍分别验收。
 
+## A1 任务采样切片
+
+`src/algorithm/providers/task-sampling.ts` 已实现授权 TaskView 的确定性无放回选样，保留原任务用途、exposure 和谱系，输出独立 cursor。它是纯本地操作，不计费、不启动预算时钟；丢回复后同一输入重算相同 CAS 结果。TS/Python SDK 和 capabilities validator 对这一约束一致。
+
+独立 3 文件 47 项测试通过，包含真实 Python worker parity 与 SDK 前沿到 provider 的集成；Python A1 8 项及隔离类型检查通过。审计时另一个未冻结的 resolver 文件存在全仓类型错误，因此本次不宣称全仓检查通过。见 [任务采样审计](experiments/author-a1-task-sampling-review-20260926.zh-CN.md)。真实宿主装配和密钥/授权冻结仍待后续切片。
+
 ## 当前限制
 
-A0 是运行基础。`propose/evaluate/select`、任务采样的真实 provider、通用运行 profile、五文件作者项目及新的 CLI 仍待后续 A1 切片；现有 A0 role/edit/rollout/measure 便利方法用于探针，v2 已拒绝这些假 operation。用户不能仅复制 v4 的搜索示例便运行真实实验。
+A0 是运行基础。`propose/evaluate/select`、通用运行 profile、五文件作者项目及新的 CLI 仍待后续 A1 切片；现有 A0 role/edit/rollout/measure 便利方法用于探针，v2 已拒绝这些假 operation。用户不能仅复制 v4 的搜索示例便运行真实实验。
 
 性能按冻结标准报告：TS 的两个代表性轨迹通过每前沿额外 100 ms 门槛，Python 在 `97e938f` 上仍为 125.15/114.09 ms，未通过；冷恢复通过。进程树峰值内存目前只有抽样证据，上界未验证。见 [正式复测](experiments/author-a0-benchmark-97e938f-20260926.json)。未选择产品默认前沿上限，长流程门尚未验证。
 

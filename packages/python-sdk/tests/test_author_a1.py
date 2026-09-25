@@ -104,6 +104,7 @@ class A1AuthorSliceTests(unittest.TestCase):
         self.assertEqual(second["frontier"][0]["definitionVersion"], "algorithm.v2")
         self.assertEqual(second["frontier"][0]["kind"], "tasks.sample")
         self.assertEqual(second["frontier"][0]["limits"], {})
+        self.assertIs(second["frontier"][0]["startsBudgetClock"], False)
         self.assertEqual(second["frontier"][0]["input"],
                          {"sourceTaskViewRef": task_view, "count": 2, "seed": 7})
         selection = {"schemaVersion": 1, "taskViewRef": task_view,
@@ -134,6 +135,10 @@ class A1AuthorSliceTests(unittest.TestCase):
         with self.assertRaisesRegex(AuthorError, "AUTHOR_CAPABILITIES"):
             replay(sample, {**request(), "input": {**request()["input"],
                         "capabilities": {**request()["input"]["capabilities"], "lockDigest": "invalid"}}})
+        with self.assertRaisesRegex(AuthorError, "AUTHOR_CAPABILITIES"):
+            replay(sample, {**request(), "input": {**request()["input"],
+                        "capabilities": {**request()["input"]["capabilities"],
+                                         "operationLimits": {"tasks.sample": {"calls": 2}}}}})
 
     def test_v2_rejects_a0_fake_alias_even_if_caught(self):
         @algorithm

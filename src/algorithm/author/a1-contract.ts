@@ -179,7 +179,10 @@ export function assertAuthorCapabilitiesV1(value: unknown): asserts value is Aut
   }
   for (const [kind, raw] of Object.entries(object(item.operationLimits, 'AuthorCapabilities.operationLimits'))) {
     if (!/^[A-Za-z][A-Za-z0-9._-]{0,127}$/.test(kind)) throw new Error(`Invalid operation kind ${kind}`);
-    for (const [dimension, limit] of Object.entries(object(raw, `AuthorCapabilities.operationLimits.${kind}`)))
+    const limits = object(raw, `AuthorCapabilities.operationLimits.${kind}`);
+    if (kind === 'tasks.sample' && Object.keys(limits).length !== 0)
+      throw new Error('tasks.sample is a pure operation and cannot carry limits');
+    for (const [dimension, limit] of Object.entries(limits))
       nonnegative(limit, `AuthorCapabilities.operationLimits.${kind}.${dimension}`);
   }
   object(item.execution, 'AuthorCapabilities.execution');
