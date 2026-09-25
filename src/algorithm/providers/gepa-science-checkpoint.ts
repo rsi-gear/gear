@@ -58,7 +58,9 @@ export class GepaScienceCheckpointProvider implements OperationProvider {
     if (envelope.kind !== this.manifest.kind || envelope.implementationDigest !== this.manifest.implementationDigest
       || envelope.inputDigest !== jsonDigest(envelope.input) || envelope.operationId !== envelope.idempotencyKey
       || Object.keys(envelope.limits).length) throw new Error('GEPA science checkpoint identity drift')
-    const input = envelope.input as unknown as GepaScienceCheckpointInput
+    return this.prepareInput(envelope.input as unknown as GepaScienceCheckpointInput)
+  }
+  private prepareInput(input: GepaScienceCheckpointInput): Prepared {
     safeId(input.roundId)
     if (!(input.stage in names) || !Array.isArray(input.objects) || !Array.isArray(input.supportRefs)
       || !Array.isArray(input.consumptions)
@@ -174,30 +176,7 @@ export class GepaScienceCheckpointProvider implements OperationProvider {
     if (record.stage === 'cancelled-before-start') throw new Error('Cancelled GEPA science checkpoint cannot publish')
     try {
       if (record.stage === 'complete') return { status: 'completed', completion: record.completion! }
-      // The old journal makes the immutable decision and support objects readable first,
-      // marks evidence consumed next, and only then exposes the phase pointer.
-      for (const value of [...prepared.objects.map(row => row.value), ...prepared.supports])
-        if (await this.journal.put(value) !== value.digest)
-          throw new Error('GEPA science checkpoint object address drift')
-      for (const row of prepared.consumptions) {
-        const saved = await this.journal.freeze(prepared.input.roundId, row.name, () => row.value)
-        if (digestJson(saved) !== digestJson(row.value))
-          throw new Error('GEPA science checkpoint frozen value drift')
-      }
-      for (const row of prepared.objects) {
-        const saved = await this.journal.freeze(prepared.input.roundId, row.name, () => row.value)
-        if (digestJson(saved) !== digestJson(row.value))
-          throw new Error('GEPA science checkpoint frozen value drift')
-      }
-      if (prepared.decisions.length) {
-        const key = `rounds/${prepared.input.roundId}/progress`
-        const progress = await this.journal.read<SearchProgress>(key)
-        if (!progress) throw new Error('GEPA stage progress is unavailable')
-        for (const decision of prepared.decisions) await this.journal.put(decision)
-        const byKey = new Map([...progress.decisions, ...prepared.decisions].map(decision =>
-          [`${decision.stagePlanDigest}/${decision.candidateId}`, decision]))
-        await this.journal.write(key, { ...progress, decisions: [...byKey.values()] })
-      }
+      await this.publishPrepared(prepared)
       const completion: CompletionEnvelope = { operationId: envelope.operationId,
         idempotencyKey: envelope.idempotencyKey, inputDigest: envelope.inputDigest,
         implementationDigest: envelope.implementationDigest,
@@ -205,6 +184,43 @@ export class GepaScienceCheckpointProvider implements OperationProvider {
       await this.records.write(this.manifest.kind, envelope.operationId, { ...record, stage: 'complete', completion })
       return { status: 'completed', completion }
     } catch (error) { throw new ProviderReconcileError('GEPA science checkpoint publication failed', { cause: error }) }
+  }
+  /** Idempotent old-journal projection for a durably committed Campaign decision. */
+  async project(input: GepaScienceCheckpointInput): Promise<void> {
+    const prepared = this.prepareInput(input)
+    const first = prepared.objects[0]!
+    if (await this.journal.read(`rounds/${input.roundId}/${first.name}`)
+      && await this.published(prepared)) return
+    await this.publishPrepared(prepared)
+    if (!await this.published(prepared)) throw new Error('GEPA science checkpoint projection unresolved')
+  }
+  private async publishPrepared(prepared: Prepared): Promise<void> {
+    // The old journal makes the immutable decision and support objects readable first,
+    // marks evidence consumed next, and only then exposes the phase pointer.
+    for (const value of [...prepared.objects.map(row => row.value), ...prepared.supports])
+      if (await this.journal.put(value) !== value.digest)
+        throw new Error('GEPA science checkpoint object address drift')
+    for (const row of prepared.consumptions) {
+      const saved = await this.journal.freeze(prepared.input.roundId, row.name, () => row.value)
+      if (digestJson(saved) !== digestJson(row.value))
+        throw new Error('GEPA science checkpoint frozen value drift')
+    }
+    for (const row of prepared.objects) {
+      const saved = await this.journal.freeze(prepared.input.roundId, row.name, () => row.value)
+      if (digestJson(saved) !== digestJson(row.value))
+        throw new Error('GEPA science checkpoint frozen value drift')
+    }
+    if (prepared.decisions.length) {
+      const key = `rounds/${prepared.input.roundId}/progress`
+      const progress = await this.journal.read<SearchProgress>(key)
+      if (!progress) throw new Error('GEPA stage progress is unavailable')
+      for (const decision of prepared.decisions) await this.journal.put(decision)
+      const byKey = new Map([...progress.decisions, ...prepared.decisions].map(decision =>
+        [`${decision.stagePlanDigest}/${decision.candidateId}`, decision]))
+      const next = { ...progress, decisions: [...byKey.values()] }
+      if (canonicalJson(next as unknown as JsonValue) !== canonicalJson(progress as unknown as JsonValue))
+        await this.journal.write(key, next)
+    }
   }
   async cancel(envelope: OperationEnvelope): Promise<ProviderInspection> {
     this.prepare(envelope)

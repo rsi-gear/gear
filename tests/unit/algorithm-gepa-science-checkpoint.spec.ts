@@ -70,7 +70,9 @@ describe('GEPA science checkpoint provider', () => {
     const result = seal({ stagePlanDigest: jsonDigest('plan'), snapshotDigest: jsonDigest('snapshot'), cells: [] })
     const local = seal({ entries: [], reasons: [] })
     const expansion = seal({ skipped: [], exclusions: [] })
-    const decisions = seal({ decisions: [{ supportDigest: support.digest }] })
+    const decision = seal({ stagePlanDigest: result.stagePlanDigest, candidateId: 'candidate-0',
+      outcome: 'retained-local', reasonCodes: [], supportDigest: support.digest })
+    const decisions = seal({ decisions: [decision] })
     const input: GepaScienceCheckpointInput = { roundId: 'r', stage: 'local',
       objects: [
         { name: 'local', ref: f.artifacts.putJson(local, 'gepa.legacy-journal-object.v1') },
@@ -83,6 +85,7 @@ describe('GEPA science checkpoint provider', () => {
       operationId: jsonDigest(['science', input]), idempotencyKey: jsonDigest(['science', input]),
       input: input as unknown as JsonValue, inputDigest: jsonDigest(input as unknown as JsonValue) }
     const consumed = `rounds/r/consumed-${digestJson([result.stagePlanDigest, result.snapshotDigest]).slice(7)}`
+    await f.journal.write('rounds/r/progress', { phase: 'local', evaluations: [], decisions: [] })
     const write = f.journal.write.bind(f.journal)
     let supportWasReadable = false, interrupted = false
     f.journal.write = async (...args) => {
@@ -101,6 +104,18 @@ describe('GEPA science checkpoint provider', () => {
     expect((await f.provider().submit(envelope)).status).toBe('completed')
     expect(await f.journal.read('rounds/r/local')).toEqual({ ref: local.digest })
     expect(await f.journal.object(support.digest)).toEqual(support)
+    const later = seal({ stagePlanDigest: jsonDigest('later-plan'), candidateId: 'candidate-1',
+      outcome: 'advance', reasonCodes: [], supportDigest: support.digest })
+    const laterProgress = { phase: 'global-seed', evaluations: [], decisions: [decision, later] }
+    await f.journal.write('rounds/r/progress', laterProgress)
+    let progressWrites = 0
+    f.journal.write = async (...args) => {
+      if (args[0] === 'rounds/r/progress') progressWrites++
+      return write(...args)
+    }
+    await f.provider().project(input)
+    expect(progressWrites).toBe(0)
+    expect(await f.journal.read('rounds/r/progress')).toEqual(laterProgress)
   })
 
   it('rejects a stage name outside its closed journal projection before any write', async () => {

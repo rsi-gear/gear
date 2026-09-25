@@ -40,7 +40,11 @@ export class GepaArchiveViewProvider implements OperationProvider {
     if (envelope.kind !== this.manifest.kind || envelope.implementationDigest !== this.manifest.implementationDigest
       || envelope.inputDigest !== jsonDigest(envelope.input) || envelope.operationId !== envelope.idempotencyKey
       || Object.keys(envelope.limits).length) throw new Error('GEPA archive view identity drift')
-    const value = envelope.input as unknown as GepaArchiveViewInput
+    return this.validateInput(envelope.input as unknown as GepaArchiveViewInput)
+  }
+  private validateInput(value: GepaArchiveViewInput): {
+    value: GepaArchiveViewInput; base: ResearchArchive; parent: ResearchArchive
+  } {
     safeId(value.roundId)
     if (value.baseArchiveRef.schemaId !== 'gepa.research-archive.v1'
       || value.parentArchiveRef.schemaId !== 'gepa.research-archive.v1'
@@ -108,21 +112,33 @@ export class GepaArchiveViewProvider implements OperationProvider {
     if (record.stage === 'cancelled-before-start') throw new Error('Cancelled archive view cannot publish')
     if (record.completion) return { status: 'completed', completion: record.completion }
     try {
-      const frozenBase = await this.journal.freeze(value.roundId, 'archive-base',
-        () => seal({ archiveDigest: base.digest }))
-      if (frozenBase.archiveDigest !== base.digest) throw new Error('GEPA archive-base drift')
-      const completions = await this.journal.freeze(value.roundId, 'completions',
-        () => seal({ refs: value.completionRefs }))
-      if (digestJson(completions.refs) !== digestJson(value.completionRefs))
-        throw new Error('GEPA completion queue drift')
-      if (value.publishParentView) {
-        const frozenParent = await this.journal.freeze(value.roundId, 'parent-archive', () => parent)
-        if (frozenParent.digest !== parent.digest) throw new Error('GEPA parent archive drift')
-      }
+      await this.publishValidated(value, base, parent)
       const completion = this.completion(envelope, value.parentArchiveRef)
       await this.records.write(this.manifest.kind, envelope.operationId, { ...record, stage: 'complete', completion })
       return { status: 'completed', completion }
     } catch (error) { throw new ProviderReconcileError('GEPA archive view publication uncertain', { cause: error }) }
+  }
+  /** Idempotent old-journal projection for a durably committed Campaign decision. */
+  async project(input: GepaArchiveViewInput): Promise<void> {
+    const { value, base, parent } = this.validateInput(input)
+    if (await this.journal.read(`rounds/${value.roundId}/archive-base`)
+      && await this.published(value, base, parent)) return
+    await this.publishValidated(value, base, parent)
+    if (!await this.published(value, base, parent)) throw new Error('GEPA archive view projection unresolved')
+  }
+  private async publishValidated(value: GepaArchiveViewInput, base: ResearchArchive,
+    parent: ResearchArchive): Promise<void> {
+    const frozenBase = await this.journal.freeze(value.roundId, 'archive-base',
+      () => seal({ archiveDigest: base.digest }))
+    if (frozenBase.archiveDigest !== base.digest) throw new Error('GEPA archive-base drift')
+    const completions = await this.journal.freeze(value.roundId, 'completions',
+      () => seal({ refs: value.completionRefs }))
+    if (digestJson(completions.refs) !== digestJson(value.completionRefs))
+      throw new Error('GEPA completion queue drift')
+    if (value.publishParentView) {
+      const frozenParent = await this.journal.freeze(value.roundId, 'parent-archive', () => parent)
+      if (frozenParent.digest !== parent.digest) throw new Error('GEPA parent archive drift')
+    }
   }
   async cancel(envelope: OperationEnvelope): Promise<ProviderInspection> {
     this.input(envelope)
