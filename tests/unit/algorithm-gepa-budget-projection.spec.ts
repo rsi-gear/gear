@@ -11,9 +11,9 @@ const limits: BudgetLimits = { maxNewRolloutCells: 100, maxRepairCells: 10,
 function state(roundId: string, cells: number, heldCells = 0, budgetStartedAt?: number): CampaignState {
   return { spec: { campaignId: `search-${roundId}`, config: { request: { roundId } } }, spent: { rolloutCells: cells },
     ...(budgetStartedAt === undefined ? {} : { budgetStartedAt }),
-    operations: heldCells ? { active: { released: false, accounted: { rolloutCells: 2 },
+    operations: heldCells ? { active: { released: false, dispatchAdmitted: true, accounted: { rolloutCells: 2 },
       envelope: { limits: { rolloutCells: heldCells + 2 } } } } : {},
-    auxiliaryOperations: heldCells ? { repair: { pending: { released: false, accounted: {},
+    auxiliaryOperations: heldCells ? { repair: { pending: { released: false, dispatchAdmitted: true, accounted: {},
       envelope: { limits: { repairCells: 2 } } } } } : {},
   } as unknown as CampaignState
 }
@@ -37,6 +37,21 @@ describe('GEPA Campaign budget compatibility projection', () => {
     expect(second.cells).toBe(65)
     expect((await resumed.remaining('r1', { round: limits, evolution: limits })).cells).toBe(65)
     expect((await resumed.read<{ operations: unknown[] }>('budget'))?.operations).toHaveLength(2)
+  })
+
+  it('keeps planned main and auxiliary capacity out of the public ledger until dispatch admission', async () => {
+    const journal = new MemorySearchStore()
+    const committed = await projectGepaCampaignBudget(journal, 'r1', state('r1', 20, 0, 1000), 1000)
+    const planned = state('r1', 20, 5, 1000)
+    delete planned.operations.active!.dispatchAdmitted
+    delete planned.auxiliaryOperations!.repair!.pending!.dispatchAdmitted
+    expect(await projectGepaCampaignBudget(journal, 'r1', planned, 1000)).toEqual(committed)
+    expect((await journal.remaining('r1', { round: limits, evolution: limits })).cells).toBe(80)
+    const admitted = state('r1', 20, 5, 1000)
+    await projectGepaCampaignBudget(journal, 'r1', admitted, 1000)
+    const remaining = await journal.remaining('r1', { round: limits, evolution: limits })
+    expect(remaining.cells).toBe(75)
+    expect(remaining.repairCells).toBe(8)
   })
 
   it('does not create a ledger for admission or mutate another round before first dispatch', async () => {

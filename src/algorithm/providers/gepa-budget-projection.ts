@@ -18,7 +18,10 @@ function campaignUsage(state: CampaignState): { spent: Usage; held: Usage } {
     spent[resource] = state.spent[dimension] ?? 0
     held[resource] = 0
     for (const operation of operations) {
-      if (operation.released) continue
+      // Campaign reserves intent capacity internally, but the legacy journal
+      // exposes a reservation only after the physical dispatch is admitted.
+      // Phase callbacks must still observe the budget before the next effect.
+      if (operation.released || operation.dispatchAdmitted !== true) continue
       held[resource] += Math.max(0, (operation.envelope.limits[dimension] ?? 0) - (operation.accounted[dimension] ?? 0))
     }
     if (!Number.isSafeInteger(spent[resource]) || spent[resource] < 0 || !Number.isSafeInteger(held[resource]) || held[resource] < 0)
