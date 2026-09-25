@@ -44,6 +44,17 @@ function championParentRound(): RefinementRound {
 }
 
 describe('RefineStateStore', () => {
+  it('parses decoded round bytes with the same legacy rule as readRound', async () => {
+    const state = await store()
+    const round = roundFixture()
+    await state.writeRound(round)
+    const decoded = JSON.parse(await readFile(join(state.roundsPath, `${round.roundId}.json`), 'utf8')) as RefinementRound
+    expect(state.parseRound(decoded)).toEqual(await state.readRound(round.roundId))
+    decoded.status = 'not-a-status' as RefinementRound['status']
+    expect(() => state.parseRound(decoded)).toThrow(/round status/u)
+    await expect(state.readRound(round.roundId)).resolves.toBeDefined()
+  })
+
   it('persists an admitted champion parent without requiring it in the research population', async () => {
     const state = await store()
     const round = championParentRound()

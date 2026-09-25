@@ -242,7 +242,12 @@ export class RefineStateStore {
 
   async readRound(roundId: string): Promise<RefinementRound | undefined> {
     const value = await this.readJson<unknown>(this.roundFile(roundId))
-    return value === undefined ? undefined : this.validateRound(value)
+    return value === undefined ? undefined : this.parseRound(value)
+  }
+
+  /** Validate a decoded legacy round without touching its state directory. */
+  parseRound(value: unknown): RefinementRound {
+    return this.validateRound(value)
   }
 
   async writeRound(value: RefinementRound): Promise<void> {

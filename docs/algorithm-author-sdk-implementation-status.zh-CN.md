@@ -17,6 +17,12 @@
 
 独立复审结论为本片段无剩余功能阻塞，见 [A1.1 审计](experiments/author-a1-contract-review-20260926.zh-CN.md)。主审另外验证了 4 文件 47 项受影响回归，以及仓库外 npm/Python wheel 安装和既有跨语言 worker 接线。类型 fixture 使用仓库相对导入，仅证明 API 类型可组合，不作为外部作者试用通过的证据。
 
+## A1 历史候选输入切片
+
+`src/history/nonwinner.ts` 可以从明确的旧实验目录读取 rejected / rejected-for-substrate round 中的 sealed 候选，并在新 CAS 中建立 Harness 引用、binding 与来源记录。它验证原始 JSON 字节、旧 schema、Git commit/tree/不可变 ref、实际单一父提交、修改范围与 manifest 文件闭包；读取旧数据不调用旧 runtime，也不继承预算、未决操作或 measurement。
+
+当前仅支持新 profile 固定使用同一个物理 Git 仓库。新 CAS 必须与旧 state、原仓库及 Git common dir 分离；跨仓库搬运尚未实现。patchDigest 仅保留原记录，不声称重新构造验证。独立 history/state 回归 3 文件 44 项通过，见 [历史读取审计](experiments/author-a1-history-reader-review-20260926.zh-CN.md)。真实阿里云旧候选的导入探针及后续构建/执行仍分别验收。
+
 ## 当前限制
 
 A0 是运行基础。`propose/evaluate/select`、任务采样的真实 provider、通用运行 profile、五文件作者项目及新的 CLI 仍待后续 A1 切片；现有 A0 role/edit/rollout/measure 便利方法用于探针，v2 已拒绝这些假 operation。用户不能仅复制 v4 的搜索示例便运行真实实验。
@@ -32,7 +38,7 @@ A0 每次重放受 1 MiB 消息/历史与 256 KiB checkpoint 限制，超限明�
 | A0 功能基础 | 已提交并独立审计 |
 | A0 性能/历史盘点 | 真实历史格式清单已保存；Python 性能及 RSS 门未关闭；盘点不等于历史导入通过 |
 | A1 最小作者切片 | 实现中；真实 Hitch、外部作者体验、跨语言 provider 和非 winner 起点分别验收 |
-| A2 历史读取/复用 | 待实现；原目录保持只读，缺件必须明确报告 |
+| A2 历史读取/复用 | A1 已有狭义非 winner Harness 导入；报告、经验、模型制品等完整格式覆盖待实现 |
 | A3 统一宿主与内置接口 | 待实现 |
 | A4 RHO/长期流程 | 待实现 |
 | A5 训练适配 | 待实现；CPU 合同与真实权重/GPU 验证分别报告 |

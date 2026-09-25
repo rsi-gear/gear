@@ -1,7 +1,7 @@
-import { rm } from 'node:fs/promises'
+import { readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { EvolutionRegistryStore } from '../../src/state/evolution.js'
+import { EvolutionRegistryStore, validateEvolutionSpec } from '../../src/state/evolution.js'
 import { digestJson } from '../../src/state/digest.js'
 import { assertMetaReasoningEffortMatches } from '../../src/meta/sampling.js'
 import type { ChampionState, EvolutionSpec } from '../../src/types.js'
@@ -19,6 +19,20 @@ function spec(evolutionId: string): EvolutionSpec {
 }
 
 describe('EvolutionRegistryStore', () => {
+  it('validates decoded spec bytes with the same legacy rule as readSpec', async () => {
+    const root = join(process.env.TMPDIR ?? '/tmp', `refine-parse-spec-${crypto.randomUUID()}`)
+    roots.push(root)
+    const registry = new EvolutionRegistryStore(root)
+    const value = spec('evo-parse')
+    await registry.createEvolution({ spec: value, champion: champion() })
+    const decoded = JSON.parse(await readFile(
+      join(root, 'evolutions', value.evolutionId, 'spec.json'), 'utf8')) as EvolutionSpec
+    expect(validateEvolutionSpec(decoded)).toEqual(await registry.readSpec(value.evolutionId))
+    decoded.candidateGeneration.budget.finalizationReserveMs = -1
+    expect(() => validateEvolutionSpec(decoded)).toThrow(/finalization reserve/u)
+    await expect(registry.readSpec(value.evolutionId)).resolves.toBeDefined()
+  })
+
   it.each([-1, 60_001, 1.5])('rejects invalid finalization reserve %s', async reserve => {
     const root = join(process.env.TMPDIR ?? '/tmp', `refine-reserve-${crypto.randomUUID()}`)
     roots.push(root)
