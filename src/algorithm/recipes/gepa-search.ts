@@ -24,6 +24,7 @@ import type { BridgeSelectionDecision, EvaluationScope, EvaluationStageDecision,
   StageEvaluationPlan, StageResult, TaskUniverse } from '../../search/types.js'
 import { failureClusterGepaRecipe, type GepaRecipeOptions } from './gepa.js'
 import type { GepaSharedEpoch, GepaWork } from './gepa-policy.js'
+import type { GepaBudgetCut } from './gepa-budget.js'
 
 type ScienceStage = 'parents' | 'scope-preparation' | 'planning' | 'local' | 'nomination'
 type Phase = 'objective-initial-harness' | 'bootstrap' | 'bootstrap-failure-progress' | 'bootstrap-publication' | 'archive-view-checkpoint' |
@@ -56,6 +57,7 @@ export type CampaignFailureClusterRecipeOptions = {
   sharedEpochs?: Record<string, GepaSharedEpoch>;
   startingRegressionProposals?: RegressionProposal[];
   initialSnapshot?: Snapshot; initialSnapshotBindingSetRef?: BindingSetRef;
+  budgetCut?: GepaBudgetCut; roundStartedAt?: number;
   archiveStart?: { baseArchiveRef: ArtifactRef; parentArchiveRef: ArtifactRef;
     completionRefs: string[]; publishParentView: boolean;
     snapshotBindings: Record<string, BindingSetRef> };
@@ -98,10 +100,19 @@ function remainingBudget(snapshot: BudgetSnapshot | undefined, settings: SearchS
 export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipeOptions): Algorithm {
   const options = { ...input, admission: structuredClone(input.admission), seed: structuredClone(input.seed),
     heldOut: structuredClone(input.heldOut), settings: structuredClone(input.settings),
+    budgetCut: input.budgetCut ? structuredClone(input.budgetCut) : undefined,
     startingRegressionProposals: structuredClone(input.startingRegressionProposals ?? []) }
   validateSnapshot(options.admission.anchor); verifyDigest(options.seed); verifyDigest(options.heldOut)
   if (digestJson(options.parentPolicy.ref) !== digestJson(resolveParentPolicyRef(options.settings.search)))
     throw new Error('Campaign parent policy differs from frozen search settings')
+  if ((options.budgetCut === undefined) !== (options.roundStartedAt === undefined))
+    throw new Error('Campaign frozen budget cut and round start must be provided together')
+  if (options.budgetCut) {
+    verifyDigest(options.budgetCut)
+    if (options.budgetCut.roundId !== options.admission.roundId
+      || !Number.isSafeInteger(options.roundStartedAt) || options.roundStartedAt! < 0)
+      throw new Error('Campaign frozen budget admission drift')
+  }
   const resolution = resolveSizing(options.seed, options.settings.search.taskSetSizing)
   const implementationDigest = implementationClosureDigest(['recipes/gepa-search'], {
     admission: options.admission, seedDigest: options.seed.digest, heldOutDigest: options.heldOut.digest,
@@ -113,6 +124,7 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
     initialSnapshotDigest: options.initialSnapshot?.digest ?? options.admission.anchor.digest,
     initialSnapshotBindingSetRef: options.initialSnapshotBindingSetRef ?? options.anchorBindingSetRef,
     archiveStart: options.archiveStart ?? null,
+    budgetCut: options.budgetCut ?? null, roundStartedAt: options.roundStartedAt ?? null,
   })
   const archiveRef = (archive: ResearchArchive): ArtifactRef =>
     options.artifacts.putJson(archive as unknown as JsonValue, 'gepa.research-archive.v1')
@@ -142,7 +154,8 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
       sharedEpochs: options.sharedEpochs ?? {},
       initialSnapshot: options.initialSnapshot ?? options.admission.anchor,
       initialSnapshotBindingSetRef: options.initialSnapshotBindingSetRef ?? options.anchorBindingSetRef,
-      preserveLegacyExternalKeys: true }
+      preserveLegacyExternalKeys: true,
+      ...(options.budgetCut ? { budgetCut: options.budgetCut, roundStartedAt: options.roundStartedAt! } : {}) }
     const recipe = failureClusterGepaRecipe(innerOptions)
     innerRecipes.set(initialArchiveRef.digest, recipe)
     return recipe
@@ -410,6 +423,7 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
         roundIdentity: { evolutionId: options.admission.evolutionId, roundId: options.admission.roundId },
         universe: options.seed, plan, snapshot: anchor, processMode: options.settings.search.process.mode,
         progressProcessMode: options.settings.search.process.mode,
+        ...(options.budgetCut ? { budgetCut: options.budgetCut, roundStartedAt: options.roundStartedAt! } : {}),
         projectionPolicy: 'defer',
       } as unknown as JsonValue, { bindingSetRef: options.anchorBindingSetRef,
         limits: { rolloutCells: Math.min(plannedCells(options.seed, plan, anchor).length,

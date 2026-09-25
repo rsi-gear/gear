@@ -19,6 +19,7 @@ import { createScope, stagePlan } from '../../search/scopes.js'
 import { samplingEvidence } from '../../search/scope-sampling.js'
 import type { ScopeEpochPreparation } from '../../search/epochs.js'
 import type { ObjectiveBaseline } from '../../objective/scoring.js'
+import { SearchBudgetExceeded } from '../../search/store.js'
 import type { ParentSelectionPolicy } from '../../search/parent-selection.js'
 import type { BridgeSelectionDecision, CandidateWorkPlan, DiagnosisDossier, EvaluationScope, FailureCluster, GateDecision,
   EvaluationStageDecision, ParentSelectionDecision, ResearchArchive, ResearchFinding, SearchSettings, Snapshot, StageEvaluationPlan,
@@ -26,6 +27,7 @@ import type { BridgeSelectionDecision, CandidateWorkPlan, DiagnosisDossier, Eval
 import { chooseGepaBridge, chooseGepaParents, completeGepaScopePreparation, planGepaScopePreparation,
   updateGepaArchive, type GepaBaseline, type GepaLocal, type GepaPreparationPlan, type GepaWork } from './gepa-policy.js'
 import type { GepaSharedEpoch } from './gepa-policy.js'
+import type { GepaBudgetCut } from './gepa-budget.js'
 
 type Phase = 'scope-preparation' | 'parent-probe' | 'diagnosis' | 'planning-probe' | 'generation' | 'local'
   | 'bridge-reference-lookup' | 'bridge-reference-resolve' | 'bridge-reference' | 'bridge-reference-checkpoint' | 'bridge'
@@ -65,6 +67,7 @@ export type GepaRecipeOptions = { evolutionId: string; roundId: string; roundInd
   sharedEpochs?: Record<string, GepaSharedEpoch>; preserveLegacyExternalKeys?: boolean;
   initialSnapshot?: Snapshot; initialSnapshotBindingSetRef?: BindingSetRef;
   objectiveReferences?: Record<string, ObjectiveBaseline> }
+  & { budgetCut?: GepaBudgetCut; roundStartedAt?: number }
 
 function resultRef(outcome: OperationOutcome | undefined, field: string): ArtifactRef | null {
   if (outcome?.kind !== 'result' || !outcome.value || typeof outcome.value !== 'object' || Array.isArray(outcome.value)) return null
@@ -95,6 +98,7 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
     snapshotBindings: structuredClone(input.snapshotBindings), findings: structuredClone(input.findings ?? {}),
     handoffFindingDigests: structuredClone(input.handoffFindingDigests ?? {}),
     sharedEpochs: structuredClone(input.sharedEpochs ?? {}),
+    budgetCut: input.budgetCut ? structuredClone(input.budgetCut) : undefined,
     initialSnapshot: structuredClone(input.initialSnapshot ?? input.anchor),
     initialSnapshotBindingSetRef: input.initialSnapshotBindingSetRef ?? input.snapshotBindings[input.anchor.digest],
     objectiveReferences: structuredClone(input.objectiveReferences ?? {}) }
@@ -106,6 +110,15 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
   if (options.archive.universeDigest !== options.seed.digest || !options.archive.snapshots.some(item => item.digest === options.anchor.digest))
     throw new Error('GEPA archive must contain the frozen seed anchor')
   if (!Number.isSafeInteger(options.deadlineAt) || options.deadlineAt < 0) throw new Error('GEPA deadline must be frozen at admission')
+  if ((options.budgetCut === undefined) !== (options.roundStartedAt === undefined))
+    throw new Error('GEPA frozen budget cut and round start must be provided together')
+  if (options.budgetCut) {
+    if (!options.preserveLegacyExternalKeys)
+      throw new Error('GEPA layered budget requires frozen legacy operation keys')
+    verifyDigest(options.budgetCut)
+    if (options.budgetCut.roundId !== options.roundId || !Number.isSafeInteger(options.roundStartedAt)
+      || options.roundStartedAt! < 0) throw new Error('GEPA frozen budget admission drift')
+  }
   const policyRef = resolveParentPolicyRef(options.settings.search)
   const policy = input.parentPolicy ?? (options.settings.search.parentSampling === 'epsilon-greedy-gepa-v1'
     ? championGepaPolicy(policyRef) : scopedFrontierPolicy(policyRef))
@@ -142,7 +155,10 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
     preserveLegacyExternalKeys: options.preserveLegacyExternalKeys === true,
     initialSnapshotDigest: options.initialSnapshot.digest,
     initialSnapshotBindingSetRef,
-    objectiveReferences: options.objectiveReferences })
+    objectiveReferences: options.objectiveReferences,
+    budgetCut: options.budgetCut ?? null, roundStartedAt: options.roundStartedAt ?? null })
+  const legacyBudget = options.budgetCut ? { budgetCut: options.budgetCut,
+    roundStartedAt: options.roundStartedAt! } : {}
   const resolution = resolveSizing(options.seed, options.settings.search.taskSetSizing)
   const reference = (state: State, snapshot: Snapshot): BindingSetRef => {
     const found = state.snapshotBindings[snapshot.digest]
@@ -167,7 +183,7 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
       ...(options.preserveLegacyExternalKeys ? { roundIdentity: { evolutionId: options.evolutionId, roundId: options.roundId } } : {}),
       ...(options.preserveLegacyExternalKeys ? { projectionPolicy: 'defer' } : {}),
       ...(options.preserveLegacyExternalKeys ? { progressProcessMode: options.settings.search.process.mode } : {}),
-      universe, plan, snapshot, processMode } as unknown as JsonValue,
+      ...legacyBudget, universe, plan, snapshot, processMode } as unknown as JsonValue,
       { bindingSetRef: reference(state, snapshot), limits: { rolloutCells: missing.length, repairCells } }))
   }
   const result = (completed: Record<string, OperationOutcome>, key: string, plan: StageEvaluationPlan, snapshot: Snapshot): StageResult | null => {
@@ -274,6 +290,7 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
   const generationOperations = (state: State): OperationIntent[] => state.works.map((work, index) =>
     clocked(task(`generate-${index}`, 'gepa.generate', {
       ...(options.preserveLegacyExternalKeys ? { roundIdentity: { evolutionId: options.evolutionId, roundId: options.roundId } } : {}),
+      ...legacyBudget,
       workplan: work.workplan, dossier: work.dossier, scope: work.scope, parent: work.parent,
       plan: work.plan, baseline: state.localBaselines[work.workplan.candidateId], universe: options.seed,
       ...(options.preserveLegacyExternalKeys ? {
@@ -473,7 +490,7 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
         state.phase = 'diagnosis'
         return output(state, [clocked(task(`diagnose-${index}`, 'gepa.diagnose', {
           ...(options.preserveLegacyExternalKeys ? { roundIdentity: { evolutionId: options.evolutionId, roundId: options.roundId } } : {}),
-          snapshot: parent, universe: options.seed, taskIds: plan.taskIds, baseline: observed } as unknown as JsonValue,
+          ...legacyBudget, snapshot: parent, universe: options.seed, taskIds: plan.taskIds, baseline: observed } as unknown as JsonValue,
         { bindingSetRef: reference(state, parent), limits: {
           diagnosisInputTokens: options.settings.budgets.round.maxDiagnosisInputTokens,
           diagnosisOutputTokens: options.settings.budgets.round.maxDiagnosisOutputTokens } }))], false, undefined, context.budget)
@@ -483,6 +500,14 @@ export function failureClusterGepaRecipe(input: GepaRecipeOptions): Algorithm {
         const ref = resultRef(completed[`diagnose-${index}`], 'dossierRef')
         if (!ref) {
           const outcome = completed[`diagnose-${index}`]
+          if (outcome?.kind === 'error') {
+            const match = /^search budget exhausted: (time|(?:round\.|evolution\.)?(?:diagnosisInputTokens|diagnosisOutputTokens))$/u.exec(outcome.message)
+            if (outcome.code !== 'SEARCH_BUDGET_EXHAUSTED' || outcome.retryable !== false || !match
+              || new SearchBudgetExceeded(match[1]!).message !== outcome.message)
+              throw new Error('GEPA diagnosis returned an unverified execution error')
+            state.reasons.push(outcome.message)
+            state.batchIndex++; return startBatch(state, context)
+          }
           state.reasons.push(outcome?.kind === 'no-result' ? outcome.reason ?? 'diagnosis-unavailable' : 'diagnosis-unavailable')
           state.batchIndex++; return startBatch(state, context)
         }

@@ -5,7 +5,7 @@ import { BindingStore } from '../bindings.js'
 import { ProviderProtocolError, ProviderReconcileError } from '../provider-errors.js'
 import { FileProviderRecordBackend, type ArtifactCheckpoint, type ProviderRecordBackend } from '../runtime/persistence.js'
 import type { CompletionEnvelope, OperationEnvelope, OperationOutcome, OperationProvider, ProviderInspection,
-  ProviderManifest, ProviderSubmission, UsageReceipt } from '../contracts.js'
+  ProviderDispatchContext, ProviderManifest, ProviderSubmission, UsageReceipt } from '../contracts.js'
 import { canonicalJson, jsonDigest, type JsonValue } from '../schema.js'
 import { implementationClosureDigest } from '../data/identity.js'
 import { digestJson } from '../../state/digest.js'
@@ -22,9 +22,13 @@ import { validateSearchSchema } from '../../search/schema.js'
 import { GepaPhysicalExecutionError, hasPhysicalGenerationInspection, type PhysicalGenerationInspection } from './gepa-hooks.js'
 import { budgetFailure, SearchExecutionFailure, searchDeadline } from '../../search/recovery.js'
 import { SearchBudgetExceeded } from '../../search/store.js'
+import { zeroUsage, type Usage } from '../../search/store.js'
+import { firstGepaBudgetFailure, type GepaBudgetCut, type GepaBudgetFailure } from '../recipes/gepa-budget.js'
 
 type GepaKind = 'gepa.evaluate' | 'gepa.diagnose' | 'gepa.generate'
 export type GepaPhysicalRoundIdentity = { evolutionId: string; roundId: string }
+type LegacyBudgetInput = { budgetCut?: GepaBudgetCut; roundStartedAt?: number }
+type LegacyBudgetDecision = { digest: string; cost: Usage | null; failure: GepaBudgetFailure | 'diagnosisInputTokens' | 'diagnosisOutputTokens' | null }
 export type GepaLegacyPendingState = { state: 'running' | 'unknown' | 'not-started' | 'partially-complete';
   reason: string; handle?: string }
 type RecordValue = { schemaVersion: 1; operationId: string; inputDigest: string; implementationDigest: string;
@@ -35,6 +39,7 @@ type RecordValue = { schemaVersion: 1; operationId: string; inputDigest: string;
   diagnosisValue?: { facts: DiagnosisFact[]; inputTokens: number; outputTokens: number; failure?: SearchStageFailure };
   diagnosisValueDigest?: string; generatedValue?: GeneratedCandidate; generatedValueDigest?: string;
   pendingReason?: string; pendingState?: GepaLegacyPendingState['state']; pendingHandle?: string;
+  legacyBudgetDecision?: LegacyBudgetDecision;
   completion?: CompletionEnvelope }
 type Result = { outcome: OperationOutcome; usage: Record<string, number> }
 class PhysicalTransportPending extends Error {
@@ -203,6 +208,7 @@ abstract class GepaOperationProvider implements OperationProvider {
       || record.diagnosisValueDigest !== (record.diagnosisValue === undefined ? undefined : digestJson(record.diagnosisValue))
       || record.generatedValueDigest !== (record.generatedValue === undefined ? undefined : digestJson(record.generatedValue)))
       throw new Error('GEPA operation record drift')
+    if (record.legacyBudgetDecision) verifyDigest(record.legacyBudgetDecision)
     return record
   }
   private async create(envelope: OperationEnvelope, stage: RecordValue['stage'], request?: JsonValue): Promise<{ record: RecordValue; created: boolean }> {
@@ -226,7 +232,53 @@ abstract class GepaOperationProvider implements OperationProvider {
     return completion
   }
   protected abstract validate(envelope: OperationEnvelope): Promise<void>
-  protected freezeRequest(_envelope: OperationEnvelope): Promise<JsonValue | undefined> | JsonValue | undefined { return undefined }
+  protected freezeRequest(_envelope: OperationEnvelope, _context?: ProviderDispatchContext): Promise<JsonValue | undefined> | JsonValue | undefined { return undefined }
+  protected legacyReserveCost(_envelope: OperationEnvelope, _record: RecordValue): Promise<Usage | null> | Usage | null {
+    return null
+  }
+  protected legacyBeforeReserveFailure(_envelope: OperationEnvelope, _record: RecordValue): Promise<LegacyBudgetDecision['failure']> | LegacyBudgetDecision['failure'] {
+    return null
+  }
+  protected legacyBudgetDecision(record: RecordValue): LegacyBudgetDecision | undefined {
+    return record.legacyBudgetDecision
+  }
+  private legacyBudgetInput(envelope: OperationEnvelope): { cut: GepaBudgetCut; roundStartedAt: number } | undefined {
+    const input = envelope.input as LegacyBudgetInput & { roundIdentity?: GepaPhysicalRoundIdentity }
+    if (input.budgetCut === undefined && input.roundStartedAt === undefined) return undefined
+    if (!input.budgetCut || !Number.isSafeInteger(input.roundStartedAt) || input.roundStartedAt! < 0)
+      throw new ProviderProtocolError('GEPA frozen budget admission is incomplete')
+    verifyDigest(input.budgetCut)
+    const round = this.roundIdentity(input.roundIdentity)
+    if (!round || input.budgetCut.roundId !== round.roundId)
+      throw new ProviderProtocolError('GEPA frozen budget admission round mismatch')
+    return { cut: input.budgetCut, roundStartedAt: input.roundStartedAt! }
+  }
+  private budgetDelta(context: ProviderDispatchContext): { spent: Usage; reserved: Usage } {
+    const dimensions = { cells: 'rolloutCells', repairCells: 'repairCells',
+      diagnosisInputTokens: 'diagnosisInputTokens', diagnosisOutputTokens: 'diagnosisOutputTokens',
+      generationTokens: 'generationTokens', generationRequests: 'generationRequests' } as const
+    const spent = zeroUsage(), reserved = zeroUsage()
+    for (const [resource, dimension] of Object.entries(dimensions) as Array<[keyof Usage, string]>) {
+      spent[resource] = context.spent[dimension] ?? 0
+      reserved[resource] = context.reservedExcludingSelf[dimension] ?? 0
+      if (!Number.isSafeInteger(spent[resource]) || spent[resource] < 0
+        || !Number.isSafeInteger(reserved[resource]) || reserved[resource] < 0)
+        throw new ProviderProtocolError('GEPA Campaign budget snapshot is invalid')
+    }
+    return { spent, reserved }
+  }
+  protected legacyRemaining(envelope: OperationEnvelope, context: ProviderDispatchContext,
+    resource: keyof Usage): number | null {
+    const budget = this.legacyBudgetInput(envelope)
+    if (!budget) return null
+    const delta = this.budgetDelta(context)
+    const used = delta.spent[resource] + delta.reserved[resource]
+    const bounds = (['round', 'evolution'] as const).flatMap(layer => {
+      const limit = budget.cut[layer].limit[resource]
+      return limit === null ? [] : [limit - budget.cut[layer].used[resource] - used]
+    })
+    return bounds.length ? Math.min(...bounds) : null
+  }
   protected startsBudgetClock(_envelope: OperationEnvelope, _record: RecordValue): boolean {
     return !this.deadlineExpired()
   }
@@ -268,14 +320,46 @@ abstract class GepaOperationProvider implements OperationProvider {
   }
   async preflight(envelope: OperationEnvelope): Promise<void | { startsBudgetClock: boolean }> {
     this.check(envelope); await this.validate(envelope)
+    if (this.legacyBudgetInput(envelope)) return undefined
     return this.deadlineExpired() ? { startsBudgetClock: false } : undefined
   }
-  async prepareForDispatch(envelope: OperationEnvelope): Promise<{ startsBudgetClock: boolean }> {
+  async prepareForDispatch(envelope: OperationEnvelope,
+    context?: ProviderDispatchContext): Promise<{ startsBudgetClock: boolean }> {
     // Preparation may freeze a trusted cache split, but cannot start a physical
     // effect. A crash before the Campaign clock commit reuses this exact plan.
     await this.preflight(envelope)
     const existing = await this.read(envelope)
-    const record = existing ?? (await this.create(envelope, 'prepared', await this.freezeRequest(envelope))).record
+    const record = existing ?? (await this.create(envelope, 'prepared', await this.freezeRequest(envelope, context))).record
+    const budget = this.legacyBudgetInput(envelope)
+    if (budget) {
+      if (!context) throw new ProviderProtocolError('GEPA layered budget dispatch context is required')
+      if (context.dispatchAdmitted) {
+        if (!record.legacyBudgetDecision) throw new ProviderProtocolError('GEPA admitted dispatch has no frozen budget decision')
+      } else {
+        if (record.stage !== 'prepared') throw new ProviderProtocolError('GEPA started effect has no durable dispatch admission')
+        const cost = await this.legacyReserveCost(envelope, record)
+        const early = await this.legacyBeforeReserveFailure(envelope, record)
+        const failure = early ?? (cost === null ? null : firstGepaBudgetFailure({
+          cut: budget.cut, delta: this.budgetDelta(context), cost,
+          roundStartedAt: budget.roundStartedAt,
+          ...(context.budgetStartedAt === undefined ? {} : { campaignBudgetStartedAt: context.budgetStartedAt }),
+          now: Date.now() }))
+        if (!failure && cost) {
+          const dimensions = { rolloutCells: 'cells', repairCells: 'repairCells',
+            diagnosisInputTokens: 'diagnosisInputTokens', diagnosisOutputTokens: 'diagnosisOutputTokens',
+            generationTokens: 'generationTokens', generationRequests: 'generationRequests' } as const
+          for (const dimension of this.manifest.meteredDimensions) {
+            const resource = dimensions[dimension as keyof typeof dimensions]
+            if (!resource || cost[resource] > envelope.limits[dimension]!)
+              throw new ProviderProtocolError('GEPA frozen reservation is below physical cost')
+          }
+        }
+        record.legacyBudgetDecision = seal({ cost, failure })
+        await this.records.write(envelope.kind, envelope.operationId, record)
+      }
+      return { startsBudgetClock: record.legacyBudgetDecision!.cost !== null
+        && record.legacyBudgetDecision!.failure === null }
+    }
     return { startsBudgetClock: envelope.startsBudgetClock === true && this.startsBudgetClock(envelope, record) }
   }
   async inspect(envelope: OperationEnvelope): Promise<ProviderInspection> {
@@ -295,6 +379,8 @@ abstract class GepaOperationProvider implements OperationProvider {
   async submit(envelope: OperationEnvelope): Promise<ProviderSubmission> {
     await this.preflight(envelope)
     const existing = await this.read(envelope)
+    if (this.legacyBudgetInput(envelope) && !existing?.legacyBudgetDecision)
+      throw new ProviderProtocolError('GEPA layered budget dispatch was not prepared')
     let createdRecord: { record: RecordValue; created: boolean }
     try { createdRecord = await this.create(envelope, 'started', existing ? undefined : await this.freezeRequest(envelope)) }
     catch (error) {
@@ -359,7 +445,7 @@ abstract class GepaOperationProvider implements OperationProvider {
   }
 }
 
-type EvaluateInput = { roundIdentity?: GepaPhysicalRoundIdentity; universe: TaskUniverse; plan: StageEvaluationPlan; snapshot: Snapshot;
+type EvaluateInput = LegacyBudgetInput & { roundIdentity?: GepaPhysicalRoundIdentity; universe: TaskUniverse; plan: StageEvaluationPlan; snapshot: Snapshot;
   processMode: 'off' | 'auto' | 'required'; progressProcessMode?: 'off' | 'auto' | 'required';
   projectionPolicy?: 'complete' | 'defer' }
 type FrozenEvaluationRequest = { missing: CellIdentity[]; cached: EvidenceCell[]; repairCells: number }
@@ -394,7 +480,8 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
       artifacts, bindings, ['rolloutCells', 'repairCells'],
       { type: 'object', required: ['universe', 'plan', 'snapshot', 'processMode'], properties: { roundIdentity: { type: 'object',
         required: ['evolutionId', 'roundId'], properties: { evolutionId: { type: 'string' }, roundId: { type: 'string' } },
-        additionalProperties: false }, universe: { type: 'any' }, plan: { type: 'any' },
+        additionalProperties: false }, budgetCut: { type: 'any' }, roundStartedAt: { type: 'integer' },
+        universe: { type: 'any' }, plan: { type: 'any' },
         snapshot: { type: 'any' }, processMode: { type: 'string', enum: ['off', 'auto', 'required'] },
         progressProcessMode: { type: 'string', enum: ['off', 'auto', 'required'] },
         projectionPolicy: { type: 'string', enum: ['complete', 'defer'] } }, additionalProperties: false },
@@ -457,10 +544,11 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     try { await current }
     catch (error) { throw new ProviderReconcileError(error instanceof Error ? error.message : String(error), { cause: error }) }
   }
-  override async prepareForDispatch(envelope: OperationEnvelope): Promise<{ startsBudgetClock: boolean }> {
+  override async prepareForDispatch(envelope: OperationEnvelope,
+    context?: ProviderDispatchContext): Promise<{ startsBudgetClock: boolean }> {
     await this.preflight(envelope)
     await this.progress(envelope)
-    return super.prepareForDispatch(envelope)
+    return super.prepareForDispatch(envelope, context)
   }
   private cellId(identity: CellIdentity): string { return cellKey(identity).slice(7) }
   private projectionId(envelope: OperationEnvelope, identity: CellIdentity): string {
@@ -543,6 +631,12 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     if (!request) throw new ProviderProtocolError('GEPA evaluation dispatch plan missing')
     return request.missing.length > 0 && request.missing.length <= envelope.limits.rolloutCells!
       && request.repairCells <= envelope.limits.repairCells!
+  }
+  protected override legacyReserveCost(_envelope: OperationEnvelope, record: RecordValue): Usage | null {
+    const request = record.request as unknown as FrozenEvaluationRequest | undefined
+    if (!request) throw new ProviderProtocolError('GEPA evaluation dispatch plan missing')
+    return request.missing.length ? { ...zeroUsage(), cells: request.missing.length,
+      repairCells: request.repairCells } : null
   }
   protected async validate(envelope: OperationEnvelope): Promise<void> {
     const { universe, plan, snapshot, processMode, projectionPolicy } = this.input(envelope)
@@ -722,6 +816,8 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     const { plan, snapshot, universe } = this.input(envelope)
     const request = record.request as unknown as FrozenEvaluationRequest
     const requested = request.missing
+    const denied = this.legacyBudgetDecision(record)?.failure
+    if (denied) return this.result(envelope, record, [], budgetFailure(denied), true)
     if (requested.length > envelope.limits.rolloutCells! || request.repairCells > envelope.limits.repairCells!)
       return { outcome: { kind: 'no-result', reason: 'rollout-cell-budget-exhausted' },
       usage: { rolloutCells: 0, repairCells: 0 } }
@@ -863,7 +959,7 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
   }
 }
 
-type DiagnoseInput = { roundIdentity?: GepaPhysicalRoundIdentity; snapshot: Snapshot; universe: TaskUniverse;
+type DiagnoseInput = LegacyBudgetInput & { roundIdentity?: GepaPhysicalRoundIdentity; snapshot: Snapshot; universe: TaskUniverse;
   taskIds: string[]; baseline: StageResult }
 export class GepaDiagnosisProvider extends GepaOperationProvider {
   private readonly identityDigest: string
@@ -875,6 +971,7 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
       { type: 'object', required: ['snapshot', 'universe', 'taskIds', 'baseline'], properties: {
         roundIdentity: { type: 'object', required: ['evolutionId', 'roundId'], properties: {
           evolutionId: { type: 'string' }, roundId: { type: 'string' } }, additionalProperties: false },
+        budgetCut: { type: 'any' }, roundStartedAt: { type: 'integer' },
         snapshot: { type: 'any' }, universe: { type: 'any' }, taskIds: { type: 'array', items: { type: 'string' } }, baseline: { type: 'any' } }, additionalProperties: false },
       { type: 'object', required: ['dossierRef'], properties: { dossierRef: { type: 'any' } }, additionalProperties: false }, records)
     this.identityDigest = digestJson([physical.integrity, physical.sanitizationPolicyDigest])
@@ -901,11 +998,18 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
       throw new ProviderProtocolError('GEPA frozen diagnosis dossier does not match its parent evidence')
     return dossier
   }
-  protected override async freezeRequest(envelope: OperationEnvelope): Promise<JsonValue> {
+  protected override async freezeRequest(envelope: OperationEnvelope, context?: ProviderDispatchContext): Promise<JsonValue> {
     const { snapshot, universe, taskIds, baseline } = this.input(envelope)
+    if (this.input(envelope).budgetCut && !context)
+      throw new ProviderProtocolError('GEPA diagnosis budget context is required before freezing request')
+    const inputCap = context ? this.legacyRemaining(envelope, context, 'diagnosisInputTokens') : null
+    const outputCap = context ? this.legacyRemaining(envelope, context, 'diagnosisOutputTokens') : null
     const request = seal({ snapshot, universe, taskIds, cells: baseline.cells,
-      maxInputTokens: envelope.limits.diagnosisInputTokens!, maxOutputTokens: envelope.limits.diagnosisOutputTokens! })
-    if (this.legacyJournal) {
+      maxInputTokens: inputCap ?? envelope.limits.diagnosisInputTokens!,
+      maxOutputTokens: outputCap ?? envelope.limits.diagnosisOutputTokens! })
+    // The old runtime rejects a zero remaining diagnosis cap from inside the
+    // input-freeze callback, so there is no legacy input pointer to publish.
+    if (this.legacyJournal && request.maxInputTokens !== 0 && request.maxOutputTokens !== 0) {
       const round = this.roundIdentity(this.input(envelope).roundIdentity)!
       const frozen = await this.legacyJournal.freeze(round.roundId, `${this.legacyName(envelope)}-input`, () => request)
       verifyDigest(frozen)
@@ -923,8 +1027,9 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
     }
     return request as unknown as JsonValue
   }
-  override async prepareForDispatch(envelope: OperationEnvelope): Promise<{ startsBudgetClock: boolean }> {
-    const disposition = await super.prepareForDispatch(envelope)
+  override async prepareForDispatch(envelope: OperationEnvelope,
+    context?: ProviderDispatchContext): Promise<{ startsBudgetClock: boolean }> {
+    const disposition = await super.prepareForDispatch(envelope, context)
     const record = await this.read(envelope)
     return !record?.diagnosisValue && await this.completedLegacyDossier(envelope)
       ? { startsBudgetClock: false } : disposition
@@ -932,6 +1037,22 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
   protected override startsBudgetClock(envelope: OperationEnvelope, _record: RecordValue): boolean {
     return !this.deadlineExpired() && envelope.limits.diagnosisInputTokens! > 0
       && envelope.limits.diagnosisOutputTokens! > 0
+  }
+  protected override async legacyReserveCost(_envelope: OperationEnvelope, record: RecordValue): Promise<Usage | null> {
+    if (await this.completedLegacyDossier(_envelope)) return null
+    const request = record.request as { maxInputTokens?: number; maxOutputTokens?: number } | undefined
+    if (!request) throw new ProviderProtocolError('GEPA diagnosis dispatch plan missing')
+    if (request.maxInputTokens === 0 || request.maxOutputTokens === 0) return null
+    return { ...zeroUsage(), diagnosisInputTokens: request.maxInputTokens!,
+      diagnosisOutputTokens: request.maxOutputTokens! }
+  }
+  protected override async legacyBeforeReserveFailure(envelope: OperationEnvelope,
+    record: RecordValue): Promise<LegacyBudgetDecision['failure']> {
+    if (await this.completedLegacyDossier(envelope)) return null
+    const request = record.request as { maxInputTokens?: number; maxOutputTokens?: number } | undefined
+    if (!request) throw new ProviderProtocolError('GEPA diagnosis dispatch plan missing')
+    return request.maxInputTokens === 0 ? 'diagnosisInputTokens'
+      : request.maxOutputTokens === 0 ? 'diagnosisOutputTokens' : null
   }
   protected override physicalKey(envelope: OperationEnvelope): string {
     const { roundIdentity, snapshot, baseline, taskIds } = this.input(envelope)
@@ -1029,17 +1150,36 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
       return { outcome: { kind: 'result', value: { dossierRef } },
         usage: { diagnosisInputTokens: 0, diagnosisOutputTokens: 0 } }
     }
-    if (record.request && canonicalJson(record.request) !== canonicalJson(seal({
-      snapshot: this.input(envelope).snapshot, universe: this.input(envelope).universe,
-      taskIds: this.input(envelope).taskIds, cells: this.input(envelope).baseline.cells,
-      maxInputTokens: envelope.limits.diagnosisInputTokens!, maxOutputTokens: envelope.limits.diagnosisOutputTokens!,
-    }) as unknown as JsonValue)) throw new ProviderProtocolError('GEPA diagnosis frozen request drift')
+    const denied = this.legacyBudgetDecision(record)?.failure
+    if (denied) return { outcome: { kind: 'error', code: 'SEARCH_BUDGET_EXHAUSTED',
+      message: new SearchBudgetExceeded(denied).message, retryable: false },
+      usage: { diagnosisInputTokens: 0, diagnosisOutputTokens: 0 } }
+    const frozenCaps = record.request as unknown as { maxInputTokens: number; maxOutputTokens: number } | undefined
+    const maxInputTokens = frozenCaps?.maxInputTokens ?? envelope.limits.diagnosisInputTokens!
+    const maxOutputTokens = frozenCaps?.maxOutputTokens ?? envelope.limits.diagnosisOutputTokens!
+    if (record.request) {
+      const request = record.request as unknown as { snapshot: Snapshot; universe: TaskUniverse; taskIds: string[];
+        cells: EvidenceCell[]; maxInputTokens: number; maxOutputTokens: number }
+      const input = this.input(envelope)
+      if (request.snapshot.digest !== input.snapshot.digest || request.universe.digest !== input.universe.digest
+        || canonicalJson(request.taskIds) !== canonicalJson(input.taskIds)
+        || canonicalJson(request.cells as unknown as JsonValue) !== canonicalJson(input.baseline.cells as unknown as JsonValue)
+        || !Number.isSafeInteger(request.maxInputTokens) || request.maxInputTokens < 0
+        || !Number.isSafeInteger(request.maxOutputTokens) || request.maxOutputTokens < 0
+        || request.maxInputTokens > envelope.limits.diagnosisInputTokens!
+        || request.maxOutputTokens > envelope.limits.diagnosisOutputTokens!)
+        throw new ProviderProtocolError('GEPA diagnosis frozen request drift')
+      const cost = this.legacyBudgetDecision(record)?.cost
+      if (cost && (cost.diagnosisInputTokens !== request.maxInputTokens
+        || cost.diagnosisOutputTokens !== request.maxOutputTokens))
+        throw new ProviderProtocolError('GEPA diagnosis frozen reservation drift')
+    }
     const inspectedFailure = this.legacyInvocationEnabled ? this.capturedInspectionFailure(envelope) : undefined
     if (inspectedFailure) return this.result(envelope, record, { facts: [], failure: inspectedFailure.failure,
-      inputTokens: envelope.limits.diagnosisInputTokens!, outputTokens: envelope.limits.diagnosisOutputTokens! })
-    if (envelope.limits.diagnosisInputTokens === 0 || envelope.limits.diagnosisOutputTokens === 0)
+      inputTokens: maxInputTokens, outputTokens: maxOutputTokens })
+    if (maxInputTokens === 0 || maxOutputTokens === 0)
       return { outcome: { kind: 'no-result', reason: this.input(envelope).roundIdentity
-        ? budgetFailure(envelope.limits.diagnosisInputTokens === 0 ? 'diagnosisInputTokens' : 'diagnosisOutputTokens').message
+        ? budgetFailure(maxInputTokens === 0 ? 'diagnosisInputTokens' : 'diagnosisOutputTokens').message
         : 'diagnosis-budget-exhausted' },
         usage: { diagnosisInputTokens: 0, diagnosisOutputTokens: 0 } }
     const timedOut = () => this.result(envelope, record, { facts: [], failure: budgetFailure('time'),
@@ -1057,7 +1197,7 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
           inspectionFailed = true
           this.inspectionSignal()
           if (error instanceof SearchExecutionFailure) return this.result(envelope, record, { facts: [], failure: error.failure,
-            inputTokens: envelope.limits.diagnosisInputTokens!, outputTokens: envelope.limits.diagnosisOutputTokens! })
+            inputTokens: maxInputTokens, outputTokens: maxOutputTokens })
           if (error instanceof SearchProtocolError) throw error
         }
       }
@@ -1074,12 +1214,12 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
     try {
       this.markPhysicalAttempt(envelope)
       value = await this.physical.diagnose({ snapshot, universe, taskIds, cells: baseline.cells,
-        idempotencyKey: record.externalKey, maxInputTokens: envelope.limits.diagnosisInputTokens!,
-        maxOutputTokens: envelope.limits.diagnosisOutputTokens!, signal: this.physicalSignal() })
+        idempotencyKey: record.externalKey, maxInputTokens,
+        maxOutputTokens, signal: this.physicalSignal() })
     } catch (error) {
       this.inspectionSignal()
       if (error instanceof SearchExecutionFailure) return this.result(envelope, record, { facts: [], failure: error.failure,
-        inputTokens: envelope.limits.diagnosisInputTokens!, outputTokens: envelope.limits.diagnosisOutputTokens! })
+        inputTokens: maxInputTokens, outputTokens: maxOutputTokens })
       if (error instanceof SearchProtocolError) throw error
       let reason = error instanceof Error ? error.message : String(error)
       let inspected: Awaited<ReturnType<NonNullable<DiagnosisProvider['inspectDiagnosis']>>> | undefined
@@ -1091,8 +1231,8 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
         catch (inspectionError) {
           this.inspectionSignal()
           if (inspectionError instanceof SearchExecutionFailure) return this.result(envelope, record, {
-            facts: [], failure: inspectionError.failure, inputTokens: envelope.limits.diagnosisInputTokens!,
-            outputTokens: envelope.limits.diagnosisOutputTokens! })
+            facts: [], failure: inspectionError.failure, inputTokens: maxInputTokens,
+            outputTokens: maxOutputTokens })
           if (inspectionError instanceof SearchProtocolError) throw inspectionError
           reason = inspectionError instanceof Error ? inspectionError.message : String(inspectionError)
         }
@@ -1104,7 +1244,9 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
     return this.result(envelope, record, value)
   }
   protected async recover(envelope: OperationEnvelope, record: RecordValue): Promise<'replay-safe' | 'running' | 'unknown'> {
-    if (envelope.limits.diagnosisInputTokens === 0 || envelope.limits.diagnosisOutputTokens === 0)
+    const request = record.request as unknown as { maxInputTokens: number; maxOutputTokens: number } | undefined
+    if (this.legacyBudgetDecision(record)?.failure || request?.maxInputTokens === 0 || request?.maxOutputTokens === 0
+      || envelope.limits.diagnosisInputTokens === 0 || envelope.limits.diagnosisOutputTokens === 0)
       return 'replay-safe'
     if (!this.physical.inspectDiagnosis)
       return this.legacyInvocationEnabled && !!this.input(envelope).roundIdentity ? 'replay-safe' : 'unknown'
@@ -1135,7 +1277,7 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
   }
 }
 
-type GenerateInput = { roundIdentity?: GepaPhysicalRoundIdentity; workplan: CandidateWorkPlan; dossier: DiagnosisDossier; scope: EvaluationScope;
+type GenerateInput = LegacyBudgetInput & { roundIdentity?: GepaPhysicalRoundIdentity; workplan: CandidateWorkPlan; dossier: DiagnosisDossier; scope: EvaluationScope;
   parent: Snapshot; plan: StageEvaluationPlan; baseline: StageResult; universe: TaskUniverse;
   findings: ResearchFinding[]; handoffFindingDigests?: string[]; processMode: 'off' | 'auto' | 'required' }
 export type GepaGenerationMetering = { generationTokens: boolean; generationRequests: boolean }
@@ -1154,6 +1296,7 @@ export class GepaGenerationProvider extends GepaOperationProvider {
       { type: 'object', required: ['workplan', 'dossier', 'scope', 'parent', 'plan', 'baseline', 'universe', 'findings', 'processMode'],
         properties: { roundIdentity: { type: 'object', required: ['evolutionId', 'roundId'], properties: {
           evolutionId: { type: 'string' }, roundId: { type: 'string' } }, additionalProperties: false },
+          budgetCut: { type: 'any' }, roundStartedAt: { type: 'integer' },
           workplan: { type: 'any' }, dossier: { type: 'any' }, scope: { type: 'any' }, parent: { type: 'any' },
           plan: { type: 'any' }, baseline: { type: 'any' }, universe: { type: 'any' }, findings: { type: 'array', items: { type: 'any' } },
           handoffFindingDigests: { type: 'array', items: { type: 'string' } },
@@ -1164,6 +1307,11 @@ export class GepaGenerationProvider extends GepaOperationProvider {
   private input(envelope: OperationEnvelope): GenerateInput { return envelope.input as unknown as GenerateInput }
   protected override startsBudgetClock(envelope: OperationEnvelope, _record: RecordValue): boolean {
     return !this.deadlineExpired() && !this.budgetInsufficient(envelope, this.input(envelope).workplan)
+  }
+  protected override legacyReserveCost(envelope: OperationEnvelope, _record: RecordValue): Usage {
+    const budget = this.input(envelope).workplan.generationBudget
+    return { ...zeroUsage(), generationTokens: budget.maxTokens ?? 0,
+      generationRequests: budget.maxModelRequests ?? 0 }
   }
   protected override physicalKey(envelope: OperationEnvelope): string {
     const { roundIdentity, workplan } = this.input(envelope)
@@ -1287,6 +1435,9 @@ export class GepaGenerationProvider extends GepaOperationProvider {
   }
   protected async execute(envelope: OperationEnvelope, record: RecordValue, newlyStarted: boolean): Promise<Result> {
     if (record.generatedValue) return this.result(envelope, record, record.generatedValue)
+    const denied = this.legacyBudgetDecision(record)?.failure
+    if (denied) return this.result(envelope, record, seal({ changedPaths: [],
+      reason: new SearchBudgetExceeded(denied).message, usage: { tokens: 0, requests: 0 } }))
     const inspectedFailure = this.legacyInvocationEnabled ? this.capturedInspectionFailure(envelope) : undefined
     if (inspectedFailure) return this.result(envelope, record, this.executionFailure(envelope, inspectedFailure))
     const input = this.input(envelope)

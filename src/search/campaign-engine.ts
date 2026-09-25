@@ -16,6 +16,7 @@ import { GepaObjectiveReferenceProvider } from '../algorithm/providers/gepa-obje
 import { ProviderProtocolError, ProviderReconcileError } from '../algorithm/provider-errors.js'
 import { projectGepaCampaignBudget } from '../algorithm/providers/gepa-budget-projection.js'
 import { campaignFailureClusterRecipe } from '../algorithm/recipes/gepa-search.js'
+import { captureGepaBudgetCut, type GepaBudgetCut } from '../algorithm/recipes/gepa-budget.js'
 import { AlgorithmRuntime, type CampaignState } from '../algorithm/runtime/engine.js'
 import { JournalArtifactStore, JournalCampaignStore, SearchJournalProviderRecordBackend } from '../algorithm/runtime/persistence.js'
 import type { JsonValue } from '../algorithm/schema.js'
@@ -48,6 +49,7 @@ export type CampaignSearchHost = { root?: string; hookImplementationDigest?: str
 type SearchCampaignExtensions = CampaignAdmissionExtensions & {
   sharedEpochs: Record<string, GepaSharedEpoch>
   initialSnapshotDigest: string | null
+  budgetCut: GepaBudgetCut
 }
 type SearchCampaignAdmission = FrozenCampaignAdmission<SearchCampaignExtensions>
 type ValidatedSearch = Awaited<ReturnType<SearchExecutionRuntime['validate']>>
@@ -135,7 +137,7 @@ export class CampaignFailureClusterSearch {
   /** Rebuilds the exact frozen Campaign host for the public run and auxiliary repair entrypoints. */
   async openCampaignSearchRuntime(request: SearchAdmission, options: {
     current?: ValidatedSearch; frozenAdmission?: SearchCampaignAdmission;
-    startedAt?: number; preview?: boolean } = {}) {
+    startedAt?: number; preview?: boolean; budgetCut?: GepaBudgetCut } = {}) {
     safeId(request.roundId)
     const { seed, heldOut, resolvedSettings } = options.current ?? await this.validate(request)
     const admitted: SearchAdmission = { ...request, settings: resolvedSettings }
@@ -170,6 +172,12 @@ export class CampaignFailureClusterSearch {
         !== digestJson(request)) throw new Error('Campaign search request changed on resume')
     }
     const startedAt = options.startedAt ?? frozenAdmission?.startedAt ?? Date.now()
+    const budgetCut = frozenAdmission?.budgetCut ?? options.budgetCut
+      ?? await captureGepaBudgetCut(this.store, request.roundId, resolvedSettings.budgets)
+    verifyDigest(budgetCut)
+    if (budgetCut.roundId !== request.roundId || options.budgetCut
+      && frozenAdmission && options.budgetCut.digest !== frozenAdmission.budgetCut.digest)
+      throw new Error('Campaign frozen budget cut changed on resume')
     const installedArchive = frozenAdmission
       ? (frozenAdmission.startingArchiveDigest
         ? await this.store.object<ResearchArchive>(frozenAdmission.startingArchiveDigest) : null)
@@ -241,6 +249,7 @@ export class CampaignFailureClusterSearch {
     const recipe = campaignFailureClusterRecipe({ admission: admitted, seed, heldOut, settings: resolvedSettings,
       artifacts, bindingSchema: harnessBindingSchema, anchorBindingSetRef, deadlineAt, parentPolicy: policy,
       initialSnapshot, initialSnapshotBindingSetRef,
+      budgetCut, roundStartedAt: startedAt,
       findings, handoffFindingDigests, sharedEpochs, startingRegressionProposals,
       ...(archiveStart ? { archiveStart } : {}) })
     const spec: CampaignSpec = { campaignId: campaignSearchId(request.roundId),
@@ -287,7 +296,7 @@ export class CampaignFailureClusterSearch {
     ], spec, { store: campaignStore, artifacts })
     if (!options.preview) await runtime.hydrate()
     return { runtime, validator: this.validator, artifacts, admitted, seed, heldOut, resolvedSettings,
-      recipe, policy, startedAt, savedAdmission, installedArchive, completionRefs, startingBudget,
+      recipe, policy, startedAt, savedAdmission, installedArchive, completionRefs, startingBudget, budgetCut,
       sharedEpochs, handoffFindingDigests, startingRegressionProposals, initialSnapshotDigest,
       roundRecipeIdentity: digestJson(recipe.describe()),
       legacyProviders: [evaluationProvider, diagnosisProvider, generationProvider] as const,
@@ -303,18 +312,20 @@ export class CampaignFailureClusterSearch {
     // archive/champion tuple without admitting a new run or invoking science.
     if (inspected.kind === 'commit') return this.validator.reconcile(request.roundId, inspected.intent)
     let preparedHost: Awaited<ReturnType<CampaignFailureClusterSearch['openCampaignSearchRuntime']>> | undefined
-    const claimed = await claimCampaignRun<SearchCampaignExtensions>({ store: this.store,
+    const claimed = await claimCampaignRun<SearchCampaignExtensions, GepaBudgetCut>({ store: this.store,
       request, signal, inspected, providerIntegrity: this.provider.integrity,
       diagnosisIntegrity: this.diagnosis.integrity,
       sanitizationPolicyDigest: this.diagnosis.sanitizationPolicyDigest,
       validate: () => this.validate(request),
-      prepareExtensions: async (current, startedAt) => {
-        const prepared = await this.openCampaignSearchRuntime(request, { current, startedAt, preview: true })
+      prepareBeforeClock: current => captureGepaBudgetCut(this.store, request.roundId, current.resolvedSettings.budgets),
+      prepareExtensions: async (current, startedAt, budgetCut) => {
+        const prepared = await this.openCampaignSearchRuntime(request, { current, startedAt, preview: true, budgetCut })
         preparedHost = prepared
         return { startingArchiveDigest: prepared.installedArchive?.digest ?? null,
           completionRefs: prepared.completionRefs, sharedEpochs: prepared.sharedEpochs,
           handoffFindingDigests: prepared.handoffFindingDigests,
           campaignBudget: prepared.startingBudget,
+          budgetCut: prepared.budgetCut,
           startingRegressionProposals: prepared.startingRegressionProposals,
           initialSnapshotDigest: prepared.initialSnapshotDigest,
           roundRecipeIdentity: prepared.roundRecipeIdentity }
@@ -335,7 +346,8 @@ export class CampaignFailureClusterSearch {
       && digestJson(host.sharedEpochs) === digestJson(claimed.admission.sharedEpochs)
       && digestJson(host.handoffFindingDigests) === digestJson(claimed.admission.handoffFindingDigests)
       && digestJson(host.startingRegressionProposals) === digestJson(claimed.admission.startingRegressionProposals)
-      && digestJson(host.startingBudget) === digestJson(claimed.admission.campaignBudget),
+      && digestJson(host.startingBudget) === digestJson(claimed.admission.campaignBudget)
+      && host.budgetCut.digest === claimed.admission.budgetCut.digest,
     'campaign host differs from frozen admission')
     if (preparedHost) await host.runtime.hydrate()
     const { runtime, artifacts, resolvedSettings, startedAt, legacyProviders } = host

@@ -108,6 +108,24 @@ describe('common-operation failure-cluster GEPA', () => {
     expect(decision.operations?.map(operation => operation.kind)).toEqual(['gepa.evaluate'])
   })
 
+  it('records a verified diagnosis budget denial without treating it as a candidate or transport failure', async () => {
+    const f = setup()
+    const diagnosis = f.providers[1] as GepaDiagnosisProvider
+    diagnosis.submit = async envelope => ({ status: 'completed', completion: {
+      operationId: envelope.operationId, idempotencyKey: envelope.idempotencyKey,
+      inputDigest: envelope.inputDigest, implementationDigest: envelope.implementationDigest,
+      outcome: { kind: 'error', code: 'SEARCH_BUDGET_EXHAUSTED',
+        message: 'search budget exhausted: round.diagnosisInputTokens', retryable: false },
+      receipt: { source: 'gepa.diagnose', scope: 'operation', operationId: envelope.operationId,
+        cursor: 'denied', cumulative: { diagnosisInputTokens: 0, diagnosisOutputTokens: 0 } },
+    } })
+    const runtime = new AlgorithmRuntime(f.root, f.recipe, f.providers, f.spec)
+    expect(await runtime.runUntilBlocked(75)).toBe('complete')
+    const state = runtime.snapshot()!.state as unknown as { reasons: string[]; works: unknown[] }
+    expect(state.reasons).toContain('search budget exhausted: round.diagnosisInputTokens')
+    expect(state.works).toEqual([])
+  })
+
   it('freezes search and promotion process modes separately in each physical evaluation intent', async () => {
     const f = setup(2, false, true)
     const physical = f.providers[0] as GepaEvaluationProvider

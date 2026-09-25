@@ -456,6 +456,31 @@ describe('Campaign FailureClusterSearch differential', () => {
     expect(await exercise('campaign')).toEqual(await exercise('frozen'))
   })
 
+  it('preserves the first reservation when only the initial evolution timer has expired', async () => {
+    const base = 2_000_000_000_000
+    let now = base
+    vi.spyOn(Date, 'now').mockImplementation(() => now)
+    const exercise = async (driver: 'frozen' | 'campaign') => {
+      now = base
+      const scenario = await oracleCase('no-actionable', driver)
+      scenario.admission.settings.budgets.evolution.timeoutMs = 1000
+      const write = scenario.store.write.bind(scenario.store)
+      scenario.store.write = async (path, value) => {
+        await write(path, value)
+        if (path === 'rounds/r/admission') now = base + 2000
+      }
+      const outcome = await scenario.run()
+      const ledger = await scenario.store.read<{ startedAt: number }>('budget')
+      expect(ledger?.startedAt).toBe(base + 2000)
+      expect(scenario.attempts).toEqual([])
+      expect(outcome.reasonCodes).toContain('budget-exhausted:time')
+      return { outcome, startedAt: ledger?.startedAt,
+        remaining: await scenario.store.remaining('r', scenario.admission.settings.budgets) }
+    }
+    const expected = await exercise('frozen')
+    expect(await exercise('campaign')).toEqual(expected)
+  })
+
   it('matches every candidate stage, physical key, archive, budget and publication in a full round', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(2_000_000_000_000)
     const frozen = await oracleCase('actionable')
@@ -669,6 +694,15 @@ describe('Campaign search adversarial behavioral equivalence', () => {
   it('preserves process evidence and all stage decisions', async () => {
     await compareCase({ id: 'process-enabled', process: true })
   })
+
+  it.each([['off', 'required'], ['required', 'off']] as const)(
+    'preserves progress when search process mode is %s and promotion is %s', async (searchMode, promotionMode) => {
+      await compareCase({ id: `mixed-process-${searchMode}-${promotionMode}`, process: true,
+        configure: (_fixture, config) => {
+          config.search.process.mode = searchMode
+          config.promotion.process.mode = promotionMode
+        } })
+    })
 
   it('retains failed generation workplans and their ineligible stage decisions', async () => {
     const result = await compareCase({ id: 'generation-no-candidate', configure: (fixture) => {

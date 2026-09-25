@@ -3,6 +3,7 @@ import { AlgorithmRuntime } from '../algorithm/runtime/engine.js'
 import { ProviderProtocolError, ProviderReconcileError } from '../algorithm/provider-errors.js'
 import type { JsonValue } from '../algorithm/schema.js'
 import { implementationClosureDigest } from '../algorithm/data/identity.js'
+import type { GepaBudgetCut } from '../algorithm/recipes/gepa-budget.js'
 import { digestJson } from '../state/digest.js'
 import { campaignSearchId } from './campaign-identity.js'
 import { integrity, invariant, processTasks, safeId, seal, SearchProtocolError, validateSnapshot, verifyDigest } from './contracts.js'
@@ -16,6 +17,7 @@ type FrozenAdmission = SearchAdmission & { seed: TaskUniverse; heldOut: TaskUniv
   startedAt: number; providerIntegrity: string; diagnosisIntegrity: string;
   resolvedSettings: SearchAdmission['settings']; algorithmIntegrity: string;
   roundRecipeIdentity: string; campaignDriver: string; digest: string }
+  & { budgetCut: GepaBudgetCut }
 
 export type PreparedCampaignRepair = {
   roundId: string; repairId: string; repairKey: string; groupId: string;
@@ -56,6 +58,8 @@ export async function prepareCampaignRepair(options: {
   invariant(admission.algorithmIntegrity === integrity
     && admission.roundRecipeIdentity === digestJson(runtime.algorithm.describe()),
     'repair algorithm identity changed')
+  verifyDigest(admission.budgetCut)
+  invariant(admission.budgetCut.roundId === roundId, 'repair frozen budget cut changed')
   const { seed, heldOut } = await validator.validate(admission)
   invariant(seed.digest === admission.seed.digest && heldOut.digest === admission.heldOut.digest,
     'repair task universe changed')
@@ -295,6 +299,7 @@ export async function repairCampaignEvaluation(options: {
   const evaluationIntent: OperationIntent = { localKey: evaluationKey, kind: 'gepa.repair-evaluate',
     startsBudgetClock: true,
     input: { roundIdentity: { evolutionId: prepared.admission.evolutionId, roundId: prepared.roundId },
+      budgetCut: prepared.admission.budgetCut, roundStartedAt: prepared.admission.startedAt,
       repairId: prepared.repairId, ...refs, plan: prepared.plan, snapshot: prepared.snapshot,
       universe: prepared.universe, missing: prepared.missing,
       deadlineAt: prepared.deadlineAt } as unknown as JsonValue,
@@ -355,6 +360,7 @@ export async function repairCampaignEvaluation(options: {
       const intent: OperationIntent = { localKey: 'projection', kind: 'gepa.process-complete',
         startsBudgetClock: true,
         input: { roundIdentity: { evolutionId: prepared.admission.evolutionId, roundId: prepared.roundId },
+          budgetCut: prepared.admission.budgetCut, roundStartedAt: prepared.admission.startedAt,
           repairId: prepared.repairId, currentRef: refs.currentRef, cachedRef: refs.cachedRef,
           ...(evaluationProof ?? {}), baseKey: prepared.externalKey,
           cellRef, deadlineAt: prepared.deadlineAt } as unknown as JsonValue,
