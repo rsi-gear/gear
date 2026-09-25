@@ -5,7 +5,7 @@ import { consumeTasks, preparePublishedTaskView, prepareTaskViewFromExperience, 
   type PublishedTask, type TaskCursor, type TaskPurpose, type TaskViewRef } from '../data/tasks.js';
 import { s3ImplementationDigest } from '../data/identity.js';
 import { readExperienceView, type ExperienceViewRef } from '../data/experience.js';
-import type { JsonValue } from '../schema.js';
+import { jsonDigest, validateSchema, type JsonValue } from '../schema.js';
 
 export type TaskPublishGrantResolver = TaskViewGrantResolver;
 export type TaskPublishInput = { parentViewRef: TaskViewRef; additions: PublishedTask[] };
@@ -43,7 +43,7 @@ export function createTasksSelectProvider(root: string, artifacts: FileArtifactS
 }
 
 /** The cursor and selected view are frozen operation inputs, so restart yields the same batch. */
-export function createTasksConsumeProvider(root: string, artifacts: FileArtifactStore, authority: TaskViewAuthority, resolveGrant: TaskViewGrantResolver,
+export function createTasksConsumeProvider(_root: string, artifacts: FileArtifactStore, authority: TaskViewAuthority, resolveGrant: TaskViewGrantResolver,
   accessPolicyDigest: string): OperationProvider {
   assertDigest(accessPolicyDigest);
   const manifest: ProviderManifest = { kind: 'tasks.consume', implementationDigest: s3ImplementationDigest('tasks.consume', { accessPolicyDigest, issuerId: authority.issuerId, keyDigest: authority.keyDigest }),
@@ -52,20 +52,35 @@ export function createTasksConsumeProvider(root: string, artifacts: FileArtifact
       cursor: { type: 'any' }, count: { type: 'integer' } }, additionalProperties: false },
     outputSchema: { type: 'object', required: ['tasks', 'cursor'], properties: { tasks: { type: 'array', items: { type: 'any' } },
       cursor: { type: 'any' } }, additionalProperties: false } };
-  const check = (envelope: OperationEnvelope): TaskConsumeInput => {
-    const input = envelope.input as TaskConsumeInput;
+  const check = (envelope: OperationEnvelope): ReturnType<typeof consumeTasks> => {
+    validateSchema(manifest.inputSchema, envelope.input);
+    if (envelope.kind !== manifest.kind || envelope.implementationDigest !== manifest.implementationDigest
+      || envelope.inputDigest !== jsonDigest(envelope.input)) throw new Error('Task consumption operation identity drift');
+    if (Object.keys(envelope.limits).length !== 0 || envelope.startsBudgetClock === true)
+      throw new Error('Task consumption cannot meter or start the budget clock');
+    const input = envelope.input as TaskConsumeInput | null;
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Task consumption input is invalid');
     if (!input.taskViewRef) throw new Error('Task consumption not authorized');
-    authority.verify(input.taskViewRef, resolveGrant(envelope.campaignId).allowedExperienceViewDigests);
-    consumeTasks(artifacts, input.taskViewRef, input.cursor, input.count);
-    return input;
+    try {
+      authority.verify(input.taskViewRef, resolveGrant(envelope.campaignId).allowedExperienceViewDigests);
+      return consumeTasks(artifacts, input.taskViewRef, input.cursor, input.count);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+        throw new Error('Task consumption source artifact is missing', { cause: error });
+      throw error;
+    }
   };
-  const local = new LocalDurableProvider(root, manifest, envelope => {
-    const input = check(envelope);
-    return { outcome: { kind: 'result', value: consumeTasks(artifacts, input.taskViewRef, input.cursor, input.count) as unknown as JsonValue } };
-  });
-  return { describe: () => local.describe(), preflight: envelope => { check(envelope); },
-    submit: envelope => { check(envelope); return local.submit(envelope); }, inspect: envelope => { check(envelope); return local.inspect(envelope); },
-    cancel: envelope => { check(envelope); return local.cancel(envelope); }, collect: envelope => { check(envelope); return local.collect(envelope); } };
+  const completion = (envelope: OperationEnvelope): CompletionEnvelope => {
+    const batch = check(envelope);
+    return { operationId: envelope.operationId, idempotencyKey: envelope.idempotencyKey,
+      inputDigest: envelope.inputDigest, implementationDigest: envelope.implementationDigest,
+      outcome: { kind: 'result', value: batch as unknown as JsonValue } };
+  };
+  return { describe: () => manifest, preflight: envelope => { check(envelope); },
+    submit: envelope => Promise.resolve({ status: 'completed', completion: completion(envelope) } as ProviderSubmission),
+    inspect: envelope => { check(envelope); return Promise.resolve({ status: 'not-started' } as ProviderInspection); },
+    cancel: envelope => { check(envelope); return Promise.resolve({ status: 'cancelled', releaseConfirmed: true } as ProviderInspection); },
+    collect: envelope => Promise.resolve(completion(envelope)) };
 }
 
 /** Publication is durable and authorization comes from a host resolver, not from recipe input. */

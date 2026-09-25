@@ -132,7 +132,8 @@ describe('S3 provider contracts', () => {
     const batchInput = { taskViewRef, cursor: { viewDigest: taskViewRef.digest, nextIndex: 0 }, count: 1 };
     const batchEnvelope = envelope(consume, 'allowed', batchInput, bindings.create({}), {});
     const forged = taskViewFromExperience(artifacts, viewRef, [{ id: 'task-one', purpose: 'development' }]);
-    expect(() => consume.preflight({ ...batchEnvelope, input: { ...batchInput, taskViewRef: forged, cursor: { viewDigest: forged.digest, nextIndex: 0 } } })).toThrow(/not authorized/);
+    const forgedInput = { ...batchInput, taskViewRef: forged, cursor: { viewDigest: forged.digest, nextIndex: 0 } };
+    expect(() => consume.preflight({ ...batchEnvelope, input: forgedInput, inputDigest: jsonDigest(forgedInput) })).toThrow(/not authorized/);
     const consumed = await consume.submit(batchEnvelope);
     if (consumed.status !== 'completed' || consumed.completion.outcome.kind !== 'result') throw new Error('task consume failed');
     expect(consumed.completion.outcome.value).toMatchObject({ tasks: [{ id: 'task-one' }], cursor: { nextIndex: 1 } });

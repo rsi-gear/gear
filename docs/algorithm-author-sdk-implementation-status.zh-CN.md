@@ -29,6 +29,12 @@
 
 独立 3 文件 47 项测试通过，包含真实 Python worker parity 与 SDK 前沿到 provider 的集成；Python A1 8 项及隔离类型检查通过。审计时另一个未冻结的 resolver 文件存在全仓类型错误，因此本次不宣称全仓检查通过。见 [任务采样审计](experiments/author-a1-task-sampling-review-20260926.zh-CN.md)。真实宿主装配和密钥/授权冻结仍待后续切片。
 
+## A1 任务消费切片
+
+`tasks.consume` 现在从冻结输入和授权 TaskView 纯重算，不再保存第二份 provider ledger。冷恢复及丢回复后使用原 key 重算相同有序 batch；每个候选从自己的 cursor 开始。入口保留输入 schema、operation 身份、签名授权、cursor 和 CAS 完整性检查，并禁止计量及启动预算时钟。
+
+实施者相关 5 文件 12 项回归及类型检查通过；主审在最后的 schema 修复后独立验证 2 文件 8 项通过。独立审查无剩余功能阻塞，见 [任务消费审计](experiments/author-a1-task-consume-review-20260926.zh-CN.md)。真实宿主仍须负责装配数据用途和授权范围。
+
 ## 当前限制
 
 A0 是运行基础。`propose/evaluate/select`、通用运行 profile、五文件作者项目及新的 CLI 仍待后续 A1 切片；现有 A0 role/edit/rollout/measure 便利方法用于探针，v2 已拒绝这些假 operation。用户不能仅复制 v4 的搜索示例便运行真实实验。
