@@ -53,10 +53,8 @@ function statePatch(before: JsonValue, after: JsonValue): StatePatch[] {
   const visit = (oldValue: JsonValue, newValue: JsonValue, path: string[]): void => {
     if (oldValue === newValue) return
     if (objectValue(oldValue) && objectValue(newValue)) {
-      // Native JSON serialization cheaply skips large unchanged subtrees.
-      // Unequal serialization only asks the walker to inspect them; ordering
-      // differences cannot cause a false equality or omit a changed value.
-      if (JSON.stringify(oldValue) === JSON.stringify(newValue)) return
+      // Walking each object once avoids repeatedly serializing every ancestor
+      // of a changed leaf. The sorted traversal preserves the exact patch order.
       const keys = [...new Set([...Object.keys(oldValue), ...Object.keys(newValue)])].sort()
       for (const key of keys) {
         const child = [...path, key]
