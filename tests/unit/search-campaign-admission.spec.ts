@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { setTimeout as delay } from 'node:timers/promises'
 import { ComponentRegistry } from '../../src/evolution/components.js'
 import { digestJson } from '../../src/state/digest.js'
 import { claimCampaignRun, inspectCampaignRun, type CampaignAdmissionExtensions } from '../../src/search/campaign-admission.js'
@@ -33,7 +34,9 @@ function scenario(store = new MemorySearchStore()) {
   const claim = async (signal = new AbortController().signal, overrides: {
     validate?: () => Promise<{ seed: typeof fixture.seed; heldOut: typeof fixture.heldOut;
       resolvedSettings: SearchAdmission['settings'] }>
-    prepareExtensions?: (startedAt: number) => CampaignAdmissionExtensions | Promise<CampaignAdmissionExtensions>
+    prepareBeforeClock?: () => { cut: string } | Promise<{ cut: string }>
+    prepareExtensions?: (startedAt: number, precomputed: { cut: string } | undefined) =>
+      CampaignAdmissionExtensions | Promise<CampaignAdmissionExtensions>
     recipeIdentity?: string
     request?: SearchAdmission
     providerIntegrity?: string
@@ -41,13 +44,15 @@ function scenario(store = new MemorySearchStore()) {
     const chosen = overrides.request ?? request
     const inspected = await inspect(chosen, signal)
     if (inspected.kind !== 'continue') throw new Error(`unexpected ${inspected.kind}`)
-    return claimCampaignRun({ store, request: chosen, signal, inspected,
+    return claimCampaignRun<CampaignAdmissionExtensions, { cut: string } | undefined>({ store, request: chosen, signal, inspected,
       providerIntegrity: overrides.providerIntegrity ?? fixture.provider.integrity,
       diagnosisIntegrity: fixture.diagnosis.integrity,
       sanitizationPolicyDigest: fixture.diagnosis.sanitizationPolicyDigest,
       validate: overrides.validate ?? (async () => ({ seed: fixture.seed, heldOut: fixture.heldOut,
         resolvedSettings: request.settings })),
-      prepareExtensions: (_current, startedAt) => overrides.prepareExtensions?.(startedAt) ?? extensions(),
+      ...(overrides.prepareBeforeClock ? { prepareBeforeClock: () => overrides.prepareBeforeClock!() } : {}),
+      prepareExtensions: (_current, startedAt, precomputed) =>
+        overrides.prepareExtensions?.(startedAt, precomputed) ?? extensions(),
       verifyFrozenRecipe: admission => {
         if (admission.roundRecipeIdentity !== (overrides.recipeIdentity ?? recipeIdentity))
           throw new Error('round recipe identity changed on resume')
@@ -84,6 +89,50 @@ describe('Campaign search admission and recovery gates', () => {
     expect(resumed.admission.handoffFindingDigests).toEqual(first.extensions().handoffFindingDigests)
     expect(resumed.admission.campaignBudget).toEqual(first.extensions().campaignBudget)
     expect(resumed.admission.startingRegressionProposals).toEqual(first.extensions().startingRegressionProposals)
+  })
+
+  it('precomputes only a new admission after identity gates and before its single clock capture', async () => {
+    const run = scenario()
+    let preparedAt = 0
+    const claimed = await run.claim(undefined, {
+      prepareBeforeClock: async () => {
+        expect(await run.store.read('rounds/round/operation-kind')).toBeDefined()
+        expect(await run.store.read('evolution/identity')).toBeDefined()
+        expect(await run.store.read('active-round')).toEqual({ roundId: 'round' })
+        await delay(20)
+        preparedAt = Date.now()
+        return { cut: 'sealed source cut' }
+      },
+      prepareExtensions: (startedAt, precomputed) => {
+        expect(precomputed).toEqual({ cut: 'sealed source cut' })
+        expect(startedAt).toBeGreaterThanOrEqual(preparedAt)
+        return run.extensions()
+      },
+    })
+    expect(claimed.admission.startedAt).toBeGreaterThanOrEqual(preparedAt)
+    const restarted = scenario(new MemorySearchStore(run.store.checkpoint()))
+    const resumed = await restarted.claim(undefined, {
+      prepareBeforeClock: () => { throw new Error('must not recompute mutable cuts') },
+      prepareExtensions: () => { throw new Error('must not derive a new recipe') },
+    })
+    expect(resumed.admission).toEqual(claimed.admission)
+  })
+
+  it('does not precompute before operation ownership and evolution identity pass', async () => {
+    const collision = scenario()
+    await collision.store.freeze('round', 'operation-kind', () => seal({ kind: 'archive-completion' }))
+    await expect(collision.claim(undefined, {
+      prepareBeforeClock: () => { throw new Error('precomputed before ownership') },
+    })).rejects.toThrow('different operation kind')
+    const identity = scenario()
+    await identity.claim()
+    const changed = { ...identity.request, roundId: 'next', roundIndex: 1,
+      settings: { ...identity.request.settings, budgets: {
+        ...identity.request.settings.budgets,
+        round: { ...identity.request.settings.budgets.round, maxNewRolloutCells: 1 } } } }
+    await expect(identity.claim(undefined, { request: changed,
+      prepareBeforeClock: () => { throw new Error('precomputed before identity') },
+    })).rejects.toThrow('identity changed')
   })
 
   it('does not claim an unsafe or cancelled round, including cancellation during validation', async () => {

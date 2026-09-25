@@ -132,7 +132,7 @@ const reserved = new Set(['digest', 'evolutionId', 'roundId', 'roundIndex', 'max
   'campaignDriver'])
 
 /** Claims a round only after validation; no mutable global cut is read on resume. */
-export async function claimCampaignRun<E extends CampaignAdmissionExtensions>(options: {
+export async function claimCampaignRun<E extends CampaignAdmissionExtensions, P = undefined>(options: {
   store: SearchJournal
   request: SearchAdmission
   signal: AbortSignal
@@ -141,8 +141,11 @@ export async function claimCampaignRun<E extends CampaignAdmissionExtensions>(op
   diagnosisIntegrity: string
   sanitizationPolicyDigest: string
   validate: () => Promise<{ seed: TaskUniverse; heldOut: TaskUniverse; resolvedSettings: SearchSettings }>
+  /** Pure admission precomputation after ownership/identity gates, before the single round clock capture. */
+  prepareBeforeClock?: (current: { seed: TaskUniverse; heldOut: TaskUniverse;
+    resolvedSettings: SearchSettings }) => Promise<P> | P
   prepareExtensions: (current: { seed: TaskUniverse; heldOut: TaskUniverse;
-    resolvedSettings: SearchSettings }, startedAt: number) => Promise<E> | E
+    resolvedSettings: SearchSettings }, startedAt: number, precomputed: P) => Promise<E> | E
   verifyFrozenRecipe: (admission: FrozenCampaignAdmission<E>, current: {
     seed: TaskUniverse; heldOut: TaskUniverse; resolvedSettings: SearchSettings }) => Promise<void> | void
 }): Promise<{ admission: FrozenCampaignAdmission<E>; current: {
@@ -170,8 +173,12 @@ export async function claimCampaignRun<E extends CampaignAdmissionExtensions>(op
   if (inspected.savedAdmission) await options.verifyFrozenRecipe(inspected.savedAdmission, current)
   await store.write('active-round', { roundId: request.roundId })
   const admission = await store.freeze(request.roundId, 'admission', async () => {
+    // Only a new admission computes these immutable cuts. A resumed round uses
+    // its sealed extension and never re-reads mutable global inputs.
+    const precomputed = options.prepareBeforeClock
+      ? await options.prepareBeforeClock(current) : undefined as P
     const startedAt = Date.now()
-    const extensions = await options.prepareExtensions(current, startedAt)
+    const extensions = await options.prepareExtensions(current, startedAt, precomputed)
     for (const key of Object.keys(extensions)) invariant(!reserved.has(key), 'campaign admission extension overrides identity')
     assertFrozenExtensions(extensions)
     return seal({ ...request, ...current, ...extensions,
