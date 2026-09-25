@@ -121,7 +121,8 @@ Arbitrary tool/hook bodies, routing, compaction and workflow behavior still
 require their own scenarios. The integration matrix executes the documented
 custom tool, native pre/post hooks and a non-delegating workflow through a
 packaged Target; the production checker does not invent arguments for arbitrary
-candidate actions. See the [extension audit](../../docs/dsh-extension-runtime-audit.zh-CN.md).
+candidate actions. Use the full Target integration matrix below to verify these
+behaviors against the installed runtime.
 
 Existing releases do not acquire this checker by upgrading source alone: update
 their compiler command, args, `reportProtocol: gear-runtime-check-v1`, and

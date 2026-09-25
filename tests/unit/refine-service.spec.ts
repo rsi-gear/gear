@@ -4728,6 +4728,69 @@ describe('RefineService evolution workspaces', () => {
 })
 
 describe('explicit staged search control-plane integration', () => {
+  it.each(['complete', 'dispose'] as const)('owns the staged repair materialization lock through %s', async mode => {
+    const { service, evaluator, git } = await setup()
+    await standardSearchDataset(git.root, 10, 'seed', false)
+    await standardSearchDataset(git.root, 10, 'held-out', false)
+    service.options.searchSettings = searchSettings()
+    const requests: string[][] = [], started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
+    evaluator.evaluationIdentity = (_round, request) => ({ provider: 'fake', effectiveConfigDigest: digestJson(request.condition), invocationFingerprint: digestJson(request.condition) })
+    ;(evaluator as RefineEvaluator).evaluate = async (_round, request, signal, reservation) => {
+      const manifest = JSON.parse(await readFile(join(request.dataset, 'benchmark.adapter.json'), 'utf8'))
+      const tasks = manifest.tasks.map((task: { task_id: string }) => task.task_id) as string[]
+      requests.push(tasks)
+      if (requests.length > 1) {
+        started.resolve()
+        await new Promise<void>((resolve, reject) => {
+          const abort = () => reject(signal!.reason)
+          signal!.addEventListener('abort', abort, { once: true })
+          release.promise.then(() => { signal!.removeEventListener('abort', abort); resolve() })
+          if (signal!.aborted) abort()
+        })
+      }
+      const missing = requests.length === 1 ? 'task-9' : undefined
+      const trials = tasks.filter(id => id !== missing).map(taskName => ({ taskName, trialName: taskName, attempt: 1,
+        runId: `${reservation!.evalId}-${taskName}`, status: 'completed' as const,
+        rewards: { reward: 1 }, scores: { totalScore: 1, normalization: 'standard' as const } }))
+      return { provider: reservation!.provider, evalId: reservation!.evalId, conditionId: request.condition.conditionId,
+        effectiveConfigDigest: digestJson(request.condition), invocationFingerprint: digestJson(request.condition),
+        dataset: request.dataset, requestedCommit: request.harnessRef, actualCommit: request.harnessRef, revisionIdentity: request.harnessRef,
+        completeness: missing ? 'partial' : 'complete', plannedTrialCount: tasks.length, primaryReward: 1,
+        summary: { total: trials.length, passed: trials.length, failed: 0, score: 1 }, trials,
+        invalidTrials: missing ? [{ taskName: missing, trialName: missing, runId: `${reservation!.evalId}-${missing}`, attempt: 1, status: 'errored', invalidReason: 'infrastructure_failure' }] : [] }
+    }
+    try {
+      const admitted = await service.admit('api'), store = service.registry.stateStore(admitted.evolutionId)
+      await eventually(() => store.readRound(admitted.roundId), r => r?.status === 'failed')
+      await eventually(async () => service.activeEntry(admitted.roundId), value => value === undefined)
+      const status = await service.status(admitted.evolutionId, admitted.roundId)
+      expect(status.searchPendingEvidence, JSON.stringify((await store.readRound(admitted.roundId))?.failure)).toBeDefined()
+      const evidence = (status as { searchPendingEvidence: { resultRefs: string[] } }).searchPendingEvidence.resultRefs[0]!
+      await expect(service.repairSearchStage(admitted.evolutionId, admitted.roundId, 'bad-evidence', `sha256:${'0'.repeat(64)}`)).rejects.toThrow()
+      const unlocked = await store.acquireRoundLock(admitted.roundId); await unlocked.release()
+      const repair = service.repairSearchStage(admitted.evolutionId, admitted.roundId, 'repair-original', evidence)
+      // Race against the result so the original missing-owner bug fails immediately.
+      await Promise.race([started.promise, repair.then(() => { throw new Error('repair settled without evaluating missing cells') })])
+      expect(requests).toEqual([Array.from({ length: 10 }, (_, i) => `task-${i}`), ['task-9']])
+      await expect(store.acquireRoundLock(admitted.roundId)).rejects.toThrow('lock is owned')
+      if (mode === 'dispose') {
+        const settled = repair.catch(error => error)
+        await service.dispose()
+        await settled
+        const lock = await store.acquireRoundLock(admitted.roundId); await lock.release()
+        expect(service.activeEntry(admitted.roundId)).toBeUndefined()
+      } else {
+        release.resolve()
+        const repaired = await repair
+        expect(repaired.failure).toBeUndefined()
+        expect(repaired.cells).toHaveLength(10)
+        const resumed = await eventually(() => store.readRound(admitted.roundId), r => ['candidate-editing', 'accepted', 'rejected', 'failed'].includes(r?.status ?? ''))
+        expect(resumed?.status, resumed?.failure?.message).not.toBe('failed')
+        expect((await store.listRounds()).map(r => r.roundId)).toEqual([admitted.roundId])
+      }
+    } finally { release.resolve(); await service.dispose() }
+  })
+
   it.each(['skill', 'unmetered', 'unknown'] as const)('rejects search-only token/request budgets before admission with %s Meta', async kind => {
     const { service, evaluator } = await setup(), fixture = searchFixtures(20)
     ;(evaluator as RefineEvaluator).search = { provider: fixture.provider, diagnosis: fixture.diagnosis }

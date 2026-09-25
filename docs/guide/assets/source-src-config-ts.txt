@@ -35,6 +35,7 @@ export interface HitchConfig {
 }
 
 export interface Config {
+  datasetStorage?: import('./state/materialize-tree.js').MaterializationPolicy
   search?: import('./search/types.js').SearchConfig
   budgets?: import('./search/types.js').SearchSettings['budgets']
   regression?: import('./search/types.js').SearchSettings['regression']
@@ -132,6 +133,11 @@ export interface Config {
 }
 
 export const ConfigSchema: Schema<Config> = Schema.object({
+  datasetStorage: Schema.object({
+    mode: Schema.union(['auto', 'require-clone', 'copy'] as const).default('auto'),
+    maxFallbackBytes: Schema.natural(),
+    minFreeBytes: Schema.natural(),
+  }).default({ mode: 'auto' } as never),
   search: Schema.any().default(undefined as never),
   budgets: Schema.any().default(undefined as never),
   regression: Schema.any().default(undefined as never),

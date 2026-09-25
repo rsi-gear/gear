@@ -38,7 +38,7 @@ Compose these components to define your search algorithm. [Example 2](example-al
 
 ## Support and version
 
-This guide accompanies Gear 0.1.0, packaged as `rsi-gear`. Gear is pre-alpha. The standalone Meta connection is Harness-neutral; the built-in Target builder is currently DSH-oriented. Supporting a Harness in Hitch does not automatically add a Gear Target builder.
+This guide accompanies Gear 0.1.2, packaged as `rsi-gear`. Gear is pre-alpha. The standalone Meta connection is Harness-neutral; the built-in Target builder is currently DSH-oriented. Supporting a Harness in Hitch does not automatically add a Gear Target builder.
 
 The staged-search case used the implementation pinned in its [source record](example-algorithm.md#implementation-and-version). Its configuration is not advertised as a switch supported by every 0.1.0 checkout. Historical Marketing scores use a public research set that also supplied optimization evidence; they are not independent held-out results.
 

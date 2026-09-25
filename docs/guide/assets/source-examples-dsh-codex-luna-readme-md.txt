@@ -70,6 +70,14 @@ to `.evolve-lab/target.json`.
 
 ## Candidate runtime checks
 
+Carrier `0.0.3` enables the existing native HMR row during initial headless boot
+with `root: []`. DSH rc.2 disables that row in its headless profile but still
+registers user-patch watchers after boot. Its late HMR fallback can return before
+the service activates, causing `user patch-layer watching requires the Cordis
+HMR service`. The fixed carrier avoids that activation race without changing
+the mutable harness. Re-bootstrap to adopt this substrate change; retain the
+previous carrier commits and evaluation evidence.
+
 The profile now uses `assets/dsh-runtime-check.mjs` through the existing fixed
 compiler interface. `evolve.mjs` supplies its absolute path as
 `GEAR_RUNTIME_CHECK_EXECUTABLE`; when starting the profile directly, set that
@@ -113,7 +121,8 @@ Arbitrary tool/hook bodies, routing, compaction and workflow behavior still
 require their own scenarios. The integration matrix executes the documented
 custom tool, native pre/post hooks and a non-delegating workflow through a
 packaged Target; the production checker does not invent arguments for arbitrary
-candidate actions. See the [extension audit](../../docs/dsh-extension-runtime-audit.zh-CN.md).
+candidate actions. Use the full Target integration matrix below to verify these
+behaviors against the installed runtime.
 
 Existing releases do not acquire this checker by upgrading source alone: update
 their compiler command, args, `reportProtocol: gear-runtime-check-v1`, and
@@ -139,8 +148,12 @@ tree, and launches `apps/cli/lib/bin.js` from a separate task directory. A
 test-only observer calls the native Skill tool with a real Agent; the task
 runner and telemetry are disabled and network/model calls are forbidden. This
 exercises the actual carrier entry point independently of Gear's snapshot and
-checker. A production Harbor smoke trial and model Skill-selection evaluation
-remain separate rollout checks before expanding to a full benchmark batch.
+checker, using the carrier's HMR configuration with no test-only repair. A
+production Harbor smoke trial and model Skill-selection evaluation remain
+separate rollout checks before expanding to a full benchmark batch. A direct
+DSH response alone does not validate Hitch's trajectory import, verifier, or
+evidence publication: require a terminal valid native Hitch trial and a readable
+trajectory before scaling up.
 
 ## Sign in once on the host
 

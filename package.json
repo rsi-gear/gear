@@ -90,8 +90,6 @@
     "examples/parent-policy/**",
     "docs/schemas/",
     "docs/generic-storage-implementation.zh-CN.md",
-    "docs/generic-storage-completion-audit.zh-CN.md",
-    "docs/evidence/generic-storage/",
     "test-contracts/hitch-resources-v1.json"
   ],
   "scripts": {

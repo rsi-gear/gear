@@ -1,14 +1,14 @@
-# 通用资源存储实施与验收
+# 通用资源存储使用与验证
 
-对应 2026-09-24 更新的 `gear-hitch-generic-storage-spec.zh-CN.md`，P0–P4 已实施并完成所列首版能力的验收。设计文档保留原文；本文件记录实际入口和已有验证。逐项完成状态以 [完成审计](generic-storage-completion-audit.zh-CN.md) 为准。
+Gear 与 Hitch 按内容摘要共享不可变输入，为每次执行提供私有工作区。本文说明当前配置、恢复与清理语义，以及已验证的支持范围。
 
-| 阶段 | Gear | Hitch |
+| 能力 | Gear | Hitch |
 | --- | --- | --- |
-| P0 | 普通目录 G1 clone/copy、预算、复制报告；保留旧 hash/ref | 普通 manifest v1 路径保留 |
-| P1 | 共享严格 schema 与固定摘要 fixtures | blob/tree CAS、OCI provider、事务、durable roots/leases、image GC 保护 |
-| P2 | preflight 先于 condition/cell 与 frozen batch；绑定语义 plan | 角色隔离、私有 workspace、实际 tree/镜像证据、两个 producer、显式 legacy export |
-| P3 | JSON selection 单独命名空间，不复制公共输入 | work spec v3、lease 授权流式缺失对象传输、离线 OCI registry bundle |
-| P4 | 历史 absolute ref 审计、显式 quarantine、owner/generation 释放 | 同锁 mark/sweep、quarantine 重获、unknown 保留、崩溃恢复与预算 |
+| 普通目录 | clone/copy、预算、复制报告；保留旧 hash/ref | 普通 manifest v1 路径保留 |
+| 内容合同 | 共享严格 schema 与固定摘要 fixtures | blob/tree CAS、OCI provider、事务、durable roots/leases、image GC 保护 |
+| 执行隔离 | preflight 先于 condition/cell 与 frozen batch；绑定语义 plan | 角色隔离、私有 workspace、实际 tree/镜像证据、两个 producer、显式 legacy export |
+| 传输 | JSON selection 单独命名空间，不复制公共输入 | work spec v3、lease 授权流式缺失对象传输、离线 OCI registry bundle |
+| 恢复与回收 | 历史 absolute ref 审计、显式 quarantine、owner/generation 释放 | 同锁 mark/sweep、quarantine 重获、unknown 保留、崩溃恢复与预算 |
 
 ## 使用
 
@@ -39,23 +39,35 @@ cleanup 默认 dry-run，`--apply` 先隔离，后续经过宽限期再确认无
 
 隔离记录与目录移动之间的中断由投影重获和 cleanup 共用的校验逻辑处理：仅当正式目录完整匹配记录摘要、隔离树不存在时，才允许在锁内清除残留记录。dry-run 不修改记录；已有历史引用继续保留正式目录，无引用投影重新隔离并重新计算宽限期。两份树并存、树丢失、摘要不符或隔离目录含未知文件时停止清理。删除记录后留下的空隔离目录可安全重试。
 
-此实现没有删除、迁移或重新评测 `.evolve-lab` 中的实验。运行实现身份变化仍按既有组件身份合同处理，不假造旧实现身份以强行复用不可确认的结果；原 ref、dataset digest 和已有评测证据保留。
+存储升级保留原 ref、dataset digest 和已有评测证据。运行实现身份变化仍按既有组件身份合同处理，不假造旧实现身份以强行复用不可确认的结果，也不自动迁移旧搜索语义。
 
-## 验收结果
+## 历史验证范围
 
-最终验证使用 Node 26.7.0：Gear 全量测试加 notebook 的正确 Python 环境复验，去重后 1,159 项通过、4 跳过；Hitch 资源、镜像与远程相关 144 项全部通过。两仓库类型检查、Hitch 干净构建/架构/语法检查及 npm 打包清单检查通过。具体命令范围与环境复验原因见 [完成审计](generic-storage-completion-audit.zh-CN.md)。
+以下是 2026-09-24 存储交付的验证摘要，不代表此后每个版本都重新执行过实机验收。验证使用合成输入或只读历史输入，没有新增模型调用。
 
-Hitch 原有 DeepSeek 冷构建 Docker 集成测试曾受 `auth.docker.io` DNS 超时阻塞。后续仅为测试进程设置可用的本机 HTTP(S) 代理后，原测试在 40.4 秒内通过，覆盖首次构建、缓存复用和不含 pnpm 的真实任务容器执行；未修改代码、断言或超时。完整套件加该单项复跑去重后为 843 通过、7 跳过、0 个未解决失败，详见 [继续验证记录](evidence/generic-storage/continued-validation.json)。其余首次全量运行发现的接口清单与 bundle readiness 问题已分别修正或隔离复验通过。
+| 范围 | 已验证行为与限制 |
+| --- | --- |
+| 普通目录 | clone/copy 的相同摘要、独立 inode、双向写隔离；跨设备/不支持回退、短写、取消、损坏输入和预算检查 |
+| 并发与恢复 | 三进程物化只发布一个 canonical；pin/freeze 中断、两进程发布/GC、SIGKILL、旧 generation、unknown lease、隔离与重获；未确认的引用保守保留 |
+| 历史兼容 | 只读恢复 8 个 round、20 个原 absolute-ref projection、29 个物理评测，273 个原记录文件哈希不变；缺失结果保持 unknown，恢复后可重复复用；未迁移旧搜索语义 |
+| 执行与评分 | shared-tree 的资源模式与 legacy export 答案一致、得分均为 1；AutomationBench 同一 snapshot 交叉评分一致，固定 canary 得分为 0，只证明存储和评分等价 |
+| 角色与远程协议 | candidate/verifier 私有目录隔离；worker 失联、重建和迟到结果保留资源，错误 epoch/generation 释放被拒绝，确认结束后回收 workspace 并保留 sealed-run root |
+| 离线导入 | AutomationBench 首次传输 17,544,214 字节文件对象，重复导入为 0，停止 registry 后仍可执行；该测试未清空原 Docker 层 |
+| 空 daemon | 独立 DinD 初始镜像与 BuildKit 为 0，不共享宿主 Docker 缓存；导入后停止 registry、断开外网，shared-tree 答案为 3、得分为 1，重复导入为 0 文件字节 |
 
-- 命名旧实验只读恢复：8 个 round、20 个原 absolute-ref projection、29 个物理评测；两组 Luna Max 保持 50/100 和 53/100，原 273 个记录文件未变，没有模型调用。见 [历史实证](evidence/generic-storage/historical-recovery.zh-CN.md)。
-- Gear 单元覆盖 clone 成功路径、跨设备/不支持回退、写隔离、损坏 canonical、取消、预算、冻结前 preflight、selection、恢复时计划变化、历史引用与释放中断。
-- `scripts/canary-dataset-storage.mjs` 在正式 build 上启动三个进程：重复投影只发布一个 canonical，重叠投影和源的写入互不影响。
-- Hitch 覆盖两进程发布/GC、首个对象发布后 SIGKILL、旧 generation、unknown lease、镜像 GC fence、view 与 CAS quarantine 重获、远程授权、流式去重和离线索引/内容损坏。
-- shared-tree terminal 真实 Docker 运行：资源模式与 legacy export 答案一致，均得 1 分。
-- AutomationBench 从原 v4 只读导入共享 runtime。真实运行 candidate 隔离检查、simulator API 与官方 verifier；资源/旧格式的 tool 结果、断言和评分一致，同一 snapshot 交叉评分一致。固定 canary 只调用 API search，评分为 0；它验证存储与评分等价，不声称完成业务任务。三个角色的实际 image config、平台和 base layers 入证据。
-- 离线测试从空文件 CAS、空本地目标 registry、缺失目标镜像引用开始，传输 17,544,214 字节文件对象；重复导入 0 字节。关闭源和目标 registry 后仍完成 AutomationBench 执行和交叉评分。Docker daemon 的已有其他层未清空，不能将此描述为“清空用户整台机器”。
-- 新增独立 DinD 空 daemon 实测：初始镜像及 BuildKit 为 0；导入完成后停止 registry、断开外网，shared-tree 实际答案 3、评分 1，重复导入 0 文件字节。未共享宿主 Docker 层，未清空用户缓存。原始阶段空间记录见 `evidence/generic-storage/empty-daemon.json`。
-- 本机 macOS/Node 强制 FICLONE 返回 `ENOSYS`；另在独占 1 GiB XFS 测试卷实测三个 32 MiB 投影，copy 新增 100,728,832 字节、clone 65,536 字节，比例 0.065%，满足原 G1 20% 门槛。XFS → tmpfs 实测 EXDEV fallback；独立 inode、相同摘要和双向写隔离通过。采样峰值与测量条件见 `evidence/generic-storage/xfs-clone.json`。
+### 空间测量
+
+独占 1 GiB XFS reflink 卷上的三个 32 MiB 投影，普通 copy 新增 100,728,832 字节，clone 新增 65,536 字节（约 0.065%）；XFS → tmpfs 的 EXDEV fallback 通过。5 ms 采样所得峰值分别为 101,294,080 和 65,536 字节，短于采样间隔的瞬态可能遗漏。该比例只适用于所测输入与文件系统。
+
+独立 DinD/VFS 的 shared-tree 联合测量包含源输入、离线 bundle、CAS、视图、活动 workspace、staging、保留证据及 Docker 总项。基础设施镜像与输入已包含在基线内；Docker 总项包含镜像、BuildKit、registry volume 和容器写层，只计一次。
+
+| 联合 allocated blocks | 字节 |
+| --- | ---: |
+| 基线 | 194,494,464 |
+| 最高联合采样 | 1,355,063,296 |
+| 回收 workspace 后 | 1,087,848,448 |
+
+共 43 次采样，目标间隔 250 ms，实际最大间隔 412 ms；各路径顺序读取，峰值是采样下界。staging 采样为 0 不表示导入未使用临时空间。allocated blocks 不等于 CoW 独占物理字节，也不代表实际释放空间；DinD/VFS 结果不能外推生产 overlay 后端或 100 个任务的节省比例。
 
 复现命令：
 
@@ -79,4 +91,4 @@ OCI manifest proof 首次由在线准入或完整离线包取得。Docker `save/
 
 空间统计分开记录逻辑字节、clone/copy、传输与 allocated blocks；CoW blocks 可能重叠。OCI/BuildKit、保留结果和源目录属于独立占用，未承诺整机只有一份，也未把 `du` 总和当作独占物理节省。
 
-联合空间验收见 [报告与测量限制](evidence/generic-storage/joint-space.zh-CN.md)：包含完整输入、CAS、视图、Docker/BuildKit、活动 workspace、临时导入及保留证据，报告同一采样时刻的总量峰值，不把各项不同时间的最高值相加。
+联合空间核算包含完整输入、CAS、视图、Docker/BuildKit、活动 workspace、临时导入及保留证据，报告同一采样时刻的总量峰值，不把各项不同时间的最高值相加。
