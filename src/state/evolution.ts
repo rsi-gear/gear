@@ -293,7 +293,11 @@ export class EvolutionRegistryStore {
   }
 
   async readEntry(evolutionId: EvolutionId): Promise<EvolutionRegistryEntry | undefined> {
-    return (await this.list()).find(entry => entry.evolutionId === evolutionId)
+    assertSafeId(evolutionId, 'evolutionId')
+    // Historical readers must not initialize the registry or refresh experiments.tsv.
+    const value = await this.readJson<unknown>(this.registryPath)
+    return value === undefined ? undefined
+      : this.validateRegistry(value).evolutions.find(entry => entry.evolutionId === evolutionId)
   }
 
   async touch(evolutionId: EvolutionId, update: { batchId?: string; roundId?: string }): Promise<void> {

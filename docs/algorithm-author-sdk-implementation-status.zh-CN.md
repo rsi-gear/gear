@@ -109,6 +109,12 @@ TS/Python 现在提供 propose、evaluate 和 select，并支持无反馈提案�
 
 解释器发现保留 venv 的启动入口，另行核验二进制、虚拟环境与实际 SDK 包身份。主审修复并复验了 realpath 导致丢失 venv 的问题，独立两文件 14 项通过，包含本地 wheel 安装和实际 worker 准入，见 [Python 安装审计](experiments/author-a1-python-installed-review-20260926.zh-CN.md)。通用宿主的 run lock 与恢复接线另验收。
 
+## A2b 历史 seed 任务导入切片
+
+宿主可 pin 并复验已有 registry/spec/round/编译数据集，在隔离新 CAS 中导入保留 exposure 的授权 train/development TaskView。缺件失败记录仍是 record-only，旧分数不成为新 measurement。readEntry 改为纯读取，源目标及对象目录链接均检查。
+
+主审独立三文件 20 项通过，见 [历史任务经验审计](experiments/author-a2b-experience-review-20260926.zh-CN.md)。真实成功样本、Hitch 轨迹、RunSpec 输入接线与模型制品仍待分别验收。
+
 ## 当前限制
 
 A0 是运行基础。`propose/evaluate/select` 已实现；通用运行 profile 的完整宿主装配、五文件作者项目及新的 CLI 仍待后续 A1 切片；现有 A0 role/edit/rollout/measure 便利方法用于探针，v2 已拒绝这些假 operation。用户不能仅复制 v4 的搜索示例便运行真实实验。
@@ -124,7 +130,7 @@ A0 每次重放受 1 MiB 消息/历史与 256 KiB checkpoint 限制，超限明�
 | A0 功能基础 | 已提交并独立审计 |
 | A0 性能/历史盘点 | 真实历史格式清单已保存；Python 性能及 RSS 门未关闭；盘点不等于历史导入通过 |
 | A1 最小作者切片 | 实现中；真实 Hitch、外部作者体验、跨语言 provider 和非 winner 起点分别验收 |
-| A2 历史读取/复用 | 已有狭义非 winner Harness 导入和 A2a 只读 round 报告；经验、模型制品等完整格式覆盖待实现 |
+| A2 历史读取/复用 | 已有非 winner Harness、A2a round 报告和 A2b seed 任务 API；真实 A2b、轨迹/模型与完整格式覆盖待实现 |
 | A3 统一宿主与内置接口 | 待实现 |
 | A4 RHO/长期流程 | 待实现 |
 | A5 训练适配 | 待实现；CPU 合同与真实权重/GPU 验证分别报告 |
