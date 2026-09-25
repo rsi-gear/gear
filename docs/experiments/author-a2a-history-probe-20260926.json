@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "recordedDate": "2026-09-26",
+  "stage": "A2a",
+  "scope": "Read-only, record-only inspection of two retained pre-refactor failed rounds. No raw round or Hitch data copied.",
+  "sourceInventory": "docs/experiments/author-a0-history-inventory-20260926.json",
+  "readerSourceSha256": "96bb4e689cd28e9dec5e4f98af76c18cbbecb7dabef8c6b73039b0861d4e7091",
+  "sourceStateTree": {
+    "fileCountBefore": 5,
+    "fileCountAfter": 5,
+    "treeSha256Before": "5c05443fcd861fc95b3c09139a597cc2ce6e7ac421cef90cd0a6be06b8b24f7f",
+    "treeSha256After": "5c05443fcd861fc95b3c09139a597cc2ce6e7ac421cef90cd0a6be06b8b24f7f",
+    "unchanged": true
+  },
+  "samples": [
+    {
+      "roundId": "eec8f477-4425-4527-a790-6f3463eaeb47",
+      "expectedByteSha256": "4cca919f65be3dac26fc68c54a147b31aec8da4fbe09b2a932f392382c341fe4",
+      "observedByteSha256": "4cca919f65be3dac26fc68c54a147b31aec8da4fbe09b2a932f392382c341fe4",
+      "roundStatus": "failed",
+      "failurePhase": "candidate-generation",
+      "candidateStatuses": [
+        {
+          "status": "failed",
+          "sealedVersionPresent": false,
+          "executableStatus": "unavailable"
+        }
+      ],
+      "attemptStatuses": [
+        {
+          "phase": "seed-baseline",
+          "status": "settled"
+        }
+      ],
+      "baseline": {
+        "availability": "recorded-complete",
+        "plannedTrialCount": 43,
+        "validTrialCount": 43,
+        "invalidTrialCount": 0,
+        "validZeroRewardCount": 27
+      },
+      "trust": "record-only"
+    },
+    {
+      "roundId": "dafcb1a1-8722-47fe-b8f5-c956e2baa767",
+      "expectedByteSha256": "97b69f60bb286128e8dd5014375002e96e2a5599fcce8488ed53edfdcfbc4d5b",
+      "observedByteSha256": "97b69f60bb286128e8dd5014375002e96e2a5599fcce8488ed53edfdcfbc4d5b",
+      "roundStatus": "failed",
+      "failurePhase": "candidate-generation",
+      "candidateStatuses": [
+        {
+          "status": "failed",
+          "sealedVersionPresent": false,
+          "executableStatus": "unavailable"
+        }
+      ],
+      "attemptStatuses": [
+        {
+          "phase": "seed-baseline",
+          "status": "settled"
+        }
+      ],
+      "baseline": {
+        "availability": "recorded-complete",
+        "plannedTrialCount": 43,
+        "validTrialCount": 43,
+        "invalidTrialCount": 0,
+        "validZeroRewardCount": 27
+      },
+      "trust": "record-only"
+    }
+  ],
+  "coverage": {
+    "historicalReportReaderPassed": true,
+    "historicalExperienceImportPassed": false,
+    "historicalExecutableInputPassed": false,
+    "physicalHitchResultRevalidated": false
+  },
+  "handling": "Counts and hashes only. Recorded-complete is structural evidence inside the legacy round, not a fresh physical evaluation."
+}

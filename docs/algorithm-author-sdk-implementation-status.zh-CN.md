@@ -93,6 +93,12 @@ Hitch 现在接受独立 author plan/context，不需要构造旧 EvolutionSpec 
 
 主审独立相关两文件 14 项通过，见 [宿主准入审计](experiments/author-a1-host-admission-review-20260926.zh-CN.md)。完整宿主装配与基于冻结配置的 resume 仍待接线；本切片不单独使新运行可执行。
 
+## A2a 旧 round 报告读取切片
+
+新的只读报告入口不需要 registry/spec 或旧 worker，能查看失败 round 并区分完整基线、有效零分、缺失证据和未封存候选。输出标记为原记录摘要；不伪装成新的可信测量或可运行 Agent。
+
+主审独立历史回归 3 文件 18 项通过，并复核两份真实旧报告及五份原文件前后字节不变，见 [历史报告审计](experiments/author-a2a-history-review-20260926.zh-CN.md)。完整 Campaign archive、授权经验和模型制品读取仍待后续范围。
+
 ## 当前限制
 
 A0 是运行基础。`propose/evaluate/select`、通用运行 profile、五文件作者项目及新的 CLI 仍待后续 A1 切片；现有 A0 role/edit/rollout/measure 便利方法用于探针，v2 已拒绝这些假 operation。用户不能仅复制 v4 的搜索示例便运行真实实验。
