@@ -21,7 +21,7 @@
 
 `src/history/nonwinner.ts` 可以从明确的旧实验目录读取 rejected / rejected-for-substrate round 中的 sealed 候选，并在新 CAS 中建立 Harness 引用、binding 与来源记录。它验证原始 JSON 字节、旧 schema、Git commit/tree/不可变 ref、实际单一父提交、修改范围与 manifest 文件闭包；读取旧数据不调用旧 runtime，也不继承预算、未决操作或 measurement。
 
-当前仅支持新 profile 固定使用同一个物理 Git 仓库。新 CAS 必须与旧 state、原仓库及 Git common dir 分离；跨仓库搬运尚未实现。patchDigest 仅保留原记录，不声称重新构造验证。独立 history/state 回归 3 文件 44 项通过，见 [历史读取审计](experiments/author-a1-history-reader-review-20260926.zh-CN.md)。真实阿里云旧候选的导入探针及后续构建/执行仍分别验收。
+当前仅支持新 profile 固定使用同一个物理 Git 仓库。新 CAS 必须与旧 state、原仓库及 Git common dir 分离；跨仓库搬运尚未实现。patchDigest 仅保留原记录，不声称重新构造验证。独立 history/state 回归 3 文件 44 项通过，见 [历史读取审计](experiments/author-a1-history-reader-review-20260926.zh-CN.md)。真实阿里云旧候选的导入探针已在 `720e91a` 通过：710 份构建文件摘要匹配，新 Harness/binding/来源记录可读，4 份相关原文件字节与 Git refs 未变，编译、Hitch、模型调用均为零。见 [真实导入记录](experiments/author-a1-history-import-20260926.json)。后续构建/执行、可运行 profile 和其他历史格式仍分别验收。
 
 ## A1 任务采样切片
 

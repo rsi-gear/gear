@@ -1,0 +1,124 @@
+{
+  "schemaVersion": 1,
+  "codeRevision": "720e91a5f64cbd95ac97462913f7586728408ecd",
+  "node": "v26.5.1",
+  "createdAt": "2026-09-25T18:43:25.718Z",
+  "source": {
+    "sourceRoot": "/root/gear-lab/state/failure-cluster-campaign-tb21-10x3-luna-20260925-standard",
+    "evolutionId": "7e0e34a1-0ec3-41d9-8a9c-595c942bbe16",
+    "roundId": "f550375e-a597-4242-af0b-65f042e4d8a3",
+    "candidateId": "f550375e-a597-4242-af0b-65f042e4d8a3-candidate-0"
+  },
+  "destinationRoot": "/tmp/gear-author-a1-history-cas-720e91a",
+  "repositoryPath": "/root/gear-lab/releases/failure-cluster-campaign-tb21-10x3-luna-20260925/target-luna-compat",
+  "sourceBytesBefore": {
+    "registry.json": "c0647dbbb122595b9c68995c336c5b8e8763e4afde87a8517dfc8549713f7264",
+    "experiments.tsv": "5afdc32754d2b2633a7b12e56bf3fc223fdbfb540065ca3d0db4362de26181b5",
+    "evolutions/7e0e34a1-0ec3-41d9-8a9c-595c942bbe16/spec.json": "7c2adfe5207df0fd37dcefe9e6606d45a7afed635121c6900629809740827da7",
+    "evolutions/7e0e34a1-0ec3-41d9-8a9c-595c942bbe16/rounds/f550375e-a597-4242-af0b-65f042e4d8a3.json": "1fa187eb2f0d8deb83ec159c4d6dbca970ffa9ad77423dceedff03f9bc701d38"
+  },
+  "sourceBytesAfter": {
+    "registry.json": "c0647dbbb122595b9c68995c336c5b8e8763e4afde87a8517dfc8549713f7264",
+    "experiments.tsv": "5afdc32754d2b2633a7b12e56bf3fc223fdbfb540065ca3d0db4362de26181b5",
+    "evolutions/7e0e34a1-0ec3-41d9-8a9c-595c942bbe16/spec.json": "7c2adfe5207df0fd37dcefe9e6606d45a7afed635121c6900629809740827da7",
+    "evolutions/7e0e34a1-0ec3-41d9-8a9c-595c942bbe16/rounds/f550375e-a597-4242-af0b-65f042e4d8a3.json": "1fa187eb2f0d8deb83ec159c4d6dbca970ffa9ad77423dceedff03f9bc701d38"
+  },
+  "gitRefsSha256": "f113cb9561243928c73e06c1dc71f5eeb2a797825cf3e21a5d367522c939bdf1",
+  "sealedVersion": {
+    "commitOid": "4b25fbbf51b196b61df7f56688c4bda64daef128",
+    "treeOid": "e789d6678e8c39f947a29e1ec9c9b483cd216481",
+    "manifestDigest": "sha256:c92f4c04d3a9b6c8d45a5d116ad6014e487d39c233b0537e7dea4707be5592bd",
+    "patchDigest": "sha256:8269723fa52240a25ae8bcc1329a9fdce30aa9454cb0615dc33dcd0ed321087f",
+    "immutableRef": "refs/dsh-refine/evolutions/7e0e34a1-0ec3-41d9-8a9c-595c942bbe16/candidates/4b25fbbf51b196b61df7f56688c4bda64daef128"
+  },
+  "manifestDigest": "sha256:c92f4c04d3a9b6c8d45a5d116ad6014e487d39c233b0537e7dea4707be5592bd",
+  "artifactCount": 2,
+  "patchDigestVerification": "recorded-only",
+  "imported": {
+    "harnessRef": {
+      "kind": "artifact",
+      "digest": "57c028a8d0f0e08f1c47e2bf96f99eff475b05d7d21bf6e2a913d0e1de714899",
+      "size": 186,
+      "mediaType": "application/json",
+      "schemaId": "harness.directory.v1"
+    },
+    "bindingSetRef": {
+      "kind": "binding-set",
+      "digest": "8d1cd1f1696609c0d9c3544becb1280ffd0cc21eb9558214e617bed9a6067f73",
+      "schemaId": "author-a1-history-probe.bindings.v1"
+    },
+    "provenanceRef": {
+      "kind": "artifact",
+      "digest": "4ed68b4b783184ab233cae9d9fbba1b049d0506cb9a674572c1dfb995d42cfb8",
+      "size": 1663,
+      "mediaType": "application/json",
+      "schemaId": "history.import.v1"
+    }
+  },
+  "provenance": {
+    "derivedFrom": {
+      "artifactCount": 2,
+      "kind": "historical-nonwinner",
+      "patchDigestVerification": "recorded-only",
+      "repository": {
+        "repositoryPath": "/root/gear-lab/releases/failure-cluster-campaign-tb21-10x3-luna-20260925/target-luna-compat",
+        "retention": "pinned-existing-repository",
+        "targetRoot": "harness"
+      },
+      "sealedVersion": {
+        "commitOid": "4b25fbbf51b196b61df7f56688c4bda64daef128",
+        "immutableRef": "refs/dsh-refine/evolutions/7e0e34a1-0ec3-41d9-8a9c-595c942bbe16/candidates/4b25fbbf51b196b61df7f56688c4bda64daef128",
+        "manifestDigest": "sha256:c92f4c04d3a9b6c8d45a5d116ad6014e487d39c233b0537e7dea4707be5592bd",
+        "patchDigest": "sha256:8269723fa52240a25ae8bcc1329a9fdce30aa9454cb0615dc33dcd0ed321087f",
+        "treeOid": "e789d6678e8c39f947a29e1ec9c9b483cd216481"
+      },
+      "source": {
+        "candidateId": "f550375e-a597-4242-af0b-65f042e4d8a3-candidate-0",
+        "decision": "rejected",
+        "evolutionId": "7e0e34a1-0ec3-41d9-8a9c-595c942bbe16",
+        "registryByteSha256": "c0647dbbb122595b9c68995c336c5b8e8763e4afde87a8517dfc8549713f7264",
+        "roundByteSha256": "1fa187eb2f0d8deb83ec159c4d6dbca970ffa9ad77423dceedff03f9bc701d38",
+        "roundId": "f550375e-a597-4242-af0b-65f042e4d8a3",
+        "roundStatus": "rejected",
+        "sourceRoot": "/root/gear-lab/state/failure-cluster-campaign-tb21-10x3-luna-20260925-standard",
+        "specByteSha256": "7c2adfe5207df0fd37dcefe9e6606d45a7afed635121c6900629809740827da7",
+        "specDigest": "sha256:f9095b421aabb11d138c534cf11ee3e6608d7e53ae90c02c7ac82cd895baafb5"
+      }
+    },
+    "executionProfileDigest": "01d1a0fa6282218a70101b3a838f5410067896ed96ab6198fb0b75f3b692fdf6",
+    "inheritedBudget": false,
+    "inheritedMeasurements": false,
+    "inheritedPendingOperations": false,
+    "kind": "history-import",
+    "newCampaignId": "a1-history-import-probe",
+    "schemaVersion": 1
+  },
+  "checks": {
+    "sourceUnchanged": true,
+    "gitRefsUnchanged": true,
+    "newBindingReadable": true,
+    "compileCalls": 0,
+    "hitchCalls": 0,
+    "modelCalls": 0
+  },
+  "limits": {
+    "profile": "import-only-probe-not-a-runnable-profile",
+    "build": false,
+    "evaluation": false,
+    "crossRepositoryTransfer": false,
+    "legacyJournalResume": false
+  },
+  "verificationPackage": {
+    "sourceRevision": "720e91a5f64cbd95ac97462913f7586728408ecd",
+    "sourceBuiltFromCleanGitArchive": true,
+    "verifiedBuiltFileCount": 710,
+    "archiveSha256": "7d840887e34d8b901829362fcfd3d8ee9e0928409e54fd0c41311f85dae2ce66",
+    "archiveBytes": 1355070,
+    "builtCodeManifestSha256": "b47eb448f0f34c25bfa9c37f7cf71efad6dfb00fe82fa77a5530a0a0eb31a7f8",
+    "probeSha256": "c4173439e863386af0c45b8dae1abe6268e80f500e1b24c70e82cf965ed78569",
+    "rawRemoteReportSha256": "3934f6c0cd215c2499e5d261dfe33f8238119de84ca2cbf6f8be9b6d4329a3ef",
+    "dependencies": "Existing server Gear node_modules; no older Gear runtime module was used as importer",
+    "probeSource": "author-a1-history-import-probe-20260926.mjs"
+  },
+  "validationBoundary": "Import-only acceptance on a real archived rejected candidate; four named source files and all Git refs were compared. No runnable RuntimeProfile, build, model, Hitch evaluation, cross-repository transfer, model-weight import, or old-journal resume is certified."
+}
