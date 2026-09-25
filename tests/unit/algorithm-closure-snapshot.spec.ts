@@ -82,3 +82,35 @@ it('invalidates an invocation snapshot for delayed callbacks', async () => {
   expect((lateResult as Error).message).toContain('Implementation closure snapshot has expired')
   expect(module.implementationClosureDigest(['fixture'], {})).not.toBe(before)
 })
+
+it('shares observed bytes across overlapping entrypoints without changing their closure digests', async () => {
+  const { module, fixture } = await isolatedIdentity(), directory = dirname(fixture)
+  const other = join(directory, 'other.js'), shared = join(directory, 'shared.js')
+  writeFileSync(fixture, "import './other.js'\nimport './shared.js'\nexport const version = 1\n")
+  writeFileSync(other, "import './fixture.js'\nimport './shared.js'\nexport const other = true\n")
+  writeFileSync(shared, 'export const shared = 1\n')
+  const config = { purpose: 'shared-cache' }
+  const expected = module.implementationClosureDigest(['fixture'], config)
+  expect(module.implementationClosureDigest(['other'], config)).toBe(expected)
+  await module.withImplementationClosureSnapshot(async snapshot => {
+    snapshot.capture(['fixture'])
+    writeFileSync(shared, 'export const shared = 2\n')
+    snapshot.capture(['other'])
+    expect(module.implementationClosureDigest(['fixture'], config)).toBe(expected)
+    expect(module.implementationClosureDigest(['other'], config)).toBe(expected)
+  })
+  expect(module.implementationClosureDigest(['fixture'], config)).not.toBe(expected)
+})
+
+it('rejects an oversized external package while scanning its files', async () => {
+  const { module, fixture } = await isolatedIdentity()
+  const packageRoot = join(dirname(dirname(dirname(fixture))), 'node_modules', 'large-package')
+  mkdirSync(packageRoot, { recursive: true })
+  writeFileSync(join(packageRoot, 'package.json'), '{"name":"large-package","version":"1.0.0","main":"index.js"}')
+  writeFileSync(join(packageRoot, 'index.js'), 'export const large = true\n')
+  for (let index = 0; index < 10_001; index++)
+    writeFileSync(join(packageRoot, `file-${index}`), '')
+  writeFileSync(fixture, "import 'large-package'\n")
+  await expect(module.withImplementationClosureSnapshot(async snapshot => { snapshot.capture(['fixture']) }))
+    .rejects.toThrow('external dependency closure too large')
+})
