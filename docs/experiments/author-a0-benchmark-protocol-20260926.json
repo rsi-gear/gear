@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "frozenDate": "2026-09-26",
+  "stage": "A0",
+  "status": "protocol-frozen-before-author-timing",
+  "machine": {
+    "system": "Darwin",
+    "release": "27.0.0",
+    "architecture": "arm64",
+    "logicalCpus": 10,
+    "python": "3.9.6",
+    "node": "26.5.1",
+    "vitest": "4.1.11",
+    "typescript": "6.0.3",
+    "memoryCapacity": "not-readable-in-sandbox"
+  },
+  "workloads": [
+    {
+      "id": "composite-10x3x4",
+      "rounds": 3,
+      "candidatesPerRound": 4,
+      "tasksPerCandidate": 10,
+      "candidateStages": [
+        "role",
+        "edit",
+        "parallel task rollout",
+        "measurement"
+      ],
+      "provider": "deterministic-counted-fake"
+    },
+    {
+      "id": "rho-shaped",
+      "rounds": 3,
+      "candidatesPerRound": 4,
+      "tasksPerCandidate": 10,
+      "stages": [
+        "initial measure",
+        "role",
+        "edit",
+        "parallel rollout",
+        "measurement",
+        "pairwise rank",
+        "checkpoint"
+      ],
+      "provider": "deterministic-counted-fake",
+      "claim": "Shape probe, not RHO scientific equivalence."
+    }
+  ],
+  "comparison": "Same committed atomic graph, inputs, fake outcomes, observations and journal backend in low-level Algorithm, TS author and Python author.",
+  "measurement": {
+    "warmups": 1,
+    "samples": 3,
+    "statistic": "median",
+    "timedWindow": "initialization through terminal durable commit",
+    "include": [
+      "worker process startup",
+      "CAS IO",
+      "journal locking and validation"
+    ],
+    "exclude": [
+      "dependency install",
+      "source compilation"
+    ],
+    "record": [
+      "F",
+      "O_pure",
+      "O_physical",
+      "J",
+      "wallMs",
+      "processTreeCpuMs",
+      "processTreePeakRssBytes",
+      "logicalArtifactAndJournalReadBytes",
+      "coldRecoveryWallMs",
+      "workerReplayWallMs"
+    ],
+    "readBytesMeaning": "Instrumented logical bytes; not operating-system physical disk traffic."
+  },
+  "acceptance": {
+    "identicalFAndOperationCountsAndEffectKeys": true,
+    "noDuplicatePhysicalChargesAfterColdRecovery": true,
+    "extraMedianWallMsPerFrontierVsLowLevelAtMost": 100,
+    "medianColdRecoveryWallMsAtMost": 5000,
+    "extraProcessTreePeakRssBytesVsLowLevelAtMost": 134217728,
+    "functionalFailureCannotBeOffsetBySpeed": true,
+    "missingMetricRemainsUnverified": true
+  },
+  "limits": {
+    "maxFrontierWavesProbeOnly": 200,
+    "defaultProductLimit": "not-selected",
+    "longRun1000Waves10000Operations": "separate-later-gate"
+  },
+  "failurePolicy": "Report a failed threshold without changing this frozen protocol; optimize or separately revise the design with new evidence."
+}
