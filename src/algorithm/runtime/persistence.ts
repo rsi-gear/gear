@@ -9,6 +9,8 @@ import type { SearchJournal } from '../../search/store.js'
 
 export interface CampaignStoreLike<T extends JsonValue> {
   readonly requiresArtifactCheckpoint?: true
+  /** withWriter verifies the complete Campaign chain before invoking work. */
+  readonly writerHydrates?: true
   readonly identityDigest?: string
   hydrate?(): Promise<void>
   recoverProjection?(): Promise<void>
@@ -128,6 +130,7 @@ async function publish<T>(journal: SearchJournal, key: string, value: T): Promis
  */
 export class JournalCampaignStore<T extends JsonValue> implements CampaignStoreLike<T> {
   readonly requiresArtifactCheckpoint = true as const
+  readonly writerHydrates = true as const
   readonly identityDigest: string
   private readonly prefix: string
   private cached: { state: T; seq: number; digest: string } | null = null
@@ -300,21 +303,35 @@ export class JournalArtifactStore extends FileArtifactStore implements ArtifactC
     this.tail = new Promise<void>(resolve => { release = resolve })
     await previous
     try {
-      await this.hydrate()
+      // Merge the current index and this adapter's prior writes at each
+      // durability barrier. Verify each published remote/local pair once.
+      const savedIndex = await this.journal.read<{ digests: string[] }>(this.indexKey())
+      if (savedIndex !== undefined && (!Array.isArray(savedIndex?.digests)
+        || new Set(savedIndex.digests).size !== savedIndex.digests.length))
+        throw new Error('Journal-backed artifact index drift')
+      for (const digest of new Set([...this.published, ...(savedIndex?.digests ?? [])])) {
+        assertDigest(digest)
+        const raw = await this.journal.read<string>(this.objectKey(digest))
+        if (typeof raw !== 'string' || sha256(raw) !== digest) throw new Error('Journal-backed artifact drift')
+        const path = join(this.root, 'objects', `${digest}.json`)
+        if (existsSync(path)) {
+          if (readFileSync(path, 'utf8') !== raw) throw new Error('Local artifact cache drift')
+        } else durableWrite(path, raw)
+        this.published.add(digest)
+      }
       const files = readdirSync(join(this.root, 'objects')).filter(name => /^[a-f0-9]{64}\.json$/u.test(name)).sort()
       for (const file of files) {
         const digest = file.slice(0, -5)
+        if (this.published.has(digest)) continue
         const raw = readFileSync(join(this.root, 'objects', file), 'utf8')
         if (sha256(raw) !== digest) throw new Error('Local artifact cache drift')
-        if (this.published.has(digest)) continue
         const existing = await this.journal.read<string>(this.objectKey(digest))
         if (existing !== undefined && existing !== raw) throw new Error('Immutable artifact conflict')
         if (existing === undefined) await publish(this.journal, this.objectKey(digest), raw)
         this.published.add(digest)
       }
       const index = { digests: [...this.published].sort() }
-      const saved = await this.journal.read<typeof index>(this.indexKey())
-      if (canonicalJson(saved ?? null) !== canonicalJson(index)) await publish(this.journal, this.indexKey(), index)
+      if (canonicalJson(savedIndex ?? null) !== canonicalJson(index)) await publish(this.journal, this.indexKey(), index)
     } finally { release() }
   }
 }

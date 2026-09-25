@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -110,9 +110,12 @@ describe('SearchJournal-backed Campaign persistence', () => {
       reduce: () => { throw new Error('complete recipe must not reduce') },
     }
     const spec = { campaignId: 'journal-campaign', config: {}, initialBindingSetRef, budget: {} }
+    const campaign = new JournalCampaignStore(journal, 'round')
+    const hydrated = vi.spyOn(campaign, 'hydrate')
     const runtime = new AlgorithmRuntime(root, recipe, [], spec,
-      { store: new JournalCampaignStore(journal, 'round'), artifacts })
+      { store: campaign, artifacts })
     expect(await runtime.runUntilBlocked()).toBe('complete')
+    expect(hydrated).toHaveBeenCalledTimes(1) // the writer verifies the chain once
     expect(runtime.snapshot()?.state).toEqual({ harness })
     const restoredJournal = new MemorySearchStore(journal.checkpoint()), restoredRoot = cacheRoot()
     const restoredArtifacts = new JournalArtifactStore(join(restoredRoot, 'artifacts'), restoredJournal, 'round')
@@ -133,6 +136,7 @@ describe('SearchJournal-backed Campaign persistence', () => {
       }), artifacts: changedArtifacts,
     })
     await expect(changed.hydrate()).rejects.toThrow('Campaign identity drift')
+    await expect(changed.tick()).rejects.toThrow('Campaign identity drift')
     expect(projected).toBe(0)
     expect(changedJournal.checkpoint()).toEqual(before)
   })
@@ -251,6 +255,15 @@ describe('SearchJournal-backed Campaign persistence', () => {
     await restored.hydrate()
     expect([a, b, c].map(ref => restored.getJson(ref)))
       .toEqual([{ from: 'first-a' }, { from: 'second' }, { from: 'first-c' }])
+  })
+
+  it('rejects a changed local published artifact at the next flush', async () => {
+    const journal = new MemorySearchStore(), root = cacheRoot()
+    const store = new JournalArtifactStore(join(root, 'artifacts'), journal, 'round')
+    const ref = store.putJson({ immutable: true }, 'test.v1')
+    await store.flush()
+    writeFileSync(join(root, 'artifacts', 'objects', `${ref.digest}.json`), 'tampered')
+    await expect(store.flush()).rejects.toThrow('Local artifact cache drift')
   })
 
   it('preserves the legacy local provider record directory through the async backend', async () => {

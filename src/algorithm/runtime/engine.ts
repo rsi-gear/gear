@@ -279,6 +279,19 @@ export class AlgorithmRuntime {
     await this.store.recoverProjection?.();
   }
 
+  private withHydratedWriter<R>(work: () => Promise<R>): Promise<R> {
+    return this.store.withWriter(async () => {
+      // A journal-backed writer has already verified its full chain under the
+      // lease. Restore artifacts and validate identity before projection or
+      // effects, without re-reading that chain outside and inside the lease.
+      await (this.artifacts as FileArtifactStore & Partial<ArtifactCheckpoint>).hydrate?.();
+      if (this.store.writerHydrates !== true) await this.store.hydrate?.();
+      this.load();
+      await this.store.recoverProjection?.();
+      return work();
+    });
+  }
+
   private applyReceipt(state: CampaignState, record: OperationRecord, receipt?: UsageReceipt): void {
     if (!receipt) return;
     assertJson(receipt);
@@ -501,8 +514,7 @@ export class AlgorithmRuntime {
   }
 
   async tick(): Promise<'complete' | 'waiting' | 'advanced'> {
-    await this.hydrate();
-    return this.store.withWriter(async () => {
+    return this.withHydratedWriter(async () => {
       const loaded = this.load();
       if (!loaded) {
         this.validateBinding(this.spec.initialBindingSetRef, this.spec.initialBindingSetRef);
@@ -566,8 +578,7 @@ export class AlgorithmRuntime {
     const keys = intents.map(intent => intent.localKey);
     for (const key of keys) validName(key);
     if (new Set(keys).size !== keys.length) throw new Error('Duplicate auxiliary local key');
-    await this.hydrate();
-    await this.store.withWriter(async () => {
+    await this.withHydratedWriter(async () => {
       const state = this.load();
       if (!state || state.phase !== 'running') throw new Error('Auxiliary operation requires an active campaign');
       const previous = state.auxiliaryOperations?.[groupId];
@@ -602,8 +613,7 @@ export class AlgorithmRuntime {
 
   /** Advances only one auxiliary group without calling algorithm.reduce. The host must admit safe provider kinds. */
   private async tickAuxiliary(groupId: string): Promise<'complete' | 'waiting'> {
-    await this.hydrate();
-    return this.store.withWriter(async () => {
+    return this.withHydratedWriter(async () => {
       const loaded = this.load();
       if (!loaded || loaded.phase !== 'running') throw new Error('Auxiliary operation requires an active campaign');
       let state: CampaignState = loaded;
@@ -651,8 +661,7 @@ export class AlgorithmRuntime {
   }
 
   async cancel(localKey: string): Promise<void> {
-    await this.hydrate();
-    await this.store.withWriter(async () => {
+    await this.withHydratedWriter(async () => {
       const state = this.load(); if (!state) throw new Error('Campaign not started');
       const record = state.operations[localKey]; if (!record) throw new Error(`Unknown operation ${localKey}`);
       if (record.status === 'completed' || record.status === 'cancelled') return;
