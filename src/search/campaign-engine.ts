@@ -20,7 +20,7 @@ import { captureGepaBudgetCut, type GepaBudgetCut } from '../algorithm/recipes/g
 import { AlgorithmRuntime, type CampaignState } from '../algorithm/runtime/engine.js'
 import { JournalArtifactStore, JournalCampaignStore, SearchJournalProviderRecordBackend } from '../algorithm/runtime/persistence.js'
 import type { JsonValue } from '../algorithm/schema.js'
-import { implementationClosureDigest } from '../algorithm/data/identity.js'
+import { implementationClosureDigest, withImplementationClosureSnapshot } from '../algorithm/data/identity.js'
 import { ComponentRegistry } from '../evolution/components.js'
 import { digestJson } from '../state/digest.js'
 import { integrity, invariant, safeId, seal, SearchProtocolError, validateSnapshot, verifyDigest } from './contracts.js'
@@ -63,6 +63,15 @@ export class CampaignSearchPending extends Error {
 
 const harnessBindingSchema: BindingSchema = { id: 'campaign-search-harness-v1',
   slots: { harness: { schemaId: 'harness.directory.v1', required: true, replaceable: true } } }
+
+const campaignImplementationEntrypoints = [
+  'recipes/gepa-search', 'recipes/gepa', '../search/campaign-engine',
+  'providers/gepa-budget-projection', 'providers/gepa-operations', 'runtime/persistence',
+  'providers/gepa-publication', 'providers/gepa-research-checkpoint',
+  'providers/gepa-science-checkpoint', 'providers/gepa-await-repair',
+  'providers/gepa-archive-view', 'providers/gepa-repair-evaluation',
+  'providers/gepa-process-completion',
+] as const
 
 function roundHasLimit(settings: SearchAdmission['settings'], key: 'maxGenerationTokens' | 'maxGenerationRequests'): boolean {
   return settings.budgets.round[key] !== undefined || settings.budgets.evolution[key] !== undefined
@@ -304,6 +313,7 @@ export class CampaignFailureClusterSearch {
   }
 
   async run(request: SearchAdmission, signal: AbortSignal): Promise<SearchRoundOutcome> {
+    return withImplementationClosureSnapshot(async identitySnapshot => {
     const inspected = await inspectCampaignRun<SearchCampaignExtensions>({ store: this.store,
       request, components: this.components, signal })
     if (inspected.kind === 'terminal') return inspected.outcome
@@ -317,7 +327,11 @@ export class CampaignFailureClusterSearch {
       diagnosisIntegrity: this.diagnosis.integrity,
       sanitizationPolicyDigest: this.diagnosis.sanitizationPolicyDigest,
       validate: () => this.validate(request),
-      prepareBeforeClock: current => captureGepaBudgetCut(this.store, request.roundId, current.resolvedSettings.budgets),
+      prepareBeforeClock: current => {
+        for (const entrypoint of campaignImplementationEntrypoints) identitySnapshot.capture([entrypoint])
+        if (current.seed.objective) identitySnapshot.capture(['providers/gepa-objective-reference'])
+        return captureGepaBudgetCut(this.store, request.roundId, current.resolvedSettings.budgets)
+      },
       prepareExtensions: async (current, startedAt, budgetCut) => {
         const prepared = await this.openCampaignSearchRuntime(request, { current, startedAt, preview: true, budgetCut })
         preparedHost = prepared
@@ -436,5 +450,6 @@ export class CampaignFailureClusterSearch {
     } finally {
       for (const release of dispose.reverse()) release()
     }
+    })
   }
 }

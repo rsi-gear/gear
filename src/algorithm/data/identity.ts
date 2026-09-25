@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs';
 import { builtinModules, createRequire } from 'node:module';
 import { basename, dirname, extname, join, relative, resolve } from 'node:path';
@@ -6,6 +7,45 @@ import { fileURLToPath } from 'node:url';
 import { canonicalJson } from '../schema.js';
 
 const s3Entrypoints = ['providers/evidence', 'providers/tasks', 'providers/measurement', 'providers/execution', 'data/legacy'];
+const closureScope = new AsyncLocalStorage<ImplementationClosureSnapshot>();
+
+function normalizedEntrypoints(entrypoints: readonly string[]): string[] {
+  if (entrypoints.length === 0 || entrypoints.some(entry => !/^(?:\.\.\/)?[A-Za-z0-9_./-]+$/u.test(entry)))
+    throw new Error('Invalid implementation entrypoints');
+  return [...new Set(entrypoints)].sort();
+}
+
+/** One invocation's actual source/package byte identity; never shared across runs or resumes. */
+export class ImplementationClosureSnapshot {
+  private readonly closures = new Map<string, string>();
+  private active = true;
+
+  capture(entrypoints: readonly string[]): void {
+    if (!this.active) throw new Error('Implementation closure snapshot has expired');
+    const normalized = normalizedEntrypoints(entrypoints), key = JSON.stringify(normalized);
+    if (!this.closures.has(key)) this.closures.set(key, scanImplementationClosure(normalized));
+  }
+
+  digest(entrypoints: readonly string[], configuration: unknown): string {
+    if (!this.active) throw new Error('Implementation closure snapshot has expired');
+    const normalized = normalizedEntrypoints(entrypoints), key = JSON.stringify(normalized);
+    this.capture(normalized);
+    return configuredDigest(this.closures.get(key)!, configuration);
+  }
+
+  invalidate(): void { this.active = false; this.closures.clear(); }
+}
+
+/** Async-local isolation prevents concurrent admissions from sharing a source snapshot. */
+export async function withImplementationClosureSnapshot<T>(work: (snapshot: ImplementationClosureSnapshot) => Promise<T>): Promise<T> {
+  const snapshot = new ImplementationClosureSnapshot();
+  try { return await closureScope.run(snapshot, () => work(snapshot)); }
+  finally { snapshot.invalidate(); }
+}
+
+function configuredDigest(closure: string, configuration: unknown): string {
+  return createHash('sha256').update(canonicalJson({ configuration, closure, node: process.versions.node })).digest('hex');
+}
 
 const builtins = new Set(builtinModules);
 function externalName(path: string, repositoryRoot: string): { name: string; packagePath?: string; packageId?: string } {
@@ -29,8 +69,12 @@ function externalName(path: string, repositoryRoot: string): { name: string; pac
 
 /** Hashes the transitive local import/export closure of the built or source implementation. */
 export function implementationClosureDigest(entrypoints: readonly string[], configuration: unknown): string {
-  if (entrypoints.length === 0 || entrypoints.some(entry => !/^(?:\.\.\/)?[A-Za-z0-9_./-]+$/u.test(entry))) throw new Error('Invalid implementation entrypoints');
-  const normalized = [...new Set(entrypoints)].sort();
+  const scoped = closureScope.getStore();
+  if (scoped) return scoped.digest(entrypoints, configuration);
+  return configuredDigest(scanImplementationClosure(normalizedEntrypoints(entrypoints)), configuration);
+}
+
+function scanImplementationClosure(normalized: readonly string[]): string {
   const current = fileURLToPath(import.meta.url);
   const algorithmRoot = dirname(dirname(current));
   const repositoryRoot = resolve(algorithmRoot, '../..');
@@ -131,8 +175,7 @@ export function implementationClosureDigest(entrypoints: readonly string[], conf
   for (const [name, bytes] of [...files].sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b)))) {
     hash.update(name); hash.update('\0'); hash.update(String(bytes.length)); hash.update('\0'); hash.update(bytes); hash.update('\0');
   }
-  const closure = hash.digest('hex');
-  return createHash('sha256').update(canonicalJson({ configuration, closure, node: process.versions.node })).digest('hex');
+  return hash.digest('hex');
 }
 
 export function s3ImplementationDigest(kind: string, configuration: unknown): string {
