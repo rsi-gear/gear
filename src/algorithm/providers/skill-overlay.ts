@@ -180,7 +180,8 @@ export async function materializeSkillOverlay(input: SkillOverlayInput): Promise
         toolchainRef: input.builder.options.toolchainRef, sandboxProfileRef: input.builder.options.sandboxProfileRef },
       workspace: { repositoryPath: input.workspaceManager.options.repositoryPath,
         targetRoot: input.workspaceManager.options.targetRoot, maxFiles: input.workspaceManager.options.maxFiles,
-        maxBytes: input.workspaceManager.options.maxBytes, maxDiffBytes: input.workspaceManager.options.maxDiffBytes },
+        maxBytes: input.workspaceManager.options.maxBytes, maxDiffBytes: input.workspaceManager.options.maxDiffBytes,
+        allowedPathGrantDigest: input.workspaceManager.allowedPathGrantDigest },
       hostIdentityDigest: input.hostIdentityDigest }) })
   const store = new CampaignStore<JsonValue>(join(input.stateRoot, 'skill-overlay', input.operationId))
   const signal = input.signal ?? new AbortController().signal

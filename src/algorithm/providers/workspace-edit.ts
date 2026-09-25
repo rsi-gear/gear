@@ -187,7 +187,8 @@ export class DshWorkspaceEditPort implements PhysicalExecutionPort {
       repositoryPath: options.workspaceManager.options.repositoryPath,
       targetRoot: options.workspaceManager.options.targetRoot,
       maxFiles: options.workspaceManager.options.maxFiles, maxBytes: options.workspaceManager.options.maxBytes,
-      maxDiffBytes: options.workspaceManager.options.maxDiffBytes } })
+      maxDiffBytes: options.workspaceManager.options.maxDiffBytes,
+      allowedPathGrantDigest: options.workspaceManager.allowedPathGrantDigest } })
     this.manifest = { kind: 'execution.workspace-edit', execution: 'external', supportsInspect: true,
       meteredDimensions: this.metered,
       hardLimitDimensions: this.metered.filter(d => options.campaignBudget[d]!.capability === 'hard'),
@@ -274,7 +275,8 @@ export class DshWorkspaceEditPort implements PhysicalExecutionPort {
       sandboxProfileRef: builder.options.sandboxProfileRef }, workspace: {
       repositoryPath: workspaceManager.options.repositoryPath, targetRoot: workspaceManager.options.targetRoot,
       maxFiles: workspaceManager.options.maxFiles, maxBytes: workspaceManager.options.maxBytes,
-      maxDiffBytes: workspaceManager.options.maxDiffBytes } })
+      maxDiffBytes: workspaceManager.options.maxDiffBytes,
+      allowedPathGrantDigest: workspaceManager.allowedPathGrantDigest } })
   }
   async preflight(envelope: OperationEnvelope): Promise<void> {
     const role = this.role(envelope)

@@ -59,6 +59,10 @@ Python replay port 改为异步创建，首次 replay 使用刚完成环境准�
 
 主审独立回归 4 文件 26 项通过，见 [物理检查审计](experiments/author-a1-physical-inspection-review-20260926.zh-CN.md)。这是部分只读探针，尚未生成完整可运行 lock；target 路由、真实服务装配与 CLI 仍待接线。Hitch 回归采用录制协议夹具，模型检查采用离线适配器，不作为真实服务运行证据。
 
+## A1 编辑授权切片
+
+候选工作区现在支持冻结的 allowedPaths，文件工具修改前和最终 Git diff 封存时都检查范围；物理编辑及 Skill overlay 身份包含授权摘要。主审独立回归 4 文件 36 项通过，见 [编辑范围审计](experiments/author-a1-edit-grants-review-20260926.zh-CN.md)。通用宿主传入 profile 授权仍在接线中。
+
 ## 当前限制
 
 A0 是运行基础。`propose/evaluate/select`、通用运行 profile、五文件作者项目及新的 CLI 仍待后续 A1 切片；现有 A0 role/edit/rollout/measure 便利方法用于探针，v2 已拒绝这些假 operation。用户不能仅复制 v4 的搜索示例便运行真实实验。
