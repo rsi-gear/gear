@@ -87,6 +87,12 @@ Hitch 现在接受独立 author plan/context，不需要构造旧 EvolutionSpec 
 
 实施者隔离构建/类型检查及 92 项相关回归通过；主审独立验证 3 文件 7 项通过，见 [外部加载审计](experiments/author-a1-installed-loader-review-20260926.zh-CN.md)。验收包含 npm pack 安装、多步 Campaign、冷进程恢复和身份漂移拒绝；完整作者 CLI 与真实 Hitch 仍待验证，任意第三方 npm 依赖仍不支持。
 
+## A1 运行锁与宿主准入切片
+
+管理员密钥、目标路由声明和运行作用域现在具有独立身份合同。运行锁在大小/路径校验后原子发布，preview 不创建运行目录；容量显式冻结。目标路由标记为配置核验，不宣称模型连通性。
+
+主审独立相关两文件 14 项通过，见 [宿主准入审计](experiments/author-a1-host-admission-review-20260926.zh-CN.md)。完整宿主装配与基于冻结配置的 resume 仍待接线；本切片不单独使新运行可执行。
+
 ## 当前限制
 
 A0 是运行基础。`propose/evaluate/select`、通用运行 profile、五文件作者项目及新的 CLI 仍待后续 A1 切片；现有 A0 role/edit/rollout/measure 便利方法用于探针，v2 已拒绝这些假 operation。用户不能仅复制 v4 的搜索示例便运行真实实验。

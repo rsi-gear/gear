@@ -13,10 +13,12 @@ export type NeutralRuntimeConfigV1 = {
   hitch: HitchCliEvaluatorOptions;
   sampling: { repetitions: number };
   taskBudgetMs: number;
+  /** Pre-existing administrator keys; ordinary author projects never provision them. */
+  authority?: { issuerId: string; taskKeyFile: string; evidenceKeyFile: string };
   modelDestinations: {
     meta: { alias: string; destinationId: string; provider: string; model: string;
       registrationModule: string; spec: DshMetaAgentSpec };
-    target: { alias: string; destinationId: string; provider: string; model: string };
+    target: { alias: string; destinationId: string; provider: string; model: string; routeFile?: string };
   };
   /** Admin-declared scripts and assets used by the compiler and model registration. */
   runtimeResources: string[];
@@ -54,7 +56,7 @@ export function parseNeutralRuntimeConfig(value: unknown): NeutralRuntimeConfigV
   assertJson(value);
   const config = object(value, 'Runtime config');
   exact(config, ['schemaVersion', 'builder', 'compiler', 'hitch', 'sampling', 'taskBudgetMs', 'modelDestinations',
-    'runtimeResources'], [], 'Runtime config');
+    'runtimeResources'], ['authority'], 'Runtime config');
   if (config.schemaVersion !== 1) throw new Error('Neutral runtime config version 1 required');
   const builder = object(config.builder, 'Runtime builder');
   exact(builder, ['dshBaseRef', 'toolchainRef', 'sandboxProfileRef', 'allowedImports'], [], 'Runtime builder');
@@ -101,13 +103,24 @@ export function parseNeutralRuntimeConfig(value: unknown): NeutralRuntimeConfigV
   exact(sampling, ['repetitions'], [], 'Runtime sampling');
   positive(sampling.repetitions, 'Runtime sampling repetitions');
   positive(config.taskBudgetMs, 'Runtime taskBudgetMs');
+  if (config.authority !== undefined) {
+    const authority = object(config.authority, 'Runtime authority');
+    exact(authority, ['issuerId', 'taskKeyFile', 'evidenceKeyFile'], [], 'Runtime authority');
+    text(authority.issuerId, 'Runtime authority issuerId');
+    absolute(authority.taskKeyFile, 'Runtime authority taskKeyFile');
+    absolute(authority.evidenceKeyFile, 'Runtime authority evidenceKeyFile');
+    if (authority.taskKeyFile === authority.evidenceKeyFile)
+      throw new Error('Task and evidence authority key files must differ');
+  }
   const models = object(config.modelDestinations, 'Runtime model destinations');
   exact(models, ['meta', 'target'], [], 'Runtime model destinations');
   for (const channel of ['meta', 'target'] as const) {
     const destination = object(models[channel], `Runtime ${channel} model`);
     exact(destination, ['alias', 'destinationId', 'provider', 'model', ...(channel === 'meta' ? ['registrationModule', 'spec'] : [])],
-      [], `Runtime ${channel} model`);
+      channel === 'target' ? ['routeFile'] : [], `Runtime ${channel} model`);
     for (const field of ['alias', 'destinationId', 'provider', 'model']) text(destination[field], `Runtime ${channel}.${field}`);
+    if (channel === 'target' && destination.routeFile !== undefined)
+      absolute(destination.routeFile, 'Runtime target routeFile');
     if (channel === 'meta') {
       absolute(destination.registrationModule, 'Runtime meta registrationModule');
       const spec = object(destination.spec, 'Runtime meta DSH spec');
@@ -124,5 +137,8 @@ export function parseNeutralRuntimeConfig(value: unknown): NeutralRuntimeConfigV
   resources.forEach((path, index) => absolute(path, `Runtime resources[${index}]`));
   if (!resources.includes(object(models.meta, 'Runtime meta model').registrationModule as string))
     throw new Error('Runtime meta registration module must be an explicit resource');
+  const routeFile = object(models.target, 'Runtime target model').routeFile;
+  if (routeFile !== undefined && !resources.includes(routeFile as string))
+    throw new Error('Runtime target route file must be an explicit resource');
   return structuredClone(value as JsonValue) as unknown as NeutralRuntimeConfigV1;
 }
