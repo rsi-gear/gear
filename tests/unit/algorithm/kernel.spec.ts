@@ -95,7 +95,10 @@ describe('algorithm kernel', () => {
     await runtime.tick();
     await expect(runtime.store.commit({} as never, 'illegal')).rejects.toThrow('writer lease');
     const headPath = join(root, 'campaign', 'HEAD');
-    writeFileSync(headPath, readFileSync(headPath, 'utf8').replace(/a/g, 'b'));
+    const originalHead = readFileSync(headPath, 'utf8');
+    const corruptedHead = `${originalHead[0] === '0' ? '1' : '0'}${originalHead.slice(1)}`;
+    expect(corruptedHead).not.toBe(originalHead);
+    writeFileSync(headPath, corruptedHead);
     expect(() => runtime.snapshot()).toThrow();
     expect(() => assertSchema({ type: 'string', pattern: '.*' } as never)).toThrow('Unsupported');
     expect(() => assertSchema({ type: 'mystery' } as never)).toThrow('Unknown');

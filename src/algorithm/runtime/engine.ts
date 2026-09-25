@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Algorithm, AlgorithmDecision, AlgorithmManifest, BudgetPlan, BudgetSnapshot, CampaignSpec, CompletionEnvelope, OperationEnvelope, OperationIntent, OperationOutcome, OperationProvider, ProviderInspection, ProviderManifest, ProviderPreflight, ProviderSubmission, UsageReceipt, BindingSetRef } from '../contracts.js';
+import type { Algorithm, AlgorithmDecision, AlgorithmManifest, BudgetPlan, BudgetSnapshot, CampaignSpec, CompletionEnvelope, OperationEnvelope, OperationIntent, OperationOutcome, OperationProvider, ProviderInspection, ProviderManifest, ProviderPreflight, ProviderDispatchContext, ProviderSubmission, UsageReceipt, BindingSetRef } from '../contracts.js';
 import { ALGORITHM_API_VERSION } from '../contracts.js';
 import { FileArtifactStore } from '../artifacts.js';
 import { BindingStore } from '../bindings.js';
@@ -18,6 +18,8 @@ type OperationRecord = {
   outcome?: OperationOutcome;
   accounted: Record<string, number>;
   released: boolean;
+  /** A ready dispatch was durably admitted before submit; a prepared provider plan alone is insufficient. */
+  dispatchAdmitted?: true;
 };
 type ReceiptCursor = { cursor: string; cumulative: Record<string, number> };
 type Observation = { kind: 'inspect'; value: ProviderInspection }
@@ -260,6 +262,8 @@ export class AlgorithmRuntime {
       if (digest !== record.providerManifestDigest || manifest.implementationDigest !== record.envelope.implementationDigest || jsonDigest(record.envelope.input) !== record.envelope.inputDigest) throw new Error('Operation identity drift');
       if (record.envelope.startsBudgetClock !== undefined && typeof record.envelope.startsBudgetClock !== 'boolean')
         throw new Error('Operation budget clock identity drift');
+      if (record.dispatchAdmitted !== undefined && record.dispatchAdmitted !== true)
+        throw new Error('Operation dispatch admission drift');
       this.validateBinding(record.envelope.bindingSetRef, state.initialBindingSetRef);
     }
     return state;
@@ -357,7 +361,23 @@ export class AlgorithmRuntime {
     return value.startsBudgetClock;
   }
 
-  private async prepareObservation(record: OperationRecord): Promise<PreparedObservation> {
+  private dispatchContext(state: CampaignState, record: OperationRecord, batchOrdinal: number): ProviderDispatchContext {
+    const spent = Object.freeze({ ...state.spent });
+    const reservedExcludingSelf: Record<string, number> = {};
+    const records = [...Object.values(state.operations),
+      ...Object.values(state.auxiliaryOperations ?? {}).flatMap(group => Object.values(group))];
+    for (const other of records) {
+      if (other.envelope.operationId === record.envelope.operationId || other.released) continue;
+      for (const [dimension, amount] of Object.entries(other.envelope.limits))
+        reservedExcludingSelf[dimension] = (reservedExcludingSelf[dimension] ?? 0)
+          + Math.max(0, amount - (other.accounted[dimension] ?? 0));
+    }
+    return Object.freeze({ ...(state.budgetStartedAt === undefined ? {} : { budgetStartedAt: state.budgetStartedAt }),
+      dispatchAdmitted: record.dispatchAdmitted === true, spent,
+      reservedExcludingSelf: Object.freeze(reservedExcludingSelf), batchOrdinal });
+  }
+
+  private async prepareObservation(record: OperationRecord, context: ProviderDispatchContext): Promise<PreparedObservation> {
     const { provider, manifest, digest } = this.provider(record.envelope.kind);
     if (digest !== record.providerManifestDigest) throw new Error('Provider manifest drift');
     if (record.status === 'cancel-pending' || (record.status === 'cancelled' && !record.released)) {
@@ -383,7 +403,7 @@ export class AlgorithmRuntime {
       const preflightClock = this.dispatchClockDisposition(preflight, record.envelope);
       this.store.assertLease();
       const prepared = provider.prepareForDispatch
-        ? await provider.prepareForDispatch(record.envelope) : undefined;
+        ? await provider.prepareForDispatch(record.envelope, context) : undefined;
       const preparedClock = this.dispatchClockDisposition(prepared, record.envelope);
       return { kind: 'ready', provider, envelope: record.envelope,
         ...(priorReceipt ? { priorReceipt } : {}),
@@ -414,15 +434,43 @@ export class AlgorithmRuntime {
 
   private async dispatchBatch(batch: Array<[string, OperationRecord]>, state: CampaignState):
     Promise<{ state: CampaignState; observed: PromiseSettledResult<Observation>[] }> {
-    const prepared = await Promise.allSettled(batch.map(([, record]) => this.prepareObservation(record)));
-    if (state.budgetStartedAt === undefined && prepared.some(result =>
-      result.status === 'fulfilled' && result.value.kind === 'ready' && result.value.startsBudgetClock)) {
+    // Preparation may persist a provider-owned plan, but it cannot start an effect.
+    // A stable order gives every member of a parallel batch a deterministic view
+    // of the same authoritative spend and all other held reservations.
+    const prepared: PromiseSettledResult<PreparedObservation>[] = [];
+    for (let index = 0; index < batch.length; index++) {
+      const record = batch[index]![1];
+      try { prepared.push({ status: 'fulfilled', value: await this.prepareObservation(
+        record, this.dispatchContext(state, record, index)) }); }
+      catch (reason) { prepared.push({ status: 'rejected', reason }); }
+    }
+    const ready = prepared.filter((result): result is PromiseFulfilledResult<Extract<PreparedObservation, { kind: 'ready' }>> =>
+      result.status === 'fulfilled' && result.value.kind === 'ready').map(result => result.value);
+    const clockStarts = state.budgetStartedAt === undefined && ready.some(result => result.startsBudgetClock);
+    if (state.budgetStartedAt === undefined && ready.some(result => result.startsBudgetClock
+      && batch.some(([, record]) => record.envelope.operationId === result.envelope.operationId
+        && record.dispatchAdmitted === true))) throw new Error('Admitted dispatch budget clock drift');
+    const newAdmitted = new Set(batch.filter(([, record]) => record.dispatchAdmitted !== true
+      && ready.some(result => result.envelope.operationId === record.envelope.operationId
+        && (result.provider.prepareForDispatch !== undefined || result.envelope.startsBudgetClock === true)))
+      .map(([, record]) => record.envelope.operationId));
+    if (clockStarts || newAdmitted.size > 0) {
       const candidate = clone(state);
-      candidate.budgetStartedAt = Date.now();
-      if (!Number.isSafeInteger(candidate.budgetStartedAt) || candidate.budgetStartedAt < 0)
-        throw new Error('Invalid Campaign budget clock timestamp');
+      if (clockStarts) {
+        candidate.budgetStartedAt = Date.now();
+        if (!Number.isSafeInteger(candidate.budgetStartedAt) || candidate.budgetStartedAt < 0)
+          throw new Error('Invalid Campaign budget clock timestamp');
+      }
+      const candidates = [...Object.values(candidate.operations),
+        ...Object.values(candidate.auxiliaryOperations ?? {}).flatMap(group => Object.values(group))];
+      for (const record of candidates) if (newAdmitted.has(record.envelope.operationId)) {
+        record.dispatchAdmitted = true;
+        newAdmitted.delete(record.envelope.operationId);
+      }
+      if (newAdmitted.size > 0) throw new Error('Prepared dispatch operation disappeared');
       await (this.artifacts as FileArtifactStore & Partial<ArtifactCheckpoint>).flush?.();
-      await this.store.commit(candidate as unknown as JsonValue, 'budget.clock-start');
+      await this.store.commit(candidate as unknown as JsonValue,
+        clockStarts ? 'budget.clock-start' : 'operation.dispatch-admit');
       state = candidate;
     }
     const observed = await Promise.allSettled(prepared.map(result => {

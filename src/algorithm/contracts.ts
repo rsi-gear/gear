@@ -73,13 +73,24 @@ export type ProviderSubmission =
   | { status: 'completed'; completion: CompletionEnvelope };
 /** Read-only admission before dispatch; false downgrades a frozen clock candidate. */
 export type ProviderPreflight = { startsBudgetClock: boolean };
+/** A detached, immutable view of the authoritative Campaign at this dispatch attempt. */
+export type ProviderDispatchContext = Readonly<{
+  budgetStartedAt?: number;
+  /** The ready-dispatch decision was durably committed; this does not imply a legacy budget reserve. */
+  dispatchAdmitted: boolean;
+  spent: Readonly<Record<string, number>>;
+  /** Live unaccounted reservations across main and auxiliary operations, excluding this operation. */
+  reservedExcludingSelf: Readonly<Record<string, number>>;
+  /** Stable local-key order within this dispatch batch. */
+  batchOrdinal: number;
+}>;
 export interface OperationProvider {
   describe(): ProviderManifest;
   preflight(envelope: OperationEnvelope): Promise<void | ProviderPreflight> | void | ProviderPreflight;
   /** Optional dispatch preparation. May persist an immutable plan, but must not start a physical effect.
    * It is called only after inspect/preflight and before the Campaign clock is committed;
    * a prepared plan must still inspect as not-started and be safe to cancel or resume. */
-  prepareForDispatch?(envelope: OperationEnvelope): Promise<ProviderPreflight> | ProviderPreflight;
+  prepareForDispatch?(envelope: OperationEnvelope, context: ProviderDispatchContext): Promise<ProviderPreflight> | ProviderPreflight;
   submit(envelope: OperationEnvelope): Promise<ProviderSubmission>;
   inspect(envelope: OperationEnvelope): Promise<ProviderInspection>;
   cancel(envelope: OperationEnvelope): Promise<ProviderInspection>;
