@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto'
 import { digestJson } from './digest.js'
 import { trainEvaluationMode } from './deployment.js'
 import { decideModel, devGate, modelEvaluationRequest, modelEvidenceKey, pairModelEvidence, validateModelEvidence } from './evaluation.js'
-import { parseModelTrainingSpec, parseModelVersion, parseTrainerCheckpoint, parseTrainingArtifacts, parseTrainingBatch, parseTrainingCapabilities, parseTrainingHandle, parseTrainingRequest, parseTrainingStatus, parseUpdateCommit, requireContract } from './schema.js'
+import { parseModelTrainingSpec, parseModelVersion, parseTrainingArtifacts, parseTrainingHandle, parseTrainingRequest, parseTrainingStatus, requireContract } from './schema.js'
+import { preflightTrainingRequest, trainingCompatibilityDigest, validateTrainingArtifacts, validateTrainingReference, validateTrainingResumeCheckpoint } from './operation-contracts.js'
+export { trainingCompatibilityDigest } from './operation-contracts.js'
 import { ModelTrainingStore } from './store.js'
 import type * as T from './types.js'
 import { evaluationControlIntent, sameTrainingControl, setEvaluationControl, setTrainingControl, trainingControlIntent } from './training-control.js'
@@ -10,13 +12,6 @@ import { chargeEvaluationUsage, refreshEvaluationUsage } from './evaluation-usag
 
 const emptyUsage = (): T.TrainingUsage => ({ gpuSeconds: 0, rolloutTokens: 0, groupResamples: 0 })
 const terminal = (run: T.ModelTrainingRun): boolean => !!run.decision
-export const trainingCompatibilityDigest = (request: T.TrainingRequest): string => digestJson({
-  backend: request.trainer.backend, runtimeLock: request.trainer.runtimeLock, hyperparametersRef: request.trainer.hyperparametersRef,
-  placement: request.trainer.placement ?? 'separate', trainingDeviceCount: request.trainingDevices.length,
-  referenceModelRef: request.referenceModelRef, architecture: request.parentModel.architecture, dtype: request.parentModel.dtype,
-  tokenizerDigest: request.parentModel.tokenizerDigest, chatTemplateDigest: request.parentModel.chatTemplateDigest,
-  ...(request.schemaVersion === 2 ? { deployment: request.deployment, trainingDevices: request.trainingDevices } : {}),
-})
 export interface ModelPublisher {
   /** Must reconcile the same activation id after an uncertain result. New episodes only. */
   activate(model: T.ModelVersion, activationId: string): Promise<{ activationId: string; modelVersionId: string; active: true }>
@@ -28,10 +23,7 @@ export class ModelTrainingCoordinator {
   async createExperiment(input: unknown): Promise<T.ModelExperimentState> {
     const spec = parseModelTrainingSpec(input)
     const initial = parseModelVersion(await this.store.readJson(spec.initialModel))
-    const reference = parseModelVersion(await this.store.readJson(spec.referenceModel))
-    requireContract(initial.architecture === reference.architecture && initial.dtype === reference.dtype
-      && initial.tokenizerDigest === reference.tokenizerDigest && initial.chatTemplateDigest === reference.chatTemplateDigest,
-    'reference-incompatible', 'reference and actor must use the same model and token semantics')
+    await validateTrainingReference(this.store, initial, spec.referenceModel)
     // Resolve immutable control inputs now, not after a job has started.
     for (const ref of [spec.fixedHarness.manifestRef, spec.verifier, spec.trainer.hyperparametersRef,
       ...Object.values(spec.datasets).flatMap(d => [d.snapshotRef, ...d.tasks.flatMap(t => [t.taskRef, t.environmentRef])])]) await this.store.readBytes(ref)
@@ -60,11 +52,7 @@ export class ModelTrainingCoordinator {
           ...(spec.schemaVersion === 2 ? { deployment: spec.deployment } : {}) }),
         datasetSplitDigest: digestJson(spec.datasets),
       })
-      if (request.resumeCheckpointRef) {
-        const checkpoint = parseTrainerCheckpoint(await this.store.readJson(request.resumeCheckpointRef))
-        requireContract(checkpoint.actorWeightsDigest === parentModel.weightsDigest && checkpoint.compatibilityDigest === trainingCompatibilityDigest(request),
-          'checkpoint-incompatible', 'champion checkpoint weights or training compatibility differ')
-      }
+      await validateTrainingResumeCheckpoint(this.store, request)
       const run: T.ModelTrainingRun = { schemaVersion: 1, id, parent: structuredClone(state.champion), request,
         idempotencyKey: `${experimentId}/${id}`, phase: 'admitted', execution: 'running', usage: emptyUsage(), resourcesReleased: true,
         heldOutQueries: 0, evaluationIntents: {}, evaluationResourcesReleased: true }
@@ -223,14 +211,7 @@ export class ModelTrainingCoordinator {
   }
 
   private async preflight(request: T.TrainingRequest): Promise<void> {
-    if (request.schemaVersion === 2) requireContract(this.trainer.control, 'training-control-unavailable', 'v2 training requires durable ordered start and pause commands')
-    const capabilities = parseTrainingCapabilities(await this.trainer.preflight(request))
-    const required = ['trainingExternalBinding', 'exactPolicyTokens', 'policyFencing', 'durableIdempotency', 'checkpointEveryUpdate', 'immutableHfExport'] as const
-    requireContract(required.every(k => capabilities[k]) && capabilities.blockers.length === 0
-      && capabilities.runtimeLockDigest === digestJson(request.trainer.runtimeLock),
-    'training-preflight-blocked', `training capabilities unavailable: ${capabilities.blockers.join(', ') || required.filter(k => !capabilities[k]).join(', ') || 'runtime lock mismatch'}`)
-    requireContract(request.trainer.runtimeLock.validation === 'validated', 'gpu-probes-pending', 'cloud GPU compatibility probes must pass before training submission')
-    for (const probe of request.trainer.runtimeLock.probeEvidenceRefs) await this.store.readBytes(probe)
+    await preflightTrainingRequest(this.store, this.trainer, request)
   }
 
   private async submitTrainer(run: T.ModelTrainingRun): Promise<T.TrainingHandle> {
@@ -325,43 +306,7 @@ export class ModelTrainingCoordinator {
   }
 
   private async validateArtifacts(run: T.ModelTrainingRun, artifacts: T.TrainingArtifacts): Promise<void> {
-    requireContract(digestJson(artifacts.handle) === digestJson(run.handle), 'job-artifacts-mismatch', 'artifacts belong to another job')
-    const model = parseModelVersion(artifacts.model)
-    const parent = run.request.parentModel
-    requireContract(model.parentModelVersionId === parent.id && model.trainingRunId === run.id && model.trainerCheckpointRef?.digest === artifacts.checkpointRef.digest,
-      'candidate-lineage-mismatch', 'candidate must descend from the frozen parent and completed trainer checkpoint')
-    for (const key of ['architecture', 'dtype', 'tokenizerDigest', 'chatTemplateDigest'] as const) requireContract(model[key] === parent[key], 'candidate-semantics-drift', `candidate changed ${key}`)
-    const checkpoint = parseTrainerCheckpoint(await this.store.readJson(artifacts.checkpointRef))
-    requireContract(checkpoint.actorWeightsDigest === model.weightsDigest && checkpoint.hfExportRef.digest === model.hfSnapshotRef.digest
-      && checkpoint.compatibilityDigest === trainingCompatibilityDigest(run.request), 'export-checkpoint-mismatch', 'HF export, actor and optimizer must describe one committed update')
-    let baseUpdate = 0
-    if (run.request.resumeCheckpointRef) baseUpdate = parseTrainerCheckpoint(await this.store.readJson(run.request.resumeCheckpointRef)).committedUpdate
-    requireContract(artifacts.updateCommitRefs.length === run.request.trainer.updatesPerCandidate && checkpoint.committedUpdate === baseUpdate + artifacts.updateCommitRefs.length,
-      'incomplete-updates', 'candidate must include each configured complete update')
-    const batches = new Set<string>()
-    let previous: T.ContentRef | undefined
-    for (const [i, ref] of artifacts.updateCommitRefs.entries()) {
-      const commit = parseUpdateCommit(await this.store.readJson(ref))
-      requireContract(commit.trainingRunId === run.id && commit.committedUpdate === baseUpdate + i + 1 && !batches.has(commit.consumedBatchDigest)
-        && (i === 0 || commit.previousCommitRef?.digest === previous!.digest), 'invalid-update-ledger', 'update ledger has a duplicate batch, gap or wrong run')
-      const committedCheckpoint = parseTrainerCheckpoint(await this.store.readJson(commit.checkpointRef))
-      requireContract(committedCheckpoint.committedUpdate === commit.committedUpdate && committedCheckpoint.schedulerAndRngRef.digest === commit.rngRef.digest && committedCheckpoint.dataCursorRef.digest === commit.dataCursorRef.digest
-        && committedCheckpoint.compatibilityDigest === checkpoint.compatibilityDigest, 'invalid-update-commit', 'checkpoint, RNG and data cursor must advance atomically')
-      for (const content of [committedCheckpoint.hfExportRef, committedCheckpoint.actorStateRef, committedCheckpoint.optimizerStateRef, committedCheckpoint.schedulerAndRngRef, committedCheckpoint.dataCursorRef]) await this.store.readBytes(content)
-      const batch = parseTrainingBatch(await this.store.readJson({ uri: `cas:${commit.consumedBatchDigest}`, digest: commit.consumedBatchDigest, mediaType: 'application/json' }))
-      requireContract(batch.trainingRunId === run.id && batch.recipeDigest === run.request.recipeDigest && batch.datasetSplitDigest === run.request.datasetSplitDigest,
-        'batch-provenance-mismatch', 'consumed batch differs from the frozen recipe or data partition')
-      await this.store.readBytes(batch.groupsRef)
-      await this.store.readBytes(batch.samplesRef)
-      batches.add(commit.consumedBatchDigest)
-      previous = ref
-      if (i === artifacts.updateCommitRefs.length - 1) requireContract(commit.checkpointRef.digest === artifacts.checkpointRef.digest, 'final-checkpoint-mismatch', 'candidate checkpoint is not the final committed update')
-    }
-    const validation = await this.store.readJson<Record<string, unknown>>(artifacts.exportValidationRef)
-    requireContract(validation.schemaVersion === 1 && validation.valid === true && validation.weightsDigest === model.weightsDigest
-      && validation.hfSnapshotDigest === model.hfSnapshotRef.digest && validation.checkpointDigest === artifacts.checkpointRef.digest,
-    'export-not-validated', 'HF export integrity and actor-weight equality must be proven before evaluation')
-    await this.store.readBytes(model.provenanceRef)
+    await validateTrainingArtifacts(this.store, run.request, run.handle!, artifacts)
   }
 
   private async finish(id: string, runId: string, decision: T.ModelDecision, allowPaused = false): Promise<void> {

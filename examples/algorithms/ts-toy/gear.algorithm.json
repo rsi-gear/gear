@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "kind": "algorithm-campaign",
+  "campaignId": "toy",
+  "stateDir": "./.gear/toy",
+  "algorithm": {
+    "language": "typescript",
+    "module": "./recipe.mjs",
+    "export": "algorithm"
+  },
+  "config": {},
+  "bindings": {},
+  "budget": {},
+  "hooks": {
+    "choose": {
+      "language": "typescript",
+      "module": "./choose.mjs",
+      "export": "choose"
+    }
+  },
+  "providers": []
+}

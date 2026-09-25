@@ -63,6 +63,34 @@
     "./training": {
       "types": "./lib/training/index.d.ts",
       "default": "./lib/training/index.js"
+    },
+    "./algorithm": {
+      "types": "./lib/algorithm/index.d.ts",
+      "default": "./lib/algorithm/index.js"
+    },
+    "./algorithm/testing": {
+      "types": "./lib/algorithm/testing.d.ts",
+      "default": "./lib/algorithm/testing.js"
+    },
+    "./algorithm/training": {
+      "types": "./lib/algorithm/training.d.ts",
+      "default": "./lib/algorithm/training.js"
+    },
+    "./algorithm/harness": {
+      "types": "./lib/algorithm/harness.d.ts",
+      "default": "./lib/algorithm/harness.js"
+    },
+    "./algorithm/recipes": {
+      "types": "./lib/algorithm/recipes.d.ts",
+      "default": "./lib/algorithm/recipes.js"
+    },
+    "./algorithm/gepa": {
+      "types": "./lib/algorithm/gepa.d.ts",
+      "default": "./lib/algorithm/gepa.js"
+    },
+    "./algorithm/legacy": {
+      "types": "./lib/algorithm/legacy.d.ts",
+      "default": "./lib/algorithm/legacy.js"
     }
   },
   "files": [
@@ -87,6 +115,10 @@
     "docs/training/README.zh-CN.md",
     "docs/training/controller-v2.zh-CN.md",
     "docs/search-algorithm-authoring.zh-CN.md",
+    "docs/algorithm-authoring.zh-CN.md",
+    "docs/algorithm-baselines/f715748/**",
+    "packages/python-sdk/README.md",
+    "examples/algorithms/**",
     "examples/parent-policy/**",
     "docs/schemas/",
     "docs/generic-storage-implementation.zh-CN.md",
@@ -101,6 +133,7 @@
     "test": "vitest run",
     "test:search": "vitest run tests/unit/search*.spec.ts --maxWorkers=2",
     "test:search:package": "npm run build && node scripts/check-search-package.mjs",
+    "test:algorithm:package": "npm run build && node scripts/check-algorithm-package.mjs",
     "test:unit": "vitest run tests/unit",
     "test:composition": "vitest run tests/composition",
     "test:e2e": "vitest run tests/e2e",

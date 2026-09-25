@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gear-algorithm"
+version = "0.1.0a0"
+description = "Experimental, dependency-light Python author SDK for Gear algorithms"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+gear-algorithm-worker = "gear_algorithm.worker:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
