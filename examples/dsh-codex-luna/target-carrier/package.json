@@ -1,7 +1,7 @@
 {
   "name": "gear-dsh-codex-target-carrier",
   "private": true,
-  "version": "0.0.3",
+  "version": "0.0.2",
   "type": "module",
   "packageManager": "pnpm@11.7.0",
   "engines": {

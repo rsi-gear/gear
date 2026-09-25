@@ -33,8 +33,9 @@ globalThis.fetch = () => { globalThis.gearSmokeNetworkRequests++; throw new Erro
 `)
   const patch = join(lab, 'cli-smoke.patch.json')
   await writeFile(patch, JSON.stringify([
-    // Keep the carrier's production HMR configuration. A test-only repair here
-    // would hide a failure in the CLI's post-boot patch watcher setup.
+    // Activate HMR during boot so the real CLI can register its patch watchers
+    // after the loader settles, without racing a late fallback activation.
+    { id: 'hmr', disabled: false, config: { root: [] } },
     ...['headless-runner', 'headless-startup', 'session-telemetry-otel'].map(id => ({ id, disabled: true })),
     { id: 'agent-default-model', config: { provider: 'openai-codex', model: 'gpt-5.6-luna' } },
     { insert: [{ id: 'packaged-skill-probe',
