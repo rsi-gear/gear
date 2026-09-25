@@ -1,6 +1,6 @@
 # FailureClusterSearch 的 Campaign 重写与等价验收
 
-状态：确定性差分、本地完整 Search 回归及阿里云功能门禁已通过；真实 TB2.1 实验执行环境仍在排障。基准为 `ec76b8b25703c46cbe3b2aaf94b64dc0c2277921` 的旧公开 `FailureClusterSearch`。
+状态：确定性差分、本地完整 Search 回归及阿里云功能门禁已通过；真实 TB2.1 三轮实验正在运行。基准为 `ec76b8b25703c46cbe3b2aaf94b64dc0c2277921` 的旧公开 `FailureClusterSearch`。
 
 ## 验收目标
 
@@ -48,6 +48,14 @@ Campaign 路径已通过 35 项冻结旧实现差分，包含最终结果、物�
 
 服务器千任务测试仍触发原 90 秒时限（测试报告约 90.48 秒），保留为已知性能限制。此前 Node 22 的两种百任务组合和千任务时限也未通过，这些结果不计入通过项；未放宽任何测试时限。
 
-真实实验配置为 TB2.1 固定 10 个任务全部用于搜索和同集评估、3 轮、meta/target 均为 `openai-codex/gpt-6-luna`、reasoning effort 为 medium。Hitch 升级至 dev `1c600caf9dda6efea1d153b5cd78182251f0e1ed`（0.2.14）。旧 Meta 登录过期的问题已通过同账户的有效服务器登录解决，并将凭据隔离到本次运行目录；旧 Codex CLI 0.153.2 返回 Luna 不支持，独立安装的 0.157.0 已用同一 Luna 型号完成真实 MCP 预检。
+真实实验配置为 TB2.1 固定 10 个任务全部用于搜索和同集评估、3 轮、meta/target 均为 `openai-codex/gpt-6-luna`、reasoning effort 为 medium。Hitch 最终升级至 dev `cadf2d747b5877b0b4feeaf089f3258a37db475b`（0.2.15）。旧 Meta 登录过期的问题已通过同账户的有效服务器登录解决，并将凭据隔离到本次运行目录；旧 Codex CLI 0.153.2 返回 Luna 不支持，独立安装的 0.157.0 已用同一 Luna 型号完成真实 MCP 预检。
 
-首个已提交批次的三轮均在 Hitch planning 阶段失败（`runtime payload rule is missing: node_modules/smol-toml`），settled trials 为 0，没有候选搜索或有效分数。这是部署执行失败，不是算法效果或成功的三轮基准；保留失败批次并修复依赖后重新验证。
+正式运行前的部署失败保留为独立记录，不计为算法效果：第一批次因 Hitch 包内 `node_modules/smol-toml` 的 npm hoist 布局不满足运行包规则而在 planning 失败，0 trials；第二批次因声明必传但未设置 `NODE_OPTIONS` 而在启动前失败，0 trials；第三批次 10 个 trial 均因旧 target 不认识新模型而无效（`UNKNOWN_MODEL`），没有有效分数。
+
+Hitch 的隔离安装已补齐原锁定的 smol-toml 1.8.0，900 个运行包文件哈希通过；必传代理变量已与原服务器配置对齐，Meta 身份封存实际 Codex CLI 0.157.0 的版本和原生二进制摘要。Target 使用新的隔离 carrier：通过 pnpm `patchedDependencies` 将官方 pi-ai 0.87.1 中的 `gpt-6-luna` 单条定义回补到 0.84.4，未升级 pi-ai、dsh-codex 或其他依赖。补丁仅插入 776 字节，原 7 个模型定义保留；root 与 dsh-codex 解析到同一个 patched 实例。旧 provider 传输加新模型定义的最小真实调用已成功，Gear 隔离 compiler 的加载、提示组装和清理通过；原 harness 无 Skill，Skill 项明确未检查。Hitch 准备的 artifact 也确认包含相同补丁。
+
+新 target 基线为 `2a6ce4dcdcbc2e3e269dfea3664211748028cdb3`，基底为 `2d80e60201a22409442d31f22c0c1df14b079549`；其 harness 提示、工具、工作流内容与原基线相同，仅固定依赖目录和封存身份改变。补丁 SHA-256 为 `fb5cbf41e6802267f5ae78d4286e927b4dc54a6f5bd84a7d9776cccf0ba43306`，锁文件 SHA-256 为 `92594fb1d41b5e80192e43eb0b64021675c22bd76c46af993d35365d564bbc8e`。
+
+第四批次 evolution `221fef3a-37e1-4fb6-b587-e8cb759bcd77` 的 10 个 target 均因 Hitch 0.2.14 不接受 DSH v0 的 `request/context` 而在轨迹导入时报错；虽然原始会话已有模型生成事件，结果仍全部无效。已保存证据并正常取消最后一个尚未结束的 verifier。最新 dev 0.2.15 的上游修复恰好覆盖此兼容问题：保留 v0 元数据原文并标为扩展事件，同时将私有运行目录移出封存 bundle。39 项相关测试、运行包哈希和 doctor 均通过，使用独立安装目录重新启动实验。
+
+截至本次记录，新批次仍在运行前检查；四个部署失败批次均不计入算法分数，尚无完成三轮后的效果结论。
