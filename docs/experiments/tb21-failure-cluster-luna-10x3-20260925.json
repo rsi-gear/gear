@@ -1,0 +1,623 @@
+{
+  "schemaVersion": 1,
+  "scope": "TB2.1 fixed 10 tasks, 3 rounds, shared-set search/evaluation; not held-out generalization",
+  "evolutionId": "7e0e34a1-0ec3-41d9-8a9c-595c942bbe16",
+  "batchId": "f5a2fc6c-8b7b-4a32-a368-5f5844959bbe",
+  "startedAt": "2026-09-25T07:59:41.773044+00:00",
+  "completedAt": "2026-09-25T09:00:48.690665+00:00",
+  "sourceCommit": "6fe2c4a6fdb96e6a8775b0da0ca656a0ea0d0ea2",
+  "hitch": {
+    "version": "0.2.15",
+    "gitCommit": "cadf2d747b5877b0b4feeaf089f3258a37db475b"
+  },
+  "models": {
+    "meta": "openai-codex/gpt-6-luna",
+    "target": "openai-codex/gpt-6-luna",
+    "reasoningEffort": "medium",
+    "verifiedTargetRunCounts": {
+      "openai-codex/gpt-6-luna": 34
+    }
+  },
+  "initialHarness": "2a6ce4dcdcbc2e3e269dfea3664211748028cdb3",
+  "datasetDigest": "sha256:7e1610f0863597262b63f37b34c7622beb68ff90fc965af1d644d8ef5f0bbece",
+  "tasks": [
+    "headless-terminal",
+    "dna-insert",
+    "distribution-search",
+    "regex-log",
+    "financial-document-processor",
+    "path-tracing",
+    "gcode-to-text",
+    "gpt2-codegolf",
+    "mteb-retrieve",
+    "fix-git"
+  ],
+  "rounds": [
+    {
+      "round": 1,
+      "roundId": "f550375e-a597-4242-af0b-65f042e4d8a3",
+      "status": "rejected",
+      "championChanged": false,
+      "nomineeId": "f550375e-a597-4242-af0b-65f042e4d8a3-candidate-0",
+      "globalScores": [
+        {
+          "candidateId": "champion-2a6ce4dcdcbc2e3e269dfea3664211748028cdb3",
+          "taskCount": 10,
+          "passRate": 0.4,
+          "stageResultDigest": "sha256:2d9f48b263b56a6555ffebf0fad7ce432c0b69d104493c2cb0bfe76ed39814e4"
+        },
+        {
+          "candidateId": "f550375e-a597-4242-af0b-65f042e4d8a3-candidate-0",
+          "taskCount": 10,
+          "passRate": 0.2,
+          "stageResultDigest": "sha256:1c25cf990938c460ca3f94687882d09b74945a11561d003d0e1ad507a6c43275"
+        }
+      ],
+      "promotion": {
+        "outcome": "rejected",
+        "scope": "shared-set-research-10",
+        "objectiveEvidence": {
+          "rawMetrics": {
+            "pass_rate": {
+              "status": "available",
+              "value": 0.2
+            }
+          },
+          "passRate": 0.2,
+          "objectiveScore": {
+            "status": "available",
+            "score": 0.2
+          }
+        },
+        "reasonCategories": [
+          {
+            "category": "no-substantive-objective-improvement",
+            "count": 1
+          },
+          {
+            "category": "objective-regression",
+            "count": 1
+          }
+        ]
+      },
+      "candidateCommits": [
+        {
+          "candidateId": "f550375e-a597-4242-af0b-65f042e4d8a3-candidate-0",
+          "commit": "4b25fbbf51b196b61df7f56688c4bda64daef128"
+        }
+      ],
+      "remainingBudget": {
+        "cells": 60,
+        "repairCells": 30,
+        "diagnosisInputTokens": 100000,
+        "diagnosisOutputTokens": 20000,
+        "generationTokens": null,
+        "generationRequests": null
+      }
+    },
+    {
+      "round": 2,
+      "roundId": "3e1f46d5-986e-4ec6-b5f7-54c5e61648b7",
+      "status": "rejected",
+      "championChanged": false,
+      "nomineeId": "3e1f46d5-986e-4ec6-b5f7-54c5e61648b7-candidate-0",
+      "globalScores": [
+        {
+          "candidateId": "champion-2a6ce4dcdcbc2e3e269dfea3664211748028cdb3",
+          "taskCount": 10,
+          "passRate": 0.4,
+          "stageResultDigest": "sha256:cf03fb0ef49c171847439439d8a77142934c8c6f9e835cb290d88aed991fa1dd"
+        },
+        {
+          "candidateId": "3e1f46d5-986e-4ec6-b5f7-54c5e61648b7-candidate-0",
+          "taskCount": 10,
+          "passRate": 0.4,
+          "stageResultDigest": "sha256:7509cfcf151c8bad9c0a9bf6a065b4a554c69bfcface1e02598de719e73fbfbe"
+        }
+      ],
+      "promotion": {
+        "outcome": "rejected",
+        "scope": "shared-set-research-10",
+        "objectiveEvidence": {
+          "rawMetrics": {
+            "pass_rate": {
+              "status": "available",
+              "value": 0.4
+            }
+          },
+          "passRate": 0.4,
+          "objectiveScore": {
+            "status": "available",
+            "score": 0.4
+          }
+        },
+        "reasonCategories": [
+          {
+            "category": "no-substantive-objective-improvement",
+            "count": 1
+          }
+        ]
+      },
+      "candidateCommits": [
+        {
+          "candidateId": "3e1f46d5-986e-4ec6-b5f7-54c5e61648b7-candidate-0",
+          "commit": "beb8378c80f275863aebbf02fea734b0f923acac"
+        }
+      ],
+      "remainingBudget": {
+        "cells": 70,
+        "repairCells": 30,
+        "diagnosisInputTokens": 100000,
+        "diagnosisOutputTokens": 20000,
+        "generationTokens": null,
+        "generationRequests": null
+      }
+    },
+    {
+      "round": 3,
+      "roundId": "7ebe0bed-cdd6-44ff-8e35-9f0405f3d988",
+      "status": "rejected",
+      "championChanged": false,
+      "nomineeId": null,
+      "globalScores": [],
+      "promotion": null,
+      "candidateCommits": [
+        {
+          "candidateId": "7ebe0bed-cdd6-44ff-8e35-9f0405f3d988-candidate-0",
+          "commit": "1bf5fb3bf52914144ba38bd9eca29daf129825a0"
+        }
+      ],
+      "remainingBudget": {
+        "cells": 76,
+        "repairCells": 30,
+        "diagnosisInputTokens": 100000,
+        "diagnosisOutputTokens": 20000,
+        "generationTokens": null,
+        "generationRequests": null
+      },
+      "stageDecisions": [
+        {
+          "candidateId": "7ebe0bed-cdd6-44ff-8e35-9f0405f3d988-candidate-0",
+          "digest": "sha256:ef6c16672317517c67304978a4684ed01004a8e488b6023a6649fea105feee34",
+          "nextStagePlanDigest": "sha256:e88797b6dcf1f09b0498859fa0a32101d5c524af0d69ad5f5cbd54f951cad01b",
+          "outcome": "advance",
+          "reasonCodes": [
+            "selected-for-bridge"
+          ],
+          "stagePlanDigest": "sha256:18a568501f18f50f918b7d501abf5fc11d74e8fe757d97549196a2477cda85cd",
+          "supportDigest": "sha256:b2f1ade484952c57e7339263bf7e2c73370de4b196d579f8eec2833ffa0d8212"
+        },
+        {
+          "candidateId": "7ebe0bed-cdd6-44ff-8e35-9f0405f3d988-candidate-0",
+          "digest": "sha256:c12c3bdc8864232400c94d55a653a654872c0b4f9c3da2416241d4a122acc262",
+          "outcome": "ineligible",
+          "reasonCodes": [
+            "objective-regression"
+          ],
+          "stagePlanDigest": "sha256:e88797b6dcf1f09b0498859fa0a32101d5c524af0d69ad5f5cbd54f951cad01b",
+          "supportDigest": "sha256:903908c4fc7f71cd6af0796bd10db7ff01b5d1c72481e6d370121913f4e8aebe"
+        }
+      ],
+      "screening": {
+        "stage": "bridge",
+        "outcome": "ineligible",
+        "reasonCodes": [
+          "objective-regression"
+        ],
+        "localTrials": 2,
+        "bridgeTrials": 2,
+        "fullTenTaskScore": null
+      }
+    }
+  ],
+  "metaRuns": [
+    {
+      "round": 1,
+      "completedTurns": 1,
+      "failedEvents": 0,
+      "usage": [
+        {
+          "input_tokens": 638365,
+          "cached_input_tokens": 573952,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 3389,
+          "reasoning_output_tokens": 1661
+        }
+      ]
+    },
+    {
+      "round": 2,
+      "completedTurns": 1,
+      "failedEvents": 0,
+      "usage": [
+        {
+          "input_tokens": 796822,
+          "cached_input_tokens": 721920,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 3685,
+          "reasoning_output_tokens": 1800
+        }
+      ]
+    },
+    {
+      "round": 3,
+      "completedTurns": 1,
+      "failedEvents": 0,
+      "usage": [
+        {
+          "input_tokens": 456994,
+          "cached_input_tokens": 400640,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 2639,
+          "reasoning_output_tokens": 911
+        }
+      ]
+    }
+  ],
+  "evaluations": [
+    {
+      "evalId": "eval_06d88622a5fe4459a5da8c98b52483f9",
+      "status": "succeeded",
+      "harnessCommit": "1bf5fb3bf52914144ba38bd9eca29daf129825a0",
+      "trials": [
+        {
+          "task": "financial-document-processor",
+          "runId": "run_2ad4a9270c0a4cecbcc788429a068fa7",
+          "status": "valid",
+          "score": 0,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "mteb-retrieve",
+          "runId": "run_49c12e2921a740f7b7f8042b35bb0ffd",
+          "status": "valid",
+          "score": 0,
+          "normalization": "standard",
+          "invalidReason": null
+        }
+      ]
+    },
+    {
+      "evalId": "eval_0c8d62d3a7a043479b3278c8f74de55d",
+      "status": "succeeded",
+      "harnessCommit": "4b25fbbf51b196b61df7f56688c4bda64daef128",
+      "trials": [
+        {
+          "task": "dna-insert",
+          "runId": "run_c41968a05261475f9221e13546eb4dd0",
+          "status": "valid",
+          "score": 0,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "path-tracing",
+          "runId": "run_6f4d4ef21f1446d8ab2423676a2f0158",
+          "status": "valid",
+          "score": 0,
+          "normalization": "standard",
+          "invalidReason": null
+        }
+      ]
+    },
+    {
+      "evalId": "eval_0df335e0d71143d9874c76c4057705ce",
+      "status": "succeeded",
+      "harnessCommit": "2a6ce4dcdcbc2e3e269dfea3664211748028cdb3",
+      "trials": [
+        {
+          "task": "distribution-search",
+          "runId": "run_1deebb7cc6fb49faab1e80265313bc88",
+          "status": "valid",
+          "score": 0,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "dna-insert",
+          "runId": "run_58b9963f0dd545fe98ee5d99c60b3f06",
+          "status": "valid",
+          "score": 0,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "financial-document-processor",
+          "runId": "run_b9841a02d8e64c6f94d3e30896a0f399",
+          "status": "valid",
+          "score": 0,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "fix-git",
+          "runId": "run_6adb64a6d1ca42c6a51d817c688796a5",
+          "status": "valid",
+          "score": 1,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "gcode-to-text",
+          "runId": "run_5d17864bb8a9473aad284faf7aa94b32",
+          "status": "valid",
+          "score": 0,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "gpt2-codegolf",
+          "runId": "run_577d39a384344acaa426e7d6d6ec93c1",
+          "status": "valid",
+          "score": 0,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "headless-terminal",
+          "runId": "run_92becfd8cdb84544b74c7fb1b2dec4a4",
+          "status": "valid",
+          "score": 1,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "mteb-retrieve",
+          "runId": "run_a7dbceac54044dc9a654d60de51435fc",
+          "status": "valid",
+          "score": 1,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "path-tracing",
+          "runId": "run_836c016e720e48cf838b059d024986aa",
+          "status": "valid",
+          "score": 0,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "regex-log",
+          "runId": "run_be3923543cd547a7938272fc538becf4",
+          "status": "valid",
+          "score": 1,
+          "normalization": "standard",
+          "invalidReason": null
+        }
+      ]
+    },
+    {
+      "evalId": "eval_253f0584dc914c178f4a8cb6efb55b21",
+      "status": "succeeded",
+      "harnessCommit": "beb8378c80f275863aebbf02fea734b0f923acac",
+      "trials": [
+        {
+          "task": "fix-git",
+          "runId": "run_637a04a7abc147f5945d3d02acfa9945",
+          "status": "valid",
+          "score": 1,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "gpt2-codegolf",
+          "runId": "run_edcd6b1d261c4b0c8e4dacc035122196",
+          "status": "valid",
+          "score": 0,
+          "normalization": "standard",
+          "invalidReason": null
+        }
+      ]
+    },
+    {
+      "evalId": "eval_330d262528f64b09a5d66f3d7d3e75d4",
+      "status": "succeeded",
+      "harnessCommit": "beb8378c80f275863aebbf02fea734b0f923acac",
+      "trials": [
+        {
+          "task": "dna-insert",
+          "runId": "run_3fdff1c4e2914989ab7127055bbe3ed9",
+          "status": "valid",
+          "score": 0,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "financial-document-processor",
+          "runId": "run_621fad6ed94f48b0bc9073baa515038a",
+          "status": "valid",
+          "score": 0,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "gcode-to-text",
+          "runId": "run_0f5f86d1200340e6acdcd97a2419ea9e",
+          "status": "valid",
+          "score": 0,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "headless-terminal",
+          "runId": "run_3d8e0a0fbdd447b3af5912e7afa76f47",
+          "status": "valid",
+          "score": 1,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "mteb-retrieve",
+          "runId": "run_edb4174005d4441aac57a46b084ca912",
+          "status": "valid",
+          "score": 1,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "path-tracing",
+          "runId": "run_e8da1da236b047fba59abf285c346881",
+          "status": "valid",
+          "score": 0,
+          "normalization": "standard",
+          "invalidReason": null
+        }
+      ]
+    },
+    {
+      "evalId": "eval_5703858184b14b6d95459f8c5c6b0df9",
+      "status": "succeeded",
+      "harnessCommit": "beb8378c80f275863aebbf02fea734b0f923acac",
+      "trials": [
+        {
+          "task": "distribution-search",
+          "runId": "run_e4c332f00ffc4d939606e51a2c3633d9",
+          "status": "valid",
+          "score": 0,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "regex-log",
+          "runId": "run_f136ea37601742cd9e2ced44cfebad1e",
+          "status": "valid",
+          "score": 1,
+          "normalization": "standard",
+          "invalidReason": null
+        }
+      ]
+    },
+    {
+      "evalId": "eval_aea71fd520254f2cb20ce9ec65971dab",
+      "status": "succeeded",
+      "harnessCommit": "4b25fbbf51b196b61df7f56688c4bda64daef128",
+      "trials": [
+        {
+          "task": "fix-git",
+          "runId": "run_7ef443a496284dd8a7dd517f1d98cf20",
+          "status": "valid",
+          "score": 1,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "gpt2-codegolf",
+          "runId": "run_5af71e34adcd44f99b055c28840ba907",
+          "status": "valid",
+          "score": 0,
+          "normalization": "standard",
+          "invalidReason": null
+        }
+      ]
+    },
+    {
+      "evalId": "eval_bf101a96decd4a8c886cbaf03fa0add2",
+      "status": "succeeded",
+      "harnessCommit": "1bf5fb3bf52914144ba38bd9eca29daf129825a0",
+      "trials": [
+        {
+          "task": "fix-git",
+          "runId": "run_2f2b8b4fe4a34edfb039265625cc0e37",
+          "status": "valid",
+          "score": 1,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "gpt2-codegolf",
+          "runId": "run_c8ad0a6fcdb2447d9285b51f2adecc7c",
+          "status": "valid",
+          "score": 0,
+          "normalization": "standard",
+          "invalidReason": null
+        }
+      ]
+    },
+    {
+      "evalId": "eval_c2af53e2df034b02b866bf24e06518bd",
+      "status": "succeeded",
+      "harnessCommit": "4b25fbbf51b196b61df7f56688c4bda64daef128",
+      "trials": [
+        {
+          "task": "distribution-search",
+          "runId": "run_1c92e92c4c774c14840bb654faf26164",
+          "status": "valid",
+          "score": 0,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "financial-document-processor",
+          "runId": "run_88716b1738814109b41101acb9919163",
+          "status": "valid",
+          "score": 0,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "gcode-to-text",
+          "runId": "run_3745591310ce484893593e2c967db983",
+          "status": "valid",
+          "score": 0,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "headless-terminal",
+          "runId": "run_9e87100ffe6448dc84c6cbdae7d289c8",
+          "status": "valid",
+          "score": 0,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "mteb-retrieve",
+          "runId": "run_e21a545bbefb4eb6ab7ea46b64c571fb",
+          "status": "valid",
+          "score": 1,
+          "normalization": "standard",
+          "invalidReason": null
+        },
+        {
+          "task": "regex-log",
+          "runId": "run_4553526e948c479295d57469629e31ad",
+          "status": "valid",
+          "score": 0,
+          "normalization": "standard",
+          "invalidReason": null
+        }
+      ]
+    }
+  ],
+  "candidateScoreChecks": [
+    {
+      "round": 1,
+      "rawTaskCount": 10,
+      "rawPassRate": 0.2,
+      "matchesSealedMetric": true
+    },
+    {
+      "round": 2,
+      "rawTaskCount": 10,
+      "rawPassRate": 0.4,
+      "matchesSealedMetric": true
+    }
+  ],
+  "counts": {
+    "evaluations": 9,
+    "totalTrials": 34,
+    "validTrials": 34,
+    "invalidTrials": 0
+  },
+  "excludedDeploymentAttempts": 5,
+  "excludedCanary": "eval_32bdd637220f4f58917f3a892748a075",
+  "finalChampion": {
+    "harnessCommit": "2a6ce4dcdcbc2e3e269dfea3664211748028cdb3",
+    "passRate": 0.4,
+    "taskCount": 10,
+    "evidence": "reused initial baseline; not a new final evaluation",
+    "changed": false
+  }
+}

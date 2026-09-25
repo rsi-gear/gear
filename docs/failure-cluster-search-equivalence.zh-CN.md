@@ -1,6 +1,6 @@
 # FailureClusterSearch 的 Campaign 重写与等价验收
 
-状态：确定性差分、本地完整 Search 回归及阿里云功能门禁已通过；真实 TB2.1 三轮实验正在运行。基准为 `ec76b8b25703c46cbe3b2aaf94b64dc0c2277921` 的旧公开 `FailureClusterSearch`。
+状态：确定性差分、本地完整 Search 回归及阿里云功能门禁已通过；真实 TB2.1 三轮实验已完成，未找到优于基线的候选。基准为 `ec76b8b25703c46cbe3b2aaf94b64dc0c2277921` 的旧公开 `FailureClusterSearch`。
 
 ## 验收目标
 
@@ -64,4 +64,23 @@ Hitch 的隔离安装已补齐原锁定的 smol-toml 1.8.0，900 个运行包文
 
 旧状态目录保留五个失败批次。修正后的实验使用独立状态目录：旧实现 `ec76b8b` 与当前实现均会在初始化时尝试恢复所有 failed Search rounds，多于两个活跃恢复项会触发 Meta session 槽位上限。本次记录这一既有边界，未修改恢复行为以绕过等价要求。
 
-截至本次记录，完整三轮实验已重新启动；五个部署失败批次与单任务预检均不计入算法分数，尚无完成三轮后的效果结论。
+## 真实 TB2.1 三轮结果
+
+正式实验于北京时间 2026-09-25 15:59:41 至 17:00:48 完成，约 61 分钟。Evolution 为 `7e0e34a1-0ec3-41d9-8a9c-595c942bbe16`，batch 为 `f5a2fc6c-8b7b-4a32-a368-5f5844959bbe`。使用上述 Gear `6fe2c4a`、Hitch 0.2.15 和 Luna 配置；之后的提交只补充验收文档。
+
+| 阶段 | 完整十任务通过率 | 判定 |
+| --- | --- | --- |
+| 初始基线 | 4/10（40%） | 作为三轮比较基准 |
+| 第 1 轮候选 | 2/10（20%） | 拒绝：`objective-regression`、`no-substantive-objective-improvement` |
+| 第 2 轮候选 | 4/10（40%） | 拒绝：`no-substantive-objective-improvement` |
+| 第 3 轮候选 | 未执行完整十任务评估 | 桥接阶段因 `objective-regression` 提前筛除 |
+
+第三轮先完成 2 个 local 任务，再完成 2 个 bridge 任务。Local 中 `fix-git` 通过、`gpt2-codegolf` 未通过；bridge 中 `financial-document-processor` 和 `mteb-retrieve` 均未通过，其中 `mteb-retrieve` 的基线为通过。封存的 stage decision 为 `ineligible / objective-regression`，没有 global nominee，也没有完整十任务分数。局部 profile 使用任务权重，其数值不能当作十任务通过率。
+
+最终 champion 未改变，仍为初始 harness `2a6ce4dcdcbc2e3e269dfea3664211748028cdb3`，沿用已测得的 40% 基线分数；没有额外执行一次最终复测。三个候选均只修改 `harness/plugins/policy.js` 及对应 manifest 摘要：第 1 轮增加对不透明文件的结构检查建议，第 2 轮增加缺少工具时尝试等价实现的建议，第 3 轮细化二进制/模型文件检查和阻塞说明。三轮没有得到可晋升的改进。
+
+共执行 9 次 Hitch evaluation、34 次真实任务 trial，34 次均有效，0 次无效。执行量为基线 10 + 第一轮 10 + 第二轮 10 + 第三轮 4；前两轮候选各由 local 2、bridge 2、剩余 6 个任务组成完整十任务证据，已经逐任务核对原始分数与封存 global metric 一致。复用的基线和局部证据不重复计为物理执行。全部 34 个 target manifest 的模型均为 `openai-codex/gpt-6-luna`，3 个 Meta turn 均完成、无 failed event。
+
+固定任务为 `headless-terminal`、`dna-insert`、`distribution-search`、`regex-log`、`financial-document-processor`、`path-tracing`、`gcode-to-text`、`gpt2-codegolf`、`mteb-retrieve`、`fix-git`。按用户选择，10 个任务全部用于搜索和同集评估（`shared-set-research`），不是独立 held-out 结果。单次小样本运行不足以证明泛化收益；本次实际结果是流程成功完成、候选未超过基线。确定性等价依据仍是上述冻结旧实现的差分测试，真实模型运行不替代等价证明。
+
+五个部署失败批次及单任务预检均排除在上述计数和分数之外。结构化结果（含逐任务分数、eval/run ID、候选 commit、第三轮阶段判定和模型使用量）见 [实验 JSON](experiments/tb21-failure-cluster-luna-10x3-20260925.json)。该文件不包含凭据、题目正文、提示或轨迹。
