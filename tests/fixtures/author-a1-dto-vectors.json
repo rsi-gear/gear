@@ -1,0 +1,1146 @@
+[
+  {
+    "name": "agent-valid",
+    "validator": "harnessAgent",
+    "valid": true,
+    "value": {
+      "schemaVersion": 1,
+      "kind": "harness-agent",
+      "bindingSetRef": {
+        "kind": "binding-set",
+        "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "schemaId": "binding.set.v1"
+      },
+      "executionProfileDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  },
+  {
+    "name": "agent-profile-digest-invalid",
+    "validator": "harnessAgent",
+    "valid": false,
+    "value": {
+      "schemaVersion": 1,
+      "kind": "harness-agent",
+      "bindingSetRef": {
+        "kind": "binding-set",
+        "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "schemaId": "binding.set.v1"
+      },
+      "executionProfileDigest": "bad"
+    }
+  },
+  {
+    "name": "capabilities-valid",
+    "validator": "capabilities",
+    "valid": true,
+    "value": {
+      "version": "gear.author.capabilities.v1",
+      "lockDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "roles": {
+        "analyst": {
+          "template": "read-only-analyst",
+          "kind": "execution.role"
+        }
+      },
+      "operationLimits": {
+        "tasks.sample": {
+          "calls": 2
+        }
+      },
+      "execution": {}
+    }
+  },
+  {
+    "name": "capabilities-role-grant-invalid",
+    "validator": "capabilities",
+    "valid": false,
+    "value": {
+      "version": "gear.author.capabilities.v1",
+      "lockDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "roles": {
+        "analyst": {
+          "template": "harness-editor",
+          "kind": "execution.role"
+        }
+      },
+      "operationLimits": {
+        "tasks.sample": {
+          "calls": 2
+        }
+      },
+      "execution": {}
+    }
+  },
+  {
+    "name": "selection-valid",
+    "validator": "taskSelection",
+    "valid": true,
+    "value": {
+      "schemaVersion": 1,
+      "taskViewRef": {
+        "kind": "artifact",
+        "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "task.view.v1"
+      },
+      "selectedTaskIds": [
+        "t-1",
+        "t-2"
+      ],
+      "cursor": {
+        "viewDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "nextIndex": 0
+      }
+    }
+  },
+  {
+    "name": "selection-cursor-drift",
+    "validator": "taskSelection",
+    "valid": false,
+    "value": {
+      "schemaVersion": 1,
+      "taskViewRef": {
+        "kind": "artifact",
+        "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "task.view.v1"
+      },
+      "selectedTaskIds": [
+        "t-1",
+        "t-2"
+      ],
+      "cursor": {
+        "viewDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "nextIndex": 0
+      }
+    }
+  },
+  {
+    "name": "selection-duplicate-task-id",
+    "validator": "taskSelection",
+    "valid": false,
+    "value": {
+      "schemaVersion": 1,
+      "taskViewRef": {
+        "kind": "artifact",
+        "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "task.view.v1"
+      },
+      "selectedTaskIds": [
+        "t-1",
+        "t-1"
+      ],
+      "cursor": {
+        "viewDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "nextIndex": 0
+      }
+    }
+  },
+  {
+    "name": "role-execution-valid",
+    "validator": "roleExecution",
+    "valid": true,
+    "value": {
+      "requestedBindingSetDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "actualBindings": {
+        "harness": {
+          "kind": "artifact",
+          "digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "size": 10,
+          "mediaType": "application/json"
+        }
+      },
+      "evidenceRef": {
+        "kind": "artifact",
+        "digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "size": 10,
+        "mediaType": "application/json"
+      },
+      "receiptRef": {
+        "kind": "artifact",
+        "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "execution.receipt.v1"
+      },
+      "structuredResult": {
+        "score": 0.4
+      },
+      "structuredResultRef": {
+        "kind": "artifact",
+        "digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "execution.structured-result.v1"
+      }
+    }
+  },
+  {
+    "name": "role-execution-binding-drift",
+    "validator": "roleExecution",
+    "valid": false,
+    "value": {
+      "requestedBindingSetDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "actualBindings": {
+        "harness": {
+          "kind": "artifact",
+          "digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "size": 10,
+          "mediaType": "application/json"
+        }
+      },
+      "evidenceRef": {
+        "kind": "artifact",
+        "digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "size": 10,
+        "mediaType": "application/json"
+      },
+      "receiptRef": {
+        "kind": "artifact",
+        "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "execution.receipt.v1"
+      },
+      "structuredResult": {
+        "score": 0.4
+      },
+      "structuredResultRef": {
+        "kind": "artifact",
+        "digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "execution.structured-result.v1"
+      }
+    }
+  },
+  {
+    "name": "role-execution-actual-bindings-missing",
+    "validator": "roleExecution",
+    "valid": false,
+    "value": {
+      "requestedBindingSetDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "evidenceRef": {
+        "kind": "artifact",
+        "digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "size": 10,
+        "mediaType": "application/json"
+      },
+      "receiptRef": {
+        "kind": "artifact",
+        "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "execution.receipt.v1"
+      },
+      "structuredResult": {
+        "score": 0.4
+      },
+      "structuredResultRef": {
+        "kind": "artifact",
+        "digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "execution.structured-result.v1"
+      }
+    }
+  },
+  {
+    "name": "role-execution-structured-ref-missing",
+    "validator": "roleExecution",
+    "valid": false,
+    "value": {
+      "requestedBindingSetDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "actualBindings": {
+        "harness": {
+          "kind": "artifact",
+          "digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "size": 10,
+          "mediaType": "application/json"
+        }
+      },
+      "evidenceRef": {
+        "kind": "artifact",
+        "digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "size": 10,
+        "mediaType": "application/json"
+      },
+      "receiptRef": {
+        "kind": "artifact",
+        "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "execution.receipt.v1"
+      },
+      "structuredResult": {
+        "score": 0.4
+      }
+    }
+  },
+  {
+    "name": "role-execution-receipt-schema-invalid",
+    "validator": "roleExecution",
+    "valid": false,
+    "value": {
+      "requestedBindingSetDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "actualBindings": {
+        "harness": {
+          "kind": "artifact",
+          "digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "size": 10,
+          "mediaType": "application/json"
+        }
+      },
+      "evidenceRef": {
+        "kind": "artifact",
+        "digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "size": 10,
+        "mediaType": "application/json"
+      },
+      "receiptRef": {
+        "kind": "artifact",
+        "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "other.receipt.v1"
+      },
+      "structuredResult": {
+        "score": 0.4
+      },
+      "structuredResultRef": {
+        "kind": "artifact",
+        "digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "execution.structured-result.v1"
+      }
+    }
+  },
+  {
+    "name": "batch-valid",
+    "validator": "proposalBatch",
+    "valid": true,
+    "value": {
+      "schemaVersion": 1,
+      "requestedCount": 2,
+      "candidates": [
+        {
+          "schemaVersion": 1,
+          "kind": "harness-agent",
+          "bindingSetRef": {
+            "kind": "binding-set",
+            "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "schemaId": "binding.set.v1"
+          },
+          "executionProfileDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "proposalIndex": 0
+        },
+        {
+          "schemaVersion": 1,
+          "kind": "harness-agent",
+          "bindingSetRef": {
+            "kind": "binding-set",
+            "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "schemaId": "binding.set.v1"
+          },
+          "executionProfileDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "proposalIndex": 1
+        }
+      ],
+      "failures": []
+    }
+  },
+  {
+    "name": "batch-candidate-order-invalid",
+    "validator": "proposalBatch",
+    "valid": false,
+    "value": {
+      "schemaVersion": 1,
+      "requestedCount": 2,
+      "candidates": [
+        {
+          "schemaVersion": 1,
+          "kind": "harness-agent",
+          "bindingSetRef": {
+            "kind": "binding-set",
+            "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "schemaId": "binding.set.v1"
+          },
+          "executionProfileDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "proposalIndex": 1
+        },
+        {
+          "schemaVersion": 1,
+          "kind": "harness-agent",
+          "bindingSetRef": {
+            "kind": "binding-set",
+            "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "schemaId": "binding.set.v1"
+          },
+          "executionProfileDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "proposalIndex": 0
+        }
+      ],
+      "failures": []
+    }
+  },
+  {
+    "name": "batch-partition-invalid",
+    "validator": "proposalBatch",
+    "valid": false,
+    "value": {
+      "schemaVersion": 1,
+      "requestedCount": 2,
+      "candidates": [
+        {
+          "schemaVersion": 1,
+          "kind": "harness-agent",
+          "bindingSetRef": {
+            "kind": "binding-set",
+            "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "schemaId": "binding.set.v1"
+          },
+          "executionProfileDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "proposalIndex": 0
+        },
+        {
+          "schemaVersion": 1,
+          "kind": "harness-agent",
+          "bindingSetRef": {
+            "kind": "binding-set",
+            "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "schemaId": "binding.set.v1"
+          },
+          "executionProfileDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "proposalIndex": 0
+        }
+      ],
+      "failures": []
+    }
+  },
+  {
+    "name": "evaluation-complete-valid",
+    "validator": "evaluation",
+    "valid": true,
+    "value": {
+      "schemaVersion": 1,
+      "subject": {
+        "schemaVersion": 1,
+        "kind": "harness-agent",
+        "bindingSetRef": {
+          "kind": "binding-set",
+          "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "schemaId": "binding.set.v1"
+        },
+        "executionProfileDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "taskViewRef": {
+        "kind": "artifact",
+        "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "task.view.v1"
+      },
+      "status": "complete",
+      "comparable": true,
+      "comparisonKey": "9999999999999999999999999999999999999999999999999999999999999999",
+      "metrics": {
+        "passRate": 0.4
+      },
+      "measurementRef": {
+        "kind": "artifact",
+        "digest": "8888888888888888888888888888888888888888888888888888888888888888",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "measurement.record.v1"
+      },
+      "trials": [
+        {
+          "taskId": "t-1",
+          "repeatIndex": 0,
+          "status": "completed"
+        }
+      ],
+      "evidenceRefs": [
+        {
+          "kind": "artifact",
+          "digest": "7777777777777777777777777777777777777777777777777777777777777777",
+          "size": 10,
+          "mediaType": "application/json"
+        }
+      ]
+    }
+  },
+  {
+    "name": "evaluation-empty-trials-invalid",
+    "validator": "evaluation",
+    "valid": false,
+    "value": {
+      "schemaVersion": 1,
+      "subject": {
+        "schemaVersion": 1,
+        "kind": "harness-agent",
+        "bindingSetRef": {
+          "kind": "binding-set",
+          "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "schemaId": "binding.set.v1"
+        },
+        "executionProfileDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "taskViewRef": {
+        "kind": "artifact",
+        "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "task.view.v1"
+      },
+      "status": "complete",
+      "comparable": true,
+      "comparisonKey": "9999999999999999999999999999999999999999999999999999999999999999",
+      "metrics": {
+        "passRate": 0.4
+      },
+      "measurementRef": {
+        "kind": "artifact",
+        "digest": "8888888888888888888888888888888888888888888888888888888888888888",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "measurement.record.v1"
+      },
+      "trials": [],
+      "evidenceRefs": [
+        {
+          "kind": "artifact",
+          "digest": "7777777777777777777777777777777777777777777777777777777777777777",
+          "size": 10,
+          "mediaType": "application/json"
+        }
+      ]
+    }
+  },
+  {
+    "name": "evaluation-failed-trial-invalid",
+    "validator": "evaluation",
+    "valid": false,
+    "value": {
+      "schemaVersion": 1,
+      "subject": {
+        "schemaVersion": 1,
+        "kind": "harness-agent",
+        "bindingSetRef": {
+          "kind": "binding-set",
+          "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "schemaId": "binding.set.v1"
+        },
+        "executionProfileDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "taskViewRef": {
+        "kind": "artifact",
+        "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "task.view.v1"
+      },
+      "status": "complete",
+      "comparable": true,
+      "comparisonKey": "9999999999999999999999999999999999999999999999999999999999999999",
+      "metrics": {
+        "passRate": 0.4
+      },
+      "measurementRef": {
+        "kind": "artifact",
+        "digest": "8888888888888888888888888888888888888888888888888888888888888888",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "measurement.record.v1"
+      },
+      "trials": [
+        {
+          "taskId": "t-1",
+          "repeatIndex": 0,
+          "status": "failed"
+        }
+      ],
+      "evidenceRefs": [
+        {
+          "kind": "artifact",
+          "digest": "7777777777777777777777777777777777777777777777777777777777777777",
+          "size": 10,
+          "mediaType": "application/json"
+        }
+      ]
+    }
+  },
+  {
+    "name": "evaluation-duplicate-trial-invalid",
+    "validator": "evaluation",
+    "valid": false,
+    "value": {
+      "schemaVersion": 1,
+      "subject": {
+        "schemaVersion": 1,
+        "kind": "harness-agent",
+        "bindingSetRef": {
+          "kind": "binding-set",
+          "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "schemaId": "binding.set.v1"
+        },
+        "executionProfileDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "taskViewRef": {
+        "kind": "artifact",
+        "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "task.view.v1"
+      },
+      "status": "complete",
+      "comparable": true,
+      "comparisonKey": "9999999999999999999999999999999999999999999999999999999999999999",
+      "metrics": {
+        "passRate": 0.4
+      },
+      "measurementRef": {
+        "kind": "artifact",
+        "digest": "8888888888888888888888888888888888888888888888888888888888888888",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "measurement.record.v1"
+      },
+      "trials": [
+        {
+          "taskId": "t-1",
+          "repeatIndex": 0,
+          "status": "completed"
+        },
+        {
+          "taskId": "t-1",
+          "repeatIndex": 0,
+          "status": "completed"
+        }
+      ],
+      "evidenceRefs": [
+        {
+          "kind": "artifact",
+          "digest": "7777777777777777777777777777777777777777777777777777777777777777",
+          "size": 10,
+          "mediaType": "application/json"
+        }
+      ]
+    }
+  },
+  {
+    "name": "evaluation-no-evidence-invalid",
+    "validator": "evaluation",
+    "valid": false,
+    "value": {
+      "schemaVersion": 1,
+      "subject": {
+        "schemaVersion": 1,
+        "kind": "harness-agent",
+        "bindingSetRef": {
+          "kind": "binding-set",
+          "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "schemaId": "binding.set.v1"
+        },
+        "executionProfileDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "taskViewRef": {
+        "kind": "artifact",
+        "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "task.view.v1"
+      },
+      "status": "complete",
+      "comparable": true,
+      "comparisonKey": "9999999999999999999999999999999999999999999999999999999999999999",
+      "metrics": {
+        "passRate": 0.4
+      },
+      "measurementRef": {
+        "kind": "artifact",
+        "digest": "8888888888888888888888888888888888888888888888888888888888888888",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "measurement.record.v1"
+      },
+      "trials": [
+        {
+          "taskId": "t-1",
+          "repeatIndex": 0,
+          "status": "completed"
+        }
+      ],
+      "evidenceRefs": []
+    }
+  },
+  {
+    "name": "evaluation-incomplete-valid",
+    "validator": "evaluation",
+    "valid": true,
+    "value": {
+      "schemaVersion": 1,
+      "subject": {
+        "schemaVersion": 1,
+        "kind": "harness-agent",
+        "bindingSetRef": {
+          "kind": "binding-set",
+          "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "schemaId": "binding.set.v1"
+        },
+        "executionProfileDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "taskViewRef": {
+        "kind": "artifact",
+        "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "task.view.v1"
+      },
+      "status": "incomplete",
+      "comparable": false,
+      "trials": [
+        {
+          "taskId": "t-1",
+          "repeatIndex": 0,
+          "status": "failed"
+        }
+      ],
+      "evidenceRefs": [
+        {
+          "kind": "artifact",
+          "digest": "7777777777777777777777777777777777777777777777777777777777777777",
+          "size": 10,
+          "mediaType": "application/json"
+        }
+      ]
+    }
+  },
+  {
+    "name": "evaluation-incomplete-metrics-invalid",
+    "validator": "evaluation",
+    "valid": false,
+    "value": {
+      "schemaVersion": 1,
+      "subject": {
+        "schemaVersion": 1,
+        "kind": "harness-agent",
+        "bindingSetRef": {
+          "kind": "binding-set",
+          "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "schemaId": "binding.set.v1"
+        },
+        "executionProfileDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "taskViewRef": {
+        "kind": "artifact",
+        "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "task.view.v1"
+      },
+      "status": "incomplete",
+      "comparable": false,
+      "trials": [
+        {
+          "taskId": "t-1",
+          "repeatIndex": 0,
+          "status": "failed"
+        }
+      ],
+      "evidenceRefs": [
+        {
+          "kind": "artifact",
+          "digest": "7777777777777777777777777777777777777777777777777777777777777777",
+          "size": 10,
+          "mediaType": "application/json"
+        }
+      ],
+      "metrics": {
+        "passRate": 0.4
+      }
+    }
+  },
+  {
+    "name": "agent-integral-float-version-valid",
+    "validator": "harnessAgent",
+    "valid": true,
+    "value": {
+      "schemaVersion": 1.0,
+      "kind": "harness-agent",
+      "bindingSetRef": {
+        "kind": "binding-set",
+        "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "schemaId": "binding.set.v1"
+      },
+      "executionProfileDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  },
+  {
+    "name": "agent-boolean-version-invalid",
+    "validator": "harnessAgent",
+    "valid": false,
+    "value": {
+      "schemaVersion": true,
+      "kind": "harness-agent",
+      "bindingSetRef": {
+        "kind": "binding-set",
+        "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "schemaId": "binding.set.v1"
+      },
+      "executionProfileDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  },
+  {
+    "name": "agent-integral-float-index-valid",
+    "validator": "harnessAgent",
+    "valid": true,
+    "value": {
+      "schemaVersion": 1,
+      "kind": "harness-agent",
+      "bindingSetRef": {
+        "kind": "binding-set",
+        "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "schemaId": "binding.set.v1"
+      },
+      "executionProfileDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "proposalIndex": 0.0
+    }
+  },
+  {
+    "name": "selection-integral-float-cursor-valid",
+    "validator": "taskSelection",
+    "valid": true,
+    "value": {
+      "schemaVersion": 1.0,
+      "taskViewRef": {
+        "kind": "artifact",
+        "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "task.view.v1"
+      },
+      "selectedTaskIds": [
+        "t-1",
+        "t-2"
+      ],
+      "cursor": {
+        "viewDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "nextIndex": 0.0
+      }
+    }
+  },
+  {
+    "name": "selection-negative-zero-cursor-valid",
+    "validator": "taskSelection",
+    "valid": true,
+    "value": {
+      "schemaVersion": 1,
+      "taskViewRef": {
+        "kind": "artifact",
+        "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "task.view.v1"
+      },
+      "selectedTaskIds": [
+        "t-1",
+        "t-2"
+      ],
+      "cursor": {
+        "viewDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "nextIndex": -0.0
+      }
+    }
+  },
+  {
+    "name": "selection-boolean-cursor-invalid",
+    "validator": "taskSelection",
+    "valid": false,
+    "value": {
+      "schemaVersion": 1,
+      "taskViewRef": {
+        "kind": "artifact",
+        "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "task.view.v1"
+      },
+      "selectedTaskIds": [
+        "t-1",
+        "t-2"
+      ],
+      "cursor": {
+        "viewDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "nextIndex": false
+      }
+    }
+  },
+  {
+    "name": "selection-safe-upper-artifact-size-valid",
+    "validator": "taskSelection",
+    "valid": true,
+    "value": {
+      "schemaVersion": 1,
+      "taskViewRef": {
+        "kind": "artifact",
+        "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size": 9007199254740991,
+        "mediaType": "application/json",
+        "schemaId": "task.view.v1"
+      },
+      "selectedTaskIds": [
+        "t-1",
+        "t-2"
+      ],
+      "cursor": {
+        "viewDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "nextIndex": 0
+      }
+    }
+  },
+  {
+    "name": "selection-unsafe-artifact-size-invalid",
+    "validator": "taskSelection",
+    "valid": false,
+    "value": {
+      "schemaVersion": 1,
+      "taskViewRef": {
+        "kind": "artifact",
+        "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size": 9007199254740992.0,
+        "mediaType": "application/json",
+        "schemaId": "task.view.v1"
+      },
+      "selectedTaskIds": [
+        "t-1",
+        "t-2"
+      ],
+      "cursor": {
+        "viewDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "nextIndex": 0
+      }
+    }
+  },
+  {
+    "name": "capabilities-integral-float-limit-valid",
+    "validator": "capabilities",
+    "valid": true,
+    "value": {
+      "version": "gear.author.capabilities.v1",
+      "lockDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "roles": {
+        "analyst": {
+          "template": "read-only-analyst",
+          "kind": "execution.role"
+        }
+      },
+      "operationLimits": {
+        "tasks.sample": {
+          "calls": 2.0
+        }
+      },
+      "execution": {}
+    }
+  },
+  {
+    "name": "capabilities-boolean-limit-invalid",
+    "validator": "capabilities",
+    "valid": false,
+    "value": {
+      "version": "gear.author.capabilities.v1",
+      "lockDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "roles": {
+        "analyst": {
+          "template": "read-only-analyst",
+          "kind": "execution.role"
+        }
+      },
+      "operationLimits": {
+        "tasks.sample": {
+          "calls": true
+        }
+      },
+      "execution": {}
+    }
+  },
+  {
+    "name": "batch-integral-float-count-and-indices-valid",
+    "validator": "proposalBatch",
+    "valid": true,
+    "value": {
+      "schemaVersion": 1,
+      "requestedCount": 2.0,
+      "candidates": [
+        {
+          "schemaVersion": 1,
+          "kind": "harness-agent",
+          "bindingSetRef": {
+            "kind": "binding-set",
+            "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "schemaId": "binding.set.v1"
+          },
+          "executionProfileDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "proposalIndex": 0.0
+        },
+        {
+          "schemaVersion": 1,
+          "kind": "harness-agent",
+          "bindingSetRef": {
+            "kind": "binding-set",
+            "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "schemaId": "binding.set.v1"
+          },
+          "executionProfileDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "proposalIndex": 1.0
+        }
+      ],
+      "failures": []
+    }
+  },
+  {
+    "name": "batch-unsafe-count-invalid",
+    "validator": "proposalBatch",
+    "valid": false,
+    "value": {
+      "schemaVersion": 1,
+      "requestedCount": 9007199254740992.0,
+      "candidates": [
+        {
+          "schemaVersion": 1,
+          "kind": "harness-agent",
+          "bindingSetRef": {
+            "kind": "binding-set",
+            "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "schemaId": "binding.set.v1"
+          },
+          "executionProfileDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "proposalIndex": 0
+        },
+        {
+          "schemaVersion": 1,
+          "kind": "harness-agent",
+          "bindingSetRef": {
+            "kind": "binding-set",
+            "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "schemaId": "binding.set.v1"
+          },
+          "executionProfileDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "proposalIndex": 1
+        }
+      ],
+      "failures": []
+    }
+  },
+  {
+    "name": "evaluation-integral-float-repeat-valid",
+    "validator": "evaluation",
+    "valid": true,
+    "value": {
+      "schemaVersion": 1,
+      "subject": {
+        "schemaVersion": 1,
+        "kind": "harness-agent",
+        "bindingSetRef": {
+          "kind": "binding-set",
+          "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "schemaId": "binding.set.v1"
+        },
+        "executionProfileDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "taskViewRef": {
+        "kind": "artifact",
+        "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "task.view.v1"
+      },
+      "status": "complete",
+      "comparable": true,
+      "comparisonKey": "9999999999999999999999999999999999999999999999999999999999999999",
+      "metrics": {
+        "passRate": 0.4
+      },
+      "measurementRef": {
+        "kind": "artifact",
+        "digest": "8888888888888888888888888888888888888888888888888888888888888888",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "measurement.record.v1"
+      },
+      "trials": [
+        {
+          "taskId": "t-1",
+          "repeatIndex": 0.0,
+          "status": "completed"
+        }
+      ],
+      "evidenceRefs": [
+        {
+          "kind": "artifact",
+          "digest": "7777777777777777777777777777777777777777777777777777777777777777",
+          "size": 10,
+          "mediaType": "application/json"
+        }
+      ]
+    }
+  },
+  {
+    "name": "evaluation-boolean-repeat-invalid",
+    "validator": "evaluation",
+    "valid": false,
+    "value": {
+      "schemaVersion": 1,
+      "subject": {
+        "schemaVersion": 1,
+        "kind": "harness-agent",
+        "bindingSetRef": {
+          "kind": "binding-set",
+          "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "schemaId": "binding.set.v1"
+        },
+        "executionProfileDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "taskViewRef": {
+        "kind": "artifact",
+        "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "task.view.v1"
+      },
+      "status": "complete",
+      "comparable": true,
+      "comparisonKey": "9999999999999999999999999999999999999999999999999999999999999999",
+      "metrics": {
+        "passRate": 0.4
+      },
+      "measurementRef": {
+        "kind": "artifact",
+        "digest": "8888888888888888888888888888888888888888888888888888888888888888",
+        "size": 10,
+        "mediaType": "application/json",
+        "schemaId": "measurement.record.v1"
+      },
+      "trials": [
+        {
+          "taskId": "t-1",
+          "repeatIndex": false,
+          "status": "completed"
+        }
+      ],
+      "evidenceRefs": [
+        {
+          "kind": "artifact",
+          "digest": "7777777777777777777777777777777777777777777777777777777777777777",
+          "size": 10,
+          "mediaType": "application/json"
+        }
+      ]
+    }
+  }
+]

@@ -9,13 +9,21 @@
 
 主审验证：类型检查通过；8 文件、79 项相关回归通过，覆盖两种语言真实 controller SIGKILL 后原 key 恢复；Python SDK 40 项中 37 项通过、3 项可选 Optuna 测试跳过；仓库外 npm 安装与 Python wheel 导入通过。独立 reviewer 的功能结论及证据见 [A0 审计](experiments/author-a0-functional-review-20260926.zh-CN.md)。
 
+## A1.1 双语言合同切片
+
+新增显式 `gear.author.replay.v2`，定义 HarnessAgent、TaskSelection、RoleResult、ProposalBatch 和 Evaluation 的公共数据合同。`ctx.role` 与 `ctx.tasks.sample` 已生成对应的正式 operation 意图并验证返回结构；具体服务装配仍在下一切片。配置 schema 在第一次意图之前校验，TS 普通 `interface` 配置可直接使用。只读结果可以原样传入 workflow、checkpoint、operation 和 result；Python 提供 snake_case 属性访问。
+
+两端共用 36 个 DTO 正反例，并通过真实 Python worker 的三次重放对照。Python 将 v2 的有限安全整数值统一为 int，允许 JSON `2.0` 用于 `range`，保留科学计算的小数值，拒绝 bool 及越界整数。数据结构校验不代表模型调用或评估产物已获得物理验证；这些检查属于通用宿主。
+
+独立复审结论为本片段无剩余功能阻塞，见 [A1.1 审计](experiments/author-a1-contract-review-20260926.zh-CN.md)。主审另外验证了 4 文件 47 项受影响回归，以及仓库外 npm/Python wheel 安装和既有跨语言 worker 接线。类型 fixture 使用仓库相对导入，仅证明 API 类型可组合，不作为外部作者试用通过的证据。
+
 ## 当前限制
 
-A0 是运行基础。`propose/evaluate/tasks/select`、通用运行 profile、五文件作者项目及新的 CLI 仍属 A1；现有 A0 role/edit/rollout/measure 便利方法用于探针，尚未连接真实服务。用户不能仅复制 v4 的搜索示例便运行真实实验。
+A0 是运行基础。`propose/evaluate/select`、任务采样的真实 provider、通用运行 profile、五文件作者项目及新的 CLI 仍待后续 A1 切片；现有 A0 role/edit/rollout/measure 便利方法用于探针，v2 已拒绝这些假 operation。用户不能仅复制 v4 的搜索示例便运行真实实验。
 
 性能按冻结标准报告：TS 的两个代表性轨迹通过每前沿额外 100 ms 门槛，Python 在 `97e938f` 上仍为 125.15/114.09 ms，未通过；冷恢复通过。进程树峰值内存目前只有抽样证据，上界未验证。见 [正式复测](experiments/author-a0-benchmark-97e938f-20260926.json)。未选择产品默认前沿上限，长流程门尚未验证。
 
-A0 每次重放受 1 MiB 消息/历史与 256 KiB checkpoint 限制，超限明确失败；分页、大输出分块、自定义 schema 及完整依赖闭包支持尚待后续阶段。源检查用于已知不支持用法的诊断，不能当作任意作者代码沙箱。
+A0 每次重放受 1 MiB 消息/历史与 256 KiB checkpoint 限制，超限明确失败；分页、大输出分块、自定义 archive schema 及完整依赖闭包支持尚待后续阶段；本片段的配置 schema 支持不等于这些能力已完成。源检查用于已知不支持用法的诊断，不能当作任意作者代码沙箱。
 
 ## 阶段验收
 

@@ -15,6 +15,15 @@ MAX_SAFE_INTEGER = 2**53 - 1
 JSONSchema = dict[str, Any]
 
 
+def json_safe_integer(value: Any) -> int | None:
+    """Interpret a JSON number as a JS-safe integer without accepting bool."""
+    if type(value) is int:
+        return value if abs(value) <= MAX_SAFE_INTEGER else None
+    if type(value) is float and math.isfinite(value) and value.is_integer() and abs(value) <= MAX_SAFE_INTEGER:
+        return int(value)
+    return None
+
+
 def validate_json(value: Any, path: str = "$") -> Any:
     if value is None or isinstance(value, (str, bool)):
         if isinstance(value, str):
@@ -111,7 +120,7 @@ def validate_schema(schema: Mapping[str, Any], value: Any, path: str = "$") -> A
         "null": value is None,
         "boolean": isinstance(value, bool),
         "number": isinstance(value, (int, float)) and not isinstance(value, bool),
-        "integer": isinstance(value, int) and not isinstance(value, bool),
+        "integer": json_safe_integer(value) is not None,
         "string": isinstance(value, str),
         "array": isinstance(value, list),
         "object": isinstance(value, dict),

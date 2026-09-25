@@ -1,17 +1,37 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { canonicalJson, assertJson, jsonDigest, type JsonValue } from '../schema.js';
-import type { BindingSetRef, OperationOutcome } from '../contracts.js';
+import { canonicalJson, assertJson, jsonDigest, validateSchema, type JsonSchema, type JsonValue } from '../schema.js';
+import type { ArtifactRef, BindingSetRef, OperationOutcome } from '../contracts.js';
+import { AUTHOR_WIRE_VERSION_V2, assertAuthorCapabilitiesV1, assertHarnessAgentV1, assertAuthorConfigSchema,
+  assertTaskSelectionV1, decodeRoleExecutionResult,
+  type AuthorCapabilitiesV1, type AuthorInputV2, type RoleResultV1, type TaskSelectionV1,
+  type ProposalBatchV1, type EvaluationV1 } from './a1-contract.js';
+export { AUTHOR_WIRE_VERSION_V2, AUTHOR_CAPABILITIES_VERSION, assertAuthorCapabilitiesV1, assertHarnessAgentV1,
+  assertTaskSelectionV1, assertRoleResultV1, assertProposalBatchV1, assertEvaluationV1 } from './a1-contract.js';
+export type { AuthorCapabilitiesV1, AuthorInputV2, HarnessAgentV1, TaskSelectionV1, RoleResultV1,
+  ProposalFailureV1, ProposalBatchV1, TrialV1, EvaluationV1 } from './a1-contract.js';
 
 export const AUTHOR_WIRE_VERSION = 'gear.author.replay.v1' as const;
-export type AuthorInput = { initialAgent: JsonValue; data: JsonValue; config: JsonValue };
+export type AuthorInputV1 = { initialAgent: JsonValue; data: JsonValue; config: JsonValue };
+export type AuthorInput = AuthorInputV1 | AuthorInputV2;
 export type AuthorHistoryEntry = { address: string; kind: string; definitionVersion: string; inputDigest: string; outcome: OperationOutcome };
 export type AuthorAtomic = { address: string; kind: string; definitionVersion: string; input: JsonValue; bindingSetRef?: BindingSetRef; limits?: Record<string, number>; startsBudgetClock?: boolean };
-export type AuthorReplayRequest = { version: typeof AUTHOR_WIRE_VERSION; input: AuthorInput; history: AuthorHistoryEntry[] };
+export type AuthorReplayRequest = { version: typeof AUTHOR_WIRE_VERSION; input: AuthorInputV1; history: AuthorHistoryEntry[] }
+  | { version: typeof AUTHOR_WIRE_VERSION_V2; input: AuthorInputV2; history: AuthorHistoryEntry[] };
 export type AuthorReplayReply = { status: 'waiting'; frontier: AuthorAtomic[] } | { status: 'completed'; result: JsonValue };
 export type AuthorError = { kind: Exclude<OperationOutcome['kind'], 'result'>; code?: string; message?: string; reason?: string; retryable?: boolean };
 export type Outcome<T> = { ok: true; value: T } | { ok: false; error: AuthorError };
-export type AuthorResult = { selected?: JsonValue; outputs?: Record<string, JsonValue> };
 export type OperationOptions = { bindingSetRef?: BindingSetRef; limits?: Record<string, number>; startsBudgetClock?: boolean };
+export type DeepReadonly<T> = T extends (...args: never[]) => unknown ? T
+  : T extends readonly (infer U)[] ? readonly DeepReadonly<U>[]
+  : T extends object ? { readonly [K in keyof T]: DeepReadonly<T[K]> } : T;
+export type AuthorRoleResult = DeepReadonly<RoleResultV1>;
+export type AuthorTaskSelection = DeepReadonly<TaskSelectionV1>;
+/** Author inputs accept frozen SDK DTOs and recursively readonly JSON; replay still validates actual JSON bytes. */
+export type AuthorJsonValue = null | string | number | boolean | readonly AuthorJsonValue[]
+  | { readonly [key: string]: AuthorJsonValue }
+  | DeepReadonly<BindingSetRef> | DeepReadonly<ArtifactRef> | DeepReadonly<AuthorInputV2['initialAgent']>
+  | AuthorRoleResult | AuthorTaskSelection | DeepReadonly<ProposalBatchV1> | DeepReadonly<EvaluationV1>;
+export type AuthorResult = { selected?: AuthorJsonValue; outputs?: Record<string, AuthorJsonValue> };
 export function authorIntentDigest(item: { input: JsonValue } & OperationOptions): string {
   return jsonDigest({ input: item.input, ...(item.bindingSetRef ? { bindingSetRef: item.bindingSetRef } : {}),
     ...(item.limits ? { limits: item.limits } : {}),
@@ -20,12 +40,12 @@ export function authorIntentDigest(item: { input: JsonValue } & OperationOptions
 
 type Scope = { runner: ReplayRunner; path: string; next: number; definitionVersion: string };
 type Action<T> =
-  | { tag: 'atomic'; kind: string; input: JsonValue; options: OperationOptions }
+  | { tag: 'atomic'; kind: string; input: JsonValue; options: OperationOptions; decode?: (value: JsonValue) => T }
   | { tag: 'parallel'; children: ManagedCall<unknown>[] }
   | { tag: 'workflow'; fn: (ctx: AuthorContext, ...args: JsonValue[]) => Promise<T> | T; args: JsonValue[]; version: string };
 const activeScope = new AsyncLocalStorage<Scope>();
 
-function clone<T extends JsonValue>(value: T): T { assertJson(value); return JSON.parse(canonicalJson(value)) as T; }
+function clone<T>(value: T): T { assertJson(value); return JSON.parse(canonicalJson(value)) as T; }
 function deepFreeze<T>(value: T): T {
   if (value && typeof value === 'object') {
     for (const item of Object.values(value)) deepFreeze(item);
@@ -74,19 +94,42 @@ export class AuthorOperationError extends Error {
   toAuthorError(): AuthorError { return clone(this.outcome as JsonValue) as AuthorError; }
 }
 
-export class AuthorContext {
-  readonly initialAgent: JsonValue;
-  readonly data: JsonValue;
-  readonly config: JsonValue;
+export class AuthorContext<TConfig = JsonValue, TVersion extends 'v1' | 'v2' = 'v2'> {
+  readonly initialAgent: TVersion extends 'v2' ? DeepReadonly<AuthorInputV2['initialAgent']> : JsonValue;
+  readonly data: DeepReadonly<JsonValue>;
+  readonly config: DeepReadonly<TConfig>;
+  readonly capabilities: TVersion extends 'v2' ? DeepReadonly<AuthorCapabilitiesV1> : undefined;
+  readonly tasks: { sample: (sourceTaskViewRef: DeepReadonly<ArtifactRef>, options: { count: number; seed: number }) => ManagedCall<AuthorTaskSelection> };
   constructor(readonly scope: Scope, input: AuthorInput) {
-    this.initialAgent = deepFreeze(clone(input.initialAgent));
-    this.data = deepFreeze(clone(input.data));
-    this.config = deepFreeze(clone(input.config));
+    this.initialAgent = deepFreeze(clone(input.initialAgent)) as typeof this.initialAgent;
+    this.data = deepFreeze(clone(input.data)) as typeof this.data;
+    this.config = deepFreeze(clone(input.config)) as typeof this.config;
+    this.capabilities = ('capabilities' in input ? deepFreeze(clone(input.capabilities as JsonValue) as AuthorCapabilitiesV1)
+      : undefined) as typeof this.capabilities;
+    this.tasks = { sample: (sourceTaskViewRef, options) => {
+      if (!this.capabilities) this.scope.runner.recordFatal('tasks.sample requires A1 capabilities');
+      if (!sourceTaskViewRef || sourceTaskViewRef.kind !== 'artifact' || sourceTaskViewRef.schemaId !== 'task.view.v1'
+        || !Number.isSafeInteger(options.count) || options.count < 1 || !Number.isSafeInteger(options.seed))
+        this.scope.runner.recordFatal('tasks.sample requires a task view, positive count and safe seed');
+      return this.typedOperation<AuthorTaskSelection>('tasks.sample', { sourceTaskViewRef, count: options.count, seed: options.seed },
+        { limits: this.capabilities.operationLimits['tasks.sample'] ?? {} }, value => {
+          assertTaskSelectionV1(value);
+          if (value.selectedTaskIds.length !== options.count) throw new Error('TaskSelection count mismatch');
+          return value;
+        });
+    } };
   }
-  operation<T extends JsonValue = JsonValue>(kind: string, input: JsonValue, options: OperationOptions = {}): ManagedCall<T> {
+  operation<T extends JsonValue = JsonValue>(kind: string, input: AuthorJsonValue, options: OperationOptions = {}): ManagedCall<T> {
+    return this.typedOperation<T>(kind, input, options);
+  }
+  private typedOperation<T>(kind: string, input: AuthorJsonValue, options: OperationOptions,
+    decode?: (value: JsonValue) => T): ManagedCall<T> {
     if (typeof kind !== 'string' || !kind) fail('operation kind required');
+    if (this.capabilities && /^author\.(?:role|edit|rollout|measure)$/.test(kind))
+      this.scope.runner.recordFatal(`A0 fake operation ${kind} is not available in A1`);
     const normalized = deepFreeze(clone(input));
-    return new ManagedCall<T>({ tag: 'atomic', kind, input: normalized, options: clone(options as JsonValue) as OperationOptions }, this.scope);
+    return new ManagedCall<T>({ tag: 'atomic', kind, input: normalized as JsonValue,
+      options: clone(options as JsonValue) as OperationOptions, ...(decode ? { decode } : {}) }, this.scope);
   }
   parallel<T extends readonly ManagedCall<unknown>[]>(calls: T): ManagedCall<{ [K in keyof T]: T[K] extends ManagedCall<infer V> ? Outcome<V> : never }> {
     if (!Array.isArray(calls) || !calls.every(call => call instanceof ManagedCall))
@@ -95,29 +138,59 @@ export class AuthorContext {
     for (const call of calls) if (call.creationScope !== this.scope) this.scope.runner.recordFatal('parallel call belongs to another scope', call.creationLocation);
     return new ManagedCall({ tag: 'parallel', children: [...calls] }, this.scope) as ManagedCall<{ [K in keyof T]: T[K] extends ManagedCall<infer V> ? Outcome<V> : never }>;
   }
-  role(name: string, input: JsonValue): ManagedCall<JsonValue> { return this.operation('author.role', { name, input }); }
-  edit(input: JsonValue): ManagedCall<JsonValue> { return this.operation('author.edit', input); }
-  rollout(input: JsonValue): ManagedCall<JsonValue> { return this.operation('author.rollout', input); }
-  measure(input: JsonValue): ManagedCall<JsonValue> { return this.operation('author.measure', input); }
-  checkpoint(name: string, value: JsonValue, schema = 'author.archive.v1'): ManagedCall<JsonValue> {
+  role(name: string, input: AuthorJsonValue): ManagedCall<TVersion extends 'v2' ? AuthorRoleResult : JsonValue> {
+    if (!this.capabilities) return this.operation('author.role', { name, input }) as ManagedCall<TVersion extends 'v2' ? AuthorRoleResult : JsonValue>;
+    const grant = this.capabilities.roles[name];
+    if (!grant || grant.kind !== 'execution.role' || grant.template !== 'read-only-analyst')
+      this.scope.runner.recordFatal(`Role ${name} lacks read-only execution.role grant`);
+    const agent = this.initialAgent as unknown as AuthorInputV2['initialAgent'];
+    return this.typedOperation<AuthorRoleResult>('execution.role', { roleId: name, input }, { bindingSetRef: agent.bindingSetRef,
+      limits: this.capabilities.operationLimits['execution.role'] ?? {} }, value =>
+      decodeRoleExecutionResult(value, agent.bindingSetRef.digest)) as ManagedCall<TVersion extends 'v2' ? AuthorRoleResult : JsonValue>;
+  }
+  edit(input: AuthorJsonValue): ManagedCall<JsonValue> { return this.operation('author.edit', input); }
+  rollout(input: AuthorJsonValue): ManagedCall<JsonValue> { return this.operation('author.rollout', input); }
+  measure(input: AuthorJsonValue): ManagedCall<JsonValue> { return this.operation('author.measure', input); }
+  checkpoint(name: string, value: AuthorJsonValue, schema = 'author.archive.v1'): ManagedCall<JsonValue> {
     return this.operation('author.checkpoint', { name, value, schema });
   }
   budget(): ManagedCall<JsonValue> { return this.operation('author.observe', { kind: 'budget' }); }
   now(): ManagedCall<JsonValue> { return this.operation('author.observe', { kind: 'now' }); }
   randomSeed(): ManagedCall<JsonValue> { return this.operation('author.observe', { kind: 'random-seed' }); }
   newId(): ManagedCall<JsonValue> { return this.operation('author.observe', { kind: 'id' }); }
-  result(result: AuthorResult): AuthorResult { return deepFreeze(clone(result as JsonValue)) as AuthorResult; }
+  result(result: AuthorResult): DeepReadonly<AuthorResult> {
+    if (this.capabilities && result.selected !== undefined) {
+      try { assertHarnessAgentV1(result.selected); }
+      catch (error) { this.scope.runner.recordFatal(`selected Agent invalid: ${error instanceof Error ? error.message : String(error)}`); }
+    }
+    return deepFreeze(clone(result)) as DeepReadonly<AuthorResult>;
+  }
 }
 
-export type AlgorithmDefinition = (ctx: AuthorContext) => Promise<JsonValue> | JsonValue;
-export function algorithm<T extends AlgorithmDefinition>(fn: T): T { return fn; }
+export type AlgorithmDefinition<TConfig = JsonValue, TVersion extends 'v1' | 'v2' = 'v2'> =
+  (ctx: AuthorContext<TConfig, TVersion>) => Promise<AuthorJsonValue> | AuthorJsonValue;
+const declaredConfigSchemas = new WeakMap<Function, JsonSchema>();
+export function algorithm<TConfig = JsonValue, TVersion extends 'v1' | 'v2' = 'v2'>(
+  fn: AlgorithmDefinition<TConfig, TVersion>, options: { configSchema?: JsonSchema } = {}): AlgorithmDefinition<TConfig, TVersion> {
+  if (options.configSchema) {
+    assertAuthorConfigSchema(options.configSchema);
+    declaredConfigSchemas.set(fn, deepFreeze(clone(options.configSchema as JsonValue)) as JsonSchema);
+  }
+  Object.defineProperty(fn, 'describe', { value: () => ({ apiVersion: AUTHOR_WIRE_VERSION,
+    id: fn.name || 'algorithm', definitionVersion: 'algorithm.v1',
+    ...(declaredConfigSchemas.has(fn) ? { configSchema: declaredConfigSchemas.get(fn) } : {}) }), configurable: false });
+  return fn;
+}
 /** A call to this wrapper is lazy; the driver injects a branch-local context when consumed. */
-export function workflow<T extends JsonValue[], R extends JsonValue>(fn: (ctx: AuthorContext, ...args: T) => Promise<R> | R, options: { name?: string; version?: string } = {}): (...args: T) => ManagedCall<R> {
+export function workflow<T extends readonly AuthorJsonValue[], R extends AuthorJsonValue>(
+  fn: (ctx: AuthorContext, ...args: T) => Promise<R> | R,
+  options: { name?: string; version?: string } = {}): (...args: T) => ManagedCall<R> {
   return (...args: T): ManagedCall<R> => {
     const scope = activeScope.getStore();
     if (!scope) fail('workflow invoked outside author replay');
     const frozenArgs = deepFreeze(clone(args));
-    return new ManagedCall<R>({ tag: 'workflow', fn: fn as (ctx: AuthorContext, ...args: JsonValue[]) => Promise<R> | R, args: frozenArgs, version: `${options.name ?? (fn.name || 'workflow')}@${options.version ?? 'v1'}` }, scope);
+    return new ManagedCall<R>({ tag: 'workflow', fn: fn as unknown as (ctx: AuthorContext, ...args: JsonValue[]) => Promise<R> | R,
+      args: frozenArgs as unknown as JsonValue[], version: `${options.name ?? (fn.name || 'workflow')}@${options.version ?? 'v1'}` }, scope);
   };
 }
 
@@ -133,8 +206,18 @@ class ReplayRunner {
     throw error;
   }
   constructor(readonly request: AuthorReplayRequest) {
-    if (request.version !== AUTHOR_WIRE_VERSION) fail('unsupported wire version');
+    if (request.version !== AUTHOR_WIRE_VERSION && request.version !== AUTHOR_WIRE_VERSION_V2)
+      fail('unsupported wire version');
     assertJson(request);
+    const requiredInput = request.version === AUTHOR_WIRE_VERSION_V2
+      ? ['initialAgent', 'data', 'config', 'capabilities'] : ['initialAgent', 'data', 'config'];
+    if (!request.input || typeof request.input !== 'object' || Array.isArray(request.input)
+      || Object.keys(request.input).length !== requiredInput.length
+      || requiredInput.some(key => !Object.hasOwn(request.input, key))) fail('author replay input keys invalid');
+    if (request.version === AUTHOR_WIRE_VERSION_V2) {
+      assertAuthorCapabilitiesV1(request.input.capabilities);
+      assertHarnessAgentV1(request.input.initialAgent);
+    } else if (Object.hasOwn(request.input, 'capabilities')) fail('A1 capabilities cannot use A0 wire');
     if (Buffer.byteLength(canonicalJson(request)) > 1024 * 1024) fail('request exceeds 1 MiB');
     this.remaining = new Map();
     for (const entry of request.history) {
@@ -146,21 +229,26 @@ class ReplayRunner {
   }
   register(call: ManagedCall<unknown>): void { this.calls.add(call); }
   consumed(call: ManagedCall<unknown>): void { this.calls.delete(call); }
-  private atom(action: Extract<Action<unknown>, { tag: 'atomic' }>, address: string, definitionVersion: string): Promise<JsonValue> {
+  private atom<T>(action: Extract<Action<T>, { tag: 'atomic' }>, address: string, definitionVersion: string): Promise<T> {
     const digest = authorIntentDigest({ input: action.input, ...action.options });
     const prior = this.remaining.get(address);
     if (prior) {
       if (prior.kind !== action.kind || prior.definitionVersion !== definitionVersion || prior.inputDigest !== digest) this.recordFatal(`history input drift at ${address}`);
       this.visited.add(address);
-      return prior.outcome.kind === 'result' ? Promise.resolve(deepFreeze(clone(prior.outcome.value)))
-        : Promise.reject(new AuthorOperationError(prior.outcome));
+      if (prior.outcome.kind !== 'result') return Promise.reject(new AuthorOperationError(prior.outcome));
+      try {
+        const value = deepFreeze(clone(prior.outcome.value));
+        return Promise.resolve(action.decode ? deepFreeze(action.decode(value)) : value as T);
+      } catch (error) {
+        this.recordFatal(`typed result invalid at ${address}: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
     if (this.frontier.some(item => item.address === address)) fail(`duplicate frontier address ${address}`);
     this.frontier.push({ address, kind: action.kind, definitionVersion, input: action.input, ...action.options });
     return new Promise(() => {});
   }
   runCall<T>(action: Action<T>, address: string, definitionVersion: string): Promise<T> {
-    if (action.tag === 'atomic') return this.atom(action, address, definitionVersion) as Promise<T>;
+    if (action.tag === 'atomic') return this.atom(action, address, definitionVersion);
     if (action.tag === 'workflow') {
       const child: Scope = { runner: this, path: address, next: 0, definitionVersion: `${definitionVersion}/${action.version}` };
       const ctx = new AuthorContext(child, this.request.input);
@@ -206,11 +294,15 @@ function compareAuthorAddress(a: AuthorAtomic, b: AuthorAtomic): number {
 }
 
 /** Pure replay; never invokes a provider. Pending thenables remain unresolved until the next replay. */
-export async function replay(definition: AlgorithmDefinition, request: AuthorReplayRequest): Promise<AuthorReplayReply> {
+export async function replay<TConfig = JsonValue, TVersion extends 'v1' | 'v2' = 'v2'>(
+  definition: AlgorithmDefinition<TConfig, TVersion>,
+  request: AuthorReplayRequest): Promise<AuthorReplayReply> {
   const runner = new ReplayRunner(request);
-  const root: Scope = { runner, path: 'r', next: 0, definitionVersion: 'algorithm.v1' };
-  const ctx = new AuthorContext(root, request.input);
-  let completed = false; let result: JsonValue | undefined; let failure: unknown;
+  const configSchema = declaredConfigSchemas.get(definition);
+  if (configSchema) validateSchema(configSchema, request.input.config, '$.input.config');
+  const root: Scope = { runner, path: 'r', next: 0, definitionVersion: request.version === AUTHOR_WIRE_VERSION_V2 ? 'algorithm.v2' : 'algorithm.v1' };
+  const ctx = new AuthorContext<TConfig, TVersion>(root, request.input);
+  let completed = false; let result: AuthorJsonValue | undefined; let failure: unknown;
   Promise.resolve(activeScope.run(root, () => definition(ctx))).then(value => { completed = true; result = value; }, error => { completed = true; failure = error; });
   // A macrotask boundary drains normal Promise continuations without throwing a catchable pause exception.
   await new Promise<void>(resolve => setImmediate(resolve));
@@ -220,6 +312,11 @@ export async function replay(definition: AlgorithmDefinition, request: AuthorRep
     if (failure) throw failure;
     runner.checkUnconsumed();
     assertJson(result);
+    if (request.version === AUTHOR_WIRE_VERSION_V2 && result && !Array.isArray(result) && typeof result === 'object'
+      && Object.hasOwn(result, 'selected')) {
+      const selected = (result as Record<string, unknown>).selected;
+      if (selected !== undefined) assertHarnessAgentV1(selected);
+    }
     const reply: AuthorReplayReply = { status: 'completed', result: clone(result) };
     if (Buffer.byteLength(canonicalJson(reply)) > 1024 * 1024) fail('reply exceeds 1 MiB');
     return reply;

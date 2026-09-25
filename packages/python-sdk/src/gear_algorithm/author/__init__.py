@@ -18,6 +18,7 @@ import hashlib
 import inspect
 import json
 from pathlib import Path
+import re
 import sys
 import textwrap
 import traceback
@@ -25,10 +26,18 @@ import types
 from typing import Any, Callable, Mapping
 
 from gear_algorithm.errors import GearAlgorithmError
-from gear_algorithm.protocol import validate_json
+from gear_algorithm.protocol import assert_schema, json_safe_integer, validate_json, validate_schema
+from gear_algorithm.author.dto import (
+    ArtifactRef, AuthorCapabilitiesV1, EvaluationV1, HarnessAgentV1,
+    ProposalBatchV1, RoleResultV1, TaskSelectionV1,
+    assert_artifact_ref, assert_author_capabilities_v1, assert_harness_agent_v1,
+    assert_task_selection_v1, decode_role_execution_result,
+)
 
 
 WIRE_VERSION = "gear.author.replay.v1"
+WIRE_VERSION_V2 = "gear.author.replay.v2"
+CAPABILITIES_VERSION = "gear.author.capabilities.v1"
 MAX_FRAME_BYTES = 1024 * 1024
 _active_task: ContextVar[_Task | None] = ContextVar("gear_author_task", default=None)
 
@@ -67,9 +76,30 @@ def _snapshot(value: Any, path: str = "$") -> Any:
     return copy.deepcopy(value)
 
 
+def _v2_wire_numbers(value: Any) -> Any:
+    """Match JSON.parse's number domain before v2 author code sees a value."""
+    if type(value) is float:
+        integer = json_safe_integer(value)
+        return integer if integer is not None else value
+    if isinstance(value, list):
+        return [_v2_wire_numbers(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _v2_wire_numbers(item) for key, item in value.items()}
+    return value
+
+
 class _FrozenMap(Mapping[str, Any]):
+    __slots__ = ("_data",)
+
     def __init__(self, value: Mapping[str, Any]) -> None:
-        self._data = {key: _readonly(item) for key, item in value.items()}
+        object.__setattr__(self, "_data", types.MappingProxyType(
+            {key: _readonly(item) for key, item in value.items()}))
+
+    def __setattr__(self, _name: str, _value: Any) -> None:
+        raise TypeError("author input is read-only")
+
+    def __delattr__(self, _name: str) -> None:
+        raise TypeError("author input is read-only")
 
     def __getitem__(self, key: str) -> Any:
         return self._data[key]
@@ -83,11 +113,61 @@ class _FrozenMap(Mapping[str, Any]):
     def __getattr__(self, name: str) -> Any:
         try:
             return self._data[name]
-        except KeyError as exc:
-            raise AttributeError(name) from exc
+        except KeyError:
+            camel = re.sub(r"_([a-z])", lambda match: match[1].upper(), name)
+            try:
+                return self._data[camel]
+            except KeyError as exc:
+                raise AttributeError(name) from exc
 
     def to_json(self) -> dict[str, Any]:
         return {key: _plain(value) for key, value in self._data.items()}
+
+
+class OutcomeView(dict):
+    """Read-only JSON dict with attribute access for a collected branch."""
+    __slots__ = ()
+
+    def __init__(self, value: Mapping[str, Any]) -> None:
+        dict.__init__(self)
+        for key, item in value.items():
+            dict.__setitem__(self, key, _readonly(item))
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+    def __setattr__(self, _name: str, _value: Any) -> None:
+        raise TypeError("collected outcome is read-only")
+
+    def __delattr__(self, _name: str) -> None:
+        raise TypeError("collected outcome is read-only")
+
+    def __setitem__(self, _key: str, _value: Any) -> None:
+        raise TypeError("collected outcome is read-only")
+
+    def __delitem__(self, _key: str) -> None:
+        raise TypeError("collected outcome is read-only")
+
+    def clear(self) -> None:
+        raise TypeError("collected outcome is read-only")
+
+    def pop(self, _key: str, _default: Any = None) -> Any:
+        raise TypeError("collected outcome is read-only")
+
+    def popitem(self) -> Any:
+        raise TypeError("collected outcome is read-only")
+
+    def setdefault(self, _key: str, _default: Any = None) -> Any:
+        raise TypeError("collected outcome is read-only")
+
+    def update(self, *_args: Any, **_kwargs: Any) -> None:
+        raise TypeError("collected outcome is read-only")
+
+    def __ior__(self, _other: Any):
+        raise TypeError("collected outcome is read-only")
 
 
 def _readonly(value: Any) -> Any:
@@ -248,7 +328,7 @@ def _check_known_unsafe_calls(function: Callable[..., Any]) -> None:
 
 class ManagedCall:
     def __init__(self, call_type: str, payload: Any, *, definition: WorkflowDefinition | None = None,
-                 children: tuple[ManagedCall, ...] = ()) -> None:
+                 children: tuple[ManagedCall, ...] = (), decoder: Callable[[Any], Any] | None = None) -> None:
         task = _active_task.get()
         if task is None:
             raise AuthorError("AUTHOR_SCOPE", "ManagedCall must be created during an algorithm replay", _site(2))
@@ -258,6 +338,7 @@ class ManagedCall:
         self.payload = payload
         self.definition = definition
         self.children = children
+        self.decoder = decoder
         self.owner = task
         self.ordinal = task.next_ordinal
         task.next_ordinal += 1
@@ -273,25 +354,33 @@ class ManagedCall:
 
 class WorkflowDefinition:
     def __init__(self, function: Callable[..., Any], *, root: bool = False,
-                 version: str = "v1") -> None:
+                 version: str = "v1", config_schema: Mapping[str, Any] | None = None) -> None:
         if not inspect.iscoroutinefunction(function):
             raise AuthorError("AUTHOR_DEFINITION", "workflow must be async", _site(3))
         if not isinstance(version, str) or not version:
             raise AuthorError("AUTHOR_DEFINITION", "definition version must be a nonempty string", _site(3))
         if root and version != "v1":
             raise AuthorError("AUTHOR_DEFINITION", "root version is fixed at algorithm.v1; freeze source identity in the host", _site(3))
+        if config_schema is not None and not root:
+            raise AuthorError("AUTHOR_DEFINITION", "only @algorithm declares config_schema", _site(3))
+        if config_schema is not None:
+            assert_schema(config_schema)
         _check_known_unsafe_calls(function)
         self.function = _copy_function(function)
         self.root = root
         self.version = version
         self.name = function.__name__
         self.site = f"{Path(function.__code__.co_filename).name}:{function.__code__.co_firstlineno}"
+        self.config_schema = _snapshot(dict(config_schema), "$.configSchema") if config_schema is not None else None
 
     def describe(self) -> dict[str, Any]:
         if not self.root:
             raise AuthorError("AUTHOR_DEFINITION", "only @algorithm is a worker export", self.site)
-        return {"apiVersion": WIRE_VERSION, "id": self.name,
-                "definitionVersion": "algorithm.v1"}
+        result = {"apiVersion": WIRE_VERSION, "id": self.name,
+                  "definitionVersion": "algorithm.v1"}
+        if self.config_schema is not None:
+            result["configSchema"] = copy.deepcopy(self.config_schema)
+        return result
 
     def __call__(self, *args: Any, **kwargs: Any) -> ManagedCall:
         if self.root:
@@ -307,22 +396,70 @@ def workflow(function: Callable[..., Any] | None = None, *, version: str = "v1")
     return WorkflowDefinition(function, version=version)
 
 
-def algorithm(function: Callable[..., Any] | None = None, *, version: str = "v1"):
+def algorithm(function: Callable[..., Any] | None = None, *, version: str = "v1",
+              config_schema: Mapping[str, Any] | None = None):
     if function is None:
-        return lambda actual: WorkflowDefinition(actual, root=True, version=version)
-    return WorkflowDefinition(function, root=True, version=version)
+        return lambda actual: WorkflowDefinition(actual, root=True, version=version,
+                                                 config_schema=config_schema)
+    return WorkflowDefinition(function, root=True, version=version, config_schema=config_schema)
+
+
+def _check_capabilities(value: Any) -> None:
+    try:
+        assert_author_capabilities_v1(value)
+    except GearAlgorithmError as exc:
+        raise AuthorError("AUTHOR_CAPABILITIES", str(exc)) from exc
+
+
+class TaskTools:
+    def __init__(self, context: AuthorContext) -> None:
+        self._context = context
+
+    def sample(self, source_task_view_ref: Any, *, count: int, seed: int) -> ManagedCall:
+        if self._context.wire_version != WIRE_VERSION_V2:
+            raise AuthorError("AUTHOR_CAPABILITY", "tasks.sample requires author capabilities v1", _site(2))
+        ref = _plain(source_task_view_ref)
+        try:
+            assert_artifact_ref(ref, schema_id="task.view.v1")
+        except GearAlgorithmError as exc:
+            raise AuthorError("AUTHOR_INPUT", "tasks.sample needs a TaskViewRef", _site(2)) from exc
+        count_value = json_safe_integer(count)
+        if count_value is None or count_value < 1:
+            raise AuthorError("AUTHOR_INPUT", "tasks.sample count must be a positive safe integer", _site(2))
+        seed_value = json_safe_integer(seed)
+        if seed_value is None:
+            raise AuthorError("AUTHOR_INPUT", "tasks.sample seed must be a safe integer", _site(2))
+        limits = _plain(self._context.capabilities.operation_limits.get("tasks.sample", {}))
+        def decode(value: Any) -> Any:
+            assert_task_selection_v1(value)
+            if len(value["selectedTaskIds"]) != count_value:
+                raise AuthorError("AUTHOR_RESULT", "tasks.sample returned a different count", _site(2))
+            return value
+        return self._context.operation("tasks.sample", {"sourceTaskViewRef": ref, "count": count_value, "seed": seed_value},
+                                       limits=limits, _decoder=decode)
 
 
 class AuthorContext:
-    def __init__(self, input_value: Mapping[str, Any]) -> None:
-        self.initial_agent = _readonly(_snapshot(input_value["initialAgent"], "$.input.initialAgent"))
-        self.data = _readonly(_snapshot(input_value["data"], "$.input.data"))
-        self.config = _readonly(_snapshot(input_value["config"], "$.input.config"))
+    def __init__(self, input_value: Mapping[str, Any], wire_version: str) -> None:
+        self.wire_version = wire_version
+        def frozen(name: str) -> Any:
+            value = _snapshot(input_value[name], f"$.input.{name}")
+            return _readonly(_v2_wire_numbers(value) if wire_version == WIRE_VERSION_V2 else value)
+        self.initial_agent = frozen("initialAgent")
+        self.data = frozen("data")
+        self.config = frozen("config")
+        self.capabilities = (frozen("capabilities")
+                             if wire_version == WIRE_VERSION_V2 else None)
+        self.tasks = TaskTools(self)
 
     def operation(self, kind: str, input: Any, *, binding_set_ref: Any = None,
-                  limits: Any = None, starts_budget_clock: bool | None = None) -> ManagedCall:
+                  limits: Any = None, starts_budget_clock: bool | None = None,
+                  _decoder: Callable[[Any], Any] | None = None) -> ManagedCall:
         if not isinstance(kind, str) or not kind:
             raise AuthorError("AUTHOR_INPUT", "operation kind must be nonempty", _site(2))
+        if self.wire_version == WIRE_VERSION_V2 and kind in (
+                "author.role", "author.edit", "author.rollout", "author.measure"):
+            raise AuthorError("AUTHOR_CAPABILITY", f"A0 fake kind {kind} is unavailable in v2", _site(2))
         payload: dict[str, Any] = {"kind": kind, "input": _snapshot(_plain(input), "$.operation.input")}
         if binding_set_ref is not None:
             payload["bindingSetRef"] = _snapshot(_plain(binding_set_ref))
@@ -332,7 +469,7 @@ class AuthorContext:
             if type(starts_budget_clock) is not bool:
                 raise AuthorError("AUTHOR_INPUT", "starts_budget_clock must be boolean", _site(2))
             payload["startsBudgetClock"] = starts_budget_clock
-        return ManagedCall("operation", payload)
+        return ManagedCall("operation", payload, decoder=_decoder)
 
     def parallel(self, calls: list[ManagedCall] | tuple[ManagedCall, ...]) -> ManagedCall:
         if not isinstance(calls, (list, tuple)):
@@ -366,6 +503,17 @@ class AuthorContext:
         return self._observe("id")
 
     def role(self, name: str, input: Any) -> ManagedCall:
+        if not isinstance(name, str) or not name:
+            raise AuthorError("AUTHOR_INPUT", "role name must be nonempty", _site(2))
+        if self.wire_version == WIRE_VERSION_V2:
+            grant = self.capabilities.roles.get(name)
+            if grant is None or grant.kind != "execution.role" or grant.template != "read-only-analyst":
+                raise AuthorError("AUTHOR_CAPABILITY", f"role {name} lacks read-only execution.role grant", _site(2))
+            limits = _plain(self.capabilities.operation_limits.get("execution.role", {}))
+            binding_digest = self.initial_agent.binding_set_ref.digest
+            return self.operation("execution.role", {"roleId": name, "input": _plain(input)},
+                                  binding_set_ref=_plain(self.initial_agent.binding_set_ref), limits=limits,
+                                  _decoder=lambda value: decode_role_execution_result(value, binding_digest))
         return self.operation("author.role", {"name": name, "input": _plain(input)})
 
     def edit(self, input: Any) -> ManagedCall:
@@ -381,6 +529,11 @@ class AuthorContext:
         result: dict[str, Any] = {}
         if selected is not None:
             result["selected"] = _snapshot(_plain(selected))
+            if self.wire_version == WIRE_VERSION_V2:
+                try:
+                    assert_harness_agent_v1(result["selected"])
+                except GearAlgorithmError as exc:
+                    raise AuthorError("AUTHOR_RESULT", "selected must be HarnessAgentV1", _site(2)) from exc
         if outputs is not None:
             result["outputs"] = _snapshot(_plain(outputs))
         return result
@@ -408,7 +561,7 @@ class _Driver:
         self.history: dict[str, Mapping[str, Any]] = {}
         self.used_history: set[str] = set()
         self.frontier: list[dict[str, Any]] = []
-        self.context = AuthorContext(request["input"])
+        self.context = AuthorContext(request["input"], request["version"])
         self.tasks: list[_Task] = []
         for entry in request["history"]:
             if not isinstance(entry, dict) or not isinstance(entry.get("address"), str):
@@ -487,7 +640,14 @@ class _Driver:
                     raise AuthorError("AUTHOR_INPUT_DRIFT", "history definition, kind or input changed", address)
                 outcome = old["outcome"]
                 if outcome["kind"] == "result":
-                    value = _readonly(_snapshot(outcome.get("value")))
+                    value = outcome.get("value")
+                    if call.decoder is not None:
+                        try:
+                            value = call.decoder(value)
+                        except GearAlgorithmError as exc:
+                            raise AuthorError("AUTHOR_RESULT", f"managed result invalid: {exc}", call.site) from exc
+                    value = _snapshot(value)
+                    value = _readonly(_v2_wire_numbers(value) if self.request["version"] == WIRE_VERSION_V2 else value)
                 else:
                     failure = OperationFailure(outcome)
                 continue
@@ -522,7 +682,7 @@ class _Driver:
                 if pending:
                     task.waiting = True
                     return
-                value = outcomes
+                value = [OutcomeView(item) for item in outcomes]
                 continue
             raise AuthorError("AUTHOR_PROTOCOL", "invalid ManagedCall type", call.site)
 
@@ -532,7 +692,7 @@ class _Driver:
         args = [_readonly(copy.deepcopy(arg)) for arg in payload["args"]]
         kwargs = {key: _readonly(copy.deepcopy(val)) for key, val in payload["kwargs"].items()}
         version = (f"{parent_version}/{definition.name}@{definition.version}" if parent_version
-                   else "algorithm.v1")
+                   else "algorithm.v2" if self.request["version"] == WIRE_VERSION_V2 else "algorithm.v1")
         task = _Task(function(self.context, *args, **kwargs), address, version)
         self.tasks.append(task)
         return task
@@ -579,6 +739,11 @@ class _Driver:
                     raise root.failure
                 result = _plain(root.value)
                 validate_json(result)
+                if self.request["version"] == WIRE_VERSION_V2 and isinstance(result, dict) and "selected" in result:
+                    try:
+                        assert_harness_agent_v1(result["selected"])
+                    except GearAlgorithmError as exc:
+                        raise AuthorError("AUTHOR_RESULT", "selected must be HarnessAgentV1") from exc
                 return {"status": "completed", "result": result}
             if not self.frontier:
                 raise AuthorError("AUTHOR_DEADLOCK", "workflow paused without an atomic frontier")
@@ -597,13 +762,24 @@ def replay(definition: WorkflowDefinition, request: Mapping[str, Any]) -> dict[s
     """
     if not isinstance(definition, WorkflowDefinition) or not definition.root:
         raise AuthorError("AUTHOR_DEFINITION", "replay requires an @algorithm definition")
-    if not isinstance(request, dict) or request.get("version") != WIRE_VERSION:
+    if not isinstance(request, dict) or request.get("version") not in (WIRE_VERSION, WIRE_VERSION_V2):
         raise AuthorError("AUTHOR_PROTOCOL", "unsupported replay wire version")
     if not isinstance(request.get("history"), list) or not isinstance(request.get("input"), dict):
         raise AuthorError("AUTHOR_PROTOCOL", "request requires input and history")
-    if set(request["input"]) != {"initialAgent", "data", "config"}:
-        raise AuthorError("AUTHOR_PROTOCOL", "input requires initialAgent, data, config")
+    expected_input = {"initialAgent", "data", "config"}
+    if request["version"] == WIRE_VERSION_V2:
+        expected_input.add("capabilities")
+    if set(request["input"]) != expected_input:
+        raise AuthorError("AUTHOR_PROTOCOL", "input fields do not match replay wire version")
     validate_json(request)
+    if request["version"] == WIRE_VERSION_V2:
+        _check_capabilities(request["input"]["capabilities"])
+        try:
+            assert_harness_agent_v1(request["input"]["initialAgent"])
+        except GearAlgorithmError as exc:
+            raise AuthorError("AUTHOR_INPUT", "v2 initialAgent must be HarnessAgentV1") from exc
+    if definition.config_schema is not None:
+        validate_schema(definition.config_schema, request["input"]["config"], "$.input.config")
     if len(canonical_json(request).encode("utf-8")) > MAX_FRAME_BYTES:
         raise AuthorError("AUTHOR_FRAME_LIMIT", "encoded request exceeds 1 MiB")
     result = _Driver(definition, request).execute()
@@ -612,5 +788,8 @@ def replay(definition: WorkflowDefinition, request: Mapping[str, Any]) -> dict[s
     return result
 
 
-__all__ = ["WIRE_VERSION", "AuthorContext", "AuthorError", "ManagedCall", "OperationFailure",
-           "WorkflowDefinition", "algorithm", "canonical_json", "input_digest", "replay", "workflow"]
+__all__ = ["WIRE_VERSION", "WIRE_VERSION_V2", "CAPABILITIES_VERSION", "ArtifactRef",
+           "AuthorCapabilitiesV1", "EvaluationV1", "HarnessAgentV1", "ProposalBatchV1",
+           "RoleResultV1", "TaskSelectionV1", "AuthorContext", "AuthorError", "ManagedCall",
+           "OperationFailure", "OutcomeView", "WorkflowDefinition", "algorithm", "canonical_json",
+           "input_digest", "replay", "workflow"]
