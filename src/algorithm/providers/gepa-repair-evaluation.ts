@@ -1,6 +1,6 @@
 import { FileArtifactStore } from '../artifacts.js'
 import { BindingStore } from '../bindings.js'
-import type { ArtifactRef, CompletionEnvelope, OperationEnvelope, OperationProvider, ProviderInspection,
+import type { ArtifactRef, CompletionEnvelope, OperationEnvelope, OperationProvider, ProviderDispatchContext, ProviderInspection,
   ProviderManifest, ProviderSubmission, UsageReceipt } from '../contracts.js'
 import { ProviderProtocolError, ProviderReconcileError } from '../provider-errors.js'
 import { implementationClosureDigest } from '../data/identity.js'
@@ -12,8 +12,11 @@ import { safeId, SearchProtocolError, verifyDigest, validateSnapshot } from '../
 import type { CellIdentity, EvidenceCell, SearchProvider, SearchStageFailure, Snapshot,
   StageEvaluationPlan, StageResult, TaskUniverse } from '../../search/types.js'
 import { digestJson } from '../../state/digest.js'
+import { auxBudgetDecision, checkedAuxBudget, type GepaAuxBudgetDecision,
+  type GepaAuxBudgetInput } from './gepa-budget-dispatch.js'
+import { zeroUsage } from '../../search/store.js'
 
-export type GepaRepairEvaluationInput = {
+export type GepaRepairEvaluationInput = GepaAuxBudgetInput & {
   roundIdentity: { evolutionId: string; roundId: string }
   repairId: string
   originalRef: ArtifactRef
@@ -31,7 +34,7 @@ export type GepaRepairEvaluationOutput = { executionRef: ArtifactRef }
 type RecordValue = { schemaVersion: 1; operationId: string; inputDigest: string; implementationDigest: string;
   bindingDigest: string; externalKey: string; stage: 'started' | 'complete' | 'cancelled-before-start';
   effectStarted: boolean; pendingReason?: string; pendingState?: GepaRepairPendingState['state'];
-  pendingHandle?: string; completion?: CompletionEnvelope }
+  pendingHandle?: string; budgetDecision?: GepaAuxBudgetDecision; completion?: CompletionEnvelope }
 export type GepaRepairPendingState = { state: 'running' | 'unknown' | 'not-started' | 'partially-complete';
   reason: string; handle?: string }
 
@@ -57,6 +60,7 @@ export class GepaRepairEvaluationProvider implements OperationProvider {
       repairId: { type: 'string' }, originalRef: { type: 'any' }, currentRef: { type: 'any' }, cachedRef: { type: 'any' },
       plan: { type: 'any' }, snapshot: { type: 'any' }, universe: { type: 'any' },
       missing: { type: 'array', items: { type: 'any' } }, deadlineAt: { type: 'integer' },
+      budgetCut: { type: 'any' }, roundStartedAt: { type: 'integer' },
     }, additionalProperties: false },
     outputSchema: { type: 'object', required: ['executionRef'], properties: { executionRef: { type: 'any' } },
       additionalProperties: false }, meteredDimensions: ['rolloutCells', 'repairCells'], hardLimitDimensions: [],
@@ -108,6 +112,7 @@ export class GepaRepairEvaluationProvider implements OperationProvider {
       || record.pendingState !== undefined && !['running', 'unknown', 'not-started', 'partially-complete'].includes(record.pendingState)
       || record.pendingHandle !== undefined && typeof record.pendingHandle !== 'string'
       || record.stage === 'complete' && !record.completion)) throw new ProviderProtocolError('GEPA repair record drift')
+    if (record?.budgetDecision) verifyDigest(record.budgetDecision)
     return record
   }
   private original(envelope: OperationEnvelope): StageResult {
@@ -130,6 +135,7 @@ export class GepaRepairEvaluationProvider implements OperationProvider {
       throw new ProviderProtocolError('GEPA repair operation identity drift')
     const input = this.input(envelope)
     safeId(input.roundIdentity.roundId); safeId(input.repairId)
+    checkedAuxBudget(input, input.roundIdentity.roundId)
     if (typeof input.roundIdentity.evolutionId !== 'string' || !input.roundIdentity.evolutionId
       || !Number.isSafeInteger(input.deadlineAt) || input.deadlineAt < 0)
       throw new ProviderProtocolError('GEPA repair identity or deadline invalid')
@@ -183,9 +189,11 @@ export class GepaRepairEvaluationProvider implements OperationProvider {
   }
   async preflight(envelope: OperationEnvelope): Promise<void | { startsBudgetClock: boolean }> {
     await this.checked(envelope)
+    if (this.input(envelope).budgetCut) return undefined
     return Date.now() >= this.input(envelope).deadlineAt ? { startsBudgetClock: false } : undefined
   }
-  async prepareForDispatch(envelope: OperationEnvelope): Promise<{ startsBudgetClock: boolean }> {
+  async prepareForDispatch(envelope: OperationEnvelope,
+    context?: ProviderDispatchContext): Promise<{ startsBudgetClock: boolean }> {
     const { input, current } = await this.checked(envelope)
     const initial: RecordValue = { schemaVersion: 1, operationId: envelope.operationId,
       inputDigest: envelope.inputDigest, implementationDigest: envelope.implementationDigest,
@@ -193,7 +201,19 @@ export class GepaRepairEvaluationProvider implements OperationProvider {
       stage: 'started', effectStarted: false }
     await this.flushArtifacts()
     await this.records.create(this.manifest.kind, envelope.operationId, initial)
-    await this.read(envelope)
+    const record = (await this.read(envelope))!
+    if (checkedAuxBudget(input, input.roundIdentity.roundId)) {
+      if (!context) throw new ProviderProtocolError('GEPA repair dispatch context is required')
+      if (context.dispatchAdmitted) {
+        if (!record.budgetDecision) throw new ProviderProtocolError('GEPA admitted repair lacks frozen budget decision')
+      } else {
+        if (record.effectStarted) throw new ProviderProtocolError('GEPA repair effect lacks dispatch admission')
+        const cost = { ...zeroUsage(), cells: input.missing.length, repairCells: input.missing.length }
+        record.budgetDecision = auxBudgetDecision(input, input.roundIdentity.roundId, context, cost)
+        await this.records.write(this.manifest.kind, envelope.operationId, record)
+      }
+      return { startsBudgetClock: record.budgetDecision!.failure === null }
+    }
     return { startsBudgetClock: envelope.startsBudgetClock === true && Date.now() < input.deadlineAt }
   }
   private receipt(envelope: OperationEnvelope, amount: number): UsageReceipt {
@@ -299,6 +319,10 @@ export class GepaRepairEvaluationProvider implements OperationProvider {
     const record = (await this.read(envelope))!
     if (record.stage === 'cancelled-before-start') throw new ProviderProtocolError('Cancelled GEPA repair cannot be submitted')
     if (record.completion) return { status: 'completed', completion: record.completion }
+    if (checkedAuxBudget(input, input.roundIdentity.roundId) && !record.budgetDecision)
+      throw new ProviderProtocolError('GEPA repair dispatch has no frozen budget decision')
+    if (record.budgetDecision?.failure) return { status: 'completed', completion: await this.complete(envelope,
+      record, { schemaVersion: 1, cells: [], failure: budgetFailure(record.budgetDecision.failure) }, 0) }
     if (this.attemptedThisInvocation.has(envelope.operationId)) return { status: 'running' }
     let observed: Awaited<ReturnType<NonNullable<SearchProvider['inspectEvaluation']>>> | undefined
     if (record.effectStarted && this.physical.inspectEvaluation

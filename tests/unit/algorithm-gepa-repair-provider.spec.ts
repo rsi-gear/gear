@@ -1,19 +1,20 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { FileArtifactStore } from '../../src/algorithm/artifacts.js'
 import { BindingStore } from '../../src/algorithm/bindings.js'
-import type { OperationEnvelope } from '../../src/algorithm/contracts.js'
+import type { OperationEnvelope, ProviderDispatchContext } from '../../src/algorithm/contracts.js'
 import { GepaRepairEvaluationProvider, type GepaRepairEvaluationInput } from '../../src/algorithm/providers/gepa-repair-evaluation.js'
+import { captureGepaBudgetCut } from '../../src/algorithm/recipes/gepa-budget.js'
 import { jsonDigest, type JsonValue } from '../../src/algorithm/schema.js'
 import { seal } from '../../src/search/contracts.js'
 import { plannedCells } from '../../src/search/evidence.js'
-import { evaluatedFixture, fixtures, scopeFixture } from '../../src/search/testing.js'
+import { evaluatedFixture, fixtures, scopeFixture, settings, MemorySearchStore } from '../../src/search/testing.js'
 import { digestJson } from '../../src/state/digest.js'
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 function setup() {
   const root = mkdtempSync(join(tmpdir(), 'gepa-repair-provider-')); roots.push(root)
@@ -112,4 +113,31 @@ it('starts a zero-cell repair reservation only after preparation and cancels its
   expect(await provider.cancel(zeroEnvelope)).toMatchObject({ status: 'cancelled', releaseConfirmed: true })
   await expect(provider.submit(zeroEnvelope)).rejects.toThrow('Cancelled GEPA repair')
   expect(fixture.executions).toHaveLength(0)
+})
+
+it('seals a layered repairCells denial before physical evaluation, including admitted replay', async () => {
+  const { fixture, provider, envelope, input, artifacts } = setup()
+  const now = Date.now()
+  vi.spyOn(Date, 'now').mockReturnValue(now)
+  const limits = settings().budgets
+  limits.round.maxRepairCells = 0
+  const budgetCut = await captureGepaBudgetCut(new MemorySearchStore(), 'r', limits)
+  const layered: GepaRepairEvaluationInput = { ...input, budgetCut, roundStartedAt: now - 100 }
+  const request: OperationEnvelope = { ...envelope, input: layered as unknown as JsonValue,
+    inputDigest: jsonDigest(layered as unknown as JsonValue), startsBudgetClock: true }
+  const context: ProviderDispatchContext = { dispatchAdmitted: false, spent: {},
+    reservedExcludingSelf: {}, batchOrdinal: 0 }
+  expect(await provider.prepareForDispatch(request, context)).toEqual({ startsBudgetClock: false })
+  expect(await provider.prepareForDispatch(request, { ...context, dispatchAdmitted: true }))
+    .toEqual({ startsBudgetClock: false })
+  const submitted = await provider.submit(request)
+  expect(submitted.status).toBe('completed')
+  expect(fixture.executions).toHaveLength(0)
+  if (submitted.status !== 'completed' || submitted.completion.outcome.kind !== 'result')
+    throw new Error('repair denial did not seal a result')
+  const value = submitted.completion.outcome.value as { executionRef: Parameters<typeof artifacts.getJson>[0] }
+  expect(artifacts.getJson(value.executionRef)).toMatchObject({ schemaVersion: 1, cells: [],
+    failure: { kind: 'budget-exhausted', code: 'round.repairCells',
+      message: 'search budget exhausted: round.repairCells' } })
+  expect(submitted.completion.receipt?.cumulative).toEqual({ rolloutCells: 0, repairCells: 0 })
 })
