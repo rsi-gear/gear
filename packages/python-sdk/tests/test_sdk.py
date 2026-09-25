@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from gear_algorithm import (AlgorithmDecision, DurableLocalProvider, ProviderManifest, OperationIntent, ValidationError,
+from gear_algorithm import (AlgorithmDecision, AlgorithmManifest, ArtifactRef, DurableLocalProvider, ProviderManifest, OperationIntent, ValidationError,
                             check_durable_provider, check_repeated_usage, check_unreleased_cancel, MemoryArtifactBridge,
                             assert_schema, validate_json, validate_schema)
 
@@ -26,6 +26,21 @@ class SdkTests(unittest.TestCase):
     def test_parallel_key_uniqueness(self):
         with self.assertRaises(ValidationError):
             AlgorithmDecision(None, (OperationIntent("same", "a", 1), OperationIntent("same", "b", 2))).to_wire()
+
+    def test_projection_manifest_and_decision_wire_contract(self):
+        base = ("projector", {"type": "object"}, {"type": "object"}, {"id": "empty", "slots": {}})
+        self.assertNotIn("requiredProjectionSchemas", AlgorithmManifest(*base).to_wire())
+        declared = AlgorithmManifest(*base, requiredProjectionSchemas=("science.v1", "archive.v1"))
+        self.assertEqual(declared.to_wire()["requiredProjectionSchemas"], ["science.v1", "archive.v1"])
+        for invalid in (("science.v1", "science.v1"), ("",), (1,), "science.v1"):
+            with self.assertRaisesRegex(ValidationError, "requiredProjectionSchemas"):
+                AlgorithmManifest(*base, requiredProjectionSchemas=invalid).to_wire()
+        self.assertNotIn("projections", AlgorithmDecision({}).to_wire())
+        projection = ArtifactRef("a" * 64, 2, "application/json", "science.v1")
+        self.assertEqual(AlgorithmDecision({}, projections=(projection,)).to_wire()["projections"],
+                         [projection.to_wire()])
+        with self.assertRaisesRegex(ValidationError, "projections"):
+            AlgorithmDecision({}, projections=(ArtifactRef("a" * 64, 2, "application/json"),)).to_wire()
 
     def test_optional_budget_clock_intent_requires_a_real_boolean(self):
         self.assertNotIn("startsBudgetClock", OperationIntent("one", "a", {}).to_wire())

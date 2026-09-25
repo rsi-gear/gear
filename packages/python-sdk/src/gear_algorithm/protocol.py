@@ -228,6 +228,7 @@ class AlgorithmDecision:
     operations: tuple[OperationIntent, ...] = ()
     bindingTransition: BindingSetRef | None = None
     complete: bool = False
+    projections: tuple[ArtifactRef, ...] = ()
 
     def to_wire(self) -> dict[str, Any]:
         result: dict[str, Any] = {"nextState": self.nextState, "operations": [op.to_wire() for op in self.operations]}
@@ -235,6 +236,12 @@ class AlgorithmDecision:
             result["bindingTransition"] = self.bindingTransition.to_wire()
         if self.complete:
             result["complete"] = True
+        if not isinstance(self.projections, (tuple, list)) or any(
+            not isinstance(ref, ArtifactRef) or not ref.schemaId for ref in self.projections
+        ):
+            raise ValidationError("projections must contain artifact references with schema IDs")
+        if self.projections:
+            result["projections"] = [ref.to_wire() for ref in self.projections]
         validate_json(result)
         if len({op.localKey for op in self.operations}) != len(self.operations):
             raise ValidationError("duplicate operation localKey", "$.operations")

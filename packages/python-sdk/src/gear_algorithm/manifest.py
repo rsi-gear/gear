@@ -28,6 +28,7 @@ class AlgorithmManifest:
     requiredHooks: dict[str, dict[str, Any]] = field(default_factory=dict)
     requiredOperationKinds: tuple[str, ...] = ()
     requiredOperationKindsFromConfig: tuple[str, ...] = ()
+    requiredProjectionSchemas: tuple[str, ...] = ()
 
     def to_wire(self) -> dict[str, Any]:
         _check_schema(self.stateSchema)
@@ -47,9 +48,17 @@ class AlgorithmManifest:
             or any(not isinstance(key, str) or not key for key in self.requiredOperationKindsFromConfig)
             or len(set(self.requiredOperationKindsFromConfig)) != len(self.requiredOperationKindsFromConfig)):
             raise ValidationError("requiredOperationKindsFromConfig must contain unique nonempty keys")
+        if (not isinstance(self.requiredProjectionSchemas, (tuple, list))
+            or any(not isinstance(schema_id, str) or not schema_id for schema_id in self.requiredProjectionSchemas)
+            or len(set(self.requiredProjectionSchemas)) != len(self.requiredProjectionSchemas)):
+            raise ValidationError("requiredProjectionSchemas must contain unique nonempty schema IDs")
         result = vars(self).copy()
         result["requiredOperationKinds"] = list(self.requiredOperationKinds)
         result["requiredOperationKindsFromConfig"] = list(self.requiredOperationKindsFromConfig)
+        if self.requiredProjectionSchemas:
+            result["requiredProjectionSchemas"] = list(self.requiredProjectionSchemas)
+        else:
+            result.pop("requiredProjectionSchemas")
         validate_json(result)
         return result
 

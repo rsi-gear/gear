@@ -43,6 +43,14 @@ Fresh seed 接入读取已编译数据集和精确 Git Harness，不要求先跑
 
 旧搜索的 pending 运行必须继续由其**原封存的 runtime、包与依赖**恢复；新 Campaign、配置变更或 GEPA recipe 不接管旧不确定 journal。旧运行兼容基线见[封存制品](algorithm-baselines/f715748/README.md)。
 
+## 宿主持久投影
+
+接入既有日志或进度视图的宿主，可让算法返回 `AlgorithmDecision.projections`，并在 manifest 的 `requiredProjectionSchemas` 声明所需 artifact schema。TypeScript 与 Python 使用同一合同；Python SDK 对应 `AlgorithmManifest` 和 `AlgorithmDecision` 的同名字段。普通算法继续返回 operations，无需配置投影。
+
+投影只物化已经封存的决定，例如 GEPA 的科学检查点和 archive 视图。宿主先持久化 artifact 与 Campaign 决定，再按顺序完成投影，之后才进入下一步或执行物理操作。重启时会重放投影，因此投影实现必须幂等；宿主实现身份变化会拒绝恢复。模型请求、rollout、训练和需要计量或对账的外部操作仍使用 `OperationProvider`。
+
+此能力目前由定制的 journal 宿主接入；默认文件 Campaign store 和普通 CLI host profile 没有配置投影宿主。缺少所声明的能力会在准入时拒绝，不能只在 Python 或 TypeScript 算法中添加字段就启用它。
+
 ## 训练与验证边界
 
 固定 Harness GRPO 从 `rsi-gear/algorithm/training` 使用 `fixedHarnessGrpoRecipe`，独立训练模型绑定、实际 Slime job lookup 与 Hitch 模型评测 provider；它不会替换旧 champion。训练入口是可选物理集成，Python 作者 wheel 不带 Torch/CUDA。[训练示例](../examples/algorithms/slime-grpo/README.md)说明真实后端要求。

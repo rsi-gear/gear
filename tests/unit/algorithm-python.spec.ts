@@ -101,6 +101,33 @@ it('seals actual Python host bridge files into Python author identity', async ()
   } finally { await loaded.close(); }
 });
 
+it('keeps Python projection requirements and projection-only decisions across the loader', async () => {
+  const dir = await directory();
+  await writeFile(join(dir, 'projection.py'), `from gear_algorithm import AlgorithmDecision, AlgorithmManifest, ArtifactRef
+
+class ProjectionAlgorithm:
+    def describe(self):
+        return AlgorithmManifest("python-projection", {"type": "object"}, {"type": "object"},
+            {"id": "empty", "slots": {}}, requiredProjectionSchemas=("science.v1",))
+    def initialize(self, context):
+        return AlgorithmDecision({}, projections=(ArtifactRef("a" * 64, 2, "application/json", "science.v1"),))
+    def reduce(self, context):
+        return AlgorithmDecision({}, complete=True)
+
+algorithm = ProjectionAlgorithm()
+`);
+  const loaded = await loadPythonAlgorithm({ configDir: dir, module: './projection.py', export: 'algorithm',
+    interpreter, sdkPath });
+  try {
+    expect(loaded.value.describe().requiredProjectionSchemas).toEqual(['science.v1']);
+    const decision = await loaded.value.initialize({ campaignId: 'python-projection', decisionIndex: 0,
+      config: {}, activeBindingSetRef: { kind: 'binding-set', digest: 'b'.repeat(64), schemaId: 'empty' } });
+    expect(decision.projections).toEqual([{ kind: 'artifact', digest: 'a'.repeat(64), size: 2,
+      mediaType: 'application/json', schemaId: 'science.v1' }]);
+    expect(decision.operations).toEqual([]);
+  } finally { await loaded.close(); }
+});
+
 it('runs generated Python algorithm/provider and resumes from the same journal', async () => {
   const { configPath } = await prepare('python');
   const output: string[] = [];
