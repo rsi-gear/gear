@@ -592,7 +592,10 @@ export class AlgorithmRuntime {
       }
       if (Object.values(state.operations).every(record => record.status === 'completed' || (record.status === 'cancelled' && record.released))) {
         const completed = Object.fromEntries(Object.entries(state.operations).sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b))).map(([key, record]) => [key, record.outcome ?? { kind: 'cancelled' }])) as Record<string, OperationOutcome>;
-        const decision = await this.algorithm.reduce({ campaignId: state.spec.campaignId, decisionIndex: state.decisionIndex + 1, activeBindingSetRef: state.activeBindingSetRef, config: clone(state.spec.config), budget: this.budgetSnapshot(state), state: clone(state.state), completed });
+        const completedOperationIds = Object.fromEntries(Object.entries(state.operations)
+          .sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b)))
+          .map(([key, record]) => [key, record.envelope.operationId]));
+        const decision = await this.algorithm.reduce({ campaignId: state.spec.campaignId, decisionIndex: state.decisionIndex + 1, activeBindingSetRef: state.activeBindingSetRef, config: clone(state.spec.config), budget: this.budgetSnapshot(state), state: clone(state.state), completed, completedOperationIds });
         state.decisionIndex++;
         state = this.applyDecision(state, decision);
         await (this.artifacts as FileArtifactStore & Partial<ArtifactCheckpoint>).flush?.();

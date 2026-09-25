@@ -3,8 +3,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { authorHostIdentityDigest, authorSourceClosureDigest } from './identity.js';
 import { checkAuthorModuleSource } from './source-check.js';
-import { canonicalJson } from '../schema.js';
-import { type AuthorReplayRequest, type AuthorReplayReply } from './index.js';
+import { canonicalJson, jsonDigest } from '../schema.js';
+import { AUTHOR_WIRE_VERSION, AUTHOR_WIRE_VERSION_V2, type AuthorReplayRequest, type AuthorReplayReply } from './index.js';
 
 export class AuthorWorkerError extends Error {
   constructor(message: string) { super(message); this.name = 'AuthorWorkerError'; }
@@ -17,16 +17,23 @@ export class AuthorProcessReplayPort {
   readonly hostRoot: string;
   constructor(readonly modulePath: string, readonly exportName: string,
     readonly workerPath = fileURLToPath(new URL('./worker-entry.js', import.meta.url)), readonly timeoutMs = 10_000,
-    sourceRoot = dirname(modulePath), hostRoot = dirname(dirname(workerPath))) {
+    sourceRoot = dirname(modulePath), hostRoot = dirname(dirname(workerPath)),
+    readonly wireVersion: typeof AUTHOR_WIRE_VERSION | typeof AUTHOR_WIRE_VERSION_V2 = AUTHOR_WIRE_VERSION) {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error('Positive author worker timeout required');
+    if (wireVersion !== AUTHOR_WIRE_VERSION && wireVersion !== AUTHOR_WIRE_VERSION_V2)
+      throw new Error('Unsupported author process wire version');
     this.sourceRoot = resolve(sourceRoot); this.hostRoot = resolve(hostRoot);
     checkAuthorModuleSource(this.modulePath, this.sourceRoot, this.hostRoot);
-    this.sourceDigest = authorSourceClosureDigest(this.sourceRoot);
+    const closure = authorSourceClosureDigest(this.sourceRoot);
+    this.sourceDigest = wireVersion === AUTHOR_WIRE_VERSION ? closure : jsonDigest({ closure, wireVersion });
     this.hostDigest = authorHostIdentityDigest(this.hostRoot);
   }
   async replay(request: AuthorReplayRequest): Promise<AuthorReplayReply> {
+    if (request.version !== this.wireVersion) throw new AuthorWorkerError('Author process wire version drift');
     checkAuthorModuleSource(this.modulePath, this.sourceRoot, this.hostRoot);
-    if (authorSourceClosureDigest(this.sourceRoot) !== this.sourceDigest || authorHostIdentityDigest(this.hostRoot) !== this.hostDigest)
+    const closure = authorSourceClosureDigest(this.sourceRoot);
+    if ((this.wireVersion === AUTHOR_WIRE_VERSION ? closure : jsonDigest({ closure, wireVersion: this.wireVersion })) !== this.sourceDigest
+      || authorHostIdentityDigest(this.hostRoot) !== this.hostDigest)
       throw new AuthorWorkerError('Author source/host closure changed during campaign');
     const encoded = canonicalJson(request);
     if (Buffer.byteLength(encoded) > 1024 * 1024) throw new AuthorWorkerError('Author replay request exceeds 1 MiB');

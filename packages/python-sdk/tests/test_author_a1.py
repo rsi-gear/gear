@@ -1,9 +1,10 @@
+import hashlib
 import json
 from pathlib import Path
 import unittest
 
 from gear_algorithm.author import (AuthorError, CAPABILITIES_VERSION, WIRE_VERSION,
-                                   WIRE_VERSION_V2, algorithm, input_digest, replay)
+                                   WIRE_VERSION_V2, OperationFailure, algorithm, input_digest, replay)
 from gear_algorithm.author.dto import (assert_author_capabilities_v1, assert_evaluation_v1,
                                        assert_harness_agent_v1, assert_proposal_batch_v1,
                                        assert_task_selection_v1, decode_role_execution_result)
@@ -29,7 +30,8 @@ def request(version=WIRE_VERSION_V2, history=None, config=None):
 
 def seal(frontier, values=None):
     values = values or {}
-    return [{"address": item["address"], "kind": item["kind"],
+    return [{"address": item["address"], "operationId": hashlib.sha256(item["address"].encode()).hexdigest(),
+             "kind": item["kind"],
              "definitionVersion": item["definitionVersion"],
              "inputDigest": input_digest({key: value for key, value in item.items()
                                           if key not in ("address", "kind", "definitionVersion")}),
@@ -187,6 +189,48 @@ class A1AuthorSliceTests(unittest.TestCase):
         self.assertEqual(result["result"]["outputs"]["outcomes"],
                          [{"ok": True, "value": {"answer": 3}},
                           {"ok": False, "error": {"kind": "error", "code": "BUSINESS", "message": "failed"}}])
+
+
+    def test_tracked_business_error_keeps_kernel_id_and_public_operation_still_raises(self):
+        @algorithm
+        async def tracked(ctx):
+            result = await ctx._tracked_operation(
+                "execution.rollout", {"taskId": "task-0"},
+                binding_set_ref=ctx.initial_agent.binding_set_ref, limits={})
+            return ctx.result(selected=ctx.initial_agent, outputs={"tracked": result})
+        first = replay(tracked, request())
+        self.assertEqual(first["frontier"][0]["definitionVersion"],
+                         "algorithm.v2/tracked-operation@v1")
+        failed = {first["frontier"][0]["address"]:
+                  {"kind": "error", "code": "TASK_FAILED", "message": "sealed business failure"}}
+        history = seal(first["frontier"], failed)
+        expected = {"status": "completed", "result": {"selected": AGENT,
+                    "outputs": {"tracked": {"operationId": history[0]["operationId"],
+                                            "outcome": failed[first["frontier"][0]["address"]]}}}}
+        self.assertEqual(replay(tracked, request(history=history)), expected)
+        self.assertEqual(replay(tracked, request(history=history)), expected)
+        without_id = [{key: value for key, value in history[0].items() if key != "operationId"}]
+        with self.assertRaisesRegex(AuthorError, "operation ID"):
+            replay(tracked, request(history=without_id))
+        duplicate = [{**history[0], "address": "r/s9"}, history[0]]
+        with self.assertRaisesRegex(AuthorError, "operation ID"):
+            replay(tracked, request(history=duplicate))
+        with self.assertRaisesRegex(AuthorError, "v1 history cannot carry operation ID"):
+            replay(tracked, request(WIRE_VERSION, history=history))
+
+        @algorithm
+        async def ordinary(ctx):
+            try:
+                await ctx.operation("execution.rollout", {"taskId": "task-0"},
+                                    binding_set_ref=ctx.initial_agent.binding_set_ref, limits={})
+            except OperationFailure as exc:
+                return ctx.result(outputs={"caught": exc.outcome["code"]})
+            return ctx.result(outputs={"caught": "none"})
+        ordinary_first = replay(ordinary, request())
+        ordinary_history = seal(ordinary_first["frontier"],
+                                {ordinary_first["frontier"][0]["address"]: failed[first["frontier"][0]["address"]]})
+        self.assertEqual(replay(ordinary, request(history=ordinary_history))["result"]["outputs"],
+                         {"caught": "TASK_FAILED"})
 
     def test_v2_selected_agent_stays_complete_and_typed_dto_partition(self):
         @algorithm

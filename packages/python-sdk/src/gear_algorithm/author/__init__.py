@@ -328,7 +328,8 @@ def _check_known_unsafe_calls(function: Callable[..., Any]) -> None:
 
 class ManagedCall:
     def __init__(self, call_type: str, payload: Any, *, definition: WorkflowDefinition | None = None,
-                 children: tuple[ManagedCall, ...] = (), decoder: Callable[[Any], Any] | None = None) -> None:
+                 children: tuple[ManagedCall, ...] = (), decoder: Callable[[Any], Any] | None = None,
+                 tracked: bool = False) -> None:
         task = _active_task.get()
         if task is None:
             raise AuthorError("AUTHOR_SCOPE", "ManagedCall must be created during an algorithm replay", _site(2))
@@ -339,6 +340,7 @@ class ManagedCall:
         self.definition = definition
         self.children = children
         self.decoder = decoder
+        self.tracked = tracked
         self.owner = task
         self.ordinal = task.next_ordinal
         task.next_ordinal += 1
@@ -470,6 +472,16 @@ class AuthorContext:
             payload["startsBudgetClock"] = starts_budget_clock
         return ManagedCall("operation", payload, decoder=_decoder)
 
+    def _tracked_operation(self, kind: str, input: Any, *, binding_set_ref: Any = None,
+                           limits: Any = None, starts_budget_clock: bool | None = None) -> ManagedCall:
+        """Internal A1 workflow helper. The host verifies the returned ID against the committed journal."""
+        if self.wire_version != WIRE_VERSION_V2 or kind != "execution.rollout":
+            raise AuthorError("AUTHOR_CAPABILITY", "tracked operation requires A1 execution.rollout", _site(2))
+        call = self.operation(kind, input, binding_set_ref=binding_set_ref, limits=limits,
+                              starts_budget_clock=starts_budget_clock)
+        call.tracked = True
+        return call
+
     def parallel(self, calls: list[ManagedCall] | tuple[ManagedCall, ...]) -> ManagedCall:
         if not isinstance(calls, (list, tuple)):
             raise AuthorError("AUTHOR_PARALLEL", "parallel requires an ordered list of ManagedCall values", _site(2))
@@ -560,6 +572,7 @@ class _Driver:
         self.history: dict[str, Mapping[str, Any]] = {}
         self.used_history: set[str] = set()
         self.frontier: list[dict[str, Any]] = []
+        operation_ids: set[str] = set()
         self.context = AuthorContext(request["input"], request["version"])
         self.tasks: list[_Task] = []
         for entry in request["history"]:
@@ -571,6 +584,15 @@ class _Driver:
             if not isinstance(outcome, dict) or outcome.get("kind") not in (
                     "result", "error", "no-result", "inconclusive", "cancelled"):
                 raise AuthorError("AUTHOR_HISTORY", "history requires a terminal outcome", entry["address"])
+            operation_id = entry.get("operationId")
+            if request["version"] == WIRE_VERSION_V2:
+                if not isinstance(operation_id, str) or not re.fullmatch(r"[a-f0-9]{64}", operation_id) \
+                        or operation_id in operation_ids:
+                    raise AuthorError("AUTHOR_HISTORY", "v2 history operation ID missing, invalid or repeated",
+                                      entry["address"])
+                operation_ids.add(operation_id)
+            elif "operationId" in entry:
+                raise AuthorError("AUTHOR_HISTORY", "v1 history cannot carry operation ID", entry["address"])
             self.history[entry["address"]] = entry
 
     def _assert_consumed(self, task: _Task) -> None:
@@ -624,7 +646,9 @@ class _Driver:
             ordinal = 0 if call.transfer_to is task else call.ordinal
             address = f"{task.scope}/s{ordinal}"
             if call.call_type == "operation":
-                intent = {"address": address, "definitionVersion": task.definition_version, **call.payload}
+                operation_version = (f"{task.definition_version}/tracked-operation@v1"
+                                     if call.tracked else task.definition_version)
+                intent = {"address": address, "definitionVersion": operation_version, **call.payload}
                 digest_input = {key: val for key, val in intent.items()
                                 if key not in ("address", "kind", "definitionVersion")}
                 digest = input_digest(digest_input)
@@ -635,9 +659,13 @@ class _Driver:
                     return
                 self.used_history.add(address)
                 if (old.get("kind") != intent["kind"] or old.get("inputDigest") != digest
-                        or old.get("definitionVersion") != task.definition_version):
+                        or old.get("definitionVersion") != operation_version):
                     raise AuthorError("AUTHOR_INPUT_DRIFT", "history definition, kind or input changed", address)
                 outcome = old["outcome"]
+                if call.tracked:
+                    tracked = {"operationId": old["operationId"], "outcome": _snapshot(outcome)}
+                    value = _readonly(_v2_wire_numbers(tracked))
+                    continue
                 if outcome["kind"] == "result":
                     value = outcome.get("value")
                     if call.decoder is not None:

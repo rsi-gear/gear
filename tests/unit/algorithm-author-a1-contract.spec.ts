@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { sha256 } from '../../src/algorithm/artifacts.js';
 import { expect, it } from 'vitest';
 import { algorithm, replay, authorIntentDigest, AUTHOR_WIRE_VERSION, AUTHOR_WIRE_VERSION_V2,
   assertAuthorCapabilitiesV1, assertHarnessAgentV1, assertTaskSelectionV1, assertRoleResultV1,
@@ -65,11 +66,11 @@ it('decodes physical role and task selection results and keeps malformed sealed 
     input: { roleId: 'analyst', input: { goal: 'inspect' } } });
   const badRole = { ...first.frontier[0]!, outcome: { kind: 'result' as const, value: { schemaVersion: 1,
     output: {}, evidenceRef: taskView, receiptRef: taskView } } };
-  await expect(replay(definition, { ...request, history: [{ address: badRole.address, kind: badRole.kind,
+  await expect(replay(definition, { ...request, history: [{ address: badRole.address, operationId: sha256('role'), kind: badRole.kind,
     definitionVersion: badRole.definitionVersion, inputDigest: authorIntentDigest(badRole), outcome: badRole.outcome }] }))
     .rejects.toThrow('typed result invalid');
   const physical = vectors.find(row => row.name === 'role-execution-valid')!.value as JsonValue;
-  const history = [{ address: first.frontier[0]!.address, kind: first.frontier[0]!.kind,
+  const history = [{ address: first.frontier[0]!.address, operationId: sha256('role'), kind: first.frontier[0]!.kind,
     definitionVersion: first.frontier[0]!.definitionVersion, inputDigest: authorIntentDigest(first.frontier[0]!),
     outcome: { kind: 'result' as const, value: physical } }];
   const second = await replay(definition, { ...request, history });
@@ -77,13 +78,13 @@ it('decodes physical role and task selection results and keeps malformed sealed 
   expect(second.frontier).toHaveLength(1);
   expect(second.frontier[0]).toMatchObject({ kind: 'tasks.sample', input: { count: 2, seed: 7 } });
   const sample = vectors.find(row => row.name === 'selection-valid')!.value as JsonValue;
-  const final = await replay(definition, { ...request, history: [...history, { address: second.frontier[0]!.address,
+  const final = await replay(definition, { ...request, history: [...history, { address: second.frontier[0]!.address, operationId: sha256('sample'),
     kind: second.frontier[0]!.kind, definitionVersion: second.frontier[0]!.definitionVersion,
     inputDigest: authorIntentDigest(second.frontier[0]!), outcome: { kind: 'result', value: sample } }] });
   expect(final).toMatchObject({ status: 'completed', result: { selected: agent,
     outputs: { output: { score: 0.4 }, selectedTaskIds: ['t-1', 't-2'] } } });
   const short = { ...(sample as Record<string, JsonValue>), selectedTaskIds: ['t-1'] };
-  await expect(replay(definition, { ...request, history: [...history, { address: second.frontier[0]!.address,
+  await expect(replay(definition, { ...request, history: [...history, { address: second.frontier[0]!.address, operationId: sha256('sample'),
     kind: second.frontier[0]!.kind, definitionVersion: second.frontier[0]!.definitionVersion,
     inputDigest: authorIntentDigest(second.frontier[0]!), outcome: { kind: 'result', value: short } }] }))
     .rejects.toThrow('TaskSelection count mismatch');

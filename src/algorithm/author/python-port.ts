@@ -4,12 +4,14 @@ import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { canonicalJson, jsonDigest, type JsonValue } from '../schema.js';
 import { PythonWorker, type PythonWorkerOptions } from '../hosts/python.js';
-import { AUTHOR_WIRE_VERSION, type AuthorReplayReply } from './index.js';
+import { AUTHOR_WIRE_VERSION, AUTHOR_WIRE_VERSION_V2, type AuthorReplayReply } from './index.js';
 import { authorHostIdentityDigest, authorSourceClosureDigest } from './identity.js';
 import type { ReplayPort } from './adapter.js';
 
 export type PythonAuthorReplayOptions = Omit<PythonWorkerOptions, 'mode'> & {
   signal?: AbortSignal;
+  /** Transport identity is frozen before the first Campaign decision. */
+  wireVersion?: typeof AUTHOR_WIRE_VERSION | typeof AUTHOR_WIRE_VERSION_V2;
   /** Maximum wait to use the admitted worker for its only replay. */
   admissionIdleMs?: number;
 };
@@ -44,7 +46,9 @@ function shaFile(path: string): string { return createHash('sha256').update(read
 
 /** Admission and first replay share one process; subsequent replays use fresh processes. */
 export async function createPythonAuthorReplayPort(options: PythonAuthorReplayOptions): Promise<SealedPythonReplayPort> {
-  const { signal, admissionIdleMs = 30_000, ...workerOptions } = options;
+  const { signal, admissionIdleMs = 30_000, wireVersion = AUTHOR_WIRE_VERSION, ...workerOptions } = options;
+  if (wireVersion !== AUTHOR_WIRE_VERSION && wireVersion !== AUTHOR_WIRE_VERSION_V2)
+    throw new Error('Unsupported Python author replay wire version');
   if (!Number.isSafeInteger(admissionIdleMs) || admissionIdleMs < 1 || admissionIdleMs > 60_000)
     throw new Error('Python author admission idle timeout must be 1..60000 ms');
   if (signal?.aborted) throw new Error('Python author admission cancelled');
@@ -79,10 +83,12 @@ export async function createPythonAuthorReplayPort(options: PythonAuthorReplayOp
       packages: initial.packages ?? null, loadedFiles: loadedFiles(initial.loadedModules),
       executableSha256: shaFile(executable) };
     const source = (): JsonValue => ({ ...(closure() as Record<string, JsonValue>), environment: frozen as unknown as JsonValue });
-    const sourceDigest = jsonDigest(source());
+    const sourceDigest = wireVersion === AUTHOR_WIRE_VERSION ? jsonDigest(source())
+      : jsonDigest({ source: source(), wireVersion });
     const hostDigest = hostBefore;
     const checkSource = (): void => {
-      if (jsonDigest(source()) !== sourceDigest || authorHostIdentityDigest(hostRoot) !== hostDigest
+      if ((wireVersion === AUTHOR_WIRE_VERSION ? jsonDigest(source())
+        : jsonDigest({ source: source(), wireVersion })) !== sourceDigest || authorHostIdentityDigest(hostRoot) !== hostDigest
         || shaFile(executable) !== frozen.executableSha256)
         throw new Error('Python author source/host/environment closure changed during campaign');
     };
@@ -141,7 +147,7 @@ export async function createPythonAuthorReplayPort(options: PythonAuthorReplayOp
       try {
         try { checkSource(); }
         catch (error) { await discardReserved(); throw error; }
-        if (request.version !== AUTHOR_WIRE_VERSION || Buffer.byteLength(canonicalJson(request)) > 1024 * 1024)
+        if (request.version !== wireVersion || Buffer.byteLength(canonicalJson(request)) > 1024 * 1024)
           throw new Error('Invalid/oversized author replay request');
         if (idleTimer) clearTimeout(idleTimer);
         idleTimer = undefined;

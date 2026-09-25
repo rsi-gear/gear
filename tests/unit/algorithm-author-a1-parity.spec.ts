@@ -1,8 +1,9 @@
 import { expect, it } from 'vitest';
+import { sha256 } from '../../src/algorithm/artifacts.js';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { PythonWorker } from '../../src/algorithm/hosts/python.js';
-import { AUTHOR_WIRE_VERSION_V2, algorithm, authorIntentDigest, replay,
+import { AUTHOR_WIRE_VERSION, AUTHOR_WIRE_VERSION_V2, algorithm, authorIntentDigest, replay,
   type AuthorAtomic, type AuthorHistoryEntry, type AuthorReplayRequest,
   type RoleResultV1 } from '../../src/algorithm/author/index.js';
 
@@ -26,6 +27,7 @@ const definition = algorithm(async ctx => {
 
 function sealed(item: AuthorAtomic, value: unknown): AuthorHistoryEntry {
   return { address: item.address, kind: item.kind, definitionVersion: item.definitionVersion,
+    operationId: sha256(`a1-parity:${item.address}`),
     inputDigest: authorIntentDigest(item), outcome: { kind: 'result', value: value as never } };
 }
 const interpreter = [process.env.GEAR_TEST_PYTHON, process.env.GEAR_ALGORITHM_TEST_PYTHON,
@@ -64,5 +66,41 @@ const interpreter = [process.env.GEAR_TEST_PYTHON, process.env.GEAR_ALGORITHM_TE
     const final = await compare({ ...request, history: [firstHistory, sealed(second.frontier[0]!, selection)] });
     expect(final).toEqual({ status: 'completed', result: { selected: agent,
       outputs: { role: { name: 'analyst' }, taskViewRef: selectedTaskView } } });
+  } finally { await worker.close(); }
+});
+
+(interpreter ? it : it.skip)('matches Python and TypeScript tracked failure replay while rejecting missing or mixed-version IDs', async () => {
+  const worker = await PythonWorker.start({ configDir: resolve('packages/python-sdk/tests/fixtures'),
+    module: 'author_a1_tracked_campaign.py', export: 'sample', interpreter: interpreter!,
+    sdkPath: resolve('packages/python-sdk/src'), mode: 'author' });
+  const trackedRequest: AuthorReplayRequest = { ...request, input: { ...request.input,
+    config: { goal: 'verify v2' } }, history: [] };
+  const tracked = algorithm(async ctx => {
+    const item = await ctx.trackedOperation('execution.rollout', { taskId: 'task-0' },
+      { bindingSetRef: ctx.initialAgent.bindingSetRef, limits: {} });
+    return ctx.result({ selected: ctx.initialAgent, outputs: { tracked: item } });
+  }, { configSchema: { type: 'object', required: ['goal'], properties: { goal: { type: 'string' } },
+    additionalProperties: false } });
+  try {
+    const first = await replay(tracked, trackedRequest);
+    expect(await worker.call('author.replay', trackedRequest)).toEqual(first);
+    if (first.status !== 'waiting') throw new Error('tracked rollout frontier missing');
+    expect(first.frontier[0]!.definitionVersion).toBe('algorithm.v2/tracked-operation@v1');
+    const operationId = sha256('tracked-business-failure');
+    const history = [sealed(first.frontier[0]!, null)];
+    history[0] = { ...history[0]!, operationId,
+      outcome: { kind: 'error', code: 'TASK_FAILED', message: 'sealed business failure' } };
+    const resumed: AuthorReplayRequest = { ...trackedRequest, history };
+    const expected = { status: 'completed', result: { selected: agent,
+      outputs: { tracked: { operationId, outcome: history[0]!.outcome } } } };
+    expect(await replay(tracked, resumed)).toEqual(expected);
+    expect(await worker.call('author.replay', resumed)).toEqual(expected);
+    expect(await replay(tracked, resumed)).toEqual(expected);
+    const { operationId: _omitted, ...withoutId } = history[0]!;
+    const missing: AuthorReplayRequest = { ...trackedRequest, history: [withoutId] };
+    await expect(replay(tracked, missing)).rejects.toThrow('operation ID');
+    const v1Mixed: AuthorReplayRequest = { version: AUTHOR_WIRE_VERSION, input: { initialAgent: null, data: {}, config: {} },
+      history };
+    await expect(replay(algorithm(() => null), v1Mixed)).rejects.toThrow('v1 history cannot carry operation ID');
   } finally { await worker.close(); }
 });

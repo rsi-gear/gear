@@ -136,6 +136,8 @@ export type DecisionContext = {
 export type ReduceContext = DecisionContext & {
   state: JsonValue;
   completed: Record<string, OperationOutcome>;
+  /** Actual IDs of the terminal Campaign operations, projected from the kernel journal. */
+  completedOperationIds?: Record<string, string>;
 };
 export interface Algorithm {
   describe(): AlgorithmManifest;

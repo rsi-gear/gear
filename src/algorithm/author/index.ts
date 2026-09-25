@@ -13,7 +13,9 @@ export type { AuthorCapabilitiesV1, AuthorInputV2, HarnessAgentV1, TaskSelection
 export const AUTHOR_WIRE_VERSION = 'gear.author.replay.v1' as const;
 export type AuthorInputV1 = { initialAgent: JsonValue; data: JsonValue; config: JsonValue };
 export type AuthorInput = AuthorInputV1 | AuthorInputV2;
-export type AuthorHistoryEntry = { address: string; kind: string; definitionVersion: string; inputDigest: string; outcome: OperationOutcome };
+export type AuthorHistoryEntry = { address: string; kind: string; definitionVersion: string; inputDigest: string; outcome: OperationOutcome;
+  /** V2 only: actual committed kernel operation ID. V1 history omits this field. */ operationId?: string };
+export type TrackedOperationResult = { operationId: string; outcome: OperationOutcome };
 export type AuthorAtomic = { address: string; kind: string; definitionVersion: string; input: JsonValue; bindingSetRef?: BindingSetRef; limits?: Record<string, number>; startsBudgetClock?: boolean };
 export type AuthorReplayRequest = { version: typeof AUTHOR_WIRE_VERSION; input: AuthorInputV1; history: AuthorHistoryEntry[] }
   | { version: typeof AUTHOR_WIRE_VERSION_V2; input: AuthorInputV2; history: AuthorHistoryEntry[] };
@@ -40,7 +42,7 @@ export function authorIntentDigest(item: { input: JsonValue } & OperationOptions
 
 type Scope = { runner: ReplayRunner; path: string; next: number; definitionVersion: string };
 type Action<T> =
-  | { tag: 'atomic'; kind: string; input: JsonValue; options: OperationOptions; decode?: (value: JsonValue) => T }
+  | { tag: 'atomic'; kind: string; input: JsonValue; options: OperationOptions; decode?: (value: JsonValue) => T; tracked?: true }
   | { tag: 'parallel'; children: ManagedCall<unknown>[] }
   | { tag: 'workflow'; fn: (ctx: AuthorContext, ...args: JsonValue[]) => Promise<T> | T; args: JsonValue[]; version: string };
 const activeScope = new AsyncLocalStorage<Scope>();
@@ -121,6 +123,12 @@ export class AuthorContext<TConfig = JsonValue, TVersion extends 'v1' | 'v2' = '
   }
   operation<T extends JsonValue = JsonValue>(kind: string, input: AuthorJsonValue, options: OperationOptions = {}): ManagedCall<T> {
     return this.typedOperation<T>(kind, input, options);
+  }
+  /** @internal Only built-in A1 workflows should use the tracked terminal outcome. The provider still verifies the ID against the Campaign journal. */
+  trackedOperation(kind: 'execution.rollout', input: AuthorJsonValue, options: OperationOptions = {}): ManagedCall<TrackedOperationResult> {
+    if (!this.capabilities || kind !== 'execution.rollout') this.scope.runner.recordFatal('tracked operation requires A1 execution.rollout');
+    return new ManagedCall<TrackedOperationResult>({ tag: 'atomic', kind, input: deepFreeze(clone(input)) as JsonValue,
+      options: clone(options as JsonValue) as OperationOptions, tracked: true }, this.scope);
   }
   private typedOperation<T>(kind: string, input: AuthorJsonValue, options: OperationOptions,
     decode?: (value: JsonValue) => T): ManagedCall<T> {
@@ -220,10 +228,16 @@ class ReplayRunner {
     } else if (Object.hasOwn(request.input, 'capabilities')) fail('A1 capabilities cannot use A0 wire');
     if (Buffer.byteLength(canonicalJson(request)) > 1024 * 1024) fail('request exceeds 1 MiB');
     this.remaining = new Map();
+    const operationIds = new Set<string>();
     for (const entry of request.history) {
       if (this.remaining.has(entry.address)) fail(`duplicate history address ${entry.address}`);
       if (!entry.outcome || !['result', 'error', 'no-result', 'inconclusive', 'cancelled'].includes(entry.outcome.kind))
         fail(`nonterminal/invalid history outcome at ${entry.address}`);
+      if (request.version === AUTHOR_WIRE_VERSION_V2) {
+        if (typeof entry.operationId !== 'string' || !/^[a-f0-9]{64}$/.test(entry.operationId)
+          || operationIds.has(entry.operationId)) fail(`v2 history operation ID missing, invalid or repeated at ${entry.address}`);
+        operationIds.add(entry.operationId);
+      } else if (entry.operationId !== undefined) fail(`v1 history cannot carry operation ID at ${entry.address}`);
       this.remaining.set(entry.address, entry);
     }
   }
@@ -231,10 +245,12 @@ class ReplayRunner {
   consumed(call: ManagedCall<unknown>): void { this.calls.delete(call); }
   private atom<T>(action: Extract<Action<T>, { tag: 'atomic' }>, address: string, definitionVersion: string): Promise<T> {
     const digest = authorIntentDigest({ input: action.input, ...action.options });
+    const operationVersion = action.tracked ? `${definitionVersion}/tracked-operation@v1` : definitionVersion;
     const prior = this.remaining.get(address);
     if (prior) {
-      if (prior.kind !== action.kind || prior.definitionVersion !== definitionVersion || prior.inputDigest !== digest) this.recordFatal(`history input drift at ${address}`);
+      if (prior.kind !== action.kind || prior.definitionVersion !== operationVersion || prior.inputDigest !== digest) this.recordFatal(`history input drift at ${address}`);
       this.visited.add(address);
+      if (action.tracked) return Promise.resolve(deepFreeze(clone({ operationId: prior.operationId!, outcome: prior.outcome })) as T);
       if (prior.outcome.kind !== 'result') return Promise.reject(new AuthorOperationError(prior.outcome));
       try {
         const value = deepFreeze(clone(prior.outcome.value));
@@ -244,7 +260,7 @@ class ReplayRunner {
       }
     }
     if (this.frontier.some(item => item.address === address)) fail(`duplicate frontier address ${address}`);
-    this.frontier.push({ address, kind: action.kind, definitionVersion, input: action.input, ...action.options });
+    this.frontier.push({ address, kind: action.kind, definitionVersion: operationVersion, input: action.input, ...action.options });
     return new Promise(() => {});
   }
   runCall<T>(action: Action<T>, address: string, definitionVersion: string): Promise<T> {
