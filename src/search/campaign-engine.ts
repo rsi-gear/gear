@@ -10,8 +10,7 @@ import { GepaResearchCheckpointProvider } from '../algorithm/providers/gepa-rese
 import { GepaAwaitRepairProvider } from '../algorithm/providers/gepa-await-repair.js'
 import { GepaRepairEvaluationProvider } from '../algorithm/providers/gepa-repair-evaluation.js'
 import { GepaProcessCompletionProvider } from '../algorithm/providers/gepa-process-completion.js'
-import { GepaArchiveViewProvider } from '../algorithm/providers/gepa-archive-view.js'
-import { GepaScienceCheckpointProvider } from '../algorithm/providers/gepa-science-checkpoint.js'
+import { createGepaDurableProjectionHost } from '../algorithm/providers/gepa-durable-projections.js'
 import { GepaObjectiveReferenceProvider } from '../algorithm/providers/gepa-objective-reference.js'
 import { ProviderProtocolError, ProviderReconcileError } from '../algorithm/provider-errors.js'
 import { projectGepaCampaignBudget } from '../algorithm/providers/gepa-budget-projection.js'
@@ -70,7 +69,7 @@ const campaignImplementationEntrypoints = [
   'providers/gepa-publication', 'providers/gepa-research-checkpoint',
   'providers/gepa-science-checkpoint', 'providers/gepa-await-repair',
   'providers/gepa-archive-view', 'providers/gepa-repair-evaluation',
-  'providers/gepa-process-completion',
+  'providers/gepa-process-completion', 'providers/gepa-durable-projections',
 ] as const
 
 function roundHasLimit(settings: SearchAdmission['settings'], key: 'maxGenerationTokens' | 'maxGenerationRequests'): boolean {
@@ -260,6 +259,7 @@ export class CampaignFailureClusterSearch {
       initialSnapshot, initialSnapshotBindingSetRef,
       budgetCut, roundStartedAt: startedAt,
       findings, handoffFindingDigests, sharedEpochs, startingRegressionProposals,
+      checkpointMode: 'projections',
       ...(archiveStart ? { archiveStart } : {}) })
     const spec: CampaignSpec = { campaignId: campaignSearchId(request.roundId),
       config: { request: admitted, seedDigest: seed.digest, heldOutDigest: heldOut.digest, deadlineAt,
@@ -273,7 +273,10 @@ export class CampaignFailureClusterSearch {
     const records = new SearchJournalProviderRecordBackend(this.store, request.roundId)
     const projectorIdentityDigest = implementationClosureDigest(['providers/gepa-budget-projection'], {
       roundId: request.roundId, settings: resolvedSettings.budgets })
+    const projectionHost = createGepaDurableProjectionHost({ root: operationRoot,
+      roundId: request.roundId, artifacts, journal: this.store })
     const campaignStore = new JournalCampaignStore<JsonValue>(this.store, request.roundId, {
+      projectionHost,
       projectorIdentityDigest, afterCommit: async value => {
         await projectGepaCampaignBudget(this.store, request.roundId, value as unknown as CampaignState, startedAt)
       } })
@@ -296,10 +299,8 @@ export class CampaignFailureClusterSearch {
         { hookIdentityDigest: providerIdentity, records,
           beforePublication: () => runtime.hydrate(), publicationBarrierIdentityDigest: projectorIdentityDigest }),
       new GepaResearchCheckpointProvider(operationRoot, artifacts, this.store, records),
-      new GepaScienceCheckpointProvider(operationRoot, artifacts, this.store, records),
       ...(seed.objective ? [new GepaObjectiveReferenceProvider(operationRoot, artifacts, this.store, records)] : []),
       new GepaAwaitRepairProvider(this.store, operationRoot, records),
-      new GepaArchiveViewProvider(operationRoot, artifacts, this.store, records),
       repairProvider,
       processProvider,
     ], spec, { store: campaignStore, artifacts })

@@ -58,6 +58,8 @@ export type CampaignFailureClusterRecipeOptions = {
   startingRegressionProposals?: RegressionProposal[];
   initialSnapshot?: Snapshot; initialSnapshotBindingSetRef?: BindingSetRef;
   budgetCut?: GepaBudgetCut; roundStartedAt?: number;
+  /** The public Campaign projects pure checkpoints after its durable decision; direct recipes retain operation delivery. */
+  checkpointMode?: 'operations' | 'projections';
   archiveStart?: { baseArchiveRef: ArtifactRef; parentArchiveRef: ArtifactRef;
     completionRefs: string[]; publishParentView: boolean;
     snapshotBindings: Record<string, BindingSetRef> };
@@ -107,6 +109,9 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
     throw new Error('Campaign parent policy differs from frozen search settings')
   if ((options.budgetCut === undefined) !== (options.roundStartedAt === undefined))
     throw new Error('Campaign frozen budget cut and round start must be provided together')
+  if (options.checkpointMode !== undefined && !['operations', 'projections'].includes(options.checkpointMode))
+    throw new Error('Invalid Campaign checkpoint delivery mode')
+  const projectCheckpoints = options.checkpointMode === 'projections'
   if (options.budgetCut) {
     verifyDigest(options.budgetCut)
     if (options.budgetCut.roundId !== options.admission.roundId
@@ -125,7 +130,12 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
     initialSnapshotBindingSetRef: options.initialSnapshotBindingSetRef ?? options.anchorBindingSetRef,
     archiveStart: options.archiveStart ?? null,
     budgetCut: options.budgetCut ?? null, roundStartedAt: options.roundStartedAt ?? null,
+    checkpointMode: options.checkpointMode ?? 'operations',
   })
+  const checkpoint = (key: string, kind: string, input: JsonValue, schemaId: string):
+    Pick<AlgorithmDecision, 'operations' | 'projections'> => projectCheckpoints
+      ? { projections: [options.artifacts.putJson(input, schemaId)] }
+      : { operations: [task(key, kind, input)] }
   const archiveRef = (archive: ResearchArchive): ArtifactRef =>
     options.artifacts.putJson(archive as unknown as JsonValue, 'gepa.research-archive.v1')
   const outcomeRef = (outcome: SearchRoundOutcome): ArtifactRef =>
@@ -253,7 +263,8 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
         ...(championChanged && nominee ? { nextChampion: nominee } : {}),
         outcomeRef: state.outcomeRef } as unknown as JsonValue)] }
   }
-  const scienceCheckpoint = (state: State, inner: InnerState, stage: ScienceStage): OperationIntent => {
+  const scienceCheckpoint = (state: State, inner: InnerState, stage: ScienceStage):
+    Pick<AlgorithmDecision, 'operations' | 'projections'> => {
     const initial = options.artifacts.getJson(state.initialArchiveRef!) as unknown as ResearchArchive
     verifyDigest(initial)
     const preparedWork = (work: GepaWork) => ({ workplan: work.workplan, dossier: work.dossier,
@@ -298,7 +309,7 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
       results = Object.values(inner.bridgeResults)
     }
     const owner = objects.find(row => row.name === (stage === 'local' ? 'local' : stage))!
-    return task(`checkpoint-science-${stage}`, 'gepa.science-checkpoint', {
+    return checkpoint(`checkpoint-science-${stage}`, 'gepa.science-checkpoint', {
       roundId: options.admission.roundId, stage,
       objects: objects.map(row => ({ name: row.name,
         ref: options.artifacts.putJson(row.value as unknown as JsonValue, 'gepa.legacy-journal-object.v1') })),
@@ -309,7 +320,7 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
       }),
       consumptions: results.map(result => ({ resultRef: options.artifacts.putJson(result as unknown as JsonValue,
         'gepa.stage-result.v1'), consumerDigest: owner.value.digest })),
-    } as unknown as JsonValue)
+    } as unknown as JsonValue, 'gepa.science-projection.v1')
   }
   const checkpointStage = (state: State, inner: InnerState): ScienceStage | null => {
     const done = new Set(state.scienceCheckpointed)
@@ -355,7 +366,7 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
       state.deferredOperations = decision.operations ?? []
       state.pendingScienceStage = stage
       state.phase = 'science-checkpoint'
-      return { nextState: state as unknown as JsonValue, operations: [scienceCheckpoint(state, inner, stage)] }
+      return { nextState: state as unknown as JsonValue, ...scienceCheckpoint(state, inner, stage) }
     }
     if (inner.phase === 'seed-research') {
       if (!inner.archiveRef) throw new Error('Campaign seed research archive is missing')
@@ -394,12 +405,12 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
           inner: null, outcomeRef: null, finalArchiveRef: null, scienceCheckpointed: [],
           deferredOperations: null, pendingScienceStage: null, planningReasonsCount: 0, localDecisionCount: 0 }
         return { nextState: state as unknown as JsonValue,
-          operations: [task('checkpoint-archive-view', 'gepa.archive-view', {
+          ...checkpoint('checkpoint-archive-view', 'gepa.archive-view', {
             roundId: options.admission.roundId, baseArchiveRef: options.archiveStart.baseArchiveRef,
             parentArchiveRef: options.archiveStart.parentArchiveRef,
             completionRefs: options.archiveStart.completionRefs,
             publishParentView: options.archiveStart.publishParentView,
-          } as unknown as JsonValue)] }
+          } as unknown as JsonValue, 'gepa.archive-view-projection.v1') }
       }
       const anchor = options.admission.anchor
       const taskIds = sorted(options.seed.tasks.map(task => task.id))
@@ -435,8 +446,11 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
       implementationDigest, stateSchema: { type: 'object', additionalProperties: true },
       configSchema: { type: 'object', additionalProperties: true }, bindingSchema: options.bindingSchema,
       requiredOperationKinds: ['gepa.evaluate', 'gepa.diagnose', 'gepa.generate', 'gepa.publish',
-        'gepa.research-checkpoint', 'gepa.science-checkpoint', 'gepa.await-repair', 'gepa.archive-view',
-        ...(options.seed.objective ? ['gepa.objective-reference'] : [])] }),
+        'gepa.research-checkpoint', 'gepa.await-repair',
+        ...(projectCheckpoints ? [] : ['gepa.science-checkpoint', 'gepa.archive-view']),
+        ...(options.seed.objective ? ['gepa.objective-reference'] : [])],
+      ...(projectCheckpoints ? { requiredProjectionSchemas: ['gepa.science-projection.v1',
+        'gepa.archive-view-projection.v1'] } : {}) }),
     initialize(context: DecisionContext) {
       if (options.seed.objective) {
         const state: State = { phase: 'objective-initial-harness', bootstrapScope: null, bootstrapPlan: null,
@@ -462,7 +476,8 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
       }
       if (state.phase === 'science-checkpoint') {
         const stage = state.pendingScienceStage
-        if (!stage || context.completed[`checkpoint-science-${stage}`]?.kind !== 'result' || !state.inner)
+        if (!stage || !state.inner || !projectCheckpoints
+          && context.completed[`checkpoint-science-${stage}`]?.kind !== 'result')
           throw new Error('Campaign science checkpoint is unconfirmed')
         state.scienceCheckpointed.push(stage)
         state.pendingScienceStage = null
@@ -471,7 +486,8 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
         return wrapInner(state, { nextState: state.inner, operations }, context.budget)
       }
       if (state.phase === 'archive-view-checkpoint') {
-        if (context.completed['checkpoint-archive-view']?.kind !== 'result' || !state.initialArchiveRef)
+        if (!state.initialArchiveRef || !projectCheckpoints
+          && context.completed['checkpoint-archive-view']?.kind !== 'result')
           throw new Error('Campaign parent archive view is not durable')
         return wrapInner(state, await innerRecipe(state.initialArchiveRef).initialize(context), context.budget)
       }
@@ -540,11 +556,11 @@ export function campaignFailureClusterRecipe(input: CampaignFailureClusterRecipe
           throw new Error('Campaign bootstrap archive publication is unconfirmed')
         state.phase = 'archive-view-checkpoint'
         return { nextState: state as unknown as JsonValue,
-          operations: [task('checkpoint-archive-view', 'gepa.archive-view', {
+          ...checkpoint('checkpoint-archive-view', 'gepa.archive-view', {
             roundId: options.admission.roundId, baseArchiveRef: state.initialArchiveRef,
             parentArchiveRef: state.initialArchiveRef, completionRefs: [],
             publishParentView: options.parentPolicy.requiresChampion,
-          } as unknown as JsonValue)] }
+          } as unknown as JsonValue, 'gepa.archive-view-projection.v1') }
       }
       if (state.phase === 'bootstrap-failure-progress') {
         if (context.completed['checkpoint-bootstrap-failure']?.kind !== 'result' || !state.initialArchiveRef || !state.outcomeRef)
