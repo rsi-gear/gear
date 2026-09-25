@@ -187,10 +187,12 @@ export class FailureClusterSearch {
       const p = profile(seed, baselinePlan, anchor, result, settings.search.process.mode, bootstrapScope.weights)
       if (result.failure?.kind === 'execution-failure'
         || !result.failure && !(seed.objective ? p.objectiveComplete : p.outcomeComplete)) {
-        // A worker failure or incomplete baseline is not a completed search
-        // round. Preserve the original result for explicit evidence repair and
-        // keep the batch from silently spending its next round on a new baseline.
-        await this.store.write(`rounds/${request.roundId}/pending-evidence`, { planDigest: baselinePlan.digest, resultRefs: [result.digest] })
+        // evaluate() may return a later repair, but every repair must target the
+        // frozen original evaluation. Keep that reference stable while this
+        // incomplete bootstrap blocks admission of the next round.
+        const original = await this.store.read<{ ref: string }>(`rounds/${request.roundId}/evaluation-${digestJson([baselinePlan.digest, anchor.digest]).slice(7)}`)
+        invariant(original, 'missing bootstrap evaluation')
+        await this.store.write(`rounds/${request.roundId}/pending-evidence`, { planDigest: baselinePlan.digest, resultRefs: [original.ref] })
         throw new SearchEvidencePending(baselinePlan.digest)
       }
       if (result.failure) {

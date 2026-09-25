@@ -147,6 +147,47 @@ describe('search operation ownership', () => {
     expect(f.store.checkpoint()).toEqual(before)
   })
 
+  it.each(['partial', 'failed'])('keeps the original bootstrap reference across consecutive %s repairs', async kind => {
+    const f = setup(), evaluate = f.provider.evaluate
+    f.config.budgets.round.maxRepairCells = 100
+    f.config.budgets.evolution.maxRepairCells = 100
+    f.provider.evaluate = async input => (await evaluate(input)).slice(0, 3)
+    await expect(f.run()).rejects.toBeInstanceOf(SearchEvidencePending)
+    const originalPending = (await f.store.read<{ planDigest: string; resultRefs: string[] }>('rounds/r/pending-evidence'))!
+    const original = await f.store.object<StageResult>(originalPending.resultRefs[0]!)
+    let pending = originalPending, current = original
+    f.provider.evaluate = async input => {
+      const valid = (await evaluate(input)).slice(0, 3)
+      if (kind === 'failed') throw new SearchExecutionFailure('worker-exited', 'repair worker exited', 'worker:repair', valid)
+      return valid
+    }
+    for (const repairId of ['first', 'second']) {
+      const calls = f.executions.length
+      const repaired = await f.engine().repairEvaluation('r', repairId, pending.resultRefs[0]!, new AbortController().signal)
+      expect(f.executions[calls]!.count).toBe(f.seed.tasks.length - current.cells.length)
+      expect(repaired.cells).toHaveLength(current.cells.length + 3)
+      expect(repaired.cells).toEqual(expect.arrayContaining(current.cells))
+      await expect(f.run()).rejects.toBeInstanceOf(SearchEvidencePending)
+      pending = (await f.store.read<typeof originalPending>('rounds/r/pending-evidence'))!
+      expect(pending).toEqual(originalPending)
+      await expect(f.run()).rejects.toBeInstanceOf(SearchEvidencePending)
+      expect(f.executions).toHaveLength(calls + 1)
+      expect(await f.store.read('rounds/r/terminal')).toBeUndefined()
+      expect(await f.store.archive()).toBeUndefined()
+      expect(f.generated).toEqual([])
+      current = repaired
+    }
+    await expect(f.engine().run({ ...f.request, roundId: 'next', roundIndex: 1 }, new AbortController().signal))
+      .rejects.toThrow('unresolved round')
+    f.provider.evaluate = evaluate
+    const calls = f.executions.length
+    const repaired = await f.engine().repairEvaluation('r', 'final', pending.resultRefs[0]!, new AbortController().signal)
+    expect(f.executions[calls]!.count).toBe(f.seed.tasks.length - current.cells.length)
+    expect(repaired.cells).toHaveLength(f.seed.tasks.length)
+    expect(repaired.cells).toEqual(expect.arrayContaining(current.cells))
+    expect((await f.run()).championChanged).toBe(true)
+  })
+
   it('still terminates a bootstrap that cannot reserve its frozen rollout budget', async () => {
     const f = setup()
     f.config.budgets.round.maxNewRolloutCells = 0
