@@ -61,10 +61,11 @@ async function fixture() {
       subjectSchemaId: bindingSetRef.schemaId }, metricContract };
   const committed = new Map<string, CommittedRollout>();
   let resolves = 0;
-  const resolveCommitted = (_campaignId: string, operationIds: readonly string[]) => {
-    resolves++;
-    return Object.fromEntries(operationIds.flatMap(id => committed.has(id) ? [[id, committed.get(id)!]] : []));
-  };
+  const resolveCommitted = { identityDigest: profile.resolverIdentityDigest,
+    resolve(_campaignId: string, operationIds: readonly string[]) {
+      resolves++;
+      return Object.fromEntries(operationIds.flatMap(id => committed.has(id) ? [[id, committed.get(id)!]] : []));
+    } };
   const provider = createAuthorMeasurementProvider({ artifacts, bindings, authority, profile, resolveCommitted });
 
   function producer(task: TaskEntry, repeatIndex: number, options: { passed?: boolean; score?: number;
@@ -91,7 +92,7 @@ async function fixture() {
       status: 'errored', invalidReason: 'physical-invalid' };
     const conditionBody = { ...profile.rolloutCondition,
       dataset: { ref: `projected-${task.id}`, digest: digestJson({ projected: task.id }) } };
-    const request = { phase: 'seed-candidate' as const, dataset: conditionBody.dataset.ref,
+    const request = { phase: 'author-candidate' as const, dataset: conditionBody.dataset.ref,
       harnessRef: commit, condition: { ...conditionBody, conditionId: digestJson(conditionBody) } };
     const requestDigest = digestJson(request);
     const evidence = { ...identity, evalId, dataset: request.dataset, conditionId: request.condition.conditionId,
@@ -258,6 +259,14 @@ describe('trusted author measurement over committed Hitch rollouts', () => {
           source: { path: 'originalResult.passed', extractor: 'boolean-v1' }, range: { min: 0, max: 1 },
           granularity: 'trial', repetitionReducer: 'mean', taskReducer: 'weighted-mean', comparisonPrecision: 1e-9 }) },
       resolveCommitted: f.resolveCommitted })).toThrow(/does not bind/);
+  });
+
+  it('locks the measurement provider to the actual committed resolver identity', async () => {
+    const f = await fixture();
+    expect(() => createAuthorMeasurementProvider({ artifacts: f.artifacts, bindings: f.bindings,
+      authority: f.authority, profile: f.profile,
+      resolveCommitted: { ...f.resolveCommitted, identityDigest: sha256('another-resolver') } }))
+      .toThrow(/resolver identity drift/);
   });
 
   it('requires a saved, self-consistent Hitch request and exact evidence condition', async () => {

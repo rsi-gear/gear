@@ -69,6 +69,12 @@ v2 adapter 和 TS/Python transport 现在冻结配置、能力、执行 profile 
 
 隔离源码验收：实施者 106 项 TS 与 25 项 Python author 测试通过；主审独立 v2/内核身份/预算回归合计 5 文件 27 项通过。见 [v2 运行接线审计](experiments/author-a1-v2-runtime-review-20260926.zh-CN.md)。这些是受控 provider 与真实语言 worker 的验证，尚不代表外部项目或真实 Hitch 搜索可用。
 
+## A1 已提交 rollout 历史解析切片
+
+默认本地 CampaignStore 的只读解析器现在能验证同一 HEAD 的完整历史链，找到已从当前 operations 清除的终态 rollout，配对物理 journal，并拒绝只完成在物理侧而尚未提交到内核的结果。measurement 绑定解析器实现身份，作者评估使用独立 author-candidate phase。
+
+主审独立回归 2 文件 15 项通过，含真实内核正常完成与取消时发现完成两条路径，见 [历史解析审计](experiments/author-a1-committed-rollout-review-20260926.zh-CN.md)。实际 Hitch reader 接线及增量 JournalCampaignStore 后端仍分别验收。
+
 ## 当前限制
 
 A0 是运行基础。`propose/evaluate/select`、通用运行 profile、五文件作者项目及新的 CLI 仍待后续 A1 切片；现有 A0 role/edit/rollout/measure 便利方法用于探针，v2 已拒绝这些假 operation。用户不能仅复制 v4 的搜索示例便运行真实实验。

@@ -30,8 +30,11 @@ export type CommittedRollout = {
     request: EvaluationRequest; requestDigest: string; submittedIdentity?: JsonValue };
 };
 /** Resolve all named IDs from one verified Campaign snapshot, so a measurement has one read boundary. */
-export type CommittedRolloutResolver = (campaignId: string, operationIds: readonly string[]) =>
-  Promise<Readonly<Record<string, CommittedRollout>>> | Readonly<Record<string, CommittedRollout>>;
+export type CommittedRolloutResolver = {
+  readonly identityDigest: string;
+  resolve(campaignId: string, operationIds: readonly string[]):
+    Promise<Readonly<Record<string, CommittedRollout>>> | Readonly<Record<string, CommittedRollout>>;
+};
 
 /** Immutable host policy. Refs and metric semantics are never accepted from author input. */
 export type FrozenAuthorMeasurementProfile = {
@@ -88,7 +91,8 @@ function completionIdentity(envelope: OperationEnvelope, completion: CompletionE
 }
 function frozenProfile(options: AuthorMeasurementOptions): FrozenAuthorMeasurementProfile {
   const { profile, authority, artifacts, bindings } = options;
-  if (authority.artifacts !== artifacts || bindings.artifacts !== artifacts || typeof options.resolveCommitted !== 'function')
+  if (authority.artifacts !== artifacts || bindings.artifacts !== artifacts
+    || typeof options.resolveCommitted?.resolve !== 'function')
     throw new Error('Author measurement host capabilities do not share one CAS');
   for (const [name, value] of Object.entries({ profileDigest: profile.profileDigest,
     executionProfileDigest: profile.executionProfileDigest, accessPolicyDigest: profile.accessPolicyDigest,
@@ -96,6 +100,8 @@ function frozenProfile(options: AuthorMeasurementOptions): FrozenAuthorMeasureme
     rolloutAdapterManifestDigest: profile.rolloutAdapterManifestDigest, rolloutPhysicalDigest: profile.rolloutPhysicalDigest })) {
     try { assertDigest(value); } catch { throw new Error(`Invalid author measurement ${name}`); }
   }
+  if (options.resolveCommitted.identityDigest !== profile.resolverIdentityDigest)
+    throw new Error('Author measurement committed resolver identity drift');
   if (!profile.campaignId || !profile.recipePhase || !Number.isSafeInteger(profile.repeatCount)
     || profile.repeatCount < 1 || profile.repeatCount > 100
     || !Array.isArray(profile.allowedExperienceViewDigests) || profile.allowedExperienceViewDigests.length === 0
@@ -197,7 +203,7 @@ export function createAuthorMeasurementProvider(options: AuthorMeasurementOption
     const raw: RawTrialMetrics[] = [];
     const evidenceRefs: ArtifactRef[] = [];
     const evalIds = new Set<string>(), runIds = new Set<string>();
-    const committed = await resolveCommitted(envelope.campaignId, input.producerOperationIds);
+    const committed = await resolveCommitted.resolve(envelope.campaignId, input.producerOperationIds);
     if (!committed || typeof committed !== 'object' || Array.isArray(committed)
       || Object.keys(committed).some(id => !input.producerOperationIds.includes(id)))
       throw new Error('Committed rollout resolver returned an invalid snapshot');
@@ -232,7 +238,7 @@ export function createAuthorMeasurementProvider(options: AuthorMeasurementOption
       if (bySlot.has(key)) throw new Error('Two producer operations claim one measurement slot');
       const submittedRequest = physical.request;
       if (!submittedRequest || typeof submittedRequest !== 'object' || Array.isArray(submittedRequest)
-        || submittedRequest.phase !== 'seed-candidate' || submittedRequest.harnessRef !== harnessCommit
+        || submittedRequest.phase !== 'author-candidate' || submittedRequest.harnessRef !== harnessCommit
         || !submittedRequest.condition || typeof submittedRequest.dataset !== 'string' || !submittedRequest.dataset
         || submittedRequest.condition.dataset?.ref !== submittedRequest.dataset
         || !same(Object.fromEntries(Object.entries(submittedRequest.condition)
