@@ -57,4 +57,46 @@ describe('GEPA Campaign budget compatibility projection', () => {
       .rejects.toThrow('mapped spending without a Campaign budget clock')
     expect(await journal.read('budget')).toBeUndefined()
   })
+
+  it('keeps the ledger byte-identical through scientific-only steps but writes every usage or status change', async () => {
+    const journal = new MemorySearchStore()
+    const originalWrite = journal.write.bind(journal)
+    let budgetWrites = 0
+    journal.write = async (name, value) => {
+      if (name === 'budget') budgetWrites++
+      return originalWrite(name, value)
+    }
+    const first = state('r1', 2, 3, 1000)
+    const reserved = await projectGepaCampaignBudget(journal, 'r1', first, 1000)
+    expect(budgetWrites).toBe(1)
+    expect(reserved?.operations[0]?.status).toBe('reserved')
+    const scientificOnly = { ...first, state: { phase: 'new-decision' }, decisionIndex: 7 } as CampaignState
+    expect(await projectGepaCampaignBudget(journal, 'r1', scientificOnly, 1000)).toEqual(reserved)
+    expect(budgetWrites).toBe(1)
+    const settled = await projectGepaCampaignBudget(journal, 'r1', state('r1', 5, 0, 1000), 1000)
+    expect(settled?.operations[0]?.status).toBe('complete')
+    expect(settled?.operations[0]?.actual?.cells).toBe(5)
+    expect(budgetWrites).toBe(2)
+    expect(await projectGepaCampaignBudget(journal, 'r1', { ...state('r1', 5, 0, 1000),
+      state: { phase: 'another-scientific-decision' } } as CampaignState, 1000)).toEqual(settled)
+    expect(budgetWrites).toBe(2)
+    await projectGepaCampaignBudget(journal, 'r1', state('r1', 6, 0, 1000), 1000)
+    expect(budgetWrites).toBe(3)
+  })
+
+  it('reconciles a lost budget acknowledgement and still rejects a tampered ledger', async () => {
+    const journal = new MemorySearchStore()
+    const originalWrite = journal.write.bind(journal)
+    let loseAck = true
+    journal.write = async (name, value) => {
+      await originalWrite(name, value)
+      if (name === 'budget' && loseAck) { loseAck = false; throw new Error('budget acknowledgement lost') }
+    }
+    const value = await projectGepaCampaignBudget(journal, 'r1', state('r1', 3, 0, 1000), 1000)
+    expect(value?.operations[0]?.actual?.cells).toBe(3)
+    expect(await projectGepaCampaignBudget(journal, 'r1', state('r1', 3, 0, 1000), 1000)).toEqual(value)
+    await originalWrite('budget', { ...value, digest: `sha256:${'0'.repeat(64)}` })
+    await expect(projectGepaCampaignBudget(journal, 'r1', state('r1', 3, 0, 1000), 1000))
+      .rejects.toThrow('immutable record digest mismatch')
+  })
 })

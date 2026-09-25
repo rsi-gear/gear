@@ -56,9 +56,15 @@ export async function projectGepaCampaignBudget(journal: SearchJournal, roundId:
     if (!Number.isSafeInteger(reserved[resource])) throw new Error(`GEPA projected usage exceeds safe integer: ${resource}`)
   }
   const pending = (Object.keys(held) as Array<keyof Usage>).some(resource => held[resource] > 0)
-  const operation: Operation = { key, roundId, requestDigest: digestJson(state.spec), reserved,
+  const requestDigest = digestJson(state.spec)
+  // This synthetic row only exposes budget state. Scientific decisions live in
+  // the Campaign hash chain; changing them without changing usage must not
+  // republish the same compatibility ledger at every durable decision.
+  const operation: Operation = { key, roundId, requestDigest, reserved,
     status: pending ? 'reserved' : 'complete',
-    ...(!pending ? { actual: spent, outputDigest: digestJson(state) } : {}) }
+    ...(!pending ? { actual: spent, outputDigest: digestJson({
+      kind: 'campaign-budget-result-v2', roundId, requestDigest, reserved, actual: spent,
+    }) } : {}) }
   if (previous && (previous.roundId !== roundId || previous.requestDigest !== operation.requestDigest))
     throw new Error('GEPA budget projection conflicts with frozen Campaign identity')
   const ledger = seal({ startedAt: existing?.startedAt ?? state.budgetStartedAt,
