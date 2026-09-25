@@ -5,13 +5,15 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { FileArtifactStore } from '../../src/algorithm/artifacts.js'
 import { BindingStore } from '../../src/algorithm/bindings.js'
 import type { OperationEnvelope, ProviderDispatchContext } from '../../src/algorithm/contracts.js'
-import { GepaDiagnosisProvider, GepaEvaluationProvider } from '../../src/algorithm/providers/gepa-operations.js'
+import { GepaDiagnosisProvider, GepaEvaluationProvider, GepaGenerationProvider } from '../../src/algorithm/providers/gepa-operations.js'
 import { captureGepaBudgetCut } from '../../src/algorithm/recipes/gepa-budget.js'
+import { FileProviderRecordBackend } from '../../src/algorithm/runtime/persistence.js'
 import { jsonDigest, type JsonValue } from '../../src/algorithm/schema.js'
 import { cellKey, plannedCells } from '../../src/search/evidence.js'
 import { MemorySearchStore, evaluatedFixture, fixtures, scopeFixture, settings } from '../../src/search/testing.js'
 import type { StageResult } from '../../src/search/types.js'
 import { digestJson } from '../../src/state/digest.js'
+import { seal } from '../../src/search/contracts.js'
 
 const roots: string[] = []
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -85,6 +87,27 @@ it('preserves a round.cells denial as sealed StageResult.failure with zero physi
   expect(result.failure).toMatchObject({ kind: 'budget-exhausted', code: 'round.cells',
     message: 'search budget exhausted: round.cells' })
   expect(completed.completion.receipt?.cumulative).toEqual({ rolloutCells: 0, repairCells: 0 })
+})
+
+it('resumes an evaluation denial after its started marker without inspecting or executing a physical key', async () => {
+  vi.spyOn(Date, 'now').mockReturnValue(now)
+  const { root, fixture, provider, envelope } = await setup({ roundCells: 0 })
+  let inspected = 0, executed = 0
+  fixture.provider.inspectEvaluation = async () => { inspected++; return { status: 'unknown' } }
+  fixture.provider.evaluate = async () => { executed++; throw new Error('physical evaluation must not start') }
+  expect(await provider.prepareForDispatch(envelope, context())).toEqual({ startsBudgetClock: false })
+  const records = new FileProviderRecordBackend(join(root, 'operations'), {
+    'gepa.cell': 'gepa-cells', 'gepa.process': 'gepa-process',
+  })
+  const started = await records.read<Record<string, JsonValue>>('gepa.evaluate', envelope.operationId)
+  expect(started?.stage).toBe('prepared')
+  await records.write('gepa.evaluate', envelope.operationId, { ...started, stage: 'started' })
+  const resumed = new GepaEvaluationProvider(join(root, 'operations'), provider.artifacts,
+    provider.bindings, fixture.provider, undefined, undefined, provider.legacyJournal)
+  expect(await resumed.inspect(envelope)).toEqual({ status: 'replay-safe' })
+  expect((await resumed.submit(envelope)).status).toBe('completed')
+  expect(inspected).toBe(0)
+  expect(executed).toBe(0)
 })
 
 it('starts the first reserve clock even if the admission-based evolution run signal has expired', async () => {
@@ -184,4 +207,56 @@ it('freezes diagnosis request caps from the remaining two-layer budget, not the 
   expect(pointer).toBeDefined()
   const frozen = await journal.object<{ digest: string; maxInputTokens: number }>(pointer!.ref)
   expect(frozen.maxInputTokens).toBe(70)
+})
+
+it('resumes a generation denial after its started marker without a nonexistent physical inspection', async () => {
+  vi.spyOn(Date, 'now').mockReturnValue(now)
+  const { root, fixture, artifacts, bindings, harness, budgetCut: unused } = await setup()
+  void unused
+  const scope = scopeFixture(fixture.seed, ['task-0'])
+  const { plan, result: baseline } = evaluatedFixture(fixture.seed, scope, fixture.anchor,
+    () => ({ outcome: 0 }), { stage: 'baseline-probe' })
+  const dossier = seal({ parentSnapshotDigest: fixture.anchor.digest, universeDigest: fixture.seed.digest,
+    taskIds: ['task-0'], baselineEvidenceDigests: [baseline.digest], facts: [],
+    classifierIntegrity: fixture.diagnosis.integrity,
+    sanitizationPolicyDigest: fixture.diagnosis.sanitizationPolicyDigest })
+  const workplan = seal({ candidateId: 'candidate', parentSnapshotDigest: fixture.anchor.digest,
+    dossierDigest: dossier.digest, scopeDigest: scope.digest, localStagePlanDigest: plan.digest,
+    generationBudget: { maxTokens: 10, maxModelRequests: 1, deadlineAt: now + 60_000 } })
+  const limits = settings().budgets
+  limits.round.maxGenerationRequests = 0
+  const budgetCut = await captureGepaBudgetCut(new MemorySearchStore(), 'r', limits)
+  const input = { roundIdentity: { evolutionId: 'e', roundId: 'r' }, workplan, dossier, scope,
+    parent: fixture.anchor, plan, baseline, universe: fixture.seed, findings: [], processMode: 'off',
+    budgetCut, roundStartedAt: now - 100 } as unknown as JsonValue
+  const records = new FileProviderRecordBackend(join(root, 'generation'))
+  const provider = new GepaGenerationProvider(join(root, 'generation'), artifacts, bindings,
+    fixture.hooks, jsonDigest('hooks'), records)
+  const operationId = digestJson(['denied-generation', root]).slice(7)
+  const envelope: OperationEnvelope = { campaignId: 'search-r', decisionIndex: 0, localKey: 'generate',
+    operationId, idempotencyKey: operationId, kind: 'gepa.generate', input,
+    inputDigest: jsonDigest(input), implementationDigest: provider.describe().implementationDigest,
+    bindingSetRef: bindings.create({ harness }),
+    limits: { generationTokens: 10, generationRequests: 1 }, startsBudgetClock: true }
+  let inspected = 0, executed = 0
+  fixture.hooks.inspectGeneration = async () => { inspected++; return { status: 'unknown' } }
+  fixture.hooks.generate = async () => { executed++; throw new Error('physical generation must not start') }
+  expect(await provider.prepareForDispatch(envelope, context())).toEqual({ startsBudgetClock: false })
+  const started = await records.read<Record<string, JsonValue>>('gepa.generate', envelope.operationId)
+  expect(started?.stage).toBe('prepared')
+  await records.write('gepa.generate', envelope.operationId, { ...started, stage: 'started' })
+  const resumed = new GepaGenerationProvider(join(root, 'generation'), artifacts, bindings,
+    fixture.hooks, jsonDigest('hooks'), records)
+  expect(await resumed.inspect(envelope)).toEqual({ status: 'replay-safe' })
+  const submitted = await resumed.submit(envelope)
+  expect(submitted.status).toBe('completed')
+  expect(inspected).toBe(0)
+  expect(executed).toBe(0)
+  if (submitted.status !== 'completed' || submitted.completion.outcome.kind !== 'result')
+    throw new Error('generation denial did not seal its response')
+  const value = submitted.completion.outcome.value as { generatedRef: Parameters<typeof artifacts.getJson>[0] }
+  expect(artifacts.getJson(value.generatedRef)).toMatchObject({
+    reason: 'search budget exhausted: round.generationRequests',
+    usage: { tokens: 0, requests: 0 }, changedPaths: [],
+  })
 })

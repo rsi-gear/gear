@@ -891,6 +891,7 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     return this.result(envelope, record, cells)
   }
   protected async recover(envelope: OperationEnvelope, record: RecordValue): Promise<'replay-safe' | 'running' | 'unknown'> {
+    if (this.legacyBudgetDecision(record)?.failure) return 'replay-safe'
     const { plan, snapshot } = this.input(envelope)
     const request = record.request as unknown as FrozenEvaluationRequest
     const requested = request.missing
@@ -1545,6 +1546,7 @@ export class GepaGenerationProvider extends GepaOperationProvider {
     return this.result(envelope, record, value)
   }
   protected async recover(envelope: OperationEnvelope, record: RecordValue): Promise<'not-started' | 'replay-safe' | 'running' | 'unknown'> {
+    if (this.legacyBudgetDecision(record)?.failure) return 'replay-safe'
     const input = this.input(envelope)
     if (this.budgetInsufficient(envelope, input.workplan))
       return 'replay-safe'
