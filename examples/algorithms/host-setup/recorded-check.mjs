@@ -138,8 +138,8 @@ export const hostProfile = {
     assert.equal(profile.config.historyTraceAvailable, false);
   } finally { await profile.close(); }
   const python = process.env.GEAR_ALGORITHM_PACKAGE_PYTHON;
-  const cli = process.env.GEAR_ALGORITHM_PACKAGE_CLI;
-  if (!python || !cli) throw Error('GEAR_ALGORITHM_PACKAGE_PYTHON and GEAR_ALGORITHM_PACKAGE_CLI are required');
+  const legacyCli = process.env.GEAR_ALGORITHM_PACKAGE_LEGACY_CLI;
+  if (!python || !legacyCli) throw Error('GEAR_ALGORITHM_PACKAGE_PYTHON and GEAR_ALGORITHM_PACKAGE_LEGACY_CLI are required');
   const campaign = { schemaVersion: 1, kind: 'algorithm-campaign', campaignId: 'public-host-cli-check',
     stateDir: join(runtimeRoot, 'cli-state'),
     algorithm: { language: 'python', interpreter: python, module: 'gear_algorithm.recipes.rho', export: 'algorithm' },
@@ -148,12 +148,19 @@ export const hostProfile = {
     config: context.config, budget };
   const configPath = join(root, 'gear.algorithm.json');
   await writeFile(configPath, JSON.stringify(campaign));
-  const output = execFileSync(process.execPath, [cli, 'algorithm', 'check', configPath], {
+  // v1 physical-host admission remains an internal oracle, not a public v2 CLI promise.
+  const internalV1Program = `
+    import { pathToFileURL } from 'node:url'
+    const { algorithmCommand } = await import(pathToFileURL(process.argv[1]).href)
+    await algorithmCommand(process.argv.slice(2), line => console.log(line))
+  `;
+  const output = execFileSync(process.execPath,
+    ['--input-type=module', '-e', internalV1Program, legacyCli, 'check', configPath], {
     cwd: root, env: process.env, encoding: 'utf8' });
   const checked = JSON.parse(output.trim().split('\n').at(-1));
   assert.equal(checked.ok, true);
   assert.ok(checked.providers.includes('execution.workspace-edit'));
-  console.log(JSON.stringify({ configuredPhysicalHost: true, publicCliCheck: true,
+  console.log(JSON.stringify({ configuredPhysicalHost: true, legacyInternalCheck: true,
     providerCount: checked.providers.length }));
 } finally {
   await rm(root, { recursive: true, force: true });

@@ -1,5 +1,7 @@
 # 编写 Gear Campaign 算法（实验性）
 
+> **旧 runtime / 测试 oracle 指南。** 本文的 `schemaVersion: 1` Campaign JSON、toy 模板和 `gear-refine algorithm check/run/resume` 示例属于旧内部 `algorithmCommand`，已不再是公开 `gear algorithm` 命令的输入。新项目请从 [v2 作者 CLI 快速使用](algorithm-author-cli.zh-CN.md)开始；旧代码仍用于回归验证，不表示公开 CLI 继续接受旧 RunSpec。
+
 Gear 的 Campaign 把**算法决策**与**受管理操作**分开：算法返回下一批 `OperationIntent`，宿主验证权限、绑定和预算，执行 provider，再把已提交的结果交给下一次决策。恢复从已提交的决策与操作状态继续，不恢复 Python 或 JavaScript 的调用栈。接口尚属 experimental；离线合同测试不能证明真实模型质量或论文复现。
 
 ## 选择一条作者路径
@@ -55,4 +57,4 @@ Fresh seed 接入读取已编译数据集和精确 Git Harness，不要求先跑
 
 固定 Harness GRPO 从 `rsi-gear/algorithm/training` 使用 `fixedHarnessGrpoRecipe`，独立训练模型绑定、实际 Slime job lookup 与 Hitch 模型评测 provider；它不会替换旧 champion。训练入口是可选物理集成，Python 作者 wheel 不带 Torch/CUDA。[训练示例](../examples/algorithms/slime-grpo/README.md)说明真实后端要求。
 
-`npm run test:algorithm:package` 构建并在外部项目安装 npm 包和干净 Python wheel，执行公开入口及 toy `check/run/resume`，检查旧搜索封存制品的恢复。其包外 [`host-setup/recorded-check.mjs`](../examples/algorithms/host-setup/recorded-check.mjs) 还生成合成 Git/编译数据集、闭合宿主设置与 `host.mjs`/`model.mjs`，通过**已安装** npm CLI 和独立 wheel 运行配置宿主的 `algorithm check`；它是离线准入测试，不发送模型请求或 Hitch evaluation。仓库单测另以真实 Python recipe、Git workspace、离线 DSH 模型和录制 Hitch CLI 验证 RHO/AHE/Evo 流程与恢复。这些测试没有使用付费模型、真实 GPU 或人工作者实验；SDK 仍为 experimental。
+`npm run test:algorithm:package` 构建并在外部项目安装 npm 包和干净 Python wheel，通过已安装包的内部 v1 `algorithmCommand` 执行 toy `check/run/resume`，检查旧搜索封存制品的恢复；同时验证公开 v2 CLI 明确拒绝旧 RunSpec、生成的 v2 两语言项目能从真实 tgz/wheel 安装和载入。其包外 [`host-setup/recorded-check.mjs`](../examples/algorithms/host-setup/recorded-check.mjs) 生成合成 Git/编译数据集、闭合宿主设置与 `host.mjs`/`model.mjs`，通过同一内部 v1 oracle 运行配置宿主的 `check`；它是离线准入测试，不发送模型请求或 Hitch evaluation。仓库单测另以真实 Python recipe、Git workspace、离线 DSH 模型和录制 Hitch CLI 验证 RHO/AHE/Evo 流程与恢复。这些测试没有使用付费模型、真实 GPU 或人工作者实验；SDK 仍为 experimental。

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { cp, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -21,6 +21,11 @@ function run(command, args, cwd, env = {}) {
   }
 }
 function sha256(bytes) { return createHash('sha256').update(bytes).digest('hex') }
+const internalV1Program = `
+  import { pathToFileURL } from 'node:url'
+  const { algorithmCommand } = await import(pathToFileURL(process.argv[1]).href)
+  await algorithmCommand(process.argv.slice(2), line => console.log(line))
+`
 async function withPython(configPath, python) {
   const config = JSON.parse(await readFile(configPath, 'utf8'))
   function replace(value) {
@@ -33,8 +38,11 @@ async function withPython(configPath, python) {
   replace(config)
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`)
 }
-function algorithm(cli, action, config, cwd, env = {}) {
-  const output = run(process.execPath, [cli, 'algorithm', action, config], cwd, env)
+// Keep the v1 campaign fixtures as an internal regression oracle. The public
+// `gear algorithm` route is the v2 author command and does not accept v1 RunSpecs.
+function legacyAlgorithm(internalCli, action, config, cwd, env = {}) {
+  const output = run(process.execPath,
+    ['--input-type=module', '-e', internalV1Program, internalCli, action, config], cwd, env)
   return JSON.parse(output.trim().split('\n').at(-1))
 }
 
@@ -51,15 +59,20 @@ try {
   run(npm, ['install', '--ignore-scripts', '--offline', '--legacy-peer-deps', '--no-audit', '--no-fund', tarball], consumer)
   const cli = join(consumer, 'node_modules/rsi-gear/lib/cli.js')
   const installed = join(consumer, 'node_modules/rsi-gear')
+  const legacyCli = join(installed, 'lib/algorithm/cli.js')
   const installedAuthorGuide = await readFile(join(installed, 'docs/algorithm-authoring.zh-CN.md'), 'utf8')
+  const installedAuthorCliGuide = await readFile(join(installed, 'docs/algorithm-author-cli.zh-CN.md'), 'utf8')
   const installedPythonGuide = await readFile(join(installed, 'packages/python-sdk/README.md'), 'utf8')
   const installedBaselineGuide = await readFile(join(installed, 'docs/algorithm-baselines/f715748/README.md'), 'utf8')
   const installedBaselineManifest = JSON.parse(await readFile(join(installed,
     'docs/algorithm-baselines/f715748/manifest.json'), 'utf8'))
   assert.match(installedAuthorGuide, /gear-algorithm/)
+  assert.match(installedAuthorCliGuide, /max-frontier-waves/)
   assert.match(installedPythonGuide, /gear-algorithm/)
   assert.match(installedBaselineGuide, /f715748/)
   assert.equal(installedBaselineManifest.revision, 'f715748dad576d3055e4a9eaab21b36015348aee')
+  assert.match(await readFile(join(installed, 'packages/python-sdk/pyproject.toml'), 'utf8'),
+    /name = "gear-algorithm"[\s\S]*version = "0\.1\.0a0"/)
   const publicExports = JSON.parse(run(process.execPath, ['--input-type=module', '-e', `
     const core = await import('rsi-gear/algorithm')
     const recipes = await import('rsi-gear/algorithm/recipes')
@@ -125,19 +138,68 @@ try {
     join(heavyConsumer, 'recorded-check.mjs'))
   const physicalAdmission = JSON.parse(run(process.execPath, ['recorded-check.mjs'], heavyConsumer, {
     GEAR_ALGORITHM_PACKAGE_PYTHON: python,
-    GEAR_ALGORITHM_PACKAGE_CLI: join(heavyConsumer, 'node_modules/rsi-gear/lib/cli.js'),
+    GEAR_ALGORITHM_PACKAGE_LEGACY_CLI: join(heavyConsumer, 'node_modules/rsi-gear/lib/algorithm/cli.js'),
   }))
   assert.equal(physicalAdmission.configuredPhysicalHost, true)
-  assert.equal(physicalAdmission.publicCliCheck, true)
+  assert.equal(physicalAdmission.legacyInternalCheck, true)
 
   for (const name of ['python-toy', 'cross-language-hook', 'ts-toy']) {
     const project = join(consumer, name)
     const config = join(project, 'gear.algorithm.json')
     await withPython(config, python)
-    assert.equal(algorithm(cli, 'check', config, project).ok, true)
-    assert.equal(algorithm(cli, 'run', config, project).status, 'complete')
-    assert.equal(algorithm(cli, 'resume', config, project).status, 'complete')
+    assert.equal(legacyAlgorithm(legacyCli, 'check', config, project).ok, true)
+    assert.equal(legacyAlgorithm(legacyCli, 'run', config, project).status, 'complete')
+    assert.equal(legacyAlgorithm(legacyCli, 'resume', config, project).status, 'complete')
   }
+
+  const v1Public = spawnSync(process.execPath,
+    [cli, 'algorithm', 'check', join(consumer, 'python-toy/gear.algorithm.json'),
+      '--max-frontier-waves', '10'],
+    { cwd: consumer, env: process.env, encoding: 'utf8', timeout: 30_000 })
+  assert.equal(v1Public.status, 1)
+  assert.match(v1Public.stderr, /schemaVersion 2/u)
+
+  // Admit both generated five-file projects from the actual packed host and
+  // wheel. This exercises the published entrypoints and installed dependency
+  // metadata, rather than checking template text in the source checkout.
+  const tsAuthor = join(temporary, 'author-ts')
+  const pyAuthor = join(temporary, 'author-python')
+  const initializedTs = JSON.parse(run(process.execPath,
+    [cli, 'algorithm', 'init', tsAuthor, '--language', 'typescript', '--template', 'search',
+      '--profile', 'lab', '--sdk-package', tarball], consumer))
+  const initializedPy = JSON.parse(run(process.execPath,
+    [cli, 'algorithm', 'init', pyAuthor, '--language', 'python', '--template', 'search',
+      '--profile', 'lab', '--python-sdk-wheel', wheelPath], consumer))
+  assert.equal(initializedTs.status, 'initialized')
+  assert.equal(initializedPy.status, 'initialized')
+  assert.deepEqual((await readdir(tsAuthor)).sort(),
+    ['algorithm.ts', 'package.json', 'prompts', 'roles.yaml', 'run.yaml'])
+  assert.deepEqual((await readdir(pyAuthor)).sort(),
+    ['algorithm.py', 'prompts', 'requirements.txt', 'roles.yaml', 'run.yaml'])
+  run(npm, ['install', '--ignore-scripts', '--offline', '--legacy-peer-deps', '--no-audit', '--no-fund'], tsAuthor)
+  const admission = JSON.parse(run(process.execPath, ['--input-type=module', '-e', `
+    const { admitInstalledAuthorProject } = await import(process.argv[1])
+    const value = admitInstalledAuthorProject(process.argv[2], './algorithm.ts')
+    console.log(JSON.stringify({ emitted: value.emittedModule.endsWith('/algorithm.js'),
+      sourceDigest: value.sourceDigest }))
+  `, pathToFileURL(join(tsAuthor, 'node_modules/rsi-gear/lib/algorithm/author/installed-loader.js')).href,
+  tsAuthor], tsAuthor))
+  assert.equal(admission.emitted, true)
+  assert.match(admission.sourceDigest, /^[a-f0-9]{64}$/u)
+  const authorVenv = join(temporary, 'author-python-venv')
+  run(buildPython, ['-m', 'venv', authorVenv], root)
+  const authorPython = process.platform === 'win32' ? join(authorVenv, 'Scripts/python.exe') : join(authorVenv, 'bin/python')
+  run(authorPython, ['-m', 'pip', 'install', '--no-index', '--no-deps', '-r', join(pyAuthor, 'requirements.txt')], root)
+  const described = JSON.parse(run(authorPython, ['-c', `
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location('author_search', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+manifest = module.search.describe()
+print(json.dumps({'wire': manifest['apiVersion'],
+  'roundsMinimum': manifest['configSchema']['properties']['rounds']['minimum']}))
+  `, join(pyAuthor, 'algorithm.py')], pyAuthor))
+  assert.deepEqual(described, { wire: 'gear.author.replay.v1', roundsMinimum: 1 })
 
   const baselinePath = join(root, '.evolve-lab/algorithm-baselines/f715748/rsi-gear-0.1.0.tgz')
   const baseline = JSON.parse(await readFile(join(root, 'docs/algorithm-baselines/f715748/manifest.json'), 'utf8'))
@@ -224,13 +286,15 @@ console.log(JSON.stringify({ phase, executions: fixture.executions.length }))
     const env = { PYTHONPATH: site }
     run(optunaPython, ['make_config.py'], optunaProject, env)
     const config = join(optunaProject, 'gear.algorithm.json')
-    assert.equal(algorithm(cli, 'check', config, optunaProject, env).ok, true)
-    assert.equal(algorithm(cli, 'run', config, optunaProject, env).status, 'complete')
-    assert.equal(algorithm(cli, 'resume', config, optunaProject, env).status, 'complete')
+    assert.equal(legacyAlgorithm(legacyCli, 'check', config, optunaProject, env).ok, true)
+    assert.equal(legacyAlgorithm(legacyCli, 'run', config, optunaProject, env).status, 'complete')
+    assert.equal(legacyAlgorithm(legacyCli, 'resume', config, optunaProject, env).status, 'complete')
   }
   process.stdout.write(JSON.stringify({ npmTarball: packageFile.filename, pythonWheel: (await wheel) ?? 'missing-wheel',
     externalCampaigns: ['python-toy', 'cross-language-hook', 'ts-toy'], oldBuiltSearch: baseline.builtSearch.integrity,
-    configuredPhysicalHostCliCheck: physicalAdmission.publicCliCheck,
+    configuredPhysicalHostLegacyInternalCheck: physicalAdmission.legacyInternalCheck,
+    v1PublicCliRejected: true, generatedTsAdmitted: admission.emitted,
+    generatedPythonImported: described.roundsMinimum === 1,
     oldSearchInterruptedAndResumed: true, oldSearchPersistedAcrossProcesses: true,
     legacyEnvironment: { node: process.version, npm: baseline.environment.npm,
       lockSha256: baseline.packageLock.sha256, typescript: oldTypeScript.version },

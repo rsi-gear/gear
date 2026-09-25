@@ -115,9 +115,15 @@ TS/Python 现在提供 propose、evaluate 和 select，并支持无反馈提案�
 
 主审独立三文件 20 项通过，见 [历史任务经验审计](experiments/author-a2b-experience-review-20260926.zh-CN.md)。真实成功样本、Hitch 轨迹、RunSpec 输入接线与模型制品仍待分别验收。
 
+## A1 五文件项目与 CLI 切片
+
+新增 gear bin 与 v2 init/check/explain/run/resume 控制入口、profile 定位、原 lock 恢复索引，以及 history inspect。两语言项目均保持五个作者文件，支持精确版本和本地 wheel/tarball。独立审查发现的 resume 参数歧义已修复。
+
+实施者完整离线包检查通过；主审与独立 reviewer 分别两文件 9 项通过，见 [CLI/项目审计](experiments/author-a1-cli-project-review-20260926.zh-CN.md)和[当前 CLI 用法](algorithm-author-cli.zh-CN.md)。控制测试使用注入 backend；完整物理宿主和默认搜索示例尚未因此通过。
+
 ## 当前限制
 
-A0 是运行基础。`propose/evaluate/select` 已实现；通用运行 profile 的完整宿主装配、五文件作者项目及新的 CLI 仍待后续 A1 切片；现有 A0 role/edit/rollout/measure 便利方法用于探针，v2 已拒绝这些假 operation。用户不能仅复制 v4 的搜索示例便运行真实实验。
+A0 是运行基础。`propose/evaluate/select` 已实现；五文件项目和 CLI 控制入口已实现，通用运行 profile 的完整宿主装配及实际 CLI 接线仍待后续 A1 切片；现有 A0 role/edit/rollout/measure 便利方法用于探针，v2 已拒绝这些假 operation。用户不能仅复制 v4 的搜索示例便运行真实实验。
 
 性能按冻结标准报告：TS 的两个代表性轨迹通过每前沿额外 100 ms 门槛，Python 最新在 `770b3f9` 为 130.94/123.13 ms，仍未通过；TS 为 86.30/75.98 ms，两语言冷恢复通过。操作图 F/O/J 和原 key 一致，恢复没有重复物理执行。进程树峰值内存目前只有抽样证据，上界未验证。见 [最新正式复测](experiments/author-a0-benchmark-770b3f9-20260926.json)；[此前失败记录](experiments/author-a0-benchmark-97e938f-20260926.json)保留。未选择产品默认前沿上限，长流程门尚未验证。
 

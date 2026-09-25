@@ -22,6 +22,7 @@
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "bin": {
+    "gear": "./lib/cli.js",
     "gear-refine": "./lib/cli.js",
     "gear-hitch-codex": "./assets/hitch-codex-wrapper.mjs",
     "gear-dsh-runtime-check": "./assets/dsh-runtime-check.mjs"
@@ -120,8 +121,10 @@
     "docs/training/controller-v2.zh-CN.md",
     "docs/search-algorithm-authoring.zh-CN.md",
     "docs/algorithm-authoring.zh-CN.md",
+    "docs/algorithm-author-cli.zh-CN.md",
     "docs/algorithm-baselines/f715748/**",
     "packages/python-sdk/README.md",
+    "packages/python-sdk/pyproject.toml",
     "examples/algorithms/**",
     "examples/parent-policy/**",
     "docs/schemas/",

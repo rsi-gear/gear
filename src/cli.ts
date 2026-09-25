@@ -2,14 +2,19 @@
 import { readFile } from 'node:fs/promises'
 
 function usage(): never {
-  throw new Error('usage: gear-refine algorithm <init|check|run|resume> ... | gear-refine storage ... | gear-refine serve --config PATH | gear-refine skill-identity [--path DIRECTORY] | gear-refine [--socket PATH] request <method> [json-params]')
+  throw new Error('usage: gear-refine algorithm <init|check|explain|run|resume> ... | gear-refine history inspect ... | gear-refine storage ... | gear-refine serve --config PATH | gear-refine skill-identity [--path DIRECTORY] | gear-refine [--socket PATH] request <method> [json-params]')
 }
 
 async function main(argv: string[]): Promise<void> {
   const args = [...argv]
   if (args[0] === 'algorithm') {
-    const { algorithmCommand } = await import('./algorithm/cli.js')
-    await algorithmCommand(args.slice(1))
+    const { runAuthorCommand } = await import('./algorithm/author/cli.js')
+    await runAuthorCommand(args.slice(1))
+    return
+  }
+  if (args[0] === 'history') {
+    const { runHistoryInspect } = await import('./history/report-cli.js')
+    await runHistoryInspect(args.slice(1), line => process.stdout.write(`${line}\n`))
     return
   }
   if (args[0] === 'storage') {
