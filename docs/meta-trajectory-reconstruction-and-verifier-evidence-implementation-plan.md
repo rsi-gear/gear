@@ -6,7 +6,6 @@
 - Hitch 核查基线：`4ad697d9bc8219917a2d2d234107deaeca81b41e`
 - Hitch verifier 实现：`6351425787c242f1318b89f3405697cbee930893`
 - 日期：2026-09-02
-- 取代：[Hitch Run Evidence 与语义轨迹查询开发需求](hitch-run-evidence-query-development-requirements.md)
 
 ## 1. 决策摘要
 

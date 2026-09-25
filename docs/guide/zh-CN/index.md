@@ -38,7 +38,7 @@ Gear 是一个可通过 Skill 调用的 Agent 优化算法库。给定现有 ben
 
 ## 支持范围与版本
 
-本指南对应 Gear 0.1.0，包名为 `rsi-gear`，目前为 pre-alpha。Standalone 的 Meta 接口不绑定宿主 Harness；内置 Target builder 当前围绕 DSH。Hitch 支持某个 Harness，并不自动意味着 Gear 已有对应的 Target builder。
+本指南对应 Gear 0.1.2，包名为 `rsi-gear`，目前为 pre-alpha。Standalone 的 Meta 接口不绑定宿主 Harness；内置 Target builder 当前围绕 DSH。Hitch 支持某个 Harness，并不自动意味着 Gear 已有对应的 Target builder。
 
 分阶段搜索案例使用[来源记录](example-algorithm.md#实现与版本)中固定的实现；不能将其配置当成所有 0.1.0 checkout 都支持的开关。历史 Marketing 实验使用公开研究集，并从同一批任务获取优化反馈，没有独立 held-out 结果。
 

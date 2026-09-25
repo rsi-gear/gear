@@ -3,8 +3,10 @@
 **General Evolution Architecture for Agents**
 
 > 本文描述 GEAR 的长期项目愿景。当前仓库已经提供独立 Gear Core、通用
-> Refine Agent Skill、DSH 兼容适配层，以及基于 Hitch/Harbor 的 Target rollout；
-> 更多 Target builder、模型训练与数据基础设施能力仍属于后续规划。
+> Refine Agent Skill、DSH 兼容适配层、基于 Hitch/Harbor 的 Target rollout，
+> 以及实验性的 Slime GRPO 模型训练和通用资源存储。模型训练使用独立于
+> Harness 进化的生命周期，当前支持范围见[训练指南](training/README.zh-CN.md)；
+> 更多 Target builder、训练方法和数据基础设施能力仍属于后续规划。
 
 GEAR 是一个面向智能体持续演进的通用架构。它将 Agent 运行、轨迹评测和
 数据基础设施解耦，并通过评测反馈持续改进 Harness、Seed Tasks 和模型能力。
