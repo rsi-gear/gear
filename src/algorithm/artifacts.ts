@@ -20,6 +20,8 @@ type StoredArtifact = { mediaType: string; schemaId?: string; data: string };
 export class FileArtifactStore {
   constructor(readonly root: string, readonly maxBytes = 64 * 1024 * 1024) { mkdirSync(join(root, 'objects'), { recursive: true }); }
 
+  protected writeObject(path: string, serialized: string): void { durableWrite(path, serialized); }
+
   putBytes(bytes: Uint8Array, mediaType: string, schemaId?: string): ArtifactRef {
     if (bytes.length > this.maxBytes) throw new Error('Artifact exceeds size limit');
     if (!mediaType || mediaType.includes('\0')) throw new Error('Invalid media type');
@@ -28,7 +30,7 @@ export class FileArtifactStore {
     const serialized = canonicalJson(record);
     const digest = sha256(serialized);
     const path = join(this.root, 'objects', `${digest}.json`);
-    if (!existsSync(path)) durableWrite(path, serialized);
+    if (!existsSync(path)) this.writeObject(path, serialized);
     return schemaId === undefined
       ? { kind: 'artifact', digest, size: bytes.length, mediaType }
       : { kind: 'artifact', digest, size: bytes.length, mediaType, schemaId };

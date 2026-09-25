@@ -95,6 +95,18 @@ describe('SearchJournal-backed Campaign persistence', () => {
       .toMatchObject({ created: false })
   })
 
+  it('rebuilds a discarded local artifact cache from the authoritative journal', async () => {
+    const journal = new MemorySearchStore(), root = cacheRoot()
+    const local = join(root, 'artifacts')
+    const artifacts = new JournalArtifactStore(local, journal, 'round')
+    const ref = artifacts.putJson({ task: 'rebuild-local-cache' }, 'test.task.v1')
+    await artifacts.flush()
+    rmSync(join(local, 'objects', `${ref.digest}.json`))
+    const restored = new JournalArtifactStore(local, new MemorySearchStore(journal.checkpoint()), 'round')
+    await restored.hydrate()
+    expect(restored.getJson(ref)).toEqual({ task: 'rebuild-local-cache' })
+  })
+
   it('reconstructs a complete Kernel campaign and bindings with no original filesystem', async () => {
     const journal = new MemorySearchStore(), root = cacheRoot()
     const bindingSchema = { id: 'journal-bindings.v1', slots: { harness: { schemaId: 'harness.v1', required: true, replaceable: false } } }

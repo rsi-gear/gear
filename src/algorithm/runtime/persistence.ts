@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { FileArtifactStore, assertDigest, durableWrite, sha256 } from '../artifacts.js'
 import { assertJson, assertSafeKey, canonicalJson, type JsonValue } from '../schema.js'
 import { implementationClosureDigest } from '../data/identity.js'
@@ -345,6 +346,19 @@ export class JournalArtifactStore extends FileArtifactStore implements ArtifactC
     this.identityDigest = implementationClosureDigest(['runtime/persistence'], { backend: 'artifact-cache', roundId, maxBytes: this.maxBytes })
   }
 
+  /** This file is a reconstructible cache; the SearchJournal copy is the durability boundary. */
+  protected override writeObject(path: string, raw: string): void {
+    mkdirSync(dirname(path), { recursive: true })
+    const temporary = `${path}.${randomUUID()}.tmp`
+    try {
+      writeFileSync(temporary, raw, { flag: 'wx', mode: 0o600 })
+      renameSync(temporary, path)
+    } catch (error) {
+      try { unlinkSync(temporary) } catch { /* A successful rename has already consumed it. */ }
+      throw error
+    }
+  }
+
   private indexKey(): string { return `${this.prefix}/index` }
   private objectKey(digest: string): string { return `${this.prefix}/objects/${digest}` }
 
@@ -359,7 +373,7 @@ export class JournalArtifactStore extends FileArtifactStore implements ArtifactC
       const path = join(this.root, 'objects', `${digest}.json`)
       if (existsSync(path)) {
         if (readFileSync(path, 'utf8') !== raw) throw new Error('Local artifact cache drift')
-      } else durableWrite(path, raw)
+      } else this.writeObject(path, raw)
       this.published.add(digest)
     }
   }
@@ -383,7 +397,7 @@ export class JournalArtifactStore extends FileArtifactStore implements ArtifactC
         const path = join(this.root, 'objects', `${digest}.json`)
         if (existsSync(path)) {
           if (readFileSync(path, 'utf8') !== raw) throw new Error('Local artifact cache drift')
-        } else durableWrite(path, raw)
+        } else this.writeObject(path, raw)
         this.published.add(digest)
       }
       const files = readdirSync(join(this.root, 'objects')).filter(name => /^[a-f0-9]{64}\.json$/u.test(name)).sort()
