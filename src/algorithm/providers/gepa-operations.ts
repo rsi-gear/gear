@@ -18,6 +18,7 @@ import type { CandidateWorkPlan, CellIdentity, DiagnosisDossier, DiagnosisFact, 
 import type { ResearchFinding } from '../../search/types.js'
 import type { GeneratedCandidate, SearchExecutionHooks } from '../../search/runtime.js'
 import type { SearchJournal } from '../../search/store.js'
+import { validateSearchSchema } from '../../search/schema.js'
 import { GepaPhysicalExecutionError, hasPhysicalGenerationInspection, type PhysicalGenerationInspection } from './gepa-hooks.js'
 import { budgetFailure, SearchExecutionFailure, searchDeadline } from '../../search/recovery.js'
 import { SearchBudgetExceeded } from '../../search/store.js'
@@ -185,7 +186,7 @@ abstract class GepaOperationProvider implements OperationProvider {
     return { source: this.manifest.kind, scope: 'operation', operationId: envelope.operationId,
       cursor: digestJson(usage), cumulative: usage }
   }
-  private async read(envelope: OperationEnvelope): Promise<RecordValue | null> {
+  protected async read(envelope: OperationEnvelope): Promise<RecordValue | null> {
     const record = await this.records.read<RecordValue>(envelope.kind, envelope.operationId)
     if (!record) return null
     if (!record || record.schemaVersion !== 1 || !['prepared', 'started', 'cancelled-before-start', 'complete'].includes(record.stage)
@@ -883,6 +884,23 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
     const { snapshot, baseline, taskIds } = this.input(envelope)
     return `diagnosis-${digestJson([snapshot.digest, baseline.digest, taskIds]).slice(7)}`
   }
+  private async completedLegacyDossier(envelope: OperationEnvelope): Promise<DiagnosisDossier | undefined> {
+    if (!this.legacyJournal) return undefined
+    const { roundIdentity, snapshot, universe, taskIds, baseline } = this.input(envelope)
+    const round = this.roundIdentity(roundIdentity)!
+    const pointer = await this.legacyJournal.read<{ ref: string }>(`rounds/${round.roundId}/${this.legacyName(envelope)}`)
+    if (!pointer) return undefined
+    const dossier = await this.legacyJournal.object<DiagnosisDossier>(pointer.ref)
+    validateSearchSchema('DiagnosisDossier', dossier)
+    verifyDigest(dossier)
+    if (dossier.digest !== pointer.ref || dossier.parentSnapshotDigest !== snapshot.digest
+      || dossier.universeDigest !== universe.digest || digestJson(dossier.taskIds) !== digestJson(taskIds)
+      || digestJson(dossier.baselineEvidenceDigests) !== digestJson([baseline.digest])
+      || dossier.classifierIntegrity !== this.physical.integrity
+      || dossier.sanitizationPolicyDigest !== this.physical.sanitizationPolicyDigest)
+      throw new ProviderProtocolError('GEPA frozen diagnosis dossier does not match its parent evidence')
+    return dossier
+  }
   protected override async freezeRequest(envelope: OperationEnvelope): Promise<JsonValue> {
     const { snapshot, universe, taskIds, baseline } = this.input(envelope)
     const request = seal({ snapshot, universe, taskIds, cells: baseline.cells,
@@ -891,10 +909,25 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
       const round = this.roundIdentity(this.input(envelope).roundIdentity)!
       const frozen = await this.legacyJournal.freeze(round.roundId, `${this.legacyName(envelope)}-input`, () => request)
       verifyDigest(frozen)
-      if (canonicalJson(frozen as unknown as JsonValue) !== canonicalJson(request as unknown as JsonValue))
-        throw new ProviderProtocolError('GEPA diagnosis input pointer drift')
+      if (canonicalJson(frozen as unknown as JsonValue) !== canonicalJson(request as unknown as JsonValue)) {
+        // The old outer diagnosis freeze returns its first completed dossier
+        // before computing a fresh token cap. A later parent can therefore
+        // reuse the same named diagnosis even after the remaining budget moves.
+        if (!await this.completedLegacyDossier(envelope)
+          || frozen.snapshot.digest !== snapshot.digest || frozen.universe.digest !== universe.digest
+          || digestJson(frozen.taskIds) !== digestJson(taskIds)
+          || digestJson(frozen.cells) !== digestJson(baseline.cells))
+          throw new ProviderProtocolError('GEPA diagnosis input pointer drift')
+      }
+      return frozen as unknown as JsonValue
     }
     return request as unknown as JsonValue
+  }
+  override async prepareForDispatch(envelope: OperationEnvelope): Promise<{ startsBudgetClock: boolean }> {
+    const disposition = await super.prepareForDispatch(envelope)
+    const record = await this.read(envelope)
+    return !record?.diagnosisValue && await this.completedLegacyDossier(envelope)
+      ? { startsBudgetClock: false } : disposition
   }
   protected override startsBudgetClock(envelope: OperationEnvelope, _record: RecordValue): boolean {
     return !this.deadlineExpired() && envelope.limits.diagnosisInputTokens! > 0
@@ -990,6 +1023,12 @@ export class GepaDiagnosisProvider extends GepaOperationProvider {
   }
   protected async execute(envelope: OperationEnvelope, record: RecordValue, newlyStarted: boolean): Promise<Result> {
     if (record.diagnosisValue) return this.result(envelope, record, record.diagnosisValue)
+    const reused = await this.completedLegacyDossier(envelope)
+    if (reused) {
+      const dossierRef = this.artifacts.putJson(reused as unknown as JsonValue, 'gepa.dossier.v1')
+      return { outcome: { kind: 'result', value: { dossierRef } },
+        usage: { diagnosisInputTokens: 0, diagnosisOutputTokens: 0 } }
+    }
     if (record.request && canonicalJson(record.request) !== canonicalJson(seal({
       snapshot: this.input(envelope).snapshot, universe: this.input(envelope).universe,
       taskIds: this.input(envelope).taskIds, cells: this.input(envelope).baseline.cells,

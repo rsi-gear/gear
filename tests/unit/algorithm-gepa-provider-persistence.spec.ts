@@ -16,6 +16,7 @@ import { evaluatedFixture, fixtures, revise, scopeFixture } from '../../src/sear
 import { MemorySearchStore } from '../../src/search/testing.js'
 import { SearchBudgetExceeded } from '../../src/search/store.js'
 import { SearchExecutionFailure } from '../../src/search/recovery.js'
+import type { DiagnosisDossier } from '../../src/search/types.js'
 import { seal } from '../../src/search/contracts.js'
 import { digestJson } from '../../src/state/digest.js'
 
@@ -370,6 +371,56 @@ it('keeps an earlier evidence consumer when diagnosis reuses the same verified b
   const pointer = await journal.read<{ ref: string }>(`rounds/r/${consumedName}`)
   expect(pointer?.ref).toBe(firstConsumption.digest)
   expect(await journal.object(pointer!.ref)).toEqual(firstConsumption)
+})
+
+it('reuses a completed named diagnosis when later token caps change, without a second reserve or physical call', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'gepa-diagnosis-reuse-')); roots.push(root)
+  const fixture = fixtures(4)
+  const { result: baseline } = evaluatedFixture(fixture.seed,
+    scopeFixture(fixture.seed, ['task-0']), fixture.anchor, () => ({ outcome: 0 }), { stage: 'baseline-probe' })
+  const artifacts = new FileArtifactStore(join(root, 'artifacts'))
+  const bindings = new BindingStore(artifacts, { id: 'harness', slots: {
+    harness: { schemaId: 'harness.directory.v1', required: true, replaceable: true },
+  } })
+  const harness = artifacts.putJson({ commitOid: fixture.anchor.commit,
+    manifestDigest: fixture.anchor.manifestDigest }, 'harness.directory.v1')
+  const journal = new MemorySearchStore()
+  const provider = new GepaDiagnosisProvider(join(root, 'operations'), artifacts, bindings,
+    fixture.diagnosis, undefined, journal)
+  const original = fixture.diagnosis.diagnose
+  let physicalCalls = 0
+  fixture.diagnosis.diagnose = async request => { physicalCalls++; return original(request) }
+  const input = { roundIdentity: { evolutionId: 'e', roundId: 'r' }, snapshot: fixture.anchor,
+    universe: fixture.seed, taskIds: ['task-0'], baseline } as unknown as JsonValue
+  const bindingSetRef = bindings.create({ harness })
+  const operation = (suffix: string, cap: number): OperationEnvelope => {
+    const operationId = digestJson(['diagnosis-reuse', suffix, root]).slice(7)
+    return { campaignId: 'search-r', decisionIndex: 0, localKey: `diagnose-${suffix}`, operationId,
+      idempotencyKey: operationId, kind: 'gepa.diagnose', input, inputDigest: jsonDigest(input),
+      implementationDigest: provider.describe().implementationDigest, bindingSetRef,
+      limits: { diagnosisInputTokens: cap, diagnosisOutputTokens: cap } }
+  }
+  const first = await provider.submit(operation('first', 100))
+  expect(first.status).toBe('completed')
+  const secondEnvelope = operation('second', 1)
+  expect(await provider.prepareForDispatch(secondEnvelope)).toEqual({ startsBudgetClock: false })
+  const second = await provider.submit(secondEnvelope)
+  expect(second.status).toBe('completed')
+  expect(physicalCalls).toBe(1)
+  if (first.status !== 'completed' || second.status !== 'completed') return
+  expect(second.completion.outcome).toEqual(first.completion.outcome)
+  expect(second.completion.receipt?.cumulative).toEqual({ diagnosisInputTokens: 0, diagnosisOutputTokens: 0 })
+  const name = `diagnosis-${digestJson([fixture.anchor.digest, baseline.digest, ['task-0']]).slice(7)}`
+  const inputPointer = await journal.read<{ ref: string }>(`rounds/r/${name}-input`)
+  expect(await journal.object(inputPointer!.ref)).toMatchObject({ maxInputTokens: 100, maxOutputTokens: 100 })
+  const dossierPointer = await journal.read<{ ref: string }>(`rounds/r/${name}`)
+  const dossier = await journal.object<DiagnosisDossier>(dossierPointer!.ref)
+  const forged = revise(dossier, { parentSnapshotDigest: digestJson('other-parent') })
+  await journal.put(forged)
+  await journal.write(`rounds/r/${name}`, { ref: forged.digest })
+  await expect(provider.prepareForDispatch(operation('forged', 1)))
+    .rejects.toThrow('frozen diagnosis dossier does not match')
+  expect(physicalCalls).toBe(1)
 })
 
 it.each([false, true])('freezes a %s cached evaluation before its budget clock and dispatch', async cached => {
