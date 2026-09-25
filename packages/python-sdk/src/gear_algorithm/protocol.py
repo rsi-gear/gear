@@ -62,6 +62,8 @@ def assert_schema(schema: Mapping[str, Any], path: str = "$schema") -> None:
     if kind not in kinds:
         raise ValidationError("unsupported schema type", path)
     allowed = {"type", "enum"}
+    if kind in ("number", "integer"):
+        allowed.update(("minimum", "maximum"))
     if kind == "array":
         allowed.add("items")
     if kind == "object":
@@ -74,6 +76,18 @@ def assert_schema(schema: Mapping[str, Any], path: str = "$schema") -> None:
         if not isinstance(choices, list) or not choices:
             raise ValidationError("schema enum must be nonempty array", path)
         validate_json(choices, f"{path}.enum")
+    if kind in ("number", "integer"):
+        for name in ("minimum", "maximum"):
+            if name not in schema:
+                continue
+            bound = schema[name]
+            validate_json(bound, f"{path}.{name}")
+            if type(bound) not in (int, float) or not math.isfinite(bound) \
+                    or kind == "integer" and json_safe_integer(bound) is None:
+                raise ValidationError(f"{name} must be a finite {'safe integer' if kind == 'integer' else 'number'}",
+                                      f"{path}.{name}")
+        if "minimum" in schema and "maximum" in schema and schema["minimum"] > schema["maximum"]:
+            raise ValidationError("schema minimum exceeds maximum", path)
     if kind == "array":
         if "items" not in schema:
             raise ValidationError("array schema requires items", path)
@@ -127,6 +141,11 @@ def validate_schema(schema: Mapping[str, Any], value: Any, path: str = "$") -> A
     }
     if not matches[kind]:
         raise ValidationError(f"expected {kind}", path)
+    if kind in ("number", "integer"):
+        if "minimum" in schema and value < schema["minimum"]:
+            raise ValidationError("below minimum", path)
+        if "maximum" in schema and value > schema["maximum"]:
+            raise ValidationError("above maximum", path)
     if kind == "array" and "items" not in schema:
         raise ValidationError("array schema requires items", path)
     if kind == "array" and "items" in schema:

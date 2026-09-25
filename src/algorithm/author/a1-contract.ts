@@ -11,6 +11,12 @@ export type TaskSelectionV1 = { schemaVersion: 1; taskViewRef: ArtifactRef; sele
 export type RoleResultV1 = { schemaVersion: 1; output: JsonValue; evidenceRef: ArtifactRef; receiptRef: ArtifactRef };
 export type ProposalFailureV1 = { index: number; stage: 'edit' | 'validation' | 'derive'; code: string;
   message: string; evidenceRefs: ArtifactRef[]; checkReportRef?: ArtifactRef };
+/** Only sealed identifiers enter the editor input; the host resolves the bounded feedback projection. */
+export type AuthorProposalFeedbackV1 = { schemaVersion: 1; subject: HarnessAgentV1;
+  taskViewRef: ArtifactRef; measurementRef: ArtifactRef; comparisonKey: string };
+export type AuthorProposalEditInputV1 = { roleId: string; baseBindingSetRef: BindingSetRef;
+  proposalIndex: number; feedback?: AuthorProposalFeedbackV1 };
+
 export type ProposalBatchV1 = { schemaVersion: 1; requestedCount: number; candidates: HarnessAgentV1[];
   failures: ProposalFailureV1[] };
 export type TrialV1 = { taskId: string; repeatIndex: number; status: 'completed' | 'failed' | 'invalid';
@@ -20,6 +26,11 @@ export type EvaluationV1 = { schemaVersion: 1; subject: HarnessAgentV1; taskView
   metrics?: Record<string, number>; measurementRef?: ArtifactRef; trials: TrialV1[]; evidenceRefs: ArtifactRef[] };
 export type AuthorRoleGrantV1 = { template: 'harness-editor' | 'read-only-analyst';
   kind: 'execution.workspace-edit' | 'execution.role' };
+export type AuthorSelectionConfigV1 = { schemaVersion: 1; metric: { id: string;
+  direction: 'maximize' | 'minimize'; comparisonPrecision: number; contractDigest: string } };
+export type AuthorEvaluationConfigV1 = { schemaVersion: 1; repeatCount: number; maxTrials: number; recipePhase: string;
+  samplingDigest: string; environmentDigest: string };
+export type AuthorProposalConfigV1 = { schemaVersion: 1; maxCount: number };
 export type AuthorCapabilitiesV1 = { version: typeof AUTHOR_CAPABILITIES_VERSION; lockDigest: string;
   roles: Record<string, AuthorRoleGrantV1>; operationLimits: Record<string, Record<string, number>>;
   execution: Record<string, JsonValue> };
@@ -37,6 +48,10 @@ function exact(value: Record<string, unknown>, required: readonly string[], opti
 }
 function digest(value: unknown, label: string): asserts value is string {
   if (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) throw new Error(`${label} needs SHA-256 digest`);
+}
+function gearDigest(value: unknown, label: string): asserts value is string {
+  if (typeof value !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(value))
+    throw new Error(`${label} needs namespaced SHA-256 digest`);
 }
 function nonnegative(value: unknown, label: string): asserts value is number {
   if (!Number.isSafeInteger(value) || (value as number) < 0) throw new Error(`${label} must be a nonnegative safe integer`);
@@ -180,11 +195,49 @@ export function assertAuthorCapabilitiesV1(value: unknown): asserts value is Aut
   for (const [kind, raw] of Object.entries(object(item.operationLimits, 'AuthorCapabilities.operationLimits'))) {
     if (!/^[A-Za-z][A-Za-z0-9._-]{0,127}$/.test(kind)) throw new Error(`Invalid operation kind ${kind}`);
     const limits = object(raw, `AuthorCapabilities.operationLimits.${kind}`);
-    if (kind === 'tasks.sample' && Object.keys(limits).length !== 0)
-      throw new Error('tasks.sample is a pure operation and cannot carry limits');
+    if (['tasks.sample', 'tasks.consume', 'bindings.derive', 'author.checkpoint',
+      'author.observe', 'author.measurement'].includes(kind) && Object.keys(limits).length !== 0)
+      throw new Error(`${kind} is a pure operation and cannot carry limits`);
     for (const [dimension, limit] of Object.entries(limits))
       nonnegative(limit, `AuthorCapabilities.operationLimits.${kind}.${dimension}`);
   }
-  object(item.execution, 'AuthorCapabilities.execution');
+  const execution = object(item.execution, 'AuthorCapabilities.execution');
+  if (execution.selection !== undefined) {
+    const selection = object(execution.selection, 'AuthorCapabilities.execution.selection');
+    exact(selection, ['schemaVersion', 'metric'], [], 'AuthorCapabilities.execution.selection');
+    const metric = object(selection.metric, 'AuthorCapabilities.execution.selection.metric');
+    exact(metric, ['id', 'direction', 'comparisonPrecision', 'contractDigest'], [],
+      'AuthorCapabilities.execution.selection.metric');
+    if (selection.schemaVersion !== 1 || typeof metric.id !== 'string' || !metric.id
+      || !['maximize', 'minimize'].includes(String(metric.direction))
+      || typeof metric.comparisonPrecision !== 'number' || !Number.isFinite(metric.comparisonPrecision)
+      || metric.comparisonPrecision <= 0)
+      throw new Error('Author selection metric configuration invalid');
+    gearDigest(metric.contractDigest, 'Author selection metric contract');
+  }
+  if (execution.evaluation !== undefined) {
+    const evaluation = object(execution.evaluation, 'AuthorCapabilities.execution.evaluation');
+    exact(evaluation, ['schemaVersion', 'repeatCount', 'maxTrials', 'recipePhase', 'samplingDigest', 'environmentDigest'], [],
+      'AuthorCapabilities.execution.evaluation');
+    if (evaluation.schemaVersion !== 1 || !Number.isSafeInteger(evaluation.repeatCount)
+      || (evaluation.repeatCount as number) < 1 || (evaluation.repeatCount as number) > 100
+      || !Number.isSafeInteger(evaluation.maxTrials) || (evaluation.maxTrials as number) < 1
+      || (evaluation.maxTrials as number) > 128
+      || evaluation.recipePhase !== 'author.evaluate')
+      throw new Error('Author evaluation configuration invalid');
+    gearDigest(evaluation.samplingDigest, 'Author evaluation sampling');
+    gearDigest(evaluation.environmentDigest, 'Author evaluation environment');
+    const rolloutLimits = object(object(item.operationLimits, 'AuthorCapabilities.operationLimits')['execution.rollout'],
+      'AuthorCapabilities.operationLimits.execution.rollout');
+    exact(rolloutLimits, ['rollout.trials'], [], 'AuthorCapabilities.operationLimits.execution.rollout');
+    if (rolloutLimits['rollout.trials'] !== 1) throw new Error('Author evaluation requires one rollout trial reservation');
+  }
+  if (execution.proposal !== undefined) {
+    const proposal = object(execution.proposal, 'AuthorCapabilities.execution.proposal');
+    exact(proposal, ['schemaVersion', 'maxCount'], [], 'AuthorCapabilities.execution.proposal');
+    if (proposal.schemaVersion !== 1 || !Number.isSafeInteger(proposal.maxCount)
+      || (proposal.maxCount as number) < 1 || (proposal.maxCount as number) > 100)
+      throw new Error('Author proposal count bound invalid');
+  }
 }
 export function assertAuthorConfigSchema(value: JsonSchema): void { assertSchema(value); }

@@ -1159,5 +1159,269 @@
         }
       ]
     }
+  },
+  {
+    "name": "capabilities-execution-valid",
+    "validator": "capabilities",
+    "valid": true,
+    "value": {
+      "version": "gear.author.capabilities.v1",
+      "lockDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "roles": {
+        "analyst": {
+          "template": "read-only-analyst",
+          "kind": "execution.role"
+        }
+      },
+      "operationLimits": {
+        "tasks.sample": {},
+        "execution.rollout": {
+          "rollout.trials": 1
+        }
+      },
+      "execution": {
+        "selection": {
+          "schemaVersion": 1,
+          "metric": {
+            "id": "pass_rate",
+            "direction": "maximize",
+            "comparisonPrecision": 0.01,
+            "contractDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        },
+        "evaluation": {
+          "schemaVersion": 1,
+          "repeatCount": 2,
+          "maxTrials": 8,
+          "recipePhase": "author.evaluate",
+          "samplingDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "environmentDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+        },
+        "proposal": {
+          "schemaVersion": 1,
+          "maxCount": 4
+        }
+      }
+    }
+  },
+  {
+    "name": "capabilities-selection-direction-invalid",
+    "validator": "capabilities",
+    "valid": false,
+    "value": {
+      "version": "gear.author.capabilities.v1",
+      "lockDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "roles": {
+        "analyst": {
+          "template": "read-only-analyst",
+          "kind": "execution.role"
+        }
+      },
+      "operationLimits": {
+        "tasks.sample": {},
+        "execution.rollout": {
+          "rollout.trials": 1
+        }
+      },
+      "execution": {
+        "selection": {
+          "schemaVersion": 1,
+          "metric": {
+            "id": "pass_rate",
+            "direction": "larger",
+            "comparisonPrecision": 0.01,
+            "contractDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        },
+        "evaluation": {
+          "schemaVersion": 1,
+          "repeatCount": 2,
+          "maxTrials": 8,
+          "recipePhase": "author.evaluate",
+          "samplingDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "environmentDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+        },
+        "proposal": {
+          "schemaVersion": 1,
+          "maxCount": 4
+        }
+      }
+    }
+  },
+  {
+    "name": "capabilities-evaluation-max-trials-invalid",
+    "validator": "capabilities",
+    "valid": false,
+    "value": {
+      "version": "gear.author.capabilities.v1",
+      "lockDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "roles": {
+        "analyst": {
+          "template": "read-only-analyst",
+          "kind": "execution.role"
+        }
+      },
+      "operationLimits": {
+        "tasks.sample": {},
+        "execution.rollout": {
+          "rollout.trials": 1
+        }
+      },
+      "execution": {
+        "selection": {
+          "schemaVersion": 1,
+          "metric": {
+            "id": "pass_rate",
+            "direction": "maximize",
+            "comparisonPrecision": 0.01,
+            "contractDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        },
+        "evaluation": {
+          "schemaVersion": 1,
+          "repeatCount": 2,
+          "maxTrials": 129,
+          "recipePhase": "author.evaluate",
+          "samplingDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "environmentDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+        },
+        "proposal": {
+          "schemaVersion": 1,
+          "maxCount": 4
+        }
+      }
+    }
+  },
+  {
+    "name": "capabilities-evaluation-sampling-digest-invalid",
+    "validator": "capabilities",
+    "valid": false,
+    "value": {
+      "version": "gear.author.capabilities.v1",
+      "lockDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "roles": {
+        "analyst": {
+          "template": "read-only-analyst",
+          "kind": "execution.role"
+        }
+      },
+      "operationLimits": {
+        "tasks.sample": {},
+        "execution.rollout": {
+          "rollout.trials": 1
+        }
+      },
+      "execution": {
+        "selection": {
+          "schemaVersion": 1,
+          "metric": {
+            "id": "pass_rate",
+            "direction": "maximize",
+            "comparisonPrecision": 0.01,
+            "contractDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        },
+        "evaluation": {
+          "schemaVersion": 1,
+          "repeatCount": 2,
+          "maxTrials": 8,
+          "recipePhase": "author.evaluate",
+          "samplingDigest": "2222222222222222222222222222222222222222222222222222222222222222",
+          "environmentDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+        },
+        "proposal": {
+          "schemaVersion": 1,
+          "maxCount": 4
+        }
+      }
+    }
+  },
+  {
+    "name": "capabilities-proposal-bound-invalid",
+    "validator": "capabilities",
+    "valid": false,
+    "value": {
+      "version": "gear.author.capabilities.v1",
+      "lockDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "roles": {
+        "analyst": {
+          "template": "read-only-analyst",
+          "kind": "execution.role"
+        }
+      },
+      "operationLimits": {
+        "tasks.sample": {},
+        "execution.rollout": {
+          "rollout.trials": 1
+        }
+      },
+      "execution": {
+        "selection": {
+          "schemaVersion": 1,
+          "metric": {
+            "id": "pass_rate",
+            "direction": "maximize",
+            "comparisonPrecision": 0.01,
+            "contractDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        },
+        "evaluation": {
+          "schemaVersion": 1,
+          "repeatCount": 2,
+          "maxTrials": 8,
+          "recipePhase": "author.evaluate",
+          "samplingDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "environmentDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+        },
+        "proposal": {
+          "schemaVersion": 1,
+          "maxCount": 101
+        }
+      }
+    }
+  },
+  {
+    "name": "capabilities-rollout-meter-invalid",
+    "validator": "capabilities",
+    "valid": false,
+    "value": {
+      "version": "gear.author.capabilities.v1",
+      "lockDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "roles": {
+        "analyst": {
+          "template": "read-only-analyst",
+          "kind": "execution.role"
+        }
+      },
+      "operationLimits": {
+        "tasks.sample": {},
+        "execution.rollout": {
+          "rollout.trials": 2
+        }
+      },
+      "execution": {
+        "selection": {
+          "schemaVersion": 1,
+          "metric": {
+            "id": "pass_rate",
+            "direction": "maximize",
+            "comparisonPrecision": 0.01,
+            "contractDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        },
+        "evaluation": {
+          "schemaVersion": 1,
+          "repeatCount": 2,
+          "maxTrials": 8,
+          "recipePhase": "author.evaluate",
+          "samplingDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "environmentDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+        },
+        "proposal": {
+          "schemaVersion": 1,
+          "maxCount": 4
+        }
+      }
+    }
   }
 ]

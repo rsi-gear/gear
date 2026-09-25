@@ -14,6 +14,7 @@ from contextvars import ContextVar
 import copy
 from dataclasses import dataclass, field
 from decimal import Decimal
+from fractions import Fraction
 import hashlib
 import inspect
 import json
@@ -31,13 +32,19 @@ from gear_algorithm.author.dto import (
     ArtifactRef, AuthorCapabilitiesV1, EvaluationV1, HarnessAgentV1,
     ProposalBatchV1, RoleResultV1, TaskSelectionV1,
     assert_artifact_ref, assert_author_capabilities_v1, assert_harness_agent_v1,
-    assert_task_selection_v1, decode_role_execution_result,
+    assert_task_selection_v1, assert_evaluation_v1, assert_proposal_batch_v1,
+    decode_role_execution_result,
 )
 
 
 WIRE_VERSION = "gear.author.replay.v1"
 WIRE_VERSION_V2 = "gear.author.replay.v2"
 CAPABILITIES_VERSION = "gear.author.capabilities.v1"
+SEARCH_CONFIG_SCHEMA = {"type": "object", "required": ["rounds", "taskCount", "proposalCount", "seed"],
+                        "properties": {"rounds": {"type": "integer", "minimum": 1},
+                                       "taskCount": {"type": "integer", "minimum": 1},
+                                       "proposalCount": {"type": "integer", "minimum": 1},
+                                       "seed": {"type": "integer"}}, "additionalProperties": False}
 MAX_FRAME_BYTES = 1024 * 1024
 _active_task: ContextVar[_Task | None] = ContextVar("gear_author_task", default=None)
 
@@ -74,6 +81,15 @@ def _snapshot(value: Any, path: str = "$") -> Any:
         value = list(value)
     validate_json(value, path)
     return copy.deepcopy(value)
+
+
+def _managed_snapshot(value: Any, path: str) -> Any:
+    try:
+        return _snapshot(_plain(value), path)
+    except AuthorError:
+        raise
+    except (GearAlgorithmError, TypeError, ValueError, OverflowError, RecursionError) as exc:
+        raise AuthorError("AUTHOR_INPUT", f"managed input invalid at {path}: {exc}", _site(2)) from exc
 
 
 def _v2_wire_numbers(value: Any) -> Any:
@@ -236,6 +252,12 @@ def input_digest(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
+def _metric_comparison_key(value: float, quantum: float) -> int:
+    """Decimal-rational half-up key matching search/contracts.comparisonKey."""
+    ratio = Fraction(Decimal(str(value))) / Fraction(Decimal(str(quantum)))
+    return (ratio + Fraction(1, 2)).numerator // (ratio + Fraction(1, 2)).denominator
+
+
 def _cell(value: Any):
     def capture():
         return value
@@ -387,8 +409,13 @@ class WorkflowDefinition:
     def __call__(self, *args: Any, **kwargs: Any) -> ManagedCall:
         if self.root:
             raise AuthorError("AUTHOR_SCOPE", "algorithm is an entry point, not a child call", self.site)
-        frozen_args = _snapshot(list(args), "$.args")
-        frozen_kwargs = _snapshot(kwargs, "$.kwargs")
+        try:
+            frozen_args = _snapshot(_plain(list(args)), "$.args")
+            frozen_kwargs = _snapshot(_plain(kwargs), "$.kwargs")
+        except AuthorError:
+            raise
+        except (GearAlgorithmError, TypeError, ValueError, OverflowError, RecursionError) as exc:
+            raise AuthorError("AUTHOR_INPUT", f"workflow arguments invalid: {exc}", _site(2)) from exc
         return ManagedCall("workflow", {"args": frozen_args, "kwargs": frozen_kwargs}, definition=self)
 
 
@@ -414,8 +441,16 @@ def _check_capabilities(value: Any) -> None:
 
 
 class TaskTools:
+    __slots__ = ("_context",)
+
     def __init__(self, context: AuthorContext) -> None:
-        self._context = context
+        object.__setattr__(self, "_context", context)
+
+    def __setattr__(self, _name: str, _value: Any) -> None:
+        raise TypeError("author task tools are read-only")
+
+    def __delattr__(self, _name: str) -> None:
+        raise TypeError("author task tools are read-only")
 
     def sample(self, source_task_view_ref: Any, *, count: int, seed: int) -> ManagedCall:
         if self._context.wire_version != WIRE_VERSION_V2:
@@ -441,17 +476,24 @@ class TaskTools:
 
 
 class AuthorContext:
+    __slots__ = ("wire_version", "initial_agent", "data", "config", "capabilities", "tasks")
+
     def __init__(self, input_value: Mapping[str, Any], wire_version: str) -> None:
-        self.wire_version = wire_version
+        object.__setattr__(self, "wire_version", wire_version)
         def frozen(name: str) -> Any:
             value = _snapshot(input_value[name], f"$.input.{name}")
             return _readonly(_v2_wire_numbers(value) if wire_version == WIRE_VERSION_V2 else value)
-        self.initial_agent = frozen("initialAgent")
-        self.data = frozen("data")
-        self.config = frozen("config")
-        self.capabilities = (frozen("capabilities")
-                             if wire_version == WIRE_VERSION_V2 else None)
-        self.tasks = TaskTools(self)
+        object.__setattr__(self, "initial_agent", frozen("initialAgent"))
+        object.__setattr__(self, "data", frozen("data"))
+        object.__setattr__(self, "config", frozen("config"))
+        object.__setattr__(self, "capabilities", frozen("capabilities") if wire_version == WIRE_VERSION_V2 else None)
+        object.__setattr__(self, "tasks", TaskTools(self))
+
+    def __setattr__(self, _name: str, _value: Any) -> None:
+        raise TypeError("author context is read-only")
+
+    def __delattr__(self, _name: str) -> None:
+        raise TypeError("author context is read-only")
 
     def operation(self, kind: str, input: Any, *, binding_set_ref: Any = None,
                   limits: Any = None, starts_budget_clock: bool | None = None,
@@ -461,11 +503,11 @@ class AuthorContext:
         if self.wire_version == WIRE_VERSION_V2 and kind in (
                 "author.role", "author.edit", "author.rollout", "author.measure"):
             raise AuthorError("AUTHOR_CAPABILITY", f"A0 fake kind {kind} is unavailable in v2", _site(2))
-        payload: dict[str, Any] = {"kind": kind, "input": _snapshot(_plain(input), "$.operation.input")}
+        payload: dict[str, Any] = {"kind": kind, "input": _managed_snapshot(input, "$.operation.input")}
         if binding_set_ref is not None:
-            payload["bindingSetRef"] = _snapshot(_plain(binding_set_ref))
+            payload["bindingSetRef"] = _managed_snapshot(binding_set_ref, "$.operation.bindingSetRef")
         if limits is not None:
-            payload["limits"] = _snapshot(_plain(limits))
+            payload["limits"] = _managed_snapshot(limits, "$.operation.limits")
         if starts_budget_clock is not None:
             if type(starts_budget_clock) is not bool:
                 raise AuthorError("AUTHOR_INPUT", "starts_budget_clock must be boolean", _site(2))
@@ -527,6 +569,86 @@ class AuthorContext:
                                   _decoder=lambda value: decode_role_execution_result(value, binding_digest))
         return self.operation("author.role", {"name": name, "input": _plain(input)})
 
+    def select(self, evaluations: Any, *, metric: str, require_improvement: bool = False) -> Any:
+        configured = self.capabilities.execution.get("selection") if self.capabilities is not None else None
+        if configured is None:
+            raise AuthorError("AUTHOR_CAPABILITY", "select requires a frozen selection metric", _site(2))
+        if not isinstance(metric, str) or metric != configured.metric.id or type(require_improvement) is not bool:
+            raise AuthorError("AUTHOR_INPUT", "select metric or options invalid", _site(2))
+        values = _plain(evaluations)
+        if not isinstance(values, list) or not values:
+            raise AuthorError("AUTHOR_INPUT", "select requires an ordered nonempty Evaluation list", _site(2))
+        complete: list[dict[str, Any]] = []
+        for value in values:
+            try:
+                assert_evaluation_v1(value)
+            except GearAlgorithmError as exc:
+                raise AuthorError("AUTHOR_RESULT", f"select Evaluation invalid: {exc}", _site(2)) from exc
+            if not value["comparable"]:
+                continue
+            if metric not in value["metrics"]:
+                raise AuthorError("AUTHOR_RESULT", "select metric missing from complete Evaluation", _site(2))
+            if complete and value["comparisonKey"] != complete[0]["comparisonKey"]:
+                raise AuthorError("AUTHOR_RESULT", "select cannot compare different measurement conditions", _site(2))
+            complete.append(value)
+        if require_improvement and not values[0]["comparable"]:
+            raise AuthorError("AUTHOR_INPUT", "select requireImprovement needs a complete baseline first", _site(2))
+        if not complete:
+            raise AuthorError("AUTHOR_INPUT", "select has no comparable Evaluation", _site(2))
+        best = complete[0]
+        precision = configured.metric.comparison_precision
+        best_key = _metric_comparison_key(best["metrics"][metric], precision)
+        for candidate in complete[1:]:
+            key = _metric_comparison_key(candidate["metrics"][metric], precision)
+            better = key > best_key if configured.metric.direction == "maximize" else key < best_key
+            if better:
+                best, best_key = candidate, key
+        return _readonly({"agent": best["subject"], "evaluation": best})
+
+    def propose(self, parent: Any, *, role: str, count: int, feedback: Any = None) -> ManagedCall:
+        configured = self.capabilities.execution.get("proposal") if self.capabilities is not None else None
+        if configured is None:
+            raise AuthorError("AUTHOR_CAPABILITY", "propose requires frozen proposal bound", _site(2))
+        maximum = configured.max_count
+        count_value = json_safe_integer(count)
+        if not isinstance(role, str) or not role or count_value is None or not 1 <= count_value <= maximum:
+            raise AuthorError("AUTHOR_INPUT", "propose role or count exceeds frozen bound", _site(2))
+        grant = self.capabilities.roles.get(role)
+        if grant is None or grant.kind != "execution.workspace-edit" or grant.template != "harness-editor":
+            raise AuthorError("AUTHOR_CAPABILITY", f"role {role} lacks harness-editor grant", _site(2))
+        subject, measured = _plain(parent), _plain(feedback) if feedback is not None else None
+        try:
+            assert_harness_agent_v1(subject)
+            if measured is not None:
+                assert_evaluation_v1(measured)
+        except GearAlgorithmError as exc:
+            raise AuthorError("AUTHOR_INPUT", f"propose input invalid: {exc}", _site(2)) from exc
+        if subject["executionProfileDigest"] != self.initial_agent.execution_profile_digest \
+                or measured is not None and (not measured["comparable"]
+                                             or canonical_json(measured["subject"]) != canonical_json(subject)):
+            raise AuthorError("AUTHOR_INPUT", "propose parent profile or supplied feedback invalid", _site(2))
+        limits = _plain(self.capabilities.operation_limits.get("execution.workspace-edit"))
+        if not isinstance(limits, dict) or any(json_safe_integer(limits.get(dimension)) is None
+                                                    or limits[dimension] < 1
+                                                    for dimension in ("model.requests", "model.tokens")):
+            raise AuthorError("AUTHOR_CAPABILITY", "propose requires frozen editor model request and token limits", _site(2))
+        return author_propose(subject, measured, role, count_value, limits)
+
+    def evaluate(self, subject: Any, *, tasks: Any) -> ManagedCall:
+        configured = self.capabilities.execution.get("evaluation") if self.capabilities is not None else None
+        if configured is None:
+            raise AuthorError("AUTHOR_CAPABILITY", "evaluate requires frozen execution conditions", _site(2))
+        agent, selection, config = _plain(subject), _plain(tasks), _plain(configured)
+        try:
+            assert_harness_agent_v1(agent)
+            assert_task_selection_v1(selection)
+        except GearAlgorithmError as exc:
+            raise AuthorError("AUTHOR_INPUT", f"evaluate subject or TaskSelection invalid: {exc}", _site(2)) from exc
+        if agent["executionProfileDigest"] != self.initial_agent.execution_profile_digest \
+                or len(selection["selectedTaskIds"]) * config["repeatCount"] > config["maxTrials"]:
+            raise AuthorError("AUTHOR_INPUT", "evaluate subject profile or finite trial bound invalid", _site(2))
+        return author_evaluate(agent, selection, config)
+
     def edit(self, input: Any) -> ManagedCall:
         return self.operation("author.edit", _plain(input))
 
@@ -548,6 +670,148 @@ class AuthorContext:
         if outputs is not None:
             result["outputs"] = _snapshot(_plain(outputs))
         return result
+
+
+def _proposal_ref(value: Any, schema_id: str, label: str) -> dict[str, Any]:
+    try:
+        assert_artifact_ref(value, schema_id=schema_id)
+    except GearAlgorithmError as exc:
+        raise AuthorError("AUTHOR_RESULT", f"{label} artifact identity invalid", _site(2)) from exc
+    if value["mediaType"] != "application/json":
+        raise AuthorError("AUTHOR_RESULT", f"{label} artifact media type invalid", _site(2))
+    return value
+
+
+def _proposal_failure(index: int, stage: str, outcome: Mapping[str, Any],
+                      evidence_refs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    code = outcome.get("code") if outcome["kind"] == "error" else outcome.get("reason") or outcome["kind"]
+    return {"index": index, "stage": stage, "code": code,
+            "message": outcome.get("message", code) if outcome["kind"] == "error" else code,
+            "evidenceRefs": evidence_refs or []}
+
+
+@workflow
+async def author_propose_one(ctx: AuthorContext, parent: Any, feedback: Any, role: str,
+                             index: int, limits: Any) -> Any:
+    edit_input = {"roleId": role, "baseBindingSetRef": parent.binding_set_ref,
+                  "proposalIndex": index}
+    if feedback is not None:
+        edit_input["feedback"] = {"schemaVersion": 1, "subject": parent,
+                                  "taskViewRef": feedback.task_view_ref,
+                                  "measurementRef": feedback.measurement_ref,
+                                  "comparisonKey": feedback.comparison_key}
+    try:
+        edited = await ctx.operation("execution.workspace-edit", edit_input,
+                                     binding_set_ref=parent.binding_set_ref, limits=limits,
+                                     starts_budget_clock=True)
+    except OperationFailure as exc:
+        stage = ("validation" if exc.outcome.get("reason") == "workspace-edit-fixed-check-failed"
+                 else "edit")
+        return {"kind": "failure", "failure": _proposal_failure(index, stage, exc.outcome)}
+    value = _plain(edited)
+    if not isinstance(value, dict) or value.get("requestedBindingSetDigest") != parent.binding_set_ref.digest:
+        raise AuthorError("AUTHOR_RESULT", "workspace editor executed a different parent binding", _site(2))
+    produced = _proposal_ref(value.get("producedArtifactRef"), "harness.directory.v1", "Edited Harness")
+    evidence = _proposal_ref(value.get("evidenceRef"), "execution.workspace-edit.evidence.v1", "Edit evidence")
+    receipt = _proposal_ref(value.get("receiptRef"), "execution.receipt.v1", "Edit receipt")
+    validation = _proposal_ref(value.get("validationReceiptRef"),
+                               "execution.workspace-edit.validation.v1", "Edit validation")
+    try:
+        derived = await ctx.operation("bindings.derive", {"baseRef": parent.binding_set_ref,
+                                                      "replacements": {"harness": produced}},
+                                      binding_set_ref=parent.binding_set_ref, limits={},
+                                      starts_budget_clock=False)
+    except OperationFailure as exc:
+        return {"kind": "failure", "failure": _proposal_failure(index, "derive", exc.outcome,
+                                                                 [evidence, receipt, validation])}
+    result = _plain(derived)
+    if not isinstance(result, dict) or not isinstance(result.get("bindingSetRef"), dict) \
+            or result["bindingSetRef"].get("schemaId") != parent.binding_set_ref.schema_id:
+        raise AuthorError("AUTHOR_RESULT", "bindings.derive returned malformed binding", _site(2))
+    candidate = {"schemaVersion": 1, "kind": "harness-agent", "bindingSetRef": result["bindingSetRef"],
+                 "executionProfileDigest": parent.execution_profile_digest, "proposalIndex": index}
+    try:
+        assert_harness_agent_v1(candidate)
+    except GearAlgorithmError as exc:
+        raise AuthorError("AUTHOR_RESULT", f"bindings.derive candidate invalid: {exc}", _site(2)) from exc
+    return {"kind": "candidate", "candidate": candidate}
+
+
+@workflow
+async def author_propose(ctx: AuthorContext, parent: Any, feedback: Any, role: str,
+                         count: int, limits: Any) -> Any:
+    calls = [author_propose_one(_plain(parent), _plain(feedback), role, index, _plain(limits))
+             for index in range(count)]
+    settled = await ctx.parallel(calls)
+    candidates, failures = [], []
+    for item in settled:
+        if not item.ok:
+            raise AuthorError("AUTHOR_RESULT", "propose branch leaked a business failure", _site(2))
+        result = _plain(item.value)
+        if result["kind"] == "candidate":
+            candidates.append(result["candidate"])
+        else:
+            failures.append(result["failure"])
+    batch = {"schemaVersion": 1, "requestedCount": count, "candidates": candidates, "failures": failures}
+    try:
+        assert_proposal_batch_v1(batch)
+    except GearAlgorithmError as exc:
+        raise AuthorError("AUTHOR_RESULT", f"propose batch invalid: {exc}", _site(2)) from exc
+    return _readonly(batch)
+
+
+@workflow
+async def author_evaluate_trial(ctx: AuthorContext, subject: Any, selection: Any, task: Any,
+                                repeat_index: int, config: Any) -> Any:
+    return await ctx._tracked_operation("execution.rollout", {
+        "task": task,
+        "taskViewRef": selection.task_view_ref,
+        "samplingDigest": config.sampling_digest,
+        "environmentDigest": config.environment_digest,
+        "recipePhase": config.recipe_phase,
+        "repeatIndex": repeat_index,
+        "executedRevisionDigest": subject.binding_set_ref.digest,
+    }, binding_set_ref=subject.binding_set_ref, limits={"rollout.trials": 1}, starts_budget_clock=True)
+
+
+@workflow
+async def author_evaluate(ctx: AuthorContext, subject: Any, selection: Any, config: Any) -> Any:
+    consumed = await ctx.operation("tasks.consume", {
+        "taskViewRef": selection.task_view_ref,
+        "cursor": selection.cursor,
+        "count": len(selection.selected_task_ids),
+    }, limits={}, starts_budget_clock=False)
+    materialized = _plain(consumed)
+    expected_ids = list(selection.selected_task_ids)
+    if not isinstance(materialized, dict) or not isinstance(materialized.get("tasks"), list) \
+            or len(materialized["tasks"]) != len(expected_ids) \
+            or materialized.get("cursor") != {"viewDigest": selection.task_view_ref.digest,
+                                                   "nextIndex": len(expected_ids)} \
+            or any(not isinstance(task, dict) or task.get("id") != expected_ids[index]
+                   or task.get("purpose") == "final-test"
+                   for index, task in enumerate(materialized["tasks"])):
+        raise AuthorError("AUTHOR_RESULT", "tasks.consume did not return the exact signed TaskSelection", _site(2))
+    calls = [author_evaluate_trial(_plain(subject), _plain(selection), _plain(task), repeat_index, _plain(config))
+             for task in consumed.tasks for repeat_index in range(config.repeat_count)]
+    settled = await ctx.parallel(calls)
+    producer_ids = []
+    for item in settled:
+        if not item.ok or not isinstance(item.value.operation_id, str) \
+                or re.fullmatch(r"[a-f0-9]{64}", item.value.operation_id) is None:
+            raise AuthorError("AUTHOR_RESULT", "evaluate trial has no terminal committed operation ID", _site(2))
+        producer_ids.append(item.value.operation_id)
+    measured = await ctx.operation("author.measurement", {
+        "subject": subject, "selection": selection, "producerOperationIds": producer_ids,
+    }, binding_set_ref=subject.binding_set_ref, limits={}, starts_budget_clock=False)
+    result = _plain(measured)
+    try:
+        assert_evaluation_v1(result)
+    except GearAlgorithmError as exc:
+        raise AuthorError("AUTHOR_RESULT", f"author.measurement result invalid: {exc}", _site(2)) from exc
+    if canonical_json(result["subject"]) != canonical_json(subject) \
+            or canonical_json(result["taskViewRef"]) != canonical_json(selection.task_view_ref):
+        raise AuthorError("AUTHOR_RESULT", "author.measurement subject or TaskSelection drift", _site(2))
+    return measured
 
 
 @dataclass
@@ -573,7 +837,6 @@ class _Driver:
         self.used_history: set[str] = set()
         self.frontier: list[dict[str, Any]] = []
         operation_ids: set[str] = set()
-        self.context = AuthorContext(request["input"], request["version"])
         self.tasks: list[_Task] = []
         for entry in request["history"]:
             if not isinstance(entry, dict) or not isinstance(entry.get("address"), str):
@@ -720,7 +983,8 @@ class _Driver:
         kwargs = {key: _readonly(copy.deepcopy(val)) for key, val in payload["kwargs"].items()}
         version = (f"{parent_version}/{definition.name}@{definition.version}" if parent_version
                    else "algorithm.v2" if self.request["version"] == WIRE_VERSION_V2 else "algorithm.v1")
-        task = _Task(function(self.context, *args, **kwargs), address, version)
+        context = AuthorContext(self.request["input"], self.request["version"])
+        task = _Task(function(context, *args, **kwargs), address, version)
         self.tasks.append(task)
         return task
 
@@ -815,7 +1079,7 @@ def replay(definition: WorkflowDefinition, request: Mapping[str, Any]) -> dict[s
     return result
 
 
-__all__ = ["WIRE_VERSION", "WIRE_VERSION_V2", "CAPABILITIES_VERSION", "ArtifactRef",
+__all__ = ["WIRE_VERSION", "WIRE_VERSION_V2", "CAPABILITIES_VERSION", "SEARCH_CONFIG_SCHEMA", "ArtifactRef",
            "AuthorCapabilitiesV1", "EvaluationV1", "HarnessAgentV1", "ProposalBatchV1",
            "RoleResultV1", "TaskSelectionV1", "AuthorContext", "AuthorError", "ManagedCall",
            "OperationFailure", "OutcomeView", "WorkflowDefinition", "algorithm", "canonical_json",

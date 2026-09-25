@@ -158,7 +158,7 @@ it('fails closed when physical model, provider, budget or role-schema resolution
   await inspect(value => { delete (value.models as Partial<typeof value.models>).target; });
   await inspect(value => { value.providerManifests = value.providerManifests.filter(row => row.kind !== 'author.measurement'); });
   await inspect(value => { value.algorithm.requiredKinds = ['my-metric.compute']; });
-  await inspect(value => { value.providerManifests[0]!.outputSchema = { type: 'number', minimum: 0 } as never; });
+  await inspect(value => { value.providerManifests[0]!.outputSchema = { type: 'number', exclusiveMinimum: 0 } as never; });
   await inspect(value => { value.providerManifests[0]!.supportsInspect = false as never; });
   await inspect(value => { value.providerManifests[0]!.hardLimitDimensions = ['unmetered']; });
   await inspect(value => { value.providerManifests.find(row => row.kind === 'tasks.sample')!.meteredDimensions = ['model.requests']; });

@@ -99,9 +99,15 @@ Hitch 现在接受独立 author plan/context，不需要构造旧 EvolutionSpec 
 
 主审独立历史回归 3 文件 18 项通过，并复核两份真实旧报告及五份原文件前后字节不变，见 [历史报告审计](experiments/author-a2a-history-review-20260926.zh-CN.md)。完整 Campaign archive、授权经验和模型制品读取仍待后续范围。
 
+## A1 双语言搜索组合接口切片
+
+TS/Python 现在提供 propose、evaluate 和 select，并支持无反馈提案、自定义子流程、并行候选、稳定精度比较和错误恢复。最小 TS 搜索示例通过类型检查且无需类型断言。独立复审发现的只读 DTO 传递、分支 context 重绑定和异常被捕获后错误继续执行三个 P1 已修复并关闭。
+
+主审独立 6 个 TS 文件 31 项与 Python author 32 项通过，25 个切片文件与独立冻结副本一致，见 [搜索组合接口审计](experiments/author-a1-composites-review-20260926.zh-CN.md)。完整宿主、外部 CLI 和真实 Hitch 搜索仍需分别验收。
+
 ## 当前限制
 
-A0 是运行基础。`propose/evaluate/select`、通用运行 profile、五文件作者项目及新的 CLI 仍待后续 A1 切片；现有 A0 role/edit/rollout/measure 便利方法用于探针，v2 已拒绝这些假 operation。用户不能仅复制 v4 的搜索示例便运行真实实验。
+A0 是运行基础。`propose/evaluate/select` 已实现；通用运行 profile 的完整宿主装配、五文件作者项目及新的 CLI 仍待后续 A1 切片；现有 A0 role/edit/rollout/measure 便利方法用于探针，v2 已拒绝这些假 operation。用户不能仅复制 v4 的搜索示例便运行真实实验。
 
 性能按冻结标准报告：TS 的两个代表性轨迹通过每前沿额外 100 ms 门槛，Python 最新在 `770b3f9` 为 130.94/123.13 ms，仍未通过；TS 为 86.30/75.98 ms，两语言冷恢复通过。操作图 F/O/J 和原 key 一致，恢复没有重复物理执行。进程树峰值内存目前只有抽样证据，上界未验证。见 [最新正式复测](experiments/author-a0-benchmark-770b3f9-20260926.json)；[此前失败记录](experiments/author-a0-benchmark-97e938f-20260926.json)保留。未选择产品默认前沿上限，长流程门尚未验证。
 
@@ -114,7 +120,7 @@ A0 每次重放受 1 MiB 消息/历史与 256 KiB checkpoint 限制，超限明�
 | A0 功能基础 | 已提交并独立审计 |
 | A0 性能/历史盘点 | 真实历史格式清单已保存；Python 性能及 RSS 门未关闭；盘点不等于历史导入通过 |
 | A1 最小作者切片 | 实现中；真实 Hitch、外部作者体验、跨语言 provider 和非 winner 起点分别验收 |
-| A2 历史读取/复用 | A1 已有狭义非 winner Harness 导入；报告、经验、模型制品等完整格式覆盖待实现 |
+| A2 历史读取/复用 | 已有狭义非 winner Harness 导入和 A2a 只读 round 报告；经验、模型制品等完整格式覆盖待实现 |
 | A3 统一宿主与内置接口 | 待实现 |
 | A4 RHO/长期流程 | 待实现 |
 | A5 训练适配 | 待实现；CPU 合同与真实权重/GPU 验证分别报告 |

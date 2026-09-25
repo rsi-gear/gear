@@ -1,0 +1,139 @@
+[
+  {
+    "name": "integer-min-valid",
+    "schema": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "value": 1,
+    "valid": true
+  },
+  {
+    "name": "integer-min-invalid",
+    "schema": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "value": 0,
+    "valid": false
+  },
+  {
+    "name": "integer-max-valid",
+    "schema": {
+      "type": "integer",
+      "maximum": 3
+    },
+    "value": 3,
+    "valid": true
+  },
+  {
+    "name": "integer-max-invalid",
+    "schema": {
+      "type": "integer",
+      "maximum": 3
+    },
+    "value": 4,
+    "valid": false
+  },
+  {
+    "name": "integer-fraction-invalid",
+    "schema": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "value": 1.5,
+    "valid": false
+  },
+  {
+    "name": "integer-bool-invalid",
+    "schema": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "value": true,
+    "valid": false
+  },
+  {
+    "name": "number-min-max-valid",
+    "schema": {
+      "type": "number",
+      "minimum": -0.5,
+      "maximum": 0.5
+    },
+    "value": 0.5,
+    "valid": true
+  },
+  {
+    "name": "number-min-invalid",
+    "schema": {
+      "type": "number",
+      "minimum": -0.5
+    },
+    "value": -0.6,
+    "valid": false
+  },
+  {
+    "name": "number-max-invalid",
+    "schema": {
+      "type": "number",
+      "maximum": 0.5
+    },
+    "value": 0.6,
+    "valid": false
+  },
+  {
+    "name": "integer-unsafe-bound-invalid",
+    "schema": {
+      "type": "integer",
+      "minimum": 9007199254740992
+    },
+    "value": 1,
+    "valid": false
+  },
+  {
+    "name": "number-boolean-bound-invalid",
+    "schema": {
+      "type": "number",
+      "minimum": true
+    },
+    "value": 1,
+    "valid": false
+  },
+  {
+    "name": "inverted-bounds-invalid",
+    "schema": {
+      "type": "number",
+      "minimum": 2,
+      "maximum": 1
+    },
+    "value": 1,
+    "valid": false
+  },
+  {
+    "name": "bound-on-string-invalid",
+    "schema": {
+      "type": "string",
+      "minimum": 1
+    },
+    "value": "x",
+    "valid": false
+  },
+  {
+    "name": "number-unsafe-bound-invalid",
+    "schema": {
+      "type": "number",
+      "minimum": 9007199254740992
+    },
+    "value": 1,
+    "valid": false
+  },
+  {
+    "name": "number-huge-bound-invalid",
+    "schema": {
+      "type": "number",
+      "maximum": 1e+100
+    },
+    "value": 1,
+    "valid": false
+  }
+]

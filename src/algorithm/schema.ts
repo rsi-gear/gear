@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto';
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 export type JsonSchema =
   | { type: 'any'; enum?: JsonValue[] }
-  | { type: 'null' | 'boolean' | 'number' | 'integer' | 'string'; enum?: JsonValue[] }
+  | { type: 'null' | 'boolean' | 'string'; enum?: JsonValue[] }
+  | { type: 'number' | 'integer'; enum?: JsonValue[]; minimum?: number; maximum?: number }
   | { type: 'array'; items: JsonSchema; enum?: JsonValue[] }
   | { type: 'object'; properties?: Record<string, JsonSchema>; required?: string[]; additionalProperties?: boolean | JsonSchema; enum?: JsonValue[] };
 
@@ -60,10 +61,21 @@ export function assertSchema(schema: JsonSchema): void {
   if (!types.has(schema.type)) throw new Error('Unknown schema type');
   const allowed = schema.type === 'object'
     ? new Set(['type', 'enum', 'properties', 'required', 'additionalProperties'])
-    : schema.type === 'array' ? new Set(['type', 'enum', 'items']) : new Set(['type', 'enum']);
+    : schema.type === 'array' ? new Set(['type', 'enum', 'items'])
+      : schema.type === 'number' || schema.type === 'integer'
+        ? new Set(['type', 'enum', 'minimum', 'maximum']) : new Set(['type', 'enum']);
   for (const key of Object.keys(schema)) if (!allowed.has(key)) throw new Error(`Unsupported schema keyword ${key}`);
   if (schema.enum !== undefined) {
     if (!Array.isArray(schema.enum) || schema.enum.length === 0) throw new Error('schema enum must be nonempty');
+  }
+  if (schema.type === 'number' || schema.type === 'integer') {
+    for (const [name, bound] of [['minimum', schema.minimum], ['maximum', schema.maximum]] as const) {
+      if (bound !== undefined && (typeof bound !== 'number' || !Number.isFinite(bound)
+        || schema.type === 'integer' && !Number.isSafeInteger(bound)))
+        throw new Error(`${name} must be a finite ${schema.type === 'integer' ? 'safe integer' : 'number'}`);
+    }
+    if (schema.minimum !== undefined && schema.maximum !== undefined && schema.minimum > schema.maximum)
+      throw new Error('Schema minimum exceeds maximum');
   }
   if (schema.type === 'array') { if (!schema.items) throw new Error('Array schema requires items'); assertSchema(schema.items); }
   if (schema.type === 'object') {
@@ -96,4 +108,8 @@ export function validateSchema(schema: JsonSchema, value: unknown, path = '$'): 
     return;
   }
   if (typeof value !== schema.type && !(schema.type === 'integer' && typeof value === 'number' && Number.isSafeInteger(value))) throw new Error(`${path}: expected ${schema.type}`);
+  if (schema.type === 'number' || schema.type === 'integer') {
+    if (schema.minimum !== undefined && (value as number) < schema.minimum) throw new Error(`${path}: below minimum`);
+    if (schema.maximum !== undefined && (value as number) > schema.maximum) throw new Error(`${path}: above maximum`);
+  }
 }

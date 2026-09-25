@@ -4,7 +4,7 @@ from pathlib import Path
 import unittest
 
 from gear_algorithm.author import (AuthorError, CAPABILITIES_VERSION, WIRE_VERSION,
-                                   WIRE_VERSION_V2, OperationFailure, algorithm, input_digest, replay)
+                                   WIRE_VERSION_V2, OperationFailure, algorithm, input_digest, replay, workflow)
 from gear_algorithm.author.dto import (assert_author_capabilities_v1, assert_evaluation_v1,
                                        assert_harness_agent_v1, assert_proposal_batch_v1,
                                        assert_task_selection_v1, decode_role_execution_result)
@@ -262,6 +262,141 @@ class A1AuthorSliceTests(unittest.TestCase):
                         {**complete, "trials": complete["trials"] * 2}):
             with self.assertRaises(ValidationError):
                 assert_evaluation_v1(invalid)
+
+    def test_frozen_dtos_cross_custom_workflow_kwargs_and_nested_parallel(self):
+        selection = {"schemaVersion": 1, "taskViewRef": TASK_VIEW, "selectedTaskIds": ["task-1"],
+                     "cursor": {"viewDigest": TASK_VIEW["digest"], "nextIndex": 0}}
+        role_value = {"requestedBindingSetDigest": AGENT["bindingSetRef"]["digest"],
+                      "actualBindings": {}, "structuredResult": {"name": "analyst"},
+                      "structuredResultRef": {**TASK_VIEW, "schemaId": "execution.structured-result.v1"},
+                      "evidenceRef": TASK_VIEW,
+                      "receiptRef": {**TASK_VIEW, "schemaId": "execution.receipt.v1"}}
+
+        @workflow
+        async def child(ctx, agent, selected, *, payload, label):
+            assert agent.binding_set_ref.digest == AGENT["bindingSetRef"]["digest"]
+            assert selected.selected_task_ids[0] == "task-1"
+            assert payload.role.output.name == "analyst"
+            assert payload.rows[0].value.nested.score == 3
+            try:
+                payload["role"]["output"]["name"] = "changed"
+            except TypeError:
+                pass
+            else:
+                raise AssertionError("role input was mutable")
+            try:
+                payload["rows"][0]["value"]["nested"]["score"] = 99
+            except TypeError:
+                pass
+            else:
+                raise AssertionError("nested outcome input was mutable")
+            settled = await ctx.parallel([
+                ctx.operation("probe.one", {"label": label, "task": selected.selected_task_ids[0]}),
+                ctx.operation("probe.two", {"label": label, "score": payload.rows[0].value.nested.score}),
+            ])
+            return {"label": label, "value": settled[0].value}
+
+        @algorithm
+        async def parent(ctx):
+            role = await ctx.role("analyst", {"goal": "inspect"})
+            selected = await ctx.tasks.sample(TASK_VIEW, count=1, seed=7)
+            prepared = await ctx.parallel([ctx.operation("prepare", {})])
+            payload = {"role": role, "rows": [prepared[0]]}
+            branches = await ctx.parallel([
+                child(ctx.initial_agent, selected, payload=payload, label="left"),
+                child(ctx.initial_agent, selected, payload=payload, label="right"),
+            ])
+            return ctx.result(selected=ctx.initial_agent, outputs={"branches": branches})
+
+        history = []
+        for _wave in range(8):
+            reply = replay(parent, request(history=history))
+            if reply["status"] == "completed":
+                self.assertEqual([item["value"]["label"] for item in reply["result"]["outputs"]["branches"]],
+                                 ["left", "right"])
+                self.assertEqual(replay(parent, request(history=history)), reply)
+                break
+            values = {}
+            for item in reply["frontier"]:
+                result = (role_value if item["kind"] == "execution.role" else
+                          selection if item["kind"] == "tasks.sample" else
+                          {"nested": {"score": 3}} if item["kind"] == "prepare" else
+                          {"at": item["address"]})
+                values[item["address"]] = {"kind": "result", "value": result}
+            history.extend(seal(reply["frontier"], values))
+        else:
+            self.fail("nested custom workflow did not complete")
+
+    def test_branch_context_properties_cannot_be_rebound_and_local_archive_remains_mutable(self):
+        @workflow
+        async def branch(ctx, name):
+            for change in (lambda: setattr(ctx, "config", {"rounds": 99}),
+                           lambda: setattr(ctx, "initial_agent", {"changed": True}),
+                           lambda: setattr(ctx, "capabilities", {}),
+                           lambda: setattr(ctx, "data", {}),
+                           lambda: setattr(ctx.tasks, "_context", None)):
+                try:
+                    change()
+                except TypeError:
+                    pass
+                else:
+                    raise AssertionError("author context was mutable")
+            archive = [name]
+            archive.append(ctx.config.rounds)
+            return {"archive": archive, "agent": ctx.initial_agent.binding_set_ref.digest}
+
+        @algorithm
+        async def parent(ctx):
+            branches = await ctx.parallel([branch("left"), branch("right")])
+            return ctx.result(outputs={"branches": branches, "rounds": ctx.config.rounds})
+
+        finished = replay(parent, request(config={"rounds": 2}))
+        self.assertEqual(finished["status"], "completed")
+        self.assertEqual(finished["result"]["outputs"]["rounds"], 2)
+        self.assertEqual([item["value"]["archive"] for item in finished["result"]["outputs"]["branches"]],
+                         [["left", 2], ["right", 2]])
+
+    def test_caught_invalid_managed_construction_remains_fatal(self):
+        @workflow
+        async def child(ctx, value):
+            return value
+
+        @algorithm
+        async def invalid_kind(ctx):
+            try:
+                ctx.operation("", {})
+            except AuthorError:
+                pass
+            return await ctx.now()
+
+        @algorithm
+        async def invalid_input(ctx):
+            try:
+                ctx.operation("custom", {"unsupported": object()})
+            except Exception:
+                pass
+            return await ctx.now()
+
+        @algorithm
+        async def invalid_workflow_arg(ctx):
+            try:
+                child({"unsupported": object()})
+            except Exception:
+                pass
+            return await ctx.now()
+
+        @algorithm
+        async def invalid_parallel(ctx):
+            try:
+                ctx.parallel("not-a-list")
+            except AuthorError:
+                pass
+            return await ctx.now()
+
+        for definition in (invalid_kind, invalid_input, invalid_workflow_arg, invalid_parallel):
+            with self.subTest(definition=definition.name):
+                with self.assertRaises(AuthorError):
+                    replay(definition, request())
 
     def test_author_inputs_reject_attribute_and_nested_mutation(self):
         @algorithm

@@ -15,6 +15,7 @@ from gear_algorithm.protocol import json_safe_integer, validate_json
 
 AUTHOR_CAPABILITIES_VERSION = "gear.author.capabilities.v1"
 _SHA256 = re.compile(r"[a-f0-9]{64}\Z")
+_GEAR_SHA256 = re.compile(r"sha256:[a-f0-9]{64}\Z")
 _NAME = re.compile(r"[A-Za-z][A-Za-z0-9._-]{0,127}\Z")
 
 
@@ -61,6 +62,21 @@ class ProposalFailureV1(TypedDict):
     message: str
     evidenceRefs: list[ArtifactRef]
     checkReportRef: NotRequired[ArtifactRef]
+
+
+class AuthorProposalFeedbackV1(TypedDict):
+    schemaVersion: int
+    subject: HarnessAgentV1
+    taskViewRef: ArtifactRef
+    measurementRef: ArtifactRef
+    comparisonKey: str
+
+
+class AuthorProposalEditInputV1(TypedDict):
+    roleId: str
+    baseBindingSetRef: BindingSetRef
+    proposalIndex: int
+    feedback: NotRequired[AuthorProposalFeedbackV1]
 
 
 class ProposalBatchV1(TypedDict):
@@ -121,6 +137,11 @@ def _exact(item: dict[str, Any], required: set[str], optional: set[str], path: s
 def _digest(value: Any, path: str) -> None:
     if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
         raise ValidationError("expected SHA-256 digest", path)
+
+
+def _gear_digest(value: Any, path: str) -> None:
+    if not isinstance(value, str) or _GEAR_SHA256.fullmatch(value) is None:
+        raise ValidationError("expected namespaced SHA-256 digest", path)
 
 
 def _nonnegative(value: Any, path: str) -> None:
@@ -273,12 +294,49 @@ def assert_author_capabilities_v1(value: Any) -> None:
         if _NAME.fullmatch(kind) is None:
             raise ValidationError("invalid operation kind", f"$.AuthorCapabilities.operationLimits.{kind}")
         limits = _object(raw, f"$.AuthorCapabilities.operationLimits.{kind}")
-        if kind == "tasks.sample" and limits:
-            raise ValidationError("tasks.sample is a pure operation and cannot carry limits",
-                                  "$.AuthorCapabilities.operationLimits.tasks.sample")
+        if kind in ("tasks.sample", "tasks.consume", "bindings.derive", "author.checkpoint",
+                    "author.observe", "author.measurement") and limits:
+            raise ValidationError(f"{kind} is a pure operation and cannot carry limits",
+                                  f"$.AuthorCapabilities.operationLimits.{kind}")
         for dimension, limit in limits.items():
             _nonnegative(limit, f"$.AuthorCapabilities.operationLimits.{kind}.{dimension}")
-    _object(item["execution"], "$.AuthorCapabilities.execution")
+    execution = _object(item["execution"], "$.AuthorCapabilities.execution")
+    if "selection" in execution:
+        selection = _object(execution["selection"], "$.AuthorCapabilities.execution.selection")
+        _exact(selection, {"schemaVersion", "metric"}, set(), "$.AuthorCapabilities.execution.selection")
+        metric = _object(selection["metric"], "$.AuthorCapabilities.execution.selection.metric")
+        _exact(metric, {"id", "direction", "comparisonPrecision", "contractDigest"}, set(),
+               "$.AuthorCapabilities.execution.selection.metric")
+        if json_safe_integer(selection["schemaVersion"]) != 1 or not isinstance(metric["id"], str) or not metric["id"] \
+                or metric["direction"] not in ("maximize", "minimize") \
+                or type(metric["comparisonPrecision"]) not in (int, float) \
+                or not math.isfinite(metric["comparisonPrecision"]) or metric["comparisonPrecision"] <= 0:
+            raise ValidationError("Author selection metric configuration invalid", "$.AuthorCapabilities.execution.selection")
+        _gear_digest(metric["contractDigest"], "$.AuthorCapabilities.execution.selection.metric.contractDigest")
+    if "evaluation" in execution:
+        evaluation = _object(execution["evaluation"], "$.AuthorCapabilities.execution.evaluation")
+        _exact(evaluation, {"schemaVersion", "repeatCount", "maxTrials", "recipePhase", "samplingDigest", "environmentDigest"},
+               set(), "$.AuthorCapabilities.execution.evaluation")
+        count = json_safe_integer(evaluation["repeatCount"])
+        max_trials = json_safe_integer(evaluation["maxTrials"])
+        if json_safe_integer(evaluation["schemaVersion"]) != 1 or count is None or not 1 <= count <= 100 \
+                or max_trials is None or not 1 <= max_trials <= 128 \
+                or evaluation["recipePhase"] != "author.evaluate":
+            raise ValidationError("Author evaluation configuration invalid", "$.AuthorCapabilities.execution.evaluation")
+        _gear_digest(evaluation["samplingDigest"], "$.AuthorCapabilities.execution.evaluation.samplingDigest")
+        _gear_digest(evaluation["environmentDigest"], "$.AuthorCapabilities.execution.evaluation.environmentDigest")
+        rollout_limits = _object(_object(item["operationLimits"], "$.AuthorCapabilities.operationLimits")
+                                 .get("execution.rollout"), "$.AuthorCapabilities.operationLimits.execution.rollout")
+        _exact(rollout_limits, {"rollout.trials"}, set(), "$.AuthorCapabilities.operationLimits.execution.rollout")
+        if json_safe_integer(rollout_limits["rollout.trials"]) != 1:
+            raise ValidationError("Author evaluation requires one rollout trial reservation",
+                                  "$.AuthorCapabilities.operationLimits.execution.rollout")
+    if "proposal" in execution:
+        proposal = _object(execution["proposal"], "$.AuthorCapabilities.execution.proposal")
+        _exact(proposal, {"schemaVersion", "maxCount"}, set(), "$.AuthorCapabilities.execution.proposal")
+        maximum = json_safe_integer(proposal["maxCount"])
+        if json_safe_integer(proposal["schemaVersion"]) != 1 or maximum is None or not 1 <= maximum <= 100:
+            raise ValidationError("Author proposal count bound invalid", "$.AuthorCapabilities.execution.proposal")
 
 
 def assert_evaluation_v1(value: Any) -> None:
@@ -324,7 +382,7 @@ def assert_evaluation_v1(value: Any) -> None:
 
 __all__ = ["AUTHOR_CAPABILITIES_VERSION", "ArtifactRef", "BindingSetRef", "HarnessAgentV1",
            "TaskSelectionV1", "RoleResultV1", "ProposalFailureV1", "ProposalBatchV1", "TrialV1",
-           "EvaluationV1", "AuthorRoleGrantV1", "AuthorCapabilitiesV1", "assert_artifact_ref",
+           "EvaluationV1", "AuthorRoleGrantV1", "AuthorCapabilitiesV1", "AuthorProposalFeedbackV1", "AuthorProposalEditInputV1", "assert_artifact_ref",
            "assert_binding_set_ref", "assert_harness_agent_v1", "assert_task_selection_v1",
            "assert_role_result_v1", "decode_role_execution_result", "assert_proposal_batch_v1", "assert_evaluation_v1",
            "assert_author_capabilities_v1"]
