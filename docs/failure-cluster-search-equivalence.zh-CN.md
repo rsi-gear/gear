@@ -1,6 +1,6 @@
 # FailureClusterSearch 的 Campaign 重写与等价验收
 
-状态：确定性差分与本地完整 Search 回归已通过；阿里云部署验证仍在进行。基准为 `ec76b8b25703c46cbe3b2aaf94b64dc0c2277921` 的旧公开 `FailureClusterSearch`。
+状态：确定性差分、本地完整 Search 回归及阿里云功能门禁已通过；真实 TB2.1 实验执行环境仍在排障。基准为 `ec76b8b25703c46cbe3b2aaf94b64dc0c2277921` 的旧公开 `FailureClusterSearch`。
 
 ## 验收目标
 
@@ -44,4 +44,10 @@ Campaign 路径已通过 35 项冻结旧实现差分，包含最终结果、物�
 
 最终入口源码快照在 macOS / Node 26.5.1 / npm 11.17.0 下通过 29 个文件、342 项 Search 测试，无跳过或失败。其中包括 35 项冻结旧实现差分、原 1500ms generation deadline（约 1.67 秒完成测试）、原 1000-task / 1700-cell 用例（约 58.68 秒，保留 90 秒门槛）。额外持久化/provider 聚焦验证 46 项通过；丢失第二次 process projection 回复后，恢复保留原 key 且不重复第一次 projection 或 rollout。TypeScript、构建、安装后 Search 示例恢复，以及 TS/Python/跨语言作者包验证通过。
 
-阿里云已核对相同 223 个源码文件的摘要，并安装隔离的 Node 26.5.1，未替换系统 Node。该环境下原百任务四种 adapter 组合均通过，约 14–16 秒；千任务仍触发原 90 秒时限，性能优化和复验尚未结束。此前 Node 22 的两种百任务组合和千任务时限也未通过，这些结果不计入通过项。TB2.1 正式实验尚未启动；计划为固定 10 个任务全部用于搜索和同集评估、3 轮、meta/target 均为 gpt-6-luna。
+阿里云正式安装 Gear `6fe2c4a6fdb96e6a8775b0da0ca656a0ea0d0ea2`，核对相同 223 个源码文件的摘要，使用隔离的 Node 26.5.1，未替换系统 Node。该环境下原百任务四种 adapter 组合均通过，约 14–16 秒；功能门禁选中的 75 项全部通过：原 D05 1 项、冻结差分 35 项、时钟恢复 7 项、过期 bootstrap 1 项、science 冻结恢复 2 项、持久化/provider 框架 29 项。筛选命令之外的用例不计入通过数。
+
+服务器千任务测试仍触发原 90 秒时限（测试报告约 90.48 秒），保留为已知性能限制。此前 Node 22 的两种百任务组合和千任务时限也未通过，这些结果不计入通过项；未放宽任何测试时限。
+
+真实实验配置为 TB2.1 固定 10 个任务全部用于搜索和同集评估、3 轮、meta/target 均为 `openai-codex/gpt-6-luna`、reasoning effort 为 medium。Hitch 升级至 dev `1c600caf9dda6efea1d153b5cd78182251f0e1ed`（0.2.14）。旧 Meta 登录过期的问题已通过同账户的有效服务器登录解决，并将凭据隔离到本次运行目录；旧 Codex CLI 0.153.2 返回 Luna 不支持，独立安装的 0.157.0 已用同一 Luna 型号完成真实 MCP 预检。
+
+首个已提交批次的三轮均在 Hitch planning 阶段失败（`runtime payload rule is missing: node_modules/smol-toml`），settled trials 为 0，没有候选搜索或有效分数。这是部署执行失败，不是算法效果或成功的三轮基准；保留失败批次并修复依赖后重新验证。
