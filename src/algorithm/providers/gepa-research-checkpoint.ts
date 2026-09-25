@@ -33,7 +33,8 @@ type Frozen = { input: GepaResearchCheckpointInput; archive: ResearchArchive; fi
   regression: { proposals: RegressionProposal[] } | null;
   regressionCheckpoint: { digest: string; proposalDigests: string[]; reasonCodes: string[] } | null }
 type RecordValue = { schemaVersion: 1; operationId: string; inputDigest: string; implementationDigest: string;
-  bindingDigest: string; stage: 'intent' | 'complete' | 'cancelled-before-start'; completion?: CompletionEnvelope }
+  bindingDigest: string; stage: 'intent' | 'complete' | 'cancelled-before-start';
+  progress?: SearchProgress; progressDigest?: string; completion?: CompletionEnvelope }
 
 /** Publishes only already sealed seed research. Every journal write is idempotent under the original round key. */
 export class GepaResearchCheckpointProvider implements OperationProvider {
@@ -152,7 +153,9 @@ export class GepaResearchCheckpointProvider implements OperationProvider {
     if (!record) return null
     if (!record || record.schemaVersion !== 1 || !['intent', 'complete', 'cancelled-before-start'].includes(record.stage)
       || record.operationId !== envelope.operationId || record.inputDigest !== envelope.inputDigest
-      || record.implementationDigest !== envelope.implementationDigest || record.bindingDigest !== envelope.bindingSetRef.digest)
+      || record.implementationDigest !== envelope.implementationDigest || record.bindingDigest !== envelope.bindingSetRef.digest
+      || (record.progress && record.progressDigest !== jsonDigest(record.progress as unknown as JsonValue))
+      || (!!record.progress !== !!record.progressDigest))
       throw new Error('GEPA research checkpoint record drift')
     return record
   }
@@ -163,24 +166,40 @@ export class GepaResearchCheckpointProvider implements OperationProvider {
     const { record } = await this.records.create(this.manifest.kind, envelope.operationId, value)
     return record
   }
-  private checkpointRef(frozen: Frozen): ArtifactRef {
+  private checkpointRef(frozen: Frozen, progress: SearchProgress): ArtifactRef {
     return this.artifacts.putJson({ schemaVersion: 1, roundId: frozen.input.roundId,
       publishResearch: frozen.input.publishResearch !== false,
       archiveDigest: frozen.archive.digest, findings: frozen.input.findings,
-      progressDigest: jsonDigest(frozen.progress), regressionDigest: frozen.input.regressionRef?.digest ?? null,
+      progressDigest: jsonDigest(progress as unknown as JsonValue), regressionDigest: frozen.input.regressionRef?.digest ?? null,
       regressionCheckpointDigest: frozen.regressionCheckpoint?.digest ?? null,
       supportDigests: frozen.supports.map(support => support.digest),
       researchResultDigests: frozen.researchResults.map(result => result.digest),
       sharedEpochDigest: frozen.input.sharedEpoch ? digestJson(frozen.input.sharedEpoch) : null },
     'gepa.research-checkpoint.v1')
   }
-  private completion(envelope: OperationEnvelope, frozen: Frozen): CompletionEnvelope {
+  private completion(envelope: OperationEnvelope, frozen: Frozen, progress: SearchProgress): CompletionEnvelope {
     return { operationId: envelope.operationId, idempotencyKey: envelope.idempotencyKey,
       inputDigest: envelope.inputDigest, implementationDigest: envelope.implementationDigest,
       outcome: { kind: 'result', value: { archiveRef: frozen.input.archiveRef,
-        checkpointRef: this.checkpointRef(frozen) } as unknown as JsonValue } }
+        checkpointRef: this.checkpointRef(frozen, progress) } as unknown as JsonValue } }
   }
-  private async published(frozen: Frozen): Promise<boolean> {
+  private async mergedProgress(frozen: Frozen): Promise<SearchProgress> {
+    const live = await this.journal.read<SearchProgress>(`rounds/${frozen.input.roundId}/progress`)
+    if (!live || live.evaluations.length === 0) return frozen.progress
+    if (!Array.isArray(live.evaluations) || live.evaluations.some(row => row.state !== 'settled'
+      || (row as { stage: string }).stage === 'held-out')) throw new Error('GEPA seed evaluation progress is unsettled')
+    const key = (row: SearchProgress['evaluations'][number]): string => `${row.stagePlanDigest}/${row.candidateId}`
+    const actual = new Map(live.evaluations.map(row => [key(row), row]))
+    if (actual.size !== live.evaluations.length) throw new Error('GEPA seed evaluation progress has duplicate rows')
+    for (const row of frozen.progress.evaluations) {
+      const saved = actual.get(key(row))
+      if (!saved || canonicalJson(saved as unknown as JsonValue) !== canonicalJson(row as unknown as JsonValue))
+        throw new Error('GEPA seed evaluation progress differs from verified evidence')
+    }
+    return { phase: frozen.progress.phase, evaluations: live.evaluations,
+      decisions: frozen.progress.decisions }
+  }
+  private async published(frozen: Frozen, progress: SearchProgress): Promise<boolean> {
     if (frozen.input.sharedEpoch) {
       const pointer = await this.journal.read<{ ref: string }>(`evolution/shared-epoch-${frozen.input.sharedEpoch.epoch}`)
       if (!pointer) return false
@@ -238,13 +257,13 @@ export class GepaResearchCheckpointProvider implements OperationProvider {
           throw new Error('GEPA regression sanitized prompt drift')
       }
     }
-    const progress = await this.journal.read<SearchProgress>(`rounds/${frozen.input.roundId}/progress`)
-    if (!progress) return false
-    if (canonicalJson(progress as unknown as JsonValue) !== canonicalJson(frozen.progress as unknown as JsonValue))
+    const savedProgress = await this.journal.read<SearchProgress>(`rounds/${frozen.input.roundId}/progress`)
+    if (!savedProgress) return false
+    if (canonicalJson(savedProgress as unknown as JsonValue) !== canonicalJson(progress as unknown as JsonValue))
       throw new Error('GEPA seed progress drift')
     return true
   }
-  private async publish(frozen: Frozen): Promise<void> {
+  private async publish(frozen: Frozen, progress: SearchProgress): Promise<void> {
     if (frozen.input.sharedEpoch) {
       const shared = frozen.input.sharedEpoch
       const installed = await this.journal.freezeEvolution(`shared-epoch-${shared.epoch}`, () => seal(shared))
@@ -295,15 +314,16 @@ export class GepaResearchCheckpointProvider implements OperationProvider {
     }
     const progressKey = `rounds/${frozen.input.roundId}/progress`
     const oldProgress = await this.journal.read<SearchProgress>(progressKey)
-    if (!oldProgress || canonicalJson(oldProgress as unknown as JsonValue) !== canonicalJson(frozen.progress as unknown as JsonValue))
-      await this.journal.write(progressKey, frozen.progress)
+    if (!oldProgress || canonicalJson(oldProgress as unknown as JsonValue) !== canonicalJson(progress as unknown as JsonValue))
+      await this.journal.write(progressKey, progress)
   }
   async inspect(envelope: OperationEnvelope): Promise<ProviderInspection> {
     const frozen = this.freeze(envelope), record = await this.read(envelope)
     if (!record) return { status: 'not-started' }
     if (record.stage === 'cancelled-before-start') return { status: 'cancelled', releaseConfirmed: true }
     if (record.stage === 'complete') {
-      if (!await this.published(frozen)) throw new Error('GEPA completed research checkpoint missing')
+      if (!record.progress || !await this.published(frozen, record.progress))
+        throw new Error('GEPA completed research checkpoint missing')
       return { status: 'completed', completion: record.completion! }
     }
     return { status: 'replay-safe' }
@@ -314,14 +334,19 @@ export class GepaResearchCheckpointProvider implements OperationProvider {
       const record = await this.create(envelope, 'intent')
       if (record.stage === 'cancelled-before-start') throw new Error('Cancelled GEPA research checkpoint cannot submit')
       if (record.stage === 'complete') {
-        if (!await this.published(frozen)) throw new Error('GEPA completed research checkpoint missing')
+        if (!record.progress || !await this.published(frozen, record.progress))
+          throw new Error('GEPA completed research checkpoint missing')
         return { status: 'completed', completion: record.completion! }
       }
       try {
-        await this.publish(frozen)
-        if (!await this.published(frozen)) throw new Error('GEPA research checkpoint unresolved')
-        const completion = this.completion(envelope, frozen)
-        await this.records.write(this.manifest.kind, envelope.operationId, { ...record, stage: 'complete', completion })
+        const progress = record.progress ?? await this.mergedProgress(frozen)
+        if (!record.progress) await this.records.write(this.manifest.kind, envelope.operationId,
+          { ...record, progress, progressDigest: jsonDigest(progress as unknown as JsonValue) })
+        await this.publish(frozen, progress)
+        if (!await this.published(frozen, progress)) throw new Error('GEPA research checkpoint unresolved')
+        const completion = this.completion(envelope, frozen, progress)
+        await this.records.write(this.manifest.kind, envelope.operationId,
+          { ...record, stage: 'complete', progress, progressDigest: jsonDigest(progress as unknown as JsonValue), completion })
         return { status: 'completed', completion }
       } catch (error) { throw new ProviderReconcileError('GEPA research checkpoint publication failed', { cause: error }) }
     })
