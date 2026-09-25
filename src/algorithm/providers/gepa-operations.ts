@@ -587,6 +587,11 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
   }
   private async cached(expected: CellIdentity[]): Promise<{ cells: EvidenceCell[]; missing: CellIdentity[]; repairCells: number }> {
     const cells: EvidenceCell[] = [], missing: CellIdentity[] = [], inspected: EvidenceCell[] = []
+    const expectedByKey = new Map<string, CellIdentity>()
+    for (const identity of expected) {
+      const key = cellKey(identity)
+      if (!expectedByKey.has(key)) expectedByKey.set(key, identity)
+    }
     let repairCells = 0
     for (const identity of expected) {
       const persisted = await this.readCell(identity)
@@ -600,7 +605,7 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
       if (!validOutcome(cell)) { missing.push(identity); repairCells++; continue }
       cells.push(cell)
     }
-    if (!await verifyCells(this.physical, inspected.map(cell => ({ cell, identity: expected.find(i => cellKey(i) === cellKey(cell.identity))! }))))
+    if (!await verifyCells(this.physical, inspected.map(cell => ({ cell, identity: expectedByKey.get(cellKey(cell.identity))! }))))
       throw new ProviderProtocolError('GEPA cached cell provenance rejected')
     return { cells, missing, repairCells }
   }
@@ -778,6 +783,19 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
     }
     const originals = [...request.cached, ...received]
     let cells = originals.map(cell => cellsByKey.get(cellKey(cell.identity)) ?? cell)
+    // Keep the first original for each key, matching originals.find below.
+    // The usual unique-cell path can validate each replacement against its
+    // current cell without repeatedly sealing the entire growing result.
+    const originalByKey = new Map<string, EvidenceCell>()
+    const cellIndex = new Map<string, number>()
+    if (projectionPolicy !== 'defer') {
+      for (const cell of originals) {
+        const key = cellKey(cell.identity)
+        if (!originalByKey.has(key)) originalByKey.set(key, cell)
+      }
+      cells.forEach((cell, index) => cellIndex.set(cellKey(cell.identity), index))
+    }
+    const uniqueCells = cellIndex.size === cells.length
     const usage = { rolloutCells: notStarted ? 0 : requested.length, repairCells: notStarted ? 0 : request.repairCells }
     this.receipt(envelope, usage)
     const applicable = new Set(processTasks(universe, processMode))
@@ -787,13 +805,23 @@ export class GepaEvaluationProvider extends GepaOperationProvider {
       applicable.has(cell.identity.taskId) && cell.process?.status !== 'available'
       || [...requiredMetrics].some(metric => cell.rawMetrics?.metrics[metric]?.status !== 'available'))
     for (const cell of projectionPolicy === 'defer' ? [] : [...cells]) {
-      const original = originals.find(item => cellKey(item.identity) === cellKey(cell.identity))!
+      const key = cellKey(cell.identity)
+      const original = originalByKey.get(key)!
       if (!missingProjection(cell) && !await this.readProjection(envelope, cell.identity)) continue
       if (!this.physical.completeProcess) return { outcome: { kind: 'error', code: 'PROCESS_COMPLETION_UNSUPPORTED',
         message: 'Original-run process/raw-metric completion is unavailable from this provider' }, usage }
       const projected = await this.project(envelope, record, original)
-      const before: StageResult = seal({ stagePlanDigest: plan.digest, snapshotDigest: snapshot.digest, cells, settled: true })
-      cells = completeEvidence(before, [projected]).cells
+      if (uniqueCells) {
+        const index = cellIndex.get(key)!
+        const before: StageResult = seal({ stagePlanDigest: plan.digest, snapshotDigest: snapshot.digest,
+          cells: [cells[index]!], settled: true })
+        cells[index] = completeEvidence(before, [projected]).cells[0]!
+      } else {
+        // Preserve the old whole-result normalization when the input itself
+        // contains duplicate keys; final profile validation still owns them.
+        const before: StageResult = seal({ stagePlanDigest: plan.digest, snapshotDigest: snapshot.digest, cells, settled: true })
+        cells = completeEvidence(before, [projected]).cells
+      }
       if (missingProjection(projected)) return { outcome: { kind: 'error', code: 'PROCESS_COMPLETION_INCOMPLETE',
         message: 'Original-run process/raw-metric completion did not supply the required evidence' }, usage }
     }
