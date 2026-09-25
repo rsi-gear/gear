@@ -54,6 +54,16 @@ export type CampaignState = {
 function id(value: JsonValue): string { return createHash('sha256').update(canonicalJson(value)).digest('hex'); }
 function validName(value: string): void { if (typeof value !== 'string' || !/^[A-Za-z][A-Za-z0-9._-]{0,127}$/.test(value)) throw new Error(`Invalid identifier: ${value}`); }
 function clone<T>(value: T): T { return JSON.parse(canonicalJson(value)) as T; }
+function frozenCopy<T>(value: T): T {
+  const detached = clone(value);
+  const freeze = (item: unknown): void => {
+    if (item === null || typeof item !== 'object') return;
+    for (const child of Object.values(item)) freeze(child);
+    Object.freeze(item);
+  };
+  freeze(detached);
+  return detached;
+}
 
 export class AlgorithmRuntime {
   readonly artifacts: FileArtifactStore;
@@ -279,16 +289,16 @@ export class AlgorithmRuntime {
     await this.store.recoverProjection?.();
   }
 
-  private withHydratedWriter<R>(work: () => Promise<R>): Promise<R> {
+  private withHydratedWriter<R>(work: (loaded: CampaignState | null) => Promise<R>): Promise<R> {
     return this.store.withWriter(async () => {
       // A journal-backed writer has already verified its full chain under the
       // lease. Restore artifacts and validate identity before projection or
       // effects, without re-reading that chain outside and inside the lease.
       await (this.artifacts as FileArtifactStore & Partial<ArtifactCheckpoint>).hydrate?.();
       if (this.store.writerHydrates !== true) await this.store.hydrate?.();
-      this.load();
+      const loaded = this.load();
       await this.store.recoverProjection?.();
-      return work();
+      return work(loaded);
     });
   }
 
@@ -514,8 +524,12 @@ export class AlgorithmRuntime {
   }
 
   async tick(): Promise<'complete' | 'waiting' | 'advanced'> {
-    return this.withHydratedWriter(async () => {
-      const loaded = this.load();
+    return this.withHydratedWriter(async loaded => (await this.tickLocked(loaded)).status);
+  }
+
+  private async tickLocked(loaded: CampaignState | null): Promise<{
+    status: 'complete' | 'waiting' | 'advanced'; state: CampaignState
+  }> {
       if (!loaded) {
         this.validateBinding(this.spec.initialBindingSetRef, this.spec.initialBindingSetRef);
         const base: CampaignState = { version: 1, spec: clone(this.spec), ...(this.storageBackendDigest ? { storageBackendDigest: this.storageBackendDigest } : {}), algorithmManifestDigest: jsonDigest(this.manifest), kernelImplementationDigest: kernelImplementationDigest(), providerCatalogDigest: this.providerCatalogDigest, activeBindingSetRef: this.spec.initialBindingSetRef, initialBindingSetRef: this.spec.initialBindingSetRef, state: null, decisionIndex: 0, operations: {}, spent: {}, receiptSources: {}, phase: 'running' };
@@ -523,13 +537,13 @@ export class AlgorithmRuntime {
         const initialized = this.applyDecision(base, decision);
         await (this.artifacts as FileArtifactStore & Partial<ArtifactCheckpoint>).flush?.();
         await this.store.commit(initialized as unknown as JsonValue, 'decision.initialize');
-        return initialized.phase === 'complete' ? 'complete' : 'advanced';
+        return { status: initialized.phase === 'complete' ? 'complete' : 'advanced', state: initialized };
       }
       let state: CampaignState = loaded;
-      if (state.phase === 'complete') return 'complete';
+      if (state.phase === 'complete') return { status: 'complete', state };
       if (Object.values(state.auxiliaryOperations ?? {}).some(group =>
         Object.values(group).some(record => record.status !== 'completed' && !(record.status === 'cancelled' && record.released))))
-        return 'waiting';
+        return { status: 'waiting', state };
       const pending = Object.entries(state.operations).filter(([, record]) => record.status !== 'completed' && !(record.status === 'cancelled' && record.released)).sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
       for (let offset = 0; offset < pending.length; offset += 8) {
         const batch = pending.slice(offset, offset + 8);
@@ -560,15 +574,39 @@ export class AlgorithmRuntime {
         state = this.applyDecision(state, decision);
         await (this.artifacts as FileArtifactStore & Partial<ArtifactCheckpoint>).flush?.();
         await this.store.commit(state as unknown as JsonValue, 'decision.reduce');
-        return state.phase === 'complete' ? 'complete' : 'advanced';
+        return { status: state.phase === 'complete' ? 'complete' : 'advanced', state };
       }
-      return 'waiting';
-    });
+      return { status: 'waiting', state };
   }
 
   async runUntilBlocked(maxTicks = 100): Promise<'complete' | 'waiting'> {
     for (let i = 0; i < maxTicks; i++) { const result = await this.tick(); if (result !== 'advanced') return result; }
     throw new Error('Maximum decisions exceeded');
+  }
+
+  /** Advances a SearchJournal-owned run under one writer lease. Each step still
+   * flushes and commits independently; callbacks run between committed steps.
+   * Callers must already own the SearchJournal's cross-process single writer. */
+  async runWithWriterUntilBlocked(hooks: {
+    beforeTick?: () => void | Promise<void>;
+    onAdvanced?: (scientificState: Readonly<JsonValue>) => void | Promise<void>;
+  } = {}, maxTicks = Number.MAX_SAFE_INTEGER): Promise<'complete' | 'waiting'> {
+    if (this.store.writerHydrates !== true)
+      throw new Error('Continuous Campaign writer requires a journal-backed store');
+    if (!Number.isSafeInteger(maxTicks) || maxTicks < 1)
+      throw new Error('Continuous Campaign writer needs a positive safe step limit');
+    return this.withHydratedWriter(async loaded => {
+      let state = loaded;
+      for (let index = 0; index < maxTicks; index++) {
+        await hooks.beforeTick?.();
+        this.store.assertLease();
+        const step = await this.tickLocked(state);
+        state = step.state;
+        if (step.status !== 'advanced') return step.status;
+        await hooks.onAdvanced?.(frozenCopy(state.state));
+      }
+      throw new Error('Maximum decisions exceeded');
+    });
   }
 
   /** Adds one host-authorized repair group without changing a scientific decision. */
