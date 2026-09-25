@@ -47,6 +47,12 @@ Python replay port 改为异步创建，首次 replay 使用刚完成环境准�
 
 实施者构建及类型检查通过，相关 4 文件 38 项回归通过。独立审查隔离副本 2 文件 14 项通过，含真实 SIGKILL 与同版本冷恢复。第一次共享工作树测试为 13/14，失败发生于并行源码修改触发 host 闭包漂移；隔离冻结源码后通过，未取消身份检查。见 [生命周期审计](experiments/author-a0-python-admission-review-20260926.zh-CN.md)。已在隔离的 `770b3f9` 按原协议复测，Python 两种轨迹为 130.94/123.13 ms，仍未通过；不能据此宣称墙时改善。
 
+## A1 可信评估汇总切片
+
+`author.measurement` 从宿主验证的已提交 rollout 汇总结果，核对保存请求、物理凭据、任务与重复覆盖、绑定及冻结评分合同；仅完整有效的结果可参与比较。作者不能直接提交分数、receipt 或比较键。丢回复后可用原 key 纯重算；命名但未提交的 producer 不会被当作固定的缺失结果。
+
+主审独立验证 2 文件 12 项通过，见 [评估汇总审计](experiments/author-a1-measurement-review-20260926.zh-CN.md)。本切片的 committed-operation resolver 是明确的宿主注入边界，真实历史读取、新 Hitch 请求持久化及 ctx.evaluate 接线仍分别实现和验收。
+
 ## 当前限制
 
 A0 是运行基础。`propose/evaluate/select`、通用运行 profile、五文件作者项目及新的 CLI 仍待后续 A1 切片；现有 A0 role/edit/rollout/measure 便利方法用于探针，v2 已拒绝这些假 operation。用户不能仅复制 v4 的搜索示例便运行真实实验。
