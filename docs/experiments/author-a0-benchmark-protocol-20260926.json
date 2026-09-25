@@ -8,11 +8,12 @@
     "release": "27.0.0",
     "architecture": "arm64",
     "logicalCpus": 10,
-    "python": "3.9.6",
+    "python": "3.11.16",
     "node": "26.5.1",
     "vitest": "4.1.11",
     "typescript": "6.0.3",
-    "memoryCapacity": "not-readable-in-sandbox"
+    "memoryCapacity": "not-readable-in-sandbox",
+    "pythonExecutable": "/opt/homebrew/bin/python3.11"
   },
   "workloads": [
     {
@@ -89,5 +90,13 @@
     "defaultProductLimit": "not-selected",
     "longRun1000Waves10000Operations": "separate-later-gate"
   },
-  "failurePolicy": "Report a failed threshold without changing this frozen protocol; optimize or separately revise the design with new evidence."
+  "failurePolicy": "Report a failed threshold without changing this frozen protocol; optimize or separately revise the design with new evidence.",
+  "preMeasurementAmendments": [
+    {
+      "reason": "SDK requires Python >=3.11; system python3 3.9.6 was exploration only.",
+      "priorPython": "3.9.6",
+      "authorPerformanceTimingStarted": false,
+      "acceptanceThresholdsChanged": false
+    }
+  ]
 }
