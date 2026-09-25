@@ -358,17 +358,16 @@ export class CampaignFailureClusterSearch {
     try {
     const phases = new CampaignPhaseProgress(this.store, request.roundId, this.hooks.progress)
     await phases.reach(runtime.snapshot()?.state ?? null)
-    let status: Awaited<ReturnType<AlgorithmRuntime['tick']>>
-    do {
-      signal.throwIfAborted(); status = await runtime.tick()
-      if (status === 'advanced') {
+    const status = await runtime.runWithWriterUntilBlocked({
+      beforeTick: () => signal.throwIfAborted(),
+      onAdvanced: async scientificState => {
         // A reducer advances only after the preceding physical group settled;
         // the old compatibility pointer can then be cleared before the next key.
         const prior = await this.store.read<PendingSearchOperation | null>(`rounds/${request.roundId}/pending-operation`)
         if (prior) await this.store.write(`rounds/${request.roundId}/pending-operation`, null)
-        await phases.reach(runtime.snapshot()?.state ?? null)
-      }
-    } while (status === 'advanced')
+        await phases.reach(scientificState as JsonValue)
+      },
+    })
     if (status !== 'complete') {
       const pendingReference = Object.values(runtime.snapshot()?.operations ?? {}).find(record =>
         record.envelope.kind === 'gepa.objective-reference'
