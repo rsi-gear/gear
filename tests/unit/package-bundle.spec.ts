@@ -15,7 +15,7 @@ describe('published Gear bundle', () => {
       exports?: Record<string, unknown>
     }
     expect(pkg.name).toBe('rsi-gear')
-    expect(pkg.version).toBe('0.1.1')
+    expect(pkg.version).toBe('0.1.2')
     expect(pkg.dsh?.bundle?.patch).toBe('./cordis.patch.yml')
     expect(pkg.files).toContain('cordis.patch.yml')
     expect(pkg.files).toContain('assets/llm-verifier-bridge.py')

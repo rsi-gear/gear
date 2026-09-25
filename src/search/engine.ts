@@ -184,9 +184,20 @@ export class FailureClusterSearch {
       const { digest: discarded, ...body } = plan
       const baselinePlan = seal(body)
       const result = await evaluate(seed, baselinePlan, anchor)
+      const p = profile(seed, baselinePlan, anchor, result, settings.search.process.mode, bootstrapScope.weights)
+      if (result.failure?.kind === 'execution-failure'
+        || !result.failure && !(seed.objective ? p.objectiveComplete : p.outcomeComplete)) {
+        // evaluate() may return a later repair, but every repair must target the
+        // frozen original evaluation. Keep that reference stable while this
+        // incomplete bootstrap blocks admission of the next round.
+        const original = await this.store.read<{ ref: string }>(`rounds/${request.roundId}/evaluation-${digestJson([baselinePlan.digest, anchor.digest]).slice(7)}`)
+        invariant(original, 'missing bootstrap evaluation')
+        await this.store.write(`rounds/${request.roundId}/pending-evidence`, { planDigest: baselinePlan.digest, resultRefs: [original.ref] })
+        throw new SearchEvidencePending(baselinePlan.digest)
+      }
       if (result.failure) {
-        // Keep incomplete bootstrap evidence with this round. Installing it as the
-        // parent archive would prevent the next round from completing its baseline.
+        // Frozen budget exhaustion still terminates the round, without installing
+        // incomplete evidence as the parent archive.
         const research = buildArchive({ evolutionId: admission.evolutionId, universe: seed, snapshots: [anchor], scopes: [bootstrapScope],
           results: [result], plans: [baselinePlan], config: { ...settings.search, parentPolicy: parentPolicy.ref },
           championId: anchor.candidateId, includeChampion: parentPolicy.requiresChampion })
@@ -210,7 +221,6 @@ export class FailureClusterSearch {
         inspectionSignal.throwIfAborted()
         return this.runtime.recordTerminal(request.roundId, outcome)
       }
-      const p = profile(seed, baselinePlan, anchor, result, settings.search.process.mode, bootstrapScope.weights)
       invariant(passesExploration(bootstrapScope, p, seed), 'bootstrap baseline is incomplete or fails exploration guards')
       archive = buildArchive({ evolutionId: admission.evolutionId, universe: seed, snapshots: [anchor], scopes: [bootstrapScope], results: [result], plans: [baselinePlan], config: settings.search, championId: anchor.candidateId, includeChampion: parentPolicy.requiresChampion })
       await this.store.put(archive)
