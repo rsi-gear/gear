@@ -53,6 +53,12 @@ Python replay port 改为异步创建，首次 replay 使用刚完成环境准�
 
 主审独立验证 2 文件 12 项通过，见 [评估汇总审计](experiments/author-a1-measurement-review-20260926.zh-CN.md)。本切片的 committed-operation resolver 是明确的宿主注入边界，真实历史读取、新 Hitch 请求持久化及 ctx.evaluate 接线仍分别实现和验收。
 
+## A1 只读物理环境检查切片
+
+新增独立于 EvolutionSpec 的管理员运行配置，读取真实 Git/Harness、标准 v1 编译数据集、Hitch capability 与冻结 meta 注册模块。聚合入口加载已检查的模块字节；配置和 manifest 有读取上界。标准数据集验证同时供现有搜索投影使用。
+
+主审独立回归 4 文件 26 项通过，见 [物理检查审计](experiments/author-a1-physical-inspection-review-20260926.zh-CN.md)。这是部分只读探针，尚未生成完整可运行 lock；target 路由、真实服务装配与 CLI 仍待接线。Hitch 回归采用录制协议夹具，模型检查采用离线适配器，不作为真实服务运行证据。
+
 ## 当前限制
 
 A0 是运行基础。`propose/evaluate/select`、通用运行 profile、五文件作者项目及新的 CLI 仍待后续 A1 切片；现有 A0 role/edit/rollout/measure 便利方法用于探针，v2 已拒绝这些假 operation。用户不能仅复制 v4 的搜索示例便运行真实实验。

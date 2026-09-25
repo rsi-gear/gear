@@ -11,6 +11,7 @@ import { resolveMetric, resolveObjective } from '../objective/contracts.js'
 import type { RawMetricDefinition } from '../objective/types.js'
 import { parseResourceDataset, selectResources, type ResourceDataset } from '../state/resource-contract.js'
 import { parseStrictJson } from '../state/resource-protocol.js'
+import { inspectStandardCompiledDatasetV1 } from './compiled-dataset-v1.js'
 import { readProjectionQuarantine } from '../state/projection-quarantine.js'
 
 interface ScoreDefinition { source_metric: string; direction: 'maximize' | 'minimize'; range: readonly [number, number]; reducer: 'task-macro-mean' }
@@ -37,17 +38,21 @@ export async function describeDataset(spec: EvolutionSpec, partition: Partition,
   const text = await readFile(join(root, 'benchmark.adapter.json'), 'utf8').catch(error => { if (error.code === 'ENOENT') return undefined; throw error })
   invariant(text, 'Gear staged search requires benchmark.adapter.json from the standard dataset compiler')
   const raw = JSON.parse(text), resourceManifest = raw.schema_version === '2' ? parseResourceDataset(parseStrictJson(text)) : undefined
-  const manifest = (resourceManifest ?? raw) as DatasetDescription['manifest']
+  const standardV1 = raw.schema_version === '1' ? await inspectStandardCompiledDatasetV1(root) : undefined
+  if (standardV1) invariant(standardV1.sourceDigest === sourceDigest, 'standard dataset changed during admission')
+  const manifest = (resourceManifest ?? standardV1?.manifest ?? raw) as DatasetDescription['manifest']
   invariant((manifest.schema_version === '1' || resourceManifest) && manifest.kind === 'gear-harbor-benchmark' && manifest.adapter?.output_protocol === 'gear-harbor-eval-result-v1', 'staged search requires a supported standard benchmark manifest')
   invariant(typeof manifest.benchmark?.id === 'string' && typeof manifest.benchmark.revision === 'string'
     && typeof manifest.adapter.id === 'string' && typeof manifest.adapter.revision === 'string' && Array.isArray(manifest.tasks) && manifest.tasks.length > 0, 'invalid benchmark manifest')
   const ids = sorted(manifest.tasks.map(t => t.task_id))
   invariant(ids.length === manifest.tasks.length && ids.every(id => /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/u.test(id) && id !== '.' && id !== '..'), 'invalid task directory manifest')
-  const tasks: Array<{ id: string; contentDigest: string }> = []
-  for (const id of ids) {
+  const tasks: Array<{ id: string; contentDigest: string }> = standardV1
+    ? sorted(standardV1.tasks.map(task => task.id)).map(id => standardV1.tasks.find(task => task.id === id)!)
+    : []
+  if (!standardV1) for (const id of ids) {
     digest(manifest.tasks.find(t => t.task_id === id)!.task_digest)
     invariant((await lstat(join(root, id))).isDirectory() && (await lstat(join(root, id, 'task.toml'))).isFile(), 'each task must be a self-contained standard task directory')
-    tasks.push({ id, contentDigest: resourceManifest ? resourceManifest.tasks.find(t => t.task_id === id)!.task_digest : await digestDatasetRef(join(root, id)) })
+    tasks.push({ id, contentDigest: resourceManifest!.tasks.find(t => t.task_id === id)!.task_digest })
   }
   const contract = (channel: 'outcome' | 'process', score: ScoreDefinition): MetricContract => {
     invariant(score && typeof score.source_metric === 'string' && ['maximize', 'minimize'].includes(score.direction)

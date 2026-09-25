@@ -773,6 +773,17 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     await this.inspectCapabilities(new AbortController().signal)
   }
 
+  /** Read-only identity for admission; runs version, daemon-status and capabilities commands only. */
+  async inspectRuntimeCapability(signal: AbortSignal): Promise<{ runtimeIdentity: string; capabilities: HitchCapabilities }> {
+    signal.throwIfAborted()
+    await this.checkVersion(signal)
+    if (this.daemonMode) await this.checkDaemon()
+    const capabilities = await this.inspectCapabilities(signal)
+    const runtimeIdentity = await this.runtimeIdentity(signal)
+    signal.throwIfAborted()
+    return { runtimeIdentity, capabilities }
+  }
+
   private async checkVersion(signal?: AbortSignal): Promise<string> {
     await this.executablePath()
     const controller = new AbortController()

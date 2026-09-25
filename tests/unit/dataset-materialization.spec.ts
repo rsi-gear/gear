@@ -25,6 +25,12 @@ async function fixture() {
   const spec = evolutionSpec(), dataset = await standardSearchDataset(root, 2)
   await fs.mkdir(join(dataset.ref, 'task-0/empty'))
   await fs.writeFile(join(dataset.ref, 'task-0/run'), '#!/bin/sh\nexit 0\n', { mode: 0o751 })
+  // The fixture adds real task bytes after compilation; reseal the standard
+  // manifest so materialization starts from a valid compiled dataset.
+  const manifestPath = join(dataset.ref, 'benchmark.adapter.json')
+  const { dataset_digest: _previousDigest, ...manifest } = JSON.parse(await fs.readFile(manifestPath, 'utf8'))
+  for (const task of manifest.tasks) task.task_digest = await digestDatasetRef(join(dataset.ref, task.task_id))
+  await fs.writeFile(manifestPath, `${JSON.stringify({ ...manifest, dataset_digest: digestJson(manifest) }, null, 2)}\n`)
   dataset.digest = await digestDatasetRef(dataset.ref)
   spec.datasets = { seed: dataset, heldOut: dataset }
   const description = await describeDataset(spec, 'seed', root)
