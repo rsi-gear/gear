@@ -130,10 +130,11 @@ export class CampaignFailureClusterSearch {
     safeId(roundId); safeId(repairId); signal.throwIfAborted()
     const pointer = await this.store.read<{ ref: string }>(`rounds/${roundId}/admission`)
     if (!pointer) throw new Error('unknown search round')
-    const frozen = await this.store.object<SearchAdmission & { digest: string;
+    const frozen = await this.store.object<SearchAdmission & { digest: string; providerIntegrity: string;
       requestedSettings?: SearchAdmission['settings']; campaignDriver?: string }>(pointer.ref)
     if (frozen.campaignDriver !== 'failure-cluster-campaign-v1')
       throw new Error('Existing legacy search repair must resume with its original engine')
+    invariant(frozen.providerIntegrity === this.provider.integrity, 'repair provider identity changed')
     const request: SearchAdmission = { evolutionId: frozen.evolutionId, roundId: frozen.roundId,
       roundIndex: frozen.roundIndex, maxCandidates: frozen.maxCandidates, anchor: frozen.anchor,
       championRevisionDigest: frozen.championRevisionDigest, settings: frozen.requestedSettings ?? frozen.settings }
