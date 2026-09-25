@@ -2,11 +2,12 @@ import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { canonicalJson, jsonDigest, type JsonValue } from '../schema.js';
+import { assertJson, assertSchema, canonicalJson, jsonDigest, type JsonSchema, type JsonValue } from '../schema.js';
 import { PythonWorker, type PythonWorkerOptions } from '../hosts/python.js';
 import { AUTHOR_WIRE_VERSION, AUTHOR_WIRE_VERSION_V2, type AuthorReplayReply } from './index.js';
 import { authorHostIdentityDigest, authorSourceClosureDigest } from './identity.js';
 import type { ReplayPort } from './adapter.js';
+import type { AuthorDefinitionDescription } from './process-port.js';
 
 export type PythonAuthorReplayOptions = Omit<PythonWorkerOptions, 'mode'> & {
   signal?: AbortSignal;
@@ -18,8 +19,24 @@ export type PythonAuthorReplayOptions = Omit<PythonWorkerOptions, 'mode'> & {
 export type SealedPythonReplayPort = ReplayPort & {
   sourceDigest: string;
   hostDigest: string;
+  /** V2 only: sealed once at admission; the SDK descriptor apiVersion does not select transport. */
+  definitionDescription?: AuthorDefinitionDescription;
   close(): Promise<void>;
 };
+function freezeDescription(value: unknown): AuthorDefinitionDescription {
+  assertJson(value);
+  if (!value || Array.isArray(value) || typeof value !== 'object'
+    || typeof value.apiVersion !== 'string' || typeof value.id !== 'string' || !value.id
+    || typeof value.definitionVersion !== 'string' || !value.definitionVersion)
+    throw new Error('Invalid Python author definition description');
+  if (value.configSchema !== undefined) assertSchema(value.configSchema as JsonSchema);
+  const copy = JSON.parse(canonicalJson(value)) as AuthorDefinitionDescription;
+  const freeze = (item: unknown): void => {
+    if (item && typeof item === 'object') { for (const child of Object.values(item)) freeze(child); Object.freeze(item); }
+  };
+  freeze(copy);
+  return copy;
+}
 type Environment = { executable: string; version: string; packages: JsonValue; loadedFiles: [string, string][]; executableSha256: string };
 
 function loadedFiles(value: unknown): [string, string][] {
@@ -69,6 +86,8 @@ export async function createPythonAuthorReplayPort(options: PythonAuthorReplayOp
   lifetime.signal.addEventListener('abort', stopAdmission, { once: true });
   try {
     warm = await PythonWorker.start({ ...workerOptions, mode: 'author' }, lifetime.signal);
+    const declaration = wireVersion === AUTHOR_WIRE_VERSION_V2
+      ? freezeDescription(await warm.call('describe')) : undefined;
     const initial = await warm.call('environment.describe') as Record<string, JsonValue>;
     lifetime.signal.removeEventListener('abort', stopAdmission);
     if (lifetime.signal.aborted) throw new Error('Python author admission cancelled');
@@ -82,7 +101,8 @@ export async function createPythonAuthorReplayPort(options: PythonAuthorReplayOp
     const frozen: Environment = { executable, version: initial.pythonVersion,
       packages: initial.packages ?? null, loadedFiles: loadedFiles(initial.loadedModules),
       executableSha256: shaFile(executable) };
-    const source = (): JsonValue => ({ ...(closure() as Record<string, JsonValue>), environment: frozen as unknown as JsonValue });
+    const source = (): JsonValue => ({ ...(closure() as Record<string, JsonValue>), environment: frozen as unknown as JsonValue,
+      ...(declaration ? { declaration: declaration as unknown as JsonValue } : {}) });
     const sourceDigest = wireVersion === AUTHOR_WIRE_VERSION ? jsonDigest(source())
       : jsonDigest({ source: source(), wireVersion });
     const hostDigest = hostBefore;
@@ -171,7 +191,8 @@ export async function createPythonAuthorReplayPort(options: PythonAuthorReplayOp
         } finally { active = undefined; await worker.close(); }
       } finally { busy = false; }
     };
-    return Object.assign(replay, { sourceDigest, hostDigest, close });
+    return Object.assign(replay, { sourceDigest, hostDigest, close,
+      ...(declaration ? { definitionDescription: declaration } : {}) });
   } catch (error) {
     lifetime.signal.removeEventListener('abort', stopAdmission);
     await warm?.close();

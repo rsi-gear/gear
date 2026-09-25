@@ -81,6 +81,12 @@ Hitch 现在接受独立 author plan/context，不需要构造旧 EvolutionSpec 
 
 主审独立回归 6 文件 43 项通过，见 [中性 Hitch 审计](experiments/author-a1-neutral-hitch-review-20260926.zh-CN.md)。验证使用真实 Git/数据集与录制 CLI；真实 daemon、模型和完整通用宿主仍待验收。
 
+## A1 外部作者包加载切片
+
+外部 ESM 作者项目现在可通过普通 SDK 导入加载 TS/JS/MTS，宿主负责封存依赖、编译及短进程声明读取。Python v2 同样封存首次声明。编译缓存是 check 允许产生的可清理产物，Campaign/CAS/lock 和物理任务仍需运行入口创建。
+
+实施者隔离构建/类型检查及 92 项相关回归通过；主审独立验证 3 文件 7 项通过，见 [外部加载审计](experiments/author-a1-installed-loader-review-20260926.zh-CN.md)。验收包含 npm pack 安装、多步 Campaign、冷进程恢复和身份漂移拒绝；完整作者 CLI 与真实 Hitch 仍待验证，任意第三方 npm 依赖仍不支持。
+
 ## 当前限制
 
 A0 是运行基础。`propose/evaluate/select`、通用运行 profile、五文件作者项目及新的 CLI 仍待后续 A1 切片；现有 A0 role/edit/rollout/measure 便利方法用于探针，v2 已拒绝这些假 operation。用户不能仅复制 v4 的搜索示例便运行真实实验。
