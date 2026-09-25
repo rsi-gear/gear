@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Algorithm, AlgorithmDecision, AlgorithmManifest, BudgetPlan, BudgetSnapshot, CampaignSpec, CompletionEnvelope, OperationEnvelope, OperationIntent, OperationOutcome, OperationProvider, ProviderInspection, ProviderManifest, ProviderPreflight, ProviderDispatchContext, ProviderSubmission, UsageReceipt, BindingSetRef } from '../contracts.js';
+import type { Algorithm, AlgorithmDecision, AlgorithmManifest, ArtifactRef, BudgetPlan, BudgetSnapshot, CampaignSpec, CompletionEnvelope, OperationEnvelope, OperationIntent, OperationOutcome, OperationProvider, ProviderInspection, ProviderManifest, ProviderPreflight, ProviderDispatchContext, ProviderSubmission, UsageReceipt, BindingSetRef } from '../contracts.js';
 import { ALGORITHM_API_VERSION } from '../contracts.js';
 import { FileArtifactStore } from '../artifacts.js';
 import { BindingStore } from '../bindings.js';
@@ -42,6 +42,8 @@ export type CampaignState = {
   state: JsonValue;
   decisionIndex: number;
   operations: Record<string, OperationRecord>;
+  /** Ordered host projections sealed by prior scientific decisions. */
+  durableProjections?: ArtifactRef[];
   /** External repair groups share this Campaign's receipts and budget without advancing the reducer. */
   auxiliaryOperations?: Record<string, Record<string, OperationRecord>>;
   /** First admitted physical reservation, shared by main and auxiliary operations. */
@@ -96,6 +98,13 @@ export class AlgorithmRuntime {
     validateSchema(this.manifest.configSchema, spec.config);
     this.bindings = new BindingStore(this.artifacts, this.manifest.bindingSchema);
     this.store = storage.store ?? new CampaignStore<JsonValue>(`${root}/campaign`);
+    const requiredProjections = this.manifest.requiredProjectionSchemas ?? [];
+    if (!Array.isArray(requiredProjections) || new Set(requiredProjections).size !== requiredProjections.length)
+      throw new Error('Algorithm requiredProjectionSchemas must be a unique array');
+    for (const schemaId of requiredProjections) {
+      if (typeof schemaId !== 'string' || !schemaId || !this.store.projectionSchemas?.includes(schemaId))
+        throw new Error(`Required durable projection host missing: ${schemaId}`);
+    }
     for (const provider of [new BindingDeriveProvider(this.bindings), ...providers]) {
       const manifest = provider.describe(); this.validateProviderManifest(manifest);
       if (this.providers.has(manifest.kind)) throw new Error(`Duplicate provider ${manifest.kind}`);
@@ -235,6 +244,8 @@ export class AlgorithmRuntime {
     assertJson(decision);
     if (decision.complete !== undefined && typeof decision.complete !== 'boolean') throw new Error('Decision complete must be boolean');
     if (decision.operations !== undefined && !Array.isArray(decision.operations)) throw new Error('Decision operations must be an array');
+    if (decision.projections !== undefined && !Array.isArray(decision.projections))
+      throw new Error('Decision projections must be an array');
     validateSchema(this.manifest.stateSchema, decision.nextState);
     const next = clone(state);
     const active = decision.bindingTransition ?? next.activeBindingSetRef;
@@ -243,8 +254,21 @@ export class AlgorithmRuntime {
     next.state = decision.nextState;
     next.operations = {};
     const intents = decision.operations ?? [];
+    const projections = decision.projections ?? [];
     if (decision.complete && intents.length) throw new Error('Completed decision cannot start operations');
-    if (!decision.complete && intents.length === 0) throw new Error('Nonterminal decision needs operations');
+    if (!decision.complete && intents.length === 0 && projections.length === 0)
+      throw new Error('Nonterminal decision needs operations or projections');
+    const seenProjections = new Set((next.durableProjections ?? []).map(ref => canonicalJson(ref)));
+    for (const ref of projections) {
+      if (!ref || ref.kind !== 'artifact' || typeof ref.schemaId !== 'string'
+        || !this.store.projectionSchemas?.includes(ref.schemaId))
+        throw new Error('No durable projection host for decision artifact');
+      const refIdentity = canonicalJson(ref);
+      if (seenProjections.has(refIdentity)) throw new Error('Duplicate durable projection artifact');
+      this.artifacts.getBytes(ref);
+      seenProjections.add(refIdentity);
+    }
+    if (projections.length) next.durableProjections = [...(next.durableProjections ?? []), ...projections];
     this.budgetAdmission(next, intents);
     for (const intent of intents) {
       if (next.operations[intent.localKey]) throw new Error(`Duplicate local key ${intent.localKey}`);
@@ -263,6 +287,17 @@ export class AlgorithmRuntime {
     if (state.version !== 1 || canonicalJson(state.spec) !== canonicalJson(this.spec) || state.algorithmManifestDigest !== jsonDigest(this.manifest) || state.kernelImplementationDigest !== kernelImplementationDigest() || state.providerCatalogDigest !== this.providerCatalogDigest || state.storageBackendDigest !== this.storageBackendDigest) throw new Error('Campaign identity drift');
     if (state.budgetStartedAt !== undefined && (!Number.isSafeInteger(state.budgetStartedAt) || state.budgetStartedAt < 0))
       throw new Error('Campaign budget clock drift');
+    if (state.durableProjections !== undefined) {
+      if (!Array.isArray(state.durableProjections)
+        || new Set(state.durableProjections.map(ref => canonicalJson(ref))).size !== state.durableProjections.length)
+        throw new Error('Campaign durable projection history drift');
+      for (const ref of state.durableProjections) {
+        if (!ref || ref.kind !== 'artifact' || typeof ref.schemaId !== 'string'
+          || !this.store.projectionSchemas?.includes(ref.schemaId))
+          throw new Error('Campaign durable projection schema drift');
+        this.artifacts.getBytes(ref);
+      }
+    }
     this.validateBinding(state.activeBindingSetRef, state.initialBindingSetRef);
     validateSchema(this.manifest.stateSchema, state.state);
     const records = [...Object.values(state.operations),

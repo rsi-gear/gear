@@ -100,6 +100,8 @@ export interface OperationProvider {
 export type AlgorithmDecision = {
   nextState: JsonValue;
   operations?: OperationIntent[];
+  /** Host-owned durable projections, published after this decision is committed and before its next effect. */
+  projections?: ArtifactRef[];
   bindingTransition?: BindingSetRef;
   complete?: boolean;
 };
@@ -114,6 +116,8 @@ export type AlgorithmManifest = {
   requiredOperationKinds?: string[];
   /** Top-level frozen config keys whose string values name required operation providers. */
   requiredOperationKindsFromConfig?: string[];
+  /** Artifact schemas that require a durable host projection capability. */
+  requiredProjectionSchemas?: string[];
 };
 export type CampaignSpec = {
   campaignId: string;

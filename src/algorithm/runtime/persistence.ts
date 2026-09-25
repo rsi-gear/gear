@@ -5,6 +5,7 @@ import { FileArtifactStore, assertDigest, durableWrite, sha256 } from '../artifa
 import { assertJson, assertSafeKey, canonicalJson, type JsonValue } from '../schema.js'
 import { implementationClosureDigest } from '../data/identity.js'
 import { durableCreate } from '../providers/provider-record.js'
+import type { ArtifactRef } from '../contracts.js'
 import type { SearchJournal } from '../../search/store.js'
 
 export interface CampaignStoreLike<T extends JsonValue> {
@@ -12,12 +13,20 @@ export interface CampaignStoreLike<T extends JsonValue> {
   /** withWriter verifies the complete Campaign chain before invoking work. */
   readonly writerHydrates?: true
   readonly identityDigest?: string
+  /** Schemas whose projections are durably reconciled before the next effect. */
+  readonly projectionSchemas?: readonly string[]
   hydrate?(): Promise<void>
   recoverProjection?(): Promise<void>
   load(): { state: T; seq: number; digest: string } | null
   withWriter<R>(work: () => Promise<R>): Promise<R>
   assertLease(): void
   commit(state: T, event: string): Promise<void>
+}
+
+export interface DurableProjectionHost {
+  describe(): { implementationDigest: string; schemaIds: string[] }
+  /** Idempotently materialize exactly this sealed artifact into host-owned storage. */
+  project(ref: ArtifactRef): Promise<void>
 }
 
 export interface ArtifactCheckpoint {
@@ -132,6 +141,9 @@ export class JournalCampaignStore<T extends JsonValue> implements CampaignStoreL
   readonly requiresArtifactCheckpoint = true as const
   readonly writerHydrates = true as const
   readonly identityDigest: string
+  readonly projectionSchemas: readonly string[]
+  private readonly projectionManifest: ReturnType<DurableProjectionHost['describe']> | null
+  private readonly projectedRefs: ArtifactRef[] = []
   private readonly prefix: string
   private cached: { state: T; seq: number; digest: string } | null = null
   private hydrated = false
@@ -141,21 +153,71 @@ export class JournalCampaignStore<T extends JsonValue> implements CampaignStoreL
 
   constructor(readonly journal: SearchJournal, roundId: string,
     readonly options: { afterCommit?: (state: T, phase: 'hydrate' | 'commit') => Promise<void>;
-      projectorIdentityDigest?: string } = {}) {
+      projectorIdentityDigest?: string; projectionHost?: DurableProjectionHost } = {}) {
     safeRoundId(roundId)
     if (options.afterCommit) {
       if (!options.projectorIdentityDigest) throw new Error('Campaign projector identity required')
       assertDigest(options.projectorIdentityDigest)
     }
+    const projectionManifest = options.projectionHost?.describe() ?? null
+    if (projectionManifest) {
+      assertDigest(projectionManifest.implementationDigest)
+      if (!Array.isArray(projectionManifest.schemaIds) || projectionManifest.schemaIds.length === 0
+        || projectionManifest.schemaIds.some(id => typeof id !== 'string' || !/^[A-Za-z][A-Za-z0-9._-]+$/u.test(id))
+        || new Set(projectionManifest.schemaIds).size !== projectionManifest.schemaIds.length
+        || projectionManifest.schemaIds.some((id, index) => index > 0 && projectionManifest.schemaIds[index - 1]! > id))
+        throw new Error('Invalid durable projection manifest')
+    }
+    this.projectionManifest = projectionManifest === null ? null : structuredClone(projectionManifest)
+    this.projectionSchemas = Object.freeze([...(projectionManifest?.schemaIds ?? [])])
     this.prefix = `rounds/${roundId}/campaign/state`
     this.identityDigest = implementationClosureDigest(['runtime/persistence'], {
-      backend: 'campaign-state', roundId, projectorIdentityDigest: options.projectorIdentityDigest ?? null })
+      backend: 'campaign-state', roundId, projectorIdentityDigest: options.projectorIdentityDigest ?? null,
+      projectionManifest: this.projectionManifest })
+  }
+
+  private async projectDurable(state: T): Promise<void> {
+    const refs = (state as { durableProjections?: ArtifactRef[] }).durableProjections ?? []
+    if (!Array.isArray(refs) || this.projectedRefs.length > refs.length)
+      throw new Error('Campaign durable projection history drift')
+    for (let index = 0; index < this.projectedRefs.length; index++)
+      if (canonicalJson(this.projectedRefs[index]) !== canonicalJson(refs[index]))
+        throw new Error('Campaign durable projection history drift')
+    if (refs.length === 0) return
+    const host = this.options.projectionHost
+    if (!host || canonicalJson(host.describe()) !== canonicalJson(this.projectionManifest))
+      throw new Error('Campaign durable projection host identity drift')
+    for (let index = this.projectedRefs.length; index < refs.length; index++) {
+      const ref = refs[index]!
+      if (!ref || ref.kind !== 'artifact' || typeof ref.schemaId !== 'string'
+        || !this.projectionSchemas.includes(ref.schemaId))
+        throw new Error('Campaign durable projection schema drift')
+      await host.project(structuredClone(ref))
+      this.projectedRefs.push(structuredClone(ref))
+    }
+  }
+
+  private assertProjectionAppendOnly(state: T): void {
+    const previous = (this.cached?.state as { durableProjections?: ArtifactRef[] } | undefined)?.durableProjections ?? []
+    const next = (state as { durableProjections?: ArtifactRef[] }).durableProjections ?? []
+    if (!Array.isArray(next) || next.length < previous.length)
+      throw new Error('Campaign durable projection history drift')
+    for (let index = 0; index < previous.length; index++)
+      if (canonicalJson(previous[index]) !== canonicalJson(next[index]))
+        throw new Error('Campaign durable projection history drift')
+    if (next.length && (!this.options.projectionHost
+      || canonicalJson(this.options.projectionHost.describe()) !== canonicalJson(this.projectionManifest)))
+      throw new Error('Campaign durable projection host identity drift')
+    for (const ref of next) if (!ref || ref.kind !== 'artifact' || typeof ref.schemaId !== 'string'
+      || !this.projectionSchemas.includes(ref.schemaId))
+      throw new Error('Campaign durable projection schema drift')
   }
 
   private recordKey(digest: string): string { return `${this.prefix}/records/${digest}` }
   private headKey(): string { return `${this.prefix}/head` }
 
   async hydrate(): Promise<void> {
+    this.projectedRefs.length = 0
     const head = await this.journal.read<Head>(this.headKey())
     if (head === undefined) { this.cached = null; this.hydrated = true; return }
     if (!Number.isSafeInteger(head.seq) || head.seq < 0) throw new Error('Corrupt journal-backed campaign head')
@@ -214,7 +276,10 @@ export class JournalCampaignStore<T extends JsonValue> implements CampaignStoreL
   /** Called only after the Kernel validates campaign and artifact identity. */
   async recoverProjection(): Promise<void> {
     if (!this.hydrated) throw new Error('Journal-backed campaign must hydrate before projection recovery')
-    if (this.cached) await this.options.afterCommit?.(structuredClone(this.cached.state), 'hydrate')
+    if (this.cached) {
+      await this.options.afterCommit?.(structuredClone(this.cached.state), 'hydrate')
+      await this.projectDurable(this.cached.state)
+    }
   }
 
   load(): { state: T; seq: number; digest: string } | null {
@@ -243,6 +308,7 @@ export class JournalCampaignStore<T extends JsonValue> implements CampaignStoreL
   async commit(state: T, event: string): Promise<void> {
     this.assertLease()
     assertJson(state)
+    this.assertProjectionAppendOnly(state)
     if (!event) throw new Error('Campaign journal event required')
     const published = await this.journal.read<Head>(this.headKey())
     if ((published?.digest ?? null) !== (this.cached?.digest ?? null)
@@ -261,6 +327,7 @@ export class JournalCampaignStore<T extends JsonValue> implements CampaignStoreL
     await publish(this.journal, this.headKey(), { seq: record.seq, digest })
     this.cached = { state: structuredClone(state), seq: record.seq, digest }
     await this.options.afterCommit?.(structuredClone(state), 'commit')
+    await this.projectDurable(state)
   }
 }
 
