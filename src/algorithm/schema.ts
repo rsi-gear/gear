@@ -36,7 +36,16 @@ export function canonicalJson(value: unknown): string {
   const render = (item: JsonValue): string => {
     if (item === null || typeof item !== 'object') return JSON.stringify(item);
     if (Array.isArray(item)) return `[${item.map(render).join(',')}]`;
-    const keys = Object.keys(item).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+    const keys = Object.keys(item);
+    let ascii = true;
+    for (const key of keys) {
+      for (let index = 0; index < key.length; index++) {
+        if (key.charCodeAt(index) > 0x7f) { ascii = false; break; }
+      }
+      if (!ascii) break;
+    }
+    if (ascii) keys.sort();
+    else keys.sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
     return `{${keys.map(key => `${JSON.stringify(key)}:${render(item[key]!)}`).join(',')}}`;
   };
   return render(value);
