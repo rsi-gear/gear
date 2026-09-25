@@ -1,7 +1,7 @@
 import { mkdir } from 'node:fs/promises';
 import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import type { ArtifactRef, BudgetPlan, CompletionEnvelope, OperationEnvelope, ProviderInspection, ProviderManifest, ProviderSubmission, UsageReceipt } from '../contracts.js';
 import { FileArtifactStore, assertDigest, durableWrite } from '../artifacts.js';
 import { BindingStore } from '../bindings.js';
@@ -18,7 +18,10 @@ import { materializeSkillOverlay, validateSkillOverlaySelection, SkillOverlayUnk
   type SkillOverlayResult } from './skill-overlay.js';
 import type { CandidateWorkspaceManager } from '../../candidate/workspace.js';
 import { describeDataset, projectDataset } from '../../search/dataset-projection.js';
-import type { DatasetDescription } from '../../search/dataset-projection.js';
+import type { DatasetDescription, DatasetProjectionSource } from '../../search/dataset-projection.js';
+import { inspectStandardCompiledDatasetV1, type StandardCompiledDatasetV1 } from '../../search/compiled-dataset-v1.js';
+import { readBoundedRegularFile } from '../../state/bounded-file.js';
+import type { HitchEvaluationContext, AuthorHitchEvaluationContext } from '../../evaluator/hitch-cli.js';
 import { RefineStateStore, type WorkspaceLock } from '../../state/store.js';
 import { digestJson } from '../../state/digest.js';
 import { digestDatasetRef } from '../../state/dataset.js';
@@ -64,18 +67,32 @@ type HitchRolloutHostCommon = { workspaceRoot: string; stateRoot: string; artifa
   taskAuthority: TaskViewAuthority; allowedExperienceViewDigests(campaignId: string): readonly string[];
   accessPolicyDigest: string; builder: HarnessBuilder; evaluator: HitchCliEvaluator; campaignBudget: BudgetPlan;
   skillOverlay?: { workspaceManager: CandidateWorkspaceManager; hostIdentityDigest: string } };
+/** Host-sealed A1 execution inputs. The task source is independently checked against a compiled dataset. */
+export type AuthorHitchRolloutPlanV1 = { schemaVersion: 1; kind: 'author.hitch-plan.v1'; campaignId: string;
+  workspaceRoot: string; datasetRoot: string; datasetDigest: string; taskIds: string[]; repetitions: number;
+  taskBudgetMs: number; sandboxProfileRef: string; model: string; rolloutProviderDigest: string;
+  recipePhase: string; allowedExperienceViewDigests: string[] };
 export type HitchRolloutHostOptions = HitchRolloutHostCommon & (
-  { registry: EvolutionRegistryStore; evolutionId: string; roundId: string; freshContext?: never }
-  | { freshContext: FreshHitchRolloutContext; registry?: never; evolutionId?: never; roundId?: never });
+  { registry: EvolutionRegistryStore; evolutionId: string; roundId: string; freshContext?: never; authorPlan?: never }
+  | { freshContext: FreshHitchRolloutContext; registry?: never; evolutionId?: never; roundId?: never; authorPlan?: never }
+  | { authorPlan: AuthorHitchRolloutPlanV1; registry?: never; evolutionId?: never; roundId?: never;
+    freshContext?: never; skillOverlay?: never });
+
+type HitchSource = { kind: 'legacy'; spec: EvolutionSpec; round: RefinementRound }
+  | { kind: 'author'; plan: AuthorHitchRolloutPlanV1; dataset: StandardCompiledDatasetV1 };
 
 type Prepared = { input: HitchRolloutInput; task: TaskEntry; bindingSlots: Record<string, ArtifactRef>;
-  request: EvaluationRequest; contextRound: RefinementRound; intent: EvaluationSubmissionIntent;
+  request: EvaluationRequest; contextRound: HitchEvaluationContext; intent: EvaluationSubmissionIntent;
   baseHarness: GitHarnessBinding; skillsLibraryRef?: ArtifactRef; selectedSkillDigests?: string[] };
 type SubmittedIdentity = NonNullable<Awaited<ReturnType<HitchCliEvaluator['submittedEvaluationIdentity']>>>;
 type Journal = { envelope: OperationEnvelope; requestDigest: string; intent: EvaluationSubmissionIntent;
+  schemaVersion?: 2; kind?: 'author.hitch-rollout.v2'; request?: EvaluationRequest;
   status: 'intent' | 'reserved' | 'cancelling' | 'cancelled' | 'completed';
   overlay?: SkillOverlayResult; reservation?: EvaluationReservation; identity?: SubmittedIdentity;
   completion?: CompletionEnvelope; receipt?: UsageReceipt };
+export type AuthorRolloutJournalSnapshot = { status: Journal['status']; envelope: OperationEnvelope;
+  request: EvaluationRequest; requestDigest: string; intent: EvaluationSubmissionIntent;
+  submittedIdentity?: JsonValue; completion?: CompletionEnvelope };
 
 /** Physical seed rollout. It reuses Gear's durable staged search bridge into Hitch daemon, not a synthetic result. */
 export class HitchRolloutPort implements PhysicalExecutionPort {
@@ -88,10 +105,9 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
   private readonly sourceRoundDigest: string;
   private readonly sourceSpecDigest: string;
 
-  private constructor(readonly options: HitchRolloutHostOptions, readonly spec: EvolutionSpec,
-    readonly round: RefinementRound) {
+  private constructor(readonly options: HitchRolloutHostOptions, private readonly source: HitchSource) {
     if (options.evaluator.options.controlPlane?.mode !== 'daemon') throw new Error('Durable Hitch rollout requires daemon mode');
-    if (resolve(options.workspaceRoot) !== resolve(round.workspaceRoot)
+    if (resolve(options.workspaceRoot) !== resolve(source.kind === 'author' ? source.plan.workspaceRoot : source.round.workspaceRoot)
       || options.builder.repositoryPath !== options.evaluator.repositoryPath) throw new Error('Hitch rollout host/source workspace mismatch');
     assertDigest(options.accessPolicyDigest);
     if (options.skillOverlay) assertDigest(options.skillOverlay.hostIdentityDigest);
@@ -99,15 +115,15 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
     this.meterSource = budget?.source;
     this.metered = budget !== undefined;
     if (this.meterSource && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(this.meterSource)) throw new Error('Invalid Hitch meter source');
-    this.sourceRoundDigest = digestJson(round);
-    this.sourceSpecDigest = digestJson(spec);
-    this.samplingDigest = digestJson(round.plan.seed.sampling);
+    this.sourceRoundDigest = digestJson(source.kind === 'author' ? source.plan : source.round);
+    this.sourceSpecDigest = source.kind === 'author' ? source.dataset.sourceDigest : digestJson(source.spec);
+    this.samplingDigest = digestJson(source.kind === 'author' ? {} : source.round.plan.seed.sampling);
     this.environmentDigest = this.currentEnvironmentDigest();
     this.records = join(options.stateRoot, 'algorithm-hitch-operations');
     mkdirSync(this.records, { recursive: true });
     this.manifest = { kind: 'execution.rollout',
       implementationDigest: implementationClosureDigest(['providers/hitch', 'providers/execution'], {
-        sourceKind: options.freshContext ? 'fresh-context' : 'legacy-round',
+        sourceKind: source.kind === 'author' ? 'author-plan' : options.freshContext ? 'fresh-context' : 'legacy-round',
         sourceSpecDigest: this.sourceSpecDigest, sourceRoundDigest: this.sourceRoundDigest,
         environmentDigest: this.environmentDigest, samplingDigest: this.samplingDigest,
         accessPolicyDigest: options.accessPolicyDigest, issuerId: options.taskAuthority.issuerId,
@@ -119,7 +135,8 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
           targetRoot: options.skillOverlay.workspaceManager.options.targetRoot,
           maxFiles: options.skillOverlay.workspaceManager.options.maxFiles,
           maxBytes: options.skillOverlay.workspaceManager.options.maxBytes,
-          maxDiffBytes: options.skillOverlay.workspaceManager.options.maxDiffBytes } : null }),
+          maxDiffBytes: options.skillOverlay.workspaceManager.options.maxDiffBytes,
+          allowedPathGrantDigest: options.skillOverlay.workspaceManager.allowedPathGrantDigest } : null }),
       execution: 'external', supportsInspect: true, meteredDimensions: this.metered ? ['rollout.trials'] : [],
       hardLimitDimensions: budget?.capability === 'hard' ? ['rollout.trials'] : [],
       inputSchema: { type: 'object', required: ['task', 'taskViewRef', 'samplingDigest', 'environmentDigest', 'recipePhase'],
@@ -131,6 +148,37 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
   }
 
   static async create(options: HitchRolloutHostOptions): Promise<HitchRolloutPort> {
+    if (options.authorPlan) {
+      const plan = structuredClone(options.authorPlan);
+      assertJson(plan as unknown as JsonValue);
+      if (canonicalJson(Object.keys(plan).sort()) !== canonicalJson(['schemaVersion', 'kind', 'campaignId',
+        'workspaceRoot', 'datasetRoot', 'datasetDigest', 'taskIds', 'repetitions', 'taskBudgetMs',
+        'sandboxProfileRef', 'model', 'rolloutProviderDigest', 'recipePhase',
+        'allowedExperienceViewDigests'].sort())
+        || plan.schemaVersion !== 1 || plan.kind !== 'author.hitch-plan.v1'
+        || !plan.campaignId || !plan.workspaceRoot || !plan.datasetRoot
+        || !isAbsolute(plan.workspaceRoot) || !isAbsolute(plan.datasetRoot)
+        || !/^sha256:[a-f0-9]{64}$/u.test(plan.datasetDigest)
+        || !Array.isArray(plan.taskIds) || plan.taskIds.length === 0
+        || new Set(plan.taskIds).size !== plan.taskIds.length
+        || !Array.isArray(plan.allowedExperienceViewDigests)
+        || plan.allowedExperienceViewDigests.length === 0
+        || new Set(plan.allowedExperienceViewDigests).size !== plan.allowedExperienceViewDigests.length
+        || plan.allowedExperienceViewDigests.some(digest => !/^[a-f0-9]{64}$/u.test(digest))
+        || !Number.isSafeInteger(plan.repetitions) || plan.repetitions < 1
+        || !Number.isSafeInteger(plan.taskBudgetMs) || plan.taskBudgetMs < 1
+        || !plan.sandboxProfileRef || !plan.model || !plan.recipePhase
+        || !/^sha256:[a-f0-9]{64}$/u.test(plan.rolloutProviderDigest)
+        || plan.model !== options.evaluator.options.model
+        || plan.sandboxProfileRef !== options.builder.options.sandboxProfileRef)
+        throw new Error('Author Hitch execution plan invalid');
+      const dataset = await inspectStandardCompiledDatasetV1(plan.datasetRoot);
+      if (dataset.sourceDigest !== plan.datasetDigest
+        || canonicalJson(dataset.tasks.map(task => task.id)) !== canonicalJson(plan.taskIds))
+        throw new Error('Author Hitch task source differs from frozen plan');
+      await mkdir(options.stateRoot, { recursive: true });
+      return new HitchRolloutPort(options, { kind: 'author', plan, dataset });
+    }
     if (options.freshContext) {
       const { spec, round, specDigest, roundDigest, datasetDigest } = options.freshContext;
       if (options.freshContext.schemaVersion !== 1 || digestJson(spec) !== specDigest
@@ -141,7 +189,7 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
       requireAlgorithmDatasetV1(description);
       if (description.sourceDigest !== datasetDigest) throw new Error('Fresh Hitch rollout context dataset drift');
       await mkdir(options.stateRoot, { recursive: true });
-      return new HitchRolloutPort(options, structuredClone(spec), structuredClone(round));
+      return new HitchRolloutPort(options, { kind: 'legacy', spec: structuredClone(spec), round: structuredClone(round) });
     }
     const spec = await options.registry.requireSpec(options.evolutionId);
     const entry = await options.registry.readEntry(options.evolutionId);
@@ -151,7 +199,7 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
       throw new Error('Hitch rollout source evolution/round unavailable or mismatched');
     requireAlgorithmDatasetV1(await describeDataset(spec, 'seed', options.workspaceRoot));
     await mkdir(options.stateRoot, { recursive: true });
-    return new HitchRolloutPort(options, spec, round);
+    return new HitchRolloutPort(options, { kind: 'legacy', spec, round });
   }
 
   /** Host records these concrete digests in Campaign config; recipes must echo them. */
@@ -161,29 +209,44 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
   describe(): ProviderManifest & { kind: 'execution.rollout' } { return structuredClone(this.manifest); }
   private currentEnvironmentDigest(): string {
     const { compiler, ...builderOptions } = this.options.builder.options;
-    return digestJson({ evolution: this.sourceSpecDigest, roundPlan: this.round.plan.digest,
+    const physical = {
       evaluator: JSON.parse(JSON.stringify(this.options.evaluator.options)),
       subprocessEnvironmentDigest: hitchSubprocessEnvironmentDigest(),
       builder: { repositoryPath: this.options.builder.repositoryPath, targetRoot: this.options.builder.targetRoot,
         options: builderOptions, compiler: { name: compiler.constructor.name,
-          runtimeValidation: compiler.runtimeValidation === true } } });
+          runtimeValidation: compiler.runtimeValidation === true } } };
+    return this.source.kind === 'author'
+      ? digestJson({ authorPlan: this.sourceRoundDigest, dataset: this.sourceSpecDigest, ...physical })
+      : digestJson({ evolution: this.sourceSpecDigest, roundPlan: this.source.round.plan.digest, ...physical });
   }
-  private async currentRound(): Promise<RefinementRound> {
+  private async currentRound(): Promise<void> {
+    if (this.source.kind === 'author') {
+      if (digestJson(this.source.plan) !== this.sourceRoundDigest) throw new Error('Author Hitch plan changed');
+      const inspected = await inspectStandardCompiledDatasetV1(this.source.plan.datasetRoot);
+      if (inspected.sourceDigest !== this.source.dataset.sourceDigest
+        || canonicalJson(inspected.tasks) !== canonicalJson(this.source.dataset.tasks))
+        throw new Error('Author Hitch task source changed');
+      return;
+    }
     if (this.options.freshContext) {
       if (digestJson(this.options.freshContext.round) !== this.sourceRoundDigest)
         throw new Error('Fresh Hitch rollout context round changed');
-      return this.round;
+      return;
     }
+    if (!this.options.registry || !this.options.evolutionId || !this.options.roundId)
+      throw new Error('Legacy Hitch source registry missing');
     const current = await this.options.registry.stateStore(this.options.evolutionId).readRound(this.options.roundId);
     if (!current || digestJson(current) !== this.sourceRoundDigest) throw new Error('Hitch rollout source round changed');
-    return current;
   }
   private async currentSpec(): Promise<void> {
+    if (this.source.kind === 'author') return;
     if (this.options.freshContext) {
       if (digestJson(this.options.freshContext.spec) !== this.sourceSpecDigest)
         throw new Error('Fresh Hitch rollout context spec changed');
       return;
     }
+    if (!this.options.registry || !this.options.evolutionId)
+      throw new Error('Legacy Hitch source registry missing');
     const current = await this.options.registry.requireSpec(this.options.evolutionId);
     if (digestJson(current) !== this.sourceSpecDigest) throw new Error('Hitch rollout source spec changed');
   }
@@ -202,17 +265,31 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
     }
     if (input.executedRevisionDigest && input.executedRevisionDigest !== envelope.bindingSetRef.digest)
       throw new Error('Hitch executed revision does not match bound version');
-    this.options.taskAuthority.verify(input.taskViewRef, this.options.allowedExperienceViewDigests(envelope.campaignId));
+    this.options.taskAuthority.verify(input.taskViewRef, this.source.kind === 'author'
+      ? this.source.plan.allowedExperienceViewDigests
+      : this.options.allowedExperienceViewDigests(envelope.campaignId));
     const view = readTaskView(this.options.artifacts, input.taskViewRef);
     const task = view.tasks.find(item => item.id === input.task?.id);
     if (!task || canonicalJson(task) !== canonicalJson(input.task) || task.purpose === 'final-test')
       throw new Error('Hitch rollout task is not an authorized research task');
     const content = this.options.artifacts.getJson(task.contentRef) as unknown as { prompt?: string; executionSource?: {
       kind?: string; datasetDigest?: string; taskContentDigest?: string } };
-    const description = await describeDataset(this.spec, 'seed', this.options.workspaceRoot);
-    requireAlgorithmDatasetV1(description);
-    const declared = description.universe.tasks.find(item => item.id === task.id);
-    if (!declared || content.executionSource?.kind !== 'compiled-seed-dataset'
+    let description: DatasetDescription | DatasetProjectionSource;
+    if (this.source.kind === 'author') {
+      const inspected = await inspectStandardCompiledDatasetV1(this.source.plan.datasetRoot);
+      if (inspected.sourceDigest !== this.source.dataset.sourceDigest
+        || canonicalJson(inspected.tasks) !== canonicalJson(this.source.dataset.tasks))
+        throw new Error('Author Hitch task source changed');
+      description = { root: inspected.root, sourceDigest: inspected.sourceDigest,
+        manifest: inspected.manifest, taskContentDigests: inspected.tasks };
+    } else {
+      description = await describeDataset(this.source.spec, 'seed', this.options.workspaceRoot);
+      requireAlgorithmDatasetV1(description);
+    }
+    const declared = ('taskContentDigests' in description ? description.taskContentDigests
+      : description.universe.tasks).find(item => item.id === task.id);
+    if (!declared || content.executionSource?.kind !== (this.source.kind === 'author'
+      ? 'compiled-author-dataset' : 'compiled-seed-dataset')
       || content.executionSource.datasetDigest !== description.sourceDigest
       || content.executionSource.taskContentDigest !== declared.contentDigest) {
       throw new Error('Hitch rollout task source bytes are not physically bound');
@@ -243,8 +320,16 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
       selectedSkillRefs: input.injectedSkillRefs!, artifacts: this.options.artifacts,
       bindings: this.options.bindings }).injectedSkillDigests : undefined;
     const repeatIndex = input.repeatIndex ?? 0;
-    const repetition = description.universe.repetitions.find(item => item.index === repeatIndex);
-    if (!repetition || repetition.seed !== null) throw new Error('Hitch repetition not in supported frozen plan');
+    if (this.source.kind === 'author') {
+      if (envelope.campaignId !== this.source.plan.campaignId
+        || input.recipePhase !== this.source.plan.recipePhase
+        || !Number.isSafeInteger(repeatIndex) || repeatIndex < 0 || repeatIndex >= this.source.plan.repetitions)
+        throw new Error('Author Hitch campaign, phase, or repetition differs from frozen plan');
+    } else {
+      if (!('universe' in description)) throw new Error('Legacy Hitch source has no frozen task universe');
+      const repetition = description.universe.repetitions.find(item => item.index === repeatIndex);
+      if (!repetition || repetition.seed !== null) throw new Error('Hitch repetition not in supported frozen plan');
+    }
     const storageRoot = resolve(this.options.stateRoot, 'hitch-storage');
     const projected = await withProjectionLock(storageRoot, async lock => {
       const result = await projectDataset(description, [task.id], join(storageRoot, 'search'),
@@ -267,11 +352,24 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
       }
       return result;
     });
-    const { conditionId: _ignored, seeds: _seeds, ...base } = this.round.plan.seed;
+    // Hitch's current EvaluationCondition calls this physical research slot "seed";
+    // author-candidate phase and the signed TaskView retain the profile's development scope.
+    const base = this.source.kind === 'author' ? {
+      partition: 'seed' as const, model: this.source.plan.model, sampling: {},
+      timeoutMs: this.source.plan.taskBudgetMs,
+      rolloutProviderDigest: this.source.plan.rolloutProviderDigest,
+    } : (({ conditionId: _ignored, seeds: _seeds, ...condition }) => condition)(this.source.round.plan.seed);
     const body = { ...base, dataset: projected, repetitions: 1 };
     const condition: EvaluationCondition = { ...body, conditionId: digestJson(body) };
-    const request: EvaluationRequest = { phase: 'seed-candidate', dataset: projected.ref, harnessRef: harness.commitOid, condition };
-    const contextRound: RefinementRound = { ...this.round, roundId: `${this.round.roundId}-algorithm-${envelope.operationId.slice(0, 16)}` };
+    const request: EvaluationRequest = { phase: this.source.kind === 'author' ? 'author-candidate' : 'seed-candidate',
+      dataset: projected.ref, harnessRef: harness.commitOid, condition };
+    const contextRound: HitchEvaluationContext = this.source.kind === 'author' ? {
+      workspaceRoot: this.source.plan.workspaceRoot, taskBudgetMs: this.source.plan.taskBudgetMs,
+      sandboxProfileRef: this.source.plan.sandboxProfileRef,
+      author: { campaignId: envelope.campaignId, operationId: envelope.operationId,
+        planDigest: this.sourceRoundDigest },
+    } satisfies AuthorHitchEvaluationContext
+      : { ...this.source.round, roundId: `${this.source.round.roundId}-algorithm-${envelope.operationId.slice(0, 16)}` };
     const intent = this.options.evaluator.prepareSubmission(contextRound, request);
     if (!intent) throw new Error('Hitch daemon submission has no idempotent intent');
     return { input, task, bindingSlots, request, contextRound, intent, baseHarness: harness,
@@ -282,13 +380,67 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
     await this.options.evaluator.preflight();
   }
   private path(envelope: OperationEnvelope): string { assertDigest(envelope.operationId); return join(this.records, `${envelope.operationId}.json`); }
+  private newJournal(envelope: OperationEnvelope, prepared: Prepared,
+    status: Journal['status'], receipt?: UsageReceipt): Journal {
+    const shared: Journal = { envelope, requestDigest: digestJson(prepared.request), intent: prepared.intent, status,
+      ...(receipt ? { receipt } : {}) };
+    return this.source.kind === 'author'
+      ? { ...shared, schemaVersion: 2, kind: 'author.hitch-rollout.v2', request: prepared.request }
+      : shared;
+  }
   private read(envelope: OperationEnvelope): Journal | undefined {
     const path = this.path(envelope);
     if (!existsSync(path)) return undefined;
     const saved = JSON.parse(readFileSync(path, 'utf8')) as Journal;
     assertJson(saved);
     if (canonicalJson(saved.envelope) !== canonicalJson(envelope)) throw new Error('Hitch operation envelope identity drift');
+    if (this.source.kind === 'author' && (saved.schemaVersion !== 2 || saved.kind !== 'author.hitch-rollout.v2'
+      || !saved.request || saved.requestDigest !== digestJson(saved.request)))
+      throw new Error('Author Hitch saved request identity missing or changed');
     return saved;
+  }
+
+  /** Read only the persisted physical journal; never prepares a projection or contacts Hitch. */
+  async readAuthorRolloutJournal(operationId: string): Promise<AuthorRolloutJournalSnapshot | undefined> {
+    if (this.source.kind !== 'author') throw new Error('Only author Hitch plans expose v2 journal snapshots');
+    assertDigest(operationId);
+    let bytes: Buffer;
+    try { bytes = await readBoundedRegularFile(join(this.records, `${operationId}.json`), 4 * 1024 * 1024,
+      'Author Hitch journal'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error; }
+    const saved = JSON.parse(bytes.toString('utf8')) as Journal;
+    assertJson(saved);
+    if (saved.schemaVersion !== 2 || saved.kind !== 'author.hitch-rollout.v2'
+      || !['intent', 'reserved', 'cancelling', 'cancelled', 'completed'].includes(saved.status)
+      || saved.envelope.operationId !== operationId
+      || saved.envelope.campaignId !== this.source.plan.campaignId
+      || saved.envelope.kind !== 'execution.rollout'
+      || saved.envelope.implementationDigest !== this.manifest.implementationDigest
+      || !saved.request || saved.request.phase !== 'author-candidate'
+      || saved.request.dataset !== saved.request.condition.dataset.ref
+      || saved.request.condition.partition !== 'seed'
+      || saved.request.condition.repetitions !== 1
+      || saved.request.condition.seeds !== undefined
+      || saved.request.condition.model !== this.source.plan.model
+      || saved.request.condition.timeoutMs !== this.source.plan.taskBudgetMs
+      || saved.request.condition.rolloutProviderDigest !== this.source.plan.rolloutProviderDigest
+      || canonicalJson(saved.request.condition.sampling) !== canonicalJson({})
+      || (({ conditionId: _ignored, ...body }) => digestJson(body))(saved.request.condition)
+        !== saved.request.condition.conditionId
+      || saved.requestDigest !== digestJson(saved.request))
+      throw new Error('Author Hitch journal source, envelope, or request identity mismatch');
+    if (saved.status !== 'completed' && saved.completion)
+      throw new Error('Author Hitch nonterminal journal has a completion');
+    if (saved.status === 'completed' && (!saved.completion
+      || saved.completion.operationId !== operationId
+      || saved.completion.idempotencyKey !== saved.envelope.idempotencyKey
+      || saved.completion.inputDigest !== saved.envelope.inputDigest
+      || saved.completion.implementationDigest !== this.manifest.implementationDigest))
+      throw new Error('Author Hitch journal completion identity mismatch');
+    return { status: saved.status, envelope: saved.envelope, request: saved.request,
+      requestDigest: saved.requestDigest, intent: saved.intent,
+      ...(saved.identity ? { submittedIdentity: saved.identity as unknown as JsonValue } : {}),
+      ...(saved.completion ? { completion: saved.completion } : {}) };
   }
   /** Link an fsynced whole record: start and cancellation cannot both win. */
   private establish(record: Journal): boolean {
@@ -439,7 +591,7 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
       if (inspected.status === 'running') return inspected;
       throw new Error('Existing Hitch submission is unresolved; inspect before retrying');
     }
-    const initial: Journal = { envelope, requestDigest: digestJson(base.request), intent: base.intent, status: 'intent' };
+    const initial = this.newJournal(envelope, base, 'intent');
     if (!this.establish(initial)) return this.submit(envelope);
     const stage = await this.journalPrepared(envelope, base, initial, true);
     if (!stage) throw new SkillOverlayUnknown('Hitch Skill overlay operation outcome is unresolved');
@@ -479,8 +631,7 @@ export class HitchRolloutPort implements PhysicalExecutionPort {
     let saved = this.read(envelope);
     if (!saved) {
       const receipt = this.usage(envelope, 0);
-      const tombstone: Journal = { envelope, requestDigest: digestJson(base.request), intent: base.intent,
-        status: 'cancelled', ...(receipt ? { receipt } : {}) };
+      const tombstone = this.newJournal(envelope, base, 'cancelled', receipt);
       if (this.establish(tombstone)) return { status: 'cancelled', releaseConfirmed: true,
         ...(receipt ? { receipt } : {}) };
       saved = this.read(envelope);

@@ -28,6 +28,14 @@ export interface DatasetDescription {
   }
   universe: TaskUniverse
 }
+/** Minimal physically verified source for author projection, independent of EvolutionSpec. */
+export interface DatasetProjectionSource {
+  root: string
+  sourceDigest: string
+  manifest: DatasetDescription['manifest']
+  taskContentDigests: readonly { id: string; contentDigest: string }[]
+  resourceManifest?: ResourceDataset
+}
 /** The source is an ordinary compiled dataset. No evaluator-specific discovery protocol is needed. */
 export async function describeDataset(spec: EvolutionSpec, partition: Partition, workspaceRoot: string): Promise<DatasetDescription> {
   const source = partition === 'seed' ? spec.datasets.seed : spec.datasets.heldOut, root = resolve(workspaceRoot, source.ref)
@@ -92,12 +100,13 @@ export async function describeDataset(spec: EvolutionSpec, partition: Partition,
 }
 
 /** Copies immutable task bytes into Gear-owned state, leaving the source dataset untouched. */
-export async function projectDataset(description: DatasetDescription, taskIds: string[], stateRoot: string,
+export async function projectDataset(description: DatasetDescription | DatasetProjectionSource, taskIds: string[], stateRoot: string,
   options: { lock: WorkspaceLock; signal: AbortSignal; policy?: MaterializationPolicy }): Promise<{ ref: string; digest: string }> {
   await options.lock.assertHeld(dirname(stateRoot))
   options.signal.throwIfAborted()
   const ids = sorted(taskIds)
-  invariant(ids.length > 0 && ids.length === taskIds.length && ids.every(id => description.universe.tasks.some(t => t.id === id)), 'invalid subset task manifest')
+  const tasks = 'taskContentDigests' in description ? description.taskContentDigests : description.universe.tasks
+  invariant(ids.length > 0 && ids.length === taskIds.length && ids.every(id => tasks.some(t => t.id === id)), 'invalid subset task manifest')
   invariant(await digestDatasetRef(description.root) === description.sourceDigest, 'source dataset changed before subset preparation')
   if (description.resourceManifest) {
     const selection = selectResources(description.resourceManifest, ids)
@@ -120,7 +129,7 @@ export async function projectDataset(description: DatasetDescription, taskIds: s
   const ref = join(stateRoot, 'datasets', digestJson({ source: description.sourceDigest, ids }).slice(7))
   const verify = async (directory: string) => {
     invariant((await lstat(directory)).isDirectory(), 'prepared dataset is not a directory')
-    for (const id of ids) invariant(await digestDatasetRef(join(directory, id)) === description.universe.tasks.find(t => t.id === id)!.contentDigest, 'prepared task content changed')
+    for (const id of ids) invariant(await digestDatasetRef(join(directory, id)) === tasks.find(t => t.id === id)!.contentDigest, 'prepared task content changed')
     const manifest = JSON.parse(await readFile(join(directory, 'benchmark.adapter.json'), 'utf8'))
     invariant(digestJson(manifest) === digestJson(projectedManifest), 'prepared dataset manifest changed')
     const entries = (await readdir(directory)).sort()

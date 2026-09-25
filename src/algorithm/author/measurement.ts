@@ -112,6 +112,8 @@ function frozenProfile(options: AuthorMeasurementOptions): FrozenAuthorMeasureme
   const rolloutCondition = object(profile.rolloutCondition, 'Frozen rollout condition');
   exact(rolloutCondition, ['partition', 'repetitions', 'model', 'sampling', 'timeoutMs', 'rolloutProviderDigest'],
     'Frozen rollout condition');
+  // Existing Hitch condition protocol names this research partition seed; v2 uses
+  // author-candidate phase and signed development TaskViews, without an Evolution round.
   if (rolloutCondition.partition !== 'seed' || rolloutCondition.repetitions !== 1
     || typeof rolloutCondition.model !== 'string' || !rolloutCondition.model
     || !Number.isSafeInteger(rolloutCondition.timeoutMs) || (rolloutCondition.timeoutMs as number) < 1

@@ -34,7 +34,7 @@ import type {
   InvalidEvaluationTrialSummary,
   LocalSourceTransportSummary,
   RefineEvaluator,
-  RefinementRound,
+  RefinementRound as LegacyRefinementRound,
   RoundEvaluationAttempt,
   ScoreSummary,
   EvaluationTrialScores,
@@ -50,6 +50,16 @@ import type { EvaluationRerunReservation } from '../types.js'
 export interface HitchCliEvaluatorOptions extends HitchConfig {
   repositoryPath: string
 }
+
+/** The author route has its own identity; it does not synthesize an Evolution round. */
+export interface AuthorHitchEvaluationContext {
+  workspaceRoot: string
+  taskBudgetMs: number
+  sandboxProfileRef: string
+  author: { campaignId: string; operationId: string; planDigest: string }
+}
+export type HitchEvaluationContext = LegacyRefinementRound | AuthorHitchEvaluationContext
+type RefinementRound = HitchEvaluationContext
 
 interface ProcessResult {
   stdout: string
@@ -1026,8 +1036,8 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
 
   private daemonIdempotencyKey(round: Readonly<RefinementRound>, request: Readonly<EvaluationRequest>): string {
     return `gear-eval-v1-${sha256(JSON.stringify({
-      evolutionId: round.evolutionId,
-      roundId: round.roundId,
+      ...('author' in round ? { author: round.author }
+        : { evolutionId: round.evolutionId, roundId: round.roundId }),
       phase: request.phase,
       conditionId: request.condition.conditionId,
       dataset: request.dataset,

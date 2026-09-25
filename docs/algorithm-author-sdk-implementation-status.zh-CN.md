@@ -75,6 +75,12 @@ v2 adapter 和 TS/Python transport 现在冻结配置、能力、执行 profile 
 
 主审独立回归 2 文件 15 项通过，含真实内核正常完成与取消时发现完成两条路径，见 [历史解析审计](experiments/author-a1-committed-rollout-review-20260926.zh-CN.md)。实际 Hitch reader 接线及增量 JournalCampaignStore 后端仍分别验收。
 
+## A1 中性 Hitch 执行切片
+
+Hitch 现在接受独立 author plan/context，不需要构造旧 EvolutionSpec 或 round。它冻结真实数据集、任务来源、模型和重复条件，并在 v2 journal 保存完整评估请求。新的只读 journal 接口不触发投影或物理执行，可供可信历史解析器使用。
+
+主审独立回归 6 文件 43 项通过，见 [中性 Hitch 审计](experiments/author-a1-neutral-hitch-review-20260926.zh-CN.md)。验证使用真实 Git/数据集与录制 CLI；真实 daemon、模型和完整通用宿主仍待验收。
+
 ## 当前限制
 
 A0 是运行基础。`propose/evaluate/select`、通用运行 profile、五文件作者项目及新的 CLI 仍待后续 A1 切片；现有 A0 role/edit/rollout/measure 便利方法用于探针，v2 已拒绝这些假 operation。用户不能仅复制 v4 的搜索示例便运行真实实验。
