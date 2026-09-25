@@ -105,6 +105,10 @@ TS/Python 现在提供 propose、evaluate 和 select，并支持无反馈提案�
 
 主审独立 6 个 TS 文件 31 项与 Python author 32 项通过，25 个切片文件与独立冻结副本一致，见 [搜索组合接口审计](experiments/author-a1-composites-review-20260926.zh-CN.md)。完整宿主、外部 CLI 和真实 Hitch 搜索仍需分别验收。
 
+## A1 已安装 Python SDK 准入切片
+
+解释器发现保留 venv 的启动入口，另行核验二进制、虚拟环境与实际 SDK 包身份。主审修复并复验了 realpath 导致丢失 venv 的问题，独立两文件 14 项通过，包含本地 wheel 安装和实际 worker 准入，见 [Python 安装审计](experiments/author-a1-python-installed-review-20260926.zh-CN.md)。通用宿主的 run lock 与恢复接线另验收。
+
 ## 当前限制
 
 A0 是运行基础。`propose/evaluate/select` 已实现；通用运行 profile 的完整宿主装配、五文件作者项目及新的 CLI 仍待后续 A1 切片；现有 A0 role/edit/rollout/measure 便利方法用于探针，v2 已拒绝这些假 operation。用户不能仅复制 v4 的搜索示例便运行真实实验。

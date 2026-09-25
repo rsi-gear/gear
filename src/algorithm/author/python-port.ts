@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync } from 'node:fs';
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertJson, assertSchema, canonicalJson, jsonDigest, type JsonSchema, type JsonValue } from '../schema.js';
 import { PythonWorker, type PythonWorkerOptions } from '../hosts/python.js';
@@ -73,9 +73,12 @@ export async function createPythonAuthorReplayPort(options: PythonAuthorReplayOp
   const modulePath = containedModule(projectRoot, workerOptions.module);
   if (!workerOptions.sdkPath) throw new Error('Python author requires an explicit frozen sdkPath');
   const sdkRoot = realpathSync(workerOptions.sdkPath);
+  const sdkPackageRoot = realpathSync(join(sdkRoot, 'gear_algorithm'));
+  if (dirname(sdkPackageRoot) !== sdkRoot)
+    throw new Error('Python author installed SDK package escapes sdkPath');
   const hostRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   const closure = (): JsonValue => ({ project: authorSourceClosureDigest(projectRoot),
-    sdk: authorSourceClosureDigest(sdkRoot), modulePath, moduleSha256: shaFile(modulePath), export: workerOptions.export });
+    sdk: authorSourceClosureDigest(sdkPackageRoot), modulePath, moduleSha256: shaFile(modulePath), export: workerOptions.export });
   const before = jsonDigest(closure());
   const hostBefore = authorHostIdentityDigest(hostRoot);
   const lifetime = new AbortController();
