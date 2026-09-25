@@ -4,11 +4,12 @@ import type { ArtifactRef, CompletionEnvelope, OperationEnvelope, OperationProvi
 import { implementationClosureDigest } from '../data/identity.js'
 import { ProviderReconcileError } from '../provider-errors.js'
 import { FileProviderRecordBackend, type ArtifactCheckpoint, type ProviderRecordBackend } from '../runtime/persistence.js'
-import { jsonDigest, type JsonValue } from '../schema.js'
+import { canonicalJson, jsonDigest, type JsonValue } from '../schema.js'
 import { digestJson } from '../../state/digest.js'
 import { safeId, seal, verifyDigest } from '../../search/contracts.js'
+import { validateSearchSchema } from '../../search/schema.js'
 import type { SearchJournal } from '../../search/store.js'
-import type { StageResult } from '../../search/types.js'
+import type { EvaluationStageDecision, SearchProgress, StageResult } from '../../search/types.js'
 
 type Stage = 'parents' | 'scope-preparation' | 'planning' | 'local' | 'nomination'
 type Consumer = 'scope-preparation' | 'workplans' | 'local-decision' | 'nomination'
@@ -25,7 +26,7 @@ export type GepaScienceCheckpointInput = { roundId: string; stage: Stage;
   supportRefs: ArtifactRef[];
   consumptions: Array<{ resultRef: ArtifactRef; consumerDigest: string }> }
 type Prepared = { input: GepaScienceCheckpointInput; objects: Array<{ name: string; value: { digest: string } }>;
-  supports: Array<{ digest: string }>;
+  supports: Array<{ digest: string }>; decisions: EvaluationStageDecision[];
   consumptions: Array<{ name: string; value: { digest: string } }> }
 type RecordValue = { schemaVersion: 1; operationId: string; inputDigest: string; implementationDigest: string;
   bindingDigest: string; stage: 'intent' | 'complete' | 'cancelled-before-start'; completion?: CompletionEnvelope }
@@ -73,8 +74,14 @@ export class GepaScienceCheckpointProvider implements OperationProvider {
     const decisions = input.stage === 'local'
       ? objects.find(row => row.name === 'local-stage-decisions')?.value
       : input.stage === 'nomination' ? objects.find(row => row.name === 'nomination')?.value : undefined
-    const expectedSupports = decisions && 'decisions' in decisions && Array.isArray(decisions.decisions)
-      ? decisions.decisions.map(row => (row as { supportDigest?: unknown }).supportDigest) : []
+    if (decisions && (!('decisions' in decisions) || !Array.isArray(decisions.decisions)))
+      throw new Error('GEPA science checkpoint decisions invalid')
+    const stageDecisions = decisions ? decisions.decisions as EvaluationStageDecision[] : []
+    for (const decision of stageDecisions) {
+      validateSearchSchema('EvaluationStageDecision', decision)
+      verifyDigest(decision)
+    }
+    const expectedSupports = stageDecisions.map(row => row.supportDigest)
     const supports = input.supportRefs.map(ref => {
       if (ref?.schemaId !== 'gepa.legacy-journal-object.v1')
         throw new Error('GEPA science checkpoint support schema invalid')
@@ -101,7 +108,7 @@ export class GepaScienceCheckpointProvider implements OperationProvider {
     })
     if (new Set(consumptions.map(row => row.name)).size !== consumptions.length)
       throw new Error('GEPA science checkpoint duplicate consumption')
-    return { input, objects, supports, consumptions }
+    return { input, objects, supports, decisions: stageDecisions, consumptions }
   }
   async preflight(envelope: OperationEnvelope): Promise<void> { this.prepare(envelope) }
   private async read(envelope: OperationEnvelope): Promise<RecordValue | null> {
@@ -132,6 +139,19 @@ export class GepaScienceCheckpointProvider implements OperationProvider {
       if (pointer.ref !== row.value.digest) throw new Error('GEPA science checkpoint pointer drift')
       const saved = await this.journal.object<{ digest: string }>(pointer.ref)
       if (digestJson(saved) !== digestJson(row.value)) throw new Error('GEPA science checkpoint object drift')
+    }
+    if (prepared.decisions.length) {
+      const progress = await this.journal.read<SearchProgress>(`rounds/${prepared.input.roundId}/progress`)
+      if (!progress) return false
+      for (const decision of prepared.decisions) {
+        const saved = await this.journal.object<EvaluationStageDecision>(decision.digest)
+        if (canonicalJson(saved as unknown as JsonValue) !== canonicalJson(decision as unknown as JsonValue))
+          throw new Error('GEPA science decision object drift')
+        const row = progress.decisions.find(item => item.stagePlanDigest === decision.stagePlanDigest
+          && item.candidateId === decision.candidateId)
+        if (!row) return false
+        if (row.digest !== decision.digest) throw new Error('GEPA science decision progress drift')
+      }
     }
     return true
   }
@@ -168,6 +188,15 @@ export class GepaScienceCheckpointProvider implements OperationProvider {
         const saved = await this.journal.freeze(prepared.input.roundId, row.name, () => row.value)
         if (digestJson(saved) !== digestJson(row.value))
           throw new Error('GEPA science checkpoint frozen value drift')
+      }
+      if (prepared.decisions.length) {
+        const key = `rounds/${prepared.input.roundId}/progress`
+        const progress = await this.journal.read<SearchProgress>(key)
+        if (!progress) throw new Error('GEPA stage progress is unavailable')
+        for (const decision of prepared.decisions) await this.journal.put(decision)
+        const byKey = new Map([...progress.decisions, ...prepared.decisions].map(decision =>
+          [`${decision.stagePlanDigest}/${decision.candidateId}`, decision]))
+        await this.journal.write(key, { ...progress, decisions: [...byKey.values()] })
       }
       const completion: CompletionEnvelope = { operationId: envelope.operationId,
         idempotencyKey: envelope.idempotencyKey, inputDigest: envelope.inputDigest,

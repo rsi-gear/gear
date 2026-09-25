@@ -37,6 +37,7 @@ import { SearchEvidencePending, type SearchRoundOutcome } from './engine.js'
 import { repairCampaignEvaluation } from './campaign-repair.js'
 import { pendingOperation } from './recovery.js'
 import { campaignSearchDirectory, campaignSearchId } from './campaign-identity.js'
+import { CampaignPhaseProgress } from './campaign-progress.js'
 import { claimCampaignRun, inspectCampaignRun, type CampaignAdmissionExtensions,
   type FrozenCampaignAdmission } from './campaign-admission.js'
 import type { PendingSearchOperation, ResearchArchive, ResearchFinding, StageResult } from './types.js'
@@ -343,6 +344,8 @@ export class CampaignFailureClusterSearch {
       budgetStart + resolvedSettings.budgets.evolution.timeoutMs)
     const dispose = legacyProviders.map(provider => provider.beginLegacyInvocation({ callerSignal: signal, deadlineAt }))
     try {
+    const phases = new CampaignPhaseProgress(this.store, request.roundId, this.hooks.progress)
+    await phases.reach(runtime.snapshot()?.state ?? null)
     let status: Awaited<ReturnType<AlgorithmRuntime['tick']>>
     do {
       signal.throwIfAborted(); status = await runtime.tick()
@@ -351,6 +354,7 @@ export class CampaignFailureClusterSearch {
         // the old compatibility pointer can then be cleared before the next key.
         const prior = await this.store.read<PendingSearchOperation | null>(`rounds/${request.roundId}/pending-operation`)
         if (prior) await this.store.write(`rounds/${request.roundId}/pending-operation`, null)
+        await phases.reach(runtime.snapshot()?.state ?? null)
       }
     } while (status === 'advanced')
     if (status !== 'complete') {
