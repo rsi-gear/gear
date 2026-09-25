@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
@@ -9,8 +8,18 @@ import { AUTHOR_WIRE_VERSION, type AuthorReplayReply } from './index.js';
 import { authorHostIdentityDigest, authorSourceClosureDigest } from './identity.js';
 import type { ReplayPort } from './adapter.js';
 
-export type SealedPythonReplayPort = ReplayPort & { sourceDigest: string; hostDigest: string };
-type Environment = { executable: string; version: string; packages: [string, string][]; loadedFiles: [string, string][]; executableSha256: string };
+export type PythonAuthorReplayOptions = Omit<PythonWorkerOptions, 'mode'> & {
+  signal?: AbortSignal;
+  /** Maximum wait to use the admitted worker for its only replay. */
+  admissionIdleMs?: number;
+};
+export type SealedPythonReplayPort = ReplayPort & {
+  sourceDigest: string;
+  hostDigest: string;
+  close(): Promise<void>;
+};
+type Environment = { executable: string; version: string; packages: JsonValue; loadedFiles: [string, string][]; executableSha256: string };
+
 function loadedFiles(value: unknown): [string, string][] {
   if (!Array.isArray(value)) throw new Error('Invalid Python loadedModules');
   const unique = new Map<string, string>();
@@ -23,68 +32,144 @@ function loadedFiles(value: unknown): [string, string][] {
   }
   return [...unique].sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
 }
-function environment(interpreter: string, projectRoot: string, sdkRoot: string, modulePath: string, exportName: string): Environment {
-  const script = `import json,sys,runpy,stringprep,unicodedata,encodings.idna
-from pathlib import Path
-sys.path.insert(0,sys.argv[2]);sys.path.insert(0,sys.argv[1])
-from gear_algorithm.worker import _load_export,_environment_info
-_,source=_load_export(sys.argv[3],sys.argv[4],Path(sys.argv[1]))
-print(json.dumps(_environment_info(source)))`;
-  const raw = execFileSync(interpreter, ['-c', script, projectRoot, sdkRoot, modulePath, exportName],
-    { cwd: projectRoot, env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' }, encoding: 'utf8',
-      timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
-  const result = JSON.parse(raw) as { interpreter: string; pythonVersion: string; packages: [string, string][]; loadedModules: unknown };
-  const executable = realpathSync(result.interpreter);
-  const executableSha256 = createHash('sha256').update(readFileSync(executable)).digest('hex');
-  return { executable, version: result.pythonVersion, packages: result.packages, loadedFiles: loadedFiles(result.loadedModules), executableSha256 };
-}
 function containedModule(projectRoot: string, module: string): string {
-  if (!module.endsWith('.py')) throw new Error('A0 Python author module must be an explicit .py path inside configDir');
+  if (!module.endsWith('.py')) throw new Error('Python author module must be an explicit .py path inside configDir');
   const path = realpathSync(isAbsolute(module) ? module : resolve(projectRoot, module));
   const name = relative(projectRoot, path);
   if (!name || name === '..' || name.startsWith('../') || isAbsolute(name))
     throw new Error('Python author module escapes frozen configDir');
   return path;
 }
-/** Fresh worker per decision, with project, SDK, interpreter, packages and host closure checked before every replay. */
-export function createPythonAuthorReplayPort(options: Omit<PythonWorkerOptions, 'mode'>): SealedPythonReplayPort {
-  const projectRoot = realpathSync(options.configDir);
-  const modulePath = containedModule(projectRoot, options.module);
-  if (!options.sdkPath) throw new Error('A0 Python author requires an explicit frozen sdkPath');
-  const sdkRoot = realpathSync(options.sdkPath);
+function shaFile(path: string): string { return createHash('sha256').update(readFileSync(path)).digest('hex'); }
+
+/** Admission and first replay share one process; subsequent replays use fresh processes. */
+export async function createPythonAuthorReplayPort(options: PythonAuthorReplayOptions): Promise<SealedPythonReplayPort> {
+  const { signal, admissionIdleMs = 30_000, ...workerOptions } = options;
+  if (!Number.isSafeInteger(admissionIdleMs) || admissionIdleMs < 1 || admissionIdleMs > 60_000)
+    throw new Error('Python author admission idle timeout must be 1..60000 ms');
+  if (signal?.aborted) throw new Error('Python author admission cancelled');
+  const projectRoot = realpathSync(workerOptions.configDir);
+  const modulePath = containedModule(projectRoot, workerOptions.module);
+  if (!workerOptions.sdkPath) throw new Error('Python author requires an explicit frozen sdkPath');
+  const sdkRoot = realpathSync(workerOptions.sdkPath);
   const hostRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-  const interpreter = options.interpreter.includes('/') || options.interpreter.includes('\\')
-    ? (isAbsolute(options.interpreter) ? options.interpreter : resolve(projectRoot, options.interpreter)) : options.interpreter;
-  const frozenEnvironment = environment(interpreter, projectRoot, sdkRoot, modulePath, options.export);
-  const source = (): JsonValue => ({ project: authorSourceClosureDigest(projectRoot),
-    sdk: authorSourceClosureDigest(sdkRoot), modulePath, moduleSha256: createHash('sha256').update(readFileSync(modulePath)).digest('hex'),
-    export: options.export, environment: frozenEnvironment as unknown as JsonValue });
-  const sourceDigest = jsonDigest(source());
-  const hostDigest = authorHostIdentityDigest(hostRoot);
-  const replay: ReplayPort = async request => {
-    if (jsonDigest(source()) !== sourceDigest || authorHostIdentityDigest(hostRoot) !== hostDigest
-      || createHash('sha256').update(readFileSync(frozenEnvironment.executable)).digest('hex') !== frozenEnvironment.executableSha256)
-      throw new Error('Python author source/host/environment closure changed during campaign');
-    if (request.version !== AUTHOR_WIRE_VERSION || Buffer.byteLength(canonicalJson(request)) > 1024 * 1024)
-      throw new Error('Invalid/oversized author replay request');
-    const worker = await PythonWorker.start({ ...options, mode: 'author' });
-    try {
-      const reported = await worker.call('environment.describe') as Record<string, JsonValue>;
-      const reportedFiles = loadedFiles(reported.loadedModules);
+  const closure = (): JsonValue => ({ project: authorSourceClosureDigest(projectRoot),
+    sdk: authorSourceClosureDigest(sdkRoot), modulePath, moduleSha256: shaFile(modulePath), export: workerOptions.export });
+  const before = jsonDigest(closure());
+  const hostBefore = authorHostIdentityDigest(hostRoot);
+  const lifetime = new AbortController();
+  const abort = () => lifetime.abort();
+  signal?.addEventListener('abort', abort, { once: true });
+  let warm: PythonWorker | undefined;
+  const stopAdmission = () => { void warm?.close(); };
+  lifetime.signal.addEventListener('abort', stopAdmission, { once: true });
+  try {
+    warm = await PythonWorker.start({ ...workerOptions, mode: 'author' }, lifetime.signal);
+    const initial = await warm.call('environment.describe') as Record<string, JsonValue>;
+    lifetime.signal.removeEventListener('abort', stopAdmission);
+    if (lifetime.signal.aborted) throw new Error('Python author admission cancelled');
+    if (jsonDigest(closure()) !== before || authorHostIdentityDigest(hostRoot) !== hostBefore)
+      throw new Error('Python author source/host closure changed during admission');
+    if (initial.sourcePath !== modulePath || initial.sourceSha256 !== shaFile(modulePath)
+      || !Array.isArray(initial.packages)
+      || typeof initial.interpreter !== 'string' || typeof initial.pythonVersion !== 'string')
+      throw new Error('Python author admission environment drift');
+    const executable = realpathSync(initial.interpreter);
+    const frozen: Environment = { executable, version: initial.pythonVersion,
+      packages: initial.packages ?? null, loadedFiles: loadedFiles(initial.loadedModules),
+      executableSha256: shaFile(executable) };
+    const source = (): JsonValue => ({ ...(closure() as Record<string, JsonValue>), environment: frozen as unknown as JsonValue });
+    const sourceDigest = jsonDigest(source());
+    const hostDigest = hostBefore;
+    const checkSource = (): void => {
+      if (jsonDigest(source()) !== sourceDigest || authorHostIdentityDigest(hostRoot) !== hostDigest
+        || shaFile(executable) !== frozen.executableSha256)
+        throw new Error('Python author source/host/environment closure changed during campaign');
+    };
+    const checkEnvironment = (reported: Record<string, JsonValue>): void => {
+      const files = loadedFiles(reported.loadedModules);
       const failed = [
         reported.sourcePath !== modulePath ? 'module-path' : null,
-        reported.sourceSha256 !== createHash('sha256').update(readFileSync(modulePath)).digest('hex') ? 'module-bytes' : null,
-        reported.interpreter !== frozenEnvironment.executable ? 'interpreter' : null,
-        reported.pythonVersion !== frozenEnvironment.version ? 'version' : null,
-        canonicalJson(reported.packages) !== canonicalJson(frozenEnvironment.packages) ? 'packages' : null,
-        canonicalJson(reportedFiles) !== canonicalJson(frozenEnvironment.loadedFiles) ? `loaded-files:${reportedFiles.length}/${frozenEnvironment.loadedFiles.length}` : null,
+        reported.sourceSha256 !== shaFile(modulePath) ? 'module-bytes' : null,
+        reported.interpreter !== frozen.executable ? 'interpreter' : null,
+        reported.pythonVersion !== frozen.version ? 'version' : null,
+        canonicalJson(reported.packages ?? null) !== canonicalJson(frozen.packages) ? 'packages' : null,
+        canonicalJson(files) !== canonicalJson(frozen.loadedFiles) ? `loaded-files:${files.length}/${frozen.loadedFiles.length}` : null,
       ].filter(Boolean);
       if (failed.length) throw new Error(`Python author worker environment drift: ${failed.join(',')}`);
-      const reply = await worker.call('author.replay', request) as AuthorReplayReply;
-      if (Buffer.byteLength(canonicalJson(reply)) > 1024 * 1024 || (reply.status !== 'waiting' && reply.status !== 'completed'))
-        throw new Error('Invalid/oversized Python author replay reply');
-      return reply;
-    } finally { await worker.close(); }
-  };
-  return Object.assign(replay, { sourceDigest, hostDigest });
+    };
+    let reserved: PythonWorker | undefined = warm;
+    warm = undefined;
+    let active: PythonWorker | undefined;
+    let starting: Promise<PythonWorker> | undefined;
+    let idleClose: Promise<void> | undefined;
+    let idleTimer: NodeJS.Timeout | undefined;
+    let busy = false;
+    let closed = false;
+    let closePromise: Promise<void> | undefined;
+    const discardReserved = (): Promise<void> => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = undefined;
+      const worker = reserved;
+      reserved = undefined;
+      return worker ? worker.close() : Promise.resolve();
+    };
+    idleTimer = setTimeout(() => { idleClose = discardReserved(); void idleClose.catch(() => undefined); }, admissionIdleMs);
+    idleTimer.unref();
+    const close = (): Promise<void> => {
+      if (closePromise) return closePromise;
+      closed = true;
+      signal?.removeEventListener('abort', abort);
+      const inFlight = starting;
+      const current = active;
+      closePromise = (async () => {
+        await Promise.allSettled([discardReserved(), current?.close(), idleClose]);
+        if (inFlight) {
+          const worker = await inFlight.catch(() => undefined);
+          if (worker) await worker.close();
+        }
+      })();
+      lifetime.abort();
+      return closePromise;
+    };
+    lifetime.signal.addEventListener('abort', () => { void close(); }, { once: true });
+    if (lifetime.signal.aborted) { await close(); throw new Error('Python author admission cancelled'); }
+    const replay: ReplayPort = async request => {
+      if (closed) throw new Error('Python author replay port is closed');
+      if (busy) throw new Error('Concurrent Python author replay is forbidden');
+      busy = true;
+      try {
+        try { checkSource(); }
+        catch (error) { await discardReserved(); throw error; }
+        if (request.version !== AUTHOR_WIRE_VERSION || Buffer.byteLength(canonicalJson(request)) > 1024 * 1024)
+          throw new Error('Invalid/oversized author replay request');
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = undefined;
+        let worker = reserved;
+        reserved = undefined;
+        if (!worker) {
+          starting = PythonWorker.start({ ...workerOptions, mode: 'author' }, lifetime.signal);
+          try { worker = await starting; }
+          finally { starting = undefined; }
+        }
+        active = worker;
+        try {
+          if (closed) throw new Error('Python author replay port is closed');
+          const reported = await worker.call('environment.describe') as Record<string, JsonValue>;
+          checkEnvironment(reported);
+          checkSource();
+          const reply = await worker.call('author.replay', request) as AuthorReplayReply;
+          if (Buffer.byteLength(canonicalJson(reply)) > 1024 * 1024 || (reply.status !== 'waiting' && reply.status !== 'completed'))
+            throw new Error('Invalid/oversized Python author replay reply');
+          return reply;
+        } finally { active = undefined; await worker.close(); }
+      } finally { busy = false; }
+    };
+    return Object.assign(replay, { sourceDigest, hostDigest, close });
+  } catch (error) {
+    lifetime.signal.removeEventListener('abort', stopAdmission);
+    await warm?.close();
+    signal?.removeEventListener('abort', abort);
+    throw error;
+  }
 }

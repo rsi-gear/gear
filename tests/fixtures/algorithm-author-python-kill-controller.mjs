@@ -16,9 +16,10 @@ const schema = { id: 'author-py-kill.bindings.v1', slots: {} };
 const artifacts = new FileArtifactStore(join(root, 'artifacts'));
 const bindings = new BindingStore(artifacts, schema);
 const initialBindingSetRef = bindings.create({});
-const port = createPythonAuthorReplayPort({ configDir: resolve('packages/python-sdk/tests/fixtures'),
+const port = await createPythonAuthorReplayPort({ configDir: resolve('packages/python-sdk/tests/fixtures'),
   module: 'author_kill_sample.py', export: 'sample', interpreter,
   sdkPath: resolve('packages/python-sdk/src'), timeoutMs: 30_000 });
+try {
 const adapter = new AuthorAlgorithmAdapter({ id: 'author-py-kill', implementationDigest: port.sourceDigest,
   hostIdentityDigest: port.hostDigest, bindingSchema: schema, artifacts, bindings, replay: port,
   initialAgent: null, data: {}, maxFrontierWaves: 30, clock: () => 123456 });
@@ -82,3 +83,4 @@ if (phase === 'before') {
     historyRollouts: history.filter(item => item.kind === 'author.rollout').length,
     effects })}\n`);
 }
+} finally { await port.close(); }

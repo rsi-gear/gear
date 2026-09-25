@@ -217,6 +217,8 @@ async function runChild(args) {
     import('../lib/algorithm/schema.js'),
   ]);
   const startedAt = performance.now();
+  let pythonPort;
+  try {
   const artifacts = new FileArtifactStore(join(root, 'artifacts'));
   const bindings = new BindingStore(artifacts, { id: 'author-benchmark.bindings.v1', slots: {} });
   const bindingSchema = { id: 'author-benchmark.bindings.v1', slots: {} };
@@ -229,9 +231,10 @@ async function runChild(args) {
     const port = mode === 'typescript'
       ? new AuthorProcessReplayPort(resolve(cwd, 'tests/fixtures/algorithm-author-benchmark.mjs'),
         graph, resolve(cwd, 'lib/algorithm/author/worker-entry.js'))
-      : createPythonAuthorReplayPort({ configDir: resolve(cwd, 'packages/python-sdk/tests/fixtures'),
+      : await createPythonAuthorReplayPort({ configDir: resolve(cwd, 'packages/python-sdk/tests/fixtures'),
         module: 'author_benchmark.py', export: graph, interpreter,
         sdkPath: resolve(cwd, 'packages/python-sdk/src'), timeoutMs: 30000 });
+    if (mode === 'python') pythonPort = port;
     const replay = async request => {
       const before = performance.now();
       try { return await (mode === 'typescript' ? port.replay(request) : port(request)); }
@@ -334,6 +337,7 @@ async function runChild(args) {
     logicalArtifactAndJournalReadBytes: logicalReads,
     operationKeys: metrics.intents.map(item => item.localKey) };
   process.stdout.write(`${JSON.stringify(result)}\n`);
+  } finally { await pythonPort?.close(); }
 }
 
 function runPhase(mode, graph, root, phase) {

@@ -99,6 +99,13 @@ def _describe_export(target: Any) -> dict[str, Any]:
 
 
 def _environment_info(source: Path | None) -> dict[str, Any]:
+    # Probe before taking the module snapshot so repeated descriptions of the
+    # same idle worker have identical loaded-module identities.
+    try:
+        import fcntl  # noqa: F401 - capability probe for the local durable host
+        fcntl_available = True
+    except ImportError:
+        fcntl_available = False
     packages = sorted((dist.metadata.get("Name", "").lower(), dist.version)
                       for dist in importlib.metadata.distributions())
     source_bytes = source.read_bytes() if source is not None else b""
@@ -118,11 +125,6 @@ def _environment_info(source: Path | None) -> dict[str, Any]:
             continue
         loaded_modules.append([name, str(path.resolve()), digest])
     loaded_modules.sort()
-    try:
-        import fcntl  # noqa: F401 - capability probe for the local durable host
-        fcntl_available = True
-    except ImportError:
-        fcntl_available = False
     return {"interpreter": str(Path(sys.executable).resolve()), "pythonVersion": sys.version,
             "fcntlAvailable": fcntl_available,
             "sourcePath": str(source) if source is not None else None,

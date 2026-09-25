@@ -54,14 +54,38 @@ export class PythonWorker {
   #callQueue: Promise<unknown> = Promise.resolve();
   #ready = false;
   #closed = false;
+  #closePromise: Promise<void> | undefined;
   #logs = '';
 
   private constructor(options: PythonWorkerOptions) { this.#options = options; }
 
-  static async start(options: PythonWorkerOptions): Promise<PythonWorker> {
+  static async start(options: PythonWorkerOptions, signal?: AbortSignal): Promise<PythonWorker> {
+    if (signal?.aborted) throw new PythonHostError('CANCELLED', 'Python worker startup cancelled');
     const worker = new PythonWorker(options);
-    await worker.#start();
-    return worker;
+    let cancel: (() => void) | undefined;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      cancel = () => {
+        reject(new PythonHostError('CANCELLED', 'Python worker startup cancelled'));
+        void worker.close();
+      };
+    });
+    let deadline: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      deadline = setTimeout(() => reject(new PythonHostError('TIMEOUT', 'Python worker startup timed out')),
+        options.timeoutMs ?? 10_000);
+    });
+    if (cancel) signal?.addEventListener('abort', cancel, { once: true });
+    try {
+      await Promise.race(signal ? [worker.#start(), aborted, timeout] : [worker.#start(), timeout]);
+      if (signal?.aborted) throw new PythonHostError('CANCELLED', 'Python worker startup cancelled');
+      return worker;
+    } catch (error) {
+      await worker.close();
+      throw error;
+    } finally {
+      if (deadline) clearTimeout(deadline);
+      if (cancel) signal?.removeEventListener('abort', cancel);
+    }
   }
 
   get logs(): string { return this.#logs; }
@@ -80,6 +104,7 @@ export class PythonWorker {
       server.once('error', rejectReady);
       server.listen(0, '127.0.0.1', () => { server.off('error', rejectReady); resolveReady(); });
     });
+    if (this.#closed) throw new PythonHostError('CANCELLED', 'Python worker startup cancelled');
     const address = server.address();
     if (!address || typeof address === 'string') throw new PythonHostError('LISTEN', 'loopback listener has no TCP port');
     const environment: NodeJS.ProcessEnv = { ...process.env, GEAR_ALGORITHM_TOKEN: this.#token, GEAR_ALGORITHM_WORKER_ID: this.#workerId, PYTHONDONTWRITEBYTECODE: '1' };
@@ -137,6 +162,7 @@ export class PythonWorker {
       await this.close();
       throw error;
     }
+    if (this.#closed) throw new PythonHostError('CANCELLED', 'Python worker startup cancelled');
   }
 
   #drain(onFrame: (frame: Record<string, JsonValue>) => void): void {
@@ -240,9 +266,14 @@ export class PythonWorker {
     });
   }
 
-  async close(): Promise<void> {
-    if (this.#closed) return;
+  close(): Promise<void> {
+    if (this.#closePromise) return this.#closePromise;
     this.#closed = true;
+    this.#closePromise = this.#closeNow();
+    return this.#closePromise;
+  }
+
+  async #closeNow(): Promise<void> {
     this.#failAll(new PythonHostError('CLOSED', 'Python worker closed'));
     this.#socket?.destroy();
     this.#child?.kill('SIGTERM');

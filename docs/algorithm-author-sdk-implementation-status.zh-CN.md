@@ -41,6 +41,12 @@
 
 独立 resolver/identity 回归 2 文件 7 项通过；实施者报告全仓类型检查及 resolver/kernel 25 项通过；主审另外验证原有角色/工作区编辑回归 2 文件 28 项通过。见 [解析器审计](experiments/author-a1-run-resolver-review-20260926.zh-CN.md)。本切片只是只读解析边界：实际 inspector、lock 发布及 run/resume 消费、作者输入到物理 operation 的转换和 CLI 接线仍待实现。
 
+## A0 Python admission 生命周期优化
+
+Python replay port 改为异步创建，首次 replay 使用刚完成环境准入的同一个 worker；之后每波仍新建进程。源码/环境/宿主身份检查保留，新增显式幂等关闭、未使用 worker 的闲置清理、启动及执行期间的取消，并更新现有调用方。
+
+实施者构建及类型检查通过，相关 4 文件 38 项回归通过。独立审查隔离副本 2 文件 14 项通过，含真实 SIGKILL 与同版本冷恢复。第一次共享工作树测试为 13/14，失败发生于并行源码修改触发 host 闭包漂移；隔离冻结源码后通过，未取消身份检查。见 [生命周期审计](experiments/author-a0-python-admission-review-20260926.zh-CN.md)。性能改善尚待冻结协议复测；减少首次进程启动不代表每波性能门已通过。
+
 ## 当前限制
 
 A0 是运行基础。`propose/evaluate/select`、通用运行 profile、五文件作者项目及新的 CLI 仍待后续 A1 切片；现有 A0 role/edit/rollout/measure 便利方法用于探针，v2 已拒绝这些假 operation。用户不能仅复制 v4 的搜索示例便运行真实实验。
