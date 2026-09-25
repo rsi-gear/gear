@@ -17,7 +17,7 @@ import { resolveParentPolicyRef } from '../../search/policies/parents.js'
 import { stagePlan } from '../../search/scopes.js'
 import { usageLimit, type RemainingBudget } from '../../search/store.js'
 import type { SearchAdmission } from '../../search/runtime.js'
-import type { SearchRoundOutcome } from '../../search/engine.js'
+import type { SearchRoundOutcome } from '../../search/outcomes.js'
 import type { ParentSelectionPolicy } from '../../search/parent-selection.js'
 import type { BridgeSelectionDecision, EvaluationScope, EvaluationStageDecision, GateDecision, ResearchFinding,
   ParentSelectionDecision, ResearchArchive, SearchProgress, SearchSettings, Snapshot,

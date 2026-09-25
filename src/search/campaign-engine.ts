@@ -33,7 +33,7 @@ import { SearchExecutionRuntime, type SearchAdmission, type SearchExecutionHooks
 import { validateSearchSchema } from './schema.js'
 import { SearchStore, type RemainingBudget, type SearchJournal } from './store.js'
 import type { DiagnosisProvider, SearchProvider } from './types.js'
-import { SearchEvidencePending, type SearchRoundOutcome } from './engine.js'
+import { SearchEvidencePending, type SearchRoundOutcome } from './outcomes.js'
 import { repairCampaignEvaluation } from './campaign-repair.js'
 import { pendingOperation } from './recovery.js'
 import { campaignSearchDirectory, campaignSearchId } from './campaign-identity.js'

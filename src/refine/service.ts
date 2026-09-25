@@ -27,6 +27,7 @@ import { CandidateDiagnosisStore, type CandidateDiagnosisRecord } from '../state
 import { resolveChampionParent } from './champion-parent.js'
 import { join } from 'node:path'
 import { FailureClusterSearch, type GeneratedCandidate } from '../search/engine.js'
+import { implementationClosureDigest } from '../algorithm/data/identity.js'
 import { SearchStore } from '../search/store.js'
 import { seal, validateSettings, invariant } from '../search/contracts.js'
 import { legacySearchEvidence } from '../search/legacy.js'
@@ -579,7 +580,16 @@ export class RefineService {
   private readonly runtimes = new Map<string, EvolutionRuntime>()
   private readonly drives = new Set<Promise<void>>()
   private readonly nativeExperienceUsageReaders = new Map<string, ExperienceUsageReader>()
+  private searchHooksImplementationDigest?: string
   private disposed = false
+
+  private searchHooksIdentity(): string {
+    // The installed source/build dependency bytes of the actual hook owner,
+    // shared by the normal drive and evidence-repair entrypoints. No mutable
+    // round data or host configuration is mixed into implementation identity.
+    return this.searchHooksImplementationDigest ??= implementationClosureDigest(
+      ['../refine/service'], { domain: 'refine-service.search-hooks' })
+  }
 
   constructor(
     readonly registry: EvolutionRegistryStore,
@@ -1186,7 +1196,7 @@ export class RefineService {
         },
         generate: async () => { throw new Error('evidence repair cannot generate candidates') },
         commitChampion: async () => { throw new Error('evidence repair cannot promote') },
-      }, this.components)
+      }, this.components, { hookImplementationDigest: this.searchHooksIdentity() })
       const result = await engine.repairEvaluation(roundId, repairId, originalEvidenceDigest, new AbortController().signal)
       await this.transition(evolution.store, roundId, { status: 'baseline-running', failure: undefined })
       this.active.set(roundId, this.newActive(evolution, lock, round.source, round.batchId, round.roundIndex, round.roundCount, round.advisoryFocus))
@@ -2521,7 +2531,7 @@ export class RefineService {
         const statuses: Record<string, RefinementRound['status']> = { bootstrap: 'baseline-running', 'scope-preparation': 'baseline-running', 'diagnosis-planning': 'baseline-running', local: 'candidate-seed-running', bridge: 'candidate-seed-running', 'global-seed': 'candidate-seed-running', 'held-out': 'held-out-running' }
         if (statuses[phase]) await this.transition(store, roundId, { status: statuses[phase] })
       },
-    }, this.components)
+    }, this.components, { hookImplementationDigest: this.searchHooksIdentity() })
     const outcome = await engine.run({ evolutionId: spec.evolutionId, roundId, roundIndex: round.roundIndex - 1,
       maxCandidates: spec.candidateGeneration.maxCandidates, anchor: round.searchAnchor.snapshot, championRevisionDigest: round.searchAnchor.championRevisionDigest, settings: spec.searchSettings }, active.abort.signal)
     await this.transition(store, roundId, { searchOutcome: outcome, status: outcome.championChanged ? 'accepted' : 'rejected', decision: outcome.championChanged ? 'accepted' : 'rejected', ...(outcome.championChanged && outcome.nomineeId ? { promotedCandidateId: outcome.nomineeId } : {}) })

@@ -13,7 +13,7 @@ import { validateSearchSchema } from '../../search/schema.js'
 import type { SearchJournal } from '../../search/store.js'
 import type { Snapshot, ResearchArchive } from '../../search/types.js'
 import type { SearchExecutionHooks } from '../../search/runtime.js'
-import type { SearchRoundOutcome } from '../../search/engine.js'
+import type { SearchRoundOutcome } from '../../search/outcomes.js'
 
 export type GepaBootstrapPublication = {
   schemaVersion: 1; kind: 'bootstrap-archive'; roundId: string; archiveDigest: string

@@ -4,7 +4,7 @@ import { ComponentRegistry } from '../../src/evolution/components.js'
 import { digestJson } from '../../src/state/digest.js'
 import { claimCampaignRun, inspectCampaignRun, type CampaignAdmissionExtensions } from '../../src/search/campaign-admission.js'
 import { seal } from '../../src/search/contracts.js'
-import { FailureClusterSearch } from '../../src/search/engine.js'
+import { FrozenFailureClusterSearch } from '../helpers/frozen-failure-cluster-search.js'
 import { collectFailure } from '../../src/search/regression.js'
 import type { SearchAdmission } from '../../src/search/runtime.js'
 import { MemorySearchStore, fixtures, settings, universe } from '../../src/search/testing.js'
@@ -185,7 +185,7 @@ describe('Campaign search admission and recovery gates', () => {
   it('returns a sealed terminal and clears its active pointer without provider admission', async () => {
     const run = scenario()
     run.fixture.diagnosis.diagnose = async () => ({ facts: [], inputTokens: 1, outputTokens: 1 })
-    const old = await new FailureClusterSearch(run.store, run.fixture.provider,
+    const old = await new FrozenFailureClusterSearch(run.store, run.fixture.provider,
       run.fixture.diagnosis, run.fixture.hooks).run(run.request, new AbortController().signal)
     const pointer = await run.store.read<{ ref: string }>('rounds/round/admission')
     const legacy = await run.store.object<Record<string, unknown> & { digest: string }>(pointer!.ref)
@@ -207,7 +207,7 @@ describe('Campaign search admission and recovery gates', () => {
   it('replays a sealed legacy terminal offline but leaves an unfinished legacy round with its original engine', async () => {
     const run = scenario()
     run.fixture.diagnosis.diagnose = async () => ({ facts: [], inputTokens: 1, outputTokens: 1 })
-    const old = await new FailureClusterSearch(run.store, run.fixture.provider,
+    const old = await new FrozenFailureClusterSearch(run.store, run.fixture.provider,
       run.fixture.diagnosis, run.fixture.hooks).run(run.request, new AbortController().signal)
     const pointer = await run.store.read<{ ref: string }>('rounds/round/admission')
     const frozen = await run.store.object<Record<string, unknown> & { digest: string }>(pointer!.ref)

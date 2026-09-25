@@ -7,7 +7,7 @@ import { jsonDigest, type JsonValue } from '../../src/algorithm/schema.js'
 import type { OperationEnvelope } from '../../src/algorithm/contracts.js'
 import { GepaPublicationProvider, type GepaBootstrapPublication, type GepaPublicationInput } from '../../src/algorithm/providers/gepa-publication.js'
 import { JournalArtifactStore, SearchJournalProviderRecordBackend } from '../../src/algorithm/runtime/persistence.js'
-import { FailureClusterSearch } from '../../src/search/engine.js'
+import { FrozenFailureClusterSearch } from '../helpers/frozen-failure-cluster-search.js'
 import { MemorySearchStore } from '../../src/search/testing.js'
 import { SearchStore } from '../../src/search/store.js'
 import { seal } from '../../src/search/contracts.js'
@@ -23,7 +23,7 @@ async function setup() {
   const f = fixtures(20), config = settings()
   config.search.taskSetSizing.bridge.ratio = 0
   const legacy = new MemorySearchStore()
-  const outcome = await new FailureClusterSearch(legacy, f.provider, f.diagnosis, f.hooks).run({
+  const outcome = await new FrozenFailureClusterSearch(legacy, f.provider, f.diagnosis, f.hooks).run({
     evolutionId: 'publication-fixture', roundId: 'r', roundIndex: 0, maxCandidates: 4,
     anchor: f.anchor, championRevisionDigest: digestJson('original-revision'), settings: config,
   }, new AbortController().signal)

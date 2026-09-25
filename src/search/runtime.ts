@@ -11,7 +11,7 @@ import { validateSearchSchema } from './schema.js'
 import { SearchBudgetExceeded, zeroUsage, type SearchJournal } from './store.js'
 import type { CandidateWorkPlan, CellVerification, DiagnosisDossier, DiagnosisProvider, EvaluationExecutionResult, EvaluationScope, EvaluationStageDecision, EvidenceCell, EvidenceConsumption, ExternalRecovery, PendingSearchOperation, ResearchArchive, ResearchFinding, SearchProgress, SearchProvider, SearchSettings, SearchStageFailure, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse, WorkplanReceipt } from './types.js'
 
-import type { CommitIntent, SearchRoundOutcome } from './engine.js'
+import type { CommitIntent, SearchRoundOutcome } from './outcomes.js'
 
 export interface GeneratedCandidate {
   snapshot?: Snapshot

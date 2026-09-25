@@ -1,6 +1,6 @@
 # FailureClusterSearch 的 Campaign 重写与等价验收
 
-状态：实施中，尚未通过完整等价验收。基准为 `ec76b8b25703c46cbe3b2aaf94b64dc0c2277921` 的旧公开 `FailureClusterSearch`。
+状态：确定性差分与本地完整 Search 回归已通过；阿里云部署验证仍在进行。基准为 `ec76b8b25703c46cbe3b2aaf94b64dc0c2277921` 的旧公开 `FailureClusterSearch`。
 
 ## 验收目标
 
@@ -36,8 +36,12 @@ Campaign 是新路径的资源记账权威；旧预算/进度如需对外保留�
 
 每一阶段由实现代理冻结文件，主代理审查和独立复验后提交。中间阶段不宣称完整等价。最终报告必须区分确定性行为验收、真实物理接线和未经验证的模型效果。
 
-## 2026-09-25 中间验收记录
+## 2026-09-25 验收记录
 
 Campaign 路径已通过 35 项冻结旧实现差分，包含最终结果、物理调用、预算、故障恢复与时钟边界；另有阶段钩子差分验证 scope-preparation、generation 等公开观察点的预算和执行顺序。纯 science/archive 检查点改为已提交决定的持久投影，实际评估、诊断、生成、修复、research checkpoint 与发布仍按操作合同执行。
 
-这还不是完整验收：原公开 Search 的 1500ms generation deadline 测试仍失败，当前公共入口尚未替换。服务器的 TB2.1 实验也尚未启动。修复必须保留原时钟与测试门槛；通过后再记录公共入口全套回归、构建与包外验证结果。
+公共 `FailureClusterSearch` 入口现已切换为 Campaign facade，RefineService 的运行与修复入口封存同一个 service hook 实现身份。故障恢复中的两个 science checkpoint 发布窗口已修复；闭包扫描、状态差量和证据索引优化保留摘要、物理调用顺序和原错误边界。
+
+最终入口源码快照在 macOS / Node 26.5.1 / npm 11.17.0 下通过 29 个文件、342 项 Search 测试，无跳过或失败。其中包括 35 项冻结旧实现差分、原 1500ms generation deadline（约 1.67 秒完成测试）、原 1000-task / 1700-cell 用例（约 58.68 秒，保留 90 秒门槛）。额外持久化/provider 聚焦验证 46 项通过；丢失第二次 process projection 回复后，恢复保留原 key 且不重复第一次 projection 或 rollout。TypeScript、构建、安装后 Search 示例恢复，以及 TS/Python/跨语言作者包验证通过。
+
+阿里云已核对相同 223 个源码文件的摘要，并安装隔离的 Node 26.5.1，未替换系统 Node。该环境下原百任务四种 adapter 组合均通过，约 14–16 秒；千任务仍触发原 90 秒时限，性能优化和复验尚未结束。此前 Node 22 的两种百任务组合和千任务时限也未通过，这些结果不计入通过项。TB2.1 正式实验尚未启动；计划为固定 10 个任务全部用于搜索和同集评估、3 轮、meta/target 均为 gpt-6-luna。

@@ -8,7 +8,7 @@ import { GepaDiagnosisProvider, GepaEvaluationProvider, GepaGenerationProvider }
 import { createGepaRound, nextGepaRound } from '../../src/algorithm/recipes/gepa-round.js'
 import { chooseGepaParents } from '../../src/algorithm/recipes/gepa-policy.js'
 import { buildArchive } from '../../src/search/archive.js'
-import { FailureClusterSearch } from '../../src/search/engine.js'
+import { FrozenFailureClusterSearch } from '../helpers/frozen-failure-cluster-search.js'
 import { cellKey, completeEvidence } from '../../src/search/evidence.js'
 import { MemorySearchStore } from '../../src/search/testing.js'
 import { resolveParentPolicyRef, scopedFrontierPolicy } from '../../src/search/policies/parents.js'
@@ -192,7 +192,7 @@ describe('common-operation failure-cluster GEPA', () => {
       await oldStore.put(cell)
       await oldStore.write(`cells/${cellKey(cell.identity).slice(7)}`, { ref: cell.digest })
     }
-    const old = await new FailureClusterSearch(oldStore, oldFixture.provider, oldFixture.diagnosis, oldFixture.hooks).run({
+    const old = await new FrozenFailureClusterSearch(oldStore, oldFixture.provider, oldFixture.diagnosis, oldFixture.hooks).run({
       evolutionId: f.options.evolutionId, roundId: 'r2', roundIndex: 1, maxCandidates: 2,
       anchor: secondRound.options.anchor, championRevisionDigest: digestJson('revision'),
       settings: f.config }, new AbortController().signal)
@@ -228,7 +228,7 @@ describe('common-operation failure-cluster GEPA', () => {
       await oldStore.write(`cells/${cellKey(cell.identity).slice(7)}`, { ref: cell.digest })
     }
     await oldStore.freezeEvolution('shared-epoch-1', () => seal(firstState.sharedEpochs['1']!))
-    const old = await new FailureClusterSearch(oldStore, oldFixture.provider, oldFixture.diagnosis, oldFixture.hooks).run({
+    const old = await new FrozenFailureClusterSearch(oldStore, oldFixture.provider, oldFixture.diagnosis, oldFixture.hooks).run({
       evolutionId: f.options.evolutionId, roundId: 'r2', roundIndex: 1, maxCandidates: 2,
       anchor: next.options.anchor, championRevisionDigest: digestJson('revision'),
       settings: f.config }, new AbortController().signal)
@@ -269,7 +269,7 @@ describe('common-operation failure-cluster GEPA', () => {
       await store.put(cell)
       await store.write(`cells/${cellKey(cell.identity).slice(7)}`, { ref: cell.digest })
     }
-    const old = await new FailureClusterSearch(store, oldFixture.provider, oldFixture.diagnosis, oldFixture.hooks).run({
+    const old = await new FrozenFailureClusterSearch(store, oldFixture.provider, oldFixture.diagnosis, oldFixture.hooks).run({
       evolutionId: f.options.evolutionId, roundId: f.options.roundId, roundIndex: 0,
       maxCandidates: 2, anchor: oldFixture.anchor, championRevisionDigest: digestJson('revision'),
       settings: f.config }, new AbortController().signal)
