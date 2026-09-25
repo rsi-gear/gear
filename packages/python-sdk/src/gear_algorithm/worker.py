@@ -19,8 +19,10 @@ from .errors import GearAlgorithmError, ProtocolError, ValidationError
 from .manifest import AlgorithmManifest, ProviderManifest
 from .protocol import decision_to_wire, validate_json
 from .provider import ArtifactClient
+from .author import replay as replay_author
 
 MAX_FRAME_BYTES = 4 * 1024 * 1024
+MAX_AUTHOR_FRAME_BYTES = 1024 * 1024
 
 
 def _read_exact(sock: socket.socket, length: int) -> bytes:
@@ -34,9 +36,9 @@ def _read_exact(sock: socket.socket, length: int) -> bytes:
     return b"".join(chunks)
 
 
-def read_frame(sock: socket.socket) -> dict[str, Any]:
+def read_frame(sock: socket.socket, max_bytes: int = MAX_FRAME_BYTES) -> dict[str, Any]:
     length = struct.unpack(">I", _read_exact(sock, 4))[0]
-    if length == 0 or length > MAX_FRAME_BYTES:
+    if length == 0 or length > max_bytes:
         raise ProtocolError("invalid or oversized frame")
     try:
         value = json.loads(_read_exact(sock, length).decode("utf-8"))
@@ -48,10 +50,10 @@ def read_frame(sock: socket.socket) -> dict[str, Any]:
     return value
 
 
-def write_frame(sock: socket.socket, value: dict[str, Any]) -> None:
+def write_frame(sock: socket.socket, value: dict[str, Any], max_bytes: int = MAX_FRAME_BYTES) -> None:
     validate_json(value)
     data = json.dumps(value, ensure_ascii=True, allow_nan=False, separators=(",", ":")).encode("utf-8")
-    if len(data) == 0 or len(data) > MAX_FRAME_BYTES:
+    if len(data) == 0 or len(data) > max_bytes:
         raise ProtocolError("outgoing frame exceeds size limit")
     sock.sendall(struct.pack(">I", len(data)) + data)
 
@@ -148,6 +150,10 @@ def _dispatch(target: Any, mode: str, method: str, params: Any) -> Any:
             raise ProtocolError(f"unsupported algorithm method {method}")
         function = target.initialize if method.endswith("initialize") else target.reduce
         return decision_to_wire(function(params))
+    if mode == "author":
+        if method != "author.replay":
+            raise ProtocolError(f"unsupported author method {method}")
+        return replay_author(target, params)
     if mode == "component":
         if method != "component.invoke":
             raise ProtocolError(f"unsupported component method {method}")
@@ -195,7 +201,7 @@ def run_worker(port: int, module: str, export: str, config_dir: Path, mode: str)
         if hasattr(target, "bind_artifacts"):
             target.bind_artifacts(ArtifactClient(artifact_call))
         while True:
-            frame = read_frame(sock)
+            frame = read_frame(sock, MAX_AUTHOR_FRAME_BYTES if mode == "author" else MAX_FRAME_BYTES)
             if frame.get("type") != "request" or not isinstance(frame.get("id"), str) or not frame["id"]:
                 raise ProtocolError("invalid request envelope")
             method = frame.get("method")
@@ -210,9 +216,11 @@ def run_worker(port: int, module: str, export: str, config_dir: Path, mode: str)
                     raise GearAlgorithmError("IMPORT_ERROR", f"{type(startup_error).__name__} while loading Python export") from startup_error
                 result = _environment_info(source) if method == "environment.describe" else _dispatch(target, mode, method, frame.get("params"))
                 validate_json(result)
-                write_frame(sock, {"type": "response", "id": frame["id"], "result": result})
+                write_frame(sock, {"type": "response", "id": frame["id"], "result": result},
+                            MAX_AUTHOR_FRAME_BYTES if mode == "author" else MAX_FRAME_BYTES)
             except Exception as exc:
-                write_frame(sock, {"type": "response", "id": frame["id"], "error": _error(exc)})
+                write_frame(sock, {"type": "response", "id": frame["id"], "error": _error(exc)},
+                            MAX_AUTHOR_FRAME_BYTES if mode == "author" else MAX_FRAME_BYTES)
     except EOFError:
         pass
     finally:
@@ -225,7 +233,7 @@ def main() -> None:
     parser.add_argument("--module", required=True)
     parser.add_argument("--export", required=True)
     parser.add_argument("--config-dir", required=True)
-    parser.add_argument("--mode", choices=("algorithm", "component", "provider"), required=True)
+    parser.add_argument("--mode", choices=("algorithm", "author", "component", "provider"), required=True)
     args = parser.parse_args()
     try:
         run_worker(args.port, args.module, args.export, Path(args.config_dir), args.mode)

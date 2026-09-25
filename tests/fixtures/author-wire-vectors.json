@@ -1,0 +1,63 @@
+[
+  {
+    "name": "decimal-0.4",
+    "value": 0.4,
+    "canonical": "0.4",
+    "digest": "f3e360d89952f40d3b79d0b07dd0b94f1cbf9017cba5d2a5f8128e4146d6e3c1"
+  },
+  {
+    "name": "threshold-1e-6",
+    "value": 0.000001,
+    "canonical": "0.000001",
+    "digest": "159fb29a827ad04b260aa6c8ab6d8637f8f2b38af5c4f3cb49d6a21205e040f8"
+  },
+  {
+    "name": "threshold-1e-7",
+    "value": 1e-7,
+    "canonical": "1e-7",
+    "digest": "5b33e02f2c5103a05d32f6ba9cb058294452bfbf393967f68bb30c1bdcbbab22"
+  },
+  {
+    "name": "small-negative",
+    "value": -1.23456789e-7,
+    "canonical": "-1.23456789e-7",
+    "digest": "0d894ca78e96b25eb004abb07006b9d0c2d433651ac10dc78bfe3a1753cbb716"
+  },
+  {
+    "name": "safe-max",
+    "value": 9007199254740991,
+    "canonical": "9007199254740991",
+    "digest": "f40b423c2dd95ff2b2f027e22208f438cf7242862e5e746860e697308c9add26"
+  },
+  {
+    "name": "unicode-keys",
+    "value": {
+      "é": 3,
+      "a": 0.4,
+      "中": 1e-7
+    },
+    "canonical": "{\"a\":0.4,\"é\":3,\"中\":1e-7}",
+    "digest": "debee962784f326c6012737f1633c5984a49565a5f2bd9379e397b6ba4d613be"
+  },
+  {
+    "name": "nested-intent",
+    "value": {
+      "input": {
+        "values": [
+          0.4,
+          0.000001,
+          {
+            "中": "值",
+            "a": -12.5
+          }
+        ]
+      },
+      "limits": {
+        "calls": 2
+      },
+      "startsBudgetClock": false
+    },
+    "canonical": "{\"input\":{\"values\":[0.4,0.000001,{\"a\":-12.5,\"中\":\"值\"}]},\"limits\":{\"calls\":2},\"startsBudgetClock\":false}",
+    "digest": "e512dcd9ca02d0e601d819722b7542dbee8dc77256f45d79cf553818861bd101"
+  }
+]

@@ -22,7 +22,7 @@ export type PythonWorkerOptions = {
   module: string;
   export: string;
   interpreter: string;
-  mode: 'algorithm' | 'component' | 'provider';
+  mode: 'algorithm' | 'component' | 'provider' | 'author';
   sdkPath?: string;
   timeoutMs?: number;
   recordDir?: string;
@@ -30,6 +30,15 @@ export type PythonWorkerOptions = {
 };
 
 type Pending = { resolve(value: JsonValue): void; reject(error: Error): void; timer: NodeJS.Timeout };
+
+async function waitForChildExit(exit: Promise<void>, timeoutMs: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([exit, new Promise<void>(resolveDelay => { timer = setTimeout(resolveDelay, timeoutMs); })]);
+  } finally { if (timer) clearTimeout(timer); }
+}
+
+
 
 export class PythonWorker {
   readonly #options: PythonWorkerOptions;
@@ -238,10 +247,10 @@ export class PythonWorker {
     this.#socket?.destroy();
     this.#child?.kill('SIGTERM');
     if (this.#childExit) {
-      await Promise.race([this.#childExit, new Promise<void>(resolveDelay => setTimeout(resolveDelay, 1000))]);
+      await waitForChildExit(this.#childExit, 1000);
       if (this.#child?.exitCode === null && this.#child.signalCode === null) {
         this.#child.kill('SIGKILL');
-        await Promise.race([this.#childExit, new Promise<void>(resolveDelay => setTimeout(resolveDelay, 1000))]);
+        await waitForChildExit(this.#childExit, 1000);
       }
     }
     await new Promise<void>(resolveReady => { if (!this.#server) return resolveReady(); this.#server.close(() => resolveReady()); });

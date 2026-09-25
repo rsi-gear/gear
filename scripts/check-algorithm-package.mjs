@@ -64,12 +64,16 @@ try {
     const core = await import('rsi-gear/algorithm')
     const recipes = await import('rsi-gear/algorithm/recipes')
     const legacy = await import('rsi-gear/algorithm/legacy')
+    const author = await import('rsi-gear/algorithm/author')
     console.log(JSON.stringify({ workflow: typeof core.defineWorkflow,
       rho: recipes.rhoRecipe.module, ahe: recipes.aheRecipe.language,
-      evo: recipes.evoRecipe.language, legacy: typeof legacy.verifyPinnedLegacySearchClosure }))
+      evo: recipes.evoRecipe.language, legacy: typeof legacy.verifyPinnedLegacySearchClosure,
+      authorAlgorithm: typeof author.algorithm, authorWorkflow: typeof author.workflow,
+      authorReplay: typeof author.replay }))
   `], consumer))
   assert.deepEqual(publicExports, { workflow: 'function', rho: 'gear_algorithm.recipes.rho',
-    ahe: 'python', evo: 'python', legacy: 'function' })
+    ahe: 'python', evo: 'python', legacy: 'function', authorAlgorithm: 'function',
+    authorWorkflow: 'function', authorReplay: 'function' })
   const heavyConsumer = join(temporary, 'heavy-consumer')
   await (await import('node:fs/promises')).mkdir(heavyConsumer)
   await writeFile(join(heavyConsumer, 'package.json'), JSON.stringify({ name: 'gear-algorithm-heavy-consumer',
@@ -116,7 +120,7 @@ try {
   run(buildPython, ['-m', 'venv', venv], root)
   const python = process.platform === 'win32' ? join(venv, 'Scripts/python.exe') : join(venv, 'bin/python')
   run(python, ['-m', 'pip', 'install', '--no-index', '--no-deps', wheelPath], root)
-  run(python, ['-c', "import gear_algorithm, importlib.util; assert importlib.util.find_spec('torch') is None; assert importlib.util.find_spec('optuna') is None"], root)
+  run(python, ['-c', "import gear_algorithm, importlib.util; from gear_algorithm.author import algorithm, workflow, replay; assert callable(algorithm) and callable(workflow) and callable(replay); assert importlib.util.find_spec('torch') is None; assert importlib.util.find_spec('optuna') is None"], root)
   await cp(join(root, 'examples/algorithms/host-setup/recorded-check.mjs'),
     join(heavyConsumer, 'recorded-check.mjs'))
   const physicalAdmission = JSON.parse(run(process.execPath, ['recorded-check.mjs'], heavyConsumer, {

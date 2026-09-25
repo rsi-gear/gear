@@ -68,6 +68,10 @@
       "types": "./lib/algorithm/index.d.ts",
       "default": "./lib/algorithm/index.js"
     },
+    "./algorithm/author": {
+      "types": "./lib/algorithm/author/index.d.ts",
+      "default": "./lib/algorithm/author/index.js"
+    },
     "./algorithm/testing": {
       "types": "./lib/algorithm/testing.d.ts",
       "default": "./lib/algorithm/testing.js"
