@@ -1,6 +1,6 @@
 {
   "name": "rsi-gear",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Skill-first Gear refinement control plane with native DSH and harness-neutral adapters",
   "type": "module",
   "license": "MIT",
