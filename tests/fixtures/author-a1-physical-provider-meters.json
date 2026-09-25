@@ -1,0 +1,27 @@
+{
+  "source": {
+    "execution.role": "src/algorithm/providers/roles.ts DshStructuredRolePort.describe() with model budget",
+    "execution.workspace-edit": "src/algorithm/providers/workspace-edit.ts DshWorkspaceEditPort.describe()",
+    "execution.rollout": "src/algorithm/providers/hitch.ts HitchRolloutPort.describe()"
+  },
+  "providers": [
+    {
+      "kind": "execution.role",
+      "execution": "external",
+      "meteredDimensions": ["model.requests", "model.tokens"],
+      "hardLimitDimensions": []
+    },
+    {
+      "kind": "execution.workspace-edit",
+      "execution": "external",
+      "meteredDimensions": ["model.requests", "model.tokens"],
+      "hardLimitDimensions": []
+    },
+    {
+      "kind": "execution.rollout",
+      "execution": "external",
+      "meteredDimensions": ["rollout.trials"],
+      "hardLimitDimensions": []
+    }
+  ]
+}

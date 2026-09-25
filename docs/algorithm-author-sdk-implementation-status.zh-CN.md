@@ -35,6 +35,12 @@
 
 实施者相关 5 文件 12 项回归及类型检查通过；主审在最后的 schema 修复后独立验证 2 文件 8 项通过。独立审查无剩余功能阻塞，见 [任务消费审计](experiments/author-a1-task-consume-review-20260926.zh-CN.md)。真实宿主仍须负责装配数据用途和授权范围。
 
+## A1 运行配置解析切片
+
+`src/algorithm/author/run-resolver.ts` 解析 RunSpec、profile、角色及作者源文件，冻结 prompt/schema 字节，核验注入的只读 capability inspector 结果，生成 lock candidate。`check` 和 `explain` 使用同一解析函数。预算字段显式映射到 Campaign 的计量维度；内置角色 schema 与真实 provider 共用定义；纯操作禁止声明计量。提取出的 manifest 校验器同时供 kernel 使用，并进入 kernel 源码身份闭包。
+
+独立 resolver/identity 回归 2 文件 7 项通过；实施者报告全仓类型检查及 resolver/kernel 25 项通过；主审另外验证原有角色/工作区编辑回归 2 文件 28 项通过。见 [解析器审计](experiments/author-a1-run-resolver-review-20260926.zh-CN.md)。本切片只是只读解析边界：实际 inspector、lock 发布及 run/resume 消费、作者输入到物理 operation 的转换和 CLI 接线仍待实现。
+
 ## 当前限制
 
 A0 是运行基础。`propose/evaluate/select`、通用运行 profile、五文件作者项目及新的 CLI 仍待后续 A1 切片；现有 A0 role/edit/rollout/measure 便利方法用于探针，v2 已拒绝这些假 operation。用户不能仅复制 v4 的搜索示例便运行真实实验。

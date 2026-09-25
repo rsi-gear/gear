@@ -29,6 +29,18 @@ export type WorkspaceEditRoleDefinition = { id: string; spec: DshMetaAgentSpec; 
   resultSchema?: JsonSchema;
   /** Deterministic host restore from another sealed binding. No model turn is started. */
   restore?: { sourceBindingField: string; filesField: string } }
+/** The physical editor port's public operation/structured-result shape. */
+export function workspaceEditOperationSchema(side: 'input' | 'result'): JsonSchema {
+  return side === 'input' ? { type: 'object', required: ['roleId', 'baseBindingSetRef'], properties: {
+    roleId: { type: 'string' }, baseBindingSetRef: { type: 'any' } }, additionalProperties: true }
+    : { type: 'object', required: ['schemaVersion', 'roleId', 'sessionId', 'changedPaths',
+      'patchDigest', 'accessedRefs', 'workplanRead', 'commitOid', 'manifestDigest'], properties: {
+      schemaVersion: { type: 'integer', enum: [1] }, roleId: { type: 'string' }, sessionId: { type: 'string' },
+      changedPaths: { type: 'array', items: { type: 'string' } }, patchDigest: { type: 'string' },
+      accessedRefs: { type: 'array', items: { type: 'string' } }, workplanRead: { type: 'boolean' },
+      commitOid: { type: 'string' }, manifestDigest: { type: 'string' },
+      modelResultRef: { type: 'any' } }, additionalProperties: true };
+}
 export type WorkspaceEditPortOptions = { root: string; host: DshMetaAgentHost; sessions: WorkspaceEditSessionRegistry;
   artifacts: FileArtifactStore; bindings: BindingStore; builder: HarnessBuilder;
   workspaceManager: CandidateWorkspaceManager; roles: WorkspaceEditRoleDefinition[];
@@ -185,16 +197,9 @@ export class DshWorkspaceEditPort implements PhysicalExecutionPort {
         physicalConfigurationDigest: this.physicalConfigurationDigest,
         requiredSlots: options.requiredSlots, roles: [...this.roles.values()], meterSource: this.meterSource ?? null,
         budgetCapabilities: this.metered.map(d => [d, options.campaignBudget[d]!.capability]) }),
-      inputSchema: { type: 'object', required: ['roleId', 'baseBindingSetRef'], properties: {
-        roleId: { type: 'string' }, baseBindingSetRef: { type: 'any' } }, additionalProperties: true },
+      inputSchema: workspaceEditOperationSchema('input'),
       outputSchema: executionResultSchema,
-      structuredResultSchema: { type: 'object', required: ['schemaVersion', 'roleId', 'sessionId', 'changedPaths',
-        'patchDigest', 'accessedRefs', 'workplanRead', 'commitOid', 'manifestDigest'], properties: {
-        schemaVersion: { type: 'integer', enum: [1] }, roleId: { type: 'string' }, sessionId: { type: 'string' },
-        changedPaths: { type: 'array', items: { type: 'string' } }, patchDigest: { type: 'string' },
-        accessedRefs: { type: 'array', items: { type: 'string' } }, workplanRead: { type: 'boolean' },
-        commitOid: { type: 'string' }, manifestDigest: { type: 'string' },
-        modelResultRef: { type: 'any' } }, additionalProperties: true } }
+      structuredResultSchema: workspaceEditOperationSchema('result') }
   }
   describe(): ProviderManifest & { kind: 'execution.workspace-edit'; structuredResultSchema: JsonSchema } {
     return structuredClone(this.manifest)

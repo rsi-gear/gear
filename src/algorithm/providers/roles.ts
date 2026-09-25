@@ -25,6 +25,11 @@ import { VerifiedExecutionAdapter, executionResultSchema, type ExecutionReceipt,
 export type StructuredRoleDefinition = { id: string; spec: DshMetaAgentSpec; instruction: string;
   inputSchema: JsonSchema; resultSchema: JsonSchema; maxModelRequests: number; maxTokens: number; timeoutMs: number;
   producedSchemaId?: string };
+/** The installed structured-role port's public operation/structured-result shape. */
+export function dshStructuredRoleOperationSchema(side: 'input' | 'result'): JsonSchema {
+  return side === 'input' ? { type: 'object', properties: {}, additionalProperties: true }
+    : { type: 'object', additionalProperties: true };
+}
 export type RoleArtifactPublisher = { implementationDigest: string;
   /** Must be idempotent for an operationId: recovery may finish a completed DSH turn again. */
   publish(roleId: string, result: JsonValue, envelope: OperationEnvelope): Promise<ArtifactRef | undefined> };
@@ -266,8 +271,8 @@ export class DshStructuredRolePort implements PhysicalExecutionPort {
         meterCapabilities: this.meteredDimensions.map(dimension => [dimension, options.campaignBudget[dimension]!.capability]),
         publisher: options.publisher?.implementationDigest ?? null,
         definitions: [...this.definitions.values()].map(role => ({ ...role, specDigest: digestJson(role.spec) })) }),
-      inputSchema: { type: 'object', properties: {}, additionalProperties: true },
-      outputSchema: executionResultSchema, structuredResultSchema: { type: 'object', additionalProperties: true } };
+      inputSchema: dshStructuredRoleOperationSchema('input'),
+      outputSchema: executionResultSchema, structuredResultSchema: dshStructuredRoleOperationSchema('result') };
   }
   describe(): ProviderManifest & { kind: 'execution.role' | 'execution.feedback'; structuredResultSchema: JsonSchema } {
     return structuredClone(this.manifest);

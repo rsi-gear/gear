@@ -9,6 +9,7 @@ import type { ArtifactCheckpoint, CampaignStoreLike } from './persistence.js';
 import { BindingDeriveProvider } from './providers.js';
 import { kernelImplementationDigest } from './identity.js';
 import { ProviderProtocolError } from '../provider-errors.js';
+import { validateProviderManifest } from './provider-manifest.js';
 
 type OperationRecord = {
   envelope: OperationEnvelope;
@@ -106,7 +107,7 @@ export class AlgorithmRuntime {
         throw new Error(`Required durable projection host missing: ${schemaId}`);
     }
     for (const provider of [new BindingDeriveProvider(this.bindings), ...providers]) {
-      const manifest = provider.describe(); this.validateProviderManifest(manifest);
+      const manifest = provider.describe(); validateProviderManifest(manifest);
       if (this.providers.has(manifest.kind)) throw new Error(`Duplicate provider ${manifest.kind}`);
       this.providers.set(manifest.kind, provider);
       this.providerManifestDigests.set(manifest.kind, jsonDigest(manifest));
@@ -140,19 +141,6 @@ export class AlgorithmRuntime {
     }
   }
 
-  private validateProviderManifest(manifest: ProviderManifest): void {
-    validName(manifest.kind);
-    if (!/^[a-f0-9]{64}$/.test(manifest.implementationDigest)) throw new Error('Provider implementation digest required');
-    if (manifest.supportsInspect !== true || !['trusted-local', 'external'].includes(manifest.execution)
-      || (manifest.supportsIdempotentReplay !== undefined && manifest.supportsIdempotentReplay !== true))
-      throw new Error('Invalid provider capabilities');
-    if (!Array.isArray(manifest.meteredDimensions) || !manifest.meteredDimensions.every(dimension => typeof dimension === 'string') || new Set(manifest.meteredDimensions).size !== manifest.meteredDimensions.length) throw new Error('Invalid provider metered dimensions');
-    for (const dimension of manifest.meteredDimensions) validName(dimension);
-    for (const dimension of manifest.hardLimitDimensions ?? []) if (!manifest.meteredDimensions.includes(dimension)) throw new Error('Hard limit dimension must be metered');
-    assertSchema(manifest.inputSchema);
-    assertSchema(manifest.outputSchema);
-  }
-
   private validateBudget(budget: BudgetPlan): void {
     assertJson(budget);
     for (const [dimension, plan] of Object.entries(budget)) {
@@ -164,7 +152,7 @@ export class AlgorithmRuntime {
   private provider(kind: string): { provider: OperationProvider; manifest: ProviderManifest; digest: string } {
     const provider = this.providers.get(kind);
     if (!provider) throw new Error(`No provider for ${kind}`);
-    const manifest = provider.describe(); this.validateProviderManifest(manifest);
+    const manifest = provider.describe(); validateProviderManifest(manifest);
     const digest = jsonDigest(manifest);
     if (digest !== this.providerManifestDigests.get(kind)) throw new Error(`Provider manifest drift: ${kind}`);
     return { provider, manifest, digest };
