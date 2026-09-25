@@ -146,13 +146,15 @@ export class GepaScienceCheckpointProvider implements OperationProvider {
       const progress = await this.journal.read<SearchProgress>(`rounds/${prepared.input.roundId}/progress`)
       if (!progress) return false
       for (const decision of prepared.decisions) {
+        const row = progress.decisions.find(item => item.stagePlanDigest === decision.stagePlanDigest
+          && item.candidateId === decision.candidateId)
+        // The phase pointer is frozen before the decision object and progress
+        // row are published. Resume that window instead of treating it as drift.
+        if (!row) return false
+        if (row.digest !== decision.digest) throw new Error('GEPA science decision progress drift')
         const saved = await this.journal.object<EvaluationStageDecision>(decision.digest)
         if (canonicalJson(saved as unknown as JsonValue) !== canonicalJson(decision as unknown as JsonValue))
           throw new Error('GEPA science decision object drift')
-        const row = progress.decisions.find(item => item.stagePlanDigest === decision.stagePlanDigest
-          && item.candidateId === decision.candidateId)
-        if (!row) return false
-        if (row.digest !== decision.digest) throw new Error('GEPA science decision progress drift')
       }
     }
     return true

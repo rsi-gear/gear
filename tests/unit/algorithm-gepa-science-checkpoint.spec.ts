@@ -118,6 +118,48 @@ describe('GEPA science checkpoint provider', () => {
     expect(await f.journal.read('rounds/r/progress')).toEqual(laterProgress)
   })
 
+  it.each(['local', 'nomination'] as const)(
+    'replays a %s decision after its phase pointer is durable but its decision object is not', async stage => {
+      const f = await fixture()
+      const support = seal({ generatedDigest: jsonDigest('candidate'), baselineDigest: jsonDigest('baseline') })
+      const decision = seal({ stagePlanDigest: jsonDigest('plan'), candidateId: 'candidate-0',
+        outcome: 'retained-local', reasonCodes: [], supportDigest: support.digest })
+      const local = seal({ entries: [], reasons: [] })
+      const expansion = seal({ skipped: [], exclusions: [] })
+      const decisions = seal({ decisions: [decision] })
+      const input: GepaScienceCheckpointInput = { roundId: 'r', stage,
+        objects: stage === 'local' ? [
+          { name: 'local', ref: f.artifacts.putJson(local, 'gepa.legacy-journal-object.v1') },
+          { name: 'expansion', ref: f.artifacts.putJson(expansion, 'gepa.legacy-journal-object.v1') },
+          { name: 'local-stage-decisions', ref: f.artifacts.putJson(decisions, 'gepa.legacy-journal-object.v1') },
+        ] : [{ name: 'nomination', ref: f.artifacts.putJson(decisions, 'gepa.legacy-journal-object.v1') }],
+        supportRefs: [f.artifacts.putJson(support, 'gepa.legacy-journal-object.v1')], consumptions: [] }
+      const progress = { phase: 'local' as const, evaluations: [], decisions: [] }
+      await f.journal.write('rounds/r/progress', progress)
+      const pointer = `rounds/r/${stage === 'local' ? 'local-stage-decisions' : 'nomination'}`
+      const write = f.journal.write.bind(f.journal)
+      let crashed = false
+      f.journal.write = async (key, value) => {
+        await write(key, value)
+        if (key === pointer && !crashed) { crashed = true; throw new Error('crash after phase pointer') }
+      }
+      await expect(f.provider().project(input)).rejects.toThrow('crash after phase pointer')
+      expect(crashed).toBe(true)
+      expect(await f.journal.read(pointer)).toEqual({ ref: decisions.digest })
+      await expect(f.journal.object(decision.digest)).rejects.toThrow()
+
+      // A published progress row referencing a missing decision object is
+      // corruption, whereas a missing row is the recoverable publication gap.
+      await write('rounds/r/progress', { ...progress, decisions: [decision] })
+      await expect(f.provider().project(input)).rejects.toThrow()
+      await write('rounds/r/progress', progress)
+      f.journal.write = write
+      await f.provider().project(input)
+      expect(await f.journal.object(decision.digest)).toEqual(decision)
+      expect(await f.journal.read('rounds/r/progress')).toMatchObject({ decisions: [decision] })
+      await f.provider().project(input)
+    })
+
   it('rejects a stage name outside its closed journal projection before any write', async () => {
     const f = await fixture()
     const badInput = { ...f.input, objects: [{ ...f.input.objects[0]!, name: 'terminal' }] }
