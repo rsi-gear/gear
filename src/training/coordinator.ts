@@ -33,7 +33,7 @@ export class ModelTrainingCoordinator {
       && initial.tokenizerDigest === reference.tokenizerDigest && initial.chatTemplateDigest === reference.chatTemplateDigest,
     'reference-incompatible', 'reference and actor must use the same model and token semantics')
     // Resolve immutable control inputs now, not after a job has started.
-    for (const ref of [spec.fixedHarness.manifestRef, spec.verifier, spec.trainer.hyperparametersRef,
+    for (const ref of [spec.fixedHarness.manifestRef, spec.verifier, spec.trainer.hyperparametersRef, ...Object.values(spec.stages ?? {}).map(config => config.instructionsRef),
       ...Object.values(spec.datasets).flatMap(d => [d.snapshotRef, ...d.tasks.flatMap(t => [t.taskRef, t.environmentRef])])]) await this.store.readBytes(ref)
     const state: T.ModelExperimentState = { schemaVersion: 1, id: `exp_${randomUUID().replaceAll('-', '')}`,
       spec, specDigest: digestJson(spec), champion: { modelRef: spec.initialModel, revision: 0, baselineEvidence: {} }, runs: {}, releases: [], usage: emptyUsage() }
@@ -48,15 +48,32 @@ export class ModelTrainingCoordinator {
       const spec = state.spec
       requireContract(state.usage.gpuSeconds < spec.budgets.totalGpuSeconds && state.usage.rolloutTokens < spec.budgets.maxRolloutTokens,
         'budget-exhausted', 'experiment training budget is exhausted')
+      let generatedTaskExclusionRef: T.ContentRef | undefined
+      if (spec.stages?.taskSource) {
+        const privateTasks = [...spec.datasets.dev.tasks, ...spec.datasets.heldOut.tasks]
+        const fingerprints: string[] = [], instructions: string[] = []
+        for (const task of privateTasks) {
+          const manifest = await this.store.readJson<{ files?: { path: string; sha256: string }[] }>(task.taskRef)
+          if (manifest.files) {
+            fingerprints.push(digestJson(manifest.files.map(file => file.sha256).sort()))
+            instructions.push(...manifest.files.filter(file => file.path.endsWith('instruction.md')).map(file => file.sha256))
+          }
+        }
+        generatedTaskExclusionRef = await this.store.putJson({ ids: privateTasks.map(task => digestJson(task.id)),
+          families: privateTasks.map(task => digestJson(task.family)), taskDigests: privateTasks.map(task => task.taskRef.digest), fingerprints, instructions })
+      }
       const id = `train_${randomUUID().replaceAll('-', '')}`
       const request = parseTrainingRequest({ schemaVersion: spec.schemaVersion, ...(spec.schemaVersion === 2 ? { deployment: spec.deployment } : {}), trainingRunId: id, experimentId, parentModel, parentModelRef: state.champion.modelRef,
+        ...(spec.stages ? { stages: spec.stages, ...(generatedTaskExclusionRef ? { generatedTaskExclusionRef } : {}), behaviorPolicyRef: state.champion.modelRef,
+          updateStart: { mode: parentModel.trainerCheckpointRef ? 'resume' : 'cold-start', modelRef: state.champion.modelRef,
+            ...(parentModel.trainerCheckpointRef ? { checkpointRef: parentModel.trainerCheckpointRef } : {}) } } : {}),
         referenceModelRef: spec.referenceModel, ...(parentModel.trainerCheckpointRef ? { resumeCheckpointRef: parentModel.trainerCheckpointRef } : {}),
         coldStart: !parentModel.trainerCheckpointRef, fixedHarness: spec.fixedHarness, trainDataset: spec.datasets.train, verifier: spec.verifier,
         trainer: spec.trainer, rollout: spec.rollout, trainingDevices: spec.resources.trainingDevices,
         budgets: { ...spec.budgets, totalGpuSeconds: spec.budgets.totalGpuSeconds - state.usage.gpuSeconds,
           maxRolloutTokens: spec.budgets.maxRolloutTokens - state.usage.rolloutTokens,
           maxGroupResamples: Math.max(0, spec.budgets.maxGroupResamples - state.usage.groupResamples) },
-        recipeDigest: digestJson({ trainer: spec.trainer, rollout: spec.rollout, verifier: spec.verifier, referenceModelRef: spec.referenceModel,
+        recipeDigest: digestJson({ ...(spec.stages ? { stages: spec.stages } : {}), trainer: spec.trainer, rollout: spec.rollout, verifier: spec.verifier, referenceModelRef: spec.referenceModel,
           ...(spec.schemaVersion === 2 ? { deployment: spec.deployment } : {}) }),
         datasetSplitDigest: digestJson(spec.datasets),
       })

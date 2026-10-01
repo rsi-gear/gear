@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = ["psutil>=5.9,<8"]
 
 [project.optional-dependencies]
+agents = ["openai-codex==0.159.3"]
 gateway = ["aiohttp>=3.11,<4"]
 
 [project.scripts]

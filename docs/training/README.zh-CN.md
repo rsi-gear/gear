@@ -4,6 +4,8 @@ Gear 的模型训练独立于 harness 进化状态，通过固定 harness 和数
 
 目前实机验收覆盖本地 Gear / Hitch / Harbor Docker 与远程 RTX 5090 单卡上的 Qwen2.5-1.5B 训练、恢复及推理。远程 Docker / Harbor 和双卡尚未验收。独立评估 reward=0，不代表质量提升或晋升。认证范围及证据见文末；`pending-gpu` lock 不能提交正式训练。
 
+可选的任务生成、轨迹分析及 SFT 数据构建见 [Python 四阶段与 AgentRunner](stages.zh-CN.md)。
+
 ## 代码入口
 
 - `rsi-gear/training`：版本化合同、CAS、`ModelTrainingCoordinator`、`SlimeModelTrainer`、`HitchModelEvaluator` 和显式发布适配器。

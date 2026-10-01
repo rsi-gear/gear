@@ -35,11 +35,9 @@ def token_ids(value):
     return value
 
 
-def build_episode(store, episode, receipts, feedback, context, *, assembly=None):
+def build_capture(store, episode, receipts, feedback, context, *, assembly=None, receipt_count=None):
     """context is a frozen per-slot assignment, not facts supplied by the agent."""
     require(episode.get("schemaVersion") == feedback.get("schemaVersion") == 1, "invalid-schema", "unsupported training schema")
-    require(episode.get("termination") == "terminated", "episode-" + str(episode.get("termination")), "only normally terminated episodes are eligible")
-    require(episode.get("eligibility") == "eligible" and not episode.get("rejectionReasons"), "episode-ineligible", "Hitch episode is ineligible")
     for key in ("id", "groupId", "slot", "runId", "policyVersion"):
         require(episode.get(key) == context.get(key), "episode-identity-mismatch", "episode differs from its logical slot: " + key)
     for key in ("harnessRef", "taskRef", "environmentRef"):
@@ -53,12 +51,15 @@ def build_episode(store, episode, receipts, feedback, context, *, assembly=None)
     require(feedback.get("id") == episode.get("feedbackId") and feedback.get("episodeId") == episode["id"] and feedback.get("runId") == episode["runId"],
             "feedback-join-mismatch", "feedback must join to this exact run and episode")
     reward = feedback.get("reward")
-    require(feedback.get("outcome") == "valid" and type(reward) in (int, float) and math.isfinite(reward), "invalid-verifier", "verifier must return a finite valid reward; valid zero is retained")
+    reward = reward if type(reward) in (int, float) and math.isfinite(reward) else 0
     require(feedback.get("verifierVersion") == context["verifierVersion"], "verifier-drift", "verifier changed")
     store.read_bytes(feedback["verifierEvidenceRef"])
     require(isinstance(receipts, list) and receipts, "missing-receipts", "HTTP capture or empty receipts cannot train")
     ids = [r["id"] for r in receipts]
     require(len(set(ids)) == len(ids) and ids == episode["receiptIds"] and ids == feedback["receiptIds"], "receipt-join-mismatch", "ordered receipts must match episode and verifier feedback exactly")
+    if receipt_count is not None:
+        require(type(receipt_count) is int and 0 < receipt_count <= len(receipts), "invalid-prefix", "prefix must end at a captured call boundary")
+        receipts = receipts[:receipt_count]; ids = ids[:receipt_count]
     require(len(receipts) <= context["maxEpisodeSteps"], "episode-step-budget", "episode exceeded the sealed step limit")
     sequence, mask, logprobs, requests = [], [], [], set()
     prompt_length = None
@@ -96,6 +97,14 @@ def build_episode(store, episode, receipts, feedback, context, *, assembly=None)
         "taskDigest": context["taskRef"]["digest"], "environmentDigest": context["environmentRef"]["digest"],
         "harnessDigest": context["harnessRef"]["digest"], "samplingDigest": digest_json(context["sampling"]),
     })
+
+
+def build_episode(store, episode, receipts, feedback, context, *, assembly=None):
+    require(episode.get("termination") == "terminated", "episode-" + str(episode.get("termination")), "only normally terminated episodes are eligible")
+    require(episode.get("eligibility") == "eligible" and not episode.get("rejectionReasons"), "episode-ineligible", "Hitch episode is ineligible")
+    reward = feedback.get("reward")
+    require(feedback.get("outcome") == "valid" and type(reward) in (int, float) and math.isfinite(reward), "invalid-verifier", "verifier must return a finite valid reward; valid zero is retained")
+    return build_capture(store, episode, receipts, feedback, context, assembly=assembly)
 
 
 def admit_group(episodes, size, zero_variance="skip-with-bounded-resampling"):

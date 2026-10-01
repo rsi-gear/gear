@@ -1,3 +1,4 @@
+import { datasetSnapshotFileEntries } from './stage-artifacts.js'
 import { join } from 'node:path'
 import { stat } from 'node:fs/promises'
 import { digestJson } from './digest.js'
@@ -141,7 +142,7 @@ export async function retainContentGraph(transport: ModelNodeTransport, store: T
     requireContract(data, 'incomplete-retention-graph', 'controller metadata is missing from the retained graph')
     if (ref.mediaType !== 'application/json') continue
     const value = JSON.parse(data.toString('utf8')) as Record<string, unknown>
-    const files = snapshotFileEntries(value)
+    const files = snapshotFileEntries(value) ?? datasetSnapshotFileEntries(value)
     if (files) queue.push(...files.map(file => ({ ref: file.contentRef, size: file.size, kind: 'file' as const })))
     else {
       queue.push(...contentDependencies(value).map(ref => ({ ref, kind: 'metadata' as const })))

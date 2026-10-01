@@ -180,12 +180,22 @@ export interface TrainingSampling {
   maxContextTokens: number
 }
 
+export interface AgentStageConfig {
+  runner: string; options: Record<string, unknown>
+  instructionsRef: ContentRef; maxRepairs: number; timeoutSeconds: number
+}
+export interface TrainingStages {
+  taskSource?: AgentStageConfig
+  datasetBuilder?: AgentStageConfig
+}
+
 export interface ModelTrainingSpecV1 {
   schemaVersion: 1
   kind: 'model-training'
   name: string
   fixedHarness: { commit: string; manifestRef: ContentRef; adapter: string }
   initialModel: ContentRef
+  stages?: TrainingStages
   referenceModel: ContentRef
   datasets: { train: DatasetPartition; dev: DatasetPartition; heldOut: DatasetPartition }
   verifier: ContentRef
@@ -286,6 +296,10 @@ export interface TrainingRequestV1 {
   experimentId: string
   parentModel: ModelVersion
   parentModelRef: ContentRef
+  stages?: TrainingStages
+  generatedTaskExclusionRef?: ContentRef
+  behaviorPolicyRef?: ContentRef
+  updateStart?: { mode: 'cold-start' | 'resume'; modelRef: ContentRef; checkpointRef?: ContentRef }
   referenceModelRef: ContentRef
   resumeCheckpointRef?: ContentRef
   coldStart: boolean

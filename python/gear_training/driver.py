@@ -89,6 +89,8 @@ def run(job_dir):
     config = json.loads((job_dir / "config.json").read_text())
     store, ledger = ContentStore(config["storeRoot"]), Ledger(job_dir / "ledger.sqlite")
     from .recovery import update_recovery
+    from .stages import training_identity, SlimeModelUpdater
+    training_identity(request)
     recovered = update_recovery(job_dir, request, store, ledger)
     prior_commits, resume_ref, pending = recovered["commitRefs"], recovered["checkpointRef"], recovered["pending"]
     parent_start, start = recovered["parentStart"], recovered["start"]
@@ -163,6 +165,7 @@ def run(job_dir):
             actor, _ = create_training_models(args, pgs, manager)
             require(hasattr(actor, "export_hf"), "missing-slime-export-extension", "apply the pinned Gear HF export patch before training")
             memory = TrainingMemoryCycle(args, ray, actor, manager)
+            updater = SlimeModelUpdater(memory)
         for rollout_id in range(start, start + remaining):
             if (job_dir / "cancel.json").exists(): outcome = "paused"; break
             # Slime's initial snapshot is the parent HF, not a newer recovered
@@ -198,7 +201,7 @@ def run(job_dir):
                         "missing-batch-barrier", "optimizer and rollout offload cannot start before durable batch sealing")
             memory.finish_rollout(batch_barrier)
             atomic_json(job_dir / "progress.json", {"phase": "training", "committedUpdate": committed, "batchRef": batch["batchRef"]})
-            memory.train_and_save(rollout_id, rollout_data)
+            updater.update(rollout_id, rollout_data)
             if args.rollout_global_dataset: ray.get(manager.save.remote(rollout_id))
             # Backend saves complete optimizer/scheduler/RNG in this same trainer
             # snapshot. A matching file manifest is retained by both references.

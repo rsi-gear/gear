@@ -41,6 +41,29 @@ def snapshot_files(value):
     return files
 
 
+def dataset_snapshot_files(value):
+    """Bounded data snapshots; keep model snapshot validation separate."""
+    if not isinstance(value, dict) or value.get("schemaVersion") != 2 or value.get("format") != "harbor-dataset": return None
+    from .export import dataset_destination
+    dataset_destination(value, Path("."))
+    def mode(v): return type(v) is int and 0 <= v <= 0o7777
+    directories = value.get("directories")
+    require(mode(value.get("mode")) and isinstance(directories, list), "invalid-file-manifest", "dataset modes/directories are missing")
+    files = snapshot_files({"schemaVersion": 1, "format": "trainer-files", "files": value.get("files")})
+    require(len(files) + len(directories) <= MAX_OBJECTS and sum(item["size"] for item in files) <= 64 * 1024 * 1024,
+            "agent-artifact-limit", "data snapshot exceeds 4096 entries or 64 MiB")
+    names = {item["path"] for item in files}
+    for item in files: require(mode(item.get("mode")), "invalid-file-manifest", "dataset file mode is invalid")
+    for item in directories:
+        require(isinstance(item, dict) and mode(item.get("mode")), "invalid-file-manifest", "dataset directory mode is invalid")
+        name = item.get("path")
+        require(isinstance(name, str) and "\\" not in name and "\0" not in name and not name.startswith("/")
+                and all(p not in ("", ".", "..") for p in name.split("/")) and name not in names,
+                "invalid-export-path", "dataset directory path is unsafe or duplicated")
+        names.add(name)
+    return files
+
+
 def dependencies(value):
     from .node import dependency_refs
     refs = dependency_refs(value)
@@ -106,6 +129,7 @@ def retain_graph(store, identity, payload):
         if ref["mediaType"] == "application/json":
             value = json.loads(data)
             files = snapshot_files(value)
+            if files is None: files = dataset_snapshot_files(value)
             if files is not None:
                 allowed = {item["contentRef"]["digest"] for item in files}
                 require(all(child["digest"] in allowed for child in dependencies(value)),

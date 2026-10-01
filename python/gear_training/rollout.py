@@ -14,7 +14,8 @@ from .gateway import ExactGateway, NativeSGLang, slime_protocol
 from .hitch import frozen_harness_ref, HitchClient, canonical_trial, validate_training_run
 from .ledger import Ledger
 from .recipes.agent_grpo import sampling_params, validate_layout
-from .samples import EpisodeSample, build_episode, admit_group, seal_batch
+from .samples import EpisodeSample, admit_group, seal_batch
+from .stages import FrozenTaskSource, AgentTaskSource, HitchRolloutExecutor, GRPODatasetBuilder, AgentDatasetBuilder, persist_trajectory
 
 
 class NoUpdate(ContractError):
@@ -66,6 +67,30 @@ async def collect_rollout(args, rollout_id, job_dir):
     deadline = time.monotonic() + budget["totalGpuSeconds"] / len(request["trainingDevices"])
     last_error = None
 
+    async def execute_stage(stage, stage_config, payload):
+        require(v2, "agent-controller-required", "agent stages require the v2 controller bridge")
+        if stage == "task-source":
+            path = job_dir / "task-source-inputs" / (str(rollout_id) + ".json")
+            identity = {"config": stage_config, "weightsRef": lease["synchronizedWeightsRef"], "trainingRunId": request["trainingRunId"]}
+            frozen = json.loads(path.read_text()) if path.exists() else None
+            require(frozen is None or frozen["identity"] == identity, "task-source-round-drift", "resumed task round changed config, weights or job identity")
+            if frozen: payload = frozen["payload"]
+            else: atomic_json(path, {"identity": identity, "payload": payload})
+        from .stage_journal import StageJournal
+        result = await StageJournal(job_dir, store).execute(stage, stage_config, payload, lease, ledger, deadline)
+        evidence.extend([store.put_json(result), result["inputRef"], result["outputRef"], result["snapshotRef"], result["runner"]["logRef"]])
+        return result
+
+    stages = request.get("stages", {})
+    history = []
+    if stages.get("taskSource"):
+        for path in sorted((job_dir / "trajectories").glob("*.json"))[-64:]:
+            raw = store.read_json(json.loads(path.read_text())["trajectoryRef"])
+            history.append({"episode": store.read_json(raw["episode_ref"]), "feedback": store.read_json(raw["feedback_ref"]),
+                            "context": store.read_json(raw["context_ref"]), "receipts": [store.read_json(ref) for ref in raw["receipt_refs"]]})
+    task_source = AgentTaskSource(store, request, execute_stage, weights_ref=lease["synchronizedWeightsRef"], history=history) if stages.get("taskSource") else FrozenTaskSource(request)
+    dataset_builder = AgentDatasetBuilder(store, request, execute_stage) if stages.get("datasetBuilder") else GRPODatasetBuilder(store, request)
+
     async def controller_episode(context, binding, credential):
         journal.publish(context, binding, credential, port)
         try:
@@ -73,13 +98,16 @@ async def collect_rollout(args, rollout_id, job_dir):
                 result = journal.result(context["id"])
                 if result:
                     try:
-                        if result["outcome"] != "feedback": raise ContractError(result["reason"], "controller rejected or cancelled the canonical episode")
                         context = ledger.context(context["id"])
                         receipts = ledger.receipts(context["id"])
-                        episode, feedback, assembly = (store.read_json(result[key]) for key in ("episodeRef", "feedbackRef", "assemblyRef"))
-                        sample = build_episode(store, episode, [store.read_json(ref) for ref in receipts], feedback, context, assembly=assembly)
-                        evidence.extend([result["episodeRef"], result["feedbackRef"], result["assemblyRef"], *receipts])
-                        return sample
+                        if all(result.get(key) for key in ("episodeRef", "feedbackRef", "assemblyRef")):
+                            episode, feedback, assembly = (store.read_json(result[key]) for key in ("episodeRef", "feedbackRef", "assemblyRef"))
+                            raw, raw_ref = persist_trajectory(store, job_dir, episode, feedback, receipts, context, assembly)
+                            evidence.extend([raw_ref, *raw.refs()])
+                            if result["outcome"] == "feedback": return raw
+                        elif result.get("evidenceRef"):
+                            evidence.append(result["evidenceRef"])
+                        raise ContractError(result.get("reason", "invalid-episode"), "controller rejected or cancelled the canonical episode")
                     finally: journal.consume(context["id"])
                 if (job_dir / "cancel.json").exists(): raise ContractError("cancelled", "training pause requested")
                 if time.monotonic() >= deadline: raise NoUpdate("GPU budget ended controller episode collection")
@@ -146,8 +174,9 @@ async def collect_rollout(args, rollout_id, job_dir):
                   "termination": terminal.get("termination", "infra-error"),
                   "eligibility": "eligible", "rejectionReasons": []}
             ledger.add_feedback(feedback)
-            evidence.extend([store.put_json(inspection), store.put_json(ep), store.put_json(feedback), *receipt_refs])
-            return build_episode(store, ep, receipts, feedback, context)
+            raw, raw_ref = persist_trajectory(store, job_dir, ep, feedback, receipt_refs, context)
+            evidence.extend([store.put_json(inspection), raw_ref, *raw.refs()])
+            return raw
         finally:
             # Terminal evals keep canonical results; cancellation is idempotent.
             await client.cancel(eval_id)
@@ -168,12 +197,13 @@ async def collect_rollout(args, rollout_id, job_dir):
         # Restarting at task zero would starve the dataset suffix whenever B is
         # smaller than the task count. Recovery keeps rollout_id unchanged, and
         # sealed replay bypasses collection entirely.
-        task_start = rollout_id * request["trainer"]["rolloutBatchSize"]
+        tasks = await task_source.tasks(rollout_id)
+        executor = HitchRolloutExecutor(episode)
         while len(groups) < request["trainer"]["rolloutBatchSize"]:
             usage = ledger.usage()
             if time.monotonic() >= deadline or usage["rolloutTokens"] >= budget["maxRolloutTokens"] or usage["groupResamples"] > budget["maxGroupResamples"]:
                 raise NoUpdate("budget cannot supply B complete GRPO groups; last rejection: " + str(last_error))
-            task = request["trainDataset"]["tasks"][(task_start + attempt) % len(request["trainDataset"]["tasks"])]
+            task = tasks[attempt % len(tasks)]
             group_id = lease["batchId"] + "-group-" + str(attempt)
             attempt += 1
             samples = []
@@ -187,12 +217,13 @@ async def collect_rollout(args, rollout_id, job_dir):
                                "tokenizerDigest": parent["tokenizerDigest"], "chatTemplateDigest": parent["chatTemplateDigest"], "sampling": sampling,
                                "maxRolloutTokens": budget["maxRolloutTokens"], "maxContextTokens": request["rollout"]["sampling"]["maxContextTokens"], "maxEpisodeSteps": budget["maxEpisodeSteps"],
                                "generationContractDigest": request["trainer"]["runtimeLock"]["protocolDigest"], "verifierVersion": request["verifier"]["digest"]}
-                    samples.append(await episode(context))
-                groups.append(admit_group(samples, request["rollout"]["groupSize"], request["rollout"]["zeroVarianceGroup"]))
+                    samples.append(await executor.execute(context))
+                groups.append(await dataset_builder.build(samples))
             except ContractError as error:
                 last_error = error.code
                 atomic_json(job_dir / "rejections" / (group_id + ".json"), {"groupId": group_id, "reason": error.code, "detail": str(error)})
-                if error.code in ("cancelled", "controller-contact-expired", "lease-fenced", "lease-expired"): raise
+                if error.code in ("cancelled", "controller-contact-expired", "lease-fenced", "lease-expired", "agent-infra-error", "agent-validation-exhausted", "agent-stage-budget",
+                                  "content-digest-mismatch", "corrupt-content", "invalid-ref", "episode-identity-mismatch", "generation-identity-mismatch", "feedback-join-mismatch", "episode-assembly-drift", "controller-assembly-drift", "episode-infra-error", "episode-aborted", "generation-error", "invalid-verifier"): raise
                 if ledger.usage()["groupResamples"] >= budget["maxGroupResamples"]:
                     raise NoUpdate("bounded group resampling exhausted: " + error.code)
                 ledger.charge("resample/" + group_id, resamples=1)

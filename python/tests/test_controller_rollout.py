@@ -7,8 +7,13 @@ import tempfile
 import types
 import unittest
 from unittest.mock import Mock, patch
+from pathlib import Path
 
 from gear_training.content import digest_json
+from gear_training.stage_journal import StageJournal
+from gear_training.agent_stage import run_agent_stage
+from gear_training.agents import AgentResult
+from gear_training.export import seal_directory
 from gear_training.episodes import EpisodeJournal
 from gear_training.rollout import collect_rollout
 from episode_fixture import EpisodeFixture
@@ -53,7 +58,15 @@ class ControllerRolloutTest(unittest.IsolatedAsyncioTestCase):
         async def controller():
             completed = set()
             async with aiohttp.ClientSession() as session:
-                while len(completed) < batch_size * 2:
+                while len(completed) < batch_size * 2 or getattr(f, "agent_runner", None) and not (f.directory / "batch.json").exists():
+                    if getattr(f, "agent_runner", None):
+                        stages = StageJournal(f.directory, f.store)
+                        for stage in stages.list()["entries"]:
+                            if stage["result"]: continue
+                            payload = f.store.read_json(stage["intent"]["payloadRef"])
+                            stages.inputs(stage["id"])
+                            result = await run_agent_stage(f.store, f.directory / "controller-stages", stage["intent"]["stage"], stage["intent"]["config"], payload, runner=f.agent_runner)
+                            stages.resolve(stage["id"], {"outcome": "completed", "result": result}, lease=stage["lease"])
                     for entry in journal.list(renew=True)["entries"]:
                         intent = entry["intent"]
                         if intent["id"] in completed: continue
@@ -109,4 +122,44 @@ class ControllerRolloutTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(f.store.path(f.private["digest"]).exists())
         batch = f.store.read_json(json.loads((f.directory / "batch.json").read_text())["batchRef"])
         self.assertEqual(batch["schemaVersion"], 2)
-        self.assertEqual(len(batch["sourceEvidenceRefs"]), 10)
+        self.assertEqual(len(batch["sourceEvidenceRefs"]), 14)
+        self.assertEqual(sum(f.store.read_json(ref).get("kind") == "raw-trajectory" for ref in batch["sourceEvidenceRefs"]), 2)
+
+    async def test_generated_tasks_and_custom_dataset_runner_use_real_collection_bridge(self):
+        f = self.fixture()
+        source = f.directory / "source" / "train"; source.mkdir(parents=True)
+        (source / "task.toml").write_text("[task]\n")
+        (source / "instruction.md").write_text("Train-only exercise")
+        f.request["trainDataset"]["tasks"][0].update(family="train-family", taskRef=seal_directory(f.store, source, dataset=True))
+        config = {"runner": "custom-test-provider", "options": {}, "instructionsRef": f.store.put_bytes(b"Generate or select the requested training data", "text/plain"), "maxRepairs": 1, "timeoutSeconds": 3}
+        f.request["stages"] = {"taskSource": config, "datasetBuilder": config}
+        calls = []
+        class Runner:
+            async def run(self, request):
+                payload = json.loads((request.workspace / "inputs/index.json").read_text())
+                outputs = request.workspace / "outputs"
+                if "tasks" in payload:
+                    calls.append("task-source")
+                    self_test.assertEqual(payload["behaviorPolicyRef"], f.lease["synchronizedWeightsRef"])
+                    self_test.assertEqual(payload["history"], [])
+                    generated = outputs / "generated-a"; generated.mkdir()
+                    (generated / "task.toml").write_text("[task]\n")
+                    (generated / "instruction.md").write_text("New agent-generated training exercise")
+                    manifest = {"tasks": [{"id": "generated-a", "family": "train-family", "sourceTaskId": "train", "directory": "generated-a"}]}
+                else:
+                    calls.append("dataset-builder")
+                    self_test.assertTrue((request.workspace / "inputs/trajectory-0-call-0-rawResponseRef.json").exists())
+                    manifest = {"selectedEpisodeIds": [t["episode"]["id"] for t in payload["trajectories"]], "analysis": "Keep complete native group"}
+                (outputs / "manifest.json").write_text(json.dumps(manifest))
+                return AgentResult("completed", log="custom runner", recovery_id="custom-id")
+        self_test = self
+        f.agent_runner = Runner()
+        groups, usage = await self.collect_batch(f)
+        self.assertEqual(calls, ["task-source", "dataset-builder"])
+        self.assertEqual(f.ledger.context(groups[0][0].metadata["episodeId"])["taskId"], "generated-a")
+        self.assertEqual(groups[0][0].tokens, [1, 2, 3, 4, 90, 91, 5])
+        self.assertEqual([item.reward for item in groups[0]], [0, 1])
+        self.assertEqual(usage["rolloutTokens"], 6)
+        frozen = json.loads((f.directory / "task-source-inputs/0.json").read_text())
+        self.assertEqual(frozen["payload"]["history"], [])
+        self.assertFalse(f.store.path(f.private["digest"]).exists())

@@ -6,9 +6,10 @@ import { matchesHarnessRef } from './harness.js'
 import { datasetDestination } from './snapshots.js'
 import { parseContentRef, parseFeedbackRecord, parseGenerationReceipt, parsePolicyLease, parseTrainingEpisode, parseTrainingExternalBinding, parseTrainingRequest, requireContract, TrainingContractError } from './schema.js'
 import { jsonProcess } from './process.js'
+import { TrainingStageCoordinator } from './stages.js'
 import { atomicWrite, TrainingContentStore, withTrainingFileLock } from './store.js'
 import { ModelNodeTransport, syncContentGraph } from './transport.js'
-import type { ContentRef, GenerationReceipt, PolicyLease, TrainingExternalBinding, TrainingHandle, TrainingRequestV2 } from './types.js'
+import type { ContentRef, GenerationReceipt, PolicyLease, TrainingExternalBinding, TrainingHandle, TrainingRequestV2, DatasetPartition } from './types.js'
 import type { TrainingDeploymentConfig } from './types.js'
 import { assertHitchCommit, observeHitchController, verifyExecutionPlacement } from './placement-observation.js'
 
@@ -35,12 +36,12 @@ export function episodeAddress(intent: RolloutIntent) {
 }
 
 /** Validate against the train-only request, never against fields supplied by the task agent. */
-export function validateRolloutIntent(value: unknown, request: TrainingRequestV2, handle: TrainingHandle): RolloutIntent {
+export function validateRolloutIntent(value: unknown, request: TrainingRequestV2, handle: TrainingHandle, authorizedTasks: DatasetPartition['tasks'] = request.trainDataset.tasks): RolloutIntent {
   const input = object(value); const { inputDigest, ...body } = input
   requireContract(input.schemaVersion === 2 && inputDigest === digestJson(body) && input.jobId === handle.jobId
     && input.trainingRunId === request.trainingRunId && typeof input.incarnation === 'string', 'episode-intent-drift', 'node intent changed its job, request or input digest')
   const context = object(input.context), lease = parsePolicyLease(input.lease), binding = parseTrainingExternalBinding(input.binding)
-  const task = request.trainDataset.tasks.find(task => task.id === context.taskId)
+  const task = authorizedTasks.find(task => task.id === context.taskId)
   const sampling = request.rollout.sampling
   requireContract(task && same(context.taskRef, task.taskRef) && same(context.environmentRef, task.environmentRef)
     && same(context.harnessRef, request.fixedHarness.manifestRef) && context.id === input.id && context.trainingRunId === request.trainingRunId
@@ -90,6 +91,7 @@ export class TrainingEpisodeCoordinator {
     for (const task of request.trainDataset.tasks) {
       await this.store.readBytes(task.taskRef); await this.store.readBytes(task.environmentRef)
     }
+    for (const config of Object.values(request.stages ?? {})) await this.store.readBytes(config.instructionsRef)
     await this.store.readBytes(request.fixedHarness.manifestRef); await this.store.readBytes(request.verifier)
   }
   async remember(request: TrainingRequestV2, jobId: string): Promise<void> {
@@ -132,17 +134,20 @@ export class TrainingEpisodeCoordinator {
       const entries = await this.entries(handle, !cancel)
       observe(entries)
       if (!cancel && this.options.deployment) await verifyExecutionPlacement(request.deployment, this.options.deployment, this.options, request.trainer.runtimeLock.hitchCommit, this.invoke)
+      const stages = new TrainingStageCoordinator(this.store, this.transport, this.options, this.invoke)
+      const staged = await stages.reconcile(handle, request, cancel)
       for (const entry of entries) {
-        const intent = validateRolloutIntent(entry.intent, request, handle)
+        const authorized = staged.tasks.get(entry.intent.lease.batchId) ?? request.trainDataset.tasks
+        const intent = validateRolloutIntent(entry.intent, request, handle, authorized)
         const serving = () => {
           if (contactError || fenced.has(intent.id)) throw new TrainingContractError('controller-contact-lost', 'model-node contact or policy lease was lost; stop dispatching new episodes')
         }
-        await this.reconcileOne(handle, request, { ...entry, intent }, cancel || entry.cancelRequested, serving)
+        await this.reconcileOne(handle, request, { ...entry, intent }, cancel || entry.cancelRequested, serving, authorized)
       }
-      return { pending: (await this.entries(handle, false)).some(entry => !entry.result) }
+      return { pending: staged.pending || (await this.entries(handle, false)).some(entry => !entry.result) }
     } finally { if (timer) clearInterval(timer); await heartbeat }
   }
-  private async reconcileOne(handle: TrainingHandle, request: TrainingRequestV2, entry: IntentEntry, cancel: boolean, serving: () => void): Promise<void> {
+  private async reconcileOne(handle: TrainingHandle, request: TrainingRequestV2, entry: IntentEntry, cancel: boolean, serving: () => void, authorizedTasks: DatasetPartition['tasks']): Promise<void> {
     const { intent } = entry; const address = episodeAddress(intent)
     const directory = join(this.path(handle.jobId), digestJson(intent.id).slice(7)), statePath = join(directory, 'state.json')
     let state: ControllerEpisodeState
@@ -167,7 +172,7 @@ export class TrainingEpisodeCoordinator {
     }
     if (cancel && !state.submitted) { await resolve({ schemaVersion: 2, outcome: 'cancelled', evalId: null, reason: 'cancelled' }); return }
     const harness = `${request.fixedHarness.adapter}@git+${pathToFileURL(this.options.harnessSourceDirectory).href}#${request.fixedHarness.commit}`
-    const task = request.trainDataset.tasks.find(task => task.id === intent.context.taskId)!
+    const task = authorizedTasks.find(task => task.id === intent.context.taskId)!
     const datasetRoot = join(this.options.workspace, 'datasets', task.taskRef.digest.slice(7))
     const dataset = datasetDestination(await this.store.readJson(task.taskRef), datasetRoot)
     if (!state.evalId) {
@@ -224,25 +229,34 @@ export class TrainingEpisodeCoordinator {
     const environment = object(await this.store.readJson(task.environmentRef)), expectedHarness = object(object(await this.store.readJson(request.fixedHarness.manifestRef)).hitch)
     requireContract(loaded.record_status === 'valid' && loaded.trajectory_status !== 'corrupt' && record.run_id === runId
       && parent.eval_id === state.evalId && parent.attempt === 1 && (trial.attempt ?? 1) === 1 && trial.task_id === task.id
-      && context.kind === 'benchmark_task' && context.task_id === task.id && context.task_digest === environment.taskDigest && context.verifier_identity === environment.verifierIdentity
-      && protocol.environment_identity === environment.hitchEnvironmentIdentity && model.provider === 'slime-training' && model.effective_id === intent.lease.policyVersion && model.identity_resolved === true
+      && context.kind === 'benchmark_task' && context.task_id === task.id
+      && (environment.kind === 'generated-task-environment'
+        ? environment.taskSnapshotDigest === task.taskRef.digest && acceptedRequest.dataset === dataset
+          && context.benchmark_id === acceptedRequest.benchmark_id && context.benchmark_revision === acceptedRequest.benchmark_revision
+          && /^sha256:[a-f0-9]{64}$/.test(String(context.task_digest))
+          && context.verifier_identity === digestJson({ backend: 'harbor', benchmark_id: context.benchmark_id, benchmark_revision: context.benchmark_revision, verifier: 'dataset' })
+          && /^sha256:[a-f0-9]{64}$/.test(String(protocol.environment_identity))
+        : context.task_digest === environment.taskDigest && context.verifier_identity === environment.verifierIdentity
+          && protocol.environment_identity === environment.hitchEnvironmentIdentity)
+      && model.provider === 'slime-training' && model.effective_id === intent.lease.policyVersion && model.identity_resolved === true
       && actualHarness.harness_id === expectedHarness.harnessId && actualHarness.revision_identity === expectedHarness.revisionIdentity && actualHarness.artifact_id === expectedHarness.artifactId
       && matchesHarnessRef(actualHarness.requested_ref, harness, request.fixedHarness.adapter, request.fixedHarness.commit)
       && object(terminal.training_external).policy_version === intent.lease.policyVersion,
     'training-canonical-identity-drift', 'canonical task/verifier/environment/harness/policy differs from its frozen training slot')
-    const evidenceRef = await this.store.putJson({ inspection, loaded, verifier, terminal })
+    const evidenceRef = await this.store.putJson({ inspection, loaded, verifier, terminal,
+      ...(environment.kind === 'generated-task-environment' ? { generatedTaskBinding: { taskSnapshotRef: task.taskRef,
+        acceptedDataset: dataset, benchmarkId: context.benchmark_id, benchmarkRevision: context.benchmark_revision,
+        taskDigest: context.task_digest, verifierIdentity: context.verifier_identity, hitchEnvironmentIdentity: protocol.environment_identity } } : {}) })
     const observation = object(record.observation ?? {})
-    if (trial.observation_status !== 'valid' || observation.status !== 'valid' || observation.reward !== trial.reward
-      || object(verifier.verifier).status !== 'complete' || terminal.termination !== 'terminated' || !Number.isFinite(trial.reward)) {
-      await resolve({ schemaVersion: 2, outcome: 'rejected', evalId: state.evalId, reason: 'invalid-canonical-observation', evidenceRef }); return
-    }
+    const valid = trial.observation_status === 'valid' && observation.status === 'valid' && observation.reward === trial.reward
+      && object(verifier.verifier).status === 'complete' && Number.isFinite(trial.reward)
     const verificationRef = await this.store.putJson({ schemaVersion: 2, kind: 'controller-verifier-observation', runId, verifierVersion: request.verifier.digest,
-      reward: trial.reward, valid: true, sourceEvidenceRef: evidenceRef })
+      ...(valid ? { reward: trial.reward } : {}), valid, sourceEvidenceRef: evidenceRef })
     const feedback = parseFeedbackRecord({ schemaVersion: 1, id: `feedback_${digestJson([intent.id, evidenceRef]).slice(7, 39)}`, episodeId: intent.id, runId,
-      receiptIds: receipts.map(receipt => receipt.id), verifierVersion: request.verifier.digest, verifierEvidenceRef: verificationRef, outcome: 'valid', reward: trial.reward })
+      receiptIds: receipts.map(receipt => receipt.id), verifierVersion: request.verifier.digest, verifierEvidenceRef: verificationRef, outcome: valid ? 'valid' : 'invalid', ...(valid ? { reward: trial.reward } : {}) })
     const episode = parseTrainingEpisode({ schemaVersion: 1, id: intent.id, groupId: intent.context.groupId, slot: intent.context.slot, harnessRef: request.fixedHarness.manifestRef,
       taskRef: task.taskRef, environmentRef: task.environmentRef, policyVersion: intent.lease.policyVersion, runId, receiptIds: feedback.receiptIds, feedbackId: feedback.id,
-      termination: 'terminated', eligibility: 'eligible', rejectionReasons: [] })
+      termination: ['terminated', 'truncated', 'aborted', 'infra-error'].includes(String(terminal.termination)) ? terminal.termination : 'infra-error', eligibility: 'eligible', rejectionReasons: [] })
     const assembly = { schemaVersion: 2, kind: 'controller-episode-verification', episodeId: intent.id, runId, taskDigest: task.taskRef.digest,
       environmentDigest: task.environmentRef.digest, harnessDigest: request.fixedHarness.manifestRef.digest, verifierVersion: request.verifier.digest, feedbackDigest: digestJson(feedback) }
     const feedbackRef = await this.store.putJson(feedback), episodeRef = await this.store.putJson(episode), assemblyRef = await this.store.putJson(assembly)
@@ -257,7 +271,7 @@ export class TrainingEpisodeCoordinator {
     if (!admission.valid) {
       const reason = text(admission.reason)
       requireContract(/^[a-z][a-z0-9-]{0,127}$/.test(reason), 'invalid-episode-admission', 'node admission needs a bounded reason')
-      await resolve({ schemaVersion: 2, outcome: 'rejected', evalId: state.evalId, reason, evidenceRef }); return
+      await resolve({ ...resolution, outcome: 'rejected', reason, evidenceRef }); return
     }
     await resolve(resolution)
   }

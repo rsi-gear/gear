@@ -67,14 +67,19 @@ const rollout = object({ provider: literal('hitch'), mode: literal('synchronous'
   episodeFormat: literal('linear-token-trajectory-v1'), capture: literal('exact-policy-tokens-v1'), truncation: literal('reject'),
   zeroVarianceGroup: literal('skip-with-bounded-resampling', 'keep'), compaction: literal(false), subagents: literal(false), auxiliaryModelCalls: literal(false) })
 const budgets = object({ totalGpuSeconds: nonnegative, maxRolloutTokens: positive, maxEpisodeSteps: positive, maxGroupResamples: integer })
+const agentStage = object({ runner: str, options: (value, path) => { if (!value || typeof value !== 'object' || Array.isArray(value)) fail(path, 'runner options object'); digestJson(value) },
+  instructionsRef: ref, maxRepairs: integer, timeoutSeconds: positive })
+const stages = object({ taskSource: optional(agentStage), datasetBuilder: optional(agentStage) })
 const spec = object({ schemaVersion: version, kind: literal('model-training'), name: str, fixedHarness: harness,
-  initialModel: ref, referenceModel: ref, datasets: object({ train: partition, dev: partition, heldOut: partition }), verifier: ref, trainer, rollout,
+  initialModel: ref, referenceModel: ref, stages: optional(stages), datasets: object({ train: partition, dev: partition, heldOut: partition }), verifier: ref, trainer, rollout,
   evaluation: object({ provider: literal('hitch-managed-local'), topology: literal('local-docker-harbor-dataset'), samplingProfile: literal('baseline'),
     common: object({ runtimeDigest: hash, protocolDigest: hash, samplingDigest: hash, budgetsDigest: hash, attempts: positive }),
     policy: object({ minDevGain: nonnegative, maxHeldOutRegression: nonnegative, maxInferenceErrorRate: nonnegative, requiredTaskIds: array(str), maxHeldOutEvaluations: positive }) }),
   resources: object({ trainingDevices: array(str, 1), evaluationDevices: array(str, 1), mode: literal('isolated', 'sequential') }), budgets,
   publication: object({ mode: literal('explicit') }) })
 const request = object({ schemaVersion: version, trainingRunId: str, experimentId: str, parentModel: model, parentModelRef: ref,
+  stages: optional(stages), generatedTaskExclusionRef: optional(ref), behaviorPolicyRef: optional(ref),
+  updateStart: optional(object({ mode: literal('cold-start', 'resume'), modelRef: ref, checkpointRef: optional(ref) })),
   referenceModelRef: ref, resumeCheckpointRef: optional(ref), coldStart: bool, fixedHarness: harness, trainDataset: partition, verifier: ref,
   trainer, rollout, budgets, trainingDevices: array(str, 1), recipeDigest: hash, datasetSplitDigest: hash })
 const handle: Check = (v, p) => {
@@ -147,6 +152,7 @@ export function parseTrainingRequest(v: unknown): T.TrainingRequest {
     validateRuntimePlacement(input.trainer.runtimeLock, deployment)
     return input
   }
+  requireContract(!(v as T.TrainingRequestV1)?.stages, 'agent-controller-required', 'agent stages require v2 controller deployment')
   const result = parseTrainingRequestBody(v)
   requireContract(result.trainer.runtimeLock.schemaVersion === 1, 'invalid-runtime-placement', 'v1 requests require the original container runtime lock')
   return result
@@ -161,7 +167,17 @@ function parseTrainingRequestBody(v: unknown): T.TrainingRequestV1 {
   requireContract(result.coldStart === !result.resumeCheckpointRef, 'invalid-resume', 'cold start and optimizer resume are mutually exclusive')
   requireContract(!result.parentModel.trainerCheckpointRef || result.resumeCheckpointRef?.digest === result.parentModel.trainerCheckpointRef.digest,
     'optimizer-reset', 'a trained champion must resume its matching optimizer checkpoint')
+  if (result.behaviorPolicyRef) requireContract(digestJson(result.behaviorPolicyRef) === digestJson(result.parentModelRef), 'off-policy-grpo', 'GRPO behavior policy must be its synchronized actor')
+  if (result.updateStart) requireContract(result.updateStart.mode === (result.resumeCheckpointRef ? 'resume' : 'cold-start')
+    && digestJson(result.updateStart.modelRef) === digestJson(result.parentModelRef)
+    && digestJson(result.updateStart.checkpointRef ?? null) === digestJson(result.resumeCheckpointRef ?? null),
+  'unsupported-update-start', 'GRPO requires matching full champion state or initial cold start')
+  validateStages(result.stages)
   return result
+}
+function validateStages(value: T.TrainingStages | undefined): void {
+  for (const config of Object.values(value ?? {})) requireContract(config.maxRepairs <= 3 && config.timeoutSeconds <= 3600,
+    'invalid-agent-stage-budget', 'agent stages require at most 3 repairs and a turn timeout of at most 3600 seconds')
 }
 export function parseModelTrainingSpec(v: unknown): T.ModelTrainingSpec {
   if (v && typeof v === 'object' && (v as { schemaVersion?: unknown }).schemaVersion === 2) {
@@ -182,6 +198,7 @@ export function parseModelTrainingSpec(v: unknown): T.ModelTrainingSpec {
     validateRuntimePlacement(input.trainer.runtimeLock, deployment)
     return input
   }
+  requireContract(!(v as T.ModelTrainingSpecV1)?.stages, 'agent-controller-required', 'agent stages require v2 controller deployment')
   const result = parseModelTrainingSpecBody(v)
   requireContract(result.trainer.runtimeLock.schemaVersion === 1, 'invalid-runtime-placement', 'v1 experiments require the original container runtime lock')
   return result
@@ -197,6 +214,7 @@ function parseModelTrainingSpecBody(v: unknown): T.ModelTrainingSpecV1 {
   validateRecipe(result.trainer, result.rollout, result.budgets)
   validateTrainingDevices(result.trainer, result.resources.trainingDevices)
   requireContract(result.datasets.train.exactDataAuthorized, 'exact-data-not-authorized', 'train tasks must allow exact capture')
+  validateStages(result.stages)
   const seen = new Map<string, string>()
   for (const [name, split] of Object.entries(result.datasets)) {
     const ids = new Set<string>()

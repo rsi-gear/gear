@@ -138,6 +138,22 @@ class NodeService:
                 config = {**config, "node": self.identity, "nodeRoot": str(self.root)}
                 service = JobService(config)
                 action = operation.removeprefix("training.")
+                if action.startswith("stages."):
+                    from .stage_journal import StageJournal
+                    from .ledger import Ledger
+                    directory = service.directory(payload["handle"])
+                    journal = StageJournal(directory, self.store)
+                    if action == "stages.list": result = journal.list()
+                    elif action == "stages.inputs": result = journal.inputs(payload["id"])
+                    elif action == "stages.result":
+                        ledger = Ledger(directory / "ledger.sqlite")
+                        try:
+                            lease = payload["lease"]
+                            ledger.assert_serving(lease["batchId"], lease["runtimeInstanceId"], lease["fencingToken"])
+                            result = journal.resolve(payload["id"], payload["result"], lease=lease)
+                        finally: ledger.close()
+                    else: require(False, "unknown-node-operation", "unknown stage operation")
+                    return self.response(envelope, result)
                 if action.startswith("episodes."):
                     from .episodes import EpisodeJournal
                     directory = service.directory(payload["handle"])
