@@ -86,6 +86,7 @@
     "python/patches/*.patch",
     "docs/training/README.zh-CN.md",
     "docs/training/controller-v2.zh-CN.md",
+    "docs/training/recipes.zh-CN.md",
     "docs/search-algorithm-authoring.zh-CN.md",
     "examples/parent-policy/**",
     "docs/schemas/",

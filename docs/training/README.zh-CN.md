@@ -1,13 +1,15 @@
 # Slime 模型训练接入
 
-Gear 的模型训练独立于 harness 进化状态，通过固定 harness 和数据集执行 Slime GRPO 更新，再用不可变 HF 导出进行独立评估。新部署从 [v2 controller 配置](controller-v2.zh-CN.md) 开始；下文同时说明 v1 配置和通用训练合同。
+Gear 的模型训练独立于 harness 进化状态，通过固定 harness 和数据集执行版本化 Slime RL 或离线 SFT 更新，再用不可变 HF 导出进行独立评估。新部署从 [v2 controller 配置](controller-v2.zh-CN.md) 开始；下文同时说明 v1 配置和通用训练合同。
 
 目前实机验收覆盖本地 Gear / Hitch / Harbor Docker 与远程 RTX 5090 单卡上的 Qwen2.5-1.5B 训练、恢复及推理。远程 Docker / Harbor 和双卡尚未验收。独立评估 reward=0，不代表质量提升或晋升。认证范围及证据见文末；`pending-gpu` lock 不能提交正式训练。
+
+新增 GSPO、CISPO、REINFORCE++、REINFORCE++ baseline 与离线 SFT 的配置、数据封存和独立 GPU 验证边界见 [配方指南](recipes.zh-CN.md)。原有 GRPO v1/v2 合同和检查点兼容性保留。
 
 ## 代码入口
 
 - `rsi-gear/training`：版本化合同、CAS、`ModelTrainingCoordinator`、`SlimeModelTrainer`、`HitchModelEvaluator` 和显式发布适配器。
-- `gear-refine training`：v2 冻结前用 `preflight-deployment` 分别检查控制端、Harbor worker 和模型节点，再用 `freeze-deployment` 固定部署；实验执行使用 `put-json`、`seal-hf`、`seal-dataset`、`validate`、`init`、`admit`、`preflight`、`advance`、`status`、`pause`、`resume`、`close`、`publish`、`rollback`。
+- `gear-refine training`：v2 冻结前用 `preflight-deployment` 分别检查控制端、Harbor worker 和模型节点，再用 `freeze-deployment` 固定部署；实验执行使用 `put-json`、`seal-hf`、`seal-dataset`、`seal-sft`、`validate`、`init`、`admit`、`preflight`、`advance`、`status`、`pause`、`resume`、`close`、`publish`、`rollback`。
 - `python/gear_training`：Slime job RPC、私有作业监督进程、精确 token gateway、rollout hook、完整 checkpoint/HF export、恢复账本。
 - Hitch 新增 `training register` / `training evidence`；`local plan` / `local inspect` 用于在提交前读取并固定真实 inference lock。
 

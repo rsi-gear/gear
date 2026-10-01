@@ -85,7 +85,7 @@ export async function trainingCommand(argv: string[]): Promise<unknown> {
   const args = [...argv]; const action = args.shift()
   if (action === '--help' || action === 'help') return {
     usage: 'gear-refine training ACTION --config CONTROLLER.json [arguments]',
-    actions: ['node-probe DEPLOYMENT.json NODE_REF', 'preflight-deployment', 'freeze-deployment', 'put-json FILE', 'seal-hf DIRECTORY', 'seal-hf-node NODE_DIRECTORY', 'seal-dataset DIRECTORY', 'validate SPEC', 'init SPEC', 'admit EXP', 'preflight EXP RUN',
+    actions: ['node-probe DEPLOYMENT.json NODE_REF', 'preflight-deployment', 'freeze-deployment', 'put-json FILE', 'seal-hf DIRECTORY', 'seal-hf-node NODE_DIRECTORY', 'seal-dataset DIRECTORY', 'seal-sft INPUT.json', 'validate SPEC', 'init SPEC', 'admit EXP', 'preflight EXP RUN',
       'advance EXP RUN', 'status EXP [RUN]', 'pause EXP RUN', 'resume EXP RUN', 'close EXP RUN', 'publish EXP', 'rollback EXP RELEASE'],
   }
   if (action === 'node-probe') {
@@ -121,6 +121,34 @@ export async function trainingCommand(argv: string[]): Promise<unknown> {
     const result = await transport.call('cas.sealHf', { directory: args[0] }) as { modelRef: ContentRef }
     await retainContentGraph(transport, store, [result.modelRef])
     return { ...result, node: transport.identity, artifactStorage: 'model-node' }
+  }
+  if (action === 'seal-sft') {
+    requireContract(args.length === 1, 'usage', 'training seal-sft INPUT.json --config CONTROLLER.json')
+    const input = JSON.parse(await readFile(args[0]!, 'utf8'))
+    if (config.schemaVersion === 2 && Array.isArray(input.records)) {
+      // Authoring verifies sealed model limits; native chat masks also need
+      // tokenizer bytes. Fetch missing declared files only; weights stay there.
+      const model = await store.readJson<{ hfSnapshotRef: ContentRef }>(input.modelRef)
+      const snapshot = await store.readJson<{ files: { path: string; contentRef: ContentRef }[] }>(model.hfSnapshotRef)
+      const connection = config.deployment.nodes[config.deployment.modelRuntime.nodeRef]!
+      let transport: ModelNodeTransport | undefined
+      const hasMessages = input.records.some((r: { messages?: unknown }) => r.messages)
+      const names = new Set(['config.json', 'tokenizer.json', 'tokenizer.model', 'tokenizer_config.json', 'special_tokens_map.json',
+        'added_tokens.json', 'vocab.json', 'merges.txt', 'chat_template.jinja'])
+      for (const entry of snapshot.files ?? []) if (names.has(entry.path) && (hasMessages || entry.path === 'config.json')) {
+        try { await store.readBytes(entry.contentRef) }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+          if (!transport) {
+            const observed = await new ModelNodeTransport(connection, null).call('probe', {}) as NodeIdentity
+            transport = new ModelNodeTransport(connection, { nodeId: observed.nodeId, generation: observed.generation })
+          }
+          await transport.download(store, entry.contentRef)
+        }
+      }
+    }
+    return jsonProcess(config.schemaVersion === 1 ? config.slime.python : config.hitch.python,
+      ['-m', 'gear_training.artifacts', 'seal-sft', '--store-root', store.root], input, 3_600_000)
   }
   if (action === 'seal-hf' || action === 'seal-dataset') {
     requireContract(args.length === 1, 'usage', `training ${action} DIRECTORY --config CONTROLLER.json`)

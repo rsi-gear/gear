@@ -1,3 +1,4 @@
+import { readOfflineDataset } from './offline.js'
 import { jsonProcess } from './process.js'
 import { parseTrainingArtifacts, parseTrainingCapabilities, parseTrainingHandle, parseTrainingRequest, parseTrainingStatus, parseUpdateCommit } from './schema.js'
 import type { ModelTrainer, ModelVersion, TrainerCheckpoint, TrainingHandle, TrainingRequest } from './types.js'
@@ -54,6 +55,10 @@ export class NodeSlimeModelTrainer implements ModelTrainer {
       descriptors.push(request.resumeCheckpointRef, checkpoint.dataCursorRef)
       files.push(checkpoint.actorStateRef, checkpoint.optimizerStateRef, checkpoint.schedulerAndRngRef, checkpoint.hfExportRef)
     }
+    if (request.offlineTraining) {
+      const dataset = await readOfflineDataset(this.store, request.offlineTraining.datasetRef, request.parentModel, request.trainDataset, request.offlineTraining.maxSequenceTokens)
+      descriptors.push(request.offlineTraining.datasetRef, ...dataset.records)
+    }
     for (const ref of descriptors) await this.transport.upload(this.store, ref)
     // Model provenance, historical task refs and raw probe evidence may point
     // at controller-only data. Only manifest-listed file bytes are uploaded; JSON files are opaque.
@@ -65,7 +70,7 @@ export class NodeSlimeModelTrainer implements ModelTrainer {
     requireContract(observed?.capabilities?.orderedTrainingControl === true, 'training-control-unavailable', 'model node must support ordered v2 training control before admission')
     requireContract(this.artifactStorage !== 'model-node' || (observed.capabilities as { remoteCasRetention?: boolean }).remoteCasRetention === true,
       'remote-retention-unavailable', 'model node must support remote CAS retention before admission')
-    await this.episodes.preflight(request)
+    if (!request.offlineTraining) await this.episodes.preflight(request)
     await this.inputs(request)
     return parseTrainingCapabilities(await this.transport.call('training.preflight', { request }))
   }

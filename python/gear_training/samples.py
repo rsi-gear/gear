@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, asdict
+from .recipes.registry import zero_variance_policy
 from .content import ContractError, require, digest_json
 
 
@@ -114,7 +115,7 @@ def seal_batch(store, groups, request, lease, evidence_refs):
     require(len(groups) == request["trainer"]["rolloutBatchSize"], "incomplete-batch", "do not return an empty or undersized batch to stock GRPO")
     group_ids, run_ids = set(), set()
     for group in groups:
-        admit_group(group, request["rollout"]["groupSize"], request["rollout"]["zeroVarianceGroup"])
+        admit_group(group, request["rollout"]["groupSize"], zero_variance_policy(request))
         group_id = group[0].metadata["groupId"]
         require(group_id not in group_ids, "duplicate-group", "group replay would duplicate gradient samples")
         group_ids.add(group_id)

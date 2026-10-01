@@ -99,7 +99,7 @@ class JobService:
                     journal = EpisodeJournal(directory)
                     try: journal.reconcile_stopped()
                     finally: journal.close()
-                else: asyncio.run(reconcile_slots(directory, request, self.config))
+                elif not request.get("offlineTraining"): asyncio.run(reconcile_slots(directory, request, self.config))
             caps = preflight(request, self.config)
             require(not caps["blockers"], "training-preflight-blocked", "; ".join(caps["blockers"]))
             directory.mkdir(parents=True, exist_ok=True, mode=0o700)

@@ -1,5 +1,7 @@
 # v2 controller 与模型节点配置
 
+v2 的配方与离线 SFT 使用方法见 [版本化配方指南](recipes.zh-CN.md)。SFT 训练采用 actor-only GPU 分配，独立评估仍沿用本文部署。
+
 v2 将任务执行留在控制端，把训练与推理交给固定身份的模型节点。本文说明配置与恢复合同；实机通过范围见 [单卡认证记录](https://github.com/rsi-gear/gear/tree/b1baa88799771cafde5ec9704291e5dc2f25a601/docs/training/certifications/2026-09-10-rtx5090-single-gpu)。当前验收覆盖本地 Harbor / Docker 加远程单卡模型节点，远程 Harbor 和双卡尚未验收。
 
 ## 控制端

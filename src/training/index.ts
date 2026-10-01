@@ -14,3 +14,5 @@ export * from './slime.js'
 export * from './hitch.js'
 export * from './publication.js'
 export type { TrainingControllerConfig } from './cli.js'
+
+export { readOfflineDataset, validateOfflineDataset, offlineWindow } from './offline.js'

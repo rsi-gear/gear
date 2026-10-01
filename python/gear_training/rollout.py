@@ -8,6 +8,7 @@ import secrets
 import time
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
+from .recipes.registry import zero_variance_policy
 from .content import ContentStore, ContractError, atomic_json, digest_bytes, digest_json, require
 from .export import materialize
 from .gateway import ExactGateway, NativeSGLang, slime_protocol
@@ -188,7 +189,7 @@ async def collect_rollout(args, rollout_id, job_dir):
                                "maxRolloutTokens": budget["maxRolloutTokens"], "maxContextTokens": request["rollout"]["sampling"]["maxContextTokens"], "maxEpisodeSteps": budget["maxEpisodeSteps"],
                                "generationContractDigest": request["trainer"]["runtimeLock"]["protocolDigest"], "verifierVersion": request["verifier"]["digest"]}
                     samples.append(await episode(context))
-                groups.append(admit_group(samples, request["rollout"]["groupSize"], request["rollout"]["zeroVarianceGroup"]))
+                groups.append(admit_group(samples, request["rollout"]["groupSize"], zero_variance_policy(request)))
             except ContractError as error:
                 last_error = error.code
                 atomic_json(job_dir / "rejections" / (group_id + ".json"), {"groupId": group_id, "reason": error.code, "detail": str(error)})
@@ -228,7 +229,7 @@ def generate_rollout(args, rollout_id, data_source, evaluation=False):
         groups = [[EpisodeSample(**sample) for sample in group] for group in store.read_json(batch["samplesRef"])]
         require(len(groups) == request["trainer"]["rolloutBatchSize"], "invalid-replay-layout", "replay requires B complete groups")
         for group in groups:
-            admit_group(group, request["rollout"]["groupSize"], request["rollout"]["zeroVarianceGroup"])
+            admit_group(group, request["rollout"]["groupSize"], zero_variance_policy(request))
             require(all(s.metadata["policyVersion"] == batch["policyVersion"] for s in group), "replay-policy-mismatch", "replay may not relabel behavior receipts")
         ledger = Ledger(Path(job_dir) / "ledger.sqlite"); usage = ledger.usage(); ledger.close()
     else:
