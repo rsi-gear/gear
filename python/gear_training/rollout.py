@@ -7,6 +7,7 @@ import os
 import secrets
 import time
 from pathlib import Path
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from .content import ContentStore, ContractError, atomic_json, digest_bytes, digest_json, require
 from .export import materialize
@@ -31,7 +32,7 @@ async def generate(args, sample, sampling_params):
     return episode_sample.into_slime(sample)
 
 
-async def collect_rollout(args, rollout_id, job_dir):
+async def collect_rollout(args, rollout_id, job_dir, *, tasks=None, raw_only=False):
     from aiohttp import web
     from transformers import AutoTokenizer
     job_dir = Path(job_dir)
@@ -62,7 +63,7 @@ async def collect_rollout(args, rollout_id, job_dir):
         from .episodes import EpisodeJournal
         journal = EpisodeJournal(job_dir, ledger)
         ledger.require_controller(lease["batchId"], config["controllerTimeoutSeconds"])
-    groups, evidence, active_evals = [], [], set()
+    groups, raw_groups, evidence, active_evals = [], [], [], set()
     budget = request["budgets"]
     deadline = time.monotonic() + budget["totalGpuSeconds"] / len(request["trainingDevices"])
     last_error = None
@@ -197,7 +198,7 @@ async def collect_rollout(args, rollout_id, job_dir):
         # Restarting at task zero would starve the dataset suffix whenever B is
         # smaller than the task count. Recovery keeps rollout_id unchanged, and
         # sealed replay bypasses collection entirely.
-        tasks = await task_source.tasks(rollout_id)
+        if tasks is None: tasks = await task_source.tasks(rollout_id)
         executor = HitchRolloutExecutor(episode)
         while len(groups) < request["trainer"]["rolloutBatchSize"]:
             usage = ledger.usage()
@@ -218,7 +219,11 @@ async def collect_rollout(args, rollout_id, job_dir):
                                "maxRolloutTokens": budget["maxRolloutTokens"], "maxContextTokens": request["rollout"]["sampling"]["maxContextTokens"], "maxEpisodeSteps": budget["maxEpisodeSteps"],
                                "generationContractDigest": request["trainer"]["runtimeLock"]["protocolDigest"], "verifierVersion": request["verifier"]["digest"]}
                     samples.append(await executor.execute(context))
+                # Admission is a collection probe: bounded retries cannot be
+                # moved after all rollout without changing the native budget.
+                # The public preset's final builder assembles/seals its dataset.
                 groups.append(await dataset_builder.build(samples))
+                raw_groups.append(samples)
             except ContractError as error:
                 last_error = error.code
                 atomic_json(job_dir / "rejections" / (group_id + ".json"), {"groupId": group_id, "reason": error.code, "detail": str(error)})
@@ -229,6 +234,10 @@ async def collect_rollout(args, rollout_id, job_dir):
                 ledger.charge("resample/" + group_id, resamples=1)
         ledger.drain(lease["batchId"])
         closed = ledger.close_lease(lease["batchId"])
+        if raw_only:
+            return {"schemaVersion": 1, "kind": "raw-grpo-round", "rolloutId": rollout_id,
+                    "lease": closed, "groups": [[asdict(raw) for raw in group] for group in raw_groups],
+                    "sourceEvidenceRefs": evidence, "usage": ledger.usage()}
         batch_ref = seal_batch(store, groups, request, closed, evidence)
         ledger.seal(lease["batchId"], batch_ref)
         atomic_json(job_dir / "batch.json", {"rolloutId": rollout_id, "batchRef": batch_ref})
@@ -241,6 +250,15 @@ async def collect_rollout(args, rollout_id, job_dir):
         try: ledger.close_lease(lease["batchId"])
         except ContractError: pass
         ledger.close()
+
+
+async def collect_raw_rollout(args, rollout_id, job_dir, tasks):
+    """Same native collection/admission/retry path, with no batch seal.
+
+    Return durable raw trajectory refs under the original closed policy lease.
+    Only the final DatasetBuilder publishes a training batch.
+    """
+    return await collect_rollout(args, rollout_id, job_dir, tasks=tasks, raw_only=True)
 
 
 def generate_rollout(args, rollout_id, data_source, evaluation=False):

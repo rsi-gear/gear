@@ -83,21 +83,148 @@ def finalize_candidate(job_dir, request, store, prior_commits, checkpoint_ref, o
 
 
 
+class SlimeRoundRuntime:
+    """Shared native round lifecycle for legacy orchestration and public recipe."""
+    def __init__(self, job_dir, request, config, store, ledger, paths, parent_start, start,
+                 prior_commits, checkpoint_ref, current_hf, *, args=None, ray=None, memory=None, manager=None, incarnation=None):
+        self.job_dir, self.request, self.config, self.store, self.ledger = job_dir, request, config, store, ledger
+        self.paths, self.parent_start, self.committed = paths, parent_start, start
+        self.prior_commits, self.checkpoint_ref, self.current_hf = prior_commits, checkpoint_ref, current_hf
+        self.args, self.ray, self.memory, self.manager, self.incarnation = args, ray, memory, manager, incarnation
+
+    def check_cancel(self):
+        require(not (self.job_dir / "cancel.json").exists(), "cancelled", "training pause requested")
+
+    def prepare_round(self, rollout_id, *, checkpoint=None):
+        self.check_cancel()
+        require(rollout_id == self.committed, "runtime-cursor-mismatch", "collection must start at the native committed cursor")
+        if checkpoint is not None:
+            require(checkpoint["committedUpdate"] == rollout_id and checkpoint["hfSnapshotRef"] == self.current_hf,
+                    "replay-pre-update-mismatch", "public checkpoint differs from the loaded native actor")
+        require(self.memory is not None, "missing-slime-runtime", "remaining updates require the native Slime runtime")
+        self.memory.prepare_rollout(compare_weights=self.args.check_weight_update_equal and rollout_id == 0)
+        engines, _, _, _, _, _ = self.ray.get(self.manager.get_updatable_engines_and_lock.remote())
+        versions = self.ray.get([engine.get_weight_version.remote() for engine in engines])
+        urls = self.ray.get([engine.get_url.remote() for engine in engines])
+        active = [(url, str(version)) for url, version in zip(urls, versions) if url is not None]
+        require(active and len({v for _, v in active}) == 1, "unsynchronized-replicas", "rollout replicas disagree on current weights")
+        policy = f"{self.incarnation}/update-{rollout_id}/weight-{active[0][1]}"
+        batch_id = f"batch_{self.incarnation}_{rollout_id}"
+        lease = create_policy_lease(self.request, batch_id, policy, self.current_hf, self.incarnation)
+        replay = None
+        prior_batch = json.loads((self.job_dir / "batch.json").read_text()) if (self.job_dir / "batch.json").exists() else None
+        if prior_batch and prior_batch["rolloutId"] == rollout_id:
+            sealed = self.store.read_json(prior_batch["batchRef"])
+            source = self.ledger.db.execute("SELECT body,state FROM leases WHERE json_extract(body,'$.policyVersion')=?", (sealed["policyVersion"],)).fetchone()
+            require(source and source["state"] == "closed" and json.loads(source["body"])["synchronizedWeightsRef"]["digest"] == self.current_hf["digest"],
+                    "replay-pre-update-mismatch", "sealed batch replay requires its exact original pre-update actor weights")
+            replay = prior_batch["batchRef"]
+            batch_id = json.loads(source["body"])["batchId"]
+        self.batch_id, self.replay = batch_id, replay
+        atomic_json(self.job_dir / "runtime.json", {"rolloutId": rollout_id, "lease": lease, "engineUrl": active[0][0], "weightVersion": active[0][1],
+            "replicas": [{"replicaId": url, "weightsDigest": self.current_hf["digest"], "policyVersion": policy, "runtimeInstanceId": self.incarnation} for url, _ in active],
+            **({"replayBatchRef": replay, "replayRuntimeInstanceId": self.incarnation} if replay else {})})
+        atomic_json(self.job_dir / "progress.json", {"phase": "collecting", "committedUpdate": self.committed})
+
+    def train_commit(self, rollout_id, rollout_data, batch):
+        def batch_barrier():
+            sealed = self.ledger.db.execute("SELECT ref FROM batches WHERE batch=?", (self.batch_id,)).fetchone()
+            require(batch["rolloutId"] == rollout_id and self.ledger.lease(self.batch_id)["state"] == "closed"
+                    and sealed and json.loads(sealed[0]) == batch["batchRef"],
+                    "missing-batch-barrier", "optimizer and rollout offload cannot start before durable batch sealing")
+        self.memory.finish_rollout(batch_barrier)
+        atomic_json(self.job_dir / "progress.json", {"phase": "training", "committedUpdate": self.committed, "batchRef": batch["batchRef"]})
+        from .stages import SlimeModelUpdater
+        SlimeModelUpdater(self.memory).update(rollout_id, rollout_data)
+        if self.args.rollout_global_dataset: self.ray.get(self.manager.save.remote(rollout_id))
+        from .export import seal_directory
+        trainer_ref = seal_directory(self.store, self.paths["save"])
+        data_cursor = {"committedUpdate": rollout_id + 1, "batchRef": batch["batchRef"], "groupResamples": self.ledger.usage()["groupResamples"]}
+        if self.replay: data_cursor["replayOfBatch"] = self.replay["digest"]
+        atomic_json(self.job_dir / "pending-update.json", {"committedUpdate": rollout_id + 1, "trainerStateRef": trainer_ref,
+            "batchRef": batch["batchRef"], "dataCursor": data_cursor, "compatibilityDigest": compatibility_digest(self.request)})
+        atomic_json(self.job_dir / "progress.json", {"phase": "exporting", "committedUpdate": self.committed, "batchRef": batch["batchRef"]})
+        checkpoint_ref, commit_ref = export_committed_actor(self.memory, self.store, self.ledger, export_root=self.paths["export"], request=self.request, committed_update=rollout_id + 1,
+            trainer_directory=self.paths["save"], trainer_state_ref=trainer_ref, data_cursor=data_cursor, rng_state_ref=trainer_ref,
+            compatibility_digest=compatibility_digest(self.request), batch_ref=batch["batchRef"], previous_commit=self.prior_commits[-1] if self.prior_commits else None)
+        self.prior_commits.append(commit_ref); self.committed = rollout_id + 1; self.checkpoint_ref = checkpoint_ref
+        (self.job_dir / "pending-update.json").unlink()
+        self.current_hf = self.store.read_json(checkpoint_ref)["hfExportRef"]
+        atomic_json(self.job_dir / "progress.json", {"phase": "checkpointed", "committedUpdate": self.committed, "latestCommitRef": commit_ref})
+        self.memory.complete_update()
+        return self.checkpoint_value(checkpoint_ref, commit_ref)
+
+    def checkpoint_value(self, checkpoint_ref, commit_ref):
+        checkpoint = self.store.read_json(checkpoint_ref)
+        return {"checkpointRef": checkpoint_ref, "hfSnapshotRef": checkpoint["hfExportRef"],
+                "committedUpdate": checkpoint["committedUpdate"], "commitRef": commit_ref}
+
+    def update_dataset(self, rollout_id, dataset, checkpoint, operation_id):
+        require(dataset.get("kind") == "grpo-dataset" and dataset.get("schemaVersion") == 1 and dataset.get("rolloutId") == rollout_id
+                and dataset.get("preUpdateHfRef") == checkpoint["hfSnapshotRef"] and checkpoint["committedUpdate"] == rollout_id,
+                "grpo-dataset-drift", "updater must consume this round's sealed pre-update dataset")
+        batch_ref = dataset["batchRef"]
+        row = self.ledger.db.execute("SELECT batch_digest,ref FROM commits WHERE update_number=?", (rollout_id + 1,)).fetchone()
+        if row:
+            require(row["batch_digest"] == batch_ref["digest"], "update-conflict", "native commit consumed another batch")
+            ref = json.loads(row["ref"]); commit = self.store.read_json(ref)
+            return self.checkpoint_value(commit["checkpointRef"], ref)
+        self.check_cancel()
+        require(self.committed == rollout_id and self.current_hf == checkpoint["hfSnapshotRef"],
+                "replay-pre-update-mismatch", "dataset replay requires the original pre-update actor")
+        batch = self.store.read_json(batch_ref)
+        require(batch["trainingRunId"] == self.request["trainingRunId"] and batch["recipeDigest"] == self.request["recipeDigest"]
+                and batch["datasetSplitDigest"] == self.request["datasetSplitDigest"], "invalid-replay-batch", "dataset belongs to another frozen request")
+        lease = self.ledger.lease(dataset["batchId"])
+        require(lease["state"] == "closed" and lease["policyVersion"] == batch["policyVersion"]
+                and lease["synchronizedWeightsRef"] == self.current_hf, "replay-pre-update-mismatch", "dataset must retain its closed original policy")
+        # Raw collection may have been cached across driver incarnations. Wake
+        # the same pre-update model before the pinned Slime preprocessing call.
+        if self.memory.phase == "checkpoint": self.prepare_round(rollout_id, checkpoint=checkpoint)
+        # The hook projects a sealed batch even on the first attempt. Only
+        # prepare_round marks an actual recovered batch as replay provenance.
+        self.batch_id = dataset["batchId"]
+        runtime = json.loads((self.job_dir / "runtime.json").read_text())
+        runtime.update(replayBatchRef=batch_ref, replayRuntimeInstanceId=self.incarnation)
+        atomic_json(self.job_dir / "runtime.json", runtime)
+        atomic_json(self.job_dir / "batch.json", {"rolloutId": rollout_id, "batchRef": batch_ref})
+        rollout_data = self.ray.get(self.manager.generate.remote(rollout_id))
+        return self.train_commit(rollout_id, rollout_data, {"rolloutId": rollout_id, "batchRef": batch_ref})
+
+
+def _run_public_recipe(runtime):
+    from .dev_grpo import build_loop, loop_config
+    return build_loop(runtime).run(loop_config(runtime))
+
+
 def run(job_dir):
     job_dir = Path(job_dir)
     request = json.loads((job_dir / "request.json").read_text())
     config = json.loads((job_dir / "config.json").read_text())
+    require(request["trainer"].get("pipeline") in (None, "four-stage"), "unsupported-training-pipeline", "unknown trainer pipeline")
     store, ledger = ContentStore(config["storeRoot"]), Ledger(job_dir / "ledger.sqlite")
     from .recovery import update_recovery
-    from .stages import training_identity, SlimeModelUpdater
+    from .stages import training_identity
     training_identity(request)
     recovered = update_recovery(job_dir, request, store, ledger)
     prior_commits, resume_ref, pending = recovered["commitRefs"], recovered["checkpointRef"], recovered["pending"]
     parent_start, start = recovered["parentStart"], recovered["start"]
+    four_stage = request["trainer"].get("pipeline") == "four-stage"
+    if four_stage:
+        require(not request.get("stages"), "unsupported-preset-stages", "the dev GRPO preset uses frozen tasks and the strict trusted builder")
+        require(not (prior_commits or pending or ledger.db.execute("SELECT batch FROM batches LIMIT 1").fetchone()
+                     or ledger.db.execute("SELECT id FROM episodes LIMIT 1").fetchone()) or (job_dir / "four-stage-loop/identity.json").is_file(),
+                "missing-preset-history", "legacy jobs cannot upgrade to the public preset without their original stage artifacts")
     if len(prior_commits) == request["trainer"]["updatesPerCandidate"]:
         # SQLite already committed every update. A lost completion response
         # requires only immutable artifact publication, not CUDA or Ray startup.
-        try: finalize_candidate(job_dir, request, store, prior_commits, resume_ref, "completed", start)
+        try:
+            if four_stage:
+                checkpoint = store.read_json(resume_ref)
+                runtime = SlimeRoundRuntime(job_dir, request, config, store, ledger, {}, parent_start, start,
+                    prior_commits, resume_ref, checkpoint["hfExportRef"])
+                _run_public_recipe(runtime)
+            finalize_candidate(job_dir, request, store, prior_commits, resume_ref, "completed", start)
         finally: ledger.close()
         return
     from .execution import training_devices
@@ -165,68 +292,26 @@ def run(job_dir):
             actor, _ = create_training_models(args, pgs, manager)
             require(hasattr(actor, "export_hf"), "missing-slime-export-extension", "apply the pinned Gear HF export patch before training")
             memory = TrainingMemoryCycle(args, ray, actor, manager)
-            updater = SlimeModelUpdater(memory)
-        for rollout_id in range(start, start + remaining):
-            if (job_dir / "cancel.json").exists(): outcome = "paused"; break
-            # Slime's initial snapshot is the parent HF, not a newer recovered
-            # checkpoint. Comparing a resumed actor against it would be false.
-            memory.prepare_rollout(compare_weights=args.check_weight_update_equal and rollout_id == 0)
-            engines, _, _, _, _, _ = ray.get(manager.get_updatable_engines_and_lock.remote())
-            versions = ray.get([engine.get_weight_version.remote() for engine in engines])
-            urls = ray.get([engine.get_url.remote() for engine in engines])
-            active = [(url, str(version)) for url, version in zip(urls, versions) if url is not None]
-            require(active and len({v for _, v in active}) == 1, "unsynchronized-replicas", "rollout replicas disagree on current weights")
-            policy = f"{incarnation}/update-{rollout_id}/weight-{active[0][1]}"
-            batch_id = f"batch_{incarnation}_{rollout_id}"
-            lease = create_policy_lease(request, batch_id, policy, current_hf, incarnation)
-            replay = None
-            prior_batch = json.loads((job_dir / "batch.json").read_text()) if (job_dir / "batch.json").exists() else None
-            if prior_batch and prior_batch["rolloutId"] == rollout_id:
-                sealed = store.read_json(prior_batch["batchRef"])
-                source = ledger.db.execute("SELECT body,state FROM leases WHERE json_extract(body,'$.policyVersion')=?", (sealed["policyVersion"],)).fetchone()
-                require(source and source["state"] == "closed" and json.loads(source["body"])["synchronizedWeightsRef"]["digest"] == current_hf["digest"],
-                        "replay-pre-update-mismatch", "sealed batch replay requires its exact original pre-update actor weights")
-                replay = prior_batch["batchRef"]
-                batch_id = json.loads(source["body"])["batchId"]
-            atomic_json(job_dir / "runtime.json", {"rolloutId": rollout_id, "lease": lease, "engineUrl": active[0][0], "weightVersion": active[0][1],
-                "replicas": [{"replicaId": url, "weightsDigest": current_hf["digest"], "policyVersion": policy, "runtimeInstanceId": incarnation} for url, _ in active],
-                **({"replayBatchRef": replay, "replayRuntimeInstanceId": incarnation} if replay else {})})
-            atomic_json(job_dir / "progress.json", {"phase": "collecting", "committedUpdate": committed})
-            rollout_data = ray.get(manager.generate.remote(rollout_id))
-            batch = json.loads((job_dir / "batch.json").read_text())
-            def batch_barrier():
-                sealed = ledger.db.execute("SELECT ref FROM batches WHERE batch=?", (batch_id,)).fetchone()
-                require(batch["rolloutId"] == rollout_id and ledger.lease(batch_id)["state"] == "closed"
-                        and sealed and json.loads(sealed[0]) == batch["batchRef"],
-                        "missing-batch-barrier", "optimizer and rollout offload cannot start before durable batch sealing")
-            memory.finish_rollout(batch_barrier)
-            atomic_json(job_dir / "progress.json", {"phase": "training", "committedUpdate": committed, "batchRef": batch["batchRef"]})
-            updater.update(rollout_id, rollout_data)
-            if args.rollout_global_dataset: ray.get(manager.save.remote(rollout_id))
-            # Backend saves complete optimizer/scheduler/RNG in this same trainer
-            # snapshot. A matching file manifest is retained by both references.
-            from .export import seal_directory
-            trainer_ref = seal_directory(store, paths["save"])
-            data_cursor = {"committedUpdate": rollout_id + 1, "batchRef": batch["batchRef"], "groupResamples": ledger.usage()["groupResamples"]}
-            if replay: data_cursor["replayOfBatch"] = replay["digest"]
-            atomic_json(job_dir / "pending-update.json", {"committedUpdate": rollout_id + 1, "trainerStateRef": trainer_ref,
-                "batchRef": batch["batchRef"], "dataCursor": data_cursor, "compatibilityDigest": compatibility_digest(request)})
-            atomic_json(job_dir / "progress.json", {"phase": "exporting", "committedUpdate": committed, "batchRef": batch["batchRef"]})
-            checkpoint_ref, commit_ref = export_committed_actor(memory, store, ledger, export_root=paths["export"], request=request, committed_update=rollout_id + 1,
-                trainer_directory=paths["save"], trainer_state_ref=trainer_ref,
-                data_cursor=data_cursor,
-                rng_state_ref=trainer_ref, compatibility_digest=compatibility_digest(request), batch_ref=batch["batchRef"],
-                previous_commit=prior_commits[-1] if prior_commits else None)
-            prior_commits.append(commit_ref); committed = rollout_id + 1
-            (job_dir / "pending-update.json").unlink()
-            current_hf = store.read_json(checkpoint_ref)["hfExportRef"]
-            atomic_json(job_dir / "progress.json", {"phase": "checkpointed", "committedUpdate": committed, "latestCommitRef": commit_ref})
-            memory.complete_update()
+        runtime = SlimeRoundRuntime(job_dir, request, config, store, ledger, paths, parent_start, start,
+            prior_commits, checkpoint_ref, current_hf, args=args, ray=ray, memory=memory if remaining else None,
+            manager=manager, incarnation=incarnation)
+        if four_stage:
+            _run_public_recipe(runtime)
+        else:
+            for rollout_id in range(start, start + remaining):
+                if (job_dir / "cancel.json").exists(): outcome = "paused"; break
+                runtime.prepare_round(rollout_id)
+                rollout_data = ray.get(manager.generate.remote(rollout_id))
+                batch = json.loads((job_dir / "batch.json").read_text())
+                runtime.train_commit(rollout_id, rollout_data, batch)
+        checkpoint_ref, committed = runtime.checkpoint_ref, runtime.committed
     except Exception as error:
         cause = error.as_instanceof_cause() if hasattr(error, "as_instanceof_cause") else error
         if getattr(cause, "code", None) == "no-update" or "NoUpdate" in str(error):
             outcome = "inconclusive"
+        elif four_stage and getattr(cause, "code", None) == "cancelled": outcome = "paused"
         else: raise
+        if "runtime" in locals(): checkpoint_ref, committed = runtime.checkpoint_ref, runtime.committed
     finally:
         if manager is not None:
             try: ray.get(manager.dispose.remote())

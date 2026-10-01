@@ -105,31 +105,60 @@ agent 是阶段内部的可选实现。例如你的 `generate(ctx)` 可以调用
 
 不要为了普通 Python 任务源安装 SDK，也不必为每个 runner 新增 TS 类。
 
-## 使用现有 Slime GRPO 后端
+## 把原 dev 训练当作四阶段脚本运行
 
-如果目标是运行 Gear 已有的 Hitch/Slime 训练，而不是编写自定义四阶段脚本，准备好 [v2 配置](controller-v2.zh-CN.md) 后只需：
+真实的 dev 流程已经写成 [dev_grpo.py](../../python/gear_training/dev_grpo.py)。模型节点实际执行的就是其中的 `build_loop(runtime)`：
 
-```sh
-gear-refine training run spec.json --config controller.json
+```python
+return TrainingLoop(
+    FrozenTaskSource(runtime),
+    HitchRolloutExecutor(runtime),
+    GRPODatasetBuilder(runtime),
+    SlimeModelUpdater(runtime),
+)
 ```
 
-该命令创建实验与训练 run，并持续执行已有协调流程，包括 preflight、rollout、更新和独立评估。它会输出实验/run ID 和状态变化；不再需要手动反复 `advance`，也不会自动发布模型。
+| 阶段 | 原 dev 行为 |
+| --- | --- |
+| `FrozenTaskSource` | 从冻结训练集按原来的轮转顺序取任务，普通 Python 实现，无需 agent |
+| `HitchRolloutExecutor` | 当前权重执行 Hitch 任务，保留原生 token、验证反馈和轨迹引用；保持有界整组重采样 |
+| `GRPODatasetBuilder` | 从轨迹重新构建严格 GRPO 样本，检查原策略与关闭的租约，封存最终 batch |
+| `SlimeModelUpdater` | 对已封存 batch 做 Slime 原生预处理、训练、保存完整状态并导出下一 checkpoint |
 
-跟踪已有 run 时使用保存的 ID：
+收集阶段需要试验一组轨迹是否满足 GRPO 条件，才能决定是否重采样；最终数据集仍由第三阶段封存。这保留了原有采样顺序和预算，不会预先执行全部候选任务。
+
+准备原来能跑的 [训练 spec 和 controller 配置](controller-v2.zh-CN.md)，安装 Gear Python 包和控制器 CLI 后，在控制节点一条命令运行：
 
 ```sh
-gear-refine training run EXP_ID RUN_ID --config controller.json
+python examples/training-loop/dev_grpo.py --spec dev-spec.json --config controller.json
 ```
 
-`run spec.json` 每次创建新实验，不用于恢复原实验。`run EXP_ID RUN_ID` 遇到 completed、paused、blocked、interrupted 或 failed 会停止；需要恢复时先显式 `resume` 原 run，再执行 `run EXP_ID RUN_ID`。Ctrl+C 请求原有暂停流程，直到控制端收到暂停结果或需处理的错误；直接强杀进程仍可能留下待清理资源。
+也可使用安装后的模块入口：
 
-公开 Python 循环与现有 GRPO 后端目前是两个入口：前者支持你的四个实现；后者保留已有的严格 token、租约、checkpoint 和评估合同。这里没有把 CPU 示例或任意自定义四阶段宣称为已认证的 Slime/GPU pipeline。具体 GRPO 任务生成和数据筛选配置仍见 [四阶段后端说明](stages.zh-CN.md)。
+```sh
+python -m gear_training.dev_grpo --spec dev-spec.json --config controller.json
+```
+
+仓库开发时，若未全局安装 `gear-refine`，先 `npm run build`，然后增加 `--gear-command '["node", "lib/cli.js"]'`。脚本沿用原 spec 中的真实模型、训练集、超参和 runtime lock，只在传给控制器的副本里设置 `trainer.pipeline = "four-stage"`。原 spec 文件不被改写；模型节点需要部署包含此脚本的新版本，并按原流程更新运行时锁/bridge digest。它仍需要已配置的 Hitch、Slime 和 GPU 环境。
+
+控制器负责 preflight、设备安排和训练后独立评估，模型节点执行上述四阶段。脚本不自动发布模型。四阶段输入和结果保存在模型节点 job 的 `four-stage-loop/` 中；checkpoint 和原始证据继续使用原生存储。训练已提交但阶段返回值尚未保存时，会按原生提交记录及 batch 身份恢复，不重复更新模型。
+
+命令会打印实验和运行 ID。`--spec` 每次创建新实验；恢复时使用原 ID：
+
+```sh
+python examples/training-loop/dev_grpo.py --experiment EXP_ID --run RUN_ID --resume --config controller.json
+```
+
+省略 `--resume` 只跟踪现有运行。Ctrl+C 会请求控制器暂停。旧流程的部分运行不能直接切换成四阶段运行；继续用原命令恢复，或从已完成的模型建立新实验。
+
+这个 preset 复现原 dev 的固定任务与严格 GRPO，不接收 `stages` 中的 agent 覆盖。通用 `TrainingLoop` 仍支持任意普通 Python 或 agent 阶段；原有 agent 后端入口也保留。未设置 `trainer.pipeline` 的旧 spec 继续使用原执行路径。
 
 ## 改框架时再读这些入口
 
 | 修改内容 | 代码 / 测试 |
 | --- | --- |
 | 公开四阶段接口、循环与恢复 | [loop.py](../../python/gear_training/loop.py)、`python/tests/test_loop.py` |
+| 原 dev 四阶段 recipe 和运行入口 | [dev_grpo.py](../../python/gear_training/dev_grpo.py)、[启动脚本](../../examples/training-loop/dev_grpo.py) |
 | 无 agent 的完整用法 | [linear_cpu.py](../../examples/training-loop/linear_cpu.py) |
 | 现有后端持续运行命令 | [cli.ts](../../src/training/cli.ts)、`tests/unit/training/run.spec.ts` |
 | agent runner 与输出校验 | [agents.py](../../python/gear_training/agents.py)、[agent_stage.py](../../python/gear_training/agent_stage.py)、`test_stages.py` |

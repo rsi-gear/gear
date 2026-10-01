@@ -59,7 +59,7 @@ const runtimeLock: Check = (value, path) => {
 const harness = object({ commit, manifestRef: ref, adapter: str })
 const partition = object({ snapshotRef: ref, tasks: array(object({ id: str, family: str, taskRef: ref, environmentRef: ref }), 1), exactDataAuthorized: bool })
 const trainer = object({ provider: literal('slime'), runtimeLock, recipe: literal('agent-grpo-v1'), backend: literal('megatron'),
-  placement: optional(literal('separate', 'colocated')),
+  placement: optional(literal('separate', 'colocated')), pipeline: optional(literal('four-stage')),
   hyperparametersRef: ref, updatesPerCandidate: positive, checkpointEveryUpdate: literal(true), optimizerResetPolicy: literal('initial-cold-start-only'),
   rolloutBatchSize: positive, globalBatchSize: positive, dataParallelSize: positive })
 const sampling = object({ temperature: literal(1), topP: literal(1), topK: literal(-1), repetitionPenalty: literal(1), maxNewTokens: positive, maxContextTokens: positive })
@@ -173,6 +173,8 @@ function parseTrainingRequestBody(v: unknown): T.TrainingRequestV1 {
     && digestJson(result.updateStart.checkpointRef ?? null) === digestJson(result.resumeCheckpointRef ?? null),
   'unsupported-update-start', 'GRPO requires matching full champion state or initial cold start')
   validateStages(result.stages)
+  requireContract(result.trainer.pipeline !== 'four-stage' || !Object.keys(result.stages ?? {}).length,
+    'unsupported-dev-stages', 'four-stage dev recipe uses fixed tasks and strict GRPO; agent stage overrides are unsupported')
   return result
 }
 function validateStages(value: T.TrainingStages | undefined): void {
@@ -215,6 +217,8 @@ function parseModelTrainingSpecBody(v: unknown): T.ModelTrainingSpecV1 {
   validateTrainingDevices(result.trainer, result.resources.trainingDevices)
   requireContract(result.datasets.train.exactDataAuthorized, 'exact-data-not-authorized', 'train tasks must allow exact capture')
   validateStages(result.stages)
+  requireContract(result.trainer.pipeline !== 'four-stage' || !Object.keys(result.stages ?? {}).length,
+    'unsupported-dev-stages', 'four-stage dev recipe uses fixed tasks and strict GRPO; agent stage overrides are unsupported')
   const seen = new Map<string, string>()
   for (const [name, split] of Object.entries(result.datasets)) {
     const ids = new Set<string>()

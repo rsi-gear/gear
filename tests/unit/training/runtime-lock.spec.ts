@@ -46,6 +46,19 @@ describe('versioned process training runtime lock', () => {
       'import json,sys\nfrom gear_training.preflight import compatibility_digest\nprint(json.dumps(compatibility_digest(json.load(sys.stdin))))'], run.request)
     expect(actual).toBe(trainingCompatibilityDigest(run.request))
   })
+  it('freezes the four-stage recipe in admitted requests and rejects unknown pipelines or agent overrides', async () => {
+    spec.trainer.pipeline = 'four-stage'
+    expect(parseModelTrainingSpec(spec).trainer.pipeline).toBe('four-stage')
+    const coordinator = new ModelTrainingCoordinator(store, new FixtureTrainer(store), new FixtureEvaluator(store))
+    const experiment = await coordinator.createExperiment(spec), run = await coordinator.admit(experiment.id)
+    expect(parseTrainingRequest(run.request).trainer.pipeline).toBe('four-stage')
+    expect((await store.load(experiment.id)).spec.trainer.pipeline).toBe('four-stage')
+    spec.stages = { taskSource: { runner: 'custom', options: {}, instructionsRef: spec.verifier, maxRepairs: 0, timeoutSeconds: 1 } }
+    expect(() => parseModelTrainingSpec(spec)).toThrow('fixed tasks')
+    delete spec.stages
+    Object.assign(spec.trainer, { pipeline: 'unknown' })
+    expect(() => parseModelTrainingSpec(spec)).toThrow()
+  })
   it('rejects a process lock in v1, a mismatched frozen environment, or undeclared runtime fields', () => {
     const lock = processLock(spec)
     legacy.trainer.runtimeLock = lock
