@@ -13,7 +13,7 @@ import { observeExecutionPlacement } from './placement-observation.js'
 import { preflightDeployment } from './preflight-deployment.js'
 import { digestJson } from './digest.js'
 import { retainContentGraph } from './retention.js'
-import type { ModelTrainingSpec, TrainingDeploymentConfig, NodeIdentity, ContentRef } from './types.js'
+import type { ModelTrainingSpec, TrainingDeploymentConfig, NodeIdentity, ContentRef, ModelTrainingRun } from './types.js'
 
 export interface TrainingControllerConfigV1 {
   schemaVersion: 1
@@ -81,12 +81,54 @@ export function trainingController(config: TrainingControllerConfig, spec: Model
     frozenNode: node, modelNode: { ...inferenceConnection, gateway: config.evaluationGateway } })
   return { trainer, publisher, coordinator: new ModelTrainingCoordinator(store, trainer, evaluator) }
 }
+/** Keep the existing durable coordinator moving; never silently resume a stopped job. */
+export async function runTraining(
+  coordinator: Pick<ModelTrainingCoordinator, 'inspect' | 'advance' | 'pause'>,
+  experimentId: string, runId: string,
+  options: { intervalMs?: number; signal?: AbortSignal; onProgress?: (run: ModelTrainingRun) => void } = {},
+): Promise<ModelTrainingRun> {
+  const interval = options.intervalMs ?? 1000
+  requireContract(Number.isSafeInteger(interval) && interval > 0 && interval <= 60_000, 'invalid-poll-interval', 'poll interval must be 1–60000 ms')
+  let run = await coordinator.inspect(experimentId, runId)
+  while (true) {
+    if (options.signal?.aborted && run.execution !== 'completed' && run.execution !== 'paused') {
+      run = await coordinator.pause(experimentId, runId)
+    } else if (run.execution === 'running' || run.execution === 'pausing') {
+      try { run = await coordinator.advance(experimentId, runId) }
+      catch (error) {
+        if (!options.signal?.aborted) throw error
+        run = await coordinator.pause(experimentId, runId)
+      }
+    } else return run
+    options.onProgress?.(run)
+    if (run.execution !== 'running' && run.execution !== 'pausing') return run
+    await new Promise(resolve => setTimeout(resolve, interval))
+  }
+}
+
+async function runFromCli(coordinator: ModelTrainingCoordinator, experimentId: string, runId: string) {
+  const controller = new AbortController()
+  const stop = () => controller.abort()
+  process.once('SIGINT', stop); process.once('SIGTERM', stop)
+  let previous = ''
+  try {
+    process.stderr.write(JSON.stringify({ experimentId, runId }) + '\n')
+    return await runTraining(coordinator, experimentId, runId, {
+      signal: controller.signal,
+      onProgress: run => {
+        const progress = JSON.stringify({ experimentId, runId, phase: run.phase, execution: run.execution, error: run.error })
+        if (progress !== previous) { process.stderr.write(progress + '\n'); previous = progress }
+      },
+    })
+  } finally { process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop) }
+}
+
 export async function trainingCommand(argv: string[]): Promise<unknown> {
   const args = [...argv]; const action = args.shift()
   if (action === '--help' || action === 'help') return {
     usage: 'gear-refine training ACTION --config CONTROLLER.json [arguments]',
     actions: ['node-probe DEPLOYMENT.json NODE_REF', 'preflight-deployment', 'freeze-deployment', 'put-json FILE', 'seal-hf DIRECTORY', 'seal-hf-node NODE_DIRECTORY', 'seal-dataset DIRECTORY', 'validate SPEC', 'init SPEC', 'admit EXP', 'preflight EXP RUN',
-      'advance EXP RUN', 'status EXP [RUN]', 'pause EXP RUN', 'resume EXP RUN', 'close EXP RUN', 'publish EXP', 'rollback EXP RELEASE'],
+      'run SPEC', 'run EXP RUN', 'advance EXP RUN', 'status EXP [RUN]', 'pause EXP RUN', 'resume EXP RUN', 'close EXP RUN', 'publish EXP', 'rollback EXP RELEASE'],
   }
   if (action === 'node-probe') {
     requireContract(args.length === 2, 'usage', 'training node-probe DEPLOYMENT.json NODE_REF')
@@ -126,6 +168,13 @@ export async function trainingCommand(argv: string[]): Promise<unknown> {
     requireContract(args.length === 1, 'usage', `training ${action} DIRECTORY --config CONTROLLER.json`)
     return jsonProcess(config.schemaVersion === 1 ? config.slime.python : config.hitch.python, ['-m', 'gear_training.artifacts', action, '--store-root', store.root], { directory: args[0] }, 3_600_000)
   }
+  if (action === 'run' && args.length === 1) {
+    const spec = parseModelTrainingSpec(JSON.parse(await readFile(args[0]!, 'utf8')))
+    const { coordinator } = trainingController(config, spec, store)
+    const experiment = await coordinator.createExperiment(spec)
+    const run = await coordinator.admit(experiment.id)
+    return runFromCli(coordinator, experiment.id, run.id)
+  }
   if (action === 'validate' || action === 'init') {
     requireContract(args.length === 1, 'usage', `training ${action} SPEC.json --config CONTROLLER.json`)
     const spec = parseModelTrainingSpec(JSON.parse(await readFile(args[0]!, 'utf8')))
@@ -142,7 +191,8 @@ export async function trainingCommand(argv: string[]): Promise<unknown> {
     return coordinator.publish(experimentId, publisher, args[0])
   }
   const runId = args.shift()
-  requireContract(runId && args.length === 0, 'usage', 'training preflight|advance|status|pause|resume|close EXP RUN --config CONTROLLER.json')
+  requireContract(runId && args.length === 0, 'usage', 'training run|preflight|advance|status|pause|resume|close EXP RUN --config CONTROLLER.json')
+  if (action === 'run') return runFromCli(coordinator, experimentId, runId)
   if (action === 'preflight') return trainer.preflight((await coordinator.inspect(experimentId, runId)).request)
   if (action === 'status') return coordinator.inspect(experimentId, runId)
   if (action === 'advance' || action === 'pause' || action === 'resume' || action === 'close') return coordinator[action](experimentId, runId)

@@ -1,5 +1,7 @@
 # Python 四阶段与 AgentRunner
 
+如果你只想写四个普通 Python 阶段然后运行，从 [TrainingLoop 开发指南](development.zh-CN.md) 开始。本文说明现有 Slime GRPO 后端内部的阶段与可选 agent 接入。
+
 训练的逻辑链路为 `TaskSource → RolloutExecutor → DatasetBuilder → ModelUpdater`。默认实现分别是冻结任务游标、现有 Hitch rollout、严格 GRPO 样本构建和 Slime 更新。driver 继续负责 checkpoint、HF export、pending-update 和提交恢复；TypeScript 继续负责实验、独立评估、晋升和发布。这四步没有成为四个服务。
 
 原始轨迹、反馈和训练样本分开保存。失败、截断或 verifier 拒绝的证据可以留在 CAS，而不进入梯度样本。无 agent 配置时保持原有任务游标、组重采样、有效零奖励、原生 token/logprob 与 sealed batch 重放行为。

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { trainingCommand, trainingController, parseTrainingControllerConfig, type TrainingControllerConfigV2 } from '../../../src/training/cli.js'
+import { ModelTrainingCoordinator } from '../../../src/training/coordinator.js'
 import { ModelTrainingStore } from '../../../src/training/store.js'
 import { ModelNodeTransport } from '../../../src/training/transport.js'
 import { NodeSlimeModelTrainer, SlimeModelTrainer } from '../../../src/training/slime.js'
@@ -42,6 +43,25 @@ describe('versioned public training controller', () => {
     expect(admitted.request.schemaVersion).toBe(2)
     expect(await trainingCommand(['status', created.id, admitted.id, '--config', file])).toEqual(admitted)
     expect((await store.load(created.id)).specDigest).toBe(digestJson(spec))
+  })
+  it('run SPEC creates one experiment and run; run EXP RUN follows the existing identity', async () => {
+    const file = join(root, 'controller.json'), specFile = join(root, 'spec.json')
+    await writeFile(file, JSON.stringify(config)); await writeFile(specFile, JSON.stringify(v2spec(legacy)))
+    const create = vi.spyOn(ModelTrainingCoordinator.prototype, 'createExperiment')
+    const admit = vi.spyOn(ModelTrainingCoordinator.prototype, 'admit')
+    const advance = vi.spyOn(ModelTrainingCoordinator.prototype, 'advance').mockImplementation(async function (this: ModelTrainingCoordinator, id, runId) {
+      return { ...await this.inspect(id, runId), execution: 'completed' }
+    })
+    vi.spyOn(process.stderr, 'write').mockReturnValue(true)
+    const listeners = process.listenerCount('SIGINT')
+    const first = await trainingCommand(['run', specFile, '--config', file]) as ModelTrainingRun
+    const experimentId = create.mock.results[0] && (await create.mock.results[0].value).id
+    expect(first.execution).toBe('completed')
+    const second = await trainingCommand(['run', experimentId, first.id, '--config', file]) as ModelTrainingRun
+    expect(second.id).toBe(first.id)
+    expect(create).toHaveBeenCalledTimes(1); expect(admit).toHaveBeenCalledTimes(1)
+    expect(advance).toHaveBeenCalledTimes(2)
+    expect(process.listenerCount('SIGINT')).toBe(listeners)
   })
   it('rejects route collisions, mixed versions and placement changes before launching work', () => {
     expect(() => parseTrainingControllerConfig({ ...config, evaluationGateway: config.deployment.nodes.gpu!.gateway })).toThrow('distinct stable')
