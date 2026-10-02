@@ -127,7 +127,9 @@ class TrainingLoop:
     deep copies of inputs/checkpoint/history. Returned objects must be JSON.
     """
     def __init__(self, task_source: TaskSource, rollout_executor: RolloutExecutor,
-                 dataset_builder: DatasetBuilder, model_updater: ModelUpdater):
+                 dataset_builder: DatasetBuilder, model_updater: ModelUpdater, *, check_cancel=None, on_progress=None):
+        self.check_cancel = check_cancel or (lambda: None)
+        self.on_progress = on_progress or (lambda value: None)
         self.stages = (("task-source", task_source, "generate"),
                        ("rollout-executor", rollout_executor, "execute"),
                        ("dataset-builder", dataset_builder, "build"),
@@ -154,6 +156,8 @@ class TrainingLoop:
             stage_ids[name] = identity
         configuration = {"schemaVersion": 1, "kind": "training-loop", "rounds": config.rounds,
                          "initialCheckpoint": initial, "parameters": parameters, "stages": stage_ids}
+        if hasattr(self, "source_identity"):
+            configuration["sourceIdentity"] = _copy(self.source_identity)
         with ExitStack() as stack:
             try: stack.enter_context(lock(workspace / ".training-loop.lock", blocking=False))
             except BlockingIOError as error: raise ContractError("training-workspace-busy", "another loop owns this workspace") from error
@@ -184,6 +188,8 @@ class TrainingLoop:
             for index in range(config.rounds):
                 outputs = []
                 for name, stage, method in self.stages:
+                    self.check_cancel()
+                    self.on_progress({"roundIndex": index, "stage": name, "state": "running"})
                     arguments = [] if not outputs else [outputs[-1]]
                     inputs = {"schemaVersion": 1, "runDigest": run_digest, "roundIndex": index, "stage": name,
                               "checkpointDigest": _digest(checkpoint), "historyDigest": history_digest,
@@ -217,6 +223,7 @@ class TrainingLoop:
                                "operationId": operation_id, "inputDigest": input_digest, "outputDigest": _digest(output), "output": output})
                     require(name != "model-updater" or output is not None, "missing-training-checkpoint", "ModelUpdater.update must return a JSON checkpoint")
                     outputs.append(output)
+                    self.on_progress({"roundIndex": index, "stage": name, "state": "completed"})
                 history_digest = _digest({"previous": history_digest, "roundIndex": index, "outputs": [_digest(output) for output in outputs]})
                 checkpoint = outputs[-1]
                 history.append({"round_index": index, "tasks": outputs[0], "trajectories": outputs[1],
@@ -225,5 +232,6 @@ class TrainingLoop:
             final_record = {"schemaVersion": 1, "runDigest": run_digest, "checkpoint": result.checkpoint,
                             "history": result.history, "roundsCompleted": result.rounds_completed}
             require(completed_record is _MISSING or completed_record == final_record, "training-result-drift", "completed loop record differs from its verified stages")
+            self.check_cancel()
             if completed_record is _MISSING: _write(workspace / "result.json", final_record)
             return result

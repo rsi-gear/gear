@@ -1,3 +1,6 @@
+import { dirname, resolve } from 'node:path'
+import { parseScriptControllerConfig, scriptCommand } from './script-controller.js'
+import { sealScriptSource } from './script-source.js'
 import { readFile } from 'node:fs/promises'
 import { ModelTrainingCoordinator } from './coordinator.js'
 import { HitchModelEvaluator, type HitchModelEvaluatorOptions } from './hitch.js'
@@ -128,7 +131,7 @@ export async function trainingCommand(argv: string[]): Promise<unknown> {
   if (action === '--help' || action === 'help') return {
     usage: 'gear-refine training ACTION --config CONTROLLER.json [arguments]',
     actions: ['node-probe DEPLOYMENT.json NODE_REF', 'preflight-deployment', 'freeze-deployment', 'put-json FILE', 'seal-hf DIRECTORY', 'seal-hf-node NODE_DIRECTORY', 'seal-dataset DIRECTORY', 'validate SPEC', 'init SPEC', 'admit EXP', 'preflight EXP RUN',
-      'run SPEC', 'run EXP RUN', 'advance EXP RUN', 'status EXP [RUN]', 'pause EXP RUN', 'resume EXP RUN', 'close EXP RUN', 'publish EXP', 'rollback EXP RELEASE'],
+      'seal-script SOURCE_DIRECTORY MODULE:FACTORY', 'run SPEC', 'run SCRIPT_ID', 'run EXP RUN', 'advance EXP RUN', 'status EXP [RUN]', 'pause EXP RUN', 'resume EXP RUN', 'close EXP RUN', 'publish EXP', 'rollback EXP RELEASE'],
   }
   if (action === 'node-probe') {
     requireContract(args.length === 2, 'usage', 'training node-probe DEPLOYMENT.json NODE_REF')
@@ -140,7 +143,17 @@ export async function trainingCommand(argv: string[]): Promise<unknown> {
   const index = args.indexOf('--config')
   requireContract(index >= 0 && !!args[index + 1], 'usage', 'gear-refine training ACTION --config CONTROLLER.json [arguments]')
   const file = args.splice(index, 2)[1]!
-  const config = parseTrainingControllerConfig(JSON.parse(await readFile(file, 'utf8')))
+  const rawConfig = JSON.parse(await readFile(file, 'utf8'))
+  if (rawConfig.kind === 'training-script-controller') return scriptCommand(action!, args, parseScriptControllerConfig(rawConfig))
+  const config = parseTrainingControllerConfig(rawConfig)
+  const scriptId = args.length === 1 && /^script_[a-f0-9]{32}$/.test(args[0]!)
+  const scriptSpec = action === 'run' && args.length === 1 && !scriptId
+    && JSON.parse(await readFile(args[0]!, 'utf8')).kind === 'training-script'
+  if (scriptId || scriptSpec) {
+    requireContract(config.schemaVersion === 2, 'script-controller-version', 'use a v2 controller or a training-script-controller config')
+    return scriptCommand(action!, args, { schemaVersion: 1, kind: 'training-script-controller', storeRoot: config.storeRoot,
+      node: config.deployment.nodes[config.deployment.modelRuntime.nodeRef]! })
+  }
   const store = new ModelTrainingStore(config.storeRoot)
   if (action === 'preflight-deployment') {
     requireContract(config.schemaVersion === 2 && args.length === 0, 'usage', 'preflight-deployment requires a v2 controller config and no positional arguments')
@@ -150,6 +163,10 @@ export async function trainingCommand(argv: string[]): Promise<unknown> {
     requireContract(config.schemaVersion === 2 && args.length === 0, 'usage', 'freeze-deployment requires a v2 controller config and no positional arguments')
     const observation = await observeExecutionPlacement(config.deployment, config.hitch)
     return { deployment: freezeExecutionPlacement(config.deployment, observation), observation }
+  }
+  if (action === 'seal-script') {
+    requireContract(args.length === 2, 'usage', 'training seal-script SOURCE_DIRECTORY MODULE:FACTORY --config CONTROLLER.json')
+    return sealScriptSource(store, resolve(args[0]!), args[1]!)
   }
   if (action === 'put-json') {
     requireContract(args.length === 1, 'usage', 'training put-json FILE --config CONTROLLER.json')
@@ -169,7 +186,15 @@ export async function trainingCommand(argv: string[]): Promise<unknown> {
     return jsonProcess(config.schemaVersion === 1 ? config.slime.python : config.hitch.python, ['-m', 'gear_training.artifacts', action, '--store-root', store.root], { directory: args[0] }, 3_600_000)
   }
   if (action === 'run' && args.length === 1) {
-    const spec = parseModelTrainingSpec(JSON.parse(await readFile(args[0]!, 'utf8')))
+    const input = JSON.parse(await readFile(args[0]!, 'utf8'))
+    // Local source selection is resolved once; only immutable refs enter the experiment.
+    if (input.scriptSource) {
+      requireContract(input.trainer && typeof input.scriptSource.directory === 'string' && typeof input.scriptSource.entrypoint === 'string', 'invalid-script-source', 'scriptSource requires directory and entrypoint')
+      requireContract(!input.trainer.script, 'duplicate-script-source', 'select scriptSource or a sealed trainer.script, not both')
+      input.trainer.script = await sealScriptSource(store, resolve(dirname(resolve(args[0]!)), input.scriptSource.directory), input.scriptSource.entrypoint)
+      delete input.scriptSource
+    }
+    const spec = parseModelTrainingSpec(input)
     const { coordinator } = trainingController(config, spec, store)
     const experiment = await coordinator.createExperiment(spec)
     const run = await coordinator.admit(experiment.id)

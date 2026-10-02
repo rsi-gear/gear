@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "kind": "training-script",
+  "source": "./recipes",
+  "entrypoint": "linear:build_loop",
+  "config": {
+    "rounds": 12,
+    "initialCheckpoint": {"weight": 0.0, "steps": 0},
+    "parameters": {"target_weight": 3.0, "learning_rate": 0.1}
+  }
+}

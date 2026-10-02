@@ -16,10 +16,12 @@ def prepare_spec(value):
         raise ValueError("expected an existing Gear model-training spec with trainer settings")
     if value.get("stages"):
         raise ValueError("dev_grpo uses the original fixed task source and strict GRPO builder; remove agent stages")
-    pipeline = value["trainer"].get("pipeline")
-    if pipeline not in (None, "four-stage"):
-        raise ValueError("unsupported trainer pipeline")
-    value["trainer"]["pipeline"] = "four-stage"
+    if "pipeline" in value["trainer"]:
+        raise ValueError("replace trainer.pipeline with a script entrypoint")
+    if value["trainer"].get("script") or value.get("scriptSource"):
+        raise ValueError("use training run directly for an already selected script")
+    value["scriptSource"] = {"directory": str(Path(__file__).parent / "recipes" / "dev_script"),
+                             "entrypoint": "recipe:build_loop"}
     return value
 
 
@@ -62,7 +64,7 @@ def main(argv=None):
         result = subprocess.run(command + ["training", "status", args.experiment] + config,
                                 check=True, stdout=subprocess.PIPE, text=True)
         experiment = json.loads(result.stdout)
-        if experiment["spec"]["trainer"].get("pipeline") != "four-stage" or experiment["spec"].get("stages"):
+        if not experiment["spec"]["trainer"].get("script") or experiment["spec"].get("stages"):
             parser.error("existing experiment is not the fixed-task four-stage dev recipe")
         ids = [args.experiment, args.run]
         if args.resume:

@@ -47,7 +47,7 @@ export class ModelNodeTransport {
     requireContract(this.identity !== null || operation === 'probe', 'node-not-resolved', 'probe and pin a node generation before performing work')
     const envelope = nodeEnvelope(this.identity, operation, payload, requestId)
     let value: unknown
-    const readOnly = ['probe', 'training.inspect', 'cas.stat', 'training.episodes.receipts'].includes(operation)
+    const readOnly = ['probe', 'training.inspect', 'scripts.inspect', 'cas.stat', 'training.episodes.receipts'].includes(operation)
     const verifiesFiles = ['cas.retain', 'cas.hfManifest', 'cas.sealHf'].includes(operation)
     const deadline = Date.now() + (verifiesFiles ? this.transferTimeoutMs : this.timeoutMs)
     try {

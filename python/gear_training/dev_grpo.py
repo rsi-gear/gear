@@ -6,8 +6,8 @@ Raw collection uses trusted admission probes for bounded group resampling;
 DatasetBuilder alone seals the final training batch. All public stage values
 are JSON/CAS identities. Slime objects never become framework JSON artifacts.
 """
-from .loop import TrainingLoop, TrainingConfig
-from .content import require, digest_json, atomic_json
+from .loop import TrainingLoop
+from .content import require, atomic_json
 from .samples import seal_batch
 from .stages import FrozenTaskSource as NativeTaskSource, GRPODatasetBuilder as NativeBuilder, RawTrajectory
 
@@ -27,8 +27,7 @@ class HitchRolloutExecutor:
         self.runtime.check_cancel()
         rollout_id = self.runtime.parent_start + ctx.round_index
         self.runtime.prepare_round(rollout_id, checkpoint=ctx.checkpoint)
-        from .rollout import collect_raw_rollout
-        return await collect_raw_rollout(self.runtime.args, rollout_id, self.runtime.job_dir, tasks)
+        return await self.runtime.hitch.collect(rollout_id, tasks)
 
 
 class GRPODatasetBuilder:
@@ -56,21 +55,13 @@ class SlimeModelUpdater:
     stage_id = "gear.dev-grpo.slime-megatron:v1"
     def __init__(self, runtime): self.runtime = runtime
     def update(self, ctx, dataset):
-        return self.runtime.update_dataset(self.runtime.parent_start + ctx.round_index, dataset, ctx.checkpoint, ctx.operation_id)
+        return self.runtime.slime.update(self.runtime.parent_start + ctx.round_index, dataset, ctx.checkpoint, ctx.operation_id)
 
 
-def build_loop(runtime):
+def build_loop(config, runtime):
     """Four ordinary objects; actually used by the native job driver."""
     return TrainingLoop(FrozenTaskSource(runtime), HitchRolloutExecutor(runtime),
                         GRPODatasetBuilder(runtime), SlimeModelUpdater(runtime))
-
-
-def loop_config(runtime):
-    parent_ref = runtime.request.get("resumeCheckpointRef")
-    return TrainingConfig(runtime.job_dir / "four-stage-loop", runtime.request["trainer"]["updatesPerCandidate"],
-        initial_checkpoint={"checkpointRef": parent_ref, "hfSnapshotRef": runtime.request["parentModel"]["hfSnapshotRef"],
-                            "committedUpdate": runtime.parent_start, "commitRef": None},
-        parameters={"requestDigest": digest_json(runtime.request)})
 
 
 def main():

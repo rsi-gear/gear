@@ -33,7 +33,7 @@ export class ModelTrainingCoordinator {
       && initial.tokenizerDigest === reference.tokenizerDigest && initial.chatTemplateDigest === reference.chatTemplateDigest,
     'reference-incompatible', 'reference and actor must use the same model and token semantics')
     // Resolve immutable control inputs now, not after a job has started.
-    for (const ref of [spec.fixedHarness.manifestRef, spec.verifier, spec.trainer.hyperparametersRef, ...Object.values(spec.stages ?? {}).map(config => config.instructionsRef),
+    for (const ref of [spec.fixedHarness.manifestRef, spec.verifier, spec.trainer.hyperparametersRef, ...(spec.trainer.script ? [spec.trainer.script.sourceRef] : []), ...Object.values(spec.stages ?? {}).map(config => config.instructionsRef),
       ...Object.values(spec.datasets).flatMap(d => [d.snapshotRef, ...d.tasks.flatMap(t => [t.taskRef, t.environmentRef])])]) await this.store.readBytes(ref)
     const state: T.ModelExperimentState = { schemaVersion: 1, id: `exp_${randomUUID().replaceAll('-', '')}`,
       spec, specDigest: digestJson(spec), champion: { modelRef: spec.initialModel, revision: 0, baselineEvidence: {} }, runs: {}, releases: [], usage: emptyUsage() }

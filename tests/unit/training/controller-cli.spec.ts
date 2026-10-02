@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -46,7 +46,9 @@ describe('versioned public training controller', () => {
   })
   it('run SPEC creates one experiment and run; run EXP RUN follows the existing identity', async () => {
     const file = join(root, 'controller.json'), specFile = join(root, 'spec.json')
-    await writeFile(file, JSON.stringify(config)); await writeFile(specFile, JSON.stringify(v2spec(legacy)))
+    const source = join(root, 'recipe'); await mkdir(source)
+    await writeFile(join(source, 'custom.py'), 'def build_loop(config, runtime): pass\n')
+    await writeFile(file, JSON.stringify(config)); await writeFile(specFile, JSON.stringify({ ...v2spec(legacy), scriptSource: { directory: './recipe', entrypoint: 'custom:build_loop' } }))
     const create = vi.spyOn(ModelTrainingCoordinator.prototype, 'createExperiment')
     const admit = vi.spyOn(ModelTrainingCoordinator.prototype, 'admit')
     const advance = vi.spyOn(ModelTrainingCoordinator.prototype, 'advance').mockImplementation(async function (this: ModelTrainingCoordinator, id, runId) {
@@ -57,6 +59,9 @@ describe('versioned public training controller', () => {
     const first = await trainingCommand(['run', specFile, '--config', file]) as ModelTrainingRun
     const experimentId = create.mock.results[0] && (await create.mock.results[0].value).id
     expect(first.execution).toBe('completed')
+    expect(first.request.trainer.script?.entrypoint).toBe('custom:build_loop')
+    expect(first.request).not.toHaveProperty('scriptSource')
+    expect(await store.readJson(first.request.trainer.script!.sourceRef)).toMatchObject({ kind: 'training-script-source' })
     const second = await trainingCommand(['run', experimentId, first.id, '--config', file]) as ModelTrainingRun
     expect(second.id).toBe(first.id)
     expect(create).toHaveBeenCalledTimes(1); expect(admit).toHaveBeenCalledTimes(1)

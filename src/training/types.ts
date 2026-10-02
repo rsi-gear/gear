@@ -206,8 +206,9 @@ export interface ModelTrainingSpecV1 {
     backend: 'megatron'
     /** Defaults to separate GPUs. Colocated alternates rollout/train with CPU offload. */
     placement?: 'separate' | 'colocated'
-    /** Run the dev GRPO recipe through the public four-stage Python loop. */
-    pipeline?: 'four-stage'
+    /** Frozen four-stage factory loaded by the native runtime. */
+    script?: { entrypoint: string; sourceRef: ContentRef }
+    scriptConfig?: Record<string, unknown>
     hyperparametersRef: ContentRef
     updatesPerCandidate: number
     checkpointEveryUpdate: true

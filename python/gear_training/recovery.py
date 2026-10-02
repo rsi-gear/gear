@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from .content import ContentStore, atomic_json, require
+from .content import ContentStore, ContractError, atomic_json, require
 from .export import dataset_destination
 from .hitch import frozen_harness_ref, HitchClient
 from .ledger import Ledger
@@ -61,6 +61,33 @@ def owned_alive(identity):
         p = psutil.Process(identity["pid"])
         return p.create_time() == identity["createdAt"] and p.status() != psutil.STATUS_ZOMBIE
     except psutil.NoSuchProcess: return False
+
+
+def owned_session_alive(identity):
+    """A supervised worker's private session includes ordinary child processes.
+
+    Detached sessions cannot be adopted safely; scripts must keep spawned work
+    in the worker session and finish it before returning.
+    """
+    import os
+    import psutil
+    try:
+        leader = psutil.Process(identity["pid"])
+        if leader.create_time() != identity["createdAt"]: return False
+        if leader.status() != psutil.STATUS_ZOMBIE: return True
+    except psutil.NoSuchProcess: pass
+    for process in psutil.process_iter(["pid"]):
+        try:
+            if os.getsid(process.pid) != identity["pid"]: continue
+        except (ProcessLookupError, PermissionError): continue
+        try:
+            created, status = process.create_time(), process.status()
+            require(created is not None and status is not None, "script-resources-unobservable", "cannot observe an owned session member")
+            if created >= identity["createdAt"] and status != psutil.STATUS_ZOMBIE: return True
+        except psutil.NoSuchProcess: pass
+        except psutil.AccessDenied as error:
+            raise ContractError("script-resources-unobservable", "cannot observe an owned session member") from error
+    return False
 
 
 def stop_owned(identities):

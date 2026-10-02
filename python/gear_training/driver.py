@@ -83,6 +83,19 @@ def finalize_candidate(job_dir, request, store, prior_commits, checkpoint_ref, o
 
 
 
+class NativeHitch:
+    def __init__(self, runtime): self.runtime = runtime
+    async def collect(self, rollout_id, tasks):
+        from .rollout import collect_raw_rollout
+        return await collect_raw_rollout(self.runtime.args, rollout_id, self.runtime.job_dir, tasks)
+
+
+class NativeSlime:
+    def __init__(self, runtime): self.runtime = runtime
+    def update(self, rollout_id, dataset, checkpoint, operation_id):
+        return self.runtime.update_dataset(rollout_id, dataset, checkpoint, operation_id)
+
+
 class SlimeRoundRuntime:
     """Shared native round lifecycle for legacy orchestration and public recipe."""
     def __init__(self, job_dir, request, config, store, ledger, paths, parent_start, start,
@@ -91,6 +104,8 @@ class SlimeRoundRuntime:
         self.paths, self.parent_start, self.committed = paths, parent_start, start
         self.prior_commits, self.checkpoint_ref, self.current_hf = prior_commits, checkpoint_ref, current_hf
         self.args, self.ray, self.memory, self.manager, self.incarnation = args, ray, memory, manager, incarnation
+        self.hitch, self.slime = NativeHitch(self), NativeSlime(self)
+        self.workspace = self.job_dir
 
     def check_cancel(self):
         require(not (self.job_dir / "cancel.json").exists(), "cancelled", "training pause requested")
@@ -193,15 +208,29 @@ class SlimeRoundRuntime:
 
 
 def _run_public_recipe(runtime):
-    from .dev_grpo import build_loop, loop_config
-    return build_loop(runtime).run(loop_config(runtime))
+    from .loop import TrainingConfig
+    from .script_source import loaded_loop
+    request = runtime.request
+    parameters = request["trainer"].get("scriptConfig", {})
+    parent_ref = request.get("resumeCheckpointRef")
+    config = {"rounds": request["trainer"]["updatesPerCandidate"],
+              "initialCheckpoint": {"checkpointRef": parent_ref, "hfSnapshotRef": request["parentModel"]["hfSnapshotRef"],
+                                    "committedUpdate": runtime.parent_start, "commitRef": None},
+              "parameters": parameters}
+    loop_config = TrainingConfig(runtime.job_dir / "four-stage-loop", config["rounds"], config["initialCheckpoint"], parameters)
+    with loaded_loop(runtime.store, request["trainer"]["script"], config, runtime, runtime.job_dir / "script-source") as loop:
+        loop.source_identity = {"script": request["trainer"]["script"], "requestDigest": digest_json(request)}
+        previous_cancel = loop.check_cancel
+        def check_cancel(): runtime.check_cancel(); previous_cancel()
+        loop.check_cancel = check_cancel
+        return loop.run(loop_config)
 
 
 def run(job_dir):
     job_dir = Path(job_dir)
     request = json.loads((job_dir / "request.json").read_text())
     config = json.loads((job_dir / "config.json").read_text())
-    require(request["trainer"].get("pipeline") in (None, "four-stage"), "unsupported-training-pipeline", "unknown trainer pipeline")
+    require("pipeline" not in request["trainer"], "unsupported-training-pipeline", "use a frozen trainer.script entrypoint")
     store, ledger = ContentStore(config["storeRoot"]), Ledger(job_dir / "ledger.sqlite")
     from .recovery import update_recovery
     from .stages import training_identity
@@ -209,9 +238,12 @@ def run(job_dir):
     recovered = update_recovery(job_dir, request, store, ledger)
     prior_commits, resume_ref, pending = recovered["commitRefs"], recovered["checkpointRef"], recovered["pending"]
     parent_start, start = recovered["parentStart"], recovered["start"]
-    four_stage = request["trainer"].get("pipeline") == "four-stage"
+    four_stage = bool(request["trainer"].get("script"))
     if four_stage:
-        require(not request.get("stages"), "unsupported-preset-stages", "the dev GRPO preset uses frozen tasks and the strict trusted builder")
+        from .script_source import source_files
+        source_files(store, request["trainer"]["script"])
+    if four_stage:
+        require(not request.get("stages"), "unsupported-preset-stages", "native scripts own all four stages; stages configuration cannot override them")
         require(not (prior_commits or pending or ledger.db.execute("SELECT batch FROM batches LIMIT 1").fetchone()
                      or ledger.db.execute("SELECT id FROM episodes LIMIT 1").fetchone()) or (job_dir / "four-stage-loop/identity.json").is_file(),
                 "missing-preset-history", "legacy jobs cannot upgrade to the public preset without their original stage artifacts")

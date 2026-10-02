@@ -105,59 +105,117 @@ agent 是阶段内部的可选实现。例如你的 `generate(ctx)` 可以调用
 
 不要为了普通 Python 任务源安装 SDK，也不必为每个 runner 新增 TS 类。
 
-## 把原 dev 训练当作四阶段脚本运行
+## 通过控制器运行自己的脚本
 
-真实的 dev 流程已经写成 [dev_grpo.py](../../python/gear_training/dev_grpo.py)。模型节点实际执行的就是其中的 `build_loop(runtime)`：
+控制器现在可以运行普通四阶段脚本，也可以运行使用 Hitch/Slime 的四阶段脚本。两者使用同一个工厂接口：
 
 ```python
-return TrainingLoop(
-    FrozenTaskSource(runtime),
-    HitchRolloutExecutor(runtime),
-    GRPODatasetBuilder(runtime),
-    SlimeModelUpdater(runtime),
-)
+from gear_training import TrainingLoop
+
+def build_loop(config, runtime):
+    return TrainingLoop(
+        MyTaskSource(config),
+        MyRolloutExecutor(config),
+        MyDatasetBuilder(config),
+        MyModelUpdater(config),
+    )
 ```
 
-| 阶段 | 原 dev 行为 |
-| --- | --- |
-| `FrozenTaskSource` | 从冻结训练集按原来的轮转顺序取任务，普通 Python 实现，无需 agent |
-| `HitchRolloutExecutor` | 当前权重执行 Hitch 任务，保留原生 token、验证反馈和轨迹引用；保持有界整组重采样 |
-| `GRPODatasetBuilder` | 从轨迹重新构建严格 GRPO 样本，检查原策略与关闭的租约，封存最终 batch |
-| `SlimeModelUpdater` | 对已封存 batch 做 Slime 原生预处理、训练、保存完整状态并导出下一 checkpoint |
+`config` 包含 `rounds`、`initialCheckpoint`、`parameters`。运行配置沿用 Gear 控制协议的 ASCII 对象键约定，文本值可包含中文；阶段结果支持包括中文键在内的 JSON。`runtime.workspace` 是本次作业目录，`runtime.store` 提供内容存储，`runtime.check_cancel()` 供长阶段主动响应暂停。原生训练环境还提供 `runtime.hitch`、`runtime.slime`；普通 Python 环境不初始化这些服务。
 
-收集阶段需要试验一组轨迹是否满足 GRPO 条件，才能决定是否重采样；最终数据集仍由第三阶段封存。这保留了原有采样顺序和预算，不会预先执行全部候选任务。
+把脚本和自己的辅助模块放在独立目录中。控制器提交时封存该目录并传到节点，worker 加载 `module:factory`，调用工厂得到 `TrainingLoop`。无需注册插件、编写 TS 类或实现控制协议。目录最多 1024 个文件、16 MiB；拒绝符号链接和隐藏文件，自动忽略 `.git`、`.venv`、`node_modules`、`__pycache__`。模型、数据及第三方依赖放在运行环境或内容存储中，不塞进源码目录。
 
-准备原来能跑的 [训练 spec 和 controller 配置](controller-v2.zh-CN.md)，安装 Gear Python 包和控制器 CLI 后，在控制节点一条命令运行：
+### 普通 Python 脚本
+
+[linear-script.json](../../examples/training-loop/linear-script.json) 与 [linear.py](../../examples/training-loop/recipes/linear.py) 是可运行的 CPU 示例。使用已有 v2 controller 配置即可：
 
 ```sh
-python examples/training-loop/dev_grpo.py --spec dev-spec.json --config controller.json
+gear-refine training run examples/training-loop/linear-script.json --config controller.json
 ```
 
-也可使用安装后的模块入口：
+普通脚本不要求 GRPO 配置、native 更新记录或训练后评估；其最终结果就是四阶段循环返回的 checkpoint。`source` 相对 spec 文件所在目录解析。四个类可以同步或异步，也可以在其中调用任意 agent runner。
+
+没有已有部署时，可用轻量控制器配置，只指定存储和节点连接。例如本机 `script-controller.json`（替换绝对路径）：
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "training-script-controller",
+  "storeRoot": "/absolute/controller-store",
+  "node": {
+    "transport": {"type": "local"},
+    "workspace": "/absolute/workspace",
+    "python": ["/absolute/venv/bin/python"],
+    "configPath": "/absolute/node.json"
+  }
+}
+```
+
+对应的 `node.json` 只需：
+
+```json
+{
+  "schemaVersion": 2,
+  "nodeId": "local-python",
+  "nodeRoot": "/absolute/node-state",
+  "storeRoot": "/absolute/node-content"
+}
+```
+
+节点环境需要安装 Gear Python 包和脚本依赖；控制端需要 Gear CLI。远程使用已有 SSH Host alias：`"transport": {"type": "ssh", "host": "training-node"}`，其余路径和 Python 命令属于远程节点。控制器会探测并固定节点身份，不要求开发者手填进程 ID。
+
+命令打印 `script_…` 运行 ID。后续命令不再读取源目录：
+
+```sh
+gear-refine training status SCRIPT_ID --config controller.json
+gear-refine training pause SCRIPT_ID --config controller.json
+gear-refine training resume SCRIPT_ID --config controller.json
+gear-refine training run SCRIPT_ID --config controller.json
+```
+
+`resume` 显式继续并跟踪运行；`run SCRIPT_ID` 重新跟踪已有运行，不自动恢复已暂停/失败的作业。`run SPEC.json` 每次创建新运行。Ctrl+C 请求协作式暂停：已正常返回的阶段会先保存结果，再在边界停止；长阶段可调用 `runtime.check_cancel()`。不主动检查的阶段会继续到返回。进度包含轮次和阶段；worker 的 stdout/stderr 保存在节点的 `script-jobs/SCRIPT_ID/worker.log`。
+
+恢复固定源码和配置；修改代码或参数后要创建新运行。依赖包由节点环境管理，源码快照不会自动冻结第三方依赖。脚本属于受信任的 Python 代码，不是沙箱。子进程应留在 worker 的私有 session 中并在阶段结束前回收；若同 session 的子进程仍活着，控制器不会把资源报告为已释放或启动另一个 worker。
+
+### 使用 Hitch、Slime 基础组件
+
+沿用原来的模型、数据、GPU 和 runtime lock 配置，在 native spec 顶层增加：
+
+```json
+{
+  "scriptSource": {
+    "directory": "./recipes",
+    "entrypoint": "hitch_slime:build_loop"
+  }
+}
+```
+
+这是合并到完整训练 spec 的片段。`directory` 相对 spec 路径；[hitch_slime.py](../../examples/training-loop/recipes/hitch_slime.py) 给出工厂实现。执行仍是一条命令：
+
+```sh
+gear-refine training run native-spec.json --config controller.json
+```
+
+控制器把 `scriptSource` 转成冻结的 `trainer.script`，随训练请求上传；节点动态加载该脚本。自定义参数放在 `trainer.scriptConfig`，工厂和阶段通过 `config.parameters` / `ctx.config.parameters` 读取。轮数和初始 checkpoint 来自 native 训练配置及模型状态。已封存代码引用也可直接放在 `trainer.script`；不要同时提供这两种来源。
+
+Hitch/Slime 的设备安排、权重同步、完整 checkpoint、任务执行桥接和独立评估仍由现有运行环境负责。开发者可直接复用内置的 `FrozenTaskSource`、`HitchRolloutExecutor`、`GRPODatasetBuilder`、`SlimeModelUpdater`，也可替换其中的类；任务源不要求 agent。直接调用组件的底层接口时须遵守其数据和生命周期合同，通常优先组合内置阶段。
+
+内置 Slime 适配目前支持严格 GRPO：使用它的脚本需要提供有效任务引用、精确原生轨迹和兼容 batch，updater 要通过它提交 checkpoint。这些是组件自身的约束；完全不同的数据合同或优化器可以使用普通脚本运行入口。现有 `stages` agent 配置不与 `trainer.script` 同时使用；agent 调用写在自定义阶段中。
+
+原 dev 的默认脚本是 [recipe.py](../../python/gear_training/recipes/dev_script/recipe.py)，与自定义脚本走相同加载接口；不再使用 `trainer.pipeline` 开关。便利命令保留：
 
 ```sh
 python -m gear_training.dev_grpo --spec dev-spec.json --config controller.json
 ```
 
-仓库开发时，若未全局安装 `gear-refine`，先 `npm run build`，然后增加 `--gear-command '["node", "lib/cli.js"]'`。脚本沿用原 spec 中的真实模型、训练集、超参和 runtime lock，只在传给控制器的副本里设置 `trainer.pipeline = "four-stage"`。原 spec 文件不被改写；模型节点需要部署包含此脚本的新版本，并按原流程更新运行时锁/bridge digest。它仍需要已配置的 Hitch、Slime 和 GPU 环境。
-
-控制器负责 preflight、设备安排和训练后独立评估，模型节点执行上述四阶段。脚本不自动发布模型。四阶段输入和结果保存在模型节点 job 的 `four-stage-loop/` 中；checkpoint 和原始证据继续使用原生存储。训练已提交但阶段返回值尚未保存时，会按原生提交记录及 batch 身份恢复，不重复更新模型。
-
-命令会打印实验和运行 ID。`--spec` 每次创建新实验；恢复时使用原 ID：
-
-```sh
-python examples/training-loop/dev_grpo.py --experiment EXP_ID --run RUN_ID --resume --config controller.json
-```
-
-省略 `--resume` 只跟踪现有运行。Ctrl+C 会请求控制器暂停。旧流程的部分运行不能直接切换成四阶段运行；继续用原命令恢复，或从已完成的模型建立新实验。
-
-这个 preset 复现原 dev 的固定任务与严格 GRPO，不接收 `stages` 中的 agent 覆盖。通用 `TrainingLoop` 仍支持任意普通 Python 或 agent 阶段；原有 agent 后端入口也保留。未设置 `trainer.pipeline` 的旧 spec 继续使用原执行路径。
+它选择默认四阶段源码，再交给控制器。原生运行继续使用 `EXP_ID RUN_ID` 查询/恢复，普通脚本使用 `SCRIPT_ID`。这是两种运行环境的作业身份；开发者的四阶段工厂合同相同。
 
 ## 改框架时再读这些入口
 
 | 修改内容 | 代码 / 测试 |
 | --- | --- |
 | 公开四阶段接口、循环与恢复 | [loop.py](../../python/gear_training/loop.py)、`python/tests/test_loop.py` |
+| 通用脚本控制器、节点 worker 和加载 | [script-controller.ts](../../src/training/script-controller.ts)、[script_job.py](../../python/gear_training/script_job.py)、[script_source.py](../../python/gear_training/script_source.py) |
 | 原 dev 四阶段 recipe 和运行入口 | [dev_grpo.py](../../python/gear_training/dev_grpo.py)、[启动脚本](../../examples/training-loop/dev_grpo.py) |
 | 无 agent 的完整用法 | [linear_cpu.py](../../examples/training-loop/linear_cpu.py) |
 | 现有后端持续运行命令 | [cli.ts](../../src/training/cli.ts)、`tests/unit/training/run.spec.ts` |

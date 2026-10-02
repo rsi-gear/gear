@@ -42,7 +42,9 @@ class DevGRPOTests(unittest.TestCase):
         for ref in (self.d.hf, self.d.state_ref, self.d.request["trainer"]["hyperparametersRef"]):
             self.d.store.put_bytes(old_store.read_bytes(ref), ref["mediaType"])
         request = self.f.request
-        request["trainer"].update({key: value for key, value in self.d.request["trainer"].items() if key != "placement"}, pipeline="four-stage")
+        request["trainer"].update({key: value for key, value in self.d.request["trainer"].items() if key != "placement"})
+        source = self.d.store.put_bytes(b"from gear_training.dev_grpo import build_loop\n", "application/octet-stream")
+        request["trainer"]["script"] = {"entrypoint": "recipe:build_loop", "sourceRef": self.d.store.put_json({"schemaVersion": 1, "kind": "training-script-source", "files": [{"path": "recipe.py", "contentRef": source}]})}
         request["trainer"]["runtimeLock"]["protocolDigest"] = self.f.ref["digest"]
         request["parentModel"].update(self.d.request["parentModel"])
         request["deployment"] = {"modelRuntime": {"nodeId": "cpu-fixture"}, "gpuScheduling": {"actorRollout": "colocated"}}
@@ -217,12 +219,36 @@ class DevGRPOTests(unittest.TestCase):
         self.assertEqual(self.d.created_components[-2:], ["exporter", "exporter-released"])
         self.assertEqual(self.stage("model-updater")["committedUpdate"], 1)
 
+    def test_frozen_custom_factory_has_uniform_config_and_native_capabilities(self):
+        code = b"""from gear_training.dev_grpo import build_loop as builtin, FrozenTaskSource
+class CustomTasks(FrozenTaskSource):
+    stage_id='custom-frozen-task-source:v1'
+    async def generate(self,ctx):
+        assert ctx.config.parameters == {'custom':True}
+        (self.runtime.job_dir/'custom-task-source').write_text('called')
+        return await super().generate(ctx)
+def build_loop(config,runtime):
+    assert set(config)=={'rounds','initialCheckpoint','parameters'}
+    assert config['parameters']=={'custom':True}
+    assert callable(runtime.hitch.collect) and callable(runtime.slime.update)
+    loop=builtin(config,runtime)
+    loop.stages=((loop.stages[0][0],CustomTasks(runtime),'generate'),*loop.stages[1:])
+    return loop
+"""
+        ref=self.d.store.put_bytes(code,'application/octet-stream')
+        self.d.request['trainer']['script']['sourceRef']=self.d.store.put_json({'schemaVersion':1,'kind':'training-script-source','files':[{'path':'recipe.py','contentRef':ref}]})
+        self.d.request['trainer']['scriptConfig']={'custom':True}
+        self.d.request['trainer']['updatesPerCandidate']=1
+        with self.cpu_runtime(): run(self.d.root)
+        self.assertTrue((self.d.root/'custom-task-source').exists())
+        self.assertEqual(self.stage('model-updater')['committedUpdate'],1)
+
     def test_wrong_pipeline_and_legacy_upgrade_are_rejected_before_cuda(self):
         self.d.request["trainer"]["pipeline"] = "misspelled"
         atomic_json(self.d.root / "request.json", self.d.request); atomic_json(self.d.root / "config.json", self.config)
-        with patch("gear_training.gpu_visibility.verify_visible_devices", side_effect=AssertionError("CUDA")), self.assertRaisesRegex(ContractError, "unknown trainer pipeline"):
+        with patch("gear_training.gpu_visibility.verify_visible_devices", side_effect=AssertionError("CUDA")), self.assertRaisesRegex(ContractError, "use a frozen trainer.script"):
             run(self.d.root)
-        self.d.request["trainer"]["pipeline"] = "four-stage"
+        del self.d.request["trainer"]["pipeline"]
         self.d.original_batch()
         atomic_json(self.d.root / "request.json", self.d.request)
         with patch("gear_training.gpu_visibility.verify_visible_devices", side_effect=AssertionError("CUDA")), self.assertRaisesRegex(ContractError, "legacy jobs cannot upgrade"):

@@ -46,6 +46,7 @@ export class NodeSlimeModelTrainer implements ModelTrainer {
   private async inputs(request: TrainingRequest): Promise<void> {
     // Explicit allowlist: task snapshots, environment/verifier contents and
     // dev/held-out artifacts stay with the controller/Harbor workers.
+    if (request.trainer.script) await syncContentGraph(this.transport, this.store, [request.trainer.script.sourceRef], 'upload')
     const reference = await this.store.readJson<ModelVersion>(request.referenceModelRef)
     const descriptors = [request.parentModelRef, request.referenceModelRef, request.trainer.hyperparametersRef, ...request.trainer.runtimeLock.probeEvidenceRefs]
     const files = [request.parentModel.hfSnapshotRef, reference.hfSnapshotRef]

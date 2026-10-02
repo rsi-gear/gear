@@ -46,7 +46,7 @@ class NodeService:
     def __init__(self, config):
         require(config.get("schemaVersion") == 2 and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", str(config.get("nodeId", ""))),
                 "invalid-node-config", "model node requires schemaVersion 2 and nodeId")
-        for key in ("nodeRoot", "storeRoot", "jobConfigPath"):
+        for key in ("nodeRoot", "storeRoot"):
             require(isinstance(config.get(key), str) and Path(config[key]).is_absolute(), "invalid-node-config", "model node requires absolute " + key)
         self.config = config
         self.root = Path(config["nodeRoot"]); self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -116,7 +116,7 @@ class NodeService:
             ref = payload["ref"]
             require(ref["uri"] == "cas:" + ref["digest"], "nonportable-content-ref", "node content must use CAS references")
             result = {"refs": dependency_refs(self.store.read_json(ref))}
-        elif operation.startswith(("training.", "inference.")):
+        elif operation.startswith(("training.", "inference.", "scripts.")):
             # Mutating calls already have durable job identities. Recording an
             # envelope intent prevents a request ID from acquiring new meaning;
             # replies are live so inspect/cancel never replay stale release data.
@@ -126,6 +126,11 @@ class NodeService:
                 previous = load(path)
                 require(previous is None or previous == identity, "node-request-conflict", "node request ID already identifies another operation")
                 if previous is None: atomic_json(path, identity)
+                if operation.startswith("scripts."):
+                    from .script_job import ScriptService
+                    action = operation.removeprefix("scripts.")
+                    require(action in ("control", "inspect"), "unknown-node-operation", "unknown script operation")
+                    return self.response(envelope, getattr(ScriptService(self.config), action)(payload))
                 if operation.startswith("inference."):
                     from .inference_process import ProcessService
                     service = ProcessService(self.config, self.identity)
@@ -133,6 +138,8 @@ class NodeService:
                     require(action in ("prepare", "start", "inspect", "attach", "stop", "recover"), "unknown-node-operation", "unknown inference operation")
                     return self.response(envelope, getattr(service, action)(payload))
                 from .job import JobService
+                require(isinstance(self.config.get("jobConfigPath"), str) and Path(self.config["jobConfigPath"]).is_absolute(),
+                        "missing-training-config", "native training requires an absolute jobConfigPath")
                 config = load(self.config["jobConfigPath"])
                 require(config and Path(config["storeRoot"]).resolve() == self.store.root, "node-store-drift", "job and transport must use the same node CAS")
                 config = {**config, "node": self.identity, "nodeRoot": str(self.root)}

@@ -13,7 +13,7 @@ class LauncherTests(unittest.TestCase):
         selected = prepare_spec(original)
         self.assertEqual(selected["initialModel"], original["initialModel"])
         self.assertEqual(selected["trainer"]["runtimeLock"], original["trainer"]["runtimeLock"])
-        self.assertEqual(selected["trainer"]["pipeline"], "four-stage")
+        self.assertEqual(selected["scriptSource"]["entrypoint"], "recipe:build_loop")
         self.assertNotIn("pipeline", original["trainer"])
         with self.assertRaises(ValueError):
             prepare_spec({**original, "stages": {"taskSource": {"runner": "custom"}}})
@@ -30,12 +30,12 @@ class LauncherTests(unittest.TestCase):
             with patch("gear_training.dev_launcher._follow", side_effect=follow):
                 self.assertEqual(main(["--spec", str(spec), "--config", str(Path(directory)/"config.json"),
                                        "--gear-command", '["node", "a path/cli.js"]']), 0)
-            self.assertEqual(observed[0]["trainer"]["pipeline"], "four-stage")
+            self.assertEqual(observed[0]["scriptSource"]["entrypoint"], "recipe:build_loop")
             self.assertEqual(json.loads(spec.read_text())["trainer"], {})
 
     def test_resume_checks_frozen_recipe_then_resumes_existing_ids(self):
         with patch("gear_training.dev_launcher.subprocess.run") as run, patch("gear_training.dev_launcher._follow", return_value=0) as follow:
-            run.return_value.stdout = json.dumps({"spec": {"trainer": {"pipeline": "four-stage"}}})
+            run.return_value.stdout = json.dumps({"spec": {"trainer": {"script": {"entrypoint": "recipe:build_loop"}}}})
             main(["--experiment", "exp_existing", "--run", "run_existing", "--resume", "--config", "controller.json"])
             self.assertEqual(run.call_args_list[0].args[0][1:4], ["training", "status", "exp_existing"])
             self.assertEqual(run.call_args_list[1].args[0][1:5], ["training", "resume", "exp_existing", "run_existing"])
