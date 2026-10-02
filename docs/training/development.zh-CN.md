@@ -179,6 +179,8 @@ gear-refine training run SCRIPT_ID --config controller.json
 
 ### 使用 Hitch、Slime 基础组件
 
+要把原 GRPO 链路换成 Terminal-Bench 2.1，可直接使用 [TB 2.1 完整示例](../../examples/training-loop/terminal-bench-2.1/README.md)：准备任务分区和真实环境绑定后生成 spec，再用同一个 `training run` 启动。
+
 沿用原来的模型、数据、GPU 和 runtime lock 配置，在 native spec 顶层增加：
 
 ```json
