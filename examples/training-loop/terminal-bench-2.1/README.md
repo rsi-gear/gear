@@ -62,10 +62,10 @@ python examples/training-loop/terminal-bench-2.1/prepare.py \
   --bindings /your/config/bindings.json \
   --output /your/runs/tb21-grpo
 
-node lib/cli.js training validate /your/runs/tb21-grpo/spec.json \
+python -m gear_training validate /your/runs/tb21-grpo/spec.json \
   --config /your/config/controller.json
 
-node lib/cli.js training run /your/runs/tb21-grpo/spec.json \
+python -m gear_training run /your/runs/tb21-grpo/spec.json \
   --config /your/config/controller.json
 ```
 
@@ -80,8 +80,7 @@ node lib/cli.js training run /your/runs/tb21-grpo/spec.json \
 启动后记下输出的 `EXP_ID` 和 `RUN_ID`。Ctrl+C 请求暂停。恢复使用原 ID：
 
 ```sh
-node lib/cli.js training resume EXP_ID RUN_ID --config /your/config/controller.json
-node lib/cli.js training run EXP_ID RUN_ID --config /your/config/controller.json
+python -m gear_training resume EXP_ID RUN_ID --config /your/config/controller.json
 ```
 
 `run spec.json` 会创建新实验，不能用它代替恢复。只查看状态可用 `training status EXP_ID RUN_ID`。本示例没有实际执行 GPU 训练或 TB 容器任务；CPU 检查不构成该数据集的 GPU/Harbor 兼容性认证。

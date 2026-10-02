@@ -109,9 +109,9 @@ gear-refine training preflight "$(cat experiment-id.txt)" "$(cat run-id.txt)" --
 
 ```sh
 gear-refine training advance "$(cat experiment-id.txt)" "$(cat run-id.txt)" --config controller.json
-gear-refine training status "$(cat experiment-id.txt)" "$(cat run-id.txt)" --config controller.json
-gear-refine training pause "$(cat experiment-id.txt)" "$(cat run-id.txt)" --config controller.json
-gear-refine training resume "$(cat experiment-id.txt)" "$(cat run-id.txt)" --config controller.json
+python -m gear_training status "$(cat experiment-id.txt)" "$(cat run-id.txt)" --config controller.json
+python -m gear_training pause "$(cat experiment-id.txt)" "$(cat run-id.txt)" --config controller.json
+python -m gear_training resume "$(cat experiment-id.txt)" "$(cat run-id.txt)" --config controller.json
 ```
 
 按现有 controller 工作流反复 `advance` 直到 terminal。SFT 使用 pinned Slime 的 `debug_train_only` 进行 actor-only placement：训练 GPU 全部分配给 actor，rollout GPU=0；CPU data manager 只把 sealed offline examples 转成 Slime 的训练输入，不创建 SGLang engine、Hitch episode、policy lease、权重同步或 actor/rollout offload cycle。v2 `gpuScheduling.actorRollout` 和旧 `rollout` 字段为兼容现有部署/评估合同保留，对 SFT 训练分组和采样不生效。`rolloutBatchSize` 在 SFT 表示每 update 的 example 数，B 必须能被 global batch size 整除，global batch size 必须能被 DP size 整除，不作 B×G 校验。`fixedHarness`、verifier、dev/held-out 和 evaluation policy 继续用于独立评估。

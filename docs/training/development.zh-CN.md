@@ -130,7 +130,7 @@ def build_loop(config, runtime):
 [linear-script.json](../../examples/training-loop/linear-script.json) 与 [linear.py](../../examples/training-loop/recipes/linear.py) 是可运行的 CPU 示例。使用已有 v2 controller 配置即可：
 
 ```sh
-gear-refine training run examples/training-loop/linear-script.json --config controller.json
+python -m gear_training run examples/training-loop/linear-script.json --config controller.json
 ```
 
 普通脚本不要求 GRPO 配置、native 更新记录或训练后评估；其最终结果就是四阶段循环返回的 checkpoint。`source` 相对 spec 文件所在目录解析。四个类可以同步或异步，也可以在其中调用任意 agent runner。
@@ -167,10 +167,10 @@ gear-refine training run examples/training-loop/linear-script.json --config cont
 命令打印 `script_…` 运行 ID。后续命令不再读取源目录：
 
 ```sh
-gear-refine training status SCRIPT_ID --config controller.json
-gear-refine training pause SCRIPT_ID --config controller.json
-gear-refine training resume SCRIPT_ID --config controller.json
-gear-refine training run SCRIPT_ID --config controller.json
+python -m gear_training status SCRIPT_ID --config controller.json
+python -m gear_training pause SCRIPT_ID --config controller.json
+python -m gear_training resume SCRIPT_ID --config controller.json
+python -m gear_training run SCRIPT_ID --config controller.json
 ```
 
 `resume` 显式继续并跟踪运行；`run SCRIPT_ID` 重新跟踪已有运行，不自动恢复已暂停/失败的作业。`run SPEC.json` 每次创建新运行。Ctrl+C 请求协作式暂停：已正常返回的阶段会先保存结果，再在边界停止；长阶段可调用 `runtime.check_cancel()`。不主动检查的阶段会继续到返回。进度包含轮次和阶段；worker 的 stdout/stderr 保存在节点的 `script-jobs/SCRIPT_ID/worker.log`。
@@ -195,7 +195,7 @@ gear-refine training run SCRIPT_ID --config controller.json
 这是合并到完整训练 spec 的片段。`directory` 相对 spec 路径；[hitch_slime.py](../../examples/training-loop/recipes/hitch_slime.py) 给出工厂实现。执行仍是一条命令：
 
 ```sh
-gear-refine training run native-spec.json --config controller.json
+python -m gear_training run native-spec.json --config controller.json
 ```
 
 控制器把 `scriptSource` 转成冻结的 `trainer.script`，随训练请求上传；节点动态加载该脚本。自定义参数放在 `trainer.scriptConfig`，工厂和阶段通过 `config.parameters` / `ctx.config.parameters` 读取。轮数和初始 checkpoint 来自 native 训练配置及模型状态。已封存代码引用也可直接放在 `trainer.script`；不要同时提供这两种来源。
@@ -208,13 +208,15 @@ Hitch/Slime 的设备安排、权重同步、完整 checkpoint、任务执行桥
 
 使用内置 updater 的脚本须通过 Slime 提交完整 checkpoint；更换算法或离线数据合同必须建立新的 optimizer lineage。完全不同的数据合同或优化器可以使用普通脚本运行入口。现有 `stages` agent 配置不与 `trainer.script` 同时使用，也不用于离线 SFT；agent 调用可写在自定义阶段中。
 
+所有四阶段运行统一使用 `python -m gear_training`。源码安装会自动调用当前 checkout 的 `lib/cli.js`（先执行 `npm run build`）；其他安装使用 PATH 中的 `gear-refine`，需要时可用 `--gear-command` 指定。GRPO、SFT、自定义 native 脚本和普通 CPU 脚本使用相同入口。
+
 原 dev 的默认脚本是 [recipe.py](../../python/gear_training/recipes/dev_script/recipe.py)，与自定义脚本走相同加载接口；不再使用 `trainer.pipeline` 开关。便利命令保留：
 
 ```sh
-python -m gear_training.dev_grpo --spec dev-spec.json --config controller.json
+python -m gear_training run dev-spec.json --config controller.json
 ```
 
-它选择默认四阶段源码，再交给控制器；默认工厂根据 `trainer.recipe` 组合在线或 SFT 阶段。原生运行继续使用 `EXP_ID RUN_ID` 查询/恢复，普通脚本使用 `SCRIPT_ID`。这是两种运行环境的作业身份；开发者的四阶段工厂合同相同。
+新建时保留 spec 已指定的 `scriptSource` / `trainer.script`；仅在 native spec 没有指定脚本时选择默认工厂，根据 `trainer.recipe` 组合在线或 SFT 阶段。相对源码路径以原 spec 所在目录为基准。`resume EXP_ID RUN_ID` 恢复并持续跟踪；`run EXP_ID RUN_ID` 仅跟踪已有运行。旧 `python -m gear_training.dev_grpo` 参数形式仍转发到同一入口，不再拒绝自定义脚本。原生运行继续使用 `EXP_ID RUN_ID` 查询/恢复，普通脚本使用 `SCRIPT_ID`。这是两种运行环境的作业身份；开发者的四阶段工厂合同相同。
 
 ## 改框架时再读这些入口
 

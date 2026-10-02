@@ -2,7 +2,7 @@
 
 Gear 的模型训练独立于 harness 进化状态，通过固定 harness 和数据集执行版本化 Slime RL 或离线 SFT 更新，再用不可变 HF 导出进行独立评估。新部署从 [v2 controller 配置](controller-v2.zh-CN.md) 开始；下文同时说明 v1 配置和通用训练合同。
 
-开发者编写自己的四阶段训练，从 [TrainingLoop 开发指南](development.zh-CN.md) 开始；它支持普通 Python 实现，不要求 agent；控制器也可加载自定义 `build_loop(config, runtime)` 脚本，Hitch/Slime 作为内置组件继续复用。已有 Slime 后端可用 `gear-refine training run spec.json --config controller.json` 创建并持续运行，或 `run EXP_ID RUN_ID` 跟踪已有运行。 原 dev 固定任务 GRPO 流程的四阶段脚本是 [dev_grpo.py](../../examples/training-loop/dev_grpo.py)，运行和恢复方法见开发指南。
+开发者编写自己的四阶段训练，从 [TrainingLoop 开发指南](development.zh-CN.md) 开始；它支持普通 Python 实现，不要求 agent；控制器也可加载自定义 `build_loop(config, runtime)` 脚本，Hitch/Slime 作为内置组件继续复用。已有 Slime 后端可用 `python -m gear_training run spec.json --config controller.json` 创建并持续运行，或 `run EXP_ID RUN_ID` 跟踪已有运行。 原 dev 固定任务 GRPO 流程的四阶段脚本是 [dev_grpo.py](../../examples/training-loop/dev_grpo.py)，运行和恢复方法见开发指南。
 
 目前实机验收覆盖本地 Gear / Hitch / Harbor Docker 与远程 RTX 5090 单卡上的 Qwen2.5-1.5B 训练、恢复及推理。远程 Docker / Harbor 和双卡尚未验收。独立评估 reward=0，不代表质量提升或晋升。认证范围及证据见文末；`pending-gpu` lock 不能提交正式训练。
 
@@ -154,9 +154,9 @@ gear-refine training init spec.json --config controller.json
 gear-refine training admit EXP_ID --config controller.json
 gear-refine training preflight EXP_ID RUN_ID --config controller.json
 gear-refine training advance EXP_ID RUN_ID --config controller.json
-gear-refine training status EXP_ID RUN_ID --config controller.json
-gear-refine training pause EXP_ID RUN_ID --config controller.json
-gear-refine training resume EXP_ID RUN_ID --config controller.json
+python -m gear_training status EXP_ID RUN_ID --config controller.json
+python -m gear_training pause EXP_ID RUN_ID --config controller.json
+python -m gear_training resume EXP_ID RUN_ID --config controller.json
 ```
 
 每步训练保存 actor、optimizer、scheduler/RNG 和数据 cursor，再导出 HF，再用 UpdateCommitManifest 原子登记 batch 消费。崩溃在完整 checkpoint 之前时丢弃未提交内存更新；有 sealed batch 时只在恢复到相同 pre-update 权重后重放。完整 checkpoint 后导出失败保留 pending-update，恢复后只重导出，不执行额外 optimizer step。旧进程身份（PID 与创建时间）、旧 Hitch submit key、run 终态、receipt 和租约都需要协调完成，新 incarnation 才能开始。
