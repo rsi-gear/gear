@@ -1,0 +1,46 @@
+{
+  "kind": "teacher-assisted-training-smoke",
+  "requestDigest": "sha256:a5283e5ec79089b618c2aea22ddc5351bad720bb49b580d775134d2f2720fc6b",
+  "entrypoint": "tb21:build_loop",
+  "trainerRecipe": "agent-grpo-v1",
+  "sampling": {
+    "maxContextTokens": 32768,
+    "maxNewTokens": 16384,
+    "repetitionPenalty": 1,
+    "temperature": 1,
+    "topK": -1,
+    "topP": 1
+  },
+  "zeroVarianceGroup": "keep",
+  "budgets": {
+    "maxEpisodeSteps": 80,
+    "maxGroupResamples": 8,
+    "maxRolloutTokens": 163840,
+    "totalGpuSeconds": 3000
+  },
+  "chatTemplateKwargs": {
+    "enable_thinking": true
+  },
+  "parentModelRef": {
+    "digest": "sha256:84638d33673ab96e8b04db0e8c7ce8e3accdc3653fb6a54b863b8306f516b2c4",
+    "mediaType": "application/json",
+    "uri": "cas:sha256:84638d33673ab96e8b04db0e8c7ce8e3accdc3653fb6a54b863b8306f516b2c4"
+  },
+  "dataset": {
+    "benchmark": {
+      "benchmark_id": "local:openssl-selfsigned-cert",
+      "benchmark_revision": "sha256:46d22aa254e5eb1a1917b380a7d6bec27665f01687b51364e95a7df799c78b38"
+    },
+    "environment": {
+      "hitchEnvironmentIdentity": "sha256:a3346c52927986fd2013f8d0ca843f4b33f32d7cdca5693d90bdc87369a2aaf7",
+      "taskDigest": "sha256:bb55c859fc02207ae38fe04f90a08b5d59bd31a7f87f8263fecbaf5789ea7a6a",
+      "verifierIdentity": "sha256:b6d49d5848c670ac70819cebbe5941e14e08b7a988ede7480194eb79f659fe1a"
+    },
+    "kind": "teacher-assisted-original-verifier-smoke",
+    "observed": {
+      "image": "alexgshaw/openssl-selfsigned-cert:20251031",
+      "initialWorkspaceDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "workspaceEntries": []
+    }
+  }
+}

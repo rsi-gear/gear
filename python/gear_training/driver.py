@@ -60,6 +60,10 @@ def build_argv(request, hyperparameters, paths, start_update):
              "--advantage-estimator": estimator(request), "--rollout-temperature": 1, "--rollout-top-p": 1, "--rollout-top-k": -1,
              "--rollout-max-response-len": r["sampling"]["maxNewTokens"], "--train-backend": "megatron", **resources}
     fixed["--loss-type"] = "sft_loss" if offline else "policy_loss"
+    offload_logprob = hyperparameters.get("offloadLogprobBackward", False)
+    require(type(offload_logprob) is bool, "invalid-hyperparameters", "offloadLogprobBackward must be a boolean")
+    if offload_logprob:
+        fixed["--custom-megatron-before-log-prob-hook-path"] = "gear_training.slime_runtime.offload_logprob_backward"
     extra = []
     if offline:
         fixed["--kl-coef"] = 0
@@ -73,10 +77,13 @@ def build_argv(request, hyperparameters, paths, start_update):
     return [*args, *memory, *extra, *([] if offline else ["--use-rollout-logprobs"]), *(item for key, value in fixed.items() for item in (key, str(value)))]
 
 
-def export_committed_actor(actor, store, ledger, *, export_root, **checkpoint_args):
+def export_committed_actor(actor, store, ledger, *, export_root, parent_hf_directory=None, mtp_num_layers=0, **checkpoint_args):
     # Never reuse a partial HF directory left by an interrupted shard writer.
     destination = Path(export_root) / (str(checkpoint_args["committed_update"]) + "-" + secrets.token_hex(12))
     actor.export_hf(str(destination))
+    if parent_hf_directory is not None:
+        from .qwen35_export import preserve_frozen_auxiliary
+        preserve_frozen_auxiliary(parent_hf_directory, destination, mtp_num_layers=mtp_num_layers)
     return commit_checkpoint(store, ledger, hf_directory=destination, **checkpoint_args)
 
 
@@ -186,7 +193,7 @@ class SlimeRoundRuntime:
         atomic_json(self.job_dir / "progress.json", {"phase": "training", "committedUpdate": self.committed, "batchRef": batch["batchRef"]})
         from .stages import SlimeModelUpdater
         SlimeModelUpdater(self.memory).update(rollout_id, rollout_data)
-        if self.args.rollout_global_dataset: self.ray.get(self.manager.save.remote(rollout_id))
+        if getattr(self.args, "rollout_global_dataset", False): self.ray.get(self.manager.save.remote(rollout_id))
         from .export import seal_directory
         trainer_ref = seal_directory(self.store, self.paths["save"])
         data_cursor = {"committedUpdate": rollout_id + 1, "batchRef": batch["batchRef"], "groupResamples": self.ledger.usage()["groupResamples"]}
@@ -197,7 +204,7 @@ class SlimeRoundRuntime:
         atomic_json(self.job_dir / "pending-update.json", {"committedUpdate": rollout_id + 1, "trainerStateRef": trainer_ref,
             "batchRef": batch["batchRef"], "dataCursor": data_cursor, "compatibilityDigest": compatibility_digest(self.request)})
         atomic_json(self.job_dir / "progress.json", {"phase": "exporting", "committedUpdate": self.committed, "batchRef": batch["batchRef"]})
-        checkpoint_ref, commit_ref = export_committed_actor(self.memory, self.store, self.ledger, export_root=self.paths["export"], request=self.request, committed_update=rollout_id + 1,
+        checkpoint_ref, commit_ref = export_committed_actor(self.memory, self.store, self.ledger, export_root=self.paths["export"], parent_hf_directory=self.paths["hf"], mtp_num_layers=getattr(self.args, "mtp_num_layers", 0), request=self.request, committed_update=rollout_id + 1,
             trainer_directory=self.paths["save"], trainer_state_ref=trainer_ref, data_cursor=data_cursor, rng_state_ref=trainer_ref,
             compatibility_digest=compatibility_digest(self.request), batch_ref=batch["batchRef"], previous_commit=self.prior_commits[-1] if self.prior_commits else None)
         self.prior_commits.append(commit_ref); self.committed = rollout_id + 1; self.checkpoint_ref = checkpoint_ref
@@ -327,7 +334,8 @@ def run(job_dir):
     sys.argv = ["gear-slime", *argv]
     from slime.utils.arguments import parse_args
     from slime.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
-    from slime.utils.logging_utils import configure_logger, init_tracking, finish_tracking
+    from gear_training.slime_runtime import logging_api
+    configure_logger, init_tracking, finish_tracking = logging_api()
     import ray
     args = parse_args()
     from .recipes.agent_grpo import validate_layout
@@ -353,7 +361,7 @@ def run(job_dir):
         if pending and pending["committedUpdate"] > start:
             from .checkpoint_export import checkpoint_exporter
             with checkpoint_exporter(args, pgs, pending["committedUpdate"]) as exporter:
-                checkpoint_ref, commit_ref = export_committed_actor(exporter, store, ledger, export_root=paths["export"], request=request, committed_update=start + 1,
+                checkpoint_ref, commit_ref = export_committed_actor(exporter, store, ledger, export_root=paths["export"], parent_hf_directory=paths["hf"], mtp_num_layers=getattr(args, "mtp_num_layers", 0), request=request, committed_update=start + 1,
                     trainer_directory=load, trainer_state_ref=pending["trainerStateRef"], data_cursor=pending["dataCursor"],
                     rng_state_ref=pending["trainerStateRef"], compatibility_digest=compatibility_digest(request), batch_ref=pending["batchRef"],
                     previous_commit=prior_commits[-1] if prior_commits else None)

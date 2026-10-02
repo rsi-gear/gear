@@ -52,7 +52,10 @@ async def collect_rollout(args, rollout_id, job_dir, *, tasks=None, raw_only=Fal
     require(lease["samplingDigest"] == digest_json(sampling), "sampling-policy-drift", "policy lease must identify the exact native sampling parameters")
     ledger.open_lease(lease, runtime["replicas"])
     tokenizer = AutoTokenizer.from_pretrained(args.hf_checkpoint, trust_remote_code=False, local_files_only=True)
-    render, parse = slime_protocol(tokenizer, config.get("toolParser"), config.get("reasoningParser"))
+    from .preflight import generation_template_kwargs
+    template_options = generation_template_kwargs(config)
+    render, parse = slime_protocol(tokenizer, config.get("toolParser"), config.get("reasoningParser"),
+                                   **({"chat_template_kwargs": template_options} if template_options else {}))
     native = NativeSGLang(runtime["engineUrl"], runtime["weightVersion"])
     gateway = ExactGateway(store, ledger, native, lease["runtimeInstanceId"], parent["tokenizerDigest"], parent["chatTemplateDigest"], render, parse)
     runner = web.AppRunner(gateway.application()); await runner.setup()

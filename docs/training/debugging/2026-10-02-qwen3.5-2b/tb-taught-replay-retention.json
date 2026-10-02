@@ -1,0 +1,32 @@
+{
+  "kind": "training-only-replay-retention",
+  "handle": {
+    "jobId": "job_f016830c10b9e458c7076ae1a95b6f45",
+    "provider": "slime",
+    "requestDigest": "sha256:a5283e5ec79089b618c2aea22ddc5351bad720bb49b580d775134d2f2720fc6b",
+    "schemaVersion": 1
+  },
+  "node": {
+    "generation": "c027907eb7714841aca283aafd4680df",
+    "nodeId": "vast-tb-qwen35"
+  },
+  "batchRef": {
+    "digest": "sha256:61419d1f442baadd3b8db32f672aedd566311859240894e74d8cf712bf8e9a67",
+    "mediaType": "application/json",
+    "uri": "cas:sha256:61419d1f442baadd3b8db32f672aedd566311859240894e74d8cf712bf8e9a67"
+  },
+  "rolloutId": 0,
+  "parentModelRef": {
+    "digest": "sha256:84638d33673ab96e8b04db0e8c7ce8e3accdc3653fb6a54b863b8306f516b2c4",
+    "mediaType": "application/json",
+    "uri": "cas:sha256:84638d33673ab96e8b04db0e8c7ce8e3accdc3653fb6a54b863b8306f516b2c4"
+  },
+  "preUpdateHfRef": {
+    "digest": "sha256:1306768fb6e2bc1e7aef0e51af35a5e89650052e3188a1178b9ff846f0c5efe7",
+    "mediaType": "application/json",
+    "uri": "cas:sha256:1306768fb6e2bc1e7aef0e51af35a5e89650052e3188a1178b9ff846f0c5efe7"
+  },
+  "samplingRequired": false,
+  "replayRequirement": "Reuse the sealed native batch with its exact pre-update actor weights; preserve original token IDs, behavior logprobs, tool masks and verifier feedback.",
+  "requestDigest": "sha256:a5283e5ec79089b618c2aea22ddc5351bad720bb49b580d775134d2f2720fc6b"
+}

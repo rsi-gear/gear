@@ -49,7 +49,7 @@ hitch runs inspect RUN_ID --json
 | `environment.taskDigest` | `record.context.task_digest` |
 | `environment.verifierIdentity` | `record.context.verifier_identity` |
 
-任务 ID 需与 `record.context.task_id` 一致。不要用 Gear CAS 的 task snapshot digest 替代 Hitch `task_digest`，也不要复制其他任务的值。训练时会重新与实际 canonical 证据比对；准备阶段只检查格式。若还没有可信环境身份，先按现有 Hitch 基线/任务规划流程获得它们。
+任务 ID 需与 `record.context.task_id` 一致。不要用 Gear CAS 的 task snapshot digest 替代 Hitch `task_digest`，也不要复制其他任务的值。训练时会重新与实际 canonical 证据比对；准备阶段只检查格式。若还没有可信环境身份，先按现有 Hitch 基线/任务规划流程获得它们。 每个训练任务封存为仅含一个任务子目录的数据集，路径结构为 `TASK_ID/TASK_ID/task.toml`；规划或基线也须使用这个数据集根目录，保证本地 benchmark revision 一致。
 
 ## 4. 准备数据并启动
 

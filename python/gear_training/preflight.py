@@ -20,12 +20,22 @@ def bridge_digest():
     return digest_json([{"path": p.relative_to(root).as_posix(), "digest": digest_bytes(p.read_bytes())} for p in sorted(root.rglob("*.py"))])
 
 
+def generation_template_kwargs(config):
+    options = config.get("chatTemplateKwargs", {})
+    require(isinstance(options, dict) and set(options) <= {"enable_thinking"}
+            and all(type(value) is bool for value in options.values()),
+            "invalid-chat-template-options", "chatTemplateKwargs supports only boolean enable_thinking")
+    return dict(options)
+
+
 def generation_protocol_digest(config):
+    options = generation_template_kwargs(config)
     return digest_json({"schemaVersion": 1, "api": "chat-completions", "capture": "exact-policy-tokens-v1",
         "adapter": "slime-openai-" + SLIME_COMMIT, "native": "sglang.generate.input_ids.output_token_logprobs.v1",
         "history": "native-token-prefix-tool-results-v1",
         "wireTools": "all-sequential-v1",
-        "toolParser": config.get("toolParser"), "reasoningParser": config.get("reasoningParser")})
+        "toolParser": config.get("toolParser"), "reasoningParser": config.get("reasoningParser"),
+        **({"chatTemplateKwargs": options} if options else {})})
 
 
 def gpu_processes(devices):

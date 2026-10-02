@@ -1,0 +1,83 @@
+{
+  "kind": "gear-slime-actor-diagnostic",
+  "validated": false,
+  "synthetic_rewards": true,
+  "status": "passed",
+  "phases": [
+    {
+      "phase": "starting",
+      "elapsed_seconds": 0.072,
+      "gpu_memory_mib": "4"
+    },
+    {
+      "phase": "rollout-created",
+      "elapsed_seconds": 132.961,
+      "gpu_memory_mib": "782"
+    },
+    {
+      "phase": "actor-created",
+      "elapsed_seconds": 191.521,
+      "gpu_memory_mib": "1540"
+    },
+    {
+      "phase": "generated",
+      "elapsed_seconds": 197.017,
+      "gpu_memory_mib": "5934",
+      "weight_versions": [
+        "1"
+      ]
+    },
+    {
+      "phase": "trained-and-saved",
+      "elapsed_seconds": 387.894,
+      "gpu_memory_mib": "1588"
+    },
+    {
+      "phase": "exported",
+      "elapsed_seconds": 398.521,
+      "gpu_memory_mib": "1588",
+      "changed_tensor": {
+        "name": "model.language_model.layers.0.input_layernorm.weight",
+        "changed_elements": 37,
+        "max_abs_delta": 1.52587890625e-05
+      }
+    },
+    {
+      "phase": "updated-policy-generated",
+      "elapsed_seconds": 399.542,
+      "gpu_memory_mib": "1588",
+      "weight_versions": [
+        "2"
+      ]
+    }
+  ],
+  "ray_directory": "/tmp/gear-actor-1c69b16db2",
+  "checkpoint_files": [
+    {
+      "path": "iter_0000000/.metadata",
+      "bytes": 226486
+    },
+    {
+      "path": "iter_0000000/__0_0.distcp",
+      "bytes": 13173883213
+    },
+    {
+      "path": "iter_0000000/__0_1.distcp",
+      "bytes": 13173817816
+    },
+    {
+      "path": "iter_0000000/common.pt",
+      "bytes": 53095
+    },
+    {
+      "path": "iter_0000000/metadata.json",
+      "bytes": 119
+    },
+    {
+      "path": "latest_checkpointed_iteration.txt",
+      "bytes": 1
+    }
+  ],
+  "elapsed_seconds": 401.131,
+  "script_sha256": "463508066ad2308727a6a97592f331cddeacba9c0b1ca5d304ca16aec854e223"
+}

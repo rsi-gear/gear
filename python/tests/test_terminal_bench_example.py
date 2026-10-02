@@ -48,7 +48,10 @@ class TerminalBenchExampleTests(unittest.TestCase):
             destination = dataset_destination(manifest, self.root / 'materialized')
             materialize(self.store, task['taskRef'], destination)
             self.assertEqual(destination.name, names[0])
-            self.assertEqual((destination / 'tests/test.sh').stat().st_mode & 0o777, 0o755)
+            # Harbor discovers child tasks, rather than a task at the dataset root.
+            discovered = [p.name for p in destination.iterdir() if p.is_dir() and (p / 'task.toml').is_file()]
+            self.assertEqual(discovered, names)
+            self.assertEqual((destination / names[0] / 'tests/test.sh').stat().st_mode & 0o777, 0o755)
         source = self.store.read_json(spec['trainer']['script']['sourceRef'])
         self.assertEqual(source['files'][0]['path'], 'tb21.py')
         self.assertIn(b'PolicyDatasetBuilder', self.store.read_bytes(source['files'][0]['contentRef']))

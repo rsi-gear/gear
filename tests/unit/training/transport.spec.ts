@@ -81,6 +81,36 @@ describe('model-node subprocess transport and streaming CAS', () => {
     expect((await controller.readBytes(tensor)).toString()).toBe('weights')
     await syncContentGraph(transport, controller, [checkpoint], 'download')
   })
+  it('bounds concurrent graph transfers and deduplicates shared descendants', async () => {
+    const leaf = await destination.putBytes(Buffer.from('shared leaf'), 'application/octet-stream')
+    const roots = await Promise.all(Array.from({ length: 9 }, (_, id) => destination.putJson({ id, child: leaf })))
+    let active = 0, peak = 0
+    const download = vi.spyOn(transport, 'download').mockImplementation(async (target, ref) => {
+      active++; peak = Math.max(peak, active)
+      try {
+        await new Promise(resolve => setTimeout(resolve, 5))
+        expect(await target.putBytes(await destination.readBytes(ref), ref.mediaType)).toEqual(ref)
+      } finally { active-- }
+    })
+    await syncContentGraph(transport, controller, [...roots, roots[0]!], 'download')
+    expect(peak).toBe(4); expect(active).toBe(0)
+    expect(download).toHaveBeenCalledTimes(10)
+    expect(download.mock.calls.filter(([, ref]) => ref.digest === leaf.digest)).toHaveLength(1)
+    expect((await controller.readBytes(leaf)).toString()).toBe('shared leaf')
+  })
+  it('settles in-flight graph transfers before reporting a failed object', async () => {
+    const roots = await Promise.all(Array.from({ length: 4 }, (_, id) => destination.putJson({ id })))
+    let active = 0, completed = 0
+    vi.spyOn(transport, 'download').mockImplementation(async (_target, ref) => {
+      active++
+      try {
+        if (ref.digest === roots[0]!.digest) throw new Error('broken object')
+        await new Promise(resolve => setTimeout(resolve, 10)); completed++
+      } finally { active-- }
+    })
+    await expect(syncContentGraph(transport, controller, roots, 'download')).rejects.toThrow('broken object')
+    expect(active).toBe(0); expect(completed).toBe(3)
+  })
   it('rejects truncated streams and stale generations before publishing anything', async () => {
     const ref = await destination.putBytes(Buffer.from('committed'), 'application/octet-stream')
     async function* interrupted() { yield Buffer.from('comm'); throw new Error('connection lost') }

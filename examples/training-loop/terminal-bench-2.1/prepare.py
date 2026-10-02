@@ -62,8 +62,13 @@ def prepare(base, tasks, splits, bindings, store):
             for name in splits[partition]:
                 destination = root / name
                 shutil.copytree(tasks / name, destination, symlinks=True)
+                # Harbor consumes a dataset root containing task directories.
+                # Keep its basename stable for Hitch's local benchmark identity.
+                single = Path(temporary) / "single-tasks" / name
+                single.mkdir(parents=True)
+                shutil.copytree(destination, single / name, symlinks=True)
                 rows.append({"id": name, "family": bindings[name]["family"],
-                             "taskRef": seal_directory(store, destination, dataset=True),
+                             "taskRef": seal_directory(store, single, dataset=True),
                              "environmentRef": store.put_json(bindings[name]["environment"])})
             spec["datasets"][partition] = {"snapshotRef": seal_directory(store, root, dataset=True),
                                             "tasks": rows, "exactDataAuthorized": partition == "train"}

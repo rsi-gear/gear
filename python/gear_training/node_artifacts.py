@@ -8,6 +8,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .model_config import language_metadata
 from .content import atomic_json, digest_bytes, digest_file, digest_json, require, sync_dir
 
 MAX_METADATA = 16 * 1024 * 1024
@@ -187,8 +188,7 @@ def hf_manifest(store, payload):
     projected = sorted(({key: item[key] for key in ("path", "size", "sha256")} for item in files), key=lambda item: item["path"])
     token_files = [{"path": item["path"], "sha256": item["sha256"]} for item in projected if re.search(r"(?:^|/)(?:tokenizer|special_tokens_map|added_tokens|tokenizer_config)(?:\.|$)", item["path"])]
     architecture = (config.get("architectures") or [None])[0]
-    dtype = config.get("torch_dtype", config.get("dtype"))
-    context = config.get("max_position_embeddings")
+    dtype, context = language_metadata(config)
     require(isinstance(architecture, str) and isinstance(dtype, str) and isinstance(config.get("model_type"), str), "invalid-model-config", "model semantics are missing")
     body = {"format": "hf-safetensors", "files": projected, "architecture": architecture, "model_type": config["model_type"],
             "dtype": dtype, "quantization": None, "context_tokens": context if type(context) is int and context > 0 else None,

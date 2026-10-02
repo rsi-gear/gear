@@ -1,0 +1,19 @@
+{
+  "kind": "independent-transformers-cpu-parity",
+  "model": "Qwen/Qwen3.5-2B",
+  "modelDirectory": "/root/gear-qwen35-debug/Qwen3.5-2B",
+  "receiptId": "receipt_f33cb352031c9bde767b2a5b6bc9e00d",
+  "policyVersion": "runtime_d83044175a5527a3aea7b92f43053d81/update-0/weight-1",
+  "chatTemplateKwargs": {
+    "enable_thinking": true
+  },
+  "inputTokens": 428,
+  "comparisonTokens": 32,
+  "meanAbsoluteDifference": 0.02673288807272911,
+  "maxAbsoluteDifference": 0.20646166801452637,
+  "nativeMeanLogprob": -0.9913102473496167,
+  "transformersMeanLogprob": -0.9952922463417053,
+  "cpuImplementation": "transformers torch gated-delta reference fallback",
+  "reward": null,
+  "durationSeconds": 2.0172348022460938
+}

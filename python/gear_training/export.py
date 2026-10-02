@@ -8,6 +8,7 @@ import shutil
 import struct
 import uuid
 from pathlib import Path
+from .model_config import language_metadata
 from .content import require, digest_bytes, digest_json, digest_file, sync_dir
 
 
@@ -57,6 +58,10 @@ def seal_directory(store, directory, serving=False, verify_finite=False, dataset
     require(not (dataset and serving), "invalid-snapshot-kind", "dataset and model snapshots are distinct")
     files, directories, tensors, weights = [], [], {}, []
     for path in sorted(root.rglob("*")):
+        # local_dir downloads create volatile lock/metadata files here. They
+        # are not serving inputs, and must not change tokenizer/model identity.
+        if serving and path.relative_to(root).parts[:2] == (".cache", "huggingface"):
+            continue
         require(not path.is_symlink(), "export-symlink", "sealed exports cannot contain symlinks")
         if path.is_dir():
             if dataset: directories.append({"path": path.relative_to(root).as_posix(), "mode": path.stat().st_mode & 0o7777})
@@ -99,7 +104,7 @@ def seal_directory(store, directory, serving=False, verify_finite=False, dataset
         template = (root / "chat_template.jinja").read_text() if (root / "chat_template.jinja").exists() else token_config.get("chat_template")
         require(isinstance(template, str) and template, "missing-chat-template", "one explicit chat template is required")
         architecture = (config.get("architectures") or [None])[0]
-        dtype = config.get("torch_dtype", config.get("dtype"))
+        dtype, _ = language_metadata(config)
         require(isinstance(architecture, str) and isinstance(dtype, str), "invalid-model-config", "model config must declare architecture and dtype")
         index_path = root / "model.safetensors.index.json"
         if index_path.exists():

@@ -129,7 +129,12 @@ export function sealModelVersion(body: Omit<T.ModelVersion, 'id'>): T.ModelVersi
 }
 
 function validateRecipe(t: T.ModelTrainingSpec['trainer'], r: T.ModelTrainingSpec['rollout'], b: T.ModelTrainingSpec['budgets']): void {
-  requireContract(t.runtimeLock.slimeCommit === '41014d1f29e201137fdffce737bb8bac65bc5219', 'unsupported-slime', 'Slime commit must match the tested bridge contract')
+  // Pending process locks describe the environment being tested. Admission
+  // still rejects pending probes and unsupported commits on the model node.
+  const pendingProcess = t.runtimeLock.schemaVersion === 2 && t.runtimeLock.validation === 'pending-gpu'
+    && t.runtimeLock.probeEvidenceRefs.length === 0
+  requireContract(pendingProcess || t.runtimeLock.slimeCommit === '41014d1f29e201137fdffce737bb8bac65bc5219',
+    'unsupported-slime', 'certified Slime commit must match the tested bridge contract')
   if (t.recipe !== 'offline-sft-v1') requireContract((t.recipe === 'agent-reinforce-plus-plus-v1' || r.groupSize >= 2), 'invalid-grpo-group', 'GRPO requires at least two independent slots')
   const n = t.rolloutBatchSize * (t.recipe === 'offline-sft-v1' ? 1 : r.groupSize)
   requireContract(Number.isSafeInteger(n) && n % t.globalBatchSize === 0 && t.globalBatchSize % t.dataParallelSize === 0,
