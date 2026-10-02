@@ -1,4 +1,4 @@
-"""Controller-side entry for the fixed-task dev GRPO four-stage recipe."""
+"""Controller entry for the default native online-RL or offline-SFT stages."""
 from __future__ import annotations
 
 import argparse
@@ -15,7 +15,7 @@ def prepare_spec(value):
     if not isinstance(value, dict) or not isinstance(value.get("trainer"), dict):
         raise ValueError("expected an existing Gear model-training spec with trainer settings")
     if value.get("stages"):
-        raise ValueError("dev_grpo uses the original fixed task source and strict GRPO builder; remove agent stages")
+        raise ValueError("the default native factory owns all four stages; remove legacy agent stage overrides")
     if "pipeline" in value["trainer"]:
         raise ValueError("replace trainer.pipeline with a script entrypoint")
     if value["trainer"].get("script") or value.get("scriptSource"):
@@ -40,9 +40,9 @@ def _follow(command):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Run the original dev GRPO workflow as four Python stages.")
+    parser = argparse.ArgumentParser(description="Run the default native training objective as four Python stages.")
     source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument("--spec", type=Path, help="existing dev training spec; starts a new experiment")
+    source.add_argument("--spec", type=Path, help="existing native training spec; starts a new experiment")
     source.add_argument("--experiment", help="existing four-stage experiment ID")
     parser.add_argument("--run", help="existing run ID, required with --experiment")
     parser.add_argument("--resume", action="store_true", help="explicitly resume a paused/interrupted existing run")
@@ -65,7 +65,7 @@ def main(argv=None):
                                 check=True, stdout=subprocess.PIPE, text=True)
         experiment = json.loads(result.stdout)
         if not experiment["spec"]["trainer"].get("script") or experiment["spec"].get("stages"):
-            parser.error("existing experiment is not the fixed-task four-stage dev recipe")
+            parser.error("existing experiment does not select a native four-stage script")
         ids = [args.experiment, args.run]
         if args.resume:
             subprocess.run(command + ["training", "resume"] + ids + config, check=True)

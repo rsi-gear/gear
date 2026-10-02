@@ -1,0 +1,341 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://hitch.dev/schemas/hitch-resource-lock-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "protocol": {
+      "const": "hitch-resource-lock@1"
+    },
+    "resources": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+      },
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "blob"
+              },
+              "digest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "size": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "kind",
+              "digest",
+              "size"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "tree"
+              },
+              "format": {
+                "const": "hitch-tree@1"
+              },
+              "manifestDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              }
+            },
+            "required": [
+              "kind",
+              "format",
+              "manifestDigest"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "oci-image"
+              },
+              "manifestDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "platform": {
+                "type": "string",
+                "pattern": "^linux/(amd64|arm64)(/v[0-9]+)?$"
+              },
+              "indexDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              }
+            },
+            "required": [
+              "kind",
+              "manifestDigest",
+              "platform"
+            ]
+          }
+        ]
+      }
+    },
+    "bindings": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "resource": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+              },
+              "consumer": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "role": {
+                        "const": "candidate"
+                      }
+                    },
+                    "required": [
+                      "role"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "role": {
+                        "const": "verifier"
+                      }
+                    },
+                    "required": [
+                      "role"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "role": {
+                        "const": "service"
+                      },
+                      "serviceId": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+                      }
+                    },
+                    "required": [
+                      "role",
+                      "serviceId"
+                    ]
+                  }
+                ]
+              },
+              "use": {
+                "const": "input-file"
+              },
+              "target": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096,
+                "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(/|$))(?!.*[\\\\\\u0000-\\u001f\\u007f:])(?!.*//)(?!.*[/ ]$).+"
+              },
+              "executable": {
+                "type": "boolean"
+              },
+              "access": {
+                "enum": [
+                  "read-only",
+                  "private-copy"
+                ]
+              }
+            },
+            "required": [
+              "resource",
+              "consumer",
+              "use",
+              "target",
+              "executable",
+              "access"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "resource": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+              },
+              "consumer": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "role": {
+                        "const": "candidate"
+                      }
+                    },
+                    "required": [
+                      "role"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "role": {
+                        "const": "verifier"
+                      }
+                    },
+                    "required": [
+                      "role"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "role": {
+                        "const": "service"
+                      },
+                      "serviceId": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+                      }
+                    },
+                    "required": [
+                      "role",
+                      "serviceId"
+                    ]
+                  }
+                ]
+              },
+              "use": {
+                "const": "input-tree"
+              },
+              "target": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096,
+                "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(/|$))(?!.*[\\\\\\u0000-\\u001f\\u007f:])(?!.*//)(?!.*[/ ]$).+"
+              },
+              "access": {
+                "enum": [
+                  "read-only",
+                  "private-copy"
+                ]
+              }
+            },
+            "required": [
+              "resource",
+              "consumer",
+              "use",
+              "target",
+              "access"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "resource": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+              },
+              "consumer": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "role": {
+                        "const": "candidate"
+                      }
+                    },
+                    "required": [
+                      "role"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "role": {
+                        "const": "verifier"
+                      }
+                    },
+                    "required": [
+                      "role"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "role": {
+                        "const": "service"
+                      },
+                      "serviceId": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+                      }
+                    },
+                    "required": [
+                      "role",
+                      "serviceId"
+                    ]
+                  }
+                ]
+              },
+              "use": {
+                "const": "environment-image"
+              },
+              "slot": {
+                "enum": [
+                  "runtime",
+                  "build-base"
+                ]
+              }
+            },
+            "required": [
+              "resource",
+              "consumer",
+              "use",
+              "slot"
+            ]
+          }
+        ]
+      }
+    },
+    "requiredCapabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9-]*@[1-9][0-9]*$"
+      }
+    }
+  },
+  "required": [
+    "protocol",
+    "resources",
+    "bindings",
+    "requiredCapabilities"
+  ]
+}

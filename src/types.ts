@@ -1688,6 +1688,11 @@ export interface RefineEvaluator {
     signal: AbortSignal, intent?: Readonly<EvaluationSubmissionIntent>,
   ): Promise<EvaluationInspection>
   preflight?(): Promise<void>
+  /** Versioned resource preflight must confirm durable owner pins before Gear freezes a new batch. */
+  resourcePreflight?(input: { ref: string; owner: string; generation: number }, signal?: AbortSignal): Promise<{
+    protocol: 'hitch-resource-preflight@1'; inputDigest: string; planDigest: string
+    plans: import('./state/resource-contract.js').ResourcePlan[]
+  }>
 
   /** Gear-side inspection of an existing submission; never submits work.
    * cohortDigest excludes task subset and candidate identity, and binds the actual shared execution configuration.

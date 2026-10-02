@@ -1,10 +1,10 @@
 # 2026-09-10 单卡 runtime 验收
 
-本地 Gear / Hitch / Harbor Docker + 远程 Slime / SGLang 进程的单卡范围已完成 R1、R2、R3。停机验收后重新核验节点、GPU 与软件身份，正式 preflight 阻塞项为空。全部测试后，实例 `50406574` 已停止，容器及远端模型、检查点保留。
+本地 Gear / Hitch / Harbor Docker + 远程 Slime / SGLang 进程的单卡范围已完成 R1、R2、R3。停机验收后重新核验节点、GPU 与软件身份，正式 preflight 阻塞项为空。
 
 - [runtime lock](runtime-lock.json)：验证后的锁文件；原诊断 request 保持 pending-gpu，不改写历史。
 - [公开认证对象](certificate.json)：16 项检查及原始审计制品的摘要、长度，不含凭据或原始 verifier 内容。
-- [验收摘要](acceptance.json)：冻结身份、模型制品、数值结果、正式 preflight 与最终实例状态。
+- [验收摘要](acceptance.json)：冻结身份、模型制品、数值结果与正式 preflight。
 
 认证内容摘要为 `sha256:18f55a8b22c8bf25c994d5571d89c3d6750b7fbe50e28072a0e8fab1bce9f1c9`。范围为 `local-harbor-process-single-gpu-v1`：Qwen2.5-1.5B、已冻结 recipe、1×RTX 5090，以及 lock 指定的 Slime / Megatron / Torch / SGLang / bridge / Harness 身份。重新使用时仍由正式 preflight 核验完整范围。
 
@@ -14,4 +14,4 @@
 
 独立单样例评估 valid=true、inferenceError=false、reward=0。此认证证明运行与恢复链路，不是模型质量提升或晋升决定。远程 Harbor / Docker 主机及双卡认证按本轮范围延后。
 
-原始 operator audit 及私有制品在控制端保留，权重与 native checkpoint 在模型节点保留；本目录约 11 KB 的公开 JSON 不含模型文件。认证为有原始制品支持的 operator attestation，非 GPU 厂商签名。
+本目录约 11 KB 的公开 JSON 不含模型文件。认证为有原始制品支持的 operator attestation，非 GPU 厂商签名。

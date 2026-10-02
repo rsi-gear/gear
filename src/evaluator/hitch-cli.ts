@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { readFile, realpath } from 'node:fs/promises'
+import { lstat, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { delimiter, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
@@ -1070,12 +1072,31 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     // compiled dataset, including its adapter/scoring manifest, is unchanged.
     // Unknown legacy identities stay unresolved; the service must block reuse
     // rather than treating that uncertainty as permission to run more trials.
-    if (await this.hasStandardBenchmarkManifest(round, request)) {
+    const fileSelection = await lstat(resolve(round.workspaceRoot, request.dataset)).then(s => s.isFile()).catch(error => {
+      if (error.code !== 'ENOENT') throw error
+      return false
+    })
+    if (fileSelection || await this.hasStandardBenchmarkManifest(round, request)) {
       const datasetDigest = await digestDatasetRef(request.dataset, round.workspaceRoot)
       signal?.throwIfAborted()
       if (datasetDigest !== request.condition.dataset.digest) return undefined
     }
     return this.resolveEvaluationIdentity(round, request, signal)
+  }
+
+  async resourcePreflight(input: { ref: string; owner: string; generation: number }, signal: AbortSignal = new AbortController().signal): Promise<{
+    protocol: 'hitch-resource-preflight@1'; inputDigest: string; planDigest: string; plans: import('../state/resource-contract.js').ResourcePlan[]
+  }> {
+    const temp = await mkdtemp(join(tmpdir(), 'gear-resource-preflight-'))
+    try {
+      const file = join(temp, 'request.json'); await writeFile(file, JSON.stringify(input), { mode: 0o600 })
+      const result = await this.run([...this.rootArgs(), 'resources', 'request', 'preflight', '--input', file], this.repositoryPath, signal)
+      if (result.exitCode !== 0) throw new Error(`Hitch resource preflight failed: ${result.stderr}`)
+      const value = JSON.parse(result.stdout)
+      if (value?.protocol !== 'hitch-resource-preflight@1' || !Array.isArray(value.plans)) throw new Error('Hitch lacks the required resource preflight capability')
+      digest(value.inputDigest, 'resource input digest'); digest(value.planDigest, 'resource plan digest')
+      return value
+    } finally { await rm(temp, { recursive: true, force: true }) }
   }
 
   /** Reads the existing Hitch submission record; this adds no Hitch CLI command or protocol. */
@@ -1111,7 +1132,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       await readFile(resolve(round.workspaceRoot, request.dataset, 'benchmark.adapter.json'))
       return true
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+      if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return false
       throw error
     }
   }

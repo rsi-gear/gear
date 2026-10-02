@@ -1,12 +1,8 @@
-"""Default Gear dev recipe, loaded through the same factory contract as custom scripts."""
-from gear_training import TrainingLoop
-from gear_training.dev_grpo import FrozenTaskSource, HitchRolloutExecutor, GRPODatasetBuilder, SlimeModelUpdater
+"""Default native composition; scripts can instead compose any four stages."""
+from gear_training.recipes.registry import is_sft
+from gear_training.online_rl import build_loop as build_online_loop
+from gear_training.offline_sft import build_loop as build_sft_loop
 
 
 def build_loop(config, runtime):
-    return TrainingLoop(
-        FrozenTaskSource(runtime),
-        HitchRolloutExecutor(runtime),
-        GRPODatasetBuilder(runtime),
-        SlimeModelUpdater(runtime),
-    )
+    return (build_sft_loop if is_sft(runtime.request) else build_online_loop)(config, runtime)

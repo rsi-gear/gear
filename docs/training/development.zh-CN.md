@@ -198,9 +198,13 @@ gear-refine training run native-spec.json --config controller.json
 
 控制器把 `scriptSource` 转成冻结的 `trainer.script`，随训练请求上传；节点动态加载该脚本。自定义参数放在 `trainer.scriptConfig`，工厂和阶段通过 `config.parameters` / `ctx.config.parameters` 读取。轮数和初始 checkpoint 来自 native 训练配置及模型状态。已封存代码引用也可直接放在 `trainer.script`；不要同时提供这两种来源。
 
-Hitch/Slime 的设备安排、权重同步、完整 checkpoint、任务执行桥接和独立评估仍由现有运行环境负责。开发者可直接复用内置的 `FrozenTaskSource`、`HitchRolloutExecutor`、`GRPODatasetBuilder`、`SlimeModelUpdater`，也可替换其中的类；任务源不要求 agent。直接调用组件的底层接口时须遵守其数据和生命周期合同，通常优先组合内置阶段。
+Hitch/Slime 的设备安排、权重同步、完整 checkpoint、任务执行桥接和独立评估仍由现有运行环境负责。开发者可直接复用内置的 `FrozenTaskSource`、`HitchRolloutExecutor`、`PolicyDatasetBuilder`、`SlimeModelUpdater`，也可替换其中的类；任务源不要求 agent。直接调用组件的底层接口时须遵守其数据和生命周期合同，通常优先组合内置阶段。
 
-内置 Slime 适配目前支持严格 GRPO：使用它的脚本需要提供有效任务引用、精确原生轨迹和兼容 batch，updater 要通过它提交 checkpoint。这些是组件自身的约束；完全不同的数据合同或优化器可以使用普通脚本运行入口。现有 `stages` agent 配置不与 `trainer.script` 同时使用；agent 调用写在自定义阶段中。
+内置 Slime 适配支持 GRPO、GSPO、CISPO、REINFORCE++、REINFORCE++ baseline 和离线 SFT，具体目标由 `trainer.recipe` 冻结。在线脚本使用 `gear_training.online_rl` 的四个组件，提供精确轨迹和兼容 batch；REINFORCE++ 可使用单样本组，组内奖励相同也会保留。`dev_grpo` 的原导入路径继续可用。
+
+离线 SFT 使用 [offline_sft.py](../../examples/training-loop/recipes/offline_sft.py)：任务源选择封存数据窗口，执行阶段读取记录，构建阶段封存助手 token 掩码，更新阶段交给 Slime。它不启动 Hitch 在线采样或推理模型服务。先按 [离线数据指南](recipes.zh-CN.md#离线数据作者入口) 使用 `seal-sft`，设置 `trainer.recipe: "offline-sft-v1"` 和 `offlineTraining`，再把 `scriptSource.entrypoint` 设为 `offline_sft:build_loop` 即可使用同一个运行命令。
+
+使用内置 updater 的脚本须通过 Slime 提交完整 checkpoint；更换算法或离线数据合同必须建立新的 optimizer lineage。完全不同的数据合同或优化器可以使用普通脚本运行入口。现有 `stages` agent 配置不与 `trainer.script` 同时使用，也不用于离线 SFT；agent 调用可写在自定义阶段中。
 
 原 dev 的默认脚本是 [recipe.py](../../python/gear_training/recipes/dev_script/recipe.py)，与自定义脚本走相同加载接口；不再使用 `trainer.pipeline` 开关。便利命令保留：
 
@@ -208,7 +212,7 @@ Hitch/Slime 的设备安排、权重同步、完整 checkpoint、任务执行桥
 python -m gear_training.dev_grpo --spec dev-spec.json --config controller.json
 ```
 
-它选择默认四阶段源码，再交给控制器。原生运行继续使用 `EXP_ID RUN_ID` 查询/恢复，普通脚本使用 `SCRIPT_ID`。这是两种运行环境的作业身份；开发者的四阶段工厂合同相同。
+它选择默认四阶段源码，再交给控制器；默认工厂根据 `trainer.recipe` 组合在线或 SFT 阶段。原生运行继续使用 `EXP_ID RUN_ID` 查询/恢复，普通脚本使用 `SCRIPT_ID`。这是两种运行环境的作业身份；开发者的四阶段工厂合同相同。
 
 ## 改框架时再读这些入口
 

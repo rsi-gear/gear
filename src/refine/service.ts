@@ -48,6 +48,7 @@ import {
 } from './baseline-source.js'
 
 export interface RefineServiceOptions {
+  datasetStorage?: import('../state/materialize-tree.js').MaterializationPolicy
   searchSettings?: SearchSettings
   workspaceRoot: string
   metaAgent: MetaAgentSpec
@@ -144,14 +145,22 @@ interface ActiveRound {
   drive?: Promise<void>
 }
 
-interface ActiveEvaluationRepair {
+interface ActiveRepair {
   evolution: EvolutionRuntime
   roundId: string
   lock: WorkspaceLock
   abort: AbortController
-  attempt: RoundEvaluationAttempt
   handedToDrive: boolean
+  completion?: Promise<unknown>
+}
+
+interface ActiveEvaluationRepair extends ActiveRepair {
+  attempt: RoundEvaluationAttempt
   completion?: Promise<EvaluationRerunResult>
+}
+
+interface ActiveSearchRepair extends ActiveRepair {
+  completion?: Promise<import('../search/types.js').StageResult>
 }
 
 interface PendingEvaluationResume {
@@ -574,7 +583,7 @@ function projectPairedEvidence(
 
 export class RefineService {
   private readonly active = new Map<string, ActiveRound>()
-  private readonly repairs = new Map<string, ActiveEvaluationRepair>()
+  private readonly repairs = new Map<string, ActiveRepair>()
   private readonly runtimes = new Map<string, EvolutionRuntime>()
   private readonly drives = new Set<Promise<void>>()
   private readonly nativeExperienceUsageReaders = new Map<string, ExperienceUsageReader>()
@@ -1170,14 +1179,36 @@ export class RefineService {
   }
 
   async repairSearchStage(evolutionId: string, roundId: string, repairId: string, originalEvidenceDigest: string): Promise<import('../search/types.js').StageResult> {
+    this.assertAvailable()
     const evolution = await this.runtime(evolutionId)
     const adapter = evolution.evaluator.search
     if (!evolution.spec.searchSettings || !adapter) throw new Error('this evolution has no staged search repair capability')
     const lock = await evolution.store.acquireRoundLock(roundId)
-    let adopted = false
     try {
       const round = await this.requireRound(evolution.store, roundId)
       if (!round.searchMode) throw new Error('not a staged search round')
+      this.assertAvailable()
+      const repair: ActiveSearchRepair = { evolution, roundId, lock, abort: new AbortController(), handedToDrive: false }
+      // The adapter needs an owned lock while materializing repaired datasets,
+      // before the repaired round can be handed back to the normal drive.
+      this.repairs.set(roundId, repair)
+      repair.completion = this.runSearchRepair(repair, round, repairId, originalEvidenceDigest)
+      return repair.completion
+    } catch (error) {
+      await lock.release().catch(() => {})
+      throw error
+    }
+  }
+
+  private async runSearchRepair(
+    repair: ActiveSearchRepair,
+    round: RefinementRound,
+    repairId: string,
+    originalEvidenceDigest: string,
+  ): Promise<import('../search/types.js').StageResult> {
+    const { evolution, roundId, lock } = repair
+    const adapter = evolution.evaluator.search!
+    try {
       const engine = new FailureClusterSearch(new SearchStore(join(evolution.store.root, 'search')), adapter.provider, adapter.diagnosis, {
         verifySnapshot: async snapshot => {
           const actual = await this.builder.searchSnapshot(snapshot.candidateId, snapshot.commit, snapshot.parentIds)
@@ -1186,13 +1217,18 @@ export class RefineService {
         generate: async () => { throw new Error('evidence repair cannot generate candidates') },
         commitChampion: async () => { throw new Error('evidence repair cannot promote') },
       }, this.components)
-      const result = await engine.repairEvaluation(roundId, repairId, originalEvidenceDigest, new AbortController().signal)
+      const result = await engine.repairEvaluation(roundId, repairId, originalEvidenceDigest, repair.abort.signal)
+      repair.abort.signal.throwIfAborted()
       await this.transition(evolution.store, roundId, { status: 'baseline-running', failure: undefined })
+      repair.abort.signal.throwIfAborted()
       this.active.set(roundId, this.newActive(evolution, lock, round.source, round.batchId, round.roundIndex, round.roundCount, round.advisoryFocus))
-      adopted = true
+      repair.handedToDrive = true
       queueMicrotask(() => this.startDrive(roundId))
       return result
-    } finally { if (!adopted) await lock.release() }
+    } finally {
+      this.repairs.delete(roundId)
+      if (!repair.handedToDrive) await lock.release()
+    }
   }
 
   async rerunEvaluation(
@@ -3486,6 +3522,13 @@ export class RefineService {
       plan: this.components.taskSampler(spec.rollout.taskSampler).resolve(roundId, spec.datasets, spec.rollout, spec.taskBudgetMs),
     }
     return attachSearchEvaluation(evaluator, { spec, workspaceRoot: this.options.workspaceRoot, stateRoot: root,
+      ...(this.options.datasetStorage ? { materialization: this.options.datasetStorage } : {}),
+      lock: async () => {
+        const current = await new SearchStore(root).read<{ roundId: string | null }>('active-round')
+        const owner = current?.roundId && (this.active.get(current.roundId) ?? this.repairs.get(current.roundId))
+        invariant(owner && owner.evolution.spec.evolutionId === spec.evolutionId, 'staged materialization requires the active evolution lock')
+        return owner.lock
+      },
       identityRound,
       manifest: snapshot => this.builder.readManifest(snapshot.commit),
       round: async () => {

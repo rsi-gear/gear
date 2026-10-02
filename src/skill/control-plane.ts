@@ -245,6 +245,7 @@ export async function createSkillControlPlane(
     {
       workspaceRoot: config.workspaceRoot,
       metaAgent,
+      ...(config.datasetStorage ? { datasetStorage: config.datasetStorage } : {}),
       candidateGeneration,
       rollout,
       evaluation,

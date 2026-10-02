@@ -17,6 +17,7 @@ from .ledger import Ledger
 from .preflight import compatibility_digest
 from .placement import TrainingMemoryCycle, resource_plan, validate_resource_args
 from .recipes.agent_grpo import sampling_params
+from .recipes.registry import estimator, is_sft, validate_recipe_args
 
 
 RESERVED = {"--load", "--ref-load", "--hf-checkpoint", "--save", "--save-hf", "--save-interval", "--num-rollout", "--start-rollout-id",
@@ -28,24 +29,48 @@ RESERVED = {"--load", "--ref-load", "--hf-checkpoint", "--save", "--save-hf", "-
             "--release-train", "--rollout-external", "--use-critic", "--use-fault-tolerance", "--eval-interval", "--num-epoch", "--use-rollout-logprobs", "--custom-rm-path", "--custom-reward-post-process-path", "--custom-loss-function-path"}
 
 
+RESERVED.update({"--loss-type", "--disable-compute-advantages-and-returns", "--data-source-path", "--prompt-data",
+                 "--use-opd", "--opd-type", "--opd-kl-coef", "--opd-teacher-load", "--rollout-data-postprocess-path",
+                 "--use-tis", "--keep-old-actor", "--eval-function-path"})
+
+
 def build_argv(request, hyperparameters, paths, start_update):
     args = hyperparameters.get("slimeArgs")
     require(hyperparameters.get("schemaVersion") == 1 and isinstance(args, list) and all(isinstance(a, str) and a for a in args), "invalid-hyperparameters", "recipe must contain an explicit sealed Slime argv array")
     require(not any(a.split("=", 1)[0] in RESERVED or a.startswith("--custom-") or (a.startswith("--") and a.split("=", 1)[0].endswith("-function-path")) for a in args), "reserved-slime-override", "recipe cannot override lifecycle, identity, grouping, reference or checkpoint arguments")
+    offline = is_sft(request)
+    controlled = {"--disable-compute-advantages-and-returns", "--loss-type"}
+    if offline:
+        controlled.update({"--kl-coef", "--kl-loss-coef", "--use-kl-loss", "--disable-rollout-global-dataset",
+                           "--use-rollout-logprobs", "--check-weight-update-equal"})
+    elif estimator(request).startswith("reinforce_plus_plus"):
+        controlled.update({"--normalize-advantages", "--disable-rewards-normalization", "--disable-grpo-std-normalization"})
+    require(not any(a.split("=", 1)[0] in controlled or (a.startswith("--opd-") or a.startswith("--teacher-") or a.startswith("--async-")) for a in args),
+            "reserved-slime-override", "recipe owns loss and estimator-dependent normalization")
     # Model size, TP/PP, optimizer, learning rate, KL, clipping and epochs are
     # user-selected and sealed; never invent a GPU-fit or learning-rate default.
-    for flag in ("--lr", "--kl-coef", "--eps-clip", "--num-steps-per-rollout"):
+    for flag in (("--lr", "--num-steps-per-rollout") if offline else ("--lr", "--kl-coef", "--eps-clip", "--num-steps-per-rollout")):
         require(flag in args or any(a.startswith(flag + "=") for a in args), "unsealed-hyperparameter", "recipe must explicitly set " + flag)
     t, r = request["trainer"], request["rollout"]
     placement, resources, args = resource_plan(request, args)
     fixed = {"--load": paths["load"], "--ref-load": paths["reference"], "--hf-checkpoint": paths["hf"], "--save": paths["save"],
              "--save-interval": 1, "--num-rollout": start_update + t["updatesPerCandidate"],
-             "--start-rollout-id": start_update, "--rollout-function-path": "gear_training.rollout.generate_rollout",
-             "--rollout-batch-size": t["rolloutBatchSize"], "--n-samples-per-prompt": r["groupSize"], "--global-batch-size": t["globalBatchSize"],
-             "--advantage-estimator": "grpo", "--rollout-temperature": 1, "--rollout-top-p": 1, "--rollout-top-k": -1,
+             "--start-rollout-id": start_update, "--rollout-function-path": "gear_training.offline.generate_rollout" if offline else "gear_training.rollout.generate_rollout",
+             "--rollout-batch-size": t["rolloutBatchSize"], "--n-samples-per-prompt": 1 if offline else r["groupSize"], "--global-batch-size": t["globalBatchSize"],
+             "--advantage-estimator": estimator(request), "--rollout-temperature": 1, "--rollout-top-p": 1, "--rollout-top-k": -1,
              "--rollout-max-response-len": r["sampling"]["maxNewTokens"], "--train-backend": "megatron", **resources}
+    fixed["--loss-type"] = "sft_loss" if offline else "policy_loss"
+    extra = []
+    if offline:
+        fixed["--kl-coef"] = 0
+        fixed["--kl-loss-coef"] = 0
+        extra = ["--debug-train-only", "--disable-compute-advantages-and-returns", "--disable-rollout-global-dataset", "--disable-rewards-normalization"]
+    elif estimator(request).startswith("reinforce_plus_plus"):
+        extra = ["--normalize-advantages"]
+        if estimator(request) == "reinforce_plus_plus": extra.append("--disable-rewards-normalization")
+        else: extra.append("--disable-grpo-std-normalization")
     memory = ["--colocate", "--offload-train", "--offload-rollout"] if placement == "colocated" else ["--no-offload-train", "--no-offload-rollout"]
-    return [*args, *memory, "--use-rollout-logprobs", *(item for key, value in fixed.items() for item in (key, str(value)))]
+    return [*args, *memory, *extra, *([] if offline else ["--use-rollout-logprobs"]), *(item for key, value in fixed.items() for item in (key, str(value)))]
 
 
 def export_committed_actor(actor, store, ledger, *, export_root, **checkpoint_args):
@@ -86,6 +111,7 @@ def finalize_candidate(job_dir, request, store, prior_commits, checkpoint_ref, o
 class NativeHitch:
     def __init__(self, runtime): self.runtime = runtime
     async def collect(self, rollout_id, tasks):
+        require(not is_sft(self.runtime.request), "runtime-capability-unavailable", "offline SFT has no Hitch rollout")
         from .rollout import collect_raw_rollout
         return await collect_raw_rollout(self.runtime.args, rollout_id, self.runtime.job_dir, tasks)
 
@@ -106,6 +132,8 @@ class SlimeRoundRuntime:
         self.args, self.ray, self.memory, self.manager, self.incarnation = args, ray, memory, manager, incarnation
         self.hitch, self.slime = NativeHitch(self), NativeSlime(self)
         self.workspace = self.job_dir
+        self.offline = is_sft(request)
+        self.replay = None
 
     def check_cancel(self):
         require(not (self.job_dir / "cancel.json").exists(), "cancelled", "training pause requested")
@@ -117,6 +145,9 @@ class SlimeRoundRuntime:
             require(checkpoint["committedUpdate"] == rollout_id and checkpoint["hfSnapshotRef"] == self.current_hf,
                     "replay-pre-update-mismatch", "public checkpoint differs from the loaded native actor")
         require(self.memory is not None, "missing-slime-runtime", "remaining updates require the native Slime runtime")
+        if self.offline:
+            self.replay = None
+            return
         self.memory.prepare_rollout(compare_weights=self.args.check_weight_update_equal and rollout_id == 0)
         engines, _, _, _, _, _ = self.ray.get(self.manager.get_updatable_engines_and_lock.remote())
         versions = self.ray.get([engine.get_weight_version.remote() for engine in engines])
@@ -147,7 +178,11 @@ class SlimeRoundRuntime:
             require(batch["rolloutId"] == rollout_id and self.ledger.lease(self.batch_id)["state"] == "closed"
                     and sealed and json.loads(sealed[0]) == batch["batchRef"],
                     "missing-batch-barrier", "optimizer and rollout offload cannot start before durable batch sealing")
-        self.memory.finish_rollout(batch_barrier)
+        if self.offline:
+            from .offline import validate_batch
+            require(batch["rolloutId"] == rollout_id, "runtime-cursor-mismatch", "offline batch must match committed actor cursor")
+            validate_batch(self.store, self.request, batch["batchRef"], rollout_id)
+        else: self.memory.finish_rollout(batch_barrier)
         atomic_json(self.job_dir / "progress.json", {"phase": "training", "committedUpdate": self.committed, "batchRef": batch["batchRef"]})
         from .stages import SlimeModelUpdater
         SlimeModelUpdater(self.memory).update(rollout_id, rollout_data)
@@ -155,6 +190,9 @@ class SlimeRoundRuntime:
         from .export import seal_directory
         trainer_ref = seal_directory(self.store, self.paths["save"])
         data_cursor = {"committedUpdate": rollout_id + 1, "batchRef": batch["batchRef"], "groupResamples": self.ledger.usage()["groupResamples"]}
+        if self.offline:
+            sealed = self.store.read_json(batch["batchRef"])
+            data_cursor.update(position=sealed["cursorAfter"]["position"], datasetDigest=self.request["offlineTraining"]["datasetRef"]["digest"])
         if self.replay: data_cursor["replayOfBatch"] = self.replay["digest"]
         atomic_json(self.job_dir / "pending-update.json", {"committedUpdate": rollout_id + 1, "trainerStateRef": trainer_ref,
             "batchRef": batch["batchRef"], "dataCursor": data_cursor, "compatibilityDigest": compatibility_digest(self.request)})
@@ -175,7 +213,7 @@ class SlimeRoundRuntime:
                 "committedUpdate": checkpoint["committedUpdate"], "commitRef": commit_ref}
 
     def update_dataset(self, rollout_id, dataset, checkpoint, operation_id):
-        require(dataset.get("kind") == "grpo-dataset" and dataset.get("schemaVersion") == 1 and dataset.get("rolloutId") == rollout_id
+        require(dataset.get("kind") == ("offline-sft-dataset" if self.offline else "grpo-dataset") and dataset.get("schemaVersion") == 1 and dataset.get("rolloutId") == rollout_id
                 and dataset.get("preUpdateHfRef") == checkpoint["hfSnapshotRef"] and checkpoint["committedUpdate"] == rollout_id,
                 "grpo-dataset-drift", "updater must consume this round's sealed pre-update dataset")
         batch_ref = dataset["batchRef"]
@@ -190,18 +228,21 @@ class SlimeRoundRuntime:
         batch = self.store.read_json(batch_ref)
         require(batch["trainingRunId"] == self.request["trainingRunId"] and batch["recipeDigest"] == self.request["recipeDigest"]
                 and batch["datasetSplitDigest"] == self.request["datasetSplitDigest"], "invalid-replay-batch", "dataset belongs to another frozen request")
-        lease = self.ledger.lease(dataset["batchId"])
-        require(lease["state"] == "closed" and lease["policyVersion"] == batch["policyVersion"]
-                and lease["synchronizedWeightsRef"] == self.current_hf, "replay-pre-update-mismatch", "dataset must retain its closed original policy")
-        # Raw collection may have been cached across driver incarnations. Wake
-        # the same pre-update model before the pinned Slime preprocessing call.
-        if self.memory.phase == "checkpoint": self.prepare_round(rollout_id, checkpoint=checkpoint)
-        # The hook projects a sealed batch even on the first attempt. Only
-        # prepare_round marks an actual recovered batch as replay provenance.
-        self.batch_id = dataset["batchId"]
-        runtime = json.loads((self.job_dir / "runtime.json").read_text())
-        runtime.update(replayBatchRef=batch_ref, replayRuntimeInstanceId=self.incarnation)
-        atomic_json(self.job_dir / "runtime.json", runtime)
+        if self.offline:
+            from .offline import validate_batch
+            validate_batch(self.store, self.request, batch_ref, rollout_id)
+            # Native preprocessing must consume exactly the builder's sealed
+            # window. No engine, weight transfer or policy lease exists in SFT.
+            atomic_json(self.job_dir / "offline-replay.json", {"rolloutId": rollout_id, "batchRef": batch_ref})
+        else:
+            lease = self.ledger.lease(dataset["batchId"])
+            require(lease["state"] == "closed" and lease["policyVersion"] == batch["policyVersion"]
+                    and lease["synchronizedWeightsRef"] == self.current_hf, "replay-pre-update-mismatch", "dataset must retain its closed original policy")
+            if self.memory.phase == "checkpoint": self.prepare_round(rollout_id, checkpoint=checkpoint)
+            self.batch_id = dataset["batchId"]
+            runtime = json.loads((self.job_dir / "runtime.json").read_text())
+            runtime.update(replayBatchRef=batch_ref, replayRuntimeInstanceId=self.incarnation)
+            atomic_json(self.job_dir / "runtime.json", runtime)
         atomic_json(self.job_dir / "batch.json", {"rolloutId": rollout_id, "batchRef": batch_ref})
         rollout_data = self.ray.get(self.manager.generate.remote(rollout_id))
         return self.train_commit(rollout_id, rollout_data, {"rolloutId": rollout_id, "batchRef": batch_ref})
@@ -238,6 +279,8 @@ def run(job_dir):
     recovered = update_recovery(job_dir, request, store, ledger)
     prior_commits, resume_ref, pending = recovered["commitRefs"], recovered["checkpointRef"], recovered["pending"]
     parent_start, start = recovered["parentStart"], recovered["start"]
+    offline = is_sft(request)
+    require(not offline or not request.get("stages"), "unsupported-offline-stages", "offline SFT accepts four-stage scripts, not agent stage overrides")
     four_stage = bool(request["trainer"].get("script"))
     if four_stage:
         from .script_source import source_files
@@ -263,9 +306,10 @@ def run(job_dir):
     from .gpu_visibility import verify_visible_devices
     verify_visible_devices(training_devices(request))
     sys.path.insert(0, config["slimePath"])
-    reference_model = store.read_json(request["referenceModelRef"])
+    offline = is_sft(request)
+    reference_model = store.read_json(request["referenceModelRef"]) if not offline else None
     hf = materialize(store, request["parentModel"]["hfSnapshotRef"], job_dir / "parent-hf")
-    reference = materialize(store, reference_model["hfSnapshotRef"], job_dir / "reference-hf")
+    reference = hf if offline else materialize(store, reference_model["hfSnapshotRef"], job_dir / "reference-hf")
     if resume_ref:
         checkpoint = store.read_json(resume_ref)
         require(checkpoint["compatibilityDigest"] == compatibility_digest(request), "checkpoint-incompatible", "resume may not change runtime, reference, optimizer or model topology")
@@ -288,6 +332,7 @@ def run(job_dir):
     args = parse_args()
     from .recipes.agent_grpo import validate_layout
     validate_layout(args, request)
+    validate_recipe_args(args, request)
     validate_resource_args(args, request, argv)
     model_parallel = args.tensor_model_parallel_size * args.pipeline_model_parallel_size * getattr(args, "context_parallel_size", 1)
     actor_gpus = args.actor_num_nodes * args.actor_num_gpus_per_node

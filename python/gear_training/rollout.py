@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
+from .recipes.registry import zero_variance_policy
 from .content import ContentStore, ContractError, atomic_json, digest_bytes, digest_json, require
 from .export import materialize
 from .gateway import ExactGateway, NativeSGLang, slime_protocol
@@ -277,7 +278,7 @@ def generate_rollout(args, rollout_id, data_source, evaluation=False):
         groups = [[EpisodeSample(**sample) for sample in group] for group in store.read_json(batch["samplesRef"])]
         require(len(groups) == request["trainer"]["rolloutBatchSize"], "invalid-replay-layout", "replay requires B complete groups")
         for group in groups:
-            admit_group(group, request["rollout"]["groupSize"], request["rollout"]["zeroVarianceGroup"])
+            admit_group(group, request["rollout"]["groupSize"], zero_variance_policy(request))
             require(all(s.metadata["policyVersion"] == batch["policyVersion"] for s in group), "replay-policy-mismatch", "replay may not relabel behavior receipts")
         ledger = Ledger(Path(job_dir) / "ledger.sqlite"); usage = ledger.usage(); ledger.close()
     else:

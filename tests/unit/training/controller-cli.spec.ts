@@ -10,8 +10,9 @@ import { NodeSlimeModelTrainer, SlimeModelTrainer } from '../../../src/training/
 import { HitchModelEvaluator } from '../../../src/training/hitch.js'
 import { assertHitchCommit, observeExecutionPlacement, observeHitchController } from '../../../src/training/placement-observation.js'
 import { freezeExecutionPlacement } from '../../../src/training/deployment.js'
+import { sealModelVersion } from '../../../src/training/schema.js'
 import { digestJson } from '../../../src/training/digest.js'
-import type { ModelExperimentState, ModelTrainingRun, ModelTrainingSpecV1 } from '../../../src/training/types.js'
+import type { ModelExperimentState, ModelTrainingRun, ModelTrainingSpecV1, ContentRef } from '../../../src/training/types.js'
 import { fixture } from './fixture.js'
 import { deployment, v2spec } from './placement-fixture.js'
 
@@ -67,6 +68,45 @@ describe('versioned public training controller', () => {
     expect(create).toHaveBeenCalledTimes(1); expect(admit).toHaveBeenCalledTimes(1)
     expect(advance).toHaveBeenCalledTimes(2)
     expect(process.listenerCount('SIGINT')).toBe(listeners)
+  })
+  it('seals offline assistant examples through the public CLI and preserves the source identity', async () => {
+    config.hitch.python = ['env', `PYTHONPATH=${process.cwd()}/python`, process.env.GEAR_TRAINING_TEST_PYTHON ?? 'python3']
+    const task = legacy.datasets.train.tasks[0]!
+    const input = { schemaVersion: 1, modelRef: legacy.initialModel, maxSequenceTokens: 64, records: [{
+      source: { taskId: task.id, family: task.family, taskDigest: task.taskRef.digest },
+      segments: [{ role: 'user', tokens: [1, 2] }, { role: 'assistant', tokens: [3] }, { role: 'tool', tokens: [90] }, { role: 'assistant', tokens: [4] }],
+    }] }
+    const inputFile = join(root, 'sft.json'), configFile = join(root, 'controller.json')
+    await writeFile(inputFile, JSON.stringify(input)); await writeFile(configFile, JSON.stringify(config))
+    const network = vi.spyOn(ModelNodeTransport.prototype, 'call').mockRejectedValue(new Error('node offline'))
+    const sealed = await trainingCommand(['seal-sft', inputFile, '--config', configFile]) as { datasetRef: any; recordCount: number }
+    expect(sealed.recordCount).toBe(1); expect(network).not.toHaveBeenCalled()
+    const manifest = await store.readJson<any>(sealed.datasetRef), row = await store.readJson<any>(manifest.records[0])
+    expect(row.lossMask).toEqual([0, 0, 1, 0, 1]); expect(row.source).toEqual(input.records[0]!.source)
+  })
+  it('fetches only sealed model config for role-token authoring after a node-only HF import', async () => {
+    config.hitch.python = ['env', `PYTHONPATH=${process.cwd()}/python`, process.env.GEAR_TRAINING_TEST_PYTHON ?? 'python3']
+    const node = new ModelTrainingStore(join(root, 'model-node'))
+    const modelConfig = await node.putJson({ vocab_size: 128, max_position_embeddings: 64 })
+    const tokenizer = await node.putJson({ private: 'tokenizer-unused-for-segments' }), weights = await node.putJson({ private: 'model-weights' })
+    const refs = [modelConfig, tokenizer, weights], paths = ['config.json', 'tokenizer.json', 'model.safetensors']
+    const snapshot = await store.putJson({ schemaVersion: 1, format: 'hf-safetensors', files: refs.map((contentRef, i) => ({ path: paths[i], contentRef })) })
+    const { id: _, ...model } = await store.readJson<any>(legacy.initialModel)
+    const modelRef = await store.putJson(sealModelVersion({ ...model, hfSnapshotRef: snapshot }))
+    const task = legacy.datasets.train.tasks[0]!, inputFile = join(root, 'sft-node-input.json'), configFile = join(root, 'controller.json')
+    await writeFile(inputFile, JSON.stringify({ schemaVersion: 1, modelRef, maxSequenceTokens: 64, records: [{
+      source: { taskId: task.id, family: task.family, taskDigest: task.taskRef.digest },
+      segments: [{ role: 'user', tokens: [1, 2] }, { role: 'assistant', tokens: [3] }],
+    }] })); await writeFile(configFile, JSON.stringify(config))
+    vi.spyOn(ModelNodeTransport.prototype, 'call').mockResolvedValue({ nodeId: 'gpu-node', generation: 'boot-1' })
+    const downloaded: ContentRef[] = []
+    vi.spyOn(ModelNodeTransport.prototype, 'download').mockImplementation(async (target, ref) => {
+      downloaded.push(ref); await target.putBytes(await node.readBytes(ref), ref.mediaType)
+    })
+    expect(await trainingCommand(['seal-sft', inputFile, '--config', configFile])).toHaveProperty('recordCount', 1)
+    expect(downloaded).toEqual([modelConfig])
+    await expect(store.readBytes(weights)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(store.readBytes(tokenizer)).rejects.toMatchObject({ code: 'ENOENT' })
   })
   it('rejects route collisions, mixed versions and placement changes before launching work', () => {
     expect(() => parseTrainingControllerConfig({ ...config, evaluationGateway: config.deployment.nodes.gpu!.gateway })).toThrow('distinct stable')

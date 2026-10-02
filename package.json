@@ -1,6 +1,6 @@
 {
   "name": "rsi-gear",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Skill-first Gear refinement control plane with native DSH and harness-neutral adapters",
   "type": "module",
   "license": "MIT",
@@ -88,9 +88,13 @@
     "docs/training/controller-v2.zh-CN.md",
     "docs/training/stages.zh-CN.md",
     "docs/training/development.zh-CN.md",
+    "docs/training/recipes.zh-CN.md",
     "docs/search-algorithm-authoring.zh-CN.md",
     "examples/parent-policy/**",
-    "examples/training-loop/**"
+    "examples/training-loop/**",
+    "docs/schemas/",
+    "docs/generic-storage-implementation.zh-CN.md",
+    "test-contracts/hitch-resources-v1.json"
   ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",
@@ -121,7 +125,7 @@
     "@deepseek-ai/dsh-tool-fs-search": "^0.1.0-rc.8 || ^0.1.1-rc.2",
     "@deepseek-ai/schemastery": "^3.18.1",
     "diff": "^8.0.2",
-    "js-yaml": "^4.1.0",
+    "js-yaml": "^4.3.2",
     "typescript": "^6.0.0"
   },
   "peerDependencies": {
@@ -174,7 +178,7 @@
     "vitest": "^4.1.8",
     "@deepseek-ai/dsh-attachment": "0.1.0-rc.8",
     "@deepseek-ai/dsh-sandbox": "0.1.0-rc.8",
-    "esbuild": "0.27.4",
+    "esbuild": "0.28.1",
     "gear-tool-fs-diff": "npm:diff@9.0.0",
     "@deepseek-ai/dsh-scope": "0.1.0-rc.8"
   }

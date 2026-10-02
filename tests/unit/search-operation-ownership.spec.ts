@@ -4,7 +4,7 @@ import { buildArchive } from '../../src/search/archive.js'
 import { completeArchivedEvidence } from '../../src/search/completion.js'
 import { FailureClusterSearch, SearchEvidencePending } from '../../src/search/engine.js'
 import { SearchExecutionFailure, SearchOperationPending } from '../../src/search/recovery.js'
-import { MemorySearchStore, evaluatedFixture, fixtures, scopeFixture, settings, snapshot } from '../../src/search/testing.js'
+import { MemorySearchStore, evaluatedFixture, fixtures, revise, scopeFixture, settings, snapshot } from '../../src/search/testing.js'
 import type { ResearchArchive, StageResult } from '../../src/search/types.js'
 
 function setup() {
@@ -111,15 +111,90 @@ describe('search operation ownership', () => {
     expect((await f.run()).championChanged).toBe(true)
   })
 
-  it('does not repair a failed bootstrap after its round is terminal', async () => {
+  it.each(['worker-exited', 'cancelled', 'missing', 'invalid'])('keeps a %s bootstrap pending and repairs only its missing/invalid cells', async kind => {
     const f = setup(), evaluate = f.provider.evaluate
-    f.provider.evaluate = async () => { throw new SearchExecutionFailure('failed', 'worker exited', 'worker:failed') }
-    const outcome = await f.run(), research = await f.store.object<ResearchArchive>(outcome.archiveDigest)
+    f.provider.evaluate = async input => {
+      const cells = await evaluate(input), valid = cells.slice(0, 3)
+      if (kind === 'missing') return valid
+      if (kind === 'invalid') return [...valid, ...cells.slice(3).map(cell => revise(cell, {
+        status: 'invalid', outcomeCertified: false,
+        outcome: { status: 'invalid', contractDigest: cell.identity.outcomeContractDigest, reason: 'runtime failed' },
+      }))]
+      throw new SearchExecutionFailure(kind, 'baseline execution unavailable', `worker:${kind}`, valid)
+    }
+    await expect(f.run()).rejects.toBeInstanceOf(SearchEvidencePending)
+    const pending = (await f.store.read<{ planDigest: string; resultRefs: string[] }>('rounds/r/pending-evidence'))!
+    const original = await f.store.object<StageResult>(pending.resultRefs[0]!)
+    expect(original.stagePlanDigest).toBe(pending.planDigest)
+    expect(original.cells.slice(0, 3).every(cell => cell.outcome.status === 'available')).toBe(true)
+    expect(await f.store.read('rounds/r/terminal')).toBeUndefined()
+    expect(await f.store.read('rounds/r/commit')).toBeUndefined()
+    expect(await f.store.archive()).toBeUndefined()
+    expect(f.generated).toEqual([])
+    const calls = f.executions.length
+    await expect(f.run()).rejects.toBeInstanceOf(SearchEvidencePending)
+    expect(f.executions).toHaveLength(calls)
+    await expect(f.engine().run({ ...f.request, roundId: 'next', roundIndex: 1 }, new AbortController().signal))
+      .rejects.toThrow('unresolved round')
     f.provider.evaluate = evaluate
+    const repaired = await f.engine().repairEvaluation('r', 'baseline-repair', original.digest, new AbortController().signal)
+    expect(repaired.cells).toHaveLength(f.seed.tasks.length)
+    expect(repaired.cells).toEqual(expect.arrayContaining(original.cells.slice(0, 3)))
+    expect(f.executions[calls]!.count).toBe(f.seed.tasks.length - 3)
+    expect((await f.run()).championChanged).toBe(true)
     const before = f.store.checkpoint()
-    await expect(f.engine().repairEvaluation('r', 'late', research.results[0]!.digest, new AbortController().signal)).rejects.toThrow('terminal round')
+    await expect(f.engine().repairEvaluation('r', 'late', original.digest, new AbortController().signal)).rejects.toThrow('commit intent')
     expect(f.store.checkpoint()).toEqual(before)
-    expect(await f.run()).toEqual(outcome)
+  })
+
+  it.each(['partial', 'failed'])('keeps the original bootstrap reference across consecutive %s repairs', async kind => {
+    const f = setup(), evaluate = f.provider.evaluate
+    f.config.budgets.round.maxRepairCells = 100
+    f.config.budgets.evolution.maxRepairCells = 100
+    f.provider.evaluate = async input => (await evaluate(input)).slice(0, 3)
+    await expect(f.run()).rejects.toBeInstanceOf(SearchEvidencePending)
+    const originalPending = (await f.store.read<{ planDigest: string; resultRefs: string[] }>('rounds/r/pending-evidence'))!
+    const original = await f.store.object<StageResult>(originalPending.resultRefs[0]!)
+    let pending = originalPending, current = original
+    f.provider.evaluate = async input => {
+      const valid = (await evaluate(input)).slice(0, 3)
+      if (kind === 'failed') throw new SearchExecutionFailure('worker-exited', 'repair worker exited', 'worker:repair', valid)
+      return valid
+    }
+    for (const repairId of ['first', 'second']) {
+      const calls = f.executions.length
+      const repaired = await f.engine().repairEvaluation('r', repairId, pending.resultRefs[0]!, new AbortController().signal)
+      expect(f.executions[calls]!.count).toBe(f.seed.tasks.length - current.cells.length)
+      expect(repaired.cells).toHaveLength(current.cells.length + 3)
+      expect(repaired.cells).toEqual(expect.arrayContaining(current.cells))
+      await expect(f.run()).rejects.toBeInstanceOf(SearchEvidencePending)
+      pending = (await f.store.read<typeof originalPending>('rounds/r/pending-evidence'))!
+      expect(pending).toEqual(originalPending)
+      await expect(f.run()).rejects.toBeInstanceOf(SearchEvidencePending)
+      expect(f.executions).toHaveLength(calls + 1)
+      expect(await f.store.read('rounds/r/terminal')).toBeUndefined()
+      expect(await f.store.archive()).toBeUndefined()
+      expect(f.generated).toEqual([])
+      current = repaired
+    }
+    await expect(f.engine().run({ ...f.request, roundId: 'next', roundIndex: 1 }, new AbortController().signal))
+      .rejects.toThrow('unresolved round')
+    f.provider.evaluate = evaluate
+    const calls = f.executions.length
+    const repaired = await f.engine().repairEvaluation('r', 'final', pending.resultRefs[0]!, new AbortController().signal)
+    expect(f.executions[calls]!.count).toBe(f.seed.tasks.length - current.cells.length)
+    expect(repaired.cells).toHaveLength(f.seed.tasks.length)
+    expect(repaired.cells).toEqual(expect.arrayContaining(current.cells))
+    expect((await f.run()).championChanged).toBe(true)
+  })
+
+  it('still terminates a bootstrap that cannot reserve its frozen rollout budget', async () => {
+    const f = setup()
+    f.config.budgets.round.maxNewRolloutCells = 0
+    const outcome = await f.run()
+    expect(outcome.reasonCodes).toContain('budget-exhausted:round.cells')
+    expect(await f.store.read('rounds/r/terminal')).toBeDefined()
+    expect(f.executions).toHaveLength(0)
   })
 
   it('allows completed archive evidence to be replayed while a round is pending', async () => {

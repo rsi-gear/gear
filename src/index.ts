@@ -588,6 +588,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     {
       workspaceRoot: config.workspaceRoot,
       metaAgent,
+      ...(config.datasetStorage ? { datasetStorage: config.datasetStorage } : {}),
       candidateGeneration,
       rollout,
       evaluation,

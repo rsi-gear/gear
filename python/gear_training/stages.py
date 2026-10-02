@@ -14,6 +14,7 @@ from .agents import AgentRequest, AgentRunner, CodexRunner
 from .content import ContentStore, ContractError, atomic_json, digest_json, require
 from .export import materialize, seal_directory
 from .samples import build_episode, admit_group
+from .recipes.registry import is_sft, zero_variance_policy
 from .state import load, lock
 
 
@@ -77,7 +78,7 @@ class GRPODatasetBuilder:
             samples.append(build_episode(self.store, self.store.read_json(raw.episode_ref),
                 [self.store.read_json(ref) for ref in raw.receipt_refs], self.store.read_json(raw.feedback_ref),
                 self.store.read_json(raw.context_ref), assembly=self.store.read_json(raw.assembly_ref) if raw.assembly_ref else None))
-        return admit_group(samples, self.request["rollout"]["groupSize"], self.request["rollout"]["zeroVarianceGroup"])
+        return admit_group(samples, self.request["rollout"]["groupSize"], zero_variance_policy(self.request))
 
 
 class SlimeModelUpdater:
@@ -91,11 +92,12 @@ def training_identity(request):
     behavior = request.get("behaviorPolicyRef", parent_ref)
     start = request.get("updateStart", {"mode": "resume" if request.get("resumeCheckpointRef") else "cold-start",
                                        "checkpointRef": request.get("resumeCheckpointRef"), "modelRef": parent_ref})
-    require(behavior == parent_ref, "off-policy-grpo", "this GRPO backend requires the synchronized actor as behavior policy")
+    offline = is_sft(request)
+    require(offline or behavior == parent_ref, "off-policy-grpo", "online RL requires the synchronized actor as behavior policy")
     require(start.get("modelRef") == parent_ref and start.get("mode") == ("resume" if request.get("resumeCheckpointRef") else "cold-start")
             and start.get("checkpointRef") == request.get("resumeCheckpointRef"), "unsupported-update-start", "GRPO must resume full champion state or explicitly cold start its initial weights")
-    require(request.get("referenceModelRef"), "missing-objective-reference", "the existing GRPO objective requires its sealed reference")
-    return {"behaviorPolicyRef": behavior, "updateStart": start, "referenceModelRef": request["referenceModelRef"]}
+    require(offline or request.get("referenceModelRef"), "missing-objective-reference", "online RL requires its sealed objective reference")
+    return {"behaviorPolicyRef": None if offline else behavior, "updateStart": start, "referenceModelRef": None if offline else request["referenceModelRef"]}
 
 
 from .agent_stage import run_agent_stage

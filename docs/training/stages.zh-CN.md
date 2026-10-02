@@ -1,6 +1,6 @@
 # Python 四阶段与 AgentRunner
 
-如果你只想写四个普通 Python 阶段然后运行，从 [TrainingLoop 开发指南](development.zh-CN.md) 开始。本文说明现有 Slime GRPO 后端内部的阶段与可选 agent 接入。
+如果你只想写四个普通 Python 阶段然后运行，从 [TrainingLoop 开发指南](development.zh-CN.md) 开始。本文说明现有 Slime 在线 RL 后端内部的阶段与可选 agent 接入。各算法及离线 SFT 的公共四阶段组合见开发指南。
 
 训练的逻辑链路为 `TaskSource → RolloutExecutor → DatasetBuilder → ModelUpdater`。默认实现分别是冻结任务游标、现有 Hitch rollout、严格 GRPO 样本构建和 Slime 更新。driver 继续负责 checkpoint、HF export、pending-update 和提交恢复；TypeScript 继续负责实验、独立评估、晋升和发布。这四步没有成为四个服务。
 
@@ -88,7 +88,7 @@ controller workspace 和 CAS 必须持久化：缓存授权与续跑读取原 co
 
 `behaviorPolicyRef` 表示轨迹生产策略，`updateStart` 区分完整 optimizer/scheduler/RNG 恢复与显式初始权重冷启动。`referenceModelRef` 由需要它的目标使用；当前 GRPO schema 仍要求此字段必填。当前 Slime GRPO 仍严格 on-policy：不能把任意其他策略的轨迹或任意初始 checkpoint 当作已支持的更新方式。旧配置保留已有默认值。
 
-`SFTDatasetBuilder` 仅提供数据构建，可与 GRPO admission 分开使用；没有 SFT updater。调用示例：
+`stages.SFTDatasetBuilder` 是独立的成功解/已验证前缀提取器，仅输出 `sft-dataset` 中间产物；它不直接输出 `offline-sft-v1` 所需的封存数据合同。内置 SFT 更新已由 `gear_training.offline_sft` 四阶段组合和 Slime updater 支持，使用前按 [配方指南](recipes.zh-CN.md) 编码、绑定 train 来源并封存数据。前缀提取器的调用示例：
 
 ```python
 from gear_training.stages import SFTDatasetBuilder

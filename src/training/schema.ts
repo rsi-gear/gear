@@ -59,12 +59,13 @@ const runtimeLock: Check = (value, path) => {
 }
 const harness = object({ commit, manifestRef: ref, adapter: str })
 const partition = object({ snapshotRef: ref, tasks: array(object({ id: str, family: str, taskRef: ref, environmentRef: ref }), 1), exactDataAuthorized: bool })
-const trainer = object({ provider: literal('slime'), runtimeLock, recipe: literal('agent-grpo-v1'), backend: literal('megatron'),
+const trainer = object({ provider: literal('slime'), runtimeLock, recipe: literal('agent-grpo-v1', 'agent-gspo-v1', 'agent-cispo-v1', 'agent-reinforce-plus-plus-v1', 'agent-reinforce-plus-plus-baseline-v1', 'offline-sft-v1'), backend: literal('megatron'),
   placement: optional(literal('separate', 'colocated')),
   script: optional(value => { parseTrainingScript(value) }),
   scriptConfig: optional((value, path) => { if (!value || typeof value !== 'object' || Array.isArray(value)) fail(path, 'script config object'); digestJson(value) }),
   hyperparametersRef: ref, updatesPerCandidate: positive, checkpointEveryUpdate: literal(true), optimizerResetPolicy: literal('initial-cold-start-only'),
   rolloutBatchSize: positive, globalBatchSize: positive, dataParallelSize: positive })
+const offlineTraining = object({ datasetRef: ref, shuffleSeed: integer, maxEpochs: positive, maxSequenceTokens: positive, maskContract: literal('assistant-token-mask-v1') })
 const sampling = object({ temperature: literal(1), topP: literal(1), topK: literal(-1), repetitionPenalty: literal(1), maxNewTokens: positive, maxContextTokens: positive })
 const rollout = object({ provider: literal('hitch'), mode: literal('synchronous'), groupSize: positive, maxPolicyLag: literal(0), sampling,
   episodeFormat: literal('linear-token-trajectory-v1'), capture: literal('exact-policy-tokens-v1'), truncation: literal('reject'),
@@ -74,7 +75,7 @@ const agentStage = object({ runner: str, options: (value, path) => { if (!value 
   instructionsRef: ref, maxRepairs: integer, timeoutSeconds: positive })
 const stages = object({ taskSource: optional(agentStage), datasetBuilder: optional(agentStage) })
 const spec = object({ schemaVersion: version, kind: literal('model-training'), name: str, fixedHarness: harness,
-  initialModel: ref, referenceModel: ref, stages: optional(stages), datasets: object({ train: partition, dev: partition, heldOut: partition }), verifier: ref, trainer, rollout,
+  initialModel: ref, referenceModel: ref, stages: optional(stages), datasets: object({ train: partition, dev: partition, heldOut: partition }), verifier: ref, trainer, rollout, offlineTraining: optional(offlineTraining),
   evaluation: object({ provider: literal('hitch-managed-local'), topology: literal('local-docker-harbor-dataset'), samplingProfile: literal('baseline'),
     common: object({ runtimeDigest: hash, protocolDigest: hash, samplingDigest: hash, budgetsDigest: hash, attempts: positive }),
     policy: object({ minDevGain: nonnegative, maxHeldOutRegression: nonnegative, maxInferenceErrorRate: nonnegative, requiredTaskIds: array(str), maxHeldOutEvaluations: positive }) }),
@@ -84,7 +85,7 @@ const request = object({ schemaVersion: version, trainingRunId: str, experimentI
   stages: optional(stages), generatedTaskExclusionRef: optional(ref), behaviorPolicyRef: optional(ref),
   updateStart: optional(object({ mode: literal('cold-start', 'resume'), modelRef: ref, checkpointRef: optional(ref) })),
   referenceModelRef: ref, resumeCheckpointRef: optional(ref), coldStart: bool, fixedHarness: harness, trainDataset: partition, verifier: ref,
-  trainer, rollout, budgets, trainingDevices: array(str, 1), recipeDigest: hash, datasetSplitDigest: hash })
+  trainer, rollout, offlineTraining: optional(offlineTraining), budgets, trainingDevices: array(str, 1), recipeDigest: hash, datasetSplitDigest: hash })
 const handle: Check = (v, p) => {
   const v2 = !!v && typeof v === 'object' && (v as { schemaVersion?: unknown }).schemaVersion === 2
   object({ schemaVersion: literal(v2 ? 2 : 1), provider: literal('slime'), jobId: pattern(/^[a-zA-Z0-9_-]+$/), requestDigest: hash,
@@ -129,18 +130,18 @@ export function sealModelVersion(body: Omit<T.ModelVersion, 'id'>): T.ModelVersi
 
 function validateRecipe(t: T.ModelTrainingSpec['trainer'], r: T.ModelTrainingSpec['rollout'], b: T.ModelTrainingSpec['budgets']): void {
   requireContract(t.runtimeLock.slimeCommit === '41014d1f29e201137fdffce737bb8bac65bc5219', 'unsupported-slime', 'Slime commit must match the tested bridge contract')
-  requireContract(r.groupSize >= 2, 'invalid-grpo-group', 'GRPO requires at least two independent slots')
-  const n = t.rolloutBatchSize * r.groupSize
+  if (t.recipe !== 'offline-sft-v1') requireContract((t.recipe === 'agent-reinforce-plus-plus-v1' || r.groupSize >= 2), 'invalid-grpo-group', 'GRPO requires at least two independent slots')
+  const n = t.rolloutBatchSize * (t.recipe === 'offline-sft-v1' ? 1 : r.groupSize)
   requireContract(Number.isSafeInteger(n) && n % t.globalBatchSize === 0 && t.globalBatchSize % t.dataParallelSize === 0,
     'invalid-batch-layout', 'B × G must be divisible by global batch size, which must be divisible by DP size')
-  requireContract(r.sampling.maxNewTokens < r.sampling.maxContextTokens, 'invalid-token-budget', 'output budget must leave room for the prompt')
+  if (t.recipe !== 'offline-sft-v1') requireContract(r.sampling.maxNewTokens < r.sampling.maxContextTokens, 'invalid-token-budget', 'output budget must leave room for the prompt')
   requireContract(b.totalGpuSeconds > 0, 'invalid-gpu-budget', 'an explicit positive GPU budget is required')
   requireContract(t.runtimeLock.validation !== 'validated' || t.runtimeLock.probeEvidenceRefs.length > 0,
     'missing-probes', 'validated runtime requires GPU compatibility probe evidence')
 }
 function validateTrainingDevices(t: T.ModelTrainingSpec['trainer'], devices: string[]): void {
   requireContract(new Set(devices).size === devices.length, 'duplicate-device', 'training GPU pool has duplicate devices')
-  const minimum = t.dataParallelSize + (t.placement === 'colocated' ? 0 : 1)
+  const minimum = t.dataParallelSize + (t.recipe === 'offline-sft-v1' || t.placement === 'colocated' ? 0 : 1)
   requireContract(devices.length >= minimum, 'gpu-allocation-overflow', 'training GPU pool must fit actor DP and rollout placement')
 }
 export function parseTrainingRequest(v: unknown): T.TrainingRequest {
@@ -164,6 +165,8 @@ function parseTrainingRequestBody(v: unknown): T.TrainingRequestV1 {
   const result = parse<T.TrainingRequestV1>(request, v, 'TrainingRequest')
   parseModelVersion(result.parentModel)
   requireContract(result.fixedHarness.adapter === 'training-tool', 'unsupported-training-harness', 'v1 exact training requires the fixed linear training-tool harness')
+  requireContract((result.trainer.recipe === 'offline-sft-v1') === !!result.offlineTraining,
+    'offline-dataset-required', 'offlineTraining must be supplied exactly for offline-sft-v1')
   validateRecipe(result.trainer, result.rollout, result.budgets)
   validateTrainingDevices(result.trainer, result.trainingDevices)
   requireContract(result.trainDataset.exactDataAuthorized, 'exact-data-not-authorized', 'train tasks must allow exact training capture')
@@ -178,6 +181,8 @@ function parseTrainingRequestBody(v: unknown): T.TrainingRequestV1 {
   validateStages(result.stages)
   requireContract(!result.trainer.script || !Object.keys(result.stages ?? {}).length,
     'unsupported-dev-stages', 'script factories configure their own stages; do not also set legacy stage overrides')
+  requireContract(result.trainer.recipe !== 'offline-sft-v1' || !Object.keys(result.stages ?? {}).length,
+    'unsupported-offline-stages', 'offline SFT uses its sealed dataset; configure custom stages through trainer.script')
   return result
 }
 function validateStages(value: T.TrainingStages | undefined): void {
@@ -216,12 +221,16 @@ function validateRuntimePlacement(lock: T.TrainingRuntimeLock, deployment: T.Fro
 function parseModelTrainingSpecBody(v: unknown): T.ModelTrainingSpecV1 {
   const result = parse<T.ModelTrainingSpecV1>(spec, v, 'ModelTrainingSpec')
   requireContract(result.fixedHarness.adapter === 'training-tool', 'unsupported-training-harness', 'v1 exact training requires training-tool for training and evaluation')
+  requireContract((result.trainer.recipe === 'offline-sft-v1') === !!result.offlineTraining,
+    'offline-dataset-required', 'offlineTraining must be supplied exactly for offline-sft-v1')
   validateRecipe(result.trainer, result.rollout, result.budgets)
   validateTrainingDevices(result.trainer, result.resources.trainingDevices)
   requireContract(result.datasets.train.exactDataAuthorized, 'exact-data-not-authorized', 'train tasks must allow exact capture')
   validateStages(result.stages)
   requireContract(!result.trainer.script || !Object.keys(result.stages ?? {}).length,
     'unsupported-dev-stages', 'script factories configure their own stages; do not also set legacy stage overrides')
+  requireContract(result.trainer.recipe !== 'offline-sft-v1' || !Object.keys(result.stages ?? {}).length,
+    'unsupported-offline-stages', 'offline SFT uses its sealed dataset; configure custom stages through trainer.script')
   const seen = new Map<string, string>()
   for (const [name, split] of Object.entries(result.datasets)) {
     const ids = new Set<string>()
@@ -269,7 +278,16 @@ export function parseFeedbackRecord(v: unknown): T.FeedbackRecord {
 export const parseTrainingEpisode = (v: unknown): T.TrainingEpisode => parse(object({ schemaVersion: version, id: str, groupId: str,
   slot: integer, harnessRef: ref, taskRef: ref, environmentRef: ref, policyVersion: str, runId: str, receiptIds: array(str), feedbackId: str,
   termination: literal('terminated', 'truncated', 'aborted', 'infra-error'), eligibility: literal('eligible', 'ineligible'), rejectionReasons: array(str) }), v, 'TrainingEpisode')
-export function parseTrainingBatch(v: unknown): T.TrainingBatchManifest {
+export function parseTrainingBatch(v: unknown): T.ConsumedTrainingBatch {
+  if ((v as { schemaVersion?: unknown })?.schemaVersion === 3) {
+    const result = parse<T.OfflineSftBatchManifest>(object({ schemaVersion: literal(3), kind: literal('offline-sft-batch'), id: hash,
+      trainingRunId: str, recipeDigest: hash, datasetSplitDigest: hash, datasetRef: ref, samplesRef: ref, recordRefs: array(ref, 1),
+      cursorBefore: object({ position: integer }), cursorAfter: object({ position: positive }), state: literal('sealed') }), v, 'OfflineSftBatch')
+    const { id, ...body } = result
+    requireContract(digestJson(body) === id && result.cursorAfter.position - result.cursorBefore.position === result.recordRefs.length,
+      'batch-digest-mismatch', 'SFT batch identity or cursor advance differs')
+    return result
+  }
   const v2 = (v as { schemaVersion?: unknown })?.schemaVersion === 2
   const result = parse<T.TrainingBatchManifest>(object({ schemaVersion: literal(v2 ? 2 : 1), id: hash, trainingRunId: str,
   policyVersion: str, recipeDigest: hash, datasetSplitDigest: hash, groupsRef: ref, samplesRef: ref, sourceEvidenceDigest: hash,

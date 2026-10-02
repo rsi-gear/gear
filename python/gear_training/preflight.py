@@ -41,12 +41,15 @@ def compatibility_digest(request):
     return digest_json({"backend": request["trainer"]["backend"], "runtimeLock": request["trainer"]["runtimeLock"],
         "placement": request["trainer"].get("placement", "separate"), "trainingDeviceCount": len(request["trainingDevices"]),
         "hyperparametersRef": request["trainer"]["hyperparametersRef"], "referenceModelRef": request["referenceModelRef"],
+        **({"recipe": request["trainer"]["recipe"], "batchLayout": {k: request["trainer"][k] for k in ("rolloutBatchSize", "globalBatchSize", "dataParallelSize")},
+            **({"offlineTraining": request["offlineTraining"]} if request.get("offlineTraining") else {"rollout": request["rollout"]})}
+           if request["trainer"].get("recipe", "agent-grpo-v1") != "agent-grpo-v1" else {}),
         **{k: parent[k] for k in ("architecture", "dtype", "tokenizerDigest", "chatTemplateDigest")},
         **({"deployment": request["deployment"], "trainingDevices": request["trainingDevices"]} if request.get("schemaVersion") == 2 else {})})
 
 
 def missing_probe_checks(request, store):
-    if request.get("schemaVersion") == 2:
+    if request.get("schemaVersion") == 2 or request["trainer"].get("recipe", "agent-grpo-v1") != "agent-grpo-v1":
         from .certification import missing_checks
         return missing_checks(request, store)
     lock = request["trainer"]["runtimeLock"]
@@ -67,6 +70,8 @@ def missing_probe_checks(request, store):
 
 
 def preflight(request, config):
+    from .recipes.registry import is_sft
+    offline = is_sft(request)
     lock = request["trainer"]["runtimeLock"]
     result = {"schemaVersion": 1, "trainingExternalBinding": False, "exactPolicyTokens": False, "policyFencing": False,
               "durableIdempotency": True, "checkpointEveryUpdate": True, "immutableHfExport": True, "runtimeLockDigest": digest_json(lock), "blockers": []}
@@ -90,6 +95,17 @@ def preflight(request, config):
     if missing: blockers.append("missing-runtime-probe-evidence:" + ",".join(missing))
     try:
         from .driver import build_argv
+        if offline:
+            from .offline import read_dataset, validate_cursor
+            data = read_dataset(store, request)
+            start = 0
+            if request.get("resumeCheckpointRef"):
+                checkpoint = store.read_json(request["resumeCheckpointRef"])
+                validate_cursor(store, request, checkpoint); start = checkpoint["committedUpdate"]
+            require((start + request["trainer"]["updatesPerCandidate"]) * request["trainer"]["rolloutBatchSize"] <= len(data["records"]) * request["offlineTraining"]["maxEpochs"],
+                    "offline-dataset-exhausted", "bounded offline epoch limit cannot supply remaining candidate")
+        from .recipes.source_contract import verify_source_contract
+        if request["trainer"].get("recipe", "agent-grpo-v1") != "agent-grpo-v1": verify_source_contract(config["slimePath"], request)
         build_argv(request, store.read_json(request["trainer"]["hyperparametersRef"]),
                    {k: "/preflight/" + k for k in ("load", "reference", "hf", "save")}, 0)
     except Exception as error:
@@ -99,14 +115,14 @@ def preflight(request, config):
         blockers.extend(validate_training_runtime(request, config))
         # These are the bridge's native model-node protocols. Controller and
         # Harbor capabilities are checked independently on their own nodes.
-        result.update(trainingExternalBinding=True, exactPolicyTokens=True, policyFencing=True)
+        result.update(trainingExternalBinding=not offline, exactPolicyTokens=not offline, policyFencing=not offline)
         result["blockers"] = sorted(set(blockers))
         return result
     try:
-        if not v2: asyncio.run(HitchClient(config["hitchCommand"], config["hitchRoot"]).capabilities())
+        if not v2 and not offline: asyncio.run(HitchClient(config["hitchCommand"], config["hitchRoot"]).capabilities())
         # V2's controller separately negotiates Hitch/provider capabilities. The
         # model node advertises its native protocol, without invoking Hitch.
-        result.update(trainingExternalBinding=True, exactPolicyTokens=True, policyFencing=True)
+        result.update(trainingExternalBinding=not offline, exactPolicyTokens=not offline, policyFencing=not offline)
     except Exception:
         blockers.append("hitch-training-capabilities-unavailable")
     try:

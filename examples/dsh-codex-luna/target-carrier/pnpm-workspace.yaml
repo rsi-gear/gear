@@ -11,4 +11,6 @@ onlyBuiltDependencies:
   - node-pty
   - protobufjs
 overrides:
+  # DSH rc.2 uses registerConfig, which HMR 1.0.19 no longer exports.
+  '@deepseek-ai/cordis-plugin-hmr': 1.0.16
   '@earendil-works/pi-ai': 0.84.4

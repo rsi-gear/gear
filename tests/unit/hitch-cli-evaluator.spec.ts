@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { HitchCliEvaluator } from '../../src/evaluator/hitch-cli.js'
+import { RefineStateStore } from '../../src/state/store.js'
 import { digestDatasetRef } from '../../src/state/dataset.js'
 import { RefineCapabilities } from '../../src/capabilities.js'
 import { renderTrajectoryResult } from '../../src/notebook/tool.js'
@@ -696,7 +697,8 @@ describe('HitchCliEvaluator', () => {
     const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
     const { digest: ignored, ...anchor } = fixtures(2, false).anchor
     const snapshot = seal({ ...anchor, commit: fixture.championRef, manifestDigest: fixture.manifest.digest })
-    const options = { spec, workspaceRoot: fixture.root, stateRoot: join(fixture.root, 'search'), identityRound: state,
+    const lock = await new RefineStateStore(fixture.root).acquireRoundLock()
+    const options = { lock: async () => lock, spec, workspaceRoot: fixture.root, stateRoot: join(fixture.root, 'search'), identityRound: state,
       round: async () => state, manifest: async () => fixture.manifest }
     const provider = new EvaluationSearchAdapter(evaluator, options), universe = await provider.describe('seed')
     const plan = stagePlan({ stage: 'local', partition: 'seed', universeDigest: universe.digest,

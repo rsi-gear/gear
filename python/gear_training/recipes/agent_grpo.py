@@ -28,10 +28,12 @@ def effective_sampling(locked, body, input_length, max_context):
 
 
 def validate_layout(args, request):
+    from .registry import estimator, is_sft
     t, r = request["trainer"], request["rollout"]
-    for key, expected in {"rollout_batch_size": t["rolloutBatchSize"], "n_samples_per_prompt": r["groupSize"], "global_batch_size": t["globalBatchSize"], "advantage_estimator": "grpo"}.items():
+    offline = is_sft(request)
+    for key, expected in {"rollout_batch_size": t["rolloutBatchSize"], "n_samples_per_prompt": 1 if offline else r["groupSize"], "global_batch_size": t["globalBatchSize"], "advantage_estimator": estimator(request)}.items():
         require(getattr(args, key, None) == expected, "slime-recipe-drift", "Slime argument conflicts with sealed recipe: " + key)
-    total = t["rolloutBatchSize"] * r["groupSize"]
+    total = t["rolloutBatchSize"] * (1 if offline else r["groupSize"])
     require(total % t["globalBatchSize"] == 0 and t["globalBatchSize"] % t["dataParallelSize"] == 0, "invalid-batch-layout", "B × G / global batch / DP divisibility failed")
     require(not getattr(args, "dynamic_global_batch_size", False), "dynamic-batching-unsupported", "fixed groups cannot use dynamic global batching")
-    sampling_params(r)
+    if not offline: sampling_params(r)

@@ -19,11 +19,11 @@ export class SearchBudgetExceeded extends Error { constructor(readonly resource:
 /** Single-writer journal operations shared by durable and in-memory execution. */
 export interface SearchJournal {
   read<T>(name: string): Promise<T | undefined>
-  write(name: string, value: unknown): Promise<void>
+  write(name: string, value: unknown, beforePublish?: () => Promise<void>): Promise<void>
   put<T extends { digest: string }>(value: T): Promise<string>
   object<T extends { digest: string }>(ref: string): Promise<T>
   freeze<T extends { digest: string }>(roundId: string, name: string, create: () => Promise<T> | T): Promise<T>
-  freezeEvolution<T extends { digest: string }>(name: string, create: () => Promise<T> | T): Promise<T>
+  freezeEvolution<T extends { digest: string }>(name: string, create: () => Promise<T> | T, beforePublish?: () => Promise<void>): Promise<T>
   archive(): Promise<ResearchArchive | undefined>
   casArchive(expected: string | undefined, next: ResearchArchive): Promise<void>
   operation(roundId: string, key: string): Promise<Operation | undefined>
@@ -35,7 +35,7 @@ export interface SearchJournal {
 /** All writers run under the owning evolution's single-writer lock. */
 export abstract class SearchJournalBase implements SearchJournal {
   abstract read<T>(name: string): Promise<T | undefined>
-  abstract write(name: string, value: unknown): Promise<void>
+  abstract write(name: string, value: unknown, beforePublish?: () => Promise<void>): Promise<void>
   abstract put<T extends { digest: string }>(value: T): Promise<string>
   async object<T extends { digest: string }>(ref: string): Promise<T> {
     digest(ref)
@@ -47,14 +47,14 @@ export abstract class SearchJournalBase implements SearchJournal {
     safeId(roundId); safeId(name)
     return this.freezeKey(`rounds/${roundId}/${name}`, create)
   }
-  async freezeEvolution<T extends { digest: string }>(name: string, create: () => Promise<T> | T): Promise<T> {
+  async freezeEvolution<T extends { digest: string }>(name: string, create: () => Promise<T> | T, beforePublish?: () => Promise<void>): Promise<T> {
     safeId(name)
-    return this.freezeKey(`evolution/${name}`, create)
+    return this.freezeKey(`evolution/${name}`, create, beforePublish)
   }
-  private async freezeKey<T extends { digest: string }>(key: string, create: () => Promise<T> | T): Promise<T> {
+  private async freezeKey<T extends { digest: string }>(key: string, create: () => Promise<T> | T, beforePublish?: () => Promise<void>): Promise<T> {
     const saved = await this.read<{ ref: string }>(key)
     if (saved) return this.object<T>(saved.ref)
-    const value = await create(); await this.put(value); await this.write(key, { ref: value.digest }); return value
+    const value = await create(); await this.put(value); await this.write(key, { ref: value.digest }, beforePublish); return value
   }
   async archive(): Promise<ResearchArchive | undefined> {
     const pointer = await this.read<{ ref: string }>('archive')
@@ -123,12 +123,13 @@ export abstract class SearchJournalBase implements SearchJournal {
 
 export class SearchStore extends SearchJournalBase {
   constructor(readonly root: string) { super() }
-  private async atomic(path: string, value: unknown): Promise<void> {
+  private async atomic(path: string, value: unknown, beforePublish?: () => Promise<void>): Promise<void> {
     await mkdir(dirname(path), { recursive: true })
     const temporary = `${path}.${crypto.randomUUID()}.tmp`
     const handle = await open(temporary, 'wx', 0o600)
     try { await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`); await handle.sync() } finally { await handle.close() }
-    await rename(temporary, path)
+    try { await beforePublish?.(); await rename(temporary, path) }
+    finally { await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error }) }
   }
   async read<T>(name: string): Promise<T | undefined> {
     invariant(/^[a-zA-Z0-9_/-]+$/u.test(name) && !name.includes('..'), 'unsafe state path')
@@ -139,9 +140,9 @@ export class SearchStore extends SearchJournalBase {
     }
     catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e }
   }
-  async write(name: string, value: unknown): Promise<void> {
+  async write(name: string, value: unknown, beforePublish?: () => Promise<void>): Promise<void> {
     invariant(/^[a-zA-Z0-9_/-]+$/u.test(name) && !name.includes('..'), 'unsafe state path')
-    await this.atomic(join(this.root, `${name}.json`), value)
+    await this.atomic(join(this.root, `${name}.json`), value, beforePublish)
   }
   async put<T extends { digest: string }>(value: T): Promise<string> {
     verifyDigest(value); digest(value.digest)
