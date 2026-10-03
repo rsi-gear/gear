@@ -1,13 +1,21 @@
 # Slime 模型训练接入
 
-Gear 的模型训练独立于 harness 进化状态，通过固定 harness 和数据集执行 Slime GRPO 更新，再用不可变 HF 导出进行独立评估。新部署从 [v2 controller 配置](controller-v2.zh-CN.md) 开始；下文同时说明 v1 配置和通用训练合同。
+使用自己的 GPU，先看 [四阶段与 TB GRPO / SFT 上手指南](developer-guide.zh-CN.md)：框架、修改方法、一次性配置及两个一键示例。
+
+Gear 的模型训练独立于 harness 进化状态，通过固定 harness 和数据集执行版本化 Slime RL 或离线 SFT 更新，再用不可变 HF 导出进行独立评估。新部署从 [v2 controller 配置](controller-v2.zh-CN.md) 开始；下文同时说明 v1 配置和通用训练合同。
+
+开发者编写自己的四阶段训练，从 [TrainingLoop 开发指南](development.zh-CN.md) 开始；它支持普通 Python 实现，不要求 agent；控制器也可加载自定义 `build_loop(config, runtime)` 脚本，Hitch/Slime 作为内置组件继续复用。已有 Slime 后端可用 `python -m gear_training run spec.json --config controller.json` 创建并持续运行，或 `run EXP_ID RUN_ID` 跟踪已有运行。 原 dev 固定任务 GRPO 流程的四阶段脚本是 [dev_grpo.py](../../examples/training-loop/dev_grpo.py)，运行和恢复方法见开发指南。
 
 目前实机验收覆盖本地 Gear / Hitch / Harbor Docker 与远程 RTX 5090 单卡上的 Qwen2.5-1.5B 训练、恢复及推理。远程 Docker / Harbor 和双卡尚未验收。独立评估 reward=0，不代表质量提升或晋升。认证范围及证据见文末；`pending-gpu` lock 不能提交正式训练。
+
+可选的任务生成、轨迹分析及 SFT 数据构建见 [Python 四阶段与 AgentRunner](stages.zh-CN.md)。 开发与扩展请从 [训练模块开发指南](development.zh-CN.md) 开始。
+
+新增 GSPO、CISPO、REINFORCE++、REINFORCE++ baseline 与离线 SFT 的配置、数据封存和独立 GPU 验证边界见 [配方指南](recipes.zh-CN.md)。原有 GRPO v1/v2 合同和检查点兼容性保留。
 
 ## 代码入口
 
 - `rsi-gear/training`：版本化合同、CAS、`ModelTrainingCoordinator`、`SlimeModelTrainer`、`HitchModelEvaluator` 和显式发布适配器。
-- `gear-refine training`：v2 冻结前用 `preflight-deployment` 分别检查控制端、Harbor worker 和模型节点，再用 `freeze-deployment` 固定部署；实验执行使用 `put-json`、`seal-hf`、`seal-dataset`、`validate`、`init`、`admit`、`preflight`、`advance`、`status`、`pause`、`resume`、`close`、`publish`、`rollback`。
+- `gear-refine training`：v2 冻结前用 `preflight-deployment` 分别检查控制端、Harbor worker 和模型节点，再用 `freeze-deployment` 固定部署；实验执行使用 `put-json`、`seal-hf`、`seal-dataset`、`seal-sft`、`validate`、`init`、`admit`、`preflight`、`advance`、`status`、`pause`、`resume`、`close`、`publish`、`rollback`。
 - `python/gear_training`：Slime job RPC、私有作业监督进程、精确 token gateway、rollout hook、完整 checkpoint/HF export、恢复账本。
 - Hitch 新增 `training register` / `training evidence`；`local plan` / `local inspect` 用于在提交前读取并固定真实 inference lock。
 
@@ -148,9 +156,9 @@ gear-refine training init spec.json --config controller.json
 gear-refine training admit EXP_ID --config controller.json
 gear-refine training preflight EXP_ID RUN_ID --config controller.json
 gear-refine training advance EXP_ID RUN_ID --config controller.json
-gear-refine training status EXP_ID RUN_ID --config controller.json
-gear-refine training pause EXP_ID RUN_ID --config controller.json
-gear-refine training resume EXP_ID RUN_ID --config controller.json
+python -m gear_training status EXP_ID RUN_ID --config controller.json
+python -m gear_training pause EXP_ID RUN_ID --config controller.json
+python -m gear_training resume EXP_ID RUN_ID --config controller.json
 ```
 
 每步训练保存 actor、optimizer、scheduler/RNG 和数据 cursor，再导出 HF，再用 UpdateCommitManifest 原子登记 batch 消费。崩溃在完整 checkpoint 之前时丢弃未提交内存更新；有 sealed batch 时只在恢复到相同 pre-update 权重后重放。完整 checkpoint 后导出失败保留 pending-update，恢复后只重导出，不执行额外 optimizer step。旧进程身份（PID 与创建时间）、旧 Hitch submit key、run 终态、receipt 和租约都需要协调完成，新 incarnation 才能开始。

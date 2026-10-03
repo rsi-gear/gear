@@ -23,7 +23,28 @@ REQUIRED = {
 }
 
 
+def required_checks(request):
+    recipe = request["trainer"].get("recipe", "agent-grpo-v1")
+    if recipe == "agent-grpo-v1": return REQUIRED
+    if recipe == "offline-sft-v1":
+        return {**dict.fromkeys(("sftMaskedLoss", "sftOptimizerRecovery", "exportReload", "independentEvaluationHandoff", "disconnectedAccounting"), "gpu"),
+                "offlineDataIsolation": "process", "controlResponseRecovery": "process", "remoteArtifactRetention": "remote-process"}
+    from .execution import actor_rollout_placement
+    checks = {**REQUIRED, "algorithmLossAndAdvantages": "gpu"}
+    if actor_rollout_placement(request) != "colocated":
+        for key in ("colocatedMemoryCycle", "colocatedCheckpointRecovery", "colocatedWeightAlignment"): checks.pop(key)
+    return checks
+
+
 def scope(request):
+    recipe = request["trainer"].get("recipe", "agent-grpo-v1")
+    if recipe != "agent-grpo-v1":
+        from .preflight import compatibility_digest
+        require(recipe in ("agent-gspo-v1", "agent-cispo-v1", "agent-reinforce-plus-plus-v1", "agent-reinforce-plus-plus-baseline-v1", "offline-sft-v1"),
+                "unsupported-training-recipe", "certificate cannot authorize an unknown recipe")
+        # Scope includes recipe, batch shape and full data contract for SFT.
+        return {"profile": "gear-versioned-recipe-v1", "recipe": recipe, "harnessIdentityDigest": digest_json(request["fixedHarness"]), "compatibilityDigest": compatibility_digest({**request, "trainer": {**request["trainer"],
+            "runtimeLock": {k: v for k, v in request["trainer"]["runtimeLock"].items() if k not in ("validation", "probeEvidenceRefs")}}})}
     deployment = request.get("deployment", {})
     task = deployment.get("taskExecution", {})
     require(request.get("schemaVersion") == 2 and task.get("placement") == "local" and task.get("provider") == "local-docker"
@@ -38,6 +59,7 @@ def scope(request):
 
 def inspect_certificate(request, certificate):
     identity = scope(request)
+    required = required_checks(request)
     require(isinstance(certificate, dict) and set(certificate) == {"schemaVersion", "kind", "scope", "observations"}
             and certificate["schemaVersion"] == 2 and certificate["kind"] == "gear-training-compatibility-probe"
             and certificate["scope"] == identity and isinstance(certificate["observations"], list),
@@ -47,8 +69,8 @@ def inspect_certificate(request, certificate):
         require(isinstance(observation, dict) and set(observation) == {"check", "method", "passed", "artifacts"},
                 "invalid-runtime-certificate", "only public check observations belong in a certificate")
         check = observation["check"]
-        require(check in REQUIRED and check not in passed and observation["passed"] is True
-                and observation["method"] == REQUIRED[check], "invalid-runtime-certificate", "check is duplicated, failed or uses the wrong evidence method")
+        require(check in required and check not in passed and observation["passed"] is True
+                and observation["method"] == required[check], "invalid-runtime-certificate", "check is duplicated, failed or uses the wrong evidence method")
         artifacts = observation["artifacts"]
         require(isinstance(artifacts, list) and artifacts, "invalid-runtime-certificate", "each check needs retained audit artifact identities")
         for artifact in artifacts:
@@ -58,7 +80,7 @@ def inspect_certificate(request, certificate):
                     and type(artifact["size"]) is int and artifact["size"] > 0,
                     "invalid-runtime-certificate", "artifact digest and byte length are required; private paths and raw facts are excluded")
         passed.add(check)
-    return sorted(set(REQUIRED) - passed)
+    return sorted(set(required) - passed)
 
 
 def missing_checks(request, store):
@@ -67,10 +89,10 @@ def missing_checks(request, store):
     try:
         scope(request)
         refs = request["trainer"]["runtimeLock"].get("probeEvidenceRefs", [])
-        if len(refs) != 1: return sorted(REQUIRED)
+        if len(refs) != 1: return sorted(required_checks(request))
         return inspect_certificate(request, store.read_json(refs[0]))
     except (ValueError, KeyError, TypeError, OSError):
-        return sorted(REQUIRED)
+        return sorted(required_checks(request))
 
 
 def certify(request, audit, directory, store):

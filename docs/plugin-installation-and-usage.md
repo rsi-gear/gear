@@ -67,7 +67,7 @@ Linux 还必须明确 Unix socket 隔离实现：
 
 标准 DSH `web` profile 已提供这些宿主能力。不要在 Gear 中复制一套 DSH runtime。
 
-Gear 安装包携带私有 ToolFs：构建时校验固定的上游 `0.1.1-rc.2` 包，只补齐图片工具的 `fs` 注入，并内联该工具使用的 diff 9。运行时继续使用宿主 DSH 服务，Gear 自身的 diff 8 保持独立。这不覆盖全局 DSH，也不依赖任何图片插件。源码安装的 `prepare` 和打包前构建会生成该 asset；服务器安装构建好的 tarball 不需要构建工具。详见 [图片工具故障与修复记录](meta-agent-initialization-fix-2026-09-05.md)。
+Gear 安装包携带私有 ToolFs：构建时校验固定的上游 `0.1.1-rc.2` 包，只补齐图片工具的 `fs` 注入，并内联该工具使用的 diff 9。运行时继续使用宿主 DSH 服务，Gear 自身的 diff 8 保持独立。这不覆盖全局 DSH，也不依赖任何图片插件。源码安装的 `prepare` 和打包前构建会生成该 asset；服务器安装构建好的 tarball 不需要构建工具。构建入口为 `scripts/build-private-tool-fs.mjs`。
 
 ## 3. 安装插件
 
@@ -926,7 +926,7 @@ DSH Web `0.1.0-rc.8` 的空白新会话存在展示边缘问题。先发送一�
 - [Git-native Candidate Workspace 开发规格](git-native-candidate-workspace-development-spec.md)
 - [Gear ↔ Hitch CLI 集成设计](hitch-dsh-integration.md)
 - [Hitch Local Exact Commit → Harbor Transport](hitch-local-commit-harbor-requirements.md)
-- [Terminal-Bench 本地实验 runbook](evolve-lab-runbook.md)
+- [可复现的 DSH / Codex Luna 示例](../examples/dsh-codex-luna/README.md)
 
 ### Reuse training evaluation for promotion
 

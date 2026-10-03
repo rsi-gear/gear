@@ -115,6 +115,8 @@ export class ModelTrainingStore extends TrainingContentStore {
       requireContract(run.id === runId && request.trainingRunId === runId && request.experimentId === id
         && request.parentModelRef.digest === run.parent.modelRef.digest && request.referenceModelRef.digest === state.spec.referenceModel.digest
         && digestJson(request.trainer) === digestJson(state.spec.trainer) && digestJson(request.rollout) === digestJson(state.spec.rollout)
+        && digestJson(request.offlineTraining ?? null) === digestJson(state.spec.offlineTraining ?? null)
+        && digestJson(request.stages ?? null) === digestJson(state.spec.stages ?? null)
         && request.schemaVersion === state.spec.schemaVersion && digestJson(request.trainingDevices) === digestJson(state.spec.resources.trainingDevices)
         && (request.schemaVersion !== 2 || (state.spec.schemaVersion === 2 && digestJson(request.deployment) === digestJson(state.spec.deployment)))
         && digestJson(request.fixedHarness) === digestJson(state.spec.fixedHarness) && digestJson(request.trainDataset) === digestJson(state.spec.datasets.train),

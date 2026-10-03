@@ -5,11 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "gear-training"
 version = "0.1.0"
-description = "Exact-token Hitch rollout bridge for a pinned Slime GRPO runtime"
+description = "Versioned exact-token RL and offline SFT bridge for the pinned Slime runtime"
 requires-python = ">=3.10"
 dependencies = ["psutil>=5.9,<8"]
 
 [project.optional-dependencies]
+agents = ["openai-codex==0.159.3"]
 gateway = ["aiohttp>=3.11,<4"]
 
 [project.scripts]

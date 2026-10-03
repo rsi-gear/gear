@@ -47,7 +47,7 @@ export class ModelNodeTransport {
     requireContract(this.identity !== null || operation === 'probe', 'node-not-resolved', 'probe and pin a node generation before performing work')
     const envelope = nodeEnvelope(this.identity, operation, payload, requestId)
     let value: unknown
-    const readOnly = ['probe', 'training.inspect', 'cas.stat', 'training.episodes.receipts'].includes(operation)
+    const readOnly = ['probe', 'training.inspect', 'scripts.inspect', 'cas.stat', 'training.episodes.receipts'].includes(operation)
     const verifiesFiles = ['cas.retain', 'cas.hfManifest', 'cas.sealHf'].includes(operation)
     const deadline = Date.now() + (verifiesFiles ? this.transferTimeoutMs : this.timeoutMs)
     try {
@@ -191,17 +191,27 @@ export function contentDependencies(value: unknown): ContentRef[] {
 
 /** Walk only explicit roots. Callers decide which train-only inputs may leave the controller. */
 export async function syncContentGraph(transport: ModelNodeTransport, store: TrainingContentStore, roots: ContentRef[], direction: 'upload' | 'download'): Promise<void> {
-  const queue = [...roots]; const seen = new Set<string>()
-  for (let i = 0; i < queue.length; i++) {
-    const ref = queue[i]!
-    if (seen.has(ref.digest)) continue
-    seen.add(ref.digest)
-    if (direction === 'download') await transport.download(store, ref)
-    if (ref.mediaType === 'application/json') queue.push(...contentDependencies(await store.readJson(ref)))
-    if (direction === 'upload') await transport.upload(store, ref)
+  const queue = [...roots], seen = new Set<string>()
+  let cursor = 0
+  while (cursor < queue.length) {
+    // Independent immutable objects can share four transfers. Keep traversal
+    // bounded, deduplicate before dispatch, and settle every transfer on errors.
+    const batch: ContentRef[] = []
+    while (cursor < queue.length && batch.length < 4) {
+      const ref = queue[cursor++]!
+      if (seen.has(ref.digest)) continue
+      seen.add(ref.digest); batch.push(ref)
+    }
+    const results = await Promise.allSettled(batch.map(async ref => {
+      if (direction === 'download') await transport.download(store, ref)
+      const children = ref.mediaType === 'application/json' ? contentDependencies(await store.readJson(ref)) : []
+      if (direction === 'upload') await transport.upload(store, ref)
+      return children
+    }))
+    for (const result of results) if (result.status === 'rejected') throw result.reason
+    for (const result of results) if (result.status === 'fulfilled') queue.push(...result.value)
   }
 }
-
 
 /** Snapshot files are opaque bytes. JSON configs are not CAS traversal roots. */
 export function snapshotFileEntries(value: unknown): Array<{ contentRef: ContentRef; size: number }> | null {

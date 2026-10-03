@@ -1,3 +1,5 @@
+import type { ParentSelectionPolicy } from '../search/parent-selection.js'
+import { championGepaPolicy, parentPolicyImplementation, scopedFrontierPolicy } from '../search/policies/parents.js'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import type {
   CandidateAssessmentContext,
@@ -64,6 +66,7 @@ export function rolloutProviderSemanticDigest(
     agentConfig,
   })
 }
+export { implementationFromFiles } from './implementation-files.js'
 
 export interface CandidateGenerationSlot {
   candidateId: string
@@ -144,6 +147,7 @@ interface RegisteredComponent<C, T> {
 }
 
 export class ComponentRegistry {
+  private readonly parentPolicies = new Map<string, RegisteredComponent<unknown, ParentSelectionPolicy>>()
   private readonly candidateGenerators = new Map<string, RegisteredComponent<unknown, CandidateGenerator>>()
   private readonly taskSamplers = new Map<string, RegisteredComponent<unknown, TaskSampler>>()
   private readonly rolloutProviders = new Map<string, RegisteredComponent<unknown, RolloutProvider>>()
@@ -155,6 +159,8 @@ export class ComponentRegistry {
 
   constructor(options: { legacyComponentRoots?: readonly string[] } = {}) {
     this.legacy = new LegacyComponentVerifier(options.legacyComponentRoots)
+    this.registerParentSelectionPolicy('scoped-frontier-membership-v1', parentPolicyImplementation, scopedFrontierPolicy)
+    this.registerParentSelectionPolicy('epsilon-greedy-gepa-v1', parentPolicyImplementation, championGepaPolicy)
     this.registerCandidateGenerator('dsh-meta-forked-proposals', builtinImplementation('candidate-generator', 'dsh-meta-forked-proposals'), ref => new ForkedProposalCandidateGenerator(ref))
     this.registerCandidateGenerator('meta-forked-proposals', builtinImplementation('candidate-generator', 'meta-forked-proposals'), ref => new ForkedProposalCandidateGenerator(ref))
     this.registerTaskSampler('dataset', builtinImplementation('task-sampler', 'dataset'), ref => new DatasetTaskSampler(ref))
@@ -162,6 +168,18 @@ export class ComponentRegistry {
     this.registerCandidateSelector('highest-quality', builtinImplementation('candidate-selector', 'highest-quality'), ref => new HighestQualityCandidateSelector(ref))
     this.registerJudge('task-reward', builtinImplementation('judge', 'task-reward'), ref => new TaskRewardJudge(ref))
     this.registerPromotionPolicy('paired-gate', builtinImplementation('promotion-policy', 'paired-gate'), ref => new PairedGatePromotionPolicy(ref))
+  }
+
+  registerParentSelectionPolicy(id: string, implementation: ComponentImplementation, factory: (ref: ComponentRef<unknown>) => ParentSelectionPolicy): () => void {
+    return this.register(this.parentPolicies, id, implementation, factory)
+  }
+
+  parentSelectionPolicy(ref: ComponentRef<unknown>): ParentSelectionPolicy {
+    const policy = this.resolve(this.parentPolicies, ref, 'parent-selection')
+    if (digestJson(policy.ref) !== digestJson(ref) || typeof policy.requiresChampion !== 'boolean' || typeof policy.select !== 'function') {
+      throw new TypeError('parent policy factory returned a different identity or invalid implementation')
+    }
+    return policy
   }
 
   registerCandidateGenerator(id: string, implementation: ComponentImplementation, factory: (ref: ComponentRef<unknown>) => CandidateGenerator): () => void {

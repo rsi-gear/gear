@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from .content import ContentStore, atomic_json, require
+from .content import ContentStore, ContractError, atomic_json, require
 from .export import dataset_destination
 from .hitch import frozen_harness_ref, HitchClient
 from .ledger import Ledger
@@ -63,6 +63,33 @@ def owned_alive(identity):
     except psutil.NoSuchProcess: return False
 
 
+def owned_session_alive(identity):
+    """A supervised worker's private session includes ordinary child processes.
+
+    Detached sessions cannot be adopted safely; scripts must keep spawned work
+    in the worker session and finish it before returning.
+    """
+    import os
+    import psutil
+    try:
+        leader = psutil.Process(identity["pid"])
+        if leader.create_time() != identity["createdAt"]: return False
+        if leader.status() != psutil.STATUS_ZOMBIE: return True
+    except psutil.NoSuchProcess: pass
+    for process in psutil.process_iter(["pid"]):
+        try:
+            if os.getsid(process.pid) != identity["pid"]: continue
+        except (ProcessLookupError, PermissionError): continue
+        try:
+            created, status = process.create_time(), process.status()
+            require(created is not None and status is not None, "script-resources-unobservable", "cannot observe an owned session member")
+            if created >= identity["createdAt"] and status != psutil.STATUS_ZOMBIE: return True
+        except psutil.NoSuchProcess: pass
+        except psutil.AccessDenied as error:
+            raise ContractError("script-resources-unobservable", "cannot observe an owned session member") from error
+    return False
+
+
 def stop_owned(identities):
     import psutil
     processes = []
@@ -103,6 +130,10 @@ def update_recovery(directory, request, store, ledger):
     if parent:
         require(parent["compatibilityDigest"] == compatibility,
                 "checkpoint-incompatible", "resume may not change runtime, reference, optimizer or model topology")
+    if request.get("offlineTraining"):
+        from .offline import read_dataset, validate_cursor
+        data = read_dataset(store, request)
+        if parent: validate_cursor(store, request, parent)
     parent_start = parent["committedUpdate"] if parent else 0
     refs, commits, checkpoint = [], [], parent
     for row in ledger.db.execute("SELECT update_number,batch_digest,ref FROM commits ORDER BY update_number"):
@@ -121,6 +152,10 @@ def update_recovery(directory, request, store, ledger):
                 and checkpoint.get("dataCursorRef") == commit.get("dataCursorRef")
                 and checkpoint.get("schedulerAndRngRef") == commit.get("rngRef"),
                 "invalid-update-history", "committed checkpoint identity or complete trainer state differs")
+        if request.get("offlineTraining"):
+            from .offline import validate_batch
+            validate_cursor(store, request, checkpoint)
+            validate_batch(store, request, {"uri": "cas:" + commit["consumedBatchDigest"], "digest": commit["consumedBatchDigest"], "mediaType": "application/json"}, expected - 1)
         refs.append(ref); commits.append(commit)
     require(len(refs) <= request["trainer"]["updatesPerCandidate"], "invalid-update-history", "job exceeds its frozen update count")
     start = parent_start + len(refs)
@@ -144,8 +179,15 @@ def update_recovery(directory, request, store, ledger):
         else:
             require(number == start + 1 and len(refs) < request["trainer"]["updatesPerCandidate"],
                     "invalid-pending-checkpoint", "export recovery checkpoint does not follow the last committed update")
-            batch = ledger.db.execute("SELECT batch FROM batches WHERE ref=?", (canonical(pending["batchRef"]),)).fetchone()
-            require(batch and ledger.lease(batch["batch"])["state"] == "closed",
+            if request.get("offlineTraining"):
+                from .offline import validate_batch
+                batch = validate_batch(store, request, pending["batchRef"], start)
+                require(pending["dataCursor"].get("position") == batch["cursorAfter"]["position"]
+                        and pending["dataCursor"].get("datasetDigest") == request["offlineTraining"]["datasetRef"]["digest"],
+                        "offline-cursor-drift", "pending SFT cursor differs from its sealed dataset window")
+            else:
+                batch = ledger.db.execute("SELECT batch FROM batches WHERE ref=?", (canonical(pending["batchRef"]),)).fetchone()
+                require(batch and ledger.lease(batch["batch"])["state"] == "closed",
                     "invalid-pending-checkpoint", "export recovery requires the original sealed and drained batch")
     return {"commitRefs": refs, "checkpointRef": commits[-1]["checkpointRef"] if commits else parent_ref,
             "parentStart": parent_start, "start": start, "pending": pending}

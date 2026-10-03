@@ -83,6 +83,13 @@ class DriverMemoryTests(unittest.TestCase):
         if self.fail_commit_reply: raise OSError("commit response lost")
         return cp, commit
 
+    def materialize(self, store, ref, path):
+        path = Path(path)
+        if path.name.endswith("-hf"):
+            path.mkdir(exist_ok=True)
+            atomic_json(path / "config.json", {"model_type": "qwen2"})
+        return path
+
     def run_driver(self):
         atomic_json(self.root / "request.json", self.request)
         atomic_json(self.root / "config.json", {"storeRoot": str(self.root / "content"), "slimePath": str(self.root)})
@@ -95,7 +102,7 @@ class DriverMemoryTests(unittest.TestCase):
             "slime.utils.logging_utils": SimpleNamespace(configure_logger=lambda: None, init_tracking=lambda *a: None, finish_tracking=lambda *a: None)}
         with patch.dict(sys.modules, modules), patch.object(sys, "argv", []), patch.object(sys, "path", sys.path[:]), \
                 patch("gear_training.gpu_visibility.verify_visible_devices"), \
-                patch("gear_training.driver.materialize", side_effect=lambda store, ref, path: Path(path)), \
+                patch("gear_training.driver.materialize", side_effect=self.materialize), \
                 patch("gear_training.checkpoint_export.checkpoint_exporter", side_effect=self.exporter), \
                 patch("gear_training.export.seal_directory", return_value=self.state_ref), \
                 patch("gear_training.driver.commit_checkpoint", side_effect=self.commit):
@@ -123,6 +130,13 @@ class DriverMemoryTests(unittest.TestCase):
         self.assertEqual(self.rt.events.count("export"), 2)
         self.assertNotIn("clear", self.rt.events)
         self.assertEqual(self.rt.events[-2:], ["dispose", "shutdown"])
+        self.assertEqual(json.loads((self.root / "outcome.json").read_text()), {"outcome": "completed", "committedUpdate": 2})
+
+    def test_new_slime_without_rollout_global_dataset_completes_commits(self):
+        del self.args.rollout_global_dataset
+        self.run_driver()
+        self.assertEqual(self.rt.events.count("train"), 2)
+        self.assertEqual(self.rt.events.count("export"), 2)
         self.assertEqual(json.loads((self.root / "outcome.json").read_text()), {"outcome": "completed", "committedUpdate": 2})
 
     def test_real_driver_rejects_missing_durable_barrier_before_offload(self):
@@ -224,3 +238,29 @@ class DriverMemoryTests(unittest.TestCase):
 
 
 if __name__ == "__main__": unittest.main()
+
+
+class DriverLogprobOffloadArgsTests(unittest.TestCase):
+    def test_sealed_option_selects_only_owned_hook_and_default_stays_unchanged(self):
+        from gear_training.driver import build_argv
+        request = request_fixture()
+        paths = {"load": "/model", "reference": "/reference", "hf": "/hf", "save": "/save"}
+        flag = "--custom-megatron-before-log-prob-hook-path"
+        self.assertNotIn(flag, build_argv(request, HYPERPARAMETERS, paths, 0))
+        hyper = {**HYPERPARAMETERS, "offloadLogprobBackward": True}
+        argv = build_argv(request, hyper, paths, 0)
+        self.assertEqual(argv[argv.index(flag) + 1], "gear_training.slime_runtime.offload_logprob_backward")
+        self.assertEqual(argv.count(flag), 1)
+
+    def test_option_does_not_allow_custom_hook_overrides_or_non_boolean_values(self):
+        from gear_training.driver import build_argv
+        request = request_fixture()
+        paths = {"load": "/model", "reference": "/reference", "hf": "/hf", "save": "/save"}
+        for value in (1, "true", None):
+            with self.subTest(value=value), self.assertRaises(ContractError):
+                build_argv(request, {**HYPERPARAMETERS, "offloadLogprobBackward": value}, paths, 0)
+        hyper = {**HYPERPARAMETERS, "offloadLogprobBackward": True,
+                 "slimeArgs": [*HYPERPARAMETERS["slimeArgs"], "--custom-megatron-before-log-prob-hook-path", "other.hook"]}
+        with self.assertRaises(ContractError) as caught:
+            build_argv(request, hyper, paths, 0)
+        self.assertEqual(caught.exception.code, "reserved-slime-override")

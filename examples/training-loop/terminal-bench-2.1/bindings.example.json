@@ -1,0 +1,26 @@
+{
+  "log-summary-date-ranges": {
+    "family": "log-summary-date-ranges",
+    "environment": {
+      "hitchEnvironmentIdentity": "REPLACE_WITH_OBSERVED_SHA256",
+      "taskDigest": "REPLACE_WITH_OBSERVED_SHA256",
+      "verifierIdentity": "REPLACE_WITH_OBSERVED_SHA256"
+    }
+  },
+  "openssl-selfsigned-cert": {
+    "family": "openssl-selfsigned-cert",
+    "environment": {
+      "hitchEnvironmentIdentity": "REPLACE_WITH_OBSERVED_SHA256",
+      "taskDigest": "REPLACE_WITH_OBSERVED_SHA256",
+      "verifierIdentity": "REPLACE_WITH_OBSERVED_SHA256"
+    }
+  },
+  "pypi-server": {
+    "family": "pypi-server",
+    "environment": {
+      "hitchEnvironmentIdentity": "REPLACE_WITH_OBSERVED_SHA256",
+      "taskDigest": "REPLACE_WITH_OBSERVED_SHA256",
+      "verifierIdentity": "REPLACE_WITH_OBSERVED_SHA256"
+    }
+  }
+}

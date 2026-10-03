@@ -1,0 +1,168 @@
+diff --git a/integrations/training-tool/cli.js b/integrations/training-tool/cli.js
+index df6f882..0e502a5 100644
+--- a/integrations/training-tool/cli.js
++++ b/integrations/training-tool/cli.js
+@@ -21,8 +21,11 @@ const maxSteps = training ? binding.max_episode_steps : Number(process.env.HITCH
+ if (![maxTokens, maxSteps].every(n => Number.isSafeInteger(n) && n > 0)) throw new Error('invalid harness budget');
+ let prompt = '';
+ for await (const chunk of process.stdin) { prompt += chunk; if (Buffer.byteLength(prompt) > 8 * 1024 * 1024) throw new Error('prompt exceeds 8 MiB'); }
+-const messages = [{ role: 'user', content: prompt }];
+-const tools = [{ type: 'function', function: { name: 'bash', description: 'Run a command in the task container.', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'], additionalProperties: false } } }];
++const messages = [
++  { role: 'system', content: `You are operating a live terminal in the task container. The current working directory is ${process.cwd()}. Use the bash tool to complete the user's task autonomously. Inspect the actual files and command output before choosing paths or actions. Keep commands and scripts short and focused. Run the commands needed to make the requested changes, check their results, and correct errors. Do not substitute instructions or placeholder commands for performing the work. Give your final response only after checking that the requested result exists.` },
++  { role: 'user', content: prompt },
++];
++const tools = [{ type: 'function', function: { name: 'bash', description: 'Run a command in the task container, with a 120-second timeout and up to 4096 characters of output.', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'], additionalProperties: false } } }];
+ const emit = event => console.log(JSON.stringify(event));
+ let child;
+ const abort = new AbortController();
+@@ -51,18 +54,51 @@ for (let step = 0; step < maxSteps; step++) {
+   if (choice.finish_reason !== 'tool_calls') throw new Error('missing tool terminal state');
+   for (const call of calls) {
+     abort.signal.throwIfAborted();
+-    if (call.function?.name !== 'bash' || typeof call.id !== 'string') throw new Error('unsupported tool');
+-    const input = JSON.parse(call.function.arguments);
+-    if (typeof input.command !== 'string' || Object.keys(input).join(',') !== 'command') throw new Error('invalid bash arguments');
++    if (typeof call.id !== 'string') throw new Error('missing tool call identity');
++    let input; let toolError;
++    if (call.function?.name !== 'bash') toolError = 'Unknown tool. The available tool is bash, with arguments {"command":"shell command"}.';
++    else {
++      try { input = JSON.parse(call.function.arguments); }
++      catch { toolError = 'Invalid JSON arguments. bash expects {"command":"shell command"}.'; }
++      if (!toolError && (!input || typeof input !== 'object' || Array.isArray(input)
++        || typeof input.command !== 'string' || Object.keys(input).join(',') !== 'command'))
++        toolError = 'Invalid arguments. bash expects only a string command field.';
++    }
++    if (toolError) {
++      const result = `Tool error: ${toolError} No command was executed.`;
++      messages.push({ role: 'tool', tool_call_id: call.id, content: result });
++      emit({ type: 'tool.rejected', call_id: call.id, name: call.function?.name ?? null, error: toolError });
++      continue;
++    }
+     emit({ type: 'tool.started', call_id: call.id, name: 'bash', arguments: input });
+     const result = await new Promise((resolve, reject) => {
+-      let output = ''; let truncated = false;
+-      child = spawn('/bin/bash', ['-lc', input.command], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+-      const append = data => { const remaining = 32768 - output.length; if (remaining > 0) output += data.toString().slice(0, remaining); if (data.length > remaining) truncated = true; };
+-      child.stdout.on('data', append); child.stderr.on('data', append);
+-      const timer = setTimeout(killTool, 30000);
+-      child.once('error', error => { clearTimeout(timer); reject(error); });
+-      child.once('close', code => { clearTimeout(timer); child = undefined; resolve(`exit=${code}\n${output}${truncated ? '\n[tool output truncated]' : ''}`); });
++      let output = ''; let truncated = false; let timedOut = false;
++      const tool = spawn('/bin/bash', ['-lc', input.command], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
++      child = tool;
++      const append = data => { const remaining = 4096 - output.length; if (remaining > 0) output += data.toString().slice(0, remaining); if (data.length > remaining) truncated = true; };
++      tool.stdout.on('data', append); tool.stderr.on('data', append);
++      const timer = setTimeout(() => { timedOut = true; killTool(); }, 120000);
++      let settled = false; let postExitTimer;
++      const finish = (code, background = false) => {
++        if (settled) return;
++        settled = true; clearTimeout(timer); clearTimeout(postExitTimer);
++        if (child === tool) child = undefined;
++        resolve(`exit=${code}\n${output}${truncated ? '\n[tool output truncated]' : ''}${timedOut ? '\n[command timed out after 120 seconds]' : ''}${background ? '\n[command exited; background process kept output streams open]' : ''}`);
++      };
++      tool.once('error', error => {
++        if (settled) return;
++        settled = true; clearTimeout(timer); clearTimeout(postExitTimer);
++        if (child === tool) child = undefined;
++        reject(error);
++      });
++      tool.once('exit', code => {
++        clearTimeout(timer);
++        // Let ordinary output drain; daemons must not hold the command open.
++        postExitTimer = setTimeout(() => {
++          finish(code, true); tool.stdout.destroy(); tool.stderr.destroy();
++        }, 1000);
++      });
++      tool.once('close', code => finish(code));
+     });
+     messages.push({ role: 'tool', tool_call_id: call.id, content: result });
+     emit({ type: 'tool.completed', call_id: call.id, output: result });
+diff --git a/test/training-binding.test.ts b/test/training-binding.test.ts
+index 69b8696..507192f 100644
+--- a/test/training-binding.test.ts
++++ b/test/training-binding.test.ts
+@@ -82,7 +82,10 @@ test("fixed training harness appends tool observations and emits a single termin
+   const server = http.createServer(async (req, res) => {
+     let text = ''; for await (const chunk of req) text += chunk; const body = JSON.parse(text); requests++;
+     assert.equal(req.headers['idempotency-key'], `${run}-${requests - 1}`);
+-    if (requests === 2) { assert.equal(body.messages.length, 3); assert.match(body.messages[2].content, /gear-tool-test/); }
++    assert.equal(body.messages[0].role, 'system');
++    assert.match(body.messages[0].content, /Use the bash tool/);
++    assert.deepEqual(body.messages[1], { role: 'user', content: 'use the tool' });
++    if (requests === 2) { assert.equal(body.messages.length, 4); assert.match(body.messages[3].content, /gear-tool-test/); }
+     res.setHeader('content-type', 'application/json');
+     res.end(JSON.stringify({ choices: [{ finish_reason: requests === 1 ? 'tool_calls' : 'stop', message: requests === 1
+       ? { role: 'assistant', content: null, tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'bash', arguments: JSON.stringify({ command: 'printf gear-tool-test' }) } }] }
+@@ -127,3 +130,71 @@ test("training cancellation stops the active tool and fences later calls in the
+   assert.deepEqual(events.filter(event => event.type === "tool.started").map(event => event.call_id), ["call-0"]);
+   assert.equal(events.some(event => event.type === "training.terminated"), false, "cancellation must not become a normal terminal sample");
+ });
++
++test("training tool returns recoverable errors without executing invalid calls", async t => {
++  const run = `run_${'2'.repeat(32)}`; let requests = 0;
++  const invalid = [
++    { name: 'logging.conf', arguments: JSON.stringify({ command: 'printf must-not-run' }) },
++    { name: 'bash', arguments: '{' },
++    { name: 'bash', arguments: JSON.stringify({ command: 'printf must-not-run', extra: true }) },
++  ];
++  const server = http.createServer(async (req, res) => {
++    let text = ''; for await (const chunk of req) text += chunk;
++    const body = JSON.parse(text); requests++;
++    if (requests === 2) {
++      const feedback = body.messages.filter((m: { role: string }) => m.role === 'tool');
++      assert.equal(feedback.length, 3);
++      for (const m of feedback) assert.match(m.content, /Tool error:.*No command was executed/);
++    }
++    if (requests === 3) assert.match(body.messages.at(-1).content, /exit=0\nrecovered/);
++    res.setHeader('content-type', 'application/json');
++    const functions = requests === 1 ? invalid : [{ name: 'bash', arguments: JSON.stringify({ command: 'printf recovered' }) }];
++    res.end(JSON.stringify({ choices: [{ finish_reason: requests < 3 ? 'tool_calls' : 'stop', message: requests < 3
++      ? { role: 'assistant', content: null, tool_calls: functions.map((f, i) => ({ id: `call-${requests}-${i}`, type: 'function', function: f })) }
++      : { role: 'assistant', content: 'done' } }] }));
++  });
++  server.listen(0, '127.0.0.1'); await once(server, 'listening');
++  const child = spawn(process.execPath, ['integrations/training-tool/cli.js', '--model', 'training/binding_test'], { env: { ...process.env,
++    HITCH_HARBOR_INTERNAL: '1', HITCH_TRAINING_EXTERNAL: '1', HITCH_TRAINING_RUN_ID: run,
++    HITCH_TRAINING_BINDING: JSON.stringify({ binding_id: 'binding_test', max_output_tokens: 16, max_episode_steps: 4 }),
++    OPENAI_API_KEY: 'synthetic-contract-probe',
++    OPENAI_BASE_URL: `http://127.0.0.1:${(server.address() as import('node:net').AddressInfo).port}/${'f'.repeat(48)}/${run}/openai`,
++  }, stdio: ['pipe', 'pipe', 'pipe'] });
++  t.after(async () => { if (child.exitCode === null) child.kill('SIGKILL'); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
++  let output = '', errors = ''; child.stdout.on('data', c => output += c); child.stderr.on('data', c => errors += c);
++  child.stdin.end('synthetic error-recovery contract probe');
++  const [code] = await once(child, 'close'); assert.equal(code, 0, errors); assert.equal(requests, 3);
++  const events = output.trim().split('\n').map(line => JSON.parse(line));
++  assert.equal(events.filter(e => e.type === 'tool.rejected').length, 3);
++  assert.deepEqual(events.filter(e => e.type === 'tool.started').map(e => e.arguments.command), ['printf recovered']);
++  assert.deepEqual(events.filter(e => e.type === 'training.terminated'), [{ type: 'training.terminated', termination: 'terminated' }]);
++});
++
++test("training tool completes when a background service holds the output pipe", { timeout: 10_000 }, async t => {
++  const run = `run_${'3'.repeat(32)}`; let requests = 0; let backgroundPid: number | undefined;
++  const server = http.createServer(async (req, res) => {
++    let text = ''; for await (const chunk of req) text += chunk;
++    const body = JSON.parse(text); requests++;
++    if (requests === 2) {
++      const output = body.messages.at(-1).content;
++      assert.match(output, /exit=0\npid=\d+ parent-done/);
++      assert.match(output, /background process kept output streams open/);
++      backgroundPid = Number(/pid=(\d+)/.exec(output)![1]);
++      process.kill(backgroundPid, 0);
++    }
++    res.setHeader('content-type', 'application/json');
++    res.end(JSON.stringify({ choices: [{ finish_reason: requests === 1 ? 'tool_calls' : 'stop', message: requests === 1
++      ? { role: 'assistant', content: null, tool_calls: [{ id: 'background-call', type: 'function', function: { name: 'bash', arguments: JSON.stringify({ command: 'sleep 20 & printf "pid=%s parent-done" "$!"' }) } }] }
++      : { role: 'assistant', content: 'done' } }] }));
++  });
++  server.listen(0, '127.0.0.1'); await once(server, 'listening');
++  const child = spawn(process.execPath, ['integrations/training-tool/cli.js', '--model', 'training/binding_test'], { env: { ...process.env,
++    HITCH_HARBOR_INTERNAL: '1', HITCH_TRAINING_EXTERNAL: '1', HITCH_TRAINING_RUN_ID: run,
++    HITCH_TRAINING_BINDING: JSON.stringify({ binding_id: 'binding_test', max_output_tokens: 16, max_episode_steps: 3 }),
++    OPENAI_API_KEY: 'synthetic-contract-probe',
++    OPENAI_BASE_URL: `http://127.0.0.1:${(server.address() as import('node:net').AddressInfo).port}/${'f'.repeat(48)}/${run}/openai`,
++  }, stdio: ['pipe', 'pipe', 'pipe'] });
++  t.after(async () => { if (backgroundPid) { try { process.kill(backgroundPid, 'SIGKILL'); } catch {} } if (child.exitCode === null) child.kill('SIGKILL'); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
++  let errors = ''; child.stdout.resume(); child.stderr.on('data', c => errors += c); child.stdin.end('synthetic background-service contract probe');
++  const [code] = await once(child, 'close'); assert.equal(code, 0, errors); assert.equal(requests, 2);
++});

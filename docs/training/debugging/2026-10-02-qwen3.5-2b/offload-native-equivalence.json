@@ -1,0 +1,14 @@
+{
+  "kind": "native-slime-logprob-offload-cpu-equivalence",
+  "passed": true,
+  "exactLogprobs": true,
+  "exactEntropy": true,
+  "exactGradients": true,
+  "device": "cpu",
+  "chunkSize": 2,
+  "moduleSha256": "sha256:da395b60019058b24d932de89eb466e83a53b9c78e9e71ce7ee40eefc0a7e53d",
+  "slimeCommit": "89bfada990a00663846e0ac804de1454685ceed3",
+  "sequenceLength": 8,
+  "vocabSize": 32,
+  "responseLength": 4
+}

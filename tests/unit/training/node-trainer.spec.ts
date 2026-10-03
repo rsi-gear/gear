@@ -10,6 +10,7 @@ import { ModelTrainingStore, withTrainingFileLock } from '../../../src/training/
 import { parseTrainingBatch, sealModelVersion } from '../../../src/training/schema.js'
 import { jsonProcess } from '../../../src/training/process.js'
 import type { ContentRef, TrainingArtifacts, TrainingHandle, TrainingRequestV2, TrainingStatus, UpdateCommitManifest } from '../../../src/training/types.js'
+import { offlineDataset, OfflineFixtureTrainer } from './offline-fixture.js'
 import { fixture, FixtureEvaluator, FixtureTrainer } from './fixture.js'
 import { v2spec } from './placement-fixture.js'
 
@@ -102,6 +103,20 @@ describe('model-node trainer and controller episode lifecycle', () => {
     expect(s.uploaded).not.toContainEqual(poisoned)
     expect(s.uploaded).not.toContainEqual(forbidden)
   })
+  it('uploads only the validated offline dataset allowlist and skips online capability negotiation', async () => {
+    const s = await setup()
+    s.request.trainer.recipe = 'offline-sft-v1'; s.request.trainer.globalBatchSize = 1
+    s.request.offlineTraining = await offlineDataset(s.store, s.request.parentModel, s.request.trainDataset)
+    await s.trainer.preflight(s.request)
+    expect(s.episodes.preflight).not.toHaveBeenCalled()
+    const data = await s.store.readJson<any>(s.request.offlineTraining.datasetRef)
+    for (const ref of [s.request.offlineTraining.datasetRef, ...data.records]) expect(await s.node.readBytes(ref)).toEqual(await s.store.readBytes(ref))
+    expect(s.uploaded).not.toContainEqual(s.request.trainDataset.tasks[0]!.taskRef)
+    const privateRef = await s.store.putJson({ heldOut: 'PRIVATE' })
+    s.request.offlineTraining.datasetRef = await s.store.putJson({ ...data, extra: privateRef })
+    await expect(s.trainer.preflight(s.request)).rejects.toMatchObject({ code: 'invalid-offline-dataset' })
+    expect(s.uploaded).not.toContainEqual(privateRef)
+  })
   it('retains ownership until both the model node and old Hitch episodes have terminated', async () => {
     const s = await setup(); s.status.execution = 'paused'; s.status.resourcesReleased = true; s.state.pending = true
     expect((await s.trainer.control(s.request, s.key, { schemaVersion: 2, sequence: 1, action: 'pause' })).resourcesReleased).toBe(false)
@@ -170,6 +185,25 @@ print(json.dumps({"compatibilityDigest": digest, "devices": devices, "placement"
     expect(actual.devices).toEqual(['GPU-123']); expect(actual.placement).toBe('colocated')
     expect(actual.counts['--actor-num-gpus-per-node']).toBe(1); expect(actual.counts['--rollout-num-gpus']).toBe(1)
     expect(actual.probeChanged).toBe(true)
+  })
+  it('collects offline consumed batches, deterministic cursor and record artifacts across stores', async () => {
+    const s = await setup()
+    s.request.trainer.recipe = 'offline-sft-v1'; s.request.trainer.globalBatchSize = 1
+    s.request.offlineTraining = await offlineDataset(s.store, s.request.parentModel, s.request.trainDataset)
+    await s.trainer.preflight(s.request)
+    const backend = new OfflineFixtureTrainer(s.node); await backend.submit(s.request)
+    s.local.requestDigest = digestJson(s.request)
+    s.handle.requestDigest = digestJson(s.request)
+    s.state.artifacts = await backend.collect(s.local)
+    const artifacts = await s.trainer.collect(s.handle)
+    const checkpoint = await s.store.readJson<any>(artifacts.checkpointRef)
+    const cursor = await s.store.readJson<any>(checkpoint.dataCursorRef)
+    const batch = parseTrainingBatch(await s.store.readJson(cursor.batchRef))
+    expect(batch.schemaVersion).toBe(3)
+    expect(cursor).toMatchObject({ position: 1, datasetDigest: s.request.offlineTraining.datasetRef.digest })
+    expect(await s.store.readJson(s.request.offlineTraining.datasetRef)).toEqual(await s.node.readJson(s.request.offlineTraining.datasetRef))
+    expect(s.downloaded).toContainEqual(cursor.batchRef)
+    expect(s.uploaded).not.toContainEqual(s.request.trainDataset.tasks[0]!.taskRef)
   })
   it('collects implicit consumed-batch and source-evidence dependencies across separate stores', async () => {
     const s = await setup(), backend = new FixtureTrainer(s.node)

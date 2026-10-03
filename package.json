@@ -1,6 +1,6 @@
 {
   "name": "rsi-gear",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Skill-first Gear refinement control plane with native DSH and harness-neutral adapters",
   "type": "module",
   "license": "MIT",
@@ -86,12 +86,14 @@
     "python/patches/*.patch",
     "docs/training/README.zh-CN.md",
     "docs/training/controller-v2.zh-CN.md",
+    "docs/training/stages.zh-CN.md",
+    "docs/training/development.zh-CN.md",
+    "docs/training/recipes.zh-CN.md",
     "docs/search-algorithm-authoring.zh-CN.md",
     "examples/parent-policy/**",
+    "examples/training-loop/**",
     "docs/schemas/",
     "docs/generic-storage-implementation.zh-CN.md",
-    "docs/generic-storage-completion-audit.zh-CN.md",
-    "docs/evidence/generic-storage/",
     "test-contracts/hitch-resources-v1.json"
   ],
   "scripts": {

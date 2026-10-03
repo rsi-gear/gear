@@ -22,6 +22,28 @@ class NodeHfManifestTests(unittest.TestCase):
         (self.model / "model.safetensors").write_bytes(struct.pack("<Q", len(header)) + header + struct.pack("<f", 1))
         self.snapshot = seal_directory(self.store, self.model, serving=True)
 
+    def test_hf_download_cache_does_not_change_serving_identity(self):
+        cache = self.model / ".cache" / "huggingface" / "download"
+        cache.mkdir(parents=True)
+        (cache / "tokenizer.json.metadata").write_text("download timestamp and etag")
+        (cache / "model.safetensors.lock").write_text("")
+        self.assertEqual(seal_directory(self.store, self.model, serving=True), self.snapshot)
+        (cache / "tokenizer.json.metadata").write_text("a different download timestamp")
+        self.assertEqual(seal_directory(self.store, self.model, serving=True), self.snapshot)
+        (self.model / "tokenizer.json").write_text('{"changed": true}')
+        changed = seal_directory(self.store, self.model, serving=True)
+        self.assertNotEqual(self.store.read_json(changed)["tokenizerDigest"],
+                            self.store.read_json(self.snapshot)["tokenizerDigest"])
+
+    def test_download_cache_is_retained_in_non_serving_snapshots(self):
+        cache = self.model / ".cache" / "huggingface" / "download"
+        cache.mkdir(parents=True)
+        (cache / "tokenizer.json.metadata").write_text("dataset or trainer data")
+        for options in ({}, {"dataset": True}):
+            manifest = self.store.read_json(seal_directory(self.store, self.model, **options))
+            self.assertIn(".cache/huggingface/download/tokenizer.json.metadata",
+                          [item["path"] for item in manifest["files"]])
+
     def test_observes_real_node_files_without_local_hitch_import(self):
         model = hf_manifest(self.store, {"snapshotRef": self.snapshot})
         body = {key: model[key] for key in ("format", "files", "architecture", "model_type", "dtype", "quantization", "context_tokens", "tokenizer_digest", "template_digest")}
@@ -29,6 +51,33 @@ class NodeHfManifestTests(unittest.TestCase):
         self.assertEqual(model["architecture"], "Qwen2ForCausalLM")
         self.assertEqual(len(model["files"]), 4)
         self.assertEqual(model["source"]["kind"], "local-directory")
+
+    def test_composite_model_uses_text_dtype_and_context(self):
+        config = {"architectures": ["Qwen3_5ForConditionalGeneration"], "model_type": "qwen3_5",
+                  "text_config": {"dtype": "bfloat16", "max_position_embeddings": 262144},
+                  "vision_config": {"dtype": "float32", "max_position_embeddings": 2304}}
+        (self.model / "config.json").write_text(json.dumps(config))
+        snapshot = seal_directory(self.store, self.model, serving=True)
+        model = hf_manifest(self.store, {"snapshotRef": snapshot})
+        self.assertEqual(model["architecture"], "Qwen3_5ForConditionalGeneration")
+        self.assertEqual(model["model_type"], "qwen3_5")
+        self.assertEqual(model["dtype"], "bfloat16")
+        self.assertEqual(model["context_tokens"], 262144)
+
+    def test_flat_metadata_takes_precedence_over_nested_metadata(self):
+        config = {**self.config, "text_config": {"dtype": "bfloat16", "max_position_embeddings": 262144}}
+        (self.model / "config.json").write_text(json.dumps(config))
+        snapshot = seal_directory(self.store, self.model, serving=True)
+        model = hf_manifest(self.store, {"snapshotRef": snapshot})
+        self.assertEqual(model["dtype"], "float32")
+        self.assertEqual(model["context_tokens"], 128)
+
+    def test_does_not_infer_language_dtype_from_vision_config(self):
+        config = {"architectures": ["Composite"], "model_type": "composite",
+                  "text_config": [], "vision_config": {"dtype": "float32"}}
+        (self.model / "config.json").write_text(json.dumps(config))
+        with self.assertRaisesRegex(ContractError, "architecture and dtype"):
+            seal_directory(self.store, self.model, serving=True)
 
     def test_rejects_snapshot_semantics_that_disagree_with_actual_config(self):
         manifest = self.store.read_json(self.snapshot); manifest["architecture"] = "ForgedArchitecture"

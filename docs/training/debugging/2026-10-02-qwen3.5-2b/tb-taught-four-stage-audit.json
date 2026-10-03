@@ -1,0 +1,85 @@
+{
+  "entrypoint": "tb21:build_loop",
+  "handle": {
+    "jobId": "job_f016830c10b9e458c7076ae1a95b6f45",
+    "provider": "slime",
+    "requestDigest": "sha256:a5283e5ec79089b618c2aea22ddc5351bad720bb49b580d775134d2f2720fc6b",
+    "schemaVersion": 1
+  },
+  "kind": "terminal-bench-four-stage-audit",
+  "passed": true,
+  "stages": [
+    {
+      "inputDigest": "sha256:15ef9770d015c6472c97786c60e442ce5150cd5fa22afcabcaf87d3c7993376f",
+      "outputDigest": "sha256:2f595339e3e60ef5739210e91a0e41cb027510c539eac21b709fe4608f568648",
+      "resultSha256": "sha256:6afae18cad8151af7a5d9b5fae6b77a2a5ecd8f221b02b73ba42a952f024adc1",
+      "stage": "task-source"
+    },
+    {
+      "inputDigest": "sha256:9e70084d68be904ae4b218bff2d391e2770fd7e11734a1061ab0c88e6c2811eb",
+      "outputDigest": "sha256:d8a3803c9f267276726f946fa7b52bf7484572c6389f781eddaa24df7f99529c",
+      "resultSha256": "sha256:f95d1146054bc38badd176ad34c0ee82e647112929e83bff6a45b4e92f2f725c",
+      "stage": "rollout-executor"
+    },
+    {
+      "inputDigest": "sha256:ae6cb5970299028e7ec060b8e6dbca3287ff7258c3733c2114bed73b555330e8",
+      "outputDigest": "sha256:221ebc421badb87b9a64431b8228c433500cd05ff95e1d90fec29708bb9af5e3",
+      "resultSha256": "sha256:3ee87c5d3ce234ade2eec1a4878edab485625d4294922bab811e2785fe2812a8",
+      "stage": "dataset-builder"
+    },
+    {
+      "inputDigest": "sha256:a43f75898de886829b45f8ef061bb43372dc611f45b33cdc1262cab49fdd49be",
+      "outputDigest": "sha256:32f1eca4a2c230792ccc475370c027303cb8d9b0845fd5b8b13de9752c9ffc89",
+      "resultSha256": "sha256:a0debf7f34f3b4c87212bca0c32515fa8497f8e415bc597ee2689f504b23bb8c",
+      "stage": "model-updater"
+    }
+  ],
+  "status": {
+    "committedUpdate": 1,
+    "execution": "completed",
+    "handle": {
+      "jobId": "job_f016830c10b9e458c7076ae1a95b6f45",
+      "provider": "slime",
+      "requestDigest": "sha256:a5283e5ec79089b618c2aea22ddc5351bad720bb49b580d775134d2f2720fc6b",
+      "schemaVersion": 1
+    },
+    "latestCommitRef": {
+      "digest": "sha256:be482d9eda642ed0dd5f78c70671b8576637ab36a752c7cabff2cec8c4f989f8",
+      "mediaType": "application/json",
+      "uri": "cas:sha256:be482d9eda642ed0dd5f78c70671b8576637ab36a752c7cabff2cec8c4f989f8"
+    },
+    "phase": "checkpointed",
+    "resourcesReleased": true,
+    "schemaVersion": 1,
+    "usage": {
+      "gpuSeconds": 737.4575669765472,
+      "groupResamples": 0,
+      "rolloutTokens": 4382
+    }
+  },
+  "updates": [
+    {
+      "batchRef": {
+        "digest": "sha256:61419d1f442baadd3b8db32f672aedd566311859240894e74d8cf712bf8e9a67",
+        "mediaType": "application/json",
+        "uri": "cas:sha256:61419d1f442baadd3b8db32f672aedd566311859240894e74d8cf712bf8e9a67"
+      },
+      "checkpointRef": {
+        "digest": "sha256:d5dea58b5087ef8d5fb11f5ce3036185ae52e00318fddbb5500226483d75e491",
+        "mediaType": "application/json",
+        "uri": "cas:sha256:d5dea58b5087ef8d5fb11f5ce3036185ae52e00318fddbb5500226483d75e491"
+      },
+      "committedUpdate": 1,
+      "policyVersion": "runtime_d7d1092108c4afef4e1205e3e906036a/update-0/weight-1",
+      "rewards": [
+        1,
+        1
+      ],
+      "runs": [
+        "run_b6646f0dbc7641b3a00c49505f4e51e0",
+        "run_cf87ee08c046494aa2e0c2267dabf61b"
+      ]
+    }
+  ],
+  "validated": false
+}
