@@ -154,6 +154,16 @@ class DevGRPOTests(unittest.TestCase):
         with self.cpu_runtime(): run(self.d.root)
         self.assertEqual(self.native_events.count("train"), 2); self.assertEqual(self.native_events.count("preprocess"), 2)
         self.assertEqual([self.stage("task-source", index)[0]["id"] for index in range(2)], ["train-a", "train-b"])
+        # Two fresh rounds, each with G=2 episodes and two native requests.
+        # Updater preprocessing must not resample, nor may round 1 reuse round 0.
+        self.assertEqual(len(self.native_calls), 8)
+        rounds = [self.stage("rollout-executor", index) for index in range(2)]
+        self.assertEqual([value["rolloutId"] for value in rounds], [0, 1])
+        self.assertNotEqual(rounds[0]["lease"]["policyVersion"], rounds[1]["lease"]["policyVersion"])
+        run_ids = [{self.d.store.read_json(raw["context_ref"])["runId"]
+                    for group in value["groups"] for raw in group} for value in rounds]
+        self.assertEqual([len(ids) for ids in run_ids], [2, 2])
+        self.assertFalse(run_ids[0] & run_ids[1])
         raw = self.stage("rollout-executor")
         self.assertEqual(raw["kind"], "raw-grpo-round"); self.assertNotIn("batchRef", raw)
         self.assertEqual(raw["lease"]["state"], "closed")

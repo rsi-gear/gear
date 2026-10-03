@@ -1,4 +1,4 @@
-"""Seal local TB 2.1 tasks into an existing native GRPO deployment. CPU only."""
+"""Seal TB 2.1 tasks for GRPO/SFT; optionally validate and run the four-stage loop."""
 import argparse
 import copy
 import json
@@ -6,8 +6,10 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 
+from gear_training.cli import controller_command, main as training_main
 from gear_training.content import ContentStore, atomic_json, digest_json
 from gear_training.export import seal_directory
 
@@ -16,10 +18,15 @@ PARTITIONS = ("train", "dev", "heldOut")
 
 
 def check_inputs(base, tasks, splits, bindings):
-    if base.get("kind") != "model-training" or base.get("trainer", {}).get("recipe") != "agent-grpo-v1":
-        raise ValueError("base spec must be an existing native agent-grpo-v1 model-training spec")
-    if base.get("stages") or "pipeline" in base["trainer"] or base.get("offlineTraining"):
-        raise ValueError("remove legacy stages/pipeline and offlineTraining from the GRPO base spec")
+    recipe = base.get("trainer", {}).get("recipe")
+    if base.get("kind") != "model-training" or recipe not in ("agent-grpo-v1", "offline-sft-v1"):
+        raise ValueError("base spec must select native agent-grpo-v1 or offline-sft-v1")
+    if base.get("stages") or "pipeline" in base["trainer"]:
+        raise ValueError("remove legacy stages/pipeline from the base spec")
+    if recipe == "agent-grpo-v1" and base.get("offlineTraining"):
+        raise ValueError("remove offlineTraining from the GRPO base spec")
+    if recipe == "offline-sft-v1" and not isinstance(base.get("offlineTraining"), dict):
+        raise ValueError("SFT base spec requires offlineTraining settings")
     if set(splits) != set(PARTITIONS):
         raise ValueError("split must contain train, dev, heldOut")
     seen, families = set(), {}
@@ -50,7 +57,8 @@ def prepare(base, tasks, splits, bindings, store):
     """Keep model/runtime/hyperparameters; replace only data and script selection."""
     check_inputs(base, tasks, splits, bindings)
     spec = copy.deepcopy(base)
-    spec["name"] = "Terminal-Bench 2.1 GRPO"
+    is_sft = spec["trainer"]["recipe"] == "offline-sft-v1"
+    spec["name"] = "Terminal-Bench 2.1 " + ("SFT" if is_sft else "GRPO")
     spec.pop("scriptSource", None)
     spec.pop("stages", None)
     spec["datasets"] = {}
@@ -72,12 +80,41 @@ def prepare(base, tasks, splits, bindings, store):
                              "environmentRef": store.put_json(bindings[name]["environment"])})
             spec["datasets"][partition] = {"snapshotRef": seal_directory(store, root, dataset=True),
                                             "tasks": rows, "exactDataAuthorized": partition == "train"}
-    source = store.put_file(HERE / "recipe/tb21.py")
-    spec["trainer"]["script"] = {"entrypoint": "tb21:build_loop", "sourceRef": store.put_json({
-        "schemaVersion": 1, "kind": "training-script-source", "files": [{"path": "tb21.py", "contentRef": source}]})}
-    spec["trainer"].pop("scriptConfig", None)
+    module = "tb21_sft" if is_sft else "tb21"
+    source = store.put_file(HERE / f"recipe/{module}.py")
+    spec["trainer"]["script"] = {"entrypoint": f"{module}:build_loop", "sourceRef": store.put_json({
+        "schemaVersion": 1, "kind": "training-script-source", "files": [{"path": f"{module}.py", "contentRef": source}]})}
     spec["evaluation"]["policy"]["requiredTaskIds"] = splits["dev"] + splits["heldOut"]
     return spec
+
+
+def check_sft_input(spec, payload):
+    """Check author-supplied provenance before invoking the existing sealer."""
+    offline = spec["offlineTraining"]
+    if not isinstance(payload, dict):
+        raise ValueError("SFT input must be a JSON object")
+    if payload.get("modelRef") != spec["initialModel"]:
+        raise ValueError("SFT input modelRef must equal the base spec initialModel")
+    if payload.get("maxSequenceTokens") != offline.get("maxSequenceTokens"):
+        raise ValueError("SFT input maxSequenceTokens differs from offlineTraining")
+    records = payload.get("records")
+    if not isinstance(records, list) or not records:
+        raise ValueError("SFT input requires nonempty records")
+    sources = [{"taskId": t["id"], "family": t["family"], "taskDigest": t["taskRef"]["digest"]}
+               for t in spec["datasets"]["train"]["tasks"]]
+    if any(not isinstance(row, dict) or row.get("source") not in sources for row in records):
+        raise ValueError("SFT records must identify the exact sealed TB train tasks")
+    capacity = len(records) * offline["maxEpochs"]
+    required = spec["trainer"]["updatesPerCandidate"] * spec["trainer"]["rolloutBatchSize"]
+    if required > capacity:
+        raise ValueError("SFT maxEpochs cannot supply all configured updates")
+
+
+def run_spec(spec_path, config_path):
+    """Never submit a spec that failed the production controller validation."""
+    arguments = [str(spec_path.resolve()), "--config", str(config_path.resolve())]
+    status = training_main(["validate", *arguments])
+    return status if status else training_main(["run", *arguments])
 
 
 def main():
@@ -89,6 +126,8 @@ def main():
     parser.add_argument("--bindings", type=Path, required=True)
     parser.add_argument("--split", type=Path, default=HERE / "split.json")
     parser.add_argument("--output", type=Path, required=True, help="new output directory")
+    parser.add_argument("--sft-input", type=Path, help="seal-sft authoring JSON; required exactly for offline-sft-v1")
+    parser.add_argument("--run", action="store_true", help="validate and continuously run after sealing")
     args = parser.parse_args()
     try:
         tasks = args.tasks_root.resolve()
@@ -104,15 +143,26 @@ def main():
         if args.output.exists():
             raise ValueError("output directory already exists; choose a new one")
         base, splits, bindings = (json.loads(path.read_text()) for path in (args.base_spec, args.split, args.bindings))
+        is_sft = base.get("trainer", {}).get("recipe") == "offline-sft-v1"
+        if is_sft != bool(args.sft_input):
+            raise ValueError("--sft-input must be supplied exactly for offline-sft-v1")
         spec = prepare(base, tasks, splits, bindings, ContentStore(store_root))
+        if is_sft:
+            check_sft_input(spec, json.loads(args.sft_input.read_text()))
+            # Use the public CLI so v2 can fetch sealed tokenizer bytes from the node.
+            sealed = json.loads(subprocess.check_output(controller_command() + ["training", "seal-sft",
+                str(args.sft_input.resolve()), "--config", str(args.config.resolve())], text=True))
+            spec["offlineTraining"]["datasetRef"] = sealed["datasetRef"]
         args.output.mkdir(parents=True)
         atomic_json(args.output / "spec.json", spec)
         atomic_json(args.output / "dataset-provenance.json", {"repository": "https://github.com/harbor-framework/terminal-bench-2-1",
             "revision": revision, "splits": splits, "datasets": spec["datasets"], "specDigest": digest_json(spec)})
-        print(args.output.resolve() / "spec.json")
+        spec_path = args.output.resolve() / "spec.json"
+        print(spec_path, flush=True)
+        return run_spec(spec_path, args.config) if args.run else 0
     except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
         parser.error(str(error))
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
