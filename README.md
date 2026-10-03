@@ -72,7 +72,7 @@ For Luna, the comparison is between the original harness at medium reasoning eff
 
 Use Gear through its **Refine Skill** in Codex, Claude Code, DSH, or another compatible agent environment. Start with an existing benchmark or provide your own tasks in [Harbor format](docs/guide/en/datasets.md).
 
-For installation and dependency setup, see [install.md (Chinese)](install.md).
+For installation and dependency setup, see the [quick start guide](docs/guide/en/quickstart.md).
 
 **Let your agent install Gear.** Paste the following prompt into your agent session:
 
