@@ -143,42 +143,18 @@
     "@deepseek-ai/dsh-sandbox": "^0.1.0-rc.8 || ^0.1.1-rc.2"
   },
   "peerDependenciesMeta": {
-    "@deepseek-ai/cordis": {
-      "optional": true
-    },
-    "@deepseek-ai/cordis-plugin-include": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-agent": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-agent-presets": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-commands": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-llm": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-session": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-skill": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-system-prompt": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-tools": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-attachment": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-sandbox": {
-      "optional": true
-    }
+    "@deepseek-ai/cordis": { "optional": true },
+    "@deepseek-ai/cordis-plugin-include": { "optional": true },
+    "@deepseek-ai/dsh-agent": { "optional": true },
+    "@deepseek-ai/dsh-agent-presets": { "optional": true },
+    "@deepseek-ai/dsh-commands": { "optional": true },
+    "@deepseek-ai/dsh-llm": { "optional": true },
+    "@deepseek-ai/dsh-session": { "optional": true },
+    "@deepseek-ai/dsh-skill": { "optional": true },
+    "@deepseek-ai/dsh-system-prompt": { "optional": true },
+    "@deepseek-ai/dsh-tools": { "optional": true },
+    "@deepseek-ai/dsh-attachment": { "optional": true },
+    "@deepseek-ai/dsh-sandbox": { "optional": true }
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.1",
