@@ -72,7 +72,7 @@ Luna 对比的是原始 harness 的 medium 推理档位与优化后 harness 的 
 
 通过 **Refine Skill**，你可以在 Codex、Claude Code、DSH 或其他兼容的 Agent 环境中使用 Gear。你可以使用已有 benchmark，也可以用 [Harbor 格式](docs/guide/zh-CN/datasets.md)定义自己的任务。
 
-安装及依赖准备步骤，见 [install.md](install.md)。
+安装及依赖准备步骤，见[快速开始](docs/guide/zh-CN/quickstart.md)。
 
 **让 Agent 帮你安装。** 把下面的 prompt 复制给你正在使用的 Agent：
 

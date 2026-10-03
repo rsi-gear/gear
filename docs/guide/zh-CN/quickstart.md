@@ -18,14 +18,89 @@
 
 ## 1. 安装 Gear
 
-需要 Node.js 22.19+ 或 24+、Git。安装 Gear 和 Hitch；本例同时安装 DSH，作为 rollout Agent：
+支持 macOS 和 Linux。建议使用 Node.js 24+、Python 3.12+ 和 Git；Gear 也支持 Node.js 22.19+。运行 Harbor 评测还需要 Docker。
+
+### 安装基础工具
+
+macOS（已安装 Homebrew）：
 
 ```bash
-npm install --global rsi-gear@latest agent-hitch@latest @deepseek-ai/dsh@latest
-hitch eval setup harbor
+xcode-select --install
+brew install git node@24 python@3.12 ripgrep
+export PATH="$(brew --prefix node@24)/bin:$PATH"
+brew install --cask docker-desktop
+open -a Docker
 ```
 
-Harbor 任务需要 Docker 已启动，Python/IPython 和 sandbox 依赖见[平台安装说明](../../plugin-installation-and-usage.md)。Gear 包含 `gear-refine` CLI 和完整 Refine Skill。
+Ubuntu 24.04：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git curl ca-certificates build-essential \
+  python3 python3-venv bubblewrap socat ripgrep
+```
+
+Ubuntu 的 Node.js 和 Docker 分别按 [Node.js 安装页面](https://nodejs.org/en/download)和 [Docker 安装指南](https://docs.docker.com/engine/install/ubuntu/)安装。启动 Docker 后，确认 `docker info` 能正常执行。更多 sandbox 配置见[平台安装说明](../../plugin-installation-and-usage.md#22-操作系统要求)。
+
+### 从 npm 安装 Gear 和 Hitch
+
+安装最新发布版，npm 会自动安装依赖：
+
+```bash
+npm install --global rsi-gear@latest agent-hitch@latest
+```
+
+Gear 包含 `gear-refine` CLI 和完整 Refine Skill。若遇到 DSH peer dependency 冲突，可使用文末的源码安装方式。
+
+### 安装 Python 依赖和 Harbor
+
+创建并激活 Python 虚拟环境，安装 IPython：
+
+```bash
+python3.12 -m venv "$HOME/.venvs/gear"
+. "$HOME/.venvs/gear/bin/activate"
+python -m pip install ipython
+```
+
+Ubuntu 24.04 可将 `python3.12` 换成 `python3`。保持虚拟环境已激活，由 Hitch 自动安装 Harbor 并检查环境：
+
+```bash
+hitch eval setup harbor --python "$VIRTUAL_ENV/bin/python"
+hitch eval doctor --python "$VIRTUAL_ENV/bin/python" --json
+```
+
+### 安装 DSH（使用 DSH 时）
+
+本例使用 DSH 作为 rollout Agent：
+
+```bash
+npm install --global pnpm@11.7.0 @deepseek-ai/dsh@0.1.1-rc.2
+```
+
+如果也使用 DSH 作为 Meta 宿主，将 Gear 安装到 DSH profile：
+
+```bash
+dsh plugin --profile web add rsi-gear@latest
+```
+
+按 [DSH 配置说明](../../plugin-installation-and-usage.md#6-启用并配置-profile)启用 `refine`，填写模型、任务集、目标仓库和虚拟环境中的 Python 路径，然后启动：
+
+```bash
+dsh --profile web --no-open
+```
+
+默认访问地址：`http://127.0.0.1:3080`。外部 Meta Agent 的接入方式见下一节。
+
+### 检查安装
+
+```bash
+gear-refine skill-identity
+python -c "import IPython; print('Python OK')"
+hitch --version
+hitch eval doctor --python "$VIRTUAL_ENV/bin/python" --json
+```
+
+配置 Gear 时，将 Python 可执行文件设为上述虚拟环境中的绝对路径。
 
 ## 2. 将 Skill 接入你的 Agent
 
@@ -74,3 +149,38 @@ Meta Agent 用 Codex + Astra，rollout 用 DSH + Luna，优化 1 轮。
 继续已有实验时提供返回的 evolution ID。[进化管理](evolutions.md)介绍状态查询、修复与发布。
 
 接下来阅读[案例一：优化 Marketing Harness](example-harness.md)或[案例二：定制进化算法](example-algorithm.md)。模型权重优化使用独立的[实验性训练流程](training.md)。
+
+## 可选依赖
+
+需要 Gear Python 训练模块（自动安装 psutil 和 aiohttp）：
+
+```bash
+python -m pip install "$(npm root -g)/rsi-gear/python[gateway]"
+```
+
+训练阶段还需要 CodexRunner 时：
+
+```bash
+python -m pip install "$(npm root -g)/rsi-gear/python[agents]"
+```
+
+需要 LLM Verifier：
+
+```bash
+python -m pip install llm-verifier
+```
+
+GPU 训练的 Slime、Megatron、SGLang、Ray、PyTorch、CUDA 及补丁安装见[训练指南](../../training/README.zh-CN.md#配置和不可变输入)。
+
+## 源码安装（开发时）
+
+可用以下步骤替代前面的 npm 安装 Gear 和 Hitch，其他依赖与配置步骤仍需完成：
+
+```bash
+git clone --branch dev https://github.com/rsi-gear/gear.git
+cd gear
+npm ci
+npm run build
+npm link --ignore-scripts
+npm install --global agent-hitch@latest
+```
