@@ -1,10 +1,14 @@
 # Terminal-Bench 2.1：四阶段 GRPO 示例
 
+开发者交接入口见 [四阶段与自有 GPU 指南](../../../docs/training/developer-guide.zh-CN.md)，包含 GRPO / SFT 两个一键命令。`prepare.py --run` 会在封存后调用正式校验与持续运行；SFT base spec 使用 `offline-sft-v1` 并提供 `--sft-input`，细节见指南。
+
 复用已经配置好的 Gear GRPO 模型、Hitch/Slime 环境和 controller，把任务换成 Terminal-Bench 2.1，再通过同一个 `training run` 入口运行。四阶段组合在 [recipe/tb21.py](recipe/tb21.py)：
 
 ```text
 FrozenTaskSource → HitchRolloutExecutor → PolicyDatasetBuilder → SlimeModelUpdater
 ```
+
+本例为在线 on-policy GRPO：每轮用当前模型同步后的权重真实执行 TB，采集新的轨迹，再验证、构建训练 batch 并更新。下一轮即使选择同一道题也要重新 rollout；已有成功轨迹或人工轨迹不能替代正常采样。跳过 rollout、复用历史轨迹的训练诊断脚本不属于本例。Updater 内部读取本轮刚生成的 sealed batch 是阶段间的数据传递，不代表省略 rollout；故障恢复只可在同一未提交更新、同一采样权重下重放原 batch。SFT 的离线记录读取另见开发者指南。
 
 任务源是普通 Python 类，不需要 agent。改造其中一个阶段时，直接编辑这个工厂的组件；修改后重新准备 spec，会产生新的源码引用。
 
@@ -71,7 +75,7 @@ python -m gear_training run /your/runs/tb21-grpo/spec.json \
 
 准备阶段只使用 CPU：检查分区和 family，按真实字节封存单任务与完整 split，写入 controller CAS，冻结本例 Python 工厂，输出 `spec.json` 和 `dataset-provenance.json`。输出目录必须不存在；原 base spec 不会修改。`validate` 检查配置合同；`run` 才创建新实验并进入基线评估、训练、候选评估。实际运行仍受 GPU preflight 和 runtime 认证约束。
 
-只有 train split 开启精确训练数据授权，dev/held-out 不进入训练请求。原 spec 的 `requiredTaskIds` 替换成这里的所有 dev/held-out 任务；旧自定义脚本选择也替换为 `tb21:build_loop`。其余评估政策保留。旧 `stages`/`trainer.pipeline` 和 SFT 配置会被拒绝，不会悄悄混用。
+只有 train split 开启精确训练数据授权，dev/held-out 不进入训练请求。原 spec 的 `requiredTaskIds` 替换成这里的所有 dev/held-out 任务；旧自定义脚本选择也替换为 `tb21:build_loop`。其余评估政策保留。旧 `stages`/`trainer.pipeline` 会被拒绝；GRPO base 不能携带 `offlineTraining`。运行 SFT 时使用指南中的独立 base 和 `--sft-input`。
 
 如果要扩大任务规模，编辑或另建 split JSON，并传 `--split /path/to/split.json`。所有选中任务都需要 bindings。模型在同组内全成功或全失败时，默认 GRPO 策略可能跳过零方差组并最终报告 no-update；这个小示例不保证产生梯度或提高分数。
 

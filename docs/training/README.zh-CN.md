@@ -1,5 +1,7 @@
 # Slime 模型训练接入
 
+使用自己的 GPU，先看 [四阶段与 TB GRPO / SFT 上手指南](developer-guide.zh-CN.md)：框架、修改方法、一次性配置及两个一键示例。
+
 Gear 的模型训练独立于 harness 进化状态，通过固定 harness 和数据集执行版本化 Slime RL 或离线 SFT 更新，再用不可变 HF 导出进行独立评估。新部署从 [v2 controller 配置](controller-v2.zh-CN.md) 开始；下文同时说明 v1 配置和通用训练合同。
 
 开发者编写自己的四阶段训练，从 [TrainingLoop 开发指南](development.zh-CN.md) 开始；它支持普通 Python 实现，不要求 agent；控制器也可加载自定义 `build_loop(config, runtime)` 脚本，Hitch/Slime 作为内置组件继续复用。已有 Slime 后端可用 `python -m gear_training run spec.json --config controller.json` 创建并持续运行，或 `run EXP_ID RUN_ID` 跟踪已有运行。 原 dev 固定任务 GRPO 流程的四阶段脚本是 [dev_grpo.py](../../examples/training-loop/dev_grpo.py)，运行和恢复方法见开发指南。
