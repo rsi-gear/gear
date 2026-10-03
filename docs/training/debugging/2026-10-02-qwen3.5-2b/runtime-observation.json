@@ -1,0 +1,18 @@
+{
+  "packages": {
+    "torch": "2.11.0+cu129",
+    "transformers": "5.12.1",
+    "sglang": "0.5.15.post1",
+    "ray": "2.58.0",
+    "megatron-core": "0.16.0rc0",
+    "slime": "0.3.2",
+    "flash-linear-attention": "0.4.2",
+    "causal-conv1d": null
+  },
+  "repositories": {
+    "slime": "89bfada990a00663846e0ac804de1454685ceed3",
+    "megatron": "1dcf0dafa884ad52ffb243625717a3471643e087",
+    "gear": "973f3339d9a8d635036c2c59dedeee8fdb548bf0"
+  },
+  "gpu": "NVIDIA GeForce RTX 5090, GPU-9aeaebdf-f339-87b4-f689-87fed52af0c9, 32607 MiB, 580.178.04"
+}

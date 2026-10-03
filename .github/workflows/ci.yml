@@ -89,6 +89,7 @@ jobs:
         run: |
           python -m pip install './python[gateway]' -c python/constraints-test.txt
           python -m pip install torch -c python/constraints-test.txt --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install transformers tokenizers safetensors numpy -c python/constraints-test.txt
       - name: Test the CPU training bridge
         run: python -m unittest discover -s python/tests -v
         env:

@@ -15,7 +15,9 @@ def resource_plan(request, argv):
     Colocated actor and rollout each cover the entire pool. Separate mode keeps
     explicit actor/rollout counts from the sealed recipe. No Slime 8-GPU default.
     """
-    placement = actor_rollout_placement(request)
+    from .recipes.registry import is_sft
+    offline = is_sft(request)
+    placement = "separate" if offline else actor_rollout_placement(request)
     require(placement in ("separate", "colocated"), "unsupported-resource-topology", "unknown trainer placement")
     devices = training_devices(request)
     require(devices and len(set(devices)) == len(devices), "invalid-training-devices", "training GPU pool must be nonempty and unique")
@@ -30,14 +32,20 @@ def resource_plan(request, argv):
             i += 1
             require(i < len(argv), "invalid-resource-argument", "resource flag missing value: " + key)
             value = argv[i]
-        require(value.isascii() and value.isdecimal() and int(value) > 0,
+        require(value.isascii() and value.isdecimal() and (int(value) > 0 or (offline and key == "--rollout-num-gpus" and int(value) == 0)),
                 "invalid-resource-argument", "resource count must be a positive integer: " + key)
         values[key] = int(value); i += 1
     count = len(devices)
     for key, expected in (("--actor-num-nodes", 1), ("--num-gpus-per-node", count)):
         require(values.get(key, expected) == expected, "resource-argument-conflict", "private single-node GPU pool conflicts with " + key)
         values[key] = expected
-    if placement == "colocated":
+    if offline:
+        require(values.get("--actor-num-gpus-per-node", count) == count and values.get("--rollout-num-gpus", 0) == 0
+                and "--rollout-num-gpus-per-engine" not in values,
+                "resource-argument-conflict", "offline SFT allocates the complete actor pool and no rollout GPU")
+        values["--actor-num-gpus-per-node"] = count
+        values["--rollout-num-gpus"] = 0
+    elif placement == "colocated":
         for key in ("--actor-num-gpus-per-node", "--rollout-num-gpus"):
             require(values.get(key, count) == count, "resource-argument-conflict", "colocated actor and rollout must each cover the full GPU pool")
             values[key] = count
@@ -46,11 +54,11 @@ def resource_plan(request, argv):
                 "unsealed-resource-allocation", "separate placement requires explicit actor and rollout GPU counts")
         require(values["--actor-num-gpus-per-node"] + values["--rollout-num-gpus"] <= count,
                 "gpu-allocation-overflow", "separate actor plus rollout allocations exceed the GPU pool")
-    values.setdefault("--rollout-num-gpus-per-engine", 1)
+    if not offline: values.setdefault("--rollout-num-gpus-per-engine", 1)
     dp = request["trainer"]["dataParallelSize"]
     require(type(dp) is int and dp > 0 and values["--actor-num-gpus-per-node"] % dp == 0,
             "data-parallel-drift", "actor GPU allocation must contain complete data parallel groups")
-    require(values["--rollout-num-gpus"] % values["--rollout-num-gpus-per-engine"] == 0,
+    require(offline or values["--rollout-num-gpus"] % values["--rollout-num-gpus-per-engine"] == 0,
             "invalid-rollout-allocation", "rollout GPUs must contain complete single-node engines")
     return placement, values, remaining
 

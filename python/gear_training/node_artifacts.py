@@ -8,6 +8,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .model_config import language_metadata
 from .content import atomic_json, digest_bytes, digest_file, digest_json, require, sync_dir
 
 MAX_METADATA = 16 * 1024 * 1024
@@ -37,6 +38,29 @@ def snapshot_files(value):
         ref = validate_ref(item.get("contentRef"))
         require(item.get("sha256") == ref["digest"] and type(item.get("size")) is int and 0 <= item["size"] <= 9007199254740991,
                 "invalid-export-file", "snapshot file identity or size differs")
+        names.add(name)
+    return files
+
+
+def dataset_snapshot_files(value):
+    """Bounded data snapshots; keep model snapshot validation separate."""
+    if not isinstance(value, dict) or value.get("schemaVersion") != 2 or value.get("format") != "harbor-dataset": return None
+    from .export import dataset_destination
+    dataset_destination(value, Path("."))
+    def mode(v): return type(v) is int and 0 <= v <= 0o7777
+    directories = value.get("directories")
+    require(mode(value.get("mode")) and isinstance(directories, list), "invalid-file-manifest", "dataset modes/directories are missing")
+    files = snapshot_files({"schemaVersion": 1, "format": "trainer-files", "files": value.get("files")})
+    require(len(files) + len(directories) <= MAX_OBJECTS and sum(item["size"] for item in files) <= 64 * 1024 * 1024,
+            "agent-artifact-limit", "data snapshot exceeds 4096 entries or 64 MiB")
+    names = {item["path"] for item in files}
+    for item in files: require(mode(item.get("mode")), "invalid-file-manifest", "dataset file mode is invalid")
+    for item in directories:
+        require(isinstance(item, dict) and mode(item.get("mode")), "invalid-file-manifest", "dataset directory mode is invalid")
+        name = item.get("path")
+        require(isinstance(name, str) and "\\" not in name and "\0" not in name and not name.startswith("/")
+                and all(p not in ("", ".", "..") for p in name.split("/")) and name not in names,
+                "invalid-export-path", "dataset directory path is unsafe or duplicated")
         names.add(name)
     return files
 
@@ -106,6 +130,7 @@ def retain_graph(store, identity, payload):
         if ref["mediaType"] == "application/json":
             value = json.loads(data)
             files = snapshot_files(value)
+            if files is None: files = dataset_snapshot_files(value)
             if files is not None:
                 allowed = {item["contentRef"]["digest"] for item in files}
                 require(all(child["digest"] in allowed for child in dependencies(value)),
@@ -163,8 +188,7 @@ def hf_manifest(store, payload):
     projected = sorted(({key: item[key] for key in ("path", "size", "sha256")} for item in files), key=lambda item: item["path"])
     token_files = [{"path": item["path"], "sha256": item["sha256"]} for item in projected if re.search(r"(?:^|/)(?:tokenizer|special_tokens_map|added_tokens|tokenizer_config)(?:\.|$)", item["path"])]
     architecture = (config.get("architectures") or [None])[0]
-    dtype = config.get("torch_dtype", config.get("dtype"))
-    context = config.get("max_position_embeddings")
+    dtype, context = language_metadata(config)
     require(isinstance(architecture, str) and isinstance(dtype, str) and isinstance(config.get("model_type"), str), "invalid-model-config", "model semantics are missing")
     body = {"format": "hf-safetensors", "files": projected, "architecture": architecture, "model_type": config["model_type"],
             "dtype": dtype, "quantization": None, "context_tokens": context if type(context) is int and context > 0 else None,

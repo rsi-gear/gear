@@ -1,0 +1,19 @@
+{
+  "kind": "hf-native-forward-parity",
+  "modelDirectory": "/root/gear-qwen35-debug/Qwen3.5-2B",
+  "receiptId": "receipt_3c968c206bd411ed1df70e67e7db4b99",
+  "policyVersion": "runtime_57d53849a768a13e46fa14c8f94d64a5/update-0/weight-1",
+  "nativeUpdate": 0,
+  "tokens": 1513,
+  "meanAbsoluteDifference": 0.009378872944614884,
+  "maxAbsoluteDifference": 0.23687052726745605,
+  "nativeMeanLogprob": -0.43374279597719384,
+  "hfMeanLogprob": -0.43279509726121945,
+  "freshCompletionTokens": 2048,
+  "status": "completed",
+  "elapsedSeconds": 81.61,
+  "chatTemplateKwargs": {
+    "enable_thinking": false
+  },
+  "sourceDiagnosticRun": "tb-full-23"
+}

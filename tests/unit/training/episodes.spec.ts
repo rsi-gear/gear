@@ -17,17 +17,24 @@ type Json = Record<string, any>
 describe('controller-owned rollout reconciliation', () => {
   const roots: string[] = []
   afterEach(async () => { vi.restoreAllMocks(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
-  async function setup() {
+  async function setup(generated = false) {
     const root = await mkdtemp(join(tmpdir(), 'gear-episodes-')); roots.push(root)
     const store = new ModelTrainingStore(join(root, 'controller')), node = new TrainingContentStore(join(root, 'node'))
     const legacy = await fixture(store), hash = digestJson('canonical-identity')
     const harness = { harnessId: 'training-tool', revisionIdentity: hash, artifactId: hash }
     legacy.fixedHarness.manifestRef = await store.putJson({ hitch: harness })
     legacy.datasets.train.tasks[0]!.environmentRef = await store.putJson({ taskDigest: hash, verifierIdentity: hash, hitchEnvironmentIdentity: hash })
+    if (generated) legacy.stages = { taskSource: { runner: 'custom-provider', options: {}, instructionsRef: await store.putBytes(Buffer.from('Create train tasks'), 'text/plain'), maxRepairs: 1, timeoutSeconds: 10 } }
     const coordinator = new ModelTrainingCoordinator(store, new FixtureTrainer(store), new FixtureEvaluator(store))
     const experiment = await coordinator.createExperiment(v2spec(legacy))
     const request = (await coordinator.admit(experiment.id)).request as TrainingRequestV2
-    const task = request.trainDataset.tasks[0]!
+    let task = request.trainDataset.tasks[0]!
+    if (generated) {
+      const instruction = await store.putBytes(Buffer.from('Generated train task'), 'text/plain')
+      const taskRef = await store.putJson({ schemaVersion: 2, format: 'harbor-dataset', name: 'generated-task', files: [{ path: 'instruction.md', sha256: instruction.digest, contentRef: instruction }] })
+      const environmentRef = await store.putJson({ schemaVersion: 1, kind: 'generated-task-environment', binding: 'canonical-after-sealed-dispatch', taskSnapshotDigest: taskRef.digest, sourceEnvironmentRef: task.environmentRef })
+      task = { ...task, id: 'generated-task', taskRef, environmentRef }
+    }
     const handle: TrainingHandle = { schemaVersion: 1, provider: 'slime', jobId: `job_${'a'.repeat(32)}`, requestDigest: digestJson(request) }
     const sampling = { temperature: 1, top_p: 1, top_k: -1, repetition_penalty: 1, max_new_tokens: 16,
       skip_special_tokens: false, spaces_between_special_tokens: false, no_stop_trim: true }
@@ -47,7 +54,7 @@ describe('controller-owned rollout reconciliation', () => {
       generationContractDigest: request.trainer.runtimeLock.protocolDigest, maxOutputTokens: 16, maxEpisodeSteps: request.budgets.maxEpisodeSteps }
     const body = { schemaVersion: 2, id, jobId: handle.jobId, incarnation: 'incarnation-1', trainingRunId: request.trainingRunId,
       context, binding, lease, key: digestJson([request.trainingRunId, lease.batchId, task.taskRef.digest, context.groupId, 0]), gateway: { nodePort: 31001 }, credential: 'd'.repeat(64) }
-    const intent = validateRolloutIntent({ ...body, inputDigest: digestJson(body) }, request, handle)
+    const intent = validateRolloutIntent({ ...body, inputDigest: digestJson(body) }, request, handle, generated ? [task] : request.trainDataset.tasks)
     const entry: Json = { intent, cancelRequested: false, ack: null, result: null }
     const runId = `run_${'c'.repeat(32)}`, evalId = `eval_${'b'.repeat(32)}`
     const raw = await node.putJson({ native: 'raw-generation' })
@@ -70,8 +77,15 @@ describe('controller-owned rollout reconciliation', () => {
       }
     })
     vi.spyOn(transport, 'gateway').mockResolvedValue('http://127.0.0.1:31001')
+    const stagePayload = { trainingRunId: request.trainingRunId, rolloutId: 0, tasks: request.trainDataset.tasks, behaviorPolicyRef: lease.synchronizedWeightsRef,
+      history: [], maxTasks: request.trainer.rolloutBatchSize + request.budgets.maxGroupResamples }
+    const stageIntent = { schemaVersion: 1, stage: 'task-source', config: request.stages?.taskSource, payloadRef: await node.putJson(stagePayload), trainingRunId: request.trainingRunId, weightsRef: lease.synchronizedWeightsRef }
+    const stageResult = { inputDigest: digestJson({ schemaVersion: 1, stage: 'task-source', config: request.stages?.taskSource ?? null, payloadDigest: digestJson(stagePayload) }),
+      outputRef: await store.putJson({ tasks: [task] }), snapshotRef: raw, runner: { logRef: raw } }
     const rpc = vi.spyOn(transport, 'call').mockImplementation(async (op, payload) => {
       const p = payload as Json
+      if (op === 'training.stages.list') return { entries: [{ id: digestJson(stageIntent), intent: stageIntent, lease, cancelRequested: entry.cancelRequested, result: { outcome: 'completed', result: stageResult } }] }
+      if (op === 'training.stages.inputs') return { refs: [] }
       if (op === 'training.episodes.list') return { schemaVersion: 2, jobId: handle.jobId, entries: [structuredClone(entry)], nextCursor: null }
       if (op === 'training.episodes.ack') { expect(p.ack).toEqual({ evalId }); entry.ack = p.ack; return { ack: p.ack } }
       if (op === 'training.episodes.receipts') return { runId, complete: true, receiptRefs: [receiptRef] }
@@ -89,7 +103,7 @@ describe('controller-owned rollout reconciliation', () => {
       throw new Error(`unexpected RPC ${op}`)
     })
     const invoke: typeof jsonProcess = vi.fn(async (command, args, payload) => {
-      if (command[0] === 'fixture-python') return { path: (payload as Json).destination }
+      if (command[0] === 'fixture-python') return { path: (payload as Json | undefined)?.destination }
       const a = args.slice(2), op = a.slice(0, 2).join(' ')
       if (a[0] === 'capabilities') return { training_external_binding: '1', exact_policy_tokens: '1', training_policy_fencing: '1', training_harnesses: ['training-tool'] }
       if (op === 'training runtime') return { schema_version: '2', package_version: '0.2.9', node_version: 'v22.0.0', runtime_id: hash,
@@ -102,10 +116,10 @@ describe('controller-owned rollout reconciliation', () => {
         return { eval_id: evalId }
       }
       if (op === 'eval cancel') { state.cancelled = true; return {} }
-      if (op === 'eval inspect') return { request: { request: { training_binding: binding, harness_ref: state.submitted[state.submitted.indexOf('--harness') + 1] } }, control: { state: state.terminal ? 'completed' : 'running' },
+      if (op === 'eval inspect') return { request: { request: { training_binding: binding, ...(generated ? { dataset: state.submitted[state.submitted.indexOf('--dataset') + 1], benchmark_id: 'local:generated-task', benchmark_revision: hash } : {}), harness_ref: state.submitted[state.submitted.indexOf('--harness') + 1] } }, control: { state: state.terminal ? 'completed' : 'running' },
         result: state.terminal ? { status: state.cancelled ? 'cancelled' : 'succeeded', trials: [{ task_id: task.id, run_id: runId, attempt: 1, observation_status: 'valid', reward: 0 }] } : null }
       if (op === 'runs inspect') return { record_status: 'valid', trajectory_status: 'valid', record: { run_id: runId, parent: { eval_id: evalId, attempt: 1 },
-        context: { kind: 'benchmark_task', task_id: task.id, task_digest: hash, verifier_identity: state.wrongVerifier ? digestJson('other') : hash },
+        context: { kind: 'benchmark_task', ...(generated ? { benchmark_id: 'local:generated-task', benchmark_revision: hash } : {}), task_id: task.id, task_digest: hash, verifier_identity: state.wrongVerifier ? digestJson('other') : generated ? digestJson({ backend: 'harbor', benchmark_id: 'local:generated-task', benchmark_revision: hash, verifier: 'dataset' }) : hash },
         protocol: { environment_identity: hash }, model: { provider: 'slime-training', effective_id: lease.policyVersion, identity_resolved: true },
         harness: { harness_id: harness.harnessId, revision_identity: hash, artifact_id: state.canonicalHarnessArtifact, requested_ref: state.canonicalHarnessRef },
         observation: { status: 'valid', reward: 0 } } }
@@ -120,6 +134,24 @@ describe('controller-owned rollout reconciliation', () => {
     const statePath = join(options.workspace, 'training-episodes', handle.jobId, digestJson(id).slice(7), 'state.json')
     return { episodes, create, store, node, handle, request, entry, state, rpc, intent, uploaded, transport, invoke, fetcher, statePath }
   }
+  it('authorizes generated snapshots and records observed canonical native identities', async () => {
+    const s = await setup(true)
+    expect(await s.episodes.reconcile(s.handle)).toEqual({ pending: false })
+    expect(s.entry.result.outcome).toBe('feedback')
+    const feedback = await s.store.readJson<Json>(s.entry.result.feedbackRef)
+    const projection = await s.store.readJson<Json>(feedback.verifierEvidenceRef)
+    const evidence = await s.store.readJson<Json>(projection.sourceEvidenceRef)
+    expect(evidence.generatedTaskBinding.taskSnapshotRef.digest).toBe((s.intent.context.taskRef as ContentRef).digest)
+    expect(evidence.generatedTaskBinding.benchmarkId).toBe('local:generated-task')
+    expect(s.state.submits).toBe(1)
+  })
+  it.each(['cancel', 'expired'])('reconciles generated episodes after %s without dispatching again', async mode => {
+    const s = await setup(true); s.state.terminal = false
+    expect(await s.episodes.reconcile(s.handle)).toEqual({ pending: true })
+    s.state.terminal = true; s.entry.cancelRequested = true
+    expect(await s.episodes.reconcile(s.handle, mode === 'cancel')).toEqual({ pending: false })
+    expect(s.entry.result.outcome).toBe('cancelled'); expect(s.state.submits).toBe(1)
+  })
   it('collects native evidence, keeps zero reward and sends only verifier projections to the node', async () => {
     const s = await setup(); await s.episodes.preflight(s.request)
     expect(await s.episodes.reconcile(s.handle)).toEqual({ pending: false })

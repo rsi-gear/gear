@@ -20,13 +20,16 @@ def seal_hf(store, directory):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("materialize", "seal-hf", "seal-dataset"))
+    parser.add_argument("action", choices=("materialize", "seal-hf", "seal-dataset", "seal-sft"))
     parser.add_argument("--store-root", required=True)
     args = parser.parse_args()
     try:
         payload = json.load(sys.stdin)
         store = ContentStore(args.store_root)
-        if args.action == "materialize":
+        if args.action == "seal-sft":
+            from .offline import seal_dataset
+            result = seal_dataset(store, payload)
+        elif args.action == "materialize":
             destination = dataset_destination(store.read_json(payload["ref"]), payload["destination"])
             result = {"path": str(materialize(store, payload["ref"], destination))}
         else:

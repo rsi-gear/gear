@@ -1,0 +1,69 @@
+{
+  "kind": "teacher-assisted-training-smoke",
+  "passed": true,
+  "positives": [
+    {
+      "assisted": true,
+      "teacherMethod": "provided executable OpenSSL steps derived from public task requirements",
+      "teacherPromptSha256": "sha256:86775f412ddd30f2de586804715e9f098019191e6fe3d353e8b3836aa831186c",
+      "originalVerifierFiles": {
+        "tests/test_outputs.py": "sha256:90970bb3c372e8e7fb6bb9ac5f649ba73eb38e1a5ea2e922a9057a72b6b4192d",
+        "tests/test.sh": "sha256:4770437ea96c3cc84684b4f99d55fb148fcac09f9ea1e8ef49de487716e6c334"
+      },
+      "originalTaskRevision": "sha256:d0d756624ce28d1fc433b6be161784d4c164dfea5f182e46f3b0bdda70f7484c",
+      "evalId": "eval_c9b7c32501374ecf8ceabeaa82c56d86",
+      "runId": "run_cf87ee08c046494aa2e0c2267dabf61b",
+      "reward": 1,
+      "model": "Qwen/Qwen3.5-2B",
+      "task": "openssl-selfsigned-cert",
+      "jobId": "job_f016830c10b9e458c7076ae1a95b6f45",
+      "benchmarkRevision": "sha256:46d22aa254e5eb1a1917b380a7d6bec27665f01687b51364e95a7df799c78b38",
+      "taskDigest": "sha256:bb55c859fc02207ae38fe04f90a08b5d59bd31a7f87f8263fecbaf5789ea7a6a",
+      "initialWorkspaceDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "verifierIdentity": "sha256:b6d49d5848c670ac70819cebbe5941e14e08b7a988ede7480194eb79f659fe1a",
+      "harnessCommit": "training-tool@commit:ba774d259815daacfc9da77fc854f6b301fde70a",
+      "policyVersion": "runtime_d7d1092108c4afef4e1205e3e906036a/update-0/weight-1",
+      "toolCalls": 9,
+      "completedAt": "2026-10-02T17:51:19.708Z",
+      "evidenceHashes": {
+        "eval-result.json": "sha256:07b5c770d3bdff3946f579bb796e8a1b2676cf6ca70eeac8f6954c4ba6cecf22",
+        "verifier-result.json": "sha256:87cc92d94284f8ba4ef95aaca5e5a71988083f243e9c3eacd0b3a5605cb0ff97",
+        "test-stdout.txt": "sha256:a4d96b794395010a48355b14056700cf78430c9e93dbf66115027ff3b0b2df1a",
+        "trajectory-events.jsonl": "sha256:a77c9e15640d7698237adb330b03e7002bc1b73295cc6753839c30dd43b67b19"
+      }
+    },
+    {
+      "assisted": true,
+      "teacherMethod": "provided executable OpenSSL steps derived from public task requirements",
+      "teacherPromptSha256": "sha256:86775f412ddd30f2de586804715e9f098019191e6fe3d353e8b3836aa831186c",
+      "originalVerifierFiles": {
+        "tests/test_outputs.py": "sha256:90970bb3c372e8e7fb6bb9ac5f649ba73eb38e1a5ea2e922a9057a72b6b4192d",
+        "tests/test.sh": "sha256:4770437ea96c3cc84684b4f99d55fb148fcac09f9ea1e8ef49de487716e6c334"
+      },
+      "originalTaskRevision": "sha256:d0d756624ce28d1fc433b6be161784d4c164dfea5f182e46f3b0bdda70f7484c",
+      "evalId": "eval_2d7c18603c374891ae3087af5c858998",
+      "runId": "run_b6646f0dbc7641b3a00c49505f4e51e0",
+      "reward": 1,
+      "model": "Qwen/Qwen3.5-2B",
+      "task": "openssl-selfsigned-cert",
+      "jobId": "job_f016830c10b9e458c7076ae1a95b6f45",
+      "benchmarkRevision": "sha256:46d22aa254e5eb1a1917b380a7d6bec27665f01687b51364e95a7df799c78b38",
+      "taskDigest": "sha256:bb55c859fc02207ae38fe04f90a08b5d59bd31a7f87f8263fecbaf5789ea7a6a",
+      "initialWorkspaceDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "verifierIdentity": "sha256:b6d49d5848c670ac70819cebbe5941e14e08b7a988ede7480194eb79f659fe1a",
+      "harnessCommit": "training-tool@commit:ba774d259815daacfc9da77fc854f6b301fde70a",
+      "policyVersion": "runtime_d7d1092108c4afef4e1205e3e906036a/update-0/weight-1",
+      "toolCalls": 12,
+      "completedAt": "2026-10-02T17:48:33.448Z",
+      "evidenceHashes": {
+        "eval-result.json": "sha256:8a13c09c62ac005b258e9f797fa1f58275b4befc414a686fd017705daa9322f0",
+        "verifier-result.json": "sha256:87cc92d94284f8ba4ef95aaca5e5a71988083f243e9c3eacd0b3a5605cb0ff97",
+        "test-stdout.txt": "sha256:7b38d75076c189ab7e0b2436e359c5bc7c4a6421dfc4a5b834b682243261fd8d",
+        "trajectory-events.jsonl": "sha256:6eb1c21ce395e3028737ab36f7ebac55a320289cf5251bd06e503ca44eaf4ada"
+      }
+    }
+  ],
+  "chatTemplateKwargs": {
+    "enable_thinking": true
+  }
+}

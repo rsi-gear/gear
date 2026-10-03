@@ -125,6 +125,46 @@ export interface TrainingEpisode {
   rejectionReasons: string[]
 }
 
+export type TrainingRecipe = 'agent-grpo-v1' | 'agent-gspo-v1' | 'agent-cispo-v1'
+  | 'agent-reinforce-plus-plus-v1' | 'agent-reinforce-plus-plus-baseline-v1' | 'offline-sft-v1'
+export interface OfflineTraining {
+  datasetRef: ContentRef
+  shuffleSeed: number
+  maxEpochs: number
+  maxSequenceTokens: number
+  maskContract: 'assistant-token-mask-v1'
+}
+export interface OfflineSftRecord {
+  schemaVersion: 1
+  id: string
+  source: { taskId: string; family: string; taskDigest: string }
+  tokens: number[]
+  lossMask: number[]
+  tokenRoles: ('system' | 'user' | 'assistant' | 'tool')[]
+}
+export interface OfflineSftDataset {
+  schemaVersion: 1
+  kind: 'offline-sft-dataset'
+  tokenizerDigest: string
+  chatTemplateDigest: string
+  maskContract: 'assistant-token-mask-v1'
+  records: ContentRef[]
+}
+export interface OfflineSftBatchManifest {
+  schemaVersion: 3
+  kind: 'offline-sft-batch'
+  id: string
+  trainingRunId: string
+  recipeDigest: string
+  datasetSplitDigest: string
+  datasetRef: ContentRef
+  samplesRef: ContentRef
+  recordRefs: ContentRef[]
+  cursorBefore: { position: number }
+  cursorAfter: { position: number }
+  state: 'sealed'
+}
+export type ConsumedTrainingBatch = TrainingBatchManifest | OfflineSftBatchManifest
 export interface TrainingBatchManifest {
   schemaVersion: 1 | 2
   id: string
@@ -180,22 +220,35 @@ export interface TrainingSampling {
   maxContextTokens: number
 }
 
+export interface AgentStageConfig {
+  runner: string; options: Record<string, unknown>
+  instructionsRef: ContentRef; maxRepairs: number; timeoutSeconds: number
+}
+export interface TrainingStages {
+  taskSource?: AgentStageConfig
+  datasetBuilder?: AgentStageConfig
+}
+
 export interface ModelTrainingSpecV1 {
   schemaVersion: 1
   kind: 'model-training'
   name: string
   fixedHarness: { commit: string; manifestRef: ContentRef; adapter: string }
   initialModel: ContentRef
+  stages?: TrainingStages
   referenceModel: ContentRef
   datasets: { train: DatasetPartition; dev: DatasetPartition; heldOut: DatasetPartition }
   verifier: ContentRef
   trainer: {
     provider: 'slime'
     runtimeLock: TrainingRuntimeLock
-    recipe: 'agent-grpo-v1'
+    recipe: TrainingRecipe
     backend: 'megatron'
     /** Defaults to separate GPUs. Colocated alternates rollout/train with CPU offload. */
     placement?: 'separate' | 'colocated'
+    /** Frozen four-stage factory loaded by the native runtime. */
+    script?: { entrypoint: string; sourceRef: ContentRef }
+    scriptConfig?: Record<string, unknown>
     hyperparametersRef: ContentRef
     updatesPerCandidate: number
     checkpointEveryUpdate: true
@@ -204,6 +257,7 @@ export interface ModelTrainingSpecV1 {
     globalBatchSize: number
     dataParallelSize: number
   }
+  offlineTraining?: OfflineTraining
   rollout: {
     provider: 'hitch'
     mode: 'synchronous'
@@ -286,11 +340,16 @@ export interface TrainingRequestV1 {
   experimentId: string
   parentModel: ModelVersion
   parentModelRef: ContentRef
+  stages?: TrainingStages
+  generatedTaskExclusionRef?: ContentRef
+  behaviorPolicyRef?: ContentRef
+  updateStart?: { mode: 'cold-start' | 'resume'; modelRef: ContentRef; checkpointRef?: ContentRef }
   referenceModelRef: ContentRef
   resumeCheckpointRef?: ContentRef
   coldStart: boolean
   fixedHarness: ModelTrainingSpec['fixedHarness']
   trainDataset: DatasetPartition
+  offlineTraining?: OfflineTraining
   verifier: ContentRef
   trainer: ModelTrainingSpec['trainer']
   rollout: ModelTrainingSpec['rollout']

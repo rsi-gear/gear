@@ -8,6 +8,7 @@ use the production implementation. Run under an external rental watchdog.
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stdout
 import json
 from pathlib import Path
 import secrets
@@ -104,7 +105,9 @@ def main():
     options = parser.parse_args()
     config = json.loads(Path(options.node_config).read_text())
     if options.action == "prepare":
-        print(json.dumps(prepare(config, json.load(sys.stdin))))
+        with redirect_stdout(sys.stderr):
+            marker = prepare(config, json.load(sys.stdin))
+        print(json.dumps(marker))
     else:
         node = NodeService(config)
         marker = json.loads((node.root / "full-driver-diagnostic.json").read_text())

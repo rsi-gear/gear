@@ -159,11 +159,17 @@ class ExactGateway:
         return app
 
 
-def slime_protocol(tokenizer, tool_parser=None, reasoning_parser=None):
+def slime_protocol(tokenizer, tool_parser=None, reasoning_parser=None, *, chat_template_kwargs=None):
     """Reuse the pinned Slime adapter's template translation and tool parser."""
     from slime.agent.adapters.openai import _translate_messages, _tools_to_chat_tools, _build_reply_parts, _render_response
     from slime.agent.adapters.common import _render_token_ids
     from slime.agent.parsing import parse_model_output
+    from functools import partial
+    from types import SimpleNamespace
+    from .preflight import generation_template_kwargs
+    options = generation_template_kwargs({"chatTemplateKwargs": {} if chat_template_kwargs is None else chat_template_kwargs})
+    template_tokenizer = (SimpleNamespace(apply_chat_template=partial(tokenizer.apply_chat_template, **options))
+                          if options else tokenizer)
 
     def render(body, add_generation_prompt):
         messages = body.get("messages")
@@ -173,7 +179,7 @@ def slime_protocol(tokenizer, tool_parser=None, reasoning_parser=None):
             content = message.get("content")
             if isinstance(content, list):
                 require(all(isinstance(p, dict) and p.get("type") in ("text", "input_text", "output_text") for p in content), "multimodal-unsupported", "v1 exact training is text only")
-        return _render_token_ids(_translate_messages(messages), tokenizer, tools=_tools_to_chat_tools(body.get("tools")), add_generation_prompt=add_generation_prompt)
+        return _render_token_ids(_translate_messages(messages), template_tokenizer, tools=_tools_to_chat_tools(body.get("tools")), add_generation_prompt=add_generation_prompt)
 
     def parse(data, body, in_tokens, out_tokens):
         outputs = [t[1] for t in data["meta_info"]["output_token_logprobs"]]

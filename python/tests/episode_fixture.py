@@ -89,7 +89,7 @@ class EpisodeFixture:
         episode = {"schemaVersion": 1, **{k: context[k] for k in ("id", "groupId", "slot", "runId", "policyVersion", "harnessRef", "taskRef", "environmentRef")},
             "receiptIds": feedback["receiptIds"], "feedbackId": feedback["id"], "termination": "terminated", "eligibility": "eligible", "rejectionReasons": []}
         assembly = {"schemaVersion": 2, "kind": "controller-episode-verification", "episodeId": intent["id"], "runId": context["runId"],
-            "taskDigest": self.private["digest"], "environmentDigest": self.private["digest"], "harnessDigest": self.private["digest"],
+            "taskDigest": context["taskRef"]["digest"], "environmentDigest": context["environmentRef"]["digest"], "harnessDigest": context["harnessRef"]["digest"],
             "verifierVersion": self.private["digest"], "feedbackDigest": digest_json(feedback)}
         return {"schemaVersion": 2, "outcome": "feedback", "evalId": eval_id, "episodeRef": self.store.put_json(episode),
                 "feedbackRef": self.store.put_json(feedback), "assemblyRef": self.store.put_json(assembly)}

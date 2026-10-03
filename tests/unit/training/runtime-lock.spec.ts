@@ -46,6 +46,36 @@ describe('versioned process training runtime lock', () => {
       'import json,sys\nfrom gear_training.preflight import compatibility_digest\nprint(json.dumps(compatibility_digest(json.load(sys.stdin))))'], run.request)
     expect(actual).toBe(trainingCompatibilityDigest(run.request))
   })
+  it('records an uncertified process revision without allowing it to become a certified lock', async () => {
+    const lock = processLock(spec); lock.slimeCommit = '89bfada990a00663846e0ac804de1454685ceed3'
+    spec.trainer.runtimeLock = lock
+    expect(parseModelTrainingSpec(spec).trainer.runtimeLock).toEqual(lock)
+    const coordinator = new ModelTrainingCoordinator(store, new FixtureTrainer(store), new FixtureEvaluator(store))
+    const experiment = await coordinator.createExperiment(spec), run = await coordinator.admit(experiment.id)
+    expect(parseTrainingRequest(run.request).trainer.runtimeLock).toEqual(lock)
+    await expect(coordinator.advance(experiment.id, run.id)).rejects.toThrow('cloud GPU compatibility probes')
+    lock.probeEvidenceRefs = legacy.trainer.runtimeLock.probeEvidenceRefs
+    expect(() => parseModelTrainingSpec(spec)).toThrow('tested bridge contract')
+    lock.validation = 'validated'
+    expect(() => parseModelTrainingSpec(spec)).toThrow('tested bridge contract')
+    legacy.trainer.runtimeLock.slimeCommit = lock.slimeCommit
+    legacy.trainer.runtimeLock.validation = 'pending-gpu'
+    legacy.trainer.runtimeLock.probeEvidenceRefs = []
+    expect(() => parseModelTrainingSpec(legacy)).toThrow('tested bridge contract')
+  })
+  it('freezes the four-stage recipe in admitted requests and rejects unknown pipelines or agent overrides', async () => {
+    spec.trainer.script = { entrypoint: 'recipe:build_loop', sourceRef: await store.putJson({ schemaVersion: 1, kind: 'training-script-source', files: [] }) }
+    expect(parseModelTrainingSpec(spec).trainer.script).toEqual(spec.trainer.script)
+    const coordinator = new ModelTrainingCoordinator(store, new FixtureTrainer(store), new FixtureEvaluator(store))
+    const experiment = await coordinator.createExperiment(spec), run = await coordinator.admit(experiment.id)
+    expect(parseTrainingRequest(run.request).trainer.script).toEqual(spec.trainer.script)
+    expect((await store.load(experiment.id)).spec.trainer.script).toEqual(spec.trainer.script)
+    spec.stages = { taskSource: { runner: 'custom', options: {}, instructionsRef: spec.verifier, maxRepairs: 0, timeoutSeconds: 1 } }
+    expect(() => parseModelTrainingSpec(spec)).toThrow('script factories')
+    delete spec.stages
+    Object.assign(spec.trainer, { pipeline: 'unknown' })
+    expect(() => parseModelTrainingSpec(spec)).toThrow()
+  })
   it('rejects a process lock in v1, a mismatched frozen environment, or undeclared runtime fields', () => {
     const lock = processLock(spec)
     legacy.trainer.runtimeLock = lock

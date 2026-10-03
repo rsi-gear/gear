@@ -173,7 +173,8 @@ def main():
     import ray
     from gear_training.placement import TrainingMemoryCycle
     from slime.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
-    from slime.utils.logging_utils import configure_logger, init_tracking, finish_tracking
+    from gear_training.slime_runtime import logging_api
+    configure_logger, init_tracking, finish_tracking = logging_api()
 
     start = time.monotonic()
     summary = {"kind": "gear-slime-actor-diagnostic", "validated": False,
@@ -222,6 +223,8 @@ def main():
         # Slime labels this checkpoint with zero-based rollout_id, not step count.
         assert tracker.read_text().strip() == "0", "synchronous checkpoint does not match rollout 0"
         memory.export_hf(str(options.output / "export"))
+        from gear_training.qwen35_export import preserve_frozen_auxiliary
+        preserve_frozen_auxiliary(options.model, options.output / "export", mtp_num_layers=getattr(args, "mtp_num_layers", 0))
         delta = changed_tensor(options.model, options.output / "export")
         record("exported", changed_tensor=delta)
         memory.prepare_rollout()

@@ -1,16 +1,18 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { trainingCommand, trainingController, parseTrainingControllerConfig, type TrainingControllerConfigV2 } from '../../../src/training/cli.js'
+import { ModelTrainingCoordinator } from '../../../src/training/coordinator.js'
 import { ModelTrainingStore } from '../../../src/training/store.js'
 import { ModelNodeTransport } from '../../../src/training/transport.js'
 import { NodeSlimeModelTrainer, SlimeModelTrainer } from '../../../src/training/slime.js'
 import { HitchModelEvaluator } from '../../../src/training/hitch.js'
 import { assertHitchCommit, observeExecutionPlacement, observeHitchController } from '../../../src/training/placement-observation.js'
 import { freezeExecutionPlacement } from '../../../src/training/deployment.js'
+import { sealModelVersion } from '../../../src/training/schema.js'
 import { digestJson } from '../../../src/training/digest.js'
-import type { ModelExperimentState, ModelTrainingRun, ModelTrainingSpecV1 } from '../../../src/training/types.js'
+import type { ModelExperimentState, ModelTrainingRun, ModelTrainingSpecV1, ContentRef } from '../../../src/training/types.js'
 import { fixture } from './fixture.js'
 import { deployment, v2spec } from './placement-fixture.js'
 
@@ -42,6 +44,69 @@ describe('versioned public training controller', () => {
     expect(admitted.request.schemaVersion).toBe(2)
     expect(await trainingCommand(['status', created.id, admitted.id, '--config', file])).toEqual(admitted)
     expect((await store.load(created.id)).specDigest).toBe(digestJson(spec))
+  })
+  it('run SPEC creates one experiment and run; run EXP RUN follows the existing identity', async () => {
+    const file = join(root, 'controller.json'), specFile = join(root, 'spec.json')
+    const source = join(root, 'recipe'); await mkdir(source)
+    await writeFile(join(source, 'custom.py'), 'def build_loop(config, runtime): pass\n')
+    await writeFile(file, JSON.stringify(config)); await writeFile(specFile, JSON.stringify({ ...v2spec(legacy), scriptSource: { directory: './recipe', entrypoint: 'custom:build_loop' } }))
+    const create = vi.spyOn(ModelTrainingCoordinator.prototype, 'createExperiment')
+    const admit = vi.spyOn(ModelTrainingCoordinator.prototype, 'admit')
+    const advance = vi.spyOn(ModelTrainingCoordinator.prototype, 'advance').mockImplementation(async function (this: ModelTrainingCoordinator, id, runId) {
+      return { ...await this.inspect(id, runId), execution: 'completed' }
+    })
+    vi.spyOn(process.stderr, 'write').mockReturnValue(true)
+    const listeners = process.listenerCount('SIGINT')
+    const first = await trainingCommand(['run', specFile, '--config', file]) as ModelTrainingRun
+    const experimentId = create.mock.results[0] && (await create.mock.results[0].value).id
+    expect(first.execution).toBe('completed')
+    expect(first.request.trainer.script?.entrypoint).toBe('custom:build_loop')
+    expect(first.request).not.toHaveProperty('scriptSource')
+    expect(await store.readJson(first.request.trainer.script!.sourceRef)).toMatchObject({ kind: 'training-script-source' })
+    const second = await trainingCommand(['run', experimentId, first.id, '--config', file]) as ModelTrainingRun
+    expect(second.id).toBe(first.id)
+    expect(create).toHaveBeenCalledTimes(1); expect(admit).toHaveBeenCalledTimes(1)
+    expect(advance).toHaveBeenCalledTimes(2)
+    expect(process.listenerCount('SIGINT')).toBe(listeners)
+  })
+  it('seals offline assistant examples through the public CLI and preserves the source identity', async () => {
+    config.hitch.python = ['env', `PYTHONPATH=${process.cwd()}/python`, process.env.GEAR_TRAINING_TEST_PYTHON ?? 'python3']
+    const task = legacy.datasets.train.tasks[0]!
+    const input = { schemaVersion: 1, modelRef: legacy.initialModel, maxSequenceTokens: 64, records: [{
+      source: { taskId: task.id, family: task.family, taskDigest: task.taskRef.digest },
+      segments: [{ role: 'user', tokens: [1, 2] }, { role: 'assistant', tokens: [3] }, { role: 'tool', tokens: [90] }, { role: 'assistant', tokens: [4] }],
+    }] }
+    const inputFile = join(root, 'sft.json'), configFile = join(root, 'controller.json')
+    await writeFile(inputFile, JSON.stringify(input)); await writeFile(configFile, JSON.stringify(config))
+    const network = vi.spyOn(ModelNodeTransport.prototype, 'call').mockRejectedValue(new Error('node offline'))
+    const sealed = await trainingCommand(['seal-sft', inputFile, '--config', configFile]) as { datasetRef: any; recordCount: number }
+    expect(sealed.recordCount).toBe(1); expect(network).not.toHaveBeenCalled()
+    const manifest = await store.readJson<any>(sealed.datasetRef), row = await store.readJson<any>(manifest.records[0])
+    expect(row.lossMask).toEqual([0, 0, 1, 0, 1]); expect(row.source).toEqual(input.records[0]!.source)
+  })
+  it('fetches only sealed model config for role-token authoring after a node-only HF import', async () => {
+    config.hitch.python = ['env', `PYTHONPATH=${process.cwd()}/python`, process.env.GEAR_TRAINING_TEST_PYTHON ?? 'python3']
+    const node = new ModelTrainingStore(join(root, 'model-node'))
+    const modelConfig = await node.putJson({ vocab_size: 128, max_position_embeddings: 64 })
+    const tokenizer = await node.putJson({ private: 'tokenizer-unused-for-segments' }), weights = await node.putJson({ private: 'model-weights' })
+    const refs = [modelConfig, tokenizer, weights], paths = ['config.json', 'tokenizer.json', 'model.safetensors']
+    const snapshot = await store.putJson({ schemaVersion: 1, format: 'hf-safetensors', files: refs.map((contentRef, i) => ({ path: paths[i], contentRef })) })
+    const { id: _, ...model } = await store.readJson<any>(legacy.initialModel)
+    const modelRef = await store.putJson(sealModelVersion({ ...model, hfSnapshotRef: snapshot }))
+    const task = legacy.datasets.train.tasks[0]!, inputFile = join(root, 'sft-node-input.json'), configFile = join(root, 'controller.json')
+    await writeFile(inputFile, JSON.stringify({ schemaVersion: 1, modelRef, maxSequenceTokens: 64, records: [{
+      source: { taskId: task.id, family: task.family, taskDigest: task.taskRef.digest },
+      segments: [{ role: 'user', tokens: [1, 2] }, { role: 'assistant', tokens: [3] }],
+    }] })); await writeFile(configFile, JSON.stringify(config))
+    vi.spyOn(ModelNodeTransport.prototype, 'call').mockResolvedValue({ nodeId: 'gpu-node', generation: 'boot-1' })
+    const downloaded: ContentRef[] = []
+    vi.spyOn(ModelNodeTransport.prototype, 'download').mockImplementation(async (target, ref) => {
+      downloaded.push(ref); await target.putBytes(await node.readBytes(ref), ref.mediaType)
+    })
+    expect(await trainingCommand(['seal-sft', inputFile, '--config', configFile])).toHaveProperty('recordCount', 1)
+    expect(downloaded).toEqual([modelConfig])
+    await expect(store.readBytes(weights)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(store.readBytes(tokenizer)).rejects.toMatchObject({ code: 'ENOENT' })
   })
   it('rejects route collisions, mixed versions and placement changes before launching work', () => {
     expect(() => parseTrainingControllerConfig({ ...config, evaluationGateway: config.deployment.nodes.gpu!.gateway })).toThrow('distinct stable')

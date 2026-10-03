@@ -1,0 +1,57 @@
+{
+  "checkpointRef": {
+    "digest": "sha256:d5dea58b5087ef8d5fb11f5ce3036185ae52e00318fddbb5500226483d75e491",
+    "mediaType": "application/json",
+    "uri": "cas:sha256:d5dea58b5087ef8d5fb11f5ce3036185ae52e00318fddbb5500226483d75e491"
+  },
+  "kind": "actual-training-capture-audit",
+  "passed": true,
+  "requestDigest": "sha256:a5283e5ec79089b618c2aea22ddc5351bad720bb49b580d775134d2f2720fc6b",
+  "updates": [
+    {
+      "batchRef": {
+        "digest": "sha256:61419d1f442baadd3b8db32f672aedd566311859240894e74d8cf712bf8e9a67",
+        "mediaType": "application/json",
+        "uri": "cas:sha256:61419d1f442baadd3b8db32f672aedd566311859240894e74d8cf712bf8e9a67"
+      },
+      "capture": {
+        "sha256": "sha256:04d4ab1697ce63a867b130b5258af50ca049d79a036aa6f97144f13b9da66469",
+        "size": 229951
+      },
+      "commitRef": {
+        "digest": "sha256:be482d9eda642ed0dd5f78c70671b8576637ab36a752c7cabff2cec8c4f989f8",
+        "mediaType": "application/json",
+        "uri": "cas:sha256:be482d9eda642ed0dd5f78c70671b8576637ab36a752c7cabff2cec8c4f989f8"
+      },
+      "meanAbsoluteDifference": 0.005539063767154166,
+      "policyVersion": "runtime_d7d1092108c4afef4e1205e3e906036a/update-0/weight-1",
+      "samples": [
+        {
+          "calls": 13,
+          "episodeId": "batch_runtime_d7d1092108c4afef4e1205e3e906036a_0-group-0-0",
+          "maskDigest": "sha256:99f0dd80b40581607e89cd96ac04f41cf6fc1af6373c6a4f88832476df351388",
+          "maskedTokens": 489,
+          "maxAbsoluteDifference": 0.20882272720336914,
+          "meanAbsoluteDifference": 0.006836318224005446,
+          "policyTokens": 1657,
+          "position": 0,
+          "runId": "run_b6646f0dbc7641b3a00c49505f4e51e0",
+          "tokenDigest": "sha256:4ce43bd142b3ea69a2146a5320a63ef0d290e3434be49168ed8c5361bdd6bb97"
+        },
+        {
+          "calls": 10,
+          "episodeId": "batch_runtime_d7d1092108c4afef4e1205e3e906036a_0-group-0-1",
+          "maskDigest": "sha256:c90451053efd20f49abc45e9739de6723e4764b120e035ecd85f7b150d4ad26a",
+          "maskedTokens": 756,
+          "maxAbsoluteDifference": 0.29245448112487793,
+          "meanAbsoluteDifference": 0.004750237846052305,
+          "policyTokens": 2725,
+          "position": 1,
+          "runId": "run_cf87ee08c046494aa2e0c2267dabf61b",
+          "tokenDigest": "sha256:1ae600c53fca3bd04b70a3c87d502d6c15cc465990ee0d4264730c81872b2505"
+        }
+      ]
+    }
+  ],
+  "validated": false
+}

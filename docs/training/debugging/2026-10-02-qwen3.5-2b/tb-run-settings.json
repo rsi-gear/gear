@@ -1,0 +1,103 @@
+{
+  "kind": "terminal-bench-single-task-diagnostic",
+  "validated": false,
+  "parentModelRef": {
+    "digest": "sha256:84638d33673ab96e8b04db0e8c7ce8e3accdc3653fb6a54b863b8306f516b2c4",
+    "mediaType": "application/json",
+    "uri": "cas:sha256:84638d33673ab96e8b04db0e8c7ce8e3accdc3653fb6a54b863b8306f516b2c4"
+  },
+  "budgets": {
+    "maxEpisodeSteps": 80,
+    "maxGroupResamples": 1,
+    "maxRolloutTokens": 163840,
+    "totalGpuSeconds": 3000
+  },
+  "sampling": {
+    "maxContextTokens": 32768,
+    "maxNewTokens": 16384,
+    "repetitionPenalty": 1,
+    "temperature": 1,
+    "topK": -1,
+    "topP": 1
+  },
+  "rolloutBatchSize": 1,
+  "groupSize": 2,
+  "globalBatchSize": 2,
+  "script": {
+    "entrypoint": "tb21:build_loop",
+    "sourceRef": {
+      "digest": "sha256:9cd6fad166460be5a097b4addc56b3da4f207dd02591a797e763f067702924cc",
+      "mediaType": "application/json",
+      "uri": "cas:sha256:9cd6fad166460be5a097b4addc56b3da4f207dd02591a797e763f067702924cc"
+    }
+  },
+  "hyperparametersRef": {
+    "digest": "sha256:61d330a91e928d8f7a5fc01f78bdc8f752db553bb2b25fcae8e857dbfe6eabab",
+    "mediaType": "application/json",
+    "uri": "cas:sha256:61d330a91e928d8f7a5fc01f78bdc8f752db553bb2b25fcae8e857dbfe6eabab"
+  },
+  "runtimeLock": {
+    "bridgeDigest": "sha256:e89fdd51ec6336badb64d98e2c0229e1b4cc1959a7bf3c3c989d83178fea0bde",
+    "cudaVersion": "12.9",
+    "hitchCommit": "09eec43813d71c10d35f127cbeb24ac09db1e85c",
+    "megatronCommit": "1dcf0dafa884ad52ffb243625717a3471643e087",
+    "patchDigests": [
+      "sha256:47a8fa2c3ca03f1fc8832493d4801ca911de63a83282d2d5046add9084cc854a",
+      "sha256:613db0483e4fcdc638a021d4911131d9676ddb954d0aad5603a71add12379965"
+    ],
+    "probeEvidenceRefs": [],
+    "protocolDigest": "sha256:feff91a0e90009e66b205803df649504347f958425704395b7095685e7b8f4e2",
+    "pythonVersion": "3.12.3",
+    "pytorchVersion": "2.11.0+cu129",
+    "runtime": {
+      "kind": "python-env",
+      "nodeRuntimeDigest": "sha256:07f71f3ebbca940502f562895966ce19f419050d524b149b86630f2e1b3e84b7",
+      "outerImageDigest": null
+    },
+    "schemaVersion": 2,
+    "sglangVersion": "0.5.15.post1",
+    "slimeCommit": "89bfada990a00663846e0ac804de1454685ceed3",
+    "validation": "pending-gpu"
+  },
+  "fixedHarness": {
+    "adapter": "training-tool",
+    "commit": "09eec43813d71c10d35f127cbeb24ac09db1e85c",
+    "manifestRef": {
+      "digest": "sha256:bf2664ed317f23e776984df76d7eeae553778bb4e7005ff25cf5b6b4723e0901",
+      "mediaType": "application/json",
+      "uri": "cas:sha256:bf2664ed317f23e776984df76d7eeae553778bb4e7005ff25cf5b6b4723e0901"
+    }
+  },
+  "controllerSeconds": 738.08,
+  "gpuSeconds": 640.2051093578339,
+  "checkpointRef": {
+    "digest": "sha256:5feed605880425a80ab18a4a05a788d219cd35c5a67efa856e4110dced5c18ae",
+    "mediaType": "application/json",
+    "uri": "cas:sha256:5feed605880425a80ab18a4a05a788d219cd35c5a67efa856e4110dced5c18ae"
+  },
+  "hfSnapshotRef": {
+    "digest": "sha256:eafa31f96c6f16094e064b64b48af94b5690401d530d86a1b605ee1af81b5b7e",
+    "mediaType": "application/json",
+    "uri": "cas:sha256:eafa31f96c6f16094e064b64b48af94b5690401d530d86a1b605ee1af81b5b7e"
+  },
+  "trainMetrics": {
+    "loss": 0.0,
+    "gradNorm": 0.0,
+    "nativeReportedLogprobAbsDiff": 0.014795605093240738
+  },
+  "tests": {
+    "pythonPassed": 280,
+    "pythonSkipped": 4,
+    "typescriptPassed": 165,
+    "hitchFocusedPassed": 5
+  },
+  "memoryTuning": {
+    "offloadLogprobBackward": true,
+    "logProbsChunkSize": 256,
+    "recomputeGranularity": "full",
+    "recomputeMethod": "uniform",
+    "recomputeNumLayers": 24,
+    "seqLength": 32768,
+    "sglangMaxTotalTokens": 36864
+  }
+}
