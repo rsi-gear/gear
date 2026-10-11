@@ -9,7 +9,7 @@ import { createGitHarnessFixture } from '../helpers/git-fixture.js'
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 
-async function setup() {
+async function setup(allowedPaths?: readonly string[]) {
   const fixture = await createGitHarnessFixture()
   roots.push(fixture.root)
   const manager = new CandidateWorkspaceManager({
@@ -19,6 +19,7 @@ async function setup() {
     maxFiles: 64,
     maxBytes: 2_000_000,
     maxDiffBytes: 1_000_000,
+    ...(allowedPaths === undefined ? {} : { allowedPaths }),
   })
   await manager.initialize()
   const workspace = await manager.create({
@@ -31,6 +32,20 @@ async function setup() {
 }
 
 describe('SkillCandidateFiles', () => {
+  it('applies author allowedPaths before write, edit and remove tools mutate files', async () => {
+    const { manager, workspace, files } = await setup(['harness/prompts/**'])
+    try {
+      await files.write('meta-1', 'prompts/allowed.md', 'allowed\n', null)
+      await expect(files.write('meta-1', 'plugins/new.ts', 'denied\n', null))
+        .rejects.toThrow('outside allowedPaths')
+      const existing = await files.read('meta-1', 'plugins/context.ts')
+      await expect(files.edit('meta-1', 'plugins/context.ts', 'value', 'changed', existing.digest))
+        .rejects.toThrow('outside allowedPaths')
+      await expect(files.remove('meta-1', 'plugins/context.ts', existing.digest))
+        .rejects.toThrow('outside allowedPaths')
+      expect((await files.read('meta-1', 'plugins/context.ts')).text).toContain('value = 1')
+    } finally { await manager.dispose(workspace.workspaceId) }
+  })
   it('lets the gateway create and clear empty text files while retaining observation checks', async () => {
     const { manager, workspace, files } = await setup()
     const gateway = new RefineSkillGateway({} as never, {

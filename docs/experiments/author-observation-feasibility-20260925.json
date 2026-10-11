@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-09-25",
+  "sourceCommit": "a5011e879e11586c9b62da2ba894944d61fb7541",
+  "method": "Fresh isolated transpile of current source; deterministic provider against existing AlgorithmRuntime/CampaignStore; three Runtime instances in one process. Not async author runner implementation or full typecheck.",
+  "node": "v26.5.1",
+  "typescript": "6.0.3",
+  "sourcesMatchGitHead": true,
+  "sources": [
+    {
+      "file": "src/algorithm/contracts.ts",
+      "sha256": "3281737b7752451a722c676cae581c502e5a194c75fdfc26b73f42d29ebee875"
+    },
+    {
+      "file": "src/algorithm/schema.ts",
+      "sha256": "bdcd380b316c80f94b88df8ca74fe4a4a8330678909cfbf5433a082b2ec14357"
+    },
+    {
+      "file": "src/algorithm/artifacts.ts",
+      "sha256": "3b185bb9063492a99a8381a04a3817fd295702fc51afcbf6a028daca33b3c160"
+    },
+    {
+      "file": "src/algorithm/bindings.ts",
+      "sha256": "d1be126849ea1c6a6f7895bfae351852b3bd72a64a6c7d2973ba7c0b4eafa296"
+    },
+    {
+      "file": "src/algorithm/steps.ts",
+      "sha256": "417eb881f09f2827d22440c7c7fb70c2d55a15cfa17f545fcf93da440922182f"
+    },
+    {
+      "file": "src/algorithm/provider-errors.ts",
+      "sha256": "e8e6dff89aafe1384f6ecdfefc1a6f17ec05090572eee18aacda60807bd92a24"
+    },
+    {
+      "file": "src/algorithm/runtime/engine.ts",
+      "sha256": "8ed980501853211e6e0c3d0ef9710f9aeb054cbf89c0e5ac1a905f61b96a67ce"
+    },
+    {
+      "file": "src/algorithm/runtime/store.ts",
+      "sha256": "5a81ffb56a447711fb704136ebf35a1e782189dbea7e1194b7d51db245d4e22f"
+    },
+    {
+      "file": "src/algorithm/runtime/persistence.ts",
+      "sha256": "932500d6e38576560b9865ddcfc3c3d5111adc9abcf6c09fb1a362baf506c86c"
+    },
+    {
+      "file": "src/algorithm/runtime/providers.ts",
+      "sha256": "c58127bd79d5a448649d1cfaba1d44c4e6e7b9ed872fba7ae78a9ce9e3653195"
+    },
+    {
+      "file": "src/algorithm/runtime/identity.ts",
+      "sha256": "5906b5bbb9f0f8167dce4821a8e97e2fd78374ea1b412897ca7499fa20197e75"
+    }
+  ],
+  "checks": {
+    "observationFrozenBeforeExecution": true,
+    "planningClockChangedButOriginalValueRecovered": true,
+    "pureUnknownReplayedUnderSameOperationId": true,
+    "noBudgetClockStarted": true,
+    "noAccountingConsumption": true
+  },
+  "runtimeInstances": 3,
+  "submitAttempts": 2,
+  "externalSideEffects": 0,
+  "excludedAttempt": "Stale worktree lib did not recognize replay-safe; discarded and retested current source without weakening assertions.",
+  "notValidated": [
+    "async runner and finally semantics",
+    "cross-process kill",
+    "real billing updates",
+    "real deadline behavior",
+    "long-run performance",
+    "models and GPU"
+  ]
+}

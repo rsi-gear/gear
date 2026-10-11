@@ -1,0 +1,685 @@
+{
+  "schemaVersion": 1,
+  "status": "measured; Python wall threshold failed; RSS maximum unverified",
+  "protocolSha256": "beaa4ff4ab61ad721c02a9a29cd92815032a0bc9630d17de3707fe88f65e03d4",
+  "rawResultPath": "/var/folders/9c/gchqm16921v_skhc29s5w1_h0000gn/T/gear-author-a0-benchmark-XoMjcx/results.json",
+  "rawResultSha256": "7091d002c9c4abb516bf149c8c9475ad5e43bea69721c14a52ae08faaeb6b6cd",
+  "sourceFileSha256": {
+    "scripts/benchmark-author-a0.mjs": "abe96b14b03dfff9b86e8d29254eed9521665751d52802af6263dad806ffd10a",
+    "scripts/benchmark-author-a0-supervisor.py": "aa408112e4349da6fe09e02fddbf4d130a44421d8bc1a629b7df2a7ec6759a1d",
+    "packages/python-sdk/tests/fixtures/author_benchmark.py": "b560751e8fb8dde6cb6d7c9133981b393419b09ce2e1e1799977506b53649a0a",
+    "tests/fixtures/algorithm-author-benchmark.mjs": "4cefeee3d9e38013c1fd94edff1ec2218821969c04351979a07439d2b6c26a9d",
+    "packages/python-sdk/src/gear_algorithm/worker.py": "a209706dcc9f78da2d77209fdedbdf76656e5fe27bc53fda152f4a89d70ad7a6"
+  },
+  "pythonAuthorSdkMeasuredSourceSha256": "002756d7f78ced83a4e443f12ad5925e77d4ae65956032cf775bd214f282ca71",
+  "pythonAuthorSdkDigestProvenance": "Reconstructed from the immediately subsequent local sticky-error and _site patches; Campaign algorithmManifestDigest below is the durable runtime identity.",
+  "campaignIdentity": {
+    "composite/low-level": {
+      "algorithmManifestDigest": "18038cc281d4721e5326ac2b45c85096c9a62922e5dfe3bfdb15b24cd6caddaa",
+      "kernelImplementationDigest": "d86a436bd024c5cfdb6506d837f013a7f4fedd5dc5cd8bdecbe91d91a1990823",
+      "providerCatalogDigest": "fea6e96b567699d92b32e39850c920fdcef3626e58ebae90afbf1e1f7870c405"
+    },
+    "composite/typescript": {
+      "algorithmManifestDigest": "abff3872fe40373c2dda3e81ed4c10604c4b50be74a9cd82472347899e800bd7",
+      "kernelImplementationDigest": "d86a436bd024c5cfdb6506d837f013a7f4fedd5dc5cd8bdecbe91d91a1990823",
+      "providerCatalogDigest": "fea6e96b567699d92b32e39850c920fdcef3626e58ebae90afbf1e1f7870c405"
+    },
+    "composite/python": {
+      "algorithmManifestDigest": "004336ea72fc5911bf8a37d78f80f63657d811f0c1be1ed7851786e017add16e",
+      "kernelImplementationDigest": "d86a436bd024c5cfdb6506d837f013a7f4fedd5dc5cd8bdecbe91d91a1990823",
+      "providerCatalogDigest": "fea6e96b567699d92b32e39850c920fdcef3626e58ebae90afbf1e1f7870c405"
+    },
+    "rho_shaped/low-level": {
+      "algorithmManifestDigest": "3ee109648a6b145909bfdafc4d7018366dded28154e449c73fb3a9e5754b864a",
+      "kernelImplementationDigest": "d86a436bd024c5cfdb6506d837f013a7f4fedd5dc5cd8bdecbe91d91a1990823",
+      "providerCatalogDigest": "ee22aa73e581f4d1a3c7ca9adec7170efa6211358e4b440bc02b63783f21a1af"
+    },
+    "rho_shaped/typescript": {
+      "algorithmManifestDigest": "757020572d35954c07192c8f1c5359c0ecddfcad2cffcfd7f09df565b52eab2e",
+      "kernelImplementationDigest": "d86a436bd024c5cfdb6506d837f013a7f4fedd5dc5cd8bdecbe91d91a1990823",
+      "providerCatalogDigest": "ee22aa73e581f4d1a3c7ca9adec7170efa6211358e4b440bc02b63783f21a1af"
+    },
+    "rho_shaped/python": {
+      "algorithmManifestDigest": "4b953f93668d384755afb6bd0f1b3a2195d10aec1179710b5c498580513f8f8a",
+      "kernelImplementationDigest": "d86a436bd024c5cfdb6506d837f013a7f4fedd5dc5cd8bdecbe91d91a1990823",
+      "providerCatalogDigest": "ee22aa73e581f4d1a3c7ca9adec7170efa6211358e4b440bc02b63783f21a1af"
+    }
+  },
+  "measurement": {
+    "interpreter": "/opt/homebrew/bin/python3.11",
+    "warmups": 1,
+    "samplesPerModeGraph": 3,
+    "runner": "full durable Campaign"
+  },
+  "samples": [
+    {
+      "graph": "composite",
+      "mode": "low-level",
+      "iteration": -1,
+      "warmup": true,
+      "F": 12,
+      "O_pure": 0,
+      "O_physical": 156,
+      "O": 156,
+      "J": 193,
+      "wallMs": 5037.415375,
+      "coldRecoveryWallMs": 402.6619580000006,
+      "workerReplayWallMs": 0,
+      "processTreeCpuMs": 2948.7180000000003,
+      "logicalArtifactAndJournalReadBytes": 589901239,
+      "breakpoint": {
+        "decisionIndex": 11,
+        "historyEntries": null,
+        "pendingOperations": 4,
+        "journalRecords": 187,
+        "journalBytes": 5609259
+      }
+    },
+    {
+      "graph": "composite",
+      "mode": "typescript",
+      "iteration": -1,
+      "warmup": true,
+      "F": 12,
+      "O_pure": 0,
+      "O_physical": 156,
+      "O": 156,
+      "J": 193,
+      "wallMs": 6016.155624999999,
+      "coldRecoveryWallMs": 512.3430829999998,
+      "workerReplayWallMs": 519.1881249999994,
+      "processTreeCpuMs": 3916.2209999999995,
+      "logicalArtifactAndJournalReadBytes": 730398727,
+      "breakpoint": {
+        "decisionIndex": 11,
+        "historyEntries": 152,
+        "pendingOperations": 4,
+        "journalRecords": 187,
+        "journalBytes": 6940741
+      }
+    },
+    {
+      "graph": "composite",
+      "mode": "python",
+      "iteration": -1,
+      "warmup": true,
+      "F": 12,
+      "O_pure": 0,
+      "O_physical": 156,
+      "O": 156,
+      "J": 193,
+      "wallMs": 6879.062875,
+      "coldRecoveryWallMs": 652.802166999998,
+      "workerReplayWallMs": 1254.9447480000013,
+      "processTreeCpuMs": 4653.173,
+      "logicalArtifactAndJournalReadBytes": 730398727,
+      "breakpoint": {
+        "decisionIndex": 11,
+        "historyEntries": 152,
+        "pendingOperations": 4,
+        "journalRecords": 187,
+        "journalBytes": 6940741
+      }
+    },
+    {
+      "graph": "composite",
+      "mode": "low-level",
+      "iteration": 0,
+      "warmup": false,
+      "F": 12,
+      "O_pure": 0,
+      "O_physical": 156,
+      "O": 156,
+      "J": 193,
+      "wallMs": 5073.842875000002,
+      "coldRecoveryWallMs": 407.31283299999996,
+      "workerReplayWallMs": 0,
+      "processTreeCpuMs": 3011.732,
+      "logicalArtifactAndJournalReadBytes": 589901239,
+      "breakpoint": {
+        "decisionIndex": 11,
+        "historyEntries": null,
+        "pendingOperations": 4,
+        "journalRecords": 187,
+        "journalBytes": 5609259
+      }
+    },
+    {
+      "graph": "composite",
+      "mode": "typescript",
+      "iteration": 0,
+      "warmup": false,
+      "F": 12,
+      "O_pure": 0,
+      "O_physical": 156,
+      "O": 156,
+      "J": 193,
+      "wallMs": 6008.556708,
+      "coldRecoveryWallMs": 517.9505409999983,
+      "workerReplayWallMs": 521.850211,
+      "processTreeCpuMs": 3898.653,
+      "logicalArtifactAndJournalReadBytes": 730398727,
+      "breakpoint": {
+        "decisionIndex": 11,
+        "historyEntries": 152,
+        "pendingOperations": 4,
+        "journalRecords": 187,
+        "journalBytes": 6940741
+      }
+    },
+    {
+      "graph": "composite",
+      "mode": "python",
+      "iteration": 0,
+      "warmup": false,
+      "F": 12,
+      "O_pure": 0,
+      "O_physical": 156,
+      "O": 156,
+      "J": 193,
+      "wallMs": 6912.937125000004,
+      "coldRecoveryWallMs": 664.0235410000023,
+      "workerReplayWallMs": 1275.4029179999998,
+      "processTreeCpuMs": 4696.641,
+      "logicalArtifactAndJournalReadBytes": 730398727,
+      "breakpoint": {
+        "decisionIndex": 11,
+        "historyEntries": 152,
+        "pendingOperations": 4,
+        "journalRecords": 187,
+        "journalBytes": 6940741
+      }
+    },
+    {
+      "graph": "composite",
+      "mode": "low-level",
+      "iteration": 1,
+      "warmup": false,
+      "F": 12,
+      "O_pure": 0,
+      "O_physical": 156,
+      "O": 156,
+      "J": 193,
+      "wallMs": 5080.1075830000045,
+      "coldRecoveryWallMs": 405.08491700000013,
+      "workerReplayWallMs": 0,
+      "processTreeCpuMs": 3003.881,
+      "logicalArtifactAndJournalReadBytes": 589901239,
+      "breakpoint": {
+        "decisionIndex": 11,
+        "historyEntries": null,
+        "pendingOperations": 4,
+        "journalRecords": 187,
+        "journalBytes": 5609259
+      }
+    },
+    {
+      "graph": "composite",
+      "mode": "typescript",
+      "iteration": 1,
+      "warmup": false,
+      "F": 12,
+      "O_pure": 0,
+      "O_physical": 156,
+      "O": 156,
+      "J": 193,
+      "wallMs": 6078.239125,
+      "coldRecoveryWallMs": 517.4867499999964,
+      "workerReplayWallMs": 535.5023759999999,
+      "processTreeCpuMs": 3972.8370000000004,
+      "logicalArtifactAndJournalReadBytes": 730398727,
+      "breakpoint": {
+        "decisionIndex": 11,
+        "historyEntries": 152,
+        "pendingOperations": 4,
+        "journalRecords": 187,
+        "journalBytes": 6940741
+      }
+    },
+    {
+      "graph": "composite",
+      "mode": "python",
+      "iteration": 1,
+      "warmup": false,
+      "F": 12,
+      "O_pure": 0,
+      "O_physical": 156,
+      "O": 156,
+      "J": 193,
+      "wallMs": 6891.414582999998,
+      "coldRecoveryWallMs": 674.1860840000008,
+      "workerReplayWallMs": 1267.40625,
+      "processTreeCpuMs": 4678.613,
+      "logicalArtifactAndJournalReadBytes": 730398727,
+      "breakpoint": {
+        "decisionIndex": 11,
+        "historyEntries": 152,
+        "pendingOperations": 4,
+        "journalRecords": 187,
+        "journalBytes": 6940741
+      }
+    },
+    {
+      "graph": "composite",
+      "mode": "low-level",
+      "iteration": 2,
+      "warmup": false,
+      "F": 12,
+      "O_pure": 0,
+      "O_physical": 156,
+      "O": 156,
+      "J": 193,
+      "wallMs": 5119.908166999994,
+      "coldRecoveryWallMs": 417.7559160000019,
+      "workerReplayWallMs": 0,
+      "processTreeCpuMs": 3009.144,
+      "logicalArtifactAndJournalReadBytes": 589901239,
+      "breakpoint": {
+        "decisionIndex": 11,
+        "historyEntries": null,
+        "pendingOperations": 4,
+        "journalRecords": 187,
+        "journalBytes": 5609259
+      }
+    },
+    {
+      "graph": "composite",
+      "mode": "typescript",
+      "iteration": 2,
+      "warmup": false,
+      "F": 12,
+      "O_pure": 0,
+      "O_physical": 156,
+      "O": 156,
+      "J": 193,
+      "wallMs": 6072.188042000002,
+      "coldRecoveryWallMs": 527.5799160000024,
+      "workerReplayWallMs": 528.4048749999993,
+      "processTreeCpuMs": 3954.917,
+      "logicalArtifactAndJournalReadBytes": 730398727,
+      "breakpoint": {
+        "decisionIndex": 11,
+        "historyEntries": 152,
+        "pendingOperations": 4,
+        "journalRecords": 187,
+        "journalBytes": 6940741
+      }
+    },
+    {
+      "graph": "composite",
+      "mode": "python",
+      "iteration": 2,
+      "warmup": false,
+      "F": 12,
+      "O_pure": 0,
+      "O_physical": 156,
+      "O": 156,
+      "J": 193,
+      "wallMs": 6923.573291999994,
+      "coldRecoveryWallMs": 669.5023750000109,
+      "workerReplayWallMs": 1271.7785399999989,
+      "processTreeCpuMs": 4690.163,
+      "logicalArtifactAndJournalReadBytes": 730398727,
+      "breakpoint": {
+        "decisionIndex": 11,
+        "historyEntries": 152,
+        "pendingOperations": 4,
+        "journalRecords": 187,
+        "journalBytes": 6940741
+      }
+    },
+    {
+      "graph": "rho_shaped",
+      "mode": "low-level",
+      "iteration": -1,
+      "warmup": true,
+      "F": 19,
+      "O_pure": 6,
+      "O_physical": 157,
+      "O": 163,
+      "J": 211,
+      "wallMs": 5641.082125000001,
+      "coldRecoveryWallMs": 299.58695799999987,
+      "workerReplayWallMs": 0,
+      "processTreeCpuMs": 3434.781,
+      "logicalArtifactAndJournalReadBytes": 674264664,
+      "breakpoint": {
+        "decisionIndex": 18,
+        "historyEntries": null,
+        "pendingOperations": 1,
+        "journalRecords": 209,
+        "journalBytes": 5687776
+      }
+    },
+    {
+      "graph": "rho_shaped",
+      "mode": "typescript",
+      "iteration": -1,
+      "warmup": true,
+      "F": 19,
+      "O_pure": 6,
+      "O_physical": 157,
+      "O": 163,
+      "J": 211,
+      "wallMs": 6999.305000000008,
+      "coldRecoveryWallMs": 394.57300000000396,
+      "workerReplayWallMs": 817.5740809999977,
+      "processTreeCpuMs": 4755.552,
+      "logicalArtifactAndJournalReadBytes": 835207331,
+      "breakpoint": {
+        "decisionIndex": 18,
+        "historyEntries": 162,
+        "pendingOperations": 1,
+        "journalRecords": 209,
+        "journalBytes": 7037021
+      }
+    },
+    {
+      "graph": "rho_shaped",
+      "mode": "python",
+      "iteration": -1,
+      "warmup": true,
+      "F": 19,
+      "O_pure": 6,
+      "O_physical": 157,
+      "O": 163,
+      "J": 211,
+      "wallMs": 8265.881542000003,
+      "coldRecoveryWallMs": 524.8795419999951,
+      "workerReplayWallMs": 1966.0134159999982,
+      "processTreeCpuMs": 5861.697,
+      "logicalArtifactAndJournalReadBytes": 835207331,
+      "breakpoint": {
+        "decisionIndex": 18,
+        "historyEntries": 162,
+        "pendingOperations": 1,
+        "journalRecords": 209,
+        "journalBytes": 7037021
+      }
+    },
+    {
+      "graph": "rho_shaped",
+      "mode": "low-level",
+      "iteration": 0,
+      "warmup": false,
+      "F": 19,
+      "O_pure": 6,
+      "O_physical": 157,
+      "O": 163,
+      "J": 211,
+      "wallMs": 5639.9256250000035,
+      "coldRecoveryWallMs": 301.54037499999686,
+      "workerReplayWallMs": 0,
+      "processTreeCpuMs": 3456.877,
+      "logicalArtifactAndJournalReadBytes": 674264664,
+      "breakpoint": {
+        "decisionIndex": 18,
+        "historyEntries": null,
+        "pendingOperations": 1,
+        "journalRecords": 209,
+        "journalBytes": 5687776
+      }
+    },
+    {
+      "graph": "rho_shaped",
+      "mode": "typescript",
+      "iteration": 0,
+      "warmup": false,
+      "F": 19,
+      "O_pure": 6,
+      "O_physical": 157,
+      "O": 163,
+      "J": 211,
+      "wallMs": 6996.599000000002,
+      "coldRecoveryWallMs": 392.7068750000035,
+      "workerReplayWallMs": 811.6397500000004,
+      "processTreeCpuMs": 4726.479,
+      "logicalArtifactAndJournalReadBytes": 835207331,
+      "breakpoint": {
+        "decisionIndex": 18,
+        "historyEntries": 162,
+        "pendingOperations": 1,
+        "journalRecords": 209,
+        "journalBytes": 7037021
+      }
+    },
+    {
+      "graph": "rho_shaped",
+      "mode": "python",
+      "iteration": 0,
+      "warmup": false,
+      "F": 19,
+      "O_pure": 6,
+      "O_physical": 157,
+      "O": 163,
+      "J": 211,
+      "wallMs": 8261.767042000007,
+      "coldRecoveryWallMs": 530.721915999995,
+      "workerReplayWallMs": 1970.7070369999994,
+      "processTreeCpuMs": 5857.986,
+      "logicalArtifactAndJournalReadBytes": 835207331,
+      "breakpoint": {
+        "decisionIndex": 18,
+        "historyEntries": 162,
+        "pendingOperations": 1,
+        "journalRecords": 209,
+        "journalBytes": 7037021
+      }
+    },
+    {
+      "graph": "rho_shaped",
+      "mode": "low-level",
+      "iteration": 1,
+      "warmup": false,
+      "F": 19,
+      "O_pure": 6,
+      "O_physical": 157,
+      "O": 163,
+      "J": 211,
+      "wallMs": 5626.796249999999,
+      "coldRecoveryWallMs": 291.3215840000048,
+      "workerReplayWallMs": 0,
+      "processTreeCpuMs": 3436.6800000000003,
+      "logicalArtifactAndJournalReadBytes": 674264664,
+      "breakpoint": {
+        "decisionIndex": 18,
+        "historyEntries": null,
+        "pendingOperations": 1,
+        "journalRecords": 209,
+        "journalBytes": 5687776
+      }
+    },
+    {
+      "graph": "rho_shaped",
+      "mode": "typescript",
+      "iteration": 1,
+      "warmup": false,
+      "F": 19,
+      "O_pure": 6,
+      "O_physical": 157,
+      "O": 163,
+      "J": 211,
+      "wallMs": 7046.237166999999,
+      "coldRecoveryWallMs": 386.18550000000687,
+      "workerReplayWallMs": 814.5471680000004,
+      "processTreeCpuMs": 4778.705,
+      "logicalArtifactAndJournalReadBytes": 835207331,
+      "breakpoint": {
+        "decisionIndex": 18,
+        "historyEntries": 162,
+        "pendingOperations": 1,
+        "journalRecords": 209,
+        "journalBytes": 7037021
+      }
+    },
+    {
+      "graph": "rho_shaped",
+      "mode": "python",
+      "iteration": 1,
+      "warmup": false,
+      "F": 19,
+      "O_pure": 6,
+      "O_physical": 157,
+      "O": 163,
+      "J": 211,
+      "wallMs": 8295.029165999993,
+      "coldRecoveryWallMs": 526.9674999999988,
+      "workerReplayWallMs": 1969.4080799999992,
+      "processTreeCpuMs": 5878.932,
+      "logicalArtifactAndJournalReadBytes": 835207331,
+      "breakpoint": {
+        "decisionIndex": 18,
+        "historyEntries": 162,
+        "pendingOperations": 1,
+        "journalRecords": 209,
+        "journalBytes": 7037021
+      }
+    },
+    {
+      "graph": "rho_shaped",
+      "mode": "low-level",
+      "iteration": 2,
+      "warmup": false,
+      "F": 19,
+      "O_pure": 6,
+      "O_physical": 157,
+      "O": 163,
+      "J": 211,
+      "wallMs": 5588.910666999989,
+      "coldRecoveryWallMs": 293.6946670000034,
+      "workerReplayWallMs": 0,
+      "processTreeCpuMs": 3426.3019999999997,
+      "logicalArtifactAndJournalReadBytes": 674264664,
+      "breakpoint": {
+        "decisionIndex": 18,
+        "historyEntries": null,
+        "pendingOperations": 1,
+        "journalRecords": 209,
+        "journalBytes": 5687776
+      }
+    },
+    {
+      "graph": "rho_shaped",
+      "mode": "typescript",
+      "iteration": 2,
+      "warmup": false,
+      "F": 19,
+      "O_pure": 6,
+      "O_physical": 157,
+      "O": 163,
+      "J": 211,
+      "wallMs": 6985.451625000016,
+      "coldRecoveryWallMs": 390.98883299998124,
+      "workerReplayWallMs": 812.3732900000007,
+      "processTreeCpuMs": 4730.608,
+      "logicalArtifactAndJournalReadBytes": 835207331,
+      "breakpoint": {
+        "decisionIndex": 18,
+        "historyEntries": 162,
+        "pendingOperations": 1,
+        "journalRecords": 209,
+        "journalBytes": 7037021
+      }
+    },
+    {
+      "graph": "rho_shaped",
+      "mode": "python",
+      "iteration": 2,
+      "warmup": false,
+      "F": 19,
+      "O_pure": 6,
+      "O_physical": 157,
+      "O": 163,
+      "J": 211,
+      "wallMs": 8246.333167000004,
+      "coldRecoveryWallMs": 530.1822500000126,
+      "workerReplayWallMs": 1967.9545419999988,
+      "processTreeCpuMs": 5873.017,
+      "logicalArtifactAndJournalReadBytes": 835207331,
+      "breakpoint": {
+        "decisionIndex": 18,
+        "historyEntries": 162,
+        "pendingOperations": 1,
+        "journalRecords": 209,
+        "journalBytes": 7037021
+      }
+    }
+  ],
+  "summary": {
+    "composite/low-level": {
+      "medianWallMs": 5080.1075830000045,
+      "medianColdRecoveryWallMs": 407.31283299999996,
+      "medianWorkerReplayWallMs": 0,
+      "medianProcessTreeCpuMs": 3009.144,
+      "processTreePeakRssBytes": "unverified: 25 ms ps sampling gives approximate lower bound"
+    },
+    "composite/typescript": {
+      "medianWallMs": 6072.188042000002,
+      "medianColdRecoveryWallMs": 517.9505409999983,
+      "medianWorkerReplayWallMs": 528.4048749999993,
+      "medianProcessTreeCpuMs": 3954.917,
+      "processTreePeakRssBytes": "unverified: 25 ms ps sampling gives approximate lower bound"
+    },
+    "composite/python": {
+      "medianWallMs": 6912.937125000004,
+      "medianColdRecoveryWallMs": 669.5023750000109,
+      "medianWorkerReplayWallMs": 1271.7785399999989,
+      "medianProcessTreeCpuMs": 4690.163,
+      "processTreePeakRssBytes": "unverified: 25 ms ps sampling gives approximate lower bound"
+    },
+    "rho_shaped/low-level": {
+      "medianWallMs": 5626.796249999999,
+      "medianColdRecoveryWallMs": 293.6946670000034,
+      "medianWorkerReplayWallMs": 0,
+      "medianProcessTreeCpuMs": 3436.6800000000003,
+      "processTreePeakRssBytes": "unverified: 25 ms ps sampling gives approximate lower bound"
+    },
+    "rho_shaped/typescript": {
+      "medianWallMs": 6996.599000000002,
+      "medianColdRecoveryWallMs": 390.98883299998124,
+      "medianWorkerReplayWallMs": 812.3732900000007,
+      "medianProcessTreeCpuMs": 4730.608,
+      "processTreePeakRssBytes": "unverified: 25 ms ps sampling gives approximate lower bound"
+    },
+    "rho_shaped/python": {
+      "medianWallMs": 8261.767042000007,
+      "medianColdRecoveryWallMs": 530.1822500000126,
+      "medianWorkerReplayWallMs": 1969.4080799999992,
+      "medianProcessTreeCpuMs": 5873.017,
+      "processTreePeakRssBytes": "unverified: 25 ms ps sampling gives approximate lower bound"
+    }
+  },
+  "thresholdChecks": {
+    "composite/typescript": {
+      "extraWallPerFrontierMs": 82.6733715833331,
+      "wallThresholdPassed": true,
+      "coldRecoveryThresholdPassed": true,
+      "rssThreshold": "unverified: sampled lower bound cannot establish a maximum"
+    },
+    "composite/python": {
+      "extraWallPerFrontierMs": 152.73579516666663,
+      "wallThresholdPassed": false,
+      "coldRecoveryThresholdPassed": true,
+      "rssThreshold": "unverified: sampled lower bound cannot establish a maximum"
+    },
+    "rho_shaped/typescript": {
+      "extraWallPerFrontierMs": 72.09488157894751,
+      "wallThresholdPassed": true,
+      "coldRecoveryThresholdPassed": true,
+      "rssThreshold": "unverified: sampled lower bound cannot establish a maximum"
+    },
+    "rho_shaped/python": {
+      "extraWallPerFrontierMs": 138.68267326315828,
+      "wallThresholdPassed": false,
+      "coldRecoveryThresholdPassed": true,
+      "rssThreshold": "unverified: sampled lower bound cannot establish a maximum"
+    }
+  },
+  "acceptance": {
+    "countsAndEffectKeys": "verified",
+    "wallAndColdThresholds": "see thresholdChecks",
+    "processTreeCpu": "verified with wait4 reaped descendants",
+    "processTreeRss": "unverified: sampled lower bound",
+    "defaultProductFrontierLimit": "not-selected"
+  }
+}

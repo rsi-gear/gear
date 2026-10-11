@@ -2,6 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { digestDatasetRef } from '../../src/state/dataset.js'
 import { digestJson } from '../../src/state/digest.js'
+import { hitchTaskTreeDigest } from '../../src/search/compiled-dataset-v1.js'
 
 export async function standardSearchDataset(root: string, count: number, partition = 'seed', process = true): Promise<{ ref: string; digest: string }> {
   const ref = join(root, partition), tasks = []
@@ -10,7 +11,7 @@ export async function standardSearchDataset(root: string, count: number, partiti
     await mkdir(task, { recursive: true })
     await writeFile(join(task, 'task.toml'), 'version = "1.0"\n[verifier]\ntimeout_sec = 60\n')
     await writeFile(join(task, 'instruction.md'), `${partition} fixture task ${index}\n`)
-    tasks.push({ task_id: id, task_digest: await digestDatasetRef(task) })
+    tasks.push({ task_id: id, task_digest: await hitchTaskTreeDigest(task) })
   }
   const score = { direction: 'maximize', range: [0, 1], reducer: 'task-macro-mean' }
   const manifest = { schema_version: '1', kind: 'gear-harbor-benchmark', benchmark: { id: 'self-contained-fixture', revision: 'v1' },

@@ -11,9 +11,7 @@ export class SearchExecutionFailure extends Error {
     this.failure = { kind: 'execution-failure', code, message, evidenceRef }
   }
 }
-export class SearchEvidencePending extends Error {
-  constructor(readonly planDigest: string) { super(`search stage needs evidence repair: ${planDigest}`); this.name = 'SearchEvidencePending' }
-}
+export { SearchEvidencePending } from './outcomes.js';
 export class SearchOperationPending extends Error {
   constructor(readonly operation: PendingSearchOperation) {
     super(`${operation.kind} operation pending: ${operation.reason}`); this.name = 'SearchOperationPending'

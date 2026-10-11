@@ -103,6 +103,8 @@ hitch eval setup harbor
 
 ## 算法设计
 
+你可以用显式 JSON 状态和共用执行服务编写自己的算法。默认 `gear algorithm init` 生成可运行的 best-of-N 项目；[作者指南](docs/algorithm-authoring.zh-CN.md)、[CLI](docs/algorithm-author-cli.zh-CN.md)和 [Python/TypeScript 示例](examples/algorithms/step-search/README.md)展示任务选择、评价、接受与繁殖档案。
+
 ![Gear 的内外层学习循环：通过执行、诊断与进化，迭代 harness、seed tasks 和模型。](docs/guide/assets/gear-loop-light.svg)
 
 Gear 采用受 **meta-learning（元学习）** 启发的双层架构，将任务级执行与评测反馈驱动的 harness 优化分为内外两层。

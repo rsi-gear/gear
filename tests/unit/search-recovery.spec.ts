@@ -134,11 +134,16 @@ describe('external execution recovery and budget settlement', () => {
     vi.spyOn(Date, 'now').mockReturnValue(start + f.config.budgets.round.timeoutMs + 1000)
     await expect(f.run()).rejects.toBeInstanceOf(SearchOperationPending)
     expect(calls).toBe(before)
+    expect(await f.store.read('rounds/r/pending-operation')).toMatchObject({ state: 'running', operationKey: key })
     ready = true
     if (resolution === 'complete') expect((await f.run()).championChanged).toBe(true)
     else {
       await expect(f.run()).rejects.toBeInstanceOf(SearchEvidencePending)
       expect(await f.store.read('rounds/r/terminal')).toBeUndefined()
+      const ledger = await f.store.read('budget'), pending = await f.store.read('rounds/r/pending-evidence')
+      await expect(f.run()).rejects.toBeInstanceOf(SearchEvidencePending)
+      expect(await f.store.read('budget')).toEqual(ledger)
+      expect(await f.store.read('rounds/r/pending-evidence')).toEqual(pending)
     }
     expect(calls).toBe(before)
     expect(await f.store.read('rounds/r/research')).toEqual(research)
@@ -275,7 +280,22 @@ describe('external execution recovery and budget settlement', () => {
     f.provider.evaluate = evaluate
     const repair = (id: string) => new FailureClusterSearch(f.store, f.provider, f.diagnosis, f.hooks)
       .repairEvaluation('r', id, originalRef, new AbortController().signal)
-    vi.spyOn(f.store, 'settle').mockRejectedValueOnce(new Error('crash before repair settlement'))
+    // The old engine settles through SearchJournal; Campaign seals the same
+    // physical result in its provider record before settling its sole ledger.
+    // Fail whichever persistence boundary this engine uses, once, without
+    // changing the public ownership, pending-marker, or budget assertions.
+    const failure = new Error('crash before repair settlement')
+    vi.spyOn(f.store, 'settle').mockRejectedValueOnce(failure)
+    const write = f.store.write.bind(f.store)
+    let failedCampaignRecord = false
+    vi.spyOn(f.store, 'write').mockImplementation(async (path, value) => {
+      if (!failedCampaignRecord && path.startsWith('rounds/r/campaign/providers/')
+        && (value as { stage?: string }).stage === 'complete') {
+        failedCampaignRecord = true
+        throw failure
+      }
+      return write(path, value)
+    })
     await expect(repair('first')).rejects.toThrow('crash before repair settlement')
     expect(await f.store.read('rounds/r/pending-operation')).toBeUndefined()
     const calls = f.executions.length, ledger = await f.store.read('budget')

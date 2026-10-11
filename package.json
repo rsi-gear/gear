@@ -22,6 +22,7 @@
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "bin": {
+    "gear": "./lib/cli.js",
     "gear-refine": "./lib/cli.js",
     "gear-hitch-codex": "./assets/hitch-codex-wrapper.mjs",
     "gear-dsh-runtime-check": "./assets/dsh-runtime-check.mjs"
@@ -63,6 +64,38 @@
     "./training": {
       "types": "./lib/training/index.d.ts",
       "default": "./lib/training/index.js"
+    },
+    "./algorithm": {
+      "types": "./lib/algorithm/index.d.ts",
+      "default": "./lib/algorithm/index.js"
+    },
+    "./algorithm/author": {
+      "types": "./lib/algorithm/author/index.d.ts",
+      "default": "./lib/algorithm/author/index.js"
+    },
+    "./algorithm/testing": {
+      "types": "./lib/algorithm/testing.d.ts",
+      "default": "./lib/algorithm/testing.js"
+    },
+    "./algorithm/training": {
+      "types": "./lib/algorithm/training.d.ts",
+      "default": "./lib/algorithm/training.js"
+    },
+    "./algorithm/harness": {
+      "types": "./lib/algorithm/harness.d.ts",
+      "default": "./lib/algorithm/harness.js"
+    },
+    "./algorithm/recipes": {
+      "types": "./lib/algorithm/recipes.d.ts",
+      "default": "./lib/algorithm/recipes.js"
+    },
+    "./algorithm/gepa": {
+      "types": "./lib/algorithm/gepa.d.ts",
+      "default": "./lib/algorithm/gepa.js"
+    },
+    "./algorithm/legacy": {
+      "types": "./lib/algorithm/legacy.d.ts",
+      "default": "./lib/algorithm/legacy.js"
     }
   },
   "files": [
@@ -90,6 +123,12 @@
     "docs/training/development.zh-CN.md",
     "docs/training/recipes.zh-CN.md",
     "docs/search-algorithm-authoring.zh-CN.md",
+    "docs/algorithm-authoring.zh-CN.md",
+    "docs/algorithm-author-cli.zh-CN.md",
+    "docs/algorithm-baselines/f715748/**",
+    "packages/python-sdk/README.md",
+    "packages/python-sdk/pyproject.toml",
+    "examples/algorithms/**",
     "examples/parent-policy/**",
     "examples/training-loop/**",
     "docs/schemas/",
@@ -103,6 +142,7 @@
     "test": "vitest run",
     "test:search": "vitest run tests/unit/search*.spec.ts --maxWorkers=2",
     "test:search:package": "npm run build && node scripts/check-search-package.mjs",
+    "test:algorithm:package": "npm run build && node scripts/check-algorithm-package.mjs",
     "test:unit": "vitest run tests/unit",
     "test:composition": "vitest run tests/composition",
     "test:e2e": "vitest run tests/e2e",

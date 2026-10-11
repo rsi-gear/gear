@@ -13,13 +13,14 @@ function round(root: string, ref: string, digest: string): RefinementRound {
   return roundFixture({ workspaceRoot: root, targetHarnessRef: ref, targetHarnessDigest: digest, taskBudgetMs: 1_000 })
 }
 
-async function setup() {
+async function setup(allowedPaths?: readonly string[]) {
   const fixture = await createGitHarnessFixture()
   roots.push(fixture.root)
   const manager = new CandidateWorkspaceManager({
     repositoryPath: fixture.repository, targetRoot: fixture.targetRoot,
     rootForEvolution: id => join(fixture.root, 'state', id, 'candidate-worktrees'),
     maxFiles: 4, maxBytes: 10_000, maxDiffBytes: 10_000,
+    ...(allowedPaths === undefined ? {} : { allowedPaths }),
   })
   await manager.initialize()
   const handle = await manager.create(round(fixture.root, fixture.championRef, fixture.manifest.digest), new AbortController().signal)
@@ -27,6 +28,25 @@ async function setup() {
 }
 
 describe('CandidateWorkspaceManager', () => {
+  it('enforces frozen author write grants again at preflight and seal after direct worktree edits', async () => {
+    const mutable = ['harness/prompts/**']
+    const { manager, handle } = await setup(mutable)
+    const grantDigest = manager.allowedPathGrantDigest
+    mutable.push('harness/plugins/**')
+    expect(manager.allowedPathGrantDigest).toBe(grantDigest)
+    expect(manager.assertWritablePath('prompts/new.md')).toBe('prompts/new.md')
+    expect(() => manager.assertWritablePath('plugins/context.ts')).toThrow('outside allowedPaths')
+    await writeFile(join(handle.targetPath, 'plugins', 'bypass.ts'), 'export const bypass = true\n')
+    await expect(manager.preflight(handle.workspaceId)).rejects.toThrow('outside allowedPaths')
+    await expect(manager.seal(handle.workspaceId)).rejects.toThrow('outside allowedPaths')
+    await rm(join(handle.targetPath, 'plugins', 'bypass.ts'))
+    await mkdir(join(handle.targetPath, 'prompts'), { recursive: true })
+    await writeFile(join(handle.targetPath, 'prompts', 'new.md'), 'allowed\n')
+    expect((await manager.seal(handle.workspaceId)).files).toEqual([
+      expect.objectContaining({ path: 'prompts/new.md' }),
+    ])
+    await manager.dispose(handle.workspaceId)
+  })
   it('preserves and restores an interrupted handoff workspace without rebuilding its diff', async () => {
     const { manager, handle } = await setup()
     await mkdir(join(handle.targetPath, 'prompts'), { recursive: true })

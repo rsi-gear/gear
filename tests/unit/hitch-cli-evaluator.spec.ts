@@ -175,6 +175,12 @@ appendFileSync(${JSON.stringify(environmentLog)}, JSON.stringify({
   args,
   pythonDontWriteBytecode: process.env.PYTHONDONTWRITEBYTECODE ?? null,
   sentinel: process.env.GEAR_HITCH_ENV_SENTINEL ?? null,
+  sshClient: process.env.SSH_CLIENT ?? null,
+  sshConnection: process.env.SSH_CONNECTION ?? null,
+  sshTty: process.env.SSH_TTY ?? null,
+  xdgSessionId: process.env.XDG_SESSION_ID ?? null,
+  shellLevel: process.env.SHLVL ?? null,
+  shellPreviousCommand: process.env._ ?? null,
 }) + '\\n')
 const fault = ${JSON.stringify(setupOptions.fault ?? '')}
 if (args[0] === 'eval' && (
@@ -1067,11 +1073,14 @@ describe('HitchCliEvaluator', () => {
   ] as const)('forces Python bytecode off for direct eval and invalid rerun when the parent value is %s', async (_case, inherited) => {
     const originalBytecodeSetting = process.env.PYTHONDONTWRITEBYTECODE
     const originalSentinel = process.env.GEAR_HITCH_ENV_SENTINEL
+    const controllerNames = ['SSH_CLIENT', 'SSH_CONNECTION', 'SSH_TTY', 'XDG_SESSION_ID', 'SHLVL', '_'] as const
+    const originalControllerEnvironment = controllerNames.map(name => process.env[name])
     const sentinel = `preserved-${_case}`
     try {
       if (inherited === undefined) delete process.env.PYTHONDONTWRITEBYTECODE
       else process.env.PYTHONDONTWRITEBYTECODE = inherited
       process.env.GEAR_HITCH_ENV_SENTINEL = sentinel
+      for (const name of controllerNames) process.env[name] = `controller-session-${name}`
 
       const { fixture, evaluator, environmentLog } = await setup()
       const state = round(fixture.root, fixture.championRef, fixture.manifest.digest)
@@ -1091,11 +1100,21 @@ describe('HitchCliEvaluator', () => {
         args: string[]
         pythonDontWriteBytecode: string | null
         sentinel: string | null
+        sshClient: string | null
+        sshConnection: string | null
+        sshTty: string | null
+        xdgSessionId: string | null
+        shellLevel: string | null
+        shellPreviousCommand: string | null
       })
       const launched = environments.filter(({ args }) => args[0] === 'eval' && ['run', 'rerun'].includes(args[1]!))
       expect(launched.map(({ args }) => args[1])).toEqual(['run', 'rerun'])
       expect(launched.every(environment => environment.pythonDontWriteBytecode === '1')).toBe(true)
       expect(launched.every(environment => environment.sentinel === sentinel)).toBe(true)
+      expect(environments.every(environment => environment.sshClient === null
+        && environment.sshConnection === null && environment.sshTty === null
+        && environment.xdgSessionId === null && environment.shellLevel === null
+        && environment.shellPreviousCommand === null)).toBe(true)
       expect(process.env.PYTHONDONTWRITEBYTECODE).toBe(inherited)
       expect(process.env.GEAR_HITCH_ENV_SENTINEL).toBe(sentinel)
     } finally {
@@ -1103,6 +1122,11 @@ describe('HitchCliEvaluator', () => {
       else process.env.PYTHONDONTWRITEBYTECODE = originalBytecodeSetting
       if (originalSentinel === undefined) delete process.env.GEAR_HITCH_ENV_SENTINEL
       else process.env.GEAR_HITCH_ENV_SENTINEL = originalSentinel
+      for (const [index, name] of controllerNames.entries()) {
+        const value = originalControllerEnvironment[index]
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
     }
   })
 

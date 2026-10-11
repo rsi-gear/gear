@@ -235,6 +235,29 @@ export class HarnessBuilder {
     }
   }
 
+  /** Historical import additionally proves the physical parent and whole-repository diff. No checkout is changed. */
+  async verifyHistoricalCandidateLineage(version: Readonly<SealedCandidateVersion>, parentRef: string): Promise<void> {
+    await this.verifySealedCandidate(version)
+    const parent = await this.resolveExactCommit(parentRef, true)
+    const candidate = await this.resolveExactCommit(version.commitOid, true)
+    const lineage = (await this.git(['rev-list', '--parents', '-n', '1', candidate])).stdout.trim().split(/\s+/u)
+    if (lineage.length !== 2 || lineage[0] !== candidate || lineage[1] !== parent) {
+      throw new MutationValidationError('historical candidate has a different or non-single Git parent')
+    }
+    const changedBytes = await this.gitBuffer(['diff', '--no-ext-diff', '--no-renames', '--name-only', '-z', parent, candidate, '--'])
+    const changedText = changedBytes.toString('utf8')
+    if (!Buffer.from(changedText, 'utf8').equals(changedBytes) || changedText && !changedText.endsWith('\0')) {
+      throw new MutationValidationError('historical candidate diff returned invalid paths')
+    }
+    for (const path of changedText.split('\0').filter(Boolean)) {
+      if (!path.startsWith(`${this.targetRoot}/`)) {
+        throw new SubstrateExpansionError(`historical candidate changed fixed substrate outside ${this.targetRoot}: ${path}`)
+      }
+      const targetPath = path.slice(this.targetRoot.length + 1)
+      if (targetPath !== 'manifest.json') safeRelativePath(targetPath)
+    }
+  }
+
 
   async readManifest(ref: string): Promise<HarnessManifest> {
     const commit = await this.resolveExactCommit(ref, true)

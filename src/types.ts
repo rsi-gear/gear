@@ -871,7 +871,7 @@ export interface HitchEvaluationEvidence extends EvaluationEvidence {
   localSourceTransport: LocalSourceTransportSummary
 }
 
-export type EvaluationPhase = 'seed-baseline' | 'seed-candidate' | 'held-out-baseline' | 'held-out-candidate'
+export type EvaluationPhase = 'seed-baseline' | 'seed-candidate' | 'held-out-baseline' | 'held-out-candidate' | 'author-candidate'
 
 export interface FailedEvaluationTrialSummary {
   taskName: string

@@ -34,7 +34,7 @@ import type {
   InvalidEvaluationTrialSummary,
   LocalSourceTransportSummary,
   RefineEvaluator,
-  RefinementRound,
+  RefinementRound as LegacyRefinementRound,
   RoundEvaluationAttempt,
   ScoreSummary,
   EvaluationTrialScores,
@@ -45,11 +45,22 @@ import type {
 } from '../types.js'
 import { isExactGitCommit } from '../types.js'
 import { EvaluationCleanupError } from './cleanup.js'
+import { hitchSubprocessEnvironment } from './hitch-environment.js'
 import type { EvaluationRerunReservation } from '../types.js'
 
 export interface HitchCliEvaluatorOptions extends HitchConfig {
   repositoryPath: string
 }
+
+/** The author route has its own identity; it does not synthesize an Evolution round. */
+export interface AuthorHitchEvaluationContext {
+  workspaceRoot: string
+  taskBudgetMs: number
+  sandboxProfileRef: string
+  author: { campaignId: string; operationId: string; planDigest: string }
+}
+export type HitchEvaluationContext = LegacyRefinementRound | AuthorHitchEvaluationContext
+type RefinementRound = HitchEvaluationContext
 
 interface ProcessResult {
   stdout: string
@@ -773,6 +784,17 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     await this.inspectCapabilities(new AbortController().signal)
   }
 
+  /** Read-only identity for admission; runs version, daemon-status and capabilities commands only. */
+  async inspectRuntimeCapability(signal: AbortSignal): Promise<{ runtimeIdentity: string; capabilities: HitchCapabilities }> {
+    signal.throwIfAborted()
+    await this.checkVersion(signal)
+    if (this.daemonMode) await this.checkDaemon()
+    const capabilities = await this.inspectCapabilities(signal)
+    const runtimeIdentity = await this.runtimeIdentity(signal)
+    signal.throwIfAborted()
+    return { runtimeIdentity, capabilities }
+  }
+
   private async checkVersion(signal?: AbortSignal): Promise<string> {
     await this.executablePath()
     const controller = new AbortController()
@@ -1015,8 +1037,8 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
 
   private daemonIdempotencyKey(round: Readonly<RefinementRound>, request: Readonly<EvaluationRequest>): string {
     return `gear-eval-v1-${sha256(JSON.stringify({
-      evolutionId: round.evolutionId,
-      roundId: round.roundId,
+      ...('author' in round ? { author: round.author }
+        : { evolutionId: round.evolutionId, roundId: round.roundId }),
       phase: request.phase,
       conditionId: request.condition.conditionId,
       dataset: request.dataset,
@@ -2830,11 +2852,7 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
     return new Promise<ProcessResult>((resolvePromise, reject) => {
       const child = spawn(executablePath, args, {
         cwd,
-        env: {
-          ...process.env,
-          // Hitch controller runtimes are immutable; their Python bridge must not write .pyc files.
-          PYTHONDONTWRITEBYTECODE: '1',
-        },
+        env: hitchSubprocessEnvironment(),
         stdio: ['ignore', 'pipe', 'pipe'],
       })
       const stdoutChunks: string[] = []

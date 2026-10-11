@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "kind": "algorithm-campaign",
+  "campaignId": "toy",
+  "stateDir": "./.gear/toy",
+  "algorithm": {
+    "language": "python",
+    "interpreter": "python3.11",
+    "module": "./algorithm.py",
+    "export": "algorithm"
+  },
+  "config": {},
+  "bindings": {},
+  "budget": {},
+  "providers": [
+    {
+      "language": "python",
+      "interpreter": "python3.11",
+      "module": "./echo.py",
+      "export": "provider"
+    }
+  ]
+}

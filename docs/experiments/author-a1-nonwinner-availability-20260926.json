@@ -1,0 +1,35 @@
+{
+  "sourceRound": "/root/gear-lab/state/failure-cluster-campaign-tb21-10x3-luna-20260925-standard/evolutions/7e0e34a1-0ec3-41d9-8a9c-595c942bbe16/rounds/f550375e-a597-4242-af0b-65f042e4d8a3.json",
+  "sourceRoundSha256": "1fa187eb2f0d8deb83ec159c4d6dbca970ffa9ad77423dceedff03f9bc701d38",
+  "repository": "/root/gear-lab/releases/failure-cluster-campaign-tb21-10x3-luna-20260925/target-luna-compat",
+  "targetRoot": "harness",
+  "candidateId": "f550375e-a597-4242-af0b-65f042e4d8a3-candidate-0",
+  "decision": "rejected",
+  "sealedVersion": {
+    "commitOid": "4b25fbbf51b196b61df7f56688c4bda64daef128",
+    "treeOid": "e789d6678e8c39f947a29e1ec9c9b483cd216481",
+    "manifestDigest": "sha256:c92f4c04d3a9b6c8d45a5d116ad6014e487d39c233b0537e7dea4707be5592bd",
+    "patchDigest": "sha256:8269723fa52240a25ae8bcc1329a9fdce30aa9454cb0615dc33dcd0ed321087f",
+    "immutableRef": "refs/dsh-refine/evolutions/7e0e34a1-0ec3-41d9-8a9c-595c942bbe16/candidates/4b25fbbf51b196b61df7f56688c4bda64daef128"
+  },
+  "immutableRefMatches": true,
+  "commitAvailable": true,
+  "treeMatches": true,
+  "manifestDigestMatches": true,
+  "artifactCount": 2,
+  "artifactMismatches": [],
+  "exactHarnessFileSetMatches": true,
+  "substrate": {
+    "dshBaseRef": "2d80e60201a22409442d31f22c0c1df14b079549",
+    "toolchainRef": "dsh-rc2-codex-pnpm-11.7.0-luna-catalog-0.87.1",
+    "sandboxProfileRef": "harbor-terminal-bench-2.0"
+  },
+  "sourceUnchanged": true,
+  "scope": "read-only artifact availability; not imported, built or evaluated",
+  "schemaVersion": 1,
+  "checkedDate": "2026-09-26",
+  "sourceHost": "aliyun",
+  "patchDigestVerification": "recorded only; not independently reconstructed",
+  "importStatus": "not-yet-implemented",
+  "provenance": "Read-only Python JSON parsing and Git object reads; no legacy Gear runtime, model, rollout or training invoked."
+}

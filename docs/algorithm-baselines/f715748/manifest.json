@@ -1,0 +1,410 @@
+{
+  "schemaVersion": 1,
+  "revision": "f715748dad576d3055e4a9eaab21b36015348aee",
+  "package": {
+    "path": "package.json",
+    "bytes": 6788,
+    "sha256": "sha256:c6031c3acd4d66f5d7f259c77bc14785bcc148de9da326fb67380a3027890f8b"
+  },
+  "packageLock": {
+    "path": "package-lock.json",
+    "bytes": 108951,
+    "sha256": "sha256:e1bae19d37163501f897509468fabed60cd7bb90151ba738d8e4e810941e6a1f"
+  },
+  "sourceSearch": {
+    "protocolVersion": 2,
+    "integrity": "sha256:3f7c2be47dc1083d409b67b733a2d61da9837b5d21115b55d6ba5ed0f5c4795a",
+    "files": [
+      {
+        "path": "src/search/identity.ts",
+        "bytes": 1332,
+        "sha256": "sha256:7ef0944b9ebf3694c307265f3007f4337bdd113c630a0f6d0fc67dcd79c16037"
+      },
+      {
+        "path": "src/search/contracts.ts",
+        "bytes": 21868,
+        "sha256": "sha256:c60d9128b1fb23c712ea76ccc0c90b1b4857404027873c419e18b893477eb0fa"
+      },
+      {
+        "path": "src/search/engine.ts",
+        "bytes": 43846,
+        "sha256": "sha256:ccb837ed2ebc85afcb6b63ea0f7acf0f28fdae6251fde7401e11c9da3ce7f732"
+      },
+      {
+        "path": "src/search/runtime.ts",
+        "bytes": 35976,
+        "sha256": "sha256:737f254ca94a90bd49cdf6b0607a137684bb171b73cf21132c892cf408ab1350"
+      },
+      {
+        "path": "src/search/archive.ts",
+        "bytes": 16679,
+        "sha256": "sha256:af2f4f07067fe780632416e12f25b2c02d4b36e1fdcda849b47dc38a96ad96ca"
+      },
+      {
+        "path": "src/search/parent-selection.ts",
+        "bytes": 7563,
+        "sha256": "sha256:b94bb581dfa93ce7b945500972661247b29acef8cf2e5d16245f37894367c54f"
+      },
+      {
+        "path": "src/search/parent-random.ts",
+        "bytes": 1385,
+        "sha256": "sha256:7d1e8ed0230d3cb6521c77c0b800fb0b451d642e38bc3f5306e217fbabe81d85"
+      },
+      {
+        "path": "src/search/policies/parents.ts",
+        "bytes": 5113,
+        "sha256": "sha256:20eefb10351e824aaec36f651e3b96efb20487b2541e7e7c2a317d8b42cfd22e"
+      },
+      {
+        "path": "src/search/config.ts",
+        "bytes": 4036,
+        "sha256": "sha256:3214b67d733a1022ee112b3311d23d912b0d6d571b4cdaf0820ed99d01921cd4"
+      },
+      {
+        "path": "src/search/completion.ts",
+        "bytes": 13040,
+        "sha256": "sha256:73d56be1bd0fefe3d85b380a4eaaa9ac5fe3b60fda872edb541985e86effb79f"
+      },
+      {
+        "path": "src/search/dataset-projection.ts",
+        "bytes": 9741,
+        "sha256": "sha256:a6f93bbd3b6b7aa1ccc76a0efbd63990e4a513dabeec676f1ac76df37671782a"
+      },
+      {
+        "path": "src/search/diagnosis.ts",
+        "bytes": 5472,
+        "sha256": "sha256:12f77c13ae01d39bac115732b087606a523baf3dd19160fc17fa60832ea06efa"
+      },
+      {
+        "path": "src/search/epochs.ts",
+        "bytes": 9345,
+        "sha256": "sha256:87bb4ab54113dca6b7fc839d3244c08dc12b83bff91456ba85ea85297b5bfb45"
+      },
+      {
+        "path": "src/search/evaluation-adapter.ts",
+        "bytes": 30989,
+        "sha256": "sha256:ea558898ce380e0a62ccaecbe43ef17122063b622fe35cd107033a1a23b5fd12"
+      },
+      {
+        "path": "src/search/evidence.ts",
+        "bytes": 13937,
+        "sha256": "sha256:e9ec3478b14473807f2bf70bfa81fafe3ac5555a29bd679b6acfe8a211198bbb"
+      },
+      {
+        "path": "src/search/objective.ts",
+        "bytes": 3082,
+        "sha256": "sha256:a0f4d668a3f32bc984f409142dd7fbc8123179389ee8be3939447fb2cae57433"
+      },
+      {
+        "path": "src/search/../objective/contracts.ts",
+        "bytes": 10233,
+        "sha256": "sha256:1957fc54dff39fc2dea85b0abadb636887c452b318b52f5e57fee1c55bef5894"
+      },
+      {
+        "path": "src/search/../objective/scoring.ts",
+        "bytes": 10756,
+        "sha256": "sha256:d6d5d84eb7e816645f0015e00c5b0ec28d985298c7ef130ae0912841821414ff"
+      },
+      {
+        "path": "src/search/promotion.ts",
+        "bytes": 10647,
+        "sha256": "sha256:a85e17962bbd64389eec67db085ed87c46c96b8e1175d9aaf398881202b93042"
+      },
+      {
+        "path": "src/search/recovery.ts",
+        "bytes": 5546,
+        "sha256": "sha256:86c0547a0d630fed92258eaaadf756020e0abaabf47bc580f7f66346ad48d61f"
+      },
+      {
+        "path": "src/search/regression.ts",
+        "bytes": 7784,
+        "sha256": "sha256:2d82c756c6801534ed4a37a22c9b36c1e6f0d4d2cf6f2de498f101966b157d7b"
+      },
+      {
+        "path": "src/search/schema.ts",
+        "bytes": 2675,
+        "sha256": "sha256:ec9ed76dd9e2134a0e7567d55c6c4a0147af2c6939f5f2cb1f34e5b47499cc33"
+      },
+      {
+        "path": "src/search/scope-sampling.ts",
+        "bytes": 7072,
+        "sha256": "sha256:54288c62e2a7aab8b2b30c9d91dda2c3e15f8386c335dead8986aeadef76f3f8"
+      },
+      {
+        "path": "src/search/scopes.ts",
+        "bytes": 8689,
+        "sha256": "sha256:5f40c06c82b971da9da71e487f9468671d7924f86f7551d8c1593b0dc1a56144"
+      },
+      {
+        "path": "src/search/store.ts",
+        "bytes": 10800,
+        "sha256": "sha256:1d2212f59f580c8ae4671fbe532ed049b28b46ffa1b7a3787c7ab2b38e1cc1d3"
+      },
+      {
+        "path": "src/search/../state/digest.ts",
+        "bytes": 680,
+        "sha256": "sha256:80c543acddda6ed7a5934b436414aec62eb4e24a241b18c0f48cdcc08539b75f"
+      },
+      {
+        "path": "src/search/../evolution/component-ref.ts",
+        "bytes": 1125,
+        "sha256": "sha256:1d1b25c5a4b4e52dd8c0fd25a09d4425badeb60139fa547b1b3b7b9dfdd3195c"
+      },
+      {
+        "path": "src/search/../evolution/implementation-files.ts",
+        "bytes": 776,
+        "sha256": "sha256:2c56490553403472e23ffb92ae50c1c604370034056fbcc0549465085d416f70"
+      },
+      {
+        "path": "src/search/../evolution/component-identity.ts",
+        "bytes": 24074,
+        "sha256": "sha256:5af7b283ac036c6abc1148fdf865ddde88bd74df12a65d68e7ca39029e350760"
+      },
+      {
+        "path": "src/search/../evolution/builtin-algorithms.ts",
+        "bytes": 8383,
+        "sha256": "sha256:5338d17dd1915597393026341751838eb99dcf38d2cd75660b1d665d8b16b537"
+      },
+      {
+        "path": "src/search/../evolution/components.ts",
+        "bytes": 11939,
+        "sha256": "sha256:dbd5e242cecba365cd9bdd316ad763973b25d59bb0617bfde4e0d312933114d8"
+      },
+      {
+        "path": "src/search/schema.json",
+        "bytes": 128539,
+        "sha256": "sha256:2919c9c8c56506c84ade7d22018e9c4c5de0b0b9a1d44723959ca699410dceef"
+      }
+    ]
+  },
+  "builtSearch": {
+    "protocolVersion": 2,
+    "integrity": "sha256:59106d8db24cb2262c56bcfe2e3db3d2318e20340f3147601a4ce9433cb55d6f",
+    "files": [
+      {
+        "path": "lib/search/identity.js",
+        "bytes": 1384,
+        "sha256": "sha256:ecb06c356c5182d917fd317141967a1b83be412324ade04c5e89a35ac160aacd"
+      },
+      {
+        "path": "lib/search/contracts.js",
+        "bytes": 21709,
+        "sha256": "sha256:36b16834d23aaf58c2af29551f6d0c79388c621b7bef2d2a4373d4b34390c5d3"
+      },
+      {
+        "path": "lib/search/engine.js",
+        "bytes": 45952,
+        "sha256": "sha256:11e1bd89cde5bba46e48bcea1dde7cd09425615cc2b239e30197be12a1c37649"
+      },
+      {
+        "path": "lib/search/runtime.js",
+        "bytes": 35820,
+        "sha256": "sha256:c63a436a03c44a8cf121347491cefc4fde46d13553dffe7d4ccbc9f8700d7c57"
+      },
+      {
+        "path": "lib/search/archive.js",
+        "bytes": 16586,
+        "sha256": "sha256:54b0df9acdd61ae234c6b44ec93879b754b52780390a7f4dd3b8ffcb9174bd2c"
+      },
+      {
+        "path": "lib/search/parent-selection.js",
+        "bytes": 5961,
+        "sha256": "sha256:c48040e9656577d6799721fc4d95f2f77c2b093eb26b90b92d506dca33a32c3d"
+      },
+      {
+        "path": "lib/search/parent-random.js",
+        "bytes": 1303,
+        "sha256": "sha256:d4a8c1ae7d6ec365ca1abaf9c326c086781828c8ef441e2fcb41cbbe37491e27"
+      },
+      {
+        "path": "lib/search/policies/parents.js",
+        "bytes": 5083,
+        "sha256": "sha256:ad67f52f48c87dec8bd8eb13271ac8015e46de57470337402a2cdfa459be3bbc"
+      },
+      {
+        "path": "lib/search/config.js",
+        "bytes": 3906,
+        "sha256": "sha256:6e1b7a6eced0b107fecd27ff3f3d1033c97053efc91fc2f27bc1d5f1c8f52f69"
+      },
+      {
+        "path": "lib/search/completion.js",
+        "bytes": 13720,
+        "sha256": "sha256:5f1daea7f1f1451730530f3d5c178a641f354b203b6058bab2a3e1150f738c80"
+      },
+      {
+        "path": "lib/search/dataset-projection.js",
+        "bytes": 8957,
+        "sha256": "sha256:5122b7bd9953f69c7eea2d7ad58d2f61a8931346b05f13d58294dc86f9572a80"
+      },
+      {
+        "path": "lib/search/diagnosis.js",
+        "bytes": 5187,
+        "sha256": "sha256:5b005287ea2402df8f7a89bc8f388a8c2b93f1c10a7cfe41a5e2a34d17ffb5a6"
+      },
+      {
+        "path": "lib/search/epochs.js",
+        "bytes": 8537,
+        "sha256": "sha256:9f11c8141e07f5fb8b847aa601aab12b37116588c1921aeeeaa7f47e4b81b717"
+      },
+      {
+        "path": "lib/search/evaluation-adapter.js",
+        "bytes": 30132,
+        "sha256": "sha256:945f98a07557d93003b40f27a937d95fe7074bd207216407f0d729a266ec9ad1"
+      },
+      {
+        "path": "lib/search/evidence.js",
+        "bytes": 13900,
+        "sha256": "sha256:9cca55cc72b28a2593d93e46ee664dc71ff7c697f83645a05e58bef127f369f9"
+      },
+      {
+        "path": "lib/search/objective.js",
+        "bytes": 2758,
+        "sha256": "sha256:e475ab17aa43d5592cdbee3a491da4e702d31ea09ac5f007ac447b4048e7fe19"
+      },
+      {
+        "path": "lib/search/../objective/contracts.js",
+        "bytes": 10386,
+        "sha256": "sha256:75d89e3493dd63acd87a7d780178b7d69db1b9753513cff431fc6809c9bceb62"
+      },
+      {
+        "path": "lib/search/../objective/scoring.js",
+        "bytes": 10603,
+        "sha256": "sha256:1794224537f1caef50386b817ea4b0e767c5c75987023e30684e2fa0167fef45"
+      },
+      {
+        "path": "lib/search/promotion.js",
+        "bytes": 10461,
+        "sha256": "sha256:a24ebd5759f23a234a19f3e153141b0db7c0f515abbae52b02125f80a423d2eb"
+      },
+      {
+        "path": "lib/search/recovery.js",
+        "bytes": 5226,
+        "sha256": "sha256:7baef1121c26998630728844d61f67746f943f48b0aa76eba29aa2c5a5d79dc7"
+      },
+      {
+        "path": "lib/search/regression.js",
+        "bytes": 6452,
+        "sha256": "sha256:a80db3926c267b0cf555c6664612987677615d9594aff870bc1c092da25015d6"
+      },
+      {
+        "path": "lib/search/schema.js",
+        "bytes": 3011,
+        "sha256": "sha256:628b47e011e972f2430c0ba6002a204a067f4e79dbb97023964b96a448648115"
+      },
+      {
+        "path": "lib/search/scope-sampling.js",
+        "bytes": 7128,
+        "sha256": "sha256:b97fcdfb92ad911ffd3a056f1555c2870a225d27faa1223110b8510c82c9a246"
+      },
+      {
+        "path": "lib/search/scopes.js",
+        "bytes": 8189,
+        "sha256": "sha256:5df9ac11c5874b8662f0bddd9f933347103bd4bb55b6e2eaeebce16ef551887c"
+      },
+      {
+        "path": "lib/search/store.js",
+        "bytes": 8771,
+        "sha256": "sha256:f90b9eaaface902d4557f39a70570e29c66017323e59be3bba57d9a3795f60d5"
+      },
+      {
+        "path": "lib/search/../state/digest.js",
+        "bytes": 695,
+        "sha256": "sha256:0fecd544a08030b18d7316a68b509dffdf31e43d4e3609d448f3f1956a7fc94e"
+      },
+      {
+        "path": "lib/search/../evolution/component-ref.js",
+        "bytes": 933,
+        "sha256": "sha256:56da85eef1f584cec624ae459f1565e7e22359198dbcfceb9eab59aac33d21ef"
+      },
+      {
+        "path": "lib/search/../evolution/implementation-files.js",
+        "bytes": 733,
+        "sha256": "sha256:b3d82a50fd32a4364d03f2b3c72a2e24b623646d0aef4c3c71f95833054a2b58"
+      },
+      {
+        "path": "lib/search/../evolution/component-identity.js",
+        "bytes": 24076,
+        "sha256": "sha256:42e3ed311c922210c8c2a8b1e851193d0ec84c1509d5de5249b1380a19cce9c4"
+      },
+      {
+        "path": "lib/search/../evolution/builtin-algorithms.js",
+        "bytes": 7306,
+        "sha256": "sha256:1ee02a165b1a11c101e11fbf50111d5e0a78009070bae488b30fe9b69212e857"
+      },
+      {
+        "path": "lib/search/../evolution/components.js",
+        "bytes": 7566,
+        "sha256": "sha256:27725ea060ab2ef2faa2c6b00246811abb03083da9ea4722c5300a51247308d7"
+      },
+      {
+        "path": "lib/search/schema.json",
+        "bytes": 188773,
+        "sha256": "sha256:217c3bdd7656cdb66209ed054a4052bba2a082acf8d007d7e6051ee5e0f63024"
+      }
+    ]
+  },
+  "sourceParentPolicy": {
+    "integrity": "sha256:546e28a482f7174889926766ab67e9bf6c367f379b1af795d5c3bdf39fb155f9",
+    "files": [
+      {
+        "path": "src/search/policies/parents.ts",
+        "bytes": 5113,
+        "sha256": "sha256:20eefb10351e824aaec36f651e3b96efb20487b2541e7e7c2a317d8b42cfd22e"
+      },
+      {
+        "path": "src/search/parent-random.ts",
+        "bytes": 1385,
+        "sha256": "sha256:7d1e8ed0230d3cb6521c77c0b800fb0b451d642e38bc3f5306e217fbabe81d85"
+      },
+      {
+        "path": "package.json",
+        "bytes": 6788,
+        "sha256": "sha256:c6031c3acd4d66f5d7f259c77bc14785bcc148de9da326fb67380a3027890f8b"
+      }
+    ]
+  },
+  "builtParentPolicy": {
+    "integrity": "sha256:a06adaca929b9a0387df3a373f86851f40d3e78db2f971ccd61b1c2e41366e92",
+    "files": [
+      {
+        "path": "lib/search/policies/parents.js",
+        "bytes": 5083,
+        "sha256": "sha256:ad67f52f48c87dec8bd8eb13271ac8015e46de57470337402a2cdfa459be3bbc"
+      },
+      {
+        "path": "lib/search/parent-random.js",
+        "bytes": 1303,
+        "sha256": "sha256:d4a8c1ae7d6ec365ca1abaf9c326c086781828c8ef441e2fcb41cbbe37491e27"
+      },
+      {
+        "path": "package.json",
+        "bytes": 6788,
+        "sha256": "sha256:c6031c3acd4d66f5d7f259c77bc14785bcc148de9da326fb67380a3027890f8b"
+      }
+    ]
+  },
+  "privateToolFsInput": {
+    "path": "artifacts/dsh-tool-fs-0.1.1-rc.2.tgz",
+    "bytes": 35440,
+    "sha256": "sha256:4b7629fe7f55e0694048aec6994c5eb01cb13f3078b26265b29549de2aa3e0d4",
+    "integrity": "sha512-llX8AWbaI3CGme/a2eeTSfy5atk8u3iJeOFzmZV/KZ0v0hMhKZIK1xQInWwC9OmSDJ/StStJe0hDPVLWbB7hVg=="
+  },
+  "packageTarball": {
+    "path": "artifacts/rsi-gear-0.1.0.tgz",
+    "bytes": 650802,
+    "sha256": "sha256:287915fa34c5cae430b51898f3e6a651e13f50665028bd791319aea570a36656"
+  },
+  "environment": {
+    "node": "v26.5.1",
+    "npm": "11.17.0",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11",
+    "esbuild": "0.27.4"
+  },
+  "commands": [
+    "git archive --format=tar f715748dad576d3055e4a9eaab21b36015348aee",
+    "node scripts/build-private-tool-fs.mjs (pinned archive supplied through offline npm pack shim)",
+    "node node_modules/typescript/bin/tsc -p tsconfig.build.json",
+    "npm pack --ignore-scripts --offline --json"
+  ]
+}

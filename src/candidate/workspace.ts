@@ -46,6 +46,8 @@ export interface CandidateWorkspaceOptions {
   maxFiles: number
   maxBytes: number
   maxDiffBytes: number
+  /** Repository-relative paths from the resolved author profile; omitted for legacy recipes. */
+  allowedPaths?: readonly string[]
   gitExecutable?: string
 }
 
@@ -82,6 +84,8 @@ export class CandidateWorkspaceManager {
   private readonly repositoryPath: string
   private readonly targetRoot: string
   private readonly gitExecutable: string
+  private readonly allowedPathGrants: readonly { path: string; recursive: boolean }[] | undefined
+  readonly allowedPathGrantDigest: string
   private readonly handles = new Map<string, CandidateWorkspaceHandle>()
   private readonly bindings = new Map<string, CandidateWorkspaceBinding>()
   private readonly activeOperations = new Map<string, number>()
@@ -91,6 +95,29 @@ export class CandidateWorkspaceManager {
     this.repositoryPath = resolve(options.repositoryPath)
     this.targetRoot = options.targetRoot
     this.gitExecutable = options.gitExecutable ?? 'git'
+    if (options.allowedPaths !== undefined && (!Array.isArray(options.allowedPaths)
+      || new Set(options.allowedPaths).size !== options.allowedPaths.length))
+      throw new Error('candidate allowedPaths must be a unique array')
+    this.allowedPathGrants = options.allowedPaths?.map(raw => {
+      if (typeof raw !== 'string' || !raw.startsWith(`${this.targetRoot}/`))
+        throw new Error(`candidate path grant is outside target root: ${String(raw)}`)
+      const relativePath = raw.slice(this.targetRoot.length + 1)
+      if (relativePath === '**') return { path: '', recursive: true }
+      const recursive = relativePath.endsWith('/**')
+      const path = validateArtifactPath(recursive ? relativePath.slice(0, -3) : relativePath)
+      if (path.includes('*')) throw new Error(`candidate path grant has unsupported wildcard: ${raw}`)
+      return { path, recursive }
+    }).sort((left, right) => left.path.localeCompare(right.path) || Number(left.recursive) - Number(right.recursive))
+    this.allowedPathGrantDigest = sha256(JSON.stringify(this.allowedPathGrants ?? null))
+  }
+
+  /** The same immutable grant is checked by tools and by the final Git diff inspection. */
+  assertWritablePath(path: string): string {
+    const normalized = validateArtifactPath(path)
+    if (this.allowedPathGrants !== undefined && !this.allowedPathGrants.some(grant =>
+      grant.recursive ? grant.path === '' || normalized.startsWith(`${grant.path}/`)
+        : normalized === grant.path)) throw new Error(`candidate path is outside allowedPaths: ${normalized}`)
+    return normalized
   }
 
   async initialize(): Promise<void> {
@@ -222,7 +249,7 @@ export class CandidateWorkspaceManager {
       const repositoryPath = entry.slice(3)
       const prefix = `${this.targetRoot}/`
       if (!repositoryPath.startsWith(prefix)) throw new Error(`candidate change escapes target root: ${repositoryPath}`)
-      paths.add(validateArtifactPath(repositoryPath.slice(prefix.length)))
+      paths.add(this.assertWritablePath(repositoryPath.slice(prefix.length)))
     }
     if (paths.size === 0) return { parentRef: handle.parentRef, files: [], totalBytes: 0, patchDigest: sha256('') }
     if (paths.size > this.options.maxFiles) throw new Error(`candidate changes ${paths.size} files, over limit ${this.options.maxFiles}`)

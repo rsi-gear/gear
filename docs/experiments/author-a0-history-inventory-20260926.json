@@ -1,0 +1,273 @@
+{
+  "schemaVersion": 1,
+  "recordedDate": "2026-09-26",
+  "stage": "A0",
+  "scope": "Read-only inventory of actual retained files, not historical reader/import acceptance.",
+  "locators": {
+    "local-repro": "/Users/zgq/Desktop/projs/gear/repros/hitch-trajectory-output-overflow-make-doom-20260903",
+    "repo": ".",
+    "recentFcsRemoteState": "/root/gear-lab/state/failure-cluster-campaign-tb21-10x3-luna-20260925-standard"
+  },
+  "samples": [
+    {
+      "locator": "local-repro:state/rounds/eec8f477-4425-4527-a790-6f3463eaeb47.json",
+      "family": "pre-refactor-evolution-round",
+      "bytes": 35531,
+      "sha256": "4cca919f65be3dac26fc68c54a147b31aec8da4fbe09b2a932f392382c341fe4",
+      "topLevelKeys": [
+        "baseline",
+        "batchId",
+        "candidatePool",
+        "createdAt",
+        "evaluationAttempts",
+        "evolutionId",
+        "failure",
+        "heldOutRef",
+        "metaHarnessRef",
+        "parentAllocations",
+        "parentBaselines",
+        "parentPopulationDigest",
+        "plan",
+        "promotionPolicy",
+        "roundCount",
+        "roundId",
+        "roundIndex",
+        "sandboxProfileRef",
+        "seedTaskRef",
+        "source",
+        "status",
+        "targetHarnessDigest",
+        "targetHarnessRef",
+        "taskBudgetMs",
+        "updatedAt",
+        "workspaceRoot"
+      ],
+      "availability": {
+        "reportBytes": "present",
+        "experienceSnapshot": "absent",
+        "executableCandidate": "not-verified"
+      },
+      "observations": {
+        "status": "failed",
+        "evaluationAttempts": 1,
+        "schemaVersion": null,
+        "requirement": "Read failed round reports independently of sealed experience import."
+      }
+    },
+    {
+      "locator": "local-repro:state/rounds/dafcb1a1-8722-47fe-b8f5-c956e2baa767.json",
+      "family": "pre-refactor-evolution-round",
+      "bytes": 34309,
+      "sha256": "97b69f60bb286128e8dd5014375002e96e2a5599fcce8488ed53edfdcfbc4d5b",
+      "topLevelKeys": [
+        "baseline",
+        "batchId",
+        "candidatePool",
+        "createdAt",
+        "evaluationAttempts",
+        "evolutionId",
+        "failure",
+        "heldOutRef",
+        "metaHarnessRef",
+        "parentAllocations",
+        "parentBaselines",
+        "parentPopulationDigest",
+        "plan",
+        "promotionPolicy",
+        "roundCount",
+        "roundId",
+        "roundIndex",
+        "sandboxProfileRef",
+        "seedTaskRef",
+        "source",
+        "status",
+        "targetHarnessDigest",
+        "targetHarnessRef",
+        "taskBudgetMs",
+        "updatedAt",
+        "workspaceRoot"
+      ],
+      "availability": {
+        "reportBytes": "present",
+        "experienceSnapshot": "absent",
+        "executableCandidate": "not-verified"
+      },
+      "observations": {
+        "status": "failed",
+        "evaluationAttempts": 1,
+        "schemaVersion": null,
+        "requirement": "Read failed round reports independently of sealed experience import."
+      }
+    },
+    {
+      "locator": "local-repro:state/eval/result.json",
+      "family": "hitch-evaluation-v1",
+      "bytes": 36357,
+      "sha256": "47da4b2600ea55189dc60c2c9c68244424e8521b5aa040789a78d69bd38cda36",
+      "topLevelKeys": [
+        "backend",
+        "backend_summary",
+        "benchmark_id",
+        "benchmark_revision",
+        "candidate",
+        "completed_at",
+        "dataset",
+        "eval_id",
+        "exit_code",
+        "generation",
+        "infrastructure_retry_policy",
+        "infrastructure_retry_runs",
+        "local_source_transport",
+        "prepared_artifact",
+        "schema_version",
+        "started_at",
+        "status",
+        "summary",
+        "trials"
+      ],
+      "availability": {
+        "reportBytes": "present",
+        "trajectoryAccessThroughHitch": "not-tested"
+      },
+      "observations": {
+        "schemaVersion": "1",
+        "evaluationStatus": "succeeded",
+        "trials": 43,
+        "validTrials": 43,
+        "rewardZero": 27,
+        "rewardOne": 16,
+        "requirement": "Keep valid zero reward distinct from failed round and unavailable evaluation."
+      }
+    },
+    {
+      "locator": "local-repro:hitch-root/runs/run_d66d989f4ea148b3a53e93354bbef012/trajectory.ref.json",
+      "family": "hitch-trajectory-reference",
+      "bytes": 1060,
+      "sha256": "ed949358acb99e9dc1f8b74601b7eaed728a23eacb2de5c6132d25d17a9aeca9",
+      "topLevelKeys": [
+        "fidelity",
+        "files",
+        "provider",
+        "provider_session_id",
+        "run_id",
+        "schema_version"
+      ],
+      "availability": {
+        "referenceBytes": "present",
+        "canonicalFile": "present",
+        "boundedHitchRead": "not-tested"
+      },
+      "observations": {
+        "requirement": "Reuse Hitch standard trajectory reading; inventory is not a private-log parser."
+      }
+    },
+    {
+      "locator": "repo:docs/experiments/tb21-failure-cluster-luna-10x3-20260925.json",
+      "family": "campaign-failure-cluster-search",
+      "bytes": 18322,
+      "sha256": "67a2f3d31f0203b96777f0080d7ba2b3c2cd75739b1b67566adc84ebc7717f40",
+      "topLevelKeys": [
+        "batchId",
+        "candidateScoreChecks",
+        "completedAt",
+        "counts",
+        "datasetDigest",
+        "evaluations",
+        "evolutionId",
+        "excludedCanary",
+        "excludedDeploymentAttempts",
+        "finalChampion",
+        "hitch",
+        "initialHarness",
+        "metaRuns",
+        "models",
+        "rounds",
+        "schemaVersion",
+        "scope",
+        "sourceCommit",
+        "startedAt",
+        "tasks"
+      ],
+      "availability": {
+        "summaryBytes": "present",
+        "remoteRoundAndCasBytes": "not-rechecked-this-stage",
+        "candidateCheckout": "not-rechecked-this-stage"
+      },
+      "observations": {
+        "evaluations": 9,
+        "validTrials": 34,
+        "invalidTrials": 0,
+        "excludedDeploymentAttempts": 5,
+        "sameSetSearch": true,
+        "requirement": "Include rejected non-winner candidates and incomplete global evaluation."
+      }
+    },
+    {
+      "locator": "repo:docs/training/certifications/2026-09-10-rtx5090-single-gpu/acceptance.json",
+      "family": "real-single-gpu-training-evidence",
+      "bytes": 3544,
+      "sha256": "984e2a0725d646f7fc51180e2a99e2a5af5b29e9a54aab403e0e8db4302325ca",
+      "topLevelKeys": [
+        "certificateRef",
+        "date",
+        "disconnectedAccounting",
+        "driverVersion",
+        "evaluation",
+        "finalInstanceState",
+        "formalPreflight",
+        "gpuUuid",
+        "isolation",
+        "kind",
+        "limitations",
+        "node",
+        "privateAuditDigest",
+        "profile",
+        "result",
+        "schemaVersion",
+        "training"
+      ],
+      "availability": {
+        "reportBytes": "present",
+        "checkpointReferences": "present",
+        "rawModelManifest": "not-located",
+        "checkpointAndWeightBytes": "not-verified"
+      },
+      "observations": {
+        "historicalCertificationDate": "2026-09-10",
+        "requirement": "Evidence of real training does not prove current model asset availability or executable import."
+      }
+    },
+    {
+      "locator": "repo:docs/training/certifications/2026-09-10-rtx5090-single-gpu/certificate.json",
+      "family": "real-single-gpu-training-evidence",
+      "bytes": 5758,
+      "sha256": "18f55a8b22c8bf25c994d5571d89c3d6750b7fbe50e28072a0e8fab1bce9f1c9",
+      "topLevelKeys": [
+        "kind",
+        "observations",
+        "schemaVersion",
+        "scope"
+      ],
+      "availability": {
+        "reportBytes": "present",
+        "checkpointReferences": "present",
+        "rawModelManifest": "not-located",
+        "checkpointAndWeightBytes": "not-verified"
+      },
+      "observations": {
+        "historicalCertificationDate": "2026-09-10",
+        "requirement": "Evidence of real training does not prove current model asset availability or executable import."
+      }
+    }
+  ],
+  "coverageGates": {
+    "realPreRefactorFailedRoundLocated": true,
+    "recentFcsSummaryLocated": true,
+    "realTrainingReportLocated": true,
+    "realModelManifestAndDependenciesVerified": false,
+    "historicalReportReaderPassed": false,
+    "historicalExperienceImportPassed": false,
+    "historicalExecutableInputPassed": false
+  },
+  "handling": "Do not commit raw local repros, private traces, or verifier bodies. Hashes identify evidence; authorized content access remains separate."
+}

@@ -40,7 +40,8 @@ function validateChampion(value: ChampionState): ChampionState {
   return value
 }
 
-function validateSpec(value: EvolutionSpec): EvolutionSpec {
+/** Validate an already decoded legacy spec without reading or writing state. */
+export function validateEvolutionSpec(value: EvolutionSpec): EvolutionSpec {
   if (value.rawMetricsVersion !== undefined && value.rawMetricsVersion !== 1) throw new TypeError('unsupported raw metric version')
   if (value.objective) {
     if (value.rawMetricsVersion !== 1 || !value.searchSettings) throw new TypeError('objective requires the raw metric staged execution path')
@@ -223,7 +224,7 @@ export class EvolutionRegistryStore {
   }
 
   async createEvolution(options: CreateEvolutionOptions): Promise<EvolutionRegistryEntry> {
-    const spec = validateSpec(options.spec)
+    const spec = validateEvolutionSpec(options.spec)
     const champion = validateChampion(options.champion)
     const root = this.evolutionRoot(spec.evolutionId)
     await this.initialize()
@@ -277,7 +278,7 @@ export class EvolutionRegistryStore {
 
   async readSpec(evolutionId: EvolutionId): Promise<EvolutionSpec | undefined> {
     const value = await this.readJson<EvolutionSpec>(join(this.evolutionRoot(evolutionId), 'spec.json'))
-    return value === undefined ? undefined : validateSpec(value)
+    return value === undefined ? undefined : validateEvolutionSpec(value)
   }
 
   async requireSpec(evolutionId: EvolutionId): Promise<EvolutionSpec> {
@@ -292,7 +293,11 @@ export class EvolutionRegistryStore {
   }
 
   async readEntry(evolutionId: EvolutionId): Promise<EvolutionRegistryEntry | undefined> {
-    return (await this.list()).find(entry => entry.evolutionId === evolutionId)
+    assertSafeId(evolutionId, 'evolutionId')
+    // Historical readers must not initialize the registry or refresh experiments.tsv.
+    const value = await this.readJson<unknown>(this.registryPath)
+    return value === undefined ? undefined
+      : this.validateRegistry(value).evolutions.find(entry => entry.evolutionId === evolutionId)
   }
 
   async touch(evolutionId: EvolutionId, update: { batchId?: string; roundId?: string }): Promise<void> {

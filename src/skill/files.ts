@@ -103,6 +103,7 @@ export class SkillCandidateFiles {
     return this.manager.withOpenWorkspace(sessionId, true, async handle => {
       this.assertText(text)
       const target = await this.resolve(handle.targetPath, path, true)
+      this.manager.assertWritablePath(target.relativePath)
       const existing = await this.existingDigest(target.physical)
       if (expectedDigest === null ? existing !== undefined : existing !== expectedDigest) {
         throw new Error('candidate file changed since it was observed')
@@ -156,6 +157,7 @@ export class SkillCandidateFiles {
   remove(sessionId: string, path: string, expectedDigest: string): Promise<{ path: string; removed: true }> {
     return this.manager.withOpenWorkspace(sessionId, true, async handle => {
       const target = await this.resolve(handle.targetPath, path)
+      this.manager.assertWritablePath(target.relativePath)
       const existing = await this.existingDigest(target.physical)
       if (existing !== expectedDigest) throw new Error('candidate file changed since it was observed')
       const info = await lstat(target.physical)

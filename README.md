@@ -103,6 +103,8 @@ The agent that proposes changes is called the **Meta agent**. It can use a diffe
 
 ## Algorithm design
 
+Write a custom algorithm with explicit JSON state and shared execution services. The default `gear algorithm init` creates a runnable best-of-N project; [author guide](docs/algorithm-authoring.zh-CN.md), [CLI](docs/algorithm-author-cli.zh-CN.md), and [Python/TypeScript examples](examples/algorithms/step-search/README.md) cover task selection, evaluation, acceptance and reproduction archives.
+
 ![Gear's inner and outer learning loops: Serve, Diagnose, and Evolve the harness, seed tasks, and model.](docs/guide/assets/gear-loop-light.svg)
 
 Gear adopts a two-level architecture inspired by **meta-learning**, separating task-level execution from harness optimization guided by evaluation feedback.

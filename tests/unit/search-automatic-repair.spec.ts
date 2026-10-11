@@ -205,8 +205,9 @@ describe('automatic pre-consumption evaluation repair', () => {
       : inspect(input)
     await expect(f.run()).rejects.toBeInstanceOf(SearchOperationPending)
     const before = await pending(f.store), original = before.participants![0]!.originalRef, attempt = before.participants![0]!.attempts[0]!
-    const restarted = new MemorySearchStore(f.store.checkpoint())
+    const restarted = new MemorySearchStore(f.store.checkpoint()), ledger = await f.store.read('budget')
     await expect(f.run(restarted)).rejects.toBeInstanceOf(SearchOperationPending)
+    expect(await restarted.read('budget')).toEqual(ledger)
     expect(repairCalls).toBe(1)
     expect((await pending(restarted)).participants![0]!.attempts[0]!.id).toBe(attempt.id)
     const saved = (await restarted.object<{ startedAt: number; digest: string }>((await restarted.read<{ ref: string }>('rounds/r/admission'))!.ref)).startedAt
@@ -235,6 +236,61 @@ describe('automatic pre-consumption evaluation repair', () => {
     expect((await f.run()).championChanged).toBe(true)
     expect(projections).toBe(1)
     expect(f.executions.filter(e => e.stage === 'held-out' && e.participant !== 'anchor')).toHaveLength(1)
+  })
+
+  it.each(['unknown', 'running'] as const)('reconciles a %s original-artifact projection without another submission', async state => {
+    const f = setup(20, true), evaluate = f.provider.evaluate
+    let gap = false, calls = 0, ready = false, projectionKey = '', projected: EvidenceCell | undefined
+    f.provider.evaluate = async input => (await evaluate(input)).map((cell, index) => {
+      if (!gap && index === 0 && input.plan.stage === 'held-out' && input.snapshot.candidateId !== 'anchor') {
+        gap = true
+        return revise(cell, { process: { status: 'missing', contractDigest: cell.identity.processContractDigest!, reason: 'projection not ready' } })
+      }
+      return cell
+    })
+    f.provider.completeEvidence = async (cell, key) => {
+      calls++; projectionKey = key
+      projected = revise(cell, { process: { status: 'available', rawValue: 1,
+        contractDigest: cell.identity.processContractDigest!, evidenceRef: cell.evidenceRef } })
+      throw new Error('projection response lost')
+    }
+    f.provider.inspectEvidence = async (_cell, key) => {
+      expect(key).toBe(projectionKey)
+      return ready ? { status: 'complete', result: { cells: [projected!] } }
+        : state === 'running' ? { status: 'running', handle: 'original-projection-job' }
+          : { status: 'unknown', reason: 'projection still uncertain' }
+    }
+    await expect(f.run()).rejects.toBeInstanceOf(SearchOperationPending)
+    const restarted = new MemorySearchStore(f.store.checkpoint()), ledger = await f.store.read('budget')
+    await expect(f.run(restarted)).rejects.toBeInstanceOf(SearchOperationPending)
+    expect(await restarted.read('budget')).toEqual(ledger)
+    expect(calls).toBe(1)
+    const admission = await restarted.object<{ startedAt: number; digest: string }>((await restarted.read<{ ref: string }>('rounds/r/admission'))!.ref)
+    vi.spyOn(Date, 'now').mockReturnValue(admission.startedAt + f.config.budgets.round.timeoutMs + 1)
+    ready = true
+    expect((await f.run(restarted)).championChanged).toBe(true)
+    expect(calls).toBe(1)
+    expect(f.executions.filter(execution => execution.stage === 'held-out' && execution.participant !== 'anchor')).toHaveLength(1)
+  })
+
+  it('preserves search progress while repairing process evidence required by local promotion', async () => {
+    const f = setup(20, true), evaluate = f.provider.evaluate
+    f.config.search.process.mode = 'off'; f.config.promotion.process.mode = 'required'
+    let gap = false, projections = 0
+    f.provider.evaluate = async input => (await evaluate(input)).map((cell, index) => {
+      if (!gap && index === 0 && input.plan.stage === 'local' && input.snapshot.candidateId !== 'anchor') {
+        gap = true
+        return revise(cell, { process: { status: 'missing', contractDigest: cell.identity.processContractDigest!, reason: 'local projection not ready' } })
+      }
+      return cell
+    })
+    f.provider.completeEvidence = async cell => {
+      projections++
+      return revise(cell, { process: { status: 'available', rawValue: 1,
+        contractDigest: cell.identity.processContractDigest!, evidenceRef: cell.evidenceRef } })
+    }
+    expect((await f.run()).championChanged).toBe(true)
+    expect(gap).toBe(true); expect(projections).toBe(1)
   })
 
   it('keeps unsupported process/assertion projections pending without spending repair attempts', async () => {

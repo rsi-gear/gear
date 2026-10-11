@@ -12,7 +12,7 @@ import { validateSearchSchema } from './schema.js'
 import { SearchBudgetExceeded, zeroUsage, type SearchJournal } from './store.js'
 import type { AutomaticEvaluationRepair, PendingSearchEvidence, CandidateWorkPlan, CellVerification, DiagnosisDossier, DiagnosisProvider, EvaluationExecutionResult, EvaluationScope, EvaluationStageDecision, EvidenceCell, EvidenceConsumption, ExternalRecovery, PendingSearchOperation, ResearchArchive, ResearchFinding, SearchProgress, SearchProvider, SearchSettings, SearchStageFailure, Snapshot, StageEvaluationPlan, StageResult, TaskUniverse, WorkplanReceipt } from './types.js'
 
-import type { CommitIntent, SearchRoundOutcome } from './engine.js'
+import type { CommitIntent, SearchRoundOutcome } from './outcomes.js'
 
 export interface GeneratedCandidate {
   snapshot?: Snapshot
@@ -229,7 +229,7 @@ export class SearchExecutionRuntime {
     await this.store.write(`rounds/${roundId}/pending-evidence`, pending)
   }
 
-  private async resolveEvidence(roundId: string, originalRef: string): Promise<void> {
+  async resolveEvidence(roundId: string, originalRef: string): Promise<void> {
     const pending = await this.store.read<PendingSearchEvidence | null>(`rounds/${roundId}/pending-evidence`)
     if (!pending?.participants?.some(p => p.originalRef === originalRef)) return
     const participants = pending.participants.filter(p => p.originalRef !== originalRef)
@@ -238,7 +238,8 @@ export class SearchExecutionRuntime {
 
   /** Every engine evaluation crosses this boundary before consumption or a decision freeze. */
   async ensureEvaluationComplete(admission: SearchAdmission, universe: TaskUniverse, plan: StageEvaluationPlan, snapshot: Snapshot,
-    result: StageResult, signal: AbortSignal, inspectionSignal: AbortSignal): Promise<StageResult> {
+    result: StageResult, signal: AbortSignal, inspectionSignal: AbortSignal,
+    repairEvaluation: SearchExecutionRuntime['repairEvaluation'] = this.repairEvaluation.bind(this)): Promise<StageResult> {
     const { roundId, settings } = admission
     const original = await this.store.read<{ ref: string }>(`rounds/${roundId}/evaluation-${digestJson([plan.digest, snapshot.digest]).slice(7)}`)
     invariant(original, 'automatic repair requires original evidence')
@@ -259,7 +260,7 @@ export class SearchExecutionRuntime {
       const running = repair?.attempts.find(a => a.state === 'running')
       if (running) {
         await this.pendingEvidence(roundId, universe, plan, snapshot, result, settings, ['automatic-repair-pending'], 'repairing', repair!.attempts)
-        result = await this.repairEvaluation(roundId, running.id, original.ref, inspectionSignal, true)
+        result = await repairEvaluation(roundId, running.id, original.ref, inspectionSignal, true)
         running.state = 'complete'; running.resultRef = result.digest
         await this.store.write(name, repair)
         await this.evaluationProgress(roundId, universe, plan, snapshot, evaluationProcessMode(plan, settings), result)
@@ -321,7 +322,7 @@ export class SearchExecutionRuntime {
         attempt.state = 'running'; await this.store.write(name, repair)
         await this.pendingEvidence(roundId, universe, plan, snapshot, result, settings, ['automatic-repair-pending'], 'repairing', repair.attempts)
       }
-      result = await this.repairEvaluation(roundId, attempt.id, original.ref, inspectionSignal, true)
+      result = await repairEvaluation(roundId, attempt.id, original.ref, inspectionSignal, true)
       attempt.state = 'complete'; attempt.resultRef = result.digest
       await this.store.write(name, repair)
       await this.evaluationProgress(roundId, universe, plan, snapshot, evaluationProcessMode(plan, settings), result)
