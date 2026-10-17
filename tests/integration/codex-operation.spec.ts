@@ -5,6 +5,10 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createServer } from 'node:http'
+import { createServer as createNetServer, type Socket } from 'node:net'
+import { fileLockHeld } from '../../src/adapters/storage/file-lock.js'
+import { registerOperation, withJournal } from '../../src/adapters/codex/journal.js'
+import type { CodexInput } from '../../src/adapters/codex/contracts.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ProcessOperationProvider } from '../../src/adapters/process/operation-provider.js'
 import { configuredCancellation } from '../../src/application/cancellation.js'
@@ -74,6 +78,19 @@ if ${JSON.stringify(mode)}=='proxy':
   urllib.request.urlopen('http://denied.gear.test/probe',timeout=5)
   raise AssertionError('DENIED_DOMAIN_REACHED')
  except urllib.error.HTTPError as error: assert error.code==403,error.code
+if ${JSON.stringify(mode)}.startswith('connect-'):
+ import socket,urllib.parse,base64
+ proxy=urllib.parse.urlsplit(os.environ['HTTPS_PROXY'])
+ tunnel=socket.create_connection((proxy.hostname,proxy.port),timeout=5)
+ auth=''
+ if proxy.username:
+  auth='Proxy-Authorization: Basic '+base64.b64encode((urllib.parse.unquote(proxy.username)+':'+urllib.parse.unquote(proxy.password or '')).encode()).decode()+'\\r\\n'
+ tunnel.sendall(('CONNECT allowed.gear.test:443 HTTP/1.1\\r\\nHost: allowed.gear.test:443\\r\\n'+auth+'\\r\\n').encode())
+ header=b''
+ while b'\\r\\n\\r\\n' not in header: header+=tunnel.recv(4096)
+ assert b'200' in header,header
+ tunnel.shutdown(socket.SHUT_WR)
+ tunnel.close()
 if 'experience' in view:
  memory=view['experience']
  assert memory['cards'][0]['classification']['effect']=='regressed'
@@ -113,7 +130,7 @@ schema=json.loads(Path(args[args.index('--output-schema')+1]).read_text())
 assert 'clusters' in schema['required']
 print(json.dumps({'type':'test.started','pid':os.getpid(),'cwd':os.getcwd()}),flush=True)
 if ${JSON.stringify(mode)}=='slow': time.sleep(2.5)
-if ${JSON.stringify(mode)}=='hold': time.sleep(60)
+if ${JSON.stringify(mode)} in ['hold','connect-cancel']: time.sleep(60)
 if view['operation']['kind']=='diagnose_seed':
  try:
   Path(${JSON.stringify(adapter === 'pi' ? 'AGENTS.md' : 'prompts/system.md')}).write_text('unauthorized diagnosis edit')
@@ -127,7 +144,7 @@ if ${JSON.stringify(mode)}=='invalid': output.write_text('not json')
 else: output.write_text(json.dumps({'summary':'read isolation verified','declined':False,'hypotheses':['Respect output format'],'clusters':[{'task_ids':['seed'],'hypotheses':['Respect output format']}]}))
 if ${JSON.stringify(mode)}=='partialusage': print(json.dumps({'type':'turn.completed','usage':{'output_tokens':3}}),flush=True)
 print(json.dumps({'type':'turn.completed','usage':{'input_tokens':12,'cached_input_tokens':3,'output_tokens':7}}),end='' if ${JSON.stringify(mode)}=='partialusage' else '\\n',flush=True)
-if ${JSON.stringify(mode)}=='partialfailed':
+if ${JSON.stringify(mode)} in ['partialfailed','connect-failure']:
  print(json.dumps({'type':'turn.started'}),flush=True)
  sys.exit(3)
 `,
@@ -137,9 +154,9 @@ if ${JSON.stringify(mode)}=='partialfailed':
   const profile = {
     command: [process.execPath, resolve('assets/codex-meta-runner.mjs')],
     workingDirectory: root,
-    configuration: { executable, model: 'fixture-model', allowedDomains: mode === 'proxy' ? ['allowed.gear.test'] : [], timeoutMs: 12_000,
+    configuration: { executable, model: 'fixture-model', allowedDomains: mode === 'proxy' || mode.startsWith('connect-') ? ['allowed.gear.test'] : [], timeoutMs: 12_000,
       ...(process.env.GEAR_TEST_LINUX_ISOLATION ? { linuxIsolation: process.env.GEAR_TEST_LINUX_ISOLATION as 'seccomp' | 'bubblewrap-only' } : {}) },
-    passEnv: mode === 'proxy' ? ['HTTP_PROXY', 'NO_PROXY'] : [],
+    passEnv: mode === 'proxy' ? ['HTTP_PROXY', 'NO_PROXY'] : mode.startsWith('connect-') ? ['HTTPS_PROXY'] : [],
     timeoutMs: 20_000,
   }
   const context = {
@@ -517,4 +534,124 @@ it('does not restart a killed worker even if its started marker is also lost', a
   await promisify(execFile)(process.execPath, [resolve('assets/codex-meta-runner.mjs'), '--worker', directory])
   expect(await provider.inspect(request, signal())).toEqual({ state: 'unknown' })
   expect((await readFile(join(directory, 'events.jsonl'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
+}, 30_000)
+
+
+for (const mode of ['connect-success', 'connect-failure', 'connect-cancel'])
+it(`publishes the ${mode} result and releases its worker/lock despite a half-closed CONNECT tunnel`, async () => {
+  const sockets = new Set<Socket>(), requests: string[] = []
+  const upstream = createNetServer({ allowHalfOpen: true }, socket => {
+    sockets.add(socket)
+    socket.on('error', () => {})
+    socket.once('close', () => sockets.delete(socket))
+    let header = ''
+    socket.on('data', chunk => {
+      header += chunk.toString()
+      if (!header.includes('\r\n\r\n')) return
+      requests.push(header.split('\r\n')[0]!)
+      socket.removeAllListeners('data')
+      socket.resume()
+      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+    })
+    // Keep the response half open after FIN. This is the dependency reset deadlock.
+    socket.on('end', () => {})
+  })
+  await new Promise<void>(resolve => upstream.listen(0, '127.0.0.1', resolve))
+  try {
+    vi.stubEnv('HTTPS_PROXY', `http://127.0.0.1:${(upstream.address() as { port: number }).port}`)
+    const f = await fixture(mode)
+    const waiting = f.provider.submit(f.request, signal())
+    await untilStarted(f.directory)
+    if (mode === 'connect-cancel') await f.provider.cancel(f.request)
+    const receipt = await waiting
+    expect(receipt.result.status, await readFile(join(f.directory, 'stderr.log'), 'utf8')).toBe(mode === 'connect-success' ? 'complete' : 'failed')
+    expect(receipt.candidate === null).toBe(mode !== 'connect-success')
+    expect(requests).toEqual(['CONNECT allowed.gear.test:443 HTTP/1.1'])
+    const started = JSON.parse(await readFile(join(f.directory, 'started.json'), 'utf8')) as { pid: number }
+    await expect.poll(() => readFile(join(f.directory, 'cleanup.json'), 'utf8').then(JSON.parse).catch(() => null), { timeout: 5000 }).toMatchObject({ status: 'fallback-required', model_stopped: true, stages: { credentials: 'complete', sandbox: 'timed-out', root: 'complete' } })
+    await expect.poll(async () => {
+      const { stdout } = await promisify(execFile)('/bin/ps', ['-axo', 'pgid=,stat='])
+      return stdout.split('\n').some(line => { const [group, state] = line.trim().split(/\s+/u); return Number(group) === started.pid && !state?.startsWith('Z') })
+    }, { timeout: 5000 }).toBe(false)
+    expect(await fileLockHeld(join(f.directory, 'execution.lock'))).toBe(false)
+    const event = JSON.parse((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).split('\n')[0]!) as { cwd: string }
+    await expect(readFile(join(event.cwd, '../home/.codex/auth.json'))).rejects.toThrow()
+    await expect(readFile(join(event.cwd, 'AGENTS.md'))).rejects.toThrow()
+    // The deliberately half-open test peer retains its own write half even
+    // after the worker's FDs are gone. Finish its FIN handshake only now.
+    expect([...sockets].every(socket => socket.readableEnded)).toBe(true)
+    for (const socket of sockets) socket.end('closed-endpoint-probe')
+    await expect.poll(() => sockets.size, { timeout: 3000 }).toBe(0)
+    expect(await f.provider.submit(f.request, signal())).toEqual(receipt)
+    expect((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
+  } finally {
+    for (const socket of sockets) socket.destroy()
+    await new Promise<void>((resolve, reject) => upstream.close(error => error ? reject(error) : resolve()))
+  }
+}, 30_000)
+
+it('keeps a signal-killed guard without its private acknowledgment unknown and never repeats its call', async () => {
+  const f = await fixture('hold')
+  const waiting = f.provider.submit(f.request, signal()).catch(error => error)
+  await untilStarted(f.directory)
+  const { pid: worker } = JSON.parse(await readFile(join(f.directory, 'started.json'), 'utf8')) as { pid: number }
+  const { stdout } = await promisify(execFile)('/bin/ps', ['-A', '-o', 'pid=', '-o', 'ppid=', '-o', 'args='])
+  const rows = stdout.split('\n').map(line => line.trim().split(/\s+/u))
+  const guard = rows.find(row => Number(row[1]) === worker && row.slice(2).join(' ').includes('/assets/codex-process-guard.py'))
+  expect(guard).toBeDefined()
+  const leader = rows.find(row => Number(row[1]) === Number(guard![0]))
+  expect(leader).toBeDefined()
+  const event = JSON.parse((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).split('\n')[0]!) as { cwd: string }
+  roots.push(resolve(event.cwd, '..'))
+  // Both exact PIDs belong to this isolated sleeping fixture; no existing host
+  // process is signalled. Stop the orphan fixture model after removing its guard.
+  process.kill(Number(guard![0]), 'SIGKILL')
+  process.kill(-Number(leader![0]), 'SIGKILL')
+  expect(await waiting).toBeInstanceOf(Error)
+  expect(await f.provider.inspect(f.request, signal())).toEqual({ state: 'unknown' })
+  await expect(readFile(join(f.directory, 'receipt.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+  expect(JSON.parse(await readFile(join(f.directory, 'cleanup.json'), 'utf8'))).toMatchObject({ model_stopped: false, stages: { root: 'unconfirmed', credentials: 'unconfirmed' } })
+  expect(await readFile(join(event.cwd, 'AGENTS.md'), 'utf8')).toContain('Follow the task instruction')
+  await expect(f.provider.submit(f.request, signal())).rejects.toThrow('codex-result-unknown')
+  expect((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
+}, 30_000)
+
+it('refuses a real nonleader worker before writing started or spawning a model', async () => {
+  const f = await fixture()
+  const input: CodexInput = { version: 1, action: 'submit', configuration: f.profile.configuration, context: f.context, request: f.request, implementationIdentity: f.provider.implementationIdentity }
+  const digest = canonicalDigest({ request: f.request, configuration: input.configuration, context: input.context, implementationIdentity: input.implementationIdentity })
+  await withJournal(input, journal => registerOperation(input, journal, { digest, state: 'admitted' }))
+  await mkdir(f.directory)
+  await writeFile(join(f.directory, 'job.json'), JSON.stringify({ version: 1, input, digest, identity: input.implementationIdentity }))
+  await expect(promisify(execFile)(process.execPath, [resolve('assets/codex-meta-runner.mjs'), '--worker', f.directory])).rejects.toMatchObject({ stderr: expect.stringContaining('codex-worker-group-invalid') })
+  await expect(readFile(join(f.directory, 'started.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+  await expect(readFile(join(f.directory, 'events.jsonl'))).rejects.toMatchObject({ code: 'ENOENT' })
+  expect(await fileLockHeld(join(f.directory, 'execution.lock'))).toBe(false)
+  expect((await modelProcessIds(f.directory))).toEqual([])
+})
+
+
+it('cleans up and releases its lock after receipt publication fails without replaying the model', async () => {
+  const f = await fixture('slow')
+  const waiting = f.provider.submit(f.request, signal()).catch(error => error)
+  await untilStarted(f.directory)
+  // A private test-only directory conflicts with atomic receipt publication.
+  // Create it after start so it cannot bypass the worker's execution admission.
+  await mkdir(join(f.directory, 'receipt.json'))
+  expect(await waiting).toBeInstanceOf(Error)
+  await expect.poll(() => readFile(join(f.directory, 'cleanup.json'), 'utf8').then(JSON.parse).catch(() => null), { timeout: 8000 }).toMatchObject({ model_stopped: true, stages: { credentials: 'complete', gateway: 'complete', sandbox: 'complete', root: 'complete' } })
+  await expect.poll(() => fileLockHeld(join(f.directory, 'execution.lock')), { timeout: 3000 }).toBe(false)
+  const { pid } = JSON.parse(await readFile(join(f.directory, 'started.json'), 'utf8')) as { pid: number }
+  await expect.poll(async () => {
+    const { stdout } = await promisify(execFile)('/bin/ps', ['-axo', 'pgid=,stat='])
+    return stdout.split('\n').some(line => { const [group, state] = line.trim().split(/\s+/u); return Number(group) === pid && !state?.startsWith('Z') })
+  }, { timeout: 3000 }).toBe(false)
+  const event = JSON.parse((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).split('\n')[0]!) as { cwd: string }
+  await expect(readFile(join(event.cwd, 'AGENTS.md'))).rejects.toMatchObject({ code: 'ENOENT' })
+  // Remove only the artificial conflict. Original admission/started state stays
+  // intact and still forbids a second model execution without a durable result.
+  await rm(join(f.directory, 'receipt.json'), { recursive: true })
+  expect(await f.provider.inspect(f.request, signal())).toEqual({ state: 'unknown' })
+  await expect(f.provider.submit(f.request, signal())).rejects.toThrow('codex-result-unknown')
+  expect((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
 }, 30_000)

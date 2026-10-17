@@ -42,10 +42,24 @@ retrieval and automatic card selection run in Python. Before each Meta operation
 core binds the sanitized immutable snapshot and at most three cards to its durable
 request. The native Codex runner stages only that snapshot with a frozen local
 query/read program; it has no access to this operator socket or private journals.
-Snapshots contain no held-out/gate or raw provider receipts. A snapshot is capped
-at 4096 records and 12 MiB; cards at 2048 bytes and reply pages at 64 KiB. Exceeding
-a bound is explicit, never silent evidence truncation. Export includes the final
-snapshot and all snapshots actually reserved by Meta in experience-snapshots.json.
+Snapshots contain no held-out/gate or raw provider receipts. Version 3 snapshots
+use a 4 MiB index (4096 records), separate 2 MiB record descriptors and 256 KiB
+detail objects; one authorized closure permits 100,000 unique files. Shared parent
+verifier observations retain full content and run/evaluation/task ownership while
+being stored once. Query/cards read only summaries; read opens only the selected
+record/view/page. Individual items are at most 61 KiB and must also fit the view
+summary; cards remain 2048 bytes, automatic context 12 KiB and replies 64 KiB.
+There is no aggregate 12 MiB evidence limit. Bounds fail explicitly, with no silent
+evidence truncation. Dependencies publish before the immutable index; staging
+copies and verifies only its exact authorized object closure.
+
+Export's version 3 experience-snapshots.json lists latest_snapshot_digest and
+snapshot_digests; experience/<digest>.json indexes and experience/objects/<digest>.json
+contain all required shared objects, without reconstructing a detailed monolith.
+Historical v2 files retain their original digests, refs/cursors and 12 MiB file
+bound. Version 3 index digests are new snapshot identities; experience refs still
+name complete logical records. Frozen source implementation identities remain
+enforced: this update does not auto-resume or silently migrate old runs.
 
 Trajectory refs are opaque capabilities bound to an accepted seed trial; never pass
 provider run IDs or paths. Native Hitch pins the canonical digest at receipt capture.

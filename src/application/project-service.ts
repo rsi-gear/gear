@@ -423,8 +423,13 @@ export class ProjectApplication {
     const journal = await this.store.read(id),
       runRoot = join(this.root, '.gear/runs', id)
     const snapshot = await new ExperienceStore(join(runRoot, 'experience')).read(snapshotDigest)
-    if (snapshot.run_id !== id)
-      throw new GearError('trajectory-outside-snapshot', 'Snapshot belongs to another run')
+    if (
+      snapshot.run_id !== id ||
+      snapshot.records.some((record) =>
+        record.scope.task_ids.some((task) => !journal.spec.seedTasks.some((seed) => seed.id === task)),
+      )
+    )
+      throw new GearError('trajectory-outside-snapshot', 'Snapshot belongs to another run or seed scope')
     return readSeedTrajectory(runRoot, snapshot, journal.spec.artifactReader, params, signal)
   }
   async export(id: string) {

@@ -1,6 +1,12 @@
 import { join, resolve } from 'node:path'
 import type { Json } from '../domain/algorithm-wire.js'
-import type { ExperienceContext, ExperienceRecord, ExperienceSnapshot } from '../domain/experience.js'
+import type {
+  ExperienceContext,
+  ExperienceIndexEntry,
+  ExperienceIndexSnapshot,
+  ExperienceRecord,
+  ExperienceView,
+} from '../domain/experience.js'
 import type { RunJournal } from '../domain/run.js'
 import type { OperationRequest } from '../ports/operations.js'
 import type { ExperiencePreparation } from '../ports/experience.js'
@@ -33,7 +39,7 @@ export class ProjectExperience implements ExperiencePreparation {
   async capture(
     journal: RunJournal,
     signal: AbortSignal = new AbortController().signal,
-  ): Promise<ExperienceSnapshot> {
+  ): Promise<ExperienceIndexSnapshot> {
     if (journal.spec.objectiveIdentity !== pythonObjective.identity)
       throw new GearError(
         'experience-implementation-mismatch',
@@ -41,7 +47,7 @@ export class ProjectExperience implements ExperiencePreparation {
       )
     const { archive } = await new ResearchStore(join(this.runRoot, 'research')).load(journal)
     const seed = new Set(journal.spec.seedTasks.map((task) => task.id))
-    const records: ExperienceRecord[] = []
+    const records: ExperienceIndexEntry[] = []
     const baseline = await verifyBaseline(resolve(this.runRoot, '../../..'), journal.id, journal.spec)
     const trajectories = new SeedTrajectoryArchive(this.runRoot, journal, baseline)
     const observationBudget: ModificationUseBudget = {}
@@ -110,33 +116,32 @@ export class ProjectExperience implements ExperiencePreparation {
         signal,
         observationBudget,
       )
-      records.push(
-        builtinPolicy<ExperienceRecord>('experience_record', {
-          source: {
-            run_id: journal.id,
-            benchmark_digest: journal.spec.benchmarkDigest,
-            evaluation_identity: journal.spec.evaluationIdentity ?? journal.spec.providerIdentity,
-            objective_identity: journal.spec.objectiveIdentity,
-            objective_digest: canonicalDigest(journal.spec.objective ?? null),
-            generation_operation_id: generation.request.operationId,
-            evidence_digest: canonicalDigest(evidence),
-            modification_use_implementation: modificationUseIdentity,
-          },
-          candidate,
-          parent,
-          task_ids: taskIds,
-          repetitions: journal.spec.budget.repetitions,
-          objective: journal.spec.objective ?? null,
-          evidence,
-          proposal,
-          change,
-          trajectory_refs: references,
-          modification_trials: observations,
-        }),
-      )
+      const record = builtinPolicy<ExperienceRecord>('experience_record', {
+        source: {
+          run_id: journal.id,
+          benchmark_digest: journal.spec.benchmarkDigest,
+          evaluation_identity: journal.spec.evaluationIdentity ?? journal.spec.providerIdentity,
+          objective_identity: journal.spec.objectiveIdentity,
+          objective_digest: canonicalDigest(journal.spec.objective ?? null),
+          generation_operation_id: generation.request.operationId,
+          evidence_digest: canonicalDigest(evidence),
+          modification_use_implementation: modificationUseIdentity,
+        },
+        candidate,
+        parent,
+        task_ids: taskIds,
+        repetitions: journal.spec.budget.repetitions,
+        objective: journal.spec.objective ?? null,
+        evidence,
+        proposal,
+        change,
+        trajectory_refs: references,
+        modification_trials: observations,
+      })
+      records.push(await this.store.persistRecord(record))
     }
     const body = {
-      version: 2 as const,
+      version: 3 as const,
       run_id: journal.id,
       source_archive_digest: archive.digest,
       implementation_identity: builtinPolicyImplementationDigest,
@@ -190,16 +195,38 @@ export class ProjectExperience implements ExperiencePreparation {
         : await this.capture(journal)
     if (
       snapshot.run_id !== journal.id ||
-      snapshot.implementation_identity !== builtinPolicyImplementationDigest
+      snapshot.implementation_identity !== builtinPolicyImplementationDigest ||
+      snapshot.records.some((record) =>
+        record.scope.task_ids.some(
+          (task) => !journal.spec.seedTasks.some((admitted) => admitted.id === task),
+        ),
+      )
     )
       throw new GearError(
         'experience-implementation-mismatch',
         'Experience query requires the frozen Python implementation',
       )
-    return builtinPolicy<Json>(params.ref === undefined ? 'experience_query' : 'experience_read', {
+    const input: Record<string, unknown> = {
       ...params,
       records: snapshot.records,
       snapshot_digest: snapshot.digest,
-    })
+    }
+    if (params.ref !== undefined && snapshot.version === 3) {
+      const record = snapshot.records.find((item) => 'experience:' + item.digest.slice(7) === params.ref)
+      if (!record) throw new TypeError('experience ref is outside the frozen snapshot')
+      const view = params.view ?? 'card'
+      if (view !== 'card') input.descriptor = await this.store.descriptor(snapshot, record)
+      // Python owns cursor binding and view/page decisions; storage resolves only that window.
+      const plan = builtinPolicy<{ start: number; limit: number }>('experience_read_plan', input)
+      if (view !== 'card')
+        input.page_items = await this.store.readItems(
+          snapshot,
+          record,
+          view as ExperienceView,
+          plan.start,
+          plan.limit,
+        )
+    }
+    return builtinPolicy<Json>(params.ref === undefined ? 'experience_query' : 'experience_read', input)
   }
 }

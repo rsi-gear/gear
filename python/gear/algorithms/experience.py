@@ -9,6 +9,7 @@ from typing import Any
 
 from gear.canonical import digest
 
+from .experience_index import VIEWS, verify_descriptor, verify_record
 from .modification_use import modification_observations
 from .projection import compare_candidates, project_candidate
 from .verifier import unavailable
@@ -154,13 +155,7 @@ def _records(input: dict[str, Any]) -> list[dict[str, Any]]:
     if len(records) > 4096:
         raise ValueError("experience snapshot exceeds 4096 records")
     for record in records:
-        if record["version"] != 2 or record["scope"]["partition"] != "seed":
-            raise ValueError("experience requires version 2 seed records")
-        if (
-            digest({key: value for key, value in record.items() if key != "digest"})
-            != record["digest"]
-        ):
-            raise ValueError("experience record identity mismatch")
+        verify_record(record)
     return records
 
 
@@ -296,13 +291,18 @@ def _page(
     binding: dict[str, Any],
     maximum: int,
     reserved_bytes: int = 0,
+    window_start: int = 0,
+    total: int | None = None,
 ) -> dict[str, Any]:
     limit = input.get("limit", min(maximum, 20))
     if type(limit) is not int or not 1 <= limit <= maximum:
         raise ValueError(f"experience limit must be between 1 and {maximum}")
-    start = _offset(input.get("cursor"), binding, len(items))
+    size = len(items) if total is None else total
+    start = _offset(input.get("cursor"), binding, size)
+    if window_start != 0 and start != window_start:
+        raise ValueError("experience read window does not match its cursor")
     result: list[Any] = []
-    for item in items[start : start + limit]:
+    for item in items[start - window_start : start - window_start + limit]:
         if encoded_size(result + [item]) > MAX_PAGE_BYTES - 1024 - reserved_bytes:
             if not result:
                 raise ValueError("experience item exceeds the bounded read size")
@@ -310,14 +310,14 @@ def _page(
         result.append(item)
     offset = start + len(result)
     cursor = None
-    if offset < len(items):
+    if offset < size:
         value = {"binding": digest(binding), "offset": offset}
         cursor = (
             base64.urlsafe_b64encode(json.dumps(value, separators=(",", ":")).encode())
             .decode()
             .rstrip("=")
         )
-    return {"items": result, "next_cursor": cursor, "total": len(items)}
+    return {"items": result, "next_cursor": cursor, "total": size}
 
 
 def experience_query(input: dict[str, Any]) -> dict[str, Any]:
@@ -384,6 +384,8 @@ def experience_read(input: dict[str, Any]) -> dict[str, Any]:
     if record is None:
         raise ValueError("experience ref is outside the frozen snapshot")
     view = input.get("view", "card")
+    if record["version"] == 3:
+        return _indexed_read(input, record)
     if view == "card":
         items = [card(record, [])]
     elif view == "task-results":
@@ -436,4 +438,70 @@ def experience_read(input: dict[str, Any]) -> dict[str, Any]:
             else {}
         ),
         **_page(items, input, binding, 50, encoded_size(summary)),
+    }
+
+
+def experience_read_plan(input: dict[str, Any]) -> dict[str, Any]:
+    """Validate pagination before the I/O owner opens only the requested detail window."""
+    record = next(
+        (item for item in _records(input) if "experience:" + item["digest"][7:] == input["ref"]),
+        None,
+    )
+    if record is None:
+        raise ValueError("experience ref is outside the frozen snapshot")
+    view = input.get("view", "card")
+    if record["version"] != 3 or view not in ("card", *VIEWS):
+        raise ValueError("unknown experience read view or encoding")
+    limit = input.get("limit", 20)
+    if type(limit) is not int or not 1 <= limit <= 50:
+        raise ValueError("experience limit must be between 1 and 50")
+    metadata: dict[str, Any] = {}
+    if view == "card":
+        total = 1
+    else:
+        descriptor = input["descriptor"]
+        verify_descriptor(descriptor, record)
+        total = sum(ref["count"] for ref in descriptor["views"][view])
+        if view == "modification-use":
+            metadata["summary"] = record["modification_use"]["summary"]
+        if view == "trajectory":
+            metadata["availability"] = descriptor["trajectory_availability"]
+    binding = {"snapshot": input["snapshot_digest"], "record": record["digest"], "view": view}
+    return {
+        "start": _offset(input.get("cursor"), binding, total),
+        "limit": limit,
+        "total": total,
+        "binding": binding,
+        "metadata": metadata,
+    }
+
+
+def _indexed_read(input: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
+    plan = experience_read_plan(input)
+    view = input.get("view", "card")
+    items = (
+        [card(record, [])][plan["start"] : plan["start"] + plan["limit"]]
+        if view == "card"
+        else input["page_items"]
+    )
+    if not isinstance(items, list) or len(items) != min(
+        plan["limit"], plan["total"] - plan["start"]
+    ):
+        raise ValueError("experience detail window is incomplete")
+    return {
+        "snapshot_digest": input["snapshot_digest"],
+        "ref": input["ref"],
+        "view": view,
+        **plan["metadata"],
+        **_page(
+            items,
+            input,
+            plan["binding"],
+            50,
+            encoded_size({"summary": plan["metadata"]["summary"]})
+            if "summary" in plan["metadata"]
+            else 0,
+            window_start=plan["start"],
+            total=plan["total"],
+        ),
     }

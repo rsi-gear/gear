@@ -9,6 +9,7 @@ from gear.algorithms.experience import (
     experience_read,
     experience_record,
 )
+from gear.algorithms.experience_index import verify_snapshot
 from gear.canonical import digest
 
 
@@ -47,6 +48,35 @@ def snapshot(records):
 
 
 class ExperienceTests(unittest.TestCase):
+    def test_legacy_optional_metadata_keeps_refs_and_explicit_run_conflicts_fail(self):
+        value = record()
+        value["source"], value["proposal"] = {}, {}
+        del value["verifier_trials"]
+        value["digest"] = digest({key: item for key, item in value.items() if key != "digest"})
+        body = {
+            "version": 2,
+            "run_id": "run",
+            "source_archive_digest": digest("archive"),
+            "implementation_identity": digest("implementation"),
+            "records": [value],
+        }
+        frozen = {**body, "digest": digest(body)}
+        original = copy.deepcopy(frozen)
+        verify_snapshot(frozen)
+        cards = experience_query({"records": [value], "snapshot_digest": frozen["digest"]})
+        self.assertEqual(cards["items"][0]["card"]["ref"], "experience:" + value["digest"][7:])
+        self.assertEqual(cards["items"][0]["card"]["hypothesis"], "")
+        self.assertEqual(frozen, original)
+        for owner in ("another-run", None):
+            changed = copy.deepcopy(value)
+            changed["source"] = {"run_id": owner}
+            changed["digest"] = digest(
+                {key: item for key, item in changed.items() if key != "digest"}
+            )
+            changed_body = {**body, "records": [changed]}
+            with self.assertRaisesRegex(ValueError, "scope or lineage mismatch"):
+                verify_snapshot({**changed_body, "digest": digest(changed_body)})
+
     def test_verifier_view_paginates_frozen_parent_and_candidate_observations(self):
         value = record()
         expected = value["verifier_trials"]

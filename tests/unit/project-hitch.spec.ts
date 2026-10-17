@@ -731,3 +731,59 @@ it('binds the resident model environment before admission and refuses a changed 
   await expect(f.provider.submit(request, f.signal)).rejects.toMatchObject({ code: 'hitch-call-failed' })
   expect((await f.state()).submissions ?? 0).toBe(0)
 })
+
+
+it.each([false, true])('preserves a terminal Hitch failure and partial evidence (legacy identity: %s)', async (legacy) => {
+  const f = await controlledProvider({ failedResult: { trials: [] },
+    ...(legacy ? { omittedResultFields: ['dataset', 'candidate', 'prepared_artifact', 'prepared_artifacts'] } : {}) })
+  const receipt = await f.provider.submit(request, f.signal)
+  expect(receipt.result).toMatchObject({ status: 'failed', data: { errors: [{ code: 'environment_image_evidence_unavailable' }] } })
+  expect(receipt.evidence).toEqual([expect.objectContaining({ task_id: 'a', score: null, status: 'environment_failed' })])
+  expect(receipt.physicalAttempts).toBe(1)
+  expect(await f.provider.inspect(request, f.signal)).toEqual({ state: 'complete', receipt })
+  expect((await f.state()).submissions).toBe(1)
+  const source = (receipt.provenance as { evaluations: Array<Record<string, unknown>> }).evaluations[0]!
+  expect(source.trials).toEqual([])
+  if (legacy) expect(source).not.toHaveProperty('candidate')
+})
+
+it('retains certified zero scores and the upstream error on a failed Hitch evaluation', async () => {
+  const f = await controlledProvider({ failedResult: {} })
+  const receipt = await f.provider.submit(request, f.signal)
+  expect(receipt.result.status).toBe('failed')
+  expect(receipt.evidence[0]).toMatchObject({ status: 'valid', score: 0 })
+  expect(receipt.result.data).toMatchObject({ errors: [{ code: 'environment_image_evidence_unavailable' }] })
+})
+
+it.each([
+  { path: ['request', 'model'], value: 'wrong-model' },
+  { path: ['plan', 'candidate', 'model'], value: 'wrong-model' },
+  { path: ['result', 'dataset'], value: 'wrong-dataset' },
+  { path: ['result', 'candidate'], value: null },
+  { path: ['result', 'prepared_artifacts'], value: [] },
+])('still rejects changed identities in a failed Hitch evaluation: $path', async (mutation) => {
+  const f = await controlledProvider({ failedResult: {}, inspectionMutations: [mutation],
+    omittedResultFields: ['dataset', 'candidate', 'prepared_artifact', 'prepared_artifacts'] })
+  await expect(f.provider.submit(request, f.signal)).rejects.toMatchObject({
+    code: mutation.path.includes('prepared_artifacts') ? 'hitch-artifact-identity' : 'hitch-result-identity',
+  })
+})
+
+it('rejects missing result identities on a successful evaluation', async () => {
+  const f = await controlledProvider({ omittedResultFields: ['dataset', 'candidate', 'prepared_artifact', 'prepared_artifacts'] })
+  await expect(f.provider.submit(request, f.signal)).rejects.toMatchObject({ code: 'hitch-result-identity' })
+})
+
+it('decodes partial failed trials without inventing a score for missing tasks', () => {
+  const source = { schema_version: '1', status: 'failed', task_completed: true,
+    error: { code: 'environment_image_evidence_unavailable', message: 'Missing container observations' },
+    trials: [{ task_id: 'a', attempt: 1, run_id: 'run_1', observation_status: 'valid', reward: 0 }] }
+  const decoded = decodeHitchTrials(source, request, ['a', 'b'], 0)
+  expect(decoded.evidence).toEqual([
+    expect.objectContaining({ task_id: 'a', status: 'valid', score: 0 }),
+    expect.objectContaining({ task_id: 'b', status: 'environment_failed', score: null }),
+  ])
+  expect(decoded.provenance).toEqual(source)
+  expect(() => decodeHitchTrials({ ...source, trials: [...source.trials, ...source.trials] }, request, ['a', 'b'], 0)).toThrow('duplicate')
+  expect(() => decodeHitchTrials({ ...source, status: 'succeeded' }, request, ['a', 'b'], 0)).toThrow('missing')
+})

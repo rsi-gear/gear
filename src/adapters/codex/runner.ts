@@ -17,6 +17,7 @@ import {
 } from './contracts.js'
 import { describeCodex } from './identity.js'
 import { executeJob, exists } from './execution.js'
+import { dedicatedWorkerShutdown, type CodexWorkerLifecycle } from './cleanup.js'
 import { initializeJournal, registerOperation, stateLost, withJournal } from './journal.js'
 
 const workerEntry = fileURLToPath(new URL('../../../assets/codex-meta-runner.mjs', import.meta.url))
@@ -164,7 +165,7 @@ export async function codexOperation(raw: unknown): Promise<unknown> {
     })
 }
 
-export async function runCodexWorker(directory: string): Promise<void> {
+export async function runCodexWorker(directory: string, worker?: CodexWorkerLifecycle): Promise<void> {
   const root = await realpath(directory)
   await withFileLock(join(root, 'execution.lock'), async () => {
     if (await exists(join(root, 'receipt.json'))) return
@@ -188,6 +189,7 @@ export async function runCodexWorker(directory: string): Promise<void> {
       const entry = journal.operations[job.input.request.operationId]
       if (!entry || entry.digest !== job.digest) throw stateLost()
       if (entry.state === 'started') return false
+      worker?.assertOwnership()
       if (entry.state === 'fenced')
         await publishFile(join(root, 'cancel.json'), JSON.stringify({ digest: job.digest }), {
           immutable: true,
@@ -202,13 +204,21 @@ export async function runCodexWorker(directory: string): Promise<void> {
       )
       return true
     })
-    if (execute) await executeJob(job, root)
+    if (execute) await executeJob(job, root, worker)
   })
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (argv.length === 2 && argv[0] === '--worker') {
-    await runCodexWorker(argv[1]!)
+    const shutdown = await dedicatedWorkerShutdown()
+    let code = 1
+    try {
+      await runCodexWorker(argv[1]!, shutdown)
+      code = 0
+    } finally {
+      // The normal exit is outside withFileLock; the watchdog covers a stuck lock keeper.
+      shutdown.exit(code)
+    }
     return
   }
   if (argv.length) throw new Error('gear-meta-codex reads one version 1 operation request from stdin')

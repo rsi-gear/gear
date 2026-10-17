@@ -67,7 +67,8 @@ it('captures actual-parent seed outcomes and target diffs without raw receipts o
   const { experience, journal } = await fixture()
   const first = await experience.capture(journal)
   expect(first.records).toHaveLength(1)
-  expect(first.records[0]).toMatchObject({ parent: { id: 'anchor' }, candidate: { id: 'candidate' }, classification: { effect: 'improved', complete: true }, change: { files: [{ path: 'AGENTS.md', patch: expect.stringContaining('+Keep exact') }] } })
+  expect(first.records[0]).toMatchObject({ parent: { id: 'anchor' }, candidate: { id: 'candidate' }, classification: { effect: 'improved', complete: true }, change: { files: [{ path: 'AGENTS.md' }] } })
+  expect(await experience.access(journal, { snapshot_digest: first.digest, ref: 'experience:' + first.records[0]!.digest.slice(7), view: 'diff' })).toMatchObject({ items: [{ patch: expect.stringContaining('+Keep exact') }] })
   expect(JSON.stringify(first)).not.toMatch(/PRIVATE_|HELD_OUT/)
   journal.heldOutEvidence = [{ ...journal.seedEvidence[0]!, task_id: 'HELD_OUT_CANARY', feedback: 'PRIVATE_HELD_OUT' }]
   journal.gate = { status: 'rejected', reason: 'PRIVATE_GATE' }
@@ -163,7 +164,8 @@ it('binds original seed executions, ignores projections and replaces obsolete ar
   evaluation.receipt!.artifacts = [artifact]
   await store.write(journal)
   const snapshot = await experience.capture(journal)
-  const references = snapshot.records[0]!.trajectory_refs
+  const references = []
+  for await (const reference of experience.store.trajectoryReferences(snapshot, snapshot.records[0]!)) references.push(reference)
   expect(references).toHaveLength(1)
   expect(references[0]).toMatchObject({ candidate_id: 'candidate', content_digest: artifact.content_digest })
   expect(JSON.stringify(snapshot)).not.toContain('PRIVATE_')
@@ -204,7 +206,9 @@ it('serves frozen trajectory pages through ProjectController and exports private
   await store.write(journal)
   const snapshot = await experience.capture(journal), record = snapshot.records[0]!
   const controller = new ProjectController(new ProjectApplication(root, { async provider() { throw new Error('read-only') } }))
-  const params = { run_id: 'run', snapshot_digest: snapshot.digest, ref: 'experience:' + record.digest.slice(7), source_ref: record.trajectory_refs[0]!.ref }
+  const references = []
+  for await (const reference of experience.store.trajectoryReferences(snapshot, record)) references.push(reference)
+  const params = { run_id: 'run', snapshot_digest: snapshot.digest, ref: 'experience:' + record.digest.slice(7), source_ref: references[0]!.ref }
   expect(await controller.invoke('experience.trajectory', params)).toMatchObject({ total: 1, scope: 'canonical-session', items: [{ data: 'seed trace' }] })
   await expect(controller.invoke('experience.trajectory', { ...params, source_ref: 'trajectory:' + 'e'.repeat(64) })).rejects.toMatchObject({ code: 'trajectory-outside-snapshot' })
   const exported = await controller.invoke('run.export', { run_id: 'run' }) as { destination: string }
@@ -213,7 +217,7 @@ it('serves frozen trajectory pages through ProjectController and exports private
   expect(await controller.invoke('run.export', { run_id: 'run' })).toEqual(exported)
   await writeFile(path, '{}')
   await expect(controller.invoke('run.export', { run_id: 'run' })).rejects.toMatchObject({ code: 'export-identity-mismatch' })
-  await writeFile(join(runRoot, 'trajectory-sources', record.trajectory_refs[0]!.ref.slice(11) + '.json'), '{}')
+  await writeFile(join(runRoot, 'trajectory-sources', references[0]!.ref.slice(11) + '.json'), '{}')
   await expect(controller.invoke('experience.trajectory', params)).rejects.toMatchObject({ code: 'trajectory-source-changed' })
 })
 
@@ -249,12 +253,12 @@ it('derives native child-session resource use with frozen sources, caches comple
   const originalChild = await readFile(childPath)
   await writeFile(childPath, originalChild.toString().replace('exact', 'wrong'))
   const partial = await experience.capture(journal)
-  expect(partial.records[0]!.modification_use).toMatchObject({ trials: [{ status: 'unknown', source: { coverage: 'partial' } }] })
+  expect(await experience.access(journal, { snapshot_digest: partial.digest, ref: 'experience:' + partial.records[0]!.digest.slice(7), view: 'modification-use' })).toMatchObject({ items: [{ status: 'unknown', source: { coverage: 'partial' } }] })
   await writeFile(childPath, originalChild)
   const snapshot = await experience.capture(journal), record = snapshot.records[0]!
   expect(snapshot.digest).not.toBe(partial.digest)
-  expect(record.modification_use).toMatchObject({ summary: { candidate_trials: 1, status_counts: { observed: 1 }, conditioned_results: expect.arrayContaining([expect.objectContaining({ status: 'observed', mean_reward_delta: 1 })]) },
-    trials: [{ status: 'observed', source: { child_session_files: 1, coverage: 'listed-files-complete' }, artifacts: [{ path: 'prompts/system.md', actions: [{ session_id: 'child', call_seq: 1, result_seq: 2 }] }] }] })
+  expect(await experience.access(journal, { snapshot_digest: snapshot.digest, ref: 'experience:' + record.digest.slice(7), view: 'modification-use' })).toMatchObject({ summary: { candidate_trials: 1, status_counts: { observed: 1 }, conditioned_results: expect.arrayContaining([expect.objectContaining({ status: 'observed', mean_reward_delta: 1 })]) },
+    items: [{ status: 'observed', source: { child_session_files: 1, coverage: 'listed-files-complete' }, artifacts: [{ path: 'prompts/system.md', actions: [{ session_id: 'child', call_seq: 1, result_seq: 2 }] }] }] })
   expect(JSON.stringify(record.modification_use)).not.toContain(content)
   const view = await experience.access(journal, { ref: 'experience:' + record.digest.slice(7), view: 'modification-use', snapshot_digest: snapshot.digest })
   expect(view).toMatchObject({ summary: { status_counts: { observed: 1 }, conditioned_results: expect.arrayContaining([expect.objectContaining({ status: 'observed', mean_reward_delta: 1 })]) }, items: [{ status: 'observed' }], total: 1 })

@@ -2,6 +2,7 @@ import { GearError } from '../../domain/errors.js'
 import { hitchPreparedArtifacts, type HitchArtifactPin } from './artifacts.js'
 import { canonicalDigest } from '../../domain/canonical.js'
 import { executedHarnessReference } from './reference.js'
+import { hitchEvaluationFailure } from './failure.js'
 
 export interface HitchExecutionConditions {
   evalId: string
@@ -49,7 +50,23 @@ export function assertHitchExecutionConditions(
   const controller = object(plan?.controller_runtime)
   const execution = object(inspection.execution_plan)
   const request = object(inspection.request)
-  const result = object(inspection.result)
+  const reported = object(inspection.result)
+  const failure = reported && hitchEvaluationFailure(reported)
+  // Older exceptional results omitted identity fields. Validate missing fields against
+  // the frozen plan without changing the result or accepting contradictory reported values.
+  const result =
+    reported &&
+    failure &&
+    ['planning', 'preparing', 'running', 'finalizing'].includes(failure.failure_stage ?? '')
+      ? {
+          ...Object.fromEntries(
+            ['dataset', 'candidate', 'prepared_artifact', 'prepared_artifacts']
+              .filter((key) => !Object.hasOwn(reported, key))
+              .map((key) => [key, plan?.[key]]),
+          ),
+          ...reported,
+        }
+      : reported
   const candidate = object(result?.candidate)
   const resolution = object(inspection.resolution)
   if (
@@ -92,5 +109,5 @@ export function assertHitchExecutionConditions(
       'hitch-result-identity',
       'Hitch execution conditions do not match the frozen model, runtime, dataset or request',
     )
-  return hitchPreparedArtifacts(inspection, expected)
+  return hitchPreparedArtifacts({ ...inspection, result }, expected)
 }

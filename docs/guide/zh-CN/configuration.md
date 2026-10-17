@@ -154,6 +154,10 @@ Gear 同时要求 `evaluation_artifact_pins: "1"`：每次提交携带当前任�
 Meta 与 Target 分别认证。Codex Meta 使用[随包 operation runner](../../codex-meta-runner.zh-CN.md)，
 原生 `kind: "codex"` 配置由 Gear 解析到当前安装包，避免手写 runner 路径。
 主机需要 HTTP 上游代理时，在 Codex profile 的 `passEnv` 中显式加入 `HTTP_PROXY`、`HTTPS_PROXY` 和可选的 `NO_PROXY`（CLI：`--pass-env HTTP_PROXY,HTTPS_PROXY,NO_PROXY`）。配置只保存变量名；可信 worker 通过这些值连接上游，Codex 只收到沙箱代理端点，不会收到上游代理凭据。`allowedDomains` 仍限制目标域名，`NO_PROXY` 也不能绕过该限制。默认不继承代理变量；使用 API key 时，须在同一列表中保留相应 key 的变量名。
+
+Codex 在清理前持久化已校验的 `receipt.json`，因此回执可能先于执行锁释放出现；私有 `cleanup-started.json` / `cleanup.json` 单独记录清理，`fallback-required` 表示有步骤失败或超时，不表示超时动作已完成。凭据、trajectory gateway、sandbox reset 和根目录分别限 500/500/1500/1000 ms，状态文件写入各限 250 ms；清理开始后的 4500 ms watchdog 兜底退出。只有本次独立 worker 可以终止经验证的自身进程组，回收 CONNECT 两端和桥接子进程；直接调用库函数不会终止宿主进程组。
+
+只有守护进程的专用确认管道证明模型组已终止后才写回执。guard 被杀或缺少确认时保持 `unknown`，不会重发；私有临时根目录保留，凭据和根目录标为 `unconfirmed`，其中可能仍有临时认证文件，需保留原 journal 调查。取消仍须在既有 5 秒等待内同时确认回执和锁释放，超时不能当作停止证明。runner asset、guard 和清理代码均绑定到实现身份，旧冻结运行不会自动改用新实现恢复。
 `doctor` 检查本地登录文件或环境变量存在性；不验证远端模型授权、不执行 benchmark。
 自定义 process 的认证返回 `provider_managed`，需按其文档检查。
 Python `Project` 提供 `profiles()`、`create_profile()`、`use_profile()`、`doctor()` 及 async 对应入口。

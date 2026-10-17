@@ -13,6 +13,7 @@ import { verifyBaseline } from './baseline.js'
 import { projectResearch } from './research.js'
 import { ProjectExperience } from './experience.js'
 import { TrajectoryStore } from '../adapters/storage/trajectory.js'
+import { ExperienceStore } from '../adapters/storage/experience.js'
 
 export async function exportRun(root: string, journal: RunJournal) {
   if (journal.status !== 'completed') throw new GearError('run-incomplete', 'Export requires a completed run')
@@ -37,20 +38,22 @@ export async function exportRun(root: string, journal: RunJournal) {
       ),
     ]),
   ].sort()
-  const experienceSnapshots = []
-  for (const digest of experienceDigests) experienceSnapshots.push(await experience.store.read(digest))
+  // The export manifest contains only snapshot identities, never reconstructed detail records.
   const experienceBundle = {
-    version: 2,
+    version: 3,
     latest_snapshot_digest: latestExperience.digest,
-    snapshots: experienceSnapshots,
+    snapshot_digests: experienceDigests,
   }
-  const trajectoryRefs = [
-    ...new Set(
-      experienceSnapshots.flatMap((snapshot) =>
-        snapshot.records.flatMap((record) => record.trajectory_refs.map((reference) => reference.ref)),
-      ),
-    ),
-  ].sort()
+  if (Buffer.byteLength(JSON.stringify(experienceBundle)) > 4 * 1024 * 1024)
+    throw new GearError('experience-size-limit', 'Experience export manifest exceeds 4 MiB')
+  const trajectoryRefSet = new Set<string>()
+  for (const digest of experienceDigests) {
+    const snapshot = await experience.store.read(digest)
+    for (const record of snapshot.records)
+      for await (const reference of experience.store.trajectoryReferences(snapshot, record))
+        trajectoryRefSet.add(reference.ref)
+  }
+  const trajectoryRefs = [...trajectoryRefSet].sort()
   const sources = []
   const trajectoryStore = new TrajectoryStore(join(runRoot, 'trajectory-sources'))
   for (const ref of trajectoryRefs) sources.push(await trajectoryStore.read('sha256:' + ref.slice(11)))
@@ -64,6 +67,9 @@ export async function exportRun(root: string, journal: RunJournal) {
   if (report.changes.status !== 'available')
     throw new GearError(report.changes.error.code, report.changes.error.message)
   const verifyExport = async () => {
+    const exportedExperience = new ExperienceStore(join(destination, 'experience'))
+    for (const digest of experienceDigests)
+      await exportedExperience.verifyClosure(await exportedExperience.read(digest))
     if (
       canonicalDigest(JSON.parse(await readFile(join(destination, 'manifest.json'), 'utf8'))) !==
         canonicalDigest(manifest) ||
@@ -99,6 +105,8 @@ export async function exportRun(root: string, journal: RunJournal) {
     await publishFile(join(staging, 'manifest.json'), JSON.stringify(manifest), { immutable: true })
     await publishFile(join(staging, 'report.json'), JSON.stringify(report), { immutable: true })
     await publishFile(join(staging, 'research-archive.json'), JSON.stringify(research), { immutable: true })
+    for (const digest of experienceDigests)
+      await experience.store.copyClosure(await experience.store.read(digest), join(staging, 'experience'))
     await publishFile(join(staging, 'experience-snapshots.json'), JSON.stringify(experienceBundle), {
       immutable: true,
     })

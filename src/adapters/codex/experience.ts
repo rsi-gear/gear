@@ -1,4 +1,4 @@
-import { mkdir, realpath, writeFile } from 'node:fs/promises'
+import { mkdir, realpath, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { canonicalDigest } from '../../domain/canonical.js'
 import { GearError } from '../../domain/errors.js'
@@ -10,7 +10,11 @@ import type { CodexJob } from './contracts.js'
 import { trajectoryGateway } from './trajectory-gateway.js'
 
 /** Copy only verified, sanitized bytes into the operation sandbox. No private directory mount. */
-export async function stageExperience(job: CodexJob, root: string) {
+export async function stageExperience(
+  job: CodexJob,
+  root: string,
+  registerDispose?: (dispose: () => Promise<void>) => void,
+) {
   const { context, request } = job.input
   const empty = {
     readPaths: [] as string[],
@@ -21,9 +25,8 @@ export async function stageExperience(job: CodexJob, root: string) {
   }
   if (!request.experience) return { ...empty, input: null }
   const { digest, ...body } = request.experience
-  const snapshot = await new ExperienceStore(join(dirname(context.targets), 'experience')).read(
-    body.snapshot_digest,
-  )
+  const store = new ExperienceStore(join(dirname(context.targets), 'experience'))
+  const snapshot = await store.read(body.snapshot_digest)
   const seed = new Set(context.tasks.map((task) => task.id))
   if (
     canonicalDigest(body) !== digest ||
@@ -42,7 +45,8 @@ export async function stageExperience(job: CodexJob, root: string) {
   const directory = join(root, 'experience'),
     sources = join(directory, 'sources')
   await mkdir(directory, { recursive: true, mode: 0o700 })
-  await writeFile(join(directory, 'snapshot.json'), JSON.stringify(snapshot), { mode: 0o400 })
+  await store.copyClosure(snapshot, directory)
+  await rename(join(directory, snapshot.digest.slice(7) + '.json'), join(directory, 'snapshot.json'))
   for (const [name, source] of Object.entries(builtinPolicySources)) {
     const path = join(sources, name)
     await mkdir(dirname(path), { recursive: true, mode: 0o700 })
@@ -57,6 +61,7 @@ export async function stageExperience(job: CodexJob, root: string) {
         snapshot,
         context.artifactReader,
         python.executable,
+        registerDispose,
       )
     : undefined
   return {

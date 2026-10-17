@@ -13,6 +13,8 @@ const macosTests = new Set([
   'tests/integration/sandbox-platform.spec.ts',
   'tests/integration/python-worker.spec.ts',
   'tests/integration/codex-operation.spec.ts',
+  'tests/integration/codex-guard.spec.ts',
+  'tests/unit/codex-cleanup.spec.ts',
   'tests/unit/sandbox.spec.ts',
   'tests/unit/kernel-lock.spec.ts',
 ])

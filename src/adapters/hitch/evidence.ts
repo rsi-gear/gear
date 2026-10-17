@@ -5,6 +5,7 @@ import { canonicalDigest } from '../../domain/canonical.js'
 import { extractRawMetrics } from '../../objective/scoring.js'
 import type { OperationRequest } from '../../ports/operations.js'
 import type { VerifierCapture } from './verifier.js'
+import { hitchEvaluationFailure } from './failure.js'
 
 export function decodeHitchTrials(
   result: Record<string, unknown>,
@@ -20,13 +21,18 @@ export function decodeHitchTrials(
   )
     throw new GearError('hitch-evidence-incomplete', 'Hitch has not produced a complete trial manifest')
   const trials = result.trials as Array<Record<string, unknown>>
+  const failure = hitchEvaluationFailure(result)
   if (
-    trials.length !== taskIds.length ||
-    new Set(trials.map((trial) => trial.task_id)).size !== taskIds.length
+    (!failure && trials.length !== taskIds.length) ||
+    trials.length > taskIds.length ||
+    new Set(trials.map((trial) => trial?.task_id)).size !== trials.length
   )
     throw new GearError('hitch-slot-mismatch', 'Hitch returned duplicate or missing task slots')
   const evidence = trials.map((trial) => {
     if (
+      !trial ||
+      typeof trial !== 'object' ||
+      Array.isArray(trial) ||
       !taskIds.includes(String(trial.task_id)) ||
       trial.attempt !== 1 ||
       typeof trial.run_id !== 'string' ||
@@ -113,6 +119,19 @@ export function decodeHitchTrials(
       assertions: request.assertions ?? [],
     })
   })
+  if (failure)
+    for (const taskId of taskIds) {
+      if (evidence.some((cell) => cell.task_id === taskId)) continue
+      evidence.push({
+        candidate_id: request.operation.candidate_id!,
+        task_id: taskId,
+        repetition,
+        score: null,
+        status: 'environment_failed',
+        scope: request.operation.scope,
+        feedback: `Hitch evaluation ${failure.status}: ${failure.code}`,
+      })
+    }
   // Keep the complete original provider result in the operator-only receipt.
   return { evidence, provenance: result as Json }
 }

@@ -8,6 +8,7 @@ export const builtinPolicySources = Object.freeze(
     'gear/project.py',
     'gear/canonical.py',
     'gear/experience.py',
+    'gear/experience_store.py',
     'gear/algorithms',
   ]),
 )

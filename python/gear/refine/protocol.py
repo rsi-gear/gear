@@ -10,7 +10,8 @@ from pathlib import Path
 from gear.canonical import JSON
 
 PROTOCOL_VERSION = 1
-MAX_MESSAGE_BYTES = 4 * 1024 * 1024
+# Includes the UTF-8 JSON envelope and trailing newline; keep worker.ts in sync.
+MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 DEFINITIONS = json.loads(Path(__file__).with_name("algorithm-v1.schema.json").read_text())["$defs"]
 
 

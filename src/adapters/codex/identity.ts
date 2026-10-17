@@ -53,6 +53,7 @@ export async function describeCodex(config: CodexConfiguration): Promise<{
       'journal',
       'sandbox',
       'execution',
+      'cleanup',
       'usage',
       'experience',
       'trajectory-gateway',
@@ -82,6 +83,7 @@ export async function describeCodex(config: CodexConfiguration): Promise<{
   )
   implementation.push(
     await readFile(new URL('../../../assets/codex-process-guard.py', import.meta.url), 'utf8'),
+    await readFile(new URL('../../../assets/codex-meta-runner.mjs', import.meta.url), 'utf8'),
   )
   return {
     executable,

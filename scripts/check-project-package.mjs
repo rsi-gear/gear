@@ -260,8 +260,55 @@ for invoke in (lambda: p.experience_trajectory(*params,snapshot=${JSON.stringify
     assert.deepEqual(JSON.parse(readFileSync(join(exported.destination, 'research-archive.json'), 'utf8')), research)
     assert.deepEqual(JSON.parse(readFileSync(join(exported.destination, 'trajectory-sources.json'), 'utf8')), { version: 1, reader: null, sources: [] })
     const exportedExperiences = JSON.parse(readFileSync(join(exported.destination, 'experience-snapshots.json'), 'utf8'))
+    assert.equal(exportedExperiences.version, 3)
     assert.equal(exportedExperiences.latest_snapshot_digest, experiences.snapshot_digest)
-    assert.ok(exportedExperiences.snapshots.some(snapshot => snapshot.digest === experiences.snapshot_digest && snapshot.records.length === 1))
+    assert.deepEqual(exportedExperiences.snapshot_digests, [...new Set(exportedExperiences.snapshot_digests)].sort())
+    for (const digest of [experiences.snapshot_digest, ...metaOperations.map(item => item.request.experience.snapshot_digest)])
+      assert.ok(exportedExperiences.snapshot_digests.includes(digest))
+    const exportedExperienceRoot = join(exported.destination, 'experience'), exportedObjects = new Set()
+    for (const digest of exportedExperiences.snapshot_digests) {
+      assert.match(digest, /^sha256:[a-f0-9]{64}$/u)
+      const snapshot = JSON.parse(readFileSync(join(exportedExperienceRoot, digest.slice(7) + '.json'), 'utf8'))
+      assert.equal(snapshot.version, 3)
+      assert.equal(snapshot.digest, digest)
+      assert.equal(snapshot.run_id, refined.run_id)
+      if (digest === experiences.snapshot_digest) {
+        assert.equal(snapshot.records.length, 1)
+        assert.equal('experience:' + snapshot.records[0].digest.slice(7), experienceRef)
+      }
+      for (const record of snapshot.records) {
+        assert.match(record.descriptor_digest, /^sha256:[a-f0-9]{64}$/u)
+        exportedObjects.add(record.descriptor_digest.slice(7) + '.json')
+        const descriptor = JSON.parse(readFileSync(join(exportedExperienceRoot, 'objects', record.descriptor_digest.slice(7) + '.json'), 'utf8'))
+        assert.equal(descriptor.version, 3)
+        assert.equal(descriptor.kind, 'record')
+        assert.equal(descriptor.digest, record.descriptor_digest)
+        assert.equal(descriptor.record_digest, record.digest)
+        assert.equal(descriptor.summary_digest, record.summary_digest)
+        assert.equal(descriptor.owner.run_id, refined.run_id)
+        for (const [view, chunks] of Object.entries(descriptor.views)) for (const reference of chunks) {
+          assert.match(reference.digest, /^sha256:[a-f0-9]{64}$/u)
+          exportedObjects.add(reference.digest.slice(7) + '.json')
+          const chunk = JSON.parse(readFileSync(join(exportedExperienceRoot, 'objects', reference.digest.slice(7) + '.json'), 'utf8'))
+          assert.equal(chunk.version, 3)
+          assert.equal(chunk.kind, 'items')
+          assert.equal(chunk.digest, reference.digest)
+          assert.equal(chunk.view, view)
+          assert.equal(chunk.owner.run_id, refined.run_id)
+          assert.equal(chunk.items.length, reference.count)
+        }
+      }
+    }
+    assert.deepEqual(readdirSync(exportedExperienceRoot).sort(), ['objects', ...exportedExperiences.snapshot_digests.map(digest => digest.slice(7) + '.json')].sort())
+    assert.deepEqual(readdirSync(join(exportedExperienceRoot, 'objects')).sort(), [...exportedObjects].sort())
+    // Read the export with the installed wheel, without the Project socket or source checkout.
+    const exportedSnapshotPath = join(exportedExperienceRoot, experiences.snapshot_digest.slice(7) + '.json')
+    for (const [view, expected] of [['diff', experienceDiff], ['verifier', verifier]]) {
+      const page = JSON.parse(run(isolatedPython, ['-I', '-B', '-m', 'gear.experience', exportedSnapshotPath], {
+        cwd: exported.destination, env, input: JSON.stringify({ action: 'read', ref: experienceRef, view }),
+      }))
+      assert.deepEqual(page, expected)
+    }
     assert.equal(JSON.parse(readFileSync(join(exported.destination, 'baseline-source.json'), 'utf8')).runId, smoke.run_id)
     const sdk = run(isolatedPython, ['-c', 'from gear import Project;p=Project.open();assert p.check()["checks"]["static"]=="passed";assert any(item["name"]=="default-meta" and item["valid"] for item in p.profiles()["profiles"]);p.use_profile("default-meta",role="meta");print(p.report("' + refined.run_id + '").summary["retained"])'],
       { cwd: project, env: { ...env, GEAR_COMMAND: JSON.stringify([process.execPath, cli]) } }).trim()

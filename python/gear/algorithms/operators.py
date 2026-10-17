@@ -13,7 +13,13 @@ from typing import Any
 
 def main(request: dict[str, Any] | None = None) -> None:
     from .assertions import extract_assertions
-    from .experience import experience_context, experience_query, experience_read, experience_record
+    from .experience import (
+        experience_context,
+        experience_query,
+        experience_read,
+        experience_read_plan,
+        experience_record,
+    )
     from .model_training import offline_window, training_decide, training_dev_gate, training_pair
     from .objective import aggregate_metrics, extract_metrics, score_projection
     from .projection import compare_candidates, project_candidate
@@ -36,6 +42,7 @@ def main(request: dict[str, Any] | None = None) -> None:
         "experience_record": experience_record,
         "experience_query": experience_query,
         "experience_read": experience_read,
+        "experience_read_plan": experience_read_plan,
         "experience_context": experience_context,
         "trajectory_query": trajectory_query,
         "trajectory_page": trajectory_page,

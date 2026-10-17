@@ -1,10 +1,15 @@
 import { join } from 'node:path'
 import type { Json } from '../../domain/algorithm-wire.js'
 import type { ExperienceSnapshot } from '../../domain/experience.js'
-import type { ArtifactReaderDescriptor, TrajectoryQuery } from '../../domain/trajectory.js'
+import type {
+  ArtifactReaderDescriptor,
+  TrajectoryQuery,
+  TrajectoryReference,
+} from '../../domain/trajectory.js'
 import { canonicalDigest } from '../../domain/canonical.js'
 import { GearError } from '../../domain/errors.js'
 import { TrajectoryStore } from '../storage/trajectory.js'
+import { ExperienceStore } from '../storage/experience.js'
 import { builtinPolicy, builtinPolicyImplementationDigest } from '../python/builtin-policy.js'
 import { artifactReader } from './reader.js'
 
@@ -32,7 +37,17 @@ export async function readSeedTrajectory(
       'Use an experience ref and a trajectory source ref from that frozen record',
     )
   const record = snapshot.records.find((item) => 'experience:' + item.digest.slice(7) === params.ref)
-  const reference = record?.trajectory_refs.find((item) => item.ref === params.source_ref)
+  let reference: TrajectoryReference | undefined
+  if (record)
+    for await (const item of new ExperienceStore(join(runRoot, 'experience')).trajectoryReferences(
+      snapshot,
+      record,
+    )) {
+      if (item.ref === params.source_ref) {
+        reference = item
+        break
+      }
+    }
   if (!reference || !/^trajectory:[a-f0-9]{64}$/u.test(reference.ref))
     throw new GearError(
       'trajectory-outside-snapshot',

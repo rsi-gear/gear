@@ -24,7 +24,19 @@ import type {
   WorkerResponse,
 } from '../../domain/algorithm-wire.js'
 
-const MAX_BYTES = 4 * 1024 * 1024
+// Includes the UTF-8 JSON envelope and trailing newline; keep Python protocol.py in sync.
+export const MAX_ALGORITHM_MESSAGE_BYTES = 64 * 1024 * 1024
+
+const serializedBytes = (value: Json | undefined): number =>
+  value === undefined ? 0 : Buffer.byteLength(JSON.stringify(value))
+
+function requestSizeDetails(payload: Json): string {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return ''
+  const view = payload.view
+  const fields = view && typeof view === 'object' && !Array.isArray(view) ? view : undefined
+  // Evidence/completed are nested in view. These field values do not sum to the envelope size.
+  return `; serialized field bytes: view=${serializedBytes(view)}, evidence=${serializedBytes(fields?.evidence)}, completed=${serializedBytes(fields?.completed)}, state=${serializedBytes(payload.state)}, algorithm=${serializedBytes(payload.algorithm)} (evidence/completed are included in view)`
+}
 const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
 import type { AlgorithmConfig } from '../../domain/run.js'
 export type { AlgorithmConfig } from '../../domain/run.js'
@@ -44,7 +56,8 @@ export class PythonAlgorithmWorker {
   private child: ChildProcessWithoutNullStreams | undefined
   private lease: AirGappedSandboxLease | undefined
   private stderr = ''
-  private buffer = Buffer.alloc(0)
+  private responseChunks: Buffer[] = []
+  private responseBytes = 0
   private pending:
     { request: WorkerRequest; resolve(value: Json): void; reject(error: Error): void } | undefined
   private failure: Error | undefined
@@ -134,13 +147,13 @@ export class PythonAlgorithmWorker {
         Array.isArray(handshake) ||
         handshake.protocol_version !== 1 ||
         handshake.implementation_identity !== this.options.implementationIdentity ||
-        handshake.max_message_bytes !== MAX_BYTES ||
+        handshake.max_message_bytes !== MAX_ALGORITHM_MESSAGE_BYTES ||
         JSON.stringify(handshake.operations) !==
           JSON.stringify(['diagnose_seed', 'generate_candidate', 'evaluate_seed', 'nominate', 'stop'])
       ) {
         throw new GearError(
           'algorithm-handshake-mismatch',
-          'Worker protocol, implementation or capabilities changed',
+          `Worker protocol, implementation or capabilities changed (worker max_message_bytes=${handshake && typeof handshake === 'object' && !Array.isArray(handshake) && typeof handshake.max_message_bytes === 'number' ? handshake.max_message_bytes : 'invalid'}; runtime max_message_bytes=${MAX_ALGORITHM_MESSAGE_BYTES}). Existing runs retain frozen Python source; use a compatible runtime or start a new run`,
         )
       }
     } catch (error) {
@@ -189,8 +202,11 @@ export class PythonAlgorithmWorker {
       payload,
     }
     const bytes = Buffer.from(`${JSON.stringify(request)}\n`)
-    if (bytes.length > MAX_BYTES)
-      throw new GearError('algorithm-message-too-large', 'Seed projection exceeds the protocol size limit')
+    if (bytes.length > MAX_ALGORITHM_MESSAGE_BYTES)
+      throw new GearError(
+        'algorithm-message-too-large',
+        `Algorithm request is ${bytes.length} bytes; protocol limit is ${MAX_ALGORITHM_MESSAGE_BYTES} bytes${requestSizeDetails(payload)}`,
+      )
     const timeout = setTimeout(
       () => this.fail(new GearError('algorithm-step-timeout', 'Algorithm step timed out')),
       this.options.timeoutMs ?? 30_000,
@@ -209,15 +225,29 @@ export class PythonAlgorithmWorker {
   }
 
   private onData(chunk: Buffer): void {
-    this.buffer = Buffer.concat([this.buffer, chunk])
-    if (this.buffer.length > MAX_BYTES)
-      return this.fail(
-        new GearError('algorithm-message-too-large', 'Worker response exceeds the protocol size limit'),
-      )
-    let newline: number
-    while ((newline = this.buffer.indexOf(10)) !== -1) {
-      const line = this.buffer.subarray(0, newline)
-      this.buffer = this.buffer.subarray(newline + 1)
+    if (this.failure) return
+    let offset = 0
+    while (offset < chunk.length) {
+      const newline = chunk.indexOf(10, offset)
+      const end = newline === -1 ? chunk.length : newline + 1
+      const part = chunk.subarray(offset, end)
+      const receivedBytes = this.responseBytes + part.length
+      if (receivedBytes > MAX_ALGORITHM_MESSAGE_BYTES)
+        return this.fail(
+          new GearError(
+            'algorithm-message-too-large',
+            `Worker response received ${receivedBytes} bytes; protocol limit is ${MAX_ALGORITHM_MESSAGE_BYTES} bytes`,
+          ),
+        )
+      this.responseChunks.push(part)
+      this.responseBytes = receivedBytes
+      if (newline === -1) return
+      // Copy each complete frame once, rather than copying the accumulated response per chunk.
+      const frame = Buffer.concat(this.responseChunks, this.responseBytes)
+      this.responseChunks = []
+      this.responseBytes = 0
+      const line = frame.subarray(0, frame.length - 1)
+      offset = end
       try {
         const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(line))
         validateAlgorithmWire('WorkerResponse', value)
@@ -235,12 +265,14 @@ export class PythonAlgorithmWorker {
         this.pending = undefined
         pending.resolve(response.result)
       } catch (error) {
-        this.fail(error instanceof Error ? error : new Error(String(error)))
+        return this.fail(error instanceof Error ? error : new Error(String(error)))
       }
     }
   }
 
   private fail(error: Error): void {
+    this.responseChunks = []
+    this.responseBytes = 0
     this.failure ??= error
     this.pending?.reject(error)
     this.pending = undefined

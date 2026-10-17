@@ -114,6 +114,10 @@ SDK 冻结命名函数/类所在文件、声明的 `source_dependencies` 和 JSO
 
 新 wire schema 的单一来源是 [`contracts/algorithm-v1.schema.json`](../contracts/algorithm-v1.schema.json)。通过 `npm run generate:contracts` 生成两种语言的传输类型。作者继续使用公开 dataclass，不手写协议消息。
 
+stdio 协议每条请求/响应固定上限为 64 MiB，按完整 UTF-8 JSON envelope 加末尾换行计数；握手要求 TS 和冻结 Python worker 的上限完全一致。传输保留完整 evidence、raw metrics、completed 与 state，单条 verifier 的 16 KiB 上限不代表累计消息一定可容纳。任意算法 JSON 状态仍可超限，大消息也受内存和原有决策超时约束。
+
+协议源码属于冻结实现身份。升级 runtime 不会升级已有 run 的冻结 worker；新版 64 MiB runtime 对旧 4 MiB worker 会报告 `algorithm-handshake-mismatch`，本次改动本身不恢复已有 run。保留旧证据并使用兼容 runtime、新建 run，或单独审查身份迁移方案，不能重新冻结已有源码或改 journal 身份来绕过校验。
+
 生产 worker 只读取冻结源码、批准的 Python 运行依赖和独立 scratch，禁用网络。决策、状态和 operation IDs 在副作用前一次保存。已保存决策不重新抽样；外部结果未知时先 inspect，再决定是否重试。改源码会改变实现身份；新 run 冻结当时的配置选项，已有 run 恢复沿用原选项，不修改历史结果来通过恢复校验。
 
 ## 当前策略与固定投影的边界

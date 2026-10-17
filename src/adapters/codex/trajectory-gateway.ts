@@ -90,6 +90,7 @@ export async function trajectoryGateway(
   snapshot: ExperienceSnapshot,
   descriptor: ArtifactReaderDescriptor,
   python: string,
+  registerDispose?: (dispose: () => Promise<void>) => void,
 ) {
   const socket = join(root, 't.sock'),
     token = randomUUID(),
@@ -130,6 +131,13 @@ export async function trajectoryGateway(
           return call(input)
         },
       })
+  const dispose = async () => {
+    abort.abort(new GearError('trajectory-reader-stopped', 'Meta operation finished'))
+    await server?.dispose()
+    await mailbox?.dispose()
+  }
+  // Register before writing capability metadata or starting the socket can fail.
+  registerDispose?.(dispose)
   await writeFile(
     join(root, 'experience/gateway.json'),
     JSON.stringify(
@@ -143,10 +151,6 @@ export async function trajectoryGateway(
     writePaths: mailbox ? [mailbox.requests] : [],
     sockets: mailbox ? [] : [socket],
     path: join(root, 'experience/gateway.json'),
-    async dispose() {
-      abort.abort(new GearError('trajectory-reader-stopped', 'Meta operation finished'))
-      await server?.dispose()
-      await mailbox?.dispose()
-    },
+    dispose,
   }
 }

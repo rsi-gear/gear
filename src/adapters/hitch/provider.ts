@@ -16,6 +16,7 @@ import { publishFile } from '../storage/atomic.js'
 import { datasetDigest } from './dataset.js'
 import { hitchJson } from './transport.js'
 import { decodeHitchTrials } from './evidence.js'
+import { failureData, hitchEvaluationFailure, type HitchEvaluationFailure } from './failure.js'
 import { OrderedHitchControl, hitchOperationPath } from './control.js'
 import { findExecutable } from '../process/executable.js'
 import { HitchArtifactReader } from './trajectory.js'
@@ -599,6 +600,7 @@ export class HitchOperationProvider implements OperationProvider {
     const verifierSources: VerifierCapture[] = []
     const artifactSources: Array<{ eval_id: string; repetition: number; assignments: TaskArtifact[] }> = []
     const artifacts: TrialArtifact[] = []
+    const failures: HitchEvaluationFailure[] = []
     let missing = false,
       submitted = false,
       running = false
@@ -620,6 +622,8 @@ export class HitchOperationProvider implements OperationProvider {
       }
       const result = inspection.result as Record<string, unknown>
       const assignments = this.assertConditions(inspection, group)
+      const failure = hitchEvaluationFailure(result)
+      if (failure) failures.push(failure)
       artifactSources.push({ eval_id: group.evalId!, repetition: group.repetition, assignments })
       assertStablePreparedArtifacts(artifactSources.flatMap((source) => source.assignments))
       decodeHitchTrials(result, request, group.taskIds, group.repetition)
@@ -664,12 +668,13 @@ export class HitchOperationProvider implements OperationProvider {
         result: {
           operation_id: request.operationId,
           kind: 'evaluate_seed',
-          status: 'complete',
+          status: failures.length ? 'failed' : 'complete',
           candidate_id: request.operation.candidate_id,
-          data: null,
+          data: failureData(failures),
         },
         candidate: null,
         evidence,
+        // Missing terminal slots may already have executed; charge their reserved upper bound.
         physicalAttempts: evidence.length,
         usage: { model_requests: null, tokens: null, dollars: null },
         provenance: {

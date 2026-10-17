@@ -102,7 +102,9 @@ export function runOrderedHitchFixture(runtimeIdentity) {
     const artifact = artifactFor(job), runtimeContract = { docker_platform: 'linux/arm64', artifact_platform: artifact.platform, node_version: artifact.node_version }
     const artifacts = { prepared_artifact: artifact, prepared_artifacts: [{ ...artifact, task_ids: ['a'], runtime_contract: runtimeContract }] }
     const inspection = { schema_version: '1', eval_id: job.eval_id, request: job.request, resolution: { identity: runtimeIdentity },
-      plan: { controller_runtime: { runtime_id: job.controller.runtime_id }, ...structuredClone(artifacts) },
+      plan: { dataset: job.dataset, candidate: { revision_identity: runtimeIdentity, model: job.request.model,
+        harness_id: job.request.harness_ref.split('@')[0], harness_ref: job.request.harness_ref, requested_harness_ref: job.request.harness_ref },
+        controller_runtime: { runtime_id: job.controller.runtime_id }, ...structuredClone(artifacts) },
       execution_plan: { provider: job.provider, membership: 'known', work_items: [{ schema_version: '1', work_id: 'work_' + hash(job.eval_id), eval_id: job.eval_id,
         backend: 'harbor', logical_attempt: 1, opaque_membership: false, task_ids: ['a'], provider: job.provider,
         artifact_id: artifact.artifact_id, runtime_contract: structuredClone(runtimeContract) }] },
@@ -111,6 +113,8 @@ export function runOrderedHitchFixture(runtimeIdentity) {
         status: job.state, ...structuredClone(artifacts), candidate: { revision_identity: runtimeIdentity, model: job.request.model,
           harness_id: job.request.harness_ref.split('@')[0], harness_ref: job.request.harness_ref, requested_harness_ref: job.request.harness_ref },
         trials: [trial(job)] } }
+    if (state.failedResult) Object.assign(inspection.result, { status: 'failed', task_completed: true, failure_stage: 'running', error: { code: 'environment_image_evidence_unavailable', message: 'Immutable image observation unavailable' }, ...state.failedResult });
+    for (const key of state.omittedResultFields ?? []) delete inspection.result[key];
     for (const { path, value } of state.inspectionMutations ?? []) {
       let target = inspection
       for (const name of path.slice(0, -1)) target = target[name]

@@ -1,5 +1,7 @@
 # 阅读报告
 
+Hitch 的终态失败会在操作结果中保留上游错误，私有回执 provenance 保留未经改写的 provider 原始结果。已认证评分（包括零分）继续有效；终态结果缺失的请求槽位记录为 `score: null` 和 `environment_failed`。由于证据收集失败前可能已经执行，缺失槽位的尝试用量按预留上限保守计费。旧版异常结果缺少 dataset/candidate/artifact 字段时，可使用匹配的冻结计划校验身份；已报告字段矛盾或成功结果不完整时仍拒绝接纳。这不会修改旧账本，也不会认证缺少镜像证据的试验。
+
 Hitch 声明 `verifier_evidence: "1"` 时，Gear 在评测回执中冻结独立 verifier 观测，核对 run、eval、trial、attempt、任务 reward 和结构化过程组件。Python 负责组件权重/计数一致性、失败代码筛选与摘要。`score` 仍表示任务得分；过程指标只有通过 `metrics[].source.path`（例如 `verifier.process.score`）显式声明并被 objective/保护规则引用时才参与决策。失败代码支持调查假设，不代表已确定根因。
 
 报告的 `verifier` 汇总区分 available、missing、invalid、unsupported、unavailable 与 not_captured。过程指标按名称分别汇总；只有当前范围全部任务/重复槽位都有有效过程观测时，`value` 才返回按任务权重计算的分数。`observed_trial_mean` 只描述已有试验，不能用来代替全范围结果。有效任务零分不会因次级材料缺失而改为执行失败。
@@ -10,7 +12,22 @@ Hitch 声明 `verifier_evidence: "1"` 时，Gear 在评测回执中冻结独立 
 
 Python 提供 `experience_query` / `aexperience_query` 和 `experience_read` / `aexperience_read`，参数 `snapshot` 对应响应的 `snapshot_digest`。Meta 每次诊断/生成之前封存经验输入，自动携带实际直接父本的编辑结果与相关失败经验，最多三张卡片；恢复不重选卡片。内置 Codex 将这一快照和冻结的 Python 查询程序复制到自身沙箱，只查询该快照。快照不含 held-out、gate、原始 receipt/provenance；provider artifact 定位符只保留摘要。查询与分类决策全部在 Python。
 
-单快照最多 4096 个经验记录或 12 MiB；单卡片最多 2048 字节，查询/读取每页最多 64 KiB，diff 分块不截断 UTF-8 字符。超限明确报错，原始研究档案继续保留完整事实。导出增加 `experience-snapshots.json`，保存最终经验快照和各 Meta 操作实际绑定的历史快照。`trajectory` 视图返回该记录允许读取的历史 seed 来源引用；未捕获来源时为 `not_captured`，捕获失败时为 `unavailable`，不把缺失数据当作无轨迹。
+新快照使用 version 3 索引，记录描述符和明细分块分别按内容寻址、不可变保存。查询和自动卡片只读索引摘要；明细读取只打开指定记录、视图和页面。父本 verifier 试验按完整观测及 run/evaluation/task 身份共享存储，未变化对象也跨快照复用。父子共同 seed 范围、原始分数、选卡规则和明细值保持原有语义。捕获逐个候选处理，不再把全部完整记录组装为一个 JSON 响应。
+
+| 边界 | 上限 |
+| --- | --- |
+| 快照索引 / 记录数 | 4 MiB / 4096 |
+| 单记录描述符 | 2 MiB |
+| 明细对象 / 单条读取项 | 256 KiB / 61 KiB |
+| 单快照授权闭包的去重文件数 | 100,000（含索引） |
+| 单卡片 / 自动上下文 | 2048 字节 / 12 KiB |
+| 查询或读取响应 | 64 KiB |
+
+version 3 证据不再受 12 MiB 总量限制。单条内容还须与该视图摘要一起放入页面，无法拆分的超大条目明确报错。大型数组分块，diff 分片不切断 UTF-8 字符。读取校验摘要、格式、所有权和已准入 seed 范围；先检查文件大小再进行有界读取，拒绝符号链接、硬链接和特殊文件。依赖先持久发布，最后才让不可变索引可见；中断后可幂等重试，不改写已提交观测。
+
+原生 Codex 只收到该索引精确授权的对象闭包及冻结 Python 源码。staging 和导出校验全部依赖；普通查询不打开无关明细。导出的 version 3 `experience-snapshots.json` 通过 `latest_snapshot_digest` 和 `snapshot_digests` 列出最终快照及 Meta 实际绑定的历史快照；`experience/<digest>.json` 和 `experience/objects/<digest>.json` 保存索引与共享对象并集，不再重建完整明细的聚合 JSON。`trajectory` 仍只返回选中记录授权的来源；未捕获时为 `not_captured`，捕获失败时为 `unavailable`。
+
+历史 version 2 单体文件保留 12 MiB 单文件上限、原始记录摘要、`experience:` 引用和快照绑定游标，读取时不迁移、不重写。新 version 3 快照摘要标识索引，记录引用仍标识完整的逻辑 version 2 记录；游标继续绑定原快照、记录和视图（或查询）。冻结 Python 源码变化会改变实现身份，本次格式升级不会自动恢复旧 run；旧实验仍须使用匹配 runtime，不会静默迁移账本或历史证据。
 
 Hitch 声明 `trajectory_events_page: "1"` 时，Gear 在接纳 seed 评测回执时保存 canonical 内容摘要，并将每个来源绑定到原始执行、候选和任务重复槽位。读取步骤如下：
 
