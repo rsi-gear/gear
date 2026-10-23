@@ -1,0 +1,26 @@
+{
+  "domain": "Support",
+  "model": "gpt-5.6-luna",
+  "harness": "DSH",
+  "metric": "task pass rate",
+  "baseline": {
+    "effort": "medium",
+    "passRate": 17
+  },
+  "optimized": {
+    "effort": "medium",
+    "passRate": 25
+  },
+  "max": {
+    "effort": "max",
+    "passRate": 27
+  },
+  "source": {
+    "type": "user-provided",
+    "date": "2026-10-21"
+  },
+  "notes": [
+    "Pass rates were supplied by the user for the baseline at medium effort, optimized harness at medium effort, and optimized harness at max effort.",
+    "No benchmark version, scored task count, or round-by-round results were supplied; none are inferred."
+  ]
+}

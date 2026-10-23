@@ -187,6 +187,7 @@
     }
   ],
   "assets": [
+    "assets/coding-results.json",
     "assets/evolution-search-example.zip",
     "assets/marketing-evolution-overview.png",
     "assets/marketing-evolution-overview.svg",
@@ -194,6 +195,7 @@
     "assets/marketing-harness-evolution.svg",
     "assets/marketing-harness-example.zip",
     "assets/marketing-results.json",
+    "assets/support-results.json",
     "assets/marketing-staged-search.png",
     "assets/marketing-staged-search.svg",
     "assets/source-docs-dsh-meta-context-offloading-spec-zh-cn-md.txt",
