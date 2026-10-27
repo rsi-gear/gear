@@ -202,7 +202,12 @@ def compile_rows(root: Path, config: dict, source: Path, rows: list, split_ident
         previous = families.setdefault(family, row["split"])
         if previous != row["split"]:
             raise BenchmarkError("family occurs in seed and held_out", location + ":family")
-        input_identity = digest({"instruction": row["instruction"], "resources": resources})
+        input_identity = digest(
+            {
+                "instruction": row["instruction"],
+                "resources": sorted(resources, key=lambda resource: resource["path"]),
+            }
+        )
         if inputs.setdefault(input_identity, row["split"]) != row["split"]:
             raise BenchmarkError(
                 "identical input occurs in seed and held_out", location + ":instruction"
