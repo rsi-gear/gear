@@ -308,7 +308,20 @@ class StagedSearch:
             for cell in view.evidence
             if cell.candidate_id == parent_id and cell.task_id in failure_ids
         )
-        parent = ParentOption(parent_id, "global", self._all_tasks(view), 0)
+        batch = objects(state.data["batches"])[integer(state.data["batch_index"])]
+        selection = cast(dict[str, JSON], batch["selection"])
+        option = cast(dict[str, Any], selection["option"])
+        # Resume the selected option, including its scope and evidence metadata.
+        parent = ParentOption(
+            candidate_id=option["candidate_id"],
+            scope=option["scope"],
+            task_ids=tuple(option["task_ids"]),
+            score=option["score"],
+            probability=option["probability"],
+            task_scores=tuple((task, score) for task, score in option["task_scores"]),
+            weights=tuple((task, weight) for task, weight in option["weights"]),
+            content_digest=option["content_digest"],
+        )
         quota = min(integer(state.data["limit"]), view.budget.candidates_remaining)
         if view.budget.generation_batch_capacity is not None:
             quota = min(quota, view.budget.generation_batch_capacity)
