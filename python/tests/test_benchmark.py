@@ -1,11 +1,61 @@
 import csv
+import json
 import tempfile
 import unittest
 from pathlib import Path
-from gear.benchmark import compile_benchmark, BenchmarkError, score_output
+
+from gear.benchmark import BenchmarkError, compile_benchmark, score_output
 
 
 class BenchmarkTests(unittest.TestCase):
+    def test_files_reject_dot_and_nul_paths(self):
+        for name in (".", "file\0.txt"):
+            for assertion in (None, "done", {"/answer": 42}):
+                with self.subTest(name=name, assertion=assertion):
+                    with self.assertRaisesRegex(ValueError, "contained and normalized"):
+                        score_output("", {name: assertion}, {"kind": "files"}, {})
+
+    def test_files_compilation_locates_invalid_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in (".", "file\0.txt"):
+                for assertion in (None, "done", {"/answer": 42}):
+                    with self.subTest(name=name, assertion=assertion):
+                        self.fixture(
+                            root,
+                            [("a", "write a file", json.dumps({name: assertion}), "a", "seed")],
+                        )
+                        with self.assertRaises(BenchmarkError) as error:
+                            compile_benchmark(
+                                root, {"version": 1, "source": "tasks.csv", "template": "files"}
+                            )
+                        self.assertEqual(error.exception.location, "tasks.csv:2:fixtures")
+                        self.assertIn("contained and normalized", str(error.exception))
+
+    def test_files_normalized_paths_keep_all_assertion_kinds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("result.txt", "nested/result.json"):
+                for assertion, content in (
+                    (None, ""),
+                    ("done", "done"),
+                    ({"/answer": 42}, '{"answer":42}'),
+                ):
+                    with self.subTest(name=name, assertion=assertion):
+                        expected = {name: assertion}
+                        self.assertEqual(
+                            score_output("", expected, {"kind": "files"}, {name: content}).value, 1
+                        )
+                        self.assertEqual(score_output("", expected, {"kind": "files"}, {}).value, 0)
+                        self.fixture(
+                            root, [("a", "write a file", json.dumps(expected), "a", "seed")]
+                        )
+                        result = compile_benchmark(
+                            root, {"version": 1, "source": "tasks.csv", "template": "files"}
+                        )
+                        self.assertEqual(result["verifiers"]["a"]["expected"], expected)
+                        self.assertEqual(result["checks"]["verifier_fixtures"], "passed")
+
     def fixture(self, root, rows):
         with (root / "tasks.csv").open("w", newline="") as stream:
             writer = csv.writer(stream)
