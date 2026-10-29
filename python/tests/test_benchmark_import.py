@@ -37,6 +37,27 @@ class BenchmarkImportTests(unittest.TestCase):
         self.assertFalse(research["held_out"])
         self.assertIn("未做独立验证", research["allocation"]["note"])
 
+    def test_split_manifest_rejects_non_string_row_ids_without_a_type_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tasks.jsonl").write_text(
+                "\n".join(
+                    json.dumps(row)
+                    for row in [
+                        {"id": [], "instruction": "alpha", "expected": "one"},
+                        {"id": "b", "instruction": "beta", "expected": "two"},
+                    ]
+                )
+            )
+            (root / "splits.json").write_text(
+                json.dumps({"version": 1, "seed": ["b"], "held_out": []})
+            )
+            with self.assertRaises(BenchmarkError) as error:
+                compile_benchmark(
+                    root, {"version": 1, "source": "tasks.jsonl", "splits": "splits.json"}
+                )
+            self.assertEqual(error.exception.location, "splits.json")
+
     def test_import_freezes_resources_and_saves_a_reviewable_manifest(self):
         import base64
 

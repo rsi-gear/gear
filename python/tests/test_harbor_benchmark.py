@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from gear.benchmark import compile_benchmark
+from gear.benchmark import BenchmarkError, compile_benchmark
 from gear.benchmark.harbor import compile_harbor
 
 
@@ -44,6 +44,22 @@ class HarborCompilerTests(unittest.TestCase):
                 subprocess.run([sys.executable, str(task / "tests/verify.py"), str(workspace), str(logs)], check=True)
                 self.assertEqual(json.loads((logs / "gear-result.json").read_text())["status"], "valid")
                 self.assertEqual(float((logs / "reward.txt").read_text()), 0)
+
+    def test_native_metadata_split_must_be_a_string_annotation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            task = root / "task"
+            (task / "environment").mkdir(parents=True)
+            (task / "tests").mkdir()
+            (task / "task.toml").write_text('[metadata]\nsplit = ["seed"]\n\n[environment]\n')
+            (task / "instruction.md").write_text("Do the thing.\n")
+            (task / "tests/test.sh").write_text("#!/bin/sh\nexit 0\n")
+            (task / "environment/Dockerfile").write_text(
+                "FROM alpine@sha256:" + "a" * 64 + "\n"
+            )
+            with self.assertRaises(BenchmarkError) as error:
+                compile_benchmark(root, {"version": 1, "source": "task", "template": "harbor"})
+            self.assertEqual(error.exception.location, "task/task.toml:metadata.split")
 
     def test_json_numeric_equivalence_preserves_nested_boolean_distinction(self):
         from gear.benchmark.scorers import score_output

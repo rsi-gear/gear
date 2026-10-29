@@ -1,4 +1,5 @@
 import csv
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -47,6 +48,19 @@ class BenchmarkTests(unittest.TestCase):
                 with self.assertRaises(BenchmarkError) as error:
                     compile_benchmark(root, {"version": 1, "source": "tasks.csv"})
                 self.assertIn("tasks.csv:3", error.exception.location)
+
+    def test_non_string_split_annotations_are_located_errors(self):
+        for split in ([], {}, ["seed"]):
+            with self.subTest(split=split), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "tasks.jsonl").write_text(
+                    json.dumps(
+                        {"id": "a", "instruction": "i", "expected": "e", "split": split}
+                    )
+                )
+                with self.assertRaises(BenchmarkError) as error:
+                    compile_benchmark(root, {"version": 1, "source": "tasks.jsonl"})
+                self.assertEqual(error.exception.location, "tasks.jsonl:1:split")
 
     def test_nonfinite_and_duplicate_json_outputs_fail_even_in_unasserted_fields(self):
         for extra in ["NaN", "Infinity", "-Infinity", "1e999", "[NaN]", '{"nested":Infinity}']:
