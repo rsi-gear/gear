@@ -1,6 +1,6 @@
 import unittest
 from dataclasses import replace
-from gear.algorithms import GEPA, RandomSearch, Evidence, RankingInput, ParentPlan
+from gear.algorithms import GEPA, MetaHarness, RandomSearch, Evidence, RankingInput, ParentPlan
 from gear.algorithms.gepa.ranking import rank_candidates
 from gear.algorithms.testkit import toy_round, test_parent_policy
 from gear.canonical import canonical, digest
@@ -68,10 +68,12 @@ class AlgorithmTests(unittest.TestCase):
     def test_recipes_share_interfaces_but_control_their_own_stages(self):
         gepa = toy_round(GEPA())
         random = toy_round(RandomSearch())
+        meta_harness = toy_round(MetaHarness())
         self.assertIn("evaluate_seed:local", gepa["operations"])
         self.assertNotIn("evaluate_seed:local", random["operations"])
         self.assertIsNotNone(gepa["nominee"])
         self.assertIsNotNone(random["nominee"])
+        self.assertEqual(meta_harness["status"], "passed")
 
     def test_one_function_replaces_parent_policy(self):
         def policy(view, rng):
@@ -218,3 +220,13 @@ class AlgorithmTests(unittest.TestCase):
         self.assertEqual(
             toy_round(reconstructed)["operations"].count("generate_candidate:global"), 2
         )
+
+    def test_meta_harness_round_trips_as_a_builtin_algorithm(self):
+        from gear.project import Project
+        from gear.refine.worker import make_algorithm
+
+        config = Project._describe_algorithm(MetaHarness())
+        reconstructed = make_algorithm(config["algorithm"])
+        self.assertEqual(config["algorithm"]["name"], "meta-harness")
+        self.assertIsInstance(reconstructed, MetaHarness)
+        self.assertEqual(toy_round(reconstructed)["status"], "passed")

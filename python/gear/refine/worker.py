@@ -16,6 +16,7 @@ from gear.algorithms import (
     Budget,
     Candidate,
     Evidence,
+    MetaHarness,
     OperationResult,
     RandomSearch,
     SearchView,
@@ -57,6 +58,8 @@ def make_algorithm(config):
                 raise ValueError("policy requires an entrypoint or a configured entrypoint object")
     if config["name"] == "gepa":
         return GEPA(**options)
+    if config["name"] == "meta-harness":
+        return MetaHarness()
     if config["name"] == "random-search":
         return RandomSearch(**options)
     return load_entrypoint(config["name"])(**options)
