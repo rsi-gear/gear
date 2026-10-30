@@ -9,7 +9,7 @@
 [![Hugging Face](https://img.shields.io/badge/Hugging_Face-Paper-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/spaces/WizardTY/GEAR)
 ![arXiv: Coming soon](https://img.shields.io/badge/arXiv-Coming_soon-B31B1B?logo=arxiv&logoColor=white)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Discord](https://img.shields.io/badge/Discord-加入讨论-5865F2?logo=discord)](https://discord.gg/ZduvAtS2k)
+[![Discord](https://img.shields.io/badge/Discord-加入讨论-5865F2?logo=discord)](https://discord.gg/KH6D8Bezm)
 
 [English](README.md) | [简体中文](README.zh-CN.md) · [用户指南](https://rsigear.xyz/docs/gear/zh) · [案例](https://rsigear.xyz/docs/gear/zh/examples/evolution-search)
 
@@ -181,7 +181,7 @@ Gear 目前已支持 harness 优化。完整学习循环中的两个组件仍在
 
 ## 一起完善 Gear
 
-阅读[用户指南](docs/guide/zh-CN/index.md)，查看[示例代码](examples/evolution-search/README.zh-CN.md)，或加入 [Discord](https://discord.gg/ZduvAtS2k) 讨论。
+阅读[用户指南](docs/guide/zh-CN/index.md)，查看[示例代码](examples/evolution-search/README.zh-CN.md)，或加入 [Discord](https://discord.gg/KH6D8Bezm) 讨论。
 
 本地开发：
 

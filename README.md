@@ -9,7 +9,7 @@
 [![Hugging Face](https://img.shields.io/badge/Hugging_Face-Paper-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/spaces/WizardTY/GEAR)
 ![arXiv: Coming soon](https://img.shields.io/badge/arXiv-Coming_soon-B31B1B?logo=arxiv&logoColor=white)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Discord](https://img.shields.io/badge/Discord-Join_chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/ZduvAtS2k)
+[![Discord](https://img.shields.io/badge/Discord-Join_chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/KH6D8Bezm)
 
 [English](README.md) | [简体中文](README.zh-CN.md) · [User guide](https://rsigear.xyz/docs/gear) · [Examples](https://rsigear.xyz/docs/gear/examples/evolution-search)
 
@@ -181,7 +181,7 @@ If you use Gear in your research, please cite the following preprint. The [proje
 
 ## Build with us
 
-Start with the [user guide](docs/guide/en/index.md), browse the [example code](examples/evolution-search/README.md), or join [Discord](https://discord.gg/ZduvAtS2k).
+Start with the [user guide](docs/guide/en/index.md), browse the [example code](examples/evolution-search/README.md), or join [Discord](https://discord.gg/KH6D8Bezm).
 
 For local development:
 
