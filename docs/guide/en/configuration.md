@@ -23,7 +23,7 @@ editing a file cannot silently change a running experiment.
 | Field | Current meaning |
 | --- | --- |
 | `target.adapter` | `dsh` or `pi` |
-| `algorithm` | `gepa`, `random-search`, a Python entrypoint, or `{name: gepa, options: {promotion_widths: [2, 1]}}`; the SDK also accepts configured policy instances |
+| `algorithm` | `gepa`, `random-search`, a Python entrypoint, or `{name: gepa, options: {promotion_widths: [2, 1], global_gate: no_regression}}`; the SDK also accepts configured policy instances |
 | `objective.metric` | `{metric: pass_rate}` is the default shorthand; advanced objectives use `objective.terms` and `objective.constraints` |
 | `validation.mode` | `holdout` requires independent tasks; explicit `research` labels shared-set research |
 | `budget.rounds` | Defaults to 1 |

@@ -19,6 +19,7 @@ from .contracts import (
     ProposalInput,
     ProposalPlanner,
     RankingInput,
+    RankingPlan,
     ResearchRecord,
     SamplingInput,
     SearchView,
@@ -67,6 +68,7 @@ class StagedSearch:
     stop_rule: StopRule
     stages: tuple[Literal["local", "bridge", "global"], ...]
     promotion_widths: tuple[int, ...]
+    global_gate: Literal["any", "no_regression"] = "any"
 
     def __post_init__(self) -> None:
         if (
@@ -75,6 +77,8 @@ class StagedSearch:
             or any(type(width) is not int or width < 1 for width in self.promotion_widths)
         ):
             raise ValueError("promotion_widths requires one positive integer per stage transition")
+        if self.global_gate not in ("any", "no_regression"):
+            raise ValueError("global_gate must be 'any' or 'no_regression'")
         # JSON configuration uses arrays; keep the same immutable form as SDK configuration.
         self.promotion_widths = tuple(self.promotion_widths)
 
@@ -490,6 +494,22 @@ class StagedSearch:
                 research,
             )
         index = integer(state.data["stage_index"]) + 1
+        if self.global_gate == "no_regression" and index == len(self.stages) - 1:
+            # The complete seed comparison is the most expensive stage. This gate
+            # spends it only on candidates that match the parent on the shared
+            # scope both just completed; ties advance, regressions stay archived.
+            candidates = tuple(
+                candidate
+                for candidate in candidates
+                if self._at_least(view, ranked, candidate, parent)
+            )
+            if not candidates:
+                return self._record(
+                    self._next_batch(
+                        view, next_state, "every candidate regressed on the shared scope"
+                    ),
+                    research,
+                )
         if index < len(self.stages):
             # Expansion allocates research budget; it does not replace the parent.
             # The ranker still enforces constraints and the runtime gates publication.
@@ -569,6 +589,20 @@ class StagedSearch:
     @staticmethod
     def _record(decision: Decision, record: ResearchRecord) -> Decision:
         return replace(decision, research=(record, *decision.research))
+
+    @staticmethod
+    def _at_least(view: SearchView, ranked: RankingPlan, candidate: str, parent: str) -> bool:
+        # Same order as the ranker: satisfying the constraints outranks any score,
+        # so a candidate that repairs a constraint the parent violates is no regression.
+        if parent in ranked.disqualified and candidate not in ranked.disqualified:
+            return True
+        scores = dict(ranked.scores)
+        if isinstance(view.objective, dict):
+            precision = cast(dict[str, Any], view.objective)["definition"]["comparisonPrecision"]
+            return comparison_key(scores[candidate], precision) >= comparison_key(
+                scores[parent], precision
+            )
+        return scores[candidate] >= scores[parent]
 
     @staticmethod
     def _all_tasks(view: SearchView) -> tuple[str, ...]:
