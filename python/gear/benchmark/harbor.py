@@ -49,7 +49,7 @@ def read_output(name):
         return None
     if not path.is_file() or path.stat().st_size > 16 * 1024 * 1024:
         return None
-    return path.read_text(encoding="utf-8")
+    return path.read_bytes().decode("utf-8")
 try:
     kind = spec["rule"]["kind"]
     paths = spec["expected"] if kind == "files" else spec["rule"]["scorer"]["artifacts"] if kind in ("python", "llm") else []
