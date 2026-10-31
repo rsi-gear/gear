@@ -73,14 +73,76 @@ async def reconcile_slots(directory, request, config):
         ledger.close()
 
 
+def boot_start(pid):
+    """Boot-relative start of a process on Linux, or None where /proc is unavailable.
+
+    psutil's create_time() adds the current /proc/stat btime, which moves with
+    wall-clock updates, so a live process can stop matching its own record.
+    The kernel start tick and boot id never change for a running process.
+    """
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError:
+        return None
+    # comm may contain spaces or ")"; field 22 (starttime) is counted after the last ")".
+    return {"bootId": boot, "startTicks": int(stat.rsplit(")", 1)[1].split()[19])}
+
+
 def process_identity(pid):
     import psutil
 
     try:
         process = psutil.Process(pid)
-        return {"pid": pid, "createdAt": process.create_time()}
+        identity = {"pid": pid, "createdAt": process.create_time()}
     except psutil.NoSuchProcess:
         return None
+    return {**identity, **(boot_start(pid) or {})}
+
+
+def same_process(process, identity):
+    """Whether a psutil process is the one an identity recorded.
+
+    Records without a boot-relative start (older records, non-Linux hosts) keep
+    the exact create_time() comparison.
+    """
+    if "startTicks" in identity:
+        current = boot_start(process.pid)
+        if current is not None:
+            return current == {
+                "bootId": identity.get("bootId"),
+                "startTicks": identity["startTicks"],
+            }
+    return process.create_time() == identity["createdAt"]
+
+
+def same_identity(recorded, current):
+    """Compare two identities, ignoring createdAt when both carry a boot-relative start."""
+    if not recorded or not current:
+        return False
+    both = "startTicks" in recorded and "startTicks" in current
+    ignored = {"createdAt"} if both else {"bootId", "startTicks"}
+    return {k: v for k, v in recorded.items() if k not in ignored} == {
+        k: v for k, v in current.items() if k not in ignored
+    }
+
+
+def identity_key(identity):
+    if "startTicks" in identity:
+        return identity["pid"], identity.get("bootId"), identity["startTicks"]
+    return identity["pid"], identity["createdAt"]
+
+
+def _started_since(process, identity):
+    if "startTicks" in identity:
+        current = boot_start(process.pid)
+        if current is not None:
+            return (
+                current["bootId"] == identity.get("bootId")
+                and current["startTicks"] >= identity["startTicks"]
+            )
+    created = process.create_time()
+    return None if created is None else created >= identity["createdAt"]
 
 
 def owned_alive(identity):
@@ -88,7 +150,7 @@ def owned_alive(identity):
 
     try:
         p = psutil.Process(identity["pid"])
-        return p.create_time() == identity["createdAt"] and p.status() != psutil.STATUS_ZOMBIE
+        return same_process(p, identity) and p.status() != psutil.STATUS_ZOMBIE
     except psutil.NoSuchProcess:
         return False
 
@@ -105,7 +167,7 @@ def owned_session_alive(identity):
 
     try:
         leader = psutil.Process(identity["pid"])
-        if leader.create_time() != identity["createdAt"]:
+        if not same_process(leader, identity):
             return False
         if leader.status() != psutil.STATUS_ZOMBIE:
             return True
@@ -118,13 +180,13 @@ def owned_session_alive(identity):
         except (ProcessLookupError, PermissionError):
             continue
         try:
-            created, status = process.create_time(), process.status()
+            started, status = _started_since(process, identity), process.status()
             require(
-                created is not None and status is not None,
+                started is not None and status is not None,
                 "script-resources-unobservable",
                 "cannot observe an owned session member",
             )
-            if created >= identity["createdAt"] and status != psutil.STATUS_ZOMBIE:
+            if started and status != psutil.STATUS_ZOMBIE:
                 return True
         except psutil.NoSuchProcess:
             pass
@@ -143,13 +205,12 @@ def stop_owned(identities):
     for identity in identities:
         try:
             process = psutil.Process(identity["pid"])
-            # Check creation time on the same psutil object used for signaling.
+            # Check identity against the psutil object used for signaling.
             # Constructing a second object after owned_alive could adopt a reused
             # PID; psutil's own signal methods guard subsequent reuse of this one.
-            if (
-                process.create_time() == identity["createdAt"]
-                and process.status() != psutil.STATUS_ZOMBIE
-            ):
+            # A matching boot-relative start read after construction proves the
+            # original was still running, so this object cannot hold a reuse.
+            if same_process(process, identity) and process.status() != psutil.STATUS_ZOMBIE:
                 processes.append(process)
         except psutil.NoSuchProcess:
             pass
