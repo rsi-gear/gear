@@ -142,6 +142,123 @@ class AlgorithmTests(unittest.TestCase):
         self.assertEqual(result["operations"].count("diagnose_seed:global"), 2)
         self.assertEqual(result["operations"].count("generate_candidate:global"), 2)
 
+    def test_champion_mixture_follows_the_seed_leader_not_the_run_anchor(self):
+        from gear.algorithms import SearchView, Budget, Candidate, Task, AlgorithmState
+        from gear.algorithms.gepa.parents import ScopedFrontier
+
+        seen = []
+
+        def policy(view, rng):
+            seen.append(view.champion_id)
+            return ScopedFrontier(champion_probability=1)(view, rng)
+
+        tasks = tuple(Task(name, "family") for name in "abcd")
+        candidates = (Candidate("anchor", digest("anchor")),
+                      Candidate("leader", digest("leader"), "anchor"))
+        state = AlgorithmState(data={"phase": "parents", "round": 1})
+        # A strict complete-seed gain makes the candidate the champion; a tie or
+        # an incomplete leader keeps the anchor.
+        for scores, champion in [((1, 1, 0, 0), "leader"), ((0, 1, 0, 0), "anchor"),
+                                 ((1, 1, 1, None), "anchor")]:
+            with self.subTest(leader=scores):
+                evidence = tuple(
+                    Evidence(candidate, task, 0, score,
+                             "valid" if score is not None else "environment_failed", "global")
+                    for candidate, values in [("anchor", (0, 1, 0, 0)), ("leader", scores)]
+                    for task, score in zip("abcd", values)
+                )
+                view = SearchView("champion", 3, "fixed", tasks, candidates, evidence, (),
+                                  Budget(100, 4, 3), "anchor")
+                decision = GEPA(parent_policy=policy).step(view, state)
+                self.assertEqual(seen[-1], champion)
+                self.assertEqual(decision.operations[0].kind, "diagnose_seed")
+                self.assertEqual(decision.operations[0].candidate_id, champion)
+                self.assertEqual(decision.research[0].data["champion"], champion)
+
+    def test_champion_mixture_builds_on_each_round_improvement(self):
+        from gear.algorithms import SearchView, Budget, Candidate, Task, AlgorithmState
+        from gear.algorithms.contracts import OperationResult
+        from gear.algorithms.gepa.parents import ScopedFrontier
+
+        champions, parents = [], []
+
+        def policy(view, rng):
+            champions.append(view.champion_id)
+            return ScopedFrontier(champion_probability=1)(view, rng)
+
+        # Each generation solves one more task than its parent.
+        depth = {"anchor": 0}
+        view = SearchView("rounds", 0, "fixed", tuple(Task(name, "family") for name in "abcd"),
+                          (Candidate("anchor", digest("anchor")),), (), (), Budget(100, 3, 3),
+                          "anchor")
+        state = AlgorithmState()
+        for _ in range(60):
+            decision = GEPA(parent_policy=policy).step(view, state)
+            state = decision.state
+            if decision.operations[0].kind in ("stop", "nominate"):
+                break
+            for index, operation in enumerate(decision.operations):
+                result = OperationResult(f"{view.step_id}:{index}", operation.kind, "complete",
+                                         operation.candidate_id)
+                if operation.kind == "diagnose_seed":
+                    result = replace(result, data={"hypotheses": ["Solve one more task"]})
+                elif operation.kind == "generate_candidate":
+                    parents.append(operation.parent_id)
+                    depth[operation.candidate_id] = depth[operation.parent_id] + 1
+                    view = replace(view, candidates=view.candidates + (
+                        Candidate(operation.candidate_id, digest(operation.candidate_id),
+                                  operation.parent_id),),
+                        budget=replace(view.budget,
+                                       candidates_remaining=view.budget.candidates_remaining - 1))
+                elif operation.kind == "evaluate_seed":
+                    known = {(cell.candidate_id, cell.task_id) for cell in view.evidence}
+                    cells = tuple(
+                        Evidence(operation.candidate_id, task, 0,
+                                 float("abcd".index(task) <= depth[operation.candidate_id]),
+                                 "valid", operation.scope)
+                        for task in operation.task_ids if (operation.candidate_id, task) not in known)
+                    view = replace(view, evidence=view.evidence + cells, budget=replace(
+                        view.budget, evaluations_remaining=view.budget.evaluations_remaining - len(cells)))
+                view = replace(view, completed=view.completed + (result,))
+            view = replace(view, step_id=view.step_id + 1)
+        else:
+            self.fail("search did not reach a terminal decision")
+        # Every round mutates the previous round's improvement, not the run anchor.
+        generated = [candidate for candidate in depth if candidate != "anchor"]
+        self.assertEqual(len(champions), 3)
+        self.assertEqual(champions, ["anchor"] + generated[:-1])
+        self.assertEqual(parents, champions)
+        self.assertEqual(max(depth.values()), 3)
+
+    def test_champion_probability_bounds_the_champion_share(self):
+        from gear.algorithms import SearchView, Budget, Candidate, Task, AlgorithmState
+        from gear.algorithms.gepa.parents import ScopedFrontier
+
+        scores = {"anchor": (0, 0, 0, 0), "leader": (1, 1, 0, 0), "specialist": (0, 0, 1, 0)}
+        view = SearchView(
+            "bounds", 3, "fixed", tuple(Task(name, "family") for name in "abcd"),
+            tuple(Candidate(name, digest(name), None if name == "anchor" else "anchor")
+                  for name in scores),
+            tuple(Evidence(candidate, task, 0, score, "valid", "global")
+                  for candidate, values in scores.items() for task, score in zip("abcd", values)),
+            (), Budget(100, 4, 3), "anchor")
+        state = AlgorithmState(data={"phase": "parents", "round": 1})
+        # Zero leaves the frontier untouched; one sends every pick to the seed champion.
+        for probability, expected in [
+            (0, {"anchor": 0, "leader": 2 / 3, "specialist": 1 / 3}),
+            (1, {"anchor": 0, "leader": 1, "specialist": 0}),
+        ]:
+            with self.subTest(champion_probability=probability):
+                decision = GEPA(parent_policy=ScopedFrontier(champion_probability=probability)).step(
+                    view, state)
+                self.assertEqual(decision.research[0].data["champion"], "leader")
+                selection = decision.research[0].data["plan"]["allocations"][0]["selection"]
+                probabilities = {name.split(":", 1)[1]: value
+                                 for name, value in selection["probabilities"]}
+                self.assertEqual(probabilities.keys(), expected.keys())
+                for candidate, value in expected.items():
+                    self.assertAlmostEqual(probabilities[candidate], value)
+
     def test_gepa_scope_weights_cost_strata_and_bridge_capacity(self):
         from gear.algorithms.contracts import Task, SamplingInput
         from gear.algorithms.gepa.sampling import GEPASampler
