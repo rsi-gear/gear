@@ -1,5 +1,17 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { projectCommand } from '../../src/cli/project.js'
 import { parseProjectCommand } from '../../src/cli/project-input.js'
+import { GearError } from '../../src/domain/errors.js'
+
+async function jsonInputError(action: () => unknown): Promise<GearError> {
+  const error = await Promise.resolve().then(action).then(() => undefined, (caught: unknown) => caught)
+  expect(error).toBeInstanceOf(GearError)
+  expect((error as GearError).code).toBe('invalid-json-input')
+  return error as GearError
+}
 
 describe('native Gear project command projection', () => {
   it('maps creation and explicit evaluation to the shared service', () => {
@@ -24,5 +36,20 @@ describe('native Gear project command projection', () => {
     expect(() => parseProjectCommand('continue evolution-1')).toThrow('Unknown project command')
     expect(() => parseProjectCommand('refine --target evaluator')).toThrow('Unexpected arguments')
     expect(() => parseProjectCommand('refine --rounds 1 --rounds 2')).toThrow('Unexpected arguments')
+  })
+  it('reports malformed JSON input as a command error', async () => {
+    expect(parseProjectCommand('experience query run_1 --query-json {"query":"x"}')).toEqual({ method: 'experience.query', params: { run_id: 'run_1', query: { query: 'x' } } })
+    expect((await jsonInputError(() => parseProjectCommand('experience query run_1 --query-json {bad'))).message).toContain('--query-json must be valid JSON')
+    await jsonInputError(() => parseProjectCommand('experience trajectory run_1 ref_1 src_1 --snapshot sha256:a --query-json [1,'))
+    const root = await mkdtemp(join(tmpdir(), 'gear-command-input-'))
+    try {
+      await writeFile(join(root, 'broken.json'), '{"name": ')
+      await jsonInputError(() => projectCommand(['experience', 'query', 'run_1', '--query-json', '{bad', '--project', root, '--json']))
+      await jsonInputError(() => projectCommand(['experience', 'trajectory', 'run_1', 'ref_1', 'src_1', '--snapshot', 'sha256:a', '--query-json', '{bad', '--project', root, '--json']))
+      expect((await jsonInputError(() => projectCommand(['refine', '--algorithm-config', 'broken.json', '--project', root, '--json']))).message).toContain('--algorithm-config broken.json must be valid JSON')
+      await jsonInputError(() => projectCommand(['profile', 'create', 'imported', '--from', 'broken.json', '--project', root, '--json']))
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 })
