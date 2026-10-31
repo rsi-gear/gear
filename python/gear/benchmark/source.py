@@ -94,12 +94,13 @@ def apply_splits(rows: list[tuple[int, dict]], manifest: object, location: str):
         raise BenchmarkError("split manifest must cover exactly the current task IDs", location)
     result = []
     for line, row in rows:
-        if not isinstance(row, dict) or row.get("id") not in assignments:
+        identifier = row.get("id") if isinstance(row, dict) else None
+        if not isinstance(identifier, str) or identifier not in assignments:
             raise BenchmarkError("invalid task row", location)
-        selected = assignments[row["id"]]
+        selected = assignments[identifier]
         if row.get("split") not in (None, "", selected):
             raise BenchmarkError(
-                "task split conflicts with the saved manifest", location + ":" + row["id"]
+                "task split conflicts with the saved manifest", location + ":" + identifier
             )
         result.append((line, {**row, "split": selected}))
     return result

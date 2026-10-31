@@ -91,6 +91,12 @@ def native_tasks(source: Path) -> tuple[list[dict], Payload, dict]:
         tags = metadata.get("tags", [])
         if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
             raise BenchmarkError("tags must be strings", identifier + "/task.toml:metadata.tags")
+        split = metadata.get("split", "")
+        if not isinstance(split, str) or split not in ("", "seed", "held_out"):
+            raise BenchmarkError(
+                "metadata.split must be seed or held_out",
+                identifier + "/task.toml:metadata.split",
+            )
         files, directories = [], []
 
         def visit(folder: Path):
@@ -147,7 +153,7 @@ def native_tasks(source: Path) -> tuple[list[dict], Payload, dict]:
                 "directories": directories,
                 "dockerfiles": environment["dockerfiles"],
                 "environment_layout": environment,
-                "split": metadata.get("split", ""),
+                "split": split,
             }
         )
     if not tasks:

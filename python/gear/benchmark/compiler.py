@@ -114,7 +114,8 @@ def compile_rows(root: Path, config: dict, source: Path, rows: list, split_ident
             raise BenchmarkError("task id is missing or duplicated", location + ":id")
         if not isinstance(row.get("instruction"), str) or not row["instruction"].strip():
             raise BenchmarkError("instruction is empty", location + ":instruction")
-        if row.get("split") not in splits:
+        split = row.get("split")
+        if not isinstance(split, str) or split not in splits:
             raise BenchmarkError("explicit split must be seed or held_out", location + ":split")
         if "expected" not in row:
             raise BenchmarkError("expected value is required", location + ":expected")
