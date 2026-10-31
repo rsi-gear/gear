@@ -33,6 +33,7 @@ from .contracts import (
 from .gepa import GEPA
 from .random import DeterministicRandom
 from .random_search import RandomSearch
+from .rrsi import RRSI, RRSIConfig
 
 __all__ = [
     "AlgorithmState",
@@ -66,4 +67,6 @@ __all__ = [
     "DeterministicRandom",
     "GEPA",
     "RandomSearch",
+    "RRSI",
+    "RRSIConfig",
 ]

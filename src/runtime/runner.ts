@@ -28,6 +28,7 @@ import {
   reserveGeneration,
   validateGenerationReservations,
 } from './generation-budget.js'
+import { evaluateWithCritic } from './evaluation-screen.js'
 
 export class DurableRunner {
   constructor(
@@ -413,7 +414,10 @@ export class DurableRunner {
                 'Frozen provider cannot complete original evidence',
               )
             receipt = await this.provider.completeEvidence(structuredClone(operation.request), signal)
-          } else receipt = await this.provider.submit(structuredClone(operation.request), signal)
+          } else
+            receipt = await evaluateWithCritic(structuredClone(operation.request), (request) =>
+              this.provider.submit(request, signal),
+            )
         }
         await this.settle(journal, operation, receipt, signal)
       }
