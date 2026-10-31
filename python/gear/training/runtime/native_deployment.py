@@ -19,6 +19,7 @@ from pathlib import Path
 
 from gear.training.runtime.native_supervisor import SupervisorBackend
 from gear.training.runtime.node_artifacts import hf_manifest, validate_ref
+from gear.training.runtime.recovery import boot_start, identity_key, same_identity, same_process
 from gear.training.storage.content import atomic_json, digest_file, digest_json, require
 from gear.training.storage.snapshots import materialize
 from gear.training.storage.state import load, lock
@@ -64,7 +65,12 @@ def gpu_inventory():
 
 
 def process_identity(process):
-    return {"pid": process.pid, "createdAt": process.create_time(), "pgid": os.getpgid(process.pid)}
+    return {
+        "pid": process.pid,
+        "createdAt": process.create_time(),
+        **(boot_start(process.pid) or {}),
+        "pgid": os.getpgid(process.pid),
+    }
 
 
 class NativeDeploymentService:
@@ -367,7 +373,7 @@ class NativeDeploymentService:
             identity = process_identity(wrapper)
             if record.get("process"):
                 require(
-                    record["process"] == identity,
+                    same_identity(record["process"], identity),
                     "deployment-incarnation-lost",
                     "Supervisor process identity changed",
                 )
@@ -398,13 +404,10 @@ class NativeDeploymentService:
     @staticmethod
     def remember_processes(record, identity, processes):
         # A child may leave the current parent tree before the next observation.
-        # Keep every previously observed PID/creation-time pair for stop proof.
-        observed = {
-            (process["pid"], process["createdAt"]): process
-            for process in record.get("processes", [])
-        }
+        # Keep every previously observed PID/start-time pair for stop proof.
+        observed = {identity_key(process): process for process in record.get("processes", [])}
         for process in processes:
-            observed.setdefault((process["pid"], process["createdAt"]), process)
+            observed.setdefault(identity_key(process), process)
         record["process"] = identity
         record["processes"] = list(observed.values())
 
@@ -657,13 +660,13 @@ class NativeDeploymentService:
 
         remaining, uncertain, reused = [], False, set()
         pgid = record.get("process", {}).get("pgid")
-        known = {entry["pid"]: entry["createdAt"] for entry in record.get("processes", [])}
+        known = {entry["pid"]: entry for entry in record.get("processes", [])}
         gpu = [p for p in gpu_processes() if p["gpuUuid"] in self.profile["gpuUuids"]]
         gpu_pids = {p["pid"] for p in gpu}
         for process in psutil.process_iter(["pid", "create_time", "status"]):
             candidate = process.pid in known or process.pid in gpu_pids
             try:
-                owned = process.pid in known and process.create_time() == known[process.pid]
+                owned = process.pid in known and same_process(process, known[process.pid])
                 if process.pid in known and not owned:
                     reused.add(process.pid)
                 same_group = bool(pgid and os.getpgid(process.pid) == pgid)

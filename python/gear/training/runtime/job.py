@@ -17,6 +17,7 @@ from pathlib import Path
 from gear.training.runtime.execution import training_devices
 from gear.training.runtime.preflight import gpu_processes, preflight
 from gear.training.runtime.recovery import (
+    identity_key,
     owned_alive,
     process_identity,
     reconcile_slots,
@@ -569,7 +570,7 @@ def worker(directory, incarnation):
                     for p in [parent, *parent.children(recursive=True)]:
                         identity = process_identity(p.pid)
                         if identity:
-                            owned[(identity["pid"], identity["createdAt"])] = identity
+                            owned[identity_key(identity)] = identity
                 except psutil.NoSuchProcess:
                     pass
                 atomic_json(directory / "owned-processes.json", list(owned.values()))
