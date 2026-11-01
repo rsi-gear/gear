@@ -546,8 +546,8 @@ class StagedSearch:
         index = integer(state.data["stage_index"]) + 1
         if self.global_gate == "no_regression" and index == len(self.stages) - 1:
             # The complete seed comparison is the most expensive stage. This gate
-            # spends it only on candidates that match or beat their parent on the
-            # shared scope; ties advance, regressions stay in the research archive.
+            # spends it only on candidates that match the parent on the shared
+            # scope both just completed; ties advance, regressions stay archived.
             candidates = tuple(
                 candidate
                 for candidate in candidates
@@ -642,8 +642,8 @@ class StagedSearch:
 
     @staticmethod
     def _at_least(view: SearchView, ranked: RankingPlan, candidate: str, parent: str) -> bool:
-        # The ranker orders constraint-satisfying candidates above any candidate
-        # that violates a constraint, regardless of their raw objective scores.
+        # Same order as the ranker: satisfying the constraints outranks any score,
+        # so a candidate that repairs a constraint the parent violates is no regression.
         if parent in ranked.disqualified and candidate not in ranked.disqualified:
             return True
         scores = dict(ranked.scores)

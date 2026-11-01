@@ -531,7 +531,7 @@ class Project:
                 )
         if type(algorithm) is GEPA:
             options["promotion_widths"] = list(algorithm.promotion_widths)
-            # Omit the default so existing run specifications keep their identity.
+            # Omitted at its default so existing run specifications keep their identity.
             if algorithm.global_gate != "any":
                 options["global_gate"] = algorithm.global_gate
         if type(algorithm) not in (GEPA, RandomSearch, MetaHarness):
