@@ -190,6 +190,33 @@ class ExperienceTests(unittest.TestCase):
                 experience_read({**source, "ref": ref, "view": "task-results", "cursor": cursor})
         self.assertEqual("".join(chunks), patch)
 
+    def test_source_view_pages_complete_base64_content(self):
+        value = record()
+        expected = [
+            {
+                "candidate_id": "candidate",
+                "path": "plugins/format.py",
+                "content_digest": digest("source"),
+                "encoding": "base64",
+                "part": part,
+                "parts": 3,
+                "content": chunk,
+            }
+            for part, chunk in enumerate(("YWJj", "ZGVm", "Z2hp"))
+        ]
+        value["change"]["source_files"] = expected
+        value["digest"] = digest({key: item for key, item in value.items() if key != "digest"})
+        source = snapshot([value])
+        request = {
+            **source,
+            "ref": "experience:" + value["digest"][7:],
+            "view": "source",
+            "limit": 2,
+        }
+        first = experience_read(request)
+        second = experience_read({**request, "cursor": first["next_cursor"]})
+        self.assertEqual(first["items"] + second["items"], expected)
+
     def test_modification_use_pages_include_conditioned_summary_inside_the_byte_limit(self):
         value = record()
         trials = value["modification_use"]["trials"]

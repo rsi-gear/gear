@@ -105,6 +105,25 @@ export class ProjectExperience implements ExperiencePreparation {
       }
       signal.throwIfAborted()
       const change = await targetDiff(this.targets, parent, candidate)
+      const sourceFiles: Json[] = []
+      for (const sourceCandidate of [parent, candidate]) {
+        const resources = await this.targets.readResources(sourceCandidate.id)
+        for (const resource of resources) {
+          signal.throwIfAborted()
+          const encoded = resource.bytes.toString('base64')
+          const parts = Math.max(1, Math.ceil(encoded.length / 32_768))
+          for (let part = 0; part < parts; part++)
+            sourceFiles.push({
+              candidate_id: sourceCandidate.id,
+              path: resource.path,
+              content_digest: resource.digest,
+              encoding: 'base64',
+              part,
+              parts,
+              content: encoded.slice(part * 32_768, (part + 1) * 32_768),
+            })
+        }
+      }
       const references = await trajectories.references([candidate.id, parent.id], taskIds)
       const observations = await modificationUse(
         this.runRoot,
@@ -138,7 +157,7 @@ export class ProjectExperience implements ExperiencePreparation {
         trajectory_refs: references,
         modification_trials: observations,
       })
-      records.push(await this.store.persistRecord(record))
+      records.push(await this.store.persistRecord(record, sourceFiles))
     }
     const body = {
       version: 3 as const,
@@ -171,7 +190,33 @@ export class ProjectExperience implements ExperiencePreparation {
       },
     )
     const body = { ...context, implementation_identity: snapshot.implementation_identity }
-    return { ...body, digest: canonicalDigest(body) }
+    const baselineEvidence = request.evidence.filter(
+      (cell) =>
+        cell.candidate_id === journal.spec.anchor.id &&
+        journal.spec.seedTasks.some((task) => task.id === cell.task_id),
+    )
+    if (
+      !baselineEvidence.length ||
+      request.operation.kind !== 'diagnose_seed' ||
+      request.operation.candidate_id !== journal.spec.anchor.id
+    )
+      return { ...body, digest: canonicalDigest(body) }
+    const baselineProof = await verifyBaseline(resolve(this.runRoot, '../../..'), journal.id, journal.spec)
+    const baselineReferences = await new SeedTrajectoryArchive(
+      this.runRoot,
+      journal,
+      baselineProof,
+    ).references([journal.spec.anchor.id], [...new Set(baselineEvidence.map((cell) => cell.task_id))])
+    const withBaseline = {
+      ...body,
+      baseline: {
+        candidate_id: journal.spec.anchor.id,
+        candidate_digest: journal.spec.anchor.digest,
+        evidence: baselineEvidence,
+        trajectory_refs: baselineReferences,
+      },
+    }
+    return { ...withBaseline, digest: canonicalDigest(withBaseline) }
   }
   async verify(request: OperationRequest): Promise<void> {
     if (!request.experience) return
@@ -187,6 +232,42 @@ export class ProjectExperience implements ExperiencePreparation {
         'experience-context-mismatch',
         'Meta experience context differs from its reservation',
       )
+    if (request.experience.baseline) {
+      const baseline = request.experience.baseline
+      const candidateId = request.operation.candidate_id
+      const expectedEvidence = request.evidence.filter(
+        (cell) => cell.candidate_id === candidateId && request.operation.task_ids.includes(cell.task_id),
+      )
+      const evidenceSlots = new Set(expectedEvidence.map((cell) => `${cell.task_id}\0${cell.repetition}`))
+      const referenceSlots = new Set<string>()
+      if (
+        request.operation.kind !== 'diagnose_seed' ||
+        !candidateId ||
+        baseline.candidate_id !== candidateId ||
+        !/^sha256:[a-f0-9]{64}$/u.test(baseline.candidate_digest) ||
+        !expectedEvidence.length ||
+        canonicalDigest(baseline.evidence) !== canonicalDigest(expectedEvidence) ||
+        baseline.trajectory_refs.some((reference) => {
+          const slot = `${reference.task_id}\0${reference.repetition}`
+          const valid =
+            reference.candidate_id === baseline.candidate_id &&
+            Number.isSafeInteger(reference.repetition) &&
+            reference.repetition >= 0 &&
+            evidenceSlots.has(slot) &&
+            !referenceSlots.has(slot) &&
+            /^trajectory:[a-f0-9]{64}$/u.test(reference.ref) &&
+            (reference.status === 'available' || reference.status === 'unavailable') &&
+            (reference.status === 'available'
+              ? typeof reference.content_digest === 'string' &&
+                /^sha256:[a-f0-9]{64}$/u.test(reference.content_digest)
+              : reference.content_digest === null) &&
+            (reference.reason === null || typeof reference.reason === 'string')
+          referenceSlots.add(slot)
+          return !valid
+        })
+      )
+        throw new GearError('experience-context-mismatch', 'Baseline evidence is outside its diagnosis')
+    }
   }
   async access(journal: RunJournal, params: Record<string, unknown>): Promise<Json> {
     const snapshot =

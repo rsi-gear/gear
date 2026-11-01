@@ -155,6 +155,23 @@ function scopedItem(item: Json, record: ExperienceIndexEntry, view: ExperienceVi
     if (!record.change.files.some((file) => file.path === value.path)) fail()
     return
   }
+  if (view === 'source') {
+    if (
+      ![record.candidate.id, record.parent.id].includes(String(value.candidate_id)) ||
+      typeof value.path !== 'string' ||
+      !Number.isSafeInteger(value.part) ||
+      Number(value.part) < 0 ||
+      !Number.isSafeInteger(value.parts) ||
+      Number(value.parts) < 1 ||
+      Number(value.part) >= Number(value.parts) ||
+      typeof value.content !== 'string' ||
+      value.encoding !== 'base64' ||
+      typeof value.content_digest !== 'string' ||
+      !/^sha256:[a-f0-9]{64}$/u.test(value.content_digest)
+    )
+      fail()
+    return
+  }
   if (typeof value.task_id !== 'string' || !record.scope.task_ids.includes(value.task_id)) fail()
   if (view !== 'task-results') {
     if (

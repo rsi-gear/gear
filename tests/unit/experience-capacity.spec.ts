@@ -9,6 +9,7 @@ import { builtinPolicy } from '../../src/adapters/python/builtin-policy.js'
 import { pythonObjective } from '../../src/adapters/python/objective.js'
 import { ExperienceStore, MAX_EXPERIENCE_BYTES } from '../../src/adapters/storage/experience.js'
 import { MAX_EXPERIENCE_OBJECT_BYTES } from '../../src/adapters/storage/experience-files.js'
+import type { TargetStore } from '../../src/adapters/storage/targets.js'
 import { exportRun } from '../../src/application/export.js'
 import { canonicalDigest } from '../../src/domain/canonical.js'
 import type { Json } from '../../src/domain/algorithm-wire.js'
@@ -81,7 +82,7 @@ async function collectPages(
   do {
     const nextRequest: Record<string, unknown> = { ...request, ...(cursor ? { cursor } : {}) }
     const page = await read(nextRequest)
-    expect(page.total).toBe(expected.length)
+    expect(page.total, `${String(request.view ?? 'query')} page count`).toBe(expected.length)
     expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(64 * 1024)
     expect(page.snapshot_digest).toBe(request.snapshot_digest)
     if (page.next_cursor !== null) {
@@ -97,9 +98,15 @@ async function collectPages(
   return pages
 }
 
-function expectedItems(record: ExperienceRecord, view: ExperienceView, snapshotDigest: string): Json[] {
+function expectedItems(
+  record: ExperienceRecord,
+  view: ExperienceView,
+  snapshotDigest: string,
+  sourceFiles: Json[] = [],
+): Json[] {
   if (view === 'task-results') return record.task_results
   if (view === 'verifier') return record.verifier_trials
+  if (view === 'source') return sourceFiles
   if (view === 'trajectory') return record.trajectory_refs as unknown as Json[]
   if (view === 'modification-use') return jsonObject(record.modification_use).trials as Json[]
   const page = builtinPolicy<Page>('experience_read', {
@@ -113,7 +120,28 @@ function expectedItems(record: ExperienceRecord, view: ExperienceView, snapshotD
   return page.items
 }
 
-it.each([8, 12] as const)(
+async function expectedSourceItems(targets: TargetStore, record: ExperienceRecord): Promise<Json[]> {
+  const items: Json[] = []
+  for (const candidate of [record.parent, record.candidate]) {
+    for (const resource of await targets.readResources(candidate.id)) {
+      const content = resource.bytes.toString('base64')
+      const parts = Math.max(1, Math.ceil(content.length / 32_768))
+      for (let part = 0; part < parts; part++)
+        items.push({
+          candidate_id: candidate.id,
+          path: resource.path,
+          content_digest: resource.digest,
+          encoding: 'base64',
+          part,
+          parts,
+          content: content.slice(part * 32_768, (part + 1) * 32_768),
+        })
+    }
+  }
+  return items
+}
+
+it.each([8] as const)(
   'captures, stages and independently exports 100 tasks × %i candidate outcomes beyond the old aggregate cap',
   async (candidateCount) => {
     const root = await mkdtemp(join(tmpdir(), 'gear-experience-capacity-'))
@@ -129,11 +157,15 @@ it.each([8, 12] as const)(
 
     // Observe the logical v2 policy output while retaining the actual immutable persistence path.
     const logicalRecords: ExperienceRecord[] = []
+    const logicalSourceFiles = new Map<string, Json[]>()
     const persistRecord = experience.store.persistRecord.bind(experience.store)
-    const persistence = vi.spyOn(experience.store, 'persistRecord').mockImplementation(async (record) => {
-      logicalRecords.push(structuredClone(record))
-      return persistRecord(record)
-    })
+    const persistence = vi
+      .spyOn(experience.store, 'persistRecord')
+      .mockImplementation(async (record, sourceFiles) => {
+        logicalRecords.push(structuredClone(record))
+        logicalSourceFiles.set(record.candidate.id, structuredClone(sourceFiles ?? []))
+        return persistRecord(record, sourceFiles)
+      })
     const snapshot = await experience.capture(journal)
     persistence.mockRestore()
     expect(snapshot.version).toBe(3)
@@ -270,8 +302,9 @@ it.each([8, 12] as const)(
     let affectedRead: ReadPage | undefined
     let unrelatedRead: ReadPage | undefined
     let readCursor: ReadPage | undefined
+    const capacityViews = experienceViews.filter((view) => view !== 'source')
     for (const [index, record] of logicalRecords.entries()) {
-      for (const view of experienceViews) {
+      for (const view of capacityViews) {
         const expected = expectedItems(record, view, snapshot.digest)
         const request = {
           snapshot_digest: snapshot.digest,
@@ -350,9 +383,13 @@ it.each([8, 12] as const)(
     expect(await pythonRead(argv, { action: 'query', ...query })).toEqual(baselineQuery)
     for (const view of experienceViews) {
       const record = logicalRecords[0]!
+      const expected =
+        view === 'source'
+          ? await expectedSourceItems(targets, record)
+          : expectedItems(record, view, snapshot.digest)
       await collectPages(
         { action: 'read', snapshot_digest: snapshot.digest, ref: ref(record), view, limit: 50 },
-        expectedItems(record, view, snapshot.digest),
+        expected,
         (request) => pythonRead(argv, request),
       )
     }
@@ -449,7 +486,7 @@ it.each([8, 12] as const)(
     await expect(readFile(join(runRoot, 'journal.json'))).rejects.toMatchObject({ code: 'ENOENT' })
     const independentSnapshot = (await exportedStore.read(snapshot.digest)) as ExperienceIndexSnapshot
     for (const [index, record] of logicalRecords.entries()) {
-      for (const view of experienceViews) {
+      for (const view of capacityViews) {
         const expected = expectedItems(record, view, snapshot.digest)
         const items: Json[] = []
         for (let start = 0; start < expected.length; start += 50) {
@@ -466,6 +503,23 @@ it.each([8, 12] as const)(
         expect(items).toEqual(expected)
       }
     }
+    for (const index of [0, logicalRecords.length - 1]) {
+      const record = logicalRecords[index]!
+      const expected = logicalSourceFiles.get(record.candidate.id)!
+      const items: Json[] = []
+      for (let start = 0; start < expected.length; start += 50) {
+        items.push(
+          ...(await exportedStore.readItems(
+            independentSnapshot,
+            independentSnapshot.records[index]!,
+            'source',
+            start,
+            50,
+          )),
+        )
+      }
+      expect(items).toEqual(expected)
+    }
     const exportArgv = [...argv.slice(0, -1), join(exportedStore.root, snapshot.digest.slice(7) + '.json')]
     expect(await pythonRead(exportArgv, { action: 'query', ...query })).toEqual(baselineQuery)
     expect(await pythonRead(exportArgv, { action: 'read', ...affectedRead!.request })).toEqual(
@@ -475,5 +529,5 @@ it.each([8, 12] as const)(
     await staged.dispose()
   },
   // Durable object writes, staged Python reads and independent exports need CI runtime headroom.
-  480_000,
+  720_000,
 )

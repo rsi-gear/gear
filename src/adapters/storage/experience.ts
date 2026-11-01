@@ -67,7 +67,7 @@ export class ExperienceStore {
       throw new GearError('experience-size-limit', 'Experience index exceeds 4 MiB')
     return snapshot
   }
-  async persistRecord(record: ExperienceRecord): Promise<ExperienceIndexEntry> {
+  async persistRecord(record: ExperienceRecord, sourceFiles: Json[] = []): Promise<ExperienceIndexEntry> {
     verifyRecord(record)
     const change = experienceObject(record.change),
       use = experienceObject(record.modification_use)
@@ -95,6 +95,7 @@ export class ExperienceStore {
     const arrays: Record<ExperienceView, Json[]> = {
       'task-results': record.task_results,
       diff: diffItems(record),
+      source: sourceFiles,
       trajectory: record.trajectory_refs as unknown as Json[],
       'modification-use': use.trials as Json[],
       verifier: record.verifier_trials,
@@ -136,7 +137,7 @@ export class ExperienceStore {
       }
       await flush()
     }
-    const { files: _files, ...changeMetadata } = change
+    const { files: _files, source_files: _sourceFiles, ...changeMetadata } = change
     const { trials: _trials, ...useMetadata } = use
     const body = {
       version: 3 as const,

@@ -3,7 +3,7 @@ import { constants } from 'node:fs'
 import { mkdir, open, readdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ExperienceSnapshot } from '../../domain/experience.js'
-import type { ArtifactReaderDescriptor } from '../../domain/trajectory.js'
+import type { ArtifactReaderDescriptor, TrajectoryReference } from '../../domain/trajectory.js'
 import { GearError } from '../../domain/errors.js'
 import { readSeedTrajectory } from '../artifacts/access.js'
 import { RefineSkillServer } from '../skill/server.js'
@@ -91,6 +91,7 @@ export async function trajectoryGateway(
   descriptor: ArtifactReaderDescriptor,
   python: string,
   registerDispose?: (dispose: () => Promise<void>) => void,
+  baselineReferences: TrajectoryReference[] = [],
 ) {
   const socket = join(root, 't.sock'),
     token = randomUUID(),
@@ -110,7 +111,15 @@ export async function trajectoryGateway(
     active++
     used++
     try {
-      return await readSeedTrajectory(runRoot, snapshot, descriptor, params, abort.signal, python)
+      return await readSeedTrajectory(
+        runRoot,
+        snapshot,
+        descriptor,
+        params,
+        abort.signal,
+        python,
+        baselineReferences,
+      )
     } catch (error) {
       throw new GearError(
         error instanceof GearError ? error.code : 'trajectory-read-failed',

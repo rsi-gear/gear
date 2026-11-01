@@ -1,4 +1,5 @@
-import { chmod, lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { chmod, lstat, mkdir, open, readFile, readdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { canonicalDigest } from '../../domain/canonical.js'
 import { GearError } from '../../domain/errors.js'
@@ -126,5 +127,52 @@ export class TargetStore {
         `Frozen target ${id} or its execution conditions changed`,
       )
     return manifest
+  }
+  /** Read complete bytes for one sealed resource after revalidating its immutable target. */
+  async readResource(id: string, resourcePath: string): Promise<Buffer> {
+    const manifest = await this.verify(id)
+    const resource = manifest.resources.find((item) => item.path === resourcePath)
+    if (!resource)
+      throw new GearError('target-resource-unavailable', `Frozen target ${id} has no ${resourcePath}`)
+    return this.readVerifiedResource(id, resource)
+  }
+  /** Verify a target once, then read every complete sealed resource for a bounded archive view. */
+  async readResources(
+    id: string,
+  ): Promise<Array<{ path: string; digest: string; executable: boolean; bytes: Buffer }>> {
+    const manifest = await this.verify(id)
+    const result: Array<{ path: string; digest: string; executable: boolean; bytes: Buffer }> = []
+    for (const resource of manifest.resources)
+      result.push({ ...resource, bytes: await this.readVerifiedResource(id, resource) })
+    return result
+  }
+  private async readVerifiedResource(
+    id: string,
+    resource: TargetManifest['resources'][number],
+  ): Promise<Buffer> {
+    const file = await open(
+      join(this.path(id), resource.path),
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    )
+    try {
+      const before = await file.stat()
+      if (!before.isFile() || before.nlink !== 1 || before.size > 64 * 1024 * 1024)
+        throw new GearError(
+          'target-resource-invalid',
+          'Frozen target resources must be bounded regular files',
+        )
+      const bytes = await file.readFile()
+      const after = await file.stat()
+      if (
+        after.size !== before.size ||
+        after.nlink !== 1 ||
+        canonicalDigest(bytes.toString('base64')) !== resource.digest ||
+        Boolean(after.mode & 0o111) !== resource.executable
+      )
+        throw new GearError('target-identity-mismatch', `Frozen target resource ${resource.path} changed`)
+      return bytes
+    } finally {
+      await file.close()
+    }
   }
 }

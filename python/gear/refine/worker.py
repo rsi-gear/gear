@@ -59,7 +59,7 @@ def make_algorithm(config):
     if config["name"] == "gepa":
         return GEPA(**options)
     if config["name"] == "meta-harness":
-        return MetaHarness()
+        return MetaHarness(**options)
     if config["name"] == "random-search":
         return RandomSearch(**options)
     return load_entrypoint(config["name"])(**options)

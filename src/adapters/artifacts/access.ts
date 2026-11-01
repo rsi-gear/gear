@@ -21,6 +21,7 @@ export async function readSeedTrajectory(
   params: Record<string, unknown>,
   signal: AbortSignal,
   python?: string,
+  baselineReferences: TrajectoryReference[] = [],
 ): Promise<Json> {
   if (snapshot.implementation_identity !== builtinPolicyImplementationDigest)
     throw new GearError(
@@ -48,6 +49,8 @@ export async function readSeedTrajectory(
         break
       }
     }
+  if (!reference && params.ref === 'baseline')
+    reference = baselineReferences.find((item) => item.ref === params.source_ref)
   if (!reference || !/^trajectory:[a-f0-9]{64}$/u.test(reference.ref))
     throw new GearError(
       'trajectory-outside-snapshot',

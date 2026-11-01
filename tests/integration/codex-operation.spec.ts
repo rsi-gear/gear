@@ -1,6 +1,6 @@
 import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -23,9 +23,13 @@ import type { TrajectoryReference } from '../../src/domain/trajectory.js'
 import { resolvePythonExecutable } from '../../src/adapters/python/interpreter.js'
 import { ExperienceStore } from '../../src/adapters/storage/experience.js'
 import { builtinPolicy, builtinPolicyImplementationDigest } from '../../src/adapters/python/builtin-policy.js'
+import { stageExperience } from '../../src/adapters/codex/experience.js'
 import type { ExperienceRecord, ExperienceContext } from '../../src/domain/experience.js'
+import type { ExperienceIndexSnapshot } from '../../src/domain/experience.js'
+import { TargetStore } from '../../src/adapters/storage/targets.js'
 
-const roots: string[] = [], operationRoots: string[] = []
+const roots: string[] = [],
+  operationRoots: string[] = []
 const workerGroups = new Set<number>()
 async function rememberWorker(directory: string) {
   try {
@@ -40,26 +44,34 @@ afterEach(async () => {
   vi.unstubAllEnvs()
   // A receipt precedes cleanup: keep operation and sandbox roots until their writer exits.
   for (const namespace of operationRoots.splice(0)) {
-    const entries = await readdir(namespace, { withFileTypes: true }).catch(error => {
+    const entries = await readdir(namespace, { withFileTypes: true }).catch((error) => {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       return []
     })
-    for (const entry of entries.filter(entry => entry.isDirectory())) {
+    for (const entry of entries.filter((entry) => entry.isDirectory())) {
       const directory = join(namespace, entry.name)
       await rememberWorker(directory)
       if ((await readdir(directory)).includes('execution.lock'))
-        await expect.poll(() => fileLockHeld(join(directory, 'execution.lock')), { timeout: 8000 }).toBe(false)
+        await expect
+          .poll(() => fileLockHeld(join(directory, 'execution.lock')), { timeout: 8000 })
+          .toBe(false)
     }
   }
-  const groups = new Set(workerGroups); workerGroups.clear()
+  const groups = new Set(workerGroups)
+  workerGroups.clear()
   if (groups.size)
-    await expect.poll(async () => {
-      const { stdout } = await promisify(execFile)('/bin/ps', ['-axo', 'pgid=,stat='])
-      return stdout.split('\n').filter(line => {
-        const [group, state] = line.trim().split(/\s+/u)
-        return groups.has(Number(group)) && !state?.startsWith('Z')
-      })
-    }, { timeout: 8000 }).toEqual([])
+    await expect
+      .poll(
+        async () => {
+          const { stdout } = await promisify(execFile)('/bin/ps', ['-axo', 'pgid=,stat='])
+          return stdout.split('\n').filter((line) => {
+            const [group, state] = line.trim().split(/\s+/u)
+            return groups.has(Number(group)) && !state?.startsWith('Z')
+          })
+        },
+        { timeout: 8000 },
+      )
+      .toEqual([])
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
 })
 async function fixture(mode = 'success', adapter: 'pi' | 'dsh' = 'pi', prepare = true) {
@@ -77,8 +89,8 @@ async function fixture(mode = 'success', adapter: 'pi' | 'dsh' = 'pi', prepare =
   const executable = join(root, 'fake-codex.mjs')
   const fakePython =
     process.platform === 'darwin'
-      // Xcode-selected Python may live under /Applications, outside the sandbox.
-      ? '/Library/Developer/CommandLineTools/usr/bin/python3'
+      ? // Xcode-selected Python may live under /Applications, outside the sandbox.
+        '/Library/Developer/CommandLineTools/usr/bin/python3'
       : '/usr/bin/python3'
   await writeFile(
     executable,
@@ -126,31 +138,48 @@ if ${JSON.stringify(mode)}.startswith('connect-'):
  tunnel.close()
 if 'experience' in view:
  memory=view['experience']
- assert memory['cards'][0]['classification']['effect']=='regressed'
- query=subprocess.run(memory['reader']['argv'],input=json.dumps({'action':'query','query':{'effects':['regressed']}}),text=True,capture_output=True)
- assert query.returncode==0,query.stdout+query.stderr
- page=json.loads(query.stdout)
- assert page['total']==1 and page['snapshot_digest']==memory['snapshot_digest']
- detail=subprocess.run(memory['reader']['argv'],input=json.dumps({'action':'read','ref':page['items'][0]['card']['ref'],'view':'diff'}),text=True,capture_output=True)
- assert detail.returncode==0,detail.stdout+detail.stderr
- assert json.loads(detail.stdout)['items'][0]['patch']=='-before\\n+after\\n'
- if 'trajectory' in memory['reader']:
-  def read_memory(body):
-   return subprocess.run(memory['reader']['argv'],input=json.dumps(body),text=True,capture_output=True)
+ def read_memory(body):
+  return subprocess.run(memory['reader']['argv'],input=json.dumps(body),text=True,capture_output=True)
+ if 'baseline' in memory['reader']:
+  baseline=memory['reader']['baseline']
+  evidence=json.loads(Path(baseline['evidence_path']).read_text())
+  assert evidence['candidate_id']=='anchor' and evidence['evidence'][0]['score']==0
+  assert Path(baseline['source_root'],'AGENTS.md').read_text()
+  ref=baseline['trajectory_refs'][0]['ref']
+  trace=read_memory({'action':'trajectory','ref':'baseline','source_ref':ref,'query':{'limit':10}})
+  assert trace.returncode==0,trace.stdout+trace.stderr
+  assert json.loads(trace.stdout)['items'][0]['data']=='historical seed trace'
+ if memory['cards']:
+  assert memory['cards'][0]['classification']['effect']=='regressed'
+  query=subprocess.run(memory['reader']['argv'],input=json.dumps({'action':'query','query':{'effects':['regressed']}}),text=True,capture_output=True)
+  assert query.returncode==0,query.stdout+query.stderr
+  page=json.loads(query.stdout)
+  assert page['total']==2 and page['snapshot_digest']==memory['snapshot_digest']
+  detail=subprocess.run(memory['reader']['argv'],input=json.dumps({'action':'read','ref':page['items'][0]['card']['ref'],'view':'diff'}),text=True,capture_output=True)
+  assert detail.returncode==0,detail.stdout+detail.stderr
+  assert json.loads(detail.stdout)['items'][0]['patch']=='-before\\n+after\\n'
+  rejected=next(item['card'] for item in page['items'] if item['card']['candidate_id']=='rejected-history')
+  source=subprocess.run(memory['reader']['argv'],input=json.dumps({'action':'read','ref':rejected['ref'],'view':'source'}),text=True,capture_output=True)
+  assert source.returncode==0,source.stdout+source.stderr
+  assert json.loads(source.stdout)['items'][0]['content']==${JSON.stringify(Buffer.from('rejected implementation from an earlier round.\n').toString('base64'))}
+ if 'trajectory' in memory['reader'] and memory['cards']:
   ref=page['items'][0]['card']['ref']
   sources=read_memory({'action':'read','ref':ref,'view':'trajectory'})
   assert sources.returncode==0,sources.stdout+sources.stderr
-  source=json.loads(sources.stdout)['items'][0]['ref']
-  params={'action':'trajectory','ref':ref,'source_ref':source,'query':{'limit':1}}
-  trace=read_memory(params)
-  assert trace.returncode==0,trace.stdout+trace.stderr
-  trace_page=json.loads(trace.stdout)
-  assert trace_page['items'][0]['data']=='historical seed trace'
-  assert trace_page['child_sessions']=='not-included'
-  params['query']['cursor']=trace_page['next_cursor']
-  second=read_memory(params)
-  assert second.returncode==0,second.stdout+second.stderr
-  assert json.loads(second.stdout)['items'][0]['seq']==1
+  references=json.loads(sources.stdout)['items']
+  assert {item['candidate_id'] for item in references}=={'anchor','older'}
+  for candidate in ['anchor','older']:
+   source=next(item['ref'] for item in references if item['candidate_id']==candidate)
+   params={'action':'trajectory','ref':ref,'source_ref':source,'query':{'limit':1}}
+   trace=read_memory(params)
+   assert trace.returncode==0,trace.stdout+trace.stderr
+   trace_page=json.loads(trace.stdout)
+   assert trace_page['items'][0]['data']=='historical seed trace'
+   assert trace_page['child_sessions']=='not-included'
+   params['query']['cursor']=trace_page['next_cursor']
+   second=read_memory(params)
+   assert second.returncode==0,second.stdout+second.stderr
+   assert json.loads(second.stdout)['items'][0]['seq']==1
   params['source_ref']='trajectory:'+'f'*64
   denied=read_memory(params)
   assert denied.returncode!=0 and 'trajectory-outside-snapshot' in denied.stdout+denied.stderr
@@ -174,7 +203,14 @@ if view['operation']['kind']=='diagnose_seed':
 if view['operation']['kind']=='generate_candidate': Path(${JSON.stringify(adapter === 'pi' ? 'AGENTS.md' : 'prompts/system.md')}).write_text('Use the requested output format.')
 if ${JSON.stringify(mode)}=='protected': Path('package.json').write_text('{}')
 if ${JSON.stringify(mode)}=='invalid': output.write_text('not json')
-else: output.write_text(json.dumps({'summary':'read isolation verified','declined':False,'hypotheses':['Respect output format'],'clusters':[{'task_ids':['seed'],'hypotheses':['Respect output format']}]}))
+else:
+ result={'summary':'read isolation verified','declined':False,'hypotheses':['Respect output format'],'clusters':[{'task_ids':['seed'],'hypotheses':['Respect output format']}]}
+ bases=view['operation'].get('payload',{}).get('base_candidates',[])
+ if bases:
+  assert schema['properties']['base_candidate_id']['enum']==[item['candidate_id'] for item in bases]
+  assert 'base_candidate_id' in schema['required']
+  result['base_candidate_id']='not-offered' if ${JSON.stringify(mode)}=='base-choice-invalid' else bases[-1]['candidate_id']
+ output.write_text(json.dumps(result))
 if ${JSON.stringify(mode)}=='partialusage': print(json.dumps({'type':'turn.completed','usage':{'output_tokens':3}}),flush=True)
 print(json.dumps({'type':'turn.completed','usage':{'input_tokens':12,'cached_input_tokens':3,'output_tokens':7}}),end='' if ${JSON.stringify(mode)}=='partialusage' else '\\n',flush=True)
 if ${JSON.stringify(mode)} in ['partialfailed','connect-failure']:
@@ -187,9 +223,17 @@ if ${JSON.stringify(mode)} in ['partialfailed','connect-failure']:
   const profile = {
     command: [process.execPath, resolve('assets/codex-meta-runner.mjs')],
     workingDirectory: root,
-    configuration: { executable, model: 'fixture-model', allowedDomains: mode === 'proxy' || mode.startsWith('connect-') ? ['allowed.gear.test'] : [], timeoutMs: 12_000,
-      ...(process.env.GEAR_TEST_LINUX_ISOLATION ? { linuxIsolation: process.env.GEAR_TEST_LINUX_ISOLATION as 'seccomp' | 'bubblewrap-only' } : {}) },
-    passEnv: mode === 'proxy' ? ['HTTP_PROXY', 'NO_PROXY'] : mode.startsWith('connect-') ? ['HTTPS_PROXY'] : [],
+    configuration: {
+      executable,
+      model: 'fixture-model',
+      allowedDomains: mode === 'proxy' || mode.startsWith('connect-') ? ['allowed.gear.test'] : [],
+      timeoutMs: 12_000,
+      ...(process.env.GEAR_TEST_LINUX_ISOLATION
+        ? { linuxIsolation: process.env.GEAR_TEST_LINUX_ISOLATION as 'seccomp' | 'bubblewrap-only' }
+        : {}),
+    },
+    passEnv:
+      mode === 'proxy' ? ['HTTP_PROXY', 'NO_PROXY'] : mode.startsWith('connect-') ? ['HTTPS_PROXY'] : [],
     timeoutMs: 20_000,
   }
   const context = {
@@ -248,7 +292,10 @@ async function modelProcessIds(directory: string): Promise<number[]> {
   // the uniquely named fixture from the host, where cancellation is asserted.
   const executable = resolve(directory, '../../..', 'fake-codex.mjs')
   const { stdout } = await promisify(execFile)('/bin/ps', ['-A', '-o', 'pid=', '-o', 'args='])
-  return stdout.split('\n').filter(line => line.includes(executable)).map(line => Number(line.trim().split(/\s+/u)[0]))
+  return stdout
+    .split('\n')
+    .filter((line) => line.includes(executable))
+    .map((line) => Number(line.trim().split(/\s+/u)[0]))
 }
 async function untilStarted(directory: string) {
   for (let index = 0; index < 120; index++) {
@@ -266,6 +313,52 @@ async function untilStarted(directory: string) {
   throw new Error('fake Codex did not start')
 }
 describe('formal Codex operation runner', () => {
+  it('accepts a proposer-selected base only from the seed-evaluated archive', async () => {
+    const f = await fixture('success', 'pi', false)
+    f.request.operation = {
+      kind: 'diagnose_seed',
+      candidate_id: 'anchor',
+      parent_id: null,
+      task_ids: ['seed'],
+      scope: 'global',
+      rationale: 'Choose a base after reviewing history.',
+      payload: {
+        base_candidates: [
+          { candidate_id: 'anchor', score: 0.4, task_scores: { seed: 0.4 } },
+          { candidate_id: 'rejected-history', score: 0.2, task_scores: { seed: 0.2 } },
+        ],
+      },
+    }
+    f.request.operationId = canonicalDigest(f.request.operation)
+    await f.provider.prepareAdmission()
+
+    const receipt = await f.provider.submit(f.request, signal())
+    const directory = join(f.context.directory, f.request.operationId.slice(7))
+
+    expect(receipt.result.status, await readFile(join(directory, 'stderr.log'), 'utf8')).toBe('complete')
+    expect(receipt.result.data).toMatchObject({ base_candidate_id: 'rejected-history' })
+  }, 30_000)
+
+  it('rejects a proposer base outside the seed-evaluated archive', async () => {
+    const f = await fixture('base-choice-invalid', 'pi', false)
+    f.request.operation = {
+      kind: 'diagnose_seed',
+      candidate_id: 'anchor',
+      parent_id: null,
+      task_ids: ['seed'],
+      scope: 'global',
+      rationale: 'Choose a base after reviewing history.',
+      payload: { base_candidates: [{ candidate_id: 'anchor', score: 0.4, task_scores: { seed: 0.4 } }] },
+    }
+    f.request.operationId = canonicalDigest(f.request.operation)
+    await f.provider.prepareAdmission()
+
+    const receipt = await f.provider.submit(f.request, signal())
+
+    expect(receipt.result.status).toBe('failed')
+    expect(receipt.result.data).toMatchObject({ error: 'codex-output-invalid' })
+  }, 30_000)
+
   it('chains explicit upstream proxies without exposing credentials or bypassing domain restrictions', async () => {
     const requests: string[] = []
     const authorization: Array<string | undefined> = []
@@ -283,11 +376,15 @@ describe('formal Codex operation runner', () => {
       const receipt = await f.provider.submit(f.request, signal())
       expect(receipt.result.status, await readFile(join(f.directory, 'stderr.log'), 'utf8')).toBe('complete')
       expect(requests).toEqual(['http://allowed.gear.test/probe'])
-      expect(authorization).toEqual([`Basic ${Buffer.from('fixture:PROXY_CREDENTIAL_CANARY').toString('base64')}`])
+      expect(authorization).toEqual([
+        `Basic ${Buffer.from('fixture:PROXY_CREDENTIAL_CANARY').toString('base64')}`,
+      ])
       expect(await readFile(join(f.directory, 'job.json'), 'utf8')).not.toContain('PROXY_CREDENTIAL_CANARY')
     } finally {
       proxy.closeAllConnections()
-      await new Promise<void>((resolve, reject) => proxy.close(error => error ? reject(error) : resolve()))
+      await new Promise<void>((resolve, reject) =>
+        proxy.close((error) => (error ? reject(error) : resolve())),
+      )
     }
   })
   it('binds the optional code-mode companion to the runtime identity', async () => {
@@ -302,52 +399,298 @@ describe('formal Codex operation runner', () => {
     expect((await describeCodex(profile.configuration)).identity).not.toBe(present.identity)
   })
   for (const withTrajectory of [false, true])
-  it(`queries and reads frozen seed experiences${withTrajectory ? ' and trajectory pages' : ''} inside the actual Meta sandbox`, async () => {
-    const { provider: initialProvider, request, context, root, profile } = await fixture('success', 'pi', false)
-    let provider = initialProvider
-    const trajectory_refs: TrajectoryReference[] = []
-    if (withTrajectory) {
-      const hitchRoot = join(root, 'hitch-private'), run = 'run_' + 'a'.repeat(32), executable = join(root, 'hitch.mjs')
-      await mkdir(hitchRoot)
-      await writeFile(join(hitchRoot, 'private.txt'), 'PROVIDER_PRIVATE_CANARY')
-      await writeFile(join(hitchRoot, run + '.json'), JSON.stringify([{ seq: 0, type: 'assistant/message', data: 'historical seed trace' }, { seq: 1, type: 'tool/result', data: 'result' }]))
-      await writeFile(executable, `#!${process.execPath}\nimport {trajectoryFixture} from ${JSON.stringify(new URL('../fixtures/trajectory-hitch.mjs', import.meta.url).href)};await trajectoryFixture();`, { mode: 0o700 })
-      // The detached operation runs the installed JS adapter. Bind that actual implementation.
-      const { HitchArtifactReader } = await import(new URL('../../lib/adapters/hitch/trajectory.js', import.meta.url).href)
-      const reader = new HitchArtifactReader(executable, hitchRoot)
-      const artifact = await reader.capture(run, 'seed', 0, signal())
-      expect(artifact.status).toBe('available')
-      const source = await new TrajectoryStore(join(context.targets, '../trajectory-sources')).save({ version: 1, run_id: 'run', candidate_id: 'anchor', operation_id: canonicalDigest('evaluation'), origin_run_id: 'run', origin_candidate_id: 'anchor', receipt_digest: canonicalDigest('receipt'), reader_identity: canonicalDigest(reader.descriptor), partition: 'seed', artifact })
-      trajectory_refs.push({ ref: 'trajectory:' + source.digest.slice(7), candidate_id: 'anchor', task_id: 'seed', repetition: 0, status: artifact.status, content_digest: artifact.content_digest, reason: null })
-      provider = await ProcessOperationProvider.connect(profile, { ...context, artifactReader: reader.descriptor, experiencePython: resolvePythonExecutable() } as unknown as Json)
-    }
-    await provider.prepareAdmission()
-    const record = builtinPolicy<ExperienceRecord>('experience_record', {
-      source: { run_id: 'run' }, candidate: { id: 'anchor', digest: canonicalDigest('anchor'), parent_id: 'older' },
-      parent: { id: 'older', digest: canonicalDigest('older'), parent_id: null }, task_ids: ['seed'], repetitions: 1,
-      objective: null, evidence: ['older', 'anchor'].map((candidate_id, index) => ({ candidate_id, task_id: 'seed', repetition: 0, status: 'valid', score: index === 0 ? 1 : 0 })),
-      trajectory_refs,
-      proposal: { rationale: 'format', hypothesis: 'format', semantic_targets: [] },
-      change: { files: [{ path: 'AGENTS.md', patch: '-before\n+after\n' }] },
+    it(`passes earlier-round experience to a later actual Meta sandbox${withTrajectory ? ' with trajectory pages' : ''}`, async () => {
+      const {
+        provider: initialProvider,
+        request,
+        context,
+        root,
+        profile,
+      } = await fixture('success', 'pi', false)
+      let provider = initialProvider
+      const trajectory_refs: TrajectoryReference[] = []
+      if (withTrajectory) {
+        const hitchRoot = join(root, 'hitch-private'),
+          run = 'run_' + 'a'.repeat(32),
+          executable = join(root, 'hitch.mjs')
+        await mkdir(hitchRoot)
+        await writeFile(join(hitchRoot, 'private.txt'), 'PROVIDER_PRIVATE_CANARY')
+        await writeFile(
+          join(hitchRoot, run + '.json'),
+          JSON.stringify([
+            { seq: 0, type: 'assistant/message', data: 'historical seed trace' },
+            { seq: 1, type: 'tool/result', data: 'result' },
+          ]),
+        )
+        await writeFile(
+          executable,
+          `#!${process.execPath}\nimport {trajectoryFixture} from ${JSON.stringify(new URL('../fixtures/trajectory-hitch.mjs', import.meta.url).href)};await trajectoryFixture();`,
+          { mode: 0o700 },
+        )
+        // The detached operation runs the installed JS adapter. Bind that actual implementation.
+        const { HitchArtifactReader } = await import(
+          new URL('../../lib/adapters/hitch/trajectory.js', import.meta.url).href
+        )
+        const reader = new HitchArtifactReader(executable, hitchRoot)
+        const artifact = await reader.capture(run, 'seed', 0, signal())
+        expect(artifact.status).toBe('available')
+        const trajectoryStore = new TrajectoryStore(join(context.targets, '../trajectory-sources'))
+        for (const candidate_id of ['anchor', 'older']) {
+          const source = await trajectoryStore.save({
+            version: 1,
+            run_id: 'run',
+            candidate_id,
+            operation_id: canonicalDigest('evaluation-' + candidate_id),
+            origin_run_id: 'run',
+            origin_candidate_id: candidate_id,
+            receipt_digest: canonicalDigest('receipt-' + candidate_id),
+            reader_identity: canonicalDigest(reader.descriptor),
+            partition: 'seed',
+            artifact,
+          })
+          trajectory_refs.push({
+            ref: 'trajectory:' + source.digest.slice(7),
+            candidate_id,
+            task_id: 'seed',
+            repetition: 0,
+            status: artifact.status,
+            content_digest: artifact.content_digest,
+            reason: null,
+          })
+        }
+        provider = await ProcessOperationProvider.connect(profile, {
+          ...context,
+          artifactReader: reader.descriptor,
+          experiencePython: resolvePythonExecutable(),
+        } as unknown as Json)
+      }
+      await provider.prepareAdmission()
+      const firstRoundRequest = structuredClone(request)
+      firstRoundRequest.operationId = canonicalDigest([request.operationId, 'round-1'])
+      const firstRoundReceipt = await provider.submit(firstRoundRequest, signal())
+      expect(firstRoundReceipt.result.status, JSON.stringify(firstRoundReceipt)).toBe('complete')
+
+      const record = builtinPolicy<ExperienceRecord>('experience_record', {
+        source: { run_id: 'run' },
+        candidate: { id: 'anchor', digest: canonicalDigest('anchor'), parent_id: 'older' },
+        parent: { id: 'older', digest: canonicalDigest('older'), parent_id: null },
+        task_ids: ['seed'],
+        repetitions: 1,
+        objective: null,
+        evidence: ['older', 'anchor'].map((candidate_id, index) => ({
+          candidate_id,
+          task_id: 'seed',
+          repetition: 0,
+          status: 'valid',
+          score: index === 0 ? 1 : 0,
+        })),
+        trajectory_refs,
+        proposal: { rationale: 'format', hypothesis: 'format', semantic_targets: [] },
+        change: { files: [{ path: 'AGENTS.md', patch: '-before\n+after\n' }] },
+      })
+      const rejectedSource = Buffer.from('rejected implementation from an earlier round.\n').toString(
+        'base64',
+      )
+      const rejectedRecord = builtinPolicy<ExperienceRecord>('experience_record', {
+        source: { run_id: 'run' },
+        candidate: {
+          id: 'rejected-history',
+          digest: canonicalDigest('rejected-history'),
+          parent_id: 'anchor',
+        },
+        parent: { id: 'anchor', digest: canonicalDigest('anchor'), parent_id: 'older' },
+        task_ids: ['seed'],
+        repetitions: 1,
+        objective: null,
+        evidence: [
+          { candidate_id: 'anchor', task_id: 'seed', repetition: 0, status: 'valid', score: 1 },
+          { candidate_id: 'rejected-history', task_id: 'seed', repetition: 0, status: 'valid', score: 0.25 },
+        ],
+        proposal: { rationale: 'preserve output', hypothesis: 'preserve output', semantic_targets: [] },
+        change: {
+          files: [{ path: 'AGENTS.md', patch: '-previous\n+rejected\n' }],
+          source_files: [
+            {
+              candidate_id: 'rejected-history',
+              path: 'AGENTS.md',
+              content_digest: canonicalDigest(rejectedSource),
+              encoding: 'base64',
+              part: 0,
+              parts: 1,
+              content: rejectedSource,
+            },
+          ],
+        },
+      })
+      const body = {
+        version: 2 as const,
+        run_id: 'run',
+        source_archive_digest: canonicalDigest('archive'),
+        implementation_identity: builtinPolicyImplementationDigest,
+        records: [record],
+      }
+      body.records.push(rejectedRecord)
+      const snapshot = { ...body, digest: canonicalDigest(body) }
+      await new ExperienceStore(join(context.targets, '../experience')).save(snapshot)
+      const selected = builtinPolicy<Omit<ExperienceContext, 'digest' | 'implementation_identity'>>(
+        'experience_context',
+        {
+          records: [record, rejectedRecord],
+          snapshot_digest: snapshot.digest,
+          parent_id: 'anchor',
+          evidence: request.evidence,
+        },
+      )
+      const memory = { ...selected, implementation_identity: snapshot.implementation_identity }
+      request.experience = { ...memory, digest: canonicalDigest(memory) }
+      request.operation = { ...request.operation, candidate_id: 'candidate-round-2' }
+      request.operationId = canonicalDigest([request.operationId, request.experience.digest, 'round-2'])
+      const receipt = await provider.submit(request, signal())
+      const diagnostic = await readFile(
+        join(context.directory, request.operationId.slice(7), 'stderr.log'),
+        'utf8',
+      ).catch(() => '')
+      expect(receipt.result.status, JSON.stringify(receipt) + diagnostic).toBe('complete')
+      expect(receipt.result.data).toMatchObject({ summary: 'read isolation verified' })
+    }, 30_000)
+  it('hands baseline evidence, source, and trajectory to the actual first-diagnosis worker', async () => {
+    const {
+      provider: initialProvider,
+      request,
+      context,
+      root,
+      profile,
+    } = await fixture('success', 'pi', false)
+    const runRoot = dirname(context.targets)
+    const targetStore = new TargetStore(runRoot, new PiHarnessAdapter(), canonicalDigest('baseline-runtime'))
+    const baselineManifest = await targetStore.seal('anchor', 'fixture-base')
+    const hitchRoot = join(root, 'baseline-hitch')
+    const run = 'run_' + 'b'.repeat(32)
+    const executable = join(root, 'baseline-hitch.mjs')
+    await mkdir(hitchRoot)
+    await writeFile(
+      join(hitchRoot, run + '.json'),
+      JSON.stringify([{ seq: 0, type: 'assistant/message', data: 'historical seed trace' }]),
+    )
+    await writeFile(
+      executable,
+      `#!${process.execPath}\nimport {trajectoryFixture} from ${JSON.stringify(new URL('../fixtures/trajectory-hitch.mjs', import.meta.url).href)};await trajectoryFixture();`,
+      { mode: 0o700 },
+    )
+    const { HitchArtifactReader } = await import(
+      new URL('../../lib/adapters/hitch/trajectory.js', import.meta.url).href
+    )
+    const reader = new HitchArtifactReader(executable, hitchRoot)
+    const artifact = await reader.capture(run, 'seed', 0, signal())
+    expect(artifact.status).toBe('available')
+    const trajectoryStore = new TrajectoryStore(join(runRoot, 'trajectory-sources'))
+    const source = await trajectoryStore.save({
+      version: 1,
+      run_id: 'run',
+      candidate_id: 'anchor',
+      operation_id: canonicalDigest('baseline-evaluation'),
+      origin_run_id: 'run',
+      origin_candidate_id: 'anchor',
+      receipt_digest: canonicalDigest('baseline-receipt'),
+      reader_identity: canonicalDigest(reader.descriptor),
+      partition: 'seed',
+      artifact,
     })
-    const body = { version: 2 as const, run_id: 'run', source_archive_digest: canonicalDigest('archive'), implementation_identity: builtinPolicyImplementationDigest, records: [record] }
-    const snapshot = { ...body, digest: canonicalDigest(body) }
-    await new ExperienceStore(join(context.targets, '../experience')).save(snapshot)
-    const selected = builtinPolicy<Omit<ExperienceContext, 'digest' | 'implementation_identity'>>('experience_context', { records: [record], snapshot_digest: snapshot.digest, parent_id: 'anchor', evidence: request.evidence })
-    const memory = { ...selected, implementation_identity: snapshot.implementation_identity }
-    request.experience = { ...memory, digest: canonicalDigest(memory) }
-    request.operationId = canonicalDigest([request.operationId, request.experience.digest])
+    const baselineReference: TrajectoryReference = {
+      ref: 'trajectory:' + source.digest.slice(7),
+      candidate_id: 'anchor',
+      task_id: 'seed',
+      repetition: 0,
+      status: 'available',
+      content_digest: artifact.content_digest,
+      reason: null,
+    }
+    const snapshotBody = {
+      version: 3 as const,
+      run_id: 'run',
+      source_archive_digest: canonicalDigest('archive'),
+      implementation_identity: builtinPolicyImplementationDigest,
+      records: [],
+    }
+    const snapshot: ExperienceIndexSnapshot = {
+      ...snapshotBody,
+      records: [],
+      digest: canonicalDigest(snapshotBody),
+    }
+    await new ExperienceStore(join(runRoot, 'experience')).save(snapshot)
+    const baselineContextBody: Omit<ExperienceContext, 'digest'> = {
+      version: 2,
+      snapshot_digest: snapshot.digest,
+      implementation_identity: builtinPolicyImplementationDigest,
+      available_records: 0,
+      cards: [],
+      baseline: {
+        candidate_id: 'anchor',
+        candidate_digest: baselineManifest.digest,
+        evidence: request.evidence,
+        trajectory_refs: [baselineReference],
+      },
+    }
+    request.experience = { ...baselineContextBody, digest: canonicalDigest(baselineContextBody) }
+    request.operation = {
+      kind: 'diagnose_seed',
+      candidate_id: 'anchor',
+      parent_id: null,
+      task_ids: ['seed'],
+      scope: 'global',
+      rationale: 'Diagnose baseline evidence and choose a base.',
+      payload: { base_candidates: [{ candidate_id: 'anchor', score: 0, task_scores: { seed: 0 } }] },
+    }
+    request.operationId = canonicalDigest({
+      request: request.operation,
+      experience: request.experience.digest,
+    })
+    const provider = await ProcessOperationProvider.connect(profile, {
+      ...context,
+      artifactReader: reader.descriptor,
+    } as unknown as Json)
+    await provider.prepareAdmission()
+
+    const staged = await stageExperience(
+      {
+        version: 1,
+        input: {
+          version: 1,
+          action: 'submit',
+          configuration: profile.configuration,
+          context: { ...context, artifactReader: reader.descriptor },
+          request,
+          implementationIdentity: null,
+        },
+        digest: canonicalDigest('baseline-stage-probe'),
+        identity: canonicalDigest('baseline-stage-probe'),
+      },
+      join(root, 'baseline-stage-probe'),
+    )
+    const stagedInput = staged.input
+    if (stagedInput === null) throw new Error('Expected the staged baseline diagnosis input')
+    expect(stagedInput.baseline?.evidence).toEqual(request.evidence)
+    await staged.dispose()
+
     const receipt = await provider.submit(request, signal())
-    const diagnostic = await readFile(join(context.directory, request.operationId.slice(7), 'stderr.log'), 'utf8').catch(() => '')
+    const directory = join(context.directory, request.operationId.slice(7))
+
+    const diagnostic = await readFile(join(directory, 'stderr.log'), 'utf8').catch(() => '')
     expect(receipt.result.status, JSON.stringify(receipt) + diagnostic).toBe('complete')
-    expect(receipt.result.data).toMatchObject({ summary: 'read isolation verified' })
+    expect(receipt.result.data).toMatchObject({ base_candidate_id: 'anchor' })
   }, 30_000)
   it('keeps a missing turn counter unknown and reads the final event without a trailing newline', async () => {
     const { provider, request } = await fixture('partialusage')
     const receipt = await provider.submit(request, signal())
     expect(receipt.result.status).toBe('complete')
-    expect(receipt.usage).toEqual({ input_tokens: null, cached_input_tokens: null, output_tokens: 10,
-      tokens: null, model_requests: null, dollars: null })
+    expect(receipt.usage).toEqual({
+      input_tokens: null,
+      cached_input_tokens: null,
+      output_tokens: 10,
+      tokens: null,
+      model_requests: null,
+      dollars: null,
+    })
   }, 30_000)
   it('does not report completed-turn usage as the total after a later turn fails', async () => {
     const { provider, request } = await fixture('partialfailed')
@@ -503,30 +846,37 @@ it('stops an owned Codex process through the admission snapshot after the model 
 }, 30_000)
 
 for (const lost of ['job', 'operation', 'namespace', 'journal'] as const)
-it(`does not confirm cancellation or replay when the ${lost} state disappears`, async () => {
-  const { provider, request, directory, context } = await fixture('hold')
-  const waiting = provider.submit(request, signal()).catch(error => error)
-  await untilStarted(directory)
-  const worker = JSON.parse(await readFile(join(directory, 'started.json'), 'utf8')) as { pid: number }
-  const path = lost === 'job' ? join(directory, 'job.json') : lost === 'operation' ? directory : lost === 'journal' ? join(context.directory, 'operations.json') : context.directory
-  const backup = `${context.directory}-lost-${lost}`
-  process.kill(worker.pid, 'SIGSTOP')
-  await rename(path, backup)
-  try {
-    const cancel = await configuredCancellation(provider.cancellation)
-    await expect(cancel.cancel(request)).rejects.toThrow()
-    expect(await modelProcessIds(directory)).not.toEqual([])
-    expect(await provider.inspect(request, signal())).toEqual({ state: 'unknown' })
-    await expect(provider.submit(request, signal())).rejects.toThrow()
-  } finally {
-    await rm(path, { recursive: true, force: true })
-    await rename(backup, path)
-    process.kill(worker.pid, 'SIGCONT')
-    await provider.cancel(request)
-    await waiting
-  }
-  await expect.poll(() => modelProcessIds(directory), { timeout: 5000 }).toEqual([])
-}, 30_000)
+  it(`does not confirm cancellation or replay when the ${lost} state disappears`, async () => {
+    const { provider, request, directory, context } = await fixture('hold')
+    const waiting = provider.submit(request, signal()).catch((error) => error)
+    await untilStarted(directory)
+    const worker = JSON.parse(await readFile(join(directory, 'started.json'), 'utf8')) as { pid: number }
+    const path =
+      lost === 'job'
+        ? join(directory, 'job.json')
+        : lost === 'operation'
+          ? directory
+          : lost === 'journal'
+            ? join(context.directory, 'operations.json')
+            : context.directory
+    const backup = `${context.directory}-lost-${lost}`
+    process.kill(worker.pid, 'SIGSTOP')
+    await rename(path, backup)
+    try {
+      const cancel = await configuredCancellation(provider.cancellation)
+      await expect(cancel.cancel(request)).rejects.toThrow()
+      expect(await modelProcessIds(directory)).not.toEqual([])
+      expect(await provider.inspect(request, signal())).toEqual({ state: 'unknown' })
+      await expect(provider.submit(request, signal())).rejects.toThrow()
+    } finally {
+      await rm(path, { recursive: true, force: true })
+      await rename(backup, path)
+      process.kill(worker.pid, 'SIGCONT')
+      await provider.cancel(request)
+      await waiting
+    }
+    await expect.poll(() => modelProcessIds(directory), { timeout: 5000 }).toEqual([])
+  }, 30_000)
 
 it('keeps describe read-only and never initializes missing operation state on reconnect', async () => {
   const { provider, request, context, profile } = await fixture('success', 'pi', false)
@@ -544,7 +894,7 @@ it('keeps describe read-only and never initializes missing operation state on re
 })
 it('requires a stopped receipt even if started.json disappears, then confirms actual termination', async () => {
   const { provider, request, directory } = await fixture('hold')
-  const waiting = provider.submit(request, signal()).catch(error => error)
+  const waiting = provider.submit(request, signal()).catch((error) => error)
   await untilStarted(directory)
   const worker = JSON.parse(await readFile(join(directory, 'started.json'), 'utf8')) as { pid: number }
   process.kill(worker.pid, 'SIGSTOP')
@@ -562,83 +912,121 @@ it('requires a stopped receipt even if started.json disappears, then confirms ac
 }, 30_000)
 it('does not restart a killed worker even if its started marker is also lost', async () => {
   const { provider, request, directory } = await fixture('hold')
-  const waiting = provider.submit(request, signal()).catch(error => error)
+  const waiting = provider.submit(request, signal()).catch((error) => error)
   await untilStarted(directory)
   const worker = JSON.parse(await readFile(join(directory, 'started.json'), 'utf8')) as { pid: number }
   process.kill(worker.pid, 'SIGKILL')
   expect(await waiting).toBeInstanceOf(Error)
   await rm(join(directory, 'started.json'))
-  await promisify(execFile)(process.execPath, [resolve('assets/codex-meta-runner.mjs'), '--worker', directory])
+  await promisify(execFile)(process.execPath, [
+    resolve('assets/codex-meta-runner.mjs'),
+    '--worker',
+    directory,
+  ])
   expect(await provider.inspect(request, signal())).toEqual({ state: 'unknown' })
   expect((await readFile(join(directory, 'events.jsonl'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
 }, 30_000)
 
-
 for (const mode of ['connect-success', 'connect-failure', 'connect-cancel'])
-it(`publishes the ${mode} result and releases its worker/lock despite a half-closed CONNECT tunnel`, async () => {
-  const sockets = new Set<Socket>(), requests: string[] = []
-  const upstream = createNetServer({ allowHalfOpen: true }, socket => {
-    sockets.add(socket)
-    socket.on('error', () => {})
-    socket.once('close', () => sockets.delete(socket))
-    let header = ''
-    socket.on('data', chunk => {
-      header += chunk.toString()
-      if (!header.includes('\r\n\r\n')) return
-      requests.push(header.split('\r\n')[0]!)
-      socket.removeAllListeners('data')
-      socket.resume()
-      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+  it(`publishes the ${mode} result and releases its worker/lock despite a half-closed CONNECT tunnel`, async () => {
+    const sockets = new Set<Socket>(),
+      requests: string[] = []
+    const upstream = createNetServer({ allowHalfOpen: true }, (socket) => {
+      sockets.add(socket)
+      socket.on('error', () => {})
+      socket.once('close', () => sockets.delete(socket))
+      let header = ''
+      socket.on('data', (chunk) => {
+        header += chunk.toString()
+        if (!header.includes('\r\n\r\n')) return
+        requests.push(header.split('\r\n')[0]!)
+        socket.removeAllListeners('data')
+        socket.resume()
+        socket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+      })
+      // Keep the response half open after FIN. This is the dependency reset deadlock.
+      socket.on('end', () => {})
     })
-    // Keep the response half open after FIN. This is the dependency reset deadlock.
-    socket.on('end', () => {})
-  })
-  await new Promise<void>(resolve => upstream.listen(0, '127.0.0.1', resolve))
-  try {
-    vi.stubEnv('HTTPS_PROXY', `http://127.0.0.1:${(upstream.address() as { port: number }).port}`)
-    const f = await fixture(mode)
-    const waiting = f.provider.submit(f.request, signal())
-    await untilStarted(f.directory)
-    if (mode === 'connect-cancel') await f.provider.cancel(f.request)
-    const receipt = await waiting
-    expect(receipt.result.status, await readFile(join(f.directory, 'stderr.log'), 'utf8')).toBe(mode === 'connect-success' ? 'complete' : 'failed')
-    expect(receipt.candidate === null).toBe(mode !== 'connect-success')
-    expect(requests).toEqual(['CONNECT allowed.gear.test:443 HTTP/1.1'])
-    const started = JSON.parse(await readFile(join(f.directory, 'started.json'), 'utf8')) as { pid: number }
-    await expect.poll(() => readFile(join(f.directory, 'cleanup.json'), 'utf8').then(JSON.parse).catch(() => null), { timeout: 5000 }).toMatchObject({ status: 'fallback-required', model_stopped: true, stages: { credentials: 'complete', sandbox: 'timed-out', root: 'complete' } })
-    await expect.poll(async () => {
-      const { stdout } = await promisify(execFile)('/bin/ps', ['-axo', 'pgid=,stat='])
-      return stdout.split('\n').some(line => { const [group, state] = line.trim().split(/\s+/u); return Number(group) === started.pid && !state?.startsWith('Z') })
-    }, { timeout: 5000 }).toBe(false)
-    expect(await fileLockHeld(join(f.directory, 'execution.lock'))).toBe(false)
-    const event = JSON.parse((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).split('\n')[0]!) as { cwd: string }
-    await expect(readFile(join(event.cwd, '../home/.codex/auth.json'))).rejects.toThrow()
-    await expect(readFile(join(event.cwd, 'AGENTS.md'))).rejects.toThrow()
-    // The deliberately half-open test peer retains its own write half even
-    // after the worker's FDs are gone. Finish its FIN handshake only now.
-    expect([...sockets].every(socket => socket.readableEnded)).toBe(true)
-    for (const socket of sockets) socket.end('closed-endpoint-probe')
-    await expect.poll(() => sockets.size, { timeout: 3000 }).toBe(0)
-    expect(await f.provider.submit(f.request, signal())).toEqual(receipt)
-    expect((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
-  } finally {
-    for (const socket of sockets) socket.destroy()
-    await new Promise<void>((resolve, reject) => upstream.close(error => error ? reject(error) : resolve()))
-  }
-}, 30_000)
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve))
+    try {
+      vi.stubEnv('HTTPS_PROXY', `http://127.0.0.1:${(upstream.address() as { port: number }).port}`)
+      const f = await fixture(mode)
+      const waiting = f.provider.submit(f.request, signal())
+      await untilStarted(f.directory)
+      if (mode === 'connect-cancel') await f.provider.cancel(f.request)
+      const receipt = await waiting
+      expect(receipt.result.status, await readFile(join(f.directory, 'stderr.log'), 'utf8')).toBe(
+        mode === 'connect-success' ? 'complete' : 'failed',
+      )
+      expect(receipt.candidate === null).toBe(mode !== 'connect-success')
+      expect(requests).toEqual(['CONNECT allowed.gear.test:443 HTTP/1.1'])
+      const started = JSON.parse(await readFile(join(f.directory, 'started.json'), 'utf8')) as { pid: number }
+      await expect
+        .poll(
+          () =>
+            readFile(join(f.directory, 'cleanup.json'), 'utf8')
+              .then(JSON.parse)
+              .catch(() => null),
+          { timeout: 5000 },
+        )
+        .toMatchObject({
+          status: 'fallback-required',
+          model_stopped: true,
+          stages: { credentials: 'complete', sandbox: 'timed-out', root: 'complete' },
+        })
+      await expect
+        .poll(
+          async () => {
+            const { stdout } = await promisify(execFile)('/bin/ps', ['-axo', 'pgid=,stat='])
+            return stdout.split('\n').some((line) => {
+              const [group, state] = line.trim().split(/\s+/u)
+              return Number(group) === started.pid && !state?.startsWith('Z')
+            })
+          },
+          { timeout: 5000 },
+        )
+        .toBe(false)
+      expect(await fileLockHeld(join(f.directory, 'execution.lock'))).toBe(false)
+      const event = JSON.parse(
+        (await readFile(join(f.directory, 'events.jsonl'), 'utf8')).split('\n')[0]!,
+      ) as { cwd: string }
+      await expect(readFile(join(event.cwd, '../home/.codex/auth.json'))).rejects.toThrow()
+      await expect(readFile(join(event.cwd, 'AGENTS.md'))).rejects.toThrow()
+      // The deliberately half-open test peer retains its own write half even
+      // after the worker's FDs are gone. Finish its FIN handshake only now.
+      expect([...sockets].every((socket) => socket.readableEnded)).toBe(true)
+      for (const socket of sockets) socket.end('closed-endpoint-probe')
+      await expect.poll(() => sockets.size, { timeout: 3000 }).toBe(0)
+      expect(await f.provider.submit(f.request, signal())).toEqual(receipt)
+      expect(
+        (await readFile(join(f.directory, 'events.jsonl'), 'utf8')).match(/test.started/gu),
+      ).toHaveLength(1)
+    } finally {
+      for (const socket of sockets) socket.destroy()
+      await new Promise<void>((resolve, reject) =>
+        upstream.close((error) => (error ? reject(error) : resolve())),
+      )
+    }
+  }, 30_000)
 
 it('keeps a signal-killed guard without its private acknowledgment unknown and never repeats its call', async () => {
   const f = await fixture('hold')
-  const waiting = f.provider.submit(f.request, signal()).catch(error => error)
+  const waiting = f.provider.submit(f.request, signal()).catch((error) => error)
   await untilStarted(f.directory)
-  const { pid: worker } = JSON.parse(await readFile(join(f.directory, 'started.json'), 'utf8')) as { pid: number }
+  const { pid: worker } = JSON.parse(await readFile(join(f.directory, 'started.json'), 'utf8')) as {
+    pid: number
+  }
   const { stdout } = await promisify(execFile)('/bin/ps', ['-A', '-o', 'pid=', '-o', 'ppid=', '-o', 'args='])
-  const rows = stdout.split('\n').map(line => line.trim().split(/\s+/u))
-  const guard = rows.find(row => Number(row[1]) === worker && row.slice(2).join(' ').includes('/assets/codex-process-guard.py'))
+  const rows = stdout.split('\n').map((line) => line.trim().split(/\s+/u))
+  const guard = rows.find(
+    (row) => Number(row[1]) === worker && row.slice(2).join(' ').includes('/assets/codex-process-guard.py'),
+  )
   expect(guard).toBeDefined()
-  const leader = rows.find(row => Number(row[1]) === Number(guard![0]))
+  const leader = rows.find((row) => Number(row[1]) === Number(guard![0]))
   expect(leader).toBeDefined()
-  const event = JSON.parse((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).split('\n')[0]!) as { cwd: string }
+  const event = JSON.parse((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).split('\n')[0]!) as {
+    cwd: string
+  }
   roots.push(resolve(event.cwd, '..'))
   // Both exact PIDs belong to this isolated sleeping fixture; no existing host
   // process is signalled. Stop the orphan fixture model after removing its guard.
@@ -647,7 +1035,10 @@ it('keeps a signal-killed guard without its private acknowledgment unknown and n
   expect(await waiting).toBeInstanceOf(Error)
   expect(await f.provider.inspect(f.request, signal())).toEqual({ state: 'unknown' })
   await expect(readFile(join(f.directory, 'receipt.json'))).rejects.toMatchObject({ code: 'ENOENT' })
-  expect(JSON.parse(await readFile(join(f.directory, 'cleanup.json'), 'utf8'))).toMatchObject({ model_stopped: false, stages: { root: 'unconfirmed', credentials: 'unconfirmed' } })
+  expect(JSON.parse(await readFile(join(f.directory, 'cleanup.json'), 'utf8'))).toMatchObject({
+    model_stopped: false,
+    stages: { root: 'unconfirmed', credentials: 'unconfirmed' },
+  })
   expect(await readFile(join(event.cwd, 'AGENTS.md'), 'utf8')).toContain('Follow the task instruction')
   await expect(f.provider.submit(f.request, signal())).rejects.toThrow('codex-result-unknown')
   expect((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
@@ -655,35 +1046,72 @@ it('keeps a signal-killed guard without its private acknowledgment unknown and n
 
 it('refuses a real nonleader worker before writing started or spawning a model', async () => {
   const f = await fixture()
-  const input: CodexInput = { version: 1, action: 'submit', configuration: f.profile.configuration, context: f.context, request: f.request, implementationIdentity: f.provider.implementationIdentity }
-  const digest = canonicalDigest({ request: f.request, configuration: input.configuration, context: input.context, implementationIdentity: input.implementationIdentity })
-  await withJournal(input, journal => registerOperation(input, journal, { digest, state: 'admitted' }))
+  const input: CodexInput = {
+    version: 1,
+    action: 'submit',
+    configuration: f.profile.configuration,
+    context: f.context,
+    request: f.request,
+    implementationIdentity: f.provider.implementationIdentity,
+  }
+  const digest = canonicalDigest({
+    request: f.request,
+    configuration: input.configuration,
+    context: input.context,
+    implementationIdentity: input.implementationIdentity,
+  })
+  await withJournal(input, (journal) => registerOperation(input, journal, { digest, state: 'admitted' }))
   await mkdir(f.directory)
-  await writeFile(join(f.directory, 'job.json'), JSON.stringify({ version: 1, input, digest, identity: input.implementationIdentity }))
-  await expect(promisify(execFile)(process.execPath, [resolve('assets/codex-meta-runner.mjs'), '--worker', f.directory])).rejects.toMatchObject({ stderr: expect.stringContaining('codex-worker-group-invalid') })
+  await writeFile(
+    join(f.directory, 'job.json'),
+    JSON.stringify({ version: 1, input, digest, identity: input.implementationIdentity }),
+  )
+  await expect(
+    promisify(execFile)(process.execPath, [resolve('assets/codex-meta-runner.mjs'), '--worker', f.directory]),
+  ).rejects.toMatchObject({ stderr: expect.stringContaining('codex-worker-group-invalid') })
   await expect(readFile(join(f.directory, 'started.json'))).rejects.toMatchObject({ code: 'ENOENT' })
   await expect(readFile(join(f.directory, 'events.jsonl'))).rejects.toMatchObject({ code: 'ENOENT' })
   expect(await fileLockHeld(join(f.directory, 'execution.lock'))).toBe(false)
-  expect((await modelProcessIds(f.directory))).toEqual([])
+  expect(await modelProcessIds(f.directory)).toEqual([])
 })
-
 
 it('cleans up and releases its lock after receipt publication fails without replaying the model', async () => {
   const f = await fixture('slow')
-  const waiting = f.provider.submit(f.request, signal()).catch(error => error)
+  const waiting = f.provider.submit(f.request, signal()).catch((error) => error)
   await untilStarted(f.directory)
   // A private test-only directory conflicts with atomic receipt publication.
   // Create it after start so it cannot bypass the worker's execution admission.
   await mkdir(join(f.directory, 'receipt.json'))
   expect(await waiting).toBeInstanceOf(Error)
-  await expect.poll(() => readFile(join(f.directory, 'cleanup.json'), 'utf8').then(JSON.parse).catch(() => null), { timeout: 8000 }).toMatchObject({ model_stopped: true, stages: { credentials: 'complete', gateway: 'complete', sandbox: 'complete', root: 'complete' } })
+  await expect
+    .poll(
+      () =>
+        readFile(join(f.directory, 'cleanup.json'), 'utf8')
+          .then(JSON.parse)
+          .catch(() => null),
+      { timeout: 8000 },
+    )
+    .toMatchObject({
+      model_stopped: true,
+      stages: { credentials: 'complete', gateway: 'complete', sandbox: 'complete', root: 'complete' },
+    })
   await expect.poll(() => fileLockHeld(join(f.directory, 'execution.lock')), { timeout: 3000 }).toBe(false)
   const { pid } = JSON.parse(await readFile(join(f.directory, 'started.json'), 'utf8')) as { pid: number }
-  await expect.poll(async () => {
-    const { stdout } = await promisify(execFile)('/bin/ps', ['-axo', 'pgid=,stat='])
-    return stdout.split('\n').some(line => { const [group, state] = line.trim().split(/\s+/u); return Number(group) === pid && !state?.startsWith('Z') })
-  }, { timeout: 3000 }).toBe(false)
-  const event = JSON.parse((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).split('\n')[0]!) as { cwd: string }
+  await expect
+    .poll(
+      async () => {
+        const { stdout } = await promisify(execFile)('/bin/ps', ['-axo', 'pgid=,stat='])
+        return stdout.split('\n').some((line) => {
+          const [group, state] = line.trim().split(/\s+/u)
+          return Number(group) === pid && !state?.startsWith('Z')
+        })
+      },
+      { timeout: 3000 },
+    )
+    .toBe(false)
+  const event = JSON.parse((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).split('\n')[0]!) as {
+    cwd: string
+  }
   await expect(readFile(join(event.cwd, 'AGENTS.md'))).rejects.toMatchObject({ code: 'ENOENT' })
   // Remove only the artificial conflict. Original admission/started state stays
   // intact and still forbids a second model execution without a durable result.

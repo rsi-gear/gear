@@ -198,6 +198,7 @@ class ProposalPlan:
     hypotheses: tuple[str, ...]
     task_ids: tuple[str, ...]
     reason: str
+    parent_candidate_id: str | None = None
 
 
 class ProposalPlanner(Protocol):

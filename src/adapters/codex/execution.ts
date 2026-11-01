@@ -23,7 +23,7 @@ export async function exists(path: string): Promise<boolean> {
     throw error
   }
 }
-function parseResult(value: unknown, taskIds: string[]): Record<string, Json> {
+function parseResult(value: unknown, taskIds: string[], baseCandidates?: string[]): Record<string, Json> {
   const data = value as Record<string, Json>
   const strings = (input: unknown): input is string[] =>
     Array.isArray(input) &&
@@ -33,7 +33,9 @@ function parseResult(value: unknown, taskIds: string[]): Record<string, Json> {
     !data ||
     typeof data !== 'object' ||
     Array.isArray(data) ||
-    Object.keys(data).some((key) => !['summary', 'declined', 'hypotheses', 'clusters'].includes(key)) ||
+    Object.keys(data).some(
+      (key) => !['summary', 'declined', 'hypotheses', 'clusters', 'base_candidate_id'].includes(key),
+    ) ||
     typeof data.summary !== 'string' ||
     data.summary.length > 16_384 ||
     typeof data.declined !== 'boolean' ||
@@ -49,7 +51,10 @@ function parseResult(value: unknown, taskIds: string[]): Record<string, Json> {
         !strings(cluster.task_ids) ||
         cluster.task_ids.some((id) => !taskIds.includes(id)) ||
         !strings(cluster.hypotheses),
-    )
+    ) ||
+    (baseCandidates !== undefined &&
+      (typeof data.base_candidate_id !== 'string' || !baseCandidates.includes(data.base_candidate_id))) ||
+    (baseCandidates === undefined && Object.hasOwn(data, 'base_candidate_id'))
   )
     throw new Error('codex-output-invalid')
   return data
@@ -208,7 +213,32 @@ export async function executeJob(
         info = await lstat(resultPath)
       if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > 1024 * 1024)
         throw new Error('codex-output-invalid')
-      const result = parseResult(JSON.parse(await readFile(resultPath, 'utf8')), operation.task_ids)
+      const payload = operation.payload
+      const payloadObject =
+        payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : undefined
+      const offeredBases =
+        operation.kind === 'diagnose_seed' && payloadObject && Array.isArray(payloadObject.base_candidates)
+          ? payloadObject.base_candidates.map((item) => {
+              if (
+                !item ||
+                typeof item !== 'object' ||
+                Array.isArray(item) ||
+                typeof item.candidate_id !== 'string' ||
+                !/^[a-zA-Z0-9_-]+$/u.test(item.candidate_id) ||
+                typeof item.score !== 'number' ||
+                !Number.isFinite(item.score)
+              )
+                throw new Error('codex-output-invalid')
+              return item.candidate_id
+            })
+          : undefined
+      if (offeredBases && (!offeredBases.length || new Set(offeredBases).size !== offeredBases.length))
+        throw new Error('codex-output-invalid')
+      const result = parseResult(
+        JSON.parse(await readFile(resultPath, 'utf8')),
+        operation.task_ids,
+        offeredBases,
+      )
       data = result
       if (operation.kind === 'generate_candidate' && !result.declined) {
         const parent = await targetResources(join(context.targets, operation.parent_id!))

@@ -509,11 +509,7 @@ class Project:
             return module + ":" + qualname
 
         capture(type(algorithm))
-        policy_fields = (
-            ()
-            if type(algorithm) is MetaHarness
-            else ("parent_policy", "sampler", "proposal_planner", "ranker", "stop_rule")
-        )
+        policy_fields = ("parent_policy", "sampler", "proposal_planner", "ranker", "stop_rule")
         for field in policy_fields:
             value = getattr(algorithm, field, None)
             if value is None:
@@ -535,6 +531,9 @@ class Project:
                 )
         if type(algorithm) is GEPA:
             options["promotion_widths"] = list(algorithm.promotion_widths)
+            # Omit the default so existing run specifications keep their identity.
+            if algorithm.global_gate != "any":
+                options["global_gate"] = algorithm.global_gate
         if type(algorithm) not in (GEPA, RandomSearch, MetaHarness):
             configuration = getattr(algorithm, "configuration", {})
             validate("Json", configuration)

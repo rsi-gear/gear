@@ -1,19 +1,16 @@
-"""Meta-Harness uses the strongest fully evaluated seed candidate as its base."""
+"""Sample a seed-evaluated Pareto parent instead of fixing the scalar-score winner."""
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 from ..contracts import ParentInput, ParentPlan, RandomSource
+from ..gepa.parents import frontier_options
 
 
-def select_best_parent(view: ParentInput, rng: RandomSource) -> ParentPlan:
+def select_frontier_parent(view: ParentInput, rng: RandomSource) -> ParentPlan:
     if not view.eligible or view.candidate_limit < 1:
         return ParentPlan.abstain("no candidate has complete global seed evidence")
-    best = min(view.eligible, key=lambda option: (-option.score, option.candidate_id))
-    options = tuple(
-        replace(option, probability=float(option.candidate_id == best.candidate_id))
-        for option in view.eligible
-    )
+    options = frontier_options(view)
+    if not options:
+        return ParentPlan.abstain("no candidate is on the comparable seed frontier")
     selection = rng.choice(options, key="meta_harness_parent")
     return ParentPlan.single(selection, 1)
