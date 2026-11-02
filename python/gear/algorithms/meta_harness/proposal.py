@@ -46,7 +46,7 @@ def diagnosis_meta(base_candidates: list[dict[str, JSON]]) -> dict[str, JSON]:
             "additionalProperties": False,
             "properties": {
                 "summary": {"type": "string", "minLength": 1},
-                "base_candidate_id": {"type": "string", "enum": cast(list[str], candidate_ids)},
+                "base_candidate_id": {"type": "string", "enum": candidate_ids},
                 "hypothesis": {"type": "string", "minLength": 1},
             },
             "required": ["summary", "base_candidate_id", "hypothesis"],
@@ -88,7 +88,7 @@ def parse_diagnosis(result: JSON, eligible_base_ids: tuple[str, ...]) -> dict[st
         or not data["hypothesis"].strip()
     ):
         raise ValueError("Meta-Harness diagnosis selected an invalid or ineligible base")
-    return cast(dict[str, JSON], data)
+    return data
 
 
 def plan_proposals(view: ProposalInput) -> ProposalPlan:
