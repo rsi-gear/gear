@@ -100,7 +100,7 @@ if sys.platform=='darwin':
  assert 'BEGIN CERTIFICATE' in Path(os.environ['CODEX_CA_CERTIFICATE']).read_text()
 view=json.loads(Path('../input.json').read_text())
 prompt=sys.stdin.read()
-assert ('Do not edit the candidate.' if view['operation']['kind']=='diagnose_seed' else 'Implement the requested hypothesis') in prompt
+assert ('Do not edit the candidate.' if view['operation']['kind']=='diagnose_seed' else 'Change only the allowed mutation paths.') in prompt
 assert len(view['tasks'])==1 and view['tasks'][0]['id']=='seed'
 for path in [${JSON.stringify(join(privateRoot, 'held-out.json'))},${JSON.stringify(join(targets, 'anchor', adapter === 'pi' ? 'AGENTS.md' : 'prompts/system.md'))}]:
  try:
@@ -165,7 +165,7 @@ if 'experience' in view:
   except (PermissionError,FileNotFoundError): pass
 output=Path(args[args.index('--output-last-message')+1])
 schema=json.loads(Path(args[args.index('--output-schema')+1]).read_text())
-assert 'clusters' in schema['required']
+assert ('data' if 'meta' in (view['operation'].get('payload') or {}) else 'clusters') in schema['required']
 print(json.dumps({'type':'test.started','pid':os.getpid(),'cwd':os.getcwd()}),flush=True)
 if ${JSON.stringify(mode)}=='slow': time.sleep(2.5)
 if ${JSON.stringify(mode)} in ['hold','connect-cancel']: time.sleep(60)
@@ -182,9 +182,15 @@ if ${JSON.stringify(mode)}=='invalid': output.write_text('not json')
 elif ${JSON.stringify(mode)}=='invalid-result': output.write_text(json.dumps({'summary':'bad','declined':False,'hypotheses':[42],'clusters':[]}))
 elif ${JSON.stringify(mode)}=='declined': output.write_text(json.dumps({'summary':'no change','declined':True,'hypotheses':[],'clusters':[]}))
 elif ${JSON.stringify(mode)}.startswith('historical') and view['operation']['kind']=='diagnose_seed':
- assert schema['properties']['base_candidate_id']['enum']==['anchor','older']
- assert 'even when all tasks passed' in prompt and 'You do not choose parents' not in prompt
- output.write_text(json.dumps({'summary':'choose a historical mechanism','declined':False,'hypotheses':['improve'], 'clusters':[], 'base_candidate_id':'outside' if ${JSON.stringify(mode)}=='historical-invalid' else 'older'}))
+ custom=view['operation']['payload']['meta']
+ key=custom['schema']['required'][0]
+ assert schema['properties']['data']==custom['schema']
+ assert schema['properties']['data']['properties'][key]['enum']==['anchor','older']
+ assert 'operation.payload.meta.prompt' in prompt and 'even when all tasks passed' in custom['prompt']
+ output.write_text(json.dumps({'declined':False,'data':{key:'outside' if ${JSON.stringify(mode)}=='historical-invalid' else 'older'}}))
+elif ${JSON.stringify(mode)}.startswith('historical'):
+ assert schema['properties']['data']=={'type':'string'}
+ output.write_text(json.dumps({'declined':False,'data':'Updated the selected candidate.'}))
 else: output.write_text(json.dumps({'summary':'read isolation verified','declined':False,'hypotheses':['Respect output format'],'clusters':[{'task_ids':['seed'],'hypotheses':['Respect output format']}]}))
 if ${JSON.stringify(mode)}=='partialusage': print(json.dumps({'type':'turn.completed','usage':{'output_tokens':3}}),flush=True)
 print(json.dumps({'type':'turn.completed','usage':{'input_tokens':12,'cached_input_tokens':3,'output_tokens':7}}),end='' if ${JSON.stringify(mode)}=='partialusage' else '\\n',flush=True)
@@ -277,8 +283,10 @@ async function untilStarted(directory: string) {
   throw new Error('fake Codex did not start')
 }
 describe('formal Codex operation runner', () => {
-  it('PR #95: Python requests and consumes a historical base without adapter-specific fields', async () => {
-    const f = await fixture('historical')
+  it.each([
+    ['base_candidate_id', false], ['another_algorithm_field', false], ['base_candidate_id', true],
+  ] as const)('Python alone defines and validates Meta field %s (invalid=%s)', async (resultKey, invalid) => {
+    const f = await fixture(invalid ? 'historical-invalid' : 'historical')
     await new PiHarnessAdapter().prepare(join(f.targets, 'older'))
     const source = join(f.root, 'source'), scratch = join(f.root, 'scratch')
     await mkdir(scratch)
@@ -290,29 +298,29 @@ describe('formal Codex operation runner', () => {
       tasks: [{ id: 'seed', family: 'format', estimated_cost: 1 }],
       evidence: ['anchor', 'older'].map(candidate_id => ({ candidate_id, task_id: 'seed', repetition: 0, score: 1, status: 'valid', scope: 'global', feedback: 'passed' })),
       completed: [], budget: { rounds: 1, repetitions: 1, candidates_remaining: 1, evaluations_remaining: 2 } }
-    const algorithm = { name: 'pr_cases:HistoricalBase', options: {} }
+    const algorithm = { name: 'pr_cases:HistoricalBase', options: { result_key: resultKey } }
     try {
       await worker.start(signal())
       const diagnosis = await worker.step(view, { version: 1, data: {} }, algorithm, signal())
       const receipt = await f.provider.submit({ ...f.request, operation: diagnosis.operations[0]!, evidence: view.evidence }, signal())
       expect(receipt.result.status).toBe('complete')
       view.completed.push(receipt.result); view.step_id++
+      if (invalid) {
+        // The model's schema is guidance, not the algorithm's semantic validation.
+        const rejected = await worker.step(view, diagnosis.state, algorithm, signal())
+        expect(rejected.state.data.rejected).toBe('historical base not offered')
+        expect(rejected.operations.map(operation => operation.kind)).toEqual(['stop'])
+        expect(receipt.candidate).toBeNull()
+        return
+      }
       const generation = await worker.step(view, diagnosis.state, algorithm, signal())
       expect(generation.operations[0]).toMatchObject({ kind: 'generate_candidate', parent_id: 'older' })
       const generated = await f.provider.submit({ ...f.request, operationId: canonicalDigest('historical-generation'), operation: generation.operations[0]! }, signal())
       expect(generated.result.status).toBe('complete')
       expect(generated.candidate).toMatchObject({ id: 'new', parent_id: 'older' })
+      expect(generated.result.data).toEqual({ declined: false, data: 'Updated the selected candidate.' })
     } finally { await worker.dispose() }
   }, 30_000)
-
-  it('PR #95: Python rejects a Meta-selected base outside the offered candidates', async () => {
-    const f = await fixture('historical-invalid')
-    f.request.operation = { ...f.request.operation, kind: 'diagnose_seed', candidate_id: 'anchor', parent_id: null,
-      payload: { base_candidates: [{ candidate_id: 'anchor', score: 1 }, { candidate_id: 'older', score: 1 }] } }
-    const receipt = await f.provider.submit(f.request, signal())
-    expect(receipt.result.data).toEqual({ error: 'codex-output-invalid' })
-    expect(receipt.candidate).toBeNull()
-  })
 
   it('chains explicit upstream proxies without exposing credentials or bypassing domain restrictions', async () => {
     const requests: string[] = []

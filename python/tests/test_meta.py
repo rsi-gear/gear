@@ -43,41 +43,53 @@ class MetaTests(unittest.TestCase):
         self.result["declined"] = True
         self.assertEqual(self.parse(self.result), self.result)
 
-    def test_pr95_historical_base_choice_is_defined_and_checked_in_python(self):
-        self.input["operation"]["payload"] = {
-            "base_candidates": [
-                {"candidate_id": "anchor", "score": 1},
-                {"candidate_id": "older", "score": 0.8},
-            ]
+    def test_custom_meta_uses_algorithm_format_for_both_operations(self):
+        meta = {
+            "prompt": "自定义诊断" * 1000,
+            "schema": {"type": "array", "items": {"type": "string"}},
         }
-        prepared = prepare_meta(self.input)
-        self.assertEqual(
-            prepared["schema"]["properties"]["base_candidate_id"]["enum"], ["anchor", "older"]
-        )
-        self.assertIn("even when all tasks passed", prepared["prompt"])
-        self.assertNotIn("You do not choose parents", prepared["prompt"])
-        result = {**self.result, "base_candidate_id": "older"}
-        self.assertEqual(self.parse(result), result)
-        for bad in (self.result, {**result, "base_candidate_id": "outside"}):
+        self.input["operation"]["payload"] = {"meta": meta}
+        for kind, instruction in (
+            ("diagnose_seed", "Do not edit the candidate."),
+            ("generate_candidate", "Change only the allowed mutation paths."),
+        ):
+            self.input["operation"]["kind"] = kind
+            prepared = prepare_meta(self.input)
+            self.assertEqual(prepared["input"], self.input)
+            self.assertEqual(prepared["schema"]["properties"]["data"], meta["schema"])
+            self.assertIn("operation.payload.meta.prompt", prepared["prompt"])
+            self.assertIn(instruction, prepared["prompt"])
+            self.assertLess(len(prepared["prompt"].encode()), 4096)
+        for declined in (False, True):
+            response = {"declined": declined, "data": ["algorithm-defined value"]}
+            self.assertEqual(self.parse(response), response)
+        for response in (
+            {"data": []},
+            {"declined": 0, "data": []},
+            {"declined": False, "data": [], "extra": 1},
+        ):
             with self.assertRaises(ValueError):
-                self.parse(bad)
-        self.input["operation"]["kind"] = "generate_candidate"
-        self.assertNotIn("base_candidate_id", prepare_meta(self.input)["schema"]["properties"])
-        with self.assertRaises(ValueError):
-            self.parse(result)
+                self.parse(response)
 
-    def test_pr95_rejects_malformed_base_offers(self):
-        for offered in (
+    def test_custom_meta_rejects_malformed_configuration(self):
+        for meta in (
+            None,
             [],
             {},
-            [{"candidate_id": "../private", "score": 1}],
-            [{"candidate_id": "anchor", "score": True}],
-            [{"candidate_id": "anchor", "score": float("inf")}],
-            [{"candidate_id": "anchor", "score": 1}] * 2,
+            {"prompt": "", "schema": {}},
+            {"prompt": "inspect", "schema": []},
         ):
-            self.input["operation"]["payload"] = {"base_candidates": offered}
-            with self.subTest(offered=offered), self.assertRaises(ValueError):
+            self.input["operation"]["payload"] = {"meta": meta}
+            with self.subTest(meta=meta), self.assertRaises(ValueError):
                 prepare_meta(self.input)
+
+    def test_default_meta_does_not_interpret_algorithm_specific_payloads(self):
+        baseline = prepare_meta(self.input)
+        self.input["operation"]["payload"] = {"base_candidates": [], "rrsi": {"enabled": True}}
+        prepared = prepare_meta(self.input)
+        self.assertEqual(prepared["schema"], baseline["schema"])
+        self.assertEqual(prepared["prompt"], baseline["prompt"])
+        self.assertEqual(self.parse(self.result), self.result)
 
     def test_invalid_results_keep_the_existing_bounds_and_seed_scope(self):
         for change in (

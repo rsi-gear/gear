@@ -17,27 +17,37 @@
 
 表中路径相对于 [`python/gear/algorithms`](../python/gear/algorithms)。合同在 [`contracts.py`](../python/gear/algorithms/contracts.py)，可复用流程在 [`workflow.py`](../python/gear/algorithms/workflow.py)。新增算法可以组合这些合同，也可以直接实现 `step`，不需要修改 TS 的操作类型或状态机。
 
-Meta 的诊断/生成提示词、输入组织、结果结构与解析位于
-[`meta.py`](../python/gear/algorithms/meta.py)。改变诊断方式时，在 Python 中修改
-`prepare_meta`、`parse_meta_result` 及对应的 proposal planner，无需修改 TS。
-经验记录和检索对算法 payload 的解释位于 `experience.py`。
-TS 通过现有 Python policy 通道调用这些函数，仅负责授权、模型执行、预算和结果持久化。
-默认诊断保持原有结果合同，不新增配置式 Meta 策略接口；实现身份变化后不能直接恢复旧运行。
+默认 Meta 的提示词、输入组织、结果结构与解析位于
+[`meta.py`](../python/gear/algorithms/meta.py)；经验记录对算法 payload 的解释位于
+`experience.py`。TS 通过现有 Python policy 通道执行，负责授权、模型调用、预算和持久化。
 
-两个算法 PR 的边界验收：
+算法自定义诊断或生成时，在现有 `Operation.payload` 中传入 `meta`，无需修改公共 Meta
+代码、TS 或 SDK。例如，Python 算法可以发出：
 
-- [#95](https://github.com/rsi-gear/gear/pull/95)：诊断操作可以在 payload 中提供
-  `base_candidates: [{candidate_id, score}]`。Python Meta 负责历史候选选择的提示词和
-  `base_candidate_id` 结果检查，Python 算法据此填写生成操作的 `parent_id`。
-  未提供候选列表时保留原诊断行为；历史源码/轨迹的受控读取仍属于通用执行能力。
-- [#99](https://github.com/rsi-gear/gear/pull/99)：项目执行层在生成候选封存后，将已有
-  `targetDiff` 的结果放入 `OperationResult.candidate_change`，与模型的 `data` 分开。
-  Python 根据实际差异决定是否发出 `evaluate_seed`，拒绝原因记入算法状态，不能伪造成
-  `environment_failed` 评测证据。字段缺失或 `omitted_patches > 0` 表示无法完整检查，
-  算法需要显式处理，不能当作“没有问题”。此字段在 submit/恢复 inspect 时从封存文件重建。
+```python
+Operation(
+    "diagnose_seed", candidate_id="anchor", task_ids=("seed",),
+    payload={"meta": {"prompt": "Explain the strongest improvement opportunity.",
+                      "schema": {"type": "string"}}},
+)
+```
 
-`tests/fixtures/python-algorithm-boundaries.py` 与对应进程集成测试验证上述边界，
-包括历史基点选择、筛选拒绝/通过、不完整差异及恢复；不代表完整论文算法或效果复现。
+`meta.prompt` 是算法指令，`meta.schema` 是算法响应的 JSON Schema；通过已有 input.json
+交给模型，不把长指令写进进程控制管道。执行结果使用固定信封
+`{"declined": bool, "data": ...}`；算法在后续 `step` 中读取 `result.data["data"]`，
+自行检查字段、候选范围和业务含义，再决定下一步。Schema 指导模型输出，不能代替算法校验。
+未提供 `meta` 时保留现有 GEPA/RandomSearch 的默认诊断合同。
+
+生成结果的可选 `OperationResult.candidate_change` 提供封存候选相对父代的真实文件差异，
+与模型自述分开；执行层复用已有 `targetDiff`，在 submit/恢复 inspect 时重建。
+Python 可以据此决定是否评估、拒绝或继续修改；字段缺失或 `omitted_patches > 0`
+表示无法完整检查，算法需显式处理。算法拒绝不是 `environment_failed` 评测证据。
+
+以 [#95](https://github.com/rsi-gear/gear/pull/95) 的历史候选选择和
+[#99](https://github.com/rsi-gear/gear/pull/99) 的候选筛选检查上述扩展边界：具体字段、
+提示词、结果校验和筛选规则仅写在独立 Python 测试算法里，生产代码不识别算法名称或
+`base_candidates`。验收还替换了诊断字段名，验证无需修改公共 Meta 实现。
+这不合入两个 PR 的算法；历史源码/轨迹的授权读取等新执行能力仍属于基础设施工作。
 
 ## 一个文件替换策略
 

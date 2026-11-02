@@ -10,6 +10,9 @@ from gear.algorithms import AlgorithmState, Decision, Operation
 
 
 class HistoricalBase:
+    def __init__(self, result_key="base_candidate_id"):
+        self.result_key = result_key
+
     def step(self, view, state):
         if not view.completed:
             bases = [
@@ -23,13 +26,46 @@ class HistoricalBase:
                         "diagnose_seed",
                         candidate_id="anchor",
                         task_ids=("seed",),
-                        payload={"base_candidates": bases},
+                        payload={
+                            "base_candidates": bases,
+                            "meta": {
+                                "prompt": "Choose a useful historical base, even when all tasks passed.",
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "properties": {
+                                        self.result_key: {
+                                            "type": "string",
+                                            "enum": [
+                                                base["candidate_id"] for base in bases
+                                            ],
+                                        }
+                                    },
+                                    "required": [self.result_key],
+                                },
+                            },
+                        },
                     ),
                 ),
                 "compare historical bases",
             )
-        selected = view.completed[-1].data["base_candidate_id"]
-        assert selected in {candidate.id for candidate in view.candidates}
+        result = view.completed[-1]
+        if result.status != "complete":
+            raise ValueError("Meta did not complete")
+        response = result.data["data"]
+        eligible = {cell.candidate_id for cell in view.evidence}
+        if (
+            not isinstance(response, dict)
+            or set(response) != {self.result_key}
+            or not isinstance(response[self.result_key], str)
+            or response[self.result_key] not in eligible
+        ):
+            return Decision(
+                AlgorithmState(data={"rejected": "historical base not offered"}),
+                (Operation("stop"),),
+                "invalid diagnosis",
+            )
+        selected = response[self.result_key]
         return Decision(
             state,
             (
@@ -38,7 +74,12 @@ class HistoricalBase:
                     candidate_id="new",
                     parent_id=selected,
                     task_ids=("seed",),
-                    payload={"hypothesis": "improve the chosen base"},
+                    payload={
+                        "meta": {
+                            "prompt": "Improve the chosen base while preserving successful behavior.",
+                            "schema": {"type": "string"},
+                        }
+                    },
                 ),
             ),
             "use the diagnosed historical base",
