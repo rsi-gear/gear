@@ -1,0 +1,56 @@
+{
+  "date": "2026-11-02",
+  "base_commit": "b0d7f93534b79bfbdae7d5c9c8aa742578eb36eb",
+  "report": {
+    "model": "gpt-5.6-luna",
+    "linuxIsolation": "bubblewrap-only",
+    "taskCount": 1,
+    "evidence": "synthetic-seed-feedback",
+    "evaluatedTargets": 0,
+    "algorithmIdentity": "sha256:4fcc3e14a47930018142b561abdc7b0dfde45156e418fa9b2c100552c6e875f3",
+    "providerIdentity": "sha256:1557eabe5e76df1346fea21e64f7f8f3f22bc476c84c3919ece4858bea431977",
+    "operations": [
+      {
+        "kind": "diagnose_seed",
+        "status": "complete",
+        "usage": {
+          "input_tokens": 31767,
+          "cached_input_tokens": 20352,
+          "output_tokens": 352,
+          "tokens": 32119,
+          "model_requests": null,
+          "dollars": null
+        },
+        "candidate": null,
+        "replayReusedReceipt": true
+      },
+      {
+        "kind": "generate_candidate",
+        "status": "complete",
+        "usage": {
+          "input_tokens": 55232,
+          "cached_input_tokens": 42752,
+          "output_tokens": 789,
+          "tokens": 56021,
+          "model_requests": null,
+          "dollars": null
+        },
+        "candidate": {
+          "id": "r0-b0-candidate-0",
+          "parent_id": "anchor",
+          "digest": "sha256:7c27ab9ac2747a650b479cfc9f461be79a6fa4914dc2f3dc08a299a644d12ffe"
+        },
+        "replayReusedReceipt": true
+      }
+    ]
+  },
+  "package_sha256": "c25dbf2191a5cb1a154dbbbad1117399f56f3645f389c257b1aac8bdabb6f415",
+  "script_sha256": "cbedd7eba9e7c8d4c5351882fcd21e91f4c94620eb91e55b63ace77889d9d5b6",
+  "node": "v22.22.1",
+  "python": "3.14.4",
+  "codex": "codex-cli 0.160.1",
+  "candidate_files": [
+    "r0-b0-candidate-0/AGENTS.md",
+    "r0-b0-candidate-0/.pi/settings.json"
+  ]
+}

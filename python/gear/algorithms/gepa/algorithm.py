@@ -9,6 +9,7 @@ from ..contracts import (
     StopRule,
     TaskSampler,
 )
+from ..meta import MetaPolicy, default_meta
 from ..workflow import StagedSearch
 from .parents import select_parent
 from .proposal import plan_proposals
@@ -28,6 +29,7 @@ class GEPA(StagedSearch):
         stop_rule: StopRule = stop_reason,
         promotion_widths: tuple[int, ...] = (2, 1),
         global_gate: Literal["any", "no_regression"] = "any",
+        meta_policy: MetaPolicy = default_meta,
     ) -> None:
         super().__init__(
             parent_policy,
@@ -38,4 +40,5 @@ class GEPA(StagedSearch):
             ("local", "bridge", "global"),
             promotion_widths,
             global_gate,
+            meta_policy,
         )

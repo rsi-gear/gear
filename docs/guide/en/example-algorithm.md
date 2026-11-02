@@ -111,3 +111,31 @@ family rotation. The current Python workflow ranks a parent's batch on one
 shared local scope and has its own nomination and acceptance rules. Matching
 the widths does not reproduce the full historical algorithm; historical
 results are not measurements of the current Python implementation.
+
+## Python Meta policies
+
+`GEPA` and `RandomSearch` accept `meta_policy`, a named Python function or callable
+dataclass mapping an `Operation` to a `MetaTask`. The task defines model instructions
+and a strict JSON object result schema. The SDK freezes this policy just like the
+other algorithm policies; the decision records its instructions and schema before
+execution. A custom `SearchAlgorithm.step` can instead return
+`MetaTask(...).bind(Operation(...))` directly.
+
+See [custom_meta.py](../../../examples/algorithms/custom_meta.py) for a diagnosis
+that returns `findings` and a Python proposal planner that consumes them. Use
+`GEPA(meta_policy=FailureAnalysis(), proposal_planner=plan_findings)` after importing
+those two definitions from the example. No algorithm-specific TypeScript changes
+are needed. Generation instructions can be customized through the same policy.
+
+Do not declare `declined` in your result schema: the framework adds this boolean
+execution-status field. All other result fields belong to your algorithm. The
+schema subset supports nested objects/arrays, scalar types, scalar enums,
+descriptions, length bounds and numeric bounds. Every object must require all
+properties and set `additionalProperties: false`; references, regexes, unions and
+unknown keywords are rejected. A Meta task is limited to 64 KiB, with schema depth
+16 and 256 nodes, strings of at most 16,384 UTF-16 units and arrays of at most 256
+items. Result files remain limited to 1 MiB.
+
+Python owns prompt construction and result validation. TypeScript retains seed
+authorization, isolation, execution, cancellation and persistence. This migration
+changes implementation identities; it does not silently upgrade historical runs.

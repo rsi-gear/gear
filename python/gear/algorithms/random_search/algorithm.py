@@ -7,6 +7,7 @@ from ..contracts import (
     StopRule,
     TaskSampler,
 )
+from ..meta import MetaPolicy, default_meta
 from ..workflow import StagedSearch
 from .parents import select_parent
 from .proposal import plan_proposals
@@ -24,7 +25,15 @@ class RandomSearch(StagedSearch):
         proposal_planner: ProposalPlanner = plan_proposals,
         ranker: CandidateRanker = rank_candidates,
         stop_rule: StopRule = stop_reason,
+        meta_policy: MetaPolicy = default_meta,
     ) -> None:
         super().__init__(
-            parent_policy, sampler, proposal_planner, ranker, stop_rule, ("global",), ()
+            parent_policy,
+            sampler,
+            proposal_planner,
+            ranker,
+            stop_rule,
+            ("global",),
+            (),
+            meta_policy=meta_policy,
         )

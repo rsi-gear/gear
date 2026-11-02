@@ -2,6 +2,8 @@
 
 `src/ports/operations.ts` 定义执行端口；可信 process adapter 使用单次 JSON 输入/输出，版本为 1。算法决策由 Python 生成，provider 只执行、观察、计量或取消已持久化的 operation。请求中的 operation ID、generation、partition、slots 和冻结配置不能在恢复时换成新值。
 
+Meta 的算法合同由 Python `gear.algorithms.MetaTask` 定义，保存在 operation 的 JSON payload 中。Codex adapter 将已授权的 seed 输入交给受信任的 Python `meta_prepare`，获得输入文件、结果 schema 和模型指令；执行后调用 `meta_result` 校验结果。TS 不维护 `hypotheses` / `clusters` 等算法字段，仅消费通用 `declined` 状态和完整结果对象。作者代码在算法 worker 内运行，不会被导入可信 provider 进程。Meta 配置随决策持久化，Python Meta 与 schema 实现也进入现有 provider 实现摘要。没有显式 Meta task 的操作使用 Python 默认合同；这不意味着允许不同实现身份之间恢复旧运行。
+
 应用层组合 Target 与 Meta 时，整体 `identity` 封存两者，恢复必须匹配；单独的
 `evaluationIdentity` 封存全部 Target 执行条件（实现、模型、采样、计量、重试及 profile），
 用于候选 manifest 和跨 run baseline 对照。不得为了复用而忽略影响执行的设置。
