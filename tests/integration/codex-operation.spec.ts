@@ -447,13 +447,10 @@ describe('formal Codex operation runner', () => {
     const firstRoundRequest = structuredClone(request)
     firstRoundRequest.operationId = canonicalDigest([request.operationId, 'round-1'])
     firstRoundRequest.operation.candidate_id = 'candidate-round-1'
-    const firstRoundReceipt = await provider.submit(firstRoundRequest, signal())
-    expect(firstRoundReceipt.result.status).toBe('complete')
-    expect(firstRoundReceipt.candidate).toMatchObject({ id: 'candidate-round-1', parent_id: 'anchor' })
     const trajectory_refs: TrajectoryReference[] = []
     const rejectedTrajectoryRefs: TrajectoryReference[] = []
     if (withTrajectory) {
-      const hitchRoot = join(root, 'hitch-private'), run = 'run_' + 'a'.repeat(32), executable = join(root, 'hitch.mjs')
+      const hitchRoot = join(root, 'hitch-private'), executable = join(root, 'hitch.mjs')
       await mkdir(hitchRoot)
       await writeFile(join(hitchRoot, 'private.txt'), 'PROVIDER_PRIVATE_CANARY')
       await writeFile(executable, `#!${process.execPath}\nimport {trajectoryFixture} from ${JSON.stringify(new URL('../fixtures/trajectory-hitch.mjs', import.meta.url).href)};await trajectoryFixture();`, { mode: 0o700 })
@@ -462,6 +459,7 @@ describe('formal Codex operation runner', () => {
       const reader = new HitchArtifactReader(executable, hitchRoot)
       const trajectoryStore = new TrajectoryStore(join(context.targets, '../trajectory-sources'))
       const saveTrajectory = async (candidateId: string, text: string, destination: TrajectoryReference[]) => {
+        const run = 'run_' + (candidateId === 'anchor' ? 'a' : 'c').repeat(32)
         await writeFile(join(hitchRoot, run + '.json'), JSON.stringify([{ seq: 0, type: 'assistant/message', data: text }, { seq: 1, type: 'tool/result', data: 'result' }]))
         const artifact = await reader.capture(run, 'seed', 0, signal())
         expect(artifact.status).toBe('available')
@@ -473,6 +471,13 @@ describe('formal Codex operation runner', () => {
       provider = await ProcessOperationProvider.connect(profile, { ...context, artifactReader: reader.descriptor, experiencePython: resolvePythonExecutable() } as unknown as Json)
     }
     await provider.prepareAdmission()
+    const firstRoundReceipt = await provider.submit(firstRoundRequest, signal())
+    const firstRoundDiagnostic = await readFile(
+      join(context.directory, firstRoundRequest.operationId.slice(7), 'stderr.log'),
+      'utf8',
+    ).catch(() => '')
+    expect(firstRoundReceipt.result.status, JSON.stringify(firstRoundReceipt) + firstRoundDiagnostic).toBe('complete')
+    expect(firstRoundReceipt.candidate).toMatchObject({ id: 'candidate-round-1', parent_id: 'anchor' })
     const record = builtinPolicy<ExperienceRecord>('experience_record', {
       source: { run_id: 'run' }, candidate: { id: 'anchor', digest: canonicalDigest('anchor'), parent_id: 'older' },
       parent: { id: 'older', digest: canonicalDigest('older'), parent_id: null }, task_ids: ['seed'], repetitions: 1,
