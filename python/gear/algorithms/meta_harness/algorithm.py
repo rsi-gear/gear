@@ -1,7 +1,7 @@
 """Meta-Harness Terminal-Bench 2 adaptation using Gear's public algorithm API."""
 
-from dataclasses import asdict
 import json
+from dataclasses import asdict
 from typing import cast
 
 from gear.canonical import JSON
@@ -10,7 +10,6 @@ from ..contracts import (
     AlgorithmState,
     CandidateRanker,
     Decision,
-    Evidence,
     Operation,
     ParentInput,
     ParentOption,
@@ -82,7 +81,9 @@ class MetaHarness(StagedSearch):
             or view.budget.generation_batch_capacity == 0
             or integer(state.data.get("round", 0)) >= view.budget.rounds
         ):
-            return self._finish(view, state, "Meta-Harness candidate or generation budget exhausted")
+            return self._finish(
+                view, state, "Meta-Harness candidate or generation budget exhausted"
+            )
 
         task_ids = self._all_tasks(view)
         if not task_ids:
@@ -204,9 +205,7 @@ class MetaHarness(StagedSearch):
             and (cell.score < 1 or view.objective is not None)
         )
         parent = ParentOption(diagnosis_candidate, "global", self._all_tasks(view), 0.0)
-        plan = self.proposal_planner(
-            ProposalInput(parent, failures, diagnosis, 1, view.tasks)
-        )
+        plan = self.proposal_planner(ProposalInput(parent, failures, diagnosis, 1, view.tasks))
         if (
             not plan.reason
             or len(plan.hypotheses) != 1

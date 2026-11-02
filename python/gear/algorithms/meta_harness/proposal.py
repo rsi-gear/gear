@@ -60,8 +60,7 @@ def generation_meta(hypothesis: str) -> dict[str, JSON]:
             "Implement exactly one general-purpose mechanism in the selected historical base. "
             "Preserve mechanisms that work, change only authorized files, and do not add task- or "
             "benchmark-specific hints. Do not run evaluations or inspect held-out data. Proposed "
-            "mechanism: "
-            + hypothesis
+            "mechanism: " + hypothesis
         ),
         "schema": GENERATION_SCHEMA,
     }

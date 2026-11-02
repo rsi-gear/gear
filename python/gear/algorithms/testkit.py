@@ -132,7 +132,9 @@ def toy_round(algorithm: SearchAlgorithm) -> dict[str, JSON]:
                         },
                     )
                 else:
-                    result = replace(result, data={"hypotheses": ["Fix arithmetic and formatting."]})
+                    result = replace(
+                        result, data={"hypotheses": ["Fix arithmetic and formatting."]}
+                    )
             elif operation.kind == "generate_candidate":
                 if operation.candidate_id is None:
                     raise ValueError("generation needs a candidate ID")
