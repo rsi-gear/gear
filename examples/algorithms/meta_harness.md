@@ -174,6 +174,6 @@ The current local conformance results are `status: passed`, 5 algorithm steps,
 with operations `evaluate_seed:global`, `diagnose_seed:global`,
 `generate_candidate:global`, two comparable `evaluate_seed:global` operations,
 and `nominate:global`. The focused archive, Meta-Harness, and runner suite also
-passes all 35 Python tests. These are implementation checks; the Terminal-Bench
+passes all 37 Python tests. These are implementation checks; the Terminal-Bench
 experiment remains not run until a configured project, pinned task dataset,
 and model profiles are available.
