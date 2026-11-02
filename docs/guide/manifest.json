@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "product": "Gear",
-  "version": "0.2.1",
-  "updated": "2026-10-26",
+  "version": "0.2.2",
+  "updated": "2026-11-02",
   "defaultLanguage": "en",
   "languages": [
     {
@@ -23,11 +23,11 @@
       "translations": {
         "en": {
           "title": "Gear user guide",
-          "description": "These pages describe Gear 0.2.1 and its project-based API. Python defines optimization policies; the durable runtime executes evaluations, candidate generation, recovery and final validation. The CLI, Python SDK, native DSH Skill and project socket use the same application service."
+          "description": "These pages describe Gear 0.2.2 and its project-based API. Python defines optimization policies; the durable runtime executes evaluations, candidate generation, recovery and final validation. The CLI, Python SDK, native DSH Skill and project socket use the same application service."
         },
         "zh-CN": {
           "title": "Gear 用户指南",
-          "description": "本指南对应 Gear 0.2.1 及其基于项目的 API。 Gear 用 Python 定义优化策略，用持久运行层执行评测、候选生成、恢复和最终验证。 CLI、Python SDK、原生 DSH Skill 和项目 socket 调用同一个应用服务。"
+          "description": "本指南对应 Gear 0.2.2 及其基于项目的 API。 Gear 用 Python 定义优化策略，用持久运行层执行评测、候选生成、恢复和最终验证。 CLI、Python SDK、原生 DSH Skill 和项目 socket 调用同一个应用服务。"
         }
       }
     },
@@ -37,11 +37,11 @@
       "translations": {
         "en": {
           "title": "Quick start",
-          "description": "This page uses the Gear 0.2.1 `gear` CLI. Use compatible Node (22.x from 22.19, or 24+), and Python 3.10+; development and CPU tests use Python 3.12. Linux algorithm isolation also requires bubblewrap, socat and ripgrep; macOS uses the system sandbox. Hitch/Harbor tasks need their runtime and Docker."
+          "description": "This page uses the Gear 0.2.2 `gear` CLI. Use compatible Node (22.x from 22.19, or 24+), and Python 3.10+; development and CPU tests use Python 3.12. Linux algorithm isolation also requires bubblewrap, socat and ripgrep; macOS uses the system sandbox. Hitch/Harbor tasks need their runtime and Docker."
         },
         "zh-CN": {
           "title": "快速开始",
-          "description": "本页使用 Gear 0.2.1 的 `gear` CLI。需要兼容 Node（22.19+ 的 22 系列或 24+）、Python 3.10+；开发和 CPU 测试使用 Python 3.12。Linux 的算法隔离还需要 bubblewrap、socat、ripgrep；macOS 使用系统隔离机制。Hitch/Harbor 任务另需其运行环境及 Docker。"
+          "description": "本页使用 Gear 0.2.2 的 `gear` CLI。需要兼容 Node（22.19+ 的 22 系列或 24+）、Python 3.10+；开发和 CPU 测试使用 Python 3.12。Linux 的算法隔离还需要 bubblewrap、socat、ripgrep；macOS 使用系统隔离机制。Hitch/Harbor 任务另需其运行环境及 Docker。"
         }
       }
     },
