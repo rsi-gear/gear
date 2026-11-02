@@ -3,6 +3,8 @@ import { GearError } from '../domain/errors.js'
 import { validateAlgorithmWire } from '../domain/algorithm-schema.js'
 import type { TargetStore } from '../adapters/storage/targets.js'
 import type { ExperiencePreparation } from '../ports/experience.js'
+import { targetDiff } from '../adapters/storage/target-diff.js'
+import type { Json } from '../domain/algorithm-wire.js'
 
 /** Provider proposals become candidates only after core-owned resource checks and sealing. */
 export function sealedProvider(
@@ -18,6 +20,9 @@ export function sealedProvider(
   const seal = async (request: OperationRequest, value: OperationReceipt): Promise<OperationReceipt> => {
     validateAlgorithmWire('OperationReceipt', value)
     await verifyInput(request)
+    // Facts are rebuilt from sealed resources, never accepted from model/provider data.
+    const { candidate_change: _claimedChange, ...result } = value.result
+    value = { ...value, result }
     if (!value.candidate) return value
     const operation = request.operation
     if (
@@ -31,7 +36,20 @@ export function sealedProvider(
         'Provider proposal does not match the reserved mutation',
       )
     const manifest = await targets.seal(value.candidate.id, '', operation.parent_id)
-    return { ...value, candidate: { ...value.candidate, digest: manifest.digest } }
+    const candidate = { ...value.candidate, digest: manifest.digest }
+    const parent = {
+      id: operation.parent_id,
+      parent_id: null,
+      digest: (await targets.verify(operation.parent_id)).digest,
+    }
+    return {
+      ...value,
+      candidate,
+      result: {
+        ...result,
+        candidate_change: (await targetDiff(targets, parent, candidate)) as unknown as Json,
+      },
+    }
   }
   return {
     identity: provider.identity,

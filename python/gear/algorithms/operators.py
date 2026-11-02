@@ -20,6 +20,7 @@ def main(request: dict[str, Any] | None = None) -> None:
         experience_read_plan,
         experience_record,
     )
+    from .meta import parse_meta_result, prepare_meta
     from .model_training import offline_window, training_decide, training_dev_gate, training_pair
     from .objective import aggregate_metrics, extract_metrics, score_projection
     from .projection import compare_candidates, project_candidate
@@ -28,6 +29,8 @@ def main(request: dict[str, Any] | None = None) -> None:
     from .verifier import bind_verifier_channels, project_verifier, verifier_feedback
 
     operations = {
+        "meta_prepare": prepare_meta,
+        "meta_result": parse_meta_result,
         "assertions_extract": extract_assertions,
         "training_pair": training_pair,
         "training_dev_gate": training_dev_gate,
