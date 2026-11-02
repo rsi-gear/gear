@@ -13,37 +13,6 @@ import type { Decision } from '../../src/domain/algorithm-wire.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
-it('freezes a Python-only Meta policy and emits its custom diagnosis contract', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'gear-python-meta-')); roots.push(root)
-  const source = join(root, 'source'), scratch = join(root, 'scratch'), author = join(root, 'custom_meta.py')
-  await mkdir(scratch)
-  await writeFile(author, await readFile(resolve('examples/algorithms/custom_meta.py')))
-  const identity = await freezeAlgorithmSource(source, [{ path: 'custom_meta.py', source: author }])
-  await writeFile(author, 'raise RuntimeError("mutable author source must not be loaded")\n')
-  const worker = new PythonAlgorithmWorker({
-    python: process.env.GEAR_TRAINING_TEST_PYTHON ?? 'python3', sourceRoot: source, scratch,
-    implementationIdentity: identity,
-    ...(process.env.GEAR_TEST_LINUX_ISOLATION ? { linuxIsolation: process.env.GEAR_TEST_LINUX_ISOLATION as 'seccomp' | 'bubblewrap-only' } : {}),
-  })
-  try {
-    await worker.start(new AbortController().signal)
-    const decision = await worker.step({ run_id: 'test', step_id: 1, seed: 'test',
-      tasks: [{ id: 'seed', family: 'format', estimated_cost: 1 }],
-      candidates: [{ id: 'anchor', digest: canonicalDigest('anchor'), parent_id: null }],
-      evidence: [{ candidate_id: 'anchor', task_id: 'seed', repetition: 0, score: 0, status: 'valid', scope: 'global', feedback: 'wrong format' }],
-      completed: [], budget: { evaluations_remaining: 10, candidates_remaining: 1, rounds: 1, repetitions: 1 }, anchor_id: 'anchor',
-    }, { version: 1, data: { phase: 'parents', round: 0 } }, {
-      name: 'gepa', options: {
-        meta_policy: { entrypoint: 'custom_meta:FailureAnalysis', configuration: { focus: 'frozen focus' } },
-        proposal_planner: 'custom_meta:plan_findings',
-      },
-    }, new AbortController().signal)
-    expect(decision.operations[0]).toMatchObject({ kind: 'diagnose_seed', payload: { meta: {
-      instructions: expect.stringContaining('frozen focus'), result_schema: { required: ['findings'] },
-    } } })
-  } finally { await worker.dispose() }
-}, 30_000)
-
 it('executes frozen Python decisions with OS filesystem, environment and network isolation', async () => {
   const root = await mkdtemp(join(tmpdir(), 'gear-python-sandbox-')); roots.push(root)
   const source = join(root, 'source'), scratch = join(root, 'scratch'), secret = join(root, 'held-out.json')

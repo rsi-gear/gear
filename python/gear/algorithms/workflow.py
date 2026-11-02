@@ -28,7 +28,6 @@ from .contracts import (
 )
 from .evidence import task_scores
 from .limits import MAX_DECISION_OPERATIONS
-from .meta import MetaPolicy, default_meta
 from .objective import comparison_key, score_ceiling
 from .random import DeterministicRandom
 from .validation import validate_parent_plan, validate_sampling_plan
@@ -70,10 +69,6 @@ class StagedSearch:
     stages: tuple[Literal["local", "bridge", "global"], ...]
     promotion_widths: tuple[int, ...]
     global_gate: Literal["any", "no_regression"] = "any"
-    meta_policy: MetaPolicy = default_meta
-
-    def _meta(self, operation: Operation) -> Operation:
-        return self.meta_policy(operation).bind(operation)
 
     def __post_init__(self) -> None:
         if (
@@ -290,13 +285,11 @@ class StagedSearch:
                 "failures": list(failures),
             },
             (
-                self._meta(
-                    Operation(
-                        "diagnose_seed",
-                        candidate_id=parent,
-                        task_ids=failures,
-                        rationale=str(state.data["parent_reason"]),
-                    )
+                Operation(
+                    "diagnose_seed",
+                    candidate_id=parent,
+                    task_ids=failures,
+                    rationale=str(state.data["parent_reason"]),
                 ),
             ),
             "diagnose selected parent",
@@ -351,15 +344,13 @@ class StagedSearch:
             for index in range(len(plan.hypotheses))
         )
         operations = tuple(
-            self._meta(
-                Operation(
-                    "generate_candidate",
-                    candidate_id=candidate,
-                    parent_id=parent_id,
-                    task_ids=plan.task_ids,
-                    payload={"hypothesis": hypothesis},
-                    rationale=plan.reason,
-                )
+            Operation(
+                "generate_candidate",
+                candidate_id=candidate,
+                parent_id=parent_id,
+                task_ids=plan.task_ids,
+                payload={"hypothesis": hypothesis},
+                rationale=plan.reason,
             )
             for candidate, hypothesis in zip(ids, plan.hypotheses)
         )

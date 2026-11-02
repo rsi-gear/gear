@@ -513,7 +513,6 @@ class Project:
             "proposal_planner",
             "ranker",
             "stop_rule",
-            "meta_policy",
         ):
             value = getattr(algorithm, field, None)
             if value is None:

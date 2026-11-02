@@ -42,14 +42,7 @@ def load_entrypoint(name: str):
 
 def make_algorithm(config):
     options = dict(config.get("options", {}))
-    for key in (
-        "parent_policy",
-        "sampler",
-        "proposal_planner",
-        "ranker",
-        "stop_rule",
-        "meta_policy",
-    ):
+    for key in ("parent_policy", "sampler", "proposal_planner", "ranker", "stop_rule"):
         if key in options:
             value = options[key]
             if isinstance(value, str):

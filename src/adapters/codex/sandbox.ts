@@ -55,7 +55,7 @@ export async function prepareSandbox(
     })
     // Scope authorization remains in the executor; Python owns the Meta task's
     // input presentation, instructions and result format.
-    const meta = builtinPolicy<{ input: Json; schema: Json; prompt: string; instructions: string }>(
+    const meta = builtinPolicy<{ input: Json; schema: Json; prompt: string }>(
       'meta_prepare',
       {
         operation: request.operation,
@@ -71,7 +71,6 @@ export async function prepareSandbox(
     )
     await writeFile(join(root, 'input.json'), JSON.stringify(meta.input), { mode: 0o400 })
     await writeFile(join(root, 'schema.json'), JSON.stringify(meta.schema), { mode: 0o400 })
-    await writeFile(join(root, 'meta-instructions.md'), meta.instructions, { mode: 0o400 })
     if (config.authHome) {
       await writeFile(join(home, '.codex/auth.json'), await codexAuthFile(config.authHome), { mode: 0o600 })
     }
@@ -88,7 +87,6 @@ export async function prepareSandbox(
       ...runtimePaths,
       join(root, 'input.json'),
       join(root, 'schema.json'),
-      join(root, 'meta-instructions.md'),
       candidate,
       output,
       home,

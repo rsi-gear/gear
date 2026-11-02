@@ -15,39 +15,14 @@
 | 阶段顺序与晋级宽度 | `SearchAlgorithm` | `gepa/algorithm.py` | `random_search/algorithm.py` |
 | 结束条件 | `StopRule` | `gepa/stopping.py` | `random_search/stopping.py` |
 
-表中路径相对于 [`python/gear/algorithms`](../python/gear/algorithms)。合同在 [`contracts.py`](../python/gear/algorithms/contracts.py)，可复用流程在 [`workflow.py`](../python/gear/algorithms/workflow.py)。新增算法可以组合这些合同，也可以直接实现 `step`，不需要修改 TS 的操作类型或状态机。模型诊断与生成指令通过下面的 Python `meta_policy` 扩展；默认实现和结果校验也属于 Python。
+表中路径相对于 [`python/gear/algorithms`](../python/gear/algorithms)。合同在 [`contracts.py`](../python/gear/algorithms/contracts.py)，可复用流程在 [`workflow.py`](../python/gear/algorithms/workflow.py)。新增算法可以组合这些合同，也可以直接实现 `step`，不需要修改 TS 的操作类型或状态机。
 
-## 自定义 Meta 诊断与生成
-
-`GEPA` 和 `RandomSearch` 接受 `meta_policy: Callable[[Operation], MetaTask]`。它在纯 Python 决策阶段为 `diagnose_seed` / `generate_candidate` 定义模型指令和结果结构，不直接调用模型。`MetaTask.bind(operation)` 把指令与 schema 保存到 `operation.payload.meta`，保留原有 hypothesis 等字段；运行层先持久化整个决策，再提交执行。返回结果完整传给 Python 的 `ProposalPlanner`，不要求使用默认的 `hypotheses` / `clusters` 字段。
-
-例如，[custom_meta.py](../examples/algorithms/custom_meta.py) 定义了返回 `findings` 的诊断策略及对应的 proposal planner：
-
-```python
-from gear import Project
-from gear.algorithms import GEPA
-from custom_meta import FailureAnalysis, plan_findings
-
-algorithm = GEPA(
-    meta_policy=FailureAnalysis(focus="reusable failure causes"),
-    proposal_planner=plan_findings,
-)
-run = Project.open(".").refine(algorithm=algorithm, rounds=1)
-```
-
-把示例模块放在可导入的 Python 路径中。命名函数和 callable dataclass 与其他策略使用同一套源码、配置及依赖冻结机制。示例只替换诊断，生成继续调用 Python 的 `default_meta(operation)`；也可以为两种 operation 分别定义指令。自己实现 `SearchAlgorithm.step` 时，直接返回 `MetaTask(...).bind(Operation(...))` 即可。需要依赖证据构造动态上下文时，可在 `step` 中从 `SearchView` 计算并写入 operation 的 JSON payload。
-
-`MetaTask.result_schema` 是严格 JSON object schema，不包含运行层保留的 `declined` 字段；框架自动加入布尔 `declined`，为 true 时本次操作记为失败且不发布候选。其他字段由算法定义，业务解释由其 Python planner 完成。支持嵌套 object、array、string、integer、number、boolean、null，标量 enum、description、字符串/数组长度及数值上下界。所有 object 的属性必须列入 required，并指定 `additionalProperties: false`。不支持 `$ref`、正则、组合 schema 或其他未声明关键字，遇到它们会明确拒绝。
-
-Meta task 序列化后最多 64 KiB；schema 最多 256 个节点、16 层嵌套，字符串最多 16,384 个 UTF-16 单元，数组最多 256 项。指令通过只读文件交给模型，启动管道只传固定短提示，避免长指令阻塞进程取消。原有结果文件 1 MiB 上限继续生效。
-
-Python 的 `algorithms/meta.py` 负责默认诊断/生成行为、输入组织和结果解释；`meta_schema.py` 负责通用结构校验。TS Codex adapter 只过滤已授权的 seed 数据、准备执行环境、调用模型、请求 Python 校验结果并保存 receipt。它不识别算法名称或诊断字段。新增算法、改变其诊断格式或生成提示词，只需提交 Python 代码和相应测试。网络、文件写入范围、评测、预算及 held-out 权限仍由运行层控制，Meta 指令不增加这些权限。
-
-生成操作中的 `hypothesis`、`semantic_targets` 与 rationale 如何进入历史经验，以及当前操作如何提供检索语义焦点，也由 Python `algorithms/experience.py` 解释。TS 仅传递已持久化的 operation；历史存储仍校验稳定记录格式，不执行算法 payload 的字段提取。
-
-迁移会改变算法与 provider 的实现身份。新任务使用 Python Meta 合同；历史运行不通过修改身份或重新生成既有决策来兼容恢复。
-
-真实模型最小检查可使用 `scripts/check-python-meta-live.mjs`。在构建后设置 `GEAR_PYTHON`、`GEAR_TEST_CODEX`、`GEAR_TEST_CODEX_MODEL`、`GEAR_TEST_CODEX_AUTH_HOME` 和一个不存在的 `GEAR_TEST_LIVE_OUTPUT` 目录，再运行 `node scripts/check-python-meta-live.mjs`。脚本通过冻结的 Python worker 驱动示例策略，对一个人工构造的 seed 失败执行真实诊断和候选生成，并验证重连后复用 receipt；不运行 Target benchmark，不能据此宣称评测效果提升。测试安装包时另设 `GEAR_TEST_PACKAGE_ROOT` 指向该包目录。
+Meta 的诊断/生成提示词、输入组织、结果结构与解析位于
+[`meta.py`](../python/gear/algorithms/meta.py)。改变诊断方式时，在 Python 中修改
+`prepare_meta`、`parse_meta_result` 及对应的 proposal planner，无需修改 TS。
+经验记录和检索对算法 payload 的解释位于 `experience.py`。
+TS 通过现有 Python policy 通道调用这些函数，仅负责授权、模型执行、预算和结果持久化。
+此次迁移保留原有结果合同，不新增配置式 Meta 策略接口；实现身份变化后不能直接恢复旧运行。
 
 ## 一个文件替换策略
 

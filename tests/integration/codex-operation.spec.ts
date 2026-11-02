@@ -96,6 +96,8 @@ if sys.platform=='darwin':
  assert os.environ['CODEX_CA_CERTIFICATE']==os.environ['SSL_CERT_FILE']
  assert 'BEGIN CERTIFICATE' in Path(os.environ['CODEX_CA_CERTIFICATE']).read_text()
 view=json.loads(Path('../input.json').read_text())
+prompt=sys.stdin.read()
+assert ('Do not edit the candidate.' if view['operation']['kind']=='diagnose_seed' else 'Implement the requested hypothesis') in prompt
 assert len(view['tasks'])==1 and view['tasks'][0]['id']=='seed'
 for path in [${JSON.stringify(join(privateRoot, 'held-out.json'))},${JSON.stringify(join(targets, 'anchor', adapter === 'pi' ? 'AGENTS.md' : 'prompts/system.md'))}]:
  try:
@@ -160,12 +162,7 @@ if 'experience' in view:
   except (PermissionError,FileNotFoundError): pass
 output=Path(args[args.index('--output-last-message')+1])
 schema=json.loads(Path(args[args.index('--output-schema')+1]).read_text())
-if ${JSON.stringify(mode)}.startswith('custom-meta'):
- assert set(schema['required'])=={'findings','declined'}
- assert 'meta-instructions.md' in sys.stdin.read()
- assert 'reusable failure causes' in Path('../meta-instructions.md').read_text()
- assert len(Path('../meta-instructions.md').read_bytes())>4096
-else: assert 'clusters' in schema['required']
+assert 'clusters' in schema['required']
 print(json.dumps({'type':'test.started','pid':os.getpid(),'cwd':os.getcwd()}),flush=True)
 if ${JSON.stringify(mode)}=='slow': time.sleep(2.5)
 if ${JSON.stringify(mode)} in ['hold','connect-cancel']: time.sleep(60)
@@ -179,8 +176,8 @@ if view['operation']['kind']=='diagnose_seed':
 if view['operation']['kind']=='generate_candidate': Path(${JSON.stringify(adapter === 'pi' ? 'AGENTS.md' : 'prompts/system.md')}).write_text('Use the requested output format.')
 if ${JSON.stringify(mode)}=='protected': Path('package.json').write_text('{}')
 if ${JSON.stringify(mode)}=='invalid': output.write_text('not json')
-elif ${JSON.stringify(mode)}.startswith('custom-meta'):
- output.write_text(json.dumps({'findings':[42] if ${JSON.stringify(mode)}=='custom-meta-invalid' else ['Fix formatting'], 'declined':${JSON.stringify(mode)}=='custom-meta-declined'}))
+elif ${JSON.stringify(mode)}=='invalid-result': output.write_text(json.dumps({'summary':'bad','declined':False,'hypotheses':[42],'clusters':[]}))
+elif ${JSON.stringify(mode)}=='declined': output.write_text(json.dumps({'summary':'no change','declined':True,'hypotheses':[],'clusters':[]}))
 else: output.write_text(json.dumps({'summary':'read isolation verified','declined':False,'hypotheses':['Respect output format'],'clusters':[{'task_ids':['seed'],'hypotheses':['Respect output format']}]}))
 if ${JSON.stringify(mode)}=='partialusage': print(json.dumps({'type':'turn.completed','usage':{'output_tokens':3}}),flush=True)
 print(json.dumps({'type':'turn.completed','usage':{'input_tokens':12,'cached_input_tokens':3,'output_tokens':7}}),end='' if ${JSON.stringify(mode)}=='partialusage' else '\\n',flush=True)
@@ -273,28 +270,6 @@ async function untilStarted(directory: string) {
   throw new Error('fake Codex did not start')
 }
 describe('formal Codex operation runner', () => {
-  for (const mode of ['custom-meta', 'custom-meta-invalid', 'custom-meta-declined']) {
-    it(`executes a Python-authored diagnosis with a different result contract: ${mode}`, async () => {
-      const f = await fixture(mode)
-      const operation = { ...f.request.operation, kind: 'diagnose_seed', candidate_id: 'anchor', parent_id: null }
-      const { stdout } = await promisify(execFile)(resolvePythonExecutable(), ['-I', '-B', '-c', `
-import json,sys
-from dataclasses import asdict
-sys.path[:0]=sys.argv[1:3]
-from gear.algorithms import Operation
-from custom_meta import FailureAnalysis
-operation=Operation(**json.loads(sys.argv[3]))
-print(json.dumps(asdict(FailureAnalysis('reusable failure causes ' + '检查证据。'*1000)(operation).bind(operation))))
-`, resolve('python'), resolve('examples/algorithms'), JSON.stringify(operation)])
-      f.request.operation = JSON.parse(stdout) as OperationRequest['operation']
-      const receipt = await f.provider.submit(f.request, signal())
-      expect(receipt.candidate).toBeNull()
-      expect(receipt.result.status).toBe(mode === 'custom-meta' ? 'complete' : 'failed')
-      expect(receipt.result.data).toEqual(mode === 'custom-meta-invalid'
-        ? { error: 'codex-output-invalid' }
-        : { findings: ['Fix formatting'], declined: mode === 'custom-meta-declined' })
-    })
-  }
   it('chains explicit upstream proxies without exposing credentials or bypassing domain restrictions', async () => {
     const requests: string[] = []
     const authorization: Array<string | undefined> = []
@@ -445,12 +420,14 @@ print(json.dumps(asdict(FailureAnalysis('reusable failure causes ' + '检查证�
     expect(receipt.candidate).toBeNull()
     expect(await provider.submit(request, signal())).toEqual(receipt)
   }, 30_000)
-  for (const mode of ['invalid', 'protected'])
+  for (const mode of ['invalid', 'invalid-result', 'declined', 'protected'])
     it(`rejects ${mode} model output without publishing a candidate`, async () => {
       const { provider, request, targets } = await fixture(mode)
       const receipt = await provider.submit(request, signal())
       expect(receipt.result.status).toBe('failed')
       expect(receipt.candidate).toBeNull()
+      if (mode.startsWith('invalid')) expect(receipt.result.data).toEqual({ error: 'codex-output-invalid' })
+      if (mode === 'declined') expect(receipt.result.data).toMatchObject({ declined: true })
       await expect(readFile(join(targets, 'candidate/AGENTS.md'))).rejects.toThrow()
     }, 30_000)
   it('rejects held-out requests before model submission', async () => {
