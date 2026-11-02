@@ -71,6 +71,53 @@ class MetaTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.parse(response)
 
+    def test_custom_schema_preserves_local_references_and_instance_literals(self):
+        schema = {
+            "$defs": {"Choice": {"type": "string", "enum": ["anchor", "older"]}},
+            "type": "object",
+            "properties": {
+                "choice": {"$ref": "#/$defs/Choice"},
+                "child": {"anyOf": [{"$ref": "#"}, {"type": "null"}]},
+                "alias": {"$ref": "#/properties/choice"},
+                "$ref": {"type": "string"},
+                "literal": {"const": {"$ref": "#/do-not-change"}},
+                "external": {"$ref": "https://example.invalid/schema#/$defs/Choice"},
+                "resource": {"$id": "https://example.invalid/other", "$ref": "#"},
+            },
+            "required": ["choice", "child"],
+            "additionalProperties": False,
+            "default": {"$ref": "#"},
+            "examples": [{"$ref": "#/$defs/Choice"}],
+        }
+        original = copy.deepcopy(schema)
+        self.input["operation"]["payload"] = {"meta": {"prompt": "Choose", "schema": schema}}
+        envelope = prepare_meta(self.input)["schema"]
+        nested = envelope["properties"]["data"]
+
+        def resolve(ref):
+            value = envelope
+            for key in ref[2:].split("/"):
+                value = value[key]
+            return value
+
+        self.assertEqual(resolve(nested["properties"]["choice"]["$ref"]), schema["$defs"]["Choice"])
+        self.assertIs(resolve(nested["properties"]["child"]["anyOf"][0]["$ref"]), nested)
+        self.assertEqual(
+            resolve(nested["properties"]["alias"]["$ref"]), nested["properties"]["choice"]
+        )
+        for field in ("literal", "$ref", "external", "resource"):
+            self.assertEqual(nested["properties"][field], schema["properties"][field])
+        for field in ("default", "examples"):
+            self.assertEqual(nested[field], schema[field])
+        self.assertEqual(schema, original)
+        # An empty ID keeps the current resource; it must not disable rebasing.
+        schema["$id"] = ""
+        prepared = prepare_meta(self.input)["schema"]
+        self.assertEqual(
+            prepared["properties"]["data"]["properties"]["choice"]["$ref"],
+            "#/properties/data/$defs/Choice",
+        )
+
     def test_custom_meta_rejects_malformed_configuration(self):
         for meta in (
             None,

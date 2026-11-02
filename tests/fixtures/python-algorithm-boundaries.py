@@ -5,6 +5,7 @@ Screening is an algorithm decision; it never manufactures evaluation evidence.
 """
 
 import re
+from dataclasses import replace
 
 from gear.algorithms import AlgorithmState, Decision, Operation
 
@@ -12,6 +13,7 @@ from gear.algorithms import AlgorithmState, Decision, Operation
 class HistoricalBase:
     def __init__(self, result_key="base_candidate_id"):
         self.result_key = result_key
+        self.configuration = {"result_key": result_key}
 
     def step(self, view, state):
         if not view.completed:
@@ -138,3 +140,34 @@ class ScreenBeforeEvaluation:
             ),
             "critic accepted candidate",
         )
+
+
+class SDKExample(HistoricalBase):
+    """One-file author algorithm: evaluate, diagnose, generate, screen, evaluate, stop."""
+
+    def step(self, view, state):
+        if not view.evidence:
+            return Decision(
+                state,
+                (
+                    Operation(
+                        "evaluate_seed", candidate_id="anchor", task_ids=("seed",)
+                    ),
+                ),
+                "baseline",
+            )
+        if (
+            view.completed
+            and view.completed[-1].kind == "evaluate_seed"
+            and view.completed[-1].candidate_id != "anchor"
+        ):
+            return Decision(state, (Operation("stop"),), "finished")
+        meta = tuple(
+            result
+            for result in view.completed
+            if result.kind in ("diagnose_seed", "generate_candidate")
+        )
+        view = replace(view, completed=meta)
+        if not meta or meta[-1].kind == "diagnose_seed":
+            return super().step(view, state)
+        return ScreenBeforeEvaluation().step(view, state)

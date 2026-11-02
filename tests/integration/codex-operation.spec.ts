@@ -10,6 +10,7 @@ import { fileLockHeld } from '../../src/adapters/storage/file-lock.js'
 import { registerOperation, withJournal } from '../../src/adapters/codex/journal.js'
 import type { CodexInput } from '../../src/adapters/codex/contracts.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { initProject } from '../../src/application/init.js'
 import { ProcessOperationProvider } from '../../src/adapters/process/operation-provider.js'
 import { configuredCancellation } from '../../src/application/cancellation.js'
 import { describeCodex } from '../../src/adapters/codex/identity.js'
@@ -129,7 +130,7 @@ if ${JSON.stringify(mode)}.startswith('connect-'):
  assert b'200' in header,header
  tunnel.shutdown(socket.SHUT_WR)
  tunnel.close()
-if 'experience' in view:
+if 'experience' in view and ${JSON.stringify(mode)}!='historical-sdk':
  memory=view['experience']
  assert memory['cards'][0]['classification']['effect']=='regressed'
  query=subprocess.run(memory['reader']['argv'],input=json.dumps({'action':'query','query':{'effects':['regressed']}}),text=True,capture_output=True)
@@ -185,9 +186,10 @@ elif ${JSON.stringify(mode)}.startswith('historical') and view['operation']['kin
  custom=view['operation']['payload']['meta']
  key=custom['schema']['required'][0]
  assert schema['properties']['data']==custom['schema']
- assert schema['properties']['data']['properties'][key]['enum']==['anchor','older']
+ choices=schema['properties']['data']['properties'][key]['enum']
+ assert choices==(['anchor'] if ${JSON.stringify(mode)}=='historical-sdk' else ['anchor','older'])
  assert 'operation.payload.meta.prompt' in prompt and 'even when all tasks passed' in custom['prompt']
- output.write_text(json.dumps({'declined':False,'data':{key:'outside' if ${JSON.stringify(mode)}=='historical-invalid' else 'older'}}))
+ output.write_text(json.dumps({'declined':False,'data':{key:'outside' if ${JSON.stringify(mode)}=='historical-invalid' else choices[-1]}}))
 elif ${JSON.stringify(mode)}.startswith('historical'):
  assert schema['properties']['data']=={'type':'string'}
  output.write_text(json.dumps({'declined':False,'data':'Updated the selected candidate.'}))
@@ -321,6 +323,53 @@ describe('formal Codex operation runner', () => {
       expect(generated.result.data).toEqual({ declined: false, data: 'Updated the selected candidate.' })
     } finally { await worker.dispose() }
   }, 30_000)
+
+  it('public Python SDK freezes one external algorithm file, its configuration and recovery', async () => {
+    const f = await fixture('historical-sdk')
+    const profiles = join(f.root, 'profiles'), project = join(f.root, 'sdk-project')
+    await mkdir(profiles)
+    vi.stubEnv('GEAR_PROFILE_ROOT', profiles)
+    const python = resolvePythonExecutable()
+    // Persist the evaluation receipt, then lose its reply to require a fresh SDK resume.
+    const targetProvider = join(f.root, 'target-provider.mjs')
+    await writeFile(targetProvider, (await readFile(resolve('tests/fixtures/project-provider.mjs'), 'utf8')).replace(
+      'process.stdout.write(JSON.stringify(result))',
+      "if (action === 'submit' && request.operation.kind === 'evaluate_seed' && request.operation.candidate_id !== 'anchor') throw new Error('lost SDK evaluation reply'); process.stdout.write(JSON.stringify(result))"))
+    await writeFile(join(profiles, 'sdk-target.json'), JSON.stringify({ command: [process.execPath, targetProvider],
+      workingDirectory: f.root, passEnv: ['PYTHONPATH'], timeoutMs: 30_000,
+      configuration: { python, receipts: join(f.root, 'target-receipts') } }))
+    await writeFile(join(profiles, 'sdk-meta.json'), JSON.stringify(f.profile))
+    await initProject(project, { adapter: 'pi', template: 'text', targetProfile: 'sdk-target', metaProfile: 'sdk-meta' })
+    await writeFile(join(project, 'tasks.csv'), 'id,instruction,expected,family,split\nseed,Produce the requested answer.,42,format,seed\nheld-out,Private task.,43,private-family,held_out\n')
+    if (process.env.GEAR_TEST_LINUX_ISOLATION)
+      await writeFile(join(project, 'gear.yaml'), await readFile(join(project, 'gear.yaml'), 'utf8') + `\nsandbox: {linux_isolation: ${process.env.GEAR_TEST_LINUX_ISOLATION}}\n`)
+    const ownFile = join(project, 'own_algorithm.py')
+    await writeFile(ownFile, await readFile(resolve('tests/fixtures/python-algorithm-boundaries.py')))
+    const sdk = (code: string) => promisify(execFile)(python, ['-c', code], { cwd: project, timeout: 60_000,
+      env: { ...process.env, PYTHONPATH: resolve('python'), GEAR_PYTHON: python,
+        GEAR_COMMAND: JSON.stringify([process.execPath, resolve('lib/cli.js')]) } })
+    const failed = await sdk("from gear import Project; from own_algorithm import SDKExample; Project.open().refine(algorithm=SDKExample(result_key='sdk_selected'), rounds=1)").then(() => null, error => error)
+    expect(failed?.stderr).toMatch(/lost SDK evaluation reply|process-operation-failed/)
+    const runs = join(project, '.gear/runs'), [id] = await readdir(runs)
+    expect(id).toBeTruthy()
+    const runRoot = join(runs, id!), journalPath = join(runRoot, 'journal.json')
+    const before = JSON.parse(await readFile(journalPath, 'utf8'))
+    expect(before.status).toBe('needs_recovery')
+    expect(before.spec.algorithm).toEqual({ name: 'own_algorithm:SDKExample', options: { result_key: 'sdk_selected' } })
+    expect(before.operations.map((entry: { request: OperationRequest }) => entry.request.operation.kind)).toEqual(['evaluate_seed', 'diagnose_seed', 'generate_candidate', 'evaluate_seed'])
+    expect(before.operations[1].receipt.result.data.data).toEqual({ sdk_selected: 'anchor' })
+    expect(before.operations[2].receipt.result.candidate_change.omitted_patches).toBe(0)
+    expect(before.operations[3].status).toBe('submitted')
+    expect(await readFile(join(runRoot, 'algorithm/own_algorithm.py'), 'utf8')).toBe(await readFile(ownFile, 'utf8'))
+    await writeFile(ownFile, "raise RuntimeError('mutable author file must not be reloaded')\n")
+    await sdk(`from gear import Project; Project.open().resume(${JSON.stringify(id)})`)
+    const after = JSON.parse(await readFile(journalPath, 'utf8'))
+    expect(after.status).toBe('completed')
+    expect(after.operations).toHaveLength(4)
+    expect(after.operations[1].receipt).toEqual(before.operations[1].receipt)
+    expect(after.operations[2].receipt).toEqual(before.operations[2].receipt)
+    expect(after.decisions.at(-1).decision.operations[0].kind).toBe('stop')
+  }, 90_000)
 
   it('chains explicit upstream proxies without exposing credentials or bypassing domain restrictions', async () => {
     const requests: string[] = []

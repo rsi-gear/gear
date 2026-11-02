@@ -36,7 +36,8 @@ Operation(
 交给模型，不把长指令写进进程控制管道。执行结果使用固定信封
 `{"declined": bool, "data": ...}`；算法在后续 `step` 中读取 `result.data["data"]`，
 自行检查字段、候选范围和业务含义，再决定下一步。Schema 指导模型输出，不能代替算法校验。
-未提供 `meta` 时保留现有 GEPA/RandomSearch 的默认诊断合同。
+未提供 `meta` 时保留现有 GEPA/RandomSearch 的默认诊断合同。响应格式中的文档内
+`$ref` 会随嵌套位置调整；`const`、默认值和示例等实际数据保持原样。
 
 生成结果的可选 `OperationResult.candidate_change` 提供封存候选相对父代的真实文件差异，
 与模型自述分开；执行层复用已有 `targetDiff`，在 submit/恢复 inspect 时重建。
@@ -139,6 +140,10 @@ class StopAfterInspection:
 scope 的 `data.weights` 必须明确覆盖任务集合，才能在档案中生成同范围比较；可同时保存 stage、round 与 sampling 信息。其他 data 保持算法自述，不能据此替代真实 receipt。公共纯投影 `algorithms/research.py` 计算档案的描述性比较，不调用算法或重新抽样；每套算法仍只需维护同样的六个模块。读取命令与字段见[报告指南](guide/zh-CN/results.md)。
 
 ## 身份与恢复
+
+自定义算法若有非默认构造参数，在自己的类中提供 `configuration` 字典，键对应构造参数，
+例如 `self.configuration = {"result_key": result_key}`。SDK 据此重建算法，不会自动复制
+实例的所有属性；配置和依赖声明都只需写在算法自己的 Python 文件中。
 
 SDK 冻结命名函数/类所在文件、声明的 `source_dependencies` 和 JSON 策略配置。局部函数、lambda、不可序列化对象会被拒绝。依赖其他本地模块时，在算法或策略上声明 `(module_name, file_path)` 列表；每个文件的真实字节进入身份。
 

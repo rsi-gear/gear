@@ -5,6 +5,49 @@ from __future__ import annotations
 from typing import Any
 
 
+def _response_schema(schema: Any) -> Any:
+    """Keep document-local references valid when nesting the algorithm response."""
+    if isinstance(schema, list):
+        return [_response_schema(item) for item in schema]
+    if not isinstance(schema, dict) or schema.get("$id"):
+        return schema
+    result = dict(schema)
+    ref = schema.get("$ref")
+    if isinstance(ref, str) and (ref == "#" or ref.startswith("#/")):
+        result["$ref"] = "#/properties/data" + ref[1:]
+    for key in (
+        "$defs",
+        "definitions",
+        "properties",
+        "patternProperties",
+        "dependentSchemas",
+        "dependencies",
+    ):
+        if isinstance(schema.get(key), dict):
+            result[key] = {name: _response_schema(value) for name, value in schema[key].items()}
+    for key in (
+        "items",
+        "prefixItems",
+        "additionalItems",
+        "additionalProperties",
+        "contains",
+        "propertyNames",
+        "not",
+        "if",
+        "then",
+        "else",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+        "allOf",
+        "anyOf",
+        "oneOf",
+        "contentSchema",
+    ):
+        if key in schema:
+            result[key] = _response_schema(schema[key])
+    return result
+
+
 def _custom_meta(operation: dict[str, Any]) -> dict[str, Any] | None:
     payload = operation.get("payload")
     if not isinstance(payload, dict) or "meta" not in payload:
@@ -34,7 +77,10 @@ def prepare_meta(value: dict[str, Any]) -> dict[str, Any]:
             "schema": {
                 "type": "object",
                 "additionalProperties": False,
-                "properties": {"declined": {"type": "boolean"}, "data": meta["schema"]},
+                "properties": {
+                    "declined": {"type": "boolean"},
+                    "data": _response_schema(meta["schema"]),
+                },
                 "required": ["declined", "data"],
             },
             "prompt": (
