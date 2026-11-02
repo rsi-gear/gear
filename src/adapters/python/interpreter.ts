@@ -7,7 +7,7 @@ import { GearError } from '../../domain/errors.js'
 export const packageRoot = fileURLToPath(new URL('../../../', import.meta.url))
 export const pythonSourceRoot = join(packageRoot, 'python')
 export const managedPythonRoot = (): string =>
-  join(process.env.GEAR_HOME ?? join(homedir(), '.local', 'share', 'gear'), 'python', '0.2.1')
+  join(process.env.GEAR_HOME ?? join(homedir(), '.local', 'share', 'gear'), 'python', '0.2.2')
 
 /** Shared selection for asynchronous author tools and synchronous policy workers. */
 export function resolvePythonExecutable(testOverride = false): string {

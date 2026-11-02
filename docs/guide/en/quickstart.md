@@ -1,6 +1,6 @@
 # Quick start
 
-This page uses the Gear 0.2.1 `gear` CLI. Use compatible Node (22.x from
+This page uses the Gear 0.2.2 `gear` CLI. Use compatible Node (22.x from
 22.19, or 24+), and Python 3.10+; development and CPU tests use Python 3.12.
 Linux algorithm isolation also requires bubblewrap, socat and ripgrep; macOS
 uses the system sandbox. Hitch/Harbor tasks need their runtime and Docker.
@@ -10,7 +10,7 @@ uses the system sandbox. Hitch/Harbor tasks need their runtime and Docker.
 ```sh
 npm ci
 npm pack
-npm install --global ./rsi-gear-0.2.1.tgz
+npm install --global ./rsi-gear-0.2.2.tgz
 gear setup --python python3.12
 gear doctor
 ```
