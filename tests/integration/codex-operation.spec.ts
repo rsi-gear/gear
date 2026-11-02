@@ -106,7 +106,7 @@ view=json.loads(Path('../input.json').read_text())
 prompt=sys.stdin.read()
 assert ('Do not edit the candidate.' if view['operation']['kind']=='diagnose_seed' else 'Change only the allowed mutation paths.') in prompt
 assert len(view['tasks'])==1 and view['tasks'][0]['id']=='seed'
-for path in [${JSON.stringify(join(privateRoot, 'held-out.json'))},${JSON.stringify(join(targets, 'anchor', adapter === 'pi' ? 'AGENTS.md' : 'prompts/system.md'))}]:
+for path in ([] if ${JSON.stringify(mode)}=='meta-sdk' else [${JSON.stringify(join(privateRoot, 'held-out.json'))},${JSON.stringify(join(targets, 'anchor', adapter === 'pi' ? 'AGENTS.md' : 'prompts/system.md'))}]):
  try:
   Path(path).read_text()
   raise AssertionError('PRIVATE_FILE_READABLE')
@@ -133,7 +133,7 @@ if ${JSON.stringify(mode)}.startswith('connect-'):
  assert b'200' in header,header
  tunnel.shutdown(socket.SHUT_WR)
  tunnel.close()
-if 'experience' in view and ${JSON.stringify(mode)}!='historical-sdk':
+if 'experience' in view and ${JSON.stringify(mode)} not in ['historical-sdk','meta-sdk']:
  memory=view['experience']
  def read_memory(body):
   return subprocess.run(memory['reader']['argv'],input=json.dumps(body),text=True,capture_output=True)
@@ -216,6 +216,17 @@ if ${JSON.stringify(mode)}=='protected': Path('package.json').write_text('{}')
 if ${JSON.stringify(mode)}=='invalid': output.write_text('not json')
 elif ${JSON.stringify(mode)}=='invalid-result': output.write_text(json.dumps({'summary':'bad','declined':False,'hypotheses':[42],'clusters':[]}))
 elif ${JSON.stringify(mode)}=='declined': output.write_text(json.dumps({'summary':'no change','declined':True,'hypotheses':[],'clusters':[]}))
+elif ${JSON.stringify(mode)}=='meta-sdk' and view['operation']['kind']=='diagnose_seed':
+ custom=view['operation']['payload']['meta']
+ assert schema['properties']['data']==custom['schema']
+ ids=custom['schema']['properties']['base_candidate_id']['enum']
+ assert ids==[item['candidate_id'] for item in view['operation']['payload']['base_candidates']]
+ chosen='r0-candidate-0' if 'r0-candidate-0' in ids else ids[0]
+ output.write_text(json.dumps({'declined':False,'data':{'summary':'Reuse a mechanism from the seed archive','base_candidate_id':chosen,'hypothesis':'Preserve the parser recovery behavior'}}))
+elif ${JSON.stringify(mode)}=='meta-sdk':
+ custom=view['operation']['payload']['meta']
+ assert schema['properties']['data']==custom['schema']
+ output.write_text(json.dumps({'declined':False,'data':{'summary':'Use the selected historical base'}}))
 elif ${JSON.stringify(mode)}.startswith('historical') and view['operation']['kind']=='diagnose_seed':
  custom=view['operation']['payload']['meta']
  key=custom['schema']['required'][0]
@@ -404,6 +415,63 @@ describe('formal Codex operation runner', () => {
     expect(after.operations[2].receipt).toEqual(before.operations[2].receipt)
     expect(after.decisions.at(-1).decision.operations[0].kind).toBe('stop')
   }, 90_000)
+
+  it('recovers Meta-Harness through the public SDK with frozen policy and history-selected bases', async () => {
+    const f = await fixture('meta-sdk')
+    const profiles = join(f.root, 'profiles'), project = join(f.root, 'meta-sdk-project')
+    await mkdir(profiles)
+    vi.stubEnv('GEAR_PROFILE_ROOT', profiles)
+    const python = resolvePythonExecutable()
+    const targetProvider = join(f.root, 'meta-sdk-target-provider.mjs')
+    await writeFile(targetProvider, (await readFile(resolve('tests/fixtures/project-provider.mjs'), 'utf8')).replace(
+      'process.stdout.write(JSON.stringify(result))',
+      "if (action === 'submit' && request.operation.kind === 'evaluate_seed') { const marker = join(configuration.receipts, 'fail-once'); try { await readFile(marker) } catch { await writeFile(marker, 'done'); throw new Error('lost Meta-Harness SDK evaluation reply') } } process.stdout.write(JSON.stringify(result))",
+    ))
+    await writeFile(join(profiles, 'meta-sdk-target.json'), JSON.stringify({
+      command: [process.execPath, targetProvider], workingDirectory: f.root, passEnv: ['PYTHONPATH'],
+      timeoutMs: 30_000, configuration: { python, receipts: join(f.root, 'meta-sdk-target-receipts') },
+    }))
+    await writeFile(join(profiles, 'meta-sdk-codex.json'), JSON.stringify(f.profile))
+    await initProject(project, { adapter: 'pi', template: 'text', targetProfile: 'meta-sdk-target', metaProfile: 'meta-sdk-codex' })
+    await writeFile(join(project, 'tasks.csv'), 'id,instruction,expected,family,split\nseed,Produce the requested answer.,42,format,seed\nheld-out,Private task.,43,private-family,held_out\n')
+    if (process.env.GEAR_TEST_LINUX_ISOLATION) await writeFile(join(project, 'gear.yaml'),
+      (await readFile(join(project, 'gear.yaml'), 'utf8')) + `\nsandbox: {linux_isolation: ${process.env.GEAR_TEST_LINUX_ISOLATION}}\n`)
+    const policyPath = join(project, 'meta_policy.py')
+    await writeFile(policyPath, [
+      'from gear.algorithms.contracts import ProposalPlan', '',
+      'def preserve_diagnosis(view):', '    diagnosis = view.diagnosis',
+      '    hypothesis = diagnosis["hypothesis"]', '    summary = diagnosis["summary"]',
+      '    return ProposalPlan((summary + "\\nSelected mechanism: " + hypothesis,), tuple(sorted(task.id for task in view.tasks)), "frozen Meta-Harness SDK policy")', '',
+    ].join('\n'))
+    const sdk = (code: string) => promisify(execFile)(python, ['-c', code], {
+      cwd: project, timeout: 90_000, env: { ...process.env, PYTHONPATH: resolve('python'), GEAR_PYTHON: python,
+        GEAR_COMMAND: JSON.stringify([process.execPath, resolve('lib/cli.js')]) },
+    })
+    const failed = await sdk('from gear import Project; from gear.algorithms import MetaHarness; from meta_policy import preserve_diagnosis; Project.open().refine(algorithm=MetaHarness(proposal_planner=preserve_diagnosis), rounds=2)').then(() => null, error => error)
+    expect(failed).not.toBeNull()
+    expect([failed?.stderr, failed?.message].filter(Boolean).join('\n')).toMatch(/lost Meta-Harness SDK evaluation reply|process-operation-failed/)
+    const runs = join(project, '.gear/runs'), [id] = await readdir(runs)
+    expect(id).toBeTruthy()
+    const runRoot = join(runs, id!), journalPath = join(runRoot, 'journal.json')
+    const before = JSON.parse(await readFile(journalPath, 'utf8'))
+    expect(before.status).toBe('needs_recovery')
+    expect(before.spec.algorithm.options.proposal_planner).toBe('meta_policy:preserve_diagnosis')
+    expect(before.operations.map((entry: { request: OperationRequest }) => entry.request.operation.kind)).toEqual(['evaluate_seed'])
+    expect(before.operations[0].status).toBe('submitted')
+    expect(await readFile(join(runRoot, 'algorithm/meta_policy.py'), 'utf8')).toBe(await readFile(policyPath, 'utf8'))
+    await writeFile(policyPath, "raise RuntimeError('recovery must use frozen Meta-Harness policy')\n")
+    await sdk(`from gear import Project; Project.open().resume(${JSON.stringify(id)})`)
+    const after = JSON.parse(await readFile(journalPath, 'utf8'))
+    expect(after.status).toBe('completed')
+    const diagnoses = after.operations.filter((entry: { request: OperationRequest }) => entry.request.operation.kind === 'diagnose_seed')
+    expect(diagnoses).toHaveLength(2)
+    expect(diagnoses[0].request.operation.payload.meta.schema.required).toEqual(['summary', 'base_candidate_id', 'hypothesis'])
+    const generated = after.operations.filter((entry: { request: OperationRequest }) => entry.request.operation.kind === 'generate_candidate')
+    expect(generated).toHaveLength(2)
+    const firstCandidateId = generated[0].request.operation.candidate_id
+    expect(diagnoses[1].request.operation.payload.base_candidates.map((item: { candidate_id: string }) => item.candidate_id)).toContain(firstCandidateId)
+    expect(generated[1].request.operation.parent_id).toBe(firstCandidateId)
+  }, 120_000)
 
   it('chains explicit upstream proxies without exposing credentials or bypassing domain restrictions', async () => {
     const requests: string[] = []
