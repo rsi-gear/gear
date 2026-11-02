@@ -76,6 +76,8 @@ jobs:
         run: sudo env "PATH=$PATH" "GEAR_PYTHON=$GEAR_PYTHON" "GEAR_TRAINING_TEST_PYTHON=$GEAR_TRAINING_TEST_PYTHON" npm test -- --maxWorkers=4
       # The build above already ran the same command as the prepack hook.
       - run: npm pack --dry-run --ignore-scripts
+      - name: Verify the packed tarball installs globally
+        run: node scripts/check-global-install.mjs
       - name: Test the published project API from an external package
         run: node scripts/check-public-api-package.mjs
       - name: Test the installed npm and Python project journey
