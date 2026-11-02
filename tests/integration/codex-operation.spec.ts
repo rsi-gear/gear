@@ -90,7 +90,7 @@ async function fixture(mode = 'success', adapter: 'pi' | 'dsh' = 'pi', prepare =
   await writeFile(
     executable,
     `#!${fakePython}
-import json,os,sys,time,subprocess
+import base64,json,os,sys,time,subprocess
 from pathlib import Path
 if '--version' in sys.argv:
  print('codex-cli 0.145.0'); sys.exit(0)
@@ -148,36 +148,52 @@ if 'experience' in view and ${JSON.stringify(mode)}!='historical-sdk':
   assert json.loads(trace.stdout)['items'][0]['data']=='historical seed trace'
  if memory['cards']:
   assert any(card['classification']['effect']=='regressed' for card in memory['cards'])
-  query=subprocess.run(memory['reader']['argv'],input=json.dumps({'action':'query','query':{'effects':['regressed']}}),text=True,capture_output=True)
+  query=subprocess.run(memory['reader']['argv'],input=json.dumps({'action':'query'}),text=True,capture_output=True)
   assert query.returncode==0,query.stdout+query.stderr
   page=json.loads(query.stdout)
   assert page['total']==2 and page['snapshot_digest']==memory['snapshot_digest']
   anchor=next(item['card'] for item in page['items'] if item['card']['candidate_id']=='anchor')
+  assert anchor['classification']['effect']=='improved'
   detail=read_memory({'action':'read','ref':anchor['ref'],'view':'diff'})
   assert detail.returncode==0,detail.stdout+detail.stderr
   assert json.loads(detail.stdout)['items'][0]['patch']=='-before\\n+after\\n'
   rejected=next(item['card'] for item in page['items'] if item['card']['candidate_id']=='rejected-history')
-  source=read_memory({'action':'read','ref':rejected['ref'],'view':'source'})
-  assert source.returncode==0,source.stdout+source.stderr
-  assert json.loads(source.stdout)['items'][0]['content']==${JSON.stringify(Buffer.from('rejected implementation from an earlier round.\n').toString('base64'))}
+  assert rejected['classification']['effect']=='regressed'
+  source_items=[]
+  source_cursor=None
+  while True:
+   source_page=read_memory({'action':'read','ref':rejected['ref'],'view':'source','limit':2,'cursor':source_cursor})
+   assert source_page.returncode==0,source_page.stdout+source_page.stderr
+   source_page=json.loads(source_page.stdout)
+   source_items.extend(source_page['items'])
+   source_cursor=source_page['next_cursor']
+   if source_cursor is None: break
+  source_items=sorted(source_items,key=lambda item:item['part'])
+  assert len(source_items)>1 and all(item['parts']==len(source_items) for item in source_items)
+  source_bytes=b''.join(base64.b64decode(item['content']) for item in source_items)
+  assert len(source_bytes)==70*1024 and set(source_bytes)=={ord('R')}
+  diff=read_memory({'action':'read','ref':rejected['ref'],'view':'diff'})
+  assert diff.returncode==0 and json.loads(diff.stdout)['items'][0]['patch_status']=='too-large'
  if 'trajectory' in memory['reader'] and memory['cards']:
-  ref=anchor['ref']
-  sources=read_memory({'action':'read','ref':ref,'view':'trajectory'})
-  assert sources.returncode==0,sources.stdout+sources.stderr
-  source=json.loads(sources.stdout)['items'][0]['ref']
-  params={'action':'trajectory','ref':ref,'source_ref':source,'query':{'limit':1}}
-  trace=read_memory(params)
-  assert trace.returncode==0,trace.stdout+trace.stderr
-  trace_page=json.loads(trace.stdout)
-  assert trace_page['items'][0]['data']=='historical seed trace'
-  assert trace_page['child_sessions']=='not-included'
-  params['query']['cursor']=trace_page['next_cursor']
-  second=read_memory(params)
-  assert second.returncode==0,second.stdout+second.stderr
-  assert json.loads(second.stdout)['items'][0]['seq']==1
-  params['source_ref']='trajectory:'+'f'*64
-  denied=read_memory(params)
-  assert denied.returncode!=0 and 'trajectory-outside-snapshot' in denied.stdout+denied.stderr
+  for historical_card,expected_trace in [(anchor,'successful seed trace'),(rejected,'failed seed trace')]:
+   ref=historical_card['ref']
+   sources=read_memory({'action':'read','ref':ref,'view':'trajectory'})
+   assert sources.returncode==0,sources.stdout+sources.stderr
+   source=json.loads(sources.stdout)['items'][0]['ref']
+   params={'action':'trajectory','ref':ref,'source_ref':source,'query':{'limit':1}}
+   trace=read_memory(params)
+   assert trace.returncode==0,trace.stdout+trace.stderr
+   trace_page=json.loads(trace.stdout)
+   assert trace_page['items'][0]['data']==expected_trace
+   assert trace_page['child_sessions']=='not-included'
+   if historical_card is anchor:
+    params['query']['cursor']=trace_page['next_cursor']
+    second=read_memory(params)
+    assert second.returncode==0,second.stdout+second.stderr
+    assert json.loads(second.stdout)['items'][0]['seq']==1
+    params['source_ref']='trajectory:'+'f'*64
+    denied=read_memory(params)
+    assert denied.returncode!=0 and 'trajectory-outside-snapshot' in denied.stdout+denied.stderr
   try:
    Path(${JSON.stringify(join(root, 'hitch-private/private.txt'))}).read_text()
    raise AssertionError('PROVIDER_PRIVATE_FILE_READABLE')
@@ -435,31 +451,37 @@ describe('formal Codex operation runner', () => {
     expect(firstRoundReceipt.result.status).toBe('complete')
     expect(firstRoundReceipt.candidate).toMatchObject({ id: 'candidate-round-1', parent_id: 'anchor' })
     const trajectory_refs: TrajectoryReference[] = []
+    const rejectedTrajectoryRefs: TrajectoryReference[] = []
     if (withTrajectory) {
       const hitchRoot = join(root, 'hitch-private'), run = 'run_' + 'a'.repeat(32), executable = join(root, 'hitch.mjs')
       await mkdir(hitchRoot)
       await writeFile(join(hitchRoot, 'private.txt'), 'PROVIDER_PRIVATE_CANARY')
-      await writeFile(join(hitchRoot, run + '.json'), JSON.stringify([{ seq: 0, type: 'assistant/message', data: 'historical seed trace' }, { seq: 1, type: 'tool/result', data: 'result' }]))
       await writeFile(executable, `#!${process.execPath}\nimport {trajectoryFixture} from ${JSON.stringify(new URL('../fixtures/trajectory-hitch.mjs', import.meta.url).href)};await trajectoryFixture();`, { mode: 0o700 })
       // The detached operation runs the installed JS adapter. Bind that actual implementation.
       const { HitchArtifactReader } = await import(new URL('../../lib/adapters/hitch/trajectory.js', import.meta.url).href)
       const reader = new HitchArtifactReader(executable, hitchRoot)
-      const artifact = await reader.capture(run, 'seed', 0, signal())
-      expect(artifact.status).toBe('available')
-      const source = await new TrajectoryStore(join(context.targets, '../trajectory-sources')).save({ version: 1, run_id: 'run', candidate_id: 'anchor', operation_id: canonicalDigest('evaluation'), origin_run_id: 'run', origin_candidate_id: 'anchor', receipt_digest: canonicalDigest('receipt'), reader_identity: canonicalDigest(reader.descriptor), partition: 'seed', artifact })
-      trajectory_refs.push({ ref: 'trajectory:' + source.digest.slice(7), candidate_id: 'anchor', task_id: 'seed', repetition: 0, status: artifact.status, content_digest: artifact.content_digest, reason: null })
+      const trajectoryStore = new TrajectoryStore(join(context.targets, '../trajectory-sources'))
+      const saveTrajectory = async (candidateId: string, text: string, destination: TrajectoryReference[]) => {
+        await writeFile(join(hitchRoot, run + '.json'), JSON.stringify([{ seq: 0, type: 'assistant/message', data: text }, { seq: 1, type: 'tool/result', data: 'result' }]))
+        const artifact = await reader.capture(run, 'seed', 0, signal())
+        expect(artifact.status).toBe('available')
+        const source = await trajectoryStore.save({ version: 1, run_id: 'run', candidate_id: candidateId, operation_id: canonicalDigest(['evaluation', candidateId]), origin_run_id: 'run', origin_candidate_id: candidateId, receipt_digest: canonicalDigest(['receipt', candidateId]), reader_identity: canonicalDigest(reader.descriptor), partition: 'seed', artifact })
+        destination.push({ ref: 'trajectory:' + source.digest.slice(7), candidate_id: candidateId, task_id: 'seed', repetition: 0, status: artifact.status, content_digest: artifact.content_digest, reason: null })
+      }
+      await saveTrajectory('anchor', 'successful seed trace', trajectory_refs)
+      await saveTrajectory('rejected-history', 'failed seed trace', rejectedTrajectoryRefs)
       provider = await ProcessOperationProvider.connect(profile, { ...context, artifactReader: reader.descriptor, experiencePython: resolvePythonExecutable() } as unknown as Json)
     }
     await provider.prepareAdmission()
     const record = builtinPolicy<ExperienceRecord>('experience_record', {
       source: { run_id: 'run' }, candidate: { id: 'anchor', digest: canonicalDigest('anchor'), parent_id: 'older' },
       parent: { id: 'older', digest: canonicalDigest('older'), parent_id: null }, task_ids: ['seed'], repetitions: 1,
-      objective: null, evidence: ['older', 'anchor'].map((candidate_id, index) => ({ candidate_id, task_id: 'seed', repetition: 0, status: 'valid', score: index === 0 ? 1 : 0 })),
+      objective: null, evidence: ['older', 'anchor'].map((candidate_id, index) => ({ candidate_id, task_id: 'seed', repetition: 0, status: 'valid', score: index === 0 ? 0 : 1 })),
       trajectory_refs,
       proposal: { rationale: 'format', hypothesis: 'format', semantic_targets: [] },
       change: { files: [{ path: 'AGENTS.md', patch: '-before\n+after\n' }] },
     })
-    const rejectedSource = Buffer.from('rejected implementation from an earlier round.\n').toString('base64')
+    const rejectedSource = Buffer.from('R'.repeat(70 * 1024)).toString('base64')
     const rejectedRecord = builtinPolicy<ExperienceRecord>('experience_record', {
       source: { run_id: 'run' },
       candidate: { id: 'rejected-history', digest: canonicalDigest('rejected-history'), parent_id: 'anchor' },
@@ -469,13 +491,15 @@ describe('formal Codex operation runner', () => {
         { candidate_id: 'anchor', task_id: 'seed', repetition: 0, status: 'valid', score: 1 },
         { candidate_id: 'rejected-history', task_id: 'seed', repetition: 0, status: 'valid', score: 0.25 },
       ],
+      trajectory_refs: rejectedTrajectoryRefs,
       proposal: { rationale: 'preserve output', hypothesis: 'preserve output', semantic_targets: [] },
       change: {
-        files: [{ path: 'AGENTS.md', patch: '-previous\n+rejected\n' }],
-        source_files: [{
+        files: [{ path: 'AGENTS.md', patch: null, patch_status: 'too-large' }],
+        source_files: Array.from({ length: Math.ceil(rejectedSource.length / 24_000) }, (_, part) => ({
           candidate_id: 'rejected-history', path: 'AGENTS.md', content_digest: canonicalDigest(rejectedSource),
-          encoding: 'base64', part: 0, parts: 1, content: rejectedSource,
-        }],
+          encoding: 'base64', part, parts: Math.ceil(rejectedSource.length / 24_000),
+          content: rejectedSource.slice(part * 24_000, (part + 1) * 24_000),
+        })),
       },
     })
     const body = { version: 2 as const, run_id: 'run', source_archive_digest: canonicalDigest('archive'), implementation_identity: builtinPolicyImplementationDigest, records: [record] }
