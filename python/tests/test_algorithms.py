@@ -221,12 +221,15 @@ class AlgorithmTests(unittest.TestCase):
             toy_round(reconstructed)["operations"].count("generate_candidate:global"), 2
         )
 
-    def test_meta_harness_round_trips_as_a_builtin_algorithm(self):
+    def test_meta_harness_round_trips_through_the_generic_algorithm_entrypoint(self):
         from gear.project import Project
         from gear.refine.worker import make_algorithm
 
         config = Project._describe_algorithm(MetaHarness())
         reconstructed = make_algorithm(config["algorithm"])
-        self.assertEqual(config["algorithm"]["name"], "meta-harness")
+        self.assertEqual(
+            config["algorithm"]["name"],
+            "gear.algorithms.meta_harness.algorithm:MetaHarness",
+        )
         self.assertIsInstance(reconstructed, MetaHarness)
         self.assertEqual(toy_round(reconstructed)["status"], "passed")

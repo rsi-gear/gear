@@ -69,9 +69,6 @@ class StagedSearch:
     stages: tuple[Literal["local", "bridge", "global"], ...]
     promotion_widths: tuple[int, ...]
     global_gate: Literal["any", "no_regression"] = "any"
-    stop_at_score_ceiling: bool = True
-    propose_without_failures: bool = False
-    diagnosis_scope: Literal["selected", "global"] = "selected"
 
     def __post_init__(self) -> None:
         if (
@@ -82,8 +79,6 @@ class StagedSearch:
             raise ValueError("promotion_widths requires one positive integer per stage transition")
         if self.global_gate not in ("any", "no_regression"):
             raise ValueError("global_gate must be 'any' or 'no_regression'")
-        if self.diagnosis_scope not in ("selected", "global"):
-            raise ValueError("diagnosis_scope must be 'selected' or 'global'")
         # JSON configuration uses arrays; keep the same immutable form as SDK configuration.
         self.promotion_widths = tuple(self.promotion_widths)
 
@@ -155,7 +150,6 @@ class StagedSearch:
             anchor_id=view.anchor_id,
         )
         reached_ceiling = False
-        base_candidates: list[dict[str, JSON]] = []
         if isinstance(view.objective, dict):
             ceiling = score_ceiling(view.objective)
             if ceiling is not None:
@@ -172,7 +166,7 @@ class StagedSearch:
                 all(score == 1 for _, score in profile)
                 for profile in task_scores(global_input).values()
             )
-        if reached_ceiling and self.stop_at_score_ceiling:
+        if reached_ceiling:
             return self._finish(view, state, "complete seed evidence reached the score upper bound")
         manifests: list[dict[str, JSON]] = [
             {
@@ -195,15 +189,6 @@ class StagedSearch:
                 anchor_id=view.anchor_id,
             )
             ranks, profiles = self.ranker(ranking), task_scores(ranking)
-            if scope["scope"] == "global":
-                base_candidates = [
-                    {
-                        "candidate_id": candidate,
-                        "score": score,
-                    }
-                    for candidate, score in ranks.scores
-                    if candidate in profiles
-                ]
             for candidate, score in ranks.scores:
                 if candidate in ranks.disqualified and candidate != view.anchor_id:
                     continue
@@ -253,12 +238,11 @@ class StagedSearch:
             for allocation in plan.allocations
             for offset in range(0, allocation.count, batch_capacity)
         ]
-        data: dict[str, JSON] = {
+        data = {
             **state.data,
             "batches": batches,
             "batch_index": 0,
             "parent_reason": plan.reason,
-            "base_candidates": cast(JSON, base_candidates),
         }
         return self._record(self._diagnose(view, AlgorithmState(data=data)), research)
 
@@ -285,10 +269,10 @@ class StagedSearch:
                     }
                 )
             )
-            if failures or self.propose_without_failures:
+            if failures:
                 break
             batch_index += 1
-        if not failures and (not self.propose_without_failures or batch_index >= len(batches)):
+        if not failures:
             return self._next_round(view, state)
         batch = batches[batch_index]
         return self._decision(
@@ -304,13 +288,8 @@ class StagedSearch:
                 Operation(
                     "diagnose_seed",
                     candidate_id=parent,
-                    task_ids=(
-                        self._all_tasks(view)
-                        if self.diagnosis_scope == "global"
-                        else failures or selected_tasks
-                    ),
+                    task_ids=failures,
                     rationale=str(state.data["parent_reason"]),
-                    payload={"base_candidates": state.data.get("base_candidates", [])},
                 ),
             ),
             "diagnose selected parent",
@@ -333,7 +312,20 @@ class StagedSearch:
             for cell in view.evidence
             if cell.candidate_id == parent_id and cell.task_id in failure_ids
         )
-        parent = ParentOption(parent_id, "global", self._all_tasks(view), 0)
+        batch = objects(state.data["batches"])[integer(state.data["batch_index"])]
+        selection = cast(dict[str, JSON], batch["selection"])
+        option = cast(dict[str, Any], selection["option"])
+        # Resume the selected option, including its scope and evidence metadata.
+        parent = ParentOption(
+            candidate_id=option["candidate_id"],
+            scope=option["scope"],
+            task_ids=tuple(option["task_ids"]),
+            score=option["score"],
+            probability=option["probability"],
+            task_scores=tuple((task, score) for task, score in option["task_scores"]),
+            weights=tuple((task, weight) for task, weight in option["weights"]),
+            content_digest=option["content_digest"],
+        )
         quota = min(integer(state.data["limit"]), view.budget.candidates_remaining)
         if view.budget.generation_batch_capacity is not None:
             quota = min(quota, view.budget.generation_batch_capacity)
@@ -347,16 +339,6 @@ class StagedSearch:
             or set(plan.task_ids) - set(self._all_tasks(view))
         ):
             raise ValueError("invalid proposal quota, rationale or task scope")
-        requested_base = plan.parent_candidate_id
-        if plan.parent_candidate_id is not None:
-            eligible_bases = {
-                item["candidate_id"]
-                for item in objects(state.data.get("base_candidates", []))
-                if isinstance(item.get("candidate_id"), str)
-            }
-            if plan.parent_candidate_id not in eligible_bases:
-                raise ValueError("proposal selected a base without complete global seed evidence")
-            parent_id = plan.parent_candidate_id
         ids = tuple(
             f"r{state.data['round']}-b{state.data['batch_index']}-candidate-{index}"
             for index in range(len(plan.hypotheses))
@@ -380,28 +362,9 @@ class StagedSearch:
                 "phase": "generated",
                 "planned": list(ids),
                 "failures": list(plan.task_ids),
-                "parent": parent_id,
             },
             operations,
             plan.reason,
-            (
-                (
-                    ResearchRecord(
-                        "parents",
-                        "global",
-                        self._all_tasks(view),
-                        (parent_id,),
-                        {
-                            "round": state.data["round"],
-                            "selection": "meta-proposer",
-                            "diagnosis_candidate": str(state.data["parent"]),
-                            "selected_base_candidate": parent_id,
-                        },
-                    ),
-                )
-                if requested_base is not None
-                else ()
-            ),
         )
 
     def _evaluate(

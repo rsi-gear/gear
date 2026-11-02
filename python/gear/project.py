@@ -434,7 +434,7 @@ class Project:
 
     @staticmethod
     def _describe_algorithm(algorithm: SearchAlgorithm) -> dict[str, JSON]:
-        from .algorithms import GEPA, MetaHarness, RandomSearch
+        from .algorithms import GEPA, RandomSearch
         from .refine.protocol import validate
 
         name = (
@@ -442,8 +442,6 @@ class Project:
             if type(algorithm) is GEPA
             else "random-search"
             if type(algorithm) is RandomSearch
-            else "meta-harness"
-            if type(algorithm) is MetaHarness
             else type(algorithm).__module__ + ":" + type(algorithm).__qualname__
         )
         options: dict[str, JSON] = {}
@@ -509,8 +507,13 @@ class Project:
             return module + ":" + qualname
 
         capture(type(algorithm))
-        policy_fields = ("parent_policy", "sampler", "proposal_planner", "ranker", "stop_rule")
-        for field in policy_fields:
+        for field in (
+            "parent_policy",
+            "sampler",
+            "proposal_planner",
+            "ranker",
+            "stop_rule",
+        ):
             value = getattr(algorithm, field, None)
             if value is None:
                 continue
@@ -534,7 +537,7 @@ class Project:
             # Omitted at its default so existing run specifications keep their identity.
             if algorithm.global_gate != "any":
                 options["global_gate"] = algorithm.global_gate
-        if type(algorithm) not in (GEPA, RandomSearch, MetaHarness):
+        if type(algorithm) not in (GEPA, RandomSearch):
             configuration = getattr(algorithm, "configuration", {})
             validate("Json", configuration)
             if not isinstance(configuration, dict):

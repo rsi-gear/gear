@@ -22,11 +22,6 @@ import { SeedTrajectoryArchive } from './trajectory.js'
 import { verifyBaseline } from './baseline.js'
 import { modificationUse, modificationUseIdentity, type ModificationUseBudget } from './modification-use.js'
 
-const object = (value: Json): { [key: string]: Json } =>
-  value && typeof value === 'object' && !Array.isArray(value) ? value : {}
-const boundedText = (value: Json | undefined): string =>
-  typeof value === 'string' ? value.slice(0, 8192) : ''
-
 /** Builds factual inputs; Python owns outcome classification, retrieval and card selection. */
 export class ProjectExperience implements ExperiencePreparation {
   readonly store: ExperienceStore
@@ -92,17 +87,6 @@ export class ProjectExperience implements ExperiencePreparation {
       const evidence = journal.seedEvidence.filter(
         (cell) => taskIds.includes(cell.task_id) && [candidate.id, parent.id].includes(cell.candidate_id),
       )
-      const payload = object(generation.request.operation.payload)
-      const proposal = {
-        rationale: boundedText(generation.request.operation.rationale),
-        hypothesis: boundedText(payload.hypothesis),
-        semantic_targets: Array.isArray(payload.semantic_targets)
-          ? payload.semantic_targets
-              .filter((item): item is string => typeof item === 'string')
-              .slice(0, 50)
-              .map((item) => item.slice(0, 4096))
-          : [],
-      }
       signal.throwIfAborted()
       const change = await targetDiff(this.targets, parent, candidate)
       const sourceFiles: Json[] = []
@@ -152,7 +136,7 @@ export class ProjectExperience implements ExperiencePreparation {
         repetitions: journal.spec.budget.repetitions,
         objective: journal.spec.objective ?? null,
         evidence,
-        proposal,
+        operation: generation.request.operation,
         change,
         trajectory_refs: references,
         modification_trials: observations,
@@ -176,7 +160,6 @@ export class ProjectExperience implements ExperiencePreparation {
     signal: AbortSignal = new AbortController().signal,
   ): Promise<ExperienceContext> {
     const snapshot = await this.capture(journal, signal)
-    const focus = object(request.operation.payload).semantic_targets
     const context = builtinPolicy<Omit<ExperienceContext, 'digest' | 'implementation_identity'>>(
       'experience_context',
       {
@@ -184,9 +167,7 @@ export class ProjectExperience implements ExperiencePreparation {
         snapshot_digest: snapshot.digest,
         parent_id: request.operation.parent_id ?? request.operation.candidate_id,
         evidence: request.evidence,
-        semantic_targets: Array.isArray(focus)
-          ? focus.filter((item): item is string => typeof item === 'string')
-          : [],
+        operation: request.operation,
       },
     )
     const body = { ...context, implementation_identity: snapshot.implementation_identity }

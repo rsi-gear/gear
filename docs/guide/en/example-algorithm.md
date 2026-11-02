@@ -43,10 +43,13 @@ return JSON state plus explicit operations. The runtime owns budgets, execution,
 evidence identities, the held-out gate and champion CAS.
 
 `MetaHarness` adapts the Meta-Harness outer loop to Gear: it evaluates each
-candidate on the complete seed set, starts from the best fully evaluated
-candidate, and asks Gear's Meta worker to ground one proposal in the bounded,
-read-only history of candidate diffs, scores, and execution traces. Gear keeps that archive
-seed-only and runs its independent held-out gate after nomination. This does
+candidate on the complete seed set, then asks Gear's generic Meta worker to
+propose one mechanism and select a base from all eligible historical candidates.
+The algorithm's Python module defines the prompt and response schema and
+validates the selected base. A verified, read-only, paginated history reader
+provides baseline evidence, complete historical source, scores, and successful
+and failed seed trajectories, including rejected candidates. History remains
+seed-only; Gear runs its independent held-out gate after nomination. This does
 not reproduce the paper's benchmark-specific harnesses or reported results.
 
 Admission freezes source and declared dependencies. Local functions, lambdas

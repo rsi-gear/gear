@@ -121,6 +121,7 @@ export function algorithmCapacityFixture(records: 600 | 1300 | 1800): {
         status: 'complete' as const,
         candidate_id: candidate.id,
         data: { hypotheses: ['Synthetic diagnosis\n'.repeat(100)] },
+        candidate_change: null,
       },
       {
         operation_id: `generate-${index}`,
@@ -128,6 +129,7 @@ export function algorithmCapacityFixture(records: 600 | 1300 | 1800): {
         status: 'complete' as const,
         candidate_id: candidate.id,
         data: { summary: 'Synthetic proposal\n'.repeat(100) },
+        candidate_change: null,
       },
       {
         operation_id: `evaluate-${index}`,
@@ -135,6 +137,7 @@ export function algorithmCapacityFixture(records: 600 | 1300 | 1800): {
         status: 'complete' as const,
         candidate_id: candidate.id,
         data: { tasks: tasks.map((task) => task.id), summary: 'Scored 全部\n'.repeat(100) },
+        candidate_change: null,
       },
     ]),
     budget: {

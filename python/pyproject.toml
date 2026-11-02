@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rsi-gear"
-version = "0.2.1"
+version = "0.2.2"
 description = "Gear benchmark, algorithm, refine and training SDK"
 requires-python = ">=3.10"
 dependencies = ["psutil>=5.9,<8", "tomli>=2.0,<3; python_version < '3.11'", "tomli-w>=1.2,<2", "PyYAML>=6,<7"]

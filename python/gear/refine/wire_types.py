@@ -39,12 +39,15 @@ class Budget(_BudgetRequired, total=False):
     generation_batch_capacity: int | None
 OperationKind: TypeAlias = Literal["diagnose_seed", "generate_candidate", "evaluate_seed", "nominate", "stop"]
 
-class OperationResult(TypedDict):
+class _OperationResultRequired(TypedDict):
     operation_id: str
     kind: OperationKind
     status: Literal["complete", "failed"]
     candidate_id: str | None
     data: Json
+
+class OperationResult(_OperationResultRequired, total=False):
+    candidate_change: Json
 
 class _SearchViewRequired(TypedDict):
     run_id: str

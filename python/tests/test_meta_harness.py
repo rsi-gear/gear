@@ -16,7 +16,12 @@ from gear.algorithms.contracts import (
 )
 from gear.algorithms.gepa.proposal import plan_proposals as gepa_plan_proposals
 from gear.algorithms.meta_harness.parents import select_frontier_parent
-from gear.algorithms.meta_harness.proposal import HISTORY_GUIDANCE, plan_proposals
+from gear.algorithms.meta_harness.proposal import (
+    HISTORY_GUIDANCE,
+    diagnosis_meta,
+    parse_diagnosis,
+    plan_proposals,
+)
 from gear.algorithms.meta_harness.ranking import rank_candidates
 from gear.algorithms.meta_harness.sampling import sample_all_tasks
 from gear.algorithms.meta_harness.stopping import stop_reason
@@ -41,7 +46,7 @@ class MetaHarnessTests(unittest.TestCase):
         configuration = Project._describe_algorithm(algorithm)["algorithm"]
         restored = make_algorithm(configuration)
 
-        self.assertEqual(restored.diagnosis_scope, "global")
+        self.assertEqual(restored.stages, ("global",))
         for name, policy in policies.items():
             with self.subTest(policy=name):
                 self.assertIs(getattr(restored, name), policy)
@@ -74,9 +79,11 @@ class MetaHarnessTests(unittest.TestCase):
 
         self.assertEqual(diagnosis.operations[0].kind, "diagnose_seed")
         self.assertEqual(diagnosis.operations[0].task_ids, ("task-a", "task-b"))
+        payload = diagnosis.operations[0].payload
+        self.assertEqual(payload["base_candidates"][0]["candidate_id"], "anchor")
         self.assertEqual(
-            diagnosis.operations[0].payload["base_candidates"],
-            [{"candidate_id": "anchor", "score": 1.0}],
+            payload["meta"]["schema"]["properties"]["base_candidate_id"]["enum"],
+            ["anchor"],
         )
 
         completed_view = SearchView(
@@ -92,7 +99,14 @@ class MetaHarnessTests(unittest.TestCase):
                     "diagnose_seed",
                     "complete",
                     "anchor",
-                    {"base_candidate_id": "anchor", "hypotheses": [], "clusters": []},
+                    {
+                        "declined": False,
+                        "data": {
+                            "summary": "one general change",
+                            "base_candidate_id": "anchor",
+                            "hypothesis": "improve output recovery",
+                        },
+                    },
                 ),
             ),
             view.budget,
@@ -104,6 +118,8 @@ class MetaHarnessTests(unittest.TestCase):
         self.assertEqual(proposal.operations[0].kind, "generate_candidate")
         self.assertEqual(proposal.operations[0].parent_id, "anchor")
         self.assertEqual(proposal.operations[0].task_ids, ("task-a", "task-b"))
+        self.assertIn("improve output recovery", proposal.operations[0].payload["hypothesis"])
+        self.assertIn("improve output recovery", proposal.operations[0].payload["meta"]["prompt"])
 
     def test_diagnosis_scope_includes_successful_and_failed_global_seed_evidence(self):
         tasks = (Task("task-a", "format"), Task("task-b", "files"))
@@ -180,14 +196,19 @@ class MetaHarnessTests(unittest.TestCase):
         )
 
     def test_proposer_can_select_a_complete_historical_base_outside_the_parent_frontier(self):
-        tasks = (Task("task", "format"),)
+        tasks = (Task("format-task", "format"), Task("files-task", "files"))
         candidates = (
             Candidate("anchor", "anchor-digest"),
             Candidate("historical", "historical-digest", "anchor"),
+            Candidate("frontier", "frontier-digest", "historical"),
         )
         evidence = (
-            Evidence("anchor", "task", 0, 0.4, "valid", "global"),
-            Evidence("historical", "task", 0, 0.8, "valid", "global"),
+            Evidence("anchor", "format-task", 0, 0.4, "valid", "global"),
+            Evidence("anchor", "files-task", 0, 0.4, "valid", "global"),
+            Evidence("historical", "format-task", 0, 0.2, "valid", "global"),
+            Evidence("historical", "files-task", 0, 0.2, "valid", "global"),
+            Evidence("frontier", "format-task", 0, 0.9, "valid", "global"),
+            Evidence("frontier", "files-task", 0, 0.9, "valid", "global"),
         )
         view = SearchView(
             "run",
@@ -207,9 +228,9 @@ class MetaHarnessTests(unittest.TestCase):
         self.assertEqual(diagnose_operation.kind, "diagnose_seed")
         self.assertEqual(
             {item["candidate_id"] for item in diagnose_operation.payload["base_candidates"]},
-            {"anchor", "historical"},
+            {"anchor", "historical", "frontier"},
         )
-        self.assertEqual(diagnose_operation.candidate_id, "historical")
+        self.assertEqual(diagnose_operation.candidate_id, "frontier")
 
         completed_view = SearchView(
             view.run_id,
@@ -223,8 +244,15 @@ class MetaHarnessTests(unittest.TestCase):
                     "diagnose",
                     "diagnose_seed",
                     "complete",
-                    "historical",
-                    {"base_candidate_id": "anchor", "hypotheses": ["repair format"]},
+                    "frontier",
+                    {
+                        "declined": False,
+                        "data": {
+                            "summary": "reuse a prior parser fix",
+                            "base_candidate_id": "historical",
+                            "hypothesis": "repair format recovery",
+                        },
+                    },
                 ),
             ),
             view.budget,
@@ -233,10 +261,10 @@ class MetaHarnessTests(unittest.TestCase):
         proposal = algorithm.step(completed_view, diagnosis.state)
 
         self.assertEqual(proposal.operations[0].kind, "generate_candidate")
-        self.assertEqual(proposal.operations[0].parent_id, "anchor")
+        self.assertEqual(proposal.operations[0].parent_id, "historical")
         self.assertEqual(
             proposal.research[0].data["selected_base_candidate"],
-            "anchor",
+            "historical",
         )
 
     def test_sampler_keeps_every_seed_task_with_uniform_weight(self):
@@ -250,66 +278,56 @@ class MetaHarnessTests(unittest.TestCase):
         self.assertEqual(plan.task_ids, ("a", "b"))
         self.assertEqual(plan.weights, (("a", 0.5), ("b", 0.5)))
 
-    def test_proposal_is_single_and_requests_archive_grounding(self):
+    def test_proposal_uses_the_model_selected_hypothesis_without_gepa_clustering(self):
         failure = Evidence("best", "task", 0, 0.0, "valid", "global")
         plan = plan_proposals(
             ProposalInput(
                 ParentOption("best", "global", ("task",), 0.0),
                 (failure,),
-                {"hypotheses": ["First edit", "Second edit"]},
+                {
+                    "summary": "Reuse a robust parser from history",
+                    "base_candidate_id": "older",
+                    "hypothesis": "Preserve parser output recovery",
+                },
                 4,
                 (Task("task", "family"),),
             )
         )
 
         self.assertEqual(len(plan.hypotheses), 1)
-        self.assertIn("First edit", plan.hypotheses[0])
-        self.assertIn("Second edit", plan.hypotheses[0])
+        self.assertIn("Preserve parser output recovery", plan.hypotheses[0])
         self.assertEqual(plan.task_ids, ("task",))
         self.assertEqual(plan.reason, HISTORY_GUIDANCE)
-        self.assertIn("execution traces", plan.reason)
+        self.assertIn("successful and failed trajectories", plan.reason)
 
-    def test_proposal_considers_every_diagnosis_cluster_for_one_candidate(self):
-        failures = (
-            Evidence("best", "task-a", 0, 0.0, "valid", "global"),
-            Evidence("best", "task-b", 0, 0.0, "valid", "global"),
+    def test_diagnosis_meta_schema_offers_all_eligible_bases_and_no_fixed_parent(self):
+        meta = diagnosis_meta(
+            [
+                {"candidate_id": "anchor", "score": 0.8},
+                {"candidate_id": "older-rejected", "score": 0.2},
+            ]
         )
-        plan = plan_proposals(
-            ProposalInput(
-                ParentOption("best", "global", ("task-a", "task-b"), 0.0),
-                failures,
+        schema = meta["schema"]
+
+        self.assertEqual(
+            schema["properties"]["base_candidate_id"]["enum"],
+            ["anchor", "older-rejected"],
+        )
+        self.assertIn("not restrict the search to a failure family", meta["prompt"])
+
+    def test_meta_result_rejects_unoffered_base_even_if_schema_was_ignored(self):
+        with self.assertRaisesRegex(ValueError, "ineligible base"):
+            parse_diagnosis(
                 {
-                    "clusters": [
-                        {"task_ids": ["task-a"], "hypotheses": ["Repair parser recovery"]},
-                        {"task_ids": ["task-b"], "hypotheses": ["Preserve generated files"]},
-                    ]
+                    "declined": False,
+                    "data": {
+                        "summary": "a change",
+                        "base_candidate_id": "held-out-candidate",
+                        "hypothesis": "reuse an approach",
+                    },
                 },
-                1,
-                (Task("task-a", "parser"), Task("task-b", "filesystem")),
+                ("anchor", "older-rejected"),
             )
-        )
-
-        self.assertEqual(len(plan.hypotheses), 1)
-        self.assertIn("Repair parser recovery", plan.hypotheses[0])
-        self.assertIn("Preserve generated files", plan.hypotheses[0])
-        self.assertNotIn("Tasks [", plan.hypotheses[0])
-        self.assertEqual(plan.task_ids, ("task-a", "task-b"))
-        self.assertIn("do not add task-specific hints", plan.reason)
-
-    def test_proposal_preserves_all_unclustered_hypotheses_for_worker_choice(self):
-        plan = plan_proposals(
-            ProposalInput(
-                ParentOption("parent", "global", ("task",), 0.0),
-                (Evidence("parent", "task", 0, 0.0, "valid", "global"),),
-                {"hypotheses": ["Repair parser recovery", "Preserve generated files"]},
-                1,
-                (Task("task", "format"),),
-            )
-        )
-
-        self.assertIn("Repair parser recovery", plan.hypotheses[0])
-        self.assertIn("Preserve generated files", plan.hypotheses[0])
-        self.assertEqual(plan.task_ids, ("task",))
 
 
 if __name__ == "__main__":

@@ -47,6 +47,31 @@ def descriptive(value: Any) -> Any:
     return value
 
 
+def _semantic_targets(operation: dict[str, Any]) -> list[str]:
+    payload = operation.get("payload")
+    values = payload.get("semantic_targets") if isinstance(payload, dict) else None
+    return [item for item in values if isinstance(item, str)] if isinstance(values, list) else []
+
+
+def proposal_metadata(operation: dict[str, Any]) -> dict[str, Any]:
+    """Interpret algorithm payloads here; the executor supplies only the operation."""
+    payload = operation.get("payload")
+
+    def bounded(value: Any, limit: int) -> str:
+        if not isinstance(value, str):
+            return ""
+        # Preserve the previous UTF-16 bounds without splitting a Unicode character.
+        return value.encode("utf-16-le")[: limit * 2].decode("utf-16-le", errors="ignore")
+
+    return {
+        "rationale": bounded(operation.get("rationale"), 8192),
+        "hypothesis": bounded(
+            payload.get("hypothesis") if isinstance(payload, dict) else None, 8192
+        ),
+        "semantic_targets": [bounded(item, 4096) for item in _semantic_targets(operation)[:50]],
+    }
+
+
 def experience_record(input: dict[str, Any]) -> dict[str, Any]:
     """Pair against the actual code parent on an explicit, admitted seed scope."""
     candidate, parent = input["candidate"], input["parent"]
@@ -119,7 +144,9 @@ def experience_record(input: dict[str, Any]) -> dict[str, Any]:
             "task_ids": sorted(tasks),
             "repetitions": input["repetitions"],
         },
-        "proposal": input["proposal"],
+        "proposal": proposal_metadata(input["operation"])
+        if "operation" in input
+        else input["proposal"],
         "change": input["change"],
         "classification": {
             "effect": effect,
@@ -346,7 +373,11 @@ def experience_context(input: dict[str, Any]) -> dict[str, Any]:
         }
     )
     cards = [card(direct, ["actual direct parent edit outcome"])] if direct else []
-    focus = set(input.get("semantic_targets", []))
+    focus = set(
+        _semantic_targets(input["operation"])
+        if "operation" in input
+        else input.get("semantic_targets", [])
+    )
     ranked = []
     for record in records:
         if record is direct:

@@ -1,6 +1,6 @@
 # Gear 用户指南
 
-本指南对应 Gear 0.2.1 及其基于项目的 API。
+本指南对应 Gear 0.2.2 及其基于项目的 API。
 Gear 用 Python 定义优化策略，用持久运行层执行评测、候选生成、恢复和最终验证。
 CLI、Python SDK、原生 DSH Skill 和项目 socket 调用同一个应用服务。
 
