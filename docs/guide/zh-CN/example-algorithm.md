@@ -40,6 +40,8 @@ print(run.report.summary)
 
 `GEPA(promotion_widths=(2, 1))` 是默认配置：每个父代批次的候选在同一 local scope 内排名，最多两个进入 bridge，再让 bridge 中排名最高的合格候选进入全量 seed 评测。这是候选数量限制，与任务采样比例独立。扩评不要求候选分数严格高于父代；违反约束的候选仍被排除，任一参与者证据不完整时整批不晋级。最终接受门由运行层单独执行。
 
+全量 seed 评测是最大的阶段：100 题时，4 → 2 → 1 批次新增的 170 个候选 cells 中有 60 个来自这一阶段。使用 `GEPA(global_gate="no_regression")` 时，bridge 候选只有在同一批题上的 bridge 分数不低于父代时才进入全量评测，分数相同也可晋级。所有 bridge 候选都退步时，本批不做全量评测，候选仍保留在研究档案中。默认值 `"any"` 保持上述行为。
+
 项目已配置 benchmark、Target 和执行 profiles 后，可用以下 `gear.yaml` 允许一轮最多生成四个候选：
 
 ```yaml

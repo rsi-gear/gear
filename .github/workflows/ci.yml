@@ -133,7 +133,7 @@ jobs:
     name: Sandbox / macOS
     needs: changes
     if: needs.changes.outputs.macos == 'true'
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5

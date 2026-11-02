@@ -54,6 +54,15 @@ it('stops before compilation when SDK environment does not match the resident da
   await expect(new HitchPreparedRuntime().prepare(profile, context, connection, signal)).rejects.toMatchObject({ code: 'hitch-sdk-environment-mismatch' })
   expect(context.compile).not.toHaveBeenCalled()
 })
+it('uses declaration-only compilation for planning when available', async () => {
+  const compilePlanning = vi.fn(async (path: string) => { directory = path; await mkdir(path) })
+  const bindings = await new HitchPreparedRuntime().prepare({ ...profile }, { ...context, compilePlanning }, connection, signal)
+  expect(bindings).toHaveLength(3)
+  expect(compilePlanning).toHaveBeenCalledOnce()
+  expect(context.compile).not.toHaveBeenCalled()
+  expect(compilePlanning.mock.calls[0]).toEqual([directory, context.taskIds, profile.baseImage, expect.any(AbortSignal)])
+  await expect(access(directory)).rejects.toMatchObject({ code: 'ENOENT' })
+})
 it('sanitizes preparation failures and removes temporary datasets', async () => {
   const original = sdk.call.getMockImplementation()!
   sdk.call.mockImplementation(async (...args) => {

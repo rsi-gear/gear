@@ -534,6 +534,9 @@ class Project:
                 )
         if type(algorithm) is GEPA:
             options["promotion_widths"] = list(algorithm.promotion_widths)
+            # Omitted at its default so existing run specifications keep their identity.
+            if algorithm.global_gate != "any":
+                options["global_gate"] = algorithm.global_gate
         if type(algorithm) not in (GEPA, RandomSearch):
             configuration = getattr(algorithm, "configuration", {})
             validate("Json", configuration)

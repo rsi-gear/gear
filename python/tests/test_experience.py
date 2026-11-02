@@ -8,6 +8,7 @@ from gear.algorithms.experience import (
     experience_query,
     experience_read,
     experience_record,
+    proposal_metadata,
 )
 from gear.algorithms.experience_index import verify_snapshot
 from gear.canonical import digest
@@ -48,6 +49,45 @@ def snapshot(records):
 
 
 class ExperienceTests(unittest.TestCase):
+    def test_operation_metadata_is_bounded_and_excludes_unrelated_algorithm_payload(self):
+        operation = {
+            "rationale": "r" * 9000,
+            "payload": {
+                "hypothesis": "😀" * 5000,
+                "semantic_targets": [42, "x" * 5000, *["output"] * 60],
+                "private": "do not retain",
+                "meta": {"instructions": "do not retain"},
+            },
+        }
+        proposal = proposal_metadata(operation)
+        self.assertEqual(proposal["rationale"], "r" * 8192)
+        self.assertEqual(proposal["hypothesis"], "😀" * 4096)
+        self.assertEqual(len(proposal["semantic_targets"]), 50)
+        self.assertEqual(proposal["semantic_targets"][0], "x" * 4096)
+        self.assertNotIn("do not retain", str(proposal))
+        self.assertEqual(
+            proposal_metadata({"payload": []}),
+            {
+                "rationale": "",
+                "hypothesis": "",
+                "semantic_targets": [],
+            },
+        )
+
+    def test_context_reads_semantic_focus_from_the_python_operation_contract(self):
+        source = {**snapshot([record()]), "parent_id": "unrelated", "evidence": []}
+        explicit = experience_context({**source, "semantic_targets": ["output"]})
+        operation = experience_context(
+            {
+                **source,
+                "operation": {
+                    "payload": {"semantic_targets": [42, "output"], "private": "not a query"},
+                },
+            }
+        )
+        self.assertEqual(operation, explicit)
+        self.assertEqual(len(operation["cards"]), 1)
+
     def test_legacy_optional_metadata_keeps_refs_and_explicit_run_conflicts_fail(self):
         value = record()
         value["source"], value["proposal"] = {}, {}

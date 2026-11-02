@@ -56,6 +56,14 @@ require a candidate to score strictly above its parent. Disqualified candidates
 remain excluded; incomplete evidence for any participant prevents the batch
 from advancing. The runtime applies the final acceptance gate separately.
 
+Global seed evaluation is the largest stage: at 100 tasks it accounts for 60 of
+the 170 new candidate cells in a 4 → 2 → 1 batch. With
+`GEPA(global_gate="no_regression")`, a bridge candidate reaches it only if its
+bridge score is at least its parent's on the same tasks; ties advance. When
+every bridge candidate regresses, the batch ends without global evaluation and
+the candidates stay in the research archive. The default `"any"` keeps the
+behavior described above.
+
 For a project with a configured benchmark, Target and execution profiles, use
 this `gear.yaml` to allow four generated candidates in one round:
 

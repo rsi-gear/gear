@@ -11,7 +11,7 @@ from gear.canonical import digest
 
 from .compiler import BenchmarkError, bytes_digest
 from .manifest import restore_metadata, seal_harbor
-from .payload import content_bytes
+from .payload import NativeMaterializer
 from .payload import source_bytes as payload_source_bytes
 from .runtime_limits import source_bytes, template_timeouts
 from .scorers import source_bytes as scorer_source_bytes
@@ -74,8 +74,17 @@ if result["status"] != "valid":
 """
 
 
-def compile_harbor(benchmark: dict, destination: str, task_ids: list[str], base_image: str) -> dict:
+def compile_harbor(
+    benchmark: dict,
+    destination: str,
+    task_ids: list[str],
+    base_image: str,
+    *,
+    planning_only: bool = False,
+) -> dict:
     """No imports from project code and no mutable source paths after admission."""
+    if not isinstance(planning_only, bool):
+        raise BenchmarkError("planning_only must be a boolean", "planning_only")
     body = {key: value for key, value in benchmark.items() if key != "digest"}
     if digest(body) != benchmark.get("digest"):
         raise BenchmarkError("frozen benchmark digest mismatch", "benchmark")
@@ -104,6 +113,7 @@ def compile_harbor(benchmark: dict, destination: str, task_ids: list[str], base_
     root = Path(destination)
     root.mkdir(parents=True, exist_ok=False, mode=0o700)
     environments = {}
+    materializer = NativeMaterializer(benchmark.get("native_blobs", {}))
     for identifier in task_ids:
         task = tasks[identifier]
         verifier = benchmark["verifiers"][identifier]
@@ -127,20 +137,27 @@ def compile_harbor(benchmark: dict, destination: str, task_ids: list[str], base_
                     "environment_source_digest",
                 )
             environments[identifier] = verifier["native_environment"]
-            for name in verifier["native_directories"]:
+            # Runtime platform/resource discovery consumes declarations only.
+            # It must not materialize every task's build and verifier payload.
+            planning_files = {
+                "task.toml",
+                *verifier["native_environment"]["dockerfiles"],
+                *verifier["native_environment"]["compose"],
+            }
+            for name in [] if planning_only else verifier["native_directories"]:
                 path = Path(name)
                 if path.is_absolute() or ".." in path.parts or "\\" in name:
                     raise BenchmarkError("invalid frozen native directory", name)
                 (root / identifier / path).mkdir(parents=True, exist_ok=True)
             for resource in verifier["native_files"]:
+                if planning_only and resource["path"] not in planning_files:
+                    continue
                 path = Path(resource["path"])
                 if path.is_absolute() or ".." in path.parts or "\\" in resource["path"]:
                     raise BenchmarkError("invalid frozen native path", resource["path"])
-                content = content_bytes(resource, benchmark["native_blobs"])
                 output = root / identifier / path
                 output.parent.mkdir(parents=True, exist_ok=True)
-                output.write_bytes(content)
-                output.chmod(0o755 if resource["executable"] else 0o644)
+                materializer.write(resource, output)
             continue
         environments[identifier] = {
             "mains": {
@@ -167,7 +184,8 @@ def compile_harbor(benchmark: dict, destination: str, task_ids: list[str], base_
                 )
         else:
             instruction += "\n\nCreate the requested files under /app."
-        (directory / "instruction.md").write_text(instruction + "\n", encoding="utf-8")
+        if not planning_only:
+            (directory / "instruction.md").write_text(instruction + "\n", encoding="utf-8")
         llm = verifier["rule"]["kind"] == "llm"
         verifier_env = (
             (
@@ -197,6 +215,10 @@ def compile_harbor(benchmark: dict, destination: str, task_ids: list[str], base_
             encoding="utf-8",
         )
         (environment / "inputs").mkdir()
+        if planning_only:
+            (environment / "Dockerfile").write_text(f"FROM {base_image}\n", encoding="utf-8")
+            (tests / "Dockerfile").write_text(f"FROM {base_image}\n", encoding="utf-8")
+            continue
         for resource in task["resources"]:
             path = Path(resource["path"])
             if path.is_absolute() or ".." in path.parts or "\\" in resource["path"]:
@@ -236,8 +258,9 @@ def compile_harbor(benchmark: dict, destination: str, task_ids: list[str], base_
             'RUN mkdir -p /app /logs/verifier\nCMD ["sleep", "infinity"]\n',
             encoding="utf-8",
         )
-    restore_metadata(benchmark, root)
-    seal_harbor(benchmark, destination, task_ids)
+    if not planning_only:
+        restore_metadata(benchmark, root)
+        seal_harbor(benchmark, destination, task_ids)
     return {
         "directory": str(root.resolve()),
         "environments": environments,

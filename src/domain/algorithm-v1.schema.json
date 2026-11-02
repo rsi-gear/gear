@@ -267,6 +267,9 @@
         },
         "data": {
           "$ref": "#/$defs/Json"
+        },
+        "candidate_change": {
+          "$ref": "#/$defs/Json"
         }
       },
       "required": [

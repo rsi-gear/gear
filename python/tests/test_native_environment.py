@@ -84,6 +84,55 @@ def materialize(root, plan):
 
 
 class NativeEnvironmentTests(unittest.TestCase):
+    def test_planning_retains_declarations_without_materializing_task_payloads(self):
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib
+
+        from gear.benchmark.environment import read_environment
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture(root / "source")
+            for task in ("alpha", "beta"):
+                (root / "source" / task / "environment/candidate/large-source").write_bytes(
+                    b"x" * 1024**2
+                )
+            pins = {
+                name + ":tag": name + "@sha256:" + "3" * 64
+                for name in ("candidate", "simulator", "judge")
+            }
+            plan = prepare_import(str(root / "source"), template="harbor", image_digests=pins)
+            materialize(root, plan)
+            benchmark = compile_benchmark(root, plan["config"])
+            tasks = [task["id"] for task in benchmark["tasks"]]
+            full = compile_harbor(benchmark, str(root / "full"), tasks, "unused@sha256:" + "4" * 64)
+            planning = compile_harbor(
+                benchmark,
+                str(root / "planning"),
+                tasks,
+                "unused@sha256:" + "4" * 64,
+                planning_only=True,
+            )
+            self.assertEqual(full["environments"], planning["environments"])
+            for task in tasks:
+                first, second = root / "full" / task, root / "planning" / task
+                config = tomllib.loads((first / "task.toml").read_text())
+                self.assertEqual(read_environment(first, config), read_environment(second, config))
+                self.assertEqual(
+                    (first / "task.toml").read_bytes(), (second / "task.toml").read_bytes()
+                )
+                self.assertFalse((second / "environment/candidate/large-source").exists())
+                self.assertFalse((second / "tests/test.sh").exists())
+                self.assertFalse((second / "instruction.md").exists())
+            self.assertLess(
+                sum(
+                    path.stat().st_size for path in (root / "planning").rglob("*") if path.is_file()
+                ),
+                10_000,
+            )
+
     def test_compose_and_manifest_survive_import_subset_and_carrier_materialization(self):
         with tempfile.TemporaryDirectory() as directory:
             root, pins = (

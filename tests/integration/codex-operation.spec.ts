@@ -10,6 +10,7 @@ import { fileLockHeld } from '../../src/adapters/storage/file-lock.js'
 import { registerOperation, withJournal } from '../../src/adapters/codex/journal.js'
 import type { CodexInput } from '../../src/adapters/codex/contracts.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { initProject } from '../../src/application/init.js'
 import { ProcessOperationProvider } from '../../src/adapters/process/operation-provider.js'
 import { configuredCancellation } from '../../src/application/cancellation.js'
 import { describeCodex } from '../../src/adapters/codex/identity.js'
@@ -24,6 +25,9 @@ import { resolvePythonExecutable } from '../../src/adapters/python/interpreter.j
 import { ExperienceStore } from '../../src/adapters/storage/experience.js'
 import { builtinPolicy, builtinPolicyImplementationDigest } from '../../src/adapters/python/builtin-policy.js'
 import type { ExperienceRecord, ExperienceContext } from '../../src/domain/experience.js'
+import { freezeAlgorithmSource } from '../../src/adapters/python/source.js'
+import { PythonAlgorithmWorker } from '../../src/adapters/python/worker.js'
+import type { SearchView } from '../../src/domain/algorithm-wire.js'
 
 const roots: string[] = [], operationRoots: string[] = []
 const workerGroups = new Set<number>()
@@ -96,6 +100,8 @@ if sys.platform=='darwin':
  assert os.environ['CODEX_CA_CERTIFICATE']==os.environ['SSL_CERT_FILE']
  assert 'BEGIN CERTIFICATE' in Path(os.environ['CODEX_CA_CERTIFICATE']).read_text()
 view=json.loads(Path('../input.json').read_text())
+prompt=sys.stdin.read()
+assert ('Do not edit the candidate.' if view['operation']['kind']=='diagnose_seed' else 'Change only the allowed mutation paths.') in prompt
 assert len(view['tasks'])==1 and view['tasks'][0]['id']=='seed'
 for path in [${JSON.stringify(join(privateRoot, 'held-out.json'))},${JSON.stringify(join(targets, 'anchor', adapter === 'pi' ? 'AGENTS.md' : 'prompts/system.md'))}]:
  try:
@@ -124,7 +130,7 @@ if ${JSON.stringify(mode)}.startswith('connect-'):
  assert b'200' in header,header
  tunnel.shutdown(socket.SHUT_WR)
  tunnel.close()
-if 'experience' in view:
+if 'experience' in view and ${JSON.stringify(mode)}!='historical-sdk':
  memory=view['experience']
  assert memory['cards'][0]['classification']['effect']=='regressed'
  query=subprocess.run(memory['reader']['argv'],input=json.dumps({'action':'query','query':{'effects':['regressed']}}),text=True,capture_output=True)
@@ -160,7 +166,7 @@ if 'experience' in view:
   except (PermissionError,FileNotFoundError): pass
 output=Path(args[args.index('--output-last-message')+1])
 schema=json.loads(Path(args[args.index('--output-schema')+1]).read_text())
-assert 'clusters' in schema['required']
+assert ('data' if 'meta' in (view['operation'].get('payload') or {}) else 'clusters') in schema['required']
 print(json.dumps({'type':'test.started','pid':os.getpid(),'cwd':os.getcwd()}),flush=True)
 if ${JSON.stringify(mode)}=='slow': time.sleep(2.5)
 if ${JSON.stringify(mode)} in ['hold','connect-cancel']: time.sleep(60)
@@ -174,6 +180,19 @@ if view['operation']['kind']=='diagnose_seed':
 if view['operation']['kind']=='generate_candidate': Path(${JSON.stringify(adapter === 'pi' ? 'AGENTS.md' : 'prompts/system.md')}).write_text('Use the requested output format.')
 if ${JSON.stringify(mode)}=='protected': Path('package.json').write_text('{}')
 if ${JSON.stringify(mode)}=='invalid': output.write_text('not json')
+elif ${JSON.stringify(mode)}=='invalid-result': output.write_text(json.dumps({'summary':'bad','declined':False,'hypotheses':[42],'clusters':[]}))
+elif ${JSON.stringify(mode)}=='declined': output.write_text(json.dumps({'summary':'no change','declined':True,'hypotheses':[],'clusters':[]}))
+elif ${JSON.stringify(mode)}.startswith('historical') and view['operation']['kind']=='diagnose_seed':
+ custom=view['operation']['payload']['meta']
+ key=custom['schema']['required'][0]
+ assert schema['properties']['data']==custom['schema']
+ choices=schema['properties']['data']['properties'][key]['enum']
+ assert choices==(['anchor'] if ${JSON.stringify(mode)}=='historical-sdk' else ['anchor','older'])
+ assert 'operation.payload.meta.prompt' in prompt and 'even when all tasks passed' in custom['prompt']
+ output.write_text(json.dumps({'declined':False,'data':{key:'outside' if ${JSON.stringify(mode)}=='historical-invalid' else choices[-1]}}))
+elif ${JSON.stringify(mode)}.startswith('historical'):
+ assert schema['properties']['data']=={'type':'string'}
+ output.write_text(json.dumps({'declined':False,'data':'Updated the selected candidate.'}))
 else: output.write_text(json.dumps({'summary':'read isolation verified','declined':False,'hypotheses':['Respect output format'],'clusters':[{'task_ids':['seed'],'hypotheses':['Respect output format']}]}))
 if ${JSON.stringify(mode)}=='partialusage': print(json.dumps({'type':'turn.completed','usage':{'output_tokens':3}}),flush=True)
 print(json.dumps({'type':'turn.completed','usage':{'input_tokens':12,'cached_input_tokens':3,'output_tokens':7}}),end='' if ${JSON.stringify(mode)}=='partialusage' else '\\n',flush=True)
@@ -266,6 +285,92 @@ async function untilStarted(directory: string) {
   throw new Error('fake Codex did not start')
 }
 describe('formal Codex operation runner', () => {
+  it.each([
+    ['base_candidate_id', false], ['another_algorithm_field', false], ['base_candidate_id', true],
+  ] as const)('Python alone defines and validates Meta field %s (invalid=%s)', async (resultKey, invalid) => {
+    const f = await fixture(invalid ? 'historical-invalid' : 'historical')
+    await new PiHarnessAdapter().prepare(join(f.targets, 'older'))
+    const source = join(f.root, 'source'), scratch = join(f.root, 'scratch')
+    await mkdir(scratch)
+    const identity = await freezeAlgorithmSource(source, [{ path: 'pr_cases.py', source: resolve('tests/fixtures/python-algorithm-boundaries.py') }])
+    const worker = new PythonAlgorithmWorker({ python: resolvePythonExecutable(), sourceRoot: source, scratch, implementationIdentity: identity,
+      ...(process.env.GEAR_TEST_LINUX_ISOLATION ? { linuxIsolation: process.env.GEAR_TEST_LINUX_ISOLATION as 'seccomp' | 'bubblewrap-only' } : {}) })
+    const view: SearchView = { run_id: 'run', step_id: 0, seed: 'fixed', anchor_id: 'anchor',
+      candidates: ['anchor', 'older'].map(id => ({ id, digest: canonicalDigest(id), parent_id: null })),
+      tasks: [{ id: 'seed', family: 'format', estimated_cost: 1 }],
+      evidence: ['anchor', 'older'].map(candidate_id => ({ candidate_id, task_id: 'seed', repetition: 0, score: 1, status: 'valid', scope: 'global', feedback: 'passed' })),
+      completed: [], budget: { rounds: 1, repetitions: 1, candidates_remaining: 1, evaluations_remaining: 2 } }
+    const algorithm = { name: 'pr_cases:HistoricalBase', options: { result_key: resultKey } }
+    try {
+      await worker.start(signal())
+      const diagnosis = await worker.step(view, { version: 1, data: {} }, algorithm, signal())
+      const receipt = await f.provider.submit({ ...f.request, operation: diagnosis.operations[0]!, evidence: view.evidence }, signal())
+      expect(receipt.result.status).toBe('complete')
+      view.completed.push(receipt.result); view.step_id++
+      if (invalid) {
+        // The model's schema is guidance, not the algorithm's semantic validation.
+        const rejected = await worker.step(view, diagnosis.state, algorithm, signal())
+        expect(rejected.state.data.rejected).toBe('historical base not offered')
+        expect(rejected.operations.map(operation => operation.kind)).toEqual(['stop'])
+        expect(receipt.candidate).toBeNull()
+        return
+      }
+      const generation = await worker.step(view, diagnosis.state, algorithm, signal())
+      expect(generation.operations[0]).toMatchObject({ kind: 'generate_candidate', parent_id: 'older' })
+      const generated = await f.provider.submit({ ...f.request, operationId: canonicalDigest('historical-generation'), operation: generation.operations[0]! }, signal())
+      expect(generated.result.status).toBe('complete')
+      expect(generated.candidate).toMatchObject({ id: 'new', parent_id: 'older' })
+      expect(generated.result.data).toEqual({ declined: false, data: 'Updated the selected candidate.' })
+    } finally { await worker.dispose() }
+  }, 30_000)
+
+  it('public Python SDK freezes one external algorithm file, its configuration and recovery', async () => {
+    const f = await fixture('historical-sdk')
+    const profiles = join(f.root, 'profiles'), project = join(f.root, 'sdk-project')
+    await mkdir(profiles)
+    vi.stubEnv('GEAR_PROFILE_ROOT', profiles)
+    const python = resolvePythonExecutable()
+    // Persist the evaluation receipt, then lose its reply to require a fresh SDK resume.
+    const targetProvider = join(f.root, 'target-provider.mjs')
+    await writeFile(targetProvider, (await readFile(resolve('tests/fixtures/project-provider.mjs'), 'utf8')).replace(
+      'process.stdout.write(JSON.stringify(result))',
+      "if (action === 'submit' && request.operation.kind === 'evaluate_seed' && request.operation.candidate_id !== 'anchor') throw new Error('lost SDK evaluation reply'); process.stdout.write(JSON.stringify(result))"))
+    await writeFile(join(profiles, 'sdk-target.json'), JSON.stringify({ command: [process.execPath, targetProvider],
+      workingDirectory: f.root, passEnv: ['PYTHONPATH'], timeoutMs: 30_000,
+      configuration: { python, receipts: join(f.root, 'target-receipts') } }))
+    await writeFile(join(profiles, 'sdk-meta.json'), JSON.stringify(f.profile))
+    await initProject(project, { adapter: 'pi', template: 'text', targetProfile: 'sdk-target', metaProfile: 'sdk-meta' })
+    await writeFile(join(project, 'tasks.csv'), 'id,instruction,expected,family,split\nseed,Produce the requested answer.,42,format,seed\nheld-out,Private task.,43,private-family,held_out\n')
+    if (process.env.GEAR_TEST_LINUX_ISOLATION)
+      await writeFile(join(project, 'gear.yaml'), await readFile(join(project, 'gear.yaml'), 'utf8') + `\nsandbox: {linux_isolation: ${process.env.GEAR_TEST_LINUX_ISOLATION}}\n`)
+    const ownFile = join(project, 'own_algorithm.py')
+    await writeFile(ownFile, await readFile(resolve('tests/fixtures/python-algorithm-boundaries.py')))
+    const sdk = (code: string) => promisify(execFile)(python, ['-c', code], { cwd: project, timeout: 60_000,
+      env: { ...process.env, PYTHONPATH: resolve('python'), GEAR_PYTHON: python,
+        GEAR_COMMAND: JSON.stringify([process.execPath, resolve('lib/cli.js')]) } })
+    const failed = await sdk("from gear import Project; from own_algorithm import SDKExample; Project.open().refine(algorithm=SDKExample(result_key='sdk_selected'), rounds=1)").then(() => null, error => error)
+    expect(failed?.stderr).toMatch(/lost SDK evaluation reply|process-operation-failed/)
+    const runs = join(project, '.gear/runs'), [id] = await readdir(runs)
+    expect(id).toBeTruthy()
+    const runRoot = join(runs, id!), journalPath = join(runRoot, 'journal.json')
+    const before = JSON.parse(await readFile(journalPath, 'utf8'))
+    expect(before.status).toBe('needs_recovery')
+    expect(before.spec.algorithm).toEqual({ name: 'own_algorithm:SDKExample', options: { result_key: 'sdk_selected' } })
+    expect(before.operations.map((entry: { request: OperationRequest }) => entry.request.operation.kind)).toEqual(['evaluate_seed', 'diagnose_seed', 'generate_candidate', 'evaluate_seed'])
+    expect(before.operations[1].receipt.result.data.data).toEqual({ sdk_selected: 'anchor' })
+    expect(before.operations[2].receipt.result.candidate_change.omitted_patches).toBe(0)
+    expect(before.operations[3].status).toBe('submitted')
+    expect(await readFile(join(runRoot, 'algorithm/own_algorithm.py'), 'utf8')).toBe(await readFile(ownFile, 'utf8'))
+    await writeFile(ownFile, "raise RuntimeError('mutable author file must not be reloaded')\n")
+    await sdk(`from gear import Project; Project.open().resume(${JSON.stringify(id)})`)
+    const after = JSON.parse(await readFile(journalPath, 'utf8'))
+    expect(after.status).toBe('completed')
+    expect(after.operations).toHaveLength(4)
+    expect(after.operations[1].receipt).toEqual(before.operations[1].receipt)
+    expect(after.operations[2].receipt).toEqual(before.operations[2].receipt)
+    expect(after.decisions.at(-1).decision.operations[0].kind).toBe('stop')
+  }, 90_000)
+
   it('chains explicit upstream proxies without exposing credentials or bypassing domain restrictions', async () => {
     const requests: string[] = []
     const authorization: Array<string | undefined> = []
@@ -416,12 +521,14 @@ describe('formal Codex operation runner', () => {
     expect(receipt.candidate).toBeNull()
     expect(await provider.submit(request, signal())).toEqual(receipt)
   }, 30_000)
-  for (const mode of ['invalid', 'protected'])
+  for (const mode of ['invalid', 'invalid-result', 'declined', 'protected'])
     it(`rejects ${mode} model output without publishing a candidate`, async () => {
       const { provider, request, targets } = await fixture(mode)
       const receipt = await provider.submit(request, signal())
       expect(receipt.result.status).toBe('failed')
       expect(receipt.candidate).toBeNull()
+      if (mode.startsWith('invalid')) expect(receipt.result.data).toEqual({ error: 'codex-output-invalid' })
+      if (mode === 'declined') expect(receipt.result.data).toMatchObject({ declined: true })
       await expect(readFile(join(targets, 'candidate/AGENTS.md'))).rejects.toThrow()
     }, 30_000)
   it('rejects held-out requests before model submission', async () => {
@@ -643,7 +750,11 @@ it('keeps a signal-killed guard without its private acknowledgment unknown and n
   // Both exact PIDs belong to this isolated sleeping fixture; no existing host
   // process is signalled. Stop the orphan fixture model after removing its guard.
   process.kill(Number(guard![0]), 'SIGKILL')
-  process.kill(-Number(leader![0]), 'SIGKILL')
+  try { process.kill(-Number(leader![0]), 'SIGKILL') }
+  catch (error) {
+    // Linux may already reap the child group when its guard dies.
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
+  }
   expect(await waiting).toBeInstanceOf(Error)
   expect(await f.provider.inspect(f.request, signal())).toEqual({ state: 'unknown' })
   await expect(readFile(join(f.directory, 'receipt.json'))).rejects.toMatchObject({ code: 'ENOENT' })

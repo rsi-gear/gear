@@ -275,6 +275,7 @@ def compile_native(root: Path, config: dict) -> dict:
             "native_environment": {
                 "mains": layout["mains"],
                 "compose": sorted(layout["compositions"]),
+                "dockerfiles": sorted(layout["dockerfiles"]),
             },
         }
         verifiers[task["id"]] = {**body, "digest": digest(body)}

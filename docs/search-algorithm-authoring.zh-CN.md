@@ -17,6 +17,39 @@
 
 表中路径相对于 [`python/gear/algorithms`](../python/gear/algorithms)。合同在 [`contracts.py`](../python/gear/algorithms/contracts.py)，可复用流程在 [`workflow.py`](../python/gear/algorithms/workflow.py)。新增算法可以组合这些合同，也可以直接实现 `step`，不需要修改 TS 的操作类型或状态机。
 
+默认 Meta 的提示词、输入组织、结果结构与解析位于
+[`meta.py`](../python/gear/algorithms/meta.py)；经验记录对算法 payload 的解释位于
+`experience.py`。TS 通过现有 Python policy 通道执行，负责授权、模型调用、预算和持久化。
+
+算法自定义诊断或生成时，在现有 `Operation.payload` 中传入 `meta`，无需修改公共 Meta
+代码、TS 或 SDK。例如，Python 算法可以发出：
+
+```python
+Operation(
+    "diagnose_seed", candidate_id="anchor", task_ids=("seed",),
+    payload={"meta": {"prompt": "Explain the strongest improvement opportunity.",
+                      "schema": {"type": "string"}}},
+)
+```
+
+`meta.prompt` 是算法指令，`meta.schema` 是算法响应的 JSON Schema；通过已有 input.json
+交给模型，不把长指令写进进程控制管道。执行结果使用固定信封
+`{"declined": bool, "data": ...}`；算法在后续 `step` 中读取 `result.data["data"]`，
+自行检查字段、候选范围和业务含义，再决定下一步。Schema 指导模型输出，不能代替算法校验。
+未提供 `meta` 时保留现有 GEPA/RandomSearch 的默认诊断合同。响应格式中的文档内
+`$ref` 会随嵌套位置调整；`const`、默认值和示例等实际数据保持原样。
+
+生成结果的可选 `OperationResult.candidate_change` 提供封存候选相对父代的真实文件差异，
+与模型自述分开；执行层复用已有 `targetDiff`，在 submit/恢复 inspect 时重建。
+Python 可以据此决定是否评估、拒绝或继续修改；字段缺失或 `omitted_patches > 0`
+表示无法完整检查，算法需显式处理。算法拒绝不是 `environment_failed` 评测证据。
+
+以 [#95](https://github.com/rsi-gear/gear/pull/95) 的历史候选选择和
+[#99](https://github.com/rsi-gear/gear/pull/99) 的候选筛选检查上述扩展边界：具体字段、
+提示词、结果校验和筛选规则仅写在独立 Python 测试算法里，生产代码不识别算法名称或
+`base_candidates`。验收还替换了诊断字段名，验证无需修改公共 Meta 实现。
+这不合入两个 PR 的算法；历史源码/轨迹的授权读取等新执行能力仍属于基础设施工作。
+
 ## 一个文件替换策略
 
 保存为可以导入的 `my_policy.py`：
@@ -107,6 +140,10 @@ class StopAfterInspection:
 scope 的 `data.weights` 必须明确覆盖任务集合，才能在档案中生成同范围比较；可同时保存 stage、round 与 sampling 信息。其他 data 保持算法自述，不能据此替代真实 receipt。公共纯投影 `algorithms/research.py` 计算档案的描述性比较，不调用算法或重新抽样；每套算法仍只需维护同样的六个模块。读取命令与字段见[报告指南](guide/zh-CN/results.md)。
 
 ## 身份与恢复
+
+自定义算法若有非默认构造参数，在自己的类中提供 `configuration` 字典，键对应构造参数，
+例如 `self.configuration = {"result_key": result_key}`。SDK 据此重建算法，不会自动复制
+实例的所有属性；配置和依赖声明都只需写在算法自己的 Python 文件中。
 
 SDK 冻结命名函数/类所在文件、声明的 `source_dependencies` 和 JSON 策略配置。局部函数、lambda、不可序列化对象会被拒绝。依赖其他本地模块时，在算法或策略上声明 `(module_name, file_path)` 列表；每个文件的真实字节进入身份。
 

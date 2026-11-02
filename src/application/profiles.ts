@@ -101,6 +101,17 @@ export async function configuredProvider(
                 },
                 compileSignal,
               ),
+            compilePlanning: (destination, taskIds, baseImage, compileSignal) =>
+              pythonJson(
+                ['benchmark', 'harbor', '--output', destination],
+                {
+                  benchmark: context.benchmark,
+                  task_ids: taskIds,
+                  base_image: baseImage,
+                  planning_only: true,
+                },
+                compileSignal,
+              ),
           },
           signal,
         )

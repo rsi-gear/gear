@@ -56,6 +56,8 @@ class OperationResult:
     status: Literal["complete", "failed"]
     candidate_id: str | None = None
     data: JSON = None
+    # Core-read diff of the sealed candidate, separate from model/provider claims.
+    candidate_change: JSON = None
 
 
 @dataclass(frozen=True)

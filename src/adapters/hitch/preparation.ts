@@ -113,7 +113,9 @@ export class HitchPreparedRuntime implements HitchRuntimeAccess {
             signal,
           })
         }
-        await context.compile(dataset, context.taskIds, profile.baseImage, signal)
+        if (context.compilePlanning)
+          await context.compilePlanning(dataset, context.taskIds, profile.baseImage, signal)
+        else await context.compile(dataset, context.taskIds, profile.baseImage, signal)
         signal.throwIfAborted()
         const groups = new Map<string, string[]>()
         for (let offset = 0; offset < context.taskIds.length; offset += taskInspectionBatchSize) {

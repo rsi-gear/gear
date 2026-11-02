@@ -78,6 +78,13 @@ export interface HitchProviderContext {
   targets: string
   adapter: HarnessAdapter
   compile(destination: string, taskIds: string[], baseImage: string, signal?: AbortSignal): Promise<unknown>
+  /** Declarations for runtime planning only; never submitted for execution. */
+  compilePlanning?(
+    destination: string,
+    taskIds: string[],
+    baseImage: string,
+    signal?: AbortSignal,
+  ): Promise<unknown>
   seal?(destination: string, taskIds: string[]): Promise<unknown>
   implementationIdentity: string
 }

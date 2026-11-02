@@ -14,7 +14,8 @@ from gear.algorithms import (
     SearchView,
     Task,
 )
-from gear.algorithms.contracts import OperationResult
+from gear.algorithms.contracts import OperationResult, RankingPlan
+from gear.algorithms.workflow import StagedSearch
 from gear.algorithms.gepa.ranking import rank_candidates
 from gear.algorithms.testkit import wire
 from gear.canonical import digest
@@ -268,6 +269,67 @@ class StagedPromotionTests(unittest.TestCase):
             with self.subTest(promotion_widths=widths):
                 with self.assertRaises(ValueError):
                     GEPA(promotion_widths=widths)
+
+    def test_no_regression_gate_spends_global_seed_only_on_matching_candidates(self):
+        gated = GEPA(promotion_widths=(3, 2), global_gate="no_regression")
+        view, operations, _ = self.run_search(gated)
+        self.assertEqual(self.cohorts(operations)["global"], [candidate_id(1)])
+        self.assertEqual(operations[-1].candidate_id, candidate_id(1))
+        ungated, _, _ = self.run_search(GEPA(promotion_widths=(3, 2)))
+        self.assertEqual(len(ungated.evidence) - len(view.evidence), 60)
+
+        view, operations, _ = self.run_search(
+            GEPA(global_gate="no_regression"), candidate_count=1
+        )
+        self.assertEqual(list(self.cohorts(operations)), ["local", "bridge"])
+        self.assertEqual(operations[-1].kind, "stop")
+        ungated, _, _ = self.run_search(candidate_count=1)
+        self.assertEqual(len(ungated.evidence) - len(view.evidence), 60)
+
+    def test_no_regression_gate_advances_ties(self):
+        def rank_as_ties(view):
+            ranked = rank_candidates(view)
+            return replace(ranked, scores=tuple((candidate, 0.5) for candidate, _ in ranked.scores))
+
+        _, operations, _ = self.run_search(GEPA(ranker=rank_as_ties, global_gate="no_regression"))
+        self.assertEqual(len(self.cohorts(operations)["global"]), 1)
+
+    def test_no_regression_gate_advances_a_candidate_that_repairs_parent_constraints(self):
+        def rank_with_disqualified_anchor(view):
+            ranked = rank_candidates(view)
+            scores = tuple(
+                (candidate, 0.9 if candidate == "anchor" else 0.5) for candidate, _ in ranked.scores
+            )
+            return replace(ranked, scores=scores, disqualified=("anchor",))
+
+        _, operations, _ = self.run_search(
+            GEPA(ranker=rank_with_disqualified_anchor, global_gate="no_regression")
+        )
+        self.assertEqual(len(self.cohorts(operations)["global"]), 1)
+        self.assertEqual(operations[-1].kind, "nominate")
+
+    def test_no_regression_gate_compares_objective_scores_at_their_precision(self):
+        view = SearchView(
+            "gate", 0, "seed", (), (), (), (), Budget(1, 1, 1), "anchor",
+            {"definition": {"comparisonPrecision": 0.01}},
+        )
+        # 0.699 and 0.7 round to the same 0.01 step, so the candidate ties the parent.
+        ranked = RankingPlan(("anchor", "c"), (("anchor", 0.7), ("c", 0.699)), ())
+        self.assertTrue(StagedSearch._at_least(view, ranked, "c", "anchor"))
+        ranked = RankingPlan(("anchor", "c"), (("anchor", 0.72), ("c", 0.7)), ())
+        self.assertFalse(StagedSearch._at_least(view, ranked, "c", "anchor"))
+
+    def test_global_gate_survives_sdk_and_worker_json_and_default_is_omitted(self):
+        default = Project._describe_algorithm(GEPA())
+        self.assertNotIn("global_gate", default["algorithm"]["options"])
+        config = json.loads(json.dumps(Project._describe_algorithm(
+            GEPA(global_gate="no_regression")
+        )))
+        self.assertEqual(config["algorithm"]["options"]["global_gate"], "no_regression")
+        self.assertEqual(make_algorithm(config["algorithm"]).global_gate, "no_regression")
+        for value in ("strict", "", None):
+            with self.subTest(global_gate=value), self.assertRaises(ValueError):
+                GEPA(global_gate=value)
 
     def test_random_search_remains_a_single_global_cohort(self):
         algorithm = RandomSearch()
