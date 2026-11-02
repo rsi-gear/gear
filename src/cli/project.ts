@@ -9,7 +9,7 @@ import { createProfileWizard, selectProfilesWizard } from './profile-wizard.js'
 import { formatRunPlan } from './run-plan.js'
 import type { RunPlan } from '../application/run-plan.js'
 
-const help = `gear setup [--hitch --target dsh|pi] [--python PATH] [--interactive] | doctor | init DIRECTORY [--target dsh|pi] [--template text|files]
+const help = `gear version | gear setup [--hitch --target dsh|pi] [--python PATH] [--interactive] | doctor | init DIRECTORY [--target dsh|pi] [--template text|files]
 gear profile list | create NAME [--kind hitch|codex --model MODEL [--agent-args-json JSON] | --from FILE] | use NAME --role target|meta [--default]
 gear benchmark check | benchmark preview TASK_ID | benchmark import SOURCE [--template text|json|files|harbor] [--research]
 gear benchmark import --apply PLAN_ID

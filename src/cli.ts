@@ -3,16 +3,22 @@ import { projectCommand } from './cli/project.js'
 import { GearError } from './domain/errors.js'
 import { requestRefineSkill } from './adapters/skill/client.js'
 import { loadBundledRefineSkill } from './skill/bundle.js'
+import pkg from '../package.json' with { type: 'json' }
+const { version } = pkg
 
 function usage(): never {
   throw new Error(
-    'usage: gear serve --project DIRECTORY [--socket PATH] | gear skill-identity [--path DIRECTORY] | gear [--socket PATH] request <method> [json-params] [--request-id ID]',
+    'usage: gear version | gear serve --project DIRECTORY [--socket PATH] | gear skill-identity [--path DIRECTORY] | gear [--socket PATH] request <method> [json-params] [--request-id ID]',
   )
 }
 
-async function main(argv: string[]): Promise<void> {
-  if (await projectCommand(argv)) return
+export async function main(argv: string[]): Promise<void> {
   const args = [...argv]
+  if (args.includes('--version') || args.includes('version')) {
+    process.stdout.write(`gear ${version}\n`)
+    return
+  }
+  if (await projectCommand(args)) return
   if (args[0] === 'storage') {
     const { storageCommand } = await import('./state/storage-cli.js')
     process.stdout.write(`${JSON.stringify(await storageCommand(args.slice(1)), null, 2)}\n`)
@@ -37,6 +43,8 @@ async function main(argv: string[]): Promise<void> {
     )
     return
   }
+  if (args[0] !== undefined && args[0] !== '--socket' && args[0] !== 'request')
+    throw new GearError('unknown-cli-command', `Unknown command: ${args[0]}. Run 'gear' for usage.`)
   let socketPath = process.env.GEAR_REFINE_SOCKET
   if (args[0] === '--socket') {
     args.shift()
