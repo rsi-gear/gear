@@ -22,7 +22,22 @@ Meta 的诊断/生成提示词、输入组织、结果结构与解析位于
 `prepare_meta`、`parse_meta_result` 及对应的 proposal planner，无需修改 TS。
 经验记录和检索对算法 payload 的解释位于 `experience.py`。
 TS 通过现有 Python policy 通道调用这些函数，仅负责授权、模型执行、预算和结果持久化。
-此次迁移保留原有结果合同，不新增配置式 Meta 策略接口；实现身份变化后不能直接恢复旧运行。
+默认诊断保持原有结果合同，不新增配置式 Meta 策略接口；实现身份变化后不能直接恢复旧运行。
+
+两个算法 PR 的边界验收：
+
+- [#95](https://github.com/rsi-gear/gear/pull/95)：诊断操作可以在 payload 中提供
+  `base_candidates: [{candidate_id, score}]`。Python Meta 负责历史候选选择的提示词和
+  `base_candidate_id` 结果检查，Python 算法据此填写生成操作的 `parent_id`。
+  未提供候选列表时保留原诊断行为；历史源码/轨迹的受控读取仍属于通用执行能力。
+- [#99](https://github.com/rsi-gear/gear/pull/99)：项目执行层在生成候选封存后，将已有
+  `targetDiff` 的结果放入 `OperationResult.candidate_change`，与模型的 `data` 分开。
+  Python 根据实际差异决定是否发出 `evaluate_seed`，拒绝原因记入算法状态，不能伪造成
+  `environment_failed` 评测证据。字段缺失或 `omitted_patches > 0` 表示无法完整检查，
+  算法需要显式处理，不能当作“没有问题”。此字段在 submit/恢复 inspect 时从封存文件重建。
+
+`tests/fixtures/python-algorithm-boundaries.py` 与对应进程集成测试验证上述边界，
+包括历史基点选择、筛选拒绝/通过、不完整差异及恢复；不代表完整论文算法或效果复现。
 
 ## 一个文件替换策略
 

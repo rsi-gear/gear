@@ -43,6 +43,42 @@ class MetaTests(unittest.TestCase):
         self.result["declined"] = True
         self.assertEqual(self.parse(self.result), self.result)
 
+    def test_pr95_historical_base_choice_is_defined_and_checked_in_python(self):
+        self.input["operation"]["payload"] = {
+            "base_candidates": [
+                {"candidate_id": "anchor", "score": 1},
+                {"candidate_id": "older", "score": 0.8},
+            ]
+        }
+        prepared = prepare_meta(self.input)
+        self.assertEqual(
+            prepared["schema"]["properties"]["base_candidate_id"]["enum"], ["anchor", "older"]
+        )
+        self.assertIn("even when all tasks passed", prepared["prompt"])
+        self.assertNotIn("You do not choose parents", prepared["prompt"])
+        result = {**self.result, "base_candidate_id": "older"}
+        self.assertEqual(self.parse(result), result)
+        for bad in (self.result, {**result, "base_candidate_id": "outside"}):
+            with self.assertRaises(ValueError):
+                self.parse(bad)
+        self.input["operation"]["kind"] = "generate_candidate"
+        self.assertNotIn("base_candidate_id", prepare_meta(self.input)["schema"]["properties"])
+        with self.assertRaises(ValueError):
+            self.parse(result)
+
+    def test_pr95_rejects_malformed_base_offers(self):
+        for offered in (
+            [],
+            {},
+            [{"candidate_id": "../private", "score": 1}],
+            [{"candidate_id": "anchor", "score": True}],
+            [{"candidate_id": "anchor", "score": float("inf")}],
+            [{"candidate_id": "anchor", "score": 1}] * 2,
+        ):
+            self.input["operation"]["payload"] = {"base_candidates": offered}
+            with self.subTest(offered=offered), self.assertRaises(ValueError):
+                prepare_meta(self.input)
+
     def test_invalid_results_keep_the_existing_bounds_and_seed_scope(self):
         for change in (
             {"extra": True},

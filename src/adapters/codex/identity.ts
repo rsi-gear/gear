@@ -75,6 +75,8 @@ export async function describeCodex(config: CodexConfiguration): Promise<{
       '../storage/atomic',
       '../storage/file-lock',
       '../storage/targets',
+      '../storage/target-diff',
+      '../../application/sealed-provider',
       '../dsh/harness',
       '../pi/harness',
       '../../domain/canonical',

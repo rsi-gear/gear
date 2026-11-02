@@ -24,6 +24,9 @@ import { resolvePythonExecutable } from '../../src/adapters/python/interpreter.j
 import { ExperienceStore } from '../../src/adapters/storage/experience.js'
 import { builtinPolicy, builtinPolicyImplementationDigest } from '../../src/adapters/python/builtin-policy.js'
 import type { ExperienceRecord, ExperienceContext } from '../../src/domain/experience.js'
+import { freezeAlgorithmSource } from '../../src/adapters/python/source.js'
+import { PythonAlgorithmWorker } from '../../src/adapters/python/worker.js'
+import type { SearchView } from '../../src/domain/algorithm-wire.js'
 
 const roots: string[] = [], operationRoots: string[] = []
 const workerGroups = new Set<number>()
@@ -178,6 +181,10 @@ if ${JSON.stringify(mode)}=='protected': Path('package.json').write_text('{}')
 if ${JSON.stringify(mode)}=='invalid': output.write_text('not json')
 elif ${JSON.stringify(mode)}=='invalid-result': output.write_text(json.dumps({'summary':'bad','declined':False,'hypotheses':[42],'clusters':[]}))
 elif ${JSON.stringify(mode)}=='declined': output.write_text(json.dumps({'summary':'no change','declined':True,'hypotheses':[],'clusters':[]}))
+elif ${JSON.stringify(mode)}.startswith('historical') and view['operation']['kind']=='diagnose_seed':
+ assert schema['properties']['base_candidate_id']['enum']==['anchor','older']
+ assert 'even when all tasks passed' in prompt and 'You do not choose parents' not in prompt
+ output.write_text(json.dumps({'summary':'choose a historical mechanism','declined':False,'hypotheses':['improve'], 'clusters':[], 'base_candidate_id':'outside' if ${JSON.stringify(mode)}=='historical-invalid' else 'older'}))
 else: output.write_text(json.dumps({'summary':'read isolation verified','declined':False,'hypotheses':['Respect output format'],'clusters':[{'task_ids':['seed'],'hypotheses':['Respect output format']}]}))
 if ${JSON.stringify(mode)}=='partialusage': print(json.dumps({'type':'turn.completed','usage':{'output_tokens':3}}),flush=True)
 print(json.dumps({'type':'turn.completed','usage':{'input_tokens':12,'cached_input_tokens':3,'output_tokens':7}}),end='' if ${JSON.stringify(mode)}=='partialusage' else '\\n',flush=True)
@@ -270,6 +277,43 @@ async function untilStarted(directory: string) {
   throw new Error('fake Codex did not start')
 }
 describe('formal Codex operation runner', () => {
+  it('PR #95: Python requests and consumes a historical base without adapter-specific fields', async () => {
+    const f = await fixture('historical')
+    await new PiHarnessAdapter().prepare(join(f.targets, 'older'))
+    const source = join(f.root, 'source'), scratch = join(f.root, 'scratch')
+    await mkdir(scratch)
+    const identity = await freezeAlgorithmSource(source, [{ path: 'pr_cases.py', source: resolve('tests/fixtures/python-algorithm-boundaries.py') }])
+    const worker = new PythonAlgorithmWorker({ python: resolvePythonExecutable(), sourceRoot: source, scratch, implementationIdentity: identity,
+      ...(process.env.GEAR_TEST_LINUX_ISOLATION ? { linuxIsolation: process.env.GEAR_TEST_LINUX_ISOLATION as 'seccomp' | 'bubblewrap-only' } : {}) })
+    const view: SearchView = { run_id: 'run', step_id: 0, seed: 'fixed', anchor_id: 'anchor',
+      candidates: ['anchor', 'older'].map(id => ({ id, digest: canonicalDigest(id), parent_id: null })),
+      tasks: [{ id: 'seed', family: 'format', estimated_cost: 1 }],
+      evidence: ['anchor', 'older'].map(candidate_id => ({ candidate_id, task_id: 'seed', repetition: 0, score: 1, status: 'valid', scope: 'global', feedback: 'passed' })),
+      completed: [], budget: { rounds: 1, repetitions: 1, candidates_remaining: 1, evaluations_remaining: 2 } }
+    const algorithm = { name: 'pr_cases:HistoricalBase', options: {} }
+    try {
+      await worker.start(signal())
+      const diagnosis = await worker.step(view, { version: 1, data: {} }, algorithm, signal())
+      const receipt = await f.provider.submit({ ...f.request, operation: diagnosis.operations[0]!, evidence: view.evidence }, signal())
+      expect(receipt.result.status).toBe('complete')
+      view.completed.push(receipt.result); view.step_id++
+      const generation = await worker.step(view, diagnosis.state, algorithm, signal())
+      expect(generation.operations[0]).toMatchObject({ kind: 'generate_candidate', parent_id: 'older' })
+      const generated = await f.provider.submit({ ...f.request, operationId: canonicalDigest('historical-generation'), operation: generation.operations[0]! }, signal())
+      expect(generated.result.status).toBe('complete')
+      expect(generated.candidate).toMatchObject({ id: 'new', parent_id: 'older' })
+    } finally { await worker.dispose() }
+  }, 30_000)
+
+  it('PR #95: Python rejects a Meta-selected base outside the offered candidates', async () => {
+    const f = await fixture('historical-invalid')
+    f.request.operation = { ...f.request.operation, kind: 'diagnose_seed', candidate_id: 'anchor', parent_id: null,
+      payload: { base_candidates: [{ candidate_id: 'anchor', score: 1 }, { candidate_id: 'older', score: 1 }] } }
+    const receipt = await f.provider.submit(f.request, signal())
+    expect(receipt.result.data).toEqual({ error: 'codex-output-invalid' })
+    expect(receipt.candidate).toBeNull()
+  })
+
   it('chains explicit upstream proxies without exposing credentials or bypassing domain restrictions', async () => {
     const requests: string[] = []
     const authorization: Array<string | undefined> = []
@@ -649,7 +693,11 @@ it('keeps a signal-killed guard without its private acknowledgment unknown and n
   // Both exact PIDs belong to this isolated sleeping fixture; no existing host
   // process is signalled. Stop the orphan fixture model after removing its guard.
   process.kill(Number(guard![0]), 'SIGKILL')
-  process.kill(-Number(leader![0]), 'SIGKILL')
+  try { process.kill(-Number(leader![0]), 'SIGKILL') }
+  catch (error) {
+    // Linux may already reap the child group when its guard dies.
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
+  }
   expect(await waiting).toBeInstanceOf(Error)
   expect(await f.provider.inspect(f.request, signal())).toEqual({ state: 'unknown' })
   await expect(readFile(join(f.directory, 'receipt.json'))).rejects.toMatchObject({ code: 'ENOENT' })
