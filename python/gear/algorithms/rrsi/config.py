@@ -21,13 +21,19 @@ class RRSIConfig:
     cost_weight: float = 15.0
     novelty_weight: float = 0.5
     prune_window: int = 4
+    max_repairs: int = 1
 
     def __post_init__(self) -> None:
         if self.rounds < 1 or self.candidates < 1 or self.repetitions < 1:
             raise ValueError("rounds, candidates and repetitions must be positive")
         if self.min_edit_budget < 1 or self.max_edit_budget < self.min_edit_budget:
             raise ValueError("edit budget bounds are invalid")
-        if self.stall_window < 1 or self.exploration_slots < 0 or self.prune_window < 1:
+        if (
+            self.stall_window < 1
+            or self.exploration_slots < 0
+            or self.prune_window < 1
+            or self.max_repairs < 0
+        ):
             raise ValueError("window and exploration settings are invalid")
         if self.noise_delta < 0 or self.beta0 < 0 or self.beta1 < 0:
             raise ValueError("selection thresholds must be nonnegative")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from typing import cast
 
@@ -11,6 +12,7 @@ from ..contracts import (
     AlgorithmState,
     CandidateRanker,
     Decision,
+    Operation,
     ParentPolicy,
     ProposalPlanner,
     SearchView,
@@ -30,9 +32,7 @@ from .stopping import RRSIStopRule
 class RRSI(StagedSearch):
     """Configurable RRSI policy recipe.
 
-    Gear keeps candidate screening, evaluation and nomination in the trusted
-    runtime. RRSI evaluation payloads opt into the runtime's private critic
-    screen without changing the public operation vocabulary.
+    Gear supplies sealed candidate changes; RRSI owns its screening policy.
     """
 
     def __init__(
@@ -66,6 +66,11 @@ class RRSI(StagedSearch):
         return {"config": cast(JSON, self.config.to_json())}
 
     def step(self, view: SearchView, state: AlgorithmState) -> Decision:
+        screened = self._screen_generated(view, state)
+        if screened is not None:
+            return screened
+        if state.data.get("phase") == "screening":
+            return self._finish_screening(view, state)
         incumbent_id = state.data.get("incumbent_id")
         if isinstance(incumbent_id, str) and any(
             candidate.id == incumbent_id for candidate in view.candidates
@@ -117,7 +122,7 @@ class RRSI(StagedSearch):
             "config": cast(JSON, self.config.to_json()),
             "edit_budget": self.config.edit_budget(round_index),
             "noise_delta": self.config.noise_delta,
-            "critic": {"enabled": True, "diff_field": "candidate_diff"},
+            "critic": {"enabled": True},
             "history": cast(JSON, history),
             "stall": stalled(
                 score_trajectory,
@@ -129,43 +134,164 @@ class RRSI(StagedSearch):
             "untried_components": cast(JSON, untried),
             "prune_components": cast(JSON, prune_components(history)),
         }
-        operations = tuple(
-            replace(
-                operation,
-                payload={
-                    **(operation.payload if isinstance(operation.payload, dict) else {}),
-                    "rrsi": directives,
-                    **(
-                        {"candidate_diff": diff}
-                        if operation.kind == "evaluate_seed"
-                        and isinstance(
-                            diff := self._candidate_diff(view, operation.candidate_id), str
-                        )
-                        else {}
-                    ),
-                },
-            )
-            if operation.kind in ("generate_candidate", "evaluate_seed")
-            else operation
-            for operation in decision.operations
-        )
         data = cast(
             dict[str, JSON],
             {**decision.state.data, "rrsi": directives, "rrsi_history": history},
         )
-        return replace(decision, state=type(decision.state)(data=data), operations=operations)
+        return replace(decision, state=type(decision.state)(data=data))
+
+    def _screen_generated(self, view: SearchView, state: AlgorithmState) -> Decision | None:
+        if state.data.get("phase") != "generated":
+            return None
+        planned = state.data.get("planned")
+        if not isinstance(planned, list) or not planned:
+            return None
+        candidate_id = planned[-1]
+        result = next(
+            (
+                item
+                for item in reversed(view.completed)
+                if item.kind == "generate_candidate"
+                and item.candidate_id == candidate_id
+                and item.status == "complete"
+            ),
+            None,
+        )
+        if result is None:
+            return None
+        reason = self._screen_reason(result.candidate_change)
+        if reason is None:
+            return None
+        if reason != "candidate changes unavailable or incomplete":
+            return Decision(
+                AlgorithmState(
+                    data={
+                        **state.data,
+                        "phase": "screening",
+                        "screen_candidate": candidate_id,
+                        "screen_reason": reason,
+                    }
+                ),
+                (
+                    Operation(
+                        "diagnose_seed",
+                        candidate_id=candidate_id,
+                        parent_id=str(state.data["parent"]),
+                        task_ids=tuple(str(item) for item in state.data["failures"]),
+                        payload={
+                            "meta": {
+                                "prompt": (
+                                    "Review the candidate change for credentials, task-specific "
+                                    "logic, or grader-directed behavior. Return a verdict."
+                                ),
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "properties": {
+                                        "verdict": {
+                                            "type": "string",
+                                            "enum": ["accept", "reject"],
+                                        },
+                                        "reason": {"type": "string"},
+                                    },
+                                    "required": ["verdict", "reason"],
+                                },
+                            }
+                        },
+                    ),
+                ),
+                "screen candidate with RRSI critic",
+            )
+        return Decision(
+            AlgorithmState(
+                data={
+                    **state.data,
+                    "phase": "done",
+                    "rejected": reason,
+                }
+            ),
+            (Operation("stop", rationale=reason),),
+            reason,
+        )
+
+    def _finish_screening(self, view: SearchView, state: AlgorithmState) -> Decision:
+        result = next(
+            (
+                item
+                for item in reversed(view.completed)
+                if item.kind == "diagnose_seed"
+                and item.candidate_id == state.data.get("screen_candidate")
+            ),
+            None,
+        )
+        response = result.data.get("data") if result and isinstance(result.data, dict) else None
+        accepted = isinstance(response, dict) and response.get("verdict") == "accept"
+        if accepted:
+            state = AlgorithmState(
+                data={
+                    **state.data,
+                    "phase": "screened",
+                    "planned": [state.data["screen_candidate"]],
+                }
+            )
+            return self._evaluate(view, state, (str(state.data["screen_candidate"]),), 0)
+        repairs = state.data.get("repairs", 0)
+        repairs_count = repairs if type(repairs) is int else 0
+        if repairs_count < self.config.max_repairs:
+            candidate_id = f"{state.data['screen_candidate']}-repair-{repairs_count + 1}"
+            return Decision(
+                AlgorithmState(
+                    data={
+                        **state.data,
+                        "phase": "generated",
+                        "planned": [candidate_id],
+                        "repairs": repairs_count + 1,
+                    }
+                ),
+                (
+                    Operation(
+                        "generate_candidate",
+                        candidate_id=candidate_id,
+                        parent_id=str(state.data["parent"]),
+                        task_ids=tuple(str(item) for item in state.data["failures"]),
+                        payload={
+                            "meta": {
+                                "prompt": "Repair the candidate while removing the rejected behavior.",
+                                "schema": {"type": "string"},
+                            }
+                        },
+                    ),
+                ),
+                "repair rejected candidate",
+            )
+        reason = "critic rejected candidate"
+        return Decision(
+            AlgorithmState(data={**state.data, "phase": "done", "rejected": reason}),
+            (Operation("stop", rationale=reason),),
+            reason,
+        )
 
     @staticmethod
-    def _candidate_diff(view: SearchView, candidate_id: str | None) -> str | None:
-        if not candidate_id:
-            return None
-        for result in reversed(view.completed):
-            if result.kind != "generate_candidate" or result.candidate_id != candidate_id:
-                continue
-            if not isinstance(result.data, dict):
-                return None
-            for key in ("candidate_diff", "diff"):
-                value = result.data.get(key)
-                if isinstance(value, str):
-                    return value
-        return None
+    def _screen_reason(change: JSON) -> str | None:
+        if not isinstance(change, dict) or change.get("omitted_patches", 1):
+            return "candidate changes unavailable or incomplete"
+        files = change.get("files")
+        if not isinstance(files, list):
+            return "candidate changes unavailable or incomplete"
+        additions = "\n".join(
+            line[1:]
+            for item in files
+            if isinstance(item, dict) and isinstance(item.get("patch"), str)
+            for line in item["patch"].splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+        patterns = (
+            r"AIza[0-9A-Za-z_-]{35}|sk-[A-Za-z0-9]{20,}|api[_-]?key\s*=\s*[\"'][^\"']{8,}",
+            r"\b(?:task|case|issue)[-_ ]?(?:id|name)\s*[:=]",
+            r"\b(?:grader|verifier|judge|rubric)\b.*(?:read|detect|parse|match)",
+        )
+        return (
+            "critic rejected candidate additions"
+            if any(re.search(pattern, additions, re.I | re.S) for pattern in patterns)
+            else None
+        )

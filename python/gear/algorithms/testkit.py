@@ -133,6 +133,13 @@ def toy_round(algorithm: SearchAlgorithm) -> dict[str, JSON]:
                         candidates_remaining=view.budget.candidates_remaining - 1,
                     ),
                 )
+                result = replace(
+                    result,
+                    candidate_change={
+                        "files": [{"path": "candidate.py", "patch": "+clean change\n"}],
+                        "omitted_patches": 0,
+                    },
+                )
             elif operation.kind == "evaluate_seed":
                 if operation.candidate_id is None:
                     raise ValueError("evaluation needs a candidate ID")

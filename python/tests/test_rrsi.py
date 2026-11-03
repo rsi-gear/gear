@@ -1,14 +1,119 @@
 import json
 import unittest
 
-from gear.algorithms import RRSI, Evidence, RankingInput, RRSIConfig
+from gear.algorithms import (
+    RRSI,
+    AlgorithmState,
+    Budget,
+    Candidate,
+    Evidence,
+    OperationResult,
+    RankingInput,
+    RRSIConfig,
+    SearchView,
+    Task,
+)
 from gear.algorithms.rrsi.ranking import RRSIRanker, cost_rule, novelty
 from gear.algorithms.testkit import toy_round
+from gear.canonical import digest
 from gear.project import Project
 from gear.refine.worker import make_algorithm
 
 
 class RRSITests(unittest.TestCase):
+    @staticmethod
+    def screening_view(change, *, candidate_id="candidate", completed=()):
+        return SearchView(
+            "run",
+            1,
+            "fixed",
+            (Task("task", "format"),),
+            (
+                Candidate("anchor", digest("anchor")),
+                Candidate(candidate_id, digest(candidate_id), "anchor"),
+            ),
+            (Evidence("anchor", "task", 0, 0.0, "valid", "global"),),
+            tuple(completed),
+            Budget(10, 2, 1, 1),
+            "anchor",
+        )
+
+    def test_incomplete_change_rejects_without_evaluation(self):
+        result = OperationResult("generation", "generate_candidate", "complete", "candidate")
+        decision = RRSI(config=RRSIConfig(rounds=1)).step(
+            self.screening_view(None, completed=(result,)),
+            AlgorithmState(
+                data={"phase": "generated", "planned": ["candidate"], "parent": "anchor"}
+            ),
+        )
+        self.assertEqual(decision.operations[0].kind, "stop")
+        self.assertIn("rejected", decision.state.data)
+
+    def test_suspicious_change_requests_critic_then_repairs(self):
+        generated = OperationResult(
+            "generation",
+            "generate_candidate",
+            "complete",
+            "candidate",
+            candidate_change={
+                "files": [{"path": "x.py", "patch": '+api_key = "secret-value"\n'}],
+                "omitted_patches": 0,
+            },
+        )
+        algorithm = RRSI(config=RRSIConfig(rounds=1, max_repairs=1))
+        first = algorithm.step(
+            self.screening_view(None, completed=(generated,)),
+            AlgorithmState(
+                data={
+                    "phase": "generated",
+                    "planned": ["candidate"],
+                    "parent": "anchor",
+                    "failures": ["task"],
+                    "round": 0,
+                }
+            ),
+        )
+        self.assertEqual(first.operations[0].kind, "diagnose_seed")
+        self.assertIn("meta", first.operations[0].payload)
+        rejected = OperationResult(
+            "critic",
+            "diagnose_seed",
+            "complete",
+            "candidate",
+            {"data": {"verdict": "reject", "reason": "credential"}},
+        )
+        second = algorithm.step(
+            self.screening_view(None, completed=(generated, rejected)),
+            first.state,
+        )
+        self.assertEqual(second.operations[0].kind, "generate_candidate")
+        self.assertNotEqual(second.operations[0].candidate_id, "candidate")
+
+    def test_clean_change_is_evaluated_after_screening(self):
+        generated = OperationResult(
+            "generation",
+            "generate_candidate",
+            "complete",
+            "candidate",
+            candidate_change={
+                "files": [{"path": "x.py", "patch": "+retry = True\n"}],
+                "omitted_patches": 0,
+            },
+        )
+        decision = RRSI(config=RRSIConfig(rounds=1)).step(
+            self.screening_view(None, completed=(generated,)),
+            AlgorithmState(
+                data={
+                    "phase": "generated",
+                    "planned": ["candidate"],
+                    "parent": "anchor",
+                    "failures": ["task"],
+                    "round": 0,
+                }
+            ),
+        )
+        self.assertEqual(decision.operations[0].kind, "evaluate_seed")
+
     def test_edit_budget_anneals_from_maximum_to_minimum(self):
         config = RRSIConfig(rounds=4, min_edit_budget=1, max_edit_budget=4)
         self.assertEqual(config.edit_budget(0), 4)

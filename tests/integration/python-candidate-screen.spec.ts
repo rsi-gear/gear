@@ -40,7 +40,8 @@ it.each([
   const spec: RunSpec = {
     version: 1, kind: 'refine', benchmarkDigest: canonicalDigest('tasks'), configDigest: canonicalDigest('config'),
     implementationIdentity: identity, providerIdentity: targets.runtimeIdentity, championRevision: null,
-    targetSourceDigest: anchor.digest, lineage: null, algorithm: { name: 'pr_cases:ScreenBeforeEvaluation', options: {} },
+    targetSourceDigest: anchor.digest, lineage: null,
+    algorithm: { name: 'gear.algorithms.rrsi:RRSI', options: { config: { rounds: 1, candidates: 1, repetitions: 1 } } },
     validationMode: 'holdout', seed: 'fixed', seedTasks: [{ id: 'seed', family: 'format', estimated_cost: 1 }],
     heldOutTaskIds: ['private-held-out'], anchor,
     budget: { rounds: 1, maxEvaluations: 2, maxCandidates: 1, repetitions: 1 },
@@ -58,14 +59,14 @@ it.each([
       const operation = request.operation
       const value: OperationReceipt = {
         result: { operation_id: request.operationId, kind: operation.kind, candidate_id: operation.candidate_id,
-          status: 'complete', data: { candidate_diff: 'model says clean' }, candidate_change: { files: [], omitted_patches: 0 } },
+          status: 'complete', data: null },
         candidate: null, evidence: [], physicalAttempts: 0, usage: {}, provenance: null,
       }
       if (operation.kind === 'generate_candidate') {
         generations++
-        await targets.adapter.prepare(targets.path('candidate'))
-        await writeFile(join(targets.path('candidate'), 'AGENTS.md'), content)
-        value.candidate = { id: 'candidate', parent_id: 'anchor', digest: canonicalDigest('untrusted provider digest') }
+        await targets.adapter.prepare(targets.path(operation.candidate_id!))
+        await writeFile(join(targets.path(operation.candidate_id!), 'AGENTS.md'), content)
+        value.candidate = { id: operation.candidate_id!, parent_id: operation.parent_id!, digest: canonicalDigest('untrusted provider digest') }
         receipts.set(request.operationId, value)
         throw new Error('response lost after generation')
       }
@@ -86,13 +87,12 @@ it.each([
     await expect(run()).rejects.toThrow('response lost')
     const result = await run()
     expect(result.status).toBe('completed')
-    expect(generations).toBe(1)
+    expect(generations).toBe(accepted || content.length > 64 * 1024 ? 1 : 2)
     expect(evaluations).toBe(accepted ? 1 : 0)
     expect(result.physicalAttempts).toBe(accepted ? 1 : 0)
     expect(result.seedEvidence).toHaveLength(accepted ? 1 : 0)
     expect(result.heldOutEvidence).toEqual([])
     const generated = result.operations[0]!, receipt = generated.receipt!
-    expect(receipt.result.data).toEqual({ candidate_diff: 'model says clean' })
     expect(receipt.result.candidate_change).toMatchObject({ from: { id: anchor.id, digest: anchor.digest },
       to: { id: receipt.candidate!.id, digest: receipt.candidate!.digest },
       omitted_patches: content.length > 64 * 1024 ? 1 : 0 })
