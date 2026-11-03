@@ -149,11 +149,11 @@ class StagedSearch:
             objective=view.objective,
             anchor_id=view.anchor_id,
         )
+        global_ranking = self.ranker(global_input)
         reached_ceiling = False
         if isinstance(view.objective, dict):
             ceiling = score_ceiling(view.objective)
             if ceiling is not None:
-                global_ranking = self.ranker(global_input)
                 configuration = cast(dict[str, Any], view.objective)
                 precision = configuration["definition"]["comparisonPrecision"]
                 reached_ceiling = any(
@@ -208,7 +208,8 @@ class StagedSearch:
                 )
         remaining_rounds = max(1, view.budget.rounds - integer(state.data["round"]))
         quota = max(1, view.budget.candidates_remaining // remaining_rounds)
-        parent_input = ParentInput(tuple(eligible), quota, view.anchor_id)
+        champion = self._seed_champion(view, global_ranking)
+        parent_input = ParentInput(tuple(eligible), quota, champion)
         plan = self.parent_policy(parent_input, self._rng(view))
         validate_parent_plan(parent_input, plan)
         research = ResearchRecord(
@@ -218,6 +219,7 @@ class StagedSearch:
             tuple(candidate.id for candidate in view.candidates),
             {
                 "round": state.data["round"],
+                "champion": champion,
                 "eligible": json.loads(json.dumps([asdict(option) for option in eligible])),
                 "plan": json.loads(json.dumps(asdict(plan))),
             },
@@ -602,6 +604,25 @@ class StagedSearch:
     @staticmethod
     def _record(decision: Decision, record: ResearchRecord) -> Decision:
         return replace(decision, research=(record, *decision.research))
+
+    def _seed_champion(self, view: SearchView, ranked: RankingPlan) -> str:
+        # The runtime promotes only after the run's final gate, so the anchor stays
+        # the deployed champion for the whole run. Parent policies instead receive
+        # the seed champion: the leading complete-seed candidate, if it satisfies
+        # its constraints and strictly improves on the anchor. Ties keep the anchor.
+        leader = next(
+            (
+                candidate
+                for candidate in ranked.candidate_ids
+                if candidate not in ranked.disqualified
+            ),
+            view.anchor_id,
+        )
+        if leader == view.anchor_id or view.anchor_id not in dict(ranked.scores):
+            return view.anchor_id
+        if view.anchor_id in ranked.disqualified:
+            return leader
+        return view.anchor_id if self._at_least(view, ranked, view.anchor_id, leader) else leader
 
     @staticmethod
     def _at_least(view: SearchView, ranked: RankingPlan, candidate: str, parent: str) -> bool:
