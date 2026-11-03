@@ -11,10 +11,9 @@ import { publishFile, syncDirectory } from '../storage/atomic.js'
 import { prepareSandbox, codexAdapter } from './sandbox.js'
 import { describeCodex, fileDigest } from './identity.js'
 import type { CodexJob } from './contracts.js'
+import { builtinPolicy } from '../python/builtin-policy.js'
 import { CodexUsage } from './usage.js'
 import { cleanupCodex, type CodexResources, type CodexWorkerLifecycle } from './cleanup.js'
-
-const MAX_CANDIDATE_DIFF_BYTES = 256 * 1024
 
 export async function exists(path: string): Promise<boolean> {
   try {
@@ -25,66 +24,6 @@ export async function exists(path: string): Promise<boolean> {
     throw error
   }
 }
-
-async function candidateDiff(
-  parentRoot: string,
-  candidateRoot: string,
-  parent: Awaited<ReturnType<typeof targetResources>>,
-  candidate: Awaited<ReturnType<typeof targetResources>>,
-): Promise<string> {
-  const parentByPath = new Map(parent.map((resource) => [resource.path, resource]))
-  const changed = candidate.filter(
-    (resource) => canonicalDigest(parentByPath.get(resource.path) ?? null) !== canonicalDigest(resource),
-  )
-  let diff = ''
-  for (const resource of changed) {
-    const content = await readFile(join(candidateRoot, resource.path), 'utf8')
-    diff += `--- ${resource.path}\n+++ ${resource.path}\n${content}\n`
-    if (Buffer.byteLength(diff, 'utf8') >= MAX_CANDIDATE_DIFF_BYTES)
-      return diff.slice(0, MAX_CANDIDATE_DIFF_BYTES)
-  }
-  const candidatePaths = new Set(candidate.map((resource) => resource.path))
-  for (const resource of parent) {
-    if (candidatePaths.has(resource.path)) continue
-    diff += `--- ${resource.path}\n+++ /dev/null\n`
-    if (Buffer.byteLength(diff, 'utf8') >= MAX_CANDIDATE_DIFF_BYTES)
-      return diff.slice(0, MAX_CANDIDATE_DIFF_BYTES)
-  }
-  return diff
-}
-
-function parseResult(value: unknown, taskIds: string[]): Record<string, Json> {
-  const data = value as Record<string, Json>
-  const strings = (input: unknown): input is string[] =>
-    Array.isArray(input) &&
-    input.length <= 256 &&
-    input.every((item) => typeof item === 'string' && item.length <= 16_384)
-  if (
-    !data ||
-    typeof data !== 'object' ||
-    Array.isArray(data) ||
-    Object.keys(data).some((key) => !['summary', 'declined', 'hypotheses', 'clusters'].includes(key)) ||
-    typeof data.summary !== 'string' ||
-    data.summary.length > 16_384 ||
-    typeof data.declined !== 'boolean' ||
-    !strings(data.hypotheses) ||
-    !Array.isArray(data.clusters) ||
-    data.clusters.length > 256 ||
-    data.clusters.some(
-      (cluster) =>
-        !cluster ||
-        typeof cluster !== 'object' ||
-        Array.isArray(cluster) ||
-        Object.keys(cluster).some((key) => !['task_ids', 'hypotheses'].includes(key)) ||
-        !strings(cluster.task_ids) ||
-        cluster.task_ids.some((id) => !taskIds.includes(id)) ||
-        !strings(cluster.hypotheses),
-    )
-  )
-    throw new Error('codex-output-invalid')
-  return data
-}
-
 export async function executeJob(
   job: CodexJob,
   directory: string,
@@ -238,13 +177,22 @@ export async function executeJob(
         info = await lstat(resultPath)
       if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > 1024 * 1024)
         throw new Error('codex-output-invalid')
-      const result = parseResult(JSON.parse(await readFile(resultPath, 'utf8')), operation.task_ids)
+      let result: Record<string, Json>
+      try {
+        result = builtinPolicy<Record<string, Json>>(
+          'meta_result',
+          { operation, result: JSON.parse(await readFile(resultPath, 'utf8')) },
+          context.experiencePython,
+        )
+      } catch (error) {
+        if (error instanceof SyntaxError || error instanceof TypeError)
+          throw new Error('codex-output-invalid')
+        throw error
+      }
       data = result
       if (operation.kind === 'generate_candidate' && !result.declined) {
-        const parentRoot = join(context.targets, operation.parent_id!)
-        const parent = await targetResources(parentRoot)
-        const candidateRoot = sandbox.candidate
-        const resources = await targetResources(candidateRoot)
+        const parent = await targetResources(join(context.targets, operation.parent_id!))
+        const resources = await targetResources(sandbox.candidate)
         const before = new Map(parent.map((resource) => [resource.path, resource]))
         const after = new Map(resources.map((resource) => [resource.path, resource]))
         const adapter = codexAdapter(context.targetAdapter)
@@ -259,10 +207,6 @@ export async function executeJob(
         await snapshotTarget(sandbox.candidate, staged)
         await rename(staged, destination)
         await syncDirectory(context.targets)
-        data = {
-          ...result,
-          candidate_diff: await candidateDiff(parentRoot, candidateRoot, parent, resources),
-        }
         candidate = {
           id: operation.candidate_id!,
           parent_id: operation.parent_id,

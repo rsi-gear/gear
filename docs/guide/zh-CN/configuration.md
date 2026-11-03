@@ -19,7 +19,7 @@ budget: {rounds: 1, max_evaluations: 40}
 | 字段 | 当前含义 |
 | --- | --- |
 | `target.adapter` | `dsh` 或 `pi` |
-| `algorithm` | `gepa`、`random-search`、Python entrypoint，或 `{name: gepa, options: {promotion_widths: [2, 1]}}`；SDK 可传可替换策略实例 |
+| `algorithm` | `gepa`、`random-search`、Python entrypoint，或 `{name: gepa, options: {promotion_widths: [2, 1], global_gate: no_regression}}`；SDK 可传可替换策略实例 |
 | `objective.metric` | `{metric: pass_rate}` 为默认简写；高级目标使用 `objective.terms` 和 `objective.constraints` |
 | `validation.mode` | `holdout` 要求独立任务；显式 `research` 标记同集研究 |
 | `budget.rounds` | 默认 1 |
