@@ -1,5 +1,7 @@
 """RRSI finite-horizon stop rule."""
 
+from dataclasses import dataclass
+
 from ..contracts import AlgorithmState, SearchView
 from ..stopping import bounded_run
 from .config import RRSIConfig
@@ -20,3 +22,15 @@ def configured_stop_reason(
     if round_index >= config.rounds:
         return "RRSI round horizon reached"
     return None
+
+
+@dataclass(frozen=True)
+class RRSIStopRule:
+    config: RRSIConfig
+
+    def __post_init__(self) -> None:
+        if isinstance(self.config, dict):
+            object.__setattr__(self, "config", RRSIConfig(**self.config))
+
+    def __call__(self, view: SearchView, state: AlgorithmState) -> str | None:
+        return configured_stop_reason(view, state, self.config)

@@ -1,8 +1,11 @@
+import json
 import unittest
 
 from gear.algorithms import RRSI, Evidence, RankingInput, RRSIConfig
 from gear.algorithms.rrsi.ranking import RRSIRanker, cost_rule, novelty
 from gear.algorithms.testkit import toy_round
+from gear.project import Project
+from gear.refine.worker import make_algorithm
 
 
 class RRSITests(unittest.TestCase):
@@ -70,9 +73,46 @@ class RRSITests(unittest.TestCase):
         self.assertEqual(ranked.candidate_ids, ("anchor",))
         self.assertEqual(ranked.disqualified, ("candidate",))
 
+    def test_ranker_can_select_a_lower_score_candidate_with_a_cost_reduction(self):
+        evidence = (
+            Evidence(
+                "anchor",
+                "task",
+                0,
+                0.78,
+                "valid",
+                "global",
+                raw_metrics={"policy_tokens": {"value": 100}},
+            ),
+            Evidence(
+                "candidate",
+                "task",
+                0,
+                0.77,
+                "valid",
+                "global",
+                raw_metrics={"policy_tokens": {"value": 80}},
+            ),
+        )
+        ranked = RRSIRanker(RRSIConfig(noise_delta=0.02))(
+            RankingInput(("anchor", "candidate"), ("task",), evidence, 1, anchor_id="anchor")
+        )
+        self.assertEqual(ranked.candidate_ids, ("candidate", "anchor"))
+
     def test_recipe_emits_rrsi_generation_directives(self):
         result = toy_round(RRSI(config=RRSIConfig(rounds=2, max_edit_budget=3)))
         self.assertEqual(result["status"], "passed")
+        self.assertIsNotNone(result["nominee"])
+
+    def test_configuration_round_trip_preserves_nested_settings(self):
+        algorithm = RRSI(config=RRSIConfig(rounds=7, candidates=3, noise_delta=0.04))
+        frozen = json.loads(json.dumps(Project._describe_algorithm(algorithm)["algorithm"]))
+        restored = make_algorithm(frozen)
+        self.assertEqual(restored.config.rounds, 7)
+        self.assertEqual(restored.config.candidates, 3)
+        self.assertEqual(restored.config.noise_delta, 0.04)
+        self.assertEqual(restored.ranker.config.noise_delta, 0.04)
+        self.assertEqual(restored.stop_rule.config.rounds, 7)
 
 
 if __name__ == "__main__":

@@ -23,9 +23,7 @@ def measured_history(
     history: list[dict[str, JSON]], evidence: tuple[Evidence, ...]
 ) -> list[dict[str, JSON]]:
     known = {
-        str(row["candidate_id"])
-        for row in history
-        if isinstance(row.get("candidate_id"), str)
+        str(row["candidate_id"]) for row in history if isinstance(row.get("candidate_id"), str)
     }
     scores: dict[str, list[float]] = {}
     costs: dict[str, list[float]] = {}

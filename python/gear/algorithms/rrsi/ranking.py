@@ -46,10 +46,7 @@ def cost_rule(
     if delta_score > noise_delta:
         return delta_cost <= beta0 + beta1 * delta_score
     return (
-        score_weight * delta_score
-        - cost_weight * delta_cost
-        + novelty_weight * novelty_value
-        > 0
+        score_weight * delta_score - cost_weight * delta_cost + novelty_weight * novelty_value > 0
     )
 
 
@@ -91,6 +88,10 @@ def rank_candidates(view: RankingInput) -> RankingPlan:
 class RRSIRanker:
     config: RRSIConfig
 
+    def __post_init__(self) -> None:
+        if isinstance(self.config, dict):
+            object.__setattr__(self, "config", RRSIConfig(**self.config))
+
     def __call__(self, view: RankingInput) -> RankingPlan:
         baseline = complete_scope_mean(view)
         scores = dict(baseline.scores)
@@ -98,7 +99,7 @@ class RRSIRanker:
         if incumbent_score is None:
             return baseline
         incumbent_cost = relative_cost(view.anchor_id, view.evidence)
-        admissible_ids = [view.anchor_id]
+        admissible_ids: list[str] = []
         disqualified = set(baseline.disqualified)
         for candidate in baseline.candidate_ids:
             if candidate == view.anchor_id:
@@ -126,9 +127,11 @@ class RRSIRanker:
                 disqualified.add(candidate)
                 continue
             admissible_ids.append(candidate)
-        admissible_ids[1:] = sorted(
-            admissible_ids[1:], key=lambda candidate: (-scores[candidate], candidate)
+        admissible_ids = sorted(
+            admissible_ids, key=lambda candidate: (-scores[candidate], candidate)
         )
+        if view.anchor_id in scores and view.anchor_id not in disqualified:
+            admissible_ids.append(view.anchor_id)
         return RankingPlan(
             tuple(admissible_ids),
             tuple((candidate, scores[candidate]) for candidate in admissible_ids),

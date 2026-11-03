@@ -38,9 +38,9 @@ class RRSIConfig:
         if self.rounds <= 0:
             return self.max_edit_budget
         t = max(0, min(round_index, self.rounds))
-        value = self.min_edit_budget + (
-            self.max_edit_budget - self.min_edit_budget
-        ) * 0.5 * (1 + math.cos(math.pi * t / self.rounds))
+        value = self.min_edit_budget + (self.max_edit_budget - self.min_edit_budget) * 0.5 * (
+            1 + math.cos(math.pi * t / self.rounds)
+        )
         return int(math.ceil(round(value, 9)))
 
     def to_json(self) -> dict[str, int | float]:

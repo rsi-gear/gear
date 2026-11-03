@@ -24,7 +24,7 @@ from .parents import select_parent
 from .proposal import RRSIProposalPlanner
 from .ranking import RRSIRanker
 from .sampling import sample_tasks
-from .stopping import configured_stop_reason
+from .stopping import RRSIStopRule
 
 
 class RRSI(StagedSearch):
@@ -45,12 +45,12 @@ class RRSI(StagedSearch):
         ranker: CandidateRanker | None = None,
         stop_rule: StopRule | None = None,
     ) -> None:
+        if isinstance(config, dict):
+            config = RRSIConfig(**config)
         self.config = config or RRSIConfig()
         planner = proposal_planner or RRSIProposalPlanner(self.config)
         ranking = ranker or RRSIRanker(self.config)
-        stopping = stop_rule or (
-            lambda view, state: configured_stop_reason(view, state, self.config)
-        )
+        stopping = stop_rule or RRSIStopRule(self.config)
         super().__init__(
             parent_policy,
             sampler,
@@ -61,8 +61,42 @@ class RRSI(StagedSearch):
             (),
         )
 
+    @property
+    def configuration(self) -> dict[str, JSON]:
+        return {"config": cast(JSON, self.config.to_json())}
+
     def step(self, view: SearchView, state: AlgorithmState) -> Decision:
+        incumbent_id = state.data.get("incumbent_id")
+        if isinstance(incumbent_id, str) and any(
+            candidate.id == incumbent_id for candidate in view.candidates
+        ):
+            view = replace(view, anchor_id=incumbent_id)
         decision = super().step(view, state)
+        ranking = decision.state.data.get("ranking")
+        if (
+            isinstance(ranking, dict)
+            and decision.state.data.get("phase") == "parents"
+            and isinstance(ranking.get("candidate_ids"), list)
+        ):
+            parent = decision.state.data.get("parent")
+            winner = next(
+                (
+                    candidate
+                    for candidate in ranking["candidate_ids"]
+                    if isinstance(candidate, str)
+                    and candidate != parent
+                    and candidate not in ranking.get("disqualified", [])
+                ),
+                None,
+            )
+            if winner is not None:
+                decision = replace(
+                    decision,
+                    state=replace(
+                        decision.state,
+                        data={**decision.state.data, "incumbent_id": winner},
+                    ),
+                )
         round_value = decision.state.data.get("round", 0)
         round_index = round_value if type(round_value) is int else 0
         prior_raw = decision.state.data.get("rrsi_history", [])
@@ -104,7 +138,9 @@ class RRSI(StagedSearch):
                     **(
                         {"candidate_diff": diff}
                         if operation.kind == "evaluate_seed"
-                        and isinstance(diff := self._candidate_diff(view, operation.candidate_id), str)
+                        and isinstance(
+                            diff := self._candidate_diff(view, operation.candidate_id), str
+                        )
                         else {}
                     ),
                 },
