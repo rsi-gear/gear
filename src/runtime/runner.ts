@@ -569,7 +569,12 @@ export class DurableRunner {
     if (!seed.complete) journal.gate = { status: 'incomplete', reason: 'Incomplete comparable seed evidence' }
     else if (!seed.constraints_passed)
       journal.gate = { status: 'rejected', reason: 'Frozen seed objective constraints or protection failed' }
-    else if (seed.gain! <= spec.acceptance.minimumGain)
+    else if (seed.improved === false)
+      journal.gate = {
+        status: 'rejected',
+        reason: 'Seed evidence regresses a declared signal or improves none',
+      }
+    else if (seed.improved === undefined && seed.gain! <= spec.acceptance.minimumGain)
       journal.gate = {
         status: 'rejected',
         reason: 'Seed improvement does not meet the frozen acceptance rule',
@@ -604,9 +609,11 @@ export class DurableRunner {
         ? { status: 'incomplete', reason: 'Incomplete held-out evidence' }
         : !compared.constraints_passed
           ? { status: 'rejected', reason: 'Frozen held-out objective constraints or protection failed' }
-          : compared.gain! < -spec.acceptance.maxHeldOutRegression
-            ? { status: 'rejected', reason: 'Held-out regression exceeds the frozen limit' }
-            : { status: 'accepted', reason: 'Independent held-out gate passed' }
+          : compared.regressed
+            ? { status: 'rejected', reason: 'Held-out evidence regresses a declared signal' }
+            : compared.regressed === undefined && compared.gain! < -spec.acceptance.maxHeldOutRegression
+              ? { status: 'rejected', reason: 'Held-out regression exceeds the frozen limit' }
+              : { status: 'accepted', reason: 'Independent held-out gate passed' }
     }
     await this.checkOwner(journal, signal)
     // Persist gate/nomination intent before the global champion CAS.

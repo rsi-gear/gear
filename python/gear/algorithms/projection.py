@@ -205,9 +205,38 @@ def project_candidate(input: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
+def signal_gains(
+    configuration: dict[str, Any], candidate: dict[str, Any], reference: dict[str, Any]
+) -> list[dict[str, Any]] | None:
+    """Quantized gains of the seed rule's signals, positive when better; None if any is missing."""
+    rule = configuration["seed_rule"]
+    gains = []
+    for metric_id in (rule["outcome"], *rule["process"]):
+        contract = next(
+            (item for item in configuration["metrics"] if item["id"] == metric_id), None
+        )
+        if contract is None:
+            raise ValueError("seed rule signal has no declared metric contract")
+        values = [side["metrics"].get(metric_id) for side in (candidate, reference)]
+        if any(not value or value["status"] != "available" for value in values):
+            return None
+        quantum = contract["comparisonPrecision"]
+        difference = comparison_key(values[0]["value"], quantum) - comparison_key(
+            values[1]["value"], quantum
+        )
+        if contract["direction"] != "maximize":
+            difference = -difference
+        gains.append({"metric": metric_id, "gain": numeric(difference * decimal(quantum))})
+    return gains
+
+
 def compare_candidates(input: dict[str, Any]) -> dict[str, Any]:
+    # The reference defaults to the run anchor. Constraints and protection always
+    # compare with the anchor, even when the reference is a later champion.
     candidate = project_candidate(input)
-    baseline = project_candidate({**input, "candidate_id": input["anchor_id"]})
+    baseline = project_candidate(
+        {**input, "candidate_id": input.get("reference_id") or input["anchor_id"]}
+    )
     complete = candidate["complete"] and baseline["complete"]
     quantum = (
         input["objective"]["definition"]["comparisonPrecision"] if input.get("objective") else 1e-9
@@ -223,8 +252,24 @@ def compare_candidates(input: dict[str, Any]) -> dict[str, Any]:
         if complete
         else None
     )
-    return {
+    result = {
         "complete": complete,
         "gain": gain,
         "constraints_passed": candidate["constraints_passed"],
     }
+    configuration = input.get("objective")
+    if configuration and configuration.get("seed_rule"):
+        # The paper's SeedGate promotes when no declared signal regresses and at least
+        # one strictly improves; held-out validation only forbids a regression. A
+        # declared signal without evidence makes the comparison incomplete.
+        signals = signal_gains(configuration, candidate, baseline) if complete else None
+        regressed = signals is not None and any(item["gain"] < 0 for item in signals)
+        result.update(
+            complete=signals is not None,
+            signals=signals or [],
+            regressed=regressed,
+            improved=signals is not None
+            and not regressed
+            and any(item["gain"] > 0 for item in signals),
+        )
+    return result

@@ -10,6 +10,7 @@ import { ProjectApplication } from '../../src/application/project-service.js'
 import { initProject } from '../../src/application/init.js'
 import type { Evidence } from '../../src/domain/algorithm-wire.js'
 import type { RawMetricDefinition } from '../../src/domain/objective.js'
+import type { NativeScoreDefinition } from '../../src/domain/project.js'
 import type { OperationProvider, OperationReceipt, OperationRequest } from '../../src/ports/operations.js'
 import type { RunSpec } from '../../src/domain/run.js'
 import { RunStore } from '../../src/adapters/storage/run-store.js'
@@ -469,4 +470,49 @@ it('freezes independent assertion semantics and refuses undeclared or ambiguous 
       canonicalDigest('candidate'),
     ),
   ).toThrow('frozen contract')
+})
+
+it('freezes the multi-signal seed rule for the default objective from the native manifest', () => {
+  const score = (direction: 'maximize' | 'minimize'): NativeScoreDefinition => ({
+    source_metric: 'partial_credit',
+    direction,
+    range: [0, 10],
+    reducer: 'task-macro-mean',
+  })
+  const manifest = (process?: NativeScoreDefinition) => ({
+    adapter: { id: 'fixture', revision: 'r1' },
+    scoring: {
+      total_score: { ...score('maximize'), source_metric: 'correct' },
+      ...(process ? { process_score: process } : {}),
+    },
+  })
+  const standard = resolveProjectObjective({ objective: { metric: 'pass_rate' } }, manifest(score('minimize')))
+  expect(standard.seed_rule).toEqual({ rule: 'multisignal-v1', outcome: 'pass_rate', process: ['process_score'] })
+  expect(standard.metrics.find((metric) => metric.id === 'process_score')).toMatchObject({
+    revision: 'r1',
+    direction: 'minimize',
+    range: { min: 0, max: 10 },
+    source: { path: 'verifier.scores.process_score', extractor: 'number-v1' },
+    granularity: 'trial',
+  })
+  // Without a declared process channel the rule reduces to a strict pass-rate gain.
+  for (const total of [manifest(), null, undefined]) {
+    const objective = resolveProjectObjective({ objective: { metric: 'pass_rate' } }, total)
+    expect(objective.seed_rule?.process).toEqual([])
+    expect(objective.metrics.map((metric) => metric.id)).toEqual(['pass_rate'])
+  }
+  // A project's own process_score declaration keeps its semantics.
+  const declared = resolveProjectObjective(
+    { objective: { metric: 'pass_rate' }, metrics: [quality] },
+    manifest(score('maximize')),
+  )
+  expect(declared.seed_rule?.process).toEqual(['process_score'])
+  expect(declared.metrics.find((metric) => metric.id === 'process_score')).toMatchObject({ unit: 'points' })
+  // Explicit objectives keep their configured gain and register no standard channel.
+  const custom = resolveProjectObjective(
+    { objective: { terms: [{ metric: 'pass_rate', weight: 1 }] } },
+    manifest(score('maximize')),
+  )
+  expect(custom.seed_rule).toBeUndefined()
+  expect(custom.metrics.map((metric) => metric.id)).toEqual(['pass_rate'])
 })

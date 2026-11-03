@@ -46,6 +46,13 @@ export interface ObjectiveConfiguration {
   definition: ResolvedObjective
   metrics: RawMetricContract[]
   protection: ProtectedMetric[]
+  /** The paper's multi-signal SeedGate; explicit objectives omit it and use their gain. */
+  seed_rule?: SeedRule
+}
+export interface SeedRule {
+  rule: 'multisignal-v1'
+  outcome: string
+  process: string[]
 }
 export interface ObjectiveDefinition {
   terms: Array<{ metric: string; weight: number; scale?: number }>
