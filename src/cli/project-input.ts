@@ -1,5 +1,14 @@
 import { GearError } from '../domain/errors.js'
 
+/** Command-line JSON is external input: malformed text is a command error with a code, not a SyntaxError. */
+export function parseJsonInput(text: string, label: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch (error) {
+    throw new GearError('invalid-json-input', `${label} must be valid JSON: ${(error as Error).message}`)
+  }
+}
+
 /** Native command projection; ProjectController owns semantic validation. */
 export function parseProjectCommand(input: string): { method: string; params: Record<string, unknown> } {
   const words = input.trim().split(/\s+/u).filter(Boolean)
@@ -66,7 +75,7 @@ export function parseProjectCommand(input: string): { method: string; params: Re
         ref,
         source_ref,
         snapshot_digest: snapshot,
-        query: queryJson === undefined ? {} : JSON.parse(queryJson),
+        query: queryJson === undefined ? {} : parseJsonInput(queryJson, '--query-json'),
       })
     }
     const run_id = words.shift(),
@@ -87,7 +96,10 @@ export function parseProjectCommand(input: string): { method: string; params: Re
       run_id,
       ...(ref
         ? { ref }
-        : { query: queryJson === undefined ? { query: query ?? '' } : JSON.parse(queryJson) }),
+        : {
+            query:
+              queryJson === undefined ? { query: query ?? '' } : parseJsonInput(queryJson, '--query-json'),
+          }),
       ...(snapshot ? { snapshot_digest: snapshot } : {}),
       ...(view ? { view } : {}),
       ...(limit === undefined ? {} : { limit: Number(limit) }),
