@@ -1,0 +1,4 @@
+# Keep the working tree LF on every platform so fixture digests and the
+# documented-source parsing tests stay byte-exact; text=auto leaves the
+# binary documentation assets untouched.
+* text=auto eol=lf
