@@ -26,10 +26,11 @@ class RRSIProposalPlanner:
                 ]
         if not hypotheses:
             hypotheses = ["Address the observed failures without changing successful behavior."]
+        limit = min(self.config.candidates, view.candidate_limit)
         return ProposalPlan(
-            tuple(dict.fromkeys(hypotheses))[: view.candidate_limit],
+            tuple(dict.fromkeys(hypotheses))[:limit],
             view.parent.task_ids,
-            f"RRSI bounded proposals (up to {view.candidate_limit} candidates)",
+            f"RRSI bounded proposals (up to {limit} candidates)",
         )
 
 

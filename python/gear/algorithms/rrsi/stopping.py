@@ -11,26 +11,15 @@ def stop_reason(view: SearchView, state: AlgorithmState) -> str | None:
     return bounded_run(view, state)
 
 
-def configured_stop_reason(
-    view: SearchView, state: AlgorithmState, config: RRSIConfig
-) -> str | None:
-    reason = stop_reason(view, state)
-    if reason:
-        return reason
-    round_value = state.data.get("round", 0)
-    round_index = round_value if type(round_value) is int else 0
-    if round_index >= config.rounds:
-        return "RRSI round horizon reached"
-    return None
-
-
 @dataclass(frozen=True)
 class RRSIStopRule:
-    config: RRSIConfig
+    config: RRSIConfig = RRSIConfig()
 
     def __post_init__(self) -> None:
         if isinstance(self.config, dict):
             object.__setattr__(self, "config", RRSIConfig(**self.config))
 
     def __call__(self, view: SearchView, state: AlgorithmState) -> str | None:
-        return configured_stop_reason(view, state, self.config)
+        if state.data.get("phase") == "done":
+            return "RRSI search completed"
+        return bounded_run(view, state)
