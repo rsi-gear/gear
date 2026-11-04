@@ -61,7 +61,7 @@ def read_rows(source: Path) -> list[tuple[int, dict]]:
         if source.suffix.lower() == ".jsonl":
             return [
                 (line, json_value(text, f"{source.name}:{line}"))
-                for line, text in enumerate(source.read_text(encoding="utf-8-sig").splitlines(), 1)
+                for line, text in enumerate(source.read_text(encoding="utf-8-sig").split("\n"), 1)
                 if text.strip()
             ]
     except (OSError, UnicodeError, csv.Error) as error:
