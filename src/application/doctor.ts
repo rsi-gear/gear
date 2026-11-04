@@ -22,6 +22,9 @@ import {
 import { resolveProject } from './project-config.js'
 import { pythonExecutable, pythonSourceRoot } from './python.js'
 import { runtimeMatrix, supportedNode } from './runtime-matrix.js'
+import pkg from '../../package.json' with { type: 'json' }
+
+const { version: gearVersion } = pkg
 
 const execute = promisify(execFile)
 interface Check {
@@ -65,11 +68,24 @@ export async function doctor(root: string) {
       executable,
       [
         '-c',
-        'import json,sys,gear,psutil,tomli_w;import gear.benchmark.native;from gear.algorithms import GEPA;assert sys.version_info >= (3,10);print(json.dumps({"version":".".join(map(str,sys.version_info[:3]))}))',
+        'import json,sys,gear,psutil,tomli_w;import gear.benchmark.native;from gear.algorithms import GEPA;assert sys.version_info >= (3,10);print(json.dumps({"python_version":".".join(map(str,sys.version_info[:3])),"gear_version":getattr(gear,"__version__",None)}))',
       ],
       { timeout: 10_000, maxBuffer: 4096, env: { ...process.env, PYTHONPATH: pythonSourceRoot } },
     )
-    return { executable, ...(JSON.parse(stdout) as { version: string }) }
+    const info = JSON.parse(stdout) as {
+      python_version: string
+      gear_version: string | null
+    }
+    if (info.gear_version !== null && info.gear_version !== gearVersion)
+      throw new GearError(
+        'python-gear-version-mismatch',
+        `Python Gear SDK ${info.gear_version} does not match package version ${gearVersion}; reinstall the Python package`,
+      )
+    return {
+      executable,
+      python_version: info.python_version,
+      gear_version: info.gear_version,
+    }
   })
   let selection: Partial<Record<ProfileRole, string>> = {},
     adapter: 'dsh' | 'pi' | undefined
