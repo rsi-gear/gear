@@ -44,7 +44,7 @@ it('validates references against admitted candidate identities, preserving unrel
   expect(() => validateDecision(view, decide({ ...operation, payload: refs('other', 'donor', canonicalDigest('wrong')) }))).toThrow('frozen digest')
   expect(() => candidateReferences({ ...operation, kind: 'diagnose_seed', payload: { references: ['legacy', 'algorithm-data'] } })).not.toThrow()
   expect(() => candidateReferences({ ...operation, kind: 'diagnose_seed', payload: refs('donor') })).toThrow('on an edit')
-  expect(() => candidateReferences({ ...operation, payload: { gear_candidate_references_v1: Object.fromEntries(Array.from({ length: 9 }, (_, i) => ['r'+i, { candidate_id: 'donor', digest: donor.digest }])) } })).toThrow('eight')
+  expect(() => candidateReferences({ ...operation, payload: { gear_candidate_references_v1: Object.fromEntries(Array.from({ length: 129 }, (_, i) => ['r'+i, { candidate_id: 'donor', digest: donor.digest }])) } })).toThrow('128')
 })
 it('stages exact sibling resources, excludes references from the child and detects tampering', async () => {
   const { root, job } = await fixture()
@@ -78,4 +78,13 @@ it('preserves an alias named __proto__ as a plain index entry', async () => {
   const staged = await stageCandidateReferences(job, join(root, 'prototype'))
   expect(Object.keys(staged.index)).toEqual(['__proto__'])
   expect(staged.index.__proto__!.directory).toBe('../references/__proto__')
+})
+
+it('can stage the full default Meta-Harness history beyond eight aliases within aggregate limits', async () => {
+  const { root, job, donor } = await fixture()
+  job.input.request.operation.payload = { gear_candidate_references_v1: Object.fromEntries(Array.from({ length: 21 }, (_, i) =>
+    ['version'+i, { candidate_id: 'donor', digest: donor.digest }])) }
+  const staged = await stageCandidateReferences(job, join(root, 'history'))
+  expect(Object.keys(staged.index)).toHaveLength(21)
+  await staged.verify()
 })

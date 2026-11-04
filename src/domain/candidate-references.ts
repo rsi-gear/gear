@@ -18,15 +18,15 @@ export function candidateReferences(operation: Operation): Record<string, Candid
     return {}
   const references = payload.gear_candidate_references_v1
   if (
-    operation.kind !== 'generate_candidate' ||
+    !['generate_candidate', 'workspace_edit'].includes(operation.kind) ||
     !references ||
     typeof references !== 'object' ||
     Array.isArray(references)
   )
     throw new GearError('invalid-candidate-reference', 'References require a named candidate map on an edit')
-  // Each candidate is bounded by TargetStore to 64 MiB; cap multiplied disk materialization.
-  if (Object.keys(references).length > 8)
-    throw new GearError('invalid-candidate-reference', 'An edit supports at most eight candidate references')
+  // Bound reference metadata; staging separately caps aggregate resource bytes.
+  if (Object.keys(references).length > 128)
+    throw new GearError('invalid-candidate-reference', 'An edit supports at most 128 candidate references')
   for (const [name, value] of Object.entries(references)) {
     if (
       !/^[a-zA-Z0-9_-]+$/u.test(name) ||

@@ -9,6 +9,7 @@ import sys
 from contextlib import redirect_stdout
 from dataclasses import asdict
 from pathlib import Path
+from typing import get_args
 
 from gear.algorithms import (
     GEPA,
@@ -18,9 +19,11 @@ from gear.algorithms import (
     Evidence,
     OperationResult,
     RandomSearch,
+    ResearchTrial,
     SearchView,
     Task,
 )
+from gear.algorithms.contracts import OperationKind
 from gear.canonical import digest
 
 from .dependencies import verify_dependencies
@@ -42,6 +45,7 @@ def load_entrypoint(name: str):
 
 def make_algorithm(config):
     options = dict(config.get("options", {}))
+    options.pop("research_data", None)
     for key in ("parent_policy", "sampler", "proposal_planner", "ranker", "stop_rule"):
         if key in options:
             value = options[key]
@@ -75,6 +79,11 @@ def decode_view(value) -> SearchView:
         Budget(**value["budget"]),
         value["anchor_id"],
         value.get("objective"),
+        tuple(
+            ResearchTrial(**{**item, "evidence": Evidence(**item["evidence"])})
+            for item in value.get("research_trials", [])
+        ),
+        value.get("research_data"),
     )
 
 
@@ -100,13 +109,7 @@ def main() -> int:
                 verify_dependencies(Path(__file__).resolve().parents[2])
                 result = {
                     "protocol_version": 1,
-                    "operations": [
-                        "diagnose_seed",
-                        "generate_candidate",
-                        "evaluate_seed",
-                        "nominate",
-                        "stop",
-                    ],
+                    "operations": list(get_args(OperationKind)),
                     "max_message_bytes": MAX_MESSAGE_BYTES,
                     "implementation_identity": source_identity(Path(__file__).resolve().parents[2]),
                 }

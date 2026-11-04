@@ -14,7 +14,7 @@ import {
 } from '../../sandbox.js'
 import { canonicalDigest } from '../../domain/canonical.js'
 import { GearError } from '../../domain/errors.js'
-import { validateAlgorithmWire } from '../../domain/algorithm-schema.js'
+import { algorithmOperationKinds, validateAlgorithmWire } from '../../domain/algorithm-schema.js'
 import type {
   AlgorithmState,
   Decision,
@@ -55,6 +55,7 @@ export interface PythonWorkerOptions {
 export class PythonAlgorithmWorker {
   private child: ChildProcessWithoutNullStreams | undefined
   private lease: AirGappedSandboxLease | undefined
+  private legacyOperations = false
   private stderr = ''
   private responseChunks: Buffer[] = []
   private responseBytes = 0
@@ -148,14 +149,17 @@ export class PythonAlgorithmWorker {
         handshake.protocol_version !== 1 ||
         handshake.implementation_identity !== this.options.implementationIdentity ||
         handshake.max_message_bytes !== MAX_ALGORITHM_MESSAGE_BYTES ||
-        JSON.stringify(handshake.operations) !==
-          JSON.stringify(['diagnose_seed', 'generate_candidate', 'evaluate_seed', 'nominate', 'stop'])
+        ![
+          ['diagnose_seed', 'generate_candidate', 'evaluate_seed', 'nominate', 'stop'],
+          algorithmOperationKinds,
+        ].some((operations) => JSON.stringify(handshake.operations) === JSON.stringify(operations))
       ) {
         throw new GearError(
           'algorithm-handshake-mismatch',
           `Worker protocol, implementation or capabilities changed (worker max_message_bytes=${handshake && typeof handshake === 'object' && !Array.isArray(handshake) && typeof handshake.max_message_bytes === 'number' ? handshake.max_message_bytes : 'invalid'}; runtime max_message_bytes=${MAX_ALGORITHM_MESSAGE_BYTES}). Existing runs retain frozen Python source; use a compatible runtime or start a new run`,
         )
       }
+      this.legacyOperations = Array.isArray(handshake.operations) && handshake.operations.length === 5
     } catch (error) {
       await this.dispose()
       throw error
@@ -169,12 +173,17 @@ export class PythonAlgorithmWorker {
     signal: AbortSignal,
   ): Promise<Decision> {
     validateAlgorithmWire('SearchView', view)
+    const projected = { ...view } as unknown as Record<string, Json>
+    if (this.legacyOperations) {
+      delete projected.research_data
+      delete projected.research_trials
+    }
     validateAlgorithmWire('AlgorithmState', state)
     const result = await this.request(
       'step',
       view.run_id,
       view.step_id,
-      { view, state, algorithm } as unknown as Json,
+      { view: projected, state, algorithm } as unknown as Json,
       signal,
     )
     validateAlgorithmWire('Decision', result)

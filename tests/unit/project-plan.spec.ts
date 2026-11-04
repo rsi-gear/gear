@@ -344,20 +344,84 @@ it('binds frozen proof to execution conditions and historical accounting even if
   expect(calls).toHaveLength(1)
 })
 
-it.each(['artifact', 'environment'])('reuses a baseline only while the pre-admission Hitch %s binding remains identical', async (changed) => {
-  const { app, state } = await fixture()
-  const root = await mkdtemp(join(tmpdir(), 'gear-baseline-artifact-')); roots.push(root)
-  const executable = join(root, 'hitch.mjs'), remote = join(root, 'remote.json')
-  await writeFile(executable, `#!${process.execPath}\nimport {runOrderedHitchFixture} from ${JSON.stringify(new URL('../fixtures/ordered-hitch.mjs', import.meta.url).href)};runOrderedHitchFixture('${canonicalDigest('revision')}');`, { mode: 0o700 })
-  const profile = { kind: 'hitch' as const, executable, root, harnessRef: 'deepseek@version:0.1.1-rc.2', model: 'unused', baseImage: 'image@' + canonicalDigest('image'), passEnv: [], timeoutMs: 1000 }
-  const context = { directory: join(root, 'submissions'), targets: join(root, 'targets'), adapter: new DshHarnessAdapter(), implementationIdentity: canonicalDigest('adapter'), taskIds: ['sum-01', 'sum-02'], runtime: fixtureRuntime, async compile() {} }
-  state.target = (await HitchOperationProvider.connect(profile, context)).identity
-  await app.evaluate({ split: 'seed', limit: 1 })
-  state.target = (await HitchOperationProvider.connect(profile, context)).identity
-  expect((await app.previewRefine()).baseline.reusable_slots).toBe(1)
-  await writeFile(remote, JSON.stringify(changed === 'artifact'
-    ? { preparedArtifactId: canonicalDigest('new-dependency-closure') }
-    : { environmentBinding: 'hmac-sha256:' + 'e'.repeat(64) }))
-  state.target = (await HitchOperationProvider.connect(profile, context)).identity
-  expect((await app.previewRefine()).baseline.reusable_slots).toBe(0)
-}, 60_000)
+it.each(['artifact', 'environment'])(
+  'reuses a baseline only while the pre-admission Hitch %s binding remains identical',
+  async (changed) => {
+    const { app, state } = await fixture()
+    const root = await mkdtemp(join(tmpdir(), 'gear-baseline-artifact-'))
+    roots.push(root)
+    const executable = join(root, 'hitch.mjs'),
+      remote = join(root, 'remote.json')
+    await writeFile(
+      executable,
+      `#!${process.execPath}\nimport {runOrderedHitchFixture} from ${JSON.stringify(new URL('../fixtures/ordered-hitch.mjs', import.meta.url).href)};runOrderedHitchFixture('${canonicalDigest('revision')}');`,
+      { mode: 0o700 },
+    )
+    const profile = {
+      kind: 'hitch' as const,
+      executable,
+      root,
+      harnessRef: 'deepseek@version:0.1.1-rc.2',
+      model: 'unused',
+      baseImage: 'image@' + canonicalDigest('image'),
+      passEnv: [],
+      timeoutMs: 1000,
+    }
+    const context = {
+      directory: join(root, 'submissions'),
+      targets: join(root, 'targets'),
+      adapter: new DshHarnessAdapter(),
+      implementationIdentity: canonicalDigest('adapter'),
+      taskIds: ['sum-01', 'sum-02'],
+      runtime: fixtureRuntime,
+      async compile() {},
+    }
+    state.target = (await HitchOperationProvider.connect(profile, context)).identity
+    await app.evaluate({ split: 'seed', limit: 1 })
+    state.target = (await HitchOperationProvider.connect(profile, context)).identity
+    expect((await app.previewRefine()).baseline.reusable_slots).toBe(1)
+    await writeFile(
+      remote,
+      JSON.stringify(
+        changed === 'artifact'
+          ? { preparedArtifactId: canonicalDigest('new-dependency-closure') }
+          : { environmentBinding: 'hmac-sha256:' + 'e'.repeat(64) },
+      ),
+    )
+    state.target = (await HitchOperationProvider.connect(profile, context)).identity
+    expect((await app.previewRefine()).baseline.reusable_slots).toBe(0)
+  },
+  60_000,
+)
+
+it('excludes independent same-slot trials from reused baseline evidence and historical cost', async () => {
+  const { app } = await fixture()
+  const previous = await app.evaluate({ split: 'seed', limit: 1 })
+  const journal = await app.store.read(previous.run_id)
+  const canonical = journal.operations.find((entry) => entry.request.operation.kind === 'evaluate_seed')!
+  const independent = structuredClone(canonical)
+  independent.request.operationId = canonicalDigest('independent-source-observation')
+  independent.request.trials = {
+    group: 'research-only',
+    repetitions: 1,
+    instances: canonical.request.slots.map((slot) => ({
+      id: slot.taskId,
+      task_id: slot.taskId,
+      question: 'Different research input',
+    })),
+  }
+  independent.request.operation.payload = { gear_trials_v1: independent.request.trials as never }
+  independent.receipt!.result.operation_id = independent.request.operationId
+  independent.receipt!.evidence = independent.receipt!.evidence.map((cell) => ({ ...cell, score: 1 }))
+  independent.receipt!.usage = { tokens: 99999, model_requests: 999 }
+  journal.operations.push(independent)
+  journal.physicalAttempts += independent.receipt!.physicalAttempts
+  await app.store.write(journal)
+  const plan = await app.previewRefine()
+  expect(plan.baseline.reusable_slots).toBe(1)
+  expect(plan.baseline.historical_usage).toMatchObject({
+    physical_attempts: 1,
+    usage: { model_requests: 1, tokens: 10, dollars: null },
+  })
+  expect(plan.baseline.source?.run_id).toBe(previous.run_id)
+})

@@ -21,6 +21,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
   readonly mutationPolicy = dshMutationPolicy
   describe() {
     return {
+      instructionFile: 'prompts/system.md',
+      skillRoot: 'skills',
       adapterRef: { id: 'dsh', version: '1' },
       resources: ['rules', 'skills', 'plugins', 'workflows', 'configuration'],
       guide:

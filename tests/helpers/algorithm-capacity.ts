@@ -151,6 +151,8 @@ export function algorithmCapacityFixture(records: 600 | 1300 | 1800): {
     },
     anchor_id: 'anchor',
     objective: null,
+    research_trials: [],
+    research_data: null,
   }
   const state: AlgorithmState = {
     version: 1,

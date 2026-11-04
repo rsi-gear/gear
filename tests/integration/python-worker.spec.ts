@@ -136,3 +136,28 @@ it('rejects an existing frozen 4 MiB worker without modifying its source or reco
     expect(worker.options.implementationIdentity).toBe(identity)
   } finally { await worker.dispose() }
 }, 30_000)
+
+it('accepts a frozen legacy operation list and omits new research projections from its view', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'gear-python-legacy-operations-')); roots.push(root)
+  const source = join(root, 'source'), scratch = join(root, 'scratch')
+  await mkdir(scratch); await freezeAlgorithmSource(source)
+  const path = join(source, 'gear/refine/worker.py')
+  let legacy = await readFile(path, 'utf8')
+  legacy = legacy.replace('list(get_args(OperationKind))', '["diagnose_seed", "generate_candidate", "evaluate_seed", "nominate", "stop"]')
+  legacy = legacy.replace('                view = decode_view(body["view"])', '                assert "research_data" not in body["view"] and "research_trials" not in body["view"]\n                view = decode_view(body["view"])')
+  await chmod(path, 0o600); await writeFile(path, legacy); await chmod(path, 0o400)
+  const python = process.env.GEAR_TRAINING_TEST_PYTHON ?? 'python3'
+  const identity = execFileSync(python, ['-I', '-B', '-c',
+    `import sys;from pathlib import Path;sys.path.insert(0,${JSON.stringify(source)});from gear.refine.identity import source_identity;print(source_identity(Path(${JSON.stringify(source)})))`,
+  ], { encoding: 'utf8' }).trim()
+  const worker = new PythonAlgorithmWorker({ python, sourceRoot: source, scratch, implementationIdentity: identity })
+  try {
+    await worker.start(new AbortController().signal)
+    const result = await worker.step({ run_id: 'run', step_id: 0, seed: 'fixed', tasks: [{ id: 'seed', family: 'x', estimated_cost: 1 }],
+      candidates: [{ id: 'anchor', digest: canonicalDigest('anchor'), parent_id: null }], evidence: [], completed: [],
+      budget: { evaluations_remaining: 2, candidates_remaining: 1, rounds: 1, repetitions: 1 }, anchor_id: 'anchor',
+      research_data: {}, research_trials: [] }, { version: 1, data: {} }, { name: 'random-search', options: {} }, new AbortController().signal)
+    expect(result.operations[0]?.kind).toBe('evaluate_seed')
+    expect(await readFile(path, 'utf8')).toBe(legacy)
+  } finally { await worker.dispose() }
+}, 30000)

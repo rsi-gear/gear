@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Coroutine, Generator, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from collections.abc import Callable, Coroutine, Generator, Mapping, Sequence
+from dataclasses import asdict, dataclass, replace
 from typing import Any, cast
 
 from gear.canonical import JSON, digest
 
+from .artifacts import ArtifactAccess
 from .contracts import (
     AlgorithmState,
     Budget,
@@ -18,10 +19,12 @@ from .contracts import (
     Operation,
     OperationResult,
     ResearchRecord,
+    ResearchTrial,
     SearchView,
     Task,
 )
 from .random import DeterministicRandom
+from .workspaces import WorkspaceAccess, WorkspaceRef
 
 
 def _json(value: Any) -> JSON:
@@ -46,8 +49,33 @@ class RunInputs:
 
 
 @dataclass(frozen=True)
+class TaskInstance:
+    id: str
+    task_id: str
+    question: str | None = None
+
+
+@dataclass(frozen=True)
 class RunData:
     seed: tuple[Task, ...]
+    train: tuple[Task, ...] = ()
+    dev: tuple[Task, ...] = ()
+    _sources: tuple[dict[str, Any], ...] = ()
+
+    def question(self, task: Task | str) -> str:
+        task_id = task.id if isinstance(task, Task) else task
+        return cast(
+            str, next(value["instruction"] for value in self._sources if value["id"] == task_id)
+        )
+
+    def expected(self, task: Task | str) -> JSON:
+        task_id = task.id if isinstance(task, Task) else task
+        return _json(
+            next(value.get("expected") for value in self._sources if value["id"] == task_id)
+        )
+
+    def derive(self, task: Task | str, question: str, *, id: str) -> TaskInstance:
+        return TaskInstance(id, task.id if isinstance(task, Task) else task, question)
 
 
 @dataclass(frozen=True)
@@ -55,6 +83,7 @@ class RoleResult:
     operation: OperationResult
     data: JSON
     candidate: Candidate | None = None
+    revision: WorkspaceRef | None = None
 
     @property
     def ok(self) -> bool:
@@ -84,17 +113,48 @@ class EvaluationResult:
 
 
 @dataclass(frozen=True)
+class EvidencePage:
+    operation: OperationResult
+    data: JSON
+
+
+@dataclass(frozen=True)
+class TrialResult:
+    operation: OperationResult
+    observations: tuple[ResearchTrial, ...]
+    complete: bool
+
+    @property
+    def ok(self) -> bool:
+        return (
+            self.operation.status == "complete"
+            and self.complete
+            and all(
+                value.evidence.status in ("valid", "task_failed")
+                and value.evidence.score is not None
+                for value in self.observations
+            )
+        )
+
+
+@dataclass(frozen=True)
 class WorkflowResult:
     selected: str | None
     reason: str
+    nominate: bool = True
+    data: JSON = None
+    candidates: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class _Request:
     key: str
-    operation: Operation
+    operations: tuple[Operation, ...]
+    reason: str
 
-    def __await__(self) -> Generator[_Request, OperationResult, OperationResult]:
+    def __await__(
+        self,
+    ) -> Generator[_Request, tuple[OperationResult, ...], tuple[OperationResult, ...]]:
         return (yield self)
 
 
@@ -112,13 +172,39 @@ class RoleAccess:
         candidate: Candidate | str | None = None,
         tasks: Sequence[Task | str] | None = None,
         references: Mapping[str, Candidate] | None = None,
+        workspace: WorkspaceRef | None = None,
+        materials: Mapping[str, Any] | None = None,
+        write_paths: Sequence[str] | None = None,
     ) -> RoleResult:
         role = self._roles[name]
+        if workspace is not None:
+            return await self._context.workspaces.edit(
+                name,
+                workspace=workspace,
+                key=key,
+                inputs=inputs,
+                tasks=tasks,
+                references=references,
+                materials=materials,
+                write_paths=write_paths,
+            )
         parent = self._context._candidate(candidate or self._context.inputs.anchor)
         payload: dict[str, JSON] = {
             "meta": {"prompt": role.prompt, "schema": role.schema},
             "inputs": inputs,
+            "gear_role_v1": name,
         }
+        if write_paths is not None:
+            payload["gear_write_paths_v1"] = list(write_paths)
+        if materials:
+            payload["gear_materials_v1"] = {
+                label: {
+                    "operation_id": (
+                        value if isinstance(value, OperationResult) else value.operation
+                    ).operation_id
+                }
+                for label, value in materials.items()
+            }
         if references:
             payload["gear_candidate_references_v1"] = {
                 label: {"candidate_id": value.id, "digest": value.digest}
@@ -135,7 +221,7 @@ class RoleAccess:
             rationale=name,
             payload=payload,
         )
-        result = await _Request(key, operation)
+        result = (await self._context.perform((operation,), key=key, reason=name))[0]
         value = result.data
         if isinstance(value, dict) and "declined" in value and "data" in value:
             value = value["data"]
@@ -188,6 +274,29 @@ class EvidenceAccess:
             raise ValueError("workflow observed evidence changed: " + key)
         return tuple(Evidence(**asdict(cell)) for cell in observed)
 
+    async def trajectory(
+        self,
+        trial: ResearchTrial | str,
+        *,
+        key: str,
+        query: dict[str, JSON] | None = None,
+    ) -> EvidencePage:
+        trial_id = trial.id if isinstance(trial, ResearchTrial) else trial
+        source = next(
+            value for value in self._context._view.research_trials if value.id == trial_id
+        )
+        operation = Operation(
+            "artifact_trial_read",
+            candidate_id=source.candidate_id,
+            task_ids=(source.task_id,),
+            rationale="read authorized trial trajectory",
+            payload={"gear_trial_read_v1": {"trial_id": trial_id, "query": query or {"limit": 20}}},
+        )
+        result = (await self._context.perform((operation,), key=key))[0]
+        if result.status != "complete":
+            raise ValueError("research trajectory unavailable")
+        return EvidencePage(result, result.data)
+
 
 class RunContext:
     def __init__(self, view: SearchView, state: AlgorithmState, roles: Mapping[str, Role]) -> None:
@@ -210,9 +319,17 @@ class RunContext:
             view.budget.repetitions,
             _json(view.objective),
         )
-        self.data = RunData(view.tasks)
+        policy = cast(dict[str, Any], view.research_data or {})
+        self.data = RunData(
+            view.tasks,
+            tuple(task for task in view.tasks if task.id in policy.get("train", [])),
+            tuple(task for task in view.tasks if task.id in policy.get("dev", [])),
+            tuple(policy.get("tasks", [])),
+        )
         self.random = DeterministicRandom(view.seed)
         self.roles = RoleAccess(self, roles)
+        self.workspaces = WorkspaceAccess(self)
+        self.artifacts = ArtifactAccess(self)
         self.budget = BudgetAccess(self)
         self.evidence = EvidenceAccess(self)
 
@@ -226,10 +343,16 @@ class RunContext:
     ) -> EvaluationResult:
         candidate_id = self._candidate(candidate).id
         task_ids = self._tasks(tasks)
-        result = await _Request(
-            key,
-            Operation("evaluate_seed", candidate_id=candidate_id, task_ids=task_ids, scope=scope),
-        )
+        result = (
+            await self.perform(
+                (
+                    Operation(
+                        "evaluate_seed", candidate_id=candidate_id, task_ids=task_ids, scope=scope
+                    ),
+                ),
+                key=key,
+            )
+        )[0]
         evidence = self.evidence.for_candidate(candidate_id, key=key + "/evidence", tasks=task_ids)
         expected = {
             (task, repetition) for task in task_ids for repetition in range(self.inputs.repetitions)
@@ -237,16 +360,95 @@ class RunContext:
         complete = {(cell.task_id, cell.repetition) for cell in evidence} == expected
         return EvaluationResult(result, evidence, complete)
 
+    async def measure(
+        self,
+        candidate: Candidate | str,
+        *,
+        key: str,
+        tasks: Sequence[Task | str | TaskInstance],
+        group: str | None = None,
+        repetitions: int = 1,
+    ) -> TrialResult:
+        candidate_id = self._candidate(candidate).id
+        instances = [
+            {"id": str(i), "task_id": item.id if isinstance(item, Task) else item}
+            if not isinstance(item, TaskInstance)
+            else {
+                "id": item.id,
+                "task_id": item.task_id,
+                **({"question": item.question} if item.question is not None else {}),
+            }
+            for i, item in enumerate(tasks)
+        ]
+        trial_group = group or key
+        plan = {"group": trial_group, "repetitions": repetitions, "instances": instances}
+        operation = Operation(
+            "evaluate_seed",
+            candidate_id=candidate_id,
+            task_ids=tuple(dict.fromkeys(str(item["task_id"]) for item in instances)),
+            payload={"gear_trials_v1": cast(JSON, plan)},
+        )
+        result = (await self.perform((operation,), key=key))[0]
+        order = {
+            (str(item["id"]), sample): index * repetitions + sample
+            for index, item in enumerate(instances)
+            for sample in range(repetitions)
+        }
+        observations = tuple(
+            sorted(
+                (
+                    trial
+                    for trial in self._view.research_trials
+                    if trial.candidate_id == candidate_id and trial.group == trial_group
+                ),
+                key=lambda trial: order[(trial.instance_id, trial.repetition)],
+            )
+        )
+        observations = tuple(
+            replace(
+                trial,
+                evidence=Evidence(**asdict(trial.evidence)),
+                usage=_json(trial.usage),
+                artifacts=tuple(cast(list[JSON], _json(trial.artifacts))),
+            )
+            for trial in observations
+        )
+        return TrialResult(result, observations, len(observations) == len(order))
+
+    async def perform(
+        self, operations: Sequence[Operation], *, key: str, reason: str = "workflow operation"
+    ) -> tuple[OperationResult, ...]:
+        if not operations or any(op.kind in ("stop", "nominate") for op in operations):
+            raise ValueError("perform requires nonterminal operations")
+        return await _Request(key, tuple(operations), reason)
+
+    def compute(self, callback: Callable[[], JSON], *, key: str) -> JSON:
+        event, fresh = self._event(key, {"compute": True})
+        if fresh:
+            event["value"] = _json(callback())
+        return _json(event["value"])
+
     def record(self, record: ResearchRecord, *, key: str) -> None:
         _, fresh = self._event(key, {"record": _json(asdict(record))})
         if fresh:
             self._research.append(record)
 
     def result(
-        self, *, selected: Candidate | str | None = None, reason: str = "workflow complete"
+        self,
+        *,
+        selected: Candidate | str | None = None,
+        reason: str = "workflow complete",
+        nominate: bool | None = None,
+        data: JSON = None,
+        candidates: Sequence[Candidate | str] = (),
     ) -> WorkflowResult:
+        report_only = bool(cast(dict[str, Any], self._view.research_data or {}).get("reportOnly"))
         return WorkflowResult(
-            self._candidate(selected).id if selected is not None else None, reason
+            self._candidate(selected).id if selected is not None else None,
+            reason,
+            not report_only if nominate is None else nominate,
+            _json(data),
+            tuple(self._candidate(item).id for item in candidates),
         )
 
     def _candidate(self, candidate: Candidate | str) -> Candidate:
@@ -284,26 +486,24 @@ class RunContext:
             event["value"] = _json(current)
         return _json(event["value"])
 
-    def _resolve(self, request: _Request) -> OperationResult | None:
-        event, fresh = self._event(request.key, _json(asdict(request.operation)))
+    def _resolve(self, request: _Request) -> tuple[OperationResult, ...] | None:
+        event, fresh = self._event(request.key, _json([asdict(op) for op in request.operations]))
         if fresh:
             event["cursor"] = len(self._view.completed)
             return None
-        operation_id = event.get("operation_id")
-        if operation_id is None:
+        operation_ids = event.get("operation_ids")
+        if operation_ids is None:
             cursor = event["cursor"]
-            if cursor >= len(self._view.completed):
+            results = self._view.completed[cursor : cursor + len(request.operations)]
+            if len(results) != len(request.operations):
                 raise ValueError("workflow operation has no completion: " + request.key)
-            result = self._view.completed[cursor]
-            event["operation_id"] = result.operation_id
+            event["operation_ids"] = [result.operation_id for result in results]
         else:
-            result = self._completed[operation_id]
-        if (
-            result.kind != request.operation.kind
-            or result.candidate_id != request.operation.candidate_id
-        ):
-            raise ValueError("workflow completion does not match its request: " + request.key)
-        return OperationResult(**asdict(result))
+            results = tuple(self._completed[operation_id] for operation_id in operation_ids)
+        for operation, result in zip(request.operations, results):
+            if result.kind != operation.kind or result.candidate_id != operation.candidate_id:
+                raise ValueError("workflow completion does not match its request: " + request.key)
+        return tuple(OperationResult(**asdict(result)) for result in results)
 
     def _state(self) -> AlgorithmState:
         return AlgorithmState(data={"workflow": 1, "history": cast(JSON, self._history)})
@@ -336,9 +536,22 @@ class WorkflowAlgorithm:
                     selected = result.selected
                     operation = (
                         Operation("nominate", candidate_id=selected, rationale=result.reason)
-                        if selected is not None and selected != view.anchor_id
+                        if result.nominate and selected is not None and selected != view.anchor_id
                         else Operation("stop", rationale=result.reason)
                     )
+                    if not result.nominate or result.data is not None or result.candidates:
+                        operation = Operation(
+                            **{
+                                **asdict(operation),
+                                "payload": {
+                                    "gear_result_v1": {
+                                        "selected": selected,
+                                        "candidates": list(result.candidates),
+                                        "data": result.data,
+                                    }
+                                },
+                            }
+                        )
                     return Decision(
                         context._state(), (operation,), result.reason, tuple(context._research)
                     )
@@ -348,8 +561,8 @@ class WorkflowAlgorithm:
                 if completion is None:
                     return Decision(
                         context._state(),
-                        (request.operation,),
-                        request.operation.rationale or request.key,
+                        request.operations,
+                        request.reason,
                         tuple(context._research),
                     )
         finally:

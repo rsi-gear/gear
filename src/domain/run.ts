@@ -6,6 +6,7 @@ import type {
   Evidence,
   OperationResult,
   SearchView,
+  ResearchTrial,
   Task,
 } from './algorithm-wire.js'
 export interface AlgorithmConfig {
@@ -25,6 +26,13 @@ import type { GenerationBudget } from './generation-budget.js'
 import type { BaselineReuse } from './baseline.js'
 import type { ArtifactReaderDescriptor } from './trajectory.js'
 
+export interface ResearchDataPolicy {
+  train: string[]
+  dev: string[]
+  allowDerivedInputs: boolean
+  reportOnly: boolean
+  tasks: Array<{ id: string; instruction: string; digest: string; family: string; expected?: Json }>
+}
 export interface RunSpec {
   version: 1
   kind: 'evaluate' | 'refine'
@@ -48,6 +56,7 @@ export interface RunSpec {
   seed: string
   seedTasks: Task[]
   heldOutTaskIds: string[]
+  researchData?: ResearchDataPolicy
   anchor: Candidate
   budget: { rounds: number; maxEvaluations: number; maxCandidates: number; repetitions: number }
   acceptance: { minimumGain: number; maxHeldOutRegression: number }
@@ -93,6 +102,7 @@ export interface RunJournal {
   candidates: Candidate[]
   seedEvidence: Evidence[]
   heldOutEvidence: Evidence[]
+  researchTrials?: ResearchTrial[]
   completed: OperationResult[]
   nomineeId: string | null
   championId: string

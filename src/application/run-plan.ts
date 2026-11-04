@@ -40,9 +40,11 @@ function taskTimeoutGroups(spec: RunSpec) {
 export function runPlan(spec: RunSpec, runId: string | null = null) {
   const seedSlots = slots(spec.seedTasks.length, spec.budget.repetitions)
   const reusable = spec.baseline?.evidence.length ?? 0
-  const baselineNew = seedSlots - reusable
+  const baselineNew = spec.researchData?.reportOnly ? 0 : seedSlots - reusable
   const gateSlots =
-    spec.validationMode === 'holdout' ? slots(spec.heldOutTaskIds.length, spec.budget.repetitions, 2) : 0
+    spec.validationMode === 'holdout' && !spec.researchData?.reportOnly
+      ? slots(spec.heldOutTaskIds.length, spec.budget.repetitions, 2)
+      : 0
   const maximum = spec.budget.maxEvaluations
   const body = {
     version: 1 as const,
@@ -54,10 +56,15 @@ export function runPlan(spec: RunSpec, runId: string | null = null) {
     evaluation_identity: spec.evaluationIdentity ?? spec.providerIdentity,
     provider_identity: spec.providerIdentity,
     algorithm: spec.algorithm,
-    validation_mode: spec.validationMode === 'holdout' ? 'independent-held-out' : 'shared-set-research',
+    validation_mode: spec.researchData?.reportOnly
+      ? 'report-only-research'
+      : spec.validationMode === 'holdout'
+        ? 'independent-held-out'
+        : 'shared-set-research',
     tasks: { seed: spec.seedTasks.map((task) => task.id), held_out_count: spec.heldOutTaskIds.length },
     repetitions: spec.budget.repetitions,
     baseline: {
+      ...(spec.researchData?.reportOnly ? { required: false } : {}),
       logical_slots: seedSlots,
       reusable_slots: reusable,
       new_physical_trials: baselineNew,
@@ -78,6 +85,7 @@ export function runPlan(spec: RunSpec, runId: string | null = null) {
         : null,
     },
     final_gate: {
+      ...(spec.researchData?.reportOnly ? { required: false } : {}),
       physical_trials_for_anchor_and_nominee: gateSlots,
       affordable_after_baseline: baselineNew <= maximum && gateSlots <= maximum - baselineNew,
     },

@@ -1,6 +1,10 @@
+import { editPaths } from '../../domain/edit-scope.js'
+import { stageMaterials } from './materials.js'
+import { workspaceCommand } from '../../domain/workspaces.js'
+import { WorkspaceStore } from '../storage/workspaces.js'
 import { chmod, mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { isAbsolute, join, relative } from 'node:path'
+import { dirname, isAbsolute, join, relative } from 'node:path'
 import { SandboxManager } from '@anthropic-ai/sandbox-runtime'
 import { createAirGappedSandboxConfig, sandboxSystemReadPaths } from '../../sandbox.js'
 import { GearError } from '../../domain/errors.js'
@@ -41,16 +45,23 @@ export async function prepareSandbox(
   {
     for (const path of [output, home, join(home, '.codex'), join(home, 'tmp')])
       await mkdir(path, { recursive: true, mode: 0o700 })
-    const parentId =
-      request.operation.kind === 'generate_candidate'
-        ? request.operation.parent_id!
-        : request.operation.candidate_id!
-    await snapshotTarget(join(context.targets, parentId), candidate)
+    const parentId = ['generate_candidate', 'workspace_edit'].includes(request.operation.kind)
+      ? request.operation.parent_id!
+      : request.operation.candidate_id!
+    let source = join(context.targets, parentId)
+    if (request.operation.kind === 'workspace_edit') {
+      const workspace = workspaceCommand(request.operation).source!
+      const store = new WorkspaceStore(dirname(context.targets))
+      await store.assertOpen(workspace, request)
+      source = store.files(workspace)
+    }
+    const initialResources = await snapshotTarget(source, candidate)
     for (const resource of await targetResources(candidate)) {
       await chmod(join(candidate, resource.path), resource.executable ? 0o700 : 0o600)
     }
     const adapter = codexAdapter(context.targetAdapter)
     const references = await stageCandidateReferences(job, root)
+    const materials = await stageMaterials(job, root)
     const taskIds = new Set(request.operation.task_ids)
     const experience = await stageExperience(job, root, (dispose) => {
       resources.dispose = dispose
@@ -66,14 +77,19 @@ export async function prepareSandbox(
           .map(({ id, instruction, family }) => ({ id, instruction, family })),
         evidence: request.evidence.filter((cell) => taskIds.has(cell.task_id)),
         harness: adapter.describe(),
-        mutationPolicy: adapter.mutationPolicy,
+        mutationPolicy: {
+          ...adapter.mutationPolicy,
+          writableRoots: editPaths(request.operation, adapter.mutationPolicy),
+        },
         experience: experience.input,
       },
       context.experiencePython,
     )
-    const input = Object.keys(references.index).length
-      ? { ...(meta.input as Record<string, Json>), references: references.index }
-      : meta.input
+    const input = {
+      ...(meta.input as Record<string, Json>),
+      ...(Object.keys(references.index).length ? { references: references.index } : {}),
+      ...(Object.keys(materials.index).length ? { materials: materials.index } : {}),
+    }
     await writeFile(join(root, 'input.json'), JSON.stringify(input), { mode: 0o400 })
     await writeFile(join(root, 'schema.json'), JSON.stringify(meta.schema), { mode: 0o400 })
     if (config.authHome) {
@@ -96,6 +112,7 @@ export async function prepareSandbox(
       output,
       home,
       ...references.readPaths,
+      ...materials.readPaths,
     ]
     for (const protectedPath of [
       ...context.protectedPaths,
@@ -114,7 +131,7 @@ export async function prepareSandbox(
         output,
         home,
         ...experience.writePaths,
-        ...(request.operation.kind === 'generate_candidate' ? [candidate] : []),
+        ...(['generate_candidate', 'workspace_edit'].includes(request.operation.kind) ? [candidate] : []),
       ],
     })
     policy.network = {
@@ -175,6 +192,7 @@ export async function prepareSandbox(
       home,
       dispose: experience.dispose,
       verifyReferences: references.verify,
+      initialResources,
       argv: wrapped.argv,
       env: {
         PATH: '/usr/bin:/bin',
@@ -189,6 +207,9 @@ export async function prepareSandbox(
       },
       prompt:
         meta.prompt +
+        (Object.keys(materials.index).length
+          ? '\nRead-only task materials are listed in input.json.materials.\n'
+          : '') +
         (Object.keys(references.index).length
           ? '\nNamed read-only candidate directories are listed in input.json.references. Inspect them as reference material; edit only your candidate working directory.\n'
           : ''),

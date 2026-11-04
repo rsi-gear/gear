@@ -40,13 +40,43 @@ export function runReport(journal: RunJournal) {
 
   const usage = aggregateUsage(journal.operations)
   const generationViolation = journal.operations.some((operation) => operation.generationViolation)
+  const terminal = journal.decisions.at(-1)?.decision.operations[0]
+  const payload = terminal?.payload
+  const result =
+    payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.gear_result_v1 : undefined
   return {
+    ...(result === undefined ? {} : { algorithm_result: { authority: 'algorithm-reported', value: result } }),
+    ...(journal.researchTrials?.length
+      ? {
+          research_trials: {
+            observations: journal.researchTrials.length,
+            scored: journal.researchTrials.filter((trial) => trial.evidence.score !== null).length,
+            unscored: journal.researchTrials.filter((trial) => trial.evidence.score === null).length,
+            groups: new Set(
+              journal.researchTrials.map((trial) => JSON.stringify([trial.candidate_id, trial.group])),
+            ).size,
+            physical_attempts: journal.operations
+              .filter((entry) => entry.request.trials)
+              .reduce((sum, entry) => sum + (entry.receipt?.physicalAttempts ?? 0), 0),
+            reserved_attempts: journal.operations
+              .filter((entry) => entry.request.trials && entry.status !== 'complete')
+              .reduce((sum, entry) => sum + entry.reservedAttempts, 0),
+          },
+        }
+      : {}),
     run_id: journal.id,
     status: journal.status,
     ...(journal.failure ? { error: journal.failure } : {}),
-    validation_mode:
-      journal.spec.validationMode === 'research' ? 'shared-set-research' : 'independent-held-out',
-    warning: journal.spec.validationMode === 'research' ? '同集优化，未做独立验证' : null,
+    validation_mode: journal.spec.researchData?.reportOnly
+      ? 'report-only-research'
+      : journal.spec.validationMode === 'research'
+        ? 'shared-set-research'
+        : 'independent-held-out',
+    warning: journal.spec.researchData?.reportOnly
+      ? '研究结果，未执行正式验收'
+      : journal.spec.validationMode === 'research'
+        ? '同集优化，未做独立验证'
+        : null,
     initial: journal.spec.anchor.id,
     retained: journal.championId,
     nominee: journal.nomineeId,

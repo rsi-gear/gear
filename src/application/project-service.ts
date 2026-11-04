@@ -1,3 +1,4 @@
+import { researchDataPolicy } from '../domain/research-trials.js'
 import { generationBudget, requireGenerationCapability } from '../domain/generation-budget.js'
 import { evaluationRepairPolicy, requireEvaluationCapabilities } from '../domain/evaluation.js'
 import { randomUUID } from 'node:crypto'
@@ -123,6 +124,11 @@ export class ProjectApplication {
     const algorithm =
       options.algorithm ??
       (typeof config.algorithm === 'string' ? { name: config.algorithm, options: {} } : config.algorithm)
+    if ('research_data' in algorithm.options)
+      throw new GearError(
+        'algorithm-data-policy-forbidden',
+        'Declare research_data in project configuration, outside algorithm options',
+      )
     const generation = generationBudget(config.generation)
     requireEvaluationCapabilities(provider.capabilities)
     requireGenerationCapability(generation, provider.capabilities.generationBudget)
@@ -162,6 +168,9 @@ export class ProjectApplication {
         .filter((task) => benchmark.splits.seed.includes(task.id))
         .map((task) => ({ id: task.id, family: task.family, estimated_cost: 1 })),
       heldOutTaskIds: benchmark.splits.held_out,
+      ...(config.research_data === undefined
+        ? {}
+        : { researchData: researchDataPolicy(config.research_data, benchmark)! }),
       anchor: {
         id: 'anchor',
         digest: target.manifest.digest,

@@ -89,7 +89,7 @@ def prepare_meta(value: dict[str, Any]) -> dict[str, Any]:
                 "Put the algorithm response in data; set declined=true if unable to comply. "
                 + (
                     "Change only the allowed mutation paths. Do not modify dependencies. "
-                    if value["operation"]["kind"] == "generate_candidate"
+                    if value["operation"]["kind"] in ("generate_candidate", "workspace_edit")
                     else "Do not edit the candidate. "
                 )
                 + "Do not run benchmarks or access held-out tasks. Budgets and gates are controlled "
@@ -102,7 +102,7 @@ def prepare_meta(value: dict[str, Any]) -> dict[str, Any]:
         "Make a general improvement and preserve successful behavior. "
         "Change only the allowed mutation paths. Do not run a benchmark or modify dependencies. "
         "Set declined=true if no justified change can be made."
-        if value["operation"]["kind"] == "generate_candidate"
+        if value["operation"]["kind"] in ("generate_candidate", "workspace_edit")
         else "Diagnose the observed seed failures against this candidate. "
         "Return grounded hypotheses and task clusters for the algorithm to consider. "
         "Do not edit the candidate."

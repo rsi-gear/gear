@@ -3,6 +3,7 @@ import { GearError } from '../../domain/errors.js'
 import { validateAlgorithmWire } from '../../domain/algorithm-schema.js'
 import type { OperationRequest, ProviderCapabilities } from '../../ports/operations.js'
 import type { ArtifactReaderDescriptor } from '../../domain/trajectory.js'
+import { workspaceCommand } from '../../domain/workspaces.js'
 import { candidateReferences } from '../../domain/candidate-references.js'
 
 // Proxy values stay in the trusted worker; the sandbox exposes only its own
@@ -60,6 +61,8 @@ export const capabilities: ProviderCapabilities = {
   hardDollarBudget: false,
   generationBudget: false,
   candidateReferences: true,
+  workspaces: true,
+  readOnlyMaterials: true,
 }
 export function configuration(input: unknown): CodexConfiguration {
   const value = input as CodexConfiguration
@@ -162,13 +165,15 @@ export function validateInput(input: unknown): CodexInput {
   validateAlgorithmWire('Operation', request.operation)
   const operation = request.operation
   candidateReferences(operation)
+  if (operation.kind === 'workspace_edit') workspaceCommand(operation)
   if (
-    !['diagnose_seed', 'generate_candidate'].includes(operation.kind) ||
+    !['diagnose_seed', 'generate_candidate', 'workspace_edit'].includes(operation.kind) ||
     operation.scope === 'held_out' ||
     operation.task_ids.some((id) => !context.tasks.some((task) => task.id === id)) ||
-    !operation.candidate_id ||
-    !/^[a-zA-Z0-9_-]+$/u.test(operation.candidate_id) ||
-    (operation.kind === 'generate_candidate' &&
+    (operation.kind !== 'workspace_edit' &&
+      (!operation.candidate_id || !/^[a-zA-Z0-9_-]+$/u.test(operation.candidate_id))) ||
+    (operation.kind === 'workspace_edit' && operation.candidate_id !== null) ||
+    (['generate_candidate', 'workspace_edit'].includes(operation.kind) &&
       (!operation.parent_id || !/^[a-zA-Z0-9_-]+$/u.test(operation.parent_id)))
   )
     throw new GearError(

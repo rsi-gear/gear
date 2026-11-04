@@ -27,13 +27,28 @@ export async function targetDiff(store: TargetStore, from: Candidate, to: Candid
   }
   const before = await verify(from)
   const after = from.id === to.id && from.digest === to.digest ? before : await verify(to)
+  return treeDiff(
+    { id: from.id, digest: from.digest, path: store.path(from.id), resources: before.resources },
+    { id: to.id, digest: to.digest, path: store.path(to.id), resources: after.resources },
+  )
+}
+
+interface ResourceTree {
+  id: string
+  digest: string
+  path: string
+  resources: TargetResource[]
+}
+export async function treeDiff(from: ResourceTree, to: ResourceTree) {
+  const before = from,
+    after = to
   const oldFiles = new Map(before.resources.map((resource) => [resource.path, resource]))
   const newFiles = new Map(after.resources.map((resource) => [resource.path, resource]))
   const files: TargetFileChange[] = []
   let remainingBytes = 128 * 1024
   const read = async (id: string, resource?: TargetResource): Promise<Buffer> => {
     if (!resource) return Buffer.alloc(0)
-    const file = await open(join(store.path(id), resource.path), constants.O_RDONLY | constants.O_NOFOLLOW)
+    const file = await open(join(id, resource.path), constants.O_RDONLY | constants.O_NOFOLLOW)
     try {
       const info = await file.stat()
       if (!info.isFile() || info.nlink !== 1)
@@ -73,8 +88,8 @@ export async function targetDiff(store: TargetStore, from: Candidate, to: Candid
     }
     files.push(change)
     if (oldFile?.digest === newFile?.digest) continue
-    const oldBytes = await read(from.id, oldFile),
-      newBytes = await read(to.id, newFile)
+    const oldBytes = await read(from.path, oldFile),
+      newBytes = await read(to.path, newFile)
     if (oldBytes.length > 64 * 1024 || newBytes.length > 64 * 1024) {
       change.patch_status = 'too-large'
       continue

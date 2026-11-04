@@ -20,6 +20,8 @@ export function validateRepairReservation(journal: RunJournal, operation: Journa
     ? { ...previous.request.operation, task_ids: [...new Set(slots.map((slot) => slot.taskId))] }
     : null
   if (
+    request.trials ||
+    previous?.request.trials ||
     !previous ||
     previous.status !== 'complete' ||
     !slots.length ||
@@ -63,6 +65,7 @@ export function reserveRepairs(
   )
   let changed = false
   for (const previous of journal.operations) {
+    if (previous.request.trials) continue
     if (
       previous.status !== 'complete' ||
       previous.request.operation.kind !== 'evaluate_seed' ||

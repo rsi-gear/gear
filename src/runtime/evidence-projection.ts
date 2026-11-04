@@ -54,7 +54,12 @@ export function reserveProjections(
     visited = new Set<string>()
   let changed = false
   for (const source of [...journal.operations].reverse()) {
-    if (source.status !== 'complete' || source.request.operation.kind !== 'evaluate_seed') continue
+    if (
+      source.status !== 'complete' ||
+      source.request.trials ||
+      source.request.operation.kind !== 'evaluate_seed'
+    )
+      continue
     const destination = source.request.partition === 'seed' ? journal.seedEvidence : journal.heldOutEvidence
     const eligible = source.receipt!.evidence.filter((cell) => {
       const id = key(source.request.partition, cell)
@@ -152,6 +157,9 @@ export function validateProjectionReservation(journal: RunJournal, operation: Jo
     ? { ...source.request.operation, task_ids: [...new Set(slots.map((slot) => slot.taskId))] }
     : null
   if (
+    request.trials ||
+    source?.request.trials ||
+    root?.request.trials ||
     !source ||
     source.status !== 'complete' ||
     !root ||

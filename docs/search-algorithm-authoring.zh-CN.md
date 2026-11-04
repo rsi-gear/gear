@@ -17,7 +17,7 @@
 | 阶段顺序与晋级宽度 | `SearchAlgorithm` | `gepa/algorithm.py` | `random_search/algorithm.py` |
 | 结束条件 | `StopRule` | `gepa/stopping.py` | `random_search/stopping.py` |
 
-表中路径相对于 [`python/gear/algorithms`](../python/gear/algorithms)。合同在 [`contracts.py`](../python/gear/algorithms/contracts.py)，可复用流程在 [`workflow.py`](../python/gear/algorithms/workflow.py)。新增算法可以组合这些合同，也可以直接实现 `step`，不需要修改 TS 的操作类型或状态机。
+表中路径相对于 [`python/gear/algorithms`](../python/gear/algorithms)。合同在 [`contracts.py`](../python/gear/algorithms/contracts.py)，纯策略规划在 [`workflow.py`](../python/gear/algorithms/workflow.py)。GEPA 的新运行直接执行 [async run(ctx)](../python/gear/algorithms/gepa/algorithm.py)，其父代、采样、排序和最终 SeedGate 继续复用这些规划函数。旧 phase 日志恢复和 RandomSearch 使用原阶段入口。新增算法可以组合这些合同，也可以直接实现 `step`，不需要修改 TS 的操作类型或状态机。
 
 默认 Meta 的提示词、输入组织、结果结构与解析位于
 [`meta.py`](../python/gear/algorithms/meta.py)；经验记录对算法 payload 的解释位于

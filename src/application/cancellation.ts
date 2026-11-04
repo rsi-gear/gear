@@ -1,3 +1,6 @@
+import { isArtifactOperation } from '../domain/artifacts.js'
+import { ModelOperationProvider, type ModelContext } from '../adapters/model/provider.js'
+import { isLocalWorkspace } from '../domain/workspaces.js'
 import { isAbsolute } from 'node:path'
 import type { Json } from '../domain/algorithm-wire.js'
 import { GearError } from '../domain/errors.js'
@@ -39,6 +42,16 @@ export async function configuredCancellation(snapshot: Json): Promise<OperationC
       directory: path(data.directory),
       identity: digest(data.identity),
     })
+  if (data.kind === 'model') {
+    const profile = validateProfile(data.profile)
+    if (!('kind' in profile) || profile.kind !== 'model') invalid()
+    const context = object(data.context ?? null)
+    return ModelOperationProvider.canceller(
+      profile,
+      { directory: path(context.directory), tasks: context.tasks as unknown as ModelContext['tasks'] },
+      digest(data.identity),
+    )
+  }
   if (data.kind === 'process') {
     const profile = validateProfile(data.profile)
     if ('kind' in profile || !isAbsolute(profile.command[0]!)) invalid()
@@ -51,7 +64,18 @@ export async function configuredCancellation(snapshot: Json): Promise<OperationC
   if (data.kind === 'composite') {
     return {
       async cancel(request) {
-        const selected = request.operation.kind === 'evaluate_seed' ? data.evaluation : data.meta
+        if (isLocalWorkspace(request.operation.kind) || isArtifactOperation(request.operation.kind)) return
+        const payload = request.operation.payload
+        const role =
+          payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.gear_role_v1 : undefined
+        const roles =
+          data.roles && typeof data.roles === 'object' && !Array.isArray(data.roles) ? data.roles : {}
+        const selected =
+          request.operation.kind === 'evaluate_seed'
+            ? data.evaluation
+            : typeof role === 'string' && Object.hasOwn(roles, role)
+              ? roles[role]
+              : data.meta
         await (await configuredCancellation(selected ?? null)).cancel(request)
       },
     }

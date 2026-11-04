@@ -1,5 +1,6 @@
 """Stable algorithm author API. Every recipe uses the same replaceable contracts."""
 
+from .adas import ADAS
 from .contracts import (
     AlgorithmState,
     Budget,
@@ -21,6 +22,7 @@ from .contracts import (
     RankingInput,
     RankingPlan,
     ResearchRecord,
+    ResearchTrial,
     SamplingInput,
     SamplingPlan,
     SearchAlgorithm,
@@ -35,16 +37,22 @@ from .random import DeterministicRandom
 from .random_search import RandomSearch
 from .run_context import (
     EvaluationResult,
+    EvidencePage,
     Role,
     RoleResult,
     RunContext,
     RunData,
     RunInputs,
+    TaskInstance,
+    TrialResult,
     WorkflowAlgorithm,
     WorkflowResult,
 )
+from .workspaces import WorkspaceRef
 
 __all__ = [
+    "ADAS",
+    "WorkspaceRef",
     "AlgorithmState",
     "Budget",
     "Candidate",
@@ -65,6 +73,7 @@ __all__ = [
     "RankingInput",
     "RankingPlan",
     "ResearchRecord",
+    "ResearchTrial",
     "SamplingInput",
     "SamplingPlan",
     "SearchAlgorithm",
@@ -77,6 +86,7 @@ __all__ = [
     "GEPA",
     "RandomSearch",
     "EvaluationResult",
+    "EvidencePage",
     "Role",
     "RoleResult",
     "RunContext",
@@ -84,4 +94,6 @@ __all__ = [
     "RunInputs",
     "WorkflowAlgorithm",
     "WorkflowResult",
+    "TaskInstance",
+    "TrialResult",
 ]

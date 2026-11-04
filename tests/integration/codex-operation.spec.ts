@@ -29,6 +29,12 @@ import type { ExperienceRecord, ExperienceContext } from '../../src/domain/exper
 import { freezeAlgorithmSource } from '../../src/adapters/python/source.js'
 import { PythonAlgorithmWorker } from '../../src/adapters/python/worker.js'
 import type { SearchView } from '../../src/domain/algorithm-wire.js'
+import { sealedProvider } from '../../src/application/sealed-provider.js'
+import { RunStore } from '../../src/adapters/storage/run-store.js'
+import { DurableRunner } from '../../src/runtime/runner.js'
+import { pythonObjective } from '../../src/adapters/python/objective.js'
+import type { RunSpec } from '../../src/domain/run.js'
+import type { OperationProvider, OperationReceipt } from '../../src/ports/operations.js'
 
 const roots: string[] = [], operationRoots: string[] = []
 const workerGroups = new Set<number>()
@@ -194,8 +200,25 @@ if view['operation']['kind']=='diagnose_seed':
   import errno
   assert error.errno in (errno.EACCES,errno.EPERM,errno.EROFS),error
 if view['operation']['kind']=='generate_candidate': Path(${JSON.stringify(adapter === 'pi' ? 'AGENTS.md' : 'prompts/system.md')}).write_text('Use the requested output format.')
+if view['operation']['kind']=='workspace_edit':
+ material=Path(view['materials']['archive']['file'])
+ assert json.loads(material.read_text())[0]['account']=='initial harness'
+ try:
+  material.write_text('modified evidence')
+  raise AssertionError('MATERIAL_WRITABLE')
+ except OSError as error:
+  import errno
+  assert error.errno in (errno.EACCES,errno.EPERM,errno.EROFS),error
+ item=view['operation']['payload']['inputs']
+ path=Path(${JSON.stringify(adapter === 'pi' ? 'AGENTS.md' : 'prompts/system.md')})
+ current=path.read_text()
+ if item['edit']>0: assert '|edit'+str(item['edit']-1) in current,current
+ path.write_text(current+'|edit'+str(item['edit']))
 if ${JSON.stringify(mode)}=='protected': Path('package.json').write_text('{}')
-if ${JSON.stringify(mode)}=='invalid': output.write_text('not json')
+if ${JSON.stringify(mode)}.startswith('workspace'):
+ item=view['operation']['payload']['inputs']
+ output.write_text(json.dumps({'declined':${JSON.stringify(mode)}=='workspace-decline' and item['edit']==1,'data':'design-step-'+str(item['step'])+'-edit-'+str(item['edit'])}))
+elif ${JSON.stringify(mode)}=='invalid': output.write_text('not json')
 elif ${JSON.stringify(mode)}=='invalid-result': output.write_text(json.dumps({'summary':'bad','declined':False,'hypotheses':[42],'clusters':[]}))
 elif ${JSON.stringify(mode)}=='declined': output.write_text(json.dumps({'summary':'no change','declined':True,'hypotheses':[],'clusters':[]}))
 elif ${JSON.stringify(mode)}.startswith('historical') and view['operation']['kind']=='diagnose_seed':
@@ -311,6 +334,67 @@ async function untilStarted(directory: string) {
   throw new Error('fake Codex did not start')
 }
 describe('formal Codex operation runner', () => {
+  it.each(['workspace_edit', 'workspace_seal'] as const)('resumes ADAS after losing a %s reply and seals one final candidate', async loseKind => {
+    const f = await fixture('workspace')
+    const targets = new TargetStore(f.privateRoot, new PiHarnessAdapter(), f.provider.identity)
+    const anchor = { id: 'anchor', parent_id: null, digest: (await targets.seal('anchor', 'base')).digest }
+    const source = join(f.root, 'source'), scratch = join(f.root, 'scratch')
+    await mkdir(scratch)
+    const identity = await freezeAlgorithmSource(source)
+    const makeWorker = () => new PythonAlgorithmWorker({ python: resolvePythonExecutable(), sourceRoot: source, scratch, implementationIdentity: identity })
+    const store = new RunStore(join(f.root, 'state'))
+    const spec: RunSpec = { version: 1, kind: 'refine', benchmarkDigest: canonicalDigest('tasks'), configDigest: canonicalDigest('config'),
+      implementationIdentity: identity, providerIdentity: f.provider.identity, championRevision: null, targetSourceDigest: anchor.digest,
+      lineage: null, algorithm: { name: 'gear.algorithms.adas:ADAS', options: { max_steps: 1, selection: 'seed' } }, validationMode: 'research', seed: 'fixed',
+      seedTasks: [{ id: 'seed', family: 'format', estimated_cost: 1 }], heldOutTaskIds: [], anchor,
+      budget: { rounds: 1, maxEvaluations: 2, maxCandidates: 1, repetitions: 1 },
+      acceptance: { minimumGain: 0, maxHeldOutRegression: 0 }, objectiveIdentity: pythonObjective.identity,
+      generationBudget: { version: 1, total: {}, perOperation: {} }, evaluationRepair: { maxRetries: 0, maxProjections: 0, backoffMs: [0] } }
+    await store.create('run', spec)
+    const paid: OperationRequest[] = [], evaluated = new Map<string, OperationReceipt>()
+    const provider: OperationProvider = { identity: f.provider.identity,
+      capabilities: { ...f.provider.capabilities, seeds: true, temperature: true },
+      async submit(request, signal) {
+        if (request.operation.kind !== 'evaluate_seed') { paid.push(request); return f.provider.submit(request, signal) }
+        const receipt: OperationReceipt = { result: { operation_id: request.operationId, kind: 'evaluate_seed', status: 'complete', candidate_id: request.operation.candidate_id, data: null },
+          candidate: null, evidence: request.slots.map(slot => ({ candidate_id: request.operation.candidate_id!, task_id: slot.taskId,
+            repetition: slot.repetition, score: request.operation.candidate_id === 'anchor' ? 0 : 1, status: 'valid', scope: request.operation.scope, feedback: '' })),
+          physicalAttempts: request.slots.length, usage: { model_requests: 0 }, provenance: null }
+        evaluated.set(request.operationId, receipt); return receipt
+      },
+      async inspect(request, signal) { const receipt = evaluated.get(request.operationId); return receipt ? { state: 'complete', receipt } : f.provider.inspect(request, signal) },
+      cancel: request => f.provider.cancel(request),
+    }
+    const sealed = sealedProvider(provider, targets)
+    let lost = false
+    const interrupted: OperationProvider = { ...sealed, async submit(request, signal) {
+      const receipt = await sealed.submit(request, signal)
+      const inputs = (request.operation.payload as { inputs?: { edit?: number } } | null)?.inputs
+      if (!lost && request.operation.kind === loseKind && (loseKind === 'workspace_seal' || inputs?.edit === 1)) {
+        lost = true; throw new Error('lost workspace reply')
+      }
+      return receipt
+    } }
+    let worker = makeWorker()
+    try {
+      await worker.start(signal())
+      await expect(new DurableRunner(store, worker, interrupted, pythonObjective).run('run', signal())).rejects.toThrow('lost workspace reply')
+      await worker.dispose(); worker = makeWorker(); await worker.start(signal())
+      const result = await new DurableRunner(store, worker, interrupted, pythonObjective).run('run', signal())
+      expect(result.status).toBe('completed')
+      expect(result.candidates).toHaveLength(2)
+      expect(result.operations.filter(op => op.request.operation.kind === 'workspace_edit')).toHaveLength(3)
+      expect(result.operations.filter(op => op.request.operation.kind === 'workspace_seal')).toHaveLength(1)
+      expect(paid).toHaveLength(3)
+      expect(result.operations.reduce((n, op) => n + (op.receipt?.usage.tokens ?? 0), 0)).toBe(57)
+      expect(result.operations.filter(op => op.request.operation.kind === 'workspace_edit').every(op => op.receipt?.usage.model_requests === null)).toBe(true)
+      const selected = result.candidates.find(candidate => candidate.id !== 'anchor')!
+      expect(await readFile(join(targets.path(selected.id), 'AGENTS.md'), 'utf8')).toContain('|edit0|edit1|edit2')
+      expect(await readFile(join(targets.path('anchor'), 'AGENTS.md'), 'utf8')).not.toContain('|edit')
+      expect(result.gate.status).toBe('accepted')
+    } finally { await worker.dispose() }
+  }, 30000)
+
   it.each(['pi', 'dsh'] as const)('reads a sealed %s reference but cannot edit it or retain it in the child', async adapter => {
     const f = await fixture('references', adapter)
     const receipt = await f.provider.submit(f.request, signal())

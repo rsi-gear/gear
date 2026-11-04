@@ -1,6 +1,8 @@
+import { checkEditPaths } from '../../domain/edit-scope.js'
+import { WorkspaceStore } from '../storage/workspaces.js'
 import { spawn } from 'node:child_process'
 import { lstat, open, readFile, rename } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { canonicalDigest } from '../../domain/canonical.js'
 import { assertMutationPath } from '../../domain/mutation-policy.js'
@@ -191,27 +193,36 @@ export async function executeJob(
         throw error
       }
       data = result
-      if (operation.kind === 'generate_candidate' && !result.declined) {
+      if (['generate_candidate', 'workspace_edit'].includes(operation.kind) && !result.declined) {
         const parent = await targetResources(join(context.targets, operation.parent_id!))
         const resources = await targetResources(sandbox.candidate)
         const before = new Map(parent.map((resource) => [resource.path, resource]))
         const after = new Map(resources.map((resource) => [resource.path, resource]))
         const adapter = codexAdapter(context.targetAdapter)
+        checkEditPaths(operation, adapter.mutationPolicy, sandbox.initialResources, resources)
         for (const path of new Set([...before.keys(), ...after.keys()])) {
           if (canonicalDigest(before.get(path) ?? null) !== canonicalDigest(after.get(path) ?? null))
             assertMutationPath(path, adapter.mutationPolicy)
         }
-        await adapter.check(sandbox.candidate)
-        const destination = join(context.targets, operation.candidate_id!)
-        const staged = join(context.targets, `.codex-${request.operationId.slice(7)}`)
-        if (await exists(destination)) throw new Error('codex-candidate-conflict')
-        await snapshotTarget(sandbox.candidate, staged)
-        await rename(staged, destination)
-        await syncDirectory(context.targets)
-        candidate = {
-          id: operation.candidate_id!,
-          parent_id: operation.parent_id,
-          digest: canonicalDigest(resources),
+        if (operation.kind === 'workspace_edit') {
+          const workspace = await new WorkspaceStore(dirname(context.targets)).save(
+            request,
+            sandbox.candidate,
+          )
+          data = { ...result, workspace: workspace as unknown as Json }
+        } else {
+          await adapter.check(sandbox.candidate)
+          const destination = join(context.targets, operation.candidate_id!)
+          const staged = join(context.targets, `.codex-${request.operationId.slice(7)}`)
+          if (await exists(destination)) throw new Error('codex-candidate-conflict')
+          await snapshotTarget(sandbox.candidate, staged)
+          await rename(staged, destination)
+          await syncDirectory(context.targets)
+          candidate = {
+            id: operation.candidate_id!,
+            parent_id: operation.parent_id,
+            digest: canonicalDigest(resources),
+          }
         }
       }
       status = result.declined ? 'failed' : 'complete'

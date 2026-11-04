@@ -5,6 +5,8 @@ export interface MutationPolicy {
   allowedImports: readonly string[]
 }
 export interface HarnessDescription {
+  instructionFile?: string
+  skillRoot?: string
   adapterRef: { id: string; version: string }
   resources: readonly string[]
   guide: string

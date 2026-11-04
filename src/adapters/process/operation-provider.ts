@@ -1,3 +1,4 @@
+import { materialReferences } from '../../domain/materials.js'
 import { candidateReferences } from '../../domain/candidate-references.js'
 import { spawn } from 'node:child_process'
 import { isAbsolute, resolve } from 'node:path'
@@ -110,6 +111,16 @@ export class ProcessOperationProvider implements OperationProvider {
       typeof reply.capabilities.candidateReferences !== 'boolean'
     )
       throw new GearError('provider-capability-invalid', 'Invalid candidateReferences capability')
+    if (reply.capabilities.workspaces !== undefined && typeof reply.capabilities.workspaces !== 'boolean')
+      throw new GearError('provider-capability-invalid', 'Invalid workspaces capability')
+    for (const key of ['researchTrials', 'derivedInputs'] as const)
+      if (reply.capabilities[key] !== undefined && typeof reply.capabilities[key] !== 'boolean')
+        throw new GearError('provider-capability-invalid', `Invalid ${key} capability`)
+    if (
+      reply.capabilities.readOnlyMaterials !== undefined &&
+      typeof reply.capabilities.readOnlyMaterials !== 'boolean'
+    )
+      throw new GearError('provider-capability-invalid', 'Invalid readOnlyMaterials capability')
     return new ProcessOperationProvider(
       profile,
       canonicalDigest({
@@ -135,11 +146,15 @@ export class ProcessOperationProvider implements OperationProvider {
       throw new GearError('provider-admission-unconfirmed', 'Provider control state was not initialized')
   }
   async submit(request: OperationRequest, signal: AbortSignal): Promise<OperationReceipt> {
+    if (Object.keys(materialReferences(request.operation)).length && !this.capabilities.readOnlyMaterials)
+      throw new GearError('materials-unsupported', 'Provider cannot materialize read-only inputs')
     if (Object.keys(candidateReferences(request.operation)).length && !this.capabilities.candidateReferences)
       throw new GearError(
         'candidate-references-unsupported',
         'Provider cannot materialize candidate references',
       )
+    if (request.operation.kind === 'workspace_edit' && !this.capabilities.workspaces)
+      throw new GearError('workspaces-unsupported', 'Provider cannot edit workspace revisions')
     if (request.generationLimits !== undefined && !this.capabilities.generationBudget)
       throw new GearError('generation-budget-unsupported', 'Provider cannot enforce generation limits')
     if (request.projection)

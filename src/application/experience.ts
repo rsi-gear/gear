@@ -52,7 +52,7 @@ export class ProjectExperience implements ExperiencePreparation {
         (entry) =>
           entry.status === 'complete' &&
           entry.request.partition === 'seed' &&
-          entry.request.operation.kind === 'generate_candidate' &&
+          ['generate_candidate', 'workspace_seal'].includes(entry.request.operation.kind) &&
           entry.receipt?.candidate?.id === candidate.id,
       )
       // An imported run anchor has no generation operation in this run.
@@ -64,6 +64,7 @@ export class ProjectExperience implements ExperiencePreparation {
               (entry) =>
                 entry.request.partition === 'seed' &&
                 entry.request.operation.kind === 'evaluate_seed' &&
+                !entry.request.trials &&
                 entry.request.operation.candidate_id === candidate.id,
             )
             .flatMap((entry) => entry.request.slots.map((slot) => slot.taskId)),

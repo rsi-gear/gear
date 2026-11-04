@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises'
+import { lstat, readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { canonicalDigest } from '../../domain/canonical.js'
 import { candidateReferences } from '../../domain/candidate-references.js'
@@ -9,6 +9,7 @@ import type { CodexJob } from './contracts.js'
 
 export async function stageCandidateReferences(job: CodexJob, root: string) {
   const { context, request } = job.input
+  let totalBytes = 0
   const staged: Array<{ directory: string; resources: TargetResource[] }> = []
   const entries: Array<[string, { candidate_id: string; digest: string; directory: string }]> = []
   for (const [name, reference] of Object.entries(candidateReferences(request.operation))) {
@@ -25,6 +26,9 @@ export async function stageCandidateReferences(job: CodexJob, root: string) {
     const resources = await snapshotTarget(join(context.targets, reference.candidate_id), directory)
     if (canonicalDigest(resources) !== canonicalDigest(manifest.resources))
       throw new GearError('candidate-reference-mismatch', 'Reference candidate resources changed')
+    for (const resource of resources) totalBytes += (await lstat(join(directory, resource.path))).size
+    if (totalBytes > 64 * 1024 * 1024)
+      throw new GearError('candidate-references-too-large', 'Reference directories exceed 64 MiB in total')
     staged.push({ directory, resources })
     entries.push([name, { ...reference, directory: `../references/${name}` }])
   }

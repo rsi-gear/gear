@@ -173,6 +173,13 @@ export async function doctor(root: string) {
           capabilities: codexCapabilities,
         }
       }
+      if ('kind' in value && value.kind === 'model') {
+        const present = !!process.env[value.apiKeyEnv]?.trim()
+        authentication[role] = present
+          ? { status: 'environment_present', names: [value.apiKeyEnv] }
+          : { status: 'not_configured', next_action: `Set ${value.apiKeyEnv}` }
+        return { name, kind: value.kind, model: value.model, endpoint: value.endpoint }
+      }
       if ('kind' in value) {
         const present = value.passEnv.filter(
           (key) => /(?:API_KEY|ACCESS_TOKEN|AUTH_TOKEN)$/u.test(key) && !!process.env[key]?.trim(),

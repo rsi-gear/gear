@@ -8,7 +8,7 @@ import type { JournalOperation, RunJournal } from '../domain/run.js'
 import type { OperationReceipt } from '../ports/operations.js'
 
 export function isGeneration(kind: string): boolean {
-  return kind === 'diagnose_seed' || kind === 'generate_candidate'
+  return kind === 'diagnose_seed' || kind === 'generate_candidate' || kind === 'workspace_edit'
 }
 function counter(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
