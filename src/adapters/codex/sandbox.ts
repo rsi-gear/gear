@@ -14,6 +14,7 @@ import { stageExperience } from './experience.js'
 import { ownCodexRoot, type CodexResources } from './cleanup.js'
 import { builtinPolicy } from '../python/builtin-policy.js'
 import type { Json } from '../../domain/algorithm-wire.js'
+import { stageCandidateReferences } from './references.js'
 
 export const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
 const contains = (root: string, path: string): boolean => {
@@ -49,6 +50,7 @@ export async function prepareSandbox(
       await chmod(join(candidate, resource.path), resource.executable ? 0o700 : 0o600)
     }
     const adapter = codexAdapter(context.targetAdapter)
+    const references = await stageCandidateReferences(job, root)
     const taskIds = new Set(request.operation.task_ids)
     const experience = await stageExperience(job, root, (dispose) => {
       resources.dispose = dispose
@@ -69,7 +71,10 @@ export async function prepareSandbox(
       },
       context.experiencePython,
     )
-    await writeFile(join(root, 'input.json'), JSON.stringify(meta.input), { mode: 0o400 })
+    const input = Object.keys(references.index).length
+      ? { ...(meta.input as Record<string, Json>), references: references.index }
+      : meta.input
+    await writeFile(join(root, 'input.json'), JSON.stringify(input), { mode: 0o400 })
     await writeFile(join(root, 'schema.json'), JSON.stringify(meta.schema), { mode: 0o400 })
     if (config.authHome) {
       await writeFile(join(home, '.codex/auth.json'), await codexAuthFile(config.authHome), { mode: 0o600 })
@@ -90,6 +95,7 @@ export async function prepareSandbox(
       candidate,
       output,
       home,
+      ...references.readPaths,
     ]
     for (const protectedPath of [
       ...context.protectedPaths,
@@ -168,6 +174,7 @@ export async function prepareSandbox(
       output,
       home,
       dispose: experience.dispose,
+      verifyReferences: references.verify,
       argv: wrapped.argv,
       env: {
         PATH: '/usr/bin:/bin',
@@ -180,7 +187,11 @@ export async function prepareSandbox(
           ? { CODEX_API_KEY: process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY }
           : {}),
       },
-      prompt: meta.prompt,
+      prompt:
+        meta.prompt +
+        (Object.keys(references.index).length
+          ? '\nNamed read-only candidate directories are listed in input.json.references. Inspect them as reference material; edit only your candidate working directory.\n'
+          : ''),
     }
   }
 }

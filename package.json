@@ -68,6 +68,7 @@
     "docs/training/development.zh-CN.md",
     "docs/training/recipes.zh-CN.md",
     "docs/search-algorithm-authoring.zh-CN.md",
+    "docs/async-workflows.zh-CN.md",
     "examples/training-loop/**",
     "docs/schemas/",
     "docs/generic-storage-implementation.zh-CN.md",

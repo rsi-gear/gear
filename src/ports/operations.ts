@@ -28,6 +28,8 @@ export interface ProviderCapabilities {
   hardDollarBudget: boolean
   /** Enforces request/token reservations across all calls, retries and summaries in one Meta operation. */
   generationBudget: boolean
+  /** Materializes named sealed candidates as read-only edit inputs. Omission means unsupported. */
+  candidateReferences?: boolean
   evidenceProjection: boolean
 }
 export interface OperationRequest {

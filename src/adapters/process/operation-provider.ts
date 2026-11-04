@@ -1,3 +1,4 @@
+import { candidateReferences } from '../../domain/candidate-references.js'
 import { spawn } from 'node:child_process'
 import { isAbsolute, resolve } from 'node:path'
 import { findExecutable } from './executable.js'
@@ -104,6 +105,11 @@ export class ProcessOperationProvider implements OperationProvider {
       if (typeof reply.capabilities?.[key] !== 'boolean')
         throw new GearError('provider-capability-invalid', `Provider omitted capability ${key}`)
     }
+    if (
+      reply.capabilities.candidateReferences !== undefined &&
+      typeof reply.capabilities.candidateReferences !== 'boolean'
+    )
+      throw new GearError('provider-capability-invalid', 'Invalid candidateReferences capability')
     return new ProcessOperationProvider(
       profile,
       canonicalDigest({
@@ -129,6 +135,11 @@ export class ProcessOperationProvider implements OperationProvider {
       throw new GearError('provider-admission-unconfirmed', 'Provider control state was not initialized')
   }
   async submit(request: OperationRequest, signal: AbortSignal): Promise<OperationReceipt> {
+    if (Object.keys(candidateReferences(request.operation)).length && !this.capabilities.candidateReferences)
+      throw new GearError(
+        'candidate-references-unsupported',
+        'Provider cannot materialize candidate references',
+      )
     if (request.generationLimits !== undefined && !this.capabilities.generationBudget)
       throw new GearError('generation-budget-unsupported', 'Provider cannot enforce generation limits')
     if (request.projection)

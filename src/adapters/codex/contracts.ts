@@ -3,6 +3,7 @@ import { GearError } from '../../domain/errors.js'
 import { validateAlgorithmWire } from '../../domain/algorithm-schema.js'
 import type { OperationRequest, ProviderCapabilities } from '../../ports/operations.js'
 import type { ArtifactReaderDescriptor } from '../../domain/trajectory.js'
+import { candidateReferences } from '../../domain/candidate-references.js'
 
 // Proxy values stay in the trusted worker; the sandbox exposes only its own
 // filtered proxy endpoints to Codex. Profiles opt in by variable name.
@@ -58,6 +59,7 @@ export const capabilities: ProviderCapabilities = {
   evidenceProjection: false,
   hardDollarBudget: false,
   generationBudget: false,
+  candidateReferences: true,
 }
 export function configuration(input: unknown): CodexConfiguration {
   const value = input as CodexConfiguration
@@ -159,6 +161,7 @@ export function validateInput(input: unknown): CodexInput {
     throw new GearError('codex-request-invalid', 'Meta accepts only bound seed operations')
   validateAlgorithmWire('Operation', request.operation)
   const operation = request.operation
+  candidateReferences(operation)
   if (
     !['diagnose_seed', 'generate_candidate'].includes(operation.kind) ||
     operation.scope === 'held_out' ||

@@ -10,6 +10,7 @@ import { evaluationRepairPolicy, requireEvaluationCapabilities } from '../domain
 import { mergeEvaluationEvidence, reserveRepairs, validateRepairReservation } from './evaluation-repair.js'
 import type { Json, Operation, SearchView } from '../domain/algorithm-wire.js'
 import { canonicalDigest } from '../domain/canonical.js'
+import { candidateReferences } from '../domain/candidate-references.js'
 import { GearError } from '../domain/errors.js'
 import type { AlgorithmDriver, JournalOperation, RunJournal } from '../domain/run.js'
 import type { OperationProvider, OperationReceipt, OperationRequest } from '../ports/operations.js'
@@ -99,6 +100,14 @@ export class DurableRunner {
           )
           await this.checkOwner(journal, signal)
           validateDecision(view, decision)
+          if (
+            !this.provider.capabilities.candidateReferences &&
+            decision.operations.some((operation) => Object.keys(candidateReferences(operation)).length)
+          )
+            throw new GearError(
+              'candidate-references-unsupported',
+              'Provider cannot materialize candidate references',
+            )
           const operations = decision.operations
             .filter((operation) => !['nominate', 'stop'].includes(operation.kind))
             .map((operation, index) => this.reserve(journal, operation, `${view.step_id}:${index}`, 'seed'))

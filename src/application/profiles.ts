@@ -191,6 +191,7 @@ export async function configuredProvider(
       cancel: evaluation.capabilities.cancel && meta.capabilities.cancel,
       hardDollarBudget: evaluation.capabilities.hardDollarBudget && meta.capabilities.hardDollarBudget,
       generationBudget: meta.capabilities.generationBudget,
+      candidateReferences: meta.capabilities.candidateReferences ?? false,
     },
     completeEvidence: (request, signal) => {
       if (!evaluation.completeEvidence)

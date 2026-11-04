@@ -222,3 +222,16 @@ it('rejects cumulative reservations above the safe-integer boundary without roun
 it.each([null, { extra: 1 }, { max_tokens: 0 }, { max_model_requests: 1.5 }, { per_operation: { max_tokens: -1 } }, { max_tokens: Number.MAX_SAFE_INTEGER + 1 }])('rejects invalid generation configuration %j', value => {
   expect(() => generationBudget(value)).toThrow()
 })
+
+it('rejects unsupported candidate references before recording a decision or reserving an operation', async () => {
+  const edit = { ...operation('generate_candidate', 'child'), payload: {
+    gear_candidate_references_v1: { source: { candidate_id: 'anchor', digest: canonicalDigest('anchor') } },
+  } }
+  const { runner, provider, store } = await fixture(defaults, [[edit]])
+  await expect(runner.run('run', signal())).rejects.toMatchObject({ code: 'candidate-references-unsupported' })
+  expect(provider.calls).toEqual([])
+  const journal = await store.read('run')
+  expect(journal.operations).toEqual([])
+  expect(journal.decisions).toEqual([])
+  expect(journal.physicalAttempts).toBe(0)
+})

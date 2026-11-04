@@ -16,6 +16,7 @@ import { configuredCancellation } from '../../src/application/cancellation.js'
 import { describeCodex } from '../../src/adapters/codex/identity.js'
 import { canonicalDigest } from '../../src/domain/canonical.js'
 import { PiHarnessAdapter } from '../../src/adapters/pi/harness.js'
+import { TargetStore, targetResources } from '../../src/adapters/storage/targets.js'
 import { DshHarnessAdapter } from '../../src/adapters/dsh/harness.js'
 import type { Json } from '../../src/domain/algorithm-wire.js'
 import type { OperationRequest } from '../../src/ports/operations.js'
@@ -164,6 +165,21 @@ if 'experience' in view and ${JSON.stringify(mode)}!='historical-sdk':
    Path(${JSON.stringify(join(root, 'hitch-private/private.txt'))}).read_text()
    raise AssertionError('PROVIDER_PRIVATE_FILE_READABLE')
   except (PermissionError,FileNotFoundError): pass
+if ${JSON.stringify(mode)}=='references':
+ reference=view['references']['donor']
+ assert reference['candidate_id']=='donor'
+ reference_path=Path(reference['directory'])/${JSON.stringify(adapter === 'pi' ? 'AGENTS.md' : 'prompts/system.md')}
+ assert reference_path.read_text()=='DONOR_REFERENCE_CANARY'
+ try:
+  reference_path.write_text('changed read-only reference')
+  raise AssertionError('REFERENCE_WRITABLE')
+ except OSError as error:
+  import errno
+  assert error.errno in (errno.EACCES,errno.EPERM,errno.EROFS),error
+ try:
+  Path(${JSON.stringify(join(targets, 'donor', adapter === 'pi' ? 'AGENTS.md' : 'prompts/system.md'))}).read_text()
+  raise AssertionError('SOURCE_REFERENCE_READABLE')
+ except (PermissionError,FileNotFoundError): pass
 output=Path(args[args.index('--output-last-message')+1])
 schema=json.loads(Path(args[args.index('--output-schema')+1]).read_text())
 assert ('data' if 'meta' in (view['operation'].get('payload') or {}) else 'clusters') in schema['required']
@@ -250,6 +266,16 @@ if ${JSON.stringify(mode)} in ['partialfailed','connect-failure']:
       },
     ],
   }
+  if (mode === 'references') {
+    const store = new TargetStore(privateRoot, harness, canonicalDigest('reference-runtime'))
+    await harness.prepare(store.path('donor'))
+    await writeFile(join(store.path('donor'), adapter === 'pi' ? 'AGENTS.md' : 'prompts/system.md'), 'DONOR_REFERENCE_CANARY')
+    const manifest = await store.seal('donor', 'reference-base')
+    request.operation.payload = {
+      hypothesis: 'Respect output format',
+      gear_candidate_references_v1: { donor: { candidate_id: 'donor', digest: manifest.digest } },
+    }
+  }
   return {
     provider,
     request,
@@ -285,6 +311,18 @@ async function untilStarted(directory: string) {
   throw new Error('fake Codex did not start')
 }
 describe('formal Codex operation runner', () => {
+  it.each(['pi', 'dsh'] as const)('reads a sealed %s reference but cannot edit it or retain it in the child', async adapter => {
+    const f = await fixture('references', adapter)
+    const receipt = await f.provider.submit(f.request, signal())
+    expect(receipt.result.status, await readFile(join(f.directory, 'stderr.log'), 'utf8')).toBe('complete')
+    expect(receipt.candidate?.id).toBe('candidate')
+    expect((await targetResources(join(f.targets, 'candidate'))).some(item => item.path.includes('references'))).toBe(false)
+    expect(await readFile(join(f.targets, 'donor', adapter === 'pi' ? 'AGENTS.md' : 'prompts/system.md'), 'utf8')).toBe('DONOR_REFERENCE_CANARY')
+    const events = await readFile(join(f.directory, 'events.jsonl'), 'utf8')
+    expect(await f.provider.submit(f.request, signal())).toEqual(receipt)
+    expect(await readFile(join(f.directory, 'events.jsonl'), 'utf8')).toBe(events)
+  })
+
   it.each([
     ['base_candidate_id', false], ['another_algorithm_field', false], ['base_candidate_id', true],
   ] as const)('Python alone defines and validates Meta field %s (invalid=%s)', async (resultKey, invalid) => {

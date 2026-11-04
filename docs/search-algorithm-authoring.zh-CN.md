@@ -2,6 +2,8 @@
 
 公开入口是 `gear.algorithms`。算法返回决策，TypeScript 运行层验证、持久化并执行这些决策。算法不能直接提交评测、查询 held-out 或更新 champion。
 
+用完整的 Python 协程组织多次角色调用和评测，见 [async 工作流编写指南](async-workflows.zh-CN.md)。现有策略与自定义 step 入口继续使用同一运行器。
+
 ## 修改位置
 
 每套算法都包含相同的六个文件。GEPA 和 RandomSearch 是公共合同的两个实例，彼此不继承策略实现。

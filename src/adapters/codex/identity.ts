@@ -52,6 +52,7 @@ export async function describeCodex(config: CodexConfiguration): Promise<{
       'runner',
       'journal',
       'sandbox',
+      'references',
       'execution',
       'cleanup',
       'usage',
@@ -82,6 +83,7 @@ export async function describeCodex(config: CodexConfiguration): Promise<{
       '../../domain/canonical',
       '../../domain/mutation-policy',
       '../../domain/algorithm-schema',
+      '../../domain/candidate-references',
       '../../sandbox',
     ].map((name) => readFile(new URL(`${name}${extension}`, import.meta.url), 'utf8')),
   )

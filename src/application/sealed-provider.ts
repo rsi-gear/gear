@@ -5,6 +5,7 @@ import type { TargetStore } from '../adapters/storage/targets.js'
 import type { ExperiencePreparation } from '../ports/experience.js'
 import { targetDiff } from '../adapters/storage/target-diff.js'
 import type { Json } from '../domain/algorithm-wire.js'
+import { candidateReferences } from '../domain/candidate-references.js'
 
 /** Provider proposals become candidates only after core-owned resource checks and sealing. */
 export function sealedProvider(
@@ -15,6 +16,10 @@ export function sealedProvider(
   const verifyInput = async (request: OperationRequest) => {
     const id = request.operation.parent_id ?? request.operation.candidate_id
     if (id) await targets.verify(id)
+    for (const reference of Object.values(candidateReferences(request.operation))) {
+      if ((await targets.verify(reference.candidate_id)).digest !== reference.digest)
+        throw new GearError('candidate-reference-mismatch', 'Reference candidate identity changed')
+    }
     await experience?.verify(request)
   }
   const seal = async (request: OperationRequest, value: OperationReceipt): Promise<OperationReceipt> => {

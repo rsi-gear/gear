@@ -173,6 +173,7 @@ export async function executeJob(
         await diagnostics.close()
       }
       if (await exists(join(directory, 'cancel.json'))) throw new Error('codex-cancelled')
+      await sandbox.verifyReferences()
       const resultPath = join(sandbox.output, 'result.json'),
         info = await lstat(resultPath)
       if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > 1024 * 1024)

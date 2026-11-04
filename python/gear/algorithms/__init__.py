@@ -33,6 +33,16 @@ from .contracts import (
 from .gepa import GEPA
 from .random import DeterministicRandom
 from .random_search import RandomSearch
+from .run_context import (
+    EvaluationResult,
+    Role,
+    RoleResult,
+    RunContext,
+    RunData,
+    RunInputs,
+    WorkflowAlgorithm,
+    WorkflowResult,
+)
 
 __all__ = [
     "AlgorithmState",
@@ -66,4 +76,12 @@ __all__ = [
     "DeterministicRandom",
     "GEPA",
     "RandomSearch",
+    "EvaluationResult",
+    "Role",
+    "RoleResult",
+    "RunContext",
+    "RunData",
+    "RunInputs",
+    "WorkflowAlgorithm",
+    "WorkflowResult",
 ]

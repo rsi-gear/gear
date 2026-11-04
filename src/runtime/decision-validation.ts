@@ -1,6 +1,7 @@
 import type { Decision, SearchView } from '../domain/algorithm-wire.js'
 import { validateAlgorithmWire } from '../domain/algorithm-schema.js'
 import { GearError } from '../domain/errors.js'
+import { candidateReferences } from '../domain/candidate-references.js'
 
 /** Author helpers never grant authority. Runtime independently checks the complete batch. */
 export function validateDecision(view: SearchView, decision: Decision): void {
@@ -29,6 +30,11 @@ export function validateDecision(view: SearchView, decision: Decision): void {
   const evaluations = new Set<string>()
   let terminal = 0
   for (const operation of decision.operations) {
+    for (const reference of Object.values(candidateReferences(operation))) {
+      const candidate = view.candidates.find((item) => item.id === reference.candidate_id)
+      if (!candidate || candidate.digest !== reference.digest)
+        fail('Candidate references must identify existing candidates with their frozen digest')
+    }
     if (
       new Set(operation.task_ids).size !== operation.task_ids.length ||
       operation.task_ids.some((task) => !tasks.has(task))
