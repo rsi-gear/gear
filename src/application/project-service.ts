@@ -127,7 +127,7 @@ export class ProjectApplication {
     requireEvaluationCapabilities(provider.capabilities)
     requireGenerationCapability(generation, provider.capabilities.generationBudget)
     const target = await this.selectTarget(context, provider)
-    const objective = resolveProjectObjective(config)
+    const objective = resolveProjectObjective(config, benchmark.adapter_manifest)
     for (const rule of [...objective.protection, ...(objective.assertion_protection ?? [])]) {
       if (!benchmark.splits[rule.partition].includes(rule.task_id))
         throw new GearError(
@@ -212,7 +212,7 @@ export class ProjectApplication {
     const context = { kind: 'evaluate' as const, root: this.root, runId, stateRoot, config, benchmark },
       provider = await this.bindings.provider(context)
     const target = await this.prepareTarget(context, provider)
-    const objective = resolveProjectObjective(config)
+    const objective = resolveProjectObjective(config, benchmark.adapter_manifest)
     for (const rule of [...objective.protection, ...(objective.assertion_protection ?? [])]) {
       if (!benchmark.splits[rule.partition].includes(rule.task_id))
         throw new GearError(
