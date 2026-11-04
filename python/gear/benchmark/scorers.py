@@ -59,7 +59,14 @@ def score_output(
         passed = True
         for name, assertion in expected.items():
             path = PurePosixPath(name)
-            if path.is_absolute() or str(path) != name or ".." in path.parts or "\\" in name:
+            if (
+                path.is_absolute()
+                or str(path) != name
+                or name == "."
+                or ".." in path.parts
+                or "\\" in name
+                or "\0" in name
+            ):
                 raise ValueError("file assertion path must be contained and normalized")
             content = (artifacts or {}).get(name)
             if assertion is None:
