@@ -61,17 +61,19 @@ def project_assertions(input: dict[str, Any]) -> list[dict[str, Any]]:
     configuration = input.get("objective") or {}
     result = []
     contracts = {item["id"]: item for item in configuration.get("assertions", [])}
-    cells = {
-        (cell["candidate_id"], cell["task_id"], cell["repetition"]): cell
-        for cell in input["evidence"]
-    }
+    cells: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
+    for cell in input["evidence"]:
+        cells.setdefault((cell["candidate_id"], cell["task_id"], cell["repetition"]), []).append(
+            cell
+        )
 
     def observation(
         candidate: str, task: str, repetition: int, identifier: str
     ) -> dict[str, Any] | None:
-        cell = cells.get((candidate, task, repetition))
-        if not cell or cell["status"] not in ("valid", "task_failed"):
+        slot = cells.get((candidate, task, repetition), [])
+        if len(slot) != 1 or slot[0]["status"] not in ("valid", "task_failed"):
             return None
+        cell = slot[0]
         values = [item for item in cell.get("assertions") or [] if item["id"] == identifier]
         if len(values) > 1:
             raise ValueError("duplicate independent assertion identity")

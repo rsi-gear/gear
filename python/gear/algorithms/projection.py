@@ -85,6 +85,18 @@ def raw_scope(input: dict[str, Any]) -> dict[str, Any]:
         )
         record = {"taskId": cell["task_id"], "repetition": cell["repetition"], "metrics": raw}
         records.append({**record, "digest": digest(record)})
+    if len({(cell["task_id"], cell["repetition"]) for cell in cells}) != len(cells):
+        # Ambiguous evidence invalidates this projection, not other candidates.
+        return {
+            contract["id"]: {
+                "contractDigest": contract["digest"],
+                "unit": contract["unit"],
+                "status": "invalid",
+                "evidenceRefs": sorted({record["digest"] for record in records}),
+                "reason": "duplicate evidence in frozen task/repetition scope",
+            }
+            for contract in contracts
+        }
     return aggregate_metrics(
         {
             "contracts": contracts,
