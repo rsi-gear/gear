@@ -1,0 +1,229 @@
+{
+  "description": "Operation, reason, research and policy-state transcript digests captured from the previous phase-based built-in search. Fresh native workflows must preserve those observations.",
+  "scenarios": {
+    "gepa-default": {
+      "digest": "sha256:89ab8534fd9169737874de3280f765347359dd3a194aad9a51d715e4e9cd465d",
+      "decisions": 13,
+      "final": [
+        {
+          "kind": "nominate",
+          "candidate_id": "r0-b0-candidate-0",
+          "parent_id": null,
+          "task_ids": [],
+          "scope": "global",
+          "rationale": "configured rounds complete",
+          "payload": null
+        }
+      ],
+      "evidence": 53
+    },
+    "gepa-multi-parent": {
+      "digest": "sha256:9e2c1f7a5e5a1f94af36b6cf6a6dcbd62cb75399013c2f590ce81115221f7e97",
+      "decisions": 23,
+      "final": [
+        {
+          "kind": "nominate",
+          "candidate_id": "r0-b0-candidate-0",
+          "parent_id": null,
+          "task_ids": [],
+          "scope": "global",
+          "rationale": "configured rounds complete",
+          "payload": null
+        }
+      ],
+      "evidence": 87
+    },
+    "gepa-failed-diagnosis": {
+      "digest": "sha256:e0891cfc5c499d998d752a8f023b9209412c8eb08388e9a41a32ee287a6d9189",
+      "decisions": 5,
+      "final": [
+        {
+          "kind": "stop",
+          "candidate_id": null,
+          "parent_id": null,
+          "task_ids": [],
+          "scope": "global",
+          "rationale": "configured rounds complete",
+          "payload": null
+        }
+      ],
+      "evidence": 12
+    },
+    "gepa-partial-generation": {
+      "digest": "sha256:171b1a453b2de35f7e02452245f67e7806af379c9c0385f9b9f8da861bf9af61",
+      "decisions": 13,
+      "final": [
+        {
+          "kind": "nominate",
+          "candidate_id": "r0-b0-candidate-1",
+          "parent_id": null,
+          "task_ids": [],
+          "scope": "global",
+          "rationale": "configured rounds complete",
+          "payload": null
+        }
+      ],
+      "evidence": 41
+    },
+    "gepa-incomplete-evidence": {
+      "digest": "sha256:9fc0754e6cc626c42dc95ee9ac010ffdaac3e4ffeb8ecf8c0a3033a09bc6a9a3",
+      "decisions": 12,
+      "final": [
+        {
+          "kind": "stop",
+          "candidate_id": null,
+          "parent_id": null,
+          "task_ids": [],
+          "scope": "global",
+          "rationale": "configured rounds complete",
+          "payload": null
+        }
+      ],
+      "evidence": 39
+    },
+    "gepa-low-budget": {
+      "digest": "sha256:fc5b4527a2a12a9a10cad6c1fb954ccf2377846597d0b19bcab357ce8b54627d",
+      "decisions": 4,
+      "final": [
+        {
+          "kind": "stop",
+          "candidate_id": null,
+          "parent_id": null,
+          "task_ids": [],
+          "scope": "global",
+          "rationale": "insufficient budget for comparable local scope",
+          "payload": null
+        }
+      ],
+      "evidence": 12
+    },
+    "gepa-multisignal": {
+      "digest": "sha256:df98850fdc117874f6766fe5c41d777fbc0ab6838a1c597536ccd34d939503c3",
+      "decisions": 13,
+      "final": [
+        {
+          "kind": "stop",
+          "candidate_id": null,
+          "parent_id": null,
+          "task_ids": [],
+          "scope": "global",
+          "rationale": "configured rounds complete",
+          "payload": null
+        }
+      ],
+      "evidence": 46
+    },
+    "gepa-upper-bound": {
+      "digest": "sha256:d04b4ae6b60d2737e32cb9f08c96abf32625a85186500513ec73bf218f225681",
+      "decisions": 13,
+      "final": [
+        {
+          "kind": "nominate",
+          "candidate_id": "r0-b0-candidate-0",
+          "parent_id": null,
+          "task_ids": [],
+          "scope": "global",
+          "rationale": "configured rounds complete",
+          "payload": null
+        }
+      ],
+      "evidence": 53
+    },
+    "gepa-custom-stop": {
+      "digest": "sha256:e0a0c145bd344456f9b43ce779f807f03bf5c0d4ae73074275d09b49c8bd11aa",
+      "decisions": 4,
+      "final": [
+        {
+          "kind": "stop",
+          "candidate_id": null,
+          "parent_id": null,
+          "task_ids": [],
+          "scope": "global",
+          "rationale": "operator stop",
+          "payload": null
+        }
+      ],
+      "evidence": 12
+    },
+    "random-default": {
+      "digest": "sha256:a2266aab5867b2517b8ce7184a2fee824207d7e11346237c6d4b12cbd3dc61af",
+      "decisions": 9,
+      "final": [
+        {
+          "kind": "nominate",
+          "candidate_id": "r0-b0-candidate-0",
+          "parent_id": null,
+          "task_ids": [],
+          "scope": "global",
+          "rationale": "configured rounds complete",
+          "payload": null
+        }
+      ],
+      "evidence": 60
+    },
+    "random-failed-diagnosis": {
+      "digest": "sha256:644c182350e366f48c2fbaff5582ba43f0f817a9039c46df494d770e23c605e6",
+      "decisions": 5,
+      "final": [
+        {
+          "kind": "stop",
+          "candidate_id": null,
+          "parent_id": null,
+          "task_ids": [],
+          "scope": "global",
+          "rationale": "configured rounds complete",
+          "payload": null
+        }
+      ],
+      "evidence": 12
+    },
+    "random-partial-generation": {
+      "digest": "sha256:fe74b64724dd2bc4c2c19656843049918f7a16f248a8d571b389b84af6493d50",
+      "decisions": 9,
+      "final": [
+        {
+          "kind": "nominate",
+          "candidate_id": "r0-b0-candidate-1",
+          "parent_id": null,
+          "task_ids": [],
+          "scope": "global",
+          "rationale": "configured rounds complete",
+          "payload": null
+        }
+      ],
+      "evidence": 48
+    },
+    "random-low-budget": {
+      "digest": "sha256:61c296948ff19f9289d6f0d0bc3dd16217a68bbe5e5b4629430fef1c188efa01",
+      "decisions": 4,
+      "final": [
+        {
+          "kind": "stop",
+          "candidate_id": null,
+          "parent_id": null,
+          "task_ids": [],
+          "scope": "global",
+          "rationale": "insufficient budget for comparable global scope",
+          "payload": null
+        }
+      ],
+      "evidence": 12
+    },
+    "random-custom-stop": {
+      "digest": "sha256:ecfc946af19e2d4707cbd13a1e3e9fc58bd46f12a1c70bc9626a9b27dbf105d5",
+      "decisions": 4,
+      "final": [
+        {
+          "kind": "stop",
+          "candidate_id": null,
+          "parent_id": null,
+          "task_ids": [],
+          "scope": "global",
+          "rationale": "operator stop",
+          "payload": null
+        }
+      ],
+      "evidence": 12
+    }
+  }
+}

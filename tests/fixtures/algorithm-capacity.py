@@ -4,7 +4,7 @@ import json
 from dataclasses import asdict
 
 from gear.algorithms import GEPA, AlgorithmState, Decision, RankingInput
-from gear.algorithms.gepa.ranking import rank_candidates
+from gear.refine.evidence import complete_scope_mean as rank_candidates
 from gear.canonical import digest
 
 

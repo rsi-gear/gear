@@ -22,7 +22,7 @@ from gear.training import TrainingLoop, TrainingConfig
 | `recipes/` | 后端配方合同、默认 composition factory |
 | `cli/` | 控制器命令、artifact RPC、agent-stage 子进程、脚本启动参数 |
 
-模型评测的 task-macro 配对统计、dev/held-out 晋级规则和离线 SFT epoch 排序统一位于 `gear.algorithms.model_training`。这是不读写存储的固定计算模块；`training/data` 负责数据来源与合同校验，`training/pipelines` 负责四阶段组合，TypeScript 控制器调用同一份 Python 算法。每个 task 的重复尝试先求均值，再计算 task-macro 差值及任务级标准误；单任务标准误为 `None`。任务输出按 Unicode 码点排序，不依赖宿主 locale。离线记录排列保留既有 seed/epoch/index 的 SHA-256 顺序。
+模型评测的 task-macro 配对统计、dev/held-out 晋级规则和离线 SFT epoch 排序统一位于 `gear.training.policy`。这是不读写存储的固定计算模块；`training/data` 负责数据来源与合同校验，`training/pipelines` 负责四阶段组合，TypeScript 控制器调用同一份 Python 算法。每个 task 的重复尝试先求均值，再计算 task-macro 差值及任务级标准误；单任务标准误为 `None`。任务输出按 Unicode 码点排序，不依赖宿主 locale。离线记录排列保留既有 seed/epoch/index 的 SHA-256 顺序。
 
 TypeScript 控制器与项目评估共用 `src/adapters/hitch/environment.ts` 的 provider 环境校验和 `json.ts` 的 Hitch JSON 摘要；训练部署只保留自己的 placement、来源 checkout 和 GPU 约束，避免维护重复的 daemon/worker 校验。
 

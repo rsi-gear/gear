@@ -6,21 +6,18 @@
 
 ## 修改位置
 
-每套算法都包含相同的六个文件。GEPA 和 RandomSearch 是公共合同的两个实例，彼此不继承策略实现。
+每个内置算法有独立目录，从它的 `algorithm.py` 读起。
 
-| 要修改的行为 | 公共合同 | GEPA 实现 | RandomSearch 实现 |
-| --- | --- | --- | --- |
-| 父代和候选配额 | `ParentPolicy` | `gepa/parents.py` | `random_search/parents.py` |
-| 任务范围和评分权重 | `TaskSampler` | `gepa/sampling.py` | `random_search/sampling.py` |
-| 消费诊断、规划候选 | `ProposalPlanner` | `gepa/proposal.py` | `random_search/proposal.py` |
-| 在完整共同范围比较候选 | `CandidateRanker` | `gepa/ranking.py` | `random_search/ranking.py` |
-| 阶段顺序与晋级宽度 | `SearchAlgorithm` | `gepa/algorithm.py` | `random_search/algorithm.py` |
-| 结束条件 | `StopRule` | `gepa/stopping.py` | `random_search/stopping.py` |
+| 算法入口 | 主要流程 |
+| --- | --- |
+| [ADAS](../python/gear/algorithms/adas/algorithm.py) | 设计、反思并修改同一份草稿，封存后评测 |
+| [RandomSearch](../python/gear/algorithms/random_search/algorithm.py) | 均匀选择父代，生成独立提案，在完整 seed 集上比较 |
+| [GEPA](../python/gear/algorithms/gepa/algorithm.py) | 选择父代、根据失败提出改进，按 local、bridge、global 逐步扩大评测 |
 
-表中路径相对于 [`python/gear/algorithms`](../python/gear/algorithms)。合同在 [`contracts.py`](../python/gear/algorithms/contracts.py)，纯策略规划在 [`workflow.py`](../python/gear/algorithms/workflow.py)。GEPA 的新运行直接执行 [async run(ctx)](../python/gear/algorithms/gepa/algorithm.py)，其父代、采样、排序和最终 SeedGate 继续复用这些规划函数。旧 phase 日志恢复和 RandomSearch 使用原阶段入口。新增算法可以组合这些合同，也可以直接实现 `step`，不需要修改 TS 的操作类型或状态机。
+GEPA 的父代选择、采样和提案分别放在同目录的 `parents.py`、`sampling.py` 和 `proposal.py`。RandomSearch 的默认策略较短，放在入口文件。两个算法都提供 `parent_policy`、`sampler`、`proposal_planner`、`ranker`、`stop_rule` 五个替换点。默认排名用 `gear.refine.evidence.complete_scope_mean`，默认停止条件用 `gear.refine.stopping.bounded_run`。新算法也可以像 ADAS 一样直接用 `ctx` 编写自己的流程。[策略类型](../python/gear/refine/contracts.py) · [共用的分阶段搜索实现](../python/gear/refine/staged.py)
 
 默认 Meta 的提示词、输入组织、结果结构与解析位于
-[`meta.py`](../python/gear/algorithms/meta.py)；经验记录对算法 payload 的解释位于
+[`meta.py`](../python/gear/refine/meta.py)；经验记录对算法 payload 的解释位于
 `experience.py`。TS 通过现有 Python policy 通道执行，负责授权、模型调用、预算和持久化。
 
 算法自定义诊断或生成时，在现有 `Operation.payload` 中传入 `meta`，无需修改公共 Meta
@@ -139,7 +136,7 @@ class StopAfterInspection:
 
 `Decision.research` 可选附带 `ResearchRecord(kind, scope, task_ids, candidate_ids, data)`，kind 为 `scope`、`ranking` 或 `parents`。它用于独立研究档案，不产生操作权限。runtime 检查任务和候选属于当前 seed view，每次 decision 最多 64 条、JSON 总计最多 2 MiB。两套内置算法通过共享流程自动记录范围、排名和父代抽样；自定义算法不提供记录时，事实档案仍保存候选、证据和操作。
 
-scope 的 `data.weights` 必须明确覆盖任务集合，才能在档案中生成同范围比较；可同时保存 stage、round 与 sampling 信息。其他 data 保持算法自述，不能据此替代真实 receipt。公共纯投影 `algorithms/research.py` 计算档案的描述性比较，不调用算法或重新抽样；每套算法仍只需维护同样的六个模块。读取命令与字段见[报告指南](guide/zh-CN/results.md)。
+scope 的 `data.weights` 必须明确覆盖任务集合，才能在档案中生成同范围比较；可同时保存 stage、round 与 sampling 信息。其他 data 保持算法自述，不能据此替代真实 receipt。公共纯投影 `refine/research.py` 计算档案的描述性比较，不调用算法或重新抽样。读取命令与字段见[报告指南](guide/zh-CN/results.md)。
 
 ## 身份与恢复
 
@@ -161,15 +158,13 @@ stdio 协议每条请求/响应固定上限为 64 MiB，按完整 UTF-8 JSON env
 
 ## 当前策略与固定投影的边界
 
-GEPA 和 RandomSearch 分别保留 parents、sampling、proposal、ranking、stopping、algorithm 六个模块。`algorithm.py` 实例化公共流程和同样的五个可替换策略；共享流程在 `algorithms/workflow.py`，每个阶段由命名方法表达。正式配方目录只包含当前实现。
+加权指标算术在 `refine/objective.py`，固定任务/重复范围与保护投影在 `refine/projection.py`，独立 assertion 判定在 `refine/assertions.py`。排名策略使用公共 `RankingInput`（含冻结 objective 与 anchor_id）；`RankingPlan` 区分不完整和违反约束的候选。GEPA 父代的逐题前沿也使用 objective 投影。最终验收由 core 调用受信任的 Python 投影独立执行，替换 ranker 不能绕过冻结的规则。
 
-加权指标算术在 `algorithms/objective.py`，固定任务/重复范围与保护投影在 `algorithms/projection.py`，独立 assertion 判定在 `algorithms/assertions.py`。各算法的 `ranking.py` 使用同一公共 `RankingInput`（含冻结 objective 与 anchor_id）；`RankingPlan` 区分不完整和违反约束的候选。GEPA 父代的逐题前沿也使用 objective 投影。最终验收由 core 调用受信任的 Python 投影独立执行，替换 ranker 不能绕过冻结的规则。
+公共采样器使用 `refine/sampling.py` 的十进制向上取整；`100 × 0.07` 固定为 7 个任务。确定性随机源在 `refine/random.py`。训练的配对统计、dev/held-out 决策和离线记录顺序在 `training/policy.py`，由 `gear.training` 和 TS 执行适配层共用。
 
-公共采样器使用 `algorithms/sampling.py` 的十进制向上取整；`100 × 0.07` 固定为 7 个任务。确定性随机源在 `algorithms/random.py`。训练的配对统计、dev/held-out 决策和离线记录顺序在 `algorithms/model_training.py`，由 `gear.training` 和 TS 执行适配层共用。
+`refine/operators.py` 仅分发当前执行适配层所需的纯投影与训练策略。它不是算法作者的扩展入口，也不承担 GEPA 阶段规划；自定义算法仍使用上面的公共合同。
 
-`algorithms/operators.py` 仅分发当前执行适配层所需的纯投影与训练策略。它不是算法作者的扩展入口，也不承担 GEPA 阶段规划；自定义算法仍使用上面的公共合同。
-
-verifier 过程组件验证、失败代码诊断与范围汇总在 `algorithms/verifier.py`；历史编辑经验分类/查询在 `algorithms/experience.py`，修改资源使用匹配在 `algorithms/modification_use.py`。这些共享纯投影不增加每套算法的可替换模块。TypeScript 只负责 provider I/O、来源固定、合同校验和持久化；诊断不会隐式改变 objective 或晋级规则。
+verifier 过程组件验证、失败代码诊断与范围汇总在 `refine/verifier.py`；历史编辑经验分类/查询在 `refine/experience.py`，修改资源使用匹配在 `observations/modification_use.py`。这些共享纯投影不增加每套算法的可替换模块。TypeScript 只负责 provider I/O、来源固定、合同校验和持久化；诊断不会隐式改变 objective 或晋级规则。
 
 ## 历史行为对照
 

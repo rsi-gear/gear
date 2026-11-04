@@ -1,0 +1,30 @@
+{
+  "description": "Default built-in algorithm descriptions captured by executing Project._describe_algorithm from the pre-layout Python SDK.",
+  "source_commit": "7721b78e00d61becff3ff2801760ba87a9be5ff3",
+  "algorithms": [
+    {
+      "name": "gepa",
+      "options": {
+        "parent_policy": "gear.algorithms.gepa.parents:select_parent",
+        "sampler": "gear.algorithms.gepa.sampling:sample_tasks",
+        "proposal_planner": "gear.algorithms.gepa.proposal:plan_proposals",
+        "ranker": "gear.algorithms.gepa.ranking:rank_candidates",
+        "stop_rule": "gear.algorithms.gepa.stopping:stop_reason",
+        "promotion_widths": [
+          2,
+          1
+        ]
+      }
+    },
+    {
+      "name": "random-search",
+      "options": {
+        "parent_policy": "gear.algorithms.random_search.parents:select_parent",
+        "sampler": "gear.algorithms.random_search.sampling:sample_tasks",
+        "proposal_planner": "gear.algorithms.random_search.proposal:plan_proposals",
+        "ranker": "gear.algorithms.random_search.ranking:rank_candidates",
+        "stop_rule": "gear.algorithms.random_search.stopping:stop_reason"
+      }
+    }
+  ]
+}

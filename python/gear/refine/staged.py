@@ -1,10 +1,14 @@
-"""Common resumable flow; every recipe supplies its policy implementations."""
+"""Native staged workflow and planning shared by the built-in search recipes.
+
+Durability belongs to RunContext. Policy-state snapshots are exposed only to
+stop rules; they never dispatch a second state machine.
+"""
 
 from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, replace
-from typing import Any, Literal, cast
+from typing import Any, ClassVar, Literal, cast
 
 from gear.canonical import JSON, digest
 
@@ -32,6 +36,7 @@ from .limits import MAX_DECISION_OPERATIONS
 from .objective import comparison_key, score_ceiling
 from .projection import compare_candidates, project_candidate
 from .random import DeterministicRandom
+from .run_context import RunContext, WorkflowAlgorithm, WorkflowResult
 from .validation import validate_parent_plan, validate_sampling_plan
 
 
@@ -43,12 +48,6 @@ def strings(value: JSON) -> tuple[str, ...]:
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         raise ValueError("algorithm state requires a string array")
     return cast(tuple[str, ...], tuple(value))
-
-
-def integer(value: JSON) -> int:
-    if type(value) is not int or value < 0:
-        raise ValueError("algorithm state requires a nonnegative integer")
-    return value
 
 
 def objects(value: JSON) -> list[dict[str, JSON]]:
@@ -66,13 +65,13 @@ def weights(value: JSON) -> tuple[tuple[str, float], ...]:
 
 
 @dataclass
-class StagedSearch:
+class StagedWorkflow(WorkflowAlgorithm):
     parent_policy: ParentPolicy
     sampler: TaskSampler
     proposal_planner: ProposalPlanner
     ranker: CandidateRanker
     stop_rule: StopRule
-    stages: tuple[Literal["local", "bridge", "global"], ...]
+    stages: ClassVar[tuple[Literal["local", "bridge", "global"], ...]]
     promotion_widths: tuple[int, ...]
     global_gate: Literal["any", "no_regression"] = "any"
 
@@ -87,246 +86,257 @@ class StagedSearch:
             raise ValueError("global_gate must be 'any' or 'no_regression'")
         # JSON configuration uses arrays; keep the same immutable form as SDK configuration.
         self.promotion_widths = tuple(self.promotion_widths)
+        self._policy_state: dict[str, JSON] = {}
 
     def step(self, view: SearchView, state: AlgorithmState) -> Decision:
-        if state.version != 1 or not self.stages or self.stages[-1] != "global":
-            raise ValueError("unsupported state or missing final global comparison")
-        reason = self.stop_rule(view, state)
+        if state.version != 1 or state.data and state.data.get("workflow") != 1:
+            raise ValueError("unsupported workflow state")
+        policy_state = cast(dict[str, JSON], state.data.get("policy_state", {}))
+        reason = self.stop_rule(view, AlgorithmState(data=policy_state))
         if reason:
             return Decision(state, (Operation("stop", rationale=reason),), reason)
-        phase = state.data.get("phase", "baseline")
-        if phase == "baseline":
-            return self._decision(
-                {"phase": "parents", "round": 0},
-                (
-                    Operation(
-                        "evaluate_seed",
-                        candidate_id=view.anchor_id,
-                        task_ids=self._all_tasks(view),
-                    ),
-                ),
-                "comparable baseline",
-                (
-                    ResearchRecord(
-                        "scope",
-                        "global",
-                        self._all_tasks(view),
-                        (view.anchor_id,),
-                        {
-                            "stage": "baseline",
-                            "round": 0,
-                            "weights": {
-                                task: 1 / len(view.tasks) for task in self._all_tasks(view)
-                            },
-                        },
-                    ),
-                ),
-            )
-        if phase == "parents":
-            return self._parents(view, state)
-        if phase == "proposals":
-            return self._proposals(view, state)
-        if phase == "generated":
-            planned = strings(state.data["planned"])
-            candidates = tuple(
-                result.candidate_id
-                for result in view.completed
-                if result.kind == "generate_candidate"
-                and result.status == "complete"
-                and result.candidate_id is not None
-                and result.candidate_id in planned
-            )
-            if not candidates:
-                return self._next_batch(view, state, "no candidate was generated")
-            return self._evaluate(view, state, candidates, 0)
-        if phase == "rank":
-            return self._rank(view, state)
-        raise ValueError("unknown algorithm phase: " + str(phase))
-
-    def _parents(self, view: SearchView, state: AlgorithmState) -> Decision:
-        plan = cast(dict[str, Any], self._parent_batches(view, state.data))
-        research = self._research(plan["record"]) if plan.get("record") is not None else None
-        if plan.get("finish"):
-            decision = self._finish(view, state, plan["finish"])
-        else:
-            data = {
-                **state.data,
-                "batches": plan["batches"],
-                "batch_index": 0,
-                "parent_reason": plan["reason"],
-            }
-            decision = self._diagnose(view, AlgorithmState(data=data))
-        return self._record(decision, research) if research is not None else decision
-
-    def _diagnose(self, view: SearchView, state: AlgorithmState) -> Decision:
-        if view.budget.generation_batch_capacity == 0:
-            return self._finish(view, state, "generation budget exhausted")
-        batches = objects(state.data["batches"])
-        index = integer(state.data["batch_index"])
-        while index < len(batches):
-            batch = batches[index]
-            plan = cast(dict[str, Any], self._diagnosis(view, batch))
-            if plan.get("finish"):
-                return self._finish(view, state, plan["finish"])
-            if plan["tasks"]:
-                return self._decision(
-                    {
-                        **state.data,
-                        "batch_index": index,
-                        "phase": "proposals",
-                        "parent": batch["parent"],
-                        "limit": batch["count"],
-                        "failures": plan["tasks"],
-                    },
-                    (
-                        Operation(
-                            "diagnose_seed",
-                            candidate_id=str(batch["parent"]),
-                            task_ids=tuple(plan["tasks"]),
-                            rationale=str(state.data["parent_reason"]),
-                        ),
-                    ),
-                    "diagnose selected parent",
-                )
-            index += 1
-        return self._next_round(view, state)
-
-    def _proposals(self, view: SearchView, state: AlgorithmState) -> Decision:
-        if view.budget.generation_batch_capacity == 0:
-            return self._finish(view, state, "generation budget exhausted")
-        parent = str(state.data["parent"])
-        diagnosis = [
-            result
-            for result in view.completed
-            if result.kind == "diagnose_seed" and result.candidate_id == parent
-        ]
-        if not diagnosis:
-            return self._next_batch(view, state, "diagnosis failed")
-        batch = objects(state.data["batches"])[integer(state.data["batch_index"])]
-        plan = cast(
-            dict[str, Any],
-            self._proposal(view, batch, diagnosis[-1], list(strings(state.data["failures"]))),
-        )
-        if plan.get("finish"):
-            return self._finish(view, state, plan["finish"])
-        hypotheses = plan.get("hypotheses", [])
-        if not hypotheses:
-            return self._next_batch(view, state, plan["reason"])
-        ids = tuple(
-            f"r{state.data['round']}-b{state.data['batch_index']}-candidate-{index}"
-            for index in range(len(hypotheses))
-        )
-        operations = tuple(
-            Operation(
-                "generate_candidate",
-                candidate_id=candidate,
-                parent_id=parent,
-                task_ids=tuple(plan["tasks"]),
-                payload={"hypothesis": hypothesis},
-                rationale=plan["reason"],
-            )
-            for candidate, hypothesis in zip(ids, hypotheses)
-        )
-        return self._decision(
-            {**state.data, "phase": "generated", "planned": list(ids), "failures": plan["tasks"]},
-            operations,
-            plan["reason"],
-        )
-
-    def _evaluate(
-        self, view: SearchView, state: AlgorithmState, candidates: tuple[str, ...], index: int
-    ) -> Decision:
-        plan = cast(dict[str, Any], self._scope(view, state.data, candidates, index))
-        if plan.get("finish"):
-            return self._finish(view, state, plan["finish"])
-        if not plan["tasks"]:
-            return self._next_batch(view, state, plan["reason"])
-        data = {
-            **state.data,
-            "phase": "rank",
-            "stage_index": index,
-            "scope_tasks": plan["tasks"],
-            "scope_weights": plan["weights"],
-            "scope_id": plan["id"],
-            "sampling": plan["sampling"],
-            "participants": plan["participants"],
-        }
-        operations = tuple(
-            Operation(
-                "evaluate_seed",
-                candidate_id=candidate,
-                task_ids=tuple(plan["tasks"]),
-                scope=plan["id"],
-                rationale=plan["reason"],
-            )
-            for candidate in plan["participants"]
-        )
-        return self._decision(data, operations, plan["reason"], (self._research(plan["record"]),))
-
-    def _rank(self, view: SearchView, state: AlgorithmState) -> Decision:
-        plan = cast(dict[str, Any], self._ranking(view, state.data))
-        next_state = AlgorithmState(data={**state.data, **plan["state"]})
-        if not plan["next"]:
-            decision = self._next_batch(view, next_state, plan["reason"])
-        else:
-            decision = self._evaluate(
-                view, next_state, tuple(plan["next"]), integer(state.data["stage_index"]) + 1
-            )
-        return self._record(decision, self._research(plan["record"]))
-
-    def _next_batch(self, view: SearchView, state: AlgorithmState, reason: str) -> Decision:
-        return self._diagnose(
-            view,
-            AlgorithmState(
+        decision = WorkflowAlgorithm.step(self, view, state)
+        return replace(
+            decision,
+            state=AlgorithmState(
                 data={
-                    **state.data,
-                    "batch_index": integer(state.data["batch_index"]) + 1,
-                    "last_batch_reason": reason,
+                    **decision.state.data,
+                    "policy_state": self._policy_state,
                 }
             ),
         )
 
-    def _next_round(self, view: SearchView, state: AlgorithmState) -> Decision:
-        next_round = integer(state.data["round"]) + 1
-        next_state = AlgorithmState(data={**state.data, "phase": "parents", "round": next_round})
-        if next_round < view.budget.rounds and view.budget.candidates_remaining > 0:
-            # Round transitions yield a committed decision, even if every selected
-            # local scope is already solved. Reuse these slots without new trials.
-            return self._decision(
-                next_state.data,
+    async def _baseline(self, ctx: RunContext) -> dict[str, JSON]:
+        data: dict[str, JSON] = {"phase": "parents", "round": 0}
+        tasks = tuple(sorted(task.id for task in ctx.data.seed))
+        ctx.record(
+            ResearchRecord(
+                "scope",
+                "global",
+                tasks,
+                (ctx.inputs.anchor.id,),
+                {
+                    "stage": "baseline",
+                    "round": 0,
+                    "weights": {task: 1 / len(tasks) for task in tasks},
+                },
+            ),
+            key="baseline/record",
+        )
+        self._policy_state = data
+        await ctx.perform(
+            (Operation("evaluate_seed", candidate_id=ctx.inputs.anchor.id, task_ids=tasks),),
+            key="baseline",
+            reason="comparable baseline",
+        )
+
+        return data
+
+    async def _run_round(
+        self,
+        ctx: RunContext,
+        data: dict[str, JSON],
+        round_id: int,
+        *,
+        stages: tuple[Literal["local", "bridge", "global"], ...],
+    ) -> tuple[dict[str, JSON], WorkflowResult | None]:
+        """Plan parents, diagnose, generate, and compare one round's cohorts."""
+        prefix = f"round/{round_id}"
+        parents = cast(
+            dict[str, Any],
+            ctx.compute(lambda: self._parent_batches(ctx._view, data), key=prefix + "/parents"),
+        )
+        if parents.get("record") is not None:
+            ctx.record(self._research(parents["record"]), key=prefix + "/parents/record")
+        if parents.get("finish"):
+            return data, self._finish_workflow(ctx, data, parents["finish"], prefix + "/finish")
+        batches = parents["batches"]
+        data = {
+            **data,
+            "batches": batches,
+            "batch_index": 0,
+            "parent_reason": parents["reason"],
+        }
+        for index, batch in enumerate(batches):
+            key = f"{prefix}/batch/{index}"
+            diagnosed = cast(
+                dict[str, Any],
+                ctx.compute(lambda: self._diagnosis(ctx._view, batch), key=key + "/cases"),
+            )
+            if diagnosed.get("finish"):
+                return data, self._finish_workflow(ctx, data, diagnosed["finish"], key + "/finish")
+            if not diagnosed["tasks"]:
+                continue
+            parent = batch["parent"]
+            data = {
+                **data,
+                "batch_index": index,
+                "phase": "proposals",
+                "parent": parent,
+                "limit": batch["count"],
+                "failures": diagnosed["tasks"],
+            }
+            self._policy_state = data
+            (diagnosis,) = await ctx.perform(
                 (
                     Operation(
-                        "evaluate_seed",
-                        candidate_id=view.anchor_id,
-                        task_ids=self._all_tasks(view),
-                        rationale="reuse admitted baseline for the next round",
+                        "diagnose_seed",
+                        candidate_id=parent,
+                        task_ids=tuple(diagnosed["tasks"]),
+                        rationale=parents["reason"],
                     ),
                 ),
-                "next round",
+                key=key + "/diagnose",
+                reason="diagnose selected parent",
             )
-        return self._finish(view, next_state, "configured rounds complete")
-
-    def _finish(self, view: SearchView, state: AlgorithmState, reason: str) -> Decision:
-        candidate = self._finish_candidate(view)
-        operations = (
-            (Operation("nominate", candidate_id=candidate, rationale=reason),)
-            if candidate != view.anchor_id
-            else (Operation("stop", rationale=reason),)
+            proposal = cast(
+                dict[str, Any],
+                ctx.compute(
+                    lambda: self._proposal(ctx._view, batch, diagnosis, diagnosed["tasks"]),
+                    key=key + "/proposals",
+                ),
+            )
+            if proposal.get("finish"):
+                return data, self._finish_workflow(ctx, data, proposal["finish"], key + "/finish")
+            hypotheses = proposal.get("hypotheses", [])
+            if not hypotheses:
+                data = {
+                    **data,
+                    "batch_index": index + 1,
+                    "last_batch_reason": proposal["reason"],
+                }
+                continue
+            ids = tuple(f"r{round_id}-b{index}-candidate-{j}" for j in range(len(hypotheses)))
+            data = {
+                **data,
+                "phase": "generated",
+                "planned": list(ids),
+                "failures": proposal["tasks"],
+            }
+            self._policy_state = data
+            generated = await ctx.perform(
+                tuple(
+                    Operation(
+                        "generate_candidate",
+                        candidate_id=candidate,
+                        parent_id=parent,
+                        task_ids=tuple(proposal["tasks"]),
+                        payload={"hypothesis": hypothesis},
+                        rationale=proposal["reason"],
+                    )
+                    for candidate, hypothesis in zip(ids, hypotheses)
+                ),
+                key=key + "/generate",
+                reason=proposal["reason"],
+            )
+            candidates = tuple(
+                result.candidate_id
+                for result in generated
+                if result.status == "complete" and result.candidate_id is not None
+            )
+            if not candidates:
+                data = {
+                    **data,
+                    "batch_index": index + 1,
+                    "last_batch_reason": "no candidate was generated",
+                }
+                continue
+            for stage_index, stage in enumerate(stages):
+                stage_key = key + "/" + stage
+                scope = cast(
+                    dict[str, Any],
+                    ctx.compute(
+                        lambda: self._scope(ctx._view, data, candidates, stage_index, stage),
+                        key=stage_key + "/scope",
+                    ),
+                )
+                if scope.get("finish"):
+                    return data, self._finish_workflow(
+                        ctx, data, scope["finish"], stage_key + "/finish"
+                    )
+                if not scope["tasks"]:
+                    data = {
+                        **data,
+                        "batch_index": index + 1,
+                        "last_batch_reason": scope["reason"],
+                    }
+                    break
+                data = {
+                    **data,
+                    "phase": "rank",
+                    "stage_index": stage_index,
+                    "scope_tasks": scope["tasks"],
+                    "scope_weights": scope["weights"],
+                    "scope_id": scope["id"],
+                    "sampling": scope["sampling"],
+                    "participants": scope["participants"],
+                }
+                ctx.record(self._research(scope["record"]), key=stage_key + "/record")
+                self._policy_state = data
+                await ctx.perform(
+                    tuple(
+                        Operation(
+                            "evaluate_seed",
+                            candidate_id=candidate,
+                            task_ids=tuple(scope["tasks"]),
+                            scope=scope["id"],
+                            rationale=scope["reason"],
+                        )
+                        for candidate in scope["participants"]
+                    ),
+                    key=stage_key + "/evaluate",
+                    reason=scope["reason"],
+                )
+                ranking = cast(
+                    dict[str, Any],
+                    ctx.compute(lambda: self._ranking(ctx._view, data), key=stage_key + "/ranking"),
+                )
+                ctx.record(self._research(ranking["record"]), key=stage_key + "/ranking/record")
+                data = {**data, **ranking["state"]}
+                candidates = tuple(ranking["next"])
+                if not candidates:
+                    data = {
+                        **data,
+                        "batch_index": index + 1,
+                        "last_batch_reason": ranking["reason"],
+                    }
+                    break
+        transition = cast(
+            dict[str, Any],
+            ctx.compute(
+                lambda: {
+                    "continue": round_id + 1 < ctx.inputs.rounds
+                    and ctx._view.budget.candidates_remaining > 0,
+                },
+                key=prefix + "/transition",
+            ),
         )
-        return self._decision({**state.data, "phase": "done"}, operations, reason)
+        data = {**data, "phase": "parents", "round": round_id + 1}
+        if not transition["continue"]:
+            return data, self._finish_workflow(
+                ctx, data, "configured rounds complete", prefix + "/finish"
+            )
+        self._policy_state = data
+        await ctx.perform(
+            (
+                Operation(
+                    "evaluate_seed",
+                    candidate_id=ctx.inputs.anchor.id,
+                    task_ids=self._all_tasks(ctx._view),
+                    rationale="reuse admitted baseline for the next round",
+                ),
+            ),
+            key=prefix + "/next",
+            reason="next round",
+        )
+        return data, None
 
-    @staticmethod
-    def _decision(
-        data: dict[str, JSON],
-        operations: tuple[Operation, ...],
-        reason: str,
-        research: tuple[ResearchRecord, ...] = (),
-    ) -> Decision:
-        return Decision(AlgorithmState(data=data), operations, reason, research)
-
-    @staticmethod
-    def _record(decision: Decision, record: ResearchRecord) -> Decision:
-        return replace(decision, research=(record, *decision.research))
+    def _finish_workflow(
+        self, ctx: RunContext, data: dict[str, JSON], reason: str, key: str
+    ) -> WorkflowResult:
+        candidate = cast(str, ctx.compute(lambda: self._finish_candidate(ctx._view), key=key))
+        self._policy_state = {**data, "phase": "done"}
+        return ctx.result(selected=candidate, reason=reason)
 
     def _seed_champion(self, view: SearchView, ranked: RankingPlan) -> str:
         # The runtime promotes only after the run's final gate, so the anchor stays
@@ -607,9 +617,14 @@ class StagedSearch:
         }
 
     def _scope(
-        self, view: SearchView, data: dict[str, JSON], candidates: tuple[str, ...], index: int
+        self,
+        view: SearchView,
+        data: dict[str, JSON],
+        candidates: tuple[str, ...],
+        index: int,
+        stage: Literal["local", "bridge", "global"],
     ) -> JSON:
-        stage, parent = self.stages[index], str(data["parent"])
+        parent = str(data["parent"])
         required = strings(data.get("scope_tasks", [])) if index else ()
         controls = tuple(
             task

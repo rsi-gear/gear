@@ -23,15 +23,34 @@ from gear.algorithms import (
     SearchView,
     Task,
 )
-from gear.algorithms.contracts import OperationKind
 from gear.canonical import digest
+from gear.refine.contracts import OperationKind
 
 from .dependencies import verify_dependencies
 from .identity import source_identity
 from .protocol import MAX_MESSAGE_BYTES, validate
 
+# Older SDK descriptions stored all default hook entrypoints in their options.
+# Resolve only those retired built-in paths; frozen historical runs keep their source.
+_BUILTIN_ENTRYPOINTS = {
+    "gear.algorithms.gepa.ranking:rank_candidates": "gear.refine.evidence:complete_scope_mean",
+    "gear.algorithms.gepa.stopping:stop_reason": "gear.refine.stopping:bounded_run",
+    "gear.algorithms.random_search.parents:select_parent": (
+        "gear.algorithms.random_search.algorithm:select_parent"
+    ),
+    "gear.algorithms.random_search.proposal:plan_proposals": (
+        "gear.algorithms.random_search.algorithm:plan_proposals"
+    ),
+    "gear.algorithms.random_search.ranking:rank_candidates": "gear.refine.evidence:complete_scope_mean",
+    "gear.algorithms.random_search.sampling:sample_tasks": (
+        "gear.algorithms.random_search.algorithm:sample_tasks"
+    ),
+    "gear.algorithms.random_search.stopping:stop_reason": "gear.refine.stopping:bounded_run",
+}
+
 
 def load_entrypoint(name: str):
+    name = _BUILTIN_ENTRYPOINTS.get(name, name)
     module, separator, member = name.partition(":")
     if not separator or not module or not member or member.startswith("_"):
         raise ValueError("entrypoint must be module:public_name")

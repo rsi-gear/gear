@@ -1,6 +1,6 @@
 import unittest
 
-from gear.algorithms.trajectory import trajectory_page, trajectory_query
+from gear.observations.trajectory import trajectory_page, trajectory_query
 from gear.canonical import digest
 
 

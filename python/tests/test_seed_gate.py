@@ -2,10 +2,11 @@
 
 import unittest
 from dataclasses import asdict
+from staged_search_fixture import decision_after_baseline
 
-from gear.algorithms import GEPA, AlgorithmState, Budget, Candidate, Evidence, SearchView, Task
+from gear.algorithms import GEPA, Budget, Candidate, Evidence, SearchView, Task
 from gear.algorithms.gepa.parents import ScopedFrontier
-from gear.algorithms.projection import compare_candidates
+from gear.refine.projection import compare_candidates
 from gear.canonical import digest
 
 
@@ -254,8 +255,7 @@ class SeedChampionTests(unittest.TestCase):
             seen.append(parents.champion_id)
             return ScopedFrontier(champion_probability=1)(parents, rng)
 
-        state = AlgorithmState(data={"phase": "parents", "round": 1})
-        return GEPA(parent_policy=policy).step(view, state), seen
+        return decision_after_baseline(GEPA(parent_policy=policy), view), seen
 
     def test_each_round_is_gated_against_the_current_champion(self):
         profiles = {

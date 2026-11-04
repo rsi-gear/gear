@@ -28,7 +28,7 @@ def main(argv=None):
     try:
         if args.command == "algorithm":
             from gear.algorithms import GEPA, RandomSearch
-            from gear.algorithms.testkit import test_parent_policy, toy_round
+            from gear.refine.testkit import test_parent_policy, toy_round
             from gear.refine.worker import load_entrypoint
 
             if args.entrypoint in ("gepa", "random-search"):

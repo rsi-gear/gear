@@ -22,7 +22,7 @@ try {
   const wheelSource = join(root, 'wheel-source'); mkdirSync(wheelSource)
   for (const name of ['pyproject.toml', 'setup.py', 'gear']) cpSync(join(source, 'python', name), join(wheelSource, name), { recursive: true })
   // A removed module must not survive setuptools' incremental build directory.
-  for (const name of ['gear_training/obsolete.py', 'gear/training/cli/launch.py', 'gear/training/cli/inference.py', 'gear/training/inference/inference_process.py', 'gear/training/inference/inference_attach.py', 'gear/training/inference/inference_recovery.py', 'gear/training/cli/__main__.py', 'gear/algorithms/history.py', 'gear/algorithms/gates.py', 'gear/algorithms/observations.py', 'gear/algorithms/_retired/__init__.py']) {
+  for (const name of ['gear_training/obsolete.py', 'gear/training/cli/launch.py', 'gear/training/cli/inference.py', 'gear/training/inference/inference_process.py', 'gear/training/inference/inference_attach.py', 'gear/training/inference/inference_recovery.py', 'gear/training/cli/__main__.py', 'gear/algorithms/contracts.py', 'gear/algorithms/run_context.py', 'gear/algorithms/testkit.py', 'gear/algorithms/adas.py', 'gear/algorithms/history.py', 'gear/algorithms/gates.py', 'gear/algorithms/observations.py', 'gear/algorithms/_retired/__init__.py']) {
     const path = join(wheelSource, 'build/lib', name)
     mkdirSync(join(path, '..'), { recursive: true }); writeFileSync(path, 'raise RuntimeError("retired module leaked into wheel")\n')
   }
@@ -31,6 +31,19 @@ try {
   const isolatedPython = join(environment, 'bin/python')
   run(isolatedPython, ['-m', 'pip', 'install', join(wheels, readdirSync(wheels).find(name => name.endsWith('.whl')))])
   run(isolatedPython, ['-c', 'import sys;import gear;import gear.training;import gear.benchmark.probe;import importlib;import importlib.util;assert all(importlib.util.find_spec(name) is None for name in ("gear_training","gear.training.cli.launch","gear.training.cli.__main__","gear.training.cli.inference","gear.training.inference.inference_process","gear.training.inference.inference_attach","gear.training.inference.inference_recovery","gear.algorithms.history","gear.algorithms.gates","gear.algorithms.observations","gear.algorithms._retired","retired_policies"));[importlib.import_module("gear.training.cli."+name) for name in ("controller","job","node","script_job","certify","slime","gpu_inventory")];assert not any(n in sys.modules for n in ("torch","slime","transformers","aiohttp"));from gear.algorithms import GEPA;from gear.algorithms.testkit import toy_round;assert toy_round(GEPA())["status"] == "passed"'], { cwd: root, env: { ...process.env, PYTHONPATH: '' } })
+  run(isolatedPython, ['-c', `from pathlib import Path
+import gear.algorithms as algorithms
+from gear.algorithms.adas import ADAS
+from gear.algorithms.adas.algorithm import ADAS as implementation
+from gear.algorithms.testkit import toy_round
+from gear.refine import testkit
+assert ADAS is implementation
+assert toy_round is testkit.toy_round
+recipes = Path(algorithms.__file__).parent
+assert {"adas", "gepa", "random_search"} <= {path.name for path in recipes.iterdir() if path.is_dir()}
+assert {path.name for path in recipes.iterdir() if path.is_file()} == {"__init__.py"}
+assert all((path / "algorithm.py").is_file() for path in recipes.iterdir() if path.is_dir() and path.name != "__pycache__")
+`], { cwd: root, env: { ...process.env, PYTHONPATH: '' } })
   note('Installed Python terminal errors preserve warning diagnostics and reject log JSON')
   run(isolatedPython, ['-c', `from gear import ProjectError
 raw=b'warning'+bytes([10])+b'{"code":"provider-environment-unavailable","message":"unavailable"}'+bytes([10])

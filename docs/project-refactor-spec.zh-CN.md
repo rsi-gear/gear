@@ -197,9 +197,9 @@ budget: {rounds: 1, max_evaluations: 40}
 | 如何挑选父代 | `algorithms/gepa/parents.py`，`ParentPolicy` | 提供合法 seed 视图，验证选择与配额 |
 | 评哪些任务、多少重复 | `algorithms/gepa/sampling.py`，`TaskSampler` | 验证任务范围、证据身份与预算 |
 | 诊断哪些失败、给 Meta 什么候选计划 | `algorithms/gepa/proposal.py`，`ProposalPlanner` | 提供清洗的 seed 诊断，执行生成并保存 receipt |
-| 候选如何比较、哪一个进入最终验证 | `algorithms/gepa/ranking.py`，`CandidateRanker` | 验证共同评测范围和完整指标 |
+| 候选如何比较、哪一个进入最终验证 | `refine/evidence.py`，`CandidateRanker` | 验证共同评测范围和完整指标 |
 | local/bridge/global 等阶段怎样安排 | `algorithms/gepa/algorithm.py`，`SearchAlgorithm` | 执行已验证的操作，持久化与恢复 |
-| 何时结束搜索 | `algorithms/gepa/stopping.py`，`StopRule` | 强制总预算和取消要求 |
+| 何时结束搜索 | `refine/stopping.py`，`StopRule` | 强制总预算和取消要求 |
 | 什么算成功、输出哪些原始分数 | `benchmark/scorers.py` 或项目 `scorers.py` | 固定 scorer 身份，保存原始结果及来源 |
 | 优化指标、晋级底线 | `Objective` / `AcceptanceRules` 配置 | 按冻结规则执行 held-out gate 和最终 CAS 提交 |
 | 模型训练四阶段与后端 | `gear.training`，`training/loop.py` 与 `training/backends/` | 维持训练恢复、设备和模型身份合同，重型依赖按需加载 |

@@ -40,6 +40,10 @@ export async function freezeAlgorithmSource(
   await put('gear/canonical.py', await readFile(join(framework, 'canonical.py')))
   await walk(join(framework, 'algorithms'))
   await walk(join(framework, 'refine'))
+  for (const name of ['__init__', 'modification_use', 'trajectory'])
+    await put(`gear/observations/${name}.py`, await readFile(join(framework, 'observations', `${name}.py`)))
+  await put('gear/training/__init__.py', Buffer.from('"""Frozen pure training policy package."""\n'))
+  await put('gear/training/policy.py', await readFile(join(framework, 'training/policy.py')))
   await put('dependencies.json', Buffer.from(JSON.stringify(dependencies)))
   for (const source of sources) {
     if (

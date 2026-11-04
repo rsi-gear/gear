@@ -22,7 +22,7 @@
 
 这 13 行可以分三组重跑：
 
-- [ADAS、AHE、EvoHarness、Meta-Harness、ModularRSI](../../tests/integration/harness-workflows.spec.ts)。ADAS 将较差、打平和改进的设计都记入档案；EvoHarness 拒绝证据不足的 general skill；Meta-Harness 的编辑器读到旧版退分的源码和非首页轨迹；ModularRSI 在分支来源、可写范围和零分但成功执行的门槛上分别断言。[ADAS 生产配方](../../python/gear/algorithms/adas.py)与[其余工作流示例](../../examples/algorithms/harness_workflows.py)可单独阅读。
+- [ADAS、AHE、EvoHarness、Meta-Harness、ModularRSI](../../tests/integration/harness-workflows.spec.ts)。ADAS 将较差、打平和改进的设计都记入档案；EvoHarness 拒绝证据不足的 general skill；Meta-Harness 的编辑器读到旧版退分的源码和非首页轨迹；ModularRSI 在分支来源、可写范围和零分但成功执行的门槛上分别断言。[ADAS 生产配方](../../python/gear/algorithms/adas/algorithm.py)与[其余工作流示例](../../examples/algorithms/harness_workflows.py)可单独阅读。
 - [EvoPrompt、OPRO、Arbor、GEPA（训练集反思、开发集选择）、SkillOpt](../../tests/integration/prompt-workflows.spec.ts)。EvoPrompt 的 GA 与 DE 各在 Pi、DSH 上运行，使用适配器声明的指令文件；其余用例分别检查历史输出、主干与概念树、训练反思与 dev 选择、多文件补丁与平局处理。[机制夹具](../../tests/fixtures/prompt_workflows.py)描述固定的验收情境。
 - [ACE、DarwinX、RRSI](../../tests/integration/research-workflows.spec.ts)。分别验证在线首测、三方重组与新试验组、按每次目标执行用量选择及草稿修复；[工作流示例](../../examples/algorithms/research_workflows.py)与拒绝场景另见下文。
 

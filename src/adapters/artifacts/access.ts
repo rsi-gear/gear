@@ -1,3 +1,4 @@
+import { policyReaderCompatible } from '../python/policy-compatibility.js'
 import { join } from 'node:path'
 import type { Json } from '../../domain/algorithm-wire.js'
 import type { ExperienceSnapshot } from '../../domain/experience.js'
@@ -10,7 +11,7 @@ import { canonicalDigest } from '../../domain/canonical.js'
 import { GearError } from '../../domain/errors.js'
 import { TrajectoryStore } from '../storage/trajectory.js'
 import { ExperienceStore } from '../storage/experience.js'
-import { builtinPolicy, builtinPolicyImplementationDigest } from '../python/builtin-policy.js'
+import { builtinPolicy } from '../python/builtin-policy.js'
 import { artifactReader } from './reader.js'
 
 /** Shared authorization for operator access and the per-Meta local gateway. */
@@ -22,7 +23,7 @@ export async function readSeedTrajectory(
   signal: AbortSignal,
   python?: string,
 ): Promise<Json> {
-  if (snapshot.implementation_identity !== builtinPolicyImplementationDigest)
+  if (!policyReaderCompatible(snapshot.implementation_identity))
     throw new GearError(
       'experience-implementation-mismatch',
       'Trajectory projection requires the frozen implementation',

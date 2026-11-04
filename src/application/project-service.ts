@@ -10,7 +10,7 @@ import type { OperationProvider, OperationCancellation } from '../ports/operatio
 import { canonicalDigest } from '../domain/canonical.js'
 import { GearError } from '../domain/errors.js'
 import { resolveProjectObjective } from './objective.js'
-import { pythonObjective } from '../adapters/python/objective.js'
+import { pythonObjective, pythonObjectiveFor } from '../adapters/python/objective.js'
 import { RunStore } from '../adapters/storage/run-store.js'
 import { withFileLock } from '../adapters/storage/file-lock.js'
 import { publishFile } from '../adapters/storage/atomic.js'
@@ -540,7 +540,7 @@ export class ProjectApplication {
           this.store,
           driver,
           sealedProvider(provider, targets, experience),
-          pythonObjective,
+          journal.spec.objective ? pythonObjectiveFor(journal.spec.objectiveIdentity) : pythonObjective,
           experience,
         ).run(context.runId, signal),
       )

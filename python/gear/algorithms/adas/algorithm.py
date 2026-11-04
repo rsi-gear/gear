@@ -7,10 +7,9 @@ from statistics import mean
 from typing import cast
 
 from gear.canonical import JSON
-
-from .contracts import Candidate, Evidence, ResearchRecord
-from .run_context import Role, RunContext, WorkflowAlgorithm, WorkflowResult
-from .workspaces import WorkspaceRef
+from gear.refine.contracts import Candidate, Evidence, ResearchRecord
+from gear.refine.run_context import Role, RunContext, WorkflowAlgorithm, WorkflowResult
+from gear.refine.workspaces import WorkspaceRef
 
 
 class ADAS(WorkflowAlgorithm):

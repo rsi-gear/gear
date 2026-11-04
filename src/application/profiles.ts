@@ -86,7 +86,7 @@ export async function configuredProvider(
                   'benchmark/python_scorer.py',
                   'benchmark/llm_scorer.py',
                   'benchmark/runtime_limits.py',
-                  'algorithms/verifier.py',
+                  'refine/verifier.py',
                   'canonical.py',
                 ].map((name) => readFile(join(pythonSourceRoot, 'gear', name), 'utf8')),
               ]),

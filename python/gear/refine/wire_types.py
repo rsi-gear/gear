@@ -1,4 +1,4 @@
-"""Generated transport types. Author contracts live in algorithms/contracts.py."""
+"""Generated transport types. Author contracts live in refine/contracts.py."""
 from __future__ import annotations
 from typing import Literal, TypedDict, TypeAlias
 from gear.canonical import JSON as Json

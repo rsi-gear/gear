@@ -13,8 +13,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from gear.algorithms.modification_use import obj, retain_event, trial_use
 from gear.canonical import digest
+from gear.observations.modification_use import obj, retain_event, trial_use
 
 MAIN = "trajectory/provider/deepseek-session.jsonl"
 CHILD = re.compile(r"trajectory/provider/deepseek-child-session-[1-9][0-9]*\.jsonl")

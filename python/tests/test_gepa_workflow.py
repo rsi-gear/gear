@@ -1,108 +1,33 @@
-"""Native GEPA decisions retain the established staged search's behavior."""
+"""Native built-ins preserve the previous search observations and replay safely."""
 
+import inspect
+import json
 import unittest
-from dataclasses import asdict, replace
+from pathlib import Path
 
+from gear.algorithms.testkit import wire
+from staged_search_fixture import advance
 from test_seed_gate import configuration, metric
 
-from gear.algorithms import GEPA, AlgorithmState, Budget, Candidate, Evidence, SearchView, Task
-from gear.algorithms.contracts import OperationResult
+from gear.algorithms import GEPA, AlgorithmState, Budget, Candidate, RandomSearch, SearchView, Task
 from gear.algorithms.gepa.parents import ScopedFrontier
-from gear.algorithms.testkit import wire
-from gear.algorithms.workflow import StagedSearch
 from gear.canonical import digest
 from gear.refine.protocol import validate
+from gear.refine.run_context import WorkflowAlgorithm
+from gear.refine.worker import decode_view, make_algorithm
+
+REFERENCE = json.loads(
+    (Path(__file__).parent / "fixtures" / "staged-search-v1.json").read_text()
+)["scenarios"]
 
 
-def legacy(algorithm):
-    return StagedSearch(
-        algorithm.parent_policy,
-        algorithm.sampler,
-        algorithm.proposal_planner,
-        algorithm.ranker,
-        algorithm.stop_rule,
-        algorithm.stages,
-        algorithm.promotion_widths,
-        algorithm.global_gate,
-    )
 
 
-def advance(view, operations, *, failing=None, score=None, process=False):
-    failing = failing or (lambda operation: False)
-    for index, operation in enumerate(operations):
-        failed = failing(operation)
-        result = OperationResult(
-            f"{view.step_id}:{index}",
-            operation.kind,
-            "failed" if failed else "complete",
-            operation.candidate_id,
-        )
-        if operation.kind == "diagnose_seed":
-            result = replace(
-                result,
-                data={
-                    "hypotheses": [
-                        "Improve correctness.",
-                        "Preserve formatting.",
-                        "Check calculations.",
-                        "Retry safely.",
-                    ]
-                },
-            )
-        elif operation.kind == "generate_candidate" and not failed:
-            view = replace(
-                view,
-                candidates=view.candidates
-                + (
-                    Candidate(
-                        operation.candidate_id, digest(operation.candidate_id), operation.parent_id
-                    ),
-                ),
-                budget=replace(
-                    view.budget, candidates_remaining=view.budget.candidates_remaining - 1
-                ),
-            )
-        elif operation.kind == "evaluate_seed":
-            existing = {(x.candidate_id, x.task_id, x.repetition) for x in view.evidence}
-            cells = []
-            for task in operation.task_ids:
-                for repetition in range(view.budget.repetitions):
-                    if (operation.candidate_id, task, repetition) in existing:
-                        continue
-                    value = (
-                        score(operation, task)
-                        if score
-                        else (0.25 if operation.candidate_id == "anchor" else 0.75)
-                    )
-                    cells.append(
-                        Evidence(
-                            operation.candidate_id,
-                            task,
-                            repetition,
-                            value,
-                            "scoring_failed" if value is None else "valid",
-                            operation.scope,
-                            raw_metrics={"process_score": metric("process_score", 0.5)}
-                            if process
-                            else None,
-                        )
-                    )
-            view = replace(
-                view,
-                evidence=view.evidence + tuple(cells),
-                budget=replace(
-                    view.budget,
-                    evaluations_remaining=view.budget.evaluations_remaining - len(cells),
-                ),
-            )
-        view = replace(view, completed=view.completed + (result,))
-    return replace(view, step_id=view.step_id + 1)
-
-
-class GepaWorkflowTests(unittest.TestCase):
-    def assert_parity(
+class StagedWorkflowTests(unittest.TestCase):
+    def assert_reference(
         self,
-        algorithm=None,
+        name,
+        factory=GEPA,
         *,
         rounds=2,
         candidates=4,
@@ -112,9 +37,7 @@ class GepaWorkflowTests(unittest.TestCase):
         score=None,
         objective=None,
     ):
-        algorithm = algorithm or GEPA()
-        old = legacy(algorithm)
-        state, previous = AlgorithmState(), AlgorithmState()
+        state = AlgorithmState()
         view = SearchView(
             "gepa-parity",
             0,
@@ -127,30 +50,45 @@ class GepaWorkflowTests(unittest.TestCase):
             "anchor",
             objective,
         )
+        observations = []
         for _ in range(150):
-            actual = algorithm.step(view, state)
-            expected = old.step(view, previous)
+            # Recreate both the worker's object and its JSON input at every boundary.
+            actual = factory().step(view, state)
             validate("Decision", wire(actual))
-            self.assertEqual(actual.operations, expected.operations)
-            self.assertEqual(actual.reason, expected.reason)
-            self.assertEqual(actual.research, expected.research)
-            self.assertEqual(actual.state.data["policy_state"], expected.state.data)
-            self.assertEqual(wire(actual), wire(algorithm.step(view, state)))
-            state, previous = actual.state, expected.state
+            restored = factory().step(
+                decode_view(wire(view)),
+                AlgorithmState(**json.loads(json.dumps(wire(state)))),
+            )
+            self.assertEqual(wire(actual), wire(restored))
+            self.assertEqual(actual.state.data["workflow"], 1)
+            value = wire(actual)
+            observations.append({
+                "operations": value["operations"],
+                "reason": actual.reason,
+                "research": value["research"],
+                "policy_state": actual.state.data["policy_state"],
+            })
+            state = actual.state
             if actual.operations[0].kind in ("stop", "nominate"):
-                self.assertEqual(state.data["workflow"], 1)
+                expected = REFERENCE[name]
+                self.assertEqual(value["operations"], expected["final"])
+                self.assertEqual(len(view.evidence), expected["evidence"])
+                self.assertEqual(len(observations), expected["decisions"])
+                self.assertEqual(digest(observations), expected["digest"])
                 return actual, view
             view = advance(
-                view, actual.operations, failing=failing, score=score, process=objective is not None
+                view, actual.operations, failing=failing, score=score,
+                raw_metrics={"process_score": metric("process_score", 0.5)} if objective is not None else None,
             )
-        self.fail("GEPA did not finish")
+        self.fail("native search did not finish")
 
-    def test_default_widths_and_multiple_rounds_match_legacy_decisions(self):
-        self.assert_parity()
+    def test_gepa_default_widths_and_multiple_rounds_preserve_observations(self):
+        self.assert_reference("gepa-default")
 
-    def test_multi_parent_batches_and_global_gate_match(self):
-        self.assert_parity(
-            GEPA(
+    def test_multi_parent_batches_and_global_gate_preserve_observations(self):
+        self.assert_reference(
+            "gepa-multi-parent",
+            lambda: GEPA(
                 parent_policy=ScopedFrontier(batch_count=2),
                 promotion_widths=(2, 1),
                 global_gate="no_regression",
@@ -158,52 +96,60 @@ class GepaWorkflowTests(unittest.TestCase):
             candidates=8,
         )
 
-    def test_failed_diagnosis_or_partial_generation_match(self):
-        for kind in ("diagnose_seed", "generate_candidate"):
-            with self.subTest(kind=kind):
-                self.assert_parity(
-                    failing=lambda op: (
-                        op.kind == kind
-                        and (op.kind == "diagnose_seed" or op.candidate_id.endswith("-0"))
+    def test_failed_diagnosis_or_partial_generation_preserve_observations(self):
+        for prefix, factory in (("gepa", GEPA), ("random", RandomSearch)):
+            for kind, scenario in (
+                ("diagnose_seed", "failed-diagnosis"),
+                ("generate_candidate", "partial-generation"),
+            ):
+                with self.subTest(algorithm=prefix, kind=kind):
+                    self.assert_reference(
+                        f"{prefix}-{scenario}",
+                        factory,
+                        failing=lambda op: (
+                            op.kind == kind
+                            and (op.kind == "diagnose_seed" or op.candidate_id.endswith("-0"))
+                        ),
                     )
-                )
 
-    def test_incomplete_evidence_and_low_budget_match(self):
-        self.assert_parity(
-            score=lambda op, task: None if op.candidate_id != "anchor" and task == "0" else 0.25
+    def test_incomplete_evidence_and_low_budget_preserve_observations(self):
+        self.assert_reference(
+            "gepa-incomplete-evidence",
+            score=lambda op, task: None if op.candidate_id != "anchor" and task == "0" else 0.25,
         )
-        self.assert_parity(evaluations=12)
+        self.assert_reference("gepa-low-budget", evaluations=12)
+        self.assert_reference("random-low-budget", RandomSearch, evaluations=12)
 
-    def test_multisignal_champion_and_upper_bound_match(self):
-        self.assert_parity(objective=configuration())
-        self.assert_parity(
+    def test_multisignal_champion_and_upper_bound_preserve_observations(self):
+        self.assert_reference("gepa-multisignal", objective=configuration())
+        self.assert_reference(
+            "gepa-upper-bound",
             objective=configuration(ranges=True),
             score=lambda op, task: 1.0 if op.candidate_id != "anchor" else 0.0,
         )
 
-    def test_custom_stop_rule_sees_the_same_phase_state(self):
+    def test_custom_stop_rule_sees_the_same_phase_snapshots(self):
         def stop(view, state):
             return "operator stop" if state.data.get("phase") == "generated" else None
 
-        self.assert_parity(GEPA(stop_rule=stop))
+        self.assert_reference("gepa-custom-stop", lambda: GEPA(stop_rule=stop))
+        self.assert_reference("random-custom-stop", lambda: RandomSearch(stop_rule=stop))
 
-    def test_existing_phase_journal_keeps_legacy_route(self):
-        algorithm = GEPA()
-        view = SearchView(
-            "legacy",
-            0,
-            "fixed",
-            (Task("a", "a"),),
-            (Candidate("anchor", digest("anchor")),),
-            (),
-            (),
-            Budget(10, 1, 1),
-            "anchor",
-        )
-        state = AlgorithmState(data={"phase": "parents", "round": 0})
-        self.assertEqual(
-            asdict(algorithm.step(view, state)), asdict(legacy(algorithm).step(view, state))
-        )
+    def test_random_search_preserves_observations_with_native_checkpoints(self):
+        self.assert_reference("random-default", RandomSearch)
+        for algorithm in (GEPA(), RandomSearch()):
+            with self.subTest(algorithm=type(algorithm).__name__):
+                self.assertIsInstance(algorithm, WorkflowAlgorithm)
+                self.assertTrue(inspect.iscoroutinefunction(algorithm.run))
+
+    def test_saved_pre_layout_sdk_defaults_execute_unchanged(self):
+        descriptions = json.loads(
+            (Path(__file__).parent / "fixtures" / "builtin-options-v1.json").read_text()
+        )["algorithms"]
+        for description in descriptions:
+            with self.subTest(algorithm=description["name"]):
+                name = "gepa-default" if description["name"] == "gepa" else "random-default"
+                self.assert_reference(name, lambda: make_algorithm(description))
 
 
 if __name__ == "__main__":

@@ -8,9 +8,9 @@ import re
 from typing import Any
 
 from gear.canonical import digest
+from gear.observations.modification_use import modification_observations
 
 from .experience_index import VIEWS, verify_descriptor, verify_record
-from .modification_use import modification_observations
 from .projection import compare_candidates, project_candidate
 from .verifier import unavailable
 

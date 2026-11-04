@@ -8,23 +8,14 @@ native DSH Skill and project socket use the same application service.
 ## Choose an entrypoint
 
 - [Quick start](quickstart.md): create an editable benchmark, check it without model calls, then run one task.
-- [Python algorithms](example-algorithm.md): replace a parent policy or edit the six shared algorithm modules.
+- [Python algorithms](example-algorithm.md): write a search workflow or replace a GEPA parent policy.
 - [Target harness](target-harness.md): choose native DSH or Pi resources.
 - [Model training](training.md): use `gear.training` with its independent experiment lifecycle.
 
-## Six algorithm modules
+## Algorithm entry points
 
-| File | Responsibility |
-| --- | --- |
-| `parents.py` | Parents, sampling probabilities and candidate quotas |
-| `sampling.py` | Seed task sets and weights |
-| `proposal.py` | Diagnosis and candidate planning |
-| `ranking.py` | Candidate comparison over complete, shared scopes |
-| `stopping.py` | Termination |
-| `algorithm.py` | Stage order and policy composition |
+Each recipe in `python/gear/algorithms/` has an `algorithm.py`. Read ADAS for a draft-and-reflect workflow, RandomSearch for a single global comparison, or GEPA for staged promotion. The author API is `gear.algorithms`. The runtime persists operations, accounts for budget and applies the acceptance rules.
 
-GEPA and RandomSearch instantiate the same public contracts. TypeScript owns
-execution and fixed validation; it does not expose a second algorithm author API.
 Training lives in `python/gear/training/`, separated into contracts, loop,
 storage, runtime, backends, data, script entrypoints and related responsibilities.
 

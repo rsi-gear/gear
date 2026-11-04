@@ -1,6 +1,6 @@
 """Read-only JSON gateway for a single sanitized Meta experience snapshot.
 
-This I/O entrypoint is staged with frozen sources; retrieval policy stays in algorithms.
+This I/O entrypoint is staged with frozen sources; retrieval policy stays in refine.
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from gear.algorithms.experience import experience_query, experience_read, experience_read_plan
 from gear.experience_store import ExperienceStore
+from gear.refine.experience import experience_query, experience_read, experience_read_plan
 
 
 def main() -> int:

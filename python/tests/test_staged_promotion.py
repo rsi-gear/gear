@@ -14,9 +14,9 @@ from gear.algorithms import (
     SearchView,
     Task,
 )
-from gear.algorithms.contracts import OperationResult, RankingPlan
-from gear.algorithms.workflow import StagedSearch
-from gear.algorithms.gepa.ranking import rank_candidates
+from gear.refine.contracts import OperationResult, RankingPlan
+from gear.refine.staged import StagedWorkflow
+from gear.refine.evidence import complete_scope_mean as rank_candidates
 from gear.algorithms.testkit import wire
 from gear.canonical import digest
 from gear.project import Project
@@ -315,9 +315,9 @@ class StagedPromotionTests(unittest.TestCase):
         )
         # 0.699 and 0.7 round to the same 0.01 step, so the candidate ties the parent.
         ranked = RankingPlan(("anchor", "c"), (("anchor", 0.7), ("c", 0.699)), ())
-        self.assertTrue(StagedSearch._at_least(view, ranked, "c", "anchor"))
+        self.assertTrue(StagedWorkflow._at_least(view, ranked, "c", "anchor"))
         ranked = RankingPlan(("anchor", "c"), (("anchor", 0.72), ("c", 0.7)), ())
-        self.assertFalse(StagedSearch._at_least(view, ranked, "c", "anchor"))
+        self.assertFalse(StagedWorkflow._at_least(view, ranked, "c", "anchor"))
 
     def test_global_gate_survives_sdk_and_worker_json_and_default_is_omitted(self):
         default = Project._describe_algorithm(GEPA())

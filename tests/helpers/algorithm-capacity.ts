@@ -157,8 +157,6 @@ export function algorithmCapacityFixture(records: 600 | 1300 | 1800): {
   const state: AlgorithmState = {
     version: 1,
     data: {
-      phase: 'parents',
-      round: 2,
       diagnostics: Array.from({ length: 32 }, (_, index) => ({
         index,
         hypothesis: 'Preserve synthetic state 测🙂\n'.repeat(80),

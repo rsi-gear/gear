@@ -1,15 +1,12 @@
 import type { RunJournal } from '../domain/run.js'
-import { pythonObjective } from '../adapters/python/objective.js'
-import { GearError } from '../domain/errors.js'
+import { pythonObjective, pythonObjectiveFor } from '../adapters/python/objective.js'
 import { aggregateUsage } from '../domain/usage.js'
 import { generationLedger } from '../runtime/generation-budget.js'
 import { runPlan } from './run-plan.js'
 export function runReport(journal: RunJournal) {
-  if (journal.spec.objective && journal.spec.objectiveIdentity !== pythonObjective.identity)
-    throw new GearError(
-      'objective-identity-mismatch',
-      'Frozen objective implementation changed; use the matching runtime',
-    )
+  const objective = journal.spec.objective
+    ? pythonObjectiveFor(journal.spec.objectiveIdentity)
+    : pythonObjective
   const cells = [...journal.seedEvidence, ...journal.heldOutEvidence]
   const coverage = {
     logical_slots: cells.length,
@@ -27,7 +24,7 @@ export function runReport(journal: RunJournal) {
     const tasks =
       partition === 'seed' ? journal.spec.seedTasks.map((task) => task.id) : journal.spec.heldOutTaskIds
     const source = partition === 'seed' ? journal.seedEvidence : journal.heldOutEvidence
-    return pythonObjective.project({
+    return objective.project({
       evidence: source,
       task_ids: tasks,
       repetitions: journal.spec.budget.repetitions,

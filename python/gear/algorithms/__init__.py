@@ -1,7 +1,9 @@
 """Stable algorithm author API. Every recipe uses the same replaceable contracts."""
 
-from .adas import ADAS
-from .contracts import (
+import sys as _sys
+
+from gear.refine import testkit
+from gear.refine.contracts import (
     AlgorithmState,
     Budget,
     Candidate,
@@ -32,10 +34,8 @@ from .contracts import (
     Task,
     TaskSampler,
 )
-from .gepa import GEPA
-from .random import DeterministicRandom
-from .random_search import RandomSearch
-from .run_context import (
+from gear.refine.random import DeterministicRandom
+from gear.refine.run_context import (
     EvaluationResult,
     EvidencePage,
     Role,
@@ -48,7 +48,14 @@ from .run_context import (
     WorkflowAlgorithm,
     WorkflowResult,
 )
-from .workspaces import WorkspaceRef
+from gear.refine.workspaces import WorkspaceRef
+
+from .adas import ADAS
+from .gepa import GEPA
+from .random_search import RandomSearch
+
+# Existing custom algorithms use this documented authoring entrypoint.
+_sys.modules[__name__ + ".testkit"] = testkit
 
 __all__ = [
     "ADAS",

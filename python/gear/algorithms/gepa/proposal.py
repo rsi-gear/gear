@@ -1,6 +1,6 @@
 """Failure-family proposals; diagnosis is requested through an explicit operation."""
 
-from ..contracts import ProposalInput, ProposalPlan
+from gear.refine.contracts import ProposalInput, ProposalPlan
 
 
 def plan_proposals(view: ProposalInput) -> ProposalPlan:
