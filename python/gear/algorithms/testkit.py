@@ -25,6 +25,7 @@ from .contracts import (
     Task,
 )
 from .random import DeterministicRandom
+from .validation import validate_parent_plan
 
 
 def wire(value: SearchView | Decision | ParentPlan) -> JSON:
@@ -41,20 +42,12 @@ def test_parent_policy(policy: ParentPolicy) -> dict[str, JSON]:
     second = policy(view, DeterministicRandom("toy"))
     if wire(first) != wire(second):
         raise ValueError("policy is not deterministic for a fixed view and seed")
-    if not first.reason or sum(item.count for item in first.allocations) > view.candidate_limit:
-        raise ValueError("invalid parent quota or unexplained decision")
-    for item in first.allocations:
-        if item.count < 1 or not any(
-            (item.selection.option.candidate_id, item.selection.option.scope)
-            == (option.candidate_id, option.scope)
-            for option in options
-        ):
-            raise ValueError("policy selected an ineligible parent")
-        if abs(sum(probability for _, probability in item.selection.probabilities) - 1) > 1e-9:
-            raise ValueError("invalid parent sampling distribution")
-    empty = policy(ParentInput((), 1, "anchor"), DeterministicRandom("toy"))
+    validate_parent_plan(view, first)
+    empty_view = ParentInput((), 1, "anchor")
+    empty = policy(empty_view, DeterministicRandom("toy"))
     if empty.allocations:
         raise ValueError("empty eligibility must abstain")
+    validate_parent_plan(empty_view, empty)
     return {"status": "passed", "deterministic": True, "plan": wire(first)}
 
 
