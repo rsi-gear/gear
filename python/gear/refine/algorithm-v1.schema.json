@@ -237,7 +237,17 @@
         "generate_candidate",
         "evaluate_seed",
         "nominate",
-        "stop"
+        "stop",
+        "workspace_open",
+        "workspace_edit",
+        "workspace_seal",
+        "workspace_discard",
+        "workspace_apply",
+        "artifact_list",
+        "artifact_read",
+        "artifact_diff",
+        "artifact_trial_read",
+        "artifact_material"
       ]
     },
     "OperationResult": {
@@ -326,6 +336,15 @@
           "type": "string"
         },
         "objective": {
+          "$ref": "#/$defs/Json"
+        },
+        "research_trials": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ResearchTrial"
+          }
+        },
+        "research_data": {
           "$ref": "#/$defs/Json"
         }
       },
@@ -593,6 +612,12 @@
           "maxItems": 100000,
           "items": {
             "$ref": "#/$defs/TrialArtifact"
+          }
+        },
+        "trial_details": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TrialDetail"
           }
         }
       },
@@ -1080,6 +1105,127 @@
         "omitted_feedback",
         "failure_codes",
         "omitted_failure_codes"
+      ],
+      "additionalProperties": false
+    },
+    "TrialDetail": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string"
+        },
+        "repetition": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "output": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "usage": {
+          "$ref": "#/$defs/Json"
+        },
+        "execution_status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "task_id",
+        "repetition",
+        "output",
+        "usage",
+        "execution_status"
+      ],
+      "additionalProperties": false
+    },
+    "ResearchTrial": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "operation_id": {
+          "type": "string"
+        },
+        "group": {
+          "type": "string"
+        },
+        "instance_id": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "repetition": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "candidate_id": {
+          "type": "string"
+        },
+        "input_digest": {
+          "type": "string"
+        },
+        "evidence": {
+          "$ref": "#/$defs/Evidence"
+        },
+        "output": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "usage": {
+          "$ref": "#/$defs/Json"
+        },
+        "execution_status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TrialArtifact"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "operation_id",
+        "group",
+        "instance_id",
+        "task_id",
+        "repetition",
+        "candidate_id",
+        "input_digest",
+        "evidence",
+        "output",
+        "usage",
+        "execution_status",
+        "artifacts"
       ],
       "additionalProperties": false
     }

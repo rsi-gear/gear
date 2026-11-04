@@ -6,7 +6,7 @@ import math
 from collections import defaultdict
 from dataclasses import dataclass, replace
 
-from ..contracts import (
+from gear.refine.contracts import (
     ParentAllocation,
     ParentInput,
     ParentOption,

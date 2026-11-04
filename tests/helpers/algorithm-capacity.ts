@@ -151,12 +151,12 @@ export function algorithmCapacityFixture(records: 600 | 1300 | 1800): {
     },
     anchor_id: 'anchor',
     objective: null,
+    research_trials: [],
+    research_data: null,
   }
   const state: AlgorithmState = {
     version: 1,
     data: {
-      phase: 'parents',
-      round: 2,
       diagnostics: Array.from({ length: 32 }, (_, index) => ({
         index,
         hypothesis: 'Preserve synthetic state 测🙂\n'.repeat(80),

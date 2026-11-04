@@ -84,6 +84,7 @@ function sourceAccounting(proof: BaselineProof) {
       !receipt ||
       request.runId !== proof.runId ||
       request.partition !== 'seed' ||
+      request.trials ||
       request.operation.kind !== 'evaluate_seed' ||
       request.operation.candidate_id !== proof.candidateId ||
       receipt.result.operation_id !== request.operationId ||
@@ -183,6 +184,7 @@ export async function selectBaseline(
         (item) =>
           item.status === 'complete' &&
           item.request.partition === 'seed' &&
+          !item.request.trials &&
           item.request.operation.kind === 'evaluate_seed' &&
           item.request.operation.candidate_id === candidate.id,
       )

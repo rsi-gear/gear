@@ -89,8 +89,8 @@ shared-set research without independent validation.
 
 ## Algorithm authors
 
-All strategies live in Python. Each recipe has the same six files: `parents.py`,
-`sampling.py`, `proposal.py`, `ranking.py`, `stopping.py`, and `algorithm.py`.
+Each built-in recipe lives in its own Python package under `gear.algorithms`.
+Start in its `algorithm.py` and implement `async run(ctx)`.
 Use public `gear.algorithms` contracts and the offline testkit. A named importable
 Python function can replace one policy without changing TypeScript. Run
 `gear algorithm test` before an experiment, and preserve the algorithm's declared

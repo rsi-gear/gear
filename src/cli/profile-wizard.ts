@@ -57,7 +57,10 @@ export async function selectProfilesWizard(controller: ProjectController) {
     }
     const available = inventory.profiles.filter(
       (item) =>
-        item.valid && (item.kind === 'process' || item.kind === (role === 'target' ? 'hitch' : 'codex')),
+        item.valid &&
+        (item.kind === 'process' ||
+          item.kind === (role === 'target' ? 'hitch' : 'codex') ||
+          (role === 'meta' && item.kind === 'model')),
     )
     const name = await prompt((ask) =>
       ask(

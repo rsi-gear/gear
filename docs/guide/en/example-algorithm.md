@@ -1,8 +1,6 @@
 # Customize an algorithm in Python
 
-The author API is `gear.algorithms`. GEPA and RandomSearch share six contracts:
-parents, sampling, proposal, ranking, stopping and stage composition. GEPA is
-an instance of these common module contracts.
+Each built-in algorithm has its own directory and a Python `run(ctx)` entry point. GEPA and RandomSearch also accept custom parent selection, sampling, proposal, ranking and stopping policies through the public `gear.algorithms` API.
 
 Replace its parent policy with a named function:
 
@@ -36,7 +34,7 @@ The three tests require only the base Python package and make no model calls.
 A real project needs the npm runtime and configured execution profiles. In a
 notebook use `await project.arefine(...)`.
 
-Use the [six-module index](../../search-algorithm-authoring.zh-CN.md) to locate
+Use the [algorithm authoring guide](../../search-algorithm-authoring.zh-CN.md) to locate
 implementations and typed contracts. Policies consume authorized seed views and
 return JSON state plus explicit operations. The runtime owns budgets, execution,
 evidence identities, the held-out gate and champion CAS.

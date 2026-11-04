@@ -6,8 +6,8 @@ import math
 from collections import defaultdict
 from dataclasses import dataclass
 
-from ..contracts import RandomSource, SamplingInput, SamplingPlan, Task
-from ..sampling import ceiling_count
+from gear.refine.contracts import RandomSource, SamplingInput, SamplingPlan, Task
+from gear.refine.sampling import ceiling_count
 
 
 def stratified(

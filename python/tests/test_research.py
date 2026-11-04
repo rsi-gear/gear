@@ -1,7 +1,7 @@
 import copy
 import unittest
 
-from gear.algorithms.research import project_research
+from gear.refine.research import project_research
 
 
 def fixture():

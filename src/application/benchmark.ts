@@ -13,7 +13,11 @@ export async function checkBenchmark(root: string, config: ProjectConfig): Promi
     ['benchmark', 'compile', '--root', root],
     load(await readFile(path, 'utf8')),
   )) as CompiledBenchmark
-  if (config.validation.mode === 'holdout' && !benchmark.splits.held_out.length)
+  if (
+    config.validation.mode === 'holdout' &&
+    !config.research_data?.report_only &&
+    !benchmark.splits.held_out.length
+  )
     throw new GearError(
       'held-out-required',
       'No independent held-out tasks; explicitly choose validation.mode: research if intended',

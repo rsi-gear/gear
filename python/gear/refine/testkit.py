@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import asdict, replace
 from typing import cast
 
@@ -15,6 +16,7 @@ from .contracts import (
     Candidate,
     Decision,
     Evidence,
+    Operation,
     OperationResult,
     ParentInput,
     ParentOption,
@@ -58,7 +60,12 @@ def test_parent_policy(policy: ParentPolicy) -> dict[str, JSON]:
     return {"status": "passed", "deterministic": True, "plan": wire(first)}
 
 
-def toy_round(algorithm: SearchAlgorithm) -> dict[str, JSON]:
+def toy_round(
+    algorithm: SearchAlgorithm,
+    *,
+    meta_response: Callable[[Operation], JSON] | None = None,
+) -> dict[str, JSON]:
+    """Run synthetic observations; custom Meta schemas can supply their own fixture replies."""
     tasks = tuple(
         Task(name, family)
         for name, family in [
@@ -111,9 +118,16 @@ def toy_round(algorithm: SearchAlgorithm) -> dict[str, JSON]:
                 "complete",
                 operation.candidate_id,
             )
-            if operation.kind == "diagnose_seed":
-                result = replace(result, data={"hypotheses": ["Fix arithmetic and formatting."]})
-            elif operation.kind == "generate_candidate":
+            if operation.kind in ("diagnose_seed", "generate_candidate"):
+                if meta_response is not None:
+                    result = replace(
+                        result, data={"declined": False, "data": meta_response(operation)}
+                    )
+                elif operation.kind == "diagnose_seed":
+                    result = replace(
+                        result, data={"hypotheses": ["Fix arithmetic and formatting."]}
+                    )
+            if operation.kind == "generate_candidate":
                 if operation.candidate_id is None:
                     raise ValueError("generation needs a candidate ID")
                 if view.budget.candidates_remaining < 1:

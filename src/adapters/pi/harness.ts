@@ -29,6 +29,8 @@ export class PiHarnessAdapter implements HarnessAdapter {
   readonly mutationPolicy = piMutationPolicy
   describe() {
     return {
+      instructionFile: 'AGENTS.md',
+      skillRoot: '.pi/skills',
       adapterRef: { id: 'pi', version: '1' },
       resources: ['rules', 'skills', 'extensions', 'prompts', 'configuration'],
       guide:

@@ -1,4 +1,4 @@
-"""Generated transport types. Author contracts live in algorithms/contracts.py."""
+"""Generated transport types. Author contracts live in refine/contracts.py."""
 from __future__ import annotations
 from typing import Literal, TypedDict, TypeAlias
 from gear.canonical import JSON as Json
@@ -37,7 +37,7 @@ class Budget(_BudgetRequired, total=False):
     generation_requests_remaining: int | None
     generation_tokens_remaining: int | None
     generation_batch_capacity: int | None
-OperationKind: TypeAlias = Literal["diagnose_seed", "generate_candidate", "evaluate_seed", "nominate", "stop"]
+OperationKind: TypeAlias = Literal["diagnose_seed", "generate_candidate", "evaluate_seed", "nominate", "stop", "workspace_open", "workspace_edit", "workspace_seal", "workspace_discard", "workspace_apply", "artifact_list", "artifact_read", "artifact_diff", "artifact_trial_read", "artifact_material"]
 
 class _OperationResultRequired(TypedDict):
     operation_id: str
@@ -62,6 +62,8 @@ class _SearchViewRequired(TypedDict):
 
 class SearchView(_SearchViewRequired, total=False):
     objective: Json
+    research_trials: list[ResearchTrial]
+    research_data: Json
 
 class AlgorithmState(TypedDict):
     version: Literal[1]
@@ -112,6 +114,7 @@ class _OperationReceiptRequired(TypedDict):
 
 class OperationReceipt(_OperationReceiptRequired, total=False):
     artifacts: list[TrialArtifact]
+    trial_details: list[TrialDetail]
 
 class _RawMetricValueRequired(TypedDict):
     contractDigest: str
@@ -190,3 +193,25 @@ class VerifierObservation(TypedDict):
     omitted_feedback: int
     failure_codes: list[str]
     omitted_failure_codes: int
+
+class TrialDetail(TypedDict):
+    task_id: str
+    repetition: int
+    output: str | None
+    usage: Json
+    execution_status: str | None
+
+class ResearchTrial(TypedDict):
+    id: str
+    operation_id: str
+    group: str
+    instance_id: str
+    task_id: str
+    repetition: int
+    candidate_id: str
+    input_digest: str
+    evidence: Evidence
+    output: str | None
+    usage: Json
+    execution_status: str | None
+    artifacts: list[TrialArtifact]

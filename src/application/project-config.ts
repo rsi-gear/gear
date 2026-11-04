@@ -39,6 +39,7 @@ export async function resolveProject(
       'meta',
       'sandbox',
       'generation',
+      'research_data',
       'algorithm',
       'objective',
       'metrics',
@@ -53,7 +54,18 @@ export async function resolveProject(
   )
   if (raw.version !== 1) throw new GearError('unsupported-config-version', 'gear.yaml version must be 1')
   const target = object(raw.target, ['adapter', 'path', 'profile'], 'target'),
-    meta = object(raw.meta, ['profile'], 'meta')
+    meta = object(raw.meta, ['profile', 'roles'], 'meta')
+  const roles = meta.roles === undefined ? undefined : (meta.roles as Record<string, unknown>)
+  if (
+    roles &&
+    (typeof roles !== 'object' ||
+      Array.isArray(roles) ||
+      Object.entries(roles).some(
+        ([role, profile]) =>
+          !/^[a-zA-Z0-9_-]+$/u.test(role) || typeof profile !== 'string' || !profile.trim(),
+      ))
+  )
+    throw new GearError('invalid-config', 'meta.roles must map role names to profile names')
   const sandbox = raw.sandbox === undefined ? undefined : object(raw.sandbox, ['linux_isolation'], 'sandbox')
   if (sandbox && !['seccomp', 'bubblewrap-only'].includes(String(sandbox.linux_isolation)))
     throw new GearError('invalid-config', 'sandbox.linux_isolation must be seccomp or bubblewrap-only')
@@ -111,13 +123,25 @@ export async function resolveProject(
         backoff_ms: repair.backoffMs,
       },
     },
+    ...(raw.research_data === undefined
+      ? {}
+      : {
+          research_data: object(
+            raw.research_data,
+            ['train', 'dev', 'allow_derived_inputs', 'include_train_labels', 'report_only'],
+            'research_data',
+          ) as unknown as NonNullable<ProjectConfig['research_data']>,
+        }),
     benchmark: string(raw.benchmark, 'benchmark'),
     target: {
       adapter: target.adapter as 'dsh' | 'pi',
       path: string(target.path, 'target.path'),
       profile: string(target.profile, 'target.profile'),
     },
-    meta: { profile: string(meta.profile, 'meta.profile') },
+    meta: {
+      profile: string(meta.profile, 'meta.profile'),
+      ...(roles ? { roles: roles as Record<string, string> } : {}),
+    },
     ...(sandbox
       ? { sandbox: { linux_isolation: sandbox.linux_isolation as 'seccomp' | 'bubblewrap-only' } }
       : {}),

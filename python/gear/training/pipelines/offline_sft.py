@@ -6,7 +6,7 @@ projection. No behavior-policy tokens, rewards, native lease or Hitch job is
 created. Exact token roles/masks come from the sealed offline authoring contract.
 """
 
-from gear.algorithms import model_training
+from gear.training import policy
 from gear.training.data import offline
 from gear.training.data.offline import read_dataset, seal_batch, window
 from gear.training.loop import TrainingLoop
@@ -34,7 +34,7 @@ def selection(runtime, rollout_id):
 
 class DatasetTaskSource:
     stage_id = "gear.offline-sft.dataset-window:v1"
-    source_dependencies = (offline.__file__, model_training.__file__)
+    source_dependencies = (offline.__file__, policy.__file__)
 
     def __init__(self, runtime):
         self.runtime = runtime
@@ -46,7 +46,7 @@ class DatasetTaskSource:
 
 class OfflineRolloutExecutor:
     stage_id = "gear.offline-sft.read-records:v1"
-    source_dependencies = (offline.__file__, model_training.__file__)
+    source_dependencies = (offline.__file__, policy.__file__)
 
     def __init__(self, runtime):
         self.runtime = runtime
@@ -68,7 +68,7 @@ class OfflineRolloutExecutor:
 
 class AssistantDatasetBuilder:
     stage_id = "gear.offline-sft.assistant-mask-dataset:v1"
-    source_dependencies = (offline.__file__, model_training.__file__)
+    source_dependencies = (offline.__file__, policy.__file__)
 
     def __init__(self, runtime):
         self.runtime = runtime

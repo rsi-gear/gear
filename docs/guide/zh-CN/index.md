@@ -7,22 +7,14 @@ CLI、Python SDK、原生 DSH Skill 和项目 socket 调用同一个应用服务
 ## 选择入口
 
 - [快速开始](quickstart.md)：创建可编辑 benchmark，先做无模型检查，再试跑单题。
-- [Python 算法](example-algorithm.md)：替换父代策略，或修改统一的六个算法模块。
+- [Python 算法](example-algorithm.md)：编写搜索流程，或替换 GEPA 的父代选择策略。
 - [Target Harness](target-harness.md)：选择 DSH 或 Pi 的原生资源边界。
 - [模型训练](training.md)：通过 `gear.training` 使用独立的训练生命周期。
 
-## 算法的六个修改位置
+## 算法入口
 
-| 文件 | 控制内容 |
-| --- | --- |
-| `parents.py` | 父代、抽样概率和候选配额 |
-| `sampling.py` | seed 任务集合和权重 |
-| `proposal.py` | 诊断与候选计划 |
-| `ranking.py` | 完整共同范围内的候选比较 |
-| `stopping.py` | 搜索结束条件 |
-| `algorithm.py` | 阶段顺序与策略组合 |
+内置算法各自位于 `python/gear/algorithms/` 下的独立目录，从对应的 `algorithm.py` 阅读。ADAS 展示草稿设计与反思，RandomSearch 展示全量比较，GEPA 展示分阶段晋级。作者从 `gear.algorithms` 导入公共接口，运行层负责持久化操作、核算预算和执行验收规则。
 
-GEPA 和 RandomSearch 都实例化这些公共合同。TS 负责执行和固定校验，不提供另一套公开算法作者 API。
 训练代码在 `python/gear/training/`，按基础合同、循环、存储、运行时、后端、数据、脚本入口等职责整理。
 
 ## 当前验证范围

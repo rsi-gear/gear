@@ -25,6 +25,7 @@ export class SeedTrajectoryArchive {
       if (
         operation.status !== 'complete' ||
         operation.request.partition !== 'seed' ||
+        operation.request.trials ||
         operation.request.operation.kind !== 'evaluate_seed' ||
         operation.request.projection ||
         !operation.receipt

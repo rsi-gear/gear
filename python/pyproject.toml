@@ -37,4 +37,6 @@ select = ["E4", "E7", "E9", "F", "I"]
 python_version = "3.10"
 strict = true
 follow_imports = "silent"
-files = ["gear/algorithms", "gear/project.py", "gear/training/contracts.py", "gear/training/loop.py", "gear/training/storage/loop_journal.py", "gear/training/runtime/implementation.py"]
+files = ["gear/algorithms", "gear/refine", "gear/observations", "gear/project.py", "gear/training/policy.py", "gear/training/contracts.py", "gear/training/loop.py", "gear/training/storage/loop_journal.py", "gear/training/runtime/implementation.py"]
+# Entrypoint loaders and wire validation have independent protocol/adapter checks.
+exclude = ["gear/refine/(builtin_transport|worker|protocol|wire_types|identity|dependencies)\\.py$", "gear/observations/(worker|hitch)\\.py$"]

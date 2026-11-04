@@ -1,3 +1,11 @@
+import { materialReferences } from '../domain/materials.js'
+import {
+  admitTrials,
+  trialPlan,
+  trialSlots,
+  trialIdentity,
+  collectTrials,
+} from '../domain/research-trials.js'
 import { confirmCancellation, finishCancellation } from './cancellation.js'
 import {
   mergeProjectedEvidence,
@@ -10,6 +18,7 @@ import { evaluationRepairPolicy, requireEvaluationCapabilities } from '../domain
 import { mergeEvaluationEvidence, reserveRepairs, validateRepairReservation } from './evaluation-repair.js'
 import type { Json, Operation, SearchView } from '../domain/algorithm-wire.js'
 import { canonicalDigest } from '../domain/canonical.js'
+import { candidateReferences } from '../domain/candidate-references.js'
 import { GearError } from '../domain/errors.js'
 import type { AlgorithmDriver, JournalOperation, RunJournal } from '../domain/run.js'
 import type { OperationProvider, OperationReceipt, OperationRequest } from '../ports/operations.js'
@@ -99,6 +108,61 @@ export class DurableRunner {
           )
           await this.checkOwner(journal, signal)
           validateDecision(view, decision)
+          if (
+            journal.spec.researchData?.reportOnly &&
+            decision.operations.some((op) => op.kind === 'nominate')
+          )
+            throw new GearError(
+              'report-only-promotion-forbidden',
+              'Report-only research cannot nominate a project champion',
+            )
+          for (const operation of decision.operations) this.provider.validateOperation?.(operation)
+          if (
+            !this.provider.capabilities.candidateReferences &&
+            decision.operations.some((operation) => Object.keys(candidateReferences(operation)).length)
+          )
+            throw new GearError(
+              'candidate-references-unsupported',
+              'Provider cannot materialize candidate references',
+            )
+          if (
+            !this.provider.capabilities.workspaces &&
+            decision.operations.some((operation) => operation.kind === 'workspace_edit')
+          )
+            throw new GearError('workspaces-unsupported', 'Provider cannot edit workspace revisions')
+          if (
+            decision.operations.some(
+              (operation) =>
+                Object.keys(materialReferences(operation)).length &&
+                !(this.provider.capabilitiesFor?.(operation) ?? this.provider.capabilities).readOnlyMaterials,
+            )
+          )
+            throw new GearError(
+              'materials-unsupported',
+              'Selected executor cannot materialize read-only task materials',
+            )
+          const researchGroups = new Set<string>()
+          for (const operation of decision.operations) {
+            const plan = trialPlan(operation)
+            if (!plan) continue
+            const groupKey = JSON.stringify([operation.candidate_id, plan.group])
+            if (researchGroups.has(groupKey))
+              throw new GearError(
+                'research-group-conflict',
+                'A candidate/group can only appear once in a decision batch',
+              )
+            researchGroups.add(groupKey)
+            admitTrials(journal, operation, plan)
+            if (
+              !this.provider.capabilities.researchTrials ||
+              (plan.instances.some((instance) => instance.question !== undefined) &&
+                !this.provider.capabilities.derivedInputs)
+            )
+              throw new GearError(
+                'research-trials-unsupported',
+                'Evaluation provider does not support the requested research trials or derived inputs',
+              )
+          }
           const operations = decision.operations
             .filter((operation) => !['nominate', 'stop'].includes(operation.kind))
             .map((operation, index) => this.reserve(journal, operation, `${view.step_id}:${index}`, 'seed'))
@@ -188,7 +252,7 @@ export class DurableRunner {
         'Provider implementation or execution conditions changed',
       )
     requireEvaluationCapabilities(capabilities)
-    if (spec.validationMode === 'holdout' && !spec.heldOutTaskIds.length)
+    if (spec.validationMode === 'holdout' && !spec.researchData?.reportOnly && !spec.heldOutTaskIds.length)
       throw new GearError(
         'held-out-required',
         'Holdout mode requires independent tasks; explicitly select research mode for shared-set research',
@@ -200,7 +264,7 @@ export class DurableRunner {
     if (Object.values(spec.budget).some((value) => !Number.isSafeInteger(value) || value < 1))
       throw new GearError('invalid-budget', 'Run budgets must be positive safe integers')
     const minimum = spec.seedTasks.length * spec.budget.repetitions - (spec.baseline?.evidence.length ?? 0)
-    if (spec.kind === 'refine' && spec.budget.maxEvaluations < minimum)
+    if (spec.kind === 'refine' && !spec.researchData?.reportOnly && spec.budget.maxEvaluations < minimum)
       throw new GearError(
         'budget-baseline-unaffordable',
         `Baseline requires at least ${minimum} physical trials`,
@@ -221,8 +285,12 @@ export class DurableRunner {
         evaluations_remaining: journal.spec.budget.maxEvaluations - this.used(journal),
         candidates_remaining:
           journal.spec.budget.maxCandidates -
-          journal.operations.filter((operation) => operation.request.operation.kind === 'generate_candidate')
-            .length,
+          journal.operations.filter(
+            (operation) =>
+              operation.request.operation.kind === 'generate_candidate' ||
+              (operation.request.operation.kind === 'workspace_seal' &&
+                (operation.status !== 'complete' || operation.receipt?.candidate !== null)),
+          ).length,
         rounds: journal.spec.budget.rounds,
         repetitions: journal.spec.budget.repetitions,
         generation_requests_remaining: generation.metrics.model_requests.remaining,
@@ -230,6 +298,8 @@ export class DurableRunner {
         generation_batch_capacity: generation.batch_capacity,
       },
       anchor_id: journal.spec.anchor.id,
+      ...(journal.spec.researchData ? { research_data: journal.spec.researchData as unknown as Json } : {}),
+      ...(journal.researchTrials?.length ? { research_trials: journal.researchTrials } : {}),
       objective: journal.spec.objective
         ? ({
             ...journal.spec.objective,
@@ -259,8 +329,25 @@ export class DurableRunner {
     partition: 'seed' | 'held_out',
   ): JournalOperation {
     const evidence = partition === 'seed' ? journal.seedEvidence : journal.heldOutEvidence
-    const slots =
-      operation.kind === 'evaluate_seed'
+    const research = trialPlan(operation)
+    const slots = research
+      ? trialSlots(research)
+          .filter(
+            (slot) =>
+              !(journal.researchTrials ?? []).some(
+                (value) =>
+                  value.id ===
+                  trialIdentity(
+                    journal.id,
+                    operation.candidate_id!,
+                    research.group,
+                    slot.instance.id,
+                    slot.sample,
+                  ),
+              ),
+          )
+          .map(({ taskId, repetition }) => ({ taskId, repetition }))
+      : operation.kind === 'evaluate_seed'
         ? operation.task_ids.flatMap((taskId) =>
             Array.from({ length: journal.spec.budget.repetitions }, (_, repetition) => ({
               taskId,
@@ -283,14 +370,46 @@ export class DurableRunner {
           ? [...new Set(slots.map((slot) => slot.taskId))]
           : operation.task_ids,
     }
-    const inputs =
-      operation.kind === 'diagnose_seed' || operation.kind === 'generate_candidate'
-        ? journal.seedEvidence.filter(
-            (cell) =>
-              cell.candidate_id === (operation.parent_id ?? operation.candidate_id) &&
-              operation.task_ids.includes(cell.task_id),
+    const inputs = isGeneration(operation.kind)
+      ? journal.seedEvidence.filter(
+          (cell) =>
+            cell.candidate_id === (operation.parent_id ?? operation.candidate_id) &&
+            operation.task_ids.includes(cell.task_id),
+        )
+      : []
+    const materials = Object.fromEntries(
+      Object.entries(materialReferences(operation)).map(([name, ref]) => {
+        const source = journal.operations.find(
+          (entry) =>
+            entry.status === 'complete' &&
+            entry.request.partition === 'seed' &&
+            entry.request.operationId === ref.operation_id &&
+            entry.request.operation.kind.startsWith('artifact_'),
+        )
+        if (!source?.receipt || source.receipt.result.status !== 'complete')
+          throw new GearError(
+            'material-outside-run',
+            'Material must name a completed public artifact operation in this run',
           )
-        : []
+        const data = source.receipt.result.data
+        return [
+          name,
+          { operation_id: ref.operation_id, digest: canonicalDigest(data), data: structuredClone(data) },
+        ]
+      }),
+    )
+    if (
+      Object.keys(materials).length > 16 ||
+      Object.values(materials).reduce(
+        (bytes, item) => bytes + Buffer.byteLength(JSON.stringify(item.data, null, 2)),
+        0,
+      ) >
+        1024 * 1024
+    )
+      throw new GearError(
+        'materials-too-large',
+        'An operation supports at most 16 materials and 1 MiB of materialized JSON',
+      )
     const generationLimits = isGeneration(operation.kind) ? reserveGeneration(journal) : undefined
     return {
       request: {
@@ -302,15 +421,20 @@ export class DurableRunner {
           slots,
           inputs,
           generationLimits ?? null,
+          ...(Object.keys(materials).length ? [materials] : []),
         ]),
         runId: journal.id,
         generation: journal.generation,
         operation: next,
         partition,
-        repetitions: journal.spec.budget.repetitions,
+        repetitions: research
+          ? Math.max(...trialSlots(research).map((slot) => slot.repetition)) + 1
+          : journal.spec.budget.repetitions,
+        ...(research ? { trials: research } : {}),
         slots,
         evidence: structuredClone(inputs),
         ...(generationLimits ? { generationLimits } : {}),
+        ...(Object.keys(materials).length ? { materials } : {}),
         ...(operation.kind === 'evaluate_seed' && journal.spec.objective
           ? {
               metrics: journal.spec.objective.metrics,
@@ -384,7 +508,11 @@ export class DurableRunner {
             }
             if (
               inspection.state !== 'not_submitted' &&
-              !(inspection.state === 'resumable' && this.provider.capabilities.idempotentSubmission)
+              !(
+                inspection.state === 'resumable' &&
+                (this.provider.capabilitiesFor?.(operation.request.operation) ?? this.provider.capabilities)
+                  .idempotentSubmission
+              )
             )
               throw new GearError(
                 'operation-needs-recovery',
@@ -489,6 +617,16 @@ export class DurableRunner {
         'Every requested slot needs a valid result or an explicit failure; missing slots cannot be zero-filled',
       )
     }
+    const detailSlots = new Set<string>()
+    for (const detail of receipt.trial_details ?? []) {
+      const key = `${detail.task_id}:${detail.repetition}`
+      if (!request.trials || !seen.has(key) || detailSlots.has(key))
+        throw new GearError(
+          'invalid-trial-details',
+          'Trial output and target usage must bind a distinct accepted research slot',
+        )
+      detailSlots.add(key)
+    }
     const artifactSlots = new Set<string>()
     for (const artifact of receipt.artifacts ?? []) {
       const key = JSON.stringify([artifact.kind, artifact.format, artifact.task_id, artifact.repetition])
@@ -517,7 +655,7 @@ export class DurableRunner {
       )
     }
     if (
-      expected.kind === 'generate_candidate' &&
+      ['generate_candidate', 'workspace_seal'].includes(expected.kind) &&
       receipt.result.status === 'complete' &&
       !receipt.candidate
     ) {
@@ -528,7 +666,7 @@ export class DurableRunner {
     }
     if (
       receipt.candidate &&
-      (expected.kind !== 'generate_candidate' ||
+      (!['generate_candidate', 'workspace_seal'].includes(expected.kind) ||
         receipt.candidate.id !== expected.candidate_id ||
         receipt.candidate.parent_id !== expected.parent_id ||
         !/^sha256:[0-9a-f]{64}$/u.test(receipt.candidate.digest))
@@ -549,14 +687,21 @@ export class DurableRunner {
         ),
       ),
     }
-    const merged = request.projection
-      ? mergeProjectedEvidence(journal, request, receipt.evidence)
-      : mergeEvaluationEvidence(journal, operation, receipt.evidence)
+    const merged = request.trials
+      ? []
+      : request.projection
+        ? mergeProjectedEvidence(journal, request, receipt.evidence)
+        : mergeEvaluationEvidence(journal, operation, receipt.evidence)
     operation.status = 'complete'
     operation.receipt = receipt
     journal.physicalAttempts += receipt.physicalAttempts
     if (receipt.candidate) journal.candidates.push(receipt.candidate)
-    if (request.partition === 'seed') journal.seedEvidence = merged
+    if (request.trials)
+      journal.researchTrials = [
+        ...(journal.researchTrials ?? []),
+        ...collectTrials(journal, request, receipt),
+      ]
+    else if (request.partition === 'seed') journal.seedEvidence = merged
     else journal.heldOutEvidence = merged
     if (request.partition === 'seed') journal.completed.push(receipt.result)
     await this.store.write(journal)

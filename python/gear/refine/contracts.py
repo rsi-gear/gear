@@ -7,7 +7,23 @@ from typing import Literal, Protocol
 
 from gear.canonical import JSON
 
-OperationKind = Literal["diagnose_seed", "generate_candidate", "evaluate_seed", "nominate", "stop"]
+OperationKind = Literal[
+    "diagnose_seed",
+    "generate_candidate",
+    "evaluate_seed",
+    "nominate",
+    "stop",
+    "workspace_open",
+    "workspace_edit",
+    "workspace_seal",
+    "workspace_discard",
+    "workspace_apply",
+    "artifact_list",
+    "artifact_read",
+    "artifact_diff",
+    "artifact_trial_read",
+    "artifact_material",
+]
 
 
 @dataclass(frozen=True)
@@ -61,6 +77,23 @@ class OperationResult:
 
 
 @dataclass(frozen=True)
+class ResearchTrial:
+    id: str
+    operation_id: str
+    group: str
+    instance_id: str
+    task_id: str
+    repetition: int
+    candidate_id: str
+    input_digest: str
+    evidence: Evidence
+    output: str | None
+    usage: JSON
+    execution_status: str | None
+    artifacts: tuple[JSON, ...] = ()
+
+
+@dataclass(frozen=True)
 class SearchView:
     run_id: str
     step_id: int
@@ -72,6 +105,8 @@ class SearchView:
     budget: Budget
     anchor_id: str
     objective: JSON = None
+    research_trials: tuple[ResearchTrial, ...] = ()
+    research_data: JSON = None
 
 
 @dataclass(frozen=True)

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from gear.algorithms.model_training import offline_window
+from gear.training.policy import offline_window
 from gear.training.storage.content import digest_json, require
 
 MAX_RECORDS = 1024

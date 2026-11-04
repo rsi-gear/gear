@@ -7,9 +7,16 @@ export interface ProjectConfig {
   version: 1
   benchmark: string
   target: { adapter: 'dsh' | 'pi'; path: string; profile: string }
-  meta: { profile: string }
+  meta: { profile: string; roles?: Record<string, string> }
   sandbox?: { linux_isolation: 'seccomp' | 'bubblewrap-only' }
   generation?: GenerationConfiguration
+  research_data?: {
+    train: string[]
+    dev: string[]
+    allow_derived_inputs?: boolean
+    include_train_labels?: boolean
+    report_only?: boolean
+  }
   algorithm: string | AlgorithmConfig
   objective: { metric: 'pass_rate' } | ObjectiveDefinition
   metrics?: RawMetricDefinition[]

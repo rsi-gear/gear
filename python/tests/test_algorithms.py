@@ -1,8 +1,9 @@
 import unittest
 from dataclasses import replace
+from staged_search_fixture import decision_after_baseline
 from gear.algorithms import GEPA, RandomSearch, Evidence, RankingInput, ParentPlan
-from gear.algorithms.gepa.ranking import rank_candidates
-from gear.algorithms.testkit import toy_round, test_parent_policy
+from gear.refine.evidence import complete_scope_mean as rank_candidates
+from gear.refine.testkit import toy_round, test_parent_policy
 from gear.canonical import canonical, digest
 from gear.refine.protocol import validate
 
@@ -10,9 +11,9 @@ from gear.refine.protocol import validate
 class AlgorithmTests(unittest.TestCase):
     def test_large_candidate_allocations_finish_without_dropping_candidates(self):
         from gear.algorithms import SearchView, Budget, Candidate, Task, AlgorithmState
-        from gear.algorithms.contracts import OperationResult
-        from gear.algorithms.testkit import wire
-        from gear.algorithms.limits import MAX_DECISION_OPERATIONS
+        from gear.refine.contracts import OperationResult
+        from gear.refine.testkit import wire
+        from gear.refine.limits import MAX_DECISION_OPERATIONS
 
         for count in (64, 129):
             with self.subTest(candidates=count):
@@ -62,7 +63,7 @@ class AlgorithmTests(unittest.TestCase):
         from gear.algorithms import SearchView, Budget, Candidate, Task, AlgorithmState
         view = SearchView("solved", 1, "fixed", (Task("a", "a"),), (Candidate("anchor", digest("anchor")),),
             (Evidence("anchor", "a", 0, 1, "valid", "global"),), (), Budget(100, 100, 10000), "anchor")
-        decision = GEPA().step(view, AlgorithmState(data={"phase": "parents", "round": 0}))
+        decision = decision_after_baseline(GEPA(), view)
         self.assertEqual(decision.operations[0].kind, "stop")
 
     def test_recipes_share_interfaces_but_control_their_own_stages(self):
@@ -105,7 +106,7 @@ class AlgorithmTests(unittest.TestCase):
         self.assertEqual(digest({"中文": 1, "a": []}), digest({"a": [], "中文": 1.0}))
 
     def test_frontier_preserves_specialists_and_prunes_redundant_parents(self):
-        from gear.algorithms.contracts import ParentInput, ParentOption
+        from gear.refine.contracts import ParentInput, ParentOption
         from gear.algorithms.gepa.parents import frontier_options
 
         options = tuple(
@@ -155,7 +156,6 @@ class AlgorithmTests(unittest.TestCase):
         tasks = tuple(Task(name, "family") for name in "abcd")
         candidates = (Candidate("anchor", digest("anchor")),
                       Candidate("leader", digest("leader"), "anchor"))
-        state = AlgorithmState(data={"phase": "parents", "round": 1})
         # A strict complete-seed gain makes the candidate the champion; a tie or
         # an incomplete leader keeps the anchor.
         for scores, champion in [((1, 1, 0, 0), "leader"), ((0, 1, 0, 0), "anchor"),
@@ -169,7 +169,7 @@ class AlgorithmTests(unittest.TestCase):
                 )
                 view = SearchView("champion", 3, "fixed", tasks, candidates, evidence, (),
                                   Budget(100, 4, 3), "anchor")
-                decision = GEPA(parent_policy=policy).step(view, state)
+                decision = decision_after_baseline(GEPA(parent_policy=policy), view)
                 self.assertEqual(seen[-1], champion)
                 self.assertEqual(decision.operations[0].kind, "diagnose_seed")
                 self.assertEqual(decision.operations[0].candidate_id, champion)
@@ -177,7 +177,7 @@ class AlgorithmTests(unittest.TestCase):
 
     def test_champion_mixture_builds_on_each_round_improvement(self):
         from gear.algorithms import SearchView, Budget, Candidate, Task, AlgorithmState
-        from gear.algorithms.contracts import OperationResult
+        from gear.refine.contracts import OperationResult
         from gear.algorithms.gepa.parents import ScopedFrontier
 
         champions, parents = [], []
@@ -242,15 +242,14 @@ class AlgorithmTests(unittest.TestCase):
             tuple(Evidence(candidate, task, 0, score, "valid", "global")
                   for candidate, values in scores.items() for task, score in zip("abcd", values)),
             (), Budget(100, 4, 3), "anchor")
-        state = AlgorithmState(data={"phase": "parents", "round": 1})
         # Zero leaves the frontier untouched; one sends every pick to the seed champion.
         for probability, expected in [
             (0, {"anchor": 0, "leader": 2 / 3, "specialist": 1 / 3}),
             (1, {"anchor": 0, "leader": 1, "specialist": 0}),
         ]:
             with self.subTest(champion_probability=probability):
-                decision = GEPA(parent_policy=ScopedFrontier(champion_probability=probability)).step(
-                    view, state)
+                decision = decision_after_baseline(
+                    GEPA(parent_policy=ScopedFrontier(champion_probability=probability)), view)
                 self.assertEqual(decision.research[0].data["champion"], "leader")
                 selection = decision.research[0].data["plan"]["allocations"][0]["selection"]
                 probabilities = {name.split(":", 1)[1]: value
@@ -260,9 +259,9 @@ class AlgorithmTests(unittest.TestCase):
                     self.assertAlmostEqual(probabilities[candidate], value)
 
     def test_gepa_scope_weights_cost_strata_and_bridge_capacity(self):
-        from gear.algorithms.contracts import Task, SamplingInput
+        from gear.refine.contracts import Task, SamplingInput
         from gear.algorithms.gepa.sampling import GEPASampler
-        from gear.algorithms.random import DeterministicRandom
+        from gear.refine.random import DeterministicRandom
 
         tasks = tuple(
             Task(

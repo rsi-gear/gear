@@ -1,1 +1,1 @@
-"""Bounded provider observations. Interpretation lives in gear.algorithms."""
+"""Bounded provider observations. Includes pure matching and trajectory projections."""

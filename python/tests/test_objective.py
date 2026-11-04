@@ -1,9 +1,10 @@
 import unittest
+from staged_search_fixture import decision_after_baseline
 
-from gear.algorithms.contracts import Evidence, ParentInput, ParentOption, RankingInput
-from gear.algorithms.evidence import complete_scope_mean, task_scores
+from gear.refine.contracts import Evidence, ParentInput, ParentOption, RankingInput
+from gear.refine.evidence import complete_scope_mean, task_scores
 from gear.algorithms.gepa.parents import frontier_options
-from gear.algorithms.projection import project_candidate
+from gear.refine.projection import project_candidate
 
 
 def configuration():
@@ -90,7 +91,7 @@ class ObjectiveTests(unittest.TestCase):
     def test_champion_mixture_uses_comparable_constrained_objective_gains(self):
         from dataclasses import replace
 
-        from gear.algorithms import GEPA, AlgorithmState, Budget, Candidate, SearchView, Task
+        from gear.algorithms import GEPA, Budget, Candidate, SearchView, Task
         from gear.algorithms.gepa.parents import ScopedFrontier
         from gear.canonical import digest
 
@@ -156,8 +157,7 @@ class ObjectiveTests(unittest.TestCase):
                     "anchor",
                     objective,
                 )
-                state = AlgorithmState(data={"phase": "parents", "round": 0})
-                decision = GEPA(parent_policy=policy).step(view, state)
+                decision = decision_after_baseline(GEPA(parent_policy=policy), view)
                 self.assertEqual(seen[-1], champion)
                 self.assertEqual(decision.operations[0].candidate_id, champion)
 

@@ -70,10 +70,21 @@ jobs:
         working-directory: python
       - run: npm run typecheck
       - run: npm run build
+      - name: Build the original pre-workflow recovery baseline
+        if: needs.changes.outputs.full_tests == 'true'
+        run: |
+          baseline_revision=1f5c8e3f0f95516ee6bdbe1a0365b2451f2e0618
+          baseline_root="$RUNNER_TEMP/gear-recovery-baseline"
+          git fetch --no-tags --depth=1 origin "$baseline_revision"
+          mkdir -p "$baseline_root"
+          git archive "$baseline_revision" | tar -x -C "$baseline_root"
+          ln -s "$GITHUB_WORKSPACE/node_modules" "$baseline_root/node_modules"
+          node node_modules/typescript/bin/tsc -p "$baseline_root/tsconfig.build.json"
+          echo "GEAR_RECOVERY_BASELINE=$baseline_root" >> "$GITHUB_ENV"
       # Architecture changes on dev and main both run the complete regression suite.
       - name: Test as the production service user
         if: needs.changes.outputs.full_tests == 'true'
-        run: sudo env "PATH=$PATH" "GEAR_PYTHON=$GEAR_PYTHON" "GEAR_TRAINING_TEST_PYTHON=$GEAR_TRAINING_TEST_PYTHON" npm test -- --maxWorkers=4
+        run: sudo env "PATH=$PATH" "GEAR_PYTHON=$GEAR_PYTHON" "GEAR_TRAINING_TEST_PYTHON=$GEAR_TRAINING_TEST_PYTHON" "GEAR_RECOVERY_BASELINE=$GEAR_RECOVERY_BASELINE" npm test -- --maxWorkers=4
       # The build above already ran the same command as the prepack hook.
       - run: npm pack --dry-run --ignore-scripts
       - name: Verify the packed tarball installs globally

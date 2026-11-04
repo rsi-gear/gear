@@ -1,6 +1,6 @@
 # 用 Python 修改算法
 
-公开作者 API 是 `gear.algorithms`。GEPA 和 RandomSearch 都由父代、采样、提案、排名、停止和阶段编排六个模块组成；GEPA 是公共模块合同的实例。
+内置算法使用公开的 `gear.algorithms` 接口。每个算法从自己的 `algorithm.py` 进入 `run(ctx)`。GEPA 和 RandomSearch 还支持单独替换父代选择、采样、提案、排名或停止策略。
 
 下面用一个命名函数替换父代策略：
 
@@ -32,7 +32,7 @@ print(run.report.summary)
 
 前三个测试只需要基础 Python 包，不调用模型。真实项目调用需要 npm runtime 和已配置的执行 profiles。Notebook 使用 `await project.arefine(...)`。
 
-从 [六模块索引](../../search-algorithm-authoring.zh-CN.md)定位代码和类型合同。策略输入只有允许的 seed 投影，返回 JSON 状态和明确操作。运行层负责预算、执行、证据身份、held-out gate 和 champion CAS。
+从 [算法开发索引](../../search-algorithm-authoring.zh-CN.md)定位代码和类型合同。策略输入只有允许的 seed 投影，返回 JSON 状态和明确操作。运行层负责预算、执行、证据身份、held-out gate 和 champion CAS。
 
 源码与声明依赖在 admission 时冻结；局部函数、lambda 和未声明的依赖不能作为可恢复的算法配置。修改代码产生新身份。历史 TS selector/search 子路径已从公开导出中移除。
 

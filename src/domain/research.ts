@@ -3,7 +3,7 @@ import type { Json } from './algorithm-wire.js'
 import { canonicalDigest } from './canonical.js'
 import { GearError } from './errors.js'
 
-export type ResearchKind = 'conditions' | 'candidate' | 'evidence' | 'operation' | 'decision'
+export type ResearchKind = 'conditions' | 'candidate' | 'evidence' | 'trial' | 'operation' | 'decision'
 export interface ResearchObject {
   version: 1
   kind: ResearchKind
@@ -76,6 +76,7 @@ export function researchArchive(journal: RunJournal): {
     objective,
     objective_identity: spec.objectiveIdentity ?? null,
     tasks: spec.seedTasks,
+    ...(spec.researchData ? { research_data: spec.researchData } : {}),
     repetitions: spec.budget.repetitions,
     anchor: spec.anchor,
     seed: spec.seed,
@@ -93,7 +94,7 @@ export function researchArchive(journal: RunJournal): {
       request.slots.some((slot) => !tasks.has(slot.taskId))
     )
       throw new GearError('research-outside-seed', 'Research operations must belong to admitted seed tasks')
-    if (receipt) validateEvidence(receipt.evidence ?? [])
+    if (receipt && !request.trials) validateEvidence(receipt.evidence ?? [])
     add('operation', {
       operation_id: request.operationId,
       operation: request.operation,
@@ -113,6 +114,7 @@ export function researchArchive(journal: RunJournal): {
       projection: request.projection ?? null,
     })
   }
+  for (const trial of journal.researchTrials ?? []) add('trial', trial)
   for (const entry of journal.decisions) {
     for (const record of entry.decision.research ?? [])
       if (
@@ -134,7 +136,7 @@ export function researchArchive(journal: RunJournal): {
   // Pack independent objects to avoid a separate fsync/inode for every trial or
   // decision. Fixed per-kind order preserves old packs as other kinds grow.
   const packs: ResearchPack[] = []
-  for (const kind of ['conditions', 'candidate', 'evidence', 'operation', 'decision'] as const) {
+  for (const kind of ['conditions', 'candidate', 'evidence', 'trial', 'operation', 'decision'] as const) {
     let pending: ResearchObject[] = [],
       bytes = 0
     const flush = () => {

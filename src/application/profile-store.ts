@@ -3,6 +3,7 @@ import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { GearError } from '../domain/errors.js'
 import { canonicalDigest } from '../domain/canonical.js'
+import type { ModelProfile } from '../adapters/model/provider.js'
 import type { OperationProfile } from '../adapters/process/operation-provider.js'
 import type { HitchProfile } from '../adapters/hitch/provider.js'
 import { hitchAgentArgs, hitchSettings } from '../adapters/hitch/settings.js'
@@ -17,7 +18,7 @@ export interface CodexProfile {
   configuration: CodexConfiguration
   passEnv: string[]
 }
-export type Profile = OperationProfile | HitchProfile | CodexProfile
+export type Profile = OperationProfile | HitchProfile | CodexProfile | ModelProfile
 export type ProfileRole = 'target' | 'meta'
 export const profileRoot = (): string =>
   process.env.GEAR_PROFILE_ROOT ?? join(homedir(), '.config', 'gear', 'profiles')
@@ -47,9 +48,11 @@ export function validateProfile(input: unknown): Profile {
           'preparationTimeoutMs',
           'setupTimeoutMs',
         ]
-      : kind === 'codex'
-        ? ['kind', 'configuration', 'passEnv']
-        : ['command', 'workingDirectory', 'configuration', 'passEnv', 'timeoutMs']
+      : kind === 'model'
+        ? ['kind', 'endpoint', 'model', 'apiKeyEnv', 'maxCompletionTokens', 'timeoutMs', 'passEnv']
+        : kind === 'codex'
+          ? ['kind', 'configuration', 'passEnv']
+          : ['command', 'workingDirectory', 'configuration', 'passEnv', 'timeoutMs']
   if (
     Object.keys(value).some((key) => !keys.includes(key)) ||
     !Array.isArray(value.passEnv) ||
@@ -71,7 +74,34 @@ export function validateProfile(input: unknown): Profile {
       (value.timeoutMs as number) > 86_400_000
     )
       throw new GearError('invalid-profile', 'timeoutMs must be between 100 and 86400000')
-    if (kind === 'hitch') {
+    if (kind === 'model') {
+      let url: URL
+      try {
+        url = new URL(String(value.endpoint))
+      } catch {
+        throw new GearError('invalid-profile', 'Model endpoint must be an absolute HTTPS URL')
+      }
+      if (
+        (url.protocol !== 'https:' &&
+          !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) ||
+        url.username ||
+        url.password ||
+        url.hash ||
+        url.search ||
+        typeof value.model !== 'string' ||
+        !value.model.trim() ||
+        typeof value.apiKeyEnv !== 'string' ||
+        !/^[A-Z_][A-Z0-9_]*$/u.test(value.apiKeyEnv) ||
+        !value.passEnv.includes(value.apiKeyEnv) ||
+        !Number.isSafeInteger(value.maxCompletionTokens) ||
+        (value.maxCompletionTokens as number) < 1 ||
+        (value.maxCompletionTokens as number) > 32768
+      )
+        throw new GearError(
+          'invalid-profile',
+          'Model profiles require HTTPS (or loopback HTTP), model, authorized apiKeyEnv and maxCompletionTokens in [1, 32768]',
+        )
+    } else if (kind === 'hitch') {
       hitchSettings(value as unknown as HitchProfile)
       hitchAgentArgs(value)
       if (
@@ -161,11 +191,11 @@ export function assertProfileRole(value: Profile, role: ProfileRole, adapter?: '
     throw new GearError('invalid-profile-role', 'Profile role must be target|meta')
   if (
     ('kind' in value && value.kind === 'hitch' && role !== 'target') ||
-    ('kind' in value && value.kind === 'codex' && role !== 'meta')
+    ('kind' in value && ['codex', 'model'].includes(value.kind) && role !== 'meta')
   )
     throw new GearError(
       'profile-role-mismatch',
-      'Hitch profiles are Target profiles; Codex profiles are Meta profiles',
+      'Hitch profiles are Target profiles; Codex and model profiles are Meta profiles',
     )
   if (
     'kind' in value &&

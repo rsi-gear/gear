@@ -31,10 +31,18 @@ for path in root.rglob('*.py'):
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and 'archived' in node.name:
                 failures.append(f'{path.relative_to(root)}: historical policy belongs in test fixtures')
-for recipe in ['gepa', 'random_search']:
-    for name in ['parents', 'sampling', 'proposal', 'ranking', 'stopping', 'algorithm']:
+# Only concrete recipes belong in algorithms; reusable author/runtime code lives outside it.
+for path in (root / 'algorithms').iterdir():
+    if path.name == '__pycache__':
+        continue
+    if path.name == '__init__.py':
+        continue
+    if not path.is_dir() or not all((path / name).is_file() for name in ['__init__.py', 'algorithm.py']):
+        failures.append(f'algorithms/{path.name}: expected a recipe package with __init__.py and algorithm.py')
+for recipe in ['adas', 'gepa', 'random_search']:
+    for name in ['__init__', 'algorithm']:
         if not (root / 'algorithms' / recipe / (name + '.py')).is_file():
-            failures.append(f'{recipe}: missing standard module {name}')
+            failures.append(f'{recipe}: missing recipe module {name}')
 if (root.parent / 'gear_training').exists():
     failures.append('The retired gear_training package still exists')
 for name in ['gates.py', 'history.py', 'observations.py', '_retired']:

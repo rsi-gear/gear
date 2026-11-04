@@ -42,7 +42,7 @@ gear experience trajectory RUN_ID EXPERIENCE_REF SOURCE_REF --snapshot SNAPSHOT_
 
 `gear experience read RUN_ID REF --snapshot DIGEST --view modification-use` 分页读取每个候选试验的修改资源使用情况；Python 同步/异步 `experience_read` 使用相同视图。卡片显示状态计数，`task-results` 显示逐题汇总。四种状态为：`observed`（确切内容已读取或注入）、`attempted-failure`（匹配的读取尝试失败）、`not-observed`（完整来源中未发现受支持 Skill 的使用）、`unknown`（证据不足）。没有日志、普通代码没有可判定的执行证据、内容不匹配或文件被删除均不会被判为未使用。
 
-DSH/Hitch 在回执时固定原生 manifest 摘要。独立 Python 读取器只读取清单列出的 main/child 文件，校验字节数、摘要、会话身份与父子关系；符号链接、硬链接和特殊文件不作为证据。精确匹配和状态归纳在 `gear.algorithms.modification_use`，文件读取在 `gear.observations.hitch`。完整覆盖仅指清单列出的来源（`listed-files-complete`）；canonical 页面本身不能提供此证明。Pi 或其他尚无受支持原生来源的 provider 保持 `unknown`。
+DSH/Hitch 在回执时固定原生 manifest 摘要。独立 Python 读取器只读取清单列出的 main/child 文件，校验字节数、摘要、会话身份与父子关系；符号链接、硬链接和特殊文件不作为证据。精确匹配和状态归纳在 `gear.observations.modification_use`，文件读取在 `gear.observations.hitch`。完整覆盖仅指清单列出的来源（`listed-files-complete`）；canonical 页面本身不能提供此证明。Pi 或其他尚无受支持原生来源的 provider 保持 `unknown`。
 
 每次快照的未缓存观测共享 1024 次来源读取/1 GiB 原生日志预算；每次来源最多 16 个文件、每文件 32 MiB、合计 64 MiB，保留的匹配输入最多 8 MiB。每个候选的资源内容读取最多 8 MiB。超限明确反映为部分覆盖或不可用，不推出资源未使用。完整且已校验的观测按候选、变更、来源和实现身份缓存，原日志移除后仍可复用；部分/不可用来源在后续快照中重试，已封存快照不变。
 

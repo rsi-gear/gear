@@ -65,11 +65,11 @@
       "translations": {
         "en": {
           "title": "Customize an algorithm in Python",
-          "description": "The author API is `gear.algorithms`. GEPA and RandomSearch share six contracts: parents, sampling, proposal, ranking, stopping and stage composition. GEPA is an instance of these common module contracts."
+          "description": "Each built-in algorithm has its own directory and a Python `run(ctx)` entry point. GEPA and RandomSearch also accept custom parent selection, sampling, proposal, ranking and stopping policies through the public `gear.algorithms` API."
         },
         "zh-CN": {
           "title": "用 Python 修改算法",
-          "description": "公开作者 API 是 `gear.algorithms`。GEPA 和 RandomSearch 都由父代、采样、提案、排名、停止和阶段编排六个模块组成；GEPA 是公共模块合同的实例。"
+          "description": "内置算法使用公开的 `gear.algorithms` 接口。每个算法从自己的 `algorithm.py` 进入 `run(ctx)`。GEPA 和 RandomSearch 还支持单独替换父代选择、采样、提案、排名或停止策略。"
         }
       }
     },

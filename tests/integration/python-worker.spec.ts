@@ -9,7 +9,7 @@ import { MAX_ALGORITHM_MESSAGE_BYTES, PythonAlgorithmWorker } from '../../src/ad
 import { freezeAlgorithmSource } from '../../src/adapters/python/source.js'
 import { canonicalDigest } from '../../src/domain/canonical.js'
 import { algorithmCapacityFixture } from '../helpers/algorithm-capacity.js'
-import type { Decision } from '../../src/domain/algorithm-wire.js'
+import type { AlgorithmState, Decision } from '../../src/domain/algorithm-wire.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
@@ -70,10 +70,25 @@ it.each([600, 1300, 1800] as const)(
       implementationIdentity: identity,
       ...(process.env.GEAR_TEST_LINUX_ISOLATION ? { linuxIsolation: process.env.GEAR_TEST_LINUX_ISOLATION as 'seccomp' | 'bubblewrap-only' } : {}),
     })
-    const { view, state, candidateIds, scores } = algorithmCapacityFixture(records)
-    const projectionDigest = canonicalDigest({ view, state })
+    const { view: initialView, state: diagnosticState, candidateIds, scores } = algorithmCapacityFixture(records)
     try {
       await worker.start(new AbortController().signal)
+      // The resume checkpoint comes from GEPA itself, across the same frozen worker boundary.
+      const baseline = await worker.step(initialView, { version: 1, data: {} }, { name: 'gepa', options: {} }, new AbortController().signal)
+      expect(baseline.operations).toMatchObject([{ kind: 'evaluate_seed', candidate_id: 'anchor' }])
+      expect(baseline.operations).toHaveLength(1)
+      expect(baseline.state.data.workflow).toBe(1)
+      const baselineOperationId = 'synthetic-baseline-complete'
+      const view = {
+        ...initialView,
+        step_id: initialView.step_id + 1,
+        completed: [...initialView.completed, {
+          operation_id: baselineOperationId, kind: 'evaluate_seed' as const, status: 'complete' as const,
+          candidate_id: 'anchor', data: null, candidate_change: null,
+        }],
+      }
+      const state: AlgorithmState = { version: 1, data: { ...baseline.state.data, ...diagnosticState.data } }
+      const projectionDigest = canonicalDigest({ view, state })
       const child = (worker as unknown as { child: ChildProcessWithoutNullStreams }).child
       const writes = vi.spyOn(child.stdin, 'write')
       let responseBytes = 0
@@ -105,7 +120,17 @@ it.each([600, 1300, 1800] as const)(
       const gepa = decision.state.data.gepa_decision as unknown as Decision
       expect(gepa.operations).toEqual(decision.operations)
       expect(gepa.operations).toMatchObject([{ kind: 'nominate', candidate_id: candidateIds[0] }])
-      expect(gepa.state.data).toEqual({ ...state.data, phase: 'done' })
+      const baselineHistory = baseline.state.data.history as Array<Record<string, unknown>>
+      expect(gepa.state.data).toEqual({
+        workflow: 1,
+        history: [
+          baselineHistory[0],
+          { ...baselineHistory[1], operation_ids: [baselineOperationId] },
+          { key: 'round/0/parents', digest: canonicalDigest({ compute: true }), value: { finish: 'candidate budget exhausted' } },
+          { key: 'round/0/finish', digest: canonicalDigest({ compute: true }), value: candidateIds[0] },
+        ],
+        policy_state: { phase: 'done', round: 0 },
+      })
       console.info(JSON.stringify({ records, requestBytes, responseBytes, limitBytes: MAX_ALGORITHM_MESSAGE_BYTES, elapsedMs }))
     } finally { await worker.dispose() }
   }, 60_000,
@@ -136,3 +161,28 @@ it('rejects an existing frozen 4 MiB worker without modifying its source or reco
     expect(worker.options.implementationIdentity).toBe(identity)
   } finally { await worker.dispose() }
 }, 30_000)
+
+it('accepts a frozen legacy operation list and omits new research projections from its view', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'gear-python-legacy-operations-')); roots.push(root)
+  const source = join(root, 'source'), scratch = join(root, 'scratch')
+  await mkdir(scratch); await freezeAlgorithmSource(source)
+  const path = join(source, 'gear/refine/worker.py')
+  let legacy = await readFile(path, 'utf8')
+  legacy = legacy.replace('list(get_args(OperationKind))', '["diagnose_seed", "generate_candidate", "evaluate_seed", "nominate", "stop"]')
+  legacy = legacy.replace('                view = decode_view(body["view"])', '                assert "research_data" not in body["view"] and "research_trials" not in body["view"]\n                view = decode_view(body["view"])')
+  await chmod(path, 0o600); await writeFile(path, legacy); await chmod(path, 0o400)
+  const python = process.env.GEAR_TRAINING_TEST_PYTHON ?? 'python3'
+  const identity = execFileSync(python, ['-I', '-B', '-c',
+    `import sys;from pathlib import Path;sys.path.insert(0,${JSON.stringify(source)});from gear.refine.identity import source_identity;print(source_identity(Path(${JSON.stringify(source)})))`,
+  ], { encoding: 'utf8' }).trim()
+  const worker = new PythonAlgorithmWorker({ python, sourceRoot: source, scratch, implementationIdentity: identity })
+  try {
+    await worker.start(new AbortController().signal)
+    const result = await worker.step({ run_id: 'run', step_id: 0, seed: 'fixed', tasks: [{ id: 'seed', family: 'x', estimated_cost: 1 }],
+      candidates: [{ id: 'anchor', digest: canonicalDigest('anchor'), parent_id: null }], evidence: [], completed: [],
+      budget: { evaluations_remaining: 2, candidates_remaining: 1, rounds: 1, repetitions: 1 }, anchor_id: 'anchor',
+      research_data: {}, research_trials: [] }, { version: 1, data: {} }, { name: 'random-search', options: {} }, new AbortController().signal)
+    expect(result.operations[0]?.kind).toBe('evaluate_seed')
+    expect(await readFile(path, 'utf8')).toBe(legacy)
+  } finally { await worker.dispose() }
+}, 30000)

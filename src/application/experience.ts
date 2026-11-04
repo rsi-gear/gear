@@ -1,3 +1,4 @@
+import { policyReaderCompatible } from '../adapters/python/policy-compatibility.js'
 import { join, resolve } from 'node:path'
 import type { Json } from '../domain/algorithm-wire.js'
 import type {
@@ -17,7 +18,7 @@ import { ResearchStore } from '../adapters/storage/research.js'
 import type { TargetStore } from '../adapters/storage/targets.js'
 import { targetDiff } from '../adapters/storage/target-diff.js'
 import { builtinPolicy, builtinPolicyImplementationDigest } from '../adapters/python/builtin-policy.js'
-import { pythonObjective } from '../adapters/python/objective.js'
+import { pythonObjectiveCompatible } from '../adapters/python/objective.js'
 import { SeedTrajectoryArchive } from './trajectory.js'
 import { verifyBaseline } from './baseline.js'
 import { modificationUse, modificationUseIdentity, type ModificationUseBudget } from './modification-use.js'
@@ -35,7 +36,7 @@ export class ProjectExperience implements ExperiencePreparation {
     journal: RunJournal,
     signal: AbortSignal = new AbortController().signal,
   ): Promise<ExperienceIndexSnapshot> {
-    if (journal.spec.objectiveIdentity !== pythonObjective.identity)
+    if (!pythonObjectiveCompatible(journal.spec.objectiveIdentity))
       throw new GearError(
         'experience-implementation-mismatch',
         'Cannot reinterpret historical outcomes with changed Python code',
@@ -52,7 +53,7 @@ export class ProjectExperience implements ExperiencePreparation {
         (entry) =>
           entry.status === 'complete' &&
           entry.request.partition === 'seed' &&
-          entry.request.operation.kind === 'generate_candidate' &&
+          ['generate_candidate', 'workspace_seal'].includes(entry.request.operation.kind) &&
           entry.receipt?.candidate?.id === candidate.id,
       )
       // An imported run anchor has no generation operation in this run.
@@ -64,6 +65,7 @@ export class ProjectExperience implements ExperiencePreparation {
               (entry) =>
                 entry.request.partition === 'seed' &&
                 entry.request.operation.kind === 'evaluate_seed' &&
+                !entry.request.trials &&
                 entry.request.operation.candidate_id === candidate.id,
             )
             .flatMap((entry) => entry.request.slots.map((slot) => slot.taskId)),
@@ -176,7 +178,7 @@ export class ProjectExperience implements ExperiencePreparation {
         : await this.capture(journal)
     if (
       snapshot.run_id !== journal.id ||
-      snapshot.implementation_identity !== builtinPolicyImplementationDigest ||
+      !policyReaderCompatible(snapshot.implementation_identity) ||
       snapshot.records.some((record) =>
         record.scope.task_ids.some(
           (task) => !journal.spec.seedTasks.some((admitted) => admitted.id === task),

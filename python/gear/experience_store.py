@@ -1,4 +1,4 @@
-"""Bounded file access for the frozen experience gateway; all retrieval stays in algorithms."""
+"""Bounded file access for the frozen experience gateway; all retrieval stays in refine."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ import stat
 from pathlib import Path
 from typing import Any
 
-from gear.algorithms.experience import encoded_size
-from gear.algorithms.experience_index import (
+from gear.refine.experience import encoded_size
+from gear.refine.experience_index import (
     MAX_ITEM_BYTES,
     VIEWS,
     valid_digest,

@@ -81,6 +81,7 @@ def compile_harbor(
     base_image: str,
     *,
     planning_only: bool = False,
+    task_inputs: dict[str, str] | None = None,
 ) -> dict:
     """No imports from project code and no mutable source paths after admission."""
     if not isinstance(planning_only, bool):
@@ -110,6 +111,13 @@ def compile_harbor(
     tasks = {task["id"]: task for task in benchmark["tasks"]}
     if not task_ids or len(set(task_ids)) != len(task_ids) or not set(task_ids) <= tasks.keys():
         raise BenchmarkError("expected a nonempty exact task subset", "task_ids")
+    if task_inputs is not None and (
+        not isinstance(task_inputs, dict)
+        or not set(task_inputs) <= set(task_ids)
+        or any(not isinstance(text, str) or not text.strip() for text in task_inputs.values())
+        or planning_only
+    ):
+        raise BenchmarkError("derived inputs require a valid execution task subset", "task_inputs")
     root = Path(destination)
     root.mkdir(parents=True, exist_ok=False, mode=0o700)
     environments = {}
@@ -158,6 +166,10 @@ def compile_harbor(
                 output = root / identifier / path
                 output.parent.mkdir(parents=True, exist_ok=True)
                 materializer.write(resource, output)
+            if task_inputs and identifier in task_inputs:
+                (root / identifier / "instruction.md").write_text(
+                    task_inputs[identifier], encoding="utf-8"
+                )
             continue
         environments[identifier] = {
             "mains": {
@@ -170,7 +182,7 @@ def compile_harbor(
         environment, tests = directory / "environment", directory / "tests"
         environment.mkdir(parents=True)
         tests.mkdir()
-        instruction = task["instruction"]
+        instruction = (task_inputs or {}).get(identifier, task["instruction"])
         if verifier["rule"]["kind"] in ("text", "json", "python", "llm"):
             instruction += (
                 "\n\nSave your final answer to /app/answer.txt. The verifier reads that file."

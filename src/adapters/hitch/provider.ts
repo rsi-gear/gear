@@ -1,7 +1,9 @@
+import { hitchTrialDetails } from './trial-details.js'
+import { trialInstructionGroups } from '../../domain/research-trials.js'
 import { prepareEnvironmentBinding, type HitchEnvironmentBinding } from './binding.js'
 import { appendFile, mkdir, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { Json, TrialArtifact } from '../../domain/algorithm-wire.js'
+import type { Json, TrialArtifact, TrialDetail } from '../../domain/algorithm-wire.js'
 import { canonicalDigest } from '../../domain/canonical.js'
 import { GearError } from '../../domain/errors.js'
 import type { HarnessAdapter } from '../../ports/harness.js'
@@ -78,6 +80,12 @@ export interface HitchProviderContext {
   targets: string
   adapter: HarnessAdapter
   compile(destination: string, taskIds: string[], baseImage: string, signal?: AbortSignal): Promise<unknown>
+  compileInputs?(
+    destination: string,
+    taskIds: string[],
+    baseImage: string,
+    inputs: Record<string, string>,
+  ): Promise<unknown>
   /** Declarations for runtime planning only; never submitted for execution. */
   compilePlanning?(
     destination: string,
@@ -159,7 +167,9 @@ export class HitchOperationProvider implements OperationProvider {
       taskRuntime: 'harbor' as const,
     }
   }
-  readonly capabilities = hitchCapabilities
+  get capabilities() {
+    return { ...hitchCapabilities, researchTrials: true, derivedInputs: !!this.context.compileInputs }
+  }
   private constructor(
     readonly profile: HitchProfile & HitchSettings,
     readonly context: HitchProviderContext,
@@ -436,14 +446,26 @@ export class HitchOperationProvider implements OperationProvider {
     const root = this.path(request)
     await mkdir(root, { recursive: true, mode: 0o700 })
     const groups: Group[] = []
-    for (const repetition of [...new Set(request.slots.map((slot) => slot.repetition))]) {
-      const taskIds = request.slots
-        .filter((slot) => slot.repetition === repetition)
-        .map((slot) => slot.taskId)
+    const instructions = trialInstructionGroups(request)
+    const tasksByRepetition = new Map<number, string[]>()
+    for (const slot of request.slots) {
+      const taskIds = tasksByRepetition.get(slot.repetition) ?? []
+      taskIds.push(slot.taskId)
+      tasksByRepetition.set(slot.repetition, taskIds)
+    }
+    for (const [repetition, taskIds] of tasksByRepetition) {
       const dataset = join(root, `dataset-${repetition}`)
       // No plan means no submission was allowed; an interrupted compile can be rebuilt.
       await rm(dataset, { recursive: true, force: true })
-      const compiled = (await this.context.compile(dataset, taskIds, this.profile.baseImage)) as
+      const inputs = instructions.get(repetition)
+      if (inputs && Object.keys(inputs).length && !this.context.compileInputs)
+        throw new GearError(
+          'derived-input-unsupported',
+          'Hitch task compiler cannot materialize derived inputs',
+        )
+      const compiled = (await (inputs && Object.keys(inputs).length
+        ? this.context.compileInputs!(dataset, taskIds, this.profile.baseImage, inputs)
+        : this.context.compile(dataset, taskIds, this.profile.baseImage))) as
         | {
             environments?: Record<string, { mains: { environment: { context: string; dockerfile: string } } }>
           }
@@ -615,6 +637,7 @@ export class HitchOperationProvider implements OperationProvider {
     const verifierSources: VerifierCapture[] = []
     const artifactSources: Array<{ eval_id: string; repetition: number; assignments: TaskArtifact[] }> = []
     const artifacts: TrialArtifact[] = []
+    const trialDetails: TrialDetail[] = []
     const failures: HitchEvaluationFailure[] = []
     let missing = false,
       submitted = false,
@@ -666,6 +689,15 @@ export class HitchOperationProvider implements OperationProvider {
           for (const value of results) {
             if (value.status === 'rejected') throw value.reason
             artifacts.push(value.value)
+            if (request.trials)
+              trialDetails.push(
+                await hitchTrialDetails(
+                  (args, signal, timeout) => this.call(args, signal, timeout),
+                  reader,
+                  value.value,
+                  signal,
+                ),
+              )
           }
         }
       }
@@ -699,6 +731,7 @@ export class HitchOperationProvider implements OperationProvider {
           execution_artifacts: artifactSources as unknown as Json,
         },
         ...(artifacts.length ? { artifacts } : {}),
+        ...(trialDetails.length ? { trial_details: trialDetails } : {}),
       }),
     }
   }

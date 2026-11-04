@@ -1,3 +1,8 @@
+import { ModelOperationProvider } from '../adapters/model/provider.js'
+import { materialReferences } from '../domain/materials.js'
+import { isArtifactOperation } from '../domain/artifacts.js'
+import { candidateReferences } from '../domain/candidate-references.js'
+import { isLocalWorkspace } from '../domain/workspaces.js'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { GearError } from '../domain/errors.js'
@@ -51,6 +56,7 @@ export async function configuredProvider(
                   'hitch/failure',
                   'hitch/observation',
                   'hitch/evidence',
+                  'hitch/trial-details',
                   'hitch/verifier',
                   'hitch/transport',
                   'hitch/settings',
@@ -80,7 +86,7 @@ export async function configuredProvider(
                   'benchmark/python_scorer.py',
                   'benchmark/llm_scorer.py',
                   'benchmark/runtime_limits.py',
-                  'algorithms/verifier.py',
+                  'refine/verifier.py',
                   'canonical.py',
                 ].map((name) => readFile(join(pythonSourceRoot, 'gear', name), 'utf8')),
               ]),
@@ -124,73 +130,148 @@ export async function configuredProvider(
           signal,
         )
   if (context.kind === 'evaluate') return evaluation
-  const metaProfile = await profile(context.config.meta.profile)
-  assertProfileRole(metaProfile, 'meta')
-  if ('kind' in metaProfile && metaProfile.kind === 'hitch')
-    throw new GearError('invalid-meta-profile', 'Select an external Meta process profile')
-  const meta = await ProcessOperationProvider.connect(
-    processProfile(
-      'kind' in metaProfile && metaProfile.kind === 'codex' && context.config.sandbox
-        ? {
-            ...metaProfile,
-            configuration: {
-              ...metaProfile.configuration,
-              linuxIsolation: context.config.sandbox.linux_isolation,
-            },
-          }
-        : metaProfile,
-    ),
-    {
-      ...shared,
-      directory: join(context.stateRoot, 'runs', context.runId, 'providers/codex'),
-      experiencePython: await pythonExecutable(),
-      ...(evaluation.artifactReader ? { artifactReader: evaluation.artifactReader } : {}),
-      protectedPaths: [context.root, context.stateRoot],
-      tasks: context.benchmark.tasks
-        .filter((task) => context.benchmark.splits.seed.includes(task.id))
-        .map(({ id, family, instruction }) => ({ id, family, instruction })),
-    } as unknown as Json,
-    signal,
+  const roleProfiles = context.config.meta.roles ?? {}
+  const metaTimeouts: NonNullable<OperationProvider['timeouts']>['meta'] = []
+  const connectMeta = async (name: string, directory: string): Promise<OperationProvider> => {
+    const selected = await profile(name)
+    assertProfileRole(selected, 'meta')
+    const tasks = context.benchmark.tasks
+      .filter((task) => context.benchmark.splits.seed.includes(task.id))
+      .map(({ id, family, instruction }) => ({ id, family, instruction }))
+    if ('kind' in selected && selected.kind === 'model') {
+      const provider = await ModelOperationProvider.connect(selected, { directory, tasks })
+      metaTimeouts.push(...provider.timeouts.meta)
+      return provider
+    }
+    if ('kind' in selected && selected.kind === 'hitch')
+      throw new GearError('invalid-meta-profile', 'Select a Meta execution profile')
+    const provider = await ProcessOperationProvider.connect(
+      processProfile(
+        'kind' in selected && selected.kind === 'codex' && context.config.sandbox
+          ? {
+              ...selected,
+              configuration: {
+                ...selected.configuration,
+                linuxIsolation: context.config.sandbox.linux_isolation,
+              },
+            }
+          : selected,
+      ),
+      {
+        ...shared,
+        directory,
+        experiencePython: await pythonExecutable(),
+        ...(evaluation.artifactReader ? { artifactReader: evaluation.artifactReader } : {}),
+        protectedPaths: [context.root, context.stateRoot],
+        tasks,
+      } as unknown as Json,
+      signal,
+    )
+    metaTimeouts.push(...(provider.timeouts.meta ?? []))
+    if ('kind' in selected && selected.kind === 'codex')
+      metaTimeouts.push({
+        name: 'codex-generation',
+        scope: 'meta-operation',
+        milliseconds: selected.configuration.timeoutMs,
+      })
+    return provider
+  }
+  const meta = await connectMeta(
+    context.config.meta.profile,
+    join(context.stateRoot, 'runs', context.runId, 'providers/codex'),
   )
-  const choose = (request: OperationRequest) =>
-    request.operation.kind === 'evaluate_seed' ? evaluation : meta
+  const roles = Object.create(null) as Record<string, OperationProvider>
+  for (const [role, name] of Object.entries(roleProfiles))
+    roles[role] = await connectMeta(
+      name,
+      join(context.stateRoot, 'runs', context.runId, 'providers/roles', role),
+    )
+  const roleProviders = [meta, ...Object.values(roles)]
+  const chooseOperation = (operation: OperationRequest['operation']) => {
+    if (operation.kind === 'evaluate_seed') return evaluation
+    const role =
+      operation.payload && typeof operation.payload === 'object' && !Array.isArray(operation.payload)
+        ? operation.payload.gear_role_v1
+        : undefined
+    return typeof role === 'string' && Object.hasOwn(roles, role) ? roles[role]! : meta
+  }
+  const choose = (request: OperationRequest) => chooseOperation(request.operation)
+  const roleCancellation = Object.fromEntries(
+    Object.entries(roles).map(([role, provider]) => [role, provider.cancellation ?? null]),
+  )
   return {
-    identity: canonicalDigest({ evaluation: evaluation.identity, meta: meta.identity }),
+    identity: canonicalDigest({
+      evaluation: evaluation.identity,
+      meta: meta.identity,
+      ...(Object.keys(roles).length
+        ? {
+            roles: Object.fromEntries(
+              Object.entries(roles).map(([role, provider]) => [role, provider.identity]),
+            ),
+          }
+        : {}),
+    }),
     async prepareAdmission() {
       await evaluation.prepareAdmission?.()
-      await meta.prepareAdmission()
+      for (const provider of roleProviders) await provider.prepareAdmission?.()
     },
     cancellation: {
       version: 1,
       kind: 'composite',
       evaluation: evaluation.cancellation ?? null,
       meta: meta.cancellation ?? null,
+      ...(Object.keys(roles).length ? { roles: roleCancellation } : {}),
     },
     ...(evaluation.artifactReader ? { artifactReader: evaluation.artifactReader } : {}),
     evaluationIdentity: evaluation.identity,
     timeouts: {
       ...(evaluation.timeouts?.taskRuntime ? { taskRuntime: evaluation.timeouts.taskRuntime } : {}),
       target: evaluation.timeouts?.target ?? null,
-      meta:
-        'kind' in metaProfile && metaProfile.kind === 'codex'
-          ? [
-              ...(meta.timeouts?.meta ?? []),
-              {
-                name: 'codex-generation',
-                scope: 'meta-operation',
-                milliseconds: metaProfile.configuration.timeoutMs,
-              },
-            ]
-          : (meta.timeouts?.meta ?? null),
+      meta: metaTimeouts,
     },
     capabilities: {
       ...evaluation.capabilities,
       idempotentSubmission:
-        evaluation.capabilities.idempotentSubmission && meta.capabilities.idempotentSubmission,
-      inspect: evaluation.capabilities.inspect && meta.capabilities.inspect,
-      cancel: evaluation.capabilities.cancel && meta.capabilities.cancel,
-      hardDollarBudget: evaluation.capabilities.hardDollarBudget && meta.capabilities.hardDollarBudget,
-      generationBudget: meta.capabilities.generationBudget,
+        evaluation.capabilities.idempotentSubmission &&
+        roleProviders.every((provider) => provider.capabilities.idempotentSubmission),
+      inspect:
+        evaluation.capabilities.inspect && roleProviders.every((provider) => provider.capabilities.inspect),
+      cancel:
+        evaluation.capabilities.cancel && roleProviders.every((provider) => provider.capabilities.cancel),
+      hardDollarBudget:
+        evaluation.capabilities.hardDollarBudget &&
+        roleProviders.every((provider) => provider.capabilities.hardDollarBudget),
+      generationBudget: roleProviders.every((provider) => provider.capabilities.generationBudget),
+      candidateReferences: roleProviders.some((provider) => provider.capabilities.candidateReferences),
+      workspaces: roleProviders.some((provider) => provider.capabilities.workspaces),
+      readOnlyMaterials: roleProviders.some((provider) => provider.capabilities.readOnlyMaterials),
+    },
+    capabilitiesFor: (operation) => chooseOperation(operation).capabilities,
+    validateOperation(operation) {
+      if (
+        isArtifactOperation(operation.kind) ||
+        isLocalWorkspace(operation.kind) ||
+        operation.kind === 'nominate' ||
+        operation.kind === 'stop'
+      )
+        return
+      const provider = chooseOperation(operation)
+      provider.validateOperation?.(operation)
+      if (Object.keys(candidateReferences(operation)).length && !provider.capabilities.candidateReferences)
+        throw new GearError(
+          'candidate-references-unsupported',
+          'Selected role executor cannot materialize references',
+        )
+      if (Object.keys(materialReferences(operation)).length && !provider.capabilities.readOnlyMaterials)
+        throw new GearError(
+          'materials-unsupported',
+          'Selected role executor cannot materialize read-only inputs',
+        )
+      if (operation.kind === 'workspace_edit' && !provider.capabilities.workspaces)
+        throw new GearError(
+          'workspaces-unsupported',
+          'Selected role executor cannot edit workspace revisions',
+        )
     },
     completeEvidence: (request, signal) => {
       if (!evaluation.completeEvidence)

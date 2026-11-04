@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from gear.algorithms.model_training import (
+from gear.training.policy import (
     offline_window,
     training_decide,
     training_dev_gate,
@@ -121,7 +121,7 @@ class TrainingPolicies(unittest.TestCase):
             window([], 0, 0, 1)
 
     def test_shared_algorithm_bytes_are_in_bridge_and_stage_identities(self):
-        algorithm = Path(__file__).resolve().parents[1] / "gear/algorithms/model_training.py"
+        algorithm = Path(__file__).resolve().parents[1] / "gear/training/policy.py"
         original_read = Path.read_bytes
         stages = [
             cls(None)

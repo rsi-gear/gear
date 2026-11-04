@@ -19,6 +19,7 @@ type Schema = {
   maxItems?: number
 }
 const defs = definitions.$defs as Record<string, Schema>
+export const algorithmOperationKinds = definitions.$defs.OperationKind.enum
 export function validateAlgorithmWire(name: string, value: unknown): void {
   const fail = (path: string): never => {
     throw new GearError('invalid-algorithm-message', `Invalid protocol value at ${path}`)

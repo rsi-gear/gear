@@ -1,6 +1,6 @@
 """Fixed Python projections used by the Project and training execution adapters.
 
-Recipe decisions use SearchAlgorithm.step and the public six policy contracts.
+Algorithm decisions use the public author contracts and durable workflow context.
 Only current pure projections are exposed on this internal transport.
 """
 
@@ -12,6 +12,14 @@ from typing import Any
 
 
 def main(request: dict[str, Any] | None = None) -> None:
+    from gear.observations.trajectory import trajectory_page, trajectory_query
+    from gear.training.policy import (
+        offline_window,
+        training_decide,
+        training_dev_gate,
+        training_pair,
+    )
+
     from .assertions import extract_assertions
     from .experience import (
         experience_context,
@@ -21,11 +29,9 @@ def main(request: dict[str, Any] | None = None) -> None:
         experience_record,
     )
     from .meta import parse_meta_result, prepare_meta
-    from .model_training import offline_window, training_decide, training_dev_gate, training_pair
     from .objective import aggregate_metrics, extract_metrics, score_projection
     from .projection import compare_candidates, project_candidate
     from .research import project_research
-    from .trajectory import trajectory_page, trajectory_query
     from .verifier import bind_verifier_channels, project_verifier, verifier_feedback
 
     operations = {

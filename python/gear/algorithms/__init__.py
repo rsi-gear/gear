@@ -1,6 +1,9 @@
 """Stable algorithm author API. Every recipe uses the same replaceable contracts."""
 
-from .contracts import (
+import sys as _sys
+
+from gear.refine import testkit
+from gear.refine.contracts import (
     AlgorithmState,
     Budget,
     Candidate,
@@ -21,6 +24,7 @@ from .contracts import (
     RankingInput,
     RankingPlan,
     ResearchRecord,
+    ResearchTrial,
     SamplingInput,
     SamplingPlan,
     SearchAlgorithm,
@@ -30,11 +34,32 @@ from .contracts import (
     Task,
     TaskSampler,
 )
+from gear.refine.random import DeterministicRandom
+from gear.refine.run_context import (
+    EvaluationResult,
+    EvidencePage,
+    Role,
+    RoleResult,
+    RunContext,
+    RunData,
+    RunInputs,
+    TaskInstance,
+    TrialResult,
+    WorkflowAlgorithm,
+    WorkflowResult,
+)
+from gear.refine.workspaces import WorkspaceRef
+
+from .adas import ADAS
 from .gepa import GEPA
-from .random import DeterministicRandom
 from .random_search import RandomSearch
 
+# Existing custom algorithms use this documented authoring entrypoint.
+_sys.modules[__name__ + ".testkit"] = testkit
+
 __all__ = [
+    "ADAS",
+    "WorkspaceRef",
     "AlgorithmState",
     "Budget",
     "Candidate",
@@ -55,6 +80,7 @@ __all__ = [
     "RankingInput",
     "RankingPlan",
     "ResearchRecord",
+    "ResearchTrial",
     "SamplingInput",
     "SamplingPlan",
     "SearchAlgorithm",
@@ -66,4 +92,15 @@ __all__ = [
     "DeterministicRandom",
     "GEPA",
     "RandomSearch",
+    "EvaluationResult",
+    "EvidencePage",
+    "Role",
+    "RoleResult",
+    "RunContext",
+    "RunData",
+    "RunInputs",
+    "WorkflowAlgorithm",
+    "WorkflowResult",
+    "TaskInstance",
+    "TrialResult",
 ]

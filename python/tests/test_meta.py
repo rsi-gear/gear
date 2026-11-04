@@ -1,7 +1,7 @@
 import copy
 import unittest
 
-from gear.algorithms.meta import parse_meta_result, prepare_meta
+from gear.refine.meta import parse_meta_result, prepare_meta
 
 
 class MetaTests(unittest.TestCase):

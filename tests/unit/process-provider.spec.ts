@@ -54,3 +54,13 @@ it('reconstructs a cancellation connection without running describe or changing 
   expect(Object.keys(cancel)).toEqual(['cancel'])
   await expect(cancel.cancel(request)).resolves.toBeUndefined()
 })
+
+it('refuses candidate reference inputs when the provider omits support', async () => {
+  const adapter = await provider({ wouldBeInvalidReceipt: true })
+  const operation = { ...request.operation, kind: 'generate_candidate' as const,
+    candidate_id: 'child', parent_id: 'anchor', payload: {
+      gear_candidate_references_v1: { donor: { candidate_id: 'donor', digest: canonicalDigest('donor') } },
+    } }
+  await expect(adapter.submit({ ...request, operation }, new AbortController().signal))
+    .rejects.toMatchObject({ code: 'candidate-references-unsupported' })
+})

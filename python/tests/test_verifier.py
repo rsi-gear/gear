@@ -2,7 +2,7 @@ import copy
 import json
 import unittest
 
-from gear.algorithms.verifier import (
+from gear.refine.verifier import (
     MAX_BYTES,
     bind_verifier_channels,
     project_verifier,

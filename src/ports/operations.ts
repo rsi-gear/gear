@@ -1,6 +1,8 @@
+import type { MaterialInput } from '../domain/materials.js'
 import type { AssertionContract } from '../domain/assertions.js'
 import type { RawMetricContract } from '../domain/objective.js'
 import type { Evidence, Operation, OperationReceipt, Json } from '../domain/algorithm-wire.js'
+import type { TrialPlan } from '../domain/research-trials.js'
 import type { GenerationLimits } from '../domain/generation-budget.js'
 import type { ExperienceContext } from '../domain/experience.js'
 import type { ArtifactReaderDescriptor } from '../domain/trajectory.js'
@@ -28,15 +30,27 @@ export interface ProviderCapabilities {
   hardDollarBudget: boolean
   /** Enforces request/token reservations across all calls, retries and summaries in one Meta operation. */
   generationBudget: boolean
+  /** Materializes named sealed candidates as read-only edit inputs. Omission means unsupported. */
+  candidateReferences?: boolean
+  /** Independent, ordered research trials kept outside canonical acceptance evidence. */
+  researchTrials?: boolean
+  derivedInputs?: boolean
+  /** Produces immutable workspace revisions without registering candidates. */
+  workspaces?: boolean
+  /** Mounts frozen public operation results as read-only JSON files. */
+  readOnlyMaterials?: boolean
   evidenceProjection: boolean
 }
 export interface OperationRequest {
+  /** Frozen public operation results prepared by the core for read-only role files. */
+  materials?: Record<string, MaterialInput>
   operationId: string
   runId: string
   generation: number
   operation: Operation
   partition: 'seed' | 'held_out'
   repetitions: number
+  trials?: TrialPlan
   slots: Array<{ taskId: string; repetition: number }>
   /** Seed feedback for Meta, or original observations for a target-only projection. */
   evidence: Evidence[]
@@ -77,6 +91,8 @@ export interface OperationProvider {
   /** Operator metadata for the exact connected configuration; null means unreported. */
   readonly timeouts?: ProviderTimeouts
   readonly capabilities: ProviderCapabilities
+  capabilitiesFor?(operation: Operation): ProviderCapabilities
+  validateOperation?(operation: Operation): void
   submit(request: OperationRequest, signal: AbortSignal): Promise<OperationReceipt>
   /** Read existing artifacts only. Must not execute targets or issue model requests. */
   completeEvidence?(request: OperationRequest, signal: AbortSignal): Promise<OperationReceipt>

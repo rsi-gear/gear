@@ -1,7 +1,7 @@
 import copy
 import unittest
 
-from gear.algorithms.experience import (
+from gear.refine.experience import (
     descriptive,
     encoded_size,
     experience_context,
@@ -10,7 +10,7 @@ from gear.algorithms.experience import (
     experience_record,
     proposal_metadata,
 )
-from gear.algorithms.experience_index import verify_snapshot
+from gear.refine.experience_index import verify_snapshot
 from gear.canonical import digest
 
 
