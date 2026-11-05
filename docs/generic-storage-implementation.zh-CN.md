@@ -29,10 +29,10 @@ v2 数据集由 Hitch producer 封存，Gear evaluator 必须实现 `resourcePre
 `search/resource-retention/{seed,held-out}.json` 保存已确认 pin 的 owner/generation。Hitch pin 先完成，Gear 才发布 frozen 指针。取消和崩溃允许多保留引用；已经冻结的历史不因 complete/failed 自动释放。
 
 ```sh
-gear-refine storage inspect --state-root /absolute/evolution
-gear-refine storage cleanup --state-root /absolute/evolution
-gear-refine storage cleanup --state-root /absolute/evolution --apply
-gear-refine storage release-resources --state-root /absolute/evolution --hitch-root /absolute/hitch --partition seed
+gear storage inspect --state-root /absolute/evolution
+gear storage cleanup --state-root /absolute/evolution
+gear storage cleanup --state-root /absolute/evolution --apply
+gear storage release-resources --state-root /absolute/evolution --hitch-root /absolute/hitch --partition seed
 ```
 
 cleanup 默认 dry-run，`--apply` 先隔离，后续经过宽限期再确认无引用后删除。缺失/损坏历史会停止清理；unknown 与旧 absolute refs 一样受到保护。没有本实现 ownership sidecar 的历史投影、未知临时目录和 selection 默认保留。资源释放先在 Gear 锁内核查完整历史并写入 releasing，再逐个调用 Hitch 的 generation checked release；中断后原 generation 可幂等重试。released owner 不用于新 evolution。
