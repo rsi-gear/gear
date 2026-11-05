@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { bootstrap } from '../prepare.mjs'
@@ -105,7 +105,7 @@ test('start rejects a carrier prepared without a committed package lock', async 
   await assert.rejects(buildConfig(f.config, { ...f.project, ...incomplete }, f.root), /no committed pnpm-lock/)
 })
 
-test('start assembles a valid full-fold config from the frozen carrier and deployment settings', async t => {
+test('start prepares a full-fold config and usable Hitch working directory', async t => {
   const f = await fixture(t)
   const seed = join(f.root, 'seed')
   await mkdir(seed)
@@ -115,10 +115,28 @@ test('start assembles a valid full-fold config from the frozen carrier and deplo
   const deployment = { ...f.config, metaModel: { provider: 'fixture', model: 'fixture' }, metaSampling: {},
     metaAdapter: { kind: 'skill', runtimeType: 'fixture', runtimeVersion: '1', runtimeIntegrity: hash('fixture runtime'),
       harnessId: 'refine', harnessDigest: hash('fixture skill') } }
-  const config = await buildConfig(deployment, { ...f.project, seedTaskRef: seed, heldOutRef: join(f.root, 'held-out'), hitchRoot: f.config.hitch.root }, f.root)
+  const project = { ...f.project, seedTaskRef: seed, heldOutRef: join(f.root, 'held-out'), hitchRoot: f.config.hitch.root }
+  const config = await buildConfig(deployment, project, f.root)
   assert.deepEqual(config.search.scopeSampling.sharedCoreTaskIds, ids)
   assert.equal(config.candidateWorkspace.shellEnabled, false)
   assert.equal(config.hitch.controlPlane.mode, 'direct')
   assert.equal(config.initialChampion.manifestDigest, f.project.initialChampion.manifestDigest)
   assert.deepEqual(config.compiler.args, [join(f.project.targetRepository, 'fixed/check.mjs')])
+  for (const budget of [config.budgets.round, config.budgets.evolution]) {
+    assert.equal(Object.hasOwn(budget, 'maxGenerationTokens'), false)
+    assert.equal(Object.hasOwn(budget, 'maxGenerationRequests'), false)
+    assert.ok(budget.maxNewRolloutCells > 0)
+    assert.ok(budget.timeoutMs > 0)
+  }
+  await assert.rejects(stat(config.workspaceRoot), { code: 'ENOENT' })
+  await writeFile(join(f.root, 'project.json'), JSON.stringify(project))
+  const baseConfig = join(f.root, 'base-config.json')
+  await writeFile(baseConfig, JSON.stringify(deployment))
+  await command(process.execPath, [join(exampleRoot, 'start.mjs'), '--project', f.root, '--config', baseConfig, '--prepare-only'])
+  const prepared = JSON.parse(await readFile(join(f.root, 'gear.config.json'), 'utf8'))
+  assert.equal(prepared.workspaceRoot, config.workspaceRoot)
+  assert.equal((await stat(prepared.workspaceRoot)).isDirectory(), true)
+  const capability = JSON.parse(await command(prepared.hitch.executable,
+    ['--root', prepared.hitch.root, 'capabilities', '--json'], { cwd: prepared.workspaceRoot }))
+  assert.equal(capability.run_output_artifacts, '1')
 })

@@ -599,6 +599,30 @@ export class RefineService {
     readonly components = new ComponentRegistry(),
   ) {}
 
+  /** Resolve projected seed evidence using the evaluator owned by its evolution. */
+  async resolveVerifierRun(
+    evolutionId: string,
+    evalId: string,
+    runId: string,
+    signal: AbortSignal,
+  ): Promise<Awaited<ReturnType<NonNullable<HitchTrajectoryReader['resolveVerifierRun']>>>> {
+    signal.throwIfAborted()
+    // The shared Skill gateway has a raw evaluator. Search projections instead
+    // require this evolution's sealed source index, including after a restart.
+    const existing = this.runtimes.get(evolutionId)
+    let evaluator = existing?.evaluator
+    if (evaluator === undefined) {
+      const spec = await this.registry.requireSpec(evolutionId)
+      const entry = await this.registry.readEntry(evolutionId)
+      if (entry === undefined || entry.specDigest !== digestJson(spec)) {
+        throw new Error(`evolution spec digest mismatch: ${evolutionId}`)
+      }
+      evaluator = this.evaluatorForSpec(spec)
+    }
+    const reader = evaluator as RefineEvaluator & Partial<HitchTrajectoryReader>
+    return reader.resolveVerifierRun?.(evalId, runId, signal)
+  }
+
   private experienceUsageReader(spec: Readonly<EvolutionSpec>): ExperienceUsageReader | undefined {
     if (this.options.experienceUsageReader !== undefined) return this.options.experienceUsageReader
     if (spec.rollout.provider.id !== 'hitch-cli') return undefined

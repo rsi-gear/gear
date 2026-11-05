@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { EvaluationEvidence, EvaluationRequest, HitchTrajectoryReader, HitchVerifierEvidence, RefineEvaluator } from '../../src/types.js'
 import { RefineCapabilities } from '../../src/capabilities.js'
+import { RefineService } from '../../src/refine/service.js'
+import { EvolutionRegistryStore } from '../../src/state/evolution.js'
 import { digestJson } from '../../src/state/digest.js'
 import { RefineStateStore } from '../../src/state/store.js'
 import { digestDatasetRef } from '../../src/state/dataset.js'
@@ -376,6 +378,70 @@ describe('Gear-owned staging through the existing evaluation interface', () => {
     await f.store.put(heldOut); await f.store.put(heldOutResult)
     await expect(reader.resolveVerifierRun!(heldOutResult.digest, runId, signal)).rejects.toThrow('requires seed evidence')
     expect(f.requests).toHaveLength(2)
+  })
+
+  it('routes the shared Skill reader through its evolution for a repaired, composed baseline after restart', async () => {
+    const f = await setup(false, 2, false, 2), signal = new AbortController().signal
+    f.spec.searchSettings = f.search
+    const registry = new EvolutionRegistryStore(join(f.root, 'registry'))
+    await registry.createEvolution({ spec: f.spec, champion: { schemaVersion: 2,
+      ref: f.source.anchor.commit, manifestDigest: f.source.anchor.manifestDigest, updatedAt: 'now' } })
+    const createMeta = vi.fn(() => { throw new Error('reading verifier evidence must not start a Meta session') })
+    const builder = { readManifest: () => f.options.manifest(f.source.anchor) }
+    const makeService = () => new RefineService(registry, builder as never, {} as never, createMeta, f.evaluator, {
+      ...f.spec, workspaceRoot: f.root, seedTaskRef: f.spec.datasets.seed.ref, heldOutRef: f.spec.datasets.heldOut.ref,
+      publishedPointer: false, maxLiveMetaSessions: 1,
+    })
+    const service = makeService()
+    const owned = (service as unknown as { evaluatorForSpec(spec: typeof f.spec): RefineEvaluator }).evaluatorForSpec(f.spec)
+    const provider = owned.search!.provider as EvaluationSearchAdapter
+    const lock = await registry.stateStore(f.spec.evolutionId).acquireRoundLock()
+    provider.options.lock = async () => lock
+    provider.options.round = f.options.round
+    const universe = await provider.describe('seed')
+    const plan = stagePlan({ stage: 'local', partition: 'seed', universeDigest: universe.digest,
+      taskSetSizeResolutionDigest: digestJson('sizing'), scopeDigest: digestJson('scope'), taskIds: ['task-0', 'task-1'],
+      participantIds: [f.source.anchor.candidateId], prerequisiteDecisionDigests: [], selectionRuleDigest: digestJson('rule') })
+    const evaluate = f.evaluator.evaluate.bind(f.evaluator)
+    f.evaluator.evaluate = async (...args) => {
+      const evidence = await evaluate(...args)
+      if (evidence.evalId !== 'eval-2') return evidence
+      return { ...evidence, completeness: 'partial', trials: [], invalidTrials: evidence.trials.map(trial => ({
+        taskName: trial.taskName, runId: trial.runId!, trialName: trial.trialName!, attempt: trial.attempt!,
+        status: 'errored' as const, invalidReason: 'infrastructure_failure',
+      })) }
+    }
+    const run = (task: string, repetition: number, key: string) => provider.evaluate({ plan, snapshot: f.source.anchor,
+      cells: [cellIdentity(universe, task, repetition, f.source.anchor)], idempotencyKey: digestJson(key), signal })
+    const initial = await run('task-0', 0, 'initial-good')
+    const failed = await run('task-1', 1, 'initial-invalid')
+    expect(failed[0]!.status).toBe('invalid')
+    const repaired = await run('task-1', 1, 'repair-invalid')
+    const result = seal({ stagePlanDigest: plan.digest, snapshotDigest: f.source.anchor.digest, cells: [...initial, ...repaired], settled: true })
+    await provider.store.put(plan); await provider.store.put(result)
+    const actual = new Map(result.cells.map(cell => [cell.evidenceRef, { runId: cell.evidenceRef,
+      parent: { evalId: cell === initial[0] ? 'eval-1' : 'eval-3', trialId: cell.evidenceRef, attempt: 1 },
+      verifier: { status: 'complete' as const } }]))
+    f.evaluator.inspectVerifierEvidence = async (runId: string) => actual.get(runId)!
+    // This is the shared Skill gateway wiring: its reader is raw, and the new
+    // service has no live runtime. It must reconstruct the scoped source reader.
+    const restarted = makeService()
+    const capabilities = new RefineCapabilities(restarted, {} as never, { trajectoryReader: f.evaluator as unknown as HitchTrajectoryReader })
+    const load = (index: number, evalId = result.digest, evolutionId = f.spec.evolutionId) => (capabilities as unknown as {
+      loadVerifierEvidence(item: unknown, signal: AbortSignal): Promise<HitchVerifierEvidence>
+    }).loadVerifierEvidence({ evolutionId, evalId, trial: { runId: result.cells[index]!.evidenceRef,
+      attempt: result.cells[index]!.identity.repetition + 1 } }, signal)
+    for (const index of [0, 1]) expect(await load(index)).toEqual(actual.get(result.cells[index]!.evidenceRef))
+    expect((await load(1, digestJson('foreign-result'))).verifier.status).toBe('corrupt')
+    expect((await load(1, result.digest, 'foreign-evolution')).verifier.status).toBe('corrupt')
+    const repairedEvidence = actual.get(repaired[0]!.evidenceRef)!, physical = { ...repairedEvidence.parent }
+    for (const patch of [{ evalId: 'eval-2' }, { trialId: 'foreign-trial' }, { attempt: 2 }]) {
+      repairedEvidence.parent = { ...physical, ...patch }
+      expect((await load(1)).verifier.status).toBe('corrupt')
+    }
+    expect(createMeta).not.toHaveBeenCalled()
+    expect(f.requests).toHaveLength(3)
+    await lock.release()
   })
 
   it.each(['restart', 'same-adapter'])('rejects old cells and new batches after runtime configuration changes (%s)', async mode => {

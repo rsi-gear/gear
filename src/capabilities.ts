@@ -1497,7 +1497,8 @@ export class RefineCapabilities {
       }
       if (evidence.parent !== undefined) {
         const resolveRun = this.options.trajectoryReader?.resolveVerifierRun
-        const physical = await resolveRun?.call(this.options.trajectoryReader, item.evalId, item.trial.runId, signal)
+        const physical = await this.service.resolveVerifierRun?.(item.evolutionId, item.evalId, item.trial.runId, signal)
+          ?? await resolveRun?.call(this.options.trajectoryReader, item.evalId, item.trial.runId, signal)
         const resolveParent = this.options.trajectoryReader?.resolveVerifierEvaluationId
         const expectedEvalId = physical?.evalId ?? (resolveParent === undefined ? item.evalId
           : await resolveParent.call(this.options.trajectoryReader, item.evalId, item.trial.runId, signal))
