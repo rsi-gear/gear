@@ -1,8 +1,21 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util'
-import { mkdir, readFile } from 'node:fs/promises'
-import { isAbsolute, join, resolve } from 'node:path'
+import { mkdir, readFile, realpath } from 'node:fs/promises'
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import { atomicJson, cli, command, fullFoldSettings, hash, isMain, objective, readJson, requireArtifacts } from './common.mjs'
+
+// /usr/bin/git on macOS is an xcrun shim; resolve its fixed toolchain before entering the sandbox.
+export async function compilerEnvironment(base = {}) {
+  const env = { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_OPTIONAL_LOCKS: '0',
+    ...base.env, PATH: base.env?.PATH ?? process.env.PATH ?? '' }
+  const readPaths = [...(base.readPaths ?? [])]
+  if (process.platform === 'darwin') {
+    const git = await realpath(await command('/usr/bin/xcrun', ['--find', 'git']))
+    env.PATH = [...new Set([dirname(git), ...env.PATH.split(delimiter)])].join(delimiter)
+    readPaths.push(git)
+  }
+  return { env, readPaths: [...new Set(readPaths)] }
+}
 
 export async function buildConfig(base, project, directory) {
   const lock = await command('git', ['ls-tree', project.initialChampion.ref, '--', 'pnpm-lock.yaml'], { cwd: project.targetRepository })
@@ -13,6 +26,7 @@ export async function buildConfig(base, project, directory) {
   const { ConfigSchema } = await import('../../lib/config.js')
   const { defaultSearchConfig, defaultMultisignalPromotion } = await import('../../lib/search/config.js')
   const tasks = await readJson(join(project.seedTaskRef, 'benchmark.adapter.json'))
+  const toolchain = await compilerEnvironment(base.compiler)
   const limits = { maxNewRolloutCells: 128, maxDiagnosisInputTokens: 100000, maxDiagnosisOutputTokens: 20000,
     maxRepairCells: 12, timeoutMs: 3600000 }
   return ConfigSchema({ ...base,
@@ -22,7 +36,7 @@ export async function buildConfig(base, project, directory) {
     seedTaskRef: project.seedTaskRef, heldOutRef: project.heldOutRef, taskBudgetMs: base.taskBudgetMs ?? 600000,
     candidateWorkspace: { ...base.candidateWorkspace, shellEnabled: false },
     compiler: { command: process.execPath, args: [join(project.targetRepository, 'fixed/check.mjs')],
-      timeoutMs: 60000, env: { PATH: process.env.PATH ?? '' }, readPaths: [project.targetRepository] },
+      timeoutMs: 60000, env: toolchain.env, readPaths: [...new Set([project.targetRepository, ...toolchain.readPaths])] },
     hitch: { ...base.hitch, harnessId: 'deepseek', root: project.hitchRoot, attempts: 1, maxConcurrent: 2,
       controlPlane: { mode: 'direct', requireModelCapture: false } },
     search: { ...structuredClone(defaultSearchConfig), ...fullFoldSettings(tasks.tasks.map(task => task.task_id)), process: { mode: 'off', parentBudgetFraction: 0 } },
