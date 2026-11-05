@@ -157,4 +157,12 @@ docker run --rm --user 0 --entrypoint python3 \
 
 本次数值测试镜像 ID 为 `sha256:02ff489e5d50eabc79d452955712e694090a2a692e1ba2baf45a89e11318d551`，原生 DSH 测试镜像 ID 为 `sha256:08e5f3702d83fce4900f9f0fbddfe5e6fab08167197b03e412aeab746701de92`。它们是本机测试镜像身份，不是可直接交给 resource producer 的已发布平台 manifest。
 
-尚未完成带真实模型的五折搜索、晋升、418 行最终训练及外部提交验收。真实验收还需要用户的数据、固定镜像 transport 和模型部署：baseline、至少两个候选、一次后继继承、完整五折、promotion holdout，再对明确选中的 commit 做 finalization。
+2026-11-05 已使用真实 Titanic 数据与真实 Meta/Target 模型完成基线、两个候选的完整五折比较及 promotion holdout。Meta 为 `openai-codex/gpt-6-astra`，Target 为 `openai-codex/gpt-5.6-luna`；运行于固定 linux/arm64 镜像。
+
+| 版本 | Mean-fold accuracy | Promotion holdout | 结果 |
+| --- | ---: | ---: | --- |
+| Baseline | 81.327183% | 137/178（76.966292%） | 对照 |
+| C0 | 82.463919% | 141/178（79.213483%） | 已晋升 |
+| C1 | 81.766602% | 未评估 | 未成为 nominee |
+
+已选择 C0 commit `8bba41331faa2e4ed5bcd7eb715300f4f18204fa`。已独立 finalization，用全部 891 条标签训练并导出 418 行 CSV；两列协议、唯一 ID 集合及顺序、二元标签和产物摘要均通过校验。CSV SHA-256 为 `88b3e60545b6d241b7e431e3a06a5d49bf97b75bb895523a2b15e84b74096d55`。没有执行 Kaggle 外部提交或获得线上分数。两个候选都直接继承同一基线，本次未覆盖多代继承。宿主使用了不在 engine 声明范围内的 Node 23.11.0；复现应使用支持的 Node 22.19+（22.x）或 24+，Target 镜像为固定 Node 22.23.0。真实数据来源、精确版本/摘要、eval IDs、历史失败及修复见[验收记录](../../docs/kaggle-titanic-validation-2026-11-05.zh-CN.md)。
