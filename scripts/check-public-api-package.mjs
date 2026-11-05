@@ -9,7 +9,10 @@ import { join, resolve } from 'node:path'
 const source = resolve(import.meta.dirname, '..'), root = mkdtempSync(join(tmpdir(), 'gear-public-api-'))
 const run = (args, cwd) => execFileSync('npm', args, { cwd, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
 try {
-  const packed = JSON.parse(run(['pack', '--json', '--ignore-scripts', '--pack-destination', root], source))[0]
+  // npm <=11 reports an array of packed entries; npm 12+ reports an object keyed by package name.
+  const packedResult = JSON.parse(run(['pack', '--json', '--ignore-scripts', '--pack-destination', root], source))
+  const packed = Array.isArray(packedResult) ? packedResult[0] : Object.values(packedResult)[0]
+  if (!packed?.filename) throw new Error('npm pack did not report a tarball filename')
   const consumer = join(root, 'consumer'); mkdirSync(consumer)
   writeFileSync(join(consumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }))
   run(['install', '--ignore-scripts', '--no-audit', '--no-fund', join(root, packed.filename)], consumer)
