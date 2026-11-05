@@ -166,3 +166,14 @@ docker run --rm --user 0 --entrypoint python3 \
 | C1 | 81.766602% | 未评估 | 未成为 nominee |
 
 已选择 C0 commit `8bba41331faa2e4ed5bcd7eb715300f4f18204fa`。已独立 finalization，用全部 891 条标签训练并导出 418 行 CSV；两列协议、唯一 ID 集合及顺序、二元标签和产物摘要均通过校验。CSV SHA-256 为 `88b3e60545b6d241b7e431e3a06a5d49bf97b75bb895523a2b15e84b74096d55`。没有执行 Kaggle 外部提交或获得线上分数。两个候选都直接继承同一基线，本次未覆盖多代继承。宿主使用了不在 engine 声明范围内的 Node 23.11.0；复现应使用支持的 Node 22.19+（22.x）或 24+，Target 镜像为固定 Node 22.23.0。真实数据来源、精确版本/摘要、eval IDs、历史失败及修复见[验收记录](../../docs/kaggle-titanic-validation-2026-11-05.zh-CN.md)。
+
+## 真实后续迭代
+
+用户回报首份 CSV 线上得分 0.77751（仅用户陈述，未通过 Kaggle API 核实）后，又完成三轮、六个真实候选的完整五折比较。最终 R3B 使用固定 RF + classic GradientBoosting soft voting，并通过晋升：
+
+| 版本 | Mean-fold accuracy | Promotion holdout |
+| --- | ---: | ---: |
+| 首份 CSV / 8bba4133 | 82.463919% | 141/178（79.213483%） |
+| 最终 R3B / 76254ac9 | 83.870456% | 143/178（80.337079%） |
+
+本阶段实际验证多代继承，包括从未晋升的研究父级生成候选、再与独立冠军比较。新 CSV 已完成独立 finalization 与 891/418 输入、ID、列协议和摘要校验，相比首份文件改变 24 条预测；新版本线上分数未知，没有自动提交 Kaggle。完整候选、预算切换与证据见[后续迭代记录](../../docs/kaggle-titanic-iteration-2026-11-05.zh-CN.md)。
