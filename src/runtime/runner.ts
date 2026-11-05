@@ -413,7 +413,7 @@ export class DurableRunner {
                 'Frozen provider cannot complete original evidence',
               )
             receipt = await this.provider.completeEvidence(structuredClone(operation.request), signal)
-          }           else receipt = await this.provider.submit(structuredClone(operation.request), signal)
+          } else receipt = await this.provider.submit(structuredClone(operation.request), signal)
         }
         await this.settle(journal, operation, receipt, signal)
       }
