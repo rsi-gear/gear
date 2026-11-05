@@ -18,7 +18,10 @@ try {
     'pack', `@deepseek-ai/dsh-tool-fs@${version}`, '--ignore-scripts',
     '--prefer-offline', '--dry-run=false', '--json', '--pack-destination', directory,
   ], { cwd: root, encoding: 'utf8' }))
-  const archive = join(directory, packed[0].filename)
+  // npm <=11 reports an array of packed entries; npm 12+ reports an object keyed by package name.
+  const entry = Array.isArray(packed) ? packed[0] : Object.values(packed)[0]
+  if (!entry?.filename) throw new Error('npm pack did not report a tarball filename')
+  const archive = join(directory, entry.filename)
   const bytes = await readFile(archive)
   if (`sha512-${createHash('sha512').update(bytes).digest('base64')}` !== integrity) {
     throw new Error('ToolFs source archive does not match the pinned integrity')
