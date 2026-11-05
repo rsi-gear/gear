@@ -54,3 +54,21 @@ it('reconstructs a cancellation connection without running describe or changing 
   expect(Object.keys(cancel)).toEqual(['cancel'])
   await expect(cancel.cancel(request)).resolves.toBeUndefined()
 })
+
+it('decodes provider output after reassembling pipe chunks that split a UTF-8 character', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'gear-utf8-chunk-')); roots.push(root)
+  const script = join(root, 'provider.mjs'), text = 'héllo wörld'
+  await writeFile(script, `let input='';for await (const chunk of process.stdin) input+=chunk;
+const call=JSON.parse(input);
+const capabilities={seeds:true,temperature:true,subsets:true,idempotentSubmission:true,inspect:true,cancel:true,physicalAttemptAccounting:true,generationBudget:false,hardDollarBudget:false,evidenceProjection:false};
+if(call.action==='describe'){process.stdout.write(JSON.stringify({version:1,identity:${JSON.stringify(canonicalDigest('utf8-fixture'))},capabilities}));process.exit(0)}
+const reply={result:{operation_id:call.request.operationId,kind:call.request.operation.kind,status:'complete',candidate_id:call.request.operation.candidate_id,data:{text:${JSON.stringify(text)}}},evidence:[],candidate:null,physicalAttempts:0,usage:{},provenance:null};
+const bytes=Buffer.from(JSON.stringify(reply));
+const split=bytes.findIndex(byte=>byte>=0xc0);if(split<0)process.exit(2);
+process.stdout.write(bytes.subarray(0,split+1));
+setTimeout(()=>process.stdout.write(bytes.subarray(split+1)),100);`)
+  const adapter = await ProcessOperationProvider.connect({ command: [process.execPath, script],
+    workingDirectory: root, passEnv: [], configuration: {}, timeoutMs: 5000 })
+  const receipt = await adapter.submit(request, new AbortController().signal)
+  expect((receipt.result.data as { text: string }).text).toBe(text)
+})

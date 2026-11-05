@@ -190,8 +190,10 @@ export class ProcessOperationProvider implements OperationProvider {
         detached: process.platform !== 'win32',
         stdio: ['pipe', 'pipe', 'pipe'],
       })
-      let stdout = '',
-        stderr = ''
+      const stdout: Buffer[] = [],
+        stderr: Buffer[] = []
+      let stdoutBytes = 0,
+        stderrBytes = 0
       const abort = (): void => {
         if (child.pid) {
           try {
@@ -211,22 +213,30 @@ export class ProcessOperationProvider implements OperationProvider {
       signal.addEventListener('abort', abort, { once: true })
       child.on('error', reject)
       child.stdin.on('error', () => {})
-      child.stdout.on('data', (chunk) => {
-        stdout += chunk
-        if (Buffer.byteLength(stdout) > 16 * 1024 * 1024) abort()
+      child.stdout.on('data', (chunk: Buffer) => {
+        stdoutBytes += chunk.length
+        if (stdoutBytes > 16 * 1024 * 1024) {
+          abort()
+          return
+        }
+        stdout.push(chunk)
       })
-      child.stderr.on('data', (chunk) => {
-        stderr = (stderr + chunk).slice(-2000)
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderr.push(chunk)
+        stderrBytes += chunk.length
+        while (stderrBytes > 2000 && stderr.length > 1) stderrBytes -= stderr.shift()!.length
       })
       child.once('close', (code) => {
         clearTimeout(timer)
         signal.removeEventListener('abort', abort)
         if (code !== 0) {
-          reject(new GearError('provider-call-failed', `Provider ${action} failed: ${stderr}`))
+          // Pipe chunks can split a UTF-8 character; decode only after reassembling bytes.
+          const text = Buffer.concat(stderr).toString('utf8').slice(-2000)
+          reject(new GearError('provider-call-failed', `Provider ${action} failed: ${text}`))
           return
         }
         try {
-          resolve(JSON.parse(stdout))
+          resolve(JSON.parse(Buffer.concat(stdout).toString('utf8')))
         } catch {
           reject(new GearError('provider-response-invalid', 'Provider returned invalid JSON'))
         }
