@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFile, spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
+import { constants } from 'node:fs'
 import { chmod, link, lstat, mkdir, open, readFile, readdir, rm } from 'node:fs/promises'
 import { isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -23,6 +24,7 @@ const pollIntervalMs = 2_000
 const terminationGraceMs = 5_000
 const resourcePreflightTimeoutMs = 120_000
 const resourcePreflightMaxOutputBytes = 1024 * 1024
+const maxTaskContextBytes = 64 * 1024
 const prompt = `Use the installed refine skill to complete the current assigned candidate.
 Read SKILL.md and all three required references with read_refine_resource, then call refine_request meta.claim.
 The transport binds identity and private lease fields. Inspect the seed evidence and candidate, make and check one evidence-backed general harness improvement when justified, then finalize or decline.
@@ -93,6 +95,34 @@ function configuration(environment) {
     runRoot: absolute(environment, 'GEAR_META_RUN_ROOT'),
     workspace: absolute(environment, 'GEAR_META_WORKSPACE'),
     codex: environment.GEAR_CODEX_EXECUTABLE ?? 'codex',
+    ...(environment.GEAR_META_TASK_CONTEXT_FILE === undefined ? {} : {
+      taskContextFile: absolute(environment, 'GEAR_META_TASK_CONTEXT_FILE'),
+    }),
+  }
+}
+
+async function readTaskContext(path) {
+  if (path === undefined) return undefined
+  const label = 'GEAR_META_TASK_CONTEXT_FILE'
+  const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW)
+  try {
+    const info = await handle.stat()
+    if (!info.isFile()) throw new Error(`${label} must be a regular file`)
+    if (info.size > maxTaskContextBytes) throw new Error(`${label} exceeds 64 KiB`)
+    // Bound the actual read too, in case the operator file grows after stat.
+    const bytes = Buffer.alloc(maxTaskContextBytes + 1)
+    let size = 0
+    while (size < bytes.length) {
+      const result = await handle.read(bytes, size, bytes.length - size, null)
+      if (result.bytesRead === 0) break
+      size += result.bytesRead
+    }
+    if (size > maxTaskContextBytes) throw new Error(`${label} exceeds 64 KiB`)
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, size))
+    if (text.trim().length === 0 || text.includes('\0')) throw new Error(`${label} must contain nonempty UTF-8 text without NUL`)
+    return text
+  } finally {
+    await handle.close()
   }
 }
 
@@ -346,7 +376,7 @@ function codexArguments(config, identity, runDirectory, resourcePreflight = fals
     '-c', `mcp_servers.gear_refine.tools.read_refine_resource.approval_mode=${JSON.stringify('approve')}`,
     '-c', `mcp_servers.gear_refine.tools.refine_request.approval_mode=${JSON.stringify('approve')}`,
     '-C', config.workspace,
-    resourcePreflight ? resourcePreflightPrompt : prompt,
+    resourcePreflight ? resourcePreflightPrompt : config.taskContext === undefined ? prompt : `${prompt}\n\n${config.taskContext}`,
   ]
 }
 
@@ -446,6 +476,9 @@ export async function runCodexSkillMetaRound(evolutionId, roundId, environment =
     || typeof roundId !== 'string' || roundId.length === 0) {
     throw new Error('evolutionId and roundId are required')
   }
+  // Snapshot trusted operator instructions before claiming a paid assignment.
+  // Resource preflight neither loads nor sends this task-specific text.
+  const taskContext = await readTaskContext(configuration(environment).taskContextFile)
   const { config, identity } = await preflightCodexSkillMeta(environment, evolutionId)
   const jobRoot = await privateDirectory(join(config.runRoot, `round-${roundKey(evolutionId, roundId)}`))
   const recovered = await recoverPrivateSessions(config, jobRoot, roundId)
@@ -453,7 +486,7 @@ export async function runCodexSkillMetaRound(evolutionId, roundId, environment =
     method: 'control.status', params: { evolutionId, roundId },
   }), 'Gear status')
   if (terminalStatuses.has(status.status) || recovered) return status
-  const assignment = await runAssignment(config, identity, environment, jobRoot, evolutionId, roundId)
+  const assignment = await runAssignment({ ...config, taskContext }, identity, environment, jobRoot, evolutionId, roundId)
   if (assignment.terminal !== undefined) return assignment.terminal
   return object(await requestRefineSkill(config.socketPath, {
     method: 'control.status', params: { evolutionId, roundId },

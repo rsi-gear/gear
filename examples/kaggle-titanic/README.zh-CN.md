@@ -75,6 +75,16 @@ node examples/kaggle-titanic/start.mjs \
 
 目标固定为 `total_score`，约束 `valid_output >= 1`。每个候选和 parent 都使用相同五折比较；process channel 关闭。合法预测的分数等于 accuracy；已确认的候选执行或格式失败为零且无伪造 accuracy，可信执行与评分基础设施故障保持失败。报告的是 mean-fold accuracy，不是 pooled OOF accuracy。promotion holdout 已参与选择，不能称为未接触的最终测试集。
 
+使用通用 Codex Skill Meta runner 时，设置下面的可选任务说明，让 Meta 明确本次获准修改的是 Titanic 预测 pipeline，成功执行工具仍可提出模型或特征改进假设：
+
+```sh
+GEAR_META_TASK_CONTEXT_FILE=/absolute/gear/examples/kaggle-titanic/meta-task-context.txt \
+  node examples/codex-skill-meta-runner.mjs \
+  --evolution-id EVOLUTION_ID --round-id ROUND_ID
+```
+
+其余 `GEAR_REFINE_*`、`GEAR_META_*` 环境按部署指南配置。该文件是操作者提供的可信说明，须为绝对路径下的普通 UTF-8 文件，最多 64 KiB；不要包含凭据或隐藏标签，并保持 Meta 对文件只读。runner 在领取 assignment 前读取一次，仅追加到该次任务 prompt，不进入资源 preflight，也不更改 Skill、工具权限、目标或晋升规则。未设置时保持原有通用 prompt；候选仍须引用实际源码和 seed 证据、提出可证伪假设，再由固定五折和 holdout 测量。
+
 ## 选定版本后最终训练
 
 从 Gear 的候选/冠军记录取得明确 commit 和 manifest digest，运行：

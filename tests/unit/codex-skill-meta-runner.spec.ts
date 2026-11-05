@@ -440,6 +440,57 @@ describe('Codex Skill Meta runner example', () => {
     expect(execution?.args).toContain('mcp_servers.gear_refine.tools.refine_request.approval_mode="approve"')
     expect(execution?.args).not.toContain('--ephemeral')
     expect(execution?.codexHome).toBe(value.codexHome)
+    expect(execution?.args.at(-1)).toMatch(/Do not start, continue, publish, roll back, or repair an evolution\.$/u)
+  })
+
+  it('appends operator task context only to the assignment prompt', async () => {
+    const value = await fixture('success')
+    await writeFile(join(value.codexHome, 'auth.json'), JSON.stringify({ accessToken: 'fixture-access' }))
+    const context = 'Operator context: optimize the Titanic Python prediction pipeline.\n保留训练与验证隔离。\n'
+    const contextPath = join(value.root, 'task-context.txt')
+    await writeFile(contextPath, context)
+    value.environment.GEAR_META_TASK_CONTEXT_FILE = contextPath
+    const result = await runnerModule.runCodexSkillMetaRound(evolutionId, roundId, value.environment)
+    expect(result.status).toBe('candidate-seed-running')
+    const executions = (await loggedInvocations(value.logPath)).filter(invocation => invocation.args[0] === 'exec')
+    expect(executions).toHaveLength(2)
+    const preflight = executions.find(invocation => invocation.args.includes('--ephemeral'))!
+    const assignment = executions.find(invocation => !invocation.args.includes('--ephemeral'))!
+    expect(preflight.args.at(-1)).toContain('read_refine_resource exactly once')
+    expect(preflight.args.join('\n')).not.toContain(context)
+    expect(assignment.args.at(-1)).toMatch(/^Use the installed refine skill/u)
+    expect(assignment.args.at(-1)?.endsWith(`\n\n${context}`)).toBe(true)
+    expect(assignment.args).not.toContain(contextPath)
+    expect(assignment.args).toContain('mcp_servers.gear_refine.enabled_tools=["read_refine_resource","refine_request"]')
+  })
+
+  it('does not load the optional task context during resource preflight', async () => {
+    const value = await fixture()
+    await writeFile(join(value.codexHome, 'auth.json'), JSON.stringify({ accessToken: 'fixture-access' }))
+    value.environment.GEAR_META_TASK_CONTEXT_FILE = join(value.root, 'not-created.txt')
+    await expect(runnerModule.preflightCodexSkillMeta(value.environment)).resolves.toBeDefined()
+    expect(value.gear.claimCount()).toBe(0)
+    expect((await loggedInvocations(value.logPath)).filter(invocation => invocation.args[0] === 'exec')).toHaveLength(1)
+  })
+
+  it.each([
+    ['relative', 'must be an absolute path'],
+    ['missing', 'ENOENT'],
+    ['directory', 'must be a regular file'],
+    ['oversized', 'exceeds 64 KiB'],
+    ['empty', 'must contain nonempty UTF-8 text'],
+    ['nul', 'without NUL'],
+  ])('rejects %s task context before preflight or claiming an assignment', async (kind, message) => {
+    const value = await fixture('success')
+    const contextPath = join(value.root, 'task-context.txt')
+    if (kind === 'directory') await mkdir(contextPath)
+    if (kind === 'oversized') await writeFile(contextPath, '界'.repeat(21_846))
+    if (kind === 'empty') await writeFile(contextPath, ' \n')
+    if (kind === 'nul') await writeFile(contextPath, 'context\0text')
+    value.environment.GEAR_META_TASK_CONTEXT_FILE = kind === 'relative' ? 'context.txt' : contextPath
+    await expect(runnerModule.runCodexSkillMetaRound(evolutionId, roundId, value.environment)).rejects.toThrow(message)
+    expect(value.gear.calls).toEqual([])
+    expect(await loggedInvocations(value.logPath)).toEqual([])
   })
 
   it('recovers a dead private session once without starting another Codex process', async () => {
