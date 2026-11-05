@@ -327,6 +327,7 @@ export interface HitchCapabilities {
   trajectoryAnalysis: 1
   trajectoryEventsPage: 1
   verifierEvidence?: 1
+  runOutputArtifacts?: 1
 }
 
 export interface HitchTrajectoryContentExcerpt {

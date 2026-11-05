@@ -106,6 +106,7 @@
     "test:unit": "vitest run tests/unit",
     "test:composition": "vitest run tests/composition",
     "test:e2e": "vitest run tests/e2e",
+    "test:kaggle": "vitest run tests/unit/run-artifacts.spec.ts tests/unit/hitch-run-artifacts-client.spec.ts --maxWorkers=2 && node --test examples/kaggle-titanic/tests/*.test.mjs",
     "test:sandbox:platform": "vitest run tests/integration/sandbox-platform.spec.ts tests/unit/sandbox.spec.ts tests/unit/notebook-runtime.spec.ts tests/e2e/refine-skill.e2e.spec.ts",
     "pack:check": "npm run build && npm pack --dry-run",
     "prepack": "npm run build",

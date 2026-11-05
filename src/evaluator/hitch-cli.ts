@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { lstat, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { delimiter, resolve } from 'node:path'
+import { basename, delimiter, dirname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
 import type { HitchConfig } from '../config.js'
@@ -45,6 +45,8 @@ import type {
 } from '../types.js'
 import { isExactGitCommit } from '../types.js'
 import { EvaluationCleanupError } from './cleanup.js'
+import { parseRunOutputManifest, parseRunOutputExport } from './run-artifacts.js'
+import type { RunOutputIdentity, RunOutputManifest, RunOutputExport } from './run-artifacts.js'
 import type { EvaluationRerunReservation } from '../types.js'
 
 export interface HitchCliEvaluatorOptions extends HitchConfig {
@@ -1184,7 +1186,33 @@ export class HitchCliEvaluator implements RefineEvaluator, HitchTrajectoryReader
       trajectoryAnalysis: 1,
       trajectoryEventsPage: 1,
       ...(value.verifier_evidence === '1' ? { verifierEvidence: 1 as const } : {}),
+      ...(value.run_output_artifacts === '1' ? { runOutputArtifacts: 1 as const } : {}),
     }
+  }
+
+  /** Controller-only API; callers must preserve seed/held-out access boundaries. */
+  async listRunOutputArtifacts(expected: RunOutputIdentity, signal: AbortSignal): Promise<RunOutputManifest> {
+    if (this.daemonMode) throw new HitchEvaluationError('run output export currently requires direct mode', 'hitch_artifacts_unsupported')
+    if ((await this.inspectCapabilities(signal)).runOutputArtifacts !== 1) {
+      throw new HitchEvaluationError('Hitch requires run-output-artifacts@1', 'hitch_artifacts_unsupported')
+    }
+    if (!/^run_[a-f0-9]{32}$/u.test(expected.runId)) throw new TypeError('invalid run ID')
+    const result = await this.run(['--root', this.options.root, 'runs', 'artifacts', 'list', expected.runId, '--json'], this.repositoryPath, signal)
+    if (result.exitCode !== 0) throw new HitchEvaluationError(excerpt(result.stderr || result.stdout, 1_000), 'hitch_artifact_list_failed')
+    return parseRunOutputManifest(JSON.parse(result.stdout), expected)
+  }
+
+  async exportRunOutputArtifacts(manifest: RunOutputManifest, destination: string, signal: AbortSignal): Promise<RunOutputExport> {
+    // Re-read public metadata before using a previously saved manifest.
+    const current = await this.listRunOutputArtifacts({ runId: manifest.run_id, harnessCommit: manifest.harness_commit,
+      taskId: manifest.task_id, taskDigest: manifest.task_digest, evalId: manifest.eval_id, attempt: manifest.attempt }, signal)
+    if (current.digest !== manifest.digest) throw new HitchEvaluationError('run output manifest changed', 'hitch_artifact_version_mismatch')
+    const requested = resolve(destination)
+    const output = join(await realpath(dirname(requested)), basename(requested))
+    const result = await this.run(['--root', this.options.root, 'runs', 'artifacts', 'export', manifest.run_id,
+      '--manifest-digest', manifest.digest, '--out', output, '--json'], this.repositoryPath, signal)
+    if (result.exitCode !== 0) throw new HitchEvaluationError(excerpt(result.stderr || result.stdout, 1_000), 'hitch_artifact_export_failed')
+    return parseRunOutputExport(JSON.parse(result.stdout), manifest, output)
   }
 
   async inspectTrajectoryAnalysis(runId: string, signal: AbortSignal): Promise<HitchTrajectoryAnalysis> {
