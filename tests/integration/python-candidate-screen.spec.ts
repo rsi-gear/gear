@@ -40,10 +40,11 @@ it.each([
   const spec: RunSpec = {
     version: 1, kind: 'refine', benchmarkDigest: canonicalDigest('tasks'), configDigest: canonicalDigest('config'),
     implementationIdentity: identity, providerIdentity: targets.runtimeIdentity, championRevision: null,
-    targetSourceDigest: anchor.digest, lineage: null, algorithm: { name: 'pr_cases:ScreenBeforeEvaluation', options: {} },
+    targetSourceDigest: anchor.digest, lineage: null,
+    algorithm: { name: 'gear.algorithms.rrsi:RRSI', options: { config: { rounds: 1, candidates: 1, repetitions: 1 } } },
     validationMode: 'holdout', seed: 'fixed', seedTasks: [{ id: 'seed', family: 'format', estimated_cost: 1 }],
     heldOutTaskIds: ['private-held-out'], anchor,
-    budget: { rounds: 1, maxEvaluations: 2, maxCandidates: 1, repetitions: 1 },
+    budget: { rounds: 1, maxEvaluations: 3, maxCandidates: 2, repetitions: 1 },
     acceptance: { minimumGain: 0, maxHeldOutRegression: 0 }, objectiveIdentity: pythonObjective.identity,
     generationBudget: { version: 1, total: {}, perOperation: {} }, evaluationRepair: { maxRetries: 0, maxProjections: 0, backoffMs: [0] },
   }
@@ -58,20 +59,40 @@ it.each([
       const operation = request.operation
       const value: OperationReceipt = {
         result: { operation_id: request.operationId, kind: operation.kind, candidate_id: operation.candidate_id,
-          status: 'complete', data: { candidate_diff: 'model says clean' }, candidate_change: { files: [], omitted_patches: 0 } },
+          status: 'complete', data: null },
         candidate: null, evidence: [], physicalAttempts: 0, usage: {}, provenance: null,
       }
       if (operation.kind === 'generate_candidate') {
         generations++
-        await targets.adapter.prepare(targets.path('candidate'))
-        await writeFile(join(targets.path('candidate'), 'AGENTS.md'), content)
-        value.candidate = { id: 'candidate', parent_id: 'anchor', digest: canonicalDigest('untrusted provider digest') }
+        await targets.adapter.prepare(targets.path(operation.candidate_id!))
+        await writeFile(join(targets.path(operation.candidate_id!), 'AGENTS.md'), content)
+        value.candidate = { id: operation.candidate_id!, parent_id: operation.parent_id!, digest: canonicalDigest('untrusted provider digest') }
         receipts.set(request.operationId, value)
         throw new Error('response lost after generation')
       }
+      if (operation.kind === 'diagnose_seed') {
+        value.result.data = {
+          declined: false,
+          data: {
+            verdict: accepted ? 'accept' : 'reject',
+            reasons: accepted ? [] : ['critic rejected candidate'],
+            risk_notes: [],
+          },
+        }
+        receipts.set(request.operationId, value)
+        return value
+      }
       evaluations++
-      value.evidence = request.slots.map(slot => ({ candidate_id: operation.candidate_id!, task_id: slot.taskId,
-        repetition: slot.repetition, score: 1, status: 'valid', scope: operation.scope, feedback: 'passed' }))
+      const isBaseline = operation.candidate_id === anchor.id
+      value.evidence = request.slots.map(slot => ({
+        candidate_id: operation.candidate_id!,
+        task_id: slot.taskId,
+        repetition: slot.repetition,
+        score: isBaseline ? 0 : 1,
+        status: 'valid',
+        scope: operation.scope,
+        feedback: isBaseline ? 'failed' : 'passed',
+      }))
       value.physicalAttempts = value.evidence.length
       receipts.set(request.operationId, value)
       return value
@@ -86,20 +107,22 @@ it.each([
     await expect(run()).rejects.toThrow('response lost')
     const result = await run()
     expect(result.status).toBe('completed')
-    expect(generations).toBe(1)
-    expect(evaluations).toBe(accepted ? 1 : 0)
-    expect(result.physicalAttempts).toBe(accepted ? 1 : 0)
-    expect(result.seedEvidence).toHaveLength(accepted ? 1 : 0)
+    expect(generations).toBe(accepted || content.length > 64 * 1024 ? 1 : 2)
+    expect(evaluations).toBe(accepted ? 2 : 1)
+    expect(result.physicalAttempts).toBe(accepted ? 2 : 1)
+    expect(result.seedEvidence).toHaveLength(accepted ? 2 : 1)
     expect(result.heldOutEvidence).toEqual([])
-    const generated = result.operations[0]!, receipt = generated.receipt!
-    expect(receipt.result.data).toEqual({ candidate_diff: 'model says clean' })
+    const generated = result.operations.find(op => op.request.operation.kind === 'generate_candidate')!, receipt = generated.receipt!
     expect(receipt.result.candidate_change).toMatchObject({ from: { id: anchor.id, digest: anchor.digest },
       to: { id: receipt.candidate!.id, digest: receipt.candidate!.digest },
       omitted_patches: content.length > 64 * 1024 ? 1 : 0 })
     const inspection = await wrapped.inspect(generated.request, new AbortController().signal)
     expect(inspection).toEqual({ state: 'complete', receipt })
-    if (accepted) expect(result.completed[1]!.candidate_change).toBeUndefined()
-    else expect(result.state.data.rejected).toBeTruthy()
+    if (accepted) {
+      expect(result.completed.some(op => op.kind === 'evaluate_seed' && op.candidate_id === generated.request.operation.candidate_id)).toBe(true)
+    } else {
+      expect(result.state.data.screen_rejected || result.state.data.rejected).toBeTruthy()
+    }
     expect(result.seedEvidence.some(cell => cell.status === 'environment_failed')).toBe(false)
   } finally { await worker.dispose() }
 }, 30_000)
