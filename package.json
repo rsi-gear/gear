@@ -88,7 +88,6 @@
     "docs/training/managed-native.zh-CN.md",
     "docs/unattended-model-iteration-design.zh-CN.md",
     "docs/validation/unattended-scheduler-controlled-2026-10-15.json",
-    "examples/data-analysis-harness/**",
     "examples/mle-bench/**",
     "test-contracts/run-output-artifacts-v1.json"
   ],
@@ -114,7 +113,7 @@
     "test:project:package": "npm run build && node scripts/check-project-package.mjs",
     "test:hitch:control": "npm run build && node scripts/check-hitch-control.mjs",
     "test:benchmark:llm": "npm run build && node scripts/check-llm-scorer.mjs",
-    "test:analysis": "npm run build && node --test examples/data-analysis-harness/tests/*.test.mjs"
+    "test:mle-bench": "npm run build && node --test examples/mle-bench/tests/*.test.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "0.0.55",

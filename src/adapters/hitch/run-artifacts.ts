@@ -69,13 +69,17 @@ export function parseRunOutputManifest(input: unknown, expected: RunOutputIdenti
   if (
     value.schema_version !== '1' ||
     value.kind !== 'run-output-artifacts' ||
-    !/^run_[a-f0-9]{32}$/u.test(String(value.run_id)) ||
+    typeof value.run_id !== 'string' ||
+    !/^run_[a-f0-9]{32}$/u.test(value.run_id) ||
     value.run_id !== expected.runId ||
-    !/^eval_[a-f0-9]{32}$/u.test(String(value.eval_id)) ||
-    !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,255}$/u.test(String(value.task_id)) ||
+    typeof value.eval_id !== 'string' ||
+    !/^eval_[a-f0-9]{32}$/u.test(value.eval_id) ||
+    typeof value.task_id !== 'string' ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,255}$/u.test(value.task_id) ||
     !Number.isSafeInteger(value.attempt) ||
     (value.attempt as number) < 1 ||
-    !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(String(value.harness_commit)) ||
+    typeof value.harness_commit !== 'string' ||
+    !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(value.harness_commit) ||
     !sha(value.task_digest) ||
     !sha(value.digest) ||
     !Array.isArray(value.entries) ||

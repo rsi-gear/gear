@@ -26,6 +26,12 @@ describe('Hitch public run output contract', () => {
     expect(() => parseRunOutputManifest(fixture(), { runId: run, harnessCommit: 'e'.repeat(40) })).toThrow('provenance')
     expect(() => parseRunOutputManifest({ ...fixture(), entries: [] }, { runId: run })).toThrow('digest')
   })
+  it.each(['eval_id', 'task_id', 'harness_commit'] as const)('rejects a non-string %s even with a valid digest', field => {
+    const original = fixture()
+    const { digest: _, ...body } = { ...original, [field]: [original[field]] }
+    const manifest = { ...body, digest: `sha256:${createHash('sha256').update(canonical(body)).digest('hex')}` }
+    expect(() => parseRunOutputManifest(manifest, { runId: run })).toThrow('manifest')
+  })
   it.each(['../secret', '/absolute', 'output//predictions', 'output/./predictions', 'output\\predictions'])('rejects unsafe exported paths %s', path => {
     expect(() => parseRunOutputManifest(fixture(path), { runId: run })).toThrow('entry')
   })

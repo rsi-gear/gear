@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, readFile, writeFile, readdir } from 'node:fs/promises'
+import { mkdtemp, rm, mkdir, readFile, writeFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { command } from '../lib/common.mjs'
@@ -11,7 +11,32 @@ import { metrics, objective } from '../lib/operation-provider.mjs'
 import { defaultBudget, seal } from '../lib/contracts.mjs'
 import { decodeOof } from '../target-carrier/fixed/oof.mjs'
 import { internalScore, internalQuality } from '../lib/metrics.mjs'
+import { prepare } from '../prepare.mjs'
 const python = process.env.GEAR_MLEBENCH_PYTHON ?? 'python3'
+
+test('prepare freezes an MLE-bench project and requires its input contract before creating output', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'mlebench-prepare-')); t.after(() => rm(root, { recursive: true, force: true }))
+  const input = await fixture(root, competitions[1]), out = join(root, 'project')
+  await assert.rejects(prepare({ out }), /MLE-bench repository, data root and competition/)
+  assert.ok(!(await readdir(root)).includes('project'))
+  const hitch = join(root, 'hitch')
+  for (const name of ['analysis.mjs', 'runtime/analysis-verify.py', 'runtime/scoring.py', 'analysis-contracts/schemas.mjs']) {
+    const file = join(hitch, 'benchmark-packages/kaggle', name)
+    await mkdir(join(file, '..'), { recursive: true }); await writeFile(file, 'fixture')
+  }
+  const result = await prepare({ out, mlebenchRepository: input.repository, mlebenchData: input.dataRoot,
+    competition: input.competition, fixture: true, python, hitchRepository: hitch, hitchRoot: join(root, 'hitch-state'),
+    hitchExecutable: process.execPath, executorExecutable: process.execPath, executorRepository: hitch,
+    executorCommit: 'a'.repeat(40), baseImage: 'fixture@sha256:' + 'b'.repeat(64), platform: 'linux/arm64', model: 'fixture' })
+  assert.equal(result.task.protocol, 'analysis-task@2')
+  assert.equal(result.task.benchmark.competitionId, input.competition)
+  assert.equal(result.task.prediction.metric, 'auc-roc')
+  assert.equal(result.backend.refit.scope, 'mle-bench-public')
+  assert.deepEqual(await readFile(result.backend.train), await readFile(join(input.publicDir, 'train.csv')))
+  assert.equal(result.validationPlan.foldAssignments.length, 20)
+  assert.ok(!(await readdir(result.backend.publicDirectory)).includes('private'))
+  assert.deepEqual(JSON.parse(await readFile(join(out, 'project.json'))), result)
+})
 
 for (const competition of competitions) test(`${competition}: canonical prepared/public import and locked five-fold scope`, async t => {
   const root = await mkdtemp(join(tmpdir(), 'mlebench-')); t.after(() => rm(root, { recursive: true, force: true }))
@@ -52,7 +77,7 @@ test('submission contract preserves ID order and probability/multi-target domain
 })
 
 test('fixed scores and fold asset scopes match native MLE-bench graders', { skip: !process.env.GEAR_MLEBENCH_REPOSITORY }, async () => {
-  const result = await command(python, ['examples/data-analysis-harness/tests/mlebench-parity.py'], {
+  const result = await command(python, ['examples/mle-bench/tests/mlebench-parity.py'], {
     env: { ...process.env, PYTHONPATH: process.env.GEAR_MLEBENCH_REPOSITORY } })
   assert.equal(JSON.parse(result).status, 'passed')
 })
@@ -76,7 +101,7 @@ test('Gear objective maximizes utility while retaining minimizing unbounded RMSL
 
 test('800k-row May OOF evidence fits the artifact bound and retains IDs and precision', async t => {
   const root = await mkdtemp(join(tmpdir(), 'mlebench-oof-')); t.after(() => rm(root, { recursive: true, force: true }))
-  const script = "import sys,json,random; from pathlib import Path; sys.path.insert(0,'examples/data-analysis-harness/target-carrier/fixed'); from worker import write_oof; r=random.Random(0); values={str(i):[r.random()] for i in range(800000)}; p=write_oof(Path(sys.argv[1]),values); a=p.read_bytes(); write_oof(Path(sys.argv[1]),values); assert p.read_bytes()==a; print(json.dumps({'last':values['799999'][0]}))"
+  const script = "import sys,json,random; from pathlib import Path; sys.path.insert(0,'examples/mle-bench/target-carrier/fixed'); from worker import write_oof; r=random.Random(0); values={str(i):[r.random()] for i in range(800000)}; p=write_oof(Path(sys.argv[1]),values); a=p.read_bytes(); write_oof(Path(sys.argv[1]),values); assert p.read_bytes()==a; print(json.dumps({'last':values['799999'][0]}))"
   const expected = JSON.parse(await command(python, ['-c', script, root]))
   const bytes = await readFile(join(root, 'oof.json.gz')), decoded = decodeOof(bytes)
   assert.ok(bytes.length < 16 * 1024 ** 2); assert.equal(Object.keys(decoded).length, 800000)

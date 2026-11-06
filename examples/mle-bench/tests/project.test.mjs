@@ -72,6 +72,8 @@ test('Project + Python GEPA compares five experiments per harness, promotes and 
   const backend = backends.get(runId)
   assert.equal(backend.calls.length, 10)
   assert.equal(backend.deliveries, 2)
+  assert.ok(backend.calls.every(c => c.request.task.protocol === 'analysis-task@2'))
+  assert.ok(backend.calls.flatMap(c => c.history.history).every(e => e.protocol === 'analysis-experiment@2'))
   for (const harness of [original, candidate]) {
     const calls = backend.calls.filter(c => c.request.harness.commit === harness.commit)
     assert.deepEqual(calls.map(c => c.request.slotIndex), [1, 2, 3, 4, 5])

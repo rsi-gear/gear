@@ -38,7 +38,7 @@ describe('published Gear bundle', () => {
     expect(skill).toContain('native `refine_request` tool')
     const references = [...skill.matchAll(/\]\((references\/[^)]+)\)/gu)].map(match => match[1]!)
     expect(new Set(references)).toEqual(new Set([
-      'references/data-analysis-harness.md',
+      'references/mle-bench.md',
       'references/protocol.md',
       'references/target-harness-editing.md',
       'references/dsh-target-harness.md',

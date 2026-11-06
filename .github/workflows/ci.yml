@@ -83,8 +83,8 @@ jobs:
       - name: Test the installed npm and Python project journey
         run: sudo env "PATH=$PATH" "GEAR_PYTHON=$GEAR_PYTHON" "GEAR_SETUP_PYTHON=$GEAR_PYTHON" node scripts/check-project-package.mjs
 
-  analysis:
-    name: Kaggle / MLE-bench
+  mle-bench:
+    name: MLE-bench
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
@@ -102,7 +102,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       # Public Project + sandboxed Python GEPA is also exercised by the Quality job.
-      - run: node --test examples/data-analysis-harness/tests/protocol.test.mjs examples/data-analysis-harness/tests/integration.test.mjs examples/data-analysis-harness/tests/mlebench.test.mjs
+      - run: node --test examples/mle-bench/tests/protocol.test.mjs examples/mle-bench/tests/integration.test.mjs examples/mle-bench/tests/mlebench.test.mjs
 
   training-cpu:
     name: Training / CPU

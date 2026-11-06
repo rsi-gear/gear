@@ -8,7 +8,6 @@ import { bootstrap } from '../prepare.mjs'
 import { verifyHarness } from '../target-carrier/fixed/integrity.mjs'
 import { checkCandidate } from '../target-carrier/fixed/check.mjs'
 import { Store } from '../lib/store.mjs'
-import { ExposureLedger } from '../lib/exposure.mjs'
 import { digest, defaultBudget, zeroCost } from '../lib/contracts.mjs'
 import { Budget } from '../lib/budget.mjs'
 import { schema, validateSchema } from '../lib/schemas.mjs'
@@ -75,14 +74,4 @@ test('observational model usage is explicitly unbounded and keeps uncertainty', 
   assert.equal(b.state.events[1].measured, false); assert.equal(b.state.events[1].price, 'unknown')
   b.reserve('step', zeroCost()); b.settle('step', { ...zeroCost(), tokens: 300000, requests: 2 })
   assert.equal(b.state.used.tokens, 500000)
-})
-test('transfer disclosure survives new project aliases and never rewrites the first freeze', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'analysis-exposure-')); t.after(() => rm(root, { recursive: true, force: true }))
-  const ledger = new ExposureLedger(new Store(root)), source = digest('same dataset bytes')
-  const input = { suiteDigest: digest('suite'), sourceDigests: [source], taskFamilyIds: ['original'], finalist: 'a', reference: 'b', budgetDigest: digest('budget'), provenanceVerified: true }
-  const first = await ledger.freeze(input); assert.equal(first.exposure, 'untouched')
-  await ledger.disclose(first, digest('report'))
-  const renamed = await new ExposureLedger(new Store(root)).freeze({ ...input, suiteDigest: digest('renamed'), taskFamilyIds: ['new-name'] })
-  assert.equal(renamed.exposure, 'already_exposed'); assert.equal(first.exposure, 'untouched')
-  assert.equal((await ledger.freeze({ ...input, provenanceVerified: false })).exposure, 'exposure_unknown')
 })

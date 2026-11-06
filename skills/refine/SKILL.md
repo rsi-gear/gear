@@ -9,8 +9,8 @@ Use Gear as the authority for project state, sealed candidates, evaluation,
 algorithm decisions, budgets, and champion acceptance. You operate the project;
 its configured Meta and Target profiles execute separate managed jobs.
 
-For Kaggle/MLE-bench research projects, also read
-[the data-analysis harness protocol](references/data-analysis-harness.md).
+For MLE-bench research projects, also read
+[the MLE-bench adapter protocol](references/mle-bench.md).
 The analysis provider maps one seed slot to five sequential experiments and one
 fixed C5 delivery. Use the current Project API with `validation.mode: research`;
 Python algorithms own selection and promotion.

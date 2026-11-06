@@ -1,4 +1,4 @@
-# Data-analysis harness development
+# MLE-bench adapter
 
 The candidate is a general research method. The Target writes its own Python
 solution during execution. Edit only the declared prompts, skills, research

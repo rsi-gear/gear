@@ -22,7 +22,7 @@ describe('packaged skill resource identity', () => {
     expect(copy.resources).toEqual(bundled.resources)
     expect(copy.digest).toBe(bundled.digest)
     expect(copy.resources.map(value => value.logicalPath)).toEqual([
-      'SKILL.md', 'agents/openai.yaml', 'references/data-analysis-harness.md', 'references/dsh-target-harness.md',
+      'SKILL.md', 'agents/openai.yaml', 'references/dsh-target-harness.md', 'references/mle-bench.md',
       'references/protocol.md', 'references/target-harness-editing.md',
     ])
     expect(copy.digest).toBe(`sha256:${createHash('sha256').update(JSON.stringify(copy.resources)).digest('hex')}`)
