@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { cli, isMain } from './lib/common.mjs'
 import { json, atomicJson, optionalJson, Store } from './lib/store.mjs'
+import { researchConfig } from './lib/research-config.mjs'
 import { assert, digest } from './lib/contracts.mjs'
 import { metrics, objective } from './lib/operation-provider.mjs'
 import { copyRegisteredTarget, carrierForTarget } from './lib/target-source.mjs'
@@ -31,6 +32,7 @@ export async function buildProject(directory, { metaProfile, checkpointRef, regi
   const head = await store.load('projects', project.projectId)
   checkpointRef ??= head.checkpoint
   const checkpoint = await store.get(checkpointRef)
+  const research = researchConfig(project.research)
   if (!registered) {
     const event = head.stage ? await store.get(head.stage) : null
     const commit = event?.adoptedCommit ?? project.harness.commit
@@ -59,16 +61,18 @@ export async function buildProject(directory, { metaProfile, checkpointRef, regi
   await immutableJson(join(cohort, 'benchmark.yaml'), { version: 1, source: 'tasks.jsonl', template: 'text' })
   const guidance = await readFile(new URL('./meta-task-context.txt', import.meta.url), 'utf8')
   const task = { id: project.task.taskId, family: project.task.taskFamilyId, split: 'seed', expected: 'sequence-receipt',
-    instruction: `analysis-five-rollout@2\n${project.task.description}\nEach method receives exactly five sequential experiments from checkpoint ${checkpoint.digest}. `
+    instruction: `analysis-research-sequence@1\n${project.task.description}\nEach method receives ${research.maxExperiments} sequential experiment slots from checkpoint ${checkpoint.digest}. `
       + 'Optimize prompts, skills and workflows/research/{policy.py,memory.py,policy.json}. Preserve the empty preset and fixed carrier. '
-      + 'The provider executes and scores the final C5 source. Internal folds are diagnostic only. This is shared-set development evidence.\n\n' + guidance }
+      + 'The provider executes and scores the final selected source. All experiments use the same held-out validation set. Internal CV is an optional training choice. This is shared-set development evidence.\n\n' + guidance }
   const row = JSON.stringify(task) + '\n'
   try { await writeFile(join(cohort, 'tasks.jsonl'), row, { flag: 'wx' }) }
   catch (error) { if (error.code !== 'EEXIST') throw error; assert(await readFile(join(cohort, 'tasks.jsonl'), 'utf8') === row, 'frozen task changed') }
   return { cohort, config, project, store, checkpoint, registered, configuration,
-    budgetPreview: { sequences: maxCandidates + 1, experimentsPerHarness: 5, researchRollouts: 5 * (maxCandidates + 1),
+    budgetPreview: { sequences: maxCandidates + 1, experimentsPerHarness: research.maxExperiments, researchRollouts: research.maxExperiments * (maxCandidates + 1),
+      validation: { mode: project.task.protocol === 'analysis-task@3' ? 'holdout' : 'legacy-cv', ...research.validation },
       deliveries: maxCandidates + 1, repetitions: 1, sequenceWallSeconds: project.budget.wallSeconds,
-      sequenceCpuSeconds: project.budget.cpuSeconds, model: project.modelAccounting } }
+      sequenceCpuSeconds: project.budget.cpuSeconds, experimentWallSeconds: project.budget.experimentWallSeconds,
+      experimentCpuSeconds: project.budget.experimentCpuSeconds, model: project.modelAccounting } }
 }
 
 export async function retainedHarness(built, report) {

@@ -1,4 +1,4 @@
-"""Validate prepared MLE-bench tables and freeze folds; never re-split its test."""
+"""Freeze one research train/validation split; never re-split the benchmark test."""
 import argparse
 import csv
 import hashlib
@@ -71,13 +71,15 @@ def prepare(metadata, out):
         raise ValueError('binary labels required by this runtime profile')
     if metric == 'auc-roc' and labels != ['0', '1']:
         raise ValueError('the pinned AUC profile expects 0/1 labels')
-    rng, assignments = random.Random(42), [None] * len(train_ids)
+    validation = metadata['validation']
+    rng, assignments = random.Random(validation['seed']), [0] * len(train_ids)
     for indices in groups.values() if groups else [list(range(len(train_ids)))]:
-        if len(indices) < 5:
-            raise ValueError('at least five visible rows per stratum required')
+        if len(indices) < 2:
+            raise ValueError('at least two visible rows per stratum required')
         rng.shuffle(indices)
-        for n, index in enumerate(indices):
-            assignments[index] = n % 5
+        count = max(1, min(len(indices) - 1, math.floor(len(indices) * validation['fraction'] + .5)))
+        for index in indices[:count]:
+            assignments[index] = 1
     prediction = {'kind': 'tabular', 'idColumn': idc, 'targetColumns': targets, 'metric': metric, 'labels': labels}
     # Private answers stay in the verifier-only directory. Extra feature columns
     # in the native MLE-bench private/test.csv are not exposed to Target.
@@ -86,8 +88,8 @@ def prepare(metadata, out):
         writer = csv.DictWriter(stream, fieldnames=[idc, *targets], lineterminator='\n'); writer.writeheader()
         for _, row in records(answers):
             writer.writerow({k: row[k] for k in [idc, *targets]})
-    plan = {'protocol': 'analysis-validation-plan@2', 'seed': 42, 'metric': metric,
-        'trainDigest': metadata['trainDigest'], 'foldAssignments': assignments}
+    plan = {'protocol': 'analysis-holdout-plan@1', 'seed': validation['seed'], 'metric': metric,
+        'trainDigest': metadata['trainDigest'], 'validationFraction': validation['fraction'], 'assignments': assignments}
     (out / 'validation.json').write_text(json.dumps(plan))
     result = {'prediction': prediction, 'predictIds': sample_ids, 'refitIds': sample_ids,
         'rows': {'train': len(train_ids), 'predict': len(query_ids), 'refitTrain': len(train_ids), 'refitPredict': len(query_ids)}}

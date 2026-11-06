@@ -81,5 +81,11 @@ for metric, targets in [('auc-roc',['label']),('mean-column-wise-rmsle',['energy
     assert result['status']=='completed' and len(result['foldMetrics'])==5, result
     assert result['pooledScore'] == (1 if len(targets)==1 else 0), result
     assert result['pooledUtility']==1 and len(json.loads(gzip.decompress(Path(result['oofPath']).read_bytes())))==20
+    holdout = {'protocol': 'analysis-holdout-plan@1', 'seed': 42, 'metric': metric,
+               'trainDigest': plan['trainDigest'], 'validationFraction': .2, 'assignments': [0]*16+[1]*4}
+    result = evaluate({**job, 'outputDirectory': '/run/holdout-predictions'}, {'solution.py': tabular}, data, prediction, holdout)
+    assert result['status'] == 'completed' and result['validationRows'] == 4, result
+    assert result['validationScore'] == (1 if len(targets) == 1 else 0) and result['validationUtility'] == 1, result
+    assert set(json.loads(gzip.decompress(Path(result['predictionsPath']).read_bytes()))) == {'16', '17', '18', '19'}
 print(json.dumps({'isolation': 'passed', 'fiveFolds': 'passed', 'pooledAccuracy': r['pooledAccuracy'], 'candidateFailure': 'passed',
                   'aucAndMultiTargetRmsle':'passed','cpuLimit': 'passed', 'wallLimit': 'passed', 'memoryLimit': 'passed', 'unsafeOutputs': 'passed'}))

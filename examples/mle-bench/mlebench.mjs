@@ -22,14 +22,14 @@ export async function main() {
     assert(v.project && v.sequence && v.out, '--project, --sequence, --out required')
     const project = await json(join(resolve(v.project), 'project.json')), store = new Store(join(resolve(v.project), 'research'))
     const state = await store.load('sequences', v.sequence.replace(/^sha256:/, ''))
-    assert(state?.receipt && state.receipt.delivery.status === 'completed' && project.task.benchmark, 'valid MLE-bench C5 required')
+    assert(state?.receipt && state.receipt.delivery.status === 'completed' && project.task.benchmark, 'valid MLE-bench final selected solution required')
     verify(state.plan); verify(state.receipt)
     assert(state.plan.task.digest === project.task.digest && state.receipt.planDigest === state.plan.digest
-      && state.receipt.selections[4].incumbentSolutionDigest === state.receipt.delivery.solutionDigest, 'export must use this task and its actual C5')
+      && state.receipt.selections.at(-1).incumbentSolutionDigest === state.receipt.delivery.solutionDigest, 'export must use this task and its actual final selected solution')
     const backend = new HitchBackend(store, project.backend); await backend.admit(state.plan); await backend.verifyReceipt(state.receipt)
     const delivered = state.receipt.delivery, op = await store.load('executions', delivered.requestDigest.slice(7))
     const bytes = await readFile(join(op.destination, 'output/predictions.csv'))
-    assert(sha(bytes) === delivered.predictionsDigest, 'sealed C5 predictions changed')
+    assert(sha(bytes) === delivered.predictionsDigest, 'sealed final selected solution predictions changed')
     validateTabularSubmission(bytes, project.task)
     const out = resolve(v.out); await mkdir(out, { recursive: true })
     try { await writeFile(join(out, 'submission.csv'), bytes, { flag: 'wx' }) }

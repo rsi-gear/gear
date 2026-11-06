@@ -5,7 +5,7 @@ import { cli, isMain } from './lib/common.mjs'
 import { Store, json } from './lib/store.mjs'
 import { HitchBackend } from './lib/hitch-backend.mjs'
 import { ResearchProject } from './lib/project.mjs'
-import { assert, seal, digest, advance, defaultBudget } from './lib/contracts.mjs'
+import { assert, seal, digest, advance, researchOverhead } from './lib/contracts.mjs'
 import { sequencePlan, SequenceRunner, validateRollout } from './lib/sequence.mjs'
 import { withinDeadline } from './lib/deadline.mjs'
 
@@ -20,24 +20,27 @@ export async function bootstrapCheckpoint(store, backend, project, { signal } = 
   await backend.admit({ task: project.task, model: project.model, budget: project.budget, runtimeDigest: project.task.runtimeDigest })
   assert(initial.history.length === 0, 'bootstrap requires the declared empty origin')
   const plan = seal({ protocol: 'analysis-bootstrap-plan@1', checkpointDigest: initial.digest,
-    harness: project.harness, model: project.model, task: project.task, cpuSeconds: 300, wallSeconds: 600 })
-  const request = existing?.request ?? seal({ protocol: 'analysis-rollout-request@1', sequenceId: plan.digest.slice(7), slotIndex: 1,
+    harness: project.harness, model: project.model, task: project.task,
+    cpuSeconds: project.budget.experimentCpuSeconds + researchOverhead.cpuSeconds,
+    wallSeconds: project.budget.experimentWallSeconds + researchOverhead.wallSeconds })
+  const request = existing?.request ?? seal({ protocol: 'analysis-rollout-request@2', maxExperiments: 1, sequenceId: plan.digest.slice(7), slotIndex: 1,
     planDigest: plan.digest, task: project.task, harness: project.harness, model: project.model, runtimeDigest: project.task.runtimeDigest,
     checkpointDigest: initial.digest, checkpointRef: project.checkpointRef, previousRolloutReceiptDigest: null, eligibleSolutionDigests: [],
-    allowance: { wallSeconds: 600, cpuSeconds: 300, tools: 30, tokens: null, requests: null }, experimentWallSeconds: 240, experimentCpuSeconds: 240 })
+    allowance: { wallSeconds: plan.wallSeconds, cpuSeconds: plan.cpuSeconds, tools: 30, tokens: null, requests: null },
+    experimentWallSeconds: project.budget.experimentWallSeconds, experimentCpuSeconds: project.budget.experimentCpuSeconds })
   const controller = new ResearchProject(store, project)
-  await controller.reserveAuxiliary('bootstrap', plan.digest, { wallSeconds: 600, cpuSeconds: 300 })
+  await controller.reserveAuxiliary('bootstrap', request.planDigest, { wallSeconds: request.allowance.wallSeconds, cpuSeconds: request.allowance.cpuSeconds })
   const started = existing?.started ?? Date.now()
   await store.save('bootstraps', key, { status: 'running', request, started })
-  const result = validateRollout(await withinDeadline(backend, request, started + 600000,
+  const result = validateRollout(await withinDeadline(backend, request, started + request.allowance.wallSeconds * 1000,
     signal => backend.rollout(request, initial, { signal }), { signal }), request, initial, [], initial)
   const next = advance(initial, result.experiment, result.solutions, result.selectedSolutionDigest, result.outputManifestDigest)
   const checkpointRef = await store.advanceProject(project.projectId, project.checkpointRef, next,
-    { protocol: 'analysis-bootstrap-completion@1', planDigest: plan.digest, receiptDigest: result.digest })
+    { protocol: 'analysis-bootstrap-completion@1', planDigest: request.planDigest, receiptDigest: result.digest })
   const settlement = { cost: result.cost, wallSeconds: (Date.now() - started) / 1000, receiptDigest: result.digest }
-  const record = { status: 'complete', request, started, checkpointRef, receipt: result, planDigest: plan.digest, settlement }
+  const record = { status: 'complete', request, started, checkpointRef, receipt: result, planDigest: request.planDigest, settlement }
   await store.save('bootstraps', key, record)
-  await controller.settleAuxiliary('bootstrap', plan.digest, settlement)
+  await controller.settleAuxiliary('bootstrap', request.planDigest, settlement)
   return record
 }
 
@@ -59,7 +62,7 @@ export async function main() {
     const start = await store.get(state.plan.checkpointRef)
     if (action === 'recover-delivery') {
       const harness = state.plan.harnesses.find(h => h.commit === v.commit); assert(harness, 'harness outside stage')
-      const plan = sequencePlan({ task: project.task, checkpoint: start, harness, model: project.model, budget: state.plan.budget, runtimeDigest: project.task.runtimeDigest })
+      const plan = sequencePlan({ task: project.task, checkpoint: start, harness, model: project.model, budget: state.plan.budget, research: { maxExperiments: state.plan.experiments }, runtimeDigest: project.task.runtimeDigest })
       const sequence = await store.load('sequences', plan.digest.slice(7))
       assert(sequence?.status === 'selected' && sequence.pending?.request.protocol === 'analysis-delivery-request@1', 'no pending sealed delivery')
       assert(Date.now() < sequence.budget.startedAt + plan.budget.wallSeconds * 1000, 'original sequence deadline expired; cannot reset budget')
@@ -67,7 +70,7 @@ export async function main() {
     }
     if (action === 'run') {
       const harness = state.plan.harnesses.find(h => h.commit === (v.commit ?? project.harness.commit)); assert(harness, 'harness outside frozen stage')
-      const plan = sequencePlan({ task: project.task, checkpoint: start, harness, model: project.model, budget: state.plan.budget, runtimeDigest: project.task.runtimeDigest })
+      const plan = sequencePlan({ task: project.task, checkpoint: start, harness, model: project.model, budget: state.plan.budget, research: { maxExperiments: state.plan.experiments }, runtimeDigest: project.task.runtimeDigest })
       await controller.reserveSequence(plan)
       const receipt = await new SequenceRunner(store, backend).run(plan, start, { signal: abort.signal })
       await controller.settleSequence(plan, receipt); console.log(JSON.stringify(receipt, null, 2)); return
@@ -77,7 +80,7 @@ export async function main() {
       const decisionRef = v['decision-ref'].startsWith('sha256:') ? v['decision-ref'] : await store.put(await json(resolve(v['decision-ref'])))
       const receipts = []
       for (const harness of state.plan.harnesses) {
-        const plan = sequencePlan({ task: project.task, checkpoint: start, harness, model: project.model, budget: state.plan.budget, runtimeDigest: project.task.runtimeDigest })
+        const plan = sequencePlan({ task: project.task, checkpoint: start, harness, model: project.model, budget: state.plan.budget, research: { maxExperiments: state.plan.experiments }, runtimeDigest: project.task.runtimeDigest })
         const branch = await store.load('sequences', plan.digest.slice(7)); assert(branch?.receipt, 'all planned branches must be complete')
         await backend.verifyReceipt(branch.receipt); receipts.push(branch.receipt)
       }

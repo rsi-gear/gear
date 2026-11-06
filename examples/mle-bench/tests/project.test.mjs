@@ -14,7 +14,7 @@ import { command } from '../lib/common.mjs'
 import { ResearchProject } from '../lib/project.mjs'
 import { Backend, checkpoint, task } from './project-fixture.mjs'
 
-test('Project + Python GEPA compares five experiments per harness, promotes and resumes without resampling', async t => {
+test('Project + Python GEPA compares configured experiment budgets per harness, promotes and resumes without resampling', async t => {
   const root = await mkdtemp(join(tmpdir(), 'analysis-project-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const previous = process.env.GEAR_PROFILE_ROOT
@@ -28,8 +28,9 @@ test('Project + Python GEPA compares five experiments per harness, promotes and 
   await command('git', ['commit', '--no-gpg-sign', '-m', 'Registered method B'], { cwd: target.targetRepository })
   const candidate = { commit: await command('git', ['rev-parse', 'HEAD'], { cwd: target.targetRepository }), manifestDigest: manifest.digest }
   const store = new Store(join(root, 'research')), start = checkpoint(), checkpointRef = await store.put(start)
-  const project = { projectId: 'test', ...target, harness: original, task, model: 'fixture', runtime: {},
-    budget: defaultBudget, modelAccounting: { mode: 'usage-only' }, projectLimits: { maxSequences: 2, cpuSeconds: 20000, wallSeconds: 20000 } }
+  const project = { projectId: 'test', research: { maxExperiments: 3 }, ...target, harness: original, task, model: 'fixture', runtime: {},
+    budget: defaultBudget, modelAccounting: { mode: 'usage-only' },
+    projectLimits: { maxSequences: 2, cpuSeconds: 2 * defaultBudget.cpuSeconds, wallSeconds: 2 * defaultBudget.wallSeconds } }
   await atomicJson(join(root, 'project.json'), project)
   await store.save('projects', 'test', { checkpoint: checkpointRef, stage: null })
   await new ResearchProject(store, project).stage('comparison', [original, candidate])
@@ -70,21 +71,21 @@ test('Project + Python GEPA compares five experiments per harness, promotes and 
   assert.equal(report.scores.retained.seed.score, .8)
   assert.equal((await retainedHarness(built, report)).commit, candidate.commit)
   const backend = backends.get(runId)
-  assert.equal(backend.calls.length, 10)
+  assert.equal(backend.calls.length, 6)
   assert.equal(backend.deliveries, 2)
-  assert.ok(backend.calls.every(c => c.request.task.protocol === 'analysis-task@2'))
-  assert.ok(backend.calls.flatMap(c => c.history.history).every(e => e.protocol === 'analysis-experiment@2'))
+  assert.ok(backend.calls.every(c => c.request.task.protocol === 'analysis-task@3'))
+  assert.ok(backend.calls.flatMap(c => c.history.history).every(e => e.protocol === 'analysis-experiment@3'))
   for (const harness of [original, candidate]) {
     const calls = backend.calls.filter(c => c.request.harness.commit === harness.commit)
-    assert.deepEqual(calls.map(c => c.request.slotIndex), [1, 2, 3, 4, 5])
-    assert.deepEqual(calls.map(c => c.history.history.length), [0, 1, 2, 3, 4])
+    assert.deepEqual(calls.map(c => c.request.slotIndex), [1, 2, 3])
+    assert.deepEqual(calls.map(c => c.history.history.length), [0, 1, 2])
   }
   const journal = await application.store.read(runId)
   assert.equal(journal.heldOutEvidence.length, 0)
   assert.equal(journal.physicalAttempts, 2)
   assert.equal(journal.operations.filter(o => o.request.operation.kind === 'evaluate_seed' && o.reservedAttempts > 0).length, 2)
   assert.equal((await application.resume(runId)).retained, report.retained)
-  assert.equal(backend.calls.length, 10)
+  assert.equal(backend.calls.length, 6)
   const archive = await application.archive(runId)
   assert.ok(JSON.stringify(archive).includes('analysis-operation@1'))
 
@@ -111,5 +112,5 @@ test('Project + Python GEPA compares five experiments per harness, promotes and 
   const cancelled = { ...evaluation.request, operationId: digest('cancel before submission') }
   assert.equal((await provider.cancel(cancelled)).cancelled, true)
   await assert.rejects(provider.submit(cancelled), /cancelled/)
-  assert.equal(backend.calls.length, 10)
+  assert.equal(backend.calls.length, 6)
 })

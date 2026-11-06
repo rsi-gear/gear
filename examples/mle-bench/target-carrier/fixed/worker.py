@@ -138,6 +138,8 @@ def run_python(files, inputs, entrypoint, argv, wall_seconds, cpu_seconds, max_o
 
 
 def evaluate(job, files, train_bytes, schema, plan):
+    if plan.get('protocol') == 'analysis-holdout-plan@1':
+        return evaluate_holdout(job, files, train_bytes, schema, plan)
     if schema.get('kind') == 'tabular':
         return evaluate_tabular(job, files, train_bytes, schema, plan)
     fields, rows = read_csv(train_bytes)
@@ -213,6 +215,44 @@ def public_assets(job, train_ids, predict_ids, cv=False):
     return result
 
 
+def holdout_scope(train_bytes, schema, plan):
+    fields, rows = read_csv(train_bytes)
+    assignments = plan['assignments']
+    if (len(assignments) != len(rows) or any(type(a) is not int or a not in (0, 1) for a in assignments)
+            or set(assignments) != {0, 1} or plan['trainDigest'] != 'sha256:' + hashlib.sha256(train_bytes).hexdigest()
+            or plan['metric'] != schema['metric']):
+        raise ValueError('invalid or changed holdout split')
+    by_id = {r[schema['idColumn']]: r for r in rows}
+    if len(by_id) != len(rows):
+        raise ValueError('duplicate training IDs')
+    training = [r[schema['idColumn']] for r, part in zip(rows, assignments) if part == 0]
+    validation = [r[schema['idColumn']] for r, part in zip(rows, assignments) if part == 1]
+    inputs = {'train.csv': write_csv(fields, [by_id[k] for k in training]),
+              'predict.csv': write_csv([f for f in fields if f not in schema['targetColumns']], [by_id[k] for k in validation])}
+    return by_id, training, validation, inputs
+
+
+def evaluate_holdout(job, files, train_bytes, schema, plan):
+    by_id, training, validation, inputs = holdout_scope(train_bytes, schema, plan)
+    inputs.update(public_assets(job, set(training), set(validation), cv=True))
+    result = run_python(files, inputs, job['entrypoint'], ['--train', '/work/inputs/train.csv', '--predict', '/work/inputs/predict.csv',
+        '--output', '/work/scratch/predictions.csv', '--seed', str(job['trainingSeed'])], job['wallSeconds'], job['cpuSeconds'])
+    value, predictions_path, status, logs = None, None, 'candidate_failed', [result['logs']]
+    try:
+        if result['exitCode'] or result['limit']:
+            raise ValueError('candidate execution failed')
+        predictions = scoring.predictions(result['outputs']['predictions.csv'], schema, validation)
+        value = scoring.score(schema, by_id, predictions, validation)
+        out = Path(job['outputDirectory']); out.mkdir(parents=True, exist_ok=True)
+        predictions_path = str(write_predictions(out, predictions))
+        status = 'completed'
+    except (ValueError, KeyError, OverflowError, csv.Error) as error:
+        value = None; logs.append({'validationError': str(error)})
+    return {'status': status, 'metric': schema['metric'], 'validationRows': len(validation),
+            'validationScore': value, 'validationUtility': scoring.quality(schema['metric'], value) if value is not None else None,
+            'predictionsPath': predictions_path, 'cpuSeconds': result['cpuSeconds'], 'wallSeconds': result['wallSeconds'], 'logs': logs}
+
+
 def evaluate_tabular(job, files, train_bytes, schema, plan):
     fields, rows = read_csv(train_bytes)
     by_id = {r[schema['idColumn']]: r for r in rows}
@@ -254,17 +294,21 @@ def evaluate_tabular(job, files, train_bytes, schema, plan):
     return result
 
 
-def write_oof(out, oof):
+def write_predictions(out, predictions, name='validation-predictions.json.gz'):
     # May 2022 has 800k OOF rows. Deterministic gzip keeps the public artifact
     # within Hitch's 16 MiB file bound without discarding IDs or precision.
-    raw = json.dumps(oof, separators=(',', ':')).encode()
+    raw = json.dumps(predictions, separators=(',', ':')).encode()
     if len(raw) > 64 * 1024 ** 2:
         raise ValueError('decoded OOF exceeds runtime limit')
     encoded = gzip.compress(raw, compresslevel=6, mtime=0)
     if len(encoded) > 16 * 1024 ** 2:
         raise ValueError('OOF artifact exceeds runtime file limit')
-    path = Path(out) / 'oof.json.gz'; path.write_bytes(encoded)
+    path = Path(out) / name; path.write_bytes(encoded)
     return path
+
+
+def write_oof(out, oof):
+    return write_predictions(out, oof, 'oof.json.gz')
 
 
 def main():
@@ -277,7 +321,10 @@ def main():
         result = evaluate(job, files, input_csv(job['train']), job['prediction'], job['validationPlan'])
     else:
         inputs = {name: input_csv(path) if name.endswith('.csv') else regular(path) for name, path in job['inputs'].items()}
-        if job.get('prediction', {}).get('kind') == 'tabular':
+        if job.get('validationPlan', {}).get('protocol') == 'analysis-holdout-plan@1':
+            _, training, validation, inputs = holdout_scope(inputs['train.csv'], job['prediction'], job['validationPlan'])
+            inputs.update(public_assets(job, set(training), set(validation), cv=True))
+        elif job.get('prediction', {}).get('kind') == 'tabular':
             idc = job['prediction']['idColumn']
             inputs.update(public_assets(job, {r[idc] for r in read_csv(inputs['train.csv'])[1]}, {r[idc] for r in read_csv(inputs['predict.csv'])[1]}))
         result = run_python(files, inputs, job['entrypoint'], job['argv'], job['wallSeconds'], job['cpuSeconds'])

@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto'
 import { validateSchema } from './schemas.mjs'
 import { utility } from './metrics.mjs'
+import { researchConfig } from './research-config.mjs'
 
-export const PROTOCOL = 'analysis-five-rollout@1'
+export const PROTOCOL = 'analysis-research-sequence@1'
 export const sha = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`
 export function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
@@ -30,9 +31,19 @@ export const dimensions = ['cpuSeconds', 'tokens', 'requests', 'tools']
 export const zeroCost = () => Object.fromEntries(dimensions.map(k => [k, 0]))
 export function cost(value) { keys(value, dimensions); for (const k of dimensions) finite(value[k], k); return value }
 export const addCost = (a, b) => Object.fromEntries(dimensions.map(k => [k, a[k] + b[k]]))
-export const defaultBudget = Object.freeze({ wallSeconds: 1800, reserveSeconds: 300, cpuSeconds: 2400,
-  reserveCpuSeconds: 600, tokens: null, requests: null, tools: 150, reserveTools: 10,
-  experimentWallSeconds: 240, experimentCpuSeconds: 300, maxFileBytes: 16 * 1024 ** 2, maxOutputBytes: 64 * 1024 ** 2 })
+// Two allocated CPUs may consume two CPU seconds per second of wall time.
+export const trainingLimits = Object.freeze({ wallSeconds: 30 * 60, cpuSeconds: 2 * 30 * 60 })
+export const researchOverhead = Object.freeze({ wallSeconds: 5 * 60, cpuSeconds: 60 })
+export function researchBudget(research) {
+  const { maxExperiments } = researchConfig(research)
+  return { wallSeconds: maxExperiments * (trainingLimits.wallSeconds + researchOverhead.wallSeconds) + trainingLimits.wallSeconds,
+    reserveSeconds: trainingLimits.wallSeconds,
+    cpuSeconds: maxExperiments * (trainingLimits.cpuSeconds + researchOverhead.cpuSeconds) + trainingLimits.cpuSeconds,
+    reserveCpuSeconds: trainingLimits.cpuSeconds, tokens: null, requests: null, tools: 150, reserveTools: 10,
+    experimentWallSeconds: trainingLimits.wallSeconds, experimentCpuSeconds: trainingLimits.cpuSeconds,
+    maxFileBytes: 16 * 1024 ** 2, maxOutputBytes: 64 * 1024 ** 2 }
+}
+export const defaultBudget = Object.freeze(researchBudget())
 export function validateBudget(b) {
   keys(b, Object.keys(defaultBudget))
   for (const [k, v] of Object.entries(b)) if (!(v === null && ['tokens', 'requests'].includes(k))) finite(v, k)
@@ -46,15 +57,24 @@ export function validateExperiment(e) {
   validateSchema('Experiment', e)
   keys(e, ['protocol', 'experimentId', 'sequenceId', 'rolloutRunId', 'slotIndex', 'parentExperimentId', 'operator',
     'sourceDigest', 'validationPlanDigest', 'trainingSeed', 'claim', 'execution', 'interpretation', 'digest'])
-  verify(e); assert(['analysis-experiment@1', 'analysis-experiment@2'].includes(e.protocol), 'invalid experiment protocol')
-  assert(Number.isInteger(e.slotIndex) && e.slotIndex >= 1 && e.slotIndex <= 5, 'invalid slot')
+  const holdout = e.protocol === 'analysis-experiment@3'
+  verify(e); assert(['analysis-experiment@1', 'analysis-experiment@2', 'analysis-experiment@3'].includes(e.protocol), 'invalid experiment protocol')
+  assert(Number.isSafeInteger(e.slotIndex) && e.slotIndex >= 1 && (holdout || e.slotIndex <= 5), 'invalid slot')
   assert(['draft', 'debug', 'improve', 'confirm', 'reuse'].includes(e.operator), 'invalid operator')
   keys(e.claim, ['hypothesis', 'intendedChange']); keys(e.interpretation, ['conclusion', 'limitations'])
-  const generic = e.protocol === 'analysis-experiment@2'
-  keys(e.execution, ['status', 'receiptDigest', 'physicalAttemptRefs', 'reusedEvidenceRefs', 'cost', 'foldMetrics', 'oofDigest',
-    ...(generic ? ['metric', 'pooledScore', 'pooledUtility'] : ['pooledAccuracy'])])
+  const generic = e.protocol !== 'analysis-experiment@1'
+  keys(e.execution, ['status', 'receiptDigest', 'physicalAttemptRefs', 'reusedEvidenceRefs', 'cost',
+    ...(holdout ? ['metric', 'validationScore', 'validationUtility', 'validationRows', 'predictionsDigest']
+      : ['foldMetrics', 'oofDigest', ...(generic ? ['metric', 'pooledScore', 'pooledUtility'] : ['pooledAccuracy'])])])
   assert(['completed', 'reused', 'generation_failed', 'candidate_failed'].includes(e.execution.status), 'unavailable experiment cannot advance history')
   cost(e.execution.cost)
+  if (holdout) {
+    if (['completed', 'reused'].includes(e.execution.status)) {
+      assert(e.sourceDigest && e.execution.predictionsDigest && e.execution.validationRows > 0, 'successful experiment requires held-out predictions')
+      assert(Math.abs(utility(e.execution.metric, e.execution.validationScore) - e.execution.validationUtility) < 1e-12, 'validation utility mismatch')
+    } else assert(e.execution.validationScore === null && e.execution.validationUtility === null && e.execution.predictionsDigest === null, 'failed experiment has no validation score')
+    return e
+  }
   if (generic) {
     if (['completed', 'reused'].includes(e.execution.status)) {
       assert(e.sourceDigest && e.execution.foldMetrics.length === 5, 'successful experiment requires source and five folds')

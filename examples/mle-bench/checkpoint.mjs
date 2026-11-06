@@ -10,7 +10,7 @@ import { cli, isMain } from './lib/common.mjs'
 export async function exportCheckpoint(store, reference, directory) {
   const checkpoint = validateCheckpoint(await store.get(reference)); await store.verifySources(checkpoint)
   await mkdir(join(directory, 'objects'), { recursive: true })
-  const ids = [...new Set([...checkpoint.solutions.flatMap(s => s.files.map(f => f.digest)), ...checkpoint.history.map(e => e.execution.oofDigest).filter(Boolean)])]
+  const ids = [...new Set([...checkpoint.solutions.flatMap(s => s.files.map(f => f.digest)), ...checkpoint.history.map(e => (e.execution.predictionsDigest ?? e.execution.oofDigest)).filter(Boolean)])]
   for (const id of ids) await writeFile(join(directory, 'objects', id.slice(7)), await store.bytes(id), { mode: 0o444 })
   await atomicJson(join(directory, 'checkpoint.json'), checkpoint)
   return { checkpointRef: reference, checkpointDigest: checkpoint.digest, sourceObjects: ids.length }
@@ -37,7 +37,7 @@ export async function importCheckpoint(store, backend, expectedScope, directory)
     const bytes = await readFile(join(directory, 'objects', f.digest.slice(7)))
     assert(bytes.length === f.bytes && sha(bytes) === f.digest, 'incomplete source closure'); await store.putBytes(bytes)
   }
-  for (const id of new Set(checkpoint.history.map(e => e.execution.oofDigest).filter(Boolean))) {
+  for (const id of new Set(checkpoint.history.map(e => (e.execution.predictionsDigest ?? e.execution.oofDigest)).filter(Boolean))) {
     const bytes = await readFile(join(directory, 'objects', id.slice(7)))
     assert(sha(bytes) === id, 'missing or changed OOF evidence'); await store.putBytes(bytes)
   }

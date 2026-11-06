@@ -28,8 +28,8 @@ export const schema = {
   },
 }
 
-// V1 remains readable with its original accuracy semantics. MLE-bench uses
-// explicit raw scores and a monotone utility, never a renamed "accuracy".
+// V1/V2 retain their original CV semantics. V3 uses a shared held-out score
+// and a separately recorded utility; training CV is not part of this contract.
 schema.$defs.PredictionV1 = schema.$defs.Prediction
 schema.$defs.PredictionV2 = object({ kind: { const: 'tabular' }, idColumn: str,
   targetColumns: { ...arr(str), minItems: 1, uniqueItems: true },
@@ -42,6 +42,9 @@ schema.$defs.TaskV2 = sealed('analysis-task@2', { ...Object.fromEntries(Object.e
   benchmark: object({ format: { const: 'mle-bench' }, competitionId: str, definitionDigest: sha, publicTreeDigest: sha,
     sourceRevision: str, verification: { enum: ['upstream-checksums', 'custom-checksums', 'fixture'] } }) })
 schema.$defs.Task = { anyOf: [ref('TaskV1'), ref('TaskV2')] }
+schema.$defs.TaskV3 = sealed('analysis-task@3', {
+  ...Object.fromEntries(Object.entries(schema.$defs.TaskV2.properties).filter(([k]) => !['protocol', 'digest'].includes(k))) })
+schema.$defs.Task.anyOf.push(ref('TaskV3'))
 schema.$defs.ExperimentV1 = schema.$defs.Experiment
 schema.$defs.FoldV2 = object({ fold: { type: 'integer', minimum: 0, maximum: 4 }, rows: { type: 'integer', minimum: 1 }, score: num, utility: { ...num, maximum: 1 } })
 schema.$defs.ExperimentV2 = sealed('analysis-experiment@2', {
@@ -49,6 +52,14 @@ schema.$defs.ExperimentV2 = sealed('analysis-experiment@2', {
   execution: object({ ...Object.fromEntries(Object.entries(schema.$defs.Experiment.properties.execution.properties).filter(([k]) => !['foldMetrics', 'pooledAccuracy'].includes(k))),
     metric: { enum: ['accuracy', 'auc-roc', 'mean-column-wise-rmsle'] }, foldMetrics: arr(ref('FoldV2')), pooledScore: nullable(num), pooledUtility: nullable({ ...num, maximum: 1 }) }) })
 schema.$defs.Experiment = { anyOf: [ref('ExperimentV1'), ref('ExperimentV2')] }
+schema.$defs.ExperimentV3 = sealed('analysis-experiment@3', {
+  ...Object.fromEntries(Object.entries(schema.$defs.ExperimentV2.properties).filter(([k]) => !['protocol', 'digest', 'execution'].includes(k))),
+  slotIndex: { type: 'integer', minimum: 1 },
+  execution: object({ ...Object.fromEntries(Object.entries(schema.$defs.ExperimentV2.properties.execution.properties)
+    .filter(([k]) => !['foldMetrics', 'pooledScore', 'pooledUtility', 'oofDigest'].includes(k))),
+    validationScore: nullable(num), validationUtility: nullable({ ...num, maximum: 1 }),
+    validationRows: { type: 'integer', minimum: 0 }, predictionsDigest: nullable(sha) }) })
+schema.$defs.Experiment.anyOf.push(ref('ExperimentV3'))
 
 Object.assign(schema.$defs, {
   Harness: object({ commit: { type: 'string', pattern: '^[a-f0-9]{40,64}$' }, manifestDigest: sha }),
@@ -70,15 +81,28 @@ Object.assign(schema.$defs, {
   RefitRequest: sealed('analysis-refit-request@1', { task: ref('Task'), solution: ref('Solution'), runtimeDigest: sha, harness: ref('Harness'),
     sourceSelectionPlan: ref('SourceSelectionPlan'), allowance: ref('Allowance') }),
 })
+schema.$defs.SequencePlanV1 = schema.$defs.SequencePlan
+schema.$defs.SequencePlanV2 = sealed('analysis-research-sequence@1', {
+  ...Object.fromEntries(Object.entries(schema.$defs.SequencePlan.properties).filter(([k]) => !['protocol', 'digest'].includes(k))),
+  experiments: { type: 'integer', minimum: 1 } })
+schema.$defs.SequencePlan = { anyOf: [ref('SequencePlanV1'), ref('SequencePlanV2')] }
+schema.$defs.RolloutRequestV1 = schema.$defs.RolloutRequest
+schema.$defs.RolloutRequestV2 = sealed('analysis-rollout-request@2', {
+  ...Object.fromEntries(Object.entries(schema.$defs.RolloutRequest.properties).filter(([k]) => !['protocol', 'digest'].includes(k))),
+  slotIndex: { type: 'integer', minimum: 1 }, maxExperiments: { type: 'integer', minimum: 1 } })
+schema.$defs.RolloutRequest = { anyOf: [ref('RolloutRequestV1'), ref('RolloutRequestV2')] }
+schema.$defs.Selection.properties.slotIndex = { type: 'integer', minimum: 1 }
 for (const [name, protocol] of [['DeliveryRequest', 'analysis-delivery-request@1'], ['AuditRequest', 'analysis-audit-request@1']])
   schema.$defs[name] = sealed(protocol, { sequenceId: str, planDigest: sha, task: ref('Task'), harness: ref('Harness'), runtimeDigest: sha,
     solution: ref('Solution'), selectionsDigest: sha, allowance: ref('Allowance') })
 
 export function validateRequest(value) {
-  const name = { 'analysis-rollout-request@1': 'RolloutRequest', 'analysis-delivery-request@1': 'DeliveryRequest',
+  const name = { 'analysis-rollout-request@1': 'RolloutRequest', 'analysis-rollout-request@2': 'RolloutRequest', 'analysis-delivery-request@1': 'DeliveryRequest',
     'analysis-audit-request@1': 'AuditRequest', 'analysis-refit-request@1': 'RefitRequest' }[value?.protocol]
   if (!name) throw new Error('unsupported analysis request protocol')
-  return validateSchema(name, value)
+  validateSchema(name, value)
+  if (value.protocol === 'analysis-rollout-request@2' && value.slotIndex > value.maxExperiments) throw new Error('experiment exceeds admitted slot budget')
+  return value
 }
 
 export function validateSchema(name, value) {

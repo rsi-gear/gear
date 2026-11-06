@@ -126,23 +126,23 @@ test('curve and oracle have independent coverage; final score is never the best 
   const audit = { sequenceReceiptDigest: result.digest, selectionDigest: digest(result.selections), solutions, cost: zeroCost() }
   const report = trajectoryReport(result, start, state.steps.map(s => s.experiment), audit)
   assert.deepEqual(report.points.map(p => p.value), [.9, .7, .85, .95, .8])
-  assert.equal(report.final_quality_5, .8); assert.equal(report.oracle_best_5, .95); assert.equal(report.final_gain_from_start, null)
-  assert.ok(Math.abs(report.selection_loss_5 - .15) < 1e-12)
+  assert.equal(report.final_quality, .8); assert.equal(report.oracle_best, .95); assert.equal(report.final_gain_from_start, null)
+  assert.ok(Math.abs(report.selection_loss - .15) < 1e-12)
   delete solutions[state.steps[1].experiment.sourceDigest]
   const incomplete = trajectoryReport(result, start, state.steps.map(s => s.experiment), audit)
-  assert.equal(incomplete.incumbent_slot_mean_5, null); assert.equal(incomplete.oracle_best_5, null); assert.equal(incomplete.final_quality_5, .8)
+  assert.equal(incomplete.incumbent_slot_mean, null); assert.equal(incomplete.oracle_best, null); assert.equal(incomplete.final_quality, .8)
 })
 
 test('stage admission is atomic; merge requires every distinct sealed branch and preserves all costs', async t => {
   const store = await temporary(t), start = checkpoint(), initialRef = await store.put(start)
   await store.save('projects', 'test', { checkpoint: initialRef })
   const project = { projectId: 'test', task, model: 'fixture', budget: defaultBudget,
-    projectLimits: { maxSequences: 4, cpuSeconds: 3000, wallSeconds: 10000 } }
+    projectLimits: { maxSequences: 4, cpuSeconds: defaultBudget.cpuSeconds, wallSeconds: 4 * defaultBudget.wallSeconds } }
   const controller = new ResearchProject(store, project), harnesses = [plan(start).harness, plan(start, 'b').harness]
   await assert.rejects(controller.stage('one', harnesses), /total budget/)
   assert.equal(await store.load('ledgers', 'test'), null)
   assert.equal(await store.load('stages', 'one'), null)
-  project.projectLimits.cpuSeconds = 10000
+  project.projectLimits.cpuSeconds = 4 * defaultBudget.cpuSeconds
   await controller.stage('one', harnesses)
   assert.equal(Object.keys((await store.load('ledgers', 'test')).sequences).length, 2)
   const receipts = []
@@ -195,32 +195,35 @@ for (const expired of [false, true]) test(`the fifth pending audit keeps its att
   const sourceDigest = state.steps[3].experiment.sourceDigest
   const request = seal({ protocol: 'analysis-audit-request@1', sequenceId: p.digest.slice(7), planDigest: p.digest,
     task, harness: p.harness, runtimeDigest, solution: checkpointAfter.solutions.find(s => s.digest === sourceDigest),
-    selectionsDigest: digest(receipt.selections), allowance: { cpuSeconds: 600, wallSeconds: 300, tokens: 0, requests: 0, tools: 0 } })
+    selectionsDigest: digest(receipt.selections),
+    allowance: { cpuSeconds: p.budget.reserveCpuSeconds, wallSeconds: p.budget.reserveSeconds, tokens: 0, requests: 0, tools: 0 } })
   const solutions = Object.fromEntries([start.currentSolutionDigest, ...state.steps.slice(0, 3).map(s => s.experiment.sourceDigest)]
     .map(id => [id, { status: 'completed', accuracy: .7 }]))
   const now = Date.now()
-  await store.save('audits', p.digest.slice(7), { status: 'running', startedAt: now - (expired ? 1501000 : 1000),
-    attempts: 5, cost: { ...zeroCost(), cpuSeconds: 4 }, solutions, pending: { request, startedAt: now - (expired ? 301000 : 1000) } })
-  const project = { projectId: 'test', projectLimits: { cpuSeconds: 4000, wallSeconds: 2000 } }
+  await store.save('audits', p.digest.slice(7), { status: 'running', startedAt: now - (expired ? (p.experiments * p.budget.reserveSeconds + 1) * 1000 : 1000),
+    attempts: 5, cost: { ...zeroCost(), cpuSeconds: 4 }, solutions,
+    pending: { request, startedAt: now - (expired ? (request.allowance.wallSeconds + 1) * 1000 : 1000) } })
+  const project = { projectId: 'test', projectLimits: {
+    cpuSeconds: p.experiments * p.budget.reserveCpuSeconds, wallSeconds: p.experiments * p.budget.reserveSeconds } }
   const before = backend.deliveries, cancelled = []
   backend.cancel = async r => { cancelled.push(r.digest) }
   const result = await auditSequence(store, backend, project, receipt)
   assert.equal(backend.deliveries - before, expired ? 0 : 1)
   assert.equal(result.solutions[sourceDigest].status, expired ? 'unavailable' : 'completed')
-  assert.equal(result.cost.cpuSeconds, expired ? 604 : 6)
+  assert.equal(result.cost.cpuSeconds, expired ? request.allowance.cpuSeconds + 4 : 6)
   assert.deepEqual(cancelled, expired ? [request.digest] : [])
   assert.equal((await store.load('ledgers', project.projectId)).audit[p.digest.slice(7)].status, 'complete')
 })
 
 test('fixed execution recovery refuses valid low scores, consumes one allowance and preserves prior run identity', async t => {
   const store = await temporary(t), backend = new HitchBackend(store, {})
-  const request = seal({ protocol: 'analysis-delivery-request@1', allowance: { cpuSeconds: 1200 } }), id = request.digest.slice(7)
+  const request = seal({ protocol: 'analysis-delivery-request@1', allowance: { cpuSeconds: 7200 } }), id = request.digest.slice(7)
   await store.save('executions', id, { status: 'reserved', evalId: 'failed-eval', task: { taskId: 'fixed' } })
   backend.hitch = async () => ({ result: { status: 'failed', trials: [{ observation_status: 'valid', scores: { total_score: 0 } }] } })
   await assert.rejects(backend.repairSealed(request, 'fixture'), /certified infrastructure/)
   backend.hitch = async () => ({ result: { status: 'failed', trials: [{ observation_status: 'invalid', invalid_reason: 'infrastructure_failure', run_id: 'original' }] } })
   const previous = await backend.repairSealed(request, 'fixed infrastructure')
-  assert.equal(previous.runId, 'original'); assert.equal(previous.reservedCpuSeconds, 600)
+  assert.equal(previous.runId, 'original'); assert.equal(previous.reservedCpuSeconds, 3600)
   await assert.rejects(backend.repairSealed(request, 'retry'), /allowance is spent/)
 })
 
@@ -229,6 +232,7 @@ test('deployment rejects a source from a different research budget before execut
   const receipt = await new SequenceRunner(store, backend).run(p, start)
   const calls = backend.deliveries
   await assert.rejects(refit(store, backend, { task, budget: { ...defaultBudget, tools: 151 } }, receipt, join(store.root, 'submission')), /registered task, budget/)
+  await assert.rejects(refit(store, backend, { task, budget: defaultBudget, research: { maxExperiments: 3 } }, receipt, join(store.root, 'submission')), /registered task, budget/)
   assert.equal(backend.deliveries, calls)
 })
 
@@ -238,7 +242,8 @@ test('failed deployment records and settles evidence once; restarting never reru
   const train = join(store.root, 'train.csv'), predict = join(store.root, 'test.csv'), out = join(store.root, 'submission')
   await writeFile(train, 'row,label\ntrain,1\n'); await writeFile(predict, 'row\nquery\n')
   const project = { projectId: 'test', task, budget: defaultBudget,
-    projectLimits: { cpuSeconds: 1000, wallSeconds: 1000 }, backend: { refit: { train, predict, predictIds: ['query'] } } }
+    projectLimits: { cpuSeconds: defaultBudget.reserveCpuSeconds, wallSeconds: defaultBudget.reserveSeconds },
+    backend: { refit: { train, predict, predictIds: ['query'] } } }
   await store.save('bindings', 'refit', await refitBinding(project.backend))
   await writeFile(train, 'row,label\ntrain,0\n')
   await assert.rejects(refit(store, backend, project, receipt, out), /inputs changed/)
@@ -283,5 +288,5 @@ test('actual C5 failure does not erase successful start audit or become a select
     sequenceReceiptDigest: failed.digest, selectionDigest: digest(failed.selections), cost: zeroCost(),
     solutions: Object.fromEntries(state.steps.map(s => [s.experiment.sourceDigest, { status: 'completed', accuracy: .8 }])) })
   assert.equal(report.points[0].value, .8); assert.equal(report.points[4].value, 0)
-  assert.equal(report.final_gain_from_start, -.8); assert.equal(report.selection_loss_5, null)
+  assert.equal(report.final_gain_from_start, -.8); assert.equal(report.selection_loss, null)
 })

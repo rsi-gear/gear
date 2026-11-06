@@ -26,9 +26,11 @@ async function auditLocked(store, backend, project, receipt, { signal } = {}) {
   assert(start.digest === receipt.startingCheckpointDigest, 'audit starting checkpoint changed')
   const candidates = [...new Set([start.currentSolutionDigest,
     ...state.steps.filter(s => validCandidate(s.experiment)).map(s => s.experiment.sourceDigest)].filter(Boolean))]
-  assert(candidates.length <= 6, 'audit candidate coverage exceeds registered plan')
+  assert(candidates.length <= state.plan.experiments + 1, 'audit candidate coverage exceeds registered plan')
+  const perRefit = { wallSeconds: state.plan.budget.reserveSeconds, cpuSeconds: state.plan.budget.reserveCpuSeconds }
+  const limits = { wallSeconds: state.plan.experiments * perRefit.wallSeconds, cpuSeconds: state.plan.experiments * perRefit.cpuSeconds }
   let audit = previous ?? { status: 'running', startedAt: Date.now(), solutions: {}, cost: zeroCost(), attempts: 0 }
-  await controller.reserveAuxiliary('audit', id, { wallSeconds: 1500, cpuSeconds: 3000 })
+  await controller.reserveAuxiliary('audit', id, limits)
   await store.save('audits', id, audit)
   for (const sourceDigest of candidates) {
     if (audit.solutions[sourceDigest]) continue
@@ -36,16 +38,16 @@ async function auditLocked(store, backend, project, receipt, { signal } = {}) {
       audit.solutions[sourceDigest] = { status: 'completed', quality: receipt.delivery.quality, accuracy: receipt.delivery.accuracy, reusedDelivery: receipt.delivery.digest }
       continue
     }
-    const wall = 1500 - (Date.now() - audit.startedAt) / 1000, cpu = 3000 - audit.cost.cpuSeconds
-    if (!audit.pending && (wall <= 0 || cpu < 1 || audit.attempts >= 5)) { audit.solutions[sourceDigest] = { status: 'unavailable', reason: 'audit budget exhausted' }; continue }
+    const wall = limits.wallSeconds - (Date.now() - audit.startedAt) / 1000, cpu = limits.cpuSeconds - audit.cost.cpuSeconds
+    if (!audit.pending && (wall <= 0 || cpu < 1 || audit.attempts >= state.plan.experiments)) { audit.solutions[sourceDigest] = { status: 'unavailable', reason: 'audit budget exhausted' }; continue }
     const request = audit.pending?.request ?? seal({ protocol: 'analysis-audit-request@1', sequenceId: id, planDigest: receipt.planDigest,
       task: state.plan.task, harness: state.plan.harness, runtimeDigest: state.plan.runtimeDigest,
       solution: checkpoint.solutions.find(s => s.digest === sourceDigest), selectionsDigest: digest(receipt.selections),
-      allowance: { cpuSeconds: Math.min(600, cpu), wallSeconds: Math.min(300, wall), tokens: 0, requests: 0, tools: 0 } })
+      allowance: { cpuSeconds: Math.min(perRefit.cpuSeconds, cpu), wallSeconds: Math.min(perRefit.wallSeconds, wall), tokens: 0, requests: 0, tools: 0 } })
     assert(request.solution.digest === sourceDigest, 'pending audit source differs')
     if (!audit.pending) { audit.attempts++; audit.pending = { request, startedAt: Date.now() }; await store.save('audits', id, audit) }
     try {
-      const expiresAt = Math.min(audit.startedAt + 1500000, (audit.pending.startedAt ?? audit.startedAt) + request.allowance.wallSeconds * 1000)
+      const expiresAt = Math.min(audit.startedAt + limits.wallSeconds * 1000, (audit.pending.startedAt ?? audit.startedAt) + request.allowance.wallSeconds * 1000)
       const delivered = await withinDeadline(backend, request, expiresAt, signal => backend.deliver(request, { signal }), { signal })
       audit.cost = addCost(audit.cost, delivered.cost)
       audit.solutions[sourceDigest] = { status: delivered.status, quality: delivered.quality, accuracy: delivered.accuracy, receipt: delivered }
@@ -57,7 +59,7 @@ async function auditLocked(store, backend, project, receipt, { signal } = {}) {
     audit.pending = null; await store.save('audits', id, audit)
   }
   const result = seal({ protocol: 'analysis-audit@1', sequenceReceiptDigest: receipt.digest, selectionDigest: digest(receipt.selections),
-    solutions: audit.solutions, cost: audit.cost, wallSeconds: Math.min(1500, (Date.now() - audit.startedAt) / 1000) })
+    solutions: audit.solutions, cost: audit.cost, wallSeconds: Math.min(limits.wallSeconds, (Date.now() - audit.startedAt) / 1000) })
   await store.save('audits', id, { ...audit, status: 'complete', result })
   await controller.settleAuxiliary('audit', id, result)
   return result

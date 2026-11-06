@@ -8,7 +8,7 @@ import { inspectMlebench, importMlebench } from '../lib/mlebench.mjs'
 import { validateTabularSubmission } from '../lib/submission.mjs'
 import { fixture, competitions } from './mlebench-fixture.mjs'
 import { metrics, objective } from '../lib/operation-provider.mjs'
-import { defaultBudget, seal } from '../lib/contracts.mjs'
+import { defaultBudget, researchBudget, seal } from '../lib/contracts.mjs'
 import { decodeOof } from '../target-carrier/fixed/oof.mjs'
 import { internalScore, internalQuality } from '../lib/metrics.mjs'
 import { prepare } from '../prepare.mjs'
@@ -27,18 +27,24 @@ test('prepare freezes an MLE-bench project and requires its input contract befor
   const result = await prepare({ out, mlebenchRepository: input.repository, mlebenchData: input.dataRoot,
     competition: input.competition, fixture: true, python, hitchRepository: hitch, hitchRoot: join(root, 'hitch-state'),
     hitchExecutable: process.execPath, executorExecutable: process.execPath, executorRepository: hitch,
-    executorCommit: 'a'.repeat(40), baseImage: 'fixture@sha256:' + 'b'.repeat(64), platform: 'linux/arm64', model: 'fixture' })
-  assert.equal(result.task.protocol, 'analysis-task@2')
+    executorCommit: 'a'.repeat(40), baseImage: 'fixture@sha256:' + 'b'.repeat(64), platform: 'linux/arm64', model: 'fixture',
+    research: { maxExperiments: 7, validation: { fraction: .3, seed: 7 } } })
+  assert.equal(result.task.protocol, 'analysis-task@3')
   assert.equal(result.task.benchmark.competitionId, input.competition)
   assert.equal(result.task.prediction.metric, 'auc-roc')
   assert.equal(result.backend.refit.scope, 'mle-bench-public')
   assert.deepEqual(await readFile(result.backend.train), await readFile(join(input.publicDir, 'train.csv')))
-  assert.equal(result.validationPlan.foldAssignments.length, 20)
+  assert.equal(result.validationPlan.assignments.length, 20)
+  assert.equal(result.research.maxExperiments, 7); assert.equal(result.validationPlan.seed, 7)
+  assert.deepEqual(result.budget, researchBudget({ maxExperiments: 7 }))
+  assert.ok(result.projectLimits.cpuSeconds >= 2 * result.budget.cpuSeconds)
+  assert.ok(result.projectLimits.wallSeconds >= 2 * result.budget.wallSeconds)
+  assert.equal(result.validationPlan.assignments.filter(a => a === 1).length, 6)
   assert.ok(!(await readdir(result.backend.publicDirectory)).includes('private'))
   assert.deepEqual(JSON.parse(await readFile(join(out, 'project.json'))), result)
 })
 
-for (const competition of competitions) test(`${competition}: canonical prepared/public import and locked five-fold scope`, async t => {
+for (const competition of competitions) test(`${competition}: canonical prepared/public import and shared held-out validation`, async t => {
   const root = await mkdtemp(join(tmpdir(), 'mlebench-')); t.after(() => rm(root, { recursive: true, force: true }))
   const input = await fixture(root, competition), out = join(root, 'imported')
   const result = await importMlebench({ ...input, python }, out)
@@ -47,7 +53,10 @@ for (const competition of competitions) test(`${competition}: canonical prepared
   assert.deepEqual(await readFile(result.train), await readFile(join(input.publicDir, 'train.csv')))
   assert.deepEqual(await readFile(result.predict), await readFile(join(input.publicDir, 'test.csv')))
   const plan = JSON.parse(await readFile(join(out, 'validation.json')))
-  assert.equal(plan.foldAssignments.length, 20); assert.deepEqual([...new Set(plan.foldAssignments)].sort(), [0, 1, 2, 3, 4])
+  assert.equal(plan.assignments.length, 20); assert.equal(plan.protocol, 'analysis-holdout-plan@1')
+  assert.equal(plan.assignments.filter(a => a === 1).length, 4); assert.equal(plan.assignments.filter(a => a === 0).length, 16)
+  await importMlebench({ ...input, python }, join(root, 'again'))
+  assert.deepEqual(JSON.parse(await readFile(join(root, 'again/validation.json'))), plan)
   assert.ok(!(await readdir(join(out, 'public'))).includes('private'))
   assert.equal(result.prediction.metric, competition === competitions[0] ? 'mean-column-wise-rmsle' : 'auc-roc')
   if (competition === competitions[0]) {

@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { command } from './common.mjs'
-import { assert, digest, seal, sha, sourcePath, validateCheckpoint, validateSolution, verify, zeroCost } from './contracts.mjs'
+import { assert, digest, seal, sha, sourcePath, trainingLimits, validateCheckpoint, validateSolution, verify, zeroCost } from './contracts.mjs'
 import { atomicJson, json, locked } from './store.mjs'
 import { validateRequest } from './schemas.mjs'
 import { metricName, utility } from './metrics.mjs'
@@ -70,7 +70,7 @@ export class HitchBackend {
       validateCheckpoint(checkpoint); await this.store.verifySources(checkpoint)
       await atomicJson(join(directory, 'checkpoint.json'), checkpoint)
       await atomicJson(join(directory, 'validation.json'), this.config.validationPlan)
-      for (const id of new Set(checkpoint.history.map(e => e.execution.oofDigest).filter(Boolean)))
+      for (const id of new Set(checkpoint.history.map(e => (e.execution.predictionsDigest ?? e.execution.oofDigest)).filter(Boolean)))
         await writeFile(join(directory, 'objects', id.slice(7)), await this.store.bytes(id), { mode: 0o444 })
     }
     for (const s of checkpoint?.solutions ?? [request.solution]) {
@@ -158,7 +158,7 @@ export class HitchBackend {
     const operation = await this.execute(request, null, options), output = operation.output
     assert(output.protocol === 'analysis-execution-receipt@1' && output.solutionDigest === request.solution.digest && output.modelRequests === 0, 'sealed executor identity mismatch')
     const valid = operation.rewards.valid_output === 1, deployment = request.protocol === 'analysis-refit-request@1'
-    const generic = request.task.protocol === 'analysis-task@2', metric = metricName(request.task)
+    const generic = request.task.protocol !== 'analysis-task@1', metric = metricName(request.task)
     const score = valid && !deployment ? generic ? operation.rewards.task_score : operation.rewards.accuracy : null
     assert(!valid || deployment || typeof score === 'number' && Number.isFinite(utility(metric, score)), 'missing external metric score')
     const accuracy = metric === 'accuracy' ? score : null
@@ -183,7 +183,7 @@ export class HitchBackend {
       const result = inspection.result, trial = result?.trials?.[0]
       assert(result?.status === 'failed' && result.trials.length === 1 && trial.observation_status === 'invalid'
         && trial.invalid_reason === 'infrastructure_failure', 'recovery requires certified infrastructure failure; valid outcomes and cancellations cannot be retried')
-      const reservedCpuSeconds = Math.min(600, request.allowance.cpuSeconds)
+      const reservedCpuSeconds = Math.min(trainingLimits.cpuSeconds, request.allowance.cpuSeconds)
       assert(request.allowance.cpuSeconds >= reservedCpuSeconds + 1, 'insufficient remaining execution budget for recovery')
       const failedAttempt = { evalId: operation.evalId, runId: trial.run_id, reason, resultDigest: digest(result),
         reservedCpuSeconds, accounting: 'conservative-upper-bound', recoveredAt: new Date().toISOString() }

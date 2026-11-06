@@ -3,15 +3,16 @@ import { Budget } from './budget.mjs'
 import { locked } from './store.mjs'
 import { validateSchema } from './schemas.mjs'
 import { internalScore, internalQuality, metricName, utility } from './metrics.mjs'
+import { researchConfig, defaultResearchConfig } from './research-config.mjs'
 
-export function sequencePlan({ task, checkpoint, harness, model, budget, runtimeDigest }) {
+export function sequencePlan({ task, checkpoint, harness, model, budget, runtimeDigest, research }) {
   validateCheckpoint(checkpoint); validateBudget(budget)
   validateSchema('Task', task); verify(task)
   assert(runtimeDigest === task.runtimeDigest && runtimeDigest === checkpoint.runtimeDigest, 'sequence runtime mismatch')
   assert(/^[a-f0-9]{40,64}$/.test(harness.commit), 'exact harness commit required')
   assert(task.taskFamilyId === checkpoint.taskFamilyId && task.digest === checkpoint.baseTaskDigest, 'task/checkpoint mismatch')
   return validateSchema('SequencePlan', seal({ protocol: PROTOCOL, task, startingCheckpointDigest: checkpoint.digest,
-    harness, model, budget, runtimeDigest, experiments: 5, repetitions: 1 }))
+    harness, model, budget, runtimeDigest, experiments: researchConfig(research).maxExperiments, repetitions: 1 }))
 }
 
 function remainingPool(start, steps, checkpoint) {
@@ -24,8 +25,9 @@ export function validateRollout(result, request, checkpoint, steps, start) {
   assert(typeof result.runId === 'string' && result.runId.length > 0 && result.outputManifestDigest, 'missing physical run or output manifest')
   const e = validateExperiment(result.experiment)
   assert(e.validationPlanDigest === request.task.validationPlanDigest, 'experiment validation scope changed')
-  assert(request.task.protocol === 'analysis-task@2' ? e.protocol === 'analysis-experiment@2' && e.execution.metric === request.task.prediction.metric
+  assert(request.task.protocol !== 'analysis-task@1' ? e.protocol === (request.task.protocol === 'analysis-task@3' ? 'analysis-experiment@3' : 'analysis-experiment@2') && e.execution.metric === request.task.prediction.metric
     : e.protocol === 'analysis-experiment@1', 'experiment metric contract changed')
+  assert(e.slotIndex <= (request.maxExperiments ?? defaultResearchConfig.maxExperiments), 'experiment exceeds admitted slot budget')
   assert(e.sequenceId === request.sequenceId && e.slotIndex === request.slotIndex && e.rolloutRunId === result.runId, 'experiment run/slot mismatch')
   for (const s of result.solutions) { validateSolution(s); assert(s.runtimeDigest === request.runtimeDigest, 'solution runtime mismatch') }
   assert(result.solutions.every(s => s.digest === e.sourceDigest), 'unregistered source in rollout')
@@ -35,7 +37,9 @@ export function validateRollout(result, request, checkpoint, steps, start) {
     const prior = checkpoint.history.find(p => e.execution.reusedEvidenceRefs.includes(p.digest))
     assert(validCandidate(prior) && prior.sourceDigest === e.sourceDigest && prior.validationPlanDigest === e.validationPlanDigest
       && prior.trainingSeed === e.trainingSeed && internalScore(prior) === internalScore(e) && internalQuality(prior) === internalQuality(e)
-      && digest(prior.execution.foldMetrics) === digest(e.execution.foldMetrics), 'invalid cached validation evidence')
+      && (e.protocol === 'analysis-experiment@3'
+        ? prior.execution.predictionsDigest === e.execution.predictionsDigest && prior.execution.validationRows === e.execution.validationRows
+        : digest(prior.execution.foldMetrics) === digest(e.execution.foldMetrics)), 'invalid cached validation evidence')
   }
   const nextPool = [...remainingPool(start, steps, checkpoint), ...(validCandidate(e) ? [e] : [])]
   assert(result.selectedSolutionDigest === null || nextPool.some(p => p.sourceDigest === result.selectedSolutionDigest), 'selection is outside this sequence candidate pool')
@@ -50,7 +54,8 @@ export class SequenceRunner {
   constructor(store, backend, { now = () => Date.now() } = {}) { this.store = store; this.backend = backend; this.now = now }
   async run(plan, start, { signal = new AbortController().signal } = {}) {
     verify(plan); validateCheckpoint(start)
-    assert(plan.protocol === PROTOCOL && plan.experiments === 5 && plan.repetitions === 1 && plan.startingCheckpointDigest === start.digest, 'invalid five-rollout plan')
+    validateSchema('SequencePlan', plan)
+    assert([PROTOCOL, 'analysis-five-rollout@1'].includes(plan.protocol) && plan.repetitions === 1 && plan.startingCheckpointDigest === start.digest, 'invalid research sequence plan')
     await this.store.verifySources(start)
     await this.backend.admit(plan)
     const id = plan.digest.slice(7)
@@ -77,13 +82,14 @@ export class SequenceRunner {
       }
       try {
         let checkpoint = validateCheckpoint(await this.store.get(state.checkpointRef))
-        for (let k = state.steps.length + 1; k <= 5 && !state.stopped; k++) {
+        for (let k = state.steps.length + 1; k <= plan.experiments && !state.stopped; k++) {
           signal.throwIfAborted()
           const allowance = budget.available()
           if (!state.pending && (allowance.wallSeconds <= 0 || allowance.requests !== null && allowance.requests < 1 || allowance.tools < 1 || allowance.cpuSeconds <= 0)) { state.stopped = 'research_budget_exhausted'; break }
           let request = state.pending?.request
           if (!request) {
-            request = seal({ protocol: 'analysis-rollout-request@1', sequenceId: id, slotIndex: k, planDigest: plan.digest,
+            request = seal({ protocol: plan.protocol === 'analysis-five-rollout@1' ? 'analysis-rollout-request@1' : 'analysis-rollout-request@2',
+              ...(plan.protocol === 'analysis-five-rollout@1' ? {} : { maxExperiments: plan.experiments }), sequenceId: id, slotIndex: k, planDigest: plan.digest,
               task: plan.task, harness: plan.harness, model: plan.model, runtimeDigest: plan.runtimeDigest,
               checkpointDigest: checkpoint.digest, checkpointRef: state.checkpointRef,
               previousRolloutReceiptDigest: state.steps.at(-1)?.digest ?? null,
@@ -108,14 +114,14 @@ export class SequenceRunner {
           if (result.stop) state.stopped = 'target_stopped'
           await save()
         }
-        while (state.selections.length < 5) state.selections.push(seal({ protocol: 'analysis-slot-selection@1',
+        while (state.selections.length < plan.experiments) state.selections.push(seal({ protocol: 'analysis-slot-selection@1',
           slotIndex: state.selections.length + 1, experimentId: null, status: 'not_started', stopReason: state.stopped,
           incumbentSolutionDigest: state.selections.at(-1)?.incumbentSolutionDigest ?? start.currentSolutionDigest,
           carryForward: true, availableEvidenceRefs: [], selectionPolicyDigest: null,
           cumulativeCostDigest: digest(budget.snapshot()), sealedAt: new Date(this.now()).toISOString(), rolloutReceiptDigest: null }))
         state.status = 'selected'; await save()
         signal.throwIfAborted()
-        const solutionDigest = state.selections[4].incumbentSolutionDigest
+        const solutionDigest = state.selections.at(-1).incumbentSolutionDigest
         if (!state.delivery) {
           if (!solutionDigest) state.delivery = seal({ protocol: 'analysis-delivery@1', status: 'candidate_failed',
             solutionDigest: null, quality: 0, accuracy: null, runId: null, outputManifestDigest: null, cost: Object.fromEntries(dimensions.map(d => [d, 0])) })
@@ -134,7 +140,7 @@ export class SequenceRunner {
             assert(delivered.protocol === 'analysis-delivery@1' && delivered.requestDigest === request.digest
               && delivered.solutionDigest === solutionDigest && ['completed', 'candidate_failed'].includes(delivered.status), 'delivery is unavailable or identity mismatched')
             assert(delivered.modelRequests === 0, 'sealed refit must not call a model')
-            const raw = plan.task.protocol === 'analysis-task@2' ? delivered.score : delivered.accuracy
+            const raw = plan.task.protocol !== 'analysis-task@1' ? delivered.score : delivered.accuracy
             assert(delivered.status !== 'completed' || delivered.runId && delivered.outputManifestDigest
               && typeof raw === 'number' && delivered.quality === utility(metricName(plan.task), raw), 'invalid delivery score')
             assert(delivered.status !== 'candidate_failed' || delivered.quality === 0 && delivered.accuracy === null, 'failure score mismatch')
@@ -144,8 +150,8 @@ export class SequenceRunner {
         const receipt = seal({ protocol: 'analysis-sequence-receipt@1', planDigest: plan.digest, startingCheckpointDigest: start.digest,
           harness: plan.harness, taskDigest: plan.task.digest, checkpointRef: state.checkpointRef,
           steps: state.steps.map(s => ({ runId: s.runId, receiptDigest: s.digest, outputManifestDigest: s.outputManifestDigest })),
-          selections: state.selections, delivery: state.delivery, cost: budget.snapshot(), planned: 5, attempted: state.steps.length,
-          validCandidates: state.steps.filter(s => validCandidate(s.experiment)).length, unused: 5 - state.steps.length,
+          selections: state.selections, delivery: state.delivery, cost: budget.snapshot(), planned: plan.experiments, attempted: state.steps.length,
+          validCandidates: state.steps.filter(s => validCandidate(s.experiment)).length, unused: plan.experiments - state.steps.length,
           uniqueSolutions: new Set(state.steps.map(s => s.experiment.sourceDigest).filter(Boolean)).size,
           total_score: state.delivery.quality, valid_output: state.delivery.status === 'completed' ? 1 : 0,
           completed: state.delivery.status === 'completed' ? 1 : 0 })

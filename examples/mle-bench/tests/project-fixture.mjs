@@ -1,7 +1,7 @@
 import { digest, seal, initialCheckpoint, zeroCost } from '../lib/contracts.mjs'
 const runtimeDigest = digest('runtime')
-export const task = seal({ protocol: 'analysis-task@2', taskId: 'synthetic', taskFamilyId: 'synthetic', description: 'fixture',
-  inputs: { trainDigest: digest('train'), predictDigest: digest('predict') }, predictIds: ['query'], validationPlanDigest: digest('five-folds'), runtimeDigest,
+export const task = seal({ protocol: 'analysis-task@3', taskId: 'synthetic', taskFamilyId: 'synthetic', description: 'fixture',
+  inputs: { trainDigest: digest('train'), predictDigest: digest('predict') }, predictIds: ['query'], validationPlanDigest: digest('shared-holdout'), runtimeDigest,
   prediction: { kind: 'tabular', idColumn: 'row', targetColumns: ['label'], metric: 'accuracy', labels: ['0', '1'] },
   publicFiles: [], benchmark: { format: 'mle-bench', competitionId: 'titanic', definitionDigest: digest('definition'),
     publicTreeDigest: digest('public-files'), sourceRevision: 'fixture', verification: 'fixture' } })
@@ -25,13 +25,13 @@ export class Backend {
     const solution = failed ? null : seal({ protocol: 'analysis-solution@1', entrypoint: 'solution.py', files: [{ path: 'solution.py', digest: source, bytes: bytes.length }],
       parameters: {}, trainingSeed: 42, runtimeDigest, authoredByRunId: runId })
     const used = { cpuSeconds: 1, requests: 1, tokens: 100, tools: 2 }
-    const experiment = seal({ protocol: 'analysis-experiment@2', experimentId: `${runId}/experiment`, sequenceId: request.sequenceId,
+    const experiment = seal({ protocol: 'analysis-experiment@3', experimentId: `${runId}/experiment`, sequenceId: request.sequenceId,
       rolloutRunId: runId, slotIndex: k, parentExperimentId: history.history.at(-1)?.experimentId ?? null, operator: k === 1 ? 'draft' : 'improve',
-      sourceDigest: solution?.digest ?? null, validationPlanDigest: digest('five-folds'), trainingSeed: 42,
+      sourceDigest: solution?.digest ?? null, validationPlanDigest: digest('shared-holdout'), trainingSeed: 42,
       claim: { hypothesis: `test ${k}`, intendedChange: 'fixture' }, execution: { status: failed ? 'generation_failed' : 'completed',
         receiptDigest: digest(runId), physicalAttemptRefs: [runId], reusedEvidenceRefs: [], cost: used,
-        metric: 'accuracy', foldMetrics: failed ? [] : Array.from({ length: 5 }, (_, fold) => ({ fold, rows: 10, score: (5 + k) / 10, utility: (5 + k) / 10 })),
-        pooledScore: failed ? null : (5 + k) / 10, pooledUtility: failed ? null : (5 + k) / 10, oofDigest },
+        metric: 'accuracy', validationRows: 10, validationScore: failed ? null : Math.min(.95, .5 + k * .05),
+        validationUtility: failed ? null : Math.min(.95, .5 + k * .05), predictionsDigest: oofDigest },
       interpretation: { conclusion: 'fixture', limitations: [] } })
     const result = seal({ protocol: 'analysis-rollout-receipt@1', requestDigest: request.digest, runId, outputManifestDigest: digest([runId, 'outputs']),
       experiment, solutions: solution ? [solution] : [], selectedSolutionDigest: solution?.digest ?? history.currentSolutionDigest,

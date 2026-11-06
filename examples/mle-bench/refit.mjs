@@ -9,6 +9,7 @@ import { assert, digest, seal, sha, verify } from './lib/contracts.mjs'
 import { HitchBackend, refitBinding } from './lib/hitch-backend.mjs'
 import { ResearchProject } from './lib/project.mjs'
 import { withinDeadline, withOperatorCancellation } from './lib/deadline.mjs'
+import { researchConfig } from './lib/research-config.mjs'
 
 export async function refit(store, backend, project, receipt, out, { signal } = {}) {
   verify(receipt)
@@ -17,11 +18,12 @@ export async function refit(store, backend, project, receipt, out, { signal } = 
 
 async function refitLocked(store, backend, project, receipt, out, { signal } = {}) {
   const state = await store.load('sequences', receipt.planDigest.slice(7))
-  assert(state?.receipt?.digest === receipt.digest && receipt.delivery.status === 'completed', 'refit requires the actual valid C5 from the nominated sequence')
+  assert(state?.receipt?.digest === receipt.digest && receipt.delivery.status === 'completed', 'refit requires the actual valid final selected solution from the nominated sequence')
   assert(state.plan.task.digest === project.task.digest && state.plan.runtimeDigest === project.task.runtimeDigest
+    && state.plan.experiments === researchConfig(project.research).maxExperiments
     && digest(state.plan.budget) === digest(project.budget) && state.plan.harness.commit === receipt.harness.commit
     && state.plan.harness.manifestDigest === receipt.harness.manifestDigest, 'refit source differs from the registered task, budget, runtime or harness')
-  assert(receipt.selections[4].incumbentSolutionDigest === receipt.delivery.solutionDigest, 'delivery is not C5')
+  assert(receipt.selections.at(-1).incumbentSolutionDigest === receipt.delivery.solutionDigest, 'delivery is not final selected solution')
   const inputs = await refitBinding(project.backend), frozen = await store.load('bindings', 'refit')
   assert(frozen?.digest === inputs.digest, 'full-training or prediction inputs changed; refit requires its prepared input binding')
   await backend.admit(state.plan)
@@ -36,11 +38,12 @@ async function refitLocked(store, backend, project, receipt, out, { signal } = {
     taskId: `${project.task.taskFamilyId}-refit`, inputs: inputs.inputs,
     predictIds: project.backend.refit.predictIds })
   const request = seal({ protocol: 'analysis-refit-request@1', task, solution, runtimeDigest: state.plan.runtimeDigest,
-    harness: receipt.harness, sourceSelectionPlan: selectionPlan, allowance: { wallSeconds: 300, cpuSeconds: 600, tokens: 0, requests: 0, tools: 0 } })
+    harness: receipt.harness, sourceSelectionPlan: selectionPlan,
+    allowance: { wallSeconds: project.budget.reserveSeconds, cpuSeconds: project.budget.reserveCpuSeconds, tokens: 0, requests: 0, tools: 0 } })
   const published = await optionalJson(join(out, 'refit.json'))
   if (published) { verify(published); assert(published.requestDigest === request.digest, 'export directory belongs to another refit') }
   const controller = new ResearchProject(store, project), id = request.digest.slice(7)
-  await controller.reserveAuxiliary('deployments', request.digest, { wallSeconds: 300, cpuSeconds: 600 })
+  await controller.reserveAuxiliary('deployments', request.digest, { wallSeconds: request.allowance.wallSeconds, cpuSeconds: request.allowance.cpuSeconds })
   const previous = await store.load('refits', id)
   if (previous) { verify(previous); assert(previous.requestDigest === request.digest, 'refit request changed') }
   let attempt = await store.load('refit-attempts', id)

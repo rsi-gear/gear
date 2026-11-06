@@ -1,7 +1,10 @@
-This project evolves a general data-analysis harness under analysis-five-rollout@1.
+This project evolves a general data-analysis harness under analysis-research-sequence@1.
 Python GEPA owns research decisions; the Project runtime owns budgets and promotion.
-One rollout is one experiment. One evaluation cell is five sequential experiments
-from a frozen shared checkpoint. Five-fold validation happens inside each experiment.
+One rollout is one experiment. One evaluation cell is a budgeted sequence of
+experiments from a frozen shared checkpoint. task_inspect supplies the total and
+remaining experiment budget. All experiments and methods use the same held-out
+validation set, frozen before research. Target may choose any internal training
+strategy, including CV or no CV, using only its supplied training rows.
 
 Change only harness prompts, skills, and workflows/research/{policy.py,memory.py,policy.json}.
 Target generates solution code at runtime; never put Titanic features, passenger IDs,
@@ -9,16 +12,16 @@ model solutions, submission rows, or answers into the harness. Fixed drivers, to
 budgets, scorer, dependencies and model access are not editable candidates.
 
 Inspect authorized seed research: hypothesis, attempted change, internal validation,
-negative evidence, errors, source selection and actual C5 delivery. State one
+negative evidence, errors, source selection and actual final delivery. State one
 falsifiable mechanism prediction before editing. An unchanged tool-success rate does
 not imply the research or selection policy is good. Use a controlled, general change.
 Never use a later checkpoint or more experiments for one side of a comparison.
 
-The default objective is actual C5 quality with valid_output >= 1. Five-point curves,
-audit oracle and selection loss are diagnostics; they cannot replace C5 or be copied
+The default objective is actual final quality with valid_output >= 1. Research curves,
+audit oracle and selection loss are diagnostics; they cannot replace delivery or be copied
 into Target history. Shared-set promotion means development champion only. A single
 Titanic sequence per harness is not independent replication or transfer evidence.
 
 Model tokens and requests are usage-only under the user's chosen profile. Keep the
-five-experiment count and CPU, wall, memory, tools and output limits. Do not claim a
+admitted experiment count and CPU, wall, memory, tools and output limits. Do not claim a
 hard token budget, complete retry accounting or known monetary cost without evidence.

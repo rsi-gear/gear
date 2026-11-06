@@ -11,7 +11,7 @@ import { internalScore, internalQuality, metricName } from './metrics.mjs'
 export const objective = { terms: [{ metric: 'total_score', weight: 1 }], constraints: [{ metric: 'valid_output', rule: 'minimum', value: 1 }] }
 export function metrics(task) {
   return ['total_score', 'valid_output', 'task_score', 'completed'].map(id => ({ id,
-    revision: 'analysis-five-rollout@2', unit: id === 'task_score' ? metricName(task) : 'ratio',
+    revision: 'analysis-research-sequence@1', unit: id === 'task_score' ? metricName(task) : 'ratio',
     direction: id === 'task_score' && metricName(task) === 'mean-column-wise-rmsle' ? 'minimize' : 'maximize',
     source: { path: `scores.${id}`, extractor: 'number-v1' },
     ...(id === 'task_score' && metricName(task) === 'mean-column-wise-rmsle' ? {} : { range: { min: 0, max: 1 } }),
@@ -19,12 +19,12 @@ export function metrics(task) {
 }
 export async function implementationDigest() {
   const names = ['operation-provider.mjs', 'target-source.mjs', 'sequence.mjs', 'contracts.mjs', 'schemas.mjs', 'metrics.mjs',
-    'store.mjs', 'budget.mjs', 'deadline.mjs', 'hitch-backend.mjs', 'project.mjs', 'common.mjs', '../provider.mjs', '../prepare.mjs',
+    'store.mjs', 'budget.mjs', 'research-config.mjs', 'deadline.mjs', 'hitch-backend.mjs', 'project.mjs', 'common.mjs', '../provider.mjs', '../prepare.mjs',
     '../target-carrier/fixed/check.mjs', '../target-carrier/fixed/integrity.mjs', '../../../lib/adapters/hitch/run-artifacts.js']
   return digest(Object.fromEntries(await Promise.all(names.map(async name => [name, sha(await readFile(new URL(name, import.meta.url)))]))))
 }
 
-/** Public OperationProvider protocol: one seed slot evaluates one complete five-experiment method. */
+/** Public OperationProvider protocol: one seed slot evaluates one complete budgeted research sequence. */
 export class AnalysisOperationProvider {
   static async open(configuration, context) {
     const project = await json(join(configuration.project, 'project.json'))
@@ -68,7 +68,7 @@ export class AnalysisOperationProvider {
     return record.receipt
   }
   plan(harness) { return sequencePlan({ task: this.project.task, checkpoint: this.checkpoint, harness,
-    model: this.project.model, budget: this.project.budget, runtimeDigest: this.project.task.runtimeDigest }) }
+    model: this.project.model, budget: this.project.budget, research: this.project.research, runtimeDigest: this.project.task.runtimeDigest }) }
   async inspect(request) {
     const key = this.key(request), record = await this.store.load('operations', key)
     if (!record) return { state: 'not_submitted' }
@@ -109,7 +109,7 @@ export class AnalysisOperationProvider {
       let sequence = null, candidate = null, evidence = [], data = null
       if (operation.kind === 'evaluate_seed') {
         assert(request.slots.length === 1 && request.slots[0].taskId === this.project.task.taskId && request.slots[0].repetition === 0,
-          'one task and five sequential experiments required')
+          'one task and one sequential research sequence required')
         const harness = await carrierForTarget(this.store, this.project, join(this.context.targets, operation.candidate_id), this.configuration.registered)
         const plan = this.plan(harness)
         assert(!record.plan || record.plan.digest === plan.digest, 'frozen sequence changed')
@@ -126,22 +126,23 @@ export class AnalysisOperationProvider {
         const state = await this.store.load('sequences', plan.digest.slice(7))
         const summary = state.steps.map(step => ({ slot: step.experiment.slotIndex, operator: step.experiment.operator,
           status: step.experiment.execution.status, hypothesis: step.experiment.claim.hypothesis.slice(0, 1000),
+          validationPlanDigest: step.experiment.validationPlanDigest,
           internalScore: internalScore(step.experiment), utility: internalQuality(step.experiment),
           selected: step.selectedSolutionDigest, interpretation: step.experiment.interpretation }))
         const scores = { total_score: sequence.total_score, valid_output: sequence.valid_output, completed: sequence.completed,
           task_score: sequence.delivery.score ?? sequence.delivery.accuracy ?? null }
         const raw_metrics = Object.fromEntries((request.metrics ?? []).filter(c => c.id in scores).map(c => [c.id,
           { contractDigest: c.digest, unit: c.unit, status: scores[c.id] === null ? 'missing' : 'available',
-            ...(scores[c.id] === null ? { reason: 'actual C5 delivery unavailable' } : { value: scores[c.id] }), evidenceRefs: [sequence.digest] }]))
+            ...(scores[c.id] === null ? { reason: 'actual final delivery unavailable' } : { value: scores[c.id] }), evidenceRefs: [sequence.digest] }]))
         evidence = [{ candidate_id: operation.candidate_id, task_id: this.project.task.taskId, repetition: 0,
           score: sequence.total_score, status: 'valid', scope: operation.scope, raw_metrics,
-          feedback: `Development evidence. Five sequential experiments at checkpoint ${this.checkpoint.digest}. Actual C5=${sequence.total_score}. `
-            + `Do not treat internal CV as external reward or claim task transfer. ${JSON.stringify(summary).slice(0, 20000)}` }]
+          feedback: `Development evidence. ${sequence.planned} experiment slots at checkpoint ${this.checkpoint.digest}. Actual final delivery=${sequence.total_score}. `
+            + `Do not treat research validation as external reward or claim task transfer. ${JSON.stringify(summary).slice(0, 20000)}` }]
       } else {
         assert(this.configuration.registered.length === 2 && request.evidence.length > 0,
           'registered comparison requires actual seed evidence; autonomous authoring uses the configured Meta profile')
         assert(request.evidence.every(e => e.task_id === this.project.task.taskId), 'foreign seed evidence')
-        if (operation.kind === 'diagnose_seed') data = { hypotheses: ['Compare the pre-registered research method under the identical checkpoint and five-experiment budget.'] }
+        if (operation.kind === 'diagnose_seed') data = { hypotheses: ['Compare the pre-registered research method under the identical checkpoint and admitted experiment budget.'] }
         else {
           assert(operation.kind === 'generate_candidate' && operation.parent_id === 'anchor', 'unexpected registered proposal')
           await copyRegisteredTarget(this.project.targetRepository, this.configuration.registered[1], join(this.context.targets, operation.candidate_id))
@@ -154,7 +155,7 @@ export class AnalysisOperationProvider {
         usage: sequence ? { model_requests: sequence.cost.used.requests, tokens: sequence.cost.used.tokens,
           analysis_rollouts: sequence.attempted, analysis_deliveries: sequence.delivery.runId ? 1 : 0, cpu_seconds: sequence.cost.used.cpuSeconds }
           : { model_requests: 0, tokens: 0 },
-        provenance: { protocol: 'analysis-operation@1', attempt_unit: 'five-experiment-sequence', checkpoint: this.checkpoint.digest,
+        provenance: { protocol: 'analysis-operation@1', attempt_unit: 'research-sequence', checkpoint: this.checkpoint.digest,
           sequence: sequence?.digest ?? null, plan: record.plan?.digest ?? null, harness: sequence?.harness ?? null,
           authoring: this.configuration.registered.length === 2 ? 'pre-registered; no autonomous Meta generation claimed' : 'configured Meta profile' } }
       await this.store.save('operations', key, seal({ ...record, receipt, sequence }))

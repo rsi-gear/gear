@@ -7,6 +7,7 @@ import yaml from 'js-yaml'
 import { command } from './common.mjs'
 import { assert, digest, sha, sourcePath, seal } from './contracts.mjs'
 import { atomicJson, json } from './store.mjs'
+import { researchConfig } from './research-config.mjs'
 
 export const upstreamRevision = '507f92e1138bb6e40dac5c6ee7a6758e6424bf97'
 const graders = {
@@ -94,7 +95,7 @@ export async function importMlebench(options, out) {
   await writeFile(join(out, 'public/description.md'), imported.description, { flag: 'wx' })
   const metadata = { competitionId: d.competitionId, public: join(out, 'public'), answers: imported.answers,
     sampleSubmission: join(out, 'public', relative(imported.public, imported.sampleSubmission)), metric: d.metric,
-    trainDigest: d.publicFiles.find(f => f.path === 'train.csv').digest }
+    trainDigest: d.publicFiles.find(f => f.path === 'train.csv').digest, validation: researchConfig(options.research).validation }
   await atomicJson(join(out, 'import-input.json'), metadata)
   await command(options.python ?? 'python3', [fileURLToPath(new URL('../mlebench-data.py', import.meta.url)),
     '--metadata', join(out, 'import-input.json'), '--out', out])

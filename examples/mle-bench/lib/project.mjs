@@ -1,4 +1,5 @@
 import { assert, addCost, digest, mergeCheckpoints, seal, verify, zeroCost } from './contracts.mjs'
+import { researchConfig } from './research-config.mjs'
 import { locked } from './store.mjs'
 
 /** Project budget and public checkpoint survive evolution/cohort replacement. */
@@ -36,14 +37,17 @@ export class ResearchProject {
     return locked(this.store.path('locks', `${this.id}-stage-${stageId}`), async () => {
     const head = await this.store.load('projects', this.id)
     const body = seal({ protocol: 'analysis-stage@1', projectId: this.id, stageId, checkpointRef: head.checkpoint,
-      harnesses, budget: this.project.budget, auditBudget: { wallSeconds: 1500, cpuSeconds: 3000, maxAdditionalRefits: 5 },
-      mergePolicy: 'all-compatible-facts@1', repetitions: 1, experiments: 5 })
+      harnesses, budget: this.project.budget, auditBudget: {
+        wallSeconds: this.project.budget.reserveSeconds * researchConfig(this.project.research).maxExperiments,
+        cpuSeconds: this.project.budget.reserveCpuSeconds * researchConfig(this.project.research).maxExperiments,
+        maxAdditionalRefits: researchConfig(this.project.research).maxExperiments },
+      mergePolicy: 'all-compatible-facts@1', repetitions: 1, experiments: researchConfig(this.project.research).maxExperiments })
     const existing = await this.store.load('stages', stageId)
     if (existing) { assert(existing.plan.digest === body.digest, 'stage is already frozen with different conditions'); return existing.plan }
     // Admission reserves every branch before any branch starts.
     const { sequencePlan } = await import('./sequence.mjs'), checkpoint = await this.store.get(head.checkpoint)
     await this.reserveSequences(harnesses.map(harness => sequencePlan({ task: this.project.task, checkpoint, harness,
-      budget: this.project.budget, model: this.project.model, runtimeDigest: this.project.task.runtimeDigest })))
+      research: this.project.research, budget: this.project.budget, model: this.project.model, runtimeDigest: this.project.task.runtimeDigest })))
     await this.store.save('stages', stageId, { plan: body, status: 'planned' }); return body
     })
   }
@@ -64,7 +68,7 @@ export class ResearchProject {
     for (const r of receipts) {
       verify(r)
       const plan = sequencePlan({ task: this.project.task, checkpoint: base, harness: r.harness,
-        budget: state.plan.budget, model: this.project.model, runtimeDigest: this.project.task.runtimeDigest })
+        research: { maxExperiments: state.plan.experiments }, budget: state.plan.budget, model: this.project.model, runtimeDigest: this.project.task.runtimeDigest })
       const recorded = await this.store.load('sequences', plan.digest.slice(7))
       assert(r.startingCheckpointDigest === base.digest && r.planDigest === plan.digest && recorded?.status === 'complete'
         && recorded.receipt.digest === r.digest, 'unsealed or incompatible stage branch')

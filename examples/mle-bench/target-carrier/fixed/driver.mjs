@@ -8,7 +8,8 @@ import { atomicJson } from './lib/store.mjs'
 import { Budget } from './lib/budget.mjs'
 import { validateRequest } from './lib/schemas.mjs'
 import { verifyHarness } from './integrity.mjs'
-import { internalScore, internalQuality } from './lib/metrics.mjs'
+import { internalScore, internalQuality, predictionsDigest } from './lib/metrics.mjs'
+import { experimentBudget } from './lib/research-config.mjs'
 
 export class Driver {
   constructor(repository, { data = '/data', output = '/output', work = '/run/analysis' } = {}) {
@@ -19,6 +20,9 @@ export class Driver {
     this.request = validateRequest(verify(JSON.parse(await readFile(join(this.data, 'request.json'), 'utf8'))))
     this.checkpoint = validateCheckpoint(JSON.parse(await readFile(join(this.data, 'checkpoint.json'), 'utf8')))
     this.plan = JSON.parse(await readFile(join(this.data, 'validation.json'), 'utf8'))
+    this.holdout = this.request.task.protocol === 'analysis-task@3'
+    assert(!this.holdout || this.plan.protocol === 'analysis-holdout-plan@1', 'holdout validation plan required')
+    assert(digest(this.plan) === this.request.task.validationPlanDigest, 'task validation plan changed')
     this.runId = process.env.HITCH_RUN_ID
     assert(/^run_[a-f0-9]{32}$/.test(this.runId ?? ''), 'runtime-assigned Hitch run ID required')
     assert(this.harness.manifest.digest === this.request.harness.manifestDigest, 'harness manifest differs from requested candidate')
@@ -82,9 +86,22 @@ export class Driver {
     const current = this.checkpoint.currentSolutionDigest
     const history = [...this.checkpoint.history, ...(this.evaluation ? [this.experiment()] : [])]
     const eligible = new Set([...this.request.eligibleSolutionDigests, this.solution?.digest].filter(Boolean))
-    return { phase, slotIndex: this.request.slotIndex, task: this.request.task, history,
-      currentSolutionDigest: current, eligibleExperiments: history.filter(e => validCandidate(e) && eligible.has(e.sourceDigest)),
+    return { phase, slotIndex: this.request.slotIndex, experiments: experimentBudget(this.request), training: this.trainingSummary(), validation: this.validationSummary(), task: this.request.task, history,
+      currentSolutionDigest: current, eligibleExperiments: history.filter(e => validCandidate(e) && eligible.has(e.sourceDigest) && e.validationPlanDigest === digest(this.plan)),
       policy: this.policyConfig, policyError: this.policyError ?? null, remaining: this.budget.available() }
+  }
+  trainingSummary() {
+    const remaining = this.budget.available()
+    return { wallSeconds: Math.min(this.request.experimentWallSeconds, remaining.wallSeconds),
+      cpuSeconds: Math.min(this.request.experimentCpuSeconds, remaining.cpuSeconds) }
+  }
+  validationSummary() {
+    if (this.holdout) return { mode: 'holdout', seed: this.plan.seed, metric: this.plan.metric,
+      trainingRows: this.plan.assignments.filter(a => a === 0).length, validationRows: this.plan.assignments.filter(a => a === 1).length,
+      fraction: this.plan.validationFraction, digest: this.request.task.validationPlanDigest }
+    return this.plan.protocol === 'analysis-validation-plan@2' ? { protocol: this.plan.protocol,
+      seed: this.plan.seed, metric: this.plan.metric, trainDigest: this.plan.trainDigest, folds: 5,
+      rows: this.plan.foldAssignments.length, digest: this.request.task.validationPlanDigest } : this.plan
   }
   async policy(phase, signal) {
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -135,13 +152,11 @@ export class Driver {
       guidance.push({ path: f.path, digest: f.digest, text })
     }
     if (!this.guidanceRecorded) { this.trace.push({ phase: 'guidance', loaded: guidance.map(({ path, digest }) => ({ path, digest })) }); this.guidanceRecorded = true }
-    const task = this.request.task.protocol === 'analysis-task@2' ? { ...this.request.task,
+    const task = this.request.task.protocol !== 'analysis-task@1' ? { ...this.request.task,
       predictIds: undefined, predictRows: this.request.task.predictIds.length,
       publicFiles: undefined, publicAssets: { count: this.request.task.publicFiles.length, examples: this.request.task.publicFiles.slice(0, 20) } } : this.request.task
-    const validationPlan = this.plan.protocol === 'analysis-validation-plan@2' ? { protocol: this.plan.protocol,
-      seed: this.plan.seed, metric: this.plan.metric, trainDigest: this.plan.trainDigest, folds: 5,
-      rows: this.plan.foldAssignments.length, digest: this.request.task.validationPlanDigest } : this.plan
-    return { task, slotIndex: this.request.slotIndex, startingCheckpointDigest: this.checkpoint.digest,
+    const validationPlan = this.validationSummary()
+    return { task, slotIndex: this.request.slotIndex, experiments: experimentBudget(this.request), training: this.trainingSummary(), validation: validationPlan, startingCheckpointDigest: this.checkpoint.digest,
       currentSolutionDigest: this.checkpoint.currentSolutionDigest, validationPlan, ...decision, guidance,
       visibleSources: this.checkpoint.solutions.map(s => ({ digest: s.digest, files: s.files.map(f => f.path) })), remaining: this.budget.available() }
   }
@@ -172,15 +187,15 @@ export class Driver {
     const history = [...this.checkpoint.history, ...(this.evaluation ? [this.experiment()] : [])]
     return { total: history.length, experiments: history.slice(offset, offset + 5) }
   }
-  async inspectOof(experimentId, offset = 0) {
-    assert(Number.isInteger(offset) && offset >= 0, 'invalid OOF offset')
+  async inspectPredictions(experimentId, offset = 0) {
+    assert(Number.isInteger(offset) && offset >= 0, 'invalid predictions offset')
     const experiment = [...this.checkpoint.history, ...(this.evaluation ? [this.experiment()] : [])].find(e => e.experimentId === experimentId)
-    assert(experiment?.execution.oofDigest, 'OOF outside visible evidence')
-    const id = experiment.execution.oofDigest
+    assert(experiment && predictionsDigest(experiment), 'predictions outside visible evidence')
+    const id = predictionsDigest(experiment)
     let bytes
     if (experiment.rolloutRunId === this.runId && this.evaluation.status !== 'reused') bytes = await readFile(join(this.output, 'objects', id.slice(7)))
     else bytes = await readFile(join(this.data, 'objects', id.slice(7)))
-    assert(sha(bytes) === id, 'OOF evidence changed')
+    assert(sha(bytes) === id, 'prediction evidence changed')
     const rows = Object.entries(decodeOof(bytes))
     return { digest: id, total: rows.length, predictions: rows.slice(offset, offset + 100).map(([id, prediction]) => ({ id, prediction })) }
   }
@@ -192,11 +207,13 @@ export class Driver {
     this.started = true; this.action = { action: 'reuse', parentExperimentId: prior.experimentId }
     this.solution = this.checkpoint.solutions.find(s => s.digest === solutionDigest)
     this.claim = { hypothesis, intendedChange: 'Register compatible historical solution in the current experiment slot.' }
-    this.evaluation = { status: 'reused', foldMetrics: prior.execution.foldMetrics,
+    this.evaluation = this.holdout ? { status: 'reused', metric: prior.execution.metric,
+      validationScore: internalScore(prior), validationUtility: internalQuality(prior), validationRows: prior.execution.validationRows }
+      : { status: 'reused', foldMetrics: prior.execution.foldMetrics,
       ...(this.request.task.protocol === 'analysis-task@2'
         ? { metric: prior.execution.metric, pooledScore: internalScore(prior), pooledUtility: internalQuality(prior) }
         : { pooledAccuracy: prior.execution.pooledAccuracy }) }
-    this.reusedEvidenceRefs = [prior.digest]; this.oofDigest = prior.execution.oofDigest
+    this.reusedEvidenceRefs = [prior.digest]; this.oofDigest = predictionsDigest(prior)
     this.internalReceipt = { digest: prior.execution.receiptDigest }
     return this.experiment()
   }
@@ -216,6 +233,7 @@ export class Driver {
     assert(!this.evaluation, 'analysis closed after formal experiment'); sourcePath(path)
     const result = await this.meteredWorker({ operation: 'script', entrypoint: path, files: await this.sourceFiles(),
       inputs: { 'train.csv': join(this.data, 'train.csv'), 'predict.csv': join(this.data, 'predict.csv') }, argv: [],
+      ...(this.holdout ? { validationPlan: this.plan } : {}),
       prediction: this.request.task.prediction, publicFiles: this.request.task.publicFiles ?? [], publicDirectory: join(this.data, 'public'),
       outputDirectory: join(this.work, `analysis-${randomUUID()}`), cpuSeconds: 30, wallSeconds: 60 }, signal)
     return result
@@ -230,21 +248,20 @@ export class Driver {
       runtimeDigest: this.request.runtimeDigest, authoredByRunId: this.runId })
     const result = await this.meteredWorker({ operation: 'evaluate', files, entrypoint, train: join(this.data, 'train.csv'),
       prediction: this.request.task.prediction, validationPlan: this.plan, trainingSeed: this.plan.seed,
-      publicFiles: this.request.task.publicFiles ?? [], publicDirectory: join(this.data, 'public'), outputDirectory: join(this.work, 'cv-output'),
+      publicFiles: this.request.task.publicFiles ?? [], publicDirectory: join(this.data, 'public'), outputDirectory: join(this.work, 'validation-output'),
       wallSeconds: this.request.experimentWallSeconds, cpuSeconds: this.request.experimentCpuSeconds }, signal)
     this.evaluation = result
     await atomicJson(join(this.output, 'experiment-diagnostics.json'), result.logs)
-    this.oofDigest = result.oofPath ? await this.object(await readFile(result.oofPath))
+    this.oofDigest = result.predictionsPath ? await this.object(await readFile(result.predictionsPath)) : result.oofPath ? await this.object(await readFile(result.oofPath))
       : result.oof ? await this.object(Buffer.from(JSON.stringify(result.oof))) : null
-    this.internalReceipt = seal({ protocol: 'analysis-cv-receipt@1', requestDigest: this.request.digest, sourceDigest: this.solution.digest,
-      validationPlanDigest: digest(this.plan), status: result.status, foldMetrics: result.foldMetrics,
-      ...this.scores(result), oofDigest: this.oofDigest })
-    await atomicJson(join(this.output, 'cv-receipt.json'), this.internalReceipt)
+    this.internalReceipt = seal({ protocol: this.holdout ? 'analysis-validation-receipt@1' : 'analysis-cv-receipt@1', requestDigest: this.request.digest, sourceDigest: this.solution.digest,
+      validationPlanDigest: digest(this.plan), status: result.status, ...this.validationResult(result) })
+    await atomicJson(join(this.output, this.holdout ? 'validation-receipt.json' : 'cv-receipt.json'), this.internalReceipt)
     return { ...result, solutionDigest: this.solution.digest, oof: undefined }
   }
   experiment() {
     const failed = !this.evaluation
-    return seal({ protocol: this.request.task.protocol === 'analysis-task@2' ? 'analysis-experiment@2' : 'analysis-experiment@1', experimentId: `${this.runId}/experiment`, sequenceId: this.request.sequenceId,
+    return seal({ protocol: this.holdout ? 'analysis-experiment@3' : this.request.task.protocol === 'analysis-task@2' ? 'analysis-experiment@2' : 'analysis-experiment@1', experimentId: `${this.runId}/experiment`, sequenceId: this.request.sequenceId,
       rolloutRunId: this.runId, slotIndex: this.request.slotIndex, parentExperimentId: this.action?.parentExperimentId ?? null,
       operator: this.action?.action ?? 'draft', sourceDigest: this.solution?.digest ?? null,
       validationPlanDigest: digest(this.plan), trainingSeed: this.plan.seed,
@@ -252,9 +269,14 @@ export class Driver {
       execution: { status: failed ? 'generation_failed' : this.evaluation.status,
         receiptDigest: this.internalReceipt?.digest ?? digest({ runId: this.runId, status: 'generation_failed' }),
         physicalAttemptRefs: [this.runId], reusedEvidenceRefs: this.reusedEvidenceRefs ?? [], cost: this.budget.snapshot().used,
-        foldMetrics: this.evaluation?.foldMetrics ?? [], ...this.scores(this.evaluation), oofDigest: this.oofDigest ?? null },
+        ...this.validationResult(this.evaluation) },
       interpretation: this.interpretation ?? { conclusion: '', limitations: this.evaluation?.status === 'candidate_failed'
         ? [JSON.stringify(this.evaluation.logs).slice(-8000)] : [] } })
+  }
+  validationResult(value) {
+    return this.holdout ? { metric: this.request.task.prediction.metric, validationScore: value?.validationScore ?? null,
+      validationUtility: value?.validationUtility ?? null, validationRows: value?.validationRows ?? 0, predictionsDigest: this.oofDigest ?? null }
+      : { foldMetrics: value?.foldMetrics ?? [], ...this.scores(value), oofDigest: this.oofDigest ?? null }
   }
   scores(value) {
     return this.request.task.protocol === 'analysis-task@2'

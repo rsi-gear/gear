@@ -47,6 +47,9 @@
         },
         {
           "$ref": "#/$defs/TaskV2"
+        },
+        {
+          "$ref": "#/$defs/TaskV3"
         }
       ]
     },
@@ -157,6 +160,9 @@
         },
         {
           "$ref": "#/$defs/ExperimentV2"
+        },
+        {
+          "$ref": "#/$defs/ExperimentV3"
         }
       ]
     },
@@ -514,6 +520,160 @@
       "properties": {
         "protocol": {
           "const": "analysis-task@2"
+        },
+        "taskId": {
+          "type": "string"
+        },
+        "taskFamilyId": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "inputs": {
+          "type": "object",
+          "properties": {
+            "trainDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "predictDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "trainDigest",
+            "predictDigest"
+          ],
+          "additionalProperties": false
+        },
+        "predictIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "validationPlanDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "runtimeDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "prediction": {
+          "$ref": "#/$defs/PredictionV2"
+        },
+        "publicFiles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "digest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "role": {
+                "enum": [
+                  "shared",
+                  "train",
+                  "predict"
+                ]
+              },
+              "rowId": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "digest",
+              "bytes",
+              "role",
+              "rowId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "benchmark": {
+          "type": "object",
+          "properties": {
+            "format": {
+              "const": "mle-bench"
+            },
+            "competitionId": {
+              "type": "string"
+            },
+            "definitionDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "publicTreeDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "sourceRevision": {
+              "type": "string"
+            },
+            "verification": {
+              "enum": [
+                "upstream-checksums",
+                "custom-checksums",
+                "fixture"
+              ]
+            }
+          },
+          "required": [
+            "format",
+            "competitionId",
+            "definitionDigest",
+            "publicTreeDigest",
+            "sourceRevision",
+            "verification"
+          ],
+          "additionalProperties": false
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "taskId",
+        "taskFamilyId",
+        "description",
+        "inputs",
+        "predictIds",
+        "validationPlanDigest",
+        "runtimeDigest",
+        "prediction",
+        "publicFiles",
+        "benchmark",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "TaskV3": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-task@3"
         },
         "taskId": {
           "type": "string"
@@ -1089,6 +1249,211 @@
       ],
       "additionalProperties": false
     },
+    "ExperimentV3": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-experiment@3"
+        },
+        "experimentId": {
+          "type": "string"
+        },
+        "sequenceId": {
+          "type": "string"
+        },
+        "rolloutRunId": {
+          "type": "string"
+        },
+        "slotIndex": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "parentExperimentId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operator": {
+          "enum": [
+            "draft",
+            "debug",
+            "improve",
+            "confirm",
+            "reuse"
+          ]
+        },
+        "sourceDigest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "validationPlanDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "trainingSeed": {
+          "type": "integer"
+        },
+        "claim": {
+          "type": "object",
+          "properties": {
+            "hypothesis": {
+              "type": "string"
+            },
+            "intendedChange": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "hypothesis",
+            "intendedChange"
+          ],
+          "additionalProperties": false
+        },
+        "interpretation": {
+          "type": "object",
+          "properties": {
+            "conclusion": {
+              "type": "string"
+            },
+            "limitations": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "conclusion",
+            "limitations"
+          ],
+          "additionalProperties": false
+        },
+        "execution": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "enum": [
+                "completed",
+                "reused",
+                "generation_failed",
+                "candidate_failed"
+              ]
+            },
+            "receiptDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "physicalAttemptRefs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "reusedEvidenceRefs": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              }
+            },
+            "cost": {
+              "$ref": "#/$defs/Cost"
+            },
+            "metric": {
+              "enum": [
+                "accuracy",
+                "auc-roc",
+                "mean-column-wise-rmsle"
+              ]
+            },
+            "validationScore": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "validationUtility": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "validationRows": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "predictionsDigest": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "receiptDigest",
+            "physicalAttemptRefs",
+            "reusedEvidenceRefs",
+            "cost",
+            "metric",
+            "validationScore",
+            "validationUtility",
+            "validationRows",
+            "predictionsDigest"
+          ],
+          "additionalProperties": false
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "experimentId",
+        "sequenceId",
+        "rolloutRunId",
+        "slotIndex",
+        "parentExperimentId",
+        "operator",
+        "sourceDigest",
+        "validationPlanDigest",
+        "trainingSeed",
+        "claim",
+        "interpretation",
+        "execution",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
     "Harness": {
       "type": "object",
       "properties": {
@@ -1237,149 +1602,24 @@
       "additionalProperties": false
     },
     "SequencePlan": {
-      "type": "object",
-      "properties": {
-        "protocol": {
-          "const": "analysis-five-rollout@1"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SequencePlanV1"
         },
-        "task": {
-          "$ref": "#/$defs/Task"
-        },
-        "startingCheckpointDigest": {
-          "type": "string",
-          "pattern": "^sha256:[a-f0-9]{64}$"
-        },
-        "harness": {
-          "$ref": "#/$defs/Harness"
-        },
-        "model": {
-          "type": "string"
-        },
-        "budget": {
-          "$ref": "#/$defs/Budget"
-        },
-        "runtimeDigest": {
-          "type": "string",
-          "pattern": "^sha256:[a-f0-9]{64}$"
-        },
-        "experiments": {
-          "const": 5
-        },
-        "repetitions": {
-          "const": 1
-        },
-        "digest": {
-          "type": "string",
-          "pattern": "^sha256:[a-f0-9]{64}$"
+        {
+          "$ref": "#/$defs/SequencePlanV2"
         }
-      },
-      "required": [
-        "protocol",
-        "task",
-        "startingCheckpointDigest",
-        "harness",
-        "model",
-        "budget",
-        "runtimeDigest",
-        "experiments",
-        "repetitions",
-        "digest"
-      ],
-      "additionalProperties": false
+      ]
     },
     "RolloutRequest": {
-      "type": "object",
-      "properties": {
-        "protocol": {
-          "const": "analysis-rollout-request@1"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RolloutRequestV1"
         },
-        "sequenceId": {
-          "type": "string"
-        },
-        "slotIndex": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 5
-        },
-        "planDigest": {
-          "type": "string",
-          "pattern": "^sha256:[a-f0-9]{64}$"
-        },
-        "task": {
-          "$ref": "#/$defs/Task"
-        },
-        "harness": {
-          "$ref": "#/$defs/Harness"
-        },
-        "model": {
-          "type": "string"
-        },
-        "runtimeDigest": {
-          "type": "string",
-          "pattern": "^sha256:[a-f0-9]{64}$"
-        },
-        "checkpointDigest": {
-          "type": "string",
-          "pattern": "^sha256:[a-f0-9]{64}$"
-        },
-        "checkpointRef": {
-          "type": "string",
-          "pattern": "^sha256:[a-f0-9]{64}$"
-        },
-        "previousRolloutReceiptDigest": {
-          "anyOf": [
-            {
-              "type": "string",
-              "pattern": "^sha256:[a-f0-9]{64}$"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "eligibleSolutionDigests": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "pattern": "^sha256:[a-f0-9]{64}$"
-          },
-          "uniqueItems": true
-        },
-        "allowance": {
-          "$ref": "#/$defs/Allowance"
-        },
-        "experimentWallSeconds": {
-          "type": "number",
-          "minimum": 0
-        },
-        "experimentCpuSeconds": {
-          "type": "number",
-          "minimum": 0
-        },
-        "digest": {
-          "type": "string",
-          "pattern": "^sha256:[a-f0-9]{64}$"
+        {
+          "$ref": "#/$defs/RolloutRequestV2"
         }
-      },
-      "required": [
-        "protocol",
-        "sequenceId",
-        "slotIndex",
-        "planDigest",
-        "task",
-        "harness",
-        "model",
-        "runtimeDigest",
-        "checkpointDigest",
-        "checkpointRef",
-        "previousRolloutReceiptDigest",
-        "eligibleSolutionDigests",
-        "allowance",
-        "experimentWallSeconds",
-        "experimentCpuSeconds",
-        "digest"
-      ],
-      "additionalProperties": false
+      ]
     },
     "Selection": {
       "type": "object",
@@ -1389,8 +1629,7 @@
         },
         "slotIndex": {
           "type": "integer",
-          "minimum": 1,
-          "maximum": 5
+          "minimum": 1
         },
         "experimentId": {
           "anyOf": [
@@ -1614,6 +1853,301 @@
         "harness",
         "sourceSelectionPlan",
         "allowance",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "SequencePlanV1": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-five-rollout@1"
+        },
+        "task": {
+          "$ref": "#/$defs/Task"
+        },
+        "startingCheckpointDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "harness": {
+          "$ref": "#/$defs/Harness"
+        },
+        "model": {
+          "type": "string"
+        },
+        "budget": {
+          "$ref": "#/$defs/Budget"
+        },
+        "runtimeDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "experiments": {
+          "const": 5
+        },
+        "repetitions": {
+          "const": 1
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "task",
+        "startingCheckpointDigest",
+        "harness",
+        "model",
+        "budget",
+        "runtimeDigest",
+        "experiments",
+        "repetitions",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "SequencePlanV2": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-research-sequence@1"
+        },
+        "task": {
+          "$ref": "#/$defs/Task"
+        },
+        "startingCheckpointDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "harness": {
+          "$ref": "#/$defs/Harness"
+        },
+        "model": {
+          "type": "string"
+        },
+        "budget": {
+          "$ref": "#/$defs/Budget"
+        },
+        "runtimeDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "experiments": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "repetitions": {
+          "const": 1
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "task",
+        "startingCheckpointDigest",
+        "harness",
+        "model",
+        "budget",
+        "runtimeDigest",
+        "experiments",
+        "repetitions",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "RolloutRequestV1": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-rollout-request@1"
+        },
+        "sequenceId": {
+          "type": "string"
+        },
+        "slotIndex": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "planDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "task": {
+          "$ref": "#/$defs/Task"
+        },
+        "harness": {
+          "$ref": "#/$defs/Harness"
+        },
+        "model": {
+          "type": "string"
+        },
+        "runtimeDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "checkpointDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "checkpointRef": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "previousRolloutReceiptDigest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "eligibleSolutionDigests": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "uniqueItems": true
+        },
+        "allowance": {
+          "$ref": "#/$defs/Allowance"
+        },
+        "experimentWallSeconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "experimentCpuSeconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "sequenceId",
+        "slotIndex",
+        "planDigest",
+        "task",
+        "harness",
+        "model",
+        "runtimeDigest",
+        "checkpointDigest",
+        "checkpointRef",
+        "previousRolloutReceiptDigest",
+        "eligibleSolutionDigests",
+        "allowance",
+        "experimentWallSeconds",
+        "experimentCpuSeconds",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "RolloutRequestV2": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-rollout-request@2"
+        },
+        "sequenceId": {
+          "type": "string"
+        },
+        "slotIndex": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "planDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "task": {
+          "$ref": "#/$defs/Task"
+        },
+        "harness": {
+          "$ref": "#/$defs/Harness"
+        },
+        "model": {
+          "type": "string"
+        },
+        "runtimeDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "checkpointDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "checkpointRef": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "previousRolloutReceiptDigest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "eligibleSolutionDigests": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "uniqueItems": true
+        },
+        "allowance": {
+          "$ref": "#/$defs/Allowance"
+        },
+        "experimentWallSeconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "experimentCpuSeconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "maxExperiments": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "sequenceId",
+        "slotIndex",
+        "planDigest",
+        "task",
+        "harness",
+        "model",
+        "runtimeDigest",
+        "checkpointDigest",
+        "checkpointRef",
+        "previousRolloutReceiptDigest",
+        "eligibleSolutionDigests",
+        "allowance",
+        "experimentWallSeconds",
+        "experimentCpuSeconds",
+        "maxExperiments",
         "digest"
       ],
       "additionalProperties": false

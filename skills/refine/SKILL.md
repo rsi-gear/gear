@@ -11,8 +11,8 @@ its configured Meta and Target profiles execute separate managed jobs.
 
 For MLE-bench research projects, also read
 [the MLE-bench adapter protocol](references/mle-bench.md).
-The analysis provider maps one seed slot to five sequential experiments and one
-fixed C5 delivery. Use the current Project API with `validation.mode: research`;
+The analysis provider maps one seed slot to a configured sequence of experiments and one
+fixed final delivery. Experiments share a frozen holdout; training may use internal CV. Use the current Project API with `validation.mode: research`;
 Python algorithms own selection and promotion.
 
 ## Connect

@@ -6,9 +6,10 @@ import { fileURLToPath } from 'node:url'
 import { command, isMain, cli } from './lib/common.mjs'
 import { files, hash } from './target-carrier/fixed/integrity.mjs'
 import { atomicJson, json, Store } from './lib/store.mjs'
-import { defaultBudget, digest, initialCheckpoint, seal, sha, assert } from './lib/contracts.mjs'
+import { researchBudget, digest, initialCheckpoint, seal, sha, assert } from './lib/contracts.mjs'
 import { executionBinding, refitBinding } from './lib/hitch-backend.mjs'
 import { importMlebench, fileHash } from './lib/mlebench.mjs'
+import { researchConfig } from './lib/research-config.mjs'
 export const here = dirname(fileURLToPath(import.meta.url))
 
 export async function sealHarness(repository, base, parent) {
@@ -26,7 +27,7 @@ export async function sealHarness(repository, base, parent) {
 export async function bootstrap(repository, install = false) {
   await cp(join(here, 'target-carrier'), repository, { recursive: true, force: false, errorOnExist: true })
   await mkdir(join(repository, 'fixed/lib'), { recursive: true })
-  for (const name of ['contracts.mjs', 'schemas.mjs', 'metrics.mjs', 'budget.mjs', 'store.mjs']) await copyFile(join(here, 'lib', name), join(repository, 'fixed/lib', name))
+  for (const name of ['contracts.mjs', 'schemas.mjs', 'metrics.mjs', 'budget.mjs', 'store.mjs', 'research-config.mjs']) await copyFile(join(here, 'lib', name), join(repository, 'fixed/lib', name))
   await writeFile(join(repository, '.gitignore'), 'node_modules/\n__pycache__/\n*.pyc\n')
   await mkdir(join(repository, 'apps/cli/lib'), { recursive: true })
   await copyFile(join(repository, 'fixed/launcher.mjs'), join(repository, 'apps/cli/lib/bin.js'))
@@ -45,12 +46,13 @@ export async function prepare(options) {
   assert(options.competition && options.mlebenchRepository && options.mlebenchData,
     'MLE-bench repository, data root and competition are required')
   assert(!!options.deploymentTrain === !!options.deploymentPredict, 'both deployment inputs are required')
+  const research = researchConfig(options.research)
   const out = resolve(options.out)
   assert(!await stat(out).catch(e => { if (e.code !== 'ENOENT') throw e; return null }), 'output must be new')
   await mkdir(out, { recursive: true })
   const data = join(out, 'data')
   const prepared = await importMlebench({ repository: options.mlebenchRepository, dataRoot: options.mlebenchData,
-    competition: options.competition, python: options.python, fixture: options.fixture }, data)
+    competition: options.competition, python: options.python, fixture: options.fixture, research }, data)
   const validation = await json(join(data, 'validation.json'))
   let refit = { train: prepared.train, predict: prepared.predict, predictIds: prepared.refitIds, scope: 'mle-bench-public' }
   if (options.deploymentTrain) {
@@ -68,7 +70,7 @@ export async function prepare(options) {
     workerDigest: sha(await readFile(join(here, 'target-carrier/fixed/worker.py'))), confinementDigest: sha(await readFile(join(here, 'target-carrier/fixed/confinement.py'))),
     scoringDigest: sha(await readFile(join(here, 'target-carrier/fixed/scoring.py'))) }
   const family = options.competition
-  const task = seal({ protocol: 'analysis-task@2', taskId: `${family}-development`, taskFamilyId: family,
+  const task = seal({ protocol: 'analysis-task@3', taskId: `${family}-development`, taskFamilyId: family,
     description: options.description ?? prepared.description,
     inputs: { trainDigest: await fileHash(prepared.train), predictDigest: await fileHash(prepared.predict) },
     prediction: prepared.prediction, predictIds: prepared.predictIds, validationPlanDigest: digest(validation), runtimeDigest: digest(runtime),
@@ -80,10 +82,11 @@ export async function prepare(options) {
     runtimeDigest: task.runtimeDigest, scorerDigest: digest({ metric: task.prediction.metric, scoringDigest: runtime.scoringDigest }) })
   const checkpointRef = await store.put(checkpoint)
   await store.save('projects', projectId, { checkpoint: checkpointRef, stage: null, previousStage: null })
-  const project = { protocol: 'analysis-project@1', projectId, ...target, task, runtime, validationPlan: validation, checkpointRef,
-    rows: prepared.rows, model: options.model, budget: { ...defaultBudget, tokens: null, requests: null },
+  const budget = researchBudget(research), maxSequences = 12
+  const project = { protocol: 'analysis-project@1', projectId, ...target, task, runtime, research, validationPlan: validation, checkpointRef,
+    rows: prepared.rows, model: options.model, budget,
     modelAccounting: { mode: 'usage-only', requestCoverage: 'adapter-calls-lower-bound', price: 'unknown' },
-    projectLimits: { maxSequences: 12, cpuSeconds: 40000, wallSeconds: 43200 },
+    projectLimits: { maxSequences, cpuSeconds: maxSequences * budget.cpuSeconds, wallSeconds: maxSequences * budget.wallSeconds },
     backend: { executable: resolve(options.hitchExecutable), executorExecutable: resolve(options.executorExecutable),
       root: resolve(options.hitchRoot), workDirectory: out, hitchRepository: resolve(options.hitchRepository),
       targetRepository: target.targetRepository, executorRepository: resolve(options.executorRepository ?? options.hitchRepository), executorCommit: options.executorCommit,
@@ -99,10 +102,11 @@ export async function prepare(options) {
 export async function main() {
   const required = ['out', 'mlebench-repository', 'mlebench-data', 'competition', 'hitch-repository', 'hitch-root',
     'hitch-executable', 'executor-executable', 'executor-commit', 'base-image', 'platform', 'model']
-  const names = [...required, 'description', 'executor-repository', 'python', 'deployment-train', 'deployment-predict']
+  const names = [...required, 'description', 'executor-repository', 'python', 'deployment-train', 'deployment-predict', 'research-config']
   const { values } = parseArgs({ options: { ...Object.fromEntries(names.map(k => [k, { type: 'string' }])), install: { type: 'boolean' } } })
   for (const key of required) assert(values[key], `--${key} required`)
   const options = Object.fromEntries(Object.entries(values).map(([k, v]) => [k.replace(/-([a-z])/g, (_, c) => c.toUpperCase()), v]))
+  if (options.researchConfig) options.research = await json(resolve(options.researchConfig))
   console.log(JSON.stringify(await prepare(options), null, 2))
 }
 if (isMain(import.meta.url)) cli(main)

@@ -35,13 +35,13 @@ export async function apply(ctx, config) {
     ['workspace_list', 'List files in this rollout workspace.', {}, () => driver.list()],
     ['experiment_inspect', 'Read up to five authenticated experiment records; offset starts at zero.',
       { offset: { type: 'integer', required: true } }, a => driver.inspectExperiments(a.offset)],
-    ['experiment_oof', 'Read up to 100 authenticated out-of-fold predictions from visible research history.',
-      { experimentId: string, offset: { type: 'integer', required: true } }, a => driver.inspectOof(a.experimentId, a.offset)],
+    ['experiment_predictions', 'Read up to 100 authenticated validation predictions from visible research history. Validation labels are not exposed.',
+      { experimentId: string, offset: { type: 'integer', required: true } }, a => driver.inspectPredictions(a.experimentId, a.offset)],
     ['experiment_reuse', 'Register a compatible historical solution as this rollout experiment, consuming its slot.',
       { solutionDigest: string, hypothesis: string }, a => driver.reuse(a.solutionDigest, a.hypothesis)],
     ['analysis_execute', 'Run a data-inspection script. Data is under /work/inputs; write outputs under /work/scratch. This is not an extra model validation.',
       { path: string }, (a, e) => driver.analyze(a.path, e.signal)],
-    ['experiment_evaluate', 'Seal and evaluate exactly one solution with the locked five-fold plan. Failure consumes this rollout.',
+    ['experiment_evaluate', 'Seal and evaluate exactly one solution on the shared held-out validation set. Training may use internal CV on its supplied training rows. Failure consumes this rollout.',
       { entrypoint: string, hypothesis: string, intendedChange: string }, (a, e) => driver.evaluate(a, e.signal)],
     ['experiment_select', 'Run the sealed selection policy against compatible internal evidence.', {}, (_, e) => driver.select(e.signal)],
     ['solution_freeze', 'Read the immutable source manifest after evaluation or reuse.', {}, () => {
@@ -54,7 +54,8 @@ export async function apply(ctx, config) {
   ctx.tools.guard(exec => names.includes(exec.name) && !driver.finished ? undefined : 'Only the active analysis rollout tools are authorized.')
   ctx.on('agent/created', ({ agent }) => { agent.ctx.tools.restrict({ allow: names }) })
   for (const [name, description, parameters, execute] of definitions) {
-    const tool = defineTool({ name, description, parameters, timeoutMs: 300000,
+    const tool = defineTool({ name, description, parameters,
+      timeoutMs: name === 'experiment_evaluate' ? Math.ceil((driver.request.experimentWallSeconds + 60) * 1000) : 300000,
       output: { schema: { type: 'string' }, render: (_a, value) => [{ type: 'text', text: value }] },
       execute(args, exec) {
         const task = queue.then(async () => {
