@@ -45,6 +45,7 @@ export class EvaluationSearchAdapter implements SearchProvider {
   readonly capabilities = { taskSubsetPlans: true, batchIndependentCells: true, idempotentExecution: true, objectives: 1 as const }
   readonly store: SearchStore
   readonly diagnosis: DiagnosisProvider
+  readonly verifySeedPromotionReuse?: () => Promise<void>
   private readonly datasets = new Map<string, Promise<DatasetDescription>>()
   private readonly cohorts = new Map<string, { digest: string }>()
   private readonly retentions = new Map<string, { protocol: 'gear-resource-retention@1'; state: 'active'; owner: string; generation: number; sourceRef: string; inputDigest: string; planDigest: string; tasks: string[] }>()
@@ -54,6 +55,15 @@ export class EvaluationSearchAdapter implements SearchProvider {
       integrity: digestJson({ implementation: 'gear-verifier-failure-hypotheses', revision: 1 }),
       sanitizationPolicyDigest: digestJson('gear-verifier-codes-and-component-ids-only-v1'),
       diagnose: input => this.diagnose(input),
+    }
+    if (options.spec.evaluation.mode === 'reuse-seed') this.verifySeedPromotionReuse = async () => {
+      const [seed, heldOut] = await Promise.all([
+        describeDataset(options.spec, 'seed', options.workspaceRoot),
+        describeDataset(options.spec, 'held-out', options.workspaceRoot),
+      ])
+      invariant(seed.sourceDigest === heldOut.sourceDigest && digestJson(seed.manifest) === digestJson(heldOut.manifest), 'reuse-seed requires identical frozen datasets')
+      const execution = ({ conditionId: _id, partition: _partition, dataset: _dataset, ...rest }: EvaluationCondition) => rest
+      invariant(digestJson(execution(options.identityRound.plan.seed)) === digestJson(execution(options.identityRound.plan.heldOut)), 'reuse-seed execution conditions differ')
     }
   }
   private async executionIdentity(round: Readonly<RefinementRound>, request: EvaluationRequest, signal?: AbortSignal): Promise<ExecutionIdentity | undefined> {

@@ -1,0 +1,24 @@
+This assignment evolves a general data-analysis harness under analysis-five-rollout@1.
+Read references/data-analysis-harness.md through the Refine resource interface.
+One rollout is one experiment. One evaluation cell is five sequential experiments
+from a frozen shared checkpoint. Five-fold validation happens inside each experiment.
+
+Change only harness prompts, skills, and workflows/research/{policy.py,memory.py,policy.json}.
+Target generates solution code at runtime; never put Titanic features, passenger IDs,
+model solutions, submission rows, or answers into the harness. Fixed drivers, tools,
+budgets, scorer, dependencies and model access are not editable candidates.
+
+Inspect authorized seed research: hypothesis, attempted change, internal validation,
+negative evidence, errors, source selection and actual C5 delivery. State one
+falsifiable mechanism prediction before editing. An unchanged tool-success rate does
+not imply the research or selection policy is good. Use a controlled, general change.
+Never use a later checkpoint or more experiments for one side of a comparison.
+
+The default objective is actual C5 quality with valid_output >= 1. Five-point curves,
+audit oracle and selection loss are diagnostics; they cannot replace C5 or be copied
+into Target history. Shared-set promotion means development champion only. A single
+Titanic sequence per harness is not independent replication or transfer evidence.
+
+Model tokens and requests are usage-only under the user's chosen profile. Keep the
+five-experiment count and CPU, wall, memory, tools and output limits. Do not claim a
+hard token budget, complete retry accounting or known monetary cost without evidence.

@@ -7,6 +7,8 @@ __pycache__/
 python/build/
 .pnpm-store/
 lib/
+!examples/data-analysis-harness/lib/
+!examples/data-analysis-harness/lib/**
 coverage/
 *.tgz
 .dsh-refine/

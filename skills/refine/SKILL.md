@@ -41,6 +41,9 @@ When the candidate is Gear's DSH carrier, also read
 choosing an artifact or hook. These references are the complete method
 contract, general editing guide, and version-specific DSH authoring guide; do
 not infer missing field names or harness APIs from errors.
+For `analysis-five-rollout@1` tasks, read
+[references/data-analysis-harness.md](references/data-analysis-harness.md)
+before diagnosing a sequence or changing its research policy.
 
 ## Run an evolution
 

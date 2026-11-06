@@ -33,6 +33,8 @@ const SHA256 = /^sha256:[0-9a-f]{64}$/u
 
 export interface SkillControlPlaneDependencies {
   evaluator?: RefineEvaluator & Partial<HitchTrajectoryReader>
+  /** Bind a custom evaluator's implementation/configuration instead of labelling it hitch-cli. */
+  rolloutProvider?: import('../types.js').ComponentRef<unknown>
   compiler?: HarnessCompiler
   components?: ComponentRegistry
 }
@@ -137,7 +139,8 @@ export async function createSkillControlPlane(
       ...(config.candidateGeneration.finalizationReserveMs === undefined ? {} : { finalizationReserveMs: config.candidateGeneration.finalizationReserveMs }),
     },
   }
-  const rolloutProvider = componentRef('rollout-provider', 'hitch-cli', hitchCliImplementation(), structuredClone(config.hitch))
+  if (dependencies.rolloutProvider && !dependencies.evaluator) throw new Error('custom rollout provider requires its evaluator')
+  const rolloutProvider = dependencies.rolloutProvider ?? componentRef('rollout-provider', 'hitch-cli', hitchCliImplementation(), structuredClone(config.hitch))
   const rolloutAgentConfig = { agentArgs: [...config.hitch.agentArgs] }
   const rollout = {
     provider: rolloutProvider,

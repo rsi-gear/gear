@@ -492,8 +492,15 @@ export class FailureClusterSearch {
     await this.runtime.progress(request.roundId, 'seed-research-complete')
     // The complete seed archive is frozen before any held-out outcome is requested.
     if (nominee && seedInput && gate?.outcome === 'eligible') {
-      await this.runtime.progress(request.roundId, 'held-out')
-      {
+      if (this.provider.verifySeedPromotionReuse) {
+        await this.provider.verifySeedPromotionReuse()
+        invariant(settings.promotion.validationMode === 'shared-set-research', 'seed reuse requires explicit shared-set-research')
+        const checked = precheckSeed(seedInput, settings.promotion)
+        const { digest: ignored, ...body } = checked
+        gate = seal({ ...body, outcome: checked.outcome === 'eligible' ? 'accepted' as const : checked.outcome,
+          reasonCodes: [...checked.reasonCodes, 'shared-set-research-seed-evidence'] })
+      } else {
+        await this.runtime.progress(request.roundId, 'held-out')
         const hp = this.fullPlan(admission, heldOut, 'held-out', [anchor.candidateId, nominee.candidateId], resolution.digest)
         const reference = await initialBaseline(heldOut, hp)
         const baseline = await evaluate(heldOut, hp, anchor), result = await evaluate(heldOut, hp, nominee)

@@ -101,6 +101,14 @@ export class SearchExecutionRuntime {
     const [seed, heldOut] = await Promise.all([this.provider.describe('seed'), this.provider.describe('held-out')])
     const resolvedSettings = resolveRegressionSettings(admission.settings, seed, heldOut)
     validateSettings(resolvedSettings, seed, heldOut, admission.maxCandidates)
+    if (this.provider.verifySeedPromotionReuse) {
+      invariant(resolvedSettings.promotion.validationMode === 'shared-set-research', 'reuse-seed requires shared-set-research validation')
+      const sharedUniverse = ({ partition: _partition, conditionDigest: _condition, digest: _digest, ...rest }: TaskUniverse) => rest
+      invariant(digestJson(sharedUniverse(seed)) === digestJson(sharedUniverse(heldOut)), 'reuse-seed requires identical task and scoring universes')
+      invariant(!resolvedSettings.promotion.protectedTasks.some(g => g.partition === 'held-out')
+        && !resolvedSettings.promotion.protectedAssertions.some(g => g.partition === 'held-out'), 'reuse-seed cannot satisfy independent held-out protections')
+      await this.provider.verifySeedPromotionReuse()
+    }
     if (seed.objective) invariant(this.provider.capabilities.objectives === 1, 'provider does not support objective schema version 1')
     this.components.parentSelectionPolicy(resolveParentPolicyRef(resolvedSettings.search))
     if (admission.settings.regression.suiteRef) {

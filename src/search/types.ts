@@ -477,6 +477,8 @@ export interface GateDecision {
 export interface CellVerification { cell: EvidenceCell; identity: CellIdentity }
 export interface SearchProvider {
   integrity: string
+  /** Explicit seed-only mode. Must revalidate identical task content and execution conditions. */
+  verifySeedPromotionReuse?(): Promise<void>
   capabilities: { taskSubsetPlans: boolean; batchIndependentCells: boolean; idempotentExecution: boolean; objectives?: 1 }
   describe(partition: Partition): Promise<TaskUniverse>
   /** Idempotent key identifies one invocation, including across controller crashes. */
