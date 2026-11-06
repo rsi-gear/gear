@@ -4,9 +4,9 @@ import json
 import math
 from pathlib import Path
 
-from gear_training.content import ContentStore, atomic_json, digest_file, require
-from gear_training.node import dependency_refs
-from gear_training.export import materialize, seal_directory
+from gear.training.storage.content import ContentStore, atomic_json, digest_file, require
+from gear.training.runtime.node import dependency_refs
+from gear.training.storage.snapshots import materialize, seal_directory
 
 
 def verify_updates(store, artifacts, updates):

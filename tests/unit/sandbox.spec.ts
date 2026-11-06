@@ -1,13 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { SandboxManager } from '@anthropic-ai/sandbox-runtime'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import {
   acquireAirGappedSandbox, assertAirGappedSandboxActive, createAirGappedSandboxConfig,
 } from '../../src/sandbox.js'
-import { SubprocessHarnessCompiler } from '../../src/harness/compiler.js'
 
 describe('air-gapped sandbox policy', () => {
   it('makes the Linux bubblewrap compatibility downgrade explicit and narrow', async () => {
@@ -18,6 +14,8 @@ describe('air-gapped sandbox policy', () => {
     })
     expect(config.network.allowedDomains).toEqual([])
     expect(config.network.deniedDomains).toEqual(['*'])
+    expect(config.network.tlsTerminate).toBeUndefined()
+    expect(config.network.mitmProxy).toBeUndefined()
     expect(config.network.allowLocalBinding).toBe(false)
     expect(config.network.allowAllUnixSockets).toBe(process.platform === 'linux')
     expect(config.filesystem.denyRead).toEqual(['/'])
@@ -83,44 +81,31 @@ describe('air-gapped sandbox policy', () => {
     await activeLease.release()
   })
 
-  it.skipIf(cannotRunSandbox)('runs a required compiler command under the leased compatibility policy', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'gear-sandbox-compiler-'))
-    await mkdir(join(root, 'harness'))
-    const mode = process.platform === 'linux' ? 'bubblewrap-only' : 'seccomp'
-    const lease = await acquireAirGappedSandbox(mode, 'compiler integration probe')
-    try {
-      const compiler = new SubprocessHarnessCompiler({
-        command: '/usr/bin/true',
-        sandboxMode: 'required',
+  it.skipIf(cannotRunSandbox).each(['allowAllUnixSockets', 'tlsTerminate', 'mitmProxy'] as const)(
+    'fails closed when another component mutates the process-global %s policy', async field => {
+      const mode = process.platform === 'linux' ? 'bubblewrap-only' : 'seccomp'
+      const lease = await acquireAirGappedSandbox(mode, 'policy drift probe')
+      const original = SandboxManager.getConfig()
+      if (original === undefined) throw new Error('sandbox manager has no active config')
+      const expected = await createAirGappedSandboxConfig({
         linuxIsolation: mode,
-        targetRoot: 'harness',
+        allowRead: ['/usr'],
+        allowWrite: [],
       })
-      await compiler.compile(root, new AbortController().signal)
-    } finally {
-      await lease.release()
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  it.skipIf(cannotRunSandbox)('fails closed when another component mutates the process-global policy', async () => {
-    const mode = process.platform === 'linux' ? 'bubblewrap-only' : 'seccomp'
-    const lease = await acquireAirGappedSandbox(mode, 'policy drift probe')
-    const original = SandboxManager.getConfig()
-    if (original === undefined) throw new Error('sandbox manager has no active config')
-    const expected = await createAirGappedSandboxConfig({
-      linuxIsolation: mode,
-      allowRead: ['/usr'],
-      allowWrite: [],
-    })
-    try {
-      SandboxManager.updateConfig({
-        ...original,
-        network: { ...original.network, allowAllUnixSockets: original.network.allowAllUnixSockets !== true },
-      })
-      expect(() => assertAirGappedSandboxActive(expected)).toThrow(/process-global air-gapped/iu)
-    } finally {
-      SandboxManager.updateConfig(original)
-      await lease.release()
-    }
-  })
+      try {
+        const network = { ...original.network }
+        if (field === 'allowAllUnixSockets') network.allowAllUnixSockets = original.network.allowAllUnixSockets !== true
+        else if (field === 'tlsTerminate') network.tlsTerminate = {}
+        else network.mitmProxy = { socketPath: '/tmp/gear-test-mitm.sock', domains: ['example.com'] }
+        SandboxManager.updateConfig({
+          ...original,
+          network,
+        })
+        expect(() => assertAirGappedSandboxActive(expected)).toThrow(/process-global air-gapped/iu)
+      } finally {
+        SandboxManager.updateConfig(original)
+        await lease.release()
+      }
+    },
+  )
 })

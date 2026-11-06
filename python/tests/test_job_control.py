@@ -4,13 +4,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from gear_training.content import ContractError, atomic_json, digest_json
-from gear_training.job import JobService, device_owner
-from gear_training.device_lease import NodeDeviceLedger
-from gear_training.node_generation import generation_path
-from gear_training.job_control import control_job
-from gear_training.node import NodeService
-from gear_training.state import load
+from gear.training.storage.content import ContractError, atomic_json, digest_json
+from gear.training.runtime.job import JobService, device_owner
+from gear.training.runtime.device_lease import NodeDeviceLedger
+from gear.training.runtime.node_generation import generation_path
+from gear.training.runtime.job_control import control_job
+from gear.training.runtime.node import NodeService
+from gear.training.storage.state import load
 
 
 class JobControlTests(unittest.TestCase):
@@ -30,9 +30,9 @@ class JobControlTests(unittest.TestCase):
         self.key = "same-original-job"
         self.handle = {"schemaVersion": 1, "provider": "slime", "jobId": "job_" + digest_json(self.key)[7:39], "requestDigest": digest_json(self.request)}
         self.directory = self.service.root / self.handle["jobId"]
-        self.preflight = patch("gear_training.job.preflight", return_value={"blockers": []}).start()
+        self.preflight = patch("gear.training.runtime.job.preflight", return_value={"blockers": []}).start()
         self.launch = patch.object(JobService, "ensure_worker").start()
-        patch("gear_training.job.gpu_processes", return_value=[]).start()
+        patch("gear.training.runtime.job.gpu_processes", return_value=[]).start()
         self.addCleanup(patch.stopall)
 
     def control(self, sequence, action, request=None, service=None):
@@ -40,7 +40,7 @@ class JobControlTests(unittest.TestCase):
                            {"schemaVersion": 2, "sequence": sequence, "action": action})
 
     def test_pause_before_submission_creates_no_worker_or_gpu_claim_and_survives_restart(self):
-        with patch("gear_training.job.gpu_processes", side_effect=AssertionError("no device was admitted")):
+        with patch("gear.training.runtime.job.gpu_processes", side_effect=AssertionError("no device was admitted")):
             stopped = self.control(1, "pause")
             self.assertTrue(stopped["resourcesReleased"]); self.assertEqual(stopped["usage"]["gpuSeconds"], 0)
             restarted = JobService(self.service.config)
@@ -76,7 +76,7 @@ class JobControlTests(unittest.TestCase):
     def test_new_start_cannot_replace_a_pause_while_physical_release_is_unconfirmed(self):
         self.control(0, "start")
         original = load(self.directory / "worker.json")
-        with patch("gear_training.job.gpu_processes", return_value=[{"device": "GPU-1", "pid": 123}]):
+        with patch("gear.training.runtime.job.gpu_processes", return_value=[{"device": "GPU-1", "pid": 123}]):
             self.assertFalse(self.control(1, "pause")["resourcesReleased"])
             with self.assertRaisesRegex(ContractError, "release before a new start"): self.control(2, "start")
         self.assertEqual(load(self.directory / "control.json")["intent"]["sequence"], 1)
@@ -117,7 +117,7 @@ class JobControlTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractError, "newer control intent"): restarted.rpc(pause)
 
     def reboot(self):
-        with patch("gear_training.node.boot_identity", return_value="next-os-boot"):
+        with patch("gear.training.runtime.node.boot_identity", return_value="next-os-boot"):
             node = NodeService(self.node_config)
         service = JobService({**self.service.config, "node": node.identity})
         request = copy.deepcopy(self.request)
@@ -145,7 +145,7 @@ class JobControlTests(unittest.TestCase):
             if path.name == "worker.json": raise OSError("OS stopped before worker registration")
             return atomic_json(path, value)
 
-        with patch("gear_training.job.atomic_json", side_effect=interrupt_worker_write):
+        with patch("gear.training.runtime.job.atomic_json", side_effect=interrupt_worker_write):
             with self.assertRaisesRegex(OSError, "before worker registration"):
                 self.control(0, "start")
         original = {name: (self.directory / name).read_bytes() for name in ("identity.json", "request.json", "config.json")}
@@ -155,9 +155,9 @@ class JobControlTests(unittest.TestCase):
         self.assertFalse(load(self.directory / "status.json")["resourcesReleased"])
         self.launch.assert_not_called()
         service, request = self.reboot()
-        with patch("gear_training.job.owned_alive", side_effect=AssertionError("old PID must not be inspected")):
+        with patch("gear.training.runtime.job.owned_alive", side_effect=AssertionError("old PID must not be inspected")):
             for occupants in ([{"device": "GPU-1", "pid": 123}], OSError("driver unavailable")):
-                with self.subTest(occupants=occupants), patch("gear_training.job.gpu_processes",
+                with self.subTest(occupants=occupants), patch("gear.training.runtime.job.gpu_processes",
                         **({"side_effect": occupants} if isinstance(occupants, Exception) else {"return_value": occupants})):
                     with self.assertRaises((ContractError, OSError)):
                         self.submit_new_experiment(service, request)
@@ -177,21 +177,21 @@ class JobControlTests(unittest.TestCase):
         worker = load(self.directory / "worker.json")
         owner = device_owner(self.directory, worker["incarnation"])
         devices = NodeDeviceLedger(self.node_config["nodeRoot"], self.node.identity)
-        with patch("gear_training.device_lease.gpu_processes", return_value=[]):
+        with patch("gear.training.runtime.device_lease.gpu_processes", return_value=[]):
             devices.acquire(owner, ["GPU-1"])
         worker.update(pending=False, process={"pid": 123, "createdAt": 1})
         atomic_json(self.directory / "worker.json", worker)
         original = (self.directory / "config.json").read_bytes()
         service, request = self.reboot()
-        with patch("gear_training.job.owned_alive", side_effect=AssertionError("old PID must not be inspected")), \
-             patch("gear_training.device_lease.owned_alive", side_effect=AssertionError("old PID must not be inspected")):
+        with patch("gear.training.runtime.job.owned_alive", side_effect=AssertionError("old PID must not be inspected")), \
+             patch("gear.training.runtime.device_lease.owned_alive", side_effect=AssertionError("old PID must not be inspected")):
             for occupants in ([{"device": "GPU-1", "pid": 123}], OSError("driver unavailable")):
-                with self.subTest(occupants=occupants), patch("gear_training.device_lease.gpu_processes",
+                with self.subTest(occupants=occupants), patch("gear.training.runtime.device_lease.gpu_processes",
                         **({"side_effect": occupants} if isinstance(occupants, Exception) else {"return_value": occupants})):
                     with self.assertRaises((ContractError, OSError)):
                         self.submit_new_experiment(service, request)
                     self.assertFalse(load(self.directory / "status.json")["resourcesReleased"])
-            with patch("gear_training.device_lease.gpu_processes", return_value=[]):
+            with patch("gear.training.runtime.device_lease.gpu_processes", return_value=[]):
                 self.assertEqual(self.submit_new_experiment(service, request)["execution"], "running")
         status = load(self.directory / "status.json")
         self.assertTrue(status["resourcesReleased"])
@@ -220,7 +220,7 @@ class JobControlTests(unittest.TestCase):
         worker = load(self.directory / "worker.json")
         devices = NodeDeviceLedger(self.node_config["nodeRoot"], self.node.identity)
         owner = device_owner(self.directory, worker["incarnation"])
-        with patch("gear_training.device_lease.gpu_processes", return_value=[]):
+        with patch("gear.training.runtime.device_lease.gpu_processes", return_value=[]):
             devices.acquire(owner, ["GPU-1"])
         (self.directory / "worker.json").unlink()
         control = load(self.directory / "control.json")

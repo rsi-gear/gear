@@ -1,0 +1,6 @@
+node_modules/
+lib/
+**/README*
+**/readme*
+src/domain/algorithm-wire.ts
+python/gear/refine/wire_types.py

@@ -3,8 +3,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from gear_training.content import ContentStore, ContractError
-from gear_training.export import dataset_destination, materialize, seal_directory
+from gear.training.storage.content import ContentStore, ContractError
+from gear.training.storage.snapshots import dataset_destination, materialize, seal_directory
 
 
 class DatasetSnapshotTests(unittest.TestCase):

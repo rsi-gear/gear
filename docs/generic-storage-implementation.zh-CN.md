@@ -69,15 +69,15 @@ cleanup 默认 dry-run，`--apply` 先隔离，后续经过宽限期再确认无
 
 共 43 次采样，目标间隔 250 ms，实际最大间隔 412 ms；各路径顺序读取，峰值是采样下界。staging 采样为 0 不表示导入未使用临时空间。allocated blocks 不等于 CoW 独占物理字节，也不代表实际释放空间；DinD/VFS 结果不能外推生产 overlay 后端或 100 个任务的节省比例。
 
-复现命令：
+当前存储原语验证：
 
 ```sh
+npm test -- tests/unit/dataset-materialization.spec.ts tests/unit/resource-contract.spec.ts tests/unit/storage-recovery.spec.ts
 npm run build
-node scripts/canary-dataset-storage.mjs
 node scripts/canary-clone-filesystem.mjs
-node scripts/canary-historical-storage.mjs /absolute/gear /absolute/agent-hitch
-npx vitest run tests/unit/dataset-materialization.spec.ts tests/unit/resource-contract.spec.ts tests/unit/search-evaluation-adapter.spec.ts tests/unit/hitch-cli-evaluator.spec.ts
 ```
+
+上文的历史 search 联合测量对应重构前版本；依赖旧执行器的 canary 和夹具构建已删除。当前 `gear storage` 的锁、保留记录及隔离区恢复直接由生产模块测试覆盖。
 
 Hitch 操作合同与 producer 说明位于另一仓库的 `docs/resource-storage.zh-CN.md`、`benchmark-packages/shared-tree/README.md` 和 `benchmark-packages/automationbench/RESOURCES.md`。
 

@@ -22,7 +22,7 @@ automatically scan all five:
 | `preset/` | Cordis composition: the list of plugins and providers that form the target overlay | Yes, but only `preset/agent.cordis.yml` | Gear's fixed loader includes this exact file |
 | `plugins/` | Native Cordis/DSH plugins: prompt sections, hooks, policies, tools, and resource loaders | No | Add a relative `name` row to the preset |
 | `prompts/` | Reusable model-facing prompt text | No | A loaded plugin must read it and register a prompt section or context |
-| `skills/` | On-demand Agent Skills and their bundle resources | Yes | The fixed carrier configures the existing `skill-filesystem` provider to scan `harness/skills` |
+| `skills/` | On-demand Agent Skills and their bundle resources | Yes | The fixed carrier configures the existing `skill-filesystem` provider to scan `/opt/gear-target/skills` |
 | `workflows/` | Reusable multi-step procedures or DSH workflow-tool script templates | No | A loaded plugin or skill must expose the procedure to the model |
 
 The effective graph is therefore:
@@ -30,7 +30,7 @@ The effective graph is therefore:
 ```text
 Gear fixed carrier profile
   -> skill-filesystem (existing filesystem provider)
-       -> harness/skills/<skill-name>/SKILL.md
+       -> /opt/gear-target/skills/<skill-name>/SKILL.md
   -> fixed target loader
        -> preset/agent.cordis.yml
             -> plugins/*.js
@@ -48,29 +48,19 @@ toolchain, target loader, and `manifest.json`. Candidate code must not try to
 replace or weaken those pieces. Gear rebuilds the artifact list and manifest
 when it seals a valid candidate.
 
-## How the Meta Agent may edit these files
+## How changes reach these files
 
-Use the candidate-scoped tools exposed by the active Meta adapter; never use an
-unscoped host path, Git command, shell redirect, or IPython filesystem API to
-reach the candidate.
+The operator starts `run.refine` through the project control plane. Python
+plans `generate_candidate` operations; the configured Meta provider receives
+only the authorized seed projection and exact parent identity. It returns a
+proposal for the reserved candidate. Core validates the mutation policy and
+seals the resulting content before any evaluation.
 
-In harness-neutral skill mode, mutations cross the Gear lease API:
-
-- `candidate.edit` replaces a unique observed substring in an existing text
-  file;
-- `candidate.write` creates a file with `expectedDigest: null`, or replaces a
-  whole observed file with its current digest;
-- `candidate.remove` deletes an observed file with its current digest.
-
-Use `candidate.tree` and `candidate.read` before those mutations and carry the
-new observation digest forward after each change. Modifications are not
-restricted to `candidate.edit`.
-
-In Native DSH Meta mode, Gear instead scopes DSH's standard `read`, `write`,
-`edit`, `glob`, `grep`, and optional sandboxed `bash` tools to the active
-candidate. Use those standard tools directly; do not look for unavailable
-`candidate.*` aliases. In either mode, IPython is an analysis scratchpad and
-grants no additional candidate or host filesystem authority.
+Use the active provider's scoped editing interface and its observed parent
+files. There are no `candidate.*` or `meta.call` methods on the project
+control plane. Do not edit `.gear/` snapshots or their manifests as an operator.
+See [target-harness-editing.md](target-harness-editing.md) for the DSH/Pi
+boundaries and review procedure.
 
 ## `preset/`: composition entrypoint
 
@@ -228,8 +218,8 @@ The assembly context carries `agent`, `scope` (the same Agent), and an optional
 `signal`. An unscoped diagnostic assembly is not an Agent's prompt. Template
 references such as `{{provider}}` and `{{model}}` are strict: the headless
 launcher installs the selected model variables, while unknown variables fail
-when rendered. `candidate.check` now performs this scoped assembly and renders
-both the system prompt and dynamic context.
+when rendered. Verify both the system prompt and dynamic context in a real
+scoped runtime assembly; static YAML checks cannot establish this behavior.
 
 ### Native custom tools
 
@@ -578,14 +568,13 @@ justifies it. Treat zero selected tests as no verification. Report the command,
 exit status, and any remaining gap.
 ```
 
-The fixed carrier's `fixed/target.patch.yml` adds the absolute
-`<repositoryRoot>/harness/skills` directory to the existing `skill-filesystem`
-provider's `customSkillDirs`. Its provider name is `filesystem`. Task sessions
-may run elsewhere (for example `/app`); discovery does not depend on the task
-cwd being inside the carrier repository.
+Gear materializes `gear-target.patch.yml` with the absolute
+`/opt/gear-target/skills` directory in the existing `skill-filesystem` provider's
+`customSkillDirs`. Its provider name is `filesystem`. Task sessions may run
+elsewhere (for example `/app`); discovery does not depend on the task cwd.
 
 To add this Skill, create only `skills/verify-change/SKILL.md` and any referenced
-bundle resources through the candidate tools. Do not create `skill-loader.js`
+bundle resources through the configured Meta provider. Do not create `skill-loader.js`
 or add a preset row for an ordinary file Skill. Do not change the fixed patch.
 The model sees the catalog summary and reads the body through the native tool:
 
@@ -767,10 +756,10 @@ Its preset connects the plugins; Skill discovery is supplied by the fixed carrie
 Do not create this whole layout by default. It demonstrates the connections;
 the actual candidate should contain only the smallest evidence-supported set.
 
-## Review checklist before the candidate check
+## Review the proposed candidate
 
-Inspect the authoritative diff with `candidate.diff` in skill mode or
-`candidate_diff` in Native DSH Meta mode, then confirm all of the following:
+Use the run report to identify the retained snapshot, then inspect its exported
+resources and check the following:
 
 - `preset/agent.cordis.yml` remains a valid top-level list with unique row ids.
 - Every new plugin uses named ESM exports and declares its required services.
@@ -788,29 +777,20 @@ Inspect the authoritative diff with `candidate.diff` in skill mode or
 - The change is general to the observed failure pattern and contains no seed
   answer or held-out guess.
 
-Then use `meta.call` with capability `candidate.check` and arguments
-`{"check":"compiler"}` in skill mode, or call `candidate_check` in Native DSH
-Meta mode. Inspect `static`, `compiler`, and `runtime` separately. With the
-fixed DSH runtime checker configured, `runtime.load`, `runtime.promptAssembly`,
-`runtime.skillDiscovery`,
-`runtime.skillRead`, and `runtime.cleanup` report actual execution against the
-Target installation, with candidate and dependency-lock digests. Repair a
-failed stage and check again. `not_checked` is not success: a legacy/no-op
-compiler leaves runtime coverage unverified. `harness.current.validation`
-exposes whether runtime validation is configured. If it is unavailable, record
-that limitation and request deployment support; this alone is not evidence
-that a Skill is invalid or that the intervention must become prompt-only.
-`finalizationReadiness` concerns diagnostic prerequisites, not runtime loading.
-`runtime.promptAssembly` verifies lazy prompt/context callbacks and the visible
-tool schemas, including strict variable interpolation. Older checker binaries
-report this stage as `not_checked` / `PROMPT_ASSEMBLY_NOT_REPORTED`.
+Core checks the mutation boundary and the DSH preset structure before sealing.
+That check alone does not execute plugin callbacks. Inspect the run report's
+actual Target evaluation and distinguish failed scoring, environment failures
+and valid zero scores. Loading extensions, assembling the prompt, discovering
+and reading a Skill, and invoking a custom hook are separate checks.
 
-Loading and assembling a plugin does not execute every callback. Custom tool
-bodies, pre/post-action rules, routing, compaction, subagent requests, and
-workflow scripts are not generally executed by `candidate.check`; the checker
-has no safe universal arguments for arbitrary actions. Successful Skill reads
-exercise only the hooks reached by those calls. A lazy import inside an
-unexecuted tool/hook may still fail on actual invocation. Keep module imports
-at top level when possible, use only exposed fixed dependencies, and record
-these untested behavior paths. Do not treat `ok: true` as proof that every
-intervention ran. The behavioral hypothesis remains subject to Gear evaluation.
+The repository's `scripts/check-target-extensions.mjs` exercises native DSH/Pi
+loading and selected prompt/hook behavior without model calls. Successful
+loading does not prove model adoption or exercise arbitrary tool callbacks.
+The optional `scripts/check-target-headless.mjs` additionally runs the real CLI
+and native bash in isolated containers against a deterministic local model
+server, then scores its file output in a separate verifier. The fixed container
+patch disables nested host sandboxing and interactive approval because Harbor
+owns the execution boundary; this patch is not part of the editable carrier.
+This test still does not establish behavior with an authenticated external model.
+Keep imports at top level when possible, use dependencies exposed by the
+selected runtime, and report which behavior paths were actually exercised.

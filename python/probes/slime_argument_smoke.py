@@ -16,9 +16,9 @@ def main():
     options = parser.parse_args()
     output = Path(options.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    from gear_training.driver import build_argv
-    from gear_training.placement import validate_resource_args
-    from gear_training.recipes.agent_grpo import validate_layout
+    from gear.training.backends.slime.driver import build_argv
+    from gear.training.runtime.placement import validate_resource_args
+    from gear.training.recipes.agent_grpo import validate_layout
     model_args = subprocess.run(["bash", "-c", 'source "$1"; printf "%s\\0" "${MODEL_ARGS[@]}"', "_",
                                  str(Path(options.slime) / "scripts/models/qwen2.5-1.5B.sh")],
                                 check=True, capture_output=True).stdout.decode().strip("\0").split("\0")

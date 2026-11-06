@@ -49,7 +49,7 @@ export class TrainingStageCoordinator {
       const execution = join(directory, digestJson(lease).slice(7))
       await mkdir(execution, { recursive: true, mode: 0o700 })
       const responseFile = join(execution, 'response.json'), launchFile = join(execution, 'launch.json')
-      const workerArgs = ['-m', 'gear_training.stages', '--store-root', this.store.root, '--workspace', directory, '--execution-root', execution, '--response-file', responseFile]
+      const workerArgs = ['-m', 'gear.training.cli.stages', '--store-root', this.store.root, '--workspace', directory, '--execution-root', execution, '--response-file', responseFile]
       const stopped = cancel || entry.cancelRequested === true || lease.state !== 'serving' || Date.parse(lease.expiresAt) <= Date.now()
       if (stopped) {
         if (entry.result?.outcome === 'completed' && intent.stage === 'task-source') {

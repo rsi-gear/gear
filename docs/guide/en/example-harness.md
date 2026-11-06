@@ -1,5 +1,7 @@
 # Example 1: evolve a harness for Marketing
 
+This is a research case from a pinned historical version, not current project API setup instructions. Use the [quick start](quickstart.md) for the current entrypoint.
+
 Use Gear to improve an agent's Harness from real failure evidence. Five rounds raised Luna medium's strict pass rate from 27% to 36% on the public Marketing research set; the retained Harness later scored 50% with Luna max.
 
 ![Pass rate versus objective completion: original DSH with Luna medium, Marketing evolution, separate max-effort evaluations, native Codex + Astra, and starred official Marketing model references.](../assets/marketing-harness-evolution.svg)

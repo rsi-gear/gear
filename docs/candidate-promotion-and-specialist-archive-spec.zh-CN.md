@@ -1,5 +1,11 @@
 # Candidate 晋升与任务专长 Archive 优化规范
 
+本文是重构前策略的行为规范，作为迁移对照保留；其中的 TS 入口和旧 run
+恢复方式不属于当前公开 API。当前算法结构见[Python 作者指南](search-algorithm-authoring.zh-CN.md)，
+新 Project 的覆盖与待完成项见[实施进度](refactor-progress.zh-CN.md)。
+
+当前 Project 已提供 `gear archive RUN_ID`：独立 seed 事实档案、按 scope 的 Python 比较投影及算法当时的父代/排名记录。字段与损坏恢复边界见[报告指南](guide/zh-CN/results.md)。本文旧版 archive 类型和 capability 名称仍作为历史对照，不直接映射为当前 API。
+
 - 实现与接入见[接入说明](candidate-promotion-implementation.zh-CN.md)。任务子集、逐题缓存和分阶段调度由 Gear 内部适配现有 evaluator 完成，无需 Hitch 新增能力声明或接口。
 - 范围：Gear 共享失败诊断、分类分工与多 candidate 生成、分阶段评测、父代选择、跨轮研究归档、过程指标兼容、champion 晋升、失败回归任务、状态恢复。
 - 设计依据：Gear 搜索与评测接口及 GEPA 任务专长前沿机制。
@@ -54,16 +60,16 @@ GEPA 选择父代（初始为 champion）
 
 | 位置 | 旧模式行为 | 新模式行为 |
 | --- | --- | --- |
-| [CandidateGenerator / config](../src/evolution/components.ts) | 已支持 `maxCandidates` 个 sibling 槽位，默认 1；当前校验返回数量必须相等 | 新模式中它是上限；baseline 诊断后按有效工作计划确定实际数量 |
-| [finalizationReadiness](../src/refine/finalization-readiness.ts) | 每个 candidate 都要取得全部父代失败的诊断 receipt | 引入共享 DiagnosisDossier 和真实的 candidate 级消费凭据 |
-| [Skill Meta 输入](../src/meta/skill.ts) | `advisoryFocus` 是 round 级；没有 candidate 级任务分配 | 增加绑定父代、失败组、诊断和评测范围的 CandidateWorkPlan |
-| [TaskRewardJudge / HighestQualityCandidateSelector](../src/evolution/components.ts) | `quality` 默认来自结果分；按综合 quality 排序 | 增加逐任务证据与独立的 archive 更新、发布提名 |
-| [newRound / drive](../src/refine/service.ts) | generator 只能使用固定 champion；`championParent` 同时参与父代恢复 | 分离 generation parents 与 promotion champion |
-| [passesSeed / passesHeldOut](../src/refine/service.ts) | seed 前置门硬编码结果门槛，后置门才调用 promotion provider | 两阶段都使用同一版本化策略合同 |
-| [CandidateSeedComparison / PairedTrial](../src/types.ts) | 已保存可选过程分及过程增量 | 补充指标语义、适用范围、缺失状态、证据摘要 |
-| [nextPopulation / RoundCommitIntent](../src/refine/service.ts) | 下一 population 来自本轮 selected candidates；与 champion 一起提交 | archive 可以引用历史成员；提交与恢复支持独立发布决定 |
-| [store validation](../src/state/store.ts) | finalist 必须是 survivor；population 成员必须出自本轮 | v2 合同分别校验 archive 来源与 finalist 来源 |
-| [champion parent resolver](../src/refine/champion-parent.ts) | champion 恢复依赖来源轮 population 中的成员 | champion 父代快照独立保活，不受 archive 剪枝影响 |
+| [CandidateGenerator / config](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/evolution/components.ts) | 已支持 `maxCandidates` 个 sibling 槽位，默认 1；当前校验返回数量必须相等 | 新模式中它是上限；baseline 诊断后按有效工作计划确定实际数量 |
+| [finalizationReadiness](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/refine/finalization-readiness.ts) | 每个 candidate 都要取得全部父代失败的诊断 receipt | 引入共享 DiagnosisDossier 和真实的 candidate 级消费凭据 |
+| [Skill Meta 输入](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/meta/skill.ts) | `advisoryFocus` 是 round 级；没有 candidate 级任务分配 | 增加绑定父代、失败组、诊断和评测范围的 CandidateWorkPlan |
+| [TaskRewardJudge / HighestQualityCandidateSelector](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/evolution/components.ts) | `quality` 默认来自结果分；按综合 quality 排序 | 增加逐任务证据与独立的 archive 更新、发布提名 |
+| [newRound / drive](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/refine/service.ts) | generator 只能使用固定 champion；`championParent` 同时参与父代恢复 | 分离 generation parents 与 promotion champion |
+| [passesSeed / passesHeldOut](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/refine/service.ts) | seed 前置门硬编码结果门槛，后置门才调用 promotion provider | 两阶段都使用同一版本化策略合同 |
+| [CandidateSeedComparison / PairedTrial](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/types.ts) | 已保存可选过程分及过程增量 | 补充指标语义、适用范围、缺失状态、证据摘要 |
+| [nextPopulation / RoundCommitIntent](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/refine/service.ts) | 下一 population 来自本轮 selected candidates；与 champion 一起提交 | archive 可以引用历史成员；提交与恢复支持独立发布决定 |
+| [store validation](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/state/store.ts) | finalist 必须是 survivor；population 成员必须出自本轮 | v2 合同分别校验 archive 来源与 finalist 来源 |
+| [champion parent resolver](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/refine/champion-parent.ts) | champion 恢复依赖来源轮 population 中的成员 | champion 父代快照独立保活，不受 archive 剪枝影响 |
 
 旧模式的 generator 在 baseline 读取前分配槽位，生成器输入不含失败证据；因此仅提高 `maxCandidates` 或增加 selector 插件不能实现本规范。`maxCandidates` 控制候选数量，`maxAttemptsPerCandidate` 控制同一候选的生成重试上限。
 

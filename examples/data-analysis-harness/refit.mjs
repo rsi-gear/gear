@@ -2,7 +2,7 @@
 import { readFile, copyFile, constants, mkdir } from 'node:fs/promises'
 import { parseArgs } from 'node:util'
 import { join, resolve } from 'node:path'
-import { cli, isMain } from '../kaggle-titanic/common.mjs'
+import { cli, isMain } from './lib/common.mjs'
 import { validateTabularSubmission } from './lib/submission.mjs'
 import { Store, json, atomicJson, locked, optionalJson } from './lib/store.mjs'
 import { assert, digest, seal, sha, verify } from './lib/contracts.mjs'

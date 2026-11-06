@@ -9,9 +9,9 @@ import subprocess
 import sys
 import tempfile
 
-from gear_training.cli import controller_command, main as training_main
-from gear_training.content import ContentStore, atomic_json, digest_json
-from gear_training.export import seal_directory
+from gear.training.cli.controller import controller_command, main as training_main
+from gear.training.storage.content import ContentStore, atomic_json, digest_json
+from gear.training.storage.snapshots import seal_directory
 
 HERE = Path(__file__).resolve().parent
 PARTITIONS = ("train", "dev", "heldOut")

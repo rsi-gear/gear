@@ -10,11 +10,11 @@ import subprocess
 import sys
 import time
 import uuid
-from gear_training.content import atomic_json, require
-from gear_training.device_lease import NodeDeviceLedger
-from gear_training.node import NodeService
-from gear_training.preflight import gpu_processes
-from gear_training.recovery import owned_alive, process_identity
+from gear.training.storage.content import atomic_json, require
+from gear.training.runtime.device_lease import NodeDeviceLedger
+from gear.training.runtime.node import NodeService
+from gear.training.runtime.preflight import gpu_processes
+from gear.training.runtime.recovery import owned_alive, process_identity
 
 
 def main():

@@ -2,8 +2,8 @@ import copy
 import unittest
 from types import SimpleNamespace
 
-from gear_training.content import ContractError
-from gear_training.history import ExactChatRenderer, generation_inputs
+from gear.training.storage.content import ContractError
+from gear.training.data.history import ExactChatRenderer, generation_inputs
 
 
 class ExactHistoryTests(unittest.TestCase):

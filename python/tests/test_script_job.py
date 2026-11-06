@@ -7,10 +7,10 @@ import time
 import unittest
 from unittest.mock import patch
 
-from gear_training.content import ContentStore, ContractError, digest_json
-from gear_training.loop import _write, TrainingLoop, TrainingConfig
-from gear_training.script_job import ScriptService, ScriptRuntime, worker_run
-from gear_training.script_source import loaded_loop
+from gear.training.storage.content import ContentStore, ContractError, digest_json
+from gear.training.loop import _write, TrainingLoop, TrainingConfig
+from gear.training.runtime.script_job import ScriptService, ScriptRuntime, worker_run
+from gear.training.runtime.script_source import loaded_loop
 
 CODE = """
 import asyncio
@@ -18,7 +18,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from gear_training import TrainingLoop
+from gear.training import TrainingLoop
 class Q:
     def __init__(self, runtime): self.r=runtime
     def generate(self, ctx):
@@ -108,7 +108,7 @@ class ScriptJobTests(unittest.TestCase):
         self.assertTrue(self.wait(status['handle'])['resourcesReleased'])
     def test_session_observation_skips_unrelated_denied_processes(self):
         import psutil
-        from gear_training.recovery import owned_session_alive
+        from gear.training.runtime.recovery import owned_session_alive
         from types import SimpleNamespace
         identity={'pid':4444,'createdAt':10}
         unrelated=SimpleNamespace(pid=5555,create_time=lambda: self.fail('unrelated process must not be inspected'))
@@ -134,7 +134,7 @@ class ScriptJobTests(unittest.TestCase):
         runtime=ScriptRuntime(self.root,self.store)
         with self.assertRaisesRegex(ContractError,'native training runtime'): runtime.slime
     def test_pause_before_worker_registration_never_invokes_factory(self):
-        from gear_training.recovery import process_identity
+        from gear.training.runtime.recovery import process_identity
         status=self.control('pause',1); directory=self.service.directory(status['handle'])
         _write(directory/'service.json', self.service.config)
         _write(directory/'worker.json', {'token':'launch','sequence':0,'process':process_identity(os.getpid())})
@@ -149,9 +149,9 @@ class ScriptJobTests(unittest.TestCase):
         with loaded_loop(self.store,recipe,self.request['config'],runtime,self.root/'source') as loop:
             with self.assertRaisesRegex(ContractError,'another configuration'): loop.run(config)
     def test_node_scripts_rpc_requires_no_native_job_config(self):
-        from gear_training.node import NodeService
+        from gear.training.runtime.node import NodeService
         config={'schemaVersion':2,'nodeId':'cpu-script','nodeRoot':str(self.root/'rpc-node'),'storeRoot':str(self.store.root)}
-        with patch('gear_training.node.boot_identity', return_value='test-boot'):
+        with patch('gear.training.runtime.node.boot_identity', return_value='test-boot'):
             node=NodeService(config)
         payload={'request':self.request,'idempotencyKey':'node-rpc','intent':{'sequence':0,'action':'start'}}
         envelope={'schemaVersion':2,'requestId':'script-rpc','node':node.identity,'operation':'scripts.control','inputDigest':digest_json(payload),'payload':payload}
@@ -181,12 +181,12 @@ class ScriptJobTests(unittest.TestCase):
                 self.assertEqual(result.history[0]['tasks'],[7])
             self.assertIs(sys.modules['helper'],helper)
     def test_unicode_checkpoint_survives_real_node_rpc_and_cas(self):
-        from gear_training.node import NodeService
+        from gear.training.runtime.node import NodeService
         code=CODE.replace("return {'weight':weight-0.5*gradient}", "return {'权重':weight-0.5*gradient}")
         ref=self.store.put_bytes(code.encode(),'application/octet-stream')
         self.request['script']['sourceRef']=self.store.put_json({'schemaVersion':1,'kind':'training-script-source','files':[{'path':'recipe.py','contentRef':ref}]})
         self.request['config']['rounds']=1
-        with patch('gear_training.node.boot_identity',return_value='test-boot'):
+        with patch('gear.training.runtime.node.boot_identity',return_value='test-boot'):
             node=NodeService({'schemaVersion':2,'nodeId':'unicode-script','nodeRoot':str(self.root/'rpc-node'),'storeRoot':str(self.store.root)})
         payload={'request':self.request,'idempotencyKey':'unicode-rpc','intent':{'sequence':0,'action':'start'}}
         response=node.rpc({'schemaVersion':2,'requestId':'unicode-start','node':node.identity,'operation':'scripts.control','inputDigest':digest_json(payload),'payload':payload})

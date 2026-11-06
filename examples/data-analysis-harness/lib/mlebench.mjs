@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { join, resolve, relative, dirname, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import yaml from 'js-yaml'
-import { command } from '../../kaggle-titanic/common.mjs'
+import { command } from './common.mjs'
 import { assert, digest, sha, sourcePath, seal } from './contracts.mjs'
 import { atomicJson, json } from './store.mjs'
 

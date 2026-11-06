@@ -1,5 +1,9 @@
 # Gear：面向后续 Proposer 的 Seed Outcome Experience 设计
 
+版本范围：本文的“已交付”指重构前的 V1 实现；实现和回归夹具已删除，
+源码链接指向重构前的 Git 版本。文中的旧 capability
+并非当前 Project/Skill 的可用方法；新路径迁移状态见[实施进度](refactor-progress.zh-CN.md)。
+
 状态：V1 的 skill-first 最小切片已于 2026-09-08 交付；本文其余内容保留为背景与后续提案。
 
 已交付范围是 seed-only 不可变 record、逐轮 snapshot、最多三张自动卡片（含 direct parent）、确定性 `experience.query`、有界 `experience.read` 及历史 seed trajectory 下钻。现有未启用 evolution 保持原行为。尚未交付、也不属于本次 V1 的是 curator/跨案例 lesson、磁盘 Markdown 视图、可重建持久搜索索引或向量库、独立持久化的 experience access audit / `experienceRefs` attribution、跨 evolution 导入，以及 DSH-owned adapter 接入。文末公开源码核查仍是设计背景，并非重新运行论文实验。
@@ -43,18 +47,18 @@ Skill 证据要求结构化 skill 名、同一 session 内按 `callId` 配对的
 
 现有证据位置：
 
-- [round 存储](../src/state/store.ts)
-- [原子写入](../src/state/store.ts)
-- [候选数据](../src/types.ts)
-- [实验索引](../src/state/experiments.ts)
+- [round 存储](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/state/store.ts)
+- [原子写入](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/state/store.ts)
+- [候选数据](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/types.ts)
+- [实验索引](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/state/experiments.ts)
 
 实际缺口是这些结果没有形成稳定的 proposer 输入。`resultCheckpoint` 在候选评测前保存，下一代继承这个 checkpoint；skill adapter 的 checkpoint 不包含对话事件。当前 wake 明确限定 current-round evidence，查询也围绕当前父本 baseline。
 
-- [checkpoint 时机](../src/refine/service.ts)
-- [下一代继承](../src/refine/service.ts)
-- [skill checkpoint](../src/meta/skill.ts)
-- [DSH wake](../src/meta/session.ts)
-- [当前 evidence 范围](../src/capabilities.ts)
+- [checkpoint 时机](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/refine/service.ts)
+- [下一代继承](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/refine/service.ts)
+- [skill checkpoint](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/meta/skill.ts)
+- [DSH wake](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/meta/session.ts)
+- [当前 evidence 范围](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/capabilities.ts)
 
 因此 V1 应复用已有实验事实，不要求先实现完整故障图谱，也不依赖先训练或调用新的经验总结模型。
 
@@ -281,7 +285,7 @@ V1 必须从允许字段重建正向投影，而不是复制整份 round 再删�
 | 共享 wake context 与访问审计 | `src/meta/controller.ts`、`session.ts`、`skill.ts` | 两种 adapter 提供相同经验，不依赖宿主会话记忆 |
 | DSH 工具与 skill 协议 | `src/notebook/tool.ts`、`skills/refine/references/protocol.md` | 暴露 experience_query / experience_read 的统一语义 |
 
-现有 [gateway](../src/skill/gateway.ts) 已将 `meta.call` 转给 capabilities，无需另起一套服务。
+现有 [gateway](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/skill/gateway.ts) 已将 `meta.call` 转给 capabilities，无需另起一套服务。
 
 第一版不需要新的算法扩展点、向量数据库、长期开着的 curator 或自动修改全局记忆文件。memory projection / retrieval / bootstrap 的实现身份和配置应纳入新 evolution 的封存 spec。已有未配置 memory 的 evolution 保持原行为；离线导出可用于核查，不能静默改变正在继续的实验协议。跨 evolution 导入与通用 lesson 库留到后续显式设计。
 

@@ -7,7 +7,7 @@ try:
 except ImportError:
     torch = None
 
-from gear_training.optimizer_restore import load_distributed_optimizer_state
+from gear.training.backends.slime.optimizer_restore import load_distributed_optimizer_state
 
 
 class FusedAdam(torch.optim.Optimizer if torch is not None else object):

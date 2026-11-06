@@ -2,10 +2,13 @@
 """Render guide charts from versioned evidence; Python 3.10+ / matplotlib 3.7+."""
 import argparse
 import json
+from decimal import Decimal
 from pathlib import Path
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 from matplotlib.ticker import PercentFormatter, MultipleLocator
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -166,10 +169,154 @@ def chart(key, name, title, effort_index, *, include_harness=False):
     save(fig, name)
 
 
+def overview():
+    """Compare domains, then show measured Marketing candidates in sequence."""
+    blue, pale_blue, purple, grey = '#42649a', '#dce5f1', '#cdbbdf', '#cfcfcf'
+    purple_ink, ink, muted = '#8a60a4', '#292929', '#666666'
+    coding = json.loads((ASSETS / 'coding-results.json').read_text())
+    support = json.loads((ASSETS / 'support-results.json').read_text())
+    harness, staged = DATA['harnessEvolution'], DATA['stagedEvolution']
+    champion = [r for r in staged if r['decision'].startswith('promoted')][-1]
+    astra = DATA['championAstraMaxEvaluation']
+    final_max = next(r for r in DATA['effortComparison']
+                     if r['harness'] == astra['sourceChampion'][:8])
+    groups = [
+        ('Coding', [coding[k]['passRate'] for k in ['baseline', 'optimized', 'max']]),
+        ('Marketing', [100 * harness[0]['candidatePassed'] / harness[0]['valid'],
+                       100 * champion['candidatePassed'] / champion['valid'], final_max['max']]),
+        ('Support', [support[k]['passRate'] for k in ['baseline', 'optimized', 'max']]),
+    ]
+    # H4 and the GEPA baseline are the same evaluation. Omit unevaluated rounds
+    # before assigning consecutive display indices; keep source evidence intact.
+    history = [r for r in harness + staged[1:]
+               if r['candidatePassed'] is not None and r['partialCredit'] is not None]
+    round_labels = [str(i) for i in range(len(history))]
+    kept = [r['round'] == 0 or r['decision'].startswith(('accepted', 'promoted'))
+            for r in history]
+    pass_rates = [100 * r['candidatePassed'] / r['valid'] for r in history]
+    completion = [100 * r['partialCredit'] for r in history]
+
+    with plt.rc_context({'font.family': 'STIXGeneral', 'font.size': 15,
+                         'text.color': ink, 'axes.labelcolor': ink,
+                         'xtick.color': muted, 'ytick.color': muted,
+                         'svg.hashsalt': 'gear-readme-overview-v7'}):
+        fig = plt.figure(figsize=(16.8, 6.2))
+        left = fig.add_axes([.065, .22, .365, .62])
+        right = fig.add_axes([.565, .22, .365, .62])
+        completion_axis = right.twinx()
+
+        def style(ax):
+            ax.set_axisbelow(True)
+            ax.tick_params(length=0, pad=7, labelsize=15)
+            for spine in ax.spines.values():
+                spine.set_color('#cbd1dc')
+                spine.set_linewidth(1.2)
+
+        for ax in [left, right, completion_axis]:
+            style(ax)
+        left.grid(axis='y', color='#e7eaf0', linewidth=1.2)
+        right.grid(axis='y', color='#e7eaf0', linewidth=1.2)
+        left.set_title('GPT 5.6 Luna + DSH', fontsize=18, fontweight='bold', pad=18)
+        right.set_title('Marketing · GPT 5.6 Luna medium', fontsize=18, fontweight='bold', pad=18)
+        fig.legend(handles=[
+            Patch(facecolor=grey, label='Base (medium)'),
+            Patch(facecolor=purple, label='Gear (medium)'),
+            Patch(facecolor=pale_blue, edgecolor=blue, linewidth=2, label='Gear (max)')],
+            loc='upper left', bbox_to_anchor=(.06, .98), frameon=False,
+            ncol=3, fontsize=16, handlelength=1, columnspacing=1.2, handletextpad=.45)
+        fig.legend(handles=[
+            Line2D([], [], color=blue, marker='o', markerfacecolor=blue,
+                   markeredgewidth=2, linewidth=2.6, label='Task pass rate'),
+            Line2D([], [], color=purple_ink, marker='s', markerfacecolor=purple_ink,
+                   markeredgewidth=1.5, linewidth=2.4, linestyle='--', label='Objective completion')],
+            loc='upper left', bbox_to_anchor=(.56, .98), frameon=False,
+            ncol=2, fontsize=16, handlelength=1.7, columnspacing=1.2, handletextpad=.5)
+        # Fill encodes selection status for both metric shapes. Round 1 failed
+        # execution before its result was recovered, so use "not retained"
+        # rather than describing every unselected candidate as rejected.
+        fig.legend(handles=[
+            Line2D([], [], color=muted, marker='o', markerfacecolor=muted,
+                   markersize=8, markeredgewidth=1.8, linestyle='none',
+                   label='Baseline / retained'),
+            Line2D([], [], color=muted, marker='o', markerfacecolor='white',
+                   markersize=8, markeredgewidth=1.8, linestyle='none',
+                   label='Not retained')],
+            loc='lower center', bbox_to_anchor=(.7475, .015), frameon=False,
+            ncol=2, fontsize=15, handlelength=1, columnspacing=1.2, handletextpad=.5)
+
+        left.set_ylim(0, 105)
+        left.set_yticks([0, 20, 40, 60, 80, 100])
+        left.set_ylabel('Task pass rate (%)', fontsize=17, fontweight='bold', labelpad=9)
+        centers = [1.6 * i for i in range(len(groups))]
+        left.set_xlim(-.7, centers[-1] + .7)
+        left.set_xticks(centers, [g[0] for g in groups], fontsize=20, fontweight='bold')
+        for center, (_, values) in zip(centers, groups):
+            positions = [center - .36, center, center + .36]
+            for i, (x, value) in enumerate(zip(positions, values)):
+                left.bar(x, value, width=.32, color=[grey, purple, pale_blue][i],
+                         edgecolor=blue if i == 2 else 'none', linewidth=2, zorder=3)
+                label = f'{value:.1f}'
+                left.text(x, value + 1.5, label, ha='center', va='bottom',
+                          fontsize=18, fontweight='bold')
+            delta = values[-1] - values[0]
+            y = max(values) + 10
+            left.plot([positions[0], positions[0], positions[-1], positions[-1]],
+                      [y - 1.5, y, y, y - 1.5], color=blue, linewidth=1.2)
+            left.text(center, y + 1, f'+{delta:.1f} pp', ha='center', va='bottom',
+                      fontsize=18, fontweight='bold', color=blue)
+
+        # Two explicitly labelled axes with equal 25-point spans. Lines join
+        # measured candidates in display order; no missing result is imputed.
+        right.set_ylim(20, 45)
+        right.set_yticks([20, 25, 30, 35, 40, 45])
+        completion_axis.set_ylim(70, 95)
+        completion_axis.set_yticks([70, 75, 80, 85, 90, 95])
+        right.set_ylabel('Task pass rate (%)', color=blue, fontsize=16, fontweight='bold', labelpad=8)
+        completion_axis.set_ylabel('Objective completion (%)', color=purple_ink,
+                                   fontsize=16, fontweight='bold', labelpad=10)
+        right.tick_params(axis='y', colors=blue)
+        completion_axis.tick_params(axis='y', colors=purple_ink)
+        completion_axis.spines['right'].set_visible(True)
+        completion_axis.spines['left'].set_visible(False)
+        right.set_xlim(-.45, len(history) - .4)
+        right.set_xticks(range(len(history)), round_labels, fontsize=15)
+        right.set_xlabel('Harness round', fontsize=18, fontweight='bold', labelpad=10)
+        for metric, (ax, values, color, fill, marker, line) in enumerate([
+            (right, pass_rates, blue, blue, 'o', '-'),
+            (completion_axis, completion, purple_ink, purple_ink, 's', '--'),
+        ]):
+            ax.plot(range(len(history)), values, color=color, linewidth=2.6,
+                    linestyle=line, zorder=3)
+            for x, (value, retained) in enumerate(zip(values, kept)):
+                ax.plot(x, value, marker=marker, markersize=7.5, color=color,
+                        markerfacecolor=fill if retained else 'white',
+                        markeredgewidth=2, zorder=4)
+                dy = (21 if x == 1 else 10) if metric == 0 else -14
+                # Format the decimal source so 0.7515 × 100 rounds to 75.2,
+                # unaffected by a floating-point product of 75.14999999999999.
+                display_value = value if metric == 0 else Decimal(str(history[x]['partialCredit'])) * 100
+                ax.annotate(f'{display_value:.1f}',
+                            (x, value), xytext=(0, dy), textcoords='offset points',
+                            ha='center', va='bottom' if metric == 0 else 'top',
+                            fontsize=14, fontweight='bold', color=color)
+
+        for ext in ['svg', 'png']:
+            metadata = {'Creator': 'Gear; scripts/render-guide-charts.py'}
+            if ext == 'svg':
+                metadata['Date'] = None
+            path = ASSETS / f'marketing-evolution-overview.{ext}'
+            fig.savefig(path, dpi=240, bbox_inches='tight', pad_inches=.2, metadata=metadata)
+            if ext == 'svg':
+                path.write_text('\n'.join(line.rstrip() for line in path.read_text().splitlines()) + '\n')
+        plt.close(fig)
+
+if ONLY in (None, 'marketing-evolution-overview'):
+    overview()
+
+
 for key, name, title, index, include_harness in [
     ('harnessEvolution', 'marketing-harness-evolution', 'Example 1 / Evolve a harness for Marketing', 0, False),
     ('stagedEvolution', 'marketing-staged-search', 'Example 2 / Customize your evolve algorithm', 1, False),
-    ('stagedEvolution', 'marketing-evolution-overview', None, 1, True),
 ]:
     if ONLY in (None, name):
         chart(key, name, title, index, include_harness=include_harness)
@@ -189,4 +336,4 @@ if ONLY in (None, 'staged-search-flow'):
     ax.text(.02, .1, 'Measured case: all three rounds selected 8b651c5. Cross-parent reproduction and crossover were not observed.', transform=ax.transAxes, fontsize=10, color=GREY)
     ax.set_title('A mutation-based evolutionary search, with staged evaluation budgets', loc='left', fontsize=15, fontweight='bold')
     save(fig, 'staged-search-flow')
-print(f'Rendered {ONLY or "all guide figures"} as SVG and PNG from marketing-results.json.')
+print(f'Rendered {ONLY or "all guide figures"} as SVG and PNG from versioned chart data.')

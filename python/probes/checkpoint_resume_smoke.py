@@ -12,11 +12,11 @@ import sys
 import time
 import traceback
 
-from gear_training.content import ContentStore, atomic_json, digest_json, require
-from gear_training.driver import build_argv
-from gear_training.export import materialize
-from gear_training.gpu_visibility import slime_device_environment
-from gear_training.preflight import bridge_digest, compatibility_digest, gpu_processes
+from gear.training.storage.content import ContentStore, atomic_json, digest_json, require
+from gear.training.backends.slime.driver import build_argv
+from gear.training.storage.snapshots import materialize
+from gear.training.backends.slime.gpu_visibility import slime_device_environment
+from gear.training.runtime.preflight import bridge_digest, compatibility_digest, gpu_processes
 
 
 def main():
@@ -36,8 +36,8 @@ def main():
     source_status = json.loads((job / "status.json").read_text())
     require(source_status["resourcesReleased"] and source_status["execution"] != "running",
             "source-job-active", "original job must have released resources")
-    from gear_training.node import NodeService
-    from gear_training.device_lease import NodeDeviceLedger
+    from gear.training.runtime.node import NodeService
+    from gear.training.runtime.device_lease import NodeDeviceLedger
     node = NodeService(json.loads(options.node_config.read_text()))
     observed = node.probe()
     devices = observed["gpuUuids"]
@@ -65,8 +65,8 @@ def main():
 
     class ResumeProbeActor(MegatronTrainRayActor):
         def init(self, *args, **kwargs):
-            from gear_training.device_lease import NodeDeviceLedger
-            from gear_training.recovery import process_identity
+            from gear.training.runtime.device_lease import NodeDeviceLedger
+            from gear.training.runtime.recovery import process_identity
             NodeDeviceLedger(lease_root, lease_node).track(owner, [process_identity(os.getpid())], launching=True)
             return super().init(*args, **kwargs)
 
@@ -96,7 +96,7 @@ def main():
 
     ledger = NodeDeviceLedger(node.root, node.identity)
     ledger.acquire(owner, devices)
-    from gear_training.recovery import process_identity
+    from gear.training.runtime.recovery import process_identity
     report = {"kind": "checkpoint-resume-diagnostic", "status": "running", "validated": False,
               "sourceRequestDigest": digest_json(request), "sourceTrainerStateRef": pending["trainerStateRef"],
               "bridgeDigest": bridge_digest(), "node": node.identity, "devices": devices,

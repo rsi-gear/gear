@@ -6,7 +6,7 @@ import { deployment } from './placement-fixture.js'
 
 export function preflightFixture(root: string) {
   const config: TrainingControllerConfigV2 = { schemaVersion: 2, storeRoot: join(root, 'cas'), activationPath: join(root, 'active.json'),
-    deployment: deployment(), episodeTimeoutSeconds: 30, evaluationGateway: { localPort: 32000, nodePort: 32001 },
+    deployment: deployment(), episodeTimeoutSeconds: 30, evaluationBindings: { bindingsFile: join(root, 'bindings.json'), trustedReceiptSources: ['fixture-deployer'] },
     hitch: { command: ['hitch'], root: join(root, 'hitch'), workspace: root, harnessSourceDirectory: '/controller/hitch', python: ['controller-python'],
       budgets: { timeoutSeconds: 30, setupTimeoutSeconds: 30, maxConcurrent: 1, maxEpisodeSteps: 16, infrastructureRetries: 0, maxRepairRounds: 0 } } }
   const runtime = { fixture: 'observed-python-environment' }, node = { nodeId: 'gpu-node', generation: 'boot-1' }
@@ -18,10 +18,10 @@ export function preflightFixture(root: string) {
     sources: { slime: { commit: 'a'.repeat(40), patchDigest: null, untrackedRuntimeCode: false, exportExtension: true },
       megatron: { commit: 'b'.repeat(40), patchDigest: null, untrackedRuntimeCode: false } },
     gpus: [{ uuid: 'GPU-123', name: 'Fixture GPU', memoryMiB: 81920, driverVersion: '570.1', activeProcesses: 0 }],
-    hostMemory: { totalBytes: 256_000_000_000, availableBytes: 128_000_000_000 }, cudaVersion: '12.8', ports: { rollout: 31002, inference: 32001 } }
+    hostMemory: { totalBytes: 256_000_000_000, availableBytes: 128_000_000_000 }, cudaVersion: '12.8', ports: { rollout: 31002 } }
   const controller = { schema_version: '2', package_version: '0.2.9', node_version: 'v22.0.0', runtime_id: digestJson('controller-payload'),
     source: { kind: 'git-checkout', commit: 'b'.repeat(40), dirty: true } }
-  const caps: Record<string, unknown> = { training_external_binding: '1', exact_policy_tokens: '1', training_policy_fencing: '1', managed_model_node: '2',
+  const caps: Record<string, unknown> = { training_external_binding: '1', exact_policy_tokens: '1', training_policy_fencing: '1', external_endpoint: '1',
     controller_runtime_observation: '2', local_execution_observation: '2', training_harnesses: ['training-tool'] }
   const environment = { schema_version: '2', host_platform: 'linux-x64',
     harbor: { status: 'available', version: '0.21.0', executable_digest: digestJson('harbor') },

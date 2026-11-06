@@ -121,7 +121,7 @@ def main():
     import psutil
     import ray
     from slime.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
-    from gear_training.slime_runtime import logging_api
+    from gear.training.backends.slime.slime_runtime import logging_api
     _, init_tracking, finish_tracking = logging_api()
     memory = psutil.virtual_memory()
     assert memory.total >= 64 * 1024 ** 3 and memory.available >= 48 * 1024 ** 3

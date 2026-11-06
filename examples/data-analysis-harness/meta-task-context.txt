@@ -1,5 +1,5 @@
-This assignment evolves a general data-analysis harness under analysis-five-rollout@1.
-Read references/data-analysis-harness.md through the Refine resource interface.
+This project evolves a general data-analysis harness under analysis-five-rollout@1.
+Python GEPA owns research decisions; the Project runtime owns budgets and promotion.
 One rollout is one experiment. One evaluation cell is five sequential experiments
 from a frozen shared checkpoint. Five-fold validation happens inside each experiment.
 

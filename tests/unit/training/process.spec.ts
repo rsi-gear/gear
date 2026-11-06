@@ -1,3 +1,4 @@
+import { fixtureEndpointPreparer } from './fixture.js'
 import { mkdtemp, rm, writeFile, readFile, readdir, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -43,12 +44,12 @@ describe('packaged training subprocess boundary', () => {
     const root = await mkdtemp(join(tmpdir(), 'gear-training-rpc-')); roots.push(root)
     const store = new ModelTrainingStore(root)
     const spec = await fixture(store); spec.trainer.runtimeLock.validation = 'pending-gpu'; spec.trainer.runtimeLock.probeEvidenceRefs = []
-    const coordinator = new ModelTrainingCoordinator(store, new FixtureTrainer(store), new FixtureEvaluator(store))
+    const coordinator = new ModelTrainingCoordinator(store, new FixtureTrainer(store), new FixtureEvaluator(store), fixtureEndpointPreparer)
     const experiment = await coordinator.createExperiment(spec); const run = await coordinator.admit(experiment.id)
     const configPath = join(root, 'job-config.json')
     await writeFile(configPath, JSON.stringify({ schemaVersion: 1, storeRoot: root, jobsRoot: join(root, 'jobs'), hitchRoot: join(root, 'hitch'),
       hitchPath: root, slimePath: root, megatronPath: root, hitchCommand: [join(root, 'not-installed')], gatewayBindHost: '127.0.0.1', gatewayAdvertisedHost: '127.0.0.1', episodeTimeoutSeconds: 60 }))
-    const trainer = new SlimeModelTrainer({ python: ['env', `PYTHONPATH=${resolve('python')}`, 'python3'], configPath })
+    const trainer = new SlimeModelTrainer({ python: ['env', `PYTHONPATH=${resolve('python')}`, process.env.GEAR_TRAINING_TEST_PYTHON ?? 'python3'], configPath })
     const caps = await trainer.preflight(run.request)
     expect(caps.blockers).toContain('gpu-probes-pending')
     expect(caps.exactPolicyTokens).toBe(false)

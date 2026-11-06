@@ -1,3 +1,4 @@
+import { fixtureEndpointPreparer } from './fixture.js'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -33,7 +34,7 @@ describe('versioned process training runtime lock', () => {
   })
   it('admits a pure process environment and carries its exact lock only to the train projection', async () => {
     spec.trainer.runtimeLock = processLock(spec)
-    const coordinator = new ModelTrainingCoordinator(store, new FixtureTrainer(store), new FixtureEvaluator(store))
+    const coordinator = new ModelTrainingCoordinator(store, new FixtureTrainer(store), new FixtureEvaluator(store), fixtureEndpointPreparer)
     const experiment = await coordinator.createExperiment(spec), run = await coordinator.admit(experiment.id)
     expect(parseTrainingRequest(run.request).trainer.runtimeLock).toEqual(spec.trainer.runtimeLock)
     expect(run.request).not.toHaveProperty('datasets')
@@ -43,14 +44,14 @@ describe('versioned process training runtime lock', () => {
     expect(trainingCompatibilityDigest(previous)).not.toBe(trainingCompatibilityDigest(run.request))
     const python = process.env.GEAR_TRAINING_TEST_PYTHON ?? 'python3'
     const actual = await jsonProcess(['env', `PYTHONPATH=${resolve('python')}`, python], ['-c',
-      'import json,sys\nfrom gear_training.preflight import compatibility_digest\nprint(json.dumps(compatibility_digest(json.load(sys.stdin))))'], run.request)
+      'import json,sys\nfrom gear.training.runtime.preflight import compatibility_digest\nprint(json.dumps(compatibility_digest(json.load(sys.stdin))))'], run.request)
     expect(actual).toBe(trainingCompatibilityDigest(run.request))
   })
   it('records an uncertified process revision without allowing it to become a certified lock', async () => {
     const lock = processLock(spec); lock.slimeCommit = '89bfada990a00663846e0ac804de1454685ceed3'
     spec.trainer.runtimeLock = lock
     expect(parseModelTrainingSpec(spec).trainer.runtimeLock).toEqual(lock)
-    const coordinator = new ModelTrainingCoordinator(store, new FixtureTrainer(store), new FixtureEvaluator(store))
+    const coordinator = new ModelTrainingCoordinator(store, new FixtureTrainer(store), new FixtureEvaluator(store), fixtureEndpointPreparer)
     const experiment = await coordinator.createExperiment(spec), run = await coordinator.admit(experiment.id)
     expect(parseTrainingRequest(run.request).trainer.runtimeLock).toEqual(lock)
     await expect(coordinator.advance(experiment.id, run.id)).rejects.toThrow('cloud GPU compatibility probes')
@@ -66,7 +67,7 @@ describe('versioned process training runtime lock', () => {
   it('freezes the four-stage recipe in admitted requests and rejects unknown pipelines or agent overrides', async () => {
     spec.trainer.script = { entrypoint: 'recipe:build_loop', sourceRef: await store.putJson({ schemaVersion: 1, kind: 'training-script-source', files: [] }) }
     expect(parseModelTrainingSpec(spec).trainer.script).toEqual(spec.trainer.script)
-    const coordinator = new ModelTrainingCoordinator(store, new FixtureTrainer(store), new FixtureEvaluator(store))
+    const coordinator = new ModelTrainingCoordinator(store, new FixtureTrainer(store), new FixtureEvaluator(store), fixtureEndpointPreparer)
     const experiment = await coordinator.createExperiment(spec), run = await coordinator.admit(experiment.id)
     expect(parseTrainingRequest(run.request).trainer.script).toEqual(spec.trainer.script)
     expect((await store.load(experiment.id)).spec.trainer.script).toEqual(spec.trainer.script)

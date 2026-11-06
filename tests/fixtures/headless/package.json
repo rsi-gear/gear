@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.1.5-rc.3",
+    "@earendil-works/pi-coding-agent": "0.84.1"
+  }
+}

@@ -1,7 +1,7 @@
 // Synthetic, reduced-size data. The config/preparer/grader bytes are upstream.
 import { cp, mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { command } from '../../kaggle-titanic/common.mjs'
+import { command } from '../lib/common.mjs'
 export const competitions = ['nomad2018-predict-transparent-conductors', 'tabular-playground-series-may-2022']
 export async function fixture(root, competition) {
   const repository = join(root, 'repository'), dataRoot = join(root, 'data')

@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 
-from gear_training.content import ContentStore, atomic_json, digest_bytes, digest_file, require
+from gear.training.storage.content import ContentStore, atomic_json, digest_bytes, digest_file, require
 
 
 def verify(workspace, inventory, expected):

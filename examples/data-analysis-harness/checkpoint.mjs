@@ -5,7 +5,7 @@ import { parseArgs } from 'node:util'
 import { Store, json, atomicJson } from './lib/store.mjs'
 import { assert, compatible, digest, sha, validateCheckpoint } from './lib/contracts.mjs'
 import { HitchBackend } from './lib/hitch-backend.mjs'
-import { cli, isMain } from '../kaggle-titanic/common.mjs'
+import { cli, isMain } from './lib/common.mjs'
 
 export async function exportCheckpoint(store, reference, directory) {
   const checkpoint = validateCheckpoint(await store.get(reference)); await store.verifySources(checkpoint)

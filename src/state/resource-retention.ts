@@ -1,16 +1,24 @@
 import { lstat, readFile, readdir } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { digestJson } from './digest.js'
-import { RefineStateStore } from './store.js'
-import { SearchStore } from '../search/store.js'
+import { acquireWorkspaceLock } from '../adapters/storage/workspace-lock.js'
+import { publishFile } from '../adapters/storage/atomic.js'
+
+interface RetentionReceipt {
+  protocol: string; state: string; owner: string; generation: number
+  sourceRef: string; inputDigest: string; planDigest: string; tasks: string[]
+}
 
 /** Release is explicit and generation checked. Terminal status never implies disposal. */
 export async function releaseUnusedResourceRetention(stateRoot: string, partition: 'seed' | 'held-out', release: (input: { owner: string; generation: number }) => Promise<void>): Promise<{ releasedOwners: string[] }> {
   stateRoot = resolve(stateRoot)
-  const lock = await new RefineStateStore(stateRoot).acquireRoundLock(), store = new SearchStore(join(stateRoot, 'search'))
+  const lock = await acquireWorkspaceLock(stateRoot)
   try {
-    const key = `resource-retention/${partition}`
-    const receipt = await store.read<{ protocol: string; state: string; owner: string; generation: number; sourceRef: string; inputDigest: string; planDigest: string; tasks: string[] }>(key)
+    const path = join(stateRoot, 'search', 'resource-retention', `${partition}.json`)
+    const receipt = await readFile(path, 'utf8').then(value => JSON.parse(value) as RetentionReceipt, (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined
+      throw error
+    })
     if (!receipt || receipt.protocol !== 'gear-resource-retention@1' || !['active', 'releasing', 'released'].includes(receipt.state) || !receipt.owner.startsWith('gear:') || !Number.isSafeInteger(receipt.generation) || receipt.generation < 1 || !Array.isArray(receipt.tasks) || receipt.tasks.some(t => typeof t !== 'string')) throw new Error('resource retention receipt is missing or invalid')
     const pointers = new Set<string>()
     const referenced = (value: unknown): boolean => {
@@ -41,10 +49,10 @@ export async function releaseUnusedResourceRetention(stateRoot: string, partitio
     await visit(stateRoot)
     for (const pointer of pointers) if (!(await lstat(join(stateRoot, 'search/objects', `${pointer.slice(7)}.json`)).catch(() => undefined))?.isFile()) throw new Error('missing immutable history; resources retained')
     const beforePublish = async () => lock.assertHeld(stateRoot)
-    await store.write(key, { ...receipt, state: 'releasing' }, beforePublish)
+    await publishFile(path, JSON.stringify({ ...receipt, state: 'releasing' }, null, 2) + '\n', { beforePublish })
     const releasedOwners: string[] = []
     for (const task of receipt.tasks) { const owner = `${receipt.owner}:${task}`; await release({ owner, generation: receipt.generation }); releasedOwners.push(owner) }
-    await store.write(key, { ...receipt, state: 'released' }, beforePublish)
+    await publishFile(path, JSON.stringify({ ...receipt, state: 'released' }, null, 2) + '\n', { beforePublish })
     return { releasedOwners }
   } finally { await lock.release() }
 }

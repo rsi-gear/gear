@@ -16,7 +16,9 @@
 
 2026-11-06 MLE-bench 扩展：后续 Kaggle 任务统一使用 MLE-bench 的 config/prepare/grade 和 prepared/public、prepared/private 目录。新增 `analysis-task@2`、`analysis-experiment@2`，覆盖 accuracy、概率 AUC 和双目标 mean-column-wise RMSLE，保留附属文件、原指标及效用值。五次实验语义不变，旧 `@1` 记录不改写。具体格式、上游固定版本、指标映射、Titanic 自定义任务与导出入口以 [MLE-bench 接入说明](../examples/mle-bench/README.zh-CN.md)为准；下文关于二分类和 accuracy 的首版约束仅适用于 `@1`。
 
-本规范承接[原 Kaggle 支持规范](kaggle-support-spec.zh-CN.md)，替换其中针对新方案的“每折执行固定 pipeline”“Meta 直接修改 Titanic 模型”“Target 只调用一次 run_pipeline”设计。旧示例、历史评测和 CSV 保留，不迁移为新方案的基线。此工作不依赖整个 Gear 项目重构或 Python 算法 API 重构先完成。
+本规范承接[原 Kaggle 支持规范](kaggle-support-spec.zh-CN.md)，替换其中针对新方案的“每折执行固定 pipeline”“Meta 直接修改 Titanic 模型”“Target 只调用一次 run_pipeline”设计。历史评测和 CSV 保留，不迁移为新方案的基线；当前实现已适配完成后的 Project / Python 算法架构。
+
+2026-11-06 dev 架构适配（基线 `1f5c8e3f0f95516ee6bdbe1a0365b2451f2e0618`）：执行入口改为标准 `gear.yaml`、ProjectApplication 与受信 process OperationProvider。Python GEPA 负责候选生成计划、比较和晋升，TypeScript 负责持久化运行与资源封存。五实验序列、checkpoint、预算与 MLE-bench 协议保持原语义；`validation.mode: research` 复用开发 seed 证据，自动执行修复关闭。下文旧 SearchProvider/control-plane 类型只说明首版设计，当前接口以 [研究项目入口](../examples/data-analysis-harness/README.zh-CN.md)为准。旧 Titanic 固定 pipeline 示例已退役，历史结果保留在 Git 和验证记录中。
 
 ## 1 目标与首版范围
 

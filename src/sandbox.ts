@@ -44,8 +44,10 @@ function shellQuote(value: string): string {
 }
 
 export function sandboxSystemReadPaths(): string[] {
+  // Seatbelt checks the unresolved /etc path when a descendant is absent.
+  // Grant both the macOS alias and its already permitted physical directory.
   return process.platform === 'darwin'
-    ? ['/System', '/usr', '/bin', '/sbin', '/Library', '/private/etc', '/dev']
+    ? ['/System', '/usr', '/bin', '/sbin', '/Library', '/etc', '/private/etc', '/dev']
     : ['/usr', '/bin', '/sbin', '/lib', '/lib64', '/etc', '/dev']
 }
 

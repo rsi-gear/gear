@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { spawn, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createReadStream } from 'node:fs'
-import { lstat, mkdir, readFile } from 'node:fs/promises'
+import { lstat, mkdir, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -22,7 +22,7 @@ const quote = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`
 export function nodeCommand(connection: ModelNodeConnection, action: 'rpc' | 'cas-import' | 'cas-export'): string[] {
   requireContract(connection.python.length > 0 && connection.python.every(x => typeof x === 'string' && !!x && !x.includes('\0')),
     'invalid-node-command', 'Python must be an explicit argv array')
-  const command = [...connection.python, '-m', 'gear_training.node', action, '--config', connection.configPath]
+  const command = [...connection.python, '-m', 'gear.training.cli.node', action, '--config', connection.configPath]
   if (connection.transport.type === 'local') return command
   requireContract(/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(connection.transport.host), 'invalid-ssh-host', 'SSH host must be a configured Host alias')
   return ['ssh', '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', '--', connection.transport.host, command.map(quote).join(' ')]
@@ -43,13 +43,14 @@ export function validateNodeResponse(value: unknown, envelope: NodeEnvelope): No
 
 export class ModelNodeTransport {
   constructor(readonly connection: ModelNodeConnection, readonly identity: NodeIdentity | null, readonly timeoutMs = 60_000, readonly transferTimeoutMs = 3_600_000) {}
-  async call(operation: string, payload: unknown, requestId?: string): Promise<unknown> {
+  async call(operation: string, payload: unknown, requestId?: string, remainingMs?: number): Promise<unknown> {
     requireContract(this.identity !== null || operation === 'probe', 'node-not-resolved', 'probe and pin a node generation before performing work')
     const envelope = nodeEnvelope(this.identity, operation, payload, requestId)
     let value: unknown
-    const readOnly = ['probe', 'training.inspect', 'scripts.inspect', 'cas.stat', 'training.episodes.receipts'].includes(operation)
-    const verifiesFiles = ['cas.retain', 'cas.hfManifest', 'cas.sealHf'].includes(operation)
-    const deadline = Date.now() + (verifiesFiles ? this.transferTimeoutMs : this.timeoutMs)
+    const readOnly = ['probe', 'training.inspect', 'scripts.inspect', 'cas.stat', 'training.episodes.receipts', 'deployment.observe'].includes(operation)
+    const verifiesFiles = ['cas.retain', 'cas.hfManifest', 'cas.sealHf', 'deployment.ensure'].includes(operation)
+    requireContract(remainingMs === undefined || Number.isFinite(remainingMs) && remainingMs > 0, 'node-deadline-expired', 'node operation needs remaining time in its original deadline')
+    const deadline = Date.now() + Math.min(verifiesFiles ? this.transferTimeoutMs : this.timeoutMs, remainingMs ?? Infinity)
     try {
       for (let attempt = 0; ; attempt++) {
         try {
@@ -72,19 +73,34 @@ export class ModelNodeTransport {
     return validateNodeResponse(value, envelope).result
   }
   async gateway(controllerDirectory: string, nodePort: number): Promise<string> {
-    const { gateway, transport } = this.connection
+    const { gateway } = this.connection
     requireContract(this.identity && nodePort === gateway.nodePort, 'gateway-port-drift', 'node gateway differs from its explicit stable route')
+    return this.openRoute(controllerDirectory, gateway, 'training')
+  }
+  /** Ordinary model connections have their own route and incarnation ownership. */
+  async endpointRoute(controllerDirectory: string, route: { localPort: number; nodePort: number; incarnation: string }): Promise<string> {
+    requireContract(this.identity && /^[a-f0-9]{32}$/.test(route.incarnation), 'endpoint-route-drift', 'ordinary model route requires a pinned instance')
+    requireContract([route.localPort, route.nodePort].every(p => Number.isSafeInteger(p) && p > 0 && p <= 65535)
+      && route.localPort !== this.connection.gateway.localPort && route.nodePort !== this.connection.gateway.nodePort,
+    'endpoint-route-conflict', 'ordinary evaluation and training routes require distinct ports')
+    return this.openRoute(controllerDirectory, { localPort: route.localPort, nodePort: route.nodePort }, 'evaluation', route.incarnation)
+  }
+  private async openRoute(controllerDirectory: string, gateway: { localPort: number; nodePort: number }, namespace: 'training' | 'evaluation', incarnation?: string): Promise<string> {
+    const { transport } = this.connection
+    const routeConnection = namespace === 'training' ? this.connection : { ...this.connection, gateway }
+    const routeRecord = namespace === 'training' ? { node: this.identity, connection: this.connection } : { node: this.identity, connection: routeConnection, namespace, incarnation }
+    const routeDirectory = namespace === 'training' ? 'node-routes' : 'endpoint-routes'
     if (transport.type === 'local') {
       requireContract(gateway.localPort === gateway.nodePort, 'gateway-port-drift', 'local model gateway ports must match')
     } else {
-      const identity = digestJson({ node: this.identity, connection: this.connection })
+      const identity = digestJson(routeRecord)
       const directory = join('/tmp', `gear-node-${process.getuid?.() ?? 'user'}-${digestJson(controllerDirectory).slice(-12)}`)
       await mkdir(directory, { recursive: true, mode: 0o700 })
       const permissions = await lstat(directory)
       requireContract(permissions.isDirectory() && !permissions.isSymbolicLink() && (permissions.mode & 0o077) === 0
         && (!process.getuid || permissions.uid === process.getuid()), 'unsafe-tunnel-directory', 'SSH socket directory must be private to its owner')
       const socket = join(directory, identity.slice(-20) + '.sock')
-      const record = join(controllerDirectory, 'node-routes', identity.slice(7) + '.json')
+      const record = join(controllerDirectory, routeDirectory, identity.slice(7) + '.json')
       const invoke = (args: string[]) => promisify(execFile)('ssh', args, { timeout: 30_000 })
       await withTrainingFileLock(record + '.lock', async () => {
         let previous: { identity: string } | undefined
@@ -92,7 +108,7 @@ export class ModelNodeTransport {
         requireContract(!previous || previous.identity === identity, 'tunnel-owner-drift', 'SSH route identity changed')
         const common = ['-S', socket, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15']
         if (previous) { try { await invoke([...common, '-O', 'check', '--', transport.host]); return } catch {} }
-        await atomicWrite(record, { identity, node: this.identity, connection: this.connection })
+        await atomicWrite(record, { identity, ...routeRecord })
         try {
           await invoke([...common, '-M', '-fNT', '-o', 'ExitOnForwardFailure=yes', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3',
             '-L', `127.0.0.1:${gateway.localPort}:127.0.0.1:${gateway.nodePort}`, '--', transport.host])
@@ -100,6 +116,57 @@ export class ModelNodeTransport {
       })
     }
     return `http://127.0.0.1:${gateway.localPort}`
+  }
+  /** Explicit owner cleanup only. Closing a forward never stops the model service. */
+  async closeGateway(controllerDirectory: string, nodePort: number): Promise<{ closed: boolean; reason?: 'local' | 'missing-record' | 'missing-socket' }> {
+    const { gateway } = this.connection
+    requireContract(this.identity && nodePort === gateway.nodePort, 'gateway-port-drift', 'node gateway differs from its explicit stable route')
+    return this.closeRoute(controllerDirectory, gateway, 'training')
+  }
+  async closeEndpointRoute(controllerDirectory: string, route: { localPort: number; nodePort: number; incarnation: string }): Promise<{ closed: boolean; reason?: 'local' | 'missing-record' | 'missing-socket' }> {
+    requireContract(this.identity && /^[a-f0-9]{32}$/.test(route.incarnation), 'endpoint-route-drift', 'ordinary route cleanup requires its original instance')
+    return this.closeRoute(controllerDirectory, { localPort: route.localPort, nodePort: route.nodePort }, 'evaluation', route.incarnation)
+  }
+  private async closeRoute(controllerDirectory: string, gateway: { localPort: number; nodePort: number }, namespace: 'training' | 'evaluation', incarnation?: string): Promise<{ closed: boolean; reason?: 'local' | 'missing-record' | 'missing-socket' }> {
+    const { transport } = this.connection
+    if (transport.type === 'local') return { closed: false, reason: 'local' }
+    requireContract(/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(transport.host), 'invalid-ssh-host', 'SSH host must be a configured Host alias')
+    const routeRecord = namespace === 'training' ? { node: this.identity, connection: this.connection }
+      : { node: this.identity, connection: { ...this.connection, gateway }, namespace, incarnation }
+    const identity = digestJson(routeRecord)
+    const directory = join('/tmp', `gear-node-${process.getuid?.() ?? 'user'}-${digestJson(controllerDirectory).slice(-12)}`)
+    const socket = join(directory, identity.slice(-20) + '.sock')
+    const record = join(controllerDirectory, namespace === 'training' ? 'node-routes' : 'endpoint-routes', identity.slice(7) + '.json')
+    const expected = { identity, ...routeRecord }
+    return withTrainingFileLock(record + '.lock', async () => {
+      const permissions = await lstat(record).catch(error => { if (error.code === 'ENOENT') return undefined; throw error })
+      if (!permissions) return { closed: false, reason: 'missing-record' }
+      requireContract(permissions.isFile() && !permissions.isSymbolicLink() && (permissions.mode & 0o077) === 0
+        && permissions.size <= 64 * 1024 && (!process.getuid || permissions.uid === process.getuid()),
+      'unsafe-tunnel-record', 'SSH route record must be a private regular file owned by this user')
+      requireContract(digestJson(JSON.parse(await readFile(record, 'utf8'))) === digestJson(expected),
+        'tunnel-owner-drift', 'SSH route record differs from this node, connection or identity')
+      const folder = await lstat(directory).catch(error => { if (error.code === 'ENOENT') return undefined; throw error })
+      if (!folder) return { closed: false, reason: 'missing-socket' }
+      requireContract(folder.isDirectory() && !folder.isSymbolicLink() && (folder.mode & 0o077) === 0
+        && (!process.getuid || folder.uid === process.getuid()), 'unsafe-tunnel-directory', 'SSH socket directory must be private to its owner')
+      const endpoint = await lstat(socket).catch(error => { if (error.code === 'ENOENT') return undefined; throw error })
+      if (!endpoint) return { closed: false, reason: 'missing-socket' }
+      requireContract(endpoint.isSocket() && !endpoint.isSymbolicLink() && (endpoint.mode & 0o077) === 0
+        && (!process.getuid || endpoint.uid === process.getuid()), 'unsafe-tunnel-socket', 'SSH control socket must be private to its owner')
+      try {
+        await promisify(execFile)('ssh', ['-S', socket, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', '-O', 'exit', '--', transport.host], { timeout: 30_000 })
+      } catch {
+        const remaining = await lstat(socket).catch(error => { if (error.code === 'ENOENT') return undefined; throw error })
+        if (!remaining) return { closed: false, reason: 'missing-socket' }
+        throw new TrainingContractError('node-route-close-failed', 'SSH gateway close was not acknowledged; retain its owner record for retry')
+      }
+      // Never unlink a control socket ourselves or remove a changed owner record.
+      requireContract(digestJson(JSON.parse(await readFile(record, 'utf8'))) === digestJson(expected),
+        'tunnel-owner-drift', 'SSH route owner changed during close')
+      await rm(record)
+      return { closed: true }
+    })
   }
   private binary(action: 'cas-import' | 'cas-export') {
     requireContract(this.identity, 'node-not-resolved', 'pin a model-node generation before transferring artifacts')

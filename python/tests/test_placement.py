@@ -6,10 +6,10 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 
-from gear_training.content import ContentStore, ContractError, digest_json
-from gear_training.driver import build_argv
-from gear_training.placement import TrainingMemoryCycle, resource_plan, validate_resource_args, placement_probe_digest
-from gear_training.preflight import compatibility_digest, missing_probe_checks
+from gear.training.storage.content import ContentStore, ContractError, digest_json
+from gear.training.backends.slime.driver import build_argv
+from gear.training.runtime.placement import TrainingMemoryCycle, resource_plan, validate_resource_args, placement_probe_digest
+from gear.training.runtime.preflight import compatibility_digest, missing_probe_checks
 
 
 def request_fixture():

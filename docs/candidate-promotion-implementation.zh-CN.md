@@ -1,8 +1,13 @@
 # Candidate 晋升策略实现与接入
 
+本文保留重构前的 staged-search 行为与接入记录，对应实现和回归夹具已删除，
+源码链接指向重构前的 Git 版本。当前入口是 Project 与 Python
+`gear.algorithms`，见[算法作者指南](search-algorithm-authoring.zh-CN.md)；
+尚未迁入新 Project 路径的能力见[实施进度](refactor-progress.zh-CN.md)。
+
 ## 算法扩展入口
 
-新增父代策略、公开测试工具和包消费示例见 [搜索算法作者指南](search-algorithm-authoring.zh-CN.md)。下文说明内置流程与接入方式；插件扩展应使用作者指南中的 `search/api`、`search/presets/failure-cluster-gepa` 和 `search/testing` 入口。
+下文的 `search/api`、`search/presets/failure-cluster-gepa` 和 `search/testing` 是历史入口，现已撤销。新策略与离线测试使用 Python 作者指南中的六模块合同与 testkit。
 
 新增可选的 [champion 与 GEPA 混合父代抽样](champion-gepa-parent-sampling.zh-CN.md)：默认 50% 直接选择当前 champion，剩余 50% 按 GEPA 权重抽样；每个候选独立选择父代。以下未特别说明的 scope membership 规则描述原策略及新策略的 GEPA 探索分支。
 
@@ -108,7 +113,7 @@ Gear 在外部调用前持久化请求、提交意图和 reservation；完成后
 
 `DiagnosisProvider` 接收实际父代的 seed cells 和预算，返回有证据引用的失败机制/假设/修改边界或 unresolved。它的实现和清洗策略摘要均冻结；不能把所有零分自动分为同一原因。生成的摘要只投递相关类别与共享任务内容。
 
-完整类型及运行时结构 schema 见 [`src/search/types.ts`](../src/search/types.ts) 和 [`src/search/schema.json`](../src/search/schema.json)。结构校验之外仍执行 metric、预算、task applicability、Git/证据身份等语义校验。通过 `node scripts/generate-search-schema.mjs` 重建 schema。
+完整类型及运行时结构 schema 见 [`src/search/types.ts`](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/search/types.ts) 和 [`src/search/schema.json`](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/search/schema.json)。结构校验之外仍执行 metric、预算、task applicability、Git/证据身份等语义校验。该历史 schema 的生成脚本已删除；当前跨语言合同使用 `npm run generate:contracts`。
 
 ## 配置
 
@@ -164,7 +169,7 @@ regression:
 
 调用 `control.search-resume`，参数为 `{ "evolutionId": "...", "roundId": "..." }`，可恢复同一轮次；服务重启也会继续尚未结算的搜索轮次。截止前仍使用原幂等键，截止后只读查询已有操作；已完成的结果和 commit intent 可以继续对账，禁止新运行。没有能够证明终态的查询结果时保持 pending，不另选 finalist 或开启新一轮。补评操作本身需要用原 `repairId` / completion ID 再次调用；原操作未解决时拒绝换 ID 创建第二次执行。
 
-缺失 held-out 时，状态返回 `searchPendingEvidence`。可通过 Skill 控制 API 调用：
+任一搜索评测缺失时，Gear 先在冻结决策前执行有界自动补齐；默认额外 3 次、等待 15/60/180 秒并附加最多 1 秒稳定 jitter，可通过 `search.evaluationStages.repair` 配置。耗尽或永久投影缺口时保留 `searchPendingEvidence`，本轮不终结为拒绝。原始引用、缺少 slots、重试及预算边界见[搜索评测恢复说明](search-evaluation-recovery.zh-CN.md)。可通过 Skill 控制 API 调用：
 
 ```json
 {
@@ -188,11 +193,4 @@ dossier、workplans、local 决定、nomination 与 archive 在发布引用前�
 
 ## 历史证据只读回放
 
-`replaySearchCase` 与 `scripts/search-shadow-replay.mjs` 可读取 legacy 单次观测缓存，核验输入摘要，返回包含指标假设、来源摘要和输入未变更检查的 advisory 报告。
-
-```sh
-npm run build
-node scripts/search-shadow-replay.mjs BASELINE_CACHE CANDIDATE_CACHE NEW_OUTPUT_JSON
-```
-
-该命令只创建新的输出文件，不生成候选、补评或更新 archive、champion、published pointer。回放结果不构成晋升证据。
+原 `replaySearchCase`、shadow replay 脚本及其旧执行器夹具已删除。这部分只读历史分析的设计保留为背景，不再提供可执行命令，也不构成当前 Project 的晋升证据。

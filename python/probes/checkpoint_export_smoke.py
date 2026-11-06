@@ -11,12 +11,12 @@ from pathlib import Path
 import sys
 import time
 
-from gear_training.content import ContentStore, atomic_json, digest_json, require
-from gear_training.driver import build_argv
-from gear_training.export import materialize, seal_directory
-from gear_training.execution import training_devices
-from gear_training.gpu_visibility import slime_device_environment
-from gear_training.preflight import bridge_digest, compatibility_digest, gpu_processes
+from gear.training.storage.content import ContentStore, atomic_json, digest_json, require
+from gear.training.backends.slime.driver import build_argv
+from gear.training.storage.snapshots import materialize, seal_directory
+from gear.training.runtime.execution import training_devices
+from gear.training.backends.slime.gpu_visibility import slime_device_environment
+from gear.training.runtime.preflight import bridge_digest, compatibility_digest, gpu_processes
 
 
 def main():
@@ -34,7 +34,7 @@ def main():
     if options.target_node_config:
         # An instance-to-instance copy is an offline diagnostic input, not an
         # authorization to resume the old job on a different physical device.
-        from gear_training.node import NodeService
+        from gear.training.runtime.node import NodeService
         target_config = json.loads(options.target_node_config.read_text())
         target = NodeService(target_config)
         observed = target.probe()
@@ -43,14 +43,14 @@ def main():
                 "diagnostic-device-count", "export diagnostic requires one target GPU")
         lease_root, lease_node = target.root, target.identity
     else:
-        from gear_training.job import JobService
+        from gear.training.runtime.job import JobService
         handle = json.loads((job / "identity.json").read_text())["handle"]
         status = JobService(config).inspect(handle)
         require(status["resourcesReleased"] and status["execution"] != "running", "source-job-active", "original job must be physically released")
         devices = training_devices(request)
         lease_root, lease_node = config["nodeRoot"], config["node"]
     os.environ.update(slime_device_environment(devices))
-    from gear_training.device_lease import NodeDeviceLedger
+    from gear.training.runtime.device_lease import NodeDeviceLedger
     ledger = NodeDeviceLedger(lease_root, lease_node)
     owner = "diagnostic-export/" + output.name
     ledger.acquire(owner, devices)
@@ -67,7 +67,7 @@ def main():
         sys.argv = ["gear-export-diagnostic", *argv]
         from slime.utils.arguments import parse_args
         from slime.ray.placement_group import create_placement_groups
-        from gear_training.checkpoint_export import checkpoint_exporter
+        from gear.training.backends.slime.checkpoint_export import checkpoint_exporter
         import ray
         args = parse_args()
         ray.init(address="local", num_gpus=len(devices), include_dashboard=False,

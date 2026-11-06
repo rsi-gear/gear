@@ -1,0 +1,32 @@
+{
+  "benchmark": "Terminal-Bench 2.1",
+  "model": "gpt-5.6-luna",
+  "harness": "DSH",
+  "metric": "task pass rate",
+  "baseline": {
+    "effort": "medium",
+    "passRate": 52.8,
+    "source": {
+      "type": "user-provided",
+      "date": "2026-10-23"
+    }
+  },
+  "optimized": {
+    "effort": "medium",
+    "passRate": 62.92
+  },
+  "max": {
+    "effort": "max",
+    "passRate": 84.26
+  },
+  "source": {
+    "file": "README.md",
+    "commit": "1c32819b7cf53ab5d99838cb0865ae07cf736a8d",
+    "url": "https://github.com/rsi-gear/gear/blob/1c32819b7cf53ab5d99838cb0865ae07cf736a8d/README.md"
+  },
+  "notes": [
+    "Optimized medium and max values reproduce the published README summary; the medium baseline uses the user's correction supplied on 2026-10-23.",
+    "The repository does not include round-by-round Coding results or a Coding objective-completion metric; no missing values are inferred.",
+    "The summary does not state the scored task count; no task count is inferred from the rounded percentages."
+  ]
+}

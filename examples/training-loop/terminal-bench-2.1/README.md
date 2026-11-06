@@ -26,7 +26,9 @@ python -m pip install -e './python[gateway]'
 
 你需要已有的 `controller.json` 和 **完整 GRPO** `base-spec.json`，其中模型、reference、超参数、runtime lock、部署、GPU、fixed harness、verifier、评估条件和预算都来自真实环境。`trainer.recipe` 必须是 `agent-grpo-v1`。模型节点也要安装对应版本；Hitch daemon、Harbor/Docker 与锁定的训练依赖按 [部署指南](../../../docs/training/controller-v2.zh-CN.md) 准备。
 
-本示例保留已有训练参数和预算，不替你选择模型大小、学习率、batch 或显存配置，也不把未验证的 runtime lock 标记为 validated。B×G、global batch、DP 以及 sealed Slime steps 必须保持一致。`controller.storeRoot` 使用绝对路径。
+controller 还必须配置 evaluationBindings，按 baseline/candidate 的不可变 HF snapshot digest 提供独立 ready 文件和可信部署回执，见[端点准备](../../../docs/training/standalone-inference.zh-CN.md)。可复制 [evaluation-bindings.example.json](evaluation-bindings.example.json) 和 [endpoint-binding.example.json](endpoint-binding.example.json)，再填真实部署值；占位符不是可信回执。这是模型端点映射，与下文逐任务的 bindings.json 不同。新 spec 使用 evaluation.provider=hitch-endpoint、topology=harbor-dataset、resources 仅含 trainingDevices；v2 的 trainEvaluation=isolated，普通推理卡在外部静态保留。预算显式设 gpuSecondsScope=training，未知共享推理 GPU 时间保持 null。
+
+本示例保留已有训练参数和明确覆盖范围的预算，不替你选择模型大小、学习率、batch 或显存配置，也不把未验证的 runtime lock 标记为 validated。B×G、global batch、DP 以及 sealed Slime steps 必须保持一致。`controller.storeRoot` 使用绝对路径。
 
 ## 2. 下载并固定任务版本
 
@@ -66,14 +68,14 @@ python examples/training-loop/terminal-bench-2.1/prepare.py \
   --bindings /your/config/bindings.json \
   --output /your/runs/tb21-grpo
 
-python -m gear_training validate /your/runs/tb21-grpo/spec.json \
+python -m gear.training validate /your/runs/tb21-grpo/spec.json \
   --config /your/config/controller.json
 
-python -m gear_training run /your/runs/tb21-grpo/spec.json \
+python -m gear.training run /your/runs/tb21-grpo/spec.json \
   --config /your/config/controller.json
 ```
 
-准备阶段只使用 CPU：检查分区和 family，按真实字节封存单任务与完整 split，写入 controller CAS，冻结本例 Python 工厂，输出 `spec.json` 和 `dataset-provenance.json`。输出目录必须不存在；原 base spec 不会修改。`validate` 检查配置合同；`run` 才创建新实验并进入基线评估、训练、候选评估。实际运行仍受 GPU preflight 和 runtime 认证约束。
+准备阶段只使用 CPU：检查分区和 family，按真实字节封存单任务与完整 split，写入 controller CAS，冻结本例 Python 工厂，输出 `spec.json` 和 `dataset-provenance.json`。输出目录必须不存在；原 base spec 不会修改。validate 检查配置合同；run 才创建新实验并进入基线评估、训练、候选评估。baseline 或 candidate 尚无对应 ready binding 时保存 waiting-for-deployment 状态，等待部署所有者补齐后继续同一运行；prepare.py 不自动部署模型服务。实际运行仍受 GPU preflight 和 runtime 认证约束，历史单卡证据不证明新上游端点路径通过。
 
 只有 train split 开启精确训练数据授权，dev/held-out 不进入训练请求。原 spec 的 `requiredTaskIds` 替换成这里的所有 dev/held-out 任务；旧自定义脚本选择也替换为 `tb21:build_loop`。其余评估政策保留。旧 `stages`/`trainer.pipeline` 会被拒绝；GRPO base 不能携带 `offlineTraining`。运行 SFT 时使用指南中的独立 base 和 `--sft-input`。
 
@@ -84,7 +86,7 @@ python -m gear_training run /your/runs/tb21-grpo/spec.json \
 启动后记下输出的 `EXP_ID` 和 `RUN_ID`。Ctrl+C 请求暂停。恢复使用原 ID：
 
 ```sh
-python -m gear_training resume EXP_ID RUN_ID --config /your/config/controller.json
+python -m gear.training resume EXP_ID RUN_ID --config /your/config/controller.json
 ```
 
 `run spec.json` 会创建新实验，不能用它代替恢复。只查看状态可用 `training status EXP_ID RUN_ID`。本示例没有实际执行 GPU 训练或 TB 容器任务；CPU 检查不构成该数据集的 GPU/Harbor 兼容性认证。

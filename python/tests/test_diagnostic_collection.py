@@ -2,7 +2,7 @@
 import tempfile
 import unittest
 
-from gear_training.content import ContentStore, ContractError
+from gear.training.storage.content import ContentStore, ContractError
 from probes.collect_controller_training_smoke import verify_updates
 
 

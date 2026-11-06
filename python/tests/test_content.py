@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from gear_training.content import ContentStore, ContractError
+from gear.training.storage.content import ContentStore, ContractError
 
 
 class FileImportTests(unittest.TestCase):
@@ -14,7 +14,7 @@ class FileImportTests(unittest.TestCase):
             source = Path(root) / "checkpoint.bin"
             source.write_bytes(b"complete-checkpoint")
             ref = store.put_file(source)
-            with patch("gear_training.content.shutil.copyfileobj", side_effect=OSError(errno.ENOSPC, "disk full")):
+            with patch("gear.training.storage.content.shutil.copyfileobj", side_effect=OSError(errno.ENOSPC, "disk full")):
                 self.assertEqual(store.put_file(source), ref)
                 source.write_bytes(b"next-complete-checkpoint")
                 with self.assertRaises(OSError) as error: store.put_file(source)

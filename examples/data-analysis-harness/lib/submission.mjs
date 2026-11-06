@@ -1,4 +1,4 @@
-import { parseCsv, validateSubmission } from '../../kaggle-titanic/common.mjs'
+import { parseCsv, validateSubmission } from './common.mjs'
 import { assert } from './contracts.mjs'
 
 export function validateTabularSubmission(bytes, task) {

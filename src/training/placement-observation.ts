@@ -5,7 +5,7 @@ import { requireContract } from './schema.js'
 import { ModelNodeTransport } from './transport.js'
 import type { FrozenExecutionPlacement, TrainingDeploymentConfig } from './types.js'
 import { randomBytes } from 'node:crypto'
-import { providerEnvironment, remoteWorkerRuntime } from './provider-environment.js'
+import { providerEnvironment, remoteWorkerRuntime, controllerObservation } from '../adapters/hitch/environment.js'
 
 type Json = Record<string, unknown>
 const object = (value: unknown): Json => {
@@ -19,16 +19,11 @@ export interface HitchControllerObservation {
 }
 
 export async function observeHitchController(hitch: PlacementController, invoke = jsonProcess): Promise<HitchControllerObservation> {
-  const value = object(await invoke(hitch.command, ['--root', hitch.root, 'training', 'runtime', '--json']))
-  const source = object(value.source)
-  requireContract(value.schema_version === '2' && typeof value.package_version === 'string' && !!value.package_version
-    && typeof value.node_version === 'string' && /^v[0-9]+\.[0-9]+\.[0-9]+/.test(value.node_version)
-    && typeof value.runtime_id === 'string' && /^sha256:[a-f0-9]{64}$/.test(value.runtime_id),
-  'controller-runtime-unavailable', 'Hitch must report its actual versioned controller payload identity')
-  requireContract(source.kind === 'git-checkout' && typeof source.commit === 'string' && /^[a-f0-9]{40}$/.test(source.commit) && typeof source.dirty === 'boolean',
-    'controller-source-unavailable', 'v2 training requires an observable Hitch source checkout; a parent repository or declared package version is not source evidence')
-  return { schema_version: '2', package_version: value.package_version as string, node_version: value.node_version as string, runtime_id: value.runtime_id as string,
-    source: { kind: 'git-checkout', commit: source.commit as string, dirty: source.dirty as boolean } }
+  const raw = object(await invoke(hitch.command, ['--root', hitch.root, 'training', 'runtime', '--json']))
+  requireContract(object(raw.source).kind === 'git-checkout', 'controller-source-unavailable',
+    'v2 training requires an observable Hitch source checkout; a parent repository or declared package version is not source evidence')
+  const value = controllerObservation(raw)
+  return value as HitchControllerObservation
 }
 
 export function assertHitchCommit(controller: HitchControllerObservation, expected: string): void {
@@ -57,8 +52,8 @@ export async function observeExecutionProvider(input: TrainingDeploymentConfig, 
   const capabilities = { harborDocker: features.docker === true,
     exactTrainingBinding: caps.training_external_binding === '1' && caps.exact_policy_tokens === '1' && caps.training_policy_fencing === '1'
       && (!remote || caps.remote_training_external_binding === '2' && features.training_external_binding === '2'),
-    managedModelRoute: caps.managed_model_node === '2' && features.model_proxy === true
-      && (!remote || caps.remote_managed_model_node === '2' && features.managed_model_node === '2') }
+    trainingModelRoute: features.model_proxy === true && caps.training_external_binding === '1'
+      && (!remote || caps.remote_training_external_binding === '2' && features.training_external_binding === '2') }
   requireContract((remote ? caps.remote_execution_observation === '2' && features.execution_observation === '2' : caps.local_execution_observation === '2'),
     'provider-observation-capability-missing', 'Hitch and the selected worker must support fresh execution environment observation v2')
   const nonce = randomBytes(16).toString('hex')

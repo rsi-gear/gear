@@ -1,7 +1,7 @@
 """TB assistant supervision through the same four-stage native controller."""
-from gear_training import TrainingLoop
-from gear_training.offline_sft import DatasetTaskSource, OfflineRolloutExecutor, AssistantDatasetBuilder
-from gear_training.online_rl import SlimeModelUpdater
+from gear.training import TrainingLoop
+from gear.training.pipelines.offline_sft import DatasetTaskSource, OfflineRolloutExecutor, AssistantDatasetBuilder
+from gear.training.pipelines.online_rl import SlimeModelUpdater
 
 
 def build_loop(config, runtime):

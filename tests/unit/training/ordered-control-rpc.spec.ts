@@ -1,3 +1,4 @@
+import { fixtureEndpointPreparer } from './fixture.js'
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -29,7 +30,7 @@ it('cancels before first submission through real node subprocess RPC without mat
     const { id: _, ...model } = await store.readJson<any>(spec.initialModel)
     spec.initialModel = await store.putJson(sealModelVersion({ ...model, hfSnapshotRef: hf })); spec.referenceModel = spec.initialModel
     spec.deployment.modelRuntime = { ...spec.deployment.modelRuntime, ...identity }
-    const coordinator = new ModelTrainingCoordinator(store, new FixtureTrainer(store), new FixtureEvaluator(store))
+    const coordinator = new ModelTrainingCoordinator(store, new FixtureTrainer(store), new FixtureEvaluator(store), fixtureEndpointPreparer)
     const experiment = await coordinator.createExperiment(spec), run = await coordinator.admit(experiment.id)
     const request = run.request as TrainingRequestV2
     const create = () => {

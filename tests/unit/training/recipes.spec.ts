@@ -1,3 +1,4 @@
+import { fixtureEndpointPreparer } from './fixture.js'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -16,7 +17,7 @@ describe('versioned training recipes and offline SFT admission', () => {
   let root: string, store: ModelTrainingStore, spec: T.ModelTrainingSpecV1, trainer: OfflineFixtureTrainer, evaluator: FixtureEvaluator, coordinator: ModelTrainingCoordinator
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), 'gear-recipes-')); store = new ModelTrainingStore(root); spec = await fixture(store)
-    trainer = new OfflineFixtureTrainer(store); evaluator = new FixtureEvaluator(store); coordinator = new ModelTrainingCoordinator(store, trainer, evaluator)
+    trainer = new OfflineFixtureTrainer(store); evaluator = new FixtureEvaluator(store); coordinator = new ModelTrainingCoordinator(store, trainer, evaluator, fixtureEndpointPreparer)
   })
   afterEach(async () => { await rm(root, { recursive: true, force: true }) })
   async function sft() {

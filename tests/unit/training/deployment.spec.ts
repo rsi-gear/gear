@@ -1,3 +1,4 @@
+import { fixtureEndpointPreparer } from './fixture.js'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,7 +10,7 @@ import { ModelTrainingCoordinator } from '../../../src/training/coordinator.js'
 import { ModelTrainingStore } from '../../../src/training/store.js'
 import { modelEvaluationRequest } from '../../../src/training/evaluation.js'
 import type { ModelTrainingSpecV1, ModelVersion } from '../../../src/training/types.js'
-import { fixture, FixtureEvaluator, FixtureTrainer } from './fixture.js'
+import { fixture, FixtureEvaluator, FixtureTrainer, fixtureEndpointBinding } from './fixture.js'
 
 import { deployment, observation, v2spec } from './placement-fixture.js'
 
@@ -35,8 +36,8 @@ describe('v2 independent execution placement', () => {
     expect(() => freezeExecutionPlacement(config, oldWorker)).toThrow('exactTrainingBinding')
     const wrongNode = v2spec(legacy); wrongNode.resources.trainingDevices[0]!.nodeId = 'other-node'
     expect(() => parseModelTrainingSpec(wrongNode)).toThrow('selected model node')
-    const overlap = v2spec(legacy); overlap.deployment.gpuScheduling.trainEvaluation = 'isolated'
-    expect(() => parseModelTrainingSpec(overlap)).toThrow('must not overlap')
+    const overlap = v2spec(legacy); overlap.deployment.gpuScheduling.trainEvaluation = 'sequential'
+    expect(() => parseModelTrainingSpec(overlap)).toThrow('statically separate')
     const duplicated = v2spec(legacy); duplicated.trainer.placement = 'colocated'
     expect(() => parseModelTrainingSpec(duplicated)).toThrow('v2 placement')
   })
@@ -45,9 +46,17 @@ describe('v2 independent execution placement', () => {
     expect(digestJson(parseModelTrainingSpec(legacy))).toBe(before)
     expect(parseModelTrainingSpec(legacy)).not.toHaveProperty('deployment')
   })
+  it('validates explicit runtime adapters and rejects malformed node connections', () => {
+    const config = deployment()
+    const nodes = config.nodes as Record<string, unknown>
+    nodes[config.modelRuntime.nodeRef] = null
+    expect(() => parseTrainingDeployment(config)).toThrow('must be an object')
+    nodes[config.modelRuntime.nodeRef] = { ...deployment().nodes[config.modelRuntime.nodeRef], runtime: 'unknown' }
+    expect(() => parseTrainingDeployment(config)).toThrow('unknown or missing fields')
+  })
   it('freezes deployment through admission and rejects persisted drift', async () => {
     const spec = v2spec(legacy)
-    const coordinator = new ModelTrainingCoordinator(store, new FixtureTrainer(store), new FixtureEvaluator(store))
+    const coordinator = new ModelTrainingCoordinator(store, new FixtureTrainer(store), new FixtureEvaluator(store), fixtureEndpointPreparer)
     const experiment = await coordinator.createExperiment(spec); const run = await coordinator.admit(experiment.id)
     expect(run.request.schemaVersion).toBe(2)
     expect(parseTrainingRequest(run.request)).toHaveProperty('deployment', spec.deployment)
@@ -59,9 +68,9 @@ describe('v2 independent execution placement', () => {
   })
   it('requires new baselines when provider or node identity changes', async () => {
     const model = await store.readJson<ModelVersion>(legacy.initialModel)
-    const a = modelEvaluationRequest(v2spec(legacy), model, legacy.initialModel, 'dev')
-    const b = modelEvaluationRequest(v2spec(legacy, deployment('remote')), model, legacy.initialModel, 'dev')
-    expect(a.condition.deploymentDigest).not.toBe(b.condition.deploymentDigest)
+    const a = modelEvaluationRequest(v2spec(legacy), model, legacy.initialModel, 'dev', fixtureEndpointBinding(model))
+    const b = modelEvaluationRequest(v2spec(legacy, deployment('remote')), model, legacy.initialModel, 'dev', fixtureEndpointBinding(model))
+    expect(a.condition.taskExecutionDigest).not.toBe(b.condition.taskExecutionDigest)
     const config = deployment(); const obs = observation(config); const frozen = freezeExecutionPlacement(config, obs)
     obs.node.generation = 'another-boot'
     expect(() => assertDeploymentMatches(frozen, config, obs)).toThrow('new experiment')

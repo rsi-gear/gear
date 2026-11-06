@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from gear_training.content import ContractError
+from gear.training.storage.content import ContractError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "probes"))
 import collect_training_failure as probe

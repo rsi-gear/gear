@@ -7,7 +7,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "probes"))
 from audit_training_capture import audit
-from gear_training.content import ContentStore, ContractError, atomic_json
+from gear.training.storage.content import ContentStore, ContractError, atomic_json
 
 
 class CaptureAuditTests(unittest.TestCase):

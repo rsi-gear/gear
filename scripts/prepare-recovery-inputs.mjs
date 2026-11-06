@@ -20,7 +20,7 @@ const record = inspected.record
 assert.equal(record.observation.status, 'valid')
 const store = new TrainingContentStore(join(output, 'controller-content'))
 const python = ['env', `PYTHONPATH=${resolve('python')}`, controllerPython]
-const dataset = await jsonProcess(python, ['-m', 'gear_training.artifacts', 'seal-dataset', '--store-root', store.root], { directory: join(canaryRoot, 'dataset') })
+const dataset = await jsonProcess(python, ['-m', 'gear.training.cli.artifacts', 'seal-dataset', '--store-root', store.root], { directory: join(canaryRoot, 'dataset') })
 const environmentRef = await store.putJson({ hitchEnvironmentIdentity: record.protocol.environment_identity,
   taskDigest: record.context.task_digest, verifierIdentity: record.context.verifier_identity })
 const manifestRef = await store.putJson({ schemaVersion: 1, hitch: { harnessId: record.harness.harness_id,

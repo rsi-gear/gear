@@ -3,6 +3,7 @@ import { digestJson } from '../../../src/training/digest.js'
 import type * as T from '../../../src/training/types.js'
 import { ModelTrainingStore } from '../../../src/training/store.js'
 import { trainingCompatibilityDigest } from '../../../src/training/coordinator.js'
+import { publicEndpointBinding } from '../../../src/training/endpoint-binding.js'
 import { modelEvidenceKey } from '../../../src/training/evaluation.js'
 
 export async function fixture(store: ModelTrainingStore): Promise<T.ModelTrainingSpecV1> {
@@ -17,17 +18,18 @@ export async function fixture(store: ModelTrainingStore): Promise<T.ModelTrainin
     trainer: { provider: 'slime', runtimeLock: { schemaVersion: 1, slimeCommit: '41014d1f29e201137fdffce737bb8bac65bc5219', hitchCommit: '2'.repeat(40),
       imageDigest: ref.digest, pythonVersion: '3.12', cudaVersion: 'fixture', pytorchVersion: 'fixture', megatronCommit: '3'.repeat(40), sglangVersion: 'fixture',
       bridgeDigest: ref.digest, protocolDigest: ref.digest, patchDigests: [], validation: 'validated', probeEvidenceRefs: [ref] },
-      recipe: 'agent-grpo-v1', backend: 'megatron', hyperparametersRef: ref, updatesPerCandidate: 1, checkpointEveryUpdate: true,
+      recipe: 'agent-grpo-v1', backend: 'megatron', hyperparametersRef: await store.putJson({ schemaVersion: 1,
+        slimeArgs: ['--lr', '0.000001', '--lr-decay-style', 'constant', '--kl-coef', '0.01', '--eps-clip', '0.2', '--num-steps-per-rollout', '1'] }), updatesPerCandidate: 1, checkpointEveryUpdate: true,
       optimizerResetPolicy: 'initial-cold-start-only', rolloutBatchSize: 1, globalBatchSize: 4, dataParallelSize: 1 },
     rollout: { provider: 'hitch', mode: 'synchronous', groupSize: 4, maxPolicyLag: 0,
       sampling: { temperature: 1, topP: 1, topK: -1, repetitionPenalty: 1, maxNewTokens: 16, maxContextTokens: 128 },
       episodeFormat: 'linear-token-trajectory-v1', capture: 'exact-policy-tokens-v1', truncation: 'reject', zeroVarianceGroup: 'skip-with-bounded-resampling',
       compaction: false, subagents: false, auxiliaryModelCalls: false },
-    evaluation: { provider: 'hitch-managed-local', topology: 'local-docker-harbor-dataset', samplingProfile: 'baseline',
-      common: { runtimeDigest: ref.digest, protocolDigest: ref.digest, samplingDigest: ref.digest, budgetsDigest: ref.digest, attempts: 2 },
+    evaluation: { provider: 'hitch-endpoint', topology: 'harbor-dataset',
+      common: { runtimeDigest: digestJson(fixtureServiceConfig), protocolDigest: digestJson({ api: 'chat-completions' }), samplingDigest: digestJson(fixtureGeneration), budgetsDigest: ref.digest, attempts: 2 },
       policy: { minDevGain: .1, maxHeldOutRegression: 0, maxInferenceErrorRate: 0, requiredTaskIds: [], maxHeldOutEvaluations: 3 } },
-    resources: { mode: 'sequential', trainingDevices: ['GPU-fixture', 'GPU-rollout-fixture'], evaluationDevices: ['GPU-fixture'] },
-    budgets: { totalGpuSeconds: 100, maxRolloutTokens: 1000, maxEpisodeSteps: 4, maxGroupResamples: 2 }, publication: { mode: 'explicit' } }
+    resources: { trainingDevices: ['GPU-fixture', 'GPU-rollout-fixture'] },
+    budgets: { gpuSecondsScope: 'training', totalGpuSeconds: 100, maxRolloutTokens: 1000, maxEpisodeSteps: 4, maxGroupResamples: 2 }, publication: { mode: 'explicit' } }
 }
 
 export class FixtureTrainer implements T.ModelTrainer {
@@ -97,14 +99,28 @@ export class FixtureEvaluator implements T.ModelEvaluator {
   failOnce = false
   beforeReturn?: () => Promise<void>
   constructor(private store: ModelTrainingStore) {}
-  async observeUsage(): Promise<{ gpuSeconds: number | null }> { return { gpuSeconds: 0 } }
+  async observeUsage(): Promise<T.EvaluationUsage> { return { gpuSeconds: null, gpuSecondsSource: null } }
   async evaluate(r: T.ModelEvaluationRequest): Promise<T.ModelEvaluationEvidence> {
     this.calls.push(r)
     if (this.failOnce) { this.failOnce = false; throw new Error('eval interrupted') }
     const reward = r.model.trainingRunId ? r.condition.partition === 'dev' ? this.candidateReward : this.heldOutReward : 0
     await this.beforeReturn?.()
-    return { schemaVersion: 1, evalId: `eval-${this.calls.length}`, subject: r.subject, condition: r.condition,
-      evidenceKey: modelEvidenceKey({ subject: r.subject, condition: r.condition }), hitchModelId: digestJson(r.model.id), inferenceLockRef: await this.store.putJson({ fixture: 'lock' }),
-      trials: r.condition.slots.map((s, i) => ({ taskId: s.taskId, attempt: s.attempt, runId: `${this.calls.length}-run-${i}`, valid: true, reward, inferenceError: false })), complete: true, gpuSeconds: 0 }
+    return { schemaVersion: 2, evalId: `eval-${this.calls.length}`, subject: r.subject, condition: r.condition,
+      evidenceKey: modelEvidenceKey({ subject: r.subject, condition: r.condition }), endpointBinding: publicEndpointBinding(r.endpointBinding),
+      trials: r.condition.slots.map((s, i) => ({ taskId: s.taskId, attempt: s.attempt, runId: `${this.calls.length}-run-${i}`, valid: true, reward, inferenceError: false })), complete: true, gpuSeconds: null, gpuSecondsSource: null }
   }
 }
+
+export const fixtureGeneration = { max_output_tokens: 1024, temperature: 0 }
+export const fixtureServiceConfig = { engine: 'fixture', engine_version: '1', cache_policy: 'shared', parsing: 'none' }
+export function fixtureEndpointBinding(model: T.ModelVersion): T.ReadyEvaluationEndpointBinding {
+  const config = { schema_version: '1' as const, base_url: 'http://fixture.invalid/v1', wire_model: `model-${model.hfSnapshotRef.digest.slice(-16)}`,
+    api: 'chat-completions' as const, auth: { kind: 'none' as const },
+    capabilities: { streaming: true, tool_calls: true, parallel_tool_calls: false, input_modalities: ['text'] as ['text'] } }
+  return { schema_version: '1', kind: 'external-endpoint', endpoint_ref: 'endpoint/fixture', endpoint_revision: digestJson(config),
+    api: config.api, wire_model: config.wire_model, capabilities: config.capabilities, generation: fixtureGeneration,
+    connection: { base_url: config.base_url, auth: config.auth }, deployment_receipt: { schema_version: '1', model_digest: model.hfSnapshotRef.digest,
+      wire_model: config.wire_model, deployment_ref: `fixture:${model.id}`, source: 'fixture-deployer', service_config: fixtureServiceConfig } }
+}
+export const fixtureEndpointPreparer: T.ModelEndpointPreparer = { configurationDigest: digestJson('fixture-endpoint-preparation'), trustedReceiptSources: ['fixture-deployer'],
+  prepare: async model => fixtureEndpointBinding(model) }

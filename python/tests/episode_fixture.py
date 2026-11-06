@@ -2,10 +2,10 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from gear_training.content import ContentStore, atomic_json, digest_bytes, digest_json
-from gear_training.episodes import EpisodeJournal
-from gear_training.ledger import Ledger
-from gear_training.recipes.agent_grpo import sampling_params
+from gear.training.storage.content import ContentStore, atomic_json, digest_bytes, digest_json
+from gear.training.data.episodes import EpisodeJournal
+from gear.training.storage.ledger import Ledger
+from gear.training.recipes.agent_grpo import sampling_params
 
 
 class EpisodeFixture:

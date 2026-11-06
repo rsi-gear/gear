@@ -178,7 +178,7 @@ export class TrainingEpisodeCoordinator {
     if (!state.evalId) {
       if (!state.submitted) {
         serving()
-        await this.invoke(this.options.python, ['-m', 'gear_training.artifacts', 'materialize', '--store-root', this.store.root], { ref: task.taskRef, destination: datasetRoot }, 3_600_000)
+        await this.invoke(this.options.python, ['-m', 'gear.training.cli.artifacts', 'materialize', '--store-root', this.store.root], { ref: task.taskRef, destination: datasetRoot }, 3_600_000)
         await this.transport.download(this.store, intent.binding.policyLeaseRef)
         const endpoint = await this.transport.gateway(this.options.workspace, intent.gateway.nodePort)
         const response = await this.fetcher(`${endpoint}/v1/lease`, { headers: { Authorization: `Bearer ${intent.credential}` }, signal: AbortSignal.timeout(10_000) })

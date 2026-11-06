@@ -9,7 +9,7 @@ import type { ModelNodeConnection } from '../../../src/training/types.js'
 import { deployment } from './placement-fixture.js'
 import { trainingCommand } from '../../../src/training/cli.js'
 
-const recipe = `from gear_training import TrainingLoop
+const recipe = `from gear.training import TrainingLoop
 from helper import increment
 class Source:
     async def generate(self, ctx): return [ctx.checkpoint]
@@ -106,7 +106,7 @@ describe('four-stage script controller with real Python worker', () => {
   it('uses the existing v2 controller connection for ordinary scripts without native evaluation', async () => {
     const d = deployment('local', 'local'); d.nodes.gpu = config.node as ModelNodeConnection
     const v2 = { schemaVersion: 2, storeRoot: config.storeRoot, deployment: d, episodeTimeoutSeconds: 30,
-      evaluationGateway: { localPort: 32000, nodePort: 32000 }, hitch: { python: ['unused-hitch-python'] } }
+      evaluationBindings: { bindingsFile: join(root, 'bindings.json'), trustedReceiptSources: ['fixture-deployer'] }, hitch: { python: ['unused-hitch-python'] } }
     const file = join(root, 'existing-controller.json'), input = join(root, 'script.json')
     await writeFile(file, JSON.stringify(v2)); await writeFile(input, JSON.stringify(spec()))
     const status = await trainingCommand(['run', input, '--config', file]) as ScriptStatus

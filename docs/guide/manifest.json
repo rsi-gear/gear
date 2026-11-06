@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "product": "Gear",
-  "version": "0.1.2",
-  "updated": "2026-09-25",
+  "version": "0.2.2",
+  "updated": "2026-11-02",
   "defaultLanguage": "en",
   "languages": [
     {
@@ -23,11 +23,11 @@
       "translations": {
         "en": {
           "title": "Gear user guide",
-          "description": "Gear is an algorithm library for agent optimization that you can invoke through a Skill. Provide an existing benchmark or define your own in Harbor format, and Gear can automatically optimize both the agent's Harness and its model using evaluation feedback."
+          "description": "These pages describe Gear 0.2.2 and its project-based API. Python defines optimization policies; the durable runtime executes evaluations, candidate generation, recovery and final validation. The CLI, Python SDK, native DSH Skill and project socket use the same application service."
         },
         "zh-CN": {
           "title": "Gear 用户指南",
-          "description": "Gear 是一个可通过 Skill 调用的 Agent 优化算法库。给定现有 benchmark，或使用 Harbor 格式定义自己的 benchmark，Gear 就能根据评测反馈自动优化 Agent Harness 和模型。"
+          "description": "本指南对应 Gear 0.2.2 及其基于项目的 API。 Gear 用 Python 定义优化策略，用持久运行层执行评测、候选生成、恢复和最终验证。 CLI、Python SDK、原生 DSH Skill 和项目 socket 调用同一个应用服务。"
         }
       }
     },
@@ -37,11 +37,11 @@
       "translations": {
         "en": {
           "title": "Quick start",
-          "description": "Use Gear's Refine Skill from Codex, Claude Code, DSH, or another agent that can load Skills and call Gear. Describe the benchmark, Meta agent, rollout agent and number of rounds in natural language to start optimizing."
+          "description": "This page uses the Gear 0.2.2 `gear` CLI. Use compatible Node (22.x from 22.19, or 24+), and Python 3.10+; development and CPU tests use Python 3.12. Linux algorithm isolation also requires bubblewrap, socat and ripgrep; macOS uses the system sandbox. Hitch/Harbor tasks need their runtime and Docker."
         },
         "zh-CN": {
           "title": "快速开始",
-          "description": "在 Codex、Claude Code、DSH，或其他能够加载 Skill 并调用 Gear 的 Agent 中使用 Refine Skill。用自然语言说明 benchmark、Meta Agent、rollout Agent 和优化轮数，即可开始优化。"
+          "description": "本页使用 Gear 0.2.2 的 `gear` CLI。需要兼容 Node（22.19+ 的 22 系列或 24+）、Python 3.10+；开发和 CPU 测试使用 Python 3.12。Linux 的算法隔离还需要 bubblewrap、socat、ripgrep；macOS 使用系统隔离机制。Hitch/Harbor 任务另需其运行环境及 Docker。"
         }
       }
     },
@@ -64,12 +64,12 @@
       "file": "example-algorithm.md",
       "translations": {
         "en": {
-          "title": "Example 2: customize your evolve algorithm",
-          "description": "Customize Gear's algorithm components with a small elitist selector, then study a Marketing experiment using Gear's GEPA variant to optimize the Harness through shared failure diagnosis and staged evaluation."
+          "title": "Customize an algorithm in Python",
+          "description": "The author API is `gear.algorithms`. GEPA and RandomSearch share six contracts: parents, sampling, proposal, ranking, stopping and stage composition. GEPA is an instance of these common module contracts."
         },
         "zh-CN": {
-          "title": "案例二：定制进化算法",
-          "description": "定制 Gear 的算法组件：先实现一个最小精英选择器，再研究使用 GEPA 算法的 Marketing 实验。实验采用 Gear 的 GEPA 变体，通过共享失败诊断与分阶段评测优化 Harness。"
+          "title": "用 Python 修改算法",
+          "description": "公开作者 API 是 `gear.algorithms`。GEPA 和 RandomSearch 都由父代、采样、提案、排名、停止和阶段编排六个模块组成；GEPA 是公共模块合同的实例。"
         }
       }
     },
@@ -78,12 +78,12 @@
       "file": "meta-agents.md",
       "translations": {
         "en": {
-          "title": "Connect your Meta agent",
-          "description": "Choose a Meta host independently of the Target model. Both connection paths use the same bundled Refine Skill and restricted candidate/evidence protocol."
+          "title": "Skill and Meta integration",
+          "description": "The operator assistant manages a project through the bundled `refine` Skill. The Meta profile in `gear.yaml` performs candidate generation. These are separate roles and may use different models."
         },
         "zh-CN": {
-          "title": "连接 Meta Agent",
-          "description": "Meta 宿主和 Target 模型可以分别选择。两条接入路径使用同一个随包 Refine Skill，以及受限的候选和证据协议。"
+          "title": "Skill 与 Meta 接入",
+          "description": "操作员助手通过随包 `refine` Skill 管理项目；执行候选生成的 Meta 由 `gear.yaml` 的 profile 选择。这两个角色可以使用不同模型。"
         }
       }
     },
@@ -93,11 +93,11 @@
       "translations": {
         "en": {
           "title": "Prepare a Target harness",
-          "description": "A Target is a buildable, exact Git revision. Gear edits the declared Harness tree while a fixed carrier supplies the runtime and evaluation entrypoint."
+          "description": "`gear init --target dsh` or `gear init --target pi` creates a native editable carrier. `target.path` points to its resource directory. Select the Target and the candidate-generating Meta profile independently."
         },
         "zh-CN": {
           "title": "准备 Target Harness",
-          "description": "Target 是可构建的确切 Git 版本。Gear 修改声明的 Harness 目录，固定载体提供 runtime 与评测入口。"
+          "description": "`gear init --target dsh` 或 `gear init --target pi` 生成原生可编辑载体；项目中的 `target.path` 指向其资源目录。Target 与执行候选生成的 Meta profile 分别选择。"
         }
       }
     },
@@ -106,12 +106,12 @@
       "file": "datasets.md",
       "translations": {
         "en": {
-          "title": "Tasks and evaluations",
-          "description": "Prepare the task set before starting an evolution. Gear freezes dataset content and evaluation settings so a later round cannot silently change the experiment."
+          "title": "Tasks and scoring",
+          "description": "`gear init` creates editable `tasks.csv` and `benchmark.yaml` files. CSV's base columns are `id,instruction,expected,family,split`; JSONL is also supported. Each task explicitly selects `seed` or `held_out`. A family or identical task content cannot span both partitions."
         },
         "zh-CN": {
-          "title": "任务与评测",
-          "description": "开始进化前先准备任务集。Gear 固定数据内容和评测配置，后续轮次不能静默改变实验条件。"
+          "title": "任务与评分",
+          "description": "`gear init` 生成可编辑的 `tasks.csv` 和 `benchmark.yaml`。CSV 的基础列为 `id,instruction,expected,family,split`，也支持 JSONL。每题显式指定 `seed` 或 `held_out`；同一 family 或相同任务内容不能跨两个分区。"
         }
       }
     },
@@ -120,12 +120,12 @@
       "file": "evolutions.md",
       "translations": {
         "en": {
-          "title": "Run and manage evolutions",
-          "description": "Start a new experiment, inspect its state, then explicitly continue, repair or publish the result. The examples below are DSH Skill invocations."
+          "title": "Runs and recovery",
+          "description": "Commands accept `--project DIRECTORY` and `--json`. A standalone evaluation also has its own run and budget ledger."
         },
         "zh-CN": {
-          "title": "运行与管理进化",
-          "description": "创建新实验、检查状态，再明确选择继续、修复或发布。以下命令是 DSH 的 Skill 调用。"
+          "title": "运行与恢复",
+          "description": "所有命令可使用 `--project DIRECTORY` 和 `--json`。一次独立 evaluate 也有自己的 run 和预算账本。"
         }
       }
     },
@@ -134,12 +134,12 @@
       "file": "results.md",
       "translations": {
         "en": {
-          "title": "Understand results and evidence",
-          "description": "Read coverage and scoring together. A useful improvement claim identifies the exact versions, comparable tasks and the decision that followed."
+          "title": "Read a report",
+          "description": "```sh gear report RUN_ID --json ```"
         },
         "zh-CN": {
-          "title": "理解结果与证据",
-          "description": "一起检查覆盖率和分数。一个有用的改进结论应明确版本、可比任务，以及随后作出的决定。"
+          "title": "阅读报告",
+          "description": "```sh gear report RUN_ID --json ```"
         }
       }
     },
@@ -149,11 +149,11 @@
       "translations": {
         "en": {
           "title": "Configuration reference",
-          "description": "Configure the first evolution explicitly. Gear seals experiment identity at admission and revalidates it when continuing."
+          "description": "`gear init` creates project files. Named profiles contain execution settings; credentials stay in the provider's supported authentication location. Example `gear.yaml`:"
         },
         "zh-CN": {
           "title": "配置参考",
-          "description": "首次创建 evolution 时明确配置。Gear 在 admission 封存实验身份，continue 时重新核验。"
+          "description": "`gear init` 生成项目文件；执行配置在命名 profile 中，凭据保留在 provider 支持的认证位置。 项目 `gear.yaml` 示例："
         }
       }
     },
@@ -162,12 +162,12 @@
       "file": "troubleshooting.md",
       "translations": {
         "en": {
-          "title": "Troubleshoot a run",
-          "description": "Inspect the existing evolution and evaluation IDs before starting replacement work. Preserve the evidence that explains the failure."
+          "title": "Troubleshooting",
+          "description": "Save the run ID and call `gear report RUN_ID --json` first. Do not edit journals, delete ownership locks or replace sealed files to bypass recovery checks."
         },
         "zh-CN": {
-          "title": "排查运行问题",
-          "description": "启动替代工作前，先检查现有 evolution 与 evaluation ID，保留能够解释故障的证据。"
+          "title": "问题排查",
+          "description": "先保存 run ID 并执行 `gear report RUN_ID --json`。不要通过改 journal、删除锁或替换封存文件绕过恢复校验。"
         }
       }
     },
@@ -187,6 +187,7 @@
     }
   ],
   "assets": [
+    "assets/coding-results.json",
     "assets/evolution-search-example.zip",
     "assets/marketing-evolution-overview.png",
     "assets/marketing-evolution-overview.svg",
@@ -194,6 +195,7 @@
     "assets/marketing-harness-evolution.svg",
     "assets/marketing-harness-example.zip",
     "assets/marketing-results.json",
+    "assets/support-results.json",
     "assets/marketing-staged-search.png",
     "assets/marketing-staged-search.svg",
     "assets/source-docs-dsh-meta-context-offloading-spec-zh-cn-md.txt",

@@ -2,7 +2,7 @@ import json
 import unittest
 from dataclasses import dataclass, field
 
-from gear_training.wire import complete_tool_reply
+from gear.training.data.wire import complete_tool_reply
 
 
 @dataclass(frozen=True)

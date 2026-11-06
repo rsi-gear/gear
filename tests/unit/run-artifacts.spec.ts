@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { parseRunOutputManifest, parseRunOutputExport } from '../../src/evaluator/run-artifacts.js'
+import { parseRunOutputManifest, parseRunOutputExport } from '../../src/adapters/hitch/run-artifacts.js'
 
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`

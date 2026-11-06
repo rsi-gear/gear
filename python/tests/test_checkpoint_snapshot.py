@@ -4,9 +4,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from gear_training.content import ContentStore, ContractError
-from gear_training.export import commit_checkpoint, seal_directory
-from gear_training.ledger import Ledger
+from gear.training.storage.content import ContentStore, ContractError
+from gear.training.storage.snapshots import commit_checkpoint, seal_directory
+from gear.training.storage.ledger import Ledger
 
 
 class CheckpointSnapshotTests(unittest.TestCase):
@@ -26,7 +26,7 @@ class CheckpointSnapshotTests(unittest.TestCase):
 
     def test_commit_retains_pending_snapshot_even_if_backend_directory_changes(self):
         (self.trainer / "state.pt").write_bytes(b"later mutable backend state")
-        with patch("gear_training.export.seal_directory", return_value=self.hf) as seal:
+        with patch("gear.training.storage.snapshots.seal_directory", return_value=self.hf) as seal:
             checkpoint, commit = commit_checkpoint(self.store, self.ledger, **self.kwargs)
         seal.assert_called_once_with(self.store, self.root / "hf", serving=True, verify_finite=True)
         body = self.store.read_json(checkpoint)

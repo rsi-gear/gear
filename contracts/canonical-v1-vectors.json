@@ -1,0 +1,92 @@
+[
+  {
+    "value": null,
+    "canonical": "null",
+    "digest": "sha256:8cdd2a67971cd741693ad7829c13034a9e30ab92343101a0ecd9ba7bee658ca1"
+  },
+  {
+    "value": true,
+    "canonical": "true",
+    "digest": "sha256:5026fdaaaca891994f496c9d11b481b050fd021b387e017d7aa983688eb3a96e"
+  },
+  {
+    "value": false,
+    "canonical": "false",
+    "digest": "sha256:16b72397d092fbf0e29e60fa5de5b42bd31b7366b63adb61dbe2e132a73c349d"
+  },
+  {
+    "value": 0,
+    "canonical": "n0000000000000000",
+    "digest": "sha256:cf66b105be43a190ca287ef9e4676c0740057038afa2cbb60d8ac9210253ae8f"
+  },
+  {
+    "value": -0.0,
+    "canonical": "n0000000000000000",
+    "digest": "sha256:cf66b105be43a190ca287ef9e4676c0740057038afa2cbb60d8ac9210253ae8f"
+  },
+  {
+    "value": 1,
+    "canonical": "n3ff0000000000000",
+    "digest": "sha256:2af6e953dea84555b90acb1386780157d0402d551decdecd22b18e1121542f19"
+  },
+  {
+    "value": -1,
+    "canonical": "nbff0000000000000",
+    "digest": "sha256:375e2f84a051d97e3b19f106f7b13efa52abae9450d69cf5b144eb5d2ebbae1e"
+  },
+  {
+    "value": 0.1,
+    "canonical": "n3fb999999999999a",
+    "digest": "sha256:1ac7d09b9a6c89c29a68bf629528cde6cb28702f3c8654bdd3779ba8aa4e2078"
+  },
+  {
+    "value": 1e-07,
+    "canonical": "n3e7ad7f29abcaf48",
+    "digest": "sha256:67e468ed4b4addf904461622e02d28d4e64ad0b14d13133701e240d4e6955234"
+  },
+  {
+    "value": 5e-324,
+    "canonical": "n0000000000000001",
+    "digest": "sha256:8bb6afa9f505944090f4e4a708757677fd942da3a9a9a165ba7949b2248c3dac"
+  },
+  {
+    "value": 9007199254740991,
+    "canonical": "n433fffffffffffff",
+    "digest": "sha256:851671b43332d671a7fd5244a48778c04b79a619b8ff4619d26890286daa8618"
+  },
+  {
+    "value": [],
+    "canonical": "[]",
+    "digest": "sha256:6cd939dbc5d414ec009f04b408a4eec3fe36f508fd619c947196e9c61c4a8dc4"
+  },
+  {
+    "value": {},
+    "canonical": "{}",
+    "digest": "sha256:fd428a7d52de9c90277eff1546d71aaabc7905cfe2b8ee21604c00fbd2fa5803"
+  },
+  {
+    "value": [
+      null,
+      false,
+      1,
+      ""
+    ],
+    "canonical": "[null,false,n3ff0000000000000,\"\"]",
+    "digest": "sha256:cfa67dd733f6557d68a510591ee37f73cf5a2dba53c1b654dbfe1b7ad5531afb"
+  },
+  {
+    "value": {
+      "中文": "é\n\t\u0001",
+      "𐀀": {
+        "z": 1,
+        "a": [
+          -0.0,
+          0.1
+        ]
+      },
+      "": "😀"
+    },
+    "canonical": "{\"中文\":\"é\\n\\t\\u0001\",\"\":\"😀\",\"𐀀\":{\"a\":[n0000000000000000,n3fb999999999999a],\"z\":n3ff0000000000000}}",
+    "digest": "sha256:17fa07e04b17b835bf7ba9a229badad79facdf05c9a6ef3d02605aae6ea8c7c7"
+  }
+]

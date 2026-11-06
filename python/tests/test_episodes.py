@@ -4,9 +4,9 @@ import time
 import unittest
 from unittest.mock import patch
 
-from gear_training.content import ContractError, digest_bytes
-from gear_training.episodes import EpisodeJournal
-from gear_training.samples import build_episode, seal_batch
+from gear.training.storage.content import ContractError, digest_bytes
+from gear.training.data.episodes import EpisodeJournal
+from gear.training.data.samples import build_episode, seal_batch
 from episode_fixture import EpisodeFixture
 
 
@@ -81,7 +81,7 @@ class EpisodeJournalTest(unittest.TestCase):
 
     def test_expired_controller_contact_fences_generation_and_cannot_be_renewed(self):
         f = self.f; intent = f.publish()
-        with patch("gear_training.ledger.time.time", return_value=time.time() + 20):
+        with patch("gear.training.storage.ledger.time.time", return_value=time.time() + 20):
             with self.contract("controller-contact-expired"): f.ledger.assert_serving("batch-0")
             self.assertTrue(f.journal.list(renew=True)["entries"][0]["cancelRequested"])
         self.assertEqual(f.ledger.lease("batch-0")["state"], "draining")

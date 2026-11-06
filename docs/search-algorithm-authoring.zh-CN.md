@@ -1,115 +1,180 @@
-# 编写和验证搜索算法策略
+# Python 算法开发索引
 
-Gear 将搜索分为算法流程、决策策略和执行层。当前内置流程是 failure-cluster GEPA；父代选择提供公开策略接口。local/bridge/global/held-out 的阶段顺序、任务 scope 构造和最终晋级规则仍属于该内置算法。
+公开入口是 `gear.algorithms`。算法返回决策，TypeScript 运行层验证、持久化并执行这些决策。算法不能直接提交评测、查询 held-out 或更新 champion。
 
-## 从哪里开始
+## 修改位置
 
-| 入口 | 用途 |
-| --- | --- |
-| `rsi-gear/search/api` | 组件注册、父代策略合同、随机源、journal 和 provider 类型 |
-| `rsi-gear/search/presets/failure-cluster-gepa` | 内置搜索流程、默认配置、两种父代策略 |
-| `rsi-gear/search/testing` | toy 数据、内存 provider/journal、策略合同检查 |
+每套算法都包含相同的六个文件。GEPA 和 RandomSearch 是公共合同的两个实例，彼此不继承策略实现。
 
-原 `rsi-gear/search` 入口继续兼容，包括已有的低层工具。新扩展应优先使用上表入口；`runtime.ts` 等内部模块不作为策略插件的调用接口。
+| 要修改的行为 | 公共合同 | GEPA 实现 | RandomSearch 实现 |
+| --- | --- | --- | --- |
+| 父代和候选配额 | `ParentPolicy` | `gepa/parents.py` | `random_search/parents.py` |
+| 任务范围和评分权重 | `TaskSampler` | `gepa/sampling.py` | `random_search/sampling.py` |
+| 消费诊断、规划候选 | `ProposalPlanner` | `gepa/proposal.py` | `random_search/proposal.py` |
+| 在完整共同范围比较候选 | `CandidateRanker` | `gepa/ranking.py` | `random_search/ranking.py` |
+| 阶段顺序与晋级宽度 | `SearchAlgorithm` | `gepa/algorithm.py` | `random_search/algorithm.py` |
+| 结束条件 | `StopRule` | `gepa/stopping.py` | `random_search/stopping.py` |
 
-可运行示例在 [`examples/parent-policy`](../examples/parent-policy)。它是第三种父代策略：先均匀选择有效 scope，再均匀选择其中已通过证据和探索约束的父代。它只依赖公开入口。
+表中路径相对于 [`python/gear/algorithms`](../python/gear/algorithms)。合同在 [`contracts.py`](../python/gear/algorithms/contracts.py)，可复用流程在 [`workflow.py`](../python/gear/algorithms/workflow.py)。新增算法可以组合这些合同，也可以直接实现 `step`，不需要修改 TS 的操作类型或状态机。
 
-仓库中运行：
+默认 Meta 的提示词、输入组织、结果结构与解析位于
+[`meta.py`](../python/gear/algorithms/meta.py)；经验记录对算法 payload 的解释位于
+`experience.py`。TS 通过现有 Python policy 通道执行，负责授权、模型调用、预算和持久化。
+
+算法自定义诊断或生成时，在现有 `Operation.payload` 中传入 `meta`，无需修改公共 Meta
+代码、TS 或 SDK。例如，Python 算法可以发出：
+
+```python
+Operation(
+    "diagnose_seed", candidate_id="anchor", task_ids=("seed",),
+    payload={"meta": {"prompt": "Explain the strongest improvement opportunity.",
+                      "schema": {"type": "string"}}},
+)
+```
+
+`meta.prompt` 是算法指令，`meta.schema` 是算法响应的 JSON Schema；通过已有 input.json
+交给模型，不把长指令写进进程控制管道。执行结果使用固定信封
+`{"declined": bool, "data": ...}`；算法在后续 `step` 中读取 `result.data["data"]`，
+自行检查字段、候选范围和业务含义，再决定下一步。Schema 指导模型输出，不能代替算法校验。
+未提供 `meta` 时保留现有 GEPA/RandomSearch 的默认诊断合同。响应格式中的文档内
+`$ref` 会随嵌套位置调整；`const`、默认值和示例等实际数据保持原样。
+
+生成结果的可选 `OperationResult.candidate_change` 提供封存候选相对父代的真实文件差异，
+与模型自述分开；执行层复用已有 `targetDiff`，在 submit/恢复 inspect 时重建。
+Python 可以据此决定是否评估、拒绝或继续修改；字段缺失或 `omitted_patches > 0`
+表示无法完整检查，算法需显式处理。算法拒绝不是 `environment_failed` 评测证据。
+
+以 [#95](https://github.com/rsi-gear/gear/pull/95) 的历史候选选择和
+[#99](https://github.com/rsi-gear/gear/pull/99) 的候选筛选检查上述扩展边界：具体字段、
+提示词、结果校验和筛选规则仅写在独立 Python 测试算法里，生产代码不识别算法名称或
+`base_candidates`。验收还替换了诊断字段名，验证无需修改公共 Meta 实现。
+这不合入两个 PR 的算法；历史源码/轨迹的授权读取等新执行能力仍属于基础设施工作。
+
+## 一个文件替换策略
+
+保存为可以导入的 `my_policy.py`：
+
+```python
+from gear.algorithms import ParentInput, ParentPlan, RandomSource
+
+
+def select_parent(view: ParentInput, rng: RandomSource) -> ParentPlan:
+    if not view.eligible:
+        return ParentPlan.abstain("no eligible parent")
+    return ParentPlan.single(
+        rng.choice(view.eligible, key="parent"),
+        count=view.candidate_limit,
+    )
+```
 
 ```sh
-npm ci
-npm run test:search:package
+python -m pip install rsi-gear
+python -m gear algorithm test my_policy:select_parent
+python -m gear algorithm test gepa
+python -m gear algorithm test random-search
 ```
 
-这个命令构建真实 tgz，在临时外部项目安装它，对示例执行 TypeScript 检查，再运行完整 toy round、中断恢复和终态重放。示例不需要模型密钥、Hitch 或 Docker。
+CPU toy 检查不需要 Node、模型凭据、Docker、Hitch 或 GPU。真实项目通过同一套策略运行：
 
-独立使用时复制示例目录，在其中安装 `rsi-gear` 的构建产物，然后执行 `npm start`。
+```python
+from gear import Project
+from gear.algorithms import GEPA
+from my_policy import select_parent
 
-## 算法流程
-
-```text
-读取并验证冻结的配置、实现、seed/held-out 数据身份
-建立或读取 seed archive
-根据父代策略所需能力准备只读 seed 视图
-调用 ParentSelectionPolicy，校验并冻结父代分配
-为每个父代诊断失败 family，分配候选工作计划
-生成候选并验证精确代码版本、工作计划消费凭据
-local：在指定 scope 中检查候选
-bridge：扩大共同评测范围，选择唯一全局提名
-global-seed：与固定 champion 做全量 seed 比较
-held-out：对同一个提名执行最终晋级检查
-提交研究档案和经过校验的 champion 更新
+project = Project.open(".")
+run = project.refine(algorithm=GEPA(parent_policy=select_parent), rounds=1)
+print(run.report.summary)
 ```
 
-`engine.ts` 表达上述阶段安排；`runtime.ts` 执行评测、诊断、生成、证据修复、预算结算、恢复和提交。`SearchJournal` 将这些操作与文件存储分开。生产 `SearchStore` 和测试 `MemorySearchStore` 共用 journal 与预算账本逻辑，生产写入仍要求 evolution 的单写者锁。
+Notebook 使用 `await project.arefine(...)`。同步方法在已有事件循环中明确报错。`check/evaluate/refine/resume/cancel/report/export` 都有对应的 `a` 前缀异步方法。
 
-## 父代策略合同
+真实运行需要安装 npm runtime 并完成 `gear setup` 与 provider profile 配置；SDK 会自动调用同一 application 层。只有离线策略测试可以单独使用基础 wheel。
 
-策略由 `{ ref, requiresChampion, select }` 组成。
+## 策略输入和输出
 
-- `ref` 使用现有 `ComponentRef`：组件种类为 `parent-selection`，记录包名、版本、实现摘要和配置摘要。
-- `requiresChampion` 为 true 时，框架在选择前合入已提交的 seed 补全证据，并准备合格 champion 的只读视图。它不允许策略绕过证据完整性或探索约束。
-- `select(input, random)` 是同步纯决策函数，返回 `allocations`、`parentProbabilities` 和 `reasonCodes`。
+`ParentInput.eligible` 中每个选项属于一个完整 seed scope，并携带任务分数、scope 权重和候选内容身份。`Selection` 保存完整概率分布、随机索引和输入摘要。允许多批分配，也允许带理由弃权；不能把未选中的父代从概率记录中删去。
 
-输入是分离并递归冻结的 seed 投影：archive 摘要、round ID、候选配额、随机种子，以及每个 scope 的合格父代。它不包含原始轨迹、held-out 数据、store 或 champion 写入函数。
+`SamplingPlan` 保存确切任务集合及权重。权重必须非负、覆盖整个 scope、总和为一；扩大评测时不能丢弃先前要求保留的任务。`RankingInput` 只比较相同任务和重复槽位。缺失、重复或评分/环境失败的槽位使候选不完整；有效零分参与比较。
 
-scope/parent 的 `probability` 是内置 GEPA 的参考权重。合格父代的参考权重可以为零；自定义策略可以探索这些父代。最终概率必须与返回分配相容，涉及的 parent/scope 必须来自输入。
+`Budget.generation_requests_remaining` 和 `generation_tokens_remaining` 是扣除持久预约后的 Meta 余量，`None` 表示该维度没有总上限。`generation_batch_capacity` 是当前可完整预约的 Meta 操作数，`None` 表示不受总额度限制。默认流程在额度耗尽时停止新的诊断/生成，但仍可提名已有完整评测的候选；提案数受批次容量约束。core 独立校验，不信任自定义算法自行限制调用。
 
-框架会检查正整数配额、总候选上限、父代与 scope 对应关系、有效且归一化的概率、随机索引和解释。所有检查通过后，才分配 batch ID 并冻结结果。策略可以显式返回空分配、空概率及弃权理由。
+默认 GEPA 按任务前沿成员分配父代概率，去除可由其他成员覆盖的冗余前沿，支持 `ScopedFrontier` 的多批采样及 champion 混合。local 使用 8% local、4% shared、3% cross 的向上取整数量及 0.6/0.25/0.15 分桶权重；bridge 保留既有 scope 后分层补到 40%，global 使用完整 seed。容量不足会给出原因，不偷偷扩大预算。配置这些规则可直接替换 callable dataclass：
 
-使用 `random.float(index)` 或 `random.weighted(weights, index)` 获取确定性随机数。索引由策略明确分配，没有共享的可变随机游标。不要使用 `Math.random()`、当前时间或未冻结的全局配置参与决策。
+```python
+from gear.algorithms import GEPA
+from gear.algorithms.gepa.parents import ScopedFrontier
+from gear.algorithms.gepa.sampling import GEPASampler
 
-## 注册与配置
-
-参考示例中的完整配置校验。最小注册形式为：
-
-```js
-const components = new ComponentRegistry()
-components.registerParentSelectionPolicy(ref.id, implementation, factory)
-settings.search.parentPolicy = ref
-const search = new FailureClusterSearch(store, provider, diagnosis, hooks, components)
+algorithm = GEPA(
+    parent_policy=ScopedFrontier(batch_count=2, champion_probability=0.25),
+    sampler=GEPASampler(bridge_ratio=0.5),
+    promotion_widths=(2, 1),
+)
 ```
 
-在 DSH 插件中，向 `ctx.evolutionComponents` 注册相同组件，并设置 `search.parentPolicy`。`RefineService` 会将这个 registry 传给搜索流程和修复入口。注册返回卸载函数。
+`promotion_widths` 为每次阶段转换指定一个正整数；GEPA 默认 `(2, 1)` 分别限制每个父代批次进入 bridge 和 global 的候选数。每批候选在同一 local scope 排名，最多两个扩评，再在同一 bridge scope 取最多一个。扩评不要求分数严格高于父代，但会排除 `RankingPlan.disqualified`；任一参与者不完整时整批不晋级。最终接受规则由运行层独立执行。
 
-`parentPolicy` 覆盖旧的父代采样预设。新策略参数写入它自己的 `ref.config`，由策略工厂验证；不需要扩充 Gear 的枚举或公共证据 schema。其余 `SearchConfig` 字段仍配置 GEPA 流程。
+晋级宽度、父代批数和整个 run 的 `budget.max_candidates` 生成上限相互独立；上例两个父代批次分别使用 `(2, 1)`，不能据此推导整个 run 只评测一个 global 候选。完整的单批 4 → 2 → 1 YAML 配置与 170/1,700 次候选执行量的适用条件见[算法示例](guide/zh-CN/example-algorithm.md)。CLI 使用 `algorithm: {name: gepa, options: {promotion_widths: [2, 1]}}`；SDK 使用 `GEPA(promotion_widths=(2, 1))`。两种入口都把宽度保存到算法配置并在 admission 时冻结，恢复不重新读取可变配置。
 
-省略 `parentPolicy` 时保留已有行为：
+RandomSearch 使用均匀父代抽样及完整 seed 评测，复用通用证据计算和有限运行检查。它不会导入 GEPA 的策略模块。
 
-| 原配置 | 内置策略 |
-| --- | --- |
-| `scoped-frontier-membership-v1` + `parentBatchCount` | 按 scope/frontier 权重选父代并分配批次 |
-| `epsilon-greedy-gepa-v1` + `championProbability` | champion 与 GEPA 混合，每个候选独立抽样 |
+## 改整套流程
 
-现有 archive 的 `parentMixture` 保留兼容；新策略的身份、输入摘要、实际概率和理由记录在 `research.parents.policy`，无需向 archive 添加策略专用字段。`archive.parentProbabilities` 仍是档案的内置投影，不能用于替代自定义策略的实际选择概率。
+```python
+from gear.algorithms import AlgorithmState, Decision, Operation, SearchView
 
-## 哪些规则由框架保证
 
-父代策略不负责评测执行、证据真伪、缓存复用、generation receipt、预算结算、恢复或 CAS。更换策略不会解除 seed/held-out 隔离、固定提名、保护任务和显式晋级授权。
+class StopAfterInspection:
+    def step(self, view: SearchView, state: AlgorithmState) -> Decision:
+        return Decision(
+            state,
+            (Operation("stop", rationale="inspection complete"),),
+            "inspection complete",
+        )
+```
 
-`CandidateGenerator`、`CandidateAssessor`、`CandidateSelector`、`Judge` 和旧 `PromotionPolicy` 属于旧搜索路径。staged GEPA 使用自己的候选计划、指标和晋级逻辑，不再解析不使用的这些注册组件。`TaskSampler` 和 `RolloutProvider` 仍用于共享的任务计划与运行适配，`parent-selection` 则用于 staged GEPA。
+`step` 必须是同步纯决策。状态只能包含 JSON；操作只有 `diagnose_seed`、`generate_candidate`、`evaluate_seed`、`nominate`、`stop`。模型诊断通过显式操作返回，不能在策略内部调用网络。最终提名后，运行层按 admission 时冻结的规则执行 gate，不把 held-out 结果反馈给策略重新挑选。
 
-## 测试、身份与恢复
+`Decision.research` 可选附带 `ResearchRecord(kind, scope, task_ids, candidate_ids, data)`，kind 为 `scope`、`ranking` 或 `parents`。它用于独立研究档案，不产生操作权限。runtime 检查任务和候选属于当前 seed view，每次 decision 最多 64 条、JSON 总计最多 2 MiB。两套内置算法通过共享流程自动记录范围、排名和父代抽样；自定义算法不提供记录时，事实档案仍保存候选、证据和操作。
 
-生产接入必须满足执行层合同：
+scope 的 `data.weights` 必须明确覆盖任务集合，才能在档案中生成同范围比较；可同时保存 stage、round 与 sampling 信息。其他 data 保持算法自述，不能据此替代真实 receipt。公共纯投影 `algorithms/research.py` 计算档案的描述性比较，不调用算法或重新抽样；每套算法仍只需维护同样的六个模块。读取命令与字段见[报告指南](guide/zh-CN/results.md)。
 
-- 默认评测适配器用完整数据集的固定请求解析 `evaluationIdentity`，将实际 `provider`、`effectiveConfigDigest` 及可用的 `invocationFingerprint` 合入 task universe 的条件身份。首次执行前持久化 cohort；同一实例和重启后的新实例都会重新解析配置。旧 cell、已完成 batch 和待执行 batch 都必须通过当前配置核验，不能混用不同配置下的成对证据。
-- Meta 的 seed 证据可能汇总多个物理评测，汇总摘要不能与 Hitch 的 `parent.evalId` 直接比较。默认适配器通过 `resolveVerifierRun` 从已验证的 cell 来源恢复原始 eval、trial 和 attempt；独立重复评测中的物理 attempt 通常仍为 1。提供自定义汇总证据的轨迹读取器也应实现此解析，并验证 run 属于指定 seed 投影，不能直接信任待验证 verifier 自报的 parent。
-- 对提交前无法解析身份的适配器，可以实现 Gear 的 `submittedEvaluationIdentity`：从已有 reservation 只读取得实际 `effectiveConfigDigest` 和不含候选、子集的 `cohortDigest`。Gear 在接纳结果前核验并冻结共享配置，后续 seed/held-out 的提交必须属于同一 cohort。Hitch daemon 复用已有 `eval inspect` 的 `submission.execution` 和 `submission.request`，共同身份还包含 setup timeout、agent 参数及 Gear 的执行限制；数据集投影、候选 commit 和重复次数由各自的请求身份核验。没有新增 CLI 命令、参数或协议。旧 cohort 的证据仍有效；新提交配置改变时拒绝配对并取消该 reservation。两种身份机制都不可用时才拒绝接纳。
-- `inspectEvaluation` 可以返回 `partially-complete` 和已持久化的 `cells`，前提是剩余批次均确定未启动，且不存在未决提交。到期恢复保留这些结果并结算时间预算终态；未到期时允许通过原操作继续剩余批次。存在运行中或状态不明的批次时仍须返回 `running` 或 `unknown`，不能将它们当作未启动。
-- 首次 baseline 执行失败、取消或缺少完整有效证据时，round 保持待补证状态，不写入终态或父代 archive，也不允许 batch 进入下一轮。通过原 round 的评测修复仅补缺失或无效 cells，保留有效成绩（包括零分），再继续同一轮。首次 baseline 因冻结预算耗尽结束时仍保存失败终态，不安装不完整 archive；历史证据补评在预留前耗尽预算时同样保存终态，不修改已提交的 archive，也不阻塞后续补评 ID。
-- 仅当搜索或 `candidateGeneration.budget` 显式配置 token/request 限额时，要求 `MetaSessionController.capabilities.aggregateGenerationBudget` 为 true。DSH 有独立累计计量，不要求 context offloading；开启 offloading 时，压缩请求也计入预算。Skill 没有对应的累计用量执行能力，可以省略这两个限额运行；显式限额仍在创建 evolution 前被拒绝，不会自动降级。
-- `budgets.round` 与 `budgets.evolution` 的 `maxGenerationTokens`、`maxGenerationRequests` 分别可选，任一层配置即生效，显式 `0` 表示耗尽。省略字段不生成 workplan 限额，`remainingBudget` 对应字段为 `null`。其它评测、诊断、修复与时间预算仍为必填。
-- 对已配置的生成资源，账本保守扣除完整、可强制执行的 reservation；该数值是费用上界，不是实测用量。重试共享该额度，不通过重建 session 重新获得预算。`GeneratedCandidate.usage` 字段缺失表示未计量；有硬限额时必须提供计费值。无该限额时账本对应资源不计费，不能将内部零值解释成模型零消耗。
-- 普通 DSH 在请求前持久化 reservation，按模型反馈的实际用量结算；缺失反馈时保留保守预留。必要时缩小单次输出上限，归因记录保留该实际值，只有控制器确实施加的上限调整被允许，其它模型、采样或工具配置漂移仍会拒绝。
-- 生成期间中断后，`initialize` 和 `resumeSearchRound` 均检查原 attempt 的 `MetaExecutionState`。可恢复 handoff 保留原 execution ID、attempt、父代 checkpoint、workspace 和截止时间；其它执行必须先确认取消或确认 session 不存在，再记录终态。取消无法确认时保留可见的未决状态，不能仅凭旧 session ID 报告仍在运行。
+## 身份与恢复
 
-`checkParentSelectionPolicy(policy, input)` 使用相同输入和随机种子重复执行，检查确定性、输入不变、合法输出与解释。用 `createToyUniverse`、`createToyScope`、`createToyEvidence` 构造边界案例，用 `createToySearch` 和 `MemorySearchStore` 验证完整运行。
+自定义算法若有非默认构造参数，在自己的类中提供 `configuration` 字典，键对应构造参数，
+例如 `self.configuration = {"result_key": result_key}`。SDK 据此重建算法，不会自动复制
+实例的所有属性；配置和依赖声明都只需写在算法自己的 Python 文件中。
 
-同一个 round 的父代决定一旦持久化，恢复不再调用策略重新抽样。示例会在写入父代决定后模拟中断，通过 `checkpoint()` 建立新的内存 journal，验证继续执行与终态重放。
+SDK 冻结命名函数/类所在文件、声明的 `source_dependencies` 和 JSON 策略配置。局部函数、lambda、不可序列化对象会被拒绝。依赖其他本地模块时，在算法或策略上声明 `(module_name, file_path)` 列表；每个文件的真实字节进入身份。
 
-`implementationFromFiles` 对实际发布文件字节计算摘要；应传入策略模块、所有本地实现依赖和包 manifest，不能只对版本字符串做 hash。内置搜索另外记录协议版本和实现文件摘要，策略引用进入冻结的 evolution 身份。
+依赖安装包时，用 `package_dependencies = ("distribution-name", ...)` 声明完整依赖闭包。SDK 记录安装版本及文件内容摘要，worker 在握手和每次决策前核对；执行环境缺包或字节不同会拒绝运行。editable 依赖改用 `source_dependencies`。这是身份声明，不会自动安装或升级运行环境里的软件包。
 
-实现或配置变化必须创建新 evolution。历史终态仍可以读取；尚未完成的旧实现不会悄悄采用新规则继续执行。TypeScript 源文件运行与编译产物运行的字节身份也不同，不应混用恢复环境。
+新 wire schema 的单一来源是 [`contracts/algorithm-v1.schema.json`](../contracts/algorithm-v1.schema.json)。通过 `npm run generate:contracts` 生成两种语言的传输类型。作者继续使用公开 dataclass，不手写协议消息。
 
-新增策略的验收标准：只新增策略实现、配置和测试，不修改 `engine.ts`、恢复代码或公共证据结构；安装真实包后，仅依靠公开入口即可通过合同检查、完整 round 与中断恢复。
+stdio 协议每条请求/响应固定上限为 64 MiB，按完整 UTF-8 JSON envelope 加末尾换行计数；握手要求 TS 和冻结 Python worker 的上限完全一致。传输保留完整 evidence、raw metrics、completed 与 state，单条 verifier 的 16 KiB 上限不代表累计消息一定可容纳。任意算法 JSON 状态仍可超限，大消息也受内存和原有决策超时约束。
+
+协议源码属于冻结实现身份。升级 runtime 不会升级已有 run 的冻结 worker；新版 64 MiB runtime 对旧 4 MiB worker 会报告 `algorithm-handshake-mismatch`，本次改动本身不恢复已有 run。保留旧证据并使用兼容 runtime、新建 run，或单独审查身份迁移方案，不能重新冻结已有源码或改 journal 身份来绕过校验。
+
+生产 worker 只读取冻结源码、批准的 Python 运行依赖和独立 scratch，禁用网络。决策、状态和 operation IDs 在副作用前一次保存。已保存决策不重新抽样；外部结果未知时先 inspect，再决定是否重试。改源码会改变实现身份；新 run 冻结当时的配置选项，已有 run 恢复沿用原选项，不修改历史结果来通过恢复校验。
+
+## 当前策略与固定投影的边界
+
+GEPA 和 RandomSearch 分别保留 parents、sampling、proposal、ranking、stopping、algorithm 六个模块。`algorithm.py` 实例化公共流程和同样的五个可替换策略；共享流程在 `algorithms/workflow.py`，每个阶段由命名方法表达。正式配方目录只包含当前实现。
+
+加权指标算术在 `algorithms/objective.py`，固定任务/重复范围与保护投影在 `algorithms/projection.py`，独立 assertion 判定在 `algorithms/assertions.py`。各算法的 `ranking.py` 使用同一公共 `RankingInput`（含冻结 objective 与 anchor_id）；`RankingPlan` 区分不完整和违反约束的候选。GEPA 父代的逐题前沿也使用 objective 投影。最终验收由 core 调用受信任的 Python 投影独立执行，替换 ranker 不能绕过冻结的规则。
+
+公共采样器使用 `algorithms/sampling.py` 的十进制向上取整；`100 × 0.07` 固定为 7 个任务。确定性随机源在 `algorithms/random.py`。训练的配对统计、dev/held-out 决策和离线记录顺序在 `algorithms/model_training.py`，由 `gear.training` 和 TS 执行适配层共用。
+
+`algorithms/operators.py` 仅分发当前执行适配层所需的纯投影与训练策略。它不是算法作者的扩展入口，也不承担 GEPA 阶段规划；自定义算法仍使用上面的公共合同。
+
+verifier 过程组件验证、失败代码诊断与范围汇总在 `algorithms/verifier.py`；历史编辑经验分类/查询在 `algorithms/experience.py`，修改资源使用匹配在 `algorithms/modification_use.py`。这些共享纯投影不增加每套算法的可替换模块。TypeScript 只负责 provider I/O、来源固定、合同校验和持久化；诊断不会隐式改变 objective 或晋级规则。
+
+## 历史行为对照
+
+旧 staged-search、RefineService、组件执行装配及配套 Python 策略夹具已删除。原实现由 Git 历史保留；当前回归直接测试 `gear.algorithms`、Project runtime 与生产 adapter，不再编译或运行一套旧执行器。
+
+迁移会改变实现身份。旧 TS 决策不能在新 Python 实现下静默恢复，历史记录保持原样。当前算法的确定性随机、排名、完整范围分母、保护规则及冻结恢复由生产路径测试验证。
+
+当前 Python 的 `(2, 1)` 恢复了单批四候选场景的 4 → 2 → 1 扩评宽度，但不是历史算法的完整等价迁移。历史实现按失败类别建立独立 local scope、每组提名后轮转分配 bridge 名额；当前流程让一个父代批次共用 local scope 并排名筛选，阶段比较、最终提名与接受规则也有差异。仓库保留的 Marketing 实验结果属于其固定历史版本，不能当作当前 Python 实现的效果或成本实测。
+
+公开 Project 路径和独立安装包的验证范围见[重构记录](refactor-progress.zh-CN.md)。

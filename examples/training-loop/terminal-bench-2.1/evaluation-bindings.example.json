@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "bindings": {
+    "sha256:<baseline model.hfSnapshotRef.digest hex>": "/srv/gear/deployments/baseline.ready.json",
+    "sha256:<candidate model.hfSnapshotRef.digest hex>": "/srv/gear/deployments/candidate.ready.json"
+  }
+}

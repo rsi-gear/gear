@@ -43,7 +43,7 @@
 ## 发布检查
 
 主 CI 已通过后，发布工作流重新执行 `npm ci`、typecheck、build、打包内容检查，
-以及外部消费者的 search API 检查。`npm publish --ignore-scripts` 使用已验证的构建，
+以及外部消费者的 Project API 检查。`npm publish --ignore-scripts` 使用已验证的构建，
 避免重复执行 `prepack`。注册表查询超时或非 404 错误会失败，不会被当成“版本不存在”。
 
 本地检查（不会发布）：
@@ -54,5 +54,5 @@ node .github/scripts/npm-release.mjs
 npm run typecheck
 npm run build
 npm pack --dry-run --ignore-scripts
-node scripts/check-search-package.mjs
+node scripts/check-public-api-package.mjs
 ```

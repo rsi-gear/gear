@@ -16,10 +16,10 @@ test('documentation-only changes skip heavy jobs, but mixed changes keep them', 
 
 test('platform tests retain runtime, fixture, dependency and configuration coverage', () => {
   for (const path of ['src/sandbox.ts', 'src/refine/service.ts', 'assets/ipython-kernel.py',
-    'skills/refine/references/protocol.md', 'tests/unit/notebook-runtime.spec.ts',
+    'skills/refine/references/protocol.md', 'tests/integration/python-worker.spec.ts',
     'tests/unit/sandbox.spec.ts', 'tests/integration/sandbox-platform.spec.ts',
-    'tests/helpers/git-fixture.ts', 'tests/fixtures/notebook-helper.py',
-    'tests/e2e/refine-skill.e2e.spec.ts', 'package.json', 'package-lock.json',
+    'tests/helpers/hitch-runtime-fixture.ts', 'tests/fixtures/project-provider.mjs', 'tests/build-runtime.mjs',
+    'tests/integration/codex-operation.spec.ts', 'package.json', 'package-lock.json',
     'vitest.config.ts', 'tsconfig.json', 'scripts/build-private-tool-fs.mjs',
     '.github/workflows/ci.yml', '.github/scripts/ci-changes.mjs', 'new-config.yml']) {
     assert.deepEqual(selectJobs([path]), { code: true, macos: true }, path)
@@ -34,8 +34,8 @@ test('the macOS selection covers every test entry in the package script', () => 
 })
 
 test('Python, other test suites and examples keep Linux validation without macOS', () => {
-  for (const path of ['python/gear_training/controller.py', 'tests/unit/refine-service.spec.ts',
-    'tests/integration/dsh-runtime-check.spec.ts', 'examples/dsh-codex-luna/bootstrap-target.mjs',
+  for (const path of ['python/gear/training/controller.py', 'tests/unit/project-controller.spec.ts',
+    'tests/unit/project-hitch.spec.ts', 'examples/dsh-codex-luna/bootstrap-target.mjs',
     'examples/dsh-codex-luna/README.md', 'docs/example.ts']) {
     assert.deepEqual(selectJobs([path]), { code: true, macos: false }, path)
   }
@@ -52,14 +52,14 @@ test('manual runs and unavailable comparisons select all platform jobs', () => {
   }), null)
 })
 
-test('dev code changes keep quick checks but defer full regression tests to main', () => {
+test('dev and main code changes run the full regression suite', () => {
   const paths = ['src/refine/service.ts']
   assert.deepEqual(selectWorkflowJobs('push', { ref: 'refs/heads/dev' }, paths),
-    { code: true, macos: true, full_tests: false })
+    { code: true, macos: true, full_tests: true })
   // A PR's target branch determines the policy, not its source branch.
   assert.equal(selectWorkflowJobs('pull_request', { pull_request: {
     base: { ref: 'dev' }, head: { ref: 'main' },
-  } }, paths).full_tests, false)
+  } }, paths).full_tests, true)
   assert.equal(selectWorkflowJobs('pull_request', { pull_request: {
     base: { ref: 'main' }, head: { ref: 'dev' },
   } }, paths).full_tests, true)
@@ -73,7 +73,7 @@ test('docs still skip heavy checks while manual runs always include the full sui
   assert.deepEqual(selectWorkflowJobs('workflow_dispatch', { ref: 'refs/heads/dev' }, ['README.md']),
     { code: true, macos: true, full_tests: true })
   assert.equal(selectWorkflowJobs('push', { ref: 'refs/heads/main' }, null).full_tests, true)
-  assert.equal(selectWorkflowJobs('push', { ref: 'refs/heads/dev' }, null).full_tests, false)
+  assert.equal(selectWorkflowJobs('push', { ref: 'refs/heads/dev' }, null).full_tests, true)
 })
 
 test('real git comparisons cover whole pushes, PR merge bases, deletions and renames', () => {

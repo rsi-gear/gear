@@ -3,7 +3,6 @@ import { readFile, readdir, realpath } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { load } from 'js-yaml'
-import type { ResolvedDshPresetResource } from '../types.js'
 
 const BUNDLED_SKILL_ROOT = fileURLToPath(new URL('../../skills/refine/', import.meta.url))
 
@@ -13,7 +12,7 @@ export interface BundledRefineSkill {
   content: string
   path: string
   digest: string
-  resources: ResolvedDshPresetResource[]
+  resources: Array<{ logicalPath: string; kind: 'skill'; digest: string }>
 }
 
 function sha256(bytes: Uint8Array | string): string {

@@ -1,0 +1,8 @@
+{
+  "maxFiles": 200000,
+  "maxDirectories": 100000,
+  "maxUniqueBytes": 67108864,
+  "maxMaterializedBytes": 4294967296,
+  "authorTimeoutMs": 300000,
+  "maxOutputBytes": 134217728
+}

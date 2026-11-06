@@ -10,11 +10,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from gear_training import SLIME_COMMIT
-from gear_training.content import ContentStore, ContractError, digest_json
-from gear_training.node import NodeService
-from gear_training.preflight import bridge_digest, generation_protocol_digest, preflight, missing_probe_checks
-from gear_training.runtime_checks import inspect_model_runtime, model_node_preflight, source_observation, validate_process_lock, gpu_inventory, gpu_process_inventory
+from gear.training import SLIME_COMMIT
+from gear.training.storage.content import ContentStore, ContractError, digest_json
+from gear.training.runtime.node import NodeService
+from gear.training.runtime.preflight import bridge_digest, generation_protocol_digest, preflight, missing_probe_checks
+from gear.training.runtime.runtime_checks import inspect_model_runtime, model_node_preflight, source_observation, validate_process_lock, gpu_inventory, gpu_process_inventory
 from test_placement import request_fixture, HYPERPARAMETERS
 
 
@@ -46,16 +46,16 @@ class PreflightTests(unittest.TestCase):
             if "--query-compute-apps=gpu_uuid,pid" in args: return b""
             raise AssertionError("unexpected model diagnostic command")
         self.addCleanup(patch.stopall)
-        patch("gear_training.node_runtime.observe_runtime", side_effect=lambda: copy.deepcopy(self.runtime)).start()
-        patch("gear_training.runtime_checks.command", side_effect=command).start()
-        patch("gear_training.runtime_checks.source_observation", side_effect=lambda _directory, kind: {
+        patch("gear.training.runtime.node_runtime.observe_runtime", side_effect=lambda: copy.deepcopy(self.runtime)).start()
+        patch("gear.training.runtime.runtime_checks.command", side_effect=command).start()
+        patch("gear.training.runtime.runtime_checks.source_observation", side_effect=lambda _directory, kind: {
             "commit": SLIME_COMMIT if kind == "slime" else "b" * 40, "patchDigest": None, "untrackedRuntimeCode": False,
             **({"exportExtension": True} if kind == "slime" else {})}).start()
-        patch("gear_training.runtime_checks.importlib.metadata.version", return_value="fixture-installed").start()
+        patch("gear.training.runtime.runtime_checks.importlib.metadata.version", return_value="fixture-installed").start()
         patch.dict(sys.modules, {"torch": SimpleNamespace(version=SimpleNamespace(cuda="12.8"), cuda=SimpleNamespace(is_available=lambda: True))}).start()
 
     def test_process_lock_needs_no_image_or_gpu_side_hitch(self):
-        with patch.dict(os.environ, {}, clear=True), patch("gear_training.preflight.HitchClient", side_effect=AssertionError("GPU called Hitch")):
+        with patch.dict(os.environ, {}, clear=True), patch("gear.training.runtime.preflight.HitchClient", side_effect=AssertionError("GPU called Hitch")):
             result = preflight(self.request, self.config)
         self.assertTrue(result["trainingExternalBinding"])
         self.assertIn("gpu-probes-pending", result["blockers"])
@@ -80,9 +80,9 @@ class PreflightTests(unittest.TestCase):
 
     def test_independent_failures_are_all_reported_without_private_diagnostics(self):
         secret = "private-root-and-credential-must-not-leak"
-        with patch("gear_training.runtime_checks.source_observation", side_effect=OSError(secret)), \
-             patch("gear_training.runtime_checks.importlib.metadata.version", side_effect=OSError(secret)), \
-             patch("gear_training.runtime_checks.command", side_effect=OSError(secret)), \
+        with patch("gear.training.runtime.runtime_checks.source_observation", side_effect=OSError(secret)), \
+             patch("gear.training.runtime.runtime_checks.importlib.metadata.version", side_effect=OSError(secret)), \
+             patch("gear.training.runtime.runtime_checks.command", side_effect=OSError(secret)), \
              patch.dict(sys.modules, {"torch": None}):
             report = inspect_model_runtime(self.config)
         blocked = {item["code"] for item in report["checks"] if item["status"] == "blocked"}
@@ -91,28 +91,28 @@ class PreflightTests(unittest.TestCase):
         self.assertNotIn("validation", report)
 
     def test_busy_and_unobservable_gpus_remain_blockers(self):
-        with patch("gear_training.runtime_checks.gpu_process_inventory", return_value={"GPU-0": 1}):
+        with patch("gear.training.runtime.runtime_checks.gpu_process_inventory", return_value={"GPU-0": 1}):
             self.assertIn("training-gpu-pool-occupied", preflight(self.request, self.config)["blockers"])
-        with patch("gear_training.runtime_checks.gpu_process_inventory", side_effect=OSError("not observable")):
+        with patch("gear.training.runtime.runtime_checks.gpu_process_inventory", side_effect=OSError("not observable")):
             self.assertIn("model-node:gpu-process-observation", preflight(self.request, self.config)["blockers"])
 
     def test_malformed_gpu_output_is_not_a_free_device(self):
         for output in (b"Insufficient permission\n", b"GPU-0, not-a-pid\n", b"GPU-0, 0\n"):
-            with self.subTest(output=output), patch("gear_training.runtime_checks.command", return_value=output), self.assertRaises(ContractError):
+            with self.subTest(output=output), patch("gear.training.runtime.runtime_checks.command", return_value=output), self.assertRaises(ContractError):
                 gpu_process_inventory()
-        with patch("gear_training.runtime_checks.command", return_value=b"GPU-0, GPU, 81920, 570.1\nGPU-0, GPU, 81920, 570.1\n"), self.assertRaises(ContractError):
+        with patch("gear.training.runtime.runtime_checks.command", return_value=b"GPU-0, GPU, 81920, 570.1\nGPU-0, GPU, 81920, 570.1\n"), self.assertRaises(ContractError):
             gpu_inventory()
 
     def test_preflight_rpc_is_pinned_empty_and_does_not_create_a_training_job(self):
         node_config = {"schemaVersion": 2, "nodeId": "gpu", "nodeRoot": str(self.root / "node"), "storeRoot": str(self.store.root),
-                       "jobConfigPath": str(self.root / "job.json"), "inferencePort": 30002}
+                       "jobConfigPath": str(self.root / "job.json")}
         Path(node_config["jobConfigPath"]).write_text(json.dumps(self.config))
         node = NodeService(node_config)
         envelope = {"schemaVersion": 2, "requestId": "preflight-1", "node": node.identity, "operation": "preflight", "payload": {}, "inputDigest": digest_json({})}
         result = node.rpc(envelope)
         self.assertEqual(result["node"], node.identity)
         self.assertEqual(result["result"]["node"], node.identity)
-        self.assertEqual(result["result"]["ports"], {"rollout": 30001, "inference": 30002})
+        self.assertEqual(result["result"]["ports"], {"rollout": 30001})
         self.assertTrue(all(check["status"] == "passed" for check in result["result"]["checks"]))
         self.assertFalse(Path(self.config["jobsRoot"]).exists())
         self.assertFalse((self.root / "node" / "rpc").exists())
@@ -120,7 +120,7 @@ class PreflightTests(unittest.TestCase):
             with self.assertRaises(ContractError): node.rpc(invalid)
 
     def test_invalid_configuration_is_structured_and_cannot_smuggle_controller_dependency(self):
-        node_config = {"jobConfigPath": str(self.root / "job.json"), "storeRoot": str(self.store.root), "inferencePort": 30002}
+        node_config = {"jobConfigPath": str(self.root / "job.json"), "storeRoot": str(self.store.root)}
         Path(node_config["jobConfigPath"]).write_text(json.dumps({**self.config, "hitchCommand": ["secret-command"], "gatewayPort": "secret-port"}))
         report = model_node_preflight(node_config, self.config["node"])
         self.assertEqual(report["checks"][0], {"code": "training-node-configuration", "status": "blocked"})
@@ -138,7 +138,7 @@ class PreflightTests(unittest.TestCase):
 
     def test_missing_jobs_directory_configuration_blocks_before_submission(self):
         config = dict(self.config); config.pop("jobsRoot")
-        node_config = {"jobConfigPath": str(self.root / "job.json"), "storeRoot": str(self.store.root), "inferencePort": 30002}
+        node_config = {"jobConfigPath": str(self.root / "job.json"), "storeRoot": str(self.store.root)}
         Path(node_config["jobConfigPath"]).write_text(json.dumps(config))
         report = model_node_preflight(node_config, self.config["node"])
         self.assertEqual(report["checks"][0]["status"], "blocked")

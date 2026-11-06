@@ -2,27 +2,27 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from gear_training.slime_runtime import logging_api
+from gear.training.backends.slime.slime_runtime import logging_api
 
 
 class SlimeLoggingApiTests(unittest.TestCase):
     def test_old_layout(self):
         api = SimpleNamespace(configure_logger=object(), init_tracking=object(), finish_tracking=object())
-        with patch("gear_training.slime_runtime.import_module", return_value=api) as load:
+        with patch("gear.training.backends.slime.slime_runtime.import_module", return_value=api) as load:
             self.assertEqual(logging_api(), (api.configure_logger, api.init_tracking, api.finish_tracking))
         load.assert_called_once_with("slime.utils.logging_utils")
 
     def test_moved_layout(self):
         api = SimpleNamespace(configure_logger=object(), init_tracking=object(), finish_tracking=object())
         missing = ModuleNotFoundError(name="slime.utils.logging_utils")
-        with patch("gear_training.slime_runtime.import_module", side_effect=[missing, api]) as load:
+        with patch("gear.training.backends.slime.slime_runtime.import_module", side_effect=[missing, api]) as load:
             self.assertEqual(logging_api(), (api.configure_logger, api.init_tracking, api.finish_tracking))
         self.assertEqual([call.args[0] for call in load.call_args_list],
                          ["slime.utils.logging_utils", "slime.observability.logging_utils"])
 
     def test_missing_dependency_is_not_hidden(self):
         missing = ModuleNotFoundError(name="wandb")
-        with patch("gear_training.slime_runtime.import_module", side_effect=missing) as load:
+        with patch("gear.training.backends.slime.slime_runtime.import_module", side_effect=missing) as load:
             with self.assertRaises(ModuleNotFoundError) as caught:
                 logging_api()
         self.assertIs(caught.exception, missing)
@@ -53,7 +53,7 @@ class SlimeLogprobOffloadTests(unittest.TestCase):
         return patch.dict(sys.modules, modules), actor, loss, events
 
     def test_scope_preserves_arguments_result_and_shared_alias(self):
-        from gear_training.slime_runtime import offload_logprob_backward
+        from gear.training.backends.slime.slime_runtime import offload_logprob_backward
         expected = object()
         original = lambda *args, **kw: (args, kw, expected)
         patched, actor, loss, events = self.runtime(original)
@@ -67,7 +67,7 @@ class SlimeLogprobOffloadTests(unittest.TestCase):
             self.assertEqual(events, [("enter", True), ("exit", True)])
 
     def test_dependency_exception_leaves_context_without_hiding_error(self):
-        from gear_training.slime_runtime import offload_logprob_backward
+        from gear.training.backends.slime.slime_runtime import offload_logprob_backward
         error = RuntimeError("native failure")
         def fail():
             raise error
@@ -80,7 +80,7 @@ class SlimeLogprobOffloadTests(unittest.TestCase):
             self.assertEqual(events, [("enter", True), ("exit", True)])
 
     def test_rejects_unchunked_or_inconsistent_runtime_without_patching(self):
-        from gear_training.slime_runtime import offload_logprob_backward
+        from gear.training.backends.slime.slime_runtime import offload_logprob_backward
         original = lambda: None
         patched, actor, loss, _ = self.runtime(original)
         with patched:

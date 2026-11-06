@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util'
 import { join, resolve } from 'node:path'
-import { cli, isMain } from '../kaggle-titanic/common.mjs'
+import { cli, isMain } from './lib/common.mjs'
 import { Store, json } from './lib/store.mjs'
 import { HitchBackend } from './lib/hitch-backend.mjs'
 import { ResearchProject } from './lib/project.mjs'

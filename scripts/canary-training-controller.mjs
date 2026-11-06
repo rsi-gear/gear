@@ -8,7 +8,7 @@ import { ModelNodeTransport, contentDependencies } from '../lib/training/transpo
 import { retainContentGraph } from '../lib/training/retention.js'
 import { jsonProcess } from '../lib/training/process.js'
 import { TrainingContentStore, atomicWrite } from '../lib/training/store.js'
-import { parseTrainingRequest, parseTrainingHandle, parseTrainingArtifacts } from '../lib/training/schema.js'
+import { parseTrainingRequest, parseTrainingHandle, parseTrainingArtifacts, parseTrainingStatus } from '../lib/training/schema.js'
 import { digestJson } from '../lib/training/digest.js'
 
 const [inputFile, output] = process.argv.slice(2)
@@ -96,6 +96,20 @@ try {
       try { await action() } catch (error) { (summary.cleanupErrors ??= []).push(error instanceof Error ? error.message : String(error)) }
     }
   }
+  try {
+    // Fresh acknowledged release is required; never close a route still needed
+    // by training, or automatically tear down routes in production scheduling.
+    const released = parseTrainingStatus(await originalCall('training.inspect', { handle }))
+    assert.equal(digestJson(released.handle), digestJson(handle), 'cleanup inspection returned another training job')
+    lastStatus = released
+    if (!['running', 'pausing'].includes(released.execution) && released.resourcesReleased) {
+      summary.gatewayCleanup = await transport.closeGateway(input.hitch.workspace, input.connection.gateway.nodePort)
+    } else {
+      summary.gatewayCleanup = { closed: false, reason: 'training-release-unconfirmed' }
+      summary.cleanupErrors ??= []
+      summary.cleanupErrors.push('Gateway retained because training has not confirmed terminal execution and physical release')
+    }
+  } catch (error) { (summary.cleanupErrors ??= []).push(error instanceof Error ? error.message : String(error)) }
   summary.elapsedSeconds = (Date.now() - started) / 1000
   summary.lostReplies = lossEvents
   if (lastStatus) summary.lastStatus = lastStatus

@@ -5,8 +5,8 @@ import sys
 import tempfile
 from unittest.mock import patch
 
-from gear_training.content import digest_json
-from gear_training.node_runtime import observe_runtime, observe_startup_runtime, package_version
+from gear.training.storage.content import digest_json
+from gear.training.runtime.node_runtime import observe_runtime, observe_startup_runtime, package_version
 
 
 class Distribution:
@@ -19,7 +19,7 @@ class Distribution:
 
 class NodeRuntimeTests(unittest.TestCase):
     def test_same_version_metadata_preserves_both_record_identities(self):
-        with patch("gear_training.node_runtime.importlib.metadata.distributions", return_value=[Distribution("system"), Distribution("pip")]):
+        with patch("gear.training.runtime.node_runtime.importlib.metadata.distributions", return_value=[Distribution("system"), Distribution("pip")]):
             observed = observe_startup_runtime()
         self.assertEqual(package_version(observed, "psutil"), "7.2.2")
         self.assertEqual(len(observed["packages"]), 2)

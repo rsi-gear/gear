@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "kind": "controlled-upstream-scheduler-check",
+  "gpuValidated": false,
+  "source": {
+    "commit": "1dcf0dafa884ad52ffb243625717a3471643e087",
+    "url": "https://raw.githubusercontent.com/NVIDIA/Megatron-LM/1dcf0dafa884ad52ffb243625717a3471643e087/megatron/core/optimizer_param_scheduler.py",
+    "sha256": "sha256:22ddd78a2ed920e1c56132e4cc194890f940ce736aa06955c816bc73c070f144"
+  },
+  "boundary": "Actual pinned upstream scheduler class; CPU parameter-group fixture, logging stub, no optimizer update, CUDA or model training",
+  "cases": {
+    "constant": { "roundOneLearningRate": 0.000001, "roundTwoLearningRate": 0.000001, "loadedConsumedSamples": 4, "finalConsumedSamples": 8, "retainedDecaySamples": 4, "finalLearningRate": 0.000001 },
+    "full_experiment_linear": { "roundOneLearningRate": 0.000001, "roundTwoLearningRate": 0.0000005, "loadedConsumedSamples": 4, "finalConsumedSamples": 8, "retainedDecaySamples": 8, "finalLearningRate": 0 },
+    "unsafe_one_round_linear": { "roundOneLearningRate": 0.000001, "roundTwoLearningRate": 0, "loadedConsumedSamples": 4, "finalConsumedSamples": 8, "retainedDecaySamples": 4, "finalLearningRate": 0 }
+  }
+}

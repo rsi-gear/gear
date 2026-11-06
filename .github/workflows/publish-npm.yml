@@ -71,7 +71,7 @@ jobs:
         if: steps.release.outputs.publish == 'true'
         run: |
           npm pack --dry-run --ignore-scripts
-          node scripts/check-search-package.mjs
+          node scripts/check-public-api-package.mjs
 
       - name: Check main again before publishing
         id: current

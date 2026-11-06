@@ -1,3 +1,4 @@
+import { fixtureEndpointPreparer } from './fixture.js'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,17 +9,17 @@ import { parseModelTrainingSpec, TrainingContractError } from '../../../src/trai
 import { pairModelEvidence, modelEvaluationRequest } from '../../../src/training/evaluation.js'
 import { digestJson } from '../../../src/training/digest.js'
 import type { ModelVersion, ModelTrainingSpecV1 as ModelTrainingSpec } from '../../../src/training/types.js'
-import { fixture, FixtureEvaluator, FixtureTrainer } from './fixture.js'
+import { fixture, FixtureEvaluator, FixtureTrainer, fixtureEndpointBinding } from './fixture.js'
 
 describe('model training control plane (CPU contract providers)', () => {
   let root: string, store: ModelTrainingStore, trainer: FixtureTrainer, evaluator: FixtureEvaluator, coordinator: ModelTrainingCoordinator, spec: ModelTrainingSpec
-  beforeEach(async () => { root = await mkdtemp(join(tmpdir(), 'gear-training-')); store = new ModelTrainingStore(root); trainer = new FixtureTrainer(store); evaluator = new FixtureEvaluator(store); coordinator = new ModelTrainingCoordinator(store, trainer, evaluator); spec = await fixture(store) })
+  beforeEach(async () => { root = await mkdtemp(join(tmpdir(), 'gear-training-')); store = new ModelTrainingStore(root); trainer = new FixtureTrainer(store); evaluator = new FixtureEvaluator(store); coordinator = new ModelTrainingCoordinator(store, trainer, evaluator, fixtureEndpointPreparer); spec = await fixture(store) })
   afterEach(async () => { await rm(root, { recursive: true, force: true }) })
   it('rejects split-family leakage, sampling drift, GPU overlap and invalid batch layout', () => {
     for (const mutate of [
       (s: ModelTrainingSpec) => { s.datasets.dev.tasks[0]!.family = 'train' },
       (s: ModelTrainingSpec) => { s.rollout.sampling.topP = .9 as 1 },
-      (s: ModelTrainingSpec) => { s.resources.mode = 'isolated' },
+      (s: ModelTrainingSpec) => { s.budgets.gpuSecondsScope = 'total' },
       (s: ModelTrainingSpec) => { s.trainer.globalBatchSize = 3 },
     ]) { const s = structuredClone(spec); mutate(s); expect(() => parseModelTrainingSpec(s)).toThrow() }
   })
@@ -38,7 +39,7 @@ describe('model training control plane (CPU contract providers)', () => {
     spec.resources.trainingDevices = ['GPU-fixture']
     expect(() => parseModelTrainingSpec(spec)).toThrow('GPU pool')
     spec.trainer.placement = 'colocated'
-    expect(parseModelTrainingSpec(spec).resources).toHaveProperty('mode', 'sequential')
+    expect(parseModelTrainingSpec(spec).resources).toEqual({ trainingDevices: ['GPU-fixture'] })
     const e = await coordinator.createExperiment(spec); const run = await coordinator.admit(e.id)
     expect(run.request.trainer.placement).toBe('colocated')
     expect(run.request.trainingDevices).toEqual(['GPU-fixture'])
@@ -80,7 +81,7 @@ describe('model training control plane (CPU contract providers)', () => {
     trainer.failSubmitOnce = true
     const e = await coordinator.createExperiment(spec); const r = await coordinator.admit(e.id)
     await expect(coordinator.advance(e.id, r.id)).rejects.toThrow('reply lost')
-    const restarted = new ModelTrainingCoordinator(new ModelTrainingStore(root), trainer, evaluator)
+    const restarted = new ModelTrainingCoordinator(new ModelTrainingStore(root), trainer, evaluator, fixtureEndpointPreparer)
     expect((await restarted.advance(e.id, r.id)).decision?.outcome).toBe('accepted'); expect(trainer.submissions).toBe(1)
   })
   it('blocks official submission while cloud GPU probes are pending', async () => {
@@ -93,23 +94,44 @@ describe('model training control plane (CPU contract providers)', () => {
     let released = false
     coordinator = new ModelTrainingCoordinator(store, trainer, {
       evaluate: async () => { throw new TrainingContractError('evaluation-pending', 'still evaluating') },
-      cancel: async () => ({ resourcesReleased: released, gpuSeconds: 2 }),
-    })
+      cancel: async () => ({ tasksCompleted: released, gpuSeconds: null, gpuSecondsSource: null }),
+    }, fixtureEndpointPreparer)
     const e = await coordinator.createExperiment(spec); const r = await coordinator.admit(e.id)
     expect((await coordinator.advance(e.id, r.id)).execution).toBe('running')
-    expect((await coordinator.pause(e.id, r.id)).evaluationResourcesReleased).toBe(false)
-    await expect(coordinator.close(e.id, r.id)).rejects.toMatchObject({ code: 'gpu-not-released' })
+    expect((await coordinator.pause(e.id, r.id)).evaluationTasksCompleted).toBe(false)
+    await expect(coordinator.close(e.id, r.id)).rejects.toMatchObject({ code: 'task-cleanup-pending' })
     expect(trainer.submissions).toBe(0)
     released = true
     expect((await coordinator.close(e.id, r.id)).decision?.outcome).toBe('inconclusive')
     expect((await coordinator.close(e.id, r.id)).decision?.outcome).toBe('inconclusive')
-    expect((await store.load(e.id)).usage.gpuSeconds).toBe(2)
+    expect((await store.load(e.id)).usage.gpuSeconds).toBe(0)
   })
-  it('requires training resource release before a sequential evaluation', async () => {
+  it('resumes v1 endpoint evaluation with a newer persisted task control intent', async () => {
+    let pending = true
+    const sequences: string[] = []
+    coordinator = new ModelTrainingCoordinator(store, trainer, {
+      evaluate: async (request, _key, intent) => {
+        sequences.push(`${intent!.action}:${intent!.sequence}`)
+        if (pending) throw new TrainingContractError('evaluation-pending', 'running')
+        return evaluator.evaluate(request)
+      },
+      cancel: async (_request, _key, intent) => {
+        sequences.push(`${intent!.action}:${intent!.sequence}`)
+        return { tasksCompleted: true, gpuSeconds: null, gpuSecondsSource: null }
+      },
+    }, fixtureEndpointPreparer)
+    const e = await coordinator.createExperiment(spec), run = await coordinator.admit(e.id)
+    await coordinator.advance(e.id, run.id)
+    expect((await coordinator.pause(e.id, run.id)).execution).toBe('paused')
+    pending = false
+    expect((await coordinator.resume(e.id, run.id)).decision?.outcome).toBe('accepted')
+    expect(sequences.slice(0, 3)).toEqual(['start:0', 'pause:1', 'start:2'])
+  })
+  it('evaluates a statically separate endpoint while training releases resources', async () => {
     trainer.released = false
     const e = await coordinator.createExperiment(spec); const r = await coordinator.admit(e.id)
-    await expect(coordinator.advance(e.id, r.id)).rejects.toThrow('GPU release')
-    expect(evaluator.calls).toHaveLength(2)
+    expect((await coordinator.advance(e.id, r.id)).decision?.outcome).toBe('accepted')
+    expect(evaluator.calls).toHaveLength(4)
   })
   it('does not promote across champion CAS conflicts', async () => {
     const e = await coordinator.createExperiment(spec); const r = await coordinator.admit(e.id)
@@ -131,7 +153,7 @@ describe('model training control plane (CPU contract providers)', () => {
   })
   it('rejects changed harness/template in a model comparison and counts task uncertainty', async () => {
     const model = await store.readJson<ModelVersion>(spec.initialModel)
-    const request = modelEvaluationRequest(spec, model, spec.initialModel, 'dev')
+    const request = modelEvaluationRequest(spec, model, spec.initialModel, 'dev', fixtureEndpointBinding(model))
     const a = await evaluator.evaluate(request); const b = structuredClone(a)
     expect(pairModelEvidence(a, b).standardError).toBeNull() // two attempts are still one task
     b.condition.chatTemplateDigest = digestJson('different-template'); b.evidenceKey = digestJson({ subject: b.subject, condition: b.condition })

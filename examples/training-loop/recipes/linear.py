@@ -1,5 +1,5 @@
 """A controller-loaded CPU recipe: four ordinary classes, no backend requirements."""
-from gear_training import TrainingLoop
+from gear.training import TrainingLoop
 
 
 class TaskSource:

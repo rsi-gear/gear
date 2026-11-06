@@ -4,20 +4,20 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from gear_training.content import ContractError, atomic_json
-from gear_training.device_lease import NodeDeviceLedger
-from gear_training.preflight import gpu_processes
+from gear.training.storage.content import ContractError, atomic_json
+from gear.training.runtime.device_lease import NodeDeviceLedger
+from gear.training.runtime.preflight import gpu_processes
 
 
 class GpuObservationTests(unittest.TestCase):
     def test_malformed_or_unobservable_process_rows_cannot_prove_free_devices(self):
         for output in ("Insufficient permission\n", "GPU-1, 0\n", "GPU-1, not-a-pid\n", "GPU-1, 12, extra\n", "GPU-2, 12\nunknown output\n"):
-            with self.subTest(output=output), patch("gear_training.preflight.subprocess.run", return_value=SimpleNamespace(stdout=output)), self.assertRaises(ContractError):
+            with self.subTest(output=output), patch("gear.training.runtime.preflight.subprocess.run", return_value=SimpleNamespace(stdout=output)), self.assertRaises(ContractError):
                 gpu_processes(["GPU-1"])
 
     def test_failed_release_keeps_billing_one_physical_gpu_until_verified_handoff(self):
-        with tempfile.TemporaryDirectory() as directory, patch("gear_training.preflight.subprocess.run", return_value=SimpleNamespace(stdout="")) as query, \
-             patch("gear_training.device_lease.time.time", return_value=100) as clock:
+        with tempfile.TemporaryDirectory() as directory, patch("gear.training.runtime.preflight.subprocess.run", return_value=SimpleNamespace(stdout="")) as query, \
+             patch("gear.training.runtime.device_lease.time.time", return_value=100) as clock:
             node = {"nodeId": "model", "generation": "boot-1"}
             atomic_json(Path(directory) / "identity.json", node)
             ledger = NodeDeviceLedger(directory, node)

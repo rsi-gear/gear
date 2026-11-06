@@ -11,12 +11,12 @@ from pathlib import Path
 import signal
 import time
 from unittest.mock import patch
-from gear_training.content import atomic_json, digest_json, require
-from gear_training.job import JobService
-from gear_training.node import NodeService
-from gear_training.preflight import preflight
-from gear_training.recovery import process_identity, owned_alive
-from gear_training.ledger import Ledger
+from gear.training.storage.content import atomic_json, digest_json, require
+from gear.training.runtime.job import JobService
+from gear.training.runtime.node import NodeService
+from gear.training.runtime.preflight import preflight
+from gear.training.runtime.recovery import process_identity, owned_alive
+from gear.training.storage.ledger import Ledger
 
 
 def context(path):
@@ -45,7 +45,7 @@ def resume(path):
         require(result['blockers'] and all(b == 'gpu-probes-pending' or b.startswith('missing-runtime-probe-evidence:') for b in result['blockers']),
                 'diagnostic-runtime-check', 'only unfinished certification may be bypassed by this isolated diagnostic: ' + ','.join(result['blockers']))
         return {**result, 'blockers': []}
-    with patch('gear_training.job.preflight', side_effect=checked):
+    with patch('gear.training.runtime.job.preflight', side_effect=checked):
         result = service.submit(request, key)
     require(result == handle, 'diagnostic-recovery-drift', 'resume must keep the original job identity')
     after = json.loads((directory / 'worker.json').read_text())
@@ -71,7 +71,7 @@ def watch(path, boundary, output, timeout):
                     args = psutil.Process(item['pid']).cmdline()
                 except psutil.NoSuchProcess:
                     continue
-                if args[-2:] == ['-m', 'gear_training.driver']: candidates.append(item)
+                if args[-2:] == ['-m', 'gear.training.cli.slime']: candidates.append(item)
             process = candidates[0] if len(candidates) == 1 else None
         ledger = Ledger(directory / 'ledger.sqlite')
         try:

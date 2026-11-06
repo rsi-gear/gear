@@ -10,12 +10,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from gear_training.content import ContentStore, ContractError, atomic_json, digest_json
-from gear_training.driver import run
-from gear_training.ledger import Ledger
-from gear_training.placement import resource_plan
-from gear_training.preflight import compatibility_digest
-from gear_training.recipes.agent_grpo import sampling_params
+from gear.training.storage.content import ContentStore, ContractError, atomic_json, digest_json
+from gear.training.backends.slime.driver import run
+from gear.training.storage.ledger import Ledger
+from gear.training.runtime.placement import resource_plan
+from gear.training.runtime.preflight import compatibility_digest
+from gear.training.recipes.agent_grpo import sampling_params
 from test_placement import HYPERPARAMETERS, MemoryRuntime, Remote, request_fixture
 
 
@@ -88,7 +88,14 @@ class DriverMemoryTests(unittest.TestCase):
         if path.name.endswith("-hf"):
             path.mkdir(exist_ok=True)
             atomic_json(path / "config.json", {"model_type": "qwen2"})
+        elif ref == self.state_ref:
+            path.mkdir(exist_ok=True)
+            (path / "latest_checkpointed_iteration.txt").write_text("1")
         return path
+
+    def parse_args(self):
+        self.args.use_checkpoint_opt_param_scheduler = "--use-checkpoint-opt-param-scheduler" in sys.argv
+        return self.args
 
     def run_driver(self):
         atomic_json(self.root / "request.json", self.request)
@@ -96,16 +103,16 @@ class DriverMemoryTests(unittest.TestCase):
         _, values, _ = resource_plan(self.request, HYPERPARAMETERS["slimeArgs"])
         for key, value in values.items(): setattr(self.args, key[2:].replace("-", "_"), value)
         modules = {"ray": self.rt.ray,
-            "slime.utils.arguments": SimpleNamespace(parse_args=lambda: self.args),
+            "slime.utils.arguments": SimpleNamespace(parse_args=self.parse_args),
             "slime.ray.placement_group": SimpleNamespace(create_placement_groups=lambda args: {"rollout": None, "actor": None},
                 create_rollout_manager=self.create_manager, create_training_models=self.create_actor),
             "slime.utils.logging_utils": SimpleNamespace(configure_logger=lambda: None, init_tracking=lambda *a: None, finish_tracking=lambda *a: None)}
         with patch.dict(sys.modules, modules), patch.object(sys, "argv", []), patch.object(sys, "path", sys.path[:]), \
-                patch("gear_training.gpu_visibility.verify_visible_devices"), \
-                patch("gear_training.driver.materialize", side_effect=self.materialize), \
-                patch("gear_training.checkpoint_export.checkpoint_exporter", side_effect=self.exporter), \
-                patch("gear_training.export.seal_directory", return_value=self.state_ref), \
-                patch("gear_training.driver.commit_checkpoint", side_effect=self.commit):
+                patch("gear.training.backends.slime.gpu_visibility.verify_visible_devices"), \
+                patch("gear.training.backends.slime.driver.materialize", side_effect=self.materialize), \
+                patch("gear.training.backends.slime.checkpoint_export.checkpoint_exporter", side_effect=self.exporter), \
+                patch("gear.training.storage.snapshots.seal_directory", return_value=self.state_ref), \
+                patch("gear.training.backends.slime.driver.commit_checkpoint", side_effect=self.commit):
             run(self.root)
 
     def create_manager(self, *args):
@@ -193,7 +200,7 @@ class DriverMemoryTests(unittest.TestCase):
         self.assertTrue((self.root / "pending-update.json").exists())
         before = list(self.rt.events)
         # No Slime modules or patched actor are installed on the recovery path.
-        with patch("gear_training.gpu_visibility.verify_visible_devices", side_effect=AssertionError("GPU restart")):
+        with patch("gear.training.backends.slime.gpu_visibility.verify_visible_devices", side_effect=AssertionError("GPU restart")):
             run(self.root)
         self.assertEqual(self.rt.events, before)
         self.assertEqual(before.count("train"), 1)
@@ -210,7 +217,7 @@ class DriverMemoryTests(unittest.TestCase):
         pending = json.loads((self.root / "pending-update.json").read_text())
         pending["trainerStateRef"] = self.store.put_json({"different": "optimizer"})
         atomic_json(self.root / "pending-update.json", pending)
-        with patch("gear_training.gpu_visibility.verify_visible_devices", side_effect=AssertionError("GPU restart")):
+        with patch("gear.training.backends.slime.gpu_visibility.verify_visible_devices", side_effect=AssertionError("GPU restart")):
             with self.assertRaisesRegex(ContractError, "differs from its committed update"): run(self.root)
         self.assertTrue((self.root / "pending-update.json").exists())
 
@@ -242,18 +249,18 @@ if __name__ == "__main__": unittest.main()
 
 class DriverLogprobOffloadArgsTests(unittest.TestCase):
     def test_sealed_option_selects_only_owned_hook_and_default_stays_unchanged(self):
-        from gear_training.driver import build_argv
+        from gear.training.backends.slime.driver import build_argv
         request = request_fixture()
         paths = {"load": "/model", "reference": "/reference", "hf": "/hf", "save": "/save"}
         flag = "--custom-megatron-before-log-prob-hook-path"
         self.assertNotIn(flag, build_argv(request, HYPERPARAMETERS, paths, 0))
         hyper = {**HYPERPARAMETERS, "offloadLogprobBackward": True}
         argv = build_argv(request, hyper, paths, 0)
-        self.assertEqual(argv[argv.index(flag) + 1], "gear_training.slime_runtime.offload_logprob_backward")
+        self.assertEqual(argv[argv.index(flag) + 1], "gear.training.backends.slime.slime_runtime.offload_logprob_backward")
         self.assertEqual(argv.count(flag), 1)
 
     def test_option_does_not_allow_custom_hook_overrides_or_non_boolean_values(self):
-        from gear_training.driver import build_argv
+        from gear.training.backends.slime.driver import build_argv
         request = request_fixture()
         paths = {"load": "/model", "reference": "/reference", "hf": "/hf", "save": "/save"}
         for value in (1, "true", None):

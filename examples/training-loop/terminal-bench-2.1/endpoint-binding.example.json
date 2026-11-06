@@ -1,0 +1,45 @@
+{
+  "schema_version": "1",
+  "kind": "external-endpoint",
+  "endpoint_ref": "endpoint/baseline-001",
+  "endpoint_revision": "sha256:<actual immutable registration revision hex>",
+  "api": "chat-completions",
+  "wire_model": "coder-baseline-001",
+  "capabilities": {
+    "streaming": true,
+    "tool_calls": true,
+    "parallel_tool_calls": false,
+    "input_modalities": [
+      "text"
+    ]
+  },
+  "generation": {
+    "max_output_tokens": 1024,
+    "temperature": 0
+  },
+  "deployment_receipt": {
+    "schema_version": "1",
+    "model_digest": "sha256:<baseline model.hfSnapshotRef.digest hex>",
+    "wire_model": "coder-baseline-001",
+    "deployment_ref": "gpu-deployment-run-001",
+    "source": "ci-gpu-deploy",
+    "service_config": {
+      "engine": "sglang",
+      "engine_version": "0.5.21",
+      "engine_digest": "sha256:<actual pulled image digest hex>",
+      "quantization": "none",
+      "tool_parser": "qwen25",
+      "tokenizer_digest": "sha256:<actual tokenizer digest hex>",
+      "chat_template_digest": "sha256:<actual template digest hex>",
+      "cache_policy": "shared-radix-cache",
+      "isolation": "static-separate-training-inference-devices"
+    }
+  },
+  "connection": {
+    "base_url": "http://inference.internal:30000/v1",
+    "auth": {
+      "kind": "env",
+      "name": "CODER_API_KEY"
+    }
+  }
+}

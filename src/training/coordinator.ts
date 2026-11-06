@@ -1,13 +1,15 @@
 import { readOfflineDataset, validateOfflineDataset, validateOfflineBatch } from './offline.js'
 import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import { digestJson } from './digest.js'
-import { trainEvaluationMode } from './deployment.js'
-import { decideModel, devGate, modelEvaluationRequest, modelEvidenceKey, pairModelEvidence, validateModelEvidence } from './evaluation.js'
+import { validateReadyEndpointBinding } from './endpoint-binding.js'
+import { decideModel, devGate, evaluationAttemptId, modelEvaluationIdentity, modelEvaluationRequest, modelEvidenceKey, pairModelEvidence, validateModelEvidence } from './evaluation.js'
 import { parseModelTrainingSpec, parseModelVersion, parseTrainerCheckpoint, parseTrainingArtifacts, parseTrainingBatch, parseTrainingCapabilities, parseTrainingHandle, parseTrainingRequest, parseTrainingStatus, parseUpdateCommit, requireContract } from './schema.js'
 import { ModelTrainingStore } from './store.js'
 import type * as T from './types.js'
 import { evaluationControlIntent, sameTrainingControl, setEvaluationControl, setTrainingControl, trainingControlIntent } from './training-control.js'
-import { chargeEvaluationUsage, refreshEvaluationUsage } from './evaluation-usage.js'
+import { chargeEvaluationUsage, refreshEvaluationUsage, savedEvaluationBinding } from './evaluation-usage.js'
+import { proposalInputsDigest, proposalSpec, validateIterationTrainingSchedule } from './iteration-policy.js'
 
 const emptyUsage = (): T.TrainingUsage => ({ gpuSeconds: 0, rolloutTokens: 0, groupResamples: 0 })
 const terminal = (run: T.ModelTrainingRun): boolean => !!run.decision
@@ -27,30 +29,52 @@ export interface ModelPublisher {
 }
 
 export class ModelTrainingCoordinator {
-  constructor(readonly store: ModelTrainingStore, readonly trainer: T.ModelTrainer, readonly evaluator: T.ModelEvaluator) {}
+  constructor(readonly store: ModelTrainingStore, readonly trainer: T.ModelTrainer, readonly evaluator: T.ModelEvaluator, readonly endpointPreparer?: T.ModelEndpointPreparer) {}
 
   async createExperiment(input: unknown): Promise<T.ModelExperimentState> {
     const spec = parseModelTrainingSpec(input)
+    this.assertEndpointAuthorization(spec)
     const initial = parseModelVersion(await this.store.readJson(spec.initialModel))
     const reference = parseModelVersion(await this.store.readJson(spec.referenceModel))
+    await validateIterationTrainingSchedule(this.store, spec, initial)
     requireContract(initial.architecture === reference.architecture && initial.dtype === reference.dtype
       && initial.tokenizerDigest === reference.tokenizerDigest && initial.chatTemplateDigest === reference.chatTemplateDigest,
     'reference-incompatible', 'reference and actor must use the same model and token semantics')
     // Resolve immutable control inputs now, not after a job has started.
     for (const ref of [spec.fixedHarness.manifestRef, spec.verifier, spec.trainer.hyperparametersRef, ...(spec.trainer.script ? [spec.trainer.script.sourceRef] : []), ...Object.values(spec.stages ?? {}).map(config => config.instructionsRef),
-      ...Object.values(spec.datasets).flatMap(d => [d.snapshotRef, ...d.tasks.flatMap(t => [t.taskRef, t.environmentRef])])]) await this.store.readBytes(ref)
+      ...Object.values(spec.datasets).flatMap(d => [d.snapshotRef, ...d.tasks.flatMap(t => [t.taskRef, t.environmentRef])]),
+      ...(spec.iteration?.proposals.map(proposal => proposal.sourceRef) ?? [])]) await this.store.readBytes(ref)
     if (spec.offlineTraining) await validateOfflineDataset(this.store, spec, initial)
     const state: T.ModelExperimentState = { schemaVersion: 1, id: `exp_${randomUUID().replaceAll('-', '')}`,
       spec, specDigest: digestJson(spec), champion: { modelRef: spec.initialModel, revision: 0, baselineEvidence: {} }, runs: {}, releases: [], usage: emptyUsage() }
+    const now = Date.now()
+    if (spec.iteration) state.iteration = { schemaVersion: 1, status: 'running', control: { sequence: 0, action: 'start' },
+      startedAt: new Date(now).toISOString(), deadlineAt: new Date(now + spec.iteration.maxWallClockSeconds * 1000).toISOString(),
+      rounds: {}, nextProposalIndex: 0, consecutiveRejected: 0 }
+    if (spec.endpointPreparation) state.endpointControl = { sequence: 0, action: 'start',
+      deadlineAt: state.iteration?.deadlineAt ?? new Date(now + (this.endpointPreparer!.maxRuntimeSeconds ?? 3600) * 1000).toISOString() }
     await this.store.create(state)
     return state
   }
 
-  async admit(experimentId: string): Promise<T.ModelTrainingRun> {
+  async admit(experimentId: string, iterationSequence?: number): Promise<T.ModelTrainingRun> {
+    await this.assertCurrentExperiment(experimentId)
     return this.store.transaction(experimentId, async state => {
+      const iteration = state.iteration
+      if (state.spec.iteration) {
+        requireContract(iteration && iterationSequence === iteration.control.sequence && iteration.status === 'running'
+          && iteration.control.action === 'start', 'iteration-control-stale', 'automatic admission requires the current running iteration intent')
+        if (iteration.activeRoundIndex !== undefined) {
+          const current = state.runs[iteration.rounds[String(iteration.activeRoundIndex)]!.runId]!
+          requireContract(!terminal(current), 'iteration-decision-pending', 'commit the existing round decision before admitting another')
+          return structuredClone(current)
+        }
+        requireContract(Date.now() < Date.parse(iteration.deadlineAt), 'iteration-deadline-exceeded', 'experiment wall clock deadline is exhausted')
+        requireContract(Object.keys(iteration.rounds).length < state.spec.iteration.maxRounds, 'iteration-round-limit', 'declared maximum rounds have completed')
+      } else requireContract(iterationSequence === undefined, 'iteration-not-authorized', 'this experiment was not created with iteration authority')
       requireContract(!Object.values(state.runs).some(currentRun => !terminal(currentRun)), 'training-run-active', 'finish or close the existing training run before admitting another')
       const parentModel = parseModelVersion(await this.store.readJson(state.champion.modelRef))
-      const spec = state.spec
+      const spec = proposalSpec(state.spec, iteration?.nextProposalIndex)
       requireContract(state.usage.gpuSeconds < spec.budgets.totalGpuSeconds && state.usage.rolloutTokens < spec.budgets.maxRolloutTokens,
         'budget-exhausted', 'experiment training budget is exhausted')
       let generatedTaskExclusionRef: T.ContentRef | undefined
@@ -81,6 +105,7 @@ export class ModelTrainingCoordinator {
         recipeDigest: digestJson({ ...(spec.stages ? { stages: spec.stages } : {}), trainer: spec.trainer, rollout: spec.rollout, ...(spec.offlineTraining ? { offlineTraining: spec.offlineTraining } : {}), verifier: spec.verifier, referenceModelRef: spec.referenceModel,
           ...(spec.schemaVersion === 2 ? { deployment: spec.deployment } : {}) }),
         datasetSplitDigest: digestJson(spec.datasets),
+        ...(iteration ? { deadlineAt: iteration.deadlineAt } : {}),
       })
       if (request.resumeCheckpointRef) {
         const checkpoint = parseTrainerCheckpoint(await this.store.readJson(request.resumeCheckpointRef))
@@ -97,15 +122,43 @@ export class ModelTrainingCoordinator {
       }
       const run: T.ModelTrainingRun = { schemaVersion: 1, id, parent: structuredClone(state.champion), request,
         idempotencyKey: `${experimentId}/${id}`, phase: 'admitted', execution: 'running', usage: emptyUsage(), resourcesReleased: true,
-        heldOutQueries: 0, evaluationIntents: {}, evaluationResourcesReleased: true }
-      if (spec.schemaVersion === 2) {
-        const sequence = Math.max(-1, ...Object.values(state.runs).map(currentRun => evaluationControlIntent(currentRun).sequence)) + 1
-        requireContract(Number.isSafeInteger(sequence), 'evaluation-control-overflow', 'evaluation control sequence is exhausted')
-        run.evaluationControl = { schemaVersion: 2, sequence, action: 'start' }
+        heldOutQueries: 0, evaluationIntents: {}, evaluationTasksCompleted: true, ...(spec.endpointPreparation ? { inferenceResourcesReleased: true } : {}) }
+      const sequence = Math.max(-1, ...Object.values(state.runs).map(currentRun => evaluationControlIntent(currentRun).sequence)) + 1
+      requireContract(Number.isSafeInteger(sequence), 'evaluation-control-overflow', 'evaluation control sequence is exhausted')
+      run.evaluationControl = { schemaVersion: 2, sequence, action: 'start' }
+      if (iteration) {
+        const roundIndex = Object.keys(iteration.rounds).length
+        const proposalIndex = iteration.nextProposalIndex, proposal = state.spec.iteration!.proposals[proposalIndex]!
+        run.iterationRound = { roundIndex, proposalIndex, proposalId: proposal.id, inputsDigest: proposalInputsDigest(state.spec, proposalIndex) }
+        iteration.rounds[String(roundIndex)] = { runId: id, proposalIndex, recoveries: 0 }
+        iteration.activeRoundIndex = roundIndex
+        iteration.control.sequence++
+      }
+      if (state.endpointControl) {
+        state.endpointControl.sequence = iteration?.control.sequence ?? state.endpointControl.sequence + 1
+        state.endpointControl.action = 'start'
       }
       state.runs[id] = run
       return structuredClone(run)
     })
+  }
+
+  private async assertCurrentExperiment(id: string): Promise<void> {
+    const state = await this.store.load(id)
+    requireContract(state.spec.evaluation.provider === 'hitch-endpoint', 'historical-run-read-only',
+      'historical managed inference experiments remain readable; create a new endpoint experiment to rerun')
+    this.assertEndpointAuthorization(state.spec)
+  }
+
+  private assertEndpointAuthorization(spec: T.ModelTrainingSpec): void {
+    if (this.endpointPreparer?.mode === 'managed-native') requireContract(spec.endpointPreparation?.mode === 'managed-native'
+      && spec.endpointPreparation.profileDigest === this.endpointPreparer.configurationDigest,
+    'managed-endpoint-not-authorized', 'managed deployment requires the exact profile digest frozen in this experiment')
+    if (spec.endpointPreparation) requireContract(this.endpointPreparer?.mode === 'managed-native'
+      && this.endpointPreparer.configurationDigest === spec.endpointPreparation.profileDigest
+      && this.endpointPreparer.observe && this.endpointPreparer.acquireConsumer && this.endpointPreparer.releaseConsumer
+      && this.endpointPreparer.retire && this.endpointPreparer.fence && this.endpointPreparer.retireOwned && this.endpointPreparer.releaseOwnership,
+    'managed-endpoint-unconfigured', 'the frozen managed profile requires its complete owned lifecycle adapter')
   }
 
   async inspect(id: string, runId: string): Promise<T.ModelTrainingRun> {
@@ -120,16 +173,19 @@ export class ModelTrainingCoordinator {
     let state = await this.store.load(id)
     let run = await this.inspect(id, runId)
     if (terminal(run)) return run
+    requireContract(state.spec.evaluation.provider === 'hitch-endpoint', 'historical-run-read-only', 'historical managed inference runs remain readable; start a new endpoint experiment to rerun')
+    this.assertEndpointAuthorization(state.spec)
+    if (state.iteration && state.iteration.control.action === 'pause' && run.execution !== 'pausing' && run.execution !== 'paused') return this.pause(id, runId, true)
+    if (run.request.deadlineAt && Date.now() >= Date.parse(run.request.deadlineAt)) return this.pause(id, runId, true)
     if (run.execution === 'pausing') return this.pause(id, runId)
     if (run.execution === 'paused') return run
     try {
       await refreshEvaluationUsage(this.store, this.evaluator, state, run)
       state = await this.store.load(id)
-      if (state.spec.schemaVersion === 2) requireContract(state.usage.gpuSeconds < state.spec.budgets.totalGpuSeconds, 'budget-exhausted', 'experiment GPU budget is exhausted')
       if (!run.handle) {
         if (run.resourcesReleased) {
-          // A pending baseline owns its evaluation GPU. Reconcile that same
-          // intent before requiring an idle training pool again.
+          // Reconcile a pending baseline task before submitting training.
+          // The shared endpoint has no Gear-owned evaluation devices.
           if (Object.keys(run.evaluationIntents).length === 0) await this.preflight(run.request)
           const parentModel = run.request.parentModel
           await this.evaluate(id, runId, parentModel, run.parent.modelRef, 'dev', true)
@@ -178,7 +234,6 @@ export class ModelTrainingCoordinator {
         const artifacts = parseTrainingArtifacts(await this.trainer.collect(run.handle!))
         await this.validateArtifacts(run, artifacts)
         state = await this.store.load(id)
-        requireContract(trainEvaluationMode(state.spec) !== 'sequential' || artifacts.resourcesReleased, 'gpu-not-released', 'training must confirm process termination and GPU release before evaluation')
         const artifactsRef = await this.store.putJson(artifacts)
         const candidateRef = await this.store.putJson(artifacts.model)
         await this.store.transaction(id, transactionState => {
@@ -219,7 +274,8 @@ export class ModelTrainingCoordinator {
         if (terminal(current.runs[runId]!)) return current.runs[runId]!
         await refreshEvaluationUsage(this.store, this.evaluator, current, current.runs[runId]!)
         const metered = await this.store.load(id)
-        if (metered.spec.schemaVersion === 2 && metered.usage.gpuSeconds >= metered.spec.budgets.totalGpuSeconds) {
+        if (!metered.runs[runId]!.artifactsRef && metered.runs[runId]!.status?.execution !== 'completed'
+          && metered.usage.gpuSeconds >= metered.spec.budgets.totalGpuSeconds) {
           const paused = await this.pause(id, runId)
           await this.store.transaction(id, transactionState => {
             const currentRun = transactionState.runs[runId]!
@@ -230,12 +286,13 @@ export class ModelTrainingCoordinator {
       } catch (observationError) {
         error = observationError
       }
-      if (error instanceof Error && 'code' in error && ['evaluation-pending', 'training-release-pending', 'training-run-paused', 'training-control-stale', 'eval_control_stale'].includes(String(error.code))) {
+      if (error instanceof Error && 'code' in error && ['evaluation-pending', 'evaluation-release-pending', 'evaluation-control-stale', 'inference-release-pending', 'waiting-for-deployment', 'training-release-pending', 'training-run-paused', 'training-control-stale', 'eval_control_stale', 'native-deployment-pending', 'native-deployment-stale'].includes(String(error.code))) {
         await this.store.transaction(id, transactionState => {
           const currentRun = transactionState.runs[runId]!
           if (!terminal(currentRun) && !['pausing', 'paused'].includes(currentRun.execution)) {
             currentRun.execution = 'running'
-            delete currentRun.error
+            if (error instanceof Error && 'code' in error && error.code === 'waiting-for-deployment') currentRun.error = error.message
+            else delete currentRun.error
           }
         })
         return this.inspect(id, runId)
@@ -304,25 +361,182 @@ export class ModelTrainingCoordinator {
     })
   }
 
-  private async evaluate(id: string, runId: string, model: T.ModelVersion, modelRef: T.ContentRef, partition: 'dev' | 'held-out', baseline: boolean): Promise<T.ModelEvaluationEvidence> {
+  private endpointContext(state: T.ModelExperimentState, runId?: string): T.EndpointPreparationContext {
+    const control = state.endpointControl ?? { sequence: state.iteration?.control.sequence ?? 0, action: state.iteration?.control.action ?? 'start',
+      deadlineAt: state.iteration?.deadlineAt ?? new Date(Date.now() + 3600_000).toISOString() }
+    return { experimentId: state.id, controllerDirectory: join(this.store.root, 'model-training-v1', state.id),
+      ...(runId ? { runId } : {}), controlSequence: control.sequence, action: control.action, deadlineAt: control.deadlineAt }
+  }
+
+  async fenceEndpoints(id: string): Promise<void> {
     const state = await this.store.load(id)
-    const run = state.runs[runId]!
+    this.assertEndpointAuthorization(state.spec)
+    if (state.spec.endpointPreparation) await this.endpointPreparer!.fence!(this.endpointContext(state))
+  }
+
+  /** This confirms inference cleanup independently of trainer/task termination. */
+  async retireEndpoints(id: string): Promise<boolean> {
+    const state = await this.store.load(id)
+    if (!state.spec.endpointPreparation) return true
+    this.assertEndpointAuthorization(state.spec)
+    let released = true, reason: string | undefined
+    for (const preparation of Object.values(state.endpointPreparations ?? {})) {
+      if (!preparation.bindingRef || preparation.status === 'released') continue
+      const binding = await this.store.readJson<T.ReadyEvaluationEndpointBinding>(preparation.bindingRef)
+      const result = await this.endpointPreparer!.retire!(binding, this.endpointContext(await this.store.load(id)))
+      released &&= result.status === 'released'
+      reason ??= result.reason
+      await this.store.transaction(id, current => {
+        const saved = Object.values(current.endpointPreparations ?? {}).find(item => item.bindingRef?.digest === preparation.bindingRef!.digest)
+        if (saved) saved.status = result.status === 'released' ? 'released' : 'blocked'
+      })
+    }
+    const owned = await this.endpointPreparer!.retireOwned!(this.endpointContext(await this.store.load(id)))
+    released &&= owned.status === 'released'
+    reason ??= owned.reason
+    await this.store.transaction(id, current => {
+      if (!released && current.iteration) current.iteration.error = reason ?? 'owned inference cleanup is pending'
+      for (const run of Object.values(current.runs)) {
+        if (!run.evaluationTasksCompleted) continue
+        run.inferenceResourcesReleased = released
+        if (reason && !released) run.inferenceCleanupError = reason
+        else delete run.inferenceCleanupError
+      }
+    })
+    return released
+  }
+
+  async releaseEndpointOwnership(id: string): Promise<boolean> {
+    const state = await this.store.load(id)
+    if (!state.spec.endpointPreparation) return true
+    const released = await this.endpointPreparer!.releaseOwnership!(this.endpointContext(state))
+    if (!released.released) await this.store.transaction(id, current => { if (current.iteration) current.iteration.error = released.reason ?? 'deployment ownership release pending' })
+    return released.released
+  }
+
+  private async prepareEndpoint(id: string, runId: string, model: T.ModelVersion, modelRef: T.ContentRef): Promise<T.ReadyEvaluationEndpointBinding> {
+    requireContract(this.endpointPreparer, 'endpoint-preparation-unconfigured', 'configure an external per-model endpoint binding map')
+    const state = await this.store.load(id)
+    const intentDigest = digestJson({ modelVersionId: model.id, snapshotDigest: model.hfSnapshotRef.digest,
+      configurationDigest: this.endpointPreparer.configurationDigest, common: state.spec.evaluation.common })
+    const saved = await this.store.transaction(id, transactionState => {
+      const preparations = transactionState.endpointPreparations ??= {}
+      const existing = preparations[model.id]
+      requireContract(!existing || existing.intentDigest === intentDigest, 'endpoint-preparation-drift', 'restore the original deployment preparation configuration')
+      return preparations[model.id] ??= { schemaVersion: 1, intentDigest, modelRef, status: 'waiting' }
+    })
+    if (saved.status === 'ready') {
+      const binding = validateReadyEndpointBinding(await this.store.readJson(saved.bindingRef!), model,
+        state.spec.evaluation.common, this.endpointPreparer.trustedReceiptSources)
+      if (!state.spec.endpointPreparation) return binding
+      const observed = await this.endpointPreparer.observe!(binding, this.endpointContext(state, runId))
+      if (observed) return validateReadyEndpointBinding(observed, model, state.spec.evaluation.common, this.endpointPreparer.trustedReceiptSources)
+    }
+    const current = await this.store.load(id)
+    requireContract(!state.spec.endpointPreparation || current.endpointControl?.action === 'start'
+      && Date.now() < Date.parse(current.endpointControl.deadlineAt), 'training-run-paused', 'managed deployment requires a current live start command')
+    const prepared = await this.endpointPreparer.prepare(model, modelRef, this.endpointContext(current, runId))
+    requireContract(prepared, 'waiting-for-deployment', `waiting for externally prepared endpoint: ${model.hfSnapshotRef.digest}`)
+    const binding = validateReadyEndpointBinding(prepared, model, state.spec.evaluation.common, this.endpointPreparer.trustedReceiptSources)
+    const bindingRef = await this.store.putJson(binding)
+    return this.store.transaction(id, async transactionState => {
+      const preparation = transactionState.endpointPreparations![model.id]!
+      requireContract(preparation.intentDigest === intentDigest, 'endpoint-preparation-drift', 'deployment preparation intent changed')
+      // First durable ready binding wins even when two controllers observe a mutable external map.
+      if (preparation.status === 'ready' && !transactionState.spec.endpointPreparation) return this.store.readJson<T.ReadyEvaluationEndpointBinding>(preparation.bindingRef!)
+      requireContract(!transactionState.spec.endpointPreparation || transactionState.endpointControl?.sequence === current.endpointControl?.sequence
+        && transactionState.endpointControl?.action === 'start', 'training-control-stale', 'a newer stop command owns endpoint preparation')
+      preparation.status = 'ready'; preparation.bindingRef = bindingRef
+      return binding
+    })
+  }
+
+  private async evaluate(id: string, runId: string, model: T.ModelVersion, modelRef: T.ContentRef, partition: 'dev' | 'held-out', baseline: boolean): Promise<T.ModelEvaluationEvidence> {
+    let state = await this.store.load(id)
+    let run = state.runs[runId]!
     requireContract(!['pausing', 'paused'].includes(run.execution), 'training-run-paused', 'a paused run cannot dispatch another evaluation')
-    const request = modelEvaluationRequest(state.spec, model, modelRef, partition)
-    const evidenceKey = modelEvidenceKey({ subject: request.subject, condition: request.condition })
+    const evidenceKey = modelEvidenceKey(modelEvaluationIdentity(state.spec, model, modelRef, partition))
     const intentId = `${baseline ? 'baseline' : 'candidate'}:${partition}`
-    const intent = run.evaluationIntents[intentId]
-    const previous = intent?.evidenceRef ? validateModelEvidence(await this.store.readJson(intent.evidenceRef), request) : undefined
-    if (previous?.complete) return previous
+    let intent = run.evaluationIntents[intentId]
+    let previous = intent?.evidenceRef ? validateModelEvidence(await this.store.readJson(intent.evidenceRef)) : undefined
+    requireContract(!intent || intent.key === evidenceKey, 'evaluation-intent-drift', 'evaluation intent identity changed')
+    if (previous?.complete) {
+      requireContract(previous.evidenceKey === evidenceKey, 'evaluation-drift', 'saved complete evidence must match the frozen evaluation subject and conditions')
+      for (const attempt of intent?.attempts ?? []) await this.releaseEvaluationConsumer(id, runId, intentId, attempt)
+      return previous
+    }
     const reusable = baseline ? run.parent.baselineEvidence[partition] : undefined
     if (reusable) {
-      const evidence = validateModelEvidence(await this.store.readJson(reusable), request)
-      requireContract(evidence.complete, 'baseline-reuse-blocked', 'saved baseline is incomplete; explicitly repair its missing or invalid slots')
-      await this.store.transaction(id, transactionState => { transactionState.runs[runId]!.evaluationIntents[intentId] = { key: evidenceKey, evidenceRef: reusable } })
-      return evidence
+      const evidence = validateModelEvidence(await this.store.readJson(reusable))
+      if (evidence.evidenceKey === evidenceKey && evidence.complete) {
+        await this.store.transaction(id, transactionState => { transactionState.runs[runId]!.evaluationIntents[intentId] = { key: evidenceKey, evidenceRef: reusable } })
+        return evidence
+      }
     }
-    if (state.spec.schemaVersion === 2) requireContract(state.usage.gpuSeconds < state.spec.budgets.totalGpuSeconds, 'budget-exhausted', 'evaluation exhausted the experiment GPU budget')
-    if (state.spec.schemaVersion === 2) requireContract(this.evaluator.observeUsage, 'evaluation-usage-unavailable', 'v2 evaluator must expose read-only cumulative GPU usage')
+    // An attempt retains its original connection even after the model's latest
+    // deployment record advances. A dead instance never silently changes it.
+    let attempt = intent?.attempts?.at(-1)
+    let binding = attempt ? await this.store.readJson<T.ReadyEvaluationEndpointBinding>(attempt.bindingRef) : undefined
+    if (binding && attempt && this.evaluator.reconcileEvidence) {
+      const reconciled = await this.evaluator.reconcileEvidence(modelEvaluationRequest(state.spec, model, modelRef, partition, binding), `${id}/${evidenceKey}`)
+      if (reconciled) {
+        const evidence = validateModelEvidence(reconciled, modelEvaluationRequest(state.spec, model, modelRef, partition, binding))
+        for (const valid of previous?.trials.filter(trial => trial.valid) ?? []) requireContract(evidence.trials.some(trial => digestJson(trial) === digestJson(valid)),
+          'valid-slot-rerun', 'terminal reconciliation must preserve every valid observation')
+        const evidenceRef = await this.store.putJson(evidence)
+        await this.store.transaction(id, async current => {
+          const currentRun = current.runs[runId]!, saved = currentRun.evaluationIntents[intentId]!
+          await chargeEvaluationUsage(this.store, current, runId, intentId, evidence.schemaVersion === 2 ? evidence : { gpuSeconds: evidence.gpuSeconds, gpuSecondsSource: 'historical-owned-service' })
+          const physical = saved.attempts!.find(item => item.id === attempt!.id)!
+          physical.evidenceRef = evidenceRef; physical.status = 'terminal'
+          if (saved.attempts!.at(-1)!.id === physical.id) {
+            saved.evidenceRef = evidenceRef
+            currentRun.evaluationTasksCompleted = true
+            if (baseline && evidence.complete && current.champion.modelRef.digest === modelRef.digest) current.champion.baselineEvidence[partition] = evidenceRef
+          }
+        })
+        await this.releaseEvaluationConsumer(id, runId, intentId, attempt)
+        if (evidence.complete) {
+          requireContract((await this.inspect(id, runId)).evaluationIntents[intentId]!.attempts!.at(-1)!.id === attempt.id,
+            'evaluation-control-stale', 'a newer physical evaluation attempt owns the logical result')
+          return evidence
+        }
+        previous = evidence
+        state = await this.store.load(id); run = state.runs[runId]!; intent = run.evaluationIntents[intentId]!
+        attempt = intent.attempts!.at(-1)!
+      }
+    }
+    if (binding && state.spec.endpointPreparation) {
+      const observed = await this.endpointPreparer!.observe!(binding, this.endpointContext(state, runId))
+      if (!observed) {
+        if (attempt!.status !== 'terminal') {
+          await this.store.transaction(id, current => { setEvaluationControl(current.runs[runId]!, 'pause') })
+          run = await this.inspect(id, runId)
+          requireContract(this.evaluator.cancel, 'evaluation-cancel-unavailable', 'a dead deployment requires confirmed termination of its original tasks')
+          const stopped = await this.evaluator.cancel(modelEvaluationRequest(state.spec, model, modelRef, partition, binding), `${id}/${evidenceKey}`, evaluationControlIntent(run))
+          await this.store.transaction(id, current => chargeEvaluationUsage(this.store, current, runId, intentId, stopped))
+          requireContract(stopped.tasksCompleted, 'evaluation-release-pending', 'original evaluation tasks must end before deploying a replacement instance')
+          await this.store.transaction(id, current => {
+            current.runs[runId]!.evaluationIntents[intentId]!.attempts!.at(-1)!.status = 'terminal'
+            current.runs[runId]!.evaluationTasksCompleted = true
+          })
+        }
+        await this.releaseEvaluationConsumer(id, runId, intentId, attempt!)
+        const retired = await this.endpointPreparer!.retire!(binding, this.endpointContext(await this.store.load(id), runId))
+        requireContract(retired.status === 'released', 'inference-release-pending', retired.reason ?? 'the old deployment incarnation must confirm release before repair')
+        const attempts = intent!.attempts!.length
+        requireContract(attempts < (state.spec.iteration?.recovery.maxEvaluationAttempts ?? 1), 'evaluation-attempt-budget-exhausted', 'the frozen deployment repair attempt budget is exhausted')
+        await this.store.transaction(id, current => { setEvaluationControl(current.runs[runId]!, 'start') })
+        binding = undefined
+      } else {
+        requireContract(digestJson(observed) === digestJson(binding), 'evaluation-binding-drift', 'observation must retain the same frozen deployment incarnation')
+      }
+    }
+    if (attempt?.status === 'terminal') await this.releaseEvaluationConsumer(id, runId, intentId, attempt)
+    binding ??= await this.prepareEndpoint(id, runId, model, modelRef)
+    const request = modelEvaluationRequest(state.spec, model, modelRef, partition, binding)
+    const bindingRef = await this.store.putJson(binding)
+    const attemptId = evaluationAttemptId(binding)
     await this.store.transaction(id, transactionState => {
       const currentRun = transactionState.runs[runId]!
       requireContract(!['pausing', 'paused'].includes(currentRun.execution), 'training-run-paused', 'a paused run cannot admit another evaluation')
@@ -335,11 +549,28 @@ export class ModelTrainingCoordinator {
         currentRun.evaluationIntents[intentId] = { key: evidenceKey }
       }
       requireContract(currentRun.evaluationIntents[intentId]!.key === evidenceKey, 'evaluation-intent-drift', 'evaluation intent identity changed')
-      currentRun.evaluationResourcesReleased = false
+      const attempts = currentRun.evaluationIntents[intentId]!.attempts ??= []
+      if (attempts.at(-1)?.id !== attemptId) {
+        requireContract(!attempts.length || attempts.at(-1)!.status === 'terminal', 'evaluation-attempt-active', 'finish the old deployment attempt before admitting another')
+        requireContract(attempts.length < (transactionState.spec.iteration?.recovery.maxEvaluationAttempts ?? 1), 'evaluation-attempt-budget-exhausted', 'the frozen deployment repair attempt budget is exhausted')
+        attempts.push({ id: attemptId, ...(attempts.length ? { parentId: attempts.at(-1)!.id } : {}), bindingRef, status: 'active', consumerGeneration: 0 })
+      } else {
+        const current = attempts.at(-1)!
+        if (current.status === 'terminal') current.consumerGeneration = (current.consumerGeneration ?? 0) + 1
+        current.status = 'active'
+      }
+      currentRun.evaluationTasksCompleted = false
+      if (transactionState.spec.endpointPreparation) currentRun.inferenceResourcesReleased = false
     })
-    const evidence = validateModelEvidence(await this.evaluator.evaluate(request, `${id}/${evidenceKey}`, state.spec.schemaVersion === 2 ? evaluationControlIntent(run) : undefined), request)
+    state = await this.store.load(id); run = state.runs[runId]!
+    intent = run.evaluationIntents[intentId]!
+    attempt = intent.attempts!.at(-1)!
+    if (state.spec.endpointPreparation) await this.endpointPreparer!.acquireConsumer!(binding,
+      { id: this.consumerId(runId, intentId, attempt), experimentId: id, runId, evaluationKey: `${id}/${evidenceKey}` }, this.endpointContext(state, runId))
+    const evidence = validateModelEvidence(await this.evaluator.evaluate(request, `${id}/${evidenceKey}`, evaluationControlIntent(run),
+      { id: attempt.id, ...(attempt.parentId ? { parentId: attempt.parentId } : {}) }), request)
     if (previous) {
-      requireContract(evidence.gpuSeconds >= previous.gpuSeconds, 'evaluation-usage-regression', 'repair must retain cumulative evaluation cost')
+      requireContract(previous.gpuSeconds === null || evidence.gpuSeconds !== null && evidence.gpuSeconds >= previous.gpuSeconds, 'evaluation-usage-regression', 'repair must retain cumulative evaluation cost')
       for (const valid of previous.trials.filter(t => t.valid)) requireContract(evidence.trials.some(t => digestJson(t) === digestJson(valid)),
         'valid-slot-rerun', 'evaluation repair cannot replace a valid observation, including reward zero')
     }
@@ -347,13 +578,28 @@ export class ModelTrainingCoordinator {
     await this.store.transaction(id, async transactionState => {
       const currentRun = transactionState.runs[runId]!
       const saved = currentRun.evaluationIntents[intentId]!
-      await chargeEvaluationUsage(this.store, transactionState, runId, intentId, evidence.gpuSeconds)
-      saved.evidenceRef = evidenceRef
-      currentRun.evaluationResourcesReleased = true
-      if (baseline && evidence.complete && transactionState.champion.modelRef.digest === modelRef.digest) transactionState.champion.baselineEvidence[partition] = evidenceRef
+      await chargeEvaluationUsage(this.store, transactionState, runId, intentId, evidence.schemaVersion === 2 ? evidence : { gpuSeconds: evidence.gpuSeconds, gpuSecondsSource: 'historical-owned-service' })
+      const currentAttempt = saved.attempts!.find(item => item.id === attempt!.id)!
+      currentAttempt.status = 'terminal'; currentAttempt.evidenceRef = evidenceRef
+      if (saved.attempts!.at(-1)!.id === currentAttempt.id) {
+        saved.evidenceRef = evidenceRef
+        currentRun.evaluationTasksCompleted = true
+        if (baseline && evidence.complete && transactionState.champion.modelRef.digest === modelRef.digest) transactionState.champion.baselineEvidence[partition] = evidenceRef
+      }
     })
+    await this.releaseEvaluationConsumer(id, runId, intentId, attempt)
+    requireContract((await this.inspect(id, runId)).evaluationIntents[intentId]!.attempts!.at(-1)!.id === attempt.id,
+      'evaluation-control-stale', 'a newer physical evaluation attempt owns the logical result')
     requireContract(evidence.complete, 'incomplete-evaluation', 'evaluation has missing or invalid slots; valid failures are retained and cannot be rerun')
     return evidence
+  }
+
+  private consumerId(runId: string, intentId: string, attempt: T.ModelEvaluationAttempt): string { return `${runId}/${intentId}/${attempt.id}/${attempt.consumerGeneration ?? 0}` }
+  private async releaseEvaluationConsumer(id: string, runId: string, intentId: string, attempt: T.ModelEvaluationAttempt): Promise<void> {
+    const state = await this.store.load(id)
+    if (!state.spec.endpointPreparation) return
+    const binding = await this.store.readJson<T.ReadyEvaluationEndpointBinding>(attempt.bindingRef)
+    await this.endpointPreparer!.releaseConsumer!(binding, this.consumerId(runId, intentId, attempt), this.endpointContext(state, runId))
   }
 
   private async validateArtifacts(run: T.ModelTrainingRun, artifacts: T.TrainingArtifacts): Promise<void> {
@@ -418,11 +664,12 @@ export class ModelTrainingCoordinator {
       finishing = stopping
       requireContract(status.resourcesReleased, 'training-release-pending', 'waiting for the original trainer to release its GPU ownership')
     }
+    requireContract(await this.retireEndpoints(id), 'inference-release-pending', 'owned inference resources must confirm release before round finalization')
     await this.store.transaction(id, state => {
       const run = state.runs[runId]!
       if (!sameTrainingControl(run, finishing)) return
       if (terminal(run) || !allowPaused && ['pausing', 'paused'].includes(run.execution)) return
-      requireContract(run.evaluationResourcesReleased && run.resourcesReleased, 'gpu-not-released', 'cannot finalize resource ownership without release confirmation')
+      requireContract(run.evaluationTasksCompleted && run.resourcesReleased, 'task-cleanup-pending', 'finalization requires evaluation tasks to end and training resources to release')
       if (state.usage.gpuSeconds > state.spec.budgets.totalGpuSeconds || state.usage.rolloutTokens > state.spec.budgets.maxRolloutTokens || state.usage.groupResamples > state.spec.budgets.maxGroupResamples) {
         decision = { ...decision, outcome: 'rejected', reasons: [...decision.reasons, 'experiment-budget-exceeded'] }
       }
@@ -443,8 +690,19 @@ export class ModelTrainingCoordinator {
     })
   }
 
-  async pause(id: string, runId: string): Promise<T.ModelTrainingRun> {
+  async pause(id: string, runId: string, preserveIterationIntent = false): Promise<T.ModelTrainingRun> {
+    await this.assertCurrentExperiment(id)
     await this.store.transaction(id, transactionState => {
+      const iteration = transactionState.iteration
+      if (iteration && !preserveIterationIntent && iteration.status === 'running') {
+        iteration.status = 'pausing'; iteration.control = { sequence: iteration.control.sequence + 1, action: 'pause' }
+        delete iteration.recovery
+      }
+      if (transactionState.endpointControl) {
+        const previous = transactionState.endpointControl
+        previous.sequence = iteration?.control.sequence ?? previous.sequence + (previous.action === 'pause' ? 0 : 1)
+        previous.action = iteration?.control.action ?? 'pause'
+      }
       const currentRun = transactionState.runs[runId]!
       if (!terminal(currentRun)) {
         setTrainingControl(currentRun, 'pause')
@@ -458,6 +716,7 @@ export class ModelTrainingCoordinator {
     const errors: unknown[] = []
     let trainingReleased = run.resourcesReleased
     let evaluationReleased = true
+    try { await this.fenceEndpoints(id) } catch (error) { errors.push(error) }
     // A pending/disconnected evaluation cannot prevent cancellation of its
     // independent trainer. Reconcile and charge each owner before returning.
     try {
@@ -489,15 +748,22 @@ export class ModelTrainingCoordinator {
     for (const [intentId, intent] of Object.entries(run.evaluationIntents)) {
       try {
         const previous = intent.evidenceRef ? validateModelEvidence(await this.store.readJson(intent.evidenceRef)) : undefined
-        if (previous?.complete) continue
-        await this.store.transaction(id, transactionState => { transactionState.runs[runId]!.evaluationResourcesReleased = false })
+        if (previous?.complete) {
+          for (const attempt of intent.attempts ?? []) await this.releaseEvaluationConsumer(id, runId, intentId, attempt)
+          continue
+        }
+        await this.store.transaction(id, transactionState => { transactionState.runs[runId]!.evaluationTasksCompleted = false })
         requireContract(this.evaluator.cancel, 'evaluation-cancel-unavailable', 'pending evaluation must confirm cancellation before releasing this run')
         const [role, partition] = intentId.split(':') as [string, 'dev' | 'held-out']
         const modelRef = role === 'baseline' ? run.parent.modelRef : run.candidateRef!
         const model = parseModelVersion(await this.store.readJson(modelRef))
-        const stopped = await this.evaluator.cancel(modelEvaluationRequest(state.spec, model, modelRef, partition), `${id}/${intent.key}`, state.spec.schemaVersion === 2 ? evaluationControlIntent(run) : undefined)
-        await this.store.transaction(id, transactionState => chargeEvaluationUsage(this.store, transactionState, runId, intentId, stopped.gpuSeconds))
-        evaluationReleased &&= stopped.resourcesReleased
+        const stopped = await this.evaluator.cancel(modelEvaluationRequest(state.spec, model, modelRef, partition, await savedEvaluationBinding(this.store, state, model, intentId, runId)), `${id}/${intent.key}`, evaluationControlIntent(run))
+        await this.store.transaction(id, transactionState => chargeEvaluationUsage(this.store, transactionState, runId, intentId, stopped))
+        evaluationReleased &&= stopped.tasksCompleted
+        if (stopped.tasksCompleted) {
+          await this.store.transaction(id, current => { for (const attempt of current.runs[runId]!.evaluationIntents[intentId]!.attempts ?? []) attempt.status = 'terminal' })
+          for (const attempt of intent.attempts ?? []) await this.releaseEvaluationConsumer(id, runId, intentId, attempt)
+        }
       } catch (error) {
         evaluationReleased = false
         errors.push(error)
@@ -506,7 +772,7 @@ export class ModelTrainingCoordinator {
     await this.store.transaction(id, transactionState => {
       const currentRun = transactionState.runs[runId]!
       if (!sameTrainingControl(currentRun, run)) return
-      currentRun.evaluationResourcesReleased = evaluationReleased
+      currentRun.evaluationTasksCompleted = evaluationReleased
       if (trainingReleased && evaluationReleased && !errors.length) {
         currentRun.execution = 'paused'
         currentRun.resourcesReleased = true
@@ -516,11 +782,18 @@ export class ModelTrainingCoordinator {
     return this.inspect(id, runId)
   }
   async resume(id: string, runId: string): Promise<T.ModelTrainingRun> {
+    await this.assertCurrentExperiment(id)
     if ((await this.inspect(id, runId)).execution === 'pausing') await this.pause(id, runId)
     await this.store.transaction(id, transactionState => {
+      requireContract(!transactionState.iteration || transactionState.iteration.status === 'running'
+        && transactionState.iteration.control.action === 'start', 'iteration-paused', 'resume the experiment before resuming its round')
+      if (transactionState.endpointControl && !transactionState.iteration) {
+        transactionState.endpointControl.sequence++
+        transactionState.endpointControl.action = 'start'
+      }
       const currentRun = transactionState.runs[runId]!
       requireContract(currentRun && !terminal(currentRun), 'run-not-resumable', 'completed model run cannot resume')
-      if (transactionState.spec.schemaVersion === 2) requireContract(transactionState.usage.gpuSeconds < transactionState.spec.budgets.totalGpuSeconds, 'budget-exhausted', 'cannot resume after the experiment GPU budget is exhausted')
+      if (!currentRun.artifactsRef && currentRun.status?.execution !== 'completed') requireContract(transactionState.usage.gpuSeconds < transactionState.spec.budgets.totalGpuSeconds, 'budget-exhausted', 'cannot resume training after its GPU budget is exhausted')
       requireContract(currentRun.execution !== 'pausing', 'previous-resources-not-released', 'finish the pending pause before resuming')
       setTrainingControl(currentRun, 'start', currentRun.execution !== 'running')
       setEvaluationControl(currentRun, 'start', currentRun.execution !== 'running')
@@ -535,11 +808,11 @@ export class ModelTrainingCoordinator {
     }
     return this.advance(id, runId)
   }
-  async close(id: string, runId: string): Promise<T.ModelTrainingRun> {
-    const run = await this.pause(id, runId)
+  async close(id: string, runId: string, reason = 'closed-by-user', preserveIterationIntent = false): Promise<T.ModelTrainingRun> {
+    const run = await this.pause(id, runId, preserveIterationIntent)
     if (terminal(run)) return run
-    requireContract(run.resourcesReleased && run.evaluationResourcesReleased && run.execution === 'paused', 'gpu-not-released', 'wait for cancellation and GPU release before closing the run')
-    await this.finish(id, runId, { outcome: 'inconclusive', reasons: ['closed-by-user'] }, true)
+    requireContract(run.resourcesReleased && run.evaluationTasksCompleted && run.execution === 'paused', 'task-cleanup-pending', 'wait for evaluation tasks to end and training GPU release before closing the run')
+    await this.finish(id, runId, { outcome: 'inconclusive', reasons: [reason] }, true)
     return this.inspect(id, runId)
   }
 

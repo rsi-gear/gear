@@ -4,8 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from gear_training.cli import main, prepare_spec
-from gear_training.dev_launcher import main as legacy_main
+from gear.training.cli.controller import main, prepare_spec
 
 
 class LauncherTests(unittest.TestCase):
@@ -41,36 +40,30 @@ class LauncherTests(unittest.TestCase):
                         self.assertNotIn('scriptSource', selected)
                     else: self.assertEqual(selected['scriptSource']['entrypoint'], 'recipe:build_loop')
                     return 0
-                with self.subTest(value=value), patch('gear_training.cli._follow', side_effect=follow):
+                with self.subTest(value=value), patch('gear.training.cli.controller._follow', side_effect=follow):
                     self.assertEqual(main(['run', str(spec), '--config', str(root/'controller.json'), '--gear-command', '["node", "a path/cli.js"]']), 0)
                 self.assertEqual(json.loads(spec.read_text()), value)
 
     def test_resume_native_uses_frozen_ids_and_follows_without_new_spec(self):
-        with patch('gear_training.cli.subprocess.run') as run, patch('gear_training.cli._follow', return_value=0) as follow:
-            main(['resume', 'exp_existing', 'run_existing', '--config', 'controller.json', '--gear-command', '["gear-refine"]'])
+        with patch('gear.training.cli.controller.subprocess.run') as run, patch('gear.training.cli.controller._follow', return_value=0) as follow:
+            main(['resume', 'exp_existing', 'run_existing', '--config', 'controller.json', '--gear-command', '["gear"]'])
             run.assert_called_once()
             self.assertEqual(run.call_args.args[0][1:5], ['training', 'resume', 'exp_existing', 'run_existing'])
             self.assertEqual(follow.call_args.args[0][1:5], ['training', 'run', 'exp_existing', 'run_existing'])
 
     def test_script_resume_is_one_controller_call_and_status_never_reads_spec(self):
-        with patch('gear_training.cli.subprocess.run') as run, patch('gear_training.cli._follow', return_value=0) as follow:
-            main(['resume', 'script_existing', '--config', 'c.json', '--gear-command', '["gear-refine"]'])
+        with patch('gear.training.cli.controller.subprocess.run') as run, patch('gear.training.cli.controller._follow', return_value=0) as follow:
+            main(['resume', 'script_existing', '--config', 'c.json', '--gear-command', '["gear"]'])
             run.assert_not_called()
             self.assertEqual(follow.call_args.args[0][1:4], ['training', 'resume', 'script_existing'])
-            main(['status', 'exp_existing', '--config', 'c.json', '--gear-command', '["gear-refine"]'])
+            main(['status', 'exp_existing', '--config', 'c.json', '--gear-command', '["gear"]'])
             self.assertEqual(follow.call_args.args[0][1:4], ['training', 'status', 'exp_existing'])
 
     def test_duplicate_source_rejected_and_child_failure_propagates(self):
         with self.assertRaises(ValueError): prepare_spec({'trainer': {'script': {'entrypoint': 'a:b'}}, 'scriptSource': {'directory': 'x'}})
-        with patch('gear_training.cli._follow', return_value=7):
+        with patch('gear.training.cli.controller._follow', return_value=7):
             self.assertEqual(main(['run', 'exp_x', 'run_x', '--config', 'c.json']), 7)
 
-    def test_old_spelling_delegates_to_same_entry(self):
-        with patch('gear_training.dev_launcher.controller_main', return_value=0) as unified:
-            legacy_main(['--spec', 'tb21.json', '--config', 'c.json'])
-            self.assertEqual(unified.call_args.args[0], ['run', 'tb21.json', '--config', 'c.json'])
-            legacy_main(['--experiment', 'exp_x', '--run', 'run_x', '--resume', '--config', 'c.json'])
-            self.assertEqual(unified.call_args.args[0], ['resume', 'exp_x', 'run_x', '--config', 'c.json'])
 
 
 if __name__ == '__main__': unittest.main()

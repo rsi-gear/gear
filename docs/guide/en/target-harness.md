@@ -1,37 +1,34 @@
 # Prepare a Target harness
 
-A Target is a buildable, exact Git revision. Gear edits the declared Harness tree while a fixed carrier supplies the runtime and evaluation entrypoint.
+`gear init --target dsh` or `gear init --target pi` creates a native editable
+carrier. `target.path` points to its resource directory. Select the Target and
+the candidate-generating Meta profile independently.
 
-## Use the example carrier
+| Adapter | Editable resources |
+| --- | --- |
+| DSH | `preset/`, `plugins/`, `prompts/`, `skills/`, `workflows/` |
+| Pi | `AGENTS.md`, `.pi/settings.json`, `.pi/extensions/`, `.pi/skills/`, `.pi/prompts/` |
 
-The [bootstrap in Quick start](quickstart.md) creates a separate repository and records its substrate, initial champion and manifest. Keep Gear source, Target source, task workspaces and state roots distinct. Hitch prepares the selected Target revision as an immutable artifact for container evaluation.
+DSH wires plugins in `preset/agent.cordis.yml`; the fixed patch supplies Skill
+discovery. An unconnected prompt file is inert. Pi uses native project discovery;
+settings cannot redirect packages/extensions/skills/prompts/themes outside the
+sealed local resources.
 
-```text
-target/
-  fixed/                  # loader, target configuration, verifier
-  harness/
-    preset/agent.cordis.yml
-    plugins/policy.js
-    workflows/            # optional procedures and helpers
-    skills/               # native Skills when supported by the carrier
-    manifest.json
-```
+The outer Harbor container provides the evaluation boundary. DSH's fixed
+container patch uses `danger-full-access` and `approval.policy: never`; Pi uses
+native automatic approval. These evaluation settings do not modify the host
+carrier. See the [container test guide](../../testing/target-headless.zh-CN.md)
+for real CLI loading, native tool execution and separate verifier checks.
 
-A new file must be reachable from the actual loading path. A Markdown workflow is not automatically a native Skill. The Marketing snapshots use explicit workflow reads; their policy points the agent at installed resources.
+Dependency manifests, lockfiles, Git metadata and manifests are fixed. Core
+checks resource boundaries, seals exact content and verifies execution identity.
+Editable resources do not grant permission to modify the upstream runtime source.
 
-## Verify before evaluating
+[Profiles](configuration.md) fix runtime version, model and container. Each
+evaluation uses its sealed candidate; editing `.gear/` cannot legitimately
+change an admitted experiment.
 
-`candidate.check` reports static and compiler/runtime coverage. The DSH checker can verify loading, prompt assembly and native Skill discovery/read behavior. Passing those checks does not prove arbitrary tool bodies, hooks or business workflows executed correctly. Add a targeted runtime scenario when needed, then run a real smoke evaluation.
-
-Use an absolute compiler executable. Pin `compiler.runtimeRoot` to the installed Target runtime and set `reportProtocol: gear-runtime-check-v1` for the structured DSH report. A no-op compiler without this protocol reports runtime coverage as `not_checked`.
-
-## Reuse the final Harness
-
-```bash
-node examples/automationbench-marketing/inspect.mjs
-node examples/automationbench-marketing/inspect.mjs examples/evolution-search
-```
-
-Inspection verifies the shipped source against its historical manifest. To run it in a new carrier, use `GEAR_INITIAL_HARNESS` during bootstrap. The new carrier receives a fresh manifest and commit; historical metrics remain attached to their original revisions.
-
-Keep credentials in host configuration. They do not belong in the candidate tree, Git history or exported Harness. The [DSH editing reference](../../../skills/refine/references/dsh-target-harness.md) describes actual hooks, tools, native Skills and load paths.
+See the [native DSH resource guide](../../../skills/refine/references/dsh-target-harness.md)
+for wiring examples. Host extension loading, container materialization and model
+adoption are distinct verification layers; consult the
+[implementation record](../../refactor-progress.zh-CN.md) for observed results.

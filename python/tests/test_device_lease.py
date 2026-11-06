@@ -5,10 +5,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from gear_training.content import ContractError, atomic_json
-from gear_training.device_lease import NodeDeviceLedger
-from gear_training.node_generation import record_generation
-from gear_training.recovery import process_identity, stop_owned
+from gear.training.storage.content import ContractError, atomic_json
+from gear.training.runtime.device_lease import NodeDeviceLedger
+from gear.training.runtime.node_generation import record_generation
+from gear.training.runtime.recovery import process_identity, stop_owned
 
 
 class DeviceLeaseTests(unittest.TestCase):
@@ -19,16 +19,16 @@ class DeviceLeaseTests(unittest.TestCase):
         atomic_json(Path(self.tmp.name) / "identity.json", identity)
         record_generation(self.tmp.name, identity)
         self.ledger = NodeDeviceLedger(self.tmp.name, self.node)
-        self.probe = patch("gear_training.device_lease.gpu_processes", return_value=[]).start()
+        self.probe = patch("gear.training.runtime.device_lease.gpu_processes", return_value=[]).start()
         self.addCleanup(patch.stopall)
 
     def test_training_eval_mutual_exclusion_and_disconnect_usage(self):
-        with patch("gear_training.device_lease.time.time", return_value=100): self.ledger.acquire("training/job-1", ["GPU-1"])
+        with patch("gear.training.runtime.device_lease.time.time", return_value=100): self.ledger.acquire("training/job-1", ["GPU-1"])
         with self.assertRaisesRegex(ContractError, "another training/evaluation"): self.ledger.acquire("inference/service-1", ["GPU-1"])
-        with patch("gear_training.device_lease.time.time", return_value=160):
+        with patch("gear.training.runtime.device_lease.time.time", return_value=160):
             self.assertEqual(self.ledger.inspect("training/job-1")["gpuSeconds"], 60)
             self.ledger.fence("training/job-1"); self.assertTrue(self.ledger.release("training/job-1"))
-        with patch("gear_training.device_lease.time.time", return_value=180):
+        with patch("gear.training.runtime.device_lease.time.time", return_value=180):
             self.assertEqual(self.ledger.inspect("training/job-1")["gpuSeconds"], 60)
             self.ledger.acquire("inference/service-1", ["GPU-1"])
         with self.assertRaisesRegex(ContractError, "cannot revive"): self.ledger.acquire("training/job-1", ["GPU-1"])

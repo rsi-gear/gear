@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import stat
 
-from gear_training.content import require
+from gear.training.storage.content import require
 from single_gpu_recovery_smoke import context
 
 

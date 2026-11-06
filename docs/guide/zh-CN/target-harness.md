@@ -1,37 +1,18 @@
 # 准备 Target Harness
 
-Target 是可构建的确切 Git 版本。Gear 修改声明的 Harness 目录，固定载体提供 runtime 与评测入口。
+`gear init --target dsh` 或 `gear init --target pi` 生成原生可编辑载体；项目中的 `target.path` 指向其资源目录。Target 与执行候选生成的 Meta profile 分别选择。
 
-## 使用示例载体
+| Adapter | 可修改资源 |
+| --- | --- |
+| DSH | `preset/`、`plugins/`、`prompts/`、`skills/`、`workflows/` |
+| Pi | `AGENTS.md`、`.pi/settings.json`、`.pi/extensions/`、`.pi/skills/`、`.pi/prompts/` |
 
-[快速开始的 bootstrap](quickstart.md)创建独立仓库，记录 substrate、初始 champion 与 manifest。Gear 源码、Target 源码、任务工作区和状态目录应分别保存。Hitch 将确定的 Target 提交构建为不可变制品，在容器中评测。
+DSH 的 `preset/agent.cordis.yml` 接线插件，固定 patch 配置 Skill 目录；一个未接线的提示文件不会自动生效。Pi 使用项目内原生发现规则；settings 不得重定向外部 packages/extensions/skills/prompts/themes。
 
-```text
-target/
-  fixed/                  # loader、Target 配置、verifier
-  harness/
-    preset/agent.cordis.yml
-    plugins/policy.js
-    workflows/            # 可选流程与辅助程序
-    skills/               # 载体支持时的原生 Skill
-    manifest.json
-```
+容器评测由外层 Harbor 环境隔离。DSH 的固定容器 patch 使用 `danger-full-access` 和 `approval.policy: never`，Pi 使用原生自动批准模式；这些评测设置不写入宿主载体。真实 CLI、工具执行与独立评分的可重复验证见[容器测试说明](../../testing/target-headless.zh-CN.md)。
 
-新增文件需要接入实际加载路径。Markdown workflow 不自动成为原生 Skill；Marketing 示例通过 policy 指向已安装资源，由 Agent 显式读取 workflow。
+依赖清单、锁文件、Git 元数据和 manifest 不属于候选修改范围。core 检查资源边界，封存确切字节并验证运行身份。新增可编辑文件并不意味着可以修改上游 runtime 源码。
 
-## 评测前验证
+运行 Target 的具体版本、模型及容器由[profile](configuration.md)固定。每次 evaluate 使用封存候选，生成后不能直接编辑 `.gear/` 来改变它。
 
-`candidate.check` 返回静态及编译/runtime 覆盖。DSH checker 可检查加载、提示组装和原生 Skill 发现/读取；通过检查不代表任意工具、hook 或业务流程已经正确执行。需要时补充针对性运行场景，再跑真实单题评测。
-
-compiler 使用绝对可执行路径，`compiler.runtimeRoot` 指向已安装 Target，配置 `reportProtocol: gear-runtime-check-v1` 才要求结构化 DSH 报告。未启用协议的空操作 compiler 会将 runtime 覆盖记为 `not_checked`。
-
-## 复用最终 Harness
-
-```bash
-node examples/automationbench-marketing/inspect.mjs
-node examples/automationbench-marketing/inspect.mjs examples/evolution-search
-```
-
-检查器对照历史 manifest 验证示例源码。导入新载体时，在 bootstrap 前设置 `GEAR_INITIAL_HARNESS`；新载体获得新 manifest 和 commit，历史指标仍归属于原版本。
-
-凭据由宿主配置提供，不放入候选目录、Git 或导出 Harness。[DSH 编辑参考](../../../skills/refine/references/dsh-target-harness.md)说明真实 hook、tool、原生 Skill 和加载关系。
+DSH 接线示例见[原生资源指南](../../../skills/refine/references/dsh-target-harness.md)。本机扩展加载、容器 materialization、模型是否采用策略是不同验证层次；当前结果见[实施记录](../../refactor-progress.zh-CN.md)。

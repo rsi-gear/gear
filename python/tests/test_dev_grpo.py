@@ -14,13 +14,13 @@ from unittest.mock import Mock, patch
 from episode_fixture import EpisodeFixture
 import test_driver_memory as driver_fixture
 from test_placement import MemoryRuntime, Remote, Ref, HYPERPARAMETERS
-from gear_training.content import ContractError, atomic_json, digest_json
-from gear_training.driver import run, SlimeRoundRuntime
-from gear_training.episodes import EpisodeJournal
-from gear_training.ledger import Ledger
-from gear_training.placement import resource_plan
-from gear_training.rollout import generate_rollout
-from gear_training import dev_grpo
+from gear.training.storage.content import ContractError, atomic_json, digest_json
+from gear.training.backends.slime.driver import run, SlimeRoundRuntime
+from gear.training.data.episodes import EpisodeJournal
+from gear.training.storage.ledger import Ledger
+from gear.training.runtime.placement import resource_plan
+from gear.training.backends.slime.rollout import generate_rollout
+from gear.training.pipelines import online_rl as dev_grpo
 
 
 class Sample:
@@ -43,7 +43,7 @@ class DevGRPOTests(unittest.TestCase):
             self.d.store.put_bytes(old_store.read_bytes(ref), ref["mediaType"])
         request = self.f.request
         request["trainer"].update({key: value for key, value in self.d.request["trainer"].items() if key != "placement"})
-        source = self.d.store.put_bytes(b"from gear_training.dev_grpo import build_loop\n", "application/octet-stream")
+        source = self.d.store.put_bytes(b"from gear.training.pipelines.online_rl import build_loop\n", "application/octet-stream")
         request["trainer"]["script"] = {"entrypoint": "recipe:build_loop", "sourceRef": self.d.store.put_json({"schemaVersion": 1, "kind": "training-script-source", "files": [{"path": "recipe.py", "contentRef": source}]})}
         request["trainer"]["runtimeLock"]["protocolDigest"] = self.f.ref["digest"]
         request["parentModel"].update(self.d.request["parentModel"])
@@ -118,7 +118,7 @@ class DevGRPOTests(unittest.TestCase):
         atomic_json(self.d.root / "request.json", self.d.request); atomic_json(self.d.root / "config.json", self.config)
         _, values, _ = resource_plan(self.d.request, HYPERPARAMETERS["slimeArgs"])
         for key, value in values.items(): setattr(self.d.args, key[2:].replace("-", "_"), value)
-        modules = {"ray": self.d.rt.ray, "slime.utils.arguments": SimpleNamespace(parse_args=lambda: self.d.args),
+        modules = {"ray": self.d.rt.ray, "slime.utils.arguments": SimpleNamespace(parse_args=self.d.parse_args),
             "slime.ray.placement_group": SimpleNamespace(create_placement_groups=lambda args: {"rollout": None, "actor": None},
                 create_rollout_manager=self.d.create_manager, create_training_models=self.d.create_actor),
             "slime.utils.logging_utils": SimpleNamespace(configure_logger=lambda: None, init_tracking=lambda *args: None, finish_tracking=lambda *args: None),
@@ -139,7 +139,7 @@ class DevGRPOTests(unittest.TestCase):
             try: asyncio.run(self.controller(stopped))
             except BaseException as error: self.controller_errors.append(error)
         thread = threading.Thread(target=worker)
-        with patch.dict(sys.modules, modules), patch.dict(os.environ, {"GEAR_TRAINING_JOB": str(self.d.root)}),              patch.object(sys, "argv", []), patch.object(sys, "path", sys.path[:]),              patch("gear_training.gpu_visibility.verify_visible_devices"),              patch("gear_training.driver.materialize", side_effect=self.d.materialize),              patch("gear_training.checkpoint_export.checkpoint_exporter", side_effect=self.d.exporter),              patch("gear_training.export.seal_directory", return_value=self.d.state_ref),              patch("gear_training.driver.commit_checkpoint", side_effect=self.d.commit),              patch("gear_training.rollout.slime_protocol", protocol), patch("gear_training.rollout.NativeSGLang", return_value=Native()):
+        with patch.dict(sys.modules, modules), patch.dict(os.environ, {"GEAR_TRAINING_JOB": str(self.d.root)}),              patch.object(sys, "argv", []), patch.object(sys, "path", sys.path[:]),              patch("gear.training.backends.slime.gpu_visibility.verify_visible_devices"),              patch("gear.training.backends.slime.driver.materialize", side_effect=self.d.materialize),              patch("gear.training.backends.slime.checkpoint_export.checkpoint_exporter", side_effect=self.d.exporter),              patch("gear.training.storage.snapshots.seal_directory", return_value=self.d.state_ref),              patch("gear.training.backends.slime.driver.commit_checkpoint", side_effect=self.d.commit),              patch("gear.training.backends.slime.rollout.slime_protocol", protocol), patch("gear.training.backends.slime.rollout.NativeSGLang", return_value=Native()):
             if controller: thread.start()
             try: yield
             finally:
@@ -187,7 +187,7 @@ class DevGRPOTests(unittest.TestCase):
 
     def test_raw_and_sealed_builder_gaps_resume_without_new_generation(self):
         self.d.request["trainer"]["updatesPerCandidate"] = 1
-        normal = dev_grpo.GRPODatasetBuilder.build
+        normal = dev_grpo.PolicyDatasetBuilder.build
         for seal_first in (False, True):
             if seal_first:
                 # Reuse another clean fixture, so each gap is a complete job.
@@ -195,7 +195,7 @@ class DevGRPOTests(unittest.TestCase):
             async def interrupted(builder, ctx, trajectories):
                 if seal_first: await normal(builder, ctx, trajectories)
                 raise RuntimeError("builder result gap")
-            with self.cpu_runtime(), patch.object(dev_grpo.GRPODatasetBuilder, "build", interrupted), self.assertRaisesRegex(RuntimeError, "builder result gap"):
+            with self.cpu_runtime(), patch.object(dev_grpo.PolicyDatasetBuilder, "build", interrupted), self.assertRaisesRegex(RuntimeError, "builder result gap"):
                 run(self.d.root)
             captured = len(self.native_calls)
             self.assertEqual(self.native_events.count("train"), 0)
@@ -210,7 +210,7 @@ class DevGRPOTests(unittest.TestCase):
         with self.cpu_runtime(), self.assertRaisesRegex(OSError, "commit response lost"): run(self.d.root)
         self.assertFalse((self.d.root / "four-stage-loop/rounds/000000/model-updater/result.json").exists())
         before = self.native_events[:]; captured = len(self.native_calls)
-        with patch("gear_training.gpu_visibility.verify_visible_devices", side_effect=AssertionError("CUDA must not restart")):
+        with patch("gear.training.backends.slime.gpu_visibility.verify_visible_devices", side_effect=AssertionError("CUDA must not restart")):
             run(self.d.root)
         self.assertEqual(self.native_events, before); self.assertEqual(len(self.native_calls), captured)
         self.assertEqual(self.stage("model-updater")["committedUpdate"], 1)
@@ -230,7 +230,7 @@ class DevGRPOTests(unittest.TestCase):
         self.assertEqual(self.stage("model-updater")["committedUpdate"], 1)
 
     def test_frozen_custom_factory_has_uniform_config_and_native_capabilities(self):
-        code = b"""from gear_training.dev_grpo import build_loop as builtin, FrozenTaskSource
+        code = b"""from gear.training.pipelines.online_rl import build_loop as builtin, FrozenTaskSource
 class CustomTasks(FrozenTaskSource):
     stage_id='custom-frozen-task-source:v1'
     async def generate(self,ctx):
@@ -256,10 +256,10 @@ def build_loop(config,runtime):
     def test_wrong_pipeline_and_legacy_upgrade_are_rejected_before_cuda(self):
         self.d.request["trainer"]["pipeline"] = "misspelled"
         atomic_json(self.d.root / "request.json", self.d.request); atomic_json(self.d.root / "config.json", self.config)
-        with patch("gear_training.gpu_visibility.verify_visible_devices", side_effect=AssertionError("CUDA")), self.assertRaisesRegex(ContractError, "use a frozen trainer.script"):
+        with patch("gear.training.backends.slime.gpu_visibility.verify_visible_devices", side_effect=AssertionError("CUDA")), self.assertRaisesRegex(ContractError, "use a frozen trainer.script"):
             run(self.d.root)
         del self.d.request["trainer"]["pipeline"]
         self.d.original_batch()
         atomic_json(self.d.root / "request.json", self.d.request)
-        with patch("gear_training.gpu_visibility.verify_visible_devices", side_effect=AssertionError("CUDA")), self.assertRaisesRegex(ContractError, "legacy jobs cannot upgrade"):
+        with patch("gear.training.backends.slime.gpu_visibility.verify_visible_devices", side_effect=AssertionError("CUDA")), self.assertRaisesRegex(ContractError, "legacy jobs cannot upgrade"):
             run(self.d.root)

@@ -1,47 +1,41 @@
 # Gear user guide
 
-Gear is an algorithm library for agent optimization that you can invoke through a Skill. Provide an existing benchmark or define your own in Harbor format, and Gear can automatically optimize both the agent's Harness and its model using evaluation feedback.
+These pages describe Gear 0.2.2 and its project-based API.
+Python defines optimization policies; the durable runtime executes evaluations,
+candidate generation, recovery and final validation. The CLI, Python SDK,
+native DSH Skill and project socket use the same application service.
 
-## Choose a path
+## Choose an entrypoint
 
-- [Quick start](quickstart.md): install `rsi-gear@latest`, connect the Refine Skill to Codex, Claude Code or another agent, and request an optimization in natural language.
-- [Example 1: evolve a harness for Marketing](example-harness.md): five rounds, the initial prompt, the retained change, and a 27% → 36% strict pass rate at fixed Luna medium.
-- [Example 2: customize your evolve algorithm](example-algorithm.md): seven editable algorithm modules, an elitist selector, and the measured 4 → 2 → 1 staged-search experiment.
-- [Model training](training.md): the experimental Slime training path, its deployment requirements and validation boundary.
+- [Quick start](quickstart.md): create an editable benchmark, check it without model calls, then run one task.
+- [Python algorithms](example-algorithm.md): replace a parent policy or edit the six shared algorithm modules.
+- [Target harness](target-harness.md): choose native DSH or Pi resources.
+- [Model training](training.md): use `gear.training` with its independent experiment lifecycle.
 
-## What you can evolve
+## Six algorithm modules
 
-| Part | What Gear can improve |
+| File | Responsibility |
 | --- | --- |
-| Prompts and policies | System prompts, behavioral rules and task instructions. |
-| Tools and hooks | Tool definitions, implementations and hooks around agent actions. |
-| Skills and workflows | Reusable procedures, helpers and how the agent discovers and uses them. |
-| Context management | Context assembly, injection and compaction through the Harness's extension points. |
-| Harness composition | Which plugins and providers are enabled and how they are configured. |
-| Model weights · experimental | Slime GRPO training with a fixed Harness and datasets. |
+| `parents.py` | Parents, sampling probabilities and candidate quotas |
+| `sampling.py` | Seed task sets and weights |
+| `proposal.py` | Diagnosis and candidate planning |
+| `ranking.py` | Candidate comparison over complete, shared scopes |
+| `stopping.py` | Termination |
+| `algorithm.py` | Stage order and policy composition |
 
-Start with [Harness evolution](example-harness.md), learn how to [prepare an editable Target](target-harness.md), or explore [model training](training.md).
+GEPA and RandomSearch instantiate the same public contracts. TypeScript owns
+execution and fixed validation; it does not expose a second algorithm author API.
+Training lives in `python/gear/training/`, separated into contracts, loop,
+storage, runtime, backends, data, script entrypoints and related responsibilities.
 
-## Algorithm components you can customize
+## Verification scope
 
-| Component | What you can change |
-| --- | --- |
-| Candidate generation | Candidate slots and allocation across available parents. |
-| Task sampling | Task selection, evaluation scopes and repetitions. |
-| Rollout backend | How candidate versions execute and produce evaluation evidence. |
-| Fitness scoring | Metrics calculated from evaluation evidence. |
-| Candidate assessment | Ranking criteria and optional verifier reasoning. |
-| Survivor selection | Which candidates to retain, including elitism, diversity and tie-breaking. |
-| Champion promotion | Acceptance thresholds and paired evaluation checks for replacing the champion. |
+Static benchmarks, CPU policies, native DSH/Pi extension loading and installed
+package offline journeys have coverage. The production Meta runner, authentication
+setup, real-model journey and advanced metric migration remain in progress; see
+the [implementation record](../../refactor-progress.zh-CN.md). Historical Marketing
+examples describe their pinned research experiments, not current setup instructions
+or independent held-out performance evidence.
 
-Compose these components to define your search algorithm. [Example 2](example-algorithm.md) shows the extension interfaces, an elitist selector and a staged evaluation design.
-
-## Support and version
-
-This guide accompanies Gear 0.1.2, packaged as `rsi-gear`. Gear is pre-alpha. The standalone Meta connection is Harness-neutral; the built-in Target builder is currently DSH-oriented. Supporting a Harness in Hitch does not automatically add a Gear Target builder.
-
-The staged-search case used the implementation pinned in its [source record](example-algorithm.md#implementation-and-version). Its configuration is not advertised as a switch supported by every 0.1.0 checkout. Historical Marketing scores use a public research set that also supplied optimization evidence; they are not independent held-out results.
-
-## Next steps
-
-Learn to [connect Meta](meta-agents.md), [prepare a Target](target-harness.md), [prepare tasks](datasets.md), [manage an evolution](evolutions.md), and [interpret results](results.md). Use [configuration](configuration.md) and [troubleshooting](troubleshooting.md) when setting up your own experiment.
+Continue with [configuration](configuration.md), [tasks](datasets.md),
+[run management](evolutions.md), [reports](results.md) and [troubleshooting](troubleshooting.md).

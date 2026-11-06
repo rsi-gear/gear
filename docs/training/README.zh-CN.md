@@ -4,9 +4,9 @@
 
 Gear 的模型训练独立于 harness 进化状态，通过固定 harness 和数据集执行版本化 Slime RL 或离线 SFT 更新，再用不可变 HF 导出进行独立评估。新部署从 [v2 controller 配置](controller-v2.zh-CN.md) 开始；下文同时说明 v1 配置和通用训练合同。
 
-开发者编写自己的四阶段训练，从 [TrainingLoop 开发指南](development.zh-CN.md) 开始；它支持普通 Python 实现，不要求 agent；控制器也可加载自定义 `build_loop(config, runtime)` 脚本，Hitch/Slime 作为内置组件继续复用。已有 Slime 后端可用 `python -m gear_training run spec.json --config controller.json` 创建并持续运行，或 `run EXP_ID RUN_ID` 跟踪已有运行。 原 dev 固定任务 GRPO 流程的四阶段脚本是 [dev_grpo.py](../../examples/training-loop/dev_grpo.py)，运行和恢复方法见开发指南。
+开发者编写自己的四阶段训练，从 [TrainingLoop 开发指南](development.zh-CN.md) 开始；它支持普通 Python 实现，不要求 agent；控制器也可加载自定义 `build_loop(config, runtime)` 脚本，Hitch/Slime 作为内置组件继续复用。已有 Slime 后端可用 `python -m gear_training run spec.json --config controller.json` 创建并持续运行，或 `run EXP_ID RUN_ID` 跟踪已有运行。 Hitch/Slime 四阶段工厂见 [hitch_slime.py](../../examples/training-loop/recipes/hitch_slime.py)，运行和恢复方法见开发指南。
 
-目前实机验收覆盖本地 Gear / Hitch / Harbor Docker 与远程 RTX 5090 单卡上的 Qwen2.5-1.5B 训练、恢复及推理。远程 Docker / Harbor 和双卡尚未验收。独立评估 reward=0，不代表质量提升或晋升。认证范围及证据见文末；`pending-gpu` lock 不能提交正式训练。
+既有正式实机认证覆盖本地 Gear / Hitch / Harbor Docker 与远程 RTX 5090 单卡上的 Qwen2.5-1.5B 训练、恢复及推理。2026-10-15 另取得[上游双卡推理记录](../validation/external-inference-gpu-2026-10-15.md)及[2×RTX 3090 静态分卡训练/端点评测诊断](../validation/training-gpu-loop-2026-10-15.md)：Qwen3.5-2B 一次更新、native/HF 导出和实际本机 Harbor 基线/candidate 配对，均为有效 reward=0、meanDelta=0，loss/grad norm=0，不代表质量提升或晋升。新诊断仍为 `validated:false` / `pending-gpu`，完整本机制品全闭包与离线 finite 复核已通过（108 个对象、35,467,670,234 字节），精确租机销毁已确认，不能提交正式训练；远程 Harbor worker、完整 benchmark 未验收。历史认证范围及证据见文末。
 
 可选的任务生成、轨迹分析及 SFT 数据构建见 [Python 四阶段与 AgentRunner](stages.zh-CN.md)。 开发与扩展请从 [训练模块开发指南](development.zh-CN.md) 开始。
 
@@ -17,17 +17,21 @@ Gear 的模型训练独立于 harness 进化状态，通过固定 harness 和数
 - `rsi-gear/training`：版本化合同、CAS、`ModelTrainingCoordinator`、`SlimeModelTrainer`、`HitchModelEvaluator` 和显式发布适配器。
 - `gear-refine training`：v2 冻结前用 `preflight-deployment` 分别检查控制端、Harbor worker 和模型节点，再用 `freeze-deployment` 固定部署；实验执行使用 `put-json`、`seal-hf`、`seal-dataset`、`seal-sft`、`validate`、`init`、`admit`、`preflight`、`advance`、`status`、`pause`、`resume`、`close`、`publish`、`rollback`。
 - `python/gear_training`：Slime job RPC、私有作业监督进程、精确 token gateway、rollout hook、完整 checkpoint/HF export、恢复账本。
-- Hitch 新增 `training register` / `training evidence`；`local plan` / `local inspect` 用于在提交前读取并固定真实 inference lock。
+- Hitch 的 `training register` / `training evidence` 保留精确训练接入；普通评测使用 `models connect` / `models inspect --verify` 注册并验证外部模型 API，再按不可变模型版本准备冻结绑定。
 
 状态事务通过 Python `fcntl.flock` 内核锁串行化；默认调用 `python3`，需要时用 `GEAR_TRAINING_LOCK_PYTHON` 指定同环境的 Python 可执行文件。进程中断会释放锁，不依赖过期 PID 文件恢复。
 
 `advance` 执行一轮可重复的协调，不是后台定时器。调用方应间隔数秒重复调用，直到 `execution=completed` 或需要处理 `blocked/failed`。Slime 作业和 Hitch eval 自己在后台运行；退出 Gear CLI 不会重新提交或隐式取消任务。使用 `pause` 请求取消，并继续调用直到 `paused`；`resume` 使用原 job 和 idempotency key。
 
+新建自动实验可使用 `gear training iterate SPEC --config CONTROLLER` 一次启动多轮，随后用 `iterate EXP` 协调原持久意图、`pause EXP`/`resume EXP` 控制整个实验。需在创建时冻结 iteration 策略、全实验训练 schedule 和受管 profile 授权；原单轮实验不会自动升级。配置工具、恢复限制和后续真实验收见[无人值守迭代](unattended-iteration.zh-CN.md)。
+
 ## 边界与身份
 
 训练使用固定的 `training-tool` harness：单条线性 Chat Completions 工具轨迹，只允许容器内 bash 工具；无 compaction、分支、subagent、辅助模型或隐藏重试。训练和 dev/held-out 使用同一已提交的 runner 和 artifact。Hitch 的 Codex / Responses 路径继续独立使用。
 
-Slime 管理训练 SGLang；Hitch 管理不可变 HF 模型的评估 SGLang。v1 使用单个私有 Ray 节点，支持 actor/rollout 独立 GPU，以及共享 GPU、交替生成和训练的 CPU offload 模式。评估使用一个明确的 GPU UUID。可以使用隔离资源池，或先确认旧进程和 GPU 已释放再串行复用。不会停止用户的其他 Ray 集群。
+Slime 管理训练 SGLang。独立评估连接由部署所有者准备的不可变 HF 模型端点，上游 SGLang/官方 Gateway 管理模型副本与服务恢复；Hitch 只管理任务和请求。训练 actor/rollout 可使用独立 GPU 或训练内部 CPU offload 共卡，普通评测首版与训练静态分卡。新 resources 只列 trainingDevices，v2 的 trainEvaluation 设为 isolated；推理卡在外部部署分配中保留，限制训练进程的实际设备访问。完整接入与按版本绑定见[独立评测端点](standalone-inference.zh-CN.md)。
+
+端点准备可保留 external-file 外部映射，也可在新 v2 实验显式选择[managedNative](managed-native.zh-CN.md)：Gear 的部署适配器调用 Supervisor、核验快照与真实进程、登记消费者并回收自属服务。Hitch 仍只接收普通冻结 API binding，不获得模型启停权；外部长驻端点不进入实验自动回收。
 
 每次生成都保存原始 native 输入/输出 token IDs、生成时 weight_version、behavior logprobs、采样参数及请求/响应。工具观察的 loss mask 和 logprob 为 0；模型 token 才参与 loss。prefix 不连续、length/abort、缺少 terminal、verifier 无效或版本漂移会拒绝整个 episode/group。有效 reward=0 保留。凑不满完整 B×G batch 时明确 no-update，不将空/不足 batch 交给 Slime。
 
@@ -62,6 +66,10 @@ controller JSON（示例值中的路径替换成云主机实际路径）：
     "harnessSourceDirectory": "/srv/agent-hitch",
     "python": ["/opt/training/bin/python"],
     "budgets": { "timeoutSeconds": 900, "setupTimeoutSeconds": 1800, "maxConcurrent": 1, "maxEpisodeSteps": 16, "infrastructureRetries": 0, "maxRepairRounds": 1 }
+  },
+  "evaluationBindings": {
+    "bindingsFile": "/srv/gear/deployments/by-hf-digest.json",
+    "trustedReceiptSources": ["ci-gpu-deploy"]
   },
   "activationPath": "/srv/gear/releases/active.json"
 }
@@ -105,9 +113,9 @@ Hitch 支持显式本地 Git source；训练/评估从 `hitchPath` / `harnessSou
 
 ### 单卡与独立显卡配置
 
-`trainer.placement` 控制训练 actor 与生成 SGLang 的关系，省略时为 `separate`。它与 `resources.mode`（训练与评估的 GPU 资源关系）是两个独立设置。
+`trainer.placement` 控制 v1 训练 actor 与训练 rollout SGLang 的关系，省略时为 `separate`；v2 对应 `deployment.gpuScheduling.actorRollout`。独立评测使用另外静态分配的推理卡，resources 仅含 trainingDevices。
 
-单卡调试时，合并以下字段到完整 spec，两个设备列表填同一个实际 GPU UUID：
+训练内部单卡调试时，合并以下字段到完整 v1 spec。独立评测端点部署在另一张保留的 GPU 上：
 
 ```json
 {
@@ -119,9 +127,7 @@ Hitch 支持显式本地 Git source；训练/评估从 `hitchPath` / `harnessSou
   },
   "rollout": { "groupSize": 2 },
   "resources": {
-    "trainingDevices": ["GPU-实际UUID"],
-    "evaluationDevices": ["GPU-实际UUID"],
-    "mode": "sequential"
+    "trainingDevices": ["GPU-实际训练UUID"]
   }
 }
 ```
@@ -136,7 +142,7 @@ Hitch 支持显式本地 Git source；训练/评估从 `hitchPath` / `harnessSou
 2. 恢复 SGLang 权重，用 Slime full tensor/IPC 路径同步 actor 权重，再恢复 KV cache/CUDA graphs。
 3. 生成完整训练轨迹，等待 Hitch/native 请求结束、receipt 落盘、lease 关闭、batch 封存。
 4. 等待 SGLang 卸载确认后调用 Slime backward、同步保存 optimizer/RNG、导出 HF。训练、保存和导出各自唤醒 actor，结束后再次 offload。
-5. 原子登记 update commit，下一轮重新恢复 SGLang。训练完全释放后，由 Hitch 加载不可变 HF 模型执行评估；缺失的基线评估同样与训练串行。
+5. 原子登记 update commit，下一轮重新恢复训练 SGLang。独立评测等待对应不可变 HF 版本的外部端点就绪，再向 Hitch 提交冻结绑定；基线同样按自身模型版本准备。评测结束只结束任务，不停止共享模型服务。
 
 HF 导出失败后的恢复在 SGLang 卸载状态下只重导出 pending checkpoint。任一显存切换失败会结束当前 driver incarnation，交给原有进程清理和恢复流程，不继续训练。共享模式不支持 `release-train`、delta/disk 权重传输、角色 YAML 覆盖、多模型或 prefill/decode 分离服务；不能用 argv 覆盖 offload 设置。实现依据：[固定 Slime train.py](https://github.com/THUDM/slime/blob/41014d1f29e201137fdffce737bb8bac65bc5219/train.py)、[placement_group.py](https://github.com/THUDM/slime/blob/41014d1f29e201137fdffce737bb8bac65bc5219/slime/ray/placement_group.py)。
 
@@ -144,7 +150,7 @@ placement 与设备数量进入 checkpoint compatibility digest。切换共享/�
 
 运行时 lock 除 Slime/Hitch/Megatron commit 外还固定镜像、Python/CUDA/torch/SGLang、bridgeDigest、protocolDigest 和 patchDigests。bridgeDigest 用 `gear_training.preflight.bridge_digest()` 计算；源码补丁摘要取对应 checkout 的 `git diff HEAD --binary` 原始字节。`protocolDigest` 用 `gear_training.preflight.generation_protocol_digest(jobConfig)` 计算，封存所选 gateway/tool parser 协议。实际进程、源码、已应用的 export 扩展与 GPU UUID 都在 preflight 核对。
 
-评估 `common.runtimeDigest` 为公开函数 `inferenceCommonDigest(lock)` 的值，包含 engine、runtime_id、profile、execution 和 resources；`protocolDigest` / `samplingDigest` 分别为 `digestJson(lock.protocol)` / `digestJson(lock.generation)`；`budgetsDigest` 是上面完整 `hitch.budgets` 对象的 digest。当前固定 runner 评估使用 16 步、2048 output tokens，实际锁不匹配会拒绝。可以先运行 `hitch local plan MODEL --harness REF --gpu GPU-UUID --offline --json` 得到真实锁。模型参数不同引起的 execution 漂移也不能作为“仅权重变化”通过。
+评估 `common.runtimeDigest` 为 `digestJson(binding.deployment_receipt.service_config)`，`protocolDigest` 为 `digestJson({api: binding.api})`，`samplingDigest` 为 `digestJson(binding.generation)`，`budgetsDigest` 是上面完整 `hitch.budgets` 对象的 digest。固定 runner 的任务步数仍为 16，输出预算在 generation 中明确冻结并直接透传，使用 1024、4096 等正常业务值。权重和 Harness 身份属于 subject；端点 revision、wire model 与部署回执属于本次 binding，不放入公共 condition。引擎、量化、解析器、tokenizer/template 和缓存/隔离策略改变后重新判断 baseline 可比性。绑定文件、可信回执和按 HF digest 的映射格式见[独立评测端点](standalone-inference.zh-CN.md)。
 
 ## 执行、恢复与发布
 
@@ -163,15 +169,15 @@ python -m gear_training resume EXP_ID RUN_ID --config controller.json
 
 每步训练保存 actor、optimizer、scheduler/RNG 和数据 cursor，再导出 HF，再用 UpdateCommitManifest 原子登记 batch 消费。崩溃在完整 checkpoint 之前时丢弃未提交内存更新；有 sealed batch 时只在恢复到相同 pre-update 权重后重放。完整 checkpoint 后导出失败保留 pending-update，恢复后只重导出，不执行额外 optimizer step。旧进程身份（PID 与创建时间）、旧 Hitch submit key、run 终态、receipt 和租约都需要协调完成，新 incarnation 才能开始。
 
-v2 训练与独立评估分别使用持久序号控制启动和暂停，初始提交重试不会自行恢复已中断或暂停的 incarnation；显式 `resume` 才发出较新的 start。暂停先于首次提交到达时保留未启动身份，迟到旧请求不能启动 worker 或评估服务。训练节点和 Hitch 均需支持各自的有序控制协议；v1 继续使用原接口。详细顺序与验证边界见 [v2 controller](controller-v2.zh-CN.md)。
+v2 训练与独立评估分别使用持久序号控制启动和暂停，初始提交重试不会自行恢复已中断或暂停的 incarnation；显式 `resume` 才发出较新的 start。暂停先于首次提交到达时保留未启动身份，迟到旧请求不能启动 worker 或评估任务。训练节点和 Hitch 均需支持各自的有序控制协议；v1 继续使用原接口。详细顺序与验证边界见 [v2 controller](controller-v2.zh-CN.md)。
 
 基线证据按完整 subject/common condition 复用。只有缺失或无效 slot 可以在预算内修复；有效零分不能替换。dev 不达标时不查询 candidate held-out；held-out 次数单独封顶。比较先对 task 内 attempts 求平均，再给出 task-level standard error。champion 更新使用 parent revision 和 modelRef CAS；失败/无结论保留旧 champion。
 
-v1 作业 GPU cost 按唯一分配设备数×存活墙钟计费，评估按第一次 intent 到资源释放的墙钟保守计费，包含排队/协调延迟。v2 训练与评估使用模型节点的持久设备账本，按唯一物理 GPU 的占用时间累计；共卡 actor/rollout 只算一张卡，断连不清零。每次 `advance` 刷新未释放训练和待完成评估的用量；评估达到总预算即有序暂停，物理释放前继续保留预占和计费。复用同一评估 key 只入账累计增量，跨训练 run 不重复收费。控制端离线期间由节点账本继续累计，详细语义见 [v2 controller](controller-v2.zh-CN.md)。token 先预留上限，再按实际完成数入账；无法确认的原生输出按预留上限计费。评估超总预算会拒绝晋级，不会抹去已消耗成本。
+训练 GPU cost 继续按训练后端的唯一设备占用累计，共卡 actor/rollout 不重复计费，断连不清零。每次 advance 刷新未释放训练的用量，已有累计计量保持去重与单调更新。新预算必须显式设 `gpuSecondsScope="training"`，此时 `totalGpuSeconds` 只覆盖训练；当前拒绝 `gpuSecondsScope="total"`，因为共享推理缺少可靠计量。评估记录上游实际 token、请求次数和时间；`gpuSeconds` / `gpuSecondsSource` 未知时为 null，不能补 0 或重复分摊整池费用。任务结束与训练物理资源释放分别记录为 evaluationTasksCompleted 和 resourcesReleased，共享推理服务的释放归部署所有者。训练 token 继续按原合同预留和入账。
 
 `publish EXP_ID` 和 `rollback EXP_ID RELEASE_ID` 是显式命令，不会随 champion 自动执行。它们导入已批准的不可变模型，并原子更新 Gear 管理的 `activationPath`。业务 episode 在开始时读取一次其中 `hitchModel=local/sha256:…`，此后固定该 ID。这个发布接口不热替换正在执行的 SGLang 权重，也不部署外部业务流量入口。
 
-v2 的 `artifactStorage="model-node"` 直接在冻结节点上注册、核验模型，发布和回滚都不需要将权重复制到控制端。activation 另带公开的 `modelNode` 绑定，后续推理须连同模型 ID 一起使用；配置与调用约定见 [远程发布与回滚](controller-v2.zh-CN.md#远程发布与回滚)。
+v2 的 `artifactStorage="model-node"` 保留远端训练 CAS；显式发布通过 Gear 现有制品传输下载并核验获批 snapshot，再导入 Hitch 的本地模型目录。activation 中的 hitchModel 是制品身份，不创建可调用端点；后续推理仍须为对应 snapshot 准备外部绑定，见[显式发布与回滚](controller-v2.zh-CN.md#显式发布与回滚)。
 
 ## GPU 验证与认证
 
@@ -180,12 +186,12 @@ v2 的 `artifactStorage="model-node"` 直接在冻结节点上注册、核验模
 `colocated` 还要求每份有效报告的 `placementIdentityDigest` 等于 `gear_training.placement.placement_probe_digest(trainingRequest)`，绑定设备数量、模型结构/dtype/token 语义、hyperparameters、batch、DP 和 rollout 配置。旧独立模式报告不会计入共享模式验收。另需完成三个 checks，并归档各阶段 GPU/主机内存、实际 GPU UUID、原始日志及数值结果：
 
 - `colocatedMemoryCycle`：同一显卡至少两轮 generate → offload → train/save/export → onload，同步确认显存切换，故障/取消后释放资源；不发生未结束请求下的卸载。
-- `colocatedCheckpointRecovery`：训练 checkpoint 前后中断、sealed batch 重放、HF 导出失败后只重导出、optimizer/RNG 连续恢复，随后 Hitch 评估串行复用显卡。
+- `colocatedCheckpointRecovery`：训练 checkpoint 前后中断、sealed batch 重放、HF 导出失败后只重导出、optimizer/RNG 连续恢复，随后独立端点评估使用静态分配的推理卡。
 - `colocatedWeightAlignment`：初次和更新后 SGLang 权重/token logprob 与 actor 数值对齐，验证 offload/onload 与 tensor/IPC 同步不造成权重损坏或旧策略泄漏。
 
-云端需逐项验证：native token IDs/terminal 与 actor logprob 数值一致性；两次工具调用 prefix 精确连续；一批完整 B×G 的 backward 和 ratio/KL；所有 rollout replica 同步；训练取消与旧请求 fencing；checkpoint 前后中断和 HF 导出故障恢复；HF reload 有限权重；Hitch immutable local SGLang 的非流式/流式工具协议；真实 Harbor verifier；两套 SGLang 隔离及串行释放；多轮 optimizer/reference 不漂移；最终 dev/held-out 比较和显式发布回滚。
+云端需逐项验证：native token IDs/terminal 与 actor logprob 数值一致性；两次工具调用 prefix 精确连续；一批完整 B×G 的 backward 和 ratio/KL；所有 rollout replica 同步；训练取消与旧请求 fencing；checkpoint 前后中断和 HF 导出故障恢复；HF reload 有限权重；真实上游模型端点的非流式/流式工具完整往返；真实 Harbor verifier；训练与推理静态设备隔离；多轮 optimizer/reference 不漂移；最终 dev/held-out 比较和显式发布回滚。
 
-完成相应范围的检查后才将 lock 设为 `validated` 并初始化正式实验。实际通过的模型、拓扑与数值门限以下方认证记录为准。
+完成相应范围的检查后才将 lock 设为 `validated` 并初始化正式实验。实际通过的模型、拓扑与数值门限以下方认证记录为准。[2026-10-15 推理拓扑](../validation/external-inference-gpu-2026-10-15.md)与[静态分卡训练/端点评测](../validation/training-gpu-loop-2026-10-15.md)已取得各自有界实机证据；后者明确为未认证的流程诊断，不代替上述完整数值、恢复与质量门禁，历史证书也不能替代新运行时认证。
 
 ### 认证范围与入口
 

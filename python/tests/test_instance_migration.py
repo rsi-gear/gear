@@ -6,7 +6,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "probes"))
 from verify_instance_migration import verify
-from gear_training.content import ContentStore, ContractError, atomic_json, digest_file
+from gear.training.storage.content import ContentStore, ContractError, atomic_json, digest_file
 
 
 class MigrationTests(unittest.TestCase):

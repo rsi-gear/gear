@@ -1,6 +1,6 @@
 # 版本化 Slime 训练配方与离线 SFT
 
-Gear 的模型训练使用固定 harness、不可变数据和独立 dev/held-out 评估。下面的配方都沿用原来的设备租约、GPU 时间核算、每 update 完整 checkpoint、HF 导出、暂停/恢复、评估与显式发布流程。v1/v2 controller 均可使用。RSI/harness 搜索不会自动启动这些模型更新。
+Gear 的模型训练使用固定 harness、不可变数据和独立 dev/held-out 评估。下面的配方保留训练设备租约、训练 GPU 计量、每 update 完整 checkpoint、HF 导出和暂停/恢复。独立评估采用[按不可变模型版本准备的外部端点](standalone-inference.zh-CN.md)，静态分卡；共享推理 GPU 时间未知时为 null，预算显式覆盖 training。显式发布仅更新批准的制品指针。v1/v2 controller 均可使用。RSI/harness 搜索不会自动启动这些模型更新。
 
 ## 配方与固定上游接口
 
@@ -23,7 +23,7 @@ Slime 固定为 `41014d1f29e201137fdffce737bb8bac65bc5219`，Megatron 固定为 
 
 ## 通过四阶段脚本运行
 
-所有配方共用 `TrainingLoop(task_source, rollout_executor, dataset_builder, model_updater)` 和控制器的 `training run` / 暂停 / 恢复接口。在线配方复用 `gear_training.online_rl`；SFT 复用 `gear_training.offline_sft`，由其构建阶段封存离线 batch，再交给共用 Slime updater。默认 native 脚本按 `trainer.recipe` 选择这两套组合。
+所有配方共用 `TrainingLoop(task_source, rollout_executor, dataset_builder, model_updater)` 和控制器的 `training run` / 暂停 / 恢复接口。在线配方复用 `gear.training.pipelines.online_rl`；SFT 复用 `gear.training.pipelines.offline_sft`，由其构建阶段封存离线 batch，再交给共用 Slime updater。默认 native 脚本按 `trainer.recipe` 选择这两套组合。
 
 开发者只需实现或组合四个阶段，入口和完整示例见 [开发指南](development.zh-CN.md#使用-hitchslime-基础组件)。`scriptSource` 会封存为 `trainer.script`；这与 agent runner 的选择无关。SFT 原始记录由 `seal-sft` 预先封存，运行时不接受会被忽略的旧 `stages` agent 覆盖配置。
 
@@ -52,7 +52,7 @@ row = {
 }
 json.dump({'schemaVersion': 1, 'modelRef': parent['modelRef'], 'maxSequenceTokens': 64, 'records': [row]}, open('sft-input.json', 'w'))
 PYCODE
-gear-refine training seal-sft sft-input.json --config controller.json > sft-dataset.json
+gear training seal-sft sft-input.json --config controller.json > sft-dataset.json
 ```
 
 role-token 入口信任作者对 token 来源和模型编码的声明，结构校验验证 token ID 类型/范围、对齐和掩码；不能从数字本身证明一段文本来自助手。输入不接受任意 `lossMask`：只有 `assistant` segment 自动置 1，system/user/tool segment 置 0，第一 token 始终置 0，无监督 token 的记录会拒绝。记录封存后，tokenRoles 与 mask 再次交叉检查；原始 source task 和 verifier 内容不作为引用图上传模型节点。
@@ -80,7 +80,7 @@ role-token 入口信任作者对 token 来源和模型编码的声明，结构�
 先准备 `sft-hyperparameters.json`，封存实际模型 architecture/TP/PP/optimizer/学习率参数。SFT 至少需要 `--lr` 和 `--num-steps-per-rollout`，保留 Megatron 模型尺寸和实际 `--seq-length` 等配置。去掉在线 KL/clipping/rollout GPU 配置；Gear 固定 `kl_coef=kl_loss_coef=0`、`sft_loss`、关闭 advantage computation 和 rollout logprob，参考模型不会加载成 reference actor。下面使用一条 example、一次 candidate update、一次 epoch；扩大数据后再显式调整这些值。
 
 ```sh
-gear-refine training put-json sft-hyperparameters.json --config controller.json > sft-hyperparameters-ref.json
+gear training put-json sft-hyperparameters.json --config controller.json > sft-hyperparameters-ref.json
 python - <<'PYCODE'
 import json
 spec = json.load(open('base-spec.json'))
@@ -97,21 +97,21 @@ spec['offlineTraining'] = {
 spec['trainer']['runtimeLock'].update(validation='pending-gpu', probeEvidenceRefs=[])
 json.dump(spec, open('sft-spec.json', 'w'), indent=2)
 PYCODE
-gear-refine training validate sft-spec.json --config controller.json
-gear-refine training init sft-spec.json --config controller.json > experiment.json
+gear training validate sft-spec.json --config controller.json
+gear training init sft-spec.json --config controller.json > experiment.json
 python -c "import json; print(json.load(open('experiment.json'))['id'])" > experiment-id.txt
-gear-refine training admit "$(cat experiment-id.txt)" --config controller.json > admitted.json
+gear training admit "$(cat experiment-id.txt)" --config controller.json > admitted.json
 python -c "import json; print(json.load(open('admitted.json'))['id'])" > run-id.txt
-gear-refine training preflight "$(cat experiment-id.txt)" "$(cat run-id.txt)" --config controller.json
+gear training preflight "$(cat experiment-id.txt)" "$(cat run-id.txt)" --config controller.json
 ```
 
 上述最后一步预期报告 `gpu-probes-pending` 和缺失的配方证据。在完成下节的独立实机审计并将得到的 validated lock 放入最终 spec 后，新建对应实验，再重复 admit/preflight；不能修改已有冻结实验的 spec/runtime lock 来绕过认证。正式执行：
 
 ```sh
-gear-refine training advance "$(cat experiment-id.txt)" "$(cat run-id.txt)" --config controller.json
-python -m gear_training status "$(cat experiment-id.txt)" "$(cat run-id.txt)" --config controller.json
-python -m gear_training pause "$(cat experiment-id.txt)" "$(cat run-id.txt)" --config controller.json
-python -m gear_training resume "$(cat experiment-id.txt)" "$(cat run-id.txt)" --config controller.json
+gear training advance "$(cat experiment-id.txt)" "$(cat run-id.txt)" --config controller.json
+python -m gear.training status "$(cat experiment-id.txt)" "$(cat run-id.txt)" --config controller.json
+python -m gear.training pause "$(cat experiment-id.txt)" "$(cat run-id.txt)" --config controller.json
+python -m gear.training resume "$(cat experiment-id.txt)" "$(cat run-id.txt)" --config controller.json
 ```
 
 按现有 controller 工作流反复 `advance` 直到 terminal。SFT 使用 pinned Slime 的 `debug_train_only` 进行 actor-only placement：训练 GPU 全部分配给 actor，rollout GPU=0；CPU data manager 只把 sealed offline examples 转成 Slime 的训练输入，不创建 SGLang engine、Hitch episode、policy lease、权重同步或 actor/rollout offload cycle。v2 `gpuScheduling.actorRollout` 和旧 `rollout` 字段为兼容现有部署/评估合同保留，对 SFT 训练分组和采样不生效。`rolloutBatchSize` 在 SFT 表示每 update 的 example 数，B 必须能被 global batch size 整除，global batch size 必须能被 DP size 整除，不作 B×G 校验。`fixedHarness`、verifier、dev/held-out 和 evaluation policy 继续用于独立评估。
@@ -126,7 +126,7 @@ SFT 的 `maxRolloutTokens` 仍是生成 token 预算，SFT 训练不产生或扣
 
 源码/API 支持和 GPU 实测分别判断。preflight 读取实际 Slime checkout 的参数选项、loss 函数和 actor-only placement/data-manager 接口；缺少接口时报告 `unsupported-slime-algorithm` 或 `unsupported-slime-sft-runtime`，未知 recipe 被拒绝。既有 runtime lock 的 bridgeDigest 也必须更新到本版真实桥接代码。
 
-新配方的 `gear-versioned-recipe-v1` operator certificate 绑定 recipe、实际 runtime/model/设备部署、batch/data 合同和 harness identity。在线配方增加 `algorithmLossAndAdvantages` GPU audit；separate placement 不需要 colocated checks。SFT 独立要求 `sftMaskedLoss`、`sftOptimizerRecovery`、`exportReload`、`independentEvaluationHandoff`、`disconnectedAccounting` 的 GPU evidence，以及 offlineDataIsolation/controlResponseRecovery/remoteArtifactRetention 的适用进程证据；不会把旧的 offload-cycle 认证套在 actor-only SFT 上。认证仍通过 `python -m gear_training.certification --request REQUEST.json --audit AUDIT.json --store STORE_ROOT --output LOCK.json` 封存独立 operator audit，必须提供实际留存制品和相符 scope；该命令不能生成缺失的实测观察。
+新配方的 `gear-versioned-recipe-v1` operator certificate 绑定 recipe、实际 runtime/model/设备部署、batch/data 合同和 harness identity。在线配方增加 `algorithmLossAndAdvantages` GPU audit；separate placement 不需要 colocated checks。SFT 独立要求 `sftMaskedLoss`、`sftOptimizerRecovery`、`exportReload`、`independentEvaluationHandoff`、`disconnectedAccounting` 的 GPU evidence，以及 offlineDataIsolation/controlResponseRecovery/remoteArtifactRetention 的适用进程证据；不会把旧的 offload-cycle 认证套在 actor-only SFT 上。认证仍通过 `python -m gear.training.cli.certify --request REQUEST.json --audit AUDIT.json --store STORE_ROOT --output LOCK.json` 封存独立 operator audit，必须提供实际留存制品和相符 scope；该命令不能生成缺失的实测观察。
 
 本次实现完成 CPU 合同和实际 pinned-source 检查：新增算法 argv/拒绝规则、REINFORCE++ singleton/raw reward、baseline centering、native HF 助手 mask、实际 Slime Sample 与 train-data conversion、工具 token 零梯度的 SFT loss、driver 的 train/save/export 与故障恢复、CLI/sealed provenance、v1/v2 独立评估晋级、远程上传 allowlist/制品收集、旧 GRPO 回归。CPU actor/Ray 注入只验证控制合同；source-derived loss 测试验证受控 tensor 路径。
 

@@ -112,7 +112,7 @@ node examples/data-analysis-harness/mlebench.mjs prepare-local \
 
 ## 五次实验、评分和导出
 
-沿用 [研究控制器](../data-analysis-harness/README.zh-CN.md) 的 plan/run 接口，每个 harness 一个序列、五个实验槽；每个新候选内部做五折 CV。可以从空 checkpoint 开始；共享 bootstrap 是可选的额外研究记录，不是五个槽中的重复序列。
+通过 [研究项目](../data-analysis-harness/README.zh-CN.md) 的标准 `gear.yaml` / Project API 使用 Python GEPA 比较和晋升，也可使用 plan/run 接口逐步检查序列，每个 harness 一个序列、五个实验槽；每个新候选内部做五折 CV。可以从空 checkpoint 开始；共享 bootstrap 是可选的额外研究记录，不是五个槽中的重复序列。
 
 新记录 `analysis-task@2` / `analysis-experiment@2` 分开记录 `metric`、`pooledScore`、`pooledUtility`。accuracy/AUC 的 utility 等于原分数；RMSLE 使用 `1/(1+score)`。五折汇总由完整 OOF 预测重新计算：AUC 不能取五个 fold AUC 的均值，双目标 RMSLE 也不能先平均目标的平方误差再开方。晋升仍使用实际 C5 的 utility，要求输出有效；审计不能改写 C1–C5。
 

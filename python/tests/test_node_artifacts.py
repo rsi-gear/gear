@@ -4,9 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from gear_training.content import ContentStore, ContractError, digest_json
-from gear_training.export import seal_directory
-from gear_training.node_artifacts import hf_manifest
+from gear.training.storage.content import ContentStore, ContractError, digest_json
+from gear.training.storage.snapshots import seal_directory
+from gear.training.runtime.node_artifacts import hf_manifest
 
 
 class NodeHfManifestTests(unittest.TestCase):

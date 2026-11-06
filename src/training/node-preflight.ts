@@ -28,7 +28,7 @@ export interface ModelNodePreflight {
   gpus: { uuid: string; name: string; memoryMiB: number; driverVersion: string; activeProcesses: number | null }[]
   hostMemory: { totalBytes: number; availableBytes: number } | null
   cudaVersion: string | null
-  ports: { rollout: number | null; inference: number | null }
+  ports: { rollout: number | null }
 }
 
 /** Only allow known public observations; never forward an arbitrary node error body. */
@@ -61,14 +61,14 @@ export function parseModelNodePreflight(input: unknown, node: NodeIdentity, runt
       'invalid-node-preflight', 'invalid host memory observation')
   }
   requireContract(value.cudaVersion === null || typeof value.cudaVersion === 'string' && /^\d+(\.\d+)+$/.test(value.cudaVersion), 'invalid-node-preflight', 'invalid CUDA version')
-  const ports = exact(value.ports, ['rollout', 'inference'])
+  const ports = exact(value.ports, ['rollout'])
   requireContract(Object.values(ports).every(port => port === null || integer(port) && Number(port) > 0 && Number(port) < 65536), 'invalid-node-preflight', 'invalid model gateway port')
   const passed = (code: string) => checks.find(item => item.code === code)?.status === 'passed'
   requireContract(passed('gpu-inventory') === (gpus.length > 0) && passed('cuda-runtime') === (value.cudaVersion !== null)
     && passed('host-memory-observation') === (value.hostMemory !== null)
     && gpus.every(gpu => passed('gpu-process-observation') === (gpu.activeProcesses !== null))
     && !passed('runtime-changed-during-observation')
-    && passed('model-gateway-configuration') === (ports.rollout !== null && ports.inference !== null && ports.rollout !== ports.inference),
+    && passed('model-gateway-configuration') === (ports.rollout !== null),
   'invalid-node-preflight', 'model-node checks contradict their observations')
   const sources = object(value.sources)
   for (const name of ['slime', 'megatron']) {

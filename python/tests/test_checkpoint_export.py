@@ -6,8 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from gear_training.checkpoint_export import checkpoint_export_actor_class, checkpoint_exporter
-from gear_training.content import ContractError
+from gear.training.backends.slime.checkpoint_export import checkpoint_export_actor_class, checkpoint_exporter
+from gear.training.storage.content import ContractError
 
 
 class CheckpointExportTests(unittest.TestCase):
@@ -18,7 +18,7 @@ class CheckpointExportTests(unittest.TestCase):
             group = SimpleNamespace(create=Mock(return_value=starts), release=Mock())
             allocate = Mock(return_value=group)
             with patch.dict(sys.modules, {"slime.ray.placement_group": SimpleNamespace(allocate_train_group=allocate)}), \
-                    patch("gear_training.checkpoint_export.checkpoint_export_actor_class", return_value="export-class"):
+                    patch("gear.training.backends.slime.checkpoint_export.checkpoint_export_actor_class", return_value="export-class"):
                 def exercise():
                     with checkpoint_exporter(args, {"actor": "pg"}, 3) as actual:
                         self.assertIs(actual, group)

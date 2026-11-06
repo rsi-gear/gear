@@ -2,7 +2,7 @@ import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/
 import { dirname, join, resolve } from 'node:path'
 import { digestDatasetRef } from './dataset.js'
 import { removeOwnedTree } from './materialize-tree.js'
-import { RefineStateStore } from './store.js'
+import { acquireWorkspaceLock } from '../adapters/storage/workspace-lock.js'
 import { digestJson } from './digest.js'
 import { readProjectionQuarantine } from './projection-quarantine.js'
 
@@ -16,7 +16,7 @@ export async function auditStorage(stateRoot: string, options: { apply?: boolean
   stateRoot = resolve(stateRoot)
   const grace = options.graceMs ?? 24 * 60 * 60 * 1000
   if (!Number.isSafeInteger(grace) || grace < 0) throw new TypeError('invalid storage grace period')
-  const lock = await new RefineStateStore(stateRoot).acquireRoundLock()
+  const lock = await acquireWorkspaceLock(stateRoot)
   try {
     const search = join(stateRoot, 'search'), datasets = join(search, 'datasets'), quarantine = join(search, 'storage-quarantine')
     const audit: StorageAudit = { protocol: 'gear-storage-audit@1', dryRun: !options.apply, retained: [], eligible: [], quarantined: [], deleted: [], logicalBytes: 0, reports: [] }

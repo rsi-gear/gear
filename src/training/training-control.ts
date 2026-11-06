@@ -19,7 +19,6 @@ export function evaluationControlIntent(run: ModelTrainingRun): TrainingControlI
   return run.evaluationControl ?? { schemaVersion: 2, sequence: 0, action: 'start' }
 }
 export function setEvaluationControl(run: ModelTrainingRun, action: TrainingControlIntent['action'], resume = false): void {
-  if (run.request.schemaVersion !== 2) return
   const previous = evaluationControlIntent(run)
   const sequence = previous.sequence + (previous.action !== action || resume ? 1 : 0)
   requireContract(Number.isSafeInteger(sequence), 'evaluation-control-overflow', 'evaluation control sequence is exhausted')

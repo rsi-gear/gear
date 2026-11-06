@@ -2,8 +2,8 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { requestRefineSkill } from '../../src/skill/client.js'
-import { RefineSkillServer } from '../../src/skill/server.js'
+import { requestRefineSkill } from '../../src/adapters/skill/client.js'
+import { RefineSkillServer } from '../../src/adapters/skill/server.js'
 
 const roots: string[] = []
 const servers: RefineSkillServer[] = []
@@ -32,4 +32,20 @@ describe('RefineSkillServer', () => {
     })
     await expect(requestRefineSkill(socketPath, { method: 'fail' })).rejects.toThrow('intentional failure')
   })
+})
+
+it('refuses to replace a listening socket and releases ownership on dispose', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'gear-socket-owner-')); roots.push(root)
+  const socketPath = join(root, 's.sock')
+  const gateway = { maxRequestBytes: 4096, async call(method: string) { return { method } } }
+  const first = new RefineSkillServer(socketPath, gateway); servers.push(first)
+  await first.start()
+  const second = new RefineSkillServer(socketPath, gateway)
+  await expect(second.start()).rejects.toMatchObject({ code: 'state-busy' })
+  await second.dispose().catch(() => {})
+  await expect(requestRefineSkill(socketPath, { method: 'alive' })).resolves.toEqual({ method: 'alive' })
+  await first.dispose()
+  servers.push(second)
+  await second.start()
+  await expect(requestRefineSkill(socketPath, { method: 'restarted' })).resolves.toEqual({ method: 'restarted' })
 })

@@ -9,15 +9,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from gear_training.content import ContentStore, ContractError, atomic_json, digest_json
-from gear_training.driver import build_argv
-from gear_training.offline import seal_dataset, read_dataset, seal_batch, validate_batch, validate_cursor, window
-from gear_training.preflight import compatibility_digest, missing_probe_checks
-from gear_training.recipes.registry import ESTIMATORS, validate_recipe_args, zero_variance_policy
-from gear_training.recipes.source_contract import verify_source_contract
-from gear_training.certification import scope, required_checks, inspect_certificate
-from gear_training.ledger import Ledger
-from gear_training.recovery import update_recovery
+from gear.training.storage.content import ContentStore, ContractError, atomic_json, digest_json
+from gear.training.backends.slime.driver import build_argv
+from gear.training.data.offline import seal_dataset, read_dataset, seal_batch, validate_batch, validate_cursor, window
+from gear.training.runtime.preflight import compatibility_digest, missing_probe_checks
+from gear.training.recipes.registry import ESTIMATORS, validate_recipe_args, zero_variance_policy
+from gear.training.recipes.source_contract import verify_source_contract
+from gear.training.runtime.certification import scope, required_checks, inspect_certificate
+from gear.training.storage.ledger import Ledger
+from gear.training.runtime.recovery import update_recovery
 from test_placement import request_fixture, HYPERPARAMETERS, PATHS
 
 
@@ -93,7 +93,7 @@ class RecipesTests(unittest.TestCase):
         request = request_fixture(); request["trainer"]["recipe"] = "agent-reinforce-plus-plus-v1"
         request["rollout"].update(groupSize=1, zeroVarianceGroup="skip-with-bounded-resampling")
         self.assertEqual(zero_variance_policy(request), "keep")
-        from gear_training.samples import EpisodeSample, admit_group, seal_batch as seal_online_batch
+        from gear.training.data.samples import EpisodeSample, admit_group, seal_batch as seal_online_batch
         with tempfile.TemporaryDirectory() as directory:
             store = ContentStore(directory); ref = store.put_json({"fixture": 1})
             request.update(trainingRunId="singleton", recipeDigest=ref["digest"], datasetSplitDigest=ref["digest"])
@@ -140,7 +140,7 @@ class OfflineTests(unittest.TestCase):
         from tokenizers.pre_tokenizers import Whitespace
         from transformers import PreTrainedTokenizerFast
         from safetensors.torch import save_file
-        from gear_training.artifacts import seal_hf
+        from gear.training.storage.models import seal_hf
         vocab = {"[UNK]": 0, "user": 1, "question": 2, "assistant": 3, "answer": 4, "tool": 5, "observation": 6}
         backend = Tokenizer(WordLevel(vocab, unk_token="[UNK]")); backend.pre_tokenizer = Whitespace()
         tokenizer = PreTrainedTokenizerFast(tokenizer_object=backend, unk_token="[UNK]")
@@ -327,7 +327,7 @@ class PinnedSupervisedLossTests(unittest.TestCase):
         from enum import Enum
         from typing import Any
         from types import MethodType
-        from gear_training.offline import generate_rollout
+        from gear.training.backends.slime.offline import generate_rollout
         pinned = Path(os.environ["GEAR_PINNED_SLIME_SOURCE"])
         type_tree = ast.parse((pinned / "slime/utils/types.py").read_text())
         sample_class = next(n for n in type_tree.body if isinstance(n, ast.ClassDef) and n.name == "Sample")

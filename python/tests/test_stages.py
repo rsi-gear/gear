@@ -4,11 +4,13 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from gear_training.agent_stage import run_agent_stage
-from gear_training.agents import AgentResult
-from gear_training.content import ContentStore, ContractError, atomic_json
-from gear_training.stage_journal import StageJournal
-from gear_training.stages import persist_trajectory, SFTDatasetBuilder, GRPODatasetBuilder
+from gear.training.adapters.agent_stage import run_agent_stage
+from gear.training.adapters.agents import AgentResult
+from gear.training.storage.content import ContentStore, ContractError, atomic_json
+from gear.training.storage.stage_journal import StageJournal
+from gear.training.data.trajectories import persist_trajectory
+from gear.training.data.builders import SFTDatasetBuilder
+from gear.training.data.builders import GRPODatasetBuilder
 from episode_fixture import EpisodeFixture
 import test_training
 
@@ -36,7 +38,7 @@ class StageTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ContractError): await run_agent_stage(self.store, self.root / "stages", "dataset-builder", self.config, self.payload, runner=runner)
 
     async def test_generated_task_snapshot_preserves_executables_and_empty_directories_on_replay_and_node(self):
-        from gear_training.export import seal_directory, materialize
+        from gear.training.storage.snapshots import seal_directory, materialize
         source = self.root / "source" / "train"; source.mkdir(parents=True)
         (source / "task.toml").write_text("[task]\n"); (source / "instruction.md").write_text("source exercise")
         source_ref = seal_directory(self.store, source, dataset=True)
@@ -153,9 +155,9 @@ class StageTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ContractError): await SFTDatasetBuilder(f.store).build([bad], verifications={episode["id"]: proof})
 
     async def test_split_store_candidate_provenance_retains_opaque_agent_outputs(self):
-        from gear_training.node_artifacts import retain_graph
+        from gear.training.runtime.node_artifacts import retain_graph
         config = {**self.config, "maxRepairs": 0}
-        from gear_training.export import seal_directory
+        from gear.training.storage.snapshots import seal_directory
         source = self.root / "retention-source" / "train"; source.mkdir(parents=True)
         (source / "task.toml").write_text("[task]\n"); (source / "instruction.md").write_text("source task")
         environment_ref = self.store.put_json({"policy": "frozen source environment"})
@@ -188,7 +190,7 @@ class StageTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("receipt", response)
         self.assertFalse(node.path(payload["behaviorPolicyRef"]["digest"]).exists())
         self.assertTrue(any(item["kind"] == "file" for item in response["receipt"]["objects"]))
-        from gear_training.export import materialize
+        from gear.training.storage.snapshots import materialize
         restored = materialize(node, task["taskRef"], self.root / "retained-generated")
         self.assertEqual((restored / "tests/test.sh").stat().st_mode & 0o777, 0o755)
         self.assertTrue((restored / "empty").is_dir())
@@ -196,7 +198,7 @@ class StageTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_cli_stop_before_registration_prevents_custom_runner_execution(self):
         import os, subprocess, sys
         stage_root = self.root / "cli-stage"; execution = self.root / "cli-execution"; response = execution / "response.json"
-        command = [sys.executable, "-m", "gear_training.stages", "--store-root", str(self.store.root), "--workspace", str(stage_root),
+        command = [sys.executable, "-m", "gear.training.cli.stages", "--store-root", str(self.store.root), "--workspace", str(stage_root),
                    "--execution-root", str(execution), "--response-file", str(response)]
         stopped = subprocess.run([*command, "--stop"], capture_output=True, text=True, check=True)
         self.assertTrue(json.loads(stopped.stdout)["stopped"])

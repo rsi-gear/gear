@@ -1,3 +1,4 @@
+import { fixtureEndpointPreparer } from './fixture.js'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve, join } from 'node:path'
@@ -13,7 +14,7 @@ it('admits the TB 2.1 Python example through the real v2 schema and CAS', async 
   try {
     const store = new ModelTrainingStore(root), base = v2spec(await fixture(store))
     const script = `import json, pathlib, runpy, sys, tempfile
-from gear_training.content import ContentStore
+from gear.training.storage.content import ContentStore
 inputs = json.load(sys.stdin)
 example = runpy.run_path(inputs['example'])
 splits = {'train': ['one'], 'dev': ['two'], 'heldOut': ['three']}
@@ -29,7 +30,7 @@ with tempfile.TemporaryDirectory() as directory:
 `
     const spec = await jsonProcess(['env', `PYTHONPATH=${resolve('python')}`, process.env.GEAR_TRAINING_TEST_PYTHON ?? 'python3'],
       ['-c', script], { base, root, example: resolve('examples/training-loop/terminal-bench-2.1/prepare.py') }, 10_000)
-    const coordinator = new ModelTrainingCoordinator(store, new FixtureTrainer(store), new FixtureEvaluator(store))
+    const coordinator = new ModelTrainingCoordinator(store, new FixtureTrainer(store), new FixtureEvaluator(store), fixtureEndpointPreparer)
     const experiment = await coordinator.createExperiment(spec)
     const run = await coordinator.admit(experiment.id)
     expect(run.request.trainer.script?.entrypoint).toBe('tb21:build_loop')

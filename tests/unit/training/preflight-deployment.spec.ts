@@ -68,18 +68,18 @@ describe('deployment checks before experiment freeze', () => {
   it('places missing packages, occupied GPUs and gateway mismatches on the model node', async () => {
     fixture.report.checks.find(item => item.code === 'package-ray')!.status = 'blocked'
     fixture.report.gpus[0]!.activeProcesses = 1
-    fixture.report.ports.inference = 32101
+    fixture.report.ports.rollout = 32101
     const report = await preflightDeployment(fixture.config, fixture.invoke)
-    for (const code of ['package-ray', 'idle-gpu-pool', 'evaluation-gateway-port']) expect(check(report, code)).toMatchObject({ scope: 'model-node', status: 'blocked' })
+    for (const code of ['package-ray', 'idle-gpu-pool', 'rollout-gateway-port']) expect(check(report, code)).toMatchObject({ scope: 'model-node', status: 'blocked' })
     expect(check(report, 'minimum-gpu-pool')?.status).toBe('passed')
   })
-  it('requires additional GPUs for disaggregated rollout and isolated evaluation', async () => {
+  it('requires training GPUs for disaggregated rollout without counting external evaluation GPUs', async () => {
     fixture.config.deployment.gpuScheduling.actorRollout = 'disaggregated'
     expect(check(await preflightDeployment(fixture.config, fixture.invoke), 'minimum-gpu-pool')?.status).toBe('blocked')
     fixture.report.gpus.push({ ...fixture.report.gpus[0]!, uuid: 'GPU-456' })
     expect((await preflightDeployment(fixture.config, fixture.invoke)).readyForRuntimeProbes).toBe(true)
     fixture.config.deployment.gpuScheduling.trainEvaluation = 'isolated'
-    expect(check(await preflightDeployment(fixture.config, fixture.invoke), 'minimum-gpu-pool')?.status).toBe('blocked')
+    expect(check(await preflightDeployment(fixture.config, fixture.invoke), 'minimum-gpu-pool')?.status).toBe('passed')
   })
   it('does not reuse diagnostics from another node generation or ignore unknown GPU occupancy', async () => {
     fixture.report.node = { ...fixture.report.node, generation: 'boot-2' }
@@ -128,13 +128,12 @@ describe('deployment checks before experiment freeze', () => {
     node.transport = { type: 'local' }; node.workspace = root; node.configPath = join(root, 'node.json')
     node.python = ['env', `PYTHONPATH=${resolve('python')}`, process.env.GEAR_TRAINING_TEST_PYTHON ?? 'python3']
     node.gateway.localPort = node.gateway.nodePort
-    fixture.config.evaluationGateway.localPort = fixture.config.evaluationGateway.nodePort
     const jobConfigPath = join(root, 'job.json'), jobsRoot = join(root, 'jobs')
     await writeFile(jobConfigPath, JSON.stringify({ schemaVersion: 2, storeRoot: fixture.config.storeRoot, jobsRoot,
       slimePath: join(root, 'missing-slime'), megatronPath: join(root, 'missing-megatron'), gatewayBindHost: '127.0.0.1',
       gatewayPort: node.gateway.nodePort, controllerTimeoutSeconds: 30, episodeTimeoutSeconds: 30 }))
     await writeFile(node.configPath, JSON.stringify({ schemaVersion: 2, nodeId: 'cpu-preflight', nodeRoot: join(root, 'node'),
-      storeRoot: fixture.config.storeRoot, jobConfigPath, inferencePort: fixture.config.evaluationGateway.nodePort }))
+      storeRoot: fixture.config.storeRoot, jobConfigPath }))
     const file = join(root, 'controller.json'); await writeFile(file, JSON.stringify(fixture.config))
     const report = await trainingCommand(['preflight-deployment', '--config', file]) as Awaited<ReturnType<typeof preflightDeployment>>
     expect(report.modelNode?.node.nodeId).toBe('cpu-preflight')

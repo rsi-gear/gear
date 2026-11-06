@@ -1,5 +1,7 @@
 # 案例一：优化 Marketing Harness
 
+这是固定历史版本的研究集案例，不是当前项目 API 的安装教程；当前入口见[快速开始](quickstart.md)。
+
 使用 Gear 根据真实失败证据改进 Agent Harness。五轮迭代中，Luna medium 在 Marketing 公开研究集上的严格通过率从 27% 提升到 36%；最终保留 Harness 后续以 Luna max 评测达到 50%。
 
 ![通过率与目标完成率二维图：原始 DSH 搭配 Luna medium 的基线、Marketing 迭代、独立 max 评测、原生 Codex + Astra，以及带星号的 官方 held-out Marketing 模型结果。](../assets/marketing-harness-evolution.svg)

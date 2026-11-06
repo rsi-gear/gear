@@ -15,7 +15,7 @@ export interface SlimeTrainerOptions { python: string[]; configPath: string; rpc
 export class SlimeModelTrainer implements ModelTrainer {
   constructor(readonly options: SlimeTrainerOptions) {}
   private call(action: string, body: unknown) {
-    return jsonProcess(this.options.python, ['-m', 'gear_training.job', action, '--config', this.options.configPath], body, this.options.rpcTimeoutMs ?? 60_000)
+    return jsonProcess(this.options.python, ['-m', 'gear.training.cli.job', action, '--config', this.options.configPath], body, this.options.rpcTimeoutMs ?? 60_000)
   }
   async preflight(request: TrainingRequest) { return parseTrainingCapabilities(await this.call('preflight', { request: parseTrainingRequest(request) })) }
   async submit(request: TrainingRequest, idempotencyKey: string) { return parseTrainingHandle(await this.call('submit', { request: parseTrainingRequest(request), idempotencyKey })) }

@@ -2,10 +2,10 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from gear_training import SLIME_COMMIT
-from gear_training.content import ContractError, digest_json
-from gear_training.gateway import slime_protocol
-from gear_training.preflight import generation_protocol_digest, generation_template_kwargs
+from gear.training import SLIME_COMMIT
+from gear.training.storage.content import ContractError, digest_json
+from gear.training.inference.gateway import slime_protocol
+from gear.training.runtime.preflight import generation_protocol_digest, generation_template_kwargs
 
 
 class TemplateOptionsTests(unittest.TestCase):

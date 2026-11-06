@@ -3,11 +3,11 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm, readFile, writeFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { command } from '../../kaggle-titanic/common.mjs'
+import { command } from '../lib/common.mjs'
 import { inspectMlebench, importMlebench } from '../lib/mlebench.mjs'
 import { validateTabularSubmission } from '../lib/submission.mjs'
 import { fixture, competitions } from './mlebench-fixture.mjs'
-import { AnalysisSearchProvider } from '../lib/search-provider.mjs'
+import { metrics, objective } from '../lib/operation-provider.mjs'
 import { defaultBudget, seal } from '../lib/contracts.mjs'
 import { decodeOof } from '../target-carrier/fixed/oof.mjs'
 import { internalScore, internalQuality } from '../lib/metrics.mjs'
@@ -68,12 +68,10 @@ test('Gear objective maximizes utility while retaining minimizing unbounded RMSL
     targetColumns: ['a','b'], metric: 'mean-column-wise-rmsle', labels: [] }, publicFiles: [],
     benchmark: { format: 'mle-bench', competitionId: competitions[0], definitionDigest: golden.task.digest,
       publicTreeDigest: golden.task.digest, sourceRevision: 'fixture', verification: 'fixture' } })
-  const provider = new AnalysisSearchProvider({}, {}, { task, runtime: {}, model: 'fixture', budget: defaultBudget }, golden.checkpoint)
-  const description = await provider.describe('seed')
-  const raw = description.rawMetricContracts.find(m => m.id === 'task_score')
+  const raw = metrics(task).find(m => m.id === 'task_score')
   assert.equal(raw.unit, 'mean-column-wise-rmsle'); assert.equal(raw.direction, 'minimize'); assert.equal(raw.range, undefined)
-  assert.equal(description.tasks[0].outcome.direction, 'maximize')
-  assert.equal(description.tasks[0].outcome.group, 'mean-column-wise-rmsle')
+  assert.deepEqual(objective.terms, [{ metric: 'total_score', weight: 1 }])
+  assert.equal(metrics(task).find(m => m.id === 'total_score').direction, 'maximize')
 })
 
 test('800k-row May OOF evidence fits the artifact bound and retains IDs and precision', async t => {

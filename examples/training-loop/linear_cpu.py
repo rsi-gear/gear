@@ -8,7 +8,7 @@ GPU, framework, external weights or third-party numeric package is required.
 """
 import argparse
 import json
-from gear_training import TrainingLoop, TrainingConfig
+from gear.training import TrainingLoop, TrainingConfig
 
 
 class TaskSource:

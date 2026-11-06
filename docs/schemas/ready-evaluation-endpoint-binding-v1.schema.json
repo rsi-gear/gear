@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rsi-gear.dev/schemas/ready-evaluation-endpoint-binding-v1.schema.json",
+  "title": "Ready per-model evaluation endpoint binding",
+  "description": "Private input from a trusted deployment owner. Gear freezes this file outside the evaluator; public evidence omits connection. model_digest is the immutable HF snapshot digest. Runtime validation also checks revision, trusted source and common evaluation condition digests.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "endpoint_ref",
+    "endpoint_revision",
+    "api",
+    "wire_model",
+    "capabilities",
+    "generation",
+    "connection",
+    "deployment_receipt"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1"
+    },
+    "kind": {
+      "const": "external-endpoint"
+    },
+    "endpoint_ref": {
+      "type": "string",
+      "pattern": "^endpoint/[a-z0-9][a-z0-9_.-]{0,63}(@sha256:[a-f0-9]{64})?$"
+    },
+    "endpoint_revision": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "api": {
+      "enum": [
+        "responses",
+        "chat-completions"
+      ]
+    },
+    "wire_model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "streaming",
+        "tool_calls",
+        "parallel_tool_calls",
+        "input_modalities"
+      ],
+      "properties": {
+        "streaming": {
+          "type": "boolean"
+        },
+        "tool_calls": {
+          "type": "boolean"
+        },
+        "parallel_tool_calls": {
+          "const": false
+        },
+        "input_modalities": {
+          "const": [
+            "text"
+          ]
+        }
+      }
+    },
+    "generation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_output_tokens"
+      ],
+      "properties": {
+        "max_output_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "temperature": {
+          "type": "number",
+          "minimum": 0
+        },
+        "top_p": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "top_k": {
+          "type": "integer",
+          "minimum": -1
+        },
+        "min_p": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "repetition_penalty": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "seed": {
+          "type": "integer"
+        }
+      }
+    },
+    "connection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base_url",
+        "auth"
+      ],
+      "properties": {
+        "base_url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https?://"
+        },
+        "auth": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "name"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "env"
+                },
+                "name": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "deployment_receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "model_digest",
+        "wire_model",
+        "deployment_ref",
+        "source",
+        "service_config"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "1"
+        },
+        "model_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "wire_model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "deployment_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "service_config": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "engine"
+          ],
+          "properties": {
+            "engine": {
+              "type": "string",
+              "minLength": 1
+            },
+            "engine_version": {},
+            "engine_digest": {},
+            "quantization": {},
+            "tool_parser": {},
+            "reasoning_parser": {},
+            "tokenizer_digest": {},
+            "chat_template_digest": {},
+            "cache_policy": {},
+            "isolation": {},
+            "parsing": {}
+          }
+        }
+      }
+    }
+  }
+}

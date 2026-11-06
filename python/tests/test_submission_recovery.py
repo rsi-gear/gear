@@ -4,10 +4,10 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from episode_fixture import EpisodeFixture
-from gear_training.content import atomic_json
-from gear_training.export import dataset_destination, materialize, seal_directory
-from gear_training.hitch import HitchClient, frozen_harness_ref
-from gear_training.recovery import reconcile_slots
+from gear.training.storage.content import atomic_json
+from gear.training.storage.snapshots import dataset_destination, materialize, seal_directory
+from gear.training.adapters.hitch import HitchClient, frozen_harness_ref
+from gear.training.runtime.recovery import reconcile_slots
 
 
 class SubmissionRecoveryTests(unittest.IsolatedAsyncioTestCase):

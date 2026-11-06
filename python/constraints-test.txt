@@ -1,6 +1,7 @@
 # CPU test environment only; production GPU versions belong in the runtime lock.
 aiohttp==3.14.3
 psutil==7.2.2
+supervisor==4.3.0
 torch==2.14.0
 transformers==5.18.0
 tokenizers==0.23.2

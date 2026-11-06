@@ -229,6 +229,31 @@ export interface TrainingStages {
   datasetBuilder?: AgentStageConfig
 }
 
+/** Frozen, declared alternatives. None may reset a trained champion's optimizer. */
+export interface TrainingProposal {
+  id: string
+  sourceRef: ContentRef
+  trainTaskIds?: string[]
+  updatesPerCandidate?: number
+  rolloutSampling?: TrainingSampling
+}
+export interface ModelIterationPolicy {
+  schemaVersion: 1
+  maxRounds: number
+  maxWallClockSeconds: number
+  maxConsecutiveRejected: number
+  onRejected: 'next-declared-proposal-or-stop'
+  onInconclusive: 'bounded-repair-or-stop'
+  autoPublish: false
+  recovery: { maxRunRecoveries: number; maxEvaluationAttempts: number }
+  proposals: TrainingProposal[]
+}
+export interface ManagedEndpointAuthorization {
+  mode: 'managed-native'
+  /** Authorizes this exact private profile, not arbitrary controller edits. */
+  profileDigest: string
+}
+
 export interface ModelTrainingSpecV1 {
   schemaVersion: 1
   kind: 'model-training'
@@ -273,9 +298,8 @@ export interface ModelTrainingSpecV1 {
     auxiliaryModelCalls: false
   }
   evaluation: {
-    provider: 'hitch-managed-local'
-    topology: 'local-docker-harbor-dataset'
-    samplingProfile: 'baseline'
+    provider: 'hitch-endpoint'
+    topology: 'harbor-dataset'
     common: { runtimeDigest: string; protocolDigest: string; samplingDigest: string; budgetsDigest: string; attempts: number }
     policy: {
       minDevGain: number
@@ -285,9 +309,12 @@ export interface ModelTrainingSpecV1 {
       maxHeldOutEvaluations: number
     }
   }
-  resources: { trainingDevices: string[]; evaluationDevices: string[]; mode: 'isolated' | 'sequential' }
-  budgets: { totalGpuSeconds: number; maxRolloutTokens: number; maxEpisodeSteps: number; maxGroupResamples: number }
+  resources: { trainingDevices: string[] }
+  budgets: { gpuSecondsScope: 'training' | 'total'; totalGpuSeconds: number; maxRolloutTokens: number; maxEpisodeSteps: number; maxGroupResamples: number }
   publication: { mode: 'explicit' }
+  /** Absent in historical experiments: no implicit upgrade or auto-admission. */
+  iteration?: ModelIterationPolicy
+  endpointPreparation?: ManagedEndpointAuthorization
 }
 
 export interface NodeIdentity { nodeId: string; generation: string }
@@ -316,8 +343,8 @@ export interface FrozenExecutionPlacement {
 export interface ModelTrainingSpecV2 extends Omit<ModelTrainingSpecV1, 'schemaVersion' | 'resources' | 'evaluation'> {
   schemaVersion: 2
   deployment: FrozenExecutionPlacement
-  resources: { trainingDevices: NodeGpu[]; evaluationDevices: NodeGpu[] }
-  evaluation: Omit<ModelTrainingSpecV1['evaluation'], 'provider' | 'topology'> & { provider: 'hitch-managed'; topology: 'harbor-dataset' }
+  resources: { trainingDevices: NodeGpu[] }
+  evaluation: ModelTrainingSpecV1['evaluation']
 }
 export type ModelTrainingSpec = ModelTrainingSpecV1 | ModelTrainingSpecV2
 
@@ -353,10 +380,12 @@ export interface TrainingRequestV1 {
   verifier: ContentRef
   trainer: ModelTrainingSpec['trainer']
   rollout: ModelTrainingSpec['rollout']
-  budgets: ModelTrainingSpec['budgets']
+  budgets: Omit<ModelTrainingSpec['budgets'], 'gpuSecondsScope'> & { gpuSecondsScope?: 'training' | 'total' }
   trainingDevices: string[]
   recipeDigest: string
   datasetSplitDigest: string
+  /** Absolute experiment deadline; native supervision enforces it across restarts. */
+  deadlineAt?: string
 }
 export interface TrainingRequestV2 extends Omit<TrainingRequestV1, 'schemaVersion' | 'trainingDevices'> {
   schemaVersion: 2
@@ -403,7 +432,7 @@ export interface TrainingControlIntent { schemaVersion: 2; sequence: number; act
 
 export interface EvaluationSubject { harnessRef: ContentRef; modelVersionRef: ContentRef; weightsDigest: string }
 export interface ModelEvaluationCondition {
-  schemaVersion: 1
+  schemaVersion: 1 | 2
   partition: 'dev' | 'held-out'
   datasetDigest: string
   slots: { taskId: string; attempt: number; environmentDigest: string }[]
@@ -418,8 +447,12 @@ export interface ModelEvaluationCondition {
   dtype: string
   /** Present for v2 experiments; a different execution location needs a new baseline. */
   deploymentDigest?: string
+  inferencePoolDigest?: string
+  /** Ordinary endpoint protocol; historical conditions retain their original shape. */
+  taskExecutionDigest?: string
+  endpointApi?: 'responses' | 'chat-completions'
 }
-export interface ModelEvaluationEvidence {
+export interface LegacyModelEvaluationEvidence {
   schemaVersion: 1
   evalId: string
   subject: EvaluationSubject
@@ -431,24 +464,115 @@ export interface ModelEvaluationEvidence {
   complete: boolean
   gpuSeconds: number
 }
+export interface EndpointDeploymentReceipt {
+  schema_version: '1'
+  /** Immutable HF snapshot digest, attested by the trusted deployment owner. */
+  model_digest: string
+  wire_model: string
+  deployment_ref: string
+  source: string
+  service_config: Record<string, unknown>
+}
+export interface EvaluationEndpointBinding {
+  schema_version: '1'
+  kind: 'external-endpoint'
+  endpoint_ref: string
+  endpoint_revision: string
+  api: 'responses' | 'chat-completions'
+  wire_model: string
+  capabilities: { streaming: boolean; tool_calls: boolean; parallel_tool_calls: boolean; input_modalities: ['text'] }
+  generation: { max_output_tokens: number; temperature?: number; top_p?: number; top_k?: number; min_p?: number; repetition_penalty?: number; seed?: number }
+  deployment_receipt: EndpointDeploymentReceipt
+}
+export interface ReadyEvaluationEndpointBinding extends EvaluationEndpointBinding {
+  connection: { base_url: string; auth: { kind: 'none' } | { kind: 'env'; name: string } }
+}
+export interface EvaluationUsage {
+  gpuSeconds: number | null
+  gpuSecondsSource: string | null
+  usageSource?: string
+  inputTokens?: number
+  outputTokens?: number
+  requests?: number
+  elapsedSeconds?: number
+}
+export interface EndpointModelEvaluationEvidence extends Omit<LegacyModelEvaluationEvidence, 'schemaVersion' | 'hitchModelId' | 'inferenceLockRef' | 'gpuSeconds'>, EvaluationUsage {
+  schemaVersion: 2
+  endpointBinding: EvaluationEndpointBinding
+  endpointAttempts?: { id: string; parentId?: string; evalId: string; binding: EvaluationEndpointBinding; trials: string[] }[]
+}
+/** V1 is read-only historical evidence; new evaluation always produces V2. */
+export type ModelEvaluationEvidence = LegacyModelEvaluationEvidence | EndpointModelEvaluationEvidence
 export interface ModelEvaluationRequest {
-  schemaVersion: 1
+  schemaVersion: 2
   subject: EvaluationSubject
   model: ModelVersion
   condition: ModelEvaluationCondition
+  endpointBinding: ReadyEvaluationEndpointBinding
   datasetRef: ContentRef
   harnessCommit: string
   harnessAdapter: string
   datasetTasks: DatasetPartition['tasks']
   verifierRef: ContentRef
-  evaluationDevices: string[]
-  deployment?: FrozenExecutionPlacement
+}
+export interface ModelEndpointPreparer {
+  /** Frozen deployment configuration, excluding model-specific endpoint revisions. */
+  configurationDigest: string
+  trustedReceiptSources: string[]
+  mode?: 'external-file' | 'managed-native'
+  /** External mode waits; managed mode requires frozen profile authorization. */
+  prepare(model: ModelVersion, modelRef: ContentRef, context?: EndpointPreparationContext): Promise<ReadyEvaluationEndpointBinding | undefined>
+  observe?(binding: ReadyEvaluationEndpointBinding, context: EndpointPreparationContext): Promise<ReadyEvaluationEndpointBinding | undefined>
+  acquireConsumer?(binding: ReadyEvaluationEndpointBinding, consumer: EndpointConsumer, context: EndpointPreparationContext): Promise<void>
+  releaseConsumer?(binding: ReadyEvaluationEndpointBinding, consumerId: string, context: EndpointPreparationContext): Promise<void>
+  retire?(binding: ReadyEvaluationEndpointBinding, context: EndpointPreparationContext): Promise<{ status: 'draining' | 'released' | 'blocked'; reason?: string }>
+  /** Persist the newer experiment-wide command before any remote side effect. */
+  fence?(context: EndpointPreparationContext): Promise<void>
+  maxRuntimeSeconds?: number
+  retireOwned?(context: EndpointPreparationContext): Promise<{ status: 'draining' | 'released' | 'blocked'; reason?: string }>
+  releaseOwnership?(context: EndpointPreparationContext): Promise<{ released: boolean; reason?: string }>
+}
+export interface EndpointPreparationContext {
+  experimentId: string
+  controllerDirectory: string
+  runId?: string
+  controlSequence: number
+  action: 'start' | 'pause'
+  deadlineAt: string
+}
+export interface EndpointConsumer { id: string; experimentId: string; runId: string; evaluationKey: string }
+export interface ModelEndpointPreparation {
+  schemaVersion: 1
+  intentDigest: string
+  modelRef: ContentRef
+  status: 'waiting' | 'ready' | 'released' | 'blocked'
+  bindingRef?: ContentRef
 }
 export interface ModelEvaluator {
-  evaluate(request: ModelEvaluationRequest, idempotencyKey: string, intent?: TrainingControlIntent): Promise<ModelEvaluationEvidence>
-  /** Read-only cumulative cost; null means no local journal yet, never release. */
-  observeUsage?(request: ModelEvaluationRequest, idempotencyKey: string): Promise<{ gpuSeconds: number | null }>
-  cancel?(request: ModelEvaluationRequest, idempotencyKey: string, intent?: TrainingControlIntent): Promise<{ resourcesReleased: boolean; gpuSeconds: number }>
+  evaluate(request: ModelEvaluationRequest, idempotencyKey: string, intent?: TrainingControlIntent, attempt?: { id: string; parentId?: string }): Promise<ModelEvaluationEvidence>
+  /** Read-only terminal task evidence; never submits, repairs or replays requests. */
+  reconcileEvidence?(request: ModelEvaluationRequest, idempotencyKey: string): Promise<ModelEvaluationEvidence | undefined>
+  /** Read-only cumulative task usage; unknown shared GPU time remains null. */
+  observeUsage?(request: ModelEvaluationRequest, idempotencyKey: string): Promise<EvaluationUsage>
+  /** Task/request termination says nothing about external service or GPU release. */
+  cancel?(request: ModelEvaluationRequest, idempotencyKey: string, intent?: TrainingControlIntent): Promise<EvaluationUsage & { tasksCompleted: boolean }>
+}
+export interface ModelEvaluationAttempt {
+  id: string
+  parentId?: string
+  bindingRef: ContentRef
+  status: 'active' | 'terminal'
+  evidenceRef?: ContentRef
+  /** Each terminal task repair registers a fresh durable consumer admission. */
+  consumerGeneration?: number
+}
+export interface ModelEvaluationIntent {
+  key: string
+  evidenceRef?: ContentRef
+  chargedGpuSeconds?: number
+  gpuSecondsSource?: string
+  observedUsage?: EvaluationUsage
+  attempts?: ModelEvaluationAttempt[]
 }
 
 export interface PairedModelReport {
@@ -485,9 +609,28 @@ export interface ModelTrainingRun {
   status?: TrainingStatus
   decision?: ModelDecision
   heldOutQueries: number
-  evaluationIntents: Record<string, { key: string; evidenceRef?: ContentRef; chargedGpuSeconds?: number }>
-  evaluationResourcesReleased: boolean
+  evaluationIntents: Record<string, ModelEvaluationIntent>
+  evaluationTasksCompleted: boolean
+  inferenceResourcesReleased?: boolean
+  inferenceCleanupError?: string
   error?: string
+  iterationRound?: { roundIndex: number; proposalIndex: number; proposalId: string; inputsDigest: string }
+}
+export interface ModelIterationState {
+  schemaVersion: 1
+  status: 'running' | 'pausing' | 'paused' | 'completed' | 'failed'
+  control: { sequence: number; action: 'start' | 'pause' }
+  startedAt: string
+  deadlineAt: string
+  rounds: Record<string, { runId: string; proposalIndex: number; outcome?: ModelDecision['outcome']; recoveries: number }>
+  activeRoundIndex?: number
+  nextProposalIndex: number
+  consecutiveRejected: number
+  recovery?: { roundIndex: number; phase: 'pausing' | 'resuming' }
+  stopOutcome?: 'completed' | 'failed'
+  stopReason?: string
+  error?: string
+  failureReason?: string
 }
 export interface ModelExperimentState {
   schemaVersion: 1
@@ -500,4 +643,9 @@ export interface ModelExperimentState {
   activeReleaseId?: string
   activationIntent?: { id: string; modelRef: ContentRef; expectedReleaseId: string | null; rollbackReleaseId?: string }
   usage: TrainingUsage
+  evaluationUsage?: EvaluationUsage
+  endpointPreparations?: Record<string, ModelEndpointPreparation>
+  iteration?: ModelIterationState
+  /** Managed single-run operations also use an experiment-wide ordered fence. */
+  endpointControl?: { sequence: number; action: 'start' | 'pause'; deadlineAt: string }
 }

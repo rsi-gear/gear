@@ -21,7 +21,7 @@ describe('versioned public training controller', () => {
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), 'gear-controller-v2-')); store = new ModelTrainingStore(root); legacy = await fixture(store)
     config = { schemaVersion: 2, storeRoot: root, activationPath: join(root, 'active.json'), deployment: deployment(), episodeTimeoutSeconds: 30,
-      evaluationGateway: { localPort: 32000, nodePort: 32001 }, hitch: { command: ['hitch'], root: join(root, 'hitch'), workspace: join(root, 'controller'),
+      evaluationBindings: { bindingsFile: join(root, 'bindings.json'), trustedReceiptSources: ['fixture-deployer'] }, hitch: { command: ['hitch'], root: join(root, 'hitch'), workspace: join(root, 'controller'),
         harnessSourceDirectory: '/controller/hitch', python: ['controller-python'], budgets: { timeoutSeconds: 30, setupTimeoutSeconds: 30,
           maxConcurrent: 1, maxEpisodeSteps: 16, infrastructureRetries: 0, maxRepairRounds: 0 } } }
   })
@@ -31,12 +31,12 @@ describe('versioned public training controller', () => {
     expect(controller.trainer).toBeInstanceOf(NodeSlimeModelTrainer)
     expect(controller.coordinator.evaluator).toBeInstanceOf(HitchModelEvaluator)
     const evaluator = controller.coordinator.evaluator as HitchModelEvaluator
-    expect(evaluator.options.modelNode?.gateway).toEqual(config.evaluationGateway)
-    expect(evaluator.options.modelNode?.python).toEqual(config.deployment.nodes.gpu!.python)
+    expect(evaluator.options.executionProvider).toBe('local-docker')
+    expect(evaluator.options).not.toHaveProperty('modelNode')
     expect(evaluator.options.python).toEqual(['controller-python'])
     expect(controller.publisher.options.artifactStorage).toBe('model-node')
     expect(controller.publisher.options.frozenNode).toEqual(spec.deployment.modelRuntime)
-    expect(controller.publisher.options.modelNode).toEqual(evaluator.options.modelNode)
+    expect(controller.publisher.options.modelNode?.gateway).toEqual(config.deployment.nodes.gpu!.gateway)
     const file = join(root, 'controller.json'), specFile = join(root, 'spec.json')
     await writeFile(file, JSON.stringify(config)); await writeFile(specFile, JSON.stringify(spec))
     const created = await trainingCommand(['init', specFile, '--config', file]) as ModelExperimentState
@@ -44,6 +44,10 @@ describe('versioned public training controller', () => {
     expect(admitted.request.schemaVersion).toBe(2)
     expect(await trainingCommand(['status', created.id, admitted.id, '--config', file])).toEqual(admitted)
     expect((await store.load(created.id)).specDigest).toBe(digestJson(spec))
+  })
+  it('rejects retired evaluation lifecycle configuration', () => {
+    expect(() => parseTrainingControllerConfig({ ...config, evaluationNode: {} })).toThrow('externally prepared')
+    expect(() => parseTrainingControllerConfig({ ...config, evaluationGateway: {} })).toThrow('externally prepared')
   })
   it('run SPEC creates one experiment and run; run EXP RUN follows the existing identity', async () => {
     const file = join(root, 'controller.json'), specFile = join(root, 'spec.json')
@@ -109,7 +113,7 @@ describe('versioned public training controller', () => {
     await expect(store.readBytes(tokenizer)).rejects.toMatchObject({ code: 'ENOENT' })
   })
   it('rejects route collisions, mixed versions and placement changes before launching work', () => {
-    expect(() => parseTrainingControllerConfig({ ...config, evaluationGateway: config.deployment.nodes.gpu!.gateway })).toThrow('distinct stable')
+    expect(() => parseTrainingControllerConfig({ ...config, evaluationBindings: { ...config.evaluationBindings, bindingsFile: 'relative' } })).toThrow('absolute bindings map')
     expect(() => trainingController(config, legacy)).toThrow('matching controller version')
     const spec = v2spec(legacy, deployment('remote'))
     expect(() => trainingController(config, spec)).toThrow('frozen experiment')
@@ -117,7 +121,7 @@ describe('versioned public training controller', () => {
   })
   it('preserves the v1 controller adapter and its original spec digest', () => {
     const original = digestJson(legacy)
-    const v1 = { schemaVersion: 1 as const, storeRoot: root, activationPath: config.activationPath, hitch: config.hitch,
+    const v1 = { schemaVersion: 1 as const, storeRoot: root, activationPath: config.activationPath, hitch: config.hitch, evaluationBindings: config.evaluationBindings!,
       slime: { python: ['local-python'], configPath: '/local/slime.json' } }
     expect(trainingController(parseTrainingControllerConfig(v1), legacy).trainer).toBeInstanceOf(SlimeModelTrainer)
     expect(digestJson(legacy)).toBe(original)

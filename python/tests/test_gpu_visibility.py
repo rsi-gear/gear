@@ -4,7 +4,7 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
-from gear_training.gpu_visibility import slime_device_environment, verify_visible_devices
+from gear.training.backends.slime.gpu_visibility import slime_device_environment, verify_visible_devices
 
 
 class GpuVisibilityTests(unittest.TestCase):
@@ -14,7 +14,7 @@ class GpuVisibilityTests(unittest.TestCase):
     def test_resolves_requested_uuids_in_order_without_reusing_a_parent_mask(self):
         rows = [{"uuid": "GPU-a", "ordinal": 0}, {"uuid": "GPU-b", "ordinal": 1}, {"uuid": "GPU-c", "ordinal": 2}]
         with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "2,0", "NVIDIA_VISIBLE_DEVICES": "GPU-a,GPU-c"}), \
-                patch("gear_training.gpu_visibility.subprocess.run", return_value=self.result(rows)) as query:
+                patch("gear.training.backends.slime.gpu_visibility.subprocess.run", return_value=self.result(rows)) as query:
             result = slime_device_environment(["GPU-c", "GPU-a"])
         self.assertEqual(result, {"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": "2,0"})
         env = query.call_args.kwargs["env"]
@@ -29,13 +29,13 @@ class GpuVisibilityTests(unittest.TestCase):
                  ([{"uuid": "GPU-a", "ordinal": 0}, {"uuid": "GPU-b", "ordinal": 0}], ["GPU-a"])]
         for rows, requested in cases:
             with self.subTest(rows=rows, requested=requested), \
-                    patch("gear_training.gpu_visibility.subprocess.run", return_value=self.result(rows)), \
+                    patch("gear.training.backends.slime.gpu_visibility.subprocess.run", return_value=self.result(rows)), \
                     self.assertRaises(Exception):
                 slime_device_environment(requested)
 
     def test_driver_rechecks_actual_visibility_before_training(self):
         rows = [{"uuid": "GPU-c", "ordinal": 0}, {"uuid": "GPU-a", "ordinal": 1}]
-        with patch("gear_training.gpu_visibility.subprocess.run", return_value=self.result(rows)):
+        with patch("gear.training.backends.slime.gpu_visibility.subprocess.run", return_value=self.result(rows)):
             verify_visible_devices(["GPU-c", "GPU-a"])
             for wrong in (["GPU-a", "GPU-c"], ["GPU-c"], ["GPU-b", "GPU-a"]):
                 with self.subTest(wrong=wrong), self.assertRaisesRegex(Exception, "visibility differs"):

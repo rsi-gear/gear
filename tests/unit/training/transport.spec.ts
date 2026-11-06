@@ -19,7 +19,7 @@ describe('model-node subprocess transport and streaming CAS', () => {
     controller = new TrainingContentStore(join(root, 'controller')); destination = new TrainingContentStore(join(root, 'node-content'))
     const configPath = join(root, 'node.json')
     await writeFile(configPath, JSON.stringify({ schemaVersion: 2, nodeId: 'remote-gpu', nodeRoot: join(root, 'node-state'), storeRoot: destination.root, jobConfigPath: join(root, 'job.json') }))
-    connection = { transport: { type: 'local' }, workspace: root, python: ['env', `PYTHONPATH=${resolve('python')}`, 'python3'], configPath, gateway: { localPort: 31001, nodePort: 31002 } }
+    connection = { transport: { type: 'local' }, workspace: root, python: ['env', `PYTHONPATH=${resolve('python')}`, process.env.GEAR_TRAINING_TEST_PYTHON ?? 'python3'], configPath, gateway: { localPort: 31001, nodePort: 31002 } }
     const observation = await new ModelNodeTransport(connection, null).call('probe', {}) as NodeIdentity
     transport = new ModelNodeTransport(connection, { nodeId: observation.nodeId, generation: observation.generation })
   })
@@ -136,7 +136,7 @@ import json, sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from episode_fixture import EpisodeFixture
-from gear_training.content import atomic_json, digest_bytes, digest_json
+from gear.training.storage.content import atomic_json, digest_bytes, digest_json
 data = json.load(sys.stdin)
 f = EpisodeFixture(data["root"])
 f.config.update(jobsRoot=data["root"], slimePath="/unused", megatronPath="/unused", episodeTimeoutSeconds=10,

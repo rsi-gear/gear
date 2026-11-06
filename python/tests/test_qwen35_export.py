@@ -4,9 +4,9 @@ import struct
 import tempfile
 import unittest
 
-from gear_training.content import ContractError
-from gear_training.export import safetensors_layout
-from gear_training.qwen35_export import preserve_frozen_auxiliary
+from gear.training.storage.content import ContractError
+from gear.training.storage.snapshots import safetensors_layout
+from gear.training.backends.slime.qwen35_export import preserve_frozen_auxiliary
 
 
 def weights(path, values):

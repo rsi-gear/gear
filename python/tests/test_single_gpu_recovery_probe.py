@@ -8,9 +8,9 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
-from gear_training.content import atomic_json
-from gear_training.ledger import Ledger
-from gear_training.recovery import process_identity
+from gear.training.storage.content import atomic_json
+from gear.training.storage.ledger import Ledger
+from gear.training.runtime.recovery import process_identity
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'probes'))
 import single_gpu_recovery_smoke as probe
 
@@ -20,7 +20,7 @@ class RecoveryProbeTests(unittest.TestCase):
         for boundary in ('sealed-batch', 'pending-update', 'committed-update'):
             with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as root:
                 root = Path(root)
-                child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)', '-m', 'gear_training.driver'])
+                child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)', '-m', 'gear.training.cli.slime'])
                 unrelated = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
                 try:
                     owned = process_identity(child.pid)

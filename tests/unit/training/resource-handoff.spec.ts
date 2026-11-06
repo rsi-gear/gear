@@ -1,3 +1,4 @@
+import { fixtureEndpointPreparer } from './fixture.js'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -14,7 +15,7 @@ describe('v2 GPU ownership across asynchronous evaluation and recovery', () => {
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), 'gear-handoff-')); store = new ModelTrainingStore(root)
     trainer = new FixtureTrainer(store); evaluator = new FixtureEvaluator(store); spec = v2spec(await fixture(store))
-    coordinator = new ModelTrainingCoordinator(store, trainer, evaluator)
+    coordinator = new ModelTrainingCoordinator(store, trainer, evaluator, fixtureEndpointPreparer)
   })
   afterEach(async () => { vi.restoreAllMocks(); await rm(root, { recursive: true, force: true }) })
   async function admit() { const experiment = await coordinator.createExperiment(spec); return { experiment, run: await coordinator.admit(experiment.id) } }
@@ -33,9 +34,9 @@ describe('v2 GPU ownership across asynchronous evaluation and recovery', () => {
       },
       cancel: async (_request, key, intent) => {
         seen.push(`${intent!.action}:${intent!.sequence}`); commands.set(key, intent!.sequence)
-        return { resourcesReleased: true, gpuSeconds: 0 }
+        return { tasksCompleted: true, gpuSeconds: null, gpuSecondsSource: null }
       },
-    })
+    }, fixtureEndpointPreparer)
     const { experiment, run } = await admit(), advancing = coordinator.advance(experiment.id, run.id)
     void advancing.catch(() => {})
     try { await ready; expect((await coordinator.pause(experiment.id, run.id)).execution).toBe('paused') }
@@ -66,14 +67,14 @@ describe('v2 GPU ownership across asynchronous evaluation and recovery', () => {
       originalHandle = paused.handle
     } finally { release() }
     expect((await advancing).execution).toBe('paused'); expect(trainer.submissions).toBe(0)
-    const restored = new ModelTrainingCoordinator(new ModelTrainingStore(root), trainer, evaluator)
+    const restored = new ModelTrainingCoordinator(new ModelTrainingStore(root), trainer, evaluator, fixtureEndpointPreparer)
     const completed = await restored.resume(experiment.id, run.id)
     expect(completed.decision?.outcome).toBe('accepted'); expect(completed.handle).toEqual(originalHandle)
     expect(commands).toEqual([{ schemaVersion: 2, sequence: 0, action: 'start' }, { schemaVersion: 2, sequence: 1, action: 'pause' }, { schemaVersion: 2, sequence: 2, action: 'start' }])
     expect(evaluator.calls).toHaveLength(4); expect(trainer.submissions).toBe(1)
   })
   function isolated() {
-    spec.deployment.gpuScheduling.trainEvaluation = 'isolated'; spec.resources.evaluationDevices[0]!.gpuUuid = 'GPU-456'
+    spec.deployment.gpuScheduling.trainEvaluation = 'isolated'
     trainer.released = false
     const meter = { seconds: 1 }, inspect = trainer.inspect.bind(trainer), collect = trainer.collect.bind(trainer)
     vi.spyOn(trainer, 'inspect').mockImplementation(async handle => { const status = await inspect(handle); return { ...status, usage: { ...status.usage, gpuSeconds: meter.seconds } } })
@@ -81,12 +82,12 @@ describe('v2 GPU ownership across asynchronous evaluation and recovery', () => {
     vi.spyOn(trainer, 'cancel').mockImplementation(handle => trainer.inspect(handle))
     return meter
   }
-  it('reconciles a baseline that occupies the shared GPU and rechecks readiness after the baseline releases it', async () => {
+  it('reconciles a pending baseline task and rechecks training readiness before submission', async () => {
     let occupied = false, attempts = 0
     const evaluate = evaluator.evaluate.bind(evaluator), preflight = trainer.preflight.bind(trainer)
     vi.spyOn(evaluator, 'evaluate').mockImplementation(async request => {
       if (!request.model.trainingRunId && request.condition.partition === 'dev' && attempts++ === 0) {
-        occupied = true; throw new TrainingContractError('evaluation-pending', 'baseline still owns the GPU')
+        occupied = true; throw new TrainingContractError('evaluation-pending', 'baseline task still running')
       }
       occupied = false; return evaluate(request)
     })
@@ -95,8 +96,8 @@ describe('v2 GPU ownership across asynchronous evaluation and recovery', () => {
       checks.push(occupied); return { ...await preflight(request), blockers: occupied ? ['training-gpu-pool-occupied'] : [] }
     })
     const { experiment, run } = await admit()
-    expect((await coordinator.advance(experiment.id, run.id)).evaluationResourcesReleased).toBe(false)
-    const resumed = new ModelTrainingCoordinator(new ModelTrainingStore(root), trainer, evaluator)
+    expect((await coordinator.advance(experiment.id, run.id)).evaluationTasksCompleted).toBe(false)
+    const resumed = new ModelTrainingCoordinator(new ModelTrainingStore(root), trainer, evaluator, fixtureEndpointPreparer)
     expect((await resumed.advance(experiment.id, run.id)).decision?.outcome).toBe('accepted')
     expect(checks).toEqual([false, false])
     expect(trainer.submissions).toBe(1); expect(evaluator.calls).toHaveLength(4)
@@ -108,7 +109,7 @@ describe('v2 GPU ownership across asynchronous evaluation and recovery', () => {
     const { experiment, run } = await admit()
     await expect(coordinator.advance(experiment.id, run.id)).rejects.toThrow('reply lost')
     expect((await coordinator.inspect(experiment.id, run.id)).resourcesReleased).toBe(false)
-    const resumed = new ModelTrainingCoordinator(new ModelTrainingStore(root), trainer, evaluator)
+    const resumed = new ModelTrainingCoordinator(new ModelTrainingStore(root), trainer, evaluator, fixtureEndpointPreparer)
     expect((await resumed.advance(experiment.id, run.id)).decision?.outcome).toBe('accepted')
     expect(trainer.submissions).toBe(1); expect(evaluator.calls).toHaveLength(4)
   })
@@ -163,7 +164,7 @@ describe('v2 GPU ownership across asynchronous evaluation and recovery', () => {
     expect(pending.decision).toBeUndefined(); expect(pending.phase).toBe('evaluating'); expect(pending.resourcesReleased).toBe(false)
     expect(trainer.cancel).toHaveBeenCalledTimes(1); expect(evaluator.calls).toHaveLength(4)
     meter.seconds = finalCost; trainer.released = true
-    const resumed = new ModelTrainingCoordinator(new ModelTrainingStore(root), trainer, evaluator)
+    const resumed = new ModelTrainingCoordinator(new ModelTrainingStore(root), trainer, evaluator, fixtureEndpointPreparer)
     const done = await resumed.advance(experiment.id, run.id)
     expect(done.decision?.outcome).toBe(finalCost > spec.budgets.totalGpuSeconds ? 'rejected' : 'accepted')
     if (finalCost > spec.budgets.totalGpuSeconds) expect(done.decision?.reasons).toContain('experiment-budget-exceeded')
@@ -186,11 +187,11 @@ describe('v2 GPU ownership across asynchronous evaluation and recovery', () => {
     expect(pending.decision).toBeUndefined(); expect(pending.resourcesReleased).toBe(false)
   })
   for (const state of ['evaluation-pending', 'evaluation-offline', 'training-offline']) it(`pause cancels both owners when ${state}`, async () => {
-    const meter = isolated(), evaluate = evaluator.evaluate.bind(evaluator), evaluationCancel = vi.fn(async () => ({ resourcesReleased: false, gpuSeconds: 6 }))
+    const meter = isolated(), evaluate = evaluator.evaluate.bind(evaluator), evaluationCancel = vi.fn(async () => ({ tasksCompleted: false, gpuSeconds: 6, gpuSecondsSource: 'fixture-meter' }))
     coordinator = new ModelTrainingCoordinator(store, trainer, { evaluate: request => {
-      if (request.model.trainingRunId) throw new TrainingContractError('evaluation-pending', 'candidate still owns eval GPU')
+      if (request.model.trainingRunId) throw new TrainingContractError('evaluation-pending', 'candidate task still running')
       return evaluate(request)
-    }, observeUsage: () => evaluator.observeUsage(), cancel: evaluationCancel })
+    }, observeUsage: () => evaluator.observeUsage(), cancel: evaluationCancel }, fixtureEndpointPreparer)
     const { experiment, run } = await admit(); await coordinator.advance(experiment.id, run.id)
     meter.seconds = 9
     if (state === 'training-offline') vi.mocked(trainer.cancel).mockRejectedValueOnce(new Error('model node disconnected'))
@@ -201,9 +202,9 @@ describe('v2 GPU ownership across asynchronous evaluation and recovery', () => {
     const pending = await coordinator.inspect(experiment.id, run.id)
     expect(pending.execution).toBe('pausing'); expect(pending.resourcesReleased).toBe(false)
     if (state !== 'training-offline') expect(pending.usage.gpuSeconds).toBe(9)
-    trainer.released = true; evaluationCancel.mockResolvedValue({ resourcesReleased: true, gpuSeconds: 6 })
+    trainer.released = true; evaluationCancel.mockResolvedValue({ tasksCompleted: true, gpuSeconds: 6, gpuSecondsSource: 'fixture-meter' })
     expect((await coordinator.pause(experiment.id, run.id)).execution).toBe('paused')
-    expect((await store.load(experiment.id)).usage.gpuSeconds).toBe(15)
+    expect((await store.load(experiment.id)).usage.gpuSeconds).toBe(9)
   })
   it('retains a late dev result after pause without admitting held-out work or promoting until explicit resume', async () => {
     let entered!: () => void, release!: () => void
@@ -211,7 +212,7 @@ describe('v2 GPU ownership across asynchronous evaluation and recovery', () => {
     evaluator.beforeReturn = async () => { if (evaluator.calls.length === 3) { entered(); await waiting } }
     coordinator = new ModelTrainingCoordinator(store, trainer, { evaluate: request => evaluator.evaluate(request),
       observeUsage: () => evaluator.observeUsage(),
-      cancel: async () => ({ resourcesReleased: true, gpuSeconds: 0 }) })
+      cancel: async () => ({ tasksCompleted: true, gpuSeconds: null, gpuSecondsSource: null }) }, fixtureEndpointPreparer)
     const { experiment, run } = await admit(), advancing = coordinator.advance(experiment.id, run.id)
     void advancing.catch(() => {})
     try {

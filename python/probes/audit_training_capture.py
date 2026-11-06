@@ -5,7 +5,7 @@ import math
 from pathlib import Path
 import struct
 
-from gear_training.content import ContentStore, atomic_json, digest_file, digest_json, require
+from gear.training.storage.content import ContentStore, atomic_json, digest_file, digest_json, require
 
 
 def plain(value):

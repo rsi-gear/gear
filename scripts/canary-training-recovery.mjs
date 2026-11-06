@@ -64,7 +64,7 @@ try {
     startStage = progress.boundaries.length
     assert(startStage >= 0 && startStage <= 3)
     if (startStage === 0) {
-      const inspect = 'from single_gpu_recovery_smoke import context; from gear_training.ledger import Ledger; import json,sys; n,s,d,r,h=context(sys.argv[1]); l=Ledger(d/"ledger.sqlite"); print(json.dumps({"batch":(d/"batch.json").exists(),"pending":(d/"pending-update.json").exists(),"commits":l.db.execute("SELECT COUNT(*) FROM commits").fetchone()[0]})); l.close()'
+      const inspect = 'from single_gpu_recovery_smoke import context; from gear.training.storage.ledger import Ledger; import json,sys; n,s,d,r,h=context(sys.argv[1]); l=Ledger(d/"ledger.sqlite"); print(json.dumps({"batch":(d/"batch.json").exists(),"pending":(d/"pending-update.json").exists(),"commits":l.db.execute("SELECT COUNT(*) FROM commits").fetchone()[0]})); l.close()'
       const state = await jsonProcess(remote([...connection.python, '-c', `import sys; sys.path.insert(0, ${JSON.stringify(join(workspace, 'python/probes'))}); ${inspect}`, connection.configPath]), [], undefined, 30_000)
       assert(state.batch && !state.pending && state.commits === 0, 'first-boundary retry requires the unchanged sealed batch and no saved update')
     }

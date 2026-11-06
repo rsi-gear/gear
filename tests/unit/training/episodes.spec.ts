@@ -1,3 +1,4 @@
+import { fixtureEndpointPreparer } from './fixture.js'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -25,7 +26,7 @@ describe('controller-owned rollout reconciliation', () => {
     legacy.fixedHarness.manifestRef = await store.putJson({ hitch: harness })
     legacy.datasets.train.tasks[0]!.environmentRef = await store.putJson({ taskDigest: hash, verifierIdentity: hash, hitchEnvironmentIdentity: hash })
     if (generated) legacy.stages = { taskSource: { runner: 'custom-provider', options: {}, instructionsRef: await store.putBytes(Buffer.from('Create train tasks'), 'text/plain'), maxRepairs: 1, timeoutSeconds: 10 } }
-    const coordinator = new ModelTrainingCoordinator(store, new FixtureTrainer(store), new FixtureEvaluator(store))
+    const coordinator = new ModelTrainingCoordinator(store, new FixtureTrainer(store), new FixtureEvaluator(store), fixtureEndpointPreparer)
     const experiment = await coordinator.createExperiment(v2spec(legacy))
     const request = (await coordinator.admit(experiment.id)).request as TrainingRequestV2
     let task = request.trainDataset.tasks[0]!

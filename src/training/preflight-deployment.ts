@@ -47,7 +47,7 @@ export async function preflightDeployment(input: TrainingControllerConfigV2, inv
     const results = await Promise.allSettled([
       observeHitchController(input.hitch, invoke),
       invoke(input.hitch.command, ['--root', input.hitch.root, 'capabilities', '--json']),
-      invoke(input.hitch.python, ['-c', 'import json,platform\nfrom gear_training.preflight import bridge_digest\nprint(json.dumps({"pythonVersion":platform.python_version(),"bridgeDigest":bridge_digest()}))']),
+      invoke(input.hitch.python, ['-c', 'import json,platform\nfrom gear.training.runtime.preflight import bridge_digest\nprint(json.dumps({"pythonVersion":platform.python_version(),"bridgeDigest":bridge_digest()}))']),
     ])
     const [observed, capabilities, bridge] = results
     if (observed.status === 'fulfilled') { observations.controller = observed.value; record('controller', 'hitch', 'controller-runtime', true) }
@@ -56,7 +56,7 @@ export async function preflightDeployment(input: TrainingControllerConfigV2, inv
       try {
         const caps = object(capabilities.value)
         record('controller', 'hitch', 'training-binding', ['training_external_binding', 'exact_policy_tokens', 'training_policy_fencing'].every(key => caps[key] === '1'))
-        record('controller', 'hitch', 'managed-model-node', caps.managed_model_node === '2')
+        record('controller', 'hitch', 'external-model-endpoint', caps.external_endpoint === '1')
         record('controller', 'hitch', 'training-harness', Array.isArray(caps.training_harnesses) && caps.training_harnesses.includes('training-tool'))
       } catch (error) { failed('controller', 'hitch', 'controller-capabilities-unavailable', error) }
     } else failed('controller', 'hitch', 'controller-capabilities-unavailable', capabilities.reason)
@@ -98,8 +98,7 @@ export async function preflightDeployment(input: TrainingControllerConfigV2, inv
       for (const check of modelNode.checks) checks.push({ scope: 'model-node', target: nodeRef, ...check })
       record('model-node', nodeRef, 'process-launcher', config.modelRuntime.launcher === 'process' && Array.isArray(probe.launchers) && probe.launchers.includes('process'))
       record('model-node', nodeRef, 'rollout-gateway-port', modelNode.ports.rollout === connection.gateway.nodePort)
-      record('model-node', nodeRef, 'evaluation-gateway-port', modelNode.ports.inference === input.evaluationGateway.nodePort)
-      const minimum = (config.gpuScheduling.actorRollout === 'colocated' ? 1 : 2) + (config.gpuScheduling.trainEvaluation === 'isolated' ? 1 : 0)
+      const minimum = (config.gpuScheduling.actorRollout === 'colocated' ? 1 : 2)
       record('model-node', nodeRef, 'minimum-gpu-pool', modelNode.gpus.length >= minimum)
       record('model-node', nodeRef, 'idle-gpu-pool', modelNode.gpus.filter(gpu => gpu.activeProcesses === 0).length >= minimum)
     } catch (error) { failed('model-node', nodeRef, 'model-node-unavailable', error) }
@@ -112,5 +111,5 @@ export async function preflightDeployment(input: TrainingControllerConfigV2, inv
     readyForRuntimeProbes: !checks.some(check => check.status === 'blocked'), runtimeValidation: 'not-certified' as const,
     controller: { hitch: controller, python }, harbor: harbor ? { ...harbor, environment: publicEnvironment(harbor.environment) } : null, modelNode, checks,
     remainingValidation: ['selected-device-allocation', 'sandbox-to-model-route', 'native-tokens-and-logprobs', 'backward-checkpoint-export-reload',
-      ...(config.gpuScheduling.actorRollout === 'colocated' ? ['colocated-memory-and-weight-cycle'] : []), 'training-evaluation-device-handoff'] }
+      ...(config.gpuScheduling.actorRollout === 'colocated' ? ['colocated-memory-and-weight-cycle'] : []), 'external-evaluation-endpoint-readiness'] }
 }

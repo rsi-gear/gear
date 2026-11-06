@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "name": "gpu-evaluation-default",
+  "nodeRef": "gpu",
+  "node": {"nodeId": "<observed-node-id>", "generation": "<observed-generation>"},
+  "backend": "supervisor",
+  "resourceGroup": "evaluation-gpus",
+  "gpuUuids": ["<reserved-evaluation-GPU-UUID>"],
+  "trainingGpuUuids": ["<frozen-training-GPU-UUID>"],
+  "tensorParallelSize": 1,
+  "python": "/opt/sglang-eval/bin/python",
+  "supervisorPython": "/opt/gear-node/bin/python",
+  "runtimeLock": {
+    "environmentDigest": "sha256:<generated-environment-digest>",
+    "pythonVersion": "<generated-python-version>",
+    "sglangVersion": "<generated-sglang-version>",
+    "supervisorVersion": "4.3.0",
+    "timeoutBinary": "/usr/bin/timeout",
+    "timeoutDigest": "sha256:<generated-timeout-digest>"
+  },
+  "endpoint": {
+    "nodePort": 32000,
+    "localPort": 32000,
+    "api": "chat-completions",
+    "capabilities": {"streaming": true, "tool_calls": true, "parallel_tool_calls": false, "input_modalities": ["text"]},
+    "generation": {"max_output_tokens": 4096, "temperature": 0},
+    "serviceConfig": {
+      "engine": "sglang",
+      "engine_version": "<generated-sglang-version>",
+      "engine_digest": "sha256:<generated-engine-digest>",
+      "tool_parser": "qwen25",
+      "tokenizer_digest": "sha256:<sealed-model-tokenizer-digest>",
+      "chat_template_digest": "sha256:<sealed-model-template-digest>"
+    }
+  },
+  "engineArgs": ["--tool-call-parser", "qwen25"],
+  "startupTimeoutSeconds": 900,
+  "stopTimeoutSeconds": 120,
+  "maxDeploymentAttempts": 2,
+  "maxRuntimeSeconds": 28800,
+  "minFreeDiskBytes": 10737418240
+}

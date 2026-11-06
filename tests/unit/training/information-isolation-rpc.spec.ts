@@ -1,3 +1,4 @@
+import { fixtureEndpointPreparer } from './fixture.js'
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -32,7 +33,7 @@ it('uploads only authorized bytes through real Python node RPC and keeps private
     spec.initialModel = await store.putJson(sealModelVersion({ ...model, hfSnapshotRef: hf, provenanceRef: privateRefs[0]! }))
     spec.referenceModel = spec.initialModel
     spec.deployment.modelRuntime = { ...spec.deployment.modelRuntime, ...identity }
-    const coordinator = new ModelTrainingCoordinator(store, new FixtureTrainer(store), new FixtureEvaluator(store))
+    const coordinator = new ModelTrainingCoordinator(store, new FixtureTrainer(store), new FixtureEvaluator(store), fixtureEndpointPreparer)
     const experiment = await coordinator.createExperiment(spec), run = await coordinator.admit(experiment.id)
     const request = run.request as TrainingRequestV2
     const transport = new ModelNodeTransport(connection, identity)

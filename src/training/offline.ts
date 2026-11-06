@@ -1,3 +1,4 @@
+import { builtinPolicy } from '../adapters/python/builtin-policy.js'
 import { digestJson } from './digest.js'
 import { parseContentRef, requireContract } from './schema.js'
 import type { TrainingContentStore } from './store.js'
@@ -64,13 +65,5 @@ export async function validateOfflineBatch(store: TrainingContentStore, batch: T
     && digestJson(samples[i]) === expected[i]!.digest, 'offline-batch-drift', 'SFT batch changed deterministic record order or contents')
 }
 export function offlineWindow(records: T.ContentRef[], seed: number, position: number, size: number): T.ContentRef[] {
-  const result: T.ContentRef[] = []
-  const permutations = new Map<number, T.ContentRef[]>()
-  for (let index = position; index < position + size; index++) {
-    const epoch = Math.floor(index / records.length)
-    if (!permutations.has(epoch)) permutations.set(epoch, records.map((ref, i) => ({ ref, i, key: digestJson({ seed, epoch, index: i }) }))
-      .sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : a.i - b.i).map(item => item.ref))
-    result.push(permutations.get(epoch)![index % records.length]!)
-  }
-  return result
+  return builtinPolicy<T.ContentRef[]>('offline_window', { records, seed, position, size })
 }

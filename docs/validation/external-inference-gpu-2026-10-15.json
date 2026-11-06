@@ -1,0 +1,741 @@
+{
+  "schema_version": "1",
+  "scope": "two small real Codex tool tasks and HTTP topology acceptance; not a benchmark",
+  "sources": {
+    "gear_head": "04a7dd8adb783fdcfe514b6b663baa18701bbd6c",
+    "hitch_head": "8736cea2c2992172e121b726bc4bc23aedc7fe66",
+    "image": {
+      "repository": "lmsysorg/sglang",
+      "tag": "v0.5.21",
+      "digest": "sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469",
+      "layers_bytes": 15164770325,
+      "platforms": [
+        {
+          "architecture": "amd64",
+          "os": "linux"
+        },
+        {
+          "architecture": "unknown",
+          "os": "unknown"
+        },
+        {
+          "architecture": "arm64",
+          "os": "linux"
+        },
+        {
+          "architecture": "unknown",
+          "os": "unknown"
+        }
+      ]
+    },
+    "model": {
+      "repository": "Qwen/Qwen2.5-7B-Instruct",
+      "revision": "a09a35458c702b33eeacc393d103063234e8bc28"
+    },
+    "normal_budget": 1024,
+    "selected_tasks": 2,
+    "topologies": [
+      "tp2-single",
+      "tp1-two-official-gateway"
+    ],
+    "probe_sha256": "0c09994cc20bc0983d135b961066b7ebdaacea490861524e5cf5d974125a35a2",
+    "hitch_uncommitted_probe_diff_sha256": "f3c48bf8410e1ea3340f61782f7123bcdd755b3896d0adc63e771081065056de"
+  },
+  "runtime": {
+    "torch": "2.13.0+cu130",
+    "sglang": "0.5.21",
+    "sglang-router": "0.3.2",
+    "transformers": "5.12.1",
+    "huggingface-hub": "1.33.0"
+  },
+  "smg": {
+    "filename": "smg-1.12.0-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+    "sha256": "51a0da56293a9f0aab20788e665304c9e84a62a6bab2bb096c5b4014b6e5a1e2"
+  },
+  "smg_packages": {
+    "smg": "1.12.0",
+    "setproctitle": "1.3.8",
+    "grpcio": "1.84.0",
+    "grpcio-health-checking": "1.84.0",
+    "pyyaml": "6.0.3",
+    "protobuf": "7.36.2",
+    "typing-extensions": "4.16.0"
+  },
+  "snapshot": {
+    "repository": "Qwen/Qwen2.5-7B-Instruct",
+    "revision": "a09a35458c702b33eeacc393d103063234e8bc28",
+    "lfs_hashes_verified": true,
+    "files": {
+      "config.json": {
+        "sha256": "7463bb0ea78315365e6c6b74de4e73bbcc8359dfb0c5a737584e077d42c0b03c",
+        "size": 663
+      },
+      "generation_config.json": {
+        "sha256": "3a8f9087e486054c8a4a08dae2e5a3ba62e23da212b5b8c08bc42cb983c3459f",
+        "size": 243
+      },
+      "merges.txt": {
+        "sha256": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3",
+        "size": 1671839
+      },
+      "model-00001-of-00004.safetensors": {
+        "sha256": "a1333e6293854747c481288ea83b348226af178dd565c49b6f9495ba1966aba7",
+        "size": 3945441440
+      },
+      "model-00002-of-00004.safetensors": {
+        "sha256": "f5d25a2772cb825164a2a2c0fb6d51a87e282abf21e4dd75bc5cfb3cd0ea6185",
+        "size": 3864726352
+      },
+      "model-00003-of-00004.safetensors": {
+        "sha256": "8efdec4c1bc12317ae1a38dc42b595ce777738a64deea3fcb8a0a91381bcdfd5",
+        "size": 3864726424
+      },
+      "model-00004-of-00004.safetensors": {
+        "sha256": "1a72d403cdf0c1ec3cb7f289f17b394a01e64394c2e9b3c0f94dbce3faf879bd",
+        "size": 3556377672
+      },
+      "model.safetensors.index.json": {
+        "sha256": "624bf7c47cd12468fdc16e38a47cf4f19e0415b859a223ba3c027eed2f0e1028",
+        "size": 27752
+      },
+      "tokenizer.json": {
+        "sha256": "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539",
+        "size": 7031645
+      },
+      "tokenizer_config.json": {
+        "sha256": "5b5d4f65d0acd3b2d56a35b56d374a36cbc1c8fa5cf3b3febbbfabf22f359583",
+        "size": 7305
+      },
+      "vocab.json": {
+        "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+        "size": 2776833
+      }
+    }
+  },
+  "http": {
+    "tp2-responses.json": {
+      "started_at": "2026-10-15T02:30:57.455Z",
+      "finished_at": "2026-10-15T02:31:52.874Z",
+      "passed": true,
+      "checks": [
+        {
+          "name": "authentication rejects an invalid key on the generation endpoint",
+          "passed": true
+        },
+        {
+          "name": "normal-budget generation and usage",
+          "passed": true
+        },
+        {
+          "name": "complete multi-turn history without previous_response_id",
+          "passed": true
+        },
+        {
+          "name": "SSE terminal event and usage",
+          "passed": true
+        },
+        {
+          "name": "JSON tool call, local execution, result, and continuation",
+          "passed": true
+        },
+        {
+          "name": "streaming tool call, local execution, result, and continuation",
+          "passed": true
+        },
+        {
+          "name": "independent concurrent requests",
+          "passed": true
+        },
+        {
+          "name": "abort an active stream while another completes and service remains usable",
+          "passed": true
+        },
+        {
+          "name": "server metrics show requests on every expected worker",
+          "passed": true
+        }
+      ],
+      "cancellation": {
+        "aborted_at": "2026-10-15T02:31:17.646Z",
+        "both_streams_had_content": true,
+        "both_streams_incomplete_at_abort": true,
+        "scope": "only the cancelled request AbortController; no stop, drain, flush, or release API"
+      },
+      "worker_distribution": [
+        {
+          "url": "http://127.0.0.1:30000/metrics",
+          "before": 16,
+          "after": 22,
+          "delta": 6
+        }
+      ],
+      "raw_report_sha256": "96576e64d1517ad4933218a19bd279d2c468c4f2ad0ac10228cacc23421b1ad2"
+    },
+    "tp2-chat-completions.json": {
+      "started_at": "2026-10-15T02:31:52.990Z",
+      "finished_at": "2026-10-15T02:32:41.701Z",
+      "passed": true,
+      "checks": [
+        {
+          "name": "authentication rejects an invalid key on the generation endpoint",
+          "passed": true
+        },
+        {
+          "name": "normal-budget generation and usage",
+          "passed": true
+        },
+        {
+          "name": "complete multi-turn history without previous_response_id",
+          "passed": true
+        },
+        {
+          "name": "SSE terminal event and usage",
+          "passed": true
+        },
+        {
+          "name": "JSON tool call, local execution, result, and continuation",
+          "passed": true
+        },
+        {
+          "name": "streaming tool call, local execution, result, and continuation",
+          "passed": true
+        },
+        {
+          "name": "independent concurrent requests",
+          "passed": true
+        },
+        {
+          "name": "abort an active stream while another completes and service remains usable",
+          "passed": true
+        },
+        {
+          "name": "server metrics show requests on every expected worker",
+          "passed": true
+        }
+      ],
+      "cancellation": {
+        "aborted_at": "2026-10-15T02:32:07.106Z",
+        "both_streams_had_content": true,
+        "both_streams_incomplete_at_abort": true,
+        "scope": "only the cancelled request AbortController; no stop, drain, flush, or release API"
+      },
+      "worker_distribution": [
+        {
+          "url": "http://127.0.0.1:30000/metrics",
+          "before": 30,
+          "after": 35,
+          "delta": 5
+        }
+      ],
+      "raw_report_sha256": "f571a6deecbaf03791111b770da650337dd62ac13e0e80651039d00a194f883b"
+    },
+    "gateway-responses.json": {
+      "started_at": "2026-10-15T02:35:33.586Z",
+      "finished_at": "2026-10-15T02:35:36.297Z",
+      "passed": false,
+      "checks": [
+        {
+          "name": "authentication rejects an invalid key on the generation endpoint",
+          "passed": true
+        },
+        {
+          "name": "normal-budget generation and usage",
+          "passed": true
+        },
+        {
+          "name": "complete multi-turn history without previous_response_id",
+          "passed": true
+        },
+        {
+          "name": "SSE terminal event and usage",
+          "passed": true
+        },
+        {
+          "name": "JSON tool call, local execution, result, and continuation",
+          "passed": false,
+          "error": "HTTP 400 for tools-json-call"
+        }
+      ],
+      "error": {
+        "name": "Error",
+        "message": "HTTP 400 for tools-json-call"
+      },
+      "raw_report_sha256": "e46f78795ee235feea9da3430ccca3d4a7b6df771583bcbf5ec6a8aa2316514e",
+      "failure_exchanges": [
+        {
+          "name": "tools-json-call",
+          "started_at": "2026-10-15T02:35:36.293Z",
+          "request": {
+            "method": "POST",
+            "url": "http://127.0.0.1:30000/v1/responses",
+            "body": {
+              "model": "qwen25-7b-a09a35458c70",
+              "temperature": 0,
+              "input": [
+                {
+                  "role": "user",
+                  "content": "Call lookup_delivery_code with parcel_id PARCEL_6190417c163f4e189064a53b980af818. Then tell me the delivery_code returned by the tool. Do not invent the result."
+                }
+              ],
+              "max_output_tokens": 1024,
+              "store": false,
+              "stream": false,
+              "tools": [
+                {
+                  "type": "function",
+                  "name": "lookup_delivery_code",
+                  "description": "Look up the delivery confirmation code for a parcel.",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "parcel_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "parcel_id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "strict": true
+                }
+              ],
+              "parallel_tool_calls": false,
+              "tool_choice": {
+                "type": "function",
+                "name": "lookup_delivery_code"
+              }
+            },
+            "authentication": "env"
+          },
+          "response": {
+            "status": 400,
+            "headers": {
+              "content-type": "application/json",
+              "x-request-id": "hitch-accept-353beb7c-a1a4-4a70-8577-f3b925ac0229"
+            },
+            "body": "{\"error\":{\"message\":\"Invalid JSON data: Failed to deserialize the JSON body into the target type: tool_choice: data did not match any variant of untagged enum ToolChoice at line 1 column 668\",\"type\":\"invalid_request_error\",\"code\":\"json_parse_error\"}}"
+          },
+          "error": {
+            "name": "Error",
+            "message": "HTTP 400 for tools-json-call"
+          },
+          "duration_ms": 4.8970540000000256
+        }
+      ]
+    },
+    "gateway-chat-completions.json": {
+      "started_at": "2026-10-15T02:35:36.363Z",
+      "finished_at": "2026-10-15T02:36:10.952Z",
+      "passed": true,
+      "checks": [
+        {
+          "name": "authentication rejects an invalid key on the generation endpoint",
+          "passed": true
+        },
+        {
+          "name": "normal-budget generation and usage",
+          "passed": true
+        },
+        {
+          "name": "complete multi-turn history without previous_response_id",
+          "passed": true
+        },
+        {
+          "name": "SSE terminal event and usage",
+          "passed": true
+        },
+        {
+          "name": "JSON tool call, local execution, result, and continuation",
+          "passed": true
+        },
+        {
+          "name": "streaming tool call, local execution, result, and continuation",
+          "passed": true
+        },
+        {
+          "name": "independent concurrent requests",
+          "passed": true
+        },
+        {
+          "name": "abort an active stream while another completes and service remains usable",
+          "passed": true
+        },
+        {
+          "name": "server metrics show requests on every expected worker",
+          "passed": true
+        }
+      ],
+      "cancellation": {
+        "aborted_at": "2026-10-15T02:35:47.635Z",
+        "both_streams_had_content": true,
+        "both_streams_incomplete_at_abort": true,
+        "scope": "only the cancelled request AbortController; no stop, drain, flush, or release API"
+      },
+      "worker_distribution": [
+        {
+          "url": "http://127.0.0.1:30001/metrics",
+          "before": 8,
+          "after": 10,
+          "delta": 2
+        },
+        {
+          "url": "http://127.0.0.1:30002/metrics",
+          "before": 6,
+          "after": 9,
+          "delta": 3
+        }
+      ],
+      "raw_report_sha256": "ec8ea551aa792f98f7c5649d88b40d9664531233e02e52c415785b2ea0d32edb"
+    },
+    "smg112-responses.json": {
+      "started_at": "2026-10-15T02:42:36.609Z",
+      "finished_at": "2026-10-15T02:43:09.125Z",
+      "passed": true,
+      "checks": [
+        {
+          "name": "authentication rejects an invalid key on the generation endpoint",
+          "passed": true
+        },
+        {
+          "name": "normal-budget generation and usage",
+          "passed": true
+        },
+        {
+          "name": "complete multi-turn history without previous_response_id",
+          "passed": true
+        },
+        {
+          "name": "SSE terminal event and usage",
+          "passed": true
+        },
+        {
+          "name": "JSON tool call, local execution, result, and continuation",
+          "passed": true
+        },
+        {
+          "name": "streaming tool call, local execution, result, and continuation",
+          "passed": true
+        },
+        {
+          "name": "independent concurrent requests",
+          "passed": true
+        },
+        {
+          "name": "abort an active stream while another completes and service remains usable",
+          "passed": true
+        },
+        {
+          "name": "server metrics show requests on every expected worker",
+          "passed": true
+        }
+      ],
+      "cancellation": {
+        "aborted_at": "2026-10-15T02:42:46.048Z",
+        "both_streams_had_content": true,
+        "both_streams_incomplete_at_abort": true,
+        "scope": "only the cancelled request AbortController; no stop, drain, flush, or release API"
+      },
+      "worker_distribution": [
+        {
+          "url": "http://127.0.0.1:30001/metrics",
+          "before": 14,
+          "after": 20,
+          "delta": 6
+        },
+        {
+          "url": "http://127.0.0.1:30002/metrics",
+          "before": 13,
+          "after": 18,
+          "delta": 5
+        }
+      ],
+      "raw_report_sha256": "f5a175e143e0b5a26be4a3055bb4ac8e0892407ab49b95c7cfc9d43e8642893b"
+    },
+    "smg112-chat-completions.json": {
+      "started_at": "2026-10-15T02:43:09.241Z",
+      "finished_at": "2026-10-15T02:43:43.076Z",
+      "passed": true,
+      "checks": [
+        {
+          "name": "authentication rejects an invalid key on the generation endpoint",
+          "passed": true
+        },
+        {
+          "name": "normal-budget generation and usage",
+          "passed": true
+        },
+        {
+          "name": "complete multi-turn history without previous_response_id",
+          "passed": true
+        },
+        {
+          "name": "SSE terminal event and usage",
+          "passed": true
+        },
+        {
+          "name": "JSON tool call, local execution, result, and continuation",
+          "passed": true
+        },
+        {
+          "name": "streaming tool call, local execution, result, and continuation",
+          "passed": true
+        },
+        {
+          "name": "independent concurrent requests",
+          "passed": true
+        },
+        {
+          "name": "abort an active stream while another completes and service remains usable",
+          "passed": true
+        },
+        {
+          "name": "server metrics show requests on every expected worker",
+          "passed": true
+        }
+      ],
+      "cancellation": {
+        "aborted_at": "2026-10-15T02:43:19.257Z",
+        "both_streams_had_content": true,
+        "both_streams_incomplete_at_abort": true,
+        "scope": "only the cancelled request AbortController; no stop, drain, flush, or release API"
+      },
+      "worker_distribution": [
+        {
+          "url": "http://127.0.0.1:30001/metrics",
+          "before": 25,
+          "after": 28,
+          "delta": 3
+        },
+        {
+          "url": "http://127.0.0.1:30002/metrics",
+          "before": 23,
+          "after": 27,
+          "delta": 4
+        }
+      ],
+      "raw_report_sha256": "0404415b25b04122e847bebe7c5f8e0694b567255eeefd53643c762f39cf1fd9"
+    }
+  },
+  "gpu": {
+    "tp2": {
+      "sample_count": 290,
+      "sample_interval_seconds": 0.5,
+      "devices": [
+        {
+          "device_index": 0,
+          "peak_utilization_percent": 100,
+          "peak_memory_mib": 21021
+        },
+        {
+          "device_index": 1,
+          "peak_utilization_percent": 100,
+          "peak_memory_mib": 21021
+        }
+      ]
+    },
+    "gateway": {
+      "sample_count": 554,
+      "sample_interval_seconds": 0.5,
+      "devices": [
+        {
+          "device_index": 0,
+          "peak_utilization_percent": 93,
+          "peak_memory_mib": 20561
+        },
+        {
+          "device_index": 1,
+          "peak_utilization_percent": 93,
+          "peak_memory_mib": 21123
+        }
+      ]
+    },
+    "smg112": {
+      "sample_count": 153,
+      "sample_interval_seconds": 0.5,
+      "devices": [
+        {
+          "device_index": 0,
+          "peak_utilization_percent": 95,
+          "peak_memory_mib": 21125
+        },
+        {
+          "device_index": 1,
+          "peak_utilization_percent": 100,
+          "peak_memory_mib": 21793
+        }
+      ]
+    }
+  },
+  "tasks": [
+    {
+      "topology": "tp2",
+      "harness": "codex@version:0.145.0",
+      "task": "sha",
+      "passed": true,
+      "exit_code": 0,
+      "run_id": "run_78efa1c36e1840018d66b6651351c680",
+      "status": "succeeded",
+      "output": "The SHA-256 hash of the `README.md` file is `d9d6d3936408c612f3b13ccc7b3725603774c8cc44c541bd258eccc554ba7d0c`.",
+      "tool_evidence_events": 5,
+      "usage": {
+        "requests": 2,
+        "source": "model-interactions-v1",
+        "completeness": "complete",
+        "input_tokens": 21262,
+        "output_tokens": 161,
+        "total_tokens": 21423
+      },
+      "model_binding": {
+        "schema_version": "1",
+        "kind": "external-endpoint",
+        "endpoint_ref": "endpoint/tp2",
+        "endpoint_revision": "sha256:8cf5faeaca08ca7b65ca75ebc0369721ef18dddfd18d8a6fed240078d4909531",
+        "api": "responses",
+        "wire_model": "qwen25-7b-a09a35458c70",
+        "capabilities": {
+          "streaming": true,
+          "tool_calls": true,
+          "parallel_tool_calls": false,
+          "input_modalities": [
+            "text"
+          ]
+        },
+        "generation": {
+          "max_output_tokens": 1024,
+          "temperature": 0
+        }
+      },
+      "tools": [
+        {
+          "type": "tool.started",
+          "call_id": "item_1",
+          "name": "command_execution",
+          "input": {
+            "command": "/bin/zsh -lc \"cat README.md; python3 -c 'import hashlib, sys; print(hashlib.sha256(open(\\\"README.md\\\", \\\"rb\\\").read()).hexdigest())'\""
+          }
+        },
+        {
+          "type": "tool.completed",
+          "call_id": "item_1",
+          "name": "command_execution",
+          "output": "External endpoint GPU acceptance.\nPinned Qwen2.5-7B; official SGLang; one independent task.\npython3: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\npython3: error: couldn't create cache file '/tmp/xcrun_db-NJWJS1w9' (errno=Operation not permitted)\npython3: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\npython3: error: couldn't create cache file '/tmp/xcrun_db-Z0h5PY94' (errno=Operation not permitted)\nd9d6d3936408c612f3b13ccc7b3725603774c8cc44c541bd258eccc554ba7d0c\n",
+          "status": "succeeded"
+        }
+      ]
+    },
+    {
+      "topology": "smg112",
+      "harness": "codex@version:0.145.0",
+      "task": "sum",
+      "passed": true,
+      "exit_code": 0,
+      "run_id": "run_4e0030a7f9b54558bbd8e9ec294dfa2a",
+      "status": "succeeded",
+      "output": "The sum of the numbers in `numbers.json` is `334`.\n\nIf you need any further assistance or have additional tasks, feel free to let me know!",
+      "tool_evidence_events": 5,
+      "usage": {
+        "requests": 4,
+        "source": "model-interactions-v1",
+        "completeness": "complete",
+        "input_tokens": 43830,
+        "output_tokens": 461,
+        "total_tokens": 44291
+      },
+      "model_binding": {
+        "schema_version": "1",
+        "kind": "external-endpoint",
+        "endpoint_ref": "endpoint/smg112",
+        "endpoint_revision": "sha256:8cf5faeaca08ca7b65ca75ebc0369721ef18dddfd18d8a6fed240078d4909531",
+        "api": "responses",
+        "wire_model": "qwen25-7b-a09a35458c70",
+        "capabilities": {
+          "streaming": true,
+          "tool_calls": true,
+          "parallel_tool_calls": false,
+          "input_modalities": [
+            "text"
+          ]
+        },
+        "generation": {
+          "max_output_tokens": 1024,
+          "temperature": 0
+        }
+      },
+      "tools": [
+        {
+          "type": "tool.started",
+          "call_id": "item_3",
+          "name": "command_execution",
+          "input": {
+            "command": "/bin/zsh -lc \"python3 -c 'import json; print(sum(json.load(open(\\\"numbers.json\\\"))))'\""
+          }
+        },
+        {
+          "type": "tool.completed",
+          "call_id": "item_3",
+          "name": "command_execution",
+          "output": "python3: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\npython3: error: couldn't create cache file '/tmp/xcrun_db-m6PoGcMs' (errno=Operation not permitted)\npython3: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\npython3: error: couldn't create cache file '/tmp/xcrun_db-GG9G2qQv' (errno=Operation not permitted)\n334\n",
+          "status": "succeeded"
+        }
+      ]
+    }
+  ],
+  "cleanup": {
+    "destroyed": true,
+    "instanceId": 56025748,
+    "confirmedAt": 1792032305.086667
+  },
+  "cost": {
+    "observed_at": 1792032309.73332,
+    "before_credit_usd": 1.2947383322000228,
+    "after_credit_usd": 1.0298871762000221,
+    "observed_debit_usd": 0.26485115600000064,
+    "billing_may_lag": true,
+    "hourly_usd": 0.5755555555555556,
+    "rental_minutes": 33.60384638309479,
+    "conservative_total_estimate_usd": 0.45,
+    "run_spend_cap_usd": 1.1
+  },
+  "evidence_archive_sha256": "ddb27287d9ed32e72e7cd5687b3c3149eb509f8a018f71a2c4f91dd72e8c8675",
+  "gpu_cleanup": {
+    "tp2": "",
+    "gateway": ""
+  },
+  "harness_identity": {
+    "resolved_revision": {
+      "schema_version": "1",
+      "requested_ref": "codex@version:0.145.0",
+      "canonical_ref": "codex@version:0.145.0",
+      "harness_id": "codex",
+      "selector": {
+        "type": "version",
+        "value": "0.145.0"
+      },
+      "source": {
+        "type": "npm",
+        "package": "@openai/codex",
+        "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.145.0.tgz",
+        "integrity": "sha512-/PSPSFujjjmiyVFvG2yu/grOFhsWdokTH8t2KGWhXSo/M5n/dIDsnbsnO82/7bLtIoDuzQf7ATBUMWqPWQINlQ=="
+      },
+      "revision": {
+        "type": "version",
+        "version": "0.145.0"
+      },
+      "identity": "sha256:658505489c37214c866c214b330f05dd572ebdaf0d4b7c936dbfe4694fd52c30",
+      "resolved_at": "2026-10-15T02:25:35.729Z"
+    },
+    "artifact": {
+      "artifact_id": "sha256:caaea04011c43e4822eb9998e99edf21f6795f67c343be65e880a0572561f05c",
+      "adapter": "codex",
+      "adapter_version": "1",
+      "recipe_version": "1",
+      "platform": "darwin-arm64",
+      "entrypoint": "node_modules/@openai/codex/bin/codex.js",
+      "toolchain": {
+        "node": "v26.5.1",
+        "npm": "11.17.0"
+      }
+    }
+  }
+}

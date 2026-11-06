@@ -3,8 +3,8 @@ import copy
 import tempfile
 import unittest
 from pathlib import Path
-from gear_training.certification import REQUIRED, certify, inspect_certificate, missing_checks, scope
-from gear_training.content import ContentStore, ContractError, digest_bytes, digest_json
+from gear.training.runtime.certification import REQUIRED, certify, inspect_certificate, missing_checks, scope
+from gear.training.storage.content import ContentStore, ContractError, digest_bytes, digest_json
 from test_placement import request_fixture
 
 

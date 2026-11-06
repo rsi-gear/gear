@@ -28,6 +28,7 @@ export async function sealScriptSource(store: TrainingContentStore, directory: s
     if (stat.isDirectory()) {
       for (const name of (await readdir(path)).sort()) {
         if (['__pycache__', '.git', '.venv', 'node_modules'].includes(name)) continue
+        requireContract(relative || !['gear', 'gear.py', 'gear_training', 'gear_training.py'].includes(name), 'script-module-conflict', 'recipe source cannot replace the Gear framework')
         await visit(relative ? `${relative}/${name}` : name)
       }
     } else {

@@ -26,7 +26,7 @@ python -m pip install '/path/to/gear/python[agents]'
 python - <<'PYTHON'
 import json
 from pathlib import Path
-from gear_training.content import ContentStore
+from gear.training.storage.content import ContentStore
 controller = json.loads(Path('controller.json').read_text())
 spec = json.loads(Path('spec.json').read_text())
 assert spec['schemaVersion'] == 2
@@ -47,11 +47,11 @@ spec['stages'] = {
 }
 Path('spec-agent.json').write_text(json.dumps(spec, indent=2))
 PYTHON
-gear-refine training validate spec-agent.json --config controller.json
-gear-refine training init spec-agent.json --config controller.json
-gear-refine training admit EXP_ID --config controller.json
-gear-refine training preflight EXP_ID RUN_ID --config controller.json
-gear-refine training advance EXP_ID RUN_ID --config controller.json
+gear training validate spec-agent.json --config controller.json
+gear training init spec-agent.json --config controller.json
+gear training admit EXP_ID --config controller.json
+gear training preflight EXP_ID RUN_ID --config controller.json
+gear training advance EXP_ID RUN_ID --config controller.json
 ```
 
 替换实际返回的 `EXP_ID`、`RUN_ID`，重复 `advance` 到完成或明确失败。两项 stage 可独立省略。改变 bridge 或冻结运行时后需要重新验证；旧认证不是此次改动的 GPU 认证。每轮当前 behavior 权重身份进入 task-source 输入，最多 64 条已允许的训练历史提供原始请求、响应、native token/logprob 文件。历史按持久记录的确定顺序限量；不保证时间排序。当前轮的输入快照首次执行时冻结，部分 rollout 后恢复不会追加历史并重新生成任务。
@@ -74,7 +74,7 @@ GRPO 只支持整组保留或整组拒绝；不支持按 episode 成功筛选一
 
 ## 通用 runner 与恢复
 
-公共接口是 `gear_training.agents.AgentRunner`。runner 接收 `AgentRequest(workspace, instructions, timeout_seconds, recovery_id)`，返回 `AgentResult(status, artifacts, log, recovery_id)`。阶段负责领域校验及封存，runner 不需要了解训练。
+公共接口是 `gear.training.adapters.agents.AgentRunner`。runner 接收 `AgentRequest(workspace, instructions, timeout_seconds, recovery_id)`，返回 `AgentResult(status, artifacts, log, recovery_id)`。阶段负责领域校验及封存，runner 不需要了解训练。
 
 另一个提供方可以实现此接口，并在 controller 的环境中设置 `GEAR_AGENT_RUNNER_FACTORY=installed_module:factory`。factory 接收 `(provider_name, options)`，返回 runner；spec 的 `runner` 是任意提供方名称，`options` 是该适配器的 JSON 配置。此 factory 是运营端安装配置，不由任务输出指定。Claude Code、DSH 尚无内置实现；增加适配器不需要改训练 TS schema。直接 Python 调用也可以向 `run_agent_stage(..., runner=runner)` 注入实现，不要求安装 Codex SDK。
 
@@ -88,10 +88,10 @@ controller workspace 和 CAS 必须持久化：缓存授权与续跑读取原 co
 
 `behaviorPolicyRef` 表示轨迹生产策略，`updateStart` 区分完整 optimizer/scheduler/RNG 恢复与显式初始权重冷启动。`referenceModelRef` 由需要它的目标使用；当前 GRPO schema 仍要求此字段必填。当前 Slime GRPO 仍严格 on-policy：不能把任意其他策略的轨迹或任意初始 checkpoint 当作已支持的更新方式。旧配置保留已有默认值。
 
-`stages.SFTDatasetBuilder` 是独立的成功解/已验证前缀提取器，仅输出 `sft-dataset` 中间产物；它不直接输出 `offline-sft-v1` 所需的封存数据合同。内置 SFT 更新已由 `gear_training.offline_sft` 四阶段组合和 Slime updater 支持，使用前按 [配方指南](recipes.zh-CN.md) 编码、绑定 train 来源并封存数据。前缀提取器的调用示例：
+`stages.SFTDatasetBuilder` 是独立的成功解/已验证前缀提取器，仅输出 `sft-dataset` 中间产物；它不直接输出 `offline-sft-v1` 所需的封存数据合同。内置 SFT 更新已由 `gear.training.pipelines.offline_sft` 四阶段组合和 Slime updater 支持，使用前按 [配方指南](recipes.zh-CN.md) 编码、绑定 train 来源并封存数据。前缀提取器的调用示例：
 
 ```python
-from gear_training.stages import SFTDatasetBuilder
+from gear.training.data.builders import SFTDatasetBuilder
 # raws 是持久化 RawTrajectory；proofs 由可信 verifier 提供，值为 CAS ref。
 dataset_ref = await SFTDatasetBuilder(store).build(raws, verifications=proofs)
 ```

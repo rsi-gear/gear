@@ -7,10 +7,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from gear_training.offline import seal_dataset
+from gear.training.data.offline import seal_dataset
 
-from gear_training.content import ContentStore
-from gear_training.export import materialize, dataset_destination
+from gear.training.storage.content import ContentStore
+from gear.training.storage.snapshots import materialize, dataset_destination
 
 EXAMPLE = Path(__file__).resolve().parents[2] / 'examples/training-loop/terminal-bench-2.1/prepare.py'
 example = SimpleNamespace(**runpy.run_path(str(EXAMPLE)))

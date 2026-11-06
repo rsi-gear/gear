@@ -9,9 +9,9 @@ import json
 from pathlib import Path
 import re
 
-from gear_training.content import atomic_json, digest_file, require
-from gear_training.preflight import gpu_processes
-from gear_training.recovery import owned_alive
+from gear.training.storage.content import atomic_json, digest_file, require
+from gear.training.runtime.preflight import gpu_processes
+from gear.training.runtime.recovery import owned_alive
 from single_gpu_recovery_smoke import context
 
 
@@ -20,7 +20,7 @@ def native_snapshots(directory, request):
     import math
     import pickle
     import torch
-    from gear_training.content import ContentStore, digest_bytes
+    from gear.training.storage.content import ContentStore, digest_bytes
     config = json.loads((directory / 'config.json').read_text())
     store = ContentStore(config['storeRoot'])
     artifacts = json.loads((directory / 'artifacts.body.json').read_text())

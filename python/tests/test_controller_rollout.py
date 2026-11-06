@@ -9,13 +9,13 @@ import unittest
 from unittest.mock import Mock, patch
 from pathlib import Path
 
-from gear_training.content import digest_json
-from gear_training.stage_journal import StageJournal
-from gear_training.agent_stage import run_agent_stage
-from gear_training.agents import AgentResult
-from gear_training.export import seal_directory
-from gear_training.episodes import EpisodeJournal
-from gear_training.rollout import collect_rollout
+from gear.training.storage.content import digest_json
+from gear.training.storage.stage_journal import StageJournal
+from gear.training.adapters.agent_stage import run_agent_stage
+from gear.training.adapters.agents import AgentResult
+from gear.training.storage.snapshots import seal_directory
+from gear.training.data.episodes import EpisodeJournal
+from gear.training.backends.slime.rollout import collect_rollout
 from episode_fixture import EpisodeFixture
 
 
@@ -86,10 +86,10 @@ class ControllerRolloutTest(unittest.IsolatedAsyncioTestCase):
                         completed.add(intent["id"])
                     await asyncio.sleep(.03)
         transformer = types.SimpleNamespace(AutoTokenizer=types.SimpleNamespace(from_pretrained=Mock(return_value=object())))
-        with patch.dict(sys.modules, {"transformers": transformer}), patch("gear_training.rollout.slime_protocol", protocol), \
-             patch("gear_training.rollout.NativeSGLang", return_value=Native()), \
-             patch("gear_training.rollout.HitchClient", side_effect=AssertionError("Hitch must stay on the controller")), \
-             patch("gear_training.rollout.materialize", side_effect=AssertionError("task files must stay off the model node")):
+        with patch.dict(sys.modules, {"transformers": transformer}), patch("gear.training.backends.slime.rollout.slime_protocol", protocol), \
+             patch("gear.training.backends.slime.rollout.NativeSGLang", return_value=Native()), \
+             patch("gear.training.backends.slime.rollout.HitchClient", side_effect=AssertionError("Hitch must stay on the controller")), \
+             patch("gear.training.backends.slime.rollout.materialize", side_effect=AssertionError("task files must stay off the model node")):
             results = await asyncio.wait_for(asyncio.gather(collect_rollout(args, rollout_id, f.directory), controller()), timeout=15)
         return results[0]
 

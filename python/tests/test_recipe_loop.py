@@ -11,13 +11,13 @@ from unittest.mock import patch
 import test_recipes as recipe_fixtures
 import test_dev_grpo as online_fixtures
 from test_placement import Remote, Ref
-from gear_training.content import ContractError, atomic_json
-from gear_training.driver import run
-from gear_training.ledger import Ledger
-from gear_training.offline import generate_rollout as generate_sft
-from gear_training.offline_sft import AssistantDatasetBuilder
-from gear_training.recipes.registry import ESTIMATORS
-from gear_training.rollout import generate_rollout as generate_online
+from gear.training.storage.content import ContractError, atomic_json
+from gear.training.backends.slime.driver import run
+from gear.training.storage.ledger import Ledger
+from gear.training.backends.slime.offline import generate_rollout as generate_sft
+from gear.training.pipelines.offline_sft import AssistantDatasetBuilder
+from gear.training.recipes.registry import ESTIMATORS
+from gear.training.backends.slime.rollout import generate_rollout as generate_online
 
 
 class Sample:
@@ -33,7 +33,7 @@ class SFTLoopTests(unittest.TestCase):
     def helper(self):
         fixture=recipe_fixtures.OfflineDriverTests(methodName='runTest')
         helper=fixture.helper(); self.addCleanup(fixture.doCleanups)
-        source=helper.store.put_bytes(b'from gear_training.offline_sft import build_loop\n','application/octet-stream')
+        source=helper.store.put_bytes(b'from gear.training.pipelines.offline_sft import build_loop\n','application/octet-stream')
         helper.request['trainer']['script']={'entrypoint':'recipe:build_loop','sourceRef':helper.store.put_json({'schemaVersion':1,'kind':'training-script-source','files':[{'path':'recipe.py','contentRef':source}]})}
         self.preprocessed=[]; self.fixture=fixture
         def preprocess(update):
@@ -91,7 +91,7 @@ class SFTLoopTests(unittest.TestCase):
         with self.assertRaisesRegex(OSError,'commit response lost'): helper.run_driver()
         self.assertFalse((helper.root/'four-stage-loop/rounds/000000/model-updater/result.json').exists())
         before=helper.rt.events[:]
-        with patch('gear_training.gpu_visibility.verify_visible_devices',side_effect=AssertionError('no CUDA recovery')): helper.run_driver()
+        with patch('gear.training.backends.slime.gpu_visibility.verify_visible_devices',side_effect=AssertionError('no CUDA recovery')): helper.run_driver()
         self.assertEqual(helper.rt.events,before); self.assert_actor_only(helper)
     def test_pending_export_recovery_never_repeats_supervised_gradient(self):
         helper=self.helper(); helper.request['trainer']['updatesPerCandidate']=1
@@ -116,7 +116,7 @@ class SFTLoopTests(unittest.TestCase):
         self.assertEqual(helper.rt.events.count('train'),2)
     def test_offline_agent_stage_override_is_rejected_before_cuda(self):
         helper=self.helper(); helper.request['stages']={'taskSource':{'kind':'agent'}}
-        with patch('gear_training.gpu_visibility.verify_visible_devices',side_effect=AssertionError('no CUDA')),             self.assertRaisesRegex(ContractError,'not agent stage overrides'): helper.run_driver()
+        with patch('gear.training.backends.slime.gpu_visibility.verify_visible_devices',side_effect=AssertionError('no CUDA')),             self.assertRaisesRegex(ContractError,'not agent stage overrides'): helper.run_driver()
 
 
 class OnlineRecipeLoopTests(unittest.TestCase):

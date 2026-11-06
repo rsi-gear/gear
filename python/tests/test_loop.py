@@ -8,9 +8,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from gear_training import TrainingLoop, TrainingConfig
-from gear_training.content import ContractError
-from gear_training import loop as loop_module
+from gear.training import TrainingLoop, TrainingConfig
+from gear.training.storage.content import ContractError
+from gear.training import loop as loop_module
 
 
 class Source:

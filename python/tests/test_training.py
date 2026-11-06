@@ -9,12 +9,12 @@ import unittest
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
-from gear_training.content import ContentStore, ContractError, digest_bytes, digest_json
-from gear_training.gateway import ExactGateway
-from gear_training.ledger import Ledger
-from gear_training.samples import build_episode, admit_group, seal_batch
-from gear_training.recipes.agent_grpo import effective_sampling
-from gear_training.export import seal_directory, materialize, safetensors_layout
+from gear.training.storage.content import ContentStore, ContractError, digest_bytes, digest_json
+from gear.training.inference.gateway import ExactGateway
+from gear.training.storage.ledger import Ledger
+from gear.training.data.samples import build_episode, admit_group, seal_batch
+from gear.training.recipes.agent_grpo import effective_sampling
+from gear.training.storage.snapshots import seal_directory, materialize, safetensors_layout
 
 
 class TrainingTest(unittest.IsolatedAsyncioTestCase):
@@ -115,11 +115,11 @@ class TrainingTest(unittest.IsolatedAsyncioTestCase):
 
     def test_failed_hf_export_never_commits_or_retrains_and_retry_uses_fresh_directory(self):
         from unittest.mock import Mock, patch
-        from gear_training.driver import export_committed_actor
+        from gear.training.backends.slime.driver import export_committed_actor
         actor = Mock()
         actor.export_hf.side_effect = [RuntimeError("partial shard"), None]
         checkpoint = {"committed_update": 1, "request": {"trainingRunId": "run"}, "batch_ref": self.ref}
-        with patch("gear_training.driver.commit_checkpoint", return_value=(self.ref, self.ref)) as commit:
+        with patch("gear.training.backends.slime.driver.commit_checkpoint", return_value=(self.ref, self.ref)) as commit:
             with self.assertRaisesRegex(RuntimeError, "partial shard"):
                 export_committed_actor(actor, self.store, self.ledger, export_root=self.tmp.name, **checkpoint)
             commit.assert_not_called()

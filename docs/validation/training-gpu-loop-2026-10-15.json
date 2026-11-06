@@ -1,0 +1,425 @@
+{
+  "schemaVersion": 1,
+  "kind": "gear-training-and-external-endpoint-gpu-diagnostic",
+  "date": "2026-10-15",
+  "status": "passed",
+  "complete": true,
+  "validated": false,
+  "runtimeLockValidation": "pending-gpu",
+  "scope": "One frozen two-tool canary; real local Harbor/Docker, remote Slime training and an independent ordinary endpoint. No held-out learning or formal runtime certification claim.",
+  "source": {
+    "gearPythonPayloadCommit": "536ed7f",
+    "gearGatewayCleanupCommit": "a8def4e",
+    "hitchCommit": "686928d2e7b0e1ea583d6d7c9e302affb72a2c44"
+  },
+  "runtime": {
+    "image": "slimerl/slime@sha256:626fbff9c062bc3723ee617a6930ff96913750f6847a8df9e2319d84f8169c45",
+    "slimeCommit": "41014d1f29e201137fdffce737bb8bac65bc5219",
+    "megatronCommit": "1dcf0dafa884ad52ffb243625717a3471643e087",
+    "sglangVersion": "0.5.15.post1",
+    "pytorchVersion": "2.11.0+cu129",
+    "cudaVersion": "12.9",
+    "gpuModel": "RTX 3090",
+    "gpuCount": 2,
+    "model": "Qwen/Qwen3.5-2B@15852e8c16360a2fea060d615a32b45270f8a8fc"
+  },
+  "training": {
+    "handle": {
+      "jobId": "job_184432f27309bae18693999fc199a505",
+      "provider": "slime",
+      "requestDigest": "sha256:d024999ceb0987db0be5c47425f132a9bca9e1e9168549bd7d9b5afedd25486b",
+      "schemaVersion": 1
+    },
+    "committedUpdate": 1,
+    "resourcesReleased": true,
+    "groupSize": 2,
+    "tasks": 1,
+    "usage": {
+      "gpuSeconds": 1221.732658147812,
+      "groupResamples": 0,
+      "rolloutTokens": 401
+    },
+    "metrics": {
+      "loss": 0,
+      "gradNorm": 0,
+      "trainRolloutLogprobAbsDiff": 0.010318692773580551
+    },
+    "checkpointRef": {
+      "digest": "sha256:84d099410edcb339a3f3caa657b22c29a80d2167fb7884b35ef685b07a7ca77f",
+      "mediaType": "application/json",
+      "uri": "cas:sha256:84d099410edcb339a3f3caa657b22c29a80d2167fb7884b35ef685b07a7ca77f"
+    },
+    "updateCommitRefs": [
+      {
+        "digest": "sha256:e1e4fd2b5279eab4e9bbe0c4859145f3868f40f1ffc35ccf0fdcb2013c0d0a1c",
+        "mediaType": "application/json",
+        "uri": "cas:sha256:e1e4fd2b5279eab4e9bbe0c4859145f3868f40f1ffc35ccf0fdcb2013c0d0a1c"
+      }
+    ],
+    "model": {
+      "architecture": "Qwen3_5ForConditionalGeneration",
+      "chatTemplateDigest": "sha256:273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80",
+      "dtype": "bfloat16",
+      "hfSnapshotRef": {
+        "digest": "sha256:eafa31f96c6f16094e064b64b48af94b5690401d530d86a1b605ee1af81b5b7e",
+        "mediaType": "application/json",
+        "uri": "cas:sha256:eafa31f96c6f16094e064b64b48af94b5690401d530d86a1b605ee1af81b5b7e"
+      },
+      "id": "sha256:1252857efb480aef2a514a1de30172b43b8c46a0cd31d4be50e428f20e5cb88a",
+      "parentModelVersionId": "sha256:e69e5e324924c5e5d5ed380568189dcec173f815857cb75874de31ce7e23ae1f",
+      "provenanceRef": {
+        "digest": "sha256:4e1674454ccf18470b34c0335848609b1a65e8b58768967c36e9bd34d6e9c2b3",
+        "mediaType": "application/json",
+        "uri": "cas:sha256:4e1674454ccf18470b34c0335848609b1a65e8b58768967c36e9bd34d6e9c2b3"
+      },
+      "schemaVersion": 1,
+      "tokenizerDigest": "sha256:b140540ecff5b446cbc98ae8eeba860892617f8af3fbce8ca43a4ae968606e31",
+      "trainerCheckpointRef": {
+        "digest": "sha256:84d099410edcb339a3f3caa657b22c29a80d2167fb7884b35ef685b07a7ca77f",
+        "mediaType": "application/json",
+        "uri": "cas:sha256:84d099410edcb339a3f3caa657b22c29a80d2167fb7884b35ef685b07a7ca77f"
+      },
+      "trainingRunId": "diagnostic-train-fe9e51299a5e48548ffdda298c018775",
+      "weightsDigest": "sha256:9a309d4116f032aa72e75fcd29c1fde9fca042d76b2817f13cab4d29bf2a7dc2"
+    },
+    "exactBatchPrecheck": {
+      "metadataAndExactBatchVerified": true,
+      "fullBinaryClosureVerified": false,
+      "updates": [
+        {
+          "committedUpdate": 1,
+          "checkpointRef": {
+            "digest": "sha256:84d099410edcb339a3f3caa657b22c29a80d2167fb7884b35ef685b07a7ca77f",
+            "mediaType": "application/json",
+            "uri": "cas:sha256:84d099410edcb339a3f3caa657b22c29a80d2167fb7884b35ef685b07a7ca77f"
+          },
+          "batchRef": {
+            "digest": "sha256:607be953af50346211a419bb2111db5a28299be32b2e723230e01f5550ae2c33",
+            "mediaType": "application/json",
+            "uri": "cas:sha256:607be953af50346211a419bb2111db5a28299be32b2e723230e01f5550ae2c33"
+          },
+          "policyVersion": "runtime_312ba0f52344f47f9333a1e66887e847/update-0/weight-1",
+          "runs": [
+            "run_53ac975129fe4e7299a633b09b11a0f7",
+            "run_73a9cd1310c54d7f8ecf09cbbc53c74e"
+          ],
+          "rewards": [
+            0,
+            0
+          ]
+        }
+      ],
+      "scope": "Historical interim metadata/exact-batch precheck before complete binary preservation; its false flag is retained as observed."
+    },
+    "finalOfflineVerification": {
+      "fullBinaryClosureVerified": true,
+      "finiteWeightsVerified": true,
+      "exactBatchVerified": true,
+      "checkpointRef": {
+        "digest": "sha256:84d099410edcb339a3f3caa657b22c29a80d2167fb7884b35ef685b07a7ca77f",
+        "mediaType": "application/json",
+        "uri": "cas:sha256:84d099410edcb339a3f3caa657b22c29a80d2167fb7884b35ef685b07a7ca77f"
+      },
+      "batchRef": {
+        "digest": "sha256:607be953af50346211a419bb2111db5a28299be32b2e723230e01f5550ae2c33",
+        "mediaType": "application/json",
+        "uri": "cas:sha256:607be953af50346211a419bb2111db5a28299be32b2e723230e01f5550ae2c33"
+      }
+    }
+  },
+  "evaluations": {
+    "baseline": {
+      "bindingDigest": "sha256:e68ba51495daa65fd94dbd40cd24902dd91363abd965db2a952f868077ac3532",
+      "complete": true,
+      "deploymentEvidenceDigest": "sha256:cbba0dcd60add51056524db21211e7a1add843218c327205513a44be4013b6da",
+      "elapsedSeconds": 42.154,
+      "evalId": "eval_67feb8cec96844c686e5f162bac52213",
+      "key": "sha256:067bd2977b343ed4221f75b86ee997e2964e64387e1ee589310c999d56f20c18",
+      "kind": "gear-independent-model-diagnostic",
+      "label": "baseline",
+      "rewards": [
+        {
+          "attempt": 1,
+          "reward": 0,
+          "runId": "run_4bc0eed0ca6d4de198c44bb23222878d",
+          "taskId": "one"
+        }
+      ],
+      "scope": "pipeline diagnostic on the training canary task; no learning or promotion claim",
+      "status": "passed",
+      "subject": {
+        "harnessRef": {
+          "digest": "sha256:7ccb5026a5e538e1b0faf8a3c505fde473a25063518e0714c1a013a66947fbc1",
+          "mediaType": "application/json",
+          "uri": "cas:sha256:7ccb5026a5e538e1b0faf8a3c505fde473a25063518e0714c1a013a66947fbc1"
+        },
+        "modelVersionRef": {
+          "digest": "sha256:84638d33673ab96e8b04db0e8c7ce8e3accdc3653fb6a54b863b8306f516b2c4",
+          "mediaType": "application/json",
+          "uri": "cas:sha256:84638d33673ab96e8b04db0e8c7ce8e3accdc3653fb6a54b863b8306f516b2c4"
+        },
+        "weightsDigest": "sha256:cd234e32424737e4451fea6cad5e420fcf8417612ee8b85c2c33fdc94696a40d"
+      },
+      "usage": {
+        "elapsedSeconds": 30.837,
+        "gpuSeconds": null,
+        "gpuSecondsSource": null,
+        "inputTokens": 2038,
+        "outputTokens": 157,
+        "requests": 4,
+        "usageSource": "model-interactions-v1"
+      },
+      "validated": false
+    },
+    "candidate": {
+      "bindingDigest": "sha256:2be79778649536ae46c14ecd30777cbec4d3209cd5d1372fd9b735350d8f855e",
+      "complete": true,
+      "deploymentEvidenceDigest": "sha256:381812d93d8f0aad8ba87ad0c2ccdc503cf9f1bc4434d7a260294af2d92a7983",
+      "elapsedSeconds": 42.927,
+      "evalId": "eval_cfb4d4051956496b81aaf748d7d4e2b7",
+      "key": "sha256:32f37775d8e25901046cfa5684dec8dfa85e1a68a9fc0de61f506585e2f41008",
+      "kind": "gear-independent-model-diagnostic",
+      "label": "candidate",
+      "paired": {
+        "inferenceErrorRate": 0,
+        "meanDelta": 0,
+        "partition": "dev",
+        "standardError": null,
+        "taskDeltas": [
+          {
+            "baseline": 0,
+            "candidate": 0,
+            "delta": 0,
+            "taskId": "one"
+          }
+        ]
+      },
+      "rewards": [
+        {
+          "attempt": 1,
+          "reward": 0,
+          "runId": "run_5b5dca8f2093493fbd686e5ae218c1f4",
+          "taskId": "one"
+        }
+      ],
+      "scope": "pipeline diagnostic on the training canary task; no learning or promotion claim",
+      "status": "passed",
+      "subject": {
+        "harnessRef": {
+          "digest": "sha256:7ccb5026a5e538e1b0faf8a3c505fde473a25063518e0714c1a013a66947fbc1",
+          "mediaType": "application/json",
+          "uri": "cas:sha256:7ccb5026a5e538e1b0faf8a3c505fde473a25063518e0714c1a013a66947fbc1"
+        },
+        "modelVersionRef": {
+          "digest": "sha256:c042041603084018f92168a68ec251a646b5c75f09fff3a315de17d6bf51ca66",
+          "mediaType": "application/json",
+          "uri": "cas:sha256:c042041603084018f92168a68ec251a646b5c75f09fff3a315de17d6bf51ca66"
+        },
+        "weightsDigest": "sha256:9a309d4116f032aa72e75fcd29c1fde9fca042d76b2817f13cab4d29bf2a7dc2"
+      },
+      "usage": {
+        "elapsedSeconds": 33.01,
+        "gpuSeconds": null,
+        "gpuSecondsSource": null,
+        "inputTokens": 2038,
+        "outputTokens": 157,
+        "requests": 4,
+        "usageSource": "model-interactions-v1"
+      },
+      "validated": false
+    },
+    "commonConditionEqual": true
+  },
+  "isolation": {
+    "training_gpu_compute_empty": true,
+    "shared_pid_unchanged": true,
+    "shared_process_alive": true,
+    "request": {
+      "max_tokens": 1024,
+      "status": 200,
+      "wire_model": "smoke-1306768fb6e2",
+      "text": "ready",
+      "usage": {
+        "prompt_tokens": 19,
+        "total_tokens": 21,
+        "completion_tokens": 2,
+        "prompt_tokens_details": null,
+        "reasoning_tokens": 0
+      }
+    }
+  },
+  "resourceObservations": {
+    "totalSampleRows": 3068,
+    "samplesSpanAttempts": true,
+    "peakMemoryMiB": {
+      "GPU-0bfb3ed5-af55-472e-3199-058727ff80a7": 20513,
+      "GPU-4f452774-6f8b-6fcc-4ce1-2d4d190e6d07": 16835
+    },
+    "sharedAllConfigurationsRequests": 190,
+    "sharedVisibleSuccesses": 160,
+    "candidateOwnerStopGpuEmpty": true,
+    "actorTrainWindowUtc": [
+      "2026-10-15T04:37:53Z",
+      "2026-10-15T04:39:34Z"
+    ],
+    "sharedVisibleSuccessesStartedDuringActorTrain": 12
+  },
+  "preservation": {
+    "status": "passed",
+    "complete": true,
+    "graphObjectsVerified": 108,
+    "graphBytesVerified": 35467670234,
+    "inventoryRef": {
+      "digest": "sha256:e4ddcbf9aa52e354e0e24c4b0d35121e7056e53e4871ae6175a179c311aff19a",
+      "mediaType": "application/json",
+      "uri": "cas:sha256:e4ddcbf9aa52e354e0e24c4b0d35121e7056e53e4871ae6175a179c311aff19a"
+    },
+    "preciseHashVerification": true,
+    "completeTrainerStatePreserved": true,
+    "completeHfSnapshotPreserved": true,
+    "controllerOnlyAnchorsPreserved": true,
+    "controllerAnchorsVerified": 146,
+    "controllerAnchorBytes": 434204,
+    "updates": [
+      {
+        "checkpointRef": {
+          "digest": "sha256:84d099410edcb339a3f3caa657b22c29a80d2167fb7884b35ef685b07a7ca77f",
+          "mediaType": "application/json",
+          "uri": "cas:sha256:84d099410edcb339a3f3caa657b22c29a80d2167fb7884b35ef685b07a7ca77f"
+        },
+        "commitRef": {
+          "digest": "sha256:e1e4fd2b5279eab4e9bbe0c4859145f3868f40f1ffc35ccf0fdcb2013c0d0a1c",
+          "mediaType": "application/json",
+          "uri": "cas:sha256:e1e4fd2b5279eab4e9bbe0c4859145f3868f40f1ffc35ccf0fdcb2013c0d0a1c"
+        },
+        "committedUpdate": 1,
+        "consumedBatchRef": {
+          "digest": "sha256:607be953af50346211a419bb2111db5a28299be32b2e723230e01f5550ae2c33",
+          "mediaType": "application/json",
+          "uri": "cas:sha256:607be953af50346211a419bb2111db5a28299be32b2e723230e01f5550ae2c33"
+        },
+        "hfExportRef": {
+          "digest": "sha256:eafa31f96c6f16094e064b64b48af94b5690401d530d86a1b605ee1af81b5b7e",
+          "mediaType": "application/json",
+          "uri": "cas:sha256:eafa31f96c6f16094e064b64b48af94b5690401d530d86a1b605ee1af81b5b7e"
+        },
+        "trainerStateRef": {
+          "digest": "sha256:ca19961c780611a0fefeac427c33fa8aaa512343fab4fb7fc101825d8f386caf",
+          "mediaType": "application/json",
+          "uri": "cas:sha256:ca19961c780611a0fefeac427c33fa8aaa512343fab4fb7fc101825d8f386caf"
+        }
+      }
+    ],
+    "localFiniteWeightCheckRepeated": false,
+    "fullBinaryClosureVerified": true,
+    "actualRemainingMissingFiles": 0,
+    "independentFinalAudit": {
+      "complete": true,
+      "actualRemainingMissingFiles": 0,
+      "independentlySha256VerifiedObjects": 108,
+      "independentlySha256VerifiedBytes": 35467670234,
+      "downloadSummaryInitialMissingFiles": 1,
+      "explanation": "download.mjs missingFiles is assigned only once from the initial transfer plan, not decremented; independent final audit found zero missing objects and rehashed every inventory object."
+    }
+  },
+  "offlineCollection": {
+    "artifactsCollected": true,
+    "batchRef": {
+      "digest": "sha256:607be953af50346211a419bb2111db5a28299be32b2e723230e01f5550ae2c33",
+      "mediaType": "application/json",
+      "uri": "cas:sha256:607be953af50346211a419bb2111db5a28299be32b2e723230e01f5550ae2c33"
+    },
+    "checkpointRef": {
+      "digest": "sha256:84d099410edcb339a3f3caa657b22c29a80d2167fb7884b35ef685b07a7ca77f",
+      "mediaType": "application/json",
+      "uri": "cas:sha256:84d099410edcb339a3f3caa657b22c29a80d2167fb7884b35ef685b07a7ca77f"
+    },
+    "committedUpdate": 1,
+    "finiteWeightsVerified": true,
+    "kind": "gear-full-driver-diagnostic-collection",
+    "modelRef": {
+      "digest": "sha256:c042041603084018f92168a68ec251a646b5c75f09fff3a315de17d6bf51ca66",
+      "mediaType": "application/json",
+      "uri": "cas:sha256:c042041603084018f92168a68ec251a646b5c75f09fff3a315de17d6bf51ca66"
+    },
+    "rewards": [
+      0,
+      0
+    ],
+    "runs": [
+      "run_53ac975129fe4e7299a633b09b11a0f7",
+      "run_73a9cd1310c54d7f8ecf09cbbc53c74e"
+    ],
+    "updates": [
+      {
+        "batchRef": {
+          "digest": "sha256:607be953af50346211a419bb2111db5a28299be32b2e723230e01f5550ae2c33",
+          "mediaType": "application/json",
+          "uri": "cas:sha256:607be953af50346211a419bb2111db5a28299be32b2e723230e01f5550ae2c33"
+        },
+        "checkpointRef": {
+          "digest": "sha256:84d099410edcb339a3f3caa657b22c29a80d2167fb7884b35ef685b07a7ca77f",
+          "mediaType": "application/json",
+          "uri": "cas:sha256:84d099410edcb339a3f3caa657b22c29a80d2167fb7884b35ef685b07a7ca77f"
+        },
+        "committedUpdate": 1,
+        "policyVersion": "runtime_312ba0f52344f47f9333a1e66887e847/update-0/weight-1",
+        "rewards": [
+          0,
+          0
+        ],
+        "runs": [
+          "run_53ac975129fe4e7299a633b09b11a0f7",
+          "run_73a9cd1310c54d7f8ecf09cbbc53c74e"
+        ]
+      }
+    ],
+    "validated": false,
+    "verifiedBytes": 35467666730,
+    "verifiedObjects": 106
+  },
+  "rental": {
+    "provider": "Vast",
+    "instanceId": 56035925,
+    "hourlyUsd": 0.5755555555555556,
+    "authorizedCapUsd": 5,
+    "createdAt": "2026-10-15T03:34:31.884667+00:00",
+    "destroyed": true,
+    "hoursUntilAbsenceConfirmation": 3.9660880675580765,
+    "computeAndDiskEstimatedUsd": 2.2827040211056486,
+    "conservativeTotalUsd": 3.3003310791836844,
+    "estimateMethod": "Vast creation-to-exact-instance-absence duration × $0.5755555555555556/hour compute/disk price; conservative Vast estimate is duration × $0.58/hour plus $1 transfer allowance, below the authorized $5 cap. These are estimates, not a settled invoice; account top-ups are not spending. Existing SSH jump-host network costs are unmetered and excluded; the jump host forwarded traffic and stored no training artifacts.",
+    "destructionConfirmedAt": "2026-10-15T07:32:29.801710Z"
+  },
+  "rawEvidence": {
+    "remoteArchiveSha256": "sha256:7419e364e4f3eb0aaf48ed0e201dbc4bde4eab8016e13bfd74d7b6c450103613",
+    "remoteArchiveBytes": 104179
+  },
+  "notValidated": [
+    "nonzero-policy-gradient learning",
+    "formal runtime certification",
+    "held-out quality",
+    "full Harbor benchmark",
+    "remote Harbor workers",
+    "optimizer restore from this checkpoint",
+    "fault recovery matrix",
+    "Compose container startup",
+    "dynamic GPU co-location"
+  ],
+  "recovery": {
+    "downloadInterruptionsObserved": true,
+    "temporaryHelperDirectoryLost": true,
+    "originalControllerInputBytesUnavailable": true,
+    "originalControllerInputDigest": "sha256:452bd6517bd8f8fa09c910437afee5c4341c6d5bbcf215f90f1e229980219721",
+    "preservedControllerInputCopyDigest": "sha256:6996d41f92ec3d751f4e70505ec15f571609efe2ff55cfc3feb1f7079efdb8ca",
+    "semanticRequestVerified": true,
+    "originalArtifactsBytesVerified": true,
+    "controllerAnchorsPreserved": 146,
+    "partialPrefixesResumed": true,
+    "finalDownloader": "system-openssh-sftp-reget",
+    "finalRoute": "api-mapped-ssh-via-existing-jump",
+    "sshCompressionEnabled": true,
+    "endpointWeightIdentityTrust": "operator deployment evidence; external endpoint CLI identity_verified:false",
+    "scope": "Transport recovery only. Initial rsync transfers encountered SSH interruptions. Both direct-route openrsync and SFTP were too slow; final system OpenSSH SFTP reget used the existing jump host and API-mapped SSH port, with SSH compression enabled for the last native shard. The jump host forwarded traffic without storing training artifacts; its unmetered network cost is excluded. Exact frozen request, node generation, job and artifact bytes retained. Full-size prefixes were not published until transfer ACK and original SHA/size verification. No retraining or quality claim."
+  }
+}

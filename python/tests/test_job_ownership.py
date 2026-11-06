@@ -5,11 +5,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from gear_training.content import ContractError, atomic_json, digest_json
-from gear_training.device_lease import NodeDeviceLedger
-from gear_training.job import JobService, device_owner, driver, worker, worker_alive
-from gear_training.recovery import process_identity
-from gear_training.state import load
+from gear.training.storage.content import ContractError, atomic_json, digest_json
+from gear.training.runtime.device_lease import NodeDeviceLedger
+from gear.training.runtime.job import JobService, device_owner, driver, worker, worker_alive
+from gear.training.runtime.recovery import process_identity
+from gear.training.storage.state import load
 
 
 class JobOwnershipTests(unittest.TestCase):
@@ -28,16 +28,16 @@ class JobOwnershipTests(unittest.TestCase):
             "resourcesReleased": False, "usage": {"gpuSeconds": 0, "rolloutTokens": 0, "groupResamples": 0}}}.items(): atomic_json(self.directory / (name + ".json"), value)
         self.incarnation = "a" * 32; self.owner = device_owner(self.directory, self.incarnation)
         atomic_json(self.directory / "worker.json", {"incarnation": self.incarnation, "pending": True})
-        patch("gear_training.job.gpu_processes", return_value=[]).start()
-        patch("gear_training.device_lease.gpu_processes", return_value=[]).start(); self.addCleanup(patch.stopall)
+        patch("gear.training.runtime.job.gpu_processes", return_value=[]).start()
+        patch("gear.training.runtime.device_lease.gpu_processes", return_value=[]).start(); self.addCleanup(patch.stopall)
 
     def test_lost_spawn_does_not_release_and_cancel_fences_delayed_launch(self):
-        with patch("gear_training.job.subprocess.Popen", side_effect=OSError("lost node request")):
+        with patch("gear.training.runtime.job.subprocess.Popen", side_effect=OSError("lost node request")):
             with self.assertRaises(OSError): self.service.ensure_worker(self.directory)
         self.assertFalse(self.service.inspect(self.handle)["resourcesReleased"])
         with self.assertRaisesRegex(ContractError, "still reserves"): self.devices.acquire("inference/eval", ["GPU-1"])
         self.assertTrue(self.service.cancel(self.handle)["resourcesReleased"])
-        with patch("gear_training.job.subprocess.Popen", side_effect=AssertionError("late worker must not spawn")):
+        with patch("gear.training.runtime.job.subprocess.Popen", side_effect=AssertionError("late worker must not spawn")):
             worker(self.directory, self.incarnation)
         with self.assertRaisesRegex(ContractError, "no longer authorizes"): driver(self.directory, self.incarnation)
         self.devices.acquire("inference/eval", ["GPU-1"])
@@ -66,7 +66,7 @@ class JobOwnershipTests(unittest.TestCase):
         status.update(execution="completed", phase="checkpointed", committedUpdate=1, message=pending_message)
         atomic_json(self.directory / "status.json", status)
         self.devices.acquire(self.owner, ["GPU-1"])
-        with patch("gear_training.device_lease.gpu_processes", side_effect=OSError("node observation unavailable")):
+        with patch("gear.training.runtime.device_lease.gpu_processes", side_effect=OSError("node observation unavailable")):
             pending = self.service.inspect(self.handle)
         self.assertFalse(pending["resourcesReleased"])
         self.assertEqual(pending["message"], pending_message)

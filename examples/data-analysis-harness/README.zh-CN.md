@@ -60,28 +60,29 @@ node examples/data-analysis-harness/research.mjs run --project /absolute/researc
 
 ## Gear 比较与 Meta
 
-`compare.mjs` 对两份已预登记方法使用真实 staged search、raw metrics 和开发晋升。它不生成新候选，也不声称自主 Meta 发现了预登记修改：
+`compare.mjs` 将两份预登记方法接入标准 Project API，由沙箱内的 Python GEPA 决定采样、比较和晋升。Meta provider 只复制预登记候选，不声称自主发现该修改：
 
 ```sh
 node examples/data-analysis-harness/compare.mjs --project /absolute/research-project \
-  --config /absolute/base-config.json --stage stage-1
+  --stage stage-1
 ```
 
-主目标为实际 C5 的 `total_score`，要求 `valid_output >= 1`。共享集模式复用原 seed 证据，不增加 held-out 物理 run；关闭 `allowSharedSetPromotion` 时只给建议。独立验证模式和任务/计分条件不一致时拒绝复用。缺失必需产物的 cell 不可晋升。
+主目标为实际 C5 的 `total_score`，要求 `valid_output >= 1`。生成的 `gear.yaml` 使用 `validation.mode: research`，复用 seed 证据完成晋升，不增加 held-out run。每个外层评价槽对应一个包含五个实验和 C5 固定交付的序列；Gear 的 `physical_attempts` 按外层序列计数，实际 Hitch 子运行和用量保存在 sequence receipt，并以 `analysis_rollouts` / `analysis_deliveries` 写入 usage。
 
-自主候选编辑使用 `start.mjs` 接入既有 Refine Skill/隔离 Meta runner：
+自主候选编辑使用已经配置的 Meta profile（例如 `gear profile create` 创建的 Codex profile）：
 
 ```sh
 node examples/data-analysis-harness/start.mjs --project /absolute/research-project \
-  --config /absolute/base-config.json --prepare-only
+  --meta-profile meta --prepare-only
 node examples/data-analysis-harness/start.mjs --project /absolute/research-project \
-  --config /absolute/base-config.json
-
-GEAR_META_TASK_CONTEXT_FILE=/absolute/gear/examples/data-analysis-harness/meta-task-context.txt \
-  node examples/codex-skill-meta-runner.mjs --evolution-id ID --round-id ID
+  --meta-profile meta
 ```
 
-基础配置和 runner 环境见 [Meta 部署指南](../../docs/harness-agnostic-refine-skill.md)。保留打印出的控制面 socket 与真实 Meta identity；不要使用占位身份。运行 Meta 的宿主仍须隔离原始数据、私有标签和凭据。具有全盘 shell 的开发聊天不构成该隔离证明。
+命令打印新 cohort 的项目路径，保存标准 `gear.yaml`、`benchmark.yaml` 与 admission。其后可使用 `gear --project COHORT report RUN_ID`、`archive`、`resume`、`cancel`。再次运行 `start.mjs` 复用同一 admission。Project 核心负责资源封存和日志；Target 通过受信 process provider 驱动 Hitch；Meta 使用 dev 的隔离 runner。旧的 `gear.config.json`、SearchProvider 和 `codex-skill-meta-runner.mjs` 不再使用。
+
+研究资源在 Project 中不携带旧 carrier manifest。执行前，适配器在独立临时 checkout 上将资源封存成 carrier commit，并验证固定运行层未变；不会切换或改写原 carrier 的工作区。生成失败、基础设施未决和遗留锁不会获得新的实验预算。Project 自动执行修复与 projection 均关闭；需要恢复时先检查原 Hitch run 和同一个序列的 pending 记录。
+
+模型 token/request 不设置硬上限，保留 usage-only 计量。CPU、墙钟、工具调用与五个实验槽仍由每个序列控制。新的 checkpoint 创建新的 cohort 和基线，不跨 checkpoint 解释 harness 增益。
 
 ## 审计、合并与续跑
 
@@ -122,7 +123,7 @@ node examples/data-analysis-harness/refit.mjs --project /absolute/research-proje
 ```sh
 GEAR_ANALYSIS_HITCH_REPOSITORY=/absolute/agent-hitch \
   node --test examples/data-analysis-harness/tests/*.test.mjs
-npx vitest run tests/unit/search-seed-reuse.spec.ts tests/unit/search-evaluation-adapter.spec.ts
+npx vitest run tests/unit/analysis-project.spec.ts tests/unit/run-artifacts.spec.ts
 ```
 
 `tests/worker-canary.py` 须在真实固定镜像中运行，挂载 fixed 源码到 `/runner`、临时盘到 `/opt/kaggle-runtime/work` 和 `/run`。它使用非 Titanic schema 检查五折行隔离、OOF 汇总、伪造分数、路径/网络/凭据/进程越权、CPU 与输出限制。

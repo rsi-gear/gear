@@ -2,7 +2,7 @@ import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { randomUUID } from 'node:crypto'
-import { command } from '../../kaggle-titanic/common.mjs'
+import { command } from './common.mjs'
 import { assert, digest, seal, sha, sourcePath, validateCheckpoint, validateSolution, verify, zeroCost } from './contracts.mjs'
 import { atomicJson, json, locked } from './store.mjs'
 import { validateRequest } from './schemas.mjs'
@@ -123,7 +123,7 @@ export class HitchBackend {
     assert(trials?.length === 1, 'one physical experiment per task required')
     const trial = trials[0]
     assert(trial.task_id === task.taskId && trial.run_id && trial.observation_status === 'valid', `unavailable trusted experiment: ${operation.evalId}`)
-    const { parseRunOutputManifest, parseRunOutputExport } = await import('../../../lib/evaluator/run-artifacts.js')
+    const { parseRunOutputManifest, parseRunOutputExport } = await import('../../../lib/index.js')
     const manifest = parseRunOutputManifest(await this.hitch(['runs', 'artifacts', 'list', trial.run_id, '--json'], { executor: true, signal }),
       { runId: trial.run_id, evalId: operation.evalId, attempt: 1, harnessCommit: research ? request.harness.commit : this.config.executorCommit,
         taskId: task.taskId, taskDigest: task.taskDigest })

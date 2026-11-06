@@ -3,19 +3,38 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "gear-training"
-version = "0.1.0"
-description = "Versioned exact-token RL and offline SFT bridge for the pinned Slime runtime"
+name = "rsi-gear"
+version = "0.2.2"
+description = "Gear benchmark, algorithm, refine and training SDK"
 requires-python = ">=3.10"
-dependencies = ["psutil>=5.9,<8"]
+dependencies = ["psutil>=5.9,<8", "tomli>=2.0,<3; python_version < '3.11'", "tomli-w>=1.2,<2", "PyYAML>=6,<7"]
 
 [project.optional-dependencies]
 agents = ["openai-codex==0.159.3"]
 gateway = ["aiohttp>=3.11,<4"]
+deployment = ["supervisor==4.3.0"]
+dev = ["ruff==0.17.0", "mypy==2.4.0"]
 
 [project.scripts]
-gear-training = "gear_training.job:main"
+gear-python = "gear.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["gear_training*"]
+include = ["gear*"]
+
+[tool.setuptools.package-data]
+gear = ["py.typed", "refine/*.json", "benchmark/*.cjs", "benchmark/*.json"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = ["gear/refine/wire_types.py"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+follow_imports = "silent"
+files = ["gear/algorithms", "gear/project.py", "gear/training/contracts.py", "gear/training/loop.py", "gear/training/storage/loop_journal.py", "gear/training/runtime/implementation.py"]

@@ -7,6 +7,12 @@
     "declarationMap": false,
     "sourceMap": true
   },
-  "include": ["src/**/*.ts"],
+  "include": [
+    "src/index.ts",
+    "src/cli.ts",
+    "src/skill/index.ts",
+    "src/training/index.ts",
+    "src/adapters/codex/runner.ts"
+  ],
   "exclude": ["tests"]
 }

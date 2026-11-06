@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from gear_training.content import ContentStore, ContractError
-from gear_training.hitch import validate_training_run
+from gear.training.storage.content import ContentStore, ContractError
+from gear.training.adapters.hitch import validate_training_run
 
 
 class CanonicalHitchTests(unittest.TestCase):

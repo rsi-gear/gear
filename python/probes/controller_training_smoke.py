@@ -14,10 +14,10 @@ from pathlib import Path
 import secrets
 import sys
 
-from gear_training.content import ContentStore, atomic_json, digest_json, require
-from gear_training.job import JobService
-from gear_training.node import NodeService
-from gear_training.preflight import bridge_digest, generation_protocol_digest, gpu_processes
+from gear.training.storage.content import ContentStore, atomic_json, digest_json, require
+from gear.training.runtime.job import JobService
+from gear.training.runtime.node import NodeService
+from gear.training.runtime.preflight import bridge_digest, generation_protocol_digest, gpu_processes
 
 
 def prepare(node_config, payload):
@@ -76,9 +76,9 @@ def prepare(node_config, payload):
     atomic_json(directory / "status.json", {"schemaVersion": 1, "handle": handle, "phase": "admitted", "execution": "running",
                 "committedUpdate": 0, "usage": {"gpuSeconds": 0, "rolloutTokens": 0, "groupResamples": 0}, "resourcesReleased": False})
     atomic_json(directory / "worker.json", {"incarnation": secrets.token_hex(16), "pending": True})
-    from gear_training.driver import build_argv
-    from gear_training.placement import validate_resource_args
-    from gear_training.recipes.agent_grpo import validate_layout
+    from gear.training.backends.slime.driver import build_argv
+    from gear.training.runtime.placement import validate_resource_args
+    from gear.training.recipes.agent_grpo import validate_layout
     from slime.utils.arguments import parse_args
     from slime.backends.megatron_utils.actor import MegatronTrainRayActor
     from slime.ray.actor_group import RayTrainGroup

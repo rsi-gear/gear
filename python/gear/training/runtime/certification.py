@@ -1,0 +1,257 @@
+"""Scoped, content-addressed operator certification for the single-GPU profile.
+
+Evidence is an operator attestation backed by retained audit artifacts, not a
+cryptographic statement by the GPU vendor. No CPU test self-certifies a runtime.
+Raw logs and verifier contents stay on the controller; only bounded observations
+and their original artifact digests enter this public certificate.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from gear.training.runtime.placement import placement_probe_digest
+from gear.training.storage.content import digest_json, require
+
+PROFILE = "local-harbor-process-single-gpu-v1"
+REQUIRED = {
+    **dict.fromkeys(
+        (
+            "exactTokenIds",
+            "behaviorLogProbs",
+            "toolContinuity",
+            "exportReload",
+            "hitchHarbor",
+            "actorRolloutAlignment",
+            "colocatedMemoryCycle",
+            "colocatedCheckpointRecovery",
+            "colocatedWeightAlignment",
+            "independentEvaluationHandoff",
+            "disconnectedAccounting",
+        ),
+        "gpu",
+    ),
+    "controlResponseRecovery": "process",
+    "informationIsolation": "process",
+    "generationAuthorization": "process",
+    "instanceDeadlineStop": "remote-process",
+    "remoteArtifactRetention": "remote-process",
+}
+
+
+def required_checks(request):
+    recipe = request["trainer"].get("recipe", "agent-grpo-v1")
+    if recipe == "agent-grpo-v1":
+        return REQUIRED
+    if recipe == "offline-sft-v1":
+        return {
+            **dict.fromkeys(
+                (
+                    "sftMaskedLoss",
+                    "sftOptimizerRecovery",
+                    "exportReload",
+                    "independentEvaluationHandoff",
+                    "disconnectedAccounting",
+                ),
+                "gpu",
+            ),
+            "offlineDataIsolation": "process",
+            "controlResponseRecovery": "process",
+            "remoteArtifactRetention": "remote-process",
+        }
+    from gear.training.runtime.execution import actor_rollout_placement
+
+    checks = {**REQUIRED, "algorithmLossAndAdvantages": "gpu"}
+    if actor_rollout_placement(request) != "colocated":
+        for key in (
+            "colocatedMemoryCycle",
+            "colocatedCheckpointRecovery",
+            "colocatedWeightAlignment",
+        ):
+            checks.pop(key)
+    return checks
+
+
+def scope(request):
+    recipe = request["trainer"].get("recipe", "agent-grpo-v1")
+    if recipe != "agent-grpo-v1":
+        from gear.training.runtime.preflight import compatibility_digest
+
+        require(
+            recipe
+            in (
+                "agent-gspo-v1",
+                "agent-cispo-v1",
+                "agent-reinforce-plus-plus-v1",
+                "agent-reinforce-plus-plus-baseline-v1",
+                "offline-sft-v1",
+            ),
+            "unsupported-training-recipe",
+            "certificate cannot authorize an unknown recipe",
+        )
+        # Scope includes recipe, batch shape and full data contract for SFT.
+        return {
+            "profile": "gear-versioned-recipe-v1",
+            "recipe": recipe,
+            "harnessIdentityDigest": digest_json(request["fixedHarness"]),
+            "compatibilityDigest": compatibility_digest(
+                {
+                    **request,
+                    "trainer": {
+                        **request["trainer"],
+                        "runtimeLock": {
+                            k: v
+                            for k, v in request["trainer"]["runtimeLock"].items()
+                            if k not in ("validation", "probeEvidenceRefs")
+                        },
+                    },
+                }
+            ),
+        }
+    deployment = request.get("deployment", {})
+    task = deployment.get("taskExecution", {})
+    require(
+        request.get("schemaVersion") == 2
+        and task.get("placement") == "local"
+        and task.get("provider") == "local-docker"
+        and deployment.get("modelRuntime", {}).get("launcher") == "process"
+        and deployment.get("gpuScheduling")
+        == {"actorRollout": "colocated", "trainEvaluation": "sequential"}
+        and len(request.get("trainingDevices", [])) == 1,
+        "uncertified-runtime-profile",
+        "this certificate covers local Harbor and one process model-node GPU only",
+    )
+    lock = request["trainer"]["runtimeLock"]
+    return {
+        "profile": PROFILE,
+        "runtimeLockIdentityDigest": digest_json(
+            {k: v for k, v in lock.items() if k not in ("validation", "probeEvidenceRefs")}
+        ),
+        "placementIdentityDigest": placement_probe_digest(request),
+        "harnessIdentityDigest": digest_json(request["fixedHarness"]),
+    }
+
+
+def inspect_certificate(request, certificate):
+    identity = scope(request)
+    required = required_checks(request)
+    require(
+        isinstance(certificate, dict)
+        and set(certificate) == {"schemaVersion", "kind", "scope", "observations"}
+        and certificate["schemaVersion"] == 2
+        and certificate["kind"] == "gear-training-compatibility-probe"
+        and certificate["scope"] == identity
+        and isinstance(certificate["observations"], list),
+        "invalid-runtime-certificate",
+        "certificate schema or tested scope differs",
+    )
+    passed = set()
+    for observation in certificate["observations"]:
+        require(
+            isinstance(observation, dict)
+            and set(observation) == {"check", "method", "passed", "artifacts"},
+            "invalid-runtime-certificate",
+            "only public check observations belong in a certificate",
+        )
+        check = observation["check"]
+        require(
+            check in required
+            and check not in passed
+            and observation["passed"] is True
+            and observation["method"] == required[check],
+            "invalid-runtime-certificate",
+            "check is duplicated, failed or uses the wrong evidence method",
+        )
+        artifacts = observation["artifacts"]
+        require(
+            isinstance(artifacts, list) and artifacts,
+            "invalid-runtime-certificate",
+            "each check needs retained audit artifact identities",
+        )
+        for artifact in artifacts:
+            import re
+
+            require(
+                isinstance(artifact, dict)
+                and set(artifact) == {"sha256", "size"}
+                and isinstance(artifact["sha256"], str)
+                and re.fullmatch(r"sha256:[a-f0-9]{64}", artifact["sha256"])
+                and type(artifact["size"]) is int
+                and artifact["size"] > 0,
+                "invalid-runtime-certificate",
+                "artifact digest and byte length are required; private paths and raw facts are excluded",
+            )
+        passed.add(check)
+    return sorted(set(required) - passed)
+
+
+def missing_checks(request, store):
+    # V2 cannot fall back to an old unscoped boolean checklist. Malformed or
+    # mismatched evidence is a blocker, never an invitation to broaden scope.
+    try:
+        scope(request)
+        refs = request["trainer"]["runtimeLock"].get("probeEvidenceRefs", [])
+        if len(refs) != 1:
+            return sorted(required_checks(request))
+        return inspect_certificate(request, store.read_json(refs[0]))
+    except (ValueError, KeyError, TypeError, OSError):
+        return sorted(required_checks(request))
+
+
+def certify(request, audit, directory, store):
+    """Seal a complete operator audit, verifying original files before publishing.
+
+    The input must contain passed audit results bound to this precise scope.
+    Source artifacts remain local, so a held-out marker cannot enter Trainer CAS
+    through the certification dependency graph.
+    """
+    from gear.training.storage.content import digest_file
+
+    require(
+        audit.get("scope") == scope(request)
+        and audit.get("kind") == "gear-runtime-certification-audit"
+        and audit.get("schemaVersion") == 1,
+        "invalid-certification-audit",
+        "audit must bind the actual tested runtime and layout",
+    )
+    observations = []
+    root = Path(directory).resolve(strict=True)
+    for item in audit.get("observations", []):
+        artifacts = []
+        for artifact in item.get("artifacts", []):
+            path = (root / artifact["path"]).resolve(strict=True)
+            require(
+                path.is_relative_to(root)
+                and path.is_file()
+                and path.stat().st_size == artifact["size"]
+                and digest_file(path) == artifact["sha256"],
+                "certification-artifact-drift",
+                "retained audit artifact differs or escapes its evidence directory",
+            )
+            artifacts.append({"sha256": artifact["sha256"], "size": artifact["size"]})
+        observations.append(
+            {
+                "check": item["check"],
+                "method": item["method"],
+                "passed": item["passed"],
+                "artifacts": artifacts,
+            }
+        )
+    certificate = {
+        "schemaVersion": 2,
+        "kind": "gear-training-compatibility-probe",
+        "scope": scope(request),
+        "observations": observations,
+    }
+    missing = inspect_certificate(request, certificate)
+    require(
+        not missing,
+        "runtime-certification-incomplete",
+        "missing checks: " + ",".join(missing),
+    )
+    ref = store.put_json(certificate)
+    return {
+        **request["trainer"]["runtimeLock"],
+        "validation": "validated",
+        "probeEvidenceRefs": [ref],
+    }

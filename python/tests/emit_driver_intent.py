@@ -4,10 +4,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-from gear_training.content import ContentStore, atomic_json, digest_bytes
-from gear_training.driver import create_policy_lease
-from gear_training.episodes import EpisodeJournal
-from gear_training.ledger import Ledger
+from gear.training.storage.content import ContentStore, atomic_json, digest_bytes
+from gear.training.backends.slime.driver import create_policy_lease
+from gear.training.data.episodes import EpisodeJournal
+from gear.training.storage.ledger import Ledger
 
 
 data = json.load(sys.stdin)

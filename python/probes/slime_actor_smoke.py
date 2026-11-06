@@ -19,7 +19,8 @@ import time
 
 
 def rendered_prompt(tokenizer):
-    prompt = tokenizer.apply_chat_template([{"role": "user", "content": "Output only one invented spaceship name, without a preamble or explanation."}],
+    content = os.environ.get("GEAR_ACTOR_DIAGNOSTIC_PROMPT", "Output only one invented spaceship name, without a preamble or explanation.")
+    prompt = tokenizer.apply_chat_template([{"role": "user", "content": content}],
                                            tokenize=False, add_generation_prompt=True)
     assert isinstance(prompt, str) and prompt
     return prompt
@@ -71,14 +72,15 @@ def generate_rollout(args, rollout_id, data_source, evaluation=False):
 
 
 def prepared_args(options):
-    from gear_training.driver import build_argv
-    from gear_training.placement import validate_resource_args
-    from gear_training.recipes.agent_grpo import validate_layout
+    from gear.training.backends.slime.driver import build_argv
+    from gear.training.runtime.placement import validate_resource_args
+    from gear.training.recipes.agent_grpo import validate_layout
     from slime.utils.arguments import parse_args
 
     source = json.loads(Path(options.input).read_text())
     request = source["request"]
-    assert request["trainer"]["placement"] == "colocated" and len(request["trainingDevices"]) == 1
+    assert request["trainer"]["placement"] == "colocated" and len(request["trainingDevices"]) == options.gpu_count
+    assert request["trainer"]["dataParallelSize"] == options.gpu_count
     assert request["trainer"]["updatesPerCandidate"] == 1
     assert request["trainer"]["rolloutBatchSize"] == 1 and request["trainer"]["globalBatchSize"] == 2
     assert request["rollout"]["groupSize"] == 2 and request["rollout"]["sampling"]["maxNewTokens"] == 8
@@ -135,6 +137,9 @@ def main():
     parser.add_argument("--input", required=True, help="slime_argument_smoke argument-input.json")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--gpu-count", type=int, choices=(1, 2), default=1,
+                        help="Explicit DP=1/2 native update diagnostic; model TP/PP remain 1")
+    parser.add_argument("--prompt", help="One diagnostic question; rewards remain explicitly synthetic")
     parser.add_argument("--attention-backend", choices=("flash", "unfused"), default="flash",
                         help="Explicit training backend; unsupported kernels fail without fallback")
     parser.add_argument("--minimum-host-memory-gib", type=float, default=64)
@@ -155,6 +160,8 @@ def main():
     assert memory.total >= options.minimum_host_memory_gib * 1024 ** 3, "insufficient host RAM for this native offload diagnostic"
     assert memory.available >= options.minimum_available_memory_gib * 1024 ** 3, "insufficient available RAM for this native offload diagnostic"
     os.environ["GEAR_ACTOR_DIAGNOSTIC_OUTPUT"] = str(options.output)
+    if options.prompt:
+        os.environ["GEAR_ACTOR_DIAGNOSTIC_PROMPT"] = options.prompt
     args = prepared_args(options)
     if options.prepare_only:
         from slime.rollout.sglang_rollout import GenerateState, _prepare_prompt_ids
@@ -171,14 +178,17 @@ def main():
         return
 
     import ray
-    from gear_training.placement import TrainingMemoryCycle
+    from gear.training.runtime.placement import TrainingMemoryCycle
     from slime.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
-    from gear_training.slime_runtime import logging_api
+    from gear.training.backends.slime.slime_runtime import logging_api
     configure_logger, init_tracking, finish_tracking = logging_api()
 
     start = time.monotonic()
     summary = {"kind": "gear-slime-actor-diagnostic", "validated": False,
-               "synthetic_rewards": True, "status": "running", "phases": []}
+               "synthetic_rewards": True, "gpu_count": options.gpu_count,
+               "attention_backend": options.attention_backend,
+               "data_parallel_size": options.gpu_count, "prompt": options.prompt,
+               "status": "running", "phases": []}
     manager = None
 
     def record(phase, **details):
@@ -198,10 +208,11 @@ def main():
         record("starting")
         assert not ray_directory.exists(), "refuse to reuse another private Ray session"
         summary["ray_directory"] = str(ray_directory)
-        ray.init(address="local", num_gpus=1, num_cpus=8, object_store_memory=512 * 1024 ** 2,
+        ray.init(address="local", num_gpus=options.gpu_count, num_cpus=8, object_store_memory=512 * 1024 ** 2,
                  include_dashboard=False, _temp_dir=str(ray_directory),
                  runtime_env={"env_vars": {"PYTHONPATH": os.environ.get("PYTHONPATH", ""),
-                                          "GEAR_ACTOR_DIAGNOSTIC_OUTPUT": str(options.output)}})
+                                          "GEAR_ACTOR_DIAGNOSTIC_OUTPUT": str(options.output),
+                                          "GEAR_ACTOR_DIAGNOSTIC_PROMPT": os.environ.get("GEAR_ACTOR_DIAGNOSTIC_PROMPT", "Output only one invented spaceship name, without a preamble or explanation.")}})
         configure_logger()
         init_tracking(args)
         pgs = create_placement_groups(args)
@@ -209,6 +220,8 @@ def main():
         record("rollout-created")
         actor, _ = create_training_models(args, pgs, manager)
         assert hasattr(actor, "export_hf"), "pinned Gear HF export patch is required"
+        assert len(actor._actor_handlers) == options.gpu_count, "native actor group must use the requested GPU ranks"
+        summary["actor_rank_count"] = len(actor._actor_handlers)
         memory = TrainingMemoryCycle(args, ray, actor, manager)
         record("actor-created")
         memory.prepare_rollout()
@@ -223,7 +236,7 @@ def main():
         # Slime labels this checkpoint with zero-based rollout_id, not step count.
         assert tracker.read_text().strip() == "0", "synchronous checkpoint does not match rollout 0"
         memory.export_hf(str(options.output / "export"))
-        from gear_training.qwen35_export import preserve_frozen_auxiliary
+        from gear.training.backends.slime.qwen35_export import preserve_frozen_auxiliary
         preserve_frozen_auxiliary(options.model, options.output / "export", mtp_num_layers=getattr(args, "mtp_num_layers", 0))
         delta = changed_tensor(options.model, options.output / "export")
         record("exported", changed_tensor=delta)

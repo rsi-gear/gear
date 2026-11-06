@@ -26,8 +26,10 @@ npm run build
 
 Create a topic branch from `dev` for normal development PRs. Keep
 `package-lock.json` in sync when dependencies change. `npm ci` prepares Gear's
-private ToolFs bundle, and the build produces `lib/`; neither generated output
-should be committed. Platform dependencies and a runnable agent setup are
+private ToolFs bundle. The build follows the public CLI/SDK/Skill/training and
+Codex runner entrypoints and produces `lib/`; generated output should not be
+committed. Retired execution modules are excluded from that build and the npm
+package. Platform dependencies and a runnable agent setup are
 documented in [installation and usage](docs/plugin-installation-and-usage.md).
 
 ## Code structure and readability
@@ -36,25 +38,34 @@ Keep behavior in the module that owns it:
 
 | Area | Responsibility |
 | --- | --- |
-| `src/skill/`, `skills/refine/` | Skill control plane, agent-facing contracts, and bundled instructions |
-| `src/refine/` | Refinement lifecycle and round orchestration |
-| `src/evolution/`, `src/search/` | Algorithm components, search policies, and candidate comparison |
-| `src/harness/`, `src/candidate/` | Harness construction and isolated candidate workspaces |
-| `src/evaluator/` | Evaluation adapters, execution evidence, and Hitch integration |
-| `src/state/`, `src/experience/` | Durable records, identities, and reusable task experience |
-| `src/training/`, `python/gear_training/` | Model-training coordination and the Slime bridge |
+| `src/domain/`, `src/ports/` | Shared contracts, identities and implementation-independent interfaces |
+| `src/runtime/` | Durable decisions, operation admission, budgets, recovery and final gate |
+| `src/application/` | Project use cases shared by CLI, Python SDK and Skill |
+| `src/adapters/` | Harness/provider integration, storage, Python workers and isolation |
+| `src/cli/`, `src/skill/`, `skills/refine/` | Command projection, bundled Skill resources and operator instructions |
+| `python/gear/algorithms/` | Public Python contracts and the six replaceable modules in each algorithm |
+| `python/gear/benchmark/`, `python/gear/refine/` | Author-data compilation/import, verifiers and worker protocol |
+| `src/training/`, `python/gear/training/` | Training coordination, contracts, runtime, storage and optional backends |
+
+Retired search, RefineService and Meta implementations and their regression
+fixtures have been removed. Git history preserves the old implementation.
+Tests exercise current production modules; do not restore a parallel legacy
+assembly to support new tests.
 
 Keep CLI handlers focused on argument parsing and output. Use the public entry
-points in `package.json` for external consumers. Algorithm extensions should use
-the existing component contracts; start with the
-[algorithm authoring guide](docs/search-algorithm-authoring.zh-CN.md) and the
-[external policy example](examples/parent-policy/README.md).
+points in `package.json` for external consumers. Algorithms use public
+`gear.algorithms` Python contracts; start with the
+[algorithm authoring guide](docs/search-algorithm-authoring.zh-CN.md) and
+[examples](examples/algorithms/). GEPA and RandomSearch both expose parents,
+sampling, proposal, ranking, stopping and algorithm modules.
 
 Follow nearby TypeScript style: two-space indentation, single quotes, no
 semicolons, and `.js` suffixes for local ESM imports. Use descriptive names and
 explicit types for substantial contracts. Split large operations by
 responsibility, reuse rules that share an owner, and keep formatting changes
-focused. The core package has no repository-wide formatter or lint command.
+focused. Run `npm run lint`, `npm run format:check`, `npm run check:boundaries`
+and `npm run check:contracts` for the new architecture. Python uses Ruff and
+mypy as configured in `python/pyproject.toml`.
 
 Explain invariants and non-obvious decisions in comments, especially ownership,
 persistence, cancellation, and evidence reuse. Avoid comments that narrate the
@@ -91,34 +102,34 @@ npm run build
 npm test
 ```
 
-Gear uses Vitest on TypeScript source, so focused tests do not require a prior
-build unless they exercise packaged output:
+Gear uses Vitest on TypeScript source. Its global setup builds the production
+entrypoints once so subprocess tests also execute current code:
 
 ```sh
-npm test -- tests/unit/refine-service.spec.ts
+npm test -- tests/unit/project-controller.spec.ts
 ```
 
 Use the checks that cover the changed surface:
 
 | Change | Validation |
 | --- | --- |
-| Search policies or algorithm contracts | `npm run test:search` |
-| Public search API or external algorithm extensions | `npm run test:search:package` |
+| Python algorithm contracts and policies | Python tests and `python -m gear algorithm test` |
+| Public project API; Python algorithm authoring uses the project package journey | `npm run test:api:package` |
 | Package contents, exports, or dependencies | `npm run build` followed by `npm pack --dry-run --ignore-scripts` |
-| Sandbox or notebook execution | `npm run test:sandbox:platform` with the [platform dependencies](docs/plugin-installation-and-usage.md) installed |
+| Sandbox, algorithm workers or Meta execution | `npm run test:sandbox:platform` with the [platform dependencies](docs/plugin-installation-and-usage.md) installed |
 | Training controller or Python bridge | `npm run test:training` after the [CPU training test setup](docs/guide/en/training.md#cpu-development-tests) |
 | CI selection or npm release rules | `node --test .github/scripts/*.test.mjs` |
 
-For changes to Gear's Hitch contract, reproduce the pinned Hitch checkout and
-build from [CI](.github/workflows/ci.yml), then run:
+For changes to Gear's Hitch contract, run the current provider tests:
 
 ```sh
-HITCH_CONTRACT_ROOT=/absolute/path/to/agent-hitch \
-  npm test -- tests/integration/hitch-rerun-contract.spec.ts
+npm test -- tests/unit/project-hitch.spec.ts tests/unit/hitch-preparation.spec.ts
 ```
 
-That suite skips when `HITCH_CONTRACT_ROOT` is absent. Report skipped checks and
-which tests used real processes or services. Add regression tests for observable
+For real daemon checks, build the companion Hitch with the capabilities listed
+in the [configuration guide](docs/guide/en/configuration.md), then run
+`GEAR_TEST_HITCH=/absolute/path/to/hitch GEAR_TEST_HITCH_BINDING=1 node scripts/check-hitch-environment.mjs`.
+Report skipped checks and which tests used real processes or services. Add regression tests for observable
 failures and changed contracts, using isolated temporary directories and the
 fixtures in `tests/helpers/` and `tests/fixtures/`. Clean up processes, ports,
 and files; avoid real credentials, personal state, and fixed-sleep assumptions.
@@ -139,7 +150,17 @@ or hardware tests.
 Follow the [documentation authoring guide](docs/guide/README.md). Update both
 READMEs or both language versions of a guide when a shared user-facing behavior
 changes. Keep current setup instructions separate from design proposals and
-dated experiment records. For diagram changes, commit only the SVG assets in
+experiment results. Do not commit experiment documents to Git: this includes
+ad hoc experiment plans, progress diaries, run logs, local acceptance reports,
+and one-off validation summaries, even when written as Markdown under `docs/`.
+Keep them outside the checkout or in an ignored local directory; summarize
+relevant results in the PR description and link external artifacts when needed.
+Commit maintained user/developer documentation, durable design decisions,
+reusable test instructions, and small automated fixtures with clear provenance.
+Do not copy a local experiment report into the documentation tree as a substitute
+for updating those maintained documents.
+
+For diagram changes, commit only the SVG assets in
 `docs/guide/assets/` and inspect their rendering and animation in a browser.
 Keep diagram authoring projects and rendered video files outside version control.
 

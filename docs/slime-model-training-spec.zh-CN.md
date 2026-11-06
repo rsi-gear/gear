@@ -38,7 +38,7 @@ Gear 是唯一演进控制面，管理训练任务、模型版本、评测和发
 
 | 项目 | 核查版本 | 与本方案有关的事实 |
 | --- | --- | --- |
-| Gear | `c417aec76d54447c2ff777338396c1adbd1772ea` | 当前 `EvolutionSpec.rollout.model` 固定模型；candidate、champion 仍以 Harness Git commit 为中心。[类型](../src/types.ts)、[组件](../src/evolution/components.ts) |
+| Gear | `c417aec76d54447c2ff777338396c1adbd1772ea` | 当前 `EvolutionSpec.rollout.model` 固定模型；candidate、champion 仍以 Harness Git commit 为中心。[类型](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/types.ts)、[组件](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/evolution/components.ts) |
 | Hitch `origin/dev` | `9788b85199f3f087fa59fff85dd7ddfba8831ed4` | 已合并 managed SGLang、HF safetensors 模型导入、推理锁、设备预留与模型 endpoint binding；真实 GPU / Harbor 集成仍有 Preview 验收边界。[已合并规范](https://github.com/rsi-gear/agent-hitch/blob/9788b85199f3f087fa59fff85dd7ddfba8831ed4/docs/local-model-inference-spec.zh-CN.md) |
 | Slime | 首期候选版本：`41014d1f29e201137fdffce737bb8bac65bc5219`；另核查上游 `4c193f1f37509cca70f0e88807a9305b70f63f4e` | 两版均有 custom rollout、外部 SGLang 接入及 disk 权重更新相关实现；这些能力不代表 Hitch gateway 已暴露对应合同。[Slime 固定源码](https://github.com/THUDM/slime/tree/41014d1f29e201137fdffce737bb8bac65bc5219) |
 
@@ -373,7 +373,7 @@ interface TrainingExternalBinding {
 
 ### 8.3 Python bridge / Slime recipe
 
-建议开始为仓库内独立 Python package（候选目录 `python/gear_training/`），包含：
+建议开始为仓库内独立 Python package（候选目录 `python/gear/training/`），包含：
 
 | 模块 | 职责 |
 | --- | --- |
@@ -589,8 +589,8 @@ M0 是进入训练的前置门槛；M2 完成不等于模型质量提升。每�
 ## 14. 实现依据与证据导航
 
 - [Gear 路径 A / B 愿景](vision.md)：模型训练属于路径 B，当前接口以代码中的版本化训练合同为准。
-- [Gear 当前评测配对](../src/refine/service.ts)、[基线复用](../src/refine/baseline-reuse.ts)：模型轴应保留严格证据核验，同时拆开 subject 与共同条件。
+- [Gear 当前评测配对](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/refine/service.ts)、[基线复用](https://github.com/rsi-gear/gear/blob/9a1281dba7495ea454c637d1bbad4e1605f52db6/src/refine/baseline-reuse.ts)：模型轴应保留严格证据核验，同时拆开 subject 与共同条件。
 - [Slime 固定源码](https://github.com/THUDM/slime/tree/41014d1f29e201137fdffce737bb8bac65bc5219)：训练 hook、样本语义、权重同步；最终采用的版本由 M0 compatibility lock 决定。
 - [Hitch dev 推理源码](https://github.com/rsi-gear/agent-hitch/tree/9788b85199f3f087fa59fff85dd7ddfba8831ed4/src/inference)：模型导入、推理锁、进程与设备生命周期。
 
-本稿经过源码核查，尚未执行 GPU 训练、HF 数值对齐或 Harbor 端到端测试；这些是 M0–M4 的验收项。
+本稿保留初版设计与历史源码依据；当前运行契约以[模型端点规范](model-api-inference-service-spec.zh-CN.md)及[v2 controller](training/controller-v2.zh-CN.md)为准。已有[有界 GPU 训练/Harbor 端点评测诊断](validation/training-gpu-loop-2026-10-15.md)，但其 `validated:false` / `pending-gpu`、零 reward/loss/梯度不能声明 M0–M4 认证、完整 HF 数值对齐或质量验收完成。

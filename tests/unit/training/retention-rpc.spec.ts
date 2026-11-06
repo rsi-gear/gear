@@ -55,9 +55,9 @@ describe('model-node retention through real Python RPC', () => {
     spec.referenceModel = spec.initialModel
     spec.deployment.modelRuntime = { ...spec.deployment.modelRuntime, nodeId: observed.nodeId,
       generation: observed.generation, runtimeDigest: observed.runtimeDigest }
-    for (const device of [...spec.resources.trainingDevices, ...spec.resources.evaluationDevices]) device.nodeId = observed.nodeId
+    for (const device of spec.resources.trainingDevices) device.nodeId = observed.nodeId
     const config: TrainingControllerConfigV2 = { schemaVersion: 2, storeRoot: s.store.root, artifactStorage: 'model-node', deployment: placement,
-      evaluationGateway: { localPort: 31992, nodePort: 31992 }, activationPath: join(s.root, 'active.json'), episodeTimeoutSeconds: 30,
+      evaluationBindings: { bindingsFile: join(s.root, 'bindings.json'), trustedReceiptSources: ['fixture-deployer'] }, activationPath: join(s.root, 'active.json'), episodeTimeoutSeconds: 30,
       hitch: { command: ['fixture-hitch'], root: join(s.root, 'hitch'), workspace: join(s.root, 'controller'),
         harnessSourceDirectory: '/unused', python: s.transport.connection.python,
         budgets: { timeoutSeconds: 30, setupTimeoutSeconds: 30, maxConcurrent: 1, maxEpisodeSteps: 16, infrastructureRetries: 0, maxRepairRounds: 0 } } }
@@ -66,27 +66,13 @@ describe('model-node retention through real Python RPC', () => {
     await atomicWrite(file, config)
     const state = { storage: true, loseImportReply: false, importDrift: false }
     const invoke = trainingProcess.jsonProcess
-    let registered: ModelNodeTransport | undefined
     const calls = vi.spyOn(trainingProcess, 'jsonProcess').mockImplementation(async (command, args, ...rest) => {
       if (command[0] !== 'fixture-hitch') return invoke(command, args, ...rest)
       const argv = args.slice(2), op = argv.slice(0, 2).join(' ')
-      if (op === 'capabilities --json') return { managed_model_node: '2', model_node_storage: state.storage ? '1' : undefined }
-      if (op === 'model-node register') {
-        const { binding, connection } = JSON.parse(await readFile(argv[argv.indexOf('--file') + 1]!, 'utf8'))
-        const transport = new ModelNodeTransport({ ...connection, workspace: s.root }, { nodeId: binding.node_id, generation: binding.generation })
-        const actual = await transport.call('probe', {}) as typeof observed
-        expect(actual.runtimeDigest).toBe(binding.runtime_digest)
-        registered = transport
-        return { binding }
-      }
-      if (op === 'models add-node' || op === 'models inspect') {
-        const ref = op === 'models add-node' ? JSON.parse(await readFile(argv[2]!, 'utf8')) : undefined
-        const model = models.find(model => ref ? model.hfSnapshotRef.digest === ref.digest : argv[2] === `local/${digestJson(model.id)}`)!
-        expect(registered).toBeDefined()
-        const binding = JSON.parse(await readFile(argv[argv.indexOf('--model-node-file') + 1]!, 'utf8'))
-        expect(binding.generation).toBe(observed.generation)
-        await registered!.call('cas.retain', { roots: [model.hfSnapshotRef], controllerObjects: [] })
-        if (state.loseImportReply && op === 'models add-node') {
+      if (op === 'models add') {
+        const model = models.find(model => argv[2]!.endsWith(model.id.slice(7)))!
+        expect(model).toBeDefined()
+        if (state.loseImportReply) {
           state.loseImportReply = false
           throw new Error('model import response lost')
         }
@@ -99,7 +85,7 @@ describe('model-node retention through real Python RPC', () => {
     return { config, spec, models, experiment, state, calls,
       publish: (...args: string[]) => trainingCommand([args.length ? 'rollback' : 'publish', experiment.id, ...args, '--config', file]) as Promise<ModelRelease> }
   }
-  it('publishes and rolls back retained node models through the CLI without downloading files, including a lost import reply', async () => {
+  it('publishes and rolls back immutable node artifacts through Gear CAS, including a lost import reply', async () => {
     const s = await setup(), p = await publication(s)
     p.state.loseImportReply = true
     await expect(p.publish()).rejects.toThrow('model import response lost')
@@ -107,9 +93,8 @@ describe('model-node retention through real Python RPC', () => {
     const initial = await p.publish()
     expect(initial.activationId).toBe(pending.id)
     const activation = JSON.parse(await readFile(p.config.activationPath, 'utf8'))
-    expect(activation).toMatchObject({ hitchModel: `local/${digestJson(p.models[0]!.id)}`,
-      modelNode: { node_id: s.transport.identity!.nodeId, generation: s.transport.identity!.generation,
-        runtime_digest: p.spec.deployment.modelRuntime.runtimeDigest, launcher: 'process' } })
+    expect(activation).toMatchObject({ hitchModel: `local/${digestJson(p.models[0]!.id)}` })
+    expect(activation).not.toHaveProperty('modelNode')
     expect(JSON.stringify(activation)).not.toContain(s.transport.connection.configPath)
     const candidateRef = await s.store.putJson(p.models[1])
     await s.store.transaction(p.experiment.id, state => { state.champion.modelRef = candidateRef; state.champion.revision++ })
@@ -117,25 +102,19 @@ describe('model-node retention through real Python RPC', () => {
     expect(candidate.modelRef).toEqual(candidateRef)
     const rollback = await p.publish(initial.id)
     expect(rollback.modelRef).toEqual(initial.modelRef)
-    expect(JSON.parse(await readFile(p.config.activationPath, 'utf8')).modelNode).toEqual(activation.modelNode)
-    for (const ref of [s.weight, s.config]) await expect(s.store.readBytes(ref)).rejects.toMatchObject({ code: 'ENOENT' })
-    expect(p.calls.mock.calls.some(([, args]) => args.includes('materialize') || args.includes('add'))).toBe(false)
+    expect(JSON.parse(await readFile(p.config.activationPath, 'utf8')).hitchModel).toBe(activation.hitchModel)
+    for (const ref of [s.weight, s.config]) expect(await s.store.readBytes(ref)).toEqual(await s.node.readBytes(ref))
+    expect(p.calls.mock.calls.some(([, args]) => args.includes('materialize'))).toBe(true)
+    expect(p.calls.mock.calls.some(([, args]) => args.includes('add-node') || args.includes('register') || args.includes('local'))).toBe(false)
   }, 30_000)
-  it('keeps the published release when remote capability, import identity, files or generation cannot be verified', async () => {
+  it('keeps the published release on import drift and rejects a corrupt approved artifact', async () => {
     const s = await setup(), p = await publication(s)
-    const initial = await p.publish()
-    const before = await readFile(p.config.activationPath, 'utf8')
-    p.state.storage = false
-    await expect(p.publish(initial.id)).rejects.toMatchObject({ code: 'remote-model-storage-unavailable' })
-    p.state.storage = true; p.state.importDrift = true
+    const initial = await p.publish(), before = await readFile(p.config.activationPath, 'utf8')
+    p.state.importDrift = true
     await expect(p.publish(initial.id)).rejects.toMatchObject({ code: 'publication-import-drift' })
     p.state.importDrift = false
-    await rm(s.node.path(s.weight.digest))
-    await expect(p.publish(initial.id)).rejects.toMatchObject({ code: 'missing-node-content' })
-    const identityFile = join(s.root, 'node', 'identity.json')
-    const identity = JSON.parse(await readFile(identityFile, 'utf8'))
-    await atomicWrite(identityFile, { ...identity, generation: 'different-generation' })
-    await expect(p.publish(initial.id)).rejects.toMatchObject({ code: 'node-generation-drift' })
+    await writeFile(s.store.path(s.weight.digest), Buffer.alloc(1024 * 1024, 91))
+    await expect(p.publish(initial.id)).rejects.toMatchObject({ code: 'content-digest-mismatch' })
     expect(await readFile(p.config.activationPath, 'utf8')).toBe(before)
     expect((await s.store.load(p.experiment.id)).activeReleaseId).toBe(initial.id)
   }, 30_000)
