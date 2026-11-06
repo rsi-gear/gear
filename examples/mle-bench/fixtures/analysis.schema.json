@@ -1,0 +1,2260 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:gear:analysis-protocol:1",
+  "$defs": {
+    "Cost": {
+      "type": "object",
+      "properties": {
+        "cpuSeconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "tokens": {
+          "type": "number",
+          "minimum": 0
+        },
+        "requests": {
+          "type": "number",
+          "minimum": 0
+        },
+        "tools": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "cpuSeconds",
+        "tokens",
+        "requests",
+        "tools"
+      ],
+      "additionalProperties": false
+    },
+    "Prediction": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PredictionV1"
+        },
+        {
+          "$ref": "#/$defs/PredictionV2"
+        }
+      ]
+    },
+    "Task": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TaskV1"
+        },
+        {
+          "$ref": "#/$defs/TaskV2"
+        },
+        {
+          "$ref": "#/$defs/TaskV3"
+        }
+      ]
+    },
+    "Fold": {
+      "type": "object",
+      "properties": {
+        "fold": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "correct": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "accuracy": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "fold",
+        "rows",
+        "correct",
+        "accuracy"
+      ],
+      "additionalProperties": false
+    },
+    "Solution": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-solution@1"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "digest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 16777216
+              }
+            },
+            "required": [
+              "path",
+              "digest",
+              "bytes"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 64
+        },
+        "entrypoint": {
+          "type": "string"
+        },
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        },
+        "trainingSeed": {
+          "type": "integer"
+        },
+        "runtimeDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "authoredByRunId": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "files",
+        "entrypoint",
+        "parameters",
+        "trainingSeed",
+        "runtimeDigest",
+        "authoredByRunId",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "Experiment": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ExperimentV1"
+        },
+        {
+          "$ref": "#/$defs/ExperimentV2"
+        },
+        {
+          "$ref": "#/$defs/ExperimentV3"
+        }
+      ]
+    },
+    "Checkpoint": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-research-checkpoint@1"
+        },
+        "researchProjectId": {
+          "type": "string"
+        },
+        "taskFamilyId": {
+          "type": "string"
+        },
+        "baseTaskDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "dataScopeDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "validationPlanDigest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runtimeDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "scorerDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "parentCheckpointDigests": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        },
+        "sourceOutputManifests": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        },
+        "history": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Experiment"
+          }
+        },
+        "solutions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Solution"
+          }
+        },
+        "historyVisibilityDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "cachePolicyDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "costEvents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "cost": {
+                "$ref": "#/$defs/Cost"
+              }
+            },
+            "required": [
+              "id",
+              "cost"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "currentSolutionDigest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mergePolicyDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "researchProjectId",
+        "taskFamilyId",
+        "baseTaskDigest",
+        "dataScopeDigest",
+        "validationPlanDigest",
+        "runtimeDigest",
+        "scorerDigest",
+        "parentCheckpointDigests",
+        "sourceOutputManifests",
+        "history",
+        "solutions",
+        "historyVisibilityDigest",
+        "cachePolicyDigest",
+        "costEvents",
+        "currentSolutionDigest",
+        "mergePolicyDigest",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "RolloutOutput": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-rollout-output@1"
+        },
+        "requestDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "experiment": {
+          "$ref": "#/$defs/Experiment"
+        },
+        "solutions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Solution"
+          }
+        },
+        "selectedSolutionDigest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "availableEvidenceRefs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        },
+        "selectionPolicyDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "sealedAt": {
+          "type": "string"
+        },
+        "cost": {
+          "$ref": "#/$defs/Cost"
+        },
+        "stop": {
+          "type": "boolean"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "requestDigest",
+        "runId",
+        "experiment",
+        "solutions",
+        "selectedSolutionDigest",
+        "availableEvidenceRefs",
+        "selectionPolicyDigest",
+        "sealedAt",
+        "cost",
+        "stop",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "PredictionV1": {
+      "type": "object",
+      "properties": {
+        "idColumn": {
+          "type": "string"
+        },
+        "targetColumn": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "binary-label"
+        },
+        "allowedLabels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "idColumn",
+        "targetColumn",
+        "kind",
+        "allowedLabels"
+      ],
+      "additionalProperties": false
+    },
+    "PredictionV2": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "tabular"
+        },
+        "idColumn": {
+          "type": "string"
+        },
+        "targetColumns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "metric": {
+          "enum": [
+            "accuracy",
+            "auc-roc",
+            "mean-column-wise-rmsle"
+          ]
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "kind",
+        "idColumn",
+        "targetColumns",
+        "metric",
+        "labels"
+      ],
+      "additionalProperties": false
+    },
+    "TaskV1": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-task@1"
+        },
+        "taskId": {
+          "type": "string"
+        },
+        "taskFamilyId": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "inputs": {
+          "type": "object",
+          "properties": {
+            "trainDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "predictDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "trainDigest",
+            "predictDigest"
+          ],
+          "additionalProperties": false
+        },
+        "prediction": {
+          "$ref": "#/$defs/PredictionV1"
+        },
+        "predictIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "validationPlanDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "runtimeDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "taskId",
+        "taskFamilyId",
+        "description",
+        "inputs",
+        "prediction",
+        "predictIds",
+        "validationPlanDigest",
+        "runtimeDigest",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "TaskV2": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-task@2"
+        },
+        "taskId": {
+          "type": "string"
+        },
+        "taskFamilyId": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "inputs": {
+          "type": "object",
+          "properties": {
+            "trainDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "predictDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "trainDigest",
+            "predictDigest"
+          ],
+          "additionalProperties": false
+        },
+        "predictIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "validationPlanDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "runtimeDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "prediction": {
+          "$ref": "#/$defs/PredictionV2"
+        },
+        "publicFiles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "digest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "role": {
+                "enum": [
+                  "shared",
+                  "train",
+                  "predict"
+                ]
+              },
+              "rowId": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "digest",
+              "bytes",
+              "role",
+              "rowId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "benchmark": {
+          "type": "object",
+          "properties": {
+            "format": {
+              "const": "mle-bench"
+            },
+            "competitionId": {
+              "type": "string"
+            },
+            "definitionDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "publicTreeDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "sourceRevision": {
+              "type": "string"
+            },
+            "verification": {
+              "enum": [
+                "upstream-checksums",
+                "custom-checksums",
+                "fixture"
+              ]
+            }
+          },
+          "required": [
+            "format",
+            "competitionId",
+            "definitionDigest",
+            "publicTreeDigest",
+            "sourceRevision",
+            "verification"
+          ],
+          "additionalProperties": false
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "taskId",
+        "taskFamilyId",
+        "description",
+        "inputs",
+        "predictIds",
+        "validationPlanDigest",
+        "runtimeDigest",
+        "prediction",
+        "publicFiles",
+        "benchmark",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "TaskV3": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-task@3"
+        },
+        "taskId": {
+          "type": "string"
+        },
+        "taskFamilyId": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "inputs": {
+          "type": "object",
+          "properties": {
+            "trainDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "predictDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "trainDigest",
+            "predictDigest"
+          ],
+          "additionalProperties": false
+        },
+        "predictIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "validationPlanDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "runtimeDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "prediction": {
+          "$ref": "#/$defs/PredictionV2"
+        },
+        "publicFiles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "digest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "role": {
+                "enum": [
+                  "shared",
+                  "train",
+                  "predict"
+                ]
+              },
+              "rowId": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "digest",
+              "bytes",
+              "role",
+              "rowId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "benchmark": {
+          "type": "object",
+          "properties": {
+            "format": {
+              "const": "mle-bench"
+            },
+            "competitionId": {
+              "type": "string"
+            },
+            "definitionDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "publicTreeDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "sourceRevision": {
+              "type": "string"
+            },
+            "verification": {
+              "enum": [
+                "upstream-checksums",
+                "custom-checksums",
+                "fixture"
+              ]
+            }
+          },
+          "required": [
+            "format",
+            "competitionId",
+            "definitionDigest",
+            "publicTreeDigest",
+            "sourceRevision",
+            "verification"
+          ],
+          "additionalProperties": false
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "taskId",
+        "taskFamilyId",
+        "description",
+        "inputs",
+        "predictIds",
+        "validationPlanDigest",
+        "runtimeDigest",
+        "prediction",
+        "publicFiles",
+        "benchmark",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "ExperimentV1": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-experiment@1"
+        },
+        "experimentId": {
+          "type": "string"
+        },
+        "sequenceId": {
+          "type": "string"
+        },
+        "rolloutRunId": {
+          "type": "string"
+        },
+        "slotIndex": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "parentExperimentId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operator": {
+          "enum": [
+            "draft",
+            "debug",
+            "improve",
+            "confirm",
+            "reuse"
+          ]
+        },
+        "sourceDigest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "validationPlanDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "trainingSeed": {
+          "type": "integer"
+        },
+        "claim": {
+          "type": "object",
+          "properties": {
+            "hypothesis": {
+              "type": "string"
+            },
+            "intendedChange": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "hypothesis",
+            "intendedChange"
+          ],
+          "additionalProperties": false
+        },
+        "execution": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "enum": [
+                "completed",
+                "reused",
+                "generation_failed",
+                "candidate_failed"
+              ]
+            },
+            "receiptDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "physicalAttemptRefs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "reusedEvidenceRefs": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              }
+            },
+            "cost": {
+              "$ref": "#/$defs/Cost"
+            },
+            "foldMetrics": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Fold"
+              }
+            },
+            "pooledAccuracy": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "oofDigest": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "receiptDigest",
+            "physicalAttemptRefs",
+            "reusedEvidenceRefs",
+            "cost",
+            "foldMetrics",
+            "pooledAccuracy",
+            "oofDigest"
+          ],
+          "additionalProperties": false
+        },
+        "interpretation": {
+          "type": "object",
+          "properties": {
+            "conclusion": {
+              "type": "string"
+            },
+            "limitations": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "conclusion",
+            "limitations"
+          ],
+          "additionalProperties": false
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "experimentId",
+        "sequenceId",
+        "rolloutRunId",
+        "slotIndex",
+        "parentExperimentId",
+        "operator",
+        "sourceDigest",
+        "validationPlanDigest",
+        "trainingSeed",
+        "claim",
+        "execution",
+        "interpretation",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "FoldV2": {
+      "type": "object",
+      "properties": {
+        "fold": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "score": {
+          "type": "number",
+          "minimum": 0
+        },
+        "utility": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "fold",
+        "rows",
+        "score",
+        "utility"
+      ],
+      "additionalProperties": false
+    },
+    "ExperimentV2": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-experiment@2"
+        },
+        "experimentId": {
+          "type": "string"
+        },
+        "sequenceId": {
+          "type": "string"
+        },
+        "rolloutRunId": {
+          "type": "string"
+        },
+        "slotIndex": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "parentExperimentId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operator": {
+          "enum": [
+            "draft",
+            "debug",
+            "improve",
+            "confirm",
+            "reuse"
+          ]
+        },
+        "sourceDigest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "validationPlanDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "trainingSeed": {
+          "type": "integer"
+        },
+        "claim": {
+          "type": "object",
+          "properties": {
+            "hypothesis": {
+              "type": "string"
+            },
+            "intendedChange": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "hypothesis",
+            "intendedChange"
+          ],
+          "additionalProperties": false
+        },
+        "interpretation": {
+          "type": "object",
+          "properties": {
+            "conclusion": {
+              "type": "string"
+            },
+            "limitations": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "conclusion",
+            "limitations"
+          ],
+          "additionalProperties": false
+        },
+        "execution": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "enum": [
+                "completed",
+                "reused",
+                "generation_failed",
+                "candidate_failed"
+              ]
+            },
+            "receiptDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "physicalAttemptRefs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "reusedEvidenceRefs": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              }
+            },
+            "cost": {
+              "$ref": "#/$defs/Cost"
+            },
+            "oofDigest": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "metric": {
+              "enum": [
+                "accuracy",
+                "auc-roc",
+                "mean-column-wise-rmsle"
+              ]
+            },
+            "foldMetrics": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/FoldV2"
+              }
+            },
+            "pooledScore": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "pooledUtility": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "receiptDigest",
+            "physicalAttemptRefs",
+            "reusedEvidenceRefs",
+            "cost",
+            "oofDigest",
+            "metric",
+            "foldMetrics",
+            "pooledScore",
+            "pooledUtility"
+          ],
+          "additionalProperties": false
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "experimentId",
+        "sequenceId",
+        "rolloutRunId",
+        "slotIndex",
+        "parentExperimentId",
+        "operator",
+        "sourceDigest",
+        "validationPlanDigest",
+        "trainingSeed",
+        "claim",
+        "interpretation",
+        "execution",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "ExperimentV3": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-experiment@3"
+        },
+        "experimentId": {
+          "type": "string"
+        },
+        "sequenceId": {
+          "type": "string"
+        },
+        "rolloutRunId": {
+          "type": "string"
+        },
+        "slotIndex": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "parentExperimentId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operator": {
+          "enum": [
+            "draft",
+            "debug",
+            "improve",
+            "confirm",
+            "reuse"
+          ]
+        },
+        "sourceDigest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "validationPlanDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "trainingSeed": {
+          "type": "integer"
+        },
+        "claim": {
+          "type": "object",
+          "properties": {
+            "hypothesis": {
+              "type": "string"
+            },
+            "intendedChange": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "hypothesis",
+            "intendedChange"
+          ],
+          "additionalProperties": false
+        },
+        "interpretation": {
+          "type": "object",
+          "properties": {
+            "conclusion": {
+              "type": "string"
+            },
+            "limitations": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "conclusion",
+            "limitations"
+          ],
+          "additionalProperties": false
+        },
+        "execution": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "enum": [
+                "completed",
+                "reused",
+                "generation_failed",
+                "candidate_failed"
+              ]
+            },
+            "receiptDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "physicalAttemptRefs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "reusedEvidenceRefs": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              }
+            },
+            "cost": {
+              "$ref": "#/$defs/Cost"
+            },
+            "metric": {
+              "enum": [
+                "accuracy",
+                "auc-roc",
+                "mean-column-wise-rmsle"
+              ]
+            },
+            "validationScore": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "validationUtility": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "validationRows": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "predictionsDigest": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "receiptDigest",
+            "physicalAttemptRefs",
+            "reusedEvidenceRefs",
+            "cost",
+            "metric",
+            "validationScore",
+            "validationUtility",
+            "validationRows",
+            "predictionsDigest"
+          ],
+          "additionalProperties": false
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "experimentId",
+        "sequenceId",
+        "rolloutRunId",
+        "slotIndex",
+        "parentExperimentId",
+        "operator",
+        "sourceDigest",
+        "validationPlanDigest",
+        "trainingSeed",
+        "claim",
+        "interpretation",
+        "execution",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "Harness": {
+      "type": "object",
+      "properties": {
+        "commit": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40,64}$"
+        },
+        "manifestDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "commit",
+        "manifestDigest"
+      ],
+      "additionalProperties": false
+    },
+    "Allowance": {
+      "type": "object",
+      "properties": {
+        "wallSeconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cpuSeconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "tools": {
+          "type": "number",
+          "minimum": 0
+        },
+        "tokens": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requests": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "wallSeconds",
+        "cpuSeconds",
+        "tools",
+        "tokens",
+        "requests"
+      ],
+      "additionalProperties": false
+    },
+    "Budget": {
+      "type": "object",
+      "properties": {
+        "wallSeconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "reserveSeconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cpuSeconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "reserveCpuSeconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "tokens": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requests": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tools": {
+          "type": "number",
+          "minimum": 0
+        },
+        "reserveTools": {
+          "type": "number",
+          "minimum": 0
+        },
+        "experimentWallSeconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "experimentCpuSeconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "maxFileBytes": {
+          "type": "number",
+          "minimum": 0
+        },
+        "maxOutputBytes": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "wallSeconds",
+        "reserveSeconds",
+        "cpuSeconds",
+        "reserveCpuSeconds",
+        "tokens",
+        "requests",
+        "tools",
+        "reserveTools",
+        "experimentWallSeconds",
+        "experimentCpuSeconds",
+        "maxFileBytes",
+        "maxOutputBytes"
+      ],
+      "additionalProperties": false
+    },
+    "SequencePlan": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SequencePlanV1"
+        },
+        {
+          "$ref": "#/$defs/SequencePlanV2"
+        }
+      ]
+    },
+    "RolloutRequest": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RolloutRequestV1"
+        },
+        {
+          "$ref": "#/$defs/RolloutRequestV2"
+        }
+      ]
+    },
+    "Selection": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-slot-selection@1"
+        },
+        "slotIndex": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "experimentId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "attempted",
+            "not_started"
+          ]
+        },
+        "stopReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "incumbentSolutionDigest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "carryForward": {
+          "type": "boolean"
+        },
+        "availableEvidenceRefs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        },
+        "selectionPolicyDigest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cumulativeCostDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "sealedAt": {
+          "type": "string"
+        },
+        "rolloutReceiptDigest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "slotIndex",
+        "experimentId",
+        "status",
+        "stopReason",
+        "incumbentSolutionDigest",
+        "carryForward",
+        "availableEvidenceRefs",
+        "selectionPolicyDigest",
+        "cumulativeCostDigest",
+        "sealedAt",
+        "rolloutReceiptDigest",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "SourceSelectionPlan": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-source-selection@1"
+        },
+        "sequencePlanDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "sourceSequenceReceiptDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "startingCheckpointDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "harness": {
+          "$ref": "#/$defs/Harness"
+        },
+        "runtimeDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "budgetDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "childRuns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "runId": {
+                "type": "string"
+              },
+              "receiptDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "outputManifestDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              }
+            },
+            "required": [
+              "runId",
+              "receiptDigest",
+              "outputManifestDigest"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "sourceRunId": {
+          "type": "string"
+        },
+        "outputManifestDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "solutionDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "sequencePlanDigest",
+        "sourceSequenceReceiptDigest",
+        "startingCheckpointDigest",
+        "harness",
+        "runtimeDigest",
+        "budgetDigest",
+        "childRuns",
+        "sourceRunId",
+        "outputManifestDigest",
+        "solutionDigest",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "RefitRequest": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-refit-request@1"
+        },
+        "task": {
+          "$ref": "#/$defs/Task"
+        },
+        "solution": {
+          "$ref": "#/$defs/Solution"
+        },
+        "runtimeDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "harness": {
+          "$ref": "#/$defs/Harness"
+        },
+        "sourceSelectionPlan": {
+          "$ref": "#/$defs/SourceSelectionPlan"
+        },
+        "allowance": {
+          "$ref": "#/$defs/Allowance"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "task",
+        "solution",
+        "runtimeDigest",
+        "harness",
+        "sourceSelectionPlan",
+        "allowance",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "SequencePlanV1": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-five-rollout@1"
+        },
+        "task": {
+          "$ref": "#/$defs/Task"
+        },
+        "startingCheckpointDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "harness": {
+          "$ref": "#/$defs/Harness"
+        },
+        "model": {
+          "type": "string"
+        },
+        "budget": {
+          "$ref": "#/$defs/Budget"
+        },
+        "runtimeDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "experiments": {
+          "const": 5
+        },
+        "repetitions": {
+          "const": 1
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "task",
+        "startingCheckpointDigest",
+        "harness",
+        "model",
+        "budget",
+        "runtimeDigest",
+        "experiments",
+        "repetitions",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "SequencePlanV2": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-research-sequence@1"
+        },
+        "task": {
+          "$ref": "#/$defs/Task"
+        },
+        "startingCheckpointDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "harness": {
+          "$ref": "#/$defs/Harness"
+        },
+        "model": {
+          "type": "string"
+        },
+        "budget": {
+          "$ref": "#/$defs/Budget"
+        },
+        "runtimeDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "experiments": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "repetitions": {
+          "const": 1
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "task",
+        "startingCheckpointDigest",
+        "harness",
+        "model",
+        "budget",
+        "runtimeDigest",
+        "experiments",
+        "repetitions",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "RolloutRequestV1": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-rollout-request@1"
+        },
+        "sequenceId": {
+          "type": "string"
+        },
+        "slotIndex": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "planDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "task": {
+          "$ref": "#/$defs/Task"
+        },
+        "harness": {
+          "$ref": "#/$defs/Harness"
+        },
+        "model": {
+          "type": "string"
+        },
+        "runtimeDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "checkpointDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "checkpointRef": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "previousRolloutReceiptDigest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "eligibleSolutionDigests": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "uniqueItems": true
+        },
+        "allowance": {
+          "$ref": "#/$defs/Allowance"
+        },
+        "experimentWallSeconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "experimentCpuSeconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "sequenceId",
+        "slotIndex",
+        "planDigest",
+        "task",
+        "harness",
+        "model",
+        "runtimeDigest",
+        "checkpointDigest",
+        "checkpointRef",
+        "previousRolloutReceiptDigest",
+        "eligibleSolutionDigests",
+        "allowance",
+        "experimentWallSeconds",
+        "experimentCpuSeconds",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "RolloutRequestV2": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-rollout-request@2"
+        },
+        "sequenceId": {
+          "type": "string"
+        },
+        "slotIndex": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "planDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "task": {
+          "$ref": "#/$defs/Task"
+        },
+        "harness": {
+          "$ref": "#/$defs/Harness"
+        },
+        "model": {
+          "type": "string"
+        },
+        "runtimeDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "checkpointDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "checkpointRef": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "previousRolloutReceiptDigest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "eligibleSolutionDigests": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "uniqueItems": true
+        },
+        "allowance": {
+          "$ref": "#/$defs/Allowance"
+        },
+        "experimentWallSeconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "experimentCpuSeconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "maxExperiments": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "sequenceId",
+        "slotIndex",
+        "planDigest",
+        "task",
+        "harness",
+        "model",
+        "runtimeDigest",
+        "checkpointDigest",
+        "checkpointRef",
+        "previousRolloutReceiptDigest",
+        "eligibleSolutionDigests",
+        "allowance",
+        "experimentWallSeconds",
+        "experimentCpuSeconds",
+        "maxExperiments",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "DeliveryRequest": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-delivery-request@1"
+        },
+        "sequenceId": {
+          "type": "string"
+        },
+        "planDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "task": {
+          "$ref": "#/$defs/Task"
+        },
+        "harness": {
+          "$ref": "#/$defs/Harness"
+        },
+        "runtimeDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "solution": {
+          "$ref": "#/$defs/Solution"
+        },
+        "selectionsDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "allowance": {
+          "$ref": "#/$defs/Allowance"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "sequenceId",
+        "planDigest",
+        "task",
+        "harness",
+        "runtimeDigest",
+        "solution",
+        "selectionsDigest",
+        "allowance",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "AuditRequest": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-audit-request@1"
+        },
+        "sequenceId": {
+          "type": "string"
+        },
+        "planDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "task": {
+          "$ref": "#/$defs/Task"
+        },
+        "harness": {
+          "$ref": "#/$defs/Harness"
+        },
+        "runtimeDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "solution": {
+          "$ref": "#/$defs/Solution"
+        },
+        "selectionsDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "allowance": {
+          "$ref": "#/$defs/Allowance"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "sequenceId",
+        "planDigest",
+        "task",
+        "harness",
+        "runtimeDigest",
+        "solution",
+        "selectionsDigest",
+        "allowance",
+        "digest"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

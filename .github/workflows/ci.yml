@@ -83,6 +83,27 @@ jobs:
       - name: Test the installed npm and Python project journey
         run: sudo env "PATH=$PATH" "GEAR_PYTHON=$GEAR_PYTHON" "GEAR_SETUP_PYTHON=$GEAR_PYTHON" node scripts/check-project-package.mjs
 
+  mle-bench:
+    name: MLE-bench
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.22.1
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install numpy==1.26.4 pandas==2.2.3 scikit-learn==1.5.2 PyYAML==6.0.2
+      - run: npm ci
+      - run: npm run build
+      # Public Project + sandboxed Python GEPA is also exercised by the Quality job.
+      - run: node --test examples/mle-bench/tests/protocol.test.mjs examples/mle-bench/tests/integration.test.mjs examples/mle-bench/tests/mlebench.test.mjs
+
   training-cpu:
     name: Training / CPU
     needs: changes
