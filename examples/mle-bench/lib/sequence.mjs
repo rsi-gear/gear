@@ -72,9 +72,14 @@ export class SequenceRunner {
       assert(state.status !== 'cancelled', 'cancelled sequence cannot restart')
       const budget = new Budget(plan.budget, state.budget, this.now)
       const save = async () => { state.budget = budget.snapshot(); await this.store.save('sequences', id, state) }
-      const bounded = async (final, execute) => {
+      const bounded = async (final, checkpoint, execute) => {
         const remaining = budget.available(final).wallSeconds
-        assert(remaining > 0, 'sequence deadline expired; pending execution requires inspection, not a new budget')
+        if (remaining <= 0) {
+          assert(state.pending && typeof this.backend.recover === 'function', 'sequence deadline expired; pending execution requires inspection, not a new budget')
+          // Recovery may collect the original sealed result after a lost reply,
+          // but must never materialize or submit another physical execution.
+          return this.backend.recover(state.pending.request, checkpoint, { signal })
+        }
         const deadline = new AbortController(), timer = setTimeout(() => deadline.abort(new Error('sequence wall budget exhausted')), Math.ceil(remaining * 1000))
         try { return await execute(AbortSignal.any([signal, deadline.signal])) }
         catch (error) { if (deadline.signal.aborted) await this.backend.cancel?.(state.pending?.request); throw error }
@@ -100,7 +105,7 @@ export class SequenceRunner {
           }
           // Backend execution is itself idempotent; a submitted run is inspected,
           // never replaced by a fresh model sample after an error or controller restart.
-          const result = validateRollout(await bounded(false, signal => this.backend.rollout(request, checkpoint, { signal })), request, checkpoint, state.steps, start)
+          const result = validateRollout(await bounded(false, checkpoint, signal => this.backend.rollout(request, checkpoint, { signal })), request, checkpoint, state.steps, start)
           for (const s of result.solutions) for (const f of s.files) assert((await this.store.bytes(f.digest)).length === f.bytes, 'missing exported source')
           budget.settle(`rollout-${k}`, result.cost)
           const selected = seal({ protocol: 'analysis-slot-selection@1', slotIndex: k, experimentId: result.experiment.experimentId,
@@ -136,7 +141,7 @@ export class SequenceRunner {
               budget.reserve('delivery', Object.fromEntries(dimensions.map(d => [d, allowance[d] ?? 0])), true)
               state.pending = { request, status: 'reserved' }; await save()
             }
-            const delivered = verify(await bounded(true, signal => this.backend.deliver(request, { signal })))
+            const delivered = verify(await bounded(true, null, signal => this.backend.deliver(request, { signal })))
             assert(delivered.protocol === 'analysis-delivery@1' && delivered.requestDigest === request.digest
               && delivered.solutionDigest === solutionDigest && ['completed', 'candidate_failed'].includes(delivered.status), 'delivery is unavailable or identity mismatched')
             assert(delivered.modelRequests === 0, 'sealed refit must not call a model')

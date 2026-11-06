@@ -117,7 +117,7 @@ export class AnalysisOperationProvider {
         await this.controller.reserveSequence(plan)
         const backend = this.backend, allowed = () => this.allowed(key)
         const guarded = Object.create(backend)
-        for (const method of ['admit', 'rollout', 'deliver']) guarded[method] = async (...args) => {
+        for (const method of ['admit', 'rollout', 'deliver', 'recover'].filter(method => typeof backend[method] === 'function')) guarded[method] = async (...args) => {
           await allowed(); signal.throwIfAborted(); return backend[method](...args)
         }
         sequence = await new SequenceRunner(this.store, guarded).run(plan, this.checkpoint, { signal })

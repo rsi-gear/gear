@@ -144,7 +144,7 @@ node examples/mle-bench/start.mjs --project /absolute/research-project \
 
 `start.mjs` 生成标准 `gear.yaml` 项目，并通过 Project API 运行 Python GEPA。Meta 只能修改通用提示、技能和 `workflows/research/{policy.py,memory.py,policy.json}`；Target 在固定 carrier 中生成训练代码。配置与身份管理见 [Refine Skill](../../skills/refine/SKILL.md)。
 
-相同命令会恢复已登记的 run；也可显式传入 `--resume RUN_ID`。恢复保留实验 ID、预算预留和已封存结果，不重新采样。源数据、grader、执行条件或 checkpoint 改变时需要新项目或新 cohort。不要删除运行状态来重试。
+相同命令会恢复已登记的 run；也可显式传入 `--resume RUN_ID`。恢复保留实验 ID、预算预留和已封存结果，不重新采样。原预算到期后仍可核验和收取已完成执行的结果，但不能重新提交未完成或未登记的执行。源数据、grader、执行条件或 checkpoint 改变时需要新项目或新 cohort。不要删除运行状态来重试。
 
 每个 harness 一个序列，实验槽数量来自 `research.maxExperiments`；失败、Debug、Confirm 和复用都消耗槽位。单次正式训练上限为 1800 秒（30 分钟）墙钟、3600 CPU 秒，以容纳 2 CPU 持续运行；工具包装层超时为训练上限加 60 秒，固定评分与数据检查仍计入总预算。训练时长在固定合同中定义，可编辑 prompt 从工具读取。
 

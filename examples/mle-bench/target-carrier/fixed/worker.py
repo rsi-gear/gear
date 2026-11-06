@@ -104,7 +104,14 @@ def run_python(files, inputs, entrypoint, argv, wall_seconds, cpu_seconds, max_o
                     if time.monotonic() - started > wall_seconds:
                         limited = 'wall_limit'
                         break
-                    sizes = [p.lstat().st_size for p in (work / 'scratch').rglob('*')]
+                    sizes = []
+                    for path in (work / 'scratch').rglob('*'):
+                        try:
+                            sizes.append(path.lstat().st_size)
+                        except FileNotFoundError:
+                            # Training may remove/rename temporary files while
+                            # the supervisor enumerates the scratch directory.
+                            continue
                     if sum(sizes) > 1024 ** 3 or len(sizes) > 4096:
                         limited = 'disk_limit'
                         break

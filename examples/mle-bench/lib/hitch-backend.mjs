@@ -87,13 +87,15 @@ export class HitchBackend {
     await this.store.save('tasks', id, task)
     return task
   }
-  async execute(request, checkpoint, { signal } = {}) {
-    const id = request.digest.slice(7), task = await this.materialize(request, checkpoint), research = !!checkpoint
+  async execute(request, checkpoint, { signal, inspectOnly = false } = {}) {
+    const id = request.digest.slice(7), research = !!checkpoint
     let operation = await this.store.load('executions', id), first = false
+    assert(!inspectOnly || operation, 'no admitted execution to recover; expired requests cannot be submitted')
+    const task = inspectOnly ? operation.task : await this.materialize(request, checkpoint)
     if (!operation) {
       operation = { requestDigest: request.digest, evalId: `eval_${randomUUID().replaceAll('-', '')}`, task, status: 'reserved' }
       await this.store.save('executions', id, operation); first = true
-    } else if (operation.status === 'reserved') {
+    } else if (operation.status === 'reserved' && !inspectOnly) {
       try { await this.hitch(['eval', 'inspect', operation.evalId, '--json'], { executor: true, signal }) }
       catch (error) {
         // Public proof of non-admission permits retrying the SAME eval ID.
@@ -147,6 +149,12 @@ export class HitchBackend {
       rewards, verifierDigest: verifier.verifier.result_sha256 }
     await this.store.save('executions', id, operation)
     return operation
+  }
+  /** Collect only the original execution; expiry never authorizes admission or retry. */
+  async recover(request, checkpoint, options) {
+    verify(request)
+    return checkpoint ? this.rollout(request, checkpoint, { ...options, inspectOnly: true })
+      : this.deliver(request, { ...options, inspectOnly: true })
   }
   async rollout(request, checkpoint, options) {
     const operation = await this.execute(request, checkpoint, options)

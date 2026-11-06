@@ -176,6 +176,74 @@ test('wall deadline aborts the physical operation and retains its unknown cost',
   assert.equal(cancelled, 1); assert.equal(state.steps.length, 0); assert.ok(state.budget.reservations['rollout-1'])
 })
 
+test('an expired sequence collects a completed delivery without renewing its budget or executing again', async t => {
+  const store = await temporary(t), start = checkpoint(), p = plan(start), backend = new Backend(store)
+  let now = Date.now(), completed, recovered = 0
+  const deliver = backend.deliver.bind(backend)
+  backend.deliver = async request => {
+    completed = await deliver(request)
+    throw new Error('delivery completed but reply was lost')
+  }
+  backend.recover = async (request, history) => {
+    recovered++
+    assert.equal(history, null)
+    assert.equal(request.digest, completed.requestDigest)
+    return completed
+  }
+  const runner = new SequenceRunner(store, backend, { now: () => now })
+  await assert.rejects(runner.run(p, start), /reply was lost/)
+  const pending = await store.load('sequences', p.digest.slice(7))
+  assert.equal(pending.status, 'selected'); assert.ok(pending.budget.reservations.delivery)
+  now += (p.budget.wallSeconds + 1) * 1000
+  const receipt = await runner.run(p, start)
+  assert.equal(receipt.delivery.digest, completed.digest)
+  assert.equal(receipt.cost.startedAt, pending.budget.startedAt)
+  assert.equal(receipt.cost.events.filter(e => e.id === 'delivery').length, 1)
+  assert.deepEqual(receipt.cost.reservations, {})
+  assert.equal(backend.deliveries, 1); assert.equal(backend.calls.length, p.experiments); assert.equal(recovered, 1)
+  assert.deepEqual(await runner.run(p, start), receipt)
+  assert.equal(backend.deliveries, 1); assert.equal(recovered, 1)
+})
+
+test('expired recovery cannot replace an unavailable execution or release its reservation', async t => {
+  const store = await temporary(t), start = checkpoint(), p = plan(start), backend = new Backend(store, { outageAt: 1 })
+  let now = Date.now()
+  const runner = new SequenceRunner(store, backend, { now: () => now })
+  await assert.rejects(runner.run(p, start), /infra unavailable/)
+  const pending = await store.load('sequences', p.digest.slice(7))
+  backend.recover = async request => {
+    assert.equal(request.digest, pending.pending.request.digest)
+    throw new Error('original execution is not complete')
+  }
+  now += (p.budget.wallSeconds + 1) * 1000
+  await assert.rejects(runner.run(p, start), /not complete/)
+  const after = await store.load('sequences', p.digest.slice(7))
+  assert.deepEqual(after.pending, pending.pending); assert.deepEqual(after.budget, pending.budget)
+  assert.equal(backend.calls.length, 1); assert.equal(backend.deliveries, 0)
+})
+
+test('recovering an expired research slot preserves the final delivery reserve without starting more research', async t => {
+  const store = await temporary(t), start = checkpoint(), p = plan(start), backend = new Backend(store)
+  let now = Date.now(), completed
+  const rollout = backend.rollout.bind(backend)
+  backend.rollout = async (request, history) => {
+    completed = await rollout(request, history)
+    throw new Error('rollout completed but reply was lost')
+  }
+  backend.recover = async (request, history) => {
+    assert.equal(history.digest, start.digest); assert.equal(request.digest, completed.requestDigest)
+    return completed
+  }
+  const runner = new SequenceRunner(store, backend, { now: () => now })
+  await assert.rejects(runner.run(p, start), /reply was lost/)
+  now += (p.budget.wallSeconds - p.budget.reserveSeconds + 1) * 1000
+  const receipt = await runner.run(p, start)
+  assert.equal(backend.calls.length, 1); assert.equal(backend.deliveries, 1)
+  assert.equal(receipt.attempted, 1); assert.equal(receipt.unused, p.experiments - 1)
+  assert.ok(receipt.selections.slice(1).every(s => s.status === 'not_started' && s.stopReason === 'research_budget_exhausted'))
+  assert.equal(receipt.delivery.status, 'completed'); assert.equal(receipt.cost.used.cpuSeconds, 3)
+})
+
 test('auxiliary deadlines include setup and cancel the same physical request', async () => {
   const request = { digest: digest('auxiliary') }, cancelled = []
   const backend = { cancel: async value => { cancelled.push(value.digest) } }
