@@ -1,4 +1,4 @@
-import { mkdir, realpath, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { canonicalDigest } from '../../domain/canonical.js'
 import { GearError } from '../../domain/errors.js'
@@ -8,6 +8,8 @@ import { resolvePythonExecutable } from '../python/interpreter.js'
 import { inspectPython } from '../python/runtime.js'
 import type { CodexJob } from './contracts.js'
 import { trajectoryGateway } from './trajectory-gateway.js'
+import { harnessAdapter } from '../../application/harness-adapters.js'
+import { TargetStore } from '../storage/targets.js'
 
 /** Copy only verified, sanitized bytes into the operation sandbox. No private directory mount. */
 export async function stageExperience(
@@ -28,6 +30,36 @@ export async function stageExperience(
   const store = new ExperienceStore(join(dirname(context.targets), 'experience'))
   const snapshot = await store.read(body.snapshot_digest)
   const seed = new Set(context.tasks.map((task) => task.id))
+  const baseline = request.experience.baseline
+  const expectedBaselineEvidence = baseline
+    ? request.evidence.filter(
+        (cell) =>
+          cell.candidate_id === baseline.candidate_id &&
+          seed.has(cell.task_id) &&
+          request.operation.task_ids.includes(cell.task_id),
+      )
+    : []
+  const baselineEvidenceSlots = new Set(
+    expectedBaselineEvidence.map((cell) => `${cell.task_id}\0${cell.repetition}`),
+  )
+  const baselineReferenceSlots = new Set<string>()
+  const baselineMissingSlots = new Set<string>()
+  const validMissingBaselineSlots =
+    baseline !== undefined &&
+    Array.isArray(baseline.missing_trajectory_slots) &&
+    baseline.missing_trajectory_slots.every((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return false
+      const slot = `${item.task_id}\0${item.repetition}`
+      const valid =
+        typeof item.task_id === 'string' &&
+        Number.isSafeInteger(item.repetition) &&
+        item.repetition >= 0 &&
+        baselineEvidenceSlots.has(slot) &&
+        !baselineMissingSlots.has(slot) &&
+        item.reason === 'not_captured'
+      baselineMissingSlots.add(slot)
+      return valid
+    })
   if (
     canonicalDigest(body) !== digest ||
     snapshot.run_id !== request.runId ||
@@ -35,13 +67,38 @@ export async function stageExperience(
     body.implementation_identity !== builtinPolicyImplementationDigest ||
     body.available_records !== snapshot.records.length ||
     Buffer.byteLength(JSON.stringify(body.cards)) > 12 * 1024 ||
-    snapshot.records.some((record) => record.scope.task_ids.some((id) => !seed.has(id)))
+    snapshot.records.some((record) => record.scope.task_ids.some((id) => !seed.has(id))) ||
+    (baseline !== undefined &&
+      (request.operation.kind !== 'diagnose_seed' ||
+        request.operation.candidate_id !== baseline.candidate_id ||
+        request.operation.task_ids.some((taskId) => !seed.has(taskId)) ||
+        !validMissingBaselineSlots ||
+        baseline.trajectory_refs.some((item) => {
+          const slot = `${item.task_id}\0${item.repetition}`
+          const valid =
+            item.candidate_id === baseline.candidate_id &&
+            Number.isSafeInteger(item.repetition) &&
+            item.repetition >= 0 &&
+            baselineEvidenceSlots.has(slot) &&
+            !baselineReferenceSlots.has(slot) &&
+            /^trajectory:[a-f0-9]{64}$/u.test(item.ref) &&
+            (item.status === 'available' || item.status === 'unavailable') &&
+            (item.status === 'available'
+              ? typeof item.content_digest === 'string' && /^sha256:[a-f0-9]{64}$/u.test(item.content_digest)
+              : item.content_digest === null) &&
+            (item.reason === null || typeof item.reason === 'string')
+          baselineReferenceSlots.add(slot)
+          return !valid
+        }) ||
+        [...baselineMissingSlots].some((slot) => baselineReferenceSlots.has(slot)) ||
+        baselineEvidenceSlots.size !== new Set([...baselineReferenceSlots, ...baselineMissingSlots]).size))
   )
     throw new GearError(
       'experience-context-mismatch',
       'Meta experience does not match the frozen seed reservation',
     )
-  if (!snapshot.records.length) return { ...empty, input: { ...request.experience, reader: null } }
+  if (!snapshot.records.length && !request.experience.baseline)
+    return { ...empty, input: { ...request.experience, reader: null } }
   const directory = join(root, 'experience'),
     sources = join(directory, 'sources')
   await mkdir(directory, { recursive: true, mode: 0o700 })
@@ -54,14 +111,26 @@ export async function stageExperience(
   }
   const python = await inspectPython(context.experiencePython ?? resolvePythonExecutable())
   const bootstrap = `import sys;sys.path.insert(0,${JSON.stringify(sources)});from gear.experience import main;raise SystemExit(main())`
-  const gateway = context.artifactReader
+  const runRoot = dirname(context.targets)
+  const sourceCandidate = snapshot.records[0]?.candidate.id
+  const sourceManifest = sourceCandidate
+    ? (JSON.parse(
+        await readFile(join(runRoot, 'target-manifests', `${sourceCandidate}.json`), 'utf8'),
+      ) as { runtimeIdentity: string })
+    : undefined
+  const targets = sourceManifest
+    ? new TargetStore(runRoot, harnessAdapter(context.targetAdapter), sourceManifest.runtimeIdentity)
+    : undefined
+  const gateway = context.artifactReader || targets
     ? await trajectoryGateway(
         root,
-        dirname(context.targets),
+        runRoot,
         snapshot,
         context.artifactReader,
         python.executable,
         registerDispose,
+        request.experience.baseline?.trajectory_refs,
+        targets,
       )
     : undefined
   return {
@@ -96,6 +165,29 @@ export async function stageExperience(
           view: 'card|task-results|diff|trajectory|modification-use|verifier',
           limit: 20,
         },
+        source: {
+          action: 'source',
+          ref: 'experience:<record digest>',
+          candidate_id: '<candidate_id or parent_id from a record>',
+          path: '<path from source.list>',
+          offset: 0,
+          limit: 24576,
+        },
+        ...(request.experience.baseline
+          ? {
+              baseline: {
+                candidate_id: request.experience.baseline.candidate_id,
+                trajectory_refs: request.experience.baseline.trajectory_refs,
+                missing_trajectory_slots: request.experience.baseline.missing_trajectory_slots,
+                trajectory: {
+                  action: 'trajectory',
+                  ref: 'baseline',
+                  source_ref: 'trajectory:<ref from baseline trajectory_refs>',
+                  query: { limit: 20 },
+                },
+              },
+            }
+          : {}),
         ...(gateway
           ? {
               trajectory: {

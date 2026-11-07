@@ -27,12 +27,17 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.command == "algorithm":
-            from gear.algorithms import GEPA, RandomSearch
+            from gear.algorithms import GEPA, MetaHarness, RandomSearch
             from gear.algorithms.testkit import test_parent_policy, toy_round
             from gear.refine.worker import load_entrypoint
 
-            if args.entrypoint in ("gepa", "random-search"):
-                result = toy_round(GEPA() if args.entrypoint == "gepa" else RandomSearch())
+            if args.entrypoint in ("gepa", "random-search", "meta-harness"):
+                algorithms = {
+                    "gepa": GEPA,
+                    "random-search": RandomSearch,
+                    "meta-harness": MetaHarness,
+                }
+                result = toy_round(algorithms[args.entrypoint]())
             else:
                 policy = load_entrypoint(args.entrypoint)
                 result = {

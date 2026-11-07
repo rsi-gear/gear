@@ -8,7 +8,10 @@ import { trajectoryMailbox } from '../../src/adapters/codex/trajectory-gateway.j
 it('serves bounded requests once and rejects linked, oversized and wrong-method files', async () => {
   const root = await mkdtemp(join(tmpdir(), 'gear-trajectory-mailbox-'))
   const calls: unknown[] = []
-  const mailbox = await trajectoryMailbox(root, async params => { calls.push(params); return { seed: 'trace' } })
+  const mailbox = await trajectoryMailbox(root, async (method, params) => {
+    calls.push([method, params])
+    return { seed: 'trace' }
+  })
   try {
     for (const kind of ['valid', 'linked', 'oversized', 'wrong-method']) {
       const id = randomUUID().replaceAll('-', ''), name = `${id}.json`
@@ -21,7 +24,7 @@ it('serves bounded requests once and rejects linked, oversized and wrong-method 
       } else await writeFile(input, kind === 'oversized' ? 'x'.repeat(32769) : request)
       const expected = kind === 'valid' ? { id, result: { seed: 'trace' } } : { id, error: { code: 'trajectory-request-invalid' } }
       await expect.poll(async () => JSON.parse(await readFile(output, 'utf8'))).toEqual(expected)
-      expect(calls).toEqual([{ source_ref: 'seed' }])
+      expect(calls).toEqual([['trajectory.read', { source_ref: 'seed' }]])
       if (kind === 'valid') await writeFile(input, request)
     }
   } finally { await mailbox.dispose(); await rm(root, { recursive: true, force: true }) }

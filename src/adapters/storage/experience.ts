@@ -136,7 +136,7 @@ export class ExperienceStore {
       }
       await flush()
     }
-    const { files: _files, ...changeMetadata } = change
+    const { files: _files, source_files: _sourceFiles, ...changeMetadata } = change
     const { trials: _trials, ...useMetadata } = use
     const body = {
       version: 3 as const,

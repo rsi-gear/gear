@@ -104,7 +104,7 @@
     "prepare": "npm run build:tool-fs",
     "test:training": "vitest run tests/unit/training && PYTHONPATH=python \"${GEAR_TRAINING_TEST_PYTHON:-python3}\" -m unittest discover -s python/tests -v",
     "generate:contracts": "python3 scripts/generate-algorithm-contracts.py",
-    "lint": "eslint 'src/{domain,ports,runtime,application,adapters,cli}/**/*.ts'",
+    "lint": "eslint src/domain src/ports src/runtime src/application src/adapters src/cli",
     "format:check": "prettier --check 'src/{domain,ports,runtime,application,adapters,cli}/**/*.ts'",
     "check:boundaries": "node scripts/check-boundaries.mjs && python3 scripts/check-python-boundaries.py",
     "check:contracts": "python3 scripts/generate-algorithm-contracts.py --check",

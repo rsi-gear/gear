@@ -112,7 +112,23 @@ def toy_round(algorithm: SearchAlgorithm) -> dict[str, JSON]:
                 operation.candidate_id,
             )
             if operation.kind == "diagnose_seed":
-                result = replace(result, data={"hypotheses": ["Fix arithmetic and formatting."]})
+                payload = operation.payload if isinstance(operation.payload, dict) else {}
+                if isinstance(payload.get("meta"), dict):
+                    result = replace(
+                        result,
+                        data={
+                            "declined": False,
+                            "data": {
+                                "summary": "Use one general improvement",
+                                "base_candidate_id": str(payload.get("base_candidates", [{"candidate_id": "anchor"}])[0]["candidate_id"]),
+                                "hypothesis": "Fix arithmetic and formatting.",
+                            },
+                        },
+                    )
+                else:
+                    result = replace(
+                        result, data={"hypotheses": ["Fix arithmetic and formatting."]}
+                    )
             elif operation.kind == "generate_candidate":
                 if operation.candidate_id is None:
                     raise ValueError("generation needs a candidate ID")

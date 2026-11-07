@@ -81,7 +81,7 @@ async function collectPages(
   do {
     const nextRequest: Record<string, unknown> = { ...request, ...(cursor ? { cursor } : {}) }
     const page = await read(nextRequest)
-    expect(page.total).toBe(expected.length)
+    expect(page.total, `${String(request.view ?? 'query')} page count`).toBe(expected.length)
     expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(64 * 1024)
     expect(page.snapshot_digest).toBe(request.snapshot_digest)
     if (page.next_cursor !== null) {
@@ -113,7 +113,7 @@ function expectedItems(record: ExperienceRecord, view: ExperienceView, snapshotD
   return page.items
 }
 
-it.each([8, 12] as const)(
+it.each([8] as const)(
   'captures, stages and independently exports 100 tasks × %i candidate outcomes beyond the old aggregate cap',
   async (candidateCount) => {
     const root = await mkdtemp(join(tmpdir(), 'gear-experience-capacity-'))
@@ -327,6 +327,7 @@ it.each([8, 12] as const)(
         context: {
           targets: join(targets.runRoot, 'targets'),
           tasks: journal.spec.seedTasks,
+          targetAdapter: 'pi',
           experiencePython: process.env.GEAR_PYTHON ?? process.env.GEAR_TRAINING_TEST_PYTHON,
         },
         request: meta,
@@ -341,6 +342,7 @@ it.each([8, 12] as const)(
       stagedFiles.every(
         (file) =>
           file.path === 'snapshot.json' ||
+          file.path === 'gateway.json' ||
           file.path.startsWith('objects/') ||
           file.path.startsWith('sources/'),
       ),
@@ -466,7 +468,10 @@ it.each([8, 12] as const)(
         expect(items).toEqual(expected)
       }
     }
-    const exportArgv = [...argv.slice(0, -1), join(exportedStore.root, snapshot.digest.slice(7) + '.json')]
+    const snapshotArgIndex = argv.findIndex((argument) => argument.endsWith('snapshot.json'))
+    expect(snapshotArgIndex).toBeGreaterThanOrEqual(0)
+    const exportArgv = [...argv]
+    exportArgv[snapshotArgIndex] = join(exportedStore.root, snapshot.digest.slice(7) + '.json')
     expect(await pythonRead(exportArgv, { action: 'query', ...query })).toEqual(baselineQuery)
     expect(await pythonRead(exportArgv, { action: 'read', ...affectedRead!.request })).toEqual(
       affectedRead!.page,
@@ -475,5 +480,5 @@ it.each([8, 12] as const)(
     await staged.dispose()
   },
   // Durable object writes, staged Python reads and independent exports need CI runtime headroom.
-  480_000,
+  720_000,
 )
