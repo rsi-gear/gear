@@ -48,7 +48,13 @@ it('exposes an optional dsh-codex package through the DSH profile without changi
 
   expect(materialized.dockerfile).toContain('COPY gear-target/ /opt/gear-target/')
   expect(materialized.dockerfile).toContain('ENV DSH_HOME=/opt/gear-target/dsh-home')
+  expect(materialized.dockerfile).toContain(
+    'ENV NODE_OPTIONS=--import=/opt/gear-target/dsh-codex-credential-bootstrap.mjs',
+  )
   expect(materialized.dockerfile).toContain('ln -sfn /opt/gear-target/dsh-codex-package /opt/gear-target/dsh-home/profiles/node_modules/dsh-codex')
+  expect(await readFile(join(root, 'environment/gear-target/dsh-codex-credential-bootstrap.mjs'), 'utf8')).toContain(
+    'task-bound-access-only',
+  )
   expect(materialized.dockerfile).not.toContain('/opt/hitch-harness-artifact')
 })
 
