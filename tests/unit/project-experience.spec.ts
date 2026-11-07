@@ -237,15 +237,15 @@ it('binds baseline seed evidence and trajectories to the first diagnosis context
 
   expect(context.baseline).toMatchObject({
     candidate_id: 'anchor',
-    evidence: [{ candidate_id: 'anchor', task_id: 'seed', score: 0 }],
     trajectory_refs: [{ candidate_id: 'anchor', task_id: 'seed', status: 'available' }],
+    missing_trajectory_slots: [],
   })
   await experience.verify({ ...diagnosis, experience: context })
   const forgedBaseline = {
     ...context,
     baseline: {
       ...context.baseline!,
-      evidence: context.baseline!.evidence.map((cell) => ({ ...cell, score: 1 })),
+      trajectory_refs: [],
     },
   }
   const { digest: _digest, ...forgedBody } = forgedBaseline
@@ -278,49 +278,44 @@ it('binds baseline seed evidence and trajectories to the first diagnosis context
     sandbox,
   )
   const stagedInput = staged.input as unknown as {
-    reader: { baseline: { source_root: string; evidence_path: string } }
+    reader: { baseline: { candidate_id: string; trajectory_refs: unknown[]; missing_trajectory_slots: unknown[] } }
   }
-  expect(await readFile(join(stagedInput.reader.baseline.source_root, 'AGENTS.md'), 'utf8')).toBeDefined()
-  expect(JSON.parse(await readFile(stagedInput.reader.baseline.evidence_path, 'utf8'))).toMatchObject({
+  expect(stagedInput.reader.baseline).toMatchObject({
     candidate_id: 'anchor',
-    evidence: [{ task_id: 'seed', score: 0 }],
+    trajectory_refs: [{ candidate_id: 'anchor', task_id: 'seed', status: 'available' }],
+    missing_trajectory_slots: [],
   })
+  expect(stagedInput.reader.baseline).not.toHaveProperty('source_root')
+  expect(stagedInput.reader.baseline).not.toHaveProperty('evidence_path')
   await staged.dispose()
 })
 
-it('reads complete candidate source in bounded pages when the diff omits a large patch', async () => {
-  const { experience, journal } = await fixture('pi', true)
+it('reads large candidate source by sealed candidate and path when the diff omits its patch', async () => {
+  const { experience, journal, targets } = await fixture('pi', true)
   const snapshot = await experience.capture(journal)
   const record = snapshot.records[0]!
   const ref = 'experience:' + record.digest.slice(7)
   const diff = await experience.access(journal, { snapshot_digest: snapshot.digest, ref, view: 'diff' })
   expect(diff).toMatchObject({ items: [{ patch: null, patch_status: 'too-large' }] })
-  const items: Array<{
-    candidate_id: string
-    path: string
-    part: number
-    parts: number
-    content: string
-  }> = []
-  let cursor: string | null = null
-  do {
-    const page = (await experience.access(journal, {
-      snapshot_digest: snapshot.digest,
+  const { readSeedCandidateSource } = await import('../../src/adapters/artifacts/access.js')
+  const paths = await readSeedCandidateSource(snapshot, targets, { ref, candidate_id: 'candidate' })
+  expect(paths).toMatchObject({ items: expect.arrayContaining([expect.objectContaining({ path: 'AGENTS.md' })]) })
+  const page = await readSeedCandidateSource(snapshot, targets, {
+    ref,
+    candidate_id: 'candidate',
+    path: 'AGENTS.md',
+    offset: 24 * 1024,
+    limit: 24 * 1024,
+  })
+  expect(page).toMatchObject({ total_bytes: 70 * 1024, next_offset: 48 * 1024 })
+  expect(Buffer.from((page as { content: string }).content, 'base64').toString()).toBe('L'.repeat(24 * 1024))
+  await expect(
+    readSeedCandidateSource(snapshot, targets, {
       ref,
-      view: 'source',
-      limit: 50,
-      cursor,
-    })) as unknown as { items: typeof items; next_cursor: string | null }
-    items.push(...page.items)
-    cursor = page.next_cursor
-  } while (cursor)
-  const candidateParts = items.filter(
-    (item) => item.candidate_id === 'candidate' && item.path === 'AGENTS.md',
-  )
-  expect(candidateParts.length).toBeGreaterThan(1)
-  expect(candidateParts.map((item) => item.content).join('')).toBe(
-    Buffer.from('L'.repeat(70 * 1024)).toString('base64'),
-  )
+      candidate_id: 'HELD_OUT_CANARY',
+      path: 'AGENTS.md',
+    }),
+  ).rejects.toMatchObject({ code: 'source-outside-snapshot' })
 })
 
 it('rejects damaged and symlink snapshots, changed contexts, and unbound lineage', async () => {
@@ -372,7 +367,7 @@ it('serves bounded query/read through the shared controller and explicitly repor
   await expect(controller.invoke('experience.query', { run_id: 'run', path: '/private' })).rejects.toThrow()
 })
 
-it('stages a standalone Python reader for complete source from an earlier rejected candidate', async () => {
+it('stages a Python reader for sealed source from an earlier rejected candidate', async () => {
   const { root, targets, experience, journal, meta, store } = await fixture()
   await targets.adapter.prepare(targets.path('rejected'))
   await writeFile(join(targets.path('rejected'), 'AGENTS.md'), 'Older rejected implementation source.\n')
@@ -412,7 +407,14 @@ it('stages a standalone Python reader for complete source from an earlier reject
   const sandbox = join(root, 'sandbox')
   await mkdir(sandbox)
   const job = {
-    input: { context: { targets: join(targets.runRoot, 'targets'), tasks: [{ id: 'seed' }] }, request: meta },
+    input: {
+      context: {
+        targets: join(targets.runRoot, 'targets'),
+        targetAdapter: 'pi',
+        tasks: [{ id: 'seed' }],
+      },
+      request: meta,
+    },
   } as CodexJob
   const staged = await stageExperience(job, sandbox)
   const input = staged.input as unknown as { reader: { argv: string[] } }
@@ -435,7 +437,15 @@ it('stages a standalone Python reader for complete source from an earlier reject
   expect(query).toMatchObject({ snapshot_digest: meta.experience.snapshot_digest, total: 2 })
   const rejectedCard = query.items.find((item) => item.card.candidate_id === 'rejected')!.card
   const sourceChild = execFile(executable!, args, { maxBuffer: 65536 })
-  sourceChild.stdin!.end(JSON.stringify({ action: 'read', ref: rejectedCard.ref, view: 'source' }))
+  sourceChild.stdin!.end(
+    JSON.stringify({
+      action: 'source',
+      ref: rejectedCard.ref,
+      candidate_id: 'rejected',
+      path: 'AGENTS.md',
+      limit: 24576,
+    }),
+  )
   const sourceStdout = await new Promise<string>((resolve, reject) => {
     let text = ''
     sourceChild.stdout!.on('data', (chunk) => {
@@ -444,14 +454,11 @@ it('stages a standalone Python reader for complete source from an earlier reject
     sourceChild.on('error', reject)
     sourceChild.on('exit', (code) => (code === 0 ? resolve(text) : reject(new Error(text))))
   })
-  expect(JSON.parse(sourceStdout).items).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({
-        candidate_id: 'rejected',
-        content: Buffer.from('Older rejected implementation source.\n').toString('base64'),
-      }),
-    ]),
-  )
+  expect(JSON.parse(sourceStdout)).toMatchObject({
+    candidate_id: 'rejected',
+    path: 'AGENTS.md',
+    content: Buffer.from('Older rejected implementation source.\n').toString('base64'),
+  })
   expect(await readFile(join(sandbox, 'experience/snapshot.json'), 'utf8')).not.toMatch(/PRIVATE_|HELD_OUT/)
   expect(staged.readPaths.length).toBeGreaterThan(0)
 })

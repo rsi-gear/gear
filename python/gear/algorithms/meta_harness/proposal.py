@@ -7,11 +7,11 @@ from gear.canonical import JSON
 from ..contracts import ProposalInput, ProposalPlan
 
 HISTORY_GUIDANCE = (
-    "Inspect the bounded, read-only seed archive, including baseline evidence, all evaluated "
-    "candidate scores, complete historical source pages, and successful and failed trajectories. "
-    "Choose a useful prior mechanism based on that evidence; do not restrict the search to a "
-    "failure family or the highest-scoring parent. Keep the change generalizable and do not access "
-    "held-out data."
+    "Use the baseline source in candidate/ and the bounded, read-only seed experience reader. "
+    "Compare historical scores, feedback, diffs, sealed candidate source by candidate ID and path, and available "
+    "successful and failed trajectories. Consider reusable mechanisms as well as failures; keep the "
+    "change generalizable and do not access held-out data. During generation, candidate/ contains "
+    "the proposer-selected base."
 )
 
 GENERATION_SCHEMA: dict[str, JSON] = {
@@ -23,7 +23,7 @@ GENERATION_SCHEMA: dict[str, JSON] = {
 
 
 def diagnosis_meta(base_candidates: list[dict[str, JSON]]) -> dict[str, JSON]:
-    """Build this algorithm's response contract from its currently eligible archive."""
+    """Build the TB2 response contract from all complete seed-eligible bases."""
     candidate_ids = [item.get("candidate_id") for item in base_candidates]
     if (
         not candidate_ids
@@ -34,12 +34,11 @@ def diagnosis_meta(base_candidates: list[dict[str, JSON]]) -> dict[str, JSON]:
     return {
         "prompt": (
             HISTORY_GUIDANCE
-            + " Read the full source for any useful earlier candidate through paginated source pages. "
-            "Choose one candidate ID from operation.payload.base_candidates as base_candidate_id, "
-            "then propose exactly one general mechanism in hypothesis. Consider all diagnosis "
-            "clusters and hypotheses, including successful mechanisms that can be reused. Continue "
-            "even if every seed task currently passes. Return summary, base_candidate_id, and "
-            "hypothesis in the requested JSON object."
+            + " Review every offered base candidate and the historical seed archive before choosing. "
+            "Select one eligible base_candidate_id that is useful to extend, then propose exactly one "
+            "general mechanism in hypothesis. Consider successful mechanisms that can be reused and "
+            "continue even if every seed task currently passes. Return summary, base_candidate_id, "
+            "and hypothesis in the requested JSON object."
         ),
         "schema": {
             "type": "object",
@@ -57,7 +56,7 @@ def diagnosis_meta(base_candidates: list[dict[str, JSON]]) -> dict[str, JSON]:
 def generation_meta(hypothesis: str) -> dict[str, JSON]:
     return {
         "prompt": (
-            "Implement exactly one general-purpose mechanism in the selected historical base. "
+            "Implement exactly one general-purpose mechanism in the proposer-selected base. "
             "Preserve mechanisms that work, change only authorized files, and do not add task- or "
             "benchmark-specific hints. Do not run evaluations or inspect held-out data. Proposed "
             "mechanism: " + hypothesis
@@ -67,7 +66,7 @@ def generation_meta(hypothesis: str) -> dict[str, JSON]:
 
 
 def parse_diagnosis(result: JSON, eligible_base_ids: tuple[str, ...]) -> dict[str, JSON] | None:
-    """Validate the custom Meta response and ensure its parent is authorized in Python."""
+    """Validate the custom Meta result envelope and diagnosis fields in Python."""
     if (
         not isinstance(result, dict)
         or set(result) != {"declined", "data"}

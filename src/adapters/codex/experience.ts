@@ -32,12 +32,34 @@ export async function stageExperience(
   const seed = new Set(context.tasks.map((task) => task.id))
   const baseline = request.experience.baseline
   const expectedBaselineEvidence = baseline
-    ? request.evidence.filter((cell) => cell.candidate_id === baseline.candidate_id && seed.has(cell.task_id))
+    ? request.evidence.filter(
+        (cell) =>
+          cell.candidate_id === baseline.candidate_id &&
+          seed.has(cell.task_id) &&
+          request.operation.task_ids.includes(cell.task_id),
+      )
     : []
   const baselineEvidenceSlots = new Set(
     expectedBaselineEvidence.map((cell) => `${cell.task_id}\0${cell.repetition}`),
   )
   const baselineReferenceSlots = new Set<string>()
+  const baselineMissingSlots = new Set<string>()
+  const validMissingBaselineSlots =
+    baseline !== undefined &&
+    Array.isArray(baseline.missing_trajectory_slots) &&
+    baseline.missing_trajectory_slots.every((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return false
+      const slot = `${item.task_id}\0${item.repetition}`
+      const valid =
+        typeof item.task_id === 'string' &&
+        Number.isSafeInteger(item.repetition) &&
+        item.repetition >= 0 &&
+        baselineEvidenceSlots.has(slot) &&
+        !baselineMissingSlots.has(slot) &&
+        item.reason === 'not_captured'
+      baselineMissingSlots.add(slot)
+      return valid
+    })
   if (
     canonicalDigest(body) !== digest ||
     snapshot.run_id !== request.runId ||
@@ -49,8 +71,8 @@ export async function stageExperience(
     (baseline !== undefined &&
       (request.operation.kind !== 'diagnose_seed' ||
         request.operation.candidate_id !== baseline.candidate_id ||
-        !expectedBaselineEvidence.length ||
-        canonicalDigest(baseline.evidence) !== canonicalDigest(expectedBaselineEvidence) ||
+        request.operation.task_ids.some((taskId) => !seed.has(taskId)) ||
+        !validMissingBaselineSlots ||
         baseline.trajectory_refs.some((item) => {
           const slot = `${item.task_id}\0${item.repetition}`
           const valid =
@@ -68,7 +90,8 @@ export async function stageExperience(
           baselineReferenceSlots.add(slot)
           return !valid
         }) ||
-        !/^sha256:[a-f0-9]{64}$/u.test(baseline.candidate_digest)))
+        [...baselineMissingSlots].some((slot) => baselineReferenceSlots.has(slot)) ||
+        baselineEvidenceSlots.size !== new Set([...baselineReferenceSlots, ...baselineMissingSlots]).size))
   )
     throw new GearError(
       'experience-context-mismatch',
@@ -81,32 +104,6 @@ export async function stageExperience(
   await mkdir(directory, { recursive: true, mode: 0o700 })
   await store.copyClosure(snapshot, directory)
   await rename(join(directory, snapshot.digest.slice(7) + '.json'), join(directory, 'snapshot.json'))
-  if (baseline) {
-    const runRoot = dirname(context.targets)
-    const manifestPath = join(runRoot, 'target-manifests', `${baseline.candidate_id}.json`)
-    const sourceManifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { runtimeIdentity: string }
-    const targetStore = new TargetStore(
-      runRoot,
-      harnessAdapter(context.targetAdapter),
-      sourceManifest.runtimeIdentity,
-    )
-    const manifest = await targetStore.verify(baseline.candidate_id)
-    if (manifest.digest !== baseline.candidate_digest)
-      throw new GearError('experience-context-mismatch', 'Baseline target differs from its reservation')
-    const baselineDirectory = join(directory, 'baseline')
-    const sourceRoot = join(baselineDirectory, 'source')
-    await mkdir(sourceRoot, { recursive: true, mode: 0o700 })
-    for (const resource of await targetStore.readResources(baseline.candidate_id)) {
-      const destination = join(sourceRoot, resource.path)
-      await mkdir(dirname(destination), { recursive: true, mode: 0o700 })
-      await writeFile(destination, resource.bytes, { mode: resource.executable ? 0o500 : 0o400 })
-    }
-    await writeFile(
-      join(baselineDirectory, 'evidence.json'),
-      JSON.stringify({ candidate_id: baseline.candidate_id, evidence: baseline.evidence }),
-      { mode: 0o400 },
-    )
-  }
   for (const [name, source] of Object.entries(builtinPolicySources)) {
     const path = join(sources, name)
     await mkdir(dirname(path), { recursive: true, mode: 0o700 })
@@ -114,15 +111,26 @@ export async function stageExperience(
   }
   const python = await inspectPython(context.experiencePython ?? resolvePythonExecutable())
   const bootstrap = `import sys;sys.path.insert(0,${JSON.stringify(sources)});from gear.experience import main;raise SystemExit(main())`
-  const gateway = context.artifactReader
+  const runRoot = dirname(context.targets)
+  const sourceCandidate = snapshot.records[0]?.candidate.id
+  const sourceManifest = sourceCandidate
+    ? (JSON.parse(
+        await readFile(join(runRoot, 'target-manifests', `${sourceCandidate}.json`), 'utf8'),
+      ) as { runtimeIdentity: string })
+    : undefined
+  const targets = sourceManifest
+    ? new TargetStore(runRoot, harnessAdapter(context.targetAdapter), sourceManifest.runtimeIdentity)
+    : undefined
+  const gateway = context.artifactReader || targets
     ? await trajectoryGateway(
         root,
-        dirname(context.targets),
+        runRoot,
         snapshot,
         context.artifactReader,
         python.executable,
         registerDispose,
         request.experience.baseline?.trajectory_refs,
+        targets,
       )
     : undefined
   return {
@@ -154,17 +162,23 @@ export async function stageExperience(
         read: {
           action: 'read',
           ref: 'experience:<digest from a card>',
-          view: 'card|task-results|diff|source|trajectory|modification-use|verifier',
+          view: 'card|task-results|diff|trajectory|modification-use|verifier',
           limit: 20,
+        },
+        source: {
+          action: 'source',
+          ref: 'experience:<record digest>',
+          candidate_id: '<candidate_id or parent_id from a record>',
+          path: '<path from source.list>',
+          offset: 0,
+          limit: 24576,
         },
         ...(request.experience.baseline
           ? {
               baseline: {
                 candidate_id: request.experience.baseline.candidate_id,
-                candidate_digest: request.experience.baseline.candidate_digest,
-                source_root: join(directory, 'baseline', 'source'),
-                evidence_path: join(directory, 'baseline', 'evidence.json'),
                 trajectory_refs: request.experience.baseline.trajectory_refs,
+                missing_trajectory_slots: request.experience.baseline.missing_trajectory_slots,
                 trajectory: {
                   action: 'trajectory',
                   ref: 'baseline',

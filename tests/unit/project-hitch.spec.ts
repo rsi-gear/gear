@@ -37,6 +37,21 @@ const request: OperationRequest = {
   },
 }
 
+it('exposes an optional dsh-codex package through the DSH profile without changing the pinned artifact', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'gear-hitch-dsh-codex-'))
+  roots.push(root)
+  const target = join(root, 'target')
+  await mkdir(join(target, 'dsh-codex-package'), { recursive: true })
+  await writeFile(join(target, 'dsh-codex-package/package.json'), JSON.stringify({ name: 'dsh-codex' }))
+
+  const materialized = await new DshHarnessAdapter().materialize(target, join(root, 'environment'))
+
+  expect(materialized.dockerfile).toContain('COPY gear-target/ /opt/gear-target/')
+  expect(materialized.dockerfile).toContain('ENV DSH_HOME=/opt/gear-target/dsh-home')
+  expect(materialized.dockerfile).toContain('ln -sfn /opt/gear-target/dsh-codex-package /opt/gear-target/dsh-home/profiles/node_modules/dsh-codex')
+  expect(materialized.dockerfile).not.toContain('/opt/hitch-harness-artifact')
+})
+
 it('materializes the Target in the native main context and seals the manifest after mutation', async () => {
   const root = await mkdtemp(join(tmpdir(), 'gear-hitch-context-'))
   roots.push(root)

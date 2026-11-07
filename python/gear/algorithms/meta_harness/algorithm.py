@@ -1,11 +1,5 @@
 """Meta-Harness Terminal-Bench 2 adaptation using Gear's public algorithm API."""
 
-import json
-from dataclasses import asdict
-from typing import cast
-
-from gear.canonical import JSON
-
 from ..contracts import (
     AlgorithmState,
     CandidateRanker,
@@ -24,7 +18,7 @@ from ..contracts import (
 )
 from ..evidence import task_scores
 from ..validation import validate_parent_plan
-from ..workflow import StagedSearch, integer, objects
+from ..workflow import StagedSearch, integer
 from .parents import select_frontier_parent
 from .proposal import (
     HISTORY_GUIDANCE,
@@ -102,7 +96,6 @@ class MetaHarness(StagedSearch):
         profiles = task_scores(ranking_input)
         snapshots = {candidate.id: candidate for candidate in view.candidates}
         eligible: list[ParentOption] = []
-        base_candidates: list[dict[str, JSON]] = []
         for candidate_id, score in ranking.scores:
             profile = profiles.get(candidate_id)
             if profile is None:
@@ -123,21 +116,34 @@ class MetaHarness(StagedSearch):
                     content_digest=snapshot.digest,
                 )
             )
-            base_candidates.append(
-                {
-                    "candidate_id": candidate_id,
-                    "score": score,
-                    "task_scores": dict(profile),
-                }
-            )
 
+        if not eligible:
+            return self._finish(view, state, "no candidate has complete comparable seed evidence")
         parent_input = ParentInput(tuple(eligible), 1, view.anchor_id)
         parent_plan = self.parent_policy(parent_input, self._rng(view))
         validate_parent_plan(parent_input, parent_plan)
-        if not parent_plan.allocations:
-            return self._finish(view, state, parent_plan.reason)
-        selection = parent_plan.allocations[0].selection
-        diagnosis_candidate = selection.option.candidate_id
+        # A policy may prioritize candidates, but the proposer gets every eligible
+        # complete seed candidate and makes the reference's history-driven base choice.
+        prioritized = [
+            allocation.selection.option.candidate_id
+            for allocation in parent_plan.allocations
+            if allocation.selection.option.candidate_id in {item.candidate_id for item in eligible}
+        ]
+        by_id = {item.candidate_id: item for item in eligible}
+        offered = [by_id[candidate_id] for candidate_id in dict.fromkeys(prioritized)]
+        offered.extend(item for item in eligible if item.candidate_id not in prioritized)
+        diagnosis_candidate = view.anchor_id
+        if diagnosis_candidate not in snapshots:
+            raise ValueError("Meta-Harness anchor is absent from the candidate snapshot")
+        base_candidates = [
+            {
+                "candidate_id": item.candidate_id,
+                "score": item.score,
+                "task_scores": dict(item.task_scores),
+                "content_digest": item.content_digest,
+            }
+            for item in offered
+        ]
         research = ResearchRecord(
             "parents",
             "global",
@@ -145,9 +151,9 @@ class MetaHarness(StagedSearch):
             tuple(item.candidate_id for item in eligible),
             {
                 "round": integer(state.data.get("round", 0)),
-                "selection": "Meta-Harness diagnosis candidate",
-                "plan": json.loads(json.dumps(asdict(parent_plan))),
-                "eligible_base_candidates": [item["candidate_id"] for item in base_candidates],
+                "selection": "Meta-Harness eligible bases offered to proposer",
+                "prioritized_by_policy": prioritized,
+                "eligible_base_candidates": [item.candidate_id for item in offered],
             },
         )
         next_state = AlgorithmState(
@@ -156,8 +162,7 @@ class MetaHarness(StagedSearch):
                 "phase": "proposals",
                 "round": integer(state.data.get("round", 0)),
                 "diagnosis_candidate": diagnosis_candidate,
-                "base_candidates": cast(JSON, base_candidates),
-                "parent_reason": parent_plan.reason,
+                "offered_base_candidates": base_candidates,
             }
         )
         operation = Operation(
@@ -165,10 +170,7 @@ class MetaHarness(StagedSearch):
             candidate_id=diagnosis_candidate,
             task_ids=task_ids,
             rationale=HISTORY_GUIDANCE,
-            payload={
-                "base_candidates": cast(JSON, base_candidates),
-                "meta": diagnosis_meta(base_candidates),
-            },
+            payload={"base_candidates": base_candidates, "meta": diagnosis_meta(base_candidates)},
         )
         return self._decision(
             next_state.data,
@@ -187,24 +189,30 @@ class MetaHarness(StagedSearch):
         if not results or results[-1].status != "complete":
             return self._next_batch(view, state, "Meta-Harness diagnosis did not complete")
 
-        offered = objects(state.data.get("base_candidates", []))
+        offered = state.data.get("offered_base_candidates")
+        if not isinstance(offered, list):
+            raise ValueError("Meta-Harness state lost its offered base candidates")
         eligible_ids = tuple(
-            str(item["candidate_id"])
+            item["candidate_id"]
             for item in offered
-            if isinstance(item.get("candidate_id"), str)
+            if isinstance(item, dict) and isinstance(item.get("candidate_id"), str)
         )
         diagnosis = parse_diagnosis(results[-1].data, eligible_ids)
         if diagnosis is None:
             return self._next_batch(view, state, "Meta-Harness proposer declined")
 
+        selected_base = str(diagnosis["base_candidate_id"])
+        base_snapshot = next((item for item in view.candidates if item.id == selected_base), None)
+        if base_snapshot is None or selected_base not in eligible_ids:
+            raise ValueError("Meta-Harness selected a base outside the complete seed archive")
         failures = tuple(
             cell
             for cell in view.evidence
-            if cell.candidate_id == diagnosis_candidate
+            if cell.candidate_id == selected_base
             and cell.score is not None
-            and (cell.score < 1 or view.objective is not None)
+            and cell.score < 1
         )
-        parent = ParentOption(diagnosis_candidate, "global", self._all_tasks(view), 0.0)
+        parent = ParentOption(selected_base, "global", self._all_tasks(view), 0.0)
         plan = self.proposal_planner(ProposalInput(parent, failures, diagnosis, 1, view.tasks))
         if (
             not plan.reason
@@ -213,12 +221,6 @@ class MetaHarness(StagedSearch):
             or set(plan.task_ids) - set(self._all_tasks(view))
         ):
             raise ValueError("Meta-Harness must propose exactly one in-scope candidate")
-        selected_base = cast(str, diagnosis["base_candidate_id"])
-        # This check is algorithm-side. The proposer cannot select a partial or
-        # held-out candidate even if it ignores the schema supplied by the worker.
-        if selected_base not in eligible_ids:
-            raise ValueError("Meta-Harness selected a base outside the seed-evaluated archive")
-
         candidate_id = f"r{integer(state.data.get('round', 0))}-candidate-0"
         operation = Operation(
             "generate_candidate",
@@ -253,6 +255,7 @@ class MetaHarness(StagedSearch):
                         "round": integer(state.data.get("round", 0)),
                         "selection": "Meta-Harness proposer",
                         "diagnosis_candidate": diagnosis_candidate,
+                        "offered_base_candidates": list(eligible_ids),
                         "selected_base_candidate": selected_base,
                     },
                 ),

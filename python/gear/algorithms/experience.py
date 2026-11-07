@@ -446,8 +446,6 @@ def experience_read(input: dict[str, Any]) -> dict[str, Any]:
                 {**metadata, "patch": chunk, "part": part, "parts": len(chunks)}
                 for part, chunk in enumerate(chunks)
             )
-    elif view == "source":
-        items = record["change"].get("source_files", [])
     else:
         raise ValueError("unknown experience read view")
     binding = {"snapshot": input["snapshot_digest"], "record": record["digest"], "view": view}

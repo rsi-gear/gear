@@ -96,7 +96,12 @@ export function apply(ctx) {
       // Harbor owns the container boundary. Nested host sandbox backends are
       // unavailable there; this fixed patch is never part of a host carrier.
       dockerfile:
-        'COPY gear-target/ /opt/gear-target/\nCOPY gear-target.patch.yml /opt/gear-target.patch.yml\n',
+        'COPY gear-target/ /opt/gear-target/\nCOPY gear-target.patch.yml /opt/gear-target.patch.yml\n' +
+        'ENV DSH_HOME=/opt/gear-target/dsh-home\n' +
+        'RUN if [ -d /opt/gear-target/dsh-codex-package ]; then \\\n' +
+        '  mkdir -p /opt/gear-target/dsh-home/profiles/node_modules && \\\n' +
+        '  ln -sfn /opt/gear-target/dsh-codex-package /opt/gear-target/dsh-home/profiles/node_modules/dsh-codex; \\\n' +
+        'fi\n',
       agentArgs: ['--patch', '/opt/gear-target.patch.yml'],
     }
   }

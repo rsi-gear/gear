@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import base64
 import re
 from typing import Any
 
 from gear.canonical import digest
 
-VIEWS = ("task-results", "diff", "source", "trajectory", "modification-use", "verifier")
+VIEWS = ("task-results", "diff", "trajectory", "modification-use", "verifier")
 MAX_ITEM_BYTES = 61 * 1024
 MAX_FILES = 100_000
 
@@ -185,29 +184,6 @@ def verify_chunk(
         if view == "diff":
             if item["path"] not in {file["path"] for file in record["change"]["files"]}:
                 raise ValueError("experience diff is outside the record")
-            continue
-        if view == "source":
-            content = item.get("content")
-            if (
-                not isinstance(content, str)
-                or re.fullmatch(r"[A-Za-z0-9+/]*={0,2}", content) is None
-            ):
-                raise ValueError("experience source content must be base64")
-            try:
-                decoded = base64.b64decode(content, validate=True)
-            except ValueError as error:
-                raise ValueError("experience source content must be base64") from error
-            if (
-                item["candidate_id"] not in (record["candidate"]["id"], record["parent"]["id"])
-                or not isinstance(item["path"], str)
-                or type(item["part"]) is not int
-                or type(item["parts"]) is not int
-                or not 0 <= item["part"] < item["parts"]
-                or base64.b64encode(decoded).decode("ascii") != content
-                or item["encoding"] != "base64"
-                or not valid_digest(item["content_digest"])
-            ):
-                raise ValueError("experience source is outside the record")
             continue
         if item["task_id"] not in record["scope"]["task_ids"]:
             raise ValueError("experience item is outside the seed scope")

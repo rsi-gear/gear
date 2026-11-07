@@ -114,19 +114,13 @@ def toy_round(algorithm: SearchAlgorithm) -> dict[str, JSON]:
             if operation.kind == "diagnose_seed":
                 payload = operation.payload if isinstance(operation.payload, dict) else {}
                 if isinstance(payload.get("meta"), dict):
-                    bases = payload.get("base_candidates", [])
-                    base_id = (
-                        bases[0].get("candidate_id")
-                        if isinstance(bases, list) and bases and isinstance(bases[0], dict)
-                        else None
-                    )
                     result = replace(
                         result,
                         data={
                             "declined": False,
                             "data": {
                                 "summary": "Use one general improvement",
-                                "base_candidate_id": base_id,
+                                "base_candidate_id": str(payload.get("base_candidates", [{"candidate_id": "anchor"}])[0]["candidate_id"]),
                                 "hypothesis": "Fix arithmetic and formatting.",
                             },
                         },

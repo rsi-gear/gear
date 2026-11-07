@@ -1,4 +1,4 @@
-import type { Candidate, Evidence, Json } from './algorithm-wire.js'
+import type { Candidate, Json } from './algorithm-wire.js'
 import type { TrajectoryReference } from './trajectory.js'
 
 /** The logical record and public ref retain their v2 identity across physical encodings. */
@@ -17,12 +17,10 @@ export interface ExperienceRecord {
   trajectory_refs: TrajectoryReference[]
   digest: string
 }
-export type ExperienceView =
-  'task-results' | 'diff' | 'source' | 'trajectory' | 'modification-use' | 'verifier'
+export type ExperienceView = 'task-results' | 'diff' | 'trajectory' | 'modification-use' | 'verifier'
 export const experienceViews: ExperienceView[] = [
   'task-results',
   'diff',
-  'source',
   'trajectory',
   'modification-use',
   'verifier',
@@ -91,9 +89,8 @@ export interface ExperienceContext {
   cards: Json[]
   baseline?: {
     candidate_id: string
-    candidate_digest: string
-    evidence: Evidence[]
     trajectory_refs: TrajectoryReference[]
+    missing_trajectory_slots: { task_id: string; repetition: number; reason: 'not_captured' }[]
   }
   digest: string
 }

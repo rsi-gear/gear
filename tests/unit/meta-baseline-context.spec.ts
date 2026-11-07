@@ -36,9 +36,8 @@ function setup() {
     cards: [],
     baseline: {
       candidate_id: 'anchor',
-      candidate_digest: canonicalDigest('baseline target'),
-      evidence,
       trajectory_refs: [],
+      missing_trajectory_slots: [{ task_id: 'seed-task', repetition: 0, reason: 'not_captured' }],
     },
   }
   const context = { ...contextBody, digest: canonicalDigest(contextBody) }
@@ -51,27 +50,10 @@ function setup() {
   return { experience, request, context }
 }
 
-describe('Meta baseline context validation', () => {
-  it('accepts the exact reserved baseline evidence', async () => {
+describe('baseline trajectory context validation', () => {
+  it('accepts the baseline trajectory scope reserved for the diagnosis', async () => {
     const { experience, request } = setup()
     await expect(experience.verify(request)).resolves.toBeUndefined()
-  })
-
-  it('rejects rehashed evidence that differs from the diagnosis reservation', async () => {
-    const { experience, request, context } = setup()
-    const baseline = context.baseline!
-    const body = {
-      ...context,
-      baseline: {
-        ...baseline,
-        evidence: baseline.evidence.map((cell) => ({ ...cell, score: 1 })),
-      },
-    }
-    const { digest: _digest, ...unsigned } = body
-    const forged = { ...unsigned, digest: canonicalDigest(unsigned) }
-    await expect(experience.verify({ ...request, experience: forged })).rejects.toMatchObject({
-      code: 'experience-context-mismatch',
-    })
   })
 
   it('rejects a trajectory reference outside the reserved baseline evidence', async () => {
@@ -90,6 +72,24 @@ describe('Meta baseline context validation', () => {
             content_digest: null,
             reason: 'missing',
           },
+        ],
+      },
+    }
+    const { digest: _digest, ...unsigned } = body
+    const forged = { ...unsigned, digest: canonicalDigest(unsigned) }
+    await expect(experience.verify({ ...request, experience: forged })).rejects.toMatchObject({
+      code: 'experience-context-mismatch',
+    })
+  })
+
+  it('rejects a missing-trajectory marker outside the reserved baseline evidence', async () => {
+    const { experience, request, context } = setup()
+    const body = {
+      ...context,
+      baseline: {
+        ...context.baseline!,
+        missing_trajectory_slots: [
+          { task_id: 'held-out-task', repetition: 0, reason: 'not_captured' as const },
         ],
       },
     }

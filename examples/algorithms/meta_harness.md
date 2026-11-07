@@ -20,15 +20,15 @@ execution.
 
 | Mechanism                          | Pinned reference                                                                                                                                           | Gear behavior                                                                                                                                                                                                                                                                                                             | Relationship                                                                                   |
 | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Proposer                           | Claude Code uses `model="opus"`, `effort="max"`, and a prompt naming `anthropic/claude-opus-4-6`; it chooses one general mechanism for one candidate       | Meta-Harness supplies a Python-owned prompt and schema that ask the proposer to inspect the seed archive, choose one eligible base, and describe one general mechanism; Gear requires the profile's declared model ID to identify Opus 4.6                                                                                 | Mechanism mapped; provider, model selection, and effort wiring adapted                         |
+| Proposer                           | Claude Code uses `model="opus"`, `effort="max"`, and a prompt naming `anthropic/claude-opus-4-6`; it proposes one general mechanism for one candidate       | Python emits diagnosis against the sealed baseline and offers every candidate with complete comparable seed evidence. The proposer reads the bounded history and returns one summary, an eligible `base_candidate_id`, and one hypothesis; Python validates the base before generation. | One candidate per iteration is mapped; provider, model selection, and effort wiring are adapted |
 | Analysis/implementation delegation | The skill launches one Agent subagent to analyze the archive, then one Agent subagent to implement the selected candidate and write `pending_eval.json`    | Gear records separate `diagnose_seed` and `generate_candidate` operations, with one candidate per round; it does not launch nested Agent subagents or use the reference's `pending_eval.json` handoff                                                                                                                     | Mapped to Gear operations; nested subagent orchestration and handoff format are not reproduced |
 | Target harness                     | Harbor runs the `TerminusKira` subclass of `Terminus2`; task-agent calls use `anthropic/claude-opus-4-6`                                                   | Gear runs its configured Target adapter on imported Harbor tasks; the Target profile is pinned to `anthropic/claude-opus-4-6`                                                                                                                                                                                             | Adapted; Gear does not execute the reference's Python `TerminusKira` class                     |
 | Baselines/preflight                | Compares Kira and Terminus2 baselines; import-validates each proposal and runs a one-task smoke test before its full evaluation                            | Gear starts from one sealed anchor and admits candidates through its generation and seed-evaluation lifecycle; there is no equivalent one-task smoke-evaluation stage                                                                                                                                                     | Adapted; baseline set and candidate screening differ                                           |
-| Parent/base                        | Proposer chooses a useful historical implementation after examining the archive                                                                            | Diagnosis receives every candidate with complete global seed evidence and its task scores; the proposer returns `base_candidate_id`; Gear validates that ID against the frozen eligible list and uses it as the generation parent                                                                                         | Mapped for candidates with complete comparable seed evidence                                   |
+| Parent/base                        | The analysis agent examines the archive and chooses a useful implementation to extend                                                                           | Python offers every complete, comparable seed candidate (with score, per-task scores, and digest). A configured parent policy can prioritize their order but cannot remove options. The proposer chooses `base_candidate_id`; Python validates it and uses it as `parent_id`. | Base choice follows the reference proposer; Gear limits eligibility to complete comparable seed evidence |
 | Candidate count                    | One per iteration                                                                                                                                          | One global candidate per iteration                                                                                                                                                                                                                                                                                        | Mapped                                                                                         |
 | Stop behavior                      | The skill runs one iteration and explicitly forbids stopping because the frontier looks optimal or aborting early; the outer loop owns benchmark execution | Gear creates one candidate per active Meta round, including when all seed tasks pass. Configured rounds and hard candidate/evaluation limits bound the Gear run                                                                                                                                                           | Adapted; Gear's run wrapper owns those additional bounds                                       |
 | Evaluation                         | Full 89-task Terminal-Bench 2 set; two trials per task by default                                                                                          | Configure the project with the same 89 seed tasks and `repetitions: 2`; Gear independently enforces its held-out gate                                                                                                                                                                                                     | Adapted; no held-out examples are exposed to the proposer                                      |
-| Historical evidence                | Baseline plus every evaluated candidate, scores, and successful/failed trajectories, including rejected candidates                                         | The first diagnosis receives baseline evidence, verified baseline source, and authorized baseline trajectory refs. Later diagnoses receive the paginated seed archive. Each record includes both successful and failed seed outcomes and trajectory refs; candidate source is available losslessly through `source` pages | Mapped within Gear's admitted seed scope                                                       |
+| Historical evidence                | Baseline plus every evaluated candidate, scores, and successful/failed trajectories, including rejected candidates                                         | Baseline scores and feedback are in the operation evidence; baseline source is mounted in `candidate/`. The shared reader exposes captured baseline trajectories and explicitly reports missing slots. Later diagnoses can query every seed experience, including rejected candidates, with bounded cards, scores, diffs, verifier details, source paths and paginated reads from sealed targets, and captured trajectories. | Mapped within the authorized seed archive; source is read from its sealed target by candidate ID and path |
 | Evaluation gate                    | Reference benchmark loop                                                                                                                                   | Gear keeps its independent held-out promotion gate                                                                                                                                                                                                                                                                        | Intentional Gear adaptation                                                                    |
 
 Each operation supplies its algorithm-specific prompt and response schema in
@@ -38,19 +38,33 @@ validates the response and the selected base in its own Python algorithm step;
 the shared TypeScript adapter does not know Meta-Harness field names or parse its
 search decisions.
 
-The history reader exposes all seed-evaluated candidates in the frozen run
-snapshot, not just selected parents. Use the `source` view for complete source;
-`diff` is a compact convenience view and may omit a patch that exceeds its
-bound. Pagination keeps each response bounded. Baseline source is copied into
-the diagnosis sandbox read-only after verifying its sealed target digest.
+The history reader exposes every seed-evaluated candidate in the frozen run
+snapshot, including candidates that were not selected. It provides bounded
+cards, task results, diffs, verifier records, source paths, paginated source
+reads from sealed targets, and captured seed trajectories. A diff can omit a
+patch that exceeds its size bound. This is why the proposer needs direct source
+access: at diagnosis time, Gear stages the baseline in `candidate/`, but the
+proposer has not yet selected an older parent. It must compare candidate source
+for a reusable successful mechanism before choosing that parent; a truncated
+diff cannot provide the omitted implementation. Source reads name a candidate
+and relative path, are authorized against that seed experience record, and
+reverify the sealed target and file digest on each page. The experience record
+stores no duplicate copies of the baseline or historical source. Baseline
+evidence remains in the operation request. Baseline trajectory refs use the
+same shared gateway as other seed trajectories. `missing_trajectory_slots`
+explicitly lists requested baseline task/repetition slots that had no captured
+trajectory; an unavailable captured artifact remains represented by its
+trajectory reference and status.
 
-Gear only permits a proposed base with complete global seed evidence, so
-partially evaluated candidates remain visible in the archive but cannot become
-parents. Gear also retains its independent held-out promotion gate and wraps
-the reference's one-iteration action in Gear's bounded run lifecycle. These
-are documented adaptations to Gear's evidence and promotion contracts. They do
-not establish a performance reproduction; do not use the reference paper's
-scores as Gear results. The target-harness adaptation also changes the agent
+Gear only offers a parent with complete global seed evidence. Partially
+evaluated candidates remain visible in experience records but cannot become
+parents. The proposer may choose any offered base, including a historically
+rejected candidate, and can inspect its complete source by candidate ID and path
+even when its diff is truncated. Gear also retains its independent held-out promotion gate and wraps the
+reference's one-iteration action in Gear's bounded run lifecycle. These are
+documented adaptations to Gear's evidence and promotion contracts. They do not
+establish a performance reproduction; do not use the reference paper's scores
+as Gear results. The target-harness adaptation also changes the agent
 implementation surface: the reference evolves a Python `Terminus2` subclass,
 while this Gear example evolves its configured Target artifact through the
 adapter. Treat those scores as separate experiments even when they share task
@@ -154,12 +168,40 @@ fund another iteration.
 
 ## Current local outcome
 
-No live Terminal-Bench 2 run or model evaluation has been performed for this
-change. The checked-in result is therefore `not run`; no pass rate, cost, or
-paper comparison is claimed. After a run, preserve the JSON report and record
-the exact project configuration, model identifiers, dataset revision, task
-split, seed, total evaluations, generated candidates, costs, per-task outcomes,
-and held-out result alongside it.
+An isolated one-round Terminal-Bench task smoke run was attempted on 2026-11-06
+with `openai-codex/gpt-5.6-terra`, one seed task (`fix-git`), one separate
+held-out task (`sqlite-db-truncate`), one repetition, and one candidate slot.
+The baseline exhausted three physical attempts (the initial attempt plus two
+infrastructure repairs); each Harbor trial ended with `Hitch agent run failed
+with code 7: agent exited with code 1`. Gear recorded no valid baseline, did
+not call the Meta proposer, generated no candidate, and ran no held-out gate.
+The local run ID was `run_a19e91003fa94cbba7c6945084bc67ba`. Model usage and cost
+were unavailable in the report. This is a failed runner smoke test, not a
+completed Meta-Harness iteration or a performance result.
+
+A second smoke run used `openai-codex/gpt-5.6-luna` and was launched in the
+container that owns the healthy Hitch daemon with the installed Hitch SDK
+wrapper. Gear recorded three seed-evaluation attempts under run
+`run_2c703014d4534774913a127a021591af`; each Harbor trial ended with the same
+agent exit code 1 before producing a valid Hitch run bundle. No model usage,
+valid baseline score, diagnosis, generated candidate, or held-out result was
+recorded. This narrows the remaining failure to the task-agent/runtime path; it
+does not establish a successful local reproduction.
+
+A third, single-attempt diagnostic run (`run_cff7d1a4e53e46c399a6211f869242bf`)
+added the local `dsh-codex` plugin to the test target preset and disabled
+automatic infrastructure retries. It still ended with `agent exited with code
+1` before a valid run bundle or model usage was recorded. The Codex auth helper
+and adapter compatibility checks pass independently, so the remaining live-run
+blocker is inside task-agent execution; no baseline score is available.
+
+The full pinned Terminal-Bench 2.1 reproduction remains `not run`; no pass rate,
+cost, or paper comparison is claimed. The smoke failure must be resolved and a
+complete baseline → diagnosis → generation → candidate-evaluation iteration
+recorded before this example can claim a live reproduction. After a successful
+run, preserve the JSON report and record the exact project configuration, model
+identifiers, dataset revision, task split, seed, total evaluations, generated
+candidates, costs, per-task outcomes, and held-out result alongside it.
 
 The CPU-only local conformance command is:
 
@@ -173,7 +215,7 @@ benchmark, call a model, or establish performance fidelity.
 The current local conformance results are `status: passed`, 5 algorithm steps,
 with operations `evaluate_seed:global`, `diagnose_seed:global`,
 `generate_candidate:global`, two comparable `evaluate_seed:global` operations,
-and `nominate:global`. The focused archive, Meta-Harness, and runner suite also
-passes all 37 Python tests. These are implementation checks; the Terminal-Bench
+and `nominate:global`. The focused experience, Meta-Harness, and runner suite also
+passes all 36 Python tests. These are implementation checks; the Terminal-Bench
 experiment remains not run until a configured project, pinned task dataset,
 and model profiles are available.

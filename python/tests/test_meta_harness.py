@@ -80,11 +80,12 @@ class MetaHarnessTests(unittest.TestCase):
         self.assertEqual(diagnosis.operations[0].kind, "diagnose_seed")
         self.assertEqual(diagnosis.operations[0].task_ids, ("task-a", "task-b"))
         payload = diagnosis.operations[0].payload
-        self.assertEqual(payload["base_candidates"][0]["candidate_id"], "anchor")
         self.assertEqual(
-            payload["meta"]["schema"]["properties"]["base_candidate_id"]["enum"],
-            ["anchor"],
+            payload["meta"]["schema"]["required"],
+            ["summary", "base_candidate_id", "hypothesis"],
         )
+        self.assertEqual(payload["base_candidates"][0]["candidate_id"], "anchor")
+        self.assertEqual(payload["meta"]["schema"]["properties"]["base_candidate_id"]["enum"], ["anchor"])
 
         completed_view = SearchView(
             view.run_id,
@@ -103,7 +104,7 @@ class MetaHarnessTests(unittest.TestCase):
                         "declined": False,
                         "data": {
                             "summary": "one general change",
-                            "base_candidate_id": "anchor",
+                        "base_candidate_id": "anchor",
                             "hypothesis": "improve output recovery",
                         },
                     },
@@ -195,7 +196,7 @@ class MetaHarnessTests(unittest.TestCase):
             {"global:parser", "global:filesystem"},
         )
 
-    def test_proposer_can_select_a_complete_historical_base_outside_the_parent_frontier(self):
+    def test_proposer_selects_any_complete_seed_candidate_as_generation_parent(self):
         tasks = (Task("format-task", "format"), Task("files-task", "files"))
         candidates = (
             Candidate("anchor", "anchor-digest"),
@@ -226,11 +227,11 @@ class MetaHarnessTests(unittest.TestCase):
         diagnose_operation = diagnosis.operations[0]
 
         self.assertEqual(diagnose_operation.kind, "diagnose_seed")
+        self.assertEqual(diagnose_operation.candidate_id, "anchor")
         self.assertEqual(
             {item["candidate_id"] for item in diagnose_operation.payload["base_candidates"]},
             {"anchor", "historical", "frontier"},
         )
-        self.assertEqual(diagnose_operation.candidate_id, "frontier")
 
         completed_view = SearchView(
             view.run_id,
@@ -244,7 +245,7 @@ class MetaHarnessTests(unittest.TestCase):
                     "diagnose",
                     "diagnose_seed",
                     "complete",
-                    "frontier",
+                    "anchor",
                     {
                         "declined": False,
                         "data": {
@@ -286,7 +287,7 @@ class MetaHarnessTests(unittest.TestCase):
                 (failure,),
                 {
                     "summary": "Reuse a robust parser from history",
-                    "base_candidate_id": "older",
+                    "base_candidate_id": "best",
                     "hypothesis": "Preserve parser output recovery",
                 },
                 4,
@@ -300,23 +301,16 @@ class MetaHarnessTests(unittest.TestCase):
         self.assertEqual(plan.reason, HISTORY_GUIDANCE)
         self.assertIn("successful and failed trajectories", plan.reason)
 
-    def test_diagnosis_meta_schema_offers_all_eligible_bases_and_no_fixed_parent(self):
-        meta = diagnosis_meta(
-            [
-                {"candidate_id": "anchor", "score": 0.8},
-                {"candidate_id": "older-rejected", "score": 0.2},
-            ]
-        )
+    def test_diagnosis_meta_offers_all_bases_and_the_proposer_selects_one(self):
+        meta = diagnosis_meta([{"candidate_id": "anchor"}, {"candidate_id": "older"}])
         schema = meta["schema"]
 
-        self.assertEqual(
-            schema["properties"]["base_candidate_id"]["enum"],
-            ["anchor", "older-rejected"],
-        )
-        self.assertIn("not restrict the search to a failure family", meta["prompt"])
+        self.assertEqual(schema["required"], ["summary", "base_candidate_id", "hypothesis"])
+        self.assertEqual(schema["properties"]["base_candidate_id"]["enum"], ["anchor", "older"])
+        self.assertIn("Review every offered base candidate", meta["prompt"])
 
-    def test_meta_result_rejects_unoffered_base_even_if_schema_was_ignored(self):
-        with self.assertRaisesRegex(ValueError, "ineligible base"):
+    def test_meta_result_rejects_algorithm_fields_from_an_untrusted_response(self):
+        with self.assertRaisesRegex(ValueError, "invalid or ineligible base"):
             parse_diagnosis(
                 {
                     "declined": False,
@@ -326,7 +320,7 @@ class MetaHarnessTests(unittest.TestCase):
                         "hypothesis": "reuse an approach",
                     },
                 },
-                ("anchor", "older-rejected"),
+                ("anchor",),
             )
 
 
