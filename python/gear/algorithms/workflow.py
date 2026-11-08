@@ -12,6 +12,7 @@ from .contracts import (
     AlgorithmState,
     CandidateRanker,
     Decision,
+    Evidence,
     Operation,
     ParentInput,
     ParentOption,
@@ -28,7 +29,7 @@ from .contracts import (
 )
 from .evidence import task_scores
 from .limits import MAX_DECISION_OPERATIONS
-from .objective import comparison_key, score_ceiling
+from .objective import comparison_key, has_room, score_ceiling
 from .projection import compare_candidates, project_candidate
 from .random import DeterministicRandom
 from .validation import validate_parent_plan, validate_sampling_plan
@@ -272,7 +273,7 @@ class StagedSearch:
                         and cell.task_id in selected_tasks
                         and cell.score is not None
                         and cell.status in ("valid", "task_failed")
-                        and (cell.score < 1 or view.objective is not None)
+                        and (cell.score < 1 or self._has_room(view, cell))
                     }
                 )
             )
@@ -634,6 +635,15 @@ class StagedSearch:
         if view.anchor_id in ranked.disqualified:
             return leader
         return view.anchor_id if self._at_least(view, ranked, view.anchor_id, leader) else leader
+
+    @staticmethod
+    def _has_room(view: SearchView, cell: Evidence) -> bool:
+        # A passing task stays a target only while a selected signal can still improve on it.
+        return (
+            isinstance(view.objective, dict)
+            and cell.raw_metrics is not None
+            and has_room(cast(dict[str, Any], view.objective), cell.raw_metrics)
+        )
 
     @staticmethod
     def _seed_rule(view: SearchView) -> dict[str, Any] | None:

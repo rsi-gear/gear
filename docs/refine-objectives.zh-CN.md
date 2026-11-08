@@ -46,6 +46,8 @@ anchor），通过后即替换。父代选择和最终提名都使用该 champio
 目标分必须严格优于 anchor，held-out 验证要求目标分不退步。阈值固定为 0，不再提供
 `promotion.*` 设置。
 
+GEPA 诊断失败的任务，以及仍可在某个选中信号（权重非零的 objective 项或已声明的过程分组）上提升的任务，按该指标声明的 `range` 判断。未声明 range 的指标始终视为有提升空间，因此加权成本项仍会诊断已成功但昂贵的任务。默认 objective 且未声明过程分组时，只诊断失败任务。
+
 ## Dataset 指标合同
 
 在 `benchmark.adapter.json` 中添加版本化 registry。若 benchmark 的真实通过谓词是
