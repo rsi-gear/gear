@@ -5,6 +5,9 @@ export const defaultPreparationTimeoutMs = 30 * 60_000
 export const defaultSetupTimeoutMs = 30 * 60_000
 export const hitchCredentialMarginMs = 5 * 60_000
 export const hitchControlTimeoutMs = 30_000
+// Nested Docker health collection can make daemon status much slower than a
+// normal Hitch control call, so give that admission probe its own larger bound.
+export const hitchDaemonStatusTimeoutMs = 120_000
 export const hitchEnvironmentTimeoutMs = 55_000
 // These are bounds imposed by Hitch's binding protocol and Node's timers.
 const maxTaskAndSetupMs = 24 * 60 * 60_000
