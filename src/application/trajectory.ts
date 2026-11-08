@@ -59,7 +59,7 @@ export class SeedTrajectoryArchive {
         const key = canonicalDigest([slot(cell), artifact])
         const cached = this.saved.get(key)
         if (cached) {
-          if (!output.some(item => item.ref === cached.ref)) output.push(cached)
+          if (!output.some((item) => item.ref === cached.ref)) output.push(cached)
           continue
         }
         let receiptDigest = this.receiptDigests.get(source.operation)

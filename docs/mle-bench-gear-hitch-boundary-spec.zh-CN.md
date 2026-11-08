@@ -98,6 +98,6 @@ Hitch 基于配置和已认证数据生成逐行分配，记录配置摘要、�
 - 两个 tarball 在独立目录通过真实 process 协议、Gear Python GEPA、比较、晋升和恢复测试。Hitch 单独安装可准备数据、固化执行器和导出声明式项目，无 Gear 运行依赖。
 - 真实 Linux worker 验证五折、十折与 holdout；执行时禁用重新抽样函数仍可完成。安装包端到端运行完成 20 次十折研究拟合，丢失回复恢复未增加拟合，正式 Hitch eval 完成 1 次冻结 refit，导出绑定实际所选方案。决策来自确定性测试脚本，未调用外部模型。
 - Gear 全量回归：893 通过、8 跳过，1 个代理测试首轮失败后单独复跑通过。Hitch 全量回归：1005 通过、18 跳过，新增公开导出的旧清单断言已修正并复验通过。Hitch 任务/发布重点测试、两仓架构检查、类型检查、Gear lint/合同检查均通过。
-- Gear 全量格式检查仍报告原有 `src/application/trajectory.ts`；已核对该文件与 HEAD 相同，本次没有修改。验证未运行生产模型。
+- Gear 首次全量格式检查及 PR CI 报告原有 `src/application/trajectory.ts` 格式问题；随后仅补齐箭头函数参数括号并重新通过格式检查。验证未运行生产模型。
 
 运行使用方式见 Hitch 的 `docs/analysis-research.zh-CN.md`。本地详细日志保留于 `/tmp/gear-hitch-boundary-task/`，重点为 `installed-both-current-2.log`、`installed-interface-final.log`、`workflow-canary-current.log`、`research-final.log` 与两仓全量回归日志。
