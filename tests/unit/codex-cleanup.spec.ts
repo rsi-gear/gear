@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, expect, it, vi } from 'vitest'
 import { SandboxManager } from '@anthropic-ai/sandbox-runtime'
 import { cleanupCodex, ownCodexRoot, type CodexResources } from '../../src/adapters/codex/cleanup.js'
@@ -9,6 +10,7 @@ import * as experiences from '../../src/adapters/codex/experience.js'
 import { trajectoryGateway } from '../../src/adapters/codex/trajectory-gateway.js'
 import type { CodexJob } from '../../src/adapters/codex/contracts.js'
 import { PiHarnessAdapter } from '../../src/adapters/pi/harness.js'
+import * as atomic from '../../src/adapters/storage/atomic.js'
 import type { ExperienceSnapshot } from '../../src/domain/experience.js'
 import type { ArtifactReaderDescriptor } from '../../src/domain/trajectory.js'
 
@@ -22,6 +24,42 @@ async function root(prefix = 'gear-meta-') {
   roots.push(path)
   return path
 }
+it('waits for the final cleanup record to be published before allowing worker exit', async () => {
+  const directory = await root('gear-cleanup-test-')
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
+  const publish = atomic.publishFile
+  let publication: Promise<void> | undefined
+  vi.spyOn(SandboxManager, 'reset').mockResolvedValue()
+  vi.spyOn(atomic, 'publishFile').mockImplementation((path, bytes, options) => {
+    if (path !== join(directory, 'cleanup.json')) return publish(path, bytes, options)
+    publication = publish(path, bytes, {
+      ...options,
+      beforePublish: async () => {
+        entered.resolve()
+        await release.promise
+      },
+    })
+    return publication
+  })
+  let completed = false
+  const cleanup = cleanupCodex(directory, 'frozen-digest', {}).then(() => { completed = true })
+  try {
+    await entered.promise
+    // Slow durable I/O must not turn cleanup into a fire-and-forget write.
+    await delay(400)
+    expect(completed).toBe(false)
+    await expect(readFile(join(directory, 'cleanup.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+    release.resolve()
+    await cleanup
+    expect(JSON.parse(await readFile(join(directory, 'cleanup.json'), 'utf8'))).toMatchObject({
+      input_digest: 'frozen-digest', status: 'graceful', model_stopped: true,
+    })
+  } finally {
+    release.resolve()
+    await cleanup
+    await publication
+  }
+})
 it('continues after a stuck disposer and reset, safely removes credentials, and records fallback separately', async () => {
   const directory = await root('gear-cleanup-test-'),
     path = await root(),
