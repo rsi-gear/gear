@@ -88,7 +88,7 @@
     "docs/training/managed-native.zh-CN.md",
     "docs/unattended-model-iteration-design.zh-CN.md",
     "docs/validation/unattended-scheduler-controlled-2026-10-15.json",
-    "examples/mle-bench/**",
+    "examples/mle-bench/harness/**",
     "test-contracts/run-output-artifacts-v1.json"
   ],
   "scripts": {
@@ -108,12 +108,11 @@
     "generate:contracts": "python3 scripts/generate-algorithm-contracts.py",
     "lint": "eslint 'src/{domain,ports,runtime,application,adapters,cli}/**/*.ts'",
     "format:check": "prettier --check 'src/{domain,ports,runtime,application,adapters,cli}/**/*.ts'",
-    "check:boundaries": "node scripts/check-boundaries.mjs && python3 scripts/check-python-boundaries.py",
+    "check:boundaries": "node scripts/check-boundaries.mjs && python3 scripts/check-python-boundaries.py && node scripts/check-analysis-boundaries.mjs",
     "check:contracts": "python3 scripts/generate-algorithm-contracts.py --check",
     "test:project:package": "npm run build && node scripts/check-project-package.mjs",
     "test:hitch:control": "npm run build && node scripts/check-hitch-control.mjs",
-    "test:benchmark:llm": "npm run build && node scripts/check-llm-scorer.mjs",
-    "test:mle-bench": "npm run build && node --test examples/mle-bench/tests/*.test.mjs"
+    "test:benchmark:llm": "npm run build && node scripts/check-llm-scorer.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "0.0.55",

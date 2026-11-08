@@ -6,6 +6,7 @@ import { HitchArtifactReader } from '../../src/adapters/hitch/trajectory.js'
 import { ProcessOperationProvider } from '../../src/adapters/process/operation-provider.js'
 import { canonicalDigest } from '../../src/domain/canonical.js'
 import { configuredCancellation } from '../../src/application/cancellation.js'
+import { artifactReader } from '../../src/adapters/artifacts/reader.js'
 import type { OperationRequest } from '../../src/ports/operations.js'
 
 const roots: string[] = []
@@ -66,4 +67,18 @@ it('binds and exposes a supported immutable artifact reader from the process han
   expect(changed.identity).not.toBe(connected.identity)
   await expect(provider({}, { ...reader, format: 'unknown' })).rejects.toMatchObject({ code: 'artifact-reader-unavailable' })
   await expect(provider({}, { ...reader, implementation_identity: canonicalDigest('forged') })).rejects.toMatchObject({ code: 'artifact-reader-changed' })
+})
+
+it('binds a public reader configuration locally and requires the frozen identity on resume', async () => {
+  const descriptor = new HitchArtifactReader('/fixture/hitch', '/fixture/root').descriptor
+  const { implementation_identity: _, ...configuration } = descriptor
+  const connected = await provider({}, configuration)
+  expect(connected.artifactReader).toEqual(descriptor)
+  expect(artifactReader(connected.artifactReader!).descriptor).toEqual(descriptor)
+  expect(() => artifactReader(configuration as typeof descriptor)).toThrow('identity is missing')
+  const changed = await ProcessOperationProvider.connect({
+    ...connected.profile,
+    configuration: { reader: configuration, experiment: { version: 'v2', seed: 7 } },
+  })
+  expect(changed.identity).not.toBe(connected.identity)
 })

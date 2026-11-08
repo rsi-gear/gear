@@ -1,0 +1,1 @@
+Build a working baseline early, then compare different model families within budget using the frozen outer evaluation plan reported by task_inspect. Re-evaluate a baseline from another evaluation version before ranking it against new candidates.

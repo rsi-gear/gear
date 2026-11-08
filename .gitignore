@@ -7,8 +7,6 @@ __pycache__/
 python/build/
 .pnpm-store/
 lib/
-!examples/mle-bench/lib/
-!examples/mle-bench/lib/**
 coverage/
 *.tgz
 .dsh-refine/
