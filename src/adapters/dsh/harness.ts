@@ -1,6 +1,5 @@
 import { cp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { load } from 'js-yaml'
 import type { HarnessAdapter, MutationPolicy } from '../../ports/harness.js'
 
@@ -74,10 +73,6 @@ export function apply(ctx) {
   }
   async materialize(directory: string, environment: string) {
     await cp(directory, join(environment, 'gear-target'), { recursive: true })
-    await cp(
-      fileURLToPath(new URL('../../../assets/dsh-codex-credential-bootstrap.mjs', import.meta.url)),
-      join(environment, 'gear-target/dsh-codex-credential-bootstrap.mjs'),
-    )
     await writeFile(
       join(environment, 'gear-target.patch.yml'),
       `- id: hmr
@@ -101,15 +96,7 @@ export function apply(ctx) {
       // Harbor owns the container boundary. Nested host sandbox backends are
       // unavailable there; this fixed patch is never part of a host carrier.
       dockerfile:
-        'COPY gear-target/ /opt/gear-target/\nCOPY gear-target.patch.yml /opt/gear-target.patch.yml\n' +
-        'ENV DSH_HOME=/opt/gear-target/dsh-home\n' +
-        'ENV NODE_OPTIONS=--import=/opt/gear-target/dsh-codex-credential-bootstrap.mjs\n' +
-        'RUN if [ -d /opt/gear-target/dsh-codex-package ]; then \\\n' +
-        '  mkdir -p /opt/gear-target/node_modules /opt/gear-target/dsh-home/profiles/node_modules && \\\n' +
-        '  ln -sfn /opt/gear-target/dsh-codex-package /opt/gear-target/node_modules/dsh-codex && \\\n' +
-        '  ln -sfn /opt/gear-target/dsh-codex-package /opt/gear-target/dsh-home/profiles/node_modules/dsh-codex && \\\n' +
-        '  ln -sfn /opt/hitch-harness-artifact/lib/node_modules/@deepseek-ai/dsh/node_modules /opt/gear-target/dsh-codex-package/node_modules; \\\n' +
-        'fi\n',
+        'COPY gear-target/ /opt/gear-target/\nCOPY gear-target.patch.yml /opt/gear-target.patch.yml\n',
       agentArgs: ['--patch', '/opt/gear-target.patch.yml'],
     }
   }

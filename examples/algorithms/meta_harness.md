@@ -56,6 +56,16 @@ explicitly lists requested baseline task/repetition slots that had no captured
 trajectory; an unavailable captured artifact remains represented by its
 trajectory reference and status.
 
+The concrete multi-candidate case is a history with two evaluated candidates
+that each solved different seed tasks but were not selected as the aggregate
+best parent. Before choosing a base, the proposer may need to compare the
+complete implementations of both candidates to reuse compatible mechanisms.
+The diagnosis operation stages only its requested candidate, and a bounded
+diff can omit a large implementation patch, so neither the current candidate
+source nor the diff is sufficient for that comparison. The reader exposes the
+two sealed sources by candidate ID and path without copying either source into
+the experience archive.
+
 Gear only offers a parent with complete global seed evidence. Partially
 evaluated candidates remain visible in experience records but cannot become
 parents. The proposer may choose any offered base, including a historically
@@ -191,9 +201,18 @@ does not establish a successful local reproduction.
 A third, single-attempt diagnostic run (`run_cff7d1a4e53e46c399a6211f869242bf`)
 added the local `dsh-codex` plugin to the test target preset and disabled
 automatic infrastructure retries. It still ended with `agent exited with code
-1` before a valid run bundle or model usage was recorded. The Codex auth helper
-and adapter compatibility checks pass independently, so the remaining live-run
-blocker is inside task-agent execution; no baseline score is available.
+1` before a valid run bundle or model usage was recorded. This was a task-agent
+startup failure, not a Meta-Harness result; no baseline score is available.
+
+On 2026-11-08, a resumed one-task attempt used `openai-codex/gpt-5.6-luna` and
+the `fix-git` seed task. With the local Codex credential bootstrap and package
+links enabled, the task agent reached DSH startup but failed with
+`Cannot read properties of undefined (reading 'get')`; it made no model
+requests and produced no score. After removing those experiment-only adapter
+changes from this PR, a rebuilt run stopped earlier because the local target
+profile could not resolve its private `dsh-codex` package. These are failed
+local harness attempts, not Meta-Harness iterations. No baseline score,
+diagnosis, candidate, or cost was recorded.
 
 The full pinned Terminal-Bench 2.1 reproduction remains `not run`; no pass rate,
 cost, or paper comparison is claimed. The smoke failure must be resolved and a

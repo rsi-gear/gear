@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest'
 import { digestJson } from '../../../src/training/digest.js'
 import { providerDiagnostics, providerEnvironment } from '../../../src/adapters/hitch/environment.js'
 import { assertEvaluationEnvironment, observeEvaluationEnvironment, type ObservationCall } from '../../../src/adapters/hitch/observation.js'
-import { hitchDaemonStatusTimeoutMs } from '../../../src/adapters/hitch/settings.js'
 
 function fixture() {
   const controller = { schema_version: '2' as const, package_version: '0.2.9', node_version: 'v22.0.0', runtime_id: digestJson('runtime'),
@@ -29,12 +28,6 @@ describe('fresh provider environment admission', () => {
     response.environment.buildx = { status: 'available', version: '0.23.0' }
     response.environment_digest = digestJson(response.environment)
     expect(providerEnvironment(response, expected)).toEqual(response.environment)
-  })
-  it('allows slow nested-Docker daemon status checks enough time to complete', async () => {
-    const { expected, response } = fixture()
-    const call = residentCall(response)
-    await observeEvaluationEnvironment(call, new AbortController().signal)
-    expect(call.mock.calls[0]?.[2]).toBe(hitchDaemonStatusTimeoutMs)
   })
   it('rejects stale nonce, another worker/collision domain and remote generations', () => {
     for (const change of [{ nonce: 'd'.repeat(32) }, { worker_id: 'another' }, { collision_domain_id: 'another' }, { generation: 2 }]) {

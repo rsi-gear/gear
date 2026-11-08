@@ -6,7 +6,7 @@ from pathlib import Path
 root = Path(__file__).resolve().parents[1] / 'python' / 'gear'
 failures = []
 for path in root.rglob('*.py'):
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    tree = ast.parse(path.read_text())
     for node in ast.walk(tree):
         modules = [node.module or ''] if isinstance(node, ast.ImportFrom) else [item.name for item in node.names] if isinstance(node, ast.Import) else []
         for module in modules:
@@ -25,7 +25,7 @@ for path in root.rglob('*.py'):
         for node in tree.body:
             if isinstance(node, ast.If) and any(isinstance(item, ast.Name) and item.id == '__name__' for item in ast.walk(node.test)):
                 failures.append(f'{path.relative_to(root)}: module execution entrypoint belongs in training/cli')
-    if path.parent.name == 'random_search' and 'gepa' in path.read_text(encoding="utf-8"):
+    if path.parent.name == 'random_search' and 'gepa' in path.read_text():
         failures.append(f'{path.name}: RandomSearch depends on the GEPA recipe')
     if path.parent.name in {'gepa', 'random_search'}:
         for node in tree.body:
@@ -41,7 +41,7 @@ for name in ['gates.py', 'history.py', 'observations.py', '_retired']:
     if (root / 'algorithms' / name).exists():
         failures.append(f'algorithms/{name}: retired policy leaked into the production package')
 for patch in (root.parent / 'patches').glob('*.patch'):
-    if re.search(r'^\+\s*(?:from|import)\s+gear_training(?:\.|\s)', patch.read_text(encoding="utf-8"), re.MULTILINE):
+    if re.search(r'^\+\s*(?:from|import)\s+gear_training(?:\.|\s)', patch.read_text(), re.MULTILINE):
         failures.append(f'{patch.name}: added code imports the retired training package')
 if failures:
     raise SystemExit('\n'.join(failures))
