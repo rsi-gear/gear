@@ -51,11 +51,17 @@ it('exposes an optional dsh-codex package through the DSH profile without changi
   expect(materialized.dockerfile).toContain(
     'ENV NODE_OPTIONS=--import=/opt/gear-target/dsh-codex-credential-bootstrap.mjs',
   )
+  expect(materialized.dockerfile).toContain(
+    'ln -sfn /opt/gear-target/dsh-codex-package /opt/gear-target/node_modules/dsh-codex',
+  )
   expect(materialized.dockerfile).toContain('ln -sfn /opt/gear-target/dsh-codex-package /opt/gear-target/dsh-home/profiles/node_modules/dsh-codex')
+  expect(materialized.dockerfile).toContain(
+    'ln -sfn /opt/hitch-harness-artifact/lib/node_modules/@deepseek-ai/dsh/node_modules /opt/gear-target/dsh-codex-package/node_modules',
+  )
   expect(await readFile(join(root, 'environment/gear-target/dsh-codex-credential-bootstrap.mjs'), 'utf8')).toContain(
     'task-bound-access-only',
   )
-  expect(materialized.dockerfile).not.toContain('/opt/hitch-harness-artifact')
+  expect(materialized.dockerfile).not.toContain('COPY /opt/hitch-harness-artifact')
 })
 
 it('materializes the Target in the native main context and seals the manifest after mutation', async () => {

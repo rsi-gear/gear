@@ -105,8 +105,10 @@ export function apply(ctx) {
         'ENV DSH_HOME=/opt/gear-target/dsh-home\n' +
         'ENV NODE_OPTIONS=--import=/opt/gear-target/dsh-codex-credential-bootstrap.mjs\n' +
         'RUN if [ -d /opt/gear-target/dsh-codex-package ]; then \\\n' +
-        '  mkdir -p /opt/gear-target/dsh-home/profiles/node_modules && \\\n' +
-        '  ln -sfn /opt/gear-target/dsh-codex-package /opt/gear-target/dsh-home/profiles/node_modules/dsh-codex; \\\n' +
+        '  mkdir -p /opt/gear-target/node_modules /opt/gear-target/dsh-home/profiles/node_modules && \\\n' +
+        '  ln -sfn /opt/gear-target/dsh-codex-package /opt/gear-target/node_modules/dsh-codex && \\\n' +
+        '  ln -sfn /opt/gear-target/dsh-codex-package /opt/gear-target/dsh-home/profiles/node_modules/dsh-codex && \\\n' +
+        '  ln -sfn /opt/hitch-harness-artifact/lib/node_modules/@deepseek-ai/dsh/node_modules /opt/gear-target/dsh-codex-package/node_modules; \\\n' +
         'fi\n',
       agentArgs: ['--patch', '/opt/gear-target.patch.yml'],
     }
