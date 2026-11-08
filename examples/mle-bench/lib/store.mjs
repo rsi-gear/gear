@@ -38,7 +38,7 @@ export class Store {
   async load(kind, id) { return optionalJson(this.path(kind, id)) }
   async verifySources(checkpoint) {
     for (const solution of checkpoint.solutions) { verify(solution); for (const f of solution.files) assert((await this.bytes(f.digest)).length === f.bytes, 'source size mismatch') }
-    for (const id of new Set(checkpoint.history.map(e => (e.execution.predictionsDigest ?? e.execution.oofDigest)).filter(Boolean))) await this.bytes(id)
+    for (const id of new Set(checkpoint.history.flatMap(e => [e.execution.oofDigest, e.execution.predictionsDigest, ...(e.analysis?.artifacts ?? []).map(a => a.digest), e.analysis?.pluginCache?.digest]).filter(Boolean))) await this.bytes(id)
   }
   async advanceProject(projectId, expected, next, stage) {
     return locked(this.path('locks', projectId), async () => {

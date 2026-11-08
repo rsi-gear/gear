@@ -10,7 +10,7 @@
     "@deepseek-ai/cordis": "4.0.1",
     "@deepseek-ai/dsh": "0.1.1-rc.2",
     "@deepseek-ai/dsh-tools": "0.1.1-rc.2",
-    "@earendil-works/pi-ai": "0.84.4",
+    "@earendil-works/pi-ai": "0.85.1",
     "dsh-codex": "0.2.6"
   }
 }

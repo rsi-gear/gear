@@ -29,7 +29,7 @@ async function refitLocked(store, backend, project, receipt, out, { signal } = {
   await backend.admit(state.plan)
   await backend.verifyReceipt(receipt)
   const checkpoint = await store.get(receipt.checkpointRef), solution = checkpoint.solutions.find(s => s.digest === receipt.delivery.solutionDigest)
-  assert(solution, 'missing selected source closure')
+  assert(solution?.protocol === 'analysis-solution@2', 'refit requires a resolved pipeline; legacy search programs must be migrated in a new research experiment')
   const selectionPlan = seal({ protocol: 'analysis-source-selection@1', sequencePlanDigest: state.plan.digest,
     sourceSequenceReceiptDigest: receipt.digest, startingCheckpointDigest: receipt.startingCheckpointDigest,
     harness: receipt.harness, runtimeDigest: state.plan.runtimeDigest, budgetDigest: digest(state.plan.budget),
@@ -58,6 +58,8 @@ async function refitLocked(store, backend, project, receipt, out, { signal } = {
     : await withinDeadline(backend, request, attempt.startedAt + request.allowance.wallSeconds * 1000,
       signal => backend.deliver(request, { signal }), { signal }))
   assert(delivered.modelRequests === 0 && delivered.solutionDigest === solution.digest, 'refit changed source or invoked a model')
+  assert(delivered.resolvedPipelineDigest === solution.parameters.digest && delivered.searchCalls === 0
+    && (delivered.status !== 'completed' || delivered.fits === 1), 'refit did not execute the frozen fit-only configuration')
   const wallSeconds = attempt.recoveredWithoutStart ? request.allowance.wallSeconds
     : Math.min(request.allowance.wallSeconds, (Date.now() - attempt.startedAt) / 1000)
   if (delivered.status !== 'completed') {

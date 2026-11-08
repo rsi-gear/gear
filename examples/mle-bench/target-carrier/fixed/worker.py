@@ -179,7 +179,7 @@ def evaluate(job, files, train_bytes, schema, plan):
             if result['exitCode'] != 0 or result['limit']:
                 raise ValueError('candidate execution failed')
             predictions = validate_predictions(result['outputs']['predictions.csv'], schema, validation)
-        except (ValueError, KeyError) as e:
+        except (ValueError, KeyError, UnicodeError, csv.Error) as e:
             status = 'candidate_failed'
             logs.append({'validationError': str(e)})
             break
@@ -287,7 +287,7 @@ def evaluate_tabular(job, files, train_bytes, schema, plan):
                 raise ValueError('candidate execution failed')
             predicted = scoring.predictions(result['outputs']['predictions.csv'], schema, validation)
             value = scoring.score(schema, by_id, predicted, validation)
-        except (ValueError, KeyError, OverflowError) as error:
+        except (ValueError, KeyError, OverflowError, UnicodeError, csv.Error) as error:
             status = 'candidate_failed'; logs.append({'validationError': str(error)}); break
         metrics.append({'fold': fold, 'rows': len(validation), 'score': value, 'utility': scoring.quality(schema['metric'], value)})
         oof.update(predicted)
@@ -324,7 +324,20 @@ def main():
     args = parser.parse_args()
     job = json.loads(regular(args.job))
     files = {name: regular(path) for name, path in job['files'].items()}
-    if job['operation'] == 'evaluate':
+    if job['operation'] == 'research':
+        import research_worker
+        try:
+            result = research_worker.research(sys.modules[__name__], job, files, input_csv(job['train']))
+        except (ValueError, KeyError, TypeError, csv.Error) as error:
+            result = {'status': 'candidate_failed', 'metric': job['prediction']['metric'], 'validationScore': None,
+                      'validationUtility': None, 'validationRows': 0, 'variants': [], 'formalVariantId': None,
+                      'predictionsPath': None, 'formalFit': None, 'fits': None, 'fitAttempts': None, 'fitCalls': None,
+                      'cpuSeconds': job['cpuSeconds'], 'wallSeconds': 0,
+                      'logs': [{'validationError': str(error), 'accounting': 'conservative reservation on interrupted search'}]}
+            if job['validationPlan'].get('protocol') == 'analysis-round-cv-plan@1':
+                result.update(cv=None, foldMetrics=[], meanScore=None, meanUtility=None, stdScore=None,
+                              pooledScore=None, pooledUtility=None, oofPath=None)
+    elif job['operation'] == 'evaluate':
         result = evaluate(job, files, input_csv(job['train']), job['prediction'], job['validationPlan'])
     else:
         inputs = {name: input_csv(path) if name.endswith('.csv') else regular(path) for name, path in job['inputs'].items()}
@@ -334,7 +347,15 @@ def main():
         elif job.get('prediction', {}).get('kind') == 'tabular':
             idc = job['prediction']['idColumn']
             inputs.update(public_assets(job, {r[idc] for r in read_csv(inputs['train.csv'])[1]}, {r[idc] for r in read_csv(inputs['predict.csv'])[1]}))
-        result = run_python(files, inputs, job['entrypoint'], job['argv'], job['wallSeconds'], job['cpuSeconds'])
+        if job.get('resolvedPipeline'):
+            import research_worker
+            result = research_worker.invoke(sys.modules[__name__], job, files, inputs, job['resolvedPipeline']['config'], job['cpuSeconds'], job['wallSeconds'])
+        else:
+            if job.get('analysisOnly'):
+                files['_gear_guard.py'] = Path(__file__).with_name('pipeline_runner.py').read_bytes()
+                files['_gear_analysis.py'] = ("import sklearn.ensemble,sklearn.linear_model,sklearn.pipeline,sklearn.compose,sklearn.preprocessing,sklearn.impute,sklearn.tree,sklearn.svm,sklearn.neighbors\nfrom _gear_guard import install_fit_guard\ninstall_fit_guard(0)\nimport runpy\nrunpy.run_path(" + repr('/work/source/' + job['entrypoint']) + ",run_name='__main__')\n").encode()
+                job['entrypoint'] = '_gear_analysis.py'
+            result = run_python(files, inputs, job['entrypoint'], job['argv'], job['wallSeconds'], job['cpuSeconds'])
         output_dir = Path(job['outputDirectory'])
         output_dir.mkdir(parents=True, exist_ok=True)
         outputs = result.pop('outputs')

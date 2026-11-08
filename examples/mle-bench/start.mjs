@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { cli, isMain } from './lib/common.mjs'
 import { json, atomicJson, optionalJson, Store } from './lib/store.mjs'
 import { researchConfig } from './lib/research-config.mjs'
+import { roundValidation, isRoundCvTask } from './lib/validation.mjs'
 import { assert, digest } from './lib/contracts.mjs'
 import { metrics, objective } from './lib/operation-provider.mjs'
 import { copyRegisteredTarget, carrierForTarget } from './lib/target-source.mjs'
@@ -45,6 +46,8 @@ export async function buildProject(directory, { metaProfile, checkpointRef, regi
   assert(Number.isSafeInteger(maxCandidates) && maxCandidates > 0, 'maxCandidates must be positive')
   if (registered.length === 2) assert(maxCandidates === 1, 'registered comparison has exactly one candidate')
   const cohort = join(directory, 'cohorts', digest({ checkpointRef, registered, stageId: stageId ?? null }).slice(7))
+  const validation = roundValidation(project.task, checkpoint.digest)
+  if (validation) await immutableJson(join(cohort, 'validation.json'), validation)
   const configuration = { project: directory, projectDigest: digest(project), checkpointRef, registered }
   const profile = { command: [process.execPath, fileURLToPath(new URL('./provider.mjs', import.meta.url))],
     workingDirectory: fileURLToPath(new URL('../../', import.meta.url)), configuration,
@@ -62,15 +65,17 @@ export async function buildProject(directory, { metaProfile, checkpointRef, regi
   const guidance = await readFile(new URL('./meta-task-context.txt', import.meta.url), 'utf8')
   const task = { id: project.task.taskId, family: project.task.taskFamilyId, split: 'seed', expected: 'sequence-receipt',
     instruction: `analysis-research-sequence@1\n${project.task.description}\nEach method receives ${research.maxExperiments} sequential experiment slots from checkpoint ${checkpoint.digest}. `
-      + 'Optimize prompts, skills and workflows/research/{policy.py,memory.py,policy.json}. Preserve the empty preset and fixed carrier. '
-      + 'The provider executes and scores the final selected source. All experiments use the same held-out validation set. Internal CV is an optional training choice. This is shared-set development evidence.\n\n' + guidance }
+      + 'Improve workflow.yaml, prompts, skills, workflows/research and tools/experiment. Preserve the empty preset and fixed carrier. '
+      + (validation ? 'All labeled rows participate in five shuffled folds shared by every experiment and both harnesses in this round. Compare the selected solution by mean CV utility, with no extra local test. '
+        : 'This frozen legacy project retains its original validation protocol. ')
+      + 'This is shared-set development evidence.\n\n' + guidance }
   const row = JSON.stringify(task) + '\n'
   try { await writeFile(join(cohort, 'tasks.jsonl'), row, { flag: 'wx' }) }
   catch (error) { if (error.code !== 'EEXIST') throw error; assert(await readFile(join(cohort, 'tasks.jsonl'), 'utf8') === row, 'frozen task changed') }
   return { cohort, config, project, store, checkpoint, registered, configuration,
     budgetPreview: { sequences: maxCandidates + 1, experimentsPerHarness: research.maxExperiments, researchRollouts: research.maxExperiments * (maxCandidates + 1),
-      validation: { mode: project.task.protocol === 'analysis-task@3' ? 'holdout' : 'legacy-cv', ...research.validation },
-      deliveries: maxCandidates + 1, repetitions: 1, sequenceWallSeconds: project.budget.wallSeconds,
+      validation: validation ? { mode: 'round_five_fold_cv', ...validation } : { mode: project.task.protocol === 'analysis-task@3' ? 'holdout' : 'legacy-cv', ...research.validation },
+      deliveries: validation ? 0 : maxCandidates + 1, repetitions: 1, sequenceWallSeconds: project.budget.wallSeconds,
       sequenceCpuSeconds: project.budget.cpuSeconds, experimentWallSeconds: project.budget.experimentWallSeconds,
       experimentCpuSeconds: project.budget.experimentCpuSeconds, model: project.modelAccounting } }
 }

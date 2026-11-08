@@ -2,7 +2,7 @@
 import { execFileSync } from 'node:child_process'
 import { access, readFile, realpath } from 'node:fs/promises'
 import { dirname, resolve, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { files, mutable, verifyHarness } from './integrity.mjs'
 
 export async function checkCandidate(repository, { checkManifest = false } = {}) {
@@ -37,8 +37,16 @@ export async function checkCandidate(repository, { checkManifest = false } = {})
     || typeof config.preferCurrentOnTie !== 'boolean') throw new Error('invalid research policy configuration')
   for (const name of await files(join(root, 'harness'))) if (name.endsWith('.md')
     && (await readFile(join(root, 'harness', name))).length > 32768) throw new Error('guidance exceeds limit')
+  const workflow = JSON.parse(await readFile(join(root, 'harness/workflow.yaml'), 'utf8'))
+  const { validateWorkflow } = await import(pathToFileURL(join(root, 'fixed/lib/workflow.mjs'))); validateWorkflow(workflow)
+  for (const stage of workflow.stages) if ((await readFile(join(root, 'harness', stage.prompt))).length > 4096) throw new Error('stage guidance exceeds 4 KiB')
+  for (const name of ['meta', 'target']) if ((await readFile(join(root, 'harness/prompts', name+'.md'))).length > 4096) throw new Error('main prompt exceeds 4 KiB')
+  const api = JSON.parse(await readFile(join(root, 'harness/tools/experiment/interface.json'), 'utf8'))
+  if (api.version !== 1 || api.actions.join(',') !== 'search,get,compare,record,run,select') throw new Error('incompatible tool interface')
+  for (const path of await files(join(root, 'harness/tools/experiment'))) if (path.endsWith('.py'))
+    execFileSync('python3', ['-c', 'import ast,sys; ast.parse(sys.stdin.read())'], { input: await readFile(join(root, 'harness/tools/experiment', path)), timeout: 10000 })
   if (checkManifest) await verifyHarness(root)
-  return { ok: true, mutationRoot: 'prompts,skills,workflows/research', runtime: 'not_checked' }
+  return { ok: true, mutationRoot: 'workflow.yaml,prompts,skills,workflows/research,tools/experiment', runtime: 'not_checked' }
 }
 
 if (process.argv[1] && await realpath(process.argv[1]).catch(() => null) === fileURLToPath(import.meta.url)) {

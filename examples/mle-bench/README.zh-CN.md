@@ -1,8 +1,8 @@
 # MLE-bench 适配
 
-本示例将 MLE-bench 的任务定义和 prepared 数据接入 Gear Project API。Gear 使用 Python GEPA 比较和晋升研究方法，Hitch 负责隔离执行、独立评分和输出取证。导入、执行、评分、导出及测试均位于本目录。
+本示例将 MLE-bench 的任务定义和 prepared 数据接入 Gear Project API。Gear 使用 Python GEPA 比较和晋升研究方法，Hitch 负责隔离执行、固定评分和输出取证。导入、执行、评分、导出及测试均位于本目录。
 
-每个候选方法从同一 checkpoint 开始，按统一配置进行顺序实验。准备阶段从公开 train 留出一份固定验证集，所有方法、所有实验都在这份验证集上比较；Target 自行决定训练时是否使用内部 CV、调参或直接拟合。最后固定执行最后一个实验槽选择的解法，实际交付分数用于方法比较；这是共享数据集研究，不能解释为独立测试集上的泛化结果。
+每个候选方法从同一 checkpoint 开始，按统一配置进行顺序实验。新项目对全部训练行使用打乱的 5-fold CV，同一轮新旧 harness、全部实验及候选共用同一划分；合并后的下一轮重新划分，恢复运行不会重抽。按最终槽所选方案的 CV 平均 utility 比较方法，不追加本地 val/test 评分。这是开发选择证据，不等于独立测试或 Kaggle 官方成绩。
 
 本次对齐固定上游 commit `507f92e1138bb6e40dac5c6ee7a6758e6424bf97`。[上游说明](https://github.com/openai/mle-bench/blob/507f92e1138bb6e40dac5c6ee7a6758e6424bf97/README.md)和实际 Python 源码是格式依据。实现覆盖下面三个明确注册的表格任务；新增 grader 要补充固定评分适配和与上游的一致性测试，未知 grader 会在导入时拒绝。
 
@@ -50,7 +50,7 @@ data-root/<id>/
 
 `config.yaml` 使用原生字段 `id/name/competition_type/description/dataset/grader/preparer`。`description` 相对源码仓库；`dataset` 下的路径相对 data-root；Python 入口沿用 `module:function`。私有 test 可以含特征列，Gear 只将 ID 和目标列复制到 verifier 的 `expected.csv`。完整私有表、grader 与宿主路径不进入研究 checkpoint。
 
-导入保留公开 CSV 的原始字节与行序；读取 sample_submission 推导 ID、目标列和导出顺序。在公开 train 上冻结研究训练集与验证集，不再次划分外层 test。分类任务按标签分层；默认留出比例为 0.2、seed 为 42。数据检查和正式评估都只向生成代码提供训练子集的标签及验证集的特征。NOMAD 只挂载本次训练资产，验证行的资产由 `train/<id>/` 映射成 `test/<id>/`，原外层 test 资产不进入研究执行。生成模型仍使用统一 CLI：`--train --predict --output --seed`；调用参数由适配器传入。附属目录相对输入 CSV 所在目录解析。
+导入保留公开 CSV 的原始字节与行序；读取 sample_submission 推导 ID、目标列和导出顺序。全部公开 train 行参与五折，分类使用分层划分。学习型变换放入 `build_pipeline(config)` 返回的 Pipeline，每折仅用该折训练标签拟合。NOMAD 每折只挂载对应资产，验证行资产由 `train/<id>/` 映射成 `test/<id>/`，外层 test 资产不进入训练。记录保存逐行折号、OOF 预测、五折分数、均值和标准差。模型种子与本轮划分种子独立。
 
 输入身份包含定义文件、grader 及共享 helper 的 SHA-256、全部公开文件的递归 SHA-256、CSV 字节摘要、留出划分和 runtime。官方 prepared 数据先核对上游 MD5 checksums；未被上游 checksums 列出的几何文件仍被本次导入的 SHA-256 冻结。改变数据、grader 或运行条件需要新项目，不能续用原 checkpoint。
 
@@ -126,10 +126,10 @@ node examples/mle-bench/mlebench.mjs prepare-local \
 准备时可通过 `--research-config /absolute/research-config.json` 传入统一配置，例如：
 
 ```json
-{"maxExperiments": 7, "validation": {"fraction": 0.2, "seed": 42}}
+{"maxExperiments": 7, "validation": {"folds": 5, "shuffle": true, "scope": "round", "seed": 42}}
 ```
 
-不传时使用 `lib/research-config.mjs` 中的默认值。配置随项目和序列身份冻结，所有比较分支共用相同的留出划分。改变实验数、比例或 seed 需要新项目。`task_inspect.experiments` 动态提供 `current`、`total`、`remaining`（不含当前槽）和 `includingCurrent`；`task_inspect.validation` 提供划分摘要及训练/验证行数；`task_inspect.training` 提供受剩余总预算约束的单次训练墙钟和 CPU 上限。可编辑 prompt 不写死实验次数、训练时长，也不规定 CV 折数。
+不传时使用 `lib/research-config.mjs` 中的默认值。实验数和预算随项目冻结，同轮分支共用相同起点和五折划分。`task_inspect.experiments` 动态提供当前槽和剩余次数；`task_inspect.validation` 提供本轮策略；`task_inspect.training` 提供受剩余总预算约束的训练墙钟和 CPU 上限。五折、打乱和整轮共享由固定执行层强制，Target 不能改变。历史项目可读取原 fraction 配置，新项目只能登记 round CV。
 
 最终无模型交付会用完整公开 train（包括研究验证行）重训已选源码，并在原 MLE-bench public/test 上预测；原 private 答案仅用于外部 verifier。
 
@@ -150,7 +150,7 @@ node examples/mle-bench/start.mjs --project /absolute/research-project \
 
 序列预算按实验数 N 派生：墙钟为 `N × (1800 + 300) + 1800` 秒，CPU 为 `N × (3600 + 60) + 3600` 秒。每个实验另计 5 分钟墙钟、60 CPU 秒的分析与编排余量，最终交付预留 30 分钟墙钟、3600 CPU 秒。默认 N=5 时，总墙钟为 12300 秒（3 小时 25 分钟），总 CPU 为 21900 秒；工具调用仍为 150 次。bootstrap、独立重训和审计也从已登记预算取得训练时限，Hitch 的固定重训执行器支持相同的 30 分钟上限。项目保留最多 12 条研究序列，总墙钟/CPU 上限按序列预算的 12 倍计算，辅助操作也计入其中。模型 token/请求只记录 usage，不设置硬上限；缺失 usage 或内部重试无法核实时，成本只表示下界。新预算在准备新项目时冻结，已登记项目的预算不会被续跑命令改写。
 
-新记录 `analysis-task@3` / `analysis-experiment@3` 分开记录 `metric`、`validationScore`、`validationUtility`、`validationRows` 和预测产物摘要。accuracy/AUC 的 utility 等于原分数；RMSLE 使用 `1/(1+score)`。固定评分器用统一验证集的完整预测计算指标，训练脚本打印的分数与内部 CV 结果不作为正式评分。旧 V1/V2 五折证据仍可读取；新留出协议需要新项目，不能改写旧记录。晋升仍使用最终交付的 utility，要求输出有效；审计不能改写各槽选择。
+新记录使用 `analysis-task@5`（MLE-bench）或 `analysis-task@6`（Titanic/直接 CSV），实验使用 `analysis-experiment@5`。正式选择记录 `meanScore`、`meanUtility`、`stdScore`、`foldMetrics` 和 OOF 摘要。accuracy/AUC 的 utility 等于原分数；RMSLE 先对每折做 `1/(1+score)` 再求均值。序列结束认证已封存的 CV 结果，不新增拟合。历史协议保持可读，不把旧留出分数或不同轮次的 CV 分数直接排名。
 
 验证预测通过内容寻址保留全部 ID 与预测值。大表使用确定性的 gzip JSON，单个压缩产物限 16 MiB、解压限 64 MiB；读端兼容此前的普通 JSON，按页向模型提供记录。80 万行概率 OOF 已验证无损往返，不靠截断记录来满足产物上限。
 
@@ -196,7 +196,15 @@ node examples/mle-bench/research.mjs merge --project /absolute/research-project 
 
 [Checkpoint 示例](fixtures/checkpoint-holdout.example.json) 展示四条实验记录：基线、分数下降而未采用的改动、训练超时失败、修复后采用的新解法。该文件通过当前 schema 和摘要校验，但所有分数与产物引用都是示意数据，没有对应的真实 Hitch 执行，不能作为可导入的执行证据。
 
-Checkpoint 的 `history` 追加保存本分支及已合并祖先中的每条已封存实验，包括 `claim.hypothesis`、`intendedChange`、执行状态、验证指标和 `interpretation`；不会因为失败或未被选中而删除。源码清单在 `solutions`，当前解法由 `currentSolutionDigest` 指向，源码和预测的实际字节以内容摘要另存。默认 `memory.py` 只向 Target 摘要最近 30 条，完整历史仍可经 `experiment_inspect` 分页读取。它并非所有想法的日志：没有正式登记的备选假设、内部 CV 的每个子试验不会自动成为独立记录；若代码生成在调用评估/复用前失败，假设字段也可能为空。外部测试分数和私有标签不进入 checkpoint。
+Checkpoint 的 `history` 保存全部已封存实验及合并分支，包括失败、负结果和未晋升方法。记录涵盖假设、阶段证据、候选配置、实际参数、逐折结果、成本和解释。`experiment` 统一提供 `search/get/compare/record/run/select`，完整授权历史可以分页读取，旧记录缺失的信息保持 unknown。公共 current solution 指向采用分支的最终选择，源码、OOF 和分析产物按内容摘要保存。官方成绩不导入 Target checkpoint。
+
+## Titanic 全量 CV 与分析工作流
+
+Titanic 使用官方 train.csv 的全部 891 行，不保留 178 行本地 test 或额外 val。准备时传入 `--competition titanic --train /absolute/train.csv --predict /absolute/test.csv`，无需 MLE-bench repository/data 参数；也接受成对 deployment 输入作为兼容入口。每折验证行数为 179/178/178/178/178，每行恰好验证一次。官方 418 行无标签 test 不参与评分，最终用选定配置在 891 行上拟合一次并生成 submission.csv。
+
+Target 按需完成任务理解、EDA、验证设计、数据处理、特征工程、模型比较、调参、错误分析和交付。Meta 依据可观察的执行证据改进 workflow.yaml、短英文提示词、技能与实验记录工具。N 个候选至少预留 N×5+1 次拟合；实验执行五折，最后一次留给最终 refit，禁止重新搜索。
+
+`tests/test_workflow_runtime.py` 使用带 pandas/sklearn 的 Python；`tests/workflow-canary.py` 在固定 Linux 镜像验证隔离执行、十次 CV 拟合、无额外留出拟合以及一次冻结配置 refit。这些检查不产生新的 Kaggle 成绩。
 
 ## 验证与运行边界
 

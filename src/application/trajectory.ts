@@ -47,47 +47,50 @@ export class SeedTrajectoryArchive {
       if (!candidates.includes(cell.candidate_id) || !tasks.includes(cell.task_id)) continue
       const source = this.sources.get(slot(cell))
       if (!source || outcome(source.cell) !== outcome(cell)) continue
-      const artifact = source.operation.receipt!.artifacts?.find(
+      const artifacts = source.operation.receipt!.artifacts?.filter(
         (item) =>
           item.kind === 'trajectory' &&
           item.format === descriptor.format &&
           item.task_id === cell.task_id &&
           item.repetition === cell.repetition,
       )
-      if (!artifact) continue
-      const cached = this.saved.get(slot(cell))
-      if (cached) {
-        output.push(cached)
-        continue
+      if (!artifacts) continue
+      for (const artifact of artifacts) {
+        const key = canonicalDigest([slot(cell), artifact])
+        const cached = this.saved.get(key)
+        if (cached) {
+          if (!output.some(item => item.ref === cached.ref)) output.push(cached)
+          continue
+        }
+        let receiptDigest = this.receiptDigests.get(source.operation)
+        if (!receiptDigest) {
+          receiptDigest = canonicalDigest(source.operation.receipt)
+          this.receiptDigests.set(source.operation, receiptDigest)
+        }
+        const binding = await this.store.save({
+          version: 1,
+          run_id: this.journal.id,
+          candidate_id: cell.candidate_id,
+          operation_id: source.operation.request.operationId,
+          origin_run_id: source.operation.request.runId,
+          origin_candidate_id: source.operation.request.operation.candidate_id!,
+          receipt_digest: receiptDigest,
+          reader_identity: canonicalDigest(descriptor),
+          partition: 'seed',
+          artifact,
+        })
+        const reference: TrajectoryReference = {
+          ref: 'trajectory:' + binding.digest.slice(7),
+          candidate_id: cell.candidate_id,
+          task_id: cell.task_id,
+          repetition: cell.repetition,
+          status: artifact.status,
+          content_digest: artifact.content_digest,
+          reason: artifact.reason,
+        }
+        output.push(reference)
+        this.saved.set(key, reference)
       }
-      let receiptDigest = this.receiptDigests.get(source.operation)
-      if (!receiptDigest) {
-        receiptDigest = canonicalDigest(source.operation.receipt)
-        this.receiptDigests.set(source.operation, receiptDigest)
-      }
-      const binding = await this.store.save({
-        version: 1,
-        run_id: this.journal.id,
-        candidate_id: cell.candidate_id,
-        operation_id: source.operation.request.operationId,
-        origin_run_id: source.operation.request.runId,
-        origin_candidate_id: source.operation.request.operation.candidate_id!,
-        receipt_digest: receiptDigest,
-        reader_identity: canonicalDigest(descriptor),
-        partition: 'seed',
-        artifact,
-      })
-      const reference: TrajectoryReference = {
-        ref: 'trajectory:' + binding.digest.slice(7),
-        candidate_id: cell.candidate_id,
-        task_id: cell.task_id,
-        repetition: cell.repetition,
-        status: artifact.status,
-        content_digest: artifact.content_digest,
-        reason: artifact.reason,
-      }
-      output.push(reference)
-      this.saved.set(slot(cell), reference)
     }
     return output
   }

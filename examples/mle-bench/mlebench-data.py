@@ -1,4 +1,4 @@
-"""Freeze one research train/validation split; never re-split the benchmark test."""
+"""Prepare all training rows for round CV; preserve explicit legacy holdout imports."""
 import argparse
 import csv
 import hashlib
@@ -72,14 +72,25 @@ def prepare(metadata, out):
     if metric == 'auc-roc' and labels != ['0', '1']:
         raise ValueError('the pinned AUC profile expects 0/1 labels')
     validation = metadata['validation']
-    rng, assignments = random.Random(validation['seed']), [0] * len(train_ids)
-    for indices in groups.values() if groups else [list(range(len(train_ids)))]:
-        if len(indices) < 2:
-            raise ValueError('at least two visible rows per stratum required')
-        rng.shuffle(indices)
-        count = max(1, min(len(indices) - 1, math.floor(len(indices) * validation['fraction'] + .5)))
-        for index in indices[:count]:
-            assignments[index] = 1
+    if 'fraction' in validation:
+        rng, assignments = random.Random(validation['seed']), [0] * len(train_ids)
+        for indices in groups.values() if groups else [list(range(len(train_ids)))]:
+            if len(indices) < 2:
+                raise ValueError('at least two visible rows per stratum required')
+            rng.shuffle(indices)
+            count = max(1, min(len(indices) - 1, math.floor(len(indices) * validation['fraction'] + .5)))
+            for index in indices[:count]:
+                assignments[index] = 1
+        plan = {'protocol': 'analysis-holdout-plan@1', 'seed': validation['seed'], 'metric': metric,
+                'trainDigest': metadata['trainDigest'], 'validationFraction': validation['fraction'], 'assignments': assignments}
+    else:
+        if validation.get('folds') != 5 or validation.get('shuffle') is not True or validation.get('scope') != 'round':
+            raise ValueError('new research requires five shuffled round folds')
+        if any(len(indices) < 5 for indices in groups.values()) or len(train_ids) < 5:
+            raise ValueError('at least five rows per CV stratum required')
+        plan = {'protocol': 'analysis-round-cv-policy@1', 'seed': validation['seed'], 'metric': metric,
+                'trainDigest': metadata['trainDigest'], 'folds': 5, 'shuffle': True, 'scope': 'round',
+                'splitter': 'python-random-stratified-round-robin@1'}
     prediction = {'kind': 'tabular', 'idColumn': idc, 'targetColumns': targets, 'metric': metric, 'labels': labels}
     # Private answers stay in the verifier-only directory. Extra feature columns
     # in the native MLE-bench private/test.csv are not exposed to Target.
@@ -88,8 +99,6 @@ def prepare(metadata, out):
         writer = csv.DictWriter(stream, fieldnames=[idc, *targets], lineterminator='\n'); writer.writeheader()
         for _, row in records(answers):
             writer.writerow({k: row[k] for k in [idc, *targets]})
-    plan = {'protocol': 'analysis-holdout-plan@1', 'seed': validation['seed'], 'metric': metric,
-        'trainDigest': metadata['trainDigest'], 'validationFraction': validation['fraction'], 'assignments': assignments}
     (out / 'validation.json').write_text(json.dumps(plan))
     result = {'prediction': prediction, 'predictIds': sample_ids, 'refitIds': sample_ids,
         'rows': {'train': len(train_ids), 'predict': len(query_ids), 'refitTrain': len(train_ids), 'refitPredict': len(query_ids)}}

@@ -5,6 +5,8 @@ import { canonicalDigest } from '../../domain/canonical.js'
 import { GearError } from '../../domain/errors.js'
 import { validateAlgorithmWire } from '../../domain/algorithm-schema.js'
 import type { Json } from '../../domain/algorithm-wire.js'
+import type { ArtifactReaderDescriptor } from '../../domain/trajectory.js'
+import { artifactReader } from '../artifacts/reader.js'
 import type {
   OperationInspection,
   OperationProvider,
@@ -61,6 +63,7 @@ export class ProcessOperationProvider implements OperationProvider {
     readonly context: Json,
     readonly implementationIdentity: string | null = null,
     private readonly admission = false,
+    readonly artifactReader?: ArtifactReaderDescriptor,
   ) {}
   static async connect(
     profile: OperationProfile,
@@ -81,6 +84,7 @@ export class ProcessOperationProvider implements OperationProvider {
       identity: string
       capabilities: ProviderCapabilities
       admission?: boolean
+      artifactReader?: ArtifactReaderDescriptor
     }
     if (reply.version !== 1 || !/^sha256:[0-9a-f]{64}$/u.test(reply.identity))
       throw new GearError(
@@ -89,6 +93,7 @@ export class ProcessOperationProvider implements OperationProvider {
       )
     if (reply.admission !== undefined && typeof reply.admission !== 'boolean')
       throw new GearError('provider-handshake-invalid', 'Invalid admission capability')
+    if (reply.artifactReader !== undefined) artifactReader(reply.artifactReader)
     for (const key of [
       'seeds',
       'temperature',
@@ -110,6 +115,7 @@ export class ProcessOperationProvider implements OperationProvider {
         implementation: reply.identity,
         capabilities: reply.capabilities,
         admission: reply.admission ?? false,
+        ...(reply.artifactReader ? { artifactReader: reply.artifactReader } : {}),
         config: profile.configuration,
         command: profile.command,
         cwd: profile.workingDirectory,
@@ -120,6 +126,7 @@ export class ProcessOperationProvider implements OperationProvider {
       context,
       reply.identity,
       reply.admission ?? false,
+      reply.artifactReader,
     )
   }
   async prepareAdmission(): Promise<void> {

@@ -8,6 +8,7 @@ import { ResearchProject } from './lib/project.mjs'
 import { assert, seal, digest, advance, researchOverhead } from './lib/contracts.mjs'
 import { sequencePlan, SequenceRunner, validateRollout } from './lib/sequence.mjs'
 import { withinDeadline } from './lib/deadline.mjs'
+import { roundValidation } from './lib/validation.mjs'
 
 export async function bootstrapCheckpoint(store, backend, project, { signal } = {}) {
   const key = `${project.projectId}-bootstrap`, existing = await store.load('bootstraps', key)
@@ -26,6 +27,7 @@ export async function bootstrapCheckpoint(store, backend, project, { signal } = 
   const request = existing?.request ?? seal({ protocol: 'analysis-rollout-request@2', maxExperiments: 1, sequenceId: plan.digest.slice(7), slotIndex: 1,
     planDigest: plan.digest, task: project.task, harness: project.harness, model: project.model, runtimeDigest: project.task.runtimeDigest,
     checkpointDigest: initial.digest, checkpointRef: project.checkpointRef, previousRolloutReceiptDigest: null, eligibleSolutionDigests: [],
+    ...(roundValidation(project.task, initial.digest) ? { roundValidation: roundValidation(project.task, initial.digest) } : {}),
     allowance: { wallSeconds: plan.wallSeconds, cpuSeconds: plan.cpuSeconds, tools: 30, tokens: null, requests: null },
     experimentWallSeconds: project.budget.experimentWallSeconds, experimentCpuSeconds: project.budget.experimentCpuSeconds })
   const controller = new ResearchProject(store, project)

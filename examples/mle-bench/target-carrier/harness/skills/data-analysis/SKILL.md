@@ -1,21 +1,17 @@
-# Tabular research
+# Data analysis pipeline contract
 
-Inspect schema, class balance, missingness, duplicates and group/time structure.
-Form a hypothesis before modifying a solution. Use the locked validation plan,
-and compare fixed-scorer results on the shared held-out validation set.
-Check leakage and train/query feature differences. Preprocessing that learns any
-statistics must fit on the supplied training rows. You may use internal CV or
-tuning within those rows, or train directly; validation labels are not available.
-Record both negative and
-positive findings. Preserve previous working source when a new experiment fails.
+`experiment(action="run", plan=...)` accepts an explicit list of variants. Build a bounded model/parameter search and include a baseline when useful. A variant declares inputSchema, preprocessing, features, model, hyperparameters, prediction and seed. The plan declares version:1, entrypoint, variants, validation:{kind,folds:5,shuffle:true,seed}, selection:"best_mean_utility", seed, maxFits and refitReserve:1. Copy validation kind and split seed from task_inspect. The top-level seed and variant seeds control models, separately from the runtime's split seed.
 
-For MLE-bench tasks, honor prediction.metric and all targetColumns. AUC needs
-probabilities, not thresholded labels. Mean-column-wise RMSLE needs nonnegative
-predictions for each target; lower raw RMSLE is better. The selection policy
-compares validationUtility. Training diagnostics do not replace the fixed score.
-Public row assets are relative to the directory containing --train: train/<id>/
-and test/<id>/. The driver remaps held-out validation-row assets to test/<id>/
-and hides the original query assets during research. IDs can overlap across splits.
-Handle absent, empty and missing values in every supplied feature consistently.
-Inspect visible train/query missingness before choosing preprocessing; never use
-query labels or fit feature statistics on query rows. Use --seed deterministically.
+Write a Python factory `build_pipeline(config)` returning an unfitted estimator with fit/predict (and predict_proba when requested). Put learned preprocessing/features in its sklearn Pipeline. The runtime clones and fits it inside each training fold; do not fit, search, read data files or select a configuration inside the factory. Return the same unfitted construction for the same config. Config is the concrete choice, not a search space. The runtime records get_params before/after fit, actual calls, predictions and cost. Custom transformers belong in the source closure. All code and dependencies are frozen by source and runtime digests.
+
+The runtime fixes five shuffled folds on all labeled training rows for the entire round. Both harnesses, all experiments and all variants share these folds. A new round gets a new seed; recovery keeps the original seed. Do not replace the split, choose group/time validation or reserve a separate validation/test subset. Diagnose dependence and leakage as limitations of the fixed protocol. Prediction is {kind:"label"}, {kind:"probability",positiveLabel:1,threshold:0.5}, or {kind:"regression"}. Probability without threshold produces probabilities; with threshold it produces labels.
+
+Select by mean utility across the five folds; inspect fold scores, standard deviation and OOF predictions. There is no extra holdout fit or local test score. For N variants reserve at least N*5+1 fits, including one final-refit reserve. `select` must name the evaluated resolved variant or a compatible current-round incumbent. Previous-round scores remain searchable but cannot rank/select a source until it is re-evaluated on this round's folds. CV used for model selection is development evidence, not an independent generalization estimate or a Kaggle score. Final refit fits the frozen choice once on all training rows and predicts the official unlabeled test; it never searches. EDA uses analysis_execute with fits disabled; train through experiment.run.
+
+Use experiment.record for notes and stage state; workspace artifacts are sealed automatically. Use task_inspect(stage=...,resource=...) for one stage or this skill, and experiment.get for full paged evidence. Notes do not set scores.
+
+To persist a stage, call the `experiment` tool with this argument shape:
+```json
+{"action":"record","stage":{"stage":"eda","status":"completed","artifacts":["<digest returned by analysis_execute>"],"conclusion":"<findings and their modeling implications>"}}
+```
+Valid statuses are not_started, running, completed, reused, skipped and failed. Use real, visible artifact digests from analysis_execute, experiment.run or experiment.get; completed/reused require evidence. EDA completion needs successful analysis output, not just code or a note. For reused/skipped/failed, include a reason. Optional inputs records stage-specific versions. For reuse, keep the selected stageState's inputs and artifacts unchanged. Changing inputs/evidence invalidates dependent stages. The record response returns the persisted workflow; rollout_finish seals it into the experiment for the next checkpoint. Notes alone do not change stage status.

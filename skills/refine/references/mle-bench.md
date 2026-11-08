@@ -1,43 +1,13 @@
-# MLE-bench adapter
+# MLE-bench Data Analyst workflow
 
-The candidate is a general research method. The Target writes its own Python
-solution during execution. Edit only the declared prompts, skills, research
-policy and memory code; never install a task-specific solution in the harness.
+Optimize the Target's ability to understand data, design reliable experiments and deliver reproducible pipelines. Use prompts/meta.md as the role prompt, workflow.yaml as the workflow and prompts/stages for short on-demand guidance.
 
-One rollout is one experiment. One Gear cell contains a configured number of sequential
-rollouts, one repetition, and an additional fixed, zero-model final execution.
-The runtime exposes the total and remaining experiment budget through task_inspect.
-All experiments share a held-out validation set frozen during preparation. Target
-may train directly or use internal CV and tuning on its supplied training subset. Failure, debugging, confirmation and reuse
-each consume their registered slot. Do not add independent repeated sequences.
+The adapter runs through Gear Project operations. Inspect authorized operation evidence, Target artifacts and experiment records. Bind observations to run IDs, receipt digests and artifact paths; retrieve source trajectories through the public Hitch APIs when available. Missing evidence is unknown. Private reasoning is not needed.
 
-Compare candidates only at the same starting checkpoint and incremental budget.
-Read the ordered experiment facts, failed attempts, hypotheses, selection policy
-trace and actual slot selections. Propose one measurable general mechanism. Explain
-which next action or choice should change and under which conditions it should
-not change. Check new instructions are actually loaded, rather than merely added.
+Editable resources: workflow.yaml, prompts/**/*.md, skills/**/*.md, workflows/research/{policy.py,memory.py,policy.json}, tools/experiment/**/*.py|json|md. The fixed carrier checks and seals these files. Plugins may version/rebuild caches, order and render records, but cannot alter original execution facts. Metrics, permissions, budgets and the execution kernel remain fixed.
 
-The main score is the actual final delivery. The shared validation metric is internal
-feedback, not external generalization. A higher audited V or curve cannot rescue
-a failed delivery, choose a different submission or justify retroactive selections.
-Audit metrics and their missing coverage are diagnostic. External scores,
-promotion decisions and post-score explanations must not enter Target memory.
+The workflow covers task understanding, EDA, validation, processing, features, model comparison, tuning, errors and delivery. Reuse compatible artifacts; revisit stages when evidence warrants. New tasks use all labeled rows in five shuffled folds shared by both harnesses and all experiments in a round. Select by mean fold utility. Previous-round scores are searchable but require current-round re-evaluation before ranking. Preserve explicit legacy projects' frozen protocols.
 
-For single-task development, reuse-seed promotion is explicitly shared research;
-there is no independent promotion test. Changing the public checkpoint creates
-a new cohort and requires a fresh baseline. Rejected branches and failed
-experiments remain in the stage's declared merge and total project cost.
+One rollout is one logical experiment, with trial/component fits recorded separately. Read the admitted experiment count from task_inspect; paired comparisons consume both branches. The final slot's selected solution supplies the development score; final submission refits its frozen configuration once, without search. CV is not an independent test or official Kaggle score. Rejected branches and negative results remain in the shared checkpoint.
 
-Model usage-only profiles have no hard token/request cap. Their measured usage
-is a lower bound when provider retries or missing usage cannot be verified;
-unknown monetary cost is not zero. CPU, time, tools and the admitted experiment slots
-remain separate constraints. Do not describe an observational profile as a
-hard model budget.
-
-New Kaggle tasks use MLE-bench definitions and prepared public/private trees.
-Keep raw metric and selection utility separate: accuracy/AUC use identity;
-mean-column-wise RMSLE uses 1/(1+score), with lower raw error preferred.
-The immutable grader computes metrics from the full held-out predictions. Preserve all
-target columns and public assets, and use the sample/test ID order for exports.
-Never merge benchmark-private answers into research training. Official Kaggle
-deployment inputs are a separately registered, zero-model refit scope.
+Propose a short card: capability gap, observable evidence, workflow/tool/skill change, expected behavior and verification. Simplification is valid. Keep model usage uncertainty explicit, and do not add bootstrap samples or retries outside the registered budget. Preserve all target columns/assets and final sample/test ID order. Never merge benchmark-private labels into research training.

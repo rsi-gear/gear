@@ -75,18 +75,22 @@ test('task_inspect exposes admitted experiment budget and the fixed holdout; pro
   await mkdir(module, { recursive: true })
   await writeFile(join(module, 'package.json'), JSON.stringify({ type: 'module', exports: './index.js' }))
   await writeFile(join(module, 'index.js'), 'export const defineTool = value => value\n')
-  Driver.prototype.initialize = async function () { Object.assign(this, driver) }
+  Driver.prototype.initialize = async function () {
+    Object.assign(this, driver)
+    this.workflowConfig = JSON.parse(await readFile(join(carrier.targetRepository, 'harness/workflow.yaml'), 'utf8'))
+  }
   const { apply } = await import(pathToFileURL(join(carrier.targetRepository, 'fixed/target-loader.js')))
   const registered = new Map()
   await apply({ on() {}, provide() {}, systemPrompt: { section() {} },
     tools: { guard() {}, register(tool) { registered.set(tool.name, tool) } } }, { repositoryRoot: carrier.targetRepository })
   assert.ok(registered.get('experiment_evaluate').timeoutMs > 1800 * 1000)
+  assert.ok(registered.get('experiment').timeoutMs > 1800 * 1000)
   assert.equal(registered.get('analysis_execute').timeoutMs, 300000)
 })
 
 test('research configuration rejects ambiguous or invalid budgets and validation splits', () => {
   for (const value of [{ maxExperiments: 0 }, { maxExperiments: 1.5 }, { validation: { fraction: 1 } },
-    { validation: { fraction: 0 } }, { validation: { folds: 5 } }, { validation: { seed: -1 } }])
+    { validation: { fraction: 0 } }, { validation: { folds: 3 } }, { validation: { seed: -1 } }])
     assert.throws(() => researchConfig(value))
 })
 

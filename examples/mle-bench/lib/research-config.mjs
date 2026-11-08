@@ -1,21 +1,29 @@
 /** Admission settings, never editable harness resources. */
 export const defaultResearchConfig = Object.freeze({
   maxExperiments: 5,
-  validation: Object.freeze({ fraction: 0.2, seed: 42 }),
+  validation: Object.freeze({ folds: 5, shuffle: true, scope: 'round', seed: 42 }),
 })
 
 export function researchConfig(value = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
     || Object.keys(value).some(k => !['maxExperiments', 'validation'].includes(k))) throw new Error('invalid research configuration')
   const supplied = value.validation ?? {}
+  if (supplied && Object.hasOwn(supplied, 'fraction')) {
+    if (Object.keys(supplied).some(k => !['fraction', 'seed'].includes(k))
+      || typeof supplied.fraction !== 'number' || supplied.fraction <= 0 || supplied.fraction >= 1
+      || !Number.isFinite(supplied.fraction)) throw new Error('invalid legacy validation fraction')
+    const maxExperiments = value.maxExperiments ?? defaultResearchConfig.maxExperiments, seed = supplied.seed ?? 42
+    if (!Number.isSafeInteger(maxExperiments) || maxExperiments < 1 || !Number.isSafeInteger(seed) || seed < 0) throw new Error('invalid research budget or seed')
+    return { maxExperiments, validation: { fraction: supplied.fraction, seed } }
+  }
   if (!supplied || typeof supplied !== 'object' || Array.isArray(supplied)
-    || Object.keys(supplied).some(k => !['fraction', 'seed'].includes(k))) throw new Error('invalid validation configuration')
+    || Object.keys(supplied).some(k => !['folds', 'shuffle', 'scope', 'seed'].includes(k))) throw new Error('invalid validation configuration')
   const result = { maxExperiments: value.maxExperiments ?? defaultResearchConfig.maxExperiments,
     validation: { ...defaultResearchConfig.validation, ...supplied } }
   if (!Number.isSafeInteger(result.maxExperiments) || result.maxExperiments < 1) throw new Error('maxExperiments must be a positive integer')
-  const { fraction, seed } = result.validation
-  if (typeof fraction !== 'number' || !Number.isFinite(fraction) || fraction <= 0 || fraction >= 1
-    || !Number.isSafeInteger(seed) || seed < 0) throw new Error('invalid validation fraction or seed')
+  const { folds, shuffle, scope, seed } = result.validation
+  if (folds !== 5 || shuffle !== true || scope !== 'round'
+    || !Number.isSafeInteger(seed) || seed < 0) throw new Error('validation requires shuffled five-fold CV shared by the round')
   return result
 }
 

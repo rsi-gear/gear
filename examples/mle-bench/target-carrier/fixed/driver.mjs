@@ -1,3 +1,5 @@
+import { initializeAnalysis, inspectAnalysis, experimentTool } from './experiment.mjs'
+import { stageUpdateInstructions } from './lib/workflow.mjs'
 import { spawn } from 'node:child_process'
 import { mkdir, readFile, writeFile, readdir, lstat } from 'node:fs/promises'
 import { decodeOof } from './oof.mjs'
@@ -10,6 +12,7 @@ import { validateRequest } from './lib/schemas.mjs'
 import { verifyHarness } from './integrity.mjs'
 import { internalScore, internalQuality, predictionsDigest } from './lib/metrics.mjs'
 import { experimentBudget } from './lib/research-config.mjs'
+import { isRoundCvTask, validateRoundValidation, requestValidationDigest, experimentValidationDigest } from './lib/validation.mjs'
 
 export class Driver {
   constructor(repository, { data = '/data', output = '/output', work = '/run/analysis' } = {}) {
@@ -20,15 +23,17 @@ export class Driver {
     this.request = validateRequest(verify(JSON.parse(await readFile(join(this.data, 'request.json'), 'utf8'))))
     this.checkpoint = validateCheckpoint(JSON.parse(await readFile(join(this.data, 'checkpoint.json'), 'utf8')))
     this.plan = JSON.parse(await readFile(join(this.data, 'validation.json'), 'utf8'))
-    this.holdout = this.request.task.protocol === 'analysis-task@3'
+    this.holdout = ['analysis-task@3', 'analysis-task@4'].includes(this.request.task.protocol)
+    this.roundCv = isRoundCvTask(this.request.task)
+    if (this.roundCv) validateRoundValidation(this.plan, this.request.task)
     assert(!this.holdout || this.plan.protocol === 'analysis-holdout-plan@1', 'holdout validation plan required')
-    assert(digest(this.plan) === this.request.task.validationPlanDigest, 'task validation plan changed')
+    assert(digest(this.plan) === requestValidationDigest(this.request), 'task validation plan changed')
     this.runId = process.env.HITCH_RUN_ID
     assert(/^run_[a-f0-9]{32}$/.test(this.runId ?? ''), 'runtime-assigned Hitch run ID required')
     assert(this.harness.manifest.digest === this.request.harness.manifestDigest, 'harness manifest differs from requested candidate')
     assert(this.checkpoint.digest === this.request.checkpointDigest, 'checkpoint input changed')
     for (const name of ['train', 'predict']) assert(sha(await readFile(join(this.data, `${name}.csv`))) === this.request.task.inputs[`${name}Digest`], 'task data changed')
-    if (this.checkpoint.validationPlanDigest) assert(digest(this.plan) === this.checkpoint.validationPlanDigest, 'validation history mismatch')
+    if (this.checkpoint.validationPlanDigest) assert(this.request.task.validationPlanDigest === this.checkpoint.validationPlanDigest, 'validation history mismatch')
     await mkdir(this.work, { recursive: true }); await mkdir(this.output, { recursive: true })
     await mkdir(join(this.work, 'workspace'), { recursive: true }); await mkdir(join(this.output, 'objects'), { recursive: true })
     const allowance = this.request.allowance
@@ -37,10 +42,12 @@ export class Driver {
     assert(Object.keys(this.policyConfig).sort().join(',') === 'comparisonPrecision,preferCurrentOnTie'
       && this.policyConfig.comparisonPrecision > 0 && typeof this.policyConfig.preferCurrentOnTie === 'boolean', 'invalid policy configuration')
     this.trace = []; this.evaluation = null; this.solution = null; this.selection = undefined; this.claim = null
+    if (this.harness.manifest.artifacts.some(f => f.path === 'workflow.yaml')) await initializeAnalysis(this)
     await this.persist()
   }
   async persist() {
     await atomicJson(join(this.work, 'budget.json'), this.budget.snapshot())
+    if (this.analysis) await atomicJson(join(this.work, 'analysis-state.json'), { runKey: this.runKey ?? null, started: !!this.started, analysis: this.analysis })
     if (this.finished) await this.publish()
   }
   async object(bytes) {
@@ -87,7 +94,7 @@ export class Driver {
     const history = [...this.checkpoint.history, ...(this.evaluation ? [this.experiment()] : [])]
     const eligible = new Set([...this.request.eligibleSolutionDigests, this.solution?.digest].filter(Boolean))
     return { phase, slotIndex: this.request.slotIndex, experiments: experimentBudget(this.request), training: this.trainingSummary(), validation: this.validationSummary(), task: this.request.task, history,
-      currentSolutionDigest: current, eligibleExperiments: history.filter(e => validCandidate(e) && eligible.has(e.sourceDigest) && e.validationPlanDigest === digest(this.plan)),
+      currentSolutionDigest: current, eligibleExperiments: history.filter(e => validCandidate(e) && eligible.has(e.sourceDigest) && experimentValidationDigest(e) === digest(this.plan)),
       policy: this.policyConfig, policyError: this.policyError ?? null, remaining: this.budget.available() }
   }
   trainingSummary() {
@@ -96,6 +103,9 @@ export class Driver {
       cpuSeconds: Math.min(this.request.experimentCpuSeconds, remaining.cpuSeconds) }
   }
   validationSummary() {
+    if (this.roundCv) return { ...this.plan, mode: 'round_five_fold_cv', digest: digest(this.plan),
+      separateHoldout: false, score: 'mean_of_five_folds',
+      instructions: 'All variants and both harnesses share these five shuffled folds for the entire round. Re-evaluate prior-round solutions before selection. Model seeds are separate from this split seed.' }
     if (this.holdout) return { mode: 'holdout', seed: this.plan.seed, metric: this.plan.metric,
       trainingRows: this.plan.assignments.filter(a => a === 0).length, validationRows: this.plan.assignments.filter(a => a === 1).length,
       fraction: this.plan.validationFraction, digest: this.request.task.validationPlanDigest }
@@ -140,7 +150,9 @@ export class Driver {
     this.trace.push({ phase, policyDigest: digest(this.harness.manifest.artifacts.filter(f => f.path.startsWith('workflows/research/'))), decision: value.action })
     return value
   }
-  async inspect(signal) {
+  async experiments(args, signal) { return experimentTool(this, args, signal) }
+  async inspect(signal, args = {}) {
+    if (this.analysis) return inspectAnalysis(this, args)
     const decision = this.initialDecision ?? await this.policy('research', signal)
     assert(['draft', 'debug', 'improve', 'confirm', 'reuse'].includes(decision.action.action), 'policy_error: invalid research action')
     this.action = decision.action
@@ -161,7 +173,7 @@ export class Driver {
       visibleSources: this.checkpoint.solutions.map(s => ({ digest: s.digest, files: s.files.map(f => f.path) })), remaining: this.budget.available() }
   }
   async write(path, content, expectedDigest) {
-    assert(!this.evaluation, 'source is sealed after evaluation'); sourcePath(path)
+    assert(!this.evaluation || this.analysis && !this.solution?.files.some(f => f.path === path), 'selected source is sealed after evaluation'); sourcePath(path)
     const target = join(this.work, 'workspace', path)
     const before = await readFile(target).catch(e => { if (e.code !== 'ENOENT') throw e; return null })
     assert((before ? sha(before) : null) === expectedDigest, 'workspace precondition failed')
@@ -202,17 +214,19 @@ export class Driver {
   async reuse(solutionDigest, hypothesis) {
     assert(this.action && !this.started, 'one experiment per rollout; inspect first')
     const prior = [...this.checkpoint.history].reverse().find(e => validCandidate(e) && e.sourceDigest === solutionDigest
-      && e.validationPlanDigest === digest(this.plan) && e.trainingSeed === this.plan.seed)
+      && experimentValidationDigest(e) === digest(this.plan) && (this.roundCv || e.trainingSeed === this.plan.seed))
     assert(prior, 'no compatible historical validation')
     this.started = true; this.action = { action: 'reuse', parentExperimentId: prior.experimentId }
     this.solution = this.checkpoint.solutions.find(s => s.digest === solutionDigest)
     this.claim = { hypothesis, intendedChange: 'Register compatible historical solution in the current experiment slot.' }
-    this.evaluation = this.holdout ? { status: 'reused', metric: prior.execution.metric,
+    this.evaluation = this.roundCv ? { ...prior.execution, status: 'reused' } : this.holdout ? { status: 'reused', metric: prior.execution.metric,
       validationScore: internalScore(prior), validationUtility: internalQuality(prior), validationRows: prior.execution.validationRows }
       : { status: 'reused', foldMetrics: prior.execution.foldMetrics,
       ...(this.request.task.protocol === 'analysis-task@2'
         ? { metric: prior.execution.metric, pooledScore: internalScore(prior), pooledUtility: internalQuality(prior) }
         : { pooledAccuracy: prior.execution.pooledAccuracy }) }
+    if (this.analysis) Object.assign(this.analysis, { plan: prior.analysis?.plan ?? null, variants: prior.analysis?.variants ?? [], formalVariantId: prior.analysis?.formalVariantId ?? null, trials: 0, fits: 0, decision: { disposition: 'reused', sourceExperiment: prior.experimentId } })
+    if (this.roundCv) this.analysis.validation = prior.analysis.validation
     this.reusedEvidenceRefs = [prior.digest]; this.oofDigest = predictionsDigest(prior)
     this.internalReceipt = { digest: prior.execution.receiptDigest }
     return this.experiment()
@@ -230,15 +244,25 @@ export class Driver {
     await visit(''); assert(Object.keys(files).length <= 64, 'too many source files'); return files
   }
   async analyze(path, signal) {
-    assert(!this.evaluation, 'analysis closed after formal experiment'); sourcePath(path)
-    const result = await this.meteredWorker({ operation: 'script', entrypoint: path, files: await this.sourceFiles(),
+    assert(!this.evaluation || this.analysis, 'analysis closed after formal experiment'); sourcePath(path)
+    const outputDirectory = join(this.work, `analysis-${randomUUID()}`)
+    const result = await this.meteredWorker({ operation: 'script', analysisOnly: !!this.analysis, entrypoint: path, files: await this.sourceFiles(),
       inputs: { 'train.csv': join(this.data, 'train.csv'), 'predict.csv': join(this.data, 'predict.csv') }, argv: [],
       ...(this.holdout ? { validationPlan: this.plan } : {}),
       prediction: this.request.task.prediction, publicFiles: this.request.task.publicFiles ?? [], publicDirectory: join(this.data, 'public'),
-      outputDirectory: join(this.work, `analysis-${randomUUID()}`), cpuSeconds: 30, wallSeconds: 60 }, signal)
+      outputDirectory, cpuSeconds: 30, wallSeconds: 60 }, signal)
+    if (this.analysis) {
+      const executionStatus = result.exitCode === 0 && !result.limit ? 'completed' : 'failed'
+      const source = await readFile(join(this.work, 'workspace', path))
+      const artifacts = [{ path, digest: await this.object(source), bytes: source.length, source: 'analysis_code' }]
+      for (const name of result.outputFiles ?? []) { sourcePath(name); const bytes = await readFile(join(outputDirectory, name)); artifacts.push({ path: name, digest: await this.object(bytes), bytes: bytes.length, source: 'analysis', executionStatus }) }
+      const log = Buffer.from(JSON.stringify(result)); artifacts.push({ path: 'analysis-log.json', digest: await this.object(log), bytes: log.length, source: 'analysis', executionStatus })
+      this.analysis.artifacts.push(...artifacts); await this.persist(); return { ...result, artifacts, stageUpdate: stageUpdateInstructions }
+    }
     return result
   }
-  async evaluate({ entrypoint, hypothesis, intendedChange }, signal) {
+  async evaluate({ entrypoint, hypothesis, intendedChange, plan }, signal) {
+    if (this.analysis) return this.experiments({ action: 'run', plan, hypothesis, intendedChange }, signal)
     assert(this.action && !this.evaluation && !this.started, 'one formal experiment per rollout; inspect first')
     this.started = true; this.claim = { hypothesis, intendedChange }
     const files = await this.sourceFiles(); assert(files[entrypoint] && entrypoint.endsWith('.py'), 'missing solution entrypoint')
@@ -261,10 +285,10 @@ export class Driver {
   }
   experiment() {
     const failed = !this.evaluation
-    return seal({ protocol: this.holdout ? 'analysis-experiment@3' : this.request.task.protocol === 'analysis-task@2' ? 'analysis-experiment@2' : 'analysis-experiment@1', experimentId: `${this.runId}/experiment`, sequenceId: this.request.sequenceId,
+    return seal({ ...(this.analysis && (this.holdout || this.roundCv) ? { analysis: this.analysis } : {}), protocol: this.roundCv ? 'analysis-experiment@5' : this.analysis && this.holdout ? 'analysis-experiment@4' : this.holdout ? 'analysis-experiment@3' : this.request.task.protocol === 'analysis-task@2' ? 'analysis-experiment@2' : 'analysis-experiment@1', experimentId: `${this.runId}/experiment`, sequenceId: this.request.sequenceId,
       rolloutRunId: this.runId, slotIndex: this.request.slotIndex, parentExperimentId: this.action?.parentExperimentId ?? null,
       operator: this.action?.action ?? 'draft', sourceDigest: this.solution?.digest ?? null,
-      validationPlanDigest: digest(this.plan), trainingSeed: this.plan.seed,
+      validationPlanDigest: this.request.task.validationPlanDigest, trainingSeed: this.roundCv ? (this.analysis?.plan?.seed ?? 42) : this.plan.seed,
       claim: this.claim ?? { hypothesis: '', intendedChange: '' },
       execution: { status: failed ? 'generation_failed' : this.evaluation.status,
         receiptDigest: this.internalReceipt?.digest ?? digest({ runId: this.runId, status: 'generation_failed' }),
@@ -279,6 +303,8 @@ export class Driver {
       : { foldMetrics: value?.foldMetrics ?? [], ...this.scores(value), oofDigest: this.oofDigest ?? null }
   }
   scores(value) {
+    if (this.roundCv) return { metric: this.request.task.prediction.metric, pooledScore: value?.pooledScore ?? null,
+      pooledUtility: value?.pooledUtility ?? null, meanScore: value?.meanScore ?? null, meanUtility: value?.meanUtility ?? null, stdScore: value?.stdScore ?? null }
     return this.request.task.protocol === 'analysis-task@2'
       ? { metric: this.request.task.prediction.metric, pooledScore: value?.pooledScore ?? null, pooledUtility: value?.pooledUtility ?? null }
       : { pooledAccuracy: value?.pooledAccuracy ?? null }
@@ -290,6 +316,7 @@ export class Driver {
     const chosen = decision.action.solutionDigest
     const eligible = this.state('select').eligibleExperiments
     assert(chosen === null ? eligible.length === 0 : eligible.some(e => e.sourceDigest === chosen), 'policy_error: ineligible selection')
+    if (this.analysis) this.analysis.decision = { disposition: chosen === this.checkpoint.currentSolutionDigest ? 'retained_incumbent' : 'adopted', source: 'fallback_policy', solutionDigest: chosen, innerWinner: this.analysis.formalVariantId }
     this.selection = chosen; this.selectedAt = new Date().toISOString()
     return { selectedSolutionDigest: chosen, policyDigest: this.trace.at(-1).policyDigest }
   }
@@ -312,7 +339,9 @@ export class Driver {
     this.evaluation = { status: 'candidate_failed', foldMetrics: [], pooledAccuracy: null, logs: [error.message] }
     this.oofDigest = null; this.reusedEvidenceRefs = []
     this.internalReceipt = seal({ protocol: 'analysis-policy-failure@1', runId: this.runId, reason: error.message })
-    this.selection = this.checkpoint.currentSolutionDigest; this.selectedAt = new Date().toISOString()
+    this.selection = this.roundCv && !this.state('select').eligibleExperiments.some(e => e.sourceDigest === this.checkpoint.currentSolutionDigest)
+      ? null : this.checkpoint.currentSolutionDigest
+    this.selectedAt = new Date().toISOString()
     this.interpretation = { conclusion: 'policy_error: research stopped', limitations: [error.message] }
     this.stop = true; this.finished = true; await this.publish()
     return { status: 'policy_error', selectedSolutionDigest: this.selection, carryForward: true, stopped: true }

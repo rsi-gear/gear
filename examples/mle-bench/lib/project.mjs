@@ -13,11 +13,15 @@ export class ResearchProject {
       const ledger = await this.store.load('ledgers', this.id) ?? { sequences: {}, audit: {}, deployments: {}, meta: {}, bootstrap: {} }
       const fresh = [...new Map(plans.map(p => [p.digest, p])).values()].filter(p => !ledger.sequences[p.digest])
       assert(Object.keys(ledger.sequences).length + fresh.length <= this.project.projectLimits.maxSequences, 'project sequence limit exhausted')
+      const targetSlots = Object.values(ledger.sequences).reduce((n, e) => n + (e.experiments ?? 5), 0)
+        + Object.keys(ledger.bootstrap ?? {}).length
+      assert(targetSlots + fresh.reduce((n, p) => n + p.experiments, 0) <= (this.project.projectLimits.maxTargetExperiments ?? Infinity),
+        'Target experiment budget exhausted; paired comparisons require both branches')
       const cpu = Object.values(ledger).flatMap(Object.values).reduce((n, e) => n + e.cpuSeconds, 0)
       const wall = Object.values(ledger).flatMap(Object.values).reduce((n, e) => n + e.wallSeconds, 0)
       assert(cpu + fresh.reduce((n, p) => n + p.budget.cpuSeconds, 0) <= this.project.projectLimits.cpuSeconds
         && wall + fresh.reduce((n, p) => n + p.budget.wallSeconds, 0) <= this.project.projectLimits.wallSeconds, 'project total budget exhausted')
-      for (const plan of fresh) ledger.sequences[plan.digest] = { status: 'reserved', cpuSeconds: plan.budget.cpuSeconds, wallSeconds: plan.budget.wallSeconds }
+      for (const plan of fresh) ledger.sequences[plan.digest] = { status: 'reserved', experiments: plan.experiments, cpuSeconds: plan.budget.cpuSeconds, wallSeconds: plan.budget.wallSeconds }
       await this.store.save('ledgers', this.id, ledger)
     })
   }
@@ -26,7 +30,7 @@ export class ResearchProject {
       const ledger = await this.store.load('ledgers', this.id), prior = ledger.sequences[plan.digest]
       assert(prior, 'sequence not pre-registered')
       if (prior.status === 'complete') { assert(prior.receiptDigest === receipt.digest, 'completed sequence changed'); return }
-      ledger.sequences[plan.digest] = { status: 'complete', cpuSeconds: receipt.cost.used.cpuSeconds,
+      ledger.sequences[plan.digest] = { status: 'complete', experiments: plan.experiments, cpuSeconds: receipt.cost.used.cpuSeconds,
         wallSeconds: Math.min(plan.budget.wallSeconds, Math.max(0, (Date.now() - receipt.cost.startedAt) / 1000)),
         cost: receipt.cost.used, receiptDigest: receipt.digest }
       await this.store.save('ledgers', this.id, ledger)
@@ -87,6 +91,8 @@ export class ResearchProject {
     return locked(this.store.path('locks', `${this.id}-budget`), async () => {
       const ledger = await this.store.load('ledgers', this.id) ?? { sequences: {}, audit: {}, deployments: {}, meta: {}, bootstrap: {} }
       if (ledger[kind][id]) return
+      if (kind === 'bootstrap') assert(Object.values(ledger.sequences).reduce((n, e) => n + (e.experiments ?? 5), 0)
+        + Object.keys(ledger.bootstrap).length + 1 <= (this.project.projectLimits.maxTargetExperiments ?? Infinity), 'bootstrap also consumes a Target experiment')
       const entries = Object.values(ledger).flatMap(Object.values)
       assert(entries.reduce((n, e) => n + e.cpuSeconds, 0) + allowance.cpuSeconds <= this.project.projectLimits.cpuSeconds
         && entries.reduce((n, e) => n + e.wallSeconds, 0) + allowance.wallSeconds <= this.project.projectLimits.wallSeconds, 'project auxiliary budget exhausted')

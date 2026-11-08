@@ -28,23 +28,23 @@ test('prepare freezes an MLE-bench project and requires its input contract befor
     competition: input.competition, fixture: true, python, hitchRepository: hitch, hitchRoot: join(root, 'hitch-state'),
     hitchExecutable: process.execPath, executorExecutable: process.execPath, executorRepository: hitch,
     executorCommit: 'a'.repeat(40), baseImage: 'fixture@sha256:' + 'b'.repeat(64), platform: 'linux/arm64', model: 'fixture',
-    research: { maxExperiments: 7, validation: { fraction: .3, seed: 7 } } })
-  assert.equal(result.task.protocol, 'analysis-task@3')
+    research: { maxExperiments: 7, validation: { folds: 5, shuffle: true, scope: 'round', seed: 7 } } })
+  assert.equal(result.task.protocol, 'analysis-task@5')
   assert.equal(result.task.benchmark.competitionId, input.competition)
   assert.equal(result.task.prediction.metric, 'auc-roc')
   assert.equal(result.backend.refit.scope, 'mle-bench-public')
   assert.deepEqual(await readFile(result.backend.train), await readFile(join(input.publicDir, 'train.csv')))
-  assert.equal(result.validationPlan.assignments.length, 20)
+  assert.equal(result.rows.train, 20); assert.equal(result.validationPlan.folds, 5)
   assert.equal(result.research.maxExperiments, 7); assert.equal(result.validationPlan.seed, 7)
   assert.deepEqual(result.budget, researchBudget({ maxExperiments: 7 }))
   assert.ok(result.projectLimits.cpuSeconds >= 2 * result.budget.cpuSeconds)
   assert.ok(result.projectLimits.wallSeconds >= 2 * result.budget.wallSeconds)
-  assert.equal(result.validationPlan.assignments.filter(a => a === 1).length, 6)
+  assert.equal(result.validationPlan.scope, 'round'); assert.equal(result.backend.expected, null)
   assert.ok(!(await readdir(result.backend.publicDirectory)).includes('private'))
   assert.deepEqual(JSON.parse(await readFile(join(out, 'project.json'))), result)
 })
 
-for (const competition of competitions) test(`${competition}: canonical prepared/public import and shared held-out validation`, async t => {
+for (const competition of competitions) test(`${competition}: canonical prepared/public import and round CV policy`, async t => {
   const root = await mkdtemp(join(tmpdir(), 'mlebench-')); t.after(() => rm(root, { recursive: true, force: true }))
   const input = await fixture(root, competition), out = join(root, 'imported')
   const result = await importMlebench({ ...input, python }, out)
@@ -53,8 +53,8 @@ for (const competition of competitions) test(`${competition}: canonical prepared
   assert.deepEqual(await readFile(result.train), await readFile(join(input.publicDir, 'train.csv')))
   assert.deepEqual(await readFile(result.predict), await readFile(join(input.publicDir, 'test.csv')))
   const plan = JSON.parse(await readFile(join(out, 'validation.json')))
-  assert.equal(plan.assignments.length, 20); assert.equal(plan.protocol, 'analysis-holdout-plan@1')
-  assert.equal(plan.assignments.filter(a => a === 1).length, 4); assert.equal(plan.assignments.filter(a => a === 0).length, 16)
+  assert.equal(plan.protocol, 'analysis-round-cv-policy@1'); assert.equal(plan.folds, 5)
+  assert.equal(plan.assignments, undefined); assert.equal(plan.shuffle, true); assert.equal(plan.scope, 'round')
   await importMlebench({ ...input, python }, join(root, 'again'))
   assert.deepEqual(JSON.parse(await readFile(join(root, 'again/validation.json'))), plan)
   assert.ok(!(await readdir(join(out, 'public'))).includes('private'))

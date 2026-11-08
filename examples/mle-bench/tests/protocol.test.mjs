@@ -24,7 +24,7 @@ const plan = (start, char = 'a') => sequencePlan({ task, checkpoint: start, harn
   model: 'fixture', budget: defaultBudget, runtimeDigest })
 
 class Backend {
-  constructor(store, { failAt = 0, stopAt = 0, outageAt = 0 } = {}) { Object.assign(this, { store, failAt, stopAt, outageAt }); this.calls = []; this.saved = new Map(); this.deliveries = 0 }
+  constructor(store, { failAt = 0, stopAt = 0, outageAt = 0, resolved = false } = {}) { Object.assign(this, { store, failAt, stopAt, outageAt, resolved }); this.calls = []; this.saved = new Map(); this.deliveries = 0 }
   async admit() {}
   async rollout(request, history) {
     if (this.saved.has(request.digest)) return this.saved.get(request.digest)
@@ -35,8 +35,11 @@ class Backend {
     const bytes = Buffer.from(`print(${k})`), source = await this.store.putBytes(bytes)
     const failed = this.failAt === k
     const oofDigest = failed ? null : await this.store.putBytes(Buffer.from(JSON.stringify({ [runId]: '1' })))
-    const solution = failed ? null : seal({ protocol: 'analysis-solution@1', entrypoint: 'solution.py', files: [{ path: 'solution.py', digest: source, bytes: bytes.length }],
-      parameters: {}, trainingSeed: 42, runtimeDigest, authoredByRunId: runId })
+    const files = [{ path: 'solution.py', digest: source, bytes: bytes.length }]
+    const config = { inputSchema: {}, preprocessing: {}, features: {}, model: 'fixture', hyperparameters: {}, prediction: { kind: 'label' }, seed: 42 }
+    const parameters = this.resolved ? seal({ protocol: 'analysis-resolved-pipeline@1', experimentId: `${runId}/experiment`, variantId: 'fixture', entrypoint: 'solution.py', config, configDigest: digest(config), codeDigest: digest(files), runtimeDigest, trainingEntry: 'build_pipeline', fitCount: 1, actualParameters: {} }) : {}
+    const solution = failed ? null : seal({ protocol: this.resolved ? 'analysis-solution@2' : 'analysis-solution@1', entrypoint: 'solution.py', files,
+      parameters, trainingSeed: 42, runtimeDigest, authoredByRunId: runId })
     const used = { cpuSeconds: 1, requests: 1, tokens: 100, tools: 2 }
     const experiment = seal({ protocol: 'analysis-experiment@1', experimentId: `${runId}/experiment`, sequenceId: request.sequenceId,
       rolloutRunId: runId, slotIndex: k, parentExperimentId: history.history.at(-1)?.experimentId ?? null, operator: k === 1 ? 'draft' : 'improve',
@@ -159,6 +162,12 @@ test('stage admission is atomic; merge requires every distinct sealed branch and
   const history = await store.get(next)
   assert.equal(history.history.length, 10); assert.equal(history.costEvents.length, 10)
   assert.equal(history.history.filter(e => e.execution.status === 'generation_failed').length, 2)
+  for (const receipt of receipts) {
+    const branch = await store.get(receipt.checkpointRef)
+    for (const e of branch.history) assert.deepEqual(history.history.find(merged => merged.experimentId === e.experimentId), e)
+    for (const s of branch.solutions) assert.deepEqual(history.solutions.find(merged => merged.digest === s.digest), s)
+  }
+  assert.equal(history.currentSolutionDigest, (await store.get(receipts[1].checkpointRef)).currentSolutionDigest)
   const nextStage = await controller.stage('two', [harnesses[1]])
   assert.equal(nextStage.checkpointRef, next); assert.notEqual(plan(history, 'b').digest, plan(start, 'b').digest)
 })
@@ -305,7 +314,7 @@ test('deployment rejects a source from a different research budget before execut
 })
 
 test('failed deployment records and settles evidence once; restarting never reruns the failed source', async t => {
-  const store = await temporary(t), start = checkpoint(), backend = new Backend(store), p = plan(start)
+  const store = await temporary(t), start = checkpoint(), backend = new Backend(store, { resolved: true }), p = plan(start)
   const receipt = await new SequenceRunner(store, backend).run(p, start)
   const train = join(store.root, 'train.csv'), predict = join(store.root, 'test.csv'), out = join(store.root, 'submission')
   await writeFile(train, 'row,label\ntrain,1\n'); await writeFile(predict, 'row\nquery\n')
@@ -324,7 +333,7 @@ test('failed deployment records and settles evidence once; restarting never reru
     executions++
     enter(); await pending
     return seal({ protocol: 'analysis-delivery@1', requestDigest: request.digest, status: 'candidate_failed',
-      solutionDigest: request.solution.digest, runId: 'failed-refit', outputManifestDigest: digest('failure'),
+      solutionDigest: request.solution.digest, resolvedPipelineDigest: request.solution.parameters.digest, fits: 0, searchCalls: 0, fitCalls: 0, runId: 'failed-refit', outputManifestDigest: digest('failure'),
       quality: 0, accuracy: null, modelRequests: 0, cost: { ...zeroCost(), cpuSeconds: .25 } })
   }
   const first = assert.rejects(refit(store, backend, project, receipt, out), /selected solution failed refit/)

@@ -6,7 +6,7 @@ def next_action(state):
             return {'action': 'select', 'solutionDigest': None}
         def quality(experiment):
             result = experiment['execution']
-            return result.get('validationUtility', result.get('pooledUtility', result.get('pooledAccuracy')))
+            return result.get('meanUtility', result.get('validationUtility', result.get('pooledUtility', result.get('pooledAccuracy'))))
         best = max(quality(e) for e in candidates)
         tied = [e for e in candidates if best - quality(e) <= state['policy']['comparisonPrecision']]
         current = state['currentSolutionDigest']

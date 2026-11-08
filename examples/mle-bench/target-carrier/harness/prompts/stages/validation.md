@@ -1,0 +1,1 @@
+Use the runtime-owned shuffled five-fold CV on all labeled rows. The round's seed and folds are shared by both harnesses and every experiment; do not change them or reserve a holdout. Record this scope and diagnose group/time dependence as limitations. Compare only current-round evidence. Official test rows have no labels and do not participate in selection.
