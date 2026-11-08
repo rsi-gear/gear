@@ -61,6 +61,8 @@ constraints and protection pass, the global seed objective must strictly improve
 on the anchor, and held-out validation requires no regression in the objective
 score. The thresholds are fixed at zero; there are no `promotion.*` settings.
 
+GEPA diagnoses a task when it failed or when a selected signal (a nonzero-weight objective term or a declared process group) can still improve on it, judged against that metric's declared `range`. A metric without a range always has room, so weighted cost terms keep diagnosing tasks that pass but are expensive. Under the default objective without process groups, only failing tasks are diagnosed.
+
 ## Dataset contracts
 
 Add a versioned registry to `benchmark.adapter.json`. For a benchmark whose
