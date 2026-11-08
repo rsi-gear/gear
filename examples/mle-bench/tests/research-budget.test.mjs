@@ -80,9 +80,25 @@ test('task_inspect exposes admitted experiment budget and the fixed holdout; pro
     this.workflowConfig = JSON.parse(await readFile(join(carrier.targetRepository, 'harness/workflow.yaml'), 'utf8'))
   }
   const { apply } = await import(pathToFileURL(join(carrier.targetRepository, 'fixed/target-loader.js')))
+  await assert.rejects(apply({}, { reasoningEffort: 'high' }), /reasoningEffort=max/)
+  await assert.rejects(apply({}, {}), /reasoningEffort=max/)
+  const previousLoaderUrl = process.env.DSH_REFINE_TARGET_LOADER_URL
+  process.env.DSH_REFINE_TARGET_LOADER_URL = pathToFileURL(join(carrier.targetRepository, 'fixed/target-loader.js')).href
+  try {
+    const shim = await import(pathToFileURL(join(carrier.targetRepository, 'fixed/target-loader-shim.js')))
+    assert.ok(shim.inject.includes('agentDefaultModel'))
+    assert.ok(shim.inject.includes('settings'))
+  } finally {
+    if (previousLoaderUrl === undefined) delete process.env.DSH_REFINE_TARGET_LOADER_URL
+    else process.env.DSH_REFINE_TARGET_LOADER_URL = previousLoaderUrl
+  }
   const registered = new Map()
+  let selectedModel
   await apply({ on() {}, provide() {}, systemPrompt: { section() {} },
-    tools: { guard() {}, register(tool) { registered.set(tool.name, tool) } } }, { repositoryRoot: carrier.targetRepository })
+    agentDefaultModel: { currentSelection: () => ({ provider: 'openai-codex', model: 'gpt-6-astra' }),
+      async saveSelection(value) { selectedModel = value } },
+    tools: { guard() {}, register(tool) { registered.set(tool.name, tool) } } }, { repositoryRoot: carrier.targetRepository, reasoningEffort: 'max' })
+  assert.deepEqual(selectedModel, { provider: 'openai-codex', model: 'gpt-6-astra', reasoningEffort: 'max' })
   assert.ok(registered.get('experiment_evaluate').timeoutMs > 1800 * 1000)
   assert.ok(registered.get('experiment').timeoutMs > 1800 * 1000)
   assert.equal(registered.get('analysis_execute').timeoutMs, 300000)

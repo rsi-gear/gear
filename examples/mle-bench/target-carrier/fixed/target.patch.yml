@@ -28,6 +28,7 @@
       name: ./target-loader-shim.js
       config:
         repositoryRoot: !!js process.env.DSH_REFINE_REPOSITORY
+        reasoningEffort: max
 - id: headless-runner
   inject: [headlessStartup, targetHarness]
   config:

@@ -8,9 +8,11 @@ import { stageUpdateParameter } from './lib/workflow.mjs'
 import { randomUUID } from 'node:crypto'
 
 export const name = 'gear-analysis-target-loader'
-export const inject = ['tools', 'systemPrompt', 'llm']
+export const inject = ['tools', 'systemPrompt', 'llm', 'agentDefaultModel', 'settings']
 const string = { type: 'string', required: true }
 export async function apply(ctx, config) {
+  if (config.reasoningEffort !== 'max') throw new Error('This run requires reasoningEffort=max')
+  await ctx.agentDefaultModel.saveSelection({ ...ctx.agentDefaultModel.currentSelection(), reasoningEffort: config.reasoningEffort })
   const driver = new Driver(config.repositoryRoot)
   await driver.initialize()
   if (driver.request.allowance.tokens !== null) {
