@@ -347,7 +347,7 @@ All paths are logical paths below `/candidate/harness`. Relative paths such as
 `plugins/policy.js` are preferred; a leading `./` from search results is also
 accepted. Absolute host paths and parent traversal are unavailable.
 
-Only `preset/`, `plugins/`, `prompts/`, `skills/`, and `workflows/` are editable.
+Only `preset/`, `plugins/`, `prompts/`, `skills/`, `workflows/`, `tools/`, and `workflow.yaml` are editable. A harness-specific compiler may further restrict this surface.
 `manifest.json`, package manifests, lockfiles, `.git`, symlinks, hardlinks, and
 other substrate are protected.
 

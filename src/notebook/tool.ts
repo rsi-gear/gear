@@ -245,7 +245,7 @@ export function mountMetaCapabilityTools(
       'Before proposing, inspect the diagnostic card for every failed baseline run.',
       'Cite only the current baseline evalId/runIds that were exposed by the wake or typed tools. Held-out evidence is unavailable.',
       workspaceCapabilityGuide,
-      'The current candidate tree is a starting state, not a closed list of interventions. You may create and wire new artifacts under preset/, plugins/, prompts/, skills/, and workflows/.',
+      'The current candidate tree is a starting state, not a closed list of interventions. You may create and wire new artifacts under preset/, plugins/, prompts/, skills/, workflows/, tools/, and workflow.yaml.',
       'Match the intervention to the causal boundary: static universal guidance belongs in context; recognizable task-class guidance in a skill; repeatable procedures in a workflow; observable tool calls or results in pre_action, post_action, or action_verifier hooks; and genuinely missing capabilities in tools.',
       'When evidence identifies a tool action or result, compare an executable hook or verifier with prompt guidance before editing. If you choose context, explain why no narrower enforceable or on-demand mechanism can address the failure.',
       'Do not add guidance for infrastructure failures or behavior the trajectory already performed correctly.',

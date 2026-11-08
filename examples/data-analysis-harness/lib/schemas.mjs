@@ -28,8 +28,8 @@ export const schema = {
   },
 }
 
-// V1 remains readable with its original accuracy semantics. MLE-bench uses
-// explicit raw scores and a monotone utility, never a renamed "accuracy".
+// V1/V2 retain their original CV semantics. V3 uses a shared held-out score
+// and a separately recorded utility; training CV is not part of this contract.
 schema.$defs.PredictionV1 = schema.$defs.Prediction
 schema.$defs.PredictionV2 = object({ kind: { const: 'tabular' }, idColumn: str,
   targetColumns: { ...arr(str), minItems: 1, uniqueItems: true },
@@ -42,6 +42,15 @@ schema.$defs.TaskV2 = sealed('analysis-task@2', { ...Object.fromEntries(Object.e
   benchmark: object({ format: { const: 'mle-bench' }, competitionId: str, definitionDigest: sha, publicTreeDigest: sha,
     sourceRevision: str, verification: { enum: ['upstream-checksums', 'custom-checksums', 'fixture'] } }) })
 schema.$defs.Task = { anyOf: [ref('TaskV1'), ref('TaskV2')] }
+schema.$defs.TaskV3 = sealed('analysis-task@3', {
+  ...Object.fromEntries(Object.entries(schema.$defs.TaskV2.properties).filter(([k]) => !['protocol', 'digest'].includes(k))) })
+schema.$defs.Task.anyOf.push(ref('TaskV3'))
+schema.$defs.TaskV4 = sealed('analysis-task@4', { ...Object.fromEntries(Object.entries(schema.$defs.TaskV3.properties).filter(([k]) => !['protocol', 'digest', 'benchmark'].includes(k))) })
+schema.$defs.Task.anyOf.push(ref('TaskV4'))
+for (const [name, protocol, base] of [['TaskV5', 'analysis-task@5', 'TaskV3'], ['TaskV6', 'analysis-task@6', 'TaskV4']]) {
+  schema.$defs[name] = sealed(protocol, Object.fromEntries(Object.entries(schema.$defs[base].properties).filter(([k]) => !['protocol', 'digest'].includes(k))))
+  schema.$defs.Task.anyOf.push(ref(name))
+}
 schema.$defs.ExperimentV1 = schema.$defs.Experiment
 schema.$defs.FoldV2 = object({ fold: { type: 'integer', minimum: 0, maximum: 4 }, rows: { type: 'integer', minimum: 1 }, score: num, utility: { ...num, maximum: 1 } })
 schema.$defs.ExperimentV2 = sealed('analysis-experiment@2', {
@@ -49,6 +58,33 @@ schema.$defs.ExperimentV2 = sealed('analysis-experiment@2', {
   execution: object({ ...Object.fromEntries(Object.entries(schema.$defs.Experiment.properties.execution.properties).filter(([k]) => !['foldMetrics', 'pooledAccuracy'].includes(k))),
     metric: { enum: ['accuracy', 'auc-roc', 'mean-column-wise-rmsle'] }, foldMetrics: arr(ref('FoldV2')), pooledScore: nullable(num), pooledUtility: nullable({ ...num, maximum: 1 }) }) })
 schema.$defs.Experiment = { anyOf: [ref('ExperimentV1'), ref('ExperimentV2')] }
+schema.$defs.ExperimentV3 = sealed('analysis-experiment@3', {
+  ...Object.fromEntries(Object.entries(schema.$defs.ExperimentV2.properties).filter(([k]) => !['protocol', 'digest', 'execution'].includes(k))),
+  slotIndex: { type: 'integer', minimum: 1 },
+  execution: object({ ...Object.fromEntries(Object.entries(schema.$defs.ExperimentV2.properties.execution.properties)
+    .filter(([k]) => !['foldMetrics', 'pooledScore', 'pooledUtility', 'oofDigest'].includes(k))),
+    validationScore: nullable(num), validationUtility: nullable({ ...num, maximum: 1 }),
+    validationRows: { type: 'integer', minimum: 0 }, predictionsDigest: nullable(sha) }) })
+schema.$defs.Experiment.anyOf.push(ref('ExperimentV3'))
+
+// V4 separates notes and workflow from runtime evaluation facts; old bytes stay valid.
+const jsonObject = { type: 'object', properties: {}, required: [], additionalProperties: true }
+schema.$defs.ExperimentV4 = sealed('analysis-experiment@4', {
+  ...Object.fromEntries(Object.entries(schema.$defs.ExperimentV3.properties).filter(([k]) => !['protocol', 'digest'].includes(k))),
+  analysis: jsonObject })
+schema.$defs.Experiment.anyOf.push(ref('ExperimentV4'))
+// V5 evaluates every variant on the round's five folds, with no extra holdout fit.
+schema.$defs.ExperimentV5 = sealed('analysis-experiment@5', {
+  ...Object.fromEntries(Object.entries(schema.$defs.ExperimentV2.properties).filter(([k]) => !['protocol', 'digest', 'execution'].includes(k))),
+  slotIndex: { type: 'integer', minimum: 1 }, analysis: jsonObject,
+  execution: object({ ...schema.$defs.ExperimentV2.properties.execution.properties,
+    meanScore: nullable(num), meanUtility: nullable({ ...num, maximum: 1 }), stdScore: nullable(num) }) })
+schema.$defs.Experiment.anyOf.push(ref('ExperimentV5'))
+schema.$defs.SolutionV1 = schema.$defs.Solution
+schema.$defs.SolutionV2 = sealed('analysis-solution@2', {
+  ...Object.fromEntries(Object.entries(schema.$defs.Solution.properties).filter(([k]) => !['protocol', 'digest', 'parameters'].includes(k))),
+  parameters: jsonObject })
+schema.$defs.Solution = { anyOf: [ref('SolutionV1'), ref('SolutionV2')] }
 
 Object.assign(schema.$defs, {
   Harness: object({ commit: { type: 'string', pattern: '^[a-f0-9]{40,64}$' }, manifestDigest: sha }),
@@ -70,15 +106,40 @@ Object.assign(schema.$defs, {
   RefitRequest: sealed('analysis-refit-request@1', { task: ref('Task'), solution: ref('Solution'), runtimeDigest: sha, harness: ref('Harness'),
     sourceSelectionPlan: ref('SourceSelectionPlan'), allowance: ref('Allowance') }),
 })
+schema.$defs.SequencePlanV1 = schema.$defs.SequencePlan
+schema.$defs.SequencePlanV2 = sealed('analysis-research-sequence@1', {
+  ...Object.fromEntries(Object.entries(schema.$defs.SequencePlan.properties).filter(([k]) => !['protocol', 'digest'].includes(k))),
+  experiments: { type: 'integer', minimum: 1 } })
+schema.$defs.SequencePlan = { anyOf: [ref('SequencePlanV1'), ref('SequencePlanV2')] }
+schema.$defs.RolloutRequestV1 = schema.$defs.RolloutRequest
+schema.$defs.RolloutRequestV2 = sealed('analysis-rollout-request@2', {
+  ...Object.fromEntries(Object.entries(schema.$defs.RolloutRequest.properties).filter(([k]) => !['protocol', 'digest'].includes(k))),
+  slotIndex: { type: 'integer', minimum: 1 }, maxExperiments: { type: 'integer', minimum: 1 } })
+schema.$defs.RolloutRequest = { anyOf: [ref('RolloutRequestV1'), ref('RolloutRequestV2')] }
+schema.$defs.RoundValidation = object({ protocol: { const: 'analysis-round-cv-plan@1' }, policyDigest: sha,
+  roundDigest: sha, trainDigest: sha, metric: schema.$defs.PredictionV2.properties.metric,
+  kind: { enum: ['kfold', 'stratified'] }, folds: { const: 5 }, shuffle: { const: true },
+  seed: { type: 'integer', minimum: 0, maximum: 4294967295 }, splitter: { const: 'python-random-stratified-round-robin@1' } })
+for (const name of ['SequencePlanV1', 'SequencePlanV2', 'RolloutRequestV1', 'RolloutRequestV2'])
+  schema.$defs[name].properties.roundValidation = ref('RoundValidation')
+schema.$defs.Selection.properties.slotIndex = { type: 'integer', minimum: 1 }
 for (const [name, protocol] of [['DeliveryRequest', 'analysis-delivery-request@1'], ['AuditRequest', 'analysis-audit-request@1']])
   schema.$defs[name] = sealed(protocol, { sequenceId: str, planDigest: sha, task: ref('Task'), harness: ref('Harness'), runtimeDigest: sha,
     solution: ref('Solution'), selectionsDigest: sha, allowance: ref('Allowance') })
 
 export function validateRequest(value) {
-  const name = { 'analysis-rollout-request@1': 'RolloutRequest', 'analysis-delivery-request@1': 'DeliveryRequest',
+  const name = { 'analysis-rollout-request@1': 'RolloutRequest', 'analysis-rollout-request@2': 'RolloutRequest', 'analysis-delivery-request@1': 'DeliveryRequest',
     'analysis-audit-request@1': 'AuditRequest', 'analysis-refit-request@1': 'RefitRequest' }[value?.protocol]
   if (!name) throw new Error('unsupported analysis request protocol')
-  return validateSchema(name, value)
+  validateSchema(name, value)
+  if (name === 'RolloutRequest') {
+    const cv = ['analysis-task@5', 'analysis-task@6'].includes(value.task.protocol)
+    if (cv !== Boolean(value.roundValidation)) throw new Error('round CV request must bind its frozen split')
+    if (cv && (value.roundValidation.policyDigest !== value.task.validationPlanDigest || value.roundValidation.trainDigest !== value.task.inputs.trainDigest))
+      throw new Error('round CV data/policy mismatch')
+  }
+  if (value.protocol === 'analysis-rollout-request@2' && value.slotIndex > value.maxExperiments) throw new Error('experiment exceeds admitted slot budget')
+  return value
 }
 
 export function validateSchema(name, value) {
@@ -93,8 +154,8 @@ export function validateSchema(name, value) {
     if (!s.type) return
     if (s.type === 'null') { if (v !== null) throw new Error(`${path}: expected null`); return }
     if (s.type === 'object') {
-      if (!v || typeof v !== 'object' || Array.isArray(v) || s.required.some(k => !Object.hasOwn(v, k)) || Object.keys(v).some(k => !Object.hasOwn(s.properties, k))) throw new Error(`${path}: unexpected/missing fields`)
-      for (const [k, field] of Object.entries(s.properties)) check(field, v[k], `${path}.${k}`)
+      if (!v || typeof v !== 'object' || Array.isArray(v) || s.required.some(k => !Object.hasOwn(v, k)) || s.additionalProperties !== true && Object.keys(v).some(k => !Object.hasOwn(s.properties, k))) throw new Error(`${path}: unexpected/missing fields`)
+      for (const [k, field] of Object.entries(s.properties)) if (Object.hasOwn(v, k) || s.required.includes(k)) check(field, v[k], `${path}.${k}`)
     } else if (s.type === 'array') {
       if (!Array.isArray(v) || v.length < (s.minItems ?? 0) || v.length > (s.maxItems ?? Infinity) || s.uniqueItems && new Set(v).size !== v.length) throw new Error(`${path}: invalid array`)
       v.forEach((x, i) => check(s.items, x, `${path}[${i}]`))

@@ -3,6 +3,7 @@ import { Budget } from './budget.mjs'
 import { locked } from './store.mjs'
 import { validateSchema } from './schemas.mjs'
 import { internalScore, internalQuality, metricName, utility } from './metrics.mjs'
+import { roundValidation, requestValidationDigest, experimentValidationDigest, isRoundCvTask, cvSelection } from './validation.mjs'
 
 export function sequencePlan({ task, checkpoint, harness, model, budget, runtimeDigest }) {
   validateCheckpoint(checkpoint); validateBudget(budget)
@@ -10,13 +11,15 @@ export function sequencePlan({ task, checkpoint, harness, model, budget, runtime
   assert(runtimeDigest === task.runtimeDigest && runtimeDigest === checkpoint.runtimeDigest, 'sequence runtime mismatch')
   assert(/^[a-f0-9]{40,64}$/.test(harness.commit), 'exact harness commit required')
   assert(task.taskFamilyId === checkpoint.taskFamilyId && task.digest === checkpoint.baseTaskDigest, 'task/checkpoint mismatch')
+  const validation = roundValidation(task, checkpoint.digest)
   return validateSchema('SequencePlan', seal({ protocol: PROTOCOL, task, startingCheckpointDigest: checkpoint.digest,
+    ...(validation ? { roundValidation: validation } : {}),
     harness, model, budget, runtimeDigest, experiments: 5, repetitions: 1 }))
 }
 
-function remainingPool(start, steps, checkpoint) {
+function remainingPool(start, steps, checkpoint, validationDigest) {
   const allowed = new Set([start.currentSolutionDigest, ...steps.map(s => s.experiment.sourceDigest)].filter(Boolean))
-  return checkpoint.history.filter(e => allowed.has(e.sourceDigest) && validCandidate(e) && e.validationPlanDigest === checkpoint.validationPlanDigest)
+  return checkpoint.history.filter(e => allowed.has(e.sourceDigest) && validCandidate(e) && experimentValidationDigest(e) === validationDigest)
 }
 export function validateRollout(result, request, checkpoint, steps, start) {
   verify(result)
@@ -24,7 +27,10 @@ export function validateRollout(result, request, checkpoint, steps, start) {
   assert(typeof result.runId === 'string' && result.runId.length > 0 && result.outputManifestDigest, 'missing physical run or output manifest')
   const e = validateExperiment(result.experiment)
   assert(e.validationPlanDigest === request.task.validationPlanDigest, 'experiment validation scope changed')
-  assert(request.task.protocol === 'analysis-task@2' ? e.protocol === 'analysis-experiment@2' && e.execution.metric === request.task.prediction.metric
+  assert(isRoundCvTask(request.task) ? e.protocol === 'analysis-experiment@5' && e.execution.metric === request.task.prediction.metric
+    && experimentValidationDigest(e) === requestValidationDigest(request)
+    : ['analysis-task@3', 'analysis-task@4'].includes(request.task.protocol) ? ['analysis-experiment@3', 'analysis-experiment@4'].includes(e.protocol) && e.execution.metric === request.task.prediction.metric
+    : request.task.protocol === 'analysis-task@2' ? e.protocol === 'analysis-experiment@2' && e.execution.metric === request.task.prediction.metric
     : e.protocol === 'analysis-experiment@1', 'experiment metric contract changed')
   assert(e.sequenceId === request.sequenceId && e.slotIndex === request.slotIndex && e.rolloutRunId === result.runId, 'experiment run/slot mismatch')
   for (const s of result.solutions) { validateSolution(s); assert(s.runtimeDigest === request.runtimeDigest, 'solution runtime mismatch') }
@@ -33,11 +39,11 @@ export function validateRollout(result, request, checkpoint, steps, start) {
   assert(e.parentExperimentId === null || checkpoint.history.some(p => p.experimentId === e.parentExperimentId), 'parent outside visible history')
   if (e.execution.status === 'reused') {
     const prior = checkpoint.history.find(p => e.execution.reusedEvidenceRefs.includes(p.digest))
-    assert(validCandidate(prior) && prior.sourceDigest === e.sourceDigest && prior.validationPlanDigest === e.validationPlanDigest
+    assert(validCandidate(prior) && prior.sourceDigest === e.sourceDigest && experimentValidationDigest(prior) === experimentValidationDigest(e)
       && prior.trainingSeed === e.trainingSeed && internalScore(prior) === internalScore(e) && internalQuality(prior) === internalQuality(e)
-      && digest(prior.execution.foldMetrics) === digest(e.execution.foldMetrics), 'invalid cached validation evidence')
+      && digest(prior.execution.foldMetrics ?? null) === digest(e.execution.foldMetrics ?? null), 'invalid cached validation evidence')
   }
-  const nextPool = [...remainingPool(start, steps, checkpoint), ...(validCandidate(e) ? [e] : [])]
+  const nextPool = [...remainingPool(start, steps, checkpoint, requestValidationDigest(request)), ...(validCandidate(e) ? [e] : [])]
   assert(result.selectedSolutionDigest === null || nextPool.some(p => p.sourceDigest === result.selectedSolutionDigest), 'selection is outside this sequence candidate pool')
   assert(result.selectedSolutionDigest !== null || nextPool.length === 0, 'cannot erase an available incumbent')
   assert(result.availableEvidenceRefs.every(ref => [...checkpoint.history, e].some(p => p.digest === ref)), 'future or foreign selection evidence')
@@ -51,6 +57,7 @@ export class SequenceRunner {
   async run(plan, start, { signal = new AbortController().signal } = {}) {
     verify(plan); validateCheckpoint(start)
     assert(plan.protocol === PROTOCOL && plan.experiments === 5 && plan.repetitions === 1 && plan.startingCheckpointDigest === start.digest, 'invalid five-rollout plan')
+    assert(digest(plan.roundValidation ?? null) === digest(roundValidation(plan.task, start.digest)), 'sequence round CV plan changed')
     await this.store.verifySources(start)
     await this.backend.admit(plan)
     const id = plan.digest.slice(7)
@@ -85,6 +92,7 @@ export class SequenceRunner {
           if (!request) {
             request = seal({ protocol: 'analysis-rollout-request@1', sequenceId: id, slotIndex: k, planDigest: plan.digest,
               task: plan.task, harness: plan.harness, model: plan.model, runtimeDigest: plan.runtimeDigest,
+              ...(plan.roundValidation ? { roundValidation: plan.roundValidation } : {}),
               checkpointDigest: checkpoint.digest, checkpointRef: state.checkpointRef,
               previousRolloutReceiptDigest: state.steps.at(-1)?.digest ?? null,
               eligibleSolutionDigests: [...new Set([start.currentSolutionDigest, ...state.steps.map(s => s.experiment.sourceDigest)].filter(Boolean))],
@@ -110,14 +118,17 @@ export class SequenceRunner {
         }
         while (state.selections.length < 5) state.selections.push(seal({ protocol: 'analysis-slot-selection@1',
           slotIndex: state.selections.length + 1, experimentId: null, status: 'not_started', stopReason: state.stopped,
-          incumbentSolutionDigest: state.selections.at(-1)?.incumbentSolutionDigest ?? start.currentSolutionDigest,
+          incumbentSolutionDigest: state.selections.length ? state.selections.at(-1).incumbentSolutionDigest : isRoundCvTask(plan.task) ? null : start.currentSolutionDigest,
           carryForward: true, availableEvidenceRefs: [], selectionPolicyDigest: null,
           cumulativeCostDigest: digest(budget.snapshot()), sealedAt: new Date(this.now()).toISOString(), rolloutReceiptDigest: null }))
         state.status = 'selected'; await save()
         signal.throwIfAborted()
         const solutionDigest = state.selections[4].incumbentSolutionDigest
         if (!state.delivery) {
-          if (!solutionDigest) state.delivery = seal({ protocol: 'analysis-delivery@1', status: 'candidate_failed',
+          if (isRoundCvTask(plan.task)) {
+            state.delivery = cvSelection(plan, state.steps, solutionDigest)
+            await save()
+          } else if (!solutionDigest) state.delivery = seal({ protocol: 'analysis-delivery@1', status: 'candidate_failed',
             solutionDigest: null, quality: 0, accuracy: null, runId: null, outputManifestDigest: null, cost: Object.fromEntries(dimensions.map(d => [d, 0])) })
           else {
             let request = state.pending?.request
@@ -134,7 +145,7 @@ export class SequenceRunner {
             assert(delivered.protocol === 'analysis-delivery@1' && delivered.requestDigest === request.digest
               && delivered.solutionDigest === solutionDigest && ['completed', 'candidate_failed'].includes(delivered.status), 'delivery is unavailable or identity mismatched')
             assert(delivered.modelRequests === 0, 'sealed refit must not call a model')
-            const raw = plan.task.protocol === 'analysis-task@2' ? delivered.score : delivered.accuracy
+            const raw = plan.task.protocol !== 'analysis-task@1' ? delivered.score : delivered.accuracy
             assert(delivered.status !== 'completed' || delivered.runId && delivered.outputManifestDigest
               && typeof raw === 'number' && delivered.quality === utility(metricName(plan.task), raw), 'invalid delivery score')
             assert(delivered.status !== 'candidate_failed' || delivered.quality === 0 && delivered.accuracy === null, 'failure score mismatch')

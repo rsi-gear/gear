@@ -1,24 +1,12 @@
-This assignment evolves a general data-analysis harness under analysis-five-rollout@1.
-Read references/data-analysis-harness.md through the Refine resource interface.
-One rollout is one experiment. One evaluation cell is five sequential experiments
-from a frozen shared checkpoint. Five-fold validation happens inside each experiment.
+Your goal is to continually improve a Data Analyst Agent that understands data, designs reliable experiments and delivers high-quality results.
+Inspect authorized Target trajectories, code, artifacts and experiment records to identify analytical gaps, mistaken assumptions, inefficient searches or delivery problems.
+Address the most valuable capability gap by improving the workflow, stage prompts, skills or experiment record tools. Prefer simplifying existing rules and write all prompts in English.
+Provide evidence for the problem, concrete changes and a validation plan. Test improvements with Target runs from the same starting point and budget; retain the current harness when evidence is insufficient.
 
-Change only harness prompts, skills, and workflows/research/{policy.py,memory.py,policy.json}.
-Target generates solution code at runtime; never put Titanic features, passenger IDs,
-model solutions, submission rows, or answers into the harness. Fixed drivers, tools,
-budgets, scorer, dependencies and model access are not editable candidates.
+Read references/data-analysis-harness.md through Refine. Change workflow.yaml, prompts, skills, workflows/research and tools/experiment. Keep the execution, permissions, metrics, immutable receipts and resource budgets fixed. Use the public trajectory.query API and artifact API, with run/canonical digest/seq/field references; inspect observable tools, code and outputs. Do not request private reasoning.
 
-Inspect authorized seed research: hypothesis, attempted change, internal validation,
-negative evidence, errors, source selection and actual C5 delivery. State one
-falsifiable mechanism prediction before editing. An unchanged tool-success rate does
-not imply the research or selection policy is good. Use a controlled, general change.
-Never use a later checkpoint or more experiments for one side of a comparison.
+One Target rollout is one experiment; each experiment can contain a bounded inner search. A five-round sequential run uses 25 Target slots; paired old/new comparisons use 50 at the same checkpoint. Do not silently add bootstrap runs or retry samples. Offline replay validates contracts, not ML quality. Prior task-specific code/labels stay outside the harness; reusable methods and scoped domain skills are allowed.
 
-The default objective is actual C5 quality with valid_output >= 1. Five-point curves,
-audit oracle and selection loss are diagnostics; they cannot replace C5 or be copied
-into Target history. Shared-set promotion means development champion only. A single
-Titanic sequence per harness is not independent replication or transfer evidence.
+New round-CV tasks use all labeled training rows with five shuffled folds shared by both harnesses and every experiment in that round. The frozen starting checkpoint determines the split seed; recovery preserves it and a new round changes it. Harness comparison uses the selected solution's mean CV utility, with no separate local validation/test score. Inspect per-fold scores, dispersion and OOF diagnostics. Prior-round records remain evidence for ideas, not directly comparable scores. Official unlabeled test rows are used only for final predictions. Do not modify the fixed split or report development CV as an official Kaggle score.
 
-Model tokens and requests are usage-only under the user's chosen profile. Keep the
-five-experiment count and CPU, wall, memory, tools and output limits. Do not claim a
-hard token budget, complete retry accounting or known monetary cost without evidence.
+Write a short card: capability gap, evidence, change, expected observable behavior, verification. You can remove rules and change several files for one capability. The historical 0.77511 score is user-reported; further performance claims require registered evaluation.

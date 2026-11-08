@@ -22,7 +22,7 @@ describe('packaged skill resource identity', () => {
     expect(copy.resources).toEqual(bundled.resources)
     expect(copy.digest).toBe(bundled.digest)
     expect(copy.resources.map(value => value.logicalPath)).toEqual([
-      'SKILL.md', 'agents/openai.yaml', 'references/dsh-target-harness.md',
+      'SKILL.md', 'agents/openai.yaml', 'references/data-analysis-harness.md', 'references/dsh-target-harness.md',
       'references/protocol.md', 'references/target-harness-editing.md',
       'scripts/transport.mjs',
     ])

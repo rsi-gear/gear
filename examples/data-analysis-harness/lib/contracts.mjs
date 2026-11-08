@@ -45,16 +45,51 @@ export function validateBudget(b) {
 export function validateExperiment(e) {
   validateSchema('Experiment', e)
   keys(e, ['protocol', 'experimentId', 'sequenceId', 'rolloutRunId', 'slotIndex', 'parentExperimentId', 'operator',
-    'sourceDigest', 'validationPlanDigest', 'trainingSeed', 'claim', 'execution', 'interpretation', 'digest'])
-  verify(e); assert(['analysis-experiment@1', 'analysis-experiment@2'].includes(e.protocol), 'invalid experiment protocol')
-  assert(Number.isInteger(e.slotIndex) && e.slotIndex >= 1 && e.slotIndex <= 5, 'invalid slot')
+    'sourceDigest', 'validationPlanDigest', 'trainingSeed', 'claim', 'execution', 'interpretation', 'digest'], ['analysis-experiment@4', 'analysis-experiment@5'].includes(e.protocol) ? ['analysis'] : [])
+  const holdout = ['analysis-experiment@3', 'analysis-experiment@4'].includes(e.protocol)
+  const roundCv = e.protocol === 'analysis-experiment@5'
+  verify(e); assert(['analysis-experiment@1', 'analysis-experiment@2', 'analysis-experiment@3', 'analysis-experiment@4', 'analysis-experiment@5'].includes(e.protocol), 'invalid experiment protocol')
+  assert(Number.isSafeInteger(e.slotIndex) && e.slotIndex >= 1 && (holdout || roundCv || e.slotIndex <= 5), 'invalid slot')
   assert(['draft', 'debug', 'improve', 'confirm', 'reuse'].includes(e.operator), 'invalid operator')
   keys(e.claim, ['hypothesis', 'intendedChange']); keys(e.interpretation, ['conclusion', 'limitations'])
-  const generic = e.protocol === 'analysis-experiment@2'
-  keys(e.execution, ['status', 'receiptDigest', 'physicalAttemptRefs', 'reusedEvidenceRefs', 'cost', 'foldMetrics', 'oofDigest',
-    ...(generic ? ['metric', 'pooledScore', 'pooledUtility'] : ['pooledAccuracy'])])
+  const generic = e.protocol !== 'analysis-experiment@1'
+  keys(e.execution, ['status', 'receiptDigest', 'physicalAttemptRefs', 'reusedEvidenceRefs', 'cost',
+    ...(holdout ? ['metric', 'validationScore', 'validationUtility', 'validationRows', 'predictionsDigest']
+      : ['foldMetrics', 'oofDigest', ...(generic ? ['metric', 'pooledScore', 'pooledUtility'] : ['pooledAccuracy']),
+        ...(roundCv ? ['meanScore', 'meanUtility', 'stdScore'] : [])])])
   assert(['completed', 'reused', 'generation_failed', 'candidate_failed'].includes(e.execution.status), 'unavailable experiment cannot advance history')
   cost(e.execution.cost)
+  if (e.protocol === 'analysis-experiment@4' || roundCv) {
+    const a = e.analysis
+    assert(a && Array.isArray(a.variants) && Array.isArray(a.notes) && Array.isArray(a.artifacts)
+      && a.workflow?.states && a.harness && a.checkpoint && a.dataset && a.toolVersion, 'incomplete workflow record')
+    for (const count of ['trials', 'fits', 'fitCalls']) assert(a[count] === null || Number.isSafeInteger(a[count]) && a[count] >= 0, 'invalid experiment work count')
+    if (e.execution.status === 'completed') assert(a.plan && a.variants.some(v => v.id === a.formalVariantId && v.status === 'completed'), 'formal result has no evaluated variant')
+  }
+  if (roundCv) {
+    const v = e.analysis.validation, plan = v?.plan
+    validateSchema('RoundValidation', plan)
+    assert(v.digest === digest(plan) && plan.policyDigest === e.validationPlanDigest && plan.trainDigest === e.analysis.dataset, 'CV evidence scope changed')
+    if (validCandidate(e)) {
+      const f = e.execution.foldMetrics
+      assert(e.execution.oofDigest && f.length === 5, 'CV requires five folds and OOF predictions')
+      assert(Array.isArray(v.rowIds) && Array.isArray(v.foldAssignments) && v.rowIds.length === v.foldAssignments.length
+        && new Set(v.rowIds).size === v.rowIds.length && v.foldAssignments.every(n => Number.isInteger(n) && n >= 0 && n < 5), 'invalid CV row assignments')
+      assert(f.every((row, i) => row.rows === v.foldAssignments.filter(n => n === i).length && row.rows > 0), 'CV rows do not match frozen folds')
+      const mean = f.reduce((n, row) => n + row.score, 0) / 5
+      const quality = f.reduce((n, row) => n + row.utility, 0) / 5
+      const std = Math.sqrt(f.reduce((n, row) => n + (row.score - mean) ** 2, 0) / 5)
+      assert(Math.abs(mean - e.execution.meanScore) < 1e-12 && Math.abs(quality - e.execution.meanUtility) < 1e-12
+        && Math.abs(std - e.execution.stdScore) < 1e-12, 'CV aggregate differs from fold evidence')
+    } else assert(e.execution.meanScore === null && e.execution.meanUtility === null && e.execution.stdScore === null && e.execution.oofDigest === null, 'failed CV has no selected score')
+  }
+  if (holdout) {
+    if (['completed', 'reused'].includes(e.execution.status)) {
+      assert(e.sourceDigest && e.execution.predictionsDigest && e.execution.validationRows > 0, 'successful experiment requires held-out predictions')
+      assert(Math.abs(utility(e.execution.metric, e.execution.validationScore) - e.execution.validationUtility) < 1e-12, 'validation utility mismatch')
+    } else assert(e.execution.validationScore === null && e.execution.validationUtility === null && e.execution.predictionsDigest === null, 'failed experiment has no validation score')
+    return e
+  }
   if (generic) {
     if (['completed', 'reused'].includes(e.execution.status)) {
       assert(e.sourceDigest && e.execution.foldMetrics.length === 5, 'successful experiment requires source and five folds')
@@ -83,7 +118,13 @@ export function validateExperiment(e) {
 export function validateSolution(s) {
   validateSchema('Solution', s)
   keys(s, ['protocol', 'files', 'entrypoint', 'parameters', 'trainingSeed', 'runtimeDigest', 'authoredByRunId', 'digest'])
-  verify(s); assert(s.protocol === 'analysis-solution@1', 'invalid solution')
+  verify(s); assert(['analysis-solution@1', 'analysis-solution@2'].includes(s.protocol), 'invalid solution')
+  if (s.protocol === 'analysis-solution@2') {
+    const p = verify(s.parameters)
+    assert(p.protocol === 'analysis-resolved-pipeline@1' && p.configDigest === digest(p.config) && p.codeDigest === digest(s.files)
+      && p.runtimeDigest === s.runtimeDigest && p.entrypoint === s.entrypoint && p.trainingEntry === 'build_pipeline' && p.fitCount === 1 && p.actualParameters,
+      'resolved pipeline differs from source/config/runtime')
+  }
   assert(s.files.length > 0 && s.files.length <= 64, 'invalid source closure')
   const names = new Set()
   for (const f of s.files) { keys(f, ['path', 'digest', 'bytes']); sourcePath(f.path); assert(!names.has(f.path), 'duplicate source'); names.add(f.path); finite(f.bytes, 'source bytes', defaultBudget.maxFileBytes) }

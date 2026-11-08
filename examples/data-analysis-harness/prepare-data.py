@@ -1,8 +1,7 @@
-"""Prepare a binary CSV task without task-specific feature or model logic."""
+"""Prepare all labeled rows for round CV; query rows have no local labels."""
 import argparse
 import csv
 import json
-import random
 from pathlib import Path
 
 
@@ -37,38 +36,18 @@ def main():
         raise ValueError('binary labels and disjoint unique nonempty IDs required')
     if any(not r[idc] or None in r or any(v is None for v in r.values()) for r in rows + query):
         raise ValueError('invalid CSV row')
-    rng = random.Random(a.seed)
     if a.existing_competition:
-        old = json.loads(Path(a.existing_competition).read_text())
-        split = next(t for t in old['tasks'] if t['partition'] == 'held-out')
-        train_ids, query_ids = set(split['train_ids']), set(split['predict_ids'])
-        if train_ids & query_ids or train_ids | query_ids != set(ids):
-            raise ValueError('existing split is not this dataset')
-    else:
-        query_ids = set()
-        for value in labels:
-            group = [r[idc] for r in rows if r[label] == value]; rng.shuffle(group)
-            query_ids.update(group[:max(1, round(len(group) * .2))])
-        train_ids = set(ids) - query_ids
-    train, holdout = [r for r in rows if r[idc] in train_ids], [r for r in rows if r[idc] in query_ids]
-    folds = [[] for _ in range(5)]
-    for value in labels:
-        group = [r[idc] for r in train if r[label] == value]; rng.shuffle(group)
-        if len(group) < 5:
-            raise ValueError('at least five visible rows per label required')
-        for i, key in enumerate(group):
-            folds[i % 5].append(key)
-    plan = {'protocol': 'analysis-validation-plan@1', 'seed': a.seed, 'metric': 'pooled-oof-accuracy', 'folds': [
-        {'trainIds': [r[idc] for r in train if r[idc] not in f], 'validationIds': [r[idc] for r in train if r[idc] in f]} for f in folds]}
+        raise ValueError('round CV does not accept an old held-out split; supply the full training CSV')
+    if any(sum(r[label] == value for r in rows) < 5 for value in labels):
+        raise ValueError('at least five labeled rows per class required')
     out = Path(a.out)
-    save(out / 'development/train.csv', fields, train)
-    save(out / 'development/predict.csv', qfields, holdout)
-    save(out / 'private/expected.csv', [idc, label], holdout)
+    save(out / 'development/train.csv', fields, rows)
+    save(out / 'development/predict.csv', qfields, query)
     save(out / 'refit/train.csv', fields, rows)
     save(out / 'refit/predict.csv', qfields, query)
-    (out / 'validation.json').write_text(json.dumps(plan))
+    (out / 'validation.json').write_text(json.dumps({'seed': a.seed}))
     (out / 'prepared.json').write_text(json.dumps({'prediction': {'idColumn': idc, 'targetColumn': label, 'kind': 'binary-label', 'allowedLabels': labels},
-        'predictIds': [r[idc] for r in holdout], 'refitIds': qids, 'rows': {'train': len(train), 'predict': len(holdout), 'refitTrain': len(rows), 'refitPredict': len(query)}}))
+        'predictIds': qids, 'refitIds': qids, 'rows': {'train': len(rows), 'predict': len(query), 'refitTrain': len(rows), 'refitPredict': len(query)}}))
 
 
 if __name__ == '__main__':

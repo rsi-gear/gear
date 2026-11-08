@@ -8,6 +8,7 @@ import { ResearchProject } from './lib/project.mjs'
 import { assert, seal, digest, advance, defaultBudget } from './lib/contracts.mjs'
 import { sequencePlan, SequenceRunner, validateRollout } from './lib/sequence.mjs'
 import { withinDeadline } from './lib/deadline.mjs'
+import { roundValidation } from './lib/validation.mjs'
 
 export async function bootstrapCheckpoint(store, backend, project, { signal } = {}) {
   const key = `${project.projectId}-bootstrap`, existing = await store.load('bootstraps', key)
@@ -23,7 +24,9 @@ export async function bootstrapCheckpoint(store, backend, project, { signal } = 
     harness: project.harness, model: project.model, task: project.task, cpuSeconds: 300, wallSeconds: 600 })
   const request = existing?.request ?? seal({ protocol: 'analysis-rollout-request@1', sequenceId: plan.digest.slice(7), slotIndex: 1,
     planDigest: plan.digest, task: project.task, harness: project.harness, model: project.model, runtimeDigest: project.task.runtimeDigest,
-    checkpointDigest: initial.digest, checkpointRef: project.checkpointRef, previousRolloutReceiptDigest: null, eligibleSolutionDigests: [],
+    checkpointDigest: initial.digest, checkpointRef: project.checkpointRef,
+    ...(roundValidation(project.task, initial.digest) ? { roundValidation: roundValidation(project.task, initial.digest) } : {}),
+    previousRolloutReceiptDigest: null, eligibleSolutionDigests: [],
     allowance: { wallSeconds: 600, cpuSeconds: 300, tools: 30, tokens: null, requests: null }, experimentWallSeconds: 240, experimentCpuSeconds: 240 })
   const controller = new ResearchProject(store, project)
   await controller.reserveAuxiliary('bootstrap', plan.digest, { wallSeconds: 600, cpuSeconds: 300 })

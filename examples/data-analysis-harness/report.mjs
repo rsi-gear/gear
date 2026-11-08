@@ -8,6 +8,8 @@ import { trajectoryReport } from './lib/report.mjs'
 import { HitchBackend } from './lib/hitch-backend.mjs'
 import { ResearchProject } from './lib/project.mjs'
 import { withinDeadline, withOperatorCancellation } from './lib/deadline.mjs'
+import { isRoundCvTask, experimentValidationDigest } from './lib/validation.mjs'
+import { internalScore, internalQuality } from './lib/metrics.mjs'
 
 export async function auditSequence(store, backend, project, receipt, { signal } = {}) {
   return locked(store.path('locks', `audit-${receipt.planDigest.slice(7)}`), () => auditLocked(store, backend, project, receipt, { signal }))
@@ -16,6 +18,16 @@ export async function auditSequence(store, backend, project, receipt, { signal }
 async function auditLocked(store, backend, project, receipt, { signal } = {}) {
   const id = receipt.planDigest.slice(7), state = await store.load('sequences', id)
   assert(state?.receipt?.digest === receipt.digest, 'audit requires a sealed original sequence')
+  if (isRoundCvTask(state.plan.task)) {
+    const experiments = state.steps.map(s => s.experiment).filter(e => validCandidate(e)
+      && experimentValidationDigest(e) === digest(state.plan.roundValidation))
+    const result = seal({ protocol: 'analysis-audit@1', sequenceReceiptDigest: receipt.digest, selectionDigest: digest(receipt.selections),
+      evaluationKind: 'round_five_fold_cv', independentTest: false,
+      solutions: Object.fromEntries(experiments.map(e => [e.sourceDigest, { status: 'completed', quality: internalQuality(e),
+        accuracy: e.execution.metric === 'accuracy' ? internalScore(e) : null, reusedCv: e.digest }])), cost: zeroCost(), wallSeconds: 0 })
+    await store.save('audits', id, { status: 'complete', result })
+    return result
+  }
   const previous = await store.load('audits', id)
   const controller = new ResearchProject(store, project), checkpoint = await store.get(receipt.checkpointRef)
   if (previous?.status === 'complete') {

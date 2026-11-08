@@ -10,7 +10,7 @@ import { isExactGitCommit } from '../types.js'
 import type { CandidateWorkspaceHandle } from '../candidate/workspace.js'
 import { candidateCheckReport, CompilerCheckError, type CandidateCheckReport, type CompilerCheckReport } from './check-report.js'
 
-const ALLOWED_ROOTS = new Set(['preset', 'plugins', 'prompts', 'skills', 'workflows'])
+const ALLOWED_ROOTS = new Set(['preset', 'plugins', 'prompts', 'skills', 'workflows', 'tools', 'workflow.yaml'])
 const FORBIDDEN_NAMES = new Set([
   'package.json', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lock', 'bun.lockb',
 ])

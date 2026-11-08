@@ -1,41 +1,13 @@
-# Data-analysis harness development
+# Data Analyst Agent workflow v2
 
-The candidate is a general research method. The Target writes its own Python
-solution during execution. Edit only the declared prompts, skills, research
-policy and memory code; never install a task-specific solution in the harness.
+Optimize the Target's ability to understand data, design reliable experiments and deliver reproducible pipelines. Use the current harness prompts/meta.md as the role prompt, workflow.yaml as the workflow, and prompts/stages for short on-demand guidance.
 
-One rollout is one experiment. One Gear cell contains five sequential rollouts,
-one repetition, and an additional fixed, zero-model execution of C5. Five-fold
-CV happens inside each experiment. Failure, debugging, confirmation and reuse
-each consume their registered slot. Do not add independent repeated sequences.
+Inspect actual authorized Target tool calls/results, source and outputs via trajectory.query and the public Hitch artifact APIs. Bind quotations to run ID, canonical digest, seq and field; retrieve long fields through pagination. Record missing evidence as unknown. Private reasoning is not needed.
 
-Compare candidates only at the same starting checkpoint and incremental budget.
-Read the ordered experiment facts, failed attempts, hypotheses, selection policy
-trace and actual C1–C5 choices. Propose one measurable general mechanism. Explain
-which next action or choice should change and under which conditions it should
-not change. Check new instructions are actually loaded, rather than merely added.
+Editable: workflow.yaml (JSON-compatible YAML), prompts/**/*.md, skills/**/*.md, workflows/research/{policy.py,memory.py,policy.json}, tools/experiment/**/*.py|json|md. Candidate checks seal these files. Plugin code runs in the metered worker; it can version, migrate/rebuild caches, order and render records but cannot alter original execution facts. Fixed driver, metrics, permissions and budgets remain outside the candidate.
 
-The main score is the actual final C5 delivery. The pooled OOF metric is internal
-feedback, not external generalization. A higher audited V or curve cannot rescue
-a failed C5, choose a different submission or justify retroactive selections.
-Audit metrics and their missing coverage are diagnostic. External scores,
-promotion decisions and post-score explanations must not enter Target memory.
+The Target workflow covers task, EDA, validation, processing, features, models, tuning, errors and delivery. Reuse compatible artifacts; loop where evidence warrants. Promote a specific formally evaluated variant, and refit the frozen configuration without search.
 
-For single-task development, reuse-seed promotion is explicitly shared research;
-there is no independent promotion test. Changing the public checkpoint creates
-a new cohort and requires a fresh baseline. Rejected branches and failed
-experiments remain in the stage's declared merge and total project cost.
+Each proposed improvement needs a short card: capability gap; observable evidence; changed workflow/tool/skill; expected behavior; engineering tests and any required real comparison. Simplification is a valid improvement. Do not equate longer prompts, more reports or completed stages with higher quality.
 
-Model usage-only profiles have no hard token/request cap. Their measured usage
-is a lower bound when provider retries or missing usage cannot be verified;
-unknown monetary cost is not zero. CPU, time, tools and five experiment slots
-remain separate constraints. Do not describe an observational profile as a
-hard model budget.
-
-New Kaggle tasks use MLE-bench definitions and prepared public/private trees.
-Keep raw metric and selection utility separate: accuracy/AUC use identity;
-mean-column-wise RMSLE uses 1/(1+score), with lower raw error preferred.
-The immutable grader computes metrics from full OOF predictions. Preserve all
-target columns and public assets, and use the sample/test ID order for exports.
-Never merge benchmark-private answers into research training. Official Kaggle
-deployment inputs are a separately registered, zero-model refit scope.
+One rollout is one logical experiment. Trial and component fit counts are recorded separately. Five rounds with one harness x five experiments = 25; paired old/new harnesses = 50. Match starting checkpoint, data, model and resources for comparisons. Offline replay makes no accuracy claim. A single Titanic development run is not transfer evidence.

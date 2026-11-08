@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url'
 import type { CandidateWorkspaceManager } from './workspace.js'
 
 const VIRTUAL_ROOT = '/candidate/harness'
-const ALLOWED_ROOTS = new Set(['preset', 'plugins', 'prompts', 'skills', 'workflows'])
+const ALLOWED_ROOTS = new Set(['preset', 'plugins', 'prompts', 'skills', 'workflows', 'tools', 'workflow.yaml'])
 const PROTECTED_NAMES = new Set(['manifest.json', 'package.json', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lock', 'bun.lockb', '.git'])
 
 function contained(path: string, root: string): boolean {

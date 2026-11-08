@@ -4,6 +4,8 @@ import { resolve, join, relative, sep } from 'node:path'
 
 export const hash = value => `sha256:${createHash('sha256').update(value).digest('hex')}`
 export const mutable = path => /^(?:prompts|skills)\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+\.md$/.test(path)
+  || path === 'workflow.yaml'
+  || /^tools\/experiment\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+\.(?:py|json|md)$/.test(path)
   || /^workflows\/research\/(?:policy\.py|memory\.py|policy\.json)$/.test(path)
 
 export async function files(root) {

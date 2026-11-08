@@ -1,2 +1,1 @@
-Use the previous failure's recorded diagnostics to make one justified correction.
-Do not combine a repair with unrelated feature or model changes.
+Legacy compatibility label. Use workflow.yaml and the stage guidance returned by task_inspect.

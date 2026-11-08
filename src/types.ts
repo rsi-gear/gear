@@ -457,6 +457,11 @@ export interface HitchTrajectoryEventsPage {
 }
 
 export interface HitchTrajectoryReader {
+  /** Resolve only verified research children of an already authorized seed run. */
+  resolveSeedChild?(anchorRunId: string, runId: string, signal: AbortSignal): Promise<{
+    evalId: string
+    trial: EvaluationTrialSummary & { runId: string }
+  } | undefined>
   inspectCapabilities(signal: AbortSignal): Promise<HitchCapabilities>
   inspectTrajectoryAnalysis(runId: string, signal: AbortSignal): Promise<HitchTrajectoryAnalysis>
   inspectTrajectoryEvents(

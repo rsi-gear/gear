@@ -6,7 +6,7 @@ import type { CandidateDiffFile, CandidateDiffSummary, RefinementRound } from '.
 import { isExactGitCommit } from '../types.js'
 import { createTwoFilesPatch, diffLines } from 'diff'
 
-const ALLOWED_ROOTS = new Set(['preset', 'plugins', 'prompts', 'skills', 'workflows'])
+const ALLOWED_ROOTS = new Set(['preset', 'plugins', 'prompts', 'skills', 'workflows', 'tools', 'workflow.yaml'])
 const FORBIDDEN_NAMES = new Set(['manifest.json', 'package.json', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lock', 'bun.lockb'])
 
 export type CandidateWorkspaceState = 'open' | 'sealing' | 'sealed' | 'finalizing' | 'committed' | 'disposed'

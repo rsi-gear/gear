@@ -20,7 +20,8 @@ export async function outerDataset(directory, project, checkpoint, provider) {
   const task = join(directory, project.task.taskId)
   await mkdir(task, { recursive: true })
   await writeFile(join(task, 'task.toml'), 'version = "1.0"\n[verifier]\ntimeout_sec = 60\n')
-  await writeFile(join(task, 'instruction.md'), `analysis-five-rollout@1\n${project.task.description}\nOne cell = five sequential experiments. Shared public checkpoint: ${checkpoint.digest}. This is development evidence. Improve the general research harness.\n`)
+  const metaPrompt = await command('git', ['show', `${project.harness.commit}:harness/prompts/meta.md`], { cwd: project.targetRepository })
+  await writeFile(join(task, 'instruction.md'), `${metaPrompt}\nanalysis-five-rollout@1\n${project.task.description}\nOne cell = five sequential experiments. Shared public checkpoint: ${checkpoint.digest}. This is development evidence. Improve the general research harness.\n`)
   const body = { schema_version: '1', kind: 'gear-harbor-benchmark', benchmark: { id: 'analysis-sequence', revision: checkpoint.digest },
     adapter: { id: 'analysis-five-rollout', revision: provider.integrity, output_protocol: 'gear-harbor-eval-result-v1' },
     raw_metrics: { schema_version: '1', metrics: provider.raw.map(({ schemaVersion: _, digest: _d, ...m }) => m) },
@@ -29,7 +30,7 @@ export async function outerDataset(directory, project, checkpoint, provider) {
   await atomicJson(join(directory, 'benchmark.adapter.json'), { ...body, dataset_digest: digest(body) })
   return directory
 }
-export async function buildControl(base, project, directory, { checkpointRef, fromHarness, maxCandidates = 1 } = {}) {
+export async function buildControl(base, project, directory, { checkpointRef, fromHarness, maxCandidates = 1, cohortDirectory } = {}) {
   const store = new Store(join(directory, 'research')), backend = new HitchBackend(store, project.backend), controller = new ResearchProject(store, project)
   const head = await store.load('projects', project.projectId), checkpoint = await store.get(checkpointRef ?? head.checkpoint)
   if (!fromHarness) {
@@ -47,8 +48,11 @@ export async function buildControl(base, project, directory, { checkpointRef, fr
   const implementation = await implementationDigest()
   provider.integrity = digest({ implementation, conditions: provider.integrity })
   provider.conditionDigest = digest({ provider: provider.integrity, task: project.task.digest, checkpoint: checkpoint.digest, repetitions: 1 })
-  const cohort = join(directory, 'cohorts', checkpoint.digest.slice(7))
-  const dataset = await outerDataset(join(cohort, 'tasks'), project, checkpoint, provider)
+  // A new control cohort can retain the original research ledger and sequences.
+  const cohort = cohortDirectory ?? join(directory, 'cohorts', checkpoint.digest.slice(7))
+  const validation = provider.plan(fromHarness).roundValidation
+  if (validation) await atomicJson(join(cohort, 'validation.json'), validation)
+  const dataset = await outerDataset(join(cohort, 'tasks'), { ...project, harness: fromHarness }, checkpoint, provider)
   const compiler = await compilerEnvironment(base.compiler)
   const maxSeconds = (maxCandidates + 1) * project.budget.wallSeconds + 1800
   const limits = { maxNewRolloutCells: maxCandidates + 1, maxDiagnosisInputTokens: 100000, maxDiagnosisOutputTokens: 20000,
@@ -76,6 +80,7 @@ export async function buildControl(base, project, directory, { checkpointRef, fr
   const evaluator = new Proxy(raw, { get(target, property) {
     if (property === 'search') return { provider, diagnosis: provider.diagnosis }
     if (property === 'evaluate') return async () => { throw new Error('analysis requires staged sequence execution') }
+    if (property === 'resolveSeedChild') return (anchorRunId, runId, signal) => backend.resolveSeedChild(anchorRunId, runId, provider, signal)
     if (property === 'resolveVerifierRun') return async (_evalId, runId, signal) => {
       signal.throwIfAborted(); const index = await store.load('seed-runs', runId); assert(index, 'run outside authorized seed sequence')
       const cell = await store.load('cells', index.cellKey); assert(await provider.verifyCell(cell.cell, cell.cell.identity), 'seed sequence artifacts unavailable')
@@ -89,7 +94,7 @@ export async function buildControl(base, project, directory, { checkpointRef, fr
     { checkpoint: checkpoint.digest, task: project.task.digest, model: project.model, budget: project.budget, executorCommit: project.backend.executorCommit })
   await mkdir(config.workspaceRoot, { recursive: true }); await atomicJson(join(cohort, 'gear.config.json'), config)
   return { config, evaluator, rolloutProvider, provider, cohort,
-    budgetPreview: { sequences: maxCandidates + 1, researchRollouts: 5 * (maxCandidates + 1), deliveries: maxCandidates + 1,
+    budgetPreview: { mode: 'paired', targetExperimentsPerFiveRounds: 5 * 5 * (maxCandidates + 1), sequences: maxCandidates + 1, researchRollouts: 5 * (maxCandidates + 1), deliveries: validation ? 0 : maxCandidates + 1,
       sequenceWallSeconds: project.budget.wallSeconds, sequenceCpuSeconds: project.budget.cpuSeconds, model: project.modelAccounting } }
 }
 export async function main() {

@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { copyFile, lstat, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { randomUUID } from 'node:crypto'
@@ -8,9 +8,19 @@ import { atomicJson, json, locked } from './store.mjs'
 import { validateRequest } from './schemas.mjs'
 import { metricName, utility } from './metrics.mjs'
 import { fileHash, treeManifest } from './mlebench.mjs'
+import { cvSelection } from './validation.mjs'
+
+async function writeImmutableInput(path, bytes) {
+  try { await writeFile(path, bytes, { mode: 0o444, flag: 'wx' }) }
+  catch (error) {
+    if (error.code !== 'EEXIST') throw error
+    const existing = await lstat(path)
+    assert(existing.isFile() && existing.nlink === 1 && (await readFile(path)).equals(bytes), 'materialized input changed')
+  }
+}
 
 export async function executionBinding(config) {
-  const files = { train: config.train, predict: config.predict, expected: config.expected,
+  const files = { train: config.train, predict: config.predict, ...(config.expected ? { expected: config.expected } : {}),
     producer: join(config.hitchRepository, 'benchmark-packages/kaggle/analysis.mjs'),
     verifier: join(config.hitchRepository, 'benchmark-packages/kaggle/runtime/analysis-verify.py'),
     schema: join(config.hitchRepository, 'benchmark-packages/kaggle/analysis-contracts/schemas.mjs'),
@@ -64,18 +74,18 @@ export class HitchBackend {
       assert(await fileHash(source) === file.digest, 'public MLE-bench asset changed')
       const bytes = await readFile(source)
       assert(bytes.length === file.bytes && sha(bytes) === file.digest, 'public MLE-bench asset changed')
-      await mkdir(join(destination, '..'), { recursive: true }); await writeFile(destination, bytes, { mode: 0o444 })
+      await mkdir(join(destination, '..'), { recursive: true }); await writeImmutableInput(destination, bytes)
     }
     if (checkpoint) {
       validateCheckpoint(checkpoint); await this.store.verifySources(checkpoint)
       await atomicJson(join(directory, 'checkpoint.json'), checkpoint)
-      await atomicJson(join(directory, 'validation.json'), this.config.validationPlan)
-      for (const id of new Set(checkpoint.history.map(e => e.execution.oofDigest).filter(Boolean)))
-        await writeFile(join(directory, 'objects', id.slice(7)), await this.store.bytes(id), { mode: 0o444 })
+      await atomicJson(join(directory, 'validation.json'), request.roundValidation ?? this.config.validationPlan)
+      for (const id of new Set(checkpoint.history.flatMap(e => [e.execution.oofDigest, e.execution.predictionsDigest, ...(e.analysis?.artifacts ?? []).map(a => a.digest), e.analysis?.pluginCache?.digest]).filter(Boolean)))
+        await writeImmutableInput(join(directory, 'objects', id.slice(7)), await this.store.bytes(id))
     }
     for (const s of checkpoint?.solutions ?? [request.solution]) {
       validateSolution(s)
-      for (const f of s.files) await writeFile(join(directory, 'objects', f.digest.slice(7)), await this.store.bytes(f.digest), { mode: 0o444 })
+      for (const f of s.files) await writeImmutableInput(join(directory, 'objects', f.digest.slice(7)), await this.store.bytes(f.digest))
     }
     const { produceAnalysisTask } = await import(pathToFileURL(join(this.config.hitchRepository, 'benchmark-packages/kaggle/analysis.mjs')))
     const out = join(this.store.root, 'datasets', id)
@@ -154,11 +164,47 @@ export class HitchBackend {
     const { digest: _, protocol: _protocol, ...body } = operation.output
     return seal({ ...body, protocol: 'analysis-rollout-receipt@1', outputManifestDigest: operation.outputManifestDigest })
   }
+  async trajectoryPage(runId, query = {}, { signal } = {}) {
+    const index = await this.store.load('seed-runs', runId)
+    assert(index?.childRuns.includes(runId), 'trajectory outside authorized research runs')
+    const types = query.types ?? ['tool/call', 'tool/result', 'user/message']
+    assert(types.length && types.every(t => ['tool/call', 'tool/result', 'user/message', 'request/header'].includes(t)), 'only observable evidence may be queried')
+    let canonical = query.canonicalDigest
+    if (!canonical) {
+      const overview = await this.hitch(['trajectory', 'project', runId, '--profile', 'analysis', '--max-bytes', '16384', '--json'], { executor: true, signal })
+      canonical = overview.source.canonical_sha256
+    }
+    assert(/^sha256:[a-f0-9]{64}$/.test(canonical), 'canonical trajectory digest required')
+    if (query.field) assert(query.seqStart === query.seqEnd && Number.isSafeInteger(query.seqStart), 'field retrieval requires one exact event')
+    const args = ['trajectory', 'events', runId, '--canonical-sha256', canonical, '--types', types.join(','), '--max-bytes', '32768', '--limit', '20', '--json']
+    for (const [name, value] of [['seq-start', query.seqStart], ['seq-end', query.seqEnd], ['field', query.field], ['cursor', query.cursor]])
+      if (value !== undefined) args.push(`--${name}`, String(value))
+    const page = await this.hitch(args, { executor: true, signal })
+    assert(page.run_id === runId && page.canonical_sha256 === canonical, 'trajectory source changed')
+    assert(page.events.every(e => types.includes(e.type)), 'requested field is outside observable evidence')
+    return page
+  }
+  async resolveSeedChild(anchorRunId, runId, provider, signal) {
+    signal.throwIfAborted()
+    const anchor = await this.store.load('seed-runs', anchorRunId), child = await this.store.load('seed-runs', runId)
+    if (!anchor || !child || anchor.cellKey !== child.cellKey) return undefined
+    const cell = await this.store.load('cells', anchor.cellKey)
+    if (!cell || cell.partition !== 'seed' || cell.cell.evidenceRef !== anchorRunId
+      || !await provider.verifyCell(cell.cell, cell.cell.identity)) return undefined
+    const state = await this.store.load('sequences', cell.plan.digest.slice(7))
+    const step = state?.steps.find(s => s.runId === runId)
+    if (!step || !cell.receipt.steps.some(s => s.runId === runId && s.receiptDigest === step.digest)) return undefined
+    const operation = await this.store.load('executions', step.requestDigest.slice(7))
+    assert(operation?.status === 'complete' && operation.runId === runId, 'seed child execution is unavailable')
+    signal.throwIfAborted()
+    return { evalId: operation.evalId, trial: { taskName: cell.plan.task.taskId, runId, status: 'completed',
+      rewards: operation.rewards, attempt: 1, ...(operation.trial.trial_name ? { trialName: operation.trial.trial_name } : {}) } }
+  }
   async deliver(request, options) {
     const operation = await this.execute(request, null, options), output = operation.output
     assert(output.protocol === 'analysis-execution-receipt@1' && output.solutionDigest === request.solution.digest && output.modelRequests === 0, 'sealed executor identity mismatch')
     const valid = operation.rewards.valid_output === 1, deployment = request.protocol === 'analysis-refit-request@1'
-    const generic = request.task.protocol === 'analysis-task@2', metric = metricName(request.task)
+    const generic = request.task.protocol !== 'analysis-task@1', metric = metricName(request.task)
     const score = valid && !deployment ? generic ? operation.rewards.task_score : operation.rewards.accuracy : null
     assert(!valid || deployment || typeof score === 'number' && Number.isFinite(utility(metric, score)), 'missing external metric score')
     const accuracy = metric === 'accuracy' ? score : null
@@ -167,6 +213,7 @@ export class HitchBackend {
       status: valid ? 'completed' : 'candidate_failed', modelRequests: 0,
       quality: valid ? deployment ? 1 : utility(metric, score) : 0, accuracy,
       ...(generic ? { metric, score } : {}),
+      ...(request.solution.protocol === 'analysis-solution@2' ? { resolvedPipelineDigest: output.resolvedPipelineDigest, fits: output.fits, fitCalls: output.fitCalls, searchCalls: output.searchCalls } : {}),
       predictionsDigest: output.predictionsDigest, failedAttempts: operation.failedAttempts ?? [],
       cost: { ...zeroCost(), cpuSeconds: output.cpuSeconds + (operation.failedAttempts ?? []).reduce((n, a) => n + a.reservedCpuSeconds, 0) } })
   }
@@ -194,6 +241,12 @@ export class HitchBackend {
   }
   async verifyReceipt(receipt) {
     verify(receipt)
+    if (receipt.delivery.protocol === 'analysis-cv-selection@1') {
+      const state = await this.store.load('sequences', receipt.planDigest.slice(7))
+      assert(state && cvSelection(state.plan, state.steps, receipt.selections[4].incumbentSolutionDigest).digest === receipt.delivery.digest,
+        'CV selection differs from the sealed experiment evidence')
+      assert(receipt.total_score === receipt.delivery.quality, 'CV sequence score changed')
+    }
     for (const step of [...receipt.steps, ...(receipt.delivery.runId ? [{ runId: receipt.delivery.runId, outputManifestDigest: receipt.delivery.outputManifestDigest }] : [])]) {
       const m = await this.hitch(['runs', 'artifacts', 'list', step.runId, '--json'], { executor: true })
       assert(m.digest === step.outputManifestDigest && m.run_id === step.runId, 'required artifacts unavailable or changed')

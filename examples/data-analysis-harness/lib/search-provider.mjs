@@ -14,7 +14,7 @@ export class AnalysisSearchProvider {
     this.capabilities = { taskSubsetPlans: true, batchIndependentCells: true, idempotentExecution: true, objectives: 1 }
     this.integrity = digest({ implementation: 'analysis-five-rollout@1', revision: 1, runtime: project.runtime,
       checkpoint: checkpoint.digest, model: project.model, budget: project.budget, executionBindingDigest: backend.bindingDigest ?? null })
-    this.raw = ['total_score', 'valid_output', project.task.protocol === 'analysis-task@2' ? 'task_score' : 'accuracy', 'completed'].map(id => resolveMetric({ id,
+    this.raw = ['total_score', 'valid_output', project.task.protocol !== 'analysis-task@1' ? 'task_score' : 'accuracy', 'completed'].map(id => resolveMetric({ id,
       revision: 'analysis-five-rollout@1', unit: id === 'task_score' ? metricName(project.task) : 'ratio',
       direction: id === 'task_score' && metricName(project.task) === 'mean-column-wise-rmsle' ? 'minimize' : 'maximize', source: { path: `scores.${id}`, extractor: 'number-v1' },
       ...(id === 'task_score' && metricName(project.task) === 'mean-column-wise-rmsle' ? {} : { range: { min: 0, max: 1 } }),
@@ -61,7 +61,7 @@ export class AnalysisSearchProvider {
         metrics: Object.fromEntries(this.raw.map(c => {
           const value = (c.id === 'accuracy' ? receipt.delivery.accuracy : c.id === 'task_score' ? receipt.delivery.score : receipt[c.id]) ?? null
           return [c.id, { contractDigest: c.digest, unit: c.unit, status: value === null ? 'missing' : 'available',
-            ...(value === null ? { reason: 'actual delivery has no metric score' } : { value }), evidenceRefs: [receipt.digest] }]
+            ...(value === null ? { reason: 'selected result has no metric score' } : { value }), evidenceRefs: [receipt.digest] }]
         })) })
       const cell = seal({ identity, status: 'available', envelope: 'score-envelope-v2', outcomeCertified: true, evidenceRef,
         outcome: { status: 'available', rawValue: receipt.total_score, contractDigest: this.task.outcome.digest, evidenceRef },
@@ -69,6 +69,7 @@ export class AnalysisSearchProvider {
       const record = { cell, receipt, plan, partition: 'seed' }
       await this.store.save('cells', key, record)
       await this.store.save('seed-runs', evidenceRef, { cellKey: key, childRuns: receipt.steps.map(s => s.runId) })
+      for (const child of receipt.steps) await this.store.save('seed-runs', child.runId, { cellKey: key, childRuns: [child.runId] })
       result.push(cell)
     }
     return result
@@ -103,14 +104,17 @@ export class AnalysisSearchProvider {
       assert(await this.verifyCell(cell, cell.identity), 'unavailable seed evidence')
       const { receipt, plan } = await this.store.load('cells', cellKey(cell.identity).slice(7))
       const state = await this.store.load('sequences', plan.digest.slice(7))
-      const summary = state.steps.map(s => ({ slot: s.experiment.slotIndex, run: s.runId,
-        operator: s.experiment.operator, status: s.experiment.execution.status, hypothesis: s.experiment.claim.hypothesis.slice(0, 1000),
-        metric: s.experiment.execution.metric ?? 'accuracy', internalScore: internalScore(s.experiment), utility: internalQuality(s.experiment), selected: s.selectedSolutionDigest,
-        interpretation: s.experiment.interpretation }))
+      const summary = state.steps.map(s => ({ slot: s.experiment.slotIndex, run: s.runId, experimentId: s.experiment.experimentId,
+        status: s.experiment.execution.status, metric: s.experiment.execution.metric ?? 'accuracy',
+        internalScore: internalScore(s.experiment), selected: s.selectedSolutionDigest,
+        trace: { tool: 'trajectory.query', runId: s.runId, canonicalDigest: 'resolve through public analysis API',
+          fields: ['tool/call', 'tool/result', 'user/message'], privateReasoning: 'excluded' },
+        artifacts: { runId: s.runId, outputManifestDigest: s.outputManifestDigest },
+        workflow: s.experiment.analysis ? Object.fromEntries(Object.entries(s.experiment.analysis.workflow.states).map(([k, v]) => [k, v.status])) : null }))
       facts.push({ taskId: cell.identity.taskId, evidenceRefs: [cell.evidenceRef], status: 'supported-hypothesis',
-        familyId: 'analysis-research-method', modificationPaths: ['prompts', 'skills', 'workflows/research'],
-        hypothesis: `Investigate the research/selection mechanism at the same checkpoint. Actual C5=${receipt.total_score}; planned=5, attempted=${receipt.attempted}. Internal observations: ${JSON.stringify(summary).slice(0, 10000)}`,
-        mechanism: 'Use experiment failures, hypotheses and internal evidence to improve a general method; a single task does not establish generalization.',
+        familyId: 'data-analyst-capability', modificationPaths: ['workflow.yaml', 'prompts', 'skills', 'workflows/research', 'tools/experiment'],
+        hypothesis: `Improve the Data Analyst Agent. Inspect observable actions and artifacts before diagnosing omissions in EDA, validation, processing, features, model comparison, tuning, error analysis or delivery. Actual C5=${receipt.total_score}; planned=5, attempted=${receipt.attempted}. Evidence locators: ${JSON.stringify(summary)}`,
+        mechanism: 'Submit a short capability-gap card: observation versus inference, trace/artifact evidence, workflow/tool change, predicted behavior and validation. Missing evidence is unknown. Prefer simplifying rules; a single task does not establish generalization.',
         submode: 'analysis-five-rollout' })
     }
     return { facts, inputTokens: 0, outputTokens: 0 }
@@ -119,6 +123,6 @@ export class AnalysisSearchProvider {
 
 /** Hash implementation bytes, not just a version string, into the provider identity. */
 export async function implementationDigest() {
-  const names = ['search-provider.mjs', 'sequence.mjs', 'contracts.mjs', 'schemas.mjs', 'metrics.mjs', 'store.mjs', 'budget.mjs', 'hitch-backend.mjs', 'project.mjs']
+  const names = ['search-provider.mjs', 'sequence.mjs', 'contracts.mjs', 'schemas.mjs', 'metrics.mjs', 'store.mjs', 'budget.mjs', 'hitch-backend.mjs', 'project.mjs', 'records.mjs', 'workflow.mjs', 'pipeline.mjs', 'validation.mjs']
   return digest(Object.fromEntries(await Promise.all(names.map(async n => [n, sha(await readFile(new URL(n, import.meta.url)))]))))
 }

@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { CandidateWorkspaceManager } from '../candidate/workspace.js'
 
 const VIRTUAL_ROOT = '/candidate/harness'
-const ALLOWED_ROOTS = new Set(['preset', 'plugins', 'prompts', 'skills', 'workflows'])
+const ALLOWED_ROOTS = new Set(['preset', 'plugins', 'prompts', 'skills', 'workflows', 'tools', 'workflow.yaml'])
 const PROTECTED_NAMES = new Set(['manifest.json', 'package.json', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lock', 'bun.lockb', '.git'])
 
 function digest(content: Uint8Array | string): string {

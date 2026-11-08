@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "description": "Search, inspect, compare, annotate, run and select reproducible experiments. Use get with sections for details; scores come only from the runtime.",
+  "actions": [
+    "search",
+    "get",
+    "compare",
+    "record",
+    "run",
+    "select"
+  ],
+  "storageVersion": 1
+}

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { CandidateWorkspaceManager } from '../../src/candidate/workspace.js'
 import { SkillCandidateFiles } from '../../src/skill/files.js'
 import { RefineSkillGateway } from '../../src/skill/gateway.js'
+import { HarnessBuilder, NoopHarnessCompiler } from '../../src/harness/builder.js'
 import { createGitHarnessFixture } from '../helpers/git-fixture.js'
 
 const roots: string[] = []
@@ -31,6 +32,24 @@ async function setup() {
 }
 
 describe('SkillCandidateFiles', () => {
+  it('edits and seals analyst workflow and experiment plugins through the Meta file API', async () => {
+    const { fixture, manager, workspace, files } = await setup()
+    try {
+      await files.write('meta-1', 'workflow.yaml', '{"version":2,"stages":[]}\n', null)
+      await files.write('meta-1', 'tools/experiment/query.py', 'def order(records, request): return records\n', null)
+      const tree = await files.tree('meta-1')
+      expect(tree.entries.map(e => e.path)).toEqual(expect.arrayContaining([
+        '/candidate/harness/workflow.yaml', '/candidate/harness/tools/experiment/query.py',
+      ]))
+      const builder = new HarnessBuilder({ repositoryPath: fixture.repository, targetRoot: fixture.targetRoot,
+        dshBaseRef: fixture.baseRef, toolchainRef: 'fixture', sandboxProfileRef: 'fixture', compiler: new NoopHarnessCompiler() })
+      await expect(builder.checkWorkspace(workspace, new AbortController().signal)).resolves.toMatchObject({ ok: true })
+      await expect(files.write('meta-1', 'fixed/worker.py', 'forged', null)).rejects.toThrow(/fixed substrate/)
+      await expect(files.write('meta-1', 'tools/package.json', '{}', null)).rejects.toThrow(/protected/)
+    } finally {
+      await manager.dispose(workspace.workspaceId)
+    }
+  })
   it('lets the gateway create and clear empty text files while retaining observation checks', async () => {
     const { manager, workspace, files } = await setup()
     const gateway = new RefineSkillGateway({} as never, {

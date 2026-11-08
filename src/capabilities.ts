@@ -447,7 +447,7 @@ export class RefineCapabilities {
       }
       if (refs.length > 5) throw new TypeError('trajectory.query accepts at most 5 run refs')
       if (this.options.trajectoryReader === undefined) throw new Error('Hitch trajectory reader is unavailable')
-      const selected = this.resolveSeedRefs(refs, evidence, activeRoundId)
+      const selected = await this.resolveSeedRefs(refs, evidence, activeRoundId, signal)
       if (selected.length > 5) throw new TypeError('trajectory.query expands to at most 5 runs')
       const cards: MetaFailureCard[] = []
       const receipts: Array<{ item: SeedRunEvidence; receipt: DiagnosisReceipt }> = []
@@ -2225,11 +2225,23 @@ export class RefineCapabilities {
     return values
   }
 
-  private resolveSeedRefs(refs: string[], evidence: SeedRunEvidence[], roundId?: string): SeedRunEvidence[] {
+  private async resolveSeedRefs(refs: string[], evidence: SeedRunEvidence[], roundId: string | undefined, signal: AbortSignal): Promise<SeedRunEvidence[]> {
     const selected = new Map<string, SeedRunEvidence>()
+    const authorized = evidence.filter(item => roundId === undefined || item.roundId === roundId)
     for (const ref of refs) {
-      const matches = evidence.filter(item => (roundId === undefined || item.roundId === roundId)
-        && item.trial.runId === ref)
+      const matches = authorized.filter(item => item.trial.runId === ref)
+      const reader = this.options.trajectoryReader
+      if (matches.length === 0 && reader?.resolveSeedChild !== undefined) {
+        for (const anchor of authorized) {
+          signal.throwIfAborted()
+          const child = await reader.resolveSeedChild(anchor.trial.runId, ref, signal)
+          if (child === undefined) continue
+          if (child.trial.runId !== ref || !child.evalId) throw new Error('resolved seed child identity mismatch')
+          const { originalResult: privateOriginal, ...trial } = child.trial
+          matches.push({ ...anchor, evalId: child.evalId, trial })
+          break
+        }
+      }
       if (matches.length === 0) throw new Error(`trajectory ref is not a recorded seed run: ${ref}`)
       for (const item of matches) selected.set(item.trial.runId, item)
     }

@@ -24,6 +24,29 @@ const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 
 describe('RefineCapabilities Git projection', () => {
+  it('resolves aggregate children only through a current authorized seed anchor', async () => {
+    const resolveSeedChild = vi.fn(async (anchor: string, runId: string) => anchor === 'seed' && runId === 'child'
+      ? { evalId: 'physical', trial: { runId, taskName: 'task', status: 'completed' as const, rewards: { reward: 1 } } }
+      : undefined)
+    const capabilities = new RefineCapabilities({} as never, {} as never, {
+      trajectoryReader: { resolveSeedChild } as unknown as HitchTrajectoryReader,
+    })
+    const evidence = [
+      { roundId: 'active', evalId: 'aggregate', trial: { runId: 'seed', taskName: 'task', status: 'completed', rewards: { reward: 0.8 } } },
+      { roundId: 'historical', evalId: 'other', trial: { runId: 'old-seed', taskName: 'task', status: 'completed', rewards: {} } },
+    ]
+    const resolve = (refs: string[]) => (capabilities as unknown as {
+      resolveSeedRefs(refs: string[], evidence: unknown[], roundId: string, signal: AbortSignal): Promise<unknown[]>
+    }).resolveSeedRefs(refs, evidence, 'active', new AbortController().signal)
+    expect(await resolve(['child'])).toEqual([{ ...evidence[0], evalId: 'physical',
+      trial: { runId: 'child', taskName: 'task', status: 'completed', rewards: { reward: 1 } } }])
+    await expect(resolve(['held-out'])).rejects.toThrow(/not a recorded seed run/)
+    expect(resolveSeedChild.mock.calls.every(([anchor]) => anchor === 'seed')).toBe(true)
+    resolveSeedChild.mockImplementationOnce(async () => ({ evalId: 'physical',
+      trial: { runId: 'wrong', taskName: 'task', status: 'completed', rewards: { reward: 1 } } }))
+    await expect(resolve(['child'])).rejects.toThrow(/identity mismatch/)
+  })
+
   it('validates a resolved physical verifier parent without weakening default identity checks', async () => {
     const actual: HitchVerifierEvidence = { runId: 'run-a', parent: { evalId: 'physical-a', trialId: 'trial-a', attempt: 1 }, verifier: { status: 'complete' } }
     const item = { evalId: 'shared-a', trial: { runId: 'run-a', trialName: 'trial-a', attempt: 1 } }
