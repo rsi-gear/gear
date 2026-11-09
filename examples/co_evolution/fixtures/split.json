@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "name": "synthetic-co-evolution-micro",
+  "note": "Synthetic Harbor-style split for CPU dry-run only. Not a real benchmark.",
+  "train": ["train_align_a", "train_align_b", "train_mixed", "train_conflict"],
+  "seed": ["seed_align_a", "seed_align_b", "seed_mixed", "seed_conflict"],
+  "held_out": ["held_align_a", "held_align_b", "held_mixed", "held_conflict", "held_transfer"]
+}
