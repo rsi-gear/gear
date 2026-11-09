@@ -31,6 +31,13 @@ execution.
 | Historical evidence                | Baseline plus every evaluated candidate, scores, and successful/failed trajectories, including rejected candidates                                         | Baseline scores and feedback are in the operation evidence; baseline source is mounted in `candidate/`. The shared reader exposes captured baseline trajectories and explicitly reports missing slots. Later diagnoses can query every seed experience, including rejected candidates, with bounded cards, scores, diffs, verifier details, source paths and paginated reads from sealed targets, and captured trajectories. | Mapped within the authorized seed archive; source is read from its sealed target by candidate ID and path |
 | Evaluation gate                    | Reference benchmark loop                                                                                                                                   | Gear keeps its independent held-out promotion gate                                                                                                                                                                                                                                                                        | Intentional Gear adaptation                                                                    |
 
+In the current Gear base, the standard pass-rate objective also uses Gear's
+multi-signal SeedGate when the imported task manifest declares process scores:
+a candidate becomes the seed champion only when no declared signal regresses
+and at least one improves. The independent held-out gate still runs at the end
+of the Gear lifecycle. This promotion policy is a Gear adaptation around the
+Meta-Harness search loop.
+
 Each operation supplies its algorithm-specific prompt and response schema in
 `Operation.payload.meta`. Gear's runtime handles the generic model call and
 returns the fixed `{"declined": bool, "data": ...}` envelope. Meta-Harness
@@ -176,51 +183,15 @@ outcomes do not by themselves stop Meta-Harness; the run ends at its configured
 round limit or when Gear's candidate, evaluation, or generation capacity cannot
 fund another iteration.
 
-## Current local outcome
+## Initial results
 
-An isolated one-round Terminal-Bench task smoke run was attempted on 2026-11-06
-with `openai-codex/gpt-5.6-terra`, one seed task (`fix-git`), one separate
-held-out task (`sqlite-db-truncate`), one repetition, and one candidate slot.
-The baseline exhausted three physical attempts (the initial attempt plus two
-infrastructure repairs); each Harbor trial ended with `Hitch agent run failed
-with code 7: agent exited with code 1`. Gear recorded no valid baseline, did
-not call the Meta proposer, generated no candidate, and ran no held-out gate.
-The local run ID was `run_a19e91003fa94cbba7c6945084bc67ba`. Model usage and cost
-were unavailable in the report. This is a failed runner smoke test, not a
-completed Meta-Harness iteration or a performance result.
-
-A second smoke run used `openai-codex/gpt-5.6-luna` and was launched in the
-container that owns the healthy Hitch daemon with the installed Hitch SDK
-wrapper. Gear recorded three seed-evaluation attempts under run
-`run_2c703014d4534774913a127a021591af`; each Harbor trial ended with the same
-agent exit code 1 before producing a valid Hitch run bundle. No model usage,
-valid baseline score, diagnosis, generated candidate, or held-out result was
-recorded. This narrows the remaining failure to the task-agent/runtime path; it
-does not establish a successful local reproduction.
-
-A third, single-attempt diagnostic run (`run_cff7d1a4e53e46c399a6211f869242bf`)
-added the local `dsh-codex` plugin to the test target preset and disabled
-automatic infrastructure retries. It still ended with `agent exited with code
-1` before a valid run bundle or model usage was recorded. This was a task-agent
-startup failure, not a Meta-Harness result; no baseline score is available.
-
-On 2026-11-08, a resumed one-task attempt used `openai-codex/gpt-5.6-luna` and
-the `fix-git` seed task. With the local Codex credential bootstrap and package
-links enabled, the task agent reached DSH startup but failed with
-`Cannot read properties of undefined (reading 'get')`; it made no model
-requests and produced no score. After removing those experiment-only adapter
-changes from this PR, a rebuilt run stopped earlier because the local target
-profile could not resolve its private `dsh-codex` package. These are failed
-local harness attempts, not Meta-Harness iterations. No baseline score,
-diagnosis, candidate, or cost was recorded.
-
-The full pinned Terminal-Bench 2.1 reproduction remains `not run`; no pass rate,
-cost, or paper comparison is claimed. The smoke failure must be resolved and a
-complete baseline → diagnosis → generation → candidate-evaluation iteration
-recorded before this example can claim a live reproduction. After a successful
-run, preserve the JSON report and record the exact project configuration, model
-identifiers, dataset revision, task split, seed, total evaluations, generated
-candidates, costs, per-task outcomes, and held-out result alongside it.
+**Live Meta-Harness iteration: not completed.** A local one-task attempt failed
+before the target agent produced a valid evaluation, so there is no baseline
+score, diagnosis, candidate, before/after comparison, or model cost to report.
+The pinned 89-task Terminal-Bench 2.1 experiment is also `not run`. No paper
+pass rate or performance reproduction is claimed. Complete and record a real
+baseline → diagnosis → generation → candidate-evaluation iteration before
+claiming live reproduction.
 
 The CPU-only local conformance command is:
 
@@ -231,10 +202,8 @@ PYTHONPATH=python python -m gear algorithm test meta-harness
 It checks Gear's deterministic algorithm contract. It does not run the
 benchmark, call a model, or establish performance fidelity.
 
-The current local conformance results are `status: passed`, 5 algorithm steps,
-with operations `evaluate_seed:global`, `diagnose_seed:global`,
-`generate_candidate:global`, two comparable `evaluate_seed:global` operations,
-and `nominate:global`. The focused experience, Meta-Harness, and runner suite also
-passes all 36 Python tests. These are implementation checks; the Terminal-Bench
-experiment remains not run until a configured project, pinned task dataset,
-and model profiles are available.
+The local conformance run passed 5 algorithm steps: `evaluate_seed:global`,
+`diagnose_seed:global`, `generate_candidate:global`, two comparable
+`evaluate_seed:global` operations, and `nominate:global`. The focused
+Meta-Harness and runner tests passed 24 tests on Python 3.13. These are
+implementation checks; the live task experiment remains outstanding.
