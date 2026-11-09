@@ -1,0 +1,20 @@
+{
+  "schema_version": "1",
+  "kind": "run-output-artifacts",
+  "run_id": "run_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "eval_id": "eval_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "task_id": "titanic-finalize",
+  "attempt": 1,
+  "harness_commit": "cccccccccccccccccccccccccccccccccccccccc",
+  "task_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "entries": [
+    {
+      "name": "output/predictions.csv",
+      "path": "output/predictions.csv",
+      "media_type": "text/csv",
+      "bytes": 27,
+      "sha256": "sha256:2365c5bd90664db6313ae8e56816740f8bedb76c679c09eb3aae551aafd04c20"
+    }
+  ],
+  "digest": "sha256:da0e8725e9f6a1b4560a4c0ab023f8964823396ffb61678400b0db9ec89f1ae3"
+}

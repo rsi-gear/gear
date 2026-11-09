@@ -1,0 +1,1 @@
+Bound the candidate space and stopping rule by task resources and admitted constraints. Record configurations, internal metrics and observed cost. Only change parameters authorized for the actor and action stage.

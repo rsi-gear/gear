@@ -29,7 +29,7 @@
   "lockCanonical": "{\"bindings\":[{\"access\":\"private-copy\",\"consumer\":{\"role\":\"candidate\"},\"executable\":false,\"resource\":\"dataset\",\"target\":\"data/input.txt\",\"use\":\"input-file\"}],\"protocol\":\"hitch-resource-lock@1\",\"requiredCapabilities\":[\"blob@1\",\"private-copy@1\"],\"resources\":{\"dataset\":{\"digest\":\"sha256:cf99975aa7995fad86fae7f3b0905143f30a52501944dff26002afc99c3b8419\",\"kind\":\"blob\",\"size\":7}}}",
   "lockIdentity": "sha256:4324da740609473d93cb5fca50f8b133c11c96a2e6774b9b7920aae7ce312d3d",
   "dataset": {
-    "schema_version": "2",
+    "schema_version": "3",
     "kind": "gear-harbor-benchmark",
     "resource_protocol": "hitch-resource-lock@1",
     "execution": {
@@ -99,13 +99,13 @@
         }
       }
     ],
-    "dataset_digest": "sha256:eae64d6bdfe5e43ee4ddd88a1a50d146a986c019751e8fba9f976d076f9edef4"
+    "dataset_digest": "sha256:e6c20f7609efd1b5da1276b33a433eb692112d25474f458b6573e0184f5fe168"
   },
   "selection": {
     "protocol": "hitch-resource-selection@1",
-    "sourceDatasetDigest": "sha256:eae64d6bdfe5e43ee4ddd88a1a50d146a986c019751e8fba9f976d076f9edef4",
+    "sourceDatasetDigest": "sha256:e6c20f7609efd1b5da1276b33a433eb692112d25474f458b6573e0184f5fe168",
     "manifest": {
-      "schema_version": "2",
+      "schema_version": "3",
       "kind": "gear-harbor-benchmark",
       "resource_protocol": "hitch-resource-lock@1",
       "execution": {
@@ -176,7 +176,7 @@
         }
       }
     ],
-    "digest": "sha256:21ab6142b2176ddd942ab592480c62be26e3a815d228e91c33fc81aac6244ead"
+    "digest": "sha256:9302f9cba6b4a321b088d879a35f69d0d742b087b1677793223f0a873fe24907"
   },
   "tree": {
     "protocol": "hitch-tree@1",

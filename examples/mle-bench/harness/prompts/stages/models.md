@@ -1,0 +1,1 @@
+Build a working baseline early, then compare useful model families within the task budget. Use normal training programs and reproducible local records. Choose models with training evidence, keeping private verifier data inaccessible.

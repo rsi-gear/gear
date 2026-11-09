@@ -109,7 +109,7 @@ API key 通过 provider 进程环境传递，不写入 profile 或 operation jou
 
 执行结果与清理状态分别持久化。守护进程保留模型组 leader 的 PID，先终止同组遗留子进程、再回收 leader，并通过模型无法继承的专用管道确认；缺少确认时不发布 receipt，状态保持 `unknown`。macOS 对只剩 zombie 的进程组可能返回 `EPERM`，此时只有在有界的进程组状态检查确认全部成员已停止后才接受确认。
 
-worker 先尝试清理凭据目录（500 ms）、trajectory gateway（500 ms）、sandbox manager（1500 ms）和临时根目录（1000 ms），状态文件写入各限 250 ms；每项失败或超时均继续下一项。`cleanup.json` 的 `graceful` 表示各项正常结束，`fallback-required` 表示至少一项未确认完成，不能解释为超时动作已经完成。仅本次操作的独立 worker 在释放执行锁后退出，并回收它拥有的代理 CONNECT 两端、桥接子进程及文件描述符；清理开始后的 4500 ms watchdog 负责兜底退出。直接调用库函数不会终止宿主进程组。
+worker 先尝试清理凭据目录（500 ms）、trajectory gateway（500 ms）、sandbox manager（1500 ms）和临时根目录（1000 ms）；每项失败或超时均继续下一项。开始标记写入限 250 ms，最终 `cleanup.json` 必须等待原子发布和 fsync 完成后才正常返回，避免 worker 退出中断慢速文件写入。`graceful` 表示各项正常结束，`fallback-required` 表示至少一项未确认完成，不能解释为超时动作已经完成。仅本次操作的独立 worker 在释放执行锁后退出，并回收它拥有的代理 CONNECT 两端、桥接子进程及文件描述符；模型已确认停止时，清理开始后的 4500 ms watchdog 仍负责兜底退出，硬期限内无法持久化的清理结果保持未确认。直接调用库函数不会终止宿主进程组。
 
 模型状态未知时，不删除可能仍被使用的临时根目录，清理记录将凭据和根目录标为 `unconfirmed`；该私有目录可能仍含临时认证文件，需要结合原 journal 人工调查。取消仍须同时观察到 receipt 和执行锁释放才确认，原 5 秒等待期限不变；慢速系统上未在期限内确认时会返回未确认错误，不能据此重发模型。runner asset、守护进程和清理实现均进入身份摘要，旧运行不会自动改绑新实现或迁移其回执。
 

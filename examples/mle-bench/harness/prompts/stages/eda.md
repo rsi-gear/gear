@@ -1,0 +1,1 @@
+Inspect public data schema, missingness, duplicates, target balance, distributions, related groups and leakage. Compare public training and prediction distributions without inferring prediction labels. Save concise evidence and modeling implications; identify untested hypotheses and coverage gaps.

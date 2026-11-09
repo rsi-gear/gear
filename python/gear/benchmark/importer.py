@@ -151,7 +151,7 @@ def prepare_import(
 def prepare_native_import(source: str, mode: str, image_digests: dict[str, str]) -> dict:
     import tomli_w
 
-    from .manifest import import_metadata
+    from .manifest import import_metadata, resource_manifest
     from .native import native_tasks, pin_dockerfile, pin_image
 
     entries, payload, metadata = native_tasks(Path(source))
@@ -172,6 +172,14 @@ def prepare_native_import(source: str, mode: str, image_digests: dict[str, str])
     for entry in entries:
         identifier = entry["task"]["id"]
         directories.extend("tasks/" + identifier + "/" + name for name in entry["directories"])
+        if resource_manifest(metadata["manifest"]):
+            # These are already sealed role-context descriptors. Normalizing TOML
+            # or Compose would invalidate the producer's source identity.
+            files.extend(
+                {**file, "path": "tasks/" + identifier + "/" + file["path"]}
+                for file in entry["files"]
+            )
+            continue
         config = entry["config"]
         config.setdefault("environment", {}).pop("docker_image", None)
         # Gear must build the native image plus its candidate carrier, not bypass it with a prebuilt image.
@@ -222,6 +230,7 @@ def prepare_native_import(source: str, mode: str, image_digests: dict[str, str])
                     "environment.py",
                     "manifest.py",
                     "manifest_codec.cjs",
+                    "resource_codec.cjs",
                 )
             }
         ),

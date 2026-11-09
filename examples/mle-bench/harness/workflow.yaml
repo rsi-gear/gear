@@ -1,0 +1,13 @@
+version: 1
+kind: guidance
+# Optional planning aid. These are not mandatory states or tool calls.
+steps:
+  - prompts/stages/task.md
+  - prompts/stages/eda.md
+  - prompts/stages/validation.md
+  - prompts/stages/processing.md
+  - prompts/stages/features.md
+  - prompts/stages/models.md
+  - prompts/stages/tuning.md
+  - prompts/stages/errors.md
+  - prompts/stages/delivery.md

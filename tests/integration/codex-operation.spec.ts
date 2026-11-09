@@ -96,6 +96,7 @@ for arg in ['exec','--ephemeral','--ignore-user-config','--ignore-rules','--stri
  assert arg in args, arg
 for feature in ['apps','plugins']:
  assert args[args.index(feature)-1]=='--disable'
+assert 'model_reasoning_effort="max"' in args
 if sys.platform=='darwin':
  assert os.environ['CODEX_CA_CERTIFICATE']==os.environ['SSL_CERT_FILE']
  assert 'BEGIN CERTIFICATE' in Path(os.environ['CODEX_CA_CERTIFICATE']).read_text()
@@ -206,7 +207,7 @@ if ${JSON.stringify(mode)} in ['partialfailed','connect-failure']:
   const profile = {
     command: [process.execPath, resolve('assets/codex-meta-runner.mjs')],
     workingDirectory: root,
-    configuration: { executable, model: 'fixture-model', allowedDomains: mode === 'proxy' || mode.startsWith('connect-') ? ['allowed.gear.test'] : [], timeoutMs: 12_000,
+    configuration: { executable, model: 'fixture-model', reasoningEffort: 'max' as const, allowedDomains: mode === 'proxy' || mode.startsWith('connect-') ? ['allowed.gear.test'] : [], timeoutMs: 12_000,
       ...(process.env.GEAR_TEST_LINUX_ISOLATION ? { linuxIsolation: process.env.GEAR_TEST_LINUX_ISOLATION as 'seccomp' | 'bubblewrap-only' } : {}) },
     passEnv: mode === 'proxy' ? ['HTTP_PROXY', 'NO_PROXY'] : mode.startsWith('connect-') ? ['HTTPS_PROXY'] : [],
     timeoutMs: 20_000,

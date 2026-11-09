@@ -343,79 +343,50 @@ export class DurableRunner {
     for (;;) {
       await this.checkOwner(journal, signal)
       validateGenerationReservations(journal)
-      for (const operation of journal.operations.filter((item) => item.status !== 'complete')) {
-        await this.checkOwner(journal, signal)
-        validateRepairReservation(journal, operation)
-        validateProjectionReservation(journal, operation)
-        let receipt: OperationReceipt
-        if (
-          operation.request.operation.kind === 'evaluate_seed' &&
-          operation.reservedAttempts === 0 &&
-          !operation.request.projection
+      const pending = journal.operations.filter((item) => item.status !== 'complete')
+      while (pending.length) {
+        const batch = [pending.shift()!]
+        let slots = batch[0]!.reservedAttempts
+        const parallel = (item: JournalOperation) =>
+          item.request.operation.kind === 'evaluate_seed' && !item.request.repair && !item.request.projection
+        // Only independent candidate evaluations overlap. Generation, repairs and
+        // projections retain their ordering; each provider still caps its own trials.
+        while (
+          pending.length &&
+          parallel(batch[0]!) &&
+          parallel(pending[0]!) &&
+          slots + pending[0]!.reservedAttempts <= 4 &&
+          batch.every(
+            (item) => item.request.operation.candidate_id !== pending[0]!.request.operation.candidate_id,
+          )
         ) {
-          receipt = {
-            result: {
-              operation_id: operation.request.operationId,
-              kind: 'evaluate_seed',
-              status: 'complete',
-              candidate_id: operation.request.operation.candidate_id,
-              data: null,
-            },
-            evidence: [],
-            candidate: null,
-            physicalAttempts: 0,
-            usage: {
-              model_requests: 0,
-              tokens: 0,
-              input_tokens: 0,
-              cached_input_tokens: 0,
-              output_tokens: 0,
-              dollars: 0,
-            },
-            provenance: null,
-          }
-        } else {
-          if (operation.status === 'submitted') {
-            const inspection = await this.provider.inspect(structuredClone(operation.request), signal)
-            if (inspection.state === 'complete') {
-              receipt = inspection.receipt
-              await this.settle(journal, operation, receipt, signal)
-              continue
-            }
-            if (
-              inspection.state !== 'not_submitted' &&
-              !(inspection.state === 'resumable' && this.provider.capabilities.idempotentSubmission)
-            )
-              throw new GearError(
-                'operation-needs-recovery',
-                'Submission outcome remains unknown; inspect again before retrying',
-                { run_id: journal.id, operation_id: operation.request.operationId, retryable: true },
-              )
-          }
-          while (operation.notBefore !== undefined && Date.now() < operation.notBefore) {
-            await this.checkOwner(journal, signal)
-            const remaining = operation.notBefore - Date.now()
-            if (remaining <= 0) break
-            try {
-              await delay(Math.min(30_000, remaining), undefined, { signal })
-            } catch (error) {
-              signal.throwIfAborted()
-              throw error
-            }
-          }
-          await this.checkOwner(journal, signal)
-          operation.status = 'submitted'
-          await this.store.write(journal)
-          if (operation.request.projection) {
-            if (!this.provider.capabilities.evidenceProjection || !this.provider.completeEvidence)
-              throw new GearError(
-                'evidence-projection-unsupported',
-                'Frozen provider cannot complete original evidence',
-              )
-            receipt = await this.provider.completeEvidence(structuredClone(operation.request), signal)
-          } else receipt = await this.provider.submit(structuredClone(operation.request), signal)
+          const item = pending.shift()!
+          batch.push(item)
+          slots += item.reservedAttempts
         }
-        await this.settle(journal, operation, receipt, signal)
+        const ready: (OperationReceipt | null)[] = []
+        // Keep all journal writes serial and persist every submission intent before
+        // starting the concurrent external work.
+        for (const operation of batch) ready.push(await this.prepareOperation(journal, operation, signal))
+        const results = await Promise.allSettled(
+          batch.map((operation, index) => ready[index] ?? this.executeOperation(operation, signal)),
+        )
+        let failed = false,
+          failure: unknown
+        for (const [index, result] of results.entries()) {
+          try {
+            if (result.status === 'rejected') throw result.reason
+            await this.settle(journal, batch[index]!, result.value, signal)
+          } catch (error) {
+            if (!failed) {
+              failed = true
+              failure = error
+            }
+          }
+        }
+        // Preserve successful sibling receipts even if another submission loses its
+        // acknowledgement. Recovery inspects only the still-unsettled operations.
+        if (failed) throw failure
       }
       await this.checkOwner(journal, signal)
       const repairs = reserveRepairs(journal, journal.spec.budget.maxEvaluations - this.used(journal))
@@ -427,6 +398,89 @@ export class DurableRunner {
       }
       if (!repairs.operations.length && !projections.operations.length) return
     }
+  }
+
+  private async prepareOperation(
+    journal: RunJournal,
+    operation: JournalOperation,
+    signal: AbortSignal,
+  ): Promise<OperationReceipt | null> {
+    await this.checkOwner(journal, signal)
+    validateRepairReservation(journal, operation)
+    validateProjectionReservation(journal, operation)
+    if (
+      operation.request.operation.kind === 'evaluate_seed' &&
+      operation.reservedAttempts === 0 &&
+      !operation.request.projection
+    ) {
+      return {
+        result: {
+          operation_id: operation.request.operationId,
+          kind: 'evaluate_seed',
+          status: 'complete',
+          candidate_id: operation.request.operation.candidate_id,
+          data: null,
+        },
+        evidence: [],
+        candidate: null,
+        physicalAttempts: 0,
+        usage: {
+          model_requests: 0,
+          tokens: 0,
+          input_tokens: 0,
+          cached_input_tokens: 0,
+          output_tokens: 0,
+          dollars: 0,
+        },
+        provenance: null,
+      }
+    } else {
+      if (operation.status === 'submitted') {
+        const inspection = await this.provider.inspect(structuredClone(operation.request), signal)
+        if (inspection.state === 'complete') {
+          return inspection.receipt
+        }
+        if (
+          inspection.state !== 'not_submitted' &&
+          !(inspection.state === 'resumable' && this.provider.capabilities.idempotentSubmission)
+        )
+          throw new GearError(
+            'operation-needs-recovery',
+            'Submission outcome remains unknown; inspect again before retrying',
+            { run_id: journal.id, operation_id: operation.request.operationId, retryable: true },
+          )
+      }
+      while (operation.notBefore !== undefined && Date.now() < operation.notBefore) {
+        await this.checkOwner(journal, signal)
+        const remaining = operation.notBefore - Date.now()
+        if (remaining <= 0) break
+        try {
+          await delay(Math.min(30_000, remaining), undefined, { signal })
+        } catch (error) {
+          signal.throwIfAborted()
+          throw error
+        }
+      }
+      await this.checkOwner(journal, signal)
+      operation.status = 'submitted'
+      await this.store.write(journal)
+      return null
+    }
+  }
+
+  private async executeOperation(
+    operation: JournalOperation,
+    signal: AbortSignal,
+  ): Promise<OperationReceipt> {
+    if (operation.request.projection) {
+      if (!this.provider.capabilities.evidenceProjection || !this.provider.completeEvidence)
+        throw new GearError(
+          'evidence-projection-unsupported',
+          'Frozen provider cannot complete original evidence',
+        )
+      return this.provider.completeEvidence(structuredClone(operation.request), signal)
+    }
+    return this.provider.submit(structuredClone(operation.request), signal)
   }
 
   private async settle(

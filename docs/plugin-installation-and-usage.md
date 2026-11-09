@@ -384,7 +384,7 @@ Skill 模式由宿主设置实际请求参数；Gear 校验 identity，DSH skill
 | `taskBudgetMs` | 每个 target trial 的超时预算；可由新 evolution 的 `--budget` 覆盖 |
 | `compiler` | candidate finalize 前固定执行的 compiler/check pipeline |
 | `candidateWorkspace.shellEnabled` | 是否向 Meta Agent 暴露 air-gapped `bash` |
-| `hitch.maxConcurrent` | 一个 Hitch evaluation 内 target trials 的最大并发数 |
+| `hitch.maxConcurrent` | 一次 Gear 评估操作中，跨任务及 repetitions 的 target trial 并发上限 |
 | `hitch.attempts` | 每个 task 的 logical attempt 数；可以是任意正整数，Hitch 0.2.5+ 会按 attempt shard 执行和修复 |
 | `hitch.seeds` / `hitch.sampling` | 类型化 rollout 条件；当前 Hitch CLI adapter 不支持时在 admission 阶段明确拒绝 |
 | `hitch.passEnv` | 只传环境变量名称；不要把 credential value 写进 YAML |
@@ -797,7 +797,7 @@ assignment；未请求 held-out 时，后续 held-out baseline 按正常流程�
 6. seed gate 通过后再运行 held-out baseline/candidate；
 7. 自动接受或拒绝 candidate。
 
-它不会在每个 task 结束后立即优化。`hitch.maxConcurrent` 只控制同一 evaluation 内的并发数。
+它不会在每个 task 结束后立即优化。`hitch.maxConcurrent` 控制一次 Gear 评估操作中跨任务及 repetitions 的并发上限；独立操作仍共同受 Hitch daemon 资源容量约束。
 
 `--rounds 10` 表示串行做 10 次完整优化，而不是只跑 10 个 task。每一轮都从该 evolution 当时的 champion 开始。
 
