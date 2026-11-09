@@ -9,11 +9,11 @@ Use Gear as the authority for project state, sealed candidates, evaluation,
 algorithm decisions, budgets, and champion acceptance. You operate the project;
 its configured Meta and Target profiles execute separate managed jobs.
 
-For MLE-bench research projects, also read
-[the MLE-bench adapter protocol](references/mle-bench.md).
-The analysis provider maps one seed slot to a configured sequence of experiments and one
-fixed final delivery. Experiments share a frozen holdout; training may use internal CV. Use the current Project API with `validation.mode: research`;
-Python algorithms own selection and promotion.
+For MLE-bench tasks, also read
+[the MLE-bench task workflow](references/mle-bench.md).
+Use the native Harbor/Hitch task path. Each seed slot is one complete task execution,
+including final training and prediction. Configure repetitions and budgets through the
+ordinary Project API; Python algorithms own harness comparison and promotion.
 
 ## Connect
 

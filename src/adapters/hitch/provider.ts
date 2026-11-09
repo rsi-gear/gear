@@ -1,3 +1,4 @@
+import type { HitchResourceSdkBinding } from './resource-sdk.js'
 import { prepareEnvironmentBinding, type HitchEnvironmentBinding } from './binding.js'
 import { appendFile, mkdir, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -65,6 +66,7 @@ interface Group {
   agentArgs: string[]
   evalId: string | null
   submissionStarted: boolean
+  buildMode?: 'backend'
 }
 interface Plan {
   operationDigest: string
@@ -77,15 +79,22 @@ export interface HitchProviderContext {
   runtime?: HitchRuntimeAccess
   targets: string
   adapter: HarnessAdapter
-  compile(destination: string, taskIds: string[], baseImage: string, signal?: AbortSignal): Promise<unknown>
+  compile(
+    destination: string,
+    taskIds: string[],
+    baseImage: string,
+    signal?: AbortSignal,
+    resourceSdk?: HitchResourceSdkBinding,
+  ): Promise<unknown>
   /** Declarations for runtime planning only; never submitted for execution. */
   compilePlanning?(
     destination: string,
     taskIds: string[],
     baseImage: string,
     signal?: AbortSignal,
+    resourceSdk?: HitchResourceSdkBinding,
   ): Promise<unknown>
-  seal?(destination: string, taskIds: string[]): Promise<unknown>
+  seal?(destination: string, taskIds: string[], resourceSdk?: HitchResourceSdkBinding): Promise<unknown>
   implementationIdentity: string
 }
 
@@ -187,6 +196,32 @@ export class HitchOperationProvider implements OperationProvider {
     const connection = await inspectHitchConnection(profile, context.adapter, signal)
     const { capabilities, executionEnvironment, revisionIdentity } = connection
     profile = { ...profile, executable: await findExecutable(profile.executable) }
+    const suppliedContext = context
+    const resourceSdk = {
+      executable: profile.executable,
+      controllerRuntimeId: executionEnvironment.controller.runtime_id,
+    }
+    context = {
+      ...suppliedContext,
+      compile: (destination, tasks, image, callSignal) =>
+        suppliedContext.compile(destination, tasks, image, callSignal, resourceSdk),
+      ...(suppliedContext.compilePlanning
+        ? {
+            compilePlanning: (
+              destination: string,
+              tasks: string[],
+              image: string,
+              callSignal?: AbortSignal,
+            ) => suppliedContext.compilePlanning!(destination, tasks, image, callSignal, resourceSdk),
+          }
+        : {}),
+      ...(suppliedContext.seal
+        ? {
+            seal: (destination: string, tasks: string[]) =>
+              suppliedContext.seal!(destination, tasks, resourceSdk),
+          }
+        : {}),
+    }
     const runtime = context.runtime ?? new HitchPreparedRuntime()
     const preparedArtifacts = await runtime.prepare(profile, context, connection, signal)
     await assertEvaluationEnvironment(
@@ -446,6 +481,7 @@ export class HitchOperationProvider implements OperationProvider {
       const compiled = (await this.context.compile(dataset, taskIds, this.profile.baseImage)) as
         | {
             environments?: Record<string, { mains: { environment: { context: string; dockerfile: string } } }>
+            resource_protocol?: string
           }
         | undefined
       let agentArgs: string[] = []
@@ -484,6 +520,7 @@ export class HitchOperationProvider implements OperationProvider {
         digest: await datasetDigest(dataset),
         evalId: null,
         submissionStarted: false,
+        ...(compiled?.resource_protocol === 'hitch-resource-lock@1' ? { buildMode: 'backend' as const } : {}),
       })
     }
     const plan = { operationDigest: canonicalDigest(request), providerIdentity: this.identity, groups }
@@ -512,6 +549,7 @@ export class HitchOperationProvider implements OperationProvider {
       passEnv: this.profile.passEnv,
       environmentBinding: this.environmentBinding.binding_id,
       artifactPins: artifactPins(this.preparedArtifacts, group.taskIds),
+      ...(group.buildMode ? { buildMode: group.buildMode } : {}),
     })
     assertPreparedArtifactsMatch(bindings, this.preparedArtifacts)
     return bindings
@@ -546,6 +584,7 @@ export class HitchOperationProvider implements OperationProvider {
         observed.path,
         '--dataset',
         group.dataset,
+        ...(group.buildMode ? ['--build-mode', group.buildMode] : []),
         '--harness',
         this.profile.harnessRef,
         '--model',

@@ -1,1 +1,1 @@
-Build a working baseline early, then compare different model families within budget using the frozen outer evaluation plan reported by task_inspect. Re-evaluate a baseline from another evaluation version before ranking it against new candidates.
+Build a working baseline early, then compare useful model families within the task budget. Use normal training programs and reproducible local records. Choose models with training evidence, keeping private verifier data inaccessible.

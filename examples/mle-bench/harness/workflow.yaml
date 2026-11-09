@@ -1,69 +1,13 @@
-{
-  "version": 2,
-  "stages": [
-    {
-      "id": "task",
-      "dependsOn": [],
-      "prompt": "prompts/stages/task.md"
-    },
-    {
-      "id": "eda",
-      "dependsOn": [
-        "task"
-      ],
-      "prompt": "prompts/stages/eda.md"
-    },
-    {
-      "id": "validation",
-      "dependsOn": [
-        "eda"
-      ],
-      "prompt": "prompts/stages/validation.md"
-    },
-    {
-      "id": "processing",
-      "dependsOn": [
-        "eda",
-        "validation"
-      ],
-      "prompt": "prompts/stages/processing.md"
-    },
-    {
-      "id": "features",
-      "dependsOn": [
-        "processing"
-      ],
-      "prompt": "prompts/stages/features.md"
-    },
-    {
-      "id": "models",
-      "dependsOn": [
-        "processing"
-      ],
-      "prompt": "prompts/stages/models.md"
-    },
-    {
-      "id": "tuning",
-      "dependsOn": [
-        "features",
-        "models"
-      ],
-      "prompt": "prompts/stages/tuning.md"
-    },
-    {
-      "id": "errors",
-      "dependsOn": [
-        "models",
-        "tuning"
-      ],
-      "prompt": "prompts/stages/errors.md"
-    },
-    {
-      "id": "delivery",
-      "dependsOn": [
-        "errors"
-      ],
-      "prompt": "prompts/stages/delivery.md"
-    }
-  ]
-}
+version: 1
+kind: guidance
+# Optional planning aid. These are not mandatory states or tool calls.
+steps:
+  - prompts/stages/task.md
+  - prompts/stages/eda.md
+  - prompts/stages/validation.md
+  - prompts/stages/processing.md
+  - prompts/stages/features.md
+  - prompts/stages/models.md
+  - prompts/stages/tuning.md
+  - prompts/stages/errors.md
+  - prompts/stages/delivery.md

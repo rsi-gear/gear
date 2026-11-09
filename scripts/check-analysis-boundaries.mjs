@@ -14,4 +14,15 @@ for (const file of await readdir(join(root, 'src'), { recursive: true })) {
 const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
 assert(!pkg.exports['./analysis-research'] && !pkg.bin['gear-analysis'], 'Gear must not expose a task execution API')
 assert(!pkg.dependencies?.['agent-hitch'] && !pkg.peerDependencies?.['agent-hitch'], 'Gear calls a generic process interface')
+const harness = join(root, 'examples/mle-bench/harness')
+for (const file of await readdir(harness, { recursive: true, withFileTypes: true })) {
+  if (!file.isFile()) continue
+  const source = await readFile(join(file.parentPath, file.name), 'utf8')
+  assert(!/task_inspect|rollout_finish|analysis_execute|build_pipeline\(|experiment\(action|analysis-task@|analysis-round-cv/.test(source),
+    `Removed research protocol in published harness: ${file.name}`)
+}
+for (const path of ['workflows/research', 'tools/experiment', 'prompts/operators']) {
+  assert.equal(await access(join(harness, path)).then(() => true, () => false), false,
+    `Removed research plugin remains in harness: ${path}`)
+}
 console.log('Analysis boundary: initial harness only; no task execution modules or dependencies in Gear')

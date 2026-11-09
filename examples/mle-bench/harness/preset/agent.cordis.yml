@@ -1,2 +1,3 @@
-# Fixed empty composition: the trusted carrier supplies run_pipeline.
-[]
+# Compose with the selected generic Agent adapter and its normal terminal/file tools.
+- id: data-analysis-guidance
+  name: ../plugins/data-analysis.js

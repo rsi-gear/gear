@@ -1,1 +1,1 @@
-Declare a bounded candidate space, fit budget and stopping rule. Record every trial and choose parameters using comparable training evidence.
+Bound the candidate space and stopping rule by task resources and admitted constraints. Record configurations, internal metrics and observed cost. Only change parameters authorized for the actor and action stage.

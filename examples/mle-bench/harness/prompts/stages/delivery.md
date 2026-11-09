@@ -1,1 +1,1 @@
-Freeze the exact pipeline and parameters. Delivery fits that configuration, produces and validates predictions; describe results and limitations.
+Perform final training as needed and generate all required predictions before exiting this task. Check files, schema, row order and finite values against the delivery contract. Preserve code and bounded diagnostics. Report external quality only when provided by the independent verifier.

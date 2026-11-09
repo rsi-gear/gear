@@ -17,6 +17,37 @@ from .source import BenchmarkError, json_value
 ROOT_FILES = ("benchmark.adapter.json", "source-manifest.json", "source-benchmark.adapter.json")
 
 
+def resource_manifest(manifest: dict | None) -> bool:
+    return isinstance(manifest, dict) and (
+        "resource_protocol" in manifest or manifest.get("schema_version") in ("2", "3")
+    )
+
+
+def resource_request(operation: str, directory: Path, **values):
+    """Hitch owns validation and hashing; Gear only transports frozen descriptors."""
+    try:
+        result = subprocess.run(
+            [
+                os.environ.get("GEAR_NODE", "node"),
+                str(Path(__file__).with_name("resource_codec.cjs")),
+            ],
+            input=json.dumps(
+                {"operation": operation, "directory": str(directory), **values}, allow_nan=False
+            ),
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=True,
+        )
+        return json_value(result.stdout, "benchmark.adapter.json")
+    except subprocess.CalledProcessError as error:
+        raise BenchmarkError(error.stderr.strip()[:2000], "benchmark.adapter.json") from error
+    except (OSError, subprocess.SubprocessError) as error:
+        raise BenchmarkError(
+            "Hitch resource SDK is required for resource datasets", "benchmark.adapter.json"
+        ) from error
+
+
 def object_fields(value, allowed, required, location):
     if not isinstance(value, dict) or set(value) - set(allowed) or not set(required) <= set(value):
         raise BenchmarkError("invalid or unsupported manifest fields", location)
@@ -146,6 +177,13 @@ def read_metadata(root: Path, entries: list[dict], payload: Payload) -> dict:
             if name == "benchmark.adapter.json":
                 manifest = value
     if manifest is not None:
+        if resource_manifest(manifest):
+            if manifest.get("schema_version") != "3":
+                raise BenchmarkError(
+                    "unsupported resource dataset version", "benchmark.adapter.json"
+                )
+            resource_request("verify", root, manifest=manifest)
+            return {"files": files, "manifest": manifest}
         validate_manifest(manifest)
         expected = build_manifest(
             manifest, [{"id": entry["task"]["id"], "files": entry["files"]} for entry in entries]
@@ -170,6 +208,8 @@ def import_metadata(
             "source-benchmark.adapter.json",
             {**files["benchmark.adapter.json"], "path": "source-benchmark.adapter.json"},
         )
+        if resource_manifest(metadata["manifest"]):
+            return [{**file, "path": "tasks/" + file["path"]} for file in files.values()]
         derived = build_manifest(
             metadata["manifest"],
             [
@@ -211,6 +251,12 @@ def seal_harbor(benchmark: dict, destination: str, task_ids: list[str]) -> None:
     ):
         raise BenchmarkError("expected an exact admitted task subset", "task_ids")
     root, tasks = Path(destination).resolve(), []
+    if resource_manifest(template):
+        manifest = resource_request("derive", root, manifest=template, taskIds=task_ids)
+        (root / "benchmark.adapter.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        return
     for identifier in task_ids:
         files = []
         task = root / identifier
@@ -247,6 +293,6 @@ def implementation_digest() -> str:
     return digest(
         {
             name: bytes_digest(Path(__file__).with_name(name).read_bytes())
-            for name in ("manifest.py", "manifest_codec.cjs")
+            for name in ("manifest.py", "manifest_codec.cjs", "resource_codec.cjs")
         }
     )

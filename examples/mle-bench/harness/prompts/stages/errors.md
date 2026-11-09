@@ -1,2 +1,1 @@
-Locate stable error patterns and unreliable conclusions. Decide which stage to revisit, what evidence is needed, or when to stop.
-Where labels and saved out-of-sample predictions are available, inspect error counts and rates by meaningful subgroups, uncertainty and group overlap. Separate these diagnostics from EDA and from repeatedly reused validation scores. Save evidence, connect findings to the next change, and record missing diagnostic coverage instead of claiming it was checked.
+Inspect saved out-of-sample predictions and labels available in public training data. Locate subgroup errors, uncertainty and leakage. Preserve bounded program errors and actual exit status. Decide which method to revise or when to stop within budget.

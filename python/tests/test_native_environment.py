@@ -203,7 +203,7 @@ class NativeEnvironmentTests(unittest.TestCase):
                 required_images(str(root))
             value["schema_version"] = "2"
             path.write_text(json.dumps(value))
-            with self.assertRaisesRegex(BenchmarkError, "unsupported native"):
+            with self.assertRaisesRegex(BenchmarkError, "unsupported resource dataset version"):
                 required_images(str(root))
             path.unlink()
             compose = root / "alpha/environment/docker-compose.yml"

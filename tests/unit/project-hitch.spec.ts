@@ -1,12 +1,13 @@
 import { fixtureRuntime } from '../helpers/hitch-runtime-fixture.js'
 import { configuredCancellation } from '../../src/application/cancellation.js'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, expect, it, vi } from 'vitest'
 import * as hitchTransport from '../../src/adapters/hitch/transport.js'
 import { datasetDigest } from '../../src/adapters/hitch/dataset.js'
 import { canonicalDigest } from '../../src/domain/canonical.js'
+import { digestJson } from '../../src/adapters/hitch/json.js'
 import { HitchOperationProvider } from '../../src/adapters/hitch/provider.js'
 import { DshHarnessAdapter } from '../../src/adapters/dsh/harness.js'
 import { decodeHitchTrials } from '../../src/adapters/hitch/evidence.js'
@@ -37,7 +38,7 @@ const request: OperationRequest = {
   },
 }
 
-it('materializes the Target in the native main context and seals the manifest after mutation', async () => {
+it.each([false, true])('materializes and seals the native main context with resource backend builds=%s', async (resources) => {
   const root = await mkdtemp(join(tmpdir(), 'gear-hitch-context-'))
   roots.push(root)
   const executable = join(root, 'hitch.mjs')
@@ -52,14 +53,16 @@ runOrderedHitchFixture('${canonicalDigest('runtime')}');
   const provider = await HitchOperationProvider.connect({ kind: 'hitch', executable, root,
     harnessRef: 'deepseek@version:0.1.1-rc.2', model: 'fixture', baseImage: 'python@sha256:' + '1'.repeat(64), passEnv: [], timeoutMs: 3000 }, {
     directory: join(root, 'submissions'), targets, adapter, taskIds: ['a'], runtime: fixtureRuntime, implementationIdentity: canonicalDigest('context-adapter'),
-    async compile(destination) {
+    async compile(destination, _tasks, _image, _signal, sdk) {
+      expect(sdk).toEqual({ executable: await realpath(executable), controllerRuntimeId: digestJson('controller') })
       await mkdir(join(destination, 'a/environment/candidate'), { recursive: true })
       await mkdir(join(destination, 'a/environment/simulator'))
       await writeFile(join(destination, 'a/environment/candidate/Dockerfile.main'), 'FROM fixture\n')
       await writeFile(join(destination, 'a/environment/simulator/Dockerfile'), 'FROM simulator\n')
-      return { environments: { a: { mains: { environment: { context: 'environment/candidate', dockerfile: 'environment/candidate/Dockerfile.main' } } } } }
+      return { ...(resources ? { resource_protocol: 'hitch-resource-lock@1' } : {}), environments: { a: { mains: { environment: { context: 'environment/candidate', dockerfile: 'environment/candidate/Dockerfile.main' } } } } }
     },
-    async seal(destination, taskIds) {
+    async seal(destination, taskIds, sdk) {
+      expect(sdk).toEqual({ executable: await realpath(executable), controllerRuntimeId: digestJson('controller') })
       expect(taskIds).toEqual(['a'])
       expect(await readFile(join(destination, 'a/environment/candidate/Dockerfile.main'), 'utf8')).toContain('COPY gear-target/')
       const containerPatch = await readFile(join(destination, 'a/environment/candidate/gear-target.patch.yml'), 'utf8')
@@ -76,6 +79,7 @@ runOrderedHitchFixture('${canonicalDigest('runtime')}');
   const directory = join(root, 'submissions', request.operationId.slice(7), 'dataset-0')
   const plan = JSON.parse(await readFile(join(directory, '../plan.json'), 'utf8'))
   expect(plan.groups[0].digest).toBe(await datasetDigest(directory))
+  expect(plan.groups[0].buildMode).toBe(resources ? 'backend' : undefined)
   await writeFile(join(directory, 'benchmark.adapter.json'), '{}')
   await expect(provider.inspect(request, new AbortController().signal)).rejects.toThrow('Frozen executable benchmark changed')
 })

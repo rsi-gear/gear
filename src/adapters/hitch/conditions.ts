@@ -20,6 +20,7 @@ export interface HitchExecutionConditions {
   passEnv: string[]
   environmentBinding: string
   artifactPins: HitchArtifactPin[]
+  buildMode?: 'backend'
 }
 
 function object(value: unknown): Record<string, unknown> | null {
@@ -49,6 +50,7 @@ export function assertHitchExecutionConditions(
   const plan = object(inspection.plan)
   const controller = object(plan?.controller_runtime)
   const execution = object(inspection.execution_plan)
+  const build = object(object(object(inspection.submission)?.execution)?.build)
   const request = object(inspection.request)
   const reported = object(inspection.result)
   const failure = reported && hitchEvaluationFailure(reported)
@@ -78,6 +80,7 @@ export function assertHitchExecutionConditions(
     request?.schema_version !== '1' ||
     request.backend !== 'harbor' ||
     request.dataset !== expected.dataset ||
+    (expected.buildMode !== undefined && build?.mode !== expected.buildMode) ||
     request.harness_ref !== expected.harnessRef ||
     request.model !== expected.model ||
     request.environment_binding !== expected.environmentBinding ||

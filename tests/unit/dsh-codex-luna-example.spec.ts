@@ -29,11 +29,15 @@ describe('DSH Codex Luna example', () => {
     const runtime = JSON.parse(await readFile(join(example, 'runtime.package.json'), 'utf8'))
     const target = JSON.parse(await readFile(join(example, 'target-carrier', 'package.json'), 'utf8'))
     expect(runtime.dependencies['@deepseek-ai/dsh']).toBe('0.1.1-rc.2')
-    expect(runtime.dependencies['@earendil-works/pi-ai']).toBe('0.84.4')
+    expect(runtime.dependencies['@earendil-works/pi-ai']).toBe('0.87.1')
+    expect(runtime.overrides).toMatchObject({
+      '@deepseek-ai/cordis-plugin-loader': '1.0.6',
+      '@deepseek-ai/cordis-plugin-include': '1.0.10',
+    })
     expect(target.dependencies).toMatchObject({
       '@deepseek-ai/dsh': '0.1.1-rc.2',
       '@deepseek-ai/dsh-tools': '0.1.1-rc.2',
-      '@earendil-works/pi-ai': '0.84.4',
+      '@earendil-works/pi-ai': '0.87.1',
       'dsh-codex': '0.2.6',
     })
     const targetLauncher = await readFile(join(example, 'target-carrier', 'apps', 'cli', 'lib', 'bin.js'), 'utf8')
