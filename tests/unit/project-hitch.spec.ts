@@ -440,6 +440,97 @@ const repeatedRequest = (): OperationRequest => ({
   ],
 })
 
+// The file-backed CLI double is single-writer. Serialize its short control
+// transactions while allowing long-running watches to overlap independently.
+function concurrentTransport(onWatch: (evalId: string, signal: AbortSignal) => Promise<void>, inspect?: (value: Record<string, unknown>) => void) {
+  const call = hitchTransport.hitchJson
+  let transactions: Promise<unknown> = Promise.resolve()
+  return vi.spyOn(hitchTransport, 'hitchJson').mockImplementation(async (...args) => {
+    const response = transactions.then(() => call(...args))
+    transactions = response.catch(() => {})
+    const value = await response
+    if (args[2][0] === 'eval' && args[2][1] === 'watch') await onWatch(args[2][2]!, args[3]!)
+    if (args[2][0] === 'eval' && args[2][1] === 'inspect') inspect?.(value)
+    return value
+  })
+}
+
+it.each([1, 2, 3])('runs repeated tasks with configured concurrency %s and preserves every plan identity', async (maxConcurrent) => {
+  const f = await controlledProvider({}, { maxConcurrent })
+  const repetitions = Array.from({ length: maxConcurrent * 2 }, (_, index) => index)
+  const execution = { ...repeatedRequest(), repetitions: repetitions.length, slots: repetitions.map(repetition => ({ taskId: 'a', repetition })) }
+  let active = 0, peak = 0
+  let waiting: Array<() => void> = []
+  const transport = concurrentTransport(async (_id, signal) => {
+    active++; peak = Math.max(peak, active)
+    await new Promise<void>((resolve, reject) => {
+      const aborted = () => reject(signal.reason)
+      signal.addEventListener('abort', aborted, { once: true })
+      waiting.push(() => { signal.removeEventListener('abort', aborted); resolve() })
+      if (waiting.length === maxConcurrent) {
+        const batch = waiting; waiting = []
+        for (const release of batch) release()
+      }
+    })
+    active--
+  })
+  try {
+    const receipt = await f.provider.submit(execution, AbortSignal.timeout(10_000))
+    expect(peak).toBe(maxConcurrent)
+    expect(receipt.physicalAttempts).toBe(repetitions.length)
+    expect(receipt.evidence.map(row => row.repetition)).toEqual(repetitions)
+    const plan = JSON.parse(await readFile(join(f.provider.context.directory, execution.operationId.slice(7), 'plan.json'), 'utf8'))
+    expect(new Set(plan.groups.map((group: { evalId: string }) => group.evalId)).size).toBe(repetitions.length)
+    expect(new Set(plan.groups.map((group: { dataset: string }) => group.dataset)).size).toBe(repetitions.length)
+    expect(plan.groups.every((group: { submissionStarted: boolean; evalId: string }) => group.submissionStarted && group.evalId)).toBe(true)
+    expect((await f.state()).jobs).toBe(repetitions.length)
+  } finally { transport.mockRestore() }
+})
+
+it('does not release concurrent slots after a lost watch while a trial remains active', async () => {
+  const f = await controlledProvider({}, { maxConcurrent: 2 })
+  const execution = { ...repeatedRequest(), repetitions: 3, slots: [0, 1, 2].map(repetition => ({ taskId: 'a', repetition })) }
+  let unknown: string | undefined
+  const transport = concurrentTransport(async id => {
+    unknown ??= id
+    if (id === unknown) throw new Error('watch connection lost')
+  }, value => {
+    if (value.eval_id === unknown) {
+      value.result = null
+      value.control = { eval_id: unknown, state: 'running', active_leases: ['still-running'] }
+    }
+  })
+  try {
+    await expect(f.provider.submit(execution, f.signal)).rejects.toMatchObject({ code: 'operation-needs-recovery' })
+    expect((await f.state()).jobs).toBe(2)
+    const plan = JSON.parse(await readFile(join(f.provider.context.directory, execution.operationId.slice(7), 'plan.json'), 'utf8'))
+    expect(plan.groups[2]).toMatchObject({ submissionStarted: false, evalId: null })
+    unknown = undefined
+  } finally { transport.mockRestore() }
+  const serial = concurrentTransport(async () => {})
+  try {
+    expect((await f.provider.submit(execution, f.signal)).physicalAttempts).toBe(3)
+    expect((await f.state()).jobs).toBe(3)
+  } finally { serial.mockRestore() }
+})
+
+it('preserves parallel submissions after a lost reply and fences every repetition on cancellation', async () => {
+  const f = await controlledProvider({ loseSubmitReply: true }, { maxConcurrent: 2 })
+  const execution = { ...repeatedRequest(), repetitions: 3, slots: [0, 1, 2].map(repetition => ({ taskId: 'a', repetition })) }
+  const transport = concurrentTransport(async () => {})
+  try {
+    await expect(f.provider.submit(execution, f.signal)).rejects.toThrow('did not complete')
+    expect((await f.state()).jobs).toBe(2)
+    const recovered = await HitchOperationProvider.connect(f.provider.profile, f.provider.context)
+    expect(await recovered.inspect(execution, f.signal)).toMatchObject({ state: 'resumable' })
+    await recovered.cancel(execution)
+    expect(Object.values((await f.state()).controls)).toHaveLength(3)
+    expect(Object.values((await f.state()).controls).every((value: any) => value.action === 'pause')).toBe(true)
+    await expect(recovered.submit(execution, f.signal)).rejects.toMatchObject({ code: 'hitch-call-failed' })
+    expect((await f.state()).jobs).toBe(2)
+  } finally { transport.mockRestore() }
+})
+
 it('submits configured concurrency and setup budgets and allows preparation during admission', async () => {
   const calls = vi.spyOn(hitchTransport, 'hitchJson')
   try {

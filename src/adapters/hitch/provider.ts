@@ -457,8 +457,14 @@ export class HitchOperationProvider implements OperationProvider {
       },
     })
   }
+  private planWrites: Promise<void> = Promise.resolve()
   private async save(request: OperationRequest, plan: Plan) {
-    await publishFile(join(this.path(request), 'plan.json'), JSON.stringify(plan))
+    // Concurrent repetitions share a plan, but never publish stale snapshots out of order.
+    const saved = this.planWrites.then(() =>
+      publishFile(join(this.path(request), 'plan.json'), JSON.stringify(plan)),
+    )
+    this.planWrites = saved.catch(() => {})
+    await saved
   }
   private async prepare(request: OperationRequest): Promise<Plan> {
     if (request.operation.kind !== 'evaluate_seed' || !request.operation.candidate_id)
@@ -622,13 +628,54 @@ export class HitchOperationProvider implements OperationProvider {
         'Use original-artifact projection instead of target submission',
       )
     const plan = await this.prepare(request)
+    // Each group may itself execute several tasks. Reserve its maximum possible
+    // trial count so repetition concurrency cannot multiply maxConcurrent.
+    const waves: Group[][] = []
+    let wave: Group[] = [],
+      reserved = 0
     for (const group of plan.groups) {
-      await this.submitGroup(request, plan, group, signal)
-      await this.call(
-        ['eval', 'watch', group.evalId!, '--output', 'json'],
-        signal,
-        evaluationWatchTimeoutMs(this.profile, group.taskIds.length),
-      ).catch(() => {})
+      const slots = Math.min(group.taskIds.length, this.profile.maxConcurrent)
+      if (wave.length && reserved + slots > this.profile.maxConcurrent) {
+        waves.push(wave)
+        wave = []
+        reserved = 0
+      }
+      wave.push(group)
+      reserved += slots
+    }
+    if (wave.length) waves.push(wave)
+    for (const groups of waves) {
+      signal.throwIfAborted()
+      const results = await Promise.allSettled(
+        groups.map(async (group) => {
+          await this.submitGroup(request, plan, group, signal)
+          await this.call(
+            ['eval', 'watch', group.evalId!, '--output', 'json'],
+            signal,
+            evaluationWatchTimeoutMs(this.profile, group.taskIds.length),
+          ).catch(() => {})
+          signal.throwIfAborted()
+          // A lost/timed-out watch is not a released execution slot. Confirm the
+          // terminal state before launching any later wave or accepting evidence.
+          const inspection = await this.call(['eval', 'inspect', group.evalId!, '--json'], signal)
+          const control = inspection.control as Record<string, unknown> | undefined
+          if (
+            !inspection.result ||
+            control?.eval_id !== group.evalId ||
+            !['succeeded', 'failed', 'cancelled'].includes(String(control.state)) ||
+            !Array.isArray(control.active_leases) ||
+            control.active_leases.length !== 0
+          )
+            throw new GearError(
+              'operation-needs-recovery',
+              'Hitch evaluation is still running or needs inspection',
+              { retryable: true },
+            )
+          this.assertConditions(inspection, group)
+        }),
+      )
+      const failed = results.find((result) => result.status === 'rejected')
+      if (failed?.status === 'rejected') throw failed.reason
     }
     const result = await this.inspect(request, signal)
     if (result.state !== 'complete')

@@ -11,6 +11,7 @@ const maxTaskAndSetupMs = 24 * 60 * 60_000
 const maxTimerDelayMs = 2 ** 31 - 1
 
 export interface HitchSettings {
+  /** Maximum simultaneous trials across tasks and repetitions in one operation. */
   maxConcurrent: number
   preparationTimeoutMs: number
   setupTimeoutMs: number

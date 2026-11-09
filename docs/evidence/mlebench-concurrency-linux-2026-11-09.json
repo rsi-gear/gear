@@ -1,0 +1,1075 @@
+{
+  "date": "2026-11-09",
+  "kind": "real-linux-concurrency-and-resource-validation",
+  "status": "passed",
+  "model_api_calls": 0,
+  "total_physical_task_executions": 13,
+  "formal_comparison_executions": 9,
+  "retained_partial_execution": 1,
+  "final_runtime_recheck_executions": 3,
+  "scope": "Synthetic Titanic-like ordinary training through real Gear/Hitch and Linux Docker. Not a model-quality benchmark.",
+  "image": "localhost:52991/kaggle-runtime@sha256:6965b4ceca603f9fe9b0fd00a46bcfe8b684c2052bea79ae08a57ace0dcc7e14",
+  "platform": "linux/arm64",
+  "harbor_version": "0.21.0",
+  "implementation_state": "working tree, frozen content-addressed Hitch runtime per validation; final source differs from initial runtime only by responsibility extraction",
+  "resource_limits": {
+    "agent_cpus": 1,
+    "agent_memory_mib": 1024,
+    "verifier_cpus": 1,
+    "verifier_memory_mib": 256,
+    "agent_timeout_seconds": 3600,
+    "verifier_timeout_seconds": 120,
+    "cli_timeout_ms": 3600000
+  },
+  "daemon_capacity": {
+    "maxConcurrent": 3,
+    "containerSlots": 6,
+    "buildSlots": 2
+  },
+  "interruption": {
+    "original_error": "execution_observation_busy",
+    "stage": "Gear concurrent worker observation before one C2 eval was submitted",
+    "fix": "Gear serializes fresh worker observations per Hitch root and retries only the exact structured busy response within the original deadline. Eval submissions are not retried by this mechanism.",
+    "retained_unstarted_eval_id": "eval_52972415baac4a5b904bc1aa89f68bb9",
+    "retained_completed_run_ids": [
+      "run_cd204389556b4b25ac30bd6a36bd763a"
+    ],
+    "resume_status": "not_resumed",
+    "resume_reason": "The complete resident environment binding differed after restarting the canary process. The original operation was rejected before submission; its identity was not bypassed.",
+    "resume_new_physical_attempts": 0,
+    "test_command_correction": "The first native invocation omitted --daemon and was rejected before starting any trial. The corrected invocation is recorded; prior trials were not rerun."
+  },
+  "initial_runtime_validation": {
+    "status": "passed",
+    "kind": "real-linux-same-task-concurrency",
+    "controller_runtime": "sha256:3d86c14bdd7d734a752d2a84f79c5bf8a460acd68acffa8d75a60215eec31506",
+    "platform": "linux/arm64",
+    "complete_task_executions": 10,
+    "validation_task_executions": 9,
+    "retained_partial_task_executions": 1,
+    "model_api_calls": 0,
+    "retries": 0,
+    "daemon_capacity": {
+      "maxConcurrent": 3,
+      "containerSlots": 6,
+      "buildSlots": 2
+    },
+    "fixture_limits": {
+      "agent_cpus": 1,
+      "agent_memory_mib": 1024,
+      "verifier_cpus": 1,
+      "verifier_memory_mib": 256,
+      "agent_timeout_seconds": 3600,
+      "verifier_timeout_seconds": 120,
+      "cli_timeout_ms": 3600000
+    },
+    "stages": [
+      {
+        "stage": "serial",
+        "profile_max_concurrent": 1,
+        "operations": 1,
+        "observed_peak_active_experiments": 1,
+        "physical_attempts": 2,
+        "records": [
+          {
+            "stage": "serial",
+            "operation_id": "sha256:b4f1c041c772e4c891650138998a028e7f11101dd9aa770a7b7417f6c5d978c6",
+            "candidate": "candidate-a",
+            "repetition": 0,
+            "eval_id": "eval_ed8116e11ea74f6d97e40eff2bf08e6e",
+            "run_id": "run_aed61e283ad04d7da6c65bcaaae9b0c1",
+            "task_digest": "sha256:df190540698d63ebb69f3ac9fa470beaa29ae54820747e9503a3c8dcd0ef88f8",
+            "output_manifest_digest": "sha256:6713c3f7b2095a8bc69a4c0d89ed5285abeb67e65ff2f244dd3f28a4f034977d",
+            "artifact_directory": "/private/tmp/gear-mlebench-concurrency-20261109/state/runs/run_aed61e283ad04d7da6c65bcaaae9b0c1/output-artifacts",
+            "timeout_ms": 3600000,
+            "resource_reservation": {
+              "cpu_millis": 2000,
+              "memory_bytes": 1342177280,
+              "container_slots": 2,
+              "build_slots": 0
+            },
+            "enforced_resources": {
+              "main_limits": {
+                "cpu_millis": 1000,
+                "memory_bytes": 1073741824,
+                "container_slots": 1,
+                "build_slots": 0
+              },
+              "verifier_limits": {
+                "cpu_millis": 1000,
+                "memory_bytes": 268435456,
+                "container_slots": 1,
+                "build_slots": 0
+              },
+              "sidecar_limits": {}
+            },
+            "containers": [
+              {
+                "id": "4d39d9fb67a313bce9acfe8e7a0bac1f3ee6c9593064e18838f40313ed7cbc8b",
+                "name": "hitch-e04b354e2299fc4dd3d7e200da35c2f715dbd78b25d6c30c-main-1",
+                "role": "verifier",
+                "image_config_digest": "sha256:f539b1cea501c1bc29ad34971f7f16f7f8d5e7d3cef479aa42f2f2b73873e82b",
+                "cpu_limit_millis": 1000,
+                "memory_limit_bytes": 268435456
+              },
+              {
+                "id": "f1169062d25995f810d3817515302d41d364655e28ba621f8960f6a07a1cb1b9",
+                "name": "hitch-2d7bdc0e20f0e7685eba982ecdba722a256ed609cd2516a8-main-1",
+                "role": "candidate",
+                "image_config_digest": "sha256:c0ed349382061b906f950bd4ffb2fdc68a9855b84152899fd067b892d74218d8",
+                "cpu_limit_millis": 1000,
+                "memory_limit_bytes": 1073741824
+              }
+            ],
+            "experiment": {
+              "candidate": "candidate-a",
+              "cpu_max": "100000 100000",
+              "finished_ns": "1794218666716839963",
+              "hostname": "f1169062d259",
+              "marker": "d61289b8b26a4a3dbdaaba0eed6d30b6",
+              "memory_max": "1073741824",
+              "output_marker_retained": true,
+              "started_ns": "1794218636614007713",
+              "work_marker_retained": true,
+              "workdir": "/app"
+            }
+          },
+          {
+            "stage": "serial",
+            "operation_id": "sha256:b4f1c041c772e4c891650138998a028e7f11101dd9aa770a7b7417f6c5d978c6",
+            "candidate": "candidate-a",
+            "repetition": 1,
+            "eval_id": "eval_4f7dd5e85f8a4dcc82bd0334baa23c17",
+            "run_id": "run_ce11edc9783f4e3eb975dc7b610b3cf2",
+            "task_digest": "sha256:df190540698d63ebb69f3ac9fa470beaa29ae54820747e9503a3c8dcd0ef88f8",
+            "output_manifest_digest": "sha256:69d17b760fb8e28eda0e1aa890b077622cf43086aea2ddc82e3d34a6c74fb8ac",
+            "artifact_directory": "/private/tmp/gear-mlebench-concurrency-20261109/state/runs/run_ce11edc9783f4e3eb975dc7b610b3cf2/output-artifacts",
+            "timeout_ms": 3600000,
+            "resource_reservation": {
+              "cpu_millis": 2000,
+              "memory_bytes": 1342177280,
+              "container_slots": 2,
+              "build_slots": 0
+            },
+            "enforced_resources": {
+              "main_limits": {
+                "cpu_millis": 1000,
+                "memory_bytes": 1073741824,
+                "container_slots": 1,
+                "build_slots": 0
+              },
+              "verifier_limits": {
+                "cpu_millis": 1000,
+                "memory_bytes": 268435456,
+                "container_slots": 1,
+                "build_slots": 0
+              },
+              "sidecar_limits": {}
+            },
+            "containers": [
+              {
+                "id": "a073af5a17e162a8a5456cb47a165db9bdd8d005cd6f3496e6a2fdd29175d463",
+                "name": "hitch-9088d6c7fd741af0ad49d15a0b4e38ef6d2271c02fec8ab9-main-1",
+                "role": "verifier",
+                "image_config_digest": "sha256:1ca16334d60e72813909b5937223d68840ba8bb9a610536357e113349d2726b1",
+                "cpu_limit_millis": 1000,
+                "memory_limit_bytes": 268435456
+              },
+              {
+                "id": "ca0da70e144ed43086bb2bd8991afe3d7eea95fd9456ae8904d6c119031a252d",
+                "name": "hitch-10b74c4a608f19af1f47dcd97bfd6b9b73079b01ad6cafcb-main-1",
+                "role": "candidate",
+                "image_config_digest": "sha256:4224ace1313f3f2649b04de6ad333ed0c559ab39c6d33bfc7c12753e24e961f1",
+                "cpu_limit_millis": 1000,
+                "memory_limit_bytes": 1073741824
+              }
+            ],
+            "experiment": {
+              "candidate": "candidate-a",
+              "cpu_max": "100000 100000",
+              "finished_ns": "1794218780844475002",
+              "hostname": "ca0da70e144e",
+              "marker": "65fe33b2ad814023ac163bf21614eea0",
+              "memory_max": "1073741824",
+              "output_marker_retained": true,
+              "started_ns": "1794218750826169002",
+              "work_marker_retained": true,
+              "workdir": "/app"
+            }
+          }
+        ],
+        "all_experiments_overlap_seconds": 0.0
+      },
+      {
+        "stage": "parallel-fresh",
+        "profile_max_concurrent": 2,
+        "operations": 1,
+        "observed_peak_active_experiments": 2,
+        "physical_attempts": 2,
+        "records": [
+          {
+            "stage": "parallel-fresh",
+            "operation_id": "sha256:f5d079284875e3512ce379e3e9a29f1096e9fa6e968ec5ea72c419182b6120e3",
+            "candidate": "candidate-a",
+            "repetition": 0,
+            "eval_id": "eval_4d7bce5437494bc5820e7d4dd51fd397",
+            "run_id": "run_082f136f244c4826bf7d264f4a08666c",
+            "task_digest": "sha256:df190540698d63ebb69f3ac9fa470beaa29ae54820747e9503a3c8dcd0ef88f8",
+            "output_manifest_digest": "sha256:fe55f9f7369251d3eb9e1dd95722e23d020426067d59dae5caf3ff76dd0f12a7",
+            "artifact_directory": "/private/tmp/gear-mlebench-concurrency-20261109/state/runs/run_082f136f244c4826bf7d264f4a08666c/output-artifacts",
+            "timeout_ms": 3600000,
+            "resource_reservation": {
+              "cpu_millis": 2000,
+              "memory_bytes": 1342177280,
+              "container_slots": 2,
+              "build_slots": 0
+            },
+            "enforced_resources": {
+              "main_limits": {
+                "cpu_millis": 1000,
+                "memory_bytes": 1073741824,
+                "container_slots": 1,
+                "build_slots": 0
+              },
+              "verifier_limits": {
+                "cpu_millis": 1000,
+                "memory_bytes": 268435456,
+                "container_slots": 1,
+                "build_slots": 0
+              },
+              "sidecar_limits": {}
+            },
+            "containers": [
+              {
+                "id": "229233853bba27cebde25afc90e2ebbffa369bcab39c7e9ca1f23fa9c3f1743b",
+                "name": "hitch-0e48d08c155b1305183dec9975b5b4d0b92381ead849da21-main-1",
+                "role": "verifier",
+                "image_config_digest": "sha256:7d3172d5a2695f7174f07c66a8c35c26d754b08298c489cb0b71837d6e12c66f",
+                "cpu_limit_millis": 1000,
+                "memory_limit_bytes": 268435456
+              },
+              {
+                "id": "7c9aa58417bd436684e29ff703fe15f4fbe8d671b14180abd966fae059a890e5",
+                "name": "hitch-1b9dc1911c18562bf74b6398e991b82526dd2d5d80e9e717-main-1",
+                "role": "candidate",
+                "image_config_digest": "sha256:213466cc626f3784e731afe1ad57d475e52ec04e74d7b19fdf07b7ef9c07aada",
+                "cpu_limit_millis": 1000,
+                "memory_limit_bytes": 1073741824
+              }
+            ],
+            "experiment": {
+              "candidate": "candidate-a",
+              "cpu_max": "100000 100000",
+              "finished_ns": "1794220045546646087",
+              "hostname": "7c9aa58417bd",
+              "marker": "62f020d4eaed493fbd5451601dbb289f",
+              "memory_max": "1073741824",
+              "output_marker_retained": true,
+              "started_ns": "1794220015535998504",
+              "work_marker_retained": true,
+              "workdir": "/app"
+            }
+          },
+          {
+            "stage": "parallel-fresh",
+            "operation_id": "sha256:f5d079284875e3512ce379e3e9a29f1096e9fa6e968ec5ea72c419182b6120e3",
+            "candidate": "candidate-a",
+            "repetition": 1,
+            "eval_id": "eval_23adcbd9e4554453b7e01d19b6719f73",
+            "run_id": "run_97dc8be63cfc45c9a5d838470bcafbed",
+            "task_digest": "sha256:df190540698d63ebb69f3ac9fa470beaa29ae54820747e9503a3c8dcd0ef88f8",
+            "output_manifest_digest": "sha256:9f2dce342a56bbffb92c32ccf06189b721a7d428fbecb1c4117f3cdaa048fce2",
+            "artifact_directory": "/private/tmp/gear-mlebench-concurrency-20261109/state/runs/run_97dc8be63cfc45c9a5d838470bcafbed/output-artifacts",
+            "timeout_ms": 3600000,
+            "resource_reservation": {
+              "cpu_millis": 2000,
+              "memory_bytes": 1342177280,
+              "container_slots": 2,
+              "build_slots": 0
+            },
+            "enforced_resources": {
+              "main_limits": {
+                "cpu_millis": 1000,
+                "memory_bytes": 1073741824,
+                "container_slots": 1,
+                "build_slots": 0
+              },
+              "verifier_limits": {
+                "cpu_millis": 1000,
+                "memory_bytes": 268435456,
+                "container_slots": 1,
+                "build_slots": 0
+              },
+              "sidecar_limits": {}
+            },
+            "containers": [
+              {
+                "id": "4417bd9c62c78ec91e13110e22878445e61df2100814e512f391d9f3bc3d1b48",
+                "name": "hitch-86e88e791de47e36f17df0860bba5dae3f68d5553e2a9930-main-1",
+                "role": "verifier",
+                "image_config_digest": "sha256:4da6ef42b972e4b3b2e2ee897ca34954fa592fc6b75d954af8ebd3f9d2951b9c",
+                "cpu_limit_millis": 1000,
+                "memory_limit_bytes": 268435456
+              },
+              {
+                "id": "f7b7ccabcde20895f86b98a0b1d1285c5350dec5feef2368b09ce7bf8710673c",
+                "name": "hitch-c8a8cd835a888de1e4e4743f585242cdde56c1b9d4515aba-main-1",
+                "role": "candidate",
+                "image_config_digest": "sha256:383d5d89821b3e8350be3e91681e35e505b63179c3c6c0831ad9084264342593",
+                "cpu_limit_millis": 1000,
+                "memory_limit_bytes": 1073741824
+              }
+            ],
+            "experiment": {
+              "candidate": "candidate-a",
+              "cpu_max": "100000 100000",
+              "finished_ns": "1794220044268687128",
+              "hostname": "f7b7ccabcde2",
+              "marker": "f940ee069c0b4e8b9b5b85ddb653d10d",
+              "memory_max": "1073741824",
+              "output_marker_retained": true,
+              "started_ns": "1794220014249260961",
+              "work_marker_retained": true,
+              "workdir": "/app"
+            }
+          }
+        ],
+        "all_experiments_overlap_seconds": 28.732689
+      },
+      {
+        "stage": "cross-candidate",
+        "profile_max_concurrent": 2,
+        "operations": 2,
+        "observed_peak_active_experiments": 2,
+        "physical_attempts": 2,
+        "records": [
+          {
+            "stage": "cross-candidate",
+            "operation_id": "sha256:575d5beb67c86283f8ea4b61af5d74508f54a01f23249fe294bbd4bf3d151722",
+            "candidate": "candidate-a",
+            "repetition": 0,
+            "eval_id": "eval_d409cb761d4a434b90be884795c5ebf9",
+            "run_id": "run_d6a3a091bcff4543b6b28769315f4deb",
+            "task_digest": "sha256:df190540698d63ebb69f3ac9fa470beaa29ae54820747e9503a3c8dcd0ef88f8",
+            "output_manifest_digest": "sha256:bbb64a827ed0d2ee3f35652521ae2230777baa2c2002a03920f877dbac6f498c",
+            "artifact_directory": "/private/tmp/gear-mlebench-concurrency-20261109/state/runs/run_d6a3a091bcff4543b6b28769315f4deb/output-artifacts",
+            "timeout_ms": 3600000,
+            "resource_reservation": {
+              "cpu_millis": 2000,
+              "memory_bytes": 1342177280,
+              "container_slots": 2,
+              "build_slots": 0
+            },
+            "enforced_resources": {
+              "main_limits": {
+                "cpu_millis": 1000,
+                "memory_bytes": 1073741824,
+                "container_slots": 1,
+                "build_slots": 0
+              },
+              "verifier_limits": {
+                "cpu_millis": 1000,
+                "memory_bytes": 268435456,
+                "container_slots": 1,
+                "build_slots": 0
+              },
+              "sidecar_limits": {}
+            },
+            "containers": [
+              {
+                "id": "6a2efd9e8c9c2f7fad8e5a610c036feb07099f8b1e70752adce9731dc6c822ec",
+                "name": "hitch-3b3e94485bfeed39d28cd7fa05b5d1f956f2fcd9cfb1875b-main-1",
+                "role": "candidate",
+                "image_config_digest": "sha256:589ce51dd3e845643738fe6719193b41985cf7bdda24ab87471e0a83fbf56176",
+                "cpu_limit_millis": 1000,
+                "memory_limit_bytes": 1073741824
+              },
+              {
+                "id": "734fe72f59bb9ff46c254caf5d5cffe59fb77c40a1ad78df92d6e693b5aa570a",
+                "name": "hitch-9f29c63d5c0139249335b56384cd321fc4297faf054e54f7-main-1",
+                "role": "verifier",
+                "image_config_digest": "sha256:4aee733ea94d867bdd61a403a92adf75d34cac1fa54fc8be8fec3fd490f7a88b",
+                "cpu_limit_millis": 1000,
+                "memory_limit_bytes": 268435456
+              }
+            ],
+            "experiment": {
+              "candidate": "candidate-a",
+              "cpu_max": "100000 100000",
+              "finished_ns": "1794220140066790131",
+              "hostname": "6a2efd9e8c9c",
+              "marker": "572af2a6c22740c1865da2cfba942abb",
+              "memory_max": "1073741824",
+              "output_marker_retained": true,
+              "started_ns": "1794220110055637506",
+              "work_marker_retained": true,
+              "workdir": "/app"
+            }
+          },
+          {
+            "stage": "cross-candidate",
+            "operation_id": "sha256:a9fb2c27af54a3548e393704cf12c1c7078bdef21aff0e0d6efb309d176ae295",
+            "candidate": "candidate-b",
+            "repetition": 0,
+            "eval_id": "eval_85fdd288b827462d8797d464cccb84f8",
+            "run_id": "run_112f527692a84044bdf4f2fa3e28ec8c",
+            "task_digest": "sha256:42079c7ac31845ea861804fa5b1d286e11ba60b6a5d97ee6f3c2fe26e2a5fc73",
+            "output_manifest_digest": "sha256:10576a09b3656a564c4d2acab2df5b9838b2f79fd2da6954845284e8110d80a2",
+            "artifact_directory": "/private/tmp/gear-mlebench-concurrency-20261109/state/runs/run_112f527692a84044bdf4f2fa3e28ec8c/output-artifacts",
+            "timeout_ms": 3600000,
+            "resource_reservation": {
+              "cpu_millis": 2000,
+              "memory_bytes": 1342177280,
+              "container_slots": 2,
+              "build_slots": 0
+            },
+            "enforced_resources": {
+              "main_limits": {
+                "cpu_millis": 1000,
+                "memory_bytes": 1073741824,
+                "container_slots": 1,
+                "build_slots": 0
+              },
+              "verifier_limits": {
+                "cpu_millis": 1000,
+                "memory_bytes": 268435456,
+                "container_slots": 1,
+                "build_slots": 0
+              },
+              "sidecar_limits": {}
+            },
+            "containers": [
+              {
+                "id": "09b96fbd253356693a8086e64fb600da6a789ecaea3d5c770dd168a8f56cf355",
+                "name": "hitch-9a92e7002a0be1c0b17b0a5994284c7aa4e88f0dd44b27af-main-1",
+                "role": "verifier",
+                "image_config_digest": "sha256:50ef938339ed974b64f46ab046c94513ec4f6f46b17cf8aaa7a324a46391078d",
+                "cpu_limit_millis": 1000,
+                "memory_limit_bytes": 268435456
+              },
+              {
+                "id": "1766000849bb71778c0fbf13767d21b60d19d6ff9f55d4e40609dcc3d7f6be32",
+                "name": "hitch-4e9b6850d5bd1e114d67a6a98d40171d203ddcf3403d861d-main-1",
+                "role": "candidate",
+                "image_config_digest": "sha256:3b23553db7e979220b516fa74d1cec25572f260ca251937e6ef56820104308b2",
+                "cpu_limit_millis": 1000,
+                "memory_limit_bytes": 1073741824
+              }
+            ],
+            "experiment": {
+              "candidate": "candidate-b",
+              "cpu_max": "100000 100000",
+              "finished_ns": "1794220141135732423",
+              "hostname": "1766000849bb",
+              "marker": "37a2855f507d47039518a5182fd2eed9",
+              "memory_max": "1073741824",
+              "output_marker_retained": true,
+              "started_ns": "1794220111125289923",
+              "work_marker_retained": true,
+              "workdir": "/app"
+            }
+          }
+        ],
+        "all_experiments_overlap_seconds": 28.9415
+      },
+      {
+        "stage": "native-same-eval",
+        "native_max_concurrent": 3,
+        "operations": 1,
+        "observed_peak_active_experiments": 3,
+        "physical_attempts": 3,
+        "records": [
+          {
+            "stage": "native-same-eval",
+            "candidate": "candidate-a",
+            "repetition": 0,
+            "eval_id": "eval_4a4e171476674eb89bf815461092704b",
+            "run_id": "run_af3d93e6d5674c51bb7a7ff2d50ea573",
+            "task_digest": "sha256:df190540698d63ebb69f3ac9fa470beaa29ae54820747e9503a3c8dcd0ef88f8",
+            "output_manifest_digest": "sha256:4c70ff4c894badba862b290b19a7318b1b114fa1c7b2d4a857b3118497405a54",
+            "artifact_directory": "/private/tmp/gear-mlebench-concurrency-20261109/state/runs/run_af3d93e6d5674c51bb7a7ff2d50ea573/output-artifacts",
+            "timeout_ms": 3600000,
+            "resource_reservation": {
+              "cpu_millis": 2000,
+              "memory_bytes": 1342177280,
+              "container_slots": 2,
+              "build_slots": 0
+            },
+            "enforced_resources": {
+              "main_limits": {
+                "cpu_millis": 1000,
+                "memory_bytes": 1073741824,
+                "container_slots": 1,
+                "build_slots": 0
+              },
+              "verifier_limits": {
+                "cpu_millis": 1000,
+                "memory_bytes": 268435456,
+                "container_slots": 1,
+                "build_slots": 0
+              },
+              "sidecar_limits": {}
+            },
+            "containers": [
+              {
+                "id": "599a63bbd882af5333dac38aa2a1aaa97e5956aa83a7d915b1465229bc5f20e0",
+                "name": "hitch-59f10beae1e13571a7bb011aaa0e22f53c3c61e2d5f946ea-main-1",
+                "role": "verifier",
+                "image_config_digest": "sha256:2aabbf4f59d4a2dfef02d2b074ab73f19bc7e7e4e82adad5402788cf5224317a",
+                "cpu_limit_millis": 1000,
+                "memory_limit_bytes": 268435456
+              },
+              {
+                "id": "9da574284d53c2f3a61c116b89397ba70606a560a61edd36d84ee69d5d5cc043",
+                "name": "hitch-45b9cd78e0cbf8d2373f482fc15b8bc49529c89cf3e2a5fd-main-1",
+                "role": "candidate",
+                "image_config_digest": "sha256:0d6785546b423c3cda59da288d6d7749f96b3a57e5afd083d62d873cd59485d7",
+                "cpu_limit_millis": 1000,
+                "memory_limit_bytes": 1073741824
+              }
+            ],
+            "experiment": {
+              "candidate": "candidate-a",
+              "cpu_max": "100000 100000",
+              "finished_ns": "1794220310021170209",
+              "hostname": "9da574284d53",
+              "marker": "ef964641fac84177adf26594a9f96309",
+              "memory_max": "1073741824",
+              "output_marker_retained": true,
+              "started_ns": "1794220279999034918",
+              "work_marker_retained": true,
+              "workdir": "/app"
+            }
+          },
+          {
+            "stage": "native-same-eval",
+            "candidate": "candidate-a",
+            "repetition": 1,
+            "eval_id": "eval_4a4e171476674eb89bf815461092704b",
+            "run_id": "run_bb6b6c1db51f4be8a2c764677f29d7b5",
+            "task_digest": "sha256:df190540698d63ebb69f3ac9fa470beaa29ae54820747e9503a3c8dcd0ef88f8",
+            "output_manifest_digest": "sha256:7832126543eeb07ab924b33e25d45ddc4d0eb203638071d4b45f555aed30e864",
+            "artifact_directory": "/private/tmp/gear-mlebench-concurrency-20261109/state/runs/run_bb6b6c1db51f4be8a2c764677f29d7b5/output-artifacts",
+            "timeout_ms": 3600000,
+            "resource_reservation": {
+              "cpu_millis": 2000,
+              "memory_bytes": 1342177280,
+              "container_slots": 2,
+              "build_slots": 0
+            },
+            "enforced_resources": {
+              "main_limits": {
+                "cpu_millis": 1000,
+                "memory_bytes": 1073741824,
+                "container_slots": 1,
+                "build_slots": 0
+              },
+              "verifier_limits": {
+                "cpu_millis": 1000,
+                "memory_bytes": 268435456,
+                "container_slots": 1,
+                "build_slots": 0
+              },
+              "sidecar_limits": {}
+            },
+            "containers": [
+              {
+                "id": "3745b7215479c2abe50ddf64770eb610e14f3455f9fb5d9187164fe2363c9b62",
+                "name": "hitch-5b0c716efea6b15777c20f88f7980b0406e475d832bfbaf6-main-1",
+                "role": "verifier",
+                "image_config_digest": "sha256:0ee8547018bbeb85d757cf9e7d6c1231476cb8dd5c5f92ee26817c29056f293c",
+                "cpu_limit_millis": 1000,
+                "memory_limit_bytes": 268435456
+              },
+              {
+                "id": "d6556051553a485e706826ae780f621173d3a9b34796f7ab963de195679ca069",
+                "name": "hitch-2e4035cb2c71fcbda3621440fc02d83cb61eebd1b320f804-main-1",
+                "role": "candidate",
+                "image_config_digest": "sha256:901d037d5ff27ae4c887404c3c0c3cbbd620ec0f3842b9fef2b7bf7c3effba14",
+                "cpu_limit_millis": 1000,
+                "memory_limit_bytes": 1073741824
+              }
+            ],
+            "experiment": {
+              "candidate": "candidate-a",
+              "cpu_max": "100000 100000",
+              "finished_ns": "1794220311768641002",
+              "hostname": "d6556051553a",
+              "marker": "3306c868f5f74ff4949cbda87769c0cb",
+              "memory_max": "1073741824",
+              "output_marker_retained": true,
+              "started_ns": "1794220281759412294",
+              "work_marker_retained": true,
+              "workdir": "/app"
+            }
+          },
+          {
+            "stage": "native-same-eval",
+            "candidate": "candidate-a",
+            "repetition": 2,
+            "eval_id": "eval_4a4e171476674eb89bf815461092704b",
+            "run_id": "run_a39cb4c5c0f24fbfbecd3d74dc870163",
+            "task_digest": "sha256:df190540698d63ebb69f3ac9fa470beaa29ae54820747e9503a3c8dcd0ef88f8",
+            "output_manifest_digest": "sha256:ab961bfd761d7b7dc3031e57b82ecf22ecb83b1b86bf9d7247b7eeb0786be412",
+            "artifact_directory": "/private/tmp/gear-mlebench-concurrency-20261109/state/runs/run_a39cb4c5c0f24fbfbecd3d74dc870163/output-artifacts",
+            "timeout_ms": 3600000,
+            "resource_reservation": {
+              "cpu_millis": 2000,
+              "memory_bytes": 1342177280,
+              "container_slots": 2,
+              "build_slots": 0
+            },
+            "enforced_resources": {
+              "main_limits": {
+                "cpu_millis": 1000,
+                "memory_bytes": 1073741824,
+                "container_slots": 1,
+                "build_slots": 0
+              },
+              "verifier_limits": {
+                "cpu_millis": 1000,
+                "memory_bytes": 268435456,
+                "container_slots": 1,
+                "build_slots": 0
+              },
+              "sidecar_limits": {}
+            },
+            "containers": [
+              {
+                "id": "63fd233757e4cb4b7c7567d6c096303d031da2dc95ddcc1c1610c88e42bd4005",
+                "name": "hitch-9d9ff24534c56d94f518c35235b248617869bfb72dccfb57-main-1",
+                "role": "candidate",
+                "image_config_digest": "sha256:47173ac045287da301b3b2a73bda9dff27834c1375f201165731df37a23ffb2c",
+                "cpu_limit_millis": 1000,
+                "memory_limit_bytes": 1073741824
+              },
+              {
+                "id": "7fde5a964c4c858b4b0f0f56453d496fcfa5d53211e62855b495aa6efd2fa462",
+                "name": "hitch-c5af12554c075c6eda314d01921ef9513660bd602d4429dc-main-1",
+                "role": "verifier",
+                "image_config_digest": "sha256:718d6edad174f2ca523b1006748b1221bd546a61848792dcd7628763be6ba1da",
+                "cpu_limit_millis": 1000,
+                "memory_limit_bytes": 268435456
+              }
+            ],
+            "experiment": {
+              "candidate": "candidate-a",
+              "cpu_max": "100000 100000",
+              "finished_ns": "1794220312248896169",
+              "hostname": "63fd233757e4",
+              "marker": "38d0423dd6a24c208a5d55ddb017df66",
+              "memory_max": "1073741824",
+              "output_marker_retained": true,
+              "started_ns": "1794220282225921585",
+              "work_marker_retained": true,
+              "workdir": "/app"
+            }
+          }
+        ],
+        "all_experiments_overlap_seconds": 27.795249
+      }
+    ],
+    "recovery_records": [
+      {
+        "stage": "retained-partial",
+        "operation_id": "sha256:4a367553406c8b3aea475f555dc4e95e2a9a070a9a878d1b37d29f2bb80daf62",
+        "candidate": "candidate-a",
+        "repetition": 1,
+        "eval_id": "eval_e9f488e09140426f97e88d71346b6c02",
+        "run_id": "run_cd204389556b4b25ac30bd6a36bd763a",
+        "task_digest": "sha256:df190540698d63ebb69f3ac9fa470beaa29ae54820747e9503a3c8dcd0ef88f8",
+        "output_manifest_digest": "sha256:50d4cf3a04a7b50f89f1cc5d26407e38d56e21186fc53e5104e0e84c695a5e6f",
+        "artifact_directory": "/private/tmp/gear-mlebench-concurrency-20261109/state/runs/run_cd204389556b4b25ac30bd6a36bd763a/output-artifacts",
+        "timeout_ms": 3600000,
+        "resource_reservation": {
+          "cpu_millis": 2000,
+          "memory_bytes": 1342177280,
+          "container_slots": 2,
+          "build_slots": 0
+        },
+        "enforced_resources": {
+          "main_limits": {
+            "cpu_millis": 1000,
+            "memory_bytes": 1073741824,
+            "container_slots": 1,
+            "build_slots": 0
+          },
+          "verifier_limits": {
+            "cpu_millis": 1000,
+            "memory_bytes": 268435456,
+            "container_slots": 1,
+            "build_slots": 0
+          },
+          "sidecar_limits": {}
+        },
+        "containers": [
+          {
+            "id": "0ad40ed71615546c7c23a4663cb1cb92a1546f210e9397548773a939562c37cd",
+            "name": "hitch-24180d0896a2520867e29b4c9f908e22c74718c8f9a88361-main-1",
+            "role": "verifier",
+            "image_config_digest": "sha256:ecfd9360da7895ad1133d9aa4444a775671397da204a98fb296c82b3643dab42",
+            "cpu_limit_millis": 1000,
+            "memory_limit_bytes": 268435456
+          },
+          {
+            "id": "801140e0458a862a4ee34b59d4113342e78a82f58501002ae34a58d5166f1d54",
+            "name": "hitch-cce8d63aed99324e0f3c02514a5cf5b9e382f058bcead5c4-main-1",
+            "role": "candidate",
+            "image_config_digest": "sha256:ed84d235194c6641a047cf66d86ffda567b9442169421522ab534a6aa26e30ac",
+            "cpu_limit_millis": 1000,
+            "memory_limit_bytes": 1073741824
+          }
+        ],
+        "experiment": {
+          "candidate": "candidate-a",
+          "cpu_max": "100000 100000",
+          "finished_ns": "1794218901924604336",
+          "hostname": "801140e0458a",
+          "marker": "395a8b05049d4890a54c8647640c9eb9",
+          "memory_max": "1073741824",
+          "output_marker_retained": true,
+          "started_ns": "1794218871909674211",
+          "work_marker_retained": true,
+          "workdir": "/app"
+        }
+      }
+    ],
+    "workspace_records": [
+      {
+        "id": "2d01271b-b5f5-44d0-9a10-21ce0301fc6f",
+        "state": "removed",
+        "taskDirectory": "/private/tmp/gear-mlebench-concurrency-20261109/state/store/benchmark-resources/workspaces/2d01271b-b5f5-44d0-9a10-21ce0301fc6f/titanic-like-concurrency",
+        "materialized_task_digest": "sha256:2b44cefc48648e9f80eff47d48964815f691d1bb09505676321ce23b518b85e4"
+      },
+      {
+        "id": "31eebd9b-ad80-495f-8abf-194bd1a1d2a4",
+        "state": "removed",
+        "taskDirectory": "/private/tmp/gear-mlebench-concurrency-20261109/state/store/benchmark-resources/workspaces/31eebd9b-ad80-495f-8abf-194bd1a1d2a4/titanic-like-concurrency",
+        "materialized_task_digest": "sha256:2b44cefc48648e9f80eff47d48964815f691d1bb09505676321ce23b518b85e4"
+      },
+      {
+        "id": "405b6af8-9c9b-4bcb-8f60-411f3ee83824",
+        "state": "removed",
+        "taskDirectory": "/private/tmp/gear-mlebench-concurrency-20261109/state/store/benchmark-resources/workspaces/405b6af8-9c9b-4bcb-8f60-411f3ee83824/titanic-like-concurrency",
+        "materialized_task_digest": "sha256:2b44cefc48648e9f80eff47d48964815f691d1bb09505676321ce23b518b85e4"
+      },
+      {
+        "id": "4b119632-f8bf-43ad-bac3-408ccd23f2a1",
+        "state": "removed",
+        "taskDirectory": "/private/tmp/gear-mlebench-concurrency-20261109/state/store/benchmark-resources/workspaces/4b119632-f8bf-43ad-bac3-408ccd23f2a1/titanic-like-concurrency",
+        "materialized_task_digest": "sha256:2b44cefc48648e9f80eff47d48964815f691d1bb09505676321ce23b518b85e4"
+      },
+      {
+        "id": "8808350e-f399-4dfc-8f24-e6eec4c1dea1",
+        "state": "removed",
+        "taskDirectory": "/private/tmp/gear-mlebench-concurrency-20261109/state/store/benchmark-resources/workspaces/8808350e-f399-4dfc-8f24-e6eec4c1dea1/titanic-like-concurrency",
+        "materialized_task_digest": "sha256:a44ceee400d86e984e1d6f88bcbf460927783235272d09dbdbbb27480b5ccc44"
+      },
+      {
+        "id": "917604f2-c4f2-48e7-b25b-35e827d8808f",
+        "state": "removed",
+        "taskDirectory": "/private/tmp/gear-mlebench-concurrency-20261109/state/store/benchmark-resources/workspaces/917604f2-c4f2-48e7-b25b-35e827d8808f/titanic-like-concurrency",
+        "materialized_task_digest": "sha256:2b44cefc48648e9f80eff47d48964815f691d1bb09505676321ce23b518b85e4"
+      },
+      {
+        "id": "9502e8e4-41f6-4b74-8cd5-aca1270d2855",
+        "state": "removed",
+        "taskDirectory": "/private/tmp/gear-mlebench-concurrency-20261109/state/store/benchmark-resources/workspaces/9502e8e4-41f6-4b74-8cd5-aca1270d2855/titanic-like-concurrency",
+        "materialized_task_digest": "sha256:2b44cefc48648e9f80eff47d48964815f691d1bb09505676321ce23b518b85e4"
+      },
+      {
+        "id": "fa942481-a266-4309-8bca-b0fa83da6ee3",
+        "state": "removed",
+        "taskDirectory": "/private/tmp/gear-mlebench-concurrency-20261109/state/store/benchmark-resources/workspaces/fa942481-a266-4309-8bca-b0fa83da6ee3/titanic-like-concurrency",
+        "materialized_task_digest": "sha256:2b44cefc48648e9f80eff47d48964815f691d1bb09505676321ce23b518b85e4"
+      },
+      {
+        "id": "faf1a7bd-c6fe-4d14-9a17-52b73aecfcb0",
+        "state": "removed",
+        "taskDirectory": "/private/tmp/gear-mlebench-concurrency-20261109/state/store/benchmark-resources/workspaces/faf1a7bd-c6fe-4d14-9a17-52b73aecfcb0/titanic-like-concurrency",
+        "materialized_task_digest": "sha256:2b44cefc48648e9f80eff47d48964815f691d1bb09505676321ce23b518b85e4"
+      },
+      {
+        "id": "fd6aefc3-3a6c-40e9-a34d-9e29181ad4af",
+        "state": "removed",
+        "taskDirectory": "/private/tmp/gear-mlebench-concurrency-20261109/state/store/benchmark-resources/workspaces/fd6aefc3-3a6c-40e9-a34d-9e29181ad4af/titanic-like-concurrency",
+        "materialized_task_digest": "sha256:2b44cefc48648e9f80eff47d48964815f691d1bb09505676321ce23b518b85e4"
+      }
+    ],
+    "limitations": [
+      "Synthetic fixture checks scheduling/isolation, not Titanic quality.",
+      "Per-operation maxConcurrent is distinct from daemon-wide capacity. Two concurrent operations may each request their own capacity.",
+      "Sandbox marker timestamps measure active experiment overlap, not all setup/cleanup time."
+    ]
+  },
+  "final_runtime_validation": {
+    "status": "passed",
+    "kind": "final-runtime-native-concurrency",
+    "controller_runtime": "sha256:360e4b2884e6ca010223ac6f594f3f973232cabc268fec7db6a81730684b0d31",
+    "previous_controller_runtime": "sha256:3d86c14bdd7d734a752d2a84f79c5bf8a460acd68acffa8d75a60215eec31506",
+    "model_api_calls": 0,
+    "complete_task_executions": 3,
+    "retries": 0,
+    "daemon_capacity": {
+      "maxConcurrent": 3,
+      "containerSlots": 6,
+      "buildSlots": 2
+    },
+    "observed_peak_active_experiments": 3,
+    "records": [
+      {
+        "run_id": "run_52a53cf13b6e4f86ad5238c10e361dd5",
+        "attempt": 1,
+        "eval_id": "eval_026f93f40cce4b24ad78d083af737699",
+        "output_manifest_digest": "sha256:e0dfb4f5bb2ea3cc1c6820aa74219b683f038ff0445b511c2704f1f7823840f6",
+        "artifact_directory": "/private/tmp/gear-mlebench-concurrency-20261109/state/runs/run_52a53cf13b6e4f86ad5238c10e361dd5/output-artifacts",
+        "timeout_ms": 3600000,
+        "reservation": {
+          "cpu_millis": 2000,
+          "memory_bytes": 1342177280,
+          "container_slots": 2,
+          "build_slots": 0
+        },
+        "enforced": {
+          "main_limits": {
+            "cpu_millis": 1000,
+            "memory_bytes": 1073741824,
+            "container_slots": 1,
+            "build_slots": 0
+          },
+          "verifier_limits": {
+            "cpu_millis": 1000,
+            "memory_bytes": 268435456,
+            "container_slots": 1,
+            "build_slots": 0
+          },
+          "sidecar_limits": {}
+        },
+        "containers": [
+          {
+            "id": "740737a701929fda006822dfdf70c04fcece424f5c9cf6c4045e2e1a3c504c91",
+            "name": "hitch-01772d2f07d8a201b35f9208cc49af766b243e7682b4dd83-main-1",
+            "role": "verifier",
+            "cpu_limit_millis": 1000,
+            "memory_limit_bytes": 268435456
+          },
+          {
+            "id": "c08a52f9325d202e5d336b8c19c2473792bbf4f9d5eb54b275354410e369ab40",
+            "name": "hitch-557b3f5a75c04a4e5112a188d43c0b4fdb8e9efd613e7e18-main-1",
+            "role": "candidate",
+            "cpu_limit_millis": 1000,
+            "memory_limit_bytes": 1073741824
+          }
+        ],
+        "experiment": {
+          "candidate": "candidate-a",
+          "cpu_max": "100000 100000",
+          "finished_ns": "1794220441719006298",
+          "hostname": "c08a52f9325d",
+          "marker": "5539f299a99d431b87728c75ea570ab1",
+          "memory_max": "1073741824",
+          "output_marker_retained": true,
+          "started_ns": "1794220411709113757",
+          "work_marker_retained": true,
+          "workdir": "/app"
+        }
+      },
+      {
+        "run_id": "run_010525152d284a85a7aec3fba6962c2a",
+        "attempt": 2,
+        "eval_id": "eval_026f93f40cce4b24ad78d083af737699",
+        "output_manifest_digest": "sha256:ac3d2c4bc8d445ac97c176080b5a7fbc611740033c1e6de3ab281b8e0fbdea13",
+        "artifact_directory": "/private/tmp/gear-mlebench-concurrency-20261109/state/runs/run_010525152d284a85a7aec3fba6962c2a/output-artifacts",
+        "timeout_ms": 3600000,
+        "reservation": {
+          "cpu_millis": 2000,
+          "memory_bytes": 1342177280,
+          "container_slots": 2,
+          "build_slots": 0
+        },
+        "enforced": {
+          "main_limits": {
+            "cpu_millis": 1000,
+            "memory_bytes": 1073741824,
+            "container_slots": 1,
+            "build_slots": 0
+          },
+          "verifier_limits": {
+            "cpu_millis": 1000,
+            "memory_bytes": 268435456,
+            "container_slots": 1,
+            "build_slots": 0
+          },
+          "sidecar_limits": {}
+        },
+        "containers": [
+          {
+            "id": "1489234249d5e5ae2114212563e8ddec9ceca7fbc4335b3ffb49375d583d2d4a",
+            "name": "hitch-be0a3ede8bc2956ef2a078de3b65aee056a599094212dc1b-main-1",
+            "role": "verifier",
+            "cpu_limit_millis": 1000,
+            "memory_limit_bytes": 268435456
+          },
+          {
+            "id": "e1effdfc1821b3a42ee48755d7a2e47bcc73345ba4dbee0cad9be66f1ef9f093",
+            "name": "hitch-c7e1234400b1ac464462ffb7119130c306ecd0fd0494ff03-main-1",
+            "role": "candidate",
+            "cpu_limit_millis": 1000,
+            "memory_limit_bytes": 1073741824
+          }
+        ],
+        "experiment": {
+          "candidate": "candidate-a",
+          "cpu_max": "100000 100000",
+          "finished_ns": "1794220441900657715",
+          "hostname": "e1effdfc1821",
+          "marker": "509b714ad886491ca42e0a58e46e5d5d",
+          "memory_max": "1073741824",
+          "output_marker_retained": true,
+          "started_ns": "1794220411872155590",
+          "work_marker_retained": true,
+          "workdir": "/app"
+        }
+      },
+      {
+        "run_id": "run_2f9ea44c0b354e80b08815bd8dc610b1",
+        "attempt": 3,
+        "eval_id": "eval_026f93f40cce4b24ad78d083af737699",
+        "output_manifest_digest": "sha256:7ababb4f75ee973d5a6ddd84e25d3302d2aafe77ee7bedf363423b79a8513584",
+        "artifact_directory": "/private/tmp/gear-mlebench-concurrency-20261109/state/runs/run_2f9ea44c0b354e80b08815bd8dc610b1/output-artifacts",
+        "timeout_ms": 3600000,
+        "reservation": {
+          "cpu_millis": 2000,
+          "memory_bytes": 1342177280,
+          "container_slots": 2,
+          "build_slots": 0
+        },
+        "enforced": {
+          "main_limits": {
+            "cpu_millis": 1000,
+            "memory_bytes": 1073741824,
+            "container_slots": 1,
+            "build_slots": 0
+          },
+          "verifier_limits": {
+            "cpu_millis": 1000,
+            "memory_bytes": 268435456,
+            "container_slots": 1,
+            "build_slots": 0
+          },
+          "sidecar_limits": {}
+        },
+        "containers": [
+          {
+            "id": "3489c93474a72e21e5311fad357b33e47bcb0a5b29e65c9a3b32ebbfb2960cb7",
+            "name": "hitch-6abad2ab98781eac605661a6456165f7610e3fd84b6134f6-main-1",
+            "role": "candidate",
+            "cpu_limit_millis": 1000,
+            "memory_limit_bytes": 1073741824
+          },
+          {
+            "id": "fddf4c54a019cc81b6420adaa3afa452f685bca6c211e8c052696f1824c1a550",
+            "name": "hitch-45a89ff32922eedac05978158640caae97286150fa4f8c53-main-1",
+            "role": "verifier",
+            "cpu_limit_millis": 1000,
+            "memory_limit_bytes": 268435456
+          }
+        ],
+        "experiment": {
+          "candidate": "candidate-a",
+          "cpu_max": "100000 100000",
+          "finished_ns": "1794220440641627339",
+          "hostname": "3489c93474a7",
+          "marker": "d6d7b32874894ef09c5a9bec1f453dbc",
+          "memory_max": "1073741824",
+          "output_marker_retained": true,
+          "started_ns": "1794220410629908673",
+          "work_marker_retained": true,
+          "workdir": "/app"
+        }
+      }
+    ],
+    "workspace_records": [
+      {
+        "id": "5d2cee6d-9b61-43e6-b22a-f4e730805a7c",
+        "state": "removed",
+        "taskDirectory": "/private/tmp/gear-mlebench-concurrency-20261109/state/store/benchmark-resources/workspaces/5d2cee6d-9b61-43e6-b22a-f4e730805a7c/titanic-like-concurrency"
+      },
+      {
+        "id": "948cbc3d-66e5-43d2-9e7e-0ef9658a770b",
+        "state": "removed",
+        "taskDirectory": "/private/tmp/gear-mlebench-concurrency-20261109/state/store/benchmark-resources/workspaces/948cbc3d-66e5-43d2-9e7e-0ef9658a770b/titanic-like-concurrency"
+      },
+      {
+        "id": "d1277632-e91c-41d3-b82e-99ba3d2c3c8e",
+        "state": "removed",
+        "taskDirectory": "/private/tmp/gear-mlebench-concurrency-20261109/state/store/benchmark-resources/workspaces/d1277632-e91c-41d3-b82e-99ba3d2c3c8e/titanic-like-concurrency"
+      }
+    ],
+    "limitations": [
+      "Deterministic synthetic training validates scheduling and isolation, not model quality.",
+      "The prior nine-run evidence remains unchanged."
+    ],
+    "all_experiments_overlap_seconds": 28.769472
+  },
+  "raw_evidence": {
+    "root": "/private/tmp/gear-mlebench-concurrency-20261109",
+    "initial_result_sha256": "sha256:9fc63e19baa8793165fa6ecfb11ac3750d946e8913ed5b7005cb068ee1b80bca",
+    "final_result_sha256": "sha256:74b7b4d91c4fdae2ec55e1ec85e38249f7d779b475ba9d5227d4be64bde7920e",
+    "native_command": {
+      "executable": "/private/tmp/gear-mlebench-concurrency-20261109/state/store/controller-runtimes/sha256/3d86c14bdd7d734a752d2a84f79c5bf8a460acd68acffa8d75a60215eec31506/payload/dist/bin/hitch.js",
+      "args": [
+        "--root",
+        "/private/tmp/gear-mlebench-concurrency-20261109/state",
+        "eval",
+        "run",
+        "--daemon",
+        "--dataset",
+        "/private/tmp/gear-mlebench-concurrency-20261109/parallel-fresh/f5d079284875e3512ce379e3e9a29f1096e9fa6e968ec5ea72c419182b6120e3/dataset-0",
+        "--build-mode",
+        "backend",
+        "--harness",
+        "pi@git+file:///private/tmp/gear-mlebench-concurrency-20261109/ordinary-agent#df9906a61abbc633c0dfd13b44c545513dfb7a17",
+        "--model",
+        "deterministic-no-api",
+        "--attempts",
+        "3",
+        "--max-concurrent",
+        "3",
+        "--infrastructure-retries",
+        "0",
+        "--timeout",
+        "1h",
+        "--setup-timeout",
+        "10m",
+        "--output",
+        "json"
+      ]
+    },
+    "final_runtime": {
+      "runtime_id": "sha256:360e4b2884e6ca010223ac6f594f3f973232cabc268fec7db6a81730684b0d31",
+      "executable": "/private/tmp/gear-mlebench-concurrency-20261109/state/store/controller-runtimes/sha256/360e4b2884e6ca010223ac6f594f3f973232cabc268fec7db6a81730684b0d31/payload/dist/bin/hitch.js",
+      "prior_runtime_id": "sha256:3d86c14bdd7d734a752d2a84f79c5bf8a460acd68acffa8d75a60215eec31506"
+    }
+  },
+  "reproduction_scripts": [
+    {
+      "path": "tests/integration/canaries/mlebench-concurrency-linux.mjs",
+      "sha256_at_publication": "sha256:c25a83f3add12a1b9d50a8766d2c620cbe8ae7e9fb955d9831b034a8d5fd00cb"
+    },
+    {
+      "path": "tests/integration/canaries/mlebench-concurrency-continue.mjs",
+      "sha256_at_publication": "sha256:ee0b3f8d2ec47aabb5ef08ebd4d047741cb2a38edfc578c05c4fbdb6730a57a6"
+    },
+    {
+      "path": "tests/integration/canaries/mlebench-concurrency-resnapshot.mjs",
+      "sha256_at_publication": "sha256:6351cbf65decfb4ee028e5e45c2a549c67c7fed10071af4648f6ecc78fecb3cb"
+    }
+  ],
+  "limitations": [
+    "This uses a deterministic no-API agent and synthetic data; it does not estimate Titanic model quality.",
+    "A 30-second in-sandbox hold makes active experiment overlap observable; it is not a training throughput measurement.",
+    "The interrupted operation remains retained with one completed slot and one never-submitted slot; no successful real resume is claimed.",
+    "Same-task parallelism is enabled only for the supported, host-verified local Docker isolation contract."
+  ]
+}
