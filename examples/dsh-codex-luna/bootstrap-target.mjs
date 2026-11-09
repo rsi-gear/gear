@@ -43,7 +43,7 @@ async function writeManifest(dshBaseRef, parentRef) {
     schemaVersion: 1,
     ...(parentRef === undefined ? {} : { parentRef }),
     dshBaseRef,
-    toolchainRef: process.env.GEAR_TOOLCHAIN_REF ?? 'dsh-rc2-codex-pnpm-11.7.0',
+    toolchainRef: process.env.GEAR_TOOLCHAIN_REF ?? 'dsh-0.1.5-rc.3-codex-0.3.0-pi-ai-0.85.1-include-1.0.7-pnpm-11.7.0',
     sandboxProfileRef: process.env.GEAR_SANDBOX_PROFILE_REF ?? 'harbor-terminal-bench-2.0',
     artifacts: await artifacts(),
   }

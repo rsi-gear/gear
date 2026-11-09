@@ -2,13 +2,17 @@
 // Fixed compiler entry point. Run only through Gear's disposable snapshot and
 // air-gapped compiler sandbox; this file is never supplied by the candidate.
 import { createHash } from 'node:crypto'
-import { copyFile, mkdir, readFile, realpath, symlink, writeFile } from 'node:fs/promises'
+import { copyFile, lstat, mkdir, readFile, realpath, symlink, unlink, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const sha = value => `sha256:${createHash('sha256').update(value).digest('hex')}`
 const notChecked = () => ({ status: 'not_checked', code: 'PREVIOUS_STAGE_NOT_COMPLETED' })
+async function readInstalledManifest(runtimeRoot, name) {
+  const path = join(runtimeRoot, 'node_modules', ...name.split('/'), 'package.json')
+  return { path: await realpath(path), manifest: JSON.parse(await readFile(path, 'utf8')) }
+}
 let input = ''
 for await (const chunk of process.stdin) {
   input += chunk
@@ -22,6 +26,7 @@ if (request.schemaVersion !== 1 || !/^sha256:[a-f0-9]{64}$/.test(request.candida
 process.env.TMPDIR = join(dirname(process.cwd()), 'tmp')
 process.env.TMP = process.env.TMPDIR
 process.env.TEMP = process.env.TMPDIR
+await mkdir(process.env.TMPDIR, { recursive: true })
 const report = {
   schemaVersion: 1, candidateDigest: request.candidateDigest,
   load: notChecked(), promptAssembly: notChecked(), skillDiscovery: notChecked(), skillRead: notChecked(), cleanup: notChecked(), skills: [],
@@ -51,10 +56,13 @@ try {
   const anchor = await realpath(carrierRequire.resolve('@deepseek-ai/dsh/package.json'))
   const dshRequire = createRequire(anchor)
   const pkg = JSON.parse(await readFile(anchor, 'utf8'))
-  if (pkg.version !== '0.1.1-rc.2') throw new Error(`RUNTIME_VERSION_MISMATCH: expected DSH 0.1.1-rc.2, found ${pkg.version}`)
+  const candidateCarrier = JSON.parse(await readFile(join(request.repository, 'package.json'), 'utf8'))
+  const expectedDependencies = candidateCarrier.dependencies ?? {}
+  if (pkg.version !== expectedDependencies['@deepseek-ai/dsh']) {
+    throw new Error(`RUNTIME_VERSION_MISMATCH: expected DSH ${expectedDependencies['@deepseek-ai/dsh']}, found ${pkg.version}`)
+  }
   const lock = await readFile(join(request.runtimeRoot, 'pnpm-lock.yaml'))
   const installedCarrier = JSON.parse(await readFile(join(request.runtimeRoot, 'package.json'), 'utf8'))
-  const candidateCarrier = JSON.parse(await readFile(join(request.repository, 'package.json'), 'utf8'))
   const dependencies = carrier => JSON.stringify(Object.entries(carrier.dependencies ?? {}).sort())
   if (dependencies(installedCarrier) !== dependencies(candidateCarrier)
     || installedCarrier.packageManager !== candidateCarrier.packageManager
@@ -78,13 +86,34 @@ try {
     if (installed.version !== pkg.version) throw new Error(`RUNTIME_VERSION_MISMATCH: ${name}@${installed.version}`)
   }
 
-  // The same closure and profile composition used by the rc.2 CLI. Dependencies
+  // The same closure and profile composition used by the pinned DSH CLI. Dependencies
   // resolve from the fixed Target installation, never Gear's development tree.
   const home = process.env.DSH_HOME
-  appBoot.healProfilesModuleFallback(anchor, home)
+  await appBoot.healProfilesModuleFallback({ installAnchor: anchor, home })
   const modules = join(home, 'profiles', 'node_modules')
-  const codex = dirname(await realpath(carrierRequire.resolve('dsh-codex/package.json')))
-  await symlink(codex, join(modules, 'dsh-codex'), 'dir')
+  const codexInfo = await readInstalledManifest(request.runtimeRoot, 'dsh-codex')
+  const codexPackagePath = codexInfo.path
+  const codexPackage = codexInfo.manifest
+  if (codexPackage.version !== expectedDependencies['dsh-codex']) {
+    throw new Error(`RUNTIME_VERSION_MISMATCH: expected dsh-codex ${expectedDependencies['dsh-codex']}, found ${codexPackage.version}`)
+  }
+  const piAiInfo = await readInstalledManifest(request.runtimeRoot, '@earendil-works/pi-ai')
+  const piAiPackage = piAiInfo.manifest
+  if (piAiPackage.version !== expectedDependencies['@earendil-works/pi-ai']) {
+    throw new Error(`RUNTIME_VERSION_MISMATCH: expected pi-ai ${expectedDependencies['@earendil-works/pi-ai']}, found ${piAiPackage.version}`)
+  }
+  const codex = dirname(await realpath(codexPackagePath))
+  const codexLink = join(modules, 'dsh-codex')
+  let linkedCodex
+  try { linkedCodex = await realpath(codexLink) }
+  catch (error) { if (error?.code !== 'ENOENT') throw error }
+  if (linkedCodex !== codex) {
+    if (linkedCodex) {
+      if (!(await lstat(codexLink)).isSymbolicLink()) throw new Error('PROFILE_CODEX_LINK_CONFLICT')
+      await unlink(codexLink)
+    }
+    await symlink(codex, codexLink, process.platform === 'win32' ? 'junction' : 'dir')
+  }
   const profile = appBoot.loadProfile('gear-check', 'headless', anchor, home, { userLayer: false })
   await copyFile(join(request.repository, 'fixed', 'target-loader-shim.js'), join(profile.dir, 'target-loader-shim.js'))
   process.env.DSH_REFINE_REPOSITORY = request.repository
@@ -220,7 +249,7 @@ try {
   try {
     await Promise.race([
       (async () => {
-        // dsh-codex 0.2.6 refreshes live agent tools on tools/change. Stop
+        // dsh-codex refreshes live agent tools on tools/change. Stop
         // that provider before closing the agent scope it would refresh.
         // This affects teardown only, after all runtime assertions completed.
         try {

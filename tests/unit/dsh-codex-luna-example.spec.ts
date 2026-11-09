@@ -25,17 +25,23 @@ afterEach(async () => {
 })
 
 describe('DSH Codex Luna example', () => {
-  it('pins the validated control-plane and target plugin versions', async () => {
+  it('pins the matching DSH and Codex runtime versions', async () => {
     const runtime = JSON.parse(await readFile(join(example, 'runtime.package.json'), 'utf8'))
     const target = JSON.parse(await readFile(join(example, 'target-carrier', 'package.json'), 'utf8'))
-    expect(runtime.dependencies['@deepseek-ai/dsh']).toBe('0.1.1-rc.2')
-    expect(runtime.dependencies['@earendil-works/pi-ai']).toBe('0.84.4')
+    expect(runtime.dependencies['@deepseek-ai/dsh']).toBe('0.1.5-rc.3')
+    expect(runtime.dependencies['@earendil-works/pi-ai']).toBe('0.85.1')
     expect(target.dependencies).toMatchObject({
-      '@deepseek-ai/dsh': '0.1.1-rc.2',
-      '@deepseek-ai/dsh-tools': '0.1.1-rc.2',
-      '@earendil-works/pi-ai': '0.84.4',
-      'dsh-codex': '0.2.6',
+      '@deepseek-ai/dsh': '0.1.5-rc.3',
+      '@deepseek-ai/dsh-tools': '0.1.5-rc.3',
+      '@deepseek-ai/cordis-plugin-include': '1.0.7',
+      '@earendil-works/pi-ai': '0.85.1',
+      'dsh-codex': '0.3.0',
     })
+    const runtimeCheck = await readFile(join(root, 'assets', 'dsh-runtime-check.mjs'), 'utf8')
+    expect(runtimeCheck).toContain("pkg.version !== expectedDependencies['@deepseek-ai/dsh']")
+    expect(runtimeCheck).toContain("codexPackage.version !== expectedDependencies['dsh-codex']")
+    expect(runtimeCheck).toContain("piAiPackage.version !== expectedDependencies['@earendil-works/pi-ai']")
+    expect(runtimeCheck).toContain("process.platform === 'win32' ? 'junction' : 'dir'")
     const targetLauncher = await readFile(join(example, 'target-carrier', 'apps', 'cli', 'lib', 'bin.js'), 'utf8')
     expect(targetLauncher).toContain("process.env.GEAR_TARGET_CODEX_ENV ?? 'DSH_OPENAI_CODEX_ACCESS_B64'")
     expect(targetLauncher).toContain('DSH_OPENAI_CODEX_ACCESS(?:_[A-Z0-9]+)*_B64')

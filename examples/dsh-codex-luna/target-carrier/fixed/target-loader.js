@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { lstat, readFile, readdir } from 'node:fs/promises'
 import { join, relative, resolve, sep } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import Include from '@deepseek-ai/cordis-plugin-include'
 
 export const name = 'gear-target-harness-loader'
@@ -79,7 +80,7 @@ export async function apply(ctx, config) {
   }
   const verified = await verifyTargetHarness(config.repositoryRoot)
   await ctx.plugin(Include, {
-    path: join(verified.root, 'preset', 'agent.cordis.yml'),
+    path: pathToFileURL(join(verified.root, 'preset', 'agent.cordis.yml')).href,
     enableLogs: false,
   })
   // Persist the fixed effort in this run's settings before the headless runner
