@@ -131,12 +131,10 @@ if ${JSON.stringify(mode)}.startswith('connect-'):
  tunnel.close()
 if 'experience' in view and ${JSON.stringify(mode)}!='historical-sdk':
  memory=view['experience']
- reader=memory.get('reader')
  def read_memory(body):
-  if reader is None: raise AssertionError('history reader unavailable for requested read')
-  return subprocess.run(reader['argv'],input=json.dumps(body),text=True,capture_output=True)
- if reader is not None and 'baseline' in reader:
-  baseline=reader['baseline']
+  return subprocess.run(memory['reader']['argv'],input=json.dumps(body),text=True,capture_output=True)
+ if 'baseline' in memory['reader']:
+  baseline=memory['reader']['baseline']
   assert baseline['candidate_id']=='anchor'
   assert isinstance(baseline['missing_trajectory_slots'],list)
   if baseline['trajectory_refs']:
@@ -146,7 +144,7 @@ if 'experience' in view and ${JSON.stringify(mode)}!='historical-sdk':
    assert json.loads(trace.stdout)['items'][0]['data']=='historical seed trace'
  if memory['cards'] and ${JSON.stringify(mode)} not in ['meta-sdk','meta-sdk-invalid']:
   assert any(card['classification']['effect']=='regressed' for card in memory['cards'])
-  query=subprocess.run(reader['argv'],input=json.dumps({'action':'query'}),text=True,capture_output=True)
+  query=subprocess.run(memory['reader']['argv'],input=json.dumps({'action':'query'}),text=True,capture_output=True)
   assert query.returncode==0,query.stdout+query.stderr
   page=json.loads(query.stdout)
   assert page['total']==2 and page['snapshot_digest']==memory['snapshot_digest']
@@ -159,7 +157,7 @@ if 'experience' in view and ${JSON.stringify(mode)}!='historical-sdk':
   assert rejected['classification']['effect']=='regressed'
   diff=read_memory({'action':'read','ref':rejected['ref'],'view':'diff'})
   assert diff.returncode==0 and json.loads(diff.stdout)['items'][0]['patch_status']=='too-large'
- if reader is not None and 'trajectory' in reader and memory['cards'] and ${JSON.stringify(mode)} not in ['meta-sdk','meta-sdk-invalid']:
+ if 'trajectory' in memory['reader'] and memory['cards']:
   for historical_card,expected_trace in [(anchor,'successful seed trace'),(rejected,'failed seed trace')]:
    ref=historical_card['ref']
    sources=read_memory({'action':'read','ref':ref,'view':'trajectory'})

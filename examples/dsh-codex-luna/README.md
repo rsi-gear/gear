@@ -47,11 +47,13 @@ npm ci
 npm run build
 export DSH_HOME="$PWD/.evolve-lab/dsh-home"
 .evolve-lab/runtime/node_modules/.bin/dsh plugin --profile web add "$PWD"
-.evolve-lab/runtime/node_modules/.bin/dsh plugin --profile web add dsh-codex@0.3.0
+.evolve-lab/runtime/node_modules/.bin/dsh plugin --profile web add dsh-codex@0.2.6
 cp examples/dsh-codex-luna/profile.patch.yml .evolve-lab/dsh-home/profiles/web/cordis.patch.yml
 ```
 
-The profile links `rsi-gear` to this checkout and uses `metaAdapter.kind: skill`. Run `/refine` in the configured DSH agent session; no `refine-meta` preset is required. Match the active session model and sampling to `metaModel` and `metaSampling`. The isolated runtime pins DSH `0.1.5-rc.3`, `dsh-codex` `0.3.0`, and `pi-ai` `0.85.1` as a compatible set. The earlier `dsh-codex` `0.2.6` adapter did not populate the `modelErrors` map required by DSH 0.1.5, which caused the observed `.get` startup failure before any model request. The runtime checker compares installed versions with the target carrier manifest and rejects stale dependencies.
+The profile links `rsi-gear` to this checkout and uses `metaAdapter.kind: skill`. Run `/refine` in the configured DSH agent session; no `refine-meta` preset is required. Match the active session model and sampling to `metaModel` and `metaSampling`. The commands pin DSH
+`0.1.1-rc.2` and `dsh-codex` `0.2.6`; the isolated runtime supplies the
+compatible `pi-ai` `0.84.4` to the profile through DSH's runtime links.
 
 ## Create the target carrier
 
@@ -68,13 +70,13 @@ to `.evolve-lab/target.json`.
 
 ## Candidate runtime checks
 
-Carrier `0.0.4` pins DSH 0.1.5-rc.3 / dsh-codex 0.3.0 / pi-ai 0.85.1 /
-Cordis Include 1.0.7
-compatibility set and keeps the native HMR row enabled during headless boot
-with `root: []`. This also preserves the fix for the HMR activation race
-observed with the previous DSH rc.2 carrier, where the late HMR fallback could
-return before patch watchers started. Re-bootstrap to adopt this substrate
-change; retain the previous carrier commits and evaluation evidence.
+Carrier `0.0.3` enables the existing native HMR row during initial headless boot
+with `root: []`. DSH rc.2 disables that row in its headless profile but still
+registers user-patch watchers after boot. Its late HMR fallback can return before
+the service activates, causing `user patch-layer watching requires the Cordis
+HMR service`. The fixed carrier avoids that activation race without changing
+the mutable harness. Re-bootstrap to adopt this substrate change; retain the
+previous carrier commits and evaluation evidence.
 
 The profile now uses `assets/dsh-runtime-check.mjs` through the existing fixed
 compiler interface. `evolve.mjs` supplies its absolute path as
@@ -97,9 +99,8 @@ to the profile. The checker rejects mismatched dependency declarations,
 workspace policy, or an existing candidate lockfile that differs from the
 installed runtime's lockfile.
 
-The checker loads the actual DSH 0.1.5-rc.3 headless composition and target
-loader with the automatic task runner, startup parser, HMR and telemetry
-disabled. It uses
+The checker loads the actual rc.2 headless composition and target loader with
+the automatic task runner, startup parser, HMR and telemetry disabled. It uses
 a temporary copy with a matching candidate manifest, verifies Skill discovery
 and native reads through a real Agent session whose cwd is the disposable task
 workspace, and disposes the runtime. It does not call a model or Hitch.
@@ -107,7 +108,7 @@ Keep `metaSandbox.mode: required` for candidate execution; no Meta shell or
 credentials are needed. Fixed toolchains outside system directories can declare
 additional absolute `compiler.readPaths` for their shared libraries.
 
-The carrier exposes the matching `@deepseek-ai/dsh-tools@0.1.5-rc.3` directly for
+Carrier `0.0.2` also exposes `@deepseek-ai/dsh-tools@0.1.1-rc.2` directly for
 native `defineTool` authoring. The other DSH transitive packages remain outside
 the candidate import contract. The checker now installs the same per-Agent
 model selection as headless and reports `runtime.promptAssembly`: it assembles
@@ -129,7 +130,7 @@ their compiler command, args, `reportProtocol: gear-runtime-check-v1`, and
 report protocol remains compatible but explicitly returns runtime `not_checked`;
 with the protocol enabled it fails because it produces no runtime report.
 
-Re-bootstrap the Target when adopting carrier `0.0.4`: the fixed patch and
+Re-bootstrap the Target when adopting carrier `0.0.2`: the fixed patch and
 dependency contract change the substrate commit, manifest identity, and packaged
 artifact. Record those new identities and reassess baseline comparability; do not rewrite old commits
 or evidence to reuse an earlier experiment identity.
