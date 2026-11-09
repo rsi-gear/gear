@@ -1,4 +1,5 @@
-import { chmod, lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { chmod, lstat, mkdir, open, readFile, readdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { canonicalDigest } from '../../domain/canonical.js'
 import { GearError } from '../../domain/errors.js'
@@ -126,5 +127,36 @@ export class TargetStore {
         `Frozen target ${id} or its execution conditions changed`,
       )
     return manifest
+  }
+  /** Read one sealed file by candidate and path without copying source into experience records. */
+  async readResource(id: string, resourcePath: string): Promise<Buffer> {
+    const manifest = await this.verify(id)
+    const resource = manifest.resources.find((item) => item.path === resourcePath)
+    if (!resource)
+      throw new GearError('target-resource-unavailable', `Frozen target ${id} has no ${resourcePath}`)
+    const file = await open(
+      join(this.path(id), resource.path),
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    )
+    try {
+      const before = await file.stat()
+      if (!before.isFile() || before.nlink !== 1 || before.size > 64 * 1024 * 1024)
+        throw new GearError(
+          'target-resource-invalid',
+          'Frozen target resources must be bounded regular files',
+        )
+      const bytes = await file.readFile()
+      const after = await file.stat()
+      if (
+        after.size !== before.size ||
+        after.nlink !== 1 ||
+        canonicalDigest(bytes.toString('base64')) !== resource.digest ||
+        Boolean(after.mode & 0o111) !== resource.executable
+      )
+        throw new GearError('target-identity-mismatch', `Frozen target resource ${resource.path} changed`)
+      return bytes
+    } finally {
+      await file.close()
+    }
   }
 }

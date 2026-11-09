@@ -1,6 +1,6 @@
 import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -24,10 +24,9 @@ import type { TrajectoryReference } from '../../src/domain/trajectory.js'
 import { resolvePythonExecutable } from '../../src/adapters/python/interpreter.js'
 import { ExperienceStore } from '../../src/adapters/storage/experience.js'
 import { builtinPolicy, builtinPolicyImplementationDigest } from '../../src/adapters/python/builtin-policy.js'
+import { stageExperience } from '../../src/adapters/codex/experience.js'
 import type { ExperienceRecord, ExperienceContext } from '../../src/domain/experience.js'
-import { freezeAlgorithmSource } from '../../src/adapters/python/source.js'
-import { PythonAlgorithmWorker } from '../../src/adapters/python/worker.js'
-import type { SearchView } from '../../src/domain/algorithm-wire.js'
+import type { ExperienceIndexSnapshot } from '../../src/domain/experience.js'
 
 const roots: string[] = [], operationRoots: string[] = []
 const workerGroups = new Set<number>()
@@ -87,7 +86,7 @@ async function fixture(mode = 'success', adapter: 'pi' | 'dsh' = 'pi', prepare =
   await writeFile(
     executable,
     `#!${fakePython}
-import json,os,sys,time,subprocess
+import base64,json,os,sys,time,subprocess
 from pathlib import Path
 if '--version' in sys.argv:
  print('codex-cli 0.145.0'); sys.exit(0)
@@ -103,7 +102,7 @@ view=json.loads(Path('../input.json').read_text())
 prompt=sys.stdin.read()
 assert ('Do not edit the candidate.' if view['operation']['kind']=='diagnose_seed' else 'Change only the allowed mutation paths.') in prompt
 assert len(view['tasks'])==1 and view['tasks'][0]['id']=='seed'
-for path in [${JSON.stringify(join(privateRoot, 'held-out.json'))},${JSON.stringify(join(targets, 'anchor', adapter === 'pi' ? 'AGENTS.md' : 'prompts/system.md'))}]:
+for path in ([] if ${JSON.stringify(mode)}=='meta-sdk' else [${JSON.stringify(join(privateRoot, 'held-out.json'))},${JSON.stringify(join(targets, 'anchor', adapter === 'pi' ? 'AGENTS.md' : 'prompts/system.md'))}]):
  try:
   Path(path).read_text()
   raise AssertionError('PRIVATE_FILE_READABLE')
@@ -132,34 +131,52 @@ if ${JSON.stringify(mode)}.startswith('connect-'):
  tunnel.close()
 if 'experience' in view and ${JSON.stringify(mode)}!='historical-sdk':
  memory=view['experience']
- assert memory['cards'][0]['classification']['effect']=='regressed'
- query=subprocess.run(memory['reader']['argv'],input=json.dumps({'action':'query','query':{'effects':['regressed']}}),text=True,capture_output=True)
- assert query.returncode==0,query.stdout+query.stderr
- page=json.loads(query.stdout)
- assert page['total']==1 and page['snapshot_digest']==memory['snapshot_digest']
- detail=subprocess.run(memory['reader']['argv'],input=json.dumps({'action':'read','ref':page['items'][0]['card']['ref'],'view':'diff'}),text=True,capture_output=True)
- assert detail.returncode==0,detail.stdout+detail.stderr
- assert json.loads(detail.stdout)['items'][0]['patch']=='-before\\n+after\\n'
- if 'trajectory' in memory['reader']:
-  def read_memory(body):
-   return subprocess.run(memory['reader']['argv'],input=json.dumps(body),text=True,capture_output=True)
-  ref=page['items'][0]['card']['ref']
-  sources=read_memory({'action':'read','ref':ref,'view':'trajectory'})
-  assert sources.returncode==0,sources.stdout+sources.stderr
-  source=json.loads(sources.stdout)['items'][0]['ref']
-  params={'action':'trajectory','ref':ref,'source_ref':source,'query':{'limit':1}}
-  trace=read_memory(params)
-  assert trace.returncode==0,trace.stdout+trace.stderr
-  trace_page=json.loads(trace.stdout)
-  assert trace_page['items'][0]['data']=='historical seed trace'
-  assert trace_page['child_sessions']=='not-included'
-  params['query']['cursor']=trace_page['next_cursor']
-  second=read_memory(params)
-  assert second.returncode==0,second.stdout+second.stderr
-  assert json.loads(second.stdout)['items'][0]['seq']==1
-  params['source_ref']='trajectory:'+'f'*64
-  denied=read_memory(params)
-  assert denied.returncode!=0 and 'trajectory-outside-snapshot' in denied.stdout+denied.stderr
+ def read_memory(body):
+  return subprocess.run(memory['reader']['argv'],input=json.dumps(body),text=True,capture_output=True)
+ if 'baseline' in memory['reader']:
+  baseline=memory['reader']['baseline']
+  assert baseline['candidate_id']=='anchor'
+  assert isinstance(baseline['missing_trajectory_slots'],list)
+  if baseline['trajectory_refs']:
+   ref=baseline['trajectory_refs'][0]['ref']
+   trace=read_memory({'action':'trajectory','ref':'baseline','source_ref':ref,'query':{'limit':10}})
+   assert trace.returncode==0,trace.stdout+trace.stderr
+   assert json.loads(trace.stdout)['items'][0]['data']=='historical seed trace'
+ if memory['cards'] and ${JSON.stringify(mode)} not in ['meta-sdk','meta-sdk-invalid']:
+  assert any(card['classification']['effect']=='regressed' for card in memory['cards'])
+  query=subprocess.run(memory['reader']['argv'],input=json.dumps({'action':'query'}),text=True,capture_output=True)
+  assert query.returncode==0,query.stdout+query.stderr
+  page=json.loads(query.stdout)
+  assert page['total']==2 and page['snapshot_digest']==memory['snapshot_digest']
+  anchor=next(item['card'] for item in page['items'] if item['card']['candidate_id']=='anchor')
+  assert anchor['classification']['effect']=='improved'
+  detail=read_memory({'action':'read','ref':anchor['ref'],'view':'diff'})
+  assert detail.returncode==0,detail.stdout+detail.stderr
+  assert json.loads(detail.stdout)['items'][0]['patch']=='-before\\n+after\\n'
+  rejected=next(item['card'] for item in page['items'] if item['card']['candidate_id']=='rejected-history')
+  assert rejected['classification']['effect']=='regressed'
+  diff=read_memory({'action':'read','ref':rejected['ref'],'view':'diff'})
+  assert diff.returncode==0 and json.loads(diff.stdout)['items'][0]['patch_status']=='too-large'
+ if 'trajectory' in memory['reader'] and memory['cards']:
+  for historical_card,expected_trace in [(anchor,'successful seed trace'),(rejected,'failed seed trace')]:
+   ref=historical_card['ref']
+   sources=read_memory({'action':'read','ref':ref,'view':'trajectory'})
+   assert sources.returncode==0,sources.stdout+sources.stderr
+   source=json.loads(sources.stdout)['items'][0]['ref']
+   params={'action':'trajectory','ref':ref,'source_ref':source,'query':{'limit':1}}
+   trace=read_memory(params)
+   assert trace.returncode==0,trace.stdout+trace.stderr
+   trace_page=json.loads(trace.stdout)
+   assert trace_page['items'][0]['data']==expected_trace
+   assert trace_page['child_sessions']=='not-included'
+   if historical_card is anchor:
+    params['query']['cursor']=trace_page['next_cursor']
+    second=read_memory(params)
+    assert second.returncode==0,second.stdout+second.stderr
+    assert json.loads(second.stdout)['items'][0]['seq']==1
+    params['source_ref']='trajectory:'+'f'*64
+    denied=read_memory(params)
+    assert denied.returncode!=0 and 'trajectory-outside-snapshot' in denied.stdout+denied.stderr
   try:
    Path(${JSON.stringify(join(root, 'hitch-private/private.txt'))}).read_text()
    raise AssertionError('PROVIDER_PRIVATE_FILE_READABLE')
@@ -182,14 +199,38 @@ if ${JSON.stringify(mode)}=='protected': Path('package.json').write_text('{}')
 if ${JSON.stringify(mode)}=='invalid': output.write_text('not json')
 elif ${JSON.stringify(mode)}=='invalid-result': output.write_text(json.dumps({'summary':'bad','declined':False,'hypotheses':[42],'clusters':[]}))
 elif ${JSON.stringify(mode)}=='declined': output.write_text(json.dumps({'summary':'no change','declined':True,'hypotheses':[],'clusters':[]}))
-elif ${JSON.stringify(mode)}.startswith('historical') and view['operation']['kind']=='diagnose_seed':
+elif ${JSON.stringify(mode)} in ['meta-sdk','meta-sdk-invalid'] and view['operation']['kind']=='diagnose_seed':
  custom=view['operation']['payload']['meta']
- key=custom['schema']['required'][0]
  assert schema['properties']['data']==custom['schema']
- choices=schema['properties']['data']['properties'][key]['enum']
- assert choices==(['anchor'] if ${JSON.stringify(mode)}=='historical-sdk' else ['anchor','older'])
- assert 'operation.payload.meta.prompt' in prompt and 'even when all tasks passed' in custom['prompt']
- output.write_text(json.dumps({'declined':False,'data':{key:'outside' if ${JSON.stringify(mode)}=='historical-invalid' else choices[-1]}}))
+ assert list(custom['schema']['properties'])==['summary','base_candidate_id','hypothesis']
+ offered=view['operation']['payload']['base_candidates']
+ ids=[item['candidate_id'] for item in offered]
+ assert custom['schema']['properties']['base_candidate_id']['enum']==ids
+ assert view['operation']['candidate_id']=='anchor'
+ memory=view['experience']
+ if memory['baseline']:
+  assert memory['baseline']['candidate_id']=='anchor'
+  assert len(memory['baseline']['missing_trajectory_slots'])==1
+ history=read_memory({'action':'query','query':{'query':'','task_ids':[],'paths':[],'semantic_targets':[],'effects':[]},'limit':10})
+ assert history.returncode==0,history.stdout+history.stderr
+ cards=[item['card'] for item in json.loads(history.stdout)['items']]
+ chosen='unoffered-history' if ${JSON.stringify(mode)}=='meta-sdk-invalid' else 'anchor'
+ if cards:
+  prior=next(card for card in cards if card['candidate_id']=='r0-candidate-0')
+  source=read_memory({'action':'source','ref':prior['ref'],'candidate_id':'r0-candidate-0'})
+  assert source.returncode==0,source.stdout+source.stderr
+  paths=json.loads(source.stdout)['items']
+  assert any(item['path']=='AGENTS.md' for item in paths)
+  source=read_memory({'action':'source','ref':prior['ref'],'candidate_id':'r0-candidate-0','path':'AGENTS.md','limit':24576})
+  assert source.returncode==0,source.stdout+source.stderr
+  assert 'Use the requested output format.' in base64.b64decode(json.loads(source.stdout)['content']).decode()
+  assert 'r0-candidate-0' in ids
+  chosen='r0-candidate-0'
+ output.write_text(json.dumps({'declined':False,'data':{'summary':'Reuse a mechanism from the seed archive','base_candidate_id':chosen,'hypothesis':'Preserve the parser recovery behavior'}}))
+elif ${JSON.stringify(mode)} in ['meta-sdk','meta-sdk-invalid']:
+ custom=view['operation']['payload']['meta']
+ assert schema['properties']['data']==custom['schema']
+ output.write_text(json.dumps({'declined':False,'data':{'summary':'Use the selected historical base'}}))
 elif ${JSON.stringify(mode)}.startswith('historical'):
  assert schema['properties']['data']=={'type':'string'}
  output.write_text(json.dumps({'declined':False,'data':'Updated the selected candidate.'}))
@@ -285,45 +326,6 @@ async function untilStarted(directory: string) {
   throw new Error('fake Codex did not start')
 }
 describe('formal Codex operation runner', () => {
-  it.each([
-    ['base_candidate_id', false], ['another_algorithm_field', false], ['base_candidate_id', true],
-  ] as const)('Python alone defines and validates Meta field %s (invalid=%s)', async (resultKey, invalid) => {
-    const f = await fixture(invalid ? 'historical-invalid' : 'historical')
-    await new PiHarnessAdapter().prepare(join(f.targets, 'older'))
-    const source = join(f.root, 'source'), scratch = join(f.root, 'scratch')
-    await mkdir(scratch)
-    const identity = await freezeAlgorithmSource(source, [{ path: 'pr_cases.py', source: resolve('tests/fixtures/python-algorithm-boundaries.py') }])
-    const worker = new PythonAlgorithmWorker({ python: resolvePythonExecutable(), sourceRoot: source, scratch, implementationIdentity: identity,
-      ...(process.env.GEAR_TEST_LINUX_ISOLATION ? { linuxIsolation: process.env.GEAR_TEST_LINUX_ISOLATION as 'seccomp' | 'bubblewrap-only' } : {}) })
-    const view: SearchView = { run_id: 'run', step_id: 0, seed: 'fixed', anchor_id: 'anchor',
-      candidates: ['anchor', 'older'].map(id => ({ id, digest: canonicalDigest(id), parent_id: null })),
-      tasks: [{ id: 'seed', family: 'format', estimated_cost: 1 }],
-      evidence: ['anchor', 'older'].map(candidate_id => ({ candidate_id, task_id: 'seed', repetition: 0, score: 1, status: 'valid', scope: 'global', feedback: 'passed' })),
-      completed: [], budget: { rounds: 1, repetitions: 1, candidates_remaining: 1, evaluations_remaining: 2 } }
-    const algorithm = { name: 'pr_cases:HistoricalBase', options: { result_key: resultKey } }
-    try {
-      await worker.start(signal())
-      const diagnosis = await worker.step(view, { version: 1, data: {} }, algorithm, signal())
-      const receipt = await f.provider.submit({ ...f.request, operation: diagnosis.operations[0]!, evidence: view.evidence }, signal())
-      expect(receipt.result.status).toBe('complete')
-      view.completed.push(receipt.result); view.step_id++
-      if (invalid) {
-        // The model's schema is guidance, not the algorithm's semantic validation.
-        const rejected = await worker.step(view, diagnosis.state, algorithm, signal())
-        expect(rejected.state.data.rejected).toBe('historical base not offered')
-        expect(rejected.operations.map(operation => operation.kind)).toEqual(['stop'])
-        expect(receipt.candidate).toBeNull()
-        return
-      }
-      const generation = await worker.step(view, diagnosis.state, algorithm, signal())
-      expect(generation.operations[0]).toMatchObject({ kind: 'generate_candidate', parent_id: 'older' })
-      const generated = await f.provider.submit({ ...f.request, operationId: canonicalDigest('historical-generation'), operation: generation.operations[0]! }, signal())
-      expect(generated.result.status).toBe('complete')
-      expect(generated.candidate).toMatchObject({ id: 'new', parent_id: 'older' })
-      expect(generated.result.data).toEqual({ declined: false, data: 'Updated the selected candidate.' })
-    } finally { await worker.dispose() }
-  }, 30_000)
-
   it('public Python SDK freezes one external algorithm file, its configuration and recovery', async () => {
     const f = await fixture('historical-sdk')
     const profiles = join(f.root, 'profiles'), project = join(f.root, 'sdk-project')
@@ -371,6 +373,114 @@ describe('formal Codex operation runner', () => {
     expect(after.decisions.at(-1).decision.operations[0].kind).toBe('stop')
   }, 90_000)
 
+  it('recovers Meta-Harness through the public SDK with frozen policy and history-selected bases', async () => {
+    const f = await fixture('meta-sdk')
+    const profiles = join(f.root, 'profiles'), project = join(f.root, 'meta-sdk-project')
+    await mkdir(profiles)
+    vi.stubEnv('GEAR_PROFILE_ROOT', profiles)
+    const python = resolvePythonExecutable()
+    const targetProvider = join(f.root, 'meta-sdk-target-provider.mjs')
+    await writeFile(targetProvider, (await readFile(resolve('tests/fixtures/project-provider.mjs'), 'utf8')).replace(
+      'process.stdout.write(JSON.stringify(result))',
+      "if (action === 'submit' && request.operation.kind === 'evaluate_seed') { const marker = join(configuration.receipts, 'fail-once'); try { await readFile(marker) } catch { await writeFile(marker, 'done'); throw new Error('lost Meta-Harness SDK evaluation reply') } } process.stdout.write(JSON.stringify(result))",
+    ))
+    await writeFile(join(profiles, 'meta-sdk-target.json'), JSON.stringify({
+      command: [process.execPath, targetProvider], workingDirectory: f.root, passEnv: ['PYTHONPATH'],
+      timeoutMs: 30_000, configuration: { python, receipts: join(f.root, 'meta-sdk-target-receipts') },
+    }))
+    await writeFile(join(profiles, 'meta-sdk-codex.json'), JSON.stringify(f.profile))
+    await initProject(project, { adapter: 'pi', template: 'text', targetProfile: 'meta-sdk-target', metaProfile: 'meta-sdk-codex' })
+    await writeFile(join(project, 'tasks.csv'), 'id,instruction,expected,family,split\nseed,Produce the requested answer.,42,format,seed\nheld-out,Private task.,43,private-family,held_out\n')
+    if (process.env.GEAR_TEST_LINUX_ISOLATION) await writeFile(join(project, 'gear.yaml'),
+      (await readFile(join(project, 'gear.yaml'), 'utf8')) + `\nsandbox: {linux_isolation: ${process.env.GEAR_TEST_LINUX_ISOLATION}}\n`)
+    const policyPath = join(project, 'meta_policy.py')
+    await writeFile(policyPath, [
+      'from gear.algorithms.contracts import ProposalPlan', '',
+      'def preserve_diagnosis(view):', '    diagnosis = view.diagnosis',
+      '    hypothesis = diagnosis["hypothesis"]', '    summary = diagnosis["summary"]',
+      '    return ProposalPlan((summary + "\\nSelected mechanism: " + hypothesis,), tuple(sorted(task.id for task in view.tasks)), "frozen Meta-Harness SDK policy")', '',
+    ].join('\n'))
+    const sdk = (code: string) => promisify(execFile)(python, ['-c', code], {
+      cwd: project, timeout: 90_000, env: { ...process.env, PYTHONPATH: resolve('python'), GEAR_PYTHON: python,
+        GEAR_COMMAND: JSON.stringify([process.execPath, resolve('lib/cli.js')]) },
+    })
+    const failed = await sdk('from gear import Project; from gear.algorithms import MetaHarness; from meta_policy import preserve_diagnosis; Project.open().refine(algorithm=MetaHarness(proposal_planner=preserve_diagnosis), rounds=2)').then(() => null, error => error)
+    expect(failed).not.toBeNull()
+    expect([failed?.stderr, failed?.message].filter(Boolean).join('\n')).toMatch(/lost Meta-Harness SDK evaluation reply|process-operation-failed/)
+    const runs = join(project, '.gear/runs'), [id] = await readdir(runs)
+    expect(id).toBeTruthy()
+    const runRoot = join(runs, id!), journalPath = join(runRoot, 'journal.json')
+    const before = JSON.parse(await readFile(journalPath, 'utf8'))
+    expect(before.status).toBe('needs_recovery')
+    expect(before.spec.algorithm.options.proposal_planner).toBe('meta_policy:preserve_diagnosis')
+    expect(before.operations.map((entry: { request: OperationRequest }) => entry.request.operation.kind)).toEqual(['evaluate_seed'])
+    expect(before.operations[0].status).toBe('submitted')
+    expect(await readFile(join(runRoot, 'algorithm/meta_policy.py'), 'utf8')).toBe(await readFile(policyPath, 'utf8'))
+    await writeFile(policyPath, "raise RuntimeError('recovery must use frozen Meta-Harness policy')\n")
+    await sdk(`from gear import Project; Project.open().resume(${JSON.stringify(id)})`)
+    const after = JSON.parse(await readFile(journalPath, 'utf8'))
+    expect(after.status).toBe('completed')
+    const diagnoses = after.operations.filter((entry: { request: OperationRequest }) => entry.request.operation.kind === 'diagnose_seed')
+    expect(diagnoses).toHaveLength(2)
+    expect(diagnoses[0].request.operation.payload.meta.schema.required).toEqual(['summary', 'base_candidate_id', 'hypothesis'])
+    const generated = after.operations.filter((entry: { request: OperationRequest }) => entry.request.operation.kind === 'generate_candidate')
+    expect(generated).toHaveLength(2)
+    const firstCandidateId = generated[0].request.operation.candidate_id
+    expect(diagnoses[1].request.operation.candidate_id).toBe('anchor')
+    expect(generated[1].request.operation.parent_id).toBe(firstCandidateId)
+  }, 120_000)
+
+  it('rejects an ineligible proposer-selected base through the public SDK worker path', async () => {
+    const f = await fixture('meta-sdk-invalid')
+    const profiles = join(f.root, 'profiles'), project = join(f.root, 'invalid-meta-project')
+    await mkdir(profiles)
+    vi.stubEnv('GEAR_PROFILE_ROOT', profiles)
+    const python = resolvePythonExecutable()
+    await writeFile(join(profiles, 'invalid-target.json'), JSON.stringify({
+      command: [process.execPath, resolve('tests/fixtures/project-provider.mjs')],
+      workingDirectory: f.root,
+      passEnv: ['PYTHONPATH'],
+      timeoutMs: 30_000,
+      configuration: { python, receipts: join(f.root, 'invalid-target-receipts') },
+    }))
+    await writeFile(join(profiles, 'invalid-meta.json'), JSON.stringify(f.profile))
+    await initProject(project, {
+      adapter: 'pi',
+      template: 'text',
+      targetProfile: 'invalid-target',
+      metaProfile: 'invalid-meta',
+    })
+    await writeFile(
+      join(project, 'tasks.csv'),
+      'id,instruction,expected,family,split\nseed,Produce the requested answer.,42,format,seed\nheld-out,Private task.,43,private-family,held_out\n',
+    )
+    const pythonSdk = (code: string) => promisify(execFile)(python, ['-c', code], {
+      cwd: project,
+      timeout: 90_000,
+      env: {
+        ...process.env,
+        PYTHONPATH: resolve('python'),
+        GEAR_PYTHON: python,
+        GEAR_COMMAND: JSON.stringify([process.execPath, resolve('lib/cli.js')]),
+      },
+    })
+    const failure = await pythonSdk(
+      'from gear import Project; from gear.algorithms import MetaHarness; Project.open().refine(algorithm=MetaHarness(), rounds=1)',
+    ).then(() => null, (error) => error)
+    expect(failure).not.toBeNull()
+    expect([failure?.stderr, failure?.message].filter(Boolean).join('\n')).toMatch(
+      /invalid or ineligible base/,
+    )
+    const runs = join(project, '.gear/runs'), [id] = await readdir(runs)
+    expect(id).toBeTruthy()
+    const journal = JSON.parse(await readFile(join(runs, id!, 'journal.json'), 'utf8'))
+    expect(journal.operations.map((entry: { request: OperationRequest }) => entry.request.operation.kind)).toEqual([
+      'evaluate_seed',
+      'diagnose_seed',
+    ])
+    expect(journal.operations[1].receipt.result.data.data.base_candidate_id).toBe('unoffered-history')
+  }, 120_000)
+
   it('chains explicit upstream proxies without exposing credentials or bypassing domain restrictions', async () => {
     const requests: string[] = []
     const authorization: Array<string | undefined> = []
@@ -410,40 +520,172 @@ describe('formal Codex operation runner', () => {
   it(`queries and reads frozen seed experiences${withTrajectory ? ' and trajectory pages' : ''} inside the actual Meta sandbox`, async () => {
     const { provider: initialProvider, request, context, root, profile } = await fixture('success', 'pi', false)
     let provider = initialProvider
+    const firstRoundRequest = structuredClone(request)
+    firstRoundRequest.operationId = canonicalDigest([request.operationId, 'round-1'])
+    firstRoundRequest.operation.candidate_id = 'candidate-round-1'
     const trajectory_refs: TrajectoryReference[] = []
+    const rejectedTrajectoryRefs: TrajectoryReference[] = []
     if (withTrajectory) {
-      const hitchRoot = join(root, 'hitch-private'), run = 'run_' + 'a'.repeat(32), executable = join(root, 'hitch.mjs')
+      const hitchRoot = join(root, 'hitch-private'), executable = join(root, 'hitch.mjs')
       await mkdir(hitchRoot)
       await writeFile(join(hitchRoot, 'private.txt'), 'PROVIDER_PRIVATE_CANARY')
-      await writeFile(join(hitchRoot, run + '.json'), JSON.stringify([{ seq: 0, type: 'assistant/message', data: 'historical seed trace' }, { seq: 1, type: 'tool/result', data: 'result' }]))
       await writeFile(executable, `#!${process.execPath}\nimport {trajectoryFixture} from ${JSON.stringify(new URL('../fixtures/trajectory-hitch.mjs', import.meta.url).href)};await trajectoryFixture();`, { mode: 0o700 })
       // The detached operation runs the installed JS adapter. Bind that actual implementation.
       const { HitchArtifactReader } = await import(new URL('../../lib/adapters/hitch/trajectory.js', import.meta.url).href)
       const reader = new HitchArtifactReader(executable, hitchRoot)
-      const artifact = await reader.capture(run, 'seed', 0, signal())
-      expect(artifact.status).toBe('available')
-      const source = await new TrajectoryStore(join(context.targets, '../trajectory-sources')).save({ version: 1, run_id: 'run', candidate_id: 'anchor', operation_id: canonicalDigest('evaluation'), origin_run_id: 'run', origin_candidate_id: 'anchor', receipt_digest: canonicalDigest('receipt'), reader_identity: canonicalDigest(reader.descriptor), partition: 'seed', artifact })
-      trajectory_refs.push({ ref: 'trajectory:' + source.digest.slice(7), candidate_id: 'anchor', task_id: 'seed', repetition: 0, status: artifact.status, content_digest: artifact.content_digest, reason: null })
+      const trajectoryStore = new TrajectoryStore(join(context.targets, '../trajectory-sources'))
+      const saveTrajectory = async (candidateId: string, text: string, destination: TrajectoryReference[]) => {
+        const run = 'run_' + (candidateId === 'anchor' ? 'a' : 'c').repeat(32)
+        await writeFile(join(hitchRoot, run + '.json'), JSON.stringify([{ seq: 0, type: 'assistant/message', data: text }, { seq: 1, type: 'tool/result', data: 'result' }]))
+        const artifact = await reader.capture(run, 'seed', 0, signal())
+        expect(artifact.status).toBe('available')
+        const source = await trajectoryStore.save({ version: 1, run_id: 'run', candidate_id: candidateId, operation_id: canonicalDigest(['evaluation', candidateId]), origin_run_id: 'run', origin_candidate_id: candidateId, receipt_digest: canonicalDigest(['receipt', candidateId]), reader_identity: canonicalDigest(reader.descriptor), partition: 'seed', artifact })
+        destination.push({ ref: 'trajectory:' + source.digest.slice(7), candidate_id: candidateId, task_id: 'seed', repetition: 0, status: artifact.status, content_digest: artifact.content_digest, reason: null })
+      }
+      await saveTrajectory('anchor', 'successful seed trace', trajectory_refs)
+      await saveTrajectory('rejected-history', 'failed seed trace', rejectedTrajectoryRefs)
       provider = await ProcessOperationProvider.connect(profile, { ...context, artifactReader: reader.descriptor, experiencePython: resolvePythonExecutable() } as unknown as Json)
     }
     await provider.prepareAdmission()
+    const firstRoundReceipt = await provider.submit(firstRoundRequest, signal())
+    const firstRoundDiagnostic = await readFile(
+      join(context.directory, firstRoundRequest.operationId.slice(7), 'stderr.log'),
+      'utf8',
+    ).catch(() => '')
+    expect(firstRoundReceipt.result.status, JSON.stringify(firstRoundReceipt) + firstRoundDiagnostic).toBe('complete')
+    expect(firstRoundReceipt.candidate).toMatchObject({ id: 'candidate-round-1', parent_id: 'anchor' })
     const record = builtinPolicy<ExperienceRecord>('experience_record', {
       source: { run_id: 'run' }, candidate: { id: 'anchor', digest: canonicalDigest('anchor'), parent_id: 'older' },
       parent: { id: 'older', digest: canonicalDigest('older'), parent_id: null }, task_ids: ['seed'], repetitions: 1,
-      objective: null, evidence: ['older', 'anchor'].map((candidate_id, index) => ({ candidate_id, task_id: 'seed', repetition: 0, status: 'valid', score: index === 0 ? 1 : 0 })),
+      objective: null, evidence: ['older', 'anchor'].map((candidate_id, index) => ({ candidate_id, task_id: 'seed', repetition: 0, status: 'valid', score: index === 0 ? 0 : 1 })),
       trajectory_refs,
       proposal: { rationale: 'format', hypothesis: 'format', semantic_targets: [] },
       change: { files: [{ path: 'AGENTS.md', patch: '-before\n+after\n' }] },
     })
+    const rejectedRecord = builtinPolicy<ExperienceRecord>('experience_record', {
+      source: { run_id: 'run' },
+      candidate: { id: 'rejected-history', digest: canonicalDigest('rejected-history'), parent_id: 'anchor' },
+      parent: { id: 'anchor', digest: canonicalDigest('anchor'), parent_id: 'older' },
+      task_ids: ['seed'], repetitions: 1, objective: null,
+      evidence: [
+        { candidate_id: 'anchor', task_id: 'seed', repetition: 0, status: 'valid', score: 1 },
+        { candidate_id: 'rejected-history', task_id: 'seed', repetition: 0, status: 'valid', score: 0.25 },
+      ],
+      trajectory_refs: rejectedTrajectoryRefs,
+      proposal: { rationale: 'preserve output', hypothesis: 'preserve output', semantic_targets: [] },
+      change: { files: [{ path: 'AGENTS.md', patch: null, patch_status: 'too-large' }] },
+    })
     const body = { version: 2 as const, run_id: 'run', source_archive_digest: canonicalDigest('archive'), implementation_identity: builtinPolicyImplementationDigest, records: [record] }
+    body.records.push(rejectedRecord)
     const snapshot = { ...body, digest: canonicalDigest(body) }
     await new ExperienceStore(join(context.targets, '../experience')).save(snapshot)
-    const selected = builtinPolicy<Omit<ExperienceContext, 'digest' | 'implementation_identity'>>('experience_context', { records: [record], snapshot_digest: snapshot.digest, parent_id: 'anchor', evidence: request.evidence })
+    const selected = builtinPolicy<Omit<ExperienceContext, 'digest' | 'implementation_identity'>>('experience_context', { records: [record, rejectedRecord], snapshot_digest: snapshot.digest, parent_id: 'anchor', evidence: request.evidence })
     const memory = { ...selected, implementation_identity: snapshot.implementation_identity }
     request.experience = { ...memory, digest: canonicalDigest(memory) }
-    request.operationId = canonicalDigest([request.operationId, request.experience.digest])
+    request.operation.candidate_id = 'candidate-round-2'
+    request.operationId = canonicalDigest([request.operationId, request.experience.digest, 'round-2'])
     const receipt = await provider.submit(request, signal())
     const diagnostic = await readFile(join(context.directory, request.operationId.slice(7), 'stderr.log'), 'utf8').catch(() => '')
+    expect(receipt.result.status, JSON.stringify(receipt) + diagnostic).toBe('complete')
+    expect(receipt.result.data).toMatchObject({ summary: 'read isolation verified' })
+  }, 30_000)
+  it('hands an authorized baseline trajectory to the actual first-diagnosis Meta worker', async () => {
+    const { request, context, root, profile } = await fixture('success', 'pi', false)
+    const runRoot = dirname(context.targets)
+    const hitchRoot = join(root, 'baseline-hitch')
+    const run = 'run_' + 'b'.repeat(32)
+    const executable = join(root, 'baseline-hitch.mjs')
+    await mkdir(hitchRoot)
+    await writeFile(
+      join(hitchRoot, run + '.json'),
+      JSON.stringify([{ seq: 0, type: 'assistant/message', data: 'historical seed trace' }]),
+    )
+    await writeFile(
+      executable,
+      `#!${process.execPath}\nimport {trajectoryFixture} from ${JSON.stringify(new URL('../fixtures/trajectory-hitch.mjs', import.meta.url).href)};await trajectoryFixture();`,
+      { mode: 0o700 },
+    )
+    const { HitchArtifactReader } = await import(
+      new URL('../../lib/adapters/hitch/trajectory.js', import.meta.url).href
+    )
+    const reader = new HitchArtifactReader(executable, hitchRoot)
+    const artifact = await reader.capture(run, 'seed', 0, signal())
+    expect(artifact.status).toBe('available')
+    const trajectoryStore = new TrajectoryStore(join(runRoot, 'trajectory-sources'))
+    const source = await trajectoryStore.save({
+      version: 1,
+      run_id: 'run',
+      candidate_id: 'anchor',
+      operation_id: canonicalDigest('baseline-evaluation'),
+      origin_run_id: 'run',
+      origin_candidate_id: 'anchor',
+      receipt_digest: canonicalDigest('baseline-receipt'),
+      reader_identity: canonicalDigest(reader.descriptor),
+      partition: 'seed',
+      artifact,
+    })
+    const baselineReference: TrajectoryReference = {
+      ref: 'trajectory:' + source.digest.slice(7),
+      candidate_id: 'anchor',
+      task_id: 'seed',
+      repetition: 0,
+      status: 'available',
+      content_digest: artifact.content_digest,
+      reason: null,
+    }
+    const snapshotBody = {
+      version: 3 as const,
+      run_id: 'run',
+      source_archive_digest: canonicalDigest('archive'),
+      implementation_identity: builtinPolicyImplementationDigest,
+      records: [],
+    }
+    const snapshot: ExperienceIndexSnapshot = {
+      ...snapshotBody,
+      records: [],
+      digest: canonicalDigest(snapshotBody),
+    }
+    await new ExperienceStore(join(runRoot, 'experience')).save(snapshot)
+    const baselineContextBody: Omit<ExperienceContext, 'digest'> = {
+      version: 2,
+      snapshot_digest: snapshot.digest,
+      implementation_identity: builtinPolicyImplementationDigest,
+      available_records: 0,
+      cards: [],
+      baseline: {
+        candidate_id: 'anchor',
+        trajectory_refs: [baselineReference],
+        missing_trajectory_slots: [],
+      },
+    }
+    request.experience = {
+      ...baselineContextBody,
+      digest: canonicalDigest(baselineContextBody),
+    }
+    request.operation = {
+      kind: 'diagnose_seed',
+      candidate_id: 'anchor',
+      parent_id: null,
+      task_ids: ['seed'],
+      scope: 'global',
+      rationale: 'Diagnose baseline seed evidence.',
+      payload: null,
+    }
+    request.operationId = canonicalDigest({
+      request: request.operation,
+      experience: request.experience.digest,
+    })
+    const provider = await ProcessOperationProvider.connect(profile, {
+      ...context,
+      artifactReader: reader.descriptor,
+    } as unknown as Json)
+    await provider.prepareAdmission()
+
+    const receipt = await provider.submit(request, signal())
+    const diagnostic = await readFile(
+      join(context.directory, request.operationId.slice(7), 'stderr.log'),
+      'utf8',
+    ).catch(() => '')
     expect(receipt.result.status, JSON.stringify(receipt) + diagnostic).toBe('complete')
     expect(receipt.result.data).toMatchObject({ summary: 'read isolation verified' })
   }, 30_000)

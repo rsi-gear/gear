@@ -17,6 +17,59 @@ from gear.algorithms.experience import experience_query, experience_read, experi
 from gear.experience_store import ExperienceStore
 
 
+def _gateway_call(method: str, params: dict[str, Any]) -> Any:
+    if len(sys.argv) != 3:
+        raise ValueError("frozen history reader is unavailable for this operation")
+    gateway = json.loads(Path(sys.argv[2]).read_text())
+    request_id = uuid.uuid4().hex
+    envelope = {
+        "id": request_id,
+        "method": method,
+        "params": {**params, "token": gateway["token"]},
+    }
+    encoded_request = json.dumps(envelope, separators=(",", ":")).encode()
+    if len(encoded_request) > 32768:
+        raise ValueError("history request exceeds 32 KiB")
+    if "requests" in gateway:
+        name = request_id + ".json"
+        pending = Path(gateway["requests"], name + ".tmp")
+        with pending.open("xb") as output:
+            output.write(encoded_request)
+        pending.rename(Path(gateway["requests"], name))
+        deadline = time.monotonic() + 40
+        while True:
+            try:
+                with Path(gateway["responses"], name).open("rb") as response_file:
+                    reply = response_file.read(70 * 1024 + 1)
+                break
+            except FileNotFoundError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("history reader timed out") from None
+                time.sleep(0.025)
+    else:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(40)
+            connection.connect(gateway["socket"])
+            connection.sendall(encoded_request + b"\n")
+            chunks = bytearray()
+            while b"\n" not in chunks:
+                chunk = connection.recv(4096)
+                if not chunk:
+                    raise ValueError("history reader disconnected")
+                chunks.extend(chunk)
+                if len(chunks) > 70 * 1024:
+                    raise ValueError("history reader exceeded its reply bound")
+            reply = bytes(chunks).split(b"\n", 1)[0]
+    if len(reply) > 70 * 1024:
+        raise ValueError("history reader exceeded its reply bound")
+    response = json.loads(reply)
+    if response.get("id") != envelope["id"]:
+        raise ValueError("history response identity mismatch")
+    if "error" in response:
+        raise ValueError(response["error"]["code"])
+    return response["result"]
+
+
 def main() -> int:
     try:
         if len(sys.argv) not in (2, 3):
@@ -36,64 +89,30 @@ def main() -> int:
             "cursor",
             "parent_id",
             "source_ref",
+            "candidate_id",
+            "path",
+            "offset",
+            "snapshot_digest",
         }:
             raise ValueError("invalid experience request")
         action = request.pop("action", "query")
-        if action == "trajectory":
-            if len(sys.argv) != 3:
-                raise ValueError("trajectory reader is unavailable for this operation")
-            if set(request) - {"ref", "source_ref", "query"}:
+        if action in ("trajectory", "source"):
+            if action == "trajectory" and set(request) - {"ref", "source_ref", "query"}:
                 raise ValueError("invalid trajectory read parameters")
-            gateway = json.loads(Path(sys.argv[2]).read_text())
-            request_id = uuid.uuid4().hex
-            envelope = {
-                "id": request_id,
-                "method": "trajectory.read",
-                "params": {**request, "token": gateway["token"]},
-            }
-            encoded_request = json.dumps(envelope, separators=(",", ":")).encode()
-            if len(encoded_request) > 32768:
-                raise ValueError("trajectory request exceeds 32 KiB")
-            if "requests" in gateway:
-                name = request_id + ".json"
-                pending = Path(gateway["requests"], name + ".tmp")
-                with pending.open("xb") as output:
-                    output.write(encoded_request)
-                pending.rename(Path(gateway["requests"], name))
-                deadline = time.monotonic() + 40
-                while True:
-                    try:
-                        with Path(gateway["responses"], name).open("rb") as response_file:
-                            reply = response_file.read(70 * 1024 + 1)
-                        break
-                    except FileNotFoundError:
-                        if time.monotonic() >= deadline:
-                            raise TimeoutError("trajectory reader timed out") from None
-                        time.sleep(0.025)
-            else:
-                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-                    connection.settimeout(40)
-                    connection.connect(gateway["socket"])
-                    connection.sendall(encoded_request + b"\n")
-                    chunks = bytearray()
-                    while b"\n" not in chunks:
-                        chunk = connection.recv(4096)
-                        if not chunk:
-                            raise ValueError("trajectory reader disconnected")
-                        chunks.extend(chunk)
-                        if len(chunks) > 70 * 1024:
-                            raise ValueError("trajectory reader exceeded its reply bound")
-                    reply = bytes(chunks).split(b"\n", 1)[0]
-            if len(reply) > 70 * 1024:
-                raise ValueError("trajectory reader exceeded its reply bound")
-            response = json.loads(reply)
-            if response.get("id") != envelope["id"]:
-                raise ValueError("trajectory response identity mismatch")
-            if "error" in response:
-                raise ValueError(response["error"]["code"])
+            if action == "source" and set(request) - {
+                "ref",
+                "candidate_id",
+                "path",
+                "offset",
+                "limit",
+            }:
+                raise ValueError("invalid source read parameters")
+            method = "trajectory.read" if action == "trajectory" else (
+                "source.read" if "path" in request else "source.list"
+            )
             print(
                 json.dumps(
-                    response["result"],
+                    _gateway_call(method, request),
                     ensure_ascii=False,
                     separators=(",", ":"),
                     allow_nan=False,
@@ -101,7 +120,7 @@ def main() -> int:
             )
             return 0
         if action not in ("query", "read"):
-            raise ValueError("expected query, read or trajectory")
+            raise ValueError("expected query, read, source or trajectory")
         value: dict[str, Any] = {
             **request,
             "records": snapshot["records"],

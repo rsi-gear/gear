@@ -87,5 +87,10 @@ export interface ExperienceContext {
   implementation_identity: string
   available_records: number
   cards: Json[]
+  baseline?: {
+    candidate_id: string
+    trajectory_refs: TrajectoryReference[]
+    missing_trajectory_slots: { task_id: string; repetition: number; reason: 'not_captured' }[]
+  }
   digest: string
 }

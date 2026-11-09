@@ -1,5 +1,7 @@
 # 用 Python 修改算法
 
+MetaHarness 将 Meta-Harness 外层循环适配到 Gear：候选先在完整 seed 集上评测，再由通用 Meta worker 提出一种机制，并从所有符合条件的历史候选中选择基础版本。算法 Python 模块定义提示词和响应 schema，并验证所选基础版本。经过验证的只读分页历史读取器提供 baseline 证据、完整历史源码、分数，以及成功和失败的 seed 轨迹（包括未选中的候选）。历史访问仅限 seed；提名后 Gear 仍执行独立的 held-out gate。这是适配，不代表复现论文中的特定 harness 或报告结果。
+
 公开作者 API 是 `gear.algorithms`。GEPA 和 RandomSearch 都由父代、采样、提案、排名、停止和阶段编排六个模块组成；GEPA 是公共模块合同的实例。
 
 下面用一个命名函数替换父代策略：
@@ -19,6 +21,7 @@ def select_parent(view: ParentInput, rng: RandomSource) -> ParentPlan:
 python -m gear algorithm test my_policy:select_parent
 python -m gear algorithm test gepa
 python -m gear algorithm test random-search
+python -m gear algorithm test meta-harness
 ```
 
 ```python

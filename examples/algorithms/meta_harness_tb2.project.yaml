@@ -1,0 +1,31 @@
+# Copy to gear.yaml in the prepared experiment project, then replace profile
+# IDs and benchmark path with the locally pinned configuration.
+# Keep all 89 task IDs from the Terminal-Bench 2.1 manifest at
+# dde3cd95b80ff25af5abd99a80b6513a018ad3b4 in seed; supply separate held-out
+# tasks for Gear's promotion gate. The runner verifies task membership.
+version: 1
+benchmark: ./benchmarks/tb2-with-independent-holdout/benchmark.yaml
+target:
+  adapter: pi
+  path: ./target
+  profile: tb2-evaluation
+meta:
+  profile: tb2-proposer-opus-4-6
+algorithm:
+  name: meta-harness
+  options: {}
+objective:
+  metric: pass_rate
+validation:
+  mode: holdout
+budget:
+  rounds: 10
+  max_candidates: 10
+  repetitions: 2
+  # The runner checks the actual dataset and final-gate slots before admission.
+  max_evaluations: 2500
+evaluation:
+  repair:
+    max_retries: 0
+    max_projections: 0
+    backoff_ms: [0]

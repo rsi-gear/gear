@@ -31,6 +31,7 @@ from .contracts import (
     TaskSampler,
 )
 from .gepa import GEPA
+from .meta_harness import MetaHarness
 from .random import DeterministicRandom
 from .random_search import RandomSearch
 
@@ -65,5 +66,6 @@ __all__ = [
     "TaskSampler",
     "DeterministicRandom",
     "GEPA",
+    "MetaHarness",
     "RandomSearch",
 ]

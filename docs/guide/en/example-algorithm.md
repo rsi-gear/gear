@@ -21,6 +21,7 @@ def select_parent(view: ParentInput, rng: RandomSource) -> ParentPlan:
 python -m gear algorithm test my_policy:select_parent
 python -m gear algorithm test gepa
 python -m gear algorithm test random-search
+python -m gear algorithm test meta-harness
 ```
 
 ```python
@@ -40,6 +41,16 @@ Use the [six-module index](../../search-algorithm-authoring.zh-CN.md) to locate
 implementations and typed contracts. Policies consume authorized seed views and
 return JSON state plus explicit operations. The runtime owns budgets, execution,
 evidence identities, the held-out gate and champion CAS.
+
+`MetaHarness` adapts the Meta-Harness outer loop to Gear: it evaluates each
+candidate on the complete seed set, then asks Gear's generic Meta worker to
+propose one mechanism and select a base from all eligible historical candidates.
+The algorithm's Python module defines the prompt and response schema and
+validates the selected base. A verified, read-only, paginated history reader
+provides baseline evidence, complete historical source, scores, and successful
+and failed seed trajectories, including rejected candidates. History remains
+seed-only; Gear runs its independent held-out gate after nomination. This does
+not reproduce the paper's benchmark-specific harnesses or reported results.
 
 Admission freezes source and declared dependencies. Local functions, lambdas
 and undeclared dependencies are not resumable algorithm configurations. Changed
