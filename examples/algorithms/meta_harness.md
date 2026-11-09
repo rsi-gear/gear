@@ -202,8 +202,9 @@ PYTHONPATH=python python -m gear algorithm test meta-harness
 It checks Gear's deterministic algorithm contract. It does not run the
 benchmark, call a model, or establish performance fidelity.
 
-The local conformance run passed 5 algorithm steps: `evaluate_seed:global`,
-`diagnose_seed:global`, `generate_candidate:global`, two comparable
-`evaluate_seed:global` operations, and `nominate:global`. The focused
-Meta-Harness and runner tests passed 24 tests on Python 3.13. These are
-implementation checks; the live task experiment remains outstanding.
+Run the focused algorithm and runner tests with
+`PYTHONPATH=python python -m unittest python.tests.test_meta_harness
+python.tests.test_meta_harness_runner -v`, then run the deterministic
+`python -m gear algorithm test meta-harness` smoke command above. These checks
+exercise algorithm behavior and worker configuration; they do not establish
+task performance. The live task experiment remains outstanding.
