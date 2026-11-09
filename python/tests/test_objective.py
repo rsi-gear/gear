@@ -87,6 +87,80 @@ class ObjectiveTests(unittest.TestCase):
             next(item for item in options if item.candidate_id == "better").probability, 1
         )
 
+    def test_champion_mixture_uses_comparable_constrained_objective_gains(self):
+        from dataclasses import replace
+
+        from gear.algorithms import GEPA, AlgorithmState, Budget, Candidate, SearchView, Task
+        from gear.algorithms.gepa.parents import ScopedFrontier
+        from gear.canonical import digest
+
+        seen = []
+
+        def policy(view, rng):
+            seen.append(view.champion_id)
+            return ScopedFrontier(champion_probability=1)(view, rng)
+
+        protected = configuration()
+        protected["metrics"][0].update(direction="maximize", comparisonPrecision=1e-9)
+        protected["protection"] = [
+            {
+                "partition": "seed",
+                "task_id": "a",
+                "metric": "pass_rate",
+                "rule": "minimum",
+                "value": 1,
+            }
+        ]
+        violating = replace(cell("leader", 90), score=0)
+        cases = [
+            ("gain", configuration(), (cell("anchor", 10), cell("leader", 90)), "leader"),
+            (
+                "below precision",
+                configuration(),
+                (cell("anchor", 10), cell("leader", 10 + 1e-12)),
+                "anchor",
+            ),
+            # Satisfying the constraints outranks a higher score, as in the ranker.
+            (
+                "repairs protection",
+                protected,
+                (replace(cell("anchor", 90), score=0), cell("leader", 50)),
+                "leader",
+            ),
+            ("violates protection", protected, (cell("anchor", 50), violating), "anchor"),
+            (
+                "skips a disqualified leader",
+                protected,
+                (cell("anchor", 50), violating, cell("runner", 70)),
+                "runner",
+            ),
+        ]
+        for name, objective, cells, champion in cases:
+            with self.subTest(name):
+                view = SearchView(
+                    "objective",
+                    1,
+                    "fixed",
+                    (Task("a", "a"),),
+                    tuple(
+                        Candidate(
+                            item.candidate_id,
+                            digest(item.candidate_id),
+                            None if item.candidate_id == "anchor" else "anchor",
+                        )
+                        for item in cells
+                    ),
+                    cells,
+                    (),
+                    Budget(100, 2, 2),
+                    "anchor",
+                    objective,
+                )
+                state = AlgorithmState(data={"phase": "parents", "round": 0})
+                decision = GEPA(parent_policy=policy).step(view, state)
+                self.assertEqual(seen[-1], champion)
+                self.assertEqual(decision.operations[0].candidate_id, champion)
+
     def test_missing_protected_metric_is_incomplete_even_if_not_weighted(self):
         objective = configuration()
         objective["definition"]["terms"] = [

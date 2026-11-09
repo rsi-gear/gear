@@ -197,6 +197,47 @@ describe('Python decisions through the durable runtime', () => {
     expect((await runner.run('run', new AbortController().signal)).digest).toBe(result.digest)
     expect(provider.calls).toHaveLength(calls)
   })
+  it.each([
+    ['process gains on seed and held-out', 0.9, 0.9, 'accepted', 'Independent held-out gate passed'],
+    ['held-out ties in every signal', 0.9, 0.8, 'accepted', 'Independent held-out gate passed'],
+    ['held-out process regresses', 0.9, 0.5, 'rejected', 'Held-out evidence regresses a declared signal'],
+    ['held-out process evidence is missing', 0.9, null, 'incomplete', 'Incomplete held-out evidence'],
+    ['seed process regresses', 0.5, 0.9, 'rejected', 'Seed evidence regresses a declared signal or improves none'],
+  ] as const)('applies the default multi-signal rule when %s', async (_, seed, heldOut, status, reason) => {
+    const objective = resolveProjectObjective({ objective: { metric: 'pass_rate' } }, {
+      adapter: { id: 'fixture', revision: '1' },
+      scoring: {
+        total_score: { source_metric: 'correct', direction: 'maximize', range: [0, 1], reducer: 'task-macro-mean' },
+        process_score: { source_metric: 'partial_credit', direction: 'maximize', range: [0, 1], reducer: 'task-macro-mean' },
+      },
+    })
+    expect(objective.seed_rule).toEqual({ rule: 'multisignal-v1', outcome: 'pass_rate', process: ['process_score'] })
+    const { store, provider } = await fixture(30, { objectiveIdentity: pythonObjective.identity, objective })
+    const contract = objective.metrics.find(metric => metric.id === 'process_score')!
+    const submit = provider.submit.bind(provider)
+    provider.submit = async (request, signal) => {
+      const receipt = await submit(request, signal)
+      receipt.evidence = receipt.evidence.map(cell => {
+        // The anchor passes one of two seed tasks and the held-out task; the candidate passes all.
+        const value = cell.candidate_id === 'anchor' ? 0.8 : request.partition === 'held_out' ? heldOut : seed
+        return { ...cell, score: cell.candidate_id === 'anchor' && cell.task_id === 'seed1' ? 0 : 1,
+          raw_metrics: value === null ? {} : { process_score: { contractDigest: contract.digest, unit: contract.unit,
+            status: 'available', value, evidenceRefs: [canonicalDigest([cell.candidate_id, cell.task_id])] } } }
+      })
+      return receipt
+    }
+    // GEPA applies the same rule and stops on a seed process regression; nominate anyway to reach the runtime gate.
+    const nominating: AlgorithmDriver = { async step(view, ...args) {
+      const decision = await driver.step(view, ...args)
+      const [operation] = decision.operations
+      return operation?.kind === 'stop' && view.candidates.length > 1
+        ? { ...decision, operations: [{ ...operation, kind: 'nominate', candidate_id: view.candidates.at(-1)!.id }] }
+        : decision
+    } }
+    const result = await new DurableRunner(store, nominating, provider, pythonObjective).run('run', new AbortController().signal)
+    expect(result.gate).toEqual({ status, reason })
+    expect(result.championId).toBe(status === 'accepted' ? 'r0-b0-candidate-0' : 'anchor')
+  })
   it('reconciles lost replies without resetting the ledger or resubmitting', async () => {
     const { store, provider, runner } = await fixture()
     provider.loseReply = true

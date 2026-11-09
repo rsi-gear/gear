@@ -29,6 +29,7 @@ from .contracts import (
 from .evidence import task_scores
 from .limits import MAX_DECISION_OPERATIONS
 from .objective import comparison_key, score_ceiling
+from .projection import compare_candidates, project_candidate
 from .random import DeterministicRandom
 from .validation import validate_parent_plan, validate_sampling_plan
 
@@ -149,11 +150,16 @@ class StagedSearch:
             objective=view.objective,
             anchor_id=view.anchor_id,
         )
+        global_ranking = self.ranker(global_input)
+        champion = self._seed_champion(view, global_ranking)
         reached_ceiling = False
-        if isinstance(view.objective, dict):
+        if self._seed_rule(view):
+            # Under the seed rule only a champion with every signal at its bound
+            # leaves nothing to improve; a pass-rate ceiling alone does not.
+            reached_ceiling = self._signals_at_bound(view, champion)
+        elif isinstance(view.objective, dict):
             ceiling = score_ceiling(view.objective)
             if ceiling is not None:
-                global_ranking = self.ranker(global_input)
                 configuration = cast(dict[str, Any], view.objective)
                 precision = configuration["definition"]["comparisonPrecision"]
                 reached_ceiling = any(
@@ -208,7 +214,7 @@ class StagedSearch:
                 )
         remaining_rounds = max(1, view.budget.rounds - integer(state.data["round"]))
         quota = max(1, view.budget.candidates_remaining // remaining_rounds)
-        parent_input = ParentInput(tuple(eligible), quota, view.anchor_id)
+        parent_input = ParentInput(tuple(eligible), quota, champion)
         plan = self.parent_policy(parent_input, self._rng(view))
         validate_parent_plan(parent_input, plan)
         research = ResearchRecord(
@@ -218,6 +224,7 @@ class StagedSearch:
             tuple(candidate.id for candidate in view.candidates),
             {
                 "round": state.data["round"],
+                "champion": champion,
                 "eligible": json.loads(json.dumps([asdict(option) for option in eligible])),
                 "plan": json.loads(json.dumps(asdict(plan))),
             },
@@ -575,13 +582,17 @@ class StagedSearch:
                 anchor_id=view.anchor_id,
             )
         )
-        candidate = next(
-            (
-                candidate
-                for candidate in ranked.candidate_ids
-                if candidate not in ranked.disqualified
-            ),
-            view.anchor_id,
+        candidate = (
+            self._gated_champion(view)
+            if self._seed_rule(view)
+            else next(
+                (
+                    candidate
+                    for candidate in ranked.candidate_ids
+                    if candidate not in ranked.disqualified
+                ),
+                view.anchor_id,
+            )
         )
         operations = (
             (Operation("nominate", candidate_id=candidate, rationale=reason),)
@@ -602,6 +613,90 @@ class StagedSearch:
     @staticmethod
     def _record(decision: Decision, record: ResearchRecord) -> Decision:
         return replace(decision, research=(record, *decision.research))
+
+    def _seed_champion(self, view: SearchView, ranked: RankingPlan) -> str:
+        # The runtime promotes only after the run's final gate, so the anchor stays
+        # the deployed champion for the whole run. Parent policies instead receive
+        # the seed champion: the leading complete-seed candidate, if it satisfies
+        # its constraints and strictly improves on the anchor. Ties keep the anchor.
+        if self._seed_rule(view):
+            return self._gated_champion(view)
+        leader = next(
+            (
+                candidate
+                for candidate in ranked.candidate_ids
+                if candidate not in ranked.disqualified
+            ),
+            view.anchor_id,
+        )
+        if leader == view.anchor_id or view.anchor_id not in dict(ranked.scores):
+            return view.anchor_id
+        if view.anchor_id in ranked.disqualified:
+            return leader
+        return view.anchor_id if self._at_least(view, ranked, view.anchor_id, leader) else leader
+
+    @staticmethod
+    def _seed_rule(view: SearchView) -> dict[str, Any] | None:
+        if not isinstance(view.objective, dict):
+            return None
+        return cast(dict[str, Any] | None, view.objective.get("seed_rule"))
+
+    def _gated_champion(self, view: SearchView) -> str:
+        # The paper's SeedGate, applied in generation order: a candidate with complete
+        # global seed evidence replaces the current champion only if it satisfies its
+        # constraints, regresses no declared signal and strictly improves at least one.
+        evidence = [asdict(cell) for cell in view.evidence]
+        champion = view.anchor_id
+        for candidate in view.candidates:
+            if candidate.id == view.anchor_id:
+                continue
+            result = compare_candidates(
+                {
+                    "evidence": evidence,
+                    "task_ids": list(self._all_tasks(view)),
+                    "repetitions": view.budget.repetitions,
+                    "candidate_id": candidate.id,
+                    "anchor_id": view.anchor_id,
+                    "reference_id": champion,
+                    "partition": "seed",
+                    "objective": view.objective,
+                }
+            )
+            if result["constraints_passed"] and result["improved"]:
+                champion = candidate.id
+        return champion
+
+    def _signals_at_bound(self, view: SearchView, champion: str) -> bool:
+        configuration = cast(dict[str, Any], view.objective)
+        rule = configuration["seed_rule"]
+        projected = project_candidate(
+            {
+                "evidence": [asdict(cell) for cell in view.evidence],
+                "task_ids": list(self._all_tasks(view)),
+                "repetitions": view.budget.repetitions,
+                "candidate_id": champion,
+                "anchor_id": view.anchor_id,
+                "partition": "seed",
+                "objective": configuration,
+            }
+        )
+        for metric_id in (rule["outcome"], *rule["process"]):
+            contract = next(item for item in configuration["metrics"] if item["id"] == metric_id)
+            value, bounds = projected["metrics"].get(metric_id), contract.get("range")
+            if (
+                not projected["complete"]
+                or not bounds
+                or not value
+                or value["status"] != "available"
+            ):
+                return False
+            precision = contract["comparisonPrecision"]
+            difference = comparison_key(value["value"], precision) - comparison_key(
+                bounds["max" if contract["direction"] == "maximize" else "min"], precision
+            )
+            if difference < 0 if contract["direction"] == "maximize" else difference > 0:
+                return False
+        return True
 
     @staticmethod
     def _at_least(view: SearchView, ranked: RankingPlan, candidate: str, parent: str) -> bool:

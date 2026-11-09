@@ -138,6 +138,7 @@ class Selection:
 class ParentInput:
     eligible: tuple[ParentOption, ...]
     candidate_limit: int
+    # The seed champion: the anchor until a complete-seed candidate strictly improves on it.
     champion_id: str
 
 

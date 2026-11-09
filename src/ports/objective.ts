@@ -54,5 +54,9 @@ export interface ObjectiveProjector {
     gain: number | null
     complete: boolean
     constraints_passed: boolean
+    /** Present only under a frozen seed rule: seed promotion and held-out validation verdicts. */
+    improved?: boolean
+    regressed?: boolean
+    signals?: Array<{ metric: string; gain: number }>
   }
 }

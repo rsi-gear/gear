@@ -20,6 +20,12 @@ export interface ProjectConfig {
   validation: { mode: 'holdout' | 'research' }
   budget: { rounds: number; max_evaluations: number; max_candidates: number; repetitions: number }
 }
+export interface NativeScoreDefinition {
+  source_metric: string
+  direction: 'maximize' | 'minimize'
+  range: [number, number]
+  reducer: 'task-macro-mean'
+}
 export interface CompiledBenchmark {
   version: 1
   digest: string
@@ -43,6 +49,11 @@ export interface CompiledBenchmark {
     }
   >
   native_blobs?: Record<string, string>
+  /** A native benchmark's validated benchmark.adapter.json, or null when it has none. */
+  adapter_manifest?: {
+    adapter: { id: string; revision: string }
+    scoring: { total_score: NativeScoreDefinition; process_score?: NativeScoreDefinition }
+  } | null
   splits: { seed: string[]; held_out: string[] }
   checks: { static: string; verifier_fixtures: string; environment: string }
   scorer_metadata?: Record<string, Json>
