@@ -176,7 +176,11 @@ export class ProjectExperience implements ExperiencePreparation {
           request.operation.task_ids.includes(cell.task_id) &&
           !capturedSlots.has(`${cell.task_id}\0${cell.repetition}`),
       )
-      .map((cell) => ({ task_id: cell.task_id, repetition: cell.repetition, reason: 'not_captured' as const }))
+      .map((cell) => ({
+        task_id: cell.task_id,
+        repetition: cell.repetition,
+        reason: 'not_captured' as const,
+      }))
       .sort((left, right) => left.task_id.localeCompare(right.task_id) || left.repetition - right.repetition)
     const withBaseline = {
       ...body,
@@ -206,26 +210,27 @@ export class ProjectExperience implements ExperiencePreparation {
       const baseline = request.experience.baseline
       const candidateId = request.operation.candidate_id
       const expectedEvidence = request.evidence.filter(
-        (cell) =>
-          cell.candidate_id === candidateId && request.operation.task_ids.includes(cell.task_id),
+        (cell) => cell.candidate_id === candidateId && request.operation.task_ids.includes(cell.task_id),
       )
       const evidenceSlots = new Set(expectedEvidence.map((cell) => `${cell.task_id}\0${cell.repetition}`))
       const referenceSlots = new Set<string>()
       const missingSlots = new Set<string>()
-      const validMissing = Array.isArray(baseline.missing_trajectory_slots) && baseline.missing_trajectory_slots.every((item) => {
-        if (!item || typeof item !== 'object' || Array.isArray(item)) return false
-        const slot = `${item.task_id}\0${item.repetition}`
-        const valid =
-          typeof item.task_id === 'string' &&
-          Number.isSafeInteger(item.repetition) &&
-          item.repetition >= 0 &&
-          evidenceSlots.has(slot) &&
-          !referenceSlots.has(slot) &&
-          !missingSlots.has(slot) &&
-          item.reason === 'not_captured'
-        missingSlots.add(slot)
-        return valid
-      })
+      const validMissing =
+        Array.isArray(baseline.missing_trajectory_slots) &&
+        baseline.missing_trajectory_slots.every((item) => {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) return false
+          const slot = `${item.task_id}\0${item.repetition}`
+          const valid =
+            typeof item.task_id === 'string' &&
+            Number.isSafeInteger(item.repetition) &&
+            item.repetition >= 0 &&
+            evidenceSlots.has(slot) &&
+            !referenceSlots.has(slot) &&
+            !missingSlots.has(slot) &&
+            item.reason === 'not_captured'
+          missingSlots.add(slot)
+          return valid
+        })
       if (
         request.operation.kind !== 'diagnose_seed' ||
         !candidateId ||

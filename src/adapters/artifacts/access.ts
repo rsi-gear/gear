@@ -130,11 +130,16 @@ export async function readSeedCandidateSource(
     limit < 1 ||
     limit > (params.path === undefined ? 50 : 24 * 1024)
   )
-    throw new GearError('invalid-source-query', 'Source path pages are limited to 50 entries and file pages to 24 KiB')
+    throw new GearError(
+      'invalid-source-query',
+      'Source path pages are limited to 50 entries and file pages to 24 KiB',
+    )
   if (params.path === undefined) {
     if (offset > manifest.resources.length)
       throw new GearError('invalid-source-query', 'Source path page is outside the resource list')
-    const items = manifest.resources.slice(offset, offset + limit).map(({ path, digest }) => ({ path, digest }))
+    const items = manifest.resources
+      .slice(offset, offset + limit)
+      .map(({ path, digest }) => ({ path, digest }))
     return {
       snapshot_digest: snapshot.digest,
       ref: params.ref,
@@ -147,8 +152,7 @@ export async function readSeedCandidateSource(
   if (typeof params.path !== 'string' || !params.path)
     throw new GearError('invalid-source-query', 'Source path must be a non-empty relative path')
   const resource = manifest.resources.find((item) => item.path === params.path)
-  if (!resource)
-    throw new GearError('source-outside-snapshot', 'Source path is outside the sealed candidate')
+  if (!resource) throw new GearError('source-outside-snapshot', 'Source path is outside the sealed candidate')
   const bytes = await targets.readResource(candidate.id, resource.path)
   if (offset > bytes.length)
     throw new GearError('invalid-source-query', 'Source byte offset is outside the file')

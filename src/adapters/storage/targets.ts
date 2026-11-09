@@ -141,7 +141,10 @@ export class TargetStore {
     try {
       const before = await file.stat()
       if (!before.isFile() || before.nlink !== 1 || before.size > 64 * 1024 * 1024)
-        throw new GearError('target-resource-invalid', 'Frozen target resources must be bounded regular files')
+        throw new GearError(
+          'target-resource-invalid',
+          'Frozen target resources must be bounded regular files',
+        )
       const bytes = await file.readFile()
       const after = await file.stat()
       if (

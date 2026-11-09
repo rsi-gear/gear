@@ -114,25 +114,26 @@ export async function stageExperience(
   const runRoot = dirname(context.targets)
   const sourceCandidate = snapshot.records[0]?.candidate.id
   const sourceManifest = sourceCandidate
-    ? (JSON.parse(
-        await readFile(join(runRoot, 'target-manifests', `${sourceCandidate}.json`), 'utf8'),
-      ) as { runtimeIdentity: string })
+    ? (JSON.parse(await readFile(join(runRoot, 'target-manifests', `${sourceCandidate}.json`), 'utf8')) as {
+        runtimeIdentity: string
+      })
     : undefined
   const targets = sourceManifest
     ? new TargetStore(runRoot, harnessAdapter(context.targetAdapter), sourceManifest.runtimeIdentity)
     : undefined
-  const gateway = context.artifactReader || targets
-    ? await trajectoryGateway(
-        root,
-        runRoot,
-        snapshot,
-        context.artifactReader,
-        python.executable,
-        registerDispose,
-        request.experience.baseline?.trajectory_refs,
-        targets,
-      )
-    : undefined
+  const gateway =
+    context.artifactReader || targets
+      ? await trajectoryGateway(
+          root,
+          runRoot,
+          snapshot,
+          context.artifactReader,
+          python.executable,
+          registerDispose,
+          request.experience.baseline?.trajectory_refs,
+          targets,
+        )
+      : undefined
   return {
     readPaths: [...python.readPaths, directory, ...(gateway?.readPaths ?? [])],
     writePaths: gateway?.writePaths ?? [],
