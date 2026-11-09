@@ -208,3 +208,22 @@ it('does not overlap evaluation operations whose combined slot reservations exce
   expect((await done).physicalAttempts).toBe(6)
   expect(provider.maximumSlots).toBe(3)
 })
+
+it('does not let a reused parent consume a slot needed by the two new GEPA candidates', async () => {
+  const { runner, provider, store } = await fixture(3)
+  const journal = await store.read('run')
+  journal.operations[0]!.request.slots = []
+  journal.operations[0]!.request.operation.task_ids = []
+  journal.operations[0]!.reservedAttempts = 0
+  await store.write(journal)
+  const done = runner.run('run', new AbortController().signal)
+  await vi.waitFor(() => expect(provider.calls).toHaveLength(2))
+  expect(provider.calls.map((request) => request.operation.candidate_id)).toEqual([
+    'candidate-1',
+    'candidate-2',
+  ])
+  expect(provider.activeSlots).toBe(4)
+  provider.release.get('candidate-1')!()
+  provider.release.get('candidate-2')!()
+  expect((await done).physicalAttempts).toBe(4)
+})

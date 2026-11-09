@@ -346,7 +346,7 @@ export class DurableRunner {
       const pending = journal.operations.filter((item) => item.status !== 'complete')
       while (pending.length) {
         const batch = [pending.shift()!]
-        let slots = Math.max(1, batch[0]!.reservedAttempts)
+        let slots = batch[0]!.reservedAttempts
         const parallel = (item: JournalOperation) =>
           item.request.operation.kind === 'evaluate_seed' && !item.request.repair && !item.request.projection
         // Only independent candidate evaluations overlap. Generation, repairs and
@@ -355,14 +355,14 @@ export class DurableRunner {
           pending.length &&
           parallel(batch[0]!) &&
           parallel(pending[0]!) &&
-          slots + Math.max(1, pending[0]!.reservedAttempts) <= 4 &&
+          slots + pending[0]!.reservedAttempts <= 4 &&
           batch.every(
             (item) => item.request.operation.candidate_id !== pending[0]!.request.operation.candidate_id,
           )
         ) {
           const item = pending.shift()!
           batch.push(item)
-          slots += Math.max(1, item.reservedAttempts)
+          slots += item.reservedAttempts
         }
         const ready: (OperationReceipt | null)[] = []
         // Keep all journal writes serial and persist every submission intent before
