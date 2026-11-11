@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import math
 from typing import Mapping
 
 from ..contracts import RankingInput, RankingPlan
-from ..evidence import complete_scope_mean, task_scores
+from ..evidence import complete_scope_mean
 
 
 def rank_candidates(view: RankingInput) -> RankingPlan:
@@ -21,16 +20,21 @@ def rank_candidates_pareto(
     """
     Ranks candidates using a multi-objective Pareto trade-off between task performance
     and prompt/harness bloat.
-    
+
     Candidates with identical accuracy are ranked by their compactness (lowest complexity penalty).
     """
     base_plan = complete_scope_mean(view)
-    if not complexity_penalties:
+    penalties_source = (
+        complexity_penalties
+        if complexity_penalties is not None
+        else getattr(view, "complexity_penalties", None)
+    )
+    if not penalties_source:
         return base_plan
 
-    penalties = dict(complexity_penalties)
+    penalties = dict(penalties_source)
     adjusted_scores = []
-    
+
     for candidate, score in base_plan.scores:
         penalty = max(0.0, float(penalties.get(candidate, 0.0)))
         adjusted = score - (complexity_weight * penalty)
@@ -48,3 +52,22 @@ def rank_candidates_pareto(
         base_plan.incomplete,
         base_plan.disqualified,
     )
+
+
+class ParetoRanker:
+    """Callable CandidateRanker that applies Pareto complexity penalties."""
+
+    def __init__(
+        self,
+        complexity_penalties: Mapping[str, float] | None = None,
+        complexity_weight: float = 0.05,
+    ) -> None:
+        self.complexity_penalties = complexity_penalties
+        self.complexity_weight = complexity_weight
+
+    def __call__(self, view: RankingInput) -> RankingPlan:
+        return rank_candidates_pareto(
+            view,
+            complexity_penalties=self.complexity_penalties,
+            complexity_weight=self.complexity_weight,
+        )

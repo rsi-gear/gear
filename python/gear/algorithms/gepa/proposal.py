@@ -6,7 +6,7 @@ from ..contracts import ProposalInput, ProposalPlan
 def plan_workflow_proposals(view: ProposalInput, min_cluster_size: int = 2) -> ProposalPlan:
     """
     Proposes modular, reusable workflows synthesized across multi-task failure clusters.
-    
+
     Prevents single-task overfitting by requiring at least min_cluster_size task failures
     within a task family before proposing a generalized workflow.
     """
@@ -23,7 +23,9 @@ def plan_workflow_proposals(view: ProposalInput, min_cluster_size: int = 2) -> P
     # Filter families with systematic failure patterns
     valid_clusters = {
         family: task_ids
-        for family, task_ids in sorted(family_failures.items(), key=lambda item: (-len(item[1]), item[0]))
+        for family, task_ids in sorted(
+            family_failures.items(), key=lambda item: (-len(item[1]), item[0])
+        )
         if len(task_ids) >= min_cluster_size
     }
 
@@ -40,7 +42,16 @@ def plan_workflow_proposals(view: ProposalInput, min_cluster_size: int = 2) -> P
 
     # Fallback if no family meets the multi-task cluster threshold
     if not hypotheses:
-        return plan_proposals(view)
+        base_plan = plan_proposals(view)
+        # Prevent unsupported workflow proposals from leaking through when cluster threshold is not met
+        sanitized = [h for h in base_plan.hypotheses if "workflow" not in h.lower()]
+        if not sanitized and base_plan.task_ids:
+            sanitized = ["Correct the observed seed failures while preserving successful behavior."]
+        return ProposalPlan(
+            tuple(dict.fromkeys(sanitized))[: view.candidate_limit],
+            base_plan.task_ids,
+            "failure-family proposals (non-workflow fallback)",
+        )
 
     return ProposalPlan(
         tuple(dict.fromkeys(hypotheses))[: view.candidate_limit],

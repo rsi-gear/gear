@@ -6,6 +6,7 @@ from .contracts import (
     Budget,
     Candidate,
     CandidateRanker,
+    CandidateValidator,
     Decision,
     Evidence,
     Operation,
@@ -33,7 +34,7 @@ from .contracts import (
 )
 from .gepa import GEPA
 from .gepa.proposal import plan_workflow_proposals
-from .gepa.ranking import rank_candidates_pareto
+from .gepa.ranking import ParetoRanker, rank_candidates_pareto
 from .random import DeterministicRandom
 from .random_search import RandomSearch
 
@@ -42,6 +43,7 @@ __all__ = [
     "Budget",
     "Candidate",
     "CandidateRanker",
+    "CandidateValidator",
     "Decision",
     "Evidence",
     "Operation",
@@ -74,4 +76,5 @@ __all__ = [
     "validate_anti_bloat_candidate",
     "plan_workflow_proposals",
     "rank_candidates_pareto",
+    "ParetoRanker",
 ]

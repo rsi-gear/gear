@@ -49,30 +49,47 @@ class WorkflowCatalog:
         """Formats a compact system prompt section describing available on-demand procedures."""
         if not self.entries:
             return "No specialized on-demand workflows registered."
-        lines = [
-            "Available on-demand procedures (read with the read tool when relevant):"
-        ]
+        lines = ["Available on-demand procedures (read with the read tool when relevant):"]
         for item in self.entries:
             helper_note = f" (Helper tool: {item.helper})" if item.helper else ""
             lines.append(
-                f"- [{item.id}] Trigger: \"{item.trigger}\". {item.summary} [Path: {item.path}]{helper_note}"
+                f'- [{item.id}] Trigger: "{item.trigger}". {item.summary} [Path: {item.path}]{helper_note}'
             )
         return "\n".join(lines)
 
 
 def validate_anti_bloat_candidate(
-    diff: Mapping[str, str],
+    candidate_or_diff: Mapping[str, Any] | Any,
     max_prompt_delta_bytes: int = 800,
 ) -> tuple[bool, str | None]:
     """
     Validates that candidate changes do not bloat system prompts directly.
-    
+
     Substantive procedures must be structured as on-demand files in workflows/
     rather than monolithic prompt additions in plugins/policy.js.
     """
+    diff = candidate_or_diff
+    if hasattr(diff, "candidate_change"):
+        diff = getattr(diff, "candidate_change")
+
+    diff_map: dict[str, str] = {}
+    if isinstance(diff, dict):
+        files = diff.get("files")
+        if isinstance(files, list):
+            for f in files:
+                if isinstance(f, dict):
+                    path = f.get("path")
+                    patch = f.get("patch")
+                    if isinstance(path, str) and isinstance(patch, str):
+                        diff_map[path] = patch
+        else:
+            for path, patch in diff.items():
+                if isinstance(path, str) and isinstance(patch, str):
+                    diff_map[path] = patch
+
     policy_additions_bytes = 0
 
-    for path, patch in diff.items():
+    for path, patch in diff_map.items():
         if "plugins/policy.js" in path or "policy.js" in path or "systemPrompt" in path:
             for line in patch.splitlines():
                 if line.startswith("+") and not line.startswith("+++"):
