@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "GearWorkflowCatalogV1",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["id", "trigger", "path", "summary"],
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^[a-z0-9-_]+$",
+        "description": "Unique identifier for the modular workflow."
+      },
+      "trigger": {
+        "type": "string",
+        "description": "Condition or context under which this workflow must be read and followed."
+      },
+      "path": {
+        "type": "string",
+        "description": "Relative path to the standalone workflow procedure markdown file."
+      },
+      "helper": {
+        "type": "string",
+        "description": "Optional relative path to an executable helper tool/script supporting this procedure."
+      },
+      "summary": {
+        "type": "string",
+        "description": "One-line summary of what the procedure accomplishes."
+      }
+    },
+    "additionalProperties": false
+  }
+}

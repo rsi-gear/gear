@@ -1,0 +1,21 @@
+[
+  {
+    "id": "structured-cli-requests",
+    "trigger": "Executing command-line tools with JSON payloads or complex quote escaping",
+    "path": "workflows/structured-cli-requests.md",
+    "helper": "workflows/structured-cli-requests/request.py",
+    "summary": "Serializes readable JSON into safely escaped CLI arguments without corrupting quotes."
+  },
+  {
+    "id": "source-backed-operations",
+    "trigger": "Modifying or querying business records in CRM, database, or API destinations",
+    "path": "workflows/source-backed-operations.md",
+    "summary": "Mandates resolving source contracts, destination ledgers, and standing rules before mutation."
+  },
+  {
+    "id": "resolve-workflow-sources",
+    "trigger": "When operational procedure, destination format, or amendment is unresolved",
+    "path": "workflows/resolve-workflow-sources.md",
+    "summary": "Discovers active procedure versions, destination endpoints, and authority contracts."
+  }
+]
