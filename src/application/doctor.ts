@@ -261,7 +261,9 @@ export async function doctor(root: string) {
     checks
       .filter((check) => check.component.startsWith(`${role}.`))
       .every((check) => check.status === 'passed') &&
-    ['local_login_present', 'environment_present', 'execution_binding_present'].includes(authentication[role]?.status ?? '')
+    ['local_login_present', 'environment_present', 'execution_binding_present'].includes(
+      authentication[role]?.status ?? '',
+    )
   return {
     checks,
     profiles: await listProfiles(),
