@@ -59,6 +59,28 @@ def score_ceiling(configuration: dict[str, Any]) -> float | None:
     return result if finite(result) else None
 
 
+def has_room(configuration: dict[str, Any], observed: dict[str, Any]) -> bool:
+    """Whether one observation can still improve a selected signal; unknown counts as room."""
+    metrics = {item["id"]: item for item in configuration["metrics"]}
+    signals = [
+        (metrics[term["metric"]], term["weight"] > 0)
+        for term in configuration["definition"]["terms"]
+        if term["weight"] != 0
+    ]
+    for metric_id in configuration.get("seed_rule", {}).get("process", []):
+        signals.append((metrics[metric_id], metrics[metric_id]["direction"] == "maximize"))
+    for contract, upward in signals:
+        value, bounds = observed.get(contract["id"]), contract.get("range")
+        if not bounds or not value or value["status"] != "available":
+            return True
+        precision = contract["comparisonPrecision"]
+        if comparison_key(value["value"], precision) != comparison_key(
+            bounds["max" if upward else "min"], precision
+        ):
+            return True
+    return False
+
+
 def metric_utility(value: float, contract: dict[str, Any]) -> Fraction:
     """Declared fixed utility scale for outcome/process observation contracts."""
     result = decimal(value)
