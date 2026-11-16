@@ -1,7 +1,7 @@
 import unittest
 
-from gear.algorithms.trajectory import trajectory_page, trajectory_query
 from gear.canonical import digest
+from gear.memory.trajectory import trajectory_page, trajectory_query
 
 
 class TrajectoryTests(unittest.TestCase):

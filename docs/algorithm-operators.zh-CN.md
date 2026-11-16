@@ -84,7 +84,7 @@ evidence = EvidenceSet.from_dict({**collection, "ref": saved_ref, "loaded": True
 
 失败 retry 保留 sample ID，改变 attempt ID；指标补投影不增加物理执行。`Evaluate` 返回不可变 EvidenceSet，追加样本不会改旧集合。`SelectEvidence` 纯构造选择，`ReadEvidence` 封存并分页加载；`EvidenceSet.from_pages` 检查页覆盖和去重。合并多个 fresh 计划时使用不重叠的任务槽，避免把同一个比较槽的多个 assessment 混入一次归约。
 
-`CompareCandidates(ComparisonInput(plan, sets, view.objective, baseline))` 要求明确共同任务、权重、槽、reducer 和 objective。配置 objective 时复用既有 Python 指标公式；相对 baseline 的指标需要显式 baseline。未加载、缺失、评分失败和约束不满足分别报告，失败不能缩小分母或伪装为任务零分。完整示例见 [OPRO](../examples/algorithms/operators/opro.py)。
+`CompareCandidates(ComparisonInput(plan, sets, view.objective, baseline))` 要求明确共同任务、权重、槽、reducer 和 objective。配置 objective 时复用既有 Python 指标公式；相对 baseline 的指标需要显式 baseline。未加载、缺失、评分失败和约束不满足分别报告，失败不能缩小分母或伪装为任务零分。完整示例见 [OPRO](../python/gear/algorithms/opro.py)。
 
 算法内部采纳、任务输出选择、库发布、champion gate 是独立事件。终止 `nominate` 才请求最终 gate；作者的 fresh 样本不会混入独立冻结的 seed/held-out 验收。
 
@@ -99,10 +99,11 @@ evidence = EvidenceSet.from_dict({**collection, "ref": saved_ref, "loaded": True
 ```python
 from gear import Project
 from gear.core import AccessPolicy
-from harness2 import BlindLearning  # examples/algorithms/operators/harness2.py
+from gear.algorithms import Harness2
 
 run = Project.open().refine(
-    algorithm=BlindLearning(),
+    algorithm=Harness2(),
+    rounds=2,
     access=AccessPolicy(exposure="blind", rollout_backend="scored_private",
                         task_order=("sum-01", "sum-02")),
 )
@@ -154,15 +155,25 @@ v1/v2 保留独立解码与执行路径。恢复同时校验原 provider、投�
 
 ## 示例与验证
 
-示例均位于 [examples/algorithms/operators](../examples/algorithms/operators)：
+完整算法统一位于 [gear.algorithms](../python/gear/algorithms)，可直接导入和运行：
 
-| 文件 | 展示机制 |
+| 导出 | 组合机制 |
 | --- | --- |
-| compatibility.py | GEPA/RandomSearch 原六策略与 v1 行为检查 |
-| opro.py | 显式评分历史、Meta 提示词更新、精确构造与共同范围比较 |
-| ace.py | 稳定条目 ID、确定性 delta、事务性候选写入 |
-| rrsi.py | 可替换 critic/check/evaluator、显式子状态、拒绝不评测 |
-| darwinx.py | 暂准入后以两个 fresh 计划追加确认 |
-| harness2.py | blind 输出、Meta 学习、版本化目标文件、CAS 与 CompleteTask |
+| GEPA | 六类策略、local → bridge → global 搜索 |
+| RandomSearch | 均匀父代、探索提案、全任务评估 |
+| OPRO | 显式评分历史、Meta 提示词更新、精确构造与共同范围比较 |
+| ACE | Meta 生成 playbook delta、稳定条目 ID、候选评估与采纳 |
+| RRSI | 逐轮提案、可替换 critic/check/evaluator、拒绝不评测 |
+| DarwinX | OPRO 搜索与 fresh 样本确认，覆盖 anchor、当前最佳和新候选 |
+| Harness2 | blind 输出、Meta 学习、版本化目标文件、CAS 与 CompleteTask |
 
-这些是框架机制示例。测试使用离线 provider、真实隔离 worker、实际封存与恢复路径；不代表已完成论文模型效果或完整搜索机制复现。
+```python
+from gear import Project
+from gear.algorithms import OPRO
+
+run = Project.open().refine(algorithm=OPRO(prompt_path="prompts/system.md"), rounds=2)
+```
+
+五个 v2 算法的 `prompt_path` 默认是 Pi 的 `AGENTS.md`；DSH 传入 `prompts/system.md`。`rounds` 控制 OPRO、ACE、RRSI、DarwinX 的提案轮数，预算不足可提前停止。Harness2 在每个任务上执行指定轮数的 rollout 与学习，再推进有限任务流。组件通过构造参数替换，状态由运行时保存。
+
+这些实现提供可运行的算法组合参考，不声明完整复现同名论文的所有机制或效果。离线测试覆盖两轮执行、筛查、独立确认、封存与恢复；真实任务验证另检查实际 provider 回执与执行轮数。

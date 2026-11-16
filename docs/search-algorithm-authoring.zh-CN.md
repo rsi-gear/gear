@@ -15,7 +15,7 @@
 | 阶段与子流程 | `SearchAlgorithm` | `search/workflow.py` |
 | 结束条件 | `StopRule` | `search/stopping.py` |
 
-表中路径相对于 [`python/gear`](../python/gear)。既有五类策略使用 [`search/contracts_v1.py`](../python/gear/search/contracts_v1.py)，v2 的 `Algorithm/Decision/SearchView` 从 `gear.search` 导入。两代合同不混用；GEPA/RandomSearch 保持 v1。旧 `gear.algorithms` 策略导入仍兼容，新代码使用所属能力入口。
+表中路径相对于 [`python/gear`](../python/gear)。既有五类策略使用 [`search/contracts_v1.py`](../python/gear/search/contracts_v1.py)，v2 的 `Algorithm/Decision/SearchView` 从 `gear.search` 导入。两代合同不混用；GEPA/RandomSearch 保持 v1。`gear.algorithms` 只导出完整算法，旧策略和合同导入改为所属能力入口。
 
 默认 Meta 的提示词、输入组织、结果结构与解析位于
 [`core/meta.py`](../python/gear/core/meta.py)；经验记录对算法 payload 的解释位于
@@ -121,7 +121,7 @@ RandomSearch 使用均匀父代抽样及完整 seed 评测，复用通用证据�
 ## 改整套流程
 
 ```python
-from gear.algorithms import AlgorithmState, Decision, Operation, SearchView
+from gear.search.contracts_v1 import AlgorithmState, Decision, Operation, SearchView
 
 
 class StopAfterInspection:
@@ -137,7 +137,7 @@ class StopAfterInspection:
 
 `Decision.research` 可选附带 `ResearchRecord(kind, scope, task_ids, candidate_ids, data)`，kind 为 `scope`、`ranking` 或 `parents`。它用于独立研究档案，不产生操作权限。runtime 检查任务和候选属于当前 seed view，每次 decision 最多 64 条、JSON 总计最多 2 MiB。两套内置算法通过共享流程自动记录范围、排名和父代抽样；自定义算法不提供记录时，事实档案仍保存候选、证据和操作。
 
-scope 的 `data.weights` 必须明确覆盖任务集合，才能在档案中生成同范围比较；可同时保存 stage、round 与 sampling 信息。其他 data 保持算法自述，不能据此替代真实 receipt。公共纯投影 `algorithms/research.py` 计算档案的描述性比较，不调用算法或重新抽样；每套算法仍只需维护同样的六个模块。读取命令与字段见[报告指南](guide/zh-CN/results.md)。
+scope 的 `data.weights` 必须明确覆盖任务集合，才能在档案中生成同范围比较；可同时保存 stage、round 与 sampling 信息。其他 data 保持算法自述，不能据此替代真实 receipt。公共纯投影 `memory/research.py` 计算档案的描述性比较，不调用算法或重新抽样。算法组合公共搜索能力即可，不必重复维护六个策略文件。读取命令与字段见[报告指南](guide/zh-CN/results.md)。
 
 ## 身份与恢复
 

@@ -3,10 +3,11 @@
 import unittest
 from dataclasses import asdict
 
-from gear.algorithms import GEPA, AlgorithmState, Budget, Candidate, Evidence, SearchView, Task
-from gear.algorithms.gepa.parents import ScopedFrontier
-from gear.algorithms.projection import compare_candidates
+from gear.algorithms import GEPA
 from gear.canonical import digest
+from gear.evaluation.projection import compare_candidates
+from gear.search.contracts_v1 import AlgorithmState, Budget, Candidate, Evidence, SearchView, Task
+from gear.search.parents import ScopedFrontier
 
 
 def configuration(process=None, ranges=False):

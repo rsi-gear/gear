@@ -3,9 +3,10 @@
 import json
 from dataclasses import asdict
 
-from gear.algorithms import GEPA, AlgorithmState, Decision, RankingInput
-from gear.algorithms.gepa.ranking import rank_candidates
+from gear.algorithms import GEPA
 from gear.canonical import digest
+from gear.search.contracts_v1 import AlgorithmState, Decision, RankingInput
+from gear.search.ranking import rank_candidates
 
 
 class CapacityProbe:

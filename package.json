@@ -79,7 +79,6 @@
     "python/gear/py.typed",
     "contracts/**",
     "docs/training/package-layout.zh-CN.md",
-    "examples/algorithms/**",
     "assets/codex-meta-runner.mjs",
     "assets/codex-process-guard.py",
     "docs/codex-meta-runner.zh-CN.md",

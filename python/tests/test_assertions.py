@@ -4,10 +4,10 @@ import unittest
 from copy import deepcopy
 from dataclasses import asdict
 
-from gear.algorithms.assertions import extract_assertions, project_assertions
-from gear.algorithms.contracts import Evidence, RankingInput
-from gear.algorithms.evidence import complete_scope_mean
-from gear.algorithms.projection import project_candidate
+from gear.evaluation.assertions import extract_assertions, project_assertions
+from gear.evaluation.projection import project_candidate
+from gear.search.contracts_v1 import Evidence, RankingInput
+from gear.search.ranking import complete_scope_mean
 
 
 class AssertionPolicies(unittest.TestCase):

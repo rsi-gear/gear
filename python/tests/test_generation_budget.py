@@ -3,20 +3,8 @@ import json
 import unittest
 from dataclasses import replace
 
-from gear.algorithms import (
-    GEPA,
-    AlgorithmState,
-    Budget,
-    Candidate,
-    Evidence,
-    OperationResult,
-    ParentAllocation,
-    ParentPlan,
-    ProposalPlan,
-    RandomSearch,
-    SearchView,
-    Task,
-)
+from gear.algorithms import GEPA, RandomSearch
+from gear.search.contracts_v1 import AlgorithmState, Budget, Candidate, Evidence, OperationResult, ParentAllocation, ParentPlan, ProposalPlan, SearchView, Task
 from gear.canonical import digest
 
 

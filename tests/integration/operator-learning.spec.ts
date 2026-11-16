@@ -25,23 +25,24 @@ it('runs blind learning through the public Python API, seals effective library f
     project = join(root, 'project')
   roots.push(root)
   await initProject(project, { adapter: 'pi', template: 'text' })
+  const config = load(await readFile(join(project, 'gear.yaml'), 'utf8')) as Record<string, unknown>
+  config.budget = { ...(config.budget as Record<string, unknown>), rounds: 2 }
   if (process.env.GEAR_TEST_LINUX_ISOLATION) {
-    const config = load(await readFile(join(project, 'gear.yaml'), 'utf8')) as Record<string, unknown>
     config.sandbox = { linux_isolation: process.env.GEAR_TEST_LINUX_ISOLATION }
-    await writeFile(join(project, 'gear.yaml'), dump(config))
   }
+  await writeFile(join(project, 'gear.yaml'), dump(config))
   const description = JSON.parse(
     execFileSync(
       python,
       [
         '-c',
-        'import json; from gear.project import Project; from gear.core import AccessPolicy; from harness2 import BlindLearning; d=Project._describe_algorithm(BlindLearning()); d["access"]=AccessPolicy(exposure="blind", rollout_backend="scored_private", task_order=("sum-01","sum-02")).to_dict(); print(json.dumps(d))',
+        'import json; from gear.project import Project; from gear.core import AccessPolicy; from gear.algorithms import Harness2; d=Project._describe_algorithm(Harness2()); d["access"]=AccessPolicy(exposure="blind", rollout_backend="scored_private", task_order=("sum-01","sum-02")).to_dict(); print(json.dumps(d))',
       ],
       {
         encoding: 'utf8',
         env: {
           ...process.env,
-          PYTHONPATH: [resolve('python'), resolve('examples/algorithms/operators')].join(':'),
+          PYTHONPATH: resolve('python'),
         },
       },
     ),
@@ -163,9 +164,9 @@ it('runs blind learning through the public Python API, seals effective library f
   expect(report.status).toBe('completed')
   expect(report.retained).toBe('anchor')
   expect(report.gate.status).toBe('not_run')
-  expect(journal.physicalAttempts).toBe(2)
-  expect(requests.filter((request) => request.operatorCall)).toHaveLength(2)
-  expect(actualFiles).toHaveLength(2)
+  expect(journal.physicalAttempts).toBe(4)
+  expect(requests.filter((request) => request.operatorCall)).toHaveLength(4)
+  expect(actualFiles).toHaveLength(4)
   expect(actualFiles[0]).not.toBe(actualFiles[1])
   expect(actualFiles[1]).toBe('Learned instruction for sum-01')
   const targets = requests.filter((request) => request.operatorSamples)
@@ -175,12 +176,13 @@ it('runs blind learning through the public Python API, seals effective library f
   expect(journal.operators!.state.data.publication_status).toBe('conflict')
   expect((await libraries.head('learned-skills'))!.revision).toBe(intervening.revision)
   expect(
-    journal.operators!.calls.find((entry) => entry.call.key === 'sum-01/publish')!.result!.value,
+    journal.operators!.calls.find((entry) => entry.call.key === 'sum-01/round-0/publish')!.result!.value,
   ).toMatchObject({ status: 'published', revision: first.revision })
   expect(JSON.stringify(journal.operators)).not.toContain('PRIVATE_')
   const research = await app.store.researchStore(id).load(journal)
   expect(JSON.stringify(research)).not.toContain('PRIVATE_')
   expect(research.objects.some((object) => object.kind === 'event')).toBe(true)
   expect(report.operators?.task_stream?.index).toBe(2)
-  expect(report.operators?.library_publications).toHaveLength(2)
+  expect(report.operators?.library_publications).toHaveLength(4)
+  expect(journal.operators!.state.data.iterations).toBe(4)
 }, 60_000)

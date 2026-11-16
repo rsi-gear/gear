@@ -62,6 +62,12 @@ for name in ['parents', 'sampling', 'proposal', 'ranking', 'stopping', 'workflow
 for recipe in ['gepa', 'random_search']:
     if not (root / 'algorithms' / recipe / 'algorithm.py').is_file():
         failures.append(f'{recipe}: missing complete algorithm')
+for recipe in ['opro', 'ace', 'rrsi', 'darwinx', 'harness2']:
+    if not (root / 'algorithms' / (recipe + '.py')).is_file():
+        failures.append(f'{recipe}: missing complete algorithm')
+for path in (root / 'algorithms').rglob('*.py'):
+    if 'Compatibility imports' in (ast.get_docstring(ast.parse(path.read_text())) or ''):
+        failures.append(f'{path.relative_to(root)}: obsolete compatibility module')
 # Inspect actual module imports, including package re-exports, within pure capabilities.
 visited = set()
 def visit(module, trail):
@@ -79,7 +85,7 @@ for module in graph:
         visit(module, [])
 if (root.parent / 'gear_training').exists():
     failures.append('The retired gear_training package still exists')
-for name in ['gates.py', 'history.py', 'observations.py', '_retired']:
+for name in ['gates.py', 'history.py', 'observations.py', '_retired', 'contracts.py', 'operators.py', 'meta.py', 'gepa/parents.py', 'random_search/parents.py']:
     if (root / 'algorithms' / name).exists():
         failures.append(f'algorithms/{name}: retired policy leaked into the production package')
 for patch in (root.parent / 'patches').glob('*.patch'):

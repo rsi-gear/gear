@@ -2,10 +2,10 @@
 
 from dataclasses import dataclass
 
-from gear.algorithms import AlgorithmState, Decision, Operation
 from gear.core import MetaInput, Module
 from gear.search import Algorithm, Terminal
 from gear.search import Decision as OperatorDecision
+from gear.search.contracts_v1 import AlgorithmState, Decision, Operation
 
 
 @dataclass(frozen=True)

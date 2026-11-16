@@ -65,12 +65,55 @@ assert not any(name in sys.modules for name in ('torch', 'slime', 'transformers'
                 self.assertIs(value, getattr(owners[0], name))
                 self.assertTrue(value.__module__.startswith(owners[0].__name__ + "."))
 
-        from gear.algorithms import contracts
         from gear.search import Decision, contracts_v1
 
-        self.assertIs(contracts.Decision, contracts_v1.Decision)
-        self.assertIsNot(Decision, contracts.Decision)
+        self.assertIsNot(Decision, contracts_v1.Decision)
         self.assertIs(ops.Decision, Decision)
+
+    def test_algorithms_export_complete_recipes_without_retired_capability_modules(self):
+        from gear import algorithms
+        from gear.core.base import construct_module
+
+        self.assertEqual(
+            set(algorithms.__all__),
+            {"GEPA", "RandomSearch", "OPRO", "ACE", "RRSI", "DarwinX", "Harness2"},
+        )
+        for name in algorithms.__all__:
+            algorithm = getattr(algorithms, name)()
+            spec = describe_module(algorithm).to_dict()
+            self.assertTrue(callable(algorithm.step))
+            self.assertEqual(
+                describe_module(construct_module(spec, load_entrypoint)).to_dict(), spec
+            )
+        retired = (
+            "assertions",
+            "contracts",
+            "evidence",
+            "experience",
+            "experience_index",
+            "limits",
+            "meta",
+            "model_training",
+            "modification_use",
+            "objective",
+            "operator_effects",
+            "operators",
+            "projection",
+            "random",
+            "research",
+            "sampling",
+            "stopping",
+            "testkit",
+            "trajectory",
+            "validation",
+            "verifier",
+            "workflow",
+        )
+        for module in retired:
+            self.assertIsNone(importlib.util.find_spec("gear.algorithms." + module))
+        for recipe in ("gepa", "random_search"):
+            for module in ("parents", "sampling", "proposal", "ranking", "stopping"):
+                self.assertIsNone(importlib.util.find_spec(f"gear.algorithms.{recipe}.{module}"))
 
     def test_search_components_roundtrip_clone_and_replace_without_changing_original(self):
         from gear.core.base import construct_module

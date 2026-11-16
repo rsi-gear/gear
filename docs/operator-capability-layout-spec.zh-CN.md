@@ -1,6 +1,6 @@
 # Gear 算法工程师 API 简化规范
 
-状态：已实施；以对应分支的验证结果和 PR 为准。2026-11-16；实现基线为 PR #121 的 `af8be5d`。
+状态：能力入口已实施；本修订将完整算法示例统一迁入 algorithms，并移除其中的旧兼容模块。验证结果以对应分支和 PR 为准。
 
 本稿替换上一版按 editing、candidates、inference、artifacts 等分别设立顶层包的方案，修订 [原算子规范](composable-algorithm-operators-spec.zh-CN.md) 的公共入口、能力归属和迁移要求。原有执行、预算、权限、证据和恢复合同继续有效。
 
@@ -39,6 +39,11 @@ gear/
   algorithms/
     gepa/               可直接调用的 GEPA 完整实现
     random_search/      可直接调用的 RandomSearch 完整实现
+    opro.py             显式评分历史与提示词搜索
+    ace.py              Playbook 增量更新与候选评估
+    rrsi.py             提案筛查与评估
+    darwinx.py          暂准入后的 fresh 样本确认
+    harness2.py         blind 有限任务流学习
 ```
 
 上图表示主要作者入口，不是仓库的全部目录。现有 Project SDK、benchmark、refine worker、observations 等保留所需实现位置。模块按实际规模使用文件或包，不预建空目录、注册中心或插件系统。
@@ -152,11 +157,11 @@ run = Project.open(".").refine(algorithm=GEPA())
 
 兼容要求：
 
-- `gear.ops` 和已使用的旧能力路径保留薄转发，新文档和内部新实现使用规范能力入口。`gear.algorithms` 继续是完整算法的正式入口，`from gear.algorithms import GEPA, RandomSearch` 保持有效；仅其中迁出的通用能力作为兼容导出保留，不维护两套实现或同名数据类。
-- 新 v2 作者合同以 `gear.search` 为规范入口；原 `gear.algorithms` 的 v1 同名类型保持旧语义。GEPA/RandomSearch 不因移包自动升级协议。新入口统一不表示 v1/v2 Decision、View 或 State 可以混用。
-- 可复用的 v1 合同定义迁入 `search.contracts_v1`，原 `algorithms.contracts` 仅向下转发。search 的实现直接依赖自身合同，不能为了兼容反向导入 algorithms；同一协议的旧新路径指向同一类型对象。
+- `gear.ops` 暂保留薄转发。`gear.algorithms` 只保留并导出 GEPA、RandomSearch、OPRO、ACE、RRSI、DarwinX、Harness2 七个完整算法；移除迁出能力的旧兼容文件与包根导出。内部实现、作者指南与测试改用规范能力入口。
+- 新 v2 作者合同以 `gear.search` 为规范入口，v1 合同从 `gear.search.contracts_v1` 导入。GEPA/RandomSearch 不因移包自动升级协议；v1/v2 Decision、View、State 仍不能混用。
+- 移除 `algorithms.contracts` 和 GEPA/RandomSearch 包内的五类策略兼容文件。search 直接依赖自身合同，公共能力不得反向依赖 algorithms。examples 下不再保留重复算法实现；纯用法放进作者指南，兼容行为检查放进测试。
 - 保持既有随机取值、排序、停止阈值和流程行为。迁移产生新的真实源码与组件身份，不伪装为原摘要。
-- 旧冻结运行使用原源码、原协议及匹配运行时恢复/取消；版本不匹配时执行前拒绝，不改写旧 journal。旧入口转发只解决源码导入兼容。
+- 旧冻结运行使用原源码、原协议及匹配运行时恢复/取消；版本不匹配时执行前拒绝，不改写旧 journal。新运行须更新已移除的导入路径。
 - 内置投影摘要变化会影响 objective、报告、研究、经验和证据导入。旧产物使用匹配投影，不以新实现重算后冒充旧结果。
 - 作者 worker 与内置纯投影分别维护源码清单；前者继续排除 Project、训练执行和 verifier。内置投影按真实依赖移除不再需要的 SDK 源码，不复制整个 gear 包解决缺依赖。
 - TS 的授权、硬预算、样本身份、独立筛查、库 CAS、任务推进及 blind 隔离保持原有合同。无 Hitch 核心修改要求。
@@ -170,7 +175,7 @@ run = Project.open(".").refine(algorithm=GEPA())
 3. 六类策略能单独使用、替换、描述和重建；参数化组件支持嵌套参数与 clone，clone 不复制运行状态。
 4. GEPA/RandomSearch 可从 gear.algorithms 导入并通过 Project 运行，默认组件和可替换参数完整；固定输入、配置、随机种子与回执时，其选择、任务范围、提案、排名、停止理由和阶段轨迹符合原行为。公共能力导入不加载具体算法。
 5. 评估只输出评估与比较结果；筛查拒绝不预约 benchmark；记忆纯更新不冒充持久写入；CompleteTask 仍需权威校验。
-6. 旧新源码导入、v1/v2 协议区别、新冻结身份、旧运行匹配恢复及不匹配拒绝均有覆盖；历史投影身份不能被绕过。
+6. 七个算法可描述、重建和运行，已移除路径在独立 wheel 中不可导入；v1/v2 区别、新冻结身份、旧运行匹配恢复及不匹配拒绝均有覆盖。
 7. 相关调用键、CAS、blind、跨 run 导入、有限任务流与发布包回归通过。独立 wheel/npm 安装验证新入口和实际冻结 worker；training 公共接口及惰性后端加载保持有效。
 
-本次交付为 API 组织和组件化改造，不扩充算法效果承诺或后端执行能力。本规范不要求额外的模型效果实验。
+本次交付为 API 组织和组件化改造，不扩充算法效果承诺或后端执行能力。运行验证使用固定的 10 个 AutomationBench MKT 任务、Codex + Luna low Meta 和 DSH + Luna low Target，各执行两轮；Harness2 为每题两轮。检查真实调用与完成记录，不以 smoke 结果作算法效果排名。

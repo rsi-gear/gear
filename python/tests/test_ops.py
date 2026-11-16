@@ -7,8 +7,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from gear.algorithms import AlgorithmState
-from gear.algorithms.random import DeterministicRandom
 from gear.canonical import digest
 from gear.core import (
     Call,
@@ -29,6 +27,8 @@ from gear.core.testing import check_operator
 from gear.project import Project
 from gear.refine.worker import load_entrypoint, make_algorithm
 from gear.search import Decision, Terminal
+from gear.search.contracts_v1 import AlgorithmState
+from gear.search.random import DeterministicRandom
 
 FIXTURES = Path(__file__).resolve().parents[2] / "tests" / "fixtures"
 sys.path.insert(0, str(FIXTURES))

@@ -174,7 +174,7 @@ export async function setupPython(
         [
           '-I',
           '-c',
-          'import gear,psutil,tomli_w;import gear.benchmark.native;from gear.algorithms import GEPA;from gear.algorithms.testkit import toy_round;assert toy_round(GEPA())["status"]=="passed"',
+          'import gear,psutil,tomli_w;import gear.benchmark.native;from gear.algorithms import GEPA;from gear.search.testkit import toy_round;assert toy_round(GEPA())["status"]=="passed"',
         ],
         { timeout: 30_000, maxBuffer: 64 * 1024 },
       )

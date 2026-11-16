@@ -4,20 +4,12 @@ import json
 import unittest
 from dataclasses import asdict, replace
 
-from gear.algorithms import (
-    GEPA,
-    AlgorithmState,
-    Budget,
-    Candidate,
-    Evidence,
-    RandomSearch,
-    SearchView,
-    Task,
-)
-from gear.algorithms.contracts import OperationResult, RankingPlan
-from gear.algorithms.workflow import StagedSearch
-from gear.algorithms.gepa.ranking import rank_candidates
-from gear.algorithms.testkit import wire
+from gear.algorithms import GEPA, RandomSearch
+from gear.search.contracts_v1 import AlgorithmState, Budget, Candidate, Evidence, SearchView, Task
+from gear.search.contracts_v1 import OperationResult, RankingPlan
+from gear.search.workflow import StagedSearch
+from gear.search.ranking import rank_candidates
+from gear.search.testkit import wire
 from gear.canonical import digest
 from gear.project import Project
 from gear.refine.protocol import validate
