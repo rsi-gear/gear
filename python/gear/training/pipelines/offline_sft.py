@@ -6,7 +6,7 @@ projection. No behavior-policy tokens, rewards, native lease or Hitch job is
 created. Exact token roles/masks come from the sealed offline authoring contract.
 """
 
-from gear.algorithms import model_training
+from gear.refine import training_policy as model_training
 from gear.training.data import offline
 from gear.training.data.offline import read_dataset, seal_batch, window
 from gear.training.loop import TrainingLoop

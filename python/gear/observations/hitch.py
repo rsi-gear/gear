@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from gear.algorithms.modification_use import obj, retain_event, trial_use
+from gear.memory.modification_use import obj, retain_event, trial_use
 from gear.canonical import digest
 
 MAIN = "trajectory/provider/deepseek-session.jsonl"

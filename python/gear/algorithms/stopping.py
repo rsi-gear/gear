@@ -1,13 +1,5 @@
-"""Shared finite-run predicates; physical budget enforcement remains in the runtime."""
+"""Compatibility imports; use the capability packages for new code."""
 
-from .contracts import AlgorithmState, SearchView
-
-
-def bounded_run(view: SearchView, state: AlgorithmState) -> str | None:
-    if not view.tasks:
-        return "empty seed universe"
-    if state.data.get("phase") == "done":
-        return "search complete"
-    if view.budget.evaluations_remaining < 0:
-        return "evaluation budget exhausted"
-    return None
+from gear.search.contracts_v1 import AlgorithmState as AlgorithmState
+from gear.search.contracts_v1 import SearchView as SearchView
+from gear.search.stopping import bounded_run as bounded_run

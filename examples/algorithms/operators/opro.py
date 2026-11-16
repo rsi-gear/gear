@@ -5,18 +5,10 @@ Use a Pi project and a small seed scope. The independent Gear gate owns release.
 """
 
 from gear.canonical import digest
-from gear.ops import (
-    Algorithm,
+from gear.core import (
     ArtifactInput,
     CandidateRef,
-    CompareCandidates,
-    ComparisonInput,
-    ComparisonPlan,
-    Decision,
     EditPlan,
-    Evaluate,
-    EvidenceSet,
-    ExecutionInput,
     FileContent,
     FileEdit,
     MaterializeCandidate,
@@ -24,10 +16,18 @@ from gear.ops import (
     Meta,
     MetaInput,
     ReadArtifact,
+)
+from gear.evaluation import (
+    CompareCandidates,
+    ComparisonInput,
+    ComparisonPlan,
+    Evaluate,
+    EvidenceSet,
+    ExecutionInput,
     SamplePlan,
     TaskSamples,
-    Terminal,
 )
+from gear.search import Algorithm, Decision, Terminal
 
 
 class PromptSearch(Algorithm):

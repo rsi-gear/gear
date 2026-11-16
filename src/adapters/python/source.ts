@@ -46,6 +46,10 @@ export async function freezeAlgorithmSource(
   // The worker never receives the project SDK, benchmark verifier or training implementation.
   await put('gear/__init__.py', Buffer.from('"""Frozen algorithm worker package."""\n'))
   await put('gear/canonical.py', await readFile(join(framework, 'canonical.py')))
+  await walk(join(framework, 'core'))
+  await walk(join(framework, 'evaluation'))
+  await walk(join(framework, 'memory'))
+  await walk(join(framework, 'search'))
   await walk(join(framework, 'algorithms'))
   await walk(join(framework, 'ops'))
   await walk(join(framework, 'refine'))

@@ -1,9 +1,5 @@
-"""Random search instance of ParentPolicy: uniform eligible parent sampling."""
+"""Compatibility imports; use the capability packages for new code."""
 
-from ..contracts import ParentInput, ParentPlan, RandomSource
-
-
-def select_parent(view: ParentInput, rng: RandomSource) -> ParentPlan:
-    if not view.eligible:
-        return ParentPlan.abstain("no eligible parent")
-    return ParentPlan.single(rng.choice(view.eligible, key="parent"), view.candidate_limit)
+from gear.search.contracts_v1 import ParentInput as ParentInput
+from gear.search.contracts_v1 import ParentPlan as ParentPlan
+from gear.search.contracts_v1 import RandomSource as RandomSource

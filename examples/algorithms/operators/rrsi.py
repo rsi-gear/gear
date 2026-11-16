@@ -4,28 +4,22 @@ The predicate and edit budget are examples; RRSI-specific costs and component
 classification belong in the recipe, not in Gear's execution layer.
 """
 
-from gear.ops import (
-    Algorithm,
+from gear.core import (
     ApplyInput,
     ArtifactInput,
     CandidateRef,
     CheckEdits,
-    Decision,
     EditCheckInput,
     EditPlan,
-    ExecutionInput,
     FileContent,
     FileEdit,
     MaterializeCandidate,
     MaterializeInput,
     Meta,
     ReadArtifact,
-    SamplePlan,
-    ScreenedEvaluate,
-    ScreenInput,
-    TaskSamples,
-    Terminal,
 )
+from gear.evaluation import ExecutionInput, SamplePlan, TaskSamples
+from gear.search import Algorithm, Decision, ScreenedEvaluate, ScreenInput, Terminal
 
 
 class ScreenedChange(Algorithm):

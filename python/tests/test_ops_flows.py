@@ -1,42 +1,39 @@
-import unittest
 import base64
 import hashlib
+import unittest
 from dataclasses import asdict, replace
 from types import SimpleNamespace
 
 from gear.canonical import digest
-from gear.ops import (
+from gear.core import (
     ApplyEdits,
     ApplyInput,
     ArtifactRef,
     CallResult,
     CandidateRef,
     CheckEdits,
+    EditCheckInput,
+    EditPlan,
+    FileContent,
+    FileEdit,
+    Meta,
+    Results,
+    clone,
+    decode_artifact_pages,
+)
+from gear.evaluation import (
     CompareCandidates,
     ComparisonInput,
     ComparisonPlan,
-    CounterDelta,
-    EditCheckInput,
-    EditPlan,
     EvidenceRecord,
     EvidenceSet,
     EvidenceSetSpec,
     ExecutionInput,
-    FileContent,
-    FileEdit,
-    MergePlaybook,
-    Meta,
-    PlaybookDelta,
-    PlaybookEntry,
-    PlaybookInput,
-    Results,
     SamplePlan,
-    ScreenedEvaluate,
-    ScreenInput,
     TaskSamples,
-    clone,
-    decode_artifact_pages,
 )
+from gear.memory import CounterDelta, MergePlaybook, PlaybookDelta, PlaybookEntry, PlaybookInput
+from gear.search import ScreenedEvaluate, ScreenInput
 
 
 def ref(name, kind="assessment"):
@@ -72,7 +69,7 @@ class EditTests(unittest.TestCase):
                 decode_artifact_pages(broken)
 
     def test_no_change_can_be_checked_without_admitting_an_empty_materialization(self):
-        from gear.ops import MaterializeCandidate, MaterializeInput
+        from gear.core import MaterializeCandidate, MaterializeInput
 
         material = ApplyInput({"prompt.txt": FileContent("same")}, EditPlan(()))
         self.assertEqual(CheckEdits()(EditCheckInput(material)).status, "allow")

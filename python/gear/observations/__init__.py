@@ -1,1 +1,1 @@
-"""Bounded provider observations. Interpretation lives in gear.algorithms."""
+"""Bounded provider observations, interpreted by evaluation and memory capabilities."""

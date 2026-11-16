@@ -37,7 +37,7 @@ it('runs v2 through Project.refine and resumes a lost Meta receipt without repea
       python,
       [
         '-c',
-        'import json; from gear.project import Project; from gear.ops import ScreeningPolicy; from operator_flow import OperatorFlow; a=OperatorFlow(); d=Project._describe_algorithm(a); d["screening"]=ScreeningPolicy(a.critic,a.edit_check,a.predicate).to_dict(); print(json.dumps(d))',
+        'import json; from gear.project import Project; from gear.core import ScreeningPolicy; from operator_flow import OperatorFlow; a=OperatorFlow(); d=Project._describe_algorithm(a); d["screening"]=ScreeningPolicy(a.critic,a.edit_check,a.predicate).to_dict(); print(json.dumps(d))',
       ],
       {
         encoding: 'utf8',
@@ -172,7 +172,7 @@ it('enforces frozen screening in a fresh process even when the proposing algorit
       python,
       [
         '-c',
-        'import json; from gear.project import Project; from gear.ops import ScreeningPolicy; from operator_screening import BypassScreening; a=BypassScreening(); d=Project._describe_algorithm(a); d["screening"]=ScreeningPolicy(a.critic,a.edit_check,a.predicate).to_dict(); print(json.dumps(d))',
+        'import json; from gear.project import Project; from gear.core import ScreeningPolicy; from operator_screening import BypassScreening; a=BypassScreening(); d=Project._describe_algorithm(a); d["screening"]=ScreeningPolicy(a.critic,a.edit_check,a.predicate).to_dict(); print(json.dumps(d))',
       ],
       {
         encoding: 'utf8',

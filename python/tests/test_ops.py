@@ -10,26 +10,25 @@ from unittest.mock import patch
 from gear.algorithms import AlgorithmState
 from gear.algorithms.random import DeterministicRandom
 from gear.canonical import digest
-from gear.ops import (
+from gear.core import (
     Call,
     CallResult,
     CandidateRef,
-    Decision,
     Meta,
     MetaInput,
     Results,
     Sequential,
     StateTree,
-    Terminal,
     clone,
     describe_module,
     freeze_module,
 )
-from gear.ops.base import construct_module
-from gear.ops.schema import validate_output, validate_schema
-from gear.ops.testing import check_operator
+from gear.core.base import construct_module
+from gear.core.schema import validate_output, validate_schema
+from gear.core.testing import check_operator
 from gear.project import Project
 from gear.refine.worker import load_entrypoint, make_algorithm
+from gear.search import Decision, Terminal
 
 FIXTURES = Path(__file__).resolve().parents[2] / "tests" / "fixtures"
 sys.path.insert(0, str(FIXTURES))
@@ -46,8 +45,28 @@ class ComponentTests(unittest.TestCase):
         self.assertNotEqual(first[0], first[1])
         self.assertEqual(first, operator((), rng=DeterministicRandom("seed")))
 
+    def test_sequential_preserves_namespaced_choice_for_existing_search_components(self):
+        from gear.search.contracts_v1 import ParentOption
+
+        options = (
+            ParentOption("one", "scope", (), 1, probability=0.25),
+            ParentOption("two", "scope", (), 2, probability=0.75),
+        )
+
+        def select(value, *, rng):
+            return value + (rng.choice(options, key="parent", index=3),)
+
+        rng = DeterministicRandom("seed")
+        actual = Sequential((select, select))((), rng=rng)
+        expected = tuple(
+            rng.choice(options, key=digest([f"steps/{index}", "parent"]), index=3)
+            for index in range(2)
+        )
+        self.assertEqual(actual, expected)
+        self.assertEqual(actual, Sequential((select, select))((), rng=rng))
+
     def test_results_decode_with_frozen_pure_code_without_mutating_wire_values(self):
-        from gear.ops import CallRef
+        from gear.core import CallRef
 
         reference = CallRef("result", digest("request"))
         raw = CallResult(reference, "succeeded", {"value": 3})

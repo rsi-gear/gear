@@ -8,15 +8,8 @@ import stat
 from pathlib import Path
 from typing import Any
 
-from gear.algorithms.experience import encoded_size
-from gear.algorithms.experience_index import (
-    MAX_ITEM_BYTES,
-    VIEWS,
-    valid_digest,
-    verify_chunk,
-    verify_descriptor,
-    verify_snapshot,
-)
+from gear.memory.experience import encoded_size
+from gear.memory.experience_index import MAX_ITEM_BYTES, VIEWS, valid_digest, verify_chunk, verify_descriptor, verify_snapshot
 
 MAX_LEGACY_BYTES = 12 * 1024 * 1024
 MAX_INDEX_BYTES = 4 * 1024 * 1024

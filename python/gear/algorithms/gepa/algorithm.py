@@ -2,19 +2,19 @@
 
 from typing import Literal
 
-from ..contracts import (
+from gear.search.contracts_v1 import (
     CandidateRanker,
     ParentPolicy,
     ProposalPlanner,
     StopRule,
     TaskSampler,
 )
-from ..workflow import StagedSearch
-from .parents import select_parent
-from .proposal import plan_proposals
-from .ranking import rank_candidates
-from .sampling import sample_tasks
-from .stopping import stop_reason
+from gear.search.parents import select_parent
+from gear.search.proposal import plan_proposals
+from gear.search.ranking import rank_candidates
+from gear.search.sampling import sample_tasks
+from gear.search.stopping import stop_reason
+from gear.search.workflow import StagedSearch
 
 
 class GEPA(StagedSearch):

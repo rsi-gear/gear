@@ -1,4 +1,4 @@
-"""Generated transport types. Author contracts live in ops/."""
+"""Generated transport types. Author contracts live in core/, evaluation/, memory/ and search/."""
 from __future__ import annotations
 from typing import Literal, TypedDict, TypeAlias
 from gear.canonical import JSON as Json

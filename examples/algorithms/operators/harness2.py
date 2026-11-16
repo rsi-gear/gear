@@ -1,25 +1,22 @@
 """Minimal blind continual-learning data flow; not a paper-effectiveness claim."""
 
-from gear.ops import (
-    Algorithm,
+from gear.core import (
     ArtifactRef,
-    CommitLibrary,
-    CommitLibraryInput,
     CompleteTask,
     CompleteTaskInput,
-    Decision,
-    ExecutionInput,
     FileContent,
     Meta,
     MetaInput,
+    TargetFiles,
+)
+from gear.evaluation import ExecutionInput, Rollout, SamplePlan, TaskSamples
+from gear.memory import (
+    CommitLibrary,
+    CommitLibraryInput,
     PublishLibrary,
     PublishLibraryInput,
-    Rollout,
-    SamplePlan,
-    TargetFiles,
-    TaskSamples,
-    Terminal,
 )
+from gear.search import Algorithm, Decision, Terminal
 
 
 class BlindLearning(Algorithm):

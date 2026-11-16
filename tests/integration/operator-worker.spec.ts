@@ -24,7 +24,7 @@ it('reconstructs the SDK component tree and exchanges explicit v2 calls and resu
         `
 import json
 from gear.project import Project
-from gear.ops import Meta
+from gear.core import Meta
 from operator_tree import CriticAlgorithm
 algorithm = CriticAlgorithm(Meta('Review the authorized candidate', {'type': 'object'}, max_tokens=512))
 description = Project._describe_algorithm(algorithm)

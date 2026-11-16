@@ -1,28 +1,23 @@
 """Offline end-to-end recipe: read, edit, critic, ensure, confirm, nominate."""
 
-from gear.ops import (
-    Algorithm,
+from gear.core import (
     ArtifactInput,
-    CandidateRef,
     CallRef,
+    CandidateRef,
     CheckEdits,
-    Decision,
     EditPlan,
-    Evaluate,
-    ExecutionInput,
     FileContent,
     FileEdit,
     MaterializeCandidate,
     MaterializeInput,
     Meta,
     MetaInput,
-    ReadArtifact,
-    SamplePlan,
-    TaskSamples,
-    Terminal,
     Module,
+    ReadArtifact,
 )
-from gear.ops.composition import ScreenVerdict
+from gear.evaluation import Evaluate, ExecutionInput, SamplePlan, TaskSamples
+from gear.search import Algorithm, Decision, Terminal
+from gear.search.screening import ScreenVerdict
 
 
 class ApprovedPredicate(Module):

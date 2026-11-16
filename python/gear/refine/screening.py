@@ -5,9 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 from gear.canonical import digest
-from gear.ops.base import describe_module
-from gear.ops.calls import CandidateRef
-from gear.ops.candidates import (
+from gear.core.base import describe_module
+from gear.core.calls import CandidateRef
+from gear.core.candidates import (
     ApplyInput,
     EditCheck,
     EditCheckInput,
@@ -15,7 +15,7 @@ from gear.ops.candidates import (
     FileContent,
     FileEdit,
 )
-from gear.ops.composition import ScreenCheckInput, ScreenVerdict
+from gear.search.screening import ScreenCheckInput, ScreenVerdict
 
 
 def project_screening(algorithm: object, value: dict[str, Any]) -> dict[str, str]:

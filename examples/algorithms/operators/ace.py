@@ -7,20 +7,15 @@ time. A production recipe can obtain that delta through its own Meta module.
 import json
 from dataclasses import asdict
 
-from gear.ops import (
-    Algorithm,
-    Decision,
+from gear.core import (
     EditPlan,
     FileContent,
     FileEdit,
     MaterializeCandidate,
     MaterializeInput,
-    MergePlaybook,
-    PlaybookDelta,
-    PlaybookEntry,
-    PlaybookInput,
-    Terminal,
 )
+from gear.memory import MergePlaybook, PlaybookDelta, PlaybookEntry, PlaybookInput
+from gear.search import Algorithm, Decision, Terminal
 
 
 class PlaybookUpdate(Algorithm):

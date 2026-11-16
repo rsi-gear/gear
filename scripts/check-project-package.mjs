@@ -33,8 +33,8 @@ try {
   run(isolatedPython, ['-c', 'import sys;import gear;import gear.training;import gear.benchmark.probe;import importlib;import importlib.util;assert all(importlib.util.find_spec(name) is None for name in ("gear_training","gear.training.cli.launch","gear.training.cli.__main__","gear.training.cli.inference","gear.training.inference.inference_process","gear.training.inference.inference_attach","gear.training.inference.inference_recovery","gear.algorithms.history","gear.algorithms.gates","gear.algorithms.observations","gear.algorithms._retired","retired_policies"));[importlib.import_module("gear.training.cli."+name) for name in ("controller","job","node","script_job","certify","slime","gpu_inventory")];assert not any(n in sys.modules for n in ("torch","slime","transformers","aiohttp"));from gear.algorithms import GEPA;from gear.algorithms.testkit import toy_round;assert toy_round(GEPA())["status"] == "passed"'], { cwd: root, env: { ...process.env, PYTHONPATH: '' } })
   note('Installed Python terminal errors preserve warning diagnostics and reject log JSON')
   note('Installed callable operators construct requests and exact edits without Node or Hitch')
-  run(isolatedPython, ['-c', `from gear.ops import ApplyEdits, ApplyInput, EditPlan, FileEdit, FileContent, Meta, MetaInput, CandidateRef, Call, clone
-from gear.ops.testing import check_operator
+  run(isolatedPython, ['-c', `from gear.core import ApplyEdits, ApplyInput, EditPlan, FileEdit, FileContent, Meta, MetaInput, CandidateRef, Call, clone
+from gear.core.testing import check_operator
 from gear.canonical import digest
 value=ApplyInput({}, EditPlan((FileEdit('create', 'prompt.txt', None, FileContent('frozen prompt')),)))
 assert check_operator(ApplyEdits(), value)['status']=='passed'

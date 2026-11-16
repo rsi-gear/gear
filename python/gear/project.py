@@ -11,7 +11,7 @@ import os
 import shutil
 import tempfile
 from collections.abc import Coroutine
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import dataclass, is_dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar, cast
 
@@ -20,9 +20,9 @@ from .canonical import JSON
 T = TypeVar("T")
 
 if TYPE_CHECKING:
-    from .algorithms import SearchAlgorithm as LegacySearchAlgorithm
-    from .ops import AccessPolicy, ImportSource, ScreeningPolicy
-    from .ops import SearchAlgorithm as OperatorSearchAlgorithm
+    from gear.core.policy import AccessPolicy, ImportSource, ScreeningPolicy
+    from gear.search.api import SearchAlgorithm as OperatorSearchAlgorithm
+    from gear.search.contracts_v1 import SearchAlgorithm as LegacySearchAlgorithm
 
     SearchAlgorithm = LegacySearchAlgorithm | OperatorSearchAlgorithm
 
@@ -520,8 +520,14 @@ class Project:
 
     @staticmethod
     def _describe_algorithm(algorithm: SearchAlgorithm) -> dict[str, JSON]:
+        from gear.core.base import (
+            Module,
+            describe_module,
+            entrypoint,
+            required_capabilities,
+        )
+
         from .algorithms import GEPA, RandomSearch
-        from .ops.base import Module, ModuleSpec, describe_module, entrypoint, required_capabilities
         from .refine.protocol import validate
 
         name = (
@@ -694,19 +700,12 @@ class Project:
             declared_dependencies(value)
             if inspect.isfunction(value):
                 options[field] = capture(value)
-            elif is_dataclass(value) and not isinstance(value, type):
-                policy_spec = describe_module(value, on_component=capture_component)
-                assert isinstance(policy_spec, ModuleSpec)
-                if policy_spec.children:
-                    options[field] = {"component": policy_spec.to_dict()}
-                else:
-                    configuration = json.loads(json.dumps(asdict(value), allow_nan=False))
-                    validate("Json", configuration)
-                    options[field] = {
-                        "entrypoint": capture(type(value)),
-                        "configuration": configuration,
-                    }
-            elif isinstance(value, Module) or callable(getattr(value, "get_params", None)):
+            elif (
+                is_dataclass(value)
+                and not isinstance(value, type)
+                or isinstance(value, Module)
+                or callable(getattr(value, "get_params", None))
+            ):
                 options[field] = {
                     "component": describe_module(value, on_component=capture_component).to_dict()
                 }

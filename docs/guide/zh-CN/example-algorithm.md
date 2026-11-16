@@ -1,12 +1,12 @@
 # 用 Python 修改算法
 
-公开作者 API 是 `gear.algorithms`。GEPA 和 RandomSearch 都由父代、采样、提案、排名、停止和阶段编排六个模块组成；GEPA 是公共模块合同的实例。
+完整算法从 `gear.algorithms` 使用；可复用策略位于 `gear.search` 的父代、采样、提案、排名、停止和编排六个模块。GEPA 和 RandomSearch 组合这些公共能力；其他算子分别从 core、evaluation、memory、training 使用。
 
 下面用一个命名函数替换父代策略：
 
 ```python
 # my_policy.py
-from gear.algorithms import ParentInput, ParentPlan, RandomSource
+from gear.search.parents import ParentInput, ParentPlan, RandomSource
 
 
 def select_parent(view: ParentInput, rng: RandomSource) -> ParentPlan:

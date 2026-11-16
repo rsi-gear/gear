@@ -1,6 +1,8 @@
 # Gear 可组合算法算子改造规范
 
-状态：P1/P2 框架实现已落地并完成本地验收。条件能力、适配差异和验证范围见 [实现记录](composable-algorithm-operators-progress.zh-CN.md)。
+状态：P1/P2 框架实现已落地。当前用法和能力限制见 [算子指南](algorithm-operators.zh-CN.md)，验证结果随 PR 记录。
+
+接口布局修订：[算法工程师 API 简化规范](operator-capability-layout-spec.zh-CN.md) 修订本文的包布局、公共入口和组件依赖，按 core、evaluation、memory、training、search 五个能力入口组织算子，algorithms 保留可直接调用的完整算法实现。能力布局已按该规范迁移；本文中的 `gear.ops` 保留为旧接口说明，当前导入方式见作者指南。
 
 日期：2026-11-16。
 

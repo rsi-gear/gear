@@ -17,7 +17,7 @@ DEFINITIONS = json.loads(Path(__file__).with_name("algorithm-v1.schema.json").re
 
 def validate(name: str, value: JSON, *, version: int = 1) -> None:
     if version == 2:
-        from gear.ops.wire import validate_v2
+        from gear.core.wire import validate_v2
         validate_v2(name, value)
         return
     if version != 1:

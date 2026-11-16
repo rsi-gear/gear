@@ -1,25 +1,25 @@
 # Python 算法开发索引
 
-既有六策略入口是 `gear.algorithms`（v1）；新算法可使用 [`gear.ops` 可组合算子](algorithm-operators.zh-CN.md)（v2）。算法返回决策，TypeScript 运行层验证、持久化并执行这些决策。算法不能直接提交评测、查询 held-out 或更新 champion。
+`gear.algorithms` 提供 GEPA、RandomSearch 等完整算法；`gear.search` 提供可复用搜索合同、策略和流程。基础操作、评估、记忆、训练分别从 `gear.core`、`gear.evaluation`、`gear.memory`、`gear.training` 使用，见[能力算子指南](algorithm-operators.zh-CN.md)。算法返回决策，运行时验证、持久化并执行。
 
 ## 修改位置
 
-GEPA 和 RandomSearch 各包含六个策略文件，彼此不继承策略实现。新算法可以按自身组合流程组织目录，无需套用固定六模块。
+六模块是能力集合，新算法可以自由组合，不必经过固定阶段。完整算法的专有装配保留在 `algorithms/gepa`、`algorithms/random_search`。
 
-| 要修改的行为 | 公共合同 | GEPA 实现 | RandomSearch 实现 |
-| --- | --- | --- | --- |
-| 父代和候选配额 | `ParentPolicy` | `gepa/parents.py` | `random_search/parents.py` |
-| 任务范围和评分权重 | `TaskSampler` | `gepa/sampling.py` | `random_search/sampling.py` |
-| 消费诊断、规划候选 | `ProposalPlanner` | `gepa/proposal.py` | `random_search/proposal.py` |
-| 在完整共同范围比较候选 | `CandidateRanker` | `gepa/ranking.py` | `random_search/ranking.py` |
-| 阶段顺序与晋级宽度 | `SearchAlgorithm` | `gepa/algorithm.py` | `random_search/algorithm.py` |
-| 结束条件 | `StopRule` | `gepa/stopping.py` | `random_search/stopping.py` |
+| 要修改的行为 | 公共合同 | 共享实现位置 |
+| --- | --- | --- |
+| 父代和候选配额 | `ParentPolicy` | `search/parents.py` |
+| 任务范围和权重 | `TaskSampler` | `search/sampling.py` |
+| 消费诊断、规划候选 | `ProposalPlanner` | `search/proposal.py` |
+| 排名和晋级 | `CandidateRanker` | `search/ranking.py` |
+| 阶段与子流程 | `SearchAlgorithm` | `search/workflow.py` |
+| 结束条件 | `StopRule` | `search/stopping.py` |
 
-表中路径相对于 [`python/gear/algorithms`](../python/gear/algorithms)。合同在 [`contracts.py`](../python/gear/algorithms/contracts.py)，可复用流程在 [`workflow.py`](../python/gear/algorithms/workflow.py)。新增算法可以组合这些合同，也可以直接实现 `step`，不需要修改 TS 的操作类型或状态机。
+表中路径相对于 [`python/gear`](../python/gear)。既有五类策略使用 [`search/contracts_v1.py`](../python/gear/search/contracts_v1.py)，v2 的 `Algorithm/Decision/SearchView` 从 `gear.search` 导入。两代合同不混用；GEPA/RandomSearch 保持 v1。旧 `gear.algorithms` 策略导入仍兼容，新代码使用所属能力入口。
 
 默认 Meta 的提示词、输入组织、结果结构与解析位于
-[`meta.py`](../python/gear/algorithms/meta.py)；经验记录对算法 payload 的解释位于
-`experience.py`。TS 通过现有 Python policy 通道执行，负责授权、模型调用、预算和持久化。
+[`core/meta.py`](../python/gear/core/meta.py)；经验记录对算法 payload 的解释位于
+`memory/experience.py`。TS 通过现有 Python policy 通道执行，负责授权、模型调用、预算和持久化。
 
 算法自定义诊断或生成时，在现有 `Operation.payload` 中传入 `meta`，无需修改公共 Meta
 代码、TS 或 SDK。例如，Python 算法可以发出：
@@ -55,7 +55,7 @@ Python 可以据此决定是否评估、拒绝或继续修改；字段缺失或 
 保存为可以导入的 `my_policy.py`：
 
 ```python
-from gear.algorithms import ParentInput, ParentPlan, RandomSource
+from gear.search.parents import ParentInput, ParentPlan, RandomSource
 
 
 def select_parent(view: ParentInput, rng: RandomSource) -> ParentPlan:
@@ -102,8 +102,8 @@ Notebook 使用 `await project.arefine(...)`。同步方法在已有事件循环
 
 ```python
 from gear.algorithms import GEPA
-from gear.algorithms.gepa.parents import ScopedFrontier
-from gear.algorithms.gepa.sampling import GEPASampler
+from gear.search.parents import ScopedFrontier
+from gear.search.sampling import GEPASampler
 
 algorithm = GEPA(
     parent_policy=ScopedFrontier(batch_count=2, champion_probability=0.25),
@@ -159,15 +159,13 @@ stdio 协议每条请求/响应固定上限为 64 MiB，按完整 UTF-8 JSON env
 
 ## 当前策略与固定投影的边界
 
-GEPA 和 RandomSearch 分别保留 parents、sampling、proposal、ranking、stopping、algorithm 六个模块。`algorithm.py` 实例化公共流程和同样的五个可替换策略；共享流程在 `algorithms/workflow.py`，每个阶段由命名方法表达。正式配方目录只包含当前实现。
+GEPA 和 RandomSearch 在 `algorithms` 中装配公共策略和流程。共享编排在 `search/workflow.py`，每个阶段由命名方法表达；通用算子不反向导入具体算法。
 
-加权指标算术在 `algorithms/objective.py`，固定任务/重复范围与保护投影在 `algorithms/projection.py`，独立 assertion 判定在 `algorithms/assertions.py`。各算法的 `ranking.py` 使用同一公共 `RankingInput`（含冻结 objective 与 anchor_id）；`RankingPlan` 区分不完整和违反约束的候选。GEPA 父代的逐题前沿也使用 objective 投影。最终验收由 core 调用受信任的 Python 投影独立执行，替换 ranker 不能绕过冻结的规则。
+指标算术、固定任务投影与 assertion 判定位于 `evaluation/objective.py`、`evaluation/projection.py`、`evaluation/assertions.py`。`CompareCandidates` 负责在明确证据范围内比较；`search/ranking.py` 负责排名和晋级策略。最终验收由运行时独立调用受信任 Python 投影，替换 ranker 不会绕过冻结规则。
 
-公共采样器使用 `algorithms/sampling.py` 的十进制向上取整；`100 × 0.07` 固定为 7 个任务。确定性随机源在 `algorithms/random.py`。训练的配对统计、dev/held-out 决策和离线记录顺序在 `algorithms/model_training.py`，由 `gear.training` 和 TS 执行适配层共用。
+任务采样使用 `search/sampling.py` 的十进制向上取整；通用索引随机源在 `core/random.py`，父代加权抽样在 `search/random.py`。`memory` 包负责历史、经验和档案等数据处理。训练的内部纯策略位于 `refine/training_policy.py`。
 
-`algorithms/operators.py` 仅分发当前执行适配层所需的纯投影与训练策略。它不是算法作者的扩展入口，也不承担 GEPA 阶段规划；自定义算法仍使用上面的公共合同。
-
-verifier 过程组件验证、失败代码诊断与范围汇总在 `algorithms/verifier.py`；历史编辑经验分类/查询在 `algorithms/experience.py`，修改资源使用匹配在 `algorithms/modification_use.py`。这些共享纯投影不增加每套算法的可替换模块。TypeScript 只负责 provider I/O、来源固定、合同校验和持久化；诊断不会隐式改变 objective 或晋级规则。
+`refine/projections.py` 是内部纯投影分发器，不是作者扩展入口。TypeScript 负责 provider I/O、来源绑定、合同校验和持久化，公共算子构造 Call 时不执行这些工作。
 
 ## 历史行为对照
 

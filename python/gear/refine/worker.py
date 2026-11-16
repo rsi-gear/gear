@@ -10,18 +10,17 @@ from contextlib import redirect_stdout
 from dataclasses import asdict
 from pathlib import Path
 
-from gear.algorithms import (
-    GEPA,
+from gear.algorithms import GEPA, RandomSearch
+from gear.canonical import digest
+from gear.search.contracts_v1 import (
     AlgorithmState,
     Budget,
     Candidate,
     Evidence,
     OperationResult,
-    RandomSearch,
     SearchView,
     Task,
 )
-from gear.canonical import digest
 
 from .dependencies import verify_dependencies
 from .identity import source_identity
@@ -40,18 +39,24 @@ def load_entrypoint(name: str):
     return value
 
 
+def _freeze_configuration(algorithm):
+    from gear.core.base import describe_module
+
+    def freeze(component):
+        if hasattr(component, "set_params"):
+            object.__setattr__(component, "_configuration_frozen", True)
+
+    describe_module(algorithm, on_component=freeze)
+    return algorithm
+
+
 def make_algorithm(config):
     if "component" in config:
-        from gear.ops.base import construct_module, describe_module
+        from gear.core.base import construct_module
 
         if config.get("options") or config["name"] != config["component"].get("entrypoint"):
             raise ValueError("component algorithm must have matching name and no legacy options")
-        algorithm = construct_module(config["component"], load_entrypoint)
-        def freeze(component):
-            if hasattr(component, "set_params"):
-                object.__setattr__(component, "_configuration_frozen", True)
-        describe_module(algorithm, on_component=freeze)
-        return algorithm
+        return _freeze_configuration(construct_module(config["component"], load_entrypoint))
     options = dict(config.get("options", {}))
     for key in ("parent_policy", "sampler", "proposal_planner", "ranker", "stop_rule"):
         if key in options:
@@ -59,7 +64,7 @@ def make_algorithm(config):
             if isinstance(value, str):
                 options[key] = load_entrypoint(value)
             elif isinstance(value, dict) and set(value) == {"component"}:
-                from gear.ops.base import construct_module
+                from gear.core.base import construct_module
                 options[key] = construct_module(value["component"], load_entrypoint)
             elif (
                 isinstance(value, dict)
@@ -70,9 +75,9 @@ def make_algorithm(config):
             else:
                 raise ValueError("policy requires an entrypoint or a configured entrypoint object")
     if config["name"] == "gepa":
-        return GEPA(**options)
+        return _freeze_configuration(GEPA(**options))
     if config["name"] == "random-search":
-        return RandomSearch(**options)
+        return _freeze_configuration(RandomSearch(**options))
     return load_entrypoint(config["name"])(**options)
 
 
@@ -150,9 +155,9 @@ def main() -> int:
                     raise ValueError("handshake required")
                 body = request["payload"]
                 if version == 2:
-                    from gear.ops import Decision as V2Decision
-                    from gear.ops import SearchView as V2SearchView
-                    from gear.ops import StateTree
+                    from gear.core.state import StateTree
+                    from gear.search.api import SearchView as V2SearchView
+                    from gear.search.decisions import Decision as V2Decision
                     view = V2SearchView.from_dict(body["view"])
                 else:
                     view = decode_view(body["view"])
@@ -175,7 +180,7 @@ def main() -> int:
                         raise TypeError("algorithm step must be a pure synchronous decision")
                     if version == 2:
                         if not isinstance(decision, V2Decision):
-                            raise TypeError("v2 algorithms must return gear.ops.Decision")
+                            raise TypeError("v2 algorithms must return gear.search.Decision")
                         result = decision.to_dict()
                     else:
                         result = asdict(decision)

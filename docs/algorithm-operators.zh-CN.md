@@ -1,13 +1,25 @@
 # 可组合算法算子作者指南
 
-`gear.ops` 是协议 v2 的 Python 作者入口。纯算子直接返回值；外部工作由 `Call` 描述，并在 `Decision` 提交后执行。算法模块中的选择、排序、编辑规则和阶段流程均留在 Python。TS 验证权限，预约预算，封存结果并恢复未完成调用。
+算子按用途从五个能力入口导入，完整算法从 `gear.algorithms` 导入：
 
-`gear.algorithms.GEPA`、`RandomSearch` 和六策略接口继续走 v1。新算法继承 `gear.ops.Algorithm` 明确启用 v2；不能修改旧 run 的协议号或实现身份来迁移。
+| 入口 | 常用内容 |
+| --- | --- |
+| `gear.core` | Module、编辑、候选生成、Meta、材料读取、Call 与状态 |
+| `gear.evaluation` | Evaluate、Rollout、样本计划、证据与 CompareCandidates |
+| `gear.memory` | 历史查询、档案更新、Playbook、知识库 |
+| `gear.training` | 训练数据、模型更新与训练流程 |
+| `gear.search` | 搜索合同、筛查和可组合流程；六类策略位于对应子模块 |
+| `gear.algorithms` | 可直接交给 Project 的 GEPA、RandomSearch 完整实现 |
+
+纯算子直接返回值；外部工作由 `Call` 描述，并在 `Decision` 提交后执行。选择、排序和流程留在 Python，运行时负责授权、预算、封存和恢复。
+
+GEPA、RandomSearch 保持协议 v1。新算法继承 `gear.search.Algorithm` 明确启用 v2。`gear.ops` 和迁出的旧能力路径保留导入兼容，指向同一个实现；新入口会产生新的冻结身份，旧 run 仍需原源码及匹配运行时，不能改协议号或重算身份来迁移。
 
 ## 调用与恢复
 
 ```python
-from gear.ops import Algorithm, Decision, Meta, MetaInput, Terminal
+from gear.core import Meta, MetaInput
+from gear.search import Algorithm, Decision, Terminal
 
 class Review(Algorithm):
     def __init__(self, critic=None):
@@ -41,7 +53,7 @@ class Review(Algorithm):
 
 状态使用 `StateTree`，由 `state.updated(...)` 产生新版本。改变 `state_schema_version` 后不能静默加载旧状态。有随机行为的模块显式使用 `view.random("module/path", "call-key")`，`Sequential` 为子模块隔离随机键。
 
-`gear.ops.testing.check_operator` 可离线检查参数往返、clone、重复构造、输入变动和可观测 I/O。它是作者诊断工具，不能替代运行沙箱或真实持久执行测试。
+`gear.core.testing.check_operator` 可离线检查参数往返、clone、重复构造、输入变动和可观测 I/O。它是作者诊断工具，不能替代运行沙箱或真实持久执行测试。
 
 ## 材料与精确编辑
 
@@ -53,7 +65,8 @@ class Review(Algorithm):
 
 ```python
 import json
-from gear.ops import decode_artifact_pages, EvidenceSet
+from gear.core import decode_artifact_pages
+from gear.evaluation import EvidenceSet
 
 raw = decode_artifact_pages(tuple(saved_pages))
 collection = json.loads(raw)
@@ -85,7 +98,7 @@ evidence = EvidenceSet.from_dict({**collection, "ref": saved_ref, "loaded": True
 
 ```python
 from gear import Project
-from gear.ops import AccessPolicy
+from gear.core import AccessPolicy
 from harness2 import BlindLearning  # examples/algorithms/operators/harness2.py
 
 run = Project.open().refine(
@@ -108,7 +121,7 @@ Hitch reader 使用既有公开读取接口，无需修改 Hitch 核心。目标
 ## 跨 run 显式导入
 
 ```python
-from gear.ops import ImportSource
+from gear.core import ImportSource
 
 run = project.refine(
     algorithm=recipe,

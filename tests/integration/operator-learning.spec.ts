@@ -35,7 +35,7 @@ it('runs blind learning through the public Python API, seals effective library f
       python,
       [
         '-c',
-        'import json; from gear.project import Project; from gear.ops import AccessPolicy; from harness2 import BlindLearning; d=Project._describe_algorithm(BlindLearning()); d["access"]=AccessPolicy(exposure="blind", rollout_backend="scored_private", task_order=("sum-01","sum-02")).to_dict(); print(json.dumps(d))',
+        'import json; from gear.project import Project; from gear.core import AccessPolicy; from harness2 import BlindLearning; d=Project._describe_algorithm(BlindLearning()); d["access"]=AccessPolicy(exposure="blind", rollout_backend="scored_private", task_order=("sum-01","sum-02")).to_dict(); print(json.dumps(d))',
       ],
       {
         encoding: 'utf8',

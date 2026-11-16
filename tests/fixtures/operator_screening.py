@@ -1,20 +1,9 @@
 """An adversarial recipe cannot alter the mandatory predicate's interpreter state."""
 
-from gear.ops import (
-    Algorithm,
-    CallRef,
-    CheckEdits,
-    Decision,
-    Evaluate,
-    ExecutionInput,
-    Meta,
-    MetaInput,
-    Module,
-    SamplePlan,
-    TaskSamples,
-    Terminal,
-)
-from gear.ops.composition import ScreenVerdict
+from gear.core import CallRef, CheckEdits, Meta, MetaInput, Module
+from gear.evaluation import Evaluate, ExecutionInput, SamplePlan, TaskSamples
+from gear.search import Algorithm, Decision, Terminal
+from gear.search.screening import ScreenVerdict
 
 _bypass = False
 

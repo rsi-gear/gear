@@ -3,9 +3,9 @@
 from dataclasses import dataclass
 
 from gear.algorithms import AlgorithmState, Decision, Operation
-from gear.ops import Module
-from gear.ops import Algorithm, MetaInput, Terminal
-from gear.ops import Decision as OperatorDecision
+from gear.core import MetaInput, Module
+from gear.search import Algorithm, Terminal
+from gear.search import Decision as OperatorDecision
 
 
 @dataclass(frozen=True)

@@ -1,6 +1,6 @@
 """Stable algorithm author API. Every recipe uses the same replaceable contracts."""
 
-from .contracts import (
+from gear.search.contracts_v1 import (
     AlgorithmState,
     Budget,
     Candidate,
@@ -30,8 +30,9 @@ from .contracts import (
     Task,
     TaskSampler,
 )
+from gear.search.random import DeterministicRandom
+
 from .gepa import GEPA
-from .random import DeterministicRandom
 from .random_search import RandomSearch
 
 __all__ = [

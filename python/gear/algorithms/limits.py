@@ -1,3 +1,3 @@
-"""Generated decision bounds from contracts/algorithm-v1.schema.json."""
+"""Compatibility imports; use the capability packages for new code."""
 
-MAX_DECISION_OPERATIONS = 64
+from gear.search.limits import MAX_DECISION_OPERATIONS as MAX_DECISION_OPERATIONS

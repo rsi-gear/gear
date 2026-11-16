@@ -7,7 +7,7 @@ import hashlib
 from typing import Any
 
 from gear.canonical import digest
-from gear.ops.base import describe_module, entrypoint
+from gear.core.base import describe_module, entrypoint
 
 
 def bind_resources(algorithm: object, resources: list[dict[str, Any]]) -> None:

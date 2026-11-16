@@ -1,14 +1,15 @@
 # Customize an algorithm in Python
 
-The author API is `gear.algorithms`. GEPA and RandomSearch share six contracts:
-parents, sampling, proposal, ranking, stopping and stage composition. GEPA is
-an instance of these common module contracts.
+Complete algorithms are available in `gear.algorithms`. Reusable strategies live in
+`gear.search`: parents, sampling, proposal, ranking, stopping and workflow.
+GEPA and RandomSearch compose these shared capabilities. Other operations are
+available from `core`, `evaluation`, `memory` and `training`.
 
 Replace its parent policy with a named function:
 
 ```python
 # my_policy.py
-from gear.algorithms import ParentInput, ParentPlan, RandomSource
+from gear.search.parents import ParentInput, ParentPlan, RandomSource
 
 
 def select_parent(view: ParentInput, rng: RandomSource) -> ParentPlan:
