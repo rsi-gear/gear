@@ -15,7 +15,13 @@ MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 DEFINITIONS = json.loads(Path(__file__).with_name("algorithm-v1.schema.json").read_text())["$defs"]
 
 
-def validate(name: str, value: JSON) -> None:
+def validate(name: str, value: JSON, *, version: int = 1) -> None:
+    if version == 2:
+        from gear.ops.wire import validate_v2
+        validate_v2(name, value)
+        return
+    if version != 1:
+        raise ValueError("unsupported algorithm protocol version")
     def check(schema, item, location):
         if "$ref" in schema:
             check(DEFINITIONS[schema["$ref"].split("/")[-1]], item, location)

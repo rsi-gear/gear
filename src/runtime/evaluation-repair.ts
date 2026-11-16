@@ -30,6 +30,10 @@ export function validateRepairReservation(journal: RunJournal, operation: Journa
     request.partition !== previous.request.partition ||
     request.repetitions !== previous.request.repetitions ||
     canonicalDigest(request.metrics ?? null) !== canonicalDigest(previous.request.metrics ?? null) ||
+    canonicalDigest(request.operatorSamples ?? null) !==
+      canonicalDigest(previous.request.operatorSamples ?? null) ||
+    canonicalDigest(request.executionTarget ?? null) !==
+      canonicalDigest(previous.request.executionTarget ?? null) ||
     request.evidence.length !== 0 ||
     canonicalDigest(request.operation) !== canonicalDigest(expected) ||
     canonicalDigest(request.slots) !== canonicalDigest(slots) ||
@@ -66,6 +70,8 @@ export function reserveRepairs(
     if (
       previous.status !== 'complete' ||
       previous.request.operation.kind !== 'evaluate_seed' ||
+      // Private verifier failures must not change optimizer-visible execution counts or output selection.
+      previous.request.operatorSamples?.exposure === 'blind' ||
       previous.repairBlocked ||
       superseded.has(previous.request.operationId)
     )
@@ -121,7 +127,14 @@ export function mergeEvaluationEvidence(
   cells: Evidence[],
 ): Evidence[] {
   const request = operation.request
-  const destination = request.partition === 'seed' ? journal.seedEvidence : journal.heldOutEvidence
+  const destination = request.operatorSamples
+    ? request.repair
+      ? (journal.operations.find((item) => item.request.operationId === request.repair!.previousOperationId)
+          ?.receipt?.evidence ?? [])
+      : []
+    : request.partition === 'seed'
+      ? journal.seedEvidence
+      : journal.heldOutEvidence
   const next = [...destination]
   const previous = request.repair
     ? journal.operations.find((item) => item.request.operationId === request.repair!.previousOperationId)

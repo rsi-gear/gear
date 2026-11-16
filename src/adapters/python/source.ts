@@ -7,10 +7,18 @@ import { GearError } from '../../domain/errors.js'
 import type { Json } from '../../domain/algorithm-wire.js'
 
 const framework = fileURLToPath(new URL('../../../python/gear/', import.meta.url))
+export interface AlgorithmResource {
+  entrypoint: string
+  name: string
+  path: string
+  digest: string
+  content_base64: string
+}
 export async function freezeAlgorithmSource(
   destination: string,
   sources: Array<{ path: string; source: string }> = [],
   dependencies: Json[] = [],
+  resources: AlgorithmResource[] = [],
 ): Promise<string> {
   await mkdir(destination, { recursive: true, mode: 0o700 })
   const files: Array<{ path: string; digest: string }> = []
@@ -39,8 +47,47 @@ export async function freezeAlgorithmSource(
   await put('gear/__init__.py', Buffer.from('"""Frozen algorithm worker package."""\n'))
   await put('gear/canonical.py', await readFile(join(framework, 'canonical.py')))
   await walk(join(framework, 'algorithms'))
+  await walk(join(framework, 'ops'))
   await walk(join(framework, 'refine'))
   await put('dependencies.json', Buffer.from(JSON.stringify(dependencies)))
+  if (resources.length) {
+    const seen = new Set<string>()
+    let resourceBytes = 0
+    const frozen = resources.map((resource) => {
+      if (
+        Object.keys(resource).sort().join(',') !== 'content_base64,digest,entrypoint,name,path' ||
+        Object.values(resource).some((value) => typeof value !== 'string')
+      )
+        throw new GearError('algorithm-resource-invalid', 'Invalid frozen resource fields')
+      const bytes = Buffer.from(resource.content_base64, 'base64')
+      resourceBytes += bytes.length
+      const key = canonicalDigest([resource.entrypoint, resource.name, resource.path])
+      if (
+        seen.has(key) ||
+        bytes.length > 1024 * 1024 ||
+        resourceBytes > 8 * 1024 * 1024 ||
+        resources.length > 1024 ||
+        bytes.toString('base64') !== resource.content_base64 ||
+        `sha256:${createHash('sha256').update(bytes).digest('hex')}` !== resource.digest
+      )
+        throw new GearError(
+          'algorithm-resource-invalid',
+          'Duplicate, oversized or mismatched frozen resource',
+        )
+      seen.add(key)
+      return {
+        entrypoint: resource.entrypoint,
+        name: resource.name,
+        path: resource.path,
+        digest: resource.digest,
+        content_base64: resource.content_base64,
+      }
+    })
+    frozen.sort((left, right) =>
+      Buffer.compare(Buffer.from(canonicalDigest(left)), Buffer.from(canonicalDigest(right))),
+    )
+    await put('resources.json', Buffer.from(JSON.stringify(frozen)))
+  }
   for (const source of sources) {
     if (
       isAbsolute(source.path) ||

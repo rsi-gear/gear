@@ -4,6 +4,7 @@ import { canonicalDigest } from '../../domain/canonical.js'
 import { GearError } from '../../domain/errors.js'
 import type { JournalOperation, RunJournal, RunSpec } from '../../domain/run.js'
 import type { Candidate } from '../../domain/algorithm-wire.js'
+import type { CapturedImports } from '../../domain/operator-run.js'
 import { publishFile } from './atomic.js'
 import { withFileLock } from './file-lock.js'
 import { ResearchStore } from './research.js'
@@ -18,7 +19,12 @@ export class RunStore {
     this.path(id)
     return new ResearchStore(join(this.root, 'runs', id, 'research'))
   }
-  async create(id: string, spec: RunSpec, operations: JournalOperation[] = []): Promise<RunJournal> {
+  async create(
+    id: string,
+    spec: RunSpec,
+    operations: JournalOperation[] = [],
+    imports?: CapturedImports,
+  ): Promise<RunJournal> {
     const record: Omit<RunJournal, 'digest'> = {
       version: 1,
       id,
@@ -30,7 +36,7 @@ export class RunStore {
       state: { version: 1, data: {} },
       decisions: [],
       operations: structuredClone(operations),
-      candidates: [spec.anchor],
+      candidates: [spec.anchor, ...(imports?.candidates.map((entry) => entry.candidate) ?? [])],
       seedEvidence: structuredClone(spec.baseline?.evidence ?? []),
       heldOutEvidence: [],
       completed: [],
@@ -38,6 +44,28 @@ export class RunStore {
       championId: spec.anchor.id,
       gate: { status: 'not_run', reason: 'No nominee' },
       physicalAttempts: 0,
+      ...(spec.algorithm.protocol_version === 2
+        ? {
+            operators: {
+              version: 2 as const,
+              state: { version: Number(spec.algorithm.component?.state_schema_version), data: {} },
+              decisions: [],
+              calls: [],
+              samples: [],
+              artifacts: structuredClone(imports?.artifacts ?? []),
+              history: null,
+              ...(spec.operatorPolicy?.access?.task_order
+                ? {
+                    stream: {
+                      revision: canonicalDigest([id, 'task-stream', spec.operatorPolicy.access.task_order]),
+                      index: 0,
+                      completed: [],
+                    },
+                  }
+                : {}),
+            },
+          }
+        : {}),
     }
     const journal = { ...record, digest: canonicalDigest(record) }
     await this.researchStore(id).capture(journal)

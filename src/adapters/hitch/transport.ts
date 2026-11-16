@@ -99,9 +99,13 @@ function invokeHitchJson(
     signal.addEventListener('abort', stop, { once: true })
     child.on('error', reject)
     child.stderr.on('data', (chunk: Buffer) => {
-      // Retain only a bounded structured error for the host-probe busy code.
+      // Retain only bounded structured errors for these read-only namespaces.
       // Raw diagnostics and their messages never enter Meta errors.
-      if (args[0] !== 'worker' || args[1] !== 'observe') return
+      if (!(
+        (args[0] === 'worker' && args[1] === 'observe') ||
+        (args[0] === 'runs' && args[1] === 'artifacts' && args[2] === 'list')
+      ))
+        return
       diagnosticBytes += chunk.length
       if (diagnosticBytes <= 8192) diagnostics.push(chunk)
     })
@@ -115,6 +119,32 @@ function invokeHitchJson(
       clearTimeout(force)
       signal.removeEventListener('abort', stop)
       if (code !== 0 || stopped) {
+        if (
+          !stopped &&
+          args[0] === 'runs' &&
+          args[1] === 'artifacts' &&
+          args[2] === 'list' &&
+          diagnosticBytes <= 8192
+        ) {
+          try {
+            const value = JSON.parse(Buffer.concat(diagnostics).toString('utf8'))
+            if (
+              value.schema_version === '1' &&
+              value.kind === 'error' &&
+              value.error?.code === 'output_artifacts_unavailable'
+            ) {
+              reject(
+                new GearError(
+                  'hitch-output-unavailable',
+                  'This execution has no declared output artifact namespace',
+                ),
+              )
+              return
+            }
+          } catch {
+            /* Other failures remain unknown and must be retried as reads. */
+          }
+        }
         if (code === 12 && !stopped && diagnosticBytes <= 8192) {
           try {
             const value = JSON.parse(Buffer.concat(diagnostics).toString('utf8'))

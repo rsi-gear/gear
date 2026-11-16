@@ -51,6 +51,40 @@ export function runReport(journal: RunJournal) {
     retained: journal.championId,
     nominee: journal.nomineeId,
     gate: journal.gate,
+    ...(journal.operators
+      ? {
+          operators: {
+            protocol_version: 2,
+            exposure: journal.spec.operatorPolicy?.access?.exposure ?? 'scored',
+            outcome: journal.operators.decisions.at(-1)?.decision.terminal?.outcome ?? null,
+            samples: journal.operators.samples.map((sample) => ({
+              sample_id: sample.id,
+              plan_id: sample.planId,
+              candidate_id: sample.candidateId,
+              task_id: sample.taskId,
+              slot: sample.slot,
+              execution_identity: sample.executionIdentity,
+            })),
+            calls: journal.operators.calls.map((call) => ({
+              id: call.id,
+              key: call.call.key,
+              effect: call.call.effect.kind,
+              status: call.result?.status ?? call.status,
+            })),
+            internal_selections: journal.operators.decisions.flatMap((entry) =>
+              entry.decision.records
+                .filter((record) => record.kind === 'internally_selected')
+                .map((record) => ({ provenance: 'author', record })),
+            ),
+            library_publications: journal.operators.calls
+              .filter(
+                (call) => call.call.effect.kind === 'library' && call.call.effect.input.mode === 'publish',
+              )
+              .map((call) => ({ call_id: call.id, result: call.result ?? null })),
+            task_stream: journal.operators.stream ?? null,
+          },
+        }
+      : {}),
     lineage: journal.spec.lineage,
     ...(journal.spec.kind === 'refine' ? { plan: runPlan(journal.spec, journal.id) } : {}),
     baseline_reuse: journal.spec.baseline

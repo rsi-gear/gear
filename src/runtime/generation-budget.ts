@@ -128,14 +128,27 @@ export function validateGenerationReservations(journal: RunJournal, extra: Journ
     )
       throw new GearError('invalid-generation-reservation', 'Invalid generation allowance')
     for (const metric of generationMetrics) {
-      const required = policy.total[metric] !== undefined || policy.perOperation[metric] !== undefined
+      const effect = operation.request.operatorCall?.effect
+      const callMaximum =
+        metric === 'tokens' && effect && 'max_tokens' in effect.input
+          ? (effect.input.max_tokens ?? undefined)
+          : undefined
+      const required =
+        policy.total[metric] !== undefined ||
+        policy.perOperation[metric] !== undefined ||
+        callMaximum !== undefined
       const value = limits?.[metric]
       if (
         !required
           ? value !== undefined
           : !counter(value) ||
             value < 1 ||
-            value > Math.min(policy.total[metric] ?? Infinity, policy.perOperation[metric] ?? Infinity)
+            value >
+              Math.min(
+                policy.total[metric] ?? Infinity,
+                policy.perOperation[metric] ?? Infinity,
+                callMaximum ?? Infinity,
+              )
       )
         throw new GearError(
           'invalid-generation-reservation',

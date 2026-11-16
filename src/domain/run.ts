@@ -11,6 +11,10 @@ import type {
 export interface AlgorithmConfig {
   name: string
   options: Record<string, Json>
+  /** Recursive author component tree. Older frozen runs retain name/options only. */
+  component?: Record<string, Json>
+  protocol_version?: 1 | 2
+  requirements?: string[]
 }
 import type {
   OperationReceipt,
@@ -24,6 +28,8 @@ import type { EvaluationRepairPolicy } from './evaluation.js'
 import type { GenerationBudget } from './generation-budget.js'
 import type { BaselineReuse } from './baseline.js'
 import type { ArtifactReaderDescriptor } from './trajectory.js'
+import type { OperatorJournal, OperatorPolicy } from './operator-run.js'
+import type * as V2 from './algorithm-wire-v2.js'
 
 export interface RunSpec {
   version: 1
@@ -55,6 +61,7 @@ export interface RunSpec {
   objectiveIdentity?: string
   evaluationRepair: EvaluationRepairPolicy
   generationBudget: GenerationBudget
+  operatorPolicy?: OperatorPolicy
 }
 export interface JournalOperation {
   request: OperationRequest
@@ -98,10 +105,17 @@ export interface RunJournal {
   championId: string
   gate: { status: 'accepted' | 'rejected' | 'incomplete' | 'not_run'; reason: string }
   physicalAttempts: number
+  operators?: OperatorJournal
   failure?: { code: string; message: string; retryable: boolean }
   digest: string
 }
 export interface AlgorithmDriver {
+  stepV2?(
+    view: V2.SearchView,
+    state: V2.AlgorithmState,
+    algorithm: AlgorithmConfig,
+    signal: AbortSignal,
+  ): Promise<V2.Decision>
   step(
     view: SearchView,
     state: AlgorithmState,

@@ -4,6 +4,7 @@ import { isAbsolute, join, relative } from 'node:path'
 import { SandboxManager } from '@anthropic-ai/sandbox-runtime'
 import { createAirGappedSandboxConfig, sandboxSystemReadPaths } from '../../sandbox.js'
 import { GearError } from '../../domain/errors.js'
+import { materialPath } from '../../domain/material-path.js'
 import { snapshotTarget, targetResources } from '../storage/targets.js'
 import { DshHarnessAdapter } from '../dsh/harness.js'
 import { PiHarnessAdapter } from '../pi/harness.js'
@@ -53,10 +54,37 @@ export async function prepareSandbox(
     const experience = await stageExperience(job, root, (dispose) => {
       resources.dispose = dispose
     })
+    const sourceRoot = join(root, 'sources')
+    const sources: Json[] = []
+    if (request.operatorCall) {
+      await mkdir(sourceRoot, { mode: 0o700 })
+      let bytes = 0
+      for (const [index, material] of request.operatorCall.materials.entries()) {
+        const path = join(sourceRoot, String(index))
+        await mkdir(path, { mode: 0o700 })
+        if (material.files) {
+          for (const [name, file] of Object.entries(material.files)) {
+            materialPath(name)
+            const content = Buffer.from(file.content, 'base64')
+            bytes += content.length
+            if (bytes > 8 * 1024 * 1024 || content.toString('base64') !== file.content)
+              throw new GearError('codex-source-size', 'Invalid or oversized source material')
+            await mkdir(join(path, name, '..'), { recursive: true, mode: 0o700 })
+            await writeFile(join(path, name), content, { flag: 'wx', mode: file.executable ? 0o500 : 0o400 })
+          }
+        } else {
+          const content = JSON.stringify(material.value)
+          bytes += Buffer.byteLength(content)
+          if (bytes > 8 * 1024 * 1024) throw new GearError('codex-source-size', 'Oversized source material')
+          await writeFile(join(path, 'value.json'), content, { flag: 'wx', mode: 0o400 })
+        }
+        sources.push({ ref: material.ref, path: `../sources/${index}` })
+      }
+    }
     // Scope authorization remains in the executor; Python owns the Meta task's
     // input presentation, instructions and result format.
     const meta = builtinPolicy<{ input: Json; schema: Json; prompt: string }>(
-      'meta_prepare',
+      request.operatorCall ? 'operator_meta_prepare' : 'meta_prepare',
       {
         operation: request.operation,
         tasks: context.tasks
@@ -66,6 +94,7 @@ export async function prepareSandbox(
         harness: adapter.describe(),
         mutationPolicy: adapter.mutationPolicy,
         experience: experience.input,
+        ...(request.operatorCall ? { operator_call: request.operatorCall, sources } : {}),
       },
       context.experiencePython,
     )
@@ -90,6 +119,7 @@ export async function prepareSandbox(
       candidate,
       output,
       home,
+      ...(request.operatorCall ? [sourceRoot] : []),
     ]
     for (const protectedPath of [
       ...context.protectedPaths,

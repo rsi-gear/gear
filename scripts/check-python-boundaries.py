@@ -15,7 +15,7 @@ for path in root.rglob('*.py'):
                 failures.append(f'{relative}: imports retired package {module}')
             if module.split('.')[0] in {'tests', 'retired_policies'} or module.startswith('gear.algorithms._retired'):
                 failures.append(f'{relative}: production imports historical test policies {module}')
-            if relative.parts[0] == 'algorithms' and module.split('.')[0] in {'os', 'pathlib', 'subprocess', 'socket', 'requests', 'httpx', 'urllib'}:
+            if relative.parts[0] in {'algorithms', 'ops'} and module.split('.')[0] in {'os', 'pathlib', 'subprocess', 'socket', 'requests', 'httpx', 'urllib'}:
                 failures.append(f'{relative}: pure algorithm imports {module}')
             if relative.parts[0] == 'training' and 'cli' not in relative.parts and module == 'argparse':
                 failures.append(f'{relative}: command-line parsing belongs in training/cli')

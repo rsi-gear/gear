@@ -180,8 +180,12 @@ export async function executeJob(
       let result: Record<string, Json>
       try {
         result = builtinPolicy<Record<string, Json>>(
-          'meta_result',
-          { operation, result: JSON.parse(await readFile(resultPath, 'utf8')) },
+          request.operatorCall ? 'operator_meta_result' : 'meta_result',
+          {
+            operation,
+            result: JSON.parse(await readFile(resultPath, 'utf8')),
+            ...(request.operatorCall ? { operator_call: request.operatorCall } : {}),
+          },
           context.experiencePython,
         )
       } catch (error) {

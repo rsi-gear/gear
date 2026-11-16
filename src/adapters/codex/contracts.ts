@@ -58,6 +58,7 @@ export const capabilities: ProviderCapabilities = {
   evidenceProjection: false,
   hardDollarBudget: false,
   generationBudget: false,
+  operatorMeta: true,
 }
 export function configuration(input: unknown): CodexConfiguration {
   const value = input as CodexConfiguration
@@ -158,6 +159,26 @@ export function validateInput(input: unknown): CodexInput {
   )
     throw new GearError('codex-request-invalid', 'Meta accepts only bound seed operations')
   validateAlgorithmWire('Operation', request.operation)
+  if (request.operatorCall) {
+    if (request.operatorCall.version !== 2)
+      throw new GearError('codex-operator-version', 'Expected v2 Meta binding')
+    validateAlgorithmWire('EffectRequest', request.operatorCall.effect, 2)
+    const effect = request.operatorCall.effect
+    if (effect.kind !== 'meta' && (effect.kind !== 'candidate' || effect.input.mode !== 'model'))
+      throw new GearError('codex-operator-effect', 'Codex only executes model effects')
+    const input = effect.input
+    if ('max_tokens' in input && input.max_tokens !== null)
+      throw new GearError(
+        'generation-budget-unsupported',
+        'Codex CLI cannot enforce aggregate per-call token limits',
+      )
+    if (
+      request.operation.kind !== (effect.kind === 'meta' ? 'diagnose_seed' : 'generate_candidate') ||
+      !('task_ids' in input) ||
+      JSON.stringify(request.operation.task_ids) !== JSON.stringify(input.task_ids)
+    )
+      throw new GearError('codex-operator-binding', 'Meta binding differs from its operation')
+  }
   const operation = request.operation
   if (
     !['diagnose_seed', 'generate_candidate'].includes(operation.kind) ||

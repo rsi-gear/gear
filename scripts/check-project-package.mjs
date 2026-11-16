@@ -32,6 +32,16 @@ try {
   run(isolatedPython, ['-m', 'pip', 'install', join(wheels, readdirSync(wheels).find(name => name.endsWith('.whl')))])
   run(isolatedPython, ['-c', 'import sys;import gear;import gear.training;import gear.benchmark.probe;import importlib;import importlib.util;assert all(importlib.util.find_spec(name) is None for name in ("gear_training","gear.training.cli.launch","gear.training.cli.__main__","gear.training.cli.inference","gear.training.inference.inference_process","gear.training.inference.inference_attach","gear.training.inference.inference_recovery","gear.algorithms.history","gear.algorithms.gates","gear.algorithms.observations","gear.algorithms._retired","retired_policies"));[importlib.import_module("gear.training.cli."+name) for name in ("controller","job","node","script_job","certify","slime","gpu_inventory")];assert not any(n in sys.modules for n in ("torch","slime","transformers","aiohttp"));from gear.algorithms import GEPA;from gear.algorithms.testkit import toy_round;assert toy_round(GEPA())["status"] == "passed"'], { cwd: root, env: { ...process.env, PYTHONPATH: '' } })
   note('Installed Python terminal errors preserve warning diagnostics and reject log JSON')
+  note('Installed callable operators construct requests and exact edits without Node or Hitch')
+  run(isolatedPython, ['-c', `from gear.ops import ApplyEdits, ApplyInput, EditPlan, FileEdit, FileContent, Meta, MetaInput, CandidateRef, Call, clone
+from gear.ops.testing import check_operator
+from gear.canonical import digest
+value=ApplyInput({}, EditPlan((FileEdit('create', 'prompt.txt', None, FileContent('frozen prompt')),)))
+assert check_operator(ApplyEdits(), value)['status']=='passed'
+meta=Meta('inspect', {'type':'object'})
+call=clone(meta)(MetaInput(CandidateRef('run','anchor',digest('anchor')), ('task',)), key='inspect')
+assert isinstance(call, Call) and call.effect['kind']=='meta'
+`], { cwd: root, env: { ...process.env, PYTHONPATH: '' } })
   run(isolatedPython, ['-c', `from gear import ProjectError
 raw=b'warning'+bytes([10])+b'{"code":"provider-environment-unavailable","message":"unavailable"}'+bytes([10])
 error=ProjectError.from_stderr(raw)
@@ -156,6 +166,18 @@ assert ProjectError("local-error","local").stderr is None
   // Exercise every public policy bridge using the setup selection, with no override.
   env.GEAR_PYTHON = ''
   env.GEAR_TRAINING_TEST_PYTHON = ''
+  note('Installed v2 exact-edit recipe through Python SDK, frozen npm worker and durable executor')
+  const operatorProject = join(root, 'operator-project')
+  gear(root, ['init', operatorProject, '--target', 'pi', '--template', 'text'])
+  cpSync(join(install, 'node_modules/rsi-gear/examples/algorithms/operators/ace.py'), join(operatorProject, 'ace.py'))
+  const operatorRun = JSON.parse(run(isolatedPython, ['-c', 'import json; from gear import Project; from ace import PlaybookUpdate; print(json.dumps(Project.open().refine(algorithm=PlaybookUpdate()).report.summary))'],
+    { cwd: operatorProject, env: { ...env, GEAR_COMMAND: JSON.stringify([process.execPath, cli]) } }))
+  assert.equal(operatorRun.status, 'completed')
+  const operatorJournal = JSON.parse(readFileSync(join(operatorProject, '.gear/runs', operatorRun.run_id, 'journal.json'), 'utf8'))
+  assert.equal(operatorJournal.spec.algorithm.protocol_version, 2)
+  assert.equal(operatorJournal.operators.calls[0].result.status, 'succeeded')
+  assert.equal(operatorJournal.operations.length, 0)
+  assert.equal(gear(operatorProject, ['resume', operatorRun.run_id]).status, 'completed')
   for (const target of ['dsh', 'pi']) {
     note('Installed package journey: ' + target)
     const project = join(root, target)

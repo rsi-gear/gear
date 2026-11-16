@@ -1,4 +1,5 @@
 import { canonicalDigest } from '../domain/canonical.js'
+import { validateAlgorithmWire } from '../domain/algorithm-schema.js'
 import { GearError } from '../domain/errors.js'
 import type { ProjectApplication, EvaluateOptions, RefineOptions } from './project-service.js'
 import { resolveProject } from './project-config.js'
@@ -47,13 +48,82 @@ function positive(value: unknown, label: string): number | undefined {
 }
 
 function refineOptions(input: unknown): RefineOptions {
-  const params = object(input, ['rounds', 'algorithm', 'sources', 'dependencies'])
+  const params = object(input, [
+    'rounds',
+    'algorithm',
+    'sources',
+    'dependencies',
+    'resources',
+    'screening',
+    'access',
+    'imports',
+  ])
+  if (params.imports !== undefined) {
+    if (!Array.isArray(params.imports) || params.imports.length > 128)
+      throw new GearError('invalid-command-params', 'imports must be a bounded list')
+    for (const value of params.imports) {
+      const item = object(value, ['name', 'ref', 'purpose'])
+      string(item.name, 'import.name')
+      if (!['material', 'evidence'].includes(String(item.purpose)))
+        throw new GearError('invalid-command-params', 'Invalid source import purpose')
+      validateAlgorithmWire('SourceRef', item.ref, 2)
+    }
+  }
+  if (params.access !== undefined)
+    object(params.access, ['exposure', 'rollout_backend', 'task_order', 'usage_metrics'])
+  if (params.screening !== undefined) {
+    const policy = object(params.screening, ['critic', 'edit_check', 'predicate'])
+    for (const name of ['critic', 'edit_check', 'predicate'])
+      validateAlgorithmWire('OperatorRef', policy[name], 2)
+  }
   positive(params.rounds, 'rounds')
   if (params.algorithm !== undefined) {
-    const algorithm = object(params.algorithm, ['name', 'options'])
+    const algorithm = object(params.algorithm, [
+      'name',
+      'options',
+      'component',
+      'protocol_version',
+      'requirements',
+    ])
     string(algorithm.name, 'algorithm.name')
+    if (
+      algorithm.protocol_version !== undefined &&
+      algorithm.protocol_version !== 1 &&
+      algorithm.protocol_version !== 2
+    )
+      throw new GearError('invalid-command-params', 'unsupported algorithm protocol version')
+    if (
+      algorithm.requirements !== undefined &&
+      (!Array.isArray(algorithm.requirements) ||
+        algorithm.requirements.some((value) => typeof value !== 'string'))
+    )
+      throw new GearError('invalid-command-params', 'algorithm requirements must contain capability names')
     if (!algorithm.options || typeof algorithm.options !== 'object' || Array.isArray(algorithm.options))
       throw new GearError('invalid-command-params', 'algorithm.options must be an object')
+    if (algorithm.component !== undefined) {
+      const component = object(algorithm.component, [
+        'kind',
+        'entrypoint',
+        'params',
+        'children',
+        'source_dependencies',
+        'package_dependencies',
+        'resources',
+        'state_schema_version',
+      ])
+      if (
+        component.kind !== 'module' ||
+        component.entrypoint !== algorithm.name ||
+        Object.keys(algorithm.options).length
+      )
+        throw new GearError(
+          'invalid-command-params',
+          'component must match algorithm.name and cannot mix legacy options',
+        )
+      validateAlgorithmWire('ModuleSpec', component, 2)
+    }
+    if (algorithm.protocol_version === 2 && algorithm.component === undefined)
+      throw new GearError('invalid-command-params', 'v2 requires a frozen component description')
   }
   if (
     params.sources !== undefined &&
@@ -66,6 +136,21 @@ function refineOptions(input: unknown): RefineOptions {
     throw new GearError('invalid-command-params', 'sources must contain path/source pairs')
   if (params.dependencies !== undefined && !Array.isArray(params.dependencies))
     throw new GearError('invalid-command-params', 'dependencies must be an array')
+  if (
+    params.resources !== undefined &&
+    (!Array.isArray(params.resources) ||
+      params.resources.some((value) => {
+        const resource = object(value, ['entrypoint', 'name', 'path', 'digest', 'content_base64'])
+        return (
+          Object.keys(resource).length !== 5 ||
+          Object.values(resource).some((item) => typeof item !== 'string')
+        )
+      }))
+  )
+    throw new GearError(
+      'invalid-command-params',
+      'resources must contain captured resource bytes and identities',
+    )
   canonicalDigest(params) // Reject non-JSON or non-finite values before durable admission.
   return params as RefineOptions
 }

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import inspect
 import json
 import os
@@ -18,7 +20,11 @@ from .canonical import JSON
 T = TypeVar("T")
 
 if TYPE_CHECKING:
-    from .algorithms import SearchAlgorithm
+    from .algorithms import SearchAlgorithm as LegacySearchAlgorithm
+    from .ops import AccessPolicy, ImportSource, ScreeningPolicy
+    from .ops import SearchAlgorithm as OperatorSearchAlgorithm
+
+    SearchAlgorithm = LegacySearchAlgorithm | OperatorSearchAlgorithm
 
 
 class ProjectError(RuntimeError):
@@ -200,36 +206,116 @@ class Project:
         result = await self._call(args)
         return Run(str(result["run_id"]), Report(result))
 
-    def refine(self, *, algorithm: SearchAlgorithm | None = None, rounds: int = 1) -> Run:
-        return self._sync(self.arefine(algorithm=algorithm, rounds=rounds))
+    def refine(
+        self,
+        *,
+        algorithm: SearchAlgorithm | None = None,
+        rounds: int = 1,
+        screening: ScreeningPolicy | None = None,
+        access: AccessPolicy | None = None,
+        imports: tuple[ImportSource, ...] = (),
+    ) -> Run:
+        return self._sync(
+            self.arefine(
+                algorithm=algorithm,
+                rounds=rounds,
+                screening=screening,
+                access=access,
+                imports=imports,
+            )
+        )
 
     def plan_refine(
-        self, *, algorithm: SearchAlgorithm | None = None, rounds: int = 1
+        self,
+        *,
+        algorithm: SearchAlgorithm | None = None,
+        rounds: int = 1,
+        screening: ScreeningPolicy | None = None,
+        access: AccessPolicy | None = None,
+        imports: tuple[ImportSource, ...] = (),
     ) -> dict[str, JSON]:
         """Inspect scope, verified baseline reuse and limits without creating or executing a run."""
-        return self._sync(self.aplan_refine(algorithm=algorithm, rounds=rounds))
+        return self._sync(
+            self.aplan_refine(
+                algorithm=algorithm,
+                rounds=rounds,
+                screening=screening,
+                access=access,
+                imports=imports,
+            )
+        )
 
     async def aplan_refine(
-        self, *, algorithm: SearchAlgorithm | None = None, rounds: int = 1
+        self,
+        *,
+        algorithm: SearchAlgorithm | None = None,
+        rounds: int = 1,
+        screening: ScreeningPolicy | None = None,
+        access: AccessPolicy | None = None,
+        imports: tuple[ImportSource, ...] = (),
     ) -> dict[str, JSON]:
-        return await self._refine(algorithm=algorithm, rounds=rounds, preview=True)
+        return await self._refine(
+            algorithm=algorithm,
+            rounds=rounds,
+            preview=True,
+            screening=screening,
+            access=access,
+            imports=imports,
+        )
 
-    async def arefine(self, *, algorithm: SearchAlgorithm | None = None, rounds: int = 1) -> Run:
-        result = await self._refine(algorithm=algorithm, rounds=rounds, preview=False)
+    async def arefine(
+        self,
+        *,
+        algorithm: SearchAlgorithm | None = None,
+        rounds: int = 1,
+        screening: ScreeningPolicy | None = None,
+        access: AccessPolicy | None = None,
+        imports: tuple[ImportSource, ...] = (),
+    ) -> Run:
+        result = await self._refine(
+            algorithm=algorithm,
+            rounds=rounds,
+            preview=False,
+            screening=screening,
+            access=access,
+            imports=imports,
+        )
         return Run(str(result["run_id"]), Report(result))
 
     async def _refine(
-        self, *, algorithm: SearchAlgorithm | None, rounds: int, preview: bool
+        self,
+        *,
+        algorithm: SearchAlgorithm | None,
+        rounds: int,
+        preview: bool,
+        screening: ScreeningPolicy | None = None,
+        access: AccessPolicy | None = None,
+        imports: tuple[ImportSource, ...] = (),
     ) -> dict[str, JSON]:
         args = ["refine", "--rounds", str(rounds)]
         if preview:
             args.append("--dry-run")
         if algorithm is None:
+            if screening is not None or access is not None or imports:
+                raise ValueError("admission policies require an explicit v2 algorithm")
             result = await self._call(args)
         else:
             with tempfile.TemporaryDirectory(prefix="gear-algorithm-") as directory:
                 path = Path(directory) / "algorithm.json"
-                path.write_text(json.dumps(self._describe_algorithm(algorithm)))
+                description = self._describe_algorithm(algorithm)
+                if screening is not None:
+                    if getattr(algorithm, "protocol_version", 1) != 2:
+                        raise ValueError("screening requires an explicit v2 algorithm")
+                    description["screening"] = screening.to_dict()
+                if access is not None:
+                    if getattr(algorithm, "protocol_version", 1) != 2:
+                        raise ValueError("access requires an explicit v2 algorithm")
+                    description["access"] = access.to_dict()
+                if imports:
+                    if getattr(algorithm, "protocol_version", 1) != 2:
+                        raise ValueError("imports require an explicit v2 algorithm")
+                    description["imports"] = [item.to_dict() for item in imports]
+                path.write_text(json.dumps(description))
                 result = await self._call(args + ["--algorithm-config", str(path)])
         return result
 
@@ -435,6 +521,7 @@ class Project:
     @staticmethod
     def _describe_algorithm(algorithm: SearchAlgorithm) -> dict[str, JSON]:
         from .algorithms import GEPA, RandomSearch
+        from .ops.base import Module, ModuleSpec, describe_module, entrypoint, required_capabilities
         from .refine.protocol import validate
 
         name = (
@@ -447,8 +534,19 @@ class Project:
         options: dict[str, JSON] = {}
         sources: dict[str, JSON] = {}
         dependencies: set[str] = set()
+        resources: dict[tuple[str, str, str], dict[str, JSON]] = {}
+        resource_bytes = 0
+
+        def add_source(relative: str, path: Path) -> None:
+            description: dict[str, JSON] = {"path": relative, "source": str(path.resolve())}
+            if relative in sources and sources[relative] != description:
+                raise ProjectError(
+                    "algorithm-source-conflict", "Conflicting sources for " + relative
+                )
+            sources[relative] = description
 
         def declared_dependencies(value: object) -> None:
+            nonlocal resource_bytes
             for dependency in getattr(value, "package_dependencies", ()):
                 if not isinstance(dependency, str) or not dependency:
                     raise ProjectError(
@@ -460,10 +558,52 @@ class Project:
                 relative = module.replace(".", "/") + (
                     "/__init__.py" if Path(path).name == "__init__.py" else ".py"
                 )
-                sources[relative] = {"path": relative, "source": str(Path(path).resolve())}
+                add_source(relative, Path(path))
+            for resource_name, resource_path in getattr(value, "source_resources", ()):
+                key = (entrypoint(value), resource_name, resource_path)
+                if key in resources:
+                    continue
+                path = Path(resource_path)
+                if not path.is_absolute():
+                    owner = (
+                        value
+                        if inspect.isfunction(value) or inspect.isclass(value)
+                        else type(value)
+                    )
+                    source_file = inspect.getsourcefile(owner)
+                    if source_file is None:
+                        raise ProjectError(
+                            "algorithm-resource-invalid", "Resource owner has no source file"
+                        )
+                    path = Path(source_file).parent / path
+                if not path.is_file() or path.is_symlink() or path.stat().st_size > 1024 * 1024:
+                    raise ProjectError(
+                        "algorithm-resource-invalid",
+                        "Resources must be regular files of at most 1 MiB",
+                    )
+                with path.open("rb") as stream:
+                    content = stream.read(1024 * 1024 + 1)
+                resource_bytes += len(content)
+                if (
+                    len(content) > 1024 * 1024
+                    or resource_bytes > 8 * 1024 * 1024
+                    or len(resources) >= 1024
+                ):
+                    raise ProjectError(
+                        "algorithm-resource-limit",
+                        "Declared resources exceed frozen package bounds",
+                    )
+                resources[key] = {
+                    "entrypoint": key[0],
+                    "name": resource_name,
+                    "path": resource_path,
+                    "digest": "sha256:" + hashlib.sha256(content).hexdigest(),
+                    "content_base64": base64.b64encode(content).decode("ascii"),
+                }
 
         def capture(value: object) -> str:
-            declared_dependencies(value)
+            if inspect.isfunction(value):
+                declared_dependencies(value)
             if not inspect.isfunction(value) and not inspect.isclass(value):
                 raise ProjectError(
                     "algorithm-source-unavailable",
@@ -493,20 +633,54 @@ class Project:
             path = Path(source).resolve()
             parts = module.split(".")
             relative = "/".join(parts) + ("/__init__.py" if path.name == "__init__.py" else ".py")
-            sources[relative] = {"path": relative, "source": str(path)}
+            add_source(relative, path)
             parent = path.parent if path.name != "__init__.py" else path.parent.parent
             for count in range(len(parts) - 1, 0, -1):
                 initializer = parent / "__init__.py"
                 if initializer.is_file():
                     package_path = "/".join(parts[:count]) + "/__init__.py"
-                    sources[package_path] = {
-                        "path": package_path,
-                        "source": str(initializer),
-                    }
+                    add_source(package_path, initializer)
                 parent = parent.parent
             return module + ":" + qualname
 
         capture(type(algorithm))
+        if getattr(algorithm, "protocol_version", 1) not in (1, 2):
+            raise ProjectError(
+                "algorithm-protocol-unsupported", "Only algorithm protocols v1 and v2 are supported"
+            )
+
+        def capture_component(value: object) -> None:
+            declared_dependencies(value)
+            capture(value if inspect.isfunction(value) else type(value))
+
+        # New author modules retain every constructor parameter and every child type.
+        # The legacy built-ins keep their established five-policy description below.
+        if type(algorithm) not in (GEPA, RandomSearch) and (
+            isinstance(algorithm, Module)
+            or is_dataclass(algorithm)
+            or callable(getattr(algorithm, "get_params", None))
+        ):
+            component = describe_module(algorithm, on_component=capture_component).to_dict()
+            from .refine.dependencies import dependency_identity
+
+            return {
+                "algorithm": {
+                    "name": name,
+                    "options": {},
+                    "component": component,
+                    **(
+                        {
+                            "protocol_version": 2,
+                            "requirements": list(required_capabilities(algorithm)),
+                        }
+                        if getattr(algorithm, "protocol_version", 1) == 2
+                        else {}
+                    ),
+                },
+                "sources": list(sources.values()),
+                "dependencies": [dependency_identity(item) for item in sorted(dependencies)],
+                **({"resources": list(resources.values())} if resources else {}),
+            }
         for field in (
             "parent_policy",
             "sampler",
@@ -521,11 +695,20 @@ class Project:
             if inspect.isfunction(value):
                 options[field] = capture(value)
             elif is_dataclass(value) and not isinstance(value, type):
-                configuration = json.loads(json.dumps(asdict(value), allow_nan=False))
-                validate("Json", configuration)
+                policy_spec = describe_module(value, on_component=capture_component)
+                assert isinstance(policy_spec, ModuleSpec)
+                if policy_spec.children:
+                    options[field] = {"component": policy_spec.to_dict()}
+                else:
+                    configuration = json.loads(json.dumps(asdict(value), allow_nan=False))
+                    validate("Json", configuration)
+                    options[field] = {
+                        "entrypoint": capture(type(value)),
+                        "configuration": configuration,
+                    }
+            elif isinstance(value, Module) or callable(getattr(value, "get_params", None)):
                 options[field] = {
-                    "entrypoint": capture(type(value)),
-                    "configuration": configuration,
+                    "component": describe_module(value, on_component=capture_component).to_dict()
                 }
             else:
                 raise ProjectError(
@@ -553,4 +736,5 @@ class Project:
             "algorithm": {"name": name, "options": options},
             "sources": list(sources.values()),
             "dependencies": [dependency_identity(name) for name in sorted(dependencies)],
+            **({"resources": list(resources.values())} if resources else {}),
         }

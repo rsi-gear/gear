@@ -102,6 +102,24 @@ if sys.platform=='darwin':
  assert 'BEGIN CERTIFICATE' in Path(os.environ['CODEX_CA_CERTIFICATE']).read_text()
 view=json.loads(Path('../input.json').read_text())
 prompt=sys.stdin.read()
+if ${JSON.stringify(mode)}=='operator':
+ assert view['request']['prompt']=='Choose between the frozen donor materials'
+ assert len(view['sources'])==2
+ left,right=[Path(source['path'])/'prompt.md' for source in view['sources']]
+ assert left.read_text()=='donor one' and right.read_text()=='donor two'
+ for source in [left,right,Path('AGENTS.md')]:
+  try:
+   source.write_text('forbidden edit')
+   raise AssertionError('READ_ONLY_MATERIAL_WAS_WRITABLE')
+  except (PermissionError,FileNotFoundError): pass
+ try:
+  Path(${JSON.stringify(join(privateRoot, 'held-out.json'))}).read_text()
+  raise AssertionError('PRIVATE_FILE_READABLE')
+ except (PermissionError,FileNotFoundError): pass
+ assert json.loads(Path(args[args.index('--output-schema')+1]).read_text())['properties']['data']['required']==['selected']
+ Path(args[args.index('--output-last-message')+1]).write_text(json.dumps({'declined':False,'data':{'selected':'donor two'}}))
+ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':12,'output_tokens':7}}),flush=True)
+ sys.exit(0)
 assert ('Do not edit the candidate.' if view['operation']['kind']=='diagnose_seed' else 'Change only the allowed mutation paths.') in prompt
 assert len(view['tasks'])==1 and view['tasks'][0]['id']=='seed'
 for path in [${JSON.stringify(join(privateRoot, 'held-out.json'))},${JSON.stringify(join(targets, 'anchor', adapter === 'pi' ? 'AGENTS.md' : 'prompts/system.md'))}]:
@@ -286,6 +304,28 @@ async function untilStarted(directory: string) {
   throw new Error('fake Codex did not start')
 }
 describe('formal Codex operation runner', () => {
+  it('executes generic operator Meta with multiple immutable donors and its Python output schema', async () => {
+    const f = await fixture('operator')
+    f.request.operation = { ...f.request.operation, kind: 'diagnose_seed', candidate_id: 'anchor', parent_id: null, payload: null }
+    const donors = ['one', 'two'].map(name => ({ run_id: 'run', kind: 'library', digest: canonicalDigest(name), visibility: 'optimization' as const }))
+    f.request.operatorCall = {
+      version: 2, callId: canonicalDigest('operator-call'),
+      effect: { kind: 'meta', input: {
+        candidate: { run_id: 'run', candidate_id: 'anchor', digest: canonicalDigest('anchor') },
+        sources: donors, task_ids: ['seed'], data: null, max_tokens: null,
+        prompt: 'Choose between the frozen donor materials',
+        schema: { type: 'object', properties: { selected: { type: 'string' } }, required: ['selected'], additionalProperties: false },
+      } },
+      materials: donors.map((ref, index) => ({ ref, files: { 'prompt.md': {
+        content: Buffer.from('donor ' + ['one', 'two'][index]).toString('base64'), encoding: 'base64' as const, executable: false,
+      } } })),
+    }
+    const result = await f.provider.submit(f.request, signal())
+    expect(result.result.status).toBe('complete')
+    expect(result.result.data).toMatchObject({ data: { selected: 'donor two' } })
+    expect(result.usage).toMatchObject({ model_requests: null, tokens: 19 })
+    expect((await f.provider.inspect(f.request, signal())).state).toBe('complete')
+  }, 30_000)
   it.each([
     ['base_candidate_id', false], ['another_algorithm_field', false], ['base_candidate_id', true],
   ] as const)('Python alone defines and validates Meta field %s (invalid=%s)', async (resultKey, invalid) => {

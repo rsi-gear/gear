@@ -57,6 +57,8 @@ export async function configuredProvider(
                   'hitch/transport',
                   'hitch/settings',
                   'hitch/trajectory',
+                  'hitch/operator-artifacts',
+                  'hitch/run-artifacts',
                   'hitch/native-source',
                   `${context.config.target.adapter}/harness`,
                 ].map((name) =>
@@ -178,6 +180,12 @@ export async function configuredProvider(
     },
     ...(evaluation.artifactReader ? { artifactReader: evaluation.artifactReader } : {}),
     evaluationIdentity: evaluation.identity,
+    ...(evaluation.captureExecutions
+      ? { captureExecutions: evaluation.captureExecutions.bind(evaluation) }
+      : {}),
+    ...(evaluation.readExecutionArtifact
+      ? { readExecutionArtifact: evaluation.readExecutionArtifact.bind(evaluation) }
+      : {}),
     timeouts: {
       ...(evaluation.timeouts?.taskRuntime ? { taskRuntime: evaluation.timeouts.taskRuntime } : {}),
       target: evaluation.timeouts?.target ?? null,
@@ -201,6 +209,7 @@ export async function configuredProvider(
       cancel: evaluation.capabilities.cancel && meta.capabilities.cancel,
       hardDollarBudget: evaluation.capabilities.hardDollarBudget && meta.capabilities.hardDollarBudget,
       generationBudget: meta.capabilities.generationBudget,
+      operatorMeta: meta.capabilities.operatorMeta === true,
     },
     completeEvidence: (request, signal) => {
       if (!evaluation.completeEvidence)

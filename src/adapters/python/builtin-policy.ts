@@ -10,6 +10,7 @@ export const builtinPolicySources = Object.freeze(
     'gear/experience.py',
     'gear/experience_store.py',
     'gear/algorithms',
+    'gear/ops',
   ]),
 )
 // Capture only current shipped policies; historical fixtures have their own client.

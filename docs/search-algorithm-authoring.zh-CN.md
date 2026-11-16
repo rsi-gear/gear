@@ -1,10 +1,10 @@
 # Python 算法开发索引
 
-公开入口是 `gear.algorithms`。算法返回决策，TypeScript 运行层验证、持久化并执行这些决策。算法不能直接提交评测、查询 held-out 或更新 champion。
+既有六策略入口是 `gear.algorithms`（v1）；新算法可使用 [`gear.ops` 可组合算子](algorithm-operators.zh-CN.md)（v2）。算法返回决策，TypeScript 运行层验证、持久化并执行这些决策。算法不能直接提交评测、查询 held-out 或更新 champion。
 
 ## 修改位置
 
-每套算法都包含相同的六个文件。GEPA 和 RandomSearch 是公共合同的两个实例，彼此不继承策略实现。
+GEPA 和 RandomSearch 各包含六个策略文件，彼此不继承策略实现。新算法可以按自身组合流程组织目录，无需套用固定六模块。
 
 | 要修改的行为 | 公共合同 | GEPA 实现 | RandomSearch 实现 |
 | --- | --- | --- | --- |

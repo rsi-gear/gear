@@ -23,12 +23,26 @@ def main(request: dict[str, Any] | None = None) -> None:
     from .meta import parse_meta_result, prepare_meta
     from .model_training import offline_window, training_decide, training_dev_gate, training_pair
     from .objective import aggregate_metrics, extract_metrics, score_projection
+    from .operator_effects import (
+        operator_edits,
+        operator_evidence,
+        operator_history,
+        operator_meta_prepare,
+        operator_meta_result,
+        operator_schema,
+    )
     from .projection import compare_candidates, project_candidate
     from .research import project_research
     from .trajectory import trajectory_page, trajectory_query
     from .verifier import bind_verifier_channels, project_verifier, verifier_feedback
 
     operations = {
+        "operator_schema": operator_schema,
+        "operator_edits": operator_edits,
+        "operator_meta_prepare": operator_meta_prepare,
+        "operator_meta_result": operator_meta_result,
+        "operator_history": operator_history,
+        "operator_evidence": operator_evidence,
         "meta_prepare": prepare_meta,
         "meta_result": parse_meta_result,
         "assertions_extract": extract_assertions,
