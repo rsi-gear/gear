@@ -35,3 +35,11 @@ export { listProfiles, saveProfile, selectDefaultProfile, type Profile, type Pro
 
 export { prepareBenchmarkImport, applyBenchmarkImport, type BenchmarkImportOptions } from './application/benchmark-import.js'
 export { probeBenchmark, type BenchmarkProbeOptions } from './application/benchmark-probe.js'
+
+export {
+  parseRunOutputManifest,
+  parseRunOutputExport,
+  type RunOutputManifest,
+  type RunOutputIdentity,
+  type RunOutputExport,
+} from './adapters/hitch/run-artifacts.js'

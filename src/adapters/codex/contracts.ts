@@ -20,7 +20,7 @@ export interface CodexConfiguration {
   allowedDomains: string[]
   timeoutMs: number
   authHome?: string
-  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   linuxIsolation?: 'seccomp' | 'bubblewrap-only'
 }
 export interface CodexContext {
@@ -92,7 +92,7 @@ export function configuration(input: unknown): CodexConfiguration {
     (value.authHome !== undefined && (typeof value.authHome !== 'string' || !isAbsolute(value.authHome))) ||
     (value.linuxIsolation !== undefined && !['seccomp', 'bubblewrap-only'].includes(value.linuxIsolation)) ||
     (value.reasoningEffort !== undefined &&
-      !['minimal', 'low', 'medium', 'high', 'xhigh'].includes(value.reasoningEffort))
+      !['minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(value.reasoningEffort))
   )
     throw new GearError(
       'invalid-codex-profile',

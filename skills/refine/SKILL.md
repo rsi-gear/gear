@@ -9,6 +9,12 @@ Use Gear as the authority for project state, sealed candidates, evaluation,
 algorithm decisions, budgets, and champion acceptance. You operate the project;
 its configured Meta and Target profiles execute separate managed jobs.
 
+For MLE-bench tasks, also read
+[the MLE-bench task workflow](references/mle-bench.md).
+Use the native Harbor/Hitch task path. Each seed slot is one complete task execution,
+including final training and prediction. Configure repetitions and budgets through the
+ordinary Project API; Python algorithms own harness comparison and promotion.
+
 ## Connect
 
 Use the native `refine_request` tool when available. It calls the same application

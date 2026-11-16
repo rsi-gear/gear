@@ -270,3 +270,21 @@ it('derives native child-session resource use with frozen sources, caches comple
   await writeFile(join(runRoot, 'modification-use', cached), '{}')
   await expect(experience.capture(journal)).rejects.toMatchObject({ code: 'modification-observation-changed' })
 })
+
+it('exposes every research child trajectory in an authorized seed cell without duplicating references', async () => {
+  const { journal, runRoot } = await fixture()
+  journal.spec.artifactReader = { format: 'test', implementation_identity: canonicalDigest('reader'), configuration: {} }
+  const evaluation = journal.operations[1]!
+  const artifacts = Array.from({ length: 5 }, (_, i) => ({ kind: 'trajectory' as const, format: 'test',
+    task_id: 'seed', repetition: 0, status: 'available' as const, content_digest: canonicalDigest(['trace', i]),
+    locator: { run_id: `child-${i}` }, reason: null }))
+  evaluation.receipt!.artifacts = [...artifacts, artifacts[0]!, { ...artifacts[0]!, task_id: 'held-out' }]
+  const { SeedTrajectoryArchive } = await import('../../src/application/trajectory.js')
+  const archive = new SeedTrajectoryArchive(runRoot, journal)
+  const refs = await archive.references(['candidate'], ['seed'])
+  expect(refs).toHaveLength(5)
+  expect(new Set(refs.map(r => r.ref)).size).toBe(5)
+  expect(refs.map(r => r.content_digest)).toEqual(artifacts.map(a => a.content_digest))
+  expect(await archive.references(['candidate'], ['seed'])).toEqual(refs)
+  expect(await archive.references(['candidate'], ['held-out'])).toEqual([])
+})

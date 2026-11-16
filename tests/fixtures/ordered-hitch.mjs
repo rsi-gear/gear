@@ -91,7 +91,7 @@ export function runOrderedHitchFixture(runtimeIdentity) {
         harness_ref: option('--harness'), model: option('--model'), environment_binding: option('--environment-binding'), artifact_pins: artifactPins, attempts: Number(option('--attempts')),
         max_concurrent: Number(option('--max-concurrent')), infrastructure_retries: Number(option('--infrastructure-retries')),
         timeout_ms: Number(option('--timeout').replace(/ms$/, '')), setup_timeout_ms: Number(option('--setup-timeout')?.replace(/ms$/, '') ?? 1800000), agent_args: repeated('--agent-arg'), pass_env: repeated('--pass-env') }
-      const job = { eval_id: value.eval_id, dataset: request.dataset, request, controller, artifactId: state.artifactIds?.[state.jobs ?? 0] ?? state.preparedArtifactId, provider: option('--provider'), state: 'succeeded' }
+      const job = { eval_id: value.eval_id, dataset: request.dataset, request, buildMode: option('--build-mode') ?? 'prebuild', controller, artifactId: state.artifactIds?.[state.jobs ?? 0] ?? state.preparedArtifactId, provider: option('--provider'), state: 'succeeded' }
       state.jobsById[value.eval_id] = job; state.job = job; state.jobs = (state.jobs ?? 0) + 1
       if (state.loseSubmitReply) { state.loseSubmitReply = false; fail() }
     }
@@ -102,6 +102,7 @@ export function runOrderedHitchFixture(runtimeIdentity) {
     const artifact = artifactFor(job), runtimeContract = { docker_platform: 'linux/arm64', artifact_platform: artifact.platform, node_version: artifact.node_version }
     const artifacts = { prepared_artifact: artifact, prepared_artifacts: [{ ...artifact, task_ids: ['a'], runtime_contract: runtimeContract }] }
     const inspection = { schema_version: '1', eval_id: job.eval_id, request: job.request, resolution: { identity: runtimeIdentity },
+      submission: { execution: { build: { mode: job.buildMode } } },
       plan: { dataset: job.dataset, candidate: { revision_identity: runtimeIdentity, model: job.request.model,
         harness_id: job.request.harness_ref.split('@')[0], harness_ref: job.request.harness_ref, requested_harness_ref: job.request.harness_ref },
         controller_runtime: { runtime_id: job.controller.runtime_id }, ...structuredClone(artifacts) },

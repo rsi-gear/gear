@@ -9,6 +9,7 @@ import type { Json } from '../domain/algorithm-wire.js'
 import { HitchOperationProvider } from '../adapters/hitch/provider.js'
 import { harnessAdapter } from './harness-adapters.js'
 import { pythonExecutable, pythonJson, pythonSourceRoot } from './python.js'
+import { resourceSdkEnvironment } from '../adapters/hitch/resource-sdk.js'
 import { configuredCancellation } from './cancellation.js'
 
 import { profile, assertProfileRole, processProfile } from './profile-store.js'
@@ -40,6 +41,7 @@ export async function configuredProvider(
                   'hitch/binding',
                   'hitch/preparation',
                   'hitch/sdk',
+                  'hitch/resource-sdk',
                   'process/executable',
                   'hitch/dataset',
                   'python/benchmark-limits',
@@ -75,6 +77,7 @@ export async function configuredProvider(
                   'benchmark/environment.py',
                   'benchmark/manifest.py',
                   'benchmark/manifest_codec.cjs',
+                  'benchmark/resource_codec.cjs',
                   'benchmark/scorers.py',
                   'benchmark/source.py',
                   'benchmark/python_scorer.py',
@@ -85,13 +88,18 @@ export async function configuredProvider(
                 ].map((name) => readFile(join(pythonSourceRoot, 'gear', name), 'utf8')),
               ]),
             ),
-            seal: (destination, taskIds) =>
-              pythonJson(['benchmark', 'seal-harbor'], {
-                benchmark: context.benchmark,
-                destination,
-                task_ids: taskIds,
-              }),
-            compile: (destination, taskIds, baseImage, compileSignal) =>
+            seal: (destination, taskIds, resourceSdk) =>
+              pythonJson(
+                ['benchmark', 'seal-harbor'],
+                {
+                  benchmark: context.benchmark,
+                  destination,
+                  task_ids: taskIds,
+                },
+                undefined,
+                resourceSdk && resourceSdkEnvironment(resourceSdk),
+              ),
+            compile: (destination, taskIds, baseImage, compileSignal, resourceSdk) =>
               pythonJson(
                 ['benchmark', 'harbor', '--output', destination],
                 {
@@ -100,8 +108,9 @@ export async function configuredProvider(
                   base_image: baseImage,
                 },
                 compileSignal,
+                resourceSdk && resourceSdkEnvironment(resourceSdk),
               ),
-            compilePlanning: (destination, taskIds, baseImage, compileSignal) =>
+            compilePlanning: (destination, taskIds, baseImage, compileSignal, resourceSdk) =>
               pythonJson(
                 ['benchmark', 'harbor', '--output', destination],
                 {
@@ -111,6 +120,7 @@ export async function configuredProvider(
                   planning_only: true,
                 },
                 compileSignal,
+                resourceSdk && resourceSdkEnvironment(resourceSdk),
               ),
           },
           signal,

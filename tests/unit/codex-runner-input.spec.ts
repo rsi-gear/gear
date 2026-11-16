@@ -46,6 +46,7 @@ it.each([
       configuration: {
         executable: '/test/codex',
         model: 'test-model',
+        reasoningEffort: 'max',
         allowedDomains: ['chatgpt.com'],
         timeoutMs: 1000,
       },

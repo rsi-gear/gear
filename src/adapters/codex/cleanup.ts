@@ -92,23 +92,19 @@ export async function cleanupCodex(
     ? await bounded(() => (resources.root ? removeOwnedRoot(resources.root) : Promise.resolve()), 1000)
     : 'unconfirmed'
   const stages = { gateway, credentials, sandbox, root }
-  await bounded(
-    () =>
-      publishFile(
-        join(directory, 'cleanup.json'),
-        JSON.stringify({
-          version: 1,
-          input_digest: digest,
-          status: Object.values(stages).every((stage) => stage === 'complete')
-            ? 'graceful'
-            : 'fallback-required',
-          stages,
-          model_stopped: modelStopped,
-          worker_exit: 'required',
-        }),
-        { immutable: true },
-      ),
-    250,
+  // Returning allows the worker to exit and interrupt pending filesystem I/O.
+  // Finish this durable publication; the worker watchdog still bounds shutdown.
+  await publishFile(
+    join(directory, 'cleanup.json'),
+    JSON.stringify({
+      version: 1,
+      input_digest: digest,
+      status: Object.values(stages).every((stage) => stage === 'complete') ? 'graceful' : 'fallback-required',
+      stages,
+      model_stopped: modelStopped,
+      worker_exit: 'required',
+    }),
+    { immutable: true },
   )
 }
 

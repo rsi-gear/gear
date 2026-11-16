@@ -144,7 +144,7 @@ Hitch 可附带可选的探测诊断；Gear 严格校验有界的阶段、结果
 
 还要求 Hitch 提供 `evaluation_environment_binding: "3"` 与 `evaluation_preparation: "1"` 能力；现有 0.2.16 发布版本本身不保证支持。Gear 调用 daemon 的 `eval bind`，将实际驻留环境、模型、变量名、冻结 helper 输出、Harbor Python 内容及受支持的环境引用文件的私有 HMAC 绑定加入运行身份；新准入与 Harbor 启动前由 Hitch 复核，回执必须携带同一绑定。Python 版本不变但依赖文件变化也会使旧绑定失效；正常生成的字节码缓存不会改变身份。标准证书和凭据配置文件自动检查；自定义主机文件变量在 daemon 环境中通过 `HITCH_EVALUATION_FILE_ENV_JSON='["MY_PROVIDER_CONFIG"]'` 声明，使用绝对文件路径。凭据不进入 Gear 项目锁或公开回执，失效时需要准备新运行。当前配套实现与文件范围见[环境文件绑定说明](../../testing/hitch-environment-files.zh-CN.md)。
 
-新建 Hitch profile 显式保存 `maxConcurrent: 4`，与 Hitch 默认值一致；没有该字段的既有 profile 保留并发 1。创建时用 `--max-concurrent N` 请求更高的任务并发，实际接纳仍受 daemon 资源容量约束。接纳结果前会核对实际执行并发与冻结配置一致。并发属于冻结的 provider 身份，修改后须新建运行，不能复用旧身份下的评测证据。
+新建 Hitch profile 显式保存 `maxConcurrent: 4`，与 Hitch 默认值一致；没有该字段的既有 profile 保留并发 1。创建时用 `--max-concurrent N` 设置一次 Gear 评估操作中跨任务与 repetitions 的并发上限；同一任务的多次实验可并行，每次使用独立环境、工作目录和产物。多任务 repetition 会按其最大同时执行任务数占用额度，避免将任务并发与 repetition 并发相乘。实际接纳仍受 daemon 的全局 CPU、内存和容器容量约束；不同操作共享 daemon 总容量。接纳结果前会核对实际执行并发与冻结配置一致。并发属于冻结的 provider 身份，修改后须新建运行，不能复用旧身份下的评测证据。
 
 `--preparation-timeout-ms` 同时控制 artifact 准备/复核、环境绑定及提交准入（其中也会校验 Python 运行时）。`--setup-timeout-ms` 设置 Harbor 的 Agent setup 覆盖值（`agent.override_setup_timeout_sec`），默认 1800000 毫秒。任务环境的构建/启动期限独立使用编译后任务的 `task.config.environment.build_timeout_sec`，未声明时使用 Harbor 默认值；增加 Agent setup 不会延长环境启动期限。Gear 保留任务声明的原生期限，未声明的默认值在冻结任务合同中仍为未知。任务 `timeoutMs` 与 Agent `setupTimeoutMs` 之和须符合 Hitch 的 24 小时限制，完整 24 小时任务应显式设置 Agent setup 为 0。其余时间配置使用正整数毫秒，准备期限须在 Node 定时器范围内。等待整组评测时为每个任务保留 setup 与执行预算，兼容实际 daemon 容量低于请求并发的情况。取消与响应丢失后的恢复保留原评估身份。
 

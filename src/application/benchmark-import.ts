@@ -9,6 +9,7 @@ import { withFileLock } from '../adapters/storage/file-lock.js'
 import { resolveProject } from './project-config.js'
 import { pinImage } from './profile-service.js'
 import { pythonJson } from './python.js'
+import { benchmarkSdkEnvironment } from './benchmark-sdk.js'
 import { benchmarkLimits } from '../adapters/python/benchmark-limits.js'
 
 interface ImportFile {
@@ -130,22 +131,33 @@ function validate(prepared: PreparedImport): void {
     throw new GearError('import-plan-invalid', 'Imported files and directories must not overlap')
 }
 export async function prepareBenchmarkImport(root: string, options: BenchmarkImportOptions) {
-  await resolveProject(root)
+  const { config } = await resolveProject(root)
+  const resourceEnvironment = await benchmarkSdkEnvironment(config)
   const before = await readFile(join(root, 'gear.yaml'), 'utf8')
   const imageDigests: Record<string, string> = {}
   if (options.template === 'harbor') {
-    const images = await pythonJson(['benchmark', 'images'], { source: resolve(root, options.source) })
+    const images = await pythonJson(
+      ['benchmark', 'images'],
+      { source: resolve(root, options.source) },
+      undefined,
+      resourceEnvironment,
+    )
     if (!Array.isArray(images) || images.some((image) => typeof image !== 'string'))
       throw new GearError('import-images-invalid', 'Importer did not describe its base images')
     for (const image of images as string[]) imageDigests[image] = await pinImage(image)
   }
-  const prepared = (await pythonJson(['benchmark', 'import'], {
-    source: resolve(root, options.source),
-    image_digests: imageDigests,
-    template: options.template ?? 'text',
-    mode: options.mode ?? 'holdout',
-    ...(options.resource_root ? { resource_root: resolve(root, options.resource_root) } : {}),
-  })) as PreparedImport
+  const prepared = (await pythonJson(
+    ['benchmark', 'import'],
+    {
+      source: resolve(root, options.source),
+      image_digests: imageDigests,
+      template: options.template ?? 'text',
+      mode: options.mode ?? 'holdout',
+      ...(options.resource_root ? { resource_root: resolve(root, options.resource_root) } : {}),
+    },
+    undefined,
+    resourceEnvironment,
+  )) as PreparedImport
   validate(prepared)
   const plan: ImportPlan = { version: 1, before, prepared },
     id = `import_${canonicalDigest(plan).slice(7)}`
@@ -298,7 +310,12 @@ export async function applyBenchmarkImport(root: string, planId: string) {
         await rm(temporary, { recursive: true, force: true })
       }
     }
-    const compiled = (await pythonJson(['benchmark', 'compile', '--root', root], plan.prepared.config)) as {
+    const compiled = (await pythonJson(
+      ['benchmark', 'compile', '--root', root],
+      plan.prepared.config,
+      undefined,
+      await benchmarkSdkEnvironment((await resolveProject(root)).config),
+    )) as {
       digest: string
       splits: { seed: string[]; held_out: string[] }
     }

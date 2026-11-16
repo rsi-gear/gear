@@ -4,6 +4,7 @@ import { load } from 'js-yaml'
 import { GearError } from '../domain/errors.js'
 import type { CompiledBenchmark, ProjectConfig } from '../domain/project.js'
 import { pythonJson } from './python.js'
+import { benchmarkSdkEnvironment } from './benchmark-sdk.js'
 export async function checkBenchmark(root: string, config: ProjectConfig): Promise<CompiledBenchmark> {
   const path = resolve(root, config.benchmark),
     offset = relative(root, path)
@@ -12,6 +13,8 @@ export async function checkBenchmark(root: string, config: ProjectConfig): Promi
   const benchmark = (await pythonJson(
     ['benchmark', 'compile', '--root', root],
     load(await readFile(path, 'utf8')),
+    undefined,
+    await benchmarkSdkEnvironment(config),
   )) as CompiledBenchmark
   if (config.validation.mode === 'holdout' && !benchmark.splits.held_out.length)
     throw new GearError(
