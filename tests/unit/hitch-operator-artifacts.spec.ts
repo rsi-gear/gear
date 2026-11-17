@@ -69,7 +69,7 @@ async function fixture() {
         kind: 'trajectory-events-page',
         run_id: manifest.run_id,
         canonical_sha256: canonicalDigest('messages'),
-        filter: { types },
+        filter: { types: [...new Set(types)].sort() },
         eof: true,
         total_matches: 1,
         private_extra: 'PRIVATE_PAGE_CANARY',
