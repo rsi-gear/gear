@@ -37,4 +37,4 @@ select = ["E4", "E7", "E9", "F", "I"]
 python_version = "3.10"
 strict = true
 follow_imports = "silent"
-files = ["gear/core", "gear/evaluation", "gear/memory", "gear/search", "gear/algorithms", "gear/ops", "gear/project.py", "gear/training/contracts.py", "gear/training/loop.py", "gear/training/storage/loop_journal.py", "gear/training/runtime/implementation.py"]
+files = ["gear/core", "gear/evaluation", "gear/memory", "gear/search", "gear/algorithms", "gear/project.py", "gear/training/contracts.py", "gear/training/loop.py", "gear/training/storage/loop_journal.py", "gear/training/runtime/implementation.py"]

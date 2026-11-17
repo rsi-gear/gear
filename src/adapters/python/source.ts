@@ -51,7 +51,6 @@ export async function freezeAlgorithmSource(
   await walk(join(framework, 'memory'))
   await walk(join(framework, 'search'))
   await walk(join(framework, 'algorithms'))
-  await walk(join(framework, 'ops'))
   await walk(join(framework, 'refine'))
   await put('dependencies.json', Buffer.from(JSON.stringify(dependencies)))
   if (resources.length) {

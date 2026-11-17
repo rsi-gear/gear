@@ -37,8 +37,8 @@ gear/
     stopping.py         停止条件及组合
     workflow.py         搜索编排、筛查与子流程
   algorithms/
-    gepa/               可直接调用的 GEPA 完整实现
-    random_search/      可直接调用的 RandomSearch 完整实现
+    gepa.py             可直接调用的 GEPA 完整实现
+    random_search.py    可直接调用的 RandomSearch 完整实现
     opro.py             显式评分历史与提示词搜索
     ace.py              Playbook 增量更新与候选评估
     rrsi.py             提案筛查与评估
@@ -132,7 +132,7 @@ run = Project.open(".").refine(algorithm=GEPA())
 
 ## 6. 组件和数据合同
 
-下面覆盖当前 `gear.ops` 的全部公开符号。常用算子和类型从五个能力入口导出，完整算法从 algorithms 导出；合同生成、重建及 wire 校验保持内部实现，不作为额外业务领域暴露。
+下面覆盖规范能力入口的公开符号。常用算子和类型从五个能力入口导出，完整算法从 algorithms 导出；合同生成、重建及 wire 校验保持内部实现，不作为额外业务领域暴露。
 
 | 归属 | 类型与辅助函数 |
 | --- | --- |
@@ -157,7 +157,7 @@ run = Project.open(".").refine(algorithm=GEPA())
 
 兼容要求：
 
-- `gear.ops` 暂保留薄转发。`gear.algorithms` 只保留并导出 GEPA、RandomSearch、OPRO、ACE、RRSI、DarwinX、Harness2 七个完整算法；移除迁出能力的旧兼容文件与包根导出。内部实现、作者指南与测试改用规范能力入口。
+- 删除 `gear.ops` 的全部兼容转发文件。`gear.algorithms` 只保留并导出 GEPA、RandomSearch、OPRO、ACE、RRSI、DarwinX、Harness2 七个完整算法；移除迁出能力的旧兼容文件与包根导出。内部实现、作者指南与测试改用规范能力入口。
 - 新 v2 作者合同以 `gear.search` 为规范入口，v1 合同从 `gear.search.contracts_v1` 导入。GEPA/RandomSearch 不因移包自动升级协议；v1/v2 Decision、View、State 仍不能混用。
 - 移除 `algorithms.contracts` 和 GEPA/RandomSearch 包内的五类策略兼容文件。search 直接依赖自身合同，公共能力不得反向依赖 algorithms。examples 下不再保留重复算法实现；纯用法放进作者指南，兼容行为检查放进测试。
 - 保持既有随机取值、排序、停止阈值和流程行为。迁移产生新的真实源码与组件身份，不伪装为原摘要。

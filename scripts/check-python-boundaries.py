@@ -7,7 +7,7 @@ from pathlib import Path
 root = Path(__file__).resolve().parents[1] / 'python' / 'gear'
 failures = []
 capabilities = {'core', 'evaluation', 'memory', 'search'}
-pure_packages = capabilities | {'algorithms', 'ops'}
+pure_packages = capabilities | {'algorithms'}
 graph = {}
 for path in root.rglob('*.py'):
     tree = ast.parse(path.read_text())
@@ -34,7 +34,7 @@ for path in root.rglob('*.py'):
                 failures.append(f'{relative}: core depends on domain/runtime {module}')
             if relative.parts[0] in {'evaluation', 'memory'} and target in {'search', 'training'}:
                 failures.append(f'{relative}: result/record capability depends on strategy {module}')
-            if relative.parts[0] not in {'ops', 'algorithms'} and target == 'ops':
+            if target == 'ops':
                 failures.append(f'{relative}: implementation uses compatibility import {module}')
             if module == 'gear_training' or module.startswith('gear_training.'):
                 failures.append(f'{relative}: imports retired package {module}')
@@ -50,9 +50,9 @@ for path in root.rglob('*.py'):
         for node in tree.body:
             if isinstance(node, ast.If) and any(isinstance(item, ast.Name) and item.id == '__name__' for item in ast.walk(node.test)):
                 failures.append(f'{path.relative_to(root)}: module execution entrypoint belongs in training/cli')
-    if path.parent.name == 'random_search' and 'gepa' in path.read_text():
+    if path.name == 'random_search.py' and 'gepa' in path.read_text():
         failures.append(f'{path.name}: RandomSearch depends on the GEPA recipe')
-    if path.parent.name in {'gepa', 'random_search'}:
+    if path.name in {'gepa.py', 'random_search.py'}:
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and 'archived' in node.name:
                 failures.append(f'{path.relative_to(root)}: historical policy belongs in test fixtures')
@@ -60,7 +60,7 @@ for name in ['parents', 'sampling', 'proposal', 'ranking', 'stopping', 'workflow
     if not (root / 'search' / (name + '.py')).is_file():
         failures.append(f'search: missing shared capability {name}')
 for recipe in ['gepa', 'random_search']:
-    if not (root / 'algorithms' / recipe / 'algorithm.py').is_file():
+    if not (root / 'algorithms' / (recipe + '.py')).is_file():
         failures.append(f'{recipe}: missing complete algorithm')
 for recipe in ['opro', 'ace', 'rrsi', 'darwinx', 'harness2']:
     if not (root / 'algorithms' / (recipe + '.py')).is_file():
@@ -83,6 +83,11 @@ def visit(module, trail):
 for module in graph:
     if module.partition('.')[2].partition('.')[0] in capabilities:
         visit(module, [])
+if (root / 'ops').exists():
+    failures.append('The retired gear.ops package still exists')
+for recipe in ['gepa', 'random_search']:
+    if (root / 'algorithms' / recipe).exists():
+        failures.append(f'{recipe}: obsolete algorithm package')
 if (root.parent / 'gear_training').exists():
     failures.append('The retired gear_training package still exists')
 for name in ['gates.py', 'history.py', 'observations.py', '_retired', 'contracts.py', 'operators.py', 'meta.py', 'gepa/parents.py', 'random_search/parents.py']:

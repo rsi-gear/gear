@@ -4,7 +4,7 @@
 
 ## 修改位置
 
-六模块是能力集合，新算法可以自由组合，不必经过固定阶段。完整算法的专有装配保留在 `algorithms/gepa`、`algorithms/random_search`。
+六模块是能力集合，新算法可以自由组合，不必经过固定阶段。完整算法的专有装配保留在 `algorithms/gepa.py`、`algorithms/random_search.py`。
 
 | 要修改的行为 | 公共合同 | 共享实现位置 |
 | --- | --- | --- |

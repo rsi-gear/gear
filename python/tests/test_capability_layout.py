@@ -50,25 +50,11 @@ assert not any(name in sys.modules for name in ('torch', 'slime', 'transformers'
             env=os.environ.copy(),
         )
 
-    def test_all_legacy_operator_exports_are_the_same_canonical_objects(self):
-        from gear import ops
-
-        capabilities = [
-            importlib.import_module("gear." + name)
-            for name in ("core", "evaluation", "memory", "search")
-        ]
-        for name in ops.__all__:
-            with self.subTest(name=name):
-                owners = [module for module in capabilities if name in module.__all__]
-                self.assertEqual(len(owners), 1)
-                value = getattr(ops, name)
-                self.assertIs(value, getattr(owners[0], name))
-                self.assertTrue(value.__module__.startswith(owners[0].__name__ + "."))
-
+    def test_retired_operator_package_is_absent_and_protocols_remain_distinct(self):
+        self.assertIsNone(importlib.util.find_spec("gear.ops"))
         from gear.search import Decision, contracts_v1
 
         self.assertIsNot(Decision, contracts_v1.Decision)
-        self.assertIs(ops.Decision, Decision)
 
     def test_algorithms_export_complete_recipes_without_retired_capability_modules(self):
         from gear import algorithms
@@ -112,8 +98,11 @@ assert not any(name in sys.modules for name in ('torch', 'slime', 'transformers'
         for module in retired:
             self.assertIsNone(importlib.util.find_spec("gear.algorithms." + module))
         for recipe in ("gepa", "random_search"):
-            for module in ("parents", "sampling", "proposal", "ranking", "stopping"):
-                self.assertIsNone(importlib.util.find_spec(f"gear.algorithms.{recipe}.{module}"))
+            module = importlib.import_module("gear.algorithms." + recipe)
+            self.assertFalse(hasattr(module, "__path__"))
+            self.assertTrue(module.__file__.endswith(recipe + ".py"))
+            with self.assertRaises(ModuleNotFoundError):
+                importlib.import_module("gear.algorithms." + recipe + ".algorithm")
 
     def test_search_components_roundtrip_clone_and_replace_without_changing_original(self):
         from gear.core.base import construct_module

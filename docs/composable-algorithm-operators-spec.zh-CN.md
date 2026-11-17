@@ -2,7 +2,7 @@
 
 状态：P1/P2 框架实现已落地。当前用法和能力限制见 [算子指南](algorithm-operators.zh-CN.md)，验证结果随 PR 记录。
 
-接口布局修订：[算法工程师 API 简化规范](operator-capability-layout-spec.zh-CN.md) 修订本文的包布局、公共入口和组件依赖，按 core、evaluation、memory、training、search 五个能力入口组织算子，algorithms 保留可直接调用的完整算法实现。能力布局已按该规范迁移；本文中的 `gear.ops` 保留为旧接口说明，当前导入方式见作者指南。
+接口布局修订：[算法工程师 API 简化规范](operator-capability-layout-spec.zh-CN.md) 修订本文的包布局、公共入口和组件依赖，按 core、evaluation、memory、training、search 五个能力入口组织算子，algorithms 保留可直接调用的完整算法实现。能力布局已按该规范迁移；本文中的 `gear.ops` 仅为历史设计记录，该包已删除；当前导入方式与平铺算法布局以修订规范和作者指南为准。
 
 日期：2026-11-16。
 

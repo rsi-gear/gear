@@ -42,7 +42,7 @@ console.log('Public project API passed; algorithm authoring is Python-only');
   for (const file of ['assets/codex-skill-meta-runner.mjs', 'skills/refine/scripts/transport.mjs', 'lib/search/api.js', 'lib/search/index.js', 'lib/search/testing.js', 'lib/testing.js']) assert.ok(!packageFiles.has(file), file)
   for (const file of packageFiles) assert.ok(!/^(?:tests\/|fixture-lib\/|lib\/(?:search|refine|evaluator|meta|notebook|worker|candidate|experience)\/|lib\/state\/store\.|lib\/types\.)/u.test(file), `Retired implementation leaked into the package: ${file}`)
   for (const name of ['gates.py', 'history.py', 'observations.py']) assert.ok(!packageFiles.has(`python/gear/algorithms/${name}`), name)
-  for (const file of packageFiles) assert.ok(!file.includes('retired_policies') && !file.includes('algorithms/_retired/'), file)
+  for (const file of packageFiles) assert.ok(!file.startsWith('python/gear/ops/') && !file.startsWith('python/gear/algorithms/gepa/') && !file.startsWith('python/gear/algorithms/random_search/') && !file.includes('retired_policies') && !file.includes('algorithms/_retired/'), file)
   const executable = join(root, 'codex-fixture')
   writeFileSync(executable, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "codex-cli 0.145.0"; else exit 1; fi\n')
   chmodSync(executable, 0o700)

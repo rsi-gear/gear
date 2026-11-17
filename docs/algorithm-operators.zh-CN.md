@@ -13,7 +13,7 @@
 
 纯算子直接返回值；外部工作由 `Call` 描述，并在 `Decision` 提交后执行。选择、排序和流程留在 Python，运行时负责授权、预算、封存和恢复。
 
-GEPA、RandomSearch 保持协议 v1。新算法继承 `gear.search.Algorithm` 明确启用 v2。`gear.ops` 和迁出的旧能力路径保留导入兼容，指向同一个实现；新入口会产生新的冻结身份，旧 run 仍需原源码及匹配运行时，不能改协议号或重算身份来迁移。
+GEPA、RandomSearch 保持协议 v1。新算法继承 `gear.search.Algorithm` 明确启用 v2。`gear.ops` 和 algorithms 中迁出的旧能力路径已删除，使用规范能力入口；新入口会产生新的冻结身份，旧 run 仍需原源码及匹配运行时，不能改协议号或重算身份来迁移。
 
 ## 调用与恢复
 
