@@ -719,6 +719,8 @@ class Project:
             # Omitted at its default so existing run specifications keep their identity.
             if algorithm.global_gate != "any":
                 options["global_gate"] = algorithm.global_gate
+        if type(algorithm) is RandomSearch:
+            options["diagnose"] = algorithm.diagnose
         if type(algorithm) not in (GEPA, RandomSearch):
             configuration = getattr(algorithm, "configuration", {})
             validate("Json", configuration)

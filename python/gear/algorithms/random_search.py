@@ -1,4 +1,4 @@
-"""A second recipe uses the same six contracts with a single global stage."""
+"""Global exploratory search; diagnosis is optional for custom proposal planners."""
 
 from gear.search.contracts_v1 import (
     CandidateRanker,
@@ -24,7 +24,15 @@ class RandomSearch(StagedSearch):
         proposal_planner: ProposalPlanner = plan_proposals,
         ranker: CandidateRanker = rank_candidates,
         stop_rule: StopRule = stop_reason,
+        diagnose: bool = False,
     ) -> None:
         super().__init__(
-            parent_policy, sampler, proposal_planner, ranker, stop_rule, ("global",), ()
+            parent_policy,
+            sampler,
+            proposal_planner,
+            ranker,
+            stop_rule,
+            ("global",),
+            (),
+            diagnose=diagnose,
         )

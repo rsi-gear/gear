@@ -74,6 +74,44 @@ class AlgorithmTests(unittest.TestCase):
         self.assertIsNotNone(gepa["nominee"])
         self.assertIsNotNone(random["nominee"])
 
+    def test_random_search_omits_unused_diagnosis(self):
+        result = toy_round(RandomSearch())
+        self.assertEqual(result["status"], "passed")
+        self.assertNotIn("diagnose_seed:global", result["operations"])
+        self.assertIn("generate_candidate:global", result["operations"])
+        self.assertIn("evaluate_seed:global", result["operations"])
+        self.assertIsNotNone(result["nominee"])
+
+    def test_random_search_diagnosis_opt_in_preserves_search_results(self):
+        from gear.core.base import describe_module, construct_module
+        from gear.refine.worker import load_entrypoint
+
+        direct = toy_round(RandomSearch())
+        configured = RandomSearch(diagnose=True)
+        spec = describe_module(configured).to_dict()
+        restored = construct_module(spec, load_entrypoint)
+        diagnosed = toy_round(restored)
+        self.assertEqual(restored.diagnose, True)
+        self.assertIn("diagnose_seed:global", diagnosed["operations"])
+        self.assertEqual(direct["nominee"], diagnosed["nominee"])
+        self.assertEqual(
+            direct["operations"],
+            [op for op in diagnosed["operations"] if op != "diagnose_seed:global"],
+        )
+
+    def test_random_search_diagnosis_survives_sdk_worker_configuration(self):
+        import json
+        from gear.project import Project
+        from gear.refine.worker import make_algorithm
+
+        for diagnose in (False, True):
+            with self.subTest(diagnose=diagnose):
+                configured = json.loads(json.dumps(
+                    Project._describe_algorithm(RandomSearch(diagnose=diagnose))
+                ))
+                self.assertIs(configured["algorithm"]["options"]["diagnose"], diagnose)
+                self.assertIs(make_algorithm(configured["algorithm"]).diagnose, diagnose)
+
     def test_one_function_replaces_parent_policy(self):
         def policy(view, rng):
             if not view.eligible:

@@ -179,7 +179,8 @@ assert not any(name in sys.modules for name in ('torch', 'slime', 'transformers'
         )
         cases = {
             "gepa-default": GEPA(),
-            "random-default": RandomSearch(),
+            # Preserve the historical trace with its explicit diagnosis step.
+            "random-default": RandomSearch(diagnose=True),
             "gepa-wide": GEPA(
                 sampler=GEPASampler(
                     local_ratio=0.5, shared_ratio=0, cross_ratio=0.5, bridge_ratio=1

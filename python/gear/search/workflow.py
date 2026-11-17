@@ -72,6 +72,7 @@ class StagedSearch(Module):
     stages: tuple[Literal["local", "bridge", "global"], ...]
     promotion_widths: tuple[int, ...]
     global_gate: Literal["any", "no_regression"] = "any"
+    diagnose: bool = True
 
     def __post_init__(self) -> None:
         if (
@@ -82,6 +83,8 @@ class StagedSearch(Module):
             raise ValueError("promotion_widths requires one positive integer per stage transition")
         if self.global_gate not in ("any", "no_regression"):
             raise ValueError("global_gate must be 'any' or 'no_regression'")
+        if type(self.diagnose) is not bool:
+            raise ValueError("diagnose must be a boolean")
         # JSON configuration uses arrays; keep the same immutable form as SDK configuration.
         self.promotion_widths = tuple(self.promotion_widths)
 
@@ -284,15 +287,18 @@ class StagedSearch(Module):
         if not failures:
             return self._next_round(view, state)
         batch = batches[batch_index]
+        data: dict[str, JSON] = {
+            **state.data,
+            "batch_index": batch_index,
+            "phase": "proposals",
+            "parent": parent,
+            "limit": batch["count"],
+            "failures": list(failures),
+        }
+        if not self.diagnose:
+            return self._proposals(view, AlgorithmState(data=data))
         return self._decision(
-            {
-                **state.data,
-                "batch_index": batch_index,
-                "phase": "proposals",
-                "parent": parent,
-                "limit": batch["count"],
-                "failures": list(failures),
-            },
+            data,
             (
                 Operation(
                     "diagnose_seed",
@@ -313,7 +319,7 @@ class StagedSearch(Module):
             for result in view.completed
             if result.kind == "diagnose_seed" and result.candidate_id == parent_id
         ]
-        if not results or results[-1].status != "complete":
+        if self.diagnose and (not results or results[-1].status != "complete"):
             return self._next_batch(view, state, "diagnosis failed")
         failure_ids = strings(state.data["failures"])
         failures = tuple(
@@ -339,7 +345,9 @@ class StagedSearch(Module):
         if view.budget.generation_batch_capacity is not None:
             quota = min(quota, view.budget.generation_batch_capacity)
         plan = self.proposal_planner(
-            ProposalInput(parent, failures, results[-1].data, quota, view.tasks)
+            ProposalInput(
+                parent, failures, results[-1].data if self.diagnose else None, quota, view.tasks
+            )
         )
         if (
             not plan.reason
