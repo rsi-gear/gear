@@ -65,6 +65,7 @@ def make_algorithm(config):
                 options[key] = load_entrypoint(value)
             elif isinstance(value, dict) and set(value) == {"component"}:
                 from gear.core.base import construct_module
+
                 options[key] = construct_module(value["component"], load_entrypoint)
             elif (
                 isinstance(value, dict)
@@ -123,16 +124,33 @@ def main() -> int:
                 verify_dependencies(Path(__file__).resolve().parents[2])
                 if version == 2:
                     from .imports import enforce_declared_imports
+
                     enforce_declared_imports(Path(__file__).resolve().parents[2])
                 result = {
                     "protocol_version": version,
-                    **({"operations": [
-                        "diagnose_seed",
-                        "generate_candidate",
-                        "evaluate_seed",
-                        "nominate",
-                        "stop",
-                    ]} if version == 1 else {"effects": ["meta", "candidate", "read", "execute", "score", "library", "stream"]}),
+                    **(
+                        {
+                            "operations": [
+                                "diagnose_seed",
+                                "generate_candidate",
+                                "evaluate_seed",
+                                "nominate",
+                                "stop",
+                            ]
+                        }
+                        if version == 1
+                        else {
+                            "effects": [
+                                "meta",
+                                "candidate",
+                                "read",
+                                "execute",
+                                "score",
+                                "library",
+                                "stream",
+                            ]
+                        }
+                    ),
                     "max_message_bytes": MAX_MESSAGE_BYTES,
                     "implementation_identity": source_identity(Path(__file__).resolve().parents[2]),
                 }
@@ -143,12 +161,16 @@ def main() -> int:
                     raise ValueError("v2 handshake required for screening")
                 from .resources import bind_resources
                 from .screening import project_screening
+
                 body = request["payload"]
                 with redirect_stdout(sys.stderr):
                     verify_dependencies(Path(__file__).resolve().parents[2])
                     algorithm = make_algorithm(body["algorithm"])
                     resource_file = Path(__file__).resolve().parents[2] / "resources.json"
-                    bind_resources(algorithm, json.loads(resource_file.read_text()) if resource_file.is_file() else [])
+                    bind_resources(
+                        algorithm,
+                        json.loads(resource_file.read_text()) if resource_file.is_file() else [],
+                    )
                     result = project_screening(algorithm, body)
             else:
                 if not ready:
@@ -158,6 +180,7 @@ def main() -> int:
                     from gear.core.state import StateTree
                     from gear.search.api import SearchView as V2SearchView
                     from gear.search.decisions import Decision as V2Decision
+
                     view = V2SearchView.from_dict(body["view"])
                 else:
                     view = decode_view(body["view"])
@@ -170,11 +193,26 @@ def main() -> int:
                     resource_file = Path(__file__).resolve().parents[2] / "resources.json"
                     if "component" in body["algorithm"] or resource_file.is_file():
                         from .resources import bind_resources
-                        bind_resources(algorithm, json.loads(resource_file.read_text()) if resource_file.is_file() else [])
-                    if body["algorithm"].get("protocol_version", 1) != version or getattr(algorithm, "protocol_version", 1) != version:
+
+                        bind_resources(
+                            algorithm,
+                            json.loads(resource_file.read_text())
+                            if resource_file.is_file()
+                            else [],
+                        )
+                    if (
+                        body["algorithm"].get("protocol_version", 1) != version
+                        or getattr(algorithm, "protocol_version", 1) != version
+                    ):
                         raise ValueError("algorithm and worker protocol versions do not match")
-                    state = (StateTree.from_state_dict(body["state"], expected_version=getattr(algorithm, "state_schema_version", 1))
-                             if version == 2 else AlgorithmState(**body["state"]))
+                    state = (
+                        StateTree.from_state_dict(
+                            body["state"],
+                            expected_version=getattr(algorithm, "state_schema_version", 1),
+                        )
+                        if version == 2
+                        else AlgorithmState(**body["state"])
+                    )
                     decision = algorithm.step(view, state)
                     if inspect.isawaitable(decision):
                         raise TypeError("algorithm step must be a pure synchronous decision")

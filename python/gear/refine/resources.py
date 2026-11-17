@@ -22,7 +22,10 @@ def bind_resources(algorithm: object, resources: list[dict[str, Any]]) -> None:
         total += len(raw)
         if len(raw) > 1024 * 1024 or total > 8 * 1024 * 1024 or len(resources) > 1024:
             raise ValueError("frozen resources exceed their bounds")
-        if "sha256:" + hashlib.sha256(raw).hexdigest() != item["digest"] or base64.b64encode(raw).decode() != item["content_base64"]:
+        if (
+            "sha256:" + hashlib.sha256(raw).hexdigest() != item["digest"]
+            or base64.b64encode(raw).decode() != item["content_base64"]
+        ):
             raise ValueError("frozen resource digest or encoding mismatch")
         key = digest([item["entrypoint"], item["name"], item["path"]])
         if key in index:
