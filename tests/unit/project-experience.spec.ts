@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -131,6 +131,8 @@ it('stages a standalone Python reader for only the reserved snapshot', async () 
   expect(JSON.parse(stdout)).toMatchObject({ snapshot_digest: meta.experience.snapshot_digest, total: 1 })
   expect(await readFile(join(sandbox, 'experience/snapshot.json'), 'utf8')).not.toMatch(/PRIVATE_|HELD_OUT/)
   expect(staged.readPaths.length).toBeGreaterThan(0)
+  // Hitch canonicalizes every granted path before admitting a Meta run.
+  await Promise.all(staged.readPaths.map(path => realpath(path)))
 })
 
 it('resumes the exact committed Meta context without regenerating its snapshot', async () => {
