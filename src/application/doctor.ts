@@ -126,7 +126,12 @@ export async function doctor(root: string) {
       const value = await profile(name)
       assertProfileRole(value, role, adapter)
       if ('kind' in value && value.kind === 'codex') {
-        const runtime = await describeCodex(codexExecutionConfiguration(value.configuration, selection.target ? await profile(selection.target) : undefined))
+        const runtime = await describeCodex(
+          codexExecutionConfiguration(
+            value.configuration,
+            selection.target ? await profile(selection.target) : undefined,
+          ),
+        )
         const present = value.passEnv.filter(
           (key) => codexCredentialEnvNames.includes(key) && !!process.env[key]?.trim(),
         )

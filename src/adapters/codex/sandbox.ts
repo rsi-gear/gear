@@ -169,7 +169,11 @@ export async function prepareSandbox(
         PATH: process.env.PATH,
         LANG: 'C.UTF-8',
         HITCH_CODEX_PATH: runtime.executable,
-        ...Object.fromEntries(['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY'].flatMap(name => process.env[name] ? [[name, process.env[name]]] : [])),
+        ...Object.fromEntries(
+          ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY'].flatMap((name) =>
+            process.env[name] ? [[name, process.env[name]]] : [],
+          ),
+        ),
         ...(config.authHome ? { HITCH_CODEX_AUTH_HOME: config.authHome } : {}),
         ...(context.experiencePython ? { HITCH_GUARD_PYTHON: context.experiencePython } : {}),
         ...(process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY

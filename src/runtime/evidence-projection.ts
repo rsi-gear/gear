@@ -72,7 +72,8 @@ export function reserveProjections(
         visited.has(id) ||
         !destination.some(
           (value) =>
-            key(source.request.partition, value) === cellId && canonicalDigest(value) === canonicalDigest(cell),
+            key(source.request.partition, value) === cellId &&
+            canonicalDigest(value) === canonicalDigest(cell),
         )
       )
         return false

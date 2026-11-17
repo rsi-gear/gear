@@ -18,7 +18,10 @@ export interface CodexProfile {
   passEnv: string[]
 }
 export type Profile = OperationProfile | HitchProfile | CodexProfile
-export function codexExecutionConfiguration(config: CodexConfiguration, target?: Profile): CodexConfiguration {
+export function codexExecutionConfiguration(
+  config: CodexConfiguration,
+  target?: Profile,
+): CodexConfiguration {
   if (config.hitch || !target || !('kind' in target) || target.kind !== 'hitch') return config
   return { ...config, hitch: { executable: target.executable, root: target.root } }
 }
