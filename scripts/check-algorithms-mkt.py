@@ -87,7 +87,8 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=True)
     result_file = args.output / "results.json"
     results = json.loads(result_file.read_text()) if result_file.exists() else {}
-    for name in args.algorithm or ALGORITHMS:
+    selected = args.algorithm or list(ALGORITHMS)
+    for name in selected:
         root = args.output / name
         if not root.exists():
             if args.verify_only:
@@ -239,7 +240,7 @@ def main() -> None:
             ),
             flush=True,
         )
-    if any(result["status"] != "passed" for result in results.values()):
+    if any(results[name]["status"] != "passed" for name in selected):
         raise SystemExit(1)
 
 
