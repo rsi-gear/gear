@@ -80,7 +80,6 @@
     "contracts/**",
     "docs/training/package-layout.zh-CN.md",
     "assets/codex-meta-runner.mjs",
-    "assets/codex-process-guard.py",
     "docs/codex-meta-runner.zh-CN.md",
     "docs/training/standalone-inference.md",
     "docs/training/standalone-inference.zh-CN.md",

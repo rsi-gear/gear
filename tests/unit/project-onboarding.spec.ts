@@ -149,7 +149,7 @@ it('reports missing credentials separately and never calls a model or exposes cr
   vi.stubEnv('CODEX_API_KEY', 'SECRET_CODEX_KEY'); vi.stubEnv('OPENAI_API_KEY', 'SECRET_TARGET_KEY')
   result = await doctor(root)
   expect(result.ready_for_seed_smoke).toBe(true)
-  expect(result.ready_for_refine_smoke).toBe(true)
+  expect(result.ready_for_refine_smoke, JSON.stringify(result.checks)).toBe(true)
   expect(result.authentication.meta).toEqual({ status: 'environment_present', names: ['CODEX_API_KEY'] })
   expect(result.model_access).toBe('not_checked')
   expect(result.model_requests).toBe(0)
@@ -188,6 +188,7 @@ if(args[0]==='eval'&&args[1]==='bind'){console.error('SECRET_HELPER_FAILURE');pr
   expect(JSON.stringify(result)).not.toContain('SECRET')
 })
 it('checks the same file-based Codex login used by operations and refuses symlinked auth files', async () => {
+  await hitch()
   const home = join(root, 'auth'); await mkdir(home)
   await writeFile(join(home, 'auth.json'), '{"token":"SECRET_TOKEN"}')
   await codex('login', home); await selectDefaultProfile('login', 'meta')

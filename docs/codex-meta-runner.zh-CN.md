@@ -1,7 +1,7 @@
 # Codex Meta operation runner
 
-`gear-meta-codex` 是项目协议的 Meta process provider，执行 `diagnose_seed` 和
-`generate_candidate`。父代选择、抽样、候选计划、排名与停止仍由 Python 算法决定。
+`gear-meta-codex` 是 Gear 到 Hitch 的 Meta 协议桥接，执行 `diagnose_seed` 和
+`generate_candidate`。Gear 负责输入授权、额度分配和结果校验；Hitch 负责 Codex 执行、隔离、模型代理和逐请求预算。父代选择、抽样、候选计划、排名与停止由 Python 算法决定。
 原 Codex lease runner 和 MCP transport 已移出发布包，只保留为历史协议回归 fixture。
 
 每次 Meta 操作绑定独立 seed 经验快照与最多三张卡片。`input.json` 中的
@@ -50,16 +50,24 @@ gear profile use default-meta --role meta --default
 }
 ```
 
+Meta 默认复用所选 Hitch Target profile 的 executable/root；也可在 `configuration` 中显式设置：
+
+```json
+{"hitch": {"executable": "/absolute/path/to/hitch", "root": "/absolute/path/to/meta-hitch-state"}}
+```
+
+Hitch 必须声明 `isolated_agent_run: "1"` 和 `generation_budget: "1"`。不支持时准入失败，不回退为 Gear 直接启动 Codex。`kind: "codex"` 保留为模型配置入口，执行统一经过 Hitch。
+
 模型名来自用户实际可用的模型，runner 不设置默认模型。`reasoningEffort` 可选。
 API key 通过 provider 进程环境传递，不写入 profile 或 operation journal。
 `CODEX_API_KEY` 是 Codex 非交互执行支持的认证入口，见
 [官方非交互文档](https://learn.chatgpt.com/docs/non-interactive-mode)。
 
 已有文件认证可改为 `passEnv: []`，并设置 `configuration.authHome` 为包含 `auth.json`
-的绝对目录。只复制这一文件到临时 CODEX_HOME，不挂载整个用户目录；正常结束后删除。
+的绝对目录。Hitch 读取此文件并把认证保留在可信模型代理中；模型进程的临时 CODEX_HOME 不包含真实凭据。
 当前不支持从系统 keychain 提取凭据，也不把临时刷新后的凭据写回原文件；长期运行前需
 自行维护有效登录。登录方式对应的网络域名须显式写入 `allowedDomains`，不接受通配域名。
-空数组代表禁网，供本地协议测试使用。握手本身不验证登录或模型可用性。
+模型只可访问本次 Hitch 网关；网关仅连接认证对应且已授权的模型服务域名。握手本身不验证登录或模型可用性。
 
 `gear.yaml` 引用 `meta: {profile: default-meta}`。Target 仍需独立配置评测 provider。
 `gear doctor` 检查实际二进制、能力、隔离进程及 profile 引用的认证来源。
@@ -72,7 +80,7 @@ API key 通过 provider 进程环境传递，不写入 profile 或 operation jou
 ## 执行与隔离
 
 - 新运行准入先初始化私有作业登记表；Node controller 在表中保存 operation intent，再启动独立 worker。模型启动也先登记，每个 operation 有自己的内核锁。原生 process 调用期限为生成期限加 30 秒（最多 24 小时），为终止和保存回执留出时间。
-- worker 只向 Codex 挂载候选副本、指定 seed 任务与反馈、必要系统运行库和临时目录。
+- Gear 向 Hitch 提交精确授权路径，Hitch 只向 Codex 挂载候选副本、指定 seed 任务与反馈、必要系统运行库和临时目录。
   完整项目、原候选目录、其他 operation 日志及 held-out 数据不在读取范围内。
 - diagnosis 的候选目录只读；generation 可以修改副本。结果发布前校验资源类型、mutation
   policy 和 HarnessAdapter；core 随后重新验证父代、绑定候选 ID 并封存 manifest。
@@ -81,11 +89,11 @@ API key 通过 provider 进程环境传递，不写入 profile 或 operation jou
 - 每次使用独立 CODEX_HOME、`--ephemeral`、`--ignore-user-config`、`--ignore-rules` 和
   输出 JSON Schema；关闭自动读取候选 AGENTS 作为项目指令，候选规则通过任务数据阅读。
   相关设置见[官方配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)。
-- identity 绑定实际 Codex 二进制、相邻的可选 `codex-code-mode-host`、版本、Node 版本及 runner 源码。macOS 另外绑定系统 `/etc/ssl/cert.pem`，供严格沙箱内的 TLS 校验使用，不开放额外 trustd IPC 或关闭证书校验。握手后替换二进制会拒绝
+- identity 绑定 Hitch 实际控制器运行时、隔离/预算能力以及实际 Codex 二进制、相邻的可选 `codex-code-mode-host`、版本、Node 版本及 runner 源码。macOS 另外绑定系统 `/etc/ssl/cert.pem`，供严格沙箱内的 TLS 校验使用，不开放额外 trustd IPC 或关闭证书校验。握手后替换二进制会拒绝
   提交；worker 开始前再次核对身份。运行中的文件替换仍需通过既有运行目录权限防护。
 
 普通 process profile 属于受信执行适配器；任意用户自写 process 命令不会自动获得上述
-隔离。该保证来自随包 Codex runner，而非 JSON 协议本身。
+隔离。该保证由 Hitch 的隔离执行实现；Gear 校验其能力和冻结身份。
 
 ## 恢复和诊断
 
@@ -109,24 +117,21 @@ API key 通过 provider 进程环境传递，不写入 profile 或 operation jou
 
 执行结果与清理状态分别持久化。守护进程保留模型组 leader 的 PID，先终止同组遗留子进程、再回收 leader，并通过模型无法继承的专用管道确认；缺少确认时不发布 receipt，状态保持 `unknown`。macOS 对只剩 zombie 的进程组可能返回 `EPERM`，此时只有在有界的进程组状态检查确认全部成员已停止后才接受确认。
 
-worker 先尝试清理凭据目录（500 ms）、trajectory gateway（500 ms）、sandbox manager（1500 ms）和临时根目录（1000 ms）；每项失败或超时均继续下一项。开始标记写入限 250 ms，最终 `cleanup.json` 必须等待原子发布和 fsync 完成后才正常返回，避免 worker 退出中断慢速文件写入。`graceful` 表示各项正常结束，`fallback-required` 表示至少一项未确认完成，不能解释为超时动作已经完成。仅本次操作的独立 worker 在释放执行锁后退出，并回收它拥有的代理 CONNECT 两端、桥接子进程及文件描述符；模型已确认停止时，清理开始后的 4500 ms watchdog 仍负责兜底退出，硬期限内无法持久化的清理结果保持未确认。直接调用库函数不会终止宿主进程组。
+Hitch 负责模型组、临时 CODEX_HOME、模型代理与隔离资源的关闭。Gear worker 保持到 Hitch 的控制管道；worker 丢失时，Hitch 收到 EOF 后取消执行。Gear 只接受 Hitch 的 `execution.stopped: true` 回执；Hitch 被强杀或缺少停止确认时，操作保持 `unknown`、不发布结果、不自动重发，原预算预留保持占用。Gear 独立清理自己暂存的授权素材和经验读取器，临时根目录仅在模型已确认停止后删除。
 
-模型状态未知时，不删除可能仍被使用的临时根目录，清理记录将凭据和根目录标为 `unconfirmed`；该私有目录可能仍含临时认证文件，需要结合原 journal 人工调查。取消仍须同时观察到 receipt 和执行锁释放才确认，原 5 秒等待期限不变；慢速系统上未在期限内确认时会返回未确认错误，不能据此重发模型。runner asset、守护进程和清理实现均进入身份摘要，旧运行不会自动改绑新实现或迁移其回执。
+## 请求和 token 预算
 
-token 统计来自 Codex `turn.completed` 事件，按完整轮次汇总。任一轮缺失的分项保持
-`null`；进程中断、轮次未完成、失败或统计矛盾时不把已完成部分当作总消耗。只有输入和
-输出均完整时计算 `tokens`，缓存 token 已含于输入中，不重复相加。轮次数不等于模型请求数，
-`model_requests` 和美元用量保持 `null`。Meta 不执行 Target 评测，`physicalAttempts` 为 0。
+`generationBudget: true` 的依据是 Hitch 的逐请求代理，不是 Codex 轮次事件。每个实际 Responses 请求（包括客户端重试）在转发前占用 `model_requests`，并按剩余额度限制 `max_output_tokens`。`tokens` 包含实际输入和输出；缓存输入已包含在输入中，推理已包含在输出中，不重复相加。Meta 不执行 Target 评测，`physicalAttempts` 为 0；美元硬预算不支持。
 
-原生 Codex CLI 尚不能由此 runner 在所有工具、重试和嵌套模型调用前统一预留请求/token
-额度，因此能力声明 `generationBudget: false`，不支持 `generation` 硬限额。选择该配置时
-在提交前明确拒绝，不把事后事件计数当作硬限制；美元硬预算也不支持。
+输入预留采用文本 UTF-8 字节上界并额外预留协议开销；额度不足时可能在实际 token 数达到上限前停止。仅支持可计量的文本输入和客户端工具；服务端工具、图像/文件、外部 response 引用和未计量的加密推理会在转发前拒绝。加密推理仅可复用当前网关已测量过的响应。隐式压缩不能绕过网关。缺失、截断或矛盾的 usage 会阻止后续请求，未知 token 保持 `null`，Gear 保留相应预算。超限实际值保留用于审计，不截断为限额。
+
+Gear receipt 的 `provenance` 包含 `provider: "hitch"`、`harness: "codex"` 和 `hitch_run_id`。Hitch 在 `runs/<hitch_run_id>/generation-budget.json` 保存额度和逐请求账本，并保留标准 interactions、trajectory 和 result。Gear 的私有 `events.jsonl` 保存 Hitch 终态 JSON，模型原生事件由 Hitch 保存。
+
+显式上游代理仍通过 `passEnv` 的 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 传给 Hitch，不交给模型。该路径使用 Node 内置代理支持，要求 Node 22.21+ 或 24.5+；不支持时明确失败。
 
 ## 验证边界
 
-本地假 CLI 已覆盖 DSH/Pi 候选生成、实际 OS 拒绝读取私有数据、diagnosis 只读、重复
-提交、断连恢复、取消、worker 强杀后的未知状态、身份变化和非法输出。安装包检查验证
-实际 binary 与素材齐全。另以本机独立 Codex `0.145.0` 和 `gpt-5.6-luna` 完成 DSH/Pi 的真实候选生成；DSH 还验证了重连与重复提交复用同一回执、事件不增加。该探针使用合成 seed 反馈。另有实际 Hitch Target 和 Python GEPA 的小型闭环，覆盖范围与独立评分结果见 [Luna 验收](testing/luna-live.zh-CN.md)。`gpt-6-luna` 在本次登录下被服务端拒绝，不能仅凭本机缓存列表推断可用性。
+Gear 的协议 fixture 覆盖授权素材、Python 结果 schema、DSH/Pi 候选发布、重复提交、断连恢复、取消和未知状态。实际 OS 隔离、模型进程守护、逐请求预算和上游计量由 Hitch 测试验证。真实模型探针同时检查候选变更、Hitch 来源、请求/token 限额和回执重放；它使用合成 seed 反馈，不代替真实任务评测。
 
 显式运行真实模型探针（会调用模型；输出目录必须不存在）：
 
@@ -134,11 +139,13 @@ token 统计来自 Codex `turn.completed` 事件，按完整轮次汇总。任�
 GEAR_TEST_CODEX=/absolute/path/to/codex \
 GEAR_TEST_CODEX_MODEL=gpt-5.6-luna \
 GEAR_TEST_CODEX_AUTH_HOME=/absolute/path/to/auth-home \
+GEAR_TEST_HITCH=/absolute/path/to/hitch \
+GEAR_TEST_HITCH_ROOT=/absolute/path/to/meta-hitch-state \
 GEAR_TEST_LIVE_OUTPUT=/tmp/gear-codex-live-proof \
 node scripts/check-codex-live.mjs
 ```
 
-先构建 Gear；`auth-home` 包含现有 `auth.json`。默认分别测试 DSH/Pi，可用 `GEAR_TEST_LIVE_ADAPTERS=dsh` 选择一个。证据目录保留私有回执与操作日志，不复制认证文件。桌面 App 内部二进制可能缺少相邻配套程序；本次使用独立安装的 CLI。
+先构建 Gear 和支持上述能力的 Hitch；`auth-home` 包含现有 `auth.json`。默认分别测试 DSH/Pi，可用 `GEAR_TEST_LIVE_ADAPTERS=dsh` 选择一个。证据目录保留私有回执与操作日志，不复制认证文件。桌面 App 内部二进制可能缺少相邻配套程序；本次使用独立安装的 CLI。
 
 取消回包中的 `cancelled: true` 表示已确认停止或被持久化取消记录阻止启动，不能仅表示收到请求。已经启动的 Codex worker 必须写入 receipt 并释放执行锁后才确认取消；worker 丢失且没有 receipt 时返回未确认错误，保持可见的恢复状态。外部 process provider 缺少明确确认、返回 false 或非布尔字段时，也不会被视为取消完成。
 

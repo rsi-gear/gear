@@ -1,7 +1,5 @@
-import { spawn } from 'node:child_process'
-import { lstat, open, readFile, rename } from 'node:fs/promises'
+import { lstat, readFile, rename } from 'node:fs/promises'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { canonicalDigest } from '../../domain/canonical.js'
 import { assertMutationPath } from '../../domain/mutation-policy.js'
 import type { Json } from '../../domain/algorithm-wire.js'
@@ -12,7 +10,7 @@ import { prepareSandbox, codexAdapter } from './sandbox.js'
 import { describeCodex, fileDigest } from './identity.js'
 import type { CodexJob } from './contracts.js'
 import { builtinPolicy } from '../python/builtin-policy.js'
-import { CodexUsage } from './usage.js'
+import { executeHitchMeta } from './hitch-execution.js'
 import { cleanupCodex, type CodexResources, type CodexWorkerLifecycle } from './cleanup.js'
 
 export async function exists(path: string): Promise<boolean> {
@@ -36,9 +34,8 @@ export async function executeJob(
     status: 'complete' | 'failed' = 'failed'
   let data: Json = { error: 'codex-execution-failed' },
     outcome = 'failed'
-  const usage = new CodexUsage()
-  let processCompleted = false,
-    modelStopped = true
+  let hitchResult: Awaited<ReturnType<typeof executeHitchMeta>> | undefined
+  let modelStopped = true
   const resources: CodexResources = {}
   try {
     try {
@@ -46,132 +43,13 @@ export async function executeJob(
       const runtime = await describeCodex(config)
       if (runtime.identity !== job.identity) throw new Error('codex-identity-changed')
       sandbox = await prepareSandbox(job, runtime, resources)
-      const log = await open(join(directory, 'events.jsonl'), 'wx', 0o600)
-      const diagnostics = await open(join(directory, 'stderr.log'), 'wx', 0o600)
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const child = spawn(
-            process.env.GEAR_LOCK_PYTHON || 'python3',
-            ['-I', '-B', fileURLToPath(new URL('../../../assets/codex-process-guard.py', import.meta.url))],
-            { env: { PATH: process.env.PATH }, stdio: ['pipe', 'pipe', 'pipe', 'pipe'] },
-          )
-          if (child.pid !== undefined) {
-            modelStopped = false
-            worker?.modelStarted()
-          }
-          let confirmation = ''
-          child.stdio[3]!.on('data', (chunk: Buffer) => {
-            if (Buffer.byteLength(confirmation) <= 1024) confirmation += chunk.toString('utf8')
-          })
-          let pending = '',
-            bytes = 0,
-            reason: string | undefined
-          const kill = (message: string): void => {
-            reason ??= message
-            if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM')
-          }
-          const timer = setTimeout(() => kill('codex-timeout'), config.timeoutMs)
-          let checking = false
-          const polling = setInterval(() => {
-            if (checking) return
-            checking = true
-            void exists(join(directory, 'cancel.json'))
-              .then((cancel) => {
-                if (cancel) kill('codex-cancelled')
-              })
-              .catch(() => kill('codex-cancel-check-failed'))
-              .finally(() => {
-                checking = false
-              })
-          }, 100)
-          // A killed controller cannot leave a model process running indefinitely.
-          const terminate = (): void => kill('codex-controller-stopped')
-          process.once('SIGTERM', terminate)
-          process.once('SIGINT', terminate)
-          child.stdin.on('error', () => {})
-          let writes = Promise.resolve()
-          let errorBytes = 0
-          child.stderr.on('data', (chunk: Buffer) => {
-            if (errorBytes >= 64 * 1024) return
-            const bounded = chunk.subarray(0, 64 * 1024 - errorBytes)
-            errorBytes += bounded.length
-            writes = writes
-              .then(async () => {
-                await diagnostics.write(bounded)
-              })
-              .catch(() => kill('codex-log-failed'))
-          })
-          child.stdout.on('data', (chunk: Buffer) => {
-            bytes += chunk.length
-            if (bytes > 32 * 1024 * 1024) {
-              kill('codex-output-too-large')
-              return
-            }
-            writes = writes
-              .then(async () => {
-                await log.write(chunk)
-              })
-              .catch(() => kill('codex-log-failed'))
-            pending += chunk.toString('utf8')
-            while (pending.includes('\n')) {
-              const index = pending.indexOf('\n'),
-                line = pending.slice(0, index)
-              pending = pending.slice(index + 1)
-              usage.record(line)
-            }
-          })
-          let spawnError: Error | undefined
-          child.once('error', (error) => {
-            spawnError = error
-          })
-          child.once('close', (code, signal) => {
-            try {
-              const ack = JSON.parse(confirmation) as {
-                version?: number
-                model_stopped?: boolean
-                returncode?: number
-              }
-              if (!signal && ack.version === 1 && ack.model_stopped === true && ack.returncode === code) {
-                modelStopped = true
-                worker?.modelStopped()
-              }
-            } catch {
-              /* Missing or damaged guard confirmation keeps the operation unknown. */
-            }
-            if (spawnError && child.pid === undefined) {
-              modelStopped = true
-              worker?.modelStopped()
-            }
-            clearTimeout(timer)
-            clearInterval(polling)
-            process.removeListener('SIGTERM', terminate)
-            process.removeListener('SIGINT', terminate)
-            if (pending.trim()) usage.record(pending)
-            void writes.then(() => {
-              if (!modelStopped || reason || spawnError || code !== 0)
-                reject(new Error(reason ?? 'codex-process-failed'))
-              else resolve()
-            }, reject)
-          })
-          child.stdin.write(
-            `${JSON.stringify({
-              argv: sandbox!.argv,
-              env: sandbox!.env,
-              cwd: sandbox!.candidate,
-              prompt: sandbox!.prompt,
-              cleanupRoot: sandbox!.root,
-              timeoutMs: config.timeoutMs,
-              ...(worker ? { controllerGroup: worker.group } : {}),
-            })}\n`,
-          )
-          // Keep the pipe open: EOF also kills the sandbox if this worker is SIGKILLed.
-        })
-        processCompleted = true
-        await log.sync()
-      } finally {
-        await log.close()
-        await diagnostics.close()
-      }
+      hitchResult = await executeHitchMeta(sandbox, directory, config.timeoutMs, () => {
+        modelStopped = false
+        worker?.modelStarted()
+      })
+      modelStopped = true
+      worker?.modelStopped()
+      if (!hitchResult.complete) throw new Error(hitchResult.outcome)
       if (await exists(join(directory, 'cancel.json'))) throw new Error('codex-cancelled')
       const resultPath = join(sandbox.output, 'result.json'),
         info = await lstat(resultPath)
@@ -229,6 +107,8 @@ export async function executeJob(
         'codex-output-invalid',
         'codex-candidate-conflict',
         'codex-output-too-large',
+        'generation-budget-exhausted',
+        'hitch-meta-failed',
       ]
       outcome =
         error instanceof Error && known.includes(error.message) ? error.message : 'codex-execution-failed'
@@ -248,9 +128,11 @@ export async function executeJob(
       evidence: [],
       candidate,
       physicalAttempts: 0,
-      usage: usage.result(processCompleted),
+      usage: hitchResult?.usage ?? { tokens: null, model_requests: null, dollars: null },
       provenance: {
-        provider: 'codex',
+        provider: 'hitch',
+        harness: 'codex',
+        hitch_run_id: hitchResult?.runId ?? null,
         implementation: job.identity,
         model: config.model,
         input_digest: job.digest,

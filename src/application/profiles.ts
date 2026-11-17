@@ -12,7 +12,7 @@ import { pythonExecutable, pythonJson, pythonSourceRoot } from './python.js'
 import { resourceSdkEnvironment } from '../adapters/hitch/resource-sdk.js'
 import { configuredCancellation } from './cancellation.js'
 
-import { profile, assertProfileRole, processProfile } from './profile-store.js'
+import { profile, assertProfileRole, processProfile, codexExecutionConfiguration } from './profile-store.js'
 export { profile, profileRoot } from './profile-store.js'
 
 export async function configuredProvider(
@@ -142,12 +142,12 @@ export async function configuredProvider(
     throw new GearError('invalid-meta-profile', 'Select an external Meta process profile')
   const meta = await ProcessOperationProvider.connect(
     processProfile(
-      'kind' in metaProfile && metaProfile.kind === 'codex' && context.config.sandbox
+      'kind' in metaProfile && metaProfile.kind === 'codex'
         ? {
             ...metaProfile,
             configuration: {
-              ...metaProfile.configuration,
-              linuxIsolation: context.config.sandbox.linux_isolation,
+              ...codexExecutionConfiguration(metaProfile.configuration, targetProfile),
+              ...(context.config.sandbox ? { linuxIsolation: context.config.sandbox.linux_isolation } : {}),
             },
           }
         : metaProfile,

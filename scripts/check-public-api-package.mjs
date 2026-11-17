@@ -38,16 +38,18 @@ console.log('Public project API passed; algorithm authoring is Python-only');
     'examples/training-loop/unattended/prepare.mjs', 'examples/training-loop/managed-native/prepare-profile.py',
     'python/gear/training/cli/native_deployment.py', 'python/gear/training/runtime/native_deployment.py',
     'python/gear/training/runtime/native_supervisor.py']) assert.ok(packageFiles.has(file), file)
-  for (const file of ['assets/codex-meta-runner.mjs', 'assets/codex-process-guard.py', 'lib/adapters/codex/runner.js']) assert.ok(packageFiles.has(file), file)
-  for (const file of ['assets/codex-skill-meta-runner.mjs', 'skills/refine/scripts/transport.mjs', 'lib/search/api.js', 'lib/search/index.js', 'lib/search/testing.js', 'lib/testing.js']) assert.ok(!packageFiles.has(file), file)
+  for (const file of ['assets/codex-meta-runner.mjs', 'lib/adapters/codex/hitch-execution.js', 'lib/adapters/codex/runner.js']) assert.ok(packageFiles.has(file), file)
+  for (const file of ['assets/codex-process-guard.py', 'lib/adapters/codex/usage.js', 'assets/codex-skill-meta-runner.mjs', 'skills/refine/scripts/transport.mjs', 'lib/search/api.js', 'lib/search/index.js', 'lib/search/testing.js', 'lib/testing.js']) assert.ok(!packageFiles.has(file), file)
   for (const file of packageFiles) assert.ok(!/^(?:tests\/|fixture-lib\/|lib\/(?:search|refine|evaluator|meta|notebook|worker|candidate|experience)\/|lib\/state\/store\.|lib\/types\.)/u.test(file), `Retired implementation leaked into the package: ${file}`)
   for (const name of ['gates.py', 'history.py', 'observations.py']) assert.ok(!packageFiles.has(`python/gear/algorithms/${name}`), name)
   for (const file of packageFiles) assert.ok(!file.startsWith('python/gear/ops/') && !file.startsWith('python/gear/algorithms/gepa/') && !file.startsWith('python/gear/algorithms/random_search/') && !file.includes('retired_policies') && !file.includes('algorithms/_retired/'), file)
   const executable = join(root, 'codex-fixture')
   writeFileSync(executable, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "codex-cli 0.145.0"; else exit 1; fi\n')
   chmodSync(executable, 0o700)
+  const hitch = join(root, 'hitch-fixture.mjs')
+  writeFileSync(hitch, `#!${process.execPath}\nimport {metaHitchFixture} from ${JSON.stringify(new URL('../tests/fixtures/meta-hitch.mjs', import.meta.url).href)};await metaHitchFixture({});`, { mode: 0o700 })
   const input = { version: 1, action: 'describe', request: null,
-    configuration: { executable, model: 'fixture-model', allowedDomains: [], timeoutMs: 1000 },
+    configuration: { executable, hitch: { executable: hitch, root: join(root, 'hitch-state') }, model: 'fixture-model', allowedDomains: [], timeoutMs: 1000 },
     context: { runId: 'installed', directory: join(root, 'operations'), targets: join(root, 'targets'),
       targetAdapter: 'pi', protectedPaths: [consumer], tasks: [] } }
   const invoke = value => JSON.parse(execFileSync(join(consumer, 'node_modules/.bin/gear-meta-codex'), [], {
@@ -57,6 +59,7 @@ console.log('Public project API passed; algorithm authoring is Python-only');
   assert.equal(handshake.version, 1)
   assert.match(handshake.identity, /^sha256:[a-f0-9]{64}$/u)
   assert.equal(handshake.capabilities.inspect, true)
+  assert.equal(handshake.capabilities.generationBudget, true)
   assert.equal(handshake.admission, true)
   assert.equal(existsSync(input.context.directory), false)
   input.implementationIdentity = handshake.identity

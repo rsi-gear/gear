@@ -131,10 +131,23 @@ def main() -> None:
             assert len(meta_calls) >= (20 if name == "Harness2" else 2), (
                 "Missing real Meta calls"
             )
+            generation_usage = {"model_requests": 0, "tokens": 0}
+            for operation in meta_calls:
+                receipt = operation["receipt"]
+                assert receipt["provenance"]["provider"] == "hitch"
+                assert receipt["provenance"]["harness"] == "codex"
+                for dimension in generation_usage:
+                    actual = receipt["usage"][dimension]
+                    allowance = operation["request"]["generationLimits"][dimension]
+                    assert 0 < actual <= allowance
+                    generation_usage[dimension] += actual
+            for dimension, actual in generation_usage.items():
+                assert actual <= journal["spec"]["generationBudget"]["total"][dimension]
             results[name] = {
                 "status": "passed",
                 "run_id": run.id,
                 "iterations": iterations,
+                "generation_usage": generation_usage,
                 "report": report,
             }
         except (ProjectError, AssertionError, ValueError, KeyError, OSError) as error:

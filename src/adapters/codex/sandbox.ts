@@ -1,14 +1,12 @@
 import { chmod, mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, relative } from 'node:path'
-import { SandboxManager } from '@anthropic-ai/sandbox-runtime'
-import { createAirGappedSandboxConfig, sandboxSystemReadPaths } from '../../sandbox.js'
+import { sandboxSystemReadPaths } from '../../sandbox.js'
 import { GearError } from '../../domain/errors.js'
 import { materialPath } from '../../domain/material-path.js'
 import { snapshotTarget, targetResources } from '../storage/targets.js'
 import { DshHarnessAdapter } from '../dsh/harness.js'
 import { PiHarnessAdapter } from '../pi/harness.js'
-import { codexAuthFile } from './auth.js'
 import type { describeCodex } from './identity.js'
 import type { CodexJob } from './contracts.js'
 import { stageExperience } from './experience.js'
@@ -16,7 +14,6 @@ import { ownCodexRoot, type CodexResources } from './cleanup.js'
 import { builtinPolicy } from '../python/builtin-policy.js'
 import type { Json } from '../../domain/algorithm-wire.js'
 
-export const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
 const contains = (root: string, path: string): boolean => {
   const child = relative(root, path)
   return !child || (!isAbsolute(child) && child !== '..' && !child.startsWith('../'))
@@ -29,7 +26,6 @@ export async function prepareSandbox(
   runtime: Awaited<ReturnType<typeof describeCodex>>,
   resources: CodexResources,
 ) {
-  const { executable, codeModeHost, caCertificates } = runtime
   const { configuration: config, context, request } = job.input
   const root = await mkdtemp(join(await realpath(tmpdir()), 'gear-meta-'))
   resources.root = await ownCodexRoot(root)
@@ -100,15 +96,7 @@ export async function prepareSandbox(
     )
     await writeFile(join(root, 'input.json'), JSON.stringify(meta.input), { mode: 0o400 })
     await writeFile(join(root, 'schema.json'), JSON.stringify(meta.schema), { mode: 0o400 })
-    if (config.authHome) {
-      await writeFile(join(home, '.codex/auth.json'), await codexAuthFile(config.authHome), { mode: 0o600 })
-    }
-    const runtimePaths = [
-      ...sandboxSystemReadPaths(),
-      executable,
-      ...(codeModeHost ? [codeModeHost] : []),
-      ...experience.readPaths,
-    ]
+    const runtimePaths = sandboxSystemReadPaths()
     // Listing the parent as read-only can cover its writable children when
     // bubblewrap restores mounts beneath a denied directory. Grant each input
     // and working directory explicitly so Linux keeps candidate/output writable.
@@ -119,6 +107,7 @@ export async function prepareSandbox(
       candidate,
       output,
       home,
+      ...experience.readPaths,
       ...(request.operatorCall ? [sourceRoot] : []),
     ]
     for (const protectedPath of [
@@ -131,86 +120,62 @@ export async function prepareSandbox(
       if (allowRead.some((path) => contains(path, resolved)))
         throw new GearError('codex-sandbox-overlap', 'Private project state overlaps the Meta read allowlist')
     }
-    const policy = await createAirGappedSandboxConfig({
-      linuxIsolation: config.linuxIsolation,
-      allowRead,
-      allowWrite: [
-        output,
-        home,
-        ...experience.writePaths,
-        ...(request.operation.kind === 'generate_candidate' ? [candidate] : []),
-      ],
-    })
-    policy.network = {
-      allowedDomains: config.allowedDomains,
-      deniedDomains: config.allowedDomains.length ? [] : ['*'],
-      strictAllowlist: true,
-      allowUnixSockets: experience.sockets,
-      allowAllUnixSockets: process.platform === 'linux' && config.linuxIsolation === 'bubblewrap-only',
-      allowLocalBinding: false,
+    const runRequest = {
+      harness_ref: 'codex@installed',
+      model: config.model,
+      cwd: candidate,
+      workspace_mode: 'shared',
+      prompt: meta.prompt,
+      timeout_ms: config.timeoutMs,
+      agent_args: [],
+      ...(request.generationLimits ? { generation_budget: request.generationLimits } : {}),
+      isolation: {
+        executable_sha256: runtime.binaryDigest,
+        read_paths: allowRead.filter((path) => !runtimePaths.includes(path)),
+        write_paths: [
+          output,
+          ...experience.writePaths,
+          ...(request.operation.kind === 'generate_candidate' ? [candidate] : []),
+        ],
+        unix_sockets: experience.sockets,
+        allowed_domains: config.allowedDomains,
+        output_schema: join(root, 'schema.json'),
+        output_file: join(output, 'result.json'),
+        ...(config.linuxIsolation ? { linux_isolation: config.linuxIsolation } : {}),
+        ...(config.reasoningEffort ? { reasoning_effort: config.reasoningEffort } : {}),
+      },
     }
-    // Each operation worker owns a separate manager; no shared process-wide network policy.
-    await SandboxManager.initialize(policy)
-    await SandboxManager.waitForNetworkInitialization()
-    if (process.platform === 'linux') {
-      // The root read-deny mount otherwise hides the proxy socket binds added
-      // earlier by bubblewrap. Expose only this manager's filtered bridges.
-      policy.filesystem.allowRead = [
-        ...(policy.filesystem.allowRead ?? []),
-        ...[SandboxManager.getLinuxHttpSocketPath(), SandboxManager.getLinuxSocksSocketPath()].filter(
-          (socket): socket is string => socket !== undefined,
-        ),
-      ]
-    }
-    const args = [
-      executable,
-      'exec',
-      '--ephemeral',
-      '--ignore-user-config',
-      '--ignore-rules',
-      '--strict-config',
-      '--disable',
-      'apps',
-      '--disable',
-      'plugins',
-      '--skip-git-repo-check',
-      '--json',
-      '--dangerously-bypass-approvals-and-sandbox',
-      '--output-schema',
-      join(root, 'schema.json'),
-      '--output-last-message',
-      join(output, 'result.json'),
-      '-m',
-      config.model,
-      '-c',
-      'project_doc_max_bytes=0',
-      '-C',
-      candidate,
-      ...(config.reasoningEffort
-        ? ['-c', `model_reasoning_effort=${JSON.stringify(config.reasoningEffort)}`]
-        : []),
-      '-',
-    ]
-    const wrapped = await SandboxManager.wrapWithSandboxArgv(args.map(quote).join(' '), '/bin/bash', policy)
+    const requestPath = join(root, 'hitch-request.json')
+    await writeFile(requestPath, JSON.stringify(runRequest), { mode: 0o400 })
     return {
       root,
       candidate,
       output,
       home,
       dispose: experience.dispose,
-      argv: wrapped.argv,
+      requestPath,
+      argv: [
+        runtime.hitch.executable,
+        '--root',
+        runtime.hitch.root,
+        'run',
+        '--request-file',
+        requestPath,
+        '--output',
+        'json',
+        '--watch-stdin',
+      ],
       env: {
-        PATH: '/usr/bin:/bin',
+        PATH: process.env.PATH,
         LANG: 'C.UTF-8',
-        HOME: home,
-        TMPDIR: join(home, 'tmp'),
-        CODEX_HOME: join(home, '.codex'),
-        ...(caCertificates ? { CODEX_CA_CERTIFICATE: caCertificates, SSL_CERT_FILE: caCertificates } : {}),
+        HITCH_CODEX_PATH: runtime.executable,
+        ...Object.fromEntries(['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY'].flatMap(name => process.env[name] ? [[name, process.env[name]]] : [])),
+        ...(config.authHome ? { HITCH_CODEX_AUTH_HOME: config.authHome } : {}),
+        ...(context.experiencePython ? { HITCH_GUARD_PYTHON: context.experiencePython } : {}),
         ...(process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY
           ? { CODEX_API_KEY: process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY }
           : {}),
       },
-      prompt: meta.prompt,
     }
   }
 }

@@ -56,7 +56,7 @@ generation:
 
 两个总上限和两个单次上限都可独立省略，填写时必须为正安全整数。省略总上限表示该维度没有 run 总限制；省略单次上限时，单次预约使用剩余总额。单次上限大于剩余额度时会缩小到剩余值。完整操作批次必须一次预约成功，不会先执行一部分。`config explain` 显示配置来源。
 
-Meta provider 必须明确声明 `generationBudget: true`，并在每个实际模型调用前对整个 operation 的所有调用、内部重试和总结执行限制。当前随包 Codex CLI runner 不具备这种硬限制，配置上述限额会在 baseline 提交前返回 `generation-budget-unsupported`；不会将事后观察到的 token 用量当成硬保证。支持该合同的 process provider 可接入这一路径。
+Meta provider 必须明确声明 `generationBudget: true`，并在每个实际模型调用前对整个 operation 的所有调用、内部重试和总结执行限制。随包 Codex Meta 桥接统一调用具备 `isolated_agent_run: "1"` 和 `generation_budget: "1"` 的 Hitch。Hitch 在转发前计数请求，以文本输入保守预留限制输出 token；缺失用量时保留预算占用。Hitch 能力不足会拒绝准入，不回退为直接启动 Codex。
 
 运行层在副作用前把 `generationLimits` 和 operation ID 一起持久化。只有已知、合法的实际用量会释放预约余量；缺失或 null 计量保留完整额度，丢失回包先 inspect 同一 operation。`tokens` 是所有调用的输入与输出 token 之和，缓存输入计入输入一次，不能把 reasoning token 重复加到已含它的输出中。若同时提供拆分计量，合计必须一致；实际 token 不能与零请求数矛盾。
 
@@ -163,9 +163,8 @@ Meta 与 Target 分别认证。Codex Meta 使用[随包 operation runner](../../
 原生 `kind: "codex"` 配置由 Gear 解析到当前安装包，避免手写 runner 路径。
 主机需要 HTTP 上游代理时，在 Codex profile 的 `passEnv` 中显式加入 `HTTP_PROXY`、`HTTPS_PROXY` 和可选的 `NO_PROXY`（CLI：`--pass-env HTTP_PROXY,HTTPS_PROXY,NO_PROXY`）。配置只保存变量名；可信 worker 通过这些值连接上游，Codex 只收到沙箱代理端点，不会收到上游代理凭据。`allowedDomains` 仍限制目标域名，`NO_PROXY` 也不能绕过该限制。默认不继承代理变量；使用 API key 时，须在同一列表中保留相应 key 的变量名。
 
-Codex 在清理前持久化已校验的 `receipt.json`，因此回执可能先于执行锁释放出现；私有 `cleanup-started.json` / `cleanup.json` 单独记录清理，`fallback-required` 表示有步骤失败或超时，不表示超时动作已完成。凭据、trajectory gateway、sandbox reset 和根目录分别限 500/500/1500/1000 ms，状态文件写入各限 250 ms；清理开始后的 4500 ms watchdog 兜底退出。只有本次独立 worker 可以终止经验证的自身进程组，回收 CONNECT 两端和桥接子进程；直接调用库函数不会终止宿主进程组。
+Codex profile 默认复用所选 Hitch Target 的 executable/root，也可显式设置 `configuration.hitch: {executable, root}`。Hitch 负责模型隔离、凭据、请求计量和终止；Gear 负责输入授权、结果校验和持久化回执。缺少停止确认时保持 `unknown`，不重发、不释放预算。计量、清理和恢复细节见 [Meta 执行协议](../../codex-meta-runner.zh-CN.md)。显式上游代理要求 Node 22.21+ 或 24.5+。
 
-只有守护进程的专用确认管道证明模型组已终止后才写回执。guard 被杀或缺少确认时保持 `unknown`，不会重发；私有临时根目录保留，凭据和根目录标为 `unconfirmed`，其中可能仍有临时认证文件，需保留原 journal 调查。取消仍须在既有 5 秒等待内同时确认回执和锁释放，超时不能当作停止证明。runner asset、guard 和清理代码均绑定到实现身份，旧冻结运行不会自动改用新实现恢复。
 `doctor` 检查本地登录文件或环境变量存在性；不验证远端模型授权、不执行 benchmark。
 自定义 process 的认证返回 `provider_managed`，需按其文档检查。
 Python `Project` 提供 `profiles()`、`create_profile()`、`use_profile()`、`doctor()` 及 async 对应入口。

@@ -1,11 +1,9 @@
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { createServer } from 'node:http'
-import { createServer as createNetServer, type Socket } from 'node:net'
 import { fileLockHeld } from '../../src/adapters/storage/file-lock.js'
 import { registerOperation, withJournal } from '../../src/adapters/codex/journal.js'
 import type { CodexInput } from '../../src/adapters/codex/contracts.js'
@@ -78,156 +76,15 @@ async function fixture(mode = 'success', adapter: 'pi' | 'dsh' = 'pi', prepare =
   await writeFile(join(privateRoot, 'held-out.json'), 'HELD_OUT_PRIVATE_CANARY')
   const harness = adapter === 'pi' ? new PiHarnessAdapter() : new DshHarnessAdapter()
   await harness.prepare(join(targets, 'anchor'))
-  const executable = join(root, 'fake-codex.mjs')
-  const fakePython =
-    process.platform === 'darwin'
-      // Xcode-selected Python may live under /Applications, outside the sandbox.
-      ? '/Library/Developer/CommandLineTools/usr/bin/python3'
-      : '/usr/bin/python3'
-  await writeFile(
-    executable,
-    `#!${fakePython}
-import json,os,sys,time,subprocess
-from pathlib import Path
-if '--version' in sys.argv:
- print('codex-cli 0.145.0'); sys.exit(0)
-args=sys.argv[1:]
-for arg in ['exec','--ephemeral','--ignore-user-config','--ignore-rules','--strict-config','--json','--output-schema','--output-last-message']:
- assert arg in args, arg
-for feature in ['apps','plugins']:
- assert args[args.index(feature)-1]=='--disable'
-assert 'model_reasoning_effort="max"' in args
-if sys.platform=='darwin':
- assert os.environ['CODEX_CA_CERTIFICATE']==os.environ['SSL_CERT_FILE']
- assert 'BEGIN CERTIFICATE' in Path(os.environ['CODEX_CA_CERTIFICATE']).read_text()
-view=json.loads(Path('../input.json').read_text())
-prompt=sys.stdin.read()
-if ${JSON.stringify(mode)}=='operator':
- assert view['request']['prompt']=='Choose between the frozen donor materials'
- assert len(view['sources'])==2
- left,right=[Path(source['path'])/'prompt.md' for source in view['sources']]
- assert left.read_text()=='donor one' and right.read_text()=='donor two'
- for source in [left,right,Path('AGENTS.md')]:
-  try:
-   source.write_text('forbidden edit')
-   raise AssertionError('READ_ONLY_MATERIAL_WAS_WRITABLE')
-  except (PermissionError,FileNotFoundError): pass
- try:
-  Path(${JSON.stringify(join(privateRoot, 'held-out.json'))}).read_text()
-  raise AssertionError('PRIVATE_FILE_READABLE')
- except (PermissionError,FileNotFoundError): pass
- assert json.loads(Path(args[args.index('--output-schema')+1]).read_text())['properties']['data']['required']==['selected']
- Path(args[args.index('--output-last-message')+1]).write_text(json.dumps({'declined':False,'data':{'selected':'donor two'}}))
- print(json.dumps({'type':'turn.completed','usage':{'input_tokens':12,'output_tokens':7}}),flush=True)
- sys.exit(0)
-assert ('Do not edit the candidate.' if view['operation']['kind']=='diagnose_seed' else 'Change only the allowed mutation paths.') in prompt
-assert len(view['tasks'])==1 and view['tasks'][0]['id']=='seed'
-for path in [${JSON.stringify(join(privateRoot, 'held-out.json'))},${JSON.stringify(join(targets, 'anchor', adapter === 'pi' ? 'AGENTS.md' : 'prompts/system.md'))}]:
- try:
-  Path(path).read_text()
-  raise AssertionError('PRIVATE_FILE_READABLE')
- except (PermissionError,FileNotFoundError): pass
-assert 'GEAR_META_SECRET' not in os.environ
-if ${JSON.stringify(mode)}=='proxy':
- import urllib.request,urllib.error
- assert 'PROXY_CREDENTIAL_CANARY' not in repr(dict(os.environ))
- assert urllib.request.urlopen('http://allowed.gear.test/probe',timeout=5).read()==b'upstream reached'
- try:
-  urllib.request.urlopen('http://denied.gear.test/probe',timeout=5)
-  raise AssertionError('DENIED_DOMAIN_REACHED')
- except urllib.error.HTTPError as error: assert error.code==403,error.code
-if ${JSON.stringify(mode)}.startswith('connect-'):
- import socket,urllib.parse,base64
- proxy=urllib.parse.urlsplit(os.environ['HTTPS_PROXY'])
- tunnel=socket.create_connection((proxy.hostname,proxy.port),timeout=5)
- auth=''
- if proxy.username:
-  auth='Proxy-Authorization: Basic '+base64.b64encode((urllib.parse.unquote(proxy.username)+':'+urllib.parse.unquote(proxy.password or '')).encode()).decode()+'\\r\\n'
- tunnel.sendall(('CONNECT allowed.gear.test:443 HTTP/1.1\\r\\nHost: allowed.gear.test:443\\r\\n'+auth+'\\r\\n').encode())
- header=b''
- while b'\\r\\n\\r\\n' not in header: header+=tunnel.recv(4096)
- assert b'200' in header,header
- tunnel.shutdown(socket.SHUT_WR)
- tunnel.close()
-if 'experience' in view and ${JSON.stringify(mode)}!='historical-sdk':
- memory=view['experience']
- assert memory['cards'][0]['classification']['effect']=='regressed'
- query=subprocess.run(memory['reader']['argv'],input=json.dumps({'action':'query','query':{'effects':['regressed']}}),text=True,capture_output=True)
- assert query.returncode==0,query.stdout+query.stderr
- page=json.loads(query.stdout)
- assert page['total']==1 and page['snapshot_digest']==memory['snapshot_digest']
- detail=subprocess.run(memory['reader']['argv'],input=json.dumps({'action':'read','ref':page['items'][0]['card']['ref'],'view':'diff'}),text=True,capture_output=True)
- assert detail.returncode==0,detail.stdout+detail.stderr
- assert json.loads(detail.stdout)['items'][0]['patch']=='-before\\n+after\\n'
- if 'trajectory' in memory['reader']:
-  def read_memory(body):
-   return subprocess.run(memory['reader']['argv'],input=json.dumps(body),text=True,capture_output=True)
-  ref=page['items'][0]['card']['ref']
-  sources=read_memory({'action':'read','ref':ref,'view':'trajectory'})
-  assert sources.returncode==0,sources.stdout+sources.stderr
-  source=json.loads(sources.stdout)['items'][0]['ref']
-  params={'action':'trajectory','ref':ref,'source_ref':source,'query':{'limit':1}}
-  trace=read_memory(params)
-  assert trace.returncode==0,trace.stdout+trace.stderr
-  trace_page=json.loads(trace.stdout)
-  assert trace_page['items'][0]['data']=='historical seed trace'
-  assert trace_page['child_sessions']=='not-included'
-  params['query']['cursor']=trace_page['next_cursor']
-  second=read_memory(params)
-  assert second.returncode==0,second.stdout+second.stderr
-  assert json.loads(second.stdout)['items'][0]['seq']==1
-  params['source_ref']='trajectory:'+'f'*64
-  denied=read_memory(params)
-  assert denied.returncode!=0 and 'trajectory-outside-snapshot' in denied.stdout+denied.stderr
-  try:
-   Path(${JSON.stringify(join(root, 'hitch-private/private.txt'))}).read_text()
-   raise AssertionError('PROVIDER_PRIVATE_FILE_READABLE')
-  except (PermissionError,FileNotFoundError): pass
-output=Path(args[args.index('--output-last-message')+1])
-schema=json.loads(Path(args[args.index('--output-schema')+1]).read_text())
-assert ('data' if 'meta' in (view['operation'].get('payload') or {}) else 'clusters') in schema['required']
-print(json.dumps({'type':'test.started','pid':os.getpid(),'cwd':os.getcwd()}),flush=True)
-if ${JSON.stringify(mode)}=='slow': time.sleep(2.5)
-if ${JSON.stringify(mode)} in ['hold','connect-cancel']: time.sleep(60)
-if view['operation']['kind']=='diagnose_seed':
- try:
-  Path(${JSON.stringify(adapter === 'pi' ? 'AGENTS.md' : 'prompts/system.md')}).write_text('unauthorized diagnosis edit')
-  raise AssertionError('diagnosis could edit candidate')
- except OSError as error:
-  import errno
-  assert error.errno in (errno.EACCES,errno.EPERM,errno.EROFS),error
-if view['operation']['kind']=='generate_candidate': Path(${JSON.stringify(adapter === 'pi' ? 'AGENTS.md' : 'prompts/system.md')}).write_text('Use the requested output format.')
-if ${JSON.stringify(mode)}=='protected': Path('package.json').write_text('{}')
-if ${JSON.stringify(mode)}=='invalid': output.write_text('not json')
-elif ${JSON.stringify(mode)}=='invalid-result': output.write_text(json.dumps({'summary':'bad','declined':False,'hypotheses':[42],'clusters':[]}))
-elif ${JSON.stringify(mode)}=='declined': output.write_text(json.dumps({'summary':'no change','declined':True,'hypotheses':[],'clusters':[]}))
-elif ${JSON.stringify(mode)}.startswith('historical') and view['operation']['kind']=='diagnose_seed':
- custom=view['operation']['payload']['meta']
- key=custom['schema']['required'][0]
- assert schema['properties']['data']==custom['schema']
- choices=schema['properties']['data']['properties'][key]['enum']
- assert choices==(['anchor'] if ${JSON.stringify(mode)}=='historical-sdk' else ['anchor','older'])
- assert 'operation.payload.meta.prompt' in prompt and 'even when all tasks passed' in custom['prompt']
- output.write_text(json.dumps({'declined':False,'data':{key:'outside' if ${JSON.stringify(mode)}=='historical-invalid' else choices[-1]}}))
-elif ${JSON.stringify(mode)}.startswith('historical'):
- assert schema['properties']['data']=={'type':'string'}
- output.write_text(json.dumps({'declined':False,'data':'Updated the selected candidate.'}))
-else: output.write_text(json.dumps({'summary':'read isolation verified','declined':False,'hypotheses':['Respect output format'],'clusters':[{'task_ids':['seed'],'hypotheses':['Respect output format']}]}))
-if ${JSON.stringify(mode)}=='partialusage': print(json.dumps({'type':'turn.completed','usage':{'output_tokens':3}}),flush=True)
-print(json.dumps({'type':'turn.completed','usage':{'input_tokens':12,'cached_input_tokens':3,'output_tokens':7}}),end='' if ${JSON.stringify(mode)}=='partialusage' else '\\n',flush=True)
-if ${JSON.stringify(mode)} in ['partialfailed','connect-failure']:
- print(json.dumps({'type':'turn.started'}),flush=True)
- sys.exit(3)
-`,
-    { mode: 0o700 },
-  )
-  await chmod(executable, 0o700)
+  const executable = join(root, 'fake-codex.mjs'), hitch = join(root, 'fake-hitch.mjs')
+  await writeFile(executable, '#!/bin/sh\necho "codex-cli 0.145.0"\n', { mode: 0o700 })
+  await writeFile(hitch, `#!${process.execPath}\nimport {metaHitchFixture} from ${JSON.stringify(new URL('../fixtures/meta-hitch.mjs', import.meta.url).href)};await metaHitchFixture(${JSON.stringify({mode, adapter})});`, { mode: 0o700 })
   const profile = {
     command: [process.execPath, resolve('assets/codex-meta-runner.mjs')],
     workingDirectory: root,
-    configuration: { executable, model: 'fixture-model', reasoningEffort: 'max' as const, allowedDomains: mode === 'proxy' || mode.startsWith('connect-') ? ['allowed.gear.test'] : [], timeoutMs: 12_000,
+    configuration: { executable, hitch: { executable: hitch, root: join(root, 'hitch-state') }, model: 'fixture-model', reasoningEffort: 'max' as const, allowedDomains: ['chatgpt.com'], timeoutMs: 12_000,
       ...(process.env.GEAR_TEST_LINUX_ISOLATION ? { linuxIsolation: process.env.GEAR_TEST_LINUX_ISOLATION as 'seccomp' | 'bubblewrap-only' } : {}) },
-    passEnv: mode === 'proxy' ? ['HTTP_PROXY', 'NO_PROXY'] : mode.startsWith('connect-') ? ['HTTPS_PROXY'] : [],
+    passEnv: [],
     timeoutMs: 20_000,
   }
   const context = {
@@ -284,14 +141,14 @@ const signal = () => new AbortController().signal
 async function modelProcessIds(directory: string): Promise<number[]> {
   // Linux PID namespaces report a different PID inside the sandbox. Observe
   // the uniquely named fixture from the host, where cancellation is asserted.
-  const executable = resolve(directory, '../../..', 'fake-codex.mjs')
+  const executable = resolve(directory, '../../..', 'fake-hitch.mjs')
   const { stdout } = await promisify(execFile)('/bin/ps', ['-A', '-o', 'pid=', '-o', 'args='])
   return stdout.split('\n').filter(line => line.includes(executable)).map(line => Number(line.trim().split(/\s+/u)[0]))
 }
 async function untilStarted(directory: string) {
   for (let index = 0; index < 120; index++) {
     try {
-      if ((await readFile(join(directory, 'events.jsonl'), 'utf8')).includes('test.started')) {
+      if ((await readFile(join(directory, 'stderr.log'), 'utf8')).includes('test.started')) {
         // Some cases deliberately remove started.json after this point.
         await rememberWorker(directory)
         return
@@ -323,7 +180,7 @@ describe('formal Codex operation runner', () => {
     const result = await f.provider.submit(f.request, signal())
     expect(result.result.status).toBe('complete')
     expect(result.result.data).toMatchObject({ data: { selected: 'donor two' } })
-    expect(result.usage).toMatchObject({ model_requests: null, tokens: 19 })
+    expect(result.usage).toMatchObject({ model_requests: 1, tokens: 19 })
     expect((await f.provider.inspect(f.request, signal())).state).toBe('complete')
   }, 30_000)
   it.each([
@@ -373,7 +230,7 @@ describe('formal Codex operation runner', () => {
     const python = resolvePythonExecutable()
     // Persist the evaluation receipt, then lose its reply to require a fresh SDK resume.
     const targetProvider = join(f.root, 'target-provider.mjs')
-    await writeFile(targetProvider, (await readFile(resolve('tests/fixtures/project-provider.mjs'), 'utf8')).replace(
+    await writeFile(targetProvider, (await readFile(resolve('tests/fixtures/project-provider.mjs'), 'utf8')).replaceAll(
       'process.stdout.write(JSON.stringify(result))',
       "if (action === 'submit' && request.operation.kind === 'evaluate_seed' && request.operation.candidate_id !== 'anchor') throw new Error('lost SDK evaluation reply'); process.stdout.write(JSON.stringify(result))"))
     await writeFile(join(profiles, 'sdk-target.json'), JSON.stringify({ command: [process.execPath, targetProvider],
@@ -390,11 +247,11 @@ describe('formal Codex operation runner', () => {
       env: { ...process.env, PYTHONPATH: resolve('python'), GEAR_PYTHON: python,
         GEAR_COMMAND: JSON.stringify([process.execPath, resolve('lib/cli.js')]) } })
     const failed = await sdk("from gear import Project; from own_algorithm import SDKExample; Project.open().refine(algorithm=SDKExample(result_key='sdk_selected'), rounds=1)").then(() => null, error => error)
-    expect(failed?.stderr).toMatch(/lost SDK evaluation reply|process-operation-failed/)
     const runs = join(project, '.gear/runs'), [id] = await readdir(runs)
     expect(id).toBeTruthy()
     const runRoot = join(runs, id!), journalPath = join(runRoot, 'journal.json')
     const before = JSON.parse(await readFile(journalPath, 'utf8'))
+    expect(failed?.stderr ?? '', JSON.stringify({ status: before.status, operations: before.operations.map((entry: {status: string}) => entry.status) })).toMatch(/lost SDK evaluation reply|process-operation-failed/)
     expect(before.status).toBe('needs_recovery')
     expect(before.spec.algorithm).toEqual({ name: 'own_algorithm:SDKExample', options: { result_key: 'sdk_selected' } })
     expect(before.operations.map((entry: { request: OperationRequest }) => entry.request.operation.kind)).toEqual(['evaluate_seed', 'diagnose_seed', 'generate_candidate', 'evaluate_seed'])
@@ -412,30 +269,6 @@ describe('formal Codex operation runner', () => {
     expect(after.decisions.at(-1).decision.operations[0].kind).toBe('stop')
   }, 90_000)
 
-  it('chains explicit upstream proxies without exposing credentials or bypassing domain restrictions', async () => {
-    const requests: string[] = []
-    const authorization: Array<string | undefined> = []
-    const proxy = createServer((request, response) => {
-      requests.push(request.url ?? '')
-      authorization.push(request.headers['proxy-authorization'])
-      response.end('upstream reached')
-    })
-    await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', resolve))
-    try {
-      const address = proxy.address() as { port: number }
-      vi.stubEnv('HTTP_PROXY', `http://fixture:PROXY_CREDENTIAL_CANARY@127.0.0.1:${address.port}`)
-      vi.stubEnv('NO_PROXY', 'denied.gear.test')
-      const f = await fixture('proxy')
-      const receipt = await f.provider.submit(f.request, signal())
-      expect(receipt.result.status, await readFile(join(f.directory, 'stderr.log'), 'utf8')).toBe('complete')
-      expect(requests).toEqual(['http://allowed.gear.test/probe'])
-      expect(authorization).toEqual([`Basic ${Buffer.from('fixture:PROXY_CREDENTIAL_CANARY').toString('base64')}`])
-      expect(await readFile(join(f.directory, 'job.json'), 'utf8')).not.toContain('PROXY_CREDENTIAL_CANARY')
-    } finally {
-      proxy.closeAllConnections()
-      await new Promise<void>((resolve, reject) => proxy.close(error => error ? reject(error) : resolve()))
-    }
-  })
   it('binds the optional code-mode companion to the runtime identity', async () => {
     const { profile, root } = await fixture()
     const before = await describeCodex(profile.configuration)
@@ -448,7 +281,7 @@ describe('formal Codex operation runner', () => {
     expect((await describeCodex(profile.configuration)).identity).not.toBe(present.identity)
   })
   for (const withTrajectory of [false, true])
-  it(`queries and reads frozen seed experiences${withTrajectory ? ' and trajectory pages' : ''} inside the actual Meta sandbox`, async () => {
+  it(`queries and reads frozen seed experiences${withTrajectory ? ' and trajectory pages' : ''} through the authorized Hitch handoff`, async () => {
     const { provider: initialProvider, request, context, root, profile } = await fixture('success', 'pi', false)
     let provider = initialProvider
     const trajectory_refs: TrajectoryReference[] = []
@@ -488,19 +321,12 @@ describe('formal Codex operation runner', () => {
     expect(receipt.result.status, JSON.stringify(receipt) + diagnostic).toBe('complete')
     expect(receipt.result.data).toMatchObject({ summary: 'read isolation verified' })
   }, 30_000)
-  it('keeps a missing turn counter unknown and reads the final event without a trailing newline', async () => {
-    const { provider, request } = await fixture('partialusage')
-    const receipt = await provider.submit(request, signal())
-    expect(receipt.result.status).toBe('complete')
-    expect(receipt.usage).toEqual({ input_tokens: null, cached_input_tokens: null, output_tokens: 10,
-      tokens: null, model_requests: null, dollars: null })
-  }, 30_000)
   it('does not report completed-turn usage as the total after a later turn fails', async () => {
     const { provider, request } = await fixture('partialfailed')
     const receipt = await provider.submit(request, signal())
     expect(receipt.result.status).toBe('failed')
     expect(receipt.candidate).toBeNull()
-    expect(Object.values(receipt.usage)).toEqual([null, null, null, null, null, null])
+    expect(receipt.usage).toMatchObject({ tokens: null, model_requests: 2 })
   }, 30_000)
   for (const adapter of ['pi', 'dsh'] as const)
     it(`isolates seed/candidate and persists one ${adapter} generation`, async () => {
@@ -521,10 +347,9 @@ describe('formal Codex operation runner', () => {
         cached_input_tokens: 3,
         output_tokens: 7,
         tokens: 19,
-        model_requests: null,
-        dollars: null,
+        model_requests: 1,
       })
-      expect((await readFile(join(directory, 'events.jsonl'), 'utf8')).match(/test.started/gu)).toHaveLength(
+      expect((await readFile(join(directory, 'stderr.log'), 'utf8')).match(/test.started/gu)).toHaveLength(
         1,
       )
       expect(await provider.inspect(request, signal())).toEqual({ state: 'complete', receipt: first })
@@ -547,7 +372,7 @@ describe('formal Codex operation runner', () => {
     const result = await provider.inspect(request, signal())
     expect(result.state).toBe('complete')
     if (result.state === 'complete') expect(result.receipt.result.status).toBe('complete')
-    expect((await readFile(join(directory, 'events.jsonl'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
+    expect((await readFile(join(directory, 'stderr.log'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
   }, 30_000)
   it('cancels the owned process and persists its failed receipt', async () => {
     const { provider, request, directory } = await fixture('hold')
@@ -616,7 +441,7 @@ describe('formal Codex operation runner', () => {
     const waiting = provider.submit(request, signal()).catch((error) => error)
     await untilStarted(directory)
     const started = JSON.parse(await readFile(join(directory, 'started.json'), 'utf8')) as { pid: number }
-    const event = JSON.parse((await readFile(join(directory, 'events.jsonl'), 'utf8')).split('\n')[0]!) as {
+    const event = JSON.parse((await readFile(join(directory, 'stderr.log'), 'utf8')).split('\n')[0]!) as {
       pid: number
       cwd: string
     }
@@ -632,8 +457,8 @@ describe('formal Codex operation runner', () => {
         () => false,
       ),
       await readFile(join(directory, 'stderr.log'), 'utf8'),
-    ).toBe(false)
-    expect((await readFile(join(directory, 'events.jsonl'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
+    ).toBe(true)
+    expect((await readFile(join(directory, 'stderr.log'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
   }, 30_000)
 })
 
@@ -718,91 +543,29 @@ it('does not restart a killed worker even if its started marker is also lost', a
   await rm(join(directory, 'started.json'))
   await promisify(execFile)(process.execPath, [resolve('assets/codex-meta-runner.mjs'), '--worker', directory])
   expect(await provider.inspect(request, signal())).toEqual({ state: 'unknown' })
-  expect((await readFile(join(directory, 'events.jsonl'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
+  expect((await readFile(join(directory, 'stderr.log'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
 }, 30_000)
 
 
-for (const mode of ['connect-success', 'connect-failure', 'connect-cancel'])
-it(`publishes the ${mode} result and releases its worker/lock despite a half-closed CONNECT tunnel`, async () => {
-  const sockets = new Set<Socket>(), requests: string[] = []
-  const upstream = createNetServer({ allowHalfOpen: true }, socket => {
-    sockets.add(socket)
-    socket.on('error', () => {})
-    socket.once('close', () => sockets.delete(socket))
-    let header = ''
-    socket.on('data', chunk => {
-      header += chunk.toString()
-      if (!header.includes('\r\n\r\n')) return
-      requests.push(header.split('\r\n')[0]!)
-      socket.removeAllListeners('data')
-      socket.resume()
-      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
-    })
-    // Keep the response half open after FIN. This is the dependency reset deadlock.
-    socket.on('end', () => {})
-  })
-  await new Promise<void>(resolve => upstream.listen(0, '127.0.0.1', resolve))
-  try {
-    vi.stubEnv('HTTPS_PROXY', `http://127.0.0.1:${(upstream.address() as { port: number }).port}`)
-    const f = await fixture(mode)
-    const waiting = f.provider.submit(f.request, signal())
-    await untilStarted(f.directory)
-    if (mode === 'connect-cancel') await f.provider.cancel(f.request)
-    const receipt = await waiting
-    expect(receipt.result.status, await readFile(join(f.directory, 'stderr.log'), 'utf8')).toBe(mode === 'connect-success' ? 'complete' : 'failed')
-    expect(receipt.candidate === null).toBe(mode !== 'connect-success')
-    expect(requests).toEqual(['CONNECT allowed.gear.test:443 HTTP/1.1'])
-    const started = JSON.parse(await readFile(join(f.directory, 'started.json'), 'utf8')) as { pid: number }
-    await expect.poll(() => readFile(join(f.directory, 'cleanup.json'), 'utf8').then(JSON.parse).catch(() => null), { timeout: 5000 }).toMatchObject({ status: 'fallback-required', model_stopped: true, stages: { credentials: 'complete', sandbox: 'timed-out', root: 'complete' } })
-    await expect.poll(async () => {
-      const { stdout } = await promisify(execFile)('/bin/ps', ['-axo', 'pgid=,stat='])
-      return stdout.split('\n').some(line => { const [group, state] = line.trim().split(/\s+/u); return Number(group) === started.pid && !state?.startsWith('Z') })
-    }, { timeout: 5000 }).toBe(false)
-    expect(await fileLockHeld(join(f.directory, 'execution.lock'))).toBe(false)
-    const event = JSON.parse((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).split('\n')[0]!) as { cwd: string }
-    await expect(readFile(join(event.cwd, '../home/.codex/auth.json'))).rejects.toThrow()
-    await expect(readFile(join(event.cwd, 'AGENTS.md'))).rejects.toThrow()
-    // The deliberately half-open test peer retains its own write half even
-    // after the worker's FDs are gone. Finish its FIN handshake only now.
-    expect([...sockets].every(socket => socket.readableEnded)).toBe(true)
-    for (const socket of sockets) socket.end('closed-endpoint-probe')
-    await expect.poll(() => sockets.size, { timeout: 3000 }).toBe(0)
-    expect(await f.provider.submit(f.request, signal())).toEqual(receipt)
-    expect((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
-  } finally {
-    for (const socket of sockets) socket.destroy()
-    await new Promise<void>((resolve, reject) => upstream.close(error => error ? reject(error) : resolve()))
-  }
-}, 30_000)
-
-it('keeps a signal-killed guard without its private acknowledgment unknown and never repeats its call', async () => {
+it('keeps a signal-killed Hitch without a stopped receipt unknown and never repeats its call', async () => {
   const f = await fixture('hold')
   const waiting = f.provider.submit(f.request, signal()).catch(error => error)
   await untilStarted(f.directory)
   const { pid: worker } = JSON.parse(await readFile(join(f.directory, 'started.json'), 'utf8')) as { pid: number }
   const { stdout } = await promisify(execFile)('/bin/ps', ['-A', '-o', 'pid=', '-o', 'ppid=', '-o', 'args='])
   const rows = stdout.split('\n').map(line => line.trim().split(/\s+/u))
-  const guard = rows.find(row => Number(row[1]) === worker && row.slice(2).join(' ').includes('/assets/codex-process-guard.py'))
-  expect(guard).toBeDefined()
-  const leader = rows.find(row => Number(row[1]) === Number(guard![0]))
-  expect(leader).toBeDefined()
-  const event = JSON.parse((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).split('\n')[0]!) as { cwd: string }
+  const hitch = rows.find(row => Number(row[1]) === worker && row.slice(2).join(' ').includes('/fake-hitch.mjs'))
+  expect(hitch).toBeDefined()
+  const event = JSON.parse((await readFile(join(f.directory, 'stderr.log'), 'utf8')).split('\n')[0]!) as { cwd: string }
   roots.push(resolve(event.cwd, '..'))
-  // Both exact PIDs belong to this isolated sleeping fixture; no existing host
-  // process is signalled. Stop the orphan fixture model after removing its guard.
-  process.kill(Number(guard![0]), 'SIGKILL')
-  try { process.kill(-Number(leader![0]), 'SIGKILL') }
-  catch (error) {
-    // Linux may already reap the child group when its guard dies.
-    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
-  }
+  process.kill(Number(hitch![0]), 'SIGKILL')
   expect(await waiting).toBeInstanceOf(Error)
   expect(await f.provider.inspect(f.request, signal())).toEqual({ state: 'unknown' })
   await expect(readFile(join(f.directory, 'receipt.json'))).rejects.toMatchObject({ code: 'ENOENT' })
   expect(JSON.parse(await readFile(join(f.directory, 'cleanup.json'), 'utf8'))).toMatchObject({ model_stopped: false, stages: { root: 'unconfirmed', credentials: 'unconfirmed' } })
   expect(await readFile(join(event.cwd, 'AGENTS.md'), 'utf8')).toContain('Follow the task instruction')
   await expect(f.provider.submit(f.request, signal())).rejects.toThrow('codex-result-unknown')
-  expect((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
+  expect((await readFile(join(f.directory, 'stderr.log'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
 }, 30_000)
 
 it('refuses a real nonleader worker before writing started or spawning a model', async () => {
@@ -828,19 +591,19 @@ it('cleans up and releases its lock after receipt publication fails without repl
   // Create it after start so it cannot bypass the worker's execution admission.
   await mkdir(join(f.directory, 'receipt.json'))
   expect(await waiting).toBeInstanceOf(Error)
-  await expect.poll(() => readFile(join(f.directory, 'cleanup.json'), 'utf8').then(JSON.parse).catch(() => null), { timeout: 8000 }).toMatchObject({ model_stopped: true, stages: { credentials: 'complete', gateway: 'complete', sandbox: 'complete', root: 'complete' } })
+  await expect.poll(() => readFile(join(f.directory, 'cleanup.json'), 'utf8').then(JSON.parse).catch(() => null), { timeout: 8000 }).toMatchObject({ model_stopped: true, stages: { credentials: 'complete', gateway: 'complete', root: 'complete' } })
   await expect.poll(() => fileLockHeld(join(f.directory, 'execution.lock')), { timeout: 3000 }).toBe(false)
   const { pid } = JSON.parse(await readFile(join(f.directory, 'started.json'), 'utf8')) as { pid: number }
   await expect.poll(async () => {
     const { stdout } = await promisify(execFile)('/bin/ps', ['-axo', 'pgid=,stat='])
     return stdout.split('\n').some(line => { const [group, state] = line.trim().split(/\s+/u); return Number(group) === pid && !state?.startsWith('Z') })
   }, { timeout: 3000 }).toBe(false)
-  const event = JSON.parse((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).split('\n')[0]!) as { cwd: string }
+  const event = JSON.parse((await readFile(join(f.directory, 'stderr.log'), 'utf8')).split('\n')[0]!) as { cwd: string }
   await expect(readFile(join(event.cwd, 'AGENTS.md'))).rejects.toMatchObject({ code: 'ENOENT' })
   // Remove only the artificial conflict. Original admission/started state stays
   // intact and still forbids a second model execution without a durable result.
   await rm(join(f.directory, 'receipt.json'), { recursive: true })
   expect(await f.provider.inspect(f.request, signal())).toEqual({ state: 'unknown' })
   await expect(f.provider.submit(f.request, signal())).rejects.toThrow('codex-result-unknown')
-  expect((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
+  expect((await readFile(join(f.directory, 'stderr.log'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
 }, 30_000)
