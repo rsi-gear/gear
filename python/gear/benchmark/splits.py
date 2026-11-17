@@ -23,7 +23,12 @@ def propose_splits(tasks: list[dict], supplied: dict[str, str], mode: str = "hol
     families, inputs = {}, {}
     for task in sorted(tasks, key=lambda value: value["id"]):
         identifier = task["id"]
-        input_digest = digest({"instruction": task["instruction"], "resources": task["resources"]})
+        input_digest = digest(
+            {
+                "instruction": task["instruction"],
+                "resources": sorted(task["resources"], key=lambda resource: resource["path"]),
+            }
+        )
         for owners, key in ((families, task["family"]), (inputs, input_digest)):
             previous = owners.setdefault(key, identifier)
             roots[root(identifier)] = root(previous)

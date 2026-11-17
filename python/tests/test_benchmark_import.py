@@ -1,10 +1,13 @@
+import csv
 import json
 import os
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 
 from gear.benchmark import BenchmarkError, compile_benchmark
+from gear.benchmark.compiler import bytes_digest
 from gear.benchmark.importer import prepare_import
 from gear.benchmark.splits import propose_splits
 
@@ -36,6 +39,149 @@ class BenchmarkImportTests(unittest.TestCase):
         research = propose_splits(tasks[:3], {}, "research")
         self.assertFalse(research["held_out"])
         self.assertIn("未做独立验证", research["allocation"]["note"])
+
+    def test_compile_rejects_reordered_attachments_across_splits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "one.txt").write_bytes(b"one")
+            (root / "two.txt").write_bytes(b"two")
+            rows = [
+                {
+                    "id": "a",
+                    "instruction": "Read both files",
+                    "expected": "first answer",
+                    "attachments": ["one.txt", "two.txt"],
+                    "split": "seed",
+                },
+                {
+                    "id": "b",
+                    "instruction": "Read both files",
+                    "expected": "different answer",
+                    "attachments": ["two.txt", "one.txt"],
+                    "split": "held_out",
+                },
+            ]
+            for extension, line in (("jsonl", 2), ("csv", 3)):
+                with self.subTest(extension=extension):
+                    source = root / ("tasks." + extension)
+                    if extension == "jsonl":
+                        source.write_text(
+                            "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+                        )
+                    else:
+                        with source.open("w", encoding="utf-8", newline="") as stream:
+                            writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+                            writer.writeheader()
+                            writer.writerows(
+                                {**row, "attachments": ";".join(row["attachments"])} for row in rows
+                            )
+                    with self.assertRaisesRegex(BenchmarkError, "identical input") as error:
+                        compile_benchmark(root, {"version": 1, "source": source.name})
+                    self.assertEqual(error.exception.location, f"{source.name}:{line}:instruction")
+
+    def test_split_proposal_groups_reordered_resources_without_mutating_tasks(self):
+        resources = [
+            {"path": "one.txt", "digest": bytes_digest(b"one"), "content_base64": "b25l"},
+            {"path": "two.txt", "digest": bytes_digest(b"two"), "content_base64": "dHdv"},
+        ]
+        tasks = [
+            {**self.task("a", instruction="same"), "resources": resources},
+            {**self.task("b", instruction="same"), "resources": list(reversed(resources))},
+            self.task("c"),
+        ]
+        original = deepcopy(tasks)
+        result = propose_splits(tasks, {"a": "seed"})
+        self.assertEqual(result["seed"], ["a", "b"])
+        self.assertEqual(result["held_out"], ["c"])
+        self.assertEqual(len(result["allocation"]["groups"]), 2)
+        self.assertEqual(result, propose_splits(list(reversed(tasks)), {"a": "seed"}))
+        with self.assertRaisesRegex(BenchmarkError, "conflicting") as error:
+            propose_splits(tasks, {"a": "seed", "b": "held_out"})
+        self.assertEqual(error.exception.location, "split:a,b")
+        with self.assertRaisesRegex(BenchmarkError, "two family/input groups"):
+            propose_splits(tasks[:2], {})
+        research = propose_splits(tasks[:2], {}, "research")
+        self.assertEqual(research["seed"], ["a", "b"])
+        self.assertFalse(research["held_out"])
+        self.assertEqual(len(research["allocation"]["groups"]), 1)
+        self.assertEqual(tasks, original)
+
+    def test_split_proposal_keeps_distinct_resource_inputs_separate(self):
+        resource = {"path": "one.txt", "digest": bytes_digest(b"one"), "content_base64": "b25l"}
+        differences = {
+            "instruction": {"instruction": "different"},
+            "path": {"resources": [{**resource, "path": "two.txt"}]},
+            "content": {
+                "resources": [
+                    {**resource, "digest": bytes_digest(b"two"), "content_base64": "dHdv"}
+                ]
+            },
+            "missing_attachment": {"resources": []},
+        }
+        for name, difference in differences.items():
+            with self.subTest(difference=name):
+                tasks = [
+                    {**self.task("a", instruction="same"), "resources": [resource]},
+                    {
+                        **self.task("b", instruction="same"),
+                        "resources": [resource],
+                        **difference,
+                    },
+                ]
+                result = propose_splits(tasks, {"a": "seed", "b": "held_out"})
+                self.assertEqual(result["seed"], ["a"])
+                self.assertEqual(result["held_out"], ["b"])
+                self.assertEqual(len(result["allocation"]["groups"]), 2)
+
+    def test_import_groups_reordered_attachments_and_preserves_order(self):
+        import base64
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "one.txt").write_bytes(b"one")
+            (root / "two.txt").write_bytes(b"two")
+            rows = [
+                {
+                    "id": "a",
+                    "instruction": "Read both files",
+                    "expected": "ok",
+                    "attachments": ["one.txt", "two.txt"],
+                    "split": "seed",
+                },
+                {
+                    "id": "b",
+                    "instruction": "Read both files",
+                    "expected": "ok",
+                    "attachments": ["two.txt", "one.txt"],
+                },
+                {"id": "c", "instruction": "Independent task", "expected": "other"},
+            ]
+            source = root / "tasks.jsonl"
+            source.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+            plan = prepare_import(str(source))
+            self.assertEqual(plan["summary"]["splits"]["seed"], ["a", "b"])
+            self.assertEqual(plan["summary"]["splits"]["held_out"], ["c"])
+            self.assertEqual(len(plan["summary"]["splits"]["allocation"]["groups"]), 2)
+            for file in plan["files"]:
+                path = root / plan["directory"] / file["path"]
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(base64.b64decode(plan["blobs"][file["digest"]]))
+            compiled = compile_benchmark(root, plan["config"])
+            self.assertEqual(compiled["splits"], {"seed": ["a", "b"], "held_out": ["c"]})
+            tasks = {task["id"]: task for task in compiled["tasks"]}
+            for row in rows[:2]:
+                self.assertEqual(
+                    [resource["path"] for resource in tasks[row["id"]]["resources"]],
+                    ["resources/" + name for name in row["attachments"]],
+                )
+            rows[1]["split"] = "held_out"
+            source.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+            with self.assertRaisesRegex(BenchmarkError, "conflicting"):
+                prepare_import(str(source))
+            del rows[1]["split"]
+            source.write_text("".join(json.dumps(row) + "\n" for row in rows[:2]), encoding="utf-8")
+            with self.assertRaisesRegex(BenchmarkError, "two family/input groups"):
+                prepare_import(str(source))
 
     def test_import_freezes_resources_and_saves_a_reviewable_manifest(self):
         import base64
