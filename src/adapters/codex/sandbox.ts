@@ -74,7 +74,13 @@ export async function prepareSandbox(
           if (bytes > 8 * 1024 * 1024) throw new GearError('codex-source-size', 'Oversized source material')
           await writeFile(join(path, 'value.json'), content, { flag: 'wx', mode: 0o400 })
         }
-        sources.push({ ref: material.ref, path: `../sources/${index}` })
+        sources.push({
+          ref: material.ref,
+          path: `../sources/${index}`,
+          files: (material.files ? Object.keys(material.files).sort() : ['value.json']).map(
+            (name) => `../sources/${index}/${name}`,
+          ),
+        })
       }
     }
     // Scope authorization remains in the executor; Python owns the Meta task's

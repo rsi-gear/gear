@@ -69,7 +69,8 @@ def operator_meta_prepare(value: dict[str, Any]) -> dict[str, Any]:
         "prompt": (
             "Read ../input.json. Follow request.prompt or request.instruction and return the required JSON. "
             "Put the requested response in data; set declined=true if unable to comply. "
-            "The sources array grants read-only access to the listed material snapshots. "
+            "The sources array grants read-only access to material snapshots; each entry's files "
+            "lists the exact readable file paths relative to your working directory. "
             + (
                 "Edit only allowed candidate paths. "
                 if effect["kind"] == "candidate"
