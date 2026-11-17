@@ -82,6 +82,47 @@ class AlgorithmTests(unittest.TestCase):
         self.assertEqual(test_parent_policy(policy)["status"], "passed")
         self.assertEqual(toy_round(GEPA(parent_policy=policy))["status"], "passed")
 
+    def test_parent_policy_rejects_invalid_selections(self):
+        for invalid in ("negative_probability", "modified_option"):
+            with self.subTest(invalid=invalid):
+                def policy(view, rng):
+                    if not view.eligible:
+                        return ParentPlan.abstain("empty")
+                    selection = rng.choice(view.eligible, key="custom")
+                    if invalid == "negative_probability":
+                        selected = selection.option.scope + ":" + selection.option.candidate_id
+                        selection = replace(selection, probabilities=tuple(
+                            (key, 1.25 if key == selected else -0.25)
+                            for key, _ in selection.probabilities
+                        ))
+                    else:
+                        selection = replace(selection, option=replace(
+                            selection.option, score=selection.option.score + 0.1
+                        ))
+                    return ParentPlan.single(selection, view.candidate_limit)
+
+                with self.assertRaises(ValueError):
+                    test_parent_policy(policy)
+
+    def test_parent_policy_requires_a_reason_for_empty_eligibility(self):
+        def policy(view, rng):
+            if not view.eligible:
+                return ParentPlan.abstain("")
+            return ParentPlan.single(rng.choice(view.eligible, key="custom"), view.candidate_limit)
+
+        with self.assertRaisesRegex(ValueError, "reason"):
+            test_parent_policy(policy)
+
+    def test_parent_policy_accepts_reweighted_eligible_options(self):
+        def policy(view, rng):
+            if not view.eligible:
+                return ParentPlan.abstain("empty")
+            options = tuple(replace(option, probability=index + 1)
+                            for index, option in enumerate(view.eligible))
+            return ParentPlan.single(rng.choice(options, key="weighted"), view.candidate_limit)
+
+        self.assertEqual(test_parent_policy(policy)["status"], "passed")
+
     def test_invalid_slots_are_not_zero_and_complete_zero_is_retained(self):
         cells = (
             Evidence("a", "task", 0, 0, "valid", "all"),
