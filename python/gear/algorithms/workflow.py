@@ -11,6 +11,7 @@ from gear.canonical import JSON, digest
 from .contracts import (
     AlgorithmState,
     CandidateRanker,
+    CandidateValidator,
     Decision,
     Operation,
     ParentInput,
@@ -70,6 +71,7 @@ class StagedSearch:
     stages: tuple[Literal["local", "bridge", "global"], ...]
     promotion_widths: tuple[int, ...]
     global_gate: Literal["any", "no_regression"] = "any"
+    candidate_validator: CandidateValidator | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -123,25 +125,76 @@ class StagedSearch:
             return self._proposals(view, state)
         if phase == "generated":
             planned = strings(state.data["planned"])
-            candidates = tuple(
-                result.candidate_id
+            valid_candidates: list[str] = []
+            rejection_reasons: list[str] = []
+            completed_map = {
+                result.candidate_id: result
                 for result in view.completed
                 if result.kind == "generate_candidate"
                 and result.status == "complete"
                 and result.candidate_id is not None
                 and result.candidate_id in planned
-            )
+            }
+            for candidate_id in planned:
+                result = completed_map.get(candidate_id)
+                if not result:
+                    continue
+                if self.candidate_validator is not None:
+                    check = self.candidate_validator(result)
+                    if isinstance(check, tuple):
+                        is_valid, reason = check
+                    else:
+                        is_valid, reason = bool(check), None
+                    if not is_valid:
+                        rejection_reasons.append(
+                            reason or f"candidate '{candidate_id}' rejected by validator"
+                        )
+                        continue
+                valid_candidates.append(candidate_id)
+
+            candidates = tuple(valid_candidates)
             if not candidates:
-                return self._next_batch(view, state, "no candidate was generated")
+                reason = rejection_reasons[0] if rejection_reasons else "no candidate was generated"
+                return self._next_batch(view, state, reason)
             return self._evaluate(view, state, candidates, 0)
         if phase == "rank":
             return self._rank(view, state)
         raise ValueError("unknown algorithm phase: " + str(phase))
 
+    def _compute_complexity_penalties(self, view: SearchView) -> dict[str, float]:
+        penalties: dict[str, float] = {}
+        for result in view.completed:
+            if result.kind == "generate_candidate" and result.candidate_id:
+                penalty = 0.0
+                change = result.candidate_change
+                diff_map: dict[str, str] = {}
+                if isinstance(change, dict):
+                    files = change.get("files")
+                    if isinstance(files, list):
+                        for f in files:
+                            if isinstance(f, dict):
+                                path = f.get("path")
+                                patch = f.get("patch")
+                                if isinstance(path, str) and isinstance(patch, str):
+                                    diff_map[path] = patch
+                    else:
+                        for path, patch in change.items():
+                            if isinstance(path, str) and isinstance(patch, str):
+                                diff_map[path] = patch
+                for path, patch in diff_map.items():
+                    if "policy.js" in path or "systemPrompt" in path:
+                        for line in patch.splitlines():
+                            if line.startswith("+") and not line.startswith("+++"):
+                                penalty += len(line[1:].strip().encode("utf-8")) / 100.0
+                if penalty > 0:
+                    penalties[result.candidate_id] = penalty
+        return penalties
+
     def _parents(self, view: SearchView, state: AlgorithmState) -> Decision:
         if view.budget.candidates_remaining <= 0:
             return self._finish(view, state, "candidate budget exhausted")
         all_tasks = self._all_tasks(view)
+        penalties = self._compute_complexity_penalties(view)
         global_input = RankingInput(
             tuple(candidate.id for candidate in view.candidates),
             all_tasks,
@@ -149,6 +202,7 @@ class StagedSearch:
             view.budget.repetitions,
             objective=view.objective,
             anchor_id=view.anchor_id,
+            complexity_penalties=penalties if penalties else None,
         )
         global_ranking = self.ranker(global_input)
         champion = self._seed_champion(view, global_ranking)
@@ -462,6 +516,7 @@ class StagedSearch:
         )
 
     def _rank(self, view: SearchView, state: AlgorithmState) -> Decision:
+        penalties = self._compute_complexity_penalties(view)
         ranked = self.ranker(
             RankingInput(
                 strings(state.data["participants"]),
@@ -471,6 +526,7 @@ class StagedSearch:
                 weights(state.data["scope_weights"]),
                 objective=view.objective,
                 anchor_id=view.anchor_id,
+                complexity_penalties=penalties if penalties else None,
             )
         )
         research = ResearchRecord(

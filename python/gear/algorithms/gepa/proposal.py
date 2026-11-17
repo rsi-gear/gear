@@ -3,6 +3,63 @@
 from ..contracts import ProposalInput, ProposalPlan
 
 
+def plan_workflow_proposals(view: ProposalInput, min_cluster_size: int = 2) -> ProposalPlan:
+    """
+    Proposes modular, reusable workflows synthesized across multi-task failure clusters.
+
+    Prevents single-task overfitting by requiring at least min_cluster_size task failures
+    within a task family before proposing a generalized workflow.
+    """
+    failures = {cell.task_id for cell in view.failures if cell.score is not None}
+    task_map = {task.id: task for task in view.tasks}
+
+    # Group failed tasks by family
+    family_failures: dict[str, list[str]] = {}
+    for task_id in failures:
+        task = task_map.get(task_id)
+        if task:
+            family_failures.setdefault(task.family, []).append(task_id)
+
+    # Filter families with systematic failure patterns
+    valid_clusters = {
+        family: task_ids
+        for family, task_ids in sorted(
+            family_failures.items(), key=lambda item: (-len(item[1]), item[0])
+        )
+        if len(task_ids) >= min_cluster_size
+    }
+
+    hypotheses: list[str] = []
+    selected_tasks: list[str] = []
+
+    for family, task_ids in valid_clusters.items():
+        sample_ids = ", ".join(sorted(task_ids)[:4])
+        hypotheses.append(
+            f"Synthesize reusable workflow for family '{family}' addressing failure pattern across {len(task_ids)} tasks "
+            f"({sample_ids}). Place procedure in workflows/<id>.md with trigger criteria in catalog."
+        )
+        selected_tasks.extend(task_ids)
+
+    # Fallback if no family meets the multi-task cluster threshold
+    if not hypotheses:
+        base_plan = plan_proposals(view)
+        # Prevent unsupported workflow proposals from leaking through when cluster threshold is not met
+        sanitized = [h for h in base_plan.hypotheses if "workflow" not in h.lower()]
+        if not sanitized and base_plan.task_ids:
+            sanitized = ["Correct the observed seed failures while preserving successful behavior."]
+        return ProposalPlan(
+            tuple(dict.fromkeys(sanitized))[: view.candidate_limit],
+            base_plan.task_ids,
+            "failure-family proposals (non-workflow fallback)",
+        )
+
+    return ProposalPlan(
+        tuple(dict.fromkeys(hypotheses))[: view.candidate_limit],
+        tuple(sorted(set(selected_tasks))),
+        "reusable-workflow-synthesis",
+    )
+
+
 def plan_proposals(view: ProposalInput) -> ProposalPlan:
     failures = {cell.task_id for cell in view.failures if cell.score is not None}
     hypotheses: list[str] = []

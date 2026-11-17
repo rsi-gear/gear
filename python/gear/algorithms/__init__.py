@@ -1,10 +1,12 @@
 """Stable algorithm author API. Every recipe uses the same replaceable contracts."""
 
+from .anti_bloat import WorkflowCatalog, WorkflowEntry, validate_anti_bloat_candidate
 from .contracts import (
     AlgorithmState,
     Budget,
     Candidate,
     CandidateRanker,
+    CandidateValidator,
     Decision,
     Evidence,
     Operation,
@@ -31,6 +33,8 @@ from .contracts import (
     TaskSampler,
 )
 from .gepa import GEPA
+from .gepa.proposal import plan_workflow_proposals
+from .gepa.ranking import ParetoRanker, rank_candidates_pareto
 from .random import DeterministicRandom
 from .random_search import RandomSearch
 
@@ -39,6 +43,7 @@ __all__ = [
     "Budget",
     "Candidate",
     "CandidateRanker",
+    "CandidateValidator",
     "Decision",
     "Evidence",
     "Operation",
@@ -66,4 +71,10 @@ __all__ = [
     "DeterministicRandom",
     "GEPA",
     "RandomSearch",
+    "WorkflowCatalog",
+    "WorkflowEntry",
+    "validate_anti_bloat_candidate",
+    "plan_workflow_proposals",
+    "rank_candidates_pareto",
+    "ParetoRanker",
 ]

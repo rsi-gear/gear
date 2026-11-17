@@ -11,6 +11,44 @@ export async function apply(ctx) {
     text: `For repository tasks, first inspect the relevant files and existing tests. Make the smallest complete change that satisfies the task, preserve unrelated work, and run focused verification before answering. Treat test failures and command output as evidence: diagnose them instead of guessing.`,
   })
 
+  const catalogUrl = new URL('../workflows/catalog.json', import.meta.url)
+  let catalog = null
+  try {
+    const raw = await readFile(catalogUrl, 'utf8')
+    catalog = JSON.parse(raw)
+  } catch {
+    catalog = null
+  }
+
+  if (Array.isArray(catalog) && catalog.length > 0) {
+    const lines = [
+      'Available on-demand procedures (read with the read tool when relevant):',
+    ]
+    for (const item of catalog) {
+      const workflowUrl = new URL(`../${item.path}`, import.meta.url)
+      const content = (await readFile(workflowUrl, 'utf8')).trim()
+      if (!content) throw new Error(`Workflow procedure '${item.id}' is empty`)
+      const absPath = fileURLToPath(workflowUrl)
+      let helperNote = ''
+      if (item.helper) {
+        const helperUrl = new URL(`../${item.helper}`, import.meta.url)
+        const helperContent = (await readFile(helperUrl, 'utf8')).trim()
+        if (!helperContent) throw new Error(`Workflow helper '${item.id}' is empty`)
+        helperNote = ` (Helper tool: ${fileURLToPath(helperUrl)})`
+      }
+      lines.push(
+        `- [${item.id}] Trigger: "${item.trigger}". ${item.summary} [Path: ${absPath}]${helperNote}`,
+      )
+    }
+
+    ctx.systemPrompt.section({
+      name: 'harness:workflow-catalog',
+      order: 51,
+      text: lines.join('\n'),
+    })
+    return
+  }
+
   const requestProcedureUrl = new URL('../workflows/structured-cli-requests.md', import.meta.url)
   const requestHelperUrl = new URL('../workflows/structured-cli-requests/request.py', import.meta.url)
   if (!(await readFile(requestProcedureUrl, 'utf8')).trim()) throw new Error('Structured request procedure is empty')

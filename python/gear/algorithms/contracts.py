@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from typing import Literal, Mapping, Protocol
 
 from gear.canonical import JSON
 
@@ -216,6 +216,7 @@ class RankingInput:
     weights: tuple[tuple[str, float], ...] = ()
     objective: JSON = None
     anchor_id: str = ""
+    complexity_penalties: Mapping[str, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -228,6 +229,10 @@ class RankingPlan:
 
 class CandidateRanker(Protocol):
     def __call__(self, view: RankingInput) -> RankingPlan: ...
+
+
+class CandidateValidator(Protocol):
+    def __call__(self, result: OperationResult) -> tuple[bool, str | None] | bool: ...
 
 
 class StopRule(Protocol):
