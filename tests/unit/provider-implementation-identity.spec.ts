@@ -44,7 +44,13 @@ it.each(['experience-files', 'experience-format'])(
     const copied = await copiedModule(`adapters/storage/${name}`)
     const executable = join(copied.root, 'codex')
     await native.writeFile(executable, '#!/bin/sh\nprintf "codex-cli 0.160.1\\n"\n', { mode: 0o755 })
-    const config = { executable } as CodexConfiguration
+    const hitch = join(copied.root, 'hitch.mjs')
+    await native.writeFile(
+      hitch,
+      `#!${process.execPath}\nimport {metaHitchFixture} from ${JSON.stringify(new URL('../fixtures/meta-hitch.mjs', import.meta.url).href)};await metaHitchFixture({});`,
+      { mode: 0o700 },
+    )
+    const config = { executable, hitch: { executable: hitch, root: copied.root } } as CodexConfiguration
     const before = (await describeCodex(config)).identity
     await native.writeFile(copied.copy, `${copied.original}\n// changed implementation fixture\n`)
     expect((await describeCodex(config)).identity).not.toBe(before)
