@@ -1,3 +1,4 @@
+import csv
 import json
 import os
 import tempfile
@@ -81,6 +82,85 @@ class BenchmarkImportTests(unittest.TestCase):
             manifest.write_text(json.dumps(data))
             with self.assertRaisesRegex(BenchmarkError, "overlap"):
                 compile_benchmark(root, plan["config"])
+
+    def test_jsonl_unicode_separators_are_preserved_in_task_fields(self):
+        for separator in ("\u0085", "\u2028", "\u2029"):
+            for field in ("instruction", "expected"):
+                with (
+                    self.subTest(separator=repr(separator), field=field),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    row = {"id": "a", "instruction": "prompt", "expected": "answer", "split": "seed"}
+                    row[field] = "left" + separator + "right"
+                    rows = [
+                        row,
+                        {"id": "b", "instruction": "other", "expected": "other", "split": "held_out"},
+                    ]
+                    source = root / "tasks.jsonl"
+                    source.write_bytes(
+                        "\n".join(json.dumps(item, ensure_ascii=False) for item in rows).encode("utf-8")
+                    )
+                    compiled = compile_benchmark(root, {"version": 1, "source": source.name})
+                    self.assertEqual(compiled["tasks"][0]["instruction"], row["instruction"])
+                    self.assertEqual(compiled["verifiers"]["a"]["expected"], row["expected"])
+
+    def test_import_roundtrip_preserves_unicode_separators(self):
+        import base64
+
+        text = "left\u0085middle\u2028next\u2029right"
+        rows = [
+            {"id": "a", "instruction": text, "expected": text},
+            {"id": "b", "instruction": "other", "expected": "other"},
+        ]
+        for suffix in ("csv", "jsonl"):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / ("tasks." + suffix)
+                if suffix == "csv":
+                    with source.open("w", encoding="utf-8", newline="") as stream:
+                        writer = csv.DictWriter(stream, fieldnames=["id", "instruction", "expected"])
+                        writer.writeheader()
+                        writer.writerows(rows)
+                else:
+                    source.write_bytes(
+                        "\n".join(json.dumps(row, ensure_ascii=True) for row in rows).encode("utf-8")
+                    )
+                plan = prepare_import(str(source))
+                for file in plan["files"]:
+                    path = root / plan["directory"] / file["path"]
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(base64.b64decode(plan["blobs"][file["digest"]]))
+                compiled = compile_benchmark(root, plan["config"])
+                self.assertEqual(compiled["tasks"][0]["instruction"], text)
+                self.assertEqual(compiled["verifiers"]["a"]["expected"], text)
+                self.assertEqual(
+                    compiled["splits"],
+                    {split: plan["summary"]["splits"][split] for split in ("seed", "held_out")},
+                )
+
+    def test_jsonl_unicode_preserves_physical_error_locations(self):
+        row = {
+            "id": "a", "instruction": "left\u0085middle\u2028next\u2029right",
+            "expected": "answer", "split": "seed",
+        }
+        for newline in ("\n", "\r\n", "\r"):
+            for encoding in ("utf-8", "utf-8-sig"):
+                with (
+                    self.subTest(newline=repr(newline), encoding=encoding),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    source = root / "tasks.jsonl"
+                    source.write_bytes(
+                        newline.join([
+                            json.dumps(row, ensure_ascii=False), "", '{"id":"a","id":"b"}', ""
+                        ]).encode(encoding)
+                    )
+                    with self.assertRaises(BenchmarkError) as error:
+                        compile_benchmark(root, {"version": 1, "source": source.name})
+                    self.assertEqual(error.exception.location, "tasks.jsonl:3")
+                    self.assertIn("duplicate JSON field", str(error.exception))
 
     def test_physical_jsonl_lines_and_duplicate_json_fields_are_reported(self):
         with tempfile.TemporaryDirectory() as directory:
