@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, rm, lstat } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import type { CompiledBenchmark, ProjectConfig } from '../domain/project.js'
-import type { AlgorithmConfig, AlgorithmDriver, RunSpec } from '../domain/run.js'
+import type { AlgorithmConfig, AlgorithmDriver, ResumeOptions, RunSpec } from '../domain/run.js'
 import type { OperationProvider, OperationCancellation } from '../ports/operations.js'
 import { canonicalDigest } from '../domain/canonical.js'
 import { GearError } from '../domain/errors.js'
@@ -42,6 +42,7 @@ import { operatorStorageLimits } from '../domain/operator-run.js'
 import { IndependentScreening } from '../adapters/python/screening.js'
 import { LibraryStore } from '../adapters/storage/libraries.js'
 import { captureOperatorImports } from './operator-imports.js'
+import { planMetaRecovery } from '../runtime/operator-recovery.js'
 
 export interface ProjectRuntimeContext {
   kind: 'evaluate' | 'refine'
@@ -413,11 +414,21 @@ export class ProjectApplication {
     ])
     return { runId }
   }
-  async resume(runId: string, signal: AbortSignal = new AbortController().signal) {
+  async resume(
+    runId: string,
+    signal: AbortSignal = new AbortController().signal,
+    options: ResumeOptions = {},
+  ) {
     const journal = await this.store.read(runId),
       stateRoot = join(this.root, '.gear'),
       runRoot = join(stateRoot, 'runs', runId)
-    if (journal.status === 'completed' || journal.status === 'cancelled')
+    const recovering = Object.keys(options).length > 0
+    const plan = recovering ? planMetaRecovery(journal, options) : null
+    await this.store.verifyRecoveryCheckpoints(journal)
+    if (
+      (!recovering || plan?.alreadyApplied) &&
+      (journal.status === 'completed' || journal.status === 'cancelled')
+    )
       return projectReport(this.root, journal)
     if (await this.store.cancelled(runId)) {
       await this.completeCancellation(runId)
@@ -441,6 +452,56 @@ export class ProjectApplication {
       const context = { kind: journal.spec.kind, root: this.root, runId, stateRoot, config, benchmark },
         provider = await this.bindings.provider(context, signal)
       signal.throwIfAborted()
+      if (recovering) {
+        await this.store.locked(runId, async () => {
+          const current = await this.store.read(runId)
+          const planned = planMetaRecovery(current, options)
+          await this.store.verifyRecoveryCheckpoints(current)
+          if (planned.alreadyApplied) return
+          if (await this.store.cancelled(runId))
+            throw new GearError('run-cancelled', 'Cancellation requested', { run_id: runId })
+          if (
+            provider.identity !== current.spec.providerIdentity ||
+            canonicalDigest(provider.capabilities) !== canonicalDigest(current.spec.providerCapabilities)
+          )
+            throw new GearError(
+              'provider-identity-mismatch',
+              'Recovery requires the frozen provider and capabilities',
+            )
+          requireGenerationCapability(
+            planned.recovery.generationBudget,
+            provider.capabilities.generationBudget,
+          )
+          if (!provider.capabilities.cancel || !provider.capabilities.inspect)
+            throw new GearError(
+              'meta-recovery-not-allowed',
+              'Recovery requires confirmed stop and receipt inspection',
+            )
+          const source = current.operations.find((op) => op.request.operationId === options.retry_operation)!
+          await provider.cancel(source.request)
+          const targets = new TargetStore(
+            runRoot,
+            harnessAdapter(config.target.adapter),
+            provider.evaluationIdentity ?? provider.identity,
+          )
+          const inspected = await sealedProvider(
+            provider,
+            targets,
+            new ProjectExperience(runRoot, targets),
+          ).inspect(source.request, signal)
+          if (
+            inspected.state !== 'complete' ||
+            canonicalDigest(inspected.receipt) !== planned.recovery.sourceReceiptDigest
+          )
+            throw new GearError(
+              'meta-recovery-not-allowed',
+              'Stopped Meta receipt differs from the committed failure',
+            )
+          signal.throwIfAborted()
+          await this.store.checkpointRecovery(current, planned.recovery)
+          await this.store.write(planned.journal)
+        })
+      }
       return await this.execute(
         context,
         provider,

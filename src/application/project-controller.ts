@@ -16,6 +16,9 @@ import { createProfile, selectProjectProfile, type CreateProfileOptions } from '
 import { defaultProfiles, listProfiles, saveProfile, selectDefaultProfile } from './profile-store.js'
 import { pythonJson } from './python.js'
 import { runPlan, type RunPlan } from './run-plan.js'
+import type { ResumeOptions } from '../domain/run.js'
+import { effectiveGenerationBudget } from '../runtime/generation-budget.js'
+import { planMetaRecovery } from '../runtime/operator-recovery.js'
 
 interface Invocation {
   requestId?: string
@@ -348,12 +351,18 @@ export class ProjectController {
       return this.application.experience(string(run_id, 'run_id'), options)
     }
     if (['run.resume', 'run.cancel', 'run.report', 'run.export', 'run.archive'].includes(method)) {
-      const params = object(input, ['run_id'])
+      const params = object(
+        input,
+        method === 'run.resume' ? ['run_id', 'retry_operation', 'generation'] : ['run_id'],
+      )
       const id =
         params.run_id === undefined && method === 'run.report'
           ? await this.application.store.latest()
           : string(params.run_id, 'run_id')
-      if (method === 'run.resume') return this.execute(id, context, true)
+      if (method === 'run.resume') {
+        const { run_id: _id, ...options } = params
+        return this.execute(id, context, true, options as ResumeOptions)
+      }
       if (method === 'run.cancel') {
         const requested = await this.application.cancel(id)
         this.jobs
@@ -389,17 +398,27 @@ export class ProjectController {
     }
     throw new GearError('unknown-command', `Unknown project command: ${method}`)
   }
-  private async execute(id: string, context: Invocation, resume: boolean): Promise<unknown> {
+  private async execute(
+    id: string,
+    context: Invocation,
+    resume: boolean,
+    options: ResumeOptions = {},
+  ): Promise<unknown> {
     const journal = await this.application.store.read(id)
-    const plan = journal.spec.kind === 'refine' ? runPlan(journal.spec, id) : null
+    const recovering = Object.keys(options).length > 0
+    const planned = recovering ? planMetaRecovery(journal, options).journal : journal
+    const plan =
+      journal.spec.kind === 'refine'
+        ? runPlan({ ...journal.spec, generationBudget: effectiveGenerationBudget(planned) }, id)
+        : null
     if (plan) await context.onPlan?.(plan)
     context.signal?.throwIfAborted()
     if (
-      ['completed', 'cancelled'].includes(journal.status) ||
+      (!recovering && ['completed', 'cancelled'].includes(journal.status)) ||
       (!resume && journal.status === 'needs_recovery')
     )
       return this.report(id)
-    if (!context.background) return this.application.resume(id, context.signal)
+    if (!context.background) return this.application.resume(id, context.signal, options)
     if (this.closed)
       throw new GearError('controller-stopped', 'Run admitted; resume it with a new controller', {
         run_id: id,
@@ -407,7 +426,7 @@ export class ProjectController {
     if (!this.jobs.has(id)) {
       const abort = new AbortController()
       const completion = this.application
-        .resume(id, abort.signal)
+        .resume(id, abort.signal, options)
         // ProjectApplication/runner persist the failure before this settles.
         .then(
           () => {},

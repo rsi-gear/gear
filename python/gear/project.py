@@ -319,11 +319,41 @@ class Project:
                 result = await self._call(args + ["--algorithm-config", str(path)])
         return result
 
-    def resume(self, run_id: str) -> Run:
-        return self._sync(self.aresume(run_id))
+    def resume(
+        self,
+        run_id: str,
+        *,
+        retry_operation: str | None = None,
+        generation: dict[str, JSON] | None = None,
+    ) -> Run:
+        """Continue a run; explicitly retry a settled read-only Meta failure when requested.
 
-    async def aresume(self, run_id: str) -> Run:
-        result = await self._call(["resume", run_id])
+        Generation limits are cumulative, including all previous attempts. Completed
+        target executions, learning state and historical receipts are preserved.
+        """
+        return self._sync(
+            self.aresume(run_id, retry_operation=retry_operation, generation=generation)
+        )
+
+    async def aresume(
+        self,
+        run_id: str,
+        *,
+        retry_operation: str | None = None,
+        generation: dict[str, JSON] | None = None,
+    ) -> Run:
+        args = ["resume", run_id]
+        if retry_operation is not None:
+            args += ["--retry-operation", retry_operation]
+        if generation is not None:
+            if retry_operation is None:
+                raise ValueError("generation amendments require an explicit failed retry_operation")
+            with tempfile.TemporaryDirectory(prefix="gear-recovery-") as directory:
+                path = Path(directory) / "generation.json"
+                path.write_text(json.dumps(generation))
+                result = await self._call(args + ["--generation-config", str(path)])
+        else:
+            result = await self._call(args)
         return Run(str(result["run_id"]), Report(result))
 
     def cancel(self, run_id: str) -> dict[str, JSON]:

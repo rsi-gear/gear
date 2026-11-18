@@ -9,7 +9,7 @@
 | `gear.memory` | 历史查询、档案更新、Playbook、知识库 |
 | `gear.training` | 训练数据、模型更新与训练流程 |
 | `gear.search` | 搜索合同、筛查和可组合流程；六类策略位于对应子模块 |
-| `gear.algorithms` | 可直接交给 Project 的 GEPA、RandomSearch 完整实现 |
+| `gear.algorithms` | 可直接交给 Project 的 OPRO、ACE、RRSI、DarwinX、GEPA、RandomSearch、Harness2 完整实现 |
 
 纯算子直接返回值；外部工作由 `Call` 描述，并在 `Decision` 提交后执行。选择、排序和流程留在 Python，运行时负责授权、预算、封存和恢复。
 
@@ -44,6 +44,20 @@ class Review(Algorithm):
 `Call` 不能 await 或自行执行。`view.results.require(ref)` 只查已投影的终结结果；失败时读取 `status/error`，不能把缺失值当作零分。可用 `require(ref, decode=EvidenceSet.from_dict)` 显式解码类型。不同调用之间有依赖时分成多个 step；同一 Decision 的调用只能引用已提交产物。
 
 同 key、同请求复用原调用；同 key 换输入报 `call-key-conflict`。state、Decision、调用键及预算同一次提交。模型回执丢失时先 inspect，已封存候选和已发布库通过原身份恢复。状态应保存 `CallRef`、数据和阶段，不能保存 Python 对象或依赖实例持续存活。
+
+`project.resume(run_id)` 继续尚未结束的运行。若 v2 算法在只读 Meta 失败后保持原状态停止，可以显式续跑失败的反思：
+
+```python
+project.resume(
+    run_id,
+    retry_operation=failed_operation_id,
+    generation={"max_tokens": 1_280_467, "per_operation": {"max_tokens": 300_000}},
+)
+```
+
+`generation` 指该 run 包含历史用量的累计上限及单次上限，只接受显式增加。原冻结配置不变，增加额度作为恢复记录保存。恢复前验证原 provider、全部已结算用量和未推进的算法状态，确认旧执行停止并检查原失败回执；用量未知、候选生成、取消的运行或算法已推进的情况均不适用。旧 journal 原始字节保存到 `recoveries/<id>/journal.json`，新尝试使用新的 operation ID，复用原调用材料、目标输出、库和算法状态。旧失败回执与用量继续保留。重复提交相同失败 ID 和相同参数不会再创建尝试；若新尝试也失败，需显式指定它的新 ID。
+
+CLI 对应 `gear resume RUN_ID --retry-operation OPERATION_ID --generation-config FILE`，其中 FILE 为上述 generation 对象。省略预算参数表示在原额度内重试；`report.meta_recoveries` 列出恢复历史，`recovered_operation_ids` 只列出已有成功后继的旧失败操作。
 
 ## 组件、参数与依赖
 
@@ -146,7 +160,7 @@ run = project.refine(
 | unscored / Score | P3，未开放；不静默降级 |
 | 目标策略用量白名单 | 当前不开放；未知/partial 不填零。Meta/critic 用现有 generation ledger |
 | 可执行 improvement harness | 未开放 `improvement_harness_execution`；作为上下文的代码不代表执行了它 |
-| Codex 每 Call token 上限 | CLI 无法保证时拒绝 max_tokens；其他支持该预算的 provider 可使用 |
+| Codex 每 Call token 上限 | 由 Hitch 的模型代理在每次请求前预约并执行，超出额度停止；未知用量保留额度 |
 | 自定义 schema | 有界 JSON schema 子集；不支持的关键字在收费前拒绝 |
 
 默认读预算 1024 次/64 MiB；每 Decision state 与研究记录各 2 MiB；每 Call 请求和结果各 2 MiB；保留结果最多 32 MiB，算子 journal 128 MiB，最多 4096 个调用及 10000 个决策。并行批次按待返回结果上界预约，超过容量在执行前拒绝。大执行集合改为 artifact 分页，不截断后假称 loaded。

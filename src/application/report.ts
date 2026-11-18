@@ -2,7 +2,8 @@ import type { RunJournal } from '../domain/run.js'
 import { pythonObjective } from '../adapters/python/objective.js'
 import { GearError } from '../domain/errors.js'
 import { aggregateUsage } from '../domain/usage.js'
-import { generationLedger } from '../runtime/generation-budget.js'
+import { effectiveGenerationBudget, generationLedger } from '../runtime/generation-budget.js'
+import { recoveredMetaOperations } from '../runtime/operator-recovery.js'
 import { runPlan } from './run-plan.js'
 export function runReport(journal: RunJournal) {
   if (journal.spec.objective && journal.spec.objectiveIdentity !== pythonObjective.identity)
@@ -43,6 +44,12 @@ export function runReport(journal: RunJournal) {
   return {
     run_id: journal.id,
     status: journal.status,
+    ...(journal.metaRecoveries?.length
+      ? {
+          meta_recoveries: journal.metaRecoveries,
+          recovered_operation_ids: recoveredMetaOperations(journal),
+        }
+      : {}),
     ...(journal.failure ? { error: journal.failure } : {}),
     validation_mode:
       journal.spec.validationMode === 'research' ? 'shared-set-research' : 'independent-held-out',
@@ -86,7 +93,14 @@ export function runReport(journal: RunJournal) {
         }
       : {}),
     lineage: journal.spec.lineage,
-    ...(journal.spec.kind === 'refine' ? { plan: runPlan(journal.spec, journal.id) } : {}),
+    ...(journal.spec.kind === 'refine'
+      ? {
+          plan: runPlan(
+            { ...journal.spec, generationBudget: effectiveGenerationBudget(journal) },
+            journal.id,
+          ),
+        }
+      : {}),
     baseline_reuse: journal.spec.baseline
       ? {
           source_run_id: journal.spec.baseline.sourceRunId,

@@ -1,6 +1,7 @@
 import { GearError } from '../domain/errors.js'
 import {
   generationMetrics,
+  type GenerationBudget,
   type GenerationLimits,
   type GenerationMetric,
 } from '../domain/generation-budget.js'
@@ -9,6 +10,9 @@ import type { OperationReceipt } from '../ports/operations.js'
 
 export function isGeneration(kind: string): boolean {
   return kind === 'diagnose_seed' || kind === 'generate_candidate'
+}
+export function effectiveGenerationBudget(journal: RunJournal): GenerationBudget {
+  return journal.metaRecoveries?.at(-1)?.generationBudget ?? journal.spec.generationBudget
 }
 function counter(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
@@ -42,10 +46,11 @@ function accounting(journal: RunJournal, metric: GenerationMetric) {
 }
 
 export function generationLedger(journal: RunJournal) {
+  const policy = effectiveGenerationBudget(journal)
   const violated = journal.operations.some((operation) => operation.generationViolation)
   const metrics = Object.fromEntries(
     generationMetrics.map((metric) => {
-      const total = journal.spec.generationBudget.total[metric]
+      const total = policy.total[metric]
       const current = accounting(journal, metric)
       const remaining =
         total === undefined
@@ -77,12 +82,12 @@ export function generationLedger(journal: RunJournal) {
   const capacities = generationMetrics.flatMap((metric) => {
     const remaining = metrics[metric].remaining
     if (remaining === null) return []
-    const cap = Math.min(journal.spec.generationBudget.perOperation[metric] ?? remaining, remaining)
+    const cap = Math.min(policy.perOperation[metric] ?? remaining, remaining)
     return [cap ? Number(BigInt(remaining) / BigInt(cap)) : 0]
   })
   return {
     scope: 'diagnosis-and-generation' as const,
-    policy: journal.spec.generationBudget,
+    policy,
     metrics,
     batch_capacity: violated ? 0 : capacities.length ? Math.min(...capacities) : null,
   }
@@ -96,14 +101,14 @@ export function reserveGeneration(journal: RunJournal): GenerationLimits | undef
     const remaining = ledger.metrics[metric].remaining
     if (remaining === 0)
       throw new GearError('generation-budget-exhausted', `No ${metric} remain for diagnosis or generation`)
-    const maximum = journal.spec.generationBudget.perOperation[metric] ?? remaining
+    const maximum = ledger.policy.perOperation[metric] ?? remaining
     if (maximum !== null) result[metric] = remaining === null ? maximum : Math.min(maximum, remaining)
   }
   return Object.keys(result).length ? result : undefined
 }
 
 export function validateGenerationReservations(journal: RunJournal, extra: JournalOperation[] = []): void {
-  const policy = journal.spec.generationBudget
+  const policy = effectiveGenerationBudget(journal)
   for (const operation of [...journal.operations, ...extra]) {
     if (operation.generationViolation)
       throw new GearError(

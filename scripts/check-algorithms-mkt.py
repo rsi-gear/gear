@@ -174,8 +174,10 @@ def main() -> None:
             assert all(op["status"] == "complete" for op in journal["operations"]), (
                 "Incomplete operation"
             )
+            recovered = set(report.get("recovered_operation_ids", []))
             assert all(
                 op["receipt"]["result"]["status"] == "complete"
+                or op["request"]["operationId"] in recovered
                 for op in journal["operations"]
             ), "A completed operation contains a failed provider receipt"
             assert all(
@@ -210,7 +212,7 @@ def main() -> None:
                     generation_usage[dimension] += actual
             for dimension, actual in generation_usage.items():
                 assert (
-                    actual <= journal["spec"]["generationBudget"]["total"][dimension]
+                    actual <= report["generation_budget"]["policy"]["total"][dimension]
                 ), f"Exceeded total {dimension} budget"
             results[name] = {
                 "status": "passed",

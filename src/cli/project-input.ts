@@ -30,7 +30,18 @@ export function parseProjectCommand(input: string): { method: string; params: Re
       ...(limit === undefined ? {} : { limit: Number(limit) }),
     })
   }
-  if (['report', 'resume', 'cancel', 'export', 'archive'].includes(command)) {
+  if (command === 'resume') {
+    const retry = take('--retry-operation'),
+      generation = take('--generation-json'),
+      id = words.shift()
+    if (!id) throw new GearError('run-id-required', 'resume requires one run ID')
+    return finish('run.resume', {
+      run_id: id,
+      ...(retry === undefined ? {} : { retry_operation: retry }),
+      ...(generation === undefined ? {} : { generation: JSON.parse(generation) }),
+    })
+  }
+  if (['report', 'cancel', 'export', 'archive'].includes(command)) {
     const id = words.shift()
     if (!id && command !== 'report') throw new GearError('run-id-required', `${command} requires one run ID`)
     return finish(`run.${command}`, id === undefined ? {} : { run_id: id })

@@ -25,7 +25,7 @@ import type {
 import type { CompiledBenchmark } from './project.js'
 import type { ObjectiveConfiguration } from './objective.js'
 import type { EvaluationRepairPolicy } from './evaluation.js'
-import type { GenerationBudget } from './generation-budget.js'
+import type { GenerationBudget, GenerationConfiguration } from './generation-budget.js'
 import type { BaselineReuse } from './baseline.js'
 import type { ArtifactReaderDescriptor } from './trajectory.js'
 import type { OperatorJournal, OperatorPolicy } from './operator-run.js'
@@ -86,6 +86,29 @@ export interface JournalDecision {
   decision: Decision
   operationIds: string[]
 }
+export interface ResumeOptions {
+  /** Retry this settled, failed read-only Meta attempt with a new operation ID. */
+  retry_operation?: string
+  /** Explicit increases to the run's cumulative and per-operation limits. */
+  generation?: GenerationConfiguration
+}
+export interface MetaRecovery {
+  version: 1
+  id: string
+  createdAt: string
+  requestDigest: string
+  generationUpdate: GenerationBudget
+  sourceJournalDigest: string
+  sourceOperationId: string
+  sourceReceiptDigest: string
+  operationId: string
+  callId: string
+  previousResult: V2.CallResult
+  stateDigest: string
+  terminalStepId: number | null
+  generationBudget: GenerationBudget
+  stopped: true
+}
 export interface RunJournal {
   version: 1
   id: string
@@ -106,6 +129,8 @@ export interface RunJournal {
   gate: { status: 'accepted' | 'rejected' | 'incomplete' | 'not_run'; reason: string }
   physicalAttempts: number
   operators?: OperatorJournal
+  /** Explicit recoveries preserve failed attempts and never reset their usage. */
+  metaRecoveries?: MetaRecovery[]
   failure?: { code: string; message: string; retryable: boolean }
   digest: string
 }

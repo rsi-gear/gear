@@ -2,7 +2,7 @@ import { readFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { canonicalDigest } from '../../domain/canonical.js'
 import { GearError } from '../../domain/errors.js'
-import type { JournalOperation, RunJournal, RunSpec } from '../../domain/run.js'
+import type { JournalOperation, MetaRecovery, RunJournal, RunSpec } from '../../domain/run.js'
 import type { Candidate } from '../../domain/algorithm-wire.js'
 import type { CapturedImports } from '../../domain/operator-run.js'
 import { publishFile } from './atomic.js'
@@ -116,6 +116,62 @@ export class RunStore {
         next_action: 'gear evaluate --split seed --limit 1',
       })
     return latest.id
+  }
+  private recoveryPath(id: string, recovery: MetaRecovery): string {
+    if (!/^recovery_[a-f0-9]{64}$/u.test(recovery.id))
+      throw new GearError('invalid-recovery-id', 'Invalid recovery checkpoint ID')
+    return this.path(id, `recoveries/${recovery.id}/journal`)
+  }
+  /** Save the exact historical bytes before admitting any new attempt. Caller holds the run lock. */
+  async checkpointRecovery(journal: RunJournal, recovery: MetaRecovery): Promise<void> {
+    const bytes = await readFile(this.path(journal.id))
+    if (
+      canonicalDigest(JSON.parse(bytes.toString('utf8'))) !== canonicalDigest(journal) ||
+      journal.digest !== recovery.sourceJournalDigest
+    )
+      throw new GearError('recovery-checkpoint-mismatch', 'Recovery source changed before admission')
+    await publishFile(this.recoveryPath(journal.id, recovery), bytes, { immutable: true })
+  }
+  async verifyRecoveryCheckpoints(journal: RunJournal): Promise<void> {
+    for (const [index, recovery] of (journal.metaRecoveries ?? []).entries()) {
+      const source = JSON.parse(await readFile(this.recoveryPath(journal.id, recovery), 'utf8')) as RunJournal
+      if (source.version !== 1 || !Array.isArray(source.operations) || !source.operators)
+        throw new GearError(
+          'recovery-checkpoint-mismatch',
+          'Historical recovery checkpoint failed verification',
+        )
+      const { digest, ...body } = source
+      const before = source.operations.find((op) => op.request.operationId === recovery.sourceOperationId)
+      const after = journal.operations.find((op) => op.request.operationId === recovery.sourceOperationId)
+      const retry = journal.operations.find((op) => op.request.operationId === recovery.operationId)
+      const call = source.operators?.calls.find((entry) => entry.id === recovery.callId)
+      if (
+        digest !== recovery.sourceJournalDigest ||
+        canonicalDigest(body) !== digest ||
+        source.id !== journal.id ||
+        source.specDigest !== journal.specDigest ||
+        canonicalDigest(source.spec) !== journal.specDigest ||
+        !before ||
+        !after ||
+        canonicalDigest(before) !== canonicalDigest(after) ||
+        source.operations.some((operation) => {
+          const current = journal.operations.find(
+            (entry) => entry.request.operationId === operation.request.operationId,
+          )
+          return !current || canonicalDigest(current) !== canonicalDigest(operation)
+        }) ||
+        !call?.result ||
+        canonicalDigest(call.result) !== canonicalDigest(recovery.previousResult) ||
+        canonicalDigest(source.operators!.state) !== recovery.stateDigest ||
+        retry?.request.generation !== source.generation + 1 ||
+        canonicalDigest(source.metaRecoveries ?? []) !==
+          canonicalDigest(journal.metaRecoveries!.slice(0, index))
+      )
+        throw new GearError(
+          'recovery-checkpoint-mismatch',
+          'Historical recovery checkpoint failed verification',
+        )
+    }
   }
   async write(journal: RunJournal, options: { cancellationOnly?: boolean } = {}): Promise<void> {
     if (options.cancellationOnly) {

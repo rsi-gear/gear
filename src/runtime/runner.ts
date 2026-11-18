@@ -22,7 +22,9 @@ import { bindRawMetrics } from '../domain/objective-evidence.js'
 import { requireGenerationCapability, validateGenerationBudget } from '../domain/generation-budget.js'
 import { validateBaseline } from '../domain/baseline.js'
 import type { OperatorRuntime } from './operator-runtime.js'
+import { resumedTerminal, validateMetaRecoveries } from './operator-recovery.js'
 import {
+  effectiveGenerationBudget,
   generationLedger,
   generationReceiptViolation,
   isGeneration,
@@ -89,7 +91,8 @@ export class DurableRunner {
           }
           if (
             journal.decisions.at(-1)?.decision.operations[0]?.kind === 'stop' ||
-            journal.operators?.decisions.at(-1)?.decision.terminal?.kind === 'stop'
+            (journal.operators?.decisions.at(-1)?.decision.terminal?.kind === 'stop' &&
+              !resumedTerminal(journal, journal.operators.decisions.at(-1)!.stepId))
           ) {
             journal.status = 'completed'
             await this.store.write(journal)
@@ -204,9 +207,13 @@ export class DurableRunner {
     } else if (journal.operators || journal.spec.operatorPolicy)
       throw new GearError('operator-protocol-mismatch', 'v1 cannot execute a v2 journal')
     validateBaseline(journal.spec)
-    validateGenerationBudget(journal.spec.generationBudget)
+    validateMetaRecoveries(journal)
+    validateGenerationBudget(effectiveGenerationBudget(journal))
     if (journal.spec.kind === 'refine')
-      requireGenerationCapability(journal.spec.generationBudget, this.provider.capabilities.generationBudget)
+      requireGenerationCapability(
+        effectiveGenerationBudget(journal),
+        this.provider.capabilities.generationBudget,
+      )
     if (!journal.spec.evaluationRepair)
       throw new GearError(
         'frozen-repair-policy-missing',

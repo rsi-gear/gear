@@ -10,6 +10,10 @@ import { LibraryStore } from '../../src/adapters/storage/libraries.js'
 import { canonicalDigest } from '../../src/domain/canonical.js'
 import type { OperationReceipt, OperationRequest } from '../../src/ports/operations.js'
 import type { TargetExecution } from '../../src/domain/operator-run.js'
+import type { RunJournal } from '../../src/domain/run.js'
+import { planMetaRecovery } from '../../src/runtime/operator-recovery.js'
+import { generationLedger } from '../../src/runtime/generation-budget.js'
+import { ProjectController } from '../../src/application/project-controller.js'
 
 const roots: string[] = []
 afterEach(async () => {
@@ -18,7 +22,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
 
-it('runs blind learning through the public Python API, seals effective library files and recovers publication after another publisher advances the head', async () => {
+async function fixture(options: { failMeta?: number; cancelError?: boolean; inspectMismatch?: boolean } = {}) {
   const python = process.env.GEAR_TRAINING_TEST_PYTHON ?? 'python3'
   vi.stubEnv('GEAR_PYTHON', python)
   const root = await mkdtemp(join(tmpdir(), 'gear-blind-learning-')),
@@ -27,6 +31,7 @@ it('runs blind learning through the public Python API, seals effective library f
   await initProject(project, { adapter: 'pi', template: 'text' })
   const config = load(await readFile(join(project, 'gear.yaml'), 'utf8')) as Record<string, unknown>
   config.budget = { ...(config.budget as Record<string, unknown>), rounds: 2 }
+  config.generation = { max_model_requests: 20, max_tokens: 100, per_operation: { max_model_requests: 4, max_tokens: 12 } }
   if (process.env.GEAR_TEST_LINUX_ISOLATION) {
     config.sandbox = { linux_isolation: process.env.GEAR_TEST_LINUX_ISOLATION }
   }
@@ -86,13 +91,14 @@ it('runs blind learning through the public Python API, seals effective library f
               ),
             )
           if (request.operatorCall) expect(JSON.stringify(request)).not.toContain('PRIVATE_')
+          const failed = !!request.operatorCall && requests.filter((item) => item.operatorCall).length === options.failMeta
           const receipt: OperationReceipt = {
             result: {
               operation_id: request.operationId,
               kind: request.operation.kind,
               candidate_id: request.operation.candidate_id,
-              status: 'complete',
-              data: request.operatorCall
+              status: failed ? 'failed' : 'complete',
+              data: failed ? { error: 'generation-budget-exhausted' } : request.operatorCall
                 ? {
                     declined: false,
                     data: { text: 'Learned instruction for ' + request.operation.task_ids[0] },
@@ -118,9 +124,10 @@ it('runs blind learning through the public Python API, seals effective library f
         },
         async inspect(request) {
           const receipt = receipts.get(request.operationId)
+          if (receipt && options.inspectMismatch) return { state: 'complete' as const, receipt: { ...receipt, usage: { model_requests: 1, tokens: 7 } } }
           return receipt ? { state: 'complete' as const, receipt } : { state: 'not_submitted' as const }
         },
-        async cancel() {},
+        async cancel() { if (options.cancelError) throw new Error('stop unconfirmed') },
         async captureExecutions(request): Promise<TargetExecution[]> {
           return request.slots.map((slot) => ({
             taskId: slot.taskId,
@@ -136,6 +143,11 @@ it('runs blind learning through the public Python API, seals effective library f
       }
     },
   })
+  return { app, project, requests, actualFiles, description }
+}
+
+it('runs blind learning through the public Python API, seals effective library files and recovers publication after another publisher advances the head', async () => {
+  const { app, project, requests, actualFiles, description } = await fixture()
   const publish = LibraryStore.prototype.publish
   let lost = false
   vi.spyOn(LibraryStore.prototype, 'publish').mockImplementation(async function (
@@ -185,4 +197,84 @@ it('runs blind learning through the public Python API, seals effective library f
   expect(report.operators?.task_stream?.index).toBe(2)
   expect(report.operators?.library_publications).toHaveLength(4)
   expect(journal.operators!.state.data.iterations).toBe(4)
+}, 60_000)
+
+it('continues the failed reflection with a new attempt, retaining targets, state, published learning and all historical usage', async () => {
+  const options = { failMeta: 3, cancelError: false, inspectMismatch: false }
+  const { app, project, requests, actualFiles, description } = await fixture(options)
+  const failed = await app.refine(description)
+  const id = failed.run_id, before = await app.store.read(id)
+  const source = before.operations.find((operation) => operation.receipt?.result.status === 'failed')!
+  const path = join(project, '.gear', 'runs', id, 'journal.json')
+  const original = await readFile(path)
+  expect(before.status).toBe('completed')
+  expect(before.physicalAttempts).toBe(3)
+  expect(before.operators!.state.data.iterations).toBe(2)
+  const recovery = { retry_operation: source.request.operationId, generation: { max_tokens: 200, per_operation: { max_tokens: 20 } } }
+  const planned = planMetaRecovery(before, recovery)
+  expect(planned.journal.operators!.state).toEqual(before.operators!.state)
+  expect(planned.journal.operators!.stream).toEqual(before.operators!.stream)
+  expect(planned.journal.operators!.artifacts).toEqual(before.operators!.artifacts)
+  expect(planned.journal.operations.slice(0, -1)).toEqual(before.operations)
+  expect(planned.journal.operations.at(-1)!.request.generationLimits).toEqual({ model_requests: 4, tokens: 20 })
+  for (const mutate of [
+    (j: RunJournal) => { j.operations.find((op) => op.request.operationId === source.request.operationId)!.receipt!.usage.tokens = null },
+    (j: RunJournal) => { j.operations[0]!.status = 'submitted' },
+    (j: RunJournal) => { j.operators!.state.data.iterations = 3 },
+    (j: RunJournal) => { j.status = 'cancelled' },
+    (j: RunJournal) => { j.operations.find((op) => op.request.operationId === source.request.operationId)!.receipt!.result.status = 'complete' },
+  ]) {
+    const changed = structuredClone(before)
+    mutate(changed)
+    expect(() => planMetaRecovery(changed, recovery)).toThrow()
+  }
+  expect(() => planMetaRecovery(before, { ...recovery, generation: { max_tokens: 99 } })).toThrow('cannot lower')
+  options.cancelError = true
+  await expect(app.resume(id, undefined, recovery)).rejects.toThrow('stop unconfirmed')
+  options.cancelError = false
+  options.inspectMismatch = true
+  await expect(app.resume(id, undefined, recovery)).rejects.toThrow('differs from the committed failure')
+  options.inspectMismatch = false
+  expect(await readFile(path)).toEqual(original)
+  expect(requests.filter((r) => r.operatorCall)).toHaveLength(3)
+
+  // Simulate a process ending immediately after recovery admission, before submitting the retry.
+  const write = app.store.write.bind(app.store)
+  const interrupted = vi.spyOn(app.store, 'write').mockImplementationOnce(async (journal) => {
+    await write(journal)
+    throw new Error('interrupted after recovery admission')
+  })
+  await expect(app.resume(id, undefined, recovery)).rejects.toThrow('interrupted after recovery admission')
+  interrupted.mockRestore()
+  const admitted = await app.store.read(id)
+  const checkpoint = join(project, '.gear', 'runs', id, 'recoveries', admitted.metaRecoveries![0]!.id, 'journal.json')
+  expect(await readFile(checkpoint)).toEqual(original)
+  await writeFile(checkpoint, '{}')
+  await expect(app.resume(id)).rejects.toThrow('checkpoint failed verification')
+  await writeFile(checkpoint, original)
+  const controller = new ProjectController(app)
+  const report = await controller.invoke('run.resume', { run_id: id, ...recovery }) as typeof failed
+  const journal = await app.store.read(id)
+  expect(report.status).toBe('completed')
+  expect(journal.physicalAttempts).toBe(4)
+  expect(actualFiles).toHaveLength(4)
+  expect(requests.filter((r) => r.operatorSamples).map((r) => r.operation.task_ids)).toEqual([
+    ['sum-01'], ['sum-01'], ['sum-02'], ['sum-02'],
+  ])
+  const meta = requests.filter((r) => r.operatorCall)
+  expect(meta).toHaveLength(5)
+  expect(new Set(meta.map((r) => r.operationId)).size).toBe(5)
+  expect(meta[3]!.operatorCall).toEqual(meta[2]!.operatorCall)
+  expect(journal.operations.find((op) => op.request.operationId === source.request.operationId)).toEqual(source)
+  expect(journal.specDigest).toBe(before.specDigest)
+  expect(journal.operators!.decisions.slice(0, before.operators!.decisions.length)).toEqual(before.operators!.decisions)
+  expect(journal.operators!.state.data.iterations).toBe(4)
+  expect(journal.operators!.stream!.completed.map((task) => task.task_id)).toEqual(['sum-01', 'sum-02'])
+  expect(report.operators!.library_publications).toHaveLength(4)
+  expect(report.recovered_operation_ids).toEqual([source.request.operationId])
+  expect(generationLedger(journal).metrics.tokens).toMatchObject({ accounted_upper_bound: 40, limit: 200, remaining: 160 })
+  await app.resume(id, undefined, recovery)
+  expect(requests.filter((r) => r.operatorCall)).toHaveLength(5)
+  expect(await readFile(checkpoint)).toEqual(original)
+  await expect(app.resume(id, undefined, { ...recovery, generation: { max_tokens: 300 } })).rejects.toThrow('different recovery options')
 }, 60_000)

@@ -344,14 +344,31 @@ export async function projectCommand(argv: string[]): Promise<boolean> {
       },
       !dryRun && jsonIndex < 0,
     )
+  } else if (command === 'resume') {
+    const retry = take('--retry-operation'),
+      generationPath = take('--generation-config'),
+      generationJson = take('--generation-json'),
+      id = args.shift()
+    if (!id || args.length || (generationPath && generationJson))
+      throw new GearError(
+        'invalid-resume-options',
+        'Use resume RUN_ID [--retry-operation ID] [--generation-config FILE]',
+      )
+    const generation = generationPath
+      ? JSON.parse(await readFile(resolve(root, generationPath), 'utf8'))
+      : generationJson === undefined
+        ? undefined
+        : JSON.parse(generationJson)
+    result = await foreground(controller, 'run.resume', {
+      run_id: id,
+      ...(retry === undefined ? {} : { retry_operation: retry }),
+      ...(generation === undefined ? {} : { generation }),
+    })
   } else {
     const id = args.shift()
     if ((!id && command !== 'report') || args.length)
       throw new GearError('run-id-required', `${command} requires one run ID`)
-    result =
-      command === 'resume'
-        ? await foreground(controller, 'run.resume', { run_id: id })
-        : await controller.invoke(`run.${command}`, id === undefined ? {} : { run_id: id })
+    result = await controller.invoke(`run.${command}`, id === undefined ? {} : { run_id: id })
   }
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
   return true
