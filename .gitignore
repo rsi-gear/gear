@@ -18,6 +18,9 @@ knowledge/
 # Local diagram authoring project; commit exported documentation SVGs only.
 /media/gear-loop/
 
+# Local experiment runs (CONTRIBUTING: keep experiment logs outside docs/).
+.local/
+
 # Built from the pinned upstream ToolFs package.
 assets/gear-tool-fs.js
 assets/gear-tool-fs.LICENSE
