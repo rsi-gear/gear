@@ -54,15 +54,26 @@ export function reserveProjections(
     visited = new Set<string>()
   let changed = false
   for (const source of [...journal.operations].reverse()) {
-    if (source.status !== 'complete' || source.request.operation.kind !== 'evaluate_seed') continue
-    const destination = source.request.partition === 'seed' ? journal.seedEvidence : journal.heldOutEvidence
+    if (
+      source.status !== 'complete' ||
+      source.request.operation.kind !== 'evaluate_seed' ||
+      source.request.operatorSamples?.exposure === 'blind'
+    )
+      continue
+    const destination = source.request.operatorSamples
+      ? source.receipt!.evidence
+      : source.request.partition === 'seed'
+        ? journal.seedEvidence
+        : journal.heldOutEvidence
     const eligible = source.receipt!.evidence.filter((cell) => {
-      const id = key(source.request.partition, cell)
+      const cellId = key(source.request.partition, cell)
+      const id = (source.request.operatorSamples?.callId ?? '') + ':' + cellId
       if (
         visited.has(id) ||
         !destination.some(
           (value) =>
-            key(source.request.partition, value) === id && canonicalDigest(value) === canonicalDigest(cell),
+            key(source.request.partition, value) === cellId &&
+            canonicalDigest(value) === canonicalDigest(cell),
         )
       )
         return false
@@ -178,6 +189,10 @@ export function validateProjectionReservation(journal: RunJournal, operation: Jo
     canonicalDigest(request.slots) !== canonicalDigest(slots) ||
     canonicalDigest(request.metrics ?? null) !== canonicalDigest(root.request.metrics ?? null) ||
     canonicalDigest(request.assertions ?? null) !== canonicalDigest(root.request.assertions ?? null) ||
+    canonicalDigest(request.operatorSamples ?? null) !==
+      canonicalDigest(root.request.operatorSamples ?? null) ||
+    canonicalDigest(request.executionTarget ?? null) !==
+      canonicalDigest(root.request.executionTarget ?? null) ||
     canonicalDigest(request.evidence) !== canonicalDigest(sourceCells) ||
     projection.missing.some((slot) => {
       const cell = sourceCells.find(
@@ -257,7 +272,11 @@ export function mergeProjectedEvidence(
   request: OperationRequest,
   cells: Evidence[],
 ): Evidence[] {
-  const destination = request.partition === 'seed' ? journal.seedEvidence : journal.heldOutEvidence
+  const destination = request.operatorSamples
+    ? request.evidence
+    : request.partition === 'seed'
+      ? journal.seedEvidence
+      : journal.heldOutEvidence
   const next = [...destination]
   for (const cell of cells) {
     const original = request.evidence.find(

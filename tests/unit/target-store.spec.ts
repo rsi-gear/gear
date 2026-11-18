@@ -1,4 +1,4 @@
-import { chmod, cp, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, expect, it } from 'vitest'
@@ -42,4 +42,28 @@ it('rejects substrate edits, links and changed runtime conditions', async () => 
   await symlink('/etc/hosts', join(store.path('candidate'), 'secret'))
   await expect(store.seal('candidate', '', 'anchor')).rejects.toThrow('links')
   await expect(new TargetStore(root, adapter, canonicalDigest('other-runtime')).verify('anchor')).rejects.toThrow('changed')
+})
+
+it('seals DSH guidance, ordinary tools and candidate parameters while keeping dependencies fixed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'gear-guidance-target-')); roots.push(root)
+  const adapter = new DshHarnessAdapter(), store = new TargetStore(root, adapter, canonicalDigest('runtime'))
+  await adapter.prepare(store.path('anchor'))
+  await store.seal('anchor', canonicalDigest('base'))
+  await cp(store.path('anchor'), store.path('candidate'), { recursive: true })
+  await mkdir(join(store.path('candidate'), 'tools'), { recursive: true })
+  await writeFile(join(store.path('candidate'), 'workflow.yaml'), '{"stages": []}\n')
+  await writeFile(join(store.path('candidate'), 'tools/train.py'), 'print("ordinary training program")\n')
+  await writeFile(join(store.path('candidate'), 'preset/task-parameters.json'), '{"tasks": {}}\n')
+  const candidate = await store.seal('candidate', '', 'anchor')
+  expect((await store.verify('candidate')).digest).toBe(candidate.digest)
+  expect(adapter.executionSpec(store.path('candidate')).resourcePaths).toEqual(
+    expect.arrayContaining(['workflow.yaml', 'tools']),
+  )
+  for (const path of ['runtime.py', 'tools/example/package.json']) {
+    await cp(store.path('anchor'), store.path('invalid'), { recursive: true })
+    await mkdir(join(store.path('invalid'), 'tools/example'), { recursive: true })
+    await writeFile(join(store.path('invalid'), path), '{}')
+    await expect(store.seal('invalid', '', 'anchor')).rejects.toThrow(/fixed substrate|protected/)
+    await rm(store.path('invalid'), { recursive: true, force: true })
+  }
 })

@@ -19,20 +19,47 @@ pass rate. To penalize usage, add a declared metric such as
 values remain available. This is a configurable quality/efficiency objective,
 not the official SoL-Pi formula.
 
-Omission selects strict pass rate. The dataset must explicitly declare how a
-trial passes. Neither a positive reward nor a score range implies success.
-Constraints are optional; without them the weights allow tradeoffs. For example:
+Omission selects strict pass rate and the multi-signal promotion rule below. The
+dataset must explicitly declare how a trial passes. Neither a positive reward nor
+a score range implies success. Constraints are optional; without them the weights
+allow tradeoffs. For example:
 
 ```json
 {"metric":"pass_rate","rule":"no_regression","reference":"initial_baseline","tolerance":0}
 ```
 
-Place that entry in `objective.constraints` to preserve initial quality. The
-reference is the initial harness in the same partition, not the current
-champion. Constraint failure preserves the score and blocks promotion. The
-optional search setting `promotion.objective` specifies `minimumGain`,
-`maxSeedRegression`, and `maxHeldOutRegression`, all zero by default. Global seed
-improvement must exceed the minimum; `allowNeutral` explicitly permits a tie.
+Place that entry in `objective.constraints` to preserve the run's starting
+quality. The reference is the current run's frozen anchor in the same partition.
+That anchor may be a previously accepted champion; it is not necessarily the
+first harness of the evolution. Constraint failure preserves the score and blocks
+promotion.
+
+## Promotion
+
+With the default objective, the global seed gate is the paper's multi-signal
+SeedGate. Its signals are the pass rate and each declared process-score group.
+A native benchmark declares its group with `scoring.process_score` in
+`benchmark.adapter.json`; Gear then registers a `process_score` metric with that
+declaration's direction and range, read from the verifier's standard
+`scores.process_score`. The candidate and its reference need complete, comparable
+seed evidence, and protection must pass. No signal may regress in its declared
+direction, and at least one must strictly improve, so a process-only gain promotes
+a pass-rate tie. A declared process group with missing evidence makes the
+comparison incomplete rather than dropping the group. Without declared process
+groups the rule reduces to a strict pass-rate gain.
+
+Within a run, each candidate with complete global seed evidence is compared with
+the current seed champion, which starts as the run anchor, and replaces it when it
+passes. Parent selection and the final nomination use that champion. Held-out
+validation runs once, at the end of the run, and compares the nominee with the
+frozen run anchor. It needs complete, comparable evidence for every signal and
+satisfied protection, and no signal may regress; ties in every signal pass.
+Held-out evidence never enters parent selection.
+
+An explicit objective (`terms` or `constraints`) replaces this rule: after
+constraints and protection pass, the global seed objective must strictly improve
+on the anchor, and held-out validation requires no regression in the objective
+score. The thresholds are fixed at zero; there are no `promotion.*` settings.
 
 ## Dataset contracts
 
@@ -65,9 +92,11 @@ Use the benchmark's actual predicate. `boolean-v1` accepts an explicit boolean;
 artifact (for example `verifier.result.rewards.quality`). The adapter preserves
 verifier artifacts for successful and failed runs and verifies their run and
 trial/attempt bindings. Selecting a verifier metric requires that capability;
-missing or corrupt verifier evidence cannot supply an available metric. Standard total/process
-channels are registered from the manifest's scoring declarations; no process
-channel is invented for total-only datasets. Arbitrary custom IDs use the same
+missing or corrupt verifier evidence cannot supply an available metric. With the
+default objective, the standard process channel is registered from the manifest's
+`scoring.process_score` declaration, unless the project declares its own
+`process_score`; no process channel is invented for total-only datasets.
+Arbitrary custom IDs use the same
 registry and can be selected directly without registering a scoring profile.
 
 Usage declarations additionally require a `measurement` contract covering kind

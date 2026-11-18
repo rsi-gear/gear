@@ -1,0 +1,20 @@
+{
+  "source_revision": "4a8e1061254004d9dac807054eed33fad7d1ff14",
+  "source_dataset_digest": "sha256:e57c3d491fc8905311e043a2abd74965ee2b56164d1b62b8c8aa6f35e4ef917b",
+  "dataset_digest": "sha256:bbe958d2e55d049627259a0a9fd33cadb6405af897b7e43e11af965b446f7c55",
+  "selection": {
+    "method": "sha256(gear-algorithms-mkt-smoke-v1:task_id) ascending, first 10",
+    "task_ids": [
+      "marketing-seasonal_campaign",
+      "marketing-customer_story_intake",
+      "marketing-contact_data_cleanup",
+      "marketing-customer_feedback_aggregation",
+      "marketing-seo_brief_prioritization",
+      "marketing-content_expiration_alert",
+      "marketing-event_followup_personalization",
+      "marketing-social_contest",
+      "marketing-social_audit",
+      "marketing-seo_competitor_gap"
+    ]
+  }
+}

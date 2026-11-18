@@ -42,7 +42,8 @@ class Frozen(importlib.abc.MetaPathFinder, importlib.abc.Loader):
 
 
 sys.meta_path.insert(0, Frozen())
-from gear.algorithms.operators import main  # noqa: E402 — install the frozen loader first
+# Import only after installing the loader for the frozen source snapshot.
+from gear.refine.projections import main  # noqa: E402
 
 for line in sys.stdin:
     main(json.loads(line))

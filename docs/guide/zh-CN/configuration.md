@@ -56,11 +56,15 @@ generation:
 
 两个总上限和两个单次上限都可独立省略，填写时必须为正安全整数。省略总上限表示该维度没有 run 总限制；省略单次上限时，单次预约使用剩余总额。单次上限大于剩余额度时会缩小到剩余值。完整操作批次必须一次预约成功，不会先执行一部分。`config explain` 显示配置来源。
 
-Meta provider 必须明确声明 `generationBudget: true`，并在每个实际模型调用前对整个 operation 的所有调用、内部重试和总结执行限制。当前随包 Codex CLI runner 不具备这种硬限制，配置上述限额会在 baseline 提交前返回 `generation-budget-unsupported`；不会将事后观察到的 token 用量当成硬保证。支持该合同的 process provider 可接入这一路径。
+Meta provider 必须明确声明 `generationBudget: true`，并在每个实际模型调用前对整个 operation 的所有调用、内部重试和总结执行限制。随包 Codex Meta 桥接统一调用具备 `isolated_agent_run: "1"` 和 `generation_budget: "1"` 的 Hitch。Hitch 在转发前计数请求，以文本输入保守预留限制输出 token；缺失用量时保留预算占用。Hitch 能力不足会拒绝准入，不回退为直接启动 Codex。
 
 运行层在副作用前把 `generationLimits` 和 operation ID 一起持久化。只有已知、合法的实际用量会释放预约余量；缺失或 null 计量保留完整额度，丢失回包先 inspect 同一 operation。`tokens` 是所有调用的输入与输出 token 之和，缓存输入计入输入一次，不能把 reasoning token 重复加到已含它的输出中。若同时提供拆分计量，合计必须一致；实际 token 不能与零请求数矛盾。
 
-报告的 `generation_budget` 显示适用范围、冻结规则、预约上界、已占用上界、未知操作数和可用额度。上界不是实际消费。provider 超过预约或返回矛盾计量时，原 receipt 留在 journal 的 violation 记录中，后续提交被阻止，该结果不能进入算法证据。取消和恢复不删除这些记录。
+报告的 `generation_budget` 显示适用范围、有效预算规则、预约上界、已占用上界、未知操作数和可用额度。上界不是实际消费。provider 超过预约或返回矛盾计量时，原 receipt 留在 journal 的 violation 记录中，后续提交被阻止，该结果不能进入算法证据。取消和恢复不删除这些记录。
+
+### 已失败反思的预算续接
+
+符合条件的 v2 只读 Meta 失败，可以通过 `resume(..., retry_operation=..., generation=...)` 显式提高该 run 的累计或单次上限。历史消耗继续占用额度，原冻结配置不变；报告中的 `generation_budget.policy` 展示有效预算，`meta_recoveries` 保存每次变更。省略字段保留旧限制；恢复既不清空账本，也不重置轮数、目标执行预算或修补次数。示例和适用条件见[运行与恢复](evolutions.md#重试已结算的只读-meta-失败)。
 
 ## 失败评测修补
 
@@ -144,7 +148,7 @@ Hitch 可附带可选的探测诊断；Gear 严格校验有界的阶段、结果
 
 还要求 Hitch 提供 `evaluation_environment_binding: "3"` 与 `evaluation_preparation: "1"` 能力；现有 0.2.16 发布版本本身不保证支持。Gear 调用 daemon 的 `eval bind`，将实际驻留环境、模型、变量名、冻结 helper 输出、Harbor Python 内容及受支持的环境引用文件的私有 HMAC 绑定加入运行身份；新准入与 Harbor 启动前由 Hitch 复核，回执必须携带同一绑定。Python 版本不变但依赖文件变化也会使旧绑定失效；正常生成的字节码缓存不会改变身份。标准证书和凭据配置文件自动检查；自定义主机文件变量在 daemon 环境中通过 `HITCH_EVALUATION_FILE_ENV_JSON='["MY_PROVIDER_CONFIG"]'` 声明，使用绝对文件路径。凭据不进入 Gear 项目锁或公开回执，失效时需要准备新运行。当前配套实现与文件范围见[环境文件绑定说明](../../testing/hitch-environment-files.zh-CN.md)。
 
-新建 Hitch profile 显式保存 `maxConcurrent: 4`，与 Hitch 默认值一致；没有该字段的既有 profile 保留并发 1。创建时用 `--max-concurrent N` 请求更高的任务并发，实际接纳仍受 daemon 资源容量约束。接纳结果前会核对实际执行并发与冻结配置一致。并发属于冻结的 provider 身份，修改后须新建运行，不能复用旧身份下的评测证据。
+新建 Hitch profile 显式保存 `maxConcurrent: 4`，与 Hitch 默认值一致；没有该字段的既有 profile 保留并发 1。创建时用 `--max-concurrent N` 设置一次 Gear 评估操作中跨任务与 repetitions 的并发上限；同一任务的多次实验可并行，每次使用独立环境、工作目录和产物。多任务 repetition 会按其最大同时执行任务数占用额度，避免将任务并发与 repetition 并发相乘。实际接纳仍受 daemon 的全局 CPU、内存和容器容量约束；不同操作共享 daemon 总容量。接纳结果前会核对实际执行并发与冻结配置一致。并发属于冻结的 provider 身份，修改后须新建运行，不能复用旧身份下的评测证据。
 
 `--preparation-timeout-ms` 同时控制 artifact 准备/复核、环境绑定及提交准入（其中也会校验 Python 运行时）。`--setup-timeout-ms` 设置 Harbor 的 Agent setup 覆盖值（`agent.override_setup_timeout_sec`），默认 1800000 毫秒。任务环境的构建/启动期限独立使用编译后任务的 `task.config.environment.build_timeout_sec`，未声明时使用 Harbor 默认值；增加 Agent setup 不会延长环境启动期限。Gear 保留任务声明的原生期限，未声明的默认值在冻结任务合同中仍为未知。任务 `timeoutMs` 与 Agent `setupTimeoutMs` 之和须符合 Hitch 的 24 小时限制，完整 24 小时任务应显式设置 Agent setup 为 0。其余时间配置使用正整数毫秒，准备期限须在 Node 定时器范围内。等待整组评测时为每个任务保留 setup 与执行预算，兼容实际 daemon 容量低于请求并发的情况。取消与响应丢失后的恢复保留原评估身份。
 
@@ -163,9 +167,8 @@ Meta 与 Target 分别认证。Codex Meta 使用[随包 operation runner](../../
 原生 `kind: "codex"` 配置由 Gear 解析到当前安装包，避免手写 runner 路径。
 主机需要 HTTP 上游代理时，在 Codex profile 的 `passEnv` 中显式加入 `HTTP_PROXY`、`HTTPS_PROXY` 和可选的 `NO_PROXY`（CLI：`--pass-env HTTP_PROXY,HTTPS_PROXY,NO_PROXY`）。配置只保存变量名；可信 worker 通过这些值连接上游，Codex 只收到沙箱代理端点，不会收到上游代理凭据。`allowedDomains` 仍限制目标域名，`NO_PROXY` 也不能绕过该限制。默认不继承代理变量；使用 API key 时，须在同一列表中保留相应 key 的变量名。
 
-Codex 在清理前持久化已校验的 `receipt.json`，因此回执可能先于执行锁释放出现；私有 `cleanup-started.json` / `cleanup.json` 单独记录清理，`fallback-required` 表示有步骤失败或超时，不表示超时动作已完成。凭据、trajectory gateway、sandbox reset 和根目录分别限 500/500/1500/1000 ms，状态文件写入各限 250 ms；清理开始后的 4500 ms watchdog 兜底退出。只有本次独立 worker 可以终止经验证的自身进程组，回收 CONNECT 两端和桥接子进程；直接调用库函数不会终止宿主进程组。
+Codex profile 默认复用所选 Hitch Target 的 executable/root，也可显式设置 `configuration.hitch: {executable, root}`。Hitch 负责模型隔离、凭据、请求计量和终止；Gear 负责输入授权、结果校验和持久化回执。缺少停止确认时保持 `unknown`，不重发、不释放预算。计量、清理和恢复细节见 [Meta 执行协议](../../codex-meta-runner.zh-CN.md)。显式上游代理要求 Node 22.21+ 或 24.5+。
 
-只有守护进程的专用确认管道证明模型组已终止后才写回执。guard 被杀或缺少确认时保持 `unknown`，不会重发；私有临时根目录保留，凭据和根目录标为 `unconfirmed`，其中可能仍有临时认证文件，需保留原 journal 调查。取消仍须在既有 5 秒等待内同时确认回执和锁释放，超时不能当作停止证明。runner asset、guard 和清理代码均绑定到实现身份，旧冻结运行不会自动改用新实现恢复。
 `doctor` 检查本地登录文件或环境变量存在性；不验证远端模型授权、不执行 benchmark。
 自定义 process 的认证返回 `provider_managed`，需按其文档检查。
 Python `Project` 提供 `profiles()`、`create_profile()`、`use_profile()`、`doctor()` 及 async 对应入口。

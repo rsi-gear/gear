@@ -7,10 +7,10 @@ from dataclasses import asdict
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from gear.algorithms import AlgorithmState, Decision
 from gear.canonical import digest
 from gear.refine import worker
 from gear.refine.protocol import MAX_MESSAGE_BYTES
+from gear.search.contracts_v1 import AlgorithmState, Decision
 
 IDENTITY = "sha256:" + "0" * 64
 

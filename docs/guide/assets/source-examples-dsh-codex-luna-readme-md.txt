@@ -53,7 +53,10 @@ cp examples/dsh-codex-luna/profile.patch.yml .evolve-lab/dsh-home/profiles/web/c
 
 The profile links `rsi-gear` to this checkout and uses `metaAdapter.kind: skill`. Run `/refine` in the configured DSH agent session; no `refine-meta` preset is required. Match the active session model and sampling to `metaModel` and `metaSampling`. The commands pin DSH
 `0.1.1-rc.2` and `dsh-codex` `0.2.6`; the isolated runtime supplies the
-compatible `pi-ai` `0.84.4` to the profile through DSH's runtime links.
+compatible `pi-ai` `0.87.1` to the profile through DSH's runtime links.
+The carrier also pins Cordis loader `1.0.6` and include `1.0.10`; newer loader
+resolution is incompatible with this DSH release. The runtime smoke check
+assembles the prompt and reads the skills without starting a model request.
 
 ## Create the target carrier
 

@@ -18,9 +18,17 @@ from gear.training.storage.content import ContentStore, digest_bytes, digest_jso
 
 def bridge_digest():
     root = Path(__file__).resolve().parents[2]
-    sources = [root / name for name in ("__init__.py", "canonical.py", "project.py")]
-    for directory in ("training", "algorithms"):
-        sources.extend((root / directory).rglob("*.py"))
+    sources = [
+        root / name
+        for name in (
+            "__init__.py",
+            "canonical.py",
+            "project.py",
+            "refine/__init__.py",
+            "refine/training_policy.py",
+        )
+    ]
+    sources.extend((root / "training").rglob("*.py"))
     return digest_json(
         [
             {

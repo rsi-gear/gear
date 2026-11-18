@@ -30,5 +30,6 @@ change an admitted experiment.
 
 See the [native DSH resource guide](../../../skills/refine/references/dsh-target-harness.md)
 for wiring examples. Host extension loading, container materialization and model
-adoption are distinct verification layers; consult the
-[implementation record](../../refactor-progress.zh-CN.md) for observed results.
+adoption are distinct verification layers. The [implementation record](../../refactor-progress.zh-CN.md)
+preserves earlier checks; the [seven-algorithm validation](algorithms.md#real-model-validation)
+records the subsequent Hitch/DSH real-model execution scope.

@@ -11,6 +11,7 @@ import { checkBenchmark } from './benchmark.js'
 import { profile } from './profile-store.js'
 import { pinImage } from './profile-service.js'
 import { pythonJson } from './python.js'
+import { benchmarkSdkEnvironment } from './benchmark-sdk.js'
 
 export interface BenchmarkProbeOptions {
   task_id?: string
@@ -59,13 +60,18 @@ export async function probeBenchmark(
     report: relative(root, path),
   }
   try {
-    const plan = (await pythonJson(['benchmark', 'probe-plan'], {
-      benchmark,
-      destination: join(scratch, 'compiled'),
-      task_id: taskId,
-      base_image: baseImage,
-      scorer: options.scorer ?? false,
-    })) as BenchmarkProbePlan
+    const plan = (await pythonJson(
+      ['benchmark', 'probe-plan'],
+      {
+        benchmark,
+        destination: join(scratch, 'compiled'),
+        task_id: taskId,
+        base_image: baseImage,
+        scorer: options.scorer ?? false,
+      },
+      signal,
+      await benchmarkSdkEnvironment(config),
+    )) as BenchmarkProbePlan
     Object.assign(result, {
       compiler_digest: plan.compiler_digest,
       scorer_digest: plan.scorer_digest,

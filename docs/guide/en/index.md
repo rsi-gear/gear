@@ -1,41 +1,33 @@
 # Gear user guide
 
-These pages describe Gear 0.2.2 and its project-based API.
-Python defines optimization policies; the durable runtime executes evaluations,
-candidate generation, recovery and final validation. The CLI, Python SDK,
-native DSH Skill and project socket use the same application service.
+Gear provides callable Python algorithms and reusable operators for improving agent harnesses. This guide describes the APIs in this Gear 0.2.4 source tree; use the matching source build in [quick start](quickstart.md). Python defines the algorithm, while the runtime coordinates execution, budgets, persistence and recovery.
 
-## Choose an entrypoint
+## Choose your next step
 
-- [Quick start](quickstart.md): create an editable benchmark, check it without model calls, then run one task.
-- [Python algorithms](example-algorithm.md): replace a parent policy or edit the six shared algorithm modules.
-- [Target harness](target-harness.md): choose native DSH or Pi resources.
-- [Model training](training.md): use `gear.training` with its independent experiment lifecycle.
+- [Quick start](quickstart.md): install the CLI and Python SDK, prepare a project and run an algorithm.
+- [Choose and run an algorithm](algorithms.md): GEPA, RandomSearch, OPRO, ACE, RRSI, DarwinX and Harness2, with examples and their feedback requirements.
+- [Customize an algorithm in Python](example-algorithm.md): change parameters, replace components and compose operators.
+- [Tasks and scoring](datasets.md): define task rewards and benchmark inputs; [configuration](configuration.md) controls aggregate objectives and budgets.
+- [Runs and recovery](evolutions.md): continue saved progress, retry an eligible failed reflection and inspect accounting.
+- [Reports](results.md): read candidate scores, learning outputs, library publications and task-stream progress.
+- [Target harness](target-harness.md) and [Meta integration](meta-agents.md): configure execution through Hitch.
+- [Model training](training.md): use the separate experimental `gear.training` lifecycle.
 
-## Six algorithm modules
+## Where capabilities live
 
-| File | Responsibility |
+| Python entrypoint | Purpose |
 | --- | --- |
-| `parents.py` | Parents, sampling probabilities and candidate quotas |
-| `sampling.py` | Seed task sets and weights |
-| `proposal.py` | Diagnosis and candidate planning |
-| `ranking.py` | Candidate comparison over complete, shared scopes |
-| `stopping.py` | Termination |
-| `algorithm.py` | Stage order and policy composition |
+| `gear.algorithms` | Complete algorithms passed to `Project.refine` |
+| `gear.core` | Components, state, Meta calls, candidate materialization and edit checks |
+| `gear.evaluation` | Task execution, evidence and candidate comparison |
+| `gear.memory` | History, archives, playbooks and versioned instruction libraries |
+| `gear.training` | Training data, model updates and training workflows |
+| `gear.search` | Search strategies, screening and workflow composition |
 
-GEPA and RandomSearch instantiate the same public contracts. TypeScript owns
-execution and fixed validation; it does not expose a second algorithm author API.
-Training lives in `python/gear/training/`, separated into contracts, loop,
-storage, runtime, backends, data, script entrypoints and related responsibilities.
+The six search strategy modules are `parents`, `sampling`, `proposal`, `ranking`, `stopping` and `workflow`. For example, `ApplyEdits` and `CheckEdits` come from `gear.core`; they are reusable capabilities rather than complete algorithms. Pure operators return values directly. Operators that need external work return calls for the runtime to execute.
 
 ## Verification scope
 
-Static benchmarks, CPU policies, native DSH/Pi extension loading and installed
-package offline journeys have coverage. The production Meta runner, authentication
-setup, real-model journey and advanced metric migration remain in progress; see
-the [implementation record](../../refactor-progress.zh-CN.md). Historical Marketing
-examples describe their pinned research experiments, not current setup instructions
-or independent held-out performance evidence.
+All seven algorithms have small-scale real-model execution coverage on ten AutomationBench Marketing tasks, with two rounds per algorithm and two steps per task for Harness2. The [algorithm page](algorithms.md#real-model-validation) distinguishes strict checks, ACE/DarwinX's independent target supplements and Harness2's continuation from saved learning state. It also links the recorded source revisions and journal digests.
 
-Continue with [configuration](configuration.md), [tasks](datasets.md),
-[run management](evolutions.md), [reports](results.md) and [troubleshooting](troubleshooting.md).
+These checks establish execution, budget accounting and recovery. Historical Marketing performance examples describe their separately pinned experiments. Model training retains its own [verification scope](training.md#verification-scope).

@@ -15,6 +15,19 @@ export function sealedProvider(
   const verifyInput = async (request: OperationRequest) => {
     const id = request.operation.parent_id ?? request.operation.candidate_id
     if (id) await targets.verify(id)
+    if (request.executionTarget) {
+      const target = request.executionTarget
+      if (
+        request.operation.kind !== 'evaluate_seed' ||
+        target.base.candidate_id !== id ||
+        target.base.run_id !== request.runId ||
+        (await targets.verify(id!)).digest !== target.base.digest
+      )
+        throw new GearError('execution-target-mismatch', 'Effective target differs from its reserved base')
+      const manifest = await targets.materialize(target.id, id!, target.files)
+      if (manifest.digest !== target.digest)
+        throw new GearError('execution-target-mismatch', 'Effective target differs from its frozen content')
+    }
     await experience?.verify(request)
   }
   const seal = async (request: OperationRequest, value: OperationReceipt): Promise<OperationReceipt> => {
@@ -57,6 +70,10 @@ export function sealedProvider(
     evaluationIdentity: provider.evaluationIdentity ?? provider.identity,
     ...(provider.timeouts ? { timeouts: provider.timeouts } : {}),
     capabilities: provider.capabilities,
+    ...(provider.captureExecutions ? { captureExecutions: provider.captureExecutions.bind(provider) } : {}),
+    ...(provider.readExecutionArtifact
+      ? { readExecutionArtifact: provider.readExecutionArtifact.bind(provider) }
+      : {}),
     async submit(request, signal) {
       await verifyInput(request)
       return seal(request, await provider.submit(request, signal))

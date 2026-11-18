@@ -4,7 +4,7 @@ import { load } from 'js-yaml'
 import type { HarnessAdapter, MutationPolicy } from '../../ports/harness.js'
 
 export const dshMutationPolicy: MutationPolicy = {
-  writableRoots: ['preset', 'plugins', 'prompts', 'skills', 'workflows'],
+  writableRoots: ['preset', 'plugins', 'prompts', 'skills', 'workflows', 'workflow.yaml', 'tools'],
   protectedNames: [
     'manifest.json',
     'package.json',
@@ -24,7 +24,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       adapterRef: { id: 'dsh', version: '1' },
       resources: ['rules', 'skills', 'plugins', 'workflows', 'configuration'],
       guide:
-        'Edit Cordis composition in preset/agent.cordis.yml, prompts, skills and plugin hooks. Dependency manifests are fixed.',
+        'Edit Cordis composition in preset/agent.cordis.yml, prompts, skills, workflows, workflow.yaml, ordinary tools and plugin hooks. Task-specific contracts may further restrict these resources. Dependency manifests are fixed.',
       runtimeSourceMutation: false,
     }
   }

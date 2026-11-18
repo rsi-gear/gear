@@ -1,3 +1,4 @@
+import type { HitchResourceSdkBinding } from './resource-sdk.js'
 import { prepareEnvironmentBinding, type HitchEnvironmentBinding } from './binding.js'
 import { appendFile, mkdir, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -20,6 +21,8 @@ import { failureData, hitchEvaluationFailure, type HitchEvaluationFailure } from
 import { OrderedHitchControl, hitchOperationPath } from './control.js'
 import { findExecutable } from '../process/executable.js'
 import { HitchArtifactReader } from './trajectory.js'
+import { HitchOperatorArtifacts } from './operator-artifacts.js'
+import type { OperatorArtifact } from '../../domain/operator-run.js'
 import { captureVerifiers, verifyVerifierExtension, type VerifierCapture } from './verifier.js'
 import { assertHitchExecutionConditions } from './conditions.js'
 import {
@@ -65,6 +68,7 @@ interface Group {
   agentArgs: string[]
   evalId: string | null
   submissionStarted: boolean
+  buildMode?: 'backend'
 }
 interface Plan {
   operationDigest: string
@@ -77,15 +81,22 @@ export interface HitchProviderContext {
   runtime?: HitchRuntimeAccess
   targets: string
   adapter: HarnessAdapter
-  compile(destination: string, taskIds: string[], baseImage: string, signal?: AbortSignal): Promise<unknown>
+  compile(
+    destination: string,
+    taskIds: string[],
+    baseImage: string,
+    signal?: AbortSignal,
+    resourceSdk?: HitchResourceSdkBinding,
+  ): Promise<unknown>
   /** Declarations for runtime planning only; never submitted for execution. */
   compilePlanning?(
     destination: string,
     taskIds: string[],
     baseImage: string,
     signal?: AbortSignal,
+    resourceSdk?: HitchResourceSdkBinding,
   ): Promise<unknown>
-  seal?(destination: string, taskIds: string[]): Promise<unknown>
+  seal?(destination: string, taskIds: string[], resourceSdk?: HitchResourceSdkBinding): Promise<unknown>
   implementationIdentity: string
 }
 
@@ -159,7 +170,9 @@ export class HitchOperationProvider implements OperationProvider {
       taskRuntime: 'harbor' as const,
     }
   }
-  readonly capabilities = hitchCapabilities
+  get capabilities() {
+    return { ...hitchCapabilities, blindProjection: this.operatorArtifactsEnabled, targetAssets: true }
+  }
   private constructor(
     readonly profile: HitchProfile & HitchSettings,
     readonly context: HitchProviderContext,
@@ -171,6 +184,7 @@ export class HitchOperationProvider implements OperationProvider {
     readonly executionEnvironment: Awaited<ReturnType<typeof observeEvaluationEnvironment>>,
     readonly trajectoryEnabled: boolean,
     readonly verifierEnabled: boolean,
+    readonly operatorArtifactsEnabled: boolean,
   ) {}
   static async connect(
     input: HitchProfile,
@@ -187,6 +201,32 @@ export class HitchOperationProvider implements OperationProvider {
     const connection = await inspectHitchConnection(profile, context.adapter, signal)
     const { capabilities, executionEnvironment, revisionIdentity } = connection
     profile = { ...profile, executable: await findExecutable(profile.executable) }
+    const suppliedContext = context
+    const resourceSdk = {
+      executable: profile.executable,
+      controllerRuntimeId: executionEnvironment.controller.runtime_id,
+    }
+    context = {
+      ...suppliedContext,
+      compile: (destination, tasks, image, callSignal) =>
+        suppliedContext.compile(destination, tasks, image, callSignal, resourceSdk),
+      ...(suppliedContext.compilePlanning
+        ? {
+            compilePlanning: (
+              destination: string,
+              tasks: string[],
+              image: string,
+              callSignal?: AbortSignal,
+            ) => suppliedContext.compilePlanning!(destination, tasks, image, callSignal, resourceSdk),
+          }
+        : {}),
+      ...(suppliedContext.seal
+        ? {
+            seal: (destination: string, tasks: string[]) =>
+              suppliedContext.seal!(destination, tasks, resourceSdk),
+          }
+        : {}),
+    }
     const runtime = context.runtime ?? new HitchPreparedRuntime()
     const preparedArtifacts = await runtime.prepare(profile, context, connection, signal)
     await assertEvaluationEnvironment(
@@ -219,10 +259,29 @@ export class HitchOperationProvider implements OperationProvider {
       executionEnvironment,
       capabilities.trajectory_events_page === '1',
       capabilities.verifier_evidence === '1',
+      capabilities.trajectory_events_page === '1' && capabilities.run_output_artifacts === '1',
     )
   }
   private call(args: string[], signal: AbortSignal, timeoutMs?: number) {
     return hitchJson(this.profile.executable, this.profile.root, args, signal, timeoutMs)
+  }
+  private operatorArtifacts() {
+    if (!this.operatorArtifactsEnabled)
+      throw new GearError(
+        'operator-capability-unsupported',
+        'Hitch requires target trajectory and output artifact protocols',
+      )
+    return new HitchOperatorArtifacts(
+      (args, signal) => this.call(args, signal),
+      join(this.context.directory, 'operator-artifacts'),
+      this.revisionIdentity,
+    )
+  }
+  captureExecutions(request: OperationRequest, receipt: OperationReceipt, signal: AbortSignal) {
+    return this.operatorArtifacts().capture(request, receipt, signal)
+  }
+  readExecutionArtifact(artifact: OperatorArtifact, path: string | null, signal: AbortSignal) {
+    return this.operatorArtifacts().read(artifact, path, signal)
   }
   private path(request: Pick<OperationRequest, 'operationId'>) {
     return hitchOperationPath(this.context.directory, request.operationId)
@@ -422,8 +481,14 @@ export class HitchOperationProvider implements OperationProvider {
       },
     })
   }
+  private planWrites: Promise<void> = Promise.resolve()
   private async save(request: OperationRequest, plan: Plan) {
-    await publishFile(join(this.path(request), 'plan.json'), JSON.stringify(plan))
+    // Concurrent repetitions share a plan, but never publish stale snapshots out of order.
+    const saved = this.planWrites.then(() =>
+      publishFile(join(this.path(request), 'plan.json'), JSON.stringify(plan)),
+    )
+    this.planWrites = saved.catch(() => {})
+    await saved
   }
   private async prepare(request: OperationRequest): Promise<Plan> {
     if (request.operation.kind !== 'evaluate_seed' || !request.operation.candidate_id)
@@ -446,6 +511,7 @@ export class HitchOperationProvider implements OperationProvider {
       const compiled = (await this.context.compile(dataset, taskIds, this.profile.baseImage)) as
         | {
             environments?: Record<string, { mains: { environment: { context: string; dockerfile: string } } }>
+            resource_protocol?: string
           }
         | undefined
       let agentArgs: string[] = []
@@ -468,7 +534,7 @@ export class HitchOperationProvider implements OperationProvider {
         if (!this.context.adapter.materialize)
           throw new GearError('target-execution-unsupported', 'Target cannot materialize a task environment')
         const carrier = await this.context.adapter.materialize(
-          join(this.context.targets, request.operation.candidate_id),
+          join(this.context.targets, request.executionTarget?.id ?? request.operation.candidate_id),
           environment,
         )
         await appendFile(join(dataset, taskId, main.dockerfile), `\n${carrier.dockerfile}`)
@@ -484,6 +550,7 @@ export class HitchOperationProvider implements OperationProvider {
         digest: await datasetDigest(dataset),
         evalId: null,
         submissionStarted: false,
+        ...(compiled?.resource_protocol === 'hitch-resource-lock@1' ? { buildMode: 'backend' as const } : {}),
       })
     }
     const plan = { operationDigest: canonicalDigest(request), providerIdentity: this.identity, groups }
@@ -512,6 +579,7 @@ export class HitchOperationProvider implements OperationProvider {
       passEnv: this.profile.passEnv,
       environmentBinding: this.environmentBinding.binding_id,
       artifactPins: artifactPins(this.preparedArtifacts, group.taskIds),
+      ...(group.buildMode ? { buildMode: group.buildMode } : {}),
     })
     assertPreparedArtifactsMatch(bindings, this.preparedArtifacts)
     return bindings
@@ -546,6 +614,7 @@ export class HitchOperationProvider implements OperationProvider {
         observed.path,
         '--dataset',
         group.dataset,
+        ...(group.buildMode ? ['--build-mode', group.buildMode] : []),
         '--harness',
         this.profile.harnessRef,
         '--model',
@@ -583,13 +652,54 @@ export class HitchOperationProvider implements OperationProvider {
         'Use original-artifact projection instead of target submission',
       )
     const plan = await this.prepare(request)
+    // Each group may itself execute several tasks. Reserve its maximum possible
+    // trial count so repetition concurrency cannot multiply maxConcurrent.
+    const waves: Group[][] = []
+    let wave: Group[] = [],
+      reserved = 0
     for (const group of plan.groups) {
-      await this.submitGroup(request, plan, group, signal)
-      await this.call(
-        ['eval', 'watch', group.evalId!, '--output', 'json'],
-        signal,
-        evaluationWatchTimeoutMs(this.profile, group.taskIds.length),
-      ).catch(() => {})
+      const slots = Math.min(group.taskIds.length, this.profile.maxConcurrent)
+      if (wave.length && reserved + slots > this.profile.maxConcurrent) {
+        waves.push(wave)
+        wave = []
+        reserved = 0
+      }
+      wave.push(group)
+      reserved += slots
+    }
+    if (wave.length) waves.push(wave)
+    for (const groups of waves) {
+      signal.throwIfAborted()
+      const results = await Promise.allSettled(
+        groups.map(async (group) => {
+          await this.submitGroup(request, plan, group, signal)
+          await this.call(
+            ['eval', 'watch', group.evalId!, '--output', 'json'],
+            signal,
+            evaluationWatchTimeoutMs(this.profile, group.taskIds.length),
+          ).catch(() => {})
+          signal.throwIfAborted()
+          // A lost/timed-out watch is not a released execution slot. Confirm the
+          // terminal state before launching any later wave or accepting evidence.
+          const inspection = await this.call(['eval', 'inspect', group.evalId!, '--json'], signal)
+          const control = inspection.control as Record<string, unknown> | undefined
+          if (
+            !inspection.result ||
+            control?.eval_id !== group.evalId ||
+            !['succeeded', 'failed', 'cancelled'].includes(String(control.state)) ||
+            !Array.isArray(control.active_leases) ||
+            control.active_leases.length !== 0
+          )
+            throw new GearError(
+              'operation-needs-recovery',
+              'Hitch evaluation is still running or needs inspection',
+              { retryable: true },
+            )
+          this.assertConditions(inspection, group)
+        }),
+      )
+      const failed = results.find((result) => result.status === 'rejected')
+      if (failed?.status === 'rejected') throw failed.reason
     }
     const result = await this.inspect(request, signal)
     if (result.state !== 'complete')

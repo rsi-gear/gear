@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "product": "Gear",
-  "version": "0.2.2",
-  "updated": "2026-11-02",
+  "version": "0.2.4",
+  "updated": "2026-11-18",
   "defaultLanguage": "en",
   "languages": [
     {
@@ -23,11 +23,11 @@
       "translations": {
         "en": {
           "title": "Gear user guide",
-          "description": "These pages describe Gear 0.2.2 and its project-based API. Python defines optimization policies; the durable runtime executes evaluations, candidate generation, recovery and final validation. The CLI, Python SDK, native DSH Skill and project socket use the same application service."
+          "description": "Use Gear through the Python SDK or Refine Skill. Choose a complete algorithm, customize capability modules, define task rewards and inspect durable execution and recovery."
         },
         "zh-CN": {
           "title": "Gear 用户指南",
-          "description": "本指南对应 Gear 0.2.2 及其基于项目的 API。 Gear 用 Python 定义优化策略，用持久运行层执行评测、候选生成、恢复和最终验证。 CLI、Python SDK、原生 DSH Skill 和项目 socket 调用同一个应用服务。"
+          "description": "通过 Python SDK 或 Refine Skill 使用 Gear：选择完整算法、定制能力模块、定义任务奖励，并检查持久执行与恢复。"
         }
       }
     },
@@ -37,11 +37,25 @@
       "translations": {
         "en": {
           "title": "Quick start",
-          "description": "This page uses the Gear 0.2.2 `gear` CLI. Use compatible Node (22.x from 22.19, or 24+), and Python 3.10+; development and CPU tests use Python 3.12. Linux algorithm isolation also requires bubblewrap, socat and ripgrep; macOS uses the system sandbox. Hitch/Harbor tasks need their runtime and Docker."
+          "description": "Install matching Gear CLI and Python SDK builds, prepare a Target and benchmark, configure execution profiles and budgets, then plan and run an algorithm."
         },
         "zh-CN": {
           "title": "快速开始",
-          "description": "本页使用 Gear 0.2.2 的 `gear` CLI。需要兼容 Node（22.19+ 的 22 系列或 24+）、Python 3.10+；开发和 CPU 测试使用 Python 3.12。Linux 的算法隔离还需要 bubblewrap、socat、ripgrep；macOS 使用系统隔离机制。Hitch/Harbor 任务另需其运行环境及 Docker。"
+          "description": "安装同版本 Gear CLI 与 Python SDK，准备 Target 和 benchmark，配置执行 profile 与预算，再预览和运行算法。"
+        }
+      }
+    },
+    {
+      "slug": "algorithms",
+      "file": "algorithms.md",
+      "translations": {
+        "en": {
+          "title": "Choose and run an algorithm",
+          "description": "Run GEPA, RandomSearch, OPRO, ACE, RRSI, DarwinX or Harness2 through the Python SDK. Compare feedback requirements, replaceable components and the scope of real-model validation."
+        },
+        "zh-CN": {
+          "title": "选择和运行算法",
+          "description": "通过 Python SDK 调用 GEPA、RandomSearch、OPRO、ACE、RRSI、DarwinX 或 Harness2，了解反馈要求、可替换组件与真实模型验证范围。"
         }
       }
     },
@@ -65,11 +79,11 @@
       "translations": {
         "en": {
           "title": "Customize an algorithm in Python",
-          "description": "The author API is `gear.algorithms`. GEPA and RandomSearch share six contracts: parents, sampling, proposal, ranking, stopping and stage composition. GEPA is an instance of these common module contracts."
+          "description": "Customize an algorithm by changing parameters, replacing components or composing operators. Use reusable parents, sampling, proposal, ranking, stopping and workflow capabilities from gear.search."
         },
         "zh-CN": {
           "title": "用 Python 修改算法",
-          "description": "公开作者 API 是 `gear.algorithms`。GEPA 和 RandomSearch 都由父代、采样、提案、排名、停止和阶段编排六个模块组成；GEPA 是公共模块合同的实例。"
+          "description": "从修改参数、替换组件到组合算子，逐步定制算法；复用 gear.search 中的父代、采样、提案、排名、停止和编排能力。"
         }
       }
     },
@@ -79,11 +93,11 @@
       "translations": {
         "en": {
           "title": "Skill and Meta integration",
-          "description": "The operator assistant manages a project through the bundled `refine` Skill. The Meta profile in `gear.yaml` performs candidate generation. These are separate roles and may use different models."
+          "description": "Distinguish the operator assistant, Python algorithm, Meta and Target. Codex Meta execution uses Hitch for isolation, model requests, budget enforcement and durable receipts."
         },
         "zh-CN": {
           "title": "Skill 与 Meta 接入",
-          "description": "操作员助手通过随包 `refine` Skill 管理项目；执行候选生成的 Meta 由 `gear.yaml` 的 profile 选择。这两个角色可以使用不同模型。"
+          "description": "区分操作员助手、Python 算法、Meta 与 Target；Codex Meta 通过 Hitch 执行隔离、模型调用、预算限制和持久回执。"
         }
       }
     },
@@ -107,11 +121,11 @@
       "translations": {
         "en": {
           "title": "Tasks and scoring",
-          "description": "`gear init` creates editable `tasks.csv` and `benchmark.yaml` files. CSV's base columns are `id,instruction,expected,family,split`; JSONL is also supported. Each task explicitly selects `seed` or `held_out`. A family or identical task content cannot span both partitions."
+          "description": "Define task rewards in the benchmark and scorer, then configure aggregation and candidate comparison separately. Import tasks, check scoring contracts and probe execution."
         },
         "zh-CN": {
           "title": "任务与评分",
-          "description": "`gear init` 生成可编辑的 `tasks.csv` 和 `benchmark.yaml`。CSV 的基础列为 `id,instruction,expected,family,split`，也支持 JSONL。每题显式指定 `seed` 或 `held_out`；同一 family 或相同任务内容不能跨两个分区。"
+          "description": "在 benchmark 和评分器中定义任务奖励，单独配置聚合与候选比较；导入任务、检查评分合同并试跑。"
         }
       }
     },
@@ -121,11 +135,11 @@
       "translations": {
         "en": {
           "title": "Runs and recovery",
-          "description": "Commands accept `--project DIRECTORY` and `--json`. A standalone evaluation also has its own run and budget ledger."
+          "description": "Resume interrupted work, retry an eligible settled read-only Meta failure and explicitly amend cumulative Meta limits while preserving completed outputs, learning and usage."
         },
         "zh-CN": {
           "title": "运行与恢复",
-          "description": "所有命令可使用 `--project DIRECTORY` 和 `--json`。一次独立 evaluate 也有自己的 run 和预算账本。"
+          "description": "恢复中断工作，重试符合条件的已结算只读 Meta 失败，并显式调整累计 Meta 额度，保留已有输出、学习结果和消耗。"
         }
       }
     },
@@ -135,11 +149,11 @@
       "translations": {
         "en": {
           "title": "Read a report",
-          "description": "```sh gear report RUN_ID --json ```"
+          "description": "Inspect candidate selection, learning-library outputs, task-stream progress, evaluation evidence and cumulative usage. Distinguish completed execution from a successful algorithm outcome."
         },
         "zh-CN": {
           "title": "阅读报告",
-          "description": "```sh gear report RUN_ID --json ```"
+          "description": "查看候选选择、学习库产物、任务流进度、评测证据与累计用量，区分运行结束和算法成功。"
         }
       }
     },
@@ -187,6 +201,7 @@
     }
   ],
   "assets": [
+    "assets/algorithm-validation.json",
     "assets/coding-results.json",
     "assets/evolution-search-example.zip",
     "assets/marketing-evolution-overview.png",
@@ -195,15 +210,26 @@
     "assets/marketing-harness-evolution.svg",
     "assets/marketing-harness-example.zip",
     "assets/marketing-results.json",
-    "assets/support-results.json",
     "assets/marketing-staged-search.png",
     "assets/marketing-staged-search.svg",
+    "assets/source-docs-algorithm-operators-zh-cn-md.txt",
+    "assets/source-docs-codex-meta-runner-zh-cn-md.txt",
     "assets/source-docs-dsh-meta-context-offloading-spec-zh-cn-md.txt",
     "assets/source-docs-harness-agnostic-refine-skill-md.txt",
     "assets/source-docs-plugin-installation-and-usage-md.txt",
+    "assets/source-docs-refactor-acceptance-zh-cn-md.txt",
+    "assets/source-docs-refactor-progress-zh-cn-md.txt",
+    "assets/source-docs-search-algorithm-authoring-zh-cn-md.txt",
+    "assets/source-docs-shared-task-runtime-zh-cn-md.txt",
+    "assets/source-docs-testing-hitch-artifact-pins-zh-cn-md.txt",
+    "assets/source-docs-testing-hitch-environment-files-zh-cn-md.txt",
+    "assets/source-docs-testing-target-headless-zh-cn-md.txt",
     "assets/source-docs-training-certifications-2026-09-10-rtx5090-single-gpu-readme-zh-cn-md.txt",
     "assets/source-docs-training-controller-v2-zh-cn-md.txt",
+    "assets/source-docs-training-package-layout-zh-cn-md.txt",
     "assets/source-docs-training-readme-zh-cn-md.txt",
+    "assets/source-docs-training-standalone-inference-md.txt",
+    "assets/source-docs-training-standalone-inference-zh-cn-md.txt",
     "assets/source-examples-automationbench-marketing-last-meta-change-patch.txt",
     "assets/source-examples-automationbench-marketing-meta-input-txt.txt",
     "assets/source-examples-automationbench-marketing-readme-md.txt",
@@ -223,15 +249,28 @@
     "assets/source-src-skill-control-plane-ts.txt",
     "assets/staged-search-flow.png",
     "assets/staged-search-flow.svg",
-    "assets/staged-search-source.zip"
+    "assets/staged-search-source.zip",
+    "assets/support-results.json"
   ],
   "sourceAssets": {
+    "docs/algorithm-operators.zh-CN.md": "assets/source-docs-algorithm-operators-zh-cn-md.txt",
+    "docs/codex-meta-runner.zh-CN.md": "assets/source-docs-codex-meta-runner-zh-cn-md.txt",
     "docs/dsh-meta-context-offloading-spec.zh-CN.md": "assets/source-docs-dsh-meta-context-offloading-spec-zh-cn-md.txt",
     "docs/harness-agnostic-refine-skill.md": "assets/source-docs-harness-agnostic-refine-skill-md.txt",
     "docs/plugin-installation-and-usage.md": "assets/source-docs-plugin-installation-and-usage-md.txt",
+    "docs/refactor-acceptance.zh-CN.md": "assets/source-docs-refactor-acceptance-zh-cn-md.txt",
+    "docs/refactor-progress.zh-CN.md": "assets/source-docs-refactor-progress-zh-cn-md.txt",
+    "docs/search-algorithm-authoring.zh-CN.md": "assets/source-docs-search-algorithm-authoring-zh-cn-md.txt",
+    "docs/shared-task-runtime.zh-CN.md": "assets/source-docs-shared-task-runtime-zh-cn-md.txt",
+    "docs/testing/hitch-artifact-pins.zh-CN.md": "assets/source-docs-testing-hitch-artifact-pins-zh-cn-md.txt",
+    "docs/testing/hitch-environment-files.zh-CN.md": "assets/source-docs-testing-hitch-environment-files-zh-cn-md.txt",
+    "docs/testing/target-headless.zh-CN.md": "assets/source-docs-testing-target-headless-zh-cn-md.txt",
     "docs/training/README.zh-CN.md": "assets/source-docs-training-readme-zh-cn-md.txt",
     "docs/training/certifications/2026-09-10-rtx5090-single-gpu/README.zh-CN.md": "assets/source-docs-training-certifications-2026-09-10-rtx5090-single-gpu-readme-zh-cn-md.txt",
     "docs/training/controller-v2.zh-CN.md": "assets/source-docs-training-controller-v2-zh-cn-md.txt",
+    "docs/training/package-layout.zh-CN.md": "assets/source-docs-training-package-layout-zh-cn-md.txt",
+    "docs/training/standalone-inference.md": "assets/source-docs-training-standalone-inference-md.txt",
+    "docs/training/standalone-inference.zh-CN.md": "assets/source-docs-training-standalone-inference-zh-cn-md.txt",
     "examples/automationbench-marketing/README.md": "assets/source-examples-automationbench-marketing-readme-md.txt",
     "examples/automationbench-marketing/last-meta-change.patch": "assets/source-examples-automationbench-marketing-last-meta-change-patch.txt",
     "examples/automationbench-marketing/meta-input.txt": "assets/source-examples-automationbench-marketing-meta-input-txt.txt",
@@ -245,9 +284,6 @@
     "examples/evolution-search/meta-input.txt": "assets/source-examples-evolution-search-meta-input-txt.txt",
     "examples/evolution-search/selection.mjs": "assets/source-examples-evolution-search-selection-mjs.txt",
     "skills/refine/references/dsh-target-harness.md": "assets/source-skills-refine-references-dsh-target-harness-md.txt",
-    "skills/refine/references/protocol.md": "assets/source-skills-refine-references-protocol-md.txt",
-    "src/config.ts": "assets/source-src-config-ts.txt",
-    "src/evolution/components.ts": "assets/source-src-evolution-components-ts.txt",
-    "src/skill/control-plane.ts": "assets/source-src-skill-control-plane-ts.txt"
+    "skills/refine/references/protocol.md": "assets/source-skills-refine-references-protocol-md.txt"
   }
 }

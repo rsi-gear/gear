@@ -1,0 +1,202 @@
+{
+  "schema_version": 1,
+  "completed_on": "2026-11-18",
+  "scope": "Small-scale execution, accounting and recovery validation; not a task-pass-rate comparison or paper reproduction.",
+  "control_plane_head": "b357906158ebb6365905713a8dafe759b14f8852",
+  "hitch_head_at_final_validation": "b1eb668aa7405ca0076a43837c0180cc991cbe98",
+  "revision_note": "Accepted runs retain their originally frozen implementations. These heads identify the final control plane and verification, not a claim that every algorithm was rerun at these revisions.",
+  "task_source": {
+    "benchmark": "AutomationBench Marketing",
+    "source_revision": "4a8e1061254004d9dac807054eed33fad7d1ff14",
+    "source_dataset_digest": "sha256:e57c3d491fc8905311e043a2abd74965ee2b56164d1b62b8c8aa6f35e4ef917b",
+    "imported_dataset_digest": "sha256:69476c8ecaa19df9b5b050df60c6632fe7623314632054561b44153185f6bc62",
+    "task_ids": [
+      "marketing-seasonal_campaign",
+      "marketing-customer_story_intake",
+      "marketing-contact_data_cleanup",
+      "marketing-customer_feedback_aggregation",
+      "marketing-seo_brief_prioritization",
+      "marketing-content_expiration_alert",
+      "marketing-event_followup_personalization",
+      "marketing-social_contest",
+      "marketing-social_audit",
+      "marketing-seo_competitor_gap"
+    ]
+  },
+  "execution": {
+    "meta": {
+      "adapter": "Hitch/Codex",
+      "model": "GPT 5.6 Luna",
+      "reasoning_effort": "low"
+    },
+    "target": {
+      "adapter": "Hitch/DSH",
+      "model": "GPT 5.6 Luna",
+      "reasoning_effort": "low"
+    },
+    "target_concurrency_max": 4,
+    "main": {
+      "cpu": 1,
+      "memory_mib": 1024
+    },
+    "simulator": {
+      "cpu": 0.25,
+      "memory_mib": 512
+    },
+    "verifier": {
+      "cpu": 1,
+      "memory_mib": 512
+    },
+    "harness2_learning_order": "sequential"
+  },
+  "accepted_algorithms": [
+    {
+      "algorithm": "OPRO",
+      "status": "passed",
+      "verification": "strict",
+      "run_id": "run_eecc0e3e0413401085438444f91c97d9",
+      "iterations": 2,
+      "original_target_attempts": 30,
+      "original_valid_observations": 30,
+      "original_invalid_observations": 0,
+      "supplemental_target_attempts": 0,
+      "generation_usage": {
+        "model_requests": 6,
+        "tokens": 77957
+      },
+      "journal_sha256": "sha256:969a80245fe840f2af46a2a523a717825fe5938d879bfed9969cb36e433f674b"
+    },
+    {
+      "algorithm": "ACE",
+      "status": "passed_with_supplemental_target",
+      "verification": "independent_target_supplement",
+      "run_id": "run_dba90a9ed6884939a95d2eea4dc9cd0c",
+      "iterations": 2,
+      "original_target_attempts": 30,
+      "original_valid_observations": 29,
+      "original_invalid_observations": 1,
+      "supplemental_target_attempts": 1,
+      "generation_usage": {
+        "model_requests": 7,
+        "tokens": 95002
+      },
+      "journal_sha256": "sha256:399ea6cbd26b2a0093ab9ec1355f5e98e487de7e23df99a5894f57b56b31b52f"
+    },
+    {
+      "algorithm": "RRSI",
+      "status": "passed",
+      "verification": "strict",
+      "run_id": "run_fe137446bcde4ca1995eb5bca1b29a01",
+      "iterations": 2,
+      "original_target_attempts": 20,
+      "original_valid_observations": 20,
+      "original_invalid_observations": 0,
+      "supplemental_target_attempts": 0,
+      "generation_usage": {
+        "model_requests": 13,
+        "tokens": 152015
+      },
+      "journal_sha256": "sha256:7c5b12650c3d49b922137836c453df58680c7825cd8b16bf73364d9d96407d7d"
+    },
+    {
+      "algorithm": "DarwinX",
+      "status": "passed_with_supplemental_target",
+      "verification": "independent_target_supplement",
+      "run_id": "run_f9ba3368ff594100972a7de4f83eef20",
+      "iterations": 2,
+      "original_target_attempts": 90,
+      "original_valid_observations": 89,
+      "original_invalid_observations": 1,
+      "supplemental_target_attempts": 1,
+      "generation_usage": {
+        "model_requests": 6,
+        "tokens": 77394
+      },
+      "journal_sha256": "sha256:2c688c4f140b62c3d2731e9899ff36a5e0c1b8fa3f2f0877e625257c063d9d62"
+    },
+    {
+      "algorithm": "GEPA",
+      "status": "passed",
+      "verification": "strict",
+      "run_id": "run_276e0f0f6d16495aba7d57ee2dbcb9b0",
+      "iterations": 2,
+      "original_target_attempts": 30,
+      "original_valid_observations": 30,
+      "original_invalid_observations": 0,
+      "supplemental_target_attempts": 0,
+      "generation_usage": {
+        "model_requests": 23,
+        "tokens": 307238
+      },
+      "journal_sha256": "sha256:58cb081ea045ff2132330654a95a5d9230b83a88c7fa9c716a443a3a863a075c"
+    },
+    {
+      "algorithm": "RandomSearch",
+      "status": "passed",
+      "verification": "strict",
+      "run_id": "run_9d90459c5a9c4f79a59d13840fc1ca93",
+      "iterations": 2,
+      "original_target_attempts": 30,
+      "original_valid_observations": 30,
+      "original_invalid_observations": 0,
+      "supplemental_target_attempts": 0,
+      "generation_usage": {
+        "model_requests": 14,
+        "tokens": 247280
+      },
+      "journal_sha256": "sha256:260474a1baf1e667a0e00c0872eba58e193f24d90d23b0d95401a6f27a1f05c7"
+    },
+    {
+      "algorithm": "Harness2",
+      "status": "passed",
+      "verification": "strict",
+      "run_id": "run_fc7beb258c9e404d93436a7874eef2ed",
+      "iterations": 20,
+      "original_target_attempts": 20,
+      "original_valid_observations": 20,
+      "original_invalid_observations": 0,
+      "supplemental_target_attempts": 0,
+      "generation_usage": {
+        "model_requests": 68,
+        "tokens": 905125
+      },
+      "journal_sha256": "sha256:21a9d1498b31e3c41f77c507c9ed18b0c7141755088aa526735edaa6291d0ca4"
+    }
+  ],
+  "harness2_continuation": {
+    "run_id": "run_fc7beb258c9e404d93436a7874eef2ed",
+    "preserved_learning_steps": 8,
+    "preserved_target_executions": 9,
+    "additional_target_executions": 11,
+    "historical_operations_unchanged": true,
+    "current_usage": {
+      "model_requests": 68,
+      "tokens": 905125
+    },
+    "additional_usage": {
+      "model_requests": 39,
+      "tokens": 524658
+    },
+    "aggregate_limits": {
+      "model_requests": 160,
+      "tokens": 1700000,
+      "target_attempts": 160
+    },
+    "additional_learning_steps": 12,
+    "successful_publications": 20,
+    "successful_target_outputs": 20,
+    "meta_attempts": 21,
+    "preserved_failed_meta_attempts": 1,
+    "aggregate_usage_including_prior_runs": {
+      "model_requests": 99,
+      "tokens": 1290919
+    }
+  },
+  "interpretation": [
+    "Valid target observations include valid zero scores and do not imply a task passed.",
+    "ACE and DarwinX supplements verified failed target slots independently; original failed records and algorithm decisions were not replaced.",
+    "Accepted-run generation_usage includes failed attempts within that run. It is not the total cost of all earlier attempts for the algorithm.",
+    "Harness2 resumed its original run; previously completed target outputs and learning publications were reused, with the failed reflection and its usage preserved.",
+    "Journal digests identify retained private records; raw journals, credentials and local filesystem paths are excluded from this public summary."
+  ]
+}

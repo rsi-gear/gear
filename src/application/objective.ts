@@ -1,11 +1,12 @@
 import { resolveAssertions } from './assertions.js'
-import type { ProjectConfig } from '../domain/project.js'
+import type { CompiledBenchmark, ProjectConfig } from '../domain/project.js'
 import type { ObjectiveConfiguration, ProtectedMetric } from '../domain/objective.js'
 import { GearError } from '../domain/errors.js'
 import { resolveMetric, resolveObjective } from '../objective/contracts.js'
 
 export function resolveProjectObjective(
   config: Pick<ProjectConfig, 'objective' | 'metrics' | 'protection' | 'assertions' | 'assertion_protection'>,
+  manifest?: CompiledBenchmark['adapter_manifest'],
 ): ObjectiveConfiguration {
   const pass = resolveMetric({
     id: 'pass_rate',
@@ -21,7 +22,31 @@ export function resolveProjectObjective(
   })
   if (config.metrics !== undefined && !Array.isArray(config.metrics))
     throw new GearError('invalid-metrics', 'metrics must be an array')
-  const metrics = [pass, ...(config.metrics ?? []).map(resolveMetric)]
+  // The default objective promotes by the paper's multi-signal SeedGate. Its process
+  // group is the native manifest's standard process_score channel, when declared.
+  const multisignal = 'metric' in config.objective
+  const process = multisignal ? manifest?.scoring.process_score : undefined
+  const declared = (config.metrics ?? []).some((metric) => metric?.id === 'process_score')
+  const metrics = [
+    pass,
+    ...(config.metrics ?? []).map(resolveMetric),
+    ...(process && !declared
+      ? [
+          resolveMetric({
+            id: 'process_score',
+            revision: manifest!.adapter.revision,
+            unit: 'score',
+            direction: process.direction,
+            source: { path: 'verifier.scores.process_score', extractor: 'number-v1' },
+            range: { min: process.range[0], max: process.range[1] },
+            granularity: 'trial',
+            repetitionReducer: 'mean',
+            taskReducer: 'weighted-mean',
+            comparisonPrecision: 1e-9,
+          }),
+        ]
+      : []),
+  ]
   const definition = resolveObjective(
     'metric' in config.objective
       ? { terms: [{ metric: config.objective.metric, weight: 1 }] }
@@ -72,5 +97,14 @@ export function resolveProjectObjective(
     metrics,
     protection,
     ...(assertions.assertions.length || assertions.assertion_protection.length ? assertions : {}),
+    ...(multisignal
+      ? {
+          seed_rule: {
+            rule: 'multisignal-v1' as const,
+            outcome: 'pass_rate',
+            process: process ? ['process_score'] : [],
+          },
+        }
+      : {}),
   }
 }

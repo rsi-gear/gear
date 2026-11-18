@@ -1,14 +1,15 @@
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, expect, it, vi } from 'vitest'
-import { SandboxManager } from '@anthropic-ai/sandbox-runtime'
 import { cleanupCodex, ownCodexRoot, type CodexResources } from '../../src/adapters/codex/cleanup.js'
 import { prepareSandbox } from '../../src/adapters/codex/sandbox.js'
 import * as experiences from '../../src/adapters/codex/experience.js'
 import { trajectoryGateway } from '../../src/adapters/codex/trajectory-gateway.js'
 import type { CodexJob } from '../../src/adapters/codex/contracts.js'
 import { PiHarnessAdapter } from '../../src/adapters/pi/harness.js'
+import * as atomic from '../../src/adapters/storage/atomic.js'
 import type { ExperienceSnapshot } from '../../src/domain/experience.js'
 import type { ArtifactReaderDescriptor } from '../../src/domain/trajectory.js'
 
@@ -22,14 +23,48 @@ async function root(prefix = 'gear-meta-') {
   roots.push(path)
   return path
 }
-it('continues after a stuck disposer and reset, safely removes credentials, and records fallback separately', async () => {
+it('waits for the final cleanup record to be published before allowing worker exit', async () => {
+  const directory = await root('gear-cleanup-test-')
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
+  const publish = atomic.publishFile
+  let publication: Promise<void> | undefined
+  vi.spyOn(atomic, 'publishFile').mockImplementation((path, bytes, options) => {
+    if (path !== join(directory, 'cleanup.json')) return publish(path, bytes, options)
+    publication = publish(path, bytes, {
+      ...options,
+      beforePublish: async () => {
+        entered.resolve()
+        await release.promise
+      },
+    })
+    return publication
+  })
+  let completed = false
+  const cleanup = cleanupCodex(directory, 'frozen-digest', {}).then(() => { completed = true })
+  try {
+    await entered.promise
+    // Slow durable I/O must not turn cleanup into a fire-and-forget write.
+    await delay(400)
+    expect(completed).toBe(false)
+    await expect(readFile(join(directory, 'cleanup.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+    release.resolve()
+    await cleanup
+    expect(JSON.parse(await readFile(join(directory, 'cleanup.json'), 'utf8'))).toMatchObject({
+      input_digest: 'frozen-digest', status: 'graceful', model_stopped: true,
+    })
+  } finally {
+    release.resolve()
+    await cleanup
+    await publication
+  }
+})
+it('continues after a stuck disposer, safely removes credentials, and records fallback separately', async () => {
   const directory = await root('gear-cleanup-test-'),
     path = await root(),
     outside = await root('gear-cleanup-outside-')
   await mkdir(join(path, 'home'))
   await writeFile(join(outside, 'auth.json'), 'EXTERNAL_CANARY')
   await symlink(outside, join(path, 'home/.codex'), 'dir')
-  vi.spyOn(SandboxManager, 'reset').mockImplementation(() => new Promise(() => {}))
   const before = Date.now()
   await cleanupCodex(directory, 'frozen-digest', {
     root: await ownCodexRoot(path),
@@ -42,7 +77,7 @@ it('continues after a stuck disposer and reset, safely removes credentials, and 
     input_digest: 'frozen-digest',
     status: 'fallback-required',
     model_stopped: true,
-    stages: { gateway: 'timed-out', credentials: 'complete', sandbox: 'timed-out', root: 'complete' },
+    stages: { gateway: 'timed-out', credentials: 'complete', root: 'complete' },
   })
   await expect(readFile(join(directory, 'receipt.json'))).rejects.toMatchObject({ code: 'ENOENT' })
 })
@@ -54,7 +89,6 @@ it('does not follow a replaced root or delete files while the model state is unk
   await writeFile(join(outside, 'canary'), 'KEEP')
   await rm(path, { recursive: true })
   await symlink(outside, path, 'dir')
-  vi.spyOn(SandboxManager, 'reset').mockResolvedValue()
   await cleanupCodex(directory, 'digest', { root: owned })
   expect(await readFile(join(outside, 'canary'), 'utf8')).toBe('KEEP')
   expect(JSON.parse(await readFile(join(directory, 'cleanup.json'), 'utf8')).stages.root).toBe('failed')
@@ -101,11 +135,10 @@ it('registers and releases a partial gateway and root when preparation fails', a
     },
   } as unknown as CodexJob
   await expect(
-    prepareSandbox(job, { executable: '/usr/bin/true', identity: 'test', version: 'test' }, resources),
+    prepareSandbox(job, { executable: '/usr/bin/true', identity: 'test', binaryDigest: 'test', version: 'test', hitch: { executable: '/test/hitch', root: directory, runtimeId: 'test' } }, resources),
   ).rejects.toThrow()
   expect(registered).toBe(true)
   expect(resources.root).toBeDefined()
-  vi.spyOn(SandboxManager, 'reset').mockResolvedValue()
   await cleanupCodex(directory, 'digest', resources)
   expect(disposed).toBe(true)
   await expect(readFile(join(resources.root!.path, 'experience/gateway.json'))).rejects.toThrow()

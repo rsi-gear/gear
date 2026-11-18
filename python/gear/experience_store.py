@@ -8,8 +8,8 @@ import stat
 from pathlib import Path
 from typing import Any
 
-from gear.algorithms.experience import encoded_size
-from gear.algorithms.experience_index import (
+from gear.memory.experience import encoded_size
+from gear.memory.experience_index import (
     MAX_ITEM_BYTES,
     VIEWS,
     valid_digest,

@@ -6,7 +6,7 @@ import Include from '@deepseek-ai/cordis-plugin-include'
 export const name = 'gear-target-harness-loader'
 export const inject = ['loader', 'agentDefaultModel', 'settings']
 
-const ALLOWED_ROOTS = new Set(['preset', 'plugins', 'prompts', 'skills', 'workflows'])
+const ALLOWED_ROOTS = new Set(['preset', 'plugins', 'prompts', 'skills', 'workflows', 'workflow.yaml', 'tools'])
 
 function sha256(value) {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`

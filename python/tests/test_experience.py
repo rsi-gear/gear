@@ -1,7 +1,8 @@
 import copy
 import unittest
 
-from gear.algorithms.experience import (
+from gear.canonical import digest
+from gear.memory.experience import (
     descriptive,
     encoded_size,
     experience_context,
@@ -10,8 +11,7 @@ from gear.algorithms.experience import (
     experience_record,
     proposal_metadata,
 )
-from gear.algorithms.experience_index import verify_snapshot
-from gear.canonical import digest
+from gear.memory.experience_index import verify_snapshot
 
 
 def record(candidate="candidate", before=1, after=0, task="format", path="plugins/format.py"):

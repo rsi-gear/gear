@@ -14,6 +14,16 @@ word-01,Output the uppercase form of apple.,APPLE,case-conversion,held_out
 This demonstration checks the workflow. Real performance evaluation needs
 adequate task coverage and a documented split rationale.
 
+## Task rewards and optimization objectives
+
+Define what counts as success in the benchmark and its scorer. `benchmark.yaml` selects the scoring contract; custom Python scorers return `bool`, while native Harbor task verifiers may supply rewards in the supported 0–1 range. Expected answers and private verifier resources stay outside algorithm and Meta inputs.
+
+Define how to compare candidates in the project's `metrics`, `objective` and `protection` settings. The `gear.evaluation` components aggregate observations, apply weights and check constraints; the algorithm consumes the evidence permitted by its access policy. Changing objective weights does not change the task's reward definition or rewrite recorded scores. See [weighted objectives and protected tasks](configuration.md#weighted-objectives-and-protected-tasks).
+
+Harness2 uses blind access: with `rollout_backend="scored_private"`, the operator can inspect scores, but the algorithm and its Meta reflection receive outputs and trajectories without score feedback. See [Harness2](algorithms.md#harness2).
+
+## Built-in scoring templates
+
 | Template | `expected` | Rule |
 | --- | --- | --- |
 | `text` | String | Equality with explicit trim, casefold or collapse_whitespace |

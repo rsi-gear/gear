@@ -50,7 +50,12 @@ export { packageRoot, pythonSourceRoot, managedPythonRoot } from '../adapters/py
 export async function pythonExecutable(): Promise<string> {
   return resolvePythonExecutable()
 }
-export async function pythonJson(args: string[], input: unknown, signal?: AbortSignal): Promise<unknown> {
+export async function pythonJson(
+  args: string[],
+  input: unknown,
+  signal?: AbortSignal,
+  environment: NodeJS.ProcessEnv = {},
+): Promise<unknown> {
   const python = await pythonExecutable()
   const { spawn } = await import('node:child_process')
   signal?.throwIfAborted()
@@ -60,7 +65,7 @@ export async function pythonJson(args: string[], input: unknown, signal?: AbortS
   const payload = JSON.stringify(input)
   return new Promise((resolve, reject) => {
     const child = spawn(python, ['-m', 'gear', ...args], {
-      env: { ...process.env, PYTHONPATH: pythonSourceRoot, GEAR_NODE: process.execPath },
+      env: { ...process.env, ...environment, PYTHONPATH: pythonSourceRoot, GEAR_NODE: process.execPath },
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
     })
@@ -169,7 +174,7 @@ export async function setupPython(
         [
           '-I',
           '-c',
-          'import gear,psutil,tomli_w;import gear.benchmark.native;from gear.algorithms import GEPA;from gear.algorithms.testkit import toy_round;assert toy_round(GEPA())["status"]=="passed"',
+          'import gear,psutil,tomli_w;import gear.benchmark.native;from gear.algorithms import GEPA;from gear.search.testkit import toy_round;assert toy_round(GEPA())["status"]=="passed"',
         ],
         { timeout: 30_000, maxBuffer: 64 * 1024 },
       )

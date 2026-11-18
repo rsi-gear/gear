@@ -12,6 +12,10 @@
 | `state-busy` | 等待持锁运行结束；不要删除活跃服务的 socket 或锁 |
 | `needs_recovery` / 未知 provider 结果 | 排查 provider，再 `gear resume RUN_ID`；保持原 operation ID |
 | `evaluation_repairs.blocked` | 检查次数或预算耗尽原因；修复环境后以新配置创建 run，不能通过 resume 增加原额度 |
+| v2 只读 Meta 已失败、用量已结算 | 按[失败反思恢复](evolutions.md#重试已结算的只读-meta-失败)指定准确失败 operation ID；额度不足时显式提高累计上限 |
+| `meta-recovery-not-allowed` | 检查是否为只读 Meta、旧执行是否停止、用量是否全部已知、状态是否仍停在失败调用；不适用时保留记录 |
+| Hitch 重启后仅环境绑定不同 | 使用原公开绑定申请[绑定恢复](evolutions.md#hitch-重启后的绑定变化)，其余执行条件必须匹配 |
+| `environment-recovery-mismatch` | 核对原绑定、模型、运行时、资源和 Meta；恢复不会跳过其他身份校验 |
 | `frozen-repair-policy-missing` | 该 run 未封存当前版本需要的修补规则；保留旧证据并新建实验，不修改原 journal |
 | `evidence_projections.blocked` | 检查 provider/指标不支持、禁用或次数耗尽的原因；不可用指标保持明确缺失，不通过重跑补分 |
 | `hitch-projection-source-changed` | provider 原字段被改写；保留已封存 receipt 并排查来源，不替换原始观测 |
@@ -21,7 +25,7 @@
 | 身份失配 | 保留证据；恢复正确依赖，或以新身份创建新实验 |
 | 评分或环境失败 | 先修复 scorer/执行环境；不能算作模型有效零分 |
 
-`doctor` 分开显示依赖、provider 能力、镜像和本地认证来源。`not_configured` 表示 profile 引用的凭据未准备，`provider_managed` 需按自定义 provider 检查，`model_access: not_checked` 表示尚未验证远端授权；即使允许 smoke test，也需实际执行单题评测。实际模型、GPU 和容器扩展的验证状态见[实施记录](../../refactor-progress.zh-CN.md)。
+`doctor` 分开显示依赖、provider 能力、镜像和本地认证来源。`not_configured` 表示 profile 引用的凭据未准备，`provider_managed` 需按自定义 provider 检查，`model_access: not_checked` 表示尚未验证远端授权；即使允许 smoke test，也需实际执行单题评测。实际模型、GPU 和容器扩展的验证状态见[算法验证范围](algorithms.md#真实模型验证)和[训练验证范围](training.md#验证范围)。
 
 Python 算法协议每条请求和响应上限为 64 MiB（67,108,864 字节），包含 UTF-8 JSON envelope 和末尾换行。两端握手必须声明完全相同的上限。Gear 保留全部 verifier 观测、raw metrics、completed 结果和算法 state；单条 verifier 的 16 KiB 限制不能约束累计总量，任意 raw metrics、completed.data 或 state 仍可能超限。大消息的 JSON 序列化、校验和解析还需要额外内存，并受决策超时约束。
 

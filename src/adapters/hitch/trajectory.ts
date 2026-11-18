@@ -28,7 +28,8 @@ export function validateHitchPage(
   query: TrajectoryQuery,
 ): Json {
   const filter = {
-    ...(query.types ? { types: query.types } : {}),
+    // Hitch treats event types as a set and returns its sorted canonical filter.
+    ...(query.types ? { types: [...new Set(query.types.filter((type) => type.length > 0))].sort() } : {}),
     ...(query.seq_start === undefined ? {} : { seq_start: query.seq_start }),
     ...(query.seq_end === undefined ? {} : { seq_end: query.seq_end }),
     ...(query.field === undefined ? {} : { field: query.field }),

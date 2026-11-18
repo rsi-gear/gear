@@ -16,18 +16,35 @@ Refine 保存 benchmark 原始结果，按用户权重计算独立的 `objective
 `{"metric":"total_tokens","weight":-0.1,"scale":100000}`。原始数值和单位继续保留。
 这是可配置的质量/效率目标，不是 SoL-Pi 官方评分公式。
 
-省略 objective 默认严格通过率。dataset 必须显式声明通过谓词，正 reward 和数值范围
-均不表示成功。未声明约束时，权重允许质量与效率交换。需要保留初始质量时，在
-`objective.constraints` 中加入：
+省略 objective 默认严格通过率，并使用下文的多信号晋级规则。dataset 必须显式声明通过
+谓词，正 reward 和数值范围均不表示成功。未声明约束时，权重允许质量与效率交换。需要保留
+本次运行起点质量时，在 `objective.constraints` 中加入：
 
 ```json
 {"metric":"pass_rate","rule":"no_regression","reference":"initial_baseline","tolerance":0}
 ```
 
-引用是同一 partition 下的初始 harness，不随 champion 更新。约束失败会保留真实目标分，
-同时阻止晋级。搜索设置中的 `promotion.objective` 可配置 `minimumGain`、
-`maxSeedRegression`、`maxHeldOutRegression`，均默认 0。global-seed 改善必须超过
-最小增益；只有显式 `allowNeutral` 才允许中性接受。
+引用是本次运行在同一 partition 下冻结的 anchor。该 anchor 可能是此前已接受的
+champion，不一定是整个演化的第一个 harness。约束失败会保留真实目标分，同时阻止晋级。
+
+## 晋级规则
+
+使用默认 objective 时，global-seed 门采用论文的多信号 SeedGate，信号为通过率和每个
+已声明的过程分组。native benchmark 在 `benchmark.adapter.json` 中以
+`scoring.process_score` 声明过程分组；Gear 据此注册 `process_score` 指标，沿用该声明的
+方向与范围，读取 verifier 的标准 `scores.process_score`。候选与参照都须具备完整、可比的
+seed 证据，且保护规则全部通过。任何信号都不得按其声明方向退步，且至少一项严格提升，
+因此通过率持平时仅过程分提升也可晋级。已声明的过程分组缺少证据时，比较视为不完整，
+不会丢弃该分组。未声明过程分组时，规则退化为通过率严格提升。
+
+运行内每个具备完整 global-seed 证据的候选与当前 seed champion 比较（初始为本次运行的
+anchor），通过后即替换。父代选择和最终提名都使用该 champion。held-out 验证只在运行结束时
+进行一次，将提名候选与冻结的 anchor 比较：每个信号都须具备完整、可比的证据，保护规则
+全部通过，且任何信号都不得退步；所有信号持平时通过。held-out 证据不进入父代选择。
+
+显式 objective（`terms` 或 `constraints`）替代该规则：约束与保护通过后，global-seed
+目标分必须严格优于 anchor，held-out 验证要求目标分不退步。阈值固定为 0，不再提供
+`promotion.*` 设置。
 
 ## Dataset 指标合同
 
@@ -52,8 +69,9 @@ Refine 保存 benchmark 原始结果，按用户权重计算独立的 `objective
 `scores`、`rewards`、完整导入的 `originalResult` trial 行或导入的 `verifier`
 原件（如 `verifier.result.rewards.quality`）。adapter 保存成功和失败 run 的 verifier
 原件，并核对 run、trial/attempt 绑定。选择此来源需要 verifier evidence 能力；
-缺失或损坏的原件不能提供可用指标。标准 total/process
-通道从原 manifest 的 scoring 声明注册；total-only dataset 不会凭空增加 process。
+缺失或损坏的原件不能提供可用指标。使用默认 objective 时，标准 process 通道从原
+manifest 的 `scoring.process_score` 声明注册，除非项目自行声明了 `process_score`；
+total-only dataset 不会凭空增加 process。
 自定义指标使用同一 registry，用户可直接选择其 ID，不需要命名 scoring profile。
 
 usage 指标还需要 `measurement` 合同，说明计量类型（`actual`、`api-equivalent`、

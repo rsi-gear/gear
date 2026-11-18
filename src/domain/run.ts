@@ -11,19 +11,26 @@ import type {
 export interface AlgorithmConfig {
   name: string
   options: Record<string, Json>
+  /** Recursive author component tree. Older frozen runs retain name/options only. */
+  component?: Record<string, Json>
+  protocol_version?: 1 | 2
+  requirements?: string[]
 }
 import type {
   OperationReceipt,
   OperationRequest,
+  EnvironmentBindingRecovery,
   ProviderCapabilities,
   ProviderTimeouts,
 } from '../ports/operations.js'
 import type { CompiledBenchmark } from './project.js'
 import type { ObjectiveConfiguration } from './objective.js'
 import type { EvaluationRepairPolicy } from './evaluation.js'
-import type { GenerationBudget } from './generation-budget.js'
+import type { GenerationBudget, GenerationConfiguration } from './generation-budget.js'
 import type { BaselineReuse } from './baseline.js'
 import type { ArtifactReaderDescriptor } from './trajectory.js'
+import type { OperatorJournal, OperatorPolicy } from './operator-run.js'
+import type * as V2 from './algorithm-wire-v2.js'
 
 export interface RunSpec {
   version: 1
@@ -55,6 +62,7 @@ export interface RunSpec {
   objectiveIdentity?: string
   evaluationRepair: EvaluationRepairPolicy
   generationBudget: GenerationBudget
+  operatorPolicy?: OperatorPolicy
 }
 export interface JournalOperation {
   request: OperationRequest
@@ -79,6 +87,34 @@ export interface JournalDecision {
   decision: Decision
   operationIds: string[]
 }
+export interface ResumeOptions {
+  /** Retry this settled, failed read-only Meta attempt with a new operation ID. */
+  retry_operation?: string
+  /** Explicit increases to the run's cumulative and per-operation limits. */
+  generation?: GenerationConfiguration
+  /** Original public environment binding; the provider must prove all other inputs unchanged. */
+  environment_binding?: Json
+}
+export interface MetaRecovery {
+  version: 1
+  id: string
+  createdAt: string
+  requestDigest: string
+  generationUpdate: GenerationBudget
+  environmentBinding?: Json
+  execution?: EnvironmentBindingRecovery
+  cancellationIdentity?: string
+  sourceJournalDigest: string
+  sourceOperationId: string
+  sourceReceiptDigest: string
+  operationId: string
+  callId: string
+  previousResult: V2.CallResult
+  stateDigest: string
+  terminalStepId: number | null
+  generationBudget: GenerationBudget
+  stopped: true
+}
 export interface RunJournal {
   version: 1
   id: string
@@ -98,10 +134,19 @@ export interface RunJournal {
   championId: string
   gate: { status: 'accepted' | 'rejected' | 'incomplete' | 'not_run'; reason: string }
   physicalAttempts: number
+  operators?: OperatorJournal
+  /** Explicit recoveries preserve failed attempts and never reset their usage. */
+  metaRecoveries?: MetaRecovery[]
   failure?: { code: string; message: string; retryable: boolean }
   digest: string
 }
 export interface AlgorithmDriver {
+  stepV2?(
+    view: V2.SearchView,
+    state: V2.AlgorithmState,
+    algorithm: AlgorithmConfig,
+    signal: AbortSignal,
+  ): Promise<V2.Decision>
   step(
     view: SearchView,
     state: AlgorithmState,

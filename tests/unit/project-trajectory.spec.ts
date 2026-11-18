@@ -92,6 +92,22 @@ it('cancels a pending read without waiting for the provider to finish naturally'
   try { await expect(pending).rejects.toThrow() } finally { clearTimeout(timer) }
 })
 
+it('accepts Hitch canonical type sets without changing event order or the requested filter', async () => {
+  const { root, reader, artifact } = await fixture()
+  const types = ['tool/result', 'assistant/message', 'tool/result']
+  const query = { types, limit: 2 }
+  expect(await reader.read(artifact, query, signal())).toMatchObject({
+    events: [{ seq: 0, type: 'assistant/message' }, { seq: 1, type: 'tool/result' }],
+    total_matches: 2,
+    eof: true,
+  })
+  expect(types).toEqual(['tool/result', 'assistant/message', 'tool/result'])
+  await writeFile(join(root, 'mode'), 'wrong-filter')
+  await expect(reader.read(artifact, query, signal())).rejects.toMatchObject({
+    code: 'trajectory-response-invalid',
+  })
+})
+
 it('offers only the authorized read capability through a per-operation gateway and closes it', async () => {
   const { root, reader, snapshot, params } = await fixture()
   const gatewayRoot = await mkdtemp(join(tmpdir(), 'g-tr-')); roots.push(gatewayRoot)
