@@ -25,22 +25,6 @@ Gear 是一套开源优化框架，用于提升 AI Agent 在真实世界任务�
 
 要让 Agent 适应目标场景，首先准备一个包含代表性任务、具有明确验收标准的 benchmark。你可以使用现有 benchmark，也可以[构建自己的任务集](docs/guide/zh-CN/datasets.md)。通过 Python SDK 或 [Refine Skill](skills/refine/SKILL.md) 运行算法。Gear 利用任务反馈改进 Agent 的指令、工具和工作流程；模型训练使用独立的实验性流程。
 
-## 支持的算法
-
-完整、可调用的实现统一从 `gear.algorithms` 导入，算法中的组件可以独立替换。
-
-| 算法 | 当前实现 |
-| --- | --- |
-| [GEPA](docs/guide/zh-CN/algorithms.md#gepa) | 按 local → bridge → global 分阶段评估和筛选候选。 |
-| [RandomSearch](docs/guide/zh-CN/algorithms.md#randomsearch) | 随机选择父代、提出探索性修改并进行全任务评估。 |
-| [OPRO](docs/guide/zh-CN/algorithms.md#opro) | 根据评分历史迭代优化提示词。 |
-| [ACE](docs/guide/zh-CN/algorithms.md#ace) | 增量维护 playbook，评估后采纳更新。 |
-| [RRSI](docs/guide/zh-CN/algorithms.md#rrsi) | 候选先经过编辑检查和 Meta critic 筛查，再执行任务评测。 |
-| [DarwinX](docs/guide/zh-CN/algorithms.md#darwinx) | 提示词优化，并通过新的执行样本确认结果。 |
-| [Harness2](docs/guide/zh-CN/algorithms.md#harness2) | 根据目标输出和轨迹持续学习，算法侧不接触评分。 |
-
-七个算法均有小规模真实模型运行验证，十题实验、独立补测和续跑检查的范围见[验证说明](docs/guide/zh-CN/algorithms.md#真实模型验证)。这些实现对应上表所列机制；论文复现和优化收益需要各自的实验支持。
-
 下面两个案例对比了 Luna Max 搭配 Gear 优化的 harness，与 Astra Max 搭配 Codex 在相同 AutomationBench 任务中的执行轨迹，展示它们如何读取信息、应用规则，并交付最终结果。
 
 <table>
@@ -183,6 +167,20 @@ Gear 采用受 **meta-learning（元学习）** 启发的双层架构，将任�
 任务奖励由 benchmark/scorer 定义，优化目标负责聚合声明的指标和约束。Python 组件定义算法，运行层协调执行、预算、持久化和恢复。详见[组件定制教程](docs/guide/zh-CN/example-algorithm.md)和[算子作者指南](docs/algorithm-operators.zh-CN.md)。
 
 你可以[定义加权优化目标](docs/guide/zh-CN/configuration.md#加权目标和保护任务)，组合已声明的通过率、过程分、费用或 token，并保留所有原始计量。
+
+## 支持的算法
+
+完整、可调用的实现统一从 `gear.algorithms` 导入，算法中的组件可以独立替换。
+
+| 算法 | 当前实现 |
+| --- | --- |
+| [GEPA](docs/guide/zh-CN/algorithms.md#gepa) | 按 local → bridge → global 分阶段评估和筛选候选。 |
+| [RandomSearch](docs/guide/zh-CN/algorithms.md#randomsearch) | 随机选择父代、提出探索性修改并进行全任务评估。 |
+| [OPRO](docs/guide/zh-CN/algorithms.md#opro) | 根据评分历史迭代优化提示词。 |
+| [ACE](docs/guide/zh-CN/algorithms.md#ace) | 增量维护 playbook，评估后采纳更新。 |
+| [RRSI](docs/guide/zh-CN/algorithms.md#rrsi) | 候选先经过编辑检查和 Meta critic 筛查，再执行任务评测。 |
+| [DarwinX](docs/guide/zh-CN/algorithms.md#darwinx) | 提示词优化，并通过新的执行样本确认结果。 |
+| [Harness2](docs/guide/zh-CN/algorithms.md#harness2) | 根据目标输出和轨迹持续学习，算法侧不接触评分。 |
 
 ## 看看两个完整案例
 
