@@ -5,7 +5,25 @@ Complete algorithms are available in `gear.algorithms`. Reusable strategies live
 GEPA and RandomSearch compose these shared capabilities. Other operations are
 available from `core`, `evaluation`, `memory` and `training`.
 
-Replace its parent policy with a named function:
+## Start with parameters
+
+Begin with a [complete algorithm](algorithms.md). Components support `get_params`, `set_params` and `clone`, including nested configuration before a run starts:
+
+```python
+from gear.algorithms import RRSI
+from gear.core import clone
+
+recipe = RRSI(prompt_path="prompts/system.md")
+recipe.set_params(screen__edit_check__max_changed_bytes=32_768)
+variant = clone(recipe)
+print(variant.get_params(deep=True)["screen__edit_check__max_changed_bytes"])
+```
+
+Cloning copies component configuration, not learned state. Configuration is frozen at admission; changing an object does not change an existing run. Use a new configured recipe for a new experiment, or [resume](evolutions.md) to continue the original one.
+
+## Replace a component
+
+For GEPA, replace the parent policy with a named function:
 
 ```python
 # my_policy.py
@@ -47,7 +65,50 @@ and undeclared dependencies are not resumable algorithm configurations. Changed
 code gets a new identity. Historical TypeScript selector/search subpaths are
 no longer public exports.
 
-## Configure a 4 → 2 → 1 batch
+## Compose operators
+
+Pure operators such as `ApplyEdits` and `CheckEdits` return values directly. External operators such as `Meta`, `Evaluate` and `Rollout` return a `Call`, executed after a `Decision` submits it. Read results using the saved call reference. This minimal algorithm performs one review and returns its result; save it as `review_algorithm.py`:
+
+```python
+from gear.core import Meta, MetaInput
+from gear.search import Algorithm, Decision, Terminal
+
+
+class Review(Algorithm):
+    def __init__(self, critic=None):
+        self.critic = critic if critic is not None else Meta(
+            "Review the target instructions and explain one possible improvement.",
+            {"type": "object", "properties": {"reason": {"type": "string"}},
+             "required": ["reason"], "additionalProperties": False},
+        )
+
+    def step(self, view, state):
+        if state.data.get("pending"):
+            result = view.results.require(state.data["pending"])
+            return Decision(
+                state, reason="review finished",
+                terminal=Terminal("stop", outcome={
+                    "status": result.status, "review": result.value,
+                }),
+            )
+        call = self.critic(
+            MetaInput(view.anchor, tuple(task.id for task in view.tasks)),
+            key="review/0",
+        )
+        return Decision(state.updated(pending=call.ref), (call,), "request review")
+```
+
+```python
+from gear import Project
+from review_algorithm import Review
+
+run = Project.open(".").refine(algorithm=Review(), rounds=1)
+print(run.report.summary["operators"]["outcome"])
+```
+
+The review consumes Meta budget without modifying or evaluating the Target; check the outcome status before using its value. Split dependent external work across steps and save call references and phases in state so recovery can continue from them. A `Call` itself cannot be awaited or executed. See the [operator author guide](../../algorithm-operators.zh-CN.md) for offline component checks, material access, screening, libraries and task streams.
+
+## Configure a 4-2-1 batch
 
 `GEPA(promotion_widths=(2, 1))` is the default: within each parent batch,
 rank candidates on the same local scope and send up to two to bridge, then

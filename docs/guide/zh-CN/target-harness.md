@@ -15,4 +15,4 @@ DSH 的 `preset/agent.cordis.yml` 接线插件，固定 patch 配置 Skill 目�
 
 运行 Target 的具体版本、模型及容器由[profile](configuration.md)固定。每次 evaluate 使用封存候选，生成后不能直接编辑 `.gear/` 来改变它。
 
-DSH 接线示例见[原生资源指南](../../../skills/refine/references/dsh-target-harness.md)。本机扩展加载、容器 materialization、模型是否采用策略是不同验证层次；当前结果见[实施记录](../../refactor-progress.zh-CN.md)。
+DSH 接线示例见[原生资源指南](../../../skills/refine/references/dsh-target-harness.md)。本机扩展加载、容器 materialization、模型是否采用策略是不同验证层次。[实施记录](../../refactor-progress.zh-CN.md)保留早期检查，后续 Hitch/DSH 的真实模型执行范围见[七算法验证](algorithms.md#真实模型验证)。

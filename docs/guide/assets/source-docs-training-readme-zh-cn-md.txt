@@ -6,7 +6,7 @@ Gear 的模型训练独立于 harness 进化状态，通过固定 harness 和数
 
 开发者编写自己的四阶段训练，从 [TrainingLoop 开发指南](development.zh-CN.md) 开始；它支持普通 Python 实现，不要求 agent；控制器也可加载自定义 `build_loop(config, runtime)` 脚本，Hitch/Slime 作为内置组件继续复用。已有 Slime 后端可用 `python -m gear_training run spec.json --config controller.json` 创建并持续运行，或 `run EXP_ID RUN_ID` 跟踪已有运行。 Hitch/Slime 四阶段工厂见 [hitch_slime.py](../../examples/training-loop/recipes/hitch_slime.py)，运行和恢复方法见开发指南。
 
-目前实机验收覆盖本地 Gear / Hitch / Harbor Docker 与远程 RTX 5090 单卡上的 Qwen2.5-1.5B 训练、恢复及推理。远程 Docker / Harbor 和双卡尚未验收。独立评估 reward=0，不代表质量提升或晋升。认证范围及证据见文末；`pending-gpu` lock 不能提交正式训练。
+既有正式实机认证覆盖本地 Gear / Hitch / Harbor Docker 与远程 RTX 5090 单卡上的 Qwen2.5-1.5B 训练、恢复及推理。2026-10-15 另取得[上游双卡推理记录](../validation/external-inference-gpu-2026-10-15.md)及[2×RTX 3090 静态分卡训练/端点评测诊断](../validation/training-gpu-loop-2026-10-15.md)：Qwen3.5-2B 一次更新、native/HF 导出和实际本机 Harbor 基线/candidate 配对，均为有效 reward=0、meanDelta=0，loss/grad norm=0，不代表质量提升或晋升。新诊断仍为 `validated:false` / `pending-gpu`，完整本机制品全闭包与离线 finite 复核已通过（108 个对象、35,467,670,234 字节），精确租机销毁已确认，不能提交正式训练；远程 Harbor worker、完整 benchmark 未验收。历史认证范围及证据见文末。
 
 可选的任务生成、轨迹分析及 SFT 数据构建见 [Python 四阶段与 AgentRunner](stages.zh-CN.md)。 开发与扩展请从 [训练模块开发指南](development.zh-CN.md) 开始。
 
@@ -23,11 +23,15 @@ Gear 的模型训练独立于 harness 进化状态，通过固定 harness 和数
 
 `advance` 执行一轮可重复的协调，不是后台定时器。调用方应间隔数秒重复调用，直到 `execution=completed` 或需要处理 `blocked/failed`。Slime 作业和 Hitch eval 自己在后台运行；退出 Gear CLI 不会重新提交或隐式取消任务。使用 `pause` 请求取消，并继续调用直到 `paused`；`resume` 使用原 job 和 idempotency key。
 
+新建自动实验可使用 `gear training iterate SPEC --config CONTROLLER` 一次启动多轮，随后用 `iterate EXP` 协调原持久意图、`pause EXP`/`resume EXP` 控制整个实验。需在创建时冻结 iteration 策略、全实验训练 schedule 和受管 profile 授权；原单轮实验不会自动升级。配置工具、恢复限制和后续真实验收见[无人值守迭代](unattended-iteration.zh-CN.md)。
+
 ## 边界与身份
 
 训练使用固定的 `training-tool` harness：单条线性 Chat Completions 工具轨迹，只允许容器内 bash 工具；无 compaction、分支、subagent、辅助模型或隐藏重试。训练和 dev/held-out 使用同一已提交的 runner 和 artifact。Hitch 的 Codex / Responses 路径继续独立使用。
 
 Slime 管理训练 SGLang。独立评估连接由部署所有者准备的不可变 HF 模型端点，上游 SGLang/官方 Gateway 管理模型副本与服务恢复；Hitch 只管理任务和请求。训练 actor/rollout 可使用独立 GPU 或训练内部 CPU offload 共卡，普通评测首版与训练静态分卡。新 resources 只列 trainingDevices，v2 的 trainEvaluation 设为 isolated；推理卡在外部部署分配中保留，限制训练进程的实际设备访问。完整接入与按版本绑定见[独立评测端点](standalone-inference.zh-CN.md)。
+
+端点准备可保留 external-file 外部映射，也可在新 v2 实验显式选择[managedNative](managed-native.zh-CN.md)：Gear 的部署适配器调用 Supervisor、核验快照与真实进程、登记消费者并回收自属服务。Hitch 仍只接收普通冻结 API binding，不获得模型启停权；外部长驻端点不进入实验自动回收。
 
 每次生成都保存原始 native 输入/输出 token IDs、生成时 weight_version、behavior logprobs、采样参数及请求/响应。工具观察的 loss mask 和 logprob 为 0；模型 token 才参与 loss。prefix 不连续、length/abort、缺少 terminal、verifier 无效或版本漂移会拒绝整个 episode/group。有效 reward=0 保留。凑不满完整 B×G batch 时明确 no-update，不将空/不足 batch 交给 Slime。
 
@@ -187,7 +191,7 @@ v2 的 `artifactStorage="model-node"` 保留远端训练 CAS；显式发布通�
 
 云端需逐项验证：native token IDs/terminal 与 actor logprob 数值一致性；两次工具调用 prefix 精确连续；一批完整 B×G 的 backward 和 ratio/KL；所有 rollout replica 同步；训练取消与旧请求 fencing；checkpoint 前后中断和 HF 导出故障恢复；HF reload 有限权重；真实上游模型端点的非流式/流式工具完整往返；真实 Harbor verifier；训练与推理静态设备隔离；多轮 optimizer/reference 不漂移；最终 dev/held-out 比较和显式发布回滚。
 
-完成相应范围的检查后才将 lock 设为 `validated` 并初始化正式实验。实际通过的模型、拓扑与数值门限以下方认证记录为准。新的官方 SGLang 单副本、TP=2、Gateway 两副本和静态分卡路径尚未取得实机证据；历史证书不能替代本轮验收。
+完成相应范围的检查后才将 lock 设为 `validated` 并初始化正式实验。实际通过的模型、拓扑与数值门限以下方认证记录为准。[2026-10-15 推理拓扑](../validation/external-inference-gpu-2026-10-15.md)与[静态分卡训练/端点评测](../validation/training-gpu-loop-2026-10-15.md)已取得各自有界实机证据；后者明确为未认证的流程诊断，不代替上述完整数值、恢复与质量门禁，历史证书也不能替代新运行时认证。
 
 ### 认证范围与入口
 

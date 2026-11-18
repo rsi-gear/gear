@@ -97,7 +97,11 @@ The Meta provider must declare `generationBudget: true` and enforce the operatio
 
 The runtime persists `generationLimits` with the operation ID before side effects. Only valid, known actual usage releases unused allowance. Missing/null metering retains the full reservation; lost replies require inspecting the same operation. `tokens` means all input plus output tokens across the operation, counting cached input once and not adding reasoning tokens again when already included in output. Supplied breakdowns must agree with the total, and positive tokens cannot accompany zero model requests.
 
-The report's `generation_budget` separates frozen limits, reserved/accounted upper bounds, unknown operations and remaining allowance. An upper bound is not measured consumption. A provider overrun or inconsistent counter is retained as a violation receipt in the journal, fences further submissions and cannot become algorithm evidence. Cancellation and resume preserve that record.
+The report's `generation_budget` separates effective limits, reserved/accounted upper bounds, unknown operations and remaining allowance. An upper bound is not measured consumption. A provider overrun or inconsistent counter is retained as a violation receipt in the journal, fences further submissions and cannot become algorithm evidence. Cancellation and resume preserve that record.
+
+### Budget amendments for a failed reflection
+
+An eligible v2 read-only Meta failure can explicitly increase the run's cumulative or per-operation limits through `resume(..., retry_operation=..., generation=...)`. Historical usage remains charged and the original frozen specification stays unchanged. `generation_budget.policy` reports the effective limits and `meta_recoveries` records amendments. Omitted fields retain previous limits; recovery does not reset the ledger, rounds, target budget or repair counts. See [runs and recovery](evolutions.md#retry-a-settled-read-only-meta-failure) for an example and eligibility conditions.
 
 ## Failed evaluation repair
 

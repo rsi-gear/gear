@@ -60,7 +60,11 @@ Meta provider 必须明确声明 `generationBudget: true`，并在每个实际�
 
 运行层在副作用前把 `generationLimits` 和 operation ID 一起持久化。只有已知、合法的实际用量会释放预约余量；缺失或 null 计量保留完整额度，丢失回包先 inspect 同一 operation。`tokens` 是所有调用的输入与输出 token 之和，缓存输入计入输入一次，不能把 reasoning token 重复加到已含它的输出中。若同时提供拆分计量，合计必须一致；实际 token 不能与零请求数矛盾。
 
-报告的 `generation_budget` 显示适用范围、冻结规则、预约上界、已占用上界、未知操作数和可用额度。上界不是实际消费。provider 超过预约或返回矛盾计量时，原 receipt 留在 journal 的 violation 记录中，后续提交被阻止，该结果不能进入算法证据。取消和恢复不删除这些记录。
+报告的 `generation_budget` 显示适用范围、有效预算规则、预约上界、已占用上界、未知操作数和可用额度。上界不是实际消费。provider 超过预约或返回矛盾计量时，原 receipt 留在 journal 的 violation 记录中，后续提交被阻止，该结果不能进入算法证据。取消和恢复不删除这些记录。
+
+### 已失败反思的预算续接
+
+符合条件的 v2 只读 Meta 失败，可以通过 `resume(..., retry_operation=..., generation=...)` 显式提高该 run 的累计或单次上限。历史消耗继续占用额度，原冻结配置不变；报告中的 `generation_budget.policy` 展示有效预算，`meta_recoveries` 保存每次变更。省略字段保留旧限制；恢复既不清空账本，也不重置轮数、目标执行预算或修补次数。示例和适用条件见[运行与恢复](evolutions.md#重试已结算的只读-meta-失败)。
 
 ## 失败评测修补
 

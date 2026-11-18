@@ -23,7 +23,23 @@
 
 Gear 是一套开源优化框架，用于提升 AI Agent 在真实世界任务中的表现。
 
-要让 Agent 适应目标场景，首先准备一个包含代表性任务、具有明确验收标准的 benchmark。你可以使用现有 benchmark，也可以[构建自己的任务集](docs/guide/zh-CN/datasets.md)。在这个 benchmark 上运行 [Refine Skill](skills/refine/SKILL.md)。Gear 会利用评测结果，迭代改进 Agent 的模型、指令、工具和工作流程。
+要让 Agent 适应目标场景，首先准备一个包含代表性任务、具有明确验收标准的 benchmark。你可以使用现有 benchmark，也可以[构建自己的任务集](docs/guide/zh-CN/datasets.md)。通过 Python SDK 或 [Refine Skill](skills/refine/SKILL.md) 运行算法。Gear 利用任务反馈改进 Agent 的指令、工具和工作流程；模型训练使用独立的实验性流程。
+
+## 支持的算法
+
+完整、可调用的实现统一从 `gear.algorithms` 导入，算法中的组件可以独立替换。
+
+| 算法 | 当前实现 |
+| --- | --- |
+| [GEPA](docs/guide/zh-CN/algorithms.md#gepa) | 按 local → bridge → global 分阶段评估和筛选候选。 |
+| [RandomSearch](docs/guide/zh-CN/algorithms.md#randomsearch) | 随机选择父代、提出探索性修改并进行全任务评估。 |
+| [OPRO](docs/guide/zh-CN/algorithms.md#opro) | 根据评分历史迭代优化提示词。 |
+| [ACE](docs/guide/zh-CN/algorithms.md#ace) | 增量维护 playbook，评估后采纳更新。 |
+| [RRSI](docs/guide/zh-CN/algorithms.md#rrsi) | 候选先经过编辑检查和 Meta critic 筛查，再执行任务评测。 |
+| [DarwinX](docs/guide/zh-CN/algorithms.md#darwinx) | 提示词优化，并通过新的执行样本确认结果。 |
+| [Harness2](docs/guide/zh-CN/algorithms.md#harness2) | 根据目标输出和轨迹持续学习，算法侧不接触评分。 |
+
+七个算法均有小规模真实模型运行验证，十题实验、独立补测和续跑检查的范围见[验证说明](docs/guide/zh-CN/algorithms.md#真实模型验证)。这些实现对应上表所列机制；论文复现和优化收益需要各自的实验支持。
 
 下面两个案例对比了 Luna Max 搭配 Gear 优化的 harness，与 Astra Max 搭配 Codex 在相同 AutomationBench 任务中的执行轨迹，展示它们如何读取信息、应用规则，并交付最终结果。
 
@@ -75,6 +91,26 @@ Gear 是一套开源优化框架，用于提升 AI Agent 在真实世界任务�
 
 ## 快速开始
 
+### Python SDK
+
+按照[快速开始指南](docs/guide/zh-CN/quickstart.md)构建匹配的 Gear 源码并准备项目。DSH 项目的 benchmark、执行 profile 和预算配置好后：
+
+```python
+from gear import Project
+from gear.algorithms import OPRO
+
+project = Project.open("./my-benchmark")
+run = project.refine(
+    algorithm=OPRO(prompt_path="prompts/system.md"),
+    rounds=2,
+)
+print(run.id, run.report.summary)
+```
+
+Pi 的提示词路径使用 `AGENTS.md`。继续阅读[算法选择](docs/guide/zh-CN/algorithms.md)、[组件定制](docs/guide/zh-CN/example-algorithm.md)和[运行恢复](docs/guide/zh-CN/evolutions.md)。Python 示例对应当前源码版本，应使用由匹配源码构建的包。
+
+### Refine Skill
+
 通过 **Refine Skill**，你可以在 Codex、Claude Code、DSH 或其他兼容的 Agent 环境中使用 Gear。你可以使用已有 benchmark，也可以用 [Harbor 格式](docs/guide/zh-CN/datasets.md)定义自己的任务。
 
 安装及依赖准备步骤，见[快速开始](docs/guide/zh-CN/quickstart.md)。
@@ -83,7 +119,7 @@ Gear 是一套开源优化框架，用于提升 AI Agent 在真实世界任务�
 
 ```text
 请按照 https://rsigear.xyz/docs/gear/zh/quickstart 在当前环境中安装 Gear。
-通过 npm 安装 rsi-gear@latest 和 agent-hitch@latest，并检查所需依赖。
+安装相互兼容、支持本指南 API 与所需 Hitch 能力的 Gear 和 Hitch 构建，并检查所需依赖。
 把 Gear 自带的完整 Refine Skill 接入我当前使用的 Agent，并配置它与 Gear 的连接。
 使用我实际的任务路径、目标 harness 和模型配置；缺少必要信息时再询问我。
 完成后验证 Skill 能否连接 Gear，告诉我检查结果，以及如何开始第一次优化。
@@ -95,6 +131,8 @@ Gear 是一套开源优化框架，用于提升 AI Agent 在真实世界任务�
 npm install --global rsi-gear@latest agent-hitch@latest @deepseek-ai/dsh@latest
 hitch eval setup harbor
 ```
+
+这里介绍的源码 API 可能早于 npm 发布版。使用七个算法时，请按源码构建说明安装，并通过 `gear doctor` 确认 Hitch 提供 `isolated_agent_run: "1"` 和 `generation_budget: "1"` 能力。
 
 按照[安装指南](docs/guide/zh-CN/quickstart.md)，把随包的 [Refine Skill](skills/refine/SKILL.md) 接入你的 Agent，并连接任务集。然后使用宿主支持的 `/refine`，或者直接用自然语言说：
 
@@ -131,17 +169,18 @@ Gear 采用受 **meta-learning（元学习）** 启发的双层架构，将任�
 
 ### 可定制的算法组件
 
-Gear 的进化循环包含 **Diagnose（诊断）→ Evolve（进化）→ Evaluate（评测）→ Promote（晋升）** 四个阶段。你可以定制各阶段中的以下模块。
+可复用算子按用途放在 `gear.core`、`gear.evaluation`、`gear.memory`、`gear.training` 和 `gear.search`，完整算法放在 `gear.algorithms`。例如 `ApplyEdits`、`CheckEdits` 属于 `gear.core`。搜索策略分为六个模块：
 
-| 阶段 | 模块 | 可以定制什么 |
-| --- | --- | --- |
-| Diagnose（诊断） | Parent selection（父代选择） | 从符合条件的 harness 版本中选择父代，并分配每个父代的候选生成数量。 |
-| Evolve（进化） | Proposal planning（提案规划） | 如何利用诊断反馈，规划候选修改。 |
-| Evaluate（评测） | Task sampling（任务采样） | 每个阶段评测哪些任务，以及如何设置任务得分的权重。 |
-| Evaluate（评测） | Scoring rule（评分规则） | 如何对任务结果评分，并通过可配置的权重与约束组合评测指标。 |
-| Promote（晋升） | Candidate ranking（候选排序） | 如何比较在相同任务和评测条件下运行的候选。 |
+| 模块 | 可定制内容 |
+| --- | --- |
+| `search.parents` | 父代选择和候选配额。 |
+| `search.sampling` | 任务子集、重复次数和权重。 |
+| `search.proposal` | 诊断和候选提案规划。 |
+| `search.ranking` | 在匹配评测范围内比较候选。 |
+| `search.stopping` | 搜索结束条件。 |
+| `search.workflow` | 阶段顺序和策略组合。 |
 
-运行层负责执行任务、保存评测证据和完成最终验收。你可以参考[算法示例](docs/guide/zh-CN/example-algorithm.md)和 [Python 组件接口](python/gear/algorithms/__init__.py)，基于这些组件开发算法。
+任务奖励由 benchmark/scorer 定义，优化目标负责聚合声明的指标和约束。Python 组件定义算法，运行层协调执行、预算、持久化和恢复。详见[组件定制教程](docs/guide/zh-CN/example-algorithm.md)和[算子作者指南](docs/algorithm-operators.zh-CN.md)。
 
 你可以[定义加权优化目标](docs/guide/zh-CN/configuration.md#加权目标和保护任务)，组合已声明的通过率、过程分、费用或 token，并保留所有原始计量。
 
