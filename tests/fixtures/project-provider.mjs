@@ -9,7 +9,7 @@ const { action, request, configuration, context } = input
 const hash = value => 'sha256:' + createHash('sha256').update(value).digest('hex')
 const identity = hash(await readFile(new URL(import.meta.url)))
 let result
-if (action === 'describe') result = { version: 1, identity, capabilities: { seeds: false, temperature: false, subsets: true, idempotentSubmission: true, inspect: true, cancel: true, physicalAttemptAccounting: true, evidenceProjection: configuration.projectEvidence === true, generationBudget: !!context && typeof context === 'object' && !('benchmark' in context), hardDollarBudget: false } }
+if (action === 'describe') result = { version: 1, identity, capabilities: { seeds: false, temperature: false, subsets: true, idempotentSubmission: true, inspect: true, cancel: true, physicalAttemptAccounting: true, evidenceProjection: configuration.projectEvidence === true, generationBudget: !!context && typeof context === 'object' && !('benchmark' in context), hardDollarBudget: false, operatorMeta: true } }
 else {
   const receiptPath = join(configuration.receipts, request.operationId.slice(7) + '.json')
   if (action === 'inspect') {
@@ -48,7 +48,18 @@ else {
     const { operation } = request
     if (operation.kind !== 'evaluate_seed') {
       if ('benchmark' in context || context.tasks.some(task => task.id.startsWith('word-'))) throw new Error('Meta context leaked private benchmark')
-      if (!request.evidence.length) throw new Error('Meta operation lost its authorized seed evidence')
+      if (!request.operatorCall && !request.evidence.length) throw new Error('Meta operation lost its authorized seed evidence')
+    }
+    if (request.operatorCall?.effect.kind === 'meta') {
+      const properties = request.operatorCall.effect.input.schema.properties ?? {}
+      const data = properties.add ? { add: ['offline candidate rule'], replace: [], remove: [] }
+        : properties.status ? { status: 'allow', reason: 'fixture review' } : { text: 'offline candidate rule\n' }
+      result = { result: { operation_id: request.operationId, kind: operation.kind, status: 'complete', candidate_id: operation.candidate_id,
+        data: { declined: false, data } }, candidate: null, evidence: [], physicalAttempts: 0,
+        usage: { model_requests: 1, tokens: 10 }, provenance: { test_fixture: true, identity } }
+      await writeFile(receiptPath, JSON.stringify(result), { flag: 'wx' })
+      process.stdout.write(JSON.stringify(result))
+      process.exit(0)
     }
     const candidate = operation.kind === 'generate_candidate' ? { id: operation.candidate_id, parent_id: operation.parent_id, digest: hash(operation.candidate_id) } : null
     if (candidate) {

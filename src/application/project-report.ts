@@ -9,6 +9,7 @@ import { targetDiff } from '../adapters/storage/target-diff.js'
 import { harnessAdapter } from './harness-adapters.js'
 import { runReport } from './report.js'
 import { ResearchStore } from '../adapters/storage/research.js'
+import { RunStore } from '../adapters/storage/run-store.js'
 
 async function researchSummary(root: string, journal: RunJournal) {
   try {
@@ -35,6 +36,7 @@ async function researchSummary(root: string, journal: RunJournal) {
 
 /** Operator-only report; candidate bytes are never added to algorithm or Meta feedback. */
 export async function projectReport(root: string, journal: RunJournal) {
+  await new RunStore(join(root, '.gear')).verifyRecoveryCheckpoints(journal)
   const report = { ...runReport(journal), research: await researchSummary(root, journal) }
   try {
     const runRoot = join(root, '.gear/runs', journal.id)

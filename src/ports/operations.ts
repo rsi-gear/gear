@@ -4,6 +4,13 @@ import type { Evidence, Operation, OperationReceipt, Json } from '../domain/algo
 import type { GenerationLimits } from '../domain/generation-budget.js'
 import type { ExperienceContext } from '../domain/experience.js'
 import type { ArtifactReaderDescriptor } from '../domain/trajectory.js'
+import type { CandidateEffect, MetaEffect } from '../domain/algorithm-wire-v2.js'
+import type {
+  ExecutionTarget,
+  OperatorArtifact,
+  OperatorMaterial,
+  TargetExecution,
+} from '../domain/operator-run.js'
 export type { OperationReceipt } from '../domain/algorithm-wire.js'
 
 export interface TimeoutLimit {
@@ -29,6 +36,11 @@ export interface ProviderCapabilities {
   /** Enforces request/token reservations across all calls, retries and summaries in one Meta operation. */
   generationBudget: boolean
   evidenceProjection: boolean
+  /** Understands the v2 author-owned Meta prompt/schema and read-only source manifest. */
+  operatorMeta?: boolean
+  /** Target status and artifacts are projected independently of verifier outcomes. */
+  blindProjection?: boolean
+  targetAssets?: boolean
 }
 export interface OperationRequest {
   operationId: string
@@ -46,6 +58,22 @@ export interface OperationRequest {
   generationLimits?: GenerationLimits
   /** Frozen core-owned seed memory. Bound before submission; not an algorithm payload. */
   experience?: ExperienceContext
+  /** Bound by v2 runtime, never inferred from arbitrary legacy payloads. */
+  operatorCall?: {
+    version: 2
+    callId: string
+    effect: MetaEffect | CandidateEffect
+    materials: OperatorMaterial[]
+  }
+  /** Separates explicit author samples from the independently frozen final gate. */
+  operatorSamples?: {
+    callId: string
+    sampleIds: string[]
+    executionIdentity: string
+    exposure?: 'scored' | 'blind'
+  }
+  /** Core-sealed runnable overlay; providers must execute this target when present. */
+  executionTarget?: ExecutionTarget
   /** Core-owned execution repair; never an instruction supplied by an algorithm. */
   repair?: { rootOperationId: string; previousOperationId: string; attempt: number }
   projection?: {
@@ -64,6 +92,18 @@ export type OperationInspection =
   /** Some groups completed; replay is safe with the original idempotent reservation. */
   | { state: 'resumable' }
   | { state: 'running' | 'unknown' }
+export interface ExecutionIdentity {
+  provider: string
+  evaluation: string
+}
+export interface EnvironmentBindingRecovery {
+  version: 1
+  from: ExecutionIdentity
+  to: ExecutionIdentity
+  previousBinding: Json
+  currentBinding: Json
+  invariantDigest: string
+}
 /** Evaluation/generation adapters own external side effects, never the run journal. */
 export interface OperationProvider {
   readonly identity: string
@@ -77,9 +117,26 @@ export interface OperationProvider {
   /** Operator metadata for the exact connected configuration; null means unreported. */
   readonly timeouts?: ProviderTimeouts
   readonly capabilities: ProviderCapabilities
+  /** Prove that only a host environment binding changed; never relax code/model/task identities. */
+  recoverEnvironmentBinding?(
+    previous: ExecutionIdentity,
+    binding: Json,
+    signal: AbortSignal,
+  ): Promise<EnvironmentBindingRecovery>
   submit(request: OperationRequest, signal: AbortSignal): Promise<OperationReceipt>
   /** Read existing artifacts only. Must not execute targets or issue model requests. */
   completeEvidence?(request: OperationRequest, signal: AbortSignal): Promise<OperationReceipt>
+  /** Reads immutable target records; never exposes scoring fields or starts execution. */
+  captureExecutions?(
+    request: OperationRequest,
+    receipt: OperationReceipt,
+    signal: AbortSignal,
+  ): Promise<TargetExecution[]>
+  readExecutionArtifact?(
+    artifact: OperatorArtifact,
+    path: string | null,
+    signal: AbortSignal,
+  ): Promise<Buffer>
   inspect(request: OperationRequest, signal: AbortSignal): Promise<OperationInspection>
   /** Resolve only after work has stopped or a durable fence prevents its start.
    * Throw while cancellation or resource termination remains unconfirmed. */

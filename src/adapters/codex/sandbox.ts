@@ -1,13 +1,12 @@
 import { chmod, mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, relative } from 'node:path'
-import { SandboxManager } from '@anthropic-ai/sandbox-runtime'
-import { createAirGappedSandboxConfig, sandboxSystemReadPaths } from '../../sandbox.js'
+import { sandboxSystemReadPaths } from '../../sandbox.js'
 import { GearError } from '../../domain/errors.js'
+import { materialPath } from '../../domain/material-path.js'
 import { snapshotTarget, targetResources } from '../storage/targets.js'
 import { DshHarnessAdapter } from '../dsh/harness.js'
 import { PiHarnessAdapter } from '../pi/harness.js'
-import { codexAuthFile } from './auth.js'
 import type { describeCodex } from './identity.js'
 import type { CodexJob } from './contracts.js'
 import { stageExperience } from './experience.js'
@@ -15,7 +14,6 @@ import { ownCodexRoot, type CodexResources } from './cleanup.js'
 import { builtinPolicy } from '../python/builtin-policy.js'
 import type { Json } from '../../domain/algorithm-wire.js'
 
-export const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
 const contains = (root: string, path: string): boolean => {
   const child = relative(root, path)
   return !child || (!isAbsolute(child) && child !== '..' && !child.startsWith('../'))
@@ -28,7 +26,6 @@ export async function prepareSandbox(
   runtime: Awaited<ReturnType<typeof describeCodex>>,
   resources: CodexResources,
 ) {
-  const { executable, codeModeHost, caCertificates } = runtime
   const { configuration: config, context, request } = job.input
   const root = await mkdtemp(join(await realpath(tmpdir()), 'gear-meta-'))
   resources.root = await ownCodexRoot(root)
@@ -53,10 +50,43 @@ export async function prepareSandbox(
     const experience = await stageExperience(job, root, (dispose) => {
       resources.dispose = dispose
     })
+    const sourceRoot = join(root, 'sources')
+    const sources: Json[] = []
+    if (request.operatorCall) {
+      await mkdir(sourceRoot, { mode: 0o700 })
+      let bytes = 0
+      for (const [index, material] of request.operatorCall.materials.entries()) {
+        const path = join(sourceRoot, String(index))
+        await mkdir(path, { mode: 0o700 })
+        if (material.files) {
+          for (const [name, file] of Object.entries(material.files)) {
+            materialPath(name)
+            const content = Buffer.from(file.content, 'base64')
+            bytes += content.length
+            if (bytes > 8 * 1024 * 1024 || content.toString('base64') !== file.content)
+              throw new GearError('codex-source-size', 'Invalid or oversized source material')
+            await mkdir(join(path, name, '..'), { recursive: true, mode: 0o700 })
+            await writeFile(join(path, name), content, { flag: 'wx', mode: file.executable ? 0o500 : 0o400 })
+          }
+        } else {
+          const content = JSON.stringify(material.value)
+          bytes += Buffer.byteLength(content)
+          if (bytes > 8 * 1024 * 1024) throw new GearError('codex-source-size', 'Oversized source material')
+          await writeFile(join(path, 'value.json'), content, { flag: 'wx', mode: 0o400 })
+        }
+        sources.push({
+          ref: material.ref,
+          path: `../sources/${index}`,
+          files: (material.files ? Object.keys(material.files).sort() : ['value.json']).map(
+            (name) => `../sources/${index}/${name}`,
+          ),
+        })
+      }
+    }
     // Scope authorization remains in the executor; Python owns the Meta task's
     // input presentation, instructions and result format.
     const meta = builtinPolicy<{ input: Json; schema: Json; prompt: string }>(
-      'meta_prepare',
+      request.operatorCall ? 'operator_meta_prepare' : 'meta_prepare',
       {
         operation: request.operation,
         tasks: context.tasks
@@ -66,20 +96,13 @@ export async function prepareSandbox(
         harness: adapter.describe(),
         mutationPolicy: adapter.mutationPolicy,
         experience: experience.input,
+        ...(request.operatorCall ? { operator_call: request.operatorCall, sources } : {}),
       },
       context.experiencePython,
     )
     await writeFile(join(root, 'input.json'), JSON.stringify(meta.input), { mode: 0o400 })
     await writeFile(join(root, 'schema.json'), JSON.stringify(meta.schema), { mode: 0o400 })
-    if (config.authHome) {
-      await writeFile(join(home, '.codex/auth.json'), await codexAuthFile(config.authHome), { mode: 0o600 })
-    }
-    const runtimePaths = [
-      ...sandboxSystemReadPaths(),
-      executable,
-      ...(codeModeHost ? [codeModeHost] : []),
-      ...experience.readPaths,
-    ]
+    const runtimePaths = sandboxSystemReadPaths()
     // Listing the parent as read-only can cover its writable children when
     // bubblewrap restores mounts beneath a denied directory. Grant each input
     // and working directory explicitly so Linux keeps candidate/output writable.
@@ -90,6 +113,8 @@ export async function prepareSandbox(
       candidate,
       output,
       home,
+      ...experience.readPaths,
+      ...(request.operatorCall ? [sourceRoot] : []),
     ]
     for (const protectedPath of [
       ...context.protectedPaths,
@@ -101,86 +126,66 @@ export async function prepareSandbox(
       if (allowRead.some((path) => contains(path, resolved)))
         throw new GearError('codex-sandbox-overlap', 'Private project state overlaps the Meta read allowlist')
     }
-    const policy = await createAirGappedSandboxConfig({
-      linuxIsolation: config.linuxIsolation,
-      allowRead,
-      allowWrite: [
-        output,
-        home,
-        ...experience.writePaths,
-        ...(request.operation.kind === 'generate_candidate' ? [candidate] : []),
-      ],
-    })
-    policy.network = {
-      allowedDomains: config.allowedDomains,
-      deniedDomains: config.allowedDomains.length ? [] : ['*'],
-      strictAllowlist: true,
-      allowUnixSockets: experience.sockets,
-      allowAllUnixSockets: process.platform === 'linux' && config.linuxIsolation === 'bubblewrap-only',
-      allowLocalBinding: false,
+    const runRequest = {
+      harness_ref: 'codex@installed',
+      model: config.model,
+      cwd: candidate,
+      workspace_mode: 'shared',
+      prompt: meta.prompt,
+      timeout_ms: config.timeoutMs,
+      agent_args: [],
+      ...(request.generationLimits ? { generation_budget: request.generationLimits } : {}),
+      isolation: {
+        executable_sha256: runtime.binaryDigest,
+        read_paths: allowRead.filter((path) => !runtimePaths.includes(path)),
+        write_paths: [
+          output,
+          ...experience.writePaths,
+          ...(request.operation.kind === 'generate_candidate' ? [candidate] : []),
+        ],
+        unix_sockets: experience.sockets,
+        allowed_domains: config.allowedDomains,
+        output_schema: join(root, 'schema.json'),
+        output_file: join(output, 'result.json'),
+        ...(config.linuxIsolation ? { linux_isolation: config.linuxIsolation } : {}),
+        ...(config.reasoningEffort ? { reasoning_effort: config.reasoningEffort } : {}),
+      },
     }
-    // Each operation worker owns a separate manager; no shared process-wide network policy.
-    await SandboxManager.initialize(policy)
-    await SandboxManager.waitForNetworkInitialization()
-    if (process.platform === 'linux') {
-      // The root read-deny mount otherwise hides the proxy socket binds added
-      // earlier by bubblewrap. Expose only this manager's filtered bridges.
-      policy.filesystem.allowRead = [
-        ...(policy.filesystem.allowRead ?? []),
-        ...[SandboxManager.getLinuxHttpSocketPath(), SandboxManager.getLinuxSocksSocketPath()].filter(
-          (socket): socket is string => socket !== undefined,
-        ),
-      ]
-    }
-    const args = [
-      executable,
-      'exec',
-      '--ephemeral',
-      '--ignore-user-config',
-      '--ignore-rules',
-      '--strict-config',
-      '--disable',
-      'apps',
-      '--disable',
-      'plugins',
-      '--skip-git-repo-check',
-      '--json',
-      '--dangerously-bypass-approvals-and-sandbox',
-      '--output-schema',
-      join(root, 'schema.json'),
-      '--output-last-message',
-      join(output, 'result.json'),
-      '-m',
-      config.model,
-      '-c',
-      'project_doc_max_bytes=0',
-      '-C',
-      candidate,
-      ...(config.reasoningEffort
-        ? ['-c', `model_reasoning_effort=${JSON.stringify(config.reasoningEffort)}`]
-        : []),
-      '-',
-    ]
-    const wrapped = await SandboxManager.wrapWithSandboxArgv(args.map(quote).join(' '), '/bin/bash', policy)
+    const requestPath = join(root, 'hitch-request.json')
+    await writeFile(requestPath, JSON.stringify(runRequest), { mode: 0o400 })
     return {
       root,
       candidate,
       output,
       home,
       dispose: experience.dispose,
-      argv: wrapped.argv,
+      requestPath,
+      argv: [
+        runtime.hitch.executable,
+        '--root',
+        runtime.hitch.root,
+        'run',
+        '--request-file',
+        requestPath,
+        '--output',
+        'json',
+        '--watch-stdin',
+      ],
       env: {
-        PATH: '/usr/bin:/bin',
+        PATH: process.env.PATH,
         LANG: 'C.UTF-8',
-        HOME: home,
-        TMPDIR: join(home, 'tmp'),
-        CODEX_HOME: join(home, '.codex'),
-        ...(caCertificates ? { CODEX_CA_CERTIFICATE: caCertificates, SSL_CERT_FILE: caCertificates } : {}),
+        HITCH_CODEX_PATH: runtime.executable,
+        ...Object.fromEntries(
+          ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY'].flatMap((name) =>
+            process.env[name] ? [[name, process.env[name]]] : [],
+          ),
+        ),
+        ...(config.authHome ? { HITCH_CODEX_AUTH_HOME: config.authHome } : {}),
+        ...(context.experiencePython ? { HITCH_GUARD_PYTHON: context.experiencePython } : {}),
         ...(process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY
           ? { CODEX_API_KEY: process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY }
           : {}),
       },
-      prompt: meta.prompt,
     }
   }
 }

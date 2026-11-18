@@ -1,4 +1,5 @@
 import definitions from './algorithm-v1.schema.json' with { type: 'json' }
+import v2Definitions from './algorithm-v2.schema.json' with { type: 'json' }
 import { GearError } from './errors.js'
 
 type Schema = {
@@ -15,11 +16,13 @@ type Schema = {
   maximum?: number
   exclusiveMinimum?: number
   maxLength?: number
+  minLength?: number
   pattern?: string
   maxItems?: number
+  minItems?: number
 }
-const defs = definitions.$defs as Record<string, Schema>
-export function validateAlgorithmWire(name: string, value: unknown): void {
+export function validateAlgorithmWire(name: string, value: unknown, version: 1 | 2 = 1): void {
+  const defs = (version === 2 ? v2Definitions : definitions).$defs as Record<string, Schema>
   const fail = (path: string): never => {
     throw new GearError('invalid-algorithm-message', `Invalid protocol value at ${path}`)
   }
@@ -51,6 +54,7 @@ export function validateAlgorithmWire(name: string, value: unknown): void {
     if (schema.type === 'string' && typeof item === 'string' && item.isWellFormed()) {
       if (
         (schema.maxLength !== undefined && [...item].length > schema.maxLength) ||
+        (version === 2 && schema.minLength !== undefined && [...item].length < schema.minLength) ||
         (schema.pattern !== undefined && !new RegExp(schema.pattern, 'u').test(item))
       )
         fail(path)
@@ -75,6 +79,7 @@ export function validateAlgorithmWire(name: string, value: unknown): void {
     }
     if (schema.type === 'array' && Array.isArray(item)) {
       if (schema.maxItems !== undefined && item.length > schema.maxItems) fail(path)
+      if (version === 2 && schema.minItems !== undefined && item.length < schema.minItems) fail(path)
       item.forEach((child, i) => check(schema.items!, child, `${path}[${i}]`))
       return
     }

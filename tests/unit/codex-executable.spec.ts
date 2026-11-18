@@ -44,8 +44,10 @@ for (const optional of [true, false]) for (const layout of ['bin', 'codex'] as c
 }
 
 it('binds the native binary and companion without allowing an entire npm directory', async () => {
-  const { native, link } = await installation(true, 'bin')
-  const config = { executable: link } as CodexConfiguration
+  const { native, link, root } = await installation(true, 'bin')
+  const hitch = join(root, 'hitch.mjs')
+  await writeFile(hitch, `#!${process.execPath}\nimport {metaHitchFixture} from ${JSON.stringify(new URL('../fixtures/meta-hitch.mjs', import.meta.url).href)};await metaHitchFixture({});`, { mode: 0o700 })
+  const config = { executable: link, hitch: { executable: hitch, root } } as CodexConfiguration
   const before = await describeCodex(config)
   expect(before.executable).toBe(native)
   expect(before.version).toBe('codex-cli 0.160.1')

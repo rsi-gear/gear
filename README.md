@@ -23,7 +23,23 @@
 
 Gear is an open-source optimization framework for improving AI agent performance on real-world tasks.
 
-To tailor an agent to a target scenario, first prepare a benchmark of representative tasks with clear success criteria. You can use an existing benchmark or [build your own task set](docs/guide/en/datasets.md). Run the [Refine Skill](skills/refine/SKILL.md) on that benchmark. Gear uses its evaluation results to iteratively improve the agent’s model, instructions, tools, and workflows.
+To tailor an agent to a target scenario, first prepare a benchmark of representative tasks with clear success criteria. You can use an existing benchmark or [build your own task set](docs/guide/en/datasets.md). Run an algorithm through the Python SDK or the [Refine Skill](skills/refine/SKILL.md). Gear uses task feedback to improve the agent’s instructions, tools, and workflows; model training has a separate experimental lifecycle.
+
+## Supported algorithms
+
+Complete, callable implementations are available from `gear.algorithms`. Their components can be replaced independently.
+
+| Algorithm | Current implementation |
+| --- | --- |
+| [GEPA](docs/guide/en/algorithms.md#gepa) | Staged candidate evaluation and selection: local → bridge → global. |
+| [RandomSearch](docs/guide/en/algorithms.md#randomsearch) | Random parent selection, exploratory proposals and full-task evaluation. |
+| [OPRO](docs/guide/en/algorithms.md#opro) | Iterative prompt optimization using scored history. |
+| [ACE](docs/guide/en/algorithms.md#ace) | Incremental playbook updates, evaluated before adoption. |
+| [RRSI](docs/guide/en/algorithms.md#rrsi) | Edit checks and a Meta critic screen proposals before task evaluation. |
+| [DarwinX](docs/guide/en/algorithms.md#darwinx) | Prompt optimization with additional fresh-sample confirmation. |
+| [Harness2](docs/guide/en/algorithms.md#harness2) | Continual learning from target outputs and trajectories, with scores hidden from the algorithm. |
+
+All seven have small-scale real-model execution coverage. See the [validation scope](docs/guide/en/algorithms.md#real-model-validation) for the ten-task experiment, supplemental evaluations and recovery checks. These implementations cover the listed mechanisms; paper reproduction and optimization gains require their own experiments.
 
 The two examples below compare Luna Max with a Gear-optimized harness against Astra Max with Codex on the same AutomationBench tasks. Follow their execution from reading source information and applying rules to delivering the final result.
 
@@ -75,6 +91,26 @@ On Marketing, Luna max with Gear achieved **88.88% objective completion**, compa
 
 ## Quick start
 
+### Python SDK
+
+Build the matching Gear source and prepare a project using the [quick start guide](docs/guide/en/quickstart.md). With a DSH project, benchmark, execution profiles and budgets configured:
+
+```python
+from gear import Project
+from gear.algorithms import OPRO
+
+project = Project.open("./my-benchmark")
+run = project.refine(
+    algorithm=OPRO(prompt_path="prompts/system.md"),
+    rounds=2,
+)
+print(run.id, run.report.summary)
+```
+
+Pi uses `AGENTS.md` for this prompt path. See [algorithm selection](docs/guide/en/algorithms.md), [component customization](docs/guide/en/example-algorithm.md) and [resuming a run](docs/guide/en/evolutions.md). The Python examples describe this source revision; use a package built from matching source.
+
+### Refine Skill
+
 Use Gear through its **Refine Skill** in Codex, Claude Code, DSH, or another compatible agent environment. Start with an existing benchmark or provide your own tasks in [Harbor format](docs/guide/en/datasets.md).
 
 For installation and dependency setup, see the [quick start guide](docs/guide/en/quickstart.md).
@@ -83,7 +119,7 @@ For installation and dependency setup, see the [quick start guide](docs/guide/en
 
 ```text
 Follow https://rsigear.xyz/docs/gear/quickstart to install Gear in my environment.
-Install rsi-gear@latest and agent-hitch@latest using npm and verify that all required dependencies are available.
+Install matching Gear and Hitch builds that support this guide's APIs and required Hitch capabilities, and verify all required dependencies.
 Install the complete Refine Skill bundled with Gear in my current agent environment and configure its connection to Gear.
 Use my actual task paths, target harness, and model settings; ask me for any missing information.
 Verify that the Refine Skill can connect to Gear, then report the verification result and explain how to start my first optimization run.
@@ -95,6 +131,8 @@ For manual installation, install Gear and [Hitch](https://github.com/rsi-gear/ag
 npm install --global rsi-gear@latest agent-hitch@latest @deepseek-ai/dsh@latest
 hitch eval setup harbor
 ```
+
+The source APIs documented here may be ahead of the npm release. For the seven algorithms, follow the source-build instructions and confirm Hitch's `isolated_agent_run: "1"` and `generation_budget: "1"` capabilities with `gear doctor`.
 
 Follow the [setup guide](docs/guide/en/quickstart.md) to install the bundled [Refine Skill](skills/refine/SKILL.md) in your agent environment and configure your benchmark. Then invoke `/refine` where supported, or submit the following request:
 
@@ -131,17 +169,18 @@ Optimization is limited to the components you authorize Gear to modify.
 
 ### Customizable algorithm components
 
-Gear's evolution loop follows **Diagnose → Evolve → Evaluate → Promote**. You can customize the following modules within these stages.
+Reusable operators live in `gear.core`, `gear.evaluation`, `gear.memory`, `gear.training` and `gear.search`; complete recipes live in `gear.algorithms`. For example, `ApplyEdits` and `CheckEdits` belong to `gear.core`. The six search strategy modules are:
 
-| Stage | Module | What you can customize |
-| --- | --- | --- |
-| Diagnose | Parent selection | Which eligible harness versions to use as parents and how many candidates to generate from each. |
-| Evolve | Proposal planning | How to use diagnostic feedback to plan candidate modifications. |
-| Evaluate | Task sampling | Which tasks to evaluate at each stage and how to weight their scores. |
-| Evaluate | Scoring rule | How to score task outcomes and combine evaluation metrics with configurable weights and constraints. |
-| Promote | Candidate ranking | How to compare candidates tested on the same tasks under matching evaluation conditions. |
+| Module | What you can customize |
+| --- | --- |
+| `search.parents` | Parent selection and candidate allocation. |
+| `search.sampling` | Task subsets, repetitions and weights. |
+| `search.proposal` | Diagnosis and candidate proposal planning. |
+| `search.ranking` | Candidate comparison over matching evaluation scopes. |
+| `search.stopping` | Search termination conditions. |
+| `search.workflow` | Stage order and strategy composition. |
 
-The runtime handles task execution, evidence storage, and final acceptance checks. See the [algorithm example](docs/guide/en/example-algorithm.md) and [Python component interfaces](python/gear/algorithms/__init__.py) to build on these components.
+Task rewards are defined by the benchmark/scorer; objectives aggregate the declared measurements and constraints. Python components define the algorithm, and the runtime coordinates execution, budgets, persistence and recovery. See the [customization tutorial](docs/guide/en/example-algorithm.md) and [operator author guide](docs/algorithm-operators.zh-CN.md).
 
 [Define a weighted objective](docs/guide/en/configuration.md#weighted-objectives-and-protected-tasks) to combine declared pass rate, process scores, cost or tokens while retaining the original measurements.
 

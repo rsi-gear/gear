@@ -1,5 +1,31 @@
 # Read a report
 
+## Algorithm and learning results
+
+```sh
+gear report RUN_ID --json
+```
+
+In Python, read `run.report.summary` or `project.report(run_id).summary`. Start with `status`, then check the algorithm's result and evidence completeness. A run with `status: completed` can still contain a failed algorithm outcome or invalid evaluations.
+
+| Field | What to check |
+| --- | --- |
+| `retained`, `nominee`, `gate`, `scores` | For scored search, which candidate was retained and whether final validation accepted the nominee |
+| `operators.outcome` | The terminal result of a composable algorithm; an explicit `status: failed` is not a successful experiment |
+| `operators.calls` | Operator keys, effects and statuses, including failures |
+| `operators.task_stream` | The admitted task order, completed tasks and whether the stream is complete |
+| `operators.library_publications` | Published learning-library versions and their call results |
+| `generation_budget` | Effective Meta policy, accounted/reserved upper bounds, unknown operations and remaining allowance |
+| `meta_recoveries`, `recovered_operation_ids` | Recovery amendments and original failed operations whose replacement chain later succeeded |
+
+The `operators` fields appear for composable algorithms; GEPA and RandomSearch retain their existing scored-search reports. Recovery fields appear only when a Meta recovery was recorded. The report's `plan` preserves admitted scope and uses the effective Meta limits after an amendment; it is not a remaining-budget view.
+
+Harness2's successful `operators.outcome` contains `library`, `outputs`, `iterations` and `rounds_per_task`. Check it together with the completed task stream and successful library publications. Its learned result is a library snapshot, so a retained candidate or champion alone does not describe the result. With private scoring, operator-visible scores do not imply that the learning algorithm received them.
+
+Recovery keeps the original failed calls and their usage. Use the recovery records to distinguish a repaired failure from an unresolved one; do not remove old failures or add reserved upper bounds to measured usage as if both were new consumption. The [recorded seven-algorithm validation](algorithms.md#real-model-validation) illustrates failure supplements and continuation of the original Harness2 run.
+
+## Evaluation evidence
+
 Terminal Hitch failures retain the upstream error in the operation result and the unchanged provider result in private receipt provenance. Already certified scores, including zero, remain valid; requested slots missing from that terminal result have `score: null` and `environment_failed`. Their attempt usage is conservatively charged at the reserved upper bound because execution may have occurred before evidence collection failed. Older exceptional results that omit dataset/candidate/artifact fields may use the matching frozen plan for identity validation; contradictory reported fields and incomplete successful results are still rejected. This does not change old journals or certify trials lacking image evidence.
 
 When Hitch advertises `verifier_evidence: "1"`, Gear freezes an independent verifier observation and checks its run, eval, trial, attempt, task reward and structured components. Python validates component weights/counts and projects failure-code hypotheses. Task `score` stays independent. Process values affect decisions only when explicitly declared in `metrics[].source.path` (for example `verifier.process.score`) and used by an objective or protection rule. Failure codes support investigation, not established root causes.
@@ -42,7 +68,7 @@ Native Codex uses a separate read-only socket for each operation, restricted to 
 
 `gear experience read RUN_ID REF --snapshot DIGEST --view modification-use` pages through changed-resource observations for candidate trials. Python sync/async `experience_read` accepts the same view. Cards contain status counts and `task-results` contains per-task summaries. The four statuses are `observed` (exact content read or injected), `attempted-failure` (a matching read failed), `not-observed` (a supported Skill was absent from complete listed sources), and `unknown` (insufficient evidence). Missing logs, unsupported code execution, mismatched content and removed files never establish absence.
 
-DSH/Hitch pins the native manifest digest at receipt capture. An independent Python reader verifies each listed main/child file's bytes, digest, session identity and parent relationship, rejecting symbolic links, hardlinks and special files. `gear.algorithms.modification_use` owns matching and classification; `gear.observations.hitch` owns file access. Coverage is only `listed-files-complete`, not a claim about unlisted sources. Canonical pages alone cannot establish this coverage. Pi and providers without supported native sources remain `unknown`.
+DSH/Hitch pins the native manifest digest at receipt capture. An independent Python reader verifies each listed main/child file's bytes, digest, session identity and parent relationship, rejecting symbolic links, hardlinks and special files. `gear.memory.modification_use` owns matching and classification; `gear.observations.hitch` owns file access. Coverage is only `listed-files-complete`, not a claim about unlisted sources. Canonical pages alone cannot establish this coverage. Pi and providers without supported native sources remain `unknown`.
 
 Uncached observations share a budget of 1024 source reads and 1 GiB of native logs per snapshot. Each source permits 16 files, 32 MiB per file, 64 MiB total and 8 MiB of retained matching inputs. Candidate resource content has a separate 8 MiB limit per candidate. Limits produce partial or unavailable coverage, never proof of absence. Complete verified observations are cached by candidate, changes, sources and implementation identity, surviving removal of the original logs. Partial/unavailable sources are retried in later snapshots; frozen snapshots stay unchanged.
 
@@ -70,7 +96,7 @@ local score is not a full-benchmark improvement.
 | `evidence_projections` | Read-only metric completion attempts, source references, requested channels, due times and blocked reasons |
 | `changes` | Verified initial-to-retained and initial-to-nominee resource differences, with candidate digests and file patches |
 | `usage` | Provider usage; null or missing does not mean zero |
-| `plan` | Refine's frozen admission scope, baseline reuse and applicable limits; not a live remaining-budget view |
+| `plan` | Admitted scope, baseline reuse and applicable limits, including effective Meta amendments; not a live remaining-budget view |
 | `baseline_reuse` | Source, proof digest, slots and historical usage; excluded from current usage and physical budget |
 | `research` | Verified independent seed archive, digest and object counts; read with `gear archive RUN_ID` |
 
@@ -107,7 +133,7 @@ The report verifies frozen resources and candidate identities without contacting
 
 Each score scope contains raw `metrics`, `objective.contributions`, `objective.constraintResults` and per-task `protection` outcomes. Declared independent assertions add per-task/repetition `assertions` detail and `assertion_protection` outcomes; a perfect task score can still violate an independent assertion. `scores.nominee` includes rejected candidates so a protection failure is visible even when the aggregate improved. Missing/invalid observations never shrink the fixed denominator. Scoring implementation identity is sealed; reading or resuming an old run requires its matching runtime.
 
-Coverage uses the current view of each logical slot after repair; original receipts remain in the journal and physical usage includes every execution attempt. Read-only projections can fill missing metrics without adding physical usage. `completed` means execution has ended, not that every slot or metric is valid. Check `coverage.invalid`, `evaluation_repairs.blocked`, `evidence_projections.blocked` and score completeness. Repair policy is frozen: changed configuration requires a new run, and resume cannot increase its original retry/projection allowance or budget.
+Coverage uses the current view of each logical slot after repair; original receipts remain in the journal and physical usage includes every execution attempt. Read-only projections can fill missing metrics without adding physical usage. `completed` means execution has ended, not that every slot or metric is valid. Check `coverage.invalid`, `evaluation_repairs.blocked`, `evidence_projections.blocked` and score completeness. Evaluation repair policy is frozen: resume cannot increase its retry/projection allowance or physical evaluation budget. An eligible read-only Meta failure has a separate [explicit budget amendment](evolutions.md#retry-a-settled-read-only-meta-failure).
 
 `gear cancel RUN_ID` records a cancellation request, then attempts to confirm that work has stopped. The CLI returns `cancellation: confirmed` only after confirmation. Background controllers return `requested` immediately and continue stopping work. A worker still holding the run lock can also leave the response as `requested`; inspect the report or retry cancellation. The run is `cancelled` only after providers confirm stopped work or a durable fence against starting it. `cancellation-unconfirmed` keeps the run in `needs_recovery`; resume retries cancellation without submitting new work. Unsettled reservations and unknown usage remain visible rather than being reset to zero.
 

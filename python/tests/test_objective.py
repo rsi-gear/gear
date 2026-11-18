@@ -1,9 +1,9 @@
 import unittest
 
-from gear.algorithms.contracts import Evidence, ParentInput, ParentOption, RankingInput
-from gear.algorithms.evidence import complete_scope_mean, task_scores
-from gear.algorithms.gepa.parents import frontier_options
-from gear.algorithms.projection import project_candidate
+from gear.evaluation.projection import project_candidate
+from gear.search.contracts_v1 import Evidence, ParentInput, ParentOption, RankingInput
+from gear.search.parents import frontier_options
+from gear.search.ranking import complete_scope_mean, task_scores
 
 
 def configuration():
@@ -90,9 +90,10 @@ class ObjectiveTests(unittest.TestCase):
     def test_champion_mixture_uses_comparable_constrained_objective_gains(self):
         from dataclasses import replace
 
-        from gear.algorithms import GEPA, AlgorithmState, Budget, Candidate, SearchView, Task
-        from gear.algorithms.gepa.parents import ScopedFrontier
+        from gear.algorithms import GEPA
         from gear.canonical import digest
+        from gear.search.contracts_v1 import AlgorithmState, Budget, Candidate, SearchView, Task
+        from gear.search.parents import ScopedFrontier
 
         seen = []
 

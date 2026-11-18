@@ -21,7 +21,11 @@ import type { ObjectiveProjector } from '../ports/objective.js'
 import { bindRawMetrics } from '../domain/objective-evidence.js'
 import { requireGenerationCapability, validateGenerationBudget } from '../domain/generation-budget.js'
 import { validateBaseline } from '../domain/baseline.js'
+import type { OperatorRuntime } from './operator-runtime.js'
+import { resumedTerminal, validateMetaRecoveries } from './operator-recovery.js'
+import { effectiveExecutionIdentity } from './execution-identity.js'
 import {
+  effectiveGenerationBudget,
   generationLedger,
   generationReceiptViolation,
   isGeneration,
@@ -36,6 +40,7 @@ export class DurableRunner {
     readonly provider: OperationProvider,
     readonly objective: ObjectiveProjector,
     readonly experience?: ExperiencePreparation,
+    readonly operators?: OperatorRuntime,
   ) {}
 
   async run(id: string, signal: AbortSignal): Promise<RunJournal> {
@@ -72,6 +77,7 @@ export class DurableRunner {
       try {
         // Decisions already committed are never recomputed, even after a worker crash.
         await this.drain(journal, signal)
+        if (journal.operators) await this.settleOperatorCalls(journal, signal)
         if (journal.spec.kind === 'evaluate') {
           journal.status = 'completed'
           await this.store.write(journal)
@@ -80,16 +86,46 @@ export class DurableRunner {
         while (journal.status === 'running') {
           await this.checkOwner(journal, signal)
           if (journal.nomineeId) {
+            if (journal.operators) await this.ensureOperatorGate(journal, signal)
             await this.finalize(journal, signal)
             break
           }
-          if (journal.decisions.at(-1)?.decision.operations[0]?.kind === 'stop') {
+          if (
+            journal.decisions.at(-1)?.decision.operations[0]?.kind === 'stop' ||
+            (journal.operators?.decisions.at(-1)?.decision.terminal?.kind === 'stop' &&
+              !resumedTerminal(journal, journal.operators.decisions.at(-1)!.stepId))
+          ) {
             journal.status = 'completed'
             await this.store.write(journal)
             break
           }
-          if (journal.decisions.length >= 10_000)
+          if ((journal.operators?.decisions.length ?? journal.decisions.length) >= 10_000)
             throw new GearError('algorithm-step-limit', 'Run exhausted its durable decision step limit')
+          if (journal.operators) {
+            await this.operators!.prepareView(journal, async () => {
+              await this.checkOwner(journal, signal)
+              await this.store.write(journal)
+            })
+            const view = this.operators!.view(journal)
+            const decision = await this.algorithm.stepV2!(
+              view,
+              structuredClone(journal.operators.state),
+              journal.spec.algorithm,
+              signal,
+            )
+            await this.checkOwner(journal, signal)
+            const reservation = await this.operators!.reserve(journal, view, decision, signal)
+            this.checkBudget(journal, reservation.operations)
+            await this.checkOwner(journal, signal)
+            journal.operators = reservation.operators
+            journal.operations.push(...reservation.operations)
+            if (decision.terminal?.kind === 'nominate')
+              journal.nomineeId = decision.terminal.candidate.candidate_id
+            await this.store.write(journal)
+            await this.drain(journal, signal)
+            await this.settleOperatorCalls(journal, signal)
+            continue
+          }
           const view = this.view(journal)
           const decision = await this.algorithm.step(
             view,
@@ -165,10 +201,20 @@ export class DurableRunner {
   }
 
   private admit(journal: RunJournal): void {
+    if (journal.spec.algorithm.protocol_version === 2) {
+      if (!this.operators || !this.algorithm.stepV2)
+        throw new GearError('operator-runtime-required', 'v2 requires an operator runtime and driver')
+      this.operators.admit(journal)
+    } else if (journal.operators || journal.spec.operatorPolicy)
+      throw new GearError('operator-protocol-mismatch', 'v1 cannot execute a v2 journal')
     validateBaseline(journal.spec)
-    validateGenerationBudget(journal.spec.generationBudget)
+    validateMetaRecoveries(journal)
+    validateGenerationBudget(effectiveGenerationBudget(journal))
     if (journal.spec.kind === 'refine')
-      requireGenerationCapability(journal.spec.generationBudget, this.provider.capabilities.generationBudget)
+      requireGenerationCapability(
+        effectiveGenerationBudget(journal),
+        this.provider.capabilities.generationBudget,
+      )
     if (!journal.spec.evaluationRepair)
       throw new GearError(
         'frozen-repair-policy-missing',
@@ -182,7 +228,7 @@ export class DurableRunner {
         'objective-identity-mismatch',
         'Frozen objective implementation changed; use the matching runtime',
       )
-    if (spec.providerIdentity !== this.provider.identity)
+    if (effectiveExecutionIdentity(journal).provider !== this.provider.identity)
       throw new GearError(
         'provider-identity-mismatch',
         'Provider implementation or execution conditions changed',
@@ -599,7 +645,8 @@ export class DurableRunner {
         bindRawMetrics(
           cell,
           journal.spec,
-          journal.candidates.find((candidate) => candidate.id === cell.candidate_id)!.digest,
+          request.executionTarget?.digest ??
+            journal.candidates.find((candidate) => candidate.id === cell.candidate_id)!.digest,
         ),
       ),
     }
@@ -610,9 +657,12 @@ export class DurableRunner {
     operation.receipt = receipt
     journal.physicalAttempts += receipt.physicalAttempts
     if (receipt.candidate) journal.candidates.push(receipt.candidate)
-    if (request.partition === 'seed') journal.seedEvidence = merged
-    else journal.heldOutEvidence = merged
-    if (request.partition === 'seed') journal.completed.push(receipt.result)
+    if (!request.operatorSamples) {
+      if (request.partition === 'seed') journal.seedEvidence = merged
+      else journal.heldOutEvidence = merged
+    }
+    if (request.partition === 'seed' && !request.operatorCall && !request.operatorSamples)
+      journal.completed.push(receipt.result)
     await this.store.write(journal)
   }
 
@@ -678,6 +728,49 @@ export class DurableRunner {
     }
     journal.status = 'completed'
     await this.store.write(journal)
+  }
+
+  private async settleOperatorCalls(journal: RunJournal, signal: AbortSignal): Promise<void> {
+    await this.operators!.settle(
+      journal,
+      async () => {
+        await this.checkOwner(journal, signal)
+        await this.store.write(journal)
+      },
+      signal,
+    )
+  }
+
+  private async ensureOperatorGate(journal: RunJournal, signal: AbortSignal): Promise<void> {
+    if (
+      !journal.operations.some(
+        (item) =>
+          item.request.partition === 'seed' &&
+          !item.request.operatorSamples &&
+          item.request.operation.kind === 'evaluate_seed',
+      )
+    ) {
+      const operations = [...new Set([journal.spec.anchor.id, journal.nomineeId!])].map((candidate) =>
+        this.reserve(
+          journal,
+          {
+            kind: 'evaluate_seed',
+            candidate_id: candidate,
+            parent_id: null,
+            task_ids: journal.spec.seedTasks.map((task) => task.id),
+            scope: 'global',
+            rationale: 'Frozen final seed gate',
+            payload: null,
+          },
+          `gate:seed:${candidate}`,
+          'seed',
+        ),
+      )
+      this.checkBudget(journal, operations)
+      journal.operations.push(...operations)
+      await this.store.write(journal)
+    }
+    await this.drain(journal, signal)
   }
 
   private compare(journal: RunJournal, partition: 'seed' | 'held_out', candidate: string) {

@@ -22,7 +22,7 @@ try {
   const wheelSource = join(root, 'wheel-source'); mkdirSync(wheelSource)
   for (const name of ['pyproject.toml', 'setup.py', 'gear']) cpSync(join(source, 'python', name), join(wheelSource, name), { recursive: true })
   // A removed module must not survive setuptools' incremental build directory.
-  for (const name of ['gear_training/obsolete.py', 'gear/training/cli/launch.py', 'gear/training/cli/inference.py', 'gear/training/inference/inference_process.py', 'gear/training/inference/inference_attach.py', 'gear/training/inference/inference_recovery.py', 'gear/training/cli/__main__.py', 'gear/algorithms/history.py', 'gear/algorithms/gates.py', 'gear/algorithms/observations.py', 'gear/algorithms/_retired/__init__.py']) {
+  for (const name of ['gear_training/obsolete.py', 'gear/training/cli/launch.py', 'gear/training/cli/inference.py', 'gear/training/inference/inference_process.py', 'gear/training/inference/inference_attach.py', 'gear/training/inference/inference_recovery.py', 'gear/training/cli/__main__.py', 'gear/algorithms/contracts.py', 'gear/ops/__init__.py', 'gear/algorithms/gepa/__init__.py', 'gear/algorithms/gepa/algorithm.py', 'gear/algorithms/random_search/__init__.py', 'gear/algorithms/history.py', 'gear/algorithms/gates.py', 'gear/algorithms/observations.py', 'gear/algorithms/_retired/__init__.py']) {
     const path = join(wheelSource, 'build/lib', name)
     mkdirSync(join(path, '..'), { recursive: true }); writeFileSync(path, 'raise RuntimeError("retired module leaked into wheel")\n')
   }
@@ -30,8 +30,18 @@ try {
   const environment = join(root, 'python'); run(python, ['-m', 'venv', environment])
   const isolatedPython = join(environment, 'bin/python')
   run(isolatedPython, ['-m', 'pip', 'install', join(wheels, readdirSync(wheels).find(name => name.endsWith('.whl')))])
-  run(isolatedPython, ['-c', 'import sys;import gear;import gear.training;import gear.benchmark.probe;import importlib;import importlib.util;assert all(importlib.util.find_spec(name) is None for name in ("gear_training","gear.training.cli.launch","gear.training.cli.__main__","gear.training.cli.inference","gear.training.inference.inference_process","gear.training.inference.inference_attach","gear.training.inference.inference_recovery","gear.algorithms.history","gear.algorithms.gates","gear.algorithms.observations","gear.algorithms._retired","retired_policies"));[importlib.import_module("gear.training.cli."+name) for name in ("controller","job","node","script_job","certify","slime","gpu_inventory")];assert not any(n in sys.modules for n in ("torch","slime","transformers","aiohttp"));from gear.algorithms import GEPA;from gear.algorithms.testkit import toy_round;assert toy_round(GEPA())["status"] == "passed"'], { cwd: root, env: { ...process.env, PYTHONPATH: '' } })
+  run(isolatedPython, ['-c', 'import sys;import gear;import gear.training;import gear.benchmark.probe;import importlib;import importlib.util;assert all(importlib.util.find_spec(name) is None for name in ("gear_training","gear.training.cli.launch","gear.training.cli.__main__","gear.training.cli.inference","gear.training.inference.inference_process","gear.training.inference.inference_attach","gear.training.inference.inference_recovery","gear.algorithms.contracts","gear.ops","gear.algorithms.history","gear.algorithms.gates","gear.algorithms.observations","gear.algorithms._retired","retired_policies"));[importlib.import_module("gear.training.cli."+name) for name in ("controller","job","node","script_job","certify","slime","gpu_inventory")];assert not any(n in sys.modules for n in ("torch","slime","transformers","aiohttp"));from gear.algorithms import GEPA,RandomSearch,OPRO,ACE,RRSI,DarwinX,Harness2;assert not hasattr(importlib.import_module("gear.algorithms.gepa"),"__path__");assert not hasattr(importlib.import_module("gear.algorithms.random_search"),"__path__");assert all(callable(cls().step) for cls in (GEPA,RandomSearch,OPRO,ACE,RRSI,DarwinX,Harness2));from gear.search.testkit import toy_round;assert toy_round(GEPA())["status"] == "passed"'], { cwd: root, env: { ...process.env, PYTHONPATH: '' } })
   note('Installed Python terminal errors preserve warning diagnostics and reject log JSON')
+  note('Installed callable operators construct requests and exact edits without Node or Hitch')
+  run(isolatedPython, ['-c', `from gear.core import ApplyEdits, ApplyInput, EditPlan, FileEdit, FileContent, Meta, MetaInput, CandidateRef, Call, clone
+from gear.core.testing import check_operator
+from gear.canonical import digest
+value=ApplyInput({}, EditPlan((FileEdit('create', 'prompt.txt', None, FileContent('frozen prompt')),)))
+assert check_operator(ApplyEdits(), value)['status']=='passed'
+meta=Meta('inspect', {'type':'object'})
+call=clone(meta)(MetaInput(CandidateRef('run','anchor',digest('anchor')), ('task',)), key='inspect')
+assert isinstance(call, Call) and call.effect['kind']=='meta'
+`], { cwd: root, env: { ...process.env, PYTHONPATH: '' } })
   run(isolatedPython, ['-c', `from gear import ProjectError
 raw=b'warning'+bytes([10])+b'{"code":"provider-environment-unavailable","message":"unavailable"}'+bytes([10])
 error=ProjectError.from_stderr(raw)
@@ -156,6 +166,19 @@ assert ProjectError("local-error","local").stderr is None
   // Exercise every public policy bridge using the setup selection, with no override.
   env.GEAR_PYTHON = ''
   env.GEAR_TRAINING_TEST_PYTHON = ''
+  note('Installed ACE through Python SDK, frozen npm worker and durable executor')
+  const operatorProject = join(root, 'operator-project')
+  gear(root, ['init', operatorProject, '--target', 'pi', '--template', 'text'])
+  const operatorRun = JSON.parse(run(isolatedPython, ['-c', 'import json; from gear import Project; from gear.algorithms import ACE; print(json.dumps(Project.open().refine(algorithm=ACE(), rounds=1).report.summary))'],
+    { cwd: operatorProject, env: { ...env, GEAR_COMMAND: JSON.stringify([process.execPath, cli]) } }))
+  assert.equal(operatorRun.status, 'completed')
+  const operatorJournal = JSON.parse(readFileSync(join(operatorProject, '.gear/runs', operatorRun.run_id, 'journal.json'), 'utf8'))
+  assert.equal(operatorJournal.spec.algorithm.protocol_version, 2)
+  assert.equal(operatorJournal.operators.calls.every(call => call.result?.status === 'succeeded'), true)
+  assert.equal(operatorJournal.operators.state.data.round, 1)
+  assert.equal(operatorJournal.candidates.length, 2)
+  assert.equal(operatorJournal.operations.some(item => item.request.operatorCall?.effect.kind === 'meta'), true)
+  assert.equal(gear(operatorProject, ['resume', operatorRun.run_id]).status, 'completed')
   for (const target of ['dsh', 'pi']) {
     note('Installed package journey: ' + target)
     const project = join(root, target)
@@ -180,7 +203,7 @@ assert ProjectError("local-error","local").stderr is None
       { cwd: project, env: { ...env, GEAR_COMMAND: JSON.stringify([process.execPath, cli]) } }))
     assert.deepEqual(sdkPlan, plan)
     assert.deepEqual(readdirSync(join(project, '.gear/runs')).sort(), priorRuns)
-    writeFileSync(join(project, 'custom_policy.py'), `from gear.algorithms import ParentPlan
+    writeFileSync(join(project, 'custom_policy.py'), `from gear.search.contracts_v1 import ParentPlan
 def select_parent(view, rng):
     if not view.eligible:
         return ParentPlan.abstain('empty')
@@ -188,7 +211,7 @@ def select_parent(view, rng):
 select_parent.package_dependencies = ('psutil',)
 `)
     const refined = target === 'dsh' ? gear(project, ['refine', '--rounds', '1'])
-      : JSON.parse(run(isolatedPython, ['-c', "import json;from gear import Project;from gear.algorithms import GEPA;from custom_policy import select_parent;from gear.algorithms.testkit import test_parent_policy;assert test_parent_policy(select_parent)['status']=='passed';print(json.dumps(Project.open().refine(algorithm=GEPA(parent_policy=select_parent),rounds=1).report.summary))"],
+      : JSON.parse(run(isolatedPython, ['-c', "import json;from gear import Project;from gear.algorithms import GEPA;from custom_policy import select_parent;from gear.search.testkit import test_parent_policy;assert test_parent_policy(select_parent)['status']=='passed';print(json.dumps(Project.open().refine(algorithm=GEPA(parent_policy=select_parent),rounds=1).report.summary))"],
         { cwd: project, env: { ...env, GEAR_COMMAND: JSON.stringify([process.execPath, cli]) } }))
     assert.equal(refined.status, 'completed'); assert.equal(refined.gate.status, 'accepted')
     assert.equal(refined.generation_budget.scope, 'diagnosis-and-generation')

@@ -21,6 +21,8 @@ import { failureData, hitchEvaluationFailure, type HitchEvaluationFailure } from
 import { OrderedHitchControl, hitchOperationPath } from './control.js'
 import { findExecutable } from '../process/executable.js'
 import { HitchArtifactReader } from './trajectory.js'
+import { HitchOperatorArtifacts } from './operator-artifacts.js'
+import type { OperatorArtifact } from '../../domain/operator-run.js'
 import { captureVerifiers, verifyVerifierExtension, type VerifierCapture } from './verifier.js'
 import { assertHitchExecutionConditions } from './conditions.js'
 import {
@@ -168,7 +170,9 @@ export class HitchOperationProvider implements OperationProvider {
       taskRuntime: 'harbor' as const,
     }
   }
-  readonly capabilities = hitchCapabilities
+  get capabilities() {
+    return { ...hitchCapabilities, blindProjection: this.operatorArtifactsEnabled, targetAssets: true }
+  }
   private constructor(
     readonly profile: HitchProfile & HitchSettings,
     readonly context: HitchProviderContext,
@@ -180,6 +184,7 @@ export class HitchOperationProvider implements OperationProvider {
     readonly executionEnvironment: Awaited<ReturnType<typeof observeEvaluationEnvironment>>,
     readonly trajectoryEnabled: boolean,
     readonly verifierEnabled: boolean,
+    readonly operatorArtifactsEnabled: boolean,
   ) {}
   static async connect(
     input: HitchProfile,
@@ -254,10 +259,29 @@ export class HitchOperationProvider implements OperationProvider {
       executionEnvironment,
       capabilities.trajectory_events_page === '1',
       capabilities.verifier_evidence === '1',
+      capabilities.trajectory_events_page === '1' && capabilities.run_output_artifacts === '1',
     )
   }
   private call(args: string[], signal: AbortSignal, timeoutMs?: number) {
     return hitchJson(this.profile.executable, this.profile.root, args, signal, timeoutMs)
+  }
+  private operatorArtifacts() {
+    if (!this.operatorArtifactsEnabled)
+      throw new GearError(
+        'operator-capability-unsupported',
+        'Hitch requires target trajectory and output artifact protocols',
+      )
+    return new HitchOperatorArtifacts(
+      (args, signal) => this.call(args, signal),
+      join(this.context.directory, 'operator-artifacts'),
+      this.revisionIdentity,
+    )
+  }
+  captureExecutions(request: OperationRequest, receipt: OperationReceipt, signal: AbortSignal) {
+    return this.operatorArtifacts().capture(request, receipt, signal)
+  }
+  readExecutionArtifact(artifact: OperatorArtifact, path: string | null, signal: AbortSignal) {
+    return this.operatorArtifacts().read(artifact, path, signal)
   }
   private path(request: Pick<OperationRequest, 'operationId'>) {
     return hitchOperationPath(this.context.directory, request.operationId)
@@ -510,7 +534,7 @@ export class HitchOperationProvider implements OperationProvider {
         if (!this.context.adapter.materialize)
           throw new GearError('target-execution-unsupported', 'Target cannot materialize a task environment')
         const carrier = await this.context.adapter.materialize(
-          join(this.context.targets, request.operation.candidate_id),
+          join(this.context.targets, request.executionTarget?.id ?? request.operation.candidate_id),
           environment,
         )
         await appendFile(join(dataset, taskId, main.dockerfile), `\n${carrier.dockerfile}`)

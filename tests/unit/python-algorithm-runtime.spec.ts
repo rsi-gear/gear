@@ -16,7 +16,7 @@ afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, {
 const python = process.env.GEAR_TRAINING_TEST_PYTHON ?? 'python3'
 const driver: AlgorithmDriver = { async step(view, state, algorithm) {
   // Pure offline conformance adapter. Production only uses the sandbox worker.
-  return JSON.parse(execFileSync(python, ['-c', 'import sys,json;from dataclasses import asdict;from gear.refine.worker import decode_view,make_algorithm;from gear.algorithms import AlgorithmState;v=json.load(sys.stdin);print(json.dumps(asdict(make_algorithm(v["algorithm"]).step(decode_view(v["view"]),AlgorithmState(**v["state"])))))'],
+  return JSON.parse(execFileSync(python, ['-c', 'import sys,json;from dataclasses import asdict;from gear.refine.worker import decode_view,make_algorithm;from gear.search.contracts_v1 import AlgorithmState;v=json.load(sys.stdin);print(json.dumps(asdict(make_algorithm(v["algorithm"]).step(decode_view(v["view"]),AlgorithmState(**v["state"])))))'],
     { input: JSON.stringify({ view, state, algorithm }), env: { ...process.env, PYTHONPATH: resolve('python') }, encoding: 'utf8' }))
 } }
 class FakeProvider implements OperationProvider {

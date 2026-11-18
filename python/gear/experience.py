@@ -13,8 +13,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from gear.algorithms.experience import experience_query, experience_read, experience_read_plan
 from gear.experience_store import ExperienceStore
+from gear.memory.experience import experience_query, experience_read, experience_read_plan
 
 
 def main() -> int:

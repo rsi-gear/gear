@@ -7,8 +7,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from gear.algorithms.modification_use import modification_observations, trial_use
 from gear.canonical import digest
+from gear.memory.modification_use import modification_observations, trial_use
 from gear.observations.hitch import (
     MAIN,
     NativeReader,

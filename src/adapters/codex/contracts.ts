@@ -4,8 +4,7 @@ import { validateAlgorithmWire } from '../../domain/algorithm-schema.js'
 import type { OperationRequest, ProviderCapabilities } from '../../ports/operations.js'
 import type { ArtifactReaderDescriptor } from '../../domain/trajectory.js'
 
-// Proxy values stay in the trusted worker; the sandbox exposes only its own
-// filtered proxy endpoints to Codex. Profiles opt in by variable name.
+// Credentials stay in Hitch; the model receives only a per-run gateway endpoint.
 export const codexCredentialEnvNames: readonly string[] = ['CODEX_API_KEY', 'OPENAI_API_KEY']
 export const codexPassEnvNames: readonly string[] = [
   ...codexCredentialEnvNames,
@@ -15,6 +14,7 @@ export const codexPassEnvNames: readonly string[] = [
 ]
 
 export interface CodexConfiguration {
+  hitch?: { executable: string; root: string }
   executable: string
   model: string
   allowedDomains: string[]
@@ -57,7 +57,8 @@ export const capabilities: ProviderCapabilities = {
   physicalAttemptAccounting: true,
   evidenceProjection: false,
   hardDollarBudget: false,
-  generationBudget: false,
+  generationBudget: true,
+  operatorMeta: true,
 }
 export function configuration(input: unknown): CodexConfiguration {
   const value = input as CodexConfiguration
@@ -75,8 +76,17 @@ export function configuration(input: unknown): CodexConfiguration {
           'authHome',
           'reasoningEffort',
           'linuxIsolation',
+          'hitch',
         ].includes(key),
     ) ||
+    (value.hitch !== undefined &&
+      (!value.hitch ||
+        typeof value.hitch !== 'object' ||
+        Object.keys(value.hitch).some((key) => !['executable', 'root'].includes(key)) ||
+        typeof value.hitch.executable !== 'string' ||
+        !isAbsolute(value.hitch.executable) ||
+        typeof value.hitch.root !== 'string' ||
+        !isAbsolute(value.hitch.root))) ||
     typeof value.executable !== 'string' ||
     !isAbsolute(value.executable) ||
     typeof value.model !== 'string' ||
@@ -142,11 +152,20 @@ export function validateInput(input: unknown): CodexInput {
     throw new GearError('codex-identity-required', 'Operations must bind the provider handshake identity')
   if (value.action === 'prepare_admission') return value
   const request = value.request
-  if (value.action === 'submit' && request?.generationLimits !== undefined)
-    throw new GearError(
-      'generation-budget-unsupported',
-      'Codex CLI cannot enforce aggregate token/request limits',
+  if (request?.generationLimits !== undefined) {
+    const limits = request.generationLimits
+    if (
+      !limits ||
+      typeof limits !== 'object' ||
+      Array.isArray(limits) ||
+      !Object.keys(limits).length ||
+      Object.entries(limits).some(
+        ([key, limit]) =>
+          !['tokens', 'model_requests'].includes(key) || !Number.isSafeInteger(limit) || limit < 1,
+      )
     )
+      throw new GearError('invalid-generation-reservation', 'Invalid Codex generation allowance')
+  }
   if (
     !request ||
     !/^sha256:[a-f0-9]{64}$/u.test(request.operationId) ||
@@ -158,6 +177,30 @@ export function validateInput(input: unknown): CodexInput {
   )
     throw new GearError('codex-request-invalid', 'Meta accepts only bound seed operations')
   validateAlgorithmWire('Operation', request.operation)
+  if (request.operatorCall) {
+    if (request.operatorCall.version !== 2)
+      throw new GearError('codex-operator-version', 'Expected v2 Meta binding')
+    validateAlgorithmWire('EffectRequest', request.operatorCall.effect, 2)
+    const effect = request.operatorCall.effect
+    if (effect.kind !== 'meta' && (effect.kind !== 'candidate' || effect.input.mode !== 'model'))
+      throw new GearError('codex-operator-effect', 'Codex only executes model effects')
+    const input = effect.input
+    if (
+      'max_tokens' in input &&
+      input.max_tokens !== null &&
+      (request.generationLimits?.tokens === undefined || request.generationLimits.tokens > input.max_tokens)
+    )
+      throw new GearError(
+        'invalid-generation-reservation',
+        'Per-call token limit must be included in the frozen generation allowance',
+      )
+    if (
+      request.operation.kind !== (effect.kind === 'meta' ? 'diagnose_seed' : 'generate_candidate') ||
+      !('task_ids' in input) ||
+      JSON.stringify(request.operation.task_ids) !== JSON.stringify(input.task_ids)
+    )
+      throw new GearError('codex-operator-binding', 'Meta binding differs from its operation')
+  }
   const operation = request.operation
   if (
     !['diagnose_seed', 'generate_candidate'].includes(operation.kind) ||

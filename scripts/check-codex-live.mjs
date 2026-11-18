@@ -13,7 +13,9 @@ const { canonicalDigest } = await api('domain/canonical.js')
 const { targetResources } = await api('adapters/storage/targets.js')
 const executable = process.env.GEAR_TEST_CODEX, model = process.env.GEAR_TEST_CODEX_MODEL
 const authHome = process.env.GEAR_TEST_CODEX_AUTH_HOME
-assert(executable && model && authHome, 'Set GEAR_TEST_CODEX, GEAR_TEST_CODEX_MODEL and GEAR_TEST_CODEX_AUTH_HOME')
+const hitchExecutable = process.env.GEAR_TEST_HITCH, hitchRoot = process.env.GEAR_TEST_HITCH_ROOT
+assert(executable && model && authHome && hitchExecutable && hitchRoot, 'Set GEAR_TEST_CODEX, GEAR_TEST_CODEX_MODEL, GEAR_TEST_CODEX_AUTH_HOME, GEAR_TEST_HITCH and GEAR_TEST_HITCH_ROOT')
+const generationLimits = JSON.parse(process.env.GEAR_TEST_META_LIMITS ?? '{"model_requests":8,"tokens":100000}')
 const adapters = (process.env.GEAR_TEST_LIVE_ADAPTERS ?? 'dsh,pi').split(',')
 assert(adapters.length && adapters.every(id => ['dsh', 'pi'].includes(id)))
 const output = process.env.GEAR_TEST_LIVE_OUTPUT
@@ -24,6 +26,7 @@ const root = await realpath(output)
 console.log('Live Meta evidence: ' + root)
 const profile = processProfile({ kind: 'codex', passEnv: [], configuration: {
   executable, model, authHome, reasoningEffort: 'low', timeoutMs: 180000,
+  hitch: { executable: hitchExecutable, root: hitchRoot },
   allowedDomains: ['api.openai.com', 'chatgpt.com', 'auth.openai.com'],
 } })
 const report = { model, source: 'external-model', evidence: 'synthetic-seed-feedback', operations: [] }
@@ -36,7 +39,7 @@ for (const id of adapters) {
     tasks: [{ id: 'seed', instruction: 'Write the integer 42 with one trailing newline to /app/answer.txt.', family: 'format' }] }
   const provider = await ProcessOperationProvider.connect(profile, context)
   await provider.prepareAdmission()
-  const request = { operationId: canonicalDigest({ test: 'live-meta', id, model }), runId: context.runId, generation: 1,
+  const request = { operationId: canonicalDigest({ test: 'live-meta', id, model, generationLimits }), runId: context.runId, generation: 1, generationLimits,
     operation: { kind: 'generate_candidate', candidate_id: 'candidate', parent_id: 'anchor', task_ids: ['seed'], scope: 'global',
       rationale: 'Make output-file creation reliable', payload: { hypothesis: 'Before finalizing, verify the requested output file exists and has the requested format.' } },
     partition: 'seed', repetitions: 0, slots: [], evidence: [{ candidate_id: 'anchor', task_id: 'seed', repetition: 0,
@@ -52,6 +55,9 @@ for (const id of adapters) {
     }
     await writeFile(join(root, id, 'receipt.json'), JSON.stringify(receipt, null, 2) + '\n', { mode: 0o600 })
     assert.equal(receipt.result.status, 'complete', 'Meta generation failed; inspect private operation diagnostics')
+    assert.equal(receipt.provenance.provider, 'hitch')
+    assert(receipt.usage.model_requests > 0 && receipt.usage.model_requests <= generationLimits.model_requests)
+    assert(receipt.usage.tokens > 0 && receipt.usage.tokens <= generationLimits.tokens)
     assert(receipt.candidate && receipt.result.data.declined === false, 'Model declined the controlled generation task')
     await harness.check(join(targets, 'candidate'))
     assert.notEqual(canonicalDigest(await targetResources(join(targets, 'candidate'))),

@@ -23,6 +23,8 @@ import type {
   WorkerRequest,
   WorkerResponse,
 } from '../../domain/algorithm-wire.js'
+import type * as V2 from '../../domain/algorithm-wire-v2.js'
+import type { ScreeningProjection, ScreeningVerdict } from '../../domain/operator-run.js'
 
 // Includes the UTF-8 JSON envelope and trailing newline; keep Python protocol.py in sync.
 export const MAX_ALGORITHM_MESSAGE_BYTES = 64 * 1024 * 1024
@@ -49,6 +51,7 @@ export interface PythonWorkerOptions {
   timeoutMs?: number
   protectedPaths?: string[]
   linuxIsolation?: LinuxSandboxIsolation
+  protocolVersion?: 1 | 2
 }
 
 /** No unsandboxed production fallback. The pure toy kit runs directly in Python. */
@@ -59,9 +62,13 @@ export class PythonAlgorithmWorker {
   private responseChunks: Buffer[] = []
   private responseBytes = 0
   private pending:
-    { request: WorkerRequest; resolve(value: Json): void; reject(error: Error): void } | undefined
+    | { request: WorkerRequest | V2.WorkerRequest; resolve(value: Json): void; reject(error: Error): void }
+    | undefined
   private failure: Error | undefined
   private closed: Promise<void> | undefined
+  private killRequested = false
+  private exited = false
+  private cleanupFailure: Error | undefined
   constructor(readonly options: PythonWorkerOptions) {}
 
   async start(signal: AbortSignal): Promise<void> {
@@ -119,7 +126,12 @@ export class PythonAlgorithmWorker {
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       })
-      this.closed = new Promise((resolve) => this.child!.once('close', () => resolve()))
+      this.closed = new Promise((resolve) =>
+        this.child!.once('close', () => {
+          this.exited = true
+          resolve()
+        }),
+      )
       this.child.stdout.on('data', (chunk: Buffer) => this.onData(chunk))
       this.child.stderr.on('data', (chunk) => {
         this.stderr = (this.stderr + chunk).slice(-2000)
@@ -145,11 +157,14 @@ export class PythonAlgorithmWorker {
         !handshake ||
         typeof handshake !== 'object' ||
         Array.isArray(handshake) ||
-        handshake.protocol_version !== 1 ||
+        handshake.protocol_version !== (this.options.protocolVersion ?? 1) ||
         handshake.implementation_identity !== this.options.implementationIdentity ||
         handshake.max_message_bytes !== MAX_ALGORITHM_MESSAGE_BYTES ||
-        JSON.stringify(handshake.operations) !==
-          JSON.stringify(['diagnose_seed', 'generate_candidate', 'evaluate_seed', 'nominate', 'stop'])
+        (this.options.protocolVersion === 2
+          ? JSON.stringify(handshake.effects) !==
+            JSON.stringify(['meta', 'candidate', 'read', 'execute', 'score', 'library', 'stream'])
+          : JSON.stringify(handshake.operations) !==
+            JSON.stringify(['diagnose_seed', 'generate_candidate', 'evaluate_seed', 'nominate', 'stop']))
       ) {
         throw new GearError(
           'algorithm-handshake-mismatch',
@@ -168,6 +183,8 @@ export class PythonAlgorithmWorker {
     algorithm: AlgorithmConfig,
     signal: AbortSignal,
   ): Promise<Decision> {
+    if (this.options.protocolVersion === 2 || algorithm.protocol_version === 2)
+      throw new GearError('algorithm-protocol-mismatch', 'v2 requires the v2 decision boundary')
     validateAlgorithmWire('SearchView', view)
     validateAlgorithmWire('AlgorithmState', state)
     const result = await this.request(
@@ -181,8 +198,47 @@ export class PythonAlgorithmWorker {
     return result as unknown as Decision
   }
 
+  async stepV2(
+    view: V2.SearchView,
+    state: V2.AlgorithmState,
+    algorithm: AlgorithmConfig,
+    signal: AbortSignal,
+  ): Promise<V2.Decision> {
+    if (this.options.protocolVersion !== 2 || algorithm.protocol_version !== 2)
+      throw new GearError('algorithm-protocol-mismatch', 'v2 requires matching admission and worker versions')
+    validateAlgorithmWire('SearchView', view, 2)
+    validateAlgorithmWire('AlgorithmState', state, 2)
+    const result = await this.request(
+      'step',
+      view.run_id,
+      view.step_id,
+      { view, state, algorithm } as unknown as Json,
+      signal,
+    )
+    validateAlgorithmWire('Decision', result, 2)
+    return result as unknown as V2.Decision
+  }
+
+  async screen(input: ScreeningProjection, signal: AbortSignal): Promise<ScreeningVerdict> {
+    if (this.options.protocolVersion !== 2 || input.algorithm.protocol_version !== 2)
+      throw new GearError('algorithm-protocol-mismatch', 'Independent screening requires v2')
+    const result = await this.request('screen', input.candidate.run_id, 0, input as unknown as Json, signal)
+    if (
+      !result ||
+      typeof result !== 'object' ||
+      Array.isArray(result) ||
+      Object.keys(result).sort().join(',') !== 'reason,status' ||
+      !['allow', 'reject', 'insufficient_evidence'].includes(String(result.status)) ||
+      typeof result.reason !== 'string' ||
+      !result.reason.trim() ||
+      result.reason.length > 4096
+    )
+      throw new GearError('invalid-screening-verdict', 'Frozen predicate returned an invalid verdict')
+    return result as unknown as ScreeningVerdict
+  }
+
   private async request(
-    method: WorkerRequest['method'],
+    method: WorkerRequest['method'] | V2.WorkerRequest['method'],
     runId: string,
     stepId: number,
     payload: Json,
@@ -192,15 +248,15 @@ export class PythonAlgorithmWorker {
     if (!this.child || this.pending)
       throw new GearError('algorithm-worker-busy', 'Worker is unavailable or has an outstanding request')
     signal.throwIfAborted()
-    const request: WorkerRequest = {
-      protocol_version: 1,
+    const request = {
+      protocol_version: this.options.protocolVersion ?? 1,
       request_id: randomUUID(),
       run_id: runId,
       step_id: stepId,
       input_digest: canonicalDigest(payload),
       method,
       payload,
-    }
+    } as WorkerRequest | V2.WorkerRequest
     const bytes = Buffer.from(`${JSON.stringify(request)}\n`)
     if (bytes.length > MAX_ALGORITHM_MESSAGE_BYTES)
       throw new GearError(
@@ -250,8 +306,8 @@ export class PythonAlgorithmWorker {
       offset = end
       try {
         const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(line))
-        validateAlgorithmWire('WorkerResponse', value)
-        const response = value as WorkerResponse,
+        validateAlgorithmWire('WorkerResponse', value, this.options.protocolVersion ?? 1)
+        const response = value as WorkerResponse | V2.WorkerResponse,
           pending = this.pending
         if (
           !pending ||
@@ -276,16 +332,24 @@ export class PythonAlgorithmWorker {
     this.failure ??= error
     this.pending?.reject(error)
     this.pending = undefined
-    if (this.child?.pid) {
+    if (this.child?.pid && !this.killRequested && !this.exited) {
       try {
         process.kill(process.platform === 'win32' ? this.child.pid : -this.child.pid, 'SIGKILL')
+        this.killRequested = true
       } catch (failure) {
-        if ((failure as NodeJS.ErrnoException).code !== 'ESRCH') throw failure
+        if ((failure as NodeJS.ErrnoException).code === 'ESRCH') this.killRequested = true
+        else this.cleanupFailure = failure instanceof Error ? failure : new Error(String(failure))
       }
     }
   }
   async dispose(): Promise<void> {
     this.fail(new GearError('algorithm-worker-disposed', 'Worker has been disposed'))
+    if (this.cleanupFailure && !this.exited)
+      throw new GearError(
+        'algorithm-cleanup-unconfirmed',
+        `${this.failure?.message ?? 'Worker failed'}; worker termination could not be confirmed`,
+        { retryable: true },
+      )
     await this.closed
     await this.lease?.release()
     this.lease = undefined

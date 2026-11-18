@@ -2,8 +2,9 @@ import { readFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { canonicalDigest } from '../../domain/canonical.js'
 import { GearError } from '../../domain/errors.js'
-import type { JournalOperation, RunJournal, RunSpec } from '../../domain/run.js'
-import type { Candidate } from '../../domain/algorithm-wire.js'
+import type { JournalOperation, MetaRecovery, RunJournal, RunSpec } from '../../domain/run.js'
+import type { Candidate, Json } from '../../domain/algorithm-wire.js'
+import type { CapturedImports } from '../../domain/operator-run.js'
 import { publishFile } from './atomic.js'
 import { withFileLock } from './file-lock.js'
 import { ResearchStore } from './research.js'
@@ -18,7 +19,12 @@ export class RunStore {
     this.path(id)
     return new ResearchStore(join(this.root, 'runs', id, 'research'))
   }
-  async create(id: string, spec: RunSpec, operations: JournalOperation[] = []): Promise<RunJournal> {
+  async create(
+    id: string,
+    spec: RunSpec,
+    operations: JournalOperation[] = [],
+    imports?: CapturedImports,
+  ): Promise<RunJournal> {
     const record: Omit<RunJournal, 'digest'> = {
       version: 1,
       id,
@@ -30,7 +36,7 @@ export class RunStore {
       state: { version: 1, data: {} },
       decisions: [],
       operations: structuredClone(operations),
-      candidates: [spec.anchor],
+      candidates: [spec.anchor, ...(imports?.candidates.map((entry) => entry.candidate) ?? [])],
       seedEvidence: structuredClone(spec.baseline?.evidence ?? []),
       heldOutEvidence: [],
       completed: [],
@@ -38,6 +44,28 @@ export class RunStore {
       championId: spec.anchor.id,
       gate: { status: 'not_run', reason: 'No nominee' },
       physicalAttempts: 0,
+      ...(spec.algorithm.protocol_version === 2
+        ? {
+            operators: {
+              version: 2 as const,
+              state: { version: Number(spec.algorithm.component?.state_schema_version), data: {} },
+              decisions: [],
+              calls: [],
+              samples: [],
+              artifacts: structuredClone(imports?.artifacts ?? []),
+              history: null,
+              ...(spec.operatorPolicy?.access?.task_order
+                ? {
+                    stream: {
+                      revision: canonicalDigest([id, 'task-stream', spec.operatorPolicy.access.task_order]),
+                      index: 0,
+                      completed: [],
+                    },
+                  }
+                : {}),
+            },
+          }
+        : {}),
     }
     const journal = { ...record, digest: canonicalDigest(record) }
     await this.researchStore(id).capture(journal)
@@ -88,6 +116,87 @@ export class RunStore {
         next_action: 'gear evaluate --split seed --limit 1',
       })
     return latest.id
+  }
+  private recoveryPath(id: string, recovery: MetaRecovery): string {
+    if (!/^recovery_[a-f0-9]{64}$/u.test(recovery.id))
+      throw new GearError('invalid-recovery-id', 'Invalid recovery checkpoint ID')
+    return this.path(id, `recoveries/${recovery.id}/journal`)
+  }
+  /** Save the exact historical bytes before admitting any new attempt. Caller holds the run lock. */
+  async checkpointRecovery(journal: RunJournal, recovery: MetaRecovery, cancellation?: Json): Promise<void> {
+    const bytes = await readFile(this.path(journal.id))
+    if (
+      canonicalDigest(JSON.parse(bytes.toString('utf8'))) !== canonicalDigest(journal) ||
+      journal.digest !== recovery.sourceJournalDigest
+    )
+      throw new GearError('recovery-checkpoint-mismatch', 'Recovery source changed before admission')
+    await publishFile(this.recoveryPath(journal.id, recovery), bytes, { immutable: true })
+    if (recovery.execution) {
+      if (cancellation === undefined || canonicalDigest(cancellation) !== recovery.cancellationIdentity)
+        throw new GearError('recovery-checkpoint-mismatch', 'Recovery cancellation connection is missing')
+      await publishFile(
+        this.path(journal.id, `recoveries/${recovery.id}/cancellation`),
+        JSON.stringify(cancellation),
+        { immutable: true },
+      )
+    }
+  }
+  async verifyRecoveryCheckpoints(journal: RunJournal): Promise<void> {
+    for (const [index, recovery] of (journal.metaRecoveries ?? []).entries()) {
+      const source = JSON.parse(await readFile(this.recoveryPath(journal.id, recovery), 'utf8')) as RunJournal
+      if (recovery.execution) {
+        const cancellation = JSON.parse(
+          await readFile(this.path(journal.id, `recoveries/${recovery.id}/cancellation`), 'utf8'),
+        )
+        if (canonicalDigest(cancellation) !== recovery.cancellationIdentity)
+          throw new GearError('recovery-checkpoint-mismatch', 'Recovery cancellation connection changed')
+      }
+      if (source.version !== 1 || !Array.isArray(source.operations) || !source.operators)
+        throw new GearError(
+          'recovery-checkpoint-mismatch',
+          'Historical recovery checkpoint failed verification',
+        )
+      const { digest, ...body } = source
+      const before = source.operations.find((op) => op.request.operationId === recovery.sourceOperationId)
+      const after = journal.operations.find((op) => op.request.operationId === recovery.sourceOperationId)
+      const retry = journal.operations.find((op) => op.request.operationId === recovery.operationId)
+      const call = source.operators?.calls.find((entry) => entry.id === recovery.callId)
+      if (
+        digest !== recovery.sourceJournalDigest ||
+        canonicalDigest(body) !== digest ||
+        source.id !== journal.id ||
+        source.specDigest !== journal.specDigest ||
+        canonicalDigest(source.spec) !== journal.specDigest ||
+        !before ||
+        !after ||
+        canonicalDigest(before) !== canonicalDigest(after) ||
+        source.operations.some((operation) => {
+          const current = journal.operations.find(
+            (entry) => entry.request.operationId === operation.request.operationId,
+          )
+          return !current || canonicalDigest(current) !== canonicalDigest(operation)
+        }) ||
+        !call?.result ||
+        canonicalDigest(call.result) !== canonicalDigest(recovery.previousResult) ||
+        canonicalDigest(source.operators!.state) !== recovery.stateDigest ||
+        retry?.request.generation !== source.generation + 1 ||
+        canonicalDigest(source.metaRecoveries ?? []) !==
+          canonicalDigest(journal.metaRecoveries!.slice(0, index))
+      )
+        throw new GearError(
+          'recovery-checkpoint-mismatch',
+          'Historical recovery checkpoint failed verification',
+        )
+    }
+  }
+  async cancellationSnapshot(journal: RunJournal): Promise<Json> {
+    const recovery = journal.metaRecoveries?.findLast((item) => item.execution)
+    if (recovery) this.recoveryPath(journal.id, recovery)
+    const name = recovery ? `recoveries/${recovery.id}/cancellation` : 'cancellation'
+    const snapshot = JSON.parse(await readFile(this.path(journal.id, name), 'utf8')) as Json
+    if (canonicalDigest(snapshot) !== (recovery?.cancellationIdentity ?? journal.spec.cancellationIdentity))
+      throw new GearError('cancellation-connection-unavailable', 'Frozen cancellation connection changed')
+    return snapshot
   }
   async write(journal: RunJournal, options: { cancellationOnly?: boolean } = {}): Promise<void> {
     if (options.cancellationOnly) {

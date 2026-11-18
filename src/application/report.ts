@@ -2,7 +2,8 @@ import type { RunJournal } from '../domain/run.js'
 import { pythonObjective } from '../adapters/python/objective.js'
 import { GearError } from '../domain/errors.js'
 import { aggregateUsage } from '../domain/usage.js'
-import { generationLedger } from '../runtime/generation-budget.js'
+import { effectiveGenerationBudget, generationLedger } from '../runtime/generation-budget.js'
+import { recoveredMetaOperations } from '../runtime/operator-recovery.js'
 import { runPlan } from './run-plan.js'
 export function runReport(journal: RunJournal) {
   if (journal.spec.objective && journal.spec.objectiveIdentity !== pythonObjective.identity)
@@ -43,6 +44,12 @@ export function runReport(journal: RunJournal) {
   return {
     run_id: journal.id,
     status: journal.status,
+    ...(journal.metaRecoveries?.length
+      ? {
+          meta_recoveries: journal.metaRecoveries,
+          recovered_operation_ids: recoveredMetaOperations(journal),
+        }
+      : {}),
     ...(journal.failure ? { error: journal.failure } : {}),
     validation_mode:
       journal.spec.validationMode === 'research' ? 'shared-set-research' : 'independent-held-out',
@@ -51,8 +58,49 @@ export function runReport(journal: RunJournal) {
     retained: journal.championId,
     nominee: journal.nomineeId,
     gate: journal.gate,
+    ...(journal.operators
+      ? {
+          operators: {
+            protocol_version: 2,
+            exposure: journal.spec.operatorPolicy?.access?.exposure ?? 'scored',
+            outcome: journal.operators.decisions.at(-1)?.decision.terminal?.outcome ?? null,
+            samples: journal.operators.samples.map((sample) => ({
+              sample_id: sample.id,
+              plan_id: sample.planId,
+              candidate_id: sample.candidateId,
+              task_id: sample.taskId,
+              slot: sample.slot,
+              execution_identity: sample.executionIdentity,
+            })),
+            calls: journal.operators.calls.map((call) => ({
+              id: call.id,
+              key: call.call.key,
+              effect: call.call.effect.kind,
+              status: call.result?.status ?? call.status,
+            })),
+            internal_selections: journal.operators.decisions.flatMap((entry) =>
+              entry.decision.records
+                .filter((record) => record.kind === 'internally_selected')
+                .map((record) => ({ provenance: 'author', record })),
+            ),
+            library_publications: journal.operators.calls
+              .filter(
+                (call) => call.call.effect.kind === 'library' && call.call.effect.input.mode === 'publish',
+              )
+              .map((call) => ({ call_id: call.id, result: call.result ?? null })),
+            task_stream: journal.operators.stream ?? null,
+          },
+        }
+      : {}),
     lineage: journal.spec.lineage,
-    ...(journal.spec.kind === 'refine' ? { plan: runPlan(journal.spec, journal.id) } : {}),
+    ...(journal.spec.kind === 'refine'
+      ? {
+          plan: runPlan(
+            { ...journal.spec, generationBudget: effectiveGenerationBudget(journal) },
+            journal.id,
+          ),
+        }
+      : {}),
     baseline_reuse: journal.spec.baseline
       ? {
           source_run_id: journal.spec.baseline.sourceRunId,

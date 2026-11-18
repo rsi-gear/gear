@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { verifierFixture } from './verifier-evidence.mjs'
@@ -10,7 +10,7 @@ export function runOrderedHitchFixture(runtimeIdentity) {
   const state = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {}
   state.controls ??= {}; state.jobsById ??= {}; state.commands ??= []
   state.commands.push({ action: command === 'eval' ? action : command, args })
-  const save = () => writeFileSync(file, JSON.stringify(state))
+  const save = () => { const temporary = file + '.' + process.pid; writeFileSync(temporary, JSON.stringify(state)); renameSync(temporary, file) }
   const emit = value => { save(); process.stdout.write(JSON.stringify(value)) }
   const fail = () => { save(); process.exit(1) }
   const hash = text => createHash('sha256').update(text).digest('hex').slice(0, 32)
@@ -45,7 +45,7 @@ export function runOrderedHitchFixture(runtimeIdentity) {
   }
   const reply = value => ({ ...value, submitted: !!state.jobsById[value.eval_id], pending_reruns: false })
   if (command === 'resolve') emit({ identity: runtimeIdentity })
-  else if (command === 'capabilities') emit({ schema_version: '1', ordered_eval_control: '2', controller_runtime_observation: '2', local_execution_observation: '2', evaluation_environment_binding: '3', evaluation_preparation: '1', evaluation_artifact_pins: '1', ...(state.verifier ? { verifier_evidence: '1' } : {}) })
+  else if (command === 'capabilities') emit({ schema_version: '1', isolated_agent_run: '1', generation_budget: '1', ordered_eval_control: '2', controller_runtime_observation: '2', local_execution_observation: '2', evaluation_environment_binding: '3', evaluation_preparation: '1', evaluation_artifact_pins: '1', ...(state.verifier ? { verifier_evidence: '1' } : {}) })
   else if (command === 'eval' && action === 'bind') emit({ schema_version: '1', provider: 'local-docker', nonce: 'b'.repeat(32), daemon_instance_id: instance, binding: { schema_version: '1', binding_id: state.environmentBinding ?? 'hmac-sha256:' + digest('resident-environment').slice(7), model: option('--model'), pass_env: [...new Set(repeated('--pass-env'))].sort(), expires_at_ms: null } })
   else if (command === 'daemon') emit({ status: 'running', instance_id: instance })
   else if (command === 'training' && action === 'runtime') emit(controller)

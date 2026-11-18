@@ -15,7 +15,7 @@ export async function trajectoryFixture(args = process.argv.slice(2)) {
   if (digest && digest !== current) { process.exitCode = 3; return }
   const mode = await readFile(join(root, 'mode'), 'utf8').catch(() => '')
   if (mode === 'hang') { await new Promise(resolve => setTimeout(resolve, 60000)); return }
-  const filter = { ...(types ? { types: types.split(',') } : {}), ...(start === undefined ? {} : { seq_start: Number(start) }), ...(end === undefined ? {} : { seq_end: Number(end) }), ...(field ? { field } : {}) }
+  const filter = { ...(types ? { types: [...new Set(types.split(',').filter(Boolean))].sort() } : {}), ...(start === undefined ? {} : { seq_start: Number(start) }), ...(end === undefined ? {} : { seq_end: Number(end) }), ...(field ? { field } : {}) }
   const values = JSON.parse(raw).filter(event => (!types || types.split(',').includes(event.type)) && event.seq >= Number(start ?? 0) && event.seq <= Number(end ?? Number.MAX_SAFE_INTEGER))
   const offset = cursor === undefined ? 0 : Number(Buffer.from(cursor, 'base64url').toString())
   const events = values.slice(offset, offset + limit), eof = offset + events.length >= values.length

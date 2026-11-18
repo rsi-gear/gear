@@ -1,4 +1,5 @@
 import { canonicalDigest } from '../domain/canonical.js'
+import { validateAlgorithmWire } from '../domain/algorithm-schema.js'
 import { GearError } from '../domain/errors.js'
 import type { ProjectApplication, EvaluateOptions, RefineOptions } from './project-service.js'
 import { resolveProject } from './project-config.js'
@@ -15,6 +16,9 @@ import { createProfile, selectProjectProfile, type CreateProfileOptions } from '
 import { defaultProfiles, listProfiles, saveProfile, selectDefaultProfile } from './profile-store.js'
 import { pythonJson } from './python.js'
 import { runPlan, type RunPlan } from './run-plan.js'
+import type { ResumeOptions } from '../domain/run.js'
+import { effectiveGenerationBudget } from '../runtime/generation-budget.js'
+import { planMetaRecovery } from '../runtime/operator-recovery.js'
 
 interface Invocation {
   requestId?: string
@@ -47,13 +51,82 @@ function positive(value: unknown, label: string): number | undefined {
 }
 
 function refineOptions(input: unknown): RefineOptions {
-  const params = object(input, ['rounds', 'algorithm', 'sources', 'dependencies'])
+  const params = object(input, [
+    'rounds',
+    'algorithm',
+    'sources',
+    'dependencies',
+    'resources',
+    'screening',
+    'access',
+    'imports',
+  ])
+  if (params.imports !== undefined) {
+    if (!Array.isArray(params.imports) || params.imports.length > 128)
+      throw new GearError('invalid-command-params', 'imports must be a bounded list')
+    for (const value of params.imports) {
+      const item = object(value, ['name', 'ref', 'purpose'])
+      string(item.name, 'import.name')
+      if (!['material', 'evidence'].includes(String(item.purpose)))
+        throw new GearError('invalid-command-params', 'Invalid source import purpose')
+      validateAlgorithmWire('SourceRef', item.ref, 2)
+    }
+  }
+  if (params.access !== undefined)
+    object(params.access, ['exposure', 'rollout_backend', 'task_order', 'usage_metrics'])
+  if (params.screening !== undefined) {
+    const policy = object(params.screening, ['critic', 'edit_check', 'predicate'])
+    for (const name of ['critic', 'edit_check', 'predicate'])
+      validateAlgorithmWire('OperatorRef', policy[name], 2)
+  }
   positive(params.rounds, 'rounds')
   if (params.algorithm !== undefined) {
-    const algorithm = object(params.algorithm, ['name', 'options'])
+    const algorithm = object(params.algorithm, [
+      'name',
+      'options',
+      'component',
+      'protocol_version',
+      'requirements',
+    ])
     string(algorithm.name, 'algorithm.name')
+    if (
+      algorithm.protocol_version !== undefined &&
+      algorithm.protocol_version !== 1 &&
+      algorithm.protocol_version !== 2
+    )
+      throw new GearError('invalid-command-params', 'unsupported algorithm protocol version')
+    if (
+      algorithm.requirements !== undefined &&
+      (!Array.isArray(algorithm.requirements) ||
+        algorithm.requirements.some((value) => typeof value !== 'string'))
+    )
+      throw new GearError('invalid-command-params', 'algorithm requirements must contain capability names')
     if (!algorithm.options || typeof algorithm.options !== 'object' || Array.isArray(algorithm.options))
       throw new GearError('invalid-command-params', 'algorithm.options must be an object')
+    if (algorithm.component !== undefined) {
+      const component = object(algorithm.component, [
+        'kind',
+        'entrypoint',
+        'params',
+        'children',
+        'source_dependencies',
+        'package_dependencies',
+        'resources',
+        'state_schema_version',
+      ])
+      if (
+        component.kind !== 'module' ||
+        component.entrypoint !== algorithm.name ||
+        Object.keys(algorithm.options).length
+      )
+        throw new GearError(
+          'invalid-command-params',
+          'component must match algorithm.name and cannot mix legacy options',
+        )
+      validateAlgorithmWire('ModuleSpec', component, 2)
+    }
+    if (algorithm.protocol_version === 2 && algorithm.component === undefined)
+      throw new GearError('invalid-command-params', 'v2 requires a frozen component description')
   }
   if (
     params.sources !== undefined &&
@@ -66,6 +139,21 @@ function refineOptions(input: unknown): RefineOptions {
     throw new GearError('invalid-command-params', 'sources must contain path/source pairs')
   if (params.dependencies !== undefined && !Array.isArray(params.dependencies))
     throw new GearError('invalid-command-params', 'dependencies must be an array')
+  if (
+    params.resources !== undefined &&
+    (!Array.isArray(params.resources) ||
+      params.resources.some((value) => {
+        const resource = object(value, ['entrypoint', 'name', 'path', 'digest', 'content_base64'])
+        return (
+          Object.keys(resource).length !== 5 ||
+          Object.values(resource).some((item) => typeof item !== 'string')
+        )
+      }))
+  )
+    throw new GearError(
+      'invalid-command-params',
+      'resources must contain captured resource bytes and identities',
+    )
   canonicalDigest(params) // Reject non-JSON or non-finite values before durable admission.
   return params as RefineOptions
 }
@@ -263,12 +351,20 @@ export class ProjectController {
       return this.application.experience(string(run_id, 'run_id'), options)
     }
     if (['run.resume', 'run.cancel', 'run.report', 'run.export', 'run.archive'].includes(method)) {
-      const params = object(input, ['run_id'])
+      const params = object(
+        input,
+        method === 'run.resume'
+          ? ['run_id', 'retry_operation', 'generation', 'environment_binding']
+          : ['run_id'],
+      )
       const id =
         params.run_id === undefined && method === 'run.report'
           ? await this.application.store.latest()
           : string(params.run_id, 'run_id')
-      if (method === 'run.resume') return this.execute(id, context, true)
+      if (method === 'run.resume') {
+        const { run_id: _id, ...options } = params
+        return this.execute(id, context, true, options as ResumeOptions)
+      }
       if (method === 'run.cancel') {
         const requested = await this.application.cancel(id)
         this.jobs
@@ -304,17 +400,27 @@ export class ProjectController {
     }
     throw new GearError('unknown-command', `Unknown project command: ${method}`)
   }
-  private async execute(id: string, context: Invocation, resume: boolean): Promise<unknown> {
+  private async execute(
+    id: string,
+    context: Invocation,
+    resume: boolean,
+    options: ResumeOptions = {},
+  ): Promise<unknown> {
     const journal = await this.application.store.read(id)
-    const plan = journal.spec.kind === 'refine' ? runPlan(journal.spec, id) : null
+    const recovering = Object.keys(options).length > 0
+    const planned = recovering ? planMetaRecovery(journal, options).journal : journal
+    const plan =
+      journal.spec.kind === 'refine'
+        ? runPlan({ ...journal.spec, generationBudget: effectiveGenerationBudget(planned) }, id)
+        : null
     if (plan) await context.onPlan?.(plan)
     context.signal?.throwIfAborted()
     if (
-      ['completed', 'cancelled'].includes(journal.status) ||
+      (!recovering && ['completed', 'cancelled'].includes(journal.status)) ||
       (!resume && journal.status === 'needs_recovery')
     )
       return this.report(id)
-    if (!context.background) return this.application.resume(id, context.signal)
+    if (!context.background) return this.application.resume(id, context.signal, options)
     if (this.closed)
       throw new GearError('controller-stopped', 'Run admitted; resume it with a new controller', {
         run_id: id,
@@ -322,7 +428,7 @@ export class ProjectController {
     if (!this.jobs.has(id)) {
       const abort = new AbortController()
       const completion = this.application
-        .resume(id, abort.signal)
+        .resume(id, abort.signal, options)
         // ProjectApplication/runner persist the failure before this settles.
         .then(
           () => {},
