@@ -25,22 +25,6 @@ Gear is an open-source optimization framework for improving AI agent performance
 
 To tailor an agent to a target scenario, first prepare a benchmark of representative tasks with clear success criteria. You can use an existing benchmark or [build your own task set](docs/guide/en/datasets.md). Run an algorithm through the Python SDK or the [Refine Skill](skills/refine/SKILL.md). Gear uses task feedback to improve the agent’s instructions, tools, and workflows; model training has a separate experimental lifecycle.
 
-## Supported algorithms
-
-Complete, callable implementations are available from `gear.algorithms`. Their components can be replaced independently.
-
-| Algorithm | Current implementation |
-| --- | --- |
-| [GEPA](docs/guide/en/algorithms.md#gepa) | Staged candidate evaluation and selection: local → bridge → global. |
-| [RandomSearch](docs/guide/en/algorithms.md#randomsearch) | Random parent selection, exploratory proposals and full-task evaluation. |
-| [OPRO](docs/guide/en/algorithms.md#opro) | Iterative prompt optimization using scored history. |
-| [ACE](docs/guide/en/algorithms.md#ace) | Incremental playbook updates, evaluated before adoption. |
-| [RRSI](docs/guide/en/algorithms.md#rrsi) | Edit checks and a Meta critic screen proposals before task evaluation. |
-| [DarwinX](docs/guide/en/algorithms.md#darwinx) | Prompt optimization with additional fresh-sample confirmation. |
-| [Harness2](docs/guide/en/algorithms.md#harness2) | Continual learning from target outputs and trajectories, with scores hidden from the algorithm. |
-
-All seven have small-scale real-model execution coverage. See the [validation scope](docs/guide/en/algorithms.md#real-model-validation) for the ten-task experiment, supplemental evaluations and recovery checks. These implementations cover the listed mechanisms; paper reproduction and optimization gains require their own experiments.
-
 The two examples below compare Luna Max with a Gear-optimized harness against Astra Max with Codex on the same AutomationBench tasks. Follow their execution from reading source information and applying rules to delivering the final result.
 
 <table>
@@ -183,6 +167,20 @@ Reusable operators live in `gear.core`, `gear.evaluation`, `gear.memory`, `gear.
 Task rewards are defined by the benchmark/scorer; objectives aggregate the declared measurements and constraints. Python components define the algorithm, and the runtime coordinates execution, budgets, persistence and recovery. See the [customization tutorial](docs/guide/en/example-algorithm.md) and [operator author guide](docs/algorithm-operators.zh-CN.md).
 
 [Define a weighted objective](docs/guide/en/configuration.md#weighted-objectives-and-protected-tasks) to combine declared pass rate, process scores, cost or tokens while retaining the original measurements.
+
+## Supported algorithms
+
+Complete, callable implementations are available from `gear.algorithms`. Their components can be replaced independently.
+
+| Algorithm | Current implementation |
+| --- | --- |
+| [GEPA](docs/guide/en/algorithms.md#gepa) | Staged candidate evaluation and selection: local → bridge → global. |
+| [RandomSearch](docs/guide/en/algorithms.md#randomsearch) | Random parent selection, exploratory proposals and full-task evaluation. |
+| [OPRO](docs/guide/en/algorithms.md#opro) | Iterative prompt optimization using scored history. |
+| [ACE](docs/guide/en/algorithms.md#ace) | Incremental playbook updates, evaluated before adoption. |
+| [RRSI](docs/guide/en/algorithms.md#rrsi) | Edit checks and a Meta critic screen proposals before task evaluation. |
+| [DarwinX](docs/guide/en/algorithms.md#darwinx) | Prompt optimization with additional fresh-sample confirmation. |
+| [Harness2](docs/guide/en/algorithms.md#harness2) | Continual learning from target outputs and trajectories, with scores hidden from the algorithm. |
 
 ## Explore the examples
 
