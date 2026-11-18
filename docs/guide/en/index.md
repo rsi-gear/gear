@@ -1,6 +1,6 @@
 # Gear user guide
 
-Gear provides callable Python algorithms and reusable operators for improving agent harnesses. This guide describes the APIs in this Gear 0.2.2 source tree; use the matching source build in [quick start](quickstart.md). Python defines the algorithm, while the runtime coordinates execution, budgets, persistence and recovery.
+Gear provides callable Python algorithms and reusable operators for improving agent harnesses. This guide describes the APIs in this Gear 0.2.4 source tree; use the matching source build in [quick start](quickstart.md). Python defines the algorithm, while the runtime coordinates execution, budgets, persistence and recovery.
 
 ## Choose your next step
 

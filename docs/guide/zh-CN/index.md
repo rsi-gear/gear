@@ -1,6 +1,6 @@
 # Gear 用户指南
 
-Gear 提供可直接调用的 Python 算法与可复用算子，用于改进 Agent Harness。本指南描述当前 Gear 0.2.2 源码中的 API，按[快速开始](quickstart.md)构建匹配版本。Python 定义算法，运行层协调执行、预算、持久化和恢复。
+Gear 提供可直接调用的 Python 算法与可复用算子，用于改进 Agent Harness。本指南描述当前 Gear 0.2.4 源码中的 API，按[快速开始](quickstart.md)构建匹配版本。Python 定义算法，运行层协调执行、预算、持久化和恢复。
 
 ## 选择下一步
 

@@ -116,7 +116,7 @@ npm install --global rsi-gear@latest agent-hitch@latest @deepseek-ai/dsh@latest
 hitch eval setup harbor
 ```
 
-这里介绍的源码 API 可能早于 npm 发布版。使用七个算法时，请按源码构建说明安装，并通过 `gear doctor` 确认 Hitch 提供 `isolated_agent_run: "1"` 和 `generation_budget: "1"` 能力。
+Gear 0.2.4 包含上述七个算法。请使用 Hitch 0.2.19 或更新版本，并通过 `gear doctor` 确认其提供 `isolated_agent_run: "1"` 和 `generation_budget: "1"` 能力。升级后运行 `gear setup` 准备匹配的 Python 环境，并按[作者指南](docs/search-algorithm-authoring.zh-CN.md)更新自定义算法的导入路径。
 
 按照[安装指南](docs/guide/zh-CN/quickstart.md)，把随包的 [Refine Skill](skills/refine/SKILL.md) 接入你的 Agent，并连接任务集。然后使用宿主支持的 `/refine`，或者直接用自然语言说：
 

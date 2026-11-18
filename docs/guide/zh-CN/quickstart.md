@@ -1,13 +1,13 @@
 # 快速开始
 
-本页使用 Gear 0.2.2 的 `gear` CLI。需要兼容 Node（22.19+ 的 22 系列或 24+）、Python 3.10+；开发和 CPU 测试使用 Python 3.12。Linux 的算法隔离还需要 bubblewrap、socat、ripgrep；macOS 使用系统隔离机制。Hitch/Harbor 任务另需其运行环境及 Docker。
+本页使用 Gear 0.2.4 的 `gear` CLI。需要兼容 Node（22.19+ 的 22 系列或 24+）、Python 3.10+；开发和 CPU 测试使用 Python 3.12。Linux 的算法隔离还需要 bubblewrap、socat、ripgrep；macOS 使用系统隔离机制。Hitch/Harbor 任务另需其运行环境及 Docker。
 
 ## 安装当前工作树的包
 
 ```sh
 npm ci
 npm pack
-npm install --global ./rsi-gear-0.2.2.tgz
+npm install --global ./rsi-gear-0.2.4.tgz
 python3.12 -m venv .venv
 . .venv/bin/activate
 python -m pip install ./python

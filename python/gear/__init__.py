@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .project import Project, ProjectError, Report, Run
 
-__version__ = "0.2.2"
+__version__ = "0.2.4"
 __all__ = ["Project", "ProjectError", "Report", "Run"]
 
 

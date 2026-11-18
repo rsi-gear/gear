@@ -116,7 +116,7 @@ npm install --global rsi-gear@latest agent-hitch@latest @deepseek-ai/dsh@latest
 hitch eval setup harbor
 ```
 
-The source APIs documented here may be ahead of the npm release. For the seven algorithms, follow the source-build instructions and confirm Hitch's `isolated_agent_run: "1"` and `generation_budget: "1"` capabilities with `gear doctor`.
+The seven algorithms are included in Gear 0.2.4. Use Hitch 0.2.19 or later and confirm its `isolated_agent_run: "1"` and `generation_budget: "1"` capabilities with `gear doctor`. When upgrading, run `gear setup` to prepare the matching Python environment and update custom algorithm imports using the [author guide](docs/search-algorithm-authoring.zh-CN.md).
 
 Follow the [setup guide](docs/guide/en/quickstart.md) to install the bundled [Refine Skill](skills/refine/SKILL.md) in your agent environment and configure your benchmark. Then invoke `/refine` where supported, or submit the following request:
 
