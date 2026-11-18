@@ -22,7 +22,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
 
-async function fixture(options: { failMeta?: number; cancelError?: boolean; inspectMismatch?: boolean; changedBinding?: boolean; interruptTarget?: number } = {}) {
+async function fixture(options: { failMeta?: number; cancelError?: boolean; inspectMismatch?: boolean; changedBinding?: boolean; interruptTarget?: number; noTrajectory?: boolean } = {}) {
   const python = process.env.GEAR_TRAINING_TEST_PYTHON ?? 'python3'
   vi.stubEnv('GEAR_PYTHON', python)
   const root = await mkdtemp(join(tmpdir(), 'gear-blind-learning-')),
@@ -142,7 +142,7 @@ async function fixture(options: { failMeta?: number; cancelError?: boolean; insp
             repetition: slot.repetition,
             status: 'succeeded',
             output: { value: { available: true, answer: 'target answer ' + slot.taskId } },
-            trajectory: { value: { messages: ['target reasoning'] } },
+            trajectory: options.noTrajectory ? null : { value: { messages: ['target reasoning'] } },
           }))
         },
         async readExecutionArtifact(): Promise<Buffer> {
@@ -205,6 +205,23 @@ it('runs blind learning through the public Python API, seals effective library f
   expect(report.operators?.task_stream?.index).toBe(2)
   expect(report.operators?.library_publications).toHaveLength(4)
   expect(journal.operators!.state.data.iterations).toBe(4)
+}, 60_000)
+
+it('completes blind learning from available output when target trajectories are missing', async () => {
+  const { app, requests, description } = await fixture({ noTrajectory: true })
+  const report = await app.refine(description)
+  const journal = await app.store.read(report.run_id)
+  expect(report.status).toBe('completed')
+  expect(journal.operators!.stream!.completed.map((task) => task.task_id)).toEqual(['sum-01', 'sum-02'])
+  expect(journal.operators!.state.data.iterations).toBe(4)
+  expect(report.operators!.library_publications).toHaveLength(4)
+  const reflections = requests.filter((request) => request.operatorCall)
+  expect(reflections).toHaveLength(4)
+  for (const request of reflections) {
+    const sources = request.operatorCall!.effect.input.sources
+    expect(sources).toHaveLength(1)
+    expect(sources[0]).toMatchObject({ kind: 'task_output' })
+  }
 }, 60_000)
 
 it('continues the failed reflection with a new attempt, retaining targets, state, published learning and all historical usage', async () => {

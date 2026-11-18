@@ -140,12 +140,16 @@ class OPRO(Algorithm):
     def _improved(result: ComparisonResult, data: dict[str, Any]) -> bool:
         scores = dict(result.scores)
         child, parent = data["candidate"]["candidate_id"], data["current"]["candidate_id"]
-        unavailable = set(result.incomplete + result.unloaded + result.ineligible)
+        unavailable = set(result.incomplete + result.unloaded)
         return (
             not unavailable.intersection((child, parent))
+            and child not in result.ineligible
             and child in scores
-            and parent in scores
-            and scores[child] > scores[parent]
+            # Complete evidence can disqualify a parent without giving it a score.
+            # Any eligible child improves on that constraint-failing parent.
+            and (
+                parent in result.ineligible or (parent in scores and scores[child] > scores[parent])
+            )
         )
 
     def _finish_round(

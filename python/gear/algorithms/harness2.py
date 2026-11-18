@@ -159,6 +159,26 @@ class Harness2(Algorithm):
         library = ArtifactRef(**data["library"]) if data.get("library") else None
         if phase == "rollout":
             output = value["records"][0]
+            if output["status"] == "unavailable":
+                return Decision(
+                    state,
+                    reason="target execution unavailable",
+                    terminal=Terminal(
+                        "stop",
+                        outcome=json_value(
+                            {
+                                "status": "failed",
+                                "phase": phase,
+                                "task_id": task,
+                                "sample_id": output["sample_id"],
+                                "execution_status": output["status"],
+                            }
+                        ),
+                    ),
+                )
+            sources: tuple[ArtifactRef, ...] = (ArtifactRef(**output["output"]),)
+            if output["trajectory"] is not None:
+                sources += (ArtifactRef(**output["trajectory"]),)
             return self._call(
                 state,
                 "reflect",
@@ -166,7 +186,7 @@ class Harness2(Algorithm):
                     MetaInput(
                         view.anchor,
                         (task,),
-                        (ArtifactRef(**output["output"]), ArtifactRef(**output["trajectory"])),
+                        sources,
                         json_value(
                             {
                                 "prompt_path": self.prompt_path,
