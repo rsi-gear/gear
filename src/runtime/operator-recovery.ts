@@ -44,6 +44,10 @@ function increasedBudget(previous: GenerationBudget, update: GenerationBudget): 
 /** Validate recovery links without granting an algorithm any retry or budget authority. */
 export function validateMetaRecoveries(journal: RunJournal): void {
   let previousBudget = journal.spec.generationBudget
+  let execution = {
+    provider: journal.spec.providerIdentity,
+    evaluation: journal.spec.evaluationIdentity ?? journal.spec.providerIdentity,
+  }
   const sources = new Set<string>(),
     ids = new Set<string>()
   for (const recovery of journal.metaRecoveries ?? []) {
@@ -59,7 +63,13 @@ export function validateMetaRecoveries(journal: RunJournal): void {
       recovery.id !==
         `recovery_${canonicalDigest([journal.id, recovery.sourceJournalDigest, recovery.sourceOperationId, recovery.requestDigest]).slice(7)}` ||
       recovery.requestDigest !==
-        canonicalDigest({ operationId: recovery.sourceOperationId, update: recovery.generationUpdate }) ||
+        canonicalDigest({
+          operationId: recovery.sourceOperationId,
+          update: recovery.generationUpdate,
+          ...(recovery.environmentBinding === undefined
+            ? {}
+            : { environmentBinding: recovery.environmentBinding }),
+        }) ||
       !source ||
       !retry ||
       !call ||
@@ -82,6 +92,21 @@ export function validateMetaRecoveries(journal: RunJournal): void {
       )
     )
       fail('Saved Meta recovery does not match its failed attempt and frozen call')
+    if (recovery.execution) {
+      const proof = recovery.execution
+      if (
+        proof.version !== 1 ||
+        !/^sha256:[a-f0-9]{64}$/u.test(recovery.cancellationIdentity ?? '') ||
+        canonicalDigest(proof.from) !== canonicalDigest(execution) ||
+        recovery.environmentBinding === undefined ||
+        canonicalDigest(proof.previousBinding) !== canonicalDigest(recovery.environmentBinding) ||
+        [proof.to.provider, proof.to.evaluation, proof.invariantDigest].some(
+          (value) => !/^sha256:[a-f0-9]{64}$/u.test(value),
+        )
+      )
+        fail('Saved environment recovery does not match its previous execution identity')
+      execution = proof.to
+    }
     if (recovery.terminalStepId !== null) {
       const terminal = journal.operators!.decisions.find((d) => d.stepId === recovery.terminalStepId)
       if (
@@ -105,13 +130,22 @@ export function resumedTerminal(journal: RunJournal, stepId: number): boolean {
 
 /** Pure admission: completed work and author state remain byte-for-byte equivalent. */
 export function planMetaRecovery(journal: RunJournal, options: ResumeOptions) {
-  if (!options || Object.keys(options).some((key) => !['retry_operation', 'generation'].includes(key)))
+  if (
+    !options ||
+    Object.keys(options).some(
+      (key) => !['retry_operation', 'generation', 'environment_binding'].includes(key),
+    )
+  )
     fail('Invalid resume options')
   const operationId = options.retry_operation
   if (!operationId || !/^sha256:[a-f0-9]{64}$/u.test(operationId))
     fail('Recovery requires an exact failed operation ID')
   const update = generationBudget(options.generation ?? {})
-  const requestDigest = canonicalDigest({ operationId, update })
+  const requestDigest = canonicalDigest({
+    operationId,
+    update,
+    ...(options.environment_binding === undefined ? {} : { environmentBinding: options.environment_binding }),
+  })
   validateMetaRecoveries(journal)
   const existing = journal.metaRecoveries?.find((item) => item.sourceOperationId === operationId)
   if (existing) {
@@ -191,6 +225,9 @@ export function planMetaRecovery(journal: RunJournal, options: ResumeOptions) {
     createdAt: new Date().toISOString(),
     requestDigest,
     generationUpdate: update,
+    ...(options.environment_binding === undefined
+      ? {}
+      : { environmentBinding: structuredClone(options.environment_binding) }),
     sourceJournalDigest: journal.digest,
     sourceOperationId: operationId,
     sourceReceiptDigest: canonicalDigest(source.receipt),

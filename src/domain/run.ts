@@ -19,6 +19,7 @@ export interface AlgorithmConfig {
 import type {
   OperationReceipt,
   OperationRequest,
+  EnvironmentBindingRecovery,
   ProviderCapabilities,
   ProviderTimeouts,
 } from '../ports/operations.js'
@@ -91,6 +92,8 @@ export interface ResumeOptions {
   retry_operation?: string
   /** Explicit increases to the run's cumulative and per-operation limits. */
   generation?: GenerationConfiguration
+  /** Original public environment binding; the provider must prove all other inputs unchanged. */
+  environment_binding?: Json
 }
 export interface MetaRecovery {
   version: 1
@@ -98,6 +101,9 @@ export interface MetaRecovery {
   createdAt: string
   requestDigest: string
   generationUpdate: GenerationBudget
+  environmentBinding?: Json
+  execution?: EnvironmentBindingRecovery
+  cancellationIdentity?: string
   sourceJournalDigest: string
   sourceOperationId: string
   sourceReceiptDigest: string

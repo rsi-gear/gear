@@ -347,6 +347,7 @@ export async function projectCommand(argv: string[]): Promise<boolean> {
   } else if (command === 'resume') {
     const retry = take('--retry-operation'),
       generationPath = take('--generation-config'),
+      environmentPath = take('--environment-binding-config'),
       generationJson = take('--generation-json'),
       id = args.shift()
     if (!id || args.length || (generationPath && generationJson))
@@ -363,6 +364,9 @@ export async function projectCommand(argv: string[]): Promise<boolean> {
       run_id: id,
       ...(retry === undefined ? {} : { retry_operation: retry }),
       ...(generation === undefined ? {} : { generation }),
+      ...(environmentPath === undefined
+        ? {}
+        : { environment_binding: JSON.parse(await readFile(resolve(root, environmentPath), 'utf8')) }),
     })
   } else {
     const id = args.shift()

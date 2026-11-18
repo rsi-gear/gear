@@ -325,6 +325,7 @@ class Project:
         *,
         retry_operation: str | None = None,
         generation: dict[str, JSON] | None = None,
+        environment_binding: dict[str, JSON] | None = None,
     ) -> Run:
         """Continue a run; explicitly retry a settled read-only Meta failure when requested.
 
@@ -332,7 +333,12 @@ class Project:
         target executions, learning state and historical receipts are preserved.
         """
         return self._sync(
-            self.aresume(run_id, retry_operation=retry_operation, generation=generation)
+            self.aresume(
+                run_id,
+                retry_operation=retry_operation,
+                generation=generation,
+                environment_binding=environment_binding,
+            )
         )
 
     async def aresume(
@@ -341,17 +347,24 @@ class Project:
         *,
         retry_operation: str | None = None,
         generation: dict[str, JSON] | None = None,
+        environment_binding: dict[str, JSON] | None = None,
     ) -> Run:
         args = ["resume", run_id]
         if retry_operation is not None:
             args += ["--retry-operation", retry_operation]
-        if generation is not None:
+        if generation is not None or environment_binding is not None:
             if retry_operation is None:
-                raise ValueError("generation amendments require an explicit failed retry_operation")
+                raise ValueError("recovery amendments require an explicit failed retry_operation")
             with tempfile.TemporaryDirectory(prefix="gear-recovery-") as directory:
-                path = Path(directory) / "generation.json"
-                path.write_text(json.dumps(generation))
-                result = await self._call(args + ["--generation-config", str(path)])
+                if generation is not None:
+                    path = Path(directory) / "generation.json"
+                    path.write_text(json.dumps(generation))
+                    args += ["--generation-config", str(path)]
+                if environment_binding is not None:
+                    path = Path(directory) / "environment-binding.json"
+                    path.write_text(json.dumps(environment_binding))
+                    args += ["--environment-binding-config", str(path)]
+                result = await self._call(args)
         else:
             result = await self._call(args)
         return Run(str(result["run_id"]), Report(result))

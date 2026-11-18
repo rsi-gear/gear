@@ -23,6 +23,7 @@ import { requireGenerationCapability, validateGenerationBudget } from '../domain
 import { validateBaseline } from '../domain/baseline.js'
 import type { OperatorRuntime } from './operator-runtime.js'
 import { resumedTerminal, validateMetaRecoveries } from './operator-recovery.js'
+import { effectiveExecutionIdentity } from './execution-identity.js'
 import {
   effectiveGenerationBudget,
   generationLedger,
@@ -227,7 +228,7 @@ export class DurableRunner {
         'objective-identity-mismatch',
         'Frozen objective implementation changed; use the matching runtime',
       )
-    if (spec.providerIdentity !== this.provider.identity)
+    if (effectiveExecutionIdentity(journal).provider !== this.provider.identity)
       throw new GearError(
         'provider-identity-mismatch',
         'Provider implementation or execution conditions changed',

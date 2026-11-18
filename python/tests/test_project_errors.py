@@ -20,6 +20,7 @@ class ProjectErrorTests(unittest.TestCase):
     def test_resume_forwards_explicit_retry_and_cumulative_budget(self):
         seen = []
         generation = {"max_tokens": 200, "per_operation": {"max_tokens": 30}}
+        binding = {"binding_id": "hmac-sha256:original", "model": "fixture"}
 
         async def call(_self, args):
             seen.append(args)
@@ -27,6 +28,8 @@ class ProjectErrorTests(unittest.TestCase):
             path = Path(args[5])
             self.assertEqual(args[4], "--generation-config")
             self.assertEqual(json.loads(path.read_text()), generation)
+            self.assertEqual(args[6], "--environment-binding-config")
+            self.assertEqual(json.loads(Path(args[7]).read_text()), binding)
             return {"run_id": "run_original", "status": "completed"}
 
         with tempfile.TemporaryDirectory() as directory:
@@ -34,11 +37,12 @@ class ProjectErrorTests(unittest.TestCase):
             (root / "gear.yaml").write_text("version: 1\n")
             project = Project.open(root)
             with patch.object(Project, "_call", call):
-                result = project.resume("run_original", retry_operation="sha256:failed", generation=generation)
+                result = project.resume("run_original", retry_operation="sha256:failed", generation=generation, environment_binding=binding)
                 self.assertEqual(result.id, "run_original")
                 with self.assertRaises(ValueError):
                     project.resume("run_original", generation=generation)
         self.assertFalse(Path(seen[0][5]).exists())
+        self.assertFalse(Path(seen[0][7]).exists())
 
     def test_terminal_error_survives_warnings_and_retains_exact_private_bytes(self):
         for stderr in (TERMINAL, WARNING + TERMINAL + b"\n", b"\xffwarning\n" + TERMINAL):

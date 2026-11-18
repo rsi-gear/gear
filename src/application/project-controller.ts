@@ -353,7 +353,9 @@ export class ProjectController {
     if (['run.resume', 'run.cancel', 'run.report', 'run.export', 'run.archive'].includes(method)) {
       const params = object(
         input,
-        method === 'run.resume' ? ['run_id', 'retry_operation', 'generation'] : ['run_id'],
+        method === 'run.resume'
+          ? ['run_id', 'retry_operation', 'generation', 'environment_binding']
+          : ['run_id'],
       )
       const id =
         params.run_id === undefined && method === 'run.report'

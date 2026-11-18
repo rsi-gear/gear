@@ -2,6 +2,7 @@ import type { Json, Operation } from '../domain/algorithm-wire.js'
 import type * as V2 from '../domain/algorithm-wire-v2.js'
 import { validateAlgorithmWire } from '../domain/algorithm-schema.js'
 import { canonicalDigest } from '../domain/canonical.js'
+import { effectiveExecutionIdentity } from './execution-identity.js'
 import { GearError } from '../domain/errors.js'
 import type {
   OperatorArtifact,
@@ -465,7 +466,7 @@ export class OperatorRuntime {
         const executionIdentity = canonicalDigest([
           input.candidate,
           journal.spec.benchmarkDigest,
-          journal.spec.evaluationIdentity ?? journal.spec.providerIdentity,
+          effectiveExecutionIdentity(journal).evaluation,
           input.assets,
           input.parameters,
           input.plan.randomness,

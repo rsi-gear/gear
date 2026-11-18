@@ -42,7 +42,8 @@ import { operatorStorageLimits } from '../domain/operator-run.js'
 import { IndependentScreening } from '../adapters/python/screening.js'
 import { LibraryStore } from '../adapters/storage/libraries.js'
 import { captureOperatorImports } from './operator-imports.js'
-import { planMetaRecovery } from '../runtime/operator-recovery.js'
+import { planMetaRecovery, validateMetaRecoveries } from '../runtime/operator-recovery.js'
+import { effectiveExecutionIdentity } from '../runtime/execution-identity.js'
 
 export interface ProjectRuntimeContext {
   kind: 'evaluate' | 'refine'
@@ -460,8 +461,33 @@ export class ProjectApplication {
           if (planned.alreadyApplied) return
           if (await this.store.cancelled(runId))
             throw new GearError('run-cancelled', 'Cancellation requested', { run_id: runId })
+          if (options.environment_binding !== undefined) {
+            if (!provider.recoverEnvironmentBinding)
+              throw new GearError(
+                'environment-recovery-unsupported',
+                'Provider cannot verify an environment binding recovery',
+              )
+            const previous = effectiveExecutionIdentity(current)
+            const proof = await provider.recoverEnvironmentBinding(
+              previous,
+              options.environment_binding,
+              signal,
+            )
+            if (
+              canonicalDigest(proof.from) !== canonicalDigest(previous) ||
+              proof.to.provider !== provider.identity ||
+              proof.to.evaluation !== (provider.evaluationIdentity ?? provider.identity) ||
+              canonicalDigest(proof.previousBinding) !== canonicalDigest(options.environment_binding)
+            )
+              throw new GearError(
+                'environment-recovery-mismatch',
+                'Provider recovery proof differs from the requested connection',
+              )
+            planned.recovery.execution = proof
+            planned.recovery.cancellationIdentity = canonicalDigest(provider.cancellation ?? null)
+          }
           if (
-            provider.identity !== current.spec.providerIdentity ||
+            provider.identity !== effectiveExecutionIdentity(planned.journal).provider ||
             canonicalDigest(provider.capabilities) !== canonicalDigest(current.spec.providerCapabilities)
           )
             throw new GearError(
@@ -482,7 +508,7 @@ export class ProjectApplication {
           const targets = new TargetStore(
             runRoot,
             harnessAdapter(config.target.adapter),
-            provider.evaluationIdentity ?? provider.identity,
+            current.spec.evaluationIdentity ?? current.spec.providerIdentity,
           )
           const inspected = await sealedProvider(
             provider,
@@ -498,7 +524,8 @@ export class ProjectApplication {
               'Stopped Meta receipt differs from the committed failure',
             )
           signal.throwIfAborted()
-          await this.store.checkpointRecovery(current, planned.recovery)
+          validateMetaRecoveries(planned.journal)
+          await this.store.checkpointRecovery(current, planned.recovery, provider.cancellation ?? null)
           await this.store.write(planned.journal)
         })
       }
@@ -559,10 +586,8 @@ export class ProjectApplication {
       let connection: Promise<OperationCancellation> | undefined
       await finishCancellation(this.store, journal, async (request) => {
         connection ??= (async () => {
-          const snapshot = JSON.parse(
-            await readFile(join(this.store.root, 'runs', id, 'cancellation.json'), 'utf8'),
-          ) as Json
-          if (canonicalDigest(snapshot) !== journal.spec.cancellationIdentity || !this.bindings.cancellation)
+          const snapshot = await this.store.cancellationSnapshot(journal)
+          if (!this.bindings.cancellation)
             throw new GearError(
               'cancellation-connection-unavailable',
               'Frozen cancellation connection is unavailable',
@@ -694,7 +719,7 @@ export class ProjectApplication {
       const targets = new TargetStore(
         join(context.stateRoot, 'runs', context.runId),
         harnessAdapter(context.config.target.adapter),
-        provider.evaluationIdentity ?? provider.identity,
+        saved.spec.evaluationIdentity ?? saved.spec.providerIdentity,
       )
       const journal = await this.store.read(context.runId)
       for (const candidate of journal.candidates) {

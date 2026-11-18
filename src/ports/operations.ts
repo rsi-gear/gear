@@ -92,6 +92,18 @@ export type OperationInspection =
   /** Some groups completed; replay is safe with the original idempotent reservation. */
   | { state: 'resumable' }
   | { state: 'running' | 'unknown' }
+export interface ExecutionIdentity {
+  provider: string
+  evaluation: string
+}
+export interface EnvironmentBindingRecovery {
+  version: 1
+  from: ExecutionIdentity
+  to: ExecutionIdentity
+  previousBinding: Json
+  currentBinding: Json
+  invariantDigest: string
+}
 /** Evaluation/generation adapters own external side effects, never the run journal. */
 export interface OperationProvider {
   readonly identity: string
@@ -105,6 +117,12 @@ export interface OperationProvider {
   /** Operator metadata for the exact connected configuration; null means unreported. */
   readonly timeouts?: ProviderTimeouts
   readonly capabilities: ProviderCapabilities
+  /** Prove that only a host environment binding changed; never relax code/model/task identities. */
+  recoverEnvironmentBinding?(
+    previous: ExecutionIdentity,
+    binding: Json,
+    signal: AbortSignal,
+  ): Promise<EnvironmentBindingRecovery>
   submit(request: OperationRequest, signal: AbortSignal): Promise<OperationReceipt>
   /** Read existing artifacts only. Must not execute targets or issue model requests. */
   completeEvidence?(request: OperationRequest, signal: AbortSignal): Promise<OperationReceipt>

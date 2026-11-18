@@ -22,7 +22,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
 
-async function fixture(options: { failMeta?: number; cancelError?: boolean; inspectMismatch?: boolean } = {}) {
+async function fixture(options: { failMeta?: number; cancelError?: boolean; inspectMismatch?: boolean; changedBinding?: boolean; interruptTarget?: number } = {}) {
   const python = process.env.GEAR_TRAINING_TEST_PYTHON ?? 'python3'
   vi.stubEnv('GEAR_PYTHON', python)
   const root = await mkdtemp(join(tmpdir(), 'gear-blind-learning-')),
@@ -57,8 +57,14 @@ async function fixture(options: { failMeta?: number; cancelError?: boolean; insp
     receipts = new Map<string, OperationReceipt>()
   const app = new ProjectApplication(project, {
     async provider(context) {
+      const identity = canonicalDigest(options.changedBinding ? 'learning-fixture-new-binding' : 'learning-fixture')
       return {
-        identity: canonicalDigest('learning-fixture'),
+        identity,
+        cancellation: { identity },
+        async recoverEnvironmentBinding(previous, binding) {
+          return { version: 1 as const, from: previous, to: { provider: identity, evaluation: identity },
+            previousBinding: binding, currentBinding: { fixture: 'current' }, invariantDigest: canonicalDigest('fixture-same-execution') }
+        },
         capabilities: {
           seeds: false,
           temperature: false,
@@ -76,6 +82,8 @@ async function fixture(options: { failMeta?: number; cancelError?: boolean; insp
         },
         async submit(request) {
           requests.push(structuredClone(request))
+          if (request.operatorSamples && options.interruptTarget === requests.filter((r) => r.operatorSamples).length)
+            throw new Error('target controller interrupted')
           if (request.operatorSamples)
             actualFiles.push(
               await readFile(
@@ -200,7 +208,7 @@ it('runs blind learning through the public Python API, seals effective library f
 }, 60_000)
 
 it('continues the failed reflection with a new attempt, retaining targets, state, published learning and all historical usage', async () => {
-  const options = { failMeta: 3, cancelError: false, inspectMismatch: false }
+  const options = { failMeta: 3, cancelError: false, inspectMismatch: false, changedBinding: false }
   const { app, project, requests, actualFiles, description } = await fixture(options)
   const failed = await app.refine(description)
   const id = failed.run_id, before = await app.store.read(id)
@@ -210,7 +218,7 @@ it('continues the failed reflection with a new attempt, retaining targets, state
   expect(before.status).toBe('completed')
   expect(before.physicalAttempts).toBe(3)
   expect(before.operators!.state.data.iterations).toBe(2)
-  const recovery = { retry_operation: source.request.operationId, generation: { max_tokens: 200, per_operation: { max_tokens: 20 } } }
+  const recovery = { retry_operation: source.request.operationId, generation: { max_tokens: 200, per_operation: { max_tokens: 20 } }, environment_binding: { fixture: 'original' } }
   const planned = planMetaRecovery(before, recovery)
   expect(planned.journal.operators!.state).toEqual(before.operators!.state)
   expect(planned.journal.operators!.stream).toEqual(before.operators!.stream)
@@ -237,6 +245,8 @@ it('continues the failed reflection with a new attempt, retaining targets, state
   options.inspectMismatch = false
   expect(await readFile(path)).toEqual(original)
   expect(requests.filter((r) => r.operatorCall)).toHaveLength(3)
+  options.changedBinding = true
+  await expect(app.resume(id, undefined, { retry_operation: recovery.retry_operation, generation: recovery.generation })).rejects.toThrow('frozen provider')
 
   // Simulate a process ending immediately after recovery admission, before submitting the retry.
   const write = app.store.write.bind(app.store)
@@ -267,6 +277,9 @@ it('continues the failed reflection with a new attempt, retaining targets, state
   expect(meta[3]!.operatorCall).toEqual(meta[2]!.operatorCall)
   expect(journal.operations.find((op) => op.request.operationId === source.request.operationId)).toEqual(source)
   expect(journal.specDigest).toBe(before.specDigest)
+  expect(journal.metaRecoveries![0]!.execution!.from.provider).toBe(before.spec.providerIdentity)
+  expect(journal.metaRecoveries![0]!.execution!.to.provider).toBe(canonicalDigest('learning-fixture-new-binding'))
+  expect(journal.operators!.samples.at(-1)!.executionIdentity).not.toBe(before.operators!.samples.at(-1)!.executionIdentity)
   expect(journal.operators!.decisions.slice(0, before.operators!.decisions.length)).toEqual(before.operators!.decisions)
   expect(journal.operators!.state.data.iterations).toBe(4)
   expect(journal.operators!.stream!.completed.map((task) => task.task_id)).toEqual(['sum-01', 'sum-02'])
@@ -277,4 +290,31 @@ it('continues the failed reflection with a new attempt, retaining targets, state
   expect(requests.filter((r) => r.operatorCall)).toHaveLength(5)
   expect(await readFile(checkpoint)).toEqual(original)
   await expect(app.resume(id, undefined, { ...recovery, generation: { max_tokens: 300 } })).rejects.toThrow('different recovery options')
+}, 60_000)
+
+it('cancels new work after environment recovery using its saved connection without reconnecting providers', async () => {
+  const options = { failMeta: 3, changedBinding: false, interruptTarget: 0 }
+  const { app, project, description } = await fixture(options)
+  const original = await app.refine(description)
+  const journal = await app.store.read(original.run_id)
+  const source = journal.operations.find((op) => op.receipt?.result.status === 'failed')!
+  options.changedBinding = true
+  options.interruptTarget = 4
+  await expect(app.resume(journal.id, undefined, {
+    retry_operation: source.request.operationId, environment_binding: { fixture: 'original' },
+  })).rejects.toThrow('target controller interrupted')
+  const stopped: string[] = []
+  const restarted = new ProjectApplication(project, {
+    async provider() { throw new Error('cancellation must not reconnect') },
+    async cancellation(snapshot) {
+      expect(snapshot).toEqual({ identity: canonicalDigest('learning-fixture-new-binding') })
+      return { async cancel(request) { stopped.push(request.operationId) } }
+    },
+  })
+  await restarted.cancel(journal.id)
+  await restarted.completeCancellation(journal.id)
+  const cancelled = await restarted.store.read(journal.id)
+  expect(cancelled.status).toBe('cancelled')
+  expect(stopped).toEqual(cancelled.operations.filter((op) => op.status === 'submitted').map((op) => op.request.operationId))
+  expect(stopped).toHaveLength(1)
 }, 60_000)

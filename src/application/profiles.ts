@@ -11,6 +11,7 @@ import { harnessAdapter } from './harness-adapters.js'
 import { pythonExecutable, pythonJson, pythonSourceRoot } from './python.js'
 import { resourceSdkEnvironment } from '../adapters/hitch/resource-sdk.js'
 import { configuredCancellation } from './cancellation.js'
+import { recoverHitchEnvironment } from './environment-recovery.js'
 
 import { profile, assertProfileRole, processProfile, codexExecutionConfiguration } from './profile-store.js'
 export { profile, profileRoot } from './profile-store.js'
@@ -168,6 +169,12 @@ export async function configuredProvider(
     request.operation.kind === 'evaluate_seed' ? evaluation : meta
   return {
     identity: canonicalDigest({ evaluation: evaluation.identity, meta: meta.identity }),
+    ...(evaluation instanceof HitchOperationProvider
+      ? ({
+          recoverEnvironmentBinding: (previous, binding, signal) =>
+            recoverHitchEnvironment(evaluation, meta.identity, previous, binding, signal),
+        } satisfies Pick<OperationProvider, 'recoverEnvironmentBinding'>)
+      : {}),
     async prepareAdmission() {
       await evaluation.prepareAdmission?.()
       await meta.prepareAdmission()

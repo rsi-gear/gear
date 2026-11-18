@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { canonicalDigest } from '../../domain/canonical.js'
 import { GearError } from '../../domain/errors.js'
 import type { JournalOperation, MetaRecovery, RunJournal, RunSpec } from '../../domain/run.js'
-import type { Candidate } from '../../domain/algorithm-wire.js'
+import type { Candidate, Json } from '../../domain/algorithm-wire.js'
 import type { CapturedImports } from '../../domain/operator-run.js'
 import { publishFile } from './atomic.js'
 import { withFileLock } from './file-lock.js'
@@ -123,7 +123,7 @@ export class RunStore {
     return this.path(id, `recoveries/${recovery.id}/journal`)
   }
   /** Save the exact historical bytes before admitting any new attempt. Caller holds the run lock. */
-  async checkpointRecovery(journal: RunJournal, recovery: MetaRecovery): Promise<void> {
+  async checkpointRecovery(journal: RunJournal, recovery: MetaRecovery, cancellation?: Json): Promise<void> {
     const bytes = await readFile(this.path(journal.id))
     if (
       canonicalDigest(JSON.parse(bytes.toString('utf8'))) !== canonicalDigest(journal) ||
@@ -131,10 +131,26 @@ export class RunStore {
     )
       throw new GearError('recovery-checkpoint-mismatch', 'Recovery source changed before admission')
     await publishFile(this.recoveryPath(journal.id, recovery), bytes, { immutable: true })
+    if (recovery.execution) {
+      if (cancellation === undefined || canonicalDigest(cancellation) !== recovery.cancellationIdentity)
+        throw new GearError('recovery-checkpoint-mismatch', 'Recovery cancellation connection is missing')
+      await publishFile(
+        this.path(journal.id, `recoveries/${recovery.id}/cancellation`),
+        JSON.stringify(cancellation),
+        { immutable: true },
+      )
+    }
   }
   async verifyRecoveryCheckpoints(journal: RunJournal): Promise<void> {
     for (const [index, recovery] of (journal.metaRecoveries ?? []).entries()) {
       const source = JSON.parse(await readFile(this.recoveryPath(journal.id, recovery), 'utf8')) as RunJournal
+      if (recovery.execution) {
+        const cancellation = JSON.parse(
+          await readFile(this.path(journal.id, `recoveries/${recovery.id}/cancellation`), 'utf8'),
+        )
+        if (canonicalDigest(cancellation) !== recovery.cancellationIdentity)
+          throw new GearError('recovery-checkpoint-mismatch', 'Recovery cancellation connection changed')
+      }
       if (source.version !== 1 || !Array.isArray(source.operations) || !source.operators)
         throw new GearError(
           'recovery-checkpoint-mismatch',
@@ -172,6 +188,15 @@ export class RunStore {
           'Historical recovery checkpoint failed verification',
         )
     }
+  }
+  async cancellationSnapshot(journal: RunJournal): Promise<Json> {
+    const recovery = journal.metaRecoveries?.findLast((item) => item.execution)
+    if (recovery) this.recoveryPath(journal.id, recovery)
+    const name = recovery ? `recoveries/${recovery.id}/cancellation` : 'cancellation'
+    const snapshot = JSON.parse(await readFile(this.path(journal.id, name), 'utf8')) as Json
+    if (canonicalDigest(snapshot) !== (recovery?.cancellationIdentity ?? journal.spec.cancellationIdentity))
+      throw new GearError('cancellation-connection-unavailable', 'Frozen cancellation connection changed')
+    return snapshot
   }
   async write(journal: RunJournal, options: { cancellationOnly?: boolean } = {}): Promise<void> {
     if (options.cancellationOnly) {

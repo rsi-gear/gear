@@ -33,12 +33,14 @@ export function parseProjectCommand(input: string): { method: string; params: Re
   if (command === 'resume') {
     const retry = take('--retry-operation'),
       generation = take('--generation-json'),
+      environment = take('--environment-binding-json'),
       id = words.shift()
     if (!id) throw new GearError('run-id-required', 'resume requires one run ID')
     return finish('run.resume', {
       run_id: id,
       ...(retry === undefined ? {} : { retry_operation: retry }),
       ...(generation === undefined ? {} : { generation: JSON.parse(generation) }),
+      ...(environment === undefined ? {} : { environment_binding: JSON.parse(environment) }),
     })
   }
   if (['report', 'cancel', 'export', 'archive'].includes(command)) {

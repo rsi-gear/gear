@@ -59,6 +59,8 @@ project.resume(
 
 CLI 对应 `gear resume RUN_ID --retry-operation OPERATION_ID --generation-config FILE`，其中 FILE 为上述 generation 对象。省略预算参数表示在原额度内重试；`report.meta_recoveries` 列出恢复历史，`recovered_operation_ids` 只列出已有成功后继的旧失败操作。
 
+Hitch 重启后，宿主环境绑定可能变化。恢复时可通过 `environment_binding` 传入原公开绑定（CLI 为 `--environment-binding-config FILE`）。运行时用原绑定重新计算完整 provider 身份，必须与冻结身份完全相同；模型、代码、资源、产物、能力、凭据变量选择与有效期，以及 Meta 身份均不能变化。通过后记录新旧执行身份，provider 本身仍使用真实的新身份。原候选、学习状态、样本与历史 journal 不改写；后续样本使用新的执行身份，不能与旧条件的样本计划混用。这不会恢复 Codex 的内部会话，只重试当前失败的只读 Meta 调用。
+
 ## 组件、参数与依赖
 
 `Module` 支持 `get_params`、`set_params`、`named_children`、`describe` 与 `clone`。例如 `recipe.set_params(screen__critic__max_tokens=512)` 只改变尚未准入的配置。clone 重建配置树，不复制运行缓存。子模块、命名函数、配置、schema、声明资源和依赖进入冻结身份。可使用 callable dataclass，不强制继承 Module；lambda、闭包和循环组件图不支持。
