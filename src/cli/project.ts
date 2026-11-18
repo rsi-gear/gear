@@ -6,6 +6,7 @@ import { createProjectControlPlane } from '../application/control-plane.js'
 import { ProjectApplication } from '../application/project-service.js'
 import { configuredBindings } from '../application/profiles.js'
 import { createProfileWizard, selectProfilesWizard } from './profile-wizard.js'
+import { parseJsonInput } from './project-input.js'
 import { formatRunPlan } from './run-plan.js'
 import type { RunPlan } from '../application/run-plan.js'
 
@@ -192,7 +193,7 @@ export async function projectCommand(argv: string[]): Promise<boolean> {
           throw new GearError('invalid-profile-command', '--from cannot be combined with creation options')
         result = await controller.invoke('profile.import', {
           name: args[0],
-          profile: JSON.parse(await readFile(resolve(root, from), 'utf8')),
+          profile: parseJsonInput(await readFile(resolve(root, from), 'utf8'), `--from ${from}`),
         })
       } else if (!Object.keys(options).length && jsonIndex < 0)
         result = await createProfileWizard(controller, args[0]!)
@@ -277,7 +278,7 @@ export async function projectCommand(argv: string[]): Promise<boolean> {
         ref: args[1],
         source_ref: args[2],
         snapshot_digest: snapshot,
-        query: queryJson === undefined ? {} : JSON.parse(queryJson),
+        query: queryJson === undefined ? {} : parseJsonInput(queryJson, '--query-json'),
       })
     } else {
       if (
@@ -295,7 +296,10 @@ export async function projectCommand(argv: string[]): Promise<boolean> {
         run_id: args[0],
         ...(action === 'read'
           ? { ref: args[1] }
-          : { query: queryJson === undefined ? { query: query ?? '' } : JSON.parse(queryJson) }),
+          : {
+              query:
+                queryJson === undefined ? { query: query ?? '' } : parseJsonInput(queryJson, '--query-json'),
+            }),
         ...(snapshot ? { snapshot_digest: snapshot } : {}),
         ...(view ? { view } : {}),
         ...(limit === undefined ? {} : { limit: Number(limit) }),
@@ -331,9 +335,10 @@ export async function projectCommand(argv: string[]): Promise<boolean> {
     )
       throw new GearError('invalid-refine-options', 'Use refine --rounds N')
     const algorithm = algorithmPath
-      ? (JSON.parse(await readFile(resolve(root, algorithmPath), 'utf8')) as Parameters<
-          ProjectApplication['refine']
-        >[0])
+      ? (parseJsonInput(
+          await readFile(resolve(root, algorithmPath), 'utf8'),
+          `--algorithm-config ${algorithmPath}`,
+        ) as Parameters<ProjectApplication['refine']>[0])
       : {}
     result = await foreground(
       controller,
