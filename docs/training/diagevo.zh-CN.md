@@ -67,3 +67,9 @@
 `python/tests/test_diagevo_round.py` 使用明确标识的持久化测试服务覆盖整轮处理、同轮新原因去重、晋级和重新激活、重叠节点对、提取／embedding／分配／归并后回执丢失、最终提交后中断、未知结果、未提交恢复、并发所有权、预算耗尽及侧录缺失。三组共 26 个测试通过；这些测试服务不是实际 LLM 或 embedding 效果证据。
 
 尚缺 challenger 更新后重新采样候选池、solver 更新、实际诊断／embedding 后端及原生费用回执绑定、完整外层恢复，以及真实运行和效果对照。当前记忆流程验证不替代完整 DiagEvo 或 GPU 实验验收。
+
+接入两模型更新时还有三个已核实的边界：
+
+- [DiagEvo 附录 D](https://arxiv.org/html/2609.00768v2#A4)要求先用一批问题更新 challenger，再从更新后的 challenger 采样另一批候选；不能把第一批题直接作为 solver 课程。其奖励为 `max(0, 1 - 2*abs(p1 - 0.5) - lambda*cluster_share)`，格式无效为零。当前 [R-Zero 公开 reward 文件](https://github.com/Chengsong-Huang/R-Zero/blob/main/examples/reward_function/caller_penalty.py)的末尾公式、无效格式处理及答案格式与该定义有差异，不能直接调用它并称为 DiagEvo 奖励；其 BLEU 筛选使用空白分词、method1 平滑、阈值 0.5 的 average linkage，可作为下一步明确核验的参考。
+- 全失败优化组仍是诊断材料。[原生采样路径](../../python/gear/training/backends/slime/rollout.py)选择跳过／重抽时，只在返回的 raw groups 中保留训练准入组；完整调用方需要明确使用已支持的 `zeroVarianceGroup="keep"`，或另行保留并验证未准入组，不能因为没有梯度信号而丢掉失败证据。
+- [现有原生采样合同](../../python/gear/training/recipes/agent_grpo.py)只接受 `topP=1`，而论文报告为 0.99。完整配方必须扩展并验证对应行为分布合同，或预先声明使用 `topP=1` 的适配实验；不能将不支持的参数写进配置后视为已经实现。
