@@ -25,6 +25,7 @@ from gear.training.recipes.diagevo_backends import (
     _reserve,
     _saved,
 )
+from gear.training.runtime import preflight
 from gear.training.runtime.implementation import stage_identity
 from gear.training.storage import snapshots
 from gear.training.storage.content import require
@@ -44,7 +45,8 @@ class FrozenHFSolver:
 
     stage_id = "gear.diagevo.frozen-hf-solver:v1"
     source_dependencies = tuple(
-        Path(module.__file__) for module in (diagevo_backends, agent_grpo, samples, snapshots)
+        Path(module.__file__)
+        for module in (diagevo_backends, agent_grpo, samples, snapshots, preflight)
     )
     package_dependencies = ("torch", "transformers", "tokenizers", "safetensors")
 
@@ -60,6 +62,7 @@ class FrozenHFSolver:
         max_calls=4096,
         max_seconds=300,
         seed=0,
+        chat_template_kwargs=None,
     ):
         require(
             isinstance(instruction, str)
@@ -70,7 +73,7 @@ class FrozenHFSolver:
             and type(max_new_tokens) is int
             and 0 < max_new_tokens <= 32768
             and type(max_context_tokens) is int
-            and max_new_tokens < max_context_tokens <= 131072
+            and 0 < max_context_tokens <= 131072
             and type(max_calls) is int
             and 0 < max_calls <= 1000000
             and type(max_seconds) is int
@@ -83,6 +86,11 @@ class FrozenHFSolver:
         self.max_calls, self.seed = max_calls, seed
         self.max_seconds = max_seconds
         self.max_context_tokens = max_context_tokens
+        self.template_options = preflight.generation_template_kwargs(
+            {
+                "chatTemplateKwargs": {} if chat_template_kwargs is None else chat_template_kwargs,
+            }
+        )
         self.sampling = sampling_params(
             {
                 "sampling": dict(
@@ -113,6 +121,7 @@ class FrozenHFSolver:
             "device": "cpu",
             "dtype": "float32",
             "truncation": False,
+            "chatTemplateKwargs": self.template_options,
         }
         _initialize(self.root, self.identity)
         self.policy_id = "frozen-hf/" + model_ref["digest"]
@@ -173,7 +182,12 @@ class FrozenHFSolver:
 
         self._load()
         inputs = self.tokenizer.apply_chat_template(
-            messages, tokenize=True, add_generation_prompt=True, return_dict=False, truncation=False
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=False,
+            truncation=False,
+            **self.template_options,
         )
         require(
             isinstance(inputs, list) and inputs and all(type(token) is int for token in inputs),

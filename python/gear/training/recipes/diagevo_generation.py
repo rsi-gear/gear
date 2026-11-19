@@ -13,8 +13,16 @@ from pathlib import Path
 
 from gear.core import Module, clone
 from gear.core._json import json_value
+from gear.training.data.samples import admit_group
 from gear.training.data.trajectories import RawTrajectory
-from gear.training.recipes import diagevo, diagevo_challenger, diagevo_data, diagevo_memory
+from gear.training.recipes import (
+    agent_grpo,
+    diagevo,
+    diagevo_challenger,
+    diagevo_data,
+    diagevo_memory,
+)
+from gear.training.recipes.agent_grpo import sampling_params
 from gear.training.recipes.diagevo import (
     Cause,
     GenerationDirective,
@@ -98,7 +106,7 @@ class DiagEvoGenerationBuilder:
     stage_id = "gear.diagevo.fresh-generation:v1"
     source_dependencies = tuple(
         Path(module.__file__)
-        for module in (diagevo, diagevo_challenger, diagevo_data, diagevo_memory)
+        for module in (diagevo, diagevo_challenger, diagevo_data, diagevo_memory, agent_grpo)
     )
     package_dependencies = ("nltk", "scikit-learn")
 
@@ -107,8 +115,7 @@ class DiagEvoGenerationBuilder:
         self.store = challenger.store
         self.prompt = clone(prompt if prompt is not None else DiagEvoQuestionPrompt())
 
-    def _value(self, inputs):
-        store, challenger = self.store, self.challenger
+    def _plan(self, inputs):
         memory = tuple(
             Cause(
                 **{
@@ -125,7 +132,8 @@ class DiagEvoGenerationBuilder:
             for key, row in inputs["generation"].items()
         }
         require(
-            set(generation) == {task["id"] for task in challenger.request["trainDataset"]["tasks"]}
+            set(generation)
+            == {task["id"] for task in self.challenger.request["trainDataset"]["tasks"]}
             and _text(inputs["solverPolicyId"]),
             "diagevo-generation-coverage",
             "generation directives must cover the admitted challenger tasks and name the frozen solver",
@@ -134,6 +142,11 @@ class DiagEvoGenerationBuilder:
             key: self.prompt.messages(row, memory=memory, nodes=nodes)
             for key, row in generation.items()
         }
+        return messages, generation
+
+    def _history(self, inputs):
+        store, challenger = self.store, self.challenger
+        messages, generation = self._plan(inputs)
         seen, policies, solver_identities = set(), set(), set()
 
         def check_prompt(values):
@@ -186,20 +199,100 @@ class DiagEvoGenerationBuilder:
             "diagevo-solver-policy-drift",
             "all challenger updates require one frozen solver instruction and sampling contract",
         )
-        lease = inputs["lease"]
+        return messages, generation, batches[-1][1], seen, policies, solver_identities
+
+    def _local_groups(self, inputs, groups, checkpoint, seen):
+        """Validate local inference facts without inventing a native train lease."""
+        from gear.training.storage.loop_journal import _digest
+
+        store, request = self.store, self.challenger.request
+        backend, keys = inputs["localBackend"], inputs["groupKeys"]
+        count = request["trainer"]["rolloutBatchSize"]
+        manifest = store.read_json(checkpoint["hfExportRef"])
         require(
-            lease["synchronizedWeightsRef"] == batches[-1][1]["hfExportRef"]
-            and lease["policyVersion"] not in policies,
-            "diagevo-stale-challenger",
-            "the curriculum must be sampled after the final challenger update",
+            backend.get("modelRef") == checkpoint["hfExportRef"]
+            and backend.get("implementation", {}).get("id") == "gear.diagevo.frozen-hf-solver:v1"
+            and backend.get("sampling") == sampling_params(request["rollout"])
+            and backend.get("instruction") == self.prompt.system
+            and backend.get("maxContextTokens")
+            == request["rollout"]["sampling"]["maxContextTokens"]
+            and backend.get("maxCalls") == count * request["rollout"]["groupSize"]
+            and backend.get("device") == "cpu"
+            and backend.get("dtype") == "float32"
+            and backend.get("truncation") is False
+            and backend.get("chatTemplateKwargs") == inputs["chatTemplateKwargs"]
+            and len(groups) == len(keys) == count
+            and all(_text(key) for key in keys)
+            and len(set(keys)) == count
+            and all(
+                manifest[key] == request["parentModel"][key]
+                for key in ("tokenizerDigest", "chatTemplateDigest")
+            ),
+            "diagevo-local-generation-drift",
+            "local generation must use the final exported challenger and the frozen complete sampling plan",
         )
+        tasks = request["trainDataset"]["tasks"]
+        start = checkpoint["committedUpdate"] * count
+        captured = []
+        for index, group in enumerate(groups):
+            task_id = tasks[(start + index) % len(tasks)]["id"]
+            rows = []
+            for slot, raw in enumerate(group):
+                values = _capture(store, raw, seen)
+                _, context, _, _, _ = values
+                receipt = store.read_json(raw.receipt_refs[0])
+                native = store.read_json(receipt["rawRequestRef"])["native"]
+                require(
+                    context["taskId"] == task_id
+                    and context["groupId"] == _digest([keys[index], task_id])
+                    and context["slot"] == slot
+                    and context["policyVersion"] == "frozen-hf/" + backend["modelRef"]["digest"]
+                    and context["runtimeInstanceId"] == "local-hf/" + _digest(backend)
+                    and context["tokenizerDigest"] == manifest["tokenizerDigest"]
+                    and context["chatTemplateDigest"] == manifest["chatTemplateDigest"]
+                    and context["sampling"] == backend["sampling"]
+                    and context["maxContextTokens"] == backend["maxContextTokens"]
+                    and "trainingRunId" not in context
+                    and "batchId" not in context
+                    and native["backend"] == backend,
+                    "diagevo-local-generation-drift",
+                    "local capture differs from its exact model, task, group or inference identity",
+                )
+                rows.append(values)
+            admit_group([row[0] for row in rows], request["rollout"]["groupSize"], "keep")
+            captured.append(rows)
+        return captured
+
+    def _value(self, inputs):
+        store, challenger = self.store, self.challenger
+        messages, generation, checkpoint, seen, policies, solver_identities = self._history(inputs)
         groups = [[RawTrajectory(**raw) for raw in group] for group in inputs["groups"]]
-        captured = _native_groups(store, challenger.request, groups, lease, seen)
+        if "localBackend" in inputs:
+            require(
+                "lease" not in inputs,
+                "diagevo-local-generation-drift",
+                "local captures have no native lease",
+            )
+            captured = self._local_groups(inputs, groups, checkpoint, seen)
+        else:
+            lease = inputs["lease"]
+            require(
+                lease["synchronizedWeightsRef"] == checkpoint["hfExportRef"]
+                and lease["policyVersion"] not in policies,
+                "diagevo-stale-challenger",
+                "the curriculum must be sampled after the final challenger update",
+            )
+            captured = _native_groups(store, challenger.request, groups, lease, seen)
         samples, directives = [], {}
         for group in captured:
             for values in group:
-                check_prompt(values)
                 _, context, identity, body, response = values
+                require(
+                    context["taskId"] in messages
+                    and body["messages"] == messages[context["taskId"]],
+                    "diagevo-generation-prompt-drift",
+                    "challenger captures must contain the exact declared memory prompt",
+                )
                 samples.append(
                     ChallengerSample(
                         context["id"],
@@ -238,6 +331,16 @@ class DiagEvoGenerationBuilder:
             "nodes": json_value([asdict(row) for row in nodes]),
             "generation": json_value({key: asdict(row) for key, row in generation.items()}),
             "solverPolicyId": solver_policy_id,
+        }
+        return self.store.put_json(self._value(inputs)[0])
+
+    def seal_local(self, groups, *, backend, group_keys, history):
+        """Seal post-update local captures; history was checked before inference."""
+        inputs = {
+            **deepcopy(history),
+            "groups": [[asdict(raw) for raw in group] for group in groups],
+            "localBackend": deepcopy(backend),
+            "groupKeys": list(group_keys),
         }
         return self.store.put_json(self._value(inputs)[0])
 

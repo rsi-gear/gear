@@ -125,6 +125,43 @@ class FrozenSolverTests(unittest.TestCase):
             self.assertEqual(self.sample(backend), expected)
         self.assertIsNone(backend.model)
 
+    def test_declared_template_options_change_actual_tokens_and_enter_identity(self):
+        from transformers import AutoTokenizer
+
+        directory = self.root / "model"
+        tokenizer = AutoTokenizer.from_pretrained(directory, local_files_only=True)
+        tokenizer.chat_template = (
+            "{% if enable_thinking %}{{ unk_token }}{% else %}{{ eos_token }}{% endif %}"
+        )
+        tokenizer.save_pretrained(directory)
+        ref = seal_hf(self.store, directory)["model"]["hfSnapshotRef"]
+        for flag, expected in ((False, [0]), (True, [1])):
+            backend = self.make(
+                root=str(flag), model_ref=ref, chat_template_kwargs={"enable_thinking": flag}
+            )
+            row = self.sample(backend, count=1)["q"][0]
+            receipt = self.store.read_json(row.receipt_refs[0])
+            self.assertEqual(self.store.read_json(receipt["inputTokenIdsRef"]), expected)
+            self.assertEqual(backend.identity["chatTemplateKwargs"], {"enable_thinking": flag})
+        for options in ({"enable_thinking": "false"}, {"unsealed_option": True}):
+            with self.subTest(options=options), self.assertRaises(ContractError):
+                self.make(root="invalid", chat_template_kwargs=options)
+
+    def test_native_output_budget_can_fill_the_remaining_context(self):
+        backend = FrozenHFSolver(
+            self.store,
+            self.root / "full-context",
+            model_ref=self.ref,
+            instruction="Solve the question.",
+            max_new_tokens=128,
+            max_context_tokens=128,
+        )
+        row = self.sample(backend, count=1)["q"][0]
+        receipt = self.store.read_json(row.receipt_refs[0])
+        effective = self.store.read_json(receipt["effectiveSamplingRef"])
+        self.assertEqual(effective["max_new_tokens"], 127)
+        self.assertEqual(self.store.read_json(receipt["inputTokenIdsRef"]), [0])
+
     def test_local_interruption_reuses_seed_and_quota_reservation(self):
         import gear.training.recipes.diagevo_inference as module
 
