@@ -249,7 +249,11 @@ async def respond(message):
         else:
             write_json(intent, {"binding": binding})
         benchmark = (
-            None if request.get("operatorCall") else Benchmark(config["ifeval_root"])
+            None
+            if request.get("operatorCall")
+            else Benchmark(
+                config["ifeval_root"], language_seed=config.get("language_seed", 0)
+            )
         )
         async with TextCalls(config["calls"], max_calls=config["max_calls"]) as calls:
             if action == "inspect":

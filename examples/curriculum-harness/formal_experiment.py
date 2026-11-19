@@ -57,6 +57,10 @@ MUTATIONS = (
 )
 
 
+class ModelResponseError(ValueError):
+    """A completed model response failed its declared JSON contract."""
+
+
 def freeze(path, value):
     value = json_data(value)
     if path.exists() and read_json(path) != value:
@@ -195,8 +199,11 @@ class Study:
             model=self.config["teacher"],
             effort=self.config["effort"],
         )
-        response = json.loads(receipt["response"])
-        validate_output(model_input.schema, response)
+        try:
+            response = json.loads(receipt["response"])
+            validate_output(model_input.schema, response)
+        except ValueError as error:
+            raise ModelResponseError(str(error)) from error
         return response
 
     async def generate(self, seed, arm, round_index, rows, used):
@@ -327,7 +334,18 @@ class Study:
         )
         return tasks
 
-    async def search(self, seed, arm, round_index, harness, tasks, *, preflight=False):
+    async def search(
+        self,
+        seed,
+        arm,
+        round_index,
+        harness,
+        tasks,
+        *,
+        preflight=False,
+        training_gate=False,
+        provider_script=None,
+    ):
         directory = (
             self.root / f"seed-{seed}" / arm / f"round-{round_index}" / "project"
         )
@@ -357,7 +375,8 @@ class Study:
                     "rounds": 1,
                     "max_candidates": 2,
                     "repetitions": 1,
-                    "max_evaluations": len(tasks) + 2 * len(self.splits["dev"]),
+                    "max_evaluations": len(tasks) * (2 if training_gate else 1)
+                    + 2 * len(self.splits["dev"]),
                 },
                 "evaluation": {
                     "repair": {
@@ -393,6 +412,16 @@ class Study:
             raise ValueError("admitted pool changed")
         path.write_text(source)
         project = Project.open(directory)
+        provider_script = Path(
+            provider_script or Path(__file__).with_name("formal_provider.py")
+        ).resolve()
+        freeze(
+            directory.parent / "provider.json",
+            {
+                "path": str(provider_script),
+                "sha256": hashlib.sha256(provider_script.read_bytes()).hexdigest(),
+            },
+        )
         profile_root = Path(os.environ["GEAR_PROFILE_ROOT"])
         profile_root.mkdir(parents=True, exist_ok=True)
         launcher = profile_root / "provider-launcher.sh"
@@ -401,7 +430,7 @@ class Study:
             + shlex.join(
                 [
                     sys.executable,
-                    str(Path(__file__).with_name("formal_provider.py")),
+                    str(provider_script),
                 ]
             )
             + "\n"
@@ -428,6 +457,9 @@ class Study:
                     "model": model,
                     "effort": self.config["effort"],
                     "ifeval_root": str(self.benchmark.root),
+                    "language_seed": self.benchmark.verifier_policy.get(
+                        "language_detection_seed", 0
+                    ),
                 },
             }
             profile_path = profile_root / f"study-{role}.json"
@@ -443,6 +475,7 @@ class Study:
             target_characters=1000,
             max_repairs=2,
             nominate=False,
+            training_gate=training_gate,
         )
         if preflight:
             await project.acheck()

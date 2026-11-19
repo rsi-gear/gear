@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 from gear.canonical import digest
 from gear.core import CandidateRef, Meta, MetaInput
+from gear.curriculum import ModelInput
 
 EXAMPLES = Path(__file__).resolve().parents[2] / "examples/curriculum-harness"
 sys.path.insert(0, str(EXAMPLES))
@@ -86,6 +87,21 @@ class ScopeTests(unittest.TestCase):
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_bad_model_json_is_distinct_from_receipt_integrity_failure(self):
+        async def run():
+            caller = object.__new__(study.Study)
+            caller.config = {"teacher": "fixture", "effort": "low"}
+            caller.calls = SimpleNamespace(call=AsyncMock(return_value={"response": "not JSON"}))
+            prepared = ModelInput("Reply", {"type": "object"}, {})
+            with self.assertRaises(study.ModelResponseError):
+                await caller.model_json("generate", prepared)
+            caller.calls.call.side_effect = ValueError("model receipt bytes changed")
+            with self.assertRaisesRegex(ValueError, "receipt bytes changed") as caught:
+                await caller.model_json("generate", prepared)
+            self.assertNotIsInstance(caught.exception, study.ModelResponseError)
+
+        asyncio.run(run())
+
     def sdk_patch(self):
         return patch.dict(
             sys.modules,
