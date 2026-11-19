@@ -1,6 +1,6 @@
 # DiagEvo 课程规则的当前接入
 
-`gear.training.recipes.diagevo.DiagEvoPolicy` 已实现 DiagEvo 的投票筛选、频率调度和状态更新规则，`gear.training.recipes.diagevo_memory.DiagEvoDiagnostician` 提供诊断、检索筛选及节点归并组件。两者是训练配方的内部组件，尚未注册为可执行训练 recipe，也未在 `gear.algorithms` 中宣称完整算法支持。采样、答案等价判定、实际模型与 embedding 调用、两模型 GRPO 更新和持久化仍需由完整调用方接入。
+`gear.training.recipes.diagevo.DiagEvoPolicy` 已实现 DiagEvo 的投票筛选、频率调度和状态更新规则，`gear.training.recipes.diagevo_memory.DiagEvoDiagnostician` 提供诊断、检索筛选及节点归并组件。`gear.training.recipes.diagevo_round.DiagEvoMemoryUpdater` 已将这些组件串成一个可恢复的轮末记忆更新流程。它们尚未注册为完整训练 recipe，也未在 `gear.algorithms` 中宣称完整算法支持。采样、答案等价判定、实际模型与 embedding 后端、两模型 GRPO 更新和完整外层执行仍待接入。
 
 规则依据 [DiagEvo 第 2 节及附录 E](https://arxiv.org/html/2609.00768v2#S2)，默认构造样本数 12、优化组大小 8；绝对置信度区间为 [0.25, 0.75]，相对阈值 1.6，晋级阈值 0.7，探索系数 0.5。所有参数进入现有 `Module` 描述，可重建和替换，不在 `curriculum` 增加专用分支。
 
@@ -10,7 +10,7 @@
 
 构造报告保留完整输入与一条多数答案参考轨迹。`optimization` 需要独立的新样本组，用与伪标签一致／不一致定义 +1／-1，即使全部优化响应都不一致，原构造参考仍可用于对比诊断。它不把构造样本复用为训练 rollout。优化期间策略可以推进，每个组必须保留自己的实际 policy；原生 token、logprob、组完整性和当前策略资格仍由训练 backend 检查。
 
-报告修改后不能继续使用：消费时从原构造样本重新计算投票。缺失、未完成、混合策略或重复 sample 不会被当作完整组；caller 需要先处理原外部调用结果，不能用部分组补出失败标签。
+报告修改后不能继续使用：消费时从原构造样本重新计算投票。缺失、未完成、混合策略或重复 sample 不会被当作完整组；为同一个轨迹引用另取 sample ID 也不能重复计票。caller 需要先处理原外部调用结果，不能用部分组补出失败标签。
 
 ## 调度与状态
 
@@ -34,12 +34,36 @@
 
 原因与节点 label 的 10–20 词长度在解析时强制检查；“可迁移、动宾短语、无题目特有信息”等语义要求依赖诊断模型，不能仅凭格式验证宣称满足。调用方必须把文本、embedding 及 embedding 模型身份绑定到实际记录；本组件不能验证调用方提供的文本就是对应 capture 的内容，也不能验证向量确实来自该文本。
 
-完整调用方需要保留生成时的轮初 memory 用于 recurrence 检查，并在轮内让后续去重看到先前归因的新原因；`policy.update` 的状态转移只在最终提交时生效。归并决定绑定它所看到的完整节点快照，节点成员变更后不能静默复用旧响应。这些持久化与调用恢复还没有在两模型训练入口中串起。
+记忆更新调用方保留生成时的轮初 memory 用于 recurrence 检查，并在轮内让后续去重看到先前归因的新原因；状态转移只在最终提交时生效。归并决定绑定它所看到的完整节点快照，节点成员变更后不能静默复用旧响应。
+
+## 可恢复的轮末调用流程
+
+`DiagEvoMemoryUpdater.update(ctx, evidence, memory=..., nodes=...)` 使用现有 `TrainingContext` 和该 stage 的工作目录。`RoundEvidence` 包含全候选池的构造票、生成指令、真实优化组、逐题文本，以及诊断必需的失败／构造参考文本；覆盖不全、夹带其他文本、重用原 capture 或重复计入历史失败会在外部调用前拒绝。这里检查引用与输入一致性，不认证它们对应的原生采样内容；该认证仍由训练调用方负责。
+
+记忆更新先冻结 operation、checkpoint、history 摘要、配置、源文件摘要、算子描述和后端身份，再按 sample ID 稳定顺序处理失败。新原因的 ID 由本轮输入和样本派生，后续失败可立即通过全量检索匹配它；每次重算都从轮初 memory 和累计归因出发，避免重复递增。所有失败处理完后才执行节点归并并原子保存结果。
+
+节点候选对在归并开始前固定。若前一个归并删掉了节点，后续候选对会解析到存续节点，并使用更新后的全部成员重新询问模型；不会仅凭传递关系自动合并。相同节点快照不重复询问，单轮也不因新 label 无限重新筛选。
+
+实际调用只要求四个普通异步函数，由调用方处理 SDK 格式转换：
+
+| 函数 | 输入与返回 |
+| --- | --- |
+| `diagnose(key, model_input)` | 返回已完成模型响应的 JSON；组件执行其语义范围检查 |
+| `embed(key, text)` | 返回一个向量；embedding 模型身份和文本绑定由调用方负责 |
+| `recover_diagnosis(key)` / `recover_embedding(key)` | 返回 `{"state":"completed","output":...}`、`{"state":"not_submitted"}` 或 `{"state":"unknown"}` |
+
+原生请求身份、实际 token／费用与传输层记录留在这两个后端，按相同 key 查回。只有后端能够确证从未提交时才可返回 `not_submitted`；网络错误或本地未收到响应不能作为此证据。`unknown` 会停止，已完成但未写回本地的结果先恢复；无效的已完成模型响应也会保存，重跑时不会自动换一个响应。
+
+每轮默认最多 256 个诊断请求和 256 个 embedding 请求，参数随输入冻结；提取、去重、分配、归并共同占用诊断配额，同文本的 embedding 在轮内复用。这是逻辑请求限额，不是原生重试或金额上限。后端身份必须包含实际模型版本和配置，不能仅填一个不随实现变化的昵称。
+
+已完成的 `TrainingLoop` stage 会直接重放其结果。接入方复用该 stage 前应调用 `DiagEvoMemoryUpdater.verify(stage_workspace, operation_id=...)` 检查记忆侧录和全部子调用记录；记录缺失或变化不会被默认为成功。再次调用 `update` 也会重算纯决策并核对最终结果，已有外部结果直接复用。该组件可以放入现有调用方的训练阶段，没有为 curriculum 增加执行层；它自身不是两模型训练循环。
 
 ## 验证与剩余接入
 
 `python/tests/test_diagevo_policy.py` 覆盖模糊多数票、过易／过难题、完整组、构造／优化分离、全部优化失败时的参考保留、频率抽样和同节点配对、被筛除题参与晋级、同轮晋级后重新激活、不完整题池与重复归因拒绝。
 
-`python/tests/test_diagevo_memory.py` 另覆盖全失败组的参考保留、同节点已知原因复现、不强制归因、全量原因筛选、余弦数值边界、最大成员分数检索、候选外 ID 拒绝、空记忆建节点与归并时状态保持。两组共 16 个测试通过，组件可按 `Module` 重建。
+`python/tests/test_diagevo_memory.py` 另覆盖全失败组的参考保留、同节点已知原因复现、不强制归因、全量原因筛选、余弦数值边界、最大成员分数检索、候选外 ID 拒绝、空记忆建节点与归并时状态保持。纯组件可按 `Module` 重建。
 
-尚缺 challenger 更新后重新采样候选池、solver 更新、实际诊断／embedding 调用、正式调用记录与恢复，以及真实运行和效果对照。当前单元验证不替代完整 DiagEvo 或 GPU 实验验收。
+`python/tests/test_diagevo_round.py` 使用明确标识的持久化测试服务覆盖整轮处理、同轮新原因去重、晋级和重新激活、重叠节点对、提取／embedding／分配／归并后回执丢失、最终提交后中断、未知结果、未提交恢复、并发所有权、预算耗尽及侧录缺失。三组共 26 个测试通过；这些测试服务不是实际 LLM 或 embedding 效果证据。
+
+尚缺 challenger 更新后重新采样候选池、solver 更新、实际诊断／embedding 后端及原生费用回执绑定、完整外层恢复，以及真实运行和效果对照。当前记忆流程验证不替代完整 DiagEvo 或 GPU 实验验收。

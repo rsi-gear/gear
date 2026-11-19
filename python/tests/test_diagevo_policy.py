@@ -72,6 +72,7 @@ class VoteTests(unittest.TestCase):
             (replace(values[0], policy_id="another"),) + values[1:],
             (replace(values[0], question_id="other"),) + values[1:],
             (replace(values[0], answer_key=""),) + values[1:],
+            (replace(values[0], trajectory_ref=values[1].trajectory_ref),) + values[1:],
         )
         for rows in bad:
             with self.subTest(rows=rows), self.assertRaisesRegex(ValueError, "complete"):
@@ -91,6 +92,11 @@ class VoteTests(unittest.TestCase):
         reused = (replace(responses[0], sample_id=vote.samples[0].sample_id),) + responses[1:]
         with self.assertRaisesRegex(ValueError, "new response"):
             policy.optimization(vote, reused)
+        aliased_capture = (
+            replace(responses[0], trajectory_ref=vote.samples[0].trajectory_ref),
+        ) + responses[1:]
+        with self.assertRaisesRegex(ValueError, "new response"):
+            policy.optimization(vote, aliased_capture)
         with self.assertRaisesRegex(ValueError, "construction evidence"):
             policy.optimization(replace(vote, answer_key="invented"), responses)
         easy = policy.construction(samples("a" * 12))

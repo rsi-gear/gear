@@ -111,6 +111,7 @@ def _samples(samples: Sequence[SolverSample], count: int, phase: str) -> tuple[S
     if (
         len(values) != count
         or not _unique([sample.sample_id for sample in values])
+        or not _unique([sample.trajectory_ref for sample in values])
         or len({sample.question_id for sample in values}) != 1
         or len({sample.policy_id for sample in values}) != 1
         or any(
@@ -200,6 +201,9 @@ class DiagEvoPolicy(Module):
             or {value.sample_id for value in values}.intersection(
                 value.sample_id for value in vote.samples
             )
+            or {value.trajectory_ref for value in values}.intersection(
+                value.trajectory_ref for value in vote.samples
+            )
         ):
             raise ValueError("optimization requires a retained question and new response samples")
         # The policy may advance during solver training. Keep each actual policy
@@ -277,13 +281,20 @@ class DiagEvoPolicy(Module):
         previous = _memory(memory)
         by_question: dict[str, ConstructionVote] = {}
         sample_ids: set[str] = set()
+        capture_refs: set[str] = set()
         for vote in votes:
             self._vote(vote)
             keys = {sample.sample_id for sample in vote.samples}
-            if vote.question_id in by_question or sample_ids.intersection(keys):
+            refs = {sample.trajectory_ref for sample in vote.samples}
+            if (
+                vote.question_id in by_question
+                or sample_ids.intersection(keys)
+                or capture_refs.intersection(refs)
+            ):
                 raise ValueError("construction questions and sample identities must be unique")
             by_question[vote.question_id] = vote
             sample_ids.update(keys)
+            capture_refs.update(refs)
         if set(generation) != set(by_question) or len({vote.policy_id for vote in votes}) > 1:
             raise ValueError("promotion needs the complete round pool from one frozen solver")
         measurements: dict[str, list[float]] = {key: [] for key in previous}
@@ -314,9 +325,11 @@ class DiagEvoPolicy(Module):
             ):
                 raise ValueError("optimization evidence differs from its construction pool")
             keys = {sample.sample_id for sample in group.samples}
-            if sample_ids.intersection(keys):
+            refs = {sample.trajectory_ref for sample in group.samples}
+            if sample_ids.intersection(keys) or capture_refs.intersection(refs):
                 raise ValueError("optimization cannot reuse any construction or prior group sample")
             sample_ids.update(keys)
+            capture_refs.update(refs)
             failures.update(
                 sample.sample_id
                 for sample, reward in zip(group.samples, group.rewards, strict=True)
