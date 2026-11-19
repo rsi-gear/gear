@@ -153,7 +153,7 @@ Optimization is limited to the components you authorize Gear to modify.
 
 ### Customizable algorithm components
 
-Reusable operators live in `gear.core`, `gear.evaluation`, `gear.memory`, `gear.training` and `gear.search`; complete recipes live in `gear.algorithms`. For example, `ApplyEdits` and `CheckEdits` belong to `gear.core`. The six search strategy modules are:
+Reusable operators live in `gear.core`, `gear.evaluation`, `gear.memory`, `gear.curriculum`, `gear.training` and `gear.search`; complete recipes live in `gear.algorithms`. `gear.curriculum` provides independent [failure-to-data operators and a CPU loop example](docs/curriculum.zh-CN.md); callers own conversion and execution. For example, `ApplyEdits` and `CheckEdits` belong to `gear.core`. The six search strategy modules are:
 
 | Module | What you can customize |
 | --- | --- |

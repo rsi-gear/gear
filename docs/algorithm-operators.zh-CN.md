@@ -1,12 +1,13 @@
 # 可组合算法算子作者指南
 
-算子按用途从五个能力入口导入，完整算法从 `gear.algorithms` 导入：
+算子按用途从六个能力入口导入，完整算法从 `gear.algorithms` 导入：
 
 | 入口 | 常用内容 |
 | --- | --- |
 | `gear.core` | Module、编辑、候选生成、Meta、材料读取、Call 与状态 |
 | `gear.evaluation` | Evaluate、Rollout、样本计划、证据与 CompareCandidates |
 | `gear.memory` | 历史查询、档案更新、Playbook、知识库 |
+| `gear.curriculum` | 失败案例、学习目标、练习生成与验证；[调用方组合示例](curriculum.zh-CN.md) |
 | `gear.training` | 训练数据、模型更新与训练流程 |
 | `gear.search` | 搜索合同、筛查和可组合流程；六类策略位于对应子模块 |
 | `gear.algorithms` | 可直接交给 Project 的 OPRO、ACE、RRSI、DarwinX、GEPA、RandomSearch、Harness2 完整实现 |

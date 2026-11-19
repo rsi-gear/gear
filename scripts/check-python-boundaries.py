@@ -2,11 +2,12 @@
 import ast
 import importlib.util
 import re
+import sys
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1] / 'python' / 'gear'
 failures = []
-capabilities = {'core', 'evaluation', 'memory', 'search'}
+capabilities = {'core', 'evaluation', 'memory', 'search', 'curriculum'}
 pure_packages = capabilities | {'algorithms'}
 graph = {}
 for path in root.rglob('*.py'):
@@ -30,10 +31,14 @@ for path in root.rglob('*.py'):
             target = module.split('.')[1] if module.startswith('gear.') else None
             if relative.parts[0] in capabilities | {'training'} and target in {'algorithms', 'ops', 'project'}:
                 failures.append(f'{relative}: capability depends on higher/compatibility layer {module}')
-            if relative.parts[0] == 'core' and target in {'evaluation', 'memory', 'search', 'training', 'refine'}:
+            if relative.parts[0] == 'core' and target in {'evaluation', 'memory', 'search', 'curriculum', 'training', 'refine'}:
                 failures.append(f'{relative}: core depends on domain/runtime {module}')
-            if relative.parts[0] in {'evaluation', 'memory'} and target in {'search', 'training'}:
+            if relative.parts[0] in {'evaluation', 'memory'} and target in {'search', 'curriculum', 'training'}:
                 failures.append(f'{relative}: result/record capability depends on strategy {module}')
+            if relative.parts[0] == 'curriculum' and target not in {None, 'canonical', 'core', 'curriculum'}:
+                failures.append(f'{relative}: curriculum depends on another capability/runtime {module}')
+            if relative.parts[0] == 'curriculum' and module.split('.')[0] not in sys.stdlib_module_names | {'gear'}:
+                failures.append(f'{relative}: curriculum imports non-stdlib dependency {module}')
             if target == 'ops':
                 failures.append(f'{relative}: implementation uses compatibility import {module}')
             if module == 'gear_training' or module.startswith('gear_training.'):

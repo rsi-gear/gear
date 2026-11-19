@@ -41,6 +41,12 @@ assert check_operator(ApplyEdits(), value)['status']=='passed'
 meta=Meta('inspect', {'type':'object'})
 call=clone(meta)(MetaInput(CandidateRef('run','anchor',digest('anchor')), ('task',)), key='inspect')
 assert isinstance(call, Call) and call.effect['kind']=='meta'
+from gear.curriculum import ExtractOutcomeCases, OutcomeRecord, GeneratePractice
+case=OutcomeRecord('task','family','sample',0,'policy','environment','completed',False,True)
+assert check_operator(ExtractOutcomeCases(), (case,))['status']=='passed'
+assert clone(GeneratePractice()).identity == GeneratePractice().identity
+import sys
+assert not any(name.startswith(('gear.search','gear.training','gear.evaluation','gear.memory','gear.project')) for name in sys.modules)
 `], { cwd: root, env: { ...process.env, PYTHONPATH: '' } })
   run(isolatedPython, ['-c', `from gear import ProjectError
 raw=b'warning'+bytes([10])+b'{"code":"provider-environment-unavailable","message":"unavailable"}'+bytes([10])
@@ -56,6 +62,13 @@ assert ProjectError("local-error","local").stderr is None
     assert.match(run(isolatedPython, ['-m', module, '--help'], { cwd: root, env: { ...process.env, PYTHONPATH: '' } }), /usage:/)
   cpSync(join(source, 'examples/training-loop/linear_cpu.py'), join(root, 'linear_cpu.py'))
   run(isolatedPython, [join(root, 'linear_cpu.py'), '--workspace', join(root, 'training')], { cwd: root, env: { ...process.env, PYTHONPATH: '' } })
+  cpSync(join(source, 'examples/training-loop/failure_curriculum_cpu.py'), join(root, 'failure_curriculum_cpu.py'))
+  const curriculumArgs = [join(root, 'failure_curriculum_cpu.py'), '--workspace', join(root, 'curriculum')]
+  const curriculumEnv = { cwd: root, env: { ...process.env, PYTHONPATH: '' } }
+  const curriculumResult = JSON.parse(run(isolatedPython, curriculumArgs, curriculumEnv))
+  assert.equal(curriculumResult.rounds_completed, 4)
+  assert.ok(curriculumResult.final_held_out_mse < curriculumResult.initial_held_out_mse)
+  assert.deepEqual(JSON.parse(run(isolatedPython, curriculumArgs, curriculumEnv)), curriculumResult)
   const cli = join(install, 'node_modules/rsi-gear/lib/cli.js')
   const profiles = join(root, 'profiles'); mkdirSync(profiles)
   const adapter = join(root, 'fixture-provider.mjs'); cpSync(join(source, 'tests/fixtures/project-provider.mjs'), adapter)
