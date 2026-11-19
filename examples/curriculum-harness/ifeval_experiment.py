@@ -163,11 +163,23 @@ class Benchmark:
         descriptions = []
         for name, kwargs in zip(task["instruction_id_list"], task["kwargs"]):
             instruction = self.registry[name](name)
-            descriptions.append(instruction.build_description(**kwargs))
+            description = instruction.build_description(**kwargs)
             # Reject randomly defaulted verifier parameters.
             actual = instruction.get_instruction_args() or {}
             if actual != kwargs:
                 raise ValueError("verifier has unfrozen/defaulted parameters")
+            if name == "startend:end_checker":
+                # The upstream description appends sentence punctuation to the
+                # phrase, making an already punctuated ending look one character
+                # longer than the frozen verifier expects. Delimit the literal.
+                description = (
+                    "The final characters of your response must equal the value of "
+                    "this JSON string: "
+                    + json.dumps(kwargs["end_phrase"], ensure_ascii=False)
+                    + "\nDo not include the JSON string delimiters or append any "
+                    "characters after the required ending."
+                )
+            descriptions.append(description)
         return descriptions
 
     def grade(self, task, response):

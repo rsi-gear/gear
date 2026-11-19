@@ -152,6 +152,34 @@ def export(workspace, benchmark, output):
         for path in workspace.glob("seed-*/*/round-*/generation.json")
     }
     empty = [name for name, value in generations.items() if not value["tasks"]]
+    # The frozen runner stops when any arm has fewer than three admitted tasks,
+    # which includes nonempty shortfalls. Preserve old zero-pool exports exactly.
+    shortfalls = []
+    for name, value in generations.items():
+        if not 0 < len(value["tasks"]) < 3:
+            continue
+        selected = {
+            item["draft_id"]
+            for report in value["reports"]
+            for item in report["selection"]["selections"]
+        }
+        generated = [task for task in value["tasks"] if task.get("kind") == "generated"]
+        if (
+            len({task["id"] for task in value["tasks"]}) != len(value["tasks"])
+            or {task["curriculum_draft_id"] for task in generated} != selected
+            or len(generated) != len(selected)
+            or any(
+                task not in training.values()
+                for task in value["tasks"]
+                if task not in generated
+            )
+        ):
+            raise ValueError(
+                "short pool differs from its admitted generated and training tasks"
+            )
+        shortfalls.append(
+            {"generation": name, "admitted": len(value["tasks"]), "minimum": 3}
+        )
     readiness = None
     baseline = evaluations.get("baseline_train", [])
     if baseline and not runs and not generations:
@@ -180,7 +208,7 @@ def export(workspace, benchmark, output):
                 "allowed_range": [0.25, 0.875],
                 "valid": False,
             }
-    if not malformed and not empty and readiness is None:
+    if not malformed and not empty and not shortfalls and readiness is None:
         raise ValueError(
             "no completed readiness, JSON, or generated-pool failure explains this stop"
         )
@@ -198,6 +226,8 @@ def export(workspace, benchmark, output):
     }
     if readiness is not None:
         artifact["readiness_failure"] = readiness
+    if shortfalls:
+        artifact["insufficient_generated_pools"] = shortfalls
     manifest = {
         "status": "aborted_before_test",
         "evidence_digest": digest(artifact),
@@ -222,6 +252,9 @@ def export(workspace, benchmark, output):
     if readiness is not None:
         manifest["stop_reason"] = "training_readiness_failed"
         manifest["readiness_failure"] = readiness
+    if shortfalls:
+        manifest["stop_reason"] = "too_few_validated_practices"
+        manifest["insufficient_generated_pools"] = shortfalls
     output.mkdir(parents=True, exist_ok=True)
     write_json(output / "evidence.json", artifact)
     write_json(output / "manifest.json", manifest)

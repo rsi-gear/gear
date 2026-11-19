@@ -1,0 +1,7 @@
+{
+  "evidence_digest": "sha256:af4dc4846b13c58112f4c27a44983c1a50a8ade56947a0232eada95334cef71f",
+  "logical_model_calls": 2,
+  "known_tokens": 24942,
+  "held_out_model_calls": 0,
+  "role": "training-only generation rendering probe; not a strategy comparison"
+}

@@ -2,6 +2,7 @@
 
 import asyncio
 import importlib.util
+import json
 import sys
 import tempfile
 import types
@@ -22,6 +23,30 @@ def rows(values):
 
 
 class ComparisonTests(unittest.TestCase):
+    def test_exact_ending_is_delimited_without_changing_frozen_verifier_arguments(self):
+        class Instruction:
+            def __init__(self, name):
+                self.kwargs = None
+
+            def build_description(self, **kwargs):
+                self.kwargs = kwargs
+                return "Finish with " + kwargs["end_phrase"] + "."
+
+            def get_instruction_args(self):
+                return self.kwargs
+
+        benchmark = example.Benchmark.__new__(example.Benchmark)
+        benchmark.registry = {"startend:end_checker": Instruction}
+        for phrase in ("Yes Mom, I am Dave.", 'She said "yes".', "line one\nline two."):
+            task = {
+                "instruction_id_list": ["startend:end_checker"],
+                "kwargs": [{"end_phrase": phrase}],
+            }
+            rendered = benchmark.descriptions(task)[0]
+            literal = rendered.split("this JSON string: ", 1)[1].split("\nDo not", 1)[0]
+            self.assertEqual(json.loads(literal), phrase)
+            self.assertEqual(task["kwargs"][0]["end_phrase"], phrase)
+
     def test_calibration_controls_can_violate_the_actual_letter_ceiling(self):
         task = {
             "instruction_id_list": ["keywords:letter_frequency"],

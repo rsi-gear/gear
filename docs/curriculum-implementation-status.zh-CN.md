@@ -9,7 +9,7 @@
 | 八个基础算子与轻量输入输出 | 已实现 | 当前 API、Module 重建、边界和算子测试 |
 | harness 正式搜索接入（优先） | 已实现并通过离线 provider 集成 | `ReflectiveSearch` 经真实 `Project.refine`、隔离 worker、持久执行器运行；训练与选型范围分离，候选封存与恢复已验证；真实模型接入见下一项实验 |
 | 候选约束与有限修订（优先） | 已实现并通过集成 | `PromptConstraints` 与独立 Meta 修订，稳定调用键、有限次数、收费回执恢复；超长文本不截断、不封存；真实实验中仍需核验各组有效候选比例 |
-| 有效真实 LLM 对照（优先） | 第一轮已审计；第二轮中止；第三次切分基线饱和；第四版通过 readiness，完整验收未完成 | 第一轮 1,475 次调用、24/24 有效候选，但随机语言检测影响一次采纳，见[审计](../research/curriculum-harness-2026-11-20/README.zh-CN.md)。[第二轮](../research/curriculum-harness-2026-11-20-v2/README.zh-CN.md)固定 seed 后因负例校准不足及错误 JSON 中止；[第三次切分](../research/curriculum-harness-2026-11-20-v3/README.zh-CN.md)训练 8/8 饱和，测试未开启。第四版沿用已修复的冻结代码，切分 seed 20261123、排除 208 个来源，训练 6/8；仍待完整对照与审计 |
+| 有效真实 LLM 对照（优先） | 第一轮已审计；第二、四版中止；第三次切分基线饱和；完整验收未完成 | 第一轮 1,475 次调用、24/24 有效候选，但随机语言检测影响一次采纳，见[审计](../research/curriculum-harness-2026-11-20/README.zh-CN.md)。[第二轮](../research/curriculum-harness-2026-11-20-v2/README.zh-CN.md)因负例校准不足及错误 JSON 中止；[第三次切分](../research/curriculum-harness-2026-11-20-v3/README.zh-CN.md)训练 8/8 饱和。[第四版](../research/curriculum-harness-2026-11-20-v4/README.zh-CN.md)训练 6/8，通过八个搜索后因 failure 组仅准入一条练习中止；359 次调用已归档，328 条评价重放一致，最终测试未开启。尚未证明稳定泛化收益 |
 | 学习目标策略 | 测量策略、信号与 skill-tree 算子已实现 | frontier/forgetting/rare_action/signal_mix 有跨策略条件与消融测试；`ExtractLearningSignals` 按 CoEvolve 三类布尔条件独立提取；`ProposeSubskills/PlanSkillPractice` 验证树版本、family、失败引用、配额与不可变更新，Module 重建通过 |
 | 任务、环境、轨迹／修复、过程问答生成 | 四类合同、生成解析与分类型验证已实现；完整配方待验收 | 环境调用方测试实际执行参考与负例；trajectory 必须有 replay 执行证据，example 走 semantic correctness；真实环境配方另行验收 |
 | 练习池筛选 | 纯算子与边界测试已完成 | 语义近邻绑定比较池和完整性；当前策略难度测量；预留探索槽；混合来源配额不足不暗中补齐 |
@@ -18,7 +18,7 @@
 | Forge-inspired 外层配方 | IFEval 文本配方已实现并通过离线正式运行集成；真实效果未验收 | [配方与差异](../examples/curriculum-harness/FORGE.zh-CN.md)：同批训练门槛、逐题 front 选择、停滞触发、按 epoch 记忆、四类变异及独立语义验证、扩池后未见优先；三轮真实 CLI/worker 集成验证新 run 准入与恢复。非单 run 动态池或工具环境论文复现 |
 | DataEnvGym-inspired 配方 | skill-tree CPU 配方已实现；LLM/GPU 效果未验收 | [运行与适配差异](../examples/training-loop/DATAENVGYM.zh-CN.md)：实际六轮 TrainingLoop、expand/refocus 策略、校准、参数更新、固定训练探针反馈；未见输入 MSE 35156.25 → 0。树／任务／验证记录绑定训练阶段并覆盖三个中断点恢复。该算术结果不证明论文基准上的收益 |
 | SENTINEL / CoEvolve 配方 | 待实现 | 各自实际执行入口、可替换组件、专有采样／验证信号与测试；能力不足明确拒绝，不能用空导出冒充支持 |
-| DiagEvo 配方 | 专用课程规则已实现；完整执行入口仍缺 | [规则与边界](training/diagevo.zh-CN.md)：双置信度、构造／优化样本分离、频次调度、同节点 cross-state stitching、全候选池晋级和同轮重新激活已测试；尚缺两模型更新、诊断检索／节点合并、调用恢复与真实效果实验 |
+| DiagEvo 配方 | 专用课程与诊断组件已实现；完整执行入口仍缺 | [规则与边界](training/diagevo.zh-CN.md)：双置信度、构造／优化分离、频次调度、stitching、全池晋级、重新激活，以及失败诊断解析、全量原因检索、语义确认合同、节点分配与保留状态的归并已测试；尚缺两模型更新、实际诊断与 embedding 调用、调用恢复及真实效果实验 |
 | TRACE / Agent-R / Self-Direction 配方 | 待实现 | 实际环境生成、修复／回退、过程问答和相应训练／加载／路由接入；逐项记录与上游的差异 |
 | 动态任务池、MCTS/reset、DPO/LoRA/MoE 等后端能力 | 设计第三阶段，尚未验收 | 按具体配方实现合同及后端；涉及 wire/runtime 时同步更新；用实际执行证明相应能力 |
 | 设计第 11 节九项验收 | 部分完成 | 每项都绑定具体测试／运行记录，不能以窄范围示例代替整体完成 |

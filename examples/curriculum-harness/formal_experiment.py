@@ -801,6 +801,7 @@ def main():
         "max_calls": 1800,
         "structured_output": True,
         "calibration_policy": "constraint-aware-negatives-v1",
+        "constraint_rendering": "exact-ending-v1",
     }
     study = Study(
         root,
