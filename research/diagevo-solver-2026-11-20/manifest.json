@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "evidenceDigest": "sha256:d021ce1febd4b5159483615be20c5663700d1be4d2009a65bd0b06653bdbcea5",
+  "casObjects": 47,
+  "omittedModelFiles": 12,
+  "summary": {
+    "v1": {
+      "status": "rejected_truncation",
+      "generations": 1,
+      "inputTokens": 54,
+      "outputTokens": 256,
+      "generationSeconds": 5.79395179101266
+    },
+    "v2": {
+      "status": "capture_and_replay_passed",
+      "externalModelCalls": 0,
+      "generationSeconds": 29.709617749031167,
+      "inputTokens": 190,
+      "logicalGenerations": 4,
+      "outputTokens": 1264,
+      "trainingUpdates": 0,
+      "usd": null,
+      "parsedAnswers": 0,
+      "missingBoxAnswers": 4,
+      "samePrefixTokensAndLogprobs": true,
+      "replayWithoutModelLoad": true
+    },
+    "total": {
+      "logicalGenerations": 5,
+      "inputTokens": 244,
+      "outputTokens": 1520,
+      "generationSeconds": 35.50356954004383,
+      "externalModelCalls": 0,
+      "trainingUpdates": 0,
+      "usd": null
+    }
+  },
+  "checks": [
+    "original result and all exported CAS digests",
+    "all five saved backend envelopes",
+    "same 256-token and logprob prefix after budget expansion",
+    "four complete captures and missing-box classification",
+    "actual no-model-load replay",
+    "actual Math-Verify reclassification",
+    "both exact source snapshots"
+  ],
+  "limitation": "Weights and tokenizer files remain in original local CAS; this archive contains their manifests, not their bytes. No training or useful curriculum is established."
+}

@@ -1,6 +1,6 @@
 # DiagEvo 课程规则的当前接入
 
-`gear.training.recipes.diagevo.DiagEvoPolicy` 已实现 DiagEvo 的投票筛选、频率调度和状态更新规则，`gear.training.recipes.diagevo_memory.DiagEvoDiagnostician` 提供诊断、检索筛选及节点归并组件。`gear.training.recipes.diagevo_round.DiagEvoMemoryUpdater` 已将这些组件串成一个可恢复的轮末记忆更新流程；`gear.training.recipes.diagevo_challenger.DiagEvoChallengerReward` 计算 challenger 的问题质量奖励。challenger 与 solver 的 dataset builder 已将奖励绑定到原生捕获及 GRPO 批次，solver 可从完整训练提交链恢复轮末诊断材料。数学答案已有实际 Math-Verify 分类后端，单个 solver 作业已接入现有四阶段原生驱动并通过 CPU 替身集成测试。Codex 诊断、BGE embedding 和已提交失败材料的记忆更新已通过真实后端验证。完整双模型算法尚未注册，也未在 `gear.algorithms` 中宣称支持；challenger 更新及更新后新采样、冻结 solver 构造采样、完整外层执行和 GPU 效果仍待接入验证。
+`gear.training.recipes.diagevo.DiagEvoPolicy` 已实现 DiagEvo 的投票筛选、频率调度和状态更新规则，`gear.training.recipes.diagevo_memory.DiagEvoDiagnostician` 提供诊断、检索筛选及节点归并组件。`gear.training.recipes.diagevo_round.DiagEvoMemoryUpdater` 已将这些组件串成一个可恢复的轮末记忆更新流程；`gear.training.recipes.diagevo_challenger.DiagEvoChallengerReward` 计算 challenger 的问题质量奖励。challenger 与 solver 的 dataset builder 已将奖励绑定到原生捕获及 GRPO 批次，solver 可从完整训练提交链恢复轮末诊断材料。两个单作业入口均已接入四阶段原生驱动：challenger 数据阶段执行冻结 HF solver 推理及 Math-Verify，solver 数据阶段沿用构造答案类别；训练 actor 的集成验证仍使用 CPU 替身。Codex 诊断、BGE embedding 和已提交失败材料的记忆更新已通过真实后端验证。完整双模型算法尚未注册，也未在 `gear.algorithms` 中宣称支持；challenger 更新后的新采样、构造题池的外层衔接、跨作业执行和 GPU 效果仍待接入验证。
 
 规则依据 [DiagEvo 第 2 节及附录 E](https://arxiv.org/html/2609.00768v2#S2)，默认构造样本数 12、优化组大小 8；绝对置信度区间为 [0.25, 0.75]，相对阈值 1.6，晋级阈值 0.7，探索系数 0.5。所有参数进入现有 `Module` 描述，可重建和替换，不在 `curriculum` 增加专用分支。
 
@@ -65,6 +65,16 @@ builder 从这些捕获和分类重新构造投票、计算整批奖励，调用
 
 默认每次 parse/verify 超时 5 秒、一次完整分类软期限 300 秒、每题最多 256 条响应、单条最多 262144 字符；优化阶段的原分类重放与新比较共享同一期限。软期限在库调用前后检查，文件读取与 Python 处理也可能延迟检查，不提供独立进程的硬资源隔离。当前库超时依赖主线程信号，因此只在 worker 主线程运行，并拒绝占用已有的进程 alarm。
 
+## 冻结 HF solver 推理
+
+`gear.training.recipes.diagevo_inference.FrozenHFSolver` 从既有 `seal_hf`／HF 导出制品加载真实本地模型，提供 `sample(group_key, questions, count=...)`。它执行 CPU float32 推理，保留原 chat template 输入、生成 token、每个 token 的行为 logprob、完整文本和 EOS 终止；使用 temperature=1、topP=1、不截断和显式上下文上限。模型文件重新校验后仅从本地 safetensors 加载，不执行远程代码，不更新参数。源码、依赖、模型字节引用、指令、种子和限额进入持久身份。
+
+整组问题与数量绑定稳定 group key，各槽位有派生 CPU 种子；HF 推理在主线程中保存并恢复 CPU RNG，不重新设置 CUDA RNG。已完成结果直接复用；本地前向计算中断后允许重算，逻辑槽位配额不会重复增加，但不能据此宣称物理推理次数或 CPU 成本 exactly-once。默认每槽生成软期限 300 秒，在生成步之间检查，不覆盖权重加载，也不是独立进程的硬期限。截断输出也保存，原 key 再次调用仍拒绝，不能自动换成另一份回答。
+
+返回的 `RawTrajectory` 记录真实本地推理事实；其中反馈只检查文本生成完成，`correctnessAssessed=false`，reward=0 不表示数学错误或正确。它们用于投票／诊断，没有 native train lease，不能直接作为当前 solver 的 GRPO 梯度批次。`runtimeInstanceId` 明确表示冻结模型和配置的逻辑本地实例，恢复不宣称原进程仍存活。
+
+[预训练模型检查](../../research/diagevo-solver-2026-11-20/README.zh-CN.md)使用固定 revision 的 SmolLM2-135M-Instruct。V1 在 256 tokens 截断并按合同拒绝；V2 仅将上限扩为 1024，四份响应均到 EOS，原 key 的前 256 个 token 和 logprob 与 V1 完全一致，重放不加载模型。但四份回答均缺少最终 boxed 答案，被分类为四个独立 `unparsed`，没有形成数学正确性或训练收益证据。
+
 ## Solver 课程与已提交失败材料
 
 `gear.training.recipes.diagevo_solver.DiagEvoSolverDatasetBuilder` 使用同一原生数据合同。`seal_curriculum` 接收完整候选题池、构造捕获、生成指令、轮初 memory、预期 solver policy 与答案分类证据。它从捕获重算投票并封存被保留和被筛除的所有题；晋级需要后者的观测，不能只保存进入梯度更新的题。构造捕获须属于同一个冻结 solver，实际题目、指令前缀、tokenizer 和采样配置一致。保留题的多数票参考必须有非空原文。
@@ -87,7 +97,17 @@ builder 从这些捕获和分类重新构造投票、计算整批奖励，调用
 
 `read` 会从原提交、捕获和配置重新构建整个来源记录。将该 builder 传入 `DiagEvoSolverDatasetBuilder(..., generation_builder=...)` 后，`seal_curriculum(..., generation_ref=...)` 强制要求完整新题目、逐题生成指令、轮初记忆和冻结 solver 相符，且构造响应不能复用 challenger 奖励评估中的响应。该来源随课程、优化批次和已提交失败材料保留，恢复时再次检查。
 
-当前同一 challenger 作业内的两阶段使用相同已准入任务范围、组大小和批次大小。每个 task 固定一种生成指令，调用方须用已有 `DiagEvoPolicy.schedule` 按冻结随机源构造任务及抽样计划；此绑定检查实际内容与计划关联，尚不证明完整外层频率调度已经执行。它不自行启动训练、采样或完成跨作业任务准入，也不处理全无有效题时的重采样策略。完整双模型调用方与实际训练验证仍然缺失。
+当前同一 challenger 来源记录中的更新阶段和新题池使用相同已准入任务范围、组大小和批次大小。每个 task 固定一种生成指令，调用方须用已有 `DiagEvoPolicy.schedule` 按冻结随机源构造任务及抽样计划；此绑定检查实际内容与计划关联，尚不证明完整外层频率调度已经执行。builder 不自行启动采样或完成跨作业任务准入，也不处理全无有效题时的重采样策略。下节已接单个 challenger 更新作业；更新后的独立采样及完整双模型调用方仍然缺失。
+
+## 单个 challenger 作业的原生执行
+
+`gear.training.pipelines.diagevo_challenger.build_loop` 组合既有 `FrozenTaskSource → HitchRolloutExecutor → ChallengerDatasetStage → SlimeModelUpdater`。[示例入口](../../examples/training-loop/recipes/diagevo_challenger.py)可冻结为 `trainer.script`；`scriptConfig` 恰好包含三个字段：`objective` 为 `DiagEvoChallengerReward.describe().to_dict()`，`solver` 为上述 `FrozenHFSolver` 构造参数（含 `model_ref` 和 `instruction`），`prompts` 为已准入 task ID 到实际消息列表的映射。调用方用 `DiagEvoQuestionPrompt.messages` 等普通函数组织消息和任务，传输 solver HF snapshot 及其依赖，不增加 adapter。
+
+数据阶段先核对 native ledger 的关闭 lease、更新前权重、完整采样组、任务准入及精确 prompt，再对格式有效的问题实际采样冻结 solver。Math-Verify 绑定其原响应；现有 challenger builder 重算质量奖励，保留原 challenger token、mask、logprob 和 verifier 反馈，并交给原 updater。已完成但格式无效的问题保留为零奖励槽位；全批无有效问题时不运行 solver，不伪造回答，也不丢弃整个零方差组。
+
+这个入口不更换 native actor：可训练 challenger 继续由 Slime 管理，冻结 solver 在独立的本地 HF 实例中执行。当前 solver 实现仅使用 CPU，尚未验收大模型显存、独立 GPU 部署或论文规模吞吐。两轮集成测试中真实执行 tiny HF forward、HTTP 捕获、SQLite ledger、数学分类及原生数据预处理，Slime actor／优化器／checkpoint 是显式替身。三处中断验证分别覆盖 solver 回执、已封存批次和训练提交丢失返回，不代表真实 GPU 数值更新已经通过。
+
+更新完成后仍须从新 challenger 权重独立采样，不能复用更新前的问题。该采样、冻结 solver 对新题池的构造推理、下一 solver 作业准入及最终记忆发布尚未由完整外层调用方串联。单个 challenger factory 完成不等于完整 DiagEvo 已可运行。
 
 ## 单个 solver 作业的原生执行
 
@@ -97,7 +117,7 @@ factory 从冻结描述重建 policy、challenger objective 和 question prompt�
 
 数据阶段先核对实际 ledger 中的关闭 lease、更新前 checkpoint、完整原生组和来源，再执行数学分类、封存 ±1 奖励批次并交给既有 updater。原 token、mask、行为 logprob 和 verifier 反馈不变。已完成阶段按现有 `TrainingLoop` 重放；批次封存后丢失返回时可从原捕获确定性重建，参数更新提交后丢失返回时复用原生提交，不重复采样或更新。数学计算是本地运算，中断后未完成的分类可以重算，不产生额外模型调用。
 
-这里完成的是一个已准入 solver 作业。上游 challenger 参数更新、更新后新题采样、冻结 solver 的构造采样，以及轮末记忆制品发布和下一轮作业创建仍由尚未完成的外层入口负责；下文的记忆调用函数尚未自动接入这个 factory。CPU 集成中的 actor、权重和 challenger 历史是明确标注的测试替身，不能作为真实 LLM／GPU 更新或论文效果证据。
+这里完成的是一个已准入 solver 作业。上游 challenger 作业的启动、更新后新题采样、冻结 solver 的构造题池衔接，以及轮末记忆制品发布和下一轮作业创建仍由尚未完成的外层入口负责；下文的记忆调用函数尚未自动接入这个 factory。CPU 集成中的 actor、权重和 challenger 历史是明确标注的测试替身，不能作为真实 LLM／GPU 更新或论文效果证据。
 
 ## 调度与状态
 
@@ -179,9 +199,11 @@ factory 从冻结描述重建 policy、challenger objective 和 question prompt�
 
 `python/tests/test_diagevo_pipeline.py` 通过实际 script factory、原生 driver、回环 HTTP 捕获、SQLite ledger 和预处理跑两轮 solver 作业，并从消费提交恢复失败材料。Slime/Ray actor 与 checkpoint 为 CPU 替身。另覆盖封存后返回丢失、提交后返回丢失、任务准入和组件身份约束。
 
-`python/tests/test_diagevo_backends.py` 使用 SDK 类型化通知替身和真实 tiny BERT，检查 schema、模型身份、未知提交不重试、原 turn 恢复、JSON 字段顺序、调用配额、回执漂移、向量归一化及不截断。`python/tests/test_diagevo_backend_round.py` 用显式离线回执检查最终 checkpoint、实际输入输出关联、原生 turn 去重、用量缺失及重放。十一组共 92 个测试通过；最小环境运行同一集合，缺少可选依赖时跳过 56 个。CI CPU 作业安装 `agents` 及训练依赖以运行这些测试。类型检查仍限于 `pyproject.toml` 配置的 78 个文件，不宣称覆盖全部新增原生后端文件。
+`python/tests/test_diagevo_backends.py` 使用 SDK 类型化通知替身和真实 tiny BERT，检查 schema、模型身份、未知提交不重试、原 turn 恢复、JSON 字段顺序、调用配额、回执漂移、向量归一化及不截断。`python/tests/test_diagevo_backend_round.py` 用显式离线回执检查最终 checkpoint、实际输入输出关联、原生 turn 去重、用量缺失及重放。
 
-尚缺 challenger 实际更新及更新后重新采样、冻结 solver 构造采样、记忆制品的外层发布与完整跨作业恢复，以及双模型真实运行和效果对照。美元成本也尚无可靠来源。当前 solver 入口和真实记忆后端验证不替代完整 DiagEvo 或 GPU 实验验收。
+`python/tests/test_diagevo_inference.py` 使用真实 tiny causal LM，核对实际 token／logprob、权重冻结、CPU RNG 恢复、稳定槽位、无加载重放、本地中断、内容漂移与截断拒绝。`python/tests/test_diagevo_challenger_pipeline.py` 验证上述两轮原生 challenger 接入和三处中断，另覆盖 prompt 漂移及全无效问题。十三组共 104 个测试通过；最小环境运行同一集合，缺少可选依赖时跳过 68 个。CI CPU 作业安装 `agents` 及训练依赖以运行这些测试。类型检查仍限于 `pyproject.toml` 配置的 78 个文件，不宣称覆盖全部新增原生后端文件。
+
+尚缺 challenger 更新后的独立采样、构造题池与后续训练作业的衔接、记忆制品的外层发布与完整跨作业恢复，以及双模型真实训练和效果对照。美元成本也尚无可靠来源。两个单作业入口和真实推理／记忆后端验证不替代完整 DiagEvo 或 GPU 实验验收。
 
 接入两模型更新时还有三个已核实的边界：
 
