@@ -14,7 +14,7 @@
 | 任务、环境、轨迹／修复、过程问答生成 | 四类合同、生成解析与分类型验证已实现；完整配方待验收 | 环境调用方测试实际执行参考与负例；trajectory 必须有 replay 执行证据，example 走 semantic correctness；真实环境配方另行验收 |
 | 练习池筛选 | 纯算子与边界测试已完成 | 语义近邻绑定比较池和完整性；当前策略难度测量；预留探索槽；混合来源配额不足不暗中补齐 |
 | `BuildSupervision` | 纯提案已实现并验证，训练接入见下一项 | 成功／前缀证据、修复新捕获 loss 片段、起始条件及 step 前缀配对、synthetic 过程问答；材料授权与标签来源明确 |
-| 可信训练构建接入 | 三类新增 builder 已实现；更新器接入按能力分别验收 | 修复提案在调用处映射到新捕获的 receipt 边界；success proof、原始失败/回退状态与不复用旧请求检查；preference 核对实际 token 前缀、状态和伪标签来源；synthetic QA 用真实 tokenizer 进入既有 offline SFT 合同。修复/偏好输出仍为中间数据，DPO 及捕获型 SFT 自动 updater 接入尚未实现 |
+| 可信训练构建接入 | 三类新增 builder 已实现；成功／前缀／修复已接现有 SFT 合同；GPU 未验收 | 修复提案映射到新捕获 receipt 边界；`build_offline` 重新验证捕获与 proof，不重编码，保留后缀 mask、模型和 train 来源身份，直接生成既有 SFT updater 数据合同。已验证批次封存、恢复一致性与 CPU 修复后缀梯度；synthetic QA 使用真实 tokenizer。preference 仍为中间数据，DPO updater 未实现 |
 | Forge-inspired 外层配方 | IFEval 文本配方已实现并通过离线正式运行集成；真实效果未验收 | [配方与差异](../examples/curriculum-harness/FORGE.zh-CN.md)：同批训练门槛、逐题 front 选择、停滞触发、按 epoch 记忆、四类变异及独立语义验证、扩池后未见优先；三轮真实 CLI/worker 集成验证新 run 准入与恢复。非单 run 动态池或工具环境论文复现 |
 | DataEnvGym-inspired 配方 | skill-tree CPU 配方已实现；LLM/GPU 效果未验收 | [运行与适配差异](../examples/training-loop/DATAENVGYM.zh-CN.md)：实际六轮 TrainingLoop、expand/refocus 策略、校准、参数更新、固定训练探针反馈；未见输入 MSE 35156.25 → 0。树／任务／验证记录绑定训练阶段并覆盖三个中断点恢复。该算术结果不证明论文基准上的收益 |
 | SENTINEL / CoEvolve / DiagEvo 配方 | 待实现 | 各自实际执行入口、可替换组件、专有采样／验证信号与测试；能力不足明确拒绝，不能用空导出冒充支持 |

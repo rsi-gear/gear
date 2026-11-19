@@ -133,7 +133,7 @@ gear/curriculum/
 
 `BuildLearningDataset` 继续属于 `gear.training`：它消费 curriculum 的监督提案及可信原始证据，按 SFT/preference/RL/example 合同编码并封存可训练数据。训练格式和梯度样本资格不进入 curriculum 核心。
 
-这里的 `BuildLearningDataset` 表示训练侧职责，不另设统一包装类。当前调用方直接使用 `SFTDatasetBuilder`、`GRPODatasetBuilder` 以及 `gear.training.data.supervision` 下的 `RepairSFTDatasetBuilder`、`PreferenceDatasetBuilder`、`ProceduralDatasetBuilder`。前两种新增捕获型 builder 输出中间数据；过程问答复用现有 `offline-sft-dataset` 合同并保留 synthetic 来源侧录。数据构建完成不代表 DPO 更新器或原始捕获到离线 SFT 的自动转换已经实现。
+这里的 `BuildLearningDataset` 表示训练侧职责，不另设统一包装类。调用方直接使用 `SFTDatasetBuilder`、`GRPODatasetBuilder` 以及 `gear.training.data.supervision` 下的修复、偏好、过程问答 builder。成功／前缀及修复 builder 的 `build_offline` 重新验证原始捕获与 proof，保留精确 token 和后缀 mask，封存为现有 SFT updater 的离线合同；过程问答使用真实 tokenizer 并保留 synthetic 侧录。偏好输出仍为中间数据，DPO 更新器与各配方 GPU 实测尚未完成。
 
 `prepare / parse` 和 `plan / assess` 是对应算子的普通方法，不引入统一执行请求协议。模型输入包含具体 prompt、响应 schema 和允许材料；`parse` 只校验模型输出结构，不能将模型判断升级为执行证明。组件参数和提示词由调用方纳入冻结配置。语义去重、可学习性估计需要模型或 rollout 时也由调用方明确执行，不能藏在纯 `SelectPractice` 内。
 

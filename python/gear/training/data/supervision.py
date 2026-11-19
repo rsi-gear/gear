@@ -191,6 +191,7 @@ class RepairSFTDatasetBuilder:
                 )
             require(any(sample["lossMask"]), "empty-repair-suffix", "repair has no suffix tokens")
             sample.update(
+                failedSourceTrajectory=asdict(failed),
                 repairProofRef=repair_ref,
                 successProofRef=success_ref,
                 materialProtocols=protocols,
@@ -198,6 +199,19 @@ class RepairSFTDatasetBuilder:
             samples.append(sample)
         return self.store.put_json(
             {"schemaVersion": 1, "kind": "repair-sft-dataset", "samples": samples}
+        )
+
+    async def build_offline(self, repairs, *, model_ref, train_tasks, max_sequence_tokens):
+        """Revalidate repairs, preserving their exact native suffix loss masks."""
+        from gear.training.data.offline import _seal_captured_dataset
+
+        intermediate = await self.build(repairs)
+        return _seal_captured_dataset(
+            self.store,
+            intermediate,
+            model_ref=model_ref,
+            train_tasks=train_tasks,
+            max_sequence_tokens=max_sequence_tokens,
         )
 
 

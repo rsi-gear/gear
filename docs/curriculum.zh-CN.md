@@ -129,4 +129,4 @@ selection = SelectPractice()(drafts, report, budget=4, base_pool_version="pool-v
 
 监督提案、生成和验证算子不等于训练后端或完整论文配方。`ReflectiveSearch` 已在 `gear.algorithms` 提供正式 harness 搜索；可选 `training_gate=True` 在开发集选型前，用相同训练批次核对候选相对父代的严格提升，无提升便结束该轮。默认仍为直接开发集选型。这项门槛是 Forge-inspired 配方的组成部分，本身不代表完整 Forge。
 
-新增可信训练 builder 的输入与限制见[训练阶段说明](training/stages.zh-CN.md)：修复提案在调用处映射到新捕获 receipt 的 loss 边界，偏好关系核对两侧真实输入与状态，过程问答通过真实 tokenizer 进入既有 offline SFT 数据合同。完整环境探索配方与 GPU／DPO／LoRA 等运行能力按[实施台账](curriculum-implementation-status.zh-CN.md)分别验收。
+新增可信训练 builder 的输入与限制见[训练阶段说明](training/stages.zh-CN.md)：修复提案在调用处映射到新捕获 receipt 的 loss 边界；成功／前缀及修复 builder 的 `build_offline` 可直接封存为既有 SFT updater 的数据合同，并保留捕获证明与精确 mask。偏好关系核对两侧真实输入与状态，过程问答通过真实 tokenizer 编码。完整环境探索配方与 GPU／DPO／LoRA 等运行能力按[实施台账](curriculum-implementation-status.zh-CN.md)分别验收。

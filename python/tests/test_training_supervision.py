@@ -16,6 +16,8 @@ from gear.curriculum import (
     SupervisionTrace,
     TrajectoryVerification,
 )
+from gear.training.data.builders import SFTDatasetBuilder
+from gear.training.data.offline import read_dataset, seal_batch
 from gear.training.data.supervision import (
     PreferenceDatasetBuilder,
     ProceduralDatasetBuilder,
@@ -116,6 +118,148 @@ class TrainingSupervisionTests(unittest.IsolatedAsyncioTestCase):
                 **changes,
             }
         )
+
+    def offline_scope(self):
+        model = {
+            key: self.fixture.context[key] for key in ("tokenizerDigest", "chatTemplateDigest")
+        }
+        return {
+            "model_ref": self.store.put_json(model),
+            "train_tasks": [{"id": "task-a", "family": "family", "taskRef": self.fixture.ref}],
+            "max_sequence_tokens": 128,
+        }
+
+    def offline_request(self, sealed, scope):
+        return {
+            "trainingRunId": "offline-repair",
+            "recipeDigest": digest_json("offline-sft-v1"),
+            "datasetSplitDigest": digest_json(scope["train_tasks"]),
+            "trainer": {"recipe": "offline-sft-v1", "rolloutBatchSize": 1},
+            "parentModel": self.store.read_json(scope["model_ref"]),
+            "trainDataset": {"tasks": scope["train_tasks"]},
+            "offlineTraining": {
+                "datasetRef": sealed["datasetRef"],
+                "maskContract": sealed["maskContract"],
+                "maxSequenceTokens": scope["max_sequence_tokens"],
+                "maxEpochs": 1,
+                "shuffleSeed": 7,
+            },
+        }
+
+    async def test_repair_capture_enters_existing_offline_sft_batch_without_reencoding(self):
+        failed, revised = self.capture("failed"), self.capture("revised", output=10)
+        repairs = [(failed, revised, self.repair_proof(failed, revised), self.success(revised))]
+        scope = self.offline_scope()
+        builder = RepairSFTDatasetBuilder(self.store)
+        sealed = await builder.build_offline(repairs, **scope)
+        self.assertEqual(sealed, await builder.build_offline(repairs, **scope))
+        request = self.offline_request(sealed, scope)
+        dataset = read_dataset(self.store, request)
+        batch_ref = seal_batch(self.store, request, 0)
+        self.assertEqual(batch_ref, seal_batch(self.store, request, 0))
+        batch = self.store.read_json(batch_ref)
+        self.assertEqual(batch["recordRefs"], dataset["records"])
+        record = self.store.read_json(batch["samplesRef"])[0]
+        self.assertEqual(record["tokens"], [1, 2, 3, 4, 5, 90, 91, 92, 10, 11, 12])
+        self.assertEqual(record["lossMask"], [0] * 8 + [1, 1, 1])
+        self.assertEqual(record["tokenRoles"][3:5], ["assistant", "assistant"])
+        self.assertNotIn("rolloutLogProbs", record)
+        provenance = self.store.read_json(sealed["supervisionRef"])
+        intermediate = self.store.read_json(provenance["intermediateRef"])
+        self.assertEqual(intermediate["samples"][0]["sourceTrajectory"], asdict(revised))
+        self.assertEqual(intermediate["samples"][0]["failedSourceTrajectory"], asdict(failed))
+        self.assertEqual(intermediate["samples"][0]["repairProofRef"], repairs[0][2])
+        self.assertEqual(provenance["datasetRef"], sealed["datasetRef"])
+        request["trainDataset"]["tasks"][0]["family"] = "held-out"
+        with self.assertRaisesRegex(ContractError, "authorized train"):
+            read_dataset(self.store, request)
+
+    async def test_success_and_verified_prefix_keep_their_native_boundaries_offline(self):
+        raw = self.capture("success", output=10)
+        proof = self.store.read_json(self.success(raw))
+        for count, expected in ((2, [1, 2, 3, 4, 5, 90, 91, 92, 10, 11, 12]), (1, [1, 2, 3, 4, 5])):
+            value = {
+                **proof,
+                "kind": "verified-prefix" if count == 1 else "verified-success",
+                "receiptCount": count,
+                "receiptDigests": [ref["digest"] for ref in raw.receipt_refs[:count]],
+            }
+            result = await SFTDatasetBuilder(self.store).build_offline(
+                [raw], verifications={"success": self.store.put_json(value)}, **self.offline_scope()
+            )
+            dataset = self.store.read_json(result["datasetRef"])
+            record = self.store.read_json(dataset["records"][0])
+            self.assertEqual(record["tokens"], expected)
+            self.assertEqual(record["lossMask"][:5], [0, 0, 0, 1, 1])
+            self.assertEqual(len(record["lossMask"]), len(expected))
+
+    async def test_offline_capture_checks_scope_model_limits_and_original_proofs(self):
+        failed, revised = self.capture("failed"), self.capture("revised", output=10)
+        repairs = [(failed, revised, self.repair_proof(failed, revised), self.success(revised))]
+        scope = self.offline_scope()
+        model = self.store.read_json(scope["model_ref"])
+        small_config = self.store.put_json({"vocab_size": 10, "max_position_embeddings": 128})
+        snapshot = self.store.put_json(
+            {
+                "format": "hf-safetensors",
+                "files": [{"path": "config.json", "contentRef": small_config}],
+            }
+        )
+        changes = (
+            {"model_ref": self.store.put_json({**model, "tokenizerDigest": "wrong"})},
+            {"model_ref": self.store.put_json({**model, "chatTemplateDigest": "wrong"})},
+            {"model_ref": self.store.put_json({**model, "hfSnapshotRef": snapshot})},
+            {"train_tasks": [{"id": "held-out", "family": "family", "taskRef": self.fixture.ref}]},
+            {"train_tasks": [{"id": "task-a", "family": "family", "taskRef": self.initial}]},
+            {"train_tasks": []},
+            {"max_sequence_tokens": 4},
+            {"max_sequence_tokens": True},
+        )
+        for change in changes:
+            with self.subTest(change=change), self.assertRaises(ContractError):
+                await RepairSFTDatasetBuilder(self.store).build_offline(
+                    repairs, **{**scope, **change}
+                )
+        false_proof = {**self.store.read_json(repairs[0][3]), "verified": False}
+        with self.assertRaises(ContractError):
+            await RepairSFTDatasetBuilder(self.store).build_offline(
+                [(failed, revised, repairs[0][2], self.store.put_json(false_proof))], **scope
+            )
+        with self.assertRaisesRegex(ContractError, "unique"):
+            await SFTDatasetBuilder(self.store).build_offline(
+                [revised, revised], verifications={"revised": self.success(revised)}, **scope
+            )
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("torch"), "requires CPU training test environment"
+    )
+    async def test_repaired_offline_tokens_drive_cpu_loss_only_on_the_verified_suffix(self):
+        import torch
+        import torch.nn.functional as functional
+
+        failed, revised = self.capture("failed"), self.capture("revised", output=10)
+        scope = self.offline_scope()
+        sealed = await RepairSFTDatasetBuilder(self.store).build_offline(
+            [(failed, revised, self.repair_proof(failed, revised), self.success(revised))], **scope
+        )
+        request = self.offline_request(sealed, scope)
+        batch = self.store.read_json(seal_batch(self.store, request, 0))
+        record = self.store.read_json(batch["samplesRef"])[0]
+        tokens = torch.tensor(record["tokens"])
+        mask = torch.tensor(record["lossMask"][1:], dtype=torch.bool)
+        model = torch.nn.Embedding(128, 128)
+        torch.nn.init.zeros_(model.weight)
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+
+        def loss():
+            return functional.cross_entropy(model(tokens[:-1])[mask], tokens[1:][mask])
+
+        before = float(loss().detach())
+        loss().backward()
+        changed = set(torch.nonzero(model.weight.grad.abs().sum(dim=1)).flatten().tolist())
+        self.assertEqual(changed, {92, 10, 11})
+        optimizer.step()
+        self.assertLess(float(loss().detach()), before)
 
     async def test_caller_maps_semantic_repair_to_new_receipts_and_exact_loss_mask(self):
         failed, revised = self.capture("failed"), self.capture("revised", output=10)
