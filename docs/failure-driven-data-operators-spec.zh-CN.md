@@ -278,7 +278,7 @@ pool、dataset、模型/adapter、harness、共享学习库分别版本化。一
 
 **第三阶段：按需求扩展运行能力。** 同 run 动态 task-pool、MCTS 状态恢复、DPO/LoRA/MoE 后端按各自合同实现。不将这些能力混入第一阶段交付承诺。
 
-本分支已用单元与调用方集成检查覆盖案例去重、失败分类、引用与 family 约束、显式预算/随机源、验证绑定、精确去重、轻量导入、Module 重建、CPU 更新及三个本地阶段的中断恢复。示例比较 fixed/random/failure 三种同任务预算策略；不包含付费模型调用或 GPU 效果实验。本期仅实现 `kind="task"`，`BuildSupervision` 尚未导出。
+本分支已用单元与调用方集成检查覆盖案例去重、失败分类、引用与 family 约束、显式预算/随机源、验证绑定、精确去重、轻量导入、Module 重建、CPU 更新及三个本地阶段的中断恢复。CPU 示例比较 fixed/random/failure 三种同任务预算策略。另有[真实 LLM harness 示例](../examples/curriculum-harness/README.zh-CN.md)，固定模型权重，通过同额的学习样本、候选和开发评测预算比较三种数据策略；只更新 developer prompt。它包含实际模型调用、回执恢复和固定留出集评测，不代表完整论文配方或 GPU 训练效果实验。本期仅实现 `kind="task"`，`BuildSupervision` 尚未导出。
 
 以下为分阶段验收清单，其中收费调用 reconcile、完整论文配方、真实环境/GPU 与泛化收益实验需在对应后续接入时完成：
 

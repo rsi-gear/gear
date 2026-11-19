@@ -23,6 +23,14 @@ PYTHONPATH=python python3 examples/training-loop/failure_curriculum_cpu.py \
 
 再次执行相同命令会校验并复用完成的阶段。`TaskSource` 的记录在 stage 工作目录，调用方在恢复前后核对 operation、配置、任务和证据摘要。诊断、生成和验证中途失败可重算，因为这个示例没有收费外部调用。接入真实服务后，调用方必须使用现有 runner 的子调用记录和 reconcile 能力处理未知结果；示例不承诺收费调用 exactly-once。
 
+## 不更新权重的 harness 闭环
+
+`curriculum` 不要求训练模型权重。调用方也可以把新练习用于评估和修改 prompt、工具规则或经验库，再用固定留出集选择 harness。数据生成与 harness 搜索是两个可组合的环节。
+
+[真实 LLM 示例](../examples/curriculum-harness/README.zh-CN.md)固定模型权重，使用官方 IFEval strict 验证器执行 failure → 新任务 → 回答与反馈 → developer prompt 候选 → 开发集采纳 → 固定测试集评测。fixed、random、failure 三组有相同的有效学习样本、候选和开发评测预算；生成和诊断成本另计。模型调用、收费请求恢复、验证执行和格式转换均由示例调用方处理，没有增加 adapters 或 curriculum 执行层。它是两轮反思式提示词搜索，不是完整 GEPA 复现。
+
+[实测结果与证据](../research/curriculum-harness-2026-11-19/README.zh-CN.md)：baseline 与 failure 都通过 46/48，fixed 与 random 都通过 45/48。局部练习从 6/8 到 8/8，但没有观察到相对初始 harness 的留出集提升；不能据此证明 failure 数据优于两种对照。
+
 ## 算子与合同
 
 | 算子 | 输入 → 输出 | 当前策略 |
