@@ -160,7 +160,7 @@ class DiagEvoMemoryUpdater:
             not _text(text) for text in evidence.questions.values()
         ):
             raise ValueError("question text must cover the complete construction pool")
-        required = set()
+        required, references = set(), set()
         old_failures = {key for cause in memory for key in cause.failure_ids}
         for group in evidence.groups:
             for sample, reward in zip(group.samples, group.rewards, strict=True):
@@ -169,15 +169,17 @@ class DiagEvoMemoryUpdater:
                 if sample.sample_id in old_failures:
                     raise ValueError("a previous failure cannot be counted in another round")
                 required.add(sample.trajectory_ref)
-                required.add(
-                    next(
-                        item.trajectory_ref
-                        for item in group.vote.samples
-                        if item.sample_id == group.vote.reference_sample_id
-                    )
+                reference = next(
+                    item.trajectory_ref
+                    for item in group.vote.samples
+                    if item.sample_id == group.vote.reference_sample_id
                 )
-        if set(evidence.trajectory_texts) != required or any(
-            not _text(text) for text in evidence.trajectory_texts.values()
+                required.add(reference)
+                references.add(reference)
+        if (
+            set(evidence.trajectory_texts) != required
+            or any(not isinstance(text, str) for text in evidence.trajectory_texts.values())
+            or any(not _text(evidence.trajectory_texts[ref]) for ref in references)
         ):
             raise ValueError("diagnostic text must cover exactly the failed and reference captures")
         return promoted

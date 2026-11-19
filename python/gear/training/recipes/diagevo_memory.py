@@ -181,9 +181,8 @@ class DiagEvoDiagnostician(Module):
             if sample.sample_id == group.vote.reference_sample_id
         )
         if (
-            not all(
-                _text(value) for value in (pair.question, pair.reference_text, pair.failed_text)
-            )
+            not all(_text(value) for value in (pair.question, pair.reference_text))
+            or not isinstance(pair.failed_text, str)
             or failed.trajectory_ref == reference.trajectory_ref
         ):
             raise ValueError("diagnosis requires distinct failure/reference captures and text")

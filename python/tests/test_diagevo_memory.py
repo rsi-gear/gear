@@ -157,6 +157,7 @@ class ExtractionTests(unittest.TestCase):
             replace(self.pair, group=replace(self.group, rewards=(1, -1))),
             replace(self.pair, group=successful),
             replace(self.pair, reference_text=""),
+            replace(self.pair, failed_text=None),
             replace(self.pair, generation=GenerationDirective("stitched", ("mastered", "active"))),
             replace(self.pair, generation=GenerationDirective("free", ("active",))),
         )

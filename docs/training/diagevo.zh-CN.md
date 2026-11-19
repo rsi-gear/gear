@@ -1,6 +1,6 @@
 # DiagEvo 课程规则的当前接入
 
-`gear.training.recipes.diagevo.DiagEvoPolicy` 已实现 DiagEvo 的投票筛选、频率调度和状态更新规则，`gear.training.recipes.diagevo_memory.DiagEvoDiagnostician` 提供诊断、检索筛选及节点归并组件。`gear.training.recipes.diagevo_round.DiagEvoMemoryUpdater` 已将这些组件串成一个可恢复的轮末记忆更新流程；`gear.training.recipes.diagevo_challenger.DiagEvoChallengerReward` 计算 challenger 的问题质量奖励。它们尚未注册为完整训练 recipe，也未在 `gear.algorithms` 中宣称完整算法支持。采样、答案等价判定、实际模型与 embedding 后端、两模型 GRPO 更新和完整外层执行仍待接入。
+`gear.training.recipes.diagevo.DiagEvoPolicy` 已实现 DiagEvo 的投票筛选、频率调度和状态更新规则，`gear.training.recipes.diagevo_memory.DiagEvoDiagnostician` 提供诊断、检索筛选及节点归并组件。`gear.training.recipes.diagevo_round.DiagEvoMemoryUpdater` 已将这些组件串成一个可恢复的轮末记忆更新流程；`gear.training.recipes.diagevo_challenger.DiagEvoChallengerReward` 计算 challenger 的问题质量奖励。challenger 与 solver 的 dataset builder 已将奖励绑定到原生捕获及 GRPO 批次，solver 可从完整训练提交链恢复轮末诊断材料。它们尚未注册为完整训练 recipe，也未在 `gear.algorithms` 中宣称完整算法支持。采样、答案等价判定、实际模型与 embedding 后端、两模型 GRPO 更新和完整外层执行仍待接入。
 
 规则依据 [DiagEvo 第 2 节及附录 E](https://arxiv.org/html/2609.00768v2#S2)，默认构造样本数 12、优化组大小 8；绝对置信度区间为 [0.25, 0.75]，相对阈值 1.6，晋级阈值 0.7，探索系数 0.5。所有参数进入现有 `Module` 描述，可重建和替换，不在 `curriculum` 增加专用分支。
 
@@ -50,6 +50,18 @@
 builder 从这些捕获和分类重新构造投票、计算整批奖励，调用现有 `seal_batch` 返回原生 batchRef。token、mask、logprob、policyVersion 及原 feedback 均保留；新奖励单独记录 `rewardSource`、`originalVerifierReward`、`curriculumRewardRef`，后者绑定完整输入、奖励、源码身份及实际依赖版本。训练调用方将 batchRef 登记到原 lease 的 ledger，再按已有 `grpo-dataset` 合同交给 `SlimeModelUpdater`。此处没有新 adapter 或另一个 updater，也没有改写 verifier 的原始奖励。
 
 当前要求 v2 `agent-grpo-v1`、`zeroVarianceGroup="keep"`、与奖励一致的 group size，以及原生已支持的 `topP=1`。builder 本身不运行模型、不关闭或重开 lease，也不完成两模型作业调度。测试证明已绑定的数据能封存为原生批次，不等于 Slime 已执行更新或 GPU 数值已验收。
+
+## Solver 课程与已提交失败材料
+
+`gear.training.recipes.diagevo_solver.DiagEvoSolverDatasetBuilder` 使用同一原生数据合同。`seal_curriculum` 接收完整候选题池、构造捕获、生成指令、轮初 memory、预期 solver policy 与答案分类证据。它从捕获重算投票并封存被保留和被筛除的所有题；晋级需要后者的观测，不能只保存进入梯度更新的题。构造捕获须属于同一个冻结 solver，实际题目、指令前缀、tokenizer 和采样配置一致。保留题的多数票参考必须有非空原文。
+
+`build(groups, lease=..., curriculum_ref=..., answer_classes_ref=...)` 只允许训练已保留题，要求原生 task ID 与封存 question ID 相同。优化捕获不能复用构造捕获；每个优化组保持自己的实际策略，同时保留构造阶段的题目、指令和采样合同。优化分类证据使用 `kind="diagevo-optimization-classes"`，增加 `curriculumRef`，其余字段沿用上述分类结构。调用方必须沿用同一分类器以及该题池内稳定的答案等价类，不能为优化响应重新编号。builder 检查身份、覆盖和引用，数学等价性仍由实际分类器负责。
+
+构建后的批次保留原 token、mask、行为 logprob 和 verifier 反馈；伪标签一致／不一致的奖励另记为 +1／-1。全部失败的组仍保留。`round_evidence(commit_refs, curriculum_ref=...)` 要求提供此 solver 作业的全部计划更新，按顺序检查训练作业身份、连续提交号、前序提交、实际消费的 batch、checkpoint、优化器／RNG、导出权重及下一批的更新前权重。恢复作业还检查父 checkpoint 的兼容性、完整状态和导出模型。随后从原捕获重建每个消费批次，拒绝漏批、换批和跨更新复用捕获。
+
+返回的既有 `RoundEvidence` 包含完整题池、全部已提交优化组，以及诊断必需的失败原文和构造参考原文，可直接交给 `DiagEvoMemoryUpdater`。已完成但文本为空的失败响应按空字符串保留，缺失值仍拒绝；诊断模型可选择不归因，不补写虚构的错误答案。当前方法不处理部分完成作业或跳过全部更新的轮次。
+
+上述检查证明存储记录彼此吻合，不认证任意调用方伪造的提交来源。完整训练入口必须从实际 native ledger 获取提交，并证明题池来自更新后 challenger 的新一轮采样。当前 `seal_curriculum` 仍接受调用方提供的题目与生成指令，尚未绑定这段 challenger 来源；不能据此宣称两模型闭环完成。
 
 ## 调度与状态
 
@@ -107,7 +119,9 @@ builder 从这些捕获和分类重新构造投票、计算整批奖励，调用
 
 `python/tests/test_diagevo_challenger.py` 使用真实 NLTK／scikit-learn 覆盖奖励峰值及截断、跨组重复惩罚、格式错误与完整分母、零／单有效问题、缺失／跨策略／复用证据拒绝、输入顺序影响和 Module 重建。
 
-`python/tests/test_diagevo_data.py` 使用明确标识的原生捕获合同 fixture，验证完整批次封存、重建一致性、原 token／mask／logprob／反馈保留、同 task 不同 prompt 拒绝、未准入任务／开放 lease／重复请求拒绝、solver 问题／指令／策略漂移、构造缺项和等价类证据覆盖。五组共 46 个测试通过；这些是规则、恢复及数据合同验证，不是模型训练效果验证。
+`python/tests/test_diagevo_data.py` 使用明确标识的原生捕获合同 fixture，验证完整批次封存、重建一致性、原 token／mask／logprob／反馈保留、同 task 不同 prompt 拒绝、未准入任务／开放 lease／重复请求拒绝、solver 问题／指令／策略漂移、构造缺项和等价类证据覆盖。
+
+`python/tests/test_diagevo_solver.py` 另覆盖完整题池与筛选、全失败组、构造／优化捕获隔离、分类约定、消费批次和提交链、恢复父状态、空失败原文及真实记忆调用流程的衔接。提交和模型状态为明确标识的 CPU 合同 fixture，不表示执行了优化器更新。六组共 54 个测试通过；这些是规则、恢复及数据合同验证，不是模型训练效果验证。
 
 尚缺 challenger 更新后重新采样候选池、solver 更新、实际诊断／embedding 后端及原生费用回执绑定、完整外层恢复，以及真实运行和效果对照。当前记忆流程验证不替代完整 DiagEvo 或 GPU 实验验收。
 

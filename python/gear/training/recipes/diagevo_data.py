@@ -86,6 +86,106 @@ def _capture(store, raw, seen):
     return sample, context, identity, agent_request, message["content"]
 
 
+def _answer_labels(store, ref, *, curriculum_ref=None):
+    classification = store.read_json(ref)
+    expected = {"schemaVersion", "kind", "classifier", "labels"}
+    if curriculum_ref is not None:
+        expected.add("curriculumRef")
+    require(
+        isinstance(classification, dict)
+        and set(classification) == expected
+        and classification["schemaVersion"] == 1
+        and classification["kind"]
+        == ("diagevo-answer-classes" if curriculum_ref is None else "diagevo-optimization-classes")
+        and classification.get("curriculumRef") == curriculum_ref
+        and isinstance(classification["classifier"], dict)
+        and bool(classification["classifier"])
+        and isinstance(classification["labels"], list),
+        "diagevo-answer-evidence",
+        "answer equivalence requires a sealed classifier identity and complete labels",
+    )
+    labels = {}
+    for label in classification["labels"]:
+        require(
+            isinstance(label, dict)
+            and set(label) == {"trajectoryDigest", "answerKey", "evidenceRef"}
+            and _text(label["trajectoryDigest"])
+            and _text(label["answerKey"])
+            and label["trajectoryDigest"] not in labels,
+            "diagevo-answer-evidence",
+            "answer labels must uniquely bind native trajectories",
+        )
+        store.read_bytes(label["evidenceRef"])
+        labels[label["trajectoryDigest"]] = label["answerKey"]
+    return classification, labels
+
+
+def _solver_identity(context, body):
+    return (
+        *(
+            context[key]
+            for key in (
+                "policyVersion",
+                "runtimeInstanceId",
+                "tokenizerDigest",
+                "chatTemplateDigest",
+            )
+        ),
+        digest_json(context["sampling"]),
+        digest_json(body["messages"][:-1]),
+    )
+
+
+def _native_groups(store, request, groups, lease, seen):
+    require(
+        lease.get("state") == "closed"
+        and lease.get("trainingRunId") == request["trainingRunId"]
+        and lease.get("samplingDigest") == digest_json(sampling_params(request["rollout"]))
+        and len(groups) == request["trainer"]["rolloutBatchSize"],
+        "diagevo-batch-not-ready",
+        "training needs the full batch under its closed policy lease",
+    )
+    tasks = {task["id"]: task for task in request["trainDataset"]["tasks"]}
+    model = request["parentModel"]
+    result, group_ids = [], set()
+    for group in groups:
+        captured = []
+        for raw in group:
+            values = _capture(store, raw, seen)
+            _, context, _, _, _ = values
+            task = tasks.get(context["taskId"])
+            require(
+                task is not None
+                and context["taskRef"] == task["taskRef"]
+                and context["environmentRef"] == task["environmentRef"]
+                and context["harnessRef"] == request["fixedHarness"]["manifestRef"]
+                and context["verifierVersion"] == request["verifier"]["digest"]
+                and context["trainingRunId"] == request["trainingRunId"]
+                and context["batchId"] == lease["batchId"]
+                and context["policyVersion"] == lease["policyVersion"]
+                and context["runtimeInstanceId"] == lease["runtimeInstanceId"]
+                and context["tokenizerDigest"] == model["tokenizerDigest"]
+                and context["chatTemplateDigest"] == model["chatTemplateDigest"]
+                and context["sampling"] == sampling_params(request["rollout"])
+                and context["maxContextTokens"]
+                <= request["rollout"]["sampling"]["maxContextTokens"]
+                and context["maxEpisodeSteps"] <= request["budgets"]["maxEpisodeSteps"],
+                "diagevo-training-context-drift",
+                "training capture differs from the authorized task, runtime or policy",
+            )
+            captured.append(values)
+        admit_group([row[0] for row in captured], request["rollout"]["groupSize"], "keep")
+        group_id = captured[0][1]["groupId"]
+        require(
+            group_id not in group_ids,
+            "diagevo-reused-group",
+            "training batches cannot repeat a group identity",
+        )
+        group_ids.add(group_id)
+        result.append(captured)
+    return result
+
+
 class DiagEvoChallengerDatasetBuilder:
     """Use full native groups; preserve tokens, masks, behavior policy and feedback.
 
@@ -118,64 +218,21 @@ class DiagEvoChallengerDatasetBuilder:
         sampling_params(request["rollout"])
 
     def _challengers(self, groups, lease, seen):
-        request = self.request
-        require(
-            lease.get("state") == "closed"
-            and lease.get("trainingRunId") == request["trainingRunId"]
-            and lease.get("samplingDigest") == digest_json(sampling_params(request["rollout"]))
-            and len(groups) == request["trainer"]["rolloutBatchSize"],
-            "diagevo-batch-not-ready",
-            "challenger needs the full batch under its closed training lease",
-        )
-        tasks = {task["id"]: task for task in request["trainDataset"]["tasks"]}
-        policy = request["parentModel"]
-        native, challengers, group_ids = [], [], set()
-        for group in groups:
-            built = []
-            for raw in group:
-                sample, context, identity, body, response = _capture(self.store, raw, seen)
-                task = tasks.get(context["taskId"])
-                require(
-                    task is not None
-                    and context["taskRef"] == task["taskRef"]
-                    and context["environmentRef"] == task["environmentRef"]
-                    and context["harnessRef"] == request["fixedHarness"]["manifestRef"]
-                    and context["verifierVersion"] == request["verifier"]["digest"]
-                    and context["trainingRunId"] == request["trainingRunId"]
-                    and context["batchId"] == lease["batchId"]
-                    and context["policyVersion"] == lease["policyVersion"]
-                    and context["runtimeInstanceId"] == lease["runtimeInstanceId"]
-                    and context["tokenizerDigest"] == policy["tokenizerDigest"]
-                    and context["chatTemplateDigest"] == policy["chatTemplateDigest"]
-                    and context["sampling"] == sampling_params(request["rollout"])
-                    and context["maxContextTokens"]
-                    <= request["rollout"]["sampling"]["maxContextTokens"]
-                    and context["maxEpisodeSteps"] <= request["budgets"]["maxEpisodeSteps"],
-                    "diagevo-challenger-context-drift",
-                    "challenger capture differs from the authorized task, runtime or policy",
-                )
-                built.append(sample)
-                challengers.append(
-                    ChallengerSample(
-                        context["id"],
-                        context["groupId"],
-                        digest_json(body["messages"]),
-                        context["policyVersion"],
-                        response,
-                        identity,
-                    )
-                )
-            admit_group(built, self.objective.group_size, "keep")
-            group_id = built[0].metadata["groupId"]
-            require(
-                group_id not in group_ids,
-                "diagevo-reused-group",
-                "challenger batches cannot repeat a group identity",
+        captured = _native_groups(self.store, self.request, groups, lease, seen)
+        challengers = tuple(
+            ChallengerSample(
+                context["id"],
+                context["groupId"],
+                digest_json(body["messages"]),
+                context["policyVersion"],
+                response,
+                identity,
             )
-            group_ids.add(group_id)
-            native.append(built)
+            for group in captured
+            for _, context, identity, body, response in group
+        )
         self.objective.questions(challengers)
-        return tuple(challengers), native
+        return challengers, [[row[0] for row in group] for group in captured]
 
     def questions(self, groups, *, lease):
         challengers, _ = self._challengers(groups, lease, set())
@@ -191,31 +248,7 @@ class DiagEvoChallengerDatasetBuilder:
             "diagevo-solver-coverage",
             "valid questions need complete construction captures and an explicit frozen solver",
         )
-        classification = self.store.read_json(answer_classes_ref)
-        require(
-            isinstance(classification, dict)
-            and set(classification) == {"schemaVersion", "kind", "classifier", "labels"}
-            and classification["schemaVersion"] == 1
-            and classification["kind"] == "diagevo-answer-classes"
-            and isinstance(classification["classifier"], dict)
-            and bool(classification["classifier"])
-            and isinstance(classification["labels"], list),
-            "diagevo-answer-evidence",
-            "answer equivalence requires a sealed classifier identity and complete labels",
-        )
-        labels = {}
-        for label in classification["labels"]:
-            require(
-                isinstance(label, dict)
-                and set(label) == {"trajectoryDigest", "answerKey", "evidenceRef"}
-                and _text(label["trajectoryDigest"])
-                and _text(label["answerKey"])
-                and label["trajectoryDigest"] not in labels,
-                "diagevo-answer-evidence",
-                "answer labels must uniquely bind native trajectories",
-            )
-            self.store.read_bytes(label["evidenceRef"])
-            labels[label["trajectoryDigest"]] = label["answerKey"]
+        _, labels = _answer_labels(self.store, answer_classes_ref)
 
         votes, consumed, solver_policies = [], set(), set()
         evidence = [ref for group in groups for raw in group for ref in raw.refs()]
@@ -229,21 +262,7 @@ class DiagEvoChallengerDatasetBuilder:
                     "solver must answer the exact generated question and have a bound answer class",
                 )
                 consumed.add(identity)
-                solver_policies.add(
-                    (
-                        *(
-                            context[key]
-                            for key in (
-                                "policyVersion",
-                                "runtimeInstanceId",
-                                "tokenizerDigest",
-                                "chatTemplateDigest",
-                            )
-                        ),
-                        digest_json(context["sampling"]),
-                        digest_json(body["messages"][:-1]),
-                    )
-                )
+                solver_policies.add(_solver_identity(context, body))
                 answers.append(
                     SolverSample(
                         context["id"],
