@@ -1,6 +1,6 @@
 # DiagEvo 课程规则的当前接入
 
-`gear.training.recipes.diagevo.DiagEvoPolicy` 已实现 DiagEvo 的投票筛选、频率调度和状态更新规则，`gear.training.recipes.diagevo_memory.DiagEvoDiagnostician` 提供诊断、检索筛选及节点归并组件。`gear.training.recipes.diagevo_round.DiagEvoMemoryUpdater` 已将这些组件串成一个可恢复的轮末记忆更新流程；`gear.training.recipes.diagevo_challenger.DiagEvoChallengerReward` 计算 challenger 的问题质量奖励。challenger 与 solver 的 dataset builder 已将奖励绑定到原生捕获及 GRPO 批次，solver 可从完整训练提交链恢复轮末诊断材料。它们尚未注册为完整训练 recipe，也未在 `gear.algorithms` 中宣称完整算法支持。采样、答案等价判定、实际模型与 embedding 后端、两模型 GRPO 更新和完整外层执行仍待接入。
+`gear.training.recipes.diagevo.DiagEvoPolicy` 已实现 DiagEvo 的投票筛选、频率调度和状态更新规则，`gear.training.recipes.diagevo_memory.DiagEvoDiagnostician` 提供诊断、检索筛选及节点归并组件。`gear.training.recipes.diagevo_round.DiagEvoMemoryUpdater` 已将这些组件串成一个可恢复的轮末记忆更新流程；`gear.training.recipes.diagevo_challenger.DiagEvoChallengerReward` 计算 challenger 的问题质量奖励。challenger 与 solver 的 dataset builder 已将奖励绑定到原生捕获及 GRPO 批次，solver 可从完整训练提交链恢复轮末诊断材料。数学答案已有实际 Math-Verify 分类后端，单个 solver 作业已接入现有四阶段原生驱动并通过 CPU 替身集成测试。完整双模型算法尚未注册，也未在 `gear.algorithms` 中宣称支持；challenger 更新及更新后新采样、实际诊断／embedding 后端、完整外层执行和 GPU 效果仍待接入验证。
 
 规则依据 [DiagEvo 第 2 节及附录 E](https://arxiv.org/html/2609.00768v2#S2)，默认构造样本数 12、优化组大小 8；绝对置信度区间为 [0.25, 0.75]，相对阈值 1.6，晋级阈值 0.7，探索系数 0.5。所有参数进入现有 `Module` 描述，可重建和替换，不在 `curriculum` 增加专用分支。
 
@@ -26,7 +26,7 @@
 
 只聚类有效问题，重复占比的分母固定为完整 challenger 批次大小，含格式无效槽位；零个或一个有效问题有显式处理。聚类身份以成员 sample ID 表示，不暴露库的任意数字标签。NLTK 和 scikit-learn 延迟加载，并声明为该 Module 的包依赖；训练阶段身份应记录实际安装版本。当前测试版本为 `nltk==3.10.4`、`scikit-learn==1.5.2`，不加入 `gear.curriculum` 的依赖。
 
-这些可选计算依赖可用 `pip install './python[training-metrics]' -c python/constraints-test.txt` 安装。CI 的 training-cpu 作业安装它们并运行对应测试；不安装该 extra 的最小环境跳过这两组依赖真实聚类库的测试，其他规则测试照常执行。
+这些可选计算依赖可用 `pip install './python[training-metrics]' -c python/constraints-test.txt` 安装。CI 的 training-cpu 作业安装它们并运行对应测试；不安装该 extra 的最小环境跳过依赖真实聚类库的测试，其他规则测试照常执行。
 
 ## 原生 GRPO 数据绑定
 
@@ -51,6 +51,16 @@ builder 从这些捕获和分类重新构造投票、计算整批奖励，调用
 
 当前要求 v2 `agent-grpo-v1`、`zeroVarianceGroup="keep"`、与奖励一致的 group size，以及原生已支持的 `topP=1`。builder 本身不运行模型、不关闭或重开 lease，也不完成两模型作业调度。测试证明已绑定的数据能封存为原生批次，不等于 Slime 已执行更新或 GPU 数值已验收。
 
+## 数学答案分类后端
+
+`gear.training.recipes.diagevo_answers.DiagEvoMathClassifier` 使用开源 [Math-Verify](https://github.com/huggingface/Math-Verify) 0.9.0。安装命令为 `pip install './python[training-math]' -c python/constraints-test.txt`；当前锁定 latex2sympy2_extended 1.11.0、ANTLR 4.13.2、SymPy 1.14.0 和 mpmath 1.3.0。依赖延迟加载，源码、实际安装版本及参数进入分类器身份，不加入 curriculum 核心依赖。
+
+`construction(questions, captures)` 读取完整原生 solver 响应并输出上述 `answer_classes_ref`。它只解析最后一个外层 `\boxed{...}`，不回退到更早的答案；最后一个 box 未闭合或含嵌套 box 时拒绝提取。使用严格规范化、禁止字符串 fallback，缺失或不支持的答案各有独立标识，避免解析失败聚成多数票。Math-Verify 双向比较均成立才合并，且整个题目的比较关系必须自反、传递。保存的依据包含捕获、解析状态、表达式和逐对比较结果。
+
+`optimization(curriculum_ref, groups)` 先重算冻结的构造分类，随后把新答案与各原类别的所有成员比较；匹配同一类别才复用原 ID，部分匹配或同时匹配不相容类别会报错。未匹配答案各有独立 ID，只表示它不属于已有类别，不宣称这些新答案彼此不等价。分类器异常和超时终止阶段，不转换为负奖励。这个数学专用约定是明确的适配；多数票仍是伪标签，不证明题目或答案真实正确。
+
+默认每次 parse/verify 超时 5 秒、一次完整分类软期限 300 秒、每题最多 256 条响应、单条最多 262144 字符；优化阶段的原分类重放与新比较共享同一期限。软期限在库调用前后检查，文件读取与 Python 处理也可能延迟检查，不提供独立进程的硬资源隔离。当前库超时依赖主线程信号，因此只在 worker 主线程运行，并拒绝占用已有的进程 alarm。
+
 ## Solver 课程与已提交失败材料
 
 `gear.training.recipes.diagevo_solver.DiagEvoSolverDatasetBuilder` 使用同一原生数据合同。`seal_curriculum` 接收完整候选题池、构造捕获、生成指令、轮初 memory、预期 solver policy 与答案分类证据。它从捕获重算投票并封存被保留和被筛除的所有题；晋级需要后者的观测，不能只保存进入梯度更新的题。构造捕获须属于同一个冻结 solver，实际题目、指令前缀、tokenizer 和采样配置一致。保留题的多数票参考必须有非空原文。
@@ -74,6 +84,16 @@ builder 从这些捕获和分类重新构造投票、计算整批奖励，调用
 `read` 会从原提交、捕获和配置重新构建整个来源记录。将该 builder 传入 `DiagEvoSolverDatasetBuilder(..., generation_builder=...)` 后，`seal_curriculum(..., generation_ref=...)` 强制要求完整新题目、逐题生成指令、轮初记忆和冻结 solver 相符，且构造响应不能复用 challenger 奖励评估中的响应。该来源随课程、优化批次和已提交失败材料保留，恢复时再次检查。
 
 当前同一 challenger 作业内的两阶段使用相同已准入任务范围、组大小和批次大小。每个 task 固定一种生成指令，调用方须用已有 `DiagEvoPolicy.schedule` 按冻结随机源构造任务及抽样计划；此绑定检查实际内容与计划关联，尚不证明完整外层频率调度已经执行。它不自行启动训练、采样或完成跨作业任务准入，也不处理全无有效题时的重采样策略。完整双模型调用方与实际训练验证仍然缺失。
+
+## 单个 solver 作业的原生执行
+
+`gear.training.pipelines.diagevo_solver.build_loop` 组合既有 `FrozenTaskSource → HitchRolloutExecutor → SolverDatasetStage → SlimeModelUpdater`。可冻结 [示例入口](../../examples/training-loop/recipes/diagevo_solver.py) 作为 `trainer.script`，在 `trainer.scriptConfig` 中提供 `curriculumRef` 和 `challengerRequestRef` 两个 CAS 引用。前者必须绑定更新后新题池和上述数学分类；后者是生成记录对应的完整 challenger 训练请求。调用方须先按已有权限传输这些引用及其依赖，并准入恰好全部保留题；此入口不会自动创建或扩展任务权限。
+
+factory 从冻结描述重建 policy、challenger objective 和 question prompt，只解析显式允许的组件，不按制品字符串任意导入代码。随后重放来源记录并核对分类器身份。替换算法组件的调用方可在自己的冻结 script 中直接组合现有 stage，不增加 adapters 层。
+
+数据阶段先核对实际 ledger 中的关闭 lease、更新前 checkpoint、完整原生组和来源，再执行数学分类、封存 ±1 奖励批次并交给既有 updater。原 token、mask、行为 logprob 和 verifier 反馈不变。已完成阶段按现有 `TrainingLoop` 重放；批次封存后丢失返回时可从原捕获确定性重建，参数更新提交后丢失返回时复用原生提交，不重复采样或更新。数学计算是本地运算，中断后未完成的分类可以重算，不产生额外模型调用。
+
+这里完成的是一个已准入 solver 作业。上游 challenger 参数更新、更新后新题采样、冻结 solver 的构造采样，以及轮末真实诊断和下一轮作业创建仍由尚未完成的外层入口负责。CPU 集成中的 actor、权重和 challenger 历史是明确标注的测试替身，不能作为真实 LLM／GPU 更新或论文效果证据。
 
 ## 调度与状态
 
@@ -135,9 +155,13 @@ builder 从这些捕获和分类重新构造投票、计算整批奖励，调用
 
 `python/tests/test_diagevo_solver.py` 另覆盖完整题池与筛选、全失败组、构造／优化捕获隔离、分类约定、消费批次和提交链、恢复父状态、空失败原文及真实记忆调用流程的衔接。
 
-`python/tests/test_diagevo_generation.py` 覆盖三种生成 prompt、更新后权重关联、旧请求换名拒绝、跨更新 solver 漂移、记忆与实际 prompt 一致性、无效新问题保留、构造响应不能复用奖励评估，以及新题池进入已提交 solver 失败材料。提交和模型状态为明确标识的 CPU 合同 fixture，不表示执行了优化器更新。七组共 63 个测试通过；这些是规则、恢复及数据合同验证，不是模型训练效果验证。
+`python/tests/test_diagevo_generation.py` 覆盖三种生成 prompt、更新后权重关联、旧请求换名拒绝、跨更新 solver 漂移、记忆与实际 prompt 一致性、无效新问题保留、构造响应不能复用奖励评估，以及新题池进入已提交 solver 失败材料。提交和模型状态为明确标识的 CPU 合同 fixture，不表示执行了优化器更新。
 
-尚缺 challenger 更新后重新采样候选池、solver 更新、实际诊断／embedding 后端及原生费用回执绑定、完整外层恢复，以及真实运行和效果对照。当前记忆流程验证不替代完整 DiagEvo 或 GPU 实验验收。
+`python/tests/test_diagevo_answers.py` 使用实际 Math-Verify 验证数值／符号等价、最终答案提取、未解析回答隔离、构造类别沿用及 ±1 原生奖励；另检查异常、共享软期限、非传递比较和新答案匹配多个类别时拒绝分类。
+
+`python/tests/test_diagevo_pipeline.py` 通过实际 script factory、原生 driver、回环 HTTP 捕获、SQLite ledger 和预处理跑两轮 solver 作业，并从消费提交恢复失败材料。Slime/Ray actor 与 checkpoint 为 CPU 替身。另覆盖封存后返回丢失、提交后返回丢失、任务准入和组件身份约束。九组共 78 个测试通过；这是规则、数据、执行和恢复验证，不是模型训练效果验证。
+
+尚缺 challenger 实际更新及更新后重新采样、冻结 solver 构造采样、实际诊断／embedding 后端及原生费用回执绑定、完整外层恢复，以及双模型真实运行和效果对照。当前 solver 入口和记忆流程验证不替代完整 DiagEvo 或 GPU 实验验收。
 
 接入两模型更新时还有三个已核实的边界：
 

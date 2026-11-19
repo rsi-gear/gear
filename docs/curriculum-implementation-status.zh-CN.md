@@ -18,7 +18,7 @@
 | Forge-inspired 外层配方 | IFEval 文本配方已实现并通过离线正式运行集成；真实效果未验收 | [配方与差异](../examples/curriculum-harness/FORGE.zh-CN.md)：同批训练门槛、逐题 front 选择、停滞触发、按 epoch 记忆、四类变异及独立语义验证、扩池后未见优先；三轮真实 CLI/worker 集成验证新 run 准入与恢复。非单 run 动态池或工具环境论文复现 |
 | DataEnvGym-inspired 配方 | skill-tree CPU 配方已实现；LLM/GPU 效果未验收 | [运行与适配差异](../examples/training-loop/DATAENVGYM.zh-CN.md)：实际六轮 TrainingLoop、expand/refocus 策略、校准、参数更新、固定训练探针反馈；未见输入 MSE 35156.25 → 0。树／任务／验证记录绑定训练阶段并覆盖三个中断点恢复。该算术结果不证明论文基准上的收益 |
 | SENTINEL / CoEvolve 配方 | 待实现 | 各自实际执行入口、可替换组件、专有采样／验证信号与测试；能力不足明确拒绝，不能用空导出冒充支持 |
-| DiagEvo 配方 | 专用规则、challenger／solver 原生批次、新题池来源绑定及可恢复记忆流程已实现；完整训练入口仍缺 | [规则与边界](training/diagevo.zh-CN.md)：双置信度、构造／优化分离、调度、晋级及重新激活；轮末记忆更新已串联。新题池绑定完整 challenger 提交链、更新后权重及实际记忆 prompt，拒绝复用更新采样或伪标签评估响应；来源继续进入 solver 消费批次和轮末失败材料。七组共 63 个测试通过。尚缺两模型实际更新与新采样调度、分类／诊断／embedding 后端、原生费用记录、完整外层恢复、论文规模证据保留及真实效果实验 |
+| DiagEvo 配方 | 规则、原生批次、新题池来源、记忆流程及数学分类已实现；单个 solver 作业已接原生驱动，完整双模型入口仍缺 | [规则与边界](training/diagevo.zh-CN.md)：实际 Math-Verify 保持构造答案类别；solver factory 接已有四阶段，核对新题池来源和准入后封存 ±1 奖励，已用 CPU actor 替身通过两轮原生 driver／HTTP／ledger 集成和中断恢复。九组共 78 个测试通过。尚缺 challenger 更新及更新后新采样、冻结 solver 构造采样、真实诊断／embedding 后端与费用记录、完整外层恢复、论文规模证据保留及真实 LLM／GPU 效果实验 |
 | TRACE / Agent-R / Self-Direction 配方 | 待实现 | 实际环境生成、修复／回退、过程问答和相应训练／加载／路由接入；逐项记录与上游的差异 |
 | 动态任务池、MCTS/reset、DPO/LoRA/MoE 等后端能力 | 设计第三阶段，尚未验收 | 按具体配方实现合同及后端；涉及 wire/runtime 时同步更新；用实际执行证明相应能力 |
 | 设计第 11 节九项验收 | 部分完成 | 每项都绑定具体测试／运行记录，不能以窄范围示例代替整体完成 |

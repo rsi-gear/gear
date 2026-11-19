@@ -75,7 +75,7 @@ class DriverMemoryTests(unittest.TestCase):
         cursor = store.put_json(kwargs["data_cursor"])
         cp = store.put_json({"schemaVersion": 1, "optimizerStateRef": self.state_ref, "schedulerAndRngRef": self.state_ref, "dataCursorRef": cursor, "committedUpdate": kwargs["committed_update"], "hfExportRef": self.hf,
             "actorWeightsDigest": "sha256:" + "b" * 64, "actorStateRef": self.state_ref, "compatibilityDigest": compatibility_digest(self.request)})
-        commit = store.put_json({"checkpointRef": cp, "committedUpdate": kwargs["committed_update"],
+        commit = store.put_json({"schemaVersion": 1, "checkpointRef": cp, "committedUpdate": kwargs["committed_update"],
             "trainingRunId": self.request["trainingRunId"], "consumedBatchDigest": kwargs["batch_ref"]["digest"],
             "rngRef": self.state_ref, "dataCursorRef": cursor,
             **({"previousCommitRef": kwargs["previous_commit"]} if kwargs.get("previous_commit") else {})})

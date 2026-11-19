@@ -14,6 +14,7 @@ agents = ["openai-codex==0.159.3"]
 gateway = ["aiohttp>=3.11,<4"]
 deployment = ["supervisor==4.3.0"]
 training-metrics = ["nltk>=3.10,<4", "scikit-learn>=1.5,<2"]
+training-math = ["math-verify[antlr4_13_2]==0.9.0"]
 dev = ["ruff==0.17.0", "mypy==2.4.0"]
 
 [project.scripts]
