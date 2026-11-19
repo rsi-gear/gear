@@ -1,6 +1,6 @@
 # DiagEvo 课程规则的当前接入
 
-`gear.training.recipes.diagevo.DiagEvoPolicy` 已实现 DiagEvo 的投票筛选、频率调度和状态更新规则，`gear.training.recipes.diagevo_memory.DiagEvoDiagnostician` 提供诊断、检索筛选及节点归并组件。`gear.training.recipes.diagevo_round.DiagEvoMemoryUpdater` 已将这些组件串成一个可恢复的轮末记忆更新流程。它们尚未注册为完整训练 recipe，也未在 `gear.algorithms` 中宣称完整算法支持。采样、答案等价判定、实际模型与 embedding 后端、两模型 GRPO 更新和完整外层执行仍待接入。
+`gear.training.recipes.diagevo.DiagEvoPolicy` 已实现 DiagEvo 的投票筛选、频率调度和状态更新规则，`gear.training.recipes.diagevo_memory.DiagEvoDiagnostician` 提供诊断、检索筛选及节点归并组件。`gear.training.recipes.diagevo_round.DiagEvoMemoryUpdater` 已将这些组件串成一个可恢复的轮末记忆更新流程；`gear.training.recipes.diagevo_challenger.DiagEvoChallengerReward` 计算 challenger 的问题质量奖励。它们尚未注册为完整训练 recipe，也未在 `gear.algorithms` 中宣称完整算法支持。采样、答案等价判定、实际模型与 embedding 后端、两模型 GRPO 更新和完整外层执行仍待接入。
 
 规则依据 [DiagEvo 第 2 节及附录 E](https://arxiv.org/html/2609.00768v2#S2)，默认构造样本数 12、优化组大小 8；绝对置信度区间为 [0.25, 0.75]，相对阈值 1.6，晋级阈值 0.7，探索系数 0.5。所有参数进入现有 `Module` 描述，可重建和替换，不在 `curriculum` 增加专用分支。
 
@@ -11,6 +11,20 @@
 构造报告保留完整输入与一条多数答案参考轨迹。`optimization` 需要独立的新样本组，用与伪标签一致／不一致定义 +1／-1，即使全部优化响应都不一致，原构造参考仍可用于对比诊断。它不把构造样本复用为训练 rollout。优化期间策略可以推进，每个组必须保留自己的实际 policy；原生 token、logprob、组完整性和当前策略资格仍由训练 backend 检查。
 
 报告修改后不能继续使用：消费时从原构造样本重新计算投票。缺失、未完成、混合策略或重复 sample 不会被当作完整组；为同一个轨迹引用另取 sample ID 也不能重复计票。caller 需要先处理原外部调用结果，不能用部分组补出失败标签。
+
+## Challenger 问题质量奖励
+
+`DiagEvoChallengerReward.questions(samples)` 在实际 solver 请求前验证整批 challenger 采样，并提取格式有效的问题。`ChallengerSample` 分别保存 sample、group、prompt、policy 和 capture 身份；不同采样组可共享同一个自由探索 prompt，不能按 prompt 文本合并 GRPO 组。每组默认八条，整批来自同一 challenger 策略。
+
+这里采用明确的输出合同：完整响应仅含一对 `<question>...</question>`，允许外围空白，拒绝空问题、嵌套／重复标签和额外文本。已完成的格式错误保留在组内并获零奖励；未完成、缺项、重复 capture 或混合策略直接拒绝，不能补成失败样本。格式检查不证明题目有解或语义正确。
+
+`score(samples, votes)` 要求每个有效问题有完整的 solver 投票，question ID 对应 challenger sample ID；所有票来自一个冻结 solver，且不能重用任何 challenger 或其他问题的 capture／sample。投票报告从原样本重新计算。这里不采用 solver 课程的 `retained` 条件：相冲突的多数票也参与 challenger 的难度奖励。
+
+奖励遵循 [DiagEvo 附录 D](https://arxiv.org/html/2609.00768v2#A4)：`max(0, 1 - 2*abs(p1 - 0.5) - repetition_weight*cluster_share)`，默认权重 1。结果逐项保留原样本、完整投票、聚类成员、重复占比、不确定性及奖励，供训练调用方绑定原生 token／logprob／receipt；本组件不认证这些引用的真实性，也不执行梯度更新。
+
+聚类约定参考固定版本 [R-Zero `5699329`](https://github.com/Chengsong-Huang/R-Zero/blob/5699329d018d79535b7910abdedf5a6eebf355fd/examples/reward_function/caller_penalty.py)：空白分词、NLTK 默认四元 BLEU 与 method1 平滑、`1-BLEU` 距离、average linkage、默认阈值 0.5。较早问题作为 hypothesis，较晚问题作为 reference，单向距离镜像填入矩阵；这不具备输入排列不变性，调用方必须冻结原批次顺序。本实现重新组织计算与证据输出，不执行上游文件的网络、文件或环境变量副作用，也不采用其末尾奖励公式。
+
+只聚类有效问题，重复占比的分母固定为完整 challenger 批次大小，含格式无效槽位；零个或一个有效问题有显式处理。聚类身份以成员 sample ID 表示，不暴露库的任意数字标签。NLTK 和 scikit-learn 延迟加载，并声明为该 Module 的包依赖；训练阶段身份应记录实际安装版本。当前测试版本为 `nltk==3.10.4`、`scikit-learn==1.5.2`，不加入 `gear.curriculum` 的依赖。
 
 ## 调度与状态
 
@@ -64,12 +78,14 @@
 
 `python/tests/test_diagevo_memory.py` 另覆盖全失败组的参考保留、同节点已知原因复现、不强制归因、全量原因筛选、余弦数值边界、最大成员分数检索、候选外 ID 拒绝、空记忆建节点与归并时状态保持。纯组件可按 `Module` 重建。
 
-`python/tests/test_diagevo_round.py` 使用明确标识的持久化测试服务覆盖整轮处理、同轮新原因去重、晋级和重新激活、重叠节点对、提取／embedding／分配／归并后回执丢失、最终提交后中断、未知结果、未提交恢复、并发所有权、预算耗尽及侧录缺失。三组共 26 个测试通过；这些测试服务不是实际 LLM 或 embedding 效果证据。
+`python/tests/test_diagevo_round.py` 使用明确标识的持久化测试服务覆盖整轮处理、同轮新原因去重、晋级和重新激活、重叠节点对、提取／embedding／分配／归并后回执丢失、最终提交后中断、未知结果、未提交恢复、并发所有权、预算耗尽及侧录缺失。这些测试服务不是实际 LLM 或 embedding 效果证据。
+
+`python/tests/test_diagevo_challenger.py` 使用真实 NLTK／scikit-learn 覆盖奖励峰值及截断、跨组重复惩罚、格式错误与完整分母、零／单有效问题、缺失／跨策略／复用证据拒绝、输入顺序影响和 Module 重建。四组共 34 个测试通过；这些是规则与证据合同验证，不是模型训练效果验证。
 
 尚缺 challenger 更新后重新采样候选池、solver 更新、实际诊断／embedding 后端及原生费用回执绑定、完整外层恢复，以及真实运行和效果对照。当前记忆流程验证不替代完整 DiagEvo 或 GPU 实验验收。
 
 接入两模型更新时还有三个已核实的边界：
 
-- [DiagEvo 附录 D](https://arxiv.org/html/2609.00768v2#A4)要求先用一批问题更新 challenger，再从更新后的 challenger 采样另一批候选；不能把第一批题直接作为 solver 课程。其奖励为 `max(0, 1 - 2*abs(p1 - 0.5) - lambda*cluster_share)`，格式无效为零。当前 [R-Zero 公开 reward 文件](https://github.com/Chengsong-Huang/R-Zero/blob/main/examples/reward_function/caller_penalty.py)的末尾公式、无效格式处理及答案格式与该定义有差异，不能直接调用它并称为 DiagEvo 奖励；其 BLEU 筛选使用空白分词、method1 平滑、阈值 0.5 的 average linkage，可作为下一步明确核验的参考。
+- [DiagEvo 附录 D](https://arxiv.org/html/2609.00768v2#A4)要求先用一批问题更新 challenger，再从更新后的 challenger 采样另一批候选；不能把第一批题直接作为 solver 课程。上述奖励组件已实现，但尚未绑定原生 GRPO 数据构建和 challenger 参数更新，两个采样池的独立性仍须由完整训练入口证明。
 - 全失败优化组仍是诊断材料。[原生采样路径](../../python/gear/training/backends/slime/rollout.py)选择跳过／重抽时，只在返回的 raw groups 中保留训练准入组；完整调用方需要明确使用已支持的 `zeroVarianceGroup="keep"`，或另行保留并验证未准入组，不能因为没有梯度信号而丢掉失败证据。
 - [现有原生采样合同](../../python/gear/training/recipes/agent_grpo.py)只接受 `topP=1`，而论文报告为 0.99。完整配方必须扩展并验证对应行为分布合同，或预先声明使用 `topP=1` 的适配实验；不能将不支持的参数写进配置后视为已经实现。
