@@ -96,6 +96,34 @@ def json_data(value):
     return json.loads(json.dumps(value, ensure_ascii=False, allow_nan=False))
 
 
+def negative_controls(task, reference):
+    """Bounded counterexample proposals from the actual frozen constraint args.
+
+    A proposal is a negative control only after the official verifier rejects it.
+    The old generic strings remain useful, but may all satisfy a letter ceiling.
+    """
+    controls = ["", "INVALID", reference + ", EXTRA " * 100, "- a\n" * 30, "a " * 500]
+    for name, kwargs in zip(task["instruction_id_list"], task["kwargs"], strict=True):
+        if name == "keywords:letter_frequency":
+            letter, count = kwargs["letter"], kwargs["let_frequency"]
+            controls.extend(
+                [letter * min(count + 1, 10000), "a" if letter.lower() != "a" else "b"]
+            )
+        elif name == "keywords:frequency":
+            controls.append(
+                (kwargs["keyword"] + " ") * min(kwargs["frequency"] + 1, 10000)
+            )
+        elif name == "keywords:forbidden_words":
+            controls.append(reference + " " + " ".join(kwargs["forbidden_words"]))
+        elif name == "change_case:capital_word_frequency":
+            controls.append("UPPER " * min(kwargs["capital_frequency"] + 1, 10000))
+        elif name == "length_constraints:number_words":
+            controls.append("word " * min(kwargs["num_words"] + 1, 10000))
+    # Failed construction/tautological constraints remain rejected by calibration;
+    # this does not label every constructed string as an actual negative.
+    return list(dict.fromkeys(controls))
+
+
 class Benchmark:
     def __init__(self, root, *, language_seed=0, minimum_instructions=2):
         if type(language_seed) is not int or language_seed < 0:
@@ -184,6 +212,13 @@ class Benchmark:
             try:
                 self.descriptions(task)
             except ValueError:
+                continue
+            # Decide calibratability before model calls or split assignment.
+            # Nonempty negative probes must actually violate a frozen rule.
+            if not any(
+                not self.grade(task, text)["passed"]
+                for text in negative_controls(task, "Calibration reference text.")[1:]
+            ):
                 continue
             task = {
                 **task,
@@ -510,13 +545,7 @@ class Experiment:
                 reference = self.benchmark.grade(task, draft.reference["answer"])
                 # The trusted IFEval verifier must accept a correct reference and
                 # reject empty output and at least one nonempty negative control.
-                controls = [
-                    "",
-                    "INVALID",
-                    draft.reference["answer"] + ", EXTRA " * 100,
-                    "- a\n" * 30,
-                    "a " * 500,
-                ]
+                controls = negative_controls(task, draft.reference["answer"])
                 negative = [
                     self.benchmark.grade(task, text)["passed"] for text in controls
                 ]
@@ -537,6 +566,7 @@ class Experiment:
                     "task": task,
                     "reference": reference,
                     "negative_control_results": negative,
+                    "negative_controls": controls,
                 }
             except (ValueError, TypeError, KeyError) as error:
                 facts = {name: False for name in plan.required_checks}

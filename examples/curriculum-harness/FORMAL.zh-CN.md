@@ -4,6 +4,8 @@
 
 [首轮正式实测与审计](../../research/curriculum-harness-2026-11-20/README.zh-CN.md)已完成，包含 1,475 次调用。离线复核发现官方大小写检查内部的语言检测未固定 RNG，影响一次候选采纳；原始结果保留。后续运行的 `verifier_policy.language_detection_seed=0` 已进入冻结身份，旧报告不因此自动获得确定性验收通过。
 
+[第二轮记录](../../research/curriculum-harness-2026-11-20-v2/README.zh-CN.md)在 532 次调用、12 个搜索 run 后中止，最终测试未开启。固定负例未能违反一个字母次数上限，导致有效参考解全部被拒；另一次生成返回了错误 JSON。当前版本使用约束相关的反例与原生结构化输出，须建立新的冻结实验，不能改写已中止运行的决定。
+
 ## 固定协议
 
 | 项目 | 设置 |
@@ -12,6 +14,8 @@
 | 学生 / teacher | 默认 `gpt-5.6-luna` / `gpt-6-astra`，effort `low`；运行前验证实际可用性 |
 | 数据 | 固定提交的官方 IFEval strict verifiers；沿用原示例的可确定验证子集 |
 | 验证 RNG | 当前固定 language detection seed 0；原始正式实验漏项及影响见审计报告 |
+| 生成格式 | teacher 与 Meta 使用 SDK 原生 `output_schema`；调用方限定 IFEval 领域字段，实际语义仍由校验检查 |
+| 校准 | 固定负例加按约束参数构造的反例；官方验证器必须实际拒绝非空反例，切分前检查来源可校准性 |
 | 切分 | 排除前一轮所有 train/dev/test 来源；新的 8 train、16 dev、24 test，切分 seed `20261120` |
 | 重复 | 优化种子 101/202/303，各 2 轮；种子控制数据抽样和组执行顺序，原生解码没有 seed 保证 |
 | 学习预算 | 每轮每组最多 6 条，按四组验证通过数共同缩减，少于 3 条则停止 |
@@ -30,6 +34,8 @@
 `formal_provider.py` 实现已有 process provider 协议。候选使用 Pi 的资源封存格式，但这个实验只读取 `AGENTS.md` 并作为 developer prompt 发给 LLM；配置、扩展或 skills 发生修改会被拒绝。它没有运行 Pi agent，也没有验证工具编排的改进。
 
 `model_calls.py` 在调用前保存意图、thread/turn 身份，确认丢失时只读取原会话。无法确定结果时停止，不自动重复收费。已恢复但没有原生用量的结果保持用量未知。provider 不声明取消或原生 HTTP 预算能力；SDK 内部重试次数不可见，因此报告区分 SDK turn 次数、实际回执 token 与未知的 HTTP 请求数。1800 次上限是整个实验的逻辑调用配额，不是原生 HTTP 请求数或美元硬上限。搜索、诊断和数据生成均占用该配额。
+
+`output_schema` 随请求一起冻结；同一调用键不能换 schema。IFEval 的 `data/reference/verifier` 结构由调用方补充，不收紧 `gear.curriculum` 的通用数据合同。结构化 JSON 不保证参考答案正确，也不保证生成量达到共同预算；不足仍按预设条件停止，不自动补齐或反复收费重抽。
 
 同样的候选机会和训练／验证任务预算不表示各组消耗相同 tokens。候选修订、数据生成与诊断的实际用量都应计入成本比较；不能把固定组没有执行的生成记成消费。
 

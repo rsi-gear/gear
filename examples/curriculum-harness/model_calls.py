@@ -122,7 +122,9 @@ class TextCalls:
                 "model turn did not complete as tool-free text inference"
             )
 
-    async def call(self, key, prompt, harness, *, model, effort="low"):
+    async def call(
+        self, key, prompt, harness, *, model, effort="low", output_schema=None
+    ):
         from openai_codex import ApprovalMode, Sandbox
 
         request = {
@@ -135,6 +137,8 @@ class TextCalls:
             "tools": False,
             "sdk": importlib.metadata.version("openai-codex"),
         }
+        if output_schema is not None:
+            request["output_schema"] = output_schema
         directory = self.directory(key)
         directory.mkdir(parents=True, exist_ok=True)
         async with self.semaphore:
@@ -171,7 +175,15 @@ class TextCalls:
                     developer_instructions=harness,
                 )
                 write_json(pending, {"request": request, "thread_id": thread.id})
-                handle = await thread.turn(prompt, effort=effort)
+                handle = await thread.turn(
+                    prompt,
+                    effort=effort,
+                    **(
+                        {"output_schema": output_schema}
+                        if output_schema is not None
+                        else {}
+                    ),
+                )
                 write_json(
                     pending,
                     {"request": request, "thread_id": thread.id, "turn_id": handle.id},

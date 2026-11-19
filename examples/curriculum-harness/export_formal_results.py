@@ -10,7 +10,13 @@ from collections import defaultdict
 from pathlib import Path
 
 from gear.canonical import digest
-from ifeval_experiment import Benchmark, paired_comparison, read_json, write_json
+from ifeval_experiment import (
+    Benchmark,
+    negative_controls,
+    paired_comparison,
+    read_json,
+    write_json,
+)
 
 
 def snapshot_sources(workspace):
@@ -407,13 +413,22 @@ def export(workspace, benchmark, output, *, language_seed=None):
             if grade != detail["reference"]:
                 raise ValueError("generated reference validation is not reproducible")
             reference = proof["draft"]["reference"]["answer"]
-            controls = [
-                "",
-                "INVALID",
-                reference + ", EXTRA " * 100,
-                "- a\n" * 30,
-                "a " * 500,
-            ]
+            controls = detail.get(
+                "negative_controls",
+                [
+                    "",
+                    "INVALID",
+                    reference + ", EXTRA " * 100,
+                    "- a\n" * 30,
+                    "a " * 500,
+                ],
+            )
+            if "negative_controls" in detail and controls != negative_controls(
+                detail["task"], reference
+            ):
+                raise ValueError(
+                    "calibration controls differ from the declared construction"
+                )
             if [
                 benchmark.grade(detail["task"], text)["passed"] for text in controls
             ] != detail["negative_control_results"]:
@@ -521,6 +536,24 @@ def verify_export(directory, benchmark):
             != detail["reference"]
         ):
             raise ValueError("exported reference validation changed")
+        controls = detail.get(
+            "negative_controls",
+            [
+                "",
+                "INVALID",
+                proof["draft"]["reference"]["answer"] + ", EXTRA " * 100,
+                "- a\n" * 30,
+                "a " * 500,
+            ],
+        )
+        if "negative_controls" in detail and controls != negative_controls(
+            detail["task"], proof["draft"]["reference"]["answer"]
+        ):
+            raise ValueError("exported calibration control construction changed")
+        if [
+            benchmark.grade(detail["task"], text)["passed"] for text in controls
+        ] != detail["negative_control_results"]:
+            raise ValueError("exported negative-control validation changed")
     if (
         count
         != manifest["outer_evaluations_regraded"]

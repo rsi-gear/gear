@@ -274,6 +274,9 @@ async def respond(message):
                             job["harness"],
                             model=config["model"],
                             effort=config["effort"],
+                            output_schema=job.get("schema")
+                            if config.get("structured_output", False)
+                            else None,
                         )
                         for job in jobs
                     )

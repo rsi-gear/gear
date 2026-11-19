@@ -22,6 +22,23 @@ def rows(values):
 
 
 class ComparisonTests(unittest.TestCase):
+    def test_calibration_controls_can_violate_the_actual_letter_ceiling(self):
+        task = {
+            "instruction_id_list": ["keywords:letter_frequency"],
+            "kwargs": [{"letter": "i", "let_frequency": 3, "let_relation": "less than"}],
+        }
+        controls = example.negative_controls(task, "hello world")
+
+        def accepts(text):
+            return bool(text.strip()) and text.lower().count("i") < 3
+
+        self.assertTrue(all(accepts(text) for text in controls[1:5]))
+        self.assertTrue(any(not accepts(text) for text in controls[5:]))
+        self.assertEqual(controls, example.negative_controls(task, "hello world"))
+        task["kwargs"][0].update(letter="a", let_relation="at least")
+        controls = example.negative_controls(task, "aaa")
+        self.assertTrue(any(text and text.count("a") < 3 for text in controls[1:]))
+
     def test_paired_test_counts_repairs_and_regressions(self):
         result = example.paired_comparison(
             rows([True, False, True, False]), rows([False, True, False, False])

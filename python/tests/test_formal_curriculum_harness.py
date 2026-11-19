@@ -153,19 +153,35 @@ class RecoveryTests(unittest.TestCase):
                 thread_start=AsyncMock(return_value=thread),
                 thread_resume=AsyncMock(return_value=thread),
             )
+            schema = {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["answer"],
+                "properties": {"answer": {"type": "string"}},
+            }
             with (
                 self.sdk_patch(),
                 patch("model_calls.importlib.metadata.version", return_value="test"),
             ):
                 with self.assertRaises(TimeoutError):
-                    await calls.call("key", "prompt", "harness", model="test")
-                receipt = await calls.call("key", "prompt", "harness", model="test")
+                    await calls.call("key", "prompt", "harness", model="test", output_schema=schema)
+                receipt = await calls.call(
+                    "key", "prompt", "harness", model="test", output_schema=schema
+                )
                 self.assertEqual(receipt["response"], "response")
                 self.assertIsNone(receipt["usage"])
                 self.assertEqual(
-                    await calls.call("key", "prompt", "harness", model="test"), receipt
+                    await calls.call(
+                        "key", "prompt", "harness", model="test", output_schema=schema
+                    ),
+                    receipt,
                 )
+                with self.assertRaisesRegex(ValueError, "different input"):
+                    await calls.call(
+                        "key", "prompt", "harness", model="test", output_schema={"type": "object"}
+                    )
             self.assertEqual(thread.turn.await_count, 1)
+            self.assertEqual(thread.turn.await_args.kwargs["output_schema"], schema)
             self.assertEqual(calls.client.thread_start.await_count, 1)
 
         with tempfile.TemporaryDirectory() as root:

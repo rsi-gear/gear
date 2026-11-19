@@ -198,6 +198,9 @@ class Study:
             "Return only the requested JSON. Do not use tools.",
             model=self.config["teacher"],
             effort=self.config["effort"],
+            output_schema=model_input.schema
+            if self.config.get("structured_output", False)
+            else None,
         )
         try:
             response = json.loads(receipt["response"])
@@ -301,6 +304,36 @@ class Study:
                 )
             prepared = self.generator.prepare(plan, cases=bank)
             prepared.data["slots"] = slots
+            if self.config.get("structured_output", False):
+                # The caller knows the IFEval payload shape. Tighten the generic
+                # operator schema here for native structured generation.
+                properties = prepared.schema["properties"]["practices"]["items"][
+                    "properties"
+                ]
+                source_ids = sorted({slot["source_task_id"] for slot in slots})
+                properties["data"] = {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["slot", "source_task_id"],
+                    "properties": {
+                        "slot": {"type": "integer", "enum": list(range(len(slots)))},
+                        "source_task_id": {"type": "string", "enum": source_ids},
+                    },
+                }
+                properties["reference"] = {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["answer"],
+                    "properties": {"answer": {"type": "string"}},
+                }
+                properties["verifier"] = {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["source_task_id"],
+                    "properties": {
+                        "source_task_id": {"type": "string", "enum": source_ids}
+                    },
+                }
             response = await self.model_json(
                 prefix + "/generate/" + plan.target.target_id, prepared
             )
@@ -460,6 +493,7 @@ class Study:
                     "language_seed": self.benchmark.verifier_policy.get(
                         "language_detection_seed", 0
                     ),
+                    "structured_output": self.config.get("structured_output", False),
                 },
             }
             profile_path = profile_root / f"study-{role}.json"
@@ -765,6 +799,8 @@ def main():
         "test_count": 24,
         "rounds": 2,
         "max_calls": 1800,
+        "structured_output": True,
+        "calibration_policy": "constraint-aware-negatives-v1",
     }
     study = Study(
         root,
