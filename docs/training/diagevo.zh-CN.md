@@ -26,6 +26,31 @@
 
 只聚类有效问题，重复占比的分母固定为完整 challenger 批次大小，含格式无效槽位；零个或一个有效问题有显式处理。聚类身份以成员 sample ID 表示，不暴露库的任意数字标签。NLTK 和 scikit-learn 延迟加载，并声明为该 Module 的包依赖；训练阶段身份应记录实际安装版本。当前测试版本为 `nltk==3.10.4`、`scikit-learn==1.5.2`，不加入 `gear.curriculum` 的依赖。
 
+这些可选计算依赖可用 `pip install './python[training-metrics]' -c python/constraints-test.txt` 安装。CI 的 training-cpu 作业安装它们并运行对应测试；不安装该 extra 的最小环境跳过这两组依赖真实聚类库的测试，其他规则测试照常执行。
+
+## 原生 GRPO 数据绑定
+
+`gear.training.recipes.diagevo_data.DiagEvoChallengerDatasetBuilder` 接收已有 `ContentStore`、冻结训练请求和可替换的奖励组件。`questions(groups, lease=...)` 从 `RawTrajectory` 的真实请求／响应记录读取问题，并验证完整组、已关闭 lease、已准入 train task、harness、策略、tokenizer 和采样配置。同组的实际输入消息也必须一致，不能仅凭相同 task ID 假定同一个 prompt。
+
+此入口面向单次文本生成；solver 捕获的最后一条 user 消息必须精确等于提取的问题，前置 system/developer 消息、采样配置和策略身份在整批保持一致。`build(groups, lease=..., solver_policy_id=..., solver_trajectories=..., answer_classes_ref=...)` 要求每个有效问题有完整构造组，并匹配调用方从冻结模型状态取得的预期 solver policy ID；格式无效的问题没有 solver 组。所有模型请求的 episode、run、receipt、request 和完整轨迹身份都不能重复。原生 `build_episode` 的截断、完整 token、行为 logprob、mask 和反馈关联检查继续执行。
+
+答案等价判定仍由调用方处理，`answer_classes_ref` 指向以下封存结构。每个构造轨迹恰好有一个 label，`trajectoryDigest` 为 `digest_json(asdict(raw_trajectory))`，`evidenceRef` 保存该分类决定的实际依据；`classifier` 保存真实实现／模型版本及配置。这里检查分类与捕获的绑定、完整覆盖和证据可读取性，不验证数学等价或来源授权，调用方必须只提交获准的捕获和分类结果。
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "diagevo-answer-classes",
+  "classifier": {"由调用方填写": "实际冻结的分类器身份"},
+  "labels": [
+    {"trajectoryDigest": "完整轨迹摘要", "answerKey": "同题答案等价类", "evidenceRef": {"实际": "CAS 引用"}}
+  ]
+}
+```
+
+builder 从这些捕获和分类重新构造投票、计算整批奖励，调用现有 `seal_batch` 返回原生 batchRef。token、mask、logprob、policyVersion 及原 feedback 均保留；新奖励单独记录 `rewardSource`、`originalVerifierReward`、`curriculumRewardRef`，后者绑定完整输入、奖励、源码身份及实际依赖版本。训练调用方将 batchRef 登记到原 lease 的 ledger，再按已有 `grpo-dataset` 合同交给 `SlimeModelUpdater`。此处没有新 adapter 或另一个 updater，也没有改写 verifier 的原始奖励。
+
+当前要求 v2 `agent-grpo-v1`、`zeroVarianceGroup="keep"`、与奖励一致的 group size，以及原生已支持的 `topP=1`。builder 本身不运行模型、不关闭或重开 lease，也不完成两模型作业调度。测试证明已绑定的数据能封存为原生批次，不等于 Slime 已执行更新或 GPU 数值已验收。
+
 ## 调度与状态
 
 `Cause` 同时保存历史失败 ID 和当前 active 周期中的失败 ID，频次由后者的数量得到。调度根据冻结的首轮频次和当前 active 总频次分配自由探索概率，按 active 周期频次抽取目标；只与同技能节点中的 mastered 原因做均匀配对。随机源由调用方显式提供，输入排列不改变抽样结果。
@@ -80,12 +105,16 @@
 
 `python/tests/test_diagevo_round.py` 使用明确标识的持久化测试服务覆盖整轮处理、同轮新原因去重、晋级和重新激活、重叠节点对、提取／embedding／分配／归并后回执丢失、最终提交后中断、未知结果、未提交恢复、并发所有权、预算耗尽及侧录缺失。这些测试服务不是实际 LLM 或 embedding 效果证据。
 
-`python/tests/test_diagevo_challenger.py` 使用真实 NLTK／scikit-learn 覆盖奖励峰值及截断、跨组重复惩罚、格式错误与完整分母、零／单有效问题、缺失／跨策略／复用证据拒绝、输入顺序影响和 Module 重建。四组共 34 个测试通过；这些是规则与证据合同验证，不是模型训练效果验证。
+`python/tests/test_diagevo_challenger.py` 使用真实 NLTK／scikit-learn 覆盖奖励峰值及截断、跨组重复惩罚、格式错误与完整分母、零／单有效问题、缺失／跨策略／复用证据拒绝、输入顺序影响和 Module 重建。
+
+`python/tests/test_diagevo_data.py` 使用明确标识的原生捕获合同 fixture，验证完整批次封存、重建一致性、原 token／mask／logprob／反馈保留、同 task 不同 prompt 拒绝、未准入任务／开放 lease／重复请求拒绝、solver 问题／指令／策略漂移、构造缺项和等价类证据覆盖。五组共 46 个测试通过；这些是规则、恢复及数据合同验证，不是模型训练效果验证。
 
 尚缺 challenger 更新后重新采样候选池、solver 更新、实际诊断／embedding 后端及原生费用回执绑定、完整外层恢复，以及真实运行和效果对照。当前记忆流程验证不替代完整 DiagEvo 或 GPU 实验验收。
 
 接入两模型更新时还有三个已核实的边界：
 
-- [DiagEvo 附录 D](https://arxiv.org/html/2609.00768v2#A4)要求先用一批问题更新 challenger，再从更新后的 challenger 采样另一批候选；不能把第一批题直接作为 solver 课程。上述奖励组件已实现，但尚未绑定原生 GRPO 数据构建和 challenger 参数更新，两个采样池的独立性仍须由完整训练入口证明。
+- [DiagEvo 附录 D](https://arxiv.org/html/2609.00768v2#A4)要求先用一批问题更新 challenger，再从更新后的 challenger 采样另一批候选；不能把第一批题直接作为 solver 课程。上述奖励已经绑定原生 GRPO 数据构建，但实际 challenger 参数更新、两个独立采样池及 solver 更新仍须由完整训练入口证明。
 - 全失败优化组仍是诊断材料。[原生采样路径](../../python/gear/training/backends/slime/rollout.py)选择跳过／重抽时，只在返回的 raw groups 中保留训练准入组；完整调用方需要明确使用已支持的 `zeroVarianceGroup="keep"`，或另行保留并验证未准入组，不能因为没有梯度信号而丢掉失败证据。
 - [现有原生采样合同](../../python/gear/training/recipes/agent_grpo.py)只接受 `topP=1`，而论文报告为 0.99。完整配方必须扩展并验证对应行为分布合同，或预先声明使用 `topP=1` 的适配实验；不能将不支持的参数写进配置后视为已经实现。
+
+此外，模型节点当前制品引用图上限为 4096 个对象、16 MiB metadata。论文规模的一批 challenger 加每题 12 条 solver 捕获可能超过该上限；完整入口需要在更新前核验体量，并接入相应的分页或独立证据保留能力。当前小批 CPU 合同验证没有覆盖该规模，也不能据此声称论文默认批量可运行。

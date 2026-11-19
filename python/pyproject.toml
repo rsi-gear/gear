@@ -13,6 +13,7 @@ dependencies = ["psutil>=5.9,<8", "tomli>=2.0,<3; python_version < '3.11'", "tom
 agents = ["openai-codex==0.159.3"]
 gateway = ["aiohttp>=3.11,<4"]
 deployment = ["supervisor==4.3.0"]
+training-metrics = ["nltk>=3.10,<4", "scikit-learn>=1.5,<2"]
 dev = ["ruff==0.17.0", "mypy==2.4.0"]
 
 [project.scripts]

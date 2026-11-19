@@ -1,5 +1,6 @@
 """Reward semantics with real BLEU and clustering, without claiming model training."""
 
+import importlib.util
 import unittest
 from dataclasses import replace
 
@@ -41,6 +42,10 @@ def votes(rows, answers="a" * 6 + "b" * 6):
     )
 
 
+@unittest.skipUnless(
+    all(importlib.util.find_spec(name) is not None for name in ("nltk", "sklearn")),
+    "install the training-metrics extra to test real BLEU/clustering",
+)
 class ChallengerTests(unittest.TestCase):
     def test_uncertainty_uses_all_votes_without_curriculum_retention_filter(self):
         reward = DiagEvoChallengerReward(group_size=2, repetition_weight=0)
