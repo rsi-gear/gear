@@ -3,6 +3,7 @@
 from gear.search.api import Algorithm as Algorithm
 from gear.search.api import SearchAlgorithm as SearchAlgorithm
 from gear.search.api import SearchView as SearchView
+from gear.search.constraints import PromptConstraints as PromptConstraints
 from gear.search.decisions import Decision as Decision
 from gear.search.decisions import Terminal as Terminal
 from gear.search.screening import InterpretScreen as InterpretScreen
@@ -16,6 +17,7 @@ __all__ = [
     "Algorithm",
     "Decision",
     "InterpretScreen",
+    "PromptConstraints",
     "ScreenCheckInput",
     "ScreenInput",
     "ScreenResult",

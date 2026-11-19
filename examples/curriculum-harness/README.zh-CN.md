@@ -4,6 +4,8 @@
 
 [2026-11-19 实测报告](../../research/curriculum-harness-2026-11-19/README.zh-CN.md)：363 次真实调用；baseline/fixed/random/failure 分别为 46/45/45/46（共 48 题）。观察到局部练习修复，但未验证到测试集提升；候选超长与开发集饱和限制了归因，报告保留完整记录。
 
+后续的 [正式 Project.refine 四组对照](FORMAL.zh-CN.md) 使用 `ReflectiveSearch`、有限修订、新来源切分和多个优化种子；本页保留先前探索实验的原始协议。
+
 ## 实验定义
 
 | 项目 | 固定设置 |
