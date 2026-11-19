@@ -11,7 +11,7 @@ from dataclasses import replace
 from typing import Any, cast
 
 from gear.algorithms.opro import OPRO
-from gear.canonical import JSON
+from gear.canonical import JSON, digest
 from gear.core import (
     ArtifactInput,
     ArtifactRef,
@@ -24,7 +24,15 @@ from gear.core import (
 )
 from gear.core._json import json_value
 from gear.core.calls import checked_name
-from gear.evaluation import EvidenceSet, ExecutionInput, SamplePlan, TaskSamples
+from gear.evaluation import (
+    ComparisonInput,
+    ComparisonPlan,
+    ComparisonResult,
+    EvidenceSet,
+    ExecutionInput,
+    SamplePlan,
+    TaskSamples,
+)
 from gear.search import Decision, SearchView, Terminal
 from gear.search.constraints import PromptConstraints
 
@@ -53,6 +61,7 @@ class ReflectiveSearch(OPRO):
         ranker: Any = None,
         confirmation: bool = False,
         nominate: bool = True,
+        training_gate: bool = False,
     ) -> None:
         self.train_task_ids = tuple(train_task_ids)
         self.validation_task_ids = tuple(validation_task_ids)
@@ -72,6 +81,9 @@ class ReflectiveSearch(OPRO):
         if type(nominate) is not bool:
             raise ValueError("nominate must be boolean")
         self.nominate = nominate
+        if type(training_gate) is not bool:
+            raise ValueError("training_gate must be boolean")
+        self.training_gate = training_gate
         self.constraints = constraints if constraints is not None else PromptConstraints()
         if isinstance(self.constraints, PromptConstraints):
             if target_characters >= self.constraints.max_characters:
@@ -220,7 +232,9 @@ class ReflectiveSearch(OPRO):
             return replace(decision, terminal=Terminal("stop", outcome=decision.terminal.outcome))
         return decision
 
-    def _training_ready(self, state: StateTree, value: dict[str, Any]) -> Decision:
+    def _check_training(
+        self, state: StateTree, value: dict[str, Any], candidate: CandidateRef
+    ) -> bool:
         data = cast(dict[str, Any], state.data)
         evidence = EvidenceSet.from_dict(value)
         expected = {
@@ -230,23 +244,108 @@ class ReflectiveSearch(OPRO):
         }
         declared = {(task.task_id, slot) for task in evidence.spec.tasks for slot in task.slots}
         actual = {(item.task_id, item.slot) for item in evidence.records}
-        if evidence.spec.candidate != CandidateRef(**data["current"]) or declared != expected:
+        if evidence.spec.candidate != candidate or declared != expected:
             raise ValueError("training evidence belongs to a different candidate or task scope")
-        if (
-            not evidence.loaded
-            or actual != expected
-            or len(evidence.records) != len(expected)
-            or any(
-                item.status not in ("valid", "task_failed") or item.score is None
+        return (
+            evidence.loaded
+            and actual == expected
+            and len(evidence.records) == len(expected)
+            and all(
+                item.status in ("valid", "task_failed") and item.score is not None
                 for item in evidence.records
             )
-        ):
+        )
+
+    def _training_ready(self, state: StateTree, value: dict[str, Any]) -> Decision:
+        data = cast(dict[str, Any], state.data)
+        if not self._check_training(state, value, CandidateRef(**data["current"])):
             return Decision(
                 state,
                 reason="training executions are incomplete; no prompt proposal was requested",
                 terminal=Terminal("stop", outcome={"status": "incomplete_training_evidence"}),
             )
         return super()._read(state.updated(training_evidence=value, training_pages=[]))
+
+    def _candidate_ready(
+        self, view: SearchView, state: StateTree, candidate: CandidateRef
+    ) -> Decision:
+        if not self.training_gate:
+            return super()._candidate_ready(view, state, candidate)
+        data = cast(dict[str, Any], state.data)
+        return self._call(
+            state,
+            "candidate_training",
+            self.evaluator(
+                ExecutionInput(
+                    candidate,
+                    SamplePlan(
+                        tuple(
+                            TaskSamples(task, tuple(range(data["learning_repetitions"])))
+                            for task in self.train_task_ids
+                        )
+                    ),
+                ),
+                key=f"round-{data['round']}/candidate_training",
+            ),
+            candidate=candidate,
+            training_pages=[],
+        )
+
+    def _candidate_training_ready(
+        self, view: SearchView, state: StateTree, value: dict[str, Any]
+    ) -> Decision:
+        data = cast(dict[str, Any], state.data)
+        candidate = CandidateRef(**data["candidate"])
+        if not self._check_training(state, value, candidate):
+            return Decision(
+                state,
+                reason="candidate training executions are incomplete",
+                terminal=Terminal("stop", outcome={"status": "incomplete_training_evidence"}),
+            )
+        parent, child = (
+            EvidenceSet.from_dict(data["training_evidence"]),
+            EvidenceSet.from_dict(value),
+        )
+        plan = ComparisonPlan(
+            (parent.spec.candidate, child.spec.candidate),
+            (parent.ref, child.ref),
+            parent.spec.task_weights,
+            parent.spec.tasks,
+            digest(view.objective),
+        )
+        compared = cast(
+            ComparisonResult,
+            self.ranker(
+                ComparisonInput(
+                    plan,
+                    (parent, child),
+                    view.objective,
+                    parent.spec.candidate,
+                )
+            ),
+        )
+        accepted = self._improved(compared, data)
+        decision = (
+            super()._candidate_ready(view, state, candidate)
+            if accepted
+            else self._finish_round(
+                view, state, None, None, "no strict improvement on the same training minibatch"
+            )
+        )
+        record = cast(
+            dict[str, JSON],
+            json_value(
+                {
+                    "kind": "training_acceptance",
+                    "round": data["round"],
+                    "accepted": accepted,
+                    "scores": compared.scores,
+                    "parent_evidence": parent.ref,
+                    "candidate_evidence": child.ref,
+                }
+            ),
+        )
+        return replace(decision, records=(record, *decision.records))
 
     def step(self, view: SearchView, state: StateTree) -> Decision:
         data = cast(dict[str, Any], state.data)
@@ -257,7 +356,7 @@ class ReflectiveSearch(OPRO):
             }:
                 raise ValueError("configured task scope is outside this admitted run")
             state = state.updated(learning_repetitions=view.budget["repetitions"])
-        if phase not in ("training", "load_training", "revise"):
+        if phase not in ("training", "candidate_training", "load_training", "revise"):
             return super().step(view, state)
         receipt = view.results.require(data["pending"])
         if receipt.status != "succeeded":
@@ -269,9 +368,14 @@ class ReflectiveSearch(OPRO):
             raise ValueError("algorithm calls must return object results")
         if phase == "revise":
             return self._handle_proposal(view, state, value)
-        if phase == "training":
+        role = data.get("training_role", "training") if phase == "load_training" else phase
+        if phase in ("training", "candidate_training"):
             if EvidenceSet.from_dict(value).loaded:
-                return self._training_ready(state, value)
+                return (
+                    self._training_ready(state, value)
+                    if role == "training"
+                    else self._candidate_training_ready(view, state, value)
+                )
             reference = value["ref"]
             pages = []
         else:
@@ -283,7 +387,11 @@ class ReflectiveSearch(OPRO):
                     "ref": reference,
                     "loaded": True,
                 }
-                return self._training_ready(state, evidence)
+                return (
+                    self._training_ready(state, evidence)
+                    if role == "training"
+                    else self._candidate_training_ready(view, state, evidence)
+                )
         return self._call(
             state,
             "load_training",
@@ -292,8 +400,9 @@ class ReflectiveSearch(OPRO):
                     ArtifactRef(**reference),
                     cursor=value["cursor"] if phase == "load_training" else None,
                 ),
-                key=f"round-{data['round']}/training/evidence/{len(pages)}",
+                key=f"round-{data['round']}/{role}/evidence/{len(pages)}",
             ),
+            training_role=role,
             training_ref=reference,
             training_pages=pages,
         )

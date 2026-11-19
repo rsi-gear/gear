@@ -1,6 +1,6 @@
 # gear.curriculum：Failure → Data 独立能力包设计
 
-状态：本分支已实现第一阶段的八个基础算子、输入输出定义与 CPU 调用方闭环；见[当前 API 与运行方式](curriculum.zh-CN.md)。监督提案、环境/轨迹生成和完整论文算法仍属后续设计，不是 0.2.4 已发布 API。
+状态：本分支已实现基础与扩展算子、四类生成合同、监督提案、可信数据构建和 CPU 调用方闭环，并接入正式 `ReflectiveSearch`；见[当前 API](curriculum.zh-CN.md)与[逐项验收台账](curriculum-implementation-status.zh-CN.md)。完整论文配方与效果实验按台账验收，不是 0.2.4 已发布 API。
 
 核验日期：2026-11-19。版本基线：本地 Git 标签 `v0.2.4`，commit `e4c3e8b1cd459c12ca0705ff46493e1e6096790c`。实现分支 `codex/curriculum-foundations` 从本地 `dev` commit `37aeed4714fb8efa4e88255c3ed87323f1d29e01` 创建，版本为 0.2.4；原工作区已有修改保持原状。
 
@@ -81,7 +81,7 @@ flowchart LR
 | `gear.evaluation` | 执行与评分证据、样本计划、比较与归约 |
 | `gear.memory` | 通用历史与资产快照/发布；failure mode 的学习规则由 curriculum 定义 |
 | `gear.training` | 训练格式编码、可信 token/mask/reward 构建、优化器与模型更新 |
-| `gear.algorithms` | 后续将上述能力组合成完整 Forge、TRACE、SENTINEL 等方法；本期未新增完整算法导出 |
+| `gear.algorithms` | 已导出正式 `ReflectiveSearch`；完整 Forge、TRACE、SENTINEL 等方法按各自执行能力单独验收 |
 
 按算子和数据定义组织；以下为目标布局，后续能力按实际实现需要创建，可继续合并：
 
@@ -95,7 +95,8 @@ gear/curriculum/
   selection.py         学习目标、预算分配和练习池选择
   generation.py        练习规划、任务/环境/修复/问答生成
   validation.py        验证计划与验证证据解释
-  supervision.py       后续：修复片段、偏好对、过程问答的语义提案
+  signals.py           可比执行历史中的遗忘、边界与稀有行为信号
+  supervision.py       修复片段、偏好对、过程问答的语义提案
 ```
 
 依赖要求：
@@ -117,6 +118,7 @@ gear/curriculum/
 | 算子 | 归属 | 输入 → 输出 | 执行性质 |
 | --- | --- | --- | --- |
 | `ExtractOutcomeCases` | `curriculum.cases` | 已归一化的执行/评分证据、筛选规则 → `OutcomeCase[]` | 纯；保持失败、不完整、基础设施错误的区别 |
+| `ExtractLearningSignals` | `curriculum.signals` | 可比的时序 rollout 观测 → forgetting/boundary/rare 布尔信号 | 纯；保留三种条件与证据，不用软评分替代论文条件 |
 | `ContrastiveDiagnoser` | `curriculum.diagnosis` | 成功/失败案例 → 诊断模型输入；模型响应 → 诊断 delta | `prepare / parse`；模型调用由调用方执行 |
 | `SelectLearningTargets` | `curriculum.selection` | 模式/技能摘要、历史进展、预算、显式随机源 → 目标 ID 与预算分配 | 纯；frequency/frontier/forgetting 等为可替换策略 |
 | `MergeFailureMemory` | `curriculum.memory` | 旧模式集合、诊断 delta、掌握度观测 → 新模式集合 | 纯；不自行调用模型或落盘 |
@@ -127,6 +129,8 @@ gear/curriculum/
 | `BuildSupervision` | `curriculum.supervision` | 修复方案、独立验证、配对规则 → `SupervisionProposal` | 纯；给出语义片段、偏好关系、标签来源与证据，不制造 token/logprob |
 
 `BuildLearningDataset` 继续属于 `gear.training`：它消费 curriculum 的监督提案及可信原始证据，按 SFT/preference/RL/example 合同编码并封存可训练数据。训练格式和梯度样本资格不进入 curriculum 核心。
+
+这里的 `BuildLearningDataset` 表示训练侧职责，不另设统一包装类。当前调用方直接使用 `SFTDatasetBuilder`、`GRPODatasetBuilder` 以及 `gear.training.data.supervision` 下的 `RepairSFTDatasetBuilder`、`PreferenceDatasetBuilder`、`ProceduralDatasetBuilder`。前两种新增捕获型 builder 输出中间数据；过程问答复用现有 `offline-sft-dataset` 合同并保留 synthetic 来源侧录。数据构建完成不代表 DPO 更新器或原始捕获到离线 SFT 的自动转换已经实现。
 
 `prepare / parse` 和 `plan / assess` 是对应算子的普通方法，不引入统一执行请求协议。模型输入包含具体 prompt、响应 schema 和允许材料；`parse` 只校验模型输出结构，不能将模型判断升级为执行证明。组件参数和提示词由调用方纳入冻结配置。语义去重、可学习性估计需要模型或 rollout 时也由调用方明确执行，不能藏在纯 `SelectPractice` 内。
 
@@ -278,7 +282,7 @@ pool、dataset、模型/adapter、harness、共享学习库分别版本化。一
 
 **第三阶段：按需求扩展运行能力。** 同 run 动态 task-pool、MCTS 状态恢复、DPO/LoRA/MoE 后端按各自合同实现。不将这些能力混入第一阶段交付承诺。
 
-本分支已用单元与调用方集成检查覆盖案例去重、失败分类、引用与 family 约束、显式预算/随机源、验证绑定、精确去重、轻量导入、Module 重建、CPU 更新及三个本地阶段的中断恢复。CPU 示例比较 fixed/random/failure 三种同任务预算策略。另有[真实 LLM harness 示例](../examples/curriculum-harness/README.zh-CN.md)，固定模型权重，通过同额的学习样本、候选和开发评测预算比较三种数据策略；只更新 developer prompt。它包含实际模型调用、回执恢复和固定留出集评测，不代表完整论文配方或 GPU 训练效果实验。本期仅实现 `kind="task"`，`BuildSupervision` 尚未导出。
+本分支已用单元与调用方集成检查覆盖案例去重、失败分类、引用与 family 约束、显式预算/随机源、验证绑定、语义近邻与难度测量、混合配额、轻量导入、Module 重建、CPU 更新及三个本地阶段的中断恢复。四类 `kind` 和 `BuildSupervision` 已导出；可信 builder 对修复的新捕获、偏好的实际输入与状态、合成问答的真实 tokenizer mask 分别检查。CPU 示例比较 fixed/random/failure 三种同任务预算策略。另有[真实 LLM harness 示例](../examples/curriculum-harness/README.zh-CN.md)，固定模型权重，只更新 developer prompt；正式版本以 `Project.refine` 对照 fixed/random/failure/memory，使用新 run 准入、约束修订和独立留出评价。具体运行是否完成、效果和限制以验收台账与对应报告为准，不代表完整论文复现或 GPU 训练效果。
 
 以下为分阶段验收清单，其中收费调用 reconcile、完整论文配方、真实环境/GPU 与泛化收益实验需在对应后续接入时完成：
 

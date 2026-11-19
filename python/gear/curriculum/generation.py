@@ -16,6 +16,7 @@ from gear.curriculum.contracts import (
     ModelInput,
     OutcomeCase,
     PracticeDraft,
+    PracticeKind,
     PracticePlan,
     _target,
     _text,
@@ -29,7 +30,12 @@ def _plan(value: PracticePlan) -> None:
     _text(value.generator_id, "generator_id")
     _text(value.validation_policy_id, "validation_policy_id")
     _text(value.mutation, "mutation")
-    if value.kind != "task" or value.conditioning not in ("failure", "random"):
+    if value.kind not in (
+        "task",
+        "environment",
+        "trajectory",
+        "example",
+    ) or value.conditioning not in ("failure", "random"):
         raise ValueError("unsupported practice kind or conditioning")
     if value.conditioning == "failure" and not value.target.source_case_ids:
         raise ValueError("failure-conditioned practice requires source cases")
@@ -43,6 +49,7 @@ class PlanPractice(Module):
     validation_policy_id: str
     conditioning: Literal["failure", "random"] = "failure"
     mutation: str = "Create new instances exercising the target capability."
+    kind: PracticeKind = "task"
 
     def __call__(self, targets: Sequence[LearningTarget]) -> tuple[PracticePlan, ...]:
         result = []
@@ -54,6 +61,7 @@ class PlanPractice(Module):
                 self.validation_policy_id,
                 self.conditioning,
                 self.mutation,
+                self.kind,
             )
             _plan(plan)
             if target.target_id in seen:
@@ -83,6 +91,18 @@ class GeneratePractice(Module):
         _text(self.prompt, "prompt")
         if plan.generator_id != self.identity:
             raise ValueError("generator configuration differs from the practice plan")
+        payload: dict[str, JSON] = {"type": "object"}
+        if plan.kind in ("environment", "trajectory"):
+            key = "environment" if plan.kind == "environment" else "trajectory_plan"
+            payload.update(properties={key: {"type": "object"}}, required=[key])
+        elif plan.kind == "example":
+            payload.update(
+                properties={
+                    "question": {"type": "string", "minLength": 1},
+                    "answer": {"type": "string", "minLength": 1},
+                },
+                required=["question", "answer"],
+            )
         return {
             "type": "object",
             "additionalProperties": False,
@@ -98,7 +118,7 @@ class GeneratePractice(Module):
                         "properties": {
                             "instruction": {"type": "string", "minLength": 1},
                             "family": {"type": "string", "enum": list(plan.target.families)},
-                            "data": {"type": "object"},
+                            "data": payload,
                             "reference": {},
                             "verifier": {},
                         },
@@ -119,7 +139,17 @@ class GeneratePractice(Module):
                 raise ValueError("source family is outside the practice plan")
             selected.append({"case_id": key, **json_object(case)})
         # Random mode receives only the caller's domain-level plan, never case material.
-        return ModelInput(self.prompt, schema, {"plan": json_value(plan), "cases": selected})
+        instructions = {
+            "task": "",
+            "environment": " Return a runnable environment definition in data.environment, initialization and reference actions as caller data. The environment has not been executed or admitted.",
+            "trajectory": " Return a proposed replay/repair procedure in data.trajectory_plan. Do not fabricate execution receipts, success proofs, tokens or log probabilities; the caller must execute and recapture it.",
+            "example": " Return a procedural question and answer in data.question and data.answer. Mark it as synthetic practice; do not claim a native trajectory or verified success.",
+        }
+        return ModelInput(
+            self.prompt + instructions[plan.kind],
+            schema,
+            {"plan": json_value(plan), "cases": selected},
+        )
 
     def parse(self, response: JSON, *, plan: PracticePlan) -> tuple[PracticeDraft, ...]:
         validate_output(self._schema(plan), response)

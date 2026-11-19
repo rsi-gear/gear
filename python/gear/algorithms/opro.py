@@ -200,6 +200,22 @@ class OPRO(Algorithm):
             ComparisonResult, self.ranker(ComparisonInput(plan, sets, view.objective, view.anchor))
         )
 
+    def _candidate_ready(
+        self, view: SearchView, state: StateTree, candidate: CandidateRef
+    ) -> Decision:
+        data = cast(dict[str, Any], state.data)
+        state = state.updated(candidate=candidate)
+        if getattr(self, "screen", None) is not None:
+            return self.step(view, state.updated(phase="screen", screen_state=None))
+        return self._call(
+            state,
+            "evaluate",
+            self.evaluator(
+                ExecutionInput(candidate, SamplePlan(self._tasks(view))),
+                key=f"round-{data['round']}/evaluate",
+            ),
+        )
+
     @staticmethod
     def _improved(result: ComparisonResult, data: dict[str, Any]) -> bool:
         scores = dict(result.scores)
@@ -419,17 +435,7 @@ class OPRO(Algorithm):
             return self._handle_proposal(view, state, value)
         if phase == "materialize":
             candidate = CandidateRef(**value["candidate"])
-            state = state.updated(candidate=candidate)
-            if getattr(self, "screen", None) is not None:
-                return self.step(view, state.updated(phase="screen", screen_state=None))
-            return self._call(
-                state,
-                "evaluate",
-                self.evaluator(
-                    ExecutionInput(candidate, SamplePlan(self._tasks(view))),
-                    key=f"round-{data['round']}/evaluate",
-                ),
-            )
+            return self._candidate_ready(view, state, candidate)
         if phase == "evaluate":
             result = self._compare(view, data, value)
             if self.confirmation and self._improved(result, data):

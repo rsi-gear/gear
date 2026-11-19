@@ -162,6 +162,92 @@ class ReflectiveSearchTests(unittest.TestCase):
         missing["records"] = []
         self.assertEqual(self.algorithm._training_ready(self.state(), missing).calls, ())
 
+    def child_evidence(self, score):
+        child = CandidateRef("run", "child", digest("child"))
+        value = self.evidence(score=score)
+        assessment = ArtifactRef("run", "assessment", digest("child-assessment"))
+        value["ref"] = json_value(ArtifactRef("run", "evidence_set", digest("child-training")))
+        value["spec"]["candidate"] = json_value(child)
+        value["spec"]["assessments"] = [json_value(assessment)]
+        value["records"][0].update(sample_id="child-sample", assessment=json_value(assessment))
+        return child, value
+
+    def test_training_gate_requires_strict_improvement_before_validation(self):
+        algorithm = ReflectiveSearch(("train",), ("dev",), training_gate=True, nominate=False)
+        self.assertTrue(clone(algorithm).training_gate)
+        for score, accepted in ((0.0, False), (1.0, True)):
+            child, value = self.child_evidence(score)
+            state = self.state(candidate=child)
+            proposed = algorithm._candidate_ready(self.view, state, child)
+            self.assertEqual(proposed.calls[0].key, "round-0/candidate_training")
+            self.assertEqual(
+                proposed.calls[0].effect["input"]["plan"]["tasks"][0]["task_id"], "train"
+            )
+            self.view.results = Results((CallResult(proposed.calls[0].ref, "succeeded", value),))
+            restored = StateTree.from_state_dict(json_value(proposed.state))
+            decision = clone(algorithm).step(self.view, restored)
+            self.assertEqual(decision.records[0]["accepted"], accepted)
+            if accepted:
+                self.assertEqual(
+                    decision.calls[0].effect["input"]["plan"]["tasks"][0]["task_id"], "dev"
+                )
+                self.assertEqual(decision.state.data["current"]["candidate_id"], "anchor")
+            else:
+                self.assertFalse(decision.calls)
+                self.assertEqual(decision.terminal.kind, "stop")
+                self.assertEqual(decision.terminal.outcome["selected"]["candidate_id"], "anchor")
+
+    def test_training_gate_missing_child_evidence_stops_without_validation(self):
+        algorithm = ReflectiveSearch(("train",), ("dev",), training_gate=True)
+        child, value = self.child_evidence(1.0)
+        value["records"] = []
+        result = algorithm._candidate_training_ready(self.view, self.state(candidate=child), value)
+        self.assertFalse(result.calls)
+        self.assertEqual(result.terminal.outcome["status"], "incomplete_training_evidence")
+        with self.assertRaisesRegex(ValueError, "different candidate"):
+            algorithm._candidate_training_ready(
+                self.view, self.state(candidate=child), self.evidence()
+            )
+
+    def test_training_gate_unloaded_child_retains_role_through_artifact_load(self):
+        algorithm = ReflectiveSearch(("train",), ("dev",), training_gate=True)
+        child, value = self.child_evidence(1.0)
+        pending = CallRef("round-0/candidate_training", digest("candidate-pending"))
+        state = self.state(candidate=child, phase="candidate_training", pending=pending)
+        self.view.results = Results(
+            (
+                CallResult(
+                    pending,
+                    "succeeded",
+                    {
+                        **value,
+                        "loaded": False,
+                        "records": [],
+                    },
+                ),
+            )
+        )
+        reading = algorithm.step(self.view, state)
+        self.assertEqual(reading.calls[0].key, "round-0/candidate_training/evidence/0")
+        raw = json.dumps({k: v for k, v in value.items() if k not in ("ref", "loaded")}).encode()
+        page = {
+            "ref": value["ref"],
+            "path": None,
+            "total_bytes": len(raw),
+            "content_digest": "sha256:" + hashlib.sha256(raw).hexdigest(),
+            "offset": 0,
+            "encoding": "base64",
+            "content": base64.b64encode(raw).decode(),
+            "complete": True,
+            "cursor": None,
+        }
+        self.view.results = Results((CallResult(reading.calls[0].ref, "succeeded", page),))
+        decision = clone(algorithm).step(
+            self.view, StateTree.from_state_dict(json_value(reading.state))
+        )
+        self.assertEqual(decision.state.data["phase"], "evaluate")
+        self.assertTrue(decision.records[0]["accepted"])
+
     def test_training_pages_resume_before_prompt_read_and_reject_corruption(self):
         pending = CallRef("round-0/training", digest("pending"))
         full = self.evidence()

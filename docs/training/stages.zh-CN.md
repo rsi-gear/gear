@@ -96,6 +96,18 @@ from gear.training.data.builders import SFTDatasetBuilder
 dataset_ref = await SFTDatasetBuilder(store).build(raws, verifications=proofs)
 ```
 
+新增监督的数据准入在 `gear.training.data.supervision`，调用方直接把语义提案转换成这里的输入，不使用 curriculum adapters：
+
+- `RepairSFTDatasetBuilder(store).build(repairs)`：每项为 `(failed_raw, revised_raw, repair_proof_ref, success_proof_ref)`。输出 `repair-sft-dataset` 中间数据，token 全部取自重新执行的 `revised_raw`；`lossStartReceipt` 之前的生成 token 和所有工具观测不计 loss。它不拼接旧 token，也不导出可伪装为 on-policy 的旧 logprob。
+- `PreferenceDatasetBuilder(store).build(pairs)`：每项为 `(chosen_raw, rejected_raw, judgment_ref)`。输出 `preference-dataset` 中间数据。两个实际捕获必须对应相同 task/environment、tokenizer/template、初始状态与输入 token；trajectory 可以在后续分叉，step 另外核对选中 call 的相同输入和决策状态。保留 `human / independent_verifier / majority_vote` 标签来源与置信度。这里没有 DPO updater。
+- `ProceduralDatasetBuilder(store).build(examples, model_ref=..., max_sequence_tokens=...)`：每项为 `(example, validation_ref)`，example 包含 `question / answer / source / materialProtocol`。语义验证绑定完整 example 摘要；使用封存模型的真实 chat tokenizer 和 assistant mask，返回现有 `offline-sft-dataset` 的引用与额外 `supervisionRef`。调用方应同时保存该 synthetic 来源侧录，不能把它当原生 rollout。
+
+修复 proof 的 `failedTrajectoryDigest / revisedTrajectoryDigest` 和 preference proof 的 `chosenTrajectoryDigest / rejectedTrajectoryDigest` 均为整个 `asdict(RawTrajectory)` 的训练 CAS 摘要，绑定 episode、receipt、feedback、context 和可选 assembly。proof 还需 `schemaVersion=1 / verified=true / evidenceRef / materialProtocols`，并由宿主可信验证路径提供。普通模型写出的 `verified=true` 不构成认证。builder 的 `allowed_protocols` 默认仅允许 `feedback_only`，调用方只能在获得相应材料授权后扩展。
+
+修复的 `kind="verified-repair"` 还需 `failureVerified=true`、`mode`、`startStateDigest`、`lossStartReceipt`。`verified_replay` 核对原始初始状态；`terminal_continue` 核对实际失败终态；`checkpoint_reset` 核对原失败执行记录中的 checkpoint。宿主采集到的 `initialStateRef / finalStateRef / checkpointStateRefs / decisionStateRefs` 由调用方放入冻结 context。现有 runner 没有提供这些状态证据时会明确拒绝，不能据此宣称它支持 reset。偏好 proof 的 kind 为 `verified-preference`，声明 `scope / labelSource / initialStateDigest`；step 另提供两侧 receipt index 和 `decisionStateDigest`。过程问答 proof 的 kind 为 `verified-procedural-example`，通过 `exampleDigest` 绑定输入。
+
+上述状态引用仅是 builder 的显式输入要求，不新增运行时 reset 协议。数据构建与可用更新器分别验收。真实 tokenizer、loss mask、状态不一致、伪标签与旧 receipt 拒绝测试见 `python/tests/test_training_supervision.py`。
+
 proof 必须包含 `kind`（`verified-success` 或 `verified-prefix`）、`episodeId`、`runId`、`verified=true`、有序 `receiptDigests`、`evidenceRef`；prefix 另需 `receiptCount`。完整成功还要求正常结束及有效 canonical feedback。成功不能从 reward>0 推断，首次错误位置不能从最终失败评分推断。调用方负责提供独立可信的成功/步骤证据；没有 proof 的轨迹不导出。builder 仍验证 native token/logprob 与 v2 assembly，再复制精确 tokens 和 mask，不改变原反馈或制造训练证据。
 
 ## 实施顺序与验证入口

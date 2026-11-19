@@ -15,6 +15,7 @@ from gear.core._json import json_value
 Outcome = Literal["success", "failure", "infrastructure_error", "unknown"]
 ModeState = Literal["active", "mastered", "unresolved"]
 EvidenceKind = Literal["execution", "semantic", "structural"]
+PracticeKind = Literal["task", "environment", "trajectory", "example"]
 REQUIRED_CHECKS = (
     "environment",
     "reference",
@@ -22,6 +23,13 @@ REQUIRED_CHECKS = (
     "target_fidelity",
     "novelty",
 )
+PRACTICE_CHECKS: dict[PracticeKind, tuple[str, ...]] = {
+    "task": REQUIRED_CHECKS,
+    "environment": REQUIRED_CHECKS,
+    "trajectory": ("replay", "reference", "verifier_calibration", "target_fidelity", "novelty"),
+    "example": ("semantic_correctness", "target_fidelity", "novelty"),
+}
+EXECUTION_CHECKS = ("environment", "reference", "verifier_calibration", "replay")
 
 
 @dataclass(frozen=True)
@@ -104,6 +112,57 @@ class LearningTarget:
 
 
 @dataclass(frozen=True)
+class ProgressObservation:
+    """Caller-normalized measurements; comparison_id binds equal evaluation conditions.
+
+    Sample IDs are unique physical/logical observations within this policy. An
+    absent observation is unknown, never a zero success rate or an unseen action.
+    """
+
+    target_id: str
+    policy_id: str
+    comparison_id: str
+    sample_ids: tuple[str, ...]
+    successes: int
+    evidence_refs: tuple[JSON, ...]
+    available_actions: tuple[str, ...] = ()
+    action_counts: tuple[tuple[str, int], ...] = ()
+    schema_version: int = 1
+
+    @property
+    def success_rate(self) -> float:
+        return self.successes / len(self.sample_ids)
+
+
+@dataclass(frozen=True)
+class PracticeMeasurement:
+    draft_digest: str
+    policy_id: str
+    sample_ids: tuple[str, ...]
+    successes: int
+    evidence_refs: tuple[JSON, ...]
+    schema_version: int = 1
+
+
+@dataclass(frozen=True)
+class SemanticNeighborhood:
+    """Caller-observed neighbors against a frozen complete comparison pool.
+
+    All neighbors at or above minimum_similarity must be reported. The caller
+    executes/authenticates the semantic search; a missing result is not novelty.
+    """
+
+    draft_digest: str
+    comparison_pool_digest: str
+    method_id: str
+    minimum_similarity: float
+    neighbors: tuple[tuple[str, float], ...]
+    evidence_refs: tuple[JSON, ...]
+    complete: bool = True
+    schema_version: int = 1
+
+
+@dataclass(frozen=True)
 class ModelInput:
     """Prompt, schema and permitted material, not an executable request."""
 
@@ -120,13 +179,13 @@ class PracticePlan:
     validation_policy_id: str
     conditioning: Literal["failure", "random"] = "failure"
     mutation: str = "Create new instances exercising the target capability."
-    kind: Literal["task"] = "task"
+    kind: PracticeKind = "task"
     schema_version: int = 1
 
 
 @dataclass(frozen=True)
 class PracticeDraft:
-    """Unadmitted task; ``data`` has the caller's task/environment format."""
+    """Unadmitted practice; data contains caller-owned payloads for plan.kind."""
 
     draft_id: str
     instruction: str
@@ -144,7 +203,7 @@ class PracticeDraft:
     @property
     def content_digest(self) -> str:
         # Ignore new IDs and lineage when checking exact duplicates.
-        return digest([self.instruction, self.data, self.reference, self.verifier])
+        return digest([self.plan.kind, self.instruction, self.data, self.reference, self.verifier])
 
 
 @dataclass(frozen=True)
@@ -185,18 +244,24 @@ class ValidationResult:
     draft_id: str
     draft_digest: str
     checks: tuple[CheckResult, ...]
+    kind: PracticeKind = "task"
 
     @property
     def accepted(self) -> bool:
+        required = PRACTICE_CHECKS.get(self.kind)
         return (
-            len(self.checks) == len(REQUIRED_CHECKS) + 1
-            and {item.check for item in self.checks} == {"structure", *REQUIRED_CHECKS}
+            required is not None
+            and len(self.checks) == len(required) + 1
+            and {item.check for item in self.checks} == {"structure", *required}
             and all(item.status == "passed" for item in self.checks)
             and all(item.check == "structure" or item.evidence_refs for item in self.checks)
             and all(
-                item.kind == "execution"
+                item.kind == "execution" for item in self.checks if item.check in EXECUTION_CHECKS
+            )
+            and all(
+                item.kind == "semantic"
                 for item in self.checks
-                if item.check in ("environment", "reference", "verifier_calibration")
+                if item.check == "semantic_correctness"
             )
         )
 

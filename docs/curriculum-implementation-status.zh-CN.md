@@ -10,11 +10,11 @@
 | harness 正式搜索接入（优先） | 已实现并通过离线 provider 集成 | `ReflectiveSearch` 经真实 `Project.refine`、隔离 worker、持久执行器运行；训练与选型范围分离，候选封存与恢复已验证；真实模型接入见下一项实验 |
 | 候选约束与有限修订（优先） | 已实现并通过集成 | `PromptConstraints` 与独立 Meta 修订，稳定调用键、有限次数、收费回执恢复；超长文本不截断、不封存；真实实验中仍需核验各组有效候选比例 |
 | 有效真实 LLM 对照（优先） | 待完成 | fixed/random/failure/完整记忆调度组，足够的有效候选，多个独立优化种子；预先固定留出评价与预算；修复、泛化、回归、曲线及成本报告。无需结果必然为正 |
-| 学习目标策略 | 待扩展 | frontier、forgetting、rare-action 与技能探索信号按实际策略输入；跨策略版本比较条件和消融测试 |
-| 任务、环境、轨迹／修复、过程问答生成 | 目前只有 task | 对应输入输出、生成算子与实际调用方验证；环境／参考执行必须有执行证据 |
-| 练习池筛选 | 目前为精确去重与预算 | 语义近重复、难度／可学习性、探索和混合池策略的证据输入与明确准入结果 |
-| `BuildSupervision` | 待实现 | 成功／前缀、修复 loss 片段、同起始条件偏好对、synthetic 过程问答；材料权限与标签来源；不伪造 token/logprob |
-| 可信训练构建接入 | 待实现新增监督路径 | 调用方将监督提案送入对应 builder；修改轨迹重新捕获；SFT proof、preference 对齐和完整 on-policy GRPO group 检查 |
+| 学习目标策略 | 测量策略与信号已实现；skill-tree 待接入 | frontier/forgetting/rare_action/signal_mix 有跨策略条件与消融测试；`ExtractLearningSignals` 按 CoEvolve 三类布尔条件独立提取，不把软评分冒充论文公式 |
+| 任务、环境、轨迹／修复、过程问答生成 | 四类合同、生成解析与分类型验证已实现；完整配方待验收 | 环境调用方测试实际执行参考与负例；trajectory 必须有 replay 执行证据，example 走 semantic correctness；真实环境配方另行验收 |
+| 练习池筛选 | 纯算子与边界测试已完成 | 语义近邻绑定比较池和完整性；当前策略难度测量；预留探索槽；混合来源配额不足不暗中补齐 |
+| `BuildSupervision` | 纯提案已实现并验证，训练接入见下一项 | 成功／前缀证据、修复新捕获 loss 片段、起始条件及 step 前缀配对、synthetic 过程问答；材料授权与标签来源明确 |
+| 可信训练构建接入 | 三类新增 builder 已实现；更新器接入按能力分别验收 | 修复提案在调用处映射到新捕获的 receipt 边界；success proof、原始失败/回退状态与不复用旧请求检查；preference 核对实际 token 前缀、状态和伪标签来源；synthetic QA 用真实 tokenizer 进入既有 offline SFT 合同。修复/偏好输出仍为中间数据，DPO 及捕获型 SFT 自动 updater 接入尚未实现 |
 | Forge-inspired 外层配方 | 待实现 | 停滞触发、失败记忆、四类变异、验证与混合池，新任务在后续 run 准入，固定外部评测 |
 | SENTINEL / CoEvolve / DiagEvo / DataEnvGym 配方 | 待实现 | 各自实际执行入口、可替换组件、专有采样／验证信号与测试；能力不足明确拒绝，不能用空导出冒充支持 |
 | TRACE / Agent-R / Self-Direction 配方 | 待实现 | 实际环境生成、修复／回退、过程问答和相应训练／加载／路由接入；逐项记录与上游的差异 |

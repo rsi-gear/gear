@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from gear.canonical import digest
 from gear.core.base import Module
 from gear.curriculum.contracts import (
-    REQUIRED_CHECKS,
+    EXECUTION_CHECKS,
+    PRACTICE_CHECKS,
     CheckResult,
     PracticeDraft,
     ValidationEvidence,
@@ -23,7 +24,7 @@ from gear.curriculum.generation import _plan
 
 @dataclass
 class ValidatePractice(Module):
-    """MVP task policy requires a reference and calibrated verifier.
+    """Kind-specific checks separate executable practice from synthetic examples.
 
     The caller authenticates evidence and executes against sealed task bytes.
     These structural checks cannot establish provenance or grant admission.
@@ -39,6 +40,9 @@ class ValidatePractice(Module):
     def plan(self, drafts: Sequence[PracticeDraft]) -> ValidationPlan:
         errors = []
         seen: set[str] = set()
+        kinds = {draft.plan.kind for draft in drafts}
+        if len(kinds) > 1:
+            raise ValueError("validate each practice kind separately before combining pool plans")
         for draft in drafts:
             _version(draft)
             _text(draft.draft_id, "draft_id")
@@ -54,11 +58,23 @@ class ValidatePractice(Module):
                     raise ValueError("draft changed source family lineage")
                 if not isinstance(draft.data, dict):
                     raise ValueError("task data must be an object")
+                if draft.plan.kind in ("environment", "trajectory"):
+                    key = "environment" if draft.plan.kind == "environment" else "trajectory_plan"
+                    if not isinstance(draft.data.get(key), dict) or not draft.data[key]:
+                        raise ValueError("practice requires a nonempty " + key + " definition")
+                elif draft.plan.kind == "example":
+                    for key in ("question", "answer"):
+                        value = draft.data.get(key)
+                        if not isinstance(value, str) or not value.strip():
+                            raise ValueError("synthetic procedural practice requires " + key)
                 if draft.reference is None or draft.verifier is None:
                     raise ValueError("this validation policy requires a reference and verifier")
             except (TypeError, ValueError) as error:
                 errors.append((draft.draft_id, str(error)))
-        return ValidationPlan(tuple(drafts), self.identity, self.validator_id, tuple(errors))
+        checks = PRACTICE_CHECKS.get(next(iter(kinds), "task"), ())
+        return ValidationPlan(
+            tuple(drafts), self.identity, self.validator_id, tuple(errors), checks
+        )
 
     def assess(
         self, plan: ValidationPlan, evidence: Sequence[ValidationEvidence]
@@ -86,11 +102,10 @@ class ValidatePractice(Module):
                 raise ValueError("evidence verdict must be boolean or unknown")
             if item.kind not in ("execution", "semantic", "structural"):
                 raise ValueError("unknown evidence kind")
-            if (
-                item.check in ("environment", "reference", "verifier_calibration")
-                and item.kind != "execution"
-            ):
+            if item.check in EXECUTION_CHECKS and item.kind != "execution":
                 raise ValueError("this check requires execution evidence")
+            if item.check == "semantic_correctness" and item.kind != "semantic":
+                raise ValueError("synthetic correctness requires semantic validation evidence")
             key = (item.draft_id, item.check)
             if key in observations:
                 raise ValueError("duplicate validation evidence")
@@ -103,7 +118,7 @@ class ValidatePractice(Module):
                     "structure", "failed" if error else "passed", "structural", detail=error or ""
                 )
             ]
-            for name in REQUIRED_CHECKS:
+            for name in plan.required_checks:
                 observation = observations.get((draft.draft_id, name))
                 if (
                     observation is None
@@ -128,5 +143,7 @@ class ValidatePractice(Module):
                             observation.detail,
                         )
                     )
-            results.append(ValidationResult(draft.draft_id, draft.digest, tuple(checks)))
+            results.append(
+                ValidationResult(draft.draft_id, draft.digest, tuple(checks), draft.plan.kind)
+            )
         return ValidationReport(plan.policy_id, tuple(results))
