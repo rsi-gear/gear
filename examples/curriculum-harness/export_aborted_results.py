@@ -9,7 +9,7 @@ from pathlib import Path
 from export_formal_results import snapshot_sources
 from forge_experiment import sealed_prompt
 from gear.canonical import digest
-from ifeval_experiment import Benchmark, read_json, write_json
+from ifeval_experiment import INITIAL_HARNESS, Benchmark, read_json, write_json
 
 
 def export(workspace, benchmark, output):
@@ -54,12 +54,14 @@ def export(workspace, benchmark, output):
             except ValueError as error:
                 malformed.append({"call_key": key, "error": str(error)})
     evaluations = {}
+    training = {task["id"]: task for task in identity["splits"]["train"]}
     for path in sorted((workspace / "evaluations").glob("*.json")):
         rows = read_json(path)
         for row in rows:
             call = calls[row["call_key"]]
             if (
-                call["request"]["prompt"] != row["task"]["prompt"]
+                row["task"] != training.get(row["task"]["id"])
+                or call["request"]["prompt"] != row["task"]["prompt"]
                 or call["response"] != row["response"]
                 or digest(call["request"]["harness"]) != row["policy_id"]
                 or benchmark.grade(row["task"], row["response"])
@@ -150,9 +152,37 @@ def export(workspace, benchmark, output):
         for path in workspace.glob("seed-*/*/round-*/generation.json")
     }
     empty = [name for name, value in generations.items() if not value["tasks"]]
-    if not malformed and not empty:
+    readiness = None
+    baseline = evaluations.get("baseline_train", [])
+    if baseline and not runs and not generations:
+        expected_keys = {"baseline/train/" + key for key in training}
+        if (
+            set(calls) != expected_keys
+            or {row["call_key"] for row in baseline} != expected_keys
+            or len(baseline) != len(training)
+            or len(training) != identity["config"]["train_count"]
+            or any(
+                call["request"]["harness"] != INITIAL_HARNESS
+                or call["request"]["model"] != identity["config"]["student"]
+                for call in calls.values()
+            )
+        ):
+            raise ValueError(
+                "readiness records do not match the frozen training baseline"
+            )
+        passed = sum(row["passed"] for row in baseline)
+        rate = passed / len(baseline)
+        if not 0.25 <= rate <= 0.875:
+            readiness = {
+                "passed": passed,
+                "count": len(baseline),
+                "rate": rate,
+                "allowed_range": [0.25, 0.875],
+                "valid": False,
+            }
+    if not malformed and not empty and readiness is None:
         raise ValueError(
-            "no completed JSON failure or empty generated pool explains this stop"
+            "no completed readiness, JSON, or generated-pool failure explains this stop"
         )
     artifact = {
         "status": "aborted_before_test",
@@ -166,6 +196,8 @@ def export(workspace, benchmark, output):
         "malformed_json": malformed,
         "empty_generated_pools": empty,
     }
+    if readiness is not None:
+        artifact["readiness_failure"] = readiness
     manifest = {
         "status": "aborted_before_test",
         "evidence_digest": digest(artifact),
@@ -187,6 +219,9 @@ def export(workspace, benchmark, output):
         "full_selection_audit": "not_performed",
         "native_thread_and_turn_ids": "omitted",
     }
+    if readiness is not None:
+        manifest["stop_reason"] = "training_readiness_failed"
+        manifest["readiness_failure"] = readiness
     output.mkdir(parents=True, exist_ok=True)
     write_json(output / "evidence.json", artifact)
     write_json(output / "manifest.json", manifest)

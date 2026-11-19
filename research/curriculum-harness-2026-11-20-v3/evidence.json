@@ -1,0 +1,1375 @@
+{
+  "status": "aborted_before_test",
+  "identity": {
+    "config": {
+      "student": "gpt-5.6-luna",
+      "teacher": "gpt-6-astra",
+      "effort": "low",
+      "split_seed": 20261122,
+      "minimum_instructions": 1,
+      "seeds": [
+        101,
+        202,
+        303
+      ],
+      "train_count": 8,
+      "learning_count": 6,
+      "dev_count": 16,
+      "test_count": 24,
+      "rounds": 2,
+      "max_calls": 1800,
+      "structured_output": true,
+      "calibration_policy": "constraint-aware-negatives-v1"
+    },
+    "source": {
+      "repository": "https://github.com/google-research/google-research",
+      "commit": "e6890f85757dd84e27ca6df2dd30651dafad28e0",
+      "files": {
+        "instructions.py": "60e086f5342a03ce8e18b64bbcccf86308f523c08aa826707a562150a52f3edf",
+        "instructions_registry.py": "ec92d72c264f6d906978613085db262356174300370a3fffe6fefd5969ce9cfc",
+        "instructions_util.py": "a73797261eee5bf447e279d82a2b700b1bdd3cb1193412dbab1270a85832bc6b",
+        "evaluation_lib.py": "35decc06000718487f44d7deafa6d3f48a8ec0886281edf40162c0265b7d248c",
+        "requirements.txt": "1b1716c9ac21b9cc2bd0d7354ed8f7b6982ccf35598529601a7c08508acec94a",
+        "README.md": "fef3c44408e4b39837af345095ccce7da798853fd60ea94a1de63afa9d3d67b3",
+        "data/input_data.jsonl": "67ffeee0fcb87c317c5b08a2de85557b4a7e96ada6178aa645b4954fe4b53d49"
+      }
+    },
+    "verifier_resources": {
+      "abbrev_types.txt": "92a3e070f43d9b4c5534758ca40ad7343b04e7e29bfe0c2eb658a39445a4f779",
+      "collocations.tab": "8e2da1225e4dd2cc9dba261ee231ccb134859e21b46006e7f472c5ee269af0cf",
+      "ortho_context.tab": "4bbcca25ed3d3f06c02402abf8419b9f033b8adc06e7b482eca4e45f81a5dc4c",
+      "sent_starters.txt": "f3f8535483e1dba487241b764945168123bca3209a9645e59acd1225dc76edac"
+    },
+    "verifier_policy": {
+      "language_detection_seed": 0
+    },
+    "implementation": {
+      "examples/curriculum-harness/formal_experiment.py": "ede73089d1b2805bb41f72e8954956eea998fbe015465379b1d8712bda062982",
+      "examples/curriculum-harness/formal_provider.py": "ca7963c6c438962b68294e157cad030721efdff65571c591c1c73661e9bb00ae",
+      "examples/curriculum-harness/model_calls.py": "c65f2d97ff5070225eabd414481814ff70300fe46c049d3276b929e1d5e83026",
+      "examples/curriculum-harness/ifeval_experiment.py": "6516a572b8c33d6de9f0be8453f2d5d1542e1508a9f54912c9733b04ce908f24",
+      "python/gear/curriculum/signals.py": "94558ce9deae13254a666c9b90ec0a52ad2bf2cf6a96b16cbfb8109c76f55658",
+      "python/gear/curriculum/generation.py": "71e4f206c0ae3c63a52c6277f55090866c673e0b98d352c09d0bbb5f1a9c4282",
+      "python/gear/curriculum/memory.py": "4067dcdbf8dcd53edaa31c8caf4eb9a2ff323427c2e5af124777a4d5846cd78e",
+      "python/gear/curriculum/__init__.py": "910e652e5a678ec8611cc7784425ebd61b5d471d9f16e3009a24a5e9b02eb30d",
+      "python/gear/curriculum/cases.py": "52a68462fae580165fe13d5517bb69b45a09ad0427e34df16b9f9aaf8bcb45f2",
+      "python/gear/curriculum/diagnosis.py": "38675582a18a9e6488fff15dfb7a6f60620e979850d5423390ce955ebcc5453c",
+      "python/gear/curriculum/supervision.py": "f758dc779a97478beb600b8c6903f86e2eef553e5e58f8fe1c5b2400d2ad3231",
+      "python/gear/curriculum/contracts.py": "957b4794c99bce2ad2691a142c6434ae279f3e75d93222cd2e6ac6d4a8b94d82",
+      "python/gear/curriculum/selection.py": "3840df90bf01a9c4cb8ca49be28824fd6d0a1439fd88515a401e68ce676cf434",
+      "python/gear/curriculum/validation.py": "235363119af8a19c6a177c9242ba032447bf8fef0555666f9a36826f324bec38",
+      "python/gear/algorithms/reflective_search.py": "d3d6b6e66a4a8e41ea90e8235d23325d655c6c62d8d6d0b07b94fe9ee5e5f260",
+      "python/gear/algorithms/opro.py": "6924b79513017982cb6ba3935c4d642d20ee95cd993c7f2b25fd8799c243bd9f",
+      "python/gear/search/constraints.py": "4208c60f8069a38b406a29773f9712dc01e2698caa22da6360057b7322b96e4e"
+    },
+    "splits": {
+      "excluded_ids": [
+        "ifeval-1001",
+        "ifeval-1021",
+        "ifeval-1040",
+        "ifeval-1082",
+        "ifeval-1127",
+        "ifeval-1131",
+        "ifeval-1132",
+        "ifeval-1137",
+        "ifeval-1153",
+        "ifeval-1203",
+        "ifeval-1219",
+        "ifeval-1233",
+        "ifeval-1236",
+        "ifeval-1237",
+        "ifeval-1242",
+        "ifeval-1248",
+        "ifeval-1287",
+        "ifeval-1305",
+        "ifeval-1307",
+        "ifeval-1314",
+        "ifeval-1325",
+        "ifeval-1342",
+        "ifeval-136",
+        "ifeval-1375",
+        "ifeval-1379",
+        "ifeval-1389",
+        "ifeval-142",
+        "ifeval-143",
+        "ifeval-1446",
+        "ifeval-1481",
+        "ifeval-1508",
+        "ifeval-1512",
+        "ifeval-1516",
+        "ifeval-1551",
+        "ifeval-1571",
+        "ifeval-1601",
+        "ifeval-1619",
+        "ifeval-163",
+        "ifeval-1644",
+        "ifeval-1645",
+        "ifeval-1670",
+        "ifeval-168",
+        "ifeval-1705",
+        "ifeval-1713",
+        "ifeval-1730",
+        "ifeval-1733",
+        "ifeval-1800",
+        "ifeval-1802",
+        "ifeval-1813",
+        "ifeval-1843",
+        "ifeval-1857",
+        "ifeval-1883",
+        "ifeval-1893",
+        "ifeval-1897",
+        "ifeval-1927",
+        "ifeval-1928",
+        "ifeval-1936",
+        "ifeval-1943",
+        "ifeval-1964",
+        "ifeval-201",
+        "ifeval-202",
+        "ifeval-2069",
+        "ifeval-2070",
+        "ifeval-2078",
+        "ifeval-2084",
+        "ifeval-2097",
+        "ifeval-2100",
+        "ifeval-2118",
+        "ifeval-2169",
+        "ifeval-218",
+        "ifeval-2180",
+        "ifeval-2216",
+        "ifeval-2230",
+        "ifeval-2268",
+        "ifeval-2273",
+        "ifeval-2362",
+        "ifeval-2372",
+        "ifeval-2380",
+        "ifeval-2386",
+        "ifeval-2395",
+        "ifeval-2404",
+        "ifeval-2416",
+        "ifeval-2417",
+        "ifeval-2447",
+        "ifeval-2449",
+        "ifeval-2497",
+        "ifeval-2534",
+        "ifeval-2567",
+        "ifeval-2583",
+        "ifeval-2591",
+        "ifeval-260",
+        "ifeval-2605",
+        "ifeval-2616",
+        "ifeval-2649",
+        "ifeval-2653",
+        "ifeval-2662",
+        "ifeval-2716",
+        "ifeval-2728",
+        "ifeval-2736",
+        "ifeval-2765",
+        "ifeval-2768",
+        "ifeval-2779",
+        "ifeval-2785",
+        "ifeval-279",
+        "ifeval-2820",
+        "ifeval-2825",
+        "ifeval-2829",
+        "ifeval-2844",
+        "ifeval-2853",
+        "ifeval-2887",
+        "ifeval-2889",
+        "ifeval-2908",
+        "ifeval-2929",
+        "ifeval-2943",
+        "ifeval-296",
+        "ifeval-3035",
+        "ifeval-3057",
+        "ifeval-3069",
+        "ifeval-3084",
+        "ifeval-3098",
+        "ifeval-3109",
+        "ifeval-3126",
+        "ifeval-3131",
+        "ifeval-3188",
+        "ifeval-3204",
+        "ifeval-321",
+        "ifeval-3243",
+        "ifeval-3245",
+        "ifeval-3294",
+        "ifeval-331",
+        "ifeval-3315",
+        "ifeval-3326",
+        "ifeval-3327",
+        "ifeval-334",
+        "ifeval-3350",
+        "ifeval-3351",
+        "ifeval-3367",
+        "ifeval-3376",
+        "ifeval-3380",
+        "ifeval-340",
+        "ifeval-3407",
+        "ifeval-3409",
+        "ifeval-3414",
+        "ifeval-3415",
+        "ifeval-3424",
+        "ifeval-3428",
+        "ifeval-3442",
+        "ifeval-3456",
+        "ifeval-349",
+        "ifeval-3518",
+        "ifeval-3549",
+        "ifeval-3557",
+        "ifeval-3565",
+        "ifeval-3608",
+        "ifeval-3619",
+        "ifeval-3680",
+        "ifeval-371",
+        "ifeval-3710",
+        "ifeval-3719",
+        "ifeval-3724"
+      ],
+      "train": [
+        {
+          "key": 3439,
+          "prompt": "Write an HTML page that lists 25 limericks about people named \"Bill\". The page should include keywords 'economist', 'bill', and 'jurgen'",
+          "instruction_id_list": [
+            "keywords:existence"
+          ],
+          "kwargs": [
+            {
+              "keywords": [
+                "bill",
+                "economist",
+                "jurgen"
+              ]
+            }
+          ],
+          "id": "ifeval-3439",
+          "family": "ifeval-source-3439"
+        },
+        {
+          "key": 3091,
+          "prompt": "Write a quiz about bits that includes the word elephant at least 3 times.",
+          "instruction_id_list": [
+            "keywords:frequency"
+          ],
+          "kwargs": [
+            {
+              "relation": "at least",
+              "keyword": "elephant",
+              "frequency": 3
+            }
+          ],
+          "id": "ifeval-3091",
+          "family": "ifeval-source-3091"
+        },
+        {
+          "key": 3048,
+          "prompt": "Write a poem about the top 20 tallest buildings in the world and their heights. End your response with the exact question: Is there anything else I can help with?",
+          "instruction_id_list": [
+            "startend:end_checker"
+          ],
+          "kwargs": [
+            {
+              "end_phrase": "Is there anything else I can help with?"
+            }
+          ],
+          "id": "ifeval-3048",
+          "family": "ifeval-source-3048"
+        },
+        {
+          "key": 2341,
+          "prompt": "Is praying for someone's health a good idea? Your answer must be in all capital letters and in English.",
+          "instruction_id_list": [
+            "change_case:english_capital"
+          ],
+          "kwargs": [
+            {}
+          ],
+          "id": "ifeval-2341",
+          "family": "ifeval-source-2341"
+        },
+        {
+          "key": 1094,
+          "prompt": "Please provide the names of 5 famous moms in JSON format. Please, use any interesting or weird tone. Your entire output should just contain a JSON block, nothing else.",
+          "instruction_id_list": [
+            "detectable_format:json_format"
+          ],
+          "kwargs": [
+            {}
+          ],
+          "id": "ifeval-1094",
+          "family": "ifeval-source-1094"
+        },
+        {
+          "key": 2396,
+          "prompt": "Write me a poem about a long lasting war. Add a postscript at the end starting with P.P.S",
+          "instruction_id_list": [
+            "detectable_content:postscript"
+          ],
+          "kwargs": [
+            {
+              "postscript_marker": "P.P.S"
+            }
+          ],
+          "id": "ifeval-2396",
+          "family": "ifeval-source-2396"
+        },
+        {
+          "key": 1593,
+          "prompt": "Compose a poem all in lowercase letters about my friend Barnet.",
+          "instruction_id_list": [
+            "change_case:english_lowercase"
+          ],
+          "kwargs": [
+            {}
+          ],
+          "id": "ifeval-1593",
+          "family": "ifeval-source-1593"
+        },
+        {
+          "key": 1372,
+          "prompt": "Draft a blog post about Ripley's Aquarium. Make sure your blog post contains at least 7 placeholders represented by square brackets, such as [location].",
+          "instruction_id_list": [
+            "detectable_content:number_placeholders"
+          ],
+          "kwargs": [
+            {
+              "num_placeholders": 7
+            }
+          ],
+          "id": "ifeval-1372",
+          "family": "ifeval-source-1372"
+        }
+      ],
+      "dev": [
+        {
+          "key": 2628,
+          "prompt": "Write a funny note to McQueen, using <br> to separate lines. Start with a funny greeting and include mathematical notations in the note. At the end of your response, explicitly add a postscript starting with P.P.S",
+          "instruction_id_list": [
+            "detectable_content:postscript"
+          ],
+          "kwargs": [
+            {
+              "postscript_marker": "P.P.S"
+            }
+          ],
+          "id": "ifeval-2628",
+          "family": "ifeval-source-2628"
+        },
+        {
+          "key": 1537,
+          "prompt": "Could you tell me what kind of balls are used in tennis? I would like the answer in the form of a medieval style poem with a P.P.S at the end.",
+          "instruction_id_list": [
+            "detectable_content:postscript"
+          ],
+          "kwargs": [
+            {
+              "postscript_marker": "P.P.S"
+            }
+          ],
+          "id": "ifeval-1537",
+          "family": "ifeval-source-1537"
+        },
+        {
+          "key": 3223,
+          "prompt": "List all facts about Lionel Messi in a structured output. In particular, Format your entire output in JSON.",
+          "instruction_id_list": [
+            "detectable_format:json_format"
+          ],
+          "kwargs": [
+            {}
+          ],
+          "id": "ifeval-3223",
+          "family": "ifeval-source-3223"
+        },
+        {
+          "key": 2997,
+          "prompt": "You feel strongly about a local issue that involves the environment, pollution, and climate change. Write a template for a letter to the editor of a newspaper. Use the word para at least once.",
+          "instruction_id_list": [
+            "keywords:frequency"
+          ],
+          "kwargs": [
+            {
+              "relation": "at least",
+              "keyword": "para",
+              "frequency": 1
+            }
+          ],
+          "id": "ifeval-2997",
+          "family": "ifeval-source-2997"
+        },
+        {
+          "key": 1939,
+          "prompt": "I'm a new puppy owner and I'm looking for some advice on how to train my puppy. Can you help me? Give me a few options. In particular, I need you to end your response with \"Which one you choose?\".",
+          "instruction_id_list": [
+            "startend:end_checker"
+          ],
+          "kwargs": [
+            {
+              "end_phrase": "Which one you choose?"
+            }
+          ],
+          "id": "ifeval-1939",
+          "family": "ifeval-source-1939"
+        },
+        {
+          "key": 2515,
+          "prompt": "Gideon is a farmer who has a surplus of crops from his farm this year. What might he do with that surplus? Highlight at least one section of your answer in markdown, i.e *highlighted section*.",
+          "instruction_id_list": [
+            "detectable_format:number_highlighted_sections"
+          ],
+          "kwargs": [
+            {
+              "num_highlights": 1
+            }
+          ],
+          "id": "ifeval-2515",
+          "family": "ifeval-source-2515"
+        },
+        {
+          "key": 1220,
+          "prompt": "Write a poem about two people who meet in a coffee shop and end your entire response with the exact phrase \"Is there anything else I can help with?\"",
+          "instruction_id_list": [
+            "startend:end_checker"
+          ],
+          "kwargs": [
+            {
+              "end_phrase": "Is there anything else I can help with?"
+            }
+          ],
+          "id": "ifeval-1220",
+          "family": "ifeval-source-1220"
+        },
+        {
+          "key": 3186,
+          "prompt": "Write an article about how intra-team conflict affected sports teams. Write in a crazy coach screaming style. Use all capital letters to express the craziness. Basically, not a single word in your entire reply should contain lowercase letters.",
+          "instruction_id_list": [
+            "change_case:english_capital"
+          ],
+          "kwargs": [
+            {}
+          ],
+          "id": "ifeval-3186",
+          "family": "ifeval-source-3186"
+        },
+        {
+          "key": 2622,
+          "prompt": "Melbourne has a newspaper called the Herald Sun. Can you suggest a name for a new newspaper for Melbourne teenagers? Please include a postscript at the end of your response that starts with P.S.",
+          "instruction_id_list": [
+            "detectable_content:postscript"
+          ],
+          "kwargs": [
+            {
+              "postscript_marker": "P.S."
+            }
+          ],
+          "id": "ifeval-2622",
+          "family": "ifeval-source-2622"
+        },
+        {
+          "key": 2828,
+          "prompt": "Write a parody of 'ars poetica'. Do not include the word 'parody' throughout your response.",
+          "instruction_id_list": [
+            "keywords:forbidden_words"
+          ],
+          "kwargs": [
+            {
+              "forbidden_words": [
+                "parody"
+              ]
+            }
+          ],
+          "id": "ifeval-2828",
+          "family": "ifeval-source-2828"
+        },
+        {
+          "key": 3697,
+          "prompt": "Give me a pitch deck for a startup that lets me send letters to people in my territory that I don't know personally. The title of the pitch deck should be wrapped in double angular brackets, i.e. <<title>>.",
+          "instruction_id_list": [
+            "detectable_format:title"
+          ],
+          "kwargs": [
+            {}
+          ],
+          "id": "ifeval-3697",
+          "family": "ifeval-source-3697"
+        },
+        {
+          "key": 102,
+          "prompt": "Write a dialogue between two people, one is dressed up in a ball gown and the other is dressed down in sweats. The two are going to a nightly event. Your answer must contain exactly 3 bullet points in the markdown format (use \"* \" to indicate each bullet) such as:\n* This is the first point.\n* This is the second point.",
+          "instruction_id_list": [
+            "detectable_format:number_bullet_lists"
+          ],
+          "kwargs": [
+            {
+              "num_bullets": 3
+            }
+          ],
+          "id": "ifeval-102",
+          "family": "ifeval-source-102"
+        },
+        {
+          "key": 2398,
+          "prompt": "Give me a poem about California. The very end of your entire response should read exactly like: your love, and thanks.",
+          "instruction_id_list": [
+            "startend:end_checker"
+          ],
+          "kwargs": [
+            {
+              "end_phrase": "your love, and thanks."
+            }
+          ],
+          "id": "ifeval-2398",
+          "family": "ifeval-source-2398"
+        },
+        {
+          "key": 2350,
+          "prompt": "Create a rubric to evaluate the performance of a new employee named Clarissa. In your response, make sure the letter i appears less than 6 times.",
+          "instruction_id_list": [
+            "keywords:letter_frequency"
+          ],
+          "kwargs": [
+            {
+              "let_relation": "less than",
+              "letter": "i",
+              "let_frequency": 6
+            }
+          ],
+          "id": "ifeval-2350",
+          "family": "ifeval-source-2350"
+        },
+        {
+          "key": 1773,
+          "prompt": "Write a song about the summers of my childhood that I spent in the countryside. Give the song a name, and highlight the name by wrapping it with *. For example: *little me in the countryside*.",
+          "instruction_id_list": [
+            "detectable_format:number_highlighted_sections"
+          ],
+          "kwargs": [
+            {
+              "num_highlights": 1
+            }
+          ],
+          "id": "ifeval-1773",
+          "family": "ifeval-source-1773"
+        },
+        {
+          "key": 2323,
+          "prompt": "Write a funny advertisement for a hair salon that is offering a 25% discount on all services that has at least 200 words.",
+          "instruction_id_list": [
+            "length_constraints:number_words"
+          ],
+          "kwargs": [
+            {
+              "relation": "at least",
+              "num_words": 200
+            }
+          ],
+          "id": "ifeval-2323",
+          "family": "ifeval-source-2323"
+        }
+      ],
+      "test": [
+        {
+          "key": 1902,
+          "prompt": "How can I learn to code? Finish your response with \"Follow the 5 steps listed above, and you will be successful.\" No other words should follow this.",
+          "instruction_id_list": [
+            "startend:end_checker"
+          ],
+          "kwargs": [
+            {
+              "end_phrase": "Follow the 5 steps listed above, and you will be successful."
+            }
+          ],
+          "id": "ifeval-1902",
+          "family": "ifeval-source-1902"
+        },
+        {
+          "key": 1019,
+          "prompt": "Given the sentence \"Two young boys with toy guns and horns.\" can you ask a question? Please ensure that your response is in English, and in all lowercase letters. No capital letters are allowed.",
+          "instruction_id_list": [
+            "change_case:english_lowercase"
+          ],
+          "kwargs": [
+            {}
+          ],
+          "id": "ifeval-1019",
+          "family": "ifeval-source-1019"
+        },
+        {
+          "key": 1286,
+          "prompt": "What is the difference between the 13 colonies and the other British colonies in North America? Your answer must contain exactly 6 bullet point in Markdown using the following format:\n* Bullet point one.\n* Bullet point two.\n...\n* Bullet point fix.",
+          "instruction_id_list": [
+            "detectable_format:number_bullet_lists"
+          ],
+          "kwargs": [
+            {
+              "num_bullets": 6
+            }
+          ],
+          "id": "ifeval-1286",
+          "family": "ifeval-source-1286"
+        },
+        {
+          "key": 2505,
+          "prompt": "Improve the following text, which is about how to learn a language. Also, provide two alternatives. The text is: \"The best way to learn about a new culture is by living in it. Learn a new language by living in a country where it is spoken, and you'll be able to speak the language like a native in no time!\". Finish your response with \"Is there anything else I can help with?\". No other words should follow this phrase.",
+          "instruction_id_list": [
+            "startend:end_checker"
+          ],
+          "kwargs": [
+            {
+              "end_phrase": "Is there anything else I can help with?"
+            }
+          ],
+          "id": "ifeval-2505",
+          "family": "ifeval-source-2505"
+        },
+        {
+          "key": 3453,
+          "prompt": "Summarize the history of Japan. Italicize at least 5 keywords in your response. To indicate a italic word, wrap it with asterisk, like *italic*",
+          "instruction_id_list": [
+            "detectable_format:number_highlighted_sections"
+          ],
+          "kwargs": [
+            {
+              "num_highlights": 5
+            }
+          ],
+          "id": "ifeval-3453",
+          "family": "ifeval-source-3453"
+        },
+        {
+          "key": 2849,
+          "prompt": "Write a limerick about a guy from Nantucket, use notations to express it, and use at least 2 words with all capital letters.",
+          "instruction_id_list": [
+            "change_case:capital_word_frequency"
+          ],
+          "kwargs": [
+            {
+              "capital_relation": "at least",
+              "capital_frequency": 2
+            }
+          ],
+          "id": "ifeval-2849",
+          "family": "ifeval-source-2849"
+        },
+        {
+          "key": 219,
+          "prompt": "Do you think Kareena Kapoor is a good actor? Wrap your response with double quotation marks.",
+          "instruction_id_list": [
+            "startend:quotation"
+          ],
+          "kwargs": [
+            {}
+          ],
+          "id": "ifeval-219",
+          "family": "ifeval-source-219"
+        },
+        {
+          "key": 357,
+          "prompt": "Write a short, funny story about a man named Harry with a pet dog. Your response must contain 3 sections, mark the beginning of each section with SECTION X.",
+          "instruction_id_list": [
+            "detectable_format:multiple_sections"
+          ],
+          "kwargs": [
+            {
+              "section_spliter": "SECTION",
+              "num_sections": 3
+            }
+          ],
+          "id": "ifeval-357",
+          "family": "ifeval-source-357"
+        },
+        {
+          "key": 2142,
+          "prompt": "Write a proposal for a new university course on \"The History of the World, as Told by Dogs.\" Make sure the word predatory appears at least twice in the proposal.",
+          "instruction_id_list": [
+            "keywords:frequency"
+          ],
+          "kwargs": [
+            {
+              "relation": "at least",
+              "keyword": "predatory",
+              "frequency": 2
+            }
+          ],
+          "id": "ifeval-2142",
+          "family": "ifeval-source-2142"
+        },
+        {
+          "key": 3280,
+          "prompt": "What's the difference between the Apple and Albania? Answer in email format. Your response must contain at least six placeholders which should be represented by square brackets like [name].",
+          "instruction_id_list": [
+            "detectable_content:number_placeholders"
+          ],
+          "kwargs": [
+            {
+              "num_placeholders": 6
+            }
+          ],
+          "id": "ifeval-3280",
+          "family": "ifeval-source-3280"
+        },
+        {
+          "key": 2324,
+          "prompt": "Write a riddle about a mom laying out on a beach in Humboldt without using any commas.",
+          "instruction_id_list": [
+            "punctuation:no_comma"
+          ],
+          "kwargs": [
+            {}
+          ],
+          "id": "ifeval-2324",
+          "family": "ifeval-source-2324"
+        },
+        {
+          "key": 1498,
+          "prompt": "Write a song about tomatoes and brothers. It should be funny and appropriate for teenagers. The word associations should appear at least 4 times in the song.",
+          "instruction_id_list": [
+            "keywords:frequency"
+          ],
+          "kwargs": [
+            {
+              "relation": "at least",
+              "keyword": "associations",
+              "frequency": 4
+            }
+          ],
+          "id": "ifeval-1498",
+          "family": "ifeval-source-1498"
+        },
+        {
+          "key": 24,
+          "prompt": "The Legend of the Sword and the Fairy is a movie in which Wan Wan is a villain. Write a story about Wan Wan's character in list format. Your entire response should be in English and in all capital letters.",
+          "instruction_id_list": [
+            "change_case:english_capital"
+          ],
+          "kwargs": [
+            {}
+          ],
+          "id": "ifeval-24",
+          "family": "ifeval-source-24"
+        },
+        {
+          "key": 2253,
+          "prompt": "Write a template for a workshop on the importance of diversity in the workplace and highlight at least 3 sections with markdown, i.e. *highlighted section*.",
+          "instruction_id_list": [
+            "detectable_format:number_highlighted_sections"
+          ],
+          "kwargs": [
+            {
+              "num_highlights": 3
+            }
+          ],
+          "id": "ifeval-2253",
+          "family": "ifeval-source-2253"
+        },
+        {
+          "key": 13,
+          "prompt": "What is the history of NYC prospect park? Please wrap your entire answer in JSON format. You can use markdown ticks such as ```. For example:\n```JSON\n{\n...\n}\n```",
+          "instruction_id_list": [
+            "detectable_format:json_format"
+          ],
+          "kwargs": [
+            {}
+          ],
+          "id": "ifeval-13",
+          "family": "ifeval-source-13"
+        },
+        {
+          "key": 1580,
+          "prompt": "Write a story for kids about how a person learns to ride a bike. Do not include 'can' and 'ride' in your response.",
+          "instruction_id_list": [
+            "keywords:forbidden_words"
+          ],
+          "kwargs": [
+            {
+              "forbidden_words": [
+                "can",
+                "ride"
+              ]
+            }
+          ],
+          "id": "ifeval-1580",
+          "family": "ifeval-source-1580"
+        },
+        {
+          "key": 167,
+          "prompt": "Generate a business proposal to start a sweatshirt company in Bremen. The proposal should contain 5 or more sections. Highlight each section name using the this format:\n*section name*",
+          "instruction_id_list": [
+            "detectable_format:number_highlighted_sections"
+          ],
+          "kwargs": [
+            {
+              "num_highlights": 5
+            }
+          ],
+          "id": "ifeval-167",
+          "family": "ifeval-source-167"
+        },
+        {
+          "key": 2195,
+          "prompt": "Write a list of instructions for a dog trainer to teach a dog to sit, stay, and fetch. Your list should contain exactly 3 bullet points in the markdown format such as:\n* Bullet point 1\n* Bullet point 2",
+          "instruction_id_list": [
+            "detectable_format:number_bullet_lists"
+          ],
+          "kwargs": [
+            {
+              "num_bullets": 3
+            }
+          ],
+          "id": "ifeval-2195",
+          "family": "ifeval-source-2195"
+        },
+        {
+          "key": 2532,
+          "prompt": "Write an email to your friend about what triggers you. Make sure to wrap the entire email in double quotation marks.",
+          "instruction_id_list": [
+            "startend:quotation"
+          ],
+          "kwargs": [
+            {}
+          ],
+          "id": "ifeval-2532",
+          "family": "ifeval-source-2532"
+        },
+        {
+          "key": 1322,
+          "prompt": "What are the pros and cons of kotlin vs java? Your answer must have a title contained in double angular brackets, such as <<kotlin vs java>>.",
+          "instruction_id_list": [
+            "detectable_format:title"
+          ],
+          "kwargs": [
+            {}
+          ],
+          "id": "ifeval-1322",
+          "family": "ifeval-source-1322"
+        },
+        {
+          "key": 2467,
+          "prompt": "Write a rap about an abyss in exactly 4 paragraphs. Separate paragraphs with the markdown divider: ***.",
+          "instruction_id_list": [
+            "length_constraints:number_paragraphs"
+          ],
+          "kwargs": [
+            {
+              "num_paragraphs": 4
+            }
+          ],
+          "id": "ifeval-2467",
+          "family": "ifeval-source-2467"
+        },
+        {
+          "key": 1738,
+          "prompt": "What is the next number in this series: 1, 4, 7, 11, 17? Please answer with only mathematical notation without any commas.",
+          "instruction_id_list": [
+            "punctuation:no_comma"
+          ],
+          "kwargs": [
+            {}
+          ],
+          "id": "ifeval-1738",
+          "family": "ifeval-source-1738"
+        },
+        {
+          "key": 1128,
+          "prompt": "Given the sentence \"It is unclear how much of this money is actually being spent on children\", is the sentiment positive or negative? The very last sentence of your response should be \"Is there anything else I can help with?\".",
+          "instruction_id_list": [
+            "startend:end_checker"
+          ],
+          "kwargs": [
+            {
+              "end_phrase": "Is there anything else I can help with?"
+            }
+          ],
+          "id": "ifeval-1128",
+          "family": "ifeval-source-1128"
+        },
+        {
+          "key": 3455,
+          "prompt": "Write a persuasive email to a teenager who lives in Aberdeen, Scotland. The main point is to encourage them to volunteer at a local soup kitchen. At least 5 words in the output should be in all caps.",
+          "instruction_id_list": [
+            "change_case:capital_word_frequency"
+          ],
+          "kwargs": [
+            {
+              "capital_relation": "at least",
+              "capital_frequency": 5
+            }
+          ],
+          "id": "ifeval-3455",
+          "family": "ifeval-source-3455"
+        }
+      ]
+    },
+    "quota_unit": "logical SDK turns; native HTTP retries are unbounded and uncounted",
+    "randomness": "seeds control task sampling and arm order; provider exposes no sampling seed"
+  },
+  "calls": {
+    "baseline/train/ifeval-3048": {
+      "request": {
+        "key": "baseline/train/ifeval-3048",
+        "model": "gpt-5.6-luna",
+        "effort": "low",
+        "prompt": "Write a poem about the top 20 tallest buildings in the world and their heights. End your response with the exact question: Is there anything else I can help with?",
+        "harness": "Follow all instructions in the user's request. Return only the requested answer.",
+        "base_instructions": "Answer the user's request directly. Do not use tools or access files.",
+        "tools": false,
+        "sdk": "0.159.3"
+      },
+      "response": "## A Skyline of Giants\n\nBurj Khalifa pierces heaven—**828 meters** high,  \nMerdeka 118 reaches **678.9 meters** toward the sky.  \nShanghai Tower spirals up to **632 meters** bright,  \nMakkah Royal Clock Tower stands **601 meters** in light.\n\nPing An Finance Center climbs **599.1 meters** tall,  \nLotte World Tower rises **554.5 meters** over all.  \nOne World Trade Center marks **541.3 meters** of grace,  \nGuangzhou CTF touches **530 meters** in space.\n\nTianjin CTF mirrors it at **530 meters** grand,  \nCITIC Tower crowns Beijing at **527.7 meters** planned.  \nTaipei 101 lifts **508 meters** in flight,  \nShanghai World Financial Center reaches **492 meters** of height.\n\nInternational Commerce Centre stands **484 meters** above,  \nCentral Park Tower climbs **472.4 meters** thereof.  \nLakhta Center shines at **462 meters** by the sea,  \nLandmark 81 rises **461.5 meters** majestically.\n\nChangsha IFS towers **452.1 meters** high,  \nPetronas Tower One reaches **451.9 meters** in the sky.  \nSuzhou IFS and Zifeng Tower, each **450 meters** tall—  \nTwenty giants writing their names above us all.\n\nIs there anything else I can help with?",
+      "usage": {
+        "last": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 8192,
+          "input_tokens": 8616,
+          "output_tokens": 763,
+          "reasoning_output_tokens": 460,
+          "total_tokens": 9379
+        },
+        "model_context_window": 258400,
+        "total": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 8192,
+          "input_tokens": 8616,
+          "output_tokens": 763,
+          "reasoning_output_tokens": 460,
+          "total_tokens": 9379
+        }
+      },
+      "status": "completed"
+    },
+    "baseline/train/ifeval-1094": {
+      "request": {
+        "key": "baseline/train/ifeval-1094",
+        "model": "gpt-5.6-luna",
+        "effort": "low",
+        "prompt": "Please provide the names of 5 famous moms in JSON format. Please, use any interesting or weird tone. Your entire output should just contain a JSON block, nothing else.",
+        "harness": "Follow all instructions in the user's request. Return only the requested answer.",
+        "base_instructions": "Answer the user's request directly. Do not use tools or access files.",
+        "tools": false,
+        "sdk": "0.159.3"
+      },
+      "response": "{\"famous_moms\":[\"June Cleaver\",\"Marge Simpson\",\"Mrs. Weasley\",\"Morticia Addams\",\"Mama Coco\"]}",
+      "usage": {
+        "last": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 8192,
+          "input_tokens": 8627,
+          "output_tokens": 32,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 8659
+        },
+        "model_context_window": 258400,
+        "total": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 8192,
+          "input_tokens": 8627,
+          "output_tokens": 32,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 8659
+        }
+      },
+      "status": "completed"
+    },
+    "baseline/train/ifeval-3439": {
+      "request": {
+        "key": "baseline/train/ifeval-3439",
+        "model": "gpt-5.6-luna",
+        "effort": "low",
+        "prompt": "Write an HTML page that lists 25 limericks about people named \"Bill\". The page should include keywords 'economist', 'bill', and 'jurgen'",
+        "harness": "Follow all instructions in the user's request. Return only the requested answer.",
+        "base_instructions": "Answer the user's request directly. Do not use tools or access files.",
+        "tools": false,
+        "sdk": "0.159.3"
+      },
+      "response": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"UTF-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n  <title>25 Limericks About Bill</title>\n  <meta name=\"keywords\" content=\"economist, bill, jurgen\">\n</head>\n<body>\n  <main>\n    <h1>25 Limericks About Bill</h1>\n    <p>Featuring an economist, a bill, and even Jurgen.</p>\n\n    <ol>\n      <li>\n        <p>There once was a fellow named Bill,<br>\n        Whose jokes gave the whole town a thrill.<br>\n        He danced on a chair,<br>\n        With remarkable flair,<br>\n        And insisted he’d pay every bill.</p>\n      </li>\n      <li>\n        <p>Young Bill was a clever economist,<br>\n        Who made every graph neatly twist.<br>\n        He forecast the rain,<br>\n        Then explained it again,<br>\n        While the clouds made a note on their list.</p>\n      </li>\n      <li>\n        <p>There once was a Bill from Peru,<br>\n        Who painted his mailbox bright blue.<br>\n        When Jurgen dropped by,<br>\n        He shouted, “Oh my!”<br>\n        And painted the doorstep one too.</p>\n      </li>\n      <li>\n        <p>Bill bought a remarkable hat,<br>\n        That was shaped like a very large cat.<br>\n        It purred in the breeze,<br>\n        And sneezed at the trees,<br>\n        While Bill tipped his head to a bat.</p>\n      </li>\n      <li>\n        <p>A brave little Bill from the coast,<br>\n        Claimed toast was the meal he loved most.<br>\n        He buttered a stack,<br>\n        Then carried it back,<br>\n        And served every hungry ghost.</p>\n      </li>\n      <li>\n        <p>There once was a punctual Bill,<br>\n        Who climbed up a very steep hill.<br>\n        At the top he declared,<br>\n        “I’m wonderfully aired!”<br>\n        Then rolled down it just for the thrill.</p>\n      </li>\n      <li>\n        <p>Bill owned a comical shoe,<br>\n        That was yellow, enormous, and new.<br>\n        It squeaked in the rain,<br>\n        Drove pigeons insane,<br>\n        And taught all the ducklings to moo.</p>\n      </li>\n      <li>\n        <p>There once was a baker named Bill,<br>\n        Who baked with incredible skill.<br>\n        His pies could recite,<br>\n        His muffins could write,<br>\n        And his doughnuts could dance on a sill.</p>\n      </li>\n      <li>\n        <p>Kind Bill found a frog in a hat,<br>\n        Who claimed to be friends with a cat.<br>\n        Bill offered some tea,<br>\n        The frog said, “For me?”<br>\n        Then balanced a spoon on a bat.</p>\n      </li>\n      <li>\n        <p>There once was a sailor named Bill,<br>\n        Who navigated by daffodil.<br>\n        He sailed through the foam,<br>\n        Then somehow came home,<br>\n        With a mermaid aboard for a meal.</p>\n      </li>\n      <li>\n        <p>Old Bill had a bicycle bright,<br>\n        That glowed like a star every night.<br>\n        He pedaled past Mars,<br>\n        Waving at stars,<br>\n        And returned just before morning light.</p>\n      </li>\n      <li>\n        <p>There once was a gardener Bill,<br>\n        Whose roses grew over the hill.<br>\n        They sang in a choir,<br>\n        Then climbed even higher,<br>\n        And bloomed by the old windowsill.</p>\n      </li>\n      <li>\n        <p>Bill wore a moustache made of string,<br>\n        Which he claimed was the latest thing.<br>\n        It wiggled with cheer,<br>\n        Then vanished one year,<br>\n        When a sparrow mistook it for spring.</p>\n      </li>\n      <li>\n        <p>There once was a drummer named Bill,<br>\n        Who practiced beside a windmill.<br>\n        The rhythm was loud,<br>\n        It gathered a crowd,<br>\n        And woke every sleepy daffodil.</p>\n      </li>\n      <li>\n        <p>Bill met a magician named Jurgen,<br>\n        Who performed in a bright purple version.<br>\n        He pulled from his sleeve,<br>\n        A small Christmas Eve,<br>\n        Then vanished behind a red curtain.</p>\n      </li>\n      <li>\n        <p>There once was a poet named Bill,<br>\n        Whose verses could climb up a hill.<br>\n        Each rhyme wore a shoe,<br>\n        And each stanza wore two,<br>\n        While the commas stood perfectly still.</p>\n      </li>\n      <li>\n        <p>Bill owned a most curious clock,<br>\n        That ticked like a chicken in shock.<br>\n        It crowed at noon,<br>\n        Then whistled a tune,<br>\n        And danced with a sock in a frock.</p>\n      </li>\n      <li>\n        <p>There once was a pilot called Bill,<br>\n        Who flew with a very calm quill.<br>\n        He wrote in the sky,<br>\n        “Hello!” way up high,<br>\n        Then landed beside a daffodil.</p>\n      </li>\n      <li>\n        <p>Bill ran a hotel for a bee,<br>\n        With rooms in a tall apple tree.<br>\n        Each guest paid a crumb,<br>\n        Then buzzed, “Here I come!”<br>\n        And checked out at quarter past three.</p>\n      </li>\n      <li>\n        <p>There once was a chef known as Bill,<br>\n        Who seasoned his soup with a quill.<br>\n        The flavor was grand,<br>\n        The spoons formed a band,<br>\n        And the ladle performed with great skill.</p>\n      </li>\n      <li>\n        <p>Bill bought a piano one day,<br>\n        Then taught all its keys how to play.<br>\n        The chords took the lead,<br>\n        The notes danced with speed,<br>\n        And the bench sang the chorus away.</p>\n      </li>\n      <li>\n        <p>There once was a runner named Bill,<br>\n        Who raced with a fast daffodil.<br>\n        The flower won first,<br>\n        Though Bill claimed it burst,<br>\n        When it sneezed halfway up the hill.</p>\n      </li>\n      <li>\n        <p>Bill met an economist at noon,<br>\n        Who calculated the price of the moon.<br>\n        Jurgen joined in,<br>\n        With a confident grin,<br>\n        And paid with a bright silver spoon.</p>\n      </li>\n      <li>\n        <p>There once was a painter named Bill,<br>\n        Who colored the clouds at his will.<br>\n        He chose them bright green,<br>\n        The strangest he’d seen,<br>\n        Then signed every puff with a quill.</p>\n      </li>\n      <li>\n        <p>Dear Bill had a marvelous grin,<br>\n        That invited the whole world to spin.<br>\n        With Jurgen nearby,<br>\n        They waved to the sky,<br>\n        And declared that the limericks win.</p>\n      </li>\n    </ol>\n  </main>\n</body>\n</html>",
+      "usage": {
+        "last": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 8192,
+          "input_tokens": 8624,
+          "output_tokens": 1728,
+          "reasoning_output_tokens": 30,
+          "total_tokens": 10352
+        },
+        "model_context_window": 258400,
+        "total": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 8192,
+          "input_tokens": 8624,
+          "output_tokens": 1728,
+          "reasoning_output_tokens": 30,
+          "total_tokens": 10352
+        }
+      },
+      "status": "completed"
+    },
+    "baseline/train/ifeval-1372": {
+      "request": {
+        "key": "baseline/train/ifeval-1372",
+        "model": "gpt-5.6-luna",
+        "effort": "low",
+        "prompt": "Draft a blog post about Ripley's Aquarium. Make sure your blog post contains at least 7 placeholders represented by square brackets, such as [location].",
+        "harness": "Follow all instructions in the user's request. Return only the requested answer.",
+        "base_instructions": "Answer the user's request directly. Do not use tools or access files.",
+        "tools": false,
+        "sdk": "0.159.3"
+      },
+      "response": "# A Day at Ripley’s Aquarium\n\nIf you’re looking for an unforgettable underwater adventure, Ripley’s Aquarium is a must-visit destination in [location]. From colorful tropical fish to majestic sharks, the aquarium offers visitors a chance to explore the wonders of the ocean without leaving the city.\n\n## Discover an Underwater World\n\nOne of the highlights of Ripley’s Aquarium is [featured exhibit], where visitors can see [type of animals] up close. The carefully designed habitats recreate natural ocean environments, making the experience both educational and immersive.\n\nThe aquarium’s [signature attraction] is especially popular with families. Walking through [special tunnel or viewing area], guests can watch marine life glide overhead and all around them. It’s an exciting experience that makes you feel as if you are exploring the ocean floor.\n\n## Something for Everyone\n\nRipley’s Aquarium is more than just a collection of exhibits. Visitors can learn about conservation, marine biology, and the importance of protecting our oceans. Interactive displays and educational programs make the aquarium a great destination for [target audience], including young children and curious adults.\n\nBe sure to check the schedule for [special event or animal presentation]. These programs offer fascinating insights into the lives and behaviors of marine animals.\n\n## Planning Your Visit\n\nBefore you go, check the aquarium’s website for [opening hours], [ticket prices], and [current visitor requirements]. Arriving early can help you avoid crowds, especially during [busy season or holiday].\n\nComfortable shoes are recommended because you’ll likely spend [estimated visit duration] exploring the exhibits. Visitors may also want to bring a camera to capture memorable moments, although flash photography may not be permitted in certain areas.\n\n## Final Thoughts\n\nWhether you’re fascinated by sharks, captivated by jellyfish, or simply looking for a fun day out, Ripley’s Aquarium offers an experience to remember. With its engaging exhibits, family-friendly activities, and focus on ocean conservation, it’s a wonderful place to discover the beauty beneath the waves.\n\nIf you’re planning a trip to [city or region], add Ripley’s Aquarium to your itinerary. Don’t forget to look for [recommended nearby attraction] afterward to make the most of your visit.",
+      "usage": {
+        "last": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 8192,
+          "input_tokens": 8624,
+          "output_tokens": 470,
+          "reasoning_output_tokens": 24,
+          "total_tokens": 9094
+        },
+        "model_context_window": 258400,
+        "total": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 8192,
+          "input_tokens": 8624,
+          "output_tokens": 470,
+          "reasoning_output_tokens": 24,
+          "total_tokens": 9094
+        }
+      },
+      "status": "completed"
+    },
+    "baseline/train/ifeval-2396": {
+      "request": {
+        "key": "baseline/train/ifeval-2396",
+        "model": "gpt-5.6-luna",
+        "effort": "low",
+        "prompt": "Write me a poem about a long lasting war. Add a postscript at the end starting with P.P.S",
+        "harness": "Follow all instructions in the user's request. Return only the requested answer.",
+        "base_instructions": "Answer the user's request directly. Do not use tools or access files.",
+        "tools": false,
+        "sdk": "0.159.3"
+      },
+      "response": "The war has outlived the kings who named it,  \nOutlived the flags, the maps, the marching drums;  \nIts trenches drink the seasons, year by year,  \nWhile children learn the silence before guns.\n\nThe fields remember boots, then seeds, then boots;  \nThe rivers carry ash beneath the rain.  \nEach dawn arrives in borrowed shades of gray,  \nEach dusk counts names that will not rise again.\n\nYet somewhere, under ruined walls, a rose  \nPushes through helmets, wire, and shattered stone—  \nA small, defiant heartbeat in the dust,  \nInsisting that the earth is not war’s own.\n\nAnd those who fight grow tired of being brave;  \nThey dream not of a victory parade,  \nBut bread, a door, a voice that says, “Come home,”  \nAnd hands that do not tremble when they’re laid.\n\nP.P.S. May peace arrive before the last surviving memory of peace is gone.",
+      "usage": {
+        "last": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 8192,
+          "input_tokens": 8604,
+          "output_tokens": 200,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 8804
+        },
+        "model_context_window": 258400,
+        "total": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 8192,
+          "input_tokens": 8604,
+          "output_tokens": 200,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 8804
+        }
+      },
+      "status": "completed"
+    },
+    "baseline/train/ifeval-1593": {
+      "request": {
+        "key": "baseline/train/ifeval-1593",
+        "model": "gpt-5.6-luna",
+        "effort": "low",
+        "prompt": "Compose a poem all in lowercase letters about my friend Barnet.",
+        "harness": "Follow all instructions in the user's request. Return only the requested answer.",
+        "base_instructions": "Answer the user's request directly. Do not use tools or access files.",
+        "tools": false,
+        "sdk": "0.159.3"
+      },
+      "response": "barnet walks beneath the moon,  \nwith quiet stars in every tune.  \na gentle heart, a steady light,  \nturning ordinary days bright.  \n\nwherever roads may twist or bend,  \ni’m glad that barnet is my friend.",
+      "usage": {
+        "last": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 8192,
+          "input_tokens": 8607,
+          "output_tokens": 74,
+          "reasoning_output_tokens": 18,
+          "total_tokens": 8681
+        },
+        "model_context_window": 258400,
+        "total": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 8192,
+          "input_tokens": 8607,
+          "output_tokens": 74,
+          "reasoning_output_tokens": 18,
+          "total_tokens": 8681
+        }
+      },
+      "status": "completed"
+    },
+    "baseline/train/ifeval-3091": {
+      "request": {
+        "key": "baseline/train/ifeval-3091",
+        "model": "gpt-5.6-luna",
+        "effort": "low",
+        "prompt": "Write a quiz about bits that includes the word elephant at least 3 times.",
+        "harness": "Follow all instructions in the user's request. Return only the requested answer.",
+        "base_instructions": "Answer the user's request directly. Do not use tools or access files.",
+        "tools": false,
+        "sdk": "0.159.3"
+      },
+      "response": "## Quiz: Bits and Binary\n\n1. How many possible values can one bit have?  \n   a) 1  \n   b) 2  \n   c) 8  \n   d) 10  \n\n2. What are the two values commonly represented by a bit?  \n   a) 0 and 1  \n   b) 1 and 2  \n   c) A and B  \n   d) True and Maybe  \n\n3. How many bits are in one byte?  \n   a) 4  \n   b) 8  \n   c) 16  \n   d) 32  \n\n4. If an elephant is represented using binary data, which number system would be used?  \n   a) Binary  \n   b) Roman numerals  \n   c) Musical notation  \n   d) Morse code  \n\n5. How many different values can 3 bits represent?  \n   a) 3  \n   b) 6  \n   c) 8  \n   d) 12  \n\n6. True or false: An elephant’s digital image is made up of bits.\n\n7. Challenge: What is the largest decimal number that can be represented with 4 bits?\n\n8. Bonus: If an elephant has a digital ID of `1010`, what is that number in decimal?\n\n### Answer Key\n\n1. b) 2  \n2. a) 0 and 1  \n3. b) 8  \n4. a) Binary  \n5. c) 8  \n6. True  \n7. 15  \n8. 10",
+      "usage": {
+        "last": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 8192,
+          "input_tokens": 8606,
+          "output_tokens": 340,
+          "reasoning_output_tokens": 17,
+          "total_tokens": 8946
+        },
+        "model_context_window": 258400,
+        "total": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 8192,
+          "input_tokens": 8606,
+          "output_tokens": 340,
+          "reasoning_output_tokens": 17,
+          "total_tokens": 8946
+        }
+      },
+      "status": "completed"
+    },
+    "baseline/train/ifeval-2341": {
+      "request": {
+        "key": "baseline/train/ifeval-2341",
+        "model": "gpt-5.6-luna",
+        "effort": "low",
+        "prompt": "Is praying for someone's health a good idea? Your answer must be in all capital letters and in English.",
+        "harness": "Follow all instructions in the user's request. Return only the requested answer.",
+        "base_instructions": "Answer the user's request directly. Do not use tools or access files.",
+        "tools": false,
+        "sdk": "0.159.3"
+      },
+      "response": "YES, PRAYING FOR SOMEONE’S HEALTH CAN BE A GOOD IDEA, ESPECIALLY IF IT OFFERS COMFORT, HOPE, OR SUPPORT. IT SHOULD COMPLEMENT—NOT REPLACE—APPROPRIATE MEDICAL CARE.",
+      "usage": {
+        "last": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 8192,
+          "input_tokens": 8617,
+          "output_tokens": 54,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 8671
+        },
+        "model_context_window": 258400,
+        "total": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 8192,
+          "input_tokens": 8617,
+          "output_tokens": 54,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 8671
+        }
+      },
+      "status": "completed"
+    }
+  },
+  "evaluations": {
+    "baseline_train": [
+      {
+        "task": {
+          "key": 3439,
+          "prompt": "Write an HTML page that lists 25 limericks about people named \"Bill\". The page should include keywords 'economist', 'bill', and 'jurgen'",
+          "instruction_id_list": [
+            "keywords:existence"
+          ],
+          "kwargs": [
+            {
+              "keywords": [
+                "bill",
+                "economist",
+                "jurgen"
+              ]
+            }
+          ],
+          "id": "ifeval-3439",
+          "family": "ifeval-source-3439"
+        },
+        "response": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"UTF-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n  <title>25 Limericks About Bill</title>\n  <meta name=\"keywords\" content=\"economist, bill, jurgen\">\n</head>\n<body>\n  <main>\n    <h1>25 Limericks About Bill</h1>\n    <p>Featuring an economist, a bill, and even Jurgen.</p>\n\n    <ol>\n      <li>\n        <p>There once was a fellow named Bill,<br>\n        Whose jokes gave the whole town a thrill.<br>\n        He danced on a chair,<br>\n        With remarkable flair,<br>\n        And insisted he’d pay every bill.</p>\n      </li>\n      <li>\n        <p>Young Bill was a clever economist,<br>\n        Who made every graph neatly twist.<br>\n        He forecast the rain,<br>\n        Then explained it again,<br>\n        While the clouds made a note on their list.</p>\n      </li>\n      <li>\n        <p>There once was a Bill from Peru,<br>\n        Who painted his mailbox bright blue.<br>\n        When Jurgen dropped by,<br>\n        He shouted, “Oh my!”<br>\n        And painted the doorstep one too.</p>\n      </li>\n      <li>\n        <p>Bill bought a remarkable hat,<br>\n        That was shaped like a very large cat.<br>\n        It purred in the breeze,<br>\n        And sneezed at the trees,<br>\n        While Bill tipped his head to a bat.</p>\n      </li>\n      <li>\n        <p>A brave little Bill from the coast,<br>\n        Claimed toast was the meal he loved most.<br>\n        He buttered a stack,<br>\n        Then carried it back,<br>\n        And served every hungry ghost.</p>\n      </li>\n      <li>\n        <p>There once was a punctual Bill,<br>\n        Who climbed up a very steep hill.<br>\n        At the top he declared,<br>\n        “I’m wonderfully aired!”<br>\n        Then rolled down it just for the thrill.</p>\n      </li>\n      <li>\n        <p>Bill owned a comical shoe,<br>\n        That was yellow, enormous, and new.<br>\n        It squeaked in the rain,<br>\n        Drove pigeons insane,<br>\n        And taught all the ducklings to moo.</p>\n      </li>\n      <li>\n        <p>There once was a baker named Bill,<br>\n        Who baked with incredible skill.<br>\n        His pies could recite,<br>\n        His muffins could write,<br>\n        And his doughnuts could dance on a sill.</p>\n      </li>\n      <li>\n        <p>Kind Bill found a frog in a hat,<br>\n        Who claimed to be friends with a cat.<br>\n        Bill offered some tea,<br>\n        The frog said, “For me?”<br>\n        Then balanced a spoon on a bat.</p>\n      </li>\n      <li>\n        <p>There once was a sailor named Bill,<br>\n        Who navigated by daffodil.<br>\n        He sailed through the foam,<br>\n        Then somehow came home,<br>\n        With a mermaid aboard for a meal.</p>\n      </li>\n      <li>\n        <p>Old Bill had a bicycle bright,<br>\n        That glowed like a star every night.<br>\n        He pedaled past Mars,<br>\n        Waving at stars,<br>\n        And returned just before morning light.</p>\n      </li>\n      <li>\n        <p>There once was a gardener Bill,<br>\n        Whose roses grew over the hill.<br>\n        They sang in a choir,<br>\n        Then climbed even higher,<br>\n        And bloomed by the old windowsill.</p>\n      </li>\n      <li>\n        <p>Bill wore a moustache made of string,<br>\n        Which he claimed was the latest thing.<br>\n        It wiggled with cheer,<br>\n        Then vanished one year,<br>\n        When a sparrow mistook it for spring.</p>\n      </li>\n      <li>\n        <p>There once was a drummer named Bill,<br>\n        Who practiced beside a windmill.<br>\n        The rhythm was loud,<br>\n        It gathered a crowd,<br>\n        And woke every sleepy daffodil.</p>\n      </li>\n      <li>\n        <p>Bill met a magician named Jurgen,<br>\n        Who performed in a bright purple version.<br>\n        He pulled from his sleeve,<br>\n        A small Christmas Eve,<br>\n        Then vanished behind a red curtain.</p>\n      </li>\n      <li>\n        <p>There once was a poet named Bill,<br>\n        Whose verses could climb up a hill.<br>\n        Each rhyme wore a shoe,<br>\n        And each stanza wore two,<br>\n        While the commas stood perfectly still.</p>\n      </li>\n      <li>\n        <p>Bill owned a most curious clock,<br>\n        That ticked like a chicken in shock.<br>\n        It crowed at noon,<br>\n        Then whistled a tune,<br>\n        And danced with a sock in a frock.</p>\n      </li>\n      <li>\n        <p>There once was a pilot called Bill,<br>\n        Who flew with a very calm quill.<br>\n        He wrote in the sky,<br>\n        “Hello!” way up high,<br>\n        Then landed beside a daffodil.</p>\n      </li>\n      <li>\n        <p>Bill ran a hotel for a bee,<br>\n        With rooms in a tall apple tree.<br>\n        Each guest paid a crumb,<br>\n        Then buzzed, “Here I come!”<br>\n        And checked out at quarter past three.</p>\n      </li>\n      <li>\n        <p>There once was a chef known as Bill,<br>\n        Who seasoned his soup with a quill.<br>\n        The flavor was grand,<br>\n        The spoons formed a band,<br>\n        And the ladle performed with great skill.</p>\n      </li>\n      <li>\n        <p>Bill bought a piano one day,<br>\n        Then taught all its keys how to play.<br>\n        The chords took the lead,<br>\n        The notes danced with speed,<br>\n        And the bench sang the chorus away.</p>\n      </li>\n      <li>\n        <p>There once was a runner named Bill,<br>\n        Who raced with a fast daffodil.<br>\n        The flower won first,<br>\n        Though Bill claimed it burst,<br>\n        When it sneezed halfway up the hill.</p>\n      </li>\n      <li>\n        <p>Bill met an economist at noon,<br>\n        Who calculated the price of the moon.<br>\n        Jurgen joined in,<br>\n        With a confident grin,<br>\n        And paid with a bright silver spoon.</p>\n      </li>\n      <li>\n        <p>There once was a painter named Bill,<br>\n        Who colored the clouds at his will.<br>\n        He chose them bright green,<br>\n        The strangest he’d seen,<br>\n        Then signed every puff with a quill.</p>\n      </li>\n      <li>\n        <p>Dear Bill had a marvelous grin,<br>\n        That invited the whole world to spin.<br>\n        With Jurgen nearby,<br>\n        They waved to the sky,<br>\n        And declared that the limericks win.</p>\n      </li>\n    </ol>\n  </main>\n</body>\n</html>",
+        "call_key": "baseline/train/ifeval-3439",
+        "policy_id": "sha256:53801304990b98a1f9f7e0aa33b487fa1b0170eed9d91002ab99029fa5016997",
+        "passed": true,
+        "checks": {
+          "0:keywords:existence": true
+        }
+      },
+      {
+        "task": {
+          "key": 3091,
+          "prompt": "Write a quiz about bits that includes the word elephant at least 3 times.",
+          "instruction_id_list": [
+            "keywords:frequency"
+          ],
+          "kwargs": [
+            {
+              "relation": "at least",
+              "keyword": "elephant",
+              "frequency": 3
+            }
+          ],
+          "id": "ifeval-3091",
+          "family": "ifeval-source-3091"
+        },
+        "response": "## Quiz: Bits and Binary\n\n1. How many possible values can one bit have?  \n   a) 1  \n   b) 2  \n   c) 8  \n   d) 10  \n\n2. What are the two values commonly represented by a bit?  \n   a) 0 and 1  \n   b) 1 and 2  \n   c) A and B  \n   d) True and Maybe  \n\n3. How many bits are in one byte?  \n   a) 4  \n   b) 8  \n   c) 16  \n   d) 32  \n\n4. If an elephant is represented using binary data, which number system would be used?  \n   a) Binary  \n   b) Roman numerals  \n   c) Musical notation  \n   d) Morse code  \n\n5. How many different values can 3 bits represent?  \n   a) 3  \n   b) 6  \n   c) 8  \n   d) 12  \n\n6. True or false: An elephant’s digital image is made up of bits.\n\n7. Challenge: What is the largest decimal number that can be represented with 4 bits?\n\n8. Bonus: If an elephant has a digital ID of `1010`, what is that number in decimal?\n\n### Answer Key\n\n1. b) 2  \n2. a) 0 and 1  \n3. b) 8  \n4. a) Binary  \n5. c) 8  \n6. True  \n7. 15  \n8. 10",
+        "call_key": "baseline/train/ifeval-3091",
+        "policy_id": "sha256:53801304990b98a1f9f7e0aa33b487fa1b0170eed9d91002ab99029fa5016997",
+        "passed": true,
+        "checks": {
+          "0:keywords:frequency": true
+        }
+      },
+      {
+        "task": {
+          "key": 3048,
+          "prompt": "Write a poem about the top 20 tallest buildings in the world and their heights. End your response with the exact question: Is there anything else I can help with?",
+          "instruction_id_list": [
+            "startend:end_checker"
+          ],
+          "kwargs": [
+            {
+              "end_phrase": "Is there anything else I can help with?"
+            }
+          ],
+          "id": "ifeval-3048",
+          "family": "ifeval-source-3048"
+        },
+        "response": "## A Skyline of Giants\n\nBurj Khalifa pierces heaven—**828 meters** high,  \nMerdeka 118 reaches **678.9 meters** toward the sky.  \nShanghai Tower spirals up to **632 meters** bright,  \nMakkah Royal Clock Tower stands **601 meters** in light.\n\nPing An Finance Center climbs **599.1 meters** tall,  \nLotte World Tower rises **554.5 meters** over all.  \nOne World Trade Center marks **541.3 meters** of grace,  \nGuangzhou CTF touches **530 meters** in space.\n\nTianjin CTF mirrors it at **530 meters** grand,  \nCITIC Tower crowns Beijing at **527.7 meters** planned.  \nTaipei 101 lifts **508 meters** in flight,  \nShanghai World Financial Center reaches **492 meters** of height.\n\nInternational Commerce Centre stands **484 meters** above,  \nCentral Park Tower climbs **472.4 meters** thereof.  \nLakhta Center shines at **462 meters** by the sea,  \nLandmark 81 rises **461.5 meters** majestically.\n\nChangsha IFS towers **452.1 meters** high,  \nPetronas Tower One reaches **451.9 meters** in the sky.  \nSuzhou IFS and Zifeng Tower, each **450 meters** tall—  \nTwenty giants writing their names above us all.\n\nIs there anything else I can help with?",
+        "call_key": "baseline/train/ifeval-3048",
+        "policy_id": "sha256:53801304990b98a1f9f7e0aa33b487fa1b0170eed9d91002ab99029fa5016997",
+        "passed": true,
+        "checks": {
+          "0:startend:end_checker": true
+        }
+      },
+      {
+        "task": {
+          "key": 2341,
+          "prompt": "Is praying for someone's health a good idea? Your answer must be in all capital letters and in English.",
+          "instruction_id_list": [
+            "change_case:english_capital"
+          ],
+          "kwargs": [
+            {}
+          ],
+          "id": "ifeval-2341",
+          "family": "ifeval-source-2341"
+        },
+        "response": "YES, PRAYING FOR SOMEONE’S HEALTH CAN BE A GOOD IDEA, ESPECIALLY IF IT OFFERS COMFORT, HOPE, OR SUPPORT. IT SHOULD COMPLEMENT—NOT REPLACE—APPROPRIATE MEDICAL CARE.",
+        "call_key": "baseline/train/ifeval-2341",
+        "policy_id": "sha256:53801304990b98a1f9f7e0aa33b487fa1b0170eed9d91002ab99029fa5016997",
+        "passed": true,
+        "checks": {
+          "0:change_case:english_capital": true
+        }
+      },
+      {
+        "task": {
+          "key": 1094,
+          "prompt": "Please provide the names of 5 famous moms in JSON format. Please, use any interesting or weird tone. Your entire output should just contain a JSON block, nothing else.",
+          "instruction_id_list": [
+            "detectable_format:json_format"
+          ],
+          "kwargs": [
+            {}
+          ],
+          "id": "ifeval-1094",
+          "family": "ifeval-source-1094"
+        },
+        "response": "{\"famous_moms\":[\"June Cleaver\",\"Marge Simpson\",\"Mrs. Weasley\",\"Morticia Addams\",\"Mama Coco\"]}",
+        "call_key": "baseline/train/ifeval-1094",
+        "policy_id": "sha256:53801304990b98a1f9f7e0aa33b487fa1b0170eed9d91002ab99029fa5016997",
+        "passed": true,
+        "checks": {
+          "0:detectable_format:json_format": true
+        }
+      },
+      {
+        "task": {
+          "key": 2396,
+          "prompt": "Write me a poem about a long lasting war. Add a postscript at the end starting with P.P.S",
+          "instruction_id_list": [
+            "detectable_content:postscript"
+          ],
+          "kwargs": [
+            {
+              "postscript_marker": "P.P.S"
+            }
+          ],
+          "id": "ifeval-2396",
+          "family": "ifeval-source-2396"
+        },
+        "response": "The war has outlived the kings who named it,  \nOutlived the flags, the maps, the marching drums;  \nIts trenches drink the seasons, year by year,  \nWhile children learn the silence before guns.\n\nThe fields remember boots, then seeds, then boots;  \nThe rivers carry ash beneath the rain.  \nEach dawn arrives in borrowed shades of gray,  \nEach dusk counts names that will not rise again.\n\nYet somewhere, under ruined walls, a rose  \nPushes through helmets, wire, and shattered stone—  \nA small, defiant heartbeat in the dust,  \nInsisting that the earth is not war’s own.\n\nAnd those who fight grow tired of being brave;  \nThey dream not of a victory parade,  \nBut bread, a door, a voice that says, “Come home,”  \nAnd hands that do not tremble when they’re laid.\n\nP.P.S. May peace arrive before the last surviving memory of peace is gone.",
+        "call_key": "baseline/train/ifeval-2396",
+        "policy_id": "sha256:53801304990b98a1f9f7e0aa33b487fa1b0170eed9d91002ab99029fa5016997",
+        "passed": true,
+        "checks": {
+          "0:detectable_content:postscript": true
+        }
+      },
+      {
+        "task": {
+          "key": 1593,
+          "prompt": "Compose a poem all in lowercase letters about my friend Barnet.",
+          "instruction_id_list": [
+            "change_case:english_lowercase"
+          ],
+          "kwargs": [
+            {}
+          ],
+          "id": "ifeval-1593",
+          "family": "ifeval-source-1593"
+        },
+        "response": "barnet walks beneath the moon,  \nwith quiet stars in every tune.  \na gentle heart, a steady light,  \nturning ordinary days bright.  \n\nwherever roads may twist or bend,  \ni’m glad that barnet is my friend.",
+        "call_key": "baseline/train/ifeval-1593",
+        "policy_id": "sha256:53801304990b98a1f9f7e0aa33b487fa1b0170eed9d91002ab99029fa5016997",
+        "passed": true,
+        "checks": {
+          "0:change_case:english_lowercase": true
+        }
+      },
+      {
+        "task": {
+          "key": 1372,
+          "prompt": "Draft a blog post about Ripley's Aquarium. Make sure your blog post contains at least 7 placeholders represented by square brackets, such as [location].",
+          "instruction_id_list": [
+            "detectable_content:number_placeholders"
+          ],
+          "kwargs": [
+            {
+              "num_placeholders": 7
+            }
+          ],
+          "id": "ifeval-1372",
+          "family": "ifeval-source-1372"
+        },
+        "response": "# A Day at Ripley’s Aquarium\n\nIf you’re looking for an unforgettable underwater adventure, Ripley’s Aquarium is a must-visit destination in [location]. From colorful tropical fish to majestic sharks, the aquarium offers visitors a chance to explore the wonders of the ocean without leaving the city.\n\n## Discover an Underwater World\n\nOne of the highlights of Ripley’s Aquarium is [featured exhibit], where visitors can see [type of animals] up close. The carefully designed habitats recreate natural ocean environments, making the experience both educational and immersive.\n\nThe aquarium’s [signature attraction] is especially popular with families. Walking through [special tunnel or viewing area], guests can watch marine life glide overhead and all around them. It’s an exciting experience that makes you feel as if you are exploring the ocean floor.\n\n## Something for Everyone\n\nRipley’s Aquarium is more than just a collection of exhibits. Visitors can learn about conservation, marine biology, and the importance of protecting our oceans. Interactive displays and educational programs make the aquarium a great destination for [target audience], including young children and curious adults.\n\nBe sure to check the schedule for [special event or animal presentation]. These programs offer fascinating insights into the lives and behaviors of marine animals.\n\n## Planning Your Visit\n\nBefore you go, check the aquarium’s website for [opening hours], [ticket prices], and [current visitor requirements]. Arriving early can help you avoid crowds, especially during [busy season or holiday].\n\nComfortable shoes are recommended because you’ll likely spend [estimated visit duration] exploring the exhibits. Visitors may also want to bring a camera to capture memorable moments, although flash photography may not be permitted in certain areas.\n\n## Final Thoughts\n\nWhether you’re fascinated by sharks, captivated by jellyfish, or simply looking for a fun day out, Ripley’s Aquarium offers an experience to remember. With its engaging exhibits, family-friendly activities, and focus on ocean conservation, it’s a wonderful place to discover the beauty beneath the waves.\n\nIf you’re planning a trip to [city or region], add Ripley’s Aquarium to your itinerary. Don’t forget to look for [recommended nearby attraction] afterward to make the most of your visit.",
+        "call_key": "baseline/train/ifeval-1372",
+        "policy_id": "sha256:53801304990b98a1f9f7e0aa33b487fa1b0170eed9d91002ab99029fa5016997",
+        "passed": true,
+        "checks": {
+          "0:detectable_content:number_placeholders": true
+        }
+      }
+    ]
+  },
+  "search_evaluations": [],
+  "runs": {},
+  "validation": {},
+  "generations": {},
+  "malformed_json": [],
+  "empty_generated_pools": [],
+  "readiness_failure": {
+    "passed": 8,
+    "count": 8,
+    "rate": 1.0,
+    "allowed_range": [
+      0.25,
+      0.875
+    ],
+    "valid": false
+  }
+}

@@ -9,7 +9,7 @@
 | 八个基础算子与轻量输入输出 | 已实现 | 当前 API、Module 重建、边界和算子测试 |
 | harness 正式搜索接入（优先） | 已实现并通过离线 provider 集成 | `ReflectiveSearch` 经真实 `Project.refine`、隔离 worker、持久执行器运行；训练与选型范围分离，候选封存与恢复已验证；真实模型接入见下一项实验 |
 | 候选约束与有限修订（优先） | 已实现并通过集成 | `PromptConstraints` 与独立 Meta 修订，稳定调用键、有限次数、收费回执恢复；超长文本不截断、不封存；真实实验中仍需核验各组有效候选比例 |
-| 有效真实 LLM 对照（优先） | 第一轮已审计；第二轮在测试前中止；完整验收未完成 | 第一轮 1,475 次调用、24/24 有效候选，但随机语言检测影响一次采纳，见[审计](../research/curriculum-harness-2026-11-20/README.zh-CN.md)。[第二轮](../research/curriculum-harness-2026-11-20-v2/README.zh-CN.md)已固定 seed，532 次调用、12 个 run 后因负例校准不足及错误 JSON 中止，最终测试未开启。当前已补约束相关反例和原生结构化输出；仍需新冻结协议下的完整有效实验，不能以正／负效果替代质量验收 |
+| 有效真实 LLM 对照（优先） | 第一轮已审计；第二轮中止；第三次切分基线饱和；第四版通过 readiness，完整验收未完成 | 第一轮 1,475 次调用、24/24 有效候选，但随机语言检测影响一次采纳，见[审计](../research/curriculum-harness-2026-11-20/README.zh-CN.md)。[第二轮](../research/curriculum-harness-2026-11-20-v2/README.zh-CN.md)固定 seed 后因负例校准不足及错误 JSON 中止；[第三次切分](../research/curriculum-harness-2026-11-20-v3/README.zh-CN.md)训练 8/8 饱和，测试未开启。第四版沿用已修复的冻结代码，切分 seed 20261123、排除 208 个来源，训练 6/8；仍待完整对照与审计 |
 | 学习目标策略 | 测量策略、信号与 skill-tree 算子已实现 | frontier/forgetting/rare_action/signal_mix 有跨策略条件与消融测试；`ExtractLearningSignals` 按 CoEvolve 三类布尔条件独立提取；`ProposeSubskills/PlanSkillPractice` 验证树版本、family、失败引用、配额与不可变更新，Module 重建通过 |
 | 任务、环境、轨迹／修复、过程问答生成 | 四类合同、生成解析与分类型验证已实现；完整配方待验收 | 环境调用方测试实际执行参考与负例；trajectory 必须有 replay 执行证据，example 走 semantic correctness；真实环境配方另行验收 |
 | 练习池筛选 | 纯算子与边界测试已完成 | 语义近邻绑定比较池和完整性；当前策略难度测量；预留探索槽；混合来源配额不足不暗中补齐 |

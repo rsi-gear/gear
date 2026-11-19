@@ -1,0 +1,28 @@
+{
+  "status": "aborted_before_test",
+  "evidence_digest": "sha256:000accccaf86eff6992f3f0cfacaa7ede85e4bd4b7053491c9f4547da9c4ebed",
+  "logical_model_calls": 8,
+  "completed_search_runs": 0,
+  "outer_evaluations_regraded": 8,
+  "search_evaluations_regraded": 0,
+  "validation_drafts": 0,
+  "held_out_model_calls": 0,
+  "malformed_json_calls": 0,
+  "calls_without_usage": 0,
+  "known_tokens": 72586,
+  "http_request_count": "unknown",
+  "comparison_complete": false,
+  "full_selection_audit": "not_performed",
+  "native_thread_and_turn_ids": "omitted",
+  "stop_reason": "training_readiness_failed",
+  "readiness_failure": {
+    "passed": 8,
+    "count": 8,
+    "rate": 1.0,
+    "allowed_range": [
+      0.25,
+      0.875
+    ],
+    "valid": false
+  }
+}
