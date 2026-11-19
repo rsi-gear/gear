@@ -173,7 +173,7 @@ class SolverBatchTests(unittest.TestCase):
         ref = self.store.put_json(
             {
                 "schemaVersion": 1,
-                "trainingRunId": "train-solver",
+                "trainingRunId": self.request["trainingRunId"],
                 "committedUpdate": number,
                 "consumedBatchDigest": batch_ref["digest"],
                 "checkpointRef": checkpoint,

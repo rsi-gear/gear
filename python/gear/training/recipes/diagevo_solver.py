@@ -16,7 +16,7 @@ from gear.core._json import json_value
 from gear.training.data import samples as native_samples
 from gear.training.data.samples import seal_batch
 from gear.training.data.trajectories import RawTrajectory
-from gear.training.recipes import diagevo, diagevo_data, diagevo_round
+from gear.training.recipes import diagevo, diagevo_data, diagevo_generation, diagevo_round
 from gear.training.recipes.agent_grpo import sampling_params
 from gear.training.recipes.diagevo import (
     Cause,
@@ -28,12 +28,12 @@ from gear.training.recipes.diagevo import (
 from gear.training.recipes.diagevo_data import (
     _answer_labels,
     _capture,
+    _committed_batches,
     _native_groups,
     _solver_identity,
 )
 from gear.training.recipes.diagevo_round import RoundEvidence
 from gear.training.runtime.implementation import stage_identity
-from gear.training.runtime.preflight import compatibility_digest
 from gear.training.storage.content import require
 
 
@@ -52,13 +52,15 @@ class DiagEvoSolverDatasetBuilder:
     source_dependencies = (
         Path(diagevo.__file__),
         Path(diagevo_data.__file__),
+        Path(diagevo_generation.__file__),
         Path(diagevo_round.__file__),
         Path(native_samples.__file__),
     )
 
-    def __init__(self, store, request, *, policy=None):
+    def __init__(self, store, request, *, policy=None, generation_builder=None):
         self.store, self.request = store, deepcopy(request)
         self.policy = clone(policy if policy is not None else DiagEvoPolicy())
+        self.generation_builder = generation_builder
         require(
             request.get("schemaVersion") == 2
             and request["trainer"].get("recipe", "agent-grpo-v1") == "agent-grpo-v1"
@@ -84,8 +86,26 @@ class DiagEvoSolverDatasetBuilder:
             "diagevo-curriculum-coverage",
             "curriculum needs the entire question pool, generation directives, and frozen solver",
         )
+        origin, seen = None, set()
+        require(
+            (self.generation_builder is None) == (inputs["generationRef"] is None),
+            "diagevo-generation-required",
+            "a bound solver curriculum requires its fresh-generation builder and reference",
+        )
+        if self.generation_builder is not None:
+            origin, seen = self.generation_builder.read(inputs["generationRef"])
+            require(
+                questions == origin["questions"]
+                and inputs["generation"] == origin["generation"]
+                and inputs["memory"] == origin["input"]["memory"]
+                and inputs["constructionPolicyId"] == origin["input"]["solverPolicyId"]
+                and self.policy.describe().to_dict()
+                == self.generation_builder.challenger.objective.policy.describe().to_dict(),
+                "diagevo-curriculum-origin-drift",
+                "solver curriculum must use all fresh questions, their memory directives and frozen solver",
+            )
         classification, labels = _answer_labels(self.store, inputs["answerClassesRef"])
-        seen, consumed, identities, texts, votes = set(), set(), set(), {}, []
+        consumed, identities, texts, votes = set(), set(), {}, []
         for question_id in sorted(questions):
             answers = []
             for value in construction[question_id]:
@@ -124,6 +144,13 @@ class DiagEvoSolverDatasetBuilder:
             "diagevo-construction-drift",
             "construction labels must cover one frozen solver and one instruction/sampling contract",
         )
+        require(
+            origin is None
+            or origin["solverIdentity"] is None
+            or json_value(next(iter(identities))) == origin["solverIdentity"],
+            "diagevo-construction-drift",
+            "curriculum construction must keep the solver frozen during challenger updates",
+        )
         self.policy.update(memory, votes=votes, generation=generation, groups=(), attributions=())
         value = {
             "schemaVersion": 1,
@@ -147,6 +174,7 @@ class DiagEvoSolverDatasetBuilder:
         memory,
         construction_policy_id,
         answer_classes_ref,
+        generation_ref=None,
     ):
         """Keep filtered candidates too: promotion uses the full construction pool."""
         inputs = {
@@ -158,6 +186,7 @@ class DiagEvoSolverDatasetBuilder:
             "memory": json_value([asdict(row) for row in memory]),
             "constructionPolicyId": construction_policy_id,
             "answerClassesRef": deepcopy(answer_classes_ref),
+            "generationRef": deepcopy(generation_ref),
         }
         return self.store.put_json(self._curriculum(inputs)[0])
 
@@ -278,66 +307,8 @@ class DiagEvoSolverDatasetBuilder:
         """
         pool, votes, generation, memory, seen = self._pool(curriculum_ref)
         request, store = self.request, self.store
-        require(
-            commit_refs and len(commit_refs) == request["trainer"]["updatesPerCandidate"],
-            "diagevo-incomplete-job",
-            "diagnosis requires every planned native update in this solver job",
-        )
-        before = request["parentModel"]["hfSnapshotRef"]
-        parent_ref = request.get("resumeCheckpointRef")
-        parent = store.read_json(parent_ref) if parent_ref else None
-        if parent is not None:
-            require(
-                parent.get("schemaVersion") == 1
-                and parent.get("compatibilityDigest") == compatibility_digest(request)
-                and parent.get("hfExportRef") == before
-                and isinstance(parent.get("actorStateRef"), dict)
-                and parent.get("actorStateRef")
-                == parent.get("optimizerStateRef")
-                == parent.get("schedulerAndRngRef")
-                and isinstance(parent.get("dataCursorRef"), dict)
-                and type(parent.get("committedUpdate")) is int
-                and parent["committedUpdate"] >= 0,
-                "diagevo-parent-state-drift",
-                "resume requires the complete compatible parent state and its exported model",
-            )
-        start = parent["committedUpdate"] if parent else 0
-        previous, consumed, optimization, texts = None, set(), [], dict(pool["trajectoryTexts"])
-        for index, ref in enumerate(commit_refs):
-            commit = store.read_json(ref)
-            number = start + index + 1
-            require(
-                commit.get("schemaVersion") == 1
-                and commit.get("trainingRunId") == request["trainingRunId"]
-                and commit.get("committedUpdate") == number
-                and commit.get("previousCommitRef") == previous
-                and commit.get("consumedBatchDigest") not in consumed,
-                "diagevo-commit-chain-drift",
-                "solver commits must form the complete contiguous consumed-batch chain",
-            )
-            checkpoint = store.read_json(commit["checkpointRef"])
-            cursor = store.read_json(commit["dataCursorRef"])
-            batch_ref = cursor["batchRef"]
-            require(
-                checkpoint.get("schemaVersion") == 1
-                and checkpoint.get("committedUpdate") == cursor.get("committedUpdate") == number
-                and checkpoint.get("compatibilityDigest") == compatibility_digest(request)
-                and checkpoint.get("actorStateRef")
-                == checkpoint.get("optimizerStateRef")
-                == checkpoint.get("schedulerAndRngRef")
-                == commit.get("rngRef")
-                and checkpoint.get("dataCursorRef") == commit["dataCursorRef"]
-                and batch_ref["digest"] == commit["consumedBatchDigest"],
-                "diagevo-commit-state-drift",
-                "solver checkpoint, optimizer, RNG, cursor and consumed batch must agree",
-            )
-            store.read_json(checkpoint["actorStateRef"])
-            exported = store.read_json(checkpoint["hfExportRef"])
-            require(
-                exported.get("weightsDigest") == checkpoint.get("actorWeightsDigest"),
-                "diagevo-export-drift",
-                "checkpoint and exported weights must agree",
-            )
+        optimization, texts = [], dict(pool["trajectoryTexts"])
+        for batch_ref, _, before in _committed_batches(store, request, commit_refs):
             batch = store.read_json(batch_ref)
             samples = store.read_json(batch["samplesRef"])
             proof_ref = samples[0][0]["metadata"]["curriculumRewardRef"]
@@ -361,10 +332,8 @@ class DiagEvoSolverDatasetBuilder:
                 "committed batches must reproduce exactly and cannot reuse earlier captures",
             )
             seen.update(identities)
-            consumed.add(batch_ref["digest"])
             optimization.extend(groups)
             texts.update(captured_texts)
-            previous, before = ref, checkpoint["hfExportRef"]
         self.policy.update(
             memory,
             votes=votes,

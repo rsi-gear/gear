@@ -106,6 +106,29 @@ def _memory(memory: Sequence[Cause]) -> dict[str, Cause]:
     return causes
 
 
+def _generation_causes(
+    directive: GenerationDirective, memory: dict[str, Cause]
+) -> tuple[Cause, ...]:
+    ids = directive.cause_ids
+    if directive.mode == "free" and not ids:
+        return ()
+    if (
+        directive.mode not in ("targeted", "stitched")
+        or len(ids) != (1 if directive.mode == "targeted" else 2)
+        or any(key not in memory for key in ids)
+        or memory[ids[0]].state != "active"
+        or (
+            len(ids) == 2
+            and (
+                memory[ids[1]].state != "mastered"
+                or memory[ids[0]].node_id != memory[ids[1]].node_id
+            )
+        )
+    ):
+        raise ValueError("generation directive does not match the pre-round memory")
+    return tuple(memory[key] for key in ids)
+
+
 def _samples(samples: Sequence[SolverSample], count: int, phase: str) -> tuple[SolverSample, ...]:
     values = tuple(samples)
     if (
@@ -299,25 +322,11 @@ class DiagEvoPolicy(Module):
             raise ValueError("promotion needs the complete round pool from one frozen solver")
         measurements: dict[str, list[float]] = {key: [] for key in previous}
         for question, directive in generation.items():
-            ids = directive.cause_ids
-            if directive.mode == "free" and not ids:
+            causes = _generation_causes(directive, previous)
+            if not causes:
                 continue
-            if (
-                directive.mode not in ("targeted", "stitched")
-                or len(ids) != (1 if directive.mode == "targeted" else 2)
-                or any(key not in previous for key in ids)
-                or previous[ids[0]].state != "active"
-                or (
-                    len(ids) == 2
-                    and (
-                        previous[ids[1]].state != "mastered"
-                        or previous[ids[0]].node_id != previous[ids[1]].node_id
-                    )
-                )
-            ):
-                raise ValueError("generation directive does not match the pre-round memory")
             # All targeted candidates count, even if confidence filtering rejects them.
-            measurements[ids[0]].append(by_question[question].p1)
+            measurements[causes[0].cause_id].append(by_question[question].p1)
         failures: set[str] = set()
         for group in groups:
             if by_question.get(group.vote.question_id) != group.vote or group != self.optimization(

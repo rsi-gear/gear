@@ -61,7 +61,19 @@ builder 从这些捕获和分类重新构造投票、计算整批奖励，调用
 
 返回的既有 `RoundEvidence` 包含完整题池、全部已提交优化组，以及诊断必需的失败原文和构造参考原文，可直接交给 `DiagEvoMemoryUpdater`。已完成但文本为空的失败响应按空字符串保留，缺失值仍拒绝；诊断模型可选择不归因，不补写虚构的错误答案。当前方法不处理部分完成作业或跳过全部更新的轮次。
 
-上述检查证明存储记录彼此吻合，不认证任意调用方伪造的提交来源。完整训练入口必须从实际 native ledger 获取提交，并证明题池来自更新后 challenger 的新一轮采样。当前 `seal_curriculum` 仍接受调用方提供的题目与生成指令，尚未绑定这段 challenger 来源；不能据此宣称两模型闭环完成。
+未指定 `generation_builder` 时，上述入口仍是接受调用方题目的底层数据 builder，不证明 challenger 来源。完整配方应使用下一节的绑定入口；它也只验证存储记录之间的关联，提交与 lease 的真实性必须由实际 native ledger 保证。
+
+## 更新后 challenger 的新题池
+
+`gear.training.recipes.diagevo_generation.DiagEvoQuestionPrompt` 提供自由探索、单原因定向及 active/mastered 同节点组合的文本 prompt。共同 system prompt 保持不变，自由探索不携带记忆描述，其他模式包含精确原因、状态和父节点 label；所有提示词参数进入 Module 身份。默认文字按[论文附录 I](https://arxiv.org/html/2609.00768v2#A9)的语义重新表述，不宣称逐字复现。调用方直接把 `messages(...)` 的结果用于已有执行路径，无新增 adapter。
+
+`DiagEvoGenerationBuilder(challenger_builder, prompt=...)` 将新题池关联到完整 challenger 作业。`seal` 接收更新后新捕获、已关闭 lease、全部更新提交、轮初 memory/nodes、按已准入 task ID 映射的生成指令和冻结 solver policy。它重放每个已提交 challenger 批次的奖励构建，核对消费批次、连续 checkpoint 与更新前权重，并要求各批使用同一个 solver 指令和采样合同。
+
+新题池的 lease 必须指向最后一个更新的 HF 导出，使用后续 policy 身份。更新批次与新题池的实际消息都必须等于相同记忆和指令生成的 prompt。所有 challenger／solver 的 episode、run、request、receipt 和轨迹身份跨阶段去重；不能把旧捕获换名后当成新采样。新的问题文本可以偶然相同，文本相同不等于复用捕获。已完成但格式无效的响应保存在原批记录中，不生成 solver 问题；整批没有有效问题时，后续 solver 课程会明确拒绝。
+
+`read` 会从原提交、捕获和配置重新构建整个来源记录。将该 builder 传入 `DiagEvoSolverDatasetBuilder(..., generation_builder=...)` 后，`seal_curriculum(..., generation_ref=...)` 强制要求完整新题目、逐题生成指令、轮初记忆和冻结 solver 相符，且构造响应不能复用 challenger 奖励评估中的响应。该来源随课程、优化批次和已提交失败材料保留，恢复时再次检查。
+
+当前同一 challenger 作业内的两阶段使用相同已准入任务范围、组大小和批次大小。每个 task 固定一种生成指令，调用方须用已有 `DiagEvoPolicy.schedule` 按冻结随机源构造任务及抽样计划；此绑定检查实际内容与计划关联，尚不证明完整外层频率调度已经执行。它不自行启动训练、采样或完成跨作业任务准入，也不处理全无有效题时的重采样策略。完整双模型调用方与实际训练验证仍然缺失。
 
 ## 调度与状态
 
@@ -121,13 +133,15 @@ builder 从这些捕获和分类重新构造投票、计算整批奖励，调用
 
 `python/tests/test_diagevo_data.py` 使用明确标识的原生捕获合同 fixture，验证完整批次封存、重建一致性、原 token／mask／logprob／反馈保留、同 task 不同 prompt 拒绝、未准入任务／开放 lease／重复请求拒绝、solver 问题／指令／策略漂移、构造缺项和等价类证据覆盖。
 
-`python/tests/test_diagevo_solver.py` 另覆盖完整题池与筛选、全失败组、构造／优化捕获隔离、分类约定、消费批次和提交链、恢复父状态、空失败原文及真实记忆调用流程的衔接。提交和模型状态为明确标识的 CPU 合同 fixture，不表示执行了优化器更新。六组共 54 个测试通过；这些是规则、恢复及数据合同验证，不是模型训练效果验证。
+`python/tests/test_diagevo_solver.py` 另覆盖完整题池与筛选、全失败组、构造／优化捕获隔离、分类约定、消费批次和提交链、恢复父状态、空失败原文及真实记忆调用流程的衔接。
+
+`python/tests/test_diagevo_generation.py` 覆盖三种生成 prompt、更新后权重关联、旧请求换名拒绝、跨更新 solver 漂移、记忆与实际 prompt 一致性、无效新问题保留、构造响应不能复用奖励评估，以及新题池进入已提交 solver 失败材料。提交和模型状态为明确标识的 CPU 合同 fixture，不表示执行了优化器更新。七组共 63 个测试通过；这些是规则、恢复及数据合同验证，不是模型训练效果验证。
 
 尚缺 challenger 更新后重新采样候选池、solver 更新、实际诊断／embedding 后端及原生费用回执绑定、完整外层恢复，以及真实运行和效果对照。当前记忆流程验证不替代完整 DiagEvo 或 GPU 实验验收。
 
 接入两模型更新时还有三个已核实的边界：
 
-- [DiagEvo 附录 D](https://arxiv.org/html/2609.00768v2#A4)要求先用一批问题更新 challenger，再从更新后的 challenger 采样另一批候选；不能把第一批题直接作为 solver 课程。上述奖励已经绑定原生 GRPO 数据构建，但实际 challenger 参数更新、两个独立采样池及 solver 更新仍须由完整训练入口证明。
+- [DiagEvo 附录 D](https://arxiv.org/html/2609.00768v2#A4)要求先用一批问题更新 challenger，再从更新后的 challenger 采样另一批候选；不能把第一批题直接作为 solver 课程。两个独立采样池及其更新关联已有原生数据检查，但实际 challenger 参数更新、更新后采样和 solver 更新仍须由完整训练入口执行并验证。
 - 全失败优化组仍是诊断材料。[原生采样路径](../../python/gear/training/backends/slime/rollout.py)选择跳过／重抽时，只在返回的 raw groups 中保留训练准入组；完整调用方需要明确使用已支持的 `zeroVarianceGroup="keep"`，或另行保留并验证未准入组，不能因为没有梯度信号而丢掉失败证据。
 - [现有原生采样合同](../../python/gear/training/recipes/agent_grpo.py)只接受 `topP=1`，而论文报告为 0.99。完整配方必须扩展并验证对应行为分布合同，或预先声明使用 `topP=1` 的适配实验；不能将不支持的参数写进配置后视为已经实现。
 

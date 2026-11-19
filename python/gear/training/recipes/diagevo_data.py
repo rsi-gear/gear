@@ -20,6 +20,7 @@ from gear.training.recipes.agent_grpo import sampling_params
 from gear.training.recipes.diagevo import SolverSample, _text
 from gear.training.recipes.diagevo_challenger import ChallengerSample, DiagEvoChallengerReward
 from gear.training.runtime.implementation import stage_identity
+from gear.training.runtime.preflight import compatibility_digest
 from gear.training.storage.content import digest_json, require
 
 
@@ -134,6 +135,74 @@ def _solver_identity(context, body):
         digest_json(context["sampling"]),
         digest_json(body["messages"][:-1]),
     )
+
+
+def _committed_batches(store, request, commit_refs):
+    """Validate a complete native job; callers authenticate its ledger provenance."""
+    require(
+        commit_refs and len(commit_refs) == request["trainer"]["updatesPerCandidate"],
+        "diagevo-incomplete-job",
+        "diagnosis requires every planned native update in this job",
+    )
+    before = request["parentModel"]["hfSnapshotRef"]
+    parent_ref = request.get("resumeCheckpointRef")
+    parent = store.read_json(parent_ref) if parent_ref else None
+    if parent is not None:
+        require(
+            parent.get("schemaVersion") == 1
+            and parent.get("compatibilityDigest") == compatibility_digest(request)
+            and parent.get("hfExportRef") == before
+            and isinstance(parent.get("actorStateRef"), dict)
+            and parent.get("actorStateRef")
+            == parent.get("optimizerStateRef")
+            == parent.get("schedulerAndRngRef")
+            and isinstance(parent.get("dataCursorRef"), dict)
+            and type(parent.get("committedUpdate")) is int
+            and parent["committedUpdate"] >= 0,
+            "diagevo-parent-state-drift",
+            "resume requires the complete compatible parent state and its exported model",
+        )
+    start = parent["committedUpdate"] if parent else 0
+    previous, consumed, result = None, set(), []
+    for index, ref in enumerate(commit_refs):
+        commit = store.read_json(ref)
+        number = start + index + 1
+        require(
+            commit.get("schemaVersion") == 1
+            and commit.get("trainingRunId") == request["trainingRunId"]
+            and commit.get("committedUpdate") == number
+            and commit.get("previousCommitRef") == previous
+            and commit.get("consumedBatchDigest") not in consumed,
+            "diagevo-commit-chain-drift",
+            "commits must form the complete contiguous consumed-batch chain",
+        )
+        checkpoint = store.read_json(commit["checkpointRef"])
+        cursor = store.read_json(commit["dataCursorRef"])
+        batch_ref = cursor["batchRef"]
+        require(
+            checkpoint.get("schemaVersion") == 1
+            and checkpoint.get("committedUpdate") == cursor.get("committedUpdate") == number
+            and checkpoint.get("compatibilityDigest") == compatibility_digest(request)
+            and checkpoint.get("actorStateRef")
+            == checkpoint.get("optimizerStateRef")
+            == checkpoint.get("schedulerAndRngRef")
+            == commit.get("rngRef")
+            and checkpoint.get("dataCursorRef") == commit["dataCursorRef"]
+            and batch_ref["digest"] == commit["consumedBatchDigest"],
+            "diagevo-commit-state-drift",
+            "checkpoint, optimizer, RNG, cursor and consumed batch must agree",
+        )
+        store.read_json(checkpoint["actorStateRef"])
+        exported = store.read_json(checkpoint["hfExportRef"])
+        require(
+            exported.get("weightsDigest") == checkpoint.get("actorWeightsDigest"),
+            "diagevo-export-drift",
+            "checkpoint and exported weights must agree",
+        )
+        result.append((batch_ref, checkpoint, before))
+        consumed.add(batch_ref["digest"])
+        previous, before = ref, checkpoint["hfExportRef"]
+    return result
 
 
 def _native_groups(store, request, groups, lease, seen):
