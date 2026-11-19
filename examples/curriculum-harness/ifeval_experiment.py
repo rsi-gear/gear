@@ -97,7 +97,12 @@ def json_data(value):
 
 
 class Benchmark:
-    def __init__(self, root):
+    def __init__(self, root, *, language_seed=0, minimum_instructions=2):
+        if type(language_seed) is not int or language_seed < 0:
+            raise ValueError("language_seed must be an explicit nonnegative integer")
+        if type(minimum_instructions) is not int or minimum_instructions < 1:
+            raise ValueError("minimum_instructions must be positive")
+        self.minimum_instructions = minimum_instructions
         self.root = Path(root).resolve()
         self.manifest = read_json(self.root / "manifest.json")
         if self.manifest["commit"] != SOURCE_COMMIT:
@@ -113,6 +118,10 @@ class Benchmark:
 
         self.evaluation = evaluation_lib
         self.registry = instructions_registry.INSTRUCTION_DICT
+        from langdetect import DetectorFactory
+
+        self.language_factory = DetectorFactory
+        self.verifier_policy = {"language_detection_seed": language_seed}
         import nltk
 
         resource = Path(str(nltk.data.find("tokenizers/punkt_tab/english")))
@@ -134,6 +143,10 @@ class Benchmark:
         return descriptions
 
     def grade(self, task, response):
+        # Official English-case checks include probabilistic language detection.
+        # Reset its declared seed for each grading operation, including after
+        # another caller in this process has used langdetect.
+        self.language_factory.seed = self.verifier_policy["language_detection_seed"]
         self.descriptions(task)
         inp = self.evaluation.InputExample(
             task["key"], task["instruction_id_list"], task["prompt"], task["kwargs"]
@@ -162,7 +175,7 @@ class Benchmark:
         for task in rows:
             if not set(task["instruction_id_list"]) <= ALLOWED:
                 continue
-            if len(task["instruction_id_list"]) < 2:
+            if len(task["instruction_id_list"]) < self.minimum_instructions:
                 continue
             if any((kw.get("num_words") or 0) > 200 for kw in task["kwargs"]):
                 continue
@@ -213,6 +226,7 @@ class Experiment:
             "config": config,
             "source": benchmark.manifest,
             "verifier_resources": benchmark.resource_identity,
+            "verifier_policy": benchmark.verifier_policy,
             "implementation": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "operators": {
                 "diagnoser": self.diagnoser.describe().to_dict(),

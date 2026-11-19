@@ -2,6 +2,8 @@
 
 `formal_experiment.py` 将每轮新练习交给新的 `Project.refine` 运行，使用 `ReflectiveSearch`、正式隔离 worker、候选封存、执行记录及恢复路径。`gear.curriculum` 仍只有纯算子及输入输出；这个目录负责模型调用、任务转换、实验记录和外部评测。
 
+[首轮正式实测与审计](../../research/curriculum-harness-2026-11-20/README.zh-CN.md)已完成，包含 1,475 次调用。离线复核发现官方大小写检查内部的语言检测未固定 RNG，影响一次候选采纳；原始结果保留。后续运行的 `verifier_policy.language_detection_seed=0` 已进入冻结身份，旧报告不因此自动获得确定性验收通过。
+
 ## 固定协议
 
 | 项目 | 设置 |
@@ -9,6 +11,7 @@
 | 更新对象 | developer prompt；1800 字符硬上限，1000 字符生成目标，最多 2 次修订；模型权重固定 |
 | 学生 / teacher | 默认 `gpt-5.6-luna` / `gpt-6-astra`，effort `low`；运行前验证实际可用性 |
 | 数据 | 固定提交的官方 IFEval strict verifiers；沿用原示例的可确定验证子集 |
+| 验证 RNG | 当前固定 language detection seed 0；原始正式实验漏项及影响见审计报告 |
 | 切分 | 排除前一轮所有 train/dev/test 来源；新的 8 train、16 dev、24 test，切分 seed `20261120` |
 | 重复 | 优化种子 101/202/303，各 2 轮；种子控制数据抽样和组执行顺序，原生解码没有 seed 保证 |
 | 学习预算 | 每轮每组最多 6 条，按四组验证通过数共同缩减，少于 3 条则停止 |
@@ -44,3 +47,5 @@ PYTHONPATH=python /tmp/gear-curriculum-llm-env/bin/python \
 `--phase preflight` 仅检查 benchmark、资源与 provider 握手，`readiness` 仅评测训练基线，`optimize` 到完成搜索为止。相同工作区重复执行会校验冻结配置／源码，复用模型回执与原 run；未知模型结果需要先 reconcile。不能通过删除意图文件重试。源码、模型或切分改变必须新建实验，并披露此前已看到的数据。
 
 数据来自公开基准，样本较小；多个优化种子共享测试题和初始基线，不是独立数据集重复。应展示每种子的配对差异与不确定性，并允许负结果或不显著结果。该实验不预设 failure 生成必然优于随机生成。
+
+`--previous-splits` 会递归继承文件中的 `excluded_ids`，排除所有先前用过的来源，而不只是紧邻的一轮。剩余来源不足时明确停止。可显式用 `--minimum-instructions` 和 `--split-seed` 定义新的任务范围；配置冻结后不能改写，改变任务范围的研究必须单独报告，不能把其分数与旧范围直接合并。

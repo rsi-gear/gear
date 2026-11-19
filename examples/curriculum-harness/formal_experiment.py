@@ -68,7 +68,7 @@ def fresh_splits(benchmark, previous, config):
     # All previously used source families are excluded, including pilot train/dev.
     excluded = {
         task["id"] for split in ("train", "dev", "test") for task in previous[split]
-    }
+    } | set(previous.get("excluded_ids", ()))
     all_rows = benchmark.split(config["split_seed"], 0, 0, 0)
     eligible = benchmark.split(config["split_seed"], all_rows["eligible_count"], 0, 0)[
         "train"
@@ -132,6 +132,7 @@ class Study:
             "config": config,
             "source": benchmark.manifest,
             "verifier_resources": benchmark.resource_identity,
+            "verifier_policy": benchmark.verifier_policy,
             "implementation": {
                 str(p.relative_to(here.parents[1])): hashlib.sha256(
                     p.read_bytes()
@@ -706,6 +707,8 @@ def main():
     parser.add_argument("--previous-splits", required=True)
     parser.add_argument("--student", default="gpt-5.6-luna")
     parser.add_argument("--teacher", default="gpt-6-astra")
+    parser.add_argument("--minimum-instructions", type=int, default=2)
+    parser.add_argument("--split-seed", type=int, default=20261120)
     parser.add_argument(
         "--phase", choices=("preflight", "readiness", "optimize", "all"), default="all"
     )
@@ -720,7 +723,8 @@ def main():
         "student": args.student,
         "teacher": args.teacher,
         "effort": "low",
-        "split_seed": 20261120,
+        "split_seed": args.split_seed,
+        "minimum_instructions": args.minimum_instructions,
         "seeds": [101, 202, 303],
         "train_count": 8,
         "learning_count": 6,
@@ -730,7 +734,10 @@ def main():
         "max_calls": 1800,
     }
     study = Study(
-        root, Benchmark(args.ifeval_root), read_json(args.previous_splits), config
+        root,
+        Benchmark(args.ifeval_root, minimum_instructions=args.minimum_instructions),
+        read_json(args.previous_splits),
+        config,
     )
     asyncio.run(study.run(args.phase))
 

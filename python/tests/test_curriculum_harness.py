@@ -45,6 +45,8 @@ class ComparisonTests(unittest.TestCase):
 
     def test_repeated_instruction_ids_retain_each_verdict(self):
         benchmark = example.Benchmark.__new__(example.Benchmark)
+        benchmark.language_factory = types.SimpleNamespace(seed=None)
+        benchmark.verifier_policy = {"language_detection_seed": 0}
         benchmark.descriptions = lambda task: []
         benchmark.evaluation = types.SimpleNamespace(
             InputExample=lambda *args: args,
@@ -67,6 +69,10 @@ class ComparisonTests(unittest.TestCase):
                 "checks": {"0:same": True, "1:same": False},
             },
         )
+        self.assertEqual(benchmark.language_factory.seed, 0)
+        benchmark.language_factory.seed = 99
+        benchmark.grade(task, "answer")
+        self.assertEqual(benchmark.language_factory.seed, 0)
 
 
 class ProposalTests(unittest.TestCase):

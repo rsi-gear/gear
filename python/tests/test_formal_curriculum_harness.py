@@ -68,7 +68,12 @@ class ScopeTests(unittest.TestCase):
         benchmark = SimpleNamespace(
             split=lambda seed, n, d, t: {"eligible_count": 12, "train": tasks[:n]}
         )
-        previous = {"train": tasks[:1], "dev": tasks[1:2], "test": tasks[2:3]}
+        previous = {
+            "train": tasks[:1],
+            "dev": tasks[1:2],
+            "test": tasks[2:3],
+            "excluded_ids": ["3", "4"],
+        }
         splits = study.fresh_splits(
             benchmark,
             previous,
@@ -76,7 +81,8 @@ class ScopeTests(unittest.TestCase):
         )
         selected = [row["id"] for part in ("train", "dev", "test") for row in splits[part]]
         self.assertEqual(len(set(selected)), 7)
-        self.assertFalse(set(selected) & {"0", "1", "2"})
+        self.assertFalse(set(selected) & {"0", "1", "2", "3", "4"})
+        self.assertEqual(splits["excluded_ids"], ["0", "1", "2", "3", "4"])
 
 
 class RecoveryTests(unittest.TestCase):
