@@ -1,6 +1,6 @@
 # Failure → Data 算子
 
-`gear.curriculum` 是独立的轻量能力包。它包含十个算子及其输入输出定义，只依赖标准库、`gear.core` 和公共 JSON 合同。它不导入 search、training、evaluation、memory，也不提供 adapters、执行器或新的流程状态机。
+`gear.curriculum` 是独立的轻量能力包。它包含十二个算子及其输入输出定义，只依赖标准库、`gear.core` 和公共 JSON 合同。它不导入 search、training、evaluation、memory，也不提供 adapters、执行器或新的流程状态机。
 
 本分支基于 `dev` 的 Gear 0.2.4 基线；以下是新增 API，不是已发布的 0.2.4 API。完整研究和后续范围见[设计文档](failure-driven-data-operators-spec.zh-CN.md)。
 
@@ -40,6 +40,8 @@ PYTHONPATH=python python3 examples/training-loop/failure_curriculum_cpu.py \
 | `MergeFailureMemory()` | `memory, delta, measurements=...` → 新 `FailureMode[]` | 支持案例去重；显式测量决定掌握；新失败重新激活 |
 | `SelectLearningTargets()` | `memory, budget=..., rng=..., progress=..., policy_id=...` → `LearningTarget[]` | frequency/uniform/frontier/forgetting/rare_action/signal_mix；精确预算，测量缺失保持未知 |
 | `ExtractLearningSignals()` | 有序 `BehavioralObservation[]`, `policy_id=...` → `LearningSignals[]` | 可比历史的遗忘、同策略组的结果边界、已观测低频动作，三个标签分别保留 |
+| `ProposeSubskills()` | `prepare(tree, count=..., allocation=..., cases=...)` → `ModelInput`；`parse(response, ...)` → `SkillTreeAction` | 在已有 family 内提议新子技能，校验失败引用与重复，不执行模型 |
+| `PlanSkillPractice()` | `SkillTree, SkillTreeAction, budget=...` → `SkillPracticePlan` | explore 新增分支；exploit 调整已有分支的生成配额，输出新树与 `LearningTarget[]` |
 | `PlanPractice(generator_id, validation_policy_id)` | `targets` → `PracticePlan[]` | failure 或 random；kind 可为 task/environment/trajectory/example |
 | `GeneratePractice()` | `prepare(plan, cases=...)` → `ModelInput`；`parse(response, plan=...)` → `PracticeDraft[]` | 严格响应 schema、数量和 family；输出仍是未准入草案 |
 | `ValidatePractice(validator_id)` | `plan(drafts)` → `ValidationPlan`；`assess(plan, evidence)` → `ValidationReport` | 结构检查 + 外部环境/参考解/验证器校准/目标忠实度/去重证据 |
@@ -73,6 +75,12 @@ PYTHONPATH=python python3 examples/training-loop/failure_curriculum_cpu.py \
 目标调度默认采用可替换的软评分：frontier 在成功率 0.5 附近较高，forgetting 使用成功率下降，rare_action 使用动作次数的倒数。它们不是 CoEvolve 的原论文判定公式。`ExtractLearningSignals` 单独实现论文第 3.1 节的布尔条件：可比近期窗口中曾得分至少 0.5、当前低于 0.5；同策略同组同时出现大于与小于 0.5 的结果；达到最小观测量后，已出现的动作模式频率低于阈值。未知／不完整结果不提供失败信号，未出现的动作不会伪装成论文中的 rare signal。[原论文](https://arxiv.org/html/2604.15840v1#S3.SS1)
 
 练习难度使用 `PracticeMeasurement`，必须绑定当前策略与草案摘要；成功率范围和最小样本量是显式参数。`exploration_count` 预留独立探索槽，要求显式随机源；测量未知只能使用这些槽。`mix_counts=(("fixed", 2), ("random", 2), ("failure", 2))` 配合调用方的草案来源标签约束混合池。配额总和必须等于预算，某类不足时返回较小池和拒绝原因，不拿其他来源偷偷填满。
+
+## Skill-tree 调用方
+
+`SkillTree/Subskill` 保存技能结构与每轮生成配额；`SkillTreeAction` 绑定旧树摘要。explore 只新增子技能，exploit 用整数增量覆盖每个已有子技能。`PlanSkillPractice` 拒绝过期操作、family 扩张、负配额和超预算；返回新树，不修改输入，也不把请求生成的数量当成验证通过的数据量。子技能提案可以少于请求数量，配额为零的分支不产生 `LearningTarget`。
+
+树的持久化、动作选择、学生反馈和训练仍由调用方完成。[DataEnvGym-inspired CPU 配方](../examples/training-loop/DATAENVGYM.zh-CN.md)接入现有 `TrainingLoop`，包含 explore/exploit、生成、实际校准、参数更新、下一轮反馈与中断恢复。默认 teacher 是明确的本地策略；这项接入不等于真实 LLM/GPU 效果验收。
 
 ## 不同产物的验证
 

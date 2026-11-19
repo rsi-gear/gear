@@ -96,6 +96,7 @@ gear/curriculum/
   generation.py        练习规划、任务/环境/修复/问答生成
   validation.py        验证计划与验证证据解释
   signals.py           可比执行历史中的遗忘、边界与稀有行为信号
+  skills.py            子技能提案、技能树及其生成配额更新
   supervision.py       修复片段、偏好对、过程问答的语义提案
 ```
 
@@ -121,6 +122,8 @@ gear/curriculum/
 | `ExtractLearningSignals` | `curriculum.signals` | 可比的时序 rollout 观测 → forgetting/boundary/rare 布尔信号 | 纯；保留三种条件与证据，不用软评分替代论文条件 |
 | `ContrastiveDiagnoser` | `curriculum.diagnosis` | 成功/失败案例 → 诊断模型输入；模型响应 → 诊断 delta | `prepare / parse`；模型调用由调用方执行 |
 | `SelectLearningTargets` | `curriculum.selection` | 模式/技能摘要、历史进展、预算、显式随机源 → 目标 ID 与预算分配 | 纯；frequency/frontier/forgetting 等为可替换策略 |
+| `ProposeSubskills` | `curriculum.skills` | 技能树与训练案例 → 模型输入；响应 → 新子技能动作 | `prepare / parse`；限制 family 和失败引用 |
+| `PlanSkillPractice` | `curriculum.skills` | 技能树、绑定版本的 explore/exploit 动作与预算 → 新树与学习目标 | 纯；拒绝负配额、超预算及越界更新 |
 | `MergeFailureMemory` | `curriculum.memory` | 旧模式集合、诊断 delta、掌握度观测 → 新模式集合 | 纯；不自行调用模型或落盘 |
 | `PlanPractice` | `curriculum.generation` | 目标、来源引用、生成参数 → `PracticePlan` | 纯；选择 task/trajectory/example/environment 及变异意图 |
 | `GeneratePractice` | `curriculum.generation` | 计划、材料、生成配置 → 模型输入；模型响应 → 未准入 `PracticeDraft[]` | `prepare / parse`；调用方运行模型或生成环境的 agent |
@@ -144,6 +147,8 @@ gear/curriculum/
 | --- | --- | --- |
 | `OutcomeCase` | `curriculum` | task/source family、样本/attempt、策略与环境身份、轨迹/反馈 refs、outcome、是否完整；成功、任务失败、基础设施失败、未知分开 |
 | `FailureMode` | `curriculum` | 稳定 mode ID、机制描述、支持与反证 refs、覆盖范围、频次、状态、诊断器身份；描述是模型解释，支持证据是事实 |
+| `SkillTree / Subskill` | `curriculum` | 根技能及子技能、family 来源、支持案例和每轮请求生成量；不是可执行任务注册 |
+| `SkillTreeAction / SkillPracticePlan` | `curriculum` | 旧树摘要绑定的扩展或配额增量、预算检查后的新树与学习目标；调用方持久化 |
 | `PracticePlan` | `curriculum` | 目标 mode/skill、来源、预算、产物类型、mutation intent、生成器和验证策略身份 |
 | `PracticeDraft` | `curriculum` | 指令、环境/附件/初始化、候选参考解、验证器材料、lineage；尚未取得 student rollout / training 准入 |
 | `ValidationPlan` | `curriculum` | 待检查草案、规则、所需验证项与预期证据；不包含执行权限或调度状态 |
@@ -222,7 +227,7 @@ TaskSource 继续返回既有任务格式，不增加公共结果封套或包装
 | 完整方法 | 共用组合 | 专用策略 / 复现缺口 |
 | --- | --- | --- |
 | Forge | OutcomeCases → diagnose → FailureMemory → PlanPractice → Generate/Validate → SelectPractice → harness search | 训练失败建库、验证停滞触发、四类变异；单 run 动态任务池需扩展 |
-| DataEnvGym | student feedback → skill organization → SelectLearningTargets → Generate/Validate → training loop | skill-tree explore/exploit；这是 teacher 环境框架，不当成一个固定策略 |
+| DataEnvGym | student feedback → ProposeSubskills → PlanSkillPractice → Generate/Validate → training loop | skill-tree explore/exploit 算子与 CPU 调用方已实现，LLM/GPU 效果另验收；这是 teacher 环境框架，不当成一个固定策略 |
 | SENTINEL | failure memory → target directives → reference execution → task construction → validation → mixed pool → GRPO | 必须真实执行参考轨迹；工具探索后端与过程奖励单独声明 |
 | CoEvolve | policy-aligned history → forgetting/frontier/rare-action selection → environment exploration → task-solution generation → GRPO | 跨版本比较条件；保留三类信号分别可消融 |
 | DiagEvo | solver samples → error-cause diagnosis → active/mastered memory → mixed practice generation → confidence filtering → training | 多数票伪标签、双置信度过滤、状态迁移；不宣称 oracle 正确性 |

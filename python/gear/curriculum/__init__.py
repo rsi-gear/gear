@@ -27,6 +27,14 @@ from gear.curriculum.generation import GeneratePractice, PlanPractice
 from gear.curriculum.memory import MergeFailureMemory
 from gear.curriculum.selection import SelectLearningTargets, SelectPractice
 from gear.curriculum.signals import BehavioralObservation, ExtractLearningSignals, LearningSignals
+from gear.curriculum.skills import (
+    PlanSkillPractice,
+    ProposeSubskills,
+    SkillPracticePlan,
+    SkillTree,
+    SkillTreeAction,
+    Subskill,
+)
 from gear.curriculum.supervision import (
     BuildSupervision,
     MaterialProtocol,
@@ -63,6 +71,8 @@ __all__ = [
     "OutcomeCase",
     "OutcomeRecord",
     "PlanPractice",
+    "PlanSkillPractice",
+    "ProposeSubskills",
     "PracticeDraft",
     "PracticeKind",
     "PracticeMeasurement",
@@ -80,6 +90,10 @@ __all__ = [
     "SFTSupervision",
     "SelectLearningTargets",
     "SelectPractice",
+    "SkillPracticePlan",
+    "SkillTree",
+    "SkillTreeAction",
+    "Subskill",
     "SupervisionProposal",
     "SupervisionSpan",
     "SupervisionTrace",
