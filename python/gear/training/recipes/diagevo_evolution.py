@@ -17,8 +17,8 @@ from gear.core.random import DeterministicRandom
 from gear.training.recipes import diagevo_completion, diagevo_tasks
 from gear.training.recipes.diagevo import FailureAttribution
 from gear.training.recipes.diagevo_challenger import DiagEvoChallengerReward
-from gear.training.recipes.diagevo_data import _committed_batches
-from gear.training.recipes.diagevo_generation import DiagEvoQuestionPrompt
+from gear.training.recipes.diagevo_data import DiagEvoChallengerDatasetBuilder, _committed_batches
+from gear.training.recipes.diagevo_generation import DiagEvoGenerationBuilder, DiagEvoQuestionPrompt
 from gear.training.recipes.diagevo_memory import SkillNode, _nodes
 from gear.training.recipes.diagevo_solver import _cause, native_component, read_native_curriculum
 from gear.training.storage.content import digest_file, digest_json, require
@@ -188,6 +188,56 @@ def accepted_solver_memory(store, run):
         "frequency": sum(cause.frequency for cause in memory),
         "policy": builder.policy,
     }
+
+
+def accepted_challenger_construction(store, run):
+    """Validate the entire fresh pool, including terminal empty-pool outcomes."""
+    accepted = accepted_native_result(store, run)
+    request, checkpoint = accepted["request"], accepted["checkpoint"]
+    parameters = request["trainer"]["scriptConfig"]
+    generation = DiagEvoGenerationBuilder(
+        DiagEvoChallengerDatasetBuilder(
+            store, request, objective=native_component(parameters["objective"])
+        ),
+        prompt=native_component(parameters["freshGeneration"]["prompt"]),
+    )
+    origin, _ = generation.read(checkpoint["generationRef"])
+    ref = checkpoint["constructionRef"]
+    construction = store.read_json(ref)
+    require(
+        construction.get("schemaVersion") == 1
+        and construction.get("kind") == "diagevo-curriculum-construction"
+        and store.read_json(construction["challengerRequestRef"]) == request
+        and construction["generationRef"] == checkpoint["generationRef"]
+        and origin["input"]["commitRefs"] == accepted["provenance"]["updateCommitRefs"]
+        and construction["solverBackend"]["modelRef"] == parameters["solver"]["model_ref"],
+        "diagevo-construction-provenance",
+        "construction must follow this accepted challenger and its frozen solver",
+    )
+    if origin["questions"]:
+        _, pool, _ = read_native_curriculum(
+            store, construction["curriculumRef"], construction["challengerRequestRef"]
+        )
+        retained = [row["question_id"] for row in pool["votes"] if row["retained"]]
+        backend = construction["solverBackend"]
+        require(
+            pool["input"]["generationRef"] == checkpoint["generationRef"]
+            and pool["solverIdentity"][:2]
+            == ["frozen-hf/" + backend["modelRef"]["digest"], "local-hf/" + _digest(backend)]
+            and construction["retainedQuestionIds"] == retained
+            and construction["status"] == ("ready" if retained else "no-retained-questions"),
+            "diagevo-construction-provenance",
+            "construction status and retained questions must match the complete pool",
+        )
+    else:
+        require(
+            construction["status"] == "no-valid-questions"
+            and construction["curriculumRef"] is None
+            and construction["retainedQuestionIds"] == [],
+            "diagevo-construction-provenance",
+            "an entirely invalid fresh pool cannot publish a solver curriculum",
+        )
+    return {**accepted, "constructionRef": ref, "construction": construction}
 
 
 def prepare_challenger_job(

@@ -20,12 +20,25 @@ class TrainingEntrypoints(unittest.TestCase):
         )
 
     def test_module_help_parses_without_starting_services(self):
-        for module in ("job", "node", "script_job", "certify"):
+        for module in ("job", "node", "script_job", "certify", "diagevo"):
             with self.subTest(module=module):
                 result = self.command(module, "--help")
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("usage:", result.stdout)
                 self.assertEqual(result.stderr, "")
+
+    def test_public_controller_routes_diagevo_without_starting_services(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "gear.training", "diagevo", "--help"],
+            env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--directory", result.stdout)
+        self.assertIn("resume", result.stdout)
+        self.assertEqual(result.stderr, "")
 
     def test_job_and_node_errors_remain_json_rpc_envelopes(self):
         with tempfile.TemporaryDirectory() as root:

@@ -1,6 +1,6 @@
 # DiagEvo 课程规则的当前接入
 
-`gear.training.recipes.diagevo.DiagEvoPolicy` 已实现 DiagEvo 的投票筛选、频率调度和状态更新规则，`gear.training.recipes.diagevo_memory.DiagEvoDiagnostician` 提供诊断、检索筛选及节点归并组件。`gear.training.recipes.diagevo_round.DiagEvoMemoryUpdater` 已将这些组件串成一个可恢复的轮末记忆更新流程；`gear.training.recipes.diagevo_challenger.DiagEvoChallengerReward` 计算 challenger 的问题质量奖励。challenger 与 solver 的 dataset builder 已将奖励绑定到原生捕获及 GRPO 批次，solver 可从完整训练提交链恢复轮末诊断材料。两个单作业入口均已接入四阶段原生驱动：challenger 最后提交后可独立生成新题、重新采样 solver 并封存完整筛选结果；后续已准入 solver 作业可消费该结果，并在最后提交后执行记忆更新，将决定与回执关联到模型产物。保留题及下一轮记忆调度均已有实际任务编译、封存与 controller 准入函数。训练 actor 的集成验证仍使用 CPU 替身。Codex 诊断、BGE embedding 和已提交失败材料的记忆更新已通过真实后端验证。完整双模型算法尚未注册，也未在 `gear.algorithms` 中宣称支持；多轮跨作业编排和 GPU 效果仍待接入验证。
+`gear.training.recipes.diagevo.DiagEvoPolicy` 已实现 DiagEvo 的投票筛选、频率调度和状态更新规则，`gear.training.recipes.diagevo_memory.DiagEvoDiagnostician` 提供诊断、检索筛选及节点归并组件。challenger 与 solver 的四阶段入口已将奖励、已消费失败和轮末记忆绑定到原生提交。`diagevo_run.evolve` 与 `python -m gear.training diagevo` 进一步串联双模型交替作业、新题构造、记忆反馈、跨轮预算和暂停／恢复。实际 controller、Hitch 编译器及 native driver 的两轮链路已通过 CPU 集成；训练 actor、optimizer 状态、评测服务和本组诊断 SDK 消息仍为替身。独立的 Codex／BGE 记忆后端已有真实调用证据。真实 GPU 更新、双模型效果实验和论文规模验证仍未完成，也未在 `gear.algorithms` 中宣称完整论文复现。
 
 规则依据 [DiagEvo 第 2 节及附录 E](https://arxiv.org/html/2609.00768v2#S2)，默认构造样本数 12、优化组大小 8；绝对置信度区间为 [0.25, 0.75]，相对阈值 1.6，晋级阈值 0.7，探索系数 0.5。所有参数进入现有 `Module` 描述，可重建和替换，不在 `curriculum` 增加专用分支。
 
@@ -99,7 +99,7 @@ builder 从这些捕获和分类重新构造投票、计算整批奖励，调用
 
 `read` 会从原提交、捕获和配置重新构建整个来源记录。将该 builder 传入 `DiagEvoSolverDatasetBuilder(..., generation_builder=...)` 后，`seal_curriculum(..., generation_ref=...)` 强制要求完整新题目、逐题生成指令、轮初记忆和冻结 solver 相符，且构造响应不能复用 challenger 奖励评估中的响应。该来源随课程、优化批次和已提交失败材料保留，恢复时再次检查。
 
-当前同一 challenger 来源记录中的更新阶段和新题池使用相同已准入任务范围、组大小和批次大小。每个 task 固定一种生成指令，调用方使用 `DiagEvoPolicy.schedule` 构造抽样计划；下文的 `prepare_challenger_job` 已将已采纳记忆、冻结随机源与实际任务封存串联。builder 本身不启动采样或完成跨作业任务准入，也不处理全无有效题时的重采样策略。下节调用方已接更新后的独立采样；完整双模型外层仍然缺失。
+当前同一 challenger 来源记录中的更新阶段和新题池使用相同已准入任务范围、组大小和批次大小。每个 task 固定一种生成指令，调用方使用 `DiagEvoPolicy.schedule` 构造抽样计划；下文的 `prepare_challenger_job` 已将已采纳记忆、冻结随机源与实际任务封存串联。builder 本身不启动采样或完成跨作业任务准入。`diagevo_run.evolve` 负责连续调用；空题池直接停止，不重新抽题。
 
 `seal_local` 接受最后导出权重的本地 HF 捕获，明确保存 `localBackend` 和各组稳定键，不接受虚构的 native lease。它重放同一完整更新历史，验证导出模型、tokenizer/template、采样配置、实际 prompt、任务窗口及完整 B×G 槽位，并跨所有阶段拒绝重复捕获。此模式保留真实本地来源，不将它们转成有训练资格的原生 rollout。
 
@@ -157,7 +157,7 @@ generationUsage 单列新题生成的本地调用数、输入／输出 tokens �
 | `no-retained-questions` | 全部候选与投票已保存，但没有题满足原筛选策略，不创建 solver 训练作业 |
 | `no-valid-questions` | 新题全部格式无效，不调用构造 solver，curriculum 引用为空 |
 
-这一步没有放宽置信度阈值或生成额外候选来保证成功。就绪结果可交给下述任务封存／准入函数；solver 入口可发布轮末记忆，并由 `prepare_challenger_job` 创建下一轮任务。完整外层仍须管理两个模型的作业启动、跨轮预算和恢复。
+这一步没有放宽置信度阈值或生成额外候选来保证成功。就绪结果可交给下述任务封存／准入函数；solver 入口可发布轮末记忆，并由 `prepare_challenger_job` 创建下一轮任务。多轮入口通过 `accepted_challenger_construction` 复验已采纳 challenger 的完整来源和题池状态；两种空题池都终止流程，不创建 solver 作业。
 
 ## 保留题任务封存与准入
 
@@ -169,7 +169,7 @@ generationUsage 单列新题生成的本地调用数、输入／输出 tokens �
 
 `task_options` 要求显式提供 `sourceLicense`、固定到 OCI digest 的 `environmentImage`／`verifierImage`、`agentTimeoutSeconds`、`setupTimeoutSeconds`、`verifierTimeoutSeconds` 和 `maxResponseBytes`。环境镜像须支持实际 Hitch model-call 运行时，verifier 镜像须包含 Python 与 bash；本次 CPU 验证没有拉取或运行镜像。Hitch package publication 保留 `training_eligible=false`，不以编译成功授予训练权限；Gear 的精确捕获授权分别来自原 challenger train 范围和 solver 模板。
 
-作业模板须已封存 solver `trainer.script`，只允许可选 `scriptConfig.memoryUpdate`；函数填入 `constructionRef` 并替换 train 分区。dev、held-out、评测策略、参考模型、部署和本作业预算均保持模板原值。起始模型、采样和模板选项必须与构造 solver 一致。外层仍需划分每个作业的预算并维护跨轮总量，不能把新实验的预算当作自动重置的总预算。
+作业模板须已封存 solver `trainer.script`，只允许可选 `scriptConfig.memoryUpdate`；函数填入 `constructionRef` 并替换 train 分区。dev、held-out、评测策略、参考模型、部署和本作业预算均保持模板原值。起始模型、采样和模板选项必须与构造 solver 一致。多轮调用方先在准入前分配本作业模板的预算，并维护跨轮总量；新实验不重置总预算。
 
 ```python
 from gear.training.recipes.diagevo_tasks import prepare_solver_job, admit_solver_job
@@ -193,7 +193,7 @@ job = admit_solver_job(
 # inspect/pause/resume/close、独立选型及发布仍属于现有 controller。
 ```
 
-准备目录冻结输入和结果，重试复用原制品；改变模型、来源、配置或代码时拒绝复用。`admit_solver_job` 使用现有 controller 的 `init`／`admit --idempotency-key`，创建或准入已提交但返回丢失后仍得到同一个实验／作业。重放保留已暂停或完成的状态、决定和用量，不自动恢复训练。调用方显式提供命令，配方不依赖 CLI 实现层，也不增加 adapters。函数只完成一次交接，尚未实现多轮双模型调度。
+准备目录冻结输入和结果，重试复用原制品；改变模型、来源、配置或代码时拒绝复用。`admit_solver_job` 使用现有 controller 的 `init`／`admit --idempotency-key`，创建或准入已提交但返回丢失后仍得到同一个实验／作业。重放保留已暂停或完成的状态、决定和用量，不自动恢复训练。调用方显式提供命令，配方不依赖 CLI 实现层，也不增加 adapters。函数本身只完成一次交接，多轮入口复用它。
 
 ## 单个 solver 作业的原生执行
 
@@ -207,7 +207,7 @@ factory 从冻结描述重建 policy、challenger objective 和 question prompt�
 
 数据阶段先核对实际 ledger 中的关闭 lease、更新前 checkpoint、完整原生组和来源，再执行数学分类、封存 ±1 奖励批次并交给既有 updater。原 token、mask、行为 logprob 和 verifier 反馈不变。已完成阶段按现有 `TrainingLoop` 重放；批次封存后丢失返回时可从原捕获确定性重建，参数更新提交后丢失返回时复用原生提交，不重复采样或更新。数学计算是本地运算，中断后未完成的分类可以重算，不产生额外模型调用。
 
-这里完成的是一个已准入 solver 作业。完整外层仍须调用上述交接函数、启动作业并调度下一轮。两作业交接测试使用真实 tiny HF 新题／构造推理，但原生训练 actor、优化器和提交仍为明确标注的替身，不能作为真实 GPU 更新或论文效果证据。
+这里完成的是一个已准入 solver 作业。多轮入口调用上述交接函数、推进 controller 并调度下一轮。集成测试使用真实 tiny HF 新题／构造推理，但原生训练 actor 和优化器仍为明确标注的替身，不能作为真实 GPU 更新或论文效果证据。
 
 ## Solver 最后提交后的记忆发布
 
@@ -226,7 +226,7 @@ factory 从冻结描述重建 policy、challenger objective 和 question prompt�
 
 原生训练提交丢失返回后，可在不启动 CUDA 的路径完成记忆；诊断回执丢失时读取原 turn，结果不明则停止，不重发。记忆结果已保存而最终返回丢失时，从原决定和回执重建，不连接 SDK 或加载 BGE。完整四阶段结果重放也经现有 `on_progress` 回调核对记忆与全部原生回执，缺失或变化会拒绝继续发布。
 
-取消在记忆步骤和每个外部调用前后检查，已完成调用先保存结果；当前调用仍受后端软期限约束，不提供立即中断远端 turn 的保证。取消保留训练提交和已保存回执，恢复后继续未完成记忆。下节已提供下一轮频率抽样与任务创建函数；完整双模型作业调度仍待实现。
+取消在记忆步骤和每个外部调用前后检查，已完成调用先保存结果；当前调用仍受后端软期限约束，不提供立即中断远端 turn 的保证。取消保留训练提交和已保存回执，恢复后继续未完成记忆。多轮入口保留同一个 controller 作业及其显式恢复入口。
 
 首次执行的记忆步骤仍位于原 native 作业内，训练资源由 driver 在作业退出时释放，不能把诊断耗时视为已经释放 GPU 后的免费时间。全部训练已提交的恢复路径无需重新启动 native actor。
 
@@ -260,7 +260,38 @@ job = admit_challenger_job(
 )
 ```
 
-这里只接受已被 controller 采纳的 solver，是 Gear 的选型适配，不宣称与论文逐轮模型更新完全相同。两个交接方向已具备独立函数，但跨轮总预算、完整双模型停止／恢复和实际训练尚未由统一外层串联；不能把一次任务准入当作多轮算法已经运行。
+这里只接受已被 controller 采纳的 solver，是 Gear 的选型适配，不宣称与论文逐轮模型更新完全相同。两个交接方向由下节调用方串联；真实 GPU 和模型效果仍须独立验证。
+
+## 多轮调用方与命令入口
+
+`gear.training.recipes.diagevo_run.evolve(store, root, ..., action="advance")` 每次最多推进或恢复一个原生作业，持续调用即可交替执行 challenger → 新题构造 → solver → 记忆 → 下一轮。两条模型链各自继承最近已采纳模型、原 optimizer checkpoint 和固定 reference model；首个 solver 记忆始终作为频次基准。任一候选未采纳、空题池、退化首轮频次或跨轮预算不足都会停止，不用未采纳模型的记忆继续训练。
+
+计划为 `schemaVersion=1, kind="diagevo-evolution"`，其余字段如下。JSON 使用已封存作业 spec 和 Module 描述，配置不能自行获得 GPU 能力或任务授权。
+
+| 字段 | 含义 |
+| --- | --- |
+| `challenger` / `solver` | 两份 v2 单作业 `model-call` GRPO 模板；保持 optimizer continuation，使用相同固定 dev／held-out 任务池；各角色的参考模型、脚本和评测策略保持固定 |
+| `prompt` | `DiagEvoQuestionPrompt.describe().to_dict()` |
+| `taskOptions` | 上述显式镜像、license、时间和响应大小限制 |
+| `rounds` / `seed` | 完整双作业轮数上限与冻结 seed |
+| `freshGenerationMaxSeconds` | 每次本地新题生成的软期限，1–3600 秒 |
+| `maxWallClockSeconds` | 本地调用方总墙钟期限，恢复不重置；在 controller 调用之间检查 |
+| `budgets` | 必须显式包含下列六个跨作业上限 |
+
+预算包含 `trainingGpuSeconds`、`rolloutTokens`、`localGenerations`、`diagnosticTurns`、`embeddings`、`heldOutEvaluations`。后三类后端配置须显式给出 `max_calls`；冻结 solver 的调用上限必须覆盖 challenger 各更新和新题构造的最大需求。`localGenerations` 还包括更新后 challenger 自己生成新题的 B×G 次调用。
+
+每个作业在编译／准入前持久记录预算预留；其 GPU、rollout token 和候选 held-out 查询额度受总剩余额度限制。作业完成且资源释放后，按 controller 的最终累计计数结算这三项，重放不重复扣除。辅助调用上限保留预留，不凭成功回执推断中止调用没有费用。返回值分别提供 `observedControllerUsage`、`budgetCommitted` 和 `budgetReserved`，预留数不冒充实际使用量。GPU 上限只涵盖训练；候选 held-out 计数沿用 controller 定义，不包括 baseline 查询；推理总 token／美元成本未声称完整计量。
+
+外层目录冻结计划、controller 配置和实现身份，保存稳定作业意图与 controller 观测。准入或决定返回丢失时复用同一 prepared ref／run ID；读取 controller 现状后继续，不重做已经提交的训练。`pause` 先保存暂停意图，再协调原作业，控制器暂时不可用时也不丢失意图。`advance` 不自动恢复暂停、失败或中断的作业，`resume` 必须显式调用，并复用原生有序控制序号。并发调用遇到本地锁占用须重试原目录。墙钟限制和信号暂停在当前 controller 调用返回后处理，单次调用可能持续至其 120 秒超时；这不是控制器离线期间的远端硬截止服务。
+
+```sh
+python -m gear.training diagevo run plan.json --directory run-directory --config controller.json
+python -m gear.training diagevo status plan.json --directory run-directory --config controller.json
+python -m gear.training diagevo pause plan.json --directory run-directory --config controller.json
+python -m gear.training diagevo resume plan.json --directory run-directory --config controller.json
+```
+
+`advance` 只执行一次协调；`run`／`resume` 持续协调至完成、暂停、停止或需要处理的后端状态。CLI 的 SIGINT／SIGTERM 请求暂停，并保留已完成提交；未知外部结果仍需在同一目录协调。`completed` 表示配置的所有轮次已被 controller 采纳，`stopped` 保留具体终止原因；两个状态都不等于模型已发布，也不自动调用 publish。
 
 ## 调度与状态
 
@@ -318,7 +349,7 @@ job = admit_challenger_job(
 
 普通调用函数 `gear.training.recipes.diagevo_committed_memory.update_committed_memory(...)` 接收 post-update `TrainingContext`、绑定新题池来源的 solver builder、全部 commit refs、curriculum ref 和这两个后端实例。它重建已消费批次的失败材料，要求 context 对应最后一个提交的 checkpoint／HF 导出，再执行并验证记忆更新。每份实际回执必须匹配记忆调用的输入和输出，诊断 turn 不可重复计数；输出为包含完整回执引用、已知 token 汇总和未知用量列表的 CAS 制品。
 
-这仍是训练调用方中的函数，没有增加 curriculum adapter 或通用执行协议。solver factory 的 `memoryUpdate` 已负责本作业 native ledger 校验及最终模型产物中的记忆关联。独立调用该函数时，调用方仍须认证提交来源并处理引用传输；下一轮作业创建尚未自动串联。
+这仍是训练调用方中的函数，没有增加 curriculum adapter 或通用执行协议。solver factory 的 `memoryUpdate` 已负责本作业 native ledger 校验及最终模型产物中的记忆关联。独立调用该函数时，调用方仍须认证提交来源并处理引用传输；多轮入口已串联下一轮作业创建。
 
 [真实后端记录](../../research/diagevo-memory-2026-11-20/README.zh-CN.md)使用 `gpt-6-astra` 与固定 revision 的 `BAAI/bge-small-en-v1.5`：第二版执行 5 个诊断 turn、4 次 embedding，在回执保存前注入中断后读取原 turn 完成恢复，断开诊断 client 后重放得到相同制品。第一版因 JSON 字段顺序导致恢复校验中止，其 1 个 turn 单独保留；两版合计 64,526 原生 tokens。BGE small 是本次实现选择，不宣称等于论文配置；solver 响应、actor 状态和提交为明确标识的 CPU fixture，训练步数为零，不能据此声称训练闭环或效果提升。
 
@@ -358,23 +389,27 @@ job = admit_challenger_job(
 
 `python/tests/test_diagevo_evolution.py` 将真实 tiny HF／BERT 两作业链产生的记忆，经频次重算、下一轮调度、实际 Hitch 编译与 controller 准入交给 challenger factory。另检查无记忆首轮、固定输入重放、来源／所选 solver 漂移、未采纳作业、篡改频次及回执缺失。此前作业的采纳决定、原生 actor 和 SDK 消息是显式测试替身，本组不证明真实评测采纳或多轮 GPU 收益。
 
-当前共 142 个 DiagEvo 用例在完整依赖环境一次运行全部通过，无跳过项；下一轮调度与任务交接的 7 项定向验证也通过。最小依赖环境为 40 个通过、102 个因缺少可选依赖或未配置独立 Hitch checkout 跳过。设置以下环境变量可运行跨仓库文本合同和任务交接测试，普通 CI 未设置时会明确跳过，不计为已验收：
+`python/tests/test_diagevo_run.py` 的 13 项测试使用显式执行替身，覆盖两条模型链、第三轮保留首轮基准、准入／推进／恢复返回丢失、预算分配与拒绝重置、控制器不可用时保留暂停、外部暂停不自动恢复、固定墙钟截止、空池／拒绝停止，以及公开 CLI 的持续推进和 SIGTERM 暂停。
+
+`python/tests/test_diagevo_outer_pipeline.py` 的 3 项集成使用实际 Hitch 编译器、Gear 创建／准入命令、controller 选型与 native driver。两轮共四个作业保留实际捕获、数据批次、提交、checkpoint、构造池和记忆，第二轮请求含原 `resumeCheckpointRef`，最终提交序号为 2；controller 已采纳但返回丢失后，恢复不会重训第一作业。另用实际构造记录验证全无效新题和无保留题都会停止。tiny HF forward、数学分类和 BERT 是真实执行；Slime actor、optimizer 状态、部署、评测分数及 SDK 响应是测试替身。正常链路明确使用 `p_high=1` 的夹具策略，不能视作论文默认难度窗口或 GPU 效果证据。测试没有启动 Harbor 容器。
+
+上述两组及公开 CLI 共 19 项定向验证通过。当前 158 个 DiagEvo 用例在完整依赖环境一次运行全部通过，无跳过项；最小依赖环境为 53 个通过、105 个因缺少可选依赖或独立 Hitch checkout 而跳过。Ruff、已配置的 78 文件类型检查及依赖边界检查通过。设置以下环境变量可运行跨仓库文本合同和任务交接测试，普通 CI 未设置时会明确跳过，不计为已验收：
 
 ```sh
 GEAR_DIAGEVO_HITCH_PATH=/absolute/path/to/built/hitch \
 PYTHONPATH=python:python/tests \
-python -m unittest test_diagevo_text_harness test_diagevo_tasks test_diagevo_evolution -v
+python -m unittest test_diagevo_text_harness test_diagevo_tasks test_diagevo_evolution test_diagevo_outer_pipeline -v
 ```
 
-此前 Gear 的 46 项定向回归覆盖训练及评测的固定 harness 准入、能力缺失和实际 Python 节点部署探测。本次 `admission-replay`、`controller-cli`、`coordinator`、`iteration` 四个文件的 50 项回归通过，覆盖并发创建、落盘后返回丢失、已完成／暂停作业重放和旧调用方式兼容。Hitch 的 runner／binding 回归 16 项、远程工作图回归 4 项此前通过；后者使用真实打包、代理与 worker 协议，Harbor、Docker 和 canonical bundle 为 fixture。本次 Gear 构建、TypeScript 类型检查、Ruff 与依赖边界检查通过；Python 类型检查仍仅指上述 78 文件。
+此前 Gear 的 46 项定向回归覆盖训练及评测的固定 harness 准入、能力缺失和实际 Python 节点部署探测。任务准入批次的 `admission-replay`、`controller-cli`、`coordinator`、`iteration` 四个文件共 50 项回归通过，覆盖并发创建、落盘后返回丢失、已完成／暂停作业重放和旧调用方式兼容；当时的 Gear 构建与 TypeScript 类型检查也通过，本批未修改 TypeScript 生产源码。Hitch 的 runner／binding 回归 16 项、远程工作图回归 4 项此前通过；后者使用真实打包、代理与 worker 协议，Harbor、Docker 和 canonical bundle 为 fixture。Python 类型检查仍仅指上述 78 文件。
 
 上一批 driver、GRPO、脚本及配方回归有 57 个通过，4 个因未设置 `GEAR_PINNED_SLIME_SOURCE` 跳过，不将这些跳过项计为已验收。
 
-保留题与已采纳记忆均已有任务封存／controller 准入函数及单次交接重放。尚缺跨轮预算、完整双模型作业编排及停止／恢复，以及双模型真实训练和效果对照。美元成本也尚无可靠来源。两个方向的数据交接、轮末记忆发布和真实推理／记忆后端验证不替代完整 DiagEvo 或 GPU 实验验收。
+多轮编排、跨轮预算和显式暂停／恢复已经接入；实际 controller、native driver 与 tiny HF／BERT 的两轮组合已验证。尚缺真实双模型 GPU 训练、效果对照、可靠美元成本、跨节点制品准备和论文规模证据保留。CPU 替身集成和独立真实推理／记忆后端验证不替代完整 DiagEvo 或 GPU 实验验收。
 
 接入两模型更新时还有三个已核实的边界：
 
-- [DiagEvo 附录 D](https://arxiv.org/html/2609.00768v2#A4)要求先用一批问题更新 challenger，再从更新后的 challenger 采样另一批候选；不能把第一批题直接作为 solver 课程。两个单作业入口及更新后的本地采样已接入；完整入口仍须串联 challenger 更新、新题构造与 solver 更新，并验证实际训练效果。
+- [DiagEvo 附录 D](https://arxiv.org/html/2609.00768v2#A4)要求先用一批问题更新 challenger，再从更新后的 challenger 采样另一批候选；不能把第一批题直接作为 solver 课程。多轮入口已串联这条执行顺序，实际训练效果仍待验证。
 - 全失败优化组仍是诊断材料。[原生采样路径](../../python/gear/training/backends/slime/rollout.py)选择跳过／重抽时，只在返回的 raw groups 中保留训练准入组；完整调用方需要明确使用已支持的 `zeroVarianceGroup="keep"`，或另行保留并验证未准入组，不能因为没有梯度信号而丢掉失败证据。
 - [现有原生采样合同](../../python/gear/training/recipes/agent_grpo.py)只接受 `topP=1`，而论文报告为 0.99。完整配方必须扩展并验证对应行为分布合同，或预先声明使用 `topP=1` 的适配实验；不能将不支持的参数写进配置后视为已经实现。
 
