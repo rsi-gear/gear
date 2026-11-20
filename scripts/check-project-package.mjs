@@ -11,9 +11,16 @@ const run = (command, args, options = {}) => execFileSync(command, args, { encod
 const note = message => process.stdout.write(message + '\n')
 try {
   note('Building an external npm installation and a base Python wheel')
+  const packTarball = () => {
+    const result = JSON.parse(run('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', root], { cwd: source }))
+    // npm <=11 reports an array of packed entries; npm 12+ reports an object keyed by package name.
+    const entry = Array.isArray(result) ? result[0] : Object.values(result)[0]
+    if (!entry?.filename) throw new Error('npm pack did not report a tarball filename')
+    return entry.filename
+  }
   const tarball = process.env.GEAR_TEST_NPM_PACKAGE
     ? resolve(process.env.GEAR_TEST_NPM_PACKAGE)
-    : join(root, JSON.parse(run('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', root], { cwd: source }))[0].filename)
+    : join(root, packTarball())
   const install = join(root, 'consumer'); mkdirSync(install)
   writeFileSync(join(install, 'package.json'), JSON.stringify({ name: 'gear-install-contract', private: true, type: 'module' }))
   run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', tarball], { cwd: install })
