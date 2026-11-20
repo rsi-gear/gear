@@ -1,0 +1,21 @@
+{
+  "status": "passed",
+  "model_submissions": 0,
+  "config_digest": "sha256:a61fd94a1d665f829fcad6b86f1922639fd661ca3fd16b548c1f8221ed5d1c38",
+  "source_commit": "ff7724495edc61430122837af7cfb60dd4868353",
+  "workspace": "/private/tmp/gear-sentinel-comparison-v7",
+  "files_sha256": {
+    "preflight/pool/input.json": "d7d1c06c23602e79f56a4d175ba192ae4524f2bef239a8abcfbf5a99e31a6096",
+    "preflight/pool/result.json": "5153efd16347cc28ebb2d123af856bd3888d2f4e5c96b9a73c59b4fb3a28650a",
+    "preflight/search/admission.json": "861d41bf070e8af7e64901359cb21b5cb9107856732641a66dbc90792309476f",
+    "preflight/search/calibration/038f2fe8075a6e71449ec756a34283dd1a6e7c562a31ae0b6939951dc3f83dcd.json": "fb1746e39ddeab44ceec46b840aa1abd2189d3e790eef69fad4fa4f0cbcb809a",
+    "preflight/search/calibration/3de7e81dc908e4030f6a46b42fd098165735441dfd7d5542085d5d2e35ce3719.json": "fb1746e39ddeab44ceec46b840aa1abd2189d3e790eef69fad4fa4f0cbcb809a",
+    "preflight/search/calibration/7df38ee1253a3d629ba08a37c3eb4be741d3d134b67eaedd5e4f4aabbc1e266f.json": "fb1746e39ddeab44ceec46b840aa1abd2189d3e790eef69fad4fa4f0cbcb809a",
+    "preflight/search/calibration/81e34f98745a3bf6e0c73b338243fc51cbb483efdd78e75afabe849ec1891ca4.json": "fb1746e39ddeab44ceec46b840aa1abd2189d3e790eef69fad4fa4f0cbcb809a",
+    "preflight/search/calibration/b4de4d3e9895217c5ef68527bc5bf2b704fa8750f33f48542275094da314ca3a.json": "fb1746e39ddeab44ceec46b840aa1abd2189d3e790eef69fad4fa4f0cbcb809a",
+    "preflight/search/input.json": "060abdae7f82cd0d1d5e273cb48a8ae4beb7cfadb607d6f73319a2d09a754e6a",
+    "preflight/search/pool-check/input.json": "d7d1c06c23602e79f56a4d175ba192ae4524f2bef239a8abcfbf5a99e31a6096",
+    "preflight/search/pool-check/result.json": "5153efd16347cc28ebb2d123af856bd3888d2f4e5c96b9a73c59b4fb3a28650a",
+    "preflight/search/project/target/.pi/settings.json": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+  }
+}
