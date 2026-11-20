@@ -2,7 +2,7 @@
 
 目标：按 [完整设计](failure-driven-data-operators-spec.zh-CN.md) 实现剩余部分，优先完成正式 harness 搜索接入、候选约束处理与有效对照实验。**按 2026-11-20 的范围调整，本版本不做 GPU 训练。** 此台账分别保留本版待办和后续训练路线，不把基础算子或示例完成等同于整个设计完成。
 
-当前结论：**完整设计尚未完成验收。** 优先的 harness 搜索、候选约束和固定权重的真实 LLM 文本对照已完成，但对照未观察到 failure 数据收益。Agent-R 执行修复与 Self-Direction 无 GPU 过程问答调用方也已补齐；余下重点是工具环境的真实模型效果对照与第 11 节逐项验收，不把模型替身通过算作能力提升。
+当前结论：**完整设计尚未完成验收。** 优先的 harness 搜索、候选约束和固定权重的真实 LLM 文本对照已完成，但对照未观察到 failure 数据收益。Agent-R 执行修复与 Self-Direction 无 GPU 过程问答调用方也已补齐；[第 11 节逐项审计](curriculum-acceptance.zh-CN.md)已绑定证据，余下重点是工具环境的真实模型效果对照，不把模型替身通过算作能力提升。
 
 本版继续验收纯算子及输入输出、调用方转换、数据生成与执行验证、恢复与预算、固定权重的 harness 改进。现有 CPU 测试和训练合同保留，不将替身执行算作真实权重训练。
 
@@ -32,6 +32,6 @@ GPU 权重更新、训练节点部署、跨节点训练制品准备、论文规�
 | Agent-R 配方 | 无 GPU 的 MCTS、实际修复及正式 harness 消费入口已实现；真实模型效果待验收 | [运行与差异](../examples/curriculum-harness/AGENTR.zh-CN.md)：完整失败来源重放、UCT、公开前缀 critic、共同检查点重建、新后缀执行与原任务评分、`BuildSupervision` 语义范围、恢复和离线重放。修复证据绑定原 train 任务和基线设置，仅投影到已授权 Meta；正式搜索沿用候选约束、训练门槛及原始验证／测试，生成与源采集成本另计。CPU retail 工具为真实执行，模型为替身；`training_eligible=false`，迭代 SFT 列后续 |
 | Self-Direction 配方 | 无 GPU 的过程问答、CPU lesson 检索、跨轮复用与原任务重试已实现；真实 LLM 效果待验收 | [运行与上游差异](../examples/curriculum-harness/SELFDIRECTION.zh-CN.md)：基线来源完整重放，类别化 `feedback_only` 生成，分项语义审查和精确去重，synthetic 监督提案；同策略／family 的 MiniLM 余弦检索，命中跳过生成，实际 retry 与 clean-base 回退分别归因，未知不计失败。15 项调用方／检索检查及 1 项真实 CPU MiniLM 检查通过；工具为真实 Tau2 执行，LLM 为明确替身。上下文建议不等同于 LoRA 学习，权重训练及相应加载列后续 |
 | 动态任务池、MCTS/reset、DPO/LoRA/MoE 等后端能力 | Agent-R 已实现具体 retail MCTS 与内存状态重建；其余按需要验收，GPU 后端不在本版范围 | 回退只适用于可丢弃的模拟器，不是外部服务 undo 或通用 checkpoint 后端；同 run 动态池及训练后端仍为后续范围 |
-| 设计第 11 节九项验收 | 按本版范围部分完成 | 每项都绑定具体测试／运行记录，训练相关条目另行验收；有效对照允许负结果，不能以窄范围示例代替整体完成 |
+| 设计第 11 节九项验收 | [逐项审计](curriculum-acceptance.zh-CN.md)已完成，整体验收仍未完成 | 九项分别绑定具体合同、测试和运行记录；[文本成本／修复／回归补充](../research/curriculum-acceptance-2026-11-20/README.zh-CN.md)从原 V5 证据零调用复算，工具域有效对照与指标仍缺。GPU 训练另行验收；负结果可以完成实验，窄范围示例不能代替整体完成 |
 
 已有探索实验在 [2026-11-19 报告](../research/curriculum-harness-2026-11-19/README.zh-CN.md)。它证明调用方闭环能运行，但五个候选超长、开发集饱和，不能充当有效数据策略对照的最终验收。
