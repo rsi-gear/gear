@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import fcntl
-import hashlib
 import json
 import math
 import tempfile
@@ -113,16 +112,11 @@ class RetailAgentR:
         self.backend = load_backend(source_root)
         self.task = validate_task(self.source_config["task"], self.source_config["reference"])
         self.builder = BuildSupervision()
-        implementation = implementation_identity()
-        for path in Path(__file__).parent.glob("agentr_*.py"):
-            implementation[str(path.relative_to(Path(__file__).resolve().parents[2]))] = (
-                hashlib.sha256(path.read_bytes()).hexdigest()
-            )
         self.identity = {
             "config": self.config,
             "source_input_digest": digest(self.source_identity),
             "backend": self.backend["identity"],
-            "implementation": implementation,
+            "implementation": implementation_identity(),
             "component": self.builder.describe().to_dict(),
             "upstream": UPSTREAM,
             "model_calls_identity": getattr(calls, "identity", "TextCalls"),

@@ -76,7 +76,12 @@ def prepare_jobs(config, context, request):
     if request.get("operatorCall"):
         if not set(operation["task_ids"]) <= scopes["train"]:
             raise ValueError("Meta requested material outside the training scope")
-        return prepare_meta(context, request)
+        jobs = prepare_meta(context, request)
+        if "agentr_context" in config:
+            from agentr_harness import add_context
+
+            jobs = add_context(config["agentr_context"], scopes, context, request, jobs)
+        return jobs
     if (
         operation["kind"] != "evaluate_seed"
         or request["partition"] != "seed"
@@ -397,6 +402,11 @@ async def respond(message, *, calls_factory=TextCalls):
                 "http_request_count": "unknown",
                 "hard_generation_budget": False,
                 "samples": samples,
+                **(
+                    {"agentr_context": jobs[0]["agentr_context"]}
+                    if request.get("operatorCall") and "agentr_context" in jobs[0]
+                    else {}
+                ),
             },
         }
         freeze(

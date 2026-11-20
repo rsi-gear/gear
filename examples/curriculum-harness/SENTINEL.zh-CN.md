@@ -114,7 +114,9 @@ PYTHONPATH=/path/to/gear/python \
 
 `--preflight` 只检查配置与计划，不调用模型。CLI 默认将 profile 放在 workspace 的 `profiles` 目录；直接调用 `search()` 时显式设置 `GEAR_PROFILE_ROOT`。入口使用实际 `Project.refine`、独立 worker、`ReflectiveSearch` 和训练门槛，超长候选通过既有修订路径处理。validation 只用于选型；`nominate=false`，本入口不打开最终测试。正式效果实验仍须在优化结束后独立评价固定 test。
 
-[sentinel_provider.py](sentinel_provider.py) 实现现有 Gear process provider 协议。目标只解释封存候选中的 `AGENTS.md`，拒绝额外 Pi 设置／扩展；不声称执行 Pi 本身。Meta 只获得声明的 train 任务与材料，不能请求 validation／test 内容，也不会收到完整 verifier 或参考轨迹。目标执行结果、实际对话、工具观测和评分进入正式 evidence；未完成轨迹为 `task_failed, score=null`，完整失败才是有效的 0 分。
+[sentinel_provider.py](sentinel_provider.py) 实现现有 Gear process provider 协议。目标只解释封存候选中的 `AGENTS.md`，拒绝额外 Pi 设置／扩展；不声称执行 Pi 本身。Meta 只获得声明的 train 任务与材料，不能请求 validation／test 内容，也不会收到完整 verifier 或隐藏参考解。目标执行结果、实际对话、工具观测和评分进入正式 evidence；未完成轨迹为 `task_failed, score=null`，完整失败才是有效的 0 分。
+
+可选 `agentr_workspaces` 字段可指定 1–16 个[已验证的 Agent-R 修复目录](AGENTR.zh-CN.md#接入正式-harness-搜索)。入口离线重放后将公开修复证据绑定池内的原训练任务，仅提供给对应任务范围的 Meta；不新增任务、不改变混合配额。基线模型、effort、harness 与步数须匹配来源；生成及源采集成本另行保留。target、validation 和 test 的输入合同不变。
 
 同一 workspace 绑定一个不可变 run；中断后检查原 journal 并恢复，不另建收费 run。provider 检查已提交的模型 turn：未知保持 `unknown`，确实尚未提交的下一步返回 `resumable`；inspect 不发新调用。已完成回执可重建操作结果，工具重放始终使用新的内存数据库。所有任务与 Meta 共享 `max_calls`，同时保留实际完成调用的原生 usage；不宣称 HTTP、token、美元硬上限或可靠取消。扩池或改变初始 harness 时须使用新的 workspace／run。
 

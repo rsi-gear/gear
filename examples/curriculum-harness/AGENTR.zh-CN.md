@@ -2,7 +2,7 @@
 
 [agentr_retail.py](agentr_retail.py) 提供固定权重的失败来源重放 → MCTS → 好坏路径配对 → 错误位置提议 → 实际回退 → 新后缀执行 → 修复材料入口。CPU retail 环境执行和转换留在调用方，复用 `gear.curriculum.BuildSupervision` 的输入输出；没有新增 adapters 层或通用环境运行时。
 
-**本版本不做 GPU 训练。** 入口输出可审计的修复材料与语义步范围，不输出原生训练 token/logprob，不运行 SFT，也不把原题修复当作 harness 泛化收益。修复材料进入正式 Meta 搜索的组合及真实模型效果仍待验收。
+**本版本不做 GPU 训练。** 入口输出可审计的修复材料与语义步范围，不输出原生训练 token/logprob，不运行 SFT。经过下方准入入口，修复材料可以作为对应原训练任务的补充证据进入正式 Meta 搜索；候选仍以原始 validation 选型，最终 test 另行成对评价。真实模型效果仍待验收。
 
 依据为 [Agent-R 论文](https://arxiv.org/html/2501.11425v1)与 [Apache-2.0 官方源码的冻结版本](https://github.com/ByteDance-Seed/Agent-R/tree/82fcc1ca7873b460949ed49022146dd988c32e31)，重点核对 `mcts_utils/mcts_raw.py`、`mcts_utils/webshop/mcts_ws.py` 和 `path_collection.py`。这里独立实现搜索和验证机制，没有运行上游的训练程序，也不声明复现其 benchmark 结果。
 
@@ -18,6 +18,7 @@
 | 回退 | 在新内存数据库重放 critic 截止的失败前缀，再独立重建好坏路径的共同前缀；保存前后数据库、对话与动作摘要。critic 的截止点晚于分叉点时，仍回到共同前缀 |
 | 修复 | 从真实恢复的检查点重新采样后缀，仅提供失败的公开上下文与 critic 意见。不给 actor 搜索出的好分支或隐藏参考答案。新后缀必须重新执行并通过原任务评分 |
 | 材料 | 保留失败、回退、重执行轨迹和评分的分别引用，调用 `BuildSupervision` 输出修复提案。共同前缀 loss=False，新后缀 loss=True；没有伪造原生训练捕获 |
+| harness | 离线重放完整修复产物，绑定已准入的原训练任务，将公开失败／修复对话与回退位置提供给本次任务范围内的 Meta。候选修改、约束修订和训练门槛沿用正式 `ReflectiveSearch` |
 
 上游会按奖励条件选择多组好坏路径，再把失败前缀、反思文本与好路径后缀拼接为训练材料。本入口每次处理一个失败、一对路径及一次新后缀；配对规则、固定二值奖励与原失败入树是具体适配。它没有直接复用搜索到的好后缀，而是增加真正的状态回退和新后缀验证。这是 Gear 的加强验收要求，不表示上游文本拼接已经证明状态连续，也不是完整迭代 SFT 配方。
 
@@ -75,16 +76,39 @@ PYTHONPATH=python /tmp/gear-sentinel-env/bin/python \
 
 `result.status` 含义：`ready` 为新后缀通过检查；`no_success` 为搜索未获得成功路径；`no_boundary` 为 critic 未指出错误；`repair_failed` 为新后缀完整但未通过；`incomplete` 为新后缀达到步数上限仍未结束。后三者及没有成功路径时不输出修复提案。`effect_verified` 始终为 false，单次原题修复不能证明持续改进。
 
+## 接入正式 harness 搜索
+
+[agentr_harness.py](agentr_harness.py) 是具体调用处的转换。沿用 [SENTINEL 正式搜索配置](SENTINEL.zh-CN.md#正式-harness-搜索)，增加可选字段：
+
+```json
+{
+  "agentr_workspaces": ["/tmp/gear-agentr-generation"]
+}
+```
+
+把该字段加入原搜索配置后，继续运行 [sentinel_search.py](sentinel_search.py)。`pool_workspace` 的已选 train 池必须包含失败来源的原始 native task、数据库与 user；family 也须一致。修复材料不会扩充任务池或改变固定／生成配额。搜索基线的 model、effort、harness 和 max_steps 必须与失败来源一致，不能把另一条策略的失败无声归给当前基线。后续候选仍由搜索产生并重新执行，历史修复评分不充当候选分数。
+
+准入接受 1–16 个绝对路径，逐一离线重建 Agent-R 搜索、critic、回退、新后缀、原任务评分及监督提案。只有 `ready` 才可进入。相同目录及相同任务／源策略／失败动作／修复动作的重复材料均拒绝，改写 sample 或路径不能重复计数。输出 `agentr-context.json`：公开对话、critic 位置与意见、回退机制和步数、实际评分摘要；审计 provenance 与成本另存字段。整个封存文件最多 1 MiB，超限拒绝，不截断执行证据。
+
+只有 Meta 的 provider profile 带该文件的路径、摘要与任务清单；target profile 不接收。每次 Meta 调用先核对文件摘要和 train 范围，再只投影本次操作 task IDs 的材料，复核对应指令。Meta 看不到数据库快照、私有 user instructions、隐藏参考、native verifier 定义或产物路径；执行中实际返回给 actor 的工具观察属于公开轨迹，可以保留。solver 仍只接收政策、工具和当前对话。文件变化、改写任务或越界引用在 SDK 调用前拒绝，包括已有回执的恢复检查。
+
+正式搜索沿用 `Project.refine`／worker、`PromptConstraints`、有限修订和训练门槛，只修改 `AGENTS.md`。validation/test 均保持原始 native 环境和 family 隔离；搜索不打开最终 test。选型后再使用同一原始 test 分别评价 baseline 和选中 harness。新增、删除或替换修复材料需新搜索目录与 run；原 run 的 manifest、profile、Meta 请求及回执均冻结。
+
+搜索结果额外记录 `agentr_context_digest`、`agentr_generation_usage` 和 `agentr_source_collection_usage`。写入最终结果前再次验证材料摘要，防止成本字段在最后一次 Meta 调用后被改写。生成用量包含所引用产物的 MCTS、用户模拟、审查、critic 和新后缀；源采集按唯一 input/result 身份只计一次。原 collector 的 completed_calls 在这里转换为已完成逻辑调用数，预算上限不作为实际用量相加。任何一个 token 用量未知就不提供合计，不能将未知补零或报告部分总数。两类先前调用成本独立于本次 search 的模型用量和任务尝试数；正式效果对照应同时计入。未准入或中止的其他生成尝试仍须由实验外层台账另计，不能把这些字段当作所有尝试的总费用。
+
 ## 验证与待办
 
 [Agent-R 测试](../../python/tests/test_agentr_retail.py)使用实际 Tau2 工具与 native 评分，模型响应是显式 fixture。覆盖误取消另一张订单后的状态回退、critic 较晚定位、重新执行的正确后缀、语义 mask、UCT 与去重、多轮树关闭、未知分数、失败不回填、材料隔离、收费回执恢复、离线篡改检测及无 SDK CLI 预检。
 
-本轮本地通过 15 项 Agent-R 检查、65 项 curriculum 回归和 9 项原始 collector 回归，共 89 项；Ruff、依赖边界、文档本地链接与 CI YAML 检查通过。CPU CI 已加入 Agent-R 检查，本地结果不表示远端 CI 已运行。
+本轮本地通过 22 项 Agent-R 检查、65 项 curriculum 回归、57 项 retail 回归、12 项 CoEvolve 回归及 5 项 TRACE 正式接入检查，共 161 项；Ruff、依赖边界、文档本地链接与 CI YAML 检查通过。最后增加结果写入前的摘要核对后，22 项 Agent-R 检查在最终源码上再次通过。CPU CI 已包含这些 Agent-R 检查，本地结果不表示远端 CI 已运行。
 
 ```sh
+GEAR_TEST_SENTINEL_RUNTIME=1 \
 GEAR_SENTINEL_TAU2_PATH=/tmp/gear-sentinel-tau2 PYTHONPATH=python \
   /tmp/gear-sentinel-env/bin/python -m unittest discover \
   -s python/tests -p 'test_agentr*.py' -v
 ```
 
-本阶段未新增真实 LLM 调用。仍需把通过验证的修复材料作为明确授权的 train 上下文接入既有 Meta 搜索，并在原始独立 validation/test 上评价；修复原题不能改个 ID 冒充新任务。真实修复率、未见任务收益、历史回归和单位成本收益均未验收。GPU 迭代 SFT 留待后续版本。
+[正式接入检查](../../python/tests/test_agentr_search.py)需要先构建 Gear CLI（`npm run build`），覆盖完整来源重放、原任务／策略／family 绑定、作用域内的材料消费、无新任务准入、隐藏材料隔离、付费 Meta 响应恢复、结果成本篡改拒绝及原始 test 成对评价。模型响应是明确 fixture；有无材料的分支用于证明输入实际影响调用链，不作为算法收益证据。
+
+本阶段未新增真实 LLM 调用。真实修复率、未见任务收益、历史回归和单位成本收益均未验收。GPU 迭代 SFT 留待后续版本。

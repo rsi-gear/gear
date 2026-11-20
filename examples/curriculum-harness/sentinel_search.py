@@ -55,7 +55,7 @@ async def _search(root, source_root, config, provider_script, preflight):
         "max_repairs",
     }
     if (
-        set(config) != expected
+        set(config) not in (expected, expected | {"agentr_workspaces"})
         or type(config["schema_version"]) is not int
         or config["schema_version"] != 1
     ):
@@ -89,7 +89,7 @@ async def _search(root, source_root, config, provider_script, preflight):
         "test": config["test"],
     }
     ids, content, families, rows, admission = set(), set(), {}, [], []
-    scopes, trace_tasks = {}, {}
+    scopes, trace_tasks, native_train = {}, {}, {}
     for partition, values in bundles.items():
         if not isinstance(values, list) or not 1 <= len(values) <= 256:
             raise ValueError("each retail partition needs a bounded nonempty task list")
@@ -146,6 +146,8 @@ async def _search(root, source_root, config, provider_script, preflight):
             admitted_bundle = {**bundle, "gear_task_id": gear_id}
             if synthetic:
                 trace_tasks[gear_id] = digest(admitted_bundle)
+            elif partition == "train":
+                native_train[gear_id] = admitted_bundle
             admission.append(
                 {
                     "gear_task_id": gear_id,
@@ -173,6 +175,17 @@ async def _search(root, source_root, config, provider_script, preflight):
         for a, b in (("train", "validation"), ("train", "test"), ("validation", "test"))
     ):
         raise ValueError("retail training, selection and test families must be disjoint")
+    agentr_context = None
+    if "agentr_workspaces" in config:
+        from agentr_harness import prepare_context
+
+        agentr_context = await prepare_context(
+            root / "agentr-context.json",
+            source_root,
+            config["agentr_workspaces"],
+            native_train,
+            config,
+        )
     algorithm = ReflectiveSearch(
         tuple(scopes["train"]),
         tuple(scopes["validation"]),
@@ -198,6 +211,7 @@ async def _search(root, source_root, config, provider_script, preflight):
         "backend": backend["identity"],
         "python": sys.executable,
         "profiles": str(profile_root),
+        **({"agentr_context": agentr_context} if agentr_context is not None else {}),
     }
     freeze(root / "input.json", identity)
     freeze(root / "admission.json", admission)
@@ -252,6 +266,11 @@ async def _search(root, source_root, config, provider_script, preflight):
                 "effort": config["effort"],
                 "tau2_source": str(Path(source_root).resolve()),
                 "trace_tasks": trace_tasks,
+                **(
+                    {"agentr_context": agentr_context}
+                    if role == "meta" and agentr_context is not None
+                    else {}
+                ),
                 **{key + "_task_ids": value for key, value in scopes.items()},
             },
         }
@@ -302,6 +321,16 @@ async def _search(root, source_root, config, provider_script, preflight):
         for step in journal["operators"]["decisions"]
         for record in step["decision"]["records"]
     ]
+    context_result = {}
+    if agentr_context is not None:
+        snapshot = read_json(Path(agentr_context["path"]))
+        if digest(snapshot) != agentr_context["digest"]:
+            raise ValueError("Agent-R context changed before recording the search result")
+        context_result = {
+            "agentr_context_digest": agentr_context["digest"],
+            "agentr_generation_usage": snapshot["generation_usage"],
+            "agentr_source_collection_usage": snapshot["source_collection_usage"],
+        }
     return freeze(
         root / "result.json",
         {
@@ -318,6 +347,7 @@ async def _search(root, source_root, config, provider_script, preflight):
             "pool_digest": digest(pool),
             "admission_digest": digest(admission),
             "task_ids": scopes,
+            **context_result,
         },
     )
 
