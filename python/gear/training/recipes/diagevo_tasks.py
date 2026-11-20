@@ -90,14 +90,14 @@ def _options(options):
     )
 
 
-def _package(root, rows, construction_ref, options):
+def _package(root, rows, source_ref, options):
     """Use Hitch's public compiler to derive actual task and package identities."""
     root.mkdir()
     (root / "profiles").mkdir()
     ids = [row["id"] for row in rows]
     manifest = (
         'schema_version = "1"\nprotocol = "hitch-benchmark@1"\n'
-        f'id = "diagevo-{construction_ref["digest"][7:23]}"\nrelease = "1"\n'
+        f'id = "diagevo-{source_ref["digest"][7:23]}"\nrelease = "1"\n'
         'task_root = "tasks"\n'
         f"task_ids = {json.dumps(ids)}\n"
         'default_profile = "profiles/default.json"\nprimary_metric = "completion"\n'
@@ -142,8 +142,7 @@ def _package(root, rows, construction_ref, options):
         root / "source-manifest.json",
         {
             "synthetic": True,
-            "constructionRef": construction_ref,
-            "labelSource": "majority_vote",
+            "sourceRef": source_ref,
             "metricMeaning": "transport completion only",
             "tasks": [{"task_id": row["id"], "source": row["source"]} for row in rows],
         },
@@ -215,6 +214,99 @@ def _package(root, rows, construction_ref, options):
             "#!/bin/bash\nset -euo pipefail\n"
             f"python /tests/verify.py {_RESPONSE} {options['maxResponseBytes']}\n"
         )
+
+
+def _compile_tasks(store, directory, *, rows, source_ref, spec, hitch_command, task_options):
+    """The two native roles use the same text task and private-split checks."""
+    private = [task for key in ("dev", "heldOut") for task in spec["datasets"][key]["tasks"]]
+    private_instructions, private_files = set(), set()
+    for task in private:
+        manifest = store.read_json(task["taskRef"])
+        require(
+            manifest.get("format") == "harbor-dataset" and isinstance(manifest.get("files"), list),
+            "diagevo-private-snapshot",
+            "private exclusions require actual sealed Harbor tasks",
+        )
+        private_files.add(digest_json(sorted(file["sha256"] for file in manifest["files"])))
+        private_instructions.update(
+            file["sha256"] for file in manifest["files"] if file["path"].endswith("instruction.md")
+        )
+    ids = [row["id"] for row in rows]
+    require(ids and len(set(ids)) == len(ids), "diagevo-task-id", "text task IDs must be unique")
+    for row in rows:
+        require(
+            re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", row["id"]),
+            "diagevo-task-id",
+            "capture or schedule ID must be a single Harbor task name",
+        )
+        require(
+            not any(
+                row["id"] == task["id"] or row["source"]["family"] == task["family"]
+                for task in private
+            ),
+            "diagevo-task-leakage",
+            "generated task ID or source family collides with evaluation",
+        )
+        messages = row["messages"]
+        require(
+            messages
+            and all(message["role"] == "system" for message in messages[:-1])
+            and messages[-1]["role"] == "user"
+            and all(isinstance(message["content"], str) for message in messages),
+            "diagevo-task-input",
+            "native model-call requires system instructions then one user input",
+        )
+    package, output = Path(directory) / "package", Path(directory) / "tasks"
+    _package(package, rows, source_ref, task_options)
+    compilation = _command(
+        hitch_command, ["benchmark", "compile", "--package", str(package), "--out", str(output)]
+    )
+    require(
+        compilation.get("tasks") == ids,
+        "diagevo-task-compile",
+        "compiler must retain exactly the requested task order",
+    )
+    tasks = []
+    for row in rows:
+        task_ref = seal_directory(store, output / row["id"], dataset=True)
+        manifest = store.read_json(task_ref)
+        require(
+            task_ref["digest"] not in {task["taskRef"]["digest"] for task in private}
+            and digest_json(sorted(file["sha256"] for file in manifest["files"]))
+            not in private_files
+            and not any(
+                file["path"].endswith("instruction.md") and file["sha256"] in private_instructions
+                for file in manifest["files"]
+            ),
+            "diagevo-task-leakage",
+            "generated content collided with a private evaluation task",
+        )
+        environment = store.put_json(
+            {
+                "schemaVersion": 1,
+                "kind": "generated-task-environment",
+                "binding": "canonical-after-sealed-dispatch",
+                "taskSnapshotDigest": task_ref["digest"],
+                "sourceEnvironmentRef": row["source"]["environmentRef"],
+            }
+        )
+        tasks.append(
+            {
+                "id": row["id"],
+                "family": row["source"]["family"],
+                "taskRef": task_ref,
+                "environmentRef": environment,
+            }
+        )
+    return (
+        {
+            "snapshotRef": seal_directory(store, output, dataset=True),
+            "tasks": tasks,
+            "exactDataAuthorized": True,
+        },
+        seal_directory(store, package),
+        compilation["source_package_digest"],
+    )
 
 
 def prepare_solver_job(
@@ -289,42 +381,12 @@ def prepare_solver_job(
         for raw in group
         for context in [store.read_json(raw["context_ref"])]
     }
-    private = [task for key in ("dev", "heldOut") for task in spec["datasets"][key]["tasks"]]
-    private_instructions, private_files = set(), set()
-    for task in private:
-        manifest = store.read_json(task["taskRef"])
-        require(
-            manifest.get("format") == "harbor-dataset" and isinstance(manifest.get("files"), list),
-            "diagevo-private-snapshot",
-            "private exclusions require actual sealed Harbor tasks",
-        )
-        private_files.add(digest_json(sorted(file["sha256"] for file in manifest["files"])))
-        private_instructions.update(
-            file["sha256"] for file in manifest["files"] if file["path"].endswith("instruction.md")
-        )
     rows = []
     for question_id in retained:
-        require(
-            re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", question_id),
-            "diagevo-task-id",
-            "retained capture ID must be a single Harbor task name",
-        )
         source = sources[captures[question_id]["taskId"]]
-        require(
-            not any(
-                question_id == task["id"] or source["family"] == task["family"] for task in private
-            ),
-            "diagevo-task-leakage",
-            "generated task ID or source family collides with evaluation",
-        )
         raw = pool["input"]["construction"][question_id][0]
         receipt = store.read_json(raw["receipt_refs"][0])
         messages = store.read_json(receipt["rawRequestRef"])["agent"]["messages"]
-        require(
-            all(row["role"] == "system" for row in messages[:-1]),
-            "diagevo-task-input",
-            "native model-call requires system instructions then one user input",
-        )
         rows.append({"id": question_id, "source": source, "messages": messages})
     root = Path(root).resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -346,55 +408,16 @@ def prepare_solver_job(
             store.read_json(prior["resultRef"])
             return prior["resultRef"]
         with tempfile.TemporaryDirectory(prefix="author-", dir=root) as directory:
-            package, output = Path(directory) / "package", Path(directory) / "tasks"
-            _package(package, rows, construction_ref, task_options)
-            compilation = _command(
-                hitch_command,
-                ["benchmark", "compile", "--package", str(package), "--out", str(output)],
+            train, package_ref, package_digest = _compile_tasks(
+                store,
+                directory,
+                rows=rows,
+                source_ref=construction_ref,
+                spec=spec,
+                hitch_command=hitch_command,
+                task_options=task_options,
             )
-            require(
-                compilation.get("tasks") == retained,
-                "diagevo-task-compile",
-                "compiler must retain exactly the requested task order",
-            )
-            tasks = []
-            for row in rows:
-                task_ref = seal_directory(store, output / row["id"], dataset=True)
-                manifest = store.read_json(task_ref)
-                require(
-                    task_ref["digest"] not in {task["taskRef"]["digest"] for task in private}
-                    and digest_json(sorted(file["sha256"] for file in manifest["files"]))
-                    not in private_files
-                    and not any(
-                        file["path"].endswith("instruction.md")
-                        and file["sha256"] in private_instructions
-                        for file in manifest["files"]
-                    ),
-                    "diagevo-task-leakage",
-                    "generated content collided with a private evaluation task",
-                )
-                environment = store.put_json(
-                    {
-                        "schemaVersion": 1,
-                        "kind": "generated-task-environment",
-                        "binding": "canonical-after-sealed-dispatch",
-                        "taskSnapshotDigest": task_ref["digest"],
-                        "sourceEnvironmentRef": row["source"]["environmentRef"],
-                    }
-                )
-                tasks.append(
-                    {
-                        "id": row["id"],
-                        "family": row["source"]["family"],
-                        "taskRef": task_ref,
-                        "environmentRef": environment,
-                    }
-                )
-            spec["datasets"]["train"] = {
-                "snapshotRef": seal_directory(store, output, dataset=True),
-                "tasks": tasks,
-                "exactDataAuthorized": True,
-            }
+            spec["datasets"]["train"] = train
             spec["trainer"]["scriptConfig"] = {
                 **spec["trainer"].get("scriptConfig", {}),
                 "constructionRef": construction_ref,
@@ -406,8 +429,8 @@ def prepare_solver_job(
                     "constructionRef": construction_ref,
                     "templateRef": store.put_json(solver_spec),
                     "specRef": store.put_json(spec),
-                    "sourcePackageRef": seal_directory(store, package),
-                    "sourcePackageDigest": compilation["source_package_digest"],
+                    "sourcePackageRef": package_ref,
+                    "sourcePackageDigest": package_digest,
                     "sources": [{"id": row["id"], "source": row["source"]} for row in rows],
                     "metricMeaning": "transport completion only",
                     "labelSource": "majority_vote",
@@ -419,27 +442,51 @@ def prepare_solver_job(
 
 def admit_solver_job(store, prepared_ref, *, controller_config, gear_command):
     """Create/admit once; retries retain controller pause, decisions and spent budgets."""
+    return _admit_job(
+        store,
+        prepared_ref,
+        role="solver",
+        controller_config=controller_config,
+        gear_command=gear_command,
+    )
+
+
+def _admit_job(store, prepared_ref, *, role, controller_config, gear_command):
     prepared = store.read_json(prepared_ref)
     require(
-        prepared.get("kind") == "diagevo-solver-job" and prepared.get("schemaVersion") == 1,
-        "diagevo-solver-job",
-        "expected a sealed solver preparation",
+        role in ("solver", "challenger")
+        and prepared.get("kind") == f"diagevo-{role}-job"
+        and prepared.get("schemaVersion") == 1,
+        "diagevo-prepared-job",
+        "expected a sealed preparation for the selected role",
     )
     config_file = Path(controller_config).resolve()
     config = json.loads(config_file.read_text())
     require(
         config.get("schemaVersion") == 2 and Path(config["storeRoot"]).resolve() == store.root,
         "diagevo-controller-store",
-        "solver handoff must use the same controller CAS",
+        "task handoff must use the same controller CAS",
     )
     spec = store.read_json(prepared["specRef"])
-    require(
-        spec["trainer"]["scriptConfig"]["constructionRef"] == prepared["constructionRef"],
-        "diagevo-solver-job",
-        "prepared solver lost its construction binding",
-    )
+    parameters = spec["trainer"]["scriptConfig"]
+    if role == "solver":
+        require(
+            parameters["constructionRef"] == prepared["constructionRef"],
+            "diagevo-solver-job",
+            "prepared solver lost its construction binding",
+        )
+    else:
+        schedule = store.read_json(prepared["scheduleRef"])
+        require(
+            parameters["freshGeneration"] == schedule["freshGeneration"]
+            and parameters["prompts"] == schedule["prompts"]
+            and parameters["solver"]["model_ref"]
+            == store.read_json(schedule["solverModelRef"])["hfSnapshotRef"],
+            "diagevo-challenger-job",
+            "prepared challenger lost its memory schedule or frozen solver",
+        )
     command = gear_command
-    key = "diagevo-solver/" + prepared_ref["digest"][7:]
+    key = f"diagevo-{role}/" + prepared_ref["digest"][7:]
     options = ["--config", str(config_file), "--idempotency-key", key]
     with tempfile.TemporaryDirectory(prefix="gear-diagevo-admit-") as directory:
         spec_file = Path(directory) / "spec.json"
@@ -448,7 +495,7 @@ def admit_solver_job(store, prepared_ref, *, controller_config, gear_command):
     require(
         experiment["specDigest"] == digest_json(spec),
         "diagevo-controller-drift",
-        "controller created a different solver specification",
+        "controller created a different training specification",
     )
     run = _command(command, ["training", "admit", experiment["id"], *options])
     require(
@@ -460,6 +507,6 @@ def admit_solver_job(store, prepared_ref, *, controller_config, gear_command):
         and run["request"]["trainer"] == spec["trainer"]
         and run["request"]["trainDataset"] == spec["datasets"]["train"],
         "diagevo-controller-drift",
-        "controller admitted a different solver job",
+        "controller admitted a different training job",
     )
     return {"experimentId": experiment["id"], "runId": run["id"], "run": run}
