@@ -1,0 +1,29 @@
+{
+  "status": "passed",
+  "submitted_turns_verified": 7,
+  "completed_native_tokens": 82432,
+  "all_attempt_tokens": null,
+  "cpu_reads_replayed": 2,
+  "generator_result": null,
+  "retrospective_task_score": null,
+  "comparative_effect": null,
+  "new_model_submissions": 0,
+  "sdk_imported": false,
+  "negative_checks": [
+    {
+      "mutation": "failed_request",
+      "rejected": true,
+      "reason": "native request differs from the reconstructed caller input"
+    },
+    {
+      "mutation": "tool_result",
+      "rejected": true,
+      "reason": "CPU prefix, files or calls differ"
+    },
+    {
+      "mutation": "invented_score",
+      "rejected": true,
+      "reason": "actual final reply or its unscored classification changed"
+    }
+  ]
+}

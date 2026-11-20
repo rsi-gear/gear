@@ -1,0 +1,4 @@
+The exported policy, tool schemas and CPU tool responses use tau2-bench v1.0.1,
+commit fc0055dc4e0a316c3f83133267fbd6faaa770992, under the attached LICENSE.tau2.
+The synthetic customer database was authored for the retail study, not copied
+from upstream benchmark customers. SDK thread and turn identifiers are redacted.

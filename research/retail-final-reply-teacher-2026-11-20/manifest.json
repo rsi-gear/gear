@@ -1,0 +1,16 @@
+{
+  "source_commit": "f5947efb596d4ceeac8e1ba887364b0dd2f08bb8",
+  "evidence_sha256": "f37fc8de08712bd86ea0b06e891c27de18a4bf7213b3446bfffc9f2b8f547264",
+  "accounting": {
+    "submitted_logical_turns": 7,
+    "completed_turns": 6,
+    "failed_turns": 1,
+    "known_completed_native_tokens": 82432,
+    "all_attempt_tokens": null,
+    "cpu_read_only_tool_executions": 2,
+    "weight_training_steps": 0
+  },
+  "redactions": [
+    "SDK thread_id and turn_id; native receipt digests checked before removal"
+  ]
+}
