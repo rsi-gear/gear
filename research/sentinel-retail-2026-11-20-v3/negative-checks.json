@@ -1,0 +1,6 @@
+{
+  "native_receipt_changed": "native receipt or request differs from the caller transcript",
+  "pending_request_changed": "unfinished replay does not match the original submitted request",
+  "unknown_usage_fabricated": "native accounting changed or missing usage was inferred",
+  "partial_result_fabricated": "complete versus unfinished execution classification changed"
+}

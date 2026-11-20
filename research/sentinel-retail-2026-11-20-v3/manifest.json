@@ -1,0 +1,15 @@
+{
+  "evidence_sha256": "1848e4b65117f5e7b758eeb50efa29f74e4b5e8c97b53f41c5546f4628c73feb",
+  "source_commit": "6d3959e4f",
+  "completed_study": false,
+  "accounting": {
+    "submitted_turns": 9,
+    "saved_completed_turns": 7,
+    "known_completed_tokens": 127163,
+    "all_attempt_tokens": null
+  },
+  "redactions": [
+    "SDK thread_id and turn_id"
+  ],
+  "records": 2
+}

@@ -1,0 +1,14 @@
+{
+  "source_commit": "6d3959e4f",
+  "python": "3.12.13",
+  "node": "v23.11.0",
+  "dependencies": {
+    "tau2": "1.0.1",
+    "openai-codex": "0.159.3",
+    "pydantic": "2.14.4",
+    "docstring-parser": "0.18.0",
+    "deepdiff": "9.2.1"
+  },
+  "tau2_commit": "fc0055dc4e0a316c3f83133267fbd6faaa770992",
+  "model_calls": "fixed weights; no GPU training"
+}
