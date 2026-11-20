@@ -1,6 +1,28 @@
-# Retail 工具对照 V7：预注册配置
+# Retail 工具对照 V7：生成阶段终态 429
 
-**当前为独立实验的预注册，尚无效果结果；模型权重固定，不做 GPU 训练。** 冻结源码为 `ff7724495`。[config.json](config.json) 的摘要为 `sha256:a61fd94a1d665f829fcad6b86f1922639fd661ca3fd16b548c1f8221ed5d1c38`，完整规则见 [protocol.json](protocol.json)。已停止的 V6 和此前尝试继续保留，不恢复或替换其原请求。
+**实验已因生成阶段的服务端终态 429 停止，尚无有效三组比较；模型权重固定，不做 GPU 训练。** 冻结源码为 `ff7724495`。[config.json](config.json) 的摘要为 `sha256:a61fd94a1d665f829fcad6b86f1922639fd661ca3fd16b548c1f8221ed5d1c38`，完整规则见 [protocol.json](protocol.json)。协议在首个模型请求前提交，已停止的 V6 和此前尝试继续保留，不恢复或替换其原请求。
+
+两条来源任务都完整结束并评分失败。第一条 random 生成在实际执行三次只读工具调用后，`explore/3` 收到 `exceeded retry limit, last status: 429 Too Many Requests`，原始进程退出码为 1。只读核对原 native turn 确认为 `failed`，HTTP 状态为 429，usage 缺失；未重新提交。生成没有完整参考、候选或准入数据，尚未进入正式搜索、failure 生成或最终测试。
+
+| 阶段 | 完成调用 | 已知 native tokens |
+| --- | ---: | ---: |
+| 地址与商品修改来源 | 11 | 195,142 |
+| 支付与商品修改来源 | 24 | 602,042 |
+| 第一条随机生成前缀 | 5 | 71,146 |
+
+合计 41 次逻辑提交、40 次完成、1 次服务端失败，已知用量 868,330 tokens。失败请求用量、总尝试 token、HTTP 重试数及美元成本未知；没有单独的可用性请求。三步生成探索实际调用 `find_user_id_by_email`、`get_order_details` 和 `get_product_details`，不能以这段未完成前缀声称生成有效或政策审核通过。
+
+[evidence.json](evidence.json) 保存两条完整来源、失败生成前缀、全部原始请求／完成回执、终态检查与账目；[manifest.json](manifest.json) 固定其 SHA-256 为 `262fd01350072cd16ee81a4bd4ab7bfbbd09dea8a8b637728fe24c6585abe864`。导出前核对回执摘要与 ID 对应关系，随后移除 SDK thread/turn ID；没有补造生成结果或失败请求用量。
+
+[离线核验](verification.json)通过全部五道原始任务的参考／负例校准、两条来源重放、三步生成前缀重放、600 秒配置绑定及完整调用账目。修改失败请求、工具结果、生成结果、来源评分或等待配置的五项检查全部被拒绝。核验未导入模型 SDK、未提交请求。
+
+```sh
+/path/to/sentinel-env/bin/python research/sentinel-retail-2026-11-20-v7/verify.py \
+  --repository /path/to/gear-at-ff7724495 \
+  --tau2-source /path/to/pinned-tau2 --negative-checks
+```
+
+这份归档证明中止前行为可核验，不提供数据生成收益结论。后续完整效果实验需要可用推理服务与独立冻结的新协议；本次不自动重启或再开实验。
 
 相对 V6 只改变两项配置：单次等待从默认 240 秒改为 600 秒；调度 seed 改为 1，预先确定 random → fixed → failure，先执行生成环节。选择顺序时未观察新模型结果。provider 单个操作仍限时 30 分钟，延长单次等待不保证服务可用，也不代表取消或自动重试能力。
 
