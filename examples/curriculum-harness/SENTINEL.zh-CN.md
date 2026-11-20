@@ -199,6 +199,8 @@ PYTHONPATH=python:python/tests /tmp/gear-sentinel-env/bin/python \
 
 动作输出 schema 进一步约束工具动作必须带名称且不能同时说话，message/finish 必须带非空文本且没有工具参数。执行器仍检查实际动作；无效输出不会伪造任务失败。`TextCalls` 的基础指令明确区分模型返回的结构化动作与 SDK 原生工具，避免复用 IFEval 的禁用工具措辞；原生工具仍关闭，所有实际 retail 执行仍在调用方。
 
+真实接口检查确认服务端禁止根节点 `anyOf`。动作分支因此放在对象的 `action` 属性内，retail 对话及 Agent-R 执行处直接取出该值；原始模型回执保存整个对象，实际工具轨迹格式保持不变。根级 schema 被拒绝的请求保留为接口错误，不计为任务失败或零用量。
+
 此次合同修复后，SENTINEL／Agent-R／CoEvolve／Self-Direction 合计 107 项检查通过，另 1 项可选真实 MiniLM 检查跳过；正式模型桥接的 6 项检查也通过。包括真实 CLI／worker、CPU 工具执行、新旧 schema 的边界和基础指令变化后拒绝重用原调用键；模型均为明确替身。
 
 CI 的 `Curriculum / tool environments CPU` 作业安装固定 Tau2、构建 Node CLI，并运行 `test_sentinel*.py`，启用正式 runtime 集成；未安装可选依赖时只运行纯采样检查，跳过 native 集成，不把跳过项当作通过。

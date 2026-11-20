@@ -71,6 +71,7 @@ class ExplorationCalls:
                 "arguments_json": json.dumps(action["arguments"]),
                 "text": step.get("text", "").replace("no longer needed", "ordered by mistake"),
             }
+            response = {"action": response}
         elif key.endswith("/abstract"):
             assert len(data["explorations"]) == 2
             assert all(row["status"] == "valid" for row in data["explorations"])

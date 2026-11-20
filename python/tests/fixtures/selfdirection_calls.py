@@ -128,6 +128,7 @@ class SelfDirectionCalls:
                     "arguments_json": json.dumps(action["arguments"]),
                     "text": step.get("text", ""),
                 }
+                response = {"action": response}
             elif key.endswith("/user"):
                 response = {"message": "Yes, cancel #G100 with the refund to my original card."}
             elif key.endswith("/policy-audit"):

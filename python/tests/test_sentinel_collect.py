@@ -30,6 +30,12 @@ TAU_SOURCE = os.environ.get("GEAR_SENTINEL_TAU2_PATH")
 
 
 class ActionContractTests(unittest.TestCase):
+    def test_action_union_is_below_the_required_object_root(self):
+        # Regression for the real SDK's invalid_json_schema (HTTP 400).
+        self.assertEqual(ACTION_SCHEMA["type"], "object")
+        self.assertTrue({"oneOf", "anyOf", "allOf", "enum", "not"}.isdisjoint(ACTION_SCHEMA))
+        self.assertIn("action", ACTION_SCHEMA["required"])
+
     def test_empty_finish_and_mixed_actions_are_rejected_before_execution(self):
         # Exact response that stopped the real V4 study, plus ambiguous shapes.
         empty_finish = {"kind": "finish", "name": "", "arguments_json": "{}", "text": ""}
@@ -42,16 +48,20 @@ class ActionContractTests(unittest.TestCase):
             {**empty_finish, "kind": "tool"},
         ):
             with self.subTest(response=response), self.assertRaises(ValueError):
-                validate_output(ACTION_SCHEMA, response)
+                validate_output(ACTION_SCHEMA, {"action": response})
         for kind in ("message", "finish"):
-            validate_output(ACTION_SCHEMA, {**empty_finish, "kind": kind, "text": "Done"})
+            validate_output(
+                ACTION_SCHEMA, {"action": {**empty_finish, "kind": kind, "text": "Done"}}
+            )
         validate_output(
             ACTION_SCHEMA,
             {
-                **empty_finish,
-                "kind": "tool",
-                "name": "get_order_details",
-                "arguments_json": '{"order_id":"#G100"}',
+                "action": {
+                    **empty_finish,
+                    "kind": "tool",
+                    "name": "get_order_details",
+                    "arguments_json": '{"order_id":"#G100"}',
+                }
             },
         )
 
@@ -82,6 +92,7 @@ class SolverCalls:
                 "arguments_json": json.dumps(action["arguments"]),
                 "text": step.get("text", ""),
             }
+            response = {"action": response}
         elif key.startswith("user/"):
             response = {"message": "Yes, cancel #G100 with the refund to my original card."}
         elif key == "policy-audit":

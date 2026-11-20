@@ -91,6 +91,7 @@ def rollback(backend, config, failed_steps, common_steps):
 async def extend(backend, config, prefix, response, model_json, key):
     """Execute a single sampled action after an independently verified restore."""
     validate_output(ACTION_SCHEMA, response)
+    response = response["action"]
     session, trace = restore(backend, config, prefix)
     if trace["status"] == "completed":
         raise ValueError("cannot append an action to a terminal Agent-R branch")

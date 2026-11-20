@@ -239,6 +239,7 @@ class FixtureCalls:
                 "arguments_json": json.dumps(arguments),
                 "text": text,
             }
+            response = {"action": response}
         elif key == "rewrite":
             assert data["reference"]["status"] == "completed"
             assert data["reference"]["final"]["orders"]["#G100"]["status"] == "cancelled"

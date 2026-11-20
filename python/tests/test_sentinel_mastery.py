@@ -137,10 +137,12 @@ class MasteryTests(MasteryFixture):
         async def failed_response(key, prompt, harness, **settings):
             value = (
                 {
-                    "kind": "finish",
-                    "name": "",
-                    "arguments_json": "{}",
-                    "text": "I would next verify your account.",
+                    "action": {
+                        "kind": "finish",
+                        "name": "",
+                        "arguments_json": "{}",
+                        "text": "I would next verify your account.",
+                    }
                 }
                 if key == "solve/0"
                 else {"policy_compliant": True, "reason": "Explicit model fixture."}

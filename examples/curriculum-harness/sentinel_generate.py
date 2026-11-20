@@ -49,34 +49,33 @@ def object_schema(properties):
 
 
 TEXT = {"type": "string", "minLength": 1, "maxLength": 8192}
-ACTION_SCHEMA = object_schema(
-    {
-        "kind": {"type": "string", "enum": ["tool", "message", "finish"]},
-        "name": {"type": "string"},
-        "arguments_json": {"type": "string"},
-        "text": {"type": "string", "maxLength": 8192},
-    }
-)
 # Constrain the two action shapes at the model boundary as well as execution.
 # A completed SDK response containing an empty finish is not a completed task.
-ACTION_SCHEMA["anyOf"] = [
-    object_schema(
-        {
-            "kind": {"type": "string", "const": "tool"},
-            "name": {"type": "string", "minLength": 1},
-            "arguments_json": {"type": "string", "minLength": 2},
-            "text": {"type": "string", "const": ""},
+# The inference API requires an object root without top-level unions.
+ACTION_SCHEMA = object_schema(
+    {
+        "action": {
+            "anyOf": [
+                object_schema(
+                    {
+                        "kind": {"type": "string", "const": "tool"},
+                        "name": {"type": "string", "minLength": 1},
+                        "arguments_json": {"type": "string", "minLength": 2},
+                        "text": {"type": "string", "const": ""},
+                    }
+                ),
+                object_schema(
+                    {
+                        "kind": {"type": "string", "enum": ["message", "finish"]},
+                        "name": {"type": "string", "const": ""},
+                        "arguments_json": {"type": "string", "const": "{}"},
+                        "text": TEXT,
+                    }
+                ),
+            ]
         }
-    ),
-    object_schema(
-        {
-            "kind": {"type": "string", "enum": ["message", "finish"]},
-            "name": {"type": "string", "const": ""},
-            "arguments_json": {"type": "string", "const": "{}"},
-            "text": TEXT,
-        }
-    ),
-]
+    }
+)
 WRITER_PROMPT = (
     "Write a new retail user request AFTER studying the executed reference. Preserve its "
     "customer, goal, item attributes and constraints. Exercise the selected learning "
@@ -361,6 +360,7 @@ async def retail_dialogue(
                 },
             ),
         )
+        response = response["action"]
         arguments = json.loads(response["arguments_json"])
         if not isinstance(arguments, dict):
             raise ValueError("tool arguments must be a JSON object")

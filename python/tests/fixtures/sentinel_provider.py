@@ -88,6 +88,7 @@ class FixtureCalls:
                 "arguments_json": json.dumps(arguments),
                 "text": text,
             }
+            response = {"action": response}
         elif "/user/" in key:
             response = {
                 "message": "Yes, cancel #G100 for that reason and refund the original card as described."
