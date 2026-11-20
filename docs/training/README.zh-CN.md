@@ -4,7 +4,7 @@
 
 Gear 的模型训练独立于 harness 进化状态，通过固定 harness 和数据集执行版本化 Slime RL 或离线 SFT 更新，再用不可变 HF 导出进行独立评估。新部署从 [v2 controller 配置](controller-v2.zh-CN.md) 开始；下文同时说明 v1 配置和通用训练合同。
 
-开发者编写自己的四阶段训练，从 [TrainingLoop 开发指南](development.zh-CN.md) 开始；它支持普通 Python 实现，不要求 agent；控制器也可加载自定义 `build_loop(config, runtime)` 脚本，Hitch/Slime 作为内置组件继续复用。已有 Slime 后端可用 `python -m gear_training run spec.json --config controller.json` 创建并持续运行，或 `run EXP_ID RUN_ID` 跟踪已有运行。 Hitch/Slime 四阶段工厂见 [hitch_slime.py](../../examples/training-loop/recipes/hitch_slime.py)，运行和恢复方法见开发指南。
+开发者编写自己的四阶段训练，从 [TrainingLoop 开发指南](development.zh-CN.md) 开始；它支持普通 Python 实现，不要求 agent；控制器也可加载自定义 `build_loop(config, runtime)` 脚本，Hitch/Slime 作为内置组件继续复用。已有 Slime 后端可用 `python -m gear training run spec.json --config controller.json` 创建并持续运行，或 `python -m gear training run EXP_ID RUN_ID --config controller.json` 跟踪已有运行。 Hitch/Slime 四阶段工厂见 [hitch_slime.py](../../examples/training-loop/recipes/hitch_slime.py)，运行和恢复方法见开发指南。
 
 既有正式实机认证覆盖本地 Gear / Hitch / Harbor Docker 与远程 RTX 5090 单卡上的 Qwen2.5-1.5B 训练、恢复及推理。2026-10-15 另取得[上游双卡推理记录](../validation/external-inference-gpu-2026-10-15.md)及[2×RTX 3090 静态分卡训练/端点评测诊断](../validation/training-gpu-loop-2026-10-15.md)：Qwen3.5-2B 一次更新、native/HF 导出和实际本机 Harbor 基线/candidate 配对，均为有效 reward=0、meanDelta=0，loss/grad norm=0，不代表质量提升或晋升。新诊断仍为 `validated:false` / `pending-gpu`，完整本机制品全闭包与离线 finite 复核已通过（108 个对象、35,467,670,234 字节），精确租机销毁已确认，不能提交正式训练；远程 Harbor worker、完整 benchmark 未验收。历史认证范围及证据见文末。
 
@@ -15,8 +15,8 @@ Gear 的模型训练独立于 harness 进化状态，通过固定 harness 和数
 ## 代码入口
 
 - `rsi-gear/training`：版本化合同、CAS、`ModelTrainingCoordinator`、`SlimeModelTrainer`、`HitchModelEvaluator` 和显式发布适配器。
-- `gear-refine training`：v2 冻结前用 `preflight-deployment` 分别检查控制端、Harbor worker 和模型节点，再用 `freeze-deployment` 固定部署；实验执行使用 `put-json`、`seal-hf`、`seal-dataset`、`seal-sft`、`validate`、`init`、`admit`、`preflight`、`advance`、`status`、`pause`、`resume`、`close`、`publish`、`rollback`。
-- `python/gear_training`：Slime job RPC、私有作业监督进程、精确 token gateway、rollout hook、完整 checkpoint/HF export、恢复账本。
+- `gear training`：v2 冻结前用 `preflight-deployment` 分别检查控制端、Harbor worker 和模型节点，再用 `freeze-deployment` 固定部署；实验执行使用 `put-json`、`seal-hf`、`seal-dataset`、`seal-sft`、`validate`、`init`、`admit`、`preflight`、`advance`、`status`、`pause`、`resume`、`close`、`publish`、`rollback`。
+- `python/gear/training`：Slime job RPC、私有作业监督进程、精确 token gateway、rollout hook、完整 checkpoint/HF export、恢复账本。
 - Hitch 的 `training register` / `training evidence` 保留精确训练接入；普通评测使用 `models connect` / `models inspect --verify` 注册并验证外部模型 API，再按不可变模型版本准备冻结绑定。
 
 状态事务通过 Python `fcntl.flock` 内核锁串行化；默认调用 `python3`，需要时用 `GEAR_TRAINING_LOCK_PYTHON` 指定同环境的 Python 可执行文件。进程中断会释放锁，不依赖过期 PID 文件恢复。
@@ -100,9 +100,9 @@ job JSON：
 用 `seal-hf` 导入初始 safetensors 模型，返回 `model` 和 `modelRef`。模型初始权重必须有限；多分片 index、tensor shape、dtype、tokenizer 和 template 会被校验。`seal-dataset` 将一个或多个 Harbor task 目录按文件摘要封存；每个 train `taskRef` 必须指向只含一个 task 的 snapshot，partition `snapshotRef` 指向完整 split。`put-json` 导入其余 JSON 描述符。所有命令形式为：
 
 ```sh
-gear-refine training seal-hf /models/initial --config /srv/gear/controller.json
-gear-refine training seal-dataset /datasets/train --config /srv/gear/controller.json
-gear-refine training put-json /srv/gear/verifier.json --config /srv/gear/controller.json
+gear training seal-hf /models/initial --config /srv/gear/controller.json
+gear training seal-dataset /datasets/train --config /srv/gear/controller.json
+gear training put-json /srv/gear/verifier.json --config /srv/gear/controller.json
 ```
 
 每个 `environmentRef` 的 JSON 包含从可信 Hitch 基线/任务规划提取的 `hitchEnvironmentIdentity`、`taskDigest` 和 `verifierIdentity`，均为真实 sha256。固定 harness 的 `manifestRef` 包含 `{"schemaVersion":1,"hitch":{"harnessId":"training-tool","revisionIdentity":"sha256:…","artifactId":"sha256:…"}}`。verifier ref 封存共享 verifier 版本描述，不列出 held-out 任务。控制端与训练 bridge 会将这些值与实际 canonical run 对照，不能以自己填写的声明代替运行证据。
@@ -148,7 +148,7 @@ HF 导出失败后的恢复在 SGLang 卸载状态下只重导出 pending checkp
 
 placement 与设备数量进入 checkpoint compatibility digest。切换共享/独立模式或设备数量，不能直接续训旧 optimizer checkpoint；旧 bridge/export patch 的 runtime lock 也须重新生成和验证。
 
-运行时 lock 除 Slime/Hitch/Megatron commit 外还固定镜像、Python/CUDA/torch/SGLang、bridgeDigest、protocolDigest 和 patchDigests。bridgeDigest 用 `gear_training.preflight.bridge_digest()` 计算；源码补丁摘要取对应 checkout 的 `git diff HEAD --binary` 原始字节。`protocolDigest` 用 `gear_training.preflight.generation_protocol_digest(jobConfig)` 计算，封存所选 gateway/tool parser 协议。实际进程、源码、已应用的 export 扩展与 GPU UUID 都在 preflight 核对。
+运行时 lock 除 Slime/Hitch/Megatron commit 外还固定镜像、Python/CUDA/torch/SGLang、bridgeDigest、protocolDigest 和 patchDigests。bridgeDigest 用 `gear.training.runtime.preflight.bridge_digest()` 计算；源码补丁摘要取对应 checkout 的 `git diff HEAD --binary` 原始字节。`protocolDigest` 用 `gear.training.runtime.preflight.generation_protocol_digest(jobConfig)` 计算，封存所选 gateway/tool parser 协议。实际进程、源码、已应用的 export 扩展与 GPU UUID 都在 preflight 核对。
 
 评估 `common.runtimeDigest` 为 `digestJson(binding.deployment_receipt.service_config)`，`protocolDigest` 为 `digestJson({api: binding.api})`，`samplingDigest` 为 `digestJson(binding.generation)`，`budgetsDigest` 是上面完整 `hitch.budgets` 对象的 digest。固定 runner 的任务步数仍为 16，输出预算在 generation 中明确冻结并直接透传，使用 1024、4096 等正常业务值。权重和 Harness 身份属于 subject；端点 revision、wire model 与部署回执属于本次 binding，不放入公共 condition。引擎、量化、解析器、tokenizer/template 和缓存/隔离策略改变后重新判断 baseline 可比性。绑定文件、可信回执和按 HF digest 的映射格式见[独立评测端点](standalone-inference.zh-CN.md)。
 
@@ -157,14 +157,14 @@ placement 与设备数量进入 checkpoint compatibility digest。切换共享/�
 完整 ModelTrainingSpec 字段定义见 `src/training/types.ts`，语义约束见 `schema.ts`。init 会读取所有冻结输入验证 CAS 摘要，不接受伪造摘要或 mutable URL。
 
 ```sh
-gear-refine training validate spec.json --config controller.json
-gear-refine training init spec.json --config controller.json
-gear-refine training admit EXP_ID --config controller.json
-gear-refine training preflight EXP_ID RUN_ID --config controller.json
-gear-refine training advance EXP_ID RUN_ID --config controller.json
-python -m gear_training status EXP_ID RUN_ID --config controller.json
-python -m gear_training pause EXP_ID RUN_ID --config controller.json
-python -m gear_training resume EXP_ID RUN_ID --config controller.json
+gear training validate spec.json --config controller.json
+gear training init spec.json --config controller.json
+gear training admit EXP_ID --config controller.json
+gear training preflight EXP_ID RUN_ID --config controller.json
+gear training advance EXP_ID RUN_ID --config controller.json
+python -m gear training status EXP_ID RUN_ID --config controller.json
+python -m gear training pause EXP_ID RUN_ID --config controller.json
+python -m gear training resume EXP_ID RUN_ID --config controller.json
 ```
 
 每步训练保存 actor、optimizer、scheduler/RNG 和数据 cursor，再导出 HF，再用 UpdateCommitManifest 原子登记 batch 消费。崩溃在完整 checkpoint 之前时丢弃未提交内存更新；有 sealed batch 时只在恢复到相同 pre-update 权重后重放。完整 checkpoint 后导出失败保留 pending-update，恢复后只重导出，不执行额外 optimizer step。旧进程身份（PID 与创建时间）、旧 Hitch submit key、run 终态、receipt 和租约都需要协调完成，新 incarnation 才能开始。
@@ -183,7 +183,7 @@ v2 的 `artifactStorage="model-node"` 保留远端训练 CAS；显式发布通�
 
 先在隔离设备上运行真实兼容探针，再把带原始证据的报告作为 CAS probeEvidenceRef：报告 `kind=gear-training-compatibility-probe`、`schemaVersion=1`，`runtimeLockIdentityDigest` 等于去掉 validation/probeEvidenceRefs 的 lock digest；checks 必须实际通过 `exactTokenIds`、`behaviorLogProbs`、`toolContinuity`、`exportReload`、`hitchHarbor`、`actorRolloutAlignment`。报告是验证结果，不是跳过验证的开关；CPU mock 不能提供这些结果。
 
-`colocated` 还要求每份有效报告的 `placementIdentityDigest` 等于 `gear_training.placement.placement_probe_digest(trainingRequest)`，绑定设备数量、模型结构/dtype/token 语义、hyperparameters、batch、DP 和 rollout 配置。旧独立模式报告不会计入共享模式验收。另需完成三个 checks，并归档各阶段 GPU/主机内存、实际 GPU UUID、原始日志及数值结果：
+`colocated` 还要求每份有效报告的 `placementIdentityDigest` 等于 `gear.training.runtime.placement.placement_probe_digest(trainingRequest)`，绑定设备数量、模型结构/dtype/token 语义、hyperparameters、batch、DP 和 rollout 配置。旧独立模式报告不会计入共享模式验收。另需完成三个 checks，并归档各阶段 GPU/主机内存、实际 GPU UUID、原始日志及数值结果：
 
 - `colocatedMemoryCycle`：同一显卡至少两轮 generate → offload → train/save/export → onload，同步确认显存切换，故障/取消后释放资源；不发生未结束请求下的卸载。
 - `colocatedCheckpointRecovery`：训练 checkpoint 前后中断、sealed batch 重放、HF 导出失败后只重导出、optimizer/RNG 连续恢复，随后独立端点评估使用静态分配的推理卡。
@@ -197,7 +197,7 @@ v2 的 `artifactStorage="model-node"` 保留远端训练 CAS；显式发布通�
 
 [RTX 5090 单卡认证记录](https://github.com/rsi-gear/gear/tree/b1baa88799771cafde5ec9704291e5dc2f25a601/docs/training/certifications/2026-09-10-rtx5090-single-gpu)保留 2026-09-10 的 runtime lock、认证对象和验收摘要，覆盖两次更新、故障恢复、信息隔离及独立 Hitch / Harbor 评估。认证绑定实际代码、节点、模型与 recipe；代码或运行时身份变化后需要重新冻结和核验，历史证书不证明新身份已通过。
 
-`python -m gear_training.certification --request REQUEST.json --audit AUDIT.json --store CONTROLLER_CAS --output LOCK.json` 在控制端核验全部审计文件的摘要、长度、身份、检查项与证据类型，完整通过才输出新 lock；原 request / lock 不改写。审计使用 `gear-runtime-certification-audit` schema 1，scope 由 `certification.scope(request)` 生成，必需检查与证据类型由 `certification.REQUIRED` 定义。每项 observations 包含 check / method / passed 和相对审计目录的 artifacts（path / sha256 / size）。原始审计制品留在控制端；Trainer 只接收公开证书，缺少实机恢复或隔离证据时入口拒绝封存。
+`python -m gear.training.cli.certify --request REQUEST.json --audit AUDIT.json --store CONTROLLER_CAS --output LOCK.json` 在控制端核验全部审计文件的摘要、长度、身份、检查项与证据类型，完整通过才输出新 lock；原 request / lock 不改写。审计使用 `gear-runtime-certification-audit` schema 1，scope 由 `certification.scope(request)` 生成，必需检查与证据类型由 `certification.REQUIRED` 定义。每项 observations 包含 check / method / passed 和相对审计目录的 artifacts（path / sha256 / size）。原始审计制品留在控制端；Trainer 只接收公开证书，缺少实机恢复或隔离证据时入口拒绝封存。
 
 故障 canary 因 SSH 或控制端中断结束后，可用 `node scripts/canary-training-recovery.mjs INPUT_ROOT --resume` 继续尚未完成的阶段。续跑先核对原 request / node / runtime / GPU、已通过阶段的原始回执及旧进程释放，再将失败尝试另存；已通过阶段不重复执行。节点不可用或身份变化时保留原记录并拒绝启动。若远端已注入故障而控制端未取回完整回执，先协调证据，不自动覆盖该故障点。该入口仍为 pending-gpu 诊断，不能代替正式认证。
 
