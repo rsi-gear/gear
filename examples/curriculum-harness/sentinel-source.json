@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/sierra-research/tau2-bench",
+  "revision": "fc0055dc4e0a316c3f83133267fbd6faaa770992",
+  "tag": "v1.0.1",
+  "package": "tau2==1.0.1",
+  "license": "MIT",
+  "license_sha256": "e67c5aa0074dfcaefd3c3a1aedb94cb539234aecd15d5a972574e3200e6252fe",
+  "policy_path": "data/tau2/domains/retail/policy.md",
+  "source_digest": "sha256:9e81d02f1ec99a7db0c2840d27450add93a565c9014fdb616019a90c2f1f4ae1",
+  "usage": "Installed dependency; no upstream source, benchmark database or task set is vendored.",
+  "paper": "https://arxiv.org/html/2606.12908v1"
+}
