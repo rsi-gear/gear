@@ -297,7 +297,7 @@ async def respond(message, *, calls_factory=TextCalls):
                                     "task_id": job["slot"]["taskId"],
                                     "repetition": job["slot"]["repetition"],
                                     "scope": request["operation"]["scope"],
-                                    "status": "valid" if result["complete"] else "task_failed",
+                                    "status": "valid" if result["complete"] else "scoring_failed",
                                     "score": int(result["reward"] >= bundle["success_threshold"])
                                     if result["complete"]
                                     else None,
@@ -356,7 +356,10 @@ async def respond(message, *, calls_factory=TextCalls):
                                 "task_id": job["slot"]["taskId"],
                                 "repetition": job["slot"]["repetition"],
                                 "scope": request["operation"]["scope"],
-                                "status": "valid" if record["complete"] else "task_failed",
+                                # Gear's task_failed requires a certified numeric
+                                # score. A step limit has no score, so project it
+                                # as scoring_failed while preserving the trace.
+                                "status": "valid" if record["complete"] else "scoring_failed",
                                 "score": int(record["passed"]) if record["complete"] else None,
                                 "feedback": json.dumps(
                                     {

@@ -304,13 +304,23 @@ async def _search(root, source_root, config, provider_script, preflight):
         or journal["heldOutEvidence"]
     ):
         raise ValueError("retail search journal changed or opened the final test")
-    selected = report["operators"]["outcome"]["selected"]
-    manifest = read_json(run_root / "target-manifests" / (selected["candidate_id"] + ".json"))
-    harness = (run_root / "targets" / selected["candidate_id"] / "AGENTS.md").read_text()
+    outcome = report["operators"]["outcome"]
+    selected = outcome.get("selected")
+    retained = None
+    if selected is None:
+        if outcome.get("status") != "incomplete_training_evidence":
+            raise ValueError("retail search ended without a selection or incomplete evidence")
+        # A native step limit has no score. Preserve the original candidate, but
+        # do not turn this interrupted comparison into a successful selection.
+        anchor = next(row for row in journal["candidates"] if row["id"] == "anchor")
+        retained = {"run_id": run_id, "candidate_id": anchor["id"], "digest": anchor["digest"]}
+    effective = selected or retained
+    manifest = read_json(run_root / "target-manifests" / (effective["candidate_id"] + ".json"))
+    harness = (run_root / "targets" / effective["candidate_id"] / "AGENTS.md").read_text()
     if (
-        manifest["digest"] != selected["digest"]
+        manifest["digest"] != effective["digest"]
         or digest({key: value for key, value in manifest.items() if key != "digest"})
-        != selected["digest"]
+        != effective["digest"]
     ):
         raise ValueError("selected retail candidate manifest changed")
     resource = next(item for item in manifest["resources"] if item["path"] == "AGENTS.md")
@@ -335,9 +345,11 @@ async def _search(root, source_root, config, provider_script, preflight):
         root / "result.json",
         {
             "run_id": run_id,
+            "status": "completed" if selected is not None else "incomplete_training_evidence",
             "selected": selected,
+            **({"retained": retained} if retained is not None else {}),
             "harness": harness,
-            "outcome": report["operators"]["outcome"],
+            "outcome": outcome,
             "constraints": [record for record in records if record["kind"] == "prompt_constraints"],
             "training_gates": [
                 record for record in records if record["kind"] == "training_acceptance"

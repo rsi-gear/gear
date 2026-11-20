@@ -204,6 +204,20 @@ class StudyRuntimeTests(RetailSearchFixture):
                 self.assertEqual(row["harness"], self.config["harness"])
         self.assertEqual(len(list(study.root.glob("trials/*/*/*/search/result.json"))), 1)
 
+    def test_incomplete_search_is_retained_and_excluded_from_comparison(self):
+        with self.environment():
+            study = self.study(max_steps=1)
+            result = asyncio.run(study.run())
+        self.assertFalse(result["comparable"])
+        self.assertIsNone(result["paired_failure_minus_control"])
+        fixed = next(row for row in result["decisions"] if row["arm"] == "fixed")
+        self.assertEqual(fixed["pool_status"], "ready")
+        self.assertEqual(fixed["search"]["status"], "incomplete_training_evidence")
+        self.assertIsNone(fixed["search"]["selected"])
+        self.assertEqual(fixed["harness"], study.config["harness"])
+        selected = next(row for row in result["evaluations"] if row["arm"] == "fixed")
+        self.assertFalse(selected["eligible"])
+
 
 if __name__ == "__main__":
     unittest.main()

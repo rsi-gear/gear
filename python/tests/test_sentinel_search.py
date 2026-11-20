@@ -225,7 +225,7 @@ class RetailProviderTests(RetailSearchFixture):
 
     def test_partial_solver_is_not_a_zero_score(self):
         result = asyncio.run(respond(self.message(max_steps=4), calls_factory=FixtureCalls))
-        self.assertEqual(result["evidence"][0]["status"], "task_failed")
+        self.assertEqual(result["evidence"][0]["status"], "scoring_failed")
         self.assertIsNone(result["evidence"][0]["score"])
         self.assertEqual(result["physicalAttempts"], 1)
 
@@ -305,6 +305,55 @@ class RetailProviderTests(RetailSearchFixture):
     os.environ.get("GEAR_TEST_SENTINEL_RUNTIME"), "explicit CLI/worker integration"
 )
 class RetailRuntimeTests(RetailSearchFixture):
+    def test_incomplete_training_retains_anchor_without_selecting_or_resubmitting(self):
+        async def run():
+            provider = ROOT / "python/tests/fixtures/sentinel_provider.py"
+            for phase in ("training", "candidate_training"):
+                with self.subTest(phase=phase):
+                    config = {**self.config, "max_steps": 1}
+                    if phase == "training":
+                        config["harness"] += " SOLVE_WITH_TOOLS"
+                    workspace = self.root / phase
+                    result = await search(workspace, TAU_SOURCE, config, provider_script=provider)
+                    self.assertEqual(result["status"], "incomplete_training_evidence")
+                    self.assertIsNone(result["selected"])
+                    self.assertEqual(result["retained"]["candidate_id"], "anchor")
+                    self.assertEqual(result["harness"], config["harness"])
+                    self.assertFalse(result["test_opened"])
+                    journal = read_json(
+                        workspace / "project/.gear/runs" / result["run_id"] / "journal.json"
+                    )
+                    self.assertFalse(journal["heldOutEvidence"])
+                    self.assertTrue(
+                        any(
+                            row["score"] is None
+                            for operation in journal["operations"]
+                            for row in operation["receipt"]["evidence"]
+                        )
+                    )
+                    submitted = (workspace / "calls/submitted.jsonl").read_text()
+                    if phase == "training":
+                        self.assertNotIn("/meta", submitted)
+                    else:
+                        self.assertEqual(result["physical_attempts"], 5)
+                    (workspace / "result.json").unlink()
+                    self.assertEqual(
+                        result,
+                        await search(workspace, TAU_SOURCE, config, provider_script=provider),
+                    )
+                    self.assertEqual(submitted, (workspace / "calls/submitted.jsonl").read_text())
+
+        with patch.dict(
+            os.environ,
+            {
+                "GEAR_PROFILE_ROOT": str(self.root / "profiles"),
+                "GEAR_PYTHON": sys.executable,
+                "GEAR_COMMAND": json.dumps(["node", str(ROOT / "lib/cli.js")]),
+                "PYTHONPATH": str(ROOT / "python"),
+            },
+        ):
+            asyncio.run(run())
+
     def test_formal_run_repair_training_gate_frozen_admission_and_recovery(self):
         async def run():
             provider = ROOT / "python/tests/fixtures/sentinel_provider.py"

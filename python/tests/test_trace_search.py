@@ -132,7 +132,7 @@ class TracePoolProviderTests(TraceSearchFixture):
         partial = asyncio.run(
             respond(self.trace_message(name="partial", max_steps=1), calls_factory=FixtureCalls)
         )
-        self.assertEqual(partial["evidence"][0]["status"], "task_failed")
+        self.assertEqual(partial["evidence"][0]["status"], "scoring_failed")
         self.assertIsNone(partial["evidence"][0]["score"])
         unknown = self.trace_message(name="unknown")
         with (

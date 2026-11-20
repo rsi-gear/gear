@@ -114,7 +114,9 @@ PYTHONPATH=/path/to/gear/python \
 
 `--preflight` 只检查配置与计划，不调用模型。CLI 默认将 profile 放在 workspace 的 `profiles` 目录；直接调用 `search()` 时显式设置 `GEAR_PROFILE_ROOT`。入口使用实际 `Project.refine`、独立 worker、`ReflectiveSearch` 和训练门槛，超长候选通过既有修订路径处理。validation 只用于选型；`nominate=false`，本入口不打开最终测试。正式效果实验仍须在优化结束后独立评价固定 test。
 
-[sentinel_provider.py](sentinel_provider.py) 实现现有 Gear process provider 协议。目标只解释封存候选中的 `AGENTS.md`，拒绝额外 Pi 设置／扩展；不声称执行 Pi 本身。Meta 只获得声明的 train 任务与材料，不能请求 validation／test 内容，也不会收到完整 verifier 或隐藏参考解。目标执行结果、实际对话、工具观测和评分进入正式 evidence；未完成轨迹为 `task_failed, score=null`，完整失败才是有效的 0 分。
+[sentinel_provider.py](sentinel_provider.py) 实现现有 Gear process provider 协议。目标只解释封存候选中的 `AGENTS.md`，拒绝额外 Pi 设置／扩展；不声称执行 Pi 本身。Meta 只获得声明的 train 任务与材料，不能请求 validation／test 内容，也不会收到完整 verifier 或隐藏参考解。目标执行结果、实际对话、工具观测和评分进入正式 evidence；未完成轨迹在源记录中保持 unknown，由调用方转换为 `scoring_failed, score=null`。Gear 的 `task_failed` 要求已认证的数值评分，不能与 null 配对；完整失败才是有效的 0 分。
+
+原 harness 或候选的训练轨迹不完整时，搜索返回 `status=incomplete_training_evidence`、`selected=null`，在 `retained` 中保存原 anchor，并返回其封存的 harness。此结果不能算作一次有效选型；恢复复用原回执，不为获取分数重新执行同一任务。
 
 可选 `agentr_workspaces` 字段可指定 1–16 个[已验证的 Agent-R 修复目录](AGENTR.zh-CN.md#接入正式-harness-搜索)。入口离线重放后将公开修复证据绑定池内的原训练任务，仅提供给对应任务范围的 Meta；不新增任务、不改变混合配额。基线模型、effort、harness 与步数须匹配来源；生成及源采集成本另行保留。target、validation 和 test 的输入合同不变。
 
@@ -182,7 +184,7 @@ PYTHONPATH=python /tmp/gear-sentinel-env/bin/python \
   --tau2-source /tmp/gear-sentinel-tau2
 ```
 
-`--preflight` 不执行模型请求。所有尝试均记录，不在观察到拒绝后追加尝试。池缺额时，该轮不启动搜索，保留当前 harness，并将整份研究标记 `comparable=false`；不会用固定任务填补生成份额。未完成测试不会折算为 0 分或从分母剔除，此时通过率为 `null`，不计算组间差值。
+`--preflight` 不执行模型请求。所有尝试均记录，不在观察到拒绝后追加尝试。池缺额时，该轮不启动搜索，保留当前 harness，并将整份研究标记 `comparable=false`；不会用固定任务填补生成份额。训练证据不完整导致搜索没有选型时，也保留原 harness 并将该组标记为不合格，继续保留其他组与最终测试的描述性结果。未完成测试不会折算为 0 分或从分母剔除，此时通过率为 `null`，不计算组间差值。
 
 所有 seed／组／轮完成选型后，先封存 `test-admission.json`，再评测相同的固定 test；validation／test 不进入生成或 Meta。相同 seed 内完全相同的 harness 共用同一份采集／测试观测，避免重复收费及引入无意义的模型随机差异。配置、源码、编译 CLI、原生后端、provider、任务和最终选型均绑定摘要；恢复重新检查原记录并复用调用键。汇总计数来自唯一原生回执，不累加复用观测；配额上限与实际消耗分别报告。结果只给出描述性逐 seed 配对差值，不声称统计显著性。
 

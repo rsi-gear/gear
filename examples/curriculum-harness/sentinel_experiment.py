@@ -334,6 +334,8 @@ class RetailStudy:
                             provider_script=self.provider_script,
                         )
                         harness = searched["harness"]
+                        if searched["status"] != "completed":
+                            eligible = False
                     else:
                         eligible = False
                     decision = {
