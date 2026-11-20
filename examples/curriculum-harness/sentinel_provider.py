@@ -70,6 +70,9 @@ def prepare_jobs(config, context, request):
         for a, b in (("train", "validation"), ("train", "test"), ("validation", "test"))
     ):
         raise ValueError("retail task partitions overlap")
+    trace_tasks = config.get("trace_tasks", {})
+    if not isinstance(trace_tasks, dict) or not set(trace_tasks) <= scopes["train"]:
+        raise ValueError("TRACE execution must be explicitly admitted inside training")
     if request.get("operatorCall"):
         if not set(operation["task_ids"]) <= scopes["train"]:
             raise ValueError("Meta requested material outside the training scope")
@@ -110,11 +113,17 @@ def prepare_jobs(config, context, request):
             else None
         )
         bundle = json.loads(context["benchmark"]["verifiers"][identifier]["expected"])
+        synthetic = bundle.get("kind") == "trace"
+        if synthetic != (identifier in trace_tasks) or (
+            synthetic and digest(bundle) != trace_tasks[identifier]
+        ):
+            raise ValueError("TRACE bundle differs from its explicit frozen admission")
         if (
             partition is None
             or bundle["partition"] != partition
             or bundle["gear_task_id"] != identifier
-            or bundle["task"]["ticket"] != tasks[identifier]["instruction"]
+            or (bundle["instruction"] if synthetic else bundle["task"]["ticket"])
+            != tasks[identifier]["instruction"]
             or bundle["family"] != tasks[identifier]["family"]
         ):
             raise ValueError("retail verifier differs from the admitted task or partition")
@@ -249,6 +258,67 @@ async def respond(message, *, calls_factory=TextCalls):
                             timeout_seconds=getattr(calls, "timeout_seconds", None),
                         )
                         bundle = job["bundle"]
+                        if bundle.get("kind") == "trace":
+                            from trace_calibrate import TraceCollector
+                            from trace_pool import environment_for_task, public_instruction
+
+                            environment = environment_for_task(sample_root / "environment", bundle)
+                            initial = (
+                                await asyncio.to_thread(environment.replay, bundle["seed"], [])
+                            )["snapshots"][0]
+                            if public_instruction(initial) != bundle["instruction"]:
+                                raise ValueError(
+                                    "TRACE public input differs from the admitted task"
+                                )
+                            freeze(sample_root / "steps/0.json", initial)
+                            sample_config = {
+                                "schema_version": 1,
+                                "model": config["model"],
+                                "effort": config["effort"],
+                                "harness": job["harness"],
+                                "max_steps": config["max_steps"],
+                                "max_calls": scoped.max_calls,
+                                "sample_id": job["key"],
+                                "seed": bundle["seed"],
+                                "sample_idx": 0,
+                            }
+                            result = await TraceCollector(
+                                sample_root, environment, sample_config, scoped
+                            ).collect()
+                            trace = read_json(sample_root / "trajectory.json")
+                            evidence.append(
+                                {
+                                    "candidate_id": request["operation"]["candidate_id"],
+                                    "task_id": job["slot"]["taskId"],
+                                    "repetition": job["slot"]["repetition"],
+                                    "scope": request["operation"]["scope"],
+                                    "status": "valid" if result["complete"] else "task_failed",
+                                    "score": int(result["reward"] >= bundle["success_threshold"])
+                                    if result["complete"]
+                                    else None,
+                                    "feedback": json.dumps(
+                                        {
+                                            "complete": result["complete"],
+                                            "reward": result["reward"],
+                                            "success_threshold": bundle["success_threshold"],
+                                            "actions": trace["actions"],
+                                            "messages": trace["snapshots"][-1]["messages"],
+                                            "trajectory_digest": digest(trace),
+                                            "environment_id": result["environment_id"],
+                                        }
+                                    ),
+                                }
+                            )
+                            samples.append(
+                                {
+                                    "task_id": job["slot"]["taskId"],
+                                    "partition": "train",
+                                    "kind": "trace",
+                                    "path": str(sample_root),
+                                    "result_digest": digest(result),
+                                }
+                            )
+                            continue
                         sample_config = {
                             key: bundle[key]
                             for key in (

@@ -77,12 +77,14 @@ solver 只看到 policy、工具定义、实际对话；用户模拟器只看到
 | 字段 | 内容 |
 | --- | --- |
 | `fixed` | 已授权固定任务列表，每项为 `{task, reference, evidence_refs}` |
-| `generated` | 已完成生成工作目录的路径列表 |
+| `generated` | 已完成生成目录路径，或具名 CoEvolve／TRACE 条目；TRACE 逐 seed 展开 |
 | `fixed_count`, `generated_count` | 各来源的明确数量，分别为 0–128，合计非零 |
 
 运行方式与前述命令相同，将脚本替换为 `sentinel_pool.py` 并提供独立 workspace。生成任务的完整输入、每次模型请求、结果、记忆及验证材料均以保存回执重新计算，真实工具和 native verifier 重新执行；该路径没有 SDK 客户端、没有缺失回执时的在线补跑。只能消费匹配当前冻结实现的记录，旧版本须用原提交重放。
 
-固定任务同样执行参考校准。所有任务须属于同一个训练环境与 family；重复任务 ID 或精确内容被拒绝。按显式 seed 无放回选择，两类配额不足会返回 `insufficient` 和空选择，不暗中补齐。输出包含完整数据库、task、reference 和来源，仍为待准入提案；后续正式搜索须创建新的 run，不能改写正在运行的任务池。
+固定任务同样执行参考校准。原生 retail 任务须属于同一个训练环境与 family；重复任务 ID 或精确内容被拒绝。按显式 seed 无放回选择，两类配额不足会返回 `insufficient` 和空选择，不暗中补齐。原生条目输出完整数据库、task、reference 和来源，仍为待准入提案；后续正式搜索须创建新的 run，不能改写正在运行的任务池。
+
+[TRACE 环境条目](TRACE.zh-CN.md#混合池与正式-harness-搜索)保留自己的代码和 seed，使用原始 retail 工具接口在隔离 CPU 容器中执行；只用于训练练习。它们与原始任务共享显式混合配额，但不会被转换成伪造的 native task。validation/test 仍必须是原始 retail 任务。
 
 ## 正式 harness 搜索
 
@@ -191,7 +193,7 @@ PYTHONPATH=python:python/tests /tmp/gear-sentinel-env/bin/python \
   -m unittest test_sentinel_retail test_sentinel_collect test_sentinel_pool test_sentinel_search test_sentinel_experiment test_sentinel_mastery test_formal_curriculum_harness -v
 ```
 
-当前共 63 项定向检查通过：58 项工具、provider、memory、恢复与隔离检查，另 5 项实际 CLI／worker 集成。正式集成覆盖超长候选拒绝与修订、训练门槛、6 个真实 native 任务执行、丢失外层返回后的同 run 恢复、扩池后第二个独立 run 以及缺额池拒绝准入；最终测试未打开。模型与语义审查均为明确替身，不能作为真实模型效果证据。此前 58 项 curriculum 纯算子回归记录保留；原始单轮诊断测试仍使用明确源失败夹具，采集和正式评分测试则执行真实工具与 native verifier。
+本轮 `test_sentinel*.py` 共 57 项检查通过：52 项工具、provider、memory、恢复与隔离检查，另 5 项实际 CLI／worker 集成。正式集成覆盖超长候选拒绝与修订、训练门槛、6 个真实 native 任务执行、丢失外层返回后的同 run 恢复、扩池后第二个独立 run 以及缺额池拒绝准入；最终测试未打开。模型与语义审查均为明确替身，不能作为真实模型效果证据。当前另有 65 项 curriculum 纯算子／调用方回归；原始单轮诊断测试仍使用明确源失败夹具，采集和正式评分测试则执行真实工具与 native verifier。TRACE 扩展的 22 项检查与原始留出评测见[对应记录](TRACE.zh-CN.md#验证边界)。
 
 CI 的 `Curriculum / tool environments CPU` 作业安装固定 Tau2、构建 Node CLI，并运行 `test_sentinel*.py`，启用正式 runtime 集成；未安装可选依赖时只运行纯采样检查，跳过 native 集成，不把跳过项当作通过。
 

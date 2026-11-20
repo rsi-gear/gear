@@ -26,7 +26,7 @@ IMAGE = os.environ.get("GEAR_TRACE_PYTHON_IMAGE")
 
 
 @unittest.skipUnless(IMAGE, "requires an explicit local CPU Python Docker image ID")
-class TraceGenerationTests(RetailSearchFixture):
+class TraceGenerationFixture(RetailSearchFixture):
     def setUp(self):
         super().setUp()
         success = self.collect("success", True)
@@ -97,6 +97,8 @@ class TraceGenerationTests(RetailSearchFixture):
         )
         return asyncio.run(generator.generate(preflight=preflight))
 
+
+class TraceGenerationTests(TraceGenerationFixture):
     def test_full_contrast_environment_rollout_calibration_recovery_and_offline_replay(self):
         calls = TraceCalls()
         calls.interrupt_key = "candidates/0/samples/17/0/solve/2"

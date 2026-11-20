@@ -4,7 +4,7 @@
 
 依据是 [TRACE 论文](https://arxiv.org/html/2604.05336v2)和[官方源码的冻结版本](https://github.com/ScalingIntelligence/TRACE/tree/d2db23085409555b3f13ea426f42d62cf0bbc43d)：重点核对了 `aggregate_capabilities.py`、环境生成提示词、`calibrate_environment.py` 和 `collect_rollouts.py` 的聊天工具环境合同。上游代码为 MIT。这里实现并验证其生成与校准机制，没有运行论文训练程序。
 
-**本版本不做 GPU 训练。** 本入口的完成状态表示生成环境通过本次执行、语义和难度检查，不表示 harness 已提升。TRACE 生成环境到正式 `Project.refine` 的专用任务准入、固定／随机／能力定向三组真实模型对照仍待实现与验收；不能把环境代码直接当成既有 retail 任务提交。专项 LoRA、GRPO、MoE 组合及路由属于后续范围。
+**本版本不做 GPU 训练。** 本入口的完成状态表示生成环境通过本次执行、语义和难度检查，不表示 harness 已提升。通过检查的环境可以经下方混合池入口进入新的正式 `Project.refine` run；候选仍由原始 retail 验证任务选型。固定／随机／能力定向三组真实模型效果对照仍待验收。专项 LoRA、GRPO、MoE 组合及路由属于后续范围。
 
 ## 来源与能力筛选
 
@@ -92,11 +92,32 @@ PYTHONPATH=python /tmp/gear-sentinel-env/bin/python \
 
 产物包括 `history.json`、能力字典和逐轮标签、`assessments.json`、生成计划、每版代码与环境身份、正负例执行记录、独立审查、每个 seed/sample 的模型输入和轨迹、分组校准、验证／选择报告及最终用量。`training_eligible=false`，这些草案没有自动取得训练或正式搜索准入。
 
+## 混合池与正式 harness 搜索
+
+[trace_pool.py](trace_pool.py) 在调用处把通过校准的环境展开为指定 seed 的练习；沿用 [sentinel_pool.py](sentinel_pool.py) 的固定／生成配额。`generated` 列表可以包含：
+
+```json
+{
+  "recipe": "trace",
+  "workspace": "/tmp/gear-trace-generation",
+  "draft_id": "从生成结果 selected 取实际 draft ID",
+  "seeds": [31, 32, 33]
+}
+```
+
+每个 seed 算一条生成任务，必须和环境难度校准的 seeds 不重合；来源 family、原始工具定义和已通过的 draft 必须匹配。池构建先用保存的回执离线重放整个生成与校准，再对新 seed 执行参考与负例；公开上下文必须不同，不能只换 seed 或代码摘要就重复计入同一练习。新 seed 的参考验证不冒充重新测量过的 solver 难度分布。固定来源仍是原始 retail 任务，生成环境保留自己的合成状态，不会被伪装成 Tau2 task。两类配额不足返回 `insufficient`，不补抽或用另一类任务填补。
+
+接着沿用 [正式 retail 搜索配置](SENTINEL.zh-CN.md#正式-harness-搜索)，将 `pool_workspace` 指向这个新池。无需新增算法或 provider：`sentinel_search.py` 显式准入每条 TRACE 代码／执行身份、seed、公开上下文及验证摘要，profile 冻结整个任务包的 digest；`sentinel_provider.py` 直接调用隔离的 `TraceCollector` 执行候选。未经声明、修改过代码或 seed 的任务在模型调用前拒绝。
+
+TRACE 环境只能进入 **train**。validation/test 必须继续使用原始 retail 环境与 native verifier，并保持 family 隔离。模型 solver 仅见公开政策、工具和对话；Meta 仅获得训练指令与执行反馈，不获得生成代码、参考动作或私有验证／测试内容。候选仍只修改 `AGENTS.md`，复用正式 `ReflectiveSearch`、训练门槛、长度约束、有限修订和回执恢复。每轮训练成功率使用已冻结的 `success_threshold` 将完成 reward 转为 0/1；原始 reward 另存反馈。未完成轨迹保持 `score=null`。
+
+搜索本身不打开最终 test。待候选选择完成后，调用方用 [RetailCollector](sentinel_collect.py) 在同一份原始 test 上分别评价 baseline 和选中 harness，保留 test 分区；不能把合成环境上的分数上涨直接算成迁移收益。扩展池后使用新的搜索目录和 run，不能在原 run 中增加任务。权重始终固定。
+
 ## 验证边界
 
 [核心测试](../../python/tests/test_curriculum_capabilities.py)验证标签矩阵、来源和算子绑定、coverage/gap 公式、重复标注一致性及未知分母。[校准与 collector 测试](../../python/tests/test_trace_calibrate.py)、[隔离测试](../../python/tests/test_trace_environment.py)和[生成调用方测试](../../python/tests/test_trace_generate.py)使用真实 CPU Docker 和 Tau2 执行，模型响应与生成代码均为显式 fixture。它们覆盖参考／负例、完整分组、语义拒绝、修订上限、付费回执恢复、离线重放和无 SDK 预检；不证明真实模型发现的能力或生成环境质量。
 
-本轮本地通过 65 项 curriculum 回归（含 6 项新增能力统计检查）、17 项 TRACE 检查及 69 项既有 retail／CoEvolve 回归，共 151 项；执行覆盖真实 Docker、Tau2 与正式 CLI／worker，模型响应均为替身。同时通过 mypy、Ruff、依赖边界和文档本地链接检查。离线重放还会比较原始 Python 源文件字节，拒绝仅 JSON 汇总一致而执行文件已变更的制品。CPU CI 已配置相同检查和固定 digest 的 Python 镜像；本地通过不表示远端 CI 已运行。
+本轮本地通过 65 项 curriculum 回归、22 项 TRACE 检查及 69 项既有 retail／CoEvolve 回归，共 156 项；执行覆盖真实 Docker、Tau2 与正式 CLI／worker，模型响应均为替身。新增 5 项混合池／正式搜索检查覆盖新 seed 内容重复、准入篡改、未知结果、恢复及原始留出评测。Ruff、依赖边界和文档本地链接检查通过；纯算子代码未改变，上一阶段 mypy 结果仍适用。离线重放会比较原始 Python 源文件字节，拒绝仅 JSON 汇总一致而执行文件已变更的制品。CPU CI 已配置相同检查和固定 digest 的 Python 镜像；本地通过不表示远端 CI 已运行。
 
 ```sh
 GEAR_TRACE_PYTHON_IMAGE=实际完整镜像ID \
@@ -104,5 +125,7 @@ GEAR_SENTINEL_TAU2_PATH=/tmp/gear-sentinel-tau2 PYTHONPATH=python \
   /tmp/gear-sentinel-env/bin/python -m unittest discover \
   -s python/tests -p 'test_trace*.py' -v
 ```
+
+[正式接入测试](../../python/tests/test_trace_search.py)使用真实 CPU Docker、Gear CLI／worker 和 Tau2 评分，覆盖混合池、显式准入、材料隔离、未知结果、收费回执恢复，以及选型完成后在原始 test 执行 baseline／选中 harness。模型决策均为明确 fixture；测试中出现的分数变化只是执行链路检查。
 
 真实 LLM 生成质量、校准分布、原 benchmark 留出收益和单位成本收益尚未验收。不能用 fixture 中预设的一半成功或任何生成环境上的高分代替这些结果。

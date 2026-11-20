@@ -397,6 +397,7 @@ def implementation_identity():
         + list((gear_root / "core").glob("*.py"))
         + list(Path(__file__).parent.glob("sentinel_*.py"))
         + list(Path(__file__).parent.glob("coevolve_*.py"))
+        + list(Path(__file__).parent.glob("trace_*.py"))
         + [
             gear_root / "canonical.py",
             Path(__file__).with_name("model_calls.py"),

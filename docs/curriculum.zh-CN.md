@@ -79,7 +79,7 @@ PYTHONPATH=python python3 examples/training-loop/failure_curriculum_cpu.py \
 
 [CoEvolve-inspired retail 调用方](../examples/curriculum-harness/COEVOLVE.zh-CN.md)已将三类信号接到历史重放、独立工具探索、轨迹聚合、任务构造、native 校准和正式 harness 搜索。`conditioning="signal"` 接受完整成功或失败案例，由调用方提供已测量的信号目标；不会把成功的 rare/boundary 来源改标为失败。执行、转换和恢复留在调用方。真实模型效果尚未验收，GRPO 不在本版范围。
 
-[TRACE-inspired 调用方](../examples/curriculum-harness/TRACE.zh-CN.md)使用 `ContrastCapabilities` 的规范能力字典和重复标注，计算失败覆盖及成功／失败缺失率之差，再生成独立 Python 环境。调用方负责实际 Docker 隔离、参考／负例执行、固定权重 rollout 和完整分组校准。算子不读取轨迹、不运行代码或模型；不同任务的可比性由调用方保证。生成奖励不是独立 oracle；该配方的专用正式搜索接入和真实模型收益仍待验收，专项权重训练不在本版范围。
+[TRACE-inspired 调用方](../examples/curriculum-harness/TRACE.zh-CN.md)使用 `ContrastCapabilities` 的规范能力字典和重复标注，计算失败覆盖及成功／失败缺失率之差，再生成独立 Python 环境。调用方负责实际 Docker 隔离、参考／负例执行、固定权重 rollout 和完整分组校准，并把通过验证的新 seed 练习接入混合池与正式 harness 搜索；validation/test 保持原始 retail 环境。算子不读取轨迹、不运行代码或模型；不同任务的可比性由调用方保证。生成奖励不是独立 oracle；真实模型收益仍待验收，专项权重训练不在本版范围。
 
 练习难度使用 `PracticeMeasurement`，必须绑定当前策略与草案摘要；成功率范围和最小样本量是显式参数。`exploration_count` 预留独立探索槽，要求显式随机源；测量未知只能使用这些槽。`mix_counts=(("fixed", 2), ("random", 2), ("failure", 2))` 配合调用方的草案来源标签约束混合池。配额总和必须等于预算，某类不足时返回较小池和拒绝原因，不拿其他来源偷偷填满。
 

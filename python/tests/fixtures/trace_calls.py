@@ -9,11 +9,12 @@ from fixtures.trace_game import source
 class TraceCalls:
     identity = "explicit-trace-fixture-v1"
 
-    def __init__(self, *, max_calls=64, passed=None, novel=True, code_prefixes=()):
+    def __init__(self, *, max_calls=64, passed=None, novel=True, code_prefixes=(), code_suffix=""):
         self.max_calls = max_calls
         self.passed = passed
         self.novel = novel
         self.code_prefixes = code_prefixes
+        self.code_suffix = code_suffix
         self.receipts = {}
         self.submissions = []
         self.interrupt_key = None
@@ -58,7 +59,7 @@ class TraceCalls:
             revision = int(key.split("/")[1])
             prefix = self.code_prefixes[revision] if revision < len(self.code_prefixes) else ""
             response = {
-                "code": prefix + source(data["source_tools"]),
+                "code": prefix + source(data["source_tools"]) + self.code_suffix,
                 "transfer_rationale": "Explicit generated-code fixture for pipeline validation.",
             }
         elif key.endswith("/audit"):

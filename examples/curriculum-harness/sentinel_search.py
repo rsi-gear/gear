@@ -89,7 +89,7 @@ async def _search(root, source_root, config, provider_script, preflight):
         "test": config["test"],
     }
     ids, content, families, rows, admission = set(), set(), {}, [], []
-    scopes = {}
+    scopes, trace_tasks = {}, {}
     for partition, values in bundles.items():
         if not isinstance(values, list) or not 1 <= len(values) <= 256:
             raise ValueError("each retail partition needs a bounded nonempty task list")
@@ -104,45 +104,65 @@ async def _search(root, source_root, config, provider_script, preflight):
                 raise ValueError("retail task partition or family changed")
             if partition != "train" and not bundle.get("evidence_refs"):
                 raise ValueError("private tasks require caller-authorized source evidence")
-            task = validate_task(bundle["task"], bundle["reference"])
-            session = RetailSession(backend, bundle["database"], bundle["user_id"])
-            calibration = calibrate(
-                backend, bundle["database"], bundle["user_id"], bundle["reference"], task
-            )
-            fingerprint = digest(
-                [
-                    session.identity,
-                    {
-                        key: value
-                        for key, value in task.model_dump(mode="json").items()
-                        if key != "id"
-                    },
-                ]
-            )
-            if task.id in ids or fingerprint in content:
+            synthetic = bundle.get("kind") == "trace"
+            if synthetic:
+                if partition != "train":
+                    raise ValueError(
+                        "TRACE generated environments are training-only; holdouts stay native"
+                    )
+                from trace_pool import verify_task
+
+                task_id, instruction = bundle["pool_task_id"], bundle["instruction"]
+                calibration = await asyncio.to_thread(
+                    verify_task, root / "trace" / task_id.removeprefix("sha256:"), bundle
+                )
+                fingerprint = task_id
+            else:
+                task = validate_task(bundle["task"], bundle["reference"])
+                task_id, instruction = task.id, task.ticket
+                session = RetailSession(backend, bundle["database"], bundle["user_id"])
+                calibration = calibrate(
+                    backend, bundle["database"], bundle["user_id"], bundle["reference"], task
+                )
+                fingerprint = digest(
+                    [
+                        session.identity,
+                        {
+                            key: value
+                            for key, value in task.model_dump(mode="json").items()
+                            if key != "id"
+                        },
+                    ]
+                )
+            if task_id in ids or fingerprint in content:
                 raise ValueError("retail tasks or exact content overlap across partitions")
-            ids.add(task.id)
+            ids.add(task_id)
             content.add(fingerprint)
             families[partition].add(bundle["family"])
-            gear_id = "retail-" + digest([partition, task.id, fingerprint]).removeprefix("sha256:")
+            gear_id = ("trace-" if synthetic else "retail-") + digest(
+                [partition, task_id, fingerprint]
+            ).removeprefix("sha256:")
             scopes[partition].append(gear_id)
             admitted_bundle = {**bundle, "gear_task_id": gear_id}
+            if synthetic:
+                trace_tasks[gear_id] = digest(admitted_bundle)
             admission.append(
                 {
                     "gear_task_id": gear_id,
-                    "native_task_id": task.id,
+                    "native_task_id": None if synthetic else task_id,
+                    **({"environment_task_id": task_id} if synthetic else {}),
                     "partition": partition,
                     "bundle_digest": digest(admitted_bundle),
                 }
             )
             freeze(
-                root / "calibration" / (digest(task.id).removeprefix("sha256:") + ".json"),
+                root / "calibration" / (digest(task_id).removeprefix("sha256:") + ".json"),
                 calibration,
             )
             rows.append(
                 {
                     "id": gear_id,
-                    "instruction": task.ticket,
+                    "instruction": instruction,
                     "family": bundle["family"],
                     "split": "held_out" if partition == "test" else "seed",
                     "expected": json.dumps(admitted_bundle),
@@ -231,6 +251,7 @@ async def _search(root, source_root, config, provider_script, preflight):
                 "model": model,
                 "effort": config["effort"],
                 "tau2_source": str(Path(source_root).resolve()),
+                "trace_tasks": trace_tasks,
                 **{key + "_task_ids": value for key, value in scopes.items()},
             },
         }

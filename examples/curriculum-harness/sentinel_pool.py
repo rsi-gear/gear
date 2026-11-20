@@ -133,6 +133,16 @@ async def _build_pool(root, source_root, config):
         for key in ("fixed", "generated")
     ):
         raise ValueError("mixed pool source inventories must be bounded lists")
+    expanded_count = sum(
+        len(entry.get("seeds", []))
+        if isinstance(entry, dict)
+        and entry.get("recipe") == "trace"
+        and isinstance(entry.get("seeds"), list)
+        else 1
+        for entry in config["generated"]
+    )
+    if expanded_count > 128:
+        raise ValueError("mixed pool generated task inventory exceeds 128 including TRACE seeds")
     config = json.loads(json.dumps(config, allow_nan=False))
     root = Path(root).resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -164,6 +174,19 @@ async def _build_pool(root, source_root, config):
         )
     for entry in config["generated"]:
         if isinstance(entry, dict):
+            if entry.get("recipe") == "trace":
+                from trace_pool import replay_tasks
+
+                sources["generated"].extend(
+                    await replay_tasks(
+                        root / "trace" / digest(entry).removeprefix("sha256:"),
+                        source_root,
+                        entry,
+                        family=config["family"],
+                        source_tools=session.tool_schemas(),
+                    )
+                )
+                continue
             if set(entry) != {"recipe", "workspace", "draft_id"} or entry["recipe"] != "coevolve":
                 raise ValueError("unsupported generated retail recipe")
             # Direct conversion at the caller boundary; no curriculum adapter.
@@ -178,6 +201,15 @@ async def _build_pool(root, source_root, config):
     content_ids, task_ids = set(), set()
     for kind, bundles in sources.items():
         for bundle in bundles:
+            if bundle.get("kind") == "trace":
+                content_id = digest(["trace", bundle["instruction"]])
+                if bundle["partition"] != "train" or bundle["family"] != config["family"]:
+                    raise ValueError("TRACE pool task belongs to another training scope")
+                if content_id in content_ids or bundle["pool_task_id"] in task_ids:
+                    raise ValueError("duplicate task or content across mixed pool sources")
+                content_ids.add(content_id)
+                task_ids.add(bundle["pool_task_id"])
+                continue
             if (
                 bundle["partition"] != "train"
                 or bundle["family"] != config["family"]
