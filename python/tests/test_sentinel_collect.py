@@ -12,15 +12,48 @@ from pathlib import Path
 from unittest.mock import patch
 
 from gear.canonical import digest
+from gear.core.schema import validate_output
 
 EXAMPLES = Path(__file__).resolve().parents[2] / "examples/curriculum-harness"
 sys.path.insert(0, str(EXAMPLES))
 from sentinel_collect import RetailCollector  # noqa: E402
-from sentinel_generate import EXPLORER_PROMPT, RetailGenerator, controller_cases  # noqa: E402
+from sentinel_generate import (  # noqa: E402
+    ACTION_SCHEMA,
+    EXPLORER_PROMPT,
+    RetailGenerator,
+    controller_cases,
+)
 from sentinel_retail import RetailSession, load_backend, replay_trace  # noqa: E402
 from test_sentinel_retail import FixtureCalls, database, observation  # noqa: E402
 
 TAU_SOURCE = os.environ.get("GEAR_SENTINEL_TAU2_PATH")
+
+
+class ActionContractTests(unittest.TestCase):
+    def test_empty_finish_and_mixed_actions_are_rejected_before_execution(self):
+        # Exact response that stopped the real V4 study, plus ambiguous shapes.
+        empty_finish = {"kind": "finish", "name": "", "arguments_json": "{}", "text": ""}
+        for response in (
+            empty_finish,
+            {**empty_finish, "kind": "message"},
+            {**empty_finish, "text": "Done", "name": "get_order_details"},
+            {**empty_finish, "text": "Done", "arguments_json": '{"order_id":"#G100"}'},
+            {**empty_finish, "kind": "tool", "name": "get_order_details", "text": "Done"},
+            {**empty_finish, "kind": "tool"},
+        ):
+            with self.subTest(response=response), self.assertRaises(ValueError):
+                validate_output(ACTION_SCHEMA, response)
+        for kind in ("message", "finish"):
+            validate_output(ACTION_SCHEMA, {**empty_finish, "kind": kind, "text": "Done"})
+        validate_output(
+            ACTION_SCHEMA,
+            {
+                **empty_finish,
+                "kind": "tool",
+                "name": "get_order_details",
+                "arguments_json": '{"order_id":"#G100"}',
+            },
+        )
 
 
 class SolverCalls:

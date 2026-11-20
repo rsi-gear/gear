@@ -14,7 +14,18 @@ import time
 from pathlib import Path
 
 from gear.canonical import digest
-from ifeval_experiment import BASE_INSTRUCTIONS, read_json, write_json
+from ifeval_experiment import read_json, write_json
+
+# This bridge also serves caller-executed tool environments. The IFEval-only
+# instruction "Do not use tools" ambiguously prohibited their JSON actions.
+# Native SDK tools remain disabled independently of these textual instructions.
+BASE_INSTRUCTIONS = (
+    "Follow the developer instructions and return only the requested text or structured output. "
+    "Do not invoke the model runtime's native tools or access files. "
+    "When the developer requests a structured tool action, emit that action in your response; "
+    "the caller executes supported actions and supplies the resulting observations. "
+    "Do not invent observations."
+)
 
 
 class TextCalls:
@@ -31,9 +42,7 @@ class TextCalls:
         from openai_codex.client import CodexConfig
 
         self.client = AsyncCodex(
-            CodexConfig(
-                config_overrides=("features.shell_tool=false", 'web_search="disabled"')
-            )
+            CodexConfig(config_overrides=("features.shell_tool=false", 'web_search="disabled"'))
         )
         await self.client.__aenter__()
         return self
@@ -57,9 +66,7 @@ class TextCalls:
         if saved["request"] != pending["request"]:
             raise ValueError("model receipt differs from its submission intent")
         if saved["receipt"]["status"] != "completed":
-            raise RuntimeError(
-                "model turn failed; retained receipt requires explicit recovery"
-            )
+            raise RuntimeError("model turn failed; retained receipt requires explicit recovery")
         return saved["receipt"]
 
     async def inspect(self, key):
@@ -118,13 +125,9 @@ class TextCalls:
             {"request": request, "receipt": receipt, "digest": digest(receipt)},
         )
         if receipt["status"] != "completed":
-            raise RuntimeError(
-                "model turn did not complete as tool-free text inference"
-            )
+            raise RuntimeError("model turn did not complete as tool-free text inference")
 
-    async def call(
-        self, key, prompt, harness, *, model, effort="low", output_schema=None
-    ):
+    async def call(self, key, prompt, harness, *, model, effort="low", output_schema=None):
         from openai_codex import ApprovalMode, Sandbox
 
         request = {
@@ -150,9 +153,7 @@ class TextCalls:
                 pending = directory / "pending.json"
                 if pending.exists():
                     if read_json(pending)["request"] != request:
-                        raise ValueError(
-                            "model call input changed while awaiting a result"
-                        )
+                        raise ValueError("model call input changed while awaiting a result")
                     status, receipt = await self.inspect(key)
                     if status == "complete":
                         return receipt
@@ -162,9 +163,7 @@ class TextCalls:
                 with (self.root / ".quota.lock").open("a") as quota:
                     fcntl.flock(quota, fcntl.LOCK_EX)
                     if len(list(self.root.glob("*/pending.json"))) >= self.max_calls:
-                        raise RuntimeError(
-                            "predeclared logical model-call quota exhausted"
-                        )
+                        raise RuntimeError("predeclared logical model-call quota exhausted")
                     write_json(pending, {"request": request})
                 thread = await self.client.thread_start(
                     cwd=str(directory),
@@ -178,11 +177,7 @@ class TextCalls:
                 handle = await thread.turn(
                     prompt,
                     effort=effort,
-                    **(
-                        {"output_schema": output_schema}
-                        if output_schema is not None
-                        else {}
-                    ),
+                    **({"output_schema": output_schema} if output_schema is not None else {}),
                 )
                 write_json(
                     pending,
@@ -193,15 +188,11 @@ class TextCalls:
                 receipt = {
                     "status": result.status.value,
                     "response": result.final_response or "",
-                    "usage": result.usage.model_dump(mode="json")
-                    if result.usage
-                    else None,
+                    "usage": result.usage.model_dump(mode="json") if result.usage else None,
                     "thread_id": thread.id,
                     "turn_id": result.id,
                     "seconds": time.monotonic() - started,
-                    "item_types": [
-                        getattr(item, "root", item).type for item in result.items
-                    ],
+                    "item_types": [getattr(item, "root", item).type for item in result.items],
                 }
                 self._store(directory, request, receipt)
                 return receipt
@@ -211,9 +202,7 @@ def token_usage(receipts):
     """Report tokens only if every turn has native usage; never infer HTTP counts."""
     if any(receipt["usage"] is None for receipt in receipts):
         return {}
-    return {
-        "tokens": sum(receipt["usage"]["total"]["total_tokens"] for receipt in receipts)
-    }
+    return {"tokens": sum(receipt["usage"]["total"]["total_tokens"] for receipt in receipts)}
 
 
 if __name__ == "__main__":

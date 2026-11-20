@@ -57,6 +57,26 @@ ACTION_SCHEMA = object_schema(
         "text": {"type": "string", "maxLength": 8192},
     }
 )
+# Constrain the two action shapes at the model boundary as well as execution.
+# A completed SDK response containing an empty finish is not a completed task.
+ACTION_SCHEMA["anyOf"] = [
+    object_schema(
+        {
+            "kind": {"type": "string", "const": "tool"},
+            "name": {"type": "string", "minLength": 1},
+            "arguments_json": {"type": "string", "minLength": 2},
+            "text": {"type": "string", "const": ""},
+        }
+    ),
+    object_schema(
+        {
+            "kind": {"type": "string", "enum": ["message", "finish"]},
+            "name": {"type": "string", "const": ""},
+            "arguments_json": {"type": "string", "const": "{}"},
+            "text": TEXT,
+        }
+    ),
+]
 WRITER_PROMPT = (
     "Write a new retail user request AFTER studying the executed reference. Preserve its "
     "customer, goal, item attributes and constraints. Exercise the selected learning "

@@ -195,7 +195,11 @@ PYTHONPATH=python:python/tests /tmp/gear-sentinel-env/bin/python \
   -m unittest test_sentinel_retail test_sentinel_collect test_sentinel_pool test_sentinel_search test_sentinel_experiment test_sentinel_mastery test_formal_curriculum_harness -v
 ```
 
-本轮 `test_sentinel*.py` 共 57 项检查通过：52 项工具、provider、memory、恢复与隔离检查，另 5 项实际 CLI／worker 集成。正式集成覆盖超长候选拒绝与修订、训练门槛、6 个真实 native 任务执行、丢失外层返回后的同 run 恢复、扩池后第二个独立 run 以及缺额池拒绝准入；最终测试未打开。模型与语义审查均为明确替身，不能作为真实模型效果证据。当前另有 65 项 curriculum 纯算子／调用方回归；原始单轮诊断测试仍使用明确源失败夹具，采集和正式评分测试则执行真实工具与 native verifier。TRACE 扩展的 22 项检查与原始留出评测见[对应记录](TRACE.zh-CN.md#验证边界)。
+此前 `test_sentinel*.py` 共 57 项检查通过：52 项工具、provider、memory、恢复与隔离检查，另 5 项实际 CLI／worker 集成。正式集成覆盖超长候选拒绝与修订、训练门槛、6 个真实 native 任务执行、丢失外层返回后的同 run 恢复、扩池后第二个独立 run 以及缺额池拒绝准入；最终测试未打开。模型与语义审查均为明确替身，不能作为真实模型效果证据。当前另有 65 项 curriculum 纯算子／调用方回归；原始单轮诊断测试仍使用明确源失败夹具，采集和正式评分测试则执行真实工具与 native verifier。TRACE 扩展的 22 项检查与原始留出评测见[对应记录](TRACE.zh-CN.md#验证边界)。
+
+动作输出 schema 进一步约束工具动作必须带名称且不能同时说话，message/finish 必须带非空文本且没有工具参数。执行器仍检查实际动作；无效输出不会伪造任务失败。`TextCalls` 的基础指令明确区分模型返回的结构化动作与 SDK 原生工具，避免复用 IFEval 的禁用工具措辞；原生工具仍关闭，所有实际 retail 执行仍在调用方。
+
+此次合同修复后，SENTINEL／Agent-R／CoEvolve／Self-Direction 合计 107 项检查通过，另 1 项可选真实 MiniLM 检查跳过；正式模型桥接的 6 项检查也通过。包括真实 CLI／worker、CPU 工具执行、新旧 schema 的边界和基础指令变化后拒绝重用原调用键；模型均为明确替身。
 
 CI 的 `Curriculum / tool environments CPU` 作业安装固定 Tau2、构建 Node CLI，并运行 `test_sentinel*.py`，启用正式 runtime 集成；未安装可选依赖时只运行纯采样检查，跳过 native 集成，不把跳过项当作通过。
 
@@ -204,3 +208,5 @@ CI 的 `Curriculum / tool environments CPU` 作业安装固定 Tau2、构建 Nod
 [实际 solver 与记忆探针](../../research/sentinel-retail-2026-11-20-v2/README.zh-CN.md)：冻结源码 `9d7a3e4c8`，正常 harness 的实际样本成功，明确提前结束的诊断对照实际失败。失败驱动生成 1 条候选，执行校准通过，但语义审查拒绝；记忆正常传递，混合池报告生成来源缺额且不补齐。23 次完成调用有 332,115 tokens；另 1 次容量失败单独保留并确认终态，随后在剩余预算内作一次明确恢复，全尝试 token 总数未知。导出后工具与决定重放一致、无新增模型请求。两份归档均附上游 MIT 许可，需使用各自冻结源码复核。该诊断对照不代表自然失败率或收益；retail 的真实模型搜索效果与 mastery 效果仍待验收。
 
 [三组对照入口的真实运行 V3](../../research/sentinel-retail-2026-11-20-v3/README.zh-CN.md)：冻结 `6d3959e4f`，正常初始 harness、5 条自编且已执行校准的任务。原始请求因 429 失败，唯一一次剩余配额内恢复随后超时并核实为 `interrupted`；合计 9 次提交、7 份完成回执及 127,163 已知 tokens，全尝试用量未知。未完成任何任务评分，没有开始生成、搜索或最终测试；不能据此评价 failure 数据收益。两段轨迹、全部完成回执和下一次提交输入已离线重放，四项篡改反证检查通过，无新增模型调用。
+
+[V4 动作合同中止](../../research/sentinel-retail-2026-11-20-v4/README.zh-CN.md)：冻结 `52d720227`，每个生成组在提交前预定无条件执行三次尝试，实际尚未进入生成。43 次调用全部完成、990,092 tokens，模型空 `finish` 被执行器拒绝；22 步前缀、全部回执与原异常已零调用重放。没有完整任务分数和有效对照。后续合同修复不会回写此次结果。

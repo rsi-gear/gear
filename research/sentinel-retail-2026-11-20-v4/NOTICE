@@ -1,0 +1,6 @@
+The exported model inputs and tool traces contain retail policy and tool descriptions
+from tau2-bench v1.0.1, commit fc0055dc4e0a316c3f83133267fbd6faaa770992.
+Copyright and permission terms are retained in LICENSE.tau2 (MIT).
+The customer database, task goals and reference execution used here were authored
+for this experiment. Upstream benchmark customers and tasks were not copied.
+SDK thread and turn identifiers are redacted in the exported evidence.

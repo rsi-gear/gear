@@ -17,6 +17,7 @@ EXAMPLES = Path(__file__).resolve().parents[2] / "examples/curriculum-harness"
 sys.path.insert(0, str(EXAMPLES))
 import formal_experiment as study  # noqa: E402
 import formal_provider as provider  # noqa: E402
+import model_calls as model_bridge  # noqa: E402
 from model_calls import TextCalls, token_usage  # noqa: E402
 
 
@@ -180,9 +181,20 @@ class RecoveryTests(unittest.TestCase):
                     await calls.call(
                         "key", "prompt", "harness", model="test", output_schema={"type": "object"}
                     )
+                with patch.object(model_bridge, "BASE_INSTRUCTIONS", "changed transport policy"):
+                    with self.assertRaisesRegex(ValueError, "different input"):
+                        await calls.call(
+                            "key", "prompt", "harness", model="test", output_schema=schema
+                        )
             self.assertEqual(thread.turn.await_count, 1)
             self.assertEqual(thread.turn.await_args.kwargs["output_schema"], schema)
             self.assertEqual(calls.client.thread_start.await_count, 1)
+            self.assertEqual(
+                calls.client.thread_start.await_args.kwargs["base_instructions"],
+                model_bridge.BASE_INSTRUCTIONS,
+            )
+            self.assertEqual(calls.client.thread_start.await_args.kwargs["sandbox"], "read")
+            self.assertEqual(calls.client.thread_start.await_args.kwargs["approval_mode"], "deny")
 
         with tempfile.TemporaryDirectory() as root:
             asyncio.run(run(root))
