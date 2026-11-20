@@ -23,9 +23,12 @@ import { resolvePythonExecutable } from '../../src/adapters/python/interpreter.j
 import { ExperienceStore } from '../../src/adapters/storage/experience.js'
 import { builtinPolicy, builtinPolicyImplementationDigest } from '../../src/adapters/python/builtin-policy.js'
 import type { ExperienceRecord, ExperienceContext } from '../../src/domain/experience.js'
+import type { OperatorMaterial } from '../../src/domain/operator-run.js'
 import { freezeAlgorithmSource } from '../../src/adapters/python/source.js'
 import { PythonAlgorithmWorker } from '../../src/adapters/python/worker.js'
+import { OperatorRuntime } from '../../src/runtime/operator-runtime.js'
 import type { SearchView } from '../../src/domain/algorithm-wire.js'
+import type * as V2 from '../../src/domain/algorithm-wire-v2.js'
 
 const roots: string[] = [], operationRoots: string[] = []
 const workerGroups = new Set<number>()
@@ -64,7 +67,7 @@ afterEach(async () => {
     }, { timeout: 8000 }).toEqual([])
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
 })
-async function fixture(mode = 'success', adapter: 'pi' | 'dsh' = 'pi', prepare = true) {
+async function fixture(mode = 'success', adapter: 'pi' | 'dsh' = 'pi', prepare = true, taskIds = ['seed']) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'gear-codex-test-')))
   roots.push(root)
   const privateRoot = join(root, 'private'),
@@ -94,7 +97,7 @@ async function fixture(mode = 'success', adapter: 'pi' | 'dsh' = 'pi', prepare =
     directory,
     experiencePython: resolvePythonExecutable(),
     protectedPaths: [privateRoot],
-    tasks: [{ id: 'seed', instruction: 'Produce the requested answer.', family: 'format' }],
+    tasks: taskIds.map(id => ({ id, instruction: 'Produce the requested answer.', family: 'format' })),
   }
   const provider = await ProcessOperationProvider.connect(profile, context as unknown as Json)
   if (prepare) await provider.prepareAdmission()
@@ -106,7 +109,7 @@ async function fixture(mode = 'success', adapter: 'pi' | 'dsh' = 'pi', prepare =
       kind: 'generate_candidate',
       candidate_id: 'candidate',
       parent_id: 'anchor',
-      task_ids: ['seed'],
+    task_ids: taskIds,
       scope: 'global',
       rationale: 'Improve format',
       payload: { hypothesis: 'Respect output format' },
@@ -117,7 +120,7 @@ async function fixture(mode = 'success', adapter: 'pi' | 'dsh' = 'pi', prepare =
     evidence: [
       {
         candidate_id: 'anchor',
-        task_id: 'seed',
+        task_id: taskIds[0]!,
         repetition: 0,
         score: 0,
         status: 'valid',
@@ -183,6 +186,250 @@ describe('formal Codex operation runner', () => {
     expect(result.usage).toMatchObject({ model_requests: 1, tokens: 19 })
     expect((await f.provider.inspect(f.request, signal())).state).toBe('complete')
   }, 30_000)
+  it('hands baseline and older rejected source plus successful and failed trajectories to Meta across rounds', async () => {
+    const f = await fixture('operator-history')
+    f.request.operation = {
+      ...f.request.operation,
+      kind: 'diagnose_seed',
+      candidate_id: 'anchor',
+      parent_id: null,
+      payload: null,
+    }
+    const anchor = { run_id: 'run', candidate_id: 'anchor', digest: canonicalDigest('anchor') }
+    const older = { run_id: 'run', candidate_id: 'older-rejected', digest: canonicalDigest('older') }
+    const trace = (name: string) => ({
+      run_id: 'run',
+      kind: 'target_trajectory',
+      digest: canonicalDigest(name),
+      visibility: 'agent' as const,
+    })
+    const schema = {
+      type: 'object',
+      properties: { base_candidate_id: { type: 'string', enum: ['anchor', 'older-rejected'] } },
+      required: ['base_candidate_id'],
+      additionalProperties: false,
+    }
+    const source = (ref: typeof anchor | ReturnType<typeof trace>, label: string, code = '') => ({
+      ref,
+      files: {
+        'source.json': {
+          content: Buffer.from(JSON.stringify({ label, kind: 'candidate_id' in ref ? 'candidate' : ref.kind })).toString('base64'),
+          encoding: 'base64' as const,
+          executable: false,
+        },
+        ...(code ? { 'large-source.py': {
+          content: Buffer.from(code).toString('base64'),
+          encoding: 'base64' as const,
+          executable: false,
+        } } : {}),
+      },
+    })
+    const submitDiagnosis = async (round: number, sources: ReturnType<typeof source>[]) => {
+      f.request.operationId = canonicalDigest(['history-worker', round])
+      f.request.operatorCall = {
+        version: 2,
+        callId: canonicalDigest(['history-call', round]),
+        effect: { kind: 'meta', input: {
+          candidate: anchor,
+          sources: sources.map(item => item.ref),
+          task_ids: ['seed'],
+          data: { round },
+          max_tokens: null,
+          prompt: 'Inspect every provided evaluated candidate and its captured seed trajectories.',
+          schema,
+        } },
+        materials: sources,
+      }
+      return f.provider.submit(f.request, signal())
+    }
+    const baselineSources = [
+      source(anchor, 'baseline source'),
+      source(trace('baseline-success'), 'successful baseline trajectory'),
+      source(trace('baseline-failure'), 'failed baseline trajectory'),
+    ]
+    const baseline = await submitDiagnosis(0, baselineSources)
+    expect(baseline.result.status).toBe('complete')
+    expect(baseline.result.data).toMatchObject({ data: { base_candidate_id: 'anchor' } })
+
+    const largeHistoricalSource = '# Historical implementation\n' + 'x'.repeat(350_000)
+    const historicalSources = [
+      ...baselineSources,
+      source(older, 'older rejected candidate', largeHistoricalSource),
+      source(trace('older-success'), 'successful older trajectory'),
+      source(trace('older-failure'), 'failed older trajectory'),
+    ]
+    const next = await submitDiagnosis(1, historicalSources)
+    expect(next.result.status).toBe('complete')
+    expect(next.result.data).toMatchObject({ data: { base_candidate_id: 'older-rejected' } })
+  }, 30_000)
+  it('connects MetaHarness frozen-worker decisions to the actual Meta worker across rounds', async () => {
+    const taskIds = ['seed-pass', 'seed-fail']
+    const f = await fixture('operator-history-algorithm', 'pi', true, taskIds)
+    const sourceRoot = join(f.root, 'algorithm-source'), scratch = join(f.root, 'algorithm-scratch')
+    await mkdir(scratch)
+    const identity = await freezeAlgorithmSource(sourceRoot)
+    const worker = new PythonAlgorithmWorker({
+      python: resolvePythonExecutable(), sourceRoot, scratch, implementationIdentity: identity,
+      protocolVersion: 2,
+      ...(process.env.GEAR_TEST_LINUX_ISOLATION ? { linuxIsolation: process.env.GEAR_TEST_LINUX_ISOLATION as 'seccomp' | 'bubblewrap-only' } : {}),
+    })
+    const anchor = { run_id: 'run', candidate_id: 'anchor', digest: canonicalDigest('anchor') }
+    const older = { run_id: 'run', candidate_id: 'older-rejected', digest: canonicalDigest('older') }
+    const traceNames = new Map([
+      [canonicalDigest('baseline-success'), 'successful baseline trajectory'],
+      [canonicalDigest('baseline-failure'), 'failed baseline trajectory'],
+      [canonicalDigest('older-success'), 'successful older trajectory'],
+      [canonicalDigest('older-failure'), 'failed older trajectory'],
+    ])
+    const trace = (name: string): V2.ArtifactRef => ({
+      run_id: 'run', kind: 'target_trajectory', digest: canonicalDigest(name), visibility: 'optimization',
+    })
+    const largeHistoricalSource = '# Historical implementation\n' + 'x'.repeat(350_000)
+    const material = (ref: V2.SourceRef): OperatorMaterial => {
+      const isCandidate = 'candidate_id' in ref
+      const label = isCandidate
+        ? ref.candidate_id === 'anchor' ? 'baseline source' : 'older rejected candidate'
+        : traceNames.get(ref.digest)
+      if (!label) throw new Error(`No fixture material for ${JSON.stringify(ref)}`)
+      const manifest = { label, kind: isCandidate ? 'candidate' : ref.kind }
+      return {
+        ref,
+        files: {
+          'source.json': {
+            content: Buffer.from(JSON.stringify(manifest)).toString('base64'),
+            encoding: 'base64', executable: false,
+          },
+          ...(label === 'older rejected candidate' ? {
+            'large-source.py': {
+              content: Buffer.from(largeHistoricalSource).toString('base64'),
+              encoding: 'base64' as const, executable: false,
+            },
+          } : {}),
+        },
+      }
+    }
+    const tasks: V2.Task[] = taskIds.map(id => ({ id, family: 'format', estimated_cost: 1, input: null }))
+    const view: V2.SearchView = {
+      run_id: 'run', step_id: 0, seed: 'meta-harness-history-fixture', tasks,
+      candidates: [anchor], results: [],
+      budget: { rounds: 2, repetitions: 1, candidates_remaining: 4, generation_requests_remaining: 8 },
+      anchor, objective: null, history: null, stream: null, assets: [], capabilities: [],
+    }
+    const algorithm = { name: 'gear.algorithms.meta_harness:MetaHarness', options: {}, protocol_version: 2 as const }
+    const state: V2.AlgorithmState = { version: 1, data: {} }
+    const settleMeta = async (decision: V2.Decision, receipt: Awaited<ReturnType<typeof f.provider.submit>>) => {
+      const call = decision.calls[0]!
+      const operationId = f.request.operationId
+      const entry: {
+        id: string
+        requestDigest: string
+        call: (typeof decision.calls)[number]
+        status: string
+        operationIds: string[]
+        candidateId: null
+        materials: never[]
+        reservedReadBytes: number
+        result?: { value: V2.Json }
+      } = {
+        id: call.ref.request_digest,
+        requestDigest: call.ref.request_digest,
+        call,
+        status: 'submitted',
+        operationIds: [operationId],
+        candidateId: null,
+        materials: [],
+        reservedReadBytes: 0,
+      }
+      const journal = {
+        operators: { calls: [entry], artifacts: [] },
+        operations: [{ request: { operationId }, status: 'complete', reservedAttempts: 0, receipt }],
+      }
+      const runtime = new OperatorRuntime({ validateSchema() {} } as never, f.provider as never)
+      await runtime.settle(journal as never, async () => {}, signal())
+      return entry.result!.value
+    }
+    const completed = (decision: V2.Decision, value: V2.Json, artifacts: V2.ArtifactRef[] = []) => {
+      view.results.push({
+        ref: decision.state.data.pending as V2.CallRef,
+        status: 'succeeded', value, error: null, artifacts, usage: null,
+      })
+      view.step_id += 1
+    }
+    const evidenceSet = (candidate: V2.CandidateRef, scores: number[], traces: V2.ArtifactRef[]) => {
+      const assessments = taskIds.map(taskId => ({
+        run_id: 'run', kind: 'assessment', digest: canonicalDigest([candidate.candidate_id, taskId]),
+        visibility: 'optimization' as const,
+      }))
+      const tasks = taskIds.map(taskId => ({ task_id: taskId, slots: [0] }))
+      const spec = {
+        candidate, assessments, tasks,
+        task_weights: taskIds.map(taskId => [taskId, 1 / taskIds.length]),
+        objective_ref: canonicalDigest(null), reducer_ref: 'mean-v1', missing_policy: 'incomplete' as const,
+      }
+      return {
+        ref: { run_id: 'run', kind: 'evidence_set', digest: canonicalDigest([candidate, scores]), visibility: 'optimization' as const },
+        spec,
+        records: taskIds.map((taskId, index) => ({
+          sample_id: `${candidate.candidate_id}/${taskId}`, attempt_id: `${candidate.candidate_id}-attempt`,
+          assessment: assessments[index]!, task_id: taskId, slot: 0, score: scores[index]!,
+          status: scores[index] === 1 ? 'valid' as const : 'task_failed' as const, raw_metrics: null,
+        })),
+        loaded: true, cursor: null,
+        executions: taskIds.map((taskId, index) => ({
+          sample_id: `${candidate.candidate_id}/${taskId}`, attempt_id: `${candidate.candidate_id}-attempt`,
+          task_id: taskId, status: scores[index] === 1 ? 'valid' : 'task_failed', output: null,
+          trajectory: traces[index] ?? null,
+        })),
+      }
+    }
+    const submitMeta = async (decision: V2.Decision, round: number) => {
+      const call = decision.calls[0]!
+      if (call.effect.kind !== 'meta') throw new Error('MetaHarness did not request Meta')
+      f.request.operationId = canonicalDigest(['algorithm-meta', round])
+      f.request.operation = {
+        kind: 'diagnose_seed', candidate_id: 'anchor', parent_id: null, task_ids: taskIds,
+        scope: 'global', rationale: 'History-driven Meta-Harness diagnosis', payload: null,
+      }
+      f.request.operatorCall = {
+        version: 2, callId: canonicalDigest(['algorithm-meta-call', round]), effect: call.effect,
+        materials: call.effect.input.sources.map(material),
+      }
+      return f.provider.submit(f.request, signal())
+    }
+    try {
+      await worker.start(signal())
+      const baseline = await worker.stepV2(view, state, algorithm, signal())
+      expect(baseline.calls[0]?.effect.kind).toBe('execute')
+      const baselineResult = evidenceSet(anchor, [1, 0], [trace('baseline-success'), trace('baseline-failure')])
+      completed(baseline, baselineResult, [baselineResult.ref])
+      const firstMeta = await worker.stepV2(view, baseline.state, algorithm, signal())
+      const firstReceipt = await submitMeta(firstMeta, 0)
+      expect(firstReceipt.result.status).toBe('complete')
+      expect(firstReceipt.result.data).toMatchObject({ data: { base_candidate_id: 'anchor' } })
+      const firstPublicValue = await settleMeta(firstMeta, firstReceipt)
+      expect(firstPublicValue).toMatchObject({ base_candidate_id: 'anchor' })
+      completed(firstMeta, firstPublicValue)
+
+      const generation = await worker.stepV2(view, firstMeta.state, algorithm, signal())
+      expect(generation.calls[0]?.effect.kind).toBe('candidate')
+      completed(generation, { candidate: older })
+      view.candidates.push(older)
+      const evaluation = await worker.stepV2(view, generation.state, algorithm, signal())
+      expect(evaluation.calls[0]?.effect.kind).toBe('execute')
+      const olderResult = evidenceSet(older, [0, 0], [trace('older-success'), trace('older-failure')])
+      completed(evaluation, olderResult, [olderResult.ref])
+      const secondMeta = await worker.stepV2(view, evaluation.state, algorithm, signal())
+      const secondReceipt = await submitMeta(secondMeta, 1)
+      expect(secondReceipt.result.status).toBe('complete')
+      expect(secondReceipt.result.data).toMatchObject({ data: { base_candidate_id: 'older-rejected' } })
+      const secondPublicValue = await settleMeta(secondMeta, secondReceipt)
+      expect(secondPublicValue).toMatchObject({ base_candidate_id: 'older-rejected' })
+      completed(secondMeta, secondPublicValue)
+
+      const selectedParent = await worker.stepV2(view, secondMeta.state, algorithm, signal())
+      expect(selectedParent.calls[0]?.effect).toMatchObject({ kind: 'candidate', input: { base: older } })
+    } finally { await worker.dispose() }
+  }, 60_000)
   it.each([
     ['base_candidate_id', false], ['another_algorithm_field', false], ['base_candidate_id', true],
   ] as const)('Python alone defines and validates Meta field %s (invalid=%s)', async (resultKey, invalid) => {
