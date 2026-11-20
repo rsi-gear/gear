@@ -1,0 +1,46 @@
+{
+  "algorithm": "gear.algorithms.meta_harness:MetaHarness",
+  "reference": {
+    "repository": "https://github.com/stanford-iris-lab/meta-harness",
+    "commit": "8123ccabe2b19fa1123090b2e5f1bacc20963ce8",
+    "variant": "reference_examples/terminal_bench_2",
+    "skill": "reference_examples/terminal_bench_2/.claude/skills/meta-harness-terminal-bench-2/SKILL.md"
+  },
+  "dataset": {
+    "name": "Terminal-Bench 2.1",
+    "repository": "https://github.com/harbor-framework/terminal-bench-2-1",
+    "manifest_revision": "12b7565679ce5006230b820666353673a133db93",
+    "tasks": 89,
+    "optimization_split": "Gear deterministic holdout import over all 89 tasks; exact seed/held-out IDs are frozen in the import split manifest",
+    "repetitions_per_candidate": 2
+  },
+  "models": {
+    "reference": "Claude Opus 4.6",
+    "gear_meta_and_generation": "Set in the selected Gear Meta provider profile; record the resolved model in the run report.",
+    "gear_target": "Set in the selected Gear target profile; record the resolved agent and model in the run report."
+  },
+  "budgets": {
+    "search_iterations": 1,
+    "generated_candidates_per_iteration": 1,
+    "max_candidates": 1,
+    "max_evaluations": 400,
+    "max_model_requests": 20,
+    "max_generation_tokens": 120000,
+    "gear_held_out_gate": "Enabled; Gear's deterministic holdout split reserves about 20% of task groups from the 89-task set, and held-out tasks are not exposed to the proposer."
+  },
+  "commands": [
+    "npm ci",
+    "npm pack",
+    "npm install --global ./rsi-gear-0.2.4.tgz",
+    "python -m pip install ./python",
+    "gear setup --hitch --target dsh --python python3.12",
+    "python examples/algorithms/run_meta_harness_terminal_bench_2.py /path/to/prepared-gear-project"
+  ],
+  "result": {
+    "status": "not_run",
+    "reason": "No valid Terminal-Bench target run or live model evaluation has been recorded for this v0.2.4 adaptation.",
+    "baseline_score": null,
+    "candidate_score": null,
+    "model_cost": null
+  }
+}

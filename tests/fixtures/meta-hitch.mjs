@@ -61,6 +61,33 @@ export async function metaHitchFixture({ mode, adapter }) {
       assert(!policy.write_paths.includes(dirname(file)))
     }
     result = { declined: false, data: { selected: 'donor two' } }
+  } else if (mode.startsWith('operator-history')) {
+    assert.equal(view.sources.length, view.request.data.round === 0 ? 3 : 6)
+    const observed = []
+    for (const source of view.sources) {
+      const manifest = JSON.parse(await readFile(join(request.cwd, source.path, 'source.json'), 'utf8'))
+      observed.push(manifest.label)
+      assert(readable(join(request.cwd, source.path, 'source.json')))
+      assert(!policy.write_paths.includes(join(request.cwd, source.path)))
+      if (manifest.label === 'older rejected candidate') {
+        const large = await readFile(join(request.cwd, source.path, 'large-source.py'), 'utf8')
+        assert(large.length > 256_000, 'the complete source exceeds the diff-patch cap')
+        assert.equal(large.slice(0, 27), '# Historical implementation')
+        assert(readable(join(request.cwd, source.path, 'large-source.py')))
+      }
+    }
+    assert(observed.includes('successful baseline trajectory'))
+    assert(observed.includes('failed baseline trajectory'))
+      const data = { base_candidate_id: view.request.data.round === 1 ? 'older-rejected' : 'anchor' }
+      const required = schema.properties.data.required ?? []
+      if (required.includes('summary')) data.summary = 'Inspect the seed archive before proposing.'
+      if (required.includes('hypothesis')) data.hypothesis = 'Reuse a general mechanism from the selected base.'
+      if (view.request.data.round === 1) {
+        assert(observed.includes('older rejected candidate'))
+        assert(observed.includes('successful older trajectory'))
+        assert(observed.includes('failed older trajectory'))
+      }
+      result = { declined: false, data }
   } else {
     assert.equal(view.tasks[0].id, 'seed')
     if (view.experience && mode !== 'historical-sdk') {
