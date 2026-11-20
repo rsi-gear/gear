@@ -10,7 +10,7 @@ from pathlib import Path
 from gear.canonical import digest
 
 from .compiler import BenchmarkError, bytes_digest
-from .manifest import restore_metadata, seal_harbor
+from .manifest import resource_manifest, resource_request, restore_metadata, seal_harbor
 from .payload import NativeMaterializer
 from .payload import source_bytes as payload_source_bytes
 from .runtime_limits import source_bytes, template_timeouts
@@ -158,6 +158,15 @@ def compile_harbor(
                 output = root / identifier / path
                 output.parent.mkdir(parents=True, exist_ok=True)
                 materializer.write(resource, output)
+            if not planning_only and resource_manifest(benchmark.get("adapter_manifest")):
+                resource_request(
+                    "candidate-inputs",
+                    root / identifier,
+                    candidateInputPath=verifier["native_environment"]["mains"]["environment"][
+                        "context"
+                    ]
+                    + "/gear-target",
+                )
             continue
         environments[identifier] = {
             "mains": {
@@ -268,4 +277,9 @@ def compile_harbor(
         "benchmark_digest": benchmark["digest"],
         "compiler_digest": bytes_digest(Path(__file__).read_bytes()),
         "base_image": base_image,
+        **(
+            {"resource_protocol": "hitch-resource-lock@1"}
+            if resource_manifest(benchmark.get("adapter_manifest"))
+            else {}
+        ),
     }

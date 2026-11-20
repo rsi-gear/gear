@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, rm, lstat } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import type { CompiledBenchmark, ProjectConfig } from '../domain/project.js'
-import type { AlgorithmConfig, AlgorithmDriver, RunSpec } from '../domain/run.js'
+import type { AlgorithmConfig, AlgorithmDriver, ResumeOptions, RunSpec } from '../domain/run.js'
 import type { OperationProvider, OperationCancellation } from '../ports/operations.js'
 import { canonicalDigest } from '../domain/canonical.js'
 import { GearError } from '../domain/errors.js'
@@ -13,7 +13,7 @@ import { pythonObjective } from '../adapters/python/objective.js'
 import { RunStore } from '../adapters/storage/run-store.js'
 import { withFileLock } from '../adapters/storage/file-lock.js'
 import { publishFile } from '../adapters/storage/atomic.js'
-import { freezeAlgorithmSource } from '../adapters/python/source.js'
+import { freezeAlgorithmSource, type AlgorithmResource } from '../adapters/python/source.js'
 import { PythonAlgorithmWorker } from '../adapters/python/worker.js'
 import { DurableRunner } from '../runtime/runner.js'
 import { finishCancellation } from '../runtime/cancellation.js'
@@ -32,6 +32,18 @@ import { exportRun } from './export.js'
 import type { Json } from '../domain/algorithm-wire.js'
 import { selectBaseline, verifyBaseline } from './baseline.js'
 import { runPlan, requireAffordableBaseline } from './run-plan.js'
+import { OperatorRuntime, operatorCapabilities } from '../runtime/operator-runtime.js'
+import { StoredOperatorEffects } from '../adapters/storage/operator-effects.js'
+import { validateAlgorithmWire } from '../domain/algorithm-schema.js'
+import { frozenComponent } from '../domain/algorithm-components.js'
+import type { ComponentSpec } from '../domain/algorithm-wire-v2.js'
+import type { OperatorAccessPolicy, ScreeningPolicy, SourceImport } from '../domain/operator-run.js'
+import { operatorStorageLimits } from '../domain/operator-run.js'
+import { IndependentScreening } from '../adapters/python/screening.js'
+import { LibraryStore } from '../adapters/storage/libraries.js'
+import { captureOperatorImports } from './operator-imports.js'
+import { planMetaRecovery, validateMetaRecoveries } from '../runtime/operator-recovery.js'
+import { effectiveExecutionIdentity } from '../runtime/execution-identity.js'
 
 export interface ProjectRuntimeContext {
   kind: 'evaluate' | 'refine'
@@ -57,6 +69,10 @@ export interface RefineOptions {
   algorithm?: AlgorithmConfig
   sources?: Array<{ path: string; source: string }>
   dependencies?: Json[]
+  resources?: AlgorithmResource[]
+  screening?: ScreeningPolicy
+  access?: OperatorAccessPolicy
+  imports?: SourceImport[]
 }
 export interface EvaluateOptions {
   split: 'seed' | 'held_out'
@@ -90,7 +106,7 @@ export class ProjectApplication {
     return runPlan(spec)
   }
   private async prepareRefine(options: RefineOptions, runId: string) {
-    const { spec, context, provider, target, baseline } = await this.refineInputs(options, runId)
+    const { spec, context, provider, target, baseline, imports } = await this.refineInputs(options, runId)
     requireAffordableBaseline(spec)
     const runRoot = join(context.stateRoot, 'runs', runId)
     await mkdir(runRoot, { recursive: true, mode: 0o700 })
@@ -98,8 +114,10 @@ export class ProjectApplication {
       join(runRoot, 'algorithm'),
       options.sources,
       options.dependencies,
+      options.resources,
     )
     await mkdir(join(runRoot, 'scratch'), { mode: 0o700 })
+    if (spec.operatorPolicy?.screening) await mkdir(join(runRoot, 'screening-scratch'), { mode: 0o700 })
     await publishFile(join(runRoot, 'benchmark.json'), JSON.stringify(context.benchmark), { immutable: true })
     await publishFile(join(runRoot, 'project.json'), JSON.stringify(context.config), { immutable: true })
     if (baseline)
@@ -107,8 +125,23 @@ export class ProjectApplication {
         immutable: true,
       })
     await this.freezeTarget(context, provider, target)
+    if (imports) {
+      const targets = new TargetStore(
+        runRoot,
+        harnessAdapter(context.config.target.adapter),
+        spec.evaluationIdentity ?? spec.providerIdentity,
+      )
+      for (const imported of imports.candidates) {
+        const manifest = await targets.materialize(imported.candidate.id, spec.anchor.id, imported.files)
+        if (manifest.digest !== imported.candidate.digest)
+          throw new GearError(
+            'import-identity-mismatch',
+            'Imported target differs from its captured material',
+          )
+      }
+    }
     spec.cancellationIdentity = await this.freezeCancellation(runRoot, provider)
-    await this.store.create(runId, spec)
+    await this.store.create(runId, spec, [], imports)
     return { runId }
   }
   private async refineInputs(options: RefineOptions, runId: string) {
@@ -123,6 +156,8 @@ export class ProjectApplication {
     const algorithm =
       options.algorithm ??
       (typeof config.algorithm === 'string' ? { name: config.algorithm, options: {} } : config.algorithm)
+    if ((options.screening || options.access || options.imports?.length) && algorithm.protocol_version !== 2)
+      throw new GearError('operator-protocol-required', 'Screening policy requires a v2 algorithm')
     const generation = generationBudget(config.generation)
     requireEvaluationCapabilities(provider.capabilities)
     requireGenerationCapability(generation, provider.capabilities.generationBudget)
@@ -186,7 +221,88 @@ export class ProjectApplication {
     }
     const baseline = await selectBaseline(this.root, config, spec)
     if (baseline) spec.baseline = baseline.reuse
-    return { spec, context, provider, target, baseline }
+    if (algorithm.protocol_version === 2) {
+      validateAlgorithmWire('ModuleSpec', algorithm.component, 2)
+      const effects = new StoredOperatorEffects(
+        new TargetStore(
+          join(stateRoot, 'runs', runId),
+          harnessAdapter(config.target.adapter),
+          spec.evaluationIdentity!,
+        ),
+        new LibraryStore(join(stateRoot, 'libraries')),
+      )
+      const capabilities = operatorCapabilities(provider, effects)
+      for (const capability of algorithm.requirements ?? [])
+        if (!capabilities.includes(capability))
+          throw new GearError('operator-capability-unsupported', `Unsupported capability: ${capability}`)
+      spec.operatorPolicy = {
+        version: 2,
+        storageLimits: { ...operatorStorageLimits },
+        capabilities,
+        readBudget: { calls: 1024, bytes: 64 * 1024 * 1024 },
+        taskInputs: Object.fromEntries(
+          benchmark.tasks
+            .filter((task) => spec.seedTasks.some((item) => item.id === task.id))
+            .map((task) => [task.id, { instruction: task.instruction }]),
+        ),
+        fixedPlan: {
+          name: 'fixed',
+          tasks: spec.seedTasks.map((task) => ({
+            task_id: task.id,
+            slots: Array.from({ length: spec.budget.repetitions }, (_, index) => index),
+          })),
+        },
+        ...(options.screening ? { screening: structuredClone(options.screening) } : {}),
+        ...(options.access ? { access: structuredClone(options.access) } : {}),
+      }
+      if (options.access) {
+        const access = options.access
+        if (
+          !['scored', 'blind'].includes(access.exposure) ||
+          access.rollout_backend !== (access.exposure === 'blind' ? 'scored_private' : null) ||
+          !Array.isArray(access.usage_metrics)
+        )
+          throw new GearError(
+            'invalid-access-policy',
+            'Blind access requires explicit scored_private permission',
+          )
+        if (access.usage_metrics.length)
+          throw new GearError(
+            'operator-capability-unsupported',
+            'This backend has no admitted target usage whitelist',
+          )
+        if (access.exposure === 'blind' && !capabilities.includes('blind_projection'))
+          throw new GearError(
+            'operator-capability-unsupported',
+            'Provider cannot independently project target execution',
+          )
+        if (
+          access.task_order !== null &&
+          (!Array.isArray(access.task_order) ||
+            !access.task_order.length ||
+            new Set(access.task_order).size !== access.task_order.length ||
+            access.task_order.some((id) => !spec.seedTasks.some((task) => task.id === id)))
+        )
+          throw new GearError('invalid-task-stream', 'Task order must contain unique admitted seed tasks')
+      }
+      if (options.screening)
+        for (const ref of Object.values(options.screening)) {
+          validateAlgorithmWire('OperatorRef', ref, 2)
+          frozenComponent(algorithm.component as ComponentSpec, ref)
+        }
+    }
+    const imports = options.imports?.length
+      ? await captureOperatorImports(
+          stateRoot,
+          runId,
+          spec,
+          target.manifest,
+          harnessAdapter(config.target.adapter),
+          options.imports,
+        )
+      : undefined
+    if (imports) spec.operatorPolicy!.imports = imports.bindings
+    return { spec, context, provider, target, baseline, imports }
   }
   async evaluate(options: EvaluateOptions, signal: AbortSignal = new AbortController().signal) {
     signal.throwIfAborted()
@@ -299,11 +415,21 @@ export class ProjectApplication {
     ])
     return { runId }
   }
-  async resume(runId: string, signal: AbortSignal = new AbortController().signal) {
+  async resume(
+    runId: string,
+    signal: AbortSignal = new AbortController().signal,
+    options: ResumeOptions = {},
+  ) {
     const journal = await this.store.read(runId),
       stateRoot = join(this.root, '.gear'),
       runRoot = join(stateRoot, 'runs', runId)
-    if (journal.status === 'completed' || journal.status === 'cancelled')
+    const recovering = Object.keys(options).length > 0
+    const plan = recovering ? planMetaRecovery(journal, options) : null
+    await this.store.verifyRecoveryCheckpoints(journal)
+    if (
+      (!recovering || plan?.alreadyApplied) &&
+      (journal.status === 'completed' || journal.status === 'cancelled')
+    )
       return projectReport(this.root, journal)
     if (await this.store.cancelled(runId)) {
       await this.completeCancellation(runId)
@@ -327,6 +453,82 @@ export class ProjectApplication {
       const context = { kind: journal.spec.kind, root: this.root, runId, stateRoot, config, benchmark },
         provider = await this.bindings.provider(context, signal)
       signal.throwIfAborted()
+      if (recovering) {
+        await this.store.locked(runId, async () => {
+          const current = await this.store.read(runId)
+          const planned = planMetaRecovery(current, options)
+          await this.store.verifyRecoveryCheckpoints(current)
+          if (planned.alreadyApplied) return
+          if (await this.store.cancelled(runId))
+            throw new GearError('run-cancelled', 'Cancellation requested', { run_id: runId })
+          if (options.environment_binding !== undefined) {
+            if (!provider.recoverEnvironmentBinding)
+              throw new GearError(
+                'environment-recovery-unsupported',
+                'Provider cannot verify an environment binding recovery',
+              )
+            const previous = effectiveExecutionIdentity(current)
+            const proof = await provider.recoverEnvironmentBinding(
+              previous,
+              options.environment_binding,
+              signal,
+            )
+            if (
+              canonicalDigest(proof.from) !== canonicalDigest(previous) ||
+              proof.to.provider !== provider.identity ||
+              proof.to.evaluation !== (provider.evaluationIdentity ?? provider.identity) ||
+              canonicalDigest(proof.previousBinding) !== canonicalDigest(options.environment_binding)
+            )
+              throw new GearError(
+                'environment-recovery-mismatch',
+                'Provider recovery proof differs from the requested connection',
+              )
+            planned.recovery.execution = proof
+            planned.recovery.cancellationIdentity = canonicalDigest(provider.cancellation ?? null)
+          }
+          if (
+            provider.identity !== effectiveExecutionIdentity(planned.journal).provider ||
+            canonicalDigest(provider.capabilities) !== canonicalDigest(current.spec.providerCapabilities)
+          )
+            throw new GearError(
+              'provider-identity-mismatch',
+              'Recovery requires the frozen provider and capabilities',
+            )
+          requireGenerationCapability(
+            planned.recovery.generationBudget,
+            provider.capabilities.generationBudget,
+          )
+          if (!provider.capabilities.cancel || !provider.capabilities.inspect)
+            throw new GearError(
+              'meta-recovery-not-allowed',
+              'Recovery requires confirmed stop and receipt inspection',
+            )
+          const source = current.operations.find((op) => op.request.operationId === options.retry_operation)!
+          await provider.cancel(source.request)
+          const targets = new TargetStore(
+            runRoot,
+            harnessAdapter(config.target.adapter),
+            current.spec.evaluationIdentity ?? current.spec.providerIdentity,
+          )
+          const inspected = await sealedProvider(
+            provider,
+            targets,
+            new ProjectExperience(runRoot, targets),
+          ).inspect(source.request, signal)
+          if (
+            inspected.state !== 'complete' ||
+            canonicalDigest(inspected.receipt) !== planned.recovery.sourceReceiptDigest
+          )
+            throw new GearError(
+              'meta-recovery-not-allowed',
+              'Stopped Meta receipt differs from the committed failure',
+            )
+          signal.throwIfAborted()
+          validateMetaRecoveries(planned.journal)
+          await this.store.checkpointRecovery(current, planned.recovery, provider.cancellation ?? null)
+          await this.store.write(planned.journal)
+        })
+      }
       return await this.execute(
         context,
         provider,
@@ -384,10 +586,8 @@ export class ProjectApplication {
       let connection: Promise<OperationCancellation> | undefined
       await finishCancellation(this.store, journal, async (request) => {
         connection ??= (async () => {
-          const snapshot = JSON.parse(
-            await readFile(join(this.store.root, 'runs', id, 'cancellation.json'), 'utf8'),
-          ) as Json
-          if (canonicalDigest(snapshot) !== journal.spec.cancellationIdentity || !this.bindings.cancellation)
+          const snapshot = await this.store.cancellationSnapshot(journal)
+          if (!this.bindings.cancellation)
             throw new GearError(
               'cancellation-connection-unavailable',
               'Frozen cancellation connection is unavailable',
@@ -491,7 +691,8 @@ export class ProjectApplication {
     signal: AbortSignal,
   ) {
     let driver: AlgorithmDriver & { dispose?(): Promise<void> }
-    if ((await this.store.read(context.runId)).spec.kind === 'evaluate')
+    const saved = await this.store.read(context.runId)
+    if (saved.spec.kind === 'evaluate')
       driver = {
         async step() {
           throw new Error('Evaluation does not invoke an algorithm')
@@ -504,6 +705,7 @@ export class ProjectApplication {
         sourceRoot: source,
         scratch,
         implementationIdentity: identity,
+        protocolVersion: saved.spec.algorithm.protocol_version ?? 1,
         ...(context.config.sandbox ? { linuxIsolation: context.config.sandbox.linux_isolation } : {}),
         protectedPaths: [
           join(context.stateRoot, 'runs', context.runId, 'benchmark.json'),
@@ -517,7 +719,7 @@ export class ProjectApplication {
       const targets = new TargetStore(
         join(context.stateRoot, 'runs', context.runId),
         harnessAdapter(context.config.target.adapter),
-        provider.evaluationIdentity ?? provider.identity,
+        saved.spec.evaluationIdentity ?? saved.spec.providerIdentity,
       )
       const journal = await this.store.read(context.runId)
       for (const candidate of journal.candidates) {
@@ -525,14 +727,42 @@ export class ProjectApplication {
           throw new GearError('target-identity-mismatch', `Candidate ${candidate.id} changed since admission`)
       }
       const experience = new ProjectExperience(join(context.stateRoot, 'runs', context.runId), targets)
+      const providerWithSeals = sealedProvider(provider, targets, experience)
       return projectReport(
         this.root,
         await new DurableRunner(
           this.store,
           driver,
-          sealedProvider(provider, targets, experience),
+          providerWithSeals,
           pythonObjective,
           experience,
+          saved.spec.algorithm.protocol_version === 2
+            ? new OperatorRuntime(
+                new StoredOperatorEffects(
+                  targets,
+                  new LibraryStore(join(context.stateRoot, 'libraries')),
+                  providerWithSeals,
+                ),
+                providerWithSeals,
+                saved.spec.operatorPolicy?.screening
+                  ? new IndependentScreening({
+                      python: await pythonExecutable(),
+                      sourceRoot: source,
+                      scratch: join(context.stateRoot, 'runs', context.runId, 'screening-scratch'),
+                      implementationIdentity: identity,
+                      protocolVersion: 2,
+                      ...(context.config.sandbox
+                        ? { linuxIsolation: context.config.sandbox.linux_isolation }
+                        : {}),
+                      protectedPaths: [
+                        join(context.stateRoot, 'runs', context.runId, 'benchmark.json'),
+                        join(this.root, 'gear.yaml'),
+                        scratch,
+                      ],
+                    })
+                  : undefined,
+              )
+            : undefined,
         ).run(context.runId, signal),
       )
     } finally {

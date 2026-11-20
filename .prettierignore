@@ -3,4 +3,7 @@ lib/
 **/README*
 **/readme*
 src/domain/algorithm-wire.ts
+src/domain/algorithm-wire-v2.ts
 python/gear/refine/wire_types.py
+python/gear/refine/wire_types_v2.py
+python/gear/ops/_wire_schema.py

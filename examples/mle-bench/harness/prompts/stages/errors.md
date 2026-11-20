@@ -1,0 +1,1 @@
+Inspect saved out-of-sample predictions and labels available in public training data. Locate subgroup errors, uncertainty and leakage. Preserve bounded program errors and actual exit status. Decide which method to revise or when to stop within budget.

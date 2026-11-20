@@ -15,7 +15,7 @@ describe('published Gear bundle', () => {
       exports?: Record<string, unknown>
     }
     expect(pkg.name).toBe('rsi-gear')
-    expect(pkg.version).toBe('0.2.2')
+    expect(pkg.version).toBe('0.2.4')
     expect(pkg.dsh?.bundle?.patch).toBe('./cordis.patch.yml')
     expect(pkg.files).toContain('cordis.patch.yml')
     expect(pkg.files).toContain('assets/llm-verifier-bridge.py')
@@ -38,6 +38,7 @@ describe('published Gear bundle', () => {
     expect(skill).toContain('native `refine_request` tool')
     const references = [...skill.matchAll(/\]\((references\/[^)]+)\)/gu)].map(match => match[1]!)
     expect(new Set(references)).toEqual(new Set([
+      'references/mle-bench.md',
       'references/protocol.md',
       'references/target-harness-editing.md',
       'references/dsh-target-harness.md',
@@ -45,7 +46,7 @@ describe('published Gear bundle', () => {
     const referenceBodies = await Promise.all(
       references.map(path => readFile(resolve(dirname(skillPath), path), 'utf8')),
     )
-    expect(referenceBodies).toHaveLength(3)
+    expect(referenceBodies).toHaveLength(4)
 
     const dshGuide = await readFile(
       resolve(dirname(skillPath), 'references/dsh-target-harness.md'),

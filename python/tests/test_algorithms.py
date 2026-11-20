@@ -1,18 +1,19 @@
 import unittest
 from dataclasses import replace
-from gear.algorithms import GEPA, MetaHarness, RandomSearch, Evidence, RankingInput, ParentPlan
-from gear.algorithms.gepa.ranking import rank_candidates
-from gear.algorithms.testkit import toy_round, test_parent_policy
+from gear.algorithms import GEPA, RandomSearch
+from gear.search.contracts_v1 import Evidence, RankingInput, ParentPlan
+from gear.search.ranking import rank_candidates
+from gear.search.testkit import toy_round, test_parent_policy
 from gear.canonical import canonical, digest
 from gear.refine.protocol import validate
 
 
 class AlgorithmTests(unittest.TestCase):
     def test_large_candidate_allocations_finish_without_dropping_candidates(self):
-        from gear.algorithms import SearchView, Budget, Candidate, Task, AlgorithmState
-        from gear.algorithms.contracts import OperationResult
-        from gear.algorithms.testkit import wire
-        from gear.algorithms.limits import MAX_DECISION_OPERATIONS
+        from gear.search.contracts_v1 import SearchView, Budget, Candidate, Task, AlgorithmState
+        from gear.search.contracts_v1 import OperationResult
+        from gear.search.testkit import wire
+        from gear.search.limits import MAX_DECISION_OPERATIONS
 
         for count in (64, 129):
             with self.subTest(candidates=count):
@@ -59,7 +60,7 @@ class AlgorithmTests(unittest.TestCase):
                 self.assertEqual(evaluated, generated | {"anchor"})
 
     def test_many_solved_rounds_finish_without_recursive_decisions(self):
-        from gear.algorithms import SearchView, Budget, Candidate, Task, AlgorithmState
+        from gear.search.contracts_v1 import SearchView, Budget, Candidate, Task, AlgorithmState
         view = SearchView("solved", 1, "fixed", (Task("a", "a"),), (Candidate("anchor", digest("anchor")),),
             (Evidence("anchor", "a", 0, 1, "valid", "global"),), (), Budget(100, 100, 10000), "anchor")
         decision = GEPA().step(view, AlgorithmState(data={"phase": "parents", "round": 0}))
@@ -68,12 +69,48 @@ class AlgorithmTests(unittest.TestCase):
     def test_recipes_share_interfaces_but_control_their_own_stages(self):
         gepa = toy_round(GEPA())
         random = toy_round(RandomSearch())
-        meta_harness = toy_round(MetaHarness())
         self.assertIn("evaluate_seed:local", gepa["operations"])
         self.assertNotIn("evaluate_seed:local", random["operations"])
         self.assertIsNotNone(gepa["nominee"])
         self.assertIsNotNone(random["nominee"])
-        self.assertEqual(meta_harness["status"], "passed")
+
+    def test_random_search_omits_unused_diagnosis(self):
+        result = toy_round(RandomSearch())
+        self.assertEqual(result["status"], "passed")
+        self.assertNotIn("diagnose_seed:global", result["operations"])
+        self.assertIn("generate_candidate:global", result["operations"])
+        self.assertIn("evaluate_seed:global", result["operations"])
+        self.assertIsNotNone(result["nominee"])
+
+    def test_random_search_diagnosis_opt_in_preserves_search_results(self):
+        from gear.core.base import describe_module, construct_module
+        from gear.refine.worker import load_entrypoint
+
+        direct = toy_round(RandomSearch())
+        configured = RandomSearch(diagnose=True)
+        spec = describe_module(configured).to_dict()
+        restored = construct_module(spec, load_entrypoint)
+        diagnosed = toy_round(restored)
+        self.assertEqual(restored.diagnose, True)
+        self.assertIn("diagnose_seed:global", diagnosed["operations"])
+        self.assertEqual(direct["nominee"], diagnosed["nominee"])
+        self.assertEqual(
+            direct["operations"],
+            [op for op in diagnosed["operations"] if op != "diagnose_seed:global"],
+        )
+
+    def test_random_search_diagnosis_survives_sdk_worker_configuration(self):
+        import json
+        from gear.project import Project
+        from gear.refine.worker import make_algorithm
+
+        for diagnose in (False, True):
+            with self.subTest(diagnose=diagnose):
+                configured = json.loads(json.dumps(
+                    Project._describe_algorithm(RandomSearch(diagnose=diagnose))
+                ))
+                self.assertIs(configured["algorithm"]["options"]["diagnose"], diagnose)
+                self.assertIs(make_algorithm(configured["algorithm"]).diagnose, diagnose)
 
     def test_one_function_replaces_parent_policy(self):
         def policy(view, rng):
@@ -107,8 +144,8 @@ class AlgorithmTests(unittest.TestCase):
         self.assertEqual(digest({"中文": 1, "a": []}), digest({"a": [], "中文": 1.0}))
 
     def test_frontier_preserves_specialists_and_prunes_redundant_parents(self):
-        from gear.algorithms.contracts import ParentInput, ParentOption
-        from gear.algorithms.gepa.parents import frontier_options
+        from gear.search.contracts_v1 import ParentInput, ParentOption
+        from gear.search.parents import frontier_options
 
         options = tuple(
             ParentOption(
@@ -138,15 +175,15 @@ class AlgorithmTests(unittest.TestCase):
         )
 
     def test_all_parent_allocations_are_consumed(self):
-        from gear.algorithms.gepa.parents import ScopedFrontier
+        from gear.search.parents import ScopedFrontier
 
         result = toy_round(GEPA(parent_policy=ScopedFrontier(batch_count=2)))
         self.assertEqual(result["operations"].count("diagnose_seed:global"), 2)
         self.assertEqual(result["operations"].count("generate_candidate:global"), 2)
 
     def test_champion_mixture_follows_the_seed_leader_not_the_run_anchor(self):
-        from gear.algorithms import SearchView, Budget, Candidate, Task, AlgorithmState
-        from gear.algorithms.gepa.parents import ScopedFrontier
+        from gear.search.contracts_v1 import SearchView, Budget, Candidate, Task, AlgorithmState
+        from gear.search.parents import ScopedFrontier
 
         seen = []
 
@@ -178,9 +215,9 @@ class AlgorithmTests(unittest.TestCase):
                 self.assertEqual(decision.research[0].data["champion"], champion)
 
     def test_champion_mixture_builds_on_each_round_improvement(self):
-        from gear.algorithms import SearchView, Budget, Candidate, Task, AlgorithmState
-        from gear.algorithms.contracts import OperationResult
-        from gear.algorithms.gepa.parents import ScopedFrontier
+        from gear.search.contracts_v1 import SearchView, Budget, Candidate, Task, AlgorithmState
+        from gear.search.contracts_v1 import OperationResult
+        from gear.search.parents import ScopedFrontier
 
         champions, parents = [], []
 
@@ -233,8 +270,8 @@ class AlgorithmTests(unittest.TestCase):
         self.assertEqual(max(depth.values()), 3)
 
     def test_champion_probability_bounds_the_champion_share(self):
-        from gear.algorithms import SearchView, Budget, Candidate, Task, AlgorithmState
-        from gear.algorithms.gepa.parents import ScopedFrontier
+        from gear.search.contracts_v1 import SearchView, Budget, Candidate, Task, AlgorithmState
+        from gear.search.parents import ScopedFrontier
 
         scores = {"anchor": (0, 0, 0, 0), "leader": (1, 1, 0, 0), "specialist": (0, 0, 1, 0)}
         view = SearchView(
@@ -262,9 +299,9 @@ class AlgorithmTests(unittest.TestCase):
                     self.assertAlmostEqual(probabilities[candidate], value)
 
     def test_gepa_scope_weights_cost_strata_and_bridge_capacity(self):
-        from gear.algorithms.contracts import Task, SamplingInput
-        from gear.algorithms.gepa.sampling import GEPASampler
-        from gear.algorithms.random import DeterministicRandom
+        from gear.search.contracts_v1 import Task, SamplingInput
+        from gear.search.sampling import GEPASampler
+        from gear.search.random import DeterministicRandom
 
         tasks = tuple(
             Task(
@@ -323,8 +360,8 @@ class AlgorithmTests(unittest.TestCase):
     def test_configured_policy_and_sampler_round_trip_through_sdk(self):
         from gear.project import Project
         from gear.refine.worker import make_algorithm
-        from gear.algorithms.gepa.parents import ScopedFrontier
-        from gear.algorithms.gepa.sampling import GEPASampler
+        from gear.search.parents import ScopedFrontier
+        from gear.search.sampling import GEPASampler
 
         algorithm = GEPA(
             parent_policy=ScopedFrontier(batch_count=2, champion_probability=0.25),
@@ -337,16 +374,3 @@ class AlgorithmTests(unittest.TestCase):
         self.assertEqual(
             toy_round(reconstructed)["operations"].count("generate_candidate:global"), 2
         )
-
-    def test_meta_harness_round_trips_through_the_generic_algorithm_entrypoint(self):
-        from gear.project import Project
-        from gear.refine.worker import make_algorithm
-
-        config = Project._describe_algorithm(MetaHarness())
-        reconstructed = make_algorithm(config["algorithm"])
-        self.assertEqual(
-            config["algorithm"]["name"],
-            "gear.algorithms.meta_harness.algorithm:MetaHarness",
-        )
-        self.assertIsInstance(reconstructed, MetaHarness)
-        self.assertEqual(toy_round(reconstructed)["status"], "passed")

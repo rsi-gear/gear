@@ -1,11 +1,9 @@
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { createServer } from 'node:http'
-import { createServer as createNetServer, type Socket } from 'node:net'
 import { fileLockHeld } from '../../src/adapters/storage/file-lock.js'
 import { registerOperation, withJournal } from '../../src/adapters/codex/journal.js'
 import type { CodexInput } from '../../src/adapters/codex/contracts.js'
@@ -24,9 +22,12 @@ import type { TrajectoryReference } from '../../src/domain/trajectory.js'
 import { resolvePythonExecutable } from '../../src/adapters/python/interpreter.js'
 import { ExperienceStore } from '../../src/adapters/storage/experience.js'
 import { builtinPolicy, builtinPolicyImplementationDigest } from '../../src/adapters/python/builtin-policy.js'
-import { stageExperience } from '../../src/adapters/codex/experience.js'
 import type { ExperienceRecord, ExperienceContext } from '../../src/domain/experience.js'
-import type { ExperienceIndexSnapshot } from '../../src/domain/experience.js'
+import type { OperatorMaterial } from '../../src/domain/operator-run.js'
+import { freezeAlgorithmSource } from '../../src/adapters/python/source.js'
+import { PythonAlgorithmWorker } from '../../src/adapters/python/worker.js'
+import type { SearchView } from '../../src/domain/algorithm-wire.js'
+import type * as V2 from '../../src/domain/algorithm-wire-v2.js'
 
 const roots: string[] = [], operationRoots: string[] = []
 const workerGroups = new Set<number>()
@@ -65,7 +66,7 @@ afterEach(async () => {
     }, { timeout: 8000 }).toEqual([])
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
 })
-async function fixture(mode = 'success', adapter: 'pi' | 'dsh' = 'pi', prepare = true) {
+async function fixture(mode = 'success', adapter: 'pi' | 'dsh' = 'pi', prepare = true, taskIds = ['seed']) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'gear-codex-test-')))
   roots.push(root)
   const privateRoot = join(root, 'private'),
@@ -77,179 +78,15 @@ async function fixture(mode = 'success', adapter: 'pi' | 'dsh' = 'pi', prepare =
   await writeFile(join(privateRoot, 'held-out.json'), 'HELD_OUT_PRIVATE_CANARY')
   const harness = adapter === 'pi' ? new PiHarnessAdapter() : new DshHarnessAdapter()
   await harness.prepare(join(targets, 'anchor'))
-  const executable = join(root, 'fake-codex.mjs')
-  const fakePython =
-    process.platform === 'darwin'
-      // Xcode-selected Python may live under /Applications, outside the sandbox.
-      ? '/Library/Developer/CommandLineTools/usr/bin/python3'
-      : '/usr/bin/python3'
-  await writeFile(
-    executable,
-    `#!${fakePython}
-import base64,json,os,sys,time,subprocess
-from pathlib import Path
-if '--version' in sys.argv:
- print('codex-cli 0.145.0'); sys.exit(0)
-args=sys.argv[1:]
-for arg in ['exec','--ephemeral','--ignore-user-config','--ignore-rules','--strict-config','--json','--output-schema','--output-last-message']:
- assert arg in args, arg
-for feature in ['apps','plugins']:
- assert args[args.index(feature)-1]=='--disable'
-if sys.platform=='darwin':
- assert os.environ['CODEX_CA_CERTIFICATE']==os.environ['SSL_CERT_FILE']
- assert 'BEGIN CERTIFICATE' in Path(os.environ['CODEX_CA_CERTIFICATE']).read_text()
-view=json.loads(Path('../input.json').read_text())
-prompt=sys.stdin.read()
-assert ('Do not edit the candidate.' if view['operation']['kind']=='diagnose_seed' else 'Change only the allowed mutation paths.') in prompt
-assert len(view['tasks'])==1 and view['tasks'][0]['id']=='seed'
-for path in ([] if ${JSON.stringify(mode)}=='meta-sdk' else [${JSON.stringify(join(privateRoot, 'held-out.json'))},${JSON.stringify(join(targets, 'anchor', adapter === 'pi' ? 'AGENTS.md' : 'prompts/system.md'))}]):
- try:
-  Path(path).read_text()
-  raise AssertionError('PRIVATE_FILE_READABLE')
- except (PermissionError,FileNotFoundError): pass
-assert 'GEAR_META_SECRET' not in os.environ
-if ${JSON.stringify(mode)}=='proxy':
- import urllib.request,urllib.error
- assert 'PROXY_CREDENTIAL_CANARY' not in repr(dict(os.environ))
- assert urllib.request.urlopen('http://allowed.gear.test/probe',timeout=5).read()==b'upstream reached'
- try:
-  urllib.request.urlopen('http://denied.gear.test/probe',timeout=5)
-  raise AssertionError('DENIED_DOMAIN_REACHED')
- except urllib.error.HTTPError as error: assert error.code==403,error.code
-if ${JSON.stringify(mode)}.startswith('connect-'):
- import socket,urllib.parse,base64
- proxy=urllib.parse.urlsplit(os.environ['HTTPS_PROXY'])
- tunnel=socket.create_connection((proxy.hostname,proxy.port),timeout=5)
- auth=''
- if proxy.username:
-  auth='Proxy-Authorization: Basic '+base64.b64encode((urllib.parse.unquote(proxy.username)+':'+urllib.parse.unquote(proxy.password or '')).encode()).decode()+'\\r\\n'
- tunnel.sendall(('CONNECT allowed.gear.test:443 HTTP/1.1\\r\\nHost: allowed.gear.test:443\\r\\n'+auth+'\\r\\n').encode())
- header=b''
- while b'\\r\\n\\r\\n' not in header: header+=tunnel.recv(4096)
- assert b'200' in header,header
- tunnel.shutdown(socket.SHUT_WR)
- tunnel.close()
-if 'experience' in view and ${JSON.stringify(mode)}!='historical-sdk':
- memory=view['experience']
- def read_memory(body):
-  return subprocess.run(memory['reader']['argv'],input=json.dumps(body),text=True,capture_output=True)
- if 'baseline' in memory['reader']:
-  baseline=memory['reader']['baseline']
-  assert baseline['candidate_id']=='anchor'
-  assert isinstance(baseline['missing_trajectory_slots'],list)
-  if baseline['trajectory_refs']:
-   ref=baseline['trajectory_refs'][0]['ref']
-   trace=read_memory({'action':'trajectory','ref':'baseline','source_ref':ref,'query':{'limit':10}})
-   assert trace.returncode==0,trace.stdout+trace.stderr
-   assert json.loads(trace.stdout)['items'][0]['data']=='historical seed trace'
- if memory['cards'] and ${JSON.stringify(mode)} not in ['meta-sdk','meta-sdk-invalid']:
-  assert any(card['classification']['effect']=='regressed' for card in memory['cards'])
-  query=subprocess.run(memory['reader']['argv'],input=json.dumps({'action':'query'}),text=True,capture_output=True)
-  assert query.returncode==0,query.stdout+query.stderr
-  page=json.loads(query.stdout)
-  assert page['total']==2 and page['snapshot_digest']==memory['snapshot_digest']
-  anchor=next(item['card'] for item in page['items'] if item['card']['candidate_id']=='anchor')
-  assert anchor['classification']['effect']=='improved'
-  detail=read_memory({'action':'read','ref':anchor['ref'],'view':'diff'})
-  assert detail.returncode==0,detail.stdout+detail.stderr
-  assert json.loads(detail.stdout)['items'][0]['patch']=='-before\\n+after\\n'
-  rejected=next(item['card'] for item in page['items'] if item['card']['candidate_id']=='rejected-history')
-  assert rejected['classification']['effect']=='regressed'
-  diff=read_memory({'action':'read','ref':rejected['ref'],'view':'diff'})
-  assert diff.returncode==0 and json.loads(diff.stdout)['items'][0]['patch_status']=='too-large'
- if 'trajectory' in memory['reader'] and memory['cards']:
-  for historical_card,expected_trace in [(anchor,'successful seed trace'),(rejected,'failed seed trace')]:
-   ref=historical_card['ref']
-   sources=read_memory({'action':'read','ref':ref,'view':'trajectory'})
-   assert sources.returncode==0,sources.stdout+sources.stderr
-   source=json.loads(sources.stdout)['items'][0]['ref']
-   params={'action':'trajectory','ref':ref,'source_ref':source,'query':{'limit':1}}
-   trace=read_memory(params)
-   assert trace.returncode==0,trace.stdout+trace.stderr
-   trace_page=json.loads(trace.stdout)
-   assert trace_page['items'][0]['data']==expected_trace
-   assert trace_page['child_sessions']=='not-included'
-   if historical_card is anchor:
-    params['query']['cursor']=trace_page['next_cursor']
-    second=read_memory(params)
-    assert second.returncode==0,second.stdout+second.stderr
-    assert json.loads(second.stdout)['items'][0]['seq']==1
-    params['source_ref']='trajectory:'+'f'*64
-    denied=read_memory(params)
-    assert denied.returncode!=0 and 'trajectory-outside-snapshot' in denied.stdout+denied.stderr
-  try:
-   Path(${JSON.stringify(join(root, 'hitch-private/private.txt'))}).read_text()
-   raise AssertionError('PROVIDER_PRIVATE_FILE_READABLE')
-  except (PermissionError,FileNotFoundError): pass
-output=Path(args[args.index('--output-last-message')+1])
-schema=json.loads(Path(args[args.index('--output-schema')+1]).read_text())
-assert ('data' if 'meta' in (view['operation'].get('payload') or {}) else 'clusters') in schema['required']
-print(json.dumps({'type':'test.started','pid':os.getpid(),'cwd':os.getcwd()}),flush=True)
-if ${JSON.stringify(mode)}=='slow': time.sleep(2.5)
-if ${JSON.stringify(mode)} in ['hold','connect-cancel']: time.sleep(60)
-if view['operation']['kind']=='diagnose_seed':
- try:
-  Path(${JSON.stringify(adapter === 'pi' ? 'AGENTS.md' : 'prompts/system.md')}).write_text('unauthorized diagnosis edit')
-  raise AssertionError('diagnosis could edit candidate')
- except OSError as error:
-  import errno
-  assert error.errno in (errno.EACCES,errno.EPERM,errno.EROFS),error
-if view['operation']['kind']=='generate_candidate': Path(${JSON.stringify(adapter === 'pi' ? 'AGENTS.md' : 'prompts/system.md')}).write_text('Use the requested output format.')
-if ${JSON.stringify(mode)}=='protected': Path('package.json').write_text('{}')
-if ${JSON.stringify(mode)}=='invalid': output.write_text('not json')
-elif ${JSON.stringify(mode)}=='invalid-result': output.write_text(json.dumps({'summary':'bad','declined':False,'hypotheses':[42],'clusters':[]}))
-elif ${JSON.stringify(mode)}=='declined': output.write_text(json.dumps({'summary':'no change','declined':True,'hypotheses':[],'clusters':[]}))
-elif ${JSON.stringify(mode)} in ['meta-sdk','meta-sdk-invalid'] and view['operation']['kind']=='diagnose_seed':
- custom=view['operation']['payload']['meta']
- assert schema['properties']['data']==custom['schema']
- assert list(custom['schema']['properties'])==['summary','base_candidate_id','hypothesis']
- offered=view['operation']['payload']['base_candidates']
- ids=[item['candidate_id'] for item in offered]
- assert custom['schema']['properties']['base_candidate_id']['enum']==ids
- assert view['operation']['candidate_id']=='anchor'
- memory=view['experience']
- if memory['baseline']:
-  assert memory['baseline']['candidate_id']=='anchor'
-  assert len(memory['baseline']['missing_trajectory_slots'])==1
- history=read_memory({'action':'query','query':{'query':'','task_ids':[],'paths':[],'semantic_targets':[],'effects':[]},'limit':10})
- assert history.returncode==0,history.stdout+history.stderr
- cards=[item['card'] for item in json.loads(history.stdout)['items']]
- chosen='unoffered-history' if ${JSON.stringify(mode)}=='meta-sdk-invalid' else 'anchor'
- if cards:
-  prior=next(card for card in cards if card['candidate_id']=='r0-candidate-0')
-  source=read_memory({'action':'source','ref':prior['ref'],'candidate_id':'r0-candidate-0'})
-  assert source.returncode==0,source.stdout+source.stderr
-  paths=json.loads(source.stdout)['items']
-  assert any(item['path']=='AGENTS.md' for item in paths)
-  source=read_memory({'action':'source','ref':prior['ref'],'candidate_id':'r0-candidate-0','path':'AGENTS.md','limit':24576})
-  assert source.returncode==0,source.stdout+source.stderr
-  assert 'Use the requested output format.' in base64.b64decode(json.loads(source.stdout)['content']).decode()
-  assert 'r0-candidate-0' in ids
-  chosen='r0-candidate-0'
- output.write_text(json.dumps({'declined':False,'data':{'summary':'Reuse a mechanism from the seed archive','base_candidate_id':chosen,'hypothesis':'Preserve the parser recovery behavior'}}))
-elif ${JSON.stringify(mode)} in ['meta-sdk','meta-sdk-invalid']:
- custom=view['operation']['payload']['meta']
- assert schema['properties']['data']==custom['schema']
- output.write_text(json.dumps({'declined':False,'data':{'summary':'Use the selected historical base'}}))
-elif ${JSON.stringify(mode)}.startswith('historical'):
- assert schema['properties']['data']=={'type':'string'}
- output.write_text(json.dumps({'declined':False,'data':'Updated the selected candidate.'}))
-else: output.write_text(json.dumps({'summary':'read isolation verified','declined':False,'hypotheses':['Respect output format'],'clusters':[{'task_ids':['seed'],'hypotheses':['Respect output format']}]}))
-if ${JSON.stringify(mode)}=='partialusage': print(json.dumps({'type':'turn.completed','usage':{'output_tokens':3}}),flush=True)
-print(json.dumps({'type':'turn.completed','usage':{'input_tokens':12,'cached_input_tokens':3,'output_tokens':7}}),end='' if ${JSON.stringify(mode)}=='partialusage' else '\\n',flush=True)
-if ${JSON.stringify(mode)} in ['partialfailed','connect-failure']:
- print(json.dumps({'type':'turn.started'}),flush=True)
- sys.exit(3)
-`,
-    { mode: 0o700 },
-  )
-  await chmod(executable, 0o700)
+  const executable = join(root, 'fake-codex.mjs'), hitch = join(root, 'fake-hitch.mjs')
+  await writeFile(executable, '#!/bin/sh\necho "codex-cli 0.145.0"\n', { mode: 0o700 })
+  await writeFile(hitch, `#!${process.execPath}\nimport {metaHitchFixture} from ${JSON.stringify(new URL('../fixtures/meta-hitch.mjs', import.meta.url).href)};await metaHitchFixture(${JSON.stringify({mode, adapter})});`, { mode: 0o700 })
   const profile = {
     command: [process.execPath, resolve('assets/codex-meta-runner.mjs')],
     workingDirectory: root,
-    configuration: { executable, model: 'fixture-model', allowedDomains: mode === 'proxy' || mode.startsWith('connect-') ? ['allowed.gear.test'] : [], timeoutMs: 12_000,
+    configuration: { executable, hitch: { executable: hitch, root: join(root, 'hitch-state') }, model: 'fixture-model', reasoningEffort: 'max' as const, allowedDomains: ['chatgpt.com'], timeoutMs: 12_000,
       ...(process.env.GEAR_TEST_LINUX_ISOLATION ? { linuxIsolation: process.env.GEAR_TEST_LINUX_ISOLATION as 'seccomp' | 'bubblewrap-only' } : {}) },
-    passEnv: mode === 'proxy' ? ['HTTP_PROXY', 'NO_PROXY'] : mode.startsWith('connect-') ? ['HTTPS_PROXY'] : [],
+    passEnv: [],
     timeoutMs: 20_000,
   }
   const context = {
@@ -259,7 +96,7 @@ if ${JSON.stringify(mode)} in ['partialfailed','connect-failure']:
     directory,
     experiencePython: resolvePythonExecutable(),
     protectedPaths: [privateRoot],
-    tasks: [{ id: 'seed', instruction: 'Produce the requested answer.', family: 'format' }],
+    tasks: taskIds.map(id => ({ id, instruction: 'Produce the requested answer.', family: 'format' })),
   }
   const provider = await ProcessOperationProvider.connect(profile, context as unknown as Json)
   if (prepare) await provider.prepareAdmission()
@@ -271,7 +108,7 @@ if ${JSON.stringify(mode)} in ['partialfailed','connect-failure']:
       kind: 'generate_candidate',
       candidate_id: 'candidate',
       parent_id: 'anchor',
-      task_ids: ['seed'],
+    task_ids: taskIds,
       scope: 'global',
       rationale: 'Improve format',
       payload: { hypothesis: 'Respect output format' },
@@ -306,14 +143,14 @@ const signal = () => new AbortController().signal
 async function modelProcessIds(directory: string): Promise<number[]> {
   // Linux PID namespaces report a different PID inside the sandbox. Observe
   // the uniquely named fixture from the host, where cancellation is asserted.
-  const executable = resolve(directory, '../../..', 'fake-codex.mjs')
+  const executable = resolve(directory, '../../..', 'fake-hitch.mjs')
   const { stdout } = await promisify(execFile)('/bin/ps', ['-A', '-o', 'pid=', '-o', 'args='])
   return stdout.split('\n').filter(line => line.includes(executable)).map(line => Number(line.trim().split(/\s+/u)[0]))
 }
 async function untilStarted(directory: string) {
   for (let index = 0; index < 120; index++) {
     try {
-      if ((await readFile(join(directory, 'events.jsonl'), 'utf8')).includes('test.started')) {
+      if ((await readFile(join(directory, 'stderr.log'), 'utf8')).includes('test.started')) {
         // Some cases deliberately remove started.json after this point.
         await rememberWorker(directory)
         return
@@ -326,6 +163,276 @@ async function untilStarted(directory: string) {
   throw new Error('fake Codex did not start')
 }
 describe('formal Codex operation runner', () => {
+  it('executes generic operator Meta with multiple immutable donors and its Python output schema', async () => {
+    const f = await fixture('operator')
+    f.request.operation = { ...f.request.operation, kind: 'diagnose_seed', candidate_id: 'anchor', parent_id: null, payload: null }
+    const donors = ['one', 'two'].map(name => ({ run_id: 'run', kind: 'library', digest: canonicalDigest(name), visibility: 'optimization' as const }))
+    f.request.operatorCall = {
+      version: 2, callId: canonicalDigest('operator-call'),
+      effect: { kind: 'meta', input: {
+        candidate: { run_id: 'run', candidate_id: 'anchor', digest: canonicalDigest('anchor') },
+        sources: donors, task_ids: ['seed'], data: null, max_tokens: null,
+        prompt: 'Choose between the frozen donor materials',
+        schema: { type: 'object', properties: { selected: { type: 'string' } }, required: ['selected'], additionalProperties: false },
+      } },
+      materials: donors.map((ref, index) => ({ ref, files: { 'prompt.md': {
+        content: Buffer.from('donor ' + ['one', 'two'][index]).toString('base64'), encoding: 'base64' as const, executable: false,
+      } } })),
+    }
+    const result = await f.provider.submit(f.request, signal())
+    expect(result.result.status).toBe('complete')
+    expect(result.result.data).toMatchObject({ data: { selected: 'donor two' } })
+    expect(result.usage).toMatchObject({ model_requests: 1, tokens: 19 })
+    expect((await f.provider.inspect(f.request, signal())).state).toBe('complete')
+  }, 30_000)
+  it('hands baseline and older rejected source plus successful and failed trajectories to Meta across rounds', async () => {
+    const f = await fixture('operator-history')
+    f.request.operation = {
+      ...f.request.operation,
+      kind: 'diagnose_seed',
+      candidate_id: 'anchor',
+      parent_id: null,
+      payload: null,
+    }
+    const anchor = { run_id: 'run', candidate_id: 'anchor', digest: canonicalDigest('anchor') }
+    const older = { run_id: 'run', candidate_id: 'older-rejected', digest: canonicalDigest('older') }
+    const trace = (name: string) => ({
+      run_id: 'run',
+      kind: 'target_trajectory',
+      digest: canonicalDigest(name),
+      visibility: 'agent' as const,
+    })
+    const schema = {
+      type: 'object',
+      properties: { base_candidate_id: { type: 'string', enum: ['anchor', 'older-rejected'] } },
+      required: ['base_candidate_id'],
+      additionalProperties: false,
+    }
+    const source = (ref: typeof anchor | ReturnType<typeof trace>, label: string, code = '') => ({
+      ref,
+      files: {
+        'source.json': {
+          content: Buffer.from(JSON.stringify({ label, kind: 'candidate_id' in ref ? 'candidate' : ref.kind })).toString('base64'),
+          encoding: 'base64' as const,
+          executable: false,
+        },
+        ...(code ? { 'large-source.py': {
+          content: Buffer.from(code).toString('base64'),
+          encoding: 'base64' as const,
+          executable: false,
+        } } : {}),
+      },
+    })
+    const submitDiagnosis = async (round: number, sources: ReturnType<typeof source>[]) => {
+      f.request.operationId = canonicalDigest(['history-worker', round])
+      f.request.operatorCall = {
+        version: 2,
+        callId: canonicalDigest(['history-call', round]),
+        effect: { kind: 'meta', input: {
+          candidate: anchor,
+          sources: sources.map(item => item.ref),
+          task_ids: ['seed'],
+          data: { round },
+          max_tokens: null,
+          prompt: 'Inspect every provided evaluated candidate and its captured seed trajectories.',
+          schema,
+        } },
+        materials: sources,
+      }
+      return f.provider.submit(f.request, signal())
+    }
+    const baselineSources = [
+      source(anchor, 'baseline source'),
+      source(trace('baseline-success'), 'successful baseline trajectory'),
+      source(trace('baseline-failure'), 'failed baseline trajectory'),
+    ]
+    const baseline = await submitDiagnosis(0, baselineSources)
+    expect(baseline.result.status).toBe('complete')
+    expect(baseline.result.data).toMatchObject({ data: { base_candidate_id: 'anchor' } })
+
+    const largeHistoricalSource = '# Historical implementation\n' + 'x'.repeat(350_000)
+    const historicalSources = [
+      ...baselineSources,
+      source(older, 'older rejected candidate', largeHistoricalSource),
+      source(trace('older-success'), 'successful older trajectory'),
+      source(trace('older-failure'), 'failed older trajectory'),
+    ]
+    const next = await submitDiagnosis(1, historicalSources)
+    expect(next.result.status).toBe('complete')
+    expect(next.result.data).toMatchObject({ data: { base_candidate_id: 'older-rejected' } })
+  }, 30_000)
+  it('connects MetaHarness frozen-worker decisions to the actual Meta worker across rounds', async () => {
+    const taskIds = ['seed-pass', 'seed-fail']
+    const f = await fixture('operator-history-algorithm', 'pi', true, taskIds)
+    const sourceRoot = join(f.root, 'algorithm-source'), scratch = join(f.root, 'algorithm-scratch')
+    await mkdir(scratch)
+    const identity = await freezeAlgorithmSource(sourceRoot)
+    const worker = new PythonAlgorithmWorker({
+      python: resolvePythonExecutable(), sourceRoot, scratch, implementationIdentity: identity,
+      protocolVersion: 2,
+      ...(process.env.GEAR_TEST_LINUX_ISOLATION ? { linuxIsolation: process.env.GEAR_TEST_LINUX_ISOLATION as 'seccomp' | 'bubblewrap-only' } : {}),
+    })
+    const anchor = { run_id: 'run', candidate_id: 'anchor', digest: canonicalDigest('anchor') }
+    const older = { run_id: 'run', candidate_id: 'older-rejected', digest: canonicalDigest('older') }
+    const traceNames = new Map([
+      [canonicalDigest('baseline-success'), 'successful baseline trajectory'],
+      [canonicalDigest('baseline-failure'), 'failed baseline trajectory'],
+      [canonicalDigest('older-success'), 'successful older trajectory'],
+      [canonicalDigest('older-failure'), 'failed older trajectory'],
+    ])
+    const trace = (name: string): V2.ArtifactRef => ({
+      run_id: 'run', kind: 'target_trajectory', digest: canonicalDigest(name), visibility: 'optimization',
+    })
+    const largeHistoricalSource = '# Historical implementation\n' + 'x'.repeat(350_000)
+    const material = (ref: V2.SourceRef): OperatorMaterial => {
+      const isCandidate = 'candidate_id' in ref
+      const label = isCandidate
+        ? ref.candidate_id === 'anchor' ? 'baseline source' : 'older rejected candidate'
+        : traceNames.get(ref.digest)
+      if (!label) throw new Error(`No fixture material for ${JSON.stringify(ref)}`)
+      const manifest = { label, kind: isCandidate ? 'candidate' : ref.kind }
+      return {
+        ref,
+        files: {
+          'source.json': {
+            content: Buffer.from(JSON.stringify(manifest)).toString('base64'),
+            encoding: 'base64', executable: false,
+          },
+          ...(label === 'older rejected candidate' ? {
+            'large-source.py': {
+              content: Buffer.from(largeHistoricalSource).toString('base64'),
+              encoding: 'base64' as const, executable: false,
+            },
+          } : {}),
+        },
+      }
+    }
+    const tasks: V2.Task[] = taskIds.map(id => ({ id, family: 'format', estimated_cost: 1, input: null }))
+    const view: V2.SearchView = {
+      run_id: 'run', step_id: 0, seed: 'meta-harness-history-fixture', tasks,
+      candidates: [anchor], results: [],
+      budget: { rounds: 2, repetitions: 1, candidates_remaining: 4, generation_requests_remaining: 8 },
+      anchor, objective: null, history: null, stream: null, assets: [], capabilities: [],
+    }
+    const algorithm = { name: 'gear.algorithms.meta_harness:MetaHarness', options: {}, protocol_version: 2 as const }
+    const state: V2.AlgorithmState = { version: 1, data: {} }
+    const completed = (decision: V2.Decision, value: V2.Json, artifacts: V2.ArtifactRef[] = []) => {
+      view.results.push({
+        ref: decision.state.data.pending as V2.CallRef,
+        status: 'succeeded', value, error: null, artifacts, usage: null,
+      })
+      view.step_id += 1
+    }
+    const evidenceSet = (candidate: V2.CandidateRef, scores: number[], traces: V2.ArtifactRef[]) => {
+      const assessments = taskIds.map(taskId => ({
+        run_id: 'run', kind: 'assessment', digest: canonicalDigest([candidate.candidate_id, taskId]),
+        visibility: 'optimization' as const,
+      }))
+      const tasks = taskIds.map(taskId => ({ task_id: taskId, slots: [0] }))
+      const spec = {
+        candidate, assessments, tasks,
+        task_weights: taskIds.map(taskId => [taskId, 1 / taskIds.length]),
+        objective_ref: canonicalDigest(null), reducer_ref: 'mean-v1', missing_policy: 'incomplete' as const,
+      }
+      return {
+        ref: { run_id: 'run', kind: 'evidence_set', digest: canonicalDigest([candidate, scores]), visibility: 'optimization' as const },
+        spec,
+        records: taskIds.map((taskId, index) => ({
+          sample_id: `${candidate.candidate_id}/${taskId}`, attempt_id: `${candidate.candidate_id}-attempt`,
+          assessment: assessments[index]!, task_id: taskId, slot: 0, score: scores[index]!,
+          status: scores[index] === 1 ? 'valid' as const : 'task_failed' as const, raw_metrics: null,
+        })),
+        loaded: true, cursor: null,
+        executions: taskIds.map((taskId, index) => ({
+          sample_id: `${candidate.candidate_id}/${taskId}`, attempt_id: `${candidate.candidate_id}-attempt`,
+          task_id: taskId, status: scores[index] === 1 ? 'valid' : 'task_failed', output: null,
+          trajectory: traces[index] ?? null,
+        })),
+      }
+    }
+    const submitMeta = async (decision: V2.Decision, round: number) => {
+      const call = decision.calls[0]!
+      if (call.effect.kind !== 'meta') throw new Error('MetaHarness did not request Meta')
+      f.request.operationId = canonicalDigest(['algorithm-meta', round])
+      f.request.operation = {
+        kind: 'diagnose_seed', candidate_id: 'anchor', parent_id: null, task_ids: taskIds,
+        scope: 'global', rationale: 'History-driven Meta-Harness diagnosis', payload: null,
+      }
+      f.request.operatorCall = {
+        version: 2, callId: canonicalDigest(['algorithm-meta-call', round]), effect: call.effect,
+        materials: call.effect.input.sources.map(material),
+      }
+      return f.provider.submit(f.request, signal())
+    }
+    try {
+      await worker.start(signal())
+      const baseline = await worker.stepV2(view, state, algorithm, signal())
+      expect(baseline.calls[0]?.effect.kind).toBe('execute')
+      const baselineResult = evidenceSet(anchor, [1, 0], [trace('baseline-success'), trace('baseline-failure')])
+      completed(baseline, baselineResult, [baselineResult.ref])
+      const firstMeta = await worker.stepV2(view, baseline.state, algorithm, signal())
+      const firstReceipt = await submitMeta(firstMeta, 0)
+      expect(firstReceipt.result.status).toBe('complete')
+      expect(firstReceipt.result.data).toMatchObject({ data: { base_candidate_id: 'anchor' } })
+      completed(firstMeta, firstReceipt.result.data)
+
+      const generation = await worker.stepV2(view, firstMeta.state, algorithm, signal())
+      expect(generation.calls[0]?.effect.kind).toBe('candidate')
+      completed(generation, { candidate: older })
+      view.candidates.push(older)
+      const evaluation = await worker.stepV2(view, generation.state, algorithm, signal())
+      expect(evaluation.calls[0]?.effect.kind).toBe('execute')
+      const olderResult = evidenceSet(older, [0, 0], [trace('older-success'), trace('older-failure')])
+      completed(evaluation, olderResult, [olderResult.ref])
+      const secondMeta = await worker.stepV2(view, evaluation.state, algorithm, signal())
+      const secondReceipt = await submitMeta(secondMeta, 1)
+      expect(secondReceipt.result.status).toBe('complete')
+      expect(secondReceipt.result.data).toMatchObject({ data: { base_candidate_id: 'older-rejected' } })
+      completed(secondMeta, secondReceipt.result.data)
+
+      const selectedParent = await worker.stepV2(view, secondMeta.state, algorithm, signal())
+      expect(selectedParent.calls[0]?.effect).toMatchObject({ kind: 'candidate', input: { base: older } })
+    } finally { await worker.dispose() }
+  }, 60_000)
+  it.each([
+    ['base_candidate_id', false], ['another_algorithm_field', false], ['base_candidate_id', true],
+  ] as const)('Python alone defines and validates Meta field %s (invalid=%s)', async (resultKey, invalid) => {
+    const f = await fixture(invalid ? 'historical-invalid' : 'historical')
+    await new PiHarnessAdapter().prepare(join(f.targets, 'older'))
+    const source = join(f.root, 'source'), scratch = join(f.root, 'scratch')
+    await mkdir(scratch)
+    const identity = await freezeAlgorithmSource(source, [{ path: 'pr_cases.py', source: resolve('tests/fixtures/python-algorithm-boundaries.py') }])
+    const worker = new PythonAlgorithmWorker({ python: resolvePythonExecutable(), sourceRoot: source, scratch, implementationIdentity: identity,
+      ...(process.env.GEAR_TEST_LINUX_ISOLATION ? { linuxIsolation: process.env.GEAR_TEST_LINUX_ISOLATION as 'seccomp' | 'bubblewrap-only' } : {}) })
+    const view: SearchView = { run_id: 'run', step_id: 0, seed: 'fixed', anchor_id: 'anchor',
+      candidates: ['anchor', 'older'].map(id => ({ id, digest: canonicalDigest(id), parent_id: null })),
+      tasks: [{ id: 'seed', family: 'format', estimated_cost: 1 }],
+      evidence: ['anchor', 'older'].map(candidate_id => ({ candidate_id, task_id: 'seed', repetition: 0, score: 1, status: 'valid', scope: 'global', feedback: 'passed' })),
+      completed: [], budget: { rounds: 1, repetitions: 1, candidates_remaining: 1, evaluations_remaining: 2 } }
+    const algorithm = { name: 'pr_cases:HistoricalBase', options: { result_key: resultKey } }
+    try {
+      await worker.start(signal())
+      const diagnosis = await worker.step(view, { version: 1, data: {} }, algorithm, signal())
+      const receipt = await f.provider.submit({ ...f.request, operation: diagnosis.operations[0]!, evidence: view.evidence }, signal())
+      expect(receipt.result.status).toBe('complete')
+      view.completed.push(receipt.result); view.step_id++
+      if (invalid) {
+        // The model's schema is guidance, not the algorithm's semantic validation.
+        const rejected = await worker.step(view, diagnosis.state, algorithm, signal())
+        expect(rejected.state.data.rejected).toBe('historical base not offered')
+        expect(rejected.operations.map(operation => operation.kind)).toEqual(['stop'])
+        expect(receipt.candidate).toBeNull()
+        return
+      }
+      const generation = await worker.step(view, diagnosis.state, algorithm, signal())
+      expect(generation.operations[0]).toMatchObject({ kind: 'generate_candidate', parent_id: 'older' })
+      const generated = await f.provider.submit({ ...f.request, operationId: canonicalDigest('historical-generation'), operation: generation.operations[0]! }, signal())
+      expect(generated.result.status).toBe('complete')
+      expect(generated.candidate).toMatchObject({ id: 'new', parent_id: 'older' })
+      expect(generated.result.data).toEqual({ declined: false, data: 'Updated the selected candidate.' })
+    } finally { await worker.dispose() }
+  }, 30_000)
+
   it('public Python SDK freezes one external algorithm file, its configuration and recovery', async () => {
     const f = await fixture('historical-sdk')
     const profiles = join(f.root, 'profiles'), project = join(f.root, 'sdk-project')
@@ -334,7 +441,7 @@ describe('formal Codex operation runner', () => {
     const python = resolvePythonExecutable()
     // Persist the evaluation receipt, then lose its reply to require a fresh SDK resume.
     const targetProvider = join(f.root, 'target-provider.mjs')
-    await writeFile(targetProvider, (await readFile(resolve('tests/fixtures/project-provider.mjs'), 'utf8')).replace(
+    await writeFile(targetProvider, (await readFile(resolve('tests/fixtures/project-provider.mjs'), 'utf8')).replaceAll(
       'process.stdout.write(JSON.stringify(result))',
       "if (action === 'submit' && request.operation.kind === 'evaluate_seed' && request.operation.candidate_id !== 'anchor') throw new Error('lost SDK evaluation reply'); process.stdout.write(JSON.stringify(result))"))
     await writeFile(join(profiles, 'sdk-target.json'), JSON.stringify({ command: [process.execPath, targetProvider],
@@ -351,11 +458,11 @@ describe('formal Codex operation runner', () => {
       env: { ...process.env, PYTHONPATH: resolve('python'), GEAR_PYTHON: python,
         GEAR_COMMAND: JSON.stringify([process.execPath, resolve('lib/cli.js')]) } })
     const failed = await sdk("from gear import Project; from own_algorithm import SDKExample; Project.open().refine(algorithm=SDKExample(result_key='sdk_selected'), rounds=1)").then(() => null, error => error)
-    expect(failed?.stderr).toMatch(/lost SDK evaluation reply|process-operation-failed/)
     const runs = join(project, '.gear/runs'), [id] = await readdir(runs)
     expect(id).toBeTruthy()
     const runRoot = join(runs, id!), journalPath = join(runRoot, 'journal.json')
     const before = JSON.parse(await readFile(journalPath, 'utf8'))
+    expect(failed?.stderr ?? '', JSON.stringify({ status: before.status, operations: before.operations.map((entry: {status: string}) => entry.status) })).toMatch(/lost SDK evaluation reply|process-operation-failed/)
     expect(before.status).toBe('needs_recovery')
     expect(before.spec.algorithm).toEqual({ name: 'own_algorithm:SDKExample', options: { result_key: 'sdk_selected' } })
     expect(before.operations.map((entry: { request: OperationRequest }) => entry.request.operation.kind)).toEqual(['evaluate_seed', 'diagnose_seed', 'generate_candidate', 'evaluate_seed'])
@@ -373,138 +480,6 @@ describe('formal Codex operation runner', () => {
     expect(after.decisions.at(-1).decision.operations[0].kind).toBe('stop')
   }, 90_000)
 
-  it('recovers Meta-Harness through the public SDK with frozen policy and history-selected bases', async () => {
-    const f = await fixture('meta-sdk')
-    const profiles = join(f.root, 'profiles'), project = join(f.root, 'meta-sdk-project')
-    await mkdir(profiles)
-    vi.stubEnv('GEAR_PROFILE_ROOT', profiles)
-    const python = resolvePythonExecutable()
-    const targetProvider = join(f.root, 'meta-sdk-target-provider.mjs')
-    await writeFile(targetProvider, (await readFile(resolve('tests/fixtures/project-provider.mjs'), 'utf8')).replace(
-      'process.stdout.write(JSON.stringify(result))',
-      "if (action === 'submit' && request.operation.kind === 'evaluate_seed') { const marker = join(configuration.receipts, 'fail-once'); try { await readFile(marker) } catch { await writeFile(marker, 'done'); throw new Error('lost Meta-Harness SDK evaluation reply') } } process.stdout.write(JSON.stringify(result))",
-    ))
-    await writeFile(join(profiles, 'meta-sdk-target.json'), JSON.stringify({
-      command: [process.execPath, targetProvider], workingDirectory: f.root, passEnv: ['PYTHONPATH'],
-      timeoutMs: 30_000, configuration: { python, receipts: join(f.root, 'meta-sdk-target-receipts') },
-    }))
-    await writeFile(join(profiles, 'meta-sdk-codex.json'), JSON.stringify(f.profile))
-    await initProject(project, { adapter: 'pi', template: 'text', targetProfile: 'meta-sdk-target', metaProfile: 'meta-sdk-codex' })
-    await writeFile(join(project, 'tasks.csv'), 'id,instruction,expected,family,split\nseed,Produce the requested answer.,42,format,seed\nheld-out,Private task.,43,private-family,held_out\n')
-    if (process.env.GEAR_TEST_LINUX_ISOLATION) await writeFile(join(project, 'gear.yaml'),
-      (await readFile(join(project, 'gear.yaml'), 'utf8')) + `\nsandbox: {linux_isolation: ${process.env.GEAR_TEST_LINUX_ISOLATION}}\n`)
-    const policyPath = join(project, 'meta_policy.py')
-    await writeFile(policyPath, [
-      'from gear.algorithms.contracts import ProposalPlan', '',
-      'def preserve_diagnosis(view):', '    diagnosis = view.diagnosis',
-      '    hypothesis = diagnosis["hypothesis"]', '    summary = diagnosis["summary"]',
-      '    return ProposalPlan((summary + "\\nSelected mechanism: " + hypothesis,), tuple(sorted(task.id for task in view.tasks)), "frozen Meta-Harness SDK policy")', '',
-    ].join('\n'))
-    const sdk = (code: string) => promisify(execFile)(python, ['-c', code], {
-      cwd: project, timeout: 90_000, env: { ...process.env, PYTHONPATH: resolve('python'), GEAR_PYTHON: python,
-        GEAR_COMMAND: JSON.stringify([process.execPath, resolve('lib/cli.js')]) },
-    })
-    const failed = await sdk('from gear import Project; from gear.algorithms import MetaHarness; from meta_policy import preserve_diagnosis; Project.open().refine(algorithm=MetaHarness(proposal_planner=preserve_diagnosis), rounds=2)').then(() => null, error => error)
-    expect(failed).not.toBeNull()
-    expect([failed?.stderr, failed?.message].filter(Boolean).join('\n')).toMatch(/lost Meta-Harness SDK evaluation reply|process-operation-failed/)
-    const runs = join(project, '.gear/runs'), [id] = await readdir(runs)
-    expect(id).toBeTruthy()
-    const runRoot = join(runs, id!), journalPath = join(runRoot, 'journal.json')
-    const before = JSON.parse(await readFile(journalPath, 'utf8'))
-    expect(before.status).toBe('needs_recovery')
-    expect(before.spec.algorithm.options.proposal_planner).toBe('meta_policy:preserve_diagnosis')
-    expect(before.operations.map((entry: { request: OperationRequest }) => entry.request.operation.kind)).toEqual(['evaluate_seed'])
-    expect(before.operations[0].status).toBe('submitted')
-    expect(await readFile(join(runRoot, 'algorithm/meta_policy.py'), 'utf8')).toBe(await readFile(policyPath, 'utf8'))
-    await writeFile(policyPath, "raise RuntimeError('recovery must use frozen Meta-Harness policy')\n")
-    await sdk(`from gear import Project; Project.open().resume(${JSON.stringify(id)})`)
-    const after = JSON.parse(await readFile(journalPath, 'utf8'))
-    expect(after.status).toBe('completed')
-    const diagnoses = after.operations.filter((entry: { request: OperationRequest }) => entry.request.operation.kind === 'diagnose_seed')
-    expect(diagnoses).toHaveLength(2)
-    expect(diagnoses[0].request.operation.payload.meta.schema.required).toEqual(['summary', 'base_candidate_id', 'hypothesis'])
-    const generated = after.operations.filter((entry: { request: OperationRequest }) => entry.request.operation.kind === 'generate_candidate')
-    expect(generated).toHaveLength(2)
-    const firstCandidateId = generated[0].request.operation.candidate_id
-    expect(diagnoses[1].request.operation.candidate_id).toBe('anchor')
-    expect(generated[1].request.operation.parent_id).toBe(firstCandidateId)
-  }, 120_000)
-
-  it('rejects an ineligible proposer-selected base through the public SDK worker path', async () => {
-    const f = await fixture('meta-sdk-invalid')
-    const profiles = join(f.root, 'profiles'), project = join(f.root, 'invalid-meta-project')
-    await mkdir(profiles)
-    vi.stubEnv('GEAR_PROFILE_ROOT', profiles)
-    const python = resolvePythonExecutable()
-    await writeFile(join(profiles, 'invalid-target.json'), JSON.stringify({
-      command: [process.execPath, resolve('tests/fixtures/project-provider.mjs')],
-      workingDirectory: f.root,
-      passEnv: ['PYTHONPATH'],
-      timeoutMs: 30_000,
-      configuration: { python, receipts: join(f.root, 'invalid-target-receipts') },
-    }))
-    await writeFile(join(profiles, 'invalid-meta.json'), JSON.stringify(f.profile))
-    await initProject(project, {
-      adapter: 'pi',
-      template: 'text',
-      targetProfile: 'invalid-target',
-      metaProfile: 'invalid-meta',
-    })
-    await writeFile(
-      join(project, 'tasks.csv'),
-      'id,instruction,expected,family,split\nseed,Produce the requested answer.,42,format,seed\nheld-out,Private task.,43,private-family,held_out\n',
-    )
-    const pythonSdk = (code: string) => promisify(execFile)(python, ['-c', code], {
-      cwd: project,
-      timeout: 90_000,
-      env: {
-        ...process.env,
-        PYTHONPATH: resolve('python'),
-        GEAR_PYTHON: python,
-        GEAR_COMMAND: JSON.stringify([process.execPath, resolve('lib/cli.js')]),
-      },
-    })
-    const failure = await pythonSdk(
-      'from gear import Project; from gear.algorithms import MetaHarness; Project.open().refine(algorithm=MetaHarness(), rounds=1)',
-    ).then(() => null, (error) => error)
-    expect(failure).not.toBeNull()
-    expect([failure?.stderr, failure?.message].filter(Boolean).join('\n')).toMatch(
-      /invalid or ineligible base/,
-    )
-    const runs = join(project, '.gear/runs'), [id] = await readdir(runs)
-    expect(id).toBeTruthy()
-    const journal = JSON.parse(await readFile(join(runs, id!, 'journal.json'), 'utf8'))
-    expect(journal.operations.map((entry: { request: OperationRequest }) => entry.request.operation.kind)).toEqual([
-      'evaluate_seed',
-      'diagnose_seed',
-    ])
-    expect(journal.operations[1].receipt.result.data.data.base_candidate_id).toBe('unoffered-history')
-  }, 120_000)
-
-  it('chains explicit upstream proxies without exposing credentials or bypassing domain restrictions', async () => {
-    const requests: string[] = []
-    const authorization: Array<string | undefined> = []
-    const proxy = createServer((request, response) => {
-      requests.push(request.url ?? '')
-      authorization.push(request.headers['proxy-authorization'])
-      response.end('upstream reached')
-    })
-    await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', resolve))
-    try {
-      const address = proxy.address() as { port: number }
-      vi.stubEnv('HTTP_PROXY', `http://fixture:PROXY_CREDENTIAL_CANARY@127.0.0.1:${address.port}`)
-      vi.stubEnv('NO_PROXY', 'denied.gear.test')
-      const f = await fixture('proxy')
-      const receipt = await f.provider.submit(f.request, signal())
-      expect(receipt.result.status, await readFile(join(f.directory, 'stderr.log'), 'utf8')).toBe('complete')
-      expect(requests).toEqual(['http://allowed.gear.test/probe'])
-      expect(authorization).toEqual([`Basic ${Buffer.from('fixture:PROXY_CREDENTIAL_CANARY').toString('base64')}`])
-      expect(await readFile(join(f.directory, 'job.json'), 'utf8')).not.toContain('PROXY_CREDENTIAL_CANARY')
-    } finally {
-      proxy.closeAllConnections()
-      await new Promise<void>((resolve, reject) => proxy.close(error => error ? reject(error) : resolve()))
-    }
-  })
   it('binds the optional code-mode companion to the runtime identity', async () => {
     const { profile, root } = await fixture()
     const before = await describeCodex(profile.configuration)
@@ -517,191 +492,52 @@ describe('formal Codex operation runner', () => {
     expect((await describeCodex(profile.configuration)).identity).not.toBe(present.identity)
   })
   for (const withTrajectory of [false, true])
-  it(`queries and reads frozen seed experiences${withTrajectory ? ' and trajectory pages' : ''} inside the actual Meta sandbox`, async () => {
+  it(`queries and reads frozen seed experiences${withTrajectory ? ' and trajectory pages' : ''} through the authorized Hitch handoff`, async () => {
     const { provider: initialProvider, request, context, root, profile } = await fixture('success', 'pi', false)
     let provider = initialProvider
-    const firstRoundRequest = structuredClone(request)
-    firstRoundRequest.operationId = canonicalDigest([request.operationId, 'round-1'])
-    firstRoundRequest.operation.candidate_id = 'candidate-round-1'
     const trajectory_refs: TrajectoryReference[] = []
-    const rejectedTrajectoryRefs: TrajectoryReference[] = []
     if (withTrajectory) {
-      const hitchRoot = join(root, 'hitch-private'), executable = join(root, 'hitch.mjs')
+      const hitchRoot = join(root, 'hitch-private'), run = 'run_' + 'a'.repeat(32), executable = join(root, 'hitch.mjs')
       await mkdir(hitchRoot)
       await writeFile(join(hitchRoot, 'private.txt'), 'PROVIDER_PRIVATE_CANARY')
+      await writeFile(join(hitchRoot, run + '.json'), JSON.stringify([{ seq: 0, type: 'assistant/message', data: 'historical seed trace' }, { seq: 1, type: 'tool/result', data: 'result' }]))
       await writeFile(executable, `#!${process.execPath}\nimport {trajectoryFixture} from ${JSON.stringify(new URL('../fixtures/trajectory-hitch.mjs', import.meta.url).href)};await trajectoryFixture();`, { mode: 0o700 })
       // The detached operation runs the installed JS adapter. Bind that actual implementation.
       const { HitchArtifactReader } = await import(new URL('../../lib/adapters/hitch/trajectory.js', import.meta.url).href)
       const reader = new HitchArtifactReader(executable, hitchRoot)
-      const trajectoryStore = new TrajectoryStore(join(context.targets, '../trajectory-sources'))
-      const saveTrajectory = async (candidateId: string, text: string, destination: TrajectoryReference[]) => {
-        const run = 'run_' + (candidateId === 'anchor' ? 'a' : 'c').repeat(32)
-        await writeFile(join(hitchRoot, run + '.json'), JSON.stringify([{ seq: 0, type: 'assistant/message', data: text }, { seq: 1, type: 'tool/result', data: 'result' }]))
-        const artifact = await reader.capture(run, 'seed', 0, signal())
-        expect(artifact.status).toBe('available')
-        const source = await trajectoryStore.save({ version: 1, run_id: 'run', candidate_id: candidateId, operation_id: canonicalDigest(['evaluation', candidateId]), origin_run_id: 'run', origin_candidate_id: candidateId, receipt_digest: canonicalDigest(['receipt', candidateId]), reader_identity: canonicalDigest(reader.descriptor), partition: 'seed', artifact })
-        destination.push({ ref: 'trajectory:' + source.digest.slice(7), candidate_id: candidateId, task_id: 'seed', repetition: 0, status: artifact.status, content_digest: artifact.content_digest, reason: null })
-      }
-      await saveTrajectory('anchor', 'successful seed trace', trajectory_refs)
-      await saveTrajectory('rejected-history', 'failed seed trace', rejectedTrajectoryRefs)
+      const artifact = await reader.capture(run, 'seed', 0, signal())
+      expect(artifact.status).toBe('available')
+      const source = await new TrajectoryStore(join(context.targets, '../trajectory-sources')).save({ version: 1, run_id: 'run', candidate_id: 'anchor', operation_id: canonicalDigest('evaluation'), origin_run_id: 'run', origin_candidate_id: 'anchor', receipt_digest: canonicalDigest('receipt'), reader_identity: canonicalDigest(reader.descriptor), partition: 'seed', artifact })
+      trajectory_refs.push({ ref: 'trajectory:' + source.digest.slice(7), candidate_id: 'anchor', task_id: 'seed', repetition: 0, status: artifact.status, content_digest: artifact.content_digest, reason: null })
       provider = await ProcessOperationProvider.connect(profile, { ...context, artifactReader: reader.descriptor, experiencePython: resolvePythonExecutable() } as unknown as Json)
     }
     await provider.prepareAdmission()
-    const firstRoundReceipt = await provider.submit(firstRoundRequest, signal())
-    const firstRoundDiagnostic = await readFile(
-      join(context.directory, firstRoundRequest.operationId.slice(7), 'stderr.log'),
-      'utf8',
-    ).catch(() => '')
-    expect(firstRoundReceipt.result.status, JSON.stringify(firstRoundReceipt) + firstRoundDiagnostic).toBe('complete')
-    expect(firstRoundReceipt.candidate).toMatchObject({ id: 'candidate-round-1', parent_id: 'anchor' })
     const record = builtinPolicy<ExperienceRecord>('experience_record', {
       source: { run_id: 'run' }, candidate: { id: 'anchor', digest: canonicalDigest('anchor'), parent_id: 'older' },
       parent: { id: 'older', digest: canonicalDigest('older'), parent_id: null }, task_ids: ['seed'], repetitions: 1,
-      objective: null, evidence: ['older', 'anchor'].map((candidate_id, index) => ({ candidate_id, task_id: 'seed', repetition: 0, status: 'valid', score: index === 0 ? 0 : 1 })),
+      objective: null, evidence: ['older', 'anchor'].map((candidate_id, index) => ({ candidate_id, task_id: 'seed', repetition: 0, status: 'valid', score: index === 0 ? 1 : 0 })),
       trajectory_refs,
       proposal: { rationale: 'format', hypothesis: 'format', semantic_targets: [] },
       change: { files: [{ path: 'AGENTS.md', patch: '-before\n+after\n' }] },
     })
-    const rejectedRecord = builtinPolicy<ExperienceRecord>('experience_record', {
-      source: { run_id: 'run' },
-      candidate: { id: 'rejected-history', digest: canonicalDigest('rejected-history'), parent_id: 'anchor' },
-      parent: { id: 'anchor', digest: canonicalDigest('anchor'), parent_id: 'older' },
-      task_ids: ['seed'], repetitions: 1, objective: null,
-      evidence: [
-        { candidate_id: 'anchor', task_id: 'seed', repetition: 0, status: 'valid', score: 1 },
-        { candidate_id: 'rejected-history', task_id: 'seed', repetition: 0, status: 'valid', score: 0.25 },
-      ],
-      trajectory_refs: rejectedTrajectoryRefs,
-      proposal: { rationale: 'preserve output', hypothesis: 'preserve output', semantic_targets: [] },
-      change: { files: [{ path: 'AGENTS.md', patch: null, patch_status: 'too-large' }] },
-    })
     const body = { version: 2 as const, run_id: 'run', source_archive_digest: canonicalDigest('archive'), implementation_identity: builtinPolicyImplementationDigest, records: [record] }
-    body.records.push(rejectedRecord)
     const snapshot = { ...body, digest: canonicalDigest(body) }
     await new ExperienceStore(join(context.targets, '../experience')).save(snapshot)
-    const selected = builtinPolicy<Omit<ExperienceContext, 'digest' | 'implementation_identity'>>('experience_context', { records: [record, rejectedRecord], snapshot_digest: snapshot.digest, parent_id: 'anchor', evidence: request.evidence })
+    const selected = builtinPolicy<Omit<ExperienceContext, 'digest' | 'implementation_identity'>>('experience_context', { records: [record], snapshot_digest: snapshot.digest, parent_id: 'anchor', evidence: request.evidence })
     const memory = { ...selected, implementation_identity: snapshot.implementation_identity }
     request.experience = { ...memory, digest: canonicalDigest(memory) }
-    request.operation.candidate_id = 'candidate-round-2'
-    request.operationId = canonicalDigest([request.operationId, request.experience.digest, 'round-2'])
+    request.operationId = canonicalDigest([request.operationId, request.experience.digest])
     const receipt = await provider.submit(request, signal())
     const diagnostic = await readFile(join(context.directory, request.operationId.slice(7), 'stderr.log'), 'utf8').catch(() => '')
     expect(receipt.result.status, JSON.stringify(receipt) + diagnostic).toBe('complete')
     expect(receipt.result.data).toMatchObject({ summary: 'read isolation verified' })
-  }, 30_000)
-  it('hands an authorized baseline trajectory to the actual first-diagnosis Meta worker', async () => {
-    const { request, context, root, profile } = await fixture('success', 'pi', false)
-    const runRoot = dirname(context.targets)
-    const hitchRoot = join(root, 'baseline-hitch')
-    const run = 'run_' + 'b'.repeat(32)
-    const executable = join(root, 'baseline-hitch.mjs')
-    await mkdir(hitchRoot)
-    await writeFile(
-      join(hitchRoot, run + '.json'),
-      JSON.stringify([{ seq: 0, type: 'assistant/message', data: 'historical seed trace' }]),
-    )
-    await writeFile(
-      executable,
-      `#!${process.execPath}\nimport {trajectoryFixture} from ${JSON.stringify(new URL('../fixtures/trajectory-hitch.mjs', import.meta.url).href)};await trajectoryFixture();`,
-      { mode: 0o700 },
-    )
-    const { HitchArtifactReader } = await import(
-      new URL('../../lib/adapters/hitch/trajectory.js', import.meta.url).href
-    )
-    const reader = new HitchArtifactReader(executable, hitchRoot)
-    const artifact = await reader.capture(run, 'seed', 0, signal())
-    expect(artifact.status).toBe('available')
-    const trajectoryStore = new TrajectoryStore(join(runRoot, 'trajectory-sources'))
-    const source = await trajectoryStore.save({
-      version: 1,
-      run_id: 'run',
-      candidate_id: 'anchor',
-      operation_id: canonicalDigest('baseline-evaluation'),
-      origin_run_id: 'run',
-      origin_candidate_id: 'anchor',
-      receipt_digest: canonicalDigest('baseline-receipt'),
-      reader_identity: canonicalDigest(reader.descriptor),
-      partition: 'seed',
-      artifact,
-    })
-    const baselineReference: TrajectoryReference = {
-      ref: 'trajectory:' + source.digest.slice(7),
-      candidate_id: 'anchor',
-      task_id: 'seed',
-      repetition: 0,
-      status: 'available',
-      content_digest: artifact.content_digest,
-      reason: null,
-    }
-    const snapshotBody = {
-      version: 3 as const,
-      run_id: 'run',
-      source_archive_digest: canonicalDigest('archive'),
-      implementation_identity: builtinPolicyImplementationDigest,
-      records: [],
-    }
-    const snapshot: ExperienceIndexSnapshot = {
-      ...snapshotBody,
-      records: [],
-      digest: canonicalDigest(snapshotBody),
-    }
-    await new ExperienceStore(join(runRoot, 'experience')).save(snapshot)
-    const baselineContextBody: Omit<ExperienceContext, 'digest'> = {
-      version: 2,
-      snapshot_digest: snapshot.digest,
-      implementation_identity: builtinPolicyImplementationDigest,
-      available_records: 0,
-      cards: [],
-      baseline: {
-        candidate_id: 'anchor',
-        trajectory_refs: [baselineReference],
-        missing_trajectory_slots: [],
-      },
-    }
-    request.experience = {
-      ...baselineContextBody,
-      digest: canonicalDigest(baselineContextBody),
-    }
-    request.operation = {
-      kind: 'diagnose_seed',
-      candidate_id: 'anchor',
-      parent_id: null,
-      task_ids: ['seed'],
-      scope: 'global',
-      rationale: 'Diagnose baseline seed evidence.',
-      payload: null,
-    }
-    request.operationId = canonicalDigest({
-      request: request.operation,
-      experience: request.experience.digest,
-    })
-    const provider = await ProcessOperationProvider.connect(profile, {
-      ...context,
-      artifactReader: reader.descriptor,
-    } as unknown as Json)
-    await provider.prepareAdmission()
-
-    const receipt = await provider.submit(request, signal())
-    const diagnostic = await readFile(
-      join(context.directory, request.operationId.slice(7), 'stderr.log'),
-      'utf8',
-    ).catch(() => '')
-    expect(receipt.result.status, JSON.stringify(receipt) + diagnostic).toBe('complete')
-    expect(receipt.result.data).toMatchObject({ summary: 'read isolation verified' })
-  }, 30_000)
-  it('keeps a missing turn counter unknown and reads the final event without a trailing newline', async () => {
-    const { provider, request } = await fixture('partialusage')
-    const receipt = await provider.submit(request, signal())
-    expect(receipt.result.status).toBe('complete')
-    expect(receipt.usage).toEqual({ input_tokens: null, cached_input_tokens: null, output_tokens: 10,
-      tokens: null, model_requests: null, dollars: null })
   }, 30_000)
   it('does not report completed-turn usage as the total after a later turn fails', async () => {
     const { provider, request } = await fixture('partialfailed')
     const receipt = await provider.submit(request, signal())
     expect(receipt.result.status).toBe('failed')
     expect(receipt.candidate).toBeNull()
-    expect(Object.values(receipt.usage)).toEqual([null, null, null, null, null, null])
+    expect(receipt.usage).toMatchObject({ tokens: null, model_requests: 2 })
   }, 30_000)
   for (const adapter of ['pi', 'dsh'] as const)
     it(`isolates seed/candidate and persists one ${adapter} generation`, async () => {
@@ -722,10 +558,9 @@ describe('formal Codex operation runner', () => {
         cached_input_tokens: 3,
         output_tokens: 7,
         tokens: 19,
-        model_requests: null,
-        dollars: null,
+        model_requests: 1,
       })
-      expect((await readFile(join(directory, 'events.jsonl'), 'utf8')).match(/test.started/gu)).toHaveLength(
+      expect((await readFile(join(directory, 'stderr.log'), 'utf8')).match(/test.started/gu)).toHaveLength(
         1,
       )
       expect(await provider.inspect(request, signal())).toEqual({ state: 'complete', receipt: first })
@@ -748,7 +583,7 @@ describe('formal Codex operation runner', () => {
     const result = await provider.inspect(request, signal())
     expect(result.state).toBe('complete')
     if (result.state === 'complete') expect(result.receipt.result.status).toBe('complete')
-    expect((await readFile(join(directory, 'events.jsonl'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
+    expect((await readFile(join(directory, 'stderr.log'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
   }, 30_000)
   it('cancels the owned process and persists its failed receipt', async () => {
     const { provider, request, directory } = await fixture('hold')
@@ -817,7 +652,7 @@ describe('formal Codex operation runner', () => {
     const waiting = provider.submit(request, signal()).catch((error) => error)
     await untilStarted(directory)
     const started = JSON.parse(await readFile(join(directory, 'started.json'), 'utf8')) as { pid: number }
-    const event = JSON.parse((await readFile(join(directory, 'events.jsonl'), 'utf8')).split('\n')[0]!) as {
+    const event = JSON.parse((await readFile(join(directory, 'stderr.log'), 'utf8')).split('\n')[0]!) as {
       pid: number
       cwd: string
     }
@@ -833,8 +668,8 @@ describe('formal Codex operation runner', () => {
         () => false,
       ),
       await readFile(join(directory, 'stderr.log'), 'utf8'),
-    ).toBe(false)
-    expect((await readFile(join(directory, 'events.jsonl'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
+    ).toBe(true)
+    expect((await readFile(join(directory, 'stderr.log'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
   }, 30_000)
 })
 
@@ -919,91 +754,29 @@ it('does not restart a killed worker even if its started marker is also lost', a
   await rm(join(directory, 'started.json'))
   await promisify(execFile)(process.execPath, [resolve('assets/codex-meta-runner.mjs'), '--worker', directory])
   expect(await provider.inspect(request, signal())).toEqual({ state: 'unknown' })
-  expect((await readFile(join(directory, 'events.jsonl'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
+  expect((await readFile(join(directory, 'stderr.log'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
 }, 30_000)
 
 
-for (const mode of ['connect-success', 'connect-failure', 'connect-cancel'])
-it(`publishes the ${mode} result and releases its worker/lock despite a half-closed CONNECT tunnel`, async () => {
-  const sockets = new Set<Socket>(), requests: string[] = []
-  const upstream = createNetServer({ allowHalfOpen: true }, socket => {
-    sockets.add(socket)
-    socket.on('error', () => {})
-    socket.once('close', () => sockets.delete(socket))
-    let header = ''
-    socket.on('data', chunk => {
-      header += chunk.toString()
-      if (!header.includes('\r\n\r\n')) return
-      requests.push(header.split('\r\n')[0]!)
-      socket.removeAllListeners('data')
-      socket.resume()
-      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
-    })
-    // Keep the response half open after FIN. This is the dependency reset deadlock.
-    socket.on('end', () => {})
-  })
-  await new Promise<void>(resolve => upstream.listen(0, '127.0.0.1', resolve))
-  try {
-    vi.stubEnv('HTTPS_PROXY', `http://127.0.0.1:${(upstream.address() as { port: number }).port}`)
-    const f = await fixture(mode)
-    const waiting = f.provider.submit(f.request, signal())
-    await untilStarted(f.directory)
-    if (mode === 'connect-cancel') await f.provider.cancel(f.request)
-    const receipt = await waiting
-    expect(receipt.result.status, await readFile(join(f.directory, 'stderr.log'), 'utf8')).toBe(mode === 'connect-success' ? 'complete' : 'failed')
-    expect(receipt.candidate === null).toBe(mode !== 'connect-success')
-    expect(requests).toEqual(['CONNECT allowed.gear.test:443 HTTP/1.1'])
-    const started = JSON.parse(await readFile(join(f.directory, 'started.json'), 'utf8')) as { pid: number }
-    await expect.poll(() => readFile(join(f.directory, 'cleanup.json'), 'utf8').then(JSON.parse).catch(() => null), { timeout: 5000 }).toMatchObject({ status: 'fallback-required', model_stopped: true, stages: { credentials: 'complete', sandbox: 'timed-out', root: 'complete' } })
-    await expect.poll(async () => {
-      const { stdout } = await promisify(execFile)('/bin/ps', ['-axo', 'pgid=,stat='])
-      return stdout.split('\n').some(line => { const [group, state] = line.trim().split(/\s+/u); return Number(group) === started.pid && !state?.startsWith('Z') })
-    }, { timeout: 5000 }).toBe(false)
-    expect(await fileLockHeld(join(f.directory, 'execution.lock'))).toBe(false)
-    const event = JSON.parse((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).split('\n')[0]!) as { cwd: string }
-    await expect(readFile(join(event.cwd, '../home/.codex/auth.json'))).rejects.toThrow()
-    await expect(readFile(join(event.cwd, 'AGENTS.md'))).rejects.toThrow()
-    // The deliberately half-open test peer retains its own write half even
-    // after the worker's FDs are gone. Finish its FIN handshake only now.
-    expect([...sockets].every(socket => socket.readableEnded)).toBe(true)
-    for (const socket of sockets) socket.end('closed-endpoint-probe')
-    await expect.poll(() => sockets.size, { timeout: 3000 }).toBe(0)
-    expect(await f.provider.submit(f.request, signal())).toEqual(receipt)
-    expect((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
-  } finally {
-    for (const socket of sockets) socket.destroy()
-    await new Promise<void>((resolve, reject) => upstream.close(error => error ? reject(error) : resolve()))
-  }
-}, 30_000)
-
-it('keeps a signal-killed guard without its private acknowledgment unknown and never repeats its call', async () => {
+it('keeps a signal-killed Hitch without a stopped receipt unknown and never repeats its call', async () => {
   const f = await fixture('hold')
   const waiting = f.provider.submit(f.request, signal()).catch(error => error)
   await untilStarted(f.directory)
   const { pid: worker } = JSON.parse(await readFile(join(f.directory, 'started.json'), 'utf8')) as { pid: number }
   const { stdout } = await promisify(execFile)('/bin/ps', ['-A', '-o', 'pid=', '-o', 'ppid=', '-o', 'args='])
   const rows = stdout.split('\n').map(line => line.trim().split(/\s+/u))
-  const guard = rows.find(row => Number(row[1]) === worker && row.slice(2).join(' ').includes('/assets/codex-process-guard.py'))
-  expect(guard).toBeDefined()
-  const leader = rows.find(row => Number(row[1]) === Number(guard![0]))
-  expect(leader).toBeDefined()
-  const event = JSON.parse((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).split('\n')[0]!) as { cwd: string }
+  const hitch = rows.find(row => Number(row[1]) === worker && row.slice(2).join(' ').includes('/fake-hitch.mjs'))
+  expect(hitch).toBeDefined()
+  const event = JSON.parse((await readFile(join(f.directory, 'stderr.log'), 'utf8')).split('\n')[0]!) as { cwd: string }
   roots.push(resolve(event.cwd, '..'))
-  // Both exact PIDs belong to this isolated sleeping fixture; no existing host
-  // process is signalled. Stop the orphan fixture model after removing its guard.
-  process.kill(Number(guard![0]), 'SIGKILL')
-  try { process.kill(-Number(leader![0]), 'SIGKILL') }
-  catch (error) {
-    // Linux may already reap the child group when its guard dies.
-    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
-  }
+  process.kill(Number(hitch![0]), 'SIGKILL')
   expect(await waiting).toBeInstanceOf(Error)
   expect(await f.provider.inspect(f.request, signal())).toEqual({ state: 'unknown' })
   await expect(readFile(join(f.directory, 'receipt.json'))).rejects.toMatchObject({ code: 'ENOENT' })
   expect(JSON.parse(await readFile(join(f.directory, 'cleanup.json'), 'utf8'))).toMatchObject({ model_stopped: false, stages: { root: 'unconfirmed', credentials: 'unconfirmed' } })
   expect(await readFile(join(event.cwd, 'AGENTS.md'), 'utf8')).toContain('Follow the task instruction')
   await expect(f.provider.submit(f.request, signal())).rejects.toThrow('codex-result-unknown')
-  expect((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
+  expect((await readFile(join(f.directory, 'stderr.log'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
 }, 30_000)
 
 it('refuses a real nonleader worker before writing started or spawning a model', async () => {
@@ -1029,19 +802,19 @@ it('cleans up and releases its lock after receipt publication fails without repl
   // Create it after start so it cannot bypass the worker's execution admission.
   await mkdir(join(f.directory, 'receipt.json'))
   expect(await waiting).toBeInstanceOf(Error)
-  await expect.poll(() => readFile(join(f.directory, 'cleanup.json'), 'utf8').then(JSON.parse).catch(() => null), { timeout: 8000 }).toMatchObject({ model_stopped: true, stages: { credentials: 'complete', gateway: 'complete', sandbox: 'complete', root: 'complete' } })
+  await expect.poll(() => readFile(join(f.directory, 'cleanup.json'), 'utf8').then(JSON.parse).catch(() => null), { timeout: 8000 }).toMatchObject({ model_stopped: true, stages: { credentials: 'complete', gateway: 'complete', root: 'complete' } })
   await expect.poll(() => fileLockHeld(join(f.directory, 'execution.lock')), { timeout: 3000 }).toBe(false)
   const { pid } = JSON.parse(await readFile(join(f.directory, 'started.json'), 'utf8')) as { pid: number }
   await expect.poll(async () => {
     const { stdout } = await promisify(execFile)('/bin/ps', ['-axo', 'pgid=,stat='])
     return stdout.split('\n').some(line => { const [group, state] = line.trim().split(/\s+/u); return Number(group) === pid && !state?.startsWith('Z') })
   }, { timeout: 3000 }).toBe(false)
-  const event = JSON.parse((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).split('\n')[0]!) as { cwd: string }
+  const event = JSON.parse((await readFile(join(f.directory, 'stderr.log'), 'utf8')).split('\n')[0]!) as { cwd: string }
   await expect(readFile(join(event.cwd, 'AGENTS.md'))).rejects.toMatchObject({ code: 'ENOENT' })
   // Remove only the artificial conflict. Original admission/started state stays
   // intact and still forbids a second model execution without a durable result.
   await rm(join(f.directory, 'receipt.json'), { recursive: true })
   expect(await f.provider.inspect(f.request, signal())).toEqual({ state: 'unknown' })
   await expect(f.provider.submit(f.request, signal())).rejects.toThrow('codex-result-unknown')
-  expect((await readFile(join(f.directory, 'events.jsonl'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
+  expect((await readFile(join(f.directory, 'stderr.log'), 'utf8')).match(/test.started/gu)).toHaveLength(1)
 }, 30_000)

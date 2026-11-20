@@ -1,6 +1,6 @@
 # Quick start
 
-This page uses the Gear 0.2.2 `gear` CLI. Use compatible Node (22.x from
+This page uses the Gear 0.2.4 `gear` CLI. Use compatible Node (22.x from
 22.19, or 24+), and Python 3.10+; development and CPU tests use Python 3.12.
 Linux algorithm isolation also requires bubblewrap, socat and ripgrep; macOS
 uses the system sandbox. Hitch/Harbor tasks need their runtime and Docker.
@@ -10,10 +10,15 @@ uses the system sandbox. Hitch/Harbor tasks need their runtime and Docker.
 ```sh
 npm ci
 npm pack
-npm install --global ./rsi-gear-0.2.2.tgz
+npm install --global ./rsi-gear-0.2.4.tgz
+python3.12 -m venv .venv
+. .venv/bin/activate
+python -m pip install ./python
 gear setup --python python3.12
 gear doctor
 ```
+
+Run these commands at the Gear source root. The activated `.venv` runs the Python SDK examples below; `gear setup` manages the execution worker environment. Build both packages from the same source. Codex Meta requires Hitch capabilities `isolated_agent_run: "1"` and `generation_budget: "1"`; `gear doctor` checks them. See [Meta integration](meta-agents.md).
 
 `setup` verifies a fresh Python environment before selecting it; a failed install leaves the previous environment selected.
 In an interactive terminal it also guides Target/Meta profile creation or selection; use `--json` for unattended setup.
@@ -54,19 +59,35 @@ See [configuration](configuration.md). Doctor reports dependencies, capabilities
 
 ```sh
 gear evaluate --split seed --limit 1
-gear refine --rounds 1 --dry-run
-gear refine --rounds 1
 gear report
 ```
 
 Each evaluation returns a run ID. Reports distinguish valid zero scores, scorer
 failures, environment failures and physical attempts. The small demonstration
 benchmark checks the workflow; it does not establish optimization quality.
-`--dry-run` checks scope, repetitions, budgets and verified baseline reuse without
-creating a run or calling a model. Normal refine displays its frozen plan before
-execution. A smoke test can cover only its matching seed slot. Python exposes
-`Project.open().plan_refine(rounds=1)` and async `aplan_refine()`. A preview is not
-a reservation; admission rechecks inputs.
+
+## Choose and run an algorithm
+
+Save and run this Python example from the project directory. First set Meta request/token limits and the target evaluation budget in `gear.yaml` using [configuration](configuration.md#generation-and-diagnosis-budgets), then choose one [algorithm](algorithms.md):
+
+```python
+from gear import Project
+from gear.algorithms import OPRO
+
+project = Project.open(".")
+recipe = OPRO(prompt_path="prompts/system.md")
+print(project.plan_refine(algorithm=recipe, rounds=2))
+run = project.refine(algorithm=recipe, rounds=2)
+print(run.id)
+print(run.report.summary)
+```
+
+For Pi, use `OPRO(prompt_path="AGENTS.md")`. Other recipes reuse the project configuration; Harness2 additionally needs [explicit task order and blind access](algorithms.md#harness2). In notebooks use `await project.aplan_refine(...)` and `await project.arefine(...)`.
+
+Planning checks task scope, repetitions, budgets and verified baseline reuse without creating a run or making model calls. Admission rechecks inputs; a preview is not a reservation. A smoke test covers only its matching seed slot. `rounds=2` is a limit, and insufficient budget can stop a run earlier; inspect actual progress in the [report](results.md).
+
+The CLI uses the algorithm configured in the project: `gear refine --rounds 2 --dry-run` previews it and `gear refine --rounds 2` executes it. Both entrypoints call the same project service.
+
 See [run management](evolutions.md) for recovery and export. The ordinary CLI
 needs no manually managed server; [Skill integration](meta-agents.md) provides
 the natural-language entrypoint.

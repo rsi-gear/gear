@@ -2,7 +2,8 @@ import copy
 import json
 import unittest
 
-from gear.algorithms.verifier import (
+from gear.canonical import digest
+from gear.evaluation.verifier import (
     MAX_BYTES,
     bind_verifier_channels,
     project_verifier,
@@ -10,7 +11,6 @@ from gear.algorithms.verifier import (
     unavailable,
     verifier_feedback,
 )
-from gear.canonical import digest
 from gear.refine.protocol import validate
 
 

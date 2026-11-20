@@ -1,327 +1,273 @@
+"""Behavioral contracts for the Meta-Harness Python algorithm."""
+
 import unittest
+from types import SimpleNamespace
 
 from gear.algorithms import MetaHarness
-from gear.algorithms.contracts import (
-    AlgorithmState,
-    Budget,
-    Candidate,
-    Evidence,
-    OperationResult,
-    ParentInput,
-    ParentOption,
-    ProposalInput,
-    SamplingInput,
-    SearchView,
-    Task,
+from gear.canonical import digest
+from gear.core import (
+    ArtifactRef,
+    CallResult,
+    CandidateRef,
+    GenerateCandidate,
+    Meta,
+    Results,
+    StateTree,
 )
-from gear.algorithms.gepa.proposal import plan_proposals as gepa_plan_proposals
-from gear.algorithms.meta_harness.parents import select_frontier_parent
-from gear.algorithms.meta_harness.proposal import (
-    HISTORY_GUIDANCE,
-    diagnosis_meta,
-    parse_diagnosis,
-    plan_proposals,
+from gear.core._json import json_value
+from gear.evaluation import (
+    Evaluate,
+    EvidenceRecord,
+    EvidenceSet,
+    EvidenceSetSpec,
+    ReadEvidence,
+    TaskSamples,
 )
-from gear.algorithms.meta_harness.ranking import rank_candidates
-from gear.algorithms.meta_harness.sampling import sample_all_tasks
-from gear.algorithms.meta_harness.stopping import stop_reason
-from gear.algorithms.random import DeterministicRandom
-from gear.algorithms.random_search.parents import select_parent as random_select_parent
-from gear.algorithms.testkit import toy_round
 from gear.project import Project
 from gear.refine.worker import make_algorithm
 
 
 class MetaHarnessTests(unittest.TestCase):
-    def test_custom_policy_survives_sdk_worker_round_trip(self):
-        policies = {
-            "parent_policy": random_select_parent,
-            "sampler": sample_all_tasks,
-            "proposal_planner": gepa_plan_proposals,
-            "ranker": rank_candidates,
-            "stop_rule": stop_reason,
-        }
-        algorithm = MetaHarness(**policies)
-
-        configuration = Project._describe_algorithm(algorithm)["algorithm"]
-        restored = make_algorithm(configuration)
-
-        self.assertEqual(restored.stages, ("global",))
-        for name, policy in policies.items():
-            with self.subTest(policy=name):
-                self.assertIs(getattr(restored, name), policy)
-
-    def test_runs_a_complete_seed_comparison(self):
-        result = toy_round(MetaHarness())
-
-        self.assertEqual(result["status"], "passed")
-        self.assertIn("evaluate_seed:global", result["operations"])
-        self.assertNotIn("evaluate_seed:local", result["operations"])
-        self.assertNotIn("evaluate_seed:bridge", result["operations"])
-
-    def test_emits_one_general_candidate_even_when_the_seed_frontier_is_solved(self):
-        tasks = (Task("task-a", "format"), Task("task-b", "files"))
-        candidates = (Candidate("anchor", "anchor-digest"),)
-        evidence = tuple(Evidence("anchor", task.id, 0, 1.0, "valid", "global") for task in tasks)
-        view = SearchView(
-            "solved",
-            1,
-            "fixed",
-            tasks,
-            candidates,
-            evidence,
-            (),
-            Budget(20, 1, 2),
-            "anchor",
-        )
-        algorithm = MetaHarness()
-        diagnosis = algorithm.step(view, AlgorithmState(data={"phase": "parents", "round": 0}))
-
-        self.assertEqual(diagnosis.operations[0].kind, "diagnose_seed")
-        self.assertEqual(diagnosis.operations[0].task_ids, ("task-a", "task-b"))
-        payload = diagnosis.operations[0].payload
-        self.assertEqual(
-            payload["meta"]["schema"]["required"],
-            ["summary", "base_candidate_id", "hypothesis"],
-        )
-        self.assertEqual(payload["base_candidates"][0]["candidate_id"], "anchor")
-        self.assertEqual(payload["meta"]["schema"]["properties"]["base_candidate_id"]["enum"], ["anchor"])
-
-        completed_view = SearchView(
-            view.run_id,
-            view.step_id + 1,
-            view.seed,
-            view.tasks,
-            view.candidates,
-            view.evidence,
-            (
-                OperationResult(
-                    "diagnose",
-                    "diagnose_seed",
-                    "complete",
-                    "anchor",
-                    {
-                        "declined": False,
-                        "data": {
-                            "summary": "one general change",
-                        "base_candidate_id": "anchor",
-                            "hypothesis": "improve output recovery",
-                        },
-                    },
-                ),
-            ),
-            view.budget,
-            view.anchor_id,
-        )
-        proposal = algorithm.step(completed_view, diagnosis.state)
-
-        self.assertEqual(len(proposal.operations), 1)
-        self.assertEqual(proposal.operations[0].kind, "generate_candidate")
-        self.assertEqual(proposal.operations[0].parent_id, "anchor")
-        self.assertEqual(proposal.operations[0].task_ids, ("task-a", "task-b"))
-        self.assertIn("improve output recovery", proposal.operations[0].payload["hypothesis"])
-        self.assertIn("improve output recovery", proposal.operations[0].payload["meta"]["prompt"])
-
-    def test_diagnosis_scope_includes_successful_and_failed_global_seed_evidence(self):
-        tasks = (Task("task-a", "format"), Task("task-b", "files"))
-        candidates = (Candidate("anchor", "anchor-digest"),)
-        evidence = (
-            Evidence("anchor", "task-a", 0, 0.0, "valid", "global"),
-            Evidence("anchor", "task-b", 0, 1.0, "valid", "global"),
-        )
-        view = SearchView(
-            "mixed-outcomes",
-            1,
-            "fixed",
-            tasks,
-            candidates,
-            evidence,
-            (),
-            Budget(20, 1, 2),
-            "anchor",
-        )
-
-        diagnosis = MetaHarness().step(
-            view, AlgorithmState(data={"phase": "parents", "round": 0})
-        )
-
-        self.assertEqual(diagnosis.operations[0].kind, "diagnose_seed")
-        self.assertEqual(diagnosis.operations[0].task_ids, ("task-a", "task-b"))
-
-    def test_parent_sampling_includes_seed_frontier_members(self):
-        options = (
-            ParentOption(
-                "parser",
-                "global",
-                ("task-a", "task-b"),
-                0.7,
-                task_scores=(("task-a", 1.0), ("task-b", 0.4)),
-                weights=(("task-a", 0.5), ("task-b", 0.5)),
-                content_digest="a",
-            ),
-            ParentOption(
-                "filesystem",
-                "global",
-                ("task-a", "task-b"),
-                0.6,
-                task_scores=(("task-a", 0.4), ("task-b", 1.0)),
-                weights=(("task-a", 0.5), ("task-b", 0.5)),
-                content_digest="b",
-            ),
-            ParentOption(
-                "dominated",
-                "global",
-                ("task-a", "task-b"),
-                0.2,
-                task_scores=(("task-a", 0.2), ("task-b", 0.2)),
-                weights=(("task-a", 0.5), ("task-b", 0.5)),
-                content_digest="c",
-            ),
-        )
-
-        plan = select_frontier_parent(
-            ParentInput(options, candidate_limit=5, champion_id="parser"),
-            DeterministicRandom("fixed"),
-        )
-
-        self.assertEqual(len(plan.allocations), 1)
-        self.assertIn(plan.allocations[0].selection.option.candidate_id, {"parser", "filesystem"})
-        self.assertEqual(plan.allocations[0].count, 1)
-        self.assertEqual(
-            {
-                candidate
-                for candidate, probability in plan.allocations[0].selection.probabilities
-                if probability
+    def setUp(self):
+        self.algorithm = MetaHarness()
+        self.anchor = CandidateRef("run", "anchor", digest("anchor source"))
+        self.tasks = ("seed-pass", "seed-fail")
+        self.view = SimpleNamespace(
+            run_id="run",
+            anchor=self.anchor,
+            candidates=(self.anchor,),
+            tasks=tuple(SimpleNamespace(id=task) for task in self.tasks),
+            objective=None,
+            budget={
+                "repetitions": 1,
+                "rounds": 2,
+                "candidates_remaining": 4,
+                "generation_requests_remaining": 8,
             },
-            {"global:parser", "global:filesystem"},
+            results=Results(),
         )
 
-    def test_proposer_selects_any_complete_seed_candidate_as_generation_parent(self):
-        tasks = (Task("format-task", "format"), Task("files-task", "files"))
-        candidates = (
-            Candidate("anchor", "anchor-digest"),
-            Candidate("historical", "historical-digest", "anchor"),
-            Candidate("frontier", "frontier-digest", "historical"),
+    def evidence(self, candidate, scores):
+        assessments = tuple(
+            ArtifactRef("run", "assessment", digest([candidate.candidate_id, task]))
+            for task in self.tasks
         )
-        evidence = (
-            Evidence("anchor", "format-task", 0, 0.4, "valid", "global"),
-            Evidence("anchor", "files-task", 0, 0.4, "valid", "global"),
-            Evidence("historical", "format-task", 0, 0.2, "valid", "global"),
-            Evidence("historical", "files-task", 0, 0.2, "valid", "global"),
-            Evidence("frontier", "format-task", 0, 0.9, "valid", "global"),
-            Evidence("frontier", "files-task", 0, 0.9, "valid", "global"),
+        records = tuple(
+            EvidenceRecord(
+                f"{candidate.candidate_id}/{task}",
+                "attempt",
+                assessment,
+                task,
+                0,
+                score,
+                "valid" if score == 1 else "task_failed",
+            )
+            for assessment, (task, score) in zip(assessments, zip(self.tasks, scores, strict=True), strict=True)
         )
-        view = SearchView(
-            "run",
-            1,
-            "seed",
-            tasks,
-            candidates,
-            evidence,
-            (),
-            Budget(20, 1, 2),
-            "anchor",
+        return EvidenceSet(
+            ArtifactRef("run", "evidence_set", digest([candidate.candidate_id, list(scores)])),
+            EvidenceSetSpec(
+                candidate,
+                assessments,
+                tuple(TaskSamples(task, (0,)) for task in self.tasks),
+                tuple((task, 1 / len(self.tasks)) for task in self.tasks),
+                digest(None),
+            ),
+            records,
+            True,
         )
-        algorithm = MetaHarness()
-        diagnosis = algorithm.step(view, AlgorithmState(data={"phase": "parents", "round": 1}))
-        diagnose_operation = diagnosis.operations[0]
 
-        self.assertEqual(diagnose_operation.kind, "diagnose_seed")
-        self.assertEqual(diagnose_operation.candidate_id, "anchor")
+    @staticmethod
+    def execution_records(*trajectories):
+        return [
+            {
+                "task_id": f"seed-{index}",
+                "status": "valid" if index == 0 else "task_failed",
+                "output": None,
+                "trajectory": json_value(trajectory),
+            }
+            for index, trajectory in enumerate(trajectories)
+        ]
+
+    def complete(self, decision, value, artifacts=(), executions=()):
+        if decision.state.data.get("phase") in ("baseline", "evaluate"):
+            value = {**value, "executions": list(executions)}
+        self.view.results = Results(
+            (CallResult(decision.calls[0].ref, "succeeded", value, artifacts=tuple(artifacts)),)
+        )
+        return self.algorithm.step(self.view, decision.state)
+
+    def test_first_diagnosis_receives_baseline_and_both_trajectory_outcomes(self):
+        baseline = self.evidence(self.anchor, (1, 0))
+        success = ArtifactRef(
+            "run", "target_trajectory", digest("successful trajectory"), "optimization"
+        )
+        failure = ArtifactRef(
+            "run", "target_trajectory", digest("failed trajectory"), "optimization"
+        )
+        private = ArtifactRef(
+            "run", "target_trajectory", digest("private trajectory"), "evaluation_private"
+        )
+        unrelated = ArtifactRef("run", "assessment", digest("assessment"), "optimization")
+        decision = self.algorithm.step(self.view, StateTree())
+        diagnosis = self.complete(
+            decision,
+            json_value(baseline),
+            executions=self.execution_records(success, failure, private, unrelated),
+        )
+
+        self.assertEqual(diagnosis.state.data["phase"], "diagnose")
+        meta_input = diagnosis.calls[0].effect["input"]
+        sources = meta_input["sources"]
+        self.assertIn(json_value(self.anchor), sources)
+        self.assertIn(json_value(success), sources)
+        self.assertIn(json_value(failure), sources)
+        self.assertNotIn(json_value(private), sources)
+        self.assertNotIn(json_value(unrelated), sources)
+        self.assertEqual(meta_input["data"]["baseline_trajectory_capture"], "available")
+        baseline_row = meta_input["data"]["evaluated_candidates"][0]
+        self.assertEqual(baseline_row["task_results"][0]["status"], "valid")
+        self.assertEqual(baseline_row["task_results"][1]["status"], "task_failed")
+
+    def test_execution_reader_excludes_non_seed_safe_trajectory_refs(self):
+        visible = ArtifactRef("run", "target_trajectory", digest("visible"), "optimization")
+        private = ArtifactRef(
+            "run", "target_trajectory", digest("private"), "evaluation_private"
+        )
+        wrong_kind = ArtifactRef(
+            "run", "assessment", digest("assessment"), "optimization"
+        )
+        refs = self.algorithm._execution_trajectories({
+            "executions": self.execution_records(visible, private, wrong_kind)
+        })
+        self.assertEqual(refs, (visible,))
+
+    def test_missing_baseline_trajectory_is_labeled_explicitly(self):
+        baseline_step = self.algorithm.step(self.view, StateTree())
+        baseline = self.evidence(self.anchor, (1, 0))
+        diagnosis = self.complete(baseline_step, json_value(baseline))
         self.assertEqual(
-            {item["candidate_id"] for item in diagnose_operation.payload["base_candidates"]},
-            {"anchor", "historical", "frontier"},
+            diagnosis.calls[0].effect["input"]["data"]["baseline_trajectory_capture"],
+            "not_captured",
         )
 
-        completed_view = SearchView(
-            view.run_id,
-            view.step_id + 1,
-            view.seed,
-            view.tasks,
-            view.candidates,
-            view.evidence,
-            (
-                OperationResult(
-                    "diagnose",
-                    "diagnose_seed",
-                    "complete",
-                    "anchor",
-                    {
-                        "declined": False,
-                        "data": {
-                            "summary": "reuse a prior parser fix",
-                            "base_candidate_id": "historical",
-                            "hypothesis": "repair format recovery",
-                        },
-                    },
+    def test_proposer_can_reuse_an_older_rejected_candidate_as_the_next_base(self):
+        anchor_result = self.algorithm.step(self.view, StateTree())
+        baseline = self.evidence(self.anchor, (1, 0))
+        baseline_trace = ArtifactRef(
+            "run", "target_trajectory", digest("baseline trajectory"), "optimization"
+        )
+        diagnosis = self.complete(
+            anchor_result,
+            json_value(baseline),
+            executions=self.execution_records(baseline_trace),
+        )
+
+        first_generation = self.complete(
+            diagnosis,
+            {"declined": False, "data": {
+                "summary": "try an alternate parser strategy",
+                "base_candidate_id": "anchor",
+                "hypothesis": "Use a parser that preserves quoted fields.",
+            }},
+        )
+        self.assertEqual(first_generation.calls[0].effect["input"]["base"]["candidate_id"], "anchor")
+        older = CandidateRef("run", "older-rejected", digest("large historical source"))
+        first_evaluation = self.complete(
+            first_generation,
+            {"candidate": json_value(older)},
+        )
+        self.view.candidates = (self.anchor, older)
+        second_diagnosis = self.complete(
+            first_evaluation,
+            json_value(self.evidence(older, (0, 0))),
+            executions=self.execution_records(
+                ArtifactRef(
+                    "run", "target_trajectory", digest("older successful trajectory"), "optimization"
+                ),
+                ArtifactRef(
+                    "run", "target_trajectory", digest("older failed trajectory"), "optimization"
                 ),
             ),
-            view.budget,
-            view.anchor_id,
         )
-        proposal = algorithm.step(completed_view, diagnosis.state)
 
-        self.assertEqual(proposal.operations[0].kind, "generate_candidate")
-        self.assertEqual(proposal.operations[0].parent_id, "historical")
+        history = second_diagnosis.calls[0].effect["input"]["data"]
+        self.assertIn("older-rejected", history["history_candidate_ids"])
+        self.assertEqual(history["baseline_trajectory_capture"], "available")
+        offered = {item["candidate_id"] for item in history["eligible_base_candidates"]}
+        self.assertIn("older-rejected", offered)
+        source_ids = {item.get("candidate_id") for item in second_diagnosis.calls[0].effect["input"]["sources"]}
+        self.assertIn("older-rejected", source_ids)
+        trajectory_refs = {
+            item.get("digest")
+            for item in second_diagnosis.calls[0].effect["input"]["sources"]
+            if item.get("kind") == "target_trajectory"
+        }
+        self.assertIn(digest("older successful trajectory"), trajectory_refs)
+        self.assertIn(digest("older failed trajectory"), trajectory_refs)
+        self.assertIn(digest("baseline trajectory"), trajectory_refs)
+
+        second_generation = self.complete(
+            second_diagnosis,
+            {"declined": False, "data": {
+                "summary": "reuse the rejected implementation's useful mechanism",
+                "base_candidate_id": "older-rejected",
+                "hypothesis": "Extend the older implementation with robust quoting.",
+            }},
+        )
         self.assertEqual(
-            proposal.research[0].data["selected_base_candidate"],
-            "historical",
+            second_generation.calls[0].effect["input"]["base"]["candidate_id"],
+            "older-rejected",
         )
 
-    def test_sampler_keeps_every_seed_task_with_uniform_weight(self):
-        tasks = (Task("b", "two"), Task("a", "one"))
-
-        plan = sample_all_tasks(
-            SamplingInput(tasks, (), "global"),
-            DeterministicRandom("fixed"),
+    def test_best_common_seed_score_is_nominated_after_configured_rounds(self):
+        baseline_step = self.algorithm.step(self.view, StateTree())
+        baseline = self.evidence(self.anchor, (1, 0))
+        diagnosis = self.complete(baseline_step, json_value(baseline))
+        generation = self.complete(
+            diagnosis,
+            {"declined": False, "data": {
+                "summary": "change one general mechanism",
+                "base_candidate_id": "anchor",
+                "hypothesis": "Improve general parsing.",
+            }},
         )
-
-        self.assertEqual(plan.task_ids, ("a", "b"))
-        self.assertEqual(plan.weights, (("a", 0.5), ("b", 0.5)))
-
-    def test_proposal_uses_the_model_selected_hypothesis_without_gepa_clustering(self):
-        failure = Evidence("best", "task", 0, 0.0, "valid", "global")
-        plan = plan_proposals(
-            ProposalInput(
-                ParentOption("best", "global", ("task",), 0.0),
-                (failure,),
-                {
-                    "summary": "Reuse a robust parser from history",
-                    "base_candidate_id": "best",
-                    "hypothesis": "Preserve parser output recovery",
-                },
-                4,
-                (Task("task", "family"),),
-            )
+        first = CandidateRef("run", "first", digest("first"))
+        evaluation = self.complete(generation, {"candidate": json_value(first)})
+        self.view.candidates = (self.anchor, first)
+        diagnosis2 = self.complete(evaluation, json_value(self.evidence(first, (0, 0))))
+        generation2 = self.complete(
+            diagnosis2,
+            {"declined": False, "data": {
+                "summary": "keep searching after a regression",
+                "base_candidate_id": "first",
+                "hypothesis": "Improve the general field handling.",
+            }},
         )
+        second = CandidateRef("run", "second", digest("second"))
+        self.view.candidates = (self.anchor, first, second)
+        evaluation2 = self.complete(generation2, {"candidate": json_value(second)})
+        final = self.complete(evaluation2, json_value(self.evidence(second, (1, 1))))
 
-        self.assertEqual(len(plan.hypotheses), 1)
-        self.assertIn("Preserve parser output recovery", plan.hypotheses[0])
-        self.assertEqual(plan.task_ids, ("task",))
-        self.assertEqual(plan.reason, HISTORY_GUIDANCE)
-        self.assertIn("successful and failed trajectories", plan.reason)
+        self.assertEqual(final.terminal.kind, "nominate")
+        self.assertEqual(final.terminal.candidate, second)
 
-    def test_diagnosis_meta_offers_all_bases_and_the_proposer_selects_one(self):
-        meta = diagnosis_meta([{"candidate_id": "anchor"}, {"candidate_id": "older"}])
-        schema = meta["schema"]
+    def test_sdk_serialization_and_worker_reconstruction_preserve_operator_options(self):
+        algorithm = MetaHarness(
+            proposer=Meta("Custom diagnosis", {"type": "object"}, max_tokens=384),
+            generator=GenerateCandidate(max_tokens=640),
+            evaluator=Evaluate(metrics=("latency",)),
+            evidence_reader=ReadEvidence(limit=17),
+        )
+        description = Project._describe_algorithm(algorithm)
+        restored = make_algorithm(description["algorithm"])
 
-        self.assertEqual(schema["required"], ["summary", "base_candidate_id", "hypothesis"])
-        self.assertEqual(schema["properties"]["base_candidate_id"]["enum"], ["anchor", "older"])
-        self.assertIn("Review every offered base candidate", meta["prompt"])
-
-    def test_meta_result_rejects_algorithm_fields_from_an_untrusted_response(self):
-        with self.assertRaisesRegex(ValueError, "invalid or ineligible base"):
-            parse_diagnosis(
-                {
-                    "declined": False,
-                    "data": {
-                        "summary": "a change",
-                        "base_candidate_id": "held-out-candidate",
-                        "hypothesis": "reuse an approach",
-                    },
-                },
-                ("anchor",),
-            )
+        self.assertIsInstance(restored, MetaHarness)
+        self.assertEqual(restored.proposer.prompt, "Custom diagnosis")
+        self.assertEqual(restored.proposer.max_tokens, 384)
+        self.assertEqual(restored.generator.max_tokens, 640)
+        self.assertEqual(restored.evaluator.metrics, ("latency",))
+        self.assertEqual(restored.evidence_reader.limit, 17)
 
 
 if __name__ == "__main__":

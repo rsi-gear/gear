@@ -3,20 +3,8 @@ import json
 import unittest
 from dataclasses import replace
 
-from gear.algorithms import (
-    GEPA,
-    AlgorithmState,
-    Budget,
-    Candidate,
-    Evidence,
-    OperationResult,
-    ParentAllocation,
-    ParentPlan,
-    ProposalPlan,
-    RandomSearch,
-    SearchView,
-    Task,
-)
+from gear.algorithms import GEPA, RandomSearch
+from gear.search.contracts_v1 import AlgorithmState, Budget, Candidate, Evidence, OperationResult, ParentAllocation, ParentPlan, ProposalPlan, SearchView, Task
 from gear.canonical import digest
 
 
@@ -49,10 +37,11 @@ class GenerationBudgetTests(unittest.TestCase):
                 'diagnosis', 'diagnose_seed', 'complete', 'anchor',
                 {'hypotheses': ['one', 'two', 'three']},
             ),))
-            state = recipe().step(
+            decision = recipe().step(
                 view, AlgorithmState(data={'phase': 'parents', 'round': 0})
-            ).state
-            decision = recipe().step(view, state)
+            )
+            if decision.operations[0].kind == 'diagnose_seed':
+                decision = recipe().step(view, decision.state)
             self.assertEqual(len(decision.operations), 1)
             self.assertEqual(decision.operations[0].kind, 'generate_candidate')
 
@@ -81,7 +70,8 @@ class GenerationBudgetTests(unittest.TestCase):
                         "selected parent",
                     )
 
-                algorithm = recipe(parent_policy=parents, proposal_planner=proposals)
+                options = {"diagnose": True} if recipe is RandomSearch else {}
+                algorithm = recipe(parent_policy=parents, proposal_planner=proposals, **options)
                 view = replace(
                     self.view(3),
                     tasks=(Task("a", "first"), Task("b", "second")),

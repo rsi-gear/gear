@@ -9,9 +9,11 @@ import type { Json } from '../domain/algorithm-wire.js'
 import { HitchOperationProvider } from '../adapters/hitch/provider.js'
 import { harnessAdapter } from './harness-adapters.js'
 import { pythonExecutable, pythonJson, pythonSourceRoot } from './python.js'
+import { resourceSdkEnvironment } from '../adapters/hitch/resource-sdk.js'
 import { configuredCancellation } from './cancellation.js'
+import { recoverHitchEnvironment } from './environment-recovery.js'
 
-import { profile, assertProfileRole, processProfile } from './profile-store.js'
+import { profile, assertProfileRole, processProfile, codexExecutionConfiguration } from './profile-store.js'
 export { profile, profileRoot } from './profile-store.js'
 
 export async function configuredProvider(
@@ -40,6 +42,7 @@ export async function configuredProvider(
                   'hitch/binding',
                   'hitch/preparation',
                   'hitch/sdk',
+                  'hitch/resource-sdk',
                   'process/executable',
                   'hitch/dataset',
                   'python/benchmark-limits',
@@ -55,6 +58,8 @@ export async function configuredProvider(
                   'hitch/transport',
                   'hitch/settings',
                   'hitch/trajectory',
+                  'hitch/operator-artifacts',
+                  'hitch/run-artifacts',
                   'hitch/native-source',
                   `${context.config.target.adapter}/harness`,
                 ].map((name) =>
@@ -75,23 +80,29 @@ export async function configuredProvider(
                   'benchmark/environment.py',
                   'benchmark/manifest.py',
                   'benchmark/manifest_codec.cjs',
+                  'benchmark/resource_codec.cjs',
                   'benchmark/scorers.py',
                   'benchmark/source.py',
                   'benchmark/python_scorer.py',
                   'benchmark/llm_scorer.py',
                   'benchmark/runtime_limits.py',
-                  'algorithms/verifier.py',
+                  'evaluation/verifier.py',
                   'canonical.py',
                 ].map((name) => readFile(join(pythonSourceRoot, 'gear', name), 'utf8')),
               ]),
             ),
-            seal: (destination, taskIds) =>
-              pythonJson(['benchmark', 'seal-harbor'], {
-                benchmark: context.benchmark,
-                destination,
-                task_ids: taskIds,
-              }),
-            compile: (destination, taskIds, baseImage, compileSignal) =>
+            seal: (destination, taskIds, resourceSdk) =>
+              pythonJson(
+                ['benchmark', 'seal-harbor'],
+                {
+                  benchmark: context.benchmark,
+                  destination,
+                  task_ids: taskIds,
+                },
+                undefined,
+                resourceSdk && resourceSdkEnvironment(resourceSdk),
+              ),
+            compile: (destination, taskIds, baseImage, compileSignal, resourceSdk) =>
               pythonJson(
                 ['benchmark', 'harbor', '--output', destination],
                 {
@@ -100,8 +111,9 @@ export async function configuredProvider(
                   base_image: baseImage,
                 },
                 compileSignal,
+                resourceSdk && resourceSdkEnvironment(resourceSdk),
               ),
-            compilePlanning: (destination, taskIds, baseImage, compileSignal) =>
+            compilePlanning: (destination, taskIds, baseImage, compileSignal, resourceSdk) =>
               pythonJson(
                 ['benchmark', 'harbor', '--output', destination],
                 {
@@ -111,6 +123,7 @@ export async function configuredProvider(
                   planning_only: true,
                 },
                 compileSignal,
+                resourceSdk && resourceSdkEnvironment(resourceSdk),
               ),
           },
           signal,
@@ -130,12 +143,12 @@ export async function configuredProvider(
     throw new GearError('invalid-meta-profile', 'Select an external Meta process profile')
   const meta = await ProcessOperationProvider.connect(
     processProfile(
-      'kind' in metaProfile && metaProfile.kind === 'codex' && context.config.sandbox
+      'kind' in metaProfile && metaProfile.kind === 'codex'
         ? {
             ...metaProfile,
             configuration: {
-              ...metaProfile.configuration,
-              linuxIsolation: context.config.sandbox.linux_isolation,
+              ...codexExecutionConfiguration(metaProfile.configuration, targetProfile),
+              ...(context.config.sandbox ? { linuxIsolation: context.config.sandbox.linux_isolation } : {}),
             },
           }
         : metaProfile,
@@ -156,6 +169,12 @@ export async function configuredProvider(
     request.operation.kind === 'evaluate_seed' ? evaluation : meta
   return {
     identity: canonicalDigest({ evaluation: evaluation.identity, meta: meta.identity }),
+    ...(evaluation instanceof HitchOperationProvider
+      ? ({
+          recoverEnvironmentBinding: (previous, binding, signal) =>
+            recoverHitchEnvironment(evaluation, meta.identity, previous, binding, signal),
+        } satisfies Pick<OperationProvider, 'recoverEnvironmentBinding'>)
+      : {}),
     async prepareAdmission() {
       await evaluation.prepareAdmission?.()
       await meta.prepareAdmission()
@@ -168,6 +187,12 @@ export async function configuredProvider(
     },
     ...(evaluation.artifactReader ? { artifactReader: evaluation.artifactReader } : {}),
     evaluationIdentity: evaluation.identity,
+    ...(evaluation.captureExecutions
+      ? { captureExecutions: evaluation.captureExecutions.bind(evaluation) }
+      : {}),
+    ...(evaluation.readExecutionArtifact
+      ? { readExecutionArtifact: evaluation.readExecutionArtifact.bind(evaluation) }
+      : {}),
     timeouts: {
       ...(evaluation.timeouts?.taskRuntime ? { taskRuntime: evaluation.timeouts.taskRuntime } : {}),
       target: evaluation.timeouts?.target ?? null,
@@ -191,6 +216,7 @@ export async function configuredProvider(
       cancel: evaluation.capabilities.cancel && meta.capabilities.cancel,
       hardDollarBudget: evaluation.capabilities.hardDollarBudget && meta.capabilities.hardDollarBudget,
       generationBudget: meta.capabilities.generationBudget,
+      operatorMeta: meta.capabilities.operatorMeta === true,
     },
     completeEvidence: (request, signal) => {
       if (!evaluation.completeEvidence)

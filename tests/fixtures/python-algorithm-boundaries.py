@@ -7,7 +7,7 @@ Screening is an algorithm decision; it never manufactures evaluation evidence.
 import re
 from dataclasses import replace
 
-from gear.algorithms import AlgorithmState, Decision, Operation
+from gear.search.contracts_v1 import AlgorithmState, Decision, Operation
 
 
 class HistoricalBase:
@@ -123,7 +123,10 @@ class ScreenBeforeEvaluation:
                 r"\b(?:task|case|issue)[-_ ]?(?:id|name)\s*[:=]",
                 r"\b(?:grader|verifier|judge|rubric)\b.*(?:read|detect|parse|match)",
             )
-            if any(re.search(pattern, additions, re.I | re.S) for pattern in patterns):
+            if any(
+                re.search(pattern, additions, re.IGNORECASE | re.DOTALL)
+                for pattern in patterns
+            ):
                 reason = "critic rejected candidate additions"
         if reason:
             return Decision(

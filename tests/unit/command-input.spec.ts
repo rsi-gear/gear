@@ -14,6 +14,7 @@ describe('native Gear project command projection', () => {
   })
   it('separates creating a run from recovering a saved run', () => {
     expect(parseProjectCommand('resume run_1')).toEqual({ method: 'run.resume', params: { run_id: 'run_1' } })
+    expect(parseProjectCommand('resume run_1 --retry-operation sha256:abc --generation-json {"max_tokens":200}')).toEqual({ method: 'run.resume', params: { run_id: 'run_1', retry_operation: 'sha256:abc', generation: { max_tokens: 200 } } })
     expect(() => parseProjectCommand('resume run_1 --rounds 2')).toThrow('Unexpected arguments')
     expect(() => parseProjectCommand('resume')).toThrow('requires one run ID')
     expect(() => parseProjectCommand('refine --rounds')).toThrow('requires a value')

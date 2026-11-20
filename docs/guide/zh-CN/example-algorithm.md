@@ -1,14 +1,30 @@
 # 用 Python 修改算法
 
-MetaHarness 将 Meta-Harness 外层循环适配到 Gear：候选先在完整 seed 集上评测，再由通用 Meta worker 提出一种机制，并从所有符合条件的历史候选中选择基础版本。算法 Python 模块定义提示词和响应 schema，并验证所选基础版本。经过验证的只读分页历史读取器提供 baseline 证据、完整历史源码、分数，以及成功和失败的 seed 轨迹（包括未选中的候选）。历史访问仅限 seed；提名后 Gear 仍执行独立的 held-out gate。这是适配，不代表复现论文中的特定 harness 或报告结果。
+完整算法从 `gear.algorithms` 使用；可复用策略位于 `gear.search` 的父代、采样、提案、排名、停止和编排六个模块。GEPA 和 RandomSearch 组合这些公共能力；其他算子分别从 core、evaluation、memory、training 使用。
 
-公开作者 API 是 `gear.algorithms`。GEPA 和 RandomSearch 都由父代、采样、提案、排名、停止和阶段编排六个模块组成；GEPA 是公共模块合同的实例。
+## 先修改参数
 
-下面用一个命名函数替换父代策略：
+从[完整算法](algorithms.md)开始。组件支持 `get_params`、`set_params` 和 `clone`，可在运行前修改嵌套配置：
+
+```python
+from gear.algorithms import RRSI
+from gear.core import clone
+
+recipe = RRSI(prompt_path="prompts/system.md")
+recipe.set_params(screen__edit_check__max_changed_bytes=32_768)
+variant = clone(recipe)
+print(variant.get_params(deep=True)["screen__edit_check__max_changed_bytes"])
+```
+
+clone 复制组件配置，不复制学习状态。准入后配置被冻结；修改已运行对象不会改变既有 run。新实验用新的配置对象，继续原实验用[恢复入口](evolutions.md)。
+
+## 替换组件
+
+以 GEPA 为例，用一个命名函数替换父代策略：
 
 ```python
 # my_policy.py
-from gear.algorithms import ParentInput, ParentPlan, RandomSource
+from gear.search.parents import ParentInput, ParentPlan, RandomSource
 
 
 def select_parent(view: ParentInput, rng: RandomSource) -> ParentPlan:
@@ -21,7 +37,6 @@ def select_parent(view: ParentInput, rng: RandomSource) -> ParentPlan:
 python -m gear algorithm test my_policy:select_parent
 python -m gear algorithm test gepa
 python -m gear algorithm test random-search
-python -m gear algorithm test meta-harness
 ```
 
 ```python
@@ -39,7 +54,50 @@ print(run.report.summary)
 
 源码与声明依赖在 admission 时冻结；局部函数、lambda 和未声明的依赖不能作为可恢复的算法配置。修改代码产生新身份。历史 TS selector/search 子路径已从公开导出中移除。
 
-## 配置 4 → 2 → 1 候选批次
+## 组合算子
+
+`ApplyEdits`、`CheckEdits` 等纯算子直接返回值；`Meta`、`Evaluate`、`Rollout` 等外部算子返回 `Call`，提交 `Decision` 后由运行时执行。结果通过保存的调用引用读取。下面的最小算法执行一次审查并返回结果，保存为 `review_algorithm.py`：
+
+```python
+from gear.core import Meta, MetaInput
+from gear.search import Algorithm, Decision, Terminal
+
+
+class Review(Algorithm):
+    def __init__(self, critic=None):
+        self.critic = critic if critic is not None else Meta(
+            "Review the target instructions and explain one possible improvement.",
+            {"type": "object", "properties": {"reason": {"type": "string"}},
+             "required": ["reason"], "additionalProperties": False},
+        )
+
+    def step(self, view, state):
+        if state.data.get("pending"):
+            result = view.results.require(state.data["pending"])
+            return Decision(
+                state, reason="review finished",
+                terminal=Terminal("stop", outcome={
+                    "status": result.status, "review": result.value,
+                }),
+            )
+        call = self.critic(
+            MetaInput(view.anchor, tuple(task.id for task in view.tasks)),
+            key="review/0",
+        )
+        return Decision(state.updated(pending=call.ref), (call,), "request review")
+```
+
+```python
+from gear import Project
+from review_algorithm import Review
+
+run = Project.open(".").refine(algorithm=Review(), rounds=1)
+print(run.report.summary["operators"]["outcome"])
+```
+
+审查使用 Meta 预算，不修改或评测 Target；检查 outcome 的 `status` 后再使用结果。有依赖的外部工作拆成多个 step，把调用引用和阶段写入 state，恢复时即可接着读取结果。`Call` 本身不能 await 或执行。离线组件检查、材料读取、筛查、知识库和任务流的完整说明见[算子作者指南](../../algorithm-operators.zh-CN.md)。
+
+## 配置 4-2-1 候选批次
 
 `GEPA(promotion_widths=(2, 1))` 是默认配置：每个父代批次的候选在同一 local scope 内排名，最多两个进入 bridge，再让 bridge 中排名最高的合格候选进入全量 seed 评测。这是候选数量限制，与任务采样比例独立。扩评不要求候选分数严格高于父代；违反约束的候选仍被排除，任一参与者证据不完整时整批不晋级。最终接受门由运行层单独执行。
 

@@ -1,71 +1,12 @@
-"""Stable algorithm author API. Every recipe uses the same replaceable contracts."""
+"""Complete algorithms built from Gear capability operators."""
 
-from .contracts import (
-    AlgorithmState,
-    Budget,
-    Candidate,
-    CandidateRanker,
-    Decision,
-    Evidence,
-    Operation,
-    OperationResult,
-    ParentAllocation,
-    ParentInput,
-    ParentOption,
-    ParentPlan,
-    ParentPolicy,
-    ProposalInput,
-    ProposalPlan,
-    ProposalPlanner,
-    RandomSource,
-    RankingInput,
-    RankingPlan,
-    ResearchRecord,
-    SamplingInput,
-    SamplingPlan,
-    SearchAlgorithm,
-    SearchView,
-    Selection,
-    StopRule,
-    Task,
-    TaskSampler,
-)
+from .ace import ACE
+from .darwinx import DarwinX
 from .gepa import GEPA
+from .harness2 import Harness2
 from .meta_harness import MetaHarness
-from .random import DeterministicRandom
+from .opro import OPRO
 from .random_search import RandomSearch
+from .rrsi import RRSI
 
-__all__ = [
-    "AlgorithmState",
-    "Budget",
-    "Candidate",
-    "CandidateRanker",
-    "Decision",
-    "Evidence",
-    "Operation",
-    "OperationResult",
-    "ParentAllocation",
-    "ParentInput",
-    "ParentOption",
-    "ParentPlan",
-    "ParentPolicy",
-    "ProposalInput",
-    "ProposalPlan",
-    "ProposalPlanner",
-    "RandomSource",
-    "RankingInput",
-    "RankingPlan",
-    "ResearchRecord",
-    "SamplingInput",
-    "SamplingPlan",
-    "SearchAlgorithm",
-    "SearchView",
-    "Selection",
-    "StopRule",
-    "Task",
-    "TaskSampler",
-    "DeterministicRandom",
-    "GEPA",
-    "MetaHarness",
-    "RandomSearch",
-]
+__all__ = ["GEPA", "RandomSearch", "OPRO", "ACE", "RRSI", "DarwinX", "Harness2", "MetaHarness"]

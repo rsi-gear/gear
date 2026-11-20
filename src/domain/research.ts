@@ -2,8 +2,10 @@ import type { RunJournal } from './run.js'
 import type { Json } from './algorithm-wire.js'
 import { canonicalDigest } from './canonical.js'
 import { GearError } from './errors.js'
+import { operatorHistory } from './operator-artifacts.js'
 
-export type ResearchKind = 'conditions' | 'candidate' | 'evidence' | 'operation' | 'decision'
+export type ResearchKind =
+  'conditions' | 'candidate' | 'evidence' | 'operation' | 'decision' | 'operator-call' | 'artifact' | 'event'
 export interface ResearchObject {
   version: 1
   kind: ResearchKind
@@ -31,6 +33,9 @@ export function researchArchive(journal: RunJournal): {
   packs: ResearchPack[]
 } {
   const { spec } = journal
+  const blind = spec.operatorPolicy?.access?.exposure === 'blind'
+  const order = spec.operatorPolicy?.access?.task_order
+  const visible = order ? new Set(order.slice(0, (journal.operators?.stream?.index ?? 0) + 1)) : null
   const tasks = new Set(spec.seedTasks.map((task) => task.id)),
     candidates = new Set(journal.candidates.map((candidate) => candidate.id))
   const objects: ResearchObject[] = []
@@ -38,7 +43,10 @@ export function researchArchive(journal: RunJournal): {
     const body = { version: 1 as const, kind, value: value as Json }
     objects.push({ ...body, digest: canonicalDigest(body) })
   }
-  const validateEvidence = (evidence: typeof journal.seedEvidence) => {
+  const validateEvidence = (
+    evidence: typeof journal.seedEvidence,
+    slots?: Array<{ taskId: string; repetition: number }>,
+  ) => {
     if (
       evidence.some(
         (cell) =>
@@ -46,7 +54,9 @@ export function researchArchive(journal: RunJournal): {
           !candidates.has(cell.candidate_id) ||
           !Number.isSafeInteger(cell.repetition) ||
           cell.repetition < 0 ||
-          cell.repetition >= spec.budget.repetitions,
+          (slots
+            ? !slots.some((slot) => slot.taskId === cell.task_id && slot.repetition === cell.repetition)
+            : cell.repetition >= spec.budget.repetitions),
       )
     )
       throw new GearError('research-outside-seed', 'Research evidence must belong to admitted seed slots')
@@ -73,9 +83,9 @@ export function researchArchive(journal: RunJournal): {
     config_digest: spec.configDigest,
     budget: spec.budget,
     generation_budget: spec.generationBudget ?? null,
-    objective,
+    objective: blind ? null : objective,
     objective_identity: spec.objectiveIdentity ?? null,
-    tasks: spec.seedTasks,
+    tasks: spec.seedTasks.filter((task) => !visible || visible.has(task.id)),
     repetitions: spec.budget.repetitions,
     anchor: spec.anchor,
     seed: spec.seed,
@@ -84,7 +94,7 @@ export function researchArchive(journal: RunJournal): {
   })
   for (const candidate of journal.candidates) add('candidate', candidate)
   validateEvidence(journal.seedEvidence)
-  for (const evidence of journal.seedEvidence) add('evidence', evidence)
+  if (!blind) for (const evidence of journal.seedEvidence) add('evidence', evidence)
   for (const entry of journal.operations) {
     if (entry.request.partition !== 'seed') continue
     const { request, receipt } = entry
@@ -93,22 +103,23 @@ export function researchArchive(journal: RunJournal): {
       request.slots.some((slot) => !tasks.has(slot.taskId))
     )
       throw new GearError('research-outside-seed', 'Research operations must belong to admitted seed tasks')
-    if (receipt) validateEvidence(receipt.evidence ?? [])
+    if (receipt) validateEvidence(receipt.evidence ?? [], request.operatorSamples ? request.slots : undefined)
     add('operation', {
       operation_id: request.operationId,
       operation: request.operation,
       slots: request.slots,
       status: entry.status,
       reserved_attempts: entry.reservedAttempts,
-      receipt: receipt ?? null,
+      receipt: blind ? (receipt ? { physical_attempts: receipt.physicalAttempts } : null) : (receipt ?? null),
       // Rejected metering receipts have not passed seed-slot admission. Preserve
       // their identity here; their original bytes remain in the operator journal.
-      generation_violation: entry.generationViolation
-        ? {
-            reason: entry.generationViolation.reason,
-            receipt_digest: canonicalDigest(entry.generationViolation.receipt),
-          }
-        : null,
+      generation_violation:
+        !blind && entry.generationViolation
+          ? {
+              reason: entry.generationViolation.reason,
+              receipt_digest: canonicalDigest(entry.generationViolation.receipt),
+            }
+          : null,
       repair: request.repair ?? null,
       projection: request.projection ?? null,
     })
@@ -131,10 +142,50 @@ export function researchArchive(journal: RunJournal): {
       record_authority: 'algorithm-reported',
     })
   }
+  if (journal.operators) {
+    for (const entry of journal.operators.decisions)
+      add('decision', {
+        protocol_version: 2,
+        step_id: entry.stepId,
+        input_digest: entry.inputDigest,
+        decision_digest: canonicalDigest(entry.decision),
+        call_ids: entry.callIds,
+        reason: entry.decision.reason,
+        records: entry.decision.records,
+        terminal: entry.decision.terminal,
+        record_authority: 'algorithm-reported',
+      })
+    for (const entry of journal.operators.calls)
+      add('operator-call', {
+        id: entry.id,
+        call: entry.call,
+        request_digest: entry.requestDigest,
+        status: entry.status,
+        sample_ids: entry.sampleIds ?? [],
+        operation_ids: entry.operationIds,
+        result: entry.result ?? null,
+        screening: entry.screening ?? null,
+      })
+    for (const artifact of journal.operators.artifacts) {
+      if (artifact.ref.kind === 'history') continue
+      add('artifact', { ref: artifact.ref, value: artifact.value, sources: artifact.sources })
+    }
+    const history = operatorHistory(journal).value as { events: Json[] }
+    for (const event of history.events) add('event', event)
+  }
   // Pack independent objects to avoid a separate fsync/inode for every trial or
   // decision. Fixed per-kind order preserves old packs as other kinds grow.
   const packs: ResearchPack[] = []
-  for (const kind of ['conditions', 'candidate', 'evidence', 'operation', 'decision'] as const) {
+  for (const kind of [
+    'conditions',
+    'candidate',
+    'evidence',
+    'operation',
+    'decision',
+    'operator-call',
+    'artifact',
+    'event',
+  ] as const) {
     let pending: ResearchObject[] = [],
       bytes = 0
     const flush = () => {

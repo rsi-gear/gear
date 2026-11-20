@@ -1,0 +1,108 @@
+{
+  "gepa-default": {
+    "outcome": {
+      "status": "passed",
+      "steps": 7,
+      "nominee": "r0-b0-candidate-0",
+      "operations": [
+        "evaluate_seed:global",
+        "diagnose_seed:global",
+        "generate_candidate:global",
+        "evaluate_seed:local",
+        "evaluate_seed:local",
+        "evaluate_seed:bridge",
+        "evaluate_seed:bridge",
+        "evaluate_seed:global",
+        "evaluate_seed:global",
+        "nominate:global"
+      ]
+    },
+    "trace_digest": "sha256:8c36a83a0889687e5090491ad40b26d4f4b76de15a67e9f73462e861bb5c2683"
+  },
+  "random-default": {
+    "outcome": {
+      "status": "passed",
+      "steps": 5,
+      "nominee": "r0-b0-candidate-0",
+      "operations": [
+        "evaluate_seed:global",
+        "diagnose_seed:global",
+        "generate_candidate:global",
+        "generate_candidate:global",
+        "evaluate_seed:global",
+        "evaluate_seed:global",
+        "evaluate_seed:global",
+        "nominate:global"
+      ]
+    },
+    "trace_digest": "sha256:1cad0faed2493aaf789bde770b7321e6676c142a7c0f940602bd11a8be52fa1b"
+  },
+  "gepa-wide": {
+    "outcome": {
+      "status": "passed",
+      "steps": 7,
+      "nominee": "r0-b0-candidate-0",
+      "operations": [
+        "evaluate_seed:global",
+        "diagnose_seed:global",
+        "generate_candidate:global",
+        "evaluate_seed:local",
+        "evaluate_seed:local",
+        "evaluate_seed:bridge",
+        "evaluate_seed:bridge",
+        "evaluate_seed:global",
+        "evaluate_seed:global",
+        "nominate:global"
+      ]
+    },
+    "trace_digest": "sha256:81cca3ef3ea12904e4090cf067c0f86facbe1edf04d2b707b588b380af36af7a"
+  },
+  "gepa-mixture": {
+    "outcome": {
+      "status": "passed",
+      "steps": 12,
+      "nominee": "r0-b0-candidate-0",
+      "operations": [
+        "evaluate_seed:global",
+        "diagnose_seed:global",
+        "generate_candidate:global",
+        "evaluate_seed:local",
+        "evaluate_seed:local",
+        "evaluate_seed:bridge",
+        "evaluate_seed:bridge",
+        "evaluate_seed:global",
+        "evaluate_seed:global",
+        "diagnose_seed:global",
+        "generate_candidate:global",
+        "evaluate_seed:local",
+        "evaluate_seed:local",
+        "evaluate_seed:bridge",
+        "evaluate_seed:bridge",
+        "evaluate_seed:global",
+        "evaluate_seed:global",
+        "nominate:global"
+      ]
+    },
+    "trace_digest": "sha256:2f5e492e903b3dd63e2e27f8947d9a6c9c17c8d8648eb7b3144467116fcb09fd"
+  },
+  "gepa-gate": {
+    "outcome": {
+      "status": "passed",
+      "steps": 7,
+      "nominee": "r0-b0-candidate-0",
+      "operations": [
+        "evaluate_seed:global",
+        "diagnose_seed:global",
+        "generate_candidate:global",
+        "evaluate_seed:local",
+        "evaluate_seed:local",
+        "evaluate_seed:bridge",
+        "evaluate_seed:bridge",
+        "evaluate_seed:global",
+        "evaluate_seed:global",
+        "nominate:global"
+      ]
+    },
+    "trace_digest": "sha256:8c36a83a0889687e5090491ad40b26d4f4b76de15a67e9f73462e861bb5c2683"
+  }
+}

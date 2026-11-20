@@ -10,6 +10,16 @@ word-01,Output the uppercase form of apple.,APPLE,case-conversion,held_out
 
 演示数据只检查流程。真实效果评估应使用足够规模的任务和明确的划分依据。
 
+## 任务奖励与优化目标
+
+任务的成功标准定义在 benchmark 及其评分器中。`benchmark.yaml` 选择评分合同；自定义 Python 评分器返回 `bool`，原生 Harbor verifier 可提供当前协议支持的 0–1 reward。预期答案和私有评分资源不会进入算法或 Meta 的输入。
+
+候选之间如何比较，由项目中的 `metrics`、`objective` 和 `protection` 定义。`gear.evaluation` 中的组件负责聚合观测、应用权重和检查约束，算法读取其访问策略允许的证据。修改 objective 权重不会改变任务奖励定义，也不会重写已有评分。配置见[加权目标和保护任务](configuration.md#加权目标和保护任务)。
+
+Harness2 使用 blind 访问：设置 `rollout_backend="scored_private"` 后，操作员可以查看评分，算法及其 Meta 反思只获得输出与轨迹，不获得得分反馈。见 [Harness2](algorithms.md#harness2)。
+
+## 内置评分模板
+
 | 模板 | `expected` | 评分规则 |
 | --- | --- | --- |
 | `text` | 字符串 | 显式 trim、casefold、collapse_whitespace 后比较 |

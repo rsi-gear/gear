@@ -2,7 +2,7 @@ import eslint from '@eslint/js'
 import tseslint from 'typescript-eslint'
 
 export default tseslint.config(
-  { ignores: ['lib/**', 'node_modules/**', 'src/domain/algorithm-wire.ts'] },
+  { ignores: ['lib/**', 'node_modules/**', 'src/domain/algorithm-wire.ts', 'src/domain/algorithm-wire-v2.ts'] },
   {
     files: ['src/{domain,ports,runtime,application,adapters,cli}/**/*.ts'],
     extends: [eslint.configs.recommended, ...tseslint.configs.recommended],

@@ -9,11 +9,13 @@ import { describeCodex } from '../adapters/codex/identity.js'
 import { capabilities as codexCapabilities, codexCredentialEnvNames } from '../adapters/codex/contracts.js'
 import { ProcessOperationProvider } from '../adapters/process/operation-provider.js'
 import { inspectHitchConnection, hitchCapabilities } from '../adapters/hitch/connection.js'
+import { prepareEnvironmentBinding } from '../adapters/hitch/binding.js'
 import { hitchJson } from '../adapters/hitch/transport.js'
 import { GearError } from '../domain/errors.js'
 import { harnessAdapter } from './harness-adapters.js'
 import {
   assertProfileRole,
+  codexExecutionConfiguration,
   defaultProfiles,
   listProfiles,
   profile,
@@ -124,7 +126,12 @@ export async function doctor(root: string) {
       const value = await profile(name)
       assertProfileRole(value, role, adapter)
       if ('kind' in value && value.kind === 'codex') {
-        const runtime = await describeCodex(value.configuration)
+        const runtime = await describeCodex(
+          codexExecutionConfiguration(
+            value.configuration,
+            selection.target ? await profile(selection.target) : undefined,
+          ),
+        )
         const present = value.passEnv.filter(
           (key) => codexCredentialEnvNames.includes(key) && !!process.env[key]?.trim(),
         )
@@ -190,6 +197,16 @@ export async function doctor(root: string) {
           harnessAdapter(selectedAdapter),
           new AbortController().signal,
         )
+        if (!present.length && process.env.HITCH_HOST_CREDENTIAL_HELPER_JSON) {
+          // The resident executor, not this CLI's environment, owns helper credentials.
+          // Bind without submitting a trial; configuration presence alone is not readiness.
+          const binding = await prepareEnvironmentBinding(
+            value,
+            (args, signal, timeout) => hitchJson(value.executable, value.root, args, signal, timeout),
+            new AbortController().signal,
+          )
+          authentication[role] = { status: 'execution_binding_present', names: binding.pass_env }
+        }
         await probe(`${role}.dependencies`, 'gear setup --hitch', async () => {
           const dependencies = await hitchJson(
             value.executable,
@@ -250,7 +267,9 @@ export async function doctor(root: string) {
     checks
       .filter((check) => check.component.startsWith(`${role}.`))
       .every((check) => check.status === 'passed') &&
-    ['local_login_present', 'environment_present'].includes(authentication[role]?.status ?? '')
+    ['local_login_present', 'environment_present', 'execution_binding_present'].includes(
+      authentication[role]?.status ?? '',
+    )
   return {
     checks,
     profiles: await listProfiles(),

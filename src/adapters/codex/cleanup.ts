@@ -3,7 +3,6 @@ import { lstat, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { promisify } from 'node:util'
-import { SandboxManager } from '@anthropic-ai/sandbox-runtime'
 import { GearError } from '../../domain/errors.js'
 import { publishFile } from '../storage/atomic.js'
 
@@ -87,28 +86,23 @@ export async function cleanupCodex(
     ? await bounded(() => (resources.root ? removeOwnedRoot(resources.root, true) : Promise.resolve()), 500)
     : 'unconfirmed'
   const gateway = await bounded(() => resources.dispose?.() ?? Promise.resolve(), 500)
-  const sandbox = await bounded(() => SandboxManager.reset(), 1500)
   const root = modelStopped
     ? await bounded(() => (resources.root ? removeOwnedRoot(resources.root) : Promise.resolve()), 1000)
     : 'unconfirmed'
-  const stages = { gateway, credentials, sandbox, root }
-  await bounded(
-    () =>
-      publishFile(
-        join(directory, 'cleanup.json'),
-        JSON.stringify({
-          version: 1,
-          input_digest: digest,
-          status: Object.values(stages).every((stage) => stage === 'complete')
-            ? 'graceful'
-            : 'fallback-required',
-          stages,
-          model_stopped: modelStopped,
-          worker_exit: 'required',
-        }),
-        { immutable: true },
-      ),
-    250,
+  const stages = { gateway, credentials, root }
+  // Returning allows the worker to exit and interrupt pending filesystem I/O.
+  // Finish this durable publication; the worker watchdog still bounds shutdown.
+  await publishFile(
+    join(directory, 'cleanup.json'),
+    JSON.stringify({
+      version: 1,
+      input_digest: digest,
+      status: Object.values(stages).every((stage) => stage === 'complete') ? 'graceful' : 'fallback-required',
+      stages,
+      model_stopped: modelStopped,
+      worker_exit: 'required',
+    }),
+    { immutable: true },
   )
 }
 

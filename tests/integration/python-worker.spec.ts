@@ -21,7 +21,7 @@ it('executes frozen Python decisions with OS filesystem, environment and network
   server.listen(socketPath)
   await once(server, 'listening')
   const plugin = join(root, 'isolation.py')
-  await writeFile(plugin, `from gear.algorithms import Decision, Operation
+  await writeFile(plugin, `from gear.search.contracts_v1 import Decision, Operation
 import os, socket
 class Probe:
  def step(self, view, state):

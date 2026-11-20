@@ -3,18 +3,14 @@ import { constants } from 'node:fs'
 import { mkdir, open, readdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ExperienceSnapshot } from '../../domain/experience.js'
-import type { ArtifactReaderDescriptor, TrajectoryReference } from '../../domain/trajectory.js'
+import type { ArtifactReaderDescriptor } from '../../domain/trajectory.js'
 import { GearError } from '../../domain/errors.js'
-import { readSeedCandidateSource, readSeedTrajectory } from '../artifacts/access.js'
+import { readSeedTrajectory } from '../artifacts/access.js'
 import { RefineSkillServer } from '../skill/server.js'
 import { publishFile } from '../storage/atomic.js'
-import type { TargetStore } from '../storage/targets.js'
 
 /** A bounded per-operation transport that needs no socket creation inside Linux seccomp. */
-export async function trajectoryMailbox(
-  root: string,
-  call: (method: string, params: unknown) => Promise<unknown>,
-) {
+export async function trajectoryMailbox(root: string, call: (params: unknown) => Promise<unknown>) {
   const requests = join(root, 'trajectory-requests'),
     responses = join(root, 'trajectory-responses')
   for (const path of [requests, responses]) await mkdir(path, { mode: 0o700 })
@@ -37,13 +33,9 @@ export async function trajectoryMailbox(
           { bytesRead } = await file.read(buffer, 0, buffer.length, 0)
         if (bytesRead > 32768) throw new Error('request exceeds its bound')
         const request = JSON.parse(buffer.subarray(0, bytesRead).toString('utf8')) as Record<string, unknown>
-        if (
-          !request ||
-          request.id !== id ||
-          !['trajectory.read', 'source.read', 'source.list'].includes(String(request.method))
-        )
+        if (!request || request.id !== id || request.method !== 'trajectory.read')
           throw new Error('invalid request')
-        response = { id, result: await call(String(request.method), request.params) }
+        response = { id, result: await call(request.params) }
         if (Buffer.byteLength(JSON.stringify(response)) > 70 * 1024)
           throw new Error('reply exceeds its bound')
       } finally {
@@ -96,47 +88,33 @@ export async function trajectoryGateway(
   root: string,
   runRoot: string,
   snapshot: ExperienceSnapshot,
-  descriptor: ArtifactReaderDescriptor | undefined,
+  descriptor: ArtifactReaderDescriptor,
   python: string,
   registerDispose?: (dispose: () => Promise<void>) => void,
-  baselineReferences: TrajectoryReference[] = [],
-  targets?: TargetStore,
 ) {
   const socket = join(root, 't.sock'),
     token = randomUUID(),
     abort = new AbortController()
   let active = 0,
     used = 0
-  const call = async (method: string, input: unknown) => {
+  const call = async (input: unknown) => {
     if (!input || typeof input !== 'object' || Array.isArray(input))
       throw new GearError(
         'trajectory-access-denied',
         'Only the frozen trajectory read capability is available',
       )
     const { token: supplied, ...params } = input as Record<string, unknown>
-    if (supplied !== token) throw new GearError('experience-access-denied', 'Invalid operation capability')
+    if (supplied !== token) throw new GearError('trajectory-access-denied', 'Invalid operation capability')
     if (active >= 4 || used >= 256)
-      throw new GearError('experience-read-limit', 'Operation history read limit reached')
+      throw new GearError('trajectory-read-limit', 'Operation trajectory read limit reached')
     active++
     used++
     try {
-      if (method === 'trajectory.read')
-        return await readSeedTrajectory(
-          runRoot,
-          snapshot,
-          descriptor,
-          params,
-          abort.signal,
-          python,
-          baselineReferences,
-        )
-      if (targets && (method === 'source.read' || method === 'source.list'))
-        return await readSeedCandidateSource(snapshot, targets, params)
-      throw new GearError('experience-access-denied', 'Only frozen history reads are available')
+      return await readSeedTrajectory(runRoot, snapshot, descriptor, params, abort.signal, python)
     } catch (error) {
       throw new GearError(
-        error instanceof GearError ? error.code : 'experience-read-failed',
-        'The authorized seed history could not be read; check its reference and source integrity',
+        error instanceof GearError ? error.code : 'trajectory-read-failed',
+        'The authorized trajectory could not be read; check its reference, query and source integrity',
       )
     } finally {
       active--
@@ -148,9 +126,9 @@ export async function trajectoryGateway(
     : new RefineSkillServer(socket, {
         maxRequestBytes: 32768,
         async call(method, input) {
-          if (!['trajectory.read', 'source.read', 'source.list'].includes(method))
-            throw new GearError('experience-access-denied', 'Only frozen history reads are allowed')
-          return call(method, input)
+          if (method !== 'trajectory.read')
+            throw new GearError('trajectory-access-denied', 'Only trajectory reads are allowed')
+          return call(input)
         },
       })
   const dispose = async () => {

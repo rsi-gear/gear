@@ -25,9 +25,21 @@ export async function inspectPython(pythonExecutable: string): Promise<PythonRun
     throw new Error('Invalid Python runtime path inventory')
   const executable = resolve(value.executable),
     canonical = await realpath(executable)
+  // Python lists optional search locations, including a standard-library zip
+  // that often does not exist. Hitch requires every granted path to exist.
+  const searchPaths = (
+    await Promise.all(
+      value.paths.map((path) =>
+        realpath(path).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error
+          return undefined
+        }),
+      ),
+    )
+  ).filter((path): path is string => path !== undefined)
   const readPaths = [
     ...new Set(
-      [executable, dirname(executable), canonical, dirname(canonical), ...value.paths].map((path) =>
+      [executable, dirname(executable), canonical, dirname(canonical), ...searchPaths].map((path) =>
         resolve(path),
       ),
     ),

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rsi-gear"
-version = "0.2.2"
+version = "0.2.4"
 description = "Gear benchmark, algorithm, refine and training SDK"
 requires-python = ">=3.10"
 dependencies = ["psutil>=5.9,<8", "tomli>=2.0,<3; python_version < '3.11'", "tomli-w>=1.2,<2", "PyYAML>=6,<7"]
@@ -28,7 +28,7 @@ gear = ["py.typed", "refine/*.json", "benchmark/*.cjs", "benchmark/*.json"]
 [tool.ruff]
 target-version = "py310"
 line-length = 100
-extend-exclude = ["gear/refine/wire_types.py"]
+extend-exclude = ["gear/refine/wire_types.py", "gear/refine/wire_types_v2.py", "gear/core/_wire_schema.py"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]
@@ -37,4 +37,4 @@ select = ["E4", "E7", "E9", "F", "I"]
 python_version = "3.10"
 strict = true
 follow_imports = "silent"
-files = ["gear/algorithms", "gear/project.py", "gear/training/contracts.py", "gear/training/loop.py", "gear/training/storage/loop_journal.py", "gear/training/runtime/implementation.py"]
+files = ["gear/core", "gear/evaluation", "gear/memory", "gear/search", "gear/algorithms", "gear/project.py", "gear/training/contracts.py", "gear/training/loop.py", "gear/training/storage/loop_journal.py", "gear/training/runtime/implementation.py"]

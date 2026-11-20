@@ -9,6 +9,9 @@ import { canonicalDigest } from '../../domain/canonical.js'
 import type { CodexConfiguration } from './contracts.js'
 import { builtinPolicyImplementationDigest } from '../python/builtin-policy.js'
 import { resolveCodexExecutable } from './executable.js'
+import { hitchJson } from '../hitch/transport.js'
+import { controllerObservation } from '../hitch/environment.js'
+import { GearError } from '../../domain/errors.js'
 
 export async function fileDigest(path: string): Promise<string> {
   const hash = createHash('sha256')
@@ -20,9 +23,36 @@ export async function describeCodex(config: CodexConfiguration): Promise<{
   identity: string
   executable: string
   version: string
+  binaryDigest: string
   codeModeHost?: string
   caCertificates?: string
+  hitch: { executable: string; root: string; runtimeId: string }
 }> {
+  if (!config.hitch)
+    throw new GearError(
+      'hitch-meta-required',
+      'Codex Meta requires Hitch execution; configure hitch or select a Hitch Target profile',
+    )
+  const [features, observed] = await Promise.all([
+    hitchJson(
+      config.hitch.executable,
+      config.hitch.root,
+      ['capabilities', '--json'],
+      AbortSignal.timeout(30000),
+    ),
+    hitchJson(
+      config.hitch.executable,
+      config.hitch.root,
+      ['training', 'runtime', '--json'],
+      AbortSignal.timeout(30000),
+    ),
+  ])
+  if (features.isolated_agent_run !== '1' || features.generation_budget !== '1')
+    throw new GearError(
+      'hitch-meta-unsupported',
+      'Hitch must support isolated_agent_run v1 and generation_budget v1',
+    )
+  const controller = controllerObservation(observed)
   const executable = await resolveCodexExecutable(config.executable)
   const companion = join(dirname(executable), 'codex-code-mode-host')
   const codeModeHost = await access(companion, constants.X_OK)
@@ -40,6 +70,7 @@ export async function describeCodex(config: CodexConfiguration): Promise<{
     env: { PATH: '/usr/bin:/bin', LANG: 'C.UTF-8' },
   })
   const version = stdout.trim()
+  const binaryDigest = await fileDigest(executable)
   if (!/^codex-cli \d+\.\d+\.\d+(?:[-+][\w.-]+)?$/u.test(version))
     throw new Error('Unsupported Codex executable')
   const extension = import.meta.url.endsWith('.ts') ? '.ts' : '.js'
@@ -53,8 +84,8 @@ export async function describeCodex(config: CodexConfiguration): Promise<{
       'journal',
       'sandbox',
       'execution',
+      'hitch-execution',
       'cleanup',
-      'usage',
       'experience',
       'trajectory-gateway',
       '../artifacts/reader',
@@ -86,18 +117,27 @@ export async function describeCodex(config: CodexConfiguration): Promise<{
     ].map((name) => readFile(new URL(`${name}${extension}`, import.meta.url), 'utf8')),
   )
   implementation.push(
-    await readFile(new URL('../../../assets/codex-process-guard.py', import.meta.url), 'utf8'),
     await readFile(new URL('../../../assets/codex-meta-runner.mjs', import.meta.url), 'utf8'),
   )
   return {
     executable,
     version,
+    binaryDigest,
+    hitch: { ...config.hitch, runtimeId: controller.runtime_id },
     ...(codeModeHost ? { codeModeHost } : {}),
     ...(caCertificates ? { caCertificates } : {}),
     identity: canonicalDigest({
       implementation,
+      hitch: {
+        ...config.hitch,
+        controller,
+        capabilities: {
+          isolated_agent_run: features.isolated_agent_run,
+          generation_budget: features.generation_budget,
+        },
+      },
       experienceImplementation: builtinPolicyImplementationDigest,
-      binary: await fileDigest(executable),
+      binary: binaryDigest,
       codeModeHost: codeModeHost ? await fileDigest(codeModeHost) : null,
       caCertificates: caCertificates ? await fileDigest(caCertificates) : null,
       version,

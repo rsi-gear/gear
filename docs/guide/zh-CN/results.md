@@ -1,5 +1,31 @@
 # 阅读报告
 
+## 算法与学习结果
+
+```sh
+gear report RUN_ID --json
+```
+
+Python 中读取 `run.report.summary` 或 `project.report(run_id).summary`。先看 `status`，再检查算法结果与证据完整性；`status: completed` 的 run 仍可能包含失败的算法结果或无效评测。
+
+| 字段 | 检查内容 |
+| --- | --- |
+| `retained`、`nominee`、`gate`、`scores` | 评分搜索保留了哪个候选，最终验证是否接受提名候选 |
+| `operators.outcome` | 可组合算法的终态结果；显式 `status: failed` 不表示实验成功 |
+| `operators.calls` | 算子的 key、作用和状态，包括失败调用 |
+| `operators.task_stream` | 准入的任务顺序、已完成任务及任务流是否结束 |
+| `operators.library_publications` | 已发布的学习库版本与调用结果 |
+| `generation_budget` | Meta 有效预算、已占用/预约上界、未知操作与剩余额度 |
+| `meta_recoveries`、`recovered_operation_ids` | 恢复记录，以及替代调用链最终成功的原失败操作 |
+
+可组合算法提供 `operators` 字段；GEPA 与 RandomSearch 沿用评分搜索报告。Meta 恢复发生后才出现恢复字段。报告的 `plan` 保留准入范围，并在预算变更后使用有效 Meta 限制，不表示实时剩余额度。
+
+Harness2 成功时的 `operators.outcome` 包含 `library`、`outputs`、`iterations` 和 `rounds_per_task`，需要同时检查任务流已完成、学习库发布成功。它的学习结果是 library 快照，仅看保留候选或 champion 不足以描述结果。私有评分模式下，操作员可见的得分不代表学习算法收到过这些得分。
+
+恢复会保留原失败调用及其消耗。通过恢复记录区分已修复和未解决的失败，不删除旧失败，也不把预约上界与实际用量相加后当作新增消费。[七算法验证记录](algorithms.md#真实模型验证)展示了失败任务补测和 Harness2 原 run 续跑的范围。
+
+## 评测证据
+
 Hitch 的终态失败会在操作结果中保留上游错误，私有回执 provenance 保留未经改写的 provider 原始结果。已认证评分（包括零分）继续有效；终态结果缺失的请求槽位记录为 `score: null` 和 `environment_failed`。由于证据收集失败前可能已经执行，缺失槽位的尝试用量按预留上限保守计费。旧版异常结果缺少 dataset/candidate/artifact 字段时，可使用匹配的冻结计划校验身份；已报告字段矛盾或成功结果不完整时仍拒绝接纳。这不会修改旧账本，也不会认证缺少镜像证据的试验。
 
 Hitch 声明 `verifier_evidence: "1"` 时，Gear 在评测回执中冻结独立 verifier 观测，核对 run、eval、trial、attempt、任务 reward 和结构化过程组件。Python 负责组件权重/计数一致性、失败代码筛选与摘要。`score` 仍表示任务得分；过程指标只有通过 `metrics[].source.path`（例如 `verifier.process.score`）显式声明并被 objective/保护规则引用时才参与决策。失败代码支持调查假设，不代表已确定根因。
@@ -42,7 +68,7 @@ gear experience trajectory RUN_ID EXPERIENCE_REF SOURCE_REF --snapshot SNAPSHOT_
 
 `gear experience read RUN_ID REF --snapshot DIGEST --view modification-use` 分页读取每个候选试验的修改资源使用情况；Python 同步/异步 `experience_read` 使用相同视图。卡片显示状态计数，`task-results` 显示逐题汇总。四种状态为：`observed`（确切内容已读取或注入）、`attempted-failure`（匹配的读取尝试失败）、`not-observed`（完整来源中未发现受支持 Skill 的使用）、`unknown`（证据不足）。没有日志、普通代码没有可判定的执行证据、内容不匹配或文件被删除均不会被判为未使用。
 
-DSH/Hitch 在回执时固定原生 manifest 摘要。独立 Python 读取器只读取清单列出的 main/child 文件，校验字节数、摘要、会话身份与父子关系；符号链接、硬链接和特殊文件不作为证据。精确匹配和状态归纳在 `gear.algorithms.modification_use`，文件读取在 `gear.observations.hitch`。完整覆盖仅指清单列出的来源（`listed-files-complete`）；canonical 页面本身不能提供此证明。Pi 或其他尚无受支持原生来源的 provider 保持 `unknown`。
+DSH/Hitch 在回执时固定原生 manifest 摘要。独立 Python 读取器只读取清单列出的 main/child 文件，校验字节数、摘要、会话身份与父子关系；符号链接、硬链接和特殊文件不作为证据。精确匹配和状态归纳在 `gear.memory.modification_use`，文件读取在 `gear.observations.hitch`。完整覆盖仅指清单列出的来源（`listed-files-complete`）；canonical 页面本身不能提供此证明。Pi 或其他尚无受支持原生来源的 provider 保持 `unknown`。
 
 每次快照的未缓存观测共享 1024 次来源读取/1 GiB 原生日志预算；每次来源最多 16 个文件、每文件 32 MiB、合计 64 MiB，保留的匹配输入最多 8 MiB。每个候选的资源内容读取最多 8 MiB。超限明确反映为部分覆盖或不可用，不推出资源未使用。完整且已校验的观测按候选、变更、来源和实现身份缓存，原日志移除后仍可复用；部分/不可用来源在后续快照中重试，已封存快照不变。
 
@@ -67,7 +93,7 @@ gear report RUN_ID --json
 | `evidence_projections` | 只读指标补齐次数、来源引用、请求补齐的指标、退避到期时间及阻止原因 |
 | `changes` | 已校验的初始→保留、初始→提名资源差异，包含候选摘要与文件 patch |
 | `usage` | provider 返回的用量；null 或缺失不等于零 |
-| `plan` | refine admission 封存的初始范围、baseline 复用与适用限制；不是运行中的剩余额度 |
+| `plan` | 准入范围、baseline 复用与适用限制，含 Meta 预算变更；不是运行中的剩余额度 |
 | `baseline_reuse` | 复用源、凭证摘要、槽位与历史用量；不计入当前 usage 或物理预算 |
 | `research` | 独立 seed 档案的校验状态、摘要和对象计数；下一步命令为 `gear archive RUN_ID` |
 
@@ -93,7 +119,7 @@ gear report RUN_ID --json
 
 每个 `scores` 分区包含 `metrics` 原始聚合、`objective.contributions` 加权贡献、`objective.constraintResults` 约束结果及 `protection` 单题判定。声明独立断言后，还包含逐任务/repetition 的 `assertions` 原始明细和 `assertion_protection` 保护判定；任务满分也可能违反独立断言。失败的提名保留这些详情，便于区分总分不足和保护任务退步。missing/invalid 不会缩小固定分母。评分实现身份已封存；更换实现后应使用匹配 runtime 阅读或恢复原实验。
 
-修补后的 coverage 按每个逻辑槽位的当前有效视图计算，原始 receipt 仍保留在 journal；物理用量包含所有执行尝试，只读投影补齐指标不增加物理用量。`completed` 表示运行结束，不保证每个槽位或指标都有效；同时检查 `coverage.invalid`、`evaluation_repairs.blocked`、`evidence_projections.blocked` 和分数完整性。修补策略已冻结，修改配置后需要新建 run，不能通过 resume 增加原 run 的执行/投影次数或预算。
+修补后的 coverage 按每个逻辑槽位的当前有效视图计算，原始 receipt 仍保留在 journal；物理用量包含所有执行尝试，只读投影补齐指标不增加物理用量。`completed` 表示运行结束，不保证每个槽位或指标都有效；同时检查 `coverage.invalid`、`evaluation_repairs.blocked`、`evidence_projections.blocked` 和分数完整性。评测修补策略已冻结，resume 不能增加重试/投影次数或物理评测预算。符合条件的只读 Meta 失败可单独进行[显式预算续接](evolutions.md#重试已结算的只读-meta-失败)。
 
 `gear cancel RUN_ID` 先记录取消请求，再尝试确认停止；CLI 返回 `cancellation: confirmed` 才表示完成确认。后台控制器立即返回 `requested`，随后处理停止；持有运行锁的 worker 尚未退出时也可能返回 `requested`，此时查看 report 或重试取消。provider 确认工作已停止，或持久化阻止其开始后，run 才进入 `cancelled`。`cancellation-unconfirmed` 会保持 `needs_recovery`；resume 重试取消，不提交新工作。未结算的预留和未知用量继续显示，不清零。
 

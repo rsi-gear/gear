@@ -13,6 +13,10 @@ delete ownership locks or replace sealed files to bypass recovery checks.
 | `state-busy` | Wait for the owner; do not delete an active service's socket or lock |
 | `needs_recovery` / unknown provider outcome | Repair the provider and `gear resume RUN_ID`, preserving operation IDs |
 | `evaluation_repairs.blocked` | Check retry/budget exhaustion, repair the environment and start a new run with revised limits; resume cannot increase the original allowance |
+| Settled v2 read-only Meta failure | [Retry the failed reflection](evolutions.md#retry-a-settled-read-only-meta-failure) with its exact operation ID; explicitly increase cumulative limits if needed |
+| `meta-recovery-not-allowed` | Check read-only Meta eligibility, stopped execution, fully known usage and unchanged algorithm state; preserve records if recovery is ineligible |
+| Only the binding differs after a Hitch restart | Request [binding recovery](evolutions.md#binding-changes-after-a-hitch-restart) with the original public binding; all other execution conditions must match |
+| `environment-recovery-mismatch` | Check the original binding, model, runtime, resources and Meta; other identity checks remain required |
 | `frozen-repair-policy-missing` | This run lacks the current frozen repair policy; preserve its evidence and create a new run instead of editing the journal |
 | `evidence_projections.blocked` | Check unsupported provider/metric, disabled projection or exhausted attempts; unavailable channels remain explicit and are never rerun for a better score |
 | `hitch-projection-source-changed` | Original provider fields were rewritten; preserve the sealed receipt and investigate the source instead of replacing it |
@@ -25,8 +29,7 @@ delete ownership locks or replace sealed files to bypass recovery checks.
 Doctor reports dependencies, provider capabilities, images and local credential sources separately.
 `not_configured` means the referenced credentials are missing; `provider_managed` requires custom-provider checks.
 `model_access: not_checked` means remote authorization is unverified, even when local prerequisites allow an attempted smoke test.
-See the [implementation record](../../refactor-progress.zh-CN.md) for actual
-model, GPU and container-extension verification.
+See [algorithm validation](algorithms.md#real-model-validation) and [training verification](training.md#verification-scope) for the scopes of real execution checks.
 
 The Python algorithm protocol limits each request and response to 64 MiB
 (67,108,864 bytes), including the UTF-8 JSON envelope and trailing newline.

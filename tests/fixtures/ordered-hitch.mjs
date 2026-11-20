@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { verifierFixture } from './verifier-evidence.mjs'
@@ -10,7 +10,7 @@ export function runOrderedHitchFixture(runtimeIdentity) {
   const state = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {}
   state.controls ??= {}; state.jobsById ??= {}; state.commands ??= []
   state.commands.push({ action: command === 'eval' ? action : command, args })
-  const save = () => writeFileSync(file, JSON.stringify(state))
+  const save = () => { const temporary = file + '.' + process.pid; writeFileSync(temporary, JSON.stringify(state)); renameSync(temporary, file) }
   const emit = value => { save(); process.stdout.write(JSON.stringify(value)) }
   const fail = () => { save(); process.exit(1) }
   const hash = text => createHash('sha256').update(text).digest('hex').slice(0, 32)
@@ -45,7 +45,7 @@ export function runOrderedHitchFixture(runtimeIdentity) {
   }
   const reply = value => ({ ...value, submitted: !!state.jobsById[value.eval_id], pending_reruns: false })
   if (command === 'resolve') emit({ identity: runtimeIdentity })
-  else if (command === 'capabilities') emit({ schema_version: '1', ordered_eval_control: '2', controller_runtime_observation: '2', local_execution_observation: '2', evaluation_environment_binding: '3', evaluation_preparation: '1', evaluation_artifact_pins: '1', ...(state.verifier ? { verifier_evidence: '1' } : {}) })
+  else if (command === 'capabilities') emit({ schema_version: '1', isolated_agent_run: '1', generation_budget: '1', ordered_eval_control: '2', controller_runtime_observation: '2', local_execution_observation: '2', evaluation_environment_binding: '3', evaluation_preparation: '1', evaluation_artifact_pins: '1', ...(state.verifier ? { verifier_evidence: '1' } : {}) })
   else if (command === 'eval' && action === 'bind') emit({ schema_version: '1', provider: 'local-docker', nonce: 'b'.repeat(32), daemon_instance_id: instance, binding: { schema_version: '1', binding_id: state.environmentBinding ?? 'hmac-sha256:' + digest('resident-environment').slice(7), model: option('--model'), pass_env: [...new Set(repeated('--pass-env'))].sort(), expires_at_ms: null } })
   else if (command === 'daemon') emit({ status: 'running', instance_id: instance })
   else if (command === 'training' && action === 'runtime') emit(controller)
@@ -91,7 +91,7 @@ export function runOrderedHitchFixture(runtimeIdentity) {
         harness_ref: option('--harness'), model: option('--model'), environment_binding: option('--environment-binding'), artifact_pins: artifactPins, attempts: Number(option('--attempts')),
         max_concurrent: Number(option('--max-concurrent')), infrastructure_retries: Number(option('--infrastructure-retries')),
         timeout_ms: Number(option('--timeout').replace(/ms$/, '')), setup_timeout_ms: Number(option('--setup-timeout')?.replace(/ms$/, '') ?? 1800000), agent_args: repeated('--agent-arg'), pass_env: repeated('--pass-env') }
-      const job = { eval_id: value.eval_id, dataset: request.dataset, request, controller, artifactId: state.artifactIds?.[state.jobs ?? 0] ?? state.preparedArtifactId, provider: option('--provider'), state: 'succeeded' }
+      const job = { eval_id: value.eval_id, dataset: request.dataset, request, buildMode: option('--build-mode') ?? 'prebuild', controller, artifactId: state.artifactIds?.[state.jobs ?? 0] ?? state.preparedArtifactId, provider: option('--provider'), state: 'succeeded' }
       state.jobsById[value.eval_id] = job; state.job = job; state.jobs = (state.jobs ?? 0) + 1
       if (state.loseSubmitReply) { state.loseSubmitReply = false; fail() }
     }
@@ -102,6 +102,7 @@ export function runOrderedHitchFixture(runtimeIdentity) {
     const artifact = artifactFor(job), runtimeContract = { docker_platform: 'linux/arm64', artifact_platform: artifact.platform, node_version: artifact.node_version }
     const artifacts = { prepared_artifact: artifact, prepared_artifacts: [{ ...artifact, task_ids: ['a'], runtime_contract: runtimeContract }] }
     const inspection = { schema_version: '1', eval_id: job.eval_id, request: job.request, resolution: { identity: runtimeIdentity },
+      submission: { execution: { build: { mode: job.buildMode } } },
       plan: { dataset: job.dataset, candidate: { revision_identity: runtimeIdentity, model: job.request.model,
         harness_id: job.request.harness_ref.split('@')[0], harness_ref: job.request.harness_ref, requested_harness_ref: job.request.harness_ref },
         controller_runtime: { runtime_id: job.controller.runtime_id }, ...structuredClone(artifacts) },
