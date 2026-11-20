@@ -1,0 +1,33 @@
+{
+  "status": "passed",
+  "authored_tasks_calibrated": 5,
+  "caller_records_replayed": 7,
+  "completed_tasks": 4,
+  "incomplete_tasks": 3,
+  "formal_scored_slots": 3,
+  "rejected_unscored_slots": 2,
+  "submitted_turns": 221,
+  "completed_turns": 221,
+  "native_tokens": 6085278,
+  "weight_training_steps": 0,
+  "final_test_opened": false,
+  "new_model_submissions": 0,
+  "sdk_imported": false,
+  "negative_checks": [
+    {
+      "mutation": "candidate_prompt",
+      "rejected": true,
+      "reason": "candidate prompt differs from its sealed bytes"
+    },
+    {
+      "mutation": "meta_input",
+      "rejected": true,
+      "reason": "Meta response is not bound to its authorized input"
+    },
+    {
+      "mutation": "invented_score",
+      "rejected": true,
+      "reason": "unknown task acquired a score"
+    }
+  ]
+}

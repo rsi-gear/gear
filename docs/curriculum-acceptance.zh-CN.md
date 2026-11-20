@@ -36,4 +36,4 @@ DataEnvGym 的 CPU 数值更新不是 LLM 效果；Self-Direction 的上下文 l
 
 [动作接口修复](../research/retail-action-interface-2026-11-20/README.zh-CN.md)另有真实模型与一次实际 CPU 查询证据，之后 114 项调用方／运行检查通过，1 项可选 MiniLM 检查跳过。该检查验证传输合同，不填补第 7、8 项的效果对照缺口。
 
-后续检查修正了未完成轨迹的正式状态转换：调用方使用 `scoring_failed, score=null`，保留源记录 unknown；搜索因训练证据不完整而结束时返回原 anchor，不声称选型成功，对照标记不可比。新增与回归共 17 项通过（11 项 ReflectiveSearch、6 项 native／CLI／worker／CPU Docker 检查），模型均为替身。[V5 记录工具](../research/sentinel-retail-2026-11-20-v5/README.zh-CN.md)已离线复核三条真实记录、90 份回执；它只验证这些记录，不构成完整实验验收。
+后续检查修正了未完成轨迹的正式状态转换：调用方使用 `scoring_failed, score=null`，保留源记录 unknown；搜索因训练证据不完整而结束时返回原 anchor，不声称选型成功，对照标记不可比。新增与回归共 17 项通过（11 项 ReflectiveSearch、6 项 native／CLI／worker／CPU Docker 检查），模型均为替身。[工具对照 V5](../research/sentinel-retail-2026-11-20-v5/README.zh-CN.md)仍使用旧冻结源码，因同一状态转换中止；七条任务记录、221 份回执、6,085,278 tokens 已离线复核。没有生成数据或最终测试，不能填补有效对照缺口。后续显式结束阶段与独立生成模型配置另有 35 项通过检查，仍需独立真实效果证据。
