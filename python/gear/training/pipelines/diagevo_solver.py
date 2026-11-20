@@ -1,7 +1,7 @@
 """One admitted DiagEvo solver job using the existing native four-stage driver.
 
-The outer caller must finish the challenger job, collect fresh questions,
-classify construction responses and admit retained tasks before this job.
+The outer caller must finish challenger construction and admit retained tasks
+before this job; it may use the preceding challenger's construction result.
 This factory neither swaps actors nor claims to execute the full algorithm.
 """
 
@@ -12,13 +12,16 @@ from gear.training.data.trajectories import RawTrajectory
 from gear.training.loop import TrainingLoop
 from gear.training.pipelines import online_rl
 from gear.training.recipes import diagevo_answers, diagevo_solver
+from gear.training.recipes.agent_grpo import sampling_params
 from gear.training.recipes.diagevo import DiagEvoPolicy
 from gear.training.recipes.diagevo_answers import DiagEvoMathClassifier
 from gear.training.recipes.diagevo_challenger import DiagEvoChallengerReward
 from gear.training.recipes.diagevo_data import DiagEvoChallengerDatasetBuilder, _native_groups
 from gear.training.recipes.diagevo_generation import DiagEvoGenerationBuilder, DiagEvoQuestionPrompt
 from gear.training.recipes.diagevo_solver import DiagEvoSolverDatasetBuilder
+from gear.training.runtime.preflight import generation_template_kwargs
 from gear.training.storage.content import digest_json, require
+from gear.training.storage.loop_journal import _digest
 
 
 class SolverDatasetStage:
@@ -74,14 +77,38 @@ def _component(spec):
 
 
 def build_loop(config, runtime):
-    """Reconstruct frozen sources; scriptConfig holds the two required CAS refs."""
+    """Reconstruct an admitted curriculum, including the native construction handoff."""
     parameters = config["parameters"]
     require(
-        set(parameters) == {"curriculumRef", "challengerRequestRef"},
+        set(parameters) in ({"curriculumRef", "challengerRequestRef"}, {"constructionRef"}),
         "diagevo-solver-config",
-        "solver scriptConfig requires curriculumRef and challengerRequestRef",
+        "solver scriptConfig requires constructionRef or the explicit curriculum and challenger request",
     )
     store = runtime.store
+    construction = None
+    if "constructionRef" in parameters:
+        construction = store.read_json(parameters["constructionRef"])
+        require(
+            isinstance(construction, dict) and isinstance(construction.get("solverBackend"), dict),
+            "diagevo-solver-handoff",
+            "construction result must identify its frozen solver backend",
+        )
+        backend = construction["solverBackend"]
+        require(
+            construction.get("schemaVersion") == 1
+            and construction.get("kind") == "diagevo-curriculum-construction"
+            and construction.get("status") == "ready"
+            and construction.get("curriculumRef") is not None
+            and construction.get("challengerRequestRef") is not None
+            and backend.get("modelRef") == runtime.request["parentModel"]["hfSnapshotRef"]
+            and backend.get("sampling") == sampling_params(runtime.request["rollout"])
+            and backend.get("maxContextTokens")
+            == runtime.request["rollout"]["sampling"]["maxContextTokens"]
+            and backend.get("chatTemplateKwargs") == generation_template_kwargs(runtime.config),
+            "diagevo-solver-handoff",
+            "solver needs a ready construction result and its exact original frozen model",
+        )
+        parameters = {key: construction[key] for key in ("curriculumRef", "challengerRequestRef")}
     curriculum_ref = parameters["curriculumRef"]
     pool = store.read_json(curriculum_ref)
     require(
@@ -119,6 +146,19 @@ def build_loop(config, runtime):
         "native solver recipe requires the frozen Math-Verify classifier",
     )
     retained = {vote["question_id"] for vote in pool["votes"] if vote["retained"]}
+    if construction is not None:
+        require(
+            construction.get("generationRef") == pool["input"]["generationRef"]
+            and construction.get("retainedQuestionIds")
+            == [vote["question_id"] for vote in pool["votes"] if vote["retained"]]
+            and pool["solverIdentity"][:2]
+            == [
+                "frozen-hf/" + construction["solverBackend"]["modelRef"]["digest"],
+                "local-hf/" + _digest(construction["solverBackend"]),
+            ],
+            "diagevo-solver-handoff",
+            "handoff differs from the recomputed complete curriculum",
+        )
     admitted = [task["id"] for task in runtime.request["trainDataset"]["tasks"]]
     require(
         retained and len(admitted) == len(retained) and set(admitted) == retained,

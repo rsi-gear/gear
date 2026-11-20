@@ -17,7 +17,7 @@ from gear.training.storage.content import ContractError
 from gear.training.storage.models import seal_hf
 
 
-def question_models(directory, store):
+def question_models(directory, store, *, response="<question>What is one plus one?</question>"):
     """Fixed decoder transitions input -> question -> EOS, without a text stub."""
     import torch
     from tokenizers import Tokenizer
@@ -28,7 +28,7 @@ def question_models(directory, store):
         WordLevel(
             {
                 "<input>": 0,
-                "<question>What is one plus one?</question>": 1,
+                response: 1,
                 "<eos>": 2,
                 "<unk>": 3,
             },
@@ -269,11 +269,11 @@ class FreshPipelineTests(unittest.TestCase):
             ),
         ):
             run(self.root)
-        self.assertEqual(calls, [self.updated])
+        self.assertEqual(calls, [self.updated] + [self.native.solver_ref] * 8)
         self.assertEqual(self.driver.native_events, before)
         self.result()
 
-    def test_sealed_questions_reply_gap_needs_no_model_load_or_resampling(self):
+    def test_sealed_questions_reply_gap_only_runs_the_unfinished_solver_construction(self):
         original, refs = DiagEvoGenerationBuilder.seal_local, []
 
         def gap(builder, *args, **kwargs):
@@ -287,8 +287,15 @@ class FreshPipelineTests(unittest.TestCase):
         ):
             run(self.root)
         before = self.driver.native_events[:]
+        original_generate, models = FrozenHFSolver._generate, []
+
+        def generate(backend, *args):
+            self.assertNotEqual(backend.model_ref, self.updated)
+            models.append(backend.model_ref)
+            return original_generate(backend, *args)
+
         with (
-            patch.object(FrozenHFSolver, "_load", side_effect=AssertionError("must not load")),
+            patch.object(FrozenHFSolver, "_generate", generate),
             patch(
                 "gear.training.backends.slime.gpu_visibility.verify_visible_devices",
                 side_effect=AssertionError("must not start CUDA"),
@@ -298,6 +305,7 @@ class FreshPipelineTests(unittest.TestCase):
         self.assertEqual(self.driver.native_events, before)
         result, _, _ = self.result()
         self.assertEqual(result["checkpoint"]["generationRef"], refs[0])
+        self.assertEqual(models, [self.native.solver_ref] * 8)
 
     def test_old_weights_incomplete_groups_and_reused_training_captures_are_rejected(self):
         with self.native.native():
@@ -335,6 +343,7 @@ class FreshPipelineTests(unittest.TestCase):
         self.request["trainer"]["rolloutBatchSize"] = 2
         self.driver.d.args.rollout_batch_size = 2
         parameters = self.request["trainer"]["scriptConfig"]
+        parameters["solver"]["max_calls"] = 24
         parameters["prompts"] = {"train-a": parameters["prompts"]["train-a"]}
         parameters["freshGeneration"]["directives"] = {"train-a": {"mode": "free", "cause_ids": []}}
         with self.native.native():

@@ -17,16 +17,40 @@ from gear.training.recipes import (
     diagevo_data,
     diagevo_generation,
     diagevo_inference,
+    diagevo_solver,
 )
+from gear.training.recipes.diagevo import GenerationDirective
 from gear.training.recipes.diagevo_answers import DiagEvoMathClassifier
 from gear.training.recipes.diagevo_challenger import DiagEvoChallengerReward
 from gear.training.recipes.diagevo_data import DiagEvoChallengerDatasetBuilder
 from gear.training.recipes.diagevo_generation import DiagEvoGenerationBuilder, DiagEvoQuestionPrompt
 from gear.training.recipes.diagevo_inference import FrozenHFSolver
 from gear.training.recipes.diagevo_round import _freeze
+from gear.training.recipes.diagevo_solver import DiagEvoSolverDatasetBuilder, _cause
 from gear.training.runtime.preflight import generation_template_kwargs
 from gear.training.storage.content import require
 from gear.training.storage.loop_journal import _copy
+
+
+def _local_usage(store, groups):
+    usage = {
+        "logicalGenerations": 0,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "generationSeconds": 0,
+        "externalModelCalls": 0,
+        "trainingUpdates": 0,
+        "usd": None,
+    }
+    for group in groups:
+        for raw in group:
+            receipt = store.read_json(raw.receipt_refs[0])
+            generation = store.read_json(receipt["rawResponseRef"])["native"]
+            usage["logicalGenerations"] += 1
+            usage["inputTokens"] += len(generation["inputTokenIds"])
+            usage["outputTokens"] += len(generation["outputTokenIds"])
+            usage["generationSeconds"] += generation["seconds"]
+    return usage
 
 
 class ChallengerDatasetStage:
@@ -109,13 +133,15 @@ class ChallengerDatasetStage:
 
 
 class ChallengerModelUpdater:
-    """Commit native updates, then sample the final exported model independently."""
+    """Commit updates, sample the final challenger and construct a solver curriculum."""
 
     stage_id = "gear.diagevo.challenger-update-and-generate:v1"
     source_dependencies = (
         *ChallengerDatasetStage.source_dependencies,
         Path(diagevo_generation.__file__),
+        Path(diagevo_solver.__file__),
         *DiagEvoGenerationBuilder.source_dependencies,
+        *DiagEvoSolverDatasetBuilder.source_dependencies,
     )
     package_dependencies = ChallengerDatasetStage.package_dependencies
 
@@ -196,23 +222,75 @@ class ChallengerModelUpdater:
             group_keys=keys,
             history=history,
         )
-        usage = {
-            "logicalGenerations": count * size,
-            "inputTokens": 0,
-            "outputTokens": 0,
-            "generationSeconds": 0,
-            "externalModelCalls": 0,
-            "trainingUpdates": 0,
-            "usd": None,
+        backend.model = backend.tokenizer = None
+        construction_ref = await self.construct(ctx, generation_ref)
+        return {
+            **checkpoint,
+            "generationRef": generation_ref,
+            "generationUsage": _local_usage(runtime.store, groups),
+            "constructionRef": construction_ref,
         }
-        for group in groups:
-            for raw in group:
-                receipt = runtime.store.read_json(raw.receipt_refs[0])
-                generation = runtime.store.read_json(receipt["rawResponseRef"])["native"]
-                usage["inputTokens"] += len(generation["inputTokenIds"])
-                usage["outputTokens"] += len(generation["outputTokenIds"])
-                usage["generationSeconds"] += generation["seconds"]
-        return {**checkpoint, "generationRef": generation_ref, "generationUsage": usage}
+
+    async def construct(self, ctx, generation_ref):
+        """Fresh solver draws, frozen classes and all votes; no task admission."""
+        runtime, solver = self.runtime, self.solver
+        origin, _ = self.generation.read(generation_ref)
+        policy = self.generation.challenger.objective.policy
+        classifier = DiagEvoMathClassifier(runtime.store)
+        _freeze(
+            Path(ctx.workspace) / "construction-input.json",
+            {
+                "generationRef": generation_ref,
+                "solver": solver.identity,
+                "classifier": classifier.identity(),
+            },
+        )
+        runtime.check_cancel()
+        questions = origin["questions"]
+        captures, curriculum_ref, retained = {}, None, []
+        status = "no-valid-questions"
+        if questions:
+            captures = await solver.sample(
+                ctx.operation_id + "/curriculum-construction",
+                questions,
+                count=policy.construction_samples,
+                check_cancel=runtime.check_cancel,
+            )
+            runtime.check_cancel()
+            classes_ref = classifier.construction(questions, captures)
+            builder = DiagEvoSolverDatasetBuilder(
+                runtime.store, policy=policy, generation_builder=self.generation
+            )
+            curriculum_ref = builder.seal_curriculum(
+                questions,
+                captures,
+                generation={
+                    key: GenerationDirective(row["mode"], tuple(row["cause_ids"]))
+                    for key, row in origin["generation"].items()
+                },
+                memory=tuple(_cause(row) for row in origin["input"]["memory"]),
+                construction_policy_id=solver.policy_id,
+                answer_classes_ref=classes_ref,
+                generation_ref=generation_ref,
+            )
+            pool = runtime.store.read_json(curriculum_ref)
+            retained = [vote["question_id"] for vote in pool["votes"] if vote["retained"]]
+            status = "ready" if retained else "no-retained-questions"
+        runtime.check_cancel()
+        result = {
+            "schemaVersion": 1,
+            "kind": "diagevo-curriculum-construction",
+            "status": status,
+            "generationRef": generation_ref,
+            "curriculumRef": curriculum_ref,
+            "challengerRequestRef": runtime.store.put_json(runtime.request),
+            "solverBackend": solver.identity,
+            "retainedQuestionIds": retained,
+            "usage": _local_usage(runtime.store, captures.values()),
+        }
+        ref = runtime.store.put_json(result)
+        _freeze(Path(ctx.workspace) / "construction-result.json", {"resultRef": ref})
+        return ref
 
 
 def build_loop(config, runtime):

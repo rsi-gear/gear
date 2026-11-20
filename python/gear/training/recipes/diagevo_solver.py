@@ -57,19 +57,22 @@ class DiagEvoSolverDatasetBuilder:
         Path(native_samples.__file__),
     )
 
-    def __init__(self, store, request, *, policy=None, generation_builder=None):
+    def __init__(self, store, request=None, *, policy=None, generation_builder=None):
         self.store, self.request = store, deepcopy(request)
         self.policy = clone(policy if policy is not None else DiagEvoPolicy())
         self.generation_builder = generation_builder
-        require(
-            request.get("schemaVersion") == 2
-            and request["trainer"].get("recipe", "agent-grpo-v1") == "agent-grpo-v1"
-            and request["rollout"]["zeroVarianceGroup"] == "keep"
-            and request["rollout"]["groupSize"] == self.policy.optimization_group_size,
-            "diagevo-training-contract",
-            "solver needs v2 GRPO, matching optimization group size, and zeroVarianceGroup=keep",
-        )
-        sampling_params(request["rollout"])
+        # Curriculum construction precedes admission of its retained questions.
+        # Only immutable curriculum operations are available without a request.
+        if request is not None:
+            require(
+                request.get("schemaVersion") == 2
+                and request["trainer"].get("recipe", "agent-grpo-v1") == "agent-grpo-v1"
+                and request["rollout"]["zeroVarianceGroup"] == "keep"
+                and request["rollout"]["groupSize"] == self.policy.optimization_group_size,
+                "diagevo-training-contract",
+                "solver needs v2 GRPO, matching optimization group size, and zeroVarianceGroup=keep",
+            )
+            sampling_params(request["rollout"])
 
     def _curriculum(self, inputs):
         questions, construction = inputs["questions"], inputs["construction"]
@@ -199,6 +202,11 @@ class DiagEvoSolverDatasetBuilder:
         return actual
 
     def _build(self, groups, *, lease, curriculum_ref, answer_classes_ref):
+        require(
+            self.request is not None,
+            "diagevo-solver-admission-required",
+            "gradient batches require an admitted solver training request",
+        )
         pool, votes, generation, memory, seen = self._pool(curriculum_ref)
         construction_seen = set(seen)
         classification, labels = _answer_labels(
@@ -305,6 +313,11 @@ class DiagEvoSolverDatasetBuilder:
         checks the artifact chain and replays data construction before exposing
         captured failure/reference text to the existing memory updater.
         """
+        require(
+            self.request is not None,
+            "diagevo-solver-admission-required",
+            "committed failures require an admitted solver training request",
+        )
         pool, votes, generation, memory, seen = self._pool(curriculum_ref)
         request, store = self.request, self.store
         optimization, texts = [], dict(pool["trajectoryTexts"])
