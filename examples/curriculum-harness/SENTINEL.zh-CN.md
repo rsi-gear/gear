@@ -201,7 +201,7 @@ PYTHONPATH=python:python/tests /tmp/gear-sentinel-env/bin/python \
 
 真实接口检查确认服务端禁止根节点 `anyOf`。动作分支因此放在对象的 `action` 属性内，retail 对话及 Agent-R 执行处直接取出该值；原始模型回执保存整个对象，实际工具轨迹格式保持不变。根级 schema 被拒绝的请求保留为接口错误，不计为任务失败或零用量。
 
-此次合同修复后，SENTINEL／Agent-R／CoEvolve／Self-Direction 合计 107 项检查通过，另 1 项可选真实 MiniLM 检查跳过；正式模型桥接的 6 项检查也通过。包括真实 CLI／worker、CPU 工具执行、新旧 schema 的边界和基础指令变化后拒绝重用原调用键；模型均为明确替身。
+嵌套格式修复后，SENTINEL／Agent-R／CoEvolve／Self-Direction 及正式模型桥接合计 114 项检查通过，另 1 项可选真实 MiniLM 检查跳过。包括真实 CLI／worker、CPU 工具执行、新旧 schema 的边界和基础指令变化后拒绝重用原调用键；模型均为明确替身。[独立真实接口检查](../../research/retail-action-interface-2026-11-20/README.zh-CN.md)有 1 个完成的逻辑 turn、27,587 tokens，实际执行一次 CPU 只读工具；此前根级 schema 的 400 请求保留，用量未知。这不是任务成功率或数据策略效果证据。
 
 CI 的 `Curriculum / tool environments CPU` 作业安装固定 Tau2、构建 Node CLI，并运行 `test_sentinel*.py`，启用正式 runtime 集成；未安装可选依赖时只运行纯采样检查，跳过 native 集成，不把跳过项当作通过。
 
