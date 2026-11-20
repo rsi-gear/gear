@@ -2,7 +2,7 @@
 
 目标：按 [完整设计](failure-driven-data-operators-spec.zh-CN.md) 实现剩余部分，优先完成正式 harness 搜索接入、候选约束处理与有效对照实验。**按 2026-11-20 的范围调整，本版本不做 GPU 训练。** 此台账分别保留本版待办和后续训练路线，不把基础算子或示例完成等同于整个设计完成。
 
-当前结论：**完整设计尚未实现；不做 GPU 训练也不等于所有无 GPU 配方已经完成。** 优先的 harness 搜索、候选约束和固定权重的真实 LLM 对照已完成，但对照未观察到 failure 数据收益。下表仍列出尚未完成的环境生成、轨迹修复和配方效果验证。
+当前结论：**完整设计尚未实现；不做 GPU 训练也不等于所有无 GPU 配方已经完成。** 优先的 harness 搜索、候选约束和固定权重的真实 LLM 对照已完成，但对照未观察到 failure 数据收益。下表仍列出尚未完成的配方接入、轨迹修复和效果验证。
 
 本版继续验收纯算子及输入输出、调用方转换、数据生成与执行验证、恢复与预算、固定权重的 harness 改进。现有 CPU 测试和训练合同保留，不将替身执行算作真实权重训练。
 
@@ -28,7 +28,8 @@ GPU 权重更新、训练节点部署、跨节点训练制品准备、论文规�
 | DiagEvo 配方 | 多轮双模型编排、跨轮预算、暂停／恢复与 CLI 已实现；CPU 两轮链路通过，GPU 效果不在本版范围 | [规则与边界](training/diagevo.zh-CN.md#多轮调用方与命令入口)：两条模型链保留已采纳模型与 optimizer checkpoint，更新后独立构造新题，solver 记忆反馈下一轮且保留首轮频次。实际 compiler／controller／native driver 跑通四个作业，158 项 DiagEvo 回归全部通过；训练 actor、optimizer 状态、评测服务和 SDK 消息仍为替身。[预训练 solver 检查](../research/diagevo-solver-2026-11-20/README.zh-CN.md)未得到有效 boxed 答案；[真实记忆后端](../research/diagevo-memory-2026-11-20/README.zh-CN.md)已有 Codex／BGE 与提交、回执和用量绑定。可靠美元费用尚未计量；真实双模型 GPU 训练与效果对照、跨节点制品准备和论文规模证据保留列后续 |
 | DiagEvo 保留题任务交接 | 已实现并接入多轮入口；未运行 Harbor 容器，GPU 列后续 | [封存与准入](training/diagevo.zh-CN.md#保留题任务封存与准入)：复算课程、保持原模型输入、继承 train 来源、排除私有内容；实际 Hitch 编译并封存任务，Gear controller 创建／准入原生 solver 请求。准备、创建及准入返回丢失时复用原制品与作业；评测和已分配本作业预算固定。4 项 Python 集成／verifier 检查及此前 50 项 controller 回归通过 |
 | DiagEvo 原生文本 harness | 真实 runner／代理／网关合同已补齐；依赖独立 Hitch 修复 | [依赖与验证](training/diagevo.zh-CN.md#原生文本-harness-合同)：复用 `model-call`，训练／评测按实际 harness 协商能力；工厂提前拒绝工具 harness。真实文本请求经过 Hitch proxy 与 Gear `ExactGateway` 后通过严格 DiagEvo 捕获检查。Hitch 本地提交 `3c03d98` 及可应用补丁已保存；未修改的 0.2.19 包不具备此能力。Gear 46 项 controller 回归、Hitch 20 项 runner／工作图回归通过，仍非真实 Harbor 执行或后续 GPU 训练验收 |
-| TRACE / Agent-R / Self-Direction 配方 | 无 GPU 的生成、校准、修复与过程问答组合待实现；GPU 权重训练及相应加载／路由列后续 | 逐项提供实际执行入口与上游差异；已有通用算子不等于完整论文配方支持 |
+| TRACE 配方 | 能力对比、独立 Python 环境生成和固定权重分组校准已实现；专用正式搜索接入及真实模型效果待验收 | [运行与边界](../examples/curriculum-harness/TRACE.zh-CN.md)：规范能力字典、重复完整标注、覆盖／差异筛选；CPU Docker 隔离执行参考与负例，solver 仅见公开对话；完整 seed×sample 分组、未知保留、难度筛选、有限修订、回执恢复与离线重放。测试采用明确模型替身，不能作为能力迁移或收益证明；LoRA／GRPO／MoE 列后续 |
+| Agent-R / Self-Direction 配方 | 无 GPU 的修复与过程问答组合待实现；GPU 权重训练及相应加载／路由列后续 | 逐项提供实际执行入口与上游差异；已有通用算子不等于完整论文配方支持 |
 | 动态任务池、MCTS/reset、DPO/LoRA/MoE 等后端能力 | 设计第三阶段，尚未验收；GPU 训练后端不在本版范围 | 动态池及环境状态恢复按无 GPU 配方的实际需要实现；训练后端保持后续范围，不为本版先扩展节点基础设施 |
 | 设计第 11 节九项验收 | 按本版范围部分完成 | 每项都绑定具体测试／运行记录，训练相关条目另行验收；有效对照允许负结果，不能以窄范围示例代替整体完成 |
 

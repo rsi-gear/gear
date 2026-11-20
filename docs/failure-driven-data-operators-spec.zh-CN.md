@@ -93,6 +93,7 @@ gear/curriculum/
   contracts.py         算子输入输出的数据定义
   cases.py             案例提取、筛选、成功/失败对齐
   diagnosis.py         诊断模型输入构造与输出解析
+  capabilities.py      能力字典、重复标签及覆盖／差异统计
   memory.py            FailureMode、错误原因和掌握状态更新
   selection.py         学习目标、预算分配和练习池选择
   generation.py        练习规划、任务/环境/修复/问答生成
@@ -123,6 +124,7 @@ gear/curriculum/
 | `ExtractOutcomeCases` | `curriculum.cases` | 已归一化的执行/评分证据、筛选规则 → `OutcomeCase[]` | 纯；保持失败、不完整、基础设施错误的区别 |
 | `ExtractLearningSignals` | `curriculum.signals` | 可比的时序 rollout 观测 → forgetting/boundary/rare 布尔信号 | 纯；保留三种条件与证据，不用软评分替代论文条件 |
 | `ContrastiveDiagnoser` | `curriculum.diagnosis` | 成功/失败案例 → 诊断模型输入；模型响应 → 诊断 delta | `prepare / parse`；模型调用由调用方执行 |
+| `ContrastCapabilities` | `curriculum.capabilities` | 同策略完整成功/失败 → 能力字典与独立标签输入；响应及多轮标签 → 能力评估 | 纯；完整矩阵、来源绑定、coverage/gap 与一致性筛选，不执行模型 |
 | `SelectLearningTargets` | `curriculum.selection` | 模式/技能摘要、历史进展、预算、显式随机源 → 目标 ID 与预算分配 | 纯；frequency/frontier/forgetting 等为可替换策略 |
 | `ProposeSubskills` | `curriculum.skills` | 技能树与训练案例 → 模型输入；响应 → 新子技能动作 | `prepare / parse`；限制 family 和失败引用 |
 | `PlanSkillPractice` | `curriculum.skills` | 技能树、绑定版本的 explore/exploit 动作与预算 → 新树与学习目标 | 纯；拒绝负配额、超预算及越界更新 |
@@ -139,7 +141,7 @@ gear/curriculum/
 
 `prepare / parse` 和 `plan / assess` 是对应算子的普通方法，不引入统一执行请求协议。模型输入包含具体 prompt、响应 schema 和允许材料；`parse` 只校验模型输出结构，不能将模型判断升级为执行证明。组件参数和提示词由调用方纳入冻结配置。语义去重、可学习性估计需要模型或 rollout 时也由调用方明确执行，不能藏在纯 `SelectPractice` 内。
 
-调用方直接复用现有 `ReadArtifact / QueryHistory / Meta / Evaluate / Rollout / CommitLibrary / PublishLibrary`，不复制其传输、权限、恢复实现。仅有一次使用的专用组件先留在算法模块，例如 Forge 四向变异调度、DiagEvo 的 double-confidence 规则、TRACE 的能力差异阈值。
+调用方直接复用现有 `ReadArtifact / QueryHistory / Meta / Evaluate / Rollout / CommitLibrary / PublishLibrary`，不复制其传输、权限、恢复实现。专用执行组件留在具体调用方，例如 Forge 四向变异调度、DiagEvo 的 double-confidence 编排、TRACE 的 Python 环境启动和分组校准。能力字典与标签统计作为纯 `ContrastCapabilities` 算子提供；阈值由配方显式配置，不引入通用执行层。
 
 ## 5. 数据合同与归属
 
@@ -149,6 +151,7 @@ gear/curriculum/
 | --- | --- | --- |
 | `OutcomeCase` | `curriculum` | task/source family、样本/attempt、策略与环境身份、轨迹/反馈 refs、outcome、是否完整；成功、任务失败、基础设施失败、未知分开 |
 | `FailureMode` | `curriculum` | 稳定 mode ID、机制描述、支持与反证 refs、覆盖范围、频次、状态、诊断器身份；描述是模型解释，支持证据是事实 |
+| `Capability / CapabilityLabeling / CapabilityAssessment` | `curriculum` | 规范能力字典、绑定案例与算子的完整标注矩阵、逐轮覆盖／差异和一致性；标签是模型判断，不是因果证明 |
 | `SkillTree / Subskill` | `curriculum` | 根技能及子技能、family 来源、支持案例和每轮请求生成量；不是可执行任务注册 |
 | `SkillTreeAction / SkillPracticePlan` | `curriculum` | 旧树摘要绑定的扩展或配额增量、预算检查后的新树与学习目标；调用方持久化 |
 | `PracticePlan` | `curriculum` | 目标 mode/skill、来源、预算、产物类型、mutation intent、生成器和验证策略身份 |
@@ -235,7 +238,7 @@ TaskSource 继续返回既有任务格式，不增加公共结果封套或包装
 | SENTINEL | failure memory → target directives → reference execution → task construction → validation → mixed pool → GRPO | [retail 调用方](../examples/curriculum-harness/SENTINEL.zh-CN.md)已接 solver 执行与评分、跨轮失败记忆、真实参考重放、native 校准、混合池与新的正式搜索 run；CLI／worker、候选约束、三组对照及具名训练任务 mastery 探针通过模型替身集成；探针绑定当前策略与全部支持任务，未知不当失败、重复失败重新激活且不增加诊断频次；真实模型效果仍待验收；GPU GRPO 列后续 |
 | CoEvolve | policy-aligned history → forgetting/boundary/rare selection → environment exploration → task-solution generation → harness search | [retail 调用方](../examples/curriculum-harness/COEVOLVE.zh-CN.md)实现完整来源重放、三信号消融、多次独立探索、轨迹聚合、native 校准与正式搜索接入；signal 条件保留成功来源，不伪造失败；替身集成与真实模型效果分别验收，论文环境与 GRPO 列后续 |
 | DiagEvo | solver samples → error-cause diagnosis → active/mastered memory → mixed practice generation → confidence filtering → training | 多数票伪标签、双置信度过滤、状态迁移；不宣称 oracle 正确性 |
-| TRACE | success/failure contrast → capability selection → executable environment generation/calibration → per-capability RL → adapter composition | 生成环境、专项 LoRA 和 MoE 路由均需实际能力；不能以文本 playbook 替代 |
+| TRACE | success/failure contrast → capability selection → executable environment generation/calibration → per-capability RL → adapter composition | [无 GPU 调用方](../examples/curriculum-harness/TRACE.zh-CN.md)实现规范字典、多轮完整标签、能力筛选、独立 Python 环境隔离执行及固定权重 rollout 校准；专用正式搜索接入和真实模型效果待验收。专项 LoRA、RL 和 MoE 路由列后续，不能以文本 playbook 替代 |
 | Agent-R | search tree → error-boundary proposal → repair plan → revision dataset → iterative SFT | Gear 增加执行验证；checkpoint/reset/MCTS 是环境能力，状态一致性是接纳条件 |
 | Self-Direction | base failure → 查找已有 lesson → 未命中才生成样本/训练/注册 adapter → retry → 必要时 clean-base fallback | 下一任务从 base 开始；记录 adapter 身份和路由策略，冻结基座不保证激活 adapter 后无回归 |
 | GEPA / ACE | existing search / reflection / memory operators | 提供诊断或改进分支；默认不自动扩展任务分布 |
@@ -285,7 +288,7 @@ pool、dataset、模型/adapter、harness、共享学习库分别版本化。一
 
 ## 11. 实施顺序与验收
 
-本版按不做 GPU 训练的范围验收。真实模型调用使用固定权重，改进对象是 harness；CPU 数值测试只证明相应数据合同和本地更新行为。SENTINEL／CoEvolve 已提供 retail 参考执行与探索调用方，真实模型效果仍待验收；TRACE 的环境生成和校准、Agent-R 的轨迹修复等无 GPU 部分仍需逐项补齐。这些配方的 GPU 训练及效果归入后续范围。GPU controller 配置或训练资源不是本版的前置条件。
+本版按不做 GPU 训练的范围验收。真实模型调用使用固定权重，改进对象是 harness；CPU 数值测试只证明相应数据合同和本地更新行为。SENTINEL／CoEvolve 已提供 retail 参考执行与探索调用方；TRACE 已提供独立环境生成和分组校准调用方，其专用正式搜索接入仍待实现。各配方真实模型效果、Agent-R 轨迹修复等无 GPU 部分继续逐项验收。GPU 训练及效果归入后续范围。GPU controller 配置或训练资源不是本版的前置条件。
 
 **第一阶段：算子与输入输出。** 在 `gear.curriculum` 实现案例、失败记忆、练习计划、验证报告及对应算子。先提供简单的错题条件生成基线与随机生成基线，展示调用方自己的 TaskSource 如何组合算子并返回原任务格式。配置冻结、子调用恢复、生成任务封存和验证授权在该调用方实现中完成。
 

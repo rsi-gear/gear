@@ -1,5 +1,13 @@
 """Composable failure-to-data operators; callers own conversion and execution."""
 
+from gear.curriculum.capabilities import (
+    Capability,
+    CapabilityAssessment,
+    CapabilityLabel,
+    CapabilityLabeling,
+    CapabilityMetrics,
+    ContrastCapabilities,
+)
 from gear.curriculum.cases import ExtractOutcomeCases
 from gear.curriculum.contracts import (
     CheckResult,
@@ -56,8 +64,14 @@ from gear.curriculum.validation import ValidatePractice
 __all__ = [
     "BehavioralObservation",
     "BuildSupervision",
+    "Capability",
+    "CapabilityAssessment",
+    "CapabilityLabel",
+    "CapabilityLabeling",
+    "CapabilityMetrics",
     "CheckResult",
     "ContrastiveDiagnoser",
+    "ContrastCapabilities",
     "ExtractOutcomeCases",
     "ExtractLearningSignals",
     "FailureMode",

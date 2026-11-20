@@ -1,6 +1,6 @@
 # Failure → Data 算子
 
-`gear.curriculum` 是独立的轻量能力包。它包含十二个算子及其输入输出定义，只依赖标准库、`gear.core` 和公共 JSON 合同。它不导入 search、training、evaluation、memory，也不提供 adapters、执行器或新的流程状态机。
+`gear.curriculum` 是独立的轻量能力包。它包含十三个算子及其输入输出定义，只依赖标准库、`gear.core` 和公共 JSON 合同。它不导入 search、training、evaluation、memory，也不提供 adapters、执行器或新的流程状态机。
 
 本分支基于 `dev` 的 Gear 0.2.4 基线；以下是新增 API，不是已发布的 0.2.4 API。完整研究和后续范围见[设计文档](failure-driven-data-operators-spec.zh-CN.md)。
 
@@ -39,6 +39,7 @@ PYTHONPATH=python python3 examples/training-loop/failure_curriculum_cpu.py \
 | --- | --- | --- |
 | `ExtractOutcomeCases()` | `OutcomeRecord[]` → `OutcomeCase[]` | 每个逻辑 sample 取最新 attempt；只保留 train；完整且有明确 verdict 才标成功/任务失败 |
 | `ContrastiveDiagnoser()` | `prepare(cases, memory=...)` → `ModelInput`；`parse(response, cases=...)` → `FailureMode[]` | 检查引用；反例必须与失败的 family、policy、environment 可比 |
+| `ContrastCapabilities()` | 字典发现／解析 → 独立标签输入／解析 → `select(..., labelings=...)` → `CapabilityAssessment[]` | 同策略完整成功／失败；规范字典、完整标签矩阵、coverage/gap 和跨轮一致性，未知分母不通过 |
 | `MergeFailureMemory()` | `memory, delta, measurements=...` → 新 `FailureMode[]` | 支持案例去重；显式测量决定掌握；新失败重新激活 |
 | `SelectLearningTargets()` | `memory, budget=..., rng=..., progress=..., policy_id=...` → `LearningTarget[]` | frequency/uniform/frontier/forgetting/rare_action/signal_mix；精确预算，测量缺失保持未知 |
 | `ExtractLearningSignals()` | 有序 `BehavioralObservation[]`, `policy_id=...` → `LearningSignals[]` | 可比历史的遗忘、同策略组的结果边界、已观测低频动作，三个标签分别保留 |
@@ -77,6 +78,8 @@ PYTHONPATH=python python3 examples/training-loop/failure_curriculum_cpu.py \
 目标调度默认采用可替换的软评分：frontier 在成功率 0.5 附近较高，forgetting 使用成功率下降，rare_action 使用动作次数的倒数。它们不是 CoEvolve 的原论文判定公式。`ExtractLearningSignals` 单独实现论文第 3.1 节的布尔条件：可比近期窗口中曾得分至少 0.5、当前低于 0.5；同策略同组同时出现大于与小于 0.5 的结果；达到最小观测量后，已出现的动作模式频率低于阈值。未知／不完整结果不提供失败信号，未出现的动作不会伪装成论文中的 rare signal。[原论文](https://arxiv.org/html/2604.15840v1#S3.SS1)
 
 [CoEvolve-inspired retail 调用方](../examples/curriculum-harness/COEVOLVE.zh-CN.md)已将三类信号接到历史重放、独立工具探索、轨迹聚合、任务构造、native 校准和正式 harness 搜索。`conditioning="signal"` 接受完整成功或失败案例，由调用方提供已测量的信号目标；不会把成功的 rare/boundary 来源改标为失败。执行、转换和恢复留在调用方。真实模型效果尚未验收，GRPO 不在本版范围。
+
+[TRACE-inspired 调用方](../examples/curriculum-harness/TRACE.zh-CN.md)使用 `ContrastCapabilities` 的规范能力字典和重复标注，计算失败覆盖及成功／失败缺失率之差，再生成独立 Python 环境。调用方负责实际 Docker 隔离、参考／负例执行、固定权重 rollout 和完整分组校准。算子不读取轨迹、不运行代码或模型；不同任务的可比性由调用方保证。生成奖励不是独立 oracle；该配方的专用正式搜索接入和真实模型收益仍待验收，专项权重训练不在本版范围。
 
 练习难度使用 `PracticeMeasurement`，必须绑定当前策略与草案摘要；成功率范围和最小样本量是显式参数。`exploration_count` 预留独立探索槽，要求显式随机源；测量未知只能使用这些槽。`mix_counts=(("fixed", 2), ("random", 2), ("failure", 2))` 配合调用方的草案来源标签约束混合池。配额总和必须等于预算，某类不足时返回较小池和拒绝原因，不拿其他来源偷偷填满。
 
